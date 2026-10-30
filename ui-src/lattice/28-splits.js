@@ -425,9 +425,11 @@
     if (typeof t.gbody === 'string') return t.gbody;
     if (!t.key || t.kind === 'grub' || t.gfetch) return null;
     t.gfetch = true;
+    const { key, kind } = t;
     const url = t.kind === 'know' ? api + '/know-read?key=' + encodeURIComponent(t.key)
       : api + '/page-source?name=' + encodeURIComponent(t.key);
     fetch(url).then((r) => (r.ok ? r.json() : null)).then((d) => {
+      if (t.key !== key || t.kind !== kind) return;   // the tab took another document
       if (d && typeof d.body === 'string') { t.gbody = d.body; t.gkind = d.kind; gPaintAll(); }
     }).catch(() => {});
     return null;
@@ -527,7 +529,7 @@
   }
   function gCycle(dir) {
     const ls = leaves();
-    if (ls.length < 2) return;
+    if (ls.length < 2 || isMobile()) return;
     const i = ls.indexOf(focusG);
     const g = ls[(i + dir + ls.length) % ls.length];
     gThen(g, () => { if (docFront() && !document.querySelector('.dlg:not([hidden])')) src.focus(); });
@@ -541,6 +543,18 @@
   // own drop (text into the textarea) never sees a tab.
   let dragTab = null;
   let dropEl = null;
+  const TAB_MIME = 'application/x-lat-tab';
+  // a drag carrying a tab of ours. The type, not only dragTab: a strip
+  // repainted mid-drag detaches the tab that started it, its dragend then
+  // reaches nobody, and a stale dragTab took a later text drag for a tab.
+  const tabDrag = (e) => !!dragTab && !!e.dataTransfer
+    && [...(e.dataTransfer.types || [])].includes(TAB_MIME);
+  const dragDone = () => {
+    dragTab = null;
+    dropHide();
+    for (const w of document.querySelectorAll('.dtw.dragging')) w.classList.remove('dragging');
+  };
+  for (const ev of ['dragend', 'drop']) document.addEventListener(ev, () => setTimeout(dragDone, 0), true);
   const dropHide = () => { if (dropEl) dropEl.hidden = true; };
   function dropAt(g, e) {
     const sr = g.strip.getBoundingClientRect();
@@ -583,17 +597,13 @@
       dragTab = t;
       w.classList.add('dragging');
       try {
-        e.dataTransfer.setData('application/x-lat-tab', t.id);
+        e.dataTransfer.setData(TAB_MIME, t.id);
         e.dataTransfer.effectAllowed = 'move';
       } catch {}
     });
-    g.list.addEventListener('dragend', () => {
-      dragTab = null;
-      dropHide();
-      for (const w of document.querySelectorAll('.dtw.dragging')) w.classList.remove('dragging');
-    });
+    g.list.addEventListener('dragend', dragDone);
     g.el.addEventListener('dragover', (e) => {
-      if (!dragTab) return;
+      if (!tabDrag(e)) return;
       e.preventDefault();
       e.stopPropagation();
       try { e.dataTransfer.dropEffect = 'move'; } catch {}
@@ -603,7 +613,7 @@
       if (dragTab && !(e.relatedTarget && g.el.contains(e.relatedTarget))) dropHide();
     });
     g.el.addEventListener('drop', (e) => {
-      if (!dragTab) return;
+      if (!tabDrag(e)) { dragDone(); return; }
       e.preventDefault();
       e.stopPropagation();
       const t = dragTab;

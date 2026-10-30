@@ -496,6 +496,9 @@
   // turn. One that does not save stops the leaving, with it in front.
   const leaveThen = (go) => tabSerial(async () => {
     if (!(await guardDirty())) return;
+    // a group left a moment ago is still saving its tab in the background
+    // (saveParked, 35-pages.js): what lands is not asked about
+    await savesSettled();
     const bg = allTabs().filter((t) => t !== activeTab && t.snap && t.snap.dirty);
     const names = bg.map((t) => TAB_KINDS[t.kind].label(t)).join(', ');
     if (bg.length && autosaveOn()) {

@@ -711,7 +711,16 @@
     if (t.kind !== 'page' && t.kind !== 'know') return;
     const know = t.kind === 'know';
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
-    while (saving) await waitSave();
+    parkedRun++;
+    try { await parkedSave(t, s, know); } finally { parkedRun--; }
+  }
+  async function parkedSave(t, s, know) {
+    // settled, not only off the wire: a save clears `saving` before its
+    // bookkeeping (tabLanded) marks this snap clean and gives it the new
+    // rev, and a write from the gap was a duplicate, on a link one that
+    // claimed the old rev and drew a false conflict
+    await savesSettled(false);
+    if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
     if (t.snap !== s || !s.dirty || !allTabs().includes(t)) return;
     saving = true;
     const name = t.key;
@@ -750,6 +759,25 @@
     st('autosaved ' + name);
     flushPending();
     if (offCount) replayQueue(true);
+  }
+
+  // Every save is counted from its start to the end of its bookkeeping
+  // (saveTail), and every background save of a parked tab while it runs
+  // (parkedRun). savesSettled waits until none is left, `parked` saying
+  // whether the parked ones count, capped past a save's own timeout.
+  let saveTail = 0, parkedRun = 0;
+  const tailed = (fn) => async (...a) => {
+    saveTail++;
+    try { return await fn(...a); } finally { saveTail--; }
+  };
+  autosave = tailed(autosave);
+  save = tailed(save);
+  saveKnow = tailed(saveKnow);
+  saveGrub = tailed(saveGrub);
+  async function savesSettled(parked = true) {
+    const t0 = Date.now();
+    while ((saving || saveTail || (parked && parkedRun)) && Date.now() - t0 < 35000)
+      await new Promise((r) => setTimeout(r, 50));
   }
 
   // ── a link whose save was refused as stale ──────────────────────────────

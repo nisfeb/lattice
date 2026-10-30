@@ -1940,6 +1940,15 @@
     t.kind === d.kind && t.key === d.key && (t.ship || null) === (d.ship || null);
   // a Back or Forward entry. Kind and ship ride along, since one tab can go
   // from a page to a memory to a grub.
+  // a tab taking another document in place: what its group painted of the
+  // last one while parked (28-splits.js) goes with it
+  const retarget = (t, d) => {
+    Object.assign(t, d);
+    t.ghost = null;
+    t.gbody = undefined;
+    t.gkind = undefined;
+    t.gfetch = false;
+  };
   const tabEnc = (t) => JSON.stringify([t.kind, t.key, t.ship || null]);
   const tabDec = (s) => { const [kind, key, ship] = JSON.parse(s); return { kind, key, ship }; };
 
@@ -2358,7 +2367,7 @@
       dirty = false;
       const t = activeTab;
       if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
-      Object.assign(t, want);
+      retarget(t, want);
       t.snap = null;
       tabsChanged();
       showTab(t);
@@ -2379,6 +2388,18 @@
     const t = allTabs().find((x) => x.id === id);
     if (!t) return false;
     const g = groupOf(t);
+    const k0 = TAB_KINDS[t.kind];
+    // a clean tab in a group not in front closes where it is: the editor
+    // stays in the group being worked in. One holding unsaved work, or
+    // typing in its frame, comes forward to be asked about.
+    if (g !== focusG && !(t.snap && t.snap.dirty) && !(k0.held && k0.held(t))) {
+      const i = g.tabs.indexOf(t);
+      g.tabs.splice(i, 1);
+      if (!g.tabs.length) gDrop(g);
+      else if (g.active === t) g.active = g.tabs[i] || g.tabs[i - 1];
+      tabsChanged();
+      return true;
+    }
     if (g !== focusG && !(await gTo(g))) return false;
     if (t !== activeTab && t.snap && t.snap.dirty && (await tabTo(t)) === false) return false;
     const k = TAB_KINDS[t.kind];
@@ -2420,7 +2441,7 @@
     const twin = d.key && allTabs().find((x) => x !== t && sameDoc(x, d));
     if (twin) { tabsChanged(); return tabTo(twin); }
     if (t.key) t[to].push(tabEnc(t));
-    Object.assign(t, d);
+    retarget(t, d);
     t.snap = null;
     tabsChanged();
     showTab(t);
@@ -2465,7 +2486,7 @@
     const d = liveDoc();
     if (!d || sameDoc(t, d)) return;
     if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
-    Object.assign(t, d);
+    retarget(t, d);
     t.snap = null;
     // one tab per document: a clean twin elsewhere, in any group, is now
     // redundant
@@ -3729,6 +3750,9 @@
   // turn. One that does not save stops the leaving, with it in front.
   const leaveThen = (go) => tabSerial(async () => {
     if (!(await guardDirty())) return;
+    // a group left a moment ago is still saving its tab in the background
+    // (saveParked, 35-pages.js): what lands is not asked about
+    await savesSettled();
     const bg = allTabs().filter((t) => t !== activeTab && t.snap && t.snap.dirty);
     const names = bg.map((t) => TAB_KINDS[t.kind].label(t)).join(', ');
     if (bg.length && autosaveOn()) {
@@ -5298,9 +5322,11 @@
     if (typeof t.gbody === 'string') return t.gbody;
     if (!t.key || t.kind === 'grub' || t.gfetch) return null;
     t.gfetch = true;
+    const { key, kind } = t;
     const url = t.kind === 'know' ? api + '/know-read?key=' + encodeURIComponent(t.key)
       : api + '/page-source?name=' + encodeURIComponent(t.key);
     fetch(url).then((r) => (r.ok ? r.json() : null)).then((d) => {
+      if (t.key !== key || t.kind !== kind) return;   // the tab took another document
       if (d && typeof d.body === 'string') { t.gbody = d.body; t.gkind = d.kind; gPaintAll(); }
     }).catch(() => {});
     return null;
@@ -5400,7 +5426,7 @@
   }
   function gCycle(dir) {
     const ls = leaves();
-    if (ls.length < 2) return;
+    if (ls.length < 2 || isMobile()) return;
     const i = ls.indexOf(focusG);
     const g = ls[(i + dir + ls.length) % ls.length];
     gThen(g, () => { if (docFront() && !document.querySelector('.dlg:not([hidden])')) src.focus(); });
@@ -5414,6 +5440,18 @@
   // own drop (text into the textarea) never sees a tab.
   let dragTab = null;
   let dropEl = null;
+  const TAB_MIME = 'application/x-lat-tab';
+  // a drag carrying a tab of ours. The type, not only dragTab: a strip
+  // repainted mid-drag detaches the tab that started it, its dragend then
+  // reaches nobody, and a stale dragTab took a later text drag for a tab.
+  const tabDrag = (e) => !!dragTab && !!e.dataTransfer
+    && [...(e.dataTransfer.types || [])].includes(TAB_MIME);
+  const dragDone = () => {
+    dragTab = null;
+    dropHide();
+    for (const w of document.querySelectorAll('.dtw.dragging')) w.classList.remove('dragging');
+  };
+  for (const ev of ['dragend', 'drop']) document.addEventListener(ev, () => setTimeout(dragDone, 0), true);
   const dropHide = () => { if (dropEl) dropEl.hidden = true; };
   function dropAt(g, e) {
     const sr = g.strip.getBoundingClientRect();
@@ -5456,17 +5494,13 @@
       dragTab = t;
       w.classList.add('dragging');
       try {
-        e.dataTransfer.setData('application/x-lat-tab', t.id);
+        e.dataTransfer.setData(TAB_MIME, t.id);
         e.dataTransfer.effectAllowed = 'move';
       } catch {}
     });
-    g.list.addEventListener('dragend', () => {
-      dragTab = null;
-      dropHide();
-      for (const w of document.querySelectorAll('.dtw.dragging')) w.classList.remove('dragging');
-    });
+    g.list.addEventListener('dragend', dragDone);
     g.el.addEventListener('dragover', (e) => {
-      if (!dragTab) return;
+      if (!tabDrag(e)) return;
       e.preventDefault();
       e.stopPropagation();
       try { e.dataTransfer.dropEffect = 'move'; } catch {}
@@ -5476,7 +5510,7 @@
       if (dragTab && !(e.relatedTarget && g.el.contains(e.relatedTarget))) dropHide();
     });
     g.el.addEventListener('drop', (e) => {
-      if (!dragTab) return;
+      if (!tabDrag(e)) { dragDone(); return; }
       e.preventDefault();
       e.stopPropagation();
       const t = dragTab;
@@ -6960,7 +6994,16 @@
     if (t.kind !== 'page' && t.kind !== 'know') return;
     const know = t.kind === 'know';
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
-    while (saving) await waitSave();
+    parkedRun++;
+    try { await parkedSave(t, s, know); } finally { parkedRun--; }
+  }
+  async function parkedSave(t, s, know) {
+    // settled, not only off the wire: a save clears `saving` before its
+    // bookkeeping (tabLanded) marks this snap clean and gives it the new
+    // rev, and a write from the gap was a duplicate, on a link one that
+    // claimed the old rev and drew a false conflict
+    await savesSettled(false);
+    if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
     if (t.snap !== s || !s.dirty || !allTabs().includes(t)) return;
     saving = true;
     const name = t.key;
@@ -6999,6 +7042,25 @@
     st('autosaved ' + name);
     flushPending();
     if (offCount) replayQueue(true);
+  }
+
+  // Every save is counted from its start to the end of its bookkeeping
+  // (saveTail), and every background save of a parked tab while it runs
+  // (parkedRun). savesSettled waits until none is left, `parked` saying
+  // whether the parked ones count, capped past a save's own timeout.
+  let saveTail = 0, parkedRun = 0;
+  const tailed = (fn) => async (...a) => {
+    saveTail++;
+    try { return await fn(...a); } finally { saveTail--; }
+  };
+  autosave = tailed(autosave);
+  save = tailed(save);
+  saveKnow = tailed(saveKnow);
+  saveGrub = tailed(saveGrub);
+  async function savesSettled(parked = true) {
+    const t0 = Date.now();
+    while ((saving || saveTail || (parked && parkedRun)) && Date.now() - t0 < 35000)
+      await new Promise((r) => setTimeout(r, 50));
   }
 
   // ── a link whose save was refused as stale ──────────────────────────────

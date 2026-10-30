@@ -49,6 +49,15 @@
     t.kind === d.kind && t.key === d.key && (t.ship || null) === (d.ship || null);
   // a Back or Forward entry. Kind and ship ride along, since one tab can go
   // from a page to a memory to a grub.
+  // a tab taking another document in place: what its group painted of the
+  // last one while parked (28-splits.js) goes with it
+  const retarget = (t, d) => {
+    Object.assign(t, d);
+    t.ghost = null;
+    t.gbody = undefined;
+    t.gkind = undefined;
+    t.gfetch = false;
+  };
   const tabEnc = (t) => JSON.stringify([t.kind, t.key, t.ship || null]);
   const tabDec = (s) => { const [kind, key, ship] = JSON.parse(s); return { kind, key, ship }; };
 
@@ -467,7 +476,7 @@
       dirty = false;
       const t = activeTab;
       if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
-      Object.assign(t, want);
+      retarget(t, want);
       t.snap = null;
       tabsChanged();
       showTab(t);
@@ -488,6 +497,18 @@
     const t = allTabs().find((x) => x.id === id);
     if (!t) return false;
     const g = groupOf(t);
+    const k0 = TAB_KINDS[t.kind];
+    // a clean tab in a group not in front closes where it is: the editor
+    // stays in the group being worked in. One holding unsaved work, or
+    // typing in its frame, comes forward to be asked about.
+    if (g !== focusG && !(t.snap && t.snap.dirty) && !(k0.held && k0.held(t))) {
+      const i = g.tabs.indexOf(t);
+      g.tabs.splice(i, 1);
+      if (!g.tabs.length) gDrop(g);
+      else if (g.active === t) g.active = g.tabs[i] || g.tabs[i - 1];
+      tabsChanged();
+      return true;
+    }
     if (g !== focusG && !(await gTo(g))) return false;
     if (t !== activeTab && t.snap && t.snap.dirty && (await tabTo(t)) === false) return false;
     const k = TAB_KINDS[t.kind];
@@ -529,7 +550,7 @@
     const twin = d.key && allTabs().find((x) => x !== t && sameDoc(x, d));
     if (twin) { tabsChanged(); return tabTo(twin); }
     if (t.key) t[to].push(tabEnc(t));
-    Object.assign(t, d);
+    retarget(t, d);
     t.snap = null;
     tabsChanged();
     showTab(t);
@@ -574,7 +595,7 @@
     const d = liveDoc();
     if (!d || sameDoc(t, d)) return;
     if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
-    Object.assign(t, d);
+    retarget(t, d);
     t.snap = null;
     // one tab per document: a clean twin elsewhere, in any group, is now
     // redundant
