@@ -1421,21 +1421,26 @@
   ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
     (remote-write host.l pax.l body base wait)
   ::  sent but unconfirmed (acked and the check did not answer, or the ack
-  ::  never came): read it again, so the cache's rev is the host's. The next
-  ::  save claims that rev, and would 409 against this very write if it
-  ::  kept the old one. The text there being ours is this write landing.
+  ::  never came): read it again. Our text there is this write landing, and
+  ::  its rev is cached, so the next save does not 409 against it. Any
+  ::  other text leaves the cache alone: the lick port's next write claims
+  ::  the cached rev, and a third party's edit must still 409 it.
   ?:  ?&  ?=(%| -.r)
           |(=(202 code.p.r) &(=(504 code.p.r) =((unacked-msg host.l) msg.p.r)))
       ==
     ;<  got=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek host.l pax.l)
-    ?~  got
-      ?:  =(202 code.p.r)
-        (pure:m |+[503 'the host took the write but did not confirm it: reload to check'])
+    =/  unsure=@t  'the host took the write but did not confirm it: reload to check'
+    ?-  (after-unsure:ll body got)
+        %landed
+      ?>  ?=(^ got)
+      ;<  ~  bind:m  (link-note lpath l got)
+      (pure:m &+[(fall base rev.l) rev.u.got])
+        %keep  (pure:m ?:(=(202 code.p.r) |+[503 unsure] r))
+        %none
+      ?:  =(202 code.p.r)  (pure:m |+[503 unsure])
       ;<  ~  bind:m  (link-note lpath l ~)
       (pure:m |+[504 (link-fail-msg host.l)])
-    ;<  ~  bind:m  (link-note lpath l got)
-    ?:  =(body body.u.got)  (pure:m &+[(fall base rev.l) rev.u.got])
-    (pure:m ?:(=(202 code.p.r) |+[503 'the host took the write but did not confirm it: reload to check'] r))
+    ==
   ?:  ?=(%| -.r)
     ?.  =(504 code.p.r)  (pure:m r)
     ;<  ~  bind:m  (link-note lpath l ~)

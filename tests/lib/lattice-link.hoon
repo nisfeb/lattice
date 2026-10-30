@@ -62,4 +62,17 @@
     (expect-eq !>('plan') !>((link-name:lk /apps/lattice/page/notes/plan)))
     (expect-eq !>('') !>((link-name:lk /)))
   ==
+::  +after-unsure: an unconfirmed write read back. Only our own text there
+::  is a landing whose rev may be cached; a third party's text must leave
+::  the cache alone, or the next lick write claims its rev and overwrites
+::  it without a 409.
+++  test-after-unsure-ours-landed
+  %+  expect-eq  !>(%landed)
+  !>((after-unsure:lk 'mine' `[%md 'mine' 4]))
+++  test-after-unsure-theirs-kept
+  %+  expect-eq  !>(%keep)
+  !>((after-unsure:lk 'mine' `[%md 'theirs' 4]))
+++  test-after-unsure-no-read
+  %+  expect-eq  !>(%none)
+  !>((after-unsure:lk 'mine' ~))
 --
