@@ -3043,6 +3043,13 @@
     f.title = toolMeta(key)[0];
     // a name, so a form or link in it aimed at _top lands here (frameDress)
     f.name = 'latframe' + (++frameSeq);
+    // Nothing in a frame may replace the editor's window: no top
+    // navigation token, which holds for every frame nested in it too (a
+    // page served sandboxed whose CSP would allow it, a site the frame
+    // went to, a script setting top.location). Same origin and scripts
+    // stay, for frameDress and the pages themselves.
+    f.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups '
+      + 'allow-popups-to-escape-sandbox allow-modals allow-downloads');
     f.onload = () => frameDress(f);
     f.src = url;
     toolHost.append(f);

@@ -20,6 +20,8 @@
 //      (a parked frame holds no live stream), and a closed tab's frame goes
 //    No editor boots inside a frame: the home page's Editor link focuses the
 //      shell, and an editor address loaded in a frame hands over and stops
+//    A frame tab is sandboxed without top navigation, so its script cannot
+//      replace the editor window
 //
 //  SHOTS=1 saves the forum and browser tabs at 1400x900 under /tmp.
 //  PARTS=streams,nested runs only the parts named.
@@ -475,6 +477,27 @@ try {
         && boxed.same && boxed.win === '/apps/lattice/app?into=x-' + process.pid, JSON.stringify(boxed));
   });
 
+  //  a frame cannot replace the editor window: its frame is sandboxed with
+  //  no top navigation, and a target=_top added after load lands in the
+  //  frame (delegation, not a pass at load)
+  await part('sandbox', async () => {
+    const fk = 'frame:/apps/lattice/forum';
+    await page.evaluate(() => document.getElementById('rb-forum').click());
+    await frontLoaded();
+    await sleep(1500);
+    const sb = await page.evaluate((s) => document.querySelector(s).getAttribute('sandbox'), frameOf(fk));
+    const toks = (sb || '').split(/\s+/);
+    check('a frame tab is sandboxed with no top navigation',
+      sb !== null && ['allow-scripts', 'allow-same-origin', 'allow-forms', 'allow-popups',
+        'allow-modals', 'allow-downloads'].every((t) => toks.includes(t))
+        && !toks.some((t) => t.startsWith('allow-top-navigation')), String(sb));
+    //  the frame's own script, in its own realm
+    const fr = await (await page.$(frameOf(fk))).contentFrame();
+    await fr.evaluate(() => { try { window.top.location.href = '/apps/lattice/forum'; } catch {} });
+    await sleep(2000);
+    check('a frame\'s script cannot navigate the editor window',
+      (await page.evaluate(() => location.href)) === appAt);
+  });
 
   await part('chords', async () => {
     const palOpen = () => page.evaluate(() => document.getElementById('palette')?.hidden === false
