@@ -365,6 +365,11 @@
             [%fall %& [/ %banned] [[/lattice %banned] *banned:ls]]
         ::  /key-bytes: each agent key's bytes written today (+spend:ky)
             [%fall %& [/ %'key-bytes'] [[/ %noun] *ledger:ky]]
+        ::  /tree-job: the whole-tree action the writer is part way through
+        ::  (+job-set), ~ when none. Such an action yields to the ship
+        ::  between pages, so a reload can land mid-way. The writer runs
+        ::  it again as it starts (+job-resume), and each is idempotent.
+            [%fall %& [/ %'tree-job'] [[/ %noun] ~]]
         ==
     ::
     ++  on-file
@@ -407,6 +412,8 @@
         ;<  ~  bind:m  (ensure-pub-ids root)
         ::  pages published before per-format marks were grown as gmi
         ;<  ~  bind:m  (migrate-pub-marks root)
+        ::  a whole-tree action a reload cut short (+job-set)
+        ;<  ~  bind:m  (job-resume root)
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
         ;<  now=@da  bind:m  bowl-now
@@ -422,6 +429,7 @@
         ::  one every few prompts, and on /rev each save made every open
         ::  editor, reader tab and mounted filesystem refetch its pages.
         ;<  ~  bind:m
+          ?:  =([/ %noun] p.sage)  (pure:m ~)
           ?:  =([/lattice %history-action] p.sage)  (pure:m ~)
           ?:  =([/lattice %key-action] p.sage)  (pure:m ~)
           ?:  =([/lattice %know-action] p.sage)  (bump-beacon %know now)
@@ -4080,7 +4088,10 @@
   ::  already published. Harmless to re-run (each re-grow lands a fresh gall
   ::  case on the same rev spur, latest wins). Owner-only like every route.
       [%'POST' %pub-regrow]
-    ;<  n=@ud  bind:m  pub-regrow
+    ::  in the writer, which yields as it walks: a save that came in
+    ::  meanwhile waits for it rather than racing the revision list
+    ;<  ~  bind:m  (poke-eval [%pub-regrow ~])
+    ;<  n=@ud  bind:m  pub-rev-count
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['ok' b+&] ['grown' (numb:enjs:format n)]])
   ::  pub-reconcile: ONE-SHOT cleanup of the historical-rev namespace leak
@@ -5468,6 +5479,8 @@
   |=  [root=@ud now=@da =sage:tarball]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ::  +poke-eval's barrier behind a whole-tree action: nothing to do
+  ?:  =([/ %noun] p.sage)  (pure:m ~)
   ?:  =([/lattice %know-action] p.sage)
     =/  act=know-action:lk  !<(know-action:lk q.sage)
     ;<  ~  bind:m  (apply root now act)
@@ -5526,7 +5539,47 @@
   |=  act=eval-action:le
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (poke-writer %eval-action act)
+  ;<  ~  bind:m  (poke-writer %eval-action act)
+  ::  a whole-tree action yields to the ship between pages, and the
+  ::  writer answers a poke when it first waits, so the answer above can
+  ::  come before the work is done. The writer takes one poke at a time
+  ::  and none while it yields, so a no-op poke behind it is answered only
+  ::  once the action is over: the caller still answers after the work.
+  ::  Eight minutes at most, under eyre's ten: a folder of hundreds of
+  ::  published pages runs longer, and its route then answers while the
+  ::  writer finishes, rather than as a 504 a client reads as offline.
+  ?.  ?=(?(%share-tree %del %pub-regrow) -.act)  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  now=@da  bind:m  bowl-now
+  =/  until=@da  (add now ~m8)
+  ;<  =wire  bind:m  (nonce:io /tree-wait)
+  ;<  ~  bind:m
+    (send-dart:io [%node wire (rf up / %'main.sig') [%poke [/ %noun] ~]])
+  ;<  ~  bind:m  (send-wait-dated until)
+  ;<  ~  bind:m  (take-pack-or-wake wire until)
+  (cancel-timer:io /wait/(scot %da until))
+::  +take-pack-or-wake: the %pack on `wire` (a veto of our dart counts), or
+::  the wake at `until`, whichever is first.
+++  take-pack-or-wake
+  |=  [=wire until=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %veto %node * * *]
+    ?.  =(wire wire.dart.u.in)  [%skip ~]
+    [%done ~]
+      [~ %pack * *]
+    ?.  =(wire wire.u.in)  [%skip ~]
+    [%done ~]
+      [~ %poke * *]
+    ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
+    =/  wak=path  !<(path q.sage.u.in)
+    ?.  ?&(?=([%wait @ ~] wak) =(until (slav %da i.t.wak)))  [%skip ~]
+    [%done ~]
+  ==
 ::  +poke-comment: hand a comment to the owner writer (author = us). The public
 ::  inbox fiber pokes apply-comment directly with the sender ship instead.
 ::
@@ -6221,6 +6274,16 @@
     =/  pdir=path  (weld /page pax.act)
     ;<  ex=?  bind:m  (peek-exists:io (rv up pdir))
     ?.  ex  (pure:m ~)
+    ::  the pages under pax, before anything is touched: unpublishing
+    ::  leaves /page as it is
+    ;<  dv=view:nexus  bind:m  (peek:io (rv up pdir) ~)
+    =/  rels=(list path)
+      ?.  ?=([%ball *] dv)  ~[/]
+      (murn (collect-tree ball.dv ~) |=([pax=path page=?] ?:(page `pax ~)))
+    ::  a folder's delete yields between pages (+tree-yield), so it is
+    ::  noted, and a reload mid-way finishes it as the writer starts
+    =/  big=?  (gth (lent rels) 1)
+    ;<  ~  bind:m  ?.(big (pure:m ~) (job-set `act))
     ::  unpublish FIRST: the vault copy at urb://<name> (and its /pub/index
     ::  entry) is world-readable and otherwise outlives the page forever.
     ;<  ~  bind:m
@@ -6232,22 +6295,40 @@
     ::  move each send one %del for the whole folder, so the nested pages'
     ::  history used to survive the cull.
     ::  keep=0 drops everything, so the window is irrelevant here
-    ;<  dv=view:nexus  bind:m  (peek:io (rv up pdir) ~)
-    =/  rels=(list path)
-      ?.  ?=([%ball *] dv)  ~[/]
-      (murn (collect-tree ball.dv ~) |=([pax=path page=?] ?:(page `pax ~)))
     ;<  ~  bind:m
+      =|  done=@ud
       |-  ^-  form:m
       ?~  rels  (pure:m ~)
+      ;<  ~  bind:m  (tree-yield done 2)
       =/  d=path  (weld pdir i.rels)
       ;<  ~  bind:m  (prune-hist (rf up d %code) 0 ~s0)
       ;<  ~  bind:m  (prune-hist (rf up d %data) 0 ~s0)
-      $(rels t.rels)
+      $(rels t.rels, done +(done))
+    ::  a folder's pages go one at a time, deepest first, so each cull is
+    ::  one page's grubs and the ship is answered in between; one cull of
+    ::  the folder took them all in a single event. Each is checked first:
+    ::  cull-soft on an absent dir veto-crashes the writer.
+    ;<  ~  bind:m
+      ?.  big  (pure:m ~)
+      =/  deep=(list path)
+        (sort rels |=([a=path b=path] (gth (lent a) (lent b))))
+      =|  done=@ud
+      |-  ^-  form:m
+      ?~  deep  (pure:m ~)
+      ?~  i.deep  $(deep t.deep)
+      ;<  ~  bind:m  (tree-yield done 2)
+      =/  d=road:tarball  (rv up (weld pdir i.deep))
+      ;<  dx=?  bind:m  (peek-exists:io d)
+      ;<  *  bind:m
+        ?.  dx  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
+        (cull-soft:io d)
+      $(deep t.deep, done +(done))
     ;<  *  bind:m  (cull-soft:io (rv up pdir))
     ::  re-send the public grant act AFTER the cull, so the walk inside
     ::  +send-public-how sees the deletion and the dead page's data road
     ::  leaves the group.
     ;<  ~  bind:m  (send-public-how root)
+    ;<  ~  bind:m  ?.(big (pure:m ~) (job-set ~))
     ::  Comments live under /comments, not /page, so culling the page left them
     ::  behind: they stayed in the moderation inbox attached to a path a NEW
     ::  page could later reuse, which is the same resurrection the history
@@ -6263,6 +6344,10 @@
     (pure:m ~)
       %share
     (apply-share root now pax.act mode.act %.y)
+      %pub-regrow
+    ;<  ~  bind:m  (job-set `act)
+    ;<  *  bind:m  pub-regrow
+    (job-set ~)
       %share-tree
     ::  publish/unpublish a whole subtree: apply the mode to every PAGE under
     ::  pax (folders have no /data grub, so skip them). Idempotent, so
@@ -6273,10 +6358,19 @@
     =/  rels=(list path)
       %+  murn  (collect-tree ball.dn ~)
       |=([pax=path page=?] ?:(page `pax ~))
+    ::  a page publishes in about a second and a half, so the writer
+    ::  yields between pages (+tree-yield): unbroken, 50 pages held the
+    ::  ship for over two minutes. The job is noted first, so a reload
+    ::  mid-way finishes it as the writer starts.
+    ;<  ~  bind:m  (job-set `act)
+    =|  done=@ud
     |-  ^-  form:m
-    ?~  rels  (send-public-how root)
+    ?~  rels
+      ;<  ~  bind:m  (send-public-how root)
+      (job-set ~)
+    ;<  ~  bind:m  (tree-yield done 1)
     ;<  ~  bind:m  (apply-share root now (weld pax.act i.rels) mode.act %.n)
-    $(rels t.rels)
+    $(rels t.rels, done +(done))
       %mkdir
     ::  create an empty folder (and any missing parents). ensure-dirs is
     ::  idempotent, so mkdir over an existing page/folder is a harmless no-op.
@@ -6648,8 +6742,11 @@
   ::  reflects this share (or unshare) immediately. A %share-tree sends it
   ::  once, after its last page, instead (`grant` %.n).
   ;<  ~  bind:m  ?.(grant (pure:m ~) (send-public-how root))
+  ::  in a %share-tree, a breath between the mode write (which wakes the
+  ::  page's evaluator) and the publish, so neither half holds the ship
+  ;<  ~  bind:m  ?:(grant (pure:m ~) (sleep-draining (div ~s1 100)))
   =/  key=@t  (spat (pub-path (crip (pax-str rel))))
-  ?.  pub  (apply-pub root now [%del-page key])
+  ?.  pub  (apply-pub-in root now [%del-page key] !grant)
   ::  publish the page's own output. A page whose data is not a cord (a
   ::  computed noun) has no gemtext form, so it keeps its preset without a
   ::  vault copy rather than publishing something meaningless.
@@ -6657,7 +6754,7 @@
   ?:  ?=([%file *] dn)
     =/  body=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.dn))))
     ?~  body  (pure:m ~)
-    (apply-pub root now [%save-page key u.body])
+    (apply-pub-in root now [%save-page key u.body] !grant)
   ::  no computed data yet — a freshly-made page (a move lands here: %share
   ::  is queued right behind %make, and the evaluator computes /data later).
   ::  Publish from the code src, exactly as +republish-if-shared does; the
@@ -6668,7 +6765,7 @@
   ?~  src  (pure:m ~)
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content u.src)
   ?~  un  (pure:m ~)
-  (apply-pub root now [%save-page key body.u.un])
+  (apply-pub-in root now [%save-page key body.u.un] !grant)
 ::  +republish-if-shared: refresh a page's published vault copy after a write.
 ::  urb:// names a LIVE page (docs/urls.md), but until this arm the vault copy
 ::  was a snapshot taken only when the share preset was SET. Every later edit
@@ -7425,6 +7522,50 @@
   ?~  items  (pure:m cnt)
   ;<  ~  bind:m  (poke-know [%import key.i.items entry.i.items])
   (import-know-loop t.items (add cnt 1))
+::  +tree-yield: in a long walk, the moment the `done`-th step is a
+::  multiple of `every`, give the ship a breath (+sleep-draining) so the
+::  requests waiting behind it are served. Nothing on the first step.
+++  tree-yield
+  |=  [done=@ud every=@ud]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  &(!=(0 done) =(0 (mod done every)))  (pure:m ~)
+  (sleep-draining (div ~s1 100))
+::  +job-set: note the whole-tree action now running (/tree-job), or ~
+::  once it is done.
+++  job-set
+  |=  job=(unit eval-action:le)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  (put-file (rf up / %'tree-job') [/ %noun] job)
+::  +job-resume: as the writer starts, run again the whole-tree action a
+::  reload cut short. Each such action (%share-tree, %del, %pub-regrow) is
+::  idempotent,
+::  so finishing it is running it. One the writer cannot read is dropped.
+++  job-resume
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  jv=view:nexus  bind:m  (peek:io (rf root / %'tree-job') ~)
+  ?.  ?=([%file *] jv)  (pure:m ~)
+  =/  job=(unit eval-action:le)
+    (fall (mole |.(;;((unit eval-action:le) (sang-noun:tarball sang.jv)))) ~)
+  ?~  job  (pure:m ~)
+  ?.  ?=(?(%share-tree %del %pub-regrow) -.u.job)  (job-set ~)
+  ;<  now=@da  bind:m  bowl-now
+  ;<  ~  bind:m  (apply-eval root now u.job)
+  ;<  ~  bind:m  (job-set ~)
+  (bump-beacon %rev now)
+::  +pub-rev-count: how many pages the revision list names.
+++  pub-rev-count
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=view:nexus  bind:m  (peek:io (rf up /pub %revs) ~)
+  ?.  ?=([%file *] vw)  (pure:m 0)
+  %-  pure:m
+  ~(wyt by (fall (mole |.((json-revs:lp !<(json (need-vase:tarball sang.vw))))) ~))
 ++  sleep-draining
   |=  for=@dr
   =/  m  (fiber:fiber:nexus ,~)
@@ -14089,6 +14230,15 @@
 ::
 ++  apply-pub
   |=  [root=@ud now=@da act=pub-action:lp]
+  (apply-pub-in root now act |)
+::  +apply-pub-in: +apply-pub, which with `brk` takes a breath (a yield to
+::  the ship) between a page's vault write and its namespace mirror. A
+::  whole-tree job passes it: each half is about a second, and one page
+::  whole held the ship for two and a half. Interrupted between them, the
+::  page is one publish behind in the namespace, as a crash there always
+::  left it, and the job runs again from the start (+job-resume).
+++  apply-pub-in
+  |=  [root=@ud now=@da act=pub-action:lp brk=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -14130,6 +14280,7 @@
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
     =/  nix=pub-index:lp  (~(put by ix) key (to-pub-row:lp body.act now))
     ;<  ~  bind:m  (put-file px [/lattice %pub-index] nix)
+    ;<  ~  bind:m  ?.(brk (pure:m ~) (sleep-draining (div ~s1 100)))
     ::  mesa (D1): mirror the publish into the remote-scry namespace, so a
     ::  peer can %keen the page instead of negotiating a grubbery peek. Two
     ::  bindings: the body at /pub/page/<name>/<rev> (rev = the vault grub's
@@ -14169,6 +14320,8 @@
     ;<  ~  bind:m
       ?:  |(=(0 prev-rev) =(prev-rev rev))  (pure:m ~)
       (cull-farm:io (page-spur salt inner prev-rev))
+    ::  and one before the manifest, which is the whole index
+    ;<  ~  bind:m  ?.(brk (pure:m ~) (sleep-draining (div ~s1 100)))
     ;<  *  bind:m  (grow-pub-index root nix)
     (pure:m ~)
   ::
@@ -14201,11 +14354,14 @@
         |=  k=path
         &(!=(k key) =(pre (scag (lent pre) k)))
       ?~  kids  (refuse "an unpublish: there is no such page: {(spud key)}")
+      ::  a page's unpublish is about a second: yield between them
       =/  todo=(list path)  kids
+      =|  done=@ud
       |-
       ?~  todo  (pure:m ~)
-      ;<  ~  bind:m  (apply-pub root now [%del-page (spat i.todo)])
-      $(todo t.todo)
+      ;<  ~  bind:m  (tree-yield done 1)
+      ;<  ~  bind:m  (apply-pub-in root now [%del-page (spat i.todo)] &)
+      $(todo t.todo, done +(done))
     ::  the latest published rev, read BEFORE the vault cull appends its
     ::  [%temp ~] hist entry. It names the body binding the cull-farm below
     ::  retracts.
@@ -14221,6 +14377,7 @@
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
     =/  nix=pub-index:lp  (~(del by ix) key)
     ;<  ~  bind:m  (put-file px [/lattice %pub-index] nix)
+    ;<  ~  bind:m  ?.(brk (pure:m ~) (sleep-draining (div ~s1 100)))
     ::  mesa (D1): retract the namespace copy. cull-farm, NOT tomb, and the
     ::  difference is the whole point. %tomb is per-[case spur] and gall's
     ::  +ap-tomb replaces exactly ONE case's value with its hash, while
@@ -14257,6 +14414,7 @@
     ;<  salt=@  bind:m  pub-salt
     ;<  ~  bind:m  (cull-farm:io (page-spur salt (snip (strip-pub:lp key)) rev))
     ;<  ~  bind:m  (set-pub-rev root salt key ~)
+    ;<  ~  bind:m  ?.(brk (pure:m ~) (sleep-draining (div ~s1 100)))
     ;<  *  bind:m  (grow-pub-index root nix)
     (pure:m ~)
   ==
@@ -14425,10 +14583,10 @@
 ::  walk the manifest generation uses: the pub index's key set, each key read
 ::  through its vault rail. Returns the number of pages grown.
 ::
-::  Single pass, not chunked. Per page it costs one file peek, one dir peek and
-::  one fire-and-forget %grow card, so even a large vault is one event of cheap
-::  local darts. If a regrow is ever observed to brown out the pier, ack the
-::  request first, sleep a second so the effects flush, then walk the vault.
+::  Chunked: it was one event, and 201 pages held the ship for 46s, so the
+::  walk yields every other page (+pub-regrow-loop). It runs only in the
+::  writer (the %regrow pub-action, and +ensure-pub-ids as the writer
+::  starts), so no save interleaves with it.
 ::
 ::  Re-running it is cheap but not free. A %grow at an already-bound spur does
 ::  not overwrite but appends a case (gall's +grow takes key+1). The body is
@@ -14516,6 +14674,11 @@
   ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
   ;<  mode=view-mode:pg  bind:m  (published-mode (snip (strip-pub:lp i.keys)))
   ;<  ~  bind:m  (grow-pub-page salt i.keys u.body rev mode)
+  ::  a page is about a third of a second: yield every other (+tree-yield),
+  ::  so 201 pages no longer hold the ship for 46s. In the writer (or as
+  ::  it starts), whose pokes wait meanwhile, so no save lands between a
+  ::  page grown here and the revision list written after the walk.
+  ;<  ~  bind:m  (tree-yield +(cnt) 2)
   =/  nam=@t  (page-name:lp i.keys)
   (pub-regrow-loop salt t.keys +(cnt) (~(put by revs) nam rev (page-id:lp salt nam rev)))
 ::  +set-pub-rev: one page's row in the revision list, [/pub %revs]: its

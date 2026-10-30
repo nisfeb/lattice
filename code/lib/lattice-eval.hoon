@@ -33,6 +33,9 @@
       [%del pax=path]                   ::  delete a page
       [%share pax=path mode=share-mode] ::  set a page's sharing preset
       [%share-tree pax=path mode=share-mode] ::  set every page under pax
+      ::  re-grow every published page and the index (+pub-regrow), in
+      ::  the writer so no save interleaves with its revision list
+      [%pub-regrow ~]
       [%mkdir pax=path]                 ::  create an (empty) folder at pax
       ::  set ('' clears) the display name of a page or folder. Stored ONLY
       ::  when the typed name was not a valid path segment; a valid name is
