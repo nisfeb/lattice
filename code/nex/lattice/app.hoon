@@ -380,6 +380,11 @@
             [%fall %& [/ %'tree-job-dropped'] [[/ %json] ~]]
         ::  /pub-regrown: how many pages the last /pub-regrow grew
             [%fall %& [/ %'pub-regrown'] [[/ %ud] 0]]
+        ::  /pub-pending: shared pages saved but not yet published, each
+        ::  with when it was first and last saved (+pub-mark). The writer
+        ::  publishes them in the background (+pub-tick); covered, so a
+        ::  reload resumes them instead of leaving the copy stale.
+            [%fall %& [/ %'pub-pending'] [[/ %noun] *pub-pending:lp]]
         ==
     ::
     ++  on-file
@@ -424,9 +429,20 @@
         ;<  ~  bind:m  (migrate-pub-marks root)
         ::  a whole-tree action a reload cut short (+job-set)
         ;<  ~  bind:m  (job-resume root)
+        ::  publishes a reload cut short, or that were still waiting
+        ;<  ~  bind:m  (pub-arm root)
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
         ;<  now=@da  bind:m  bowl-now
+        ::  a timer: the background publisher's (+pub-tick), or a stray
+        ::  wake an earlier sleep left behind, which is nothing to do. No
+        ::  beacon: a publish changes nothing an open tab shows.
+        ?:  =([/ %timer-wake] p.sage)
+          =/  wak=(unit path)  (mole |.(!<(path q.sage)))
+          ;<  ~  bind:m
+            ?.  ?=([~ %pub-due *] wak)  (pure:m ~)
+            (pub-tick root now)
+          $
         ;<  ~  bind:m  (apply-action root now sage)
         ::  bump the change beacon so open readers live-reload (+bump-beacon).
         ::
@@ -6251,11 +6267,12 @@
     $(ids t.ids)
       %make
     ;<  ~  bind:m  (make-page root pax.act src.act)
-    ::  a shared page's vault copy follows every write, not just the share click
-    (republish-if-shared root now pax.act src.act)
+    ::  a shared page's vault copy follows every write, not just the share
+    ::  click, published in the background so the save answers at once
+    (pub-mark root now pax.act src.act)
       %make-marked
     ;<  ~  bind:m  (make-page-as root pax.act src.act |)
-    (republish-if-shared root now pax.act src.act)
+    (pub-mark root now pax.act src.act)
       %make-many
     ::  Same work as %make, once per page, but inside ONE writer transaction.
     ::  The saving is the ~0.5s pier floor an upload used to pay per FILE. The
@@ -6273,7 +6290,7 @@
       ?.  &(!=(0 done) =(0 (mod done 10)))  (pure:m ~)
       (sleep-draining (div ~s1 100))
     ;<  ~  bind:m  (make-page root pax.i.pages.act src.i.pages.act)
-    ;<  ~  bind:m  (republish-if-shared root now pax.i.pages.act src.i.pages.act)
+    ;<  ~  bind:m  (pub-mark root now pax.i.pages.act src.i.pages.act)
     $(pages.act t.pages.act, done +(done))
       %tmpl-save
     ::  save a page-tree as a template: copy every page's CODE under
@@ -6819,7 +6836,7 @@
     (apply-pub-in root now [%save-page key u.body] !grant)
   ::  no computed data yet — a freshly-made page (a move lands here: %share
   ::  is queued right behind %make, and the evaluator computes /data later).
-  ::  Publish from the code src, exactly as +republish-if-shared does; the
+  ::  Publish from the code src, exactly as +pub-flush-one does; the
   ::  evaluator's eventual output republishes over this if it differs.
   ;<  cv=view:nexus  bind:m  (peek:io (rf up pdir %code) ~)
   ?.  ?=([%file *] cv)  (pure:m ~)
@@ -6828,28 +6845,133 @@
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content u.src)
   ?~  un  (pure:m ~)
   (apply-pub-in root now [%save-page key body.u.un] !grant)
-::  +republish-if-shared: refresh a page's published vault copy after a write.
-::  urb:// names a LIVE page (docs/urls.md), but until this arm the vault copy
-::  was a snapshot taken only when the share preset was SET. Every later edit
-::  left urb:// readers (own front door included) on the stale body forever.
+::  ── background publishing ────────────────────────────────────────────
+::  urb:// names a LIVE page (docs/urls.md), so a shared page's vault copy
+::  follows every write, not just the share click. That publish (the vault
+::  copy, its namespace binding, the revision list) cost a shared save over
+::  a second in the writer, so a save now only marks the page pending
+::  (+pub-mark) and answers. The writer publishes it a quiet +pub-gap
+::  later (+pub-tick, on a behn timer on /pub-due), never more than
+::  +pub-cap after the first save, so a burst of autosaves publishes once.
 ::
-::  The body comes from the make's own src (unwrapped), NOT the data grub.
-::  The evaluator recomputes data AFTER the writer moves on, so a data peek
-::  here publishes the PREVIOUS revision (verified: one save behind).
-::  ponytail: computed (hoon/index) pages keep share-time snapshots. Their
-::  body lands async. A data-keep publisher fiber is the upgrade path.
-::  Non-content saves cost nothing. Private content pages cost one peek.
+::  The publish reads the page as it is THEN, never a body carried in the
+::  mark, so it is always the newest text, and the writer runs one at a
+::  time, so an older body can never land after a newer one. /pub-pending
+::  is covered: a reload or crash before a publish finished leaves its row,
+::  and the writer's start arms the timer again (+pub-arm). Redoing one is
+::  safe: a revision already in the list is not grown twice (+apply-pub).
 ::
-++  republish-if-shared
+::  The body comes from the code src (unwrapped), NOT the data grub: the
+::  evaluator recomputes data AFTER the writer moves on.
+::  ponytail: computed (hoon/index) pages keep share-time snapshots.
+::
+++  pub-gap    ^-(@dr ~s6)
+++  pub-cap    ^-(@dr ~s30)
+++  pub-tries  ^-(@ud 3)
+++  pub-when
+  |=  row=[first=@da last=@da tries=@ud]
+  ^-  @da
+  (pub-due:lp row pub-gap pub-cap)
+++  pub-pending-road  |=(root=@ud (rf root / %'pub-pending'))
+++  read-pub-pending
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,pub-pending:lp)
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:io (pub-pending-road root) ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  (pure:m (fall (mole |.(;;(pub-pending:lp (sang-noun:tarball sang.vw)))) ~))
+::  +pub-mark: after a write, note a shared page for publishing. A private
+::  page costs one peek, and a non-content save nothing.
+++  pub-mark
   |=  [root=@ud now=@da rel=path src=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  up=@ud  bind:m  nexus-up
-  =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
-  ?~  un  (pure:m ~)
+  ?:  =(~ (unwrap-content src))  (pure:m ~)
   ;<  mode=share-mode:le  bind:m  (read-share (weld /page rel))
   ?:  ?=(%private mode)  (pure:m ~)
-  (apply-pub root now [%save-page (spat (pub-path (crip (pax-str rel)))) body.u.un])
+  ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
+  =/  k=@t  (spat rel)
+  =/  old  (~(get by pen) k)
+  =/  nen=pub-pending:lp
+    (~(put by pen) k ?~(old [now now 0] [first.u.old now 0]))
+  ;<  ~  bind:m  (put-file (pub-pending-road root) [/ %noun] nen)
+  (pub-arm-with nen)
+::  +pub-arm: set the publish timer for whatever is pending (writer start)
+++  pub-arm
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
+  (pub-arm-with pen)
+::  +pub-arm-with: one timer, at the earliest due row. The wire is stable,
+::  so each arm replaces the last (behn-state drops a superseded wake).
+++  pub-arm-with
+  |=  pen=pub-pending:lp
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  ds=(list @da)  (turn ~(val by pen) pub-when)
+  ?~  ds  (pure:m ~)
+  =/  at=@da
+    (roll `(list @da)`ds |=([a=@da b=@da] ?:(=(0 b) a (min a b))))
+  ;<  *  bind:m  (soft-behn /pub-arm [[/ %timer-set] `[wire @da]`[/pub-due at]])
+  (pure:m ~)
+::  +pub-tick: the timer fired. Publish ONE due page, then arm for the
+::  next, so the pokes waiting behind the writer go between pages. The try
+::  is counted in its own event before the publish, so one that keeps
+::  failing (or takes its event down) is dropped after +pub-tries, never
+::  retried for ever.
+++  pub-tick
+  |=  [root=@ud now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  pr=road:tarball  (pub-pending-road root)
+  ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
+  =/  due=(list [k=@t row=[first=@da last=@da tries=@ud]])
+    %+  skim  ~(tap by pen)
+    |=([k=@t row=[first=@da last=@da tries=@ud]] (lte (pub-when row) now))
+  ?~  due  (pub-arm-with pen)
+  =/  k=@t  k.i.due
+  =/  row  row.i.due
+  ?:  (gte tries.row pub-tries)
+    =/  nen=pub-pending:lp  (~(del by pen) k)
+    ;<  ~  bind:m
+      %:  fault  'pub-dropped'  2
+        "lattice /main.sig: gave up publishing {(trip k)} after {<tries.row>} tries"
+        ~
+      ==
+    ;<  ~  bind:m  (put-file pr [/ %noun] nen)
+    (pub-arm-with nen)
+  ;<  ~  bind:m  (put-file pr [/ %noun] (~(put by pen) k row(tries +(tries.row))))
+  ;<  ~  bind:m  (sleep-draining (div ~s1 100))
+  ;<  err=(unit tang)  bind:m  (fiber-try (pub-flush-one root now k))
+  ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
+  =/  nen=pub-pending:lp
+    ?~  err  (~(del by pen) k)
+    ::  failed: try again a gap from now
+    (~(put by pen) k row(tries +(tries.row), first now, last now))
+  ;<  ~  bind:m
+    ?~  err  (pure:m ~)
+    (fault 'pub-failed' 3 "lattice /main.sig: publishing {(trip k)} failed" u.err)
+  ;<  ~  bind:m  (put-file pr [/ %noun] nen)
+  (pub-arm-with nen)
+::  +pub-flush-one: publish the page at rel `k` as it is now, if it is
+::  still there and still shared (an unshare or delete already took its
+::  copy down, and a move publishes at the new path).
+++  pub-flush-one
+  |=  [root=@ud now=@da k=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  rel=(unit path)  (rush k stap)
+  ?~  rel  (pure:m ~)
+  ;<  cv=view:nexus  bind:m  (peek:io (rf root (weld /page u.rel) %code) ~)
+  ?.  ?=([%file *] cv)  (pure:m ~)
+  =/  src=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.cv))))
+  ?~  src  (pure:m ~)
+  =/  un=(unit [builder=@tas body=@t])  (unwrap-content u.src)
+  ?~  un  (pure:m ~)
+  ;<  mode=share-mode:le  bind:m  (read-share (weld /page u.rel))
+  ?:  ?=(%private mode)  (pure:m ~)
+  (apply-pub root now [%save-page (spat (pub-path (crip (pax-str u.rel)))) body.u.un])
 ::  +make-page: create a page at `pax` under /page with the given code, the
 ::  shared body of the %make action and template instantiation. cmd + deps
 ::  first (the code grub's fiber reads both at spawn), then the code.
@@ -10235,6 +10357,12 @@
     ::  reconciler's statement stream) turns its own skip pile into a
     ::  per-tick rescan that made its round-trips two hundred times
     ::  slower than a fresh fiber's. Nothing ever awaits these acks.
+    ::  Except the writer's publish timer (+pub-tick): eaten during one of
+    ::  the writer's sleeps, a pending publish would wait for the next save.
+    ?:  ?&  =([/ %timer-wake] p.sage.u.in)
+            ?=([~ %pub-due *] (mole |.(!<(path q.sage.u.in))))
+        ==
+      [%skip ~]
     ?:  ?|  =([/ %timer-wake] p.sage.u.in)
             =([/ %keen-response] p.sage.u.in)
             =([/ %poke-ack] p.sage.u.in)
@@ -14410,54 +14538,61 @@
     ::  bound the tombstone. 0 only when the page has never been published.
     ;<  prev-rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
     ;<  ~  bind:m  (put-file road [/lattice %page] body.act)
+    ::  the rev just written (the vault grub's cass, read AFTER the
+    ::  put-file), and the one the revision list names now
+    ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
+    ;<  was=(unit @ud)  bind:m  (pub-rev-row root key)
+    ::  INCREMENTAL. The list already names this revision: the same text
+    ::  published again, or a background publish redone after it landed.
+    ::  Its binding is grown, and a second %grow of a bound spur would only
+    ::  append a gall case that readers (who read case 1) never see, so
+    ::  there is nothing to do. A changed body is always a new cass, so a
+    ::  new spur whose case 1 is this body.
+    ?:  =(`rev was)  (pure:m ~)
     ;<  ~  bind:m  (gain:io road %.y)
     ::  nothing reads a published page's old revisions (peers %keen the
     ::  current one, and the page keeps its own history), so keep only it
     ;<  ~  bind:m  (prune-hist road 1 ~s0)
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
+    ::  the manifest is the key set only, so only a page new to the index
+    ::  grows one (an edit used to regrow it whole every save)
+    =/  fresh=?  !(~(has by ix) key)
     =/  nix=pub-index:lp  (~(put by ix) key (to-pub-row:lp body.act now))
     ;<  ~  bind:m  (put-file px [/lattice %pub-index] nix)
     ;<  ~  bind:m  ?.(brk (pure:m ~) (sleep-draining (div ~s1 100)))
     ::  mesa (D1): mirror the publish into the remote-scry namespace, so a
-    ::  peer can %keen the page instead of negotiating a grubbery peek. Two
-    ::  bindings: the body at /pub/page/<name>/<rev> (rev = the vault grub's
-    ::  cass, read AFTER the put-file so it names the revision just written),
-    ::  and a fresh /pub/index/<seq> manifest. %grow is fire-and-forget, so a
-    ::  crash between the vault write and the grow can leave the namespace one
-    ::  save behind. POST /pub-regrow re-grows the current state.
-    ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
+    ::  peer can %keen the page instead of negotiating a grubbery peek: the
+    ::  body at /pub/page/<name>/<id of rev>, and its row in the revision
+    ::  list. %grow is fire-and-forget.
     ::  ORDERING (mesa D2): the subscriber's wave carries this cass, and gall
-    ::  PARKS a keen at an unbound spur. That is the documented remote-scry
-    ::  deficiency, a hang rather than an error. The put-file above already
-    ::  emitted the wave card, but ames transmission is orders slower than
-    ::  local card application (and the reader retries once), so growing here
-    ::  binds the rev well before any keen can arrive.
-    ::  the salt is a constant: read once here for the grow, the revision
-    ::  list and the predecessor cull below
+    ::  PARKS a keen at an unbound spur. The put-file above already emitted
+    ::  the wave card, but ames transmission is orders slower than local
+    ::  card application, so growing here binds the rev well before any
+    ::  keen can arrive.
     ;<  salt=@  bind:m  pub-salt
     ;<  mode=view-mode:pg  bind:m  (published-mode (snip (strip-pub:lp key)))
     ;<  ~  bind:m  (grow-pub-page salt key body.act rev mode)
-    ::  the revision list peers read to %keen this exact revision
     ;<  ~  bind:m  (set-pub-rev root salt key `rev)
     ::  keep-only-current INVARIANT: at most one rev spur per page is ever
-    ::  bound. Retract the PREDECESSOR rev spur now that the new one is
-    ::  grown. Grow-then-cull, in this order, so a reader never observes zero
-    ::  bindings for the page. Guards:
-    ::    prev-rev=0        no prior publish, nothing to cull
-    ::    prev-rev=rev      a no-op save (save-file suppressed the cass
-    ::                      bump). The "predecessor" IS the current spur,
-    ::                      so do not cull.
-    ::  The predecessor was grown by the previous save and not yet culled, so
-    ::  this hits a still-bound spur exactly once. The sharp edge on a
-    ::  re-cull is not gall (+ap-cull no-ops totally) but +farm-top's %gw
-    ::  lookup, which crashes on the emptied plot a previous cull left. See
-    ::  +cull-farm:io. A pre-mesa page whose old rev was never grown culls
-    ::  as a no-op (farm-top finds nothing listed).
-    =/  inner=path  (snip (strip-pub:lp key))
+    ::  bound. Retract the PREDECESSOR now that the new one is grown and
+    ::  listed: grow, list, cull, so a reader never finds zero bindings,
+    ::  and a crash before the cull leaves one bound spur too many rather
+    ::  than a list naming a culled one. The predecessor is the rev the list
+    ::  named (the vault's own cass before this write, for a page the list
+    ::  lacks): a publish redone after its vault write still culls the
+    ::  right spur. Guards:
+    ::    prev=0      no prior publish, nothing to cull
+    ::    prev=rev    a no-op save (save-file suppressed the cass bump)
+    ::  The predecessor was grown and not yet culled, so this hits a bound
+    ::  spur exactly once. A re-cull would crash in +farm-top's %gw lookup
+    ::  on the emptied plot (+cull-farm:io). A pre-mesa page whose old rev
+    ::  was never grown culls as a no-op (farm-top finds nothing listed).
+    =/  prev=@ud  (fall was prev-rev)
     ;<  ~  bind:m
-      ?:  |(=(0 prev-rev) =(prev-rev rev))  (pure:m ~)
-      (cull-farm:io (page-spur salt inner prev-rev))
-    ::  and one before the manifest, which is the whole index
+      ?:  |(=(0 prev) =(prev rev))  (pure:m ~)
+      (cull-farm:io (page-spur salt (snip (strip-pub:lp key)) prev))
+    ?.  fresh  (pure:m ~)
+    ::  and one before the manifest
     ;<  ~  bind:m  ?.(brk (pure:m ~) (sleep-draining (div ~s1 100)))
     ;<  *  bind:m  (grow-pub-index root nix)
     (pure:m ~)
@@ -14548,9 +14683,12 @@
     ::  The successor index seq is grown, and the predecessor seq culled inside
     ::  +grow-pub-index, so followers see the page leave the manifest and no
     ::  stale seq lingers.
+    ::  the list first, then the cull: a crash between leaves a bound
+    ::  spur no list names, never a listed one that is culled (which the
+    ::  next publish of the page would cull again, and crash)
     ;<  salt=@  bind:m  pub-salt
-    ;<  ~  bind:m  (cull-farm:io (page-spur salt (snip (strip-pub:lp key)) rev))
     ;<  ~  bind:m  (set-pub-rev root salt key ~)
+    ;<  ~  bind:m  (cull-farm:io (page-spur salt (snip (strip-pub:lp key)) rev))
     ;<  ~  bind:m  ?.(brk (pure:m ~) (sleep-draining (div ~s1 100)))
     ;<  *  bind:m  (grow-pub-index root nix)
     (pure:m ~)
@@ -14820,23 +14958,36 @@
 ::  +set-pub-rev: one page's row in the revision list, [/pub %revs]: its
 ::  current revision after a save, gone after a delete. Peers read the list
 ::  to %keen a page at its exact revision (remote scry has no "latest").
-::  An unreadable list starts over empty rather than failing the save; the
-::  next +pub-regrow rebuilds it whole.
+::  Only that row is touched: the rest of the list is not parsed or
+::  rebuilt. An unreadable list starts over empty rather than failing the
+::  save; the next +pub-regrow rebuilds it whole.
 ::
 ++  set-pub-rev
   |=  [root=@ud salt=@ key=path rev=(unit @ud)]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  rd=road:tarball  (rf root /pub %revs)
-  ;<  vw=view:nexus  bind:m  (peek:io rd ~)
-  =/  old=(map @t [rev=@ud id=@uv])
-    ?.  ?=([%file *] vw)  ~
-    (fall (mole |.((json-revs:lp !<(json (need-vase:tarball sang.vw))))) ~)
+  ;<  old=(map @t json)  bind:m  (read-pub-revs root)
   =/  nam=@t  (page-name:lp key)
-  =/  new=(map @t [rev=@ud id=@uv])
+  =/  new=(map @t json)
     ?~  rev  (~(del by old) nam)
-    (~(put by old) nam u.rev (page-id:lp salt nam u.rev))
-  (put-file rd [/ %json] (revs-json:lp new))
+    (~(put by old) nam (rev-json:lp u.rev (page-id:lp salt nam u.rev)))
+  (put-file (rf root /pub %revs) [/ %json] [%o new])
+::  +pub-rev-row: the revision the list names for the page at `key`
+++  pub-rev-row
+  |=  [root=@ud key=path]
+  =/  m  (fiber:fiber:nexus ,(unit @ud))
+  ^-  form:m
+  ;<  old=(map @t json)  bind:m  (read-pub-revs root)
+  =/  r=(unit json)  (~(get by old) (page-name:lp key))
+  (pure:m ?~(r ~ (bind (json-rev:lp u.r) head)))
+++  read-pub-revs
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,(map @t json))
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:io (rf root /pub %revs) ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  =/  j=(unit json)  (mole |.(!<(json (need-vase:tarball sang.vw))))
+  (pure:m ?.(?=([~ %o *] j) ~ p.u.j))
 ::  +ensure-pub-ids: at writer start, mint the salt if there is none, and
 ::  lay the revision list (and every binding behind it) when it is absent.
 ::  Minting it is the move off counter spurs: every page's current
