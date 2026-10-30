@@ -370,6 +370,10 @@
         ::  between pages, so a reload can land mid-way. The writer runs
         ::  it again as it starts (+job-resume), and each is idempotent.
             [%fall %& [/ %'tree-job'] [[/ %noun] ~]]
+        ::  /tree-job-tries: how many starts have run that job again. One
+        ::  that keeps failing is dropped (+job-resume), never retried for
+        ::  ever with every write waiting behind it.
+            [%fall %& [/ %'tree-job-tries'] [[/ %ud] 0]]
         ==
     ::
     ++  on-file
@@ -7553,9 +7557,14 @@
   ^-  ?
   ?=(?(%share-tree %del %pub-regrow %unpub) -.act)
 ::  +job-resume: as the writer starts, run again the whole-tree action a
-::  reload cut short. Each such action (%share-tree, %del, %pub-regrow) is
-::  idempotent,
-::  so finishing it is running it. One the writer cannot read is dropped.
+::  reload cut short. Each such action (%share-tree, %del, %pub-regrow,
+::  %unpub) is idempotent, so finishing it is running it. One the writer
+::  cannot read is dropped.
+::
+::  It must never wedge the writer: a resume that crashed would crash every
+::  start after it, and every write with it. So the attempt is counted
+::  before it runs, the fourth start drops the job, and the run is guarded
+::  (+fiber-try): a crash is said once and the job dropped.
 ++  job-resume
   |=  root=@ud
   =/  m  (fiber:fiber:nexus ,~)
@@ -7566,10 +7575,44 @@
     (fall (mole |.(;;((unit eval-action:le) (sang-noun:tarball sang.jv)))) ~)
   ?~  job  (pure:m ~)
   ?.  (tree-jobs u.job)  (job-set ~)
+  =/  tr=road:tarball  (rf root / %'tree-job-tries')
+  ;<  tries=@ud  bind:m  (read-pub-seq tr)
+  ?:  (gte tries 3)
+    %-  (say 2 ~[leaf+"lattice /main.sig: dropped a {(trip -.u.job)} job that did not finish in {<tries>} starts"])
+    (job-drop root)
+  ;<  ~  bind:m  (put-file tr [/ %ud] +(tries))
   ;<  now=@da  bind:m  bowl-now
-  ;<  ~  bind:m  (apply-eval root now u.job)
-  ;<  ~  bind:m  (job-set ~)
+  ;<  err=(unit tang)  bind:m  (fiber-try (apply-eval root now u.job))
+  ?^  err
+    %-  (say 3 [leaf+"lattice /main.sig: a resumed {(trip -.u.job)} job crashed and was dropped" u.err])
+    (job-drop root)
+  ;<  ~  bind:m  (job-drop root)
   (bump-beacon %rev now)
+::  +job-drop: no whole-tree job, and no tries counted for one
+++  job-drop
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m  (job-set ~)
+  (put-file (rf root / %'tree-job-tries') [/ %ud] 0)
+::  +fiber-try: run `a`, and answer ~ when it finished, or the trace when
+::  any of its steps crashed or failed, instead of failing this fiber. A
+::  failed step's state and darts are dropped, as the kernel drops them.
+++  fiber-try
+  |=  a=process:fiber:nexus
+  =/  m  (fiber:fiber:nexus ,(unit tang))
+  ^-  form:m
+  |=  inp=input:fiber:nexus
+  =/  r  (mule |.((a inp)))
+  ?:  ?=(%| -.r)  [~ q.state.inp %done `p.r]
+  =/  o  p.r
+  ?-  -.next.o
+    %wait  [darts.o state.o %wait ~]
+    %skip  [darts.o state.o %skip ~]
+    %cont  [darts.o state.o %cont ^$(a self.next.o)]
+    %fail  [~ q.state.inp %done `err.next.o]
+    %done  [darts.o state.o %done ~]
+  ==
 ::  +pub-rev-count: how many pages the revision list names.
 ++  pub-rev-count
   =/  m  (fiber:fiber:nexus ,@ud)
