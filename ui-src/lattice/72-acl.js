@@ -117,10 +117,9 @@
           continue;
         }
         // a clearweb link opens in a new window. A urb:// address opens in
-        // the reader (/apps/lattice?url=), which leaves the editor, so a
-        // plain click goes the way the ribbon's Browser does (leaveTo,
-        // 24-tools.js): unsaved work is asked about first. A new-tab click
-        // leaves nothing behind and goes as it is.
+        // the reader (/apps/lattice?url=), in a browser tab of the shell as
+        // the ribbon's Browser does (browseIn, 24-tools.js). A new-tab click
+        // goes to a browser window as it is.
         const a = document.createElement('a');
         a.textContent = u;
         if (mode === 'clearweb') { a.href = u; a.target = '_blank'; a.rel = 'noopener'; }
@@ -129,7 +128,7 @@
           a.onclick = (e) => {
             if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
             e.preventDefault();
-            leaveTo(a.href);
+            browseIn(api + '?url=' + encodeURIComponent(u));
           };
         }
         b.onclick = async () => {

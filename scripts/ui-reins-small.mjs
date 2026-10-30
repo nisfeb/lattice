@@ -2,7 +2,7 @@
 //  ui-reins-small.mjs: five small fixes to the editor shell, one block each.
 //
 //    the Files and Knowledge trees are ARIA trees the arrow keys walk, Enter
-//      opens a page (Ctrl+Enter in a new tab) and Ctrl+Shift+F focuses Files
+//      opens a page (Ctrl+Enter in a new tab) and Ctrl+Shift+L focuses Files
 //      (not from behind the palette); type-ahead finds folders, and Enter on
 //      a folder's + is the +
 //    the discard dialog for a long grub path (a shared page's) wraps the
@@ -97,25 +97,25 @@ try {
   check('the Knowledge list is an ARIA tree once it has rows', know === 'tree', know);
   check('it was not a tree while it held only the loading note', aria.know === null, String(aria.know));
   check('the Files tree is one tab stop', aria.stops === 1, JSON.stringify(aria));
-  check('the Files tab tooltip names Ctrl+Shift+F', aria.tip === 'Files (Ctrl+Shift+F)', aria.tip);
+  check('the Files tab tooltip names Ctrl+Shift+L', aria.tip === 'Files (Ctrl+Shift+L)', aria.tip);
 
   await page.evaluate(() => window.latShell.paneTab('l', 'know'));
   await page.evaluate(() => document.body.focus());
-  await press('F', ['Control', 'Shift']);
+  await press('KeyL', ['Control', 'Shift']);
   const viaKey = await page.evaluate(() => ({
     files: !document.querySelector('#lbody > [data-pane=files]').hidden,
     inTree: document.getElementById('treelist').contains(document.activeElement),
   }));
-  check('Ctrl+Shift+F shows Files and focuses its tree', viaKey.files && viaKey.inTree, JSON.stringify(viaKey));
+  check('Ctrl+Shift+L shows Files and focuses its tree', viaKey.files && viaKey.inTree, JSON.stringify(viaKey));
   // not from behind a modal: the palette keeps the focus
   await page.evaluate(() => document.getElementById('rb-palette').click());
   await sleep(300);
-  await press('F', ['Control', 'Shift']);
+  await press('KeyL', ['Control', 'Shift']);
   const behind = await page.evaluate(() => ({
     open: !document.getElementById('palette').hidden,
     inTree: document.getElementById('treelist').contains(document.activeElement),
   }));
-  check('Ctrl+Shift+F does nothing while the palette is open', behind.open && !behind.inTree,
+  check('Ctrl+Shift+L does nothing while the palette is open', behind.open && !behind.inTree,
     JSON.stringify(behind));
   await press('Escape');
 
@@ -391,7 +391,9 @@ try {
     }
   }
 
-  // ── 4c. a urb:// row leaves the editor through the unsaved-work guard ──
+  // ── 4c. a urb:// row opens the reader in a browser tab ────────────────
+  //  nothing leaves the editor, so the unsaved grub behind it is kept
+  //  as it is, with no question
   {
     const base = await page.evaluate(() => localStorage.latBase);
     const ship = (await (await fetch(env.base + '/~/host')).text()).trim();
@@ -408,19 +410,22 @@ try {
     const before = page.url();
     await page.evaluate((k) =>
       document.querySelector('#publist .pubrow[data-page="' + k + '"] a').click(), PS);
-    await sleep(800);
-    const asked = await page.evaluate(() => ({
-      dlg: !document.getElementById('dlg').hidden, msg: document.getElementById('dlgmsg').textContent,
+    const want = 'urb://' + ship + '/' + PS;
+    const tabbed = await page.waitForFunction((w) => {
+      const s = window.latTabs.state();
+      const t = s.tabs[s.active];
+      if (!t || t.kind !== 'tool' || !t.key.startsWith('frame:/apps/lattice?')) return false;
+      const f = document.querySelector('#toolhost iframe[data-tool="' + CSS.escape(t.key) + '"]');
+      try { return new URLSearchParams(f.contentWindow.location.search).get('url') === w; }
+      catch { return false; }
+    }, { timeout: 30000 }, want).then(() => true, () => false);
+    const kept = await page.evaluate(() => ({
+      dlg: !document.getElementById('dlg').hidden,
+      dirty: window.latTabs.state().tabs.some((t) => t.kind === 'grub' && t.dirty),
     }));
-    check('a urb:// row asks about unsaved work before leaving', asked.dlg && page.url() === before,
-      JSON.stringify(asked));
-    await Promise.all([
-      page.waitForNavigation({ timeout: 30000 }).catch(() => null),
-      page.evaluate(() => document.getElementById('dlgok').click()),
-    ]);
-    const u = new URL(page.url());
-    check('and then opens the page in the reader',
-      u.pathname === '/apps/lattice' && u.searchParams.get('url') === 'urb://' + ship + '/' + PS, page.url());
+    check('a urb:// row opens the page in a browser tab, the editor stays',
+      tabbed && page.url() === before && !kept.dlg && kept.dirty,
+      JSON.stringify({ tabbed, url: page.url(), kept }));
   }
 } catch (e) {
   check('threw: ' + String(e.message).slice(0, 140), false);

@@ -197,6 +197,15 @@
         ::  crash on it, killing the writer fiber and hanging every publish.
         ::  The counter is one bare atom and /mar/ud.hoon already is that mark.
             [%fall %& [/pub %meta] [[/ %ud] 0]]
+        ::  /pub/revs: each page's current rev and id, the list peers read
+        ::  (+set-pub-rev). /pub/reconciled: the one-shot marker of
+        ::  +pub-reconcile. Both are %stay, not %fall: each is read by its
+        ::  PRESENCE (+ensure-pub-ids lays revs and every binding when it is
+        ::  absent; a present marker refuses a second sweep), and a %fall
+        ::  default would read as present. Uncovered, a reload dropped revs,
+        ::  so every reload re-grew every page and the index.
+            [%stay %& [/pub %revs]]
+            [%stay %& [/pub %reconciled]]
         ::  /forum: the forum (docs/superpowers/specs, State layout). A
         ::  board is a directory of [/ %noun] grubs, each [%1 shape], laid
         ::  by +apply-forum:
@@ -7445,11 +7454,13 @@
   ::  a later re-publish (cass r+1 and up) still registers. An empty list
   ::  is no answer (unreachable reads the same), so it retries instead.
   ?:  &(?=(~ ent) !=(~ revs))  (pure:m r)
-  ;<  pg=(unit [p=@tas q=@t])  bind:m
+  ;<  kp=(unit [p=@tas q=@t])  bind:m
     ?:  |(?=(~ ent) (lth rev.u.ent r))
       (pure:(fiber:fiber:nexus ,(unit [p=@tas q=@t])) ~)
     (keen-page-raw pub rel id.u.ent)
-  ?.  ?=([~ %gmi *] pg)
+  ::  a page is grown under its view-mode mark (+mode-mark), so any mark in
+  ::  that set is a real body, as the reader takes it (+read-page-body-rev)
+  ?.  ?&(?=(^ kp) ?=(view-mode:pg p.u.kp))
     ?:  (gte try 1)  (pure:m lrev)
     ;<  ~  bind:m  (sleep-draining ~s2)
     $(try +(try))
@@ -10312,8 +10323,15 @@
     ?:  &(?=(^ rest) =('' (rear `path`rest)))
       $(rest (snip `path`rest))
     rest
+  ::  bare /x, the way in (the palette, Settings, the home page): our own
+  ::  pages folder. The ship root is outside what a sandboxed lattice may
+  ::  read, so it was a refusal before anything showed. A 302, not the 301
+  ::  of +send-redirect: where lattice lives depends on how it is installed,
+  ::  and a browser keeps a 301 for good.
   ?~  rest
-    (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p our) "/"))
+    ;<  sb=path  bind:m  self-base
+    =/  to=tape  :(weld "/apps/lattice/x/" (scow %p our) (spud sb) "/page/")
+    (send-simple:srv eyre-id [[302 ['location' (crip to)]~] ~])
   =/  shp=(unit @p)  (slaw %p i.rest)
   ?~  shp  (send-err eyre-id 400 'bad ship')
   =/  pax=path  t.rest
@@ -10335,37 +10353,43 @@
     ::  ship root: always a directory
     ?.  slashed  (send-redirect eyre-id (weld base "/"))
     ?:  =(u.shp our)
-      ;<  dn=view:nexus  bind:m  (peek-shallow:io dir-road ~)
-      ?.  ?=([%ball *] dn)  (send-err eyre-id 404 'not found')
-      (send-view eyre-id (render-page-titled canon "" "" (scow %p u.shp) (explore-dir-html u.shp pax ball.dn)))
+      ;<  dn=(unit view:nexus)  bind:m  (peek-local-soft dir-road %.n)
+      ?~  dn  (explore-refused eyre-id our pax canon)
+      ?.  ?=([%ball *] u.dn)  (send-err eyre-id 404 'not found')
+      (send-view eyre-id (render-page-titled canon "" "" (scow %p u.shp) (explore-dir-html u.shp pax ball.u.dn)))
     ;<  md=(unit view:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
     ?~  md  (send-err eyre-id 504 'unreachable or denied')
     ?.  ?=([%ball *] u.md)  (send-err eyre-id 404 'not found')
     (send-view eyre-id (render-page-titled canon "" "" (scow %p u.shp) (explore-dir-html u.shp pax ball.u.md)))
   =/  file-road=road:tarball  [%& %& (snip `path`pax) (rear pax)]
+  ::  our own tree: every peek is veto-tolerant (+peek-local-soft), and a
+  ::  refusal answers +explore-refused
   ?:  =(u.shp our)
     ?:  slashed
-      ;<  dn=view:nexus  bind:m  (peek-shallow:io dir-road ~)
-      ?:  ?=([%ball *] dn)
+      ;<  dn=(unit view:nexus)  bind:m  (peek-local-soft dir-road %.n)
+      ?~  dn  (explore-refused eyre-id our pax canon)
+      ?:  ?=([%ball *] u.dn)
         ::  our own /page/<name>/ dir -> the live page view (data + command
         ::  form + SSE), unless ?raw asks for the plain grub listing. A page has
         ::  a /code grub; a plain folder does not, so a folder just browses.
         =/  pn=(unit @t)  (page-dir-name pax)
         =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
-          ?~(fil.ball.dn ~ contents.u.fil.ball.dn)
+          ?~(fil.ball.u.dn ~ contents.u.fil.ball.u.dn)
         ?:  |(?=(~ pn) ?!((~(has by fils) %code)) (~(has by args) 'raw'))
-          (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-dir-html u.shp pax ball.dn)))
-        (render-page-view eyre-id u.shp pax canon u.pn ball.dn (~(has by args) 'embed') %.y)
-      ;<  fn=view:nexus  bind:m  (peek:io file-road ~)
-      ?.  ?=([%file *] fn)  (send-err eyre-id 404 'not found')
-      ?:  want-raw  (send-raw eyre-id sang.fn %.y)
-      (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.fn %.y)))
-    ;<  fn=view:nexus  bind:m  (peek:io file-road ~)
-    ?:  ?=([%file *] fn)
-      ?:  want-raw  (send-raw eyre-id sang.fn %.y)
-      (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.fn %.y)))
-    ;<  dn=view:nexus  bind:m  (peek-shallow:io dir-road ~)
-    ?.  ?=([%ball *] dn)  (send-err eyre-id 404 'not found')
+          (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-dir-html u.shp pax ball.u.dn)))
+        (render-page-view eyre-id u.shp pax canon u.pn ball.u.dn (~(has by args) 'embed') %.y)
+      ;<  fn=(unit view:nexus)  bind:m  (peek-local-soft file-road %.y)
+      ?~  fn  (explore-refused eyre-id our pax canon)
+      ?.  ?=([%file *] u.fn)  (send-err eyre-id 404 'not found')
+      ?:  want-raw  (send-raw-own eyre-id sang.u.fn pax)
+      (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.u.fn %.y)))
+    ;<  fn=(unit view:nexus)  bind:m  (peek-local-soft file-road %.y)
+    ?:  ?=([~ %file *] fn)
+      ?:  want-raw  (send-raw-own eyre-id sang.u.fn pax)
+      (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.u.fn %.y)))
+    ;<  dn=(unit view:nexus)  bind:m  (peek-local-soft dir-road %.n)
+    ?~  dn  (explore-refused eyre-id our pax canon)
+    ?.  ?=([%ball *] u.dn)  (send-err eyre-id 404 'not found')
     (send-redirect eyre-id (weld base "/"))
   ?:  slashed
     ;<  md=(unit view:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
@@ -10394,6 +10418,53 @@
   ?~  md  (send-err eyre-id 504 'unreachable or denied')
   ?.  ?=([%ball *] u.md)  (send-err eyre-id 404 'not found')
   (send-redirect eyre-id (weld base "/"))
+::  +peek-local-soft: one node of THIS ship's tree for the /x explorer, a
+::  refusal answering ~. A sandboxed lattice may read only inside its own
+::  tree (grubbery vetoes even its own root dir), and /x names any path, so
+::  a refusal is ordinary there. The plain peeks failed the request fiber
+::  on the veto, and the Explorer showed "lattice is recovering from a
+::  crash" in place of the whole editor, or never answered. `deep` %.n is
+::  a shallow peek: one level, subdir names only.
+::
+::  Bounded by local-peek-timeout: a grubbery that parks a refused dart
+::  instead of sending %veto would otherwise hang /x as release 74 did. A
+::  local peek answers in well under a second, so the bound only ever
+::  meets that case, and answers it as the refusal it is.
+::
+++  peek-local-soft
+  |=  [=road:tarball deep=?]
+  =/  m  (fiber:fiber:nexus ,(unit view:nexus))
+  ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  =/  until=@da  (add now local-peek-timeout)
+  ::  the timer first: a local veto lands at once, and set-timer's own
+  ::  take would meet it instead of +take-peek-or-wake
+  ;<  ~  bind:m  (send-wait-dated until)
+  ;<  pw=wire  bind:m  (nonce:io /peek)
+  ;<  ~  bind:m  (send-dart:io %node pw road %peek ~ ~ deep)
+  (take-peek-or-wake pw until)
+::  +local-peek-timeout: +peek-local-soft's bound.
+++  local-peek-timeout  ~s15
+::  +explore-refused: the explorer's answer for a path of ours that lattice
+::  may not read: a 403 page with the crumbs and a way to our own pages.
+::
+++  explore-refused
+  |=  [eyre-id=@ta our=@p pax=path canon=tape]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  =/  pages=tape  :(weld "/apps/lattice/x/" (scow %p our) (spud sb) "/page/")
+  =/  htm=@t
+    %:  render-page-titled  canon  ""  ""  "not readable"
+      ;:  weld
+        (explore-crumbs our pax)
+        "<p class=\"err\">lattice is not allowed to read this on your ship. "
+        "Installed as a desk, it reads only inside its own folder.</p>"
+        "<p><a href=\""  (esc pages)  "\">your pages</a></p>"
+      ==
+    ==
+  %+  send-simple:srv  eyre-id
+  [[403 ['content-type' 'text/html']~] `(as-octs:mimes:html htm)]
 ::  +url-path-part: the path portion of a raw request url (strip ?query).
 ::
 ++  url-path-part
@@ -10491,7 +10562,10 @@
   ;<  sb=path  bind:m  self-base
   =/  keep=tape  (keep-url sb "beacon/rev")
   ;<  rev=tape  bind:m  ?:(local beacon-rev-tape (pure:(fiber:fiber:nexus ,tape) ""))
-  =/  rel=path  (slag 3 pax)
+  ::  the page-relative path, from the page dir's name. It was (slag 3 pax),
+  ::  which assumed a two-segment base: on a desk install it named no page,
+  ::  so an own page in the reader showed no comments, no box and no theme.
+  =/  rel=path  (fall (raw-name-pax name) (slag 3 pax))
   ::  eg: our own page, but shared for EDIT, so a peer may have written its
   ::  markup. It is sandboxed like a peer's page: an attribute on the frame
   ::  below, a CSP header on the bare embed.
@@ -11846,11 +11920,33 @@
     " &middot; <a href=\"?data\">raw</a>"  edit-link  "</div>"
     body
   ==
+::  +send-raw-own: +send-raw for a grub of ours. One in a page a peer may
+::  have written (+peer-written) is served as /c/ and /f/ serve that page:
+::  an opaque origin (the CSP sandbox) and js as text/plain, so ?data never
+::  runs a peer's html, svg or script as the owner. A page name that will
+::  not parse counts as written, failing closed.
+::
+++  send-raw-own
+  |=  [eyre-id=@ta =sang:tarball pax=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  pn=(unit @t)  ?~(pax ~ (page-dir-name (snip `path`pax)))
+  ;<  pw=?  bind:m
+    ?~  pn  (pure:(fiber:fiber:nexus ,?) |)
+    =/  np=(unit path)  (raw-name-pax u.pn)
+    ?~  np  (pure:(fiber:fiber:nexus ,?) &)
+    (peer-written u.np)
+  (send-raw-in eyre-id sang & pw)
 ::  +send-raw: ?data, the file body verbatim with a mark-derived content-type.
 ::  Cords ship as their bytes. octs ship as-is. Anything else is 415.
 ::
 ++  send-raw
   |=  [eyre-id=@ta =sang:tarball local=?]
+  (send-raw-in eyre-id sang local |)
+::  +send-raw-in: +send-raw, `boxed` sandboxing an own grub (+send-raw-own).
+::
+++  send-raw-in
+  |=  [eyre-id=@ta =sang:tarball local=? boxed=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  mk=@tas  name.p.sang
@@ -11860,10 +11956,19 @@
   ::  origin (residual XSS the round-1 inline-render fix missed). Only our OWN
   ::  grubs get a mark-derived type; anything foreign is forced to an inert
   ::  download (octet-stream + attachment + nosniff).
+  ::  own grubs too get nosniff, so the type is the one served (see
+  ::  +send-typed). A boxed one runs no script as us.
+  =/  own
+    |=  ct=@t
+    ^-  (list [@t @t])
+    ?.  boxed  ~[['content-type' ct] ['x-content-type-options' 'nosniff']]
+    :~  :-  'content-type'
+        ?~((find "javascript" (trip ct)) ct 'text/plain; charset=utf-8')
+        ['x-content-type-options' 'nosniff']
+        ['content-security-policy' sandbox-csp]
+    ==
   =/  heads=(list [@t @t])
-    ::  own grubs too get nosniff, so the type is the one served (see
-    ::  +send-typed)
-    ?:  local  ~[['content-type' (mark-mime mk)] ['x-content-type-options' 'nosniff']]
+    ?:  local  (own (mark-mime mk))
     :~  ['content-type' 'application/octet-stream']
         ['content-disposition' 'attachment']
         ['x-content-type-options' 'nosniff']
@@ -11878,7 +11983,7 @@
       (send-err eyre-id 413 'too large')
     =/  mheads=(list [@t @t])
       ?.  local  heads
-      ~[['content-type' (mite-type p.p.mime-res)] ['x-content-type-options' 'nosniff']]
+      (own (mite-type p.p.mime-res))
     (send-simple:srv eyre-id [[200 mheads] `q.p.mime-res])
   ::  %json: re-encode the noun so ?data yields actual JSON text
   ?:  =(%json mk)
@@ -12252,7 +12357,7 @@
       ver
       '";var PV="'
       pv
-      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var nu=(u.pathname==="/apps/lattice/app/app.js")?(u.origin+u.pathname+"?v="+V):q;return fetch(nu).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=q.url+(q.url.indexOf("?")<0?"?":"&")+"u=sw"+Date.now();e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var nu=(u.pathname==="/apps/lattice/app/app.js")?(u.origin+u.pathname+"?v="+V):q;return fetch(nu).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=q.url+(q.url.indexOf("?")<0?"?":/[?&]$/.test(q.url)?"":"&")+"u=sw"+Date.now();e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
@@ -12847,6 +12952,12 @@
     "<p><button type=\"button\" id=\"legbtn\" class=\"btn\" hidden>Import from the old editor</button></p>"
     %-  trip
     '<script>(function(){var s=document.getElementById("legst"),b=document.getElementById("legbtn");function load(msg){fetch("/apps/lattice/legacy-status").then(function(r){return r.json()}).then(function(d){b.hidden=!d.prompt;s.textContent=msg||(d.prompt?"An older lattice agent is still installed on this ship, from before this store existed. Importing copies what it holds here. Anything already here is left as it is, and nothing is removed from the old agent.":d.reason==="resolved"?"This ship has closed the import from the older lattice agent: it either finished, or the offer was dismissed with never ask again.":"No older lattice agent is installed on this ship.")}).catch(function(){s.textContent=msg||"status unavailable"})}b.onclick=function(){b.disabled=true;s.textContent="importing from the old agent, this can take a few minutes...";fetch("/apps/lattice/legacy-migrate",{method:"POST"}).then(function(r){if(r.status===409){b.disabled=false;load("Nothing to import: the import was already closed on this ship, by another tab or device.");return null}if(!r.ok)return r.json().catch(function(){return {}}).then(function(j){throw new Error(j.error||"http "+r.status)});return r.json()}).then(function(j){if(!j)return;var n=j.imported||0,p=j.pagesImported||0;if(j.complete)try{localStorage.latLegacy="done"}catch(x){}b.disabled=false;load("Imported "+n+(n===1?" memory":" memories")+(j.skipped?" ("+j.skipped+" already here, left untouched)":"")+" and "+p+(p===1?" page. ":" pages. ")+(j.complete?"Everything it held is now here.":"Not everything moved, and the old agent still holds the only copy of the rest, so do not uninstall it. Run the import again to finish."))}).catch(function(e){b.disabled=false;load("import failed: "+e.message+". Nothing was removed from the old agent, and a re-run skips what already landed.")})};load()})();</script>'
+    ::  advanced: the explorer, a power tool, so it has no ribbon button.
+    ::  In the editor's Settings tab, data-lat-tool opens it in a tab of its
+    ::  own (24-tools.js frameDress); opened on its own, the link goes there.
+    "<h2 id=\"advanced\">Advanced</h2>"
+    "<p class=\"muted\">The explorer browses the files lattice keeps on your ship: each page's source, data and history, as grubbery stores them.</p>"
+    "<p><a id=\"openexplorer\" class=\"btn\" href=\"/apps/lattice/x\" data-lat-tool=\"explorer\">Open explorer</a></p>"
     ::  desktop only: the shell's own connection and mounts page. This page
     ::  sits in a frame of the editor, so the Tauri bridge is the top
     ::  window's. latOpenManager there asks about unsaved work first. The
@@ -12858,15 +12969,16 @@
     %-  trip
     '<script>(function(){var c=document.getElementById("connection"),w=null;try{w=window.top}catch(x){}var t=w&&w.__TAURI__;if(!t||!t.core)return;c.hidden=false;document.getElementById("connbtn").onclick=function(){if(w.latOpenManager)w.latOpenManager();else t.core.invoke("open_manager")}})();</script>'
   ==
-::  +home-index-html: the landing page. Always shows navigation (Pages,
-::  Explorer) plus a live list of your programmable pages and any published
-::  pages, so an empty store is still a way in, not a dead end.
+::  +home-index-html: the landing page. Always shows navigation (Editor,
+::  Browser, Knowledge) plus a live list of your programmable pages and any
+::  published pages, so an empty store is still a way in, not a dead end.
+::  The Browser card is the reader, this page. The explorer's one home is
+::  Settings > Advanced; a second way in here was its leak.
 ::
 ++  home-index-html
   |=  [our=@p recent=(list [pax=path prev=@t]) bms=bookmarks:lb know=tape]
   ^-  tape
   =/  ship=tape  (scow %p our)
-  =/  tree=tape  :(weld "/apps/lattice/x/" ship "/")
   ::  under Editor: the 10 most recently edited pages, name + a preview, each
   ::  linking straight into the editor.
   =/  recent-list=tape
@@ -12916,7 +13028,7 @@
     "<h3 class=\"qh\">Recent</h3>"
     recent-list
     "</div>"
-    :(weld "<div class=\"col\"><a class=\"appcard\" href=\"" tree "\"><span class=\"ico\">&#127760;</span><strong>Browser</strong><span class=\"d\">Read and explore content &mdash; your published pages and other ships via urb://.</span></a>")
+    "<div class=\"col\"><a class=\"appcard\" href=\"/apps/lattice\"><span class=\"ico\">&#127760;</span><strong>Browser</strong><span class=\"d\">Read and explore content &mdash; your published pages and other ships via urb://.</span></a>"
     "<h3 class=\"qh\"><a href=\"/apps/lattice/marks\">Bookmarks &#8594;</a></h3>"
     bm-list
     "</div>"
@@ -13297,6 +13409,11 @@
 ::  A later `upd` is a live edit under the user's eyes: force-refresh the
 ::  cache — coalescing bumps that land mid-refresh — then swap to the
 ::  canonical URL, which sw-js serves from the copy just written (instant).
+::  Hidden (H) is the tab out of sight, or the page in an editor frame tab
+::  that is not in front: such a frame still reads document.hidden false,
+::  and parked streams took all six connections a browser gives a host.
+::  The shell fires lathidden/latshown on the frame as it parks or shows
+::  it (24-tools.js), and the stream drops or comes back on those.
 ::  "" -> no script (remote pages, error shells). Built from single-quote
 ::  cords so the JS braces stay literal (only \\ needs escaping); mirrors
 ::  counter.hoon's SSE parse loop.
@@ -13311,7 +13428,7 @@
     (trip '";var W=')
     ?~(revs (trip '{}') revs)
     %-  trip
-    ';var pend=0,ac=null,live=false;function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||document.hidden)return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;var k=ev.slice(ev.indexOf(" ")+1);if(!W.hasOwnProperty(k))continue;if(ev.slice(0,3)==="old"){if(W[k]&&dt&&dt.trim()!==W[k]){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!document.hidden)upd();continue}location.reload();return}}}catch(x){}live=false;if(!document.hidden)setTimeout(c,3000)}document.addEventListener("visibilitychange",function(){if(document.hidden){if(ac)ac.abort();return}if(window.__latRefresh)upd();setTimeout(c,200)});c()})();</script>'
+    ';var pend=0,ac=null,live=false;function H(){if(document.hidden)return true;try{var f=window.frameElement;return !!f&&!f.getClientRects().length}catch(e){return false}}function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||H())return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;var k=ev.slice(ev.indexOf(" ")+1);if(!W.hasOwnProperty(k))continue;if(ev.slice(0,3)==="old"){if(W[k]&&dt&&dt.trim()!==W[k]){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!H())upd();continue}location.reload();return}}}catch(x){}live=false;if(!H())setTimeout(c,3000)}function V(){if(H()){if(ac)ac.abort();return}if(live)return;if(window.__latRefresh)upd();setTimeout(c,200)}document.addEventListener("visibilitychange",V);addEventListener("lathidden",V);addEventListener("latshown",V);c()})();</script>'
   ==
 ::  +send-public-how: whitelist <root>/pub in the grubbery `public` usergroup's
 ::  peek set, so any foreign ship may peek/keep published pages. UNION, never

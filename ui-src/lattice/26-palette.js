@@ -1,4 +1,4 @@
-  // ── command palette: Ctrl/Cmd+P and the ribbon ───────────────────────────
+  // ── command palette: Ctrl/Cmd+K (or +P) and the ribbon ──────────────────
   // An index over the homes, never a home itself (spec, principle 3). It
   // lists the actions their homes registered (13-frame.js, action()), then
   // pages and memories by name. An action row names its home and shortcut,
@@ -9,8 +9,9 @@
   // Every action must have a home in the DOM: its element carries
   // data-action="<id>" (the suite checks each one). A home that is built
   // on demand is checked while its when() says it applies. PALETTE_ONLY
-  // would name the exceptions, and it is empty by design.
-  const PALETTE_ONLY = [];
+  // names the exceptions: an action whose home is in a framed page, outside
+  // this document. The one is Explorer, at Settings > Advanced (24-tools.js).
+  const PALETTE_ONLY = ['explorer'];
   const pal = document.createElement('div');
   pal.id = 'palette';
   pal.className = 'dlg palette';
@@ -50,6 +51,7 @@
   // hidden (a pane tab's own section does not count), not disabled. A home
   // built only while open says so itself (when).
   const palUsable = (a) => {
+    if (PALETTE_ONLY.includes(a.id)) return true;
     if (a.when) return a.when();
     const el = actionHome(a.id);
     return !!el && !el.disabled && !el.closest('[hidden]:not([data-pane])');
@@ -169,13 +171,18 @@
   // a click on the backdrop, outside the box, closes it
   pal.addEventListener('mousedown', (e) => { if (e.target === pal) palClose(); });
 
-  // Ctrl/Cmd+P never reaches the print dialog. Vim keeps the chord while
-  // the editor has focus, the rule Ctrl+E follows (23-tabhead.js), and an
-  // open dialog is left to finish first.
+  // Ctrl/Cmd+K, and Ctrl/Cmd+P as its alias, which never reaches the print
+  // dialog. K is the app's own chord in vim too (27-vim.js hands it back),
+  // so it opens the palette from anywhere. Vim keeps P while the editor has
+  // focus, the rule Ctrl+E follows (23-tabhead.js). An open dialog is left
+  // to finish first. Capture phase on window, ahead of vim's handler on
+  // the textarea.
   addEventListener('keydown', (e) => {
-    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || (e.key !== 'p' && e.key !== 'P')) return;
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k !== 'k' && k !== 'p') return;
     e.preventDefault();
-    if (localStorage.edVim === '1' && document.activeElement === src) return;
+    if (k === 'p' && localStorage.edVim === '1' && document.activeElement === src) return;
     if (!$('dlg').hidden) return;
     palShow();
   }, true);

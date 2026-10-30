@@ -9,13 +9,14 @@
 //    the tree and the status line moved into the frame with their ids
 //    the status bar raises a chip for a compile error, which opens Page
 //    the left pane: Knowledge lists memories with no mode switch, a memory
-//      opens as a know tab beside a still-rendered Files tree, Ctrl+K
+//      opens as a know tab beside a still-rendered Files tree, Ctrl+Shift+F
 //      focuses the Search tab, sort flips the root order, the trash
 //      restores a deleted memory, and Bookmarks lists /bookmarks-json
 //    the ribbon, top to bottom, and its tool tabs: Access & groups and the
 //      inbox render in a tab (the inbox carries the unread badge), Settings
 //      frames the settings page without its reader bar, the brief opens
-//      today's journal page, and Browser asks before leaving unsaved work
+//      today's journal page, and leaving for the desktop's manager page
+//      asks about unsaved work first
 //    the command palette: Ctrl+P and the ribbon open it, actions match
 //      first with their home, pages after them open with Enter (Ctrl+Enter
 //      in a new tab), and every action it lists has a home in the DOM
@@ -235,7 +236,9 @@ try {
   await page.evaluate(() => { localStorage.appNT = '1'; window.latShell.paneOpen('l', false); });
   await page.focus('#src');
   await page.keyboard.down('Control');
-  await page.keyboard.press('KeyK');
+  await page.keyboard.down('Shift');
+  await page.keyboard.press('KeyF');
+  await page.keyboard.up('Shift');
   await page.keyboard.up('Control');
   await sleep(300);
   const ck = await page.evaluate(() => ({
@@ -243,7 +246,7 @@ try {
     tab: !document.querySelector('section[data-pane=search]').hidden,
   }));
   const lpaneUp = await shown('#lpane');
-  check('ctrl+k focuses search pane', ck.focus === 'qinput' && ck.tab && lpaneUp,
+  check('ctrl+shift+f focuses search pane', ck.focus === 'qinput' && ck.tab && lpaneUp,
     JSON.stringify({ ...ck, lpaneUp }));
 
   await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
@@ -441,8 +444,8 @@ try {
     .map((b) => (b.title === b.getAttribute('aria-label') ? b.title : '!' + b.title)
       .replace(/^(Comments inbox), \S+ unread$/, '$1')));
   check('ribbon order and tooltips', JSON.stringify(names) === JSON.stringify([
-    "Today's brief", 'Browser', 'Forum', 'Comments inbox', 'Access & groups', 'Explorer',
-    'Sync conflicts', 'Command palette (Ctrl+P)', 'Settings']), JSON.stringify(names));
+    "Today's brief", 'Browser', 'Forum', 'Comments inbox', 'Access & groups',
+    'Sync conflicts', 'Command palette (Ctrl+K)', 'Settings']), JSON.stringify(names));
 
   const front = () => page.evaluate(() => {
     const s = window.latTabs.state();
@@ -588,7 +591,7 @@ try {
   const homeless = await page.evaluate(() => {
     const P = window.latPalette;
     if (!P) return null;
-    return { n: P.ids().length, only: P.only.length,
+    return { n: P.ids().length, only: P.only,
       //  shtest is the ribbonAdd probe above, whose button the suite removed
       //  a home rendered on demand (the page menu's items, a shared row's
       //  control) is there exactly while its when() holds, so one whose
@@ -598,7 +601,8 @@ try {
   });
   await page.evaluate(() => document.getElementById('tmenu').click());
   check('every action has a home in the DOM',
-    !!homeless && homeless.n >= 30 && homeless.only === 0 && homeless.missing.length === 0,
+    !!homeless && homeless.n >= 30 && JSON.stringify(homeless.only) === '["explorer"]'
+      && homeless.missing.length === 0,
     JSON.stringify(homeless));
 
   await page.evaluate(() => document.getElementById('rb-settings').click());
@@ -807,23 +811,24 @@ try {
   }, null, 5000);
   check('save under a tool tab leaves the hidden grub alone',
     underTool && grubSaves === 0 && stillDirty, JSON.stringify({ underTool, grubSaves, stillDirty }));
-  await page.evaluate(() => document.getElementById('rb-browser').click());
+  //  the one way off the editor left (Browser and Forum are tabs now): the
+  //  desktop's manager page, here with a stand-in for the desktop's bridge
+  await page.evaluate(() => {
+    window.__mgr = null;
+    window.__TAURI__ = { core: { invoke: async (cmd) => { window.__mgr = cmd; } } };
+  });
+  await page.evaluate(() => { window.latOpenManager(); });
   const asked = await until(() => !document.getElementById('dlg').hidden, null, 5000);
   await page.evaluate(() => document.getElementById('dlgcancel').click());
   await sleep(500);
-  const stayed2 = await page.evaluate(() => location.pathname);
-  let unloadAsk = false;
-  page.on('dialog', (d) => { if (d.type() === 'beforeunload') unloadAsk = true; d.accept(); });
-  await page.evaluate(() => document.getElementById('rb-browser').click());
+  const stayed2 = await page.evaluate(() => window.__mgr);
+  await page.evaluate(() => { window.latOpenManager(); });
   await until(() => !document.getElementById('dlg').hidden, null, 5000);
-  await Promise.all([
-    page.waitForNavigation({ timeout: 30000 }).catch(() => null),
-    page.evaluate(() => document.getElementById('dlgok').click()),
-  ]);
-  const left = await page.evaluate(() => location.pathname).catch(() => null);
-  check('browser asks before leaving unsaved work',
-    asked && stayed2 === '/apps/lattice/app' && left === '/apps/lattice' && !unloadAsk,
-    JSON.stringify({ asked, stayed2, left, unloadAsk }));
+  await page.evaluate(() => document.getElementById('dlgok').click());
+  const left = await until(() => window.__mgr === 'open_manager', null, 10000);
+  await page.evaluate(() => { delete window.__TAURI__; });
+  check('leaving for the manager page asks about unsaved work first',
+    asked && stayed2 === null && left, JSON.stringify({ asked, stayed2, left }));
 } catch (e) {
   check('threw: ' + String(e.message).slice(0, 140), false);
 } finally {

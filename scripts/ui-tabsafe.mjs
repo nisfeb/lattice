@@ -508,12 +508,18 @@ try {
       asked && opts.includes('save') && opts.includes('discard') && kept.sent === 0
       && kept.tab === P && kept.text && kept.dot, JSON.stringify(kept));
 
-    //  leaving the editor asks too, and cancel stays
-    await page.evaluate(() => document.getElementById('rb-browser').click());
+    //  leaving the editor asks too, and cancel stays. The one way off it
+    //  is the desktop's manager page (Browser and Forum are tabs), here
+    //  with a stand-in for the desktop's bridge.
+    await page.evaluate(() => {
+      window.__mgr = null;
+      window.__TAURI__ = { core: { invoke: async (cmd) => { window.__mgr = cmd; } } };
+    });
+    await page.evaluate(() => { window.latOpenManager(); });
     const lAsk = await dlgUp();
     await page.evaluate(() => document.getElementById('dlgcancel').click());
     await sleep(800);
-    const stay = await page.evaluate(() => location.pathname === '/apps/lattice/app'
+    const stay = await page.evaluate(() => window.__mgr === null
       && document.getElementById('src').value.includes('F2TYPED'));
     check('F2: leaving the editor with autosave off asks, and cancel stays', lAsk && stay
       && seen.length === 0, JSON.stringify({ lAsk, stay, sent: seen.length }));
@@ -552,7 +558,7 @@ try {
     await typeEnd('F2ALL');
     await page.click(tabSel('page', Q));
     await waitOn('page', Q);
-    await page.evaluate(() => document.getElementById('rb-browser').click());
+    await page.evaluate(() => { window.latOpenManager(); });
     const aAsk = await dlgUp();
     const aOpts = await page.evaluate(() => (document.getElementById('dlgopts').hidden ? []
       : [...document.querySelectorAll('#dlgopts [data-val]')].map((b) => b.dataset.val)));
@@ -560,13 +566,13 @@ try {
       const b = document.querySelector('#dlgopts [data-val="save all"]');
       if (b) b.click(); else document.getElementById('dlgcancel').click();
     });
-    //  the url, not waitForNavigation: that also fires on replaceState
     let left = false;
-    for (let i = 0; i < 160 && !left; i++) { await sleep(250); left = !page.url().includes('/apps/lattice/app'); }
+    for (let i = 0; i < 160 && !left; i++) { await sleep(250); left = await page.evaluate(() => window.__mgr === 'open_manager'); }
+    await page.evaluate(() => { delete window.__TAURI__; });
     const all = await pageBody(P);
     check('F2: leaving with a parked dirty tab offers save all, which saves it, then leaves',
       aAsk && aOpts.includes('save all') && aOpts.includes('discard') && left
-      && (all || '').includes('F2ALL'), JSON.stringify({ aAsk, aOpts, left, url: page.url(), all: (all || '').slice(-20) }));
+      && (all || '').includes('F2ALL'), JSON.stringify({ aAsk, aOpts, left, all: (all || '').slice(-20) }));
     await page.evaluate(() => localStorage.removeItem('latAutosave'));
   }
 } catch (e) {

@@ -158,7 +158,7 @@
     try { localStorage.latBeaconKnow = rev; } catch {}
   };
   const knowFresh = (at) => streamLive && !!at && at === lastKnow;
-  // a load that spans pages and memories (ctrl-K) is fresh while neither moved
+  // a load that spans pages and memories (Search) is fresh while neither moved
   const bothAt = () => lastRev + '|' + lastKnow;
   let dropStream = null;
   // consecutive attempts that failed. A stream that registers, then lives

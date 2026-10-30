@@ -324,11 +324,18 @@
   });
   // closeTab: false when the user kept it. guardDirty runs on the tab being
   // closed, in front, the one place it can flush or ask, so a background tab
-  // holding unsaved work comes forward first.
+  // holding unsaved work comes forward first. A kind with no buffer may
+  // still hold typing of its own (held: a frame's half-written post),
+  // which also comes forward and is asked about.
   const closeTab = (id) => tabSerial(async () => {
     const t = tabs.find((x) => x.id === id);
     if (!t) return false;
     if (t !== activeTab && t.snap && t.snap.dirty && (await tabTo(t)) === false) return false;
+    const k = TAB_KINDS[t.kind];
+    if (k.held && k.held(t)) {
+      if (t !== activeTab && (await tabTo(t)) === false) return false;
+      if (!(await askConfirm('discard what you typed in ' + k.label(t) + '?', 'discard'))) return false;
+    }
     if (t === activeTab) {
       if (!(await guardDirty())) return false;
       dirty = false;

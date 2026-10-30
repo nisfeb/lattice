@@ -35,8 +35,8 @@
   // [id, icon, name, keys] per pane tab. Their sections are filled by the
   // components below and, for the empty ones, by later steps.
   const PANES = {
-    l: [['files', 'doc', 'Files', 'Ctrl+Shift+F'], ['know', 'know', 'Knowledge'],
-      ['search', 'search', 'Search', 'Ctrl+K'], ['marks', 'mark', 'Bookmarks']],
+    l: [['files', 'doc', 'Files', 'Ctrl+Shift+L'], ['know', 'know', 'Knowledge'],
+      ['search', 'search', 'Search', 'Ctrl+Shift+F'], ['marks', 'mark', 'Bookmarks']],
     r: [['page', 'gear', 'Page'], ['out', 'out', 'Outgoing links'],
       ['back', 'back', 'Backlinks'], ['outline', 'list', 'Outline'],
       ['comments', 'comment', 'Comments'], ['hist', 'hist', 'History']],
@@ -172,7 +172,7 @@
   clickAction('treet', 'Toggle left pane', 'Top-left corner');
   clickAction('ctlt', 'Toggle right pane', 'Top-right corner');
   // A pane tab's action also opens its pane, which is what reaching the
-  // tab takes by hand. Search is Ctrl+K's qOpen (79-search.js), which
+  // tab takes by hand. Search is Ctrl+Shift+F's qOpen (79-search.js), which
   // does the same and focuses the field.
   for (const side of ['l', 'r']) {
     for (const [id, , name, keys] of PANES[side]) {

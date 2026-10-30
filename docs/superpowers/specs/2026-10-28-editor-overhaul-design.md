@@ -27,7 +27,7 @@ Today the lattice editor is one page at a time, with a tree on the left, a contr
 
 ## Layout
 
-- **Left ribbon** (top to bottom): Today's brief, Browser, Forum, Comments inbox, Access & groups, Explorer, Sync conflicts (shown only with a badge when conflicts exist), Command palette. Settings sits at the bottom of the ribbon.
+- **Left ribbon** (top to bottom): Today's brief, Browser, Forum, Comments inbox, Access & groups, Sync conflicts (shown only with a badge when conflicts exist), Command palette. Settings sits at the bottom of the ribbon. Explorer is not on the ribbon (see Settings tab below).
 - **Top corners:** a left-pane toggle and a right-pane toggle, subtle but clear, using the panel icons from the mockup.
 - **Left pane tabs:** Files, Knowledge, Search, Bookmarks.
 - **Center:** the split tree of tab groups. Each group has its own tab strip with a + button.
@@ -42,21 +42,20 @@ Tags: **merged** means today it is reachable 2 to 3 ways that behave differently
 
 ### Left pane
 
-- **Files:** your pages tree, plus Shared with me (one folder per ship), the clearweb marker, folder folding. Toolbar: new page, new folder, new from template, upload (files or folder), sort order, collapse all.
+- **Files** (Ctrl+Shift+L focuses the tree): your pages tree, plus Shared with me (one folder per ship), the clearweb marker, folder folding. Toolbar: new page, new folder, new from template, upload (files or folder), sort order, collapse all.
 - **Knowledge** (merged): the memory tree with tag filter chips. It replaces the pages/knowledge mode switch and the read-only `/know` reader. Toolbar: new memory, tidy (new), trash and restore (new).
-- **Search** (merged): one live search over pages and memories with exposure badges. Editor Ctrl+K and the reader's index search become this one, with one engine.
+- **Search** (merged): one live search over pages and memories with exposure badges. The editor's old Ctrl+K search and the reader's index search become this one, with one engine. Ctrl+Shift+F focuses it.
 - **Bookmarks:** urb:// bookmarks by folder, with filter, refile and remove.
 
 ### Ribbon
 
 - **Today's brief:** opens `journal/<today>`.
-- **Browser:** a new reader tab at your home, with the urb:// omnibar.
-- **Forum** (new from the editor): board list. Boards and threads open as tabs.
+- **Browser:** a new frame tab at the reader home on every click, with the urb:// omnibar. Reader links and the omnibar navigate inside that tab.
+- **Forum** (new from the editor): one frame tab at the board list, focused if already open. Boards and threads navigate inside it.
 - **Comments inbox:** comments from other ships, across pages.
 - **Access & groups:** groups, their ships and paths, banned ships.
-- **Explorer:** browse ship files (`/x`). Any file opens in a file tab.
 - **Sync conflicts:** badge only when conflicts exist.
-- **Command palette:** an index of every action by name.
+- **Command palette** (Ctrl+K, Ctrl+P as an alias): an index of every action by name.
 - **Settings** (new from the editor), bottom of the ribbon.
 
 ### Tab header (per tab)
@@ -90,6 +89,7 @@ Opened from the ribbon, the command palette, or the desktop's Preferences menu.
 - Commons mirror: obelisk on/off.
 - Archive a web page: the clip bookmarklets.
 - Desktop only: connection and mounts (today's manager page).
+- Advanced: Explorer, which browses ship files (`/x`) in a frame tab. A file there opens in a file tab of the editor. This and the palette are its only homes: it is a power tool, so it has no ribbon button. It is the one action the palette lists whose home is outside the shell document (`PALETTE_ONLY` in 26-palette.js), since Settings is a framed page.
 - Legacy import (new; today it is gone after "never").
 
 ### One flow each
@@ -129,10 +129,10 @@ Server routes with no UI today stay without UI in this overhaul: publishing memo
 - **Server-rendered tabs, my call.** Settings is server-rendered today (`/settings` in app.hoon), so phase 1 hosts it in a same-origin iframe tab, and the moved items (vim, backups, legacy import, publishing reset, connection and mounts) are added to that page. The Comments inbox, Access & groups and Sync conflicts are client overlays today (`lat-comments`, `lat-acl`, `lat-conflicts`) and become client tabs. So iframe hosting starts in phase 1, not phase 3.
 - **Shell and iframe bridge, my call.** The frames are same-origin, so the shell listens for clicks inside them directly. In reader tabs, urb:// links navigate inside the frame. Links to your own pages and files from the explorer open shell tabs. A reader tab showing one of your own pages has an "Edit" button in its header, which opens that page's editor tab. That is a route to the document, not a second home for a feature. Phase 3 may need small server-side changes to the reader and explorer markup, for example data attributes on links.
 - **Editors in splits, my call.** Each visible group has a live editor instance (the `<lat-editor>` element made instantiable). Hidden tabs in a group keep state only, not a DOM editor, and are painted into the group's editor when selected.
-- **Reader, forum and explorer tabs, my call.** These are server-rendered today. They are hosted in same-origin iframes inside the tab. Full-spread navigates the top-level window to the same URL. The reader bar's existing back link returns to the shell. This avoids rewriting the reader or the forum.
+- **Reader, forum and explorer tabs, my call.** These are server-rendered today. They are hosted in same-origin iframes inside the tab (frame tabs: Browser, Forum, Explorer, Settings). Each frame is sandboxed with scripts, same origin, forms, popups, modals and downloads, and no top navigation, so nothing in a frame can replace the editor's window. A frame tab that is not in front holds no live stream (the shell tells it when it is parked), so open tabs never use up the browser's connections to the ship. A link in a frame to the editor opens the matching shell tab, and the editor refuses to start inside a frame. Closing a frame tab with typed, unsent text asks first. Full-spread navigates the top-level window to the same URL. The reader bar's existing back link returns to the shell. This avoids rewriting the reader or the forum.
 - **Persistence, my call.** The open tabs, the split tree, the pane widths, which side panes are open and the active right-pane tab all persist in localStorage per device, like today's layout toggles. Bodies are not persisted. Reopening the app reloads each tab's page from the ship (or the offline cache).
 - **Command palette, my call.** It lists actions and pages, in that order, and fuzzy matches on name. Each action entry shows the action's home and shortcut, so the palette also teaches where things live.
-- **Shortcuts, my call.** Ctrl+P palette, Ctrl+K search (focuses the Search tab), Ctrl+S save, Ctrl+W close tab, Ctrl+Tab next tab, Ctrl+\\ split right, Ctrl+E Edit/Read, Esc leaves full-spread. Vim keeps its own bindings inside an editor.
+- **Shortcuts, my call.** Ctrl+K palette (Ctrl+P also), Ctrl+Shift+F search (focuses the Search tab), Ctrl+Shift+L Files tree, Ctrl+S save, Ctrl+W close tab, Ctrl+Tab next tab, Ctrl+\\ split right, Ctrl+E Edit/Read, Esc leaves full-spread. Vim keeps its own bindings inside an editor.
 
 ## Phasing, my call
 
