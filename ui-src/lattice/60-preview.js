@@ -7,6 +7,9 @@
   let fitCur = null, fitH = 0, fitOff = false;
   customElements.define('lat-preview', class extends HTMLElement {
     connectedCallback() {
+      // built once: the live editor moves between groups (28-splits.js)
+      if (this.built) return;
+      this.built = true;
       this.innerHTML =
         // SANDBOXED, and this is load-bearing rather than defensive.
         //
@@ -169,7 +172,12 @@
       // wikilink used to navigate the frame itself and land on an
       // authenticated route the opaque origin has no cookies for; escaping
       // to the top page is what the sandbox token above actually permits.
-      prev.srcdoc = '<!doctype html><meta charset="utf-8"><base target="_top">'
+      prev.srcdoc = localShell(previewFit()) + localHtml(kindNow(), src.value);
+    } catch {}
+  };
+  // the bare document a content kind's local render goes into. `fit` is
+  // the height reporter, which only the live preview has.
+  const localShell = (fit) => '<!doctype html><meta charset="utf-8"><base target="_top">'
         + '<style>:root{color-scheme:light dark}'
         + 'body{margin:0;padding:14px;font:15px/1.6 var(--font,system-ui,sans-serif);background:var(--bg,#fafafa);color:var(--text)}'
         + '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot()
@@ -180,8 +188,14 @@
         + 'pre::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
         + 'img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
-        + '</style>' + previewFit() + localHtml(kindNow(), src.value);
-    } catch {}
+        + '</style>' + fit;
+  // a parked group's Read (28-splits.js): the same local render of its
+  // text, no fit, or null for a kind only the ship renders
+  const ghostDoc = (kind, body) => {
+    if (!['md', 'gmi', 'html', 'text'].includes(kind)) return null;
+    try {
+      return kind === 'html' ? previewScrollbars() + body : localShell('') + localHtml(kind, body);
+    } catch { return null; }
   };
 
   // a theme that lands after the frame was painted (theme.js runs after

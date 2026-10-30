@@ -37,7 +37,7 @@
        page menu's Convert to HTML clicks this -->
   <button type="button" id="texconv" hidden>convert to html</button>
 </span>`;
-  $('center').insertBefore(tabHead, $('docarea'));
+  $('docarea').before(tabHead);
   pname = $('pname'); pkind = $('pkind');
   for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
   $('tback').onclick = () => tabBack();

@@ -3,16 +3,19 @@
   // sync conflicts, or a same-origin page in a frame (Settings, the memory
   // review, the forum, the explorer, a browser). Its key names the tool
   // ('inbox', 'access', 'conflicts') or the frame
-  // ('frame:/apps/lattice/settings'). While one is in front the
-  // document area is hidden and #toolhost takes the center. The editor
-  // underneath keeps whatever the parked tab left there, untouched: the
-  // tool kind has no live(), so nothing a tool does is ever filed under a
-  // document's tab.
-  const toolHost = document.createElement('div');
-  toolHost.id = 'toolhost';
-  toolHost.className = 'toolhost';
-  toolHost.hidden = true;
-  $('docarea').after(toolHost);
+  // ('frame:/apps/lattice/settings'). While one is in front of its group
+  // the group's document area is hidden and the group's own tool host
+  // (.toolhost, 28-splits.js) takes its place. Each group has one, so a
+  // frame never moves (a moved frame reloads) when another group comes to
+  // the front; the one in front is #toolhost. The editor underneath keeps
+  // whatever the parked tab left there, untouched: the tool kind has no
+  // live(), so nothing a tool does is ever filed under a document's tab.
+  const allFrames = () => [...document.querySelectorAll('.toolhost iframe')];
+  const frameOf = (key) => allFrames().find((f) => f.dataset.tool === key);
+  // where a tool's wrap waits while no group shows it
+  const toolStash = document.createElement('div');
+  toolStash.hidden = true;
+  document.body.append(toolStash);
 
   // the client tools: their name, icon, the overlay element each one used
   // to be (72-acl.js, 73-comments.js, 80-conflicts.js) and what fills it
@@ -102,7 +105,7 @@
   // its omnibar always holds the address.
   const TEXTY = ['text', 'search', 'url', 'email', 'tel', 'number'];
   function frameTyped(key) {
-    const f = [...toolHost.querySelectorAll('iframe')].find((x) => x.dataset.tool === key);
+    const f = frameOf(key);
     let d = null;
     try { d = f && f.contentDocument; } catch {}
     if (!d) return false;
@@ -116,29 +119,39 @@
       && el.value.trim() !== '' && el.value !== el.defaultValue));
   }
 
-  // Called by paintHead on every change of the tab in front. Shows the host
-  // or the document area, and in the host only the front tool. A wrap that
-  // is not in front is hidden, which is how 90-sync.js knows the inbox is
-  // not being read. A frame whose tab has closed goes away.
+  // Called by paintHead on every change of the tab in front. In each group,
+  // shows the host or the document area, and in the host only that group's
+  // front tool. A wrap that is not in front of a group is hidden, which is
+  // how 90-sync.js knows the inbox is not being read. A frame whose tab has
+  // closed goes away.
   function toolSync() {
     const t = activeTab && activeTab.kind === 'tool' ? activeTab : null;
     const was = toolShown;
     toolShown = t ? t.key : null;
     $('docarea').hidden = !!t;
-    toolHost.hidden = !t;
-    if (t) toolMount(t.key);
-    for (const f of [...toolHost.querySelectorAll('iframe')])
-      if (!tabs.some((x) => x.kind === 'tool' && x.key === f.dataset.tool)) {
+    const open = allTabs();
+    for (const f of allFrames())
+      if (!open.some((x) => x.kind === 'tool' && x.key === f.dataset.tool)) {
         delete frameTitles[f.dataset.tool];
         f.remove();
       }
-    for (const c of toolHost.children) c.hidden = c.dataset.tool !== toolShown;
+    for (const g of groups) {
+      const f = gFront(g);
+      const key = f && f.kind === 'tool' ? f.key : null;
+      g.host.hidden = !key;
+      if (key) toolMount(key, g.host);
+      for (const c of g.host.children) c.hidden = c.dataset.tool !== key;
+    }
+    // a wrap no group has in front waits in the stash, hidden
+    for (const c of [...document.querySelectorAll('.toolhost > .intab')])
+      if (!groups.some((g) => c.parentNode === g.host && !c.hidden)) { c.hidden = true; toolStash.append(c); }
     // A frame in a hidden element still reads document.hidden false, so a
     // parked reader page kept its live stream open (+sse-script, app.hoon),
     // and six of them took every connection the browser gives this host:
     // the editor's saves then queued with no error. So each frame is told
     // when it is shown or put away, and its stream follows.
-    for (const f of toolHost.querySelectorAll('iframe')) {
+    for (const f of allFrames()) {
+      const toolHost = f.closest('.toolhost');
       const on = !toolHost.hidden && !f.hidden;
       if (f.latOn === on) continue;
       f.latOn = on;
@@ -148,17 +161,21 @@
     // the right pane goes by what is in front (76-outline.js)
     if (was !== toolShown) rpSoon();
   }
-  function toolMount(key) {
+  // into `toolHost`, a group's host. A frame there already stays; one in
+  // another group's host (its tab was moved) moves, and reloads.
+  function toolMount(key, toolHost) {
     if (TOOLS[key]) {
       const w = $(TOOLS[key].wrap);
-      if (!w || w.parentNode === toolHost) return;
+      if (!w) return;
       w.classList.add('intab');
       w.dataset.tool = key;
-      toolHost.append(w);
+      if (w.parentNode !== toolHost) toolHost.append(w);
       return;
     }
     const url = frameUrl(key);
-    if (!url || [...toolHost.querySelectorAll('iframe')].some((f) => f.dataset.tool === key)) return;
+    const had = frameOf(key);
+    if (had) { if (had.parentNode !== toolHost) toolHost.append(had); return; }
+    if (!url) return;
     const f = document.createElement('iframe');
     f.className = 'toolframe';
     f.dataset.tool = key;
@@ -336,8 +353,8 @@
   window.latFrameEditor = (href, from) => {
     let w = from;
     try { while (w && w.parent !== window) w = w === w.parent ? null : w.parent; } catch { w = null; }
-    const f = w && [...toolHost.querySelectorAll('iframe')].find((x) => x.contentWindow === w);
-    if (!f || toolHost.hidden || f.hidden) return false;
+    const f = w && allFrames().find((x) => x.contentWindow === w);
+    if (!f || f.hidden || f.closest('.toolhost').hidden) return false;
     const go = editorGo(href);
     if (!go) return false;
     editorOpen(go);
@@ -422,7 +439,7 @@
     }
   }
   const framesTheme = () => {
-    for (const f of toolHost.querySelectorAll('iframe')) frameTheme(f);
+    for (const f of allFrames()) frameTheme(f);
   };
   addEventListener('lattheme', framesTheme);
   darkMq.addEventListener('change', framesTheme);
@@ -433,7 +450,7 @@
   // so here Escape only lets go of a field.
   addEventListener('keydown', (e) => {
     const a = document.activeElement;
-    if (e.key === 'Escape' && a && a !== document.body && toolHost.contains(a)) a.blur();
+    if (e.key === 'Escape' && a && a !== document.body && a.closest && a.closest('.toolhost')) a.blur();
   });
 
   // ── today's brief ────────────────────────────────────────────────────────
@@ -479,7 +496,7 @@
   // turn. One that does not save stops the leaving, with it in front.
   const leaveThen = (go) => tabSerial(async () => {
     if (!(await guardDirty())) return;
-    const bg = tabs.filter((t) => t !== activeTab && t.snap && t.snap.dirty);
+    const bg = allTabs().filter((t) => t !== activeTab && t.snap && t.snap.dirty);
     const names = bg.map((t) => TAB_KINDS[t.kind].label(t)).join(', ');
     if (bg.length && autosaveOn()) {
       if (!(await askConfirm('discard unsaved changes to ' + names + '?', 'discard'))) return;
@@ -532,7 +549,7 @@
   }
   window.latOpenSettings = async (anchor) => {
     await toolOpen('settings');
-    const f = [...toolHost.querySelectorAll('iframe')].find((x) => x.dataset.tool === SETTINGS);
+    const f = frameOf(SETTINGS);
     if (!f || !anchor) return;
     let ready = false;
     try { ready = f.contentDocument.readyState === 'complete' && f.contentDocument.URL !== 'about:blank'; } catch {}

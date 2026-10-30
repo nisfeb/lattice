@@ -420,6 +420,9 @@
   // two empty pages have the same one, so a create landing under a second
   // New took the second page's blank buffer for its own.
   const createdHere = (creating, name) => creating && current === null && pname.value === name;
+  //  the editor holds a page: a group brought to the front during a save
+  //  (28-splits.js) can hold a memory or a grub of the same name
+  const pageHere = () => mode !== 'know' && !grubPath;
   //  the page `name` (as typed) is on the ship, or queued for it, and not
   //  a create's pulsing row still waiting for its answer
   const madePage = (name) => {
@@ -539,7 +542,8 @@
       // same stillHere guard as the online path: only touch live editor state
       // if the editor has not moved to another document during the round-trip.
       const stillHere = fixed ? tabAdopt(fixed, name)
-        : current === name || createdHere(creating, name);
+        : pageHere() && (current === name || createdHere(creating, name));
+      if (!stillHere) tabLanded('page', name, sent);
       if (stillHere) {
         current = name;
         tabFollow();         // a new page's tab is named now (21-tabs.js)
@@ -573,7 +577,8 @@
     //  own tab came back to the front, unnamed, during the round trip;
     //  in the background that tab is named for it instead (tabAdopt).
     const stillHere = fixed ? tabAdopt(fixed, name)
-      : current === name || createdHere(creating, name);
+      : pageHere() && (current === name || createdHere(creating, name));
+    if (!stillHere) tabLanded('page', name, sent, vr && vr.rev);
     if (stillHere) {
       current = name;
       tabFollow();           // a new page's tab is named now (21-tabs.js)
@@ -633,53 +638,118 @@
     saving = true;
     // the document this autosave owns. If the user navigates mid-flight,
     // `current` moves; everything below acts on `target`, not the new current.
+    //  and what it is: a group coming to the front (28-splits.js) can
+    //  change the mode and the kind in the editor while this flies
     const target = current;
     const sent = src.value;
-    const url = mode === 'know'
+    const know = mode === 'know';
+    const tkind = curKind || pkind.value;
+    const trev = curRev;
+    const here = () => current === target && (mode === 'know') === know && !grubPath;
+    const url = know
       ? api + '/know-save?key=' + encodeURIComponent(target)
       : api + '/page-save?name=' + encodeURIComponent(target) +
-        '&type=' + (curKind || pkind.value) + linkBase(target);
+        '&type=' + tkind + linkBase(target);
     let w = { gone: true };
     const sentAt = Date.now();
     try {
-      if (!(jobWait && mode !== 'know' && !linkOf(target)))
+      if (!(jobWait && !know && !linkOf(target)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
     } finally { saving = false; }
     const r = w.r;
-    if (mode !== 'know' && await linkSaveFail(target, w)) { flushPending(); return; }
+    if (!know && await linkSaveFail(target, w)) { flushPending(); return; }
+    //  a document parked meanwhile keeps its own copy (21-tabs.js), which
+    //  is what was sent unless it was typed into after
+    const tk = know ? 'know' : 'page';
     if (w.gone) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
-      if (mode === 'know') {
-        if (!(await enqueueKnow(target, sent))) { flushPending(); return; }
-        if (current === target && src.value === sent) dirty = false;
+      if (!(await (know ? enqueueKnow(target, sent) : enqueueSave(target, tkind, sent, false, null, trev)))) {
         flushPending();
         return;
       }
-      if (!(await enqueueSave(target, curKind || pkind.value, sent))) { flushPending(); return; }
-      if (current === target && src.value === sent) dirty = false;
+      if (here() && src.value === sent) dirty = false;
+      else tabLanded(tk, target, sent);
       flushPending();
       return;
     }
     if (!r.ok) { st('autosave failed' + await errText(r), false); flushPending(); return; }
     let vr = null;
-    if (mode !== 'know') { try { vr = await r.json(); } catch {} }
+    if (!know) { try { vr = await r.json(); } catch {} }
     //  patch the saved doc's local cache regardless of focus. No kind: an
     //  autosave writes the page's existing kind, it never sets one.
-    if (mode !== 'know') { patchLocal(target, null, sent); await dropQueued(target, sentAt); }
+    if (!know) { patchLocal(target, null, sent); await dropQueued(target, sentAt); }
+    if (!here()) tabLanded(tk, target, sent, vr && vr.rev);
     // live-editor state only if the editor is still on the doc we autosaved
-    if (current === target) {
+    if (here()) {
       if (src.value === sent) dirty = false;   // typed during the request? stay dirty
-      if (mode !== 'know' && vr && vr.rev) curRev = vr.rev;
+      if (!know && vr && vr.rev) curRev = vr.rev;
       // the conflict verdict must be the LAST word, not clobbered by the
       // ordinary confirmation a line later
       if (vr && vr.conflicted)
         st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
       else st('autosaved');
-      if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
+      if (!know && !CONTENT()) setTimeout(checkErrors, 800);
     }
     flushPending();
     if (offCount) replayQueue(true);     // this autosave proves the ship is back too
+  }
+
+  // ── saving a parked buffer ──────────────────────────────────────────────
+  // A group that leaves the front (gRelease, 21-tabs.js) does not wait for
+  // its flush: its tab's unsaved text goes into the tab's snap, and this
+  // writes it from there, on autosave's terms. Pages and memories only,
+  // with a name, autosave on, and never a link autosave stands down for.
+  // It takes its turn behind any save in flight (one write at a time) and
+  // gives up once the tab is not parked any more, since then the live
+  // editor's own autosave owns the text. What lands marks the snap clean
+  // only if it still holds what was sent; a tab that came back to the
+  // front meanwhile is marked clean live, by the same rule.
+  async function saveParked(t) {
+    const s = t.snap;
+    if (!s || !s.dirty || !t.key || !autosaveOn()) return;
+    if (t.kind !== 'page' && t.kind !== 'know') return;
+    const know = t.kind === 'know';
+    if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
+    while (saving) await waitSave();
+    if (t.snap !== s || !s.dirty || !allTabs().includes(t)) return;
+    saving = true;
+    const name = t.key;
+    const sent = s.body;
+    const kind = s.kind || s.pkind;
+    const url = know ? api + '/know-save?key=' + encodeURIComponent(name)
+      : api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
+        + (linkOf(name) && s.rev ? '&base=' + s.rev : '');
+    let w = { gone: true };
+    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
+    finally { saving = false; }
+    const landed = (rev) => {
+      tabLanded(t.kind, name, sent, rev);
+      // back in front by now: the live editor holds it
+      if (t === activeTab && current === name && (mode === 'know') === know && !grubPath) {
+        if (src.value === sent) dirty = false;
+        if (!know && rev) curRev = rev;
+      }
+    };
+    if (!know && await linkSaveFail(name, w)) { flushPending(); return; }
+    if (w.gone) {
+      if (await (know ? enqueueKnow(name, sent) : enqueueSave(name, kind, sent, false, null, s.rev)))
+        landed(null);
+      flushPending();
+      return;
+    }
+    if (!w.r.ok) {
+      st('autosave of ' + name + ' failed' + await errText(w.r), false);
+      flushPending();
+      return;
+    }
+    let vr = null;
+    if (!know) { try { vr = await w.r.json(); } catch {} patchLocal(name, null, sent); }
+    else knowGen++;
+    landed(vr && vr.rev);
+    st('autosaved ' + name);
+    flushPending();
+    if (offCount) replayQueue(true);
   }
 
   // ── a link whose save was refused as stale ──────────────────────────────
@@ -695,7 +765,7 @@
   lcfBar.innerHTML = '<span id="lnkcfmsg"></span>' +
     '<button type="button" id="lnkcfre">Reload theirs</button>' +
     '<button type="button" id="lnkcfkeep">Keep mine as a copy</button>';
-  $('center').insertBefore(lcfBar, $('docarea'));
+  $('docarea').before(lcfBar);
   //  by id, not lcfBar: paintLink (65-ctl.js) can run before this file has
   function paintLinkCf(name) {
     const bar = $('lnkcf');

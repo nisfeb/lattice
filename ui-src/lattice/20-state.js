@@ -6,8 +6,9 @@
   // inline <script> and cannot see this scope. It reloads the page when a new
   // worker takes over, and must never do that over typed work.
   // A parked tab (21-tabs.js) holds its own dirty buffer, so the live flag
-  // alone misses work typed into any tab that is not in front.
-  window.__latUnsaved = () => dirty === true || tabs.some((t) => t !== activeTab && t.snap && t.snap.dirty);
+  // alone misses work typed into any tab that is not in front, in any group.
+  window.__latUnsaved = () => dirty === true
+    || allTabs().some((t) => t !== activeTab && t.snap && t.snap.dirty);
   // Whether the user has typed since the current editor view was established.
   // Cleared by applyPage/newFile (a fresh view), NEVER by autosave — and that
   // is the point: `dirty` cannot answer "did the user do something while

@@ -246,7 +246,7 @@
     //  memory again). Only the memory still shown takes the key and its
     //  tab, never whatever is in front now.
     const claim = () => {
-      if (!knowHere(key)) return;
+      if (!knowHere(key)) { tabLanded('know', key, sent); return; }
       current = key;
       tabFollow();             // a new memory's tab is named now (21-tabs.js)
       pname.readOnly = true;
