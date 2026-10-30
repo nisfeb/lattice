@@ -47,10 +47,14 @@ page.on('dialog', (d) => d.accept().catch(() => {}));
 let rule = null;
 let linkL = false;
 const seen = [];
+const saves = [];       // every page save sent: its address and body
 await page.setRequestInterception(true);
 page.on('request', async (r) => {
   const u = r.url();
-  if (/\/page-save\?/.test(u) || /\/know-save\?/.test(u)) seen.push(u);
+  if (/\/page-save\?/.test(u) || /\/know-save\?/.test(u)) {
+    seen.push(u);
+    saves.push({ u, b: r.postData() || '' });
+  }
   if (linkL && /\/page-dump/.test(u)) {
     try {
       const res = await fetch(u, { headers: { Cookie: env.cookie } });
@@ -274,6 +278,27 @@ try {
     g = await groups();
     check('S3 dragging a group\'s last tab out closes the group',
       g.length === 2 && g[1].tabs.map((t) => t.key).join() === [B, C].join(), JSON.stringify(g));
+
+    // a tab drag whose source went away mid-drag (no dragend reaches us),
+    // then a text drag in the editor: the text drag is the editor's
+    const before = JSON.stringify(await groups());
+    const text = await page.evaluate((id) => {
+      const w = document.querySelector('.dtw[data-id="' + id + '"]');
+      w.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: new DataTransfer() }));
+      w.remove();
+      const s = document.getElementById('src');
+      const r = s.getBoundingClientRect();
+      const dt = new DataTransfer();
+      dt.setData('text/plain', 'dragged words');
+      const o = { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + 30, clientY: r.top + 30 };
+      s.dispatchEvent(new DragEvent('dragover', o));
+      const drop = new DragEvent('drop', o);
+      s.dispatchEvent(drop);
+      return drop.defaultPrevented;
+    }, await tabId(B));
+    await sleep(1200);
+    check('S3 a text drag after a lost tab drag is left to the editor, and moves no tab',
+      !text && JSON.stringify(await groups()) === before);
   }
 
   // ── S4: one tab per document across groups ───────────────────────────
@@ -298,6 +323,26 @@ try {
     g = await groups();
     check('S4 and opens no second tab', g.flatMap((x) => x.tabs).filter((t) => t.key === A).length === 1
       && g[1].tabs.map((t) => t.key).join() === B, JSON.stringify(g));
+
+    // closing a clean tab in the group not in front leaves the front alone
+    await focusG(1);
+    await waitFront('page', B);
+    await openHere(E, true);
+    await waitFront('page', E);
+    await focusG(0);
+    await waitFront('page', A);
+    await page.evaluate((id) => window.latTabs.closeTab(id), await tabId(B));
+    await sleep(600);
+    g = await groups();
+    check('S4 closing a background group\'s tab keeps the group in front where it was',
+      (await gi()) === 0 && g[1].tabs.map((t) => t.key).join() === E
+      && await page.evaluate((k) => window.latTabs.state().tabs[window.latTabs.state().active].key === k, A),
+      JSON.stringify(g));
+    await page.evaluate((id) => window.latTabs.closeTab(id), await tabId(E));
+    await sleep(600);
+    g = await groups();
+    check('S4 and its last tab closes that group, the front still where it was',
+      g.length === 1 && g[0].focus && await waitFront('page', A), JSON.stringify(g));
   }
 
   // ── S5: two documents typed in two groups ────────────────────────────
@@ -362,6 +407,24 @@ try {
     check('S6 nothing is left unsaved', await until(() => !window.__latUnsaved(), null, 20000));
     const ed = await page.evaluate(() => document.getElementById('src').value);
     check('S6 the page in front kept its text', ed.includes(mk(2).trim()));
+  }
+
+  // ── S6b: a group left while its autosave flies saves once ────────────
+  if (on('S6')) {
+    await twoGroups(A, B);
+    rule = (r) => (/\/page-save\?/.test(r.url()) ? 1500 : null);
+    const m = ' once-' + RUN;
+    saves.length = 0;
+    await typeEnd(m);
+    await sleep(2200);            // its autosave is on the wire
+    await clickGhost(1);
+    await waitFront('page', B);
+    rule = null;
+    await shipHas(A, m.trim());
+    await sleep(4000);
+    const sent = saves.filter((x) => x.u.includes(encodeURIComponent(A)) && x.b.includes(m.trim()));
+    check('S6 a group left mid-autosave writes its text once, not again from the park',
+      sent.length === 1, JSON.stringify(sent.map((x) => x.u.slice(-60))));
   }
 
   // ── S7: autosave off, two groups dirty ───────────────────────────────
