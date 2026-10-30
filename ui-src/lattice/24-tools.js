@@ -188,8 +188,20 @@
       title();
       new MutationObserver(title).observe(d.head, { childList: true, subtree: true, characterData: true });
     }
+    // _top and _parent are re-aimed here once at load, and again as a
+    // link is followed or a form sent, which covers one a script adds
+    // later. The frame's sandbox would only block the navigation.
+    const topish = (el, at) => !!el && /^_(top|parent)$/i.test(el.getAttribute(at) || '');
     const aimTop = (doc) => {
       for (const el of doc.querySelectorAll('[target=_top], [target=_parent]')) el.target = f.name;
+      doc.addEventListener('click', (e) => {
+        const a = e.target.closest && e.target.closest('a[target], area[target]');
+        if (topish(a, 'target')) a.target = f.name;
+      }, true);
+      doc.addEventListener('submit', (e) => {
+        if (topish(e.target, 'target')) e.target.target = f.name;
+        if (topish(e.submitter, 'formtarget')) e.submitter.formTarget = f.name;
+      }, true);
     };
     aimTop(d);
     // the reader shows a page in a frame of its own (srcdoc), where the

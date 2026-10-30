@@ -22,6 +22,7 @@
 //      shell, and an editor address loaded in a frame hands over and stops
 //    A frame tab is sandboxed without top navigation, so its script cannot
 //      replace the editor window
+//    A target=_top added to a frame after load still lands in the frame
 //
 //  SHOTS=1 saves the forum and browser tabs at 1400x900 under /tmp.
 //  PARTS=streams,nested runs only the parts named.
@@ -497,6 +498,28 @@ try {
     await sleep(2000);
     check('a frame\'s script cannot navigate the editor window',
       (await page.evaluate(() => location.href)) === appAt);
+    await page.evaluate((s) => {
+      const d = document.querySelector(s).contentDocument;
+      const f = d.createElement('form');
+      f.action = '/apps/lattice/forum/_new';
+      f.method = 'get';
+      f.target = '_top';
+      f.id = 'latlate';
+      //  a field, so the address is not a bare "?" (the service worker
+      //  would add "&u=", and eyre answers "?&" with a redirect)
+      const i = d.createElement('input');
+      i.type = 'hidden';
+      i.name = 'late';
+      i.value = '1';
+      f.append(i);
+      d.body.append(f);
+      setTimeout(() => f.requestSubmit(), 50);
+    }, frameOf(fk));
+    const late = await until((s) => document.querySelector(s)?.contentWindow.location.pathname
+      === '/apps/lattice/forum/_new', frameOf(fk), 10000);
+    check('a form aimed at _top added after load lands in its frame',
+      late && (await page.evaluate(() => location.href)) === appAt,
+      JSON.stringify({ late, at: await frameAt(fk) }));
   });
 
   await part('chords', async () => {
