@@ -14,6 +14,11 @@
   let degraded = false;      // a save failed like the ship was unreachable
   let offCount = 0;          // queued page edits, drives the status text
   let offbadge = null;       // assigned by <lat-statusbar> (13-frame.js)
+  // a whole-tree job (a folder share or delete) holds the writer, and a save
+  // made meanwhile waits for it past its timeout. That is not offline: the
+  // save lands when the job ends, so the queue holds it and says so.
+  let jobWait = false;
+  const JOB_NOTE = 'a folder job is running, your save will land when it finishes';
   // The persistent offline indicator. The status line reports EVENTS and the
   // next one overwrites it, so "saved offline" scrolls away while you are
   // still offline and still queueing. This reports the CONDITION and stays up
@@ -27,10 +32,11 @@
     const q = offCount ? offCount + ' queued' : '';
     if (!degraded && !offCount) { offbadge.hidden = true; return; }
     offbadge.hidden = false;
-    offbadge.textContent = degraded ? (q ? 'offline \u00b7 ' + q : 'offline') : q;
+    offbadge.textContent = degraded ? (q ? 'offline \u00b7 ' + q : 'offline')
+      : jobWait ? (q ? 'folder job \u00b7 ' + q : 'folder job') : q;
     offbadge.title = degraded
       ? 'the ship is not answering. Edits are saved on this device and sent when it returns.'
-      : 'edits saved on this device, syncing now.';
+      : jobWait ? JOB_NOTE : 'edits saved on this device, syncing now.';
     offbadge.classList.toggle('syncing', !degraded);
   };
   let offDb = null;
@@ -267,6 +273,38 @@
   const REPLAY_DROP = [400, 404, 409, 410, 413, 422];
   const replayDrop = (r) => !!r && REPLAY_DROP.includes(r.status);
 
+  // the job the writer is in the middle of, null when none (GET /tree-job).
+  // Asked only after a save timed out, so an unreachable ship costs 5s more.
+  const treeJob = async () => {
+    try {
+      const r = await tfetch(api + '/tree-job', {}, 5000);
+      if (r && r.ok) return (await r.json()).job || null;
+    } catch {}
+    return null;
+  };
+  // a save timed out behind a job: hold the queue (not degraded, the ship is
+  // answering) and send it once the job is over
+  let jobTimer = null;
+  function waitJob() {
+    jobWait = true;
+    renderOffline();
+    if (jobTimer) return;
+    jobTimer = setInterval(async () => {
+      if (await treeJob()) return;
+      clearInterval(jobTimer); jobTimer = null;
+      jobWait = false;
+      renderOffline();
+      replayQueue(true);
+    }, 5000);
+  }
+  // after a failed save: is it a job holding the writer? Then wait for it,
+  // else the ship is away. -> whether it was a job
+  async function saveStalled() {
+    const job = await treeJob();
+    if (job) waitJob(); else setDegraded(true);
+    return !!job;
+  }
+
   let probeTimer = null;
   function setDegraded(on) {
     if (degraded === on) return;
@@ -309,7 +347,7 @@
       isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
-    setDegraded(true);
+    const job = await saveStalled();
     if (!queued) {
       st('NOT SAVED — this device cannot store offline edits. Copy your text '
         + 'somewhere safe before closing this page.', false);
@@ -319,8 +357,9 @@
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
     snapPage(name, { body, kind, rev: curRev || 0 });
-    st('saved offline — ' + offCount + ' waiting to sync');
-    return true;
+    st(job ? JOB_NOTE : 'saved offline — ' + offCount + ' waiting to sync');
+    // truthy either way: 'job' tells the editor which words to show
+    return job ? 'job' : true;
   }
   // Queue a delete or a move. The caller has already done the local tree work
   // (dropTreeNodes, or remapping the paths) because that is the same work it
@@ -379,7 +418,7 @@
   // matching what know-save itself does.
   async function enqueueKnow(key, body) {
     const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
-    setDegraded(true);
+    const job = await saveStalled();
     if (!queued) {
       st('NOT SAVED — this device cannot store offline edits. Copy your text '
         + 'somewhere safe before closing this page.', false);
@@ -391,8 +430,8 @@
     else knowKeys.push({ key, tags: [], updated: '', bytes: body.length });
     renderKnowChips();
     renderKnowTree();
-    st('saved offline — ' + offCount + ' waiting to sync');
-    return true;
+    st(job ? JOB_NOTE : 'saved offline — ' + offCount + ' waiting to sync');
+    return job ? 'job' : true;
   }
 
   let replaying = false;

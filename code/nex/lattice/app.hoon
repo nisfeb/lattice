@@ -4118,6 +4118,14 @@
         ['revs-culled' (numb:enjs:format revs.u.res)]
         ['seqs-culled' (numb:enjs:format seqs.u.res)]
     ==
+  ::  tree-job: the whole-tree job the writer is part way through (a folder
+  ::  share or delete, a regrow), null when none. Saves wait behind one, so
+  ::  the editor asks here when a save times out, and says so rather than
+  ::  offline. One peek, answered while the writer works.
+      [%'GET' %'tree-job']
+    ;<  job=(unit @tas)  bind:m  tree-job-now
+    %+  send-json  eyre-id
+    (pairs:enjs:format ~[['job' ?~(job ~ s+u.job)]])
   ::  ── legacy agent migration (see the +legacy-live block) ────────────────
   ::  legacy-status: should the UI offer to import from a retired %lattice
   ::  gall agent? One %gu liveness scry and nothing else. See below. The
@@ -7613,6 +7621,17 @@
     %fail  [~ q.state.inp %done `err.next.o]
     %done  [darts.o state.o %done ~]
   ==
+::  +tree-job-now: the whole-tree job the writer is part way through, by
+::  its name, ~ when none (/tree-job)
+++  tree-job-now
+  =/  m  (fiber:fiber:nexus ,(unit @tas))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  jv=view:nexus  bind:m  (peek:io (rf up / %'tree-job') ~)
+  ?.  ?=([%file *] jv)  (pure:m ~)
+  =/  job=(unit eval-action:le)
+    (fall (mole |.(;;((unit eval-action:le) (sang-noun:tarball sang.jv)))) ~)
+  (pure:m ?~(job ~ `-.u.job))
 ::  +pub-rev-count: how many pages the revision list names.
 ++  pub-rev-count
   =/  m  (fiber:fiber:nexus ,@ud)

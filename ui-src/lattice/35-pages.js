@@ -525,7 +525,8 @@
       // Clearing dirty there would tell the editor the work is safe and let
       // the next navigation drop it, so the bookkeeping stays untouched and
       // the page keeps behaving as unsaved. enqueueSave has already said so.
-      if (!(await enqueueSave(name, kind, sent, creating, rnc))) {
+      const queued = await enqueueSave(name, kind, sent, creating, rnc);
+      if (!queued) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return failed();
       }
@@ -542,7 +543,8 @@
         if (src.value === sent) dirty = false;
         else if (!savePending) savePending = true;
         history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
-        cerr.textContent = 'saved offline'; cerr.className = 'ok';
+        cerr.textContent = queued === 'job' ? 'saves after the folder job' : 'saved offline';
+        cerr.className = 'ok';
       }
       flushPending();
       return;
