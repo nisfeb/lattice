@@ -12,7 +12,7 @@
 //      Advanced, it opens as a tab whose page answers, and the link in
 //      Settings > Advanced opens that tab
 //    Ctrl+K and Ctrl+P open the palette, Ctrl+Shift+F the Search field,
-//      Alt+1 the Files tree; vim keeps Ctrl+P in the editor, not Ctrl+K;
+//      Ctrl+Shift+L the Files tree; vim keeps Ctrl+P in the editor, not Ctrl+K;
 //      the tooltips name the new chords
 //
 //  SHOTS=1 saves the forum and browser tabs at 1400x900 under /tmp.
@@ -264,6 +264,26 @@ try {
     check('the explorer answers, and not with a crash',
       (xr.status === 200 || xr.status === 403) && !/recovering from a crash/.test(xBody),
       JSON.stringify({ status: xr.status, ms: Date.now() - t0, body: xBody.slice(0, 120) }));
+    //  a page's code file in the explorer opens in the editor as a grub tab
+    const base = (await (await fetch(env.base + '/apps/lattice/streams',
+      { headers: { Cookie: env.cookie } })).json()).base;
+    const xShip = (await (await fetch(env.base + '/~/host')).text()).trim();
+    const code = base + '/page/' + PAGE + '/code';
+    await page.evaluate(([s, u]) => { document.querySelector(s).contentWindow.location.href = u; },
+      [frameOf(xk), '/apps/lattice/x/' + xShip + code]);
+    const xFile = await until((s) => {
+      const d = document.querySelector(s)?.contentDocument;
+      return d?.readyState === 'complete' && !!d.querySelector('a[href*="app?grub="]');
+    }, frameOf(xk));
+    await page.evaluate((s) => document.querySelector(s).contentDocument
+      .querySelector('a[href*="app?grub="]').click(), frameOf(xk));
+    const xGrub = await until((k) => {
+      const s = window.latTabs.state();
+      const t = s.tabs[s.active];
+      return t?.kind === 'grub' && t.key === k;
+    }, code, 15000);
+    check('a grub opened from the explorer opens in the editor', xFile && xGrub,
+      JSON.stringify({ xFile, xGrub, front: await front() }));
     //  Settings > Advanced has the way in, and it opens the same tab
     await page.evaluate((n) => window.latTabs.openIn('page', n), PAGE);
     await page.evaluate(() => document.getElementById('rb-settings').click());
@@ -281,7 +301,7 @@ try {
       return s.tabs[s.active]?.key === k;
     }, xk, 10000);
     await sleep(500);
-    const sAt = await frameAt(sk);
+    const sAt = (await frameAt(sk) || '').split('?')[0];
     check('Settings > Advanced opens the explorer tab',
       adv && viaSet && (await front()).n === ns && sAt === '/apps/lattice/settings',
       JSON.stringify({ adv, viaSet, sAt, n: (await front()).n, ns }));
@@ -300,8 +320,8 @@ try {
       search: document.querySelector('#ltabs [data-pt=search]').title,
       pal: document.getElementById('rb-palette').title,
     }));
-    check('the tooltips name Alt+1, Ctrl+Shift+F and Ctrl+K',
-      tips.files === 'Files (Alt+1)' && tips.search === 'Search (Ctrl+Shift+F)'
+    check('the tooltips name Ctrl+Shift+L, Ctrl+Shift+F and Ctrl+K',
+      tips.files === 'Files (Ctrl+Shift+L)' && tips.search === 'Search (Ctrl+Shift+F)'
         && tips.pal === 'Command palette (Ctrl+K)', JSON.stringify(tips));
     await page.evaluate(() => document.activeElement && document.activeElement.blur());
     await chord('KeyK', ['Control']);
@@ -323,23 +343,28 @@ try {
     check('Ctrl+Shift+F opens Search and focuses its field', sF.focus === 'qinput' && sF.tab && !sF.pal,
       JSON.stringify(sF));
     await page.evaluate(() => document.activeElement && document.activeElement.blur());
-    await chord('Digit1', ['Alt']);
+    await chord('KeyL', ['Control', 'Shift']);
     const a1 = await page.evaluate(() => ({
       files: !document.querySelector('#lbody > [data-pane=files]').hidden,
       inTree: document.getElementById('treelist').contains(document.activeElement),
     }));
-    check('Alt+1 shows Files and focuses its tree', a1.files && a1.inTree, JSON.stringify(a1));
+    check('Ctrl+Shift+L shows Files and focuses its tree', a1.files && a1.inTree, JSON.stringify(a1));
     //  a chord pressed inside a frame tab reaches the shell
     await page.evaluate(() => document.getElementById('rb-forum').click());
     const fIn = await until(() => {
       const f = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/forum"]');
-      return f?.contentDocument?.readyState === 'complete' && !!f.contentDocument.body;
+      return f?.contentDocument?.readyState === 'complete' && !!f.contentDocument.body
+        && [...f.contentDocument.querySelectorAll('style')].some((x) => x.textContent === '.hamw{display:none}');
     });
+    //  the reader's page cache may swap the document once more after load
+    await sleep(2000);
     await page.evaluate(() => {
       const f = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/forum"]');
       f.focus();
       f.contentWindow.focus();
-      (f.contentDocument.querySelector('a, input, button') || f.contentDocument.body).focus();
+      //  a field that takes the focus (the bar's first button is a
+      //  disabled Back)
+      (f.contentDocument.querySelector('input, a[href]') || f.contentDocument.body).focus();
     });
     await chord('KeyK', ['Control']);
     const inFrameK = await palOpen();
