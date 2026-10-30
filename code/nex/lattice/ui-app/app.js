@@ -10,9 +10,18 @@
   // not start. When the frame is one of the shell's own (24-tools.js), the
   // shell opens the address as a tab of its own; the frame says so either
   // way, and nothing else of this file runs.
+  // Once per arrival: a reload of this same note (a service worker
+  // taking over) finds its frame already marked and opens nothing again.
+  // The shell clears the mark when the frame goes anywhere else.
   if (window.top !== window) {
     let sent = false;
-    try { sent = !!(window.top.latFrameEditor && window.top.latFrameEditor(location.href)); } catch {}
+    let fe = null;
+    try { fe = window.frameElement; } catch {}
+    if (fe && fe.dataset.latEd === location.href) sent = true;
+    else {
+      try { sent = !!(window.top.latFrameEditor && window.top.latFrameEditor(location.href, window)); } catch {}
+      if (sent && fe) fe.dataset.latEd = location.href;
+    }
     const p = document.createElement('p');
     p.style.cssText = 'font:15px system-ui,sans-serif;margin:2rem;color:var(--text,inherit)';
     p.textContent = sent ? 'Opened in the editor. ' : 'The editor runs in a window of its own. ';
@@ -3100,6 +3109,8 @@
     try { d = f.contentDocument; } catch {}
     if (!d || !d.head) return;
     const key = f.dataset.tool;
+    // the editor's note marks its frame (00-framed.js); anywhere else clears it
+    if (!editorGo(d.URL)) delete f.dataset.latEd;
     frameTheme(f);
     // the frame's own theme.js rewrites these on <html>, so they go back on
     new MutationObserver(() => frameTheme(f))
@@ -3230,8 +3241,13 @@
     await openIn(go[0], go[1], { ship: go[2], newTab: true });
   }
   // the editor's own page loaded in a frame anyway (00-framed.js) hands
-  // its address here and does not start
-  window.latFrameEditor = (href) => {
+  // its address here and does not start. Only from the frame tab in front
+  // (or a frame inside it): a parked one has nothing the user just did.
+  window.latFrameEditor = (href, from) => {
+    let w = from;
+    try { while (w && w.parent !== window) w = w === w.parent ? null : w.parent; } catch { w = null; }
+    const f = w && [...toolHost.querySelectorAll('iframe')].find((x) => x.contentWindow === w);
+    if (!f || toolHost.hidden || f.hidden) return false;
     const go = editorGo(href);
     if (!go) return false;
     editorOpen(go);

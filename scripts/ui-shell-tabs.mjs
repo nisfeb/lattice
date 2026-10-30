@@ -487,6 +487,21 @@ try {
     check('an editor loaded in a frame does not boot, and its ?into= opens in the shell',
       boxed.at === '/apps/lattice/app' && !boxed.inner && !boxed.src && boxed.front === 'page'
         && boxed.same && boxed.win === '/apps/lattice/app?into=x-' + process.pid, JSON.stringify(boxed));
+    //  the note reloaded (a service worker taking over) opens nothing more,
+    //  and a parked frame hands nothing to the shell
+    await page.evaluate((k) => window.latTabs.switchTab(window.latTabs.state().tabs.find((t) => t.key === k).id),
+      bkey);
+    await sleep(800);
+    const n0 = await page.evaluate(() => window.latTabs.state().tabs.length);
+    await page.evaluate((s) => document.querySelector(s).contentWindow.location.reload(), frameOf(bkey));
+    await sleep(4000);
+    const n1 = await page.evaluate(() => window.latTabs.state().tabs.length);
+    check('the editor note reloaded opens no second tab', n1 === n0, JSON.stringify({ n0, n1 }));
+    await page.evaluate((n) => window.latTabs.openIn('page', n), PAGE);
+    await sleep(800);
+    const parked = await page.evaluate((s) =>
+      window.latFrameEditor('/apps/lattice/app?name=x', document.querySelector(s).contentWindow), frameOf(bkey));
+    check('a parked frame cannot hand the shell an editor address', parked === false, String(parked));
   });
 
   //  a frame cannot replace the editor window: its frame is sandboxed with

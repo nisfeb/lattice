@@ -819,7 +819,9 @@ ul.qlist a:hover { background: var(--surface); }
 // takeover reload while work is unsaved, that skip here would leave the
 // editor on stale code for the life of the tab. So the editor polls until
 // the save lands and reloads then.
-if ('serviceWorker' in navigator) {
+// Not in a frame: there the editor does not start (00-framed.js), and a
+// takeover reload would only bring its note back.
+if ('serviceWorker' in navigator && window.top === window) {
   navigator.serviceWorker.register('/apps/lattice/sw.js', { scope: '/apps/lattice' })
     .then(function (r) {
       r.addEventListener('updatefound', function () {

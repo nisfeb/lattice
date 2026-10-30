@@ -193,6 +193,8 @@
     try { d = f.contentDocument; } catch {}
     if (!d || !d.head) return;
     const key = f.dataset.tool;
+    // the editor's note marks its frame (00-framed.js); anywhere else clears it
+    if (!editorGo(d.URL)) delete f.dataset.latEd;
     frameTheme(f);
     // the frame's own theme.js rewrites these on <html>, so they go back on
     new MutationObserver(() => frameTheme(f))
@@ -323,8 +325,13 @@
     await openIn(go[0], go[1], { ship: go[2], newTab: true });
   }
   // the editor's own page loaded in a frame anyway (00-framed.js) hands
-  // its address here and does not start
-  window.latFrameEditor = (href) => {
+  // its address here and does not start. Only from the frame tab in front
+  // (or a frame inside it): a parked one has nothing the user just did.
+  window.latFrameEditor = (href, from) => {
+    let w = from;
+    try { while (w && w.parent !== window) w = w === w.parent ? null : w.parent; } catch { w = null; }
+    const f = w && [...toolHost.querySelectorAll('iframe')].find((x) => x.contentWindow === w);
+    if (!f || toolHost.hidden || f.hidden) return false;
     const go = editorGo(href);
     if (!go) return false;
     editorOpen(go);
