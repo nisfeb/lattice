@@ -37,8 +37,10 @@ let shipDown = false;
 // a folder job holding the writer: saves time out (abort) while the ship
 // answers, and GET /tree-job names the job
 let jobOn = false;
+let jobSaves = 0;          // page-saves sent while the job runs
 await page.setRequestInterception(true);
 page.on('request', (r) => {
+  if (jobOn && /page-save/.test(r.url())) jobSaves++;
   if (jobOn && /\/tree-job/.test(r.url())) {
     r.respond({ status: 200, contentType: 'application/json',
       body: JSON.stringify({ job: 'share-tree' }) }).catch(() => {});
@@ -251,6 +253,20 @@ try {
   check('the badge names the folder job, not offline',
     b3 && !b3.hidden && /folder job/.test(b3.text) && !/offline/.test(b3.text), JSON.stringify(b3));
   check('the save is kept in the queue meanwhile', await qCount() === 1, 'count=' + await qCount());
+  // more typing while the job runs joins the queue: nothing is sent, so no
+  // save of it can land after (or before) the queued text
+  const sent0 = jobSaves;
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = '# alpha NEWEST'; s.dispatchEvent(new Event('input'));
+  });
+  await sleep(5000);
+  check('a later save behind the job is queued, not sent', jobSaves === sent0 && await qCount() === 1,
+    JSON.stringify({ sent: jobSaves - sent0, q: await qCount() }));
+  // the first save's timed-out write lands as the job ends, as the
+  // writer's queue would land it (from outside the page)
+  await fetch(env.base + '/apps/lattice/page-save?name=' + encodeURIComponent(A) + '&type=md',
+    { method: 'POST', headers: { cookie: env.cookie }, body: '# alpha AFTER THE JOB' });
   jobOn = false;
   const drained = await page.waitForFunction(() => new Promise((res) => {
     const rq = indexedDB.open('lattice-offline');
@@ -267,8 +283,13 @@ try {
     const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));
     return (await r.json()).body;
   }, A);
-  check('once the job is over the save is sent and lands',
-    drained && after === '# alpha AFTER THE JOB', JSON.stringify({ drained, after }));
+  check('once the job is over the newest text lands, over the late write',
+    drained && after === '# alpha NEWEST', JSON.stringify({ drained, after }));
+  const cf = await fetch(env.base + '/apps/lattice/page-tree', { headers: { cookie: env.cookie } })
+    .then((r) => r.json()).then((j) => (j.nodes || []).filter((n) => n.page
+      && n.path.startsWith('conflicts/') && n.path.includes(A.replace(/\//g, '-')))).catch(() => []);
+  check('and no conflict page is made of our own writes', cf.length === 0,
+    JSON.stringify(cf.map((n) => n.path)));
   const b4 = await badge();
   check('and the badge clears', b4 && b4.hidden, JSON.stringify(b4));
 } catch (e) {

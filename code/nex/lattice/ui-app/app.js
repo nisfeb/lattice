@@ -375,12 +375,48 @@
       replayQueue(true);
     }, 5000);
   }
-  // after a failed save: is it a job holding the writer? Then wait for it,
-  // else the ship is away. -> whether it was a job
-  async function saveStalled() {
-    const job = await treeJob();
-    if (job) waitJob(); else setDegraded(true);
-    return !!job;
+  // after a failed save: the ship is away, said at once, unless a job is
+  // already known to hold the writer. The first failure asks /tree-job in
+  // the background and turns "offline" into the job's note when one runs;
+  // once degraded, nothing is asked. -> whether a job is known
+  function saveStalled() {
+    if (jobWait) return true;
+    const was = degraded;
+    setDegraded(true);
+    if (!was) {
+      treeJob().then((job) => {
+        if (!job || !degraded) return;
+        setDegraded(false);
+        waitJob();
+        st(JOB_NOTE);
+        if (cerr && cerr.textContent === 'saved offline') cerr.textContent = 'saves after the folder job';
+      });
+    }
+    return false;
+  }
+  // a whole-tree job the ship gave up on (a resume that kept failing) is
+  // said once, a while after boot: a folder delete dropped part way leaves
+  // some of its pages published, and nothing else would show it
+  setTimeout(async () => {
+    let d = null;
+    try {
+      const r = await tfetch(api + '/tree-job', {}, 10000);
+      if (r && r.ok) d = (await r.json()).dropped;
+    } catch {}
+    if (!d || !d.at) return;
+    try {
+      if (localStorage.latJobDropped === String(d.at)) return;
+      localStorage.latJobDropped = String(d.at);
+    } catch {}
+    st('a folder ' + d.job + ' of ' + (d.path || 'your pages') + ' stopped part way and was '
+      + 'dropped: some of its pages may still be published. Run it again.', false);
+  }, 15000);
+  // a save of `name` sent at `at` landed: a queued edit of it from before
+  // then is older text, and replayed it would overwrite the newer save
+  async function dropQueued(name, at) {
+    let q = null;
+    try { q = await offGet(name); } catch {}
+    if (q && !q.isNew && q.queuedAt <= at) await offDel(name);
   }
 
   let probeTimer = null;
@@ -421,11 +457,13 @@
     // the same way.
     let prev = null;
     try { prev = await offGet(name); } catch {}
-    const queued = await offPut({ name, kind, body, baseRev: curRev || 0,
+    //  behind a job the timed-out writes still land, so a base would only
+    //  flag our own text as a conflict: no base claim, as a live save
+    const queued = await offPut({ name, kind, body, baseRev: jobWait ? 0 : curRev || 0,
       isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
-    const job = await saveStalled();
+    const job = saveStalled();
     if (!queued) {
       st('NOT SAVED — this device cannot store offline edits. Copy your text '
         + 'somewhere safe before closing this page.', false);
@@ -496,7 +534,7 @@
   // matching what know-save itself does.
   async function enqueueKnow(key, body) {
     const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
-    const job = await saveStalled();
+    const job = saveStalled();
     if (!queued) {
       st('NOT SAVED — this device cannot store offline edits. Copy your text '
         + 'somewhere safe before closing this page.', false);
@@ -528,7 +566,9 @@
   // try/finally because an exception part way through used to leave this true
   // for the life of the page, and replay never ran again.
   async function replayQueue(proven) {
-    if (replaying) return;
+    //  not while a job holds the writer: the replay would only queue behind
+    //  it, after the writes it timed out on (waitJob replays once it ends)
+    if (replaying || jobWait) return;
     replaying = true;
     try { await drainQueue(proven); } finally { replaying = false; }
   }
@@ -5793,8 +5833,13 @@
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc) + (creating ? '' : linkBase(name));
     let w = { gone: true };
-    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
-    finally { saving = false; }
+    //  behind a folder job a save would only wait out its timeout and land
+    //  after the queued ones: it joins the queue, which keeps the newest
+    const sentAt = Date.now();
+    try {
+      if (!(jobWait && !creating && !linkOf(name)))
+        w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+    } finally { saving = false; }
     const r = w.r;
     if (await linkSaveFail(name, w)) return failed();
     if (w.gone) {
@@ -5840,6 +5885,7 @@
     // CREATE changes the tree, and it confirms a row newFile left pulsing.
     if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent);
+    await dropQueued(name, sentAt);
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
     // name field, dirty or the URL here would brand the new page as this save.
@@ -5914,8 +5960,11 @@
       : api + '/page-save?name=' + encodeURIComponent(target) +
         '&type=' + (curKind || pkind.value) + linkBase(target);
     let w = { gone: true };
-    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
-    finally { saving = false; }
+    const sentAt = Date.now();
+    try {
+      if (!(jobWait && mode !== 'know' && !linkOf(target)))
+        w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+    } finally { saving = false; }
     const r = w.r;
     if (mode !== 'know' && await linkSaveFail(target, w)) { flushPending(); return; }
     if (w.gone) {
@@ -5937,7 +5986,7 @@
     if (mode !== 'know') { try { vr = await r.json(); } catch {} }
     //  patch the saved doc's local cache regardless of focus. No kind: an
     //  autosave writes the page's existing kind, it never sets one.
-    if (mode !== 'know') patchLocal(target, null, sent);
+    if (mode !== 'know') { patchLocal(target, null, sent); await dropQueued(target, sentAt); }
     // live-editor state only if the editor is still on the doc we autosaved
     if (current === target) {
       if (src.value === sent) dirty = false;   // typed during the request? stay dirty
