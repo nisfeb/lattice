@@ -448,7 +448,9 @@
   // do: the editor then cleared its dirty flag and the work was gone with the
   // UI reporting success. If the queue cannot take it, say so and say it in
   // the words that matter, because there is nowhere else the edit now lives.
-  async function enqueueSave(name, kind, body, isNew, rn) {
+  //  `rev`: the revision the edit was made on, when it is not the open
+  //  page's (a parked tab's, saveParked in 35-pages.js)
+  async function enqueueSave(name, kind, body, isNew, rn, rev = curRev) {
     // the queue coalesces by name, and the 2s autosave calls this WITHOUT
     // the create flag — overwriting a queued create as a plain edit would
     // route the replay around the 409 create protection and let an offline
@@ -459,7 +461,7 @@
     try { prev = await offGet(name); } catch {}
     //  behind a job the timed-out writes still land, so a base would only
     //  flag our own text as a conflict: no base claim, as a live save
-    const queued = await offPut({ name, kind, body, baseRev: jobWait ? 0 : curRev || 0,
+    const queued = await offPut({ name, kind, body, baseRev: jobWait ? 0 : rev || 0,
       isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
@@ -472,7 +474,7 @@
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
-    snapPage(name, { body, kind, rev: curRev || 0 });
+    snapPage(name, { body, kind, rev: rev || 0 });
     st(job ? JOB_NOTE : 'saved offline — ' + offCount + ' waiting to sync');
     // truthy either way: 'job' tells the editor which words to show
     return job ? 'job' : true;
@@ -858,6 +860,9 @@
     save: ['0 0 24 24', 'M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 3v5h7V3M7 21v-7h10v7', 'stroke'],
     pin: ['0 0 24 24', 'M9 3h6l-1 6 3 4H7l3-4zM12 13v8', 'stroke'],
     tabs: ['0 0 24 24', 'M8 8h12v12H8zM4 16V4h12', 'stroke'],
+    // split a tab group right or down (28-splits.js): a frame cut in two
+    splitr: ['0 0 24 24', 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM12 4v16', 'stroke'],
+    splitd: ['0 0 24 24', 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM3 12h18', 'stroke'],
     copy: ['0 0 24 24', 'M9 9h11v11H9zM5 15H4V4h11v1', 'stroke'],
     mark: ['0 0 24 24', 'M6 3h12v18l-6-4-6 4z', 'stroke'],
     know: ['0 0 24 24', 'M12 3l8 9-8 9-8-9z', 'stroke'],
@@ -1561,8 +1566,9 @@
   // inline <script> and cannot see this scope. It reloads the page when a new
   // worker takes over, and must never do that over typed work.
   // A parked tab (21-tabs.js) holds its own dirty buffer, so the live flag
-  // alone misses work typed into any tab that is not in front.
-  window.__latUnsaved = () => dirty === true || tabs.some((t) => t !== activeTab && t.snap && t.snap.dirty);
+  // alone misses work typed into any tab that is not in front, in any group.
+  window.__latUnsaved = () => dirty === true
+    || allTabs().some((t) => t !== activeTab && t.snap && t.snap.dirty);
   // Whether the user has typed since the current editor view was established.
   // Cleared by applyPage/newFile (a fresh view), NEVER by autosave — and that
   // is the point: `dirty` cannot answer "did the user do something while
@@ -1894,9 +1900,25 @@
   // One tab per document: opening one that is already open focuses its tab,
   // so a document has one buffer, one dirty flag and one autosave, and two
   // tabs can never write over each other's typing.
+  //
+  // Splits (28-splits.js): the tabs live in groups, laid out side by side
+  // in a split tree. One group is in front (focusG). Its list IS `tabs`
+  // and its front tab IS `activeTab`, so everything above stays about the
+  // group in front, and the live editor sits in that group. The front tab
+  // of every other group is parked, painted read-only into its group from
+  // its snap (a ghost), and becomes live when its group comes to the front
+  // (gTo). One tab per document holds across every group.
   let tabs = [];
   let activeTab = null;
   let tabSeq = 0;
+  let groups = [];          // every group, in the order they were made
+  let focusG = null;        // the group in front
+  // a group's front tab: the live one for the group in front
+  const gFront = (g) => (g === focusG ? activeTab : g.active);
+  const allTabs = () => groups.flatMap((g) => g.tabs);
+  const groupOf = (t) => groups.find((g) => g.tabs.includes(t)) || null;
+  // the queue below is running something: a park, a switch, an open
+  let tabRunning = 0;
   // >0 while the tab model itself is painting the editor. setOpen calls
   // tabFollow on every paint, and these paints are the tab model's own steps,
   // not the user going somewhere.
@@ -1912,10 +1934,21 @@
   const mkTab = (kind, key, ship, { pinned = false, read = false } = {}) =>
     ({ id: 't' + (++tabSeq), kind, key, ship: ship || null, pinned, read,
        back: [], fwd: [], snap: null });
+  let gSeq = 0;
+  const mkGroup = () => ({ id: 'g' + (++gSeq), tabs: [], active: null });
   const sameDoc = (t, d) =>
     t.kind === d.kind && t.key === d.key && (t.ship || null) === (d.ship || null);
   // a Back or Forward entry. Kind and ship ride along, since one tab can go
   // from a page to a memory to a grub.
+  // a tab taking another document in place: what its group painted of the
+  // last one while parked (28-splits.js) goes with it
+  const retarget = (t, d) => {
+    Object.assign(t, d);
+    t.ghost = null;
+    t.gbody = undefined;
+    t.gkind = undefined;
+    t.gfetch = false;
+  };
   const tabEnc = (t) => JSON.stringify([t.kind, t.key, t.ship || null]);
   const tabDec = (s) => { const [kind, key, ship] = JSON.parse(s); return { kind, key, ship }; };
 
@@ -1951,6 +1984,14 @@
   // in a load window), it belongs to no tab, so it gets guardDirty's
   // question, and a cancel keeps it and the switch does not happen.
   // Answers false then.
+  // what the live editor holds for the tab it shows
+  // (`hist`: an old revision was on show, which is never the page's text)
+  const snapNow = () => ({
+    body: src.value, dirty, everTyped,
+    sel: [src.selectionStart, src.selectionEnd], scroll: src.scrollTop,
+    kind: curKind, pkind: pkind.value, rev: curRev, shown: pname.value,
+    hist: viewingRev !== null,
+  });
   async function parkDoc(t) {
     const label = current || pname.value.trim() || 'this';
     await flushNoAsk();
@@ -1958,11 +1999,8 @@
     if (dirty && !mine &&
         !(await askConfirm('discard unsaved changes to ' + label + '?', 'discard')))
       return false;
-    t.snap = mine ? {
-      body: src.value, dirty, everTyped,
-      sel: [src.selectionStart, src.selectionEnd], scroll: src.scrollTop,
-      kind: curKind, pkind: pkind.value, rev: curRev, shown: pname.value,
-    } : null;
+    t.snap = mine ? snapNow() : null;
+    if (mine) gGhostKeep(t);
     // the buffer lives in the snap now. The next open's own guardDirty must
     // not ask about it again, and its debounce must not save it under
     // whatever document comes next (autosave reads `current` when it fires).
@@ -2033,8 +2071,9 @@
           render();
           return;
         }
-        applyKnow(t.key, { body: s.body, tags: (knowEntry(t.key) || { tags: [] }).tags,
-          updated: 'unsaved here' });
+        const e = knowEntry(t.key) || { tags: [] };
+        applyKnow(t.key, { body: s.body, tags: e.tags,
+          updated: s.dirty ? 'unsaved here' : e.updated || '' });
       },
       park: parkDoc,
       shows: showsLive,
@@ -2063,7 +2102,7 @@
         curKind = s.kind;
         render();
         pname.dispatchEvent(new Event('input'));
-        st('unsaved, Ctrl+S to save');
+        if (s.dirty) st('unsaved, Ctrl+S to save');
       },
       park: parkDoc,
       shows: showsLive,
@@ -2071,13 +2110,22 @@
     },
   };
 
+
   // ── persistence ──────────────────────────────────────────────────────
   // Which documents are open, never their bodies: a body in localStorage
   // could come back in another window as if it were that window's work.
+  // Every group's tabs and front tab, the group in front, and the split
+  // tree with its sizes (28-splits.js). `tabs` and `active` also name the
+  // group in front on their own, the shape this had before splits.
+  const tabRec = ({ kind, key, ship, pinned, read }) => ({ kind, key, ship, pinned, read });
   const tabsSave = () => {
     try {
       localStorage.appTabs = JSON.stringify({
-        tabs: tabs.map(({ kind, key, ship, pinned, read }) => ({ kind, key, ship, pinned, read })),
+        v: 2,
+        groups: groups.map((g) => ({ tabs: g.tabs.map(tabRec), active: g.tabs.indexOf(gFront(g)) })),
+        focus: groups.indexOf(focusG),
+        tree: splitSave(),
+        tabs: tabs.map(tabRec),
         active: tabs.indexOf(activeTab),
       });
     } catch {}
@@ -2093,23 +2141,32 @@
   let tabQ = Promise.resolve();
   let tabShown = 0;         // counts showTab calls, so a late landing knows it is late
   const tabSerial = (fn) => {
-    const run = tabQ.then(fn, fn);
+    const go = async () => {
+      tabRunning++;
+      try { return await fn(); } finally { tabRunning--; }
+    };
+    const run = tabQ.then(go, go);
     tabQ = run.catch(() => {});
     return run;
   };
 
-  // show `t`, already the active tab, in the editor
-  function showTab(t) {
+  // show `t`, already the active tab, in the editor. `snapOk`: a group
+  // coming to the front (gTake) paints a clean page or memory back from its
+  // snap at once, as its group showed it while parked, and then asks the
+  // ship for anything newer (refreshOpen), rather than leaving the last
+  // group's text in the editor while a fetch runs.
+  function showTab(t, { snapOk = false } = {}) {
     const k = TAB_KINDS[t.kind];
     const s = t.snap;
     t.snap = null;          // in front, the live editor is its state
     const gen = ++tabShown;
     src.readOnly = false;   // a blank or a binary grub left it locked
     openSeq++;              // an open still loading for the tab left behind may not land
+    const quick = snapOk && !!s && !s.hist && !!t.key && (t.kind === 'page' || t.kind === 'know');
     // a new page or memory already named (its create may still be queued,
     // and runs here once the name is back in the field) comes back named
     // even when clean. Opened fresh it would be a blank, nameless page.
-    if (s && (s.dirty || (!t.key && s.shown))) {
+    if (s && (s.dirty || (!t.key && s.shown) || quick)) {
       tabLoading = null;
       tabNav++;
       try {
@@ -2123,6 +2180,7 @@
         tabCaret(s);
       } finally { tabNav--; }
       paintTabs();
+      if (quick && !s.dirty) refreshOpen();
       return Promise.resolve(true);
     }
     tabLoading = t;
@@ -2159,11 +2217,14 @@
     } finally { tabNav--; }
   }
 
-  // park whatever is in front and bring `t` there. false: the user stayed
+  // park whatever is in front and bring `t` there. false: the user stayed.
+  // A tab in another group brings its group to the front first.
   async function tabTo(t) {
+    const g = groupOf(t);
+    if (g && g !== focusG && !(await gTo(g))) return false;
     const from = activeTab;
     if (from === t) {
-      if (!TAB_KINDS[t.kind].shows(t)) showTab(t);
+      if (!TAB_KINDS[t.kind].shows(t) && tabLoading !== t) showTab(t);
       return;
     }
     if (from && tabs.includes(from) && (await TAB_KINDS[from.kind].park(from)) === false)
@@ -2173,16 +2234,125 @@
     showTab(t);
   }
 
+  // ── groups ───────────────────────────────────────────────────────────
+  // gRelease: the live editor lets go of the tab in front at once, with no
+  // flush and no question. What is unsaved stays in its snap, where
+  // __latUnsaved and beforeunload count it, and a page or memory saves it
+  // from there in the background on autosave's terms (saveParked,
+  // 35-pages.js). false when that cannot be done at once, with nothing
+  // changed: the editor holds typing no tab owns yet (an open still
+  // loading), or a create is in flight that names this tab when it lands.
+  // gTo then parks it the slow way, which flushes and asks.
+  function gRelease() {
+    const t = activeTab;
+    if (!t) return true;
+    const k = TAB_KINDS[t.kind];
+    if (!k.live) return true;          // a tool stays in its own group's host
+    const mine = k.shows(t);
+    if (dirty && !mine) return false;
+    if (saving && !t.key) return false;
+    if (mine) { t.snap = snapNow(); gGhostKeep(t); }
+    dirty = false;
+    clearTimeout(autoTimer);
+    openSeq++;                         // an open in flight lands nowhere now
+    if (tabLoading === t) tabLoading = null;
+    if (t.snap && t.snap.dirty) saveParked(t);
+    return true;
+  }
+  // gTake: group `g` comes to the front with nothing live to let go of
+  // (gRelease ran, or the group in front just closed). The live editor
+  // moves into it (splitPaint, 28-splits.js) and shows its front tab.
+  function gTake(g) {
+    if (focusG && groups.includes(focusG)) focusG.active = activeTab;
+    focusG = g;
+    tabs = g.tabs;
+    activeTab = g.active && g.tabs.includes(g.active) ? g.active : g.tabs[0] || null;
+    if (!activeTab) { activeTab = mkTab('page', ''); tabs.push(activeTab); }
+    g.active = activeTab;
+    splitPaint();
+    tabsChanged();
+    showTab(activeTab, { snapOk: true });
+    rpSoon();
+  }
+  // gTo: group `g` to the front, inside the queue. false: the user stayed
+  async function gTo(g) {
+    if (g === focusG) return true;
+    if (!gRelease()) {
+      const t = activeTab;
+      if ((await TAB_KINDS[t.kind].park(t)) === false) return false;
+    }
+    gTake(g);
+    return true;
+  }
+  // gFocus: the same from a click or a key. At once when the queue is
+  // idle, so a click into a group never waits on a save, else behind
+  // what is running. Answers whether the group is in front now.
+  function gFocus(g) {
+    if (!g || g === focusG || !groups.includes(g)) return true;
+    if (!tabRunning && gRelease()) { gTake(g); return true; }
+    tabSerial(() => gTo(g));
+    return false;
+  }
+  // a tab leaves its group without being shown (a clean twin,
+  // tabFollow). Never the front tab of the group in front.
+  function gDropTab(x) {
+    const g = groupOf(x);
+    if (!g) return;
+    const i = g.tabs.indexOf(x);
+    g.tabs.splice(i, 1);
+    if (g === focusG) return;
+    if (!g.tabs.length) { gDrop(g); return; }
+    if (g.active === x) g.active = g.tabs[i] || g.tabs[i - 1];
+  }
+  // gMove: a tab to group `g` at `at` (the end when null), in front there.
+  // The tab is parked on its way out, so the group it leaves never keeps a
+  // buffer it no longer holds. A group left empty closes.
+  const gMove = (t, g, at = null) => tabSerial(async () => {
+    const from = groupOf(t);
+    if (!from || !groups.includes(g)) return false;
+    if (from === g) {
+      const i = g.tabs.indexOf(t);
+      let j = at === null ? g.tabs.length : at;
+      g.tabs.splice(i, 1);
+      if (j > i) j--;
+      g.tabs.splice(Math.max(0, Math.min(j, g.tabs.length)), 0, t);
+      tabsChanged();
+      return true;
+    }
+    if (t === activeTab && !gRelease()
+      && (await TAB_KINDS[t.kind].park(t)) === false) return false;
+    const i = from.tabs.indexOf(t);
+    from.tabs.splice(i, 1);
+    if (gFront(from) === t) {
+      const next = from.tabs[i] || from.tabs[i - 1] || null;
+      from.active = next;
+      if (from === focusG) activeTab = next;   // parked, not shown: nothing is live
+    }
+    const j = at === null ? g.tabs.length : Math.max(0, Math.min(at, g.tabs.length));
+    g.tabs.splice(j, 0, t);
+    if (!from.tabs.length) gDrop(from);
+    if (g === focusG) return (await tabTo(t)) !== false;
+    g.active = t;
+    if (groups.includes(focusG) && focusG.tabs.length && !gRelease()
+      && (await TAB_KINDS[activeTab.kind].park(activeTab)) === false) {
+      tabsChanged();
+      splitPaint();
+      return false;
+    }
+    gTake(g);
+    return true;
+  });
+
   // ── the entry points ─────────────────────────────────────────────────
   // openIn: how every click on a document opens it. An open document
-  // focuses its tab. A new tab comes from Ctrl/Cmd+click, a middle click,
-  // opts.newTab, or a pinned tab in front. Anything else replaces the
-  // document in the front tab, after guardDirty, and that tab's Back
-  // remembers what it replaced.
+  // focuses its tab, in whichever group it is. A new tab comes from
+  // Ctrl/Cmd+click, a middle click, opts.newTab, or a pinned tab in front.
+  // Anything else replaces the document in the front tab, after
+  // guardDirty, and that tab's Back remembers what it replaced.
   function openIn(kind, key, { ev, ship, newTab } = {}) {
     return tabSerial(async () => {
       const want = { kind, key, ship: ship || null };
-      const hit = key ? tabs.find((t) => sameDoc(t, want)) : null;
+      const hit = key ? allTabs().find((t) => sameDoc(t, want)) : null;
       if (hit) return tabTo(hit);
       const fresh = newTab || (ev && (ev.ctrlKey || ev.metaKey || ev.button === 1))
         || !activeTab || activeTab.pinned;
@@ -2197,24 +2367,40 @@
       dirty = false;
       const t = activeTab;
       if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
-      Object.assign(t, want);
+      retarget(t, want);
       t.snap = null;
       tabsChanged();
       showTab(t);
     });
   }
   const switchTab = (id) => tabSerial(async () => {
-    const t = tabs.find((x) => x.id === id);
+    const t = allTabs().find((x) => x.id === id);
     if (t) await tabTo(t);
   });
-  // closeTab: false when the user kept it. guardDirty runs on the tab being
-  // closed, in front, the one place it can flush or ask, so a background tab
-  // holding unsaved work comes forward first. A kind with no buffer may
-  // still hold typing of its own (held: a frame's half-written post),
-  // which also comes forward and is asked about.
+  // closeTab: false when the user kept it. A tab in another group brings
+  // its group to the front first. guardDirty runs on the tab being
+  // closed, in front, the one place it can flush or ask, so a background
+  // tab holding unsaved work comes forward first. A kind with no buffer
+  // may still hold typing of its own (held: a frame's half-written post),
+  // which also comes forward and is asked about. The last tab of a group
+  // closes the group, unless it is the only one.
   const closeTab = (id) => tabSerial(async () => {
-    const t = tabs.find((x) => x.id === id);
+    const t = allTabs().find((x) => x.id === id);
     if (!t) return false;
+    const g = groupOf(t);
+    const k0 = TAB_KINDS[t.kind];
+    // a clean tab in a group not in front closes where it is: the editor
+    // stays in the group being worked in. One holding unsaved work, or
+    // typing in its frame, comes forward to be asked about.
+    if (g !== focusG && !(t.snap && t.snap.dirty) && !(k0.held && k0.held(t))) {
+      const i = g.tabs.indexOf(t);
+      g.tabs.splice(i, 1);
+      if (!g.tabs.length) gDrop(g);
+      else if (g.active === t) g.active = g.tabs[i] || g.tabs[i - 1];
+      tabsChanged();
+      return true;
+    }
+    if (g !== focusG && !(await gTo(g))) return false;
     if (t !== activeTab && t.snap && t.snap.dirty && (await tabTo(t)) === false) return false;
     const k = TAB_KINDS[t.kind];
     if (k.held && k.held(t)) {
@@ -2231,6 +2417,12 @@
     if (t !== activeTab) { tabsChanged(); return true; }
     activeTab = null;
     let next = tabs[i] || tabs[i - 1];
+    if (!next && groups.length > 1) {
+      const nb = gNeighbor(focusG);
+      gDrop(focusG);
+      gTake(nb);
+      return true;
+    }
     if (!next) { next = mkTab('page', ''); tabs.push(next); }
     activeTab = next;
     tabsChanged();
@@ -2246,10 +2438,10 @@
     if (!(await guardDirty())) return;
     dirty = false;
     const d = tabDec(t[from].pop());
-    const twin = d.key && tabs.find((x) => x !== t && sameDoc(x, d));
+    const twin = d.key && allTabs().find((x) => x !== t && sameDoc(x, d));
     if (twin) { tabsChanged(); return tabTo(twin); }
     if (t.key) t[to].push(tabEnc(t));
-    Object.assign(t, d);
+    retarget(t, d);
     t.snap = null;
     tabsChanged();
     showTab(t);
@@ -2294,11 +2486,12 @@
     const d = liveDoc();
     if (!d || sameDoc(t, d)) return;
     if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
-    Object.assign(t, d);
+    retarget(t, d);
     t.snap = null;
-    // one tab per document: a clean twin elsewhere is now redundant
-    const twin = d.key && tabs.find((x) => x !== t && sameDoc(x, d) && !(x.snap && x.snap.dirty));
-    if (twin) tabs.splice(tabs.indexOf(twin), 1);
+    // one tab per document: a clean twin elsewhere, in any group, is now
+    // redundant
+    const twin = d.key && allTabs().find((x) => x !== t && sameDoc(x, d) && !(x.snap && x.snap.dirty));
+    if (twin) gDropTab(twin);
     tabsChanged();
   }
   // a create that ran from the queue after its tab was left (save(),
@@ -2311,7 +2504,7 @@
   // save() takes it as still here.
   function tabAdopt(own, name) {
     const trim = (v) => v.trim().replace(/^\/+|\/+$/g, '');
-    const t = tabs.find((x) => x.id === own.tab);
+    const t = allTabs().find((x) => x.id === own.tab);
     if (!t || t.kind !== 'page' || t.key) return false;
     if (t === activeTab)
       return showsLive(t) && current === null && trim(pname.value) === own.name;
@@ -2324,47 +2517,90 @@
   // a move or rename: tabs naming the old path, or anything under it, name
   // the new one, so a parked buffer is never saved back to where it was
   function tabsRemap(kind, from, to) {
-    for (const t of tabs) {
+    for (const t of allTabs()) {
       if (t.kind !== kind || !t.key) continue;
       if (t.key === from) t.key = to;
       else if (t.key.startsWith(from + '/')) t.key = to + t.key.slice(from.length);
     }
     tabsChanged();
   }
+  // a save of `name` that landed after its tab was parked (35-pages.js,
+  // 95-know.js): the snap holding exactly what was sent is clean now, and
+  // a page's snap takes the new revision, which a link's next save claims
+  function tabLanded(kind, name, sent, rev, ship = null) {
+    for (const t of allTabs()) {
+      if (t.kind !== kind || t.key !== name || (t.ship || null) !== ship || !t.snap) continue;
+      if (t.snap.body === sent && t.snap.dirty) t.snap.dirty = false;
+      if (rev) t.snap.rev = rev;
+    }
+  }
 
   // ── boot ─────────────────────────────────────────────────────────────
-  // The saved list, and then the address on top of it: a ?name, ?grub or
-  // ?view=know&key names a document, which gets its tab focused or a new
-  // one. An entry that does not parse as a tab is dropped, and nothing at
-  // all leaves one new page. Nothing is opened here; boot (99-boot.js) shows
-  // the tab this returns. `fresh` says the list was made up rather than
-  // restored, which is when a bare launch may resume the last page.
+  // The saved groups, and then the address on top of them: a ?name, ?grub
+  // or ?view=know&key names a document, which gets its tab focused, in
+  // whichever group, or a new one in the group in front. An entry that
+  // does not parse as a tab is dropped, and so is a second tab on one
+  // document. A layout that does not name every group once (28-splits.js)
+  // falls back to one group holding every tab, and nothing at all leaves
+  // one new page. Nothing is opened here; boot (99-boot.js) shows the tab
+  // this returns, and the other groups paint from their caches. `fresh`
+  // says the list was made up rather than restored, which is when a bare
+  // launch may resume the last page.
   function tabsBoot() {
     let saved = null;
     try { saved = JSON.parse(localStorage.appTabs || 'null'); } catch {}
-    const list = saved && Array.isArray(saved.tabs) ? saved.tabs : [];
-    for (const e of list) {
-      if (!e || !TAB_KINDS[e.kind] || typeof e.key !== 'string') continue;
-      if (e.ship != null && typeof e.ship !== 'string') continue;
-      if (e.key && tabs.some((t) => sameDoc(t, e))) continue;
-      tabs.push(mkTab(e.kind, e.key, e.ship, { pinned: e.pinned === true, read: e.read === true }));
+    if (!saved || typeof saved !== 'object') saved = null;
+    const lists = saved && Array.isArray(saved.groups) && saved.groups.length ? saved.groups
+      : saved && Array.isArray(saved.tabs) ? [{ tabs: saved.tabs, active: saved.active }] : [];
+    const seen = [];
+    let made = lists.map((e) => {
+      const g = mkGroup();
+      for (const r of (e && Array.isArray(e.tabs) ? e.tabs : [])) {
+        if (!r || !TAB_KINDS[r.kind] || typeof r.key !== 'string') continue;
+        if (r.ship != null && typeof r.ship !== 'string') continue;
+        if (r.key && seen.some((t) => sameDoc(t, r))) continue;
+        const t = mkTab(r.kind, r.key, r.ship, { pinned: r.pinned === true, read: r.read === true });
+        g.tabs.push(t);
+        seen.push(t);
+      }
+      g.active = (e && Number.isInteger(e.active) && g.tabs[e.active]) || g.tabs[0] || null;
+      return g;
+    });
+    let fi = saved && Number.isInteger(saved.focus) && made[saved.focus] ? saved.focus : 0;
+    if (made.length > 1 && (made.some((g) => !g.tabs.length) || !splitLoad(saved.tree, made))) {
+      // one group, every tab in order, the one in front still in front
+      const one = mkGroup();
+      one.tabs = made.flatMap((g) => g.tabs);
+      one.active = (made[fi] && made[fi].active) || one.tabs[0] || null;
+      made = [one];
+      fi = 0;
     }
-    activeTab = (Number.isInteger(saved && saved.active) && tabs[saved.active]) || tabs[0] || null;
+    if (!made.length) made = [mkGroup()];
+    if (made.length === 1) splitLoad(0, made);
+    for (const g of made) gAdd(g);
+    focusG = made[fi];
+    tabs = focusG.tabs;
+    activeTab = focusG.active;
     const want = qs.get('grub') ? { kind: 'grub', key: qs.get('grub'), ship: qs.get('ship') || null }
       : qs.get('view') === 'know' ? { kind: 'know', key: qs.get('key') || '', ship: null }
       : qs.get('name') ? { kind: 'page', key: qs.get('name'), ship: null } : null;
     if (want) {
       const hit = activeTab && sameDoc(activeTab, want) ? activeTab
-        : tabs.find((t) => sameDoc(t, want));
-      if (hit) activeTab = hit;
-      else {
+        : allTabs().find((t) => sameDoc(t, want));
+      if (hit) {
+        focusG = groupOf(hit);
+        tabs = focusG.tabs;
+        activeTab = hit;
+      } else {
         const t = mkTab(want.kind, want.key, want.ship);
         tabs.splice(activeTab ? tabs.indexOf(activeTab) + 1 : 0, 0, t);
         activeTab = t;
       }
     }
-    const fresh = !activeTab;
-    if (fresh) { activeTab = mkTab('page', ''); tabs.push(activeTab); }
+    const fresh = !activeTab && allTabs().length === 0;
+    if (!activeTab) { activeTab = mkTab('page', ''); tabs.push(activeTab); }
+    focusG.active = activeTab;
+    splitPaint();
     tabsChanged();
     return { tab: activeTab, fresh };
   }
@@ -2372,38 +2608,33 @@
   // boot path of its own
   const tabShowBoot = (t) => tabSerial(() => showTab(t));
 
-  // ── the strip ────────────────────────────────────────────────────────
-  // First in the center column, level with the corner toggles. The tabs,
-  // then + for a new page (Back and Forward are in the tab header).
-  const tabStrip = document.createElement('div');
-  tabStrip.id = 'doctabs';
-  tabStrip.className = 'doctabs';
-  tabStrip.innerHTML =
-    '<div class="dtlist" role="tablist" aria-label="Open documents"></div>' +
-    sbtn('id="tabnew" data-action="tabnew"', 'plus', 'New page');
-  $('center').prepend(tabStrip);
-  const tabList = tabStrip.querySelector('.dtlist');
-  $('tabnew').onclick = () => tabNew();
-  clickAction('tabnew', 'New page in a new tab', 'Tab strip');
-
+  // ── the strips ───────────────────────────────────────────────────────
+  // Each group has its own, first in the group (built by gAdd,
+  // 28-splits.js): its tabs, then + for a new page and the two splits.
+  // The group in front's strip is #doctabs and its + is #tabnew.
+  //
   // Each tab is two buttons side by side in one wrapper: the tab itself
   // and its close, so the close is a real button a keyboard can reach (a
   // button cannot sit inside another). The state classes (on, dirty,
   // pinned) go on both: the wrapper draws the tab, the tab button is what
-  // scripts and suites address.
-  function paintTabs() {
-    tabList.textContent = '';
-    for (const t of tabs) {
+  // scripts and suites address. A tab drags to another group's strip, or
+  // to an edge of a group to split it (28-splits.js).
+  function paintStrip(g) {
+    const front = gFront(g);
+    g.list.textContent = '';
+    for (const t of g.tabs) {
       const k = TAB_KINDS[t.kind];
       const name = k.label(t);
       const w = document.createElement('div');
       w.setAttribute('role', 'presentation');
+      w.draggable = true;
+      w.dataset.id = t.id;
       const b = document.createElement('button');
       b.type = 'button';
       for (const [el, base] of [[w, 'dtw'], [b, 'dtab']])
-        el.className = base + (t === activeTab ? ' on' : '') + (t.pinned ? ' pinned' : '');
+        el.className = base + (t === front ? ' on' : '') + (t.pinned ? ' pinned' : '');
       b.setAttribute('role', 'tab');
-      b.setAttribute('aria-selected', t === activeTab ? 'true' : 'false');
+      b.setAttribute('aria-selected', t === front ? 'true' : 'false');
       b.dataset.id = t.id;
       b.dataset.kind = t.kind;
       b.dataset.key = t.key;
@@ -2423,27 +2654,37 @@
       w.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(t.id); } };
       w.oncontextmenu = (e) => { e.preventDefault(); tabMenu(t, e.clientX, e.clientY); };
       w.append(b, x);
-      tabList.append(w);
+      g.list.append(w);
     }
-    paintTabDirty();
-    paintHead();   // the header under the strip (23-tabhead.js)
-    const on = tabList.querySelector('.dtw.on');
+    const on = g.list.querySelector('.dtw.on');
     if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+  function paintTabs() {
+    for (const g of groups) paintStrip(g);
+    paintTabDirty();
+    if (!focusG) return;
+    paintHead();   // the header under the strip (23-tabhead.js)
+    gPaintAll();   // the other groups' parked fronts (28-splits.js)
+    document.dispatchEvent(new Event('lat-tabs'));
   }
   // The dot. `dirty` is set by typing and cleared by four save paths, so the
   // dot is read off the state on a short beat instead of from each of them.
   function paintTabDirty() {
-    for (const w of tabList.children) {
-      const b = w.firstChild;
-      const t = tabs.find((x) => x.id === b.dataset.id);
-      const on = !!t && (t === activeTab ? dirty === true : !!(t.snap && t.snap.dirty));
-      w.classList.toggle('dirty', on);
-      b.classList.toggle('dirty', on);
+    for (const g of groups) {
+      for (const w of g.list.children) {
+        const b = w.firstChild;
+        const t = g.tabs.find((x) => x.id === b.dataset.id);
+        const on = !!t && (t === activeTab ? dirty === true : !!(t.snap && t.snap.dirty));
+        w.classList.toggle('dirty', on);
+        b.classList.toggle('dirty', on);
+      }
     }
   }
   setInterval(paintTabDirty, 400);
+  clickAction('tabnew', 'New page in a new tab', 'Tab strip');
 
-  // the context menu: pin, close, close the others
+  // the context menu: pin, close, close the others, and move to a new
+  // group beside or below (the way to split without a drag)
   let tabMenuEl = null;
   const tabMenuClose = () => { if (tabMenuEl) { tabMenuEl.remove(); tabMenuEl = null; } };
   function tabMenu(t, x, y) {
@@ -2451,19 +2692,23 @@
     const m = document.createElement('div');
     m.className = 'dtmenu';
     m.setAttribute('role', 'menu');
-    const item = (label, run) => {
+    const item = (label, run, why) => {
       const b = document.createElement('button');
       b.type = 'button';
       b.setAttribute('role', 'menuitem');
       b.textContent = label;
+      if (why) { b.disabled = true; b.title = why; }
       b.onclick = () => { tabMenuClose(); run(); };
       m.append(b);
     };
+    const g = groupOf(t);
     item(t.pinned ? 'Unpin' : 'Pin', () => { t.pinned = !t.pinned; tabsChanged(); });
     item('Close', () => closeTab(t.id));
     item('Close others', async () => {
-      for (const o of tabs.filter((x) => x !== t)) await closeTab(o.id);
+      for (const o of g.tabs.filter((x) => x !== t)) await closeTab(o.id);
     });
+    item('Move to new group right', () => gSplitWith(g, 'r', t), splitWhy(g, 'r'));
+    item('Move to new group below', () => gSplitWith(g, 'd', t), splitWhy(g, 'd'));
     m.style.left = x + 'px';
     m.style.top = y + 'px';
     document.body.append(m);
@@ -2507,6 +2752,20 @@
       active: tabs.indexOf(activeTab),
       shows: !!activeTab && TAB_KINDS[activeTab.kind].shows(activeTab),
     }),
+    // every group: its tabs (dirty: unsaved, live or parked), its front,
+    // and which group is in front
+    groups: () => groups.map((g) => ({
+      id: g.id,
+      focus: g === focusG,
+      active: g.tabs.indexOf(gFront(g)),
+      tabs: g.tabs.map((t) => ({ id: t.id, kind: t.kind, key: t.key,
+        dirty: t === activeTab ? dirty === true : !!(t.snap && t.snap.dirty) })),
+    })),
+    focus: (i) => gFocus(groups[i]),
+    move: (id, i, at = null) => {
+      const t = allTabs().find((x) => x.id === id);
+      return t && groups[i] ? gMove(t, groups[i], at) : Promise.resolve(false);
+    },
   };
 
 // ── src/22-listedit.js ────────────────────────────────────────────────────
@@ -2761,7 +3020,7 @@
        page menu's Convert to HTML clicks this -->
   <button type="button" id="texconv" hidden>convert to html</button>
 </span>`;
-  $('center').insertBefore(tabHead, $('docarea'));
+  $('docarea').before(tabHead);
   pname = $('pname'); pkind = $('pkind');
   for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
   $('tback').onclick = () => tabBack();
@@ -2998,16 +3257,19 @@
   // sync conflicts, or a same-origin page in a frame (Settings, the memory
   // review, the forum, the explorer, a browser). Its key names the tool
   // ('inbox', 'access', 'conflicts') or the frame
-  // ('frame:/apps/lattice/settings'). While one is in front the
-  // document area is hidden and #toolhost takes the center. The editor
-  // underneath keeps whatever the parked tab left there, untouched: the
-  // tool kind has no live(), so nothing a tool does is ever filed under a
-  // document's tab.
-  const toolHost = document.createElement('div');
-  toolHost.id = 'toolhost';
-  toolHost.className = 'toolhost';
-  toolHost.hidden = true;
-  $('docarea').after(toolHost);
+  // ('frame:/apps/lattice/settings'). While one is in front of its group
+  // the group's document area is hidden and the group's own tool host
+  // (.toolhost, 28-splits.js) takes its place. Each group has one, so a
+  // frame never moves (a moved frame reloads) when another group comes to
+  // the front; the one in front is #toolhost. The editor underneath keeps
+  // whatever the parked tab left there, untouched: the tool kind has no
+  // live(), so nothing a tool does is ever filed under a document's tab.
+  const allFrames = () => [...document.querySelectorAll('.toolhost iframe')];
+  const frameOf = (key) => allFrames().find((f) => f.dataset.tool === key);
+  // where a tool's wrap waits while no group shows it
+  const toolStash = document.createElement('div');
+  toolStash.hidden = true;
+  document.body.append(toolStash);
 
   // the client tools: their name, icon, the overlay element each one used
   // to be (72-acl.js, 73-comments.js, 80-conflicts.js) and what fills it
@@ -3097,7 +3359,7 @@
   // its omnibar always holds the address.
   const TEXTY = ['text', 'search', 'url', 'email', 'tel', 'number'];
   function frameTyped(key) {
-    const f = [...toolHost.querySelectorAll('iframe')].find((x) => x.dataset.tool === key);
+    const f = frameOf(key);
     let d = null;
     try { d = f && f.contentDocument; } catch {}
     if (!d) return false;
@@ -3111,29 +3373,39 @@
       && el.value.trim() !== '' && el.value !== el.defaultValue));
   }
 
-  // Called by paintHead on every change of the tab in front. Shows the host
-  // or the document area, and in the host only the front tool. A wrap that
-  // is not in front is hidden, which is how 90-sync.js knows the inbox is
-  // not being read. A frame whose tab has closed goes away.
+  // Called by paintHead on every change of the tab in front. In each group,
+  // shows the host or the document area, and in the host only that group's
+  // front tool. A wrap that is not in front of a group is hidden, which is
+  // how 90-sync.js knows the inbox is not being read. A frame whose tab has
+  // closed goes away.
   function toolSync() {
     const t = activeTab && activeTab.kind === 'tool' ? activeTab : null;
     const was = toolShown;
     toolShown = t ? t.key : null;
     $('docarea').hidden = !!t;
-    toolHost.hidden = !t;
-    if (t) toolMount(t.key);
-    for (const f of [...toolHost.querySelectorAll('iframe')])
-      if (!tabs.some((x) => x.kind === 'tool' && x.key === f.dataset.tool)) {
+    const open = allTabs();
+    for (const f of allFrames())
+      if (!open.some((x) => x.kind === 'tool' && x.key === f.dataset.tool)) {
         delete frameTitles[f.dataset.tool];
         f.remove();
       }
-    for (const c of toolHost.children) c.hidden = c.dataset.tool !== toolShown;
+    for (const g of groups) {
+      const f = gFront(g);
+      const key = f && f.kind === 'tool' ? f.key : null;
+      g.host.hidden = !key;
+      if (key) toolMount(key, g.host);
+      for (const c of g.host.children) c.hidden = c.dataset.tool !== key;
+    }
+    // a wrap no group has in front waits in the stash, hidden
+    for (const c of [...document.querySelectorAll('.toolhost > .intab')])
+      if (!groups.some((g) => c.parentNode === g.host && !c.hidden)) { c.hidden = true; toolStash.append(c); }
     // A frame in a hidden element still reads document.hidden false, so a
     // parked reader page kept its live stream open (+sse-script, app.hoon),
     // and six of them took every connection the browser gives this host:
     // the editor's saves then queued with no error. So each frame is told
     // when it is shown or put away, and its stream follows.
-    for (const f of toolHost.querySelectorAll('iframe')) {
+    for (const f of allFrames()) {
+      const toolHost = f.closest('.toolhost');
       const on = !toolHost.hidden && !f.hidden;
       if (f.latOn === on) continue;
       f.latOn = on;
@@ -3143,17 +3415,21 @@
     // the right pane goes by what is in front (76-outline.js)
     if (was !== toolShown) rpSoon();
   }
-  function toolMount(key) {
+  // into `toolHost`, a group's host. A frame there already stays; one in
+  // another group's host (its tab was moved) moves, and reloads.
+  function toolMount(key, toolHost) {
     if (TOOLS[key]) {
       const w = $(TOOLS[key].wrap);
-      if (!w || w.parentNode === toolHost) return;
+      if (!w) return;
       w.classList.add('intab');
       w.dataset.tool = key;
-      toolHost.append(w);
+      if (w.parentNode !== toolHost) toolHost.append(w);
       return;
     }
     const url = frameUrl(key);
-    if (!url || [...toolHost.querySelectorAll('iframe')].some((f) => f.dataset.tool === key)) return;
+    const had = frameOf(key);
+    if (had) { if (had.parentNode !== toolHost) toolHost.append(had); return; }
+    if (!url) return;
     const f = document.createElement('iframe');
     f.className = 'toolframe';
     f.dataset.tool = key;
@@ -3331,8 +3607,8 @@
   window.latFrameEditor = (href, from) => {
     let w = from;
     try { while (w && w.parent !== window) w = w === w.parent ? null : w.parent; } catch { w = null; }
-    const f = w && [...toolHost.querySelectorAll('iframe')].find((x) => x.contentWindow === w);
-    if (!f || toolHost.hidden || f.hidden) return false;
+    const f = w && allFrames().find((x) => x.contentWindow === w);
+    if (!f || f.hidden || f.closest('.toolhost').hidden) return false;
     const go = editorGo(href);
     if (!go) return false;
     editorOpen(go);
@@ -3417,7 +3693,7 @@
     }
   }
   const framesTheme = () => {
-    for (const f of toolHost.querySelectorAll('iframe')) frameTheme(f);
+    for (const f of allFrames()) frameTheme(f);
   };
   addEventListener('lattheme', framesTheme);
   darkMq.addEventListener('change', framesTheme);
@@ -3428,7 +3704,7 @@
   // so here Escape only lets go of a field.
   addEventListener('keydown', (e) => {
     const a = document.activeElement;
-    if (e.key === 'Escape' && a && a !== document.body && toolHost.contains(a)) a.blur();
+    if (e.key === 'Escape' && a && a !== document.body && a.closest && a.closest('.toolhost')) a.blur();
   });
 
   // ── today's brief ────────────────────────────────────────────────────────
@@ -3474,7 +3750,10 @@
   // turn. One that does not save stops the leaving, with it in front.
   const leaveThen = (go) => tabSerial(async () => {
     if (!(await guardDirty())) return;
-    const bg = tabs.filter((t) => t !== activeTab && t.snap && t.snap.dirty);
+    // a group left a moment ago is still saving its tab in the background
+    // (saveParked, 35-pages.js): what lands is not asked about
+    await savesSettled();
+    const bg = allTabs().filter((t) => t !== activeTab && t.snap && t.snap.dirty);
     const names = bg.map((t) => TAB_KINDS[t.kind].label(t)).join(', ');
     if (bg.length && autosaveOn()) {
       if (!(await askConfirm('discard unsaved changes to ' + names + '?', 'discard'))) return;
@@ -3527,7 +3806,7 @@
   }
   window.latOpenSettings = async (anchor) => {
     await toolOpen('settings');
-    const f = [...toolHost.querySelectorAll('iframe')].find((x) => x.dataset.tool === SETTINGS);
+    const f = frameOf(SETTINGS);
     if (!f || !anchor) return;
     let ready = false;
     try { ready = f.contentDocument.readyState === 'complete' && f.contentDocument.URL !== 'about:blank'; } catch {}
@@ -3635,14 +3914,27 @@
   // A Tab indent was shown but never saved, and a live refresh reverted it.
   // Always route scripted edits through here.
   const edited = () => src.dispatchEvent(new Event('input'));
+  // <lat-editor>: one is live, #src and #hl, the editor every module works
+  // on, and it moves into whichever group is in front (28-splits.js), so
+  // vim, list editing, autocomplete and the preview follow it there. With
+  // `ghost` it is another group's: the same two layers, locked, painted
+  // from that group's parked tab, and live once its group comes to the
+  // front. Built once: a move between groups connects it again.
   customElements.define('lat-editor', class extends HTMLElement {
     connectedCallback() {
+      if (this.built) return;
+      this.built = true;
+      if (this.hasAttribute('ghost')) {
+        this.innerHTML = '<div class="edwrap"><pre class="ehl" aria-hidden="true"></pre>'
+          + '<textarea class="esrc" spellcheck="false" readonly></textarea></div>';
+        return;
+      }
       this.innerHTML = `
 <div class="edwrap">
   <div id="acmirror" aria-hidden="true"></div>
   <div id="ac" class="ac" hidden role="listbox" aria-label="page suggestions"></div>
-  <pre id="hl" aria-hidden="true"></pre>
-  <textarea id="src" spellcheck="false" placeholder="open a page from the tree, or name a new one and start typing"></textarea>
+  <pre id="hl" class="ehl" aria-hidden="true"></pre>
+  <textarea id="src" class="esrc" spellcheck="false" placeholder="open a page from the tree, or name a new one and start typing"></textarea>
 </div>`;
       src = $('src'); hl = $('hl');
       src.addEventListener('input', () => {
@@ -4601,6 +4893,677 @@
   // change there must refresh the indicator (it reads PREVIEW in preview-only).
   window.latVimSetInd = setInd;
 })();
+
+// ── src/28-splits.js ──────────────────────────────────────────────────────
+  // ── splits: tab groups side by side ─────────────────────────────────────
+  // The center is a split tree of tab groups. A leaf is a group, whose tabs
+  // 21-tabs.js keeps; a split is { d, k, s }: its children `k` side by side
+  // (d 'r') or stacked (d 'd'), each taking its share of the sizes `s`. Any
+  // group splits right or down, with no cap, as long as both halves keep a
+  // group's least size (GMIN_W across, GMIN_H down). A split that would go
+  // under it is refused, and its buttons are disabled with a tooltip that
+  // says why.
+  //
+  // Each group is a section placed absolutely in #groot at its fractions of
+  // the tree, so a group never moves in the page: a moved frame reloads,
+  // and a group's tool host holds frames. Only the live editor (#glive:
+  // the tab header, the link conflict bar and the document area) moves,
+  // into the group in front. Every other group shows its front tab parked:
+  // its own <lat-editor ghost>, painted from the tab's snap (or the tree's
+  // copy of the page), with its own header. A click into one brings its
+  // group to the front (gFocus, 21-tabs.js), and a click into its text
+  // puts the caret where the click was.
+  //
+  // Keys: Ctrl+\ splits right, Ctrl+Shift+\ splits down, Ctrl+Shift+] and
+  // Ctrl+Shift+[ bring the next and the previous group to the front (by
+  // e.code, in the capture phase, so vim never sees them and a keyboard
+  // layout's shifted character does not matter). Browsers keep none of
+  // these, and vim's own Ctrl+[ (Escape) is unshifted.
+  //
+  // On a phone (the 820px block) one group shows at a time, the one in
+  // front, and the tabs sheet switches groups (97-mobar.js).
+  const GMIN_W = 360, GMIN_H = 200;
+  let sroot = null;
+  const groot = $('groot');
+  const glive = $('glive');
+  const isG = (n) => !!n && Array.isArray(n.tabs);
+
+  // ── the tree ─────────────────────────────────────────────────────────
+  function parentOf(x, n = sroot) {
+    if (!n || isG(n)) return null;
+    for (const c of n.k) {
+      if (c === x) return n;
+      const p = parentOf(x, c);
+      if (p) return p;
+    }
+    return null;
+  }
+  function replaceNode(old, nu) {
+    if (sroot === old) { sroot = nu; return; }
+    const p = parentOf(old);
+    if (p) p.k[p.k.indexOf(old)] = nu;
+  }
+  const leaves = (n = sroot) => (!n ? [] : isG(n) ? [n] : n.k.flatMap((c) => leaves(c)));
+  // `ng` beside `target`: after it, or before it, in direction `dir`. A
+  // split already running that way takes it as one more child, halving
+  // the target's share; anything else becomes a new split of the two.
+  function splitInsert(target, ng, dir, before = false) {
+    const p = parentOf(target);
+    if (p && p.d === dir) {
+      const i = p.k.indexOf(target);
+      const half = p.s[i] / 2;
+      p.s[i] = half;
+      p.k.splice(i + (before ? 0 : 1), 0, ng);
+      p.s.splice(i + (before ? 0 : 1), 0, half);
+      return;
+    }
+    replaceNode(target, { d: dir, k: before ? [ng, target] : [target, ng], s: [1, 1] });
+  }
+  // a group out of the tree: its share goes to the neighbour before it (or
+  // after), and a split left with one child is that child
+  function splitRemove(g) {
+    const p = parentOf(g);
+    if (!p) { if (sroot === g) sroot = null; return; }
+    const i = p.k.indexOf(g);
+    const j = i > 0 ? i - 1 : 1;
+    p.s[j] += p.s[i];
+    p.k.splice(i, 1);
+    p.s.splice(i, 1);
+    if (p.k.length === 1) replaceNode(p, p.k[0]);
+  }
+  // the group that takes the front when `g` closes: the nearest one in
+  // the tree, the one before it first
+  function gNeighbor(g) {
+    const p = parentOf(g);
+    if (p) {
+      const i = p.k.indexOf(g);
+      const sib = p.k[i - 1] || p.k[i + 1];
+      const ls = leaves(sib);
+      if (ls.length) return i > 0 ? ls[ls.length - 1] : ls[0];
+    }
+    return groups.find((x) => x !== g) || null;
+  }
+  // the tree for appTabs (21-tabs.js): a group is its index in `groups`
+  const splitSave = () => {
+    const enc = (n) => (isG(n) ? groups.indexOf(n)
+      : { d: n.d, k: n.k.map(enc), s: n.s.map((v) => Math.round(v * 1e4) / 1e4) });
+    return sroot ? enc(sroot) : 0;
+  };
+  // a saved tree over `made`, the groups in their saved order. It must name
+  // each of them exactly once, with two or more children to a split and a
+  // positive size for each; false otherwise, and the caller falls back to
+  // one group.
+  function splitLoad(x, made) {
+    const seen = new Set();
+    const dec = (n, depth) => {
+      if (depth > 40) return null;
+      if (Number.isInteger(n)) {
+        if (n < 0 || n >= made.length || seen.has(n)) return null;
+        seen.add(n);
+        return made[n];
+      }
+      if (!n || typeof n !== 'object' || (n.d !== 'r' && n.d !== 'd')
+        || !Array.isArray(n.k) || !Array.isArray(n.s) || n.k.length < 2 || n.s.length !== n.k.length
+        || !n.s.every((v) => typeof v === 'number' && isFinite(v) && v > 0)) return null;
+      const k = [];
+      for (const c of n.k) {
+        const d = dec(c, depth + 1);
+        if (!d) return null;
+        k.push(d);
+      }
+      return { d: n.d, k, s: n.s.slice() };
+    };
+    const t = dec(x, 0);
+    if (!t || seen.size !== made.length) return false;
+    sroot = t;
+    return true;
+  }
+
+  // ── a group's elements ───────────────────────────────────────────────
+  const gBtn = (sb, icon, name, keys) => {
+    const b = tip(document.createElement('button'), name, keys);
+    b.type = 'button';
+    b.className = 'sbtn';
+    b.dataset.sb = sb;
+    b.innerHTML = ico(icon);
+    return b;
+  };
+  const SPLIT_NAME = { r: ['Split right', 'Ctrl+\\'], d: ['Split down', 'Ctrl+Shift+\\'] };
+  // the parts of a group: its strip (21-tabs.js paints the tabs), its
+  // parked view (the ghost: a header and an editor, hidden while the
+  // group is in front) and its tool host (24-tools.js)
+  function gAdd(g) {
+    if (!groups.includes(g)) groups.push(g);
+    const el = document.createElement('section');
+    el.className = 'tgroup';
+    el.dataset.g = g.id;
+    el.setAttribute('aria-label', 'Tab group');
+    const strip = document.createElement('div');
+    strip.className = 'doctabs';
+    const list = document.createElement('div');
+    list.className = 'dtlist';
+    list.setAttribute('role', 'tablist');
+    list.setAttribute('aria-label', 'Open documents');
+    const bnew = gBtn('new', 'plus', 'New page');
+    const bsr = gBtn('r', 'splitr', ...SPLIT_NAME.r);
+    const bsd = gBtn('d', 'splitd', ...SPLIT_NAME.d);
+    bsr.classList.add('gsplit');
+    bsd.classList.add('gsplit');
+    strip.append(list, bnew, bsr, bsd);
+    bnew.onclick = () => { gFocus(g); tabNew(); };
+    bsr.onclick = () => gSplit(g, 'r');
+    bsd.onclick = () => gSplit(g, 'd');
+
+    // the parked view. Its buttons do what the live header's do, once the
+    // group is in front.
+    const ghost = document.createElement('div');
+    ghost.className = 'gghost';
+    ghost.hidden = true;
+    ghost.innerHTML =
+      '<div class="tabhead ghead">'
+      + sbtn('data-go="tback"', 'left', 'Back', 'Alt+Left')
+      + sbtn('data-go="tfwd"', 'right', 'Forward', 'Alt+Right')
+      + '<button type="button" class="tpath" data-go="tpath"></button>'
+      + '<div class="tread" role="group" aria-label="Edit or Read">'
+      + '<button type="button" data-go="edit" title="Edit / Read (Ctrl+E)">' + ico('pen') + 'Edit</button>'
+      + '<button type="button" data-go="read" title="Edit / Read (Ctrl+E)">' + ico('eye') + 'Read</button>'
+      + '</div>'
+      + sbtn('data-go="tmenu" aria-haspopup="menu"', 'dots', 'Page menu')
+      + '</div>'
+      + '<div class="gdoc"><lat-editor ghost></lat-editor>'
+      + '<div class="prevwrap"><iframe class="prev" title="preview" sandbox="allow-scripts"></iframe></div></div>';
+    const host = document.createElement('div');
+    host.className = 'toolhost';
+    host.hidden = true;
+    el.append(strip, ghost, host);
+    groot.append(el);
+    Object.assign(g, { el, strip, list, bnew, bsr, bsd, ghost, host,
+      ghead: ghost.querySelector('.ghead'), gdoc: ghost.querySelector('.gdoc'),
+      gta: ghost.querySelector('.esrc'), ghl: ghost.querySelector('.ehl'),
+      gprev: ghost.querySelector('.prev'), gmemo: null });
+
+    const LIVE = { tback: '#tback', tfwd: '#tfwd', tpath: '#tpath', tmenu: '#tmenu',
+      edit: '#tread [data-r="0"]', read: '#tread [data-r="1"]' };
+    for (const b of ghost.querySelectorAll('[data-go]'))
+      b.onclick = () => gThen(g, () => {
+        const live = document.querySelector(LIVE[b.dataset.go]);
+        if (live && !live.disabled) live.click();
+      });
+    // a press anywhere in a group that is not in front brings it there,
+    // except on its tabs, which may be starting a drag (a click on one
+    // switches to it, group and all), and on the parked view, whose parts
+    // say where they lead themselves
+    el.addEventListener('pointerdown', (e) => {
+      if (g === focusG || !e.isPrimary) return;
+      if (e.target.closest('.gghost, .dtw')) return;
+      gFocus(g);
+    }, true);
+    // the parked text: the caret goes where the press put it in the ghost
+    // (readonly, so the press only selects), once the group is in front
+    const ta = g.gta;
+    let down = false;
+    ta.addEventListener('pointerdown', () => {
+      down = true;
+      addEventListener('pointerup', () => {
+        down = false;
+        if (g !== focusG) gCaret(g, ta.selectionStart, ta.selectionEnd, ta.scrollTop);
+      }, { once: true });
+    });
+    ta.addEventListener('focus', () => {
+      if (!down && g !== focusG) gCaret(g, ta.selectionStart, ta.selectionEnd, ta.scrollTop);
+    });
+    ta.addEventListener('scroll', () => {
+      g.ghl.scrollTop = ta.scrollTop;
+      g.ghl.scrollLeft = ta.scrollLeft;
+    });
+    g.gdoc.querySelector('.prevwrap').addEventListener('pointerdown', () => gFocus(g));
+    gDragWire(g);
+    return g;
+  }
+  // run `fn` once `g` is in front: at once, or after the queue brings it
+  const gThen = (g, fn) => {
+    if (gFocus(g)) fn();
+    else tabSerial(async () => {}).then(() => { if (focusG === g) fn(); });
+  };
+  // the caret where a press in a parked group put it. Only when the live
+  // editor came up on the same text, painted from the snap: an open still
+  // loading puts the caret where its own load does.
+  function gCaret(g, a, b, top) {
+    const body = g.gta.value;
+    gThen(g, () => {
+      if (!docFront() || src.value !== body) return;
+      src.focus({ preventScroll: true });
+      try { src.setSelectionRange(a, b); } catch {}
+      src.scrollTop = top;
+      sync();
+    });
+  }
+  // a group out: out of the tree and the page. The live editor never
+  // leaves the page with it (gTake puts it in the next group), and a tool
+  // wrap waits in the stash (24-tools.js).
+  function gDrop(g) {
+    splitRemove(g);
+    const i = groups.indexOf(g);
+    if (i >= 0) groups.splice(i, 1);
+    if (glive.parentNode === g.el) $('center').append(glive);
+    for (const w of [...g.host.querySelectorAll('.intab')]) { w.hidden = true; toolStash.append(w); }
+    g.el.remove();
+    if (groups.includes(focusG)) splitPaint();
+  }
+
+  // ── painting ─────────────────────────────────────────────────────────
+  // where everything goes: the live editor into the group in front, which
+  // carries the ids (#doctabs, #tabnew, #toolhost) and the action homes,
+  // the groups at their places, the handles between them, the buttons'
+  // say on splitting
+  function splitPaint() {
+    if (!sroot && groups.length) sroot = groups[0];
+    if (focusG && groups.includes(focusG) && glive.parentNode !== focusG.el) {
+      const had = document.activeElement === src;
+      // before the parked view, so the first .edwrap in the page is the live one
+      focusG.el.insertBefore(glive, focusG.ghost);
+      if (had) src.focus({ preventScroll: true });
+    }
+    for (const g of groups) {
+      const on = g === focusG;
+      g.el.classList.toggle('gfocus', on);
+      for (const [el, id] of [[g.strip, 'doctabs'], [g.bnew, 'tabnew'], [g.host, 'toolhost']])
+        if (on) el.id = id; else el.removeAttribute('id');
+      for (const [el, a] of [[g.bnew, 'tabnew'], [g.bsr, 'splitr'], [g.bsd, 'splitd']])
+        if (on) el.dataset.action = a; else delete el.dataset.action;
+      delete g.el.dataset.action;
+      delete g.strip.dataset.action;
+    }
+    // the homes of moving between groups: the group each one goes to
+    const ls = leaves();
+    const at = ls.indexOf(focusG);
+    if (ls.length > 1 && at >= 0) {
+      ls[(at + 1) % ls.length].strip.dataset.action = 'gnext';
+      ls[(at - 1 + ls.length) % ls.length].el.dataset.action = 'gprev';
+    }
+    groot.classList.toggle('multi', groups.length > 1);
+    layout();
+    gPaintAll();
+  }
+  // each group at its fractions of the tree, and a handle on each inner
+  // boundary. Handles are kept from one layout to the next, so one being
+  // dragged is never replaced under the pointer.
+  const handles = new Map();     // split node -> its handles
+  function layout() {
+    const used = new Set();
+    const place = (n, x, y, w, h) => {
+      if (isG(n)) {
+        const s = n.el.style;
+        s.left = x * 100 + '%';
+        s.top = y * 100 + '%';
+        s.width = w * 100 + '%';
+        s.height = h * 100 + '%';
+        n.el.classList.toggle('gl', x > 1e-6);
+        n.el.classList.toggle('gt', y > 1e-6);
+        return;
+      }
+      n.box = { x, y, w, h };
+      const tot = n.s.reduce((a, b) => a + b, 0);
+      if (!handles.has(n)) handles.set(n, []);
+      const hs = handles.get(n);
+      let off = 0;
+      n.k.forEach((c, i) => {
+        const f = n.s[i] / tot;
+        if (n.d === 'r') place(c, x + off * w, y, f * w, h);
+        else place(c, x, y + off * h, w, f * h);
+        off += f;
+        if (i === n.k.length - 1) return;
+        let r = hs[i];
+        if (!r) { r = document.createElement('div'); hs[i] = r; resWire(r, n, i); groot.append(r); }
+        r.className = 'gres ' + n.d + (r.classList.contains('drag') ? ' drag' : '');
+        const st_ = r.style;
+        if (n.d === 'r') {
+          Object.assign(st_, { left: (x + off * w) * 100 + '%', top: y * 100 + '%',
+            height: h * 100 + '%', width: '' });
+        } else {
+          Object.assign(st_, { top: (y + off * h) * 100 + '%', left: x * 100 + '%',
+            width: w * 100 + '%', height: '' });
+        }
+        used.add(r);
+      });
+      hs.length = n.k.length - 1;
+    };
+    if (sroot) place(sroot, 0, 0, 1, 1);
+    for (const [n, hs] of handles) {
+      for (const r of hs) if (r && !used.has(r)) r.remove();
+      if (!hs.some((r) => r && used.has(r))) handles.delete(n);
+    }
+    splitButtons();
+  }
+  // the least size of a subtree along an axis: groups side by side add up,
+  // stacked ones take the largest
+  const minPx = (n, d) => (isG(n) ? (d === 'r' ? GMIN_W : GMIN_H)
+    : n.d === d ? n.k.reduce((a, c) => a + minPx(c, d), 0) : Math.max(...n.k.map((c) => minPx(c, d))));
+  // a handle between children i and i+1 of split n. A drag moves their
+  // boundary, never past either side's least size; a double click shares
+  // the two out evenly.
+  function resWire(r, n, i) {
+    r.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      r.setPointerCapture(e.pointerId);
+      r.classList.add('drag');
+      const box = groot.getBoundingClientRect();
+      const span = n.d === 'r' ? n.box.w * box.width : n.box.h * box.height;
+      const tot = n.s.reduce((a, b) => a + b, 0);
+      const a0 = n.s[i], b0 = n.s[i + 1];
+      const pair = ((a0 + b0) / tot) * span;
+      const minA = minPx(n.k[i], n.d), minB = minPx(n.k[i + 1], n.d);
+      const p0 = n.d === 'r' ? e.clientX : e.clientY;
+      const move = (ev) => {
+        const pa = (a0 / tot) * span + (n.d === 'r' ? ev.clientX : ev.clientY) - p0;
+        if (pair < minA + minB) return;
+        const ca = Math.max(minA, Math.min(pair - minB, pa));
+        n.s[i] = ((a0 + b0) * ca) / pair;
+        n.s[i + 1] = a0 + b0 - n.s[i];
+        layout();
+      };
+      const up = () => {
+        r.removeEventListener('pointermove', move);
+        r.classList.remove('drag');
+        tabsSave();
+      };
+      r.addEventListener('pointermove', move);
+      r.addEventListener('pointerup', up, { once: true });
+    });
+    r.addEventListener('dblclick', () => {
+      const v = (n.s[i] + n.s[i + 1]) / 2;
+      n.s[i] = v;
+      n.s[i + 1] = v;
+      layout();
+      tabsSave();
+    });
+  }
+  // why `g` cannot split that way now, or '' when it can
+  function splitWhy(g, dir) {
+    if (!g) return 'no group';
+    if (isMobile()) return 'one group at a time on a phone';
+    const r = g.el.getBoundingClientRect();
+    if (dir === 'r' && r.width < 2 * GMIN_W)
+      return 'not enough room, each group needs at least ' + GMIN_W + 'px across';
+    if (dir === 'd' && r.height < 2 * GMIN_H)
+      return 'not enough room, each group needs at least ' + GMIN_H + 'px of height';
+    return '';
+  }
+  function splitButtons() {
+    for (const g of groups) {
+      for (const [b, d] of [[g.bsr, 'r'], [g.bsd, 'd']]) {
+        const why = splitWhy(g, d);
+        const [name, keys] = SPLIT_NAME[d];
+        b.disabled = !!why;
+        tip(b, name, keys);
+        if (why) b.title = name + ' (' + keys + '): ' + why;
+      }
+    }
+  }
+  new ResizeObserver(() => splitButtons()).observe(groot);
+
+  // ── the parked view ──────────────────────────────────────────────────
+  // what the live editor showed a tab as it let go of it, so its group
+  // paints exactly that: the highlighted text and the preview's document
+  function gGhostKeep(t) {
+    t.ghost = { body: src.value, hl: hl.innerHTML,
+      prev: prev.getAttribute('srcdoc'), psrc: prev.getAttribute('src') };
+  }
+  // a tab's text when no snap holds it: the tree's copy of a page, or the
+  // ship's, fetched once and painted when it lands. null: none (a grub,
+  // which shows when its group comes to the front).
+  function gCache(t) {
+    if (t.kind === 'page') {
+      if (!t.key) return '';
+      const n = nodes.find((x) => x.page && x.path === t.key);
+      if (n && typeof n.body === 'string') return n.body;
+    }
+    if (t.kind === 'know' && !t.key) return '';
+    if (typeof t.gbody === 'string') return t.gbody;
+    if (!t.key || t.kind === 'grub' || t.gfetch) return null;
+    t.gfetch = true;
+    const { key, kind } = t;
+    const url = t.kind === 'know' ? api + '/know-read?key=' + encodeURIComponent(t.key)
+      : api + '/page-source?name=' + encodeURIComponent(t.key);
+    fetch(url).then((r) => (r.ok ? r.json() : null)).then((d) => {
+      if (t.key !== key || t.kind !== kind) return;   // the tab took another document
+      if (d && typeof d.body === 'string') { t.gbody = d.body; t.gkind = d.kind; gPaintAll(); }
+    }).catch(() => {});
+    return null;
+  }
+  const ghostHl = (body, kind) => {
+    const lang = LMAP[kind];
+    const g = window.Prism && lang && Prism.languages[lang];
+    // the main thread, so only a short text: some grammars crawl on long
+    // unterminated input (25-editor.js), which is why the live one uses a worker
+    if (g && body.length <= 8000) {
+      try { return Prism.highlight(body, g, lang) + '\n'; } catch {}
+    }
+    return esc(body) + '\n';
+  };
+  function gPaint(g) {
+    const on = g === focusG;
+    g.ghost.hidden = on;
+    if (on) { g.gmemo = null; return; }
+    const t = g.active;
+    const k = t && TAB_KINDS[t.kind];
+    const doc = !!k && !!k.live;
+    const s = t && t.snap;
+    const body = !doc ? null : s ? s.body : gCache(t);
+    const memo = [t, s, body, t && t.read, t && t.ghost, t && t.key, t && t.back.length, t && t.fwd.length,
+      t && k.label(t), t && t.key && linkRO(t.key)];
+    if (g.gmemo && memo.every((v, i) => v === g.gmemo[i])) return;
+    g.gmemo = memo;
+    const path = g.ghead.querySelector('.tpath');
+    const name = !t ? '' : doc ? ((s && s.shown) || t.key || k.label(t)) : k.label(t);
+    path.textContent = name || 'no page open';
+    path.classList.toggle('muted', !name);
+    path.title = name;
+    g.ghead.querySelector('[data-go="tback"]').disabled = !t || !t.back.length;
+    g.ghead.querySelector('[data-go="tfwd"]').disabled = !t || !t.fwd.length;
+    g.ghead.querySelector('.tread').hidden = !doc;
+    g.ghead.querySelector('[data-go="tmenu"]').hidden = !doc;
+    for (const b of g.ghead.querySelectorAll('.tread button')) {
+      const p = (b.dataset.go === 'read') === !!(t && t.read);
+      b.classList.toggle('on', p);
+      b.setAttribute('aria-pressed', p ? 'true' : 'false');
+    }
+    g.gdoc.hidden = !doc;
+    if (!doc) return;
+    const kind = t.kind === 'know' ? 'md' : (s && (s.kind || s.pkind)) || t.gkind
+      || ((nodes.find((x) => x.page && x.path === t.key) || {}).kind) || 'md';
+    const ta = g.gta;
+    ta.value = body === null ? '' : body;
+    ta.placeholder = body === null ? 'click to show ' + k.label(t) : '';
+    // a link this editor may not write to is locked in its group as well
+    // as in front (linkRO, 30-tree.js)
+    ta.title = t.kind === 'page' && t.key && linkRO(t.key) ? 'read-only' : '';
+    g.ghl.innerHTML = t.ghost && t.ghost.body === ta.value ? t.ghost.hl : ghostHl(ta.value, kind);
+    ta.scrollTop = s ? s.scroll : 0;
+    g.ghl.scrollTop = ta.scrollTop;
+    g.gdoc.classList.toggle('gread', !!t.read);
+    if (t.read) {
+      const kept = t.ghost && t.ghost.body === ta.value ? t.ghost : null;
+      if (kept && kept.psrc && !kept.prev) {
+        if (g.gprev.getAttribute('src') !== kept.psrc) { g.gprev.removeAttribute('srcdoc'); g.gprev.src = kept.psrc; }
+      } else {
+        const d = (kept && kept.prev) || ghostDoc(kind, ta.value) || '';
+        if (g.gprev.getAttribute('srcdoc') !== d) { g.gprev.removeAttribute('src'); g.gprev.srcdoc = d; }
+      }
+    }
+  }
+  const gPaintAll = () => { for (const g of groups) gPaint(g); };
+
+  // ── splitting and moving between groups ─────────────────────────────
+  // a new group beside `g` with a new page in it, in front. Refused, and
+  // said so, when either half would be under a group's least size.
+  const gSplit = (g = focusG, dir = 'r') => tabSerial(async () => {
+    if (!g || !groups.includes(g)) return false;
+    const why = splitWhy(g, dir);
+    if (why) { st('cannot split: ' + why, false); return false; }
+    const ng = mkGroup();
+    ng.tabs.push(mkTab('page', ''));
+    ng.active = ng.tabs[0];
+    gAdd(ng);
+    splitInsert(g, ng, dir);
+    if (!(await gTo(ng))) { gDrop(ng); return false; }
+    src.focus();
+    return true;
+  });
+  // tab `t` into a new group beside `g` (a drop on its edge, or the tab
+  // menu). The tab is the new group's only one; a group it leaves empty
+  // closes.
+  async function gSplitWith(g, dir, t, before = false) {
+    const why = splitWhy(g, dir);
+    if (why) { st('cannot split: ' + why, false); return false; }
+    const ng = mkGroup();
+    gAdd(ng);
+    splitInsert(g, ng, dir, before);
+    splitPaint();
+    const ok = await gMove(t, ng, 0);
+    if (groups.includes(ng) && !ng.tabs.length) gDrop(ng);
+    return ok;
+  }
+  function gCycle(dir) {
+    const ls = leaves();
+    if (ls.length < 2 || isMobile()) return;
+    const i = ls.indexOf(focusG);
+    const g = ls[(i + dir + ls.length) % ls.length];
+    gThen(g, () => { if (docFront() && !document.querySelector('.dlg:not([hidden])')) src.focus(); });
+  }
+
+  // ── dragging a tab ───────────────────────────────────────────────────
+  // A tab drags to a strip, where it goes between the tabs it is dropped
+  // between, or onto a group: its middle takes it as the group's last tab,
+  // and an edge (the outer quarter) splits the group that way with the tab
+  // alone in the new half, where there is room for one. The live editor's
+  // own drop (text into the textarea) never sees a tab.
+  let dragTab = null;
+  let dropEl = null;
+  const TAB_MIME = 'application/x-lat-tab';
+  // a drag carrying a tab of ours. The type, not only dragTab: a strip
+  // repainted mid-drag detaches the tab that started it, its dragend then
+  // reaches nobody, and a stale dragTab took a later text drag for a tab.
+  const tabDrag = (e) => !!dragTab && !!e.dataTransfer
+    && [...(e.dataTransfer.types || [])].includes(TAB_MIME);
+  const dragDone = () => {
+    dragTab = null;
+    dropHide();
+    for (const w of document.querySelectorAll('.dtw.dragging')) w.classList.remove('dragging');
+  };
+  for (const ev of ['dragend', 'drop']) document.addEventListener(ev, () => setTimeout(dragDone, 0), true);
+  const dropHide = () => { if (dropEl) dropEl.hidden = true; };
+  function dropAt(g, e) {
+    const sr = g.strip.getBoundingClientRect();
+    if (e.clientY <= sr.bottom) {
+      const ws_ = [...g.list.children];
+      let at = ws_.length;
+      for (let i = 0; i < ws_.length; i++) {
+        const r = ws_[i].getBoundingClientRect();
+        if (e.clientX < r.left + r.width / 2) { at = i; break; }
+      }
+      return { g, zone: 'strip', at };
+    }
+    const r = g.el.getBoundingClientRect();
+    const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - sr.bottom) / (r.bottom - sr.bottom);
+    const edge = fx < 0.25 ? ['r', true] : fx > 0.75 ? ['r', false]
+      : fy < 0.25 ? ['d', true] : fy > 0.75 ? ['d', false] : null;
+    if (edge && !splitWhy(g, edge[0])) return { g, zone: 'edge', dir: edge[0], before: edge[1] };
+    return { g, zone: 'mid' };
+  }
+  function dropShow(d) {
+    if (!dropEl) { dropEl = document.createElement('div'); dropEl.className = 'gdrop'; groot.append(dropEl); }
+    const gr = groot.getBoundingClientRect();
+    const r = d.g.el.getBoundingClientRect();
+    const sr = d.g.strip.getBoundingClientRect();
+    let box = { l: r.left, t: sr.bottom, w: r.width, h: r.bottom - sr.bottom };
+    if (d.zone === 'strip') box = { l: sr.left, t: sr.top, w: sr.width, h: sr.height };
+    else if (d.zone === 'edge') {
+      if (d.dir === 'r') box = { ...box, w: box.w / 2, l: d.before ? box.l : box.l + box.w / 2 };
+      else box = { ...box, h: box.h / 2, t: d.before ? box.t : box.t + box.h / 2 };
+    }
+    Object.assign(dropEl.style, { left: box.l - gr.left + 'px', top: box.t - gr.top + 'px',
+      width: box.w + 'px', height: box.h + 'px' });
+    dropEl.hidden = false;
+  }
+  function gDragWire(g) {
+    g.list.addEventListener('dragstart', (e) => {
+      const w = e.target.closest && e.target.closest('.dtw');
+      const t = w && allTabs().find((x) => x.id === w.dataset.id);
+      if (!t) return;
+      dragTab = t;
+      w.classList.add('dragging');
+      try {
+        e.dataTransfer.setData(TAB_MIME, t.id);
+        e.dataTransfer.effectAllowed = 'move';
+      } catch {}
+    });
+    g.list.addEventListener('dragend', dragDone);
+    g.el.addEventListener('dragover', (e) => {
+      if (!tabDrag(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      try { e.dataTransfer.dropEffect = 'move'; } catch {}
+      dropShow(dropAt(g, e));
+    }, true);
+    g.el.addEventListener('dragleave', (e) => {
+      if (dragTab && !(e.relatedTarget && g.el.contains(e.relatedTarget))) dropHide();
+    });
+    g.el.addEventListener('drop', (e) => {
+      if (!tabDrag(e)) { dragDone(); return; }
+      e.preventDefault();
+      e.stopPropagation();
+      const t = dragTab;
+      dragTab = null;
+      dropHide();
+      const d = dropAt(g, e);
+      if (d.zone === 'edge') gSplitWith(g, d.dir, t, d.before);
+      else gMove(t, g, d.zone === 'strip' ? d.at : null);
+    }, true);
+  }
+
+  // ── keys and actions ─────────────────────────────────────────────────
+  addEventListener('keydown', (e) => {
+    if (!e.ctrlKey || e.altKey || e.metaKey) return;
+    if (e.code === 'Backslash') {
+      e.preventDefault();
+      e.stopPropagation();
+      gSplit(focusG, e.shiftKey ? 'd' : 'r');
+    } else if (e.shiftKey && (e.code === 'BracketRight' || e.code === 'BracketLeft')) {
+      e.preventDefault();
+      e.stopPropagation();
+      gCycle(e.code === 'BracketRight' ? 1 : -1);
+    }
+  }, true);
+  action({ id: 'splitr', name: 'Split right', home: 'Tab strip', keys: 'Ctrl+\\',
+    run: () => gSplit(focusG, 'r'), when: () => !splitWhy(focusG, 'r') });
+  action({ id: 'splitd', name: 'Split down', home: 'Tab strip', keys: 'Ctrl+Shift+\\',
+    run: () => gSplit(focusG, 'd'), when: () => !splitWhy(focusG, 'd') });
+  action({ id: 'gnext', name: 'Next group', home: 'Tab group', keys: 'Ctrl+Shift+]',
+    run: () => gCycle(1), when: () => groups.length > 1 && !isMobile() });
+  action({ id: 'gprev', name: 'Previous group', home: 'Tab group', keys: 'Ctrl+Shift+[',
+    run: () => gCycle(-1), when: () => groups.length > 1 && !isMobile() });
+  // a click into a frame in a group that is not in front: the frame takes
+  // the focus and this window only sees its own blur
+  addEventListener('blur', () => setTimeout(() => {
+    const a = document.activeElement;
+    const el = a && a.tagName === 'IFRAME' && a.closest('.tgroup');
+    const g = el && groups.find((x) => x.el === el);
+    if (g && g !== focusG) gFocus(g);
+  }, 0));
+  // the phone shows the group in front alone, and splits nothing
+  matchMedia('(max-width: 820px)').addEventListener('change', () => splitButtons());
+
+  // for the browser suites
+  window.latSplits = {
+    split: (dir) => gSplit(focusG, dir),
+    why: (dir) => splitWhy(focusG, dir),
+    tree: splitSave,
+    move: (id, gi, dir, before = false) => {
+      const t = allTabs().find((x) => x.id === id);
+      return t && groups[gi] ? gSplitWith(groups[gi], dir, t, before) : Promise.resolve(false);
+    },
+  };
 
 // ── src/30-tree.js ────────────────────────────────────────────────────────
   // ── page kind <-> extension, once for the whole bundle ───────────────────
@@ -5740,6 +6703,9 @@
   // two empty pages have the same one, so a create landing under a second
   // New took the second page's blank buffer for its own.
   const createdHere = (creating, name) => creating && current === null && pname.value === name;
+  //  the editor holds a page: a group brought to the front during a save
+  //  (28-splits.js) can hold a memory or a grub of the same name
+  const pageHere = () => mode !== 'know' && !grubPath;
   //  the page `name` (as typed) is on the ship, or queued for it, and not
   //  a create's pulsing row still waiting for its answer
   const madePage = (name) => {
@@ -5859,7 +6825,8 @@
       // same stillHere guard as the online path: only touch live editor state
       // if the editor has not moved to another document during the round-trip.
       const stillHere = fixed ? tabAdopt(fixed, name)
-        : current === name || createdHere(creating, name);
+        : pageHere() && (current === name || createdHere(creating, name));
+      if (!stillHere) tabLanded('page', name, sent);
       if (stillHere) {
         current = name;
         tabFollow();         // a new page's tab is named now (21-tabs.js)
@@ -5893,7 +6860,8 @@
     //  own tab came back to the front, unnamed, during the round trip;
     //  in the background that tab is named for it instead (tabAdopt).
     const stillHere = fixed ? tabAdopt(fixed, name)
-      : current === name || createdHere(creating, name);
+      : pageHere() && (current === name || createdHere(creating, name));
+    if (!stillHere) tabLanded('page', name, sent, vr && vr.rev);
     if (stillHere) {
       current = name;
       tabFollow();           // a new page's tab is named now (21-tabs.js)
@@ -5953,53 +6921,156 @@
     saving = true;
     // the document this autosave owns. If the user navigates mid-flight,
     // `current` moves; everything below acts on `target`, not the new current.
+    //  and what it is: a group coming to the front (28-splits.js) can
+    //  change the mode and the kind in the editor while this flies
     const target = current;
     const sent = src.value;
-    const url = mode === 'know'
+    const know = mode === 'know';
+    const tkind = curKind || pkind.value;
+    const trev = curRev;
+    const here = () => current === target && (mode === 'know') === know && !grubPath;
+    const url = know
       ? api + '/know-save?key=' + encodeURIComponent(target)
       : api + '/page-save?name=' + encodeURIComponent(target) +
-        '&type=' + (curKind || pkind.value) + linkBase(target);
+        '&type=' + tkind + linkBase(target);
     let w = { gone: true };
     const sentAt = Date.now();
     try {
-      if (!(jobWait && mode !== 'know' && !linkOf(target)))
+      if (!(jobWait && !know && !linkOf(target)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
     } finally { saving = false; }
     const r = w.r;
-    if (mode !== 'know' && await linkSaveFail(target, w)) { flushPending(); return; }
+    if (!know && await linkSaveFail(target, w)) { flushPending(); return; }
+    //  a document parked meanwhile keeps its own copy (21-tabs.js), which
+    //  is what was sent unless it was typed into after
+    const tk = know ? 'know' : 'page';
     if (w.gone) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
-      if (mode === 'know') {
-        if (!(await enqueueKnow(target, sent))) { flushPending(); return; }
-        if (current === target && src.value === sent) dirty = false;
+      if (!(await (know ? enqueueKnow(target, sent) : enqueueSave(target, tkind, sent, false, null, trev)))) {
         flushPending();
         return;
       }
-      if (!(await enqueueSave(target, curKind || pkind.value, sent))) { flushPending(); return; }
-      if (current === target && src.value === sent) dirty = false;
+      if (here() && src.value === sent) dirty = false;
+      else tabLanded(tk, target, sent);
       flushPending();
       return;
     }
     if (!r.ok) { st('autosave failed' + await errText(r), false); flushPending(); return; }
     let vr = null;
-    if (mode !== 'know') { try { vr = await r.json(); } catch {} }
+    if (!know) { try { vr = await r.json(); } catch {} }
     //  patch the saved doc's local cache regardless of focus. No kind: an
     //  autosave writes the page's existing kind, it never sets one.
-    if (mode !== 'know') { patchLocal(target, null, sent); await dropQueued(target, sentAt); }
+    if (!know) { patchLocal(target, null, sent); await dropQueued(target, sentAt); }
+    if (!here()) tabLanded(tk, target, sent, vr && vr.rev);
     // live-editor state only if the editor is still on the doc we autosaved
-    if (current === target) {
+    if (here()) {
       if (src.value === sent) dirty = false;   // typed during the request? stay dirty
-      if (mode !== 'know' && vr && vr.rev) curRev = vr.rev;
+      if (!know && vr && vr.rev) curRev = vr.rev;
       // the conflict verdict must be the LAST word, not clobbered by the
       // ordinary confirmation a line later
       if (vr && vr.conflicted)
         st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
       else st('autosaved');
-      if (mode !== 'know' && !CONTENT()) setTimeout(checkErrors, 800);
+      if (!know && !CONTENT()) setTimeout(checkErrors, 800);
     }
     flushPending();
     if (offCount) replayQueue(true);     // this autosave proves the ship is back too
+  }
+
+  // ── saving a parked buffer ──────────────────────────────────────────────
+  // A group that leaves the front (gRelease, 21-tabs.js) does not wait for
+  // its flush: its tab's unsaved text goes into the tab's snap, and this
+  // writes it from there, on autosave's terms. Pages and memories only,
+  // with a name, autosave on, and never a link autosave stands down for.
+  // It takes its turn behind any save in flight (one write at a time) and
+  // gives up once the tab is not parked any more, since then the live
+  // editor's own autosave owns the text. What lands marks the snap clean
+  // only if it still holds what was sent; a tab that came back to the
+  // front meanwhile is marked clean live, by the same rule.
+  async function saveParked(t) {
+    const s = t.snap;
+    if (!s || !s.dirty || !t.key || !autosaveOn()) return;
+    if (t.kind !== 'page' && t.kind !== 'know') return;
+    const know = t.kind === 'know';
+    if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
+    parkedRun++;
+    try { await parkedSave(t, s, know); } finally { parkedRun--; }
+  }
+  async function parkedSave(t, s, know) {
+    // settled, not only off the wire: a save clears `saving` before its
+    // bookkeeping (tabLanded) marks this snap clean and gives it the new
+    // rev, and a write from the gap was a duplicate, on a link one that
+    // claimed the old rev and drew a false conflict
+    await savesSettled(false);
+    if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
+    if (t.snap !== s || !s.dirty || !allTabs().includes(t)) return;
+    saving = true;
+    const name = t.key;
+    const sent = s.body;
+    const kind = s.kind || s.pkind;
+    const url = know ? api + '/know-save?key=' + encodeURIComponent(name)
+      : api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
+        + (linkOf(name) && s.rev ? '&base=' + s.rev : '');
+    let w = { gone: true };
+    //  behind a folder job a page's save queues instead of going out, as
+    //  the live editor's does (jobWait, 08-offline.js)
+    const sentAt = Date.now();
+    try {
+      if (!(jobWait && !know && !linkOf(name)))
+        w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+    } finally { saving = false; }
+    const landed = (rev) => {
+      tabLanded(t.kind, name, sent, rev);
+      // back in front by now: the live editor holds it
+      if (t === activeTab && current === name && (mode === 'know') === know && !grubPath) {
+        if (src.value === sent) dirty = false;
+        if (!know && rev) curRev = rev;
+      }
+    };
+    if (!know && await linkSaveFail(name, w)) { flushPending(); return; }
+    if (w.gone) {
+      if (await (know ? enqueueKnow(name, sent) : enqueueSave(name, kind, sent, false, null, s.rev)))
+        landed(null);
+      flushPending();
+      return;
+    }
+    if (!w.r.ok) {
+      st('autosave of ' + name + ' failed' + await errText(w.r), false);
+      flushPending();
+      return;
+    }
+    let vr = null;
+    //  and a queued edit older than this save is superseded by it
+    if (!know) {
+      try { vr = await w.r.json(); } catch {}
+      patchLocal(name, null, sent);
+      await dropQueued(name, sentAt);
+    }
+    else knowGen++;
+    landed(vr && vr.rev);
+    st('autosaved ' + name);
+    flushPending();
+    if (offCount) replayQueue(true);
+  }
+
+  // Every save is counted from its start to the end of its bookkeeping
+  // (saveTail), and every background save of a parked tab while it runs
+  // (parkedRun). savesSettled waits until none is left, `parked` saying
+  // whether the parked ones count, capped past a save's own timeout.
+  let saveTail = 0, parkedRun = 0;
+  const tailed = (fn) => async (...a) => {
+    saveTail++;
+    try { return await fn(...a); } finally { saveTail--; }
+  };
+  autosave = tailed(autosave);
+  save = tailed(save);
+  saveKnow = tailed(saveKnow);
+  saveGrub = tailed(saveGrub);
+  async function savesSettled(parked = true) {
+    const t0 = Date.now();
+    while ((saving || saveTail || (parked && parkedRun)) && Date.now() - t0 < 35000)
+      await new Promise((r) => setTimeout(r, 50));
   }
 
   // ── a link whose save was refused as stale ──────────────────────────────
@@ -6015,7 +7086,7 @@
   lcfBar.innerHTML = '<span id="lnkcfmsg"></span>' +
     '<button type="button" id="lnkcfre">Reload theirs</button>' +
     '<button type="button" id="lnkcfkeep">Keep mine as a copy</button>';
-  $('center').insertBefore(lcfBar, $('docarea'));
+  $('docarea').before(lcfBar);
   //  by id, not lcfBar: paintLink (65-ctl.js) can run before this file has
   function paintLinkCf(name) {
     const bar = $('lnkcf');
@@ -6242,6 +7313,7 @@
     }
     if (here && j && typeof j.rev === 'number') grubRev = j.rev;
     if (here && src.value === sent) dirty = false;
+    if (!here) tabLanded('grub', p, sent, null, s);
     if (here) st('saved');
     // bust the page DIRECTORY, not the grub: the cached views are the /x/
     // dir listing and page view, and none of their URLs name '/code'
@@ -6843,6 +7915,9 @@
   let fitCur = null, fitH = 0, fitOff = false;
   customElements.define('lat-preview', class extends HTMLElement {
     connectedCallback() {
+      // built once: the live editor moves between groups (28-splits.js)
+      if (this.built) return;
+      this.built = true;
       this.innerHTML =
         // SANDBOXED, and this is load-bearing rather than defensive.
         //
@@ -7005,7 +8080,12 @@
       // wikilink used to navigate the frame itself and land on an
       // authenticated route the opaque origin has no cookies for; escaping
       // to the top page is what the sandbox token above actually permits.
-      prev.srcdoc = '<!doctype html><meta charset="utf-8"><base target="_top">'
+      prev.srcdoc = localShell(previewFit()) + localHtml(kindNow(), src.value);
+    } catch {}
+  };
+  // the bare document a content kind's local render goes into. `fit` is
+  // the height reporter, which only the live preview has.
+  const localShell = (fit) => '<!doctype html><meta charset="utf-8"><base target="_top">'
         + '<style>:root{color-scheme:light dark}'
         + 'body{margin:0;padding:14px;font:15px/1.6 var(--font,system-ui,sans-serif);background:var(--bg,#fafafa);color:var(--text)}'
         + '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot()
@@ -7016,8 +8096,14 @@
         + 'pre::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
         + 'img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
-        + '</style>' + previewFit() + localHtml(kindNow(), src.value);
-    } catch {}
+        + '</style>' + fit;
+  // a parked group's Read (28-splits.js): the same local render of its
+  // text, no fit, or null for a kind only the ship renders
+  const ghostDoc = (kind, body) => {
+    if (!['md', 'gmi', 'html', 'text'].includes(kind)) return null;
+    try {
+      return kind === 'html' ? previewScrollbars() + body : localShell('') + localHtml(kind, body);
+    } catch { return null; }
   };
 
   // a theme that lands after the frame was painted (theme.js runs after
@@ -7805,7 +8891,7 @@
   async function linkBack(name) {
     const lk = linkOf(name);
     if (!lk) return;
-    for (const t of tabs.filter((x) => x.kind === 'page' && x.key === name))
+    for (const t of allTabs().filter((x) => x.kind === 'page' && x.key === name))
       if ((await closeTab(t.id)) === false) return;
     const r = await fetch(api + '/link-unmake?name=' + encodeURIComponent(name),
       { method: 'POST' }).catch(() => null);
@@ -10609,7 +11695,7 @@
     //  memory again). Only the memory still shown takes the key and its
     //  tab, never whatever is in front now.
     const claim = () => {
-      if (!knowHere(key)) return;
+      if (!knowHere(key)) { tabLanded('know', key, sent); return; }
       current = key;
       tabFollow();             // a new memory's tab is named now (21-tabs.js)
       pname.readOnly = true;
@@ -10907,8 +11993,28 @@
     sheet.setAttribute('role', 'menu');
     sheet.setAttribute('aria-label', 'Open tabs');
     sheet.hidden = true;
+    // With more than one group (28-splits.js), the sheet starts with a row
+    // of them, the one in front marked: a phone shows one group at a time,
+    // and this is the way to the others. The tabs below are the front one's.
     const sheetPaint = () => {
       sheet.textContent = '';
+      if (groups.length > 1) {
+        const gr = document.createElement('div');
+        gr.className = 'mtgrp';
+        gr.setAttribute('role', 'group');
+        gr.setAttribute('aria-label', 'Tab groups');
+        leaves().forEach((g, i) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = g === focusG ? 'on' : '';
+          b.setAttribute('aria-pressed', g === focusG ? 'true' : 'false');
+          b.dataset.g = g.id;
+          b.textContent = 'Group ' + (i + 1) + ' (' + g.tabs.length + ')';
+          b.onclick = () => gThen(g, sheetPaint);
+          gr.append(b);
+        });
+        sheet.append(gr);
+      }
       for (const t of tabs) {
         const k = TAB_KINDS[t.kind];
         const name = k.label(t);
@@ -10968,7 +12074,7 @@
     // the button carries the tab count, read off the strip it summarises
     const count = () => { tabsw.dataset.n = String(tabs.length); };
     count();
-    new MutationObserver(count).observe(tabList, { childList: true });
+    document.addEventListener('lat-tabs', count);
 
     // the unread badge lives on the ribbon's inbox, which a phone shows
     // only with the left drawer open; mirror it onto that drawer's toggle

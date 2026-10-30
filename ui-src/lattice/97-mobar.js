@@ -56,8 +56,28 @@
     sheet.setAttribute('role', 'menu');
     sheet.setAttribute('aria-label', 'Open tabs');
     sheet.hidden = true;
+    // With more than one group (28-splits.js), the sheet starts with a row
+    // of them, the one in front marked: a phone shows one group at a time,
+    // and this is the way to the others. The tabs below are the front one's.
     const sheetPaint = () => {
       sheet.textContent = '';
+      if (groups.length > 1) {
+        const gr = document.createElement('div');
+        gr.className = 'mtgrp';
+        gr.setAttribute('role', 'group');
+        gr.setAttribute('aria-label', 'Tab groups');
+        leaves().forEach((g, i) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = g === focusG ? 'on' : '';
+          b.setAttribute('aria-pressed', g === focusG ? 'true' : 'false');
+          b.dataset.g = g.id;
+          b.textContent = 'Group ' + (i + 1) + ' (' + g.tabs.length + ')';
+          b.onclick = () => gThen(g, sheetPaint);
+          gr.append(b);
+        });
+        sheet.append(gr);
+      }
       for (const t of tabs) {
         const k = TAB_KINDS[t.kind];
         const name = k.label(t);
@@ -117,7 +137,7 @@
     // the button carries the tab count, read off the strip it summarises
     const count = () => { tabsw.dataset.n = String(tabs.length); };
     count();
-    new MutationObserver(count).observe(tabList, { childList: true });
+    document.addEventListener('lat-tabs', count);
 
     // the unread badge lives on the ribbon's inbox, which a phone shows
     // only with the left drawer open; mirror it onto that drawer's toggle

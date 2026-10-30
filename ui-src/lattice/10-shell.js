@@ -49,6 +49,9 @@
     save: ['0 0 24 24', 'M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 3v5h7V3M7 21v-7h10v7', 'stroke'],
     pin: ['0 0 24 24', 'M9 3h6l-1 6 3 4H7l3-4zM12 13v8', 'stroke'],
     tabs: ['0 0 24 24', 'M8 8h12v12H8zM4 16V4h12', 'stroke'],
+    // split a tab group right or down (28-splits.js): a frame cut in two
+    splitr: ['0 0 24 24', 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM12 4v16', 'stroke'],
+    splitd: ['0 0 24 24', 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM3 12h18', 'stroke'],
     copy: ['0 0 24 24', 'M9 9h11v11H9zM5 15H4V4h11v1', 'stroke'],
     mark: ['0 0 24 24', 'M6 3h12v18l-6-4-6 4z', 'stroke'],
     know: ['0 0 24 24', 'M12 3l8 9-8 9-8-9z', 'stroke'],

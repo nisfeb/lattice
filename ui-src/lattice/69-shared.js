@@ -159,7 +159,7 @@
   async function linkBack(name) {
     const lk = linkOf(name);
     if (!lk) return;
-    for (const t of tabs.filter((x) => x.kind === 'page' && x.key === name))
+    for (const t of allTabs().filter((x) => x.kind === 'page' && x.key === name))
       if ((await closeTab(t.id)) === false) return;
     const r = await fetch(api + '/link-unmake?name=' + encodeURIComponent(name),
       { method: 'POST' }).catch(() => null);

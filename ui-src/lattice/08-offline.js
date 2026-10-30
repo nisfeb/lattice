@@ -370,7 +370,9 @@
   // do: the editor then cleared its dirty flag and the work was gone with the
   // UI reporting success. If the queue cannot take it, say so and say it in
   // the words that matter, because there is nowhere else the edit now lives.
-  async function enqueueSave(name, kind, body, isNew, rn) {
+  //  `rev`: the revision the edit was made on, when it is not the open
+  //  page's (a parked tab's, saveParked in 35-pages.js)
+  async function enqueueSave(name, kind, body, isNew, rn, rev = curRev) {
     // the queue coalesces by name, and the 2s autosave calls this WITHOUT
     // the create flag — overwriting a queued create as a plain edit would
     // route the replay around the 409 create protection and let an offline
@@ -381,7 +383,7 @@
     try { prev = await offGet(name); } catch {}
     //  behind a job the timed-out writes still land, so a base would only
     //  flag our own text as a conflict: no base claim, as a live save
-    const queued = await offPut({ name, kind, body, baseRev: jobWait ? 0 : curRev || 0,
+    const queued = await offPut({ name, kind, body, baseRev: jobWait ? 0 : rev || 0,
       isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
@@ -394,7 +396,7 @@
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
-    snapPage(name, { body, kind, rev: curRev || 0 });
+    snapPage(name, { body, kind, rev: rev || 0 });
     st(job ? JOB_NOTE : 'saved offline — ' + offCount + ' waiting to sync');
     // truthy either way: 'job' tells the editor which words to show
     return job ? 'job' : true;

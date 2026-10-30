@@ -75,14 +75,27 @@
   // A Tab indent was shown but never saved, and a live refresh reverted it.
   // Always route scripted edits through here.
   const edited = () => src.dispatchEvent(new Event('input'));
+  // <lat-editor>: one is live, #src and #hl, the editor every module works
+  // on, and it moves into whichever group is in front (28-splits.js), so
+  // vim, list editing, autocomplete and the preview follow it there. With
+  // `ghost` it is another group's: the same two layers, locked, painted
+  // from that group's parked tab, and live once its group comes to the
+  // front. Built once: a move between groups connects it again.
   customElements.define('lat-editor', class extends HTMLElement {
     connectedCallback() {
+      if (this.built) return;
+      this.built = true;
+      if (this.hasAttribute('ghost')) {
+        this.innerHTML = '<div class="edwrap"><pre class="ehl" aria-hidden="true"></pre>'
+          + '<textarea class="esrc" spellcheck="false" readonly></textarea></div>';
+        return;
+      }
       this.innerHTML = `
 <div class="edwrap">
   <div id="acmirror" aria-hidden="true"></div>
   <div id="ac" class="ac" hidden role="listbox" aria-label="page suggestions"></div>
-  <pre id="hl" aria-hidden="true"></pre>
-  <textarea id="src" spellcheck="false" placeholder="open a page from the tree, or name a new one and start typing"></textarea>
+  <pre id="hl" class="ehl" aria-hidden="true"></pre>
+  <textarea id="src" class="esrc" spellcheck="false" placeholder="open a page from the tree, or name a new one and start typing"></textarea>
 </div>`;
       src = $('src'); hl = $('hl');
       src.addEventListener('input', () => {
