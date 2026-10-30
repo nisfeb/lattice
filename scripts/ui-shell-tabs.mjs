@@ -393,6 +393,8 @@ try {
     for (const k of ['appNT', 'edVim', 'appTabs']) localStorage.removeItem(k);
   }).catch(() => {});
   await browser.close();
-  await post('page-del?name=' + encodeURIComponent(PAGE)).catch(() => {});
+  //  the page, then the folder it made
+  for (const n of [PAGE, 'x-' + process.pid])
+    await post('page-del?name=' + encodeURIComponent(n)).catch(() => {});
 }
 check.done();
