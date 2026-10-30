@@ -24,6 +24,7 @@
 //      replace the editor window
 //    A target=_top added to a frame after load still lands in the frame
 //    Closing a frame tab with typed text asks, and keeps it on cancel
+//    The explorer refuses the ship root at once
 //
 //  SHOTS=1 saves the forum and browser tabs at 1400x900 under /tmp.
 //  PARTS=streams,nested runs only the parts named.
@@ -277,6 +278,13 @@ try {
     check('the explorer answers, and not with a crash',
       (xr.status === 200 || xr.status === 403) && !/recovering from a crash/.test(xBody),
       JSON.stringify({ status: xr.status, ms: Date.now() - t0, body: xBody.slice(0, 120) }));
+    //  the ship root is refused, at once, not left hanging
+    const rootShip = (await (await fetch(env.base + '/~/host')).text()).trim();
+    const t1 = Date.now();
+    const rr = await fetch(env.base + '/apps/lattice/x/' + rootShip + '/', { headers: { Cookie: env.cookie },
+      signal: AbortSignal.timeout(30000) }).catch((e) => ({ status: 'threw ' + e.name }));
+    check('the explorer refuses the ship root at once', rr.status === 403 && Date.now() - t1 < 20000,
+      JSON.stringify({ status: rr.status, ms: Date.now() - t1 }));
     //  a page's code file in the explorer opens in the editor as a grub tab
     const base = (await (await fetch(env.base + '/apps/lattice/streams',
       { headers: { Cookie: env.cookie } })).json()).base;

@@ -10426,24 +10426,25 @@
 ::  crash" in place of the whole editor, or never answered. `deep` %.n is
 ::  a shallow peek: one level, subdir names only.
 ::
+::  Bounded by local-peek-timeout: a grubbery that parks a refused dart
+::  instead of sending %veto would otherwise hang /x as release 74 did. A
+::  local peek answers in well under a second, so the bound only ever
+::  meets that case, and answers it as the refusal it is.
+::
 ++  peek-local-soft
   |=  [=road:tarball deep=?]
   =/  m  (fiber:fiber:nexus ,(unit view:nexus))
   ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  =/  until=@da  (add now local-peek-timeout)
+  ::  the timer first: a local veto lands at once, and set-timer's own
+  ::  take would meet it instead of +take-peek-or-wake
+  ;<  ~  bind:m  (send-wait-dated until)
   ;<  pw=wire  bind:m  (nonce:io /peek)
   ;<  ~  bind:m  (send-dart:io %node pw road %peek ~ ~ deep)
-  |=  input:fiber:nexus
-  :+  ~  q.state
-  ?+  in  [%skip ~]
-      ~  [%wait ~]
-      ::  only OUR dart's veto, as in +take-peek-or-wake
-      [~ %veto %node * * *]
-    ?.  =(pw wire.dart.u.in)  [%skip ~]
-    [%done ~]
-      [~ %peek * *]
-    ?.  =(pw wire.u.in)  [%skip ~]
-    [%done `view.u.in]
-  ==
+  (take-peek-or-wake pw until)
+::  +local-peek-timeout: +peek-local-soft's bound.
+++  local-peek-timeout  ~s15
 ::  +explore-refused: the explorer's answer for a path of ours that lattice
 ::  may not read: a 403 page with the crumbs and a way to our own pages.
 ::
