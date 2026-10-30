@@ -216,6 +216,10 @@
             [%fall %| /forum/notes empty-dir:loader]
             [%fall %& [/forum %seen] [[/ %noun] [%1 ~]]]
             [%fall %& [/forum %limits] [[/ %noun] [%1 ~]]]
+        ::  /pub/marks-migrated: the version of the one-time re-grow of every
+        ::  published page under its view-mode mark (+migrate-pub-marks). 0
+        ::  until it has run. Covered, so the stamp survives reload.
+            [%fall %& [/pub %'marks-migrated'] [[/ %ud] 0]]
         ::  /salt: the private salt behind every published revision's scry
         ::  id (+page-id:lp). Outside /pub, so no peer can read it; 0 until
         ::  +ensure-pub-ids mints it. Covered, because a new salt renames
@@ -392,6 +396,8 @@
         ;<  ~  bind:m  (ensure-shipped-templates root)
         ::  the salt and the revision list peers read (+ensure-pub-ids)
         ;<  ~  bind:m  (ensure-pub-ids root)
+        ::  pages published before per-format marks were grown as gmi
+        ;<  ~  bind:m  (migrate-pub-marks root)
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
         ;<  now=@da  bind:m  bowl-now
@@ -1949,13 +1955,17 @@
       ::  a folder's address reads its index, the way the bare ship reads
       ::  /index, and the bar then names the index so its relative links
       ::  resolve under the folder
-      ;<  got=(unit [rel=path body=@t])  bind:m
+      ;<  got=(unit [rel=path mode=view-mode:pg body=@t])  bind:m
         (read-page-or-index our ship.u.ref rel.u.ref)
       =/  rel=path  ?~(got rel.u.ref rel.u.got)
       =/  canon=tape  (trip (en-urb:lu ship.u.ref (weld pub-prefix:lu rel)))
       ?~  got
         (send-view eyre-id (render-page canon "" "" "<p class=\"err\">not published here</p>"))
       =/  body=@t  body.u.got
+      ::  the page's resolved view-mode: the mark it published under (own page:
+      ::  from +published-mode; peer: from the keened mark; slow-peek / legacy:
+      ::  floored at %gmi). The reader renders by this, not by sniffing body.
+      =/  mode=view-mode:pg  mode.u.got
       ::  own pages get a live reader (keep /pub/index: its per-page hash changes
       ::  on every edit). Remote pages stay static (can't keep a peer's grub).
       ;<  sb=path  bind:m  self-base
@@ -1978,33 +1988,64 @@
       =/  ttl=@t  (page-title-of body u.raw)
       ;<  ~  bind:m
         ;<  rv=tape  bind:m  ?:(=("" rk) (pure:(fiber:fiber:nexus ,tape) "") beacon-rev-tape)
-        ::  an html page's published copy is its markup: frame it like the
-        ::  /p/ view does (sandboxed for a peer, whose markup is untrusted),
-        ::  instead of rendering the source as gemtext. The comment box is a
-        ::  form, which a sandboxed frame cannot submit, so it is gemtext-only.
-        ?:  (looks-html:lgmi body)
-          ::  our own page is framed sandboxed too when it is shared for
-          ::  edit, since a peer may have written that markup
+        ::  render by the page's RESOLVED view-mode, not by sniffing the body.
+        ::  %gmi keeps the legacy body-sniff below so a plain-gmi page (an old
+        ::  revision, an un-upgraded peer, or a modeless own page) renders
+        ::  exactly as it did before. Every other mode renders by its mark.
+        ?:  ?=(%gmi mode)
+          ::  legacy %gmi: a published gemtext body that is actually markup
+          ::  frames like the /p/ view does (sandboxed for a peer, whose
+          ::  markup is untrusted), instead of rendering the source as
+          ::  gemtext. The comment box is a form a sandboxed frame cannot
+          ::  submit, so it is gemtext-only. Behavior identical to before.
+          ?:  (looks-html:lgmi body)
+            ::  our own page is framed sandboxed too when it is shared for
+            ::  edit, since a peer may have written that markup
+            ;<  eg=?  bind:m
+              ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,?) |)
+              (peer-written rel)
+            ::  and our own page is framed raw only when it IS an html page.
+            ::  This branch sniffs the body, and a key may write md, text or
+            ::  css: a body that merely starts with '<' ran as the owner
+            ::  (security audit run-1).
+            ;<  vm=view-mode:pg  bind:m
+              ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,view-mode:pg) %text)
+              (read-show-mode (weld /page rel))
+            =/  htm=@t
+              %:  render-browser-page  canon  body  ~
+                |(?!(=(ship.u.ref our)) eg ?!(?=(%html vm)))
+                rk  rv  (trip ttl)
+              ==
+            ?:  =("" rk)  (send-view eyre-id htm)
+            (send-view-long eyre-id htm)
+          ?:  =("" rk)
+            (send-view eyre-id (render-page-titled canon rk "" (trip ttl) (weld (render-gmi body) cbox)))
+          (send-view-long eyre-id (render-page-titled canon rk rv (trip ttl) (weld (render-gmi body) cbox)))
+        ::  a %html page's published copy is its markup: frame it, NEVER inline
+        ::  it (inlining a peer's markup is stored XSS). The resolved mode already
+        ::  says it is html, so no body sniff is needed. A PEER's markup is always
+        ::  sandboxed; our OWN is framed raw only when WE wrote it, sandboxed when
+        ::  a peer may have (peer-written), exactly the old +html gate. The comment
+        ::  box is form-only and a sandboxed frame cannot submit it, so it is omitted.
+        ?:  ?=(%html mode)
           ;<  eg=?  bind:m
             ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,?) |)
             (peer-written rel)
-          ::  and our own page is framed raw only when it IS an html page.
-          ::  This branch sniffs the body, and a key may write md, text or
-          ::  css: a body that merely starts with '<' ran as the owner
-          ::  (security audit run-1).
-          ;<  vm=view-mode:pg  bind:m
-            ?.  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,view-mode:pg) %text)
-            (read-show-mode (weld /page rel))
           =/  htm=@t
             %:  render-browser-page  canon  body  ~
-              |(?!(=(ship.u.ref our)) eg ?!(?=(%html vm)))
+              |(?!(=(ship.u.ref our)) eg)
               rk  rv  (trip ttl)
             ==
           ?:  =("" rk)  (send-view eyre-id htm)
           (send-view-long eyre-id htm)
+        ::  md / text / js / css / noun: +preview-inner escapes or safe-renders
+        ::  each one (raw HTML inside a peer's markdown is escaped by +render-md,
+        ::  and text/js/css become an escaped <pre>), so the fragment is safe to
+        ::  inline in our own chrome, with the comment box, like a gemtext page.
+        =/  inner=tape  (weld (preview-inner mode body) cbox)
         ?:  =("" rk)
-          (send-view eyre-id (render-page-titled canon rk "" (trip ttl) (weld (render-gmi body) cbox)))
-        (send-view-long eyre-id (render-page-titled canon rk rv (trip ttl) (weld (render-gmi body) cbox)))
+          (send-view eyre-id (render-page-titled canon rk "" (trip ttl) inner))
+        (send-view-long eyre-id (render-page-titled canon rk rv (trip ttl) inner))
       ::  the background self-refetch and SSE-forced refreshes re-run this
       ::  handler; they are machinery, not reading, and they mark themselves
       ::  (x-lattice-bg). Counting them double-counted every cold view and
@@ -7046,6 +7087,26 @@
   ;<  sn=view:nexus  bind:m  (peek:io (rf up pdir %show) ~)
   ?.  ?=([%file *] sn)  (pure:m %text)
   (pure:m (fall (mole |.(;;(view-mode:pg (sang-noun:tarball sang.sn)))) %text))
+::  +mode-mark: the mark a published page of this view-mode carries. The
+::  single place the view-mode to mark mapping lives; identity on the tags.
+::
+++  mode-mark
+  |=  m=view-mode:pg
+  ^-  @tas
+  m
+::  +published-mode: the view-mode a page publishes as. Reads the show grub
+::  directly (not via +read-show-mode, which answers %text for both an absent
+::  grub and an explicit %text, so the two could not be told apart). An absent
+::  or malformed show grub resolves to %gmi; an explicit %text stays %text.
+::
+++  published-mode
+  |=  rel=path
+  =/  m  (fiber:fiber:nexus ,view-mode:pg)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sn=view:nexus  bind:m  (peek:io (rf up (weld /page rel) %show) ~)
+  ?.  ?=([%file *] sn)  (pure:m %gmi)
+  (pure:m (fall (mole |.(;;(view-mode:pg (sang-noun:tarball sang.sn)))) %gmi))
 ::  +read-eval-cmd / +read-eval-deps: tolerant grub reads (absent or
 ::  malformed -> the zero value; a page never crashes its evaluator).
 ::
@@ -10012,7 +10073,8 @@
   |=  [our=@p shp=@p rel=path]
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
-  ;<  pr=(unit [rev=@ud body=@t])  bind:m  (read-page-body-rev our shp rel)
+  ;<  pr=(unit [rev=@ud mode=view-mode:pg body=@t])  bind:m
+    (read-page-body-rev our shp rel)
   (pure:m ?~(pr ~ `body.u.pr))
 ::  +read-page-or-index: a published page, or, when `rel` names none, the
 ::  index under it: urb://~ship/site reads /site/index the way urb://~ship
@@ -10022,7 +10084,7 @@
 ::
 ++  read-page-or-index
   |=  [our=@p shp=@p rel=path]
-  =/  m  (fiber:fiber:nexus ,(unit [rel=path body=@t]))
+  =/  m  (fiber:fiber:nexus ,(unit [rel=path mode=view-mode:pg body=@t]))
   ^-  form:m
   =/  dex=path  (snoc rel %index)
   ;<  revs=(map @t [rev=@ud id=@uv])  bind:m
@@ -10040,8 +10102,9 @@
     ~[rel dex]
   |-
   ?~  try  (pure:m ~)
-  ;<  body=(unit @t)  bind:m  (read-page-body our shp i.try)
-  ?^  body  (pure:m `[i.try u.body])
+  ;<  got=(unit [rev=@ud mode=view-mode:pg body=@t])  bind:m
+    (read-page-body-rev our shp i.try)
+  ?^  got  (pure:m `[i.try mode.u.got body.u.got])
   $(try t.try)
 ::  +read-page-body-rev: +read-page-body, but it also hands back the REVISION
 ::  the body came from. The peek view already carries the grub's cass ([%file
@@ -10057,7 +10120,7 @@
 ::
 ++  read-page-body-rev
   |=  [our=@p shp=@p rel=path]
-  =/  m  (fiber:fiber:nexus ,(unit [rev=@ud body=@t]))
+  =/  m  (fiber:fiber:nexus ,(unit [rev=@ud mode=view-mode:pg body=@t]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ::  `our` is a parameter, not a bowl-our bind. Callers already hold it (the
@@ -10077,38 +10140,50 @@
   ?:  =(shp our)
     ;<  seen=view:nexus  bind:m  (peek:io road ~)
     ?.  ?=([%file *] seen)  (pure:m ~)
-    (pure:m `[ud.cass.seen !<(@t (need-vase:tarball sang.seen))])
+    ::  the vault is %gmi-keyed, so its mark is NOT the page's mode. Resolve
+    ::  the mode from the page's show grub (+published-mode, the single source
+    ::  of truth); the vault body is the own-format source for it to render.
+    ;<  mode=view-mode:pg  bind:m  (published-mode rel)
+    (pure:m `[ud.cass.seen mode !<(@t (need-vase:tarball sang.seen))])
   ;<  ent=(unit [rev=@ud id=@uv])  bind:m  (peer-page-id shp (spat rel))
   ?~  ent  (peek-peer-page shp rel)
   ::  the full +mesa-timeout. The id comes from the list, so it is almost
   ::  always bound, and a big page can take seconds to arrive: a 3 s wait
   ::  cut a 198 KB page off mid-transfer, then paid a peek on top.
   ;<  kp=(unit [p=@tas q=@t])  bind:m  (keen-page-raw shp rel id.u.ent)
-  ?:  ?=([~ %gmi *] kp)  (pure:m `[rev.u.ent q.u.kp])
+  ::  the publisher grows a page under its view-mode mark (+mode-mark), so a
+  ::  peer's keened mark IS its render mode. Accept ANY content mark in the
+  ::  view-mode set and carry it up. A miss, a %del tombstone, or a mark we do
+  ::  not know drops the stale revision list and falls to the slow peek.
+  ?:  ?&(?=(^ kp) ?=(view-mode:pg p.u.kp))
+    (pure:m `[rev.u.ent p.u.kp q.u.kp])
   ;<  ~  bind:m  (drop-peer-revs shp)
   (peek-peer-page shp rel)
 ::  +peek-peer-page: a peer's published page by remote peek, the slow path.
 ::
 ++  peek-peer-page
   |=  [shp=@p rel=path]
-  =/  m  (fiber:fiber:nexus ,(unit [rev=@ud body=@t]))
+  =/  m  (fiber:fiber:nexus ,(unit [rev=@ud mode=view-mode:pg body=@t]))
   ^-  form:m
   ::  a peer's page: `road` is relative to THIS nexus and +remote-road
   ::  passes relative roads through untouched, so it never reached the
   ::  peer. Absolute, at wherever the peer runs lattice, remembered from
   ::  the last ask (+peer-base-cached) so a page read is one round trip.
+  ::  The peek hits the peer's %gmi-keyed vault, which carries no render
+  ::  mark, so the mode floors at %gmi (the legacy body-sniff still runs on
+  ::  it at the reader): an un-upgraded peer renders exactly as before.
   ;<  base=(unit path)  bind:m  (peer-base-cached shp)
   ?~  base  (pure:m ~)
   ;<  got=(unit (unit [rev=@ud body=@t]))  bind:m  (peek-page-at u.base shp rel)
   ::  ~ is no answer (unreachable, or refused): nothing learned, cache kept
   ?~  got  (pure:m ~)
-  ?^  u.got  (pure:m u.got)
+  ?^  u.got  (pure:m `[rev.u.u.got %gmi body.u.u.got])
   ::  answered, nothing there. A peer that moved leaves a stale entry, so
   ::  ask where it is now, once, and read again only if that changed
   ;<  fresh=(unit path)  bind:m  (peer-base-remember shp)
   ?:  |(?=(~ fresh) =(fresh base))  (pure:m ~)
   ;<  again=(unit (unit [rev=@ud body=@t]))  bind:m  (peek-page-at u.fresh shp rel)
-  (pure:m ?~(again ~ u.again))
+  (pure:m ?~(again ~ ?~(u.again ~ `[rev.u.u.again %gmi body.u.u.again])))
 ::  +peer-page-id: a page's current revision and id in the peer's
 ::  published revision list ([/pub %revs]), from the cache, fetched when
 ::  stale.
@@ -13958,7 +14033,8 @@
     ::  the salt is a constant: read once here for the grow, the revision
     ::  list and the predecessor cull below
     ;<  salt=@  bind:m  pub-salt
-    ;<  ~  bind:m  (grow-pub-page salt key body.act rev)
+    ;<  mode=view-mode:pg  bind:m  (published-mode (snip (strip-pub:lp key)))
+    ;<  ~  bind:m  (grow-pub-page salt key body.act rev mode)
     ::  the revision list peers read to %keen this exact revision
     ;<  ~  bind:m  (set-pub-rev root salt key `rev)
     ::  keep-only-current INVARIANT: at most one rev spur per page is ever
@@ -14144,13 +14220,14 @@
 ::  key is the canonical pub key (/pub/<name…>/gmi, already validated by the
 ::  caller's key-to-rail). The spur drops the pub/gmi wrapping and rides the
 ::  rev as its last segment, so every revision is its own immutable binding.
-::  The page rides the %gmi mark. The vault body IS rendered gemtext.
+::  The page rides its view-mode mark (+mode-mark of mode); the vault body is
+::  the page's own-format source (md, html, gmi, ...), not rendered gemtext.
 ::
 ++  grow-pub-page
-  |=  [salt=@ key=path body=@t rev=@ud]
+  |=  [salt=@ key=path body=@t rev=@ud mode=view-mode:pg]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (grow:io (page-spur salt (snip (strip-pub:lp key)) rev) [%gmi body])
+  (grow:io (page-spur salt (snip (strip-pub:lp key)) rev) [(mode-mark mode) body])
 ::  +pub-salt: the private salt behind every +page-id:lp, [/ %salt] at the
 ::  nexus root. 0 until +ensure-pub-ids mints it.
 ::
@@ -14264,6 +14341,50 @@
   ::  them until a page's next real edit wave.
   ;<  *  bind:m  (grow-pub-index up ix)
   (pure:m n)
+::  +marks-version: bump to make +migrate-pub-marks run again on upgrade.
+::
+++  marks-version  1
+::  +migrate-pub-marks: ONE-TIME, stamp-guarded. Pages published before the
+::  per-format marks were all grown as gmi, and a peer reads gall case 1 of
+::  a page's spur (+keen-path), so re-growing at the SAME spur cannot fix
+::  them: gall appends case 2 and case 1 stays gmi forever. Instead rotate
+::  the salt. Every id changes, so +pub-regrow-loop grows every page at a
+::  FRESH spur, whose case 1 carries the real mark, and the revision list
+::  names the new ids. Then cull each old-salt spur, keeping one binding
+::  per page (a later delete culls only the new-salt spur). Addresses are
+::  paths and do not change; no vault grub, index row or /pub/meta is
+::  written. An un-upgraded peer keens the new id, rejects a non-gmi mark
+::  and reads by slow peek, which is the behavior it had before.
+::
+::  ponytail: the stamp is written LAST, so a crash before it re-runs the
+::  whole pass under a third salt; that cull names second-salt spurs and
+::  any first-salt spur not yet culled stays bound, the same hand-cull gap
+::  +ensure-pub-ids documents.
+::
+++  migrate-pub-marks
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  sr=road:tarball  (rf root /pub %'marks-migrated')
+  ;<  done=@ud  bind:m  (read-pub-seq sr)
+  ?:  (gte done marks-version)  (pure:m ~)
+  ;<  ix=pub-index:lp  bind:m  (read-pub-index (rf root /pub %index))
+  ;<  old=@  bind:m  pub-salt
+  ::  no salt means no ids yet: nothing is grown to correct
+  ?:  =(0 old)  (pure:m ~)
+  ;<  eny=@uvJ  bind:m  get-entropy:io
+  =/  new=@  (end [3 32] eny)
+  ;<  ~  bind:m  (put-file (rf root / %salt) [/ %ud] `@ud`new)
+  ;<  [* revs=(map @t [rev=@ud id=@uv])]  bind:m
+    (pub-regrow-loop new ~(tap in ~(key by ix)) 0 ~)
+  ;<  ~  bind:m  (put-file (rf root /pub %revs) [/ %json] (revs-json:lp revs))
+  ::  each old spur was bound by the save or regrow that named this rev, and
+  ::  is culled exactly once here (+cull-farm:io must not re-cull a spur)
+  =/  culls=(list path)  (salt-spurs:lp old revs)
+  |-
+  ?~  culls  (put-file sr [/ %ud] marks-version)
+  ;<  ~  bind:m  (cull-farm:io i.culls)
+  $(culls t.culls)
 ++  pub-regrow-loop
   |=  [salt=@ keys=(list path) cnt=@ud revs=(map @t [rev=@ud id=@uv])]
   =/  m  (fiber:fiber:nexus ,[@ud (map @t [rev=@ud id=@uv])])
@@ -14279,7 +14400,8 @@
   =/  body=(unit @t)  (mole |.(!<(@t (need-vase:tarball sang.seen))))
   ?~  body  (pub-regrow-loop salt t.keys cnt revs)
   ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
-  ;<  ~  bind:m  (grow-pub-page salt i.keys u.body rev)
+  ;<  mode=view-mode:pg  bind:m  (published-mode (snip (strip-pub:lp i.keys)))
+  ;<  ~  bind:m  (grow-pub-page salt i.keys u.body rev mode)
   =/  nam=@t  (page-name:lp i.keys)
   (pub-regrow-loop salt t.keys +(cnt) (~(put by revs) nam rev (page-id:lp salt nam rev)))
 ::  +set-pub-rev: one page's row in the revision list, [/pub %revs]: its
@@ -14528,6 +14650,8 @@
 ::                 that spur (a /pub-regrow re-grow gets key+1) carries the
 ::                 SAME body. The rev in the spur is what makes the content
 ::                 immutable. So case 1 is always present and always right.
+::                 A spur is never re-grown under a different mark: a mark
+::                 fix moves the page to a fresh spur (+migrate-pub-marks).
 ::      <agent>    q.bem, the yoke whose farm is read (see +mesa-agent)
 ::      ''         THE EMPTY SEGMENT, and it is load-bearing. The publisher's
 ::                 ames splits the spar into [ship rift life vane care case
