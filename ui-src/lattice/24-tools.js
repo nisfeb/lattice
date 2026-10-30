@@ -224,11 +224,17 @@
     // there opens the shell's tab, as in the frame's own document.
     const topish = (el, at) => !!el && /^_(top|parent)$/i.test(el.getAttribute(at) || '');
     const upward = (el, at) => topish(el, at) || (!!el && el.getAttribute(at) === f.name);
+    //
+    // In an inner doc the check runs last, on its window as the event
+    // bubbles out, so the page's own handlers have had their say: one that
+    // called preventDefault (a fetch-on-submit) is left alone. In the
+    // frame's own doc it only re-aims, so it runs first, as it always did.
     const aimTop = (doc, inner) => {
       if (doc.latAimed) return;
       doc.latAimed = true;
       for (const el of doc.querySelectorAll('[target=_top], [target=_parent]')) el.target = f.name;
-      doc.addEventListener('click', (e) => {
+      const on = inner ? (doc.defaultView || doc) : doc;
+      on.addEventListener('click', (e) => {
         const a = e.target.closest && e.target.closest('a[href], area[href]');
         if (!a) return;
         if (inner && !e.defaultPrevented) {
@@ -238,8 +244,8 @@
           return;
         }
         if (topish(a, 'target')) a.target = f.name;
-      }, true);
-      doc.addEventListener('submit', (e) => {
+      }, !inner);
+      on.addEventListener('submit', (e) => {
         const form = e.target;
         const sub = e.submitter;
         if (inner) {
@@ -251,7 +257,7 @@
         }
         if (topish(form, 'target')) form.target = f.name;
         if (topish(sub, 'formtarget')) sub.formTarget = f.name;
-      }, true);
+      }, !inner);
     };
     aimTop(d, false);
     // the reader shows a page in a frame of its own (srcdoc), where the
@@ -340,13 +346,20 @@
   // A form from a frame inside a frame tab, sent again from this window
   // into the tab's frame `name`: the same method, encoding, address and
   // fields, the button that sent it included. Files go over in a file
-  // input of their own.
+  // input of their own. Read as attributes: a field named `action` or
+  // `method` shadows the form's own properties (form.action would be the
+  // input), so the replay would post to "[object HTMLInputElement]".
   function formAgain(form, sub, name) {
     const g = document.createElement('form');
+    const attr = (k, fk) => (sub && sub.hasAttribute(fk) ? sub.getAttribute(fk) : form.getAttribute(k));
     g.hidden = true;
-    g.method = (sub && sub.getAttribute('formmethod')) || form.method || 'get';
-    g.enctype = (sub && sub.getAttribute('formenctype')) || form.enctype;
-    g.action = (sub && sub.hasAttribute('formaction')) ? sub.formAction : form.action;
+    g.method = attr('method', 'formmethod') || 'get';
+    g.enctype = attr('enctype', 'formenctype') || 'application/x-www-form-urlencoded';
+    const act = attr('action', 'formaction');
+    g.action = act ? new URL(act, form.baseURI).href : form.ownerDocument.URL;
+    const cs = form.getAttribute('accept-charset');
+    if (cs) g.acceptCharset = cs;
+    if (form.hasAttribute('novalidate') || (sub && sub.hasAttribute('formnovalidate'))) g.noValidate = true;
     g.target = name;
     const files = {};
     let fd;
