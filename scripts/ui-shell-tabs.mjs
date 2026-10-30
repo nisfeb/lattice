@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-//  ui-shell-tabs.mjs: the ribbon's ways off the editor stay in the editor.
+//  ui-shell-tabs.mjs: the ribbon's ways off the editor stay in the editor,
+//  and the shell's chords.
 //
 //    Forum opens the forum in a tab of its own (once), the window stays on
 //      the editor, the forum is navigated inside its tab, and the tab takes
@@ -10,6 +11,9 @@
 //    Explorer is not on the ribbon, the palette lists it under Settings >
 //      Advanced, it opens as a tab whose page answers, and the link in
 //      Settings > Advanced opens that tab
+//    Ctrl+K and Ctrl+P open the palette, Ctrl+Shift+F the Search field,
+//      Alt+1 the Files tree; vim keeps Ctrl+P in the editor, not Ctrl+K;
+//      the tooltips name the new chords
 //
 //  SHOTS=1 saves the forum and browser tabs at 1400x900 under /tmp.
 //
@@ -283,11 +287,85 @@ try {
       JSON.stringify({ adv, viaSet, sAt, n: (await front()).n, ns }));
   });
 
+  await part('chords', async () => {
+    const palOpen = () => page.evaluate(() => document.getElementById('palette')?.hidden === false
+      && document.activeElement === document.getElementById('palin'));
+    const palShut = async () => {
+      if (await page.evaluate(() => document.getElementById('palette')?.hidden === false))
+        await page.keyboard.press('Escape');
+      await sleep(200);
+    };
+    const tips = await page.evaluate(() => ({
+      files: document.querySelector('#ltabs [data-pt=files]').title,
+      search: document.querySelector('#ltabs [data-pt=search]').title,
+      pal: document.getElementById('rb-palette').title,
+    }));
+    check('the tooltips name Alt+1, Ctrl+Shift+F and Ctrl+K',
+      tips.files === 'Files (Alt+1)' && tips.search === 'Search (Ctrl+Shift+F)'
+        && tips.pal === 'Command palette (Ctrl+K)', JSON.stringify(tips));
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    await chord('KeyK', ['Control']);
+    const viaK = await palOpen();
+    await palShut();
+    await page.focus('#src');
+    await chord('KeyP', ['Control']);
+    const viaP = await palOpen();
+    await palShut();
+    check('Ctrl+K opens the palette, and Ctrl+P too', viaK && viaP, JSON.stringify({ viaK, viaP }));
+    await page.evaluate(() => { localStorage.appNT = '1'; window.latShell.paneOpen('l', false); });
+    await page.focus('#src');
+    await chord('KeyF', ['Control', 'Shift']);
+    const sF = await page.evaluate(() => ({
+      focus: document.activeElement && document.activeElement.id,
+      tab: !document.querySelector('section[data-pane=search]').hidden,
+      pal: document.getElementById('palette')?.hidden === false,
+    }));
+    check('Ctrl+Shift+F opens Search and focuses its field', sF.focus === 'qinput' && sF.tab && !sF.pal,
+      JSON.stringify(sF));
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    await chord('Digit1', ['Alt']);
+    const a1 = await page.evaluate(() => ({
+      files: !document.querySelector('#lbody > [data-pane=files]').hidden,
+      inTree: document.getElementById('treelist').contains(document.activeElement),
+    }));
+    check('Alt+1 shows Files and focuses its tree', a1.files && a1.inTree, JSON.stringify(a1));
+    //  a chord pressed inside a frame tab reaches the shell
+    await page.evaluate(() => document.getElementById('rb-forum').click());
+    const fIn = await until(() => {
+      const f = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/forum"]');
+      return f?.contentDocument?.readyState === 'complete' && !!f.contentDocument.body;
+    });
+    await page.evaluate(() => {
+      const f = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/forum"]');
+      f.focus();
+      f.contentWindow.focus();
+      (f.contentDocument.querySelector('a, input, button') || f.contentDocument.body).focus();
+    });
+    await chord('KeyK', ['Control']);
+    const inFrameK = await palOpen();
+    await palShut();
+    check('Ctrl+K inside a frame tab opens the palette', fIn && inFrameK, JSON.stringify({ fIn, inFrameK }));
+    await page.evaluate((n) => window.latTabs.openIn('page', n), PAGE);
+    await sleep(500);
+    //  vim keeps Ctrl+P in the editor; Ctrl+K is the app's in vim too
+    await page.evaluate(() => { localStorage.edVim = '1'; window.dispatchEvent(new StorageEvent('storage', { key: 'edVim' })); });
+    await sleep(300);
+    await page.focus('#src');
+    await chord('KeyP', ['Control']);
+    const vimP = await palOpen();
+    await palShut();
+    await page.focus('#src');
+    await chord('KeyK', ['Control']);
+    const vimK = await palOpen();
+    await palShut();
+    check('in vim, Ctrl+P stays with the editor and Ctrl+K opens the palette', !vimP && vimK,
+      JSON.stringify({ vimP, vimK }));
+  });
 } catch (e) {
   check('threw: ' + String(e.message).slice(0, 140), false);
 } finally {
   await page.evaluate(() => {
-    localStorage.removeItem('appTabs');
+    for (const k of ['appNT', 'edVim', 'appTabs']) localStorage.removeItem(k);
   }).catch(() => {});
   await browser.close();
   await post('page-del?name=' + encodeURIComponent(PAGE)).catch(() => {});

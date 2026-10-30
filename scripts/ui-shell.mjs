@@ -9,7 +9,7 @@
 //    the tree and the status line moved into the frame with their ids
 //    the status bar raises a chip for a compile error, which opens Page
 //    the left pane: Knowledge lists memories with no mode switch, a memory
-//      opens as a know tab beside a still-rendered Files tree, Ctrl+K
+//      opens as a know tab beside a still-rendered Files tree, Ctrl+Shift+F
 //      focuses the Search tab, sort flips the root order, the trash
 //      restores a deleted memory, and Bookmarks lists /bookmarks-json
 //    the ribbon, top to bottom, and its tool tabs: Access & groups and the
@@ -236,7 +236,9 @@ try {
   await page.evaluate(() => { localStorage.appNT = '1'; window.latShell.paneOpen('l', false); });
   await page.focus('#src');
   await page.keyboard.down('Control');
-  await page.keyboard.press('KeyK');
+  await page.keyboard.down('Shift');
+  await page.keyboard.press('KeyF');
+  await page.keyboard.up('Shift');
   await page.keyboard.up('Control');
   await sleep(300);
   const ck = await page.evaluate(() => ({
@@ -244,7 +246,7 @@ try {
     tab: !document.querySelector('section[data-pane=search]').hidden,
   }));
   const lpaneUp = await shown('#lpane');
-  check('ctrl+k focuses search pane', ck.focus === 'qinput' && ck.tab && lpaneUp,
+  check('ctrl+shift+f focuses search pane', ck.focus === 'qinput' && ck.tab && lpaneUp,
     JSON.stringify({ ...ck, lpaneUp }));
 
   await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
@@ -443,7 +445,7 @@ try {
       .replace(/^(Comments inbox), \S+ unread$/, '$1')));
   check('ribbon order and tooltips', JSON.stringify(names) === JSON.stringify([
     "Today's brief", 'Browser', 'Forum', 'Comments inbox', 'Access & groups',
-    'Sync conflicts', 'Command palette (Ctrl+P)', 'Settings']), JSON.stringify(names));
+    'Sync conflicts', 'Command palette (Ctrl+K)', 'Settings']), JSON.stringify(names));
 
   const front = () => page.evaluate(() => {
     const s = window.latTabs.state();

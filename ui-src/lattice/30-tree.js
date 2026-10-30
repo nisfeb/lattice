@@ -371,9 +371,9 @@
       if (to) to.focus();
     });
   }
-  // Ctrl+Shift+F: the Files tab (the pane opened if shut), its tree focused.
-  // F for Files; Ctrl+Shift+E was Firefox's network monitor, which a page
-  // cannot take back. By e.key, so it is the F on the keyboard's own layout.
+  // Alt+1: the Files tab (the pane opened if shut), its tree focused, the
+  // first of the left pane's tabs. By e.code, since Option+1 on a Mac
+  // types a character, and so in a text field there it is left to type.
   // Not while a dialog or the palette is up: focus behind a modal is lost.
   // Registered on the Files tab's own action (13-frame.js), so the tab's
   // tooltip and the palette both show it.
@@ -383,7 +383,8 @@
     if (r) r.focus();
   }
   addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f'
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.code === 'Digit1'
+      && !(e.key !== '1' && e.target.closest && e.target.closest('input, textarea, select, [contenteditable]'))
       && !document.querySelector('.dlg:not([hidden])')) {
       e.preventDefault();
       e.stopPropagation();

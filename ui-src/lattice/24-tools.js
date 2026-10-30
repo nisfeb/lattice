@@ -177,6 +177,21 @@
       inner();
       i.addEventListener('load', inner);
     }
+    // a key pressed in the frame never reaches this window, so the shell's
+    // own chords (the palette, Search, Files) are handed up to it
+    d.addEventListener('keydown', (e) => {
+      const mod = e.ctrlKey || e.metaKey;
+      const k = e.key.toLowerCase();
+      const ours = (mod && !e.altKey && !e.shiftKey && (k === 'k' || k === 'p'))
+        || (mod && e.shiftKey && !e.altKey && k === 'f')
+        || (e.altKey && !mod && !e.shiftKey && e.code === 'Digit1'
+          && !(e.key !== '1' && e.target.closest && e.target.closest('input, textarea, select, [contenteditable]')));
+      if (!ours) return;
+      const up = new KeyboardEvent('keydown', { key: e.key, code: e.code, ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey, shiftKey: e.shiftKey, altKey: e.altKey, bubbles: true, cancelable: true });
+      dispatchEvent(up);
+      if (up.defaultPrevented) e.preventDefault();
+    });
     d.addEventListener('click', (e) => {
       const a = e.target.closest && e.target.closest('a[href]');
       if (!a || e.defaultPrevented) return;
@@ -321,7 +336,7 @@
   ribbonAdd({ id: 'access', icon: 'key', name: 'Access & groups', run: () => toolOpen('access') });
   ribbonAdd({ id: 'conflicts', icon: 'conflict', name: 'Sync conflicts', run: () => toolOpen('conflicts') })
     .hidden = true;
-  ribbonAdd({ id: 'palette', icon: 'term', name: 'Command palette', keys: 'Ctrl+P', run: () => paletteOpen() });
+  ribbonAdd({ id: 'palette', icon: 'term', name: 'Command palette', keys: 'Ctrl+K', run: () => paletteOpen() });
   ribbonAdd({ id: 'settings', icon: 'gear', name: 'Settings', bottom: true, run: () => toolOpen('settings') });
   // The explorer is a power tool: no ribbon button. Its home is the link in
   // Settings > Advanced, which lives in the Settings frame and so outside

@@ -1032,8 +1032,8 @@
   // [id, icon, name, keys] per pane tab. Their sections are filled by the
   // components below and, for the empty ones, by later steps.
   const PANES = {
-    l: [['files', 'doc', 'Files', 'Ctrl+Shift+F'], ['know', 'know', 'Knowledge'],
-      ['search', 'search', 'Search', 'Ctrl+K'], ['marks', 'mark', 'Bookmarks']],
+    l: [['files', 'doc', 'Files', 'Alt+1'], ['know', 'know', 'Knowledge'],
+      ['search', 'search', 'Search', 'Ctrl+Shift+F'], ['marks', 'mark', 'Bookmarks']],
     r: [['page', 'gear', 'Page'], ['out', 'out', 'Outgoing links'],
       ['back', 'back', 'Backlinks'], ['outline', 'list', 'Outline'],
       ['comments', 'comment', 'Comments'], ['hist', 'hist', 'History']],
@@ -1169,7 +1169,7 @@
   clickAction('treet', 'Toggle left pane', 'Top-left corner');
   clickAction('ctlt', 'Toggle right pane', 'Top-right corner');
   // A pane tab's action also opens its pane, which is what reaching the
-  // tab takes by hand. Search is Ctrl+K's qOpen (79-search.js), which
+  // tab takes by hand. Search is Ctrl+Shift+F's qOpen (79-search.js), which
   // does the same and focuses the field.
   for (const side of ['l', 'r']) {
     for (const [id, , name, keys] of PANES[side]) {
@@ -3045,6 +3045,21 @@
       inner();
       i.addEventListener('load', inner);
     }
+    // a key pressed in the frame never reaches this window, so the shell's
+    // own chords (the palette, Search, Files) are handed up to it
+    d.addEventListener('keydown', (e) => {
+      const mod = e.ctrlKey || e.metaKey;
+      const k = e.key.toLowerCase();
+      const ours = (mod && !e.altKey && !e.shiftKey && (k === 'k' || k === 'p'))
+        || (mod && e.shiftKey && !e.altKey && k === 'f')
+        || (e.altKey && !mod && !e.shiftKey && e.code === 'Digit1'
+          && !(e.key !== '1' && e.target.closest && e.target.closest('input, textarea, select, [contenteditable]')));
+      if (!ours) return;
+      const up = new KeyboardEvent('keydown', { key: e.key, code: e.code, ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey, shiftKey: e.shiftKey, altKey: e.altKey, bubbles: true, cancelable: true });
+      dispatchEvent(up);
+      if (up.defaultPrevented) e.preventDefault();
+    });
     d.addEventListener('click', (e) => {
       const a = e.target.closest && e.target.closest('a[href]');
       if (!a || e.defaultPrevented) return;
@@ -3189,7 +3204,7 @@
   ribbonAdd({ id: 'access', icon: 'key', name: 'Access & groups', run: () => toolOpen('access') });
   ribbonAdd({ id: 'conflicts', icon: 'conflict', name: 'Sync conflicts', run: () => toolOpen('conflicts') })
     .hidden = true;
-  ribbonAdd({ id: 'palette', icon: 'term', name: 'Command palette', keys: 'Ctrl+P', run: () => paletteOpen() });
+  ribbonAdd({ id: 'palette', icon: 'term', name: 'Command palette', keys: 'Ctrl+K', run: () => paletteOpen() });
   ribbonAdd({ id: 'settings', icon: 'gear', name: 'Settings', bottom: true, run: () => toolOpen('settings') });
   // The explorer is a power tool: no ribbon button. Its home is the link in
   // Settings > Advanced, which lives in the Settings frame and so outside
@@ -3307,7 +3322,7 @@
   });
 
 // ── src/26-palette.js ─────────────────────────────────────────────────────
-  // ── command palette: Ctrl/Cmd+P and the ribbon ───────────────────────────
+  // ── command palette: Ctrl/Cmd+K (or +P) and the ribbon ──────────────────
   // An index over the homes, never a home itself (spec, principle 3). It
   // lists the actions their homes registered (13-frame.js, action()), then
   // pages and memories by name. An action row names its home and shortcut,
@@ -3480,13 +3495,19 @@
   // a click on the backdrop, outside the box, closes it
   pal.addEventListener('mousedown', (e) => { if (e.target === pal) palClose(); });
 
-  // Ctrl/Cmd+P never reaches the print dialog. Vim keeps the chord while
-  // the editor has focus, the rule Ctrl+E follows (23-tabhead.js), and an
-  // open dialog is left to finish first.
+  // Ctrl/Cmd+K, and Ctrl/Cmd+P as its alias, which never reaches the print
+  // dialog. K is the app's own chord in vim too (27-vim.js hands it back),
+  // so it opens the palette from anywhere. Vim keeps P while the editor has
+  // focus, the rule Ctrl+E follows (23-tabhead.js). An open dialog is left
+  // to finish first. Capture phase on window, ahead of vim's handler on
+  // the textarea, which would otherwise swallow the chord.
   addEventListener('keydown', (e) => {
-    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || (e.key !== 'p' && e.key !== 'P')) return;
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k !== 'k' && k !== 'p') return;
     e.preventDefault();
-    if (localStorage.edVim === '1' && document.activeElement === src) return;
+    if (k === 'p' && localStorage.edVim === '1' && document.activeElement === src) return;
+    e.stopPropagation();
     if (!$('dlg').hidden) return;
     palShow();
   }, true);
@@ -4174,9 +4195,10 @@
     // Never intercept the app's OWN chords. This listener is capture-phase on
     // the textarea and consumes normal-mode keys with stopImmediatePropagation,
     // so anything it does not hand back never reaches the window-level
-    // handlers at all. Save was exempted from the start. Search was not, and
-    // with vim on that read as "ctrl-K does nothing" rather than "vim ate it",
-    // which is the kind of bug people report as a missing feature.
+    // handlers at all. Save was exempted from the start. Ctrl-K (search
+    // then, the command palette now) was not, and with vim on that read as
+    // "ctrl-K does nothing" rather than "vim ate it", which is the kind of
+    // bug people report as a missing feature.
     //
     // Listed explicitly rather than exempting every ctrl chord: vim's own
     // Ctrl-d/u/f/b are bindings here and must keep working.
@@ -4611,9 +4633,9 @@
       if (to) to.focus();
     });
   }
-  // Ctrl+Shift+F: the Files tab (the pane opened if shut), its tree focused.
-  // F for Files; Ctrl+Shift+E was Firefox's network monitor, which a page
-  // cannot take back. By e.key, so it is the F on the keyboard's own layout.
+  // Alt+1: the Files tab (the pane opened if shut), its tree focused, the
+  // first of the left pane's tabs. By e.code, since Option+1 on a Mac
+  // types a character, and so in a text field there it is left to type.
   // Not while a dialog or the palette is up: focus behind a modal is lost.
   // Registered on the Files tab's own action (13-frame.js), so the tab's
   // tooltip and the palette both show it.
@@ -4623,7 +4645,8 @@
     if (r) r.focus();
   }
   addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f'
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.code === 'Digit1'
+      && !(e.key !== '1' && e.target.closest && e.target.closest('input, textarea, select, [contenteditable]'))
       && !document.querySelector('.dlg:not([hidden])')) {
       e.preventDefault();
       e.stopPropagation();
@@ -9255,7 +9278,7 @@
     qPaint(host, sum, out, skipped);
   }
 
-  // qPrime: what showing the tab owes, however it was shown (Ctrl+K, the
+  // qPrime: what showing the tab owes, however it was shown (Ctrl+Shift+F, the
   // tab button, the phone sheet). The exposure map and the memories are
   // refetched only when a beacon moved since they loaded (90-sync.js), not
   // on every visit.
@@ -9305,11 +9328,14 @@
     }
   };
 
-  // CAPTURE phase on window, so nothing downstream can swallow it. Vim mode's
-  // handler is capture-phase on the textarea and consumes normal-mode keys
-  // whole; being ahead of it is more robust than listing exemptions there.
+  // Ctrl/Cmd+Shift+F, find in files (Ctrl/Cmd+K is the palette). By e.key,
+  // so it is the F on the keyboard's own layout. CAPTURE phase on window,
+  // so nothing downstream can swallow it. Vim mode's handler is capture-
+  // phase on the textarea and consumes normal-mode keys whole; being ahead
+  // of it is more robust than listing exemptions there, and vim has no
+  // Ctrl+Shift chords of its own.
   window.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
       e.preventDefault();
       e.stopPropagation();
       qOpen();
@@ -9722,7 +9748,7 @@
     try { localStorage.latBeaconKnow = rev; } catch {}
   };
   const knowFresh = (at) => streamLive && !!at && at === lastKnow;
-  // a load that spans pages and memories (ctrl-K) is fresh while neither moved
+  // a load that spans pages and memories (Search) is fresh while neither moved
   const bothAt = () => lastRev + '|' + lastKnow;
   let dropStream = null;
   // consecutive attempts that failed. A stream that registers, then lives

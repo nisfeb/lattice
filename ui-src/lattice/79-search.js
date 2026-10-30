@@ -234,7 +234,7 @@
     qPaint(host, sum, out, skipped);
   }
 
-  // qPrime: what showing the tab owes, however it was shown (Ctrl+K, the
+  // qPrime: what showing the tab owes, however it was shown (Ctrl+Shift+F, the
   // tab button, the phone sheet). The exposure map and the memories are
   // refetched only when a beacon moved since they loaded (90-sync.js), not
   // on every visit.
@@ -284,11 +284,14 @@
     }
   };
 
-  // CAPTURE phase on window, so nothing downstream can swallow it. Vim mode's
-  // handler is capture-phase on the textarea and consumes normal-mode keys
-  // whole; being ahead of it is more robust than listing exemptions there.
+  // Ctrl/Cmd+Shift+F, find in files (Ctrl/Cmd+K is the palette). By e.key,
+  // so it is the F on the keyboard's own layout. CAPTURE phase on window,
+  // so nothing downstream can swallow it. Vim mode's handler is capture-
+  // phase on the textarea and consumes normal-mode keys whole; being ahead
+  // of it is more robust than listing exemptions there, and vim has no
+  // Ctrl+Shift chords of its own.
   window.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
       e.preventDefault();
       e.stopPropagation();
       qOpen();

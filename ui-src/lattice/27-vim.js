@@ -674,9 +674,10 @@
     // Never intercept the app's OWN chords. This listener is capture-phase on
     // the textarea and consumes normal-mode keys with stopImmediatePropagation,
     // so anything it does not hand back never reaches the window-level
-    // handlers at all. Save was exempted from the start. Search was not, and
-    // with vim on that read as "ctrl-K does nothing" rather than "vim ate it",
-    // which is the kind of bug people report as a missing feature.
+    // handlers at all. Save was exempted from the start. Ctrl-K (search
+    // then, the command palette now) was not, and with vim on that read as
+    // "ctrl-K does nothing" rather than "vim ate it", which is the kind of
+    // bug people report as a missing feature.
     //
     // Listed explicitly rather than exempting every ctrl chord: vim's own
     // Ctrl-d/u/f/b are bindings here and must keep working.

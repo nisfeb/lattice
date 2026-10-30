@@ -1,4 +1,4 @@
-  // ── command palette: Ctrl/Cmd+P and the ribbon ───────────────────────────
+  // ── command palette: Ctrl/Cmd+K (or +P) and the ribbon ──────────────────
   // An index over the homes, never a home itself (spec, principle 3). It
   // lists the actions their homes registered (13-frame.js, action()), then
   // pages and memories by name. An action row names its home and shortcut,
@@ -171,13 +171,19 @@
   // a click on the backdrop, outside the box, closes it
   pal.addEventListener('mousedown', (e) => { if (e.target === pal) palClose(); });
 
-  // Ctrl/Cmd+P never reaches the print dialog. Vim keeps the chord while
-  // the editor has focus, the rule Ctrl+E follows (23-tabhead.js), and an
-  // open dialog is left to finish first.
+  // Ctrl/Cmd+K, and Ctrl/Cmd+P as its alias, which never reaches the print
+  // dialog. K is the app's own chord in vim too (27-vim.js hands it back),
+  // so it opens the palette from anywhere. Vim keeps P while the editor has
+  // focus, the rule Ctrl+E follows (23-tabhead.js). An open dialog is left
+  // to finish first. Capture phase on window, ahead of vim's handler on
+  // the textarea, which would otherwise swallow the chord.
   addEventListener('keydown', (e) => {
-    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || (e.key !== 'p' && e.key !== 'P')) return;
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k !== 'k' && k !== 'p') return;
     e.preventDefault();
-    if (localStorage.edVim === '1' && document.activeElement === src) return;
+    if (k === 'p' && localStorage.edVim === '1' && document.activeElement === src) return;
+    e.stopPropagation();
     if (!$('dlg').hidden) return;
     palShow();
   }, true);
