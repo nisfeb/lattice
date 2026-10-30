@@ -10562,7 +10562,10 @@
   ;<  sb=path  bind:m  self-base
   =/  keep=tape  (keep-url sb "beacon/rev")
   ;<  rev=tape  bind:m  ?:(local beacon-rev-tape (pure:(fiber:fiber:nexus ,tape) ""))
-  =/  rel=path  (slag 3 pax)
+  ::  the page-relative path, from the page dir's name. It was (slag 3 pax),
+  ::  which assumed a two-segment base: on a desk install it named no page,
+  ::  so an own page in the reader showed no comments, no box and no theme.
+  =/  rel=path  (fall (raw-name-pax name) (slag 3 pax))
   ::  eg: our own page, but shared for EDIT, so a peer may have written its
   ::  markup. It is sandboxed like a peer's page: an attribute on the frame
   ::  below, a CSP header on the bare embed.
