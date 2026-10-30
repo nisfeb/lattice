@@ -14681,8 +14681,8 @@
 ::
 ::  Chunked: it was one event, and 201 pages held the ship for 46s, so the
 ::  walk yields every other page (+pub-regrow-loop). It runs only in the
-::  writer (the %regrow pub-action, and +ensure-pub-ids as the writer
-::  starts), so no save interleaves with it.
+::  writer (the %pub-regrow eval-action from POST /pub-regrow, and
+::  +ensure-pub-ids as the writer starts), so no save interleaves with it.
 ::
 ::  Re-running it is cheap but not free. A %grow at an already-bound spur does
 ::  not overwrite but appends a case (gall's +grow takes key+1). The body is
@@ -14695,9 +14695,8 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ::  Grants live in the registry-canonical %how act, laid at writer boot
-  ::  (+send-public-how). The regrow route runs in a request fiber, whose
-  ::  rail the registry does not know, so grant repair belongs to a writer
-  ::  restart and this route only rebuilds namespace bindings.
+  ::  (+send-public-how), so grant repair belongs to a writer restart and
+  ::  a regrow only rebuilds namespace bindings.
   ;<  ix=pub-index:lp  bind:m
     (read-pub-index (rf up /pub %index))
   ;<  salt=@  bind:m  pub-salt
