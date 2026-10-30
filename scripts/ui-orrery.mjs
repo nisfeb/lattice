@@ -12,10 +12,13 @@ const check = makeCheck();
 
 function El(tag) { this.tag = tag; this.kids = []; this.own = ''; this.hidden = false; this.classList = { add() {} }; }
 Object.defineProperty(El.prototype, 'textContent', {
-  get() { return [this.own, ...this.kids.map((k) => k.textContent)].filter(Boolean).join(' | '); },
+  // an icon button has no text, so read it by its accessible name, as a
+  // screen reader would
+  get() { return [this.own || this.attrs?.['aria-label'], ...this.kids.map((k) => k.textContent)].filter(Boolean).join(' | '); },
   set(v) { this.own = v; this.kids = []; },
 });
 El.prototype.append = function (...k) { this.kids.push(...k); };
+El.prototype.setAttribute = function (k, v) { (this.attrs ||= {})[k] = String(v); };
 const find = (el, tag) => (el.tag === tag ? el : el.kids.reduce((f, k) => f || find(k, tag), null));
 const tick = () => new Promise((r) => setTimeout(r, 0));
 const settle = async () => { for (let i = 0; i < 40; i++) await tick(); };
