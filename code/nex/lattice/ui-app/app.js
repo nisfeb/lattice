@@ -2869,8 +2869,9 @@
   // ── tool tabs and the ribbon ─────────────────────────────────────────────
   // A tool tab holds no document: the comments inbox, access & groups, the
   // sync conflicts, or a same-origin page in a frame (Settings, the memory
-  // review). Its key names the tool ('inbox', 'access', 'conflicts') or the
-  // frame ('frame:/apps/lattice/settings'). While one is in front the
+  // review, the forum). Its key names the tool
+  // ('inbox', 'access', 'conflicts') or the frame
+  // ('frame:/apps/lattice/settings'). While one is in front the
   // document area is hidden and #toolhost takes the center. The editor
   // underneath keeps whatever the parked tab left there, untouched: the
   // tool kind has no live(), so nothing a tool does is ever filed under a
@@ -2891,8 +2892,20 @@
   const FRAMES = {
     '/apps/lattice/settings': ['Settings', 'gear'],
     '/apps/lattice/know?lint=1': ['Memory review', 'tidy'],
+    '/apps/lattice/forum': ['Forum', 'forum'],
   };
-  const SETTINGS = 'frame:/apps/lattice/settings';
+  // the tools a frame opens by name: Settings, and the forum, one tab
+  // each
+  const FRAME_KEYS = {
+    settings: 'frame:/apps/lattice/settings',
+    forum: 'frame:/apps/lattice/forum',
+  };
+  const SETTINGS = FRAME_KEYS.settings;
+  // A browsing frame (the forum, the reader) is navigated
+  // inside, so its tab is titled by the page it is on, and it keeps the
+  // reader's bar: the omnibar is the way to an urb:// address, and Back and
+  // Forward are the frame's own. Settings and the memory review are single
+  // pages whose bar would only lead away, so theirs is hidden.
   // only a lattice path on this origin, whatever the key says: a frame is
   // dressed by reaching into it, and a key can come from typed input
   const frameUrl = (key) => {
@@ -2902,6 +2915,8 @@
     if (u.origin !== location.origin || !/^\/apps\/lattice(\/|$)/.test(u.pathname)) return null;
     return u.pathname + u.search;
   };
+  const SINGLE = ['/apps/lattice/settings', '/apps/lattice/know?lint=1'];
+  const browsing = (key) => { const u = frameUrl(key); return !!u && !SINGLE.includes(u); };
   const toolMeta = (key) => {
     if (TOOLS[key]) return [TOOLS[key].name, TOOLS[key].icon];
     const u = frameUrl(key);
@@ -2912,15 +2927,18 @@
   // the drawer it was opened from goes away, also when the tool was in
   // front already.
   const toolOpen = async (id) => {
-    await openIn('tool', id === 'settings' ? SETTINGS : id, { newTab: true });
+    await openIn('tool', FRAME_KEYS[id] || id, { newTab: true });
     drawersClose();
   };
 
   // which tool the host shows, null while a document is in front
   let toolShown = null;
+  // a browsing frame's page title, by tab key (frameDress)
+  const frameTitles = {};
   TAB_KINDS.tool = {
     icon: (t) => toolMeta(t.key)[1],
-    label: (t) => toolMeta(t.key)[0],
+    // a browsing frame's tab follows the title of the page it is on
+    label: (t) => (browsing(t.key) && frameTitles[t.key]) || toolMeta(t.key)[0],
     open: async (t) => {
       toolSync();
       if (TOOLS[t.key]) TOOLS[t.key].load();
@@ -2944,7 +2962,10 @@
     toolHost.hidden = !t;
     if (t) toolMount(t.key);
     for (const f of [...toolHost.querySelectorAll('iframe')])
-      if (!tabs.some((x) => x.kind === 'tool' && x.key === f.dataset.tool)) f.remove();
+      if (!tabs.some((x) => x.kind === 'tool' && x.key === f.dataset.tool)) {
+        delete frameTitles[f.dataset.tool];
+        f.remove();
+      }
     for (const c of toolHost.children) c.hidden = c.dataset.tool !== toolShown;
     // the right pane goes by what is in front (76-outline.js)
     if (was !== toolShown) rpSoon();
@@ -2964,22 +2985,53 @@
     f.className = 'toolframe';
     f.dataset.tool = key;
     f.title = toolMeta(key)[0];
+    // a name, so a form or link in it aimed at _top lands here (frameDress)
+    f.name = 'latframe' + (++frameSeq);
     f.onload = () => frameDress(f);
     f.src = url;
     toolHost.append(f);
   }
-  // Each load of a frame: the reader's own bar is hidden, since the shell
-  // around it is the chrome now. A link in it to a document in the editor
-  // opens that document in a new tab of the shell, never over the frame's
-  // own tab and never as a second editor nested in the frame. Any other
-  // link navigates the frame as usual.
+  let frameSeq = 0;
+  // Each load of a frame. Settings and the memory review lose the reader's
+  // bar, since the shell around them is the chrome. A browsing frame keeps
+  // it, less the menu, whose every entry (editor, knowledge, bookmarks,
+  // forum, settings) is a ribbon button or a pane tab of the shell already.
+  // The tab takes the page's title. A link in it to a document in the
+  // editor opens that document in a new tab of the shell, never over the
+  // frame's own tab and never as a second editor nested in the frame. Any
+  // other link navigates the frame as usual, and so does whatever aims at
+  // _top (the reader's comment box): the whole window is the editor's,
+  // never a page's to replace.
   function frameDress(f) {
     let d = null;
     try { d = f.contentDocument; } catch {}
     if (!d || !d.head) return;
+    const key = f.dataset.tool;
     const s = d.createElement('style');
-    s.textContent = 'form.bar{display:none}';
+    s.textContent = browsing(key) ? '.hamw{display:none}' : 'form.bar{display:none}';
     d.head.append(s);
+    if (browsing(key)) {
+      const title = () => {
+        const t = d.title.trim();
+        if (!t || frameTitles[key] === t) return;
+        frameTitles[key] = t;
+        paintTabs();
+      };
+      title();
+      new MutationObserver(title).observe(d.head, { childList: true, subtree: true, characterData: true });
+    }
+    const aimTop = (doc) => {
+      for (const el of doc.querySelectorAll('[target=_top], [target=_parent]')) el.target = f.name;
+    };
+    aimTop(d);
+    // the reader shows a page in a frame of its own (srcdoc), where the
+    // comment box lives. A sandboxed one (a peer's page) is out of reach,
+    // and has no box.
+    for (const i of d.querySelectorAll('iframe')) {
+      const inner = () => { try { if (i.contentDocument) aimTop(i.contentDocument); } catch {} };
+      inner();
+      i.addEventListener('load', inner);
+    }
     d.addEventListener('click', (e) => {
       const a = e.target.closest && e.target.closest('a[href]');
       if (!a || e.defaultPrevented) return;
@@ -3035,10 +3087,10 @@
   }
 
   // ── leaving the editor ───────────────────────────────────────────────────
-  // Browser, Forum and Explorer navigate the window. The front document gets
-  // guardDirty, and the parked tabs holding unsaved work get one question
-  // naming them. Once the user has said discard, nothing is owed, so the
-  // unload guard (35-pages.js) does not ask a second time.
+  // Browser and Explorer navigate the window (Forum is a tab). The front
+  // document gets guardDirty, and the parked tabs holding unsaved work get
+  // one question naming them. Once the user has said discard, nothing is
+  // owed, so the unload guard (35-pages.js) does not ask a second time.
   // With autosave off the parked tabs hold ordinary unsaved pages, so the
   // question offers to save them all, each brought forward and saved in
   // turn. One that does not save stops the leaving, with it in front.
@@ -3112,7 +3164,7 @@
   // top to bottom, with Settings in the lower group
   ribbonAdd({ id: 'brief', icon: 'cal', name: "Today's brief", run: (ev) => openBrief(ev) });
   ribbonAdd({ id: 'browser', icon: 'globe', name: 'Browser', run: () => leaveTo('/apps/lattice') });
-  ribbonAdd({ id: 'forum', icon: 'forum', name: 'Forum', run: () => leaveTo('/apps/lattice/forum') });
+  ribbonAdd({ id: 'forum', icon: 'forum', name: 'Forum', run: () => toolOpen('forum') });
   // the unread badge (73-comments.js) and the conflict count
   // (80-conflicts.js) are painted onto these two
   ribbonAdd({ id: 'inbox', icon: 'inbox', name: 'Comments inbox', run: () => toolOpen('inbox') });
