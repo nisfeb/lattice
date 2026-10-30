@@ -3,6 +3,7 @@
 //! err via /x/…/err?data), the kind<->ext table, and the empty-body seed.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
 
 use serde_json::Value;
 
@@ -13,12 +14,23 @@ pub struct LatticeProjection {
     t: Box<dyn Transport>,
     ship: String,
     root: String, // sub-root under /page ("" = whole tree, "notes" = mount /page/notes)
+    // page name -> the owner's rev of the body the mount last read, for
+    // links only. A save through a link claims it as `base`, so an owner's
+    // newer text is a 409, never overwritten. Not the rev a dump lists: the
+    // server's cache can move past what the mount holds (a background read),
+    // and claiming that rev would write the stale text over it.
+    bases: Mutex<HashMap<String, u64>>,
 }
 
 impl LatticeProjection {
     pub fn new(t: Box<dyn Transport>, root: &str) -> Result<Self, PErr> {
         let ship = t.ship()?;
-        Ok(Self { t, ship, root: root.trim_matches('/').to_string() })
+        Ok(Self {
+            t,
+            ship,
+            root: root.trim_matches('/').to_string(),
+            bases: Mutex::new(HashMap::new()),
+        })
     }
 
     /// A client-visible rel -> the server-side page name (root-prefixed).
@@ -42,6 +54,27 @@ impl LatticeProjection {
             return Some(String::new());
         }
         path.strip_prefix(&format!("{}/", self.root)).map(str::to_string)
+    }
+
+    /// Drop the read revs of a page and everything under it (a delete or a
+    /// move): a link made there later starts with no claim of its own.
+    fn forget(&self, name: &str) {
+        let under = format!("{name}/");
+        self.bases.lock().unwrap().retain(|k, _| k != name && !k.starts_with(&under));
+    }
+
+    /// A move: the claims of `from` and everything under it go to `to`,
+    /// since the text the mount holds moved with them.
+    fn carry(&self, from: &str, to: &str) {
+        let under = format!("{from}/");
+        let mut bs = self.bases.lock().unwrap();
+        let moved: Vec<(String, u64)> = bs
+            .iter()
+            .filter(|(k, _)| *k == from || k.starts_with(&under))
+            .map(|(k, r)| (format!("{to}{}", &k[from.len()..]), *r))
+            .collect();
+        bs.retain(|k, _| k != from && !k.starts_with(&under));
+        bs.extend(moved);
     }
 
     /// Filter a full-tree dump down to the mounted sub-root, stripping the prefix
@@ -109,6 +142,15 @@ impl Projection for LatticeProjection {
             .get("body")
             .and_then(|b| b.as_str())
             .ok_or_else(|| PErr::new(libc::EIO, "page-source: no body"))?;
+        // a link's page-source names its host: remember the rev it served.
+        // Anything else holds no claim, whatever was there before (a link
+        // unmade, or replaced by a local page, outside the mount).
+        let rev = v.get("rev").and_then(|r| r.as_u64());
+        let mut bs = self.bases.lock().unwrap();
+        match (v.get("link").is_some(), rev) {
+            (true, Some(r)) => bs.insert(name, r),
+            _ => bs.remove(&name),
+        };
         Ok(body.as_bytes().to_vec())
     }
 
@@ -179,7 +221,11 @@ impl Projection for LatticeProjection {
             _ => "hoon",
         };
         let name = self.full(rel);
+        let base = self.bases.lock().unwrap().get(&name).map(|r| r.to_string());
         let mut q: Vec<(&str, &str)> = vec![("name", &name), ("type", ptype)];
+        if let Some(b) = &base {
+            q.push(("base", b));
+        }
         let mut body = data.to_vec();
         if create {
             q.push(("new", "1"));
@@ -189,7 +235,22 @@ impl Projection for LatticeProjection {
                 body = b"\n".to_vec();
             }
         }
-        self.t.post("/apps/lattice/page-save", &q, &body)?;
+        let r = self.t.post("/apps/lattice/page-save", &q, &body)?;
+        // landed: the next save claims the rev this one made, which HTTP and
+        // the lick port both answer. An older ship's lick port answers '':
+        // the claim goes, and that ship falls back to its cached rev. A
+        // refused save keeps its claim, so a retry of the same stale text is
+        // refused too.
+        if base.is_some() {
+            let next = serde_json::from_slice::<Value>(&r)
+                .ok()
+                .and_then(|v| v.get("rev").and_then(|r| r.as_u64()));
+            let mut bs = self.bases.lock().unwrap();
+            match next {
+                Some(n) => bs.insert(name, n),
+                None => bs.remove(&name),
+            };
+        }
         Ok(())
     }
 
@@ -200,6 +261,7 @@ impl Projection for LatticeProjection {
 
     fn delete(&self, rel: &str) -> Result<(), PErr> {
         self.t.post("/apps/lattice/page-del", &[("name", &self.full(rel))], b"")?;
+        self.forget(&self.full(rel));
         Ok(())
     }
 
@@ -213,6 +275,7 @@ impl Projection for LatticeProjection {
         let q = [("from", self.full(src)), ("to", self.full(dst))];
         let q: Vec<(&str, &str)> = q.iter().map(|(k, v)| (*k, v.as_str())).collect();
         self.t.post("/apps/lattice/page-move", &q, b"")?;
+        self.carry(&self.full(src), &self.full(dst));
         Ok(())
     }
 
@@ -226,7 +289,10 @@ impl Projection for LatticeProjection {
 /// tree's reported size, or the length of the body the dump inlined.
 fn page_node(v: &Value, rel: String, size: u64) -> Node {
     let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("hoon").to_string();
-    let readonly = kind == "index"; // a generated %index page is not editable
+    // a generated %index page is not editable, and neither is a link on a
+    // read grant (the dump says `readonly`)
+    let readonly =
+        kind == "index" || v.get("readonly").and_then(|r| r.as_bool()).unwrap_or(false);
     let mtime = da_to_unix(v.get("mtime").and_then(|m| m.as_str()).unwrap_or(""));
     let rev = v.get("rev").and_then(|r| r.as_u64());
     Node { rel, is_dir: false, is_page: true, kind, size, mtime, readonly, rev }
@@ -829,6 +895,107 @@ mod tests {
         assert!(f("idx").readonly, "%index is generated; an edit would be clobbered");
         assert!(!f("note").readonly);
         assert!(f("d").mtime > 1_700_000_000, "a folder's mtime is wall clock");
+    }
+
+    #[test]
+    fn page_node_readonly_from_dump() {
+        // a link on a read grant: the dump says so, and the mount must not
+        // take writes it can only fail at flush
+        let v = serde_json::json!({"nodes": [
+            {"path": "l", "page": true, "kind": "md", "readonly": true, "size": 3,
+             "link": {"host": "~nec", "path": "/apps/x/page/d/code", "mode": "read"}},
+            {"path": "w", "page": true, "kind": "md", "readonly": false, "size": 3},
+        ]});
+        let (nodes, _) = parse_dump(&v).unwrap();
+        let f = |r: &str| nodes.iter().find(|n| n.rel == r).unwrap();
+        assert!(f("l").readonly, "readonly:true on an md node");
+        assert!(!f("w").readonly);
+        // page-tree spells it the same way
+        let (_, p) = lp("", vec![ok(&v.to_string())]);
+        let ns = p.list().unwrap();
+        assert!(ns.iter().find(|n| n.rel == "l").unwrap().readonly);
+    }
+
+    #[test]
+    fn a_link_write_carries_the_rev_the_mount_read() {
+        // read at rev 7, then the server's cache moves to 9 behind the
+        // mount's back (a dump lists the new rev): the write still claims
+        // 7, so the host refuses it instead of losing its newer text
+        let src = r#"{"kind":"md","body":"old","rev":7,"link":{"host":"~nec","path":"/apps/x/page/d/code"}}"#;
+        let dump = r#"{"nodes":[{"path":"n/l","page":true,"kind":"md","size":3,"rev":9,
+            "link":{"host":"~nec","path":"/apps/x/page/d/code","mode":"edit"}}]}"#;
+        let (rec, p) = lp(
+            "n",
+            vec![
+                ok(src),
+                ok(dump),
+                bad(409),
+                ok(r#"{"ok":true,"rev":12}"#),
+                ok(r#"{"ok":true,"rev":13}"#),
+                ok(""),
+                ok("{}"),
+            ],
+        );
+        assert_eq!(p.read("l").unwrap(), b"old");
+        p.dump().unwrap();
+        let e = p.write("l", "md", b"stale", false).unwrap_err();
+        assert_eq!(e.errno, libc::EEXIST, "the conflict reaches the writer");
+        // a failed write keeps the claim; a landed one takes the new rev
+        p.write("l", "md", b"stale", false).unwrap();
+        p.write("l", "md", b"next", false).unwrap();
+        // every landed save answers its rev (HTTP and lick alike), so the
+        // claim survives it: a background read after it can't let a later
+        // stale save through
+        p.write("l", "md", b"then", false).unwrap();
+        // that one answered '' (an older ship's lick port): the claim goes,
+        // and that ship falls back to its cached rev
+        p.write("l", "md", b"last", false).unwrap();
+        assert_eq!(
+            rec.log(),
+            vec![
+                "GET /apps/lattice/page-source?name=n/l",
+                "GET /apps/lattice/page-dump?",
+                r#"POST /apps/lattice/page-save?name=n/l&type=md&base=7 "stale""#,
+                r#"POST /apps/lattice/page-save?name=n/l&type=md&base=7 "stale""#,
+                r#"POST /apps/lattice/page-save?name=n/l&type=md&base=12 "next""#,
+                r#"POST /apps/lattice/page-save?name=n/l&type=md&base=13 "then""#,
+                r#"POST /apps/lattice/page-save?name=n/l&type=md "last""#,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_move_carries_the_claim_and_a_plain_read_clears_it() {
+        let src = r#"{"kind":"md","body":"b","rev":5,"link":{"host":"~nec","path":"/x"}}"#;
+        let (rec, p) = lp(
+            "",
+            vec![
+                ok(src),
+                ok(r#"{"moved":1}"#),
+                ok("{}"),
+                // the page at d/l is no longer a link (unmade in the web UI)
+                ok(r#"{"kind":"md","body":"b","rev":2}"#),
+                ok("{}"),
+            ],
+        );
+        p.read("a/l").unwrap();
+        p.mv("a", "d").unwrap();
+        p.write("d/l", "md", b"x", false).unwrap();
+        p.read("d/l").unwrap();
+        p.write("d/l", "md", b"y", false).unwrap();
+        let log = rec.log();
+        assert_eq!(log[2], r#"POST /apps/lattice/page-save?name=d/l&type=md&base=5 "x""#);
+        assert_eq!(log[4], r#"POST /apps/lattice/page-save?name=d/l&type=md "y""#);
+    }
+
+    #[test]
+    fn a_local_page_write_sends_no_base() {
+        // page-save's base on a local page is apply-and-flag (a conflicts/
+        // copy). The mount never asked for that, so it sends none.
+        let (rec, p) = lp("", vec![ok(r#"{"kind":"md","body":"b","rev":3}"#), ok("{}")]);
+        p.read("a").unwrap();
+        p.write("a", "md", b"c", false).unwrap();
+        assert_eq!(rec.log()[1], r#"POST /apps/lattice/page-save?name=a&type=md "c""#);
     }
 
     #[test]

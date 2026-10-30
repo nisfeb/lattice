@@ -13,10 +13,13 @@
 ::
 ::  The sender's identity is NEVER in here. The inbox takes it from the poke's
 ::  transport (+get-poke-src), the same rule the comment design records. %del
-::  is the owner's own curation and is refused from foreign ships.
+::  is the owner's own curation and is refused from foreign ships. %put is
+::  the owner's own too: a link moved back to shared with me, which names
+::  the host itself, so from any other ship it is dropped.
 +$  action
   $%  [%add pax=path mode=@t]          ::  mode: 'read' | 'edit'
       [%del host=@p pax=path]
+      [%put host=@p pax=path mode=@t]
   ==
 +$  entry   [host=@p pax=path mode=@t when=@da]
 +$  shared  (list entry)               ::  newest first

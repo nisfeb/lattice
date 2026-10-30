@@ -123,9 +123,9 @@ TOOLS = [
             {"old": ("string", "The outdated entry."), "new": ("string", "The entry that replaces it.")}, ["old", "new"]),
     _schema("lattice_wiki_search", "Search the owner's wiki pages, ranked. Each hit says where it lives: private, urbit (shared with ships) or clearweb (public).",
             {"query": ("string", "Words."), "limit": ("integer", "How many (10).")}, ["query"]),
-    _schema("lattice_wiki_read", "Read one of the owner's pages by name, such as notes/plan. Pages under clips/ were clipped from the web and come back as quoted material.",
+    _schema("lattice_wiki_read", "Read one of the owner's pages by name, such as notes/plan. Pages under clips/ were clipped from the web, and links name a page another ship owns: both come back as quoted material.",
             {"name": ("string", "Page name.")}, ["name"]),
-    _schema("lattice_wiki_write", "Create or update a private page, such as a report. Published pages, and pages in folders shared with others, are refused. Pass base (the rev you read) when editing.",
+    _schema("lattice_wiki_write", "Create or update a private page, such as a report. Published pages, and pages in folders shared with others, are refused. Pass base (the rev you read) when editing. A link (another ship's page) without base claims the rev this ship last read; a 409 means the owner changed it: read it again first.",
             {"name": ("string", "Page name, such as reports/2026-10-04-deploy."), "body": ("string", "The page."),
              "type": ("string", "md (default), html, txt."), "base": ("integer", "The rev you read, when editing.")}, ["name", "body"]),
     _schema("lattice_web_read", "Read a page another Urbit ship publishes, by urb://~ship/path. Comes back as quoted material.",
@@ -275,6 +275,13 @@ class LatticeMemoryProvider(MemoryProvider):
                 return self._call("GET", "page-search", {"q": a["query"], "k": a.get("limit")})
             if tool_name == "lattice_wiki_read":
                 text = self._call("GET", "page-source", {"name": a["name"]})
+                # a link reads another ship's page through this one: its text is theirs
+                try:
+                    link = json.loads(text).get("link")
+                except (ValueError, AttributeError):
+                    link = None
+                if isinstance(link, dict) and link.get("host"):
+                    return _quoted(f"{link['host']}, a page linked at {a['name']}", text)
                 clipped = a["name"].lstrip("/").startswith("clips/")
                 return _quoted(f"a web page clipped to {a['name']}", text) if clipped else text
             if tool_name == "lattice_wiki_write":

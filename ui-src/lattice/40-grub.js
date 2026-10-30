@@ -19,17 +19,10 @@
     grubPath = null; grubShip = null;
     if (grubPrevKind !== null) { pkind.value = grubPrevKind; grubPrevKind = null; }
   };
+  // Answers false when the open failed, like openPage (35-pages.js).
   async function openGrub(p, ship) {
-    grubPath = p;
-    grubShip = ship || null;
-    if (grubPrevKind === null) grubPrevKind = pkind.value;
-    curFolder = null;
-    // a shared lattice page reads as "~ship: its/name", not its whole ball
-    // path; the name field is only a label here (Save goes by grubPath)
-    const pg = /\/page\/(.+)\/code$/.exec(p);
-    setOpen(null, { shown: grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p, readOnly: true });
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
+    const my = ++openSeq;
+    enterGrub(p, ship);
     st('loading ' + p + '…');
     // remote files ride /browse-file (bounded cross-ship peek). Its JSON says
     // body/mark where grub-source says text/blot. Normalize here, not there,
@@ -39,8 +32,14 @@
       : api + '/grub-source?path=' + encodeURIComponent(p);
     let r = null;
     try { r = await fetch(url); } catch {}
-    if (!r || !r.ok) { st('could not open ' + p + (r ? ' (' + r.status + ')' : ''), false); return; }
+    if (my !== openSeq) return;
+    if (!r || !r.ok) {
+      // the editor stays as enterGrub left it, empty and locked
+      st('could not open ' + p + (r ? ' (' + r.status + ')' : ''), false);
+      return false;
+    }
     const d = await r.json();
+    if (my !== openSeq) return;
     src.value = d.text || d.body || '';
     // a binary/opaque grub has no text form. Show it, never offer to save it
     src.readOnly = !d.editable;
@@ -61,11 +60,40 @@
     curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'
-       : 'grub ' + blot + ' — manual save (Cmd+S), no autosave here');
+       : 'grub ' + blot + ', no autosave here: Ctrl+S to save');
+    return true;
+  }
+  // grub mode on, for `p` (on `ship`, or here), with its label and address,
+  // and an empty locked editor until its text is in: openGrub's first half,
+  // and all a tab's own unsaved grub buffer needs to come back (21-tabs.js).
+  // Empty, because grubPath is what Save and the tab model go by. Left
+  // showing the document before it while the grub loaded, the editor
+  // offered that text to Save as this grub's, and a tab switch in that
+  // window filed it as the grub's unsaved buffer.
+  function enterGrub(p, ship) {
+    src.value = '';
+    src.readOnly = true;
+    dirty = false;
+    render();
+    grubPath = p;
+    grubShip = ship || null;
+    if (grubPrevKind === null) grubPrevKind = pkind.value;
+    curFolder = null;
+    // a shared lattice page reads as "~ship: its/name", not its whole ball
+    // path; the name field is only a label here (Save goes by grubPath)
+    const pg = /\/page\/(.+)\/code$/.exec(p);
+    setOpen(null, { shown: grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p, readOnly: true,
+      url: '/apps/lattice/app?grub=' + encodeURIComponent(p) +
+        (grubShip ? '&ship=' + encodeURIComponent(grubShip) : '') });
   }
   async function saveGrub() {
     if (!grubPath || src.readOnly) return;
-    if (saving) { savePending = true; return; }
+    //  queued for this grub: a page or memory in front by then is not it
+    if (saving) {
+      const p = grubPath, s = grubShip;
+      queueSave(() => { if (grubPath === p && grubShip === s) return saveGrub(); });
+      return;
+    }
     saving = true;
     st('saving…');
     const sent = src.value;
@@ -86,10 +114,12 @@
       // the mark's opinion of the content. Grub edits have nowhere to queue
       // the way page saves do, so the text just stays here until Save runs
       // again with the ship back.
-      if (shipGone(r)) { st('ship unreachable — grub edits do not queue', false); return; }
+      // the save queued behind this one still runs (flushPending, 35-pages.js)
+      if (shipGone(r)) { st('ship unreachable — grub edits do not queue', false); flushPending(); return; }
       // the mark can reject the source. Show ITS error, since the stored grub
       // still holds the previous content and the user needs to know why
       st('save rejected' + await errText(r), false);
+      flushPending();
       return;
     }
     if (src.value === sent) dirty = false;
@@ -97,6 +127,6 @@
     // bust the page DIRECTORY, not the grub: the cached views are the /x/
     // dir listing and page view, and none of their URLs name '/code'
     bustPages(String(grubPath).replace(/\/[^/]*$/, ''));
-    if (savePending) { savePending = false; if (dirty) saveGrub(); }
+    flushPending();
   }
 

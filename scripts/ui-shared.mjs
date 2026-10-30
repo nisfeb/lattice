@@ -13,10 +13,16 @@ import { makeCheck, read, cut } from './lib/check.mjs';
 const L = 'ui-src/lattice/';
 const src = cut(L + '20-state.js', /const collStore = [\s\S]*?\n {2}const paneColl = .*/, 'collStore') + '\n'
   + cut(L + '30-tree.js', /function folderRow\([\s\S]*?\n {2}\}/, 'folderRow') + '\n'
+  + cut(L + '30-tree.js', /function treeItem\([\s\S]*?\n {2}\}/, 'treeItem') + '\n'
+  + cut(L + '21-tabs.js', /const tabLink = [\s\S]*?\n {2}\};/, 'tabLink') + '\n'
   + read(L + '69-shared.js');
 const check = makeCheck();
 
-function El(tag) { this.tag = tag; this.kids = []; this.style = {}; this.className = ''; this.text = ''; }
+function El(tag) {
+  this.tag = tag; this.kids = []; this.style = {}; this.className = ''; this.text = '';
+  this.dataset = {}; this.attrs = {};
+}
+El.prototype.setAttribute = function (k, v) { this.attrs[k] = String(v); };
 Object.defineProperty(El.prototype, 'textContent', {
   get() { return this.text + this.kids.map((k) => k.textContent).join(''); },
   set(v) { this.text = v; this.kids = []; },
@@ -34,13 +40,20 @@ function boot(items, coll = []) {
     treeList, sharedWithMe: items, mode: 'pages', api: '/apps/lattice', localStorage,
     renderTree: () => { treeList.kids = []; ctx.renderShared(JSON.parse(localStorage.appColl)); },
     guardDirty: async () => true, history: { replaceState() {} },
-    openGrub: (p, s) => opened.push([p, s]), ico: () => '',
+    // a row opens through the tab model (21-tabs.js) as a grub tab
+    openIn: (kind, p, o) => opened.push([kind, p, o.ship]), ico: () => '',
+    // the move in and out (Task 5 of shared page links): its palette home
+    // and its registration, stubbed
+    action: () => {},
+    tip: (b, name) => { b.title = name; b.setAttribute('aria-label', name); return b; },
     document: { createElement: (t) => new El(t), createTextNode: (t) => ({ textContent: t }) },
   };
   vm.runInNewContext(src, ctx);
   ctx.renderShared(coll);
-  const rows = () => treeList.kids.map((r) => (r.className.includes('pg') ? 'page ' : 'fold ') + r.textContent);
-  return { ctx, treeList, rows, opened };
+  //  a page row sits in a wrapper beside its Move into my pages button
+  const pages = () => treeList.kids.map((r) => (r.className === 'swrow' ? r.kids[0] : r));
+  const rows = () => pages().map((r) => (r.className.includes('pg') ? 'page ' : 'fold ') + r.textContent);
+  return { ctx, treeList, rows, opened, pages };
 }
 // ~nec's arrive unsorted, and not merely reversed
 const items = [
@@ -70,12 +83,23 @@ const items = [
   check('the top folder collapses to one row', rows().length === 1, JSON.stringify(rows()));
 }
 {
-  const { treeList, opened } = boot(items);
-  const row = treeList.kids.find((r) => r.textContent.startsWith('site/logging'));
+  const { pages, opened } = boot(items);
+  const row = pages().find((r) => r.textContent.startsWith('site/logging'));
   if (row) row.onclick({ preventDefault() {} });
   await new Promise((r) => setTimeout(r, 0));
   check('a row opens the page on its own ship',
-    JSON.stringify(opened) === JSON.stringify([[D + '/page/site/logging/code', '~nec']]), JSON.stringify(opened));
+    JSON.stringify(opened) === JSON.stringify([['grub', D + '/page/site/logging/code', '~nec']]), JSON.stringify(opened));
+}
+{
+  const { treeList } = boot(items);
+  const w = treeList.kids.find((r) => r.className === 'swrow' && r.kids[0].textContent.startsWith('site/logging'));
+  const row = w && w.kids[0];
+  const mv = w && w.kids[1];
+  check('a row drags, and has Move into my pages beside it, a button',
+    !!row && row.draggable === true && !!mv && mv.tag === 'button' && mv.className === 'swmv'
+      && mv.dataset.action === 'swm-move' && mv.title === 'Move into my pages'
+      && mv.attrs['aria-label'] === mv.title,
+    JSON.stringify(row && { draggable: row.draggable, mv: mv && mv.title }));
 }
 
 check.done();

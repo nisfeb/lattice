@@ -55,6 +55,34 @@ pub fn go_home(app: AppHandle) -> Result<(), String> {
     open_workspace(&app, false)
 }
 
+/// The sections of the manager page the ship page may ask for by name.
+const MANAGER_SECTIONS: &[&str] = &["backups"];
+
+/// The section open_manager lands on: none, or one of MANAGER_SECTIONS.
+/// Anything else is refused rather than passed into the page URL.
+fn manager_section(section: Option<&str>) -> Result<Option<&'static str>, String> {
+    match section {
+        None => Ok(None),
+        Some(s) => MANAGER_SECTIONS
+            .iter()
+            .find(|k| **k == s)
+            .map(|k| Some(*k))
+            .ok_or_else(|| format!("no manager section {s}")),
+    }
+}
+
+/// Settings > "Connection and mounts" and Settings > Backup > "Scheduled
+/// backups" in the ship page. The ship page may call this
+/// (capabilities/workspace-remote.json), and all it does is what the
+/// Preferences menu does: show this app's own manager page, at its top or
+/// at a named section. That page is a local origin, so the ship page
+/// cannot script it. The editor asks about unsaved work before calling it
+/// (latOpenManager in 24-tools.js).
+#[tauri::command]
+pub fn open_manager(app: AppHandle, section: Option<String>) -> Result<(), String> {
+    show_manager(&app, manager_section(section.as_deref())?)
+}
+
 /// Show the connection & mounts page IN the workspace window (single-window
 /// app: the manager is a page, not a second window). Local shell pages live
 /// at tauri://localhost on macOS but http://tauri.localhost on Linux.
@@ -839,6 +867,19 @@ pub async fn pick_vault(app: AppHandle) -> Result<String, String> {
     let bytes =
         std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
     Ok(encode_archive(&bytes))
+}
+
+#[cfg(test)]
+mod manager_section_tests {
+    use super::manager_section;
+
+    #[test]
+    fn only_known_sections_pass() {
+        assert_eq!(manager_section(None), Ok(None));
+        assert_eq!(manager_section(Some("backups")), Ok(Some("backups")));
+        assert!(manager_section(Some("backups\"><script>")).is_err());
+        assert!(manager_section(Some("")).is_err());
+    }
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@
   // autosave would queue the OLD body back (review gap 1 in the design doc).
   let degraded = false;      // a save failed like the ship was unreachable
   let offCount = 0;          // queued page edits, drives the status text
-  let offbadge = null;       // assigned by <lat-bar> (12-bar.js)
+  let offbadge = null;       // assigned by <lat-statusbar> (13-frame.js)
   // The persistent offline indicator. The status line reports EVENTS and the
   // next one overwrites it, so "saved offline" scrolls away while you are
   // still offline and still queueing. This reports the CONDITION and stays up
@@ -568,6 +568,23 @@
             continue;
           }
           if (!replayDrop(one)) return false;
+          // 409: refused as stale or as nothing-goes-there (a link's host
+          // moved on, a link where a page was). The body is the user's only
+          // copy, so it is kept as a page of its own first, as a create's
+          // collision is; if that write fails the record stays queued.
+          if (one && one.status === 409) {
+            const alt = 'conflicts/offline-edit-' + q.name.replace(/\//g, '-');
+            let two = null;
+            try {
+              two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
+                '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
+            } catch {}
+            if (!(two && two.ok)) return false;
+            conflicts.push(alt);
+            await offDel(q.name);
+            st('offline edit refused: ' + q.name + ', your version is kept at ' + alt, false);
+            continue;
+          }
           st('dropped an unsyncable offline edit: ' + q.name, false);
           await offDel(q.name);
         }
@@ -628,6 +645,6 @@
     } else st('offline edits synced');
     // reconcile ONLY after the drain. refreshAll on reconnect would repaint
     // queued pages from the server dump before their edits landed (gap 4)
-    if (knows.length && mode === 'know') loadKnow();
+    if (knows.length && knowLive()) loadKnow();
     loadTree();
   }

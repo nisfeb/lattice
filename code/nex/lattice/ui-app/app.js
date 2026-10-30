@@ -50,7 +50,7 @@
   // autosave would queue the OLD body back (review gap 1 in the design doc).
   let degraded = false;      // a save failed like the ship was unreachable
   let offCount = 0;          // queued page edits, drives the status text
-  let offbadge = null;       // assigned by <lat-bar> (12-bar.js)
+  let offbadge = null;       // assigned by <lat-statusbar> (13-frame.js)
   // The persistent offline indicator. The status line reports EVENTS and the
   // next one overwrites it, so "saved offline" scrolls away while you are
   // still offline and still queueing. This reports the CONDITION and stays up
@@ -605,6 +605,23 @@
             continue;
           }
           if (!replayDrop(one)) return false;
+          // 409: refused as stale or as nothing-goes-there (a link's host
+          // moved on, a link where a page was). The body is the user's only
+          // copy, so it is kept as a page of its own first, as a create's
+          // collision is; if that write fails the record stays queued.
+          if (one && one.status === 409) {
+            const alt = 'conflicts/offline-edit-' + q.name.replace(/\//g, '-');
+            let two = null;
+            try {
+              two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
+                '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
+            } catch {}
+            if (!(two && two.ok)) return false;
+            conflicts.push(alt);
+            await offDel(q.name);
+            st('offline edit refused: ' + q.name + ', your version is kept at ' + alt, false);
+            continue;
+          }
           st('dropped an unsyncable offline edit: ' + q.name, false);
           await offDel(q.name);
         }
@@ -665,7 +682,7 @@
     } else st('offline edits synced');
     // reconcile ONLY after the drain. refreshAll on reconnect would repaint
     // queued pages from the server dump before their edits landed (gap 4)
-    if (knows.length && mode === 'know') loadKnow();
+    if (knows.length && knowLive()) loadKnow();
     loadTree();
   }
 
@@ -675,8 +692,8 @@
   const api = '/apps/lattice';
   // ── flat icons ───────────────────────────────────────────────────────────
   // One-colour glyphs in place of colour emoji: the tree's folders and page
-  // kinds (NERDTree with devicons), and the bar's search, comments and
-  // access. folder/open/search/comment/key are GitHub's Octicons, the page
+  // kinds (NERDTree with devicons), and the shell's buttons.
+  // folder/open/search/comment/key are GitHub's Octicons, the page
   // kinds Seti-UI's, the set NERDTree's devicons draw on; both MIT. Each is
   // [viewBox, path]; Seti's boxes are cropped to match the Octicons' size.
   // The colour is CSS (.ic-md and so on), currentColor where it has none.
@@ -685,7 +702,48 @@
     open: ['0 0 16 16', 'M.513 1.513A1.75 1.75 0 0 1 1.75 1h3.5c.55 0 1.07.26 1.4.7l.9 1.2a.25.25 0 0 0 .2.1H13a1 1 0 0 1 1 1v.5H2.75a.75.75 0 0 0 0 1.5h11.978a1 1 0 0 1 .994 1.117L15 13.25A1.75 1.75 0 0 1 13.25 15H1.75A1.75 1.75 0 0 1 0 13.25V2.75c0-.464.184-.91.513-1.237Z'],
     search: ['0 0 16 16', 'M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z'],
     comment: ['0 0 16 16', 'M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z'],
-    key: ['0 0 16 16', 'M10.5 0a5.499 5.499 0 1 1-1.288 10.848l-.932.932a.749.749 0 0 1-.53.22H7v.75a.749.749 0 0 1-.22.53l-.5.5a.749.749 0 0 1-.53.22H5v.75a.749.749 0 0 1-.22.53l-.5.5a.749.749 0 0 1-.53.22h-2A1.75 1.75 0 0 1 0 14.25v-2c0-.199.079-.389.22-.53l4.932-4.932A5.5 5.5 0 0 1 10.5 0Zm-4 5.5c-.001.431.069.86.205 1.269a.75.75 0 0 1-.181.768L1.5 12.56v1.69c0 .138.112.25.25.25h1.69l.06-.06v-1.19a.75.75 0 0 1 .75-.75h1.19l.06-.06v-1.19a.75.75 0 0 1 .75-.75h1.19l1.023-1.025a.75.75 0 0 1 .768-.18A4 4 0 1 0 6.5 5.5ZM11 6a1 1 0 1 1 0-2 1 1 0 0 1 0 2Z'],
+    // Stroke icons for the editor shell: 24x24 line art, drawn by ico() with
+    // fill none and a currentColor stroke. A third element 'stroke' marks them.
+    pl: ['0 0 24 24', 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9 4v16', 'stroke'],
+    pr: ['0 0 24 24', 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM15 4v16', 'stroke'],
+    cal: ['0 0 24 24', 'M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM8 3v4M16 3v4M3 10h18', 'stroke'],
+    globe: ['0 0 24 24', 'M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18', 'stroke'],
+    forum: ['0 0 24 24', 'M3 4h12v8H8l-3 3v-3H3zM18 9h3v8h-2v3l-3-3h-6v-2', 'stroke'],
+    inbox: ['0 0 24 24', 'M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5', 'stroke'],
+    key: ['0 0 24 24', 'M4 15a4 4 0 1 0 8 0a4 4 0 1 0-8 0M11 12l9-9M16 7l3 3M14 9l2 2', 'stroke'],
+    tree: ['0 0 24 24', 'M4 5h6M4 5v14M4 12h5M4 19h5M12 12h8M12 19h8', 'stroke'],
+    conflict: ['0 0 24 24', 'M12 3l10 18H2zM12 10v5M12 18h.01', 'stroke'],
+    term: ['0 0 24 24', 'M4 17l6-5-6-5M12 19h8', 'stroke'],
+    gear: ['0 0 24 24', 'M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1', 'stroke'],
+    pen: ['0 0 24 24', 'M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z', 'stroke'],
+    fplus: ['0 0 24 24', 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM12 10v6M9 13h6', 'stroke'],
+    tpl: ['0 0 24 24', 'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM3 9h18M9 9v12', 'stroke'],
+    upload: ['0 0 24 24', 'M12 16V4M7 9l5-5 5 5M4 20h16', 'stroke'],
+    updir: ['0 0 24 24', 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM12 16v-6M9 13l3-3 3 3', 'stroke'],
+    trash: ['0 0 24 24', 'M4 7h16M10 11v6M14 11v6M5 7l1 12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2l1-12M9 7V4h6v3', 'stroke'],
+    tidy: ['0 0 24 24', 'M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z', 'stroke'],
+    sort: ['0 0 24 24', 'M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4', 'stroke'],
+    fold: ['0 0 24 24', 'M7 15l5 5 5-5M7 9l5-5 5 5', 'stroke'],
+    out: ['0 0 24 24', 'M7 17L17 7M8 7h9v9', 'stroke'],
+    back: ['0 0 24 24', 'M17 7L7 17M16 17H7V8', 'stroke'],
+    list: ['0 0 24 24', 'M9 6h12M9 12h12M9 18h12M4 6h.01M4 12h.01M4 18h.01', 'stroke'],
+    hist: ['0 0 24 24', 'M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 3', 'stroke'],
+    eye: ['0 0 24 24', 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0', 'stroke'],
+    x: ['0 0 24 24', 'M6 6l12 12M18 6L6 18', 'stroke'],
+    left: ['0 0 24 24', 'M15 6l-6 6 6 6', 'stroke'],
+    right: ['0 0 24 24', 'M9 6l6 6-6 6', 'stroke'],
+    dots: ['0 0 24 24', 'M12 5h.01M12 12h.01M12 19h.01', 'stroke'],
+    menu: ['0 0 24 24', 'M4 6h16M4 12h16M4 18h16', 'stroke'],
+    plus: ['0 0 24 24', 'M12 5v14M5 12h14', 'stroke'],
+    save: ['0 0 24 24', 'M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 3v5h7V3M7 21v-7h10v7', 'stroke'],
+    pin: ['0 0 24 24', 'M9 3h6l-1 6 3 4H7l3-4zM12 13v8', 'stroke'],
+    tabs: ['0 0 24 24', 'M8 8h12v12H8zM4 16V4h12', 'stroke'],
+    copy: ['0 0 24 24', 'M9 9h11v11H9zM5 15H4V4h11v1', 'stroke'],
+    mark: ['0 0 24 24', 'M6 3h12v18l-6-4-6 4z', 'stroke'],
+    know: ['0 0 24 24', 'M12 3l8 9-8 9-8-9z', 'stroke'],
+    doc: ['0 0 24 24', 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5', 'stroke'],
+    // a link to a page on another ship: a box with an arrow out of it
+    link: ['0 0 24 24', 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5', 'stroke'],
     md: ['4 4 24 24', 'M20.7 6.7v9.9h3.8c-2.9 3-5.8 5.9-8.7 8.8-2.7-2.8-5.6-5.8-8.4-8.7h3.5V6.6c1.3.9 4.4 3.1 5 3.1.6 0 3.6-2.2 4.8-3z'],
     tex: ['4 4 24 24', 'M7.9 17.5H6.5v1.3h4.4v-1.3H9.6V11h.4c1.2 0 1.4.1 1.6 1h1.2l-.2-2.3H4.8l-.3 3.6h1.2v-.5c.2-1.7.3-1.8 1.8-1.8h.4v6.5zM15.8 21.1h-1.7v-2.8h.6c.7 0 .7 0 .7.9v.5h1.2v-4.1h-1.2v.5c0 .9 0 .9-.7.9h-.6v-2.4h1.6c1.5 0 1.6.4 1.7 1.8h1.2l-.3-3.2h-7v1.3h1v6.4h-1v1.3h7.1l.4-2.6h-1.3c0 1.1-.4 1.5-1.7 1.5zM21.7 17.6h-.5l1.5-2.2 1.5 2.2h-.3v1.1h3.6v-1.2H27c-.6 0-.6 0-.7-.2l-2.4-3.5 1.6-2.3c.2-.2.4-.6 1.1-.6h.5V9.6H24v1.2h.5l-.1.1-1.2 1.7-1.3-1.6h.3V9.6h-3.6V11h.5c.6 0 .6 0 .7.2l2.1 3.1-1.8 2.7-.3.3c-.2.2-.5.3-.8.3h-.5v1.2h3.2v-1.2z'],
     html: ['4 4 24 24', 'M8 15l6-5.6V12l-4.5 4 4.5 4v2.6L8 17v-2zm16 2.1l-6 5.6V20l4.6-4-4.6-4V9.3l6 5.6v2.2z'],
@@ -695,6 +753,8 @@
   };
   const ico = (name) => {
     const k = ICON[name] ? name : 'file';
+    if (ICON[k][2] === 'stroke')
+      return `<svg class="ic ic-${k}" viewBox="${ICON[k][0]}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICON[k][1]}"/></svg>`;
     return `<svg class="ic ic-${k}" viewBox="${ICON[k][0]}" fill="currentColor" aria-hidden="true"><path d="${ICON[k][1]}"/></svg>`;
   };
   // ── background requests yield to the user ────────────────────────────────
@@ -837,7 +897,8 @@
         await (await caches.open('lattice-pages')).put('/__pv', new Response(pv));
     }).catch(() => {});
   };
-  let pname, pkind, status, spinner;   // assigned by <lat-bar>   (12-bar.js)
+  let pname, pkind;                    // assigned by the tab header (23-tabhead.js)
+  let status, spinner;                 // assigned by <lat-statusbar> (13-frame.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)
   // blank preview: about:blank defaults to light color-scheme, which
   // mismatches the app's declared scheme and makes the iframe an opaque
@@ -933,38 +994,92 @@
       else location.href = a.href;
     });
 
-// ── src/12-bar.js ─────────────────────────────────────────────────────────
-  // ── top bar + mobile tabs: <lat-bar>, <lat-tabs> ─────────────────────────
-  // The spinner is part of the bar's own markup now (its CSS lives in the
-  // shell stylesheet). The old inject-styles-and-synthesize-elements guards
-  // existed only because the shell and JS could cache-skew apart.
-  customElements.define('lat-bar', class extends HTMLElement {
+// ── src/13-frame.js ───────────────────────────────────────────────────────
+  // ── shell frame: <lat-ribbon>, <lat-lpane>, <lat-rpane>, <lat-statusbar> ──
+  // The ribbon down the left edge, a tabbed pane either side of the editor,
+  // the status bar along the bottom and a corner toggle above each pane.
+  // The panes render the old components (lat-tree, lat-ctl, lat-history,
+  // lat-links) as children, so those upgrade into their sections when their
+  // own files run, with every id intact.
+  //
+  // Every icon button is titled "Name (shortcut)" with an identical
+  // aria-label: the glyph is its whole content, so the title is its name.
+  const tip = (b, name, keys) => {
+    const t = keys ? name + ' (' + keys + ')' : name;
+    b.title = t;
+    b.setAttribute('aria-label', t);
+    return b;
+  };
+  const sbtn = (attrs, icon, name, keys) =>
+    `<button type="button" class="sbtn" ${attrs} title="${name}${keys ? ' (' + keys + ')' : ''}"`
+    + ` aria-label="${name}${keys ? ' (' + keys + ')' : ''}">${ico(icon)}</button>`;
+
+  // ── actions ─────────────────────────────────────────────────────────────
+  // Every command the palette (26-palette.js) lists is registered by the
+  // file that builds its home, with the home's element carrying
+  // data-action="<id>". The palette is an index over those homes and holds
+  // no feature of its own: run does what clicking the home does. Declared
+  // here, ahead of every home, since files load in filename order.
+  // {id, name, home, keys?, run, when?}: `when`, for a home that exists
+  // only while it is open (the page menu), says whether it applies now.
+  const ACTIONS = [];
+  const action = (a) => { ACTIONS.push(a); };
+  const actionHome = (id) => document.querySelector('[data-action="' + CSS.escape(id) + '"]');
+  // the common case: the home is one element, and running is clicking it
+  const clickAction = (id, name, home, keys) => action({ id, name, home, keys,
+    run: () => { const b = actionHome(id); if (b) b.click(); } });
+
+  // [id, icon, name, keys] per pane tab. Their sections are filled by the
+  // components below and, for the empty ones, by later steps.
+  const PANES = {
+    l: [['files', 'doc', 'Files', 'Ctrl+Shift+F'], ['know', 'know', 'Knowledge'],
+      ['search', 'search', 'Search', 'Ctrl+K'], ['marks', 'mark', 'Bookmarks']],
+    r: [['page', 'gear', 'Page'], ['out', 'out', 'Outgoing links'],
+      ['back', 'back', 'Backlinks'], ['outline', 'list', 'Outline'],
+      ['comments', 'comment', 'Comments'], ['hist', 'hist', 'History']],
+  };
+  const FILL = {
+    files: '<lat-tree></lat-tree>', know: '<lat-know></lat-know>',
+    search: '<lat-search></lat-search>', marks: '<lat-marks></lat-marks>',
+    page: '<lat-ctl></lat-ctl>',
+    back: '<lat-links></lat-links>', hist: '<lat-history></lat-history>',
+  };
+  const paneHtml = (side, label) => `
+<nav id="${side}tabs" class="ptabs" role="tablist" aria-label="${label}">
+  ${PANES[side].map(([id, icon, name, keys]) =>
+    sbtn(`role="tab" data-pt="${id}" data-action="pt-${id}" aria-selected="false"`, icon, name, keys)).join('\n  ')}
+</nav>
+<div id="${side}body" class="pbody">
+  ${PANES[side].map(([id]) =>
+    `<section data-pane="${id}" role="tabpanel" hidden>${FILL[id] || ''}</section>`).join('\n  ')}
+</div>`;
+
+  customElements.define('lat-ribbon', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<header class="bar">
-  <!-- the icon-only controls carry aria-labels: their glyph is their whole
-       text content, which is no accessible name at all -->
-  <!-- panel toggles sit on the side they control. The hamburger toggles the
-       LEFT (tree) panel, so it leads the bar at the left edge; the gear toggles
-       the RIGHT (controls) panel and trails it at the right edge, below. -->
-  <button id="treet" class="ico" title="toggle tree pane" aria-label="toggle tree pane">&#9776;</button>
-  <a class="home" href="/apps/lattice" title="lattice home" aria-label="lattice home">&#8962;</a>
-  <button id="modet" title="switch pages / knowledge">&#9998; pages</button>
-  <input id="pname" placeholder="page name (e.g. notes/todo)" autocomplete="off" spellcheck="false">
-  <select id="pkind" title="page kind">
-    <option value="md">md</option>
-    <option value="gmi">gmi</option>
-    <option value="html">html</option>
-    <option value="text">txt</option>
-    <option value="js">js</option>
-    <option value="css">css</option>
-    <option value="tex">tex</option>
-    <option value="hoon">hoon</option>
-  </select>
-  <button id="save">save</button>
-  <!-- LaTeX conversion runs on the user's own machine (71-latex.js),
-       so this is hidden on the web and on non-tex pages. -->
-  <button id="texconv" hidden>convert to html</button>
+<div class="corner" id="lcorner">${sbtn('id="treet" data-action="treet" aria-pressed="true"', 'pl', 'Left pane')}</div>
+<nav class="ribbon" id="ribbon" aria-label="Ribbon">
+  <div class="rtop"></div>
+  <div class="rbot"></div>
+</nav>`;
+    }
+  });
+  customElements.define('lat-lpane', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `<aside class="pane lp" id="lpane">${paneHtml('l', 'Left pane')}</aside>`;
+    }
+  });
+  customElements.define('lat-rpane', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<div class="corner" id="rcorner">${sbtn('id="ctlt" data-action="ctlt" aria-pressed="true"', 'pr', 'Right pane')}</div>
+<aside class="pane rp" id="rpane">${paneHtml('r', 'Right pane')}</aside>`;
+    }
+  });
+  customElements.define('lat-statusbar', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<footer class="statusbar" id="statusbar">
   <!-- role=status so "saved" and every failure are announced, not just
        painted onto a line a screen reader never revisits -->
   <span id="spin"></span><span id="status" class="muted" role="status" aria-live="polite"></span>
@@ -973,41 +1088,145 @@
        badge stays up for as long as the condition holds. -->
   <span id="offbadge" class="offbadge" role="status" aria-live="polite" hidden></span>
   <span class="grow"></span>
-  <button id="wrapt" class="ico" title="toggle line wrap" aria-label="toggle line wrap">&#8617;</button>
-  <button id="qt" class="ico" title="search your pages and notes (ctrl-K)" aria-label="search your pages and notes (ctrl-K)">${ico('search')}</button>
-  <button id="cmt" class="ico" title="comments from other ships" aria-label="comments from other ships">${ico('comment')}</button>
-  <!-- a save that replaced an edit from elsewhere keeps the losing body as a
-       conflicts/ page. Those are invisible unless you already know to look,
-       which is the one failure a conflict design must not have. This badge
-       counts them and opens the resolve pane. -->
-  <button id="cflt" class="ico" title="sync conflicts to resolve" aria-label="sync conflicts to resolve" hidden>&#9873;</button>
-  <button id="aclt" class="ico" title="access control &mdash; groups, sharing, banned ships" aria-label="access control &mdash; groups, sharing, banned ships">${ico('key')}</button>
-  <!-- edit | split | preview is ONE three-way choice, not two toggles: an
-       editor-less, preview-less layout is not a layout. State and handlers
-       in 85-layout.js; the desktop View menu clicks these very buttons. -->
-  <span id="viewseg" role="group" aria-label="editor layout">
-    <button id="viewedit" class="ico" title="editor only">edit</button>
-    <button id="viewsplit" class="ico" title="editor and preview">split</button>
-    <button id="viewprev" class="ico" title="preview only">preview</button>
-  </span>
-  <button id="ctlt" class="ico" title="toggle controls pane" aria-label="toggle controls pane">&#9881;</button>
-</header>`;
-      pname = $('pname'); pkind = $('pkind');
+  <button type="button" id="errchip" class="errchip" hidden></button>
+</footer>`;
       status = $('status'); spinner = $('spin'); offbadge = $('offbadge');
       renderOffline();   // a queue can outlive a session, so show it at boot
     }
   });
-  customElements.define('lat-tabs', class extends HTMLElement {
-    connectedCallback() {
-      this.innerHTML = `
-<nav class="mtabs" id="mtabs">
-  <button data-mv="tree">tree</button>
-  <button data-mv="code" class="on">code</button>
-  <button data-mv="prev">preview</button>
-  <button data-mv="ctl">controls</button>
-</nav>`;
+
+  // ── pane tabs and the corner toggles ────────────────────────────────────
+  // One section per pane is shown. The choice persists per side, and an id
+  // this build does not know (an older or newer layout) falls back to the
+  // default rather than leaving the pane blank. Showing a section announces
+  // it (lat-pane on document, detail {side, id}), so a section that loads
+  // its list lazily (Knowledge, Bookmarks) fetches when it is first seen.
+  const TABKEY = { l: 'appLTab', r: 'appRTab' };
+  const TABDEF = { l: 'files', r: 'page' };
+  function paneTab(side, id) {
+    if (!PANES[side].some((p) => p[0] === id)) id = TABDEF[side];
+    for (const b of document.querySelectorAll('#' + side + 'tabs [data-pt]')) {
+      const on = b.dataset.pt === id;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-selected', on ? 'true' : 'false');
     }
-  });
+    for (const s of document.querySelectorAll('#' + side + 'body > section'))
+      s.hidden = s.dataset.pane !== id;
+    try { localStorage[TABKEY[side]] = id; } catch {}
+    document.dispatchEvent(new CustomEvent('lat-pane', { detail: { side, id } }));
+  }
+  // the section a pane shows right now, for a file whose listener was added
+  // after the boot-time paneTab below had already announced it
+  const paneShows = (side, id) =>
+    !document.querySelector('#' + side + 'body > [data-pane=' + id + ']').hidden;
+  // The stored keys still mean HIDDEN ('1'), as they always have, so a
+  // layout saved before the frame comes back the same. The buttons say
+  // whether the pane is OPEN: pressed means showing.
+  //
+  // On a phone the panes are drawers over the document instead (97-mobar.js
+  // has the scrim and the swipe), one at a time, and the same calls drive
+  // them: a corner toggle, a pane tab's action, search. Whether a drawer is
+  // open is not kept, and the desktop columns' stored state is left alone.
+  const OPENKEY = { l: 'appNT', r: 'appNC' };
+  const isMobile = () => matchMedia('(max-width: 820px)').matches;
+  function paintPanes() {
+    const ws = $('ws');
+    const phone = isMobile();
+    for (const [side, cls, id] of [['l', 'nt', 'treet'], ['r', 'nc', 'ctlt']]) {
+      const shut = localStorage[OPENKEY[side]] === '1';
+      ws.classList.toggle(cls, shut);
+      const on = phone ? ws.classList.contains(side + 'draw') : !shut;
+      const b = $(id);
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+  function drawer(side, open) {
+    const ws = $('ws');
+    if (open === undefined) open = !ws.classList.contains(side + 'draw');
+    ws.classList.toggle('ldraw', open && side === 'l');
+    ws.classList.toggle('rdraw', open && side === 'r');
+    paintPanes();
+    return open;
+  }
+  // opening a document puts both drawers away
+  const drawersClose = () => drawer('l', false);
+  function paneOpen(side, open) {
+    if (isMobile()) return drawer(side, open);
+    if (open === undefined) open = localStorage[OPENKEY[side]] === '1';
+    try { localStorage[OPENKEY[side]] = open ? '0' : '1'; } catch {}
+    paintPanes();
+    return open;
+  }
+  for (const side of ['l', 'r']) {
+    for (const b of document.querySelectorAll('#' + side + 'tabs [data-pt]'))
+      b.onclick = () => paneTab(side, b.dataset.pt);
+    paneTab(side, localStorage[TABKEY[side]]);
+  }
+  $('treet').onclick = () => paneOpen('l');
+  $('ctlt').onclick = () => paneOpen('r');
+  paintPanes();
+  clickAction('treet', 'Toggle left pane', 'Top-left corner');
+  clickAction('ctlt', 'Toggle right pane', 'Top-right corner');
+  // A pane tab's action also opens its pane, which is what reaching the
+  // tab takes by hand. Search is Ctrl+K's qOpen (79-search.js), which
+  // does the same and focuses the field.
+  for (const side of ['l', 'r']) {
+    for (const [id, , name, keys] of PANES[side]) {
+      const aid = 'pt-' + id;
+      action({ id: aid, name: 'Show ' + name, home: side === 'l' ? 'Left pane' : 'Right pane', keys,
+        run: id === 'search' ? () => qOpen()
+          : () => {
+            paneOpen(side, true);
+            const b = actionHome(aid);
+            if (b) b.click();
+            // Files' shortcut lands in its tree (30-tree.js)
+            if (id === 'files') treeFocus();
+          } });
+    }
+  }
+
+  // ── ribbon ──────────────────────────────────────────────────────────────
+  // Items are registered here by the feature that owns them, never written
+  // into the markup, so each one has exactly one home. bottom puts it in the
+  // lower group (settings). Each one is also a palette action.
+  function ribbonAdd({ id, icon, name, keys, run, bottom }) {
+    const b = tip(document.createElement('button'), name, keys);
+    b.type = 'button';
+    b.className = 'sbtn';
+    b.id = 'rb-' + id;
+    b.dataset.rb = id;
+    b.dataset.action = id;
+    action({ id, name, home: 'Ribbon', keys, run });
+    b.innerHTML = ico(icon);
+    b.onclick = (ev) => run(ev);
+    document.querySelector('#ribbon ' + (bottom ? '.rbot' : '.rtop')).append(b);
+    return b;
+  }
+
+  // ── compile error chip ──────────────────────────────────────────────────
+  // The error itself lives in the Page tab (#cerr), which may be closed or
+  // behind another tab. While it holds an error the status bar says so, and
+  // a click brings the Page tab forward. Watched rather than called from
+  // each writer, since four files set #cerr. The watch is on the Page
+  // section because #cerr does not exist yet: <lat-ctl> upgrades later.
+  {
+    const chip = $('errchip');
+    chip.title = 'Show the error in the Page tab';
+    const sync = () => {
+      const c = $('cerr');
+      const t = c && c.className === 'err' ? c.textContent.trim() : '';
+      chip.hidden = !t;
+      chip.textContent = t.split('\n')[0];
+    };
+    new MutationObserver(sync).observe(document.querySelector('#rbody > [data-pane=page]'),
+      { childList: true, characterData: true, subtree: true, attributes: true });
+    chip.onclick = () => { paneOpen('r', true); paneTab('r', 'page'); };
+    sync();
+  }
+
+  // for the browser suites, which cannot reach this scope
+  window.latShell = { paneTab, paneOpen, ribbonAdd, drawer };
 
 // ── src/15-dialog.js ──────────────────────────────────────────────────────
   // ── in-app dialogs, NEVER browser-native prompt/confirm/alert ────────────
@@ -1052,13 +1271,16 @@
   //  hides. So the one place a desktop user names a file was also the one
   //  place they could not say what it was, and everything arrived as md.
   //
-  //  Options are cloned from the bar's own picker rather than restated, so a
-  //  kind added there (tex was) appears here with no second edit.
-  const askNameKind = async (msg, value, okLabel, kind) => {
+  //  Options are cloned from the hidden kind picker (#pkind, 23-tabhead.js)
+  //  rather than restated, so a kind added there (tex was) appears here with
+  //  no second edit. `fixed` shows the kind without letting it change: a new
+  //  memory is always md.
+  const askNameKind = async (msg, value, okLabel, kind, fixed) => {
     dlgKind.textContent = '';
     const src = $('pkind');
     if (src) for (const o of src.options) dlgKind.appendChild(o.cloneNode(true));
     dlgKind.value = kind || (src && src.value) || 'md';
+    dlgKind.disabled = !!fixed;
     let seed = value || '';
     let note = '';
     for (;;) {
@@ -1214,10 +1436,13 @@
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
+  let mode = 'pages';      // 'know' while a memory is in front (95-know.js)
   // read by the service-worker registration script, which lives in its own
   // inline <script> and cannot see this scope. It reloads the page when a new
   // worker takes over, and must never do that over typed work.
-  window.__latUnsaved = () => dirty === true;
+  // A parked tab (21-tabs.js) holds its own dirty buffer, so the live flag
+  // alone misses work typed into any tab that is not in front.
+  window.__latUnsaved = () => dirty === true || tabs.some((t) => t !== activeTab && t.snap && t.snap.dirty);
   // Whether the user has typed since the current editor view was established.
   // Cleared by applyPage/newFile (a fresh view), NEVER by autosave — and that
   // is the point: `dirty` cannot answer "did the user do something while
@@ -1242,11 +1467,46 @@
   // save path this mode already owns, and stay silent when it lands. Only a
   // flush that leaves the buffer dirty anyway (the offline queue refused it,
   // the ship rejected the write) falls back to naming what would be lost.
+  //
+  // With Settings > Editor > Autosave off, pages and memories save only when
+  // asked to, so nothing here writes on its own: after any save already in
+  // flight, unsaved text gets the question, with save as one answer.
   async function guardDirty() {
     if (!dirty) return true;
     if (grubPath)
       return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
     const label = current || pname.value.trim() || 'this';
+    if (await flushNoAsk()) return true;
+    if (autosaveOn())
+      return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+    const pick = await askChoice('unsaved changes to ' + label + '. save them?',
+      ['save', 'discard']);
+    if (pick === 'discard') return true;
+    if (pick !== 'save') return false;
+    return saveNow();
+  }
+  // saveNow: the save an answer of "save" asks for. A save already in
+  // flight is waited out first (it may be this very text), then the front
+  // document's own explicit save runs. Answers whether the buffer is clean.
+  // Never a silent no-op: a failed save has said why, and a flight still
+  // running past the cap says so here.
+  async function saveNow() {
+    await waitSave();
+    if (!dirty) return true;
+    if (saving) { st('a save is still running, try again', false); return false; }
+    if (grubPath) await saveGrub(); else if (mode === 'know') await saveKnow(); else await save();
+    await waitSave();
+    return !dirty;
+  }
+  // flushNoAsk: guardDirty's flush without its question, answering whether
+  // the buffer is clean afterwards. A tab switch (21-tabs.js) uses it on its
+  // own: the tab it leaves keeps whatever is still unsaved, so there is
+  // nothing to ask about. A dirty grub has no flush (explicit save only) and
+  // answers false at once, and so does everything with autosave off, after
+  // waiting out a save already in flight (an explicit one, still landing).
+  async function flushNoAsk() {
+    if (!dirty) return true;
+    if (grubPath) return false;
     // save() coalesces concurrent calls by design. A save already in flight
     // just arms savePending and returns on the spot, so calling save() here
     // answered nothing while dirty stayed set. That read like a flush that
@@ -1264,19 +1524,21 @@
     //  `dirty`, and waking in that gap offered to discard a save that was
     //  about to succeed. Capped past tfetch's 30s, since a grub save holds
     //  `saving` with no timeout of its own.
-    const t0 = Date.now();
-    while (saving && Date.now() - t0 < 35000)
-      await (saveFlight || new Promise((r) => setTimeout(r, 50)));
+    await waitSave();
     if (!dirty) return true;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.
-    if (!saving) {
+    if (!saving && autosaveOn()) {
       if (mode === 'know') await saveKnow(); else await save();
-      if (!dirty) return true;
     }
-    return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+    return !dirty;
   }
-  // setOpen: what the bar says is open, set in one place. `name` becomes
+  async function waitSave() {
+    const t0 = Date.now();
+    while (saving && Date.now() - t0 < 35000)
+      await (saveFlight || new Promise((r) => setTimeout(r, 50)));
+  }
+  // setOpen: what the tab header says is open, set in one place. `name` becomes
   // `current`, the open page or memory, or null when nothing named is open
   // (a new page, a folder, a grub, a fresh mode). The name field shows
   // `name` unless `shown` says otherwise (a folder's path, a grub's road, a
@@ -1284,7 +1546,8 @@
   // when readOnly. `kind` moves the kind picker when it has that option.
   // `url`, when given, replaces the address. Assigning .value fires no
   // event, so this ends by dispatching 'input' on the field: the desktop
-  // and phone labels (96-deskmenu.js, 97-mobar.js) repaint on it.
+  // and phone labels (96-deskmenu.js, 97-mobar.js) repaint on it. Then the
+  // active document tab learns what it now shows (tabFollow, 21-tabs.js).
   function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
     current = name;
     pname.value = shown === undefined ? (name || '') : shown;
@@ -1292,6 +1555,7 @@
     if (kind && [...pkind.options].some((o) => o.value === kind)) pkind.value = kind;
     if (url) history.replaceState(null, '', url);
     pname.dispatchEvent(new Event('input'));
+    tabFollow();
   }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
@@ -1420,7 +1684,8 @@
       if (saveFlight === req) saveFlight = null;
       echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
     }
-    if (shipGone(r)) return { gone: true };
+    // `r` too: a 504 can be a link's host (35-pages.js), not this ship
+    if (shipGone(r)) return { gone: true, r };
     if (r.ok) {
       echo.n++;                         // one bump is ours; consume it on arrival
       // every write names its target the same way; a move dirties both ends
@@ -1478,9 +1743,10 @@
   const forgetBase = () => { basePr = null; try { delete localStorage.latBase; } catch {} };
 
   // a tree's folded folders, remembered under one localStorage key: get()
-  // reads the list, flip(key) folds or unfolds one folder in it. The files
-  // tree (with its shared-with-me folder) keeps appColl; memories keep
-  // knowColl (95-know.js).
+  // reads the list, flip(key) folds or unfolds one folder in it, set(list)
+  // replaces it (collapse all). The files tree (with its shared-with-me
+  // folder) keeps appColl; memories keep knowColl (95-know.js) and
+  // bookmarks marksColl (31-marks.js).
   const collStore = (k) => {
     const get = () => {
       try { return JSON.parse(localStorage[k] || '[]'); } catch { return []; }
@@ -1491,9 +1757,630 @@
       if (i >= 0) c.splice(i, 1); else c.push(key);
       localStorage[k] = JSON.stringify(c);
     };
-    return { get, flip };
+    const set = (list) => { localStorage[k] = JSON.stringify(list); };
+    return { get, flip, set };
   };
   const paneColl = collStore('appColl');
+
+// ── src/21-tabs.js ────────────────────────────────────────────────────────
+  // ── document tabs ───────────────────────────────────────────────────────
+  // Many documents open at once over ONE live editor. The editor's globals
+  // (current, dirty, everTyped, grubPath, mode, src) stay the truth for the
+  // tab in front. A tab that is not in front holds `snap`: what the editor
+  // held for it when it was last in front, and above all whether that was
+  // unsaved. A parked tab's unsaved buffer exists nowhere else, so
+  // __latUnsaved and beforeunload count it (20-state.js, 35-pages.js).
+  //
+  // One tab per document: opening one that is already open focuses its tab,
+  // so a document has one buffer, one dirty flag and one autosave, and two
+  // tabs can never write over each other's typing.
+  let tabs = [];
+  let activeTab = null;
+  let tabSeq = 0;
+  // >0 while the tab model itself is painting the editor. setOpen calls
+  // tabFollow on every paint, and these paints are the tab model's own steps,
+  // not the user going somewhere.
+  let tabNav = 0;
+  // the tab whose open is still on its way in. Until its document lands the
+  // paints are the open's own steps (openKnow's setMode passes through "no
+  // memory" on its way to the key), so tabFollow leaves this tab alone. Only
+  // until it lands, though: an open's promise can run on for seconds after
+  // the paint (openPage's upgrade fetch), and what the user does meanwhile
+  // must still be followed.
+  let tabLoading = null;
+
+  const mkTab = (kind, key, ship, { pinned = false, read = false } = {}) =>
+    ({ id: 't' + (++tabSeq), kind, key, ship: ship || null, pinned, read,
+       back: [], fwd: [], snap: null });
+  const sameDoc = (t, d) =>
+    t.kind === d.kind && t.key === d.key && (t.ship || null) === (d.ship || null);
+  // a Back or Forward entry. Kind and ship ride along, since one tab can go
+  // from a page to a memory to a grub.
+  const tabEnc = (t) => JSON.stringify([t.kind, t.key, t.ship || null]);
+  const tabDec = (s) => { const [kind, key, ship] = JSON.parse(s); return { kind, key, ship }; };
+
+  // what the live editor shows, as a tab would name it: the one editor kind
+  // whose live() claims it. null for a folder, which is a view in a tab and
+  // not a document of its own.
+  const liveDoc = () => {
+    for (const [kind, k] of Object.entries(TAB_KINDS)) {
+      const d = k.live && k.live();
+      if (d) return { kind, key: d.key, ship: d.ship || null };
+    }
+    return null;
+  };
+  // whether the tab in front is a document in the editor: its kind has
+  // live(). A tool tab is not, so the controls of the editor (Save, Edit /
+  // Read, rename, the Page tab) leave the document underneath alone.
+  const docFront = () => !activeTab || !!TAB_KINDS[activeTab.kind].live;
+  // shows(t) for every editor kind: the live editor is this tab's document
+  const showsLive = (t) => { const d = liveDoc(); return !!d && sameDoc(t, d); };
+
+  // Park: the editor's state for this tab goes into its snap, and the
+  // editor is released for the next one. A page or memory first gets the
+  // same flush guardDirty gives it, minus the question: whatever the flush
+  // cannot save simply stays in the snap, unsaved and counted. A grub never
+  // autosaves, so its buffer goes straight into the snap, and so does every
+  // buffer with autosave off (flushNoAsk writes nothing then).
+  //
+  // Only a tab whose document really is in the editor owns what is there.
+  // While a slow open is still loading, the editor shows the document
+  // before it, and filing that text under this tab would hand one
+  // document's words to another's autosave. When such text is still unsaved
+  // after the flush (a page deleted elsewhere and not yet recreated, typing
+  // in a load window), it belongs to no tab, so it gets guardDirty's
+  // question, and a cancel keeps it and the switch does not happen.
+  // Answers false then.
+  async function parkDoc(t) {
+    const label = current || pname.value.trim() || 'this';
+    await flushNoAsk();
+    const mine = TAB_KINDS[t.kind].shows(t);
+    if (dirty && !mine &&
+        !(await askConfirm('discard unsaved changes to ' + label + '?', 'discard')))
+      return false;
+    t.snap = mine ? {
+      body: src.value, dirty, everTyped,
+      sel: [src.selectionStart, src.selectionEnd], scroll: src.scrollTop,
+      kind: curKind, pkind: pkind.value, rev: curRev, shown: pname.value,
+    } : null;
+    // the buffer lives in the snap now. The next open's own guardDirty must
+    // not ask about it again, and its debounce must not save it under
+    // whatever document comes next (autosave reads `current` when it fires).
+    dirty = false;
+    clearTimeout(autoTimer);
+    return true;
+  }
+  // The kinds of tab. switchTab and openIn only ever look a kind up here,
+  // so a new kind is a new entry and nothing else.
+  //   open(t)        show the document fresh, from the ship or a cache.
+  //                  Answers false when that failed with nothing shown.
+  //   restore(t, s)  paint a parked unsaved buffer back, with no fetch
+  //   park(t)        hand the editor back, keeping what is unsaved in t.snap.
+  //                  Answers false when the user chose to stay.
+  //   shows(t)       whether the editor is showing this tab's document
+  //   live()         editor kinds only: {key, ship} when the live editor
+  //                  holds a document of this kind, else null. The editor
+  //                  kinds claim mutually exclusive states. A kind without
+  //                  live() is never rewritten by tabFollow.
+  //   icon, label    for the strip. icon is a name, or a function of the tab
+  const TAB_KINDS = {
+    page: {
+      // a link (30-tree.js) is titled with its whole local path: its name
+      // alone would read as a page of my own
+      icon: (t) => (linkOf(t.key) ? 'link' : 'doc'),
+      label: (t) => !t.key ? 'new page' : linkOf(t.key) ? t.key : t.key.split('/').pop(),
+      open: async (t) => {
+        if (t.key) return openPage(t.key);
+        exitRev();
+        newFile('', false);
+        return true;
+      },
+      restore: (t, s) => {
+        exitRev();
+        if (!t.key) {
+          newFile('', false);
+          setOpen(null, { shown: s.shown });
+          if (s.pkind) pkind.value = s.pkind;
+          src.value = s.body;
+          render();
+          return;
+        }
+        exitGrub();
+        if (mode === 'know') setMode('pages');
+        setFolderCtx(t.key);
+        const n = nodes.find((x) => x.page && x.path === t.key);
+        applyPage(t.key, { body: s.body, kind: s.kind || s.pkind, rev: s.rev,
+          share: (n && n.share) || 'private' }, true);
+      },
+      park: parkDoc,
+      shows: showsLive,
+      live: () => (!grubPath && mode !== 'know' && curFolder === null
+        ? { key: current || '' } : null),
+    },
+    know: {
+      icon: 'know',
+      label: (t) => t.key ? t.key.split('/').pop() : 'new memory',
+      open: async (t) => {
+        if (t.key) return openKnow(t.key);
+        setMode('know');
+        return true;
+      },
+      restore: (t, s) => {
+        if (mode !== 'know') setMode('know');
+        if (!t.key) {
+          setOpen(null, { shown: s.shown });
+          src.value = s.body;
+          render();
+          return;
+        }
+        applyKnow(t.key, { body: s.body, tags: (knowEntry(t.key) || { tags: [] }).tags,
+          updated: 'unsaved here' });
+      },
+      park: parkDoc,
+      shows: showsLive,
+      live: () => (!grubPath && mode === 'know' ? { key: current || '' } : null),
+    },
+    grub: {
+      icon: 'file',
+      label: (t) => {
+        const pg = /\/page\/(.+)\/code$/.exec(t.key);
+        const n = pg ? pg[1] : t.key.split('/').pop();
+        return t.ship ? t.ship + ': ' + n : n;
+      },
+      open: async (t) => {
+        // grub mode is an overlay on the pages view (40-grub.js)
+        if (mode === 'know') setMode('pages');
+        exitRev();
+        return openGrub(t.key, t.ship);
+      },
+      restore: (t, s) => {
+        if (mode === 'know') setMode('pages');
+        exitRev();
+        enterGrub(t.key, t.ship);
+        src.value = s.body;
+        src.readOnly = false;
+        if (s.pkind) pkind.value = s.pkind;
+        curKind = s.kind;
+        render();
+        pname.dispatchEvent(new Event('input'));
+        st('unsaved, Ctrl+S to save');
+      },
+      park: parkDoc,
+      shows: showsLive,
+      live: () => (grubPath ? { key: grubPath, ship: grubShip } : null),
+    },
+  };
+
+  // ── persistence ──────────────────────────────────────────────────────
+  // Which documents are open, never their bodies: a body in localStorage
+  // could come back in another window as if it were that window's work.
+  const tabsSave = () => {
+    try {
+      localStorage.appTabs = JSON.stringify({
+        tabs: tabs.map(({ kind, key, ship, pinned, read }) => ({ kind, key, ship, pinned, read })),
+        active: tabs.indexOf(activeTab),
+      });
+    } catch {}
+  };
+  const tabsChanged = () => { tabsSave(); paintTabs(); };
+
+  // ── showing a tab ────────────────────────────────────────────────────
+  // Every switch, close and in-place open runs through one queue, so two
+  // quick clicks can never park the same buffer twice or interleave their
+  // halves. The queue waits for the park and for the paint to begin, not
+  // for a slow fetch: the next switch supersedes an open still loading
+  // (openSeq), and parks nothing for it, since nothing of it is shown yet.
+  let tabQ = Promise.resolve();
+  let tabShown = 0;         // counts showTab calls, so a late landing knows it is late
+  const tabSerial = (fn) => {
+    const run = tabQ.then(fn, fn);
+    tabQ = run.catch(() => {});
+    return run;
+  };
+
+  // show `t`, already the active tab, in the editor
+  function showTab(t) {
+    const k = TAB_KINDS[t.kind];
+    const s = t.snap;
+    t.snap = null;          // in front, the live editor is its state
+    const gen = ++tabShown;
+    src.readOnly = false;   // a blank or a binary grub left it locked
+    openSeq++;              // an open still loading for the tab left behind may not land
+    // a new page or memory already named (its create may still be queued,
+    // and runs here once the name is back in the field) comes back named
+    // even when clean. Opened fresh it would be a blank, nameless page.
+    if (s && (s.dirty || (!t.key && s.shown))) {
+      tabLoading = null;
+      tabNav++;
+      try {
+        k.restore(t, s);
+        dirty = s.dirty;
+        everTyped = s.everTyped;
+        // a page or memory whose flush failed tries again on the usual
+        // debounce, exactly as if it had just been typed
+        clearTimeout(autoTimer);
+        if (dirty) autoTimer = setTimeout(autosave, 2000);
+        tabCaret(s);
+      } finally { tabNav--; }
+      paintTabs();
+      return Promise.resolve(true);
+    }
+    tabLoading = t;
+    const settle = () => { if (gen === tabShown && tabLoading === t) tabLoading = null; };
+    let p;
+    try { p = Promise.resolve(k.open(t)); } catch (e) { p = Promise.reject(e); }
+    return p.then((ok) => {
+      settle();
+      if (activeTab !== t || gen !== tabShown) return ok;
+      // failed with nothing shown: an empty, locked editor under this tab's
+      // name, never the previous document wearing this tab's title
+      if (ok === false && !k.shows(t)) tabBlank(t);
+      else if (!k.shows(t)) tabFollow();   // something else opened over it
+      else if (s && !dirty) tabCaret(s);
+      paintTabs();
+      return ok;
+    }, (e) => { settle(); throw e; });
+  }
+  const tabCaret = (s) => {
+    try { src.setSelectionRange(s.sel[0], s.sel[1]); } catch {}
+    src.scrollTop = s.scroll;
+    sync();
+  };
+  function tabBlank(t) {
+    tabNav++;
+    try {
+      exitGrub();
+      setOpen(null, { shown: TAB_KINDS[t.kind].label(t), readOnly: true });
+      src.value = '';
+      src.readOnly = true;
+      dirty = false;
+      render();
+      prevBlank();
+    } finally { tabNav--; }
+  }
+
+  // park whatever is in front and bring `t` there. false: the user stayed
+  async function tabTo(t) {
+    const from = activeTab;
+    if (from === t) {
+      if (!TAB_KINDS[t.kind].shows(t)) showTab(t);
+      return;
+    }
+    if (from && tabs.includes(from) && (await TAB_KINDS[from.kind].park(from)) === false)
+      return false;
+    activeTab = t;
+    tabsChanged();
+    showTab(t);
+  }
+
+  // ── the entry points ─────────────────────────────────────────────────
+  // openIn: how every click on a document opens it. An open document
+  // focuses its tab. A new tab comes from Ctrl/Cmd+click, a middle click,
+  // opts.newTab, or a pinned tab in front. Anything else replaces the
+  // document in the front tab, after guardDirty, and that tab's Back
+  // remembers what it replaced.
+  function openIn(kind, key, { ev, ship, newTab } = {}) {
+    return tabSerial(async () => {
+      const want = { kind, key, ship: ship || null };
+      const hit = key ? tabs.find((t) => sameDoc(t, want)) : null;
+      if (hit) return tabTo(hit);
+      const fresh = newTab || (ev && (ev.ctrlKey || ev.metaKey || ev.button === 1))
+        || !activeTab || activeTab.pinned;
+      if (fresh) {
+        const t = mkTab(kind, key, ship);
+        tabs.splice(activeTab ? tabs.indexOf(activeTab) + 1 : tabs.length, 0, t);
+        if ((await tabTo(t)) === false) { tabs.splice(tabs.indexOf(t), 1); tabsChanged(); }
+        return;
+      }
+      if (!(await guardDirty())) return;
+      // flushed, or the user said discard: either way nothing here is owed
+      dirty = false;
+      const t = activeTab;
+      if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
+      Object.assign(t, want);
+      t.snap = null;
+      tabsChanged();
+      showTab(t);
+    });
+  }
+  const switchTab = (id) => tabSerial(async () => {
+    const t = tabs.find((x) => x.id === id);
+    if (t) await tabTo(t);
+  });
+  // closeTab: false when the user kept it. guardDirty runs on the tab being
+  // closed, in front, the one place it can flush or ask, so a background tab
+  // holding unsaved work comes forward first.
+  const closeTab = (id) => tabSerial(async () => {
+    const t = tabs.find((x) => x.id === id);
+    if (!t) return false;
+    if (t !== activeTab && t.snap && t.snap.dirty && (await tabTo(t)) === false) return false;
+    if (t === activeTab) {
+      if (!(await guardDirty())) return false;
+      dirty = false;
+      clearTimeout(autoTimer);
+    }
+    const i = tabs.indexOf(t);
+    tabs.splice(i, 1);
+    if (t !== activeTab) { tabsChanged(); return true; }
+    activeTab = null;
+    let next = tabs[i] || tabs[i - 1];
+    if (!next) { next = mkTab('page', ''); tabs.push(next); }
+    activeTab = next;
+    tabsChanged();
+    showTab(next);
+    return true;
+  });
+  // Back and Forward within the front tab. A step is an in-place open, so
+  // it guards like one. A step onto a document open in another tab goes
+  // to that tab instead.
+  const tabStep = (from, to) => tabSerial(async () => {
+    const t = activeTab;
+    if (!t || !t[from].length) return;
+    if (!(await guardDirty())) return;
+    dirty = false;
+    const d = tabDec(t[from].pop());
+    const twin = d.key && tabs.find((x) => x !== t && sameDoc(x, d));
+    if (twin) { tabsChanged(); return tabTo(twin); }
+    if (t.key) t[to].push(tabEnc(t));
+    Object.assign(t, d);
+    t.snap = null;
+    tabsChanged();
+    showTab(t);
+  });
+  const tabBack = () => tabStep('back', 'fwd');
+  const tabFwd = () => tabStep('fwd', 'back');
+  const tabCycle = (dir) => {
+    if (tabs.length < 2) return;
+    const i = tabs.indexOf(activeTab);
+    switchTab(tabs[(i + dir + tabs.length) % tabs.length].id);
+  };
+  // a new tab with a new page in it: the strip's +. Then newFile again, the
+  // way the + file button calls it, so the page gets named (the name field,
+  // or the create dialog where that field is hidden, 96-deskmenu.js)
+  const tabNew = async () => {
+    await openIn('page', '', { newTab: true });
+    if (activeTab && activeTab.kind === 'page' && !activeTab.key) newFile('');
+  };
+  // a tool tab in front hides the editor. Anything about to paint the
+  // editor (a new page, a folder) first gets a document tab of its own,
+  // as the strip's + gives one, so it never lands unseen under the tool.
+  // false: no document tab came to the front.
+  const docTab = async () => {
+    if (docFront()) return true;
+    await openIn('page', '', { newTab: true });
+    return docFront() && !!activeTab && activeTab.kind === 'page' && !activeTab.key;
+  };
+
+  // tabFollow: the editor moved to another document by a road that did not
+  // come through openIn (a rename, a delete, the mode pill, a template, a
+  // new page in place, the live sync). The front tab follows, so the tab
+  // and what it parks always name the document that is really shown.
+  function tabFollow() {
+    if (tabNav || !activeTab) return;
+    const t = activeTab;
+    // a tab that is not an editor document (no live()) keeps its identity
+    if (!TAB_KINDS[t.kind].live) return;
+    if (tabLoading === t) {
+      if (TAB_KINDS[t.kind].shows(t)) tabLoading = null;
+      return;
+    }
+    const d = liveDoc();
+    if (!d || sameDoc(t, d)) return;
+    if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
+    Object.assign(t, d);
+    t.snap = null;
+    // one tab per document: a clean twin elsewhere is now redundant
+    const twin = d.key && tabs.find((x) => x !== t && sameDoc(x, d) && !(x.snap && x.snap.dirty));
+    if (twin) tabs.splice(tabs.indexOf(twin), 1);
+    tabsChanged();
+  }
+  // a create that ran from the queue after its tab was left (save(),
+  // 35-pages.js). `own.tab` is the tab it was queued from, and only that
+  // tab, still unnamed and still showing the name it was created as, is
+  // the page's tab now. Named, it opens the page when it comes back
+  // (current set), so its later saves update the page instead of creating
+  // it again, which the ship refuses as a page that already exists.
+  // true: that tab is in front again, so the editor is on the page and
+  // save() takes it as still here.
+  function tabAdopt(own, name) {
+    const trim = (v) => v.trim().replace(/^\/+|\/+$/g, '');
+    const t = tabs.find((x) => x.id === own.tab);
+    if (!t || t.kind !== 'page' || t.key) return false;
+    if (t === activeTab)
+      return showsLive(t) && current === null && trim(pname.value) === own.name;
+    if (!t.snap || trim(t.snap.shown || '') !== own.name) return false;
+    t.key = name;
+    t.snap.shown = name;
+    tabsChanged();
+    return false;
+  }
+  // a move or rename: tabs naming the old path, or anything under it, name
+  // the new one, so a parked buffer is never saved back to where it was
+  function tabsRemap(kind, from, to) {
+    for (const t of tabs) {
+      if (t.kind !== kind || !t.key) continue;
+      if (t.key === from) t.key = to;
+      else if (t.key.startsWith(from + '/')) t.key = to + t.key.slice(from.length);
+    }
+    tabsChanged();
+  }
+
+  // ── boot ─────────────────────────────────────────────────────────────
+  // The saved list, and then the address on top of it: a ?name, ?grub or
+  // ?view=know&key names a document, which gets its tab focused or a new
+  // one. An entry that does not parse as a tab is dropped, and nothing at
+  // all leaves one new page. Nothing is opened here; boot (99-boot.js) shows
+  // the tab this returns. `fresh` says the list was made up rather than
+  // restored, which is when a bare launch may resume the last page.
+  function tabsBoot() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.appTabs || 'null'); } catch {}
+    const list = saved && Array.isArray(saved.tabs) ? saved.tabs : [];
+    for (const e of list) {
+      if (!e || !TAB_KINDS[e.kind] || typeof e.key !== 'string') continue;
+      if (e.ship != null && typeof e.ship !== 'string') continue;
+      if (e.key && tabs.some((t) => sameDoc(t, e))) continue;
+      tabs.push(mkTab(e.kind, e.key, e.ship, { pinned: e.pinned === true, read: e.read === true }));
+    }
+    activeTab = (Number.isInteger(saved && saved.active) && tabs[saved.active]) || tabs[0] || null;
+    const want = qs.get('grub') ? { kind: 'grub', key: qs.get('grub'), ship: qs.get('ship') || null }
+      : qs.get('view') === 'know' ? { kind: 'know', key: qs.get('key') || '', ship: null }
+      : qs.get('name') ? { kind: 'page', key: qs.get('name'), ship: null } : null;
+    if (want) {
+      const hit = activeTab && sameDoc(activeTab, want) ? activeTab
+        : tabs.find((t) => sameDoc(t, want));
+      if (hit) activeTab = hit;
+      else {
+        const t = mkTab(want.kind, want.key, want.ship);
+        tabs.splice(activeTab ? tabs.indexOf(activeTab) + 1 : 0, 0, t);
+        activeTab = t;
+      }
+    }
+    const fresh = !activeTab;
+    if (fresh) { activeTab = mkTab('page', ''); tabs.push(activeTab); }
+    tabsChanged();
+    return { tab: activeTab, fresh };
+  }
+  // boot showing a tab through the tab model, for every kind without a
+  // boot path of its own
+  const tabShowBoot = (t) => tabSerial(() => showTab(t));
+
+  // ── the strip ────────────────────────────────────────────────────────
+  // First in the center column, level with the corner toggles. The tabs,
+  // then + for a new page (Back and Forward are in the tab header).
+  const tabStrip = document.createElement('div');
+  tabStrip.id = 'doctabs';
+  tabStrip.className = 'doctabs';
+  tabStrip.innerHTML =
+    '<div class="dtlist" role="tablist" aria-label="Open documents"></div>' +
+    sbtn('id="tabnew" data-action="tabnew"', 'plus', 'New page');
+  $('center').prepend(tabStrip);
+  const tabList = tabStrip.querySelector('.dtlist');
+  $('tabnew').onclick = () => tabNew();
+  clickAction('tabnew', 'New page in a new tab', 'Tab strip');
+
+  // Each tab is two buttons side by side in one wrapper: the tab itself
+  // and its close, so the close is a real button a keyboard can reach (a
+  // button cannot sit inside another). The state classes (on, dirty,
+  // pinned) go on both: the wrapper draws the tab, the tab button is what
+  // scripts and suites address.
+  function paintTabs() {
+    tabList.textContent = '';
+    for (const t of tabs) {
+      const k = TAB_KINDS[t.kind];
+      const name = k.label(t);
+      const w = document.createElement('div');
+      w.setAttribute('role', 'presentation');
+      const b = document.createElement('button');
+      b.type = 'button';
+      for (const [el, base] of [[w, 'dtw'], [b, 'dtab']])
+        el.className = base + (t === activeTab ? ' on' : '') + (t.pinned ? ' pinned' : '');
+      b.setAttribute('role', 'tab');
+      b.setAttribute('aria-selected', t === activeTab ? 'true' : 'false');
+      b.dataset.id = t.id;
+      b.dataset.kind = t.kind;
+      b.dataset.key = t.key;
+      b.title = (t.ship ? t.ship + ' ' : '') + (t.key || name);
+      b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
+        + '<span class="dtn"></span>'
+        + '<span class="dtdot" aria-hidden="true"></span>';
+      b.querySelector('.dtn').textContent = name;
+      b.onclick = () => switchTab(t.id);
+      const x = tip(document.createElement('button'), 'Close ' + name);
+      x.type = 'button';
+      x.className = 'dtx';
+      x.innerHTML = ico('x');
+      x.onclick = () => closeTab(t.id);
+      // a middle click closes, and must not start the browser's autoscroll
+      w.onmousedown = (e) => { if (e.button === 1) e.preventDefault(); };
+      w.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(t.id); } };
+      w.oncontextmenu = (e) => { e.preventDefault(); tabMenu(t, e.clientX, e.clientY); };
+      w.append(b, x);
+      tabList.append(w);
+    }
+    paintTabDirty();
+    paintHead();   // the header under the strip (23-tabhead.js)
+    const on = tabList.querySelector('.dtw.on');
+    if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+  // The dot. `dirty` is set by typing and cleared by four save paths, so the
+  // dot is read off the state on a short beat instead of from each of them.
+  function paintTabDirty() {
+    for (const w of tabList.children) {
+      const b = w.firstChild;
+      const t = tabs.find((x) => x.id === b.dataset.id);
+      const on = !!t && (t === activeTab ? dirty === true : !!(t.snap && t.snap.dirty));
+      w.classList.toggle('dirty', on);
+      b.classList.toggle('dirty', on);
+    }
+  }
+  setInterval(paintTabDirty, 400);
+
+  // the context menu: pin, close, close the others
+  let tabMenuEl = null;
+  const tabMenuClose = () => { if (tabMenuEl) { tabMenuEl.remove(); tabMenuEl = null; } };
+  function tabMenu(t, x, y) {
+    tabMenuClose();
+    const m = document.createElement('div');
+    m.className = 'dtmenu';
+    m.setAttribute('role', 'menu');
+    const item = (label, run) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('role', 'menuitem');
+      b.textContent = label;
+      b.onclick = () => { tabMenuClose(); run(); };
+      m.append(b);
+    };
+    item(t.pinned ? 'Unpin' : 'Pin', () => { t.pinned = !t.pinned; tabsChanged(); });
+    item('Close', () => closeTab(t.id));
+    item('Close others', async () => {
+      for (const o of tabs.filter((x) => x !== t)) await closeTab(o.id);
+    });
+    m.style.left = x + 'px';
+    m.style.top = y + 'px';
+    document.body.append(m);
+    tabMenuEl = m;
+    m.querySelector('button').focus();
+  }
+  addEventListener('mousedown', (e) => {
+    if (tabMenuEl && !tabMenuEl.contains(e.target)) tabMenuClose();
+  }, true);
+  addEventListener('keydown', (e) => {
+    if (tabMenuEl && e.key === 'Escape') { tabMenuClose(); return; }
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && !e.shiftKey && !e.altKey && (e.key === 'w' || e.key === 'W')) {
+      e.preventDefault();
+      if (activeTab) closeTab(activeTab.id);
+    } else if (e.ctrlKey && e.key === 'Tab') {
+      e.preventDefault();
+      tabCycle(e.shiftKey ? -1 : 1);
+    } else if (e.altKey && !mod && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')
+      // in a text field Alt+Arrow moves by word on a Mac, and that wins
+      && !(e.target.closest && e.target.closest('input, textarea, select, [contenteditable]'))) {
+      e.preventDefault();
+      if (e.key === 'ArrowLeft') tabBack(); else tabFwd();
+    }
+  });
+  // a link to a document: a click goes through openIn with its event, so
+  // Ctrl/Cmd and the middle button open a new tab
+  const tabLink = (el, kind, key, opts = {}) => {
+    const go = (e) => { e.preventDefault(); openIn(kind, key, { ...opts, ev: e }); };
+    el.onclick = go;
+    el.onauxclick = (e) => { if (e.button === 1) go(e); };
+  };
+
+  // for the browser suites, which cannot reach this scope
+  window.latTabs = {
+    openIn, switchTab, closeTab, tabBack, tabFwd,
+    list: () => tabs.map(({ id, kind, key, ship, pinned }) => ({ id, kind, key, ship, pinned })),
+    state: () => ({
+      tabs: tabs.map(({ id, kind, key, ship, pinned, snap }) =>
+        ({ id, kind, key, ship, pinned, dirty: !!(snap && snap.dirty) })),
+      active: tabs.indexOf(activeTab),
+      shows: !!activeTab && TAB_KINDS[activeTab.kind].shows(activeTab),
+    }),
+  };
 
 // ── src/22-listedit.js ────────────────────────────────────────────────────
   // ── smart list continuation ──────────────────────────────────────────────
@@ -1707,6 +2594,535 @@
     return { from: lineStart, to: spanEnd, text, caret: lineStart, caretEnd: lineStart + text.length };
   };
 
+// ── src/23-tabhead.js ─────────────────────────────────────────────────────
+  // ── tab header ───────────────────────────────────────────────────────────
+  // Between the tab strip and the document: Back and Forward, the path of
+  // what is open, Edit / Read, Save and the page menu. The name field, the
+  // kind picker and the LaTeX convert button sit here in a hidden holder:
+  // nothing shows them, but they are the stores and the handlers these
+  // buttons call (#pname, #pkind, #texconv), as #mv and #del in the Page tab
+  // are.
+  //
+  // Save is an icon on a phone while a grub is in front, the one document
+  // with no autosave and, there, no keyboard for Ctrl+S. Everywhere else it
+  // is hidden: pages and memories autosave, and the desktop has Ctrl+S and
+  // the File menu, which clicks #save, as vim's :w does.
+  //
+  // Edit and Read are one choice per tab, kept on the tab (`read`, which
+  // 21-tabs.js persists). There is no split: Edit hides the preview, Read
+  // hides the editor.
+
+  // the page kinds: the hidden picker's options and the page menu's Kind list
+  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'hoon'];
+  const tabHead = document.createElement('div');
+  tabHead.id = 'tabhead';
+  tabHead.className = 'tabhead';
+  tabHead.innerHTML =
+    sbtn('id="tback" data-action="tback"', 'left', 'Back', 'Alt+Left') +
+    sbtn('id="tfwd" data-action="tfwd"', 'right', 'Forward', 'Alt+Right') +
+    '<button type="button" id="tpath" class="tpath" data-action="tpath"></button>' +
+    '<div id="tread" class="tread" role="group" aria-label="Edit or Read">' +
+      '<button type="button" data-r="0" data-action="edit">' + ico('pen') + 'Edit</button>' +
+      '<button type="button" data-r="1" data-action="read">' + ico('eye') + 'Read</button>' +
+    '</div>' +
+    sbtn('id="save"', 'save', 'Save', 'Ctrl+S') +
+    sbtn('id="tmenu" data-action="tmenu" aria-haspopup="menu"', 'dots', 'Page menu') +
+    `<span id="tholder" hidden>
+  <input id="pname" autocomplete="off" spellcheck="false">
+  <select id="pkind">${KINDS.map((k) => `<option value="${k}">${k}</option>`).join('')}</select>
+  <!-- LaTeX conversion runs on the user's own machine (71-latex.js); the
+       page menu's Convert to HTML clicks this -->
+  <button type="button" id="texconv" hidden>convert to html</button>
+</span>`;
+  $('center').insertBefore(tabHead, $('docarea'));
+  pname = $('pname'); pkind = $('pkind');
+  for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
+  $('tback').onclick = () => tabBack();
+  $('tfwd').onclick = () => tabFwd();
+  // the move / rename flow of the controls pane, unchanged. A tab that is
+  // not a document shows only its title there.
+  $('tpath').onclick = () => { if (docFront()) $('mv').click(); };
+  clickAction('tback', 'Back', 'Tab header', 'Alt+Left');
+  clickAction('tfwd', 'Forward', 'Tab header', 'Alt+Right');
+  clickAction('tpath', 'Move or rename', 'Tab header');
+  clickAction('edit', 'Edit', 'Tab header', 'Ctrl+E');
+  clickAction('read', 'Read', 'Tab header', 'Ctrl+E');
+  clickAction('tmenu', 'Page menu', 'Tab header');
+
+  // Read for the tab in front. Entering it shows the preview, which skipped
+  // its renders while off screen (60-preview.js)
+  function applyRead() {
+    const on = !!(activeTab && activeTab.read);
+    const was = ws.classList.contains('ve');
+    ws.classList.toggle('ve', !on);
+    ws.classList.toggle('vp', on);
+    for (const b of $('tread').children) {
+      const p = (b.dataset.r === '1') === on;
+      b.classList.toggle('on', p);
+      b.setAttribute('aria-pressed', p ? 'true' : 'false');
+    }
+    if (on && was) showPreview();
+    // the vim indicator reads PREVIEW in Read
+    if (window.latVimSetInd) window.latVimSetInd();
+  }
+  function setRead(on) {
+    if (!activeTab || !docFront()) return;
+    activeTab.read = !!on;
+    tabsSave();
+    applyRead();
+  }
+  for (const b of $('tread').children) b.onclick = () => setRead(b.dataset.r === '1');
+  const toggleRead = () => setRead(!(activeTab && activeTab.read));
+  // the desktop View menu evals these (desktop/src/main.rs)
+  window.latSetRead = setRead;
+  addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'e' || e.key === 'E')
+      // vim keeps Ctrl+E (scroll) while the editor has focus
+      && !(localStorage.edVim === '1' && document.activeElement === src)) {
+      e.preventDefault();
+      toggleRead();
+    }
+  }, true);
+
+  function paintPath() {
+    const tool = !docFront();
+    const v = tool ? TAB_KINDS[activeTab.kind].label(activeTab) : (pname.value || '').trim();
+    const p = $('tpath');
+    p.disabled = tool;
+    p.textContent = v || 'no page open';
+    p.classList.toggle('muted', !v);
+    p.title = v && !tool ? v + ' · ' + (pkind.value || '') : '';
+  }
+  // every writer of the name goes through setOpen (20-state.js), which fires
+  // 'input' on the field, and typing fires it natively
+  pname.addEventListener('input', paintPath);
+  pkind.addEventListener('change', paintPath);
+
+  // called by paintTabs: the tab in front changed, or its stacks did. A tab
+  // that is not a document (a tool, 24-tools.js) has no Edit / Read and no
+  // page menu.
+  function paintHead() {
+    const tool = !docFront();
+    $('tread').hidden = tool;
+    $('tmenu').hidden = tool;
+    // Save's one showing, on a phone (the 820px block): a grub in front
+    $('ws').classList.toggle('grubfront', !!activeTab && activeTab.kind === 'grub');
+    if (pmenuEl && pmenuTab !== activeTab) pmenuClose();
+    for (const [id, st_] of [['tback', 'back'], ['tfwd', 'fwd']]) {
+      const off = !activeTab || !activeTab[st_].length;
+      const b = $(id);
+      b.disabled = off;
+      b.setAttribute('aria-disabled', off ? 'true' : 'false');
+    }
+    paintPath();
+    applyRead();
+    toolSync();
+    paintLink();      // the Page tab's link section follows the tab in front
+  }
+
+  // ── the page menu ────────────────────────────────────────────────────────
+  // Each item calls the handler that already exists. An item that does not
+  // apply to what is open is left out, not greyed: a grub has no kind, a
+  // memory has no raw source.
+  let pmenuEl = null;
+  let pmenuTab = null;   // the tab the open menu was made for
+  const pmenuClose = () => { if (pmenuEl) { pmenuEl.remove(); pmenuEl = null; } };
+
+  // Duplicate: a new page beside this one, same kind and body, named
+  // <name>-copy until the user says otherwise
+  async function dupPage() {
+    if (!current || grubPath || mode === 'know' || curFolder !== null) return;
+    const body = src.value;
+    const kind = pkind.value;
+    const picked = await askName('duplicate ' + current + ' as:', current + '-copy', 'create');
+    if (!picked) return;
+    const rn = realName(picked);
+    if (!rn) { st('bad name — use at least one letter or digit', false); return; }
+    if (!(await guardDirty())) return;
+    newFile('', false);
+    newRn = rn;
+    pkind.value = kind;
+    setOpen(null, { shown: rn.name });
+    src.value = body;
+    render();
+    await save();
+  }
+
+  // Download: what is in the editor now, as a file named for the last path
+  // segment. A memory is markdown.
+  const DLEXT = { text: 'txt' };
+  function downloadDoc() {
+    if (!current || grubPath || curFolder !== null) return;
+    const kind = mode === 'know' ? 'md' : (pkind.value || 'md');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([src.value], { type: 'text/plain' }));
+    a.download = current.split('/').pop() + '.' + (DLEXT[kind] || kind);
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // which items apply to what is open. The menu shows these and the
+  // palette lists these, so the two never disagree.
+  function pmenuHas() {
+    const doc = !grubPath && curFolder === null;       // a page or a memory
+    const page = doc && mode !== 'know';
+    const has = new Set(['wrap']);
+    if (page) has.add('kind');
+    if (page && current) { has.add('dup'); has.add('raw'); }
+    if (doc && current) { has.add('download'); has.add('del'); }
+    if (page && linkOf(current)) has.add('linkback');
+    // a folder view: Delete is #del's folder branch, its own confirm and all
+    if (!grubPath && curFolder !== null) has.add('del');
+    if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex')) has.add('tex');
+    return has;
+  }
+  function pageMenu() {
+    if (pmenuEl) { pmenuClose(); return; }
+    const t = activeTab;
+    if (!t) return;
+    const has = pmenuHas();
+    const m = document.createElement('div');
+    m.className = 'dtmenu tmenu';
+    m.setAttribute('role', 'menu');
+    const item = (id, label, run, checked) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('role', checked === undefined ? 'menuitem' : 'menuitemcheckbox');
+      if (checked !== undefined) b.setAttribute('aria-checked', checked ? 'true' : 'false');
+      b.dataset.mi = id;
+      b.dataset.action = 'pm-' + id;
+      b.textContent = label;
+      b.onclick = () => run(b);
+      m.append(b);
+      return b;
+    };
+    const done = (fn) => () => { pmenuClose(); fn(); };
+    if (has.has('kind')) {
+      const sub = document.createElement('div');
+      sub.className = 'tsub';
+      sub.hidden = true;
+      for (const k of KINDS) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.setAttribute('role', 'menuitemradio');
+        b.setAttribute('aria-checked', k === pkind.value ? 'true' : 'false');
+        b.dataset.kind = k;
+        b.textContent = k;
+        b.onclick = () => {
+          pmenuClose();
+          if (pkind.value === k) return;
+          pkind.value = k;
+          pkind.dispatchEvent(new Event('change'));
+        };
+        sub.append(b);
+      }
+      item('kind', 'Kind ▸', () => { sub.hidden = !sub.hidden; });
+      m.append(sub);
+    }
+    item('wrap', 'Line wrap', done(() => flip('appWrap')), localStorage.appWrap === '1');
+    if (has.has('dup')) item('dup', 'Duplicate', done(dupPage));
+    if (has.has('download')) item('download', 'Download', done(downloadDoc));
+    // the hidden button's title says whether pandoc is there (71-latex.js)
+    if (has.has('tex')) item('tex', 'Convert to HTML', done(() => $('texconv').click())).title =
+      $('texconv').title;
+    if (has.has('raw')) item('raw', 'Open raw', done(() =>
+      window.open(api + '/page-source?name=' + encodeURIComponent(current), '_blank', 'noopener')));
+    if (has.has('linkback'))
+      item('linkback', 'Move back to shared with me', done(() => linkBack(current)));
+    if (has.has('del')) item('del', 'Delete', done(() => $('del').click()));
+    const r = $('tmenu').getBoundingClientRect();
+    m.style.top = r.bottom + 4 + 'px';
+    m.style.right = Math.max(4, innerWidth - r.right) + 'px';
+    document.body.append(m);
+    pmenuEl = m;
+    pmenuTab = t;
+    m.querySelector('button').focus();
+  }
+  $('tmenu').onclick = pageMenu;
+  // The items are built when the menu opens, so a palette action opens it
+  // and clicks the item, which is the menu's own path. Kind opens the menu
+  // with its list unfolded, as clicking Kind does. Convert to HTML exists
+  // only in the desktop app.
+  for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'],
+    ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
+    ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['del', 'Delete']]) {
+    if (id === 'tex' && !window.__TAURI__) continue;
+    action({ id: 'pm-' + id, name, home: 'Page menu',
+      when: () => docFront() && pmenuHas().has(id),
+      run: () => {
+        pmenuClose();
+        pageMenu();
+        const b = pmenuEl && pmenuEl.querySelector('[data-mi="' + id + '"]');
+        if (b) b.click();
+      } });
+  }
+  addEventListener('mousedown', (e) => {
+    if (pmenuEl && !pmenuEl.contains(e.target) && !$('tmenu').contains(e.target)) pmenuClose();
+  }, true);
+  addEventListener('keydown', (e) => {
+    if (pmenuEl && e.key === 'Escape') { pmenuClose(); $('tmenu').focus(); }
+  });
+
+// ── src/24-tools.js ───────────────────────────────────────────────────────
+  // ── tool tabs and the ribbon ─────────────────────────────────────────────
+  // A tool tab holds no document: the comments inbox, access & groups, the
+  // sync conflicts, or a same-origin page in a frame (Settings, the memory
+  // review). Its key names the tool ('inbox', 'access', 'conflicts') or the
+  // frame ('frame:/apps/lattice/settings'). While one is in front the
+  // document area is hidden and #toolhost takes the center. The editor
+  // underneath keeps whatever the parked tab left there, untouched: the
+  // tool kind has no live(), so nothing a tool does is ever filed under a
+  // document's tab.
+  const toolHost = document.createElement('div');
+  toolHost.id = 'toolhost';
+  toolHost.className = 'toolhost';
+  toolHost.hidden = true;
+  $('docarea').after(toolHost);
+
+  // the client tools: their name, icon, the overlay element each one used
+  // to be (72-acl.js, 73-comments.js, 80-conflicts.js) and what fills it
+  const TOOLS = {
+    inbox: { name: 'Comments inbox', icon: 'inbox', wrap: 'cmwrap', load: () => cmLoad() },
+    access: { name: 'Access & groups', icon: 'key', wrap: 'aclwrap', load: () => aclLoad() },
+    conflicts: { name: 'Sync conflicts', icon: 'conflict', wrap: 'cfwrap', load: () => renderConflicts() },
+  };
+  const FRAMES = {
+    '/apps/lattice/settings': ['Settings', 'gear'],
+    '/apps/lattice/know?lint=1': ['Memory review', 'tidy'],
+  };
+  const SETTINGS = 'frame:/apps/lattice/settings';
+  // only a lattice path on this origin, whatever the key says: a frame is
+  // dressed by reaching into it, and a key can come from typed input
+  const frameUrl = (key) => {
+    if (!key.startsWith('frame:')) return null;
+    let u;
+    try { u = new URL(key.slice(6), location.origin); } catch { return null; }
+    if (u.origin !== location.origin || !/^\/apps\/lattice(\/|$)/.test(u.pathname)) return null;
+    return u.pathname + u.search;
+  };
+  const toolMeta = (key) => {
+    if (TOOLS[key]) return [TOOLS[key].name, TOOLS[key].icon];
+    const u = frameUrl(key);
+    return u ? FRAMES[u] || [u, 'globe'] : [key, 'gear'];
+  };
+  // every way into a tool. A tool gets a tab of its own rather than
+  // replacing the document in front, and an open one is focused. On a phone
+  // the drawer it was opened from goes away, also when the tool was in
+  // front already.
+  const toolOpen = async (id) => {
+    await openIn('tool', id === 'settings' ? SETTINGS : id, { newTab: true });
+    drawersClose();
+  };
+
+  // which tool the host shows, null while a document is in front
+  let toolShown = null;
+  TAB_KINDS.tool = {
+    icon: (t) => toolMeta(t.key)[1],
+    label: (t) => toolMeta(t.key)[0],
+    open: async (t) => {
+      toolSync();
+      if (TOOLS[t.key]) TOOLS[t.key].load();
+      return true;
+    },
+    // a tool has no buffer, so nothing to park and nothing to restore
+    restore: () => {},
+    park: async () => true,
+    shows: (t) => t === activeTab && toolShown === t.key,
+  };
+
+  // Called by paintHead on every change of the tab in front. Shows the host
+  // or the document area, and in the host only the front tool. A wrap that
+  // is not in front is hidden, which is how 90-sync.js knows the inbox is
+  // not being read. A frame whose tab has closed goes away.
+  function toolSync() {
+    const t = activeTab && activeTab.kind === 'tool' ? activeTab : null;
+    const was = toolShown;
+    toolShown = t ? t.key : null;
+    $('docarea').hidden = !!t;
+    toolHost.hidden = !t;
+    if (t) toolMount(t.key);
+    for (const f of [...toolHost.querySelectorAll('iframe')])
+      if (!tabs.some((x) => x.kind === 'tool' && x.key === f.dataset.tool)) f.remove();
+    for (const c of toolHost.children) c.hidden = c.dataset.tool !== toolShown;
+    // the right pane goes by what is in front (76-outline.js)
+    if (was !== toolShown) rpSoon();
+  }
+  function toolMount(key) {
+    if (TOOLS[key]) {
+      const w = $(TOOLS[key].wrap);
+      if (!w || w.parentNode === toolHost) return;
+      w.classList.add('intab');
+      w.dataset.tool = key;
+      toolHost.append(w);
+      return;
+    }
+    const url = frameUrl(key);
+    if (!url || [...toolHost.querySelectorAll('iframe')].some((f) => f.dataset.tool === key)) return;
+    const f = document.createElement('iframe');
+    f.className = 'toolframe';
+    f.dataset.tool = key;
+    f.title = toolMeta(key)[0];
+    f.onload = () => frameDress(f);
+    f.src = url;
+    toolHost.append(f);
+  }
+  // Each load of a frame: the reader's own bar is hidden, since the shell
+  // around it is the chrome now. A link in it to a document in the editor
+  // opens that document in a new tab of the shell, never over the frame's
+  // own tab and never as a second editor nested in the frame. Any other
+  // link navigates the frame as usual.
+  function frameDress(f) {
+    let d = null;
+    try { d = f.contentDocument; } catch {}
+    if (!d || !d.head) return;
+    const s = d.createElement('style');
+    s.textContent = 'form.bar{display:none}';
+    d.head.append(s);
+    d.addEventListener('click', (e) => {
+      const a = e.target.closest && e.target.closest('a[href]');
+      if (!a || e.defaultPrevented) return;
+      let u;
+      try { u = new URL(a.href); } catch { return; }
+      if (u.origin !== location.origin || !/^\/apps\/lattice\/app\/?$/.test(u.pathname)) return;
+      const q = u.searchParams;
+      const go = q.get('grub') ? ['grub', q.get('grub'), q.get('ship') || null]
+        : q.get('view') === 'know' ? ['know', q.get('key') || '', null]
+          : q.get('name') ? ['page', q.get('name'), null] : null;
+      if (!go) return;
+      e.preventDefault();
+      openIn(go[0], go[1], { ship: go[2], newTab: true });
+    });
+  }
+  // Escape used to close the overlays. A tab is closed by its own close,
+  // so here Escape only lets go of a field.
+  addEventListener('keydown', (e) => {
+    const a = document.activeElement;
+    if (e.key === 'Escape' && a && a !== document.body && toolHost.contains(a)) a.blur();
+  });
+
+  // ── today's brief ────────────────────────────────────────────────────────
+  // orrery writes the brief to journal/<day>. Whether that day is padded is
+  // not settled, so the first of the two forms that exists wins, and with
+  // neither the unpadded one is the name a new page starts with.
+  const briefForms = (d) => {
+    const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate();
+    const p2 = (n) => String(n).padStart(2, '0');
+    return ['journal/' + y + '.' + m + '.' + day, 'journal/' + y + '.' + p2(m) + '.' + p2(day)];
+  };
+  const hasPage = (k) => nodes.some((n) => n.page && n.path === k);
+  function briefKey(d) {
+    const forms = briefForms(d);
+    return forms.find(hasPage) || forms[0];
+  }
+  async function openBrief(ev) {
+    const d = new Date();
+    let key = briefKey(d);
+    let found = hasPage(key);
+    // an empty tree has not loaded yet, so the ship says which form exists.
+    // Opening a missing page would leave the tab blank and locked.
+    if (!nodes.length) {
+      for (const k of briefForms(d)) {
+        const r = await fetch(api + '/page-source?name=' + encodeURIComponent(k)).catch(() => null);
+        if (r && r.ok) { key = k; found = true; break; }
+      }
+    }
+    if (found) return openIn('page', key, { ev });
+    await openIn('page', '', { ev });
+    if (activeTab && activeTab.kind === 'page' && !activeTab.key && current === null)
+      setOpen(null, { shown: key });
+  }
+
+  // ── leaving the editor ───────────────────────────────────────────────────
+  // Browser, Forum and Explorer navigate the window. The front document gets
+  // guardDirty, and the parked tabs holding unsaved work get one question
+  // naming them. Once the user has said discard, nothing is owed, so the
+  // unload guard (35-pages.js) does not ask a second time.
+  // With autosave off the parked tabs hold ordinary unsaved pages, so the
+  // question offers to save them all, each brought forward and saved in
+  // turn. One that does not save stops the leaving, with it in front.
+  const leaveThen = (go) => tabSerial(async () => {
+    if (!(await guardDirty())) return;
+    const bg = tabs.filter((t) => t !== activeTab && t.snap && t.snap.dirty);
+    const names = bg.map((t) => TAB_KINDS[t.kind].label(t)).join(', ');
+    if (bg.length && autosaveOn()) {
+      if (!(await askConfirm('discard unsaved changes to ' + names + '?', 'discard'))) return;
+    } else if (bg.length) {
+      const pick = await askChoice('unsaved changes to ' + names + '. save them?',
+        ['save all', 'discard']);
+      if (pick === null) return;
+      if (pick === 'save all') {
+        for (const t of bg) {
+          if ((await tabTo(t)) === false) return;
+          if (!(await saveNow())) return;
+        }
+      }
+    }
+    dirty = false;
+    clearTimeout(autoTimer);
+    //  a saved tab came to the front, where it has no snap
+    for (const t of bg) if (t.snap) t.snap.dirty = false;
+    await go();
+  });
+  const leaveTo = (url) => leaveThen(() => { location.href = url; });
+  // Settings > Connection and mounts, and Settings > Backup > Scheduled
+  // backups (section 'backups'), on the desktop. The shell rebuilds the
+  // window onto its own manager page (open_manager in
+  // desktop/src/commands.rs), and no unload guard sees a window go, so the
+  // same questions come first.
+  window.latOpenManager = (section) => leaveThen(async () => {
+    try { await window.__TAURI__.core.invoke('open_manager', { section: section || null }); }
+    catch (e) { st('could not open the desktop settings: ' + e, false); }
+  });
+
+  // the Settings tab, opened or focused, with its frame scrolled to the
+  // section #anchor. A frame still loading scrolls once it has. Sections
+  // above the anchor fill in after load (the key list), so the anchor is
+  // held at the top while the page settles, until the user scrolls or
+  // clicks or two seconds pass. Preferences on the desktop does not come
+  // here: it opens the manager page (latOpenManager above).
+  function frameScroll(f, anchor) {
+    let d = null;
+    try { d = f.contentDocument; } catch {}
+    const e = d && d.getElementById(anchor);
+    if (!e) return false;
+    e.scrollIntoView({ block: 'start' });
+    const ro = new f.contentWindow.ResizeObserver(() => e.scrollIntoView({ block: 'start' }));
+    ro.observe(d.body);
+    const stop = () => ro.disconnect();
+    setTimeout(stop, 2000);
+    for (const t of ['wheel', 'keydown', 'pointerdown', 'touchstart'])
+      d.addEventListener(t, stop, { once: true });
+    return true;
+  }
+  window.latOpenSettings = async (anchor) => {
+    await toolOpen('settings');
+    const f = [...toolHost.querySelectorAll('iframe')].find((x) => x.dataset.tool === SETTINGS);
+    if (!f || !anchor) return;
+    let ready = false;
+    try { ready = f.contentDocument.readyState === 'complete' && f.contentDocument.URL !== 'about:blank'; } catch {}
+    if (ready && frameScroll(f, anchor)) return;
+    f.addEventListener('load', () => frameScroll(f, anchor), { once: true });
+  };
+
+  // the command palette (26-palette.js) sets this to its opener
+  let paletteOpen = () => {};
+
+  // top to bottom, with Settings in the lower group
+  ribbonAdd({ id: 'brief', icon: 'cal', name: "Today's brief", run: (ev) => openBrief(ev) });
+  ribbonAdd({ id: 'browser', icon: 'globe', name: 'Browser', run: () => leaveTo('/apps/lattice') });
+  ribbonAdd({ id: 'forum', icon: 'forum', name: 'Forum', run: () => leaveTo('/apps/lattice/forum') });
+  // the unread badge (73-comments.js) and the conflict count
+  // (80-conflicts.js) are painted onto these two
+  ribbonAdd({ id: 'inbox', icon: 'inbox', name: 'Comments inbox', run: () => toolOpen('inbox') });
+  ribbonAdd({ id: 'access', icon: 'key', name: 'Access & groups', run: () => toolOpen('access') });
+  ribbonAdd({ id: 'explorer', icon: 'tree', name: 'Explorer', run: () => leaveTo('/apps/lattice/x') });
+  ribbonAdd({ id: 'conflicts', icon: 'conflict', name: 'Sync conflicts', run: () => toolOpen('conflicts') })
+    .hidden = true;
+  ribbonAdd({ id: 'palette', icon: 'term', name: 'Command palette', keys: 'Ctrl+P', run: () => paletteOpen() });
+  ribbonAdd({ id: 'settings', icon: 'gear', name: 'Settings', bottom: true, run: () => toolOpen('settings') });
+
 // ── src/25-editor.js ──────────────────────────────────────────────────────
   // ── editor pane: <lat-editor> + highlighting (Prism overlay) ─────────────
   let src, hl;   // assigned when <lat-editor> upgrades (below, synchronously)
@@ -1755,7 +3171,11 @@
     }, HL_DEADLINE + (hlFresh ? HL_STARTUP : 0));
     hlWorker.postMessage(JSON.stringify({ language: job.lang, code: job.body }));
   };
+  // the right pane's Outline and Outgoing read the text, so every paint of
+  // it, typed or scripted, tells them (rpSoon, 76-outline.js, set there)
+  let rpHook = null;
   const render = () => {
+    if (rpHook) rpHook();
     const lang = LMAP[pkind.value];
     const g = window.Prism && lang && Prism.languages[lang];
     if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; return; }
@@ -1810,6 +3230,195 @@
     if (current) edited();
     refreshTexButton();
   });
+
+// ── src/26-palette.js ─────────────────────────────────────────────────────
+  // ── command palette: Ctrl/Cmd+P and the ribbon ───────────────────────────
+  // An index over the homes, never a home itself (spec, principle 3). It
+  // lists the actions their homes registered (13-frame.js, action()), then
+  // pages and memories by name. An action row names its home and shortcut,
+  // so the palette also teaches where a thing lives. Running a row does what
+  // its home does: an action's run, or openIn for a document, which replaces
+  // the front tab or, with Ctrl/Cmd held, opens a new one.
+  //
+  // Every action must have a home in the DOM: its element carries
+  // data-action="<id>" (the suite checks each one). A home that is built
+  // on demand is checked while its when() says it applies. PALETTE_ONLY
+  // would name the exceptions, and it is empty by design.
+  const PALETTE_ONLY = [];
+  const pal = document.createElement('div');
+  pal.id = 'palette';
+  pal.className = 'dlg palette';
+  pal.hidden = true;
+  pal.setAttribute('role', 'dialog');
+  pal.setAttribute('aria-modal', 'true');
+  pal.setAttribute('aria-label', 'Command palette');
+  pal.innerHTML = '<div class="dlgbox palbox">'
+    + '<input id="palin" type="text" role="combobox" aria-expanded="true" aria-controls="pallist"'
+    + ' aria-autocomplete="list" aria-label="Command palette" placeholder="run an action or open a page"'
+    + ' autocomplete="off" spellcheck="false">'
+    + '<div id="pallist" class="pallist" role="listbox" aria-label="Results"></div></div>';
+  document.body.append(pal);
+  const palIn = $('palin'), palList = $('pallist');
+  let palRows = [];      // what is on screen: {kind, a?, key?}
+  let palSel = 0;
+  let palFrom = null;    // focus to hand back on close
+
+  // Subsequence match, case-insensitive. Lower is better: the query as a
+  // word start, then anywhere as one run, then spread out (tighter first).
+  // null is no match.
+  function palScore(q, s) {
+    const t = s.toLowerCase();
+    const at = t.indexOf(q);
+    if (at === 0 || (at > 0 && /[^a-z0-9]/.test(t[at - 1]))) return at / 1e4;
+    if (at > 0) return 1 + at / 1e4;
+    let i = 0, first = -1, last = -1;
+    for (let j = 0; j < t.length && i < q.length; j++) {
+      if (t[j] !== q[i]) continue;
+      if (first < 0) first = j;
+      last = j;
+      i++;
+    }
+    return i === q.length ? 2 + (last - first) / 1e4 : null;
+  }
+  // an action is listed while its home is there to use: present, not
+  // hidden (a pane tab's own section does not count), not disabled. A home
+  // built only while open says so itself (when).
+  const palUsable = (a) => {
+    if (a.when) return a.when();
+    const el = actionHome(a.id);
+    return !!el && !el.disabled && !el.closest('[hidden]:not([data-pane])');
+  };
+  const ranked = (q, items, name) => items
+    .map((x, i) => ({ x, i, s: palScore(q, name(x)) }))
+    .filter((r) => r.s !== null)
+    .sort((a, b) => a.s - b.s || a.i - b.i)
+    .map((r) => r.x);
+
+  function palPaint() {
+    const q = palIn.value.trim().toLowerCase();
+    const acts = ACTIONS.filter(palUsable);
+    palRows = (q ? ranked(q, acts, (a) => a.name) : acts).map((a) => ({ kind: 'action', a }));
+    if (q) {
+      const docs = nodes.filter((n) => n.page).map((n) => ({ kind: 'page', key: n.path }))
+        .concat(knowKeys.map((k) => ({ kind: 'know', key: k.key.replace(/^\//, '') })));
+      palRows = palRows.concat(ranked(q, docs, (d) => d.key).slice(0, 50));
+    }
+    palSel = 0;
+    palList.textContent = '';
+    palRows.forEach((r, i) => {
+      const row = document.createElement('div');
+      row.className = 'palrow';
+      row.id = 'palr' + i;
+      row.setAttribute('role', 'option');
+      row.dataset.kind = r.kind;
+      const name = document.createElement('span');
+      name.className = 'palname';
+      const home = document.createElement('span');
+      home.className = 'palhome muted';
+      if (r.kind === 'action') {
+        name.textContent = r.a.name;
+        home.textContent = r.a.home;
+      } else {
+        row.dataset.key = r.key;
+        name.textContent = r.key;
+        home.textContent = r.kind === 'page' ? 'Page' : 'Memory';
+      }
+      row.append(name, home);
+      if (r.kind === 'action' && r.a.keys) {
+        const k = document.createElement('kbd');
+        k.className = 'palkeys';
+        k.textContent = r.a.keys;
+        row.append(k);
+      }
+      // mousedown, so the input keeps focus until the row runs
+      row.onmousedown = (e) => e.preventDefault();
+      row.onclick = (e) => palRun(i, e);
+      palList.append(row);
+    });
+    if (!palRows.length) {
+      const none = document.createElement('div');
+      none.className = 'muted palnone';
+      none.textContent = 'nothing matches';
+      palList.append(none);
+    }
+    palMark();
+  }
+  function palMark() {
+    palRows.forEach((_, i) => {
+      const row = $('palr' + i);
+      const on = i === palSel;
+      row.classList.toggle('on', on);
+      row.setAttribute('aria-selected', on ? 'true' : 'false');
+      if (on) row.scrollIntoView({ block: 'nearest' });
+    });
+    if (palRows.length) palIn.setAttribute('aria-activedescendant', 'palr' + palSel);
+    else palIn.removeAttribute('aria-activedescendant');
+  }
+
+  function palShow() {
+    if (!pal.hidden) { palIn.select(); return; }
+    palFrom = document.activeElement;
+    pal.hidden = false;
+    palIn.value = '';
+    palPaint();
+    palIn.focus();
+    // the memory list loads when its tab is first shown (95-know.js), and
+    // the palette lists memories too
+    if (!knowHave) loadKnow().then(() => { if (!pal.hidden) palPaint(); });
+  }
+  function palClose() {
+    if (pal.hidden) return;
+    pal.hidden = true;
+    const f = palFrom; palFrom = null;
+    if (f && f.isConnected) f.focus();
+  }
+  // closed first, so what the row opens (a menu, a dialog, a tab) gets
+  // the focus, not the palette's leftover
+  function palRun(i, ev) {
+    const r = palRows[i];
+    if (!r) return;
+    palClose();
+    if (r.kind === 'action') { r.a.run(ev); return; }
+    openIn(r.kind, r.key, { ev });
+    drawersClose();
+  }
+  paletteOpen = palShow;   // the ribbon's button (24-tools.js)
+
+  palIn.oninput = palPaint;
+  palIn.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (!palRows.length) return;
+      palSel = (palSel + (e.key === 'ArrowDown' ? 1 : -1) + palRows.length) % palRows.length;
+      palMark();
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      palRun(palSel, e);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      palClose();
+    }
+  });
+  // a click on the backdrop, outside the box, closes it
+  pal.addEventListener('mousedown', (e) => { if (e.target === pal) palClose(); });
+
+  // Ctrl/Cmd+P never reaches the print dialog. Vim keeps the chord while
+  // the editor has focus, the rule Ctrl+E follows (23-tabhead.js), and an
+  // open dialog is left to finish first.
+  addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || (e.key !== 'p' && e.key !== 'P')) return;
+    e.preventDefault();
+    if (localStorage.edVim === '1' && document.activeElement === src) return;
+    if (!$('dlg').hidden) return;
+    palShow();
+  }, true);
+
+  // for the browser suites, which cannot reach this scope
+  //  `applies`: a home built on demand (a page menu item, a row's own
+  //  control) says by its when() whether it is there to be found now
+  window.latPalette = { ids: () => ACTIONS.map((a) => a.id), only: PALETTE_ONLY,
+    applies: (id) => { const a = ACTIONS.find((x) => x.id === id); return !!a && (!a.when || !!a.when()); } };
 
 // ── src/27-vim.js ─────────────────────────────────────────────────────────
   // ── vim mode ─────────────────────────────────────────────────────────────
@@ -2539,7 +4148,7 @@
   //  The toggle lives on the settings page, which is a SEPARATE document on
   //  this origin, exactly like the font and size preferences. It writes the
   //  flag and the storage event brings it here, so no button is injected into
-  //  the bar (which is managed markup now). An unset flag is off: vimOn()
+  //  the shell (which is managed markup). An unset flag is off: vimOn()
   //  and the settings checkbox both test for "1".
   window.addEventListener("storage", function(e){
     if(!e.key || e.key === LS) applyVim();
@@ -2582,7 +4191,9 @@
   // ── tree pane: <lat-tree> ────────────────────────────────────────────────
   // The pane's buttons are wired where their handlers live (45-templates,
   // 70-upload). Those files run after this component upgrades, so their
-  // $-lookups find the rendered elements.
+  // $-lookups find the rendered elements. The create and upload buttons sit
+  // in their own .newbtns group because the desktop File menu takes them
+  // over and hides that group (96-deskmenu.js); sort and collapse stay.
   let treeList;
   // pages other ships shared with us (/shared-with-me), drawn as a folder
   // after the pages. Filled by 69-shared.js.
@@ -2591,14 +4202,17 @@
     connectedCallback() {
       this.innerHTML = `
 <aside class="tree" id="tree">
-  <div class="newbtns">
-    <button class="nf" id="newfile">+ file</button>
-    <button class="nf" id="newfolder">+ folder</button>
-    <button class="nf" id="newtmpl">+ template</button>
-  </div>
-  <div class="newbtns">
-    <button class="nf" id="upfiles">&#8613; files</button>
-    <button class="nf" id="updir">&#8613; dir</button>
+  <div class="ptool" role="toolbar" aria-label="Files">
+    <div class="newbtns">
+      ${sbtn('id="newfile" data-action="newfile"', 'plus', 'New page')}
+      ${sbtn('id="newfolder" data-action="newfolder"', 'fplus', 'New folder')}
+      ${sbtn('id="newtmpl" data-action="newtmpl"', 'tpl', 'New from template')}
+      ${sbtn('id="upfiles" data-action="upfiles"', 'upload', 'Upload files')}
+      ${sbtn('id="updir" data-action="updir"', 'updir', 'Upload a folder')}
+    </div>
+    <span class="grow"></span>
+    ${sbtn('id="tsort" data-action="tsort"', 'sort', 'Sort: name')}
+    ${sbtn('id="tcoll" data-action="tcoll"', 'fold', 'Collapse all')}
   </div>
   <input type="file" id="fpick" multiple hidden>
   <input type="file" id="dpick" webkitdirectory hidden>
@@ -2607,17 +4221,11 @@
     <div class="upbar"><div id="upfill"></div></div>
     <div id="uperr" class="uperr"></div>
   </div>
-  <!-- the tag chips outgrew the pane top (one row per dozen tags), so they
-       fold under a heading like history does. Native details: the fold,
-       the keyboard and the marker come free. 95-know.js fills and labels it. -->
-  <details id="tagsec" hidden>
-    <summary class="sec" id="tagsh">tags</summary>
-    <div id="chips" class="chips"></div>
-  </details>
   <div class="sec" id="treesec">files</div>
   <div id="treelist"></div>
 </aside>`;
       treeList = $('treelist');
+      treeKeys(treeList, 'Files');
     }
   });
   // page-dump, not page-tree: it returns the same nodes PLUS every page's body
@@ -2677,16 +4285,92 @@
       if (!n || (typeof n.rev === 'number' && n.rev > c.rev)) pageCache.delete(name);
     }
     snapTree();
+    // always: #treelist holds only the files tree (the memory tree has its
+    // own #knowlist), so a memory tab in front is no reason to leave Files
+    // stale behind the Knowledge tab
     renderTree();
   }
 
   // selection changes only move the `cur` class. Never rebuild the pane's DOM
-  // for that. rowByPath is rebuilt by renderTree/renderKnowTree.
+  // for that. rowByPath is rebuilt by renderTree, knowRows by renderKnowTree
+  // (95-know.js). `current` names a page or a memory by the mode, so each
+  // tree marks it only in its own mode.
   let rowByPath = new Map();
+  let knowRows = new Map();
   function markCurrent() {
     for (const [p, row] of rowByPath)
-      row.classList.toggle('cur',
-        row.classList.contains('pg') ? p === current : p === curFolder);
+      row.classList.toggle('cur', row.classList.contains('pg')
+        ? mode !== 'know' && p === current : p === curFolder);
+    for (const [k, row] of knowRows) row.classList.toggle('cur', mode === 'know' && k === current);
+    paintLink();
+  }
+
+  // ── links: another ship's page in this tree ─────────────────────────────
+  // A node with `link` is a link the owner made from shared with me. It
+  // opens as a page tab: page-source and page-save go through it to the
+  // host, conflict-checked. linkOf names the open link, or null.
+  function linkOf(name) {
+    const n = name ? nodes.find((x) => x.page && x.path === name) : null;
+    return n && n.link && n.link.host ? n.link : null;
+  }
+  // where a link points, as ~host/<their page>. The path names the page's
+  // code grub under wherever lattice is installed there, so only the tail
+  // is read (the same rule as sharedName, 69-shared.js).
+  function linkFrom(lk) {
+    const m = /\/page\/(.+)\/code$/.exec(lk.path || '');
+    return lk.host + '/' + (m ? m[1] : String(lk.path || '').replace(/^\/+/, ''));
+  }
+  // @da (ship UTC) in the viewer's own zone, as the history list shows it
+  function daLocal(da) {
+    const m = /^~(\d+)\.(\d+)\.(\d+)\.\.(\d+)\.(\d+)\.(\d+)/.exec(da || '');
+    return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toLocaleString(undefined,
+      { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+  }
+  // the badge for a link whose last read failed: {copy, since}, or null.
+  // The owner's ship cannot tell a revoke from being offline, so it says
+  // both. `at` is when a read first failed, which the ship keeps as is
+  // while reads go on failing.
+  function linkBadge(lk) {
+    if (!lk.seen || lk.seen.ok !== false) return null;
+    const at = daLocal(lk.seen.at);
+    return { copy: lk.host + ' unreachable or no longer sharing', since: at ? 'since ' + at : '' };
+  }
+  // the badge as a tree row shows it, on a line of its own under the name
+  function linkBadgeEl(bad) {
+    const w = document.createElement('span');
+    w.className = 'lbadw';
+    const b = document.createElement('span');
+    b.className = 'lbad';
+    b.textContent = bad.copy;
+    w.append(b);
+    if (bad.since) {
+      const s = document.createElement('span');
+      s.className = 'lbsince';
+      s.textContent = bad.since;
+      w.append(' ', s);
+    }
+    return w;
+  }
+  // the links this editor must not write to just now: a conflicted one
+  // (35-pages.js, its save was refused as stale) and a stale one (its open
+  // fell back on the last-known copy). A read grant is locked always.
+  const linkCf = new Set();
+  const linkStale = new Set();
+  function linkRO(name) {
+    const lk = linkOf(name);
+    return !!lk && (lk.mode === 'read' || linkStale.has(name));
+  }
+  // what a live read through a link just found. The ship records it too
+  // (the badge survives a reload); this repaints without waiting for that.
+  function linkSeen(name, ok) {
+    const lk = linkOf(name);
+    if (!lk || !lk.seen || lk.seen.ok === ok) return;
+    const t = new Date();
+    const p = (v) => String(v).padStart(2, '0');
+    lk.seen = { ok, at: '~' + t.getUTCFullYear() + '.' + (t.getUTCMonth() + 1) + '.' + t.getUTCDate()
+      + '..' + p(t.getUTCHours()) + '.' + p(t.getUTCMinutes()) + '.' + p(t.getUTCSeconds()) };
+    snapTree();
+    renderTree();
   }
 
   // local `nodes` patching: this client performed the write, so it already
@@ -2744,10 +4428,16 @@
   // by depth. `fold` folds or unfolds it and repaints. A click anywhere on
   // the row folds, unless the row has a `pick` of its own (the files tree
   // selects the folder): then the row picks and only the arrow folds.
-  function folderRow(label, depth, folded, fold, pick) {
+  // `key`, in a tree that treeKeys drives, makes the row one of its items.
+  function folderRow(label, depth, folded, fold, pick, key) {
     const row = document.createElement('div');
     row.className = 'fld';
     row.style.marginLeft = (depth * 14) + 'px';
+    if (key !== undefined) {
+      treeItem(row, depth, key);
+      row.setAttribute('aria-expanded', folded ? 'false' : 'true');
+      row.latFold = fold;
+    }
     const cx = document.createElement('span');
     cx.className = 'cx';
     cx.textContent = folded ? '▸' : '▾';
@@ -2763,9 +4453,150 @@
     return row;
   }
 
+  // ── keyboard: the files and memory trees as ARIA trees ──────────────────
+  // The rows are flat siblings indented by depth, so the shape is read from
+  // aria-level: a folder's children are the shown rows after it with a
+  // deeper level, and its parent the nearest shown row before it with a
+  // shallower one. One row at a time is in the tab order (roving tabindex).
+  // Enter is the row's own click, with Ctrl/Cmd carried, so a page opens
+  // through openIn (tabLink) and Ctrl+Enter gives it a new tab.
+  // treeItem marks up one row. `key` names it across a repaint: a fold
+  // rebuilds the whole list, and the focus has to land on the same row.
+  function treeItem(row, depth, key) {
+    row.setAttribute('role', 'treeitem');
+    row.setAttribute('aria-level', depth + 1);
+    row.tabIndex = -1;
+    row.dataset.tk = key;
+    return row;
+  }
+  const treeRows = (list) => [...list.querySelectorAll('[role=treeitem]')]
+    .filter((r) => r.style.display !== 'none');
+  // after a paint: the row last focused, else the open one, else the first,
+  // is the one Tab reaches. `refocus` when the focus was in the list before
+  // the paint took its rows away.
+  // A list with no rows (loading, or an empty-state note) is not a tree:
+  // a tree has to own treeitems, so the role comes and goes with them.
+  function treeRove(list, refocus) {
+    const rows = treeRows(list);
+    if (rows.length) list.setAttribute('role', 'tree'); else list.removeAttribute('role');
+    const to = rows.find((r) => r.dataset.tk === list.latKey)
+      || rows.find((r) => r.classList.contains('cur')) || rows[0];
+    if (!to) return;
+    to.tabIndex = 0;
+    if (refocus) to.focus();
+  }
+  function treeKeys(list, label) {
+    list.setAttribute('aria-label', label);
+    const lv = (r) => +r.getAttribute('aria-level');
+    list.addEventListener('focusin', (e) => {
+      const row = e.target.closest('[role=treeitem]');
+      if (!row) return;
+      for (const r of list.querySelectorAll('[role=treeitem][tabindex="0"]')) r.tabIndex = -1;
+      row.tabIndex = 0;
+      list.latKey = row.dataset.tk;
+    });
+    list.addEventListener('keydown', (e) => {
+      const row = e.target.closest('[role=treeitem]');
+      if (!row || e.altKey) return;
+      const rows = treeRows(list);
+      const i = rows.indexOf(row);
+      const open = row.getAttribute('aria-expanded');
+      const mod = e.ctrlKey || e.metaKey;
+      let to = null;
+      if (e.key === 'Enter') {
+        // on a control inside the row (a folder's +), that control acts
+        const hit = e.target !== row && e.target.closest('a, button') ? e.target : row;
+        hit.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true,
+          ctrlKey: e.ctrlKey, metaKey: e.metaKey }));
+      } else if (mod || (e.shiftKey && e.key.length > 1)) return;
+      else if (e.key === 'ArrowDown') to = rows[i + 1];
+      else if (e.key === 'ArrowUp') to = rows[i - 1];
+      else if (e.key === 'Home') to = rows[0];
+      else if (e.key === 'End') to = rows[rows.length - 1];
+      // a fold repaints, and treeRove puts the focus back on this row
+      else if (e.key === 'ArrowRight') {
+        if (open === 'false') row.latFold();
+        else if (open === 'true' && rows[i + 1] && lv(rows[i + 1]) > lv(row)) to = rows[i + 1];
+      } else if (e.key === 'ArrowLeft') {
+        if (open === 'true') row.latFold();
+        else for (let j = i - 1; j >= 0 && !to; j--) if (lv(rows[j]) < lv(row)) to = rows[j];
+      } else if (e.key.length === 1 && e.key !== ' ') {
+        // type-ahead: the next row whose name starts with the letter. A
+        // folder's name is its label, not the fold arrow ahead of it.
+        const k = e.key.toLowerCase();
+        const name = (r) => (r.querySelector('.fln') || r).textContent.trim().toLowerCase();
+        for (let n = 1; n <= rows.length && !to; n++) {
+          const r = rows[(i + n) % rows.length];
+          if (name(r).startsWith(k)) to = r;
+        }
+      } else return;
+      e.preventDefault();
+      if (to) to.focus();
+    });
+  }
+  // Ctrl+Shift+F: the Files tab (the pane opened if shut), its tree focused.
+  // F for Files; Ctrl+Shift+E was Firefox's network monitor, which a page
+  // cannot take back. By e.key, so it is the F on the keyboard's own layout.
+  // Not while a dialog or the palette is up: focus behind a modal is lost.
+  // Registered on the Files tab's own action (13-frame.js), so the tab's
+  // tooltip and the palette both show it.
+  function treeFocus() {
+    treeRove(treeList, false);
+    const r = treeList.querySelector('[role=treeitem][tabindex="0"]');
+    if (r) r.focus();
+  }
+  addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f'
+      && !document.querySelector('.dlg:not([hidden])')) {
+      e.preventDefault();
+      e.stopPropagation();
+      ACTIONS.find((a) => a.id === 'pt-files').run();
+    }
+  }, true);
+
+  // ── sort order and collapse all ─────────────────────────────────────────
+  // Siblings sort by name, folders first, ascending or descending
+  // (localStorage.appSort). The order is per level, so a folder's pages stay
+  // under it whichever way its siblings run.
+  const SORTS = { name: 'Sort: name', 'name-desc': 'Sort: name, descending' };
+  const treeSort = () => (localStorage.appSort === 'name-desc' ? 'name-desc' : 'name');
+  function treeOrder(list) {
+    const dir = treeSort() === 'name-desc' ? -1 : 1;
+    return list.map((n) => ({ n, s: n.path.split('/') })).sort((a, b) => {
+      const m = Math.min(a.s.length, b.s.length);
+      for (let i = 0; i < m; i++) {
+        if (a.s[i] === b.s[i]) continue;
+        const fa = i < a.s.length - 1 || !a.n.page;
+        const fb = i < b.s.length - 1 || !b.n.page;
+        if (fa !== fb) return fa ? -1 : 1;
+        return dir * a.s[i].localeCompare(b.s[i]);
+      }
+      return (a.s.length - b.s.length) || (a.n.page - b.n.page);
+    }).map((x) => x.n);
+  }
+  const paintSort = () => tip($('tsort'), SORTS[treeSort()]);
+  paintSort();
+  $('tsort').onclick = () => {
+    try { localStorage.appSort = treeSort() === 'name' ? 'name-desc' : 'name'; } catch {}
+    paintSort();
+    renderTree();
+  };
+  $('tcoll').onclick = () => {
+    paneColl.set([...new Set([...paneColl.get(),
+      ...nodes.filter((n) => !n.page).map((n) => n.path)])]);
+    renderTree();
+  };
+  // the toolbar's palette actions. The create and upload buttons are wired
+  // in 45-templates.js and 70-upload.js; a click reaches those handlers.
+  for (const [id, name] of [['newfile', 'New page'], ['newfolder', 'New folder'],
+    ['newtmpl', 'New from template'], ['upfiles', 'Upload files'], ['updir', 'Upload a folder'],
+    ['tsort', 'Flip sort order'], ['tcoll', 'Collapse all folders']])
+    clickAction(id, name, 'Files toolbar');
+
   function renderTree() {
     const coll = paneColl.get();
-    const byPath = [...nodes].sort((a, b) => a.path.localeCompare(b.path));
+    const byPath = treeOrder(nodes);
+    const had = treeList.contains(document.activeElement);
     treeList.textContent = '';
     rowByPath = new Map();
     for (const n of byPath) {
@@ -2775,14 +4606,25 @@
       if (n.page) {
         row = document.createElement('a');
         row.style.marginLeft = (depth * 14) + 'px';
-        row.className = 'pg' + (n.path === current ? ' cur' : '')
+        const lk = n.link && n.link.host ? n.link : null;
+        row.className = 'pg' + (lk ? ' lnk' : '') + (mode !== 'know' && n.path === current ? ' cur' : '')
           + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
         // the display name when there is one (a typed name that was not a
         // valid path), the path segment otherwise; the real path in the tip
-        row.innerHTML = ico(kindExt(n.kind));
+        row.innerHTML = ico(lk ? 'link' : kindExt(n.kind));
         row.append(document.createTextNode((n.dname || n.path.split('/').pop()) + '.' + kindExt(n.kind)));
         if (n.dname) row.title = n.path;
+        // a link to another ship's page: whose it is on hover, and the
+        // badge once a read through it has failed
+        if (lk) {
+          row.dataset.host = lk.host;
+          row.dataset.path = n.path;
+          row.title = linkFrom(lk);
+          const bad = linkBadge(lk);
+          if (bad) row.append(linkBadgeEl(bad));
+        }
+        treeItem(row, depth, 'p:' + n.path);
         if (n.share === 'clearweb') {
           const cw = document.createElement('span');
           cw.className = 'cw';
@@ -2790,10 +4632,11 @@
           cw.title = n.path + ' is clearweb public';
           row.append(cw);
         }
-        row.onclick = (e) => { e.preventDefault(); openPage(n.path); };
+        tabLink(row, 'page', n.path);
       } else {
         row = folderRow(n.dname || n.path.split('/').pop(), depth, coll.includes(n.path),
-          () => { paneColl.flip(n.path); renderTree(); }, () => selectFolder(n.path));
+          () => { paneColl.flip(n.path); renderTree(); }, () => pickFolder(n.path), 'f:' + n.path);
+        linkDrop(row, n.path);       // a shared-with-me row dropped here (69-shared.js)
         if (n.path === curFolder) row.classList.add('cur');
         if (n.dname) row.lastChild.title = n.path;     // the label's tip
         if (treeShare(n.path) === 'clearweb') {
@@ -2808,7 +4651,11 @@
         add.textContent = '+';
         add.title = 'new file in ' + n.path;
         add.href = '#';
-        add.onclick = (e) => { e.preventDefault(); e.stopPropagation(); newFile(n.path); };
+        add.tabIndex = -1;          // the tree is one tab stop; New page does this
+        add.onclick = async (e) => {
+          e.preventDefault(); e.stopPropagation();
+          if (await guardDirty()) newFile(n.path);
+        };
         row.append(add);
       }
       if (hidden) row.style.display = 'none';
@@ -2816,6 +4663,11 @@
       treeList.appendChild(row);
     }
     if (sharedWithMe.length) renderShared(coll);
+    treeRove(treeList, had);
+    paintLink();                 // the Page tab's link section (65-ctl.js)
+    // the Published pages list (72-acl.js) reads these share modes
+    const aw = $('aclwrap');
+    if (aw && !aw.hidden) renderPublished();
     // the conflict badge is a count of conflicts/ pages in this very tree, so
     // it repaints exactly when the tree does. Defined in 80-conflicts.js.
     renderConfBadge();
@@ -2840,13 +4692,20 @@
     $('mv').textContent = t === 'page' ? 'move / rename' : 'move / rename ' + t;
   };
 
+  // a folder picked by the user: it paints over the editor, so it gets a
+  // document tab if a tool is in front, and what is unsaved there goes
+  // through guardDirty first, like any other way off a document
+  async function pickFolder(path) {
+    if (!(await docTab()) || !(await guardDirty())) return;
+    dirty = false;
+    clearTimeout(autoTimer);
+    selectFolder(path);
+  }
   function selectFolder(path) {
     curFolder = path;
     curKind = null;
     exitGrub();
     exitRev();
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
     folderCtx = path;
     setOpen(null, { shown: path, readOnly: true,
       url: '/apps/lattice/app?into=' + encodeURIComponent(path) });
@@ -2860,6 +4719,140 @@
     const c = pageCount(path);
     st('folder · ' + c + ' page' + (c === 1 ? '' : 's'));
   }
+
+// ── src/31-marks.js ───────────────────────────────────────────────────────
+  // ── bookmarks: <lat-marks> ───────────────────────────────────────────────
+  // The left pane's Bookmarks tab: the urb:// and web bookmarks the reader
+  // keeps (GET /bookmarks-json, newest first), grouped by folder, with a
+  // filter, and per bookmark a refile and a remove. A click opens the
+  // bookmark in the reader, in this window for now (the reader becomes a
+  // tab later), so it leaves the editor through guardDirty like any other
+  // navigation. Ctrl/Cmd or a middle click is the browser's own new tab and
+  // leaves nothing.
+  customElements.define('lat-marks', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<aside class="tree" id="markpane">
+  <input id="mfilter" type="search" placeholder="filter bookmarks" aria-label="Filter bookmarks" autocomplete="off" spellcheck="false">
+  <div id="marklist"><div class="muted kwait">loading bookmarks…</div></div>
+</aside>`;
+    }
+  });
+  let marks = null;                      // [{url, title, folder}], null until loaded
+  let marksSeq = 0;
+  const marksColl = collStore('marksColl');
+  const markList = $('marklist');
+  const readerUrl = (url) => '/apps/lattice/?q=' + encodeURIComponent(url);
+
+  async function loadMarks() {
+    const my = ++marksSeq;
+    let d = null;
+    try {
+      const r = await fetch(api + '/bookmarks-json');
+      if (r.ok) d = await r.json();
+    } catch {}
+    if (my !== marksSeq) return;
+    if (!Array.isArray(d)) {
+      if (!marks) markList.replaceChildren(marksNote('bookmarks did not load'));
+      return;
+    }
+    marks = d;
+    renderMarks();
+  }
+  const marksNote = (t) => {
+    const e = document.createElement('div');
+    e.className = 'muted';
+    e.style.padding = '4px 8px';
+    e.textContent = t;
+    return e;
+  };
+
+  // leaving the editor for the reader: the same question every other way
+  // out asks. guardDirty flushes the front document or asks about it, and a
+  // parked tab's unsaved buffer still gets beforeunload (35-pages.js).
+  async function markGo(e, url) {
+    if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+    e.preventDefault();
+    if (!(await guardDirty())) return;
+    dirty = false;                       // flushed, or the user said discard
+    clearTimeout(autoTimer);
+    location.href = readerUrl(url);
+  }
+  async function markMove(b) {
+    const f = await ask('move ' + (b.title || b.url) + ' to folder (empty for none):',
+      b.folder, 'move');
+    if (f === null) return;
+    const r = await mutate(api + '/bookmark-move?url=' + encodeURIComponent(b.url)
+      + '&folder=' + encodeURIComponent(f.trim()));
+    if (!r.ok) { st('move failed' + await errText(r), false); return; }
+    st(f.trim() ? 'moved to ' + f.trim() : 'moved out of its folder');
+    loadMarks();
+  }
+  async function markDrop(b) {
+    if (!(await askConfirm('remove bookmark ' + (b.title || b.url) + '?', 'remove'))) return;
+    const r = await mutate(api + '/unbookmark?url=' + encodeURIComponent(b.url));
+    if (!r.ok) { st('remove failed' + await errText(r), false); return; }
+    st('bookmark removed');
+    loadMarks();
+  }
+
+  function markRow(b, depth) {
+    const row = document.createElement('div');
+    row.className = 'mrow';
+    row.style.marginLeft = (depth * 14) + 'px';
+    const a = document.createElement('a');
+    a.className = 'pg';
+    a.href = readerUrl(b.url);
+    a.title = b.url;
+    a.textContent = b.title || b.url;    // titles are content: textContent
+    a.onclick = (e) => markGo(e, b.url);
+    const mv = tip(document.createElement('button'), 'Move to folder');
+    const rm = tip(document.createElement('button'), 'Remove bookmark');
+    for (const [x, icon, run] of [[mv, 'folder', markMove], [rm, 'x', markDrop]]) {
+      x.type = 'button';
+      x.className = 'sbtn';
+      x.innerHTML = ico(icon);
+      x.onclick = () => run(b);
+    }
+    row.append(a, mv, rm);
+    return row;
+  }
+
+  // folders first by name, then the unfiled ones, each newest first as the
+  // ship keeps them. A filter shows every match, folded folder or not.
+  function renderMarks() {
+    if (!marks) return;
+    const q = $('mfilter').value.trim().toLowerCase();
+    const hit = (b) => !q || [b.title, b.url, b.folder]
+      .some((x) => String(x || '').toLowerCase().includes(q));
+    const shown = marks.filter(hit);
+    markList.textContent = '';
+    if (!shown.length) {
+      markList.append(marksNote(q ? 'no bookmark matches that'
+        : 'no bookmarks yet. The reader’s star keeps one.'));
+      return;
+    }
+    const byFolder = new Map();
+    for (const b of shown) {
+      const f = b.folder || '';
+      if (!byFolder.has(f)) byFolder.set(f, []);
+      byFolder.get(f).push(b);
+    }
+    const coll = marksColl.get();
+    for (const f of [...byFolder.keys()].filter(Boolean).sort((a, b) => a.localeCompare(b))) {
+      const folded = !q && coll.includes(f);
+      markList.append(folderRow(f, 0, folded, () => { marksColl.flip(f); renderMarks(); }));
+      if (!folded) for (const b of byFolder.get(f)) markList.append(markRow(b, 1));
+    }
+    for (const b of byFolder.get('') || []) markList.append(markRow(b, 0));
+  }
+  $('mfilter').oninput = renderMarks;
+  // fetched each time the tab is shown: the reader adds and removes
+  // bookmarks in other windows, and this is one small request
+  document.addEventListener('lat-pane', (e) => {
+    if (e.detail.side === 'l' && e.detail.id === 'marks') loadMarks();
+  });
+  if (paneShows('l', 'marks')) loadMarks();
 
 // ── src/35-pages.js ───────────────────────────────────────────────────────
   // ── open / new / save ────────────────────────────────────────────────────
@@ -2879,12 +4872,17 @@
   // `current` had not been set yet. Guarding on those meant an explicit open
   // was silently dropped. After an unsaved edit, clicking another file did
   // nothing, and a page absent from the local tree never applied at all.
+  // openKnow and openGrub take a number from the same sequence, and so does
+  // a tab switch (21-tabs.js), so any later open supersedes this one.
+  //
+  // Answers false when the open failed with nothing painted, which the tab
+  // model tells apart from an open that a later one superseded.
   let openSeq = 0;
   async function openPage(name) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
-    if (!(await guardDirty())) return;
+    if (!(await guardDirty())) return false;
     const my = ++openSeq;
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
@@ -2902,10 +4900,12 @@
       const d = { body: q.body, kind: q.kind, rev: q.baseRev || 0, share: 'private' };
       applyPage(name, d, true);
       snapPage(name, d);
-      return;
+      return true;
     }
-    const hit = pageCache.get(name);
-    if (hit) { applyPage(name, hit); snapPage(name, hit); return; }
+    // a link reads live from its host every time (the spec's rule), so the
+    // session cache never answers for one
+    const hit = !linkOf(name) && pageCache.get(name);
+    if (hit) { applyPage(name, hit); snapPage(name, hit); return true; }
     const node = nodes.find((n) => n.page && n.path === name);
     const painted = !!node && typeof node.body === 'string';
     // `quiet`: the render=1 request below carries the preview and the error
@@ -2947,11 +4947,42 @@
     let d = null;
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
-      if (!r.ok) { if (!painted) { st('open failed' + await errText(r), false); unwind(); } return; }
+      // a link whose host did not answer: its badge from now, and the last
+      // copy read, which the ship sends its owner along with the failure.
+      // Shown locked (linkStale): a save from it would claim a rev the host
+      // may have moved past, and there is no host to save to anyway.
+      if (r.status === 504 && linkOf(name)) {
+        linkSeen(name, false);
+        let j = null;
+        try { j = await r.json(); } catch {}
+        if (my !== openSeq) return;
+        const why = (j && j.error) || linkOf(name).host + ' is unreachable or no longer shares this page';
+        if (j && j.cached && typeof j.cached.body === 'string') {
+          linkStale.add(name);
+          applyPage(name, j.cached);
+          st(why + '. Showing the last copy read, read-only', false);
+          return true;
+        }
+        if (painted) return true;
+        st('open failed: ' + why, false); unwind();
+        return false;
+      }
+      if (!r.ok) {
+        if (painted) return true;
+        st('open failed' + await errText(r), false); unwind();
+        return my === openSeq ? false : undefined;
+      }
       d = await r.json();
-    } catch { if (!painted) { st('open failed', false); unwind(); } return; }
+    } catch {
+      if (painted) return true;
+      st('open failed', false); unwind();
+      return my === openSeq ? false : undefined;
+    }
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
+    // a live read: the badge, the lock on a last-known copy and a conflict
+    // latched on this link all end here
+    if (d.link) { linkSeen(name, true); linkStale.delete(name); linkCf.delete(name); }
     // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
     // typed while it was in flight. On a busy pier this fetch lands many
     // seconds after the paint, and it carries the PRE-edit body: applying it
@@ -2962,15 +4993,21 @@
     // window, which is how the old dirty-guards kept failing to catch it.
     // The !painted arm stays unconditional on purpose — there the fetch IS the
     // open, and an explicit open must always land (see the head comment).
-    if (painted && src.value !== shown) return;
+    // The flag is not the body, though: the comments switch takes it from
+    // this answer whatever was typed meanwhile, or it stays unknown.
+    if (painted && src.value !== shown) {
+      if (current === name && typeof d.comments === 'boolean') cmtShow(name, d.comments);
+      return true;
+    }
     // Cache and snapshot BELOW the guards, not above. A stale or superseded
     // response that reached the cache here poisoned it with the pre-edit body:
     // the guard protected the editor but not the cache, so switching away and
     // back repainted the old text — the same data loss through a different
     // door. Only a response that is actually applied may be remembered.
-    pageCache.set(name, d);
+    if (!d.link) pageCache.set(name, d);
     snapPage(name, d);
     applyPage(name, d);
+    return true;
   }
   function applyPage(name, d, quiet) {
     curFolder = null;
@@ -2990,8 +5027,13 @@
     markCurrent();
     st(d.kind + ' · rev ' + d.rev);
     exitRev();
+    // after exitRev, which unlocks: a link with a read grant, or one shown
+    // from its last-known copy, stays locked (30-tree.js linkRO). The tab
+    // restore comes through here too.
+    src.readOnly = linkRO(name);
     resetPanels();
     showShare(d.share || 'private');
+    cmtShow(name, d.comments);
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
     //  a tex page's server render is its SOURCE as escaped text, because the
     //  ship has no LaTeX and is not getting one. The local conversion is the
@@ -3016,22 +5058,22 @@
     // Paint locally now; the fetch still corrects it when it arrives.
     else paintLocal();
     if (!CONTENT() && !quiet) checkErrors();
-    if (isMobile()) setMv('code');
+    drawersClose();
   }
 
-  // focusName: only when the USER asked for a new file. Boot calls this to
-  // land on an empty page, and focusing the name field there summons the
-  // phone keyboard before you have done anything. You arrive at the app
-  // already typing a filename you did not ask to type.
-  function newFile(into, focusName = true) {
+  // blankPage: the editor reset a new page starts from. Nothing named is
+  // open, the field (where shown) is editable, and `into` is the folder an
+  // upload or a save lands in. A page is never written in memory mode: the
+  // autosave there goes to /know-save, so a memory in front leaves it first.
+  function blankPage(into) {
+    if (mode === 'know') setMode('pages');
+    openSeq++;           // an open still in flight must not land over this
     folderCtx = into || '';
     curFolder = null;
     curKind = null;
     refreshTexButton();
     exitGrub();
     exitRev();
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
     setCtlLabels();
     setOpen(null, { shown: into ? into + '/' : '', url: '/apps/lattice/app' });
     src.value = '';
@@ -3039,11 +5081,79 @@
     everTyped = false;   // a new file is a fresh editor state, like applyPage
     render();
     renderTree();
-    if (focusName) pname.focus();
     st('new page — name it, write, save');
     prevBlank();
     showShare('private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
+  }
+
+  // ── new page: one name and kind dialog for web, desktop and phone ────────
+  //  Everything user-initiated routes through newFile: the toolbar
+  //  (newFile('')), the desktop File menu (which clicks it), the green + on
+  //  every tree folder (newFile(path)), the strip's + and the phone bar's
+  //  label. The name field left the screen with the old bar, so the dialog
+  //  is the one way a page gets its name, and its kind.
+  //
+  //  focusName false is boot and the tab model landing on an empty page.
+  //  That must not be interrupted by a dialog, and they are the callers that
+  //  say so: a plain reset, nothing asked.
+  function newFile(into, focusName = true) {
+    if (!focusName) return blankPage(into);
+    (async () => {
+      //  a folder's + pre-fills that folder; the toolbar keeps offering the
+      //  open page's path (never a memory's key: that names no page). Read
+      //  it BEFORE the reset below, which clears the field it comes from.
+      //  A tool tab in front hides the editor, so its name field is no seed.
+      const seed = into ? into.replace(/\/+$/, '') + '/'
+        : mode === 'know' || !docFront() ? '' : (pname.value || '');
+      const picked = await askNameKind('page name (e.g. notes/todo)', seed,
+        'create', pkind.value);
+      if (!picked) return;
+      //  reset the editor only once the create is confirmed, so a cancel
+      //  leaves the open page exactly as it was. Under a tool tab the page
+      //  gets a document tab of its own first (docTab, 21-tabs.js).
+      if (!(await docTab())) return;
+      blankPage(into);
+      let name = picked.name;
+      let kind = picked.kind;
+      //  a typed extension still wins, because typing notes/todo.md and being
+      //  given a page called "todo.md" would be absurd. The table is EXT_KIND
+      //  in 30-tree.js, the same one the uploader files by.
+      const dot = name.lastIndexOf('.');
+      const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
+      if (typed) { kind = typed; name = name.slice(0, dot); }
+      //  the field is seeded with the REAL path; the typed leaf, when it was
+      //  not a valid path, rides to save() as the display name
+      const rn = realName(name);
+      if (!rn) return;
+      name = rn.name;
+      newRn = rn;
+      pkind.value = kind;
+      //  blankPage above left nothing open; this names the buffer, and
+      //  setOpen's event repaints the labels
+      setOpen(null, { shown: name });
+      //  Show it in the tree NOW, pulsing, before the ship has agreed. The
+      //  write is a pier round trip and the tree sitting unchanged through it
+      //  reads as nothing having happened. The pulse is the honest part: it
+      //  says recorded, not yet confirmed. Cleared on success, and the row is
+      //  dropped on failure so a page that does not exist is never left there.
+      const already = nodes.some((n) => n.page && n.path === name);
+      if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
+      //  the button says create, so write the page here. Naming the buffer
+      //  and leaving it unwritten read as a create that did nothing. save()
+      //  owns the whole create: 409, the offline queue, the tree patch and
+      //  the url, so this must not reimplement any of it.
+      //  queued behind another save, the create has not happened yet: the
+      //  row keeps pulsing, and save() settles it when the create runs
+      const queued = (await save()) === 'queued';
+      if (!already && !queued) {
+        //  save() sets `current` on any outcome it considers a success,
+        //  including a queued offline write, which IS a success here.
+        if (current === name) setTreePending(name, false);
+        else { dropTreeNodes(name); snapTree(); renderTree(); }
+      }
+      src.focus();
+    })();
   }
 
   async function newFolder() {
@@ -3091,8 +5201,19 @@
     if (!savePending) return;
     const pending = savePending;
     savePending = false;
-    if (!dirty) return;
+    if (!dirty && !pending.create) return;
     if (typeof pending === 'function') pending(); else autosave();
+  };
+  //  queue `fn` behind the save in flight, replacing what waits there,
+  //  except a create: that is a page the user asked for and nothing else
+  //  would write it, so it is kept and runs first. `create` runs even on a
+  //  clean buffer (flushPending).
+  const queueSave = (fn, create) => {
+    const prev = savePending;
+    const keep = typeof prev === 'function' && prev.create;
+    savePending = Object.assign(keep
+      ? async () => { await prev(); if (create || dirty) return fn(); } : fn,
+    { create: !!create || keep });
   };
   //  we know exactly what we just wrote. Patch the local copies so reopening
   //  this page paints the saved text, not the dump's pre-save body. The
@@ -3101,38 +5222,117 @@
   const patchLocal = (name, kind, sent) => {
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
-    if (nd) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
+    // not a link's: its text is the host's, read live, and the rev beside
+    // a body here would be a base the next save claims falsely
+    if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
   };
   // an accidental tab close is the same data-loss shape as the grub-discard
   // guard up in openPage: a dirty edit, grub or page, exists only here
   // until it is saved. That guard catches deliberate in-app navigation. This
   // one catches the close and reload that never go through openPage at all.
+  // A parked tab's buffer counts too (__latUnsaved, 20-state.js).
   window.addEventListener('beforeunload', (e) => {
-    if (!dirty) return;
+    if (!window.__latUnsaved()) return;
     e.preventDefault();
     e.returnValue = '';
   });
 
-  // the realName() split the desktop create dialog made before seeding
+  //  A save through a link (30-tree.js) claims the owner's rev this editor
+  //  read, as ?base=. Unlike a page of our own, a link has nowhere to keep
+  //  a replaced body, so a stale claim is refused (409) and nothing is
+  //  written. linkBase is that claim for a save of `name`, '' for a page
+  //  (and for a link with no rev read yet: the ship then claims its cached
+  //  rev, never nothing).
+  const linkBase = (name) => (linkOf(name) && curRev ? '&base=' + curRev : '');
+  //  a save through a link that did not land: the host's page moved on past
+  //  what this editor read, or the host did not answer (a 502 or 504 the
+  //  ship itself sent, never queued: the queue is for this ship being
+  //  away). The text stays here, unsaved. -> true when it was one of those.
+  //  And a link save is NEVER queued for later, also when this ship is the
+  //  one away: a replay could only claim a base the host may have moved
+  //  past, and the queue drops what is refused. The text stays here.
+  async function linkSaveFail(name, w) {
+    const lk = linkOf(name);
+    const r = w.r;
+    if (!lk) return false;
+    if (r && r.status === 409) {
+      linkCf.add(name);           // autosave stands down; the bar offers the ways out
+      st('not saved: ' + lk.host + ' changed this page since you opened it', false);
+    } else if (w.gone) {
+      if (r && r.status === 504) linkSeen(name, false);
+      st('not saved: ' + lk.host + ' is unreachable or no longer shares this page', false);
+    } else return false;
+    if (current === name) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
+    paintLinkCf(current);
+    return true;
+  }
+
+  // the realName() split the create dialog (newFile) made before seeding
   // #pname with the real path; save() consumes it on create
   let newRn = null;
-  async function save(kindOverride) {
-    if (curFolder) { st('folder selected — open a page to edit', false); return; }
-    if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
-    let name = pname.value.trim().replace(/^\/+|\/+$/g, '');
+  // a create that lands with nothing else opened meanwhile: nothing is
+  // named yet and the name field still names this page. Not the body:
+  // text typed during the round trip changes it, which left the page
+  // unnamed and its typing never autosaved (autosave needs `current`), and
+  // two empty pages have the same one, so a create landing under a second
+  // New took the second page's blank buffer for its own.
+  const createdHere = (creating, name) => creating && current === null && pname.value === name;
+  //  the page `name` (as typed) is on the ship, or queued for it, and not
+  //  a create's pulsing row still waiting for its answer
+  const madePage = (name) => {
+    const rn = realName(name);
+    return !!rn && nodes.some((n) => n.page && n.path === rn.name && !n.pending);
+  };
+  //  `fixed`: a queued create whose page the editor no longer shows (see
+  //  below). It names what to write, and the editor is left alone.
+  async function save(kindOverride, fixed) {
+    if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
+    if (!fixed && viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
+    let name = fixed ? fixed.name : pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!name) { st('name required', false); return; }
-    const creating = current === null;
+    const creating = !!fixed || current === null;
     // carry kindOverride into the re-arm: a bare `true` here forgot which
     // kind THIS call wanted, and the trailing run picked whatever the
     // picker happened to show by the time it fired
-    if (saving) { savePending = () => save(kindOverride); return; }
+    //  a create queued here runs even when the buffer is clean by then (an
+    //  empty new page is clean from the start): flushPending sees `create`
+    //  It is queued for THIS document. By the time it runs the editor may
+    //  show another, and save() writes whatever name and buffer it finds
+    //  then, so it runs from the editor only if the editor still shows
+    //  this one. A create carries what it creates (name, body, kind, the
+    //  dialog's split), so a second New during the round trip still gets
+    //  the first page written. 'queued' tells newFile it has not run yet.
+    //  A create also waits behind the create before it for the same page (a
+    //  second Ctrl+S during the round trip). Once that one has made the page
+    //  it skips itself: a second create is a 409 about our own page. A page
+    //  that was already there when it was queued still gets its honest 409.
+    if (saving) {
+      const doc = current, shown = pname.value;
+      const own = fixed || (creating ? { name, body: src.value,
+        kind: kindOverride || curKind || pkind.value, rn: newRn,
+        existed: madePage(name), tab: activeTab && activeTab.id } : null);
+      if (creating && !fixed) newRn = null;
+      queueSave(() => {
+        if (own && !own.existed && madePage(own.name)) {
+          const rn = realName(own.name);
+          if (!fixed && mode !== 'know' && !grubPath && rn && current === rn.name && dirty)
+            return save(kindOverride);
+          return;
+        }
+        const here = !fixed && mode !== 'know' && !grubPath && current === doc
+          && (doc !== null || pname.value === shown);
+        if (here) { if (own) newRn = own.rn; return save(kindOverride); }
+        if (own) return save(kindOverride, own);
+      }, creating);
+      return 'queued';
+    }
     saving = true;
     st('saving…');
     // capture the exact body being sent: keystrokes landing during the round-trip
     // must NOT be marked clean, or the next refresh swaps the stale server copy
     // in and the typed text is lost (same guard autosave has always had).
-    const sent = src.value;
-    const kind = kindOverride || curKind || pkind.value;
+    const sent = fixed ? fixed.body : src.value;
+    const kind = fixed ? fixed.kind : kindOverride || curKind || pkind.value;
     // NO base on live saves, deliberately: base is the OFFLINE queue's tool,
     // where the divergence window is real. Online, any dirty-blocked refresh
     // or panel-driven save can leave curRev one step behind, and every stale
@@ -3146,23 +5346,34 @@
     }
     // a typed name that is not a valid path saves under its slug and keeps
     // the typed text as display names (the tree shows those, the name
-    // field shows the real path). newRn is the desktop dialog's copy of
+    // field shows the real path). newRn is the create dialog's copy of
     // the same split, made before it seeded the field with the slug.
-    const rnc = !creating ? null : rn.dnames ? rn : newRn;
-    newRn = null;
+    const rnc = !creating ? null : rn.dnames ? rn : fixed ? fixed.rn : newRn;
+    if (!fixed) newRn = null;
     const dname = rnc ? rnc.dname : '';
     //  the field shows the slug from here on; nothing else about what is
     //  open changes, so `current` and the lock are passed through as they are
     if (rn.name !== name) {
       name = rn.name;
-      setOpen(current, { shown: name, readOnly: pname.readOnly });
+      if (!fixed) setOpen(current, { shown: name, readOnly: pname.readOnly });
     }
+    //  a write that did not land: a create's pulsing row goes (newFile put
+    //  it there, and a create that ran from the queue settles its own row),
+    //  and the save queued behind this one still runs. It checks what it
+    //  was queued for, so it never writes another document.
+    const failed = () => {
+      if (creating && nodes.some((n) => n.page && n.path === name && n.pending)) {
+        dropTreeNodes(name); snapTree(); renderTree();
+      }
+      flushPending();
+    };
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
-      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
+      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc) + (creating ? '' : linkBase(name));
     let w = { gone: true };
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
     finally { saving = false; }
     const r = w.r;
+    if (await linkSaveFail(name, w)) return failed();
     if (w.gone) {
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
@@ -3173,44 +5384,54 @@
       // the page keeps behaving as unsaved. enqueueSave has already said so.
       if (!(await enqueueSave(name, kind, sent, creating, rnc))) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
-        return;
+        return failed();
       }
-      if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
+      if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
       // same stillHere guard as the online path: only touch live editor state
       // if the editor has not moved to another document during the round-trip.
-      const stillHere = current === name || (current === null && src.value === sent);
+      const stillHere = fixed ? tabAdopt(fixed, name)
+        : current === name || createdHere(creating, name);
       if (stillHere) {
         current = name;
+        tabFollow();         // a new page's tab is named now (21-tabs.js)
         curKind = kind;
         pname.readOnly = true;
         if (src.value === sent) dirty = false;
+        else if (!savePending) savePending = true;
         history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
         cerr.textContent = 'saved offline'; cerr.className = 'ok';
       }
       flushPending();
       return;
     }
-    if (r && r.status === 409) { st('that page already exists', false); return; }
-    if (!r.ok) { st('save failed' + await errText(r), false); return; }
+    if (r && r.status === 409) { st('that page already exists', false); return failed(); }
+    if (!r.ok) { st('save failed' + await errText(r), false); return failed(); }
     // the response carries the new revision and whether this save landed
     // on top of a revision made elsewhere; parse it regardless of focus.
     let vr = null;
     try { vr = await r.json(); } catch {}
     // saved-document bookkeeping, applied whether or not the editor still
     // shows it, so a New clicked mid-save keeps both documents. Only a
-    // CREATE changes the tree.
-    if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
+    // CREATE changes the tree, and it confirms a row newFile left pulsing.
+    if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent);
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
     // name field, dirty or the URL here would brand the new page as this save.
-    const stillHere = current === name || (current === null && src.value === sent);
+    //  A create run from the queue (`fixed`) is still here only when its
+    //  own tab came back to the front, unnamed, during the round trip;
+    //  in the background that tab is named for it instead (tabAdopt).
+    const stillHere = fixed ? tabAdopt(fixed, name)
+      : current === name || createdHere(creating, name);
     if (stillHere) {
       current = name;
+      tabFollow();           // a new page's tab is named now (21-tabs.js)
       curKind = kind;
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
+      else if (!savePending) savePending = true;   // flushPending below saves it
       if (vr && vr.rev) curRev = vr.rev;
+      if (linkCf.delete(name)) paintLinkCf(name);   // a retried link save landed
       if (vr && vr.conflicted) {
         st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
       } else if (dname) st('saved as ' + name + ' (shown as ' + dname + ')');
@@ -3224,6 +5445,14 @@
   }
 
   let autoTimer = null;
+  const autosaveOn = () => { try { return localStorage.latAutosave !== '0'; } catch { return true; } };
+  // turned back on in Settings (another document) while text waits unsaved:
+  // it goes out on the usual debounce, as if just typed
+  window.addEventListener('storage', (e) => {
+    if (e.key !== 'latAutosave' || !autosaveOn() || !dirty) return;
+    clearTimeout(autoTimer);
+    autoTimer = setTimeout(autosave, 2000);
+  });
   async function autosave() {
     // GRUB MODE IS EXPLICIT-SAVE ONLY. Autosaving a lattice page is fine. It is
     // your own note and the editor has always worked that way. Autosaving
@@ -3232,8 +5461,19 @@
     // kept a revision fine-grained enough to step back to. Save/Cmd+S only.
     // The 2s debounce still fires. It just reports instead of writing, so the
     // moment you stop typing you can see the edit is not yet on the ship.
-    if (grubPath) { if (dirty) st('unsaved — press Save or Cmd+S'); return; }
+    if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
+    // a link whose save was refused as stale: no more writes until the
+    // user picks one of the bar's ways out, or saves on purpose (Ctrl+S)
+    if (mode !== 'know' && linkCf.has(current) && linkOf(current)) {
+      st('not saved: ' + linkOf(current).host + ' changed this page since you opened it', false);
+      return;
+    }
+    // Settings > Editor > Autosave pages, off: manual only. This debounce
+    // stops, and so do the flushes a tab switch or a navigation makes
+    // (flushNoAsk and guardDirty, 20-state.js, which ask instead). Only
+    // Ctrl+S, the save button and :w write.
+    if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
     // never overlap saves. The pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview
     // behind it. Coalesce to one trailing save instead.
@@ -3247,26 +5487,27 @@
     const url = mode === 'know'
       ? api + '/know-save?key=' + encodeURIComponent(target)
       : api + '/page-save?name=' + encodeURIComponent(target) +
-        '&type=' + (curKind || pkind.value);
+        '&type=' + (curKind || pkind.value) + linkBase(target);
     let w = { gone: true };
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
     finally { saving = false; }
     const r = w.r;
+    if (mode !== 'know' && await linkSaveFail(target, w)) { flushPending(); return; }
     if (w.gone) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
       if (mode === 'know') {
-        if (!(await enqueueKnow(target, sent))) return;
+        if (!(await enqueueKnow(target, sent))) { flushPending(); return; }
         if (current === target && src.value === sent) dirty = false;
         flushPending();
         return;
       }
-      if (!(await enqueueSave(target, curKind || pkind.value, sent))) return;
+      if (!(await enqueueSave(target, curKind || pkind.value, sent))) { flushPending(); return; }
       if (current === target && src.value === sent) dirty = false;
       flushPending();
       return;
     }
-    if (!r.ok) { st('autosave failed' + await errText(r), false); return; }
+    if (!r.ok) { st('autosave failed' + await errText(r), false); flushPending(); return; }
     let vr = null;
     if (mode !== 'know') { try { vr = await r.json(); } catch {} }
     //  patch the saved doc's local cache regardless of focus. No kind: an
@@ -3286,6 +5527,66 @@
     flushPending();
     if (offCount) replayQueue(true);     // this autosave proves the ship is back too
   }
+
+  // ── a link whose save was refused as stale ──────────────────────────────
+  // The host's page moved on past the rev this editor read, so the text
+  // here was not written and is the only copy. A bar over the document
+  // offers the two ways out; until one is taken autosave stands down for
+  // that link (linkCf, 30-tree.js) and only Ctrl+S tries again.
+  const lcfBar = document.createElement('div');
+  lcfBar.id = 'lnkcf';
+  lcfBar.className = 'lnkcf';
+  lcfBar.hidden = true;
+  lcfBar.setAttribute('role', 'alert');
+  lcfBar.innerHTML = '<span id="lnkcfmsg"></span>' +
+    '<button type="button" id="lnkcfre">Reload theirs</button>' +
+    '<button type="button" id="lnkcfkeep">Keep mine as a copy</button>';
+  $('center').insertBefore(lcfBar, $('docarea'));
+  //  by id, not lcfBar: paintLink (65-ctl.js) can run before this file has
+  function paintLinkCf(name) {
+    const bar = $('lnkcf');
+    if (!bar) return;
+    const lk = name && name === current && linkCf.has(name) ? linkOf(name) : null;
+    bar.hidden = !lk;
+    if (lk) $('lnkcfmsg').textContent = lk.host + ' changed this page since you opened it. ' +
+      'Your text here is not saved.';
+  }
+  // drop what is here and read theirs again
+  async function linkReload() {
+    const name = current;
+    if (!linkOf(name)) return;
+    dirty = false;
+    clearTimeout(autoTimer);
+    linkCf.delete(name);
+    paintLinkCf(name);
+    await openPage(name);
+  }
+  // what is here becomes a page of my own beside the link (<name>-mine, or
+  // -mine-2 and on when that is taken), then theirs is read again
+  async function linkKeepMine() {
+    const name = current;
+    const lk = linkOf(name);
+    if (!lk) return;
+    const body = src.value;
+    const kind = curKind || pkind.value;
+    for (let i = 1; i < 100; i++) {
+      const copy = name + '-mine' + (i > 1 ? '-' + i : '');
+      if (nodes.some((n) => n.path === copy)) continue;
+      const r = await fetch(api + '/page-save?name=' + encodeURIComponent(copy) + '&type=' + kind +
+        '&new=1', { method: 'POST', body: body || '\n' }).catch(() => null);
+      if (r && r.status === 409) continue;
+      if (!r || !r.ok) { st('copy failed' + await errText(r) + ', your text is still here', false); return; }
+      if (current !== name) return;
+      addTreeNode(copy, kind, false);
+      snapTree();
+      renderTree();
+      await linkReload();
+      st('your text is kept at ' + copy + '; ' + name + ' shows ' + lk.host + '\u2019s again');
+      return;
+    }
+  }
+  $('lnkcfre').onclick = linkReload;
+  $('lnkcfkeep').onclick = linkKeepMine;
 
 // ── src/40-grub.js ────────────────────────────────────────────────────────
   // ── editing an arbitrary grub (?grub=<ball path>) ────────────────────────
@@ -3309,17 +5610,10 @@
     grubPath = null; grubShip = null;
     if (grubPrevKind !== null) { pkind.value = grubPrevKind; grubPrevKind = null; }
   };
+  // Answers false when the open failed, like openPage (35-pages.js).
   async function openGrub(p, ship) {
-    grubPath = p;
-    grubShip = ship || null;
-    if (grubPrevKind === null) grubPrevKind = pkind.value;
-    curFolder = null;
-    // a shared lattice page reads as "~ship: its/name", not its whole ball
-    // path; the name field is only a label here (Save goes by grubPath)
-    const pg = /\/page\/(.+)\/code$/.exec(p);
-    setOpen(null, { shown: grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p, readOnly: true });
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
+    const my = ++openSeq;
+    enterGrub(p, ship);
     st('loading ' + p + '…');
     // remote files ride /browse-file (bounded cross-ship peek). Its JSON says
     // body/mark where grub-source says text/blot. Normalize here, not there,
@@ -3329,8 +5623,14 @@
       : api + '/grub-source?path=' + encodeURIComponent(p);
     let r = null;
     try { r = await fetch(url); } catch {}
-    if (!r || !r.ok) { st('could not open ' + p + (r ? ' (' + r.status + ')' : ''), false); return; }
+    if (my !== openSeq) return;
+    if (!r || !r.ok) {
+      // the editor stays as enterGrub left it, empty and locked
+      st('could not open ' + p + (r ? ' (' + r.status + ')' : ''), false);
+      return false;
+    }
     const d = await r.json();
+    if (my !== openSeq) return;
     src.value = d.text || d.body || '';
     // a binary/opaque grub has no text form. Show it, never offer to save it
     src.readOnly = !d.editable;
@@ -3351,11 +5651,40 @@
     curKind = mk;
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'
-       : 'grub ' + blot + ' — manual save (Cmd+S), no autosave here');
+       : 'grub ' + blot + ', no autosave here: Ctrl+S to save');
+    return true;
+  }
+  // grub mode on, for `p` (on `ship`, or here), with its label and address,
+  // and an empty locked editor until its text is in: openGrub's first half,
+  // and all a tab's own unsaved grub buffer needs to come back (21-tabs.js).
+  // Empty, because grubPath is what Save and the tab model go by. Left
+  // showing the document before it while the grub loaded, the editor
+  // offered that text to Save as this grub's, and a tab switch in that
+  // window filed it as the grub's unsaved buffer.
+  function enterGrub(p, ship) {
+    src.value = '';
+    src.readOnly = true;
+    dirty = false;
+    render();
+    grubPath = p;
+    grubShip = ship || null;
+    if (grubPrevKind === null) grubPrevKind = pkind.value;
+    curFolder = null;
+    // a shared lattice page reads as "~ship: its/name", not its whole ball
+    // path; the name field is only a label here (Save goes by grubPath)
+    const pg = /\/page\/(.+)\/code$/.exec(p);
+    setOpen(null, { shown: grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p, readOnly: true,
+      url: '/apps/lattice/app?grub=' + encodeURIComponent(p) +
+        (grubShip ? '&ship=' + encodeURIComponent(grubShip) : '') });
   }
   async function saveGrub() {
     if (!grubPath || src.readOnly) return;
-    if (saving) { savePending = true; return; }
+    //  queued for this grub: a page or memory in front by then is not it
+    if (saving) {
+      const p = grubPath, s = grubShip;
+      queueSave(() => { if (grubPath === p && grubShip === s) return saveGrub(); });
+      return;
+    }
     saving = true;
     st('saving…');
     const sent = src.value;
@@ -3376,10 +5705,12 @@
       // the mark's opinion of the content. Grub edits have nowhere to queue
       // the way page saves do, so the text just stays here until Save runs
       // again with the ship back.
-      if (shipGone(r)) { st('ship unreachable — grub edits do not queue', false); return; }
+      // the save queued behind this one still runs (flushPending, 35-pages.js)
+      if (shipGone(r)) { st('ship unreachable — grub edits do not queue', false); flushPending(); return; }
       // the mark can reject the source. Show ITS error, since the stored grub
       // still holds the previous content and the user needs to know why
       st('save rejected' + await errText(r), false);
+      flushPending();
       return;
     }
     if (src.value === sent) dirty = false;
@@ -3387,12 +5718,24 @@
     // bust the page DIRECTORY, not the grub: the cached views are the /x/
     // dir listing and page view, and none of their URLs name '/code'
     bustPages(String(grubPath).replace(/\/[^/]*$/, ''));
-    if (savePending) { savePending = false; if (dirty) saveGrub(); }
+    flushPending();
   }
 
 // ── src/45-templates.js ───────────────────────────────────────────────────
-  $('save').onclick = () =>
-    (grubPath ? saveGrub() : mode === 'know' ? saveKnow() : save());
+  // Save, the button and Cmd+S alike. Nothing while the tab in front is not
+  // a document (a tool tab): what the editor holds then is a parked tab's
+  // buffer, and writing it from a screen that does not show it would leave
+  // that tab's snap claiming unsaved work the ship already has.
+  // grubPath first: it is the only mode with no `current`, and page save()
+  // would write to the wrong place (or nowhere) while a grub is open.
+  // Cmd+S matters more there than elsewhere, since grub mode has no autosave.
+  const saveFront = () => {
+    if (!docFront()) return;
+    if (grubPath) saveGrub();
+    else if (mode === 'know') saveKnow();
+    else save();
+  };
+  $('save').onclick = saveFront;
   // ── new page-tree from a template ────────────────────────────────────────
   // Templates stamp out a whole tree (the `site` template is four pages), and
   // each page is its own writer round-trip, so this is deliberately slow and
@@ -3424,9 +5767,9 @@
         // a multi-page template lands as a folder. Open its index if it made
         // one, else the page itself, else just select the new folder.
         const has = (p) => nodes.some((n) => n.page && n.path === p);
-        if (has(name)) await openPage(name);
-        else if (has(name + '/index')) await openPage(name + '/index');
-        else if (nodes.some((n) => !n.page && n.path === name)) selectFolder(name);
+        if (has(name)) await openIn('page', name);
+        else if (has(name + '/index')) await openIn('page', name + '/index');
+        else if (nodes.some((n) => !n.page && n.path === name)) await pickFolder(name);
         st('created ' + name + ' from ' + tmpl);
         return;
       }
@@ -3438,17 +5781,14 @@
     }
   }
   $('newtmpl').onclick = newFromTemplate;
-  $('newfile').onclick = () => newFile('');
+  // newFile paints over the editor, so whatever is unsaved there goes
+  // through guardDirty first, like any other way off a document
+  $('newfile').onclick = async () => { if (await guardDirty()) newFile(''); };
   $('newfolder').onclick = newFolder;
   window.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {
       e.preventDefault();
-      // grubPath first: it is the only mode with no `current`, and page save()
-      // would write to the wrong place (or nowhere) while a grub is open.
-      // Cmd+S matters more here than elsewhere, since grub mode has no autosave.
-      if (grubPath) saveGrub();
-      else if (mode === 'know') saveKnow();
-      else save();
+      saveFront();
     }
   });
   // Applies the list-continuation edit if the caret is in a list. Shared by
@@ -3544,8 +5884,8 @@
   // ── the same two moves, reachable by thumb ────────────────────────────────
   // A soft keyboard has no Tab key at all — the keydown branch above simply
   // never fires on a phone, the same hole Enter had before beforeinput. There
-  // is no beforeinput for Tab, so mobile gets buttons: a small fixed pair
-  // (like #fullt) that exists only while the caret sits somewhere listTab
+  // is no beforeinput for Tab, so mobile gets buttons: a small floating pair
+  // that exists only while the caret sits somewhere listTab
   // would actually act. The predicate IS listTab: the cluster shows exactly
   // when a tap would do something, fences and gemtext included, because it
   // asks the same function the tap will call.
@@ -3571,8 +5911,8 @@
     b.addEventListener('pointerdown', (e) => { e.preventDefault(); ltab(dir); });
     lbtns.appendChild(b);
   }
-  // inside .ws, not body: the show rule is scoped by the workspace's
-  // data-mv, and a descendant selector needs the descendant part. By id,
+  // inside .ws, not body: at phone width it is a grid item laid over the
+  // center's bottom corner (the 820px block). By id,
   // not the `ws` binding — that const lives in 85-layout.js, which
   // evaluates AFTER this file (TDZ: reaching it here killed the bundle).
   $('ws').appendChild(lbtns);
@@ -4108,11 +6448,9 @@
     if (root) return html.slice(0, root.index + root[0].length) + fit + html.slice(root.index + root[0].length);
     return fit + html;
   };
-  // nobody sees the preview on a phone off its tab, or on a desktop in the
-  // editor-only view (85-layout.js); the view buttons refresh it on the way
-  // back, the tab strip likewise
-  const previewHidden = () =>
-    (isMobile() ? ws.dataset.mv !== 'prev' : ws.classList.contains('ve'));
+  // nobody sees the preview in Edit (23-tabhead.js), on a phone or not;
+  // Read refreshes it on the way back
+  const previewHidden = () => ws.classList.contains('ve');
   const paintLocal = () => {
     if (!CONTENT() || document.hidden) return;
     if (previewHidden()) return;
@@ -4247,8 +6585,8 @@
 
 // ── src/65-ctl.js ─────────────────────────────────────────────────────────
   // ── controls pane: <lat-ctl> frame ───────────────────────────────────────
-  // Renders the pane skeleton with one tag per panel. The panel components
-  // (lat-knowtags 68, lat-share 66, lat-history/lat-links 77) upgrade when
+  // Renders the Page tab's skeleton with one tag per panel. The panel
+  // components (lat-knowtags 68, lat-share 66) upgrade when
   // NB: no lat-perms. Group EDITING lives in the full-window ACL pane now.
   // This column only points existing groups at the open file (66-share).
   // their own files run, in file order. Button handlers wired below in this
@@ -4262,15 +6600,95 @@
   <h3>status</h3>
   <div id="cerr" class="ok">&nbsp;</div>
   <lat-knowtags></lat-knowtags>
+  <!-- a link to another ship's page (paintLink, below) -->
+  <div id="lnkrow" hidden>
+    <h3>linked</h3>
+    <div id="lnkfrom"></div>
+    <div id="lnkmode" class="muted"></div>
+    <div id="lnkbad" class="lbad" hidden></div>
+    <div id="lnkat" class="muted" hidden></div>
+  </div>
+  <div id="cmtrow" hidden>
+    <h3>comments</h3>
+    <!-- the box alone toggles, as with mark sensitive (66-share.js) -->
+    <div class="chk"><input type="checkbox" id="cmton" data-action="cmton" aria-label="Comments on this page">
+    <span class="muted">Comments on this page</span></div>
+  </div>
   <lat-share></lat-share>
-  <lat-history></lat-history>
-  <lat-links></lat-links>
-  <button id="mv" class="mvbtn">move / rename</button>
-  <button id="del" class="del">delete page</button>
+  <!-- move and delete are reached from the tab header's path and the page
+       menu (23-tabhead.js), which click these. They stay, out of sight. -->
+  <div hidden><button id="mv">move / rename</button><button id="del">delete page</button></div>
 </aside>`;
       cerr = $('cerr');
     }
   });
+
+  // ── a link: whose page this is ──────────────────────────────────────────
+  // For a link in front (its tab, open or failed to open): where it points,
+  // the grant, and the badge once a read failed. Comments and sharing are
+  // the owner's, so this page's own controls for them stand down.
+  function paintLink() {
+    const row = $('lnkrow');
+    if (!row) return;
+    const t = activeTab;
+    const name = t ? (t.kind === 'page' ? t.key : null)
+      : (!grubPath && mode !== 'know' && curFolder === null ? current : null);
+    const lk = linkOf(name);
+    row.hidden = !lk;
+    paintLinkCf(current);
+    const sh = document.querySelector('lat-share');
+    if (sh) sh.hidden = !!lk;
+    if (lk) $('cmtrow').hidden = true;      // rpPaint shows it for a page
+    if (!lk) return;
+    // a read link stays locked. A reload paints the page from its snapshot
+    // before the tree has loaded, when linkRO cannot know it is a link yet,
+    // so the lock lands here, once the tree knows. Only ever locks: the
+    // unlock belongs to applyPage.
+    if (name === current && linkRO(name)) src.readOnly = true;
+    $('lnkfrom').textContent = 'Linked from ' + linkFrom(lk);
+    $('lnkmode').textContent = lk.mode === 'read' ? 'read only'
+      : lk.mode === 'edit' ? 'can edit' : lk.mode;
+    const bad = linkBadge(lk);
+    $('lnkbad').hidden = !bad;
+    $('lnkbad').textContent = bad ? bad.copy : '';
+    $('lnkat').hidden = !bad || !bad.since;
+    $('lnkat').textContent = bad ? bad.since : '';
+  }
+
+  // ── comments on this page ────────────────────────────────────────────────
+  // Comments from other ships are opt-in per page (or per folder: the
+  // nearest flag at or above a page wins). page-source reports the answer
+  // for the open page as `comments`, and this box shows it. An open painted
+  // from the tree dump has no answer yet; the box waits, disabled, for the
+  // page-source fetch that follows. cmtOn is what the Comments tab goes by.
+  let cmtOn = null;
+  let cmtFor = null;
+  function cmtShow(name, on) {
+    const cb = $('cmton');
+    cmtFor = name;
+    cmtOn = typeof on === 'boolean' ? on : null;
+    cb.checked = cmtOn === true;
+    cb.disabled = !name || cmtOn === null;
+    rpSoon();            // the Comments tab's post box goes by it too
+  }
+  $('cmton').onchange = async () => {
+    const cb = $('cmton');
+    const name = cmtFor;
+    if (!name) return;
+    const on = cb.checked;
+    cb.disabled = true;
+    const r = await mutate(api + '/page-comments?name=' + encodeURIComponent(name) +
+      '&on=' + (on ? '1' : '0'));
+    if (cmtFor !== name) return;
+    cb.disabled = false;
+    if (!r || !r.ok) { cb.checked = !on; st('comments switch failed' + await errText(r), false); return; }
+    cmtOn = on;
+    const hit = pageCache.get(name);
+    if (hit) hit.comments = on;
+    st(on ? 'comments on for ' + name : 'comments off for ' + name);
+    rpSoon();
+  };
+  clickAction('cmton', 'Comments on this page', 'Right pane › Page');
 
   // NB: the command box is gone from this panel. It POSTed to /page-cmd, the
   // input channel for a programmable page. The ROUTE stays, since public form
@@ -4329,24 +6747,81 @@
 <div id="sharesec">
 <h3>sharing</h3>
 <div class="share" id="share">
-  <button data-m="private">private</button>
-  <button data-m="shared">shared</button>
-  <button data-m="clearweb">clearweb</button>
+  <button data-m="private" data-action="share-private">private</button>
+  <button data-m="shared" data-action="share-shared">shared</button>
+  <button data-m="clearweb" data-action="share-clearweb">clearweb</button>
 </div>
+<div id="sharewhat" class="muted sharewhat"></div>
 <div id="cwurl" class="muted"></div>
 <h3>give a ship access</h3>
 <div class="row"><input id="shwith" placeholder="~ship" autocomplete="off"><button id="shread">read</button><button id="shedit">edit</button></div>
 <div id="shres" class="muted"></div>
-<h3 class="grouphead">give a group access <a id="aclopen" title="create and edit groups">manage &rarr;</a></h3>
+<h3 class="grouphead">give a group access <a id="aclopen" data-action="aclopen" title="create and edit groups">manage &rarr;</a></h3>
 <div id="grouplist" class="muted"></div>
 <h3>sensitive</h3>
-<label class="muted"><input type="checkbox" id="shsens"> mark sensitive &mdash; agents without clearance can't see or write it</label>
+<!-- only the box toggles: the words beside it are plain text, not a label
+     around both, so a click on them changes nothing. They describe it. -->
+<div class="chk"><input type="checkbox" id="shsens" data-action="shsens" aria-label="Mark sensitive" aria-describedby="shsensd">
+<span id="shsensd" class="muted">mark sensitive: agents without clearance can't see or write it</span></div>
 <div id="shsensres" class="muted"></div>
 </div>
 <div id="orrsec" hidden><h3>orrery</h3><div id="orr"></div></div>`;
       cwurl = $('cwurl');
     }
   });
+  // ── what each mode does, said where it is picked ─────────────────────────
+  // The three read as a set, and each says who can read the page and where
+  // (apply-share in app.hoon): private is in no published copy at all;
+  // shared puts a copy under /pub, which is publicly granted, so any ship
+  // reads it over ames at its urb:// address; clearweb is shared plus the
+  // unauthenticated /c/ route. A ship or group granted below reads a
+  // private page too (share-file grants the code grub itself), so private
+  // says so.
+  //
+  // The addresses are the real ones for the target. cwUrl is the one the
+  // public link below shows and the Published pages list (72-acl.js)
+  // copies, so the two can never disagree. urb:// has no folder form, so a
+  // folder's copy points at its pages instead of printing one.
+  const cwUrl = (target) => location.origin + api + '/c/' + target;
+  // our own ship, for the urb:// address: Eyre's /~/host, asked once. ''
+  // while it is on its way, null if it failed. Until then there is no
+  // address, never a made-up one: nothing shows or copies a placeholder.
+  let ourShip = '';
+  const urbUrl = (target) => (ourShip ? 'urb://' + ourShip + '/' + target : null);
+  const urbMissing = () => (ourShip === null ? 'address unavailable' : 'loading address');
+  let shareShown = null;
+  fetch('/~/host').then((r) => (r.ok ? r.text() : '')).catch(() => '').then((t) => {
+    ourShip = t.trim() || null;
+    if (shareShown) paintShareCopy(shareShown);
+    renderPublished();
+  });
+  const at = (u) => (u ? 'at ' + u : '(' + urbMissing() + ')');
+  const SHARE_COPY = {
+    private: () => 'Private: only you, and any ship or group you give access below. '
+      + 'Not published anywhere.',
+    shared: (u) => 'Shared: any ship can read it over Urbit ' + at(u) + '. Not on the web.',
+    clearweb: (u, w) => 'Clearweb: anyone with the link can read it on the web at '
+      + w + ', no login needed. Any ship can also read it over Urbit ' + at(u) + '.',
+  };
+  const FOLDER_COPY = {
+    private: SHARE_COPY.private,
+    shared: () => 'Shared: any ship can read every page in it over Urbit, each at its '
+      + 'own urb:// address (Access & groups lists them). Not on the web.',
+    clearweb: (u, w) => 'Clearweb: anyone with the link can read it on the web at '
+      + w + ', no login needed. Any ship can also read every page in it over Urbit.',
+    mixed: () => 'Mixed: the pages in this folder are not all shared the same way. '
+      + 'Access & groups lists the published ones.',
+  };
+  function paintShareCopy(m) {
+    shareShown = m;
+    const target = curFolder || current;
+    const copy = curFolder ? FOLDER_COPY : SHARE_COPY;
+    const t = target ? target + (curFolder ? '/' : '') : 'this-page';
+    const u = curFolder ? null : urbUrl(t), w = cwUrl(t);
+    for (const b of document.querySelectorAll('.share button')) b.title = copy[b.dataset.m](u, w);
+    $('sharewhat').textContent = copy[m] ? copy[m](u, w) : '';
+  }
+
   function showShare(m) {
     // the grant result names "this page", so it MUST NOT outlive the page it
     // was about. Every target change (page open, new file, folder select,
@@ -4359,6 +6834,7 @@
     // the group toggles are about THIS file, so they follow the same
     // every-target-change hook the grant message does
     renderGroupAccess();
+    paintShareCopy(m);
     orreryShow();
     refreshSensitive(curFolder || current);
     const target = curFolder || current;
@@ -4368,7 +6844,7 @@
     // markup makes this sink depend on every name source staying sane-%ta.
     cwurl.textContent = '';
     if (m === 'clearweb' && target) {
-      const url = api + '/c/' + target + suffix;
+      const url = cwUrl(target + suffix);
       cwurl.appendChild(document.createTextNode('public: '));
       const a = document.createElement('a');
       a.href = url;
@@ -4377,7 +6853,7 @@
       a.textContent = '/c/' + target + suffix;   // textContent: names are content
       cwurl.appendChild(a);
     } else if (m === 'mixed') {
-      cwurl.textContent = 'mixed — pages under this folder differ';
+      cwurl.textContent = 'mixed: pages under this folder differ';
     }
   }
   for (const b of document.querySelectorAll('.share button')) {
@@ -4564,6 +7040,13 @@
     }
   }
   $('aclopen').onclick = () => aclOpen();
+  // the panel's palette actions. Going public still asks (askPublish),
+  // since the action is the button's own click.
+  clickAction('share-private', 'Make private', 'Right pane › Page');
+  clickAction('share-shared', 'Share over Urbit', 'Right pane › Page');
+  clickAction('share-clearweb', 'Publish to the clearweb', 'Right pane › Page');
+  clickAction('shsens', 'Mark sensitive', 'Right pane › Page');
+  clickAction('aclopen', 'Manage groups', 'Right pane › Page');
 
 // ── src/67-perms.js ───────────────────────────────────────────────────────
   // ── usergroups: the shared data layer ────────────────────────────────────
@@ -4652,13 +7135,7 @@
     try { r = await (bg ? bgFetch : fetch)(api + '/shared-with-me'); } catch {}
     if (!r || !r.ok) return;           // the folder just stays as it was
     sharedWithMe = await r.json();
-    if (mode !== 'know') renderTree();
-  }
-  async function openShared(it) {
-    if (!(await guardDirty())) return;
-    history.replaceState(null, '', '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
-      '&ship=' + encodeURIComponent(it.host));
-    openGrub(it.path, it.host);
+    renderTree();
   }
   // keys for the collapsed list: a leading space is in no page name, so a
   // page can never share a fold with this folder
@@ -4667,7 +7144,7 @@
   function renderShared(coll) {
     const fold = (key, label, depth) => {
       treeList.appendChild(folderRow(label, depth, coll.includes(key),
-        () => { paneColl.flip(key); renderTree(); }));
+        () => { paneColl.flip(key); renderTree(); }, undefined, key));
       return !coll.includes(key);
     };
     if (!fold(SWM, 'shared with me', 0)) return;
@@ -4678,7 +7155,6 @@
       for (const it of mine) {
         const a = document.createElement('a');
         a.className = 'pg swm';
-        a.style.marginLeft = '28px';
         a.href = '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
           '&ship=' + encodeURIComponent(host);
         a.title = host + ' ' + it.path;
@@ -4701,11 +7177,128 @@
           loadShared();
         };
         a.append(nm, md, x);
-        a.onclick = (e) => { e.preventDefault(); openShared(it); };
-        treeList.appendChild(a);
+        a.draggable = true;
+        a.ondragstart = (e) => {
+          swmDrag = it;
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData(SWM_DRAG, it.host + ' ' + it.path);
+        };
+        a.ondragend = () => { swmDrag = null; };
+        treeItem(a, 2, SWM + '/' + host + '/' + it.path);
+        // a grub tab; openGrub (by way of enterGrub) sets the address
+        tabLink(a, 'grub', it.path, { ship: host });
+        // into my own tree as a link: this, or a drag onto a folder. A
+        // button of its own beside the row (a button cannot sit in a link),
+        // so a keyboard reaches it too
+        const mv = document.createElement('button');
+        mv.type = 'button';
+        mv.className = 'swmv';
+        mv.dataset.action = 'swm-move';
+        tip(mv, 'Move into my pages');
+        mv.innerHTML = ico('link');
+        mv.onclick = () => askMoveIn(it);
+        const w = document.createElement('div');
+        w.className = 'swrow';
+        w.style.marginLeft = '28px';
+        w.append(a, mv);
+        treeList.appendChild(w);
       }
     }
   }
+
+  // ── moving in and out: a shared page becomes a link in my tree ──────────
+  // One home at a time: /link-make writes the link and drops the
+  // shared-with-me entry, /link-unmake puts the entry back and drops the
+  // link. Neither touches the owner's grant. Both need the host's page to
+  // have a kind, so a make with the host offline is refused, not queued.
+  const SWM_DRAG = 'application/x-lattice-shared';
+  let swmDrag = null;          // the entry being dragged, for the drop
+  // the link's local name: the folder it lands in, then the page's own name
+  const swmLeaf = (it) => sharedName(it.path).split('/').pop();
+  // -> true once the link is in, after saying why when it is not
+  async function moveIn(it, to) {
+    stWork('moving ' + swmLeaf(it) + ' into ' + to + '\u2026');
+    const r = await fetch(api + '/link-make?host=' + encodeURIComponent(it.host) +
+      '&path=' + encodeURIComponent(it.path) + '&to=' + encodeURIComponent(to),
+    { method: 'POST' }).catch(() => null);
+    if (!r || !r.ok) { st('move failed' + await errText(r), false); return false; }
+    let n = null;
+    try { n = await r.json(); } catch {}
+    sharedWithMe = sharedWithMe.filter((s) => !(s.host === it.host && s.path === it.path));
+    if (to.includes('/')) addFolderNodes(to.slice(0, to.lastIndexOf('/')));
+    // the ship's node, kind and all (frozen at the host's). Without one,
+    // the tree is fetched rather than guessed at.
+    if (n && n.path === to) {
+      dropTreeNodes(to);
+      nodes.push(n);
+      snapTree();
+      renderTree();
+    } else await loadTree();
+    st('moved into ' + to + ', linked from ' + it.host);
+    return true;
+  }
+  // the move dialog, seeded with the page's name (or <folder>/<name>), and
+  // back into it seeded with what was typed when the ship refuses
+  async function askMoveIn(it, folder) {
+    let seed = (folder ? folder + '/' : '') + swmLeaf(it);
+    for (;;) {
+      const typed = await askName('move ' + it.host + '/' + sharedName(it.path) +
+        ' into my pages as:', seed, 'move');
+      if (!typed) return;
+      const rn = realName(typed);
+      if (await moveIn(it, rn.name)) return;
+      seed = typed;
+    }
+  }
+  // a folder row in Files takes a dragged shared-with-me row: the link
+  // goes in under that folder by the page's own name
+  function linkDrop(row, folder) {
+    row.addEventListener('dragover', (e) => {
+      if (!swmDrag || ![...e.dataTransfer.types].includes(SWM_DRAG)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      row.classList.add('drop');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drop'));
+    row.addEventListener('drop', (e) => {
+      row.classList.remove('drop');
+      const it = swmDrag;
+      if (!it || ![...e.dataTransfer.types].includes(SWM_DRAG)) return;
+      e.preventDefault();
+      swmDrag = null;
+      // refused (a name already there, the host away): the dialog, as the
+      // button gives, seeded with this folder
+      moveIn(it, folder + '/' + swmLeaf(it)).then((ok) => { if (!ok) askMoveIn(it, folder); });
+    });
+  }
+  // the link at `name` back to shared with me. Every tab on it closes
+  // first, through closeTab, so one holding unsaved text (in front or
+  // not) asks, and keeping it stops the move.
+  async function linkBack(name) {
+    const lk = linkOf(name);
+    if (!lk) return;
+    for (const t of tabs.filter((x) => x.kind === 'page' && x.key === name))
+      if ((await closeTab(t.id)) === false) return;
+    const r = await fetch(api + '/link-unmake?name=' + encodeURIComponent(name),
+      { method: 'POST' }).catch(() => null);
+    if (!r || !r.ok) { st('move failed' + await errText(r), false); return; }
+    dropTreeNodes(name);
+    linkCf.delete(name);
+    linkStale.delete(name);
+    snapTree();
+    renderTree();
+    await loadShared();
+    st('moved ' + name + ' back to shared with me');
+  }
+  // the palette's way in is the rows' own buttons: with one shared page
+  // it is that page's, with several it goes to the first, to pick there
+  action({ id: 'swm-move', name: 'Move into my pages', home: 'Files \u203a shared with me',
+    when: () => !!actionHome('swm-move'),
+    run: () => {
+      const all = document.querySelectorAll('[data-action="swm-move"]');
+      if (all.length === 1) { all[0].click(); return; }
+      if (all[0]) { all[0].focus(); st('pick the page to move: its Move into my pages button'); }
+    } });
   // deferred to boot, same reason as loadPerms. See 67-perms.js.
 
 // ── src/70-upload.js ──────────────────────────────────────────────────────
@@ -5119,9 +7712,9 @@
 // ── src/72-acl.js ─────────────────────────────────────────────────────────
   // ── access control pane: <lat-acl>, the peers panel with room to work ────
   // Same data and same endpoints as the narrow editor panel (67-perms.js).
-  // This is a full-window overlay for organising it. Deliberately NOT a third
-  // setMode branch. setMode is wired into the tree/editor lifecycle and access
-  // control has nothing to do with either (same reasoning as 40-grub.js).
+  // This is a tool tab for organising it (24-tools.js). Deliberately NOT a
+  // third setMode branch. setMode is wired into the tree/editor lifecycle and
+  // access control has nothing to do with either (same reasoning as 40-grub.js).
   //
   // Costs no boot requests. It renders permGroups, which boot already loads
   // off the critical path, and only fetches if the pane is opened before that
@@ -5135,13 +7728,12 @@
   customElements.define('lat-acl', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="aclwrap" id="aclwrap" hidden role="dialog" aria-modal="true" aria-label="access control">
+<div class="aclwrap" id="aclwrap" hidden role="region" aria-label="access control">
   <div class="aclbar">
     <h2>Access control</h2>
     <span class="muted" id="aclsum"></span>
     <span class="grow"></span>
     <button id="aclreload" class="ico" title="reload from ship">&#8635;</button>
-    <button id="aclclose">close</button>
   </div>
   <div class="aclbody">
     <div class="row">
@@ -5149,6 +7741,13 @@
       <button id="aclnewbtn">create group</button>
     </div>
     <div id="aclgrid" class="aclgrid"></div>
+    <section class="aclpub" id="aclpub" data-action="published" aria-labelledby="aclpubh">
+      <h4 id="aclpubh">published pages</h4>
+      <p class="aclnote">Pages anyone can read without a grant. Any ship can read
+      a shared page over Urbit at its urb:// address. Anyone can read a clearweb
+      page in a browser at its https link.</p>
+      <div id="publist"></div>
+    </section>
     <div class="aclban">
       <h4>banned ships</h4>
       <p class="aclnote">A banned ship cannot share anything with you and
@@ -5167,8 +7766,10 @@
     }
   });
 
-  const aclOpen = () => {
-    $('aclwrap').hidden = false;
+  // every way in (#aclopen in the Page tab, the ribbon, the phone's sheet)
+  // lands on the one Access & groups tab, and its coming forward loads it
+  const aclOpen = () => toolOpen('access');
+  const aclLoad = () => {
     // permGroups is populated by boot's deferred load. Only pay a request if
     // the pane was opened before that landed. Guard on permsLoaded, not the
     // array's length: a ship with zero groups is a real, load-complete
@@ -5176,8 +7777,85 @@
     // forever for exactly that ship. 66-share.js already made this call.
     if (!permsLoaded) loadPerms(); else renderAcl();
     loadBans();
+    renderPublished();
   };
-  const aclClose = () => { $('aclwrap').hidden = true; };
+
+  // ── published pages: every address worth handing out ─────────────────────
+  // Each shared page by its urb:// address and each clearweb page by its
+  // https link, the very strings the Page tab gives (urbUrl and cwUrl,
+  // 66-share.js), each with a copy button. Read off the tree's share modes,
+  // which page-dump already carries: no request of its own. renderTree
+  // repaints it while this tab is in front, so a page shared or made
+  // private elsewhere comes and goes here too.
+  function renderPublished() {
+    const host = $('publist');
+    if (!host) return;
+    host.textContent = '';
+    const note = (t) => {
+      const e = document.createElement('div');
+      e.className = 'aclnote';
+      e.textContent = t;
+      host.appendChild(e);
+    };
+    if (!treeShares) { note('share modes are not known yet: they come with the file tree.'); return; }
+    const pages = nodes.filter((n) => n.page).sort((a, b) => a.path.localeCompare(b.path));
+    const groups = [['shared over Urbit', 'shared', urbUrl], ['clearweb', 'clearweb', cwUrl]];
+    let any = false;
+    for (const [title, mode, addr] of groups) {
+      const mine = pages.filter((n) => n.share === mode);
+      if (!mine.length) continue;
+      any = true;
+      const h = document.createElement('h5');
+      h.textContent = title + ' (' + mine.length + ')';
+      host.appendChild(h);
+      for (const n of mine) {
+        const u = addr(n.path);
+        const row = document.createElement('div');
+        row.className = 'pubrow';
+        row.dataset.share = mode;
+        row.dataset.page = n.path;
+        const b = tip(document.createElement('button'), 'Copy address');
+        b.type = 'button';
+        b.className = 'sbtn';
+        b.innerHTML = ico('copy');
+        // no ship name yet (or none to be had): no address, and nothing to copy
+        if (!u) {
+          const m = document.createElement('span');
+          m.className = 'aclnote';
+          m.textContent = n.path + ': ' + urbMissing();
+          b.disabled = true;
+          row.append(m, b);
+          host.appendChild(row);
+          continue;
+        }
+        // a clearweb link opens in a new window. A urb:// address opens in
+        // the reader (/apps/lattice?url=), which leaves the editor, so a
+        // plain click goes the way the ribbon's Browser does (leaveTo,
+        // 24-tools.js): unsaved work is asked about first. A new-tab click
+        // leaves nothing behind and goes as it is.
+        const a = document.createElement('a');
+        a.textContent = u;
+        if (mode === 'clearweb') { a.href = u; a.target = '_blank'; a.rel = 'noopener'; }
+        else {
+          a.href = api + '?url=' + encodeURIComponent(u);
+          a.onclick = (e) => {
+            if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+            e.preventDefault();
+            leaveTo(a.href);
+          };
+        }
+        b.onclick = async () => {
+          try { await navigator.clipboard.writeText(u); st('copied ' + u); }
+          catch { st('could not copy ' + u, false); }
+        };
+        row.append(a, b);
+        host.appendChild(row);
+      }
+    }
+    if (!any) note('nothing is published. Share a page from its Page tab and it shows here.');
+  }
+  action({ id: 'published', name: 'Published pages', home: 'Ribbon › Access & groups',
+    run: async () => { await aclOpen(); $('aclpub').scrollIntoView({ block: 'start' }); } });
 
   // suggest the grantable paths this client already knows about, so a grant is
   // a pick rather than a hand-typed ball path. Built from the tree we have.
@@ -5420,7 +8098,6 @@
     if (e.key === 'Enter') { e.preventDefault(); $('banadd').click(); }
   };
 
-  $('aclclose').onclick = aclClose;
   $('aclreload').onclick = () => { loadPerms(); loadBans(); };
   $('aclnewbtn').onclick = async () => {
     const v = $('aclnew').value.trim();
@@ -5431,11 +8108,6 @@
   $('aclnew').onkeydown = (e) => {
     if (e.key === 'Enter') { e.preventDefault(); $('aclnewbtn').click(); }
   };
-  $('aclt').onclick = aclOpen;
-  // Escape closes, matching the in-app dialog's behaviour
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('aclwrap').hidden) aclClose();
-  });
 
 // ── src/73-comments.js ────────────────────────────────────────────────────
   // ── comments inbox: <lat-comments> ───────────────────────────────────────
@@ -5444,18 +8116,17 @@
   // replied meant visiting each published page. This is the owner's side: what
   // came in, across every page, newest first, with a way to remove one.
   //
-  // Reuses the .aclwrap/.aclbar/.aclbody overlay styles rather than growing a
-  // second set that would drift from them.
+  // Reuses the .aclwrap/.aclbar/.aclbody styles rather than growing a second
+  // set that would drift from them. It shows in a tool tab (24-tools.js).
   customElements.define('lat-comments', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="aclwrap" id="cmwrap" hidden role="dialog" aria-modal="true" aria-label="comments">
+<div class="aclwrap" id="cmwrap" hidden role="region" aria-label="comments">
   <div class="aclbar">
     <h2>Comments</h2>
     <span class="muted" id="cmsum"></span>
     <span class="grow"></span>
     <button id="cmreload" class="ico" title="reload from ship">&#8635;</button>
-    <button id="cmclose">close</button>
   </div>
   <div class="aclbody">
     <div id="cmlist"></div>
@@ -5481,26 +8152,34 @@
     renderComments(d.total || inbox.length);
   }
 
-  function renderComments(total) {
-    const host = $('cmlist');
+  // The inbox by default. The Comments tab (76-outline.js) passes one
+  // page's share of it, its own host and empty line, and its own reload,
+  // and leaves out the page link, which would only point at itself.
+  function renderComments(total, {
+    host = $('cmlist'), items = inbox, sum = $('cmsum'), reload = loadComments,
+    // say WHY it might be empty. Comments are opt-in per page, so "none yet"
+    // and "never enabled anywhere" look identical and mean different things
+    empty = 'No comments. They are opt-in per page: switch them on in a '
+      + 'page\'s Page tab.',
+    pageLink = true,
+  } = {}) {
     if (!host) return;
     host.textContent = '';
     host.className = '';
-    $('cmsum').textContent = inbox.length
-      ? inbox.length + (total > inbox.length ? ' of ' + total : '') + ' comment'
-        + (total === 1 ? '' : 's')
-      : '';
-    if (!inbox.length) {
+    if (sum) {
+      sum.textContent = items.length
+        ? items.length + (total > items.length ? ' of ' + total : '') + ' comment'
+          + (total === 1 ? '' : 's')
+        : '';
+    }
+    if (!items.length) {
       host.className = 'aclempty';
-      // say WHY it might be empty. Comments are opt-in per page, so "none yet"
-      // and "never enabled anywhere" look identical and mean different things
-      host.textContent = 'No comments. They are opt-in per page, and this app '
-        + 'has no switch for that yet.';
+      host.textContent = empty;
       return;
     }
     const grid = document.createElement('div');
     grid.className = 'aclgrid';
-    for (const c of inbox) {
+    for (const c of items) {
       const card = document.createElement('div');
       card.className = 'aclcard';
       const head = document.createElement('header');
@@ -5515,19 +8194,21 @@
           '&id=' + encodeURIComponent(c.id), { method: 'POST' }).catch(() => null);
         if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
         st('comment removed');
-        loadComments();
+        reload();
       };
       head.appendChild(who); head.appendChild(del);
       card.appendChild(head);
 
       // the page it landed on, clickable. The point of an inbox is getting
       // to the thing being talked about
-      const on = document.createElement('a');
-      on.className = 'gname';
-      on.textContent = c.page;
-      on.style.cursor = 'pointer';
-      on.onclick = () => { cmClose(); openPage(c.page); };
-      card.appendChild(on);
+      if (pageLink) {
+        const on = document.createElement('a');
+        on.className = 'gname';
+        on.textContent = c.page;
+        on.style.cursor = 'pointer';
+        on.onclick = (e) => openIn('page', c.page, { ev: e });
+        card.appendChild(on);
+      }
 
       const body = document.createElement('div');
       body.style.whiteSpace = 'pre-wrap';
@@ -5560,14 +8241,14 @@
   const lastSeen = () => { try { return localStorage[seenKey] || ''; } catch { return ''; } };
   const markSeen = (when) => { try { if (when) localStorage[seenKey] = when; } catch {} };
 
+  // on the ribbon's inbox button: the badge, and the count in its name, so
+  // a screen reader hears it too (title and label stay identical)
   function paintUnread(n) {
-    const b = $('cmt');
+    const b = $('rb-inbox');
     if (!b) return;
     if (n > 0) { b.dataset.n = n > 99 ? '99+' : String(n); b.classList.add('has-unread'); }
     else { delete b.dataset.n; b.classList.remove('has-unread'); }
-    b.title = n > 0
-      ? n + ' new comment' + (n === 1 ? '' : 's') + ' from other ships'
-      : 'comments from other ships';
+    tip(b, n > 0 ? 'Comments inbox, ' + b.dataset.n + ' unread' : 'Comments inbox');
   }
 
   // Counts without rendering, so it can run on a refresh without the pane open.
@@ -5614,9 +8295,10 @@
     paintUnread(unreadSeen);
   }
 
-  const cmOpen = () => {
-    $('cmwrap').hidden = false;
-    // opening IS reading: mark everything currently in the inbox as seen
+  const cmOpen = () => toolOpen('inbox');
+  // the inbox's tab came forward (24-tools.js). Opening IS reading: mark
+  // everything currently in the inbox as seen
+  const cmLoad = () => {
     loadComments().then(() => {
       const newest = inbox.reduce(
         (a, c) => (daKey(c.when) > daKey(a) ? String(c.when) : a), lastSeen());
@@ -5628,13 +8310,7 @@
       paintUnread(0);
     });
   };
-  const cmClose = () => { $('cmwrap').hidden = true; };
-  $('cmclose').onclick = cmClose;
   $('cmreload').onclick = loadComments;
-  $('cmt').onclick = cmOpen;
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('cmwrap').hidden) cmClose();
-  });
 
 // ── src/74-orrery.js ──────────────────────────────────────────────────────
   // ── send the open page to orrery (ui-app/orrery.js, docs/orrery.md) ──────
@@ -5678,6 +8354,7 @@
   // suffix-preserving remap, as does the offline queue's own move
   // reconciliation. Returns how many pages moved.
   const remapMoved = (from, to, rn) => {
+    tabsRemap('page', from, to);       // and the tabs naming them (21-tabs.js)
     let moved = 0;
     for (const n of nodes)
       if (n.path === from || n.path.startsWith(from + '/')) {
@@ -5729,15 +8406,278 @@
     }
   }
 
+// ── src/76-outline.js ─────────────────────────────────────────────────────
+  // ── right pane: Outgoing, Outline, Comments, and what follows the document ─
+  // The right pane's tabs are about the document in front. Outgoing and
+  // Outline read its text, the rest fetch, and all of them repaint when the
+  // document changes: setOpen (every open, tab switch and mode change goes
+  // through it) fires 'input' on the name field, resetPanels runs on every
+  // fresh paint of a page or memory, and the editor's render tells them the
+  // text moved. A tab that does not apply to what is in front says so in
+  // one line, and never hides: a tab strip that changes shape under the
+  // pointer is worse than one that is sometimes empty.
+
+  // The link targets the preview renderer (59-md.js) makes of a document,
+  // deduped, in order. Read off its own output, so a link here is exactly a
+  // link there: fences, images, unsafe schemes and escaping all come out the
+  // same. A page link comes back as its page name, a urb:// link as itself.
+  function outLinks(body, kind) {
+    const html = kind === 'md' ? mdToHtml(body) : kind === 'gmi' ? gmiToHtml(body) : '';
+    const out = [];
+    for (const m of html.matchAll(/<a href="([^"]*)"/g)) {
+      let t = mdUnesc(m[1]);
+      const pg = /^\/apps\/lattice\/app\?name=([^&#]*)$/.exec(t);
+      const urb = /^\/apps\/lattice\?url=(urb:\/\/.*)$/.exec(t);
+      if (pg) { try { t = decodeURIComponent(pg[1]); } catch { continue; } }
+      else if (urb) t = urb[1];
+      else if (t.startsWith('#')) continue;      // an anchor in the page itself
+      if (t && !out.includes(t)) out.push(t);
+    }
+    return out;
+  }
+
+  // The headings of a document, by the rules the same renderer uses: md
+  // #..###### with a space, gmi #..### with one, nothing inside a fence.
+  // `line` counts from 1.
+  function outline(body, kind) {
+    const out = [];
+    if (kind !== 'md' && kind !== 'gmi') return out;
+    const lines = String(body == null ? '' : body).split('\n');
+    let fence = null;
+    for (let i = 0; i < lines.length; i++) {
+      const ln = lines[i];
+      if (kind === 'gmi') {
+        if (ln.trimEnd() === '```') { fence = fence ? null : '```'; continue; }
+        if (fence) continue;
+      } else {
+        if (fence) { if (ln.trimStart().startsWith(fence)) fence = null; continue; }
+        const f = ln.match(/^\s*(```|~~~)/);
+        if (f) { fence = f[1]; continue; }
+      }
+      const h = ln.match(kind === 'gmi' ? /^(#{1,3}) (.*)$/ : /^(#{1,6})\s+(.*)$/);
+      if (h) out.push({ level: h[1].length, text: h[2].trim(), line: i + 1 });
+    }
+    return out;
+  }
+
+  const rpSec = (id) => document.querySelector('#rbody > [data-pane=' + id + ']');
+  const NONE = '<p class="rpnone muted" hidden>Nothing here for this tab.</p>';
+  rpSec('out').innerHTML = NONE + '<div id="outsec"><h3>outgoing links</h3><div id="outlist"></div></div>';
+  rpSec('outline').innerHTML = NONE + '<div id="olsec"><h3>outline</h3><div id="ollist"></div></div>';
+  rpSec('comments').innerHTML = NONE + `<div id="rpcmsec">
+  <h3>comments on this page</h3>
+  <div id="rpcmlist"></div>
+  <textarea id="rpcmbody" rows="3" placeholder="Write a comment"></textarea>
+  <div class="row"><span id="rpcmnote" class="muted grow"></span><button id="rpcmpost">Post</button></div>
+</div>`;
+  for (const id of ['back', 'hist', 'page']) rpSec(id).insertAdjacentHTML('afterbegin', NONE);
+
+  // What is in front, as the pane sees it: a page (named or not yet), a
+  // memory, a grub, or nothing it has tabs for (a folder, an empty editor
+  // after a close, a tab kind with no document such as a tool).
+  const rpDoc = () => {
+    if (activeTab && !['page', 'know', 'grub'].includes(activeTab.kind)) return null;
+    if (grubPath) return { kind: 'grub', key: grubPath };
+    if (curFolder !== null) return null;
+    return { kind: mode === 'know' ? 'know' : 'page', key: current };
+  };
+  // Outgoing and Outline need text a renderer reads. History needs a
+  // document with revisions, so a saved page or memory. Backlinks and
+  // Comments are about pages.
+  const rpApplies = (id, d) => !!d && (
+    id === 'out' || id === 'outline' ? d.kind !== 'grub'
+      : id === 'hist' ? d.kind !== 'grub' && !!d.key
+        : d.kind === 'page' && !!d.key);
+  const RP_BODY = { out: 'outsec', outline: 'olsec', back: 'linksec', comments: 'rpcmsec', hist: 'histsec' };
+  const rpText = () => (mode === 'know' ? 'md' : pkind.value);
+
+  // which fetched tab holds which document ('page:a/b'). A tab whose entry
+  // differs from what is in front loads when it is next seen.
+  const rpLoaded = {};
+  let rpTimer = 0;
+  let rpForce = null;
+  function rpPaint() {
+    rpTimer = 0;
+    const force = rpForce;
+    rpForce = null;
+    const d = rpDoc();
+    const key = d && d.key ? d.kind + ':' + d.key : null;
+    // the Page tab is the controls of the document underneath, which a tab
+    // that is not a document (a tool) is not. A folder (d null) keeps them:
+    // they act on it.
+    const tool = !docFront();
+    rpSec('page').querySelector('.rpnone').hidden = !tool;
+    rpSec('page').querySelector('lat-ctl').hidden = tool;
+    for (const id of Object.keys(RP_BODY)) {
+      const ok = rpApplies(id, d);
+      rpSec(id).querySelector('.rpnone').hidden = ok;
+      $(RP_BODY[id]).hidden = !ok;
+      if (!ok || !paneShows('r', id)) continue;
+      if (id === 'out') paintOut();
+      else if (id === 'outline') paintOutline();
+      else if (force === id || rpLoaded[id] !== key) {
+        rpLoaded[id] = key;
+        if (id === 'back') loadBacklinks();
+        else if (id === 'hist') loadHistory();
+        else loadPageComments();
+      }
+    }
+    // a link's comments are its owner's (paintLink, 65-ctl.js)
+    $('cmtrow').hidden = !(d && d.kind === 'page' && d.key && !linkOf(d.key));
+    // the post box follows the flag, which can land after the list did
+    if (rpApplies('comments', d)) paintCmBox();
+  }
+  // Always deferred: the callers are mid-paint (setOpen comes before the
+  // body lands), and some run while later files are still loading.
+  function rpSoon(ms = 30) {
+    clearTimeout(rpTimer);
+    rpTimer = setTimeout(rpPaint, ms);
+  }
+  pname.addEventListener('input', () => rpSoon());
+  // typing repaints Outgoing and Outline once it pauses
+  rpHook = () => rpSoon(300);
+  // a tab brought forward shows its document now, and a fetched one fresh
+  document.addEventListener('lat-pane', (e) => {
+    if (e.detail.side !== 'r') return;
+    rpForce = e.detail.id;
+    rpSoon(0);
+  });
+  rpSoon(0);
+
+  // ── Outgoing ─────────────────────────────────────────────────────────────
+  // A page target opens through the tab model, so Ctrl/Cmd and the middle
+  // button open it in a new tab. A page not in the tree is muted: following
+  // it creates it. A web or urb:// target is an ordinary link.
+  function paintOut() {
+    const host = $('outlist');
+    host.textContent = '';
+    const links = outLinks(src.value, rpText());
+    if (!links.length) {
+      host.innerHTML = '<div class="muted">no outgoing links</div>';
+      return;
+    }
+    for (const t of links) {
+      const a = document.createElement('a');
+      a.className = 'olrow';
+      a.textContent = t;
+      if (/^[a-z][a-z0-9+.-]*:/i.test(t) || t.startsWith('/')) {
+        a.href = t.startsWith('urb://') ? '/apps/lattice?url=' + encodeURIComponent(t) : t;
+        if (/^https?:/i.test(t)) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+      } else {
+        a.href = '/apps/lattice/app?name=' + encodeURIComponent(t);
+        if (!nodes.some((n) => n.page && n.path === t)) {
+          a.classList.add('muted');
+          a.title = t + ' does not exist yet';
+        }
+        tabLink(a, 'page', t);
+      }
+      host.append(a);
+    }
+  }
+
+  // ── Outline ──────────────────────────────────────────────────────────────
+  // A click puts the caret on that heading's line and brings it into view.
+  // In Read the preview scrolls instead, to the heading of the same index.
+  function paintOutline() {
+    const host = $('ollist');
+    host.textContent = '';
+    const hs = outline(src.value, rpText());
+    if (!hs.length) {
+      host.innerHTML = '<div class="muted">no headings</div>';
+      return;
+    }
+    hs.forEach((h, i) => {
+      const a = document.createElement('a');
+      a.className = 'olrow';
+      a.href = '#';
+      a.style.paddingLeft = (h.level - 1) * 12 + 'px';
+      a.textContent = h.text || '(untitled)';
+      a.onclick = (e) => { e.preventDefault(); goHeading(h.line, i); };
+      host.append(a);
+    });
+  }
+  function goHeading(line, idx) {
+    if ($('ws').classList.contains('vp')) {
+      let doc = null;
+      try { doc = prev.contentDocument; } catch {}
+      const el = doc && doc.querySelectorAll('h1, h2, h3, h4, h5, h6')[idx];
+      if (el) el.scrollIntoView({ block: 'start' });
+      return;
+    }
+    const lines = src.value.split('\n');
+    let off = 0;
+    for (let i = 0; i < line - 1 && i < lines.length; i++) off += lines[i].length + 1;
+    src.focus();
+    src.setSelectionRange(off, off);
+    // the textarea soft-wraps, so this is near the line, not on it. A third
+    // of the way down leaves room for the error of a few wrapped lines.
+    const lh = parseFloat(getComputedStyle(src).lineHeight) || 20;
+    src.scrollTop = Math.max(0, (line - 1) * lh - src.clientHeight / 3);
+    sync();
+  }
+
+  // ── Comments ─────────────────────────────────────────────────────────────
+  // This page's share of the inbox (73-comments.js), with remove as there,
+  // and a box to post one as the owner. A post only lands while comments
+  // are on for the page (the ship drops it otherwise), so the box says so
+  // and stays shut while they are off.
+  async function loadPageComments() {
+    const host = $('rpcmlist');
+    const want = current;
+    paintCmBox();
+    host.className = 'muted';
+    host.textContent = 'loading…';
+    let d = null;
+    try {
+      const r = await fetch(api + '/comments-inbox');
+      if (!r.ok) { host.textContent = ''; st('comments failed' + await errText(r), false); return; }
+      d = await r.json();
+    } catch { host.textContent = ''; st('comments failed', false); return; }
+    if (current !== want) return;
+    const items = (d.items || []).filter((c) => c.page === want);
+    renderComments(items.length, {
+      host, items, sum: null, pageLink: false,
+      reload: () => { rpForce = 'comments'; rpSoon(0); },
+      empty: 'No comments on this page.',
+    });
+  }
+  function paintCmBox() {
+    const off = cmtFor !== current || cmtOn !== true;
+    $('rpcmbody').disabled = off;
+    $('rpcmpost').disabled = off;
+    $('rpcmnote').textContent = cmtFor === current && cmtOn === false
+      ? 'Comments are off for this page. Switch them on in the Page tab.' : '';
+  }
+  $('rpcmpost').onclick = async () => {
+    const page = current;
+    const body = $('rpcmbody').value.trim();
+    if (!page || !body) return;
+    $('rpcmpost').disabled = true;
+    // the route answers a form post with a redirect to the reader. Not
+    // followed: landing is all this needs to know.
+    const r = await fetch(api + '/comment?page=' + encodeURIComponent(page), {
+      method: 'POST', redirect: 'manual',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'body=' + encodeURIComponent(body),
+    }).catch(() => null);
+    $('rpcmpost').disabled = false;
+    if (!r || !(r.ok || r.type === 'opaqueredirect')) { st('comment failed' + await errText(r), false); return; }
+    if (current === page) $('rpcmbody').value = '';
+    st('comment posted');
+    // the write is its own transaction behind the answer
+    setTimeout(() => { if (current === page) { rpForce = 'comments'; rpSoon(0); } }, 1500);
+  };
+
 // ── src/77-history.js ─────────────────────────────────────────────────────
   // ── history + backlinks panels: <lat-history>, <lat-links> ───────────────
-  // Defined here (before this file's own $-lookups). They upgrade inside the
-  // <lat-ctl> frame rendered at 65.
+  // Defined here (before this file's own $-lookups). They upgrade inside
+  // their right pane tabs (13-frame.js), which load them when shown and
+  // when the document changes under them (76-outline.js, rpPaint).
   customElements.define('lat-history', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
 <div id="histsec" hidden>
-  <h3 id="histh">history &#9656;</h3>
+  <h3 id="histh">history</h3>
   <div id="histview" class="row" hidden>
     <button id="hrestore">restore</button>
     <button id="hback">back to latest</button>
@@ -5750,27 +8690,31 @@
     connectedCallback() {
       this.innerHTML = `
 <div id="linksec" hidden>
-  <h3 id="linkh">linked from &#9656;</h3>
+  <h3 id="linkh">linked from</h3>
   <div id="linklist" class="chips"></div>
 </div>`;
     }
   });
 
   // ── backlinks: pages that wikilink [[this page]] ─────────────────────────
-  // fetched ONLY when the panel is expanded. This and history were two more
-  // ~2s round-trips paid on every page open whether or not anyone looked.
-  const linkSec = $('linksec'), linkList = $('linklist');
+  // fetched ONLY while the Backlinks tab is in front. This and history were
+  // two more ~2s round-trips paid on every page open whether or not anyone
+  // looked.
+  const linkList = $('linklist');
   async function loadBacklinks() {
     linkList.textContent = '';
     if (!current || mode === 'know') return;
+    const want = current;
     let j = null;
     // a panel nobody can see is not worth a rejection: an unreachable ship
     // leaves the list empty, the same as a refused request already does
     try {
-      const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(current));
+      const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(want));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
+    // the document changed while this was in flight: its own load follows
+    if (current !== want) return;
     const links = (j.links || []).filter((p) => p !== current);
     if (!links.length) {
       const d = document.createElement('div');
@@ -5782,44 +8726,24 @@
     for (const pth of links) {
       const a = document.createElement('a');
       a.textContent = pth;
-      a.onclick = () => openPage(pth);
+      tabLink(a, 'page', pth);
       linkList.appendChild(a);
     }
   }
 
-  // collapsed-by-default panels. First expand does the fetch
-  let histOpen = false, linksOpen = false;
-  const panelArrow = (el, base, open) => { el.textContent = base + (open ? ' ▾' : ' ▸'); };
+  // A page or memory was painted fresh. rpPaint reloads whichever of these
+  // tabs is in front if it was about another document, and the other one
+  // when it is next shown. The same document painted again (the upgrade
+  // after a quiet open) costs nothing. History covers memories too.
+  // Backlinks stay pages-only, since a wikilink search over the vault is a
+  // different feature nobody asked for (rpApplies).
   function resetPanels() {
-    histOpen = false; linksOpen = false;
-    histList.textContent = ''; linkList.textContent = '';
-    histList.hidden = true; linkList.hidden = true;
     histView.hidden = true;
-    // history now covers memories too. Backlinks stay pages-only, since a
-    // wikilink search over the vault is a different feature nobody asked for
-    histSec.hidden = !current;
-    linkSec.hidden = !current || mode === 'know';
-    panelArrow($('histh'), 'history', false);
-    panelArrow($('linkh'), 'linked from', false);
+    rpSoon();
   }
-  $('histh').onclick = () => {
-    if (histSec.hidden) return;
-    histOpen = !histOpen;
-    panelArrow($('histh'), 'history', histOpen);
-    histList.hidden = !histOpen;
-    if (!histOpen) histView.hidden = true;
-    else if (!histList.childElementCount) loadHistory();
-  };
-  $('linkh').onclick = () => {
-    if (linkSec.hidden) return;
-    linksOpen = !linksOpen;
-    panelArrow($('linkh'), 'linked from', linksOpen);
-    linkList.hidden = !linksOpen;
-    if (linksOpen && !linkList.childElementCount) loadBacklinks();
-  };
 
   // ── version history (born keeps every save; autosave makes it dense) ────
-  const histSec = $('histsec'), histList = $('histlist'), histView = $('histview');
+  const histList = $('histlist'), histView = $('histview');
   let revKind = null;
   const exitRev = () => {
     viewingRev = null;
@@ -5830,15 +8754,18 @@
   async function loadHistory() {
     histList.textContent = '';
     if (!current) return;
+    const want = current;
     let j = null;
-    // same rule as loadBacklinks: an unreachable ship leaves the panel empty
+    // same rules as loadBacklinks: an unreachable ship leaves the panel
+    // empty, and an answer about a document no longer open is dropped
     try {
       const r = await fetch(mode === 'know'
-        ? api + '/know-history?key=' + encodeURIComponent(current)
-        : api + '/page-history?name=' + encodeURIComponent(current));
+        ? api + '/know-history?key=' + encodeURIComponent(want)
+        : api + '/page-history?name=' + encodeURIComponent(want));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
+    if (current !== want) return;
     const revs = j.revisions || [];
     if (revs.length < 2) {               // a single revision is just "now"
       const d = document.createElement('div');
@@ -5943,7 +8870,10 @@
       // same path with a display name is still a rename (My Page over my-page)
       if (newName === current && !(mode !== 'know' && rn.dname)) return;
       if (mode === 'know') {
-        const r = await mutate(api + '/know-move?from=' + encodeURIComponent(current) +
+        //  the memory this move is for. A tab switch during the round trip
+        //  moves `current`, and only this memory is renamed or relabeled.
+        const from = current;
+        const r = await mutate(api + '/know-move?from=' + encodeURIComponent(from) +
           '&to=' + encodeURIComponent(newName));
         if (!(r.ok || r.offline)) {
           // the server refused this name — loop back into askName seeded with
@@ -5954,18 +8884,22 @@
         }
         // the body is already in the editor. Rename in place, no refetch
         knowGen++;
-        const k = knowKeys.find((x) => x.key.replace(/^\//, '') === current);
+        const k = knowKeys.find((x) => x.key.replace(/^\//, '') === from);
         if (k) k.key = newName;
-        setOpen(newName, { readOnly: true });
+        tabsRemap('know', from, newName);
+        if (mode === 'know' && current === from) setOpen(newName, { readOnly: true });
         renderKnowChips();
         renderKnowTree();
         st('moved to ' + newName);
         return;
       }
-      const mv = await movePage(current, newName, rn);
+      const from = current;
+      const mv = await movePage(from, newName, rn);
       if (mv) {
         st('moved to ' + newName + (mv.offline ? ' offline' : ''));
-        openPage(newName);
+        //  same rule as the memory move: only the page still in front
+        //  reopens under its new name
+        if (mode !== 'know' && !grubPath && current === from) openPage(newName);
         return;
       }
       // movePage already reported the cause — loop back into askName seeded
@@ -6037,33 +8971,30 @@
   // looking identical, on a screen someone may be sharing. That badge is a
   // safety signal, so a tree that may not carry share modes (treeShares,
   // 30-tree.js) still asks /page-scopes rather than call a page private.
+  //
+  // It is the left pane's Search tab (13-frame.js renders <lat-search> into
+  // that section), so results sit beside the document they open rather than
+  // over it, and stay there for the next pick.
   customElements.define('lat-search', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="aclwrap" id="qwrap" hidden role="dialog" aria-modal="true" aria-label="search">
-  <div class="aclbar">
-    <h2>Search</h2>
-    <input id="qinput" placeholder="search your pages and notes" autocomplete="off" spellcheck="false">
-    <span class="muted" id="qsum"></span>
-    <span class="grow"></span>
-    <button id="qclose">close</button>
-  </div>
-  <div class="aclbody">
-    <div id="qlist"></div>
-  </div>
+<div class="tree qpane" id="qpane" role="search" aria-label="Search">
+  <input id="qinput" type="search" placeholder="search your pages and notes" aria-label="Search your pages and notes" autocomplete="off" spellcheck="false">
+  <div class="muted" id="qsum"></div>
+  <div id="qlist" class="aclempty">type at least two characters</div>
 </div>`;
     }
   });
 
-  // Loaded when the panel opens, not per keystroke: the scopes and the
+  // Loaded when the tab is shown, not per keystroke: the scopes and the
   // memories are two requests, and then every keystroke is local.
   let qScopes = null;          // path -> 'private' | 'urbit' | 'clearweb'
   let qKnow = [];              // [{key, body}]
-  let qKnowFailed = false;     // /know-all never answered this panel-open
+  let qKnowFailed = false;     // /know-all never answered this visit
   let qLoading = null;         // in-flight load, shared
   let qAt = '';                // both beacons when both last loaded (bothAt)
   // never-loaded and load-failed are different states. qCtxAttempts counts
-  // how many times qLoadContextOnce has actually run since the panel opened,
+  // how many times qLoadContextOnce has actually run since the tab was shown,
   // capped at two: the open-time load and one retry. A failure short of that
   // cap is worth trying again; past it, every keystroke would otherwise fire
   // the same doomed pair of requests forever.
@@ -6073,7 +9004,7 @@
   let qResults = [];
   let qRows = [];
   let qSel = -1;
-  //  Opening the panel starts this, and the first keystroke wants it too. The
+  //  Showing the tab starts this, and the first keystroke wants it too. The
   //  pier serialises, so letting both fire meant four queued requests and a
   //  wait long enough to look like a hang. One load, both await it.
   function qLoadContext() {
@@ -6161,10 +9092,7 @@
 
   // opening a hit is the same move whether the mouse clicked it or Enter
   // picked it off the highlighted row
-  const qOpenResult = (h) => {
-    qClose();
-    if (h.know) openKnow(h.key); else openPage(h.key);
-  };
+  const qOpenResult = (h, ev) => openIn(h.know ? 'know' : 'page', h.key, { ev });
 
   // the highlighted row alone, no rebuild: an inline background rather than
   // a class, since the app's .on styling is defined per-component and this
@@ -6216,7 +9144,8 @@
         s.textContent = h.snip;              // and so are bodies
         a.appendChild(s);
       }
-      a.onclick = (e) => { e.preventDefault(); qOpenResult(h); };
+      a.onclick = (e) => { e.preventDefault(); qOpenResult(h, e); };
+      a.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); qOpenResult(h, e); } };
       qRows.push(a);
       li.appendChild(a);
       ul.appendChild(li);
@@ -6242,7 +9171,7 @@
     // keystroke a slow or unreachable pier ever gets typed at.
     if (!qScopes && qCtxAttempts < 2) {
       //  the exposure map and the memories are fetched once per open, and on a
-      //  slow pier that is seconds. Say so, rather than showing an empty panel
+      //  slow pier that is seconds. Say so, rather than showing an empty list
       //  that reads as "no results".
       host.className = 'aclempty';
       host.textContent = 'searching\u2026';
@@ -6253,24 +9182,26 @@
     qPaint(host, sum, out, skipped);
   }
 
-  const qClose = () => { $('qwrap').hidden = true; };
-  const qOpen = () => {
-    $('qwrap').hidden = false;
-    const i = $('qinput');
-    i.value = '';
-    i.focus();
-    $('qlist').className = 'aclempty';
-    $('qlist').textContent = 'type at least two characters';
-    $('qsum').textContent = '';
-    qResults = [];
-    qRows = [];
-    qSel = -1;
-    //  the exposure map and the memories are refetched only when a beacon
-    //  moved since they loaded (90-sync.js), not on every ctrl-K
+  // qPrime: what showing the tab owes, however it was shown (Ctrl+K, the
+  // tab button, the phone sheet). The exposure map and the memories are
+  // refetched only when a beacon moved since they loaded (90-sync.js), not
+  // on every visit.
+  const qPrime = () => {
     if (streamLive && qAt && qAt === bothAt()) return;
     qScopes = null;                          // refresh exposure
-    qCtxAttempts = 0;                        // this open gets its own retry
+    qCtxAttempts = 0;                        // this visit gets its own retry
     qLoadContext();
+  };
+  document.addEventListener('lat-pane', (e) => {
+    if (e.detail.side === 'l' && e.detail.id === 'search') qPrime();
+  });
+  // the query stays in the box between visits; selected, so typing replaces it
+  const qOpen = () => {
+    paneOpen('l', true);
+    paneTab('l', 'search');
+    const i = $('qinput');
+    i.focus();
+    i.select();
   };
 
   // Local now, so this can be short. It exists to avoid rescanning on every
@@ -6296,22 +9227,19 @@
     }
     if (e.key === 'Enter') {
       clearTimeout(qTimer);
-      if (qSel >= 0 && qResults[qSel]) { e.preventDefault(); qOpenResult(qResults[qSel]); return; }
+      if (qSel >= 0 && qResults[qSel]) { e.preventDefault(); qOpenResult(qResults[qSel], e); return; }
       runSearch($('qinput').value);
     }
   };
-  $('qclose').onclick = qClose;
-  $('qt').onclick = qOpen;
 
   // CAPTURE phase on window, so nothing downstream can swallow it. Vim mode's
   // handler is capture-phase on the textarea and consumes normal-mode keys
   // whole; being ahead of it is more robust than listing exemptions there.
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('qwrap').hidden) { qClose(); return; }
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'k' || e.key === 'K')) {
       e.preventDefault();
       e.stopPropagation();
-      if ($('qwrap').hidden) qOpen(); else qClose();
+      qOpen();
     }
   }, true);
 
@@ -6329,12 +9257,11 @@
   customElements.define('lat-conflicts', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="aclwrap" id="cfwrap" hidden role="dialog" aria-modal="true" aria-label="sync conflicts">
+<div class="aclwrap" id="cfwrap" hidden role="region" aria-label="sync conflicts">
   <div class="aclbar">
     <h2>Conflicts</h2>
     <span class="muted" id="cfsum"></span>
     <span class="grow"></span>
-    <button id="cfclose">close</button>
   </div>
   <div class="aclbody">
     <p class="aclnote">Each of these is a version that lost a sync race: your
@@ -6362,15 +9289,16 @@
   };
 
   // the badge: a CONDITION (unresolved conflicts exist), so like the offline
-  // badge it stays up rather than living in the scrolling status line
+  // badge it stays up rather than living in the scrolling status line. The
+  // ribbon's Sync conflicts button (24-tools.js) shows only while there are
+  // any, with their count.
   function renderConfBadge() {
-    const b = $('cflt');
+    const b = $('rb-conflicts');
     if (!b) return;
     const n = cfList().length;
     b.hidden = n === 0;
-    b.textContent = '⚑ ' + n;
-    b.title = n + ' unresolved conflict' + (n === 1 ? '' : 's') +
-      ' — a save replaced an edit from elsewhere';
+    if (n) b.dataset.n = n > 99 ? '99+' : String(n);
+    else delete b.dataset.n;
   }
 
   function renderConflicts() {
@@ -6402,13 +9330,13 @@
         live.textContent = 'open live (' + orig + ')';
         live.title = 'open the page this conflicted with';
         live.style.cursor = 'pointer';
-        live.onclick = () => { cfClose(); openPage(orig); };
+        live.onclick = (e) => openIn('page', orig, { ev: e });
         head.appendChild(live);
       }
 
       const view = document.createElement('button');
       view.textContent = 'read it';
-      view.onclick = () => { cfClose(); openPage(path); };
+      view.onclick = (e) => openIn('page', path, { ev: e });
       head.appendChild(view);
 
       const del = document.createElement('button');
@@ -6431,138 +9359,51 @@
     }
   }
 
-  const cfOpen = () => { $('cfwrap').hidden = false; renderConflicts(); };
-  const cfClose = () => { $('cfwrap').hidden = true; };
-  $('cfclose').onclick = cfClose;
-  $('cflt').onclick = cfOpen;
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('cfwrap').hidden) cfClose();
-  });
+  // its tab's coming forward renders it (24-tools.js)
+  const cfOpen = () => toolOpen('conflicts');
 
 // ── src/85-layout.js ──────────────────────────────────────────────────────
-  // ── layout toggles + mobile tabs ─────────────────────────────────────────
+  // ── layout toggles ────────────────────────────────────────────────────────
   const ws = $('ws');
   // soft-wrap is the default (long lines running off-screen are unusable on
   // mobile). The toggle still turns it off, and a saved preference wins.
   if (!('appWrap' in localStorage)) localStorage.appWrap = '1';
-  // the view: edit | split | prev. Three buttons, one pressed. It persists
-  // like the other layout toggles, and the way back is always in the bar.
-  // Desktop only: the phone's tab strip is already one pane at a time, and
-  // its CSS block never sees these classes.
-  const VIEWS = ['edit', 'split', 'prev'];
-  const view = () => (VIEWS.includes(localStorage.appView) ? localStorage.appView : 'split');
   const applyToggles = () => {
-    ws.classList.toggle('nt', localStorage.appNT === '1');
-    ws.classList.toggle('nc', localStorage.appNC === '1');
+    paintPanes();   // the side panes and their corner toggles (13-frame.js)
     ws.classList.toggle('wrap', localStorage.appWrap === '1');
-    ws.classList.toggle('ve', view() === 'edit');
-    ws.classList.toggle('vp', view() === 'prev');
-    for (const v of VIEWS) {
-      const b = $('view' + v);
-      b.className = 'ico' + (v === view() ? ' on' : '');
-      b.setAttribute('aria-pressed', v === view() ? 'true' : 'false');
-    }
-    //  the on class is paint alone, so mirror the state in aria-pressed the
-    //  way setFull below does
-    for (const [id, key] of [['wrapt', 'appWrap'], ['treet', 'appNT'], ['ctlt', 'appNC']]) {
-      const on = localStorage[key] === '1';
-      const b = $(id);
-      b.className = 'ico' + (on ? ' on' : '');
-      b.setAttribute('aria-pressed', on ? 'true' : 'false');
-    }
+    // Edit or Read, per tab (23-tabhead.js)
+    applyRead();
     // keep the vim indicator in step with the view: it reads PREVIEW in
     // preview-only. setInd is exposed by 27-vim.js (it lives in that file's
     // own IIFE); guard in case that file is absent. A no-op when vim is off.
     if (window.latVimSetInd) window.latVimSetInd();
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
-  $('wrapt').onclick = () => flip('appWrap');
-  $('treet').onclick = () => flip('appNT');
-  $('ctlt').onclick = () => flip('appNC');
-  for (const v of VIEWS)
-    $('view' + v).onclick = () => {
-      const hidden = view() === 'edit';
-      localStorage.appView = v;
-      applyToggles();
-      // the preview skipped its renders while off screen (60-preview.js)
-      if (hidden && v !== 'edit') showPreview();
-    };
   // A throw in this boot-time layout pass must NOT halt the rest of app boot:
   // the initial tree load and navigation wiring run in a later file (90-sync),
   // so an uncaught error here blanks the whole app (that was the setInd bug).
   // Contain it — a broken layout widget is survivable; a dead tree is not.
   try { applyToggles(); } catch (e) { console.error('[lattice] layout init failed', e); }
+  // Settings > Editor writes the wrap default from its own document (the
+  // Settings tab is a frame), and this window hears it as a storage event,
+  // the same way 05-prefs.js hears the font
+  window.addEventListener('storage', (e) => {
+    if (!e.key || e.key === 'appWrap') try { applyToggles(); } catch {}
+  });
 
-  // ── mobile: full-screen editing ──────────────────────────────────────────
-  // Created here rather than in <lat-bar>, and appended to #ws, because it has
-  // to survive the state it creates: full screen hides the bar, so a button
-  // inside the bar would take the only way out with it.
-  //
-  // Labelled in words, not an icon. There is no full-screen glyph with broad
-  // font coverage, and this codebase has already shipped an invisible button
-  // once — the access-control key was U+26BF and drew as an empty box, which
-  // every existence check passed. Two short words always render.
-  //
-  // The state persists: it reads as a preference ("I write full screen"),
-  // matching the other layout toggles, and the way back is on screen the whole
-  // time so a remembered full screen cannot trap anyone.
-  const fullt = document.createElement('button');
-  fullt.id = 'fullt';
-  fullt.type = 'button';
-  const setFull = (on) => {
-    ws.classList.toggle('full', on);
-    localStorage.appFull = on ? '1' : '0';
-    fullt.textContent = on ? 'exit' : 'full';
-    fullt.title = on ? 'leave full-screen editing' : 'full-screen editing';
-    fullt.setAttribute('aria-label', fullt.title);
-    fullt.setAttribute('aria-pressed', on ? 'true' : 'false');
-  };
-  fullt.onclick = () => setFull(!ws.classList.contains('full'));
-  ws.appendChild(fullt);
-  try { setFull(localStorage.appFull === '1'); } catch (e) { console.error('[lattice] full-screen init failed', e); }
-
-  const isMobile = () => matchMedia('(max-width: 820px)').matches;
-  const MV = ['tree', 'code', 'prev', 'ctl'];
-  const setMv = (v) => {
-    ws.dataset.mv = v;
-    // remember the pane so a reload resumes it. The service-worker takeover
-    // reloads the editor a few seconds into every session to drop stale code,
-    // and without this it landed back in 'code' on the snapshot page, yanking
-    // the user off whatever tree, preview or page they had moved to.
-    try { localStorage.appMv = v; } catch {}
-    for (const x of document.querySelectorAll('.mtabs button'))
-      x.className = x.dataset.mv === v ? 'on' : '';
-    if (v === 'prev') showPreview();
-  };
-  for (const b of document.querySelectorAll('.mtabs button'))
-    b.onclick = () => setMv(b.dataset.mv);
-  // On a phone the code pane is the wrong place to land with nothing open. It
-  // is an empty box, and the tree is how you get anywhere. Default to the
-  // tree and let opening a file move us. applyPage switches to 'code' on
-  // mobile, so a remembered or ?name page still lands in the editor. Desktop
-  // shows every pane at once, so 'code' remains right there.
-  //
-  // The last pane the user saw wins over that default WHEN a page resumes, so
-  // a reload lands them back where they were instead of forcing the editor
-  // over the tree or preview. Captured ONCE here, before boot's snapshot
-  // paint runs applyPage (which jumps to 'code' and would overwrite it); boot
-  // re-applies bootMv after the paint, and only then (see 99-boot.js). The
-  // initial pane stays the plain default, so a cold start with nothing open
-  // still lands on the tree, not an empty editor.
-  const bootMv = isMobile() ? (MV.includes(localStorage.appMv) ? localStorage.appMv : 'tree') : 'code';
-  setMv(isMobile() ? 'tree' : 'code');
+  // The phone's old one-pane switcher and its full-screen mode are gone
+  // (the drawers in 97-mobar.js replaced them). Their stored state goes too.
+  try { localStorage.removeItem('appMv'); localStorage.removeItem('appFull'); } catch {}
 
   // ── pane resize: drag a boundary, double-click it to reset ───────────────
   // Widths live in CSS custom properties on #ws (see .psplit in the shell
-  // css). Outer panes store px. The editor/preview boundary stores the
-  // editor's fr share against the preview's fixed 1fr, so it keeps meaning
-  // when the window or the outer panes change size.
+  // css), in px. The left pane's handle measures from the ribbon's edge, so
+  // the stored width is the pane's own.
   {
     let panes = {};
     try { panes = JSON.parse(localStorage.appPanes || '{}'); } catch {}
     const applyPanes = () => {
       ws.style.setProperty('--wtree', panes.tree ? panes.tree + 'px' : '');
-      ws.style.setProperty('--wed', panes.ed ? panes.ed + 'fr' : '');
       ws.style.setProperty('--wctl', panes.ctl ? panes.ctl + 'px' : '');
     };
     applyPanes();
@@ -6597,13 +9438,10 @@
         h.addEventListener('pointerup', up, { once: true });
       });
     };
-    wire('ph1', 'tree', (x) => { panes.tree = Math.round(lim(x, 130, 480)); });
-    wire('ph3', 'ctl', (x) => { panes.ctl = Math.round(lim(innerWidth - x, 190, 520)); });
-    wire('ph2', 'ed', (x) => {
-      const ed = document.querySelector('.edwrap').getBoundingClientRect();
-      const pv = document.querySelector('.prev').getBoundingClientRect();
-      panes.ed = Math.round(lim((x - ed.left) / Math.max(60, pv.right - x), 0.25, 4) * 1000) / 1000;
+    wire('ph1', 'tree', (x) => {
+      panes.tree = Math.round(lim(x - $('ribbon').getBoundingClientRect().right, 130, 480));
     });
+    wire('ph3', 'ctl', (x) => { panes.ctl = Math.round(lim(innerWidth - x, 190, 520)); });
   }
 
   // ── ?diag=1: a swipe readout for scroll bugs reported from phones ───────
@@ -6707,6 +9545,9 @@
       }
       return;
     }
+    // a link shown from its last-known copy, read live again: open it
+    // properly, which lifts the lock and the badge
+    if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent); return; }
     // A KIND change with an UNCHANGED body still needs handling. Retagging a
     // page (gmi -> md, say) leaves the text byte-identical, so the body check
     // below returns early and the preview keeps rendering with the old builder.
@@ -6734,6 +9575,7 @@
     } else {
       snapPage(current, d);
       showShare(d.share || 'private');
+      if (typeof d.comments === 'boolean') cmtShow(current, d.comments);
       refreshPreview();
       st('updated from ship \u00b7 rev ' + d.rev);
     }
@@ -6746,7 +9588,11 @@
     // NB: stale cached renders are dropped by loadTree, which prunes against
     // the revs in the fresh dump. Clearing the whole cache here instead meant
     // one page's edit cost every other page its cache.
-    if (mode === 'know') loadKnow(); else loadTree();
+    // Files and Knowledge both stay painted in their tabs, so neither is
+    // skipped for the other: the one the front document works on always
+    // reloads, the other when its beacon moved since it loaded
+    if (mode !== 'know' || !revFresh(treeAt)) loadTree();
+    if (mode === 'know' || (knowLive() && !knowFresh(knowAt))) loadKnow();
     refreshOpen();
     // a catch-up call, not the primary path: the stream now wakes the badge
     // directly on its own /comments event (see commentBumped below). This
@@ -6862,20 +9708,20 @@
             // never touching lastRev. (Historical note: the pre-raw
             // EventSource listened for a literal 'upd' event, which never
             // existed — live refresh was ALWAYS the 30s poll.)
-            // /know: a memory changed. Only the memory mode shows them, so
-            // only it refreshes. Elsewhere the moved beacon is enough to
-            // mark the memory listing stale (knowFresh).
+            // /know: a memory changed. A listing loaded into the Knowledge
+            // tab (knowLive) refreshes. One never loaded only needs the moved
+            // beacon, which marks it stale for when it is first shown.
             if (name.slice(-6) === ' /know') {
               if (name.slice(0, 3) === 'old') {
                 echoes.know.n = 0;
-                if (lastKnow && data && data !== lastKnow && mode === 'know') bumped();
+                if (lastKnow && data && data !== lastKnow && knowLive()) bumped();
                 noteKnow(data);
                 continue;
               }
               noteKnow(data);
               if (echoes.know.n > 0) { echoes.know.n--; continue; }
               if (Date.now() < echoes.know.until) continue;
-              if (mode === 'know') bumped();
+              if (knowLive()) bumped();
               continue;
             }
             if (name.slice(-5) !== ' /rev') {
@@ -6972,13 +9818,41 @@
   setInterval(() => { if (!streamLive && !document.hidden) refreshOpen(); }, 30000);
 
 // ── src/95-know.js ────────────────────────────────────────────────────────
-  // ── knowledge mode ───────────────────────────────────────────────────────
-  // The same workspace, pointed at the private memory store: browse keys as a
-  // tree, filter by tag chips, read/edit/save entries, tag/untag, delete.
-  let mode = 'pages';
+  // ── knowledge: <lat-know>, the memories and the editor's memory mode ────
+  // The Knowledge tab lists the private memory store as a tree, filtered by
+  // tag chips, with its own toolbar. `mode` is the editor's state for the
+  // document tab in front (21-tabs.js): a memory tab sets it to 'know', so
+  // read, edit, save, tag and delete go to the memory routes. Nothing else
+  // switches it any more, and the listing never depends on it. (`mode`
+  // itself is declared in 20-state.js, since the files tree reads it.)
+  customElements.define('lat-know', class extends HTMLElement {
+    connectedCallback() {
+      this.innerHTML = `
+<aside class="tree" id="knowpane">
+  <div class="ptool" role="toolbar" aria-label="Knowledge">
+    ${sbtn('id="knew" data-action="knew"', 'plus', 'New memory')}
+    ${sbtn('id="ktidy" data-action="ktidy"', 'tidy', 'Tidy memories')}
+    ${sbtn('id="ktrash" data-action="ktrash" aria-pressed="false"', 'trash', 'Trash')}
+  </div>
+  <div id="ktrashlist" class="ktrash" hidden></div>
+  <!-- the tag chips outgrew the pane top (one row per dozen tags), so they
+       fold under a heading like history does. Native details: the fold,
+       the keyboard and the marker come free. -->
+  <details id="tagsec">
+    <summary class="sec" id="tagsh">tags</summary>
+    <div id="chips" class="chips"></div>
+  </details>
+  <div class="sec">memories</div>
+  <div id="knowlist"><div class="muted kwait">loading memories\u2026</div></div>
+</aside>`;
+    }
+  });
   let knowKeys = [];        // [{key, tags, updated, bytes}] from know-list
   let knowTag = '';         // active tag filter ('' = all)
+  let knowHave = false;     // a know-list has landed this session
   const chipsEl = $('chips'), knowMeta = $('knowmeta'), ktagsEl = $('ktags');
+  const knowList = $('knowlist');
+  treeKeys(knowList, 'Memories');
   // folded by default and remembered, like the other layout choices
   const tagSec = $('tagsec'), tagSum = $('tagsh');
   tagSec.open = localStorage.knowTagsOpen === '1';
@@ -7001,6 +9875,7 @@
     if (gen !== knowGen) return;   // a local patch superseded this response
     knowKeys = d.keys;
     knowAt = at;
+    knowHave = true;
     renderKnowChips();
     renderKnowTree();
   }
@@ -7027,16 +9902,18 @@
   function renderKnowTree() {
     const shown = knowTag ? knowKeys.filter((k) => k.tags.includes(knowTag)) : knowKeys;
     const keys = shown.map((k) => k.key.replace(/^\//, '')).sort();
-    treeList.textContent = '';
-    rowByPath = new Map();
+    const had = knowList.contains(document.activeElement);
+    knowList.textContent = '';
+    knowRows = new Map();
     if (!keys.length) {
       const empty = document.createElement('div');
       empty.className = 'muted';
       empty.style.padding = '4px 8px';
       empty.textContent = knowTag
         ? 'no memories tagged #' + knowTag
-        : 'no memories yet — name one above and save';
-      treeList.appendChild(empty);
+        : 'no memories yet. New memory starts one.';
+      knowList.appendChild(empty);
+      treeRove(knowList, false);      // no rows, so no tree role either
       return;
     }
     const coll = knowColl.get();
@@ -7049,30 +9926,38 @@
         if (seen.has(dir)) continue;
         seen.add(dir);
         const row = folderRow(parts[d], d, coll.includes(dir),
-          () => { knowColl.flip(dir); renderKnowTree(); });
+          () => { knowColl.flip(dir); renderKnowTree(); }, undefined, 'f:' + dir);
         if (folded(dir)) row.style.display = 'none';
-        treeList.appendChild(row);
+        knowList.appendChild(row);
       }
       const row = document.createElement('a');
-      row.className = 'pg' + (key === current ? ' cur' : '');
+      row.className = 'pg' + (mode === 'know' && key === current ? ' cur' : '');
       row.style.marginLeft = ((parts.length - 1) * 14) + 'px';
       if (folded(key)) row.style.display = 'none';
-      row.href = '#';
+      row.href = '/apps/lattice/app?view=know&key=' + encodeURIComponent(key);
       row.textContent = parts[parts.length - 1];
-      row.onclick = (e) => { e.preventDefault(); openKnow(key); };
-      rowByPath.set(key, row);
-      treeList.appendChild(row);
+      tabLink(row, 'know', key);
+      treeItem(row, parts.length - 1, 'p:' + key);
+      knowRows.set(key, row);
+      knowList.appendChild(row);
     }
+    treeRove(knowList, had);
   }
   // one knowKeys entry by (normalized) key. Keys may carry a leading slash
   const knowEntry = (key) =>
     knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
+  // false when the open failed and nothing was painted, so the tab model
+  // (21-tabs.js) can tell a failure from an open a later one superseded
   async function openKnow(key) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
-    if (!(await guardDirty())) return;
+    if (!(await guardDirty())) return false;
+    // the same sequence openPage keeps: a later open of anything supersedes
+    // this one, so a slow answer cannot paint a memory over the page (or
+    // the other memory) opened after it
+    const my = ++openSeq;
     if (mode !== 'know') setMode('know');
     // a queued edit outranks the ship's copy, same rule as pages
     const q = await offGet('know:' + key);
@@ -7081,10 +9966,19 @@
     else {
       let r = null;
       try { r = await fetch(api + '/know-read?key=' + encodeURIComponent(key)); } catch {}
-      if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return; }
+      if (my !== openSeq) return;
+      if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return false; }
       d = await r.json();
     }
-    setOpen(key, { readOnly: true });
+    if (my !== openSeq) return;
+    applyKnow(key, d);
+    return true;
+  }
+  // paint a memory that is already in hand: openKnow's answer, or a tab's
+  // own unsaved buffer coming back to the front (21-tabs.js)
+  function applyKnow(key, d) {
+    setOpen(key, { readOnly: true,
+      url: '/apps/lattice/app?view=know&key=' + encodeURIComponent(key) });
     src.value = d.body;
     dirty = false;
     render(); sync();
@@ -7095,7 +9989,7 @@
     exitRev();
     resetPanels();
     st('memory · ' + (d.tags || []).map((t) => '#' + t).join(' '));
-    if (isMobile()) setMv('code');
+    drawersClose();
   }
 
   function renderKnowTags(tags) {
@@ -7134,44 +10028,62 @@
     renderKnowChips();
   };
 
-  async function saveKnow() {
-    const key = pname.value.trim().replace(/^\/+|\/+$/g, '');
+  const knowField = () => pname.value.trim().replace(/^\/+|\/+$/g, '');
+  //  the editor still shows memory `key`: its own, or the new one the name
+  //  field names (the rule save() keeps for a page create, 35-pages.js)
+  const knowHere = (key) => mode === 'know' && !grubPath &&
+    (current === key || (current === null && knowField() === key));
+  // `create`: New memory writes the key before anything is typed, so an
+  // empty body is sent as a newline (as a new page is) rather than refused
+  async function saveKnow(create) {
+    const key = knowField();
     if (!key) { st('key required', false); return; }
     if (!validName(key)) {
       st('bad key — lowercase letters, digits, and - . _ ~ (no spaces)', false);
       return;
     }
-    if (!src.value) { st('empty body', false); return; }
+    if (!src.value && !create) { st('empty body', false); return; }
     if (viewingRev !== null) { st('viewing a revision — use restore', false); return; }
     // the pier serializes every write behind one shared `saving` flag, know
     // or page (see save()/autosave()/saveGrub()). Without this guard,
     // guardDirty's flush against a memory whose autosave was already mid-
     // flight fired a second, fully concurrent POST to the same /know-save key.
-    if (saving) { savePending = () => saveKnow(); return; }
+    //  queued for this memory: it runs only if the editor still shows it,
+    //  and a create runs even on a clean buffer, as a page create does
+    if (saving) {
+      queueSave(() => { if (knowHere(key)) return saveKnow(create); }, create);
+      return;
+    }
     saving = true;
-    const sent = src.value;
+    const sent = src.value || '\n';
     let w = { gone: true };
     try {
       w = await shipWrite(api + '/know-save?key=' + encodeURIComponent(key),
         { method: 'POST', body: sent }, { save: true });
     } finally { saving = false; }
     const r = w.r;
+    //  the editor may have moved during the round trip (a page opened, New
+    //  memory again). Only the memory still shown takes the key and its
+    //  tab, never whatever is in front now.
+    const claim = () => {
+      if (!knowHere(key)) return;
+      current = key;
+      tabFollow();             // a new memory's tab is named now (21-tabs.js)
+      pname.readOnly = true;
+      if (src.value === sent) dirty = false;
+    };
     if (w.gone) {
       //  if the queue would not take it, it is NOT saved: leave the editor
       //  dirty and the key still editable, so the text under the cursor is not
       //  presented as stored. Same rule the page paths enforce (35-pages.js),
       //  and enqueueKnow has already said why it refused.
-      if (!(await enqueueKnow(key, sent))) return;
-      current = key;
-      pname.readOnly = true;
-      if (src.value === sent) dirty = false;
+      if (!(await enqueueKnow(key, sent))) { flushPending(); return; }
+      claim();
       flushPending();
       return;
     }
-    if (!r.ok) { st('save failed' + await errText(r), false); return; }
-    current = key;
-    pname.readOnly = true;
-    if (src.value === sent) dirty = false;
+    if (!r.ok) { st('save failed' + await errText(r), false); flushPending(); return; }
+    claim();
     st('memory saved');
     knowGen++;
     const k = knowEntry(key);
@@ -7205,19 +10117,18 @@
     renderKnowTree();
   }
 
+  // The editor's mode, set by what the front tab opens: openKnow and the
+  // know tab kind to 'know', openPage and the page and grub kinds back to
+  // 'pages'. Each of those has already passed guardDirty, so this does not
+  // ask again. It resets the editor to a blank document of that mode; the
+  // open that called it then paints its document.
   function setMode(m) {
     mode = m;
     curKind = null;
     exitGrub();                      // Save must stop pointing at an app file
     exitRev();                       // else readOnly leaks into the memory editor
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
     ws.classList.toggle('know', m === 'know');
-    $('modet').className = m === 'know' ? 'on' : '';
-    $('modet').innerHTML = m === 'know' ? '\u25c6 knowledge' : '\u270e pages';
-    tagSec.hidden = m !== 'know';
     knowMeta.hidden = m !== 'know';
-    $('treesec').textContent = m === 'know' ? 'memories' : 'files';
     curFolder = null;
     setCtlLabels();
     setOpen(null, { url: '/apps/lattice/app' + (m === 'know' ? '?view=know' : '') });
@@ -7225,43 +10136,129 @@
     src.value = '';
     render();
     prevBlank();
-    // paint what is already in memory NOW, and let the fetch correct it.
-    // Both listings used to paint only when their round trip returned, so
-    // the OTHER mode's listing sat under this mode's heading for as long as
-    // the pier took: seconds on ricsul, longer through the desktop proxy.
-    // The page tree is always in memory after boot. Memories are, after the
-    // first visit; before it the honest paint is a placeholder, not the
-    // pages listing and not "no memories yet".
-    //
-    // The fetch itself is skipped when the listing in memory was fetched at
-    // the beacon rev the live stream still reports (revFresh, 90-sync.js):
-    // flipping between the modes used to cost a pier round-trip each way
-    // to learn nothing.
-    if (m === 'know') {
-      if (knowKeys.length) { renderKnowChips(); renderKnowTree(); }
-      else {
-        const wait = document.createElement('div');
-        wait.className = 'muted';
-        wait.style.padding = '4px 8px';
-        wait.textContent = 'loading memories\u2026';
-        treeList.replaceChildren(wait);
-      }
-      if (!knowFresh(knowAt)) loadKnow();
-    } else { renderTree(); if (!revFresh(treeAt)) loadTree(); }
-    // the toggle's visible result is the tree listing. Make sure it can be
-    // seen: un-hide the pane on desktop, jump to the tree tab on mobile.
-    if (localStorage.appNT === '1') { localStorage.appNT = '0'; applyToggles(); }
-    if (isMobile()) setMv('tree');
-    st(m === 'know' ? 'knowledge — pick a memory from the tree' : 'pages');
+    markCurrent();
+    // both listings are always painted in their own tabs. Refetch the one
+    // this mode works on only when the beacon says it moved (revFresh,
+    // knowFresh in 90-sync.js), never to learn nothing.
+    if (m === 'know') { if (!knowFresh(knowAt)) loadKnow(); }
+    else if (!revFresh(treeAt)) loadTree();
+    st(m === 'know' ? 'knowledge' : 'pages');
   }
-  // the pill itself is the entry point a user clicks, so it guards. setMode
-  // is the applier openPage/openKnow also call once THEIR guard already
-  // passed, and guarding inside setMode too would ask twice, or ask about
-  // work guardDirty already flushed a moment earlier.
-  $('modet').onclick = async () => {
-    if (!(await guardDirty())) return;
-    setMode(mode === 'know' ? 'pages' : 'know');
+
+  // ── the Knowledge tab: lazy listing ─────────────────────────────────────
+  // Fetched the first time the tab is seen, and again when the memory
+  // beacon has moved since (knowFresh). Memories are one request the editor
+  // does not otherwise need, so a session that never looks never pays it.
+  const knowShow = () => { if (!knowHave || !knowFresh(knowAt)) loadKnow(); };
+  // whether the memory listing is worth keeping current: in memory mode, or
+  // once it has been loaded and is sitting in its tab (90-sync.js, the drain)
+  const knowLive = () => mode === 'know' || knowHave;
+  document.addEventListener('lat-pane', (e) => {
+    if (e.detail.side === 'l' && e.detail.id === 'know') knowShow();
+  });
+  if (paneShows('l', 'know')) knowShow();
+
+  // ── toolbar ─────────────────────────────────────────────────────────────
+  // New memory: the page create dialog, its kind fixed at md (a memory has
+  // no other), then a fresh memory tab named with the key and written at
+  // once, the way a new page is (newFile, 35-pages.js). The dialog comes
+  // first, so a cancel leaves the front tab exactly as it was.
+  $('knew').onclick = async (ev) => {
+    let seed = '';
+    let note = '';
+    let key = '';
+    for (;;) {
+      const picked = await askNameKind(note + 'memory key (e.g. user/preferences)', seed,
+        'create', 'md', true);
+      if (!picked) return;
+      key = picked.name.replace(/\.md$/i, '');
+      if (validName(key)) break;
+      seed = key;
+      note = 'a key is lowercase letters, digits and - . _ ~ (no spaces). ';
+    }
+    // the key must be free, and the ship is the one to ask: knowKeys is
+    // empty until the lazy list lands, or if it failed, and /know-save has
+    // no create-only form, so a write here would put a newline over an
+    // existing memory. A key that exists opens instead; a check that cannot
+    // complete creates nothing.
+    if (!knowEntry(key)) {
+      let r = null;
+      try { r = await fetch(api + '/know-read?key=' + encodeURIComponent(key)); } catch {}
+      if (!r || (!r.ok && r.status !== 404)) {
+        st('could not check whether ' + key + ' exists' + (r ? await errText(r) : ' (offline)')
+          + ', so nothing was created', false);
+        return;
+      }
+      if (r.ok) {
+        await openIn('know', key, { ev });
+        st(key + ' already exists, so it is open instead');
+        return;
+      }
+    } else { openIn('know', key, { ev }); return; }
+    await openIn('know', '', { ev });
+    if (!activeTab || activeTab.kind !== 'know' || activeTab.key || current !== null) return;
+    setOpen(null, { shown: key });
+    await saveKnow(true);
+    src.focus();
   };
+  // Tidy: the memory review (/know?lint=1) as a tool tab (24-tools.js)
+  $('ktidy').onclick = () => toolOpen('frame:/apps/lattice/know?lint=1');
+  // Trash: the soft-deleted memories (GET /know-trash), each with Restore
+  const trashList = $('ktrashlist');
+  const kmuted = (t) => {
+    const d = document.createElement('div');
+    d.className = 'muted';
+    d.style.padding = '4px 8px';
+    d.textContent = t;
+    return d;
+  };
+  async function loadTrash() {
+    trashList.replaceChildren(kmuted('loading trash\u2026'));
+    let d = null;
+    try {
+      const r = await fetch(api + '/know-trash');
+      if (r.ok) d = await r.json();
+    } catch {}
+    if (trashList.hidden) return;
+    if (!d) { trashList.replaceChildren(kmuted('the trash did not load')); return; }
+    const keys = (d.keys || []).map((k) => String(k.key || '').replace(/^\//, '')).sort();
+    const head = document.createElement('div');
+    head.className = 'sec';
+    head.textContent = 'trash \u00b7 ' + keys.length;
+    trashList.replaceChildren(head);
+    if (!keys.length) { trashList.append(kmuted('nothing in the trash')); return; }
+    for (const key of keys) {
+      const row = document.createElement('div');
+      row.className = 'ktr';
+      row.dataset.key = key;
+      const n = document.createElement('span');
+      n.className = 'ktn';
+      n.textContent = key;           // keys are content: textContent
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = 'restore';
+      b.onclick = async () => {
+        b.disabled = true;
+        const r = await mutate(api + '/know-restore?key=' + encodeURIComponent(key));
+        if (!r.ok) { b.disabled = false; st('restore failed' + await errText(r), false); return; }
+        st('restored ' + key);
+        loadKnow();
+        loadTrash();
+      };
+      row.append(n, b);
+      trashList.append(row);
+    }
+  }
+  $('ktrash').onclick = () => {
+    const on = trashList.hidden;
+    trashList.hidden = !on;
+    $('ktrash').classList.toggle('on', on);
+    $('ktrash').setAttribute('aria-pressed', on ? 'true' : 'false');
+    if (on) loadTrash();
+  };
+  clickAction('knew', 'New memory', 'Knowledge toolbar');
+  clickAction('ktidy', 'Tidy memories', 'Knowledge toolbar');
+  clickAction('ktrash', 'Memory trash', 'Knowledge toolbar');
 
 // ── src/96-deskmenu.js ────────────────────────────────────────────────────
   // ── desktop: these commands live in the native File menu ─────────────────
@@ -7276,6 +10273,7 @@
   //
   // Web and mobile are untouched: without the desktop shell there is no
   // menubar to move anything into, and the buttons are the only affordance.
+  // Naming the new page is the same dialog everywhere (newFile, 35-pages.js).
   //
   // The flag is set by the desktop build that HAS the menu (commands.rs, an
   // initialization_script), not inferred from __TAURI__. This UI ships from
@@ -7290,234 +10288,153 @@
       const el = document.getElementById(id);
       if (el) el.hidden = true;
     }
-    // Both button rows are now empty, and an empty flex row still draws its
-    // gap and margin — a blank band above the tree that reads as a rendering
-    // fault. Hide a row only when everything in it went, so a row that keeps
+    // The create and upload group is now empty, and an empty flex row still
+    // draws its gap: a blank band in the toolbar that reads as a rendering
+    // fault. Hide a group only when everything in it went, so one that keeps
     // a button (a later one added to it) still shows.
     for (const row of document.querySelectorAll('#tree .newbtns')) {
       if ([...row.children].every((c) => c.hidden)) row.hidden = true;
     }
-
-    // ── the bar's name field becomes a label ────────────────────────────────
-    // Typing a path into a text box is how you named a page when there was
-    // nowhere else to do it. Creation lives in the File menu now, so the bar
-    // can just say which page is open — centred, and not something you can
-    // edit by accident mid-sentence.
-    //
-    // Both controls stay in the DOM and keep their values. Everything reads
-    // pname.value and pkind.value — save, applyPage, the share flow, the
-    // matrix — and rewriting all of that to read from somewhere else would be
-    // a much larger change than this is worth.
-    ws.classList.add('deskbar');
-    const label = document.createElement('div');
-    label.id = 'pathlabel';
-    label.setAttribute('aria-live', 'polite');
-    pname.after(label);
-    const paint = () => {
-      const v = (pname.value || '').trim();
-      label.textContent = v || 'no page open';
-      label.className = v ? '' : 'muted';
-      label.title = v ? v + ' · ' + (pkind.value || '') : '';
-      // The label floats over the bar's centre, so its width is measured,
-      // not guessed: as wide as it can be while centred and clear of the
-      // right-hand buttons and of the status line's start. The status line,
-      // growing in the flow beside it, then stops where the label begins.
-      const bar = label.parentElement.getBoundingClientRect();
-      const mid = bar.left + bar.width / 2;
-      let right = bar.right;
-      for (let e = label.parentElement.querySelector('.grow')?.nextElementSibling; e; e = e.nextElementSibling) {
-        const r = e.getBoundingClientRect();
-        if (r.width) right = Math.min(right, r.left);
-      }
-      const left = status.getBoundingClientRect().left;
-      const half = Math.max(0, Math.min(mid - left, right - mid) - 12);
-      label.style.maxWidth = 'min(' + (2 * half) + 'px, 60ch)';
-      const room = label.getBoundingClientRect().left - left - 12;
-      status.style.maxWidth = Math.max(0, room) + 'px';
-    };
-    addEventListener('resize', paint);
-    paint();
-    // No poll. Assigning pname.value fires no event, which is why this used
-    // to check twice a second, but every writer now goes through setOpen
-    // (20-state.js), which dispatches 'input' on the field, and typing
-    // fires it natively. The kind in the tip changes by hand ('change' on
-    // the picker), inside setOpen, or just before one; openGrub, which
-    // learns its kind only after the fetch, dispatches the same event.
-    pname.addEventListener('input', paint);
-    pkind.addEventListener('change', paint);
+    // The palette indexes every action, so these stay listed, homed in the
+    // File menu. A hidden button would drop them (palUsable), and running
+    // one clicks it, which is exactly what the menu item does.
+    for (const a of ACTIONS) {
+      if (!['newfile', 'newfolder', 'newtmpl', 'upfiles', 'updir'].includes(a.id)) continue;
+      a.home = 'File menu';
+      a.when = () => true;
+    }
   }
 
-  // ── naming a new page when the name field is not on screen ───────────────
-  //  Wrap +newFile itself rather than any one button. Hooking the toolbar
-  //  button covered File > New page and missed the green + on every tree
-  //  folder, which calls newFile(path) straight — so it set a name into a
-  //  hidden field, focused something display:none, and looked like a dead
-  //  button. Everything user-initiated routes through here: the toolbar
-  //  (newFile('')), the File menu (which clicks it), the tree, and the
-  //  mobile bar's label.
-  //
-  //  The field is hidden in two independent states — the desktop shell
-  //  (deskbar, set above) and phone width (the 820px CSS block) — and a
-  //  resize crosses the second one live, so the decision is made per call,
-  //  not at load.
-  //
-  //  Boot also calls newFile, with focusName false, to land on an empty
-  //  page. That must not be interrupted by a dialog, and it is the one
-  //  caller that says so.
-  const nameFieldHidden = () =>
-    ws.classList.contains('deskbar') || matchMedia('(max-width: 820px)').matches;
-  const baseNewFile = newFile;
-  newFile = function (into, focusName = true) {
-    if (!focusName || !nameFieldHidden()) return baseNewFile(into, focusName);
-    (async () => {
-      //  a folder's + pre-fills that folder; the toolbar keeps offering the
-      //  open page's path, which is what it did before this existed. Read it
-      //  BEFORE the reset below, which clears the field it comes from.
-      const seed = into ? into.replace(/\/+$/, '') + '/' : (pname.value || '');
-      //  the kind is picked IN the dialog. The bar carries that control and
-      //  the desktop shell hides the bar, so this was the one place a desktop
-      //  user could name a file and the one place they could not say what it
-      //  was. Everything arrived as md.
-      const picked = await askNameKind('page name (e.g. notes/todo)', seed,
-        'create', pkind.value);
-      if (!picked) return;
-      //  reset the editor only once the create is confirmed, so a cancel
-      //  leaves the open page exactly as it was. The false skips the focus
-      //  that cannot land on a hidden name field.
-      baseNewFile(into, false);
-      let name = picked.name;
-      let kind = picked.kind;
-      //  a typed extension still wins, because typing notes/todo.md and being
-      //  given a page called "todo.md" would be absurd. The table is EXT_KIND
-      //  in 30-tree.js, the same one the uploader files by.
-      const dot = name.lastIndexOf('.');
-      const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
-      if (typed) { kind = typed; name = name.slice(0, dot); }
-      //  the field is seeded with the REAL path; the typed leaf, when it was
-      //  not a valid path, rides to save() as the display name
-      const rn = realName(name);
-      if (!rn) return;
-      name = rn.name;
-      newRn = rn;
-      pkind.value = kind;
-      //  newFile above left nothing open and the field editable; this names
-      //  the buffer, and setOpen's event repaints both labels
-      setOpen(null, { shown: name });
-      //  Show it in the tree NOW, pulsing, before the ship has agreed. The
-      //  write is a pier round trip and the tree sitting unchanged through it
-      //  reads as nothing having happened, which is the report that started
-      //  all of this. The pulse is the honest part: it says recorded, not yet
-      //  confirmed. Cleared on success, and the row is dropped on failure so
-      //  a page that does not exist is never left sitting there.
-      const already = nodes.some((n) => n.page && n.path === name);
-      if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
-      //  the button says create, so write the page here. Naming the buffer
-      //  and leaving it unwritten read as a create that did nothing, and a
-      //  page abandoned before its first keystroke left no trace at all.
-      //  save() owns the whole create: 409, the offline queue, the tree
-      //  patch and the url, so this must not reimplement any of it.
-      await save();
-      if (!already) {
-        //  save() sets `current` on any outcome it considers a success,
-        //  including a queued offline write, which IS a success here.
-        if (current === name) setTreePending(name, false);
-        else { dropTreeNodes(name); snapTree(); renderTree(); }
-      }
-      src.focus();
-    })();
-  };
-
 // ── src/97-mobar.js ───────────────────────────────────────────────────────
-  // ── mobile: one bar row + a ⋯ sheet ──────────────────────────────────────
-  // At phone width the bar used to wrap into three rows — the icon cluster
-  // was flex-wrap overflow, and the name input held a full-width row for a
-  // once-per-page action — 184px of chrome before the tab strip's content.
+  // ── phone: drawers and the bottom bar ────────────────────────────────────
+  // At phone width (the 820px block) the side panes are drawers over the
+  // document. Every way into a pane opens its drawer (paneOpen, 13-frame.js:
+  // the corner toggles, a pane tab's action, search), and so does a swipe in
+  // from that edge. The scrim, Escape or opening a document shuts them. The
+  // ribbon rides at the top of the left drawer by CSS alone, so its buttons
+  // stay the one set they are.
   //
-  // Same doctrine as the desktop deskbar (96-deskmenu.js): nothing is
-  // removed, and the ⋯ sheet CLICKS the page's own hidden buttons, so there
-  // is exactly one implementation of search/comments/access/mode and nothing
-  // to drift. Everything here is built unconditionally and shown or hidden
-  // by the 820px CSS block, so a resize across the breakpoint just works —
-  // no load-time isMobile branching to go stale.
+  // The bottom bar holds what a thumb reaches for most: a new page, search,
+  // today's brief and the open tabs. Like the drawers it is built always and
+  // shown only by the 820px block, so a resize across the breakpoint just
+  // works, with no load-time isMobile branching to go stale.
   {
-    const bar = document.querySelector('.bar');
+    const drawn = () => ws.classList.contains('ldraw') || ws.classList.contains('rdraw');
+    const scrim = document.createElement('div');
+    scrim.id = 'scrim';
+    scrim.onclick = drawersClose;
+    ws.append(scrim);
+    addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawn()) drawersClose(); });
+    // across the breakpoint the drawers start shut, and the corner toggles
+    // repaint for the layout that is now showing
+    matchMedia('(max-width: 820px)').addEventListener('change', drawersClose);
 
-    // the label: which page is open. Sits where the name input was; the
-    // input stays in the DOM with its value (everything reads pname.value).
-    const mpath = document.createElement('div');
-    mpath.id = 'mpath';
-    mpath.setAttribute('aria-live', 'polite');
-    pname.after(mpath);
-    // the name it last showed, so a repaint with nothing new never rewrites
-    // the aria-live label with the text it already holds
-    let mshown = null;
-    const mpaint = () => {
-      const v = (pname.value || '').trim();
-      if (v === mshown) return;
-      mshown = v;
-      mpath.textContent = v || 'no page open';
-      mpath.className = v ? '' : 'muted';
-    };
-    mpaint();
-    // setOpen (20-state.js) dispatches 'input' whenever what is open
-    // changes, and typing fires it natively, so this needs no poll
-    pname.addEventListener('input', mpaint);
+    // the edge swipe: it starts within EDGE px of a screen edge and travels
+    // EDGE px inward, more across than down. Never while text in the editor
+    // is selected, where dragging a handle to the edge means the selection,
+    // and never from the tab strip, where a sideways drag scrolls the tabs.
+    const EDGE = 24;
+    const selecting = () => document.activeElement === src && src.selectionStart !== src.selectionEnd;
+    let sw = null;
+    addEventListener('touchstart', (e) => {
+      sw = null;
+      if (!isMobile() || e.touches.length !== 1 || drawn() || selecting()
+        || document.querySelector('.dlg:not([hidden])')
+        || (e.target.closest && e.target.closest('.dtlist'))) return;
+      const { clientX: x, clientY: y } = e.touches[0];
+      const side = x <= EDGE ? 'l' : x >= innerWidth - EDGE ? 'r' : null;
+      if (side) sw = { side, x, y };
+    }, { passive: true });
+    addEventListener('touchmove', (e) => {
+      if (!sw) return;
+      if (selecting()) { sw = null; return; }
+      const t = e.touches[0];
+      const dx = (t.clientX - sw.x) * (sw.side === 'l' ? 1 : -1);
+      const dy = Math.abs(t.clientY - sw.y);
+      if (dy > EDGE && dy >= dx) { sw = null; return; }   // a scroll, not a swipe
+      if (dx >= EDGE && dx > dy) { const s = sw.side; sw = null; drawer(s, true); }
+    }, { passive: true });
+    addEventListener('touchend', () => { sw = null; }, { passive: true });
 
-    // tap: rename what is open (the controls pane's own move/rename flow),
-    // or start a page when nothing is. Both are existing buttons.
-    mpath.addEventListener('click', () => {
-      if (current || curFolder) { $('mv').click(); return; }
-      // current===null with text in the box is grub mode or an unsaved new
-      // page — the reset newFile() does would throw that work away
-      if (src.value.trim()) return;
-      newFile('');
-    });
-
-    // the ⋯ button and its sheet
-    const more = document.createElement('button');
-    more.id = 'mmore';
-    more.className = 'ico';
-    more.title = 'more';
-    more.innerHTML = '&#8943;';
-    bar.appendChild(more);
+    // the open-tabs sheet: one row per tab, the tab in front marked. A row
+    // switches to its tab; its x closes it, asking first as the strip's does.
     const sheet = document.createElement('div');
-    sheet.id = 'msheet';
+    sheet.id = 'mtsheet';
+    sheet.className = 'mtsheet';
+    sheet.setAttribute('role', 'menu');
+    sheet.setAttribute('aria-label', 'Open tabs');
     sheet.hidden = true;
-    // [sheet row id to create, real button id to click, icon, label]
-    const rows = [
-      ['ms-q', 'qt', 'search', 'search'],
-      ['ms-cm', 'cmt', 'comment', 'comments'],
-      ['ms-acl', 'aclt', 'key', 'access'],
-      ['ms-mode', 'modet', '', ''],   // label mirrors the live mode button
-    ];
-    for (const [rid, target, icon, label] of rows) {
-      const b = document.createElement('button');
-      b.id = rid;
-      if (icon) b.innerHTML = ico(icon) + ' ';
-      b.append(label);
-      b.onclick = () => { sheet.hidden = true; $(target).click(); };
-      sheet.appendChild(b);
-    }
-    bar.appendChild(sheet);
-    more.onclick = () => {
-      // the mode row's label is whatever the real button says right now
-      $('ms-mode').textContent = $('modet').textContent;
-      sheet.hidden = !sheet.hidden;
+    const sheetPaint = () => {
+      sheet.textContent = '';
+      for (const t of tabs) {
+        const k = TAB_KINDS[t.kind];
+        const name = k.label(t);
+        const row = document.createElement('div');
+        row.className = 'mtrow' + (t === activeTab ? ' on' : '');
+        row.dataset.key = t.key;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'mtname';
+        b.setAttribute('role', 'menuitem');
+        b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
+          + '<span></span>';
+        b.lastChild.textContent = name;
+        b.onclick = () => { sheet.hidden = true; switchTab(t.id); };
+        const x = tip(document.createElement('button'), 'Close ' + name);
+        x.type = 'button';
+        x.className = 'sbtn mtx';
+        x.innerHTML = ico('x');
+        x.onclick = async () => { await closeTab(t.id); if (!sheet.hidden) sheetPaint(); };
+        row.append(b, x);
+        sheet.append(row);
+      }
     };
-    // tapping anywhere else puts it away
-    document.addEventListener('click', (e) => {
-      if (!sheet.hidden && !sheet.contains(e.target) && e.target !== more) sheet.hidden = true;
-    });
 
-    // the unread-comments badge lives on the hidden #cmt; mirror it onto ⋯
-    // and the sheet row so hiding the button does not hide the signal.
+    // the bottom bar. Each button is its own home in the palette, listed
+    // only while the bar is on screen.
+    const mbar = document.createElement('nav');
+    mbar.id = 'mbar';
+    mbar.className = 'mbar';
+    mbar.setAttribute('aria-label', 'Bottom bar');
+    const mitem = (id, icon, name, run) => {
+      const b = tip(document.createElement('button'), name);
+      b.type = 'button';
+      b.className = 'sbtn';
+      b.id = id;
+      b.dataset.action = id;
+      b.innerHTML = ico(icon);
+      b.onclick = (ev) => run(ev);
+      action({ id, name, home: 'Bottom bar', run, when: isMobile });
+      mbar.append(b);
+      return b;
+    };
+    // the Files toolbar's new page does the same: newFile paints over the
+    // editor, so what is unsaved there goes through guardDirty first
+    mitem('mb-new', 'plus', 'New page', async () => { if (await guardDirty()) newFile(''); });
+    mitem('mb-search', 'search', 'Search', () => qOpen());
+    mitem('mb-brief', 'cal', "Today's brief", (ev) => openBrief(ev));
+    const tabsw = mitem('mtabsw', 'tabs', 'Open tabs', () => {
+      if (sheet.hidden) sheetPaint();
+      sheet.hidden = !sheet.hidden;
+    });
+    ws.append(mbar, sheet);
+    // tapping anywhere else puts the sheet away
+    document.addEventListener('click', (e) => {
+      if (!sheet.hidden && !sheet.contains(e.target) && !tabsw.contains(e.target)) sheet.hidden = true;
+    });
+    // the button carries the tab count, read off the strip it summarises
+    const count = () => { tabsw.dataset.n = String(tabs.length); };
+    count();
+    new MutationObserver(count).observe(tabList, { childList: true });
+
+    // the unread badge lives on the ribbon's inbox, which a phone shows
+    // only with the left drawer open; mirror it onto that drawer's toggle
     const mirror = () => {
-      const un = $('cmt').classList.contains('has-unread');
-      more.classList.toggle('has-unread', un);
-      $('ms-cm').classList.toggle('has-unread', un);
+      const n = $('rb-inbox').dataset.n;
+      if (n) $('treet').dataset.n = n; else delete $('treet').dataset.n;
     };
     mirror();
-    new MutationObserver(mirror).observe($('cmt'), { attributes: true, attributeFilter: ['class'] });
+    new MutationObserver(mirror).observe($('rb-inbox'), { attributes: true, attributeFilter: ['data-n'] });
   }
 
 // ── src/98-legacy.js ──────────────────────────────────────────────────────
@@ -7571,7 +10488,7 @@
       if (after && after.reason === 'resolved') {
         localStorage.latLegacy = 'done';
         knowGen++;
-        if (mode === 'know') loadKnow();
+        if (knowLive()) loadKnow();
         st('legacy import completed');
         return;
       }
@@ -7606,7 +10523,9 @@
     else delete sessionStorage.latLegacyAsked;
     knowGen++;
     st('imported ' + res.imported + ' memories from the old agent');
-    if (mode === 'know') loadKnow(); else loadTree();
+    // the import can bring pages too, so Files refreshes as it always did
+    if (knowLive()) loadKnow();
+    loadTree();
     // NEVER advise retiring the old agent while it still holds pages. This
     // import moves knowledge only (the agent exposes no arm for page bodies),
     // so an uninstall on that advice would destroy them permanently.
@@ -7646,16 +10565,18 @@
   // (phase 3), whose read is async but single-digit ms, imperceptible next
   // to the ~0.5s network floor. It also frees the tree (which carries every
   // page body) from localStorage's ~5MB ceiling.
-  function bootSnap() {
+  // `name` is the page the front tab names, null for a new page. Only a
+  // `fresh` tab list (nothing saved, so a first run or a corrupt one) may
+  // resume the snapshot without a name: a restored new-page tab is a new page.
+  function bootSnap(name, fresh) {
     let p = null;
     try { p = JSON.parse(localStorage.appPage || 'null'); } catch {}
     if (!p || !p.name) return false;
-    const name = qs.get('name');
-    // No ?name means a bare launch, above all the PWA, whose start_url can
+    // No name means a bare launch, above all the PWA, whose start_url can
     // never carry one. Resume the snapshot page instead of landing on an
     // empty editor. "opens where I left off" is what an installed app means.
-    // A ?name that does not match the snapshot still defers to the network.
-    if (name && p.name !== name) return false;
+    // A name that does not match the snapshot still defers to the network.
+    if (name ? p.name !== name : !fresh) return false;
     applyPage(p.name, p);
     // openPage sets the upload-target folder. The snapshot path must too,
     // or uploads land at the root until the next explicit open
@@ -7701,30 +10622,27 @@
   // and can push the save past the offline timeout, which is a real failure
   // traded for a badge nobody is waiting on.
   setTimeout(() => { refreshCommentBadge(); }, 20000);
-  if (qs.get('grub')) {
-    // arrived from the explorer's edit link. Open that ball path directly. The
-    // tree still lists lattice pages, so clicking one leaves grub mode.
-    loadTree().then(loadPanels);
-    openGrub(qs.get('grub'), qs.get('ship'));
-  } else if (qs.get('view') === 'know') {
-    setMode('know');
-    legacyCheck();
-    loadPanels();
+  // The tabs come back first (21-tabs.js) and boot shows the front one. A
+  // page has the snapshot-first path below; every other kind shows through
+  // the tab model, with the tree and the panels loading beside it.
+  const { tab: bootTab, fresh: bootFresh } = tabsBoot();
+  if (bootTab.kind !== 'page') {
+    loadTree().then(() => { legacyCheck(); loadPanels(); });
+    tabShowBoot(bootTab);
   } else {
-    const painted = bootSnap();
-    // bootSnap's applyPage jumped the mobile pane to 'code'. Put it back to
-    // the pane the user last saw (bootMv, captured in 85-layout before this
-    // ran), so resuming a snapshot page on reload does not force the editor
-    // over the tree or preview they had open. Only on a real resume: a fresh
-    // ?name open below legitimately lands in the editor.
-    if (painted) setMv(bootMv);
+    // a folder in the address (?into=, a reload while one was selected)
+    // outranks the tab's page, as it did before tabs
+    const into = qs.get('into');
+    const name = into && !qs.get('name') ? null : bootTab.key || null;
+    const painted = bootSnap(name, bootFresh && !into);
     bootTree();
     // what the snapshot painted, if anything. The baseline for "did the USER
     // do something while the dump was in flight?"
     const bootCurrent = current;
+    // and what the name field said: a new page named in the dialog has no
+    // `current` until its create lands, but it is the user's all the same
+    const bootShown = pname.value;
     loadTree().then(() => {
-      const name = qs.get('name');
-      const into = qs.get('into');
       // The tree paints from localStorage at 0ms, so it is clickable long
       // before this resolves. Anything boot does by default would then land on
       // top of the user's own action, opening a page and having it close a
@@ -7734,8 +10652,9 @@
       // everTyped, not dirty. A keystroke followed by an autosave clears dirty
       // before a slow dump lands, and this branch then repainted the editor
       // from the dump's PRE-edit copy. Typing is a user action whether or not
-      // it has since been saved.
-      const touched = current !== bootCurrent || curFolder !== null || dirty || everTyped;
+      // it has since been saved. Going to another tab is a user action too.
+      const touched = current !== bootCurrent || curFolder !== null || dirty || everTyped
+        || activeTab !== bootTab || pname.value !== bootShown;
       if (touched) {
         legacyCheck();
         loadPanels();

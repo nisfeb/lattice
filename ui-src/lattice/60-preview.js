@@ -140,11 +140,9 @@
     if (root) return html.slice(0, root.index + root[0].length) + fit + html.slice(root.index + root[0].length);
     return fit + html;
   };
-  // nobody sees the preview on a phone off its tab, or on a desktop in the
-  // editor-only view (85-layout.js); the view buttons refresh it on the way
-  // back, the tab strip likewise
-  const previewHidden = () =>
-    (isMobile() ? ws.dataset.mv !== 'prev' : ws.classList.contains('ve'));
+  // nobody sees the preview in Edit (23-tabhead.js), on a phone or not;
+  // Read refreshes it on the way back
+  const previewHidden = () => ws.classList.contains('ve');
   const paintLocal = () => {
     if (!CONTENT() || document.hidden) return;
     if (previewHidden()) return;

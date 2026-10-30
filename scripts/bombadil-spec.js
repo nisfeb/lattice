@@ -114,56 +114,35 @@ export const shareFlow = actions(() => {
   return [{ Click: { name: "share-with-input", point: ui.input } }];
 });
 
-// ── mobile: full-screen editing ────────────────────────────────────────────
+// ── mobile: the drawers ────────────────────────────────────────────────────
 //
-// Only reachable with LATTICE_MOBILE=1 (the control is display:none above
-// 820px). At desktop width these read vacuously true, which is correct: there
-// is nothing to trap you in when every pane is visible at once.
+// Only reachable with LATTICE_MOBILE=1 (the drawers are columns above
+// 820px, and the classes below are never set there). At desktop width these
+// read vacuously true.
 //
-// The failure this exists for is not cosmetic. Full screen hides the bar AND
-// the tab strip, so if the way out ever goes with them, the phone is stuck
-// on one pane with no route to the tree, no save button, and no exit — a
-// reload is the only escape. A fuzzer that clicks everything is exactly the
-// adversary that finds that, which is why it belongs here and not only in
-// the matrix, where the toggle is driven in a known order.
-const fullState = extract((state) => {
+// A drawer covers most of a phone's screen. If one is ever open with no
+// scrim to tap, the only way back to the document is the corner toggle,
+// which a fuzzer (or a thumb) may not find. And only one is ever open.
+const drawerState = extract((state) => {
   const d = state.document;
   const ws = d.getElementById("ws");
-  const vis = (el) => {
-    if (!el) return false;
-    const st = d.defaultView.getComputedStyle(el);
-    return st.display !== "none" && st.visibility !== "hidden";
-  };
+  const scrim = d.getElementById("scrim");
   return {
-    full: !!ws && ws.classList.contains("full"),
-    mv: ws ? ws.dataset.mv || "" : "",
-    exit: vis(d.getElementById("fullt")),
-    tabs: vis(d.querySelector(".mtabs")),
-    bar: vis(d.querySelector(".bar")),
-    editor: vis(d.getElementById("src")),
+    l: !!ws && ws.classList.contains("ldraw"),
+    r: !!ws && ws.classList.contains("rdraw"),
+    scrim: !!scrim && d.defaultView.getComputedStyle(scrim).display !== "none",
   };
 });
 
-// The one that matters: in full screen there is ALWAYS a way back.
-export const fullScreenHasAnExit = always(() => {
-  const f = fullState.current;
-  if (!f.full || f.mv !== "code") return true;
-  return f.exit;
+export const openDrawerHasAScrim = always(() => {
+  const f = drawerState.current;
+  if (!f.l && !f.r) return true;
+  return f.scrim;
 });
 
-// ...and full screen never costs you the editor it exists to enlarge.
-export const fullScreenKeepsTheEditor = always(() => {
-  const f = fullState.current;
-  if (!f.full || f.mv !== "code") return true;
-  return f.editor;
-});
-
-// Leaving it restores the chrome. Guards a half-exit that clears the class
-// but leaves the bar hidden, which looks identical to being stuck.
-export const leavingFullScreenRestoresChrome = always(() => {
-  const f = fullState.current;
-  if (f.full || f.mv !== "code") return true;
-  return f.tabs && f.bar;
+export const oneDrawerAtATime = always(() => {
+  const f = drawerState.current;
+  return !(f.l && f.r);
 });
 
 // ── conflicts ──────────────────────────────────────────────────────────────

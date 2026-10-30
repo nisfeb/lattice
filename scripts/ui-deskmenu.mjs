@@ -23,6 +23,10 @@ const check = makeCheck();
 
 // ── 2. behaviour, against a ship ──────────────────────────────────────────
 const MOVED = ['newfile', 'newfolder', 'newtmpl', 'upfiles', 'updir', 'save'];
+//  #save left the web's screen with the old bar (the shell frame): pages
+//  autosave and Ctrl+S saves, so on web it is only the menu's to click, and
+//  the visibility checks below leave it out
+const ONWEB = MOVED.filter((id) => id !== 'save');
 
 const browser = await launchBrowser();
 
@@ -55,7 +59,21 @@ const shown = (p) => p.evaluate((list) => Object.fromEntries(list.map((id) => {
 const web = await boot(false);
 const onWeb = await shown(web);
 check('web: every moved command is still a visible button',
-  MOVED.every((id) => onWeb[id]), JSON.stringify(onWeb));
+  ONWEB.every((id) => onWeb[id]), JSON.stringify(onWeb));
+//  View > Tree pane and View > Controls pane click these two (main.rs)
+const panes = await web.evaluate(() => {
+  const ws = document.getElementById('ws');
+  const r = [];
+  for (const [id, cls] of [['treet', 'nt'], ['ctlt', 'nc']]) {
+    const before = ws.classList.contains(cls);
+    document.getElementById(id).click();
+    const flipped = ws.classList.contains(cls) !== before;
+    document.getElementById(id).click();
+    r.push(flipped && ws.classList.contains(cls) === before);
+  }
+  return r;
+});
+check('the View menu pane toggles still toggle', panes.every(Boolean), JSON.stringify(panes));
 await web.close();
 
 // an OLDER desktop build: __TAURI__ is there, the File menu is not. The UI
@@ -65,7 +83,7 @@ await web.close();
 const old = await boot(true);
 const onOld = await shown(old);
 check('a desktop build with no File menu keeps its buttons',
-  MOVED.every((id) => onOld[id]), JSON.stringify(onOld));
+  ONWEB.every((id) => onOld[id]), JSON.stringify(onOld));
 await old.close();
 
 // desktop: hidden, but still present and still clickable
@@ -78,6 +96,46 @@ check('desktop: but they still EXIST — the menu clicks these very elements',
 check('desktop: the emptied button rows are hidden too, not left as a blank band',
   await desk.evaluate(() => [...document.querySelectorAll('#tree .newbtns')]
     .every((r) => r.hidden)));
+
+// the palette indexes every action, the File menu's too: listed with home
+// "File menu", and running one does what the menu item does (clicks the
+// hidden button). The File menu is native, so these homes are hidden in the
+// DOM; every action still has its data-action element there.
+//  the page menu's items exist only while it is open on a document of the
+//  right kind (pm-tex is desktop-only, for a tex page); ui-shell counts
+//  those. Here: everything else, the File menu's hidden homes included.
+const missing = await desk.evaluate(() => {
+  const P = window.latPalette;
+  return P.ids().filter((id) => !id.startsWith('pm-') && !P.only.includes(id)
+    && !document.querySelector('[data-action="' + CSS.escape(id) + '"]'));
+});
+const palette = await desk.evaluate(async () => {
+  document.dispatchEvent(new KeyboardEvent('keydown',
+    { key: 'p', code: 'KeyP', ctrlKey: true, bubbles: true }));
+  await new Promise((r) => setTimeout(r, 300));
+  const rows = [...document.querySelectorAll('#pallist .palrow')].map((r) =>
+    [r.querySelector('.palname')?.textContent, r.querySelector('.palhome')?.textContent]);
+  return { rows, open: !document.getElementById('palette').hidden };
+});
+const fileRows = ['New page', 'New folder', 'New from template', 'Upload files', 'Upload a folder']
+  .map((n) => palette.rows.find((r) => r[0] === n) || [n, null]);
+check('desktop: the palette lists the File menu actions, homed in the File menu',
+  palette.open && fileRows.every((r) => r[1] === 'File menu'), JSON.stringify(fileRows));
+check('desktop: every palette action still has a home element in the DOM',
+  missing.length === 0, JSON.stringify(missing));
+//  run New folder from the palette: the menu's own dialog opens
+await desk.keyboard.type('New folder');
+await new Promise((r) => setTimeout(r, 300));
+await desk.keyboard.press('Enter');
+let palRan = false;
+try {
+  await desk.waitForFunction(() => !document.getElementById('dlg').hidden
+    && /folder name/.test(document.getElementById('dlg').textContent), { timeout: 5000 });
+  palRan = true;
+} catch {}
+check('desktop: running New folder from the palette opens the File menu\'s dialog', palRan);
+await desk.evaluate(() => { const c = document.getElementById('dlgcancel'); if (c) c.click(); });
+await new Promise((r) => setTimeout(r, 300));
 
 // the menu's actual mechanism: click a HIDDEN button and see the app respond
 await desk.evaluate(() => { document.getElementById('newfolder').click(); });

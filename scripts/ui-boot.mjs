@@ -169,40 +169,40 @@ try {
     encodeURIComponent(n) + '&type=md', { method: 'POST', body: b }), PAGE, BODY);
   await sleep(4000);
 
-  // ── 4. mobile: land on the tree, and do not summon the keyboard ─────────
+  // ── 4. mobile: drawers shut, and do not summon the keyboard ─────────────
   step = 'mobile defaults';
   await page.setRequestInterception(false);
   await page.setViewport({ width: 390, height: 780, isMobile: true });
-  // the tree-landing rule applies when NOTHING is remembered. With a
-  // snapshot, resuming the page wins (that is the other half of the same
-  // request: "default to the tree UNLESS it remembers a recent file"). Clear
-  // only the page snapshot so this asserts the no-memory case.
-  await page.evaluate(() => localStorage.removeItem('appPage'));
+  // with NOTHING remembered: clear the page snapshot and the open tabs
+  // (21-tabs.js remembers the file too)
+  await page.evaluate(() => { localStorage.removeItem('appPage'); localStorage.removeItem('appTabs'); });
   await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
   await sleep(2500);
+  const drawn = () => page.evaluate(() => {
+    const c = document.getElementById('ws').classList;
+    return c.contains('ldraw') || c.contains('rdraw');
+  });
   const mob = await page.evaluate(() => ({
-    mv: document.getElementById('ws').dataset.mv,
     focused: document.activeElement && document.activeElement.id,
   }));
-  check('mobile: with nothing remembered, lands on the tree', mob.mv === 'tree', JSON.stringify(mob));
+  check('mobile: with nothing remembered, no drawer is forced open', !(await drawn()));
   check('mobile: does not focus the name field (no keyboard)',
     mob.focused !== 'pname', 'activeElement=' + mob.focused);
 
-  // opening a file still moves to the editor, and a remembered file resumes
+  // opening a file from the drawer shuts it, and a remembered file resumes
   step = 'mobile open';
+  await page.evaluate(() => document.getElementById('treet').click());
   await page.evaluate((n) => {
     [...document.querySelectorAll('#treelist a.pg')]
       .find((a) => a.href.includes(encodeURIComponent(n))).click();
   }, PAGE);
   await wait((b) => document.getElementById('src').value === b, BODY);
-  check('mobile: opening a page switches to the editor',
-    await page.evaluate(() => document.getElementById('ws').dataset.mv) === 'code');
+  check('mobile: opening a page shuts the drawer', !(await drawn()));
   await page.goto(APP + '?name=' + encodeURIComponent(PAGE),
     { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait((b) => document.getElementById('src').value === b, BODY);
-  check('mobile: a remembered file resumes in the editor',
-    await page.evaluate(() => document.getElementById('ws').dataset.mv) === 'code');
+  check('mobile: a remembered file resumes with no drawer over it', !(await drawn()));
 
   // ── 5. PWA launch: a BARE url resumes the last page ─────────────────────
   // A PWA always launches at start_url, which can never carry ?name, so the
@@ -214,35 +214,22 @@ try {
   const res = await page.evaluate(() => ({
     body: document.getElementById('src').value,
     name: document.getElementById('pname').value,
-    mv: document.getElementById('ws').dataset.mv,
   }));
   check('bare launch resumes the last open page', res.body === BODY && res.name === PAGE,
     JSON.stringify(res).slice(0, 90));
-  check('and lands in the editor pane on mobile', res.mv === 'code', res.mv);
+  check('and lands in the editor on mobile, no drawer over it', !(await drawn()));
 
-  // ── 6. a reload resumes the pane the user moved to ──────────────────────
-  // The service-worker takeover reloads the editor a few seconds into every
-  // session to drop stale code. It used to land back in the editor on the
-  // snapshot page, yanking the user off whatever they had navigated to. A
-  // reload (what the takeover does) must resume the pane AND keep the page.
-  step = 'pane survives reload';
-  await page.goto(APP + '?name=' + encodeURIComponent(PAGE),
-    { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await wait((b) => document.getElementById('src').value === b, BODY);
-  await page.evaluate(() => [...document.querySelectorAll('.mtabs button')]
-    .find((x) => x.dataset.mv === 'tree').click());
-  await wait(() => document.getElementById('ws').dataset.mv === 'tree');
+  // ── 6. a reload drops the old pane switcher's keys ──────────────────────
+  // The phone used to remember its pane (appMv) and full screen (appFull).
+  // The drawers replaced both, and boot clears what an older build left, so
+  // nothing reads them again. The page itself still resumes.
+  step = 'old pane keys';
+  await page.evaluate(() => { localStorage.appMv = 'tree'; localStorage.appFull = '1'; });
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait((b) => document.getElementById('src').value === b, BODY);
-  await sleep(1500);
-  const resumed = await page.evaluate(() => ({
-    mv: document.getElementById('ws').dataset.mv,
-    body: document.getElementById('src').value,
-  }));
-  check('a reload resumes the tree pane, not the snapshot page in the editor',
-    resumed.mv === 'tree', JSON.stringify(resumed).slice(0, 90));
-  check('and the resumed page is still there underneath', resumed.body === BODY,
-    JSON.stringify(resumed).slice(0, 90));
+  check('a reload clears appMv and appFull', await page.evaluate(() =>
+    !('appMv' in localStorage) && !('appFull' in localStorage)));
+  check('and the page resumes underneath, no drawer over it', !(await drawn()));
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 140), false);
 } finally {

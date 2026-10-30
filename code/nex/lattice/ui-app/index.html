@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- resizes-content: a phone's soft keyboard shrinks the layout rather than
+     covering it, so the bottom bar and the list pair stay above the keys -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <!-- installed-PWA status bar. The manifest's theme_color is the icon's blue,
      which matches nothing on screen. The app bar is --bg, so standalone mode
      showed a blue band above an off-white bar. These win over the manifest at
@@ -29,6 +31,9 @@
   --green: var(--accent, #4a7c59); --green-deep: var(--accent-deep, #3a6347);
   --bg: #fafafa; --text: #1a1a1a; --muted: #8a8a8a;
   --border: #8886; --border-soft: #8883; --surface: var(--raised, #8881);
+  --pane: color-mix(in srgb, var(--bg) 94%, var(--text));
+  --ribbon: color-mix(in srgb, var(--bg) 90%, var(--text));
+  --sel: var(--selection, color-mix(in srgb, var(--accent) 20%, transparent));
   --err: var(--error, #c0392b); --err-soft: color-mix(in srgb, var(--err) 33%, transparent);
   /* editor typography, overridden from the settings page (see 05-prefs.js).
      BOTH #src and #hl derive from these two vars and nothing else. The
@@ -40,6 +45,12 @@
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #1a1a1a; --text: #e6e6e6; }
+}
+/* a custom property takes any token stream, so an engine without color-mix
+   keeps the declarations above and only fails where they are used. A second
+   declaration cannot fall back for it; this block does. */
+@supports not (color: color-mix(in srgb, red, blue)) {
+  :root { --pane: var(--raised); --ribbon: var(--raised); --sel: var(--selection); }
 }
 html, body { margin: 0; height: 100vh; background: var(--bg); color: var(--text);
   font: 15px/1.5 var(--font, system-ui, sans-serif); overflow: hidden; }
@@ -71,110 +82,156 @@ select:hover, select:focus { border-color: var(--green); }
 select, option { color-scheme: inherit; }
 .muted { color: var(--muted); }
 
-/* pane widths are custom properties so the drag handles (.psplit) can move
-   them. The defaults keep the historical layout when nothing was dragged */
-.ws { display: grid; height: 100vh;
-  grid-template-columns: var(--wtree, 220px) minmax(0, var(--wed, 1.15fr)) minmax(0, 1fr) var(--wctl, 280px);
-  grid-template-rows: auto auto 1fr; }
-.ws.nt { grid-template-columns: 0 minmax(0, var(--wed, 1.15fr)) minmax(0, 1fr) var(--wctl, 280px); }
-.ws.nc { grid-template-columns: var(--wtree, 220px) minmax(0, var(--wed, 1.15fr)) minmax(0, 1fr) 0; }
-.ws.nt.nc { grid-template-columns: 0 minmax(0, var(--wed, 1.15fr)) minmax(0, 1fr) 0; }
-.ws.nt .tree, .ws.nc .ctl { display: none; }
+/* the shell frame (13-frame.js). Columns: ribbon, left pane, center, right
+   pane. Rows: the doc-tab strip, the body, the status bar. The center spans
+   the first two rows, so a tab strip at its top sits level with the corner
+   toggles above the panes; --strip is that row's height. Pane widths are
+   custom properties so the drag handles (.psplit) can move them. A shut
+   pane's column goes to 0 and the pane itself is not drawn. */
+.ws { display: grid; height: 100vh; --strip: 34px;
+  grid-template-columns: var(--wrib, 40px) var(--wtree, 240px) minmax(0, 1fr) var(--wctl, 280px);
+  grid-template-rows: auto 1fr auto; }
+.ws.nt { grid-template-columns: var(--wrib, 40px) 0 minmax(0, 1fr) var(--wctl, 280px); }
+.ws.nc { grid-template-columns: var(--wrib, 40px) var(--wtree, 240px) minmax(0, 1fr) 0; }
+.ws.nt.nc { grid-template-columns: var(--wrib, 40px) 0 minmax(0, 1fr) 0; }
+.ws.nt #lpane, .ws.nc #rpane { display: none; }
+.corner { grid-row: 1; display: flex; align-items: center; height: var(--strip);
+  padding: 0 6px; background: var(--pane); border-bottom: 1px solid var(--border-soft); }
+#lcorner { grid-column: 1 / 3; }
+#rcorner { grid-column: 4; justify-content: flex-end; }
+/* with the right pane shut, its toggle sits at the end of the center's own
+   strip, so the way back stays where it was */
+.ws.nc #rcorner { grid-column: 3; justify-self: end; z-index: 6;
+  background: none; border-bottom-color: transparent; }
+.ribbon { grid-row: 2; grid-column: 1; display: flex; flex-direction: column;
+  align-items: center; padding: 6px 0; min-height: 0; overflow: hidden auto;
+  background: var(--ribbon); border-right: 1px solid var(--border-soft); }
+.ribbon .rtop, .ribbon .rbot { display: flex; flex-direction: column; gap: 3px; }
+.ribbon .rbot { margin-top: auto; }
+/* a count on a ribbon button: unread comments, conflicts to resolve */
+.ribbon .sbtn[data-n] { position: relative; color: var(--text); }
+.ribbon .sbtn[data-n]::after { content: attr(data-n); position: absolute; top: 0; right: -2px;
+  min-width: 1.05em; padding: 0 .25em; border-radius: 999px;
+  background: var(--green); color: var(--on-accent, var(--bg));
+  font-size: .6rem; font-weight: 700; line-height: 1.35; text-align: center;
+  pointer-events: none; }
+/* a tool tab (24-tools.js) takes the document area's place in the center */
+.toolhost { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.toolhost > * { flex: 1; min-height: 0; }
+.toolframe { width: 100%; border: 0; background: var(--bg); }
+.pane { grid-row: 2; display: flex; flex-direction: column; min-width: 0;
+  min-height: 0; overflow: hidden; background: var(--pane); }
+.pane.lp { grid-column: 2; border-right: 1px solid var(--border-soft); }
+.pane.rp { grid-column: 4; border-left: 1px solid var(--border-soft); }
+.ptabs { display: flex; flex: none; gap: 2px; padding: 4px 6px;
+  border-bottom: 1px solid var(--border-soft); }
+.pbody { flex: 1; min-height: 0; overflow: auto; }
+.rp .pbody > section { padding: 10px; }
+.center { grid-row: 1 / 3; grid-column: 3; display: flex; flex-direction: column;
+  min-width: 0; min-height: 0; }
+.docarea { flex: 1; display: flex; min-height: 0; }
+/* the document tab strip (21-tabs.js): first in the center column, the
+   height of the corner row beside it. With the right pane shut its toggle
+   sits over the strip's end (#rcorner above), so the tabs stop short of it. */
+.doctabs { flex: none; display: flex; align-items: stretch; gap: 2px; min-width: 0;
+  height: var(--strip); padding: 0 6px; box-sizing: border-box;
+  background: var(--pane); border-bottom: 1px solid var(--border-soft); }
+.ws.nc .doctabs { padding-right: 40px; }
+.doctabs > .sbtn { align-self: center; }
+.dtlist { display: flex; gap: 2px; min-width: 0; overflow: auto hidden; scrollbar-width: none; }
+/* a tab is .dtw holding two buttons, the tab (.dtab) and its close (.dtx) */
+.dtw { display: inline-flex; align-items: center; flex: 0 1 auto; min-width: 64px;
+  max-width: 200px; margin-top: 4px; padding-right: 4px; border-radius: 6px 6px 0 0;
+  color: var(--muted); }
+.dtw:hover { color: var(--text); background: color-mix(in srgb, var(--text) 6%, transparent); }
+.dtw.on { color: var(--text); background: var(--bg); }
+.dtab { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0;
+  height: 100%; padding: 0 5px 0 9px; border: 0; border-radius: 6px 6px 0 0;
+  background: none; color: inherit; font: inherit; font-size: .85rem; cursor: pointer; }
+.dtab:focus-visible, .dtx:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
+.dtab .ic { width: 14px; height: 14px; flex: none; }
+.dtn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dtdot { display: none; flex: none; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--green); }
+.dtab.dirty .dtdot { display: inline-block; }
+/* faded, not hidden, off the front tab: a hidden button could not take focus */
+.dtx { display: inline-flex; flex: none; padding: 2px; border: 0; border-radius: 4px;
+  background: none; color: inherit; cursor: pointer; opacity: 0; }
+.dtx .ic { width: 14px; height: 14px; }
+.dtw:hover .dtx, .dtw.on .dtx, .dtx:focus-visible { opacity: 1; }
+.dtw.pinned .dtx { display: none; }
+.dtx:hover { background: color-mix(in srgb, var(--text) 13%, transparent); }
+.dtmenu { position: fixed; z-index: 60; display: flex; flex-direction: column;
+  min-width: 150px; padding: 4px; background: var(--pane); border: 1px solid var(--border);
+  border-radius: 6px; box-shadow: 0 6px 24px color-mix(in srgb, var(--text) 20%, transparent); }
+.dtmenu button { padding: 6px 10px; border: 0; border-radius: 4px; background: none;
+  color: var(--text); font: inherit; font-size: .85rem; text-align: left; cursor: pointer; }
+.dtmenu button:hover, .dtmenu button:focus-visible {
+  background: color-mix(in srgb, var(--text) 10%, transparent); outline: none; }
+/* the tab header (23-tabhead.js): back, forward, the path, Edit / Read, the
+   page menu. The path is the one part that grows. */
+.tabhead { flex: none; display: flex; align-items: center; gap: 2px; min-width: 0;
+  height: var(--strip); padding: 0 6px; box-sizing: border-box; background: var(--bg);
+  border-bottom: 1px solid var(--border-soft); }
+.tabhead > .sbtn:disabled { opacity: .35; cursor: default; background: none; }
+.tpath { flex: 1; min-width: 0; margin: 0 6px; padding: 4px 8px; border: 0; border-radius: 5px;
+  background: none; color: var(--text); font: .85rem ui-monospace, Menlo, Consolas, monospace;
+  text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: pointer; }
+.tpath:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.tpath.muted { color: var(--muted); font-style: italic; }
+.tpath:disabled { cursor: default; background: none; }
+.tpath:focus-visible, .tread button:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
+.tread { display: inline-flex; flex: none; margin: 0 4px; border: 1px solid var(--border);
+  border-radius: 6px; overflow: hidden; }
+.tread button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px;
+  border: 0; background: none; color: var(--muted); font: inherit; font-size: .8rem; cursor: pointer; }
+.tread button + button { border-left: 1px solid var(--border); }
+.tread button .ic { width: 13px; height: 13px; }
+.tread button:hover { color: var(--text); }
+.tread button.on { color: var(--text); background: color-mix(in srgb, var(--text) 13%, transparent); }
+/* Save shows only on a phone, while a grub is in front (the 820px block) */
+#save { display: none; }
+.tmenu .tsub { display: flex; flex-direction: column; padding-left: 12px; }
+.tmenu .tsub[hidden] { display: none; }
+.tmenu [aria-checked="true"]::after { content: " \2713"; color: var(--muted); }
+/* the shell's icon buttons: the ribbon, the pane tabs, the corners */
+.sbtn { display: inline-flex; align-items: center; justify-content: center;
+  flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px;
+  background: none; color: var(--muted); cursor: pointer; }
+.sbtn .ic { width: 16px; height: 16px; vertical-align: 0; }
+.sbtn:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+.sbtn.on { color: var(--text); background: color-mix(in srgb, var(--text) 13%, transparent); }
+.sbtn:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
+.statusbar { grid-row: 3; grid-column: 1 / -1; display: flex; align-items: center;
+  gap: 8px; min-width: 0; padding: 2px 10px; font-size: .78rem; color: var(--muted);
+  background: var(--pane); border-top: 1px solid var(--border-soft); }
+.statusbar .grow { flex: 1; }
+.errchip { font: inherit; padding: 0 9px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--err-soft); background: none; color: var(--err);
+  max-width: 40ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.errchip:hover { border-color: var(--err); }
 /* drag handles: extra grid items OVERLAYING each pane boundary (same cell,
    justify-self start, negative margin). No extra columns, so every variant
    rule above stays untouched. Double-click resets a boundary. */
-.psplit { grid-row: 3; justify-self: start; width: 9px; margin-left: -4.5px;
+.psplit { grid-row: 2; justify-self: start; width: 9px; margin-left: -4.5px;
   cursor: col-resize; z-index: 5; position: relative; user-select: none; }
-#ph1 { grid-column: 2; }
-#ph2 { grid-column: 3; }
+#ph1 { grid-column: 3; }
 #ph3 { grid-column: 4; }
 .psplit:hover, .psplit.drag { background: var(--green); opacity: .35; }
 .ws.nt #ph1, .ws.nc #ph3 { display: none; }
-/* the view (85-layout.js): .ve is editor only, .vp preview only, neither is
-   split. The survivor spans both middle columns. Pages and memories alike:
-   a memory previews as markdown (60-preview.js). Desktop only: at phone
-   width the tab strip shows one pane at a time, and this media query is the
-   exact complement of the 820px block below. */
-@media not all and (max-width: 820px) {
-  .ws.ve .prevwrap, .ws.vp .edwrap, .ws.ve #ph2, .ws.vp #ph2 { display: none; }
-  .ws.ve .edwrap, .ws.vp .prevwrap { grid-column: 2 / 4; }
-}
-#viewseg { display: inline-flex; }
-#viewseg .ico { border-radius: 0; margin-left: -1px; }
-#viewseg .ico:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
-#viewseg .ico:last-child { border-radius: 0 6px 6px 0; }
-#viewseg .ico.on { position: relative; }   /* its green border over the neighbour's */
-.bar .ico { padding: 5px 9px; }
-.bar .ico.on { border-color: var(--green); color: var(--green); }
-/* the full-screen control is mobile-only; the desktop shows every pane at
-   once, so there is nothing for it to reveal. Shown by the 820px block. */
-#fullt { display: none; }
-/* desktop shell only: the name field and kind picker give way to a centred
-   label saying which page is open. Set by 96-deskmenu.js, which also adds the
-   name prompt that replaces typing into the field. */
-#pathlabel { display: none; }
+/* Edit / Read (23-tabhead.js): .ve is the editor only, .vp the preview only.
+   Pages and memories alike: a memory previews as markdown (60-preview.js). */
+.ws.ve .prevwrap, .ws.vp .edwrap { display: none; }
 /* list indent/outdent touch pair (45-templates.js): phones have no Tab key,
    so these exist at phone width only, and only while the caret is where
    listTab would act. Desktop has the real keys. */
 #lbtns { display: none; }
-/* phone bar (97-mobar.js): built always, shown only by the 820px block */
-#mpath, #mmore, #msheet { display: none; }
-.ws.deskbar #pname, .ws.deskbar #pkind { display: none; }
-/* Centred on the BAR, not on whatever space is left between its two button
-   clusters. `flex: 1` here did the latter and looked off-centre, because
-   .bar .grow is also flex:1 — two growing siblings split the free space, so
-   the label's box only spanned half of it and its centred text landed left
-   of centre.
-   Out of flow, so: the label adds no gap of its own to the flex row, and
-   #status growing mid-save cannot shove the filename sideways. Clamped and
-   ellipsised so a long path cannot reach the buttons, and pointer-events
-   none because this is a label lying on top of a row of them. */
-.ws.deskbar .bar { position: relative; }
-.ws.deskbar #pathlabel {
-  display: block; position: absolute; top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  /* a fallback only: 96-deskmenu.js measures the room on each side and
-     sets the real limit, since the button clusters change width */
-  max-width: min(38%, 60ch); pointer-events: none;
-  text-align: center; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font: 14px/1 ui-monospace, Menlo, Consolas, monospace;
-}
-.ws.deskbar #pathlabel.muted { color: var(--muted); font-style: italic; }
-.mtabs { display: none; grid-column: 1 / -1; grid-row: 2;
-  border-bottom: 1px solid var(--border-soft); }
-.mtabs button { flex: 1; padding: 10px; border: 0; background: none;
-  color: inherit; font: inherit; border-bottom: 2px solid transparent;
-  cursor: pointer; }
-.mtabs button.on { border-bottom-color: var(--green); color: var(--green);
-  font-weight: 600; }
-.bar { grid-column: 1 / -1; display: flex; gap: 8px; align-items: center;
-  padding: 7px 10px; border-bottom: 1px solid var(--border-soft); }
-.bar .home { display: flex; align-items: center; padding: 3px 11px;
-  font-size: 1.15rem; border: 1px solid var(--border); border-radius: 6px;
-  text-decoration: none; color: inherit; }
-/* NB: select is deliberately excluded. The global `select` rule owns its
-   padding (it reserves room for the chevron) and `background` shorthand here
-   would wipe the chevron image. */
-.bar input, .bar button { font: inherit; padding: 5px 9px;
-  border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
-  color: inherit; }
-.bar input { flex: 0 1 18rem; min-width: 8rem; cursor: text; }
-.bar button { cursor: pointer; }
-/* when the bar runs out of room the status line gives way first: it
-   shrinks and ends in an ellipsis (st() puts the full text in its title),
-   and no button or the home link is ever squeezed into its neighbour */
-@media (min-width: 821px) {
-  .bar > button, .bar > .home, .bar > select, #viewseg { flex-shrink: 0; }
-}
-/* the convert button with no converter behind it: pandoc is missing, or the
-   desktop build predates LaTeX support. Dashed reads as "needs something",
-   and the button stays clickable to explain itself (71-latex.js). The var
-   holds in both themes. */
-.bar button.needsdep { border-style: dashed; border-color: var(--muted);
-  color: var(--muted); }
-.bar button:hover, .bar .home:hover { border-color: var(--green); }
-.bar .grow { flex: 1; }
+/* the phone's scrim and bottom bar (97-mobar.js): built always, shown only
+   by the 820px block */
+#scrim, .mbar { display: none; }
+/* the status line gives way first when the status bar runs out of room:
+   it shrinks and ends in an ellipsis (st() puts the full text in its title) */
 #status { font-size: .85rem; flex: 0 5 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes latspin { to { transform: rotate(360deg); } }
@@ -185,13 +242,28 @@ select, option { color-scheme: inherit; }
 #spin.on { display: inline-block; }
 @media (prefers-reduced-motion: reduce) { #spin { animation-duration: 2.4s; } }
 
-.tree { grid-row: 3; overflow: auto; padding: 10px;
-  border-right: 1px solid var(--border-soft); }
-.tree .newbtns { display: flex; gap: 6px; margin-bottom: 8px; }
-.tree .nf { flex: 1; padding: 5px 8px; font: inherit; font-weight: 600;
-  font-size: .82rem; border: 1px solid var(--border); border-radius: 6px;
+.tree { min-height: 100%; padding: 10px; }
+.tree .ptool { display: flex; align-items: center; gap: 2px; margin: -4px -4px 6px; }
+.tree .ptool .grow { flex: 1; }
+.tree .newbtns { display: flex; gap: 2px; }
+/* the Knowledge trash, the bookmark rows and the search box */
+.ktrash { margin: 0 0 8px; padding-bottom: 6px; border-bottom: 1px solid var(--border-soft); }
+.ktr { display: flex; align-items: center; gap: 6px; padding: 2px 8px; }
+.ktr .ktn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ktr button, .tree .mrow button:where(:not(.sbtn)) { font: inherit; font-size: .78rem;
+  padding: 2px 8px; border: 1px solid var(--border); border-radius: 5px;
   background: var(--surface); color: inherit; cursor: pointer; }
-.tree .nf:hover { border-color: var(--green); }
+.ktr button:hover { border-color: var(--green); }
+.tree .mrow { display: flex; align-items: center; gap: 2px; }
+.tree .mrow a.pg { flex: 1; min-width: 0; }
+.tree .mrow .sbtn { width: 24px; height: 24px; visibility: hidden; }
+.tree .mrow:hover .sbtn, .tree .mrow .sbtn:focus-visible { visibility: visible; }
+@media (hover: none) { .tree .mrow .sbtn { visibility: visible; } }
+#qinput, #mfilter { width: 100%; box-sizing: border-box; margin: 0 0 6px; padding: 5px 8px;
+  font: inherit; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: inherit; }
+#qsum { font-size: .78rem; margin: 0 2px 4px; }
+.qpane #qlist.aclempty { padding: 1rem .5rem; }
 .chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 6px 0; }
 /* Offline indicator. Amber for "the ship is gone", green for "back, still
    draining", because those are different situations for the person editing:
@@ -209,27 +281,13 @@ select, option { color-scheme: inherit; }
   .offbadge { border-color: #d4a017; color: #d4a017; background: #d4a01722; }
   .offbadge.syncing { border-color: #7fb08a; color: #7fb08a; background: #7fb08a22; }
 }
-/* Unread comment count, drawn on the comments button itself. Position is
-   relative to the button so the count rides its corner rather than taking
-   space in a bar that is already tight on a phone. */
-.bar button.has-unread { position: relative; border-color: var(--green); }
-.bar button.has-unread::after {
-  content: attr(data-n);
-  position: absolute; top: -5px; right: -5px;
-  min-width: 1.05em; padding: 0 .25em;
-  border-radius: 999px; background: var(--green); color: var(--on-accent, #fff);
-  font-size: .62rem; font-weight: 700; line-height: 1.35;
-  text-align: center; pointer-events: none;
-}
 #tagsh { cursor: pointer; }
 .chips a { padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px;
   font-size: .78rem; text-decoration: none; color: inherit; background: var(--surface);
   cursor: pointer; }
 .chips a.on, .chips a:hover { border-color: var(--green); color: var(--green); }
-.ws.know #sharesec, .ws.know #pkind,
-.ws.know #histsec, .ws.know #linksec { display: none; }
+.ws.know #sharesec { display: none; }
 #histview { margin-bottom: 8px; }
-#modet.on { border-color: var(--green); color: var(--green); }
 .uppanel { margin: 8px 0; padding: 9px 10px; border: 1px solid var(--border);
   border-radius: 8px; background: var(--surface); font-size: .78rem;
   word-break: break-all; }
@@ -255,6 +313,28 @@ select, option { color-scheme: inherit; }
 .tree .swmode { flex: none; color: var(--muted); font-size: .8em; }
 .tree .swrm { flex: none; margin-left: auto; color: var(--muted); padding: 0 4px; border-radius: 4px; }
 .tree .swrm:hover { color: var(--text); background: var(--accent-tint, #4a7c5922); }
+/*  Move into my pages, ahead of the x. A link row shows the badge on a
+    line of its own under the name, so a phone's narrow drawer keeps it. */
+.tree .swrow { display: flex; align-items: center; gap: 2px; }
+.tree .swrow a.pg.swm { flex: 1; min-width: 0; }
+.tree .swmv { flex: none; color: var(--muted); padding: 2px 4px; border: 0; background: none;
+  font: inherit; line-height: 1; border-radius: 4px; cursor: pointer; }
+.tree .swmv .ic { margin-right: 0; }
+.tree .swmv:hover { color: var(--text);
+  background: var(--accent-tint, color-mix(in srgb, var(--accent) 16%, transparent)); }
+.tree a.pg.lnk .ic-link { color: var(--accent); }
+.tree a.pg.lnk .lbadw { display: block; white-space: normal; font-size: .75em; margin-left: 1.35em; }
+.lbad { color: var(--err); }
+.lbsince { color: var(--muted); }
+.tree .fld.drop { outline: 2px dashed var(--accent); outline-offset: -2px; border-radius: 6px; }
+#lnkrow { margin-bottom: 12px; }
+/*  the stale-save bar over a link's document (35-pages.js) */
+.lnkcf { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 12px;
+  border-bottom: 1px solid var(--err-soft); color: var(--err); }
+.lnkcf span { flex: 1 1 14em; }
+.lnkcf button { background: none; color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 10px; font: inherit; font-size: .9em; cursor: pointer; }
+.lnkcf button:hover { background: var(--accent-tint, color-mix(in srgb, var(--accent) 16%, transparent)); }
 @keyframes latpend {
   0%, 100% { background: transparent; }
   50%      { background: color-mix(in srgb, currentColor 16%, transparent); }
@@ -276,6 +356,8 @@ select, option { color-scheme: inherit; }
   padding: 0 6px; border-radius: 4px; text-decoration: none; flex: none; }
 .tree .fld .addf:hover { background: var(--accent-tint, #4a7c5922); }
 .tree .ind { margin-left: 14px; }
+/* the row the arrow keys are on (treeKeys, 30-tree.js) */
+.tree [role=treeitem]:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
 /*  flat icons (ico in 10-shell.js), sized by the text around them. A page
     kind has its devicons colour; folders and the bar's icons take the
     text's, so a current folder's icon goes green with its label. */
@@ -287,13 +369,13 @@ select, option { color-scheme: inherit; }
 .ic-js { color: #cbcb41; }
 .ic-file { color: #6d8086; }
 
-.edwrap { grid-row: 3; grid-column: 2; position: relative; overflow: hidden;
+.edwrap { flex: 1 1 0; min-width: 0; position: relative; overflow: hidden;
   border-right: 1px solid var(--border-soft); }
 /* the frame inherits the root's color-scheme (a theme can force it), not
    only the srcdoc's: that covers the instant between the iframe being created
    and its srcdoc being assigned, otherwise an opaque white flash on a dark
    theme. */
-.prevwrap { grid-row: 3; grid-column: 3; overflow: auto; background: var(--bg); }
+.prevwrap { flex: 1 1 0; min-width: 0; overflow: auto; background: var(--bg); }
 /* the frame grows to its content (min-height set by 60-preview.js) and the
    wrap scrolls. WebKit takes a frame's scrollbar style from its OWNING
    element too, so the editor's universal ::-webkit-scrollbar rules above
@@ -302,18 +384,29 @@ select, option { color-scheme: inherit; }
 .prev { display: block; width: 100%; height: 100%; border: 0;
   background: var(--bg); }
 .prev::-webkit-scrollbar { display: none; }
-.ctl { grid-row: 3; grid-column: 4; overflow: auto; padding: 10px;
-  border-left: 1px solid var(--border-soft); }
-.ctl h3 { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em;
+/* the right pane's sections share the controls' look: history and
+   backlinks were part of .ctl before they got their own tabs */
+.rp h3 { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em;
   color: var(--muted); margin: 14px 0 5px; }
-.ctl h3:first-child { margin-top: 0; }
-.ctl .row { display: flex; gap: 6px; }
-.ctl input { flex: 1; font: inherit; padding: 6px 8px; min-width: 0;
+.rp h3:first-child { margin-top: 0; }
+.rp .row { display: flex; gap: 6px; }
+.rp input { flex: 1; font: inherit; padding: 6px 8px; min-width: 0;
   border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
   color: inherit; }
-.ctl button { font: inherit; padding: 6px 10px; border: 1px solid var(--border);
+.rp button:where(:not(.sbtn)) { font: inherit; padding: 6px 10px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--surface); color: inherit; cursor: pointer; }
-.ctl button:hover { border-color: var(--green); }
+.rp button:where(:not(.sbtn)):hover { border-color: var(--green); }
+/* Outgoing and Outline rows, and the Comments tab's thread and box */
+.rp .olrow { display: block; padding: 3px 0; color: inherit; text-decoration: none;
+  cursor: pointer; overflow-wrap: anywhere; font-size: .85rem; }
+.rp .olrow:hover { color: var(--green); }
+.rp .olrow.muted { color: var(--muted); }
+.rp .rpnone { margin: 0; }
+#rpcmlist .aclgrid { grid-template-columns: 1fr; gap: 8px; }
+#rpcmbody { width: 100%; box-sizing: border-box; margin: 10px 0 6px; font: inherit;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: inherit; resize: vertical; }
+#rpcmsec .grow { flex: 1; font-size: .78rem; }
 #cerr.err { color: var(--err); white-space: pre-wrap;
   font: 11px/1.4 ui-monospace, monospace; max-height: 9rem; overflow: auto; }
 #cerr.ok { color: #27ae60; font-size: .85rem; }
@@ -335,9 +428,11 @@ select, option { color-scheme: inherit; }
 .grow-row button.on { border-color: var(--green); color: var(--green);
   background: var(--accent-tint, #4a7c5922); }
 #cwurl { font-size: .85rem; margin-top: 6px; word-break: break-all; }
-.mvbtn { margin-top: 18px; width: 100%; }
-.del { margin-top: 8px; color: var(--err); border-color: var(--err-soft) !important;
-  width: 100%; }
+/* what the picked share mode does (66-share.js) */
+.sharewhat { font-size: .85rem; margin-top: 6px; overflow-wrap: anywhere; }
+/* a checkbox and the words beside it, which are not its label (65-ctl.js) */
+.ctl .chk { display: flex; gap: 6px; align-items: baseline; }
+.ctl .chk input { flex: none; cursor: pointer; }
 /* wikilink autocomplete. #acmirror is an offscreen clone of the textarea's
    text geometry used only to locate the caret. The editor soft-wraps, so a
    monospace column calculation would be wrong on any wrapped line. */
@@ -372,153 +467,132 @@ select, option { color-scheme: inherit; }
 .ws.wrap #src, .ws.wrap #hl { white-space: pre-wrap; overflow-wrap: break-word; }
 
 @media (max-width: 820px) {
-  /* the document itself scrolls here, so an overscroll at the top is Chrome's
-     pull-to-refresh, which RELOADS the app. Page edits survive (2s autosave),
-     but grub mode has none. A stray downward swipe threw away typed template
-     source. `contain` keeps the gesture inside the page. */
-  html { overflow: auto; height: auto; overscroll-behavior-y: contain; }
-  /* body must NOT be a scroll container. With overflow:auto on both, html
-     stops propagating body's overflow to the viewport and body becomes a
-     scroller in its own right, one with nothing to scroll (its height is
-     its content). A touch that lands in it latches onto body, and the
-     `contain` above, inherited here, forbids chaining up to the viewport
-     that actually has the range. Chrome 152 enforces that on
-     non-overflowing scrollers (older builds chained anyway): the expanded
-     tree reached past the screen and would not move, while html reported
-     a 430px range and scrollY stayed 0. Diagnosed with ?diag=1. */
-  body { overflow: visible; height: auto; }
-  /* dvh, not vh: vh is sized to the browser with its URL bar HIDDEN, so a
-     100vh min-height overshoots the visible viewport by the bar's height and
-     leaves the tab strip scrolled half off. Plain vh stays as the fallback. */
-  /* viewport-fit=cover (set on the viewport meta) lets html's --bg paint the
-     whole screen, including behind Android's edge-to-edge gesture-nav area, so
-     the bottom bar is the theme background rather than the manifest's off-white
-     background_color. These insets then keep the top bar and the fixed bottom
-     buttons out from under the system bars. box-sizing is border-box, so the
-     100dvh min-height already includes the padding; both insets are 0 on
-     desktop and on phones that are not edge-to-edge, so nothing moves there. */
-  .ws, .ws.nt, .ws.nc, .ws.nt.nc { grid-template-columns: 1fr;
-    height: auto; min-height: 100vh; min-height: 100dvh;
-    padding-top: env(safe-area-inset-top);
-    padding-bottom: env(safe-area-inset-bottom); }
+  /* ── the phone shell (97-mobar.js) ─────────────────────────────────────
+     One column: a top row (the two drawers' toggles), the center (tab
+     strip, tab header, the document), the status bar and the bottom bar.
+     The side panes are drawers over it.
+
+     The document does not scroll here. The editor, the preview and each
+     drawer scroll inside themselves, as on desktop. `contain` still keeps an
+     overscroll at the top from being Chrome's pull-to-refresh, which RELOADS
+     the app, and grub mode has no autosave.
+
+     dvh, not vh: vh is sized to the browser with its URL bar HIDDEN, so 100vh
+     overshoots the visible viewport by the bar's height. Plain vh stays as
+     the fallback. viewport-fit=cover (set on the viewport meta) lets html's
+     --bg paint the whole screen, including behind Android's edge-to-edge
+     gesture-nav area. The insets keep the top row and the bottom bar out
+     from under the system bars; both are 0 on desktop and on phones that
+     are not edge-to-edge. */
+  html { overscroll-behavior-y: contain; }
+  .ws, .ws.nt, .ws.nc, .ws.nt.nc { --dw: min(320px, 86vw); --rib: 44px;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    height: 100vh; height: 100dvh;
+    padding-top: env(safe-area-inset-top); }
   .psplit { display: none; }
   /* iOS zooms the viewport when a control under 16px takes focus and never
-     zooms back out. The omnibar (.bar input) and the editor (#src/#hl) were
-     each fixed once already. These are the rest: the controls pane and the
-     rename/new-page dialog. Listed by their existing selectors on purpose. A
-     bare `input` rule loses the cascade to `.ctl input` and `#dlginput`,
-     which set `font: inherit` at higher specificity. So a NEWLY added input
+     zooms back out. The editor (#src/#hl) was fixed once already. These
+     are the rest: the controls pane and the rename/new-page dialog. Listed
+     by their existing selectors on purpose. A bare `input` rule loses the
+     cascade to `.ctl input` and `#dlginput`, which set `font: inherit` at
+     higher specificity. So a NEWLY added input
      still needs adding here. The base font is 15px, under the threshold.
      (#dlginput is declared below this block, so source order beats us there;
      it gets its own rule next to its definition.) */
   .ctl input, select, textarea { font-size: 16px; }
-  /* ── one bar row (97-mobar.js) ──────────────────────────────────────────
-     The bar used to flex-wrap into three rows here: the icon cluster was
-     overflow, and the name input held a full-width row for a once-per-page
-     action. Everything it drops stays in the DOM — the ⋯ sheet clicks the
-     real hidden buttons, the label mirrors the real name field — so no
-     behaviour forks by width, only what is on screen. */
-  /* min-width: 0 is the load-bearing half. The bar is an item of the .ws
-     grid's single 1fr column, and a grid item's automatic minimum is its
-     min-content size — for a nowrap flex row that is the SUM of the
-     children's text widths. The first long status line (st() after an
-     open or save) pushed that past the viewport, the 1fr track grew to
-     match, and every row (tabs, tree) stretched with it: horizontal
-     scroll that appears only after the first pier response, ~12px at
-     390px. Floor the item at 0 and the track stays at the viewport;
-     the flex row then squeezes #mpath (its min-width is already 0). */
-  .bar { flex-wrap: nowrap; position: relative; min-width: 0; }
-  /* Same grid-item min-content trap as .bar: the tree is the .ws grid's single
-     1fr item on mobile, and its min-content width (the nowrap .newbtns button
-     row, the file rows) grew the 1fr track past the viewport -> whole-page
-     horizontal scroll. Floor it at 0 so the track stays at the viewport; the
-     file rows then ellipsise within it and the button row wraps. */
-  .tree { min-width: 0; }
-  .tree .newbtns { flex-wrap: wrap; }
-  #modet, #pname, #pkind, #qt, #cmt, #aclt { display: none; }
-  /* .grow is also flex:1 — left in the row it takes half the free space and
-     the path label ellipsises early with daylight sitting next to it (the
-     exact bug the desktop label had). The ⋯ is appended last, so nothing
-     needs pushing right. */
-  .bar .grow { display: none; }
-  #status { max-width: 30vw; overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; }
-  #mpath { display: block; flex: 1; min-width: 0; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap;
-    font: 15px/1.3 ui-monospace, Menlo, Consolas, monospace; padding: 6px 2px; }
-  #mpath.muted { font-style: italic; }
-  #mmore { display: flex; }
-  #msheet { position: absolute; right: 8px; top: 100%; z-index: 40;
-    display: flex; flex-direction: column; min-width: 13rem;
-    background: var(--pop, var(--bg)); border: 1px solid var(--border); border-radius: 8px;
-    overflow: hidden; box-shadow: 0 6px 24px #0003; }
-  #msheet button { font: 16px/1 inherit; font-size: 16px; text-align: left;
-    padding: 12px 14px; border: 0; background: none; color: inherit;
-    border-bottom: 1px solid var(--border-soft); cursor: pointer; }
-  #msheet button:last-child { border-bottom: 0; }
-  /* the unread dot #cmt carries, mirrored where it can be seen */
-  #mmore.has-unread, #msheet .has-unread { border-color: var(--green); color: var(--green); }
-  /* the desktop shell squeezed narrow keeps its own label and menu */
-  .ws.deskbar #mpath, .ws.deskbar #mmore, .ws.deskbar #msheet { display: none; }
-  /* full-screen editing. The bar and the tab strip cost about a third of a
-     phone screen; this hands it to the text and back.
 
-     Scoped to the code pane on purpose: "full screen" for the tree or the
-     controls means nothing, and hiding the tabs there would strand you with
-     no way to move. The control itself is FIXED and sits outside .bar,
-     because it has to stay reachable in the exact state that hides the bar.
+  /* the top row: the drawers' toggles at either end */
+  .ws .corner, .ws.nc #rcorner { grid-row: 1; height: auto; z-index: auto;
+    justify-self: stretch; background: none; border-bottom: 1px solid var(--border-soft); }
+  #lcorner { grid-column: 1; }
+  .ws #rcorner, .ws.nc #rcorner { grid-column: 3; }
+  .ws .corner .sbtn { width: 36px; height: 36px; }
+  /* Save, the one way to save a grub without a keyboard (23-tabhead.js) */
+  .ws.grubfront #save { display: inline-flex; }
+  /* the unread count the ribbon's inbox carries, on the left drawer's
+     toggle, since the ribbon is in that drawer */
+  #treet[data-n] { position: relative; color: var(--text); }
+  #treet[data-n]::after { content: attr(data-n); position: absolute; top: 1px; right: 0;
+    min-width: 1.05em; padding: 0 .25em; border-radius: 999px;
+    background: var(--green); color: var(--on-accent, var(--bg));
+    font-size: .6rem; font-weight: 700; line-height: 1.35; text-align: center;
+    pointer-events: none; }
 
-     It moves to the top when full: the bar is gone, so that corner is free,
-     and the bottom of a phone is where the keyboard comes up. */
-  .ws[data-mv="code"] #fullt {
-    display: block; position: fixed; right: 10px; z-index: 30;
-    bottom: calc(12px + env(safe-area-inset-bottom));
-    font: 12px/1 var(--font, system-ui, sans-serif); padding: 7px 11px; border-radius: 999px;
-    border: 1px solid var(--border); background: var(--bg); color: var(--muted);
-    opacity: .8;
-  }
-  .ws.full[data-mv="code"] #fullt { top: calc(10px + env(safe-area-inset-top)); bottom: auto; }
-  /* the list pair sits opposite #fullt, and only when it can act. Fixed for
-     the same reason #fullt is: it must survive full-screen hiding the bar.
-     Above the keyboard by being bottom-anchored in the visual viewport. */
-  .ws[data-mv="code"] #lbtns.on { display: flex; gap: 8px; position: fixed;
-    left: 10px; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 30; }
+  /* the center: the tab strip scrolls sideways within itself */
+  .ws .center { grid-row: 2; grid-column: 1 / -1; }
+  .ws.nc .doctabs { padding-right: 6px; }
+  .statusbar { grid-row: 3; }
+  /* the list pair (45-templates.js) floats over the editor's bottom-left
+     corner, and only when it can act. A grid item in the center's own cell,
+     so it sits above the status and bottom bars without measuring them. */
+  #lbtns.on { display: flex; gap: 8px; grid-row: 2; grid-column: 1 / -1;
+    align-self: end; justify-self: start; margin: 0 0 12px 10px; z-index: 30; }
   #lbtns button { font: 16px/1 var(--font, system-ui, sans-serif); padding: 8px 13px;
     border-radius: 999px; border: 1px solid var(--border);
     background: var(--bg); color: var(--muted); opacity: .85; }
-  /* #fullt and #lbtns are fixed over the editor's bottom corners. A textarea
-     reveals its caret flush to its own bottom edge, so typing on the last
-     lines parks the caret right under those buttons. End the editor layers a
-     button-row short of the container bottom — both layers identically, so the
-     highlight stays aligned and scroll-synced — and the caret can never land
-     beneath the buttons. (height:auto lets top:0 + bottom size the box; the
-     base rule's height:100% would otherwise over-constrain and win.) */
-  .ws[data-mv="code"] #src, .ws[data-mv="code"] #hl { height: auto; bottom: 56px; }
-  .ws.full[data-mv="code"] .bar,
-  .ws.full[data-mv="code"] .mtabs { display: none; }
-  .ws.full[data-mv="code"] .edwrap { min-height: 100vh; min-height: 100dvh; }
-  #wrapt, #treet, #ctlt, #viewseg { display: none; }
-  .mtabs { display: flex; }
-  .tree, .edwrap, .prevwrap, .ctl { grid-column: 1; grid-row: 3; display: none;
-    border: 0; }
-  .ws[data-mv="tree"] .tree { display: block; }
-  /* the document scrolls here, so these two panes must not. Still
-     overflow:auto from the desktop rules, each was a scroll container sized
-     to its own content, where a fraction of a pixel of rounding can leave an
-     invisible range. A swipe latches to the innermost scroller that can
-     move at all, so a sliver like that takes the first swipe from the top
-     and only the second moves the page. min-width: 0 keeps their column
-     at the screen's width: a grid item's automatic minimum is its
-     content's width, which overflow:auto used to zero, so without it one
-     long file name widened the column and the page scrolled sideways
-     instead of the name truncating. */
-  .tree, .ctl { overflow: visible; min-width: 0; }
-  .ws[data-mv="code"] .edwrap { display: block; min-height: 68vh; }
-  .ws[data-mv="prev"] .prevwrap { display: block; min-height: 68vh; }
-  .ws[data-mv="ctl"] .ctl { display: block; }
+  /* a textarea reveals its caret flush to its own bottom edge, so typing on
+     the last lines would park the caret under the list pair. End the editor
+     layers a button-row short of the container bottom, both layers alike so
+     the highlight stays aligned. (height:auto lets top:0 + bottom size the
+     box; the base rule's height:100% would otherwise win.) */
+  #src, #hl { height: auto; bottom: 56px; }
   /* never below 16px on mobile. A smaller textarea font makes iOS zoom on
      focus. Still one rule for both layers, so the metrics stay identical. */
   #src, #hl { font-size: max(16px, var(--ed-size)); }
+
+  /* the bottom bar */
+  .mbar { display: flex; grid-row: 4; grid-column: 1 / -1; justify-content: space-around;
+    padding: 4px 8px calc(4px + env(safe-area-inset-bottom));
+    background: var(--pane); border-top: 1px solid var(--border-soft); }
+  .mbar .sbtn { width: 48px; height: 40px; }
+  .mbar .sbtn .ic { width: 20px; height: 20px; }
+  /* the open-tab count, quiet: it is a number, not an alert */
+  #mtabsw[data-n] { position: relative; }
+  #mtabsw[data-n]::after { content: attr(data-n); position: absolute; top: 3px; right: 6px;
+    font-size: .6rem; font-weight: 700; line-height: 1; pointer-events: none; }
+  .mtsheet { position: fixed; right: 8px; bottom: calc(56px + env(safe-area-inset-bottom));
+    z-index: 42; display: flex; flex-direction: column; gap: 1px;
+    width: min(320px, calc(100vw - 16px)); max-height: 60vh; overflow: auto; padding: 4px;
+    background: var(--pop, var(--bg)); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 6px 24px color-mix(in srgb, var(--text) 20%, transparent); }
+  .mtrow { display: flex; align-items: center; gap: 2px; border-radius: 6px; }
+  .mtrow.on { background: color-mix(in srgb, var(--text) 10%, transparent); }
+  .mtname { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+    padding: 10px; border: 0; background: none; color: inherit; font: inherit;
+    font-size: 16px; text-align: left; cursor: pointer; }
+  .mtname span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mtrow .mtx { width: 40px; height: 40px; }
+
+  /* the drawers. Shut, each sits just off its edge and is not drawn at all
+     (visibility, once the slide is over), so nothing in it takes a tap or
+     the keyboard's focus. The ribbon is the left drawer's top row: the same
+     buttons, laid out across instead of down, sliding with the pane. */
+  .ws .pane, .ws.nt #lpane, .ws.nc #rpane { display: flex; position: fixed; z-index: 41;
+    top: env(safe-area-inset-top); bottom: 0; width: var(--dw);
+    padding-bottom: env(safe-area-inset-bottom);
+    visibility: hidden; transition: transform .2s ease, visibility 0s .2s; }
+  .ws #lpane { left: 0; top: calc(env(safe-area-inset-top) + var(--rib)); transform: translateX(-100%); }
+  .ws #rpane { right: 0; transform: translateX(100%); }
+  .ribbon { position: fixed; z-index: 41; left: 0; top: env(safe-area-inset-top);
+    width: var(--dw); height: var(--rib); flex-direction: row; gap: 3px; padding: 0 8px;
+    overflow: auto hidden; border-bottom: 1px solid var(--border-soft);
+    transform: translateX(-100%); visibility: hidden;
+    transition: transform .2s ease, visibility 0s .2s; }
+  .ribbon .rtop, .ribbon .rbot { flex-direction: row; }
+  .ribbon .rbot { margin: 0 0 0 auto; }
+  .ws.ldraw #lpane, .ws.ldraw .ribbon, .ws.rdraw #rpane { transform: none; visibility: visible;
+    transition: transform .2s ease; }
+  .ws.ldraw #scrim, .ws.rdraw #scrim { display: block; position: fixed; inset: 0; z-index: 40;
+    background: color-mix(in srgb, var(--bg) 55%, transparent); }
+  @media (prefers-reduced-motion: reduce) {
+    .ws .pane, .ribbon, .ws.ldraw #lpane, .ws.ldraw .ribbon, .ws.rdraw #rpane { transition: none; }
+  }
+  /* a long file name in the Files tab truncates within the drawer, and
+     the button row wraps rather than widening it */
+  .tree { min-width: 0; }
+  .tree .newbtns { flex-wrap: wrap; }
+  .tree .swmv { padding: 4px 8px; }   /* a finger's width, in the drawer */
 }
 
 #hl .token.comment, #hl .token.blockquote, #hl .token.pre, #hl .token.prolog,
@@ -540,9 +614,11 @@ select, option { color-scheme: inherit; }
 
 /* access-control pane: the peers panel given room to work in. A full-window
    overlay rather than a third setMode branch. setMode is wired into the
-   tree/editor lifecycle, and access control has nothing to do with either. */
+   tree/editor lifecycle, and access control has nothing to do with either.
+   In a tool tab (.intab, which they all are now) it sits in the center. */
 .aclwrap { position: fixed; inset: 0; z-index: 45; background: var(--bg);
   display: flex; flex-direction: column; }
+.aclwrap.intab { position: static; z-index: auto; }
 .aclbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px;
   border-bottom: 1px solid var(--border-soft); }
 .aclbar h2 { font-size: 1.05rem; margin: 0; }
@@ -574,6 +650,16 @@ select, option { color-scheme: inherit; }
 .aclcard button:hover { border-color: var(--green); }
 .aclnote { color: var(--muted); font-size: .8rem; }
 .aclempty { color: var(--muted); text-align: center; padding: 2rem; }
+/* published pages: one address per row, the copy button beside it */
+.aclpub { max-width: 1100px; margin: 22px auto 0; padding-top: 16px;
+  border-top: 1px solid var(--border-soft); }
+.aclpub h4, .aclpub h5 { margin: 0 0 4px; font-size: .7rem; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); font-weight: 600; }
+.aclpub h5 { margin-top: 12px; text-transform: none; letter-spacing: 0; font-size: .8rem; }
+.aclpub .aclnote { max-width: 60ch; margin: 0 0 6px; }
+.pubrow { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
+.pubrow a { min-width: 0; overflow-wrap: anywhere; color: var(--link, inherit); }
+.pubrow .sbtn { flex: none; }
 .aclban { max-width: 1100px; margin: 22px auto 0; padding-top: 16px;
   border-top: 1px solid var(--border-soft); }
 .aclban h4 { margin: 0 0 4px; font-size: .7rem; text-transform: uppercase;
@@ -602,7 +688,16 @@ select, option { color-scheme: inherit; }
 .dlgbox { background: var(--pop, var(--bg)); border: 1px solid var(--border);
   border-radius: 10px; padding: 18px; width: min(400px, 92vw);
   display: grid; gap: 12px; box-shadow: 0 8px 30px #0004; }
-#dlgmsg { overflow-wrap: break-word; white-space: pre-wrap; }
+/* The prompt box never outgrows the screen, whatever it is asked to hold:
+   one column that may shrink below its content (minmax 0, where a grid
+   track otherwise grows to its widest unbreakable word), a path that
+   breaks anywhere, and buttons that wrap onto a second row. Every prompt
+   (15-dialog.js) is this one form. The palette borrows .dlgbox but sizes
+   and scrolls itself, so this stays off it. */
+#dlgform { box-sizing: border-box; max-height: 92vh; max-height: 92dvh; overflow-y: auto;
+  grid-template-columns: minmax(0, 1fr); }
+#dlgform > * { min-width: 0; overflow-wrap: anywhere; }
+#dlgmsg { white-space: pre-wrap; }
 #dlginput { font: inherit; padding: 6px 9px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--surface); color: inherit; width: 100%; }
 /* the iOS zoom-on-focus opt-out (see the 820px block above) has to live HERE,
@@ -620,32 +715,50 @@ select, option { color-scheme: inherit; }
   outline: none; }
 .dlgopt.on { border-color: var(--green); }
 .dlgchk { display: flex; gap: 6px; align-items: center; }
-.dlgbtns { display: flex; gap: 8px; justify-content: flex-end; }
+.dlgbtns { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .dlgbtns button { font: inherit; padding: 6px 14px; border: 1px solid var(--border);
   border-radius: 6px; background: var(--surface); color: inherit; cursor: pointer; }
 #dlgok { background: var(--green); border-color: var(--green); color: var(--on-accent, #fff); }
+
+/* the command palette (26-palette.js): the dialog's backdrop and box, set
+   near the top like a search field, the full width of a phone */
+.palette { place-items: start center; padding-top: 12vh; }
+.palbox { width: min(560px, 94vw); padding: 10px; gap: 8px; }
+#palin { font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: inherit; width: 100%; box-sizing: border-box; }
+.pallist { max-height: min(420px, 60vh); overflow-y: auto; display: grid; gap: 1px; }
+.palrow { display: flex; align-items: baseline; gap: 10px; padding: 6px 8px;
+  border-radius: 5px; cursor: pointer; min-width: 0; }
+.palrow.on, .palrow:hover { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.palname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palhome { flex: none; font-size: .8rem; }
+.palkeys { flex: none; font: inherit; font-size: .75rem; padding: 0 5px;
+  border: 1px solid var(--border); border-radius: 4px; color: var(--muted); }
+.palnone { padding: 6px 8px; }
+@media (max-width: 820px) {
+  .palette { padding-top: 0; }
+  .palbox { width: 100vw; max-width: none; border-radius: 0; box-sizing: border-box; }
+  .pallist { max-height: 70vh; }
+  #palin { font-size: 16px; }
+}
 
 /* folder selection + clearweb indicator */
 .tree .fld { cursor: pointer; }
 .tree .fld.cur > span:nth-child(2) { color: var(--green); font-weight: 600; }
 .tree .fld .cw { color: var(--accent, #1a6ed8); margin-left: 5px; font-size: .85em; }
 
-/* lazy control panels: header is the toggle, content loads on first expand */
-#histh, #linkh { cursor: pointer; user-select: none; }
-#histh:hover, #linkh:hover { color: var(--green); }
-
 /* custom-element wrappers are invisible to layout. Their inner divs stay
    direct grid items of .ws (and .dlg stays a fixed overlay). Without this,
    custom elements default to display:inline and break the grid. */
-lat-dialog, lat-bar, lat-tabs, lat-tree, lat-editor, lat-preview, lat-ctl,
+lat-dialog, lat-tree, lat-editor, lat-preview, lat-ctl,
 lat-share, lat-history, lat-links, lat-knowtags, lat-acl,
-lat-comments { display: contents; }
+lat-comments, lat-ribbon, lat-lpane, lat-rpane, lat-statusbar,
+lat-know, lat-marks { display: contents; }
 lat-search, lat-conflicts { display: contents; }
 
 /*  search results. The badge states each hit's exposure, because this list
     puts private notes next to things published on the open web and the
     difference is not something to make people infer from the path. */
-#qinput { flex: 1 1 22em; min-width: 10em; }
 ul.qlist { list-style: none; margin: 0; padding: 0; }
 ul.qlist li { border-bottom: 1px solid var(--border-soft); }
 ul.qlist a {
@@ -680,19 +793,23 @@ ul.qlist a:hover { background: var(--surface); }
 </head>
 <body>
 <div class="ws" id="ws">
-  <lat-bar></lat-bar>
-  <lat-tabs></lat-tabs>
-  <lat-tree></lat-tree>
-  <lat-editor></lat-editor>
-  <lat-preview></lat-preview>
-  <lat-ctl></lat-ctl>
+  <lat-ribbon></lat-ribbon>
+  <lat-lpane></lat-lpane>
+  <!-- a flex column: the tab strip, tab header and tool host of later
+       steps stack above (or replace) the document area -->
+  <div class="center" id="center">
+    <div class="docarea" id="docarea">
+      <lat-editor></lat-editor>
+      <lat-preview></lat-preview>
+    </div>
+  </div>
+  <lat-rpane></lat-rpane>
+  <lat-statusbar></lat-statusbar>
   <div class="psplit" id="ph1"></div>
-  <div class="psplit" id="ph2"></div>
   <div class="psplit" id="ph3"></div>
 </div>
 <lat-acl></lat-acl>
 <lat-comments></lat-comments>
-<lat-search></lat-search>
 <lat-conflicts></lat-conflicts>
 <lat-dialog></lat-dialog>
 <script src="/apps/lattice/prism.js"></script>

@@ -130,7 +130,8 @@ try {
     const s = document.getElementById('src');
     s.value = '# alpha edited'; s.dispatchEvent(new Event('input'));
   });
-  await page.click('#save');
+  //  Save is hidden on a desktop (Ctrl+S, the File menu), so as an element
+  await page.evaluate(() => document.getElementById('save').click());
   // wait for the write to actually land. A fixed sleep raced the pier
   await wait(() => /saved|compiling/.test(document.getElementById('status').textContent));
   await sleep(1500);
@@ -153,10 +154,10 @@ try {
   if (check.fails || process.env.VERBOSE)
     console.log('\n  full request log:\n' + reqs.map((u, i) => '   ' + i + ' ' + u).join('\n'));
   try {
-    await page.evaluate(async (a, b) => {
-      for (const n of [a, b])
-        await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n), { method: 'POST' });
-    }, A, B);
+    //  the run's folder takes both pages with it
+    await page.evaluate(async (r) => {
+      await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(r), { method: 'POST' });
+    }, RUN);
   } catch {}
   await browser.close();
 }

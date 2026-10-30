@@ -54,6 +54,9 @@
       }
       return;
     }
+    // a link shown from its last-known copy, read live again: open it
+    // properly, which lifts the lock and the badge
+    if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent); return; }
     // A KIND change with an UNCHANGED body still needs handling. Retagging a
     // page (gmi -> md, say) leaves the text byte-identical, so the body check
     // below returns early and the preview keeps rendering with the old builder.
@@ -81,6 +84,7 @@
     } else {
       snapPage(current, d);
       showShare(d.share || 'private');
+      if (typeof d.comments === 'boolean') cmtShow(current, d.comments);
       refreshPreview();
       st('updated from ship \u00b7 rev ' + d.rev);
     }
@@ -93,7 +97,11 @@
     // NB: stale cached renders are dropped by loadTree, which prunes against
     // the revs in the fresh dump. Clearing the whole cache here instead meant
     // one page's edit cost every other page its cache.
-    if (mode === 'know') loadKnow(); else loadTree();
+    // Files and Knowledge both stay painted in their tabs, so neither is
+    // skipped for the other: the one the front document works on always
+    // reloads, the other when its beacon moved since it loaded
+    if (mode !== 'know' || !revFresh(treeAt)) loadTree();
+    if (mode === 'know' || (knowLive() && !knowFresh(knowAt))) loadKnow();
     refreshOpen();
     // a catch-up call, not the primary path: the stream now wakes the badge
     // directly on its own /comments event (see commentBumped below). This
@@ -209,20 +217,20 @@
             // never touching lastRev. (Historical note: the pre-raw
             // EventSource listened for a literal 'upd' event, which never
             // existed — live refresh was ALWAYS the 30s poll.)
-            // /know: a memory changed. Only the memory mode shows them, so
-            // only it refreshes. Elsewhere the moved beacon is enough to
-            // mark the memory listing stale (knowFresh).
+            // /know: a memory changed. A listing loaded into the Knowledge
+            // tab (knowLive) refreshes. One never loaded only needs the moved
+            // beacon, which marks it stale for when it is first shown.
             if (name.slice(-6) === ' /know') {
               if (name.slice(0, 3) === 'old') {
                 echoes.know.n = 0;
-                if (lastKnow && data && data !== lastKnow && mode === 'know') bumped();
+                if (lastKnow && data && data !== lastKnow && knowLive()) bumped();
                 noteKnow(data);
                 continue;
               }
               noteKnow(data);
               if (echoes.know.n > 0) { echoes.know.n--; continue; }
               if (Date.now() < echoes.know.until) continue;
-              if (mode === 'know') bumped();
+              if (knowLive()) bumped();
               continue;
             }
             if (name.slice(-5) !== ' /rev') {

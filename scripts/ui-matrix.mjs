@@ -44,6 +44,9 @@ await page.evaluateOnNewDocument(() => {
 // per page), so integration waits get a generous budget
 const wait = (fn, ...args) => page.waitForFunction(fn, { timeout: 90000 }, ...args);
 // The in-app dialog: fill (optional) and submit / cancel.
+//  #save shows only on a phone with a grub in front and stays in the DOM
+//  (the desktop menu and vim click it), so it is clicked as an element
+const tap = (sel) => page.evaluate((x) => document.querySelector(x).click(), sel);
 const dialog = async (value, submit = true) => {
   await wait(() => !document.getElementById('dlg').hidden);
   if (value !== null) await page.evaluate((v) => { document.getElementById('dlginput').value = v; }, value);
@@ -113,7 +116,7 @@ try {
     const control = draw('\u{10FFFF}');   // unassigned forever: always .notdef
     const blank = draw(' ');
     const bad = [];
-    for (const b of document.querySelectorAll('.bar button.ico, .bar a.home, .bar a.nav')) {
+    for (const b of document.querySelectorAll('#ws button.ico, #ws a.nav')) {
       const t = (b.textContent || '').trim();
       if (!t) continue;
       const px = draw(t);
@@ -123,17 +126,24 @@ try {
   });
   check('boot: every bar icon renders a real glyph (no tofu)',
     tofu.length === 0, tofu.join(', '));
+  // the shell's icon buttons are drawn, never typed: each holds an svg
+  const bare = await page.evaluate(() => [...document.querySelectorAll('.sbtn')]
+    .filter((b) => !b.querySelector('svg path')).map((b) => b.id || b.className));
+  check('boot: every shell icon button draws an svg', bare.length === 0, bare.join(', '));
 
   step = 'new page';
   // ── 2. new page: type, save, appears in tree, round-trips ────────────────
+  //  + file asks for the name and kind, and writes the page at once
   await page.click('#newfile');
-  await page.evaluate((n) => {
-    document.getElementById('pname').value = n;
-    const k = document.getElementById('pkind'); k.value = 'md';
+  await page.evaluate(() => { document.getElementById('dlgkind').value = 'md'; });
+  await dialog(RUN + '/hello');
+  await wait((n) => document.getElementById('pname').value === n
+    && document.getElementById('pname').readOnly, RUN + '/hello');
+  await page.evaluate(() => {
     const s = document.getElementById('src');
     s.value = '# ui matrix probe'; s.dispatchEvent(new Event('input'));
-  }, RUN + '/hello');
-  await page.click('#save');
+  });
+  await tap('#save');
   await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
     .some((a) => a.textContent === 'hello.md' && a.href.includes(n)), RUN);
   ok('save: new md page appears in tree');
@@ -166,14 +176,24 @@ try {
   await wait(() => document.getElementById('src').value === '# updated elsewhere');
   ok('live: open page updates when edited elsewhere');
 
-  // version history: the earlier remote edit left ≥2 revisions. The panel
-  // lists them, viewing one is read-only, restoring re-saves it as newest.
+  // version history: the page has been written three times (created empty
+  // by + file, the probe, the remote edit). The ship keeps one revision per
+  // five-minute window (prune-hist), so the probe, between the other two,
+  // was merged away: what it guarantees is the oldest and the newest. The
+  // panel lists them, viewing the oldest is read-only and shows what the
+  // ship has for it, restoring re-saves that as newest.
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => !document.getElementById('histsec').hidden);
-  // history is lazy now. Revisions fetch on first header expand
-  await page.click('#histh');
+  // history is lazy. Revisions fetch when the History tab is in front
+  await page.evaluate(() => document.querySelector('#rtabs [data-pt=hist]').click());
   await wait(() => document.querySelectorAll('#histlist a').length >= 2);
-  ok('history: panel lists revisions after expanding');
+  ok('history: the tab lists revisions');
+  const oldest = await page.evaluate(async (n) => {
+    const chips = document.querySelectorAll('#histlist a');
+    const rev = chips[chips.length - 1].dataset.rev;
+    const r = await fetch('/apps/lattice/page-source-at?name=' + encodeURIComponent(n) + '&rev=' + rev);
+    return (await r.json()).body;
+  }, RUN + '/hello');
   await page.evaluate(() => {                      // open the OLDEST revision
     const chips = document.querySelectorAll('#histlist a');
     chips[chips.length - 1].click();
@@ -181,17 +201,18 @@ try {
   await wait(() => document.getElementById('src').readOnly);
   const histBody = await page.evaluate(() => document.getElementById('src').value);
   check('history: viewing a revision is read-only and shows old content',
-    histBody === '# ui matrix probe', JSON.stringify(histBody).slice(0, 40));
+    typeof oldest === 'string' && histBody === oldest && histBody !== '# updated elsewhere',
+    JSON.stringify({ histBody, oldest }).slice(0, 80));
   await page.click('#hrestore');
   await wait(() => !document.getElementById('src').readOnly);
-  await page.waitForFunction(async (n) => {
+  await page.waitForFunction(async (n, old) => {
     const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));
-    return (await r.json()).body === '# ui matrix probe';
+    return (await r.json()).body.trim() === old.trim();
   //  90s, the same budget as every other integration wait here. This was the
   //  file's only bespoke timeout, tuned when a perf fork made the pier faster
   //  than upstream; on plain grubbery develop it is the one thing that ends a
   //  run, and it ends it on a clock rather than on a behaviour.
-  }, { timeout: 90000 }, RUN + '/hello');
+  }, { timeout: 90000 }, RUN + '/hello', oldest);
   ok('history: restore re-saves the old revision as newest');
 
   // REGRESSION GUARDS for the adversarial review's findings.
@@ -215,7 +236,7 @@ try {
   // F4/F13: while viewing a revision, save is refused and Tab cannot edit
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => !document.getElementById('histsec').hidden);
-  await page.click('#histh');
+  await page.evaluate(() => document.querySelector('#rtabs [data-pt=hist]').click());
   await wait(() => document.querySelectorAll('#histlist a').length >= 2);
   await page.evaluate(() => document.querySelectorAll('#histlist a')[document.querySelectorAll('#histlist a').length - 1].click());
   await wait(() => document.getElementById('src').readOnly);
@@ -229,14 +250,17 @@ try {
   check('F13: Tab cannot edit the read-only historical view',
     (await page.evaluate(() => document.getElementById('src').value)) === revBody);
 
-  // F12: leaving to knowledge mode must not leak readOnly into the memory editor
-  await page.click('#modet');
+  // F12: leaving for a memory must not leak readOnly into the memory editor
+  //  (a blank memory is a know tab; the mode follows the front tab)
+  await page.evaluate(() => window.latTabs.openIn('know', ''));
   await wait(() => document.getElementById('ws').className.includes('know'));
   check('F12: knowledge editor is not left read-only after a revision view',
     !(await page.evaluate(() => document.getElementById('src').readOnly)));
+  //  the right pane repaints on a short deferral (rpSoon, 76-outline.js)
   check('F12: stale history panel hidden after mode switch',
-    await page.evaluate(() => document.getElementById('histsec').hidden));
-  await page.click('#modet');
+    await page.waitForFunction(() => document.getElementById('histsec').hidden, { timeout: 5000 })
+      .then(() => true, () => false));
+  await page.evaluate(() => window.latTabs.openIn('page', ''));
   await wait(() => !document.getElementById('ws').className.includes('know'));
   // setMode clears the open page, so reopen it for the autosave check below
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -275,7 +299,8 @@ try {
   ok('wikilinks: preview renders [[x]] as an editor link');
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => !document.getElementById('linksec').hidden);
-  await page.click('#linkh');                       // backlinks fetch lazily on expand
+  //  backlinks fetch when their tab is in front
+  await page.evaluate(() => document.querySelector('#rtabs [data-pt=back]').click());
   await wait(() => !!document.querySelector('#linklist a'));
   check('backlinks: panel lists the linking page',
     (await page.evaluate(() => document.querySelector('#linklist a').textContent)) === RUN + '/linker');
@@ -321,20 +346,21 @@ try {
   // the geometries are compared mid-reflow and disagree for a frame.
   await sleep(300);
   check('overlay parity: wrap (default)', await parity());
-  await page.click('#wrapt');
-  await sleep(300);
+  //  line wrap is a page menu item
+  const wrapFlip = async () => {
+    await page.click('#tmenu');
+    await page.click('.tmenu [data-mi=wrap]');
+    await sleep(300);
+  };
+  await wrapFlip();
   check('overlay parity: nowrap', await parity());
-  await page.click('#wrapt');
-  await sleep(300);
+  await wrapFlip();
 
   // empty file: saving with no content must succeed (the UI stands in a
   // newline for the body the backend refuses to take empty).
   await page.click('#newfile');
-  await page.evaluate((n) => {
-    document.getElementById('pname').value = n;
-    document.getElementById('pkind').value = 'md';
-  }, RUN + '/empty');
-  await page.click('#save');
+  await page.evaluate(() => { document.getElementById('dlgkind').value = 'md'; });
+  await dialog(RUN + '/empty');
   await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
     .some((a) => a.textContent === 'empty.md' && a.href.includes(n)), RUN);
   ok('save: empty file saves without manual content');
@@ -369,8 +395,11 @@ try {
   // the buffer is dirty so autosave persists it
   //  a bare wikilink shows only its last segment, and the path rides in
   //  the href URI-encoded (release 65)
+  //  the preview renders in Read (Edit skips it), so look there
+  await page.evaluate(() => window.latSetRead(true));
   await wait((s) => (document.getElementById('prev').srcdoc || '').includes(encodeURIComponent(s)), sibling);
   ok('autocomplete: completion refreshes the preview');
+  await page.evaluate(() => window.latSetRead(false));
   // Tab-indent is the other scripted edit. It used to show in the editor and
   // never reach the ship. Autosave firing is the observable proof it is now
   // treated as a real edit (asserting ship state here races the slow pier).
@@ -428,8 +457,10 @@ try {
   await wait(() => !document.getElementById('dlginput').hidden);
   await page.evaluate((v) => { document.getElementById('dlginput').value = v; }, RUN + '/gb');
   await page.click('#dlgok');
-  await wait((n) => (document.getElementById('status').textContent || '').includes('created ' + n),
-    RUN + '/gb');
+  //  opened is the name field naming it. The status line said "created"
+  //  only until the open's own compile check wrote over it
+  await wait((n) => document.getElementById('pname').value === n
+    && document.getElementById('src').value.includes('/' + n), RUN + '/gb');
   check('template: instantiates and opens the new page',
     (await page.evaluate(() => document.getElementById('pname').value)) === RUN + '/gb',
     'pname=' + JSON.stringify(await page.evaluate(() => document.getElementById('pname').value)) +
@@ -486,7 +517,7 @@ try {
 
   step = 'folder rename';
   // ── 6. folder rename via dialog ──────────────────────────────────────────
-  await page.click('#mv');
+  await page.evaluate(() => document.getElementById('mv').click());
   await dialog(RUN + '-moved');
   await wait((n) => [...document.querySelectorAll('#treelist .fld')]
     .some((f) => f.textContent.includes(n)), RUN + '-moved');
@@ -587,7 +618,7 @@ try {
   step = 'comment notifications';
   const CN = RUN + '-notify';
   const unread = () => page.evaluate(() => {
-    const b = document.getElementById('cmt');
+    const b = document.getElementById('rb-inbox');
     return { n: b.dataset.n || null, marked: b.classList.contains('has-unread') };
   });
   await page.evaluate(async (n) => {
@@ -613,27 +644,30 @@ try {
   //  and how we prove the mark survives a reload, which is the point of it.
   const reloadApp = async () => {
     await page.reload({ waitUntil: 'networkidle2', timeout: 90000 });
-    await wait(() => !!document.getElementById('cmt'));
+    await wait(() => !!document.getElementById('rb-inbox'));
     await sleep(2000);
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   };
   await reloadApp();
-  await wait(() => document.getElementById('cmt').classList.contains('has-unread'));
+  await wait(() => document.getElementById('rb-inbox').classList.contains('has-unread'));
   const u1 = await unread();
   check('comments: an arrival marks the button unread', u1.marked, JSON.stringify(u1));
   check('comments: and carries a count', u1.n && Number(u1.n) >= 1, JSON.stringify(u1));
 
   //  opening the inbox IS reading it
-  await page.click('#cmt');
+  await page.evaluate(() => document.getElementById('rb-inbox').click());
   await wait(() => !document.getElementById('cmwrap').hidden);
   //  clearing is asynchronous by nature: opening has to LOAD the inbox before
   //  it can know what the newest comment is. A fixed sleep raced that fetch
   //  and blamed the badge. Waiting on the condition still fails if it never
   //  clears, which is the thing actually worth asserting.
-  await wait(() => !document.getElementById('cmt').classList.contains('has-unread'));
+  await wait(() => !document.getElementById('rb-inbox').classList.contains('has-unread'));
   const u2 = await unread();
   check('comments: opening the inbox clears the badge', !u2.marked, JSON.stringify(u2));
-  await page.click('#cmclose');
+  await page.evaluate(() => {
+    const s = window.latTabs.state();
+    return window.latTabs.closeTab(s.tabs[s.active].id);
+  });
   await sleep(500);
   //  and it stays cleared across a reload, which recounts from scratch against
   //  the mark opening the inbox just wrote. A refresh alone would be throttled
@@ -774,13 +808,12 @@ try {
   }, LIST);
 
   step = 'mode toggle';
-  // ── 7. mode toggle: label shows current view, chips clean up ─────────────
-  const label0 = await page.evaluate(() => document.getElementById('modet').textContent.trim());
-  check('mode label: pages view says pages', label0.includes('pages'), label0);
-  await page.click('#modet');
+  // ── 7. knowledge: the Knowledge tab, and a memory tab sets the mode ──────
+  check('mode: no pages/knowledge toggle', await page.evaluate(() => !document.getElementById('modet')));
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=know]').click());
+  await page.evaluate(() => window.latTabs.openIn('know', ''));
   await wait(() => document.getElementById('ws').className.includes('know'));
-  const label1 = await page.evaluate(() => document.getElementById('modet').textContent.trim());
-  check('mode label: knowledge view says knowledge', label1.includes('knowledge'), label1);
+  ok('mode: a blank memory tab puts the editor in knowledge mode');
 
   step = 'knowledge';
   // ── 8. knowledge: save, read back, delete via dialog ─────────────────────
@@ -789,27 +822,27 @@ try {
     const s = document.getElementById('src');
     s.value = 'ui matrix memory'; s.dispatchEvent(new Event('input'));
   }, RUN);
-  await page.click('#save');
-  await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
+  await tap('#save');
+  await wait((n) => [...document.querySelectorAll('#knowlist a.pg')]
     .some((a) => a.textContent === n), RUN);
   ok('know: memory saved and listed');
-  await page.evaluate((n) => [...document.querySelectorAll('#treelist a.pg')]
+  await page.evaluate((n) => [...document.querySelectorAll('#knowlist a.pg')]
     .find((a) => a.textContent === n).click(), RUN);
   await wait(() => document.getElementById('src').value.length > 0);
   check('know: body round-trips',
     (await page.evaluate(() => document.getElementById('src').value)) === 'ui matrix memory');
-  await page.click('#del');
+  await page.evaluate(() => document.getElementById('del').click());
   await dialog(null);   // confirm dialog, no input
-  await wait((n) => ![...document.querySelectorAll('#treelist a.pg')]
+  await wait((n) => ![...document.querySelectorAll('#knowlist a.pg')]
     .some((a) => a.textContent === n), RUN);
   ok('know: delete via in-app confirm');
 
-  // back to pages: chips gone
-  await page.click('#modet');
+  // back to pages: a page tab leaves knowledge mode, and the chips stay in
+  // the Knowledge tab, out of sight behind Files
+  await page.evaluate(() => window.latTabs.openIn('page', ''));
   await wait(() => !document.getElementById('ws').className.includes('know'));
-  // the chips sit in the tag section, which is what hides; an element under
-  // a hidden ancestor keeps its own computed display, so ask the layout
-  check('mode round-trip: tag chips hidden again',
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
+  check('mode round-trip: tag chips hidden with the Knowledge tab',
     await page.evaluate(() => document.getElementById('chips').getClientRects().length === 0));
 
   // ── batch upload: N files in ONE request, all-or-nothing ────────────────
@@ -886,7 +919,7 @@ try {
   // ── 9. delete the test page + folder via dialogs ─────────────────────────
   await page.goto(APP + '?name=' + RUN + '-moved/hello', { waitUntil: 'domcontentloaded' });
   await wait(() => document.getElementById('src').value.length > 0);
-  await page.click('#del');
+  await page.evaluate(() => document.getElementById('del').click());
   await dialog(null);
   await wait((n) => ![...document.querySelectorAll('#treelist a.pg')]
     .some((a) => a.href.includes(n + '%2Fhello')), RUN + '-moved');
@@ -896,7 +929,7 @@ try {
   if (frow.asElement()) {
     await frow.asElement().click();
     await wait(() => document.getElementById('del').textContent === 'delete folder');
-    await page.click('#del');
+    await page.evaluate(() => document.getElementById('del').click());
     await dialog(null);
   }
   // conflicts/ is excluded deliberately. A save that outruns the client's 10s
@@ -947,7 +980,7 @@ try {
     const s = document.getElementById('src');
     s.value = '# edited while offline'; s.dispatchEvent(new Event('input'));
   });
-  await page.click('#save');
+  await tap('#save');
   await wait(() => !document.getElementById('offbadge').hidden);
   ok('offline: a failed save raises the offline badge');
 
@@ -955,7 +988,7 @@ try {
   //  which is what keeps the app in offline mode across a restart.
   await page.goto(APP + '?name=' + OFF + '/gone', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
-  await page.click('#del');
+  await page.evaluate(() => document.getElementById('del').click());
   await dialog(null);
   //  the leaf is matched on its LABEL and the namespace on the href: a tree
   //  link percent-encodes the slash, so href.includes('ns/leaf') never matches
@@ -968,7 +1001,7 @@ try {
   await page.goto(APP + '?name=' + OFF + '/here', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value === '# edited while offline');
   ok('offline: the queued edit outranks the ship copy on reopen');
-  await page.click('#mv');
+  await page.evaluate(() => document.getElementById('mv').click());
   await dialog(OFF + '/moved');
   await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
     .some((a) => a.textContent === 'moved.md' && a.href.includes(n)), OFF);
@@ -1037,7 +1070,7 @@ try {
     const s2 = document.getElementById('src');
     s2.value = '# work that must not vanish'; s2.dispatchEvent(new Event('input'));
   }, DUR);
-  await page.click('#save');
+  await tap('#save');
   await wait(() => /NOT SAVED|not saved/i.test(document.getElementById('status').textContent));
   ok('durability: a failed queue write says NOT SAVED rather than claiming success');
   //  and the text is still in the editor, which is the only copy left
@@ -1231,6 +1264,8 @@ try {
   }, PV);
   await page.goto(APP + '?name=' + PV, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
+  //  the preview renders in Read (Edit skips it); a scripted edit still lands
+  await page.evaluate(() => window.latSetRead(true));
   await sleep(2500);
 
   const inPreview = (needle) => page.evaluate((m) => {
@@ -1280,6 +1315,7 @@ try {
   await sleep(15000);
   check('preview: the ship\'s render still arrives and holds', await inPreview(MARK2));
 
+  await page.evaluate(() => window.latSetRead(false));
   await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
     encodeURIComponent(n), { method: 'POST' }), PV);
 
@@ -1356,9 +1392,15 @@ try {
   check('sandbox: the preview frame is sandboxed, without allow-same-origin',
     sbx.split(/\s+/).includes('allow-scripts') && !sbx.includes('allow-same-origin'), sbx);
 
+  //  a new html page through the create dialog, then Read, where the
+  //  preview renders it (Edit skips it). The end-of-run sweep removes it.
+  await page.click('#newfile');
+  await page.evaluate(() => { document.getElementById('dlgkind').value = 'html'; });
+  await dialog(RUN + '/pwn');
+  await wait((n) => document.getElementById('pname').value === n
+    && document.getElementById('pname').readOnly, RUN + '/pwn');
   await page.evaluate(() => {
-    document.getElementById('newfile').click();
-    document.getElementById('pkind').value = 'html';
+    window.latSetRead(true);
     const s = document.getElementById('src');
     //  the assignment THROWS a SecurityError once the frame is sandboxed,
     //  which is the proof it works — but an uncaught one would trip the
@@ -1374,6 +1416,7 @@ try {
     !(await page.evaluate(() => {
       try { return !!document.getElementById('prev').contentDocument; } catch { return false; }
     })));
+  await page.evaluate(() => window.latSetRead(false));
 
   step = 'search';
   // ── 9e. finding your own writing from the editor ─────────────────────────
@@ -1397,12 +1440,13 @@ try {
   await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
 
-  check('search: the button is in the bar', await page.evaluate(() => !!document.getElementById('qt')));
+  const qShown = () => !document.querySelector('section[data-pane=search]').hidden
+    && document.activeElement && document.activeElement.id === 'qinput';
   await page.keyboard.down('Control');
   await page.keyboard.press('KeyK');
   await page.keyboard.up('Control');
-  await wait(() => !document.getElementById('qwrap').hidden);
-  ok('search: ctrl-K opens the panel');
+  await wait(qShown);
+  ok('search: ctrl-K opens the Search tab');
   check('search: the input takes focus',
     await page.evaluate(() => document.activeElement && document.activeElement.id === 'qinput'));
 
@@ -1442,9 +1486,7 @@ try {
   await page.type('#qinput', 'zzqqxxwwvvnothing');
   await wait(() => /nothing matches/.test(document.getElementById('qlist').textContent));
   ok('search: a term with no hits says so');
-  await page.keyboard.press('Escape');
-  await wait(() => document.getElementById('qwrap').hidden);
-  ok('search: escape closes the panel');
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
 
   // From INSIDE the editor, which is where you are when you want to find
   // something, and with vim on: vim's handler is capture-phase on the textarea
@@ -1463,13 +1505,10 @@ try {
     await page.keyboard.press('KeyK');
     await page.keyboard.up('Control');
     let opened = true;
-    try { await page.waitForFunction(() => !document.getElementById('qwrap').hidden, { timeout: 8000 }); }
+    try { await page.waitForFunction(qShown, { timeout: 8000 }); }
     catch { opened = false; }
     check('search: ctrl-K works from the editor with vim ' + (vim ? 'ON' : 'off'), opened);
-    if (opened) {
-      await page.keyboard.press('Escape');
-      await wait(() => document.getElementById('qwrap').hidden);
-    }
+    await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
   }
   await page.evaluate(() => {
     localStorage.edVim = '0';
@@ -1479,54 +1518,28 @@ try {
     encodeURIComponent(n), { method: 'POST' }), SQ);
 
   step = 'mobile';
-  // ── 10. mobile: toggle reveals the tree, opening jumps to the editor ─────
+  // ── 10. mobile: search opens the left drawer, opening a page shuts it ──
   await page.setViewport({ width: 390, height: 780, isMobile: true });
   await page.goto(APP, { waitUntil: 'domcontentloaded' });
-  // at phone width the mode toggle lives in the ⋯ sheet (97-mobar.js); the
-  // sheet clicks the real hidden #modet, so this drives it the way a thumb
-  // does rather than reaching around the UI
-  const toggleMode = async () => {
-    await page.click('#mmore');
-    await page.click('#ms-mode');
-  };
-  await toggleMode();
-  await wait(() => document.getElementById('ws').dataset.mv === 'tree');
-  check('mobile: mode toggle (via ⋯) jumps to the tree pane',
-    await page.evaluate(() => getComputedStyle(document.getElementById('tree')).display) !== 'none');
-  await toggleMode();   // back to pages, still on tree pane
+  // at phone width search is the bottom bar's (97-mobar.js), and it lands
+  // on the left drawer's Search tab
+  await page.click('#mb-search');
+  await wait(() => document.getElementById('ws').classList.contains('ldraw'));
+  check('mobile: search (bottom bar) opens the left drawer on Search',
+    await page.evaluate(() => getComputedStyle(document.getElementById('qpane')).display) !== 'none');
+  await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
   await wait(() => document.querySelector('#treelist a.pg'));
   await page.evaluate(() => document.querySelector('#treelist a.pg').click());
-  await wait(() => document.getElementById('ws').dataset.mv === 'code');
-  ok('mobile: opening a page jumps to the editor pane');
-
-  // full-screen editing. The trap this guards against is losing the way back:
-  // full screen hides the bar and the tabs, so if the control went with them
-  // the only exit would be a reload.
-  const vis = (id) => page.evaluate((i) => {
-    const e = document.getElementById(i);
-    return !!e && getComputedStyle(e).display !== 'none';
-  }, id);
-  check('mobile: the full-screen control is offered while editing', await vis('fullt'));
-  await page.click('#fullt');
-  await wait(() => document.getElementById('ws').classList.contains('full'));
-  //  read the real element, never a missing one: a selector that matches
-  //  nothing would make "it is hidden" pass for the wrong reason
-  const shown = (sel) => page.evaluate((s) => {
-    const e = document.querySelector(s);
-    if (!e) throw new Error('no element for ' + s);
-    return getComputedStyle(e).display !== 'none';
-  }, sel);
-  check('mobile: full screen hides the bar', !(await shown('.bar')));
-  check('mobile: full screen hides the tab strip', !(await shown('.mtabs')));
-  check('mobile: and the editor is still there', await vis('src'));
-  // the one that matters
-  check('mobile: the way OUT is still on screen', await vis('fullt'));
-  await page.click('#fullt');
-  await wait(() => !document.getElementById('ws').classList.contains('full'));
-  check('mobile: leaving full screen brings the tabs back', await shown('.mtabs'));
-  // desktop shows every pane at once, so the control has nothing to reveal
+  await wait(() => !document.getElementById('ws').classList.contains('ldraw'));
+  ok('mobile: opening a page shuts the drawer');
+  // the drawers and the tab header replaced full-screen editing
+  check('mobile: no full-screen control', await page.evaluate(() => !document.getElementById('fullt')));
+  // a drawer left open across the breakpoint would hide nothing on desktop,
+  // but its toggle would read pressed for a column that is shut
+  await page.evaluate(() => document.getElementById('treet').click());
   await page.setViewport({ width: 1400, height: 900 });
-  check('desktop: no full-screen control', !(await vis('fullt')));
+  await wait(() => !document.getElementById('ws').classList.contains('ldraw'));
+  ok('desktop: crossing the breakpoint shuts the drawer');
   await page.setViewport({ width: 390, height: 780, isMobile: true });
 
   step = 'dark theme';
@@ -1534,6 +1547,9 @@ try {
   await page.setViewport({ width: 1200, height: 800 });
   await page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: 'dark' }]);
   await page.goto(APP, { waitUntil: 'domcontentloaded' });
+  //  the preview is on screen in Read
+  await page.waitForFunction(() => !!window.latSetRead, { timeout: 30000 });
+  await page.evaluate(() => window.latSetRead(true));
   await sleep(600);
   const shot = await page.screenshot({ encoding: 'base64' });
   const px = await page.evaluate(async (b64) => {
@@ -1549,7 +1565,9 @@ try {
   check('dark theme: blank preview is the theme background',
     px[0] < 60 && px[1] < 60 && px[2] < 60, 'pixel ' + px.join(','));
 } catch (e) {
-  bad('matrix aborted at [' + step + ']: ' + e.message.slice(0, 120));
+  const at = await page.evaluate(() => [document.getElementById('status').textContent,
+    document.getElementById('pname').value, location.search]).catch(() => []);
+  bad('matrix aborted at [' + step + ']: ' + e.message.slice(0, 120), JSON.stringify(at));
 }
 
 //  A save that outruns the client's 10s deadline is queued as offline and
@@ -1578,8 +1596,10 @@ try {
   const tree = await (await fetch(`${env.base}/apps/lattice/page-tree`,
     { headers: { cookie: env.cookie } })).json();
   for (const node of tree.nodes || []) {
-    if (node.path.includes(RUN) &&
-        (node.path.startsWith('conflicts/') || node.path.includes('-lists'))) {
+    //  and whatever this run left at the top level (RUN, RUN-moved, ...)
+    //  after an abort, which skipped the dialog-driven deletes
+    if (node.path.includes(RUN) && (node.path.startsWith('conflicts/')
+        || node.path.includes('-lists') || !node.path.includes('/'))) {
       await fetch(`${env.base}/apps/lattice/page-del?name=${encodeURIComponent(node.path)}`,
         { method: 'POST', headers: { cookie: env.cookie } });
     }

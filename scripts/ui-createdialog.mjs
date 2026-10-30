@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-//  ui-createdialog.mjs — the desktop new-page dialog.
+//  ui-createdialog.mjs — the new-page dialog (web, desktop and phone alike).
 //
 //  Four properties, each of which failed silently before:
 //
@@ -12,7 +12,8 @@
 //    the row pulses until the write lands, and is REMOVED if it fails, so a
 //      page that does not exist is never left sitting in the tree
 //
-//  __TAURI__ is stubbed to reach the desktop path, as ui-deskmenu does.
+//  No __TAURI__ stub: there is one dialog for every shell now (newFile,
+//  35-pages.js), so the plain web build is the path under test.
 //
 //  Usage: LATTICE_URL=http://localhost:8081 LATTICE_COOKIE=~/.config/lattice-fs/nec-cookie \
 //           node scripts/ui-createdialog.mjs
@@ -23,11 +24,7 @@ const RUN = 'createdlg-' + process.pid;
 
 const check = makeCheck();
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
-//  <=820px: the dialog path
 const page = await openPage(browser, env, { viewport: { width: 700, height: 900 } });
-await page.evaluateOnNewDocument(() => {
-  window.__TAURI__ = { core: { invoke: async () => null } };
-});
 
 const made = [];
 try {

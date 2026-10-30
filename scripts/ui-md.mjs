@@ -13,9 +13,15 @@
 //
 // Usage:  node scripts/ui-md.mjs
 
-import { makeCheck, read } from './lib/check.mjs';
+import { makeCheck, read, cut } from './lib/check.mjs';
 
 const mdToHtml = new Function(`${read('ui-src/lattice/59-md.js')}\nreturn mdToHtml;`)();
+// the right pane's Outgoing and Outline (76-outline.js) read a document
+// through this renderer, so they are lifted to run beside it
+const { outLinks, outline } = new Function(read('ui-src/lattice/59-md.js') + '\n'
+  + cut('ui-src/lattice/76-outline.js', /function outLinks\([\s\S]*?\n {2}\}/, 'outLinks') + '\n'
+  + cut('ui-src/lattice/76-outline.js', /function outline\([\s\S]*?\n {2}\}/, 'outline')
+  + '\nreturn { outLinks, outline };')();
 
 const check = makeCheck();
 const has = (name, input, needle) => {
@@ -84,5 +90,32 @@ for (const [n, v] of [['empty', ''], ['null', null], ['undefined', undefined],
   ['table marker only', '---|---'], ['deep nesting', '- a\n  - b\n    - c']]) {
   try { mdToHtml(v); check.ok('survives ' + n); } catch (e) { check.bad('survives ' + n, 'threw ' + e.message); }
 }
+
+console.log('\noutgoing links and outline (76-outline.js)');
+const eqj = (name, got, want) => check(name, JSON.stringify(got) === JSON.stringify(want),
+  `want ${JSON.stringify(want)} got ${JSON.stringify(got)}`);
+eqj('an empty body has no links', outLinks('', 'md'), []);
+eqj('an empty body has no outline', outline('', 'md'), []);
+eqj('an empty gemtext body has neither', [outLinks('', 'gmi'), outline('', 'gmi')], [[], []]);
+eqj('wikilinks and links, deduped, in order',
+  outLinks('[[a/b]] then [x](https://e.com/?q=1&r=2)\n\n- [[c|see c]] and [[a/b]]', 'md'),
+  ['a/b', 'https://e.com/?q=1&r=2', 'c']);
+eqj('an app link names its page', outLinks('[x](/apps/lattice/app?name=n%2Fm)', 'md'), ['n/m']);
+eqj('images and unsafe schemes are not links',
+  outLinks('![i](https://e.com/i.png) [j](javascript:alert(1))', 'md'), []);
+eqj('links inside a fence are ignored', outLinks('```\n[[nope]]\n```\n[[yes]]', 'md'), ['yes']);
+eqj('gemtext links', outLinks('=> urb://~zod/x one\n=> https://e.com two\n=> bad:x three', 'gmi'),
+  ['urb://~zod/x', 'https://e.com']);
+eqj('markdown headings with their lines', outline('# One\n## Two\ntext\n###### Six', 'md'),
+  [{ level: 1, text: 'One', line: 1 }, { level: 2, text: 'Two', line: 2 },
+    { level: 6, text: 'Six', line: 4 }]);
+eqj('headings inside a fence are ignored', outline('```\n# not\n```\n~~~\n# nor\n~~~\n# yes', 'md'),
+  [{ level: 1, text: 'yes', line: 7 }]);
+eqj('#nospace is not a heading', outline('#tag\n####### seven', 'md'), []);
+eqj('gemtext headings stop at three',
+  outline('# a\n### c\n#### d\n```\n# fenced\n```\n## b', 'gmi'),
+  [{ level: 1, text: 'a', line: 1 }, { level: 3, text: 'c', line: 2 },
+    { level: 2, text: 'b', line: 7 }]);
+eqj('other kinds have no outline', outline('# x', 'html'), []);
 
 check.done();

@@ -11,6 +11,9 @@ fn main() {
             "install_grubbery",
             "connection_status",
             "go_home",
+            // the ship page's Settings: connection and mounts, and the
+            // scheduled backups section of the manager page
+            "open_manager",
             "pick_upload",
             "open_external_url",
             "status",

@@ -43,3 +43,86 @@ fn lick_round_trips_against_a_real_pier() {
     );
     eprintln!("lick ok: {} bytes of page-dump decoded", text.len());
 }
+
+/// One page-source read over lick, timed, for scripts/two-ship-links.sh: a
+/// link's read must answer from its cache even with the host offline. Opt-in
+/// like the test above: it runs only when LICK_SOURCE names a page, and
+/// prints `LICK_MS=<n>` and `LICK_BODY=<json>` lines for the script to read.
+/// With LICK_SAVE set it saves that body to the page first (`LICK_SAVED=`,
+/// `LICK_SAVE_MS=`).
+///
+///   LATTICE_SOCK=<pier>/.urb/dev/grubbery/lattice/fs LATTICE_SHIP='~mec' \
+///     LICK_SOURCE=notes/doc cargo test --test lick_live lick_source -- --nocapture
+#[test]
+fn lick_source() {
+    let (Ok(sock), Ok(ship), Ok(name)) = (
+        std::env::var("LATTICE_SOCK"),
+        std::env::var("LATTICE_SHIP"),
+        std::env::var("LICK_SOURCE"),
+    ) else {
+        eprintln!("skipped: set LATTICE_SOCK, LATTICE_SHIP and LICK_SOURCE to run");
+        return;
+    };
+    let t = LickTransport::new(&sock, &ship);
+    // LICK_SAVE=<body>: save that body first, as the mount does on a flush
+    if let Ok(body) = std::env::var("LICK_SAVE") {
+        let q = [("name", name.as_str()), ("type", "md")];
+        let at = std::time::Instant::now();
+        let r = t.post("/apps/lattice/page-save", &q, body.as_bytes());
+        println!("LICK_SAVE_MS={}", at.elapsed().as_millis());
+        match r {
+            Ok(_) => println!("LICK_SAVED=ok"),
+            Err(e) => println!("LICK_SAVED={} {}", e.code, e.msg),
+        }
+    }
+    let at = std::time::Instant::now();
+    let r = t.get_bytes("/apps/lattice/page-source", &[("name", name.as_str())]);
+    println!("LICK_MS={}", at.elapsed().as_millis());
+    match r {
+        Ok(b) => println!("LICK_BODY={}", String::from_utf8_lossy(&b)),
+        Err(e) => println!("LICK_ERR={} {}", e.code, e.msg),
+    }
+}
+
+/// The mount's stale save, for scripts/two-ship-links.sh: the projection
+/// reads LICK_STALE over lick, LICK_BETWEEN runs (the script has the host
+/// edit the page and waits for this ship's cache to take it), then the
+/// projection saves LICK_SAVE, the text it read before. It must claim the
+/// rev it read (or LICK_FIRST's save made), so the host's newer text
+/// survives. Prints `LICK_READ=`, `LICK_FIRST_SAVED=` and
+/// `LICK_STALE_SAVED=ok` or `LICK_STALE_SAVED=<errno> <msg>`. Opt-in like
+/// the tests above.
+#[test]
+fn lick_stale_save() {
+    use lattice_fs::lattice::LatticeProjection;
+    use lattice_fs::projection::Projection;
+    let (Ok(sock), Ok(ship), Ok(name), Ok(body)) = (
+        std::env::var("LATTICE_SOCK"),
+        std::env::var("LATTICE_SHIP"),
+        std::env::var("LICK_STALE"),
+        std::env::var("LICK_SAVE"),
+    ) else {
+        eprintln!("skipped: set LATTICE_SOCK, LATTICE_SHIP, LICK_STALE and LICK_SAVE to run");
+        return;
+    };
+    let p = LatticeProjection::new(Box::new(LickTransport::new(&sock, &ship)), "")
+        .expect("projection over lick");
+    let got = p.read(&name).expect("read through the link");
+    println!("LICK_READ={}", String::from_utf8_lossy(&got));
+    // LICK_FIRST=<body>: a save that lands first, so the stale one below
+    // rides the claim that save answered, not the read's
+    if let Ok(first) = std::env::var("LICK_FIRST") {
+        match p.write(&name, "md", first.as_bytes(), false) {
+            Ok(()) => println!("LICK_FIRST_SAVED=ok"),
+            Err(e) => println!("LICK_FIRST_SAVED={} {}", e.errno, e.msg),
+        }
+    }
+    if let Ok(cmd) = std::env::var("LICK_BETWEEN") {
+        let st = std::process::Command::new("sh").arg("-c").arg(&cmd).status();
+        println!("LICK_BETWEEN={}", st.map(|s| s.success()).unwrap_or(false));
+    }
+    match p.write(&name, "md", body.as_bytes(), false) {
+        Ok(()) => println!("LICK_STALE_SAVED=ok"),
+        Err(e) => println!("LICK_STALE_SAVED={} {}", e.errno, e.msg),
+    }
+}

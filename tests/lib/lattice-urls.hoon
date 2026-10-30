@@ -53,6 +53,39 @@
     (expect-eq !>(`(unit referent:lu)`~) !>((de-urb:lu 'urb://~zod/x/foo')))
     (expect-eq !>(`(unit referent:lu)`~) !>((de-urb:lu 'urb://~zod/b')))
   ==
+::  urb://<ship>/forum/<board>[/<post>] names a public forum board (or one
+::  post), matched before the legacy multi-char pub fallback.
+::
+++  test-de-urb-forum
+  ;:  weld
+    %+  expect-eq
+      !>  `(unit referent:lu)``[%forum zod %myboard ~]
+      !>  (de-urb:lu 'urb://~zod/forum/myboard')
+    %+  expect-eq
+      !>  `(unit referent:lu)``[%forum zod %myboard `12]
+      !>  (de-urb:lu 'urb://~zod/forum/myboard/12')
+    %+  expect-eq
+      !>  `(unit referent:lu)``[%forum zod %myboard ~]
+      !>  (de-urb:lu 'urb://~zod/forum/myboard/')
+    ::  a plain page url is still the legacy pub form
+    %+  expect-eq
+      !>  `(unit referent:lu)``[%pub zod /notes/todo]
+      !>  (de-urb:lu 'urb://~zod/notes/todo')
+  ==
+::  a published page under forum/ keeps its /n/ escape, so it never aliases a board.
+::
+++  test-forum-page-escapes
+  ;:  weld
+    %+  expect-eq
+      !>  'urb://~zod/n/forum/x'
+      !>  (en-urb:lu zod (weld pub-prefix:lu /forum/x))
+    %+  expect-eq
+      !>  `(unit referent:lu)``[%pub zod /forum/x]
+      !>  (de-urb:lu (en-urb:lu zod (weld pub-prefix:lu /forum/x)))
+    %+  expect-eq
+      !>  `(unit referent:lu)``[%forum zod %x ~]
+      !>  (de-urb:lu 'urb://~zod/forum/x')
+  ==
 ::  +en-urb canonical choices: pages -> /p/, know -> /k/, pub bare (or /n/ when
 ::  a single-char top segment forces the explicit form), raw tree -> /t/.
 ::

@@ -1,133 +1,167 @@
-//  ui-view.mjs — the desktop view control: edit | split | preview.
+#!/usr/bin/env node
+//  ui-view.mjs: the tab header (23-tabhead.js): Edit / Read, the path, the
+//  page menu.
 //
-//  Editor-only and preview-only are ONE three-way choice, not two toggles:
-//  "neither" is not a layout. The control lives in the bar (12-bar.js), the
-//  state in localStorage.appView (85-layout.js), and the desktop View menu
-//  (desktop/src/main.rs) clicks these same buttons — the File-menu doctrine.
+//  Edit and Read are ONE choice per tab, with no split: Edit hides the
+//  preview, Read hides the editor. Checked here against a ship: the control
+//  and Ctrl+E flip it, the choice survives a reload (it rides in appTabs),
+//  the path opens the move dialog, the page menu changes the kind and the
+//  page saves as that kind, Back and Forward are disabled with nothing to
+//  step to, and a phone shows the same header (its drawers and bottom bar
+//  are scripts/ui-mobar.mjs).
 //
-//  Checked here: the menu's id contract (no ship needed), then against a
-//  ship: each view shows the panes it should, the choice survives a reload,
-//  knowledge mode has the same three views and previews a memory as
-//  markdown, and the phone tab strip ignores a desktop preference (it has
-//  its own one-pane-at-a-time model).
+//  The desktop View menu's contract is checked ship-free in
+//  scripts/desktop-commands.mjs.
 //
-//  Usage: node scripts/ui-view.mjs      (defaults to the harness ship on :8080)
-import { shipEnv, launchBrowser, openPage, makeCheck } from './lib/harness.mjs';
+//  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
+//           node scripts/ui-view.mjs
+import { shipEnv, launchBrowser, openPage, makeCheck, seed, sleep } from './lib/harness.mjs';
 
 const env = shipEnv();
 const APP = env.app;
+const RUN = 'vw-' + process.pid;
+const P = RUN + '/p';
 const check = makeCheck();
 
-// (the menu-id contract is checked ship-free in scripts/desktop-commands.mjs)
+const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
+const shipGet = async (path) => {
+  const r = await fetch(env.base + '/apps/lattice/' + path, { headers: { Cookie: env.cookie } });
+  return r.ok ? r.json() : null;
+};
 
-// ── 2. behaviour, against a ship ──────────────────────────────────────────
-const browser = await launchBrowser();
-
-const boot = async (width, pre) => {
-  const p = await openPage(browser, env, { viewport: { width, height: 900 } });
-  if (pre) await p.evaluateOnNewDocument((kv) => { for (const k in kv) localStorage[k] = kv[k]; }, pre);
-  await p.goto(APP, { waitUntil: 'domcontentloaded', timeout: 90000 });
+const boot = async (width, url = APP) => {
+  const p = await openPage(browser, env, {
+    viewport: { width, height: 900 },
+    onPageError: (e) => check('page threw: ' + e.message.slice(0, 90), false),
+  });
+  p.on('dialog', (d) => d.accept().catch(() => {}));
+  await p.goto(url, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await p.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0,
     { timeout: 90000 });
+  await sleep(800);
   return p;
 };
-// pane widths, 0 for anything not on screen
+//  pane widths, 0 for anything not on screen
 const widths = (p) => p.evaluate(() => Object.fromEntries(
-  [['ed', '.edwrap'], ['pv', '.prevwrap'], ['h2', '#ph2'], ['tree', '.tree'], ['ctl', '.ctl']]
+  [['ed', '.edwrap'], ['pv', '.prevwrap']]
     .map(([k, s]) => [k, Math.round(document.querySelector(s).getBoundingClientRect().width)])));
-const pressed = (p) => p.evaluate(() => Object.fromEntries(
-  ['viewedit', 'viewsplit', 'viewprev'].map((id) =>
-    [id, document.getElementById(id).getAttribute('aria-pressed')])));
-const click = (p, id) => p.evaluate((i) => document.getElementById(i).click(), id);
+const readOn = (p) => p.evaluate(() =>
+  document.querySelector('#tread button[data-r="1"]').getAttribute('aria-pressed') === 'true');
 
-const desk = await boot(1400);
-const split = await widths(desk);
-check('split (the default): editor and preview both on screen, with a handle between',
-  split.ed > 0 && split.pv > 0 && split.h2 > 0, JSON.stringify(split));
-check('split is the pressed button', (await pressed(desk)).viewsplit === 'true');
+try {
+  await seed(env, [[P, '# view\n\nbody\n']]);
+  const url = APP + '?name=' + encodeURIComponent(P);
+  const desk = await boot(1400, url);
+  await desk.waitForFunction((n) => document.getElementById('pname').value === n, { timeout: 30000 }, P);
 
-await click(desk, 'viewedit');
-const edit = await widths(desk);
-check('edit: the preview and its handle are gone', edit.pv === 0 && edit.h2 === 0, JSON.stringify(edit));
-check('edit: the editor took the preview’s room', edit.ed >= split.ed + split.pv - 2,
-  JSON.stringify({ split, edit }));
-check('edit: the side panes are untouched', edit.tree === split.tree && edit.ctl === split.ctl);
-check('edit is the pressed button', (await pressed(desk)).viewedit === 'true');
+  // ── Edit and Read ───────────────────────────────────────────────────────
+  const w0 = await widths(desk);
+  check('edit is the default: no preview, no split',
+    w0.ed > 0 && w0.pv === 0 && !(await readOn(desk)), JSON.stringify(w0));
+  const ctl = await desk.evaluate(() => {
+    const r = document.getElementById('tread');
+    const b = (n) => r.querySelector('button[data-r="' + n + '"]');
+    return { n: r.querySelectorAll('button').length, t: b(1).title, x: b(1).textContent };
+  });
+  check('the control is two buttons, Edit and Read, tipped Edit / Read (Ctrl+E)',
+    ctl.n === 2 && ctl.t === 'Edit / Read (Ctrl+E)' && ctl.x === 'Read', JSON.stringify(ctl));
 
-await click(desk, 'viewprev');
-const prev = await widths(desk);
-check('preview: the editor is gone', prev.ed === 0 && prev.h2 === 0, JSON.stringify(prev));
-check('preview: the preview took the editor’s room', prev.pv >= split.ed + split.pv - 2,
-  JSON.stringify({ split, prev }));
+  await desk.click('#tread button[data-r="1"]');
+  const w1 = await widths(desk);
+  check('read: the editor is gone and the preview has the room',
+    w1.ed === 0 && w1.pv > 0, JSON.stringify(w1));
+  check('read is the pressed button', await readOn(desk));
+  await desk.click('#tread button[data-r="0"]');
+  const w2 = await widths(desk);
+  check('edit again: the preview is gone', w2.ed > 0 && w2.pv === 0, JSON.stringify(w2));
 
-await desk.reload({ waitUntil: 'domcontentloaded' });
-await desk.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0,
-  { timeout: 90000 });
-const again = await widths(desk);
-check('the choice survives a reload', again.ed === 0 && again.pv > 0, JSON.stringify(again));
+  // ctrl+e toggles, from the editor itself
+  await desk.focus('#src');
+  await desk.keyboard.down('Control');
+  await desk.keyboard.press('e');
+  await desk.keyboard.up('Control');
+  const w3 = await widths(desk);
+  check('ctrl+e switches to read', w3.ed === 0 && w3.pv > 0 && (await readOn(desk)), JSON.stringify(w3));
+  const painted = await desk.evaluate(() => /<(p|h[1-6])\b/.test(document.getElementById('prev').srcdoc || ''));
+  check('entering read paints the preview', painted);
+  await desk.keyboard.down('Control');
+  await desk.keyboard.press('e');
+  await desk.keyboard.up('Control');
+  const w4 = await widths(desk);
+  check('ctrl+e switches back to edit', w4.ed > 0 && w4.pv === 0, JSON.stringify(w4));
 
-// knowledge mode: the same view, and a memory previews as markdown
-// the memory listing arrives after a fetch, so the tree still shows PAGES
-// for a moment; remember them to tell a memory row from a page row
-const pages = await desk.evaluate(() => [...document.querySelectorAll('#treelist a.pg')].map((a) => a.textContent));
-await click(desk, 'modet');
-const know = await widths(desk);
-check('knowledge mode: preview-only holds', know.ed === 0 && know.pv > 0, JSON.stringify(know));
-check('knowledge mode: the view control is still in the bar',
-  await desk.evaluate(() => document.getElementById('viewseg').getBoundingClientRect().width > 0));
-await desk.waitForFunction((pg) => document.getElementById('treesec').textContent === 'memories'
-  && ([...document.querySelectorAll('#treelist a.pg')].some((a) => !pg.includes(a.textContent))
-      || /no memories yet/.test(document.getElementById('treelist').textContent)),
-  { timeout: 90000 }, pages);
-// the tag chips fold under a heading (they used to fill the pane top)
-const tagsec = await desk.evaluate(() => {
-  const d = document.getElementById('tagsec');
-  //  checkVisibility, not a rect: Chromium keeps a layout box for a closed
-  //  details' content (content-visibility: hidden), so its rect is not 0
-  return { open: d.open, shown: !d.hidden, chips: document.getElementById('chips').checkVisibility(),
-    label: document.getElementById('tagsh').textContent };
-});
-check('knowledge mode: the tags fold is shown and folded by default',
-  tagsec.shown && !tagsec.open && !tagsec.chips, JSON.stringify(tagsec));
-check('knowledge mode: its heading counts the tags', /^tags \u00b7 \d+$/.test(tagsec.label), tagsec.label);
-await desk.evaluate(() => document.getElementById('tagsh').click());
-check('knowledge mode: one click unfolds the chips',
-  await desk.evaluate(() => document.getElementById('chips').checkVisibility()));
-await desk.evaluate(() => document.getElementById('tagsh').click());
-const memory = await desk.evaluate((pg) => {
-  const a = [...document.querySelectorAll('#treelist a.pg')].find((x) => !pg.includes(x.textContent));
-  if (!a) return null;
-  a.click();
-  return a.textContent;
-}, pages);
-if (memory) {
-  let painted = false;
-  try {
-    await desk.waitForFunction(() => /<(p|h[1-6]|ul|pre)\b/.test(document.getElementById('prev').srcdoc || ''),
-      { timeout: 20000 });
-    painted = true;
-  } catch {}
-  check('knowledge mode: opening a memory paints it into the preview', painted, memory);
-} else console.log('  skip - no memory on this ship to open');
-await click(desk, 'modet');
-const back = await widths(desk);
-check('pages mode again: preview-only resumes', back.ed === 0 && back.pv > 0, JSON.stringify(back));
+  // the choice rides with the tab through a reload
+  await desk.click('#tread button[data-r="1"]');
+  await sleep(300);
+  await desk.reload({ waitUntil: 'domcontentloaded' });
+  await desk.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0,
+    { timeout: 90000 });
+  await sleep(1000);
+  const again = await widths(desk);
+  check('the choice survives a reload', again.ed === 0 && again.pv > 0, JSON.stringify(again));
+  await desk.click('#tread button[data-r="0"]');
 
-await click(desk, 'viewsplit');
-const restored = await widths(desk);
-check('split again: both panes and the handle return',
-  restored.ed > 0 && restored.pv > 0 && restored.h2 > 0, JSON.stringify(restored));
-await desk.close();
+  // ── the path opens the move dialog ──────────────────────────────────────
+  const shown = await desk.evaluate(() => document.getElementById('tpath').textContent);
+  check('the path names the open page', shown.includes(P), shown);
+  await desk.click('#tpath');
+  await desk.waitForFunction(() => !document.getElementById('dlg').hidden, { timeout: 10000 })
+    .catch(() => {});
+  const dlg = await desk.evaluate(() => ({
+    open: !document.getElementById('dlg').hidden, v: document.getElementById('dlginput').value }));
+  check('path click opens move, prefilled with the name', dlg.open && dlg.v === P, JSON.stringify(dlg));
+  await desk.keyboard.press('Escape');
+  await desk.waitForFunction(() => document.getElementById('dlg').hidden, { timeout: 5000 }).catch(() => {});
 
-// a phone has tabs, not a view; a desktop preference must not reach it
-const phone = await boot(400, { appView: 'edit' });
-await phone.evaluate(() => document.querySelector('.mtabs button[data-mv="prev"]').click());
-const tab = await widths(phone);
-check('phone: the preview tab still shows the preview with edit-only remembered',
-  tab.pv > 0 && tab.ed === 0, JSON.stringify(tab));
-check('phone: the view control is not in the bar',
-  await phone.evaluate(() => document.getElementById('viewseg').getBoundingClientRect().width === 0));
-await phone.close();
+  // ── back / forward ──────────────────────────────────────────────────────
+  const nav = await desk.evaluate(() => ['tback', 'tfwd'].map((id) => {
+    const b = document.getElementById(id);
+    return [b.disabled, b.getAttribute('aria-disabled')];
+  }));
+  check('back and forward are disabled with nothing to step to',
+    nav.every(([d, a]) => d && a === 'true'), JSON.stringify(nav));
 
-await browser.close();
+  // ── the page menu ───────────────────────────────────────────────────────
+  await desk.click('#tmenu');
+  const items = await desk.evaluate(() =>
+    [...document.querySelectorAll('.tmenu [data-mi]')].map((b) => b.dataset.mi));
+  check('the menu lists its items',
+    ['kind', 'wrap', 'dup', 'download', 'raw', 'del'].every((i) => items.includes(i)), JSON.stringify(items));
+  const labels = await desk.evaluate(() =>
+    [...document.querySelectorAll('.tmenu [data-mi]')].map((b) => b.textContent));
+  check('the menu has Download and no Export vault',
+    labels.includes('Download') && !labels.some((l) => /export/i.test(l)), JSON.stringify(labels));
+  check('convert to html is not offered off the desktop app and off tex', !items.includes('tex'),
+    JSON.stringify(items));
+  await desk.click('.tmenu [data-mi="kind"]');
+  await desk.click('.tmenu [data-kind="gmi"]');
+  const kv = await desk.evaluate(() => document.getElementById('pkind').value);
+  check('page menu kind change sets #pkind', kv === 'gmi', kv);
+  let kind = null;
+  for (let i = 0; i < 20 && kind !== 'gmi'; i++) {
+    await sleep(1000);
+    kind = ((await shipGet('page-source?name=' + encodeURIComponent(P))) || {}).kind;
+  }
+  check('and the page saves as gmi', kind === 'gmi', String(kind));
+  await desk.keyboard.press('Escape');
+  const closed = await desk.evaluate(() => !document.querySelector('.tmenu'));
+  check('escape closes the menu', closed);
+  await desk.close();
+
+  // ── a phone has the same header ─────────────────────────────────────────
+  const phone = await boot(400, url);
+  check('phone: the tab header is on screen, Edit / Read with it',
+    await phone.evaluate(() => {
+      const r = document.getElementById('tread').getBoundingClientRect();
+      return r.width > 0 && r.right <= 400;
+    }));
+  await phone.close();
+} catch (e) {
+  check('suite crashed: ' + e.message, false);
+} finally {
+  await browser.close();
+  for (const n of [P, RUN])
+    await fetch(env.base + '/apps/lattice/page-del?name=' + encodeURIComponent(n),
+      { method: 'POST', headers: { Cookie: env.cookie } }).catch(() => {});
+}
 check.done();

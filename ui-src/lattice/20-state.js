@@ -1,10 +1,13 @@
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
+  let mode = 'pages';      // 'know' while a memory is in front (95-know.js)
   // read by the service-worker registration script, which lives in its own
   // inline <script> and cannot see this scope. It reloads the page when a new
   // worker takes over, and must never do that over typed work.
-  window.__latUnsaved = () => dirty === true;
+  // A parked tab (21-tabs.js) holds its own dirty buffer, so the live flag
+  // alone misses work typed into any tab that is not in front.
+  window.__latUnsaved = () => dirty === true || tabs.some((t) => t !== activeTab && t.snap && t.snap.dirty);
   // Whether the user has typed since the current editor view was established.
   // Cleared by applyPage/newFile (a fresh view), NEVER by autosave — and that
   // is the point: `dirty` cannot answer "did the user do something while
@@ -29,11 +32,46 @@
   // save path this mode already owns, and stay silent when it lands. Only a
   // flush that leaves the buffer dirty anyway (the offline queue refused it,
   // the ship rejected the write) falls back to naming what would be lost.
+  //
+  // With Settings > Editor > Autosave off, pages and memories save only when
+  // asked to, so nothing here writes on its own: after any save already in
+  // flight, unsaved text gets the question, with save as one answer.
   async function guardDirty() {
     if (!dirty) return true;
     if (grubPath)
       return askConfirm('discard unsaved changes to ' + grubPath + '?', 'discard');
     const label = current || pname.value.trim() || 'this';
+    if (await flushNoAsk()) return true;
+    if (autosaveOn())
+      return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+    const pick = await askChoice('unsaved changes to ' + label + '. save them?',
+      ['save', 'discard']);
+    if (pick === 'discard') return true;
+    if (pick !== 'save') return false;
+    return saveNow();
+  }
+  // saveNow: the save an answer of "save" asks for. A save already in
+  // flight is waited out first (it may be this very text), then the front
+  // document's own explicit save runs. Answers whether the buffer is clean.
+  // Never a silent no-op: a failed save has said why, and a flight still
+  // running past the cap says so here.
+  async function saveNow() {
+    await waitSave();
+    if (!dirty) return true;
+    if (saving) { st('a save is still running, try again', false); return false; }
+    if (grubPath) await saveGrub(); else if (mode === 'know') await saveKnow(); else await save();
+    await waitSave();
+    return !dirty;
+  }
+  // flushNoAsk: guardDirty's flush without its question, answering whether
+  // the buffer is clean afterwards. A tab switch (21-tabs.js) uses it on its
+  // own: the tab it leaves keeps whatever is still unsaved, so there is
+  // nothing to ask about. A dirty grub has no flush (explicit save only) and
+  // answers false at once, and so does everything with autosave off, after
+  // waiting out a save already in flight (an explicit one, still landing).
+  async function flushNoAsk() {
+    if (!dirty) return true;
+    if (grubPath) return false;
     // save() coalesces concurrent calls by design. A save already in flight
     // just arms savePending and returns on the spot, so calling save() here
     // answered nothing while dirty stayed set. That read like a flush that
@@ -51,19 +89,21 @@
     //  `dirty`, and waking in that gap offered to discard a save that was
     //  about to succeed. Capped past tfetch's 30s, since a grub save holds
     //  `saving` with no timeout of its own.
-    const t0 = Date.now();
-    while (saving && Date.now() - t0 < 35000)
-      await (saveFlight || new Promise((r) => setTimeout(r, 50)));
+    await waitSave();
     if (!dirty) return true;
     // still dirty and nothing is in flight: the wait either never started or
     // timed out with the buffer untouched. Only now is a flush worth trying.
-    if (!saving) {
+    if (!saving && autosaveOn()) {
       if (mode === 'know') await saveKnow(); else await save();
-      if (!dirty) return true;
     }
-    return askConfirm('discard unsaved changes to ' + label + '?', 'discard');
+    return !dirty;
   }
-  // setOpen: what the bar says is open, set in one place. `name` becomes
+  async function waitSave() {
+    const t0 = Date.now();
+    while (saving && Date.now() - t0 < 35000)
+      await (saveFlight || new Promise((r) => setTimeout(r, 50)));
+  }
+  // setOpen: what the tab header says is open, set in one place. `name` becomes
   // `current`, the open page or memory, or null when nothing named is open
   // (a new page, a folder, a grub, a fresh mode). The name field shows
   // `name` unless `shown` says otherwise (a folder's path, a grub's road, a
@@ -71,7 +111,8 @@
   // when readOnly. `kind` moves the kind picker when it has that option.
   // `url`, when given, replaces the address. Assigning .value fires no
   // event, so this ends by dispatching 'input' on the field: the desktop
-  // and phone labels (96-deskmenu.js, 97-mobar.js) repaint on it.
+  // and phone labels (96-deskmenu.js, 97-mobar.js) repaint on it. Then the
+  // active document tab learns what it now shows (tabFollow, 21-tabs.js).
   function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
     current = name;
     pname.value = shown === undefined ? (name || '') : shown;
@@ -79,6 +120,7 @@
     if (kind && [...pkind.options].some((o) => o.value === kind)) pkind.value = kind;
     if (url) history.replaceState(null, '', url);
     pname.dispatchEvent(new Event('input'));
+    tabFollow();
   }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
@@ -207,7 +249,8 @@
       if (saveFlight === req) saveFlight = null;
       echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
     }
-    if (shipGone(r)) return { gone: true };
+    // `r` too: a 504 can be a link's host (35-pages.js), not this ship
+    if (shipGone(r)) return { gone: true, r };
     if (r.ok) {
       echo.n++;                         // one bump is ours; consume it on arrival
       // every write names its target the same way; a move dirties both ends
@@ -265,9 +308,10 @@
   const forgetBase = () => { basePr = null; try { delete localStorage.latBase; } catch {} };
 
   // a tree's folded folders, remembered under one localStorage key: get()
-  // reads the list, flip(key) folds or unfolds one folder in it. The files
-  // tree (with its shared-with-me folder) keeps appColl; memories keep
-  // knowColl (95-know.js).
+  // reads the list, flip(key) folds or unfolds one folder in it, set(list)
+  // replaces it (collapse all). The files tree (with its shared-with-me
+  // folder) keeps appColl; memories keep knowColl (95-know.js) and
+  // bookmarks marksColl (31-marks.js).
   const collStore = (k) => {
     const get = () => {
       try { return JSON.parse(localStorage[k] || '[]'); } catch { return []; }
@@ -278,6 +322,7 @@
       if (i >= 0) c.splice(i, 1); else c.push(key);
       localStorage[k] = JSON.stringify(c);
     };
-    return { get, flip };
+    const set = (list) => { localStorage[k] = JSON.stringify(list); };
+    return { get, flip, set };
   };
   const paneColl = collStore('appColl');

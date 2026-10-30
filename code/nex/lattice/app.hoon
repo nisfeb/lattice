@@ -63,11 +63,22 @@
 /<  lcl  /lib/lattice-clip.hoon
 /<  li   /lib/lattice-index.hoon
 /<  ls   /lib/lattice-share.hoon
+::  a page shared with us, moved into our tree. `ll` and not `lk`: that face
+::  is lattice-know above.
+/<  ll   /lib/lattice-link.hoon
 ::  signing. `lsg` and not `ls`: that face is lattice-share above.
 /<  lsg  /lib/lattice-sign.hoon
 ::  the commons mirror (docs/obelisk-mirror.md). lm builds the urQL and
 ::  carries the result-type vocabulary matched to %obelisk the DESK.
 /<  lm   /lib/lattice-mirror.hoon
+::  the forum: types, board grubs, the pure state transition (docs/superpowers/specs).
+/<  ft   /lib/lattice-forum-types.hoon
+/<  fb   /lib/lattice-forum-board.hoon
+/<  fa   /lib/lattice-forum-act.hoon
+::  fr: the forum's role, caps and rate-limit rules. The cross-ship inbox
+::  (/forum.sig) runs the rate limit, which +act leaves to the caller.
+/<  fr   /lib/lattice-forum-rules.hoon
+/<  fre  /lib/lattice-forum-render.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -186,6 +197,25 @@
         ::  crash on it, killing the writer fiber and hanging every publish.
         ::  The counter is one bare atom and /mar/ud.hoon already is that mark.
             [%fall %& [/pub %meta] [[/ %ud] 0]]
+        ::  /forum: the forum (docs/superpowers/specs, State layout). A
+        ::  board is a directory of [/ %noun] grubs, each [%1 shape], laid
+        ::  by +apply-forum:
+        ::    /forum/boards/<name>/pub/{card,roles,conf}
+        ::    /forum/boards/<name>/content/{posts,threads,votes}/b<k>
+        ::    /forum/boards/<name>/content/{pins,sidebar}
+        ::  Boards are made at runtime, so the covering row is the boards
+        ::  DIRECTORY (as /know/vault is): it carries every board's grubs
+        ::  through a reload. /forum/members/<name> is a (set @p) roster
+        ::  per board, /forum/seen the unread high-water per board, and
+        ::  /forum/limits the rate-limit state per [ship board]; the last
+        ::  two start as an empty [%1 ~] map. /forum/notes holds the refusal
+        ::  notes a host sent back about OUR cross-ship posts (one grub each,
+        ::  capped), landed by the /forum.sig inbox from the transport sender.
+            [%fall %| /forum/boards empty-dir:loader]
+            [%fall %| /forum/members empty-dir:loader]
+            [%fall %| /forum/notes empty-dir:loader]
+            [%fall %& [/forum %seen] [[/ %noun] [%1 ~]]]
+            [%fall %& [/forum %limits] [[/ %noun] [%1 ~]]]
         ::  /salt: the private salt behind every published revision's scry
         ::  id (+page-id:lp). Outside /pub, so no peer can read it; 0 until
         ::  +ensure-pub-ids mints it. Covered, because a new salt renames
@@ -234,6 +264,11 @@
         ::  a lightweight live-update signal that doesn't stream a page's heavy
         ::  compiled grub, and works where grubbery's ?blot=/txt keep does not.
             [%fall %& [/beacon %rev] [[/ %json] (numb:enjs:format 0)]]
+        ::  /beacon/forum: the forum's own stamp, bumped by +apply-forum on any
+        ::  forum change (the owner route and the cross-ship inbox both land
+        ::  there), so an open board page reloads without every page edit
+        ::  waking it. Nested under /beacon like /rev (keep-SSE needs that).
+            [%fall %& [/beacon %forum] [[/ %json] (numb:enjs:format 0)]]
         ::  /idx: the grub-native term index (docs/native-index.md). 256 bucket
         ::  grubs, each term -> (key -> [scope tf]). ONE covering %fall row. A
         ::  nexus reload rewrites its whole covered subtree, so without a row
@@ -280,6 +315,18 @@
         ::  The road reaches only this fiber, and this fiber writes only under
         ::  /comments, so a commenter structurally cannot touch a page.
             [%fall %& [/ %'comments.sig'] [[/ %sig] ~]]
+        ::  /forum.sig: the cross-ship FORUM inbox. Same shape and reasoning as
+        ::  comments.sig: /public carries a poke road for it (laid by
+        ::  +send-public-how) so any ship running lattice may post, comment or
+        ::  vote on a board hosted here, and the author is taken from the
+        ::  transport (+get-poke-src), never the payload. Board-level actions
+        ::  (create/delete, set-role, set-public, set-prune, edit-board-info)
+        ::  are owner-only: a remote src is never our, so +apply-forum refuses
+        ::  them. Refusals ride this same road back to the poster as a note.
+            [%fall %& [/ %'forum.sig'] [[/ %sig] ~]]
+        ::  /forum-sweep.sig: the forum prune timer. Behn-woken on a six-hour
+        ::  grid; deletes through the one writer (+forum-sweep).
+            [%fall %& [/ %'forum-sweep.sig'] [[/ %sig] ~]]
         ::  /fs.sig: a lick (unix-socket) port exposing the filesystem ops to a
         ::  local FUSE client (lattice-fs), the native-transport twin of the
         ::  HTTP page-tree/page-source/page-save routes.
@@ -288,6 +335,20 @@
         ::  state. Uncovered, every reload dropped them, which compiled a
         ::  revoked grantee's hoon and let banned ships back in.
             [%fall %| /lock empty-dir:loader]
+        ::  /link-reads: one short-lived fiber per background read of a link
+        ::  (+link-read-later), gone when its read is done
+            [%fall %| /link-reads empty-dir:loader]
+        ::  /link-writes/<id>: one short-lived fiber per lick save through a
+        ::  link (+link-write-apart), and /link-done/<id> its answer, which
+        ::  the lick port takes and deletes (or the fiber does, later)
+            [%fall %| /link-writes empty-dir:loader]
+            [%fall %| /link-done empty-dir:loader]
+        ::  /links/<path>/link: the links in the page tree (/lib/lattice-link),
+        ::  kept out of /page so no grant or publish there can reach one. A
+        ::  folder grant is a dir road, and grubbery's weirs only ever allow,
+        ::  so a link grub under the folder went to every ship granted it.
+        ::  Only the owner's listings put them back in place (+graft-links).
+            [%fall %| /links empty-dir:loader]
             [%fall %& [/ %banned] [[/lattice %banned] *banned:ls]]
         ::  /key-bytes: each agent key's bytes written today (+spend:ky)
             [%fall %& [/ %'key-bytes'] [[/ %noun] *ledger:ky]]
@@ -377,6 +438,22 @@
         ;<  now=@da  bind:m  bowl-now
         ;<  ~  bind:m  (apply-comment-notice root from sage now)
         $
+      ::  /forum.sig: the cross-ship forum inbox. Foreign ships poke a
+      ::  forum action (post/comment/vote); we take the author from the
+      ::  TRANSPORT, never the payload, so it cannot be forged. A host's
+      ::  refusal note rides the same road back here. Same take-poke loop as
+      ::  /comments.sig.
+          [~ %'forum.sig']
+        ;<  ~  bind:m  (rise-later prod "lattice /forum.sig" "")
+        |-
+        ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
+        ;<  now=@da  bind:m  bowl-now
+        ;<  ~  bind:m  (apply-forum-notice from sage now)
+        $
+      ::  /forum-sweep.sig: the forum prune timer (see +forum-sweep-loop).
+          [~ %'forum-sweep.sig']
+        ;<  ~  bind:m  (rise-later prod "lattice /forum-sweep.sig" "")
+        forum-sweep-loop
       ::  /ui/main.sig: bind the HTTP endpoint and dispatch each request into a
       ::  per-request fiber under /ui/requests (same pattern as counter).
           [[%ui ~] %'main.sig']
@@ -607,14 +684,50 @@
         ;<  ~  bind:m  (send-wait-dated until)
         ;<  *  bind:m  (take-news-or-wake-until /ev until)
         $
-      ::  /fs.sig: the lick (local IPC) port for the FUSE client. The serve-loop
-      ::  is generic. +lick-serve:io (fiberio) spins the socket, decodes each
-      ::  [verb path query body] frame, and spits back [status body]. The only
-      ::  lattice-specific part is the +fs-op handler. Auth is filesystem-presence.
-      ::  The socket lives in the pier.
+      ::  /fs.sig: the lick (local IPC) port for the FUSE client. +fs-serve
+      ::  spins the socket, decodes each [verb path query body] frame, and
+      ::  spits back [status body] from the +fs-op handler. Auth is
+      ::  filesystem-presence. The socket lives in the pier.
           [~ %'fs.sig']
         ;<  ~  bind:m  (rise-later prod "lattice /fs.sig" "")
-        (lick-serve:io fs-port fs-op)
+        ;<  ~  bind:m  sweep-link-done
+        fs-serve
+      ::  /link-reads/<id>: a live read of one link (+link-read-later), for a
+      ::  lattice-fs read that answered from the link's cache. The grub holds
+      ::  the link's path. The fiber ends with the read, and grubbery deletes
+      ::  its grub; a restart (prod) just ends it, the next read starts another.
+          [[%link-reads ~] @]
+        ;<  ~  bind:m  take-kick
+        ?^  prod  (pure:m ~)
+        ;<  pax=path  bind:m  (get-state-as:io ,path)
+        ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at pax)
+        ?~  lk  (pure:m ~)
+        ;<  *  bind:m  (link-read pax l.u.lk)
+        (pure:m ~)
+      ::  /link-writes/<id>: a lick save through a link (+link-write-apart).
+      ::  The remote peeks and pokes run here, never in the lick port's own
+      ::  fiber: one that times out leaves its late answer to a fiber that
+      ::  is gone, where the port would %skip it forever and slow every
+      ::  later request. The answer goes to /link-done/<id>, and is deleted
+      ::  a while later if the port gave up on it.
+          [[%link-writes ~] @]
+        ;<  ~  bind:m  take-kick
+        ?^  prod  (pure:m ~)
+        ;<  up=@ud  bind:m  nexus-up
+        ;<  [pax=path body=@t base=(unit @ud)]  bind:m
+          (get-state-as:io ,[path @t (unit @ud)])
+        ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at pax)
+        ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
+          =/  n  (fiber:fiber:nexus ,(each [old=@ud new=@ud] [code=@ud msg=@t]))
+          ?~  lk  (pure:n |+[404 'no such page'])
+          (link-write pax l.u.lk body base ~s3)
+        =/  done=road:tarball  (rf up /link-done name.rail)
+        ;<  ~  bind:m  (put-file done [/ %noun] r)
+        ;<  ~  bind:m  (sleep:io ~m1)
+        ;<  ex=?  bind:m  (peek-exists:io done)
+        ?.  ex  (pure:m ~)
+        ;<  *  bind:m  (cull-soft:io done)
+        (pure:m ~)
       ::  /mirror/mirror.sig: the commons reconciler (docs/obelisk-mirror.md
       ::  section 5). The loop lives in +mirror-loop.
           [[%mirror ~] %'mirror.sig']
@@ -723,6 +836,20 @@
     ?:  exists  (pure:n [`[403 tainted-msg] ~])
     $(todo t.todo, mark [pax mark])
   ?^  err.gate  (send-err eyre-id code.u.err.gate msg.u.err.gate)
+  ::  a link (/lib/lattice-link) saves through its host, one page at a
+  ::  time (/page-save). Refused before anything is written, never left to
+  ::  land as a %code grub at the link's path.
+  ;<  onto=(unit @t)  bind:m
+    =/  n  (fiber:fiber:nexus ,(unit @t))
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    |-  ^-  form:n
+    ?~  todo  (pure:n ~)
+    ;<  lk=(unit [l=link:ll at=@da])  bind:n  (link-at (pax-of nam.i.todo))
+    ?^  lk  (pure:n `(crip "{(trip nam.i.todo)} is a link: save it with page-save"))
+    ;<  la=(unit path)  bind:n  (link-above (pax-of nam.i.todo))
+    ?^  la  (pure:n `(link-above-msg u.la))
+    $(todo t.todo)
+  ?^  onto  (send-err eyre-id 409 u.onto)
   ::  mark a tainted key's new pages sensitive before the write lands
   ;<  ~  bind:m
     =/  n  (fiber:fiber:nexus ,~)
@@ -875,6 +1002,11 @@
   ;<  up=@ud  bind:m  nexus-up
   =/  name=(unit @t)  (~(get by args) 'name')
   ?~  name  (send-err eyre-id 400 'missing name')
+  ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+  ::  a link (/lib/lattice-link) saves on its host, never as a %code grub
+  ::  here. A key reaching this has passed both scopes (the route above).
+  ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at (pax-of u.name))
+  ?^  lk  (link-save-respond eyre-id (pax-of u.name) l.u.lk args (req-body req))
   =/  ptype=@tas  `@tas`(~(gut by args) 'type' 'hoon')
   =/  sr  (save-src u.name ptype (req-body req))
   ?:  ?=(%| -.sr)  (send-err eyre-id code.p.sr msg.p.sr)
@@ -896,6 +1028,11 @@
   ::  is safe where refuse-and-block would need true writer-side CAS.
   =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
   ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of u.name))
+  ::  a new page under a link is refused: a link holds no pages
+  ;<  la=(unit path)  bind:m
+    ?^  src.pc  (pure:(fiber:fiber:nexus ,(unit path)) ~)
+    (link-above (pax-of u.name))
+  ?^  la  (send-err eyre-id 409 (link-above-msg u.la))
   =/  prev=@ud  rev.pc
   =/  stale=?  &(?=(^ base) !=(u.base 0) !=(u.base prev))
   =/  old=(unit @t)  ?.(stale ~ src.pc)
@@ -936,6 +1073,30 @@
       ['prev-rev' (numb:enjs:format prev)]
       ['conflicted' b+conflicted]
       ['kept' s+kept]
+  ==
+::  +link-save-respond: POST /page-save onto a link (+link-write), with
+::  page-save's answer. ?base= is the owner's rev the writer read (absent
+::  or 0: the cached rev, +link-write), and a write against a page that
+::  moved past it is a 409: the owner's newer text is never overwritten,
+::  and there is no local copy to keep it in.
+::
+++  link-save-respond
+  |=  [eyre-id=@ta lpath=path l=link:ll args=(map @t @t) body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  (~(has by args) 'new')  (send-err eyre-id 409 'page exists')
+  ?:  =('' body)  (send-err eyre-id 400 'missing body')
+  =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
+  ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
+    (link-write lpath l body base ~s5)
+  ?:  ?=(%| -.r)  (send-err eyre-id code.p.r msg.p.r)
+  %+  send-json  eyre-id
+  %-  pairs:enjs:format
+  :~  ['ok' b+&]
+      ['rev' (numb:enjs:format new.p.r)]
+      ['prev-rev' (numb:enjs:format old.p.r)]
+      ['conflicted' b+|]
+      ['kept' s+'']
   ==
 ::  +handle-share-group-save: POST /share-group-save. Write one usergroup's
 ::  members and the weir that grants them access. A group naming a banned ship
@@ -1019,6 +1180,322 @@
   ;<  ok=?  bind:m  (ug-put gdir who weir)
   ?.  ok  (ug-refused eyre-id)
   (send-ok eyre-id)
+::  +handle-link-make: POST /link-make?host=&path=&to=. The shared-with-me
+::  entry [host path] becomes a link at <to>. The host is peeked once,
+::  with a short deadline, for the page's kind, body and rev: kind is frozen
+::  here, so a link is never made with a kind it guessed. Offline, nothing is
+::  written. The entry goes once the link is in (one home), and the answer is
+::  the new tree node.
+++  handle-link-make
+  |=  [eyre-id=@ta args=(map @t @t) our=@p]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  hp=(unit @p)  (biff (~(get by args) 'host') (cury slaw %p))
+  ?~  hp  (send-err eyre-id 400 'bad host')
+  ::  owner only, so `our` is the request's own src. A link names another
+  ::  ship: one to ourselves would write local pages outside page-save.
+  ?:  =(u.hp our)  (send-err eyre-id 400 'that is you: a link names another ship')
+  =/  pp=(unit path)
+    (biff (~(get by args) 'path') |=(t=@t (mole |.((stab t)))))
+  ?~  pp  (send-err eyre-id 400 'bad path')
+  ?:  =(~ u.pp)  (send-err eyre-id 400 'bad path')
+  =/  to=(unit @t)  (~(get by args) 'to')
+  ?~  to  (send-err eyre-id 400 'missing to')
+  ?.  (valid-name u.to)  (send-err eyre-id 400 'bad name')
+  =/  tp=path  (pax-of u.to)
+  ;<  la=(unit path)  bind:m  (link-above tp)
+  ?^  la  (send-err eyre-id 409 (link-above-msg u.la))
+  ;<  sh=shared:ls  bind:m  read-shared
+  =/  en=(unit entry:ls)
+    =/  hit  (skim sh |=(e=entry:ls &(=(host.e u.hp) =(pax.e u.pp))))
+    ?~(hit ~ `i.hit)
+  ?~  en  (send-err eyre-id 404 'not shared with you')
+  ::  a page or a folder (a dir under /page), or a link (under /links)
+  ;<  ex=?  bind:m  (peek-exists:io (rv up (weld /page tp)))
+  ;<  lx=?  bind:m  (peek-exists:io (link-road up tp))
+  ?:  |(ex lx)  (send-err eyre-id 409 'destination exists')
+  ;<  got=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek u.hp u.pp)
+  ?~  got
+    %^  send-err  eyre-id  504
+    (crip "{(scow %p u.hp)} is unreachable, try again when it's online")
+  ;<  now=@da  bind:m  bowl-now
+  =/  l=link:ll
+    :*  %ship  u.hp  u.pp  mode.u.en
+        kind.u.got  body.u.got  rev.u.got  (met 3 body.u.got)  [& now]
+    ==
+  ;<  ~  bind:m  (poke-eval [%link-put tp l])
+  ;<  ~  bind:m
+    %+  poke:io  (rf up / %'shares.sig')
+    [[/lattice %share-notice] `action:ls`[%del u.hp u.pp]]
+  (send-json eyre-id (pairs:enjs:format (link-rows tp l [0 now])))
+::  +handle-link-unmake: POST /link-unmake?name=. The link goes back to
+::  shared with me, with the mode it last knew, and is deleted. The owner's
+::  grant is never touched. The entry goes back through /shares.sig, the
+::  one writer of /shared: a write from here raced a notice landing there.
+++  handle-link-unmake
+  |=  [eyre-id=@ta args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  name=(unit @t)  (~(get by args) 'name')
+  ?~  name  (send-err eyre-id 400 'missing name')
+  ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+  =/  pax=path  (pax-of u.name)
+  ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at pax)
+  ?.  ?=([~ [%ship *] *] lk)  (send-err eyre-id 404 'no such link')
+  =/  l=link:ll  l.u.lk
+  ?.  ?=(%ship -.l)  (send-err eyre-id 404 'no such link')
+  ;<  ~  bind:m
+    %+  poke:io  (rf up / %'shares.sig')
+    [[/lattice %share-notice] `action:ls`[%put host.l pax.l mode.l]]
+  ;<  ~  bind:m  (poke-eval [%del pax])
+  (send-ok eyre-id)
+::  +read-shared: the shared-with-me list, ~ when absent or unreadable.
+++  read-shared
+  =/  m  (fiber:fiber:nexus ,shared:ls)
+  ^-  form:m
+  ;<  sn=view:nexus  bind:m  (peek:io (rf up / %shared) ~)
+  %-  pure:m
+  ?.  ?=([%file *] sn)  ~
+  (fall (mole |.(;;(shared:ls (sang-noun:tarball sang.sn)))) ~)
+::  +link-peek: one read of a linked page on its host, with a 5s deadline:
+::  [kind body rev], or ~ when the host is offline or no longer grants it.
+::  A lattice page reads as its prose and builder, as /browse-file reads it.
+++  link-peek
+  |=  [host=@p pax=path]
+  =/  m  (fiber:fiber:nexus ,(unit [kind=@ta body=@t rev=@ud]))
+  ^-  form:m
+  ?~  pax  (pure:m ~)
+  =/  n=@ud  (dec (lent `path`pax))
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-quiet [%& %& (scag n `path`pax) (snag n `path`pax)] host ~s5)
+  ?.  ?=([~ %file *] ms)  (pure:m ~)
+  =/  txt=(unit @t)  (grub-text sang.u.ms)
+  ?~  txt  (pure:m ~)
+  =/  un=(unit [builder=@tas body=@t])
+    ?.  =([/lattice %page] p.sang.u.ms)  ~
+    (unwrap-content u.txt)
+  %-  pure:m
+  :-  ~
+  :+  ?~(un %hoon builder.u.un)
+    ?~(un u.txt body.u.un)
+  ud.cass.u.ms
+::  +link-road: where the link at page path pax lives. Never under /page:
+::  see the /links row of the loader.
+++  link-road
+  |=  [up=@ud pax=path]
+  ^-  road:tarball
+  (rf up (weld /links pax) %link)
+::  +link-above: the nearest folder above pax that is a link, ~ if there is
+::  none. A link holds no pages, so nothing is made or moved under one: it
+::  would list as the link and vanish, and a move of the link would leave
+::  it behind.
+++  link-above
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  i=@ud  1
+  |-  ^-  form:m
+  ?:  (gte i (lent pax))  (pure:m ~)
+  ;<  ex=?  bind:m  (peek-exists:io (link-road up (scag i pax)))
+  ?:  ex  (pure:m `(scag i pax))
+  $(i +(i))
+::  +link-in-way: why a folder can't be made at pax, ~ if it can: a link is
+::  there, or above it.
+++  link-in-way
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  lx=?  bind:m  (peek-exists:io (link-road up pax))
+  ?:  lx  (pure:m `(crip "{(pax-str pax)} is a link"))
+  ;<  la=(unit path)  bind:m  (link-above pax)
+  (pure:m (bind la link-above-msg))
+::  +link-above-msg: the refusal for a path under the link at `at`.
+++  link-above-msg
+  |=  at=path
+  ^-  @t
+  (crip "{(pax-str at)} is a link: nothing goes under one")
+::  +link-at: the link at page path pax and its grub's time, ~ if there is
+::  none (a page, a folder, nothing) or it does not read as one.
+++  link-at
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,(unit [l=link:ll at=@da]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  lv=view:nexus  bind:m  (peek:io (link-road up pax) ~)
+  ?.  ?=([%file *] lv)  (pure:m ~)
+  =/  l=(unit link:ll)  (mole |.(;;(link:ll (sang-noun:tarball sang.lv))))
+  (pure:m ?~(l ~ `[u.l da.cass.lv]))
+::  +link-fail-msg: what a failed read through a link says. The host can't
+::  tell us whether it is offline or has revoked the grant, so it says both.
+++  link-fail-msg
+  |=  host=@p
+  ^-  @t
+  (crip "{(scow %p host)} is unreachable or no longer shares this page")
+::  +link-same: two states of one link that would list the same. The time a
+::  read was seen does not count, so reading an unchanged page, or failing
+::  again, rewrites nothing and bumps no beacon.
+++  link-same
+  |=  [a=link:ll b=link:ll]
+  ^-  ?
+  ?.  &(?=(%ship -.a) ?=(%ship -.b))  =(a b)
+  =(a b(at.seen at.seen.a))
+::  +link-note: put a live read's result (`got`, ~ for a failure) on the
+::  link's cache, through the writer, when it changes anything.
+++  link-note
+  |=  [lpath=path l=link:ll got=(unit [kind=@ta body=@t rev=@ud])]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  ?=(%ship -.l)  (pure:m ~)
+  ;<  now=@da  bind:m  bowl-now
+  =/  nl=link:ll
+    ?~(got (fail:ll l now) (refresh:ll l kind.u.got body.u.got rev.u.got now))
+  ?:  (link-same l nl)  (pure:m ~)
+  (poke-eval [%link-seen lpath host.l pax.l got])
+::  +link-read: a live read through the link at lpath, 5s at most: its body,
+::  the owner's rev and its kind (frozen at create), or the failure copy.
+::  Either way the cache learns the result.
+++  link-read
+  |=  [lpath=path l=link:ll]
+  =/  m  (fiber:fiber:nexus ,(each [body=@t rev=@ud kind=@ta] @t))
+  ^-  form:m
+  ?.  ?=(%ship -.l)  (pure:m |+'not a link to another ship')
+  ;<  got=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek host.l pax.l)
+  ;<  ~  bind:m  (link-note lpath l got)
+  ?~  got  (pure:m |+(link-fail-msg host.l))
+  (pure:m &+[body.u.got rev.u.got kind.l])
+::  +link-write: a save through the link at lpath, the /remote-save write
+::  (+remote-write) with 5s deadlines. `base` is the owner's rev the writer
+::  read: a write against a page that moved past it is a 409, and nothing is
+::  sent. A read grant is refused here before the host would refuse it. A
+::  host that does not answer is the read failure, and marks the link so.
+::  Success answers [old new] revs and refreshes the cache. `wait` bounds
+::  each step: 5s on HTTP, less on the lick port (+fs-save).
+++  link-write
+  |=  [lpath=path l=link:ll body=@t base=(unit @ud) wait=@dr]
+  =/  m  (fiber:fiber:nexus ,(each [old=@ud new=@ud] [code=@ud msg=@t]))
+  ^-  form:m
+  ?.  ?=(%ship -.l)  (pure:m |+[400 'not a link to another ship'])
+  ?:  =('read' mode.l)  (pure:m |+[403 'this page is shared with you read-only'])
+  ?~  pax.l  (pure:m |+[400 'bad link'])
+  ::  a link to ourselves would be a local write outside the local write
+  ::  path (and its key scope). /link-make refuses one; this is the
+  ::  backstop, as /remote-save refuses its own ship.
+  ;<  our=@p  bind:m  bowl-our
+  ?:  =(our host.l)  (pure:m |+[400 'that is you: a link names another ship'])
+  ::  no base (or 0) claims the cached rev, the owner's text this ship
+  ::  last read, as the lick port does. A link has no local copy to keep
+  ::  an overwritten page in, so a write never goes unchecked: a writer
+  ::  that skipped the read gets a 409 once the owner has moved on.
+  =?  base  |(?=(~ base) =(`0 base))  `rev.l
+  ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
+    (remote-write host.l pax.l body base `wait)
+  ?:  ?=(%| -.r)
+    ?.  =(504 code.p.r)  (pure:m r)
+    ;<  ~  bind:m  (link-note lpath l ~)
+    (pure:m |+[504 (link-fail-msg host.l)])
+  ;<  ~  bind:m  (link-note lpath l `[kind.l body new.p.r])
+  (pure:m r)
+::  +link-write-apart: +link-write for the lick port, in a fiber of its own
+::  (/link-writes/<id>), polled with the port's own timer until it answers
+::  or `wait` runs out (a 504; the write may still land). Every remote
+::  answer, late ones included, goes to that fiber and dies with it.
+++  link-write-apart
+  |=  [lpath=path body=@t base=(unit @ud) wait=@dr]
+  =/  m  (fiber:fiber:nexus ,(each [old=@ud new=@ud] [code=@ud msg=@t]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  now=@da  bind:m  bowl-now
+  =/  id=@ta  (scot %uv (sham lpath body now))
+  ;<  err=(unit tang)  bind:m
+    %+  make-soft:io  (rf up /link-writes id)
+    |+[[[/ %noun] `*`[lpath body base]] ~]
+  ?^  err  (pure:m |+[500 'could not start the save'])
+  =/  done=road:tarball  (rf up /link-done id)
+  =/  until=@da  (add now wait)
+  |-  ^-  form:m
+  ;<  dv=view:nexus  bind:m  (peek:io done ~)
+  ?:  ?=([%file *] dv)
+    ;<  *  bind:m  (cull-soft:io done)
+    =/  r
+      %-  mole  |.
+      ;;((each [old=@ud new=@ud] [code=@ud msg=@t]) (sang-noun:tarball sang.dv))
+    (pure:m ?~(r |+[500 'unreadable save result'] u.r))
+  ;<  t=@da  bind:m  bowl-now
+  ?:  (gte t until)  (pure:m |+[504 'the save did not answer in time'])
+  ;<  ~  bind:m  (sleep:io (div ~s1 20))
+  $
+::  +link-source-json: page-source's answer for a link: a page's fields
+::  plus `link`, so a client (and the MCP server, which quotes it as foreign
+::  text) knows whose page it is. No share or comments: those are the
+::  owner's.
+++  link-source-json
+  |=  [l=link:ll body=@t rev=@ud mtime=@da render=?]
+  ^-  json
+  ?.  ?=(%ship -.l)  ~
+  =/  html-row=(list [@t json])
+    ?.  &(render (~(has in content-builders) kind.l))  ~
+    ~[['html' s+(render-bare (preview-inner kind.l body))]]
+  %-  pairs:enjs:format
+  %+  weld
+    ^-  (list [@t json])
+    :~  ['kind' s+kind.l]  ['body' s+body]
+        ['size' (numb:enjs:format (met 3 body))]
+        ['rev' (numb:enjs:format rev)]
+        ['mtime' s+(scot %da mtime)]
+        ['share' s+%private]
+        ['comments' b+|]
+        ['readonly' b+=('read' mode.l)]
+        :-  'link'
+        (pairs:enjs:format ~[['host' s+(scot %p host.l)] ['path' s+(spat pax.l)]])
+    ==
+  html-row
+::  +link-read-later: start a live read of the link at pax in its own fiber
+::  (/link-reads/<id>) and return at once. The lick port serves one request
+::  at a time, so it answers from the cache and must never wait on a host.
+::  The id is the path's, so a read already running for it is not doubled
+::  (the make is refused, softly).
+++  link-read-later
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  *  bind:m
+    %+  make-soft:io  (rf up /link-reads (scot %uv (sham pax)))
+    |+[[[/ %noun] `*`pax] ~]
+  (pure:m ~)
+::  +links-to: every link naming `pax` on `host`, by its page path. One deep
+::  peek of /links: a share notice is rare.
+++  links-to
+  |=  [host=@p pax=path]
+  =/  m  (fiber:fiber:nexus ,(list [rel=path l=link:ll]))
+  ^-  form:m
+  ;<  sn=view:nexus  bind:m  (peek:io (rv up /links) ~)
+  ?.  ?=([%ball *] sn)  (pure:m ~)
+  %-  pure:m
+  %+  skim  (find-links ball.sn ~)
+  |=  [* l=link:ll]
+  &(?=(%ship -.l) =(host host.l) =(pax pax.l))
+::  +find-links: every link grub in a page-tree ball, with its rel path.
+++  find-links
+  |=  [b=ball:tarball rel=path]
+  ^-  (list [rel=path l=link:ll])
+  =/  kids=(list [rel=path l=link:ll])
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=  [nom=@ta kb=ball:tarball]
+    (find-links kb (weld rel /[nom]))
+  =/  l=(unit link:ll)  (fils-link ?~(fil.b ~ contents.u.fil.b))
+  ?~(l kids [[rel u.l] kids])
+::  +put-links: write each link back through the writer.
+++  put-links
+  |=  lks=(list [rel=path l=link:ll])
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  lks  (pure:m ~)
+  ;<  ~  bind:m  (poke-eval [%link-put rel.i.lks l.i.lks])
+  $(lks t.lks)
 ::  +handle-remote-save: POST /remote-save. Write a grub onto ANOTHER ship's
 ::  grubbery, which is why it takes `our`: saving to yourself is a different
 ::  path (/grub-save) and is refused here rather than silently rerouted.
@@ -1045,16 +1522,40 @@
   ::  key path-scope gate: when keyed, require write access to this ship+path
   ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] p.pp %write))
     (send-err eyre-id 403 'outside this key\'s scope')
-  =/  n=@ud  (dec (lent p.pp))
-  =/  dir=path  (scag n p.pp)
-  =/  nam=@ta  (snag n p.pp)
-  =/  body=@t  (req-body req)
+  ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
+    (remote-write u.shp p.pp (req-body req) ~ ~)
+  ?:  ?=(%| -.r)  (send-err eyre-id code.p.r msg.p.r)
+  (send-ok eyre-id)
+::  +remote-write: the write behind /remote-save and a save through a link
+::  (+link-write): put `body` in the grub at pax on shp, an EXISTING one,
+::  and answer its [old new] revs. `base`, when set, is the rev the writer
+::  read, and a grub that has moved past it is a 409 with nothing sent.
+::  `wait` bounds each peek and the poke's ack; ~ is /remote-save's own
+::  remote-timeout on the peeks and no bound on the ack, as it always was.
+::
+++  remote-write
+  |=  [shp=@p pax=path body=@t base=(unit @ud) wait=(unit @dr)]
+  =/  m  (fiber:fiber:nexus ,(each [old=@ud new=@ud] [code=@ud msg=@t]))
+  ^-  form:m
+  ?~  pax  (pure:m |+[400 'empty path'])
+  =/  n=@ud  (dec (lent `path`pax))
+  =/  dir=path  (scag n `path`pax)
+  =/  nam=@ta  (snag n `path`pax)
   =/  file-road=road:tarball  [%& %& dir nam]
-  ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
-  ?~  ms  (send-err eyre-id 504 'unreachable or denied')
+  =/  dl=@dr  (fall wait remote-timeout)
+  ;<  ms=(unit view:nexus)  bind:m  (peek-remote-quiet file-road shp dl)
+  ?~  ms  (pure:m |+[504 'unreachable or denied'])
   ::  v1 edits EXISTING files only. Remote create needs a make grant plus a
   ::  blot decision the client can't make for a tree it doesn't own.
-  ?.  ?=([%file *] u.ms)  (send-err eyre-id 404 'no such file on that ship')
+  ?.  ?=([%file *] u.ms)  (pure:m |+[404 'no such file on that ship'])
+  =/  ud0=@ud  ud.cass.u.ms
+  ::  the writer's base is behind the owner's page: refuse, so nothing
+  ::  overwrites text the writer never saw. Not a compare-and-swap: a third
+  ::  party's write landing between this peek and our make is overwritten,
+  ::  and the re-peek's rev below may already include a write after ours,
+  ::  which the writer then carries as its next base. The window is one
+  ::  round trip, the same apply-then-check caveat as a local page-save.
+  ?:  &(?=(^ base) !=(u.base ud0))  (pure:m |+[409 'conflict'])
   ::  a lattice content page was handed out as its prose (+browse-file-
   ::  respond): the edit goes back in that page's own envelope
   =/  cur=(unit @t)  (grub-text sang.u.ms)
@@ -1065,8 +1566,7 @@
   ?:  =(cur `body)
     ::  no-op save: nothing to send, and grubbery skips unchanged writes
     ::  anyway, so the revision check below would misread it as a denial.
-    (send-ok eyre-id)
-  =/  ud0=@ud  ud.cass.u.ms
+    (pure:m &+[ud0 ud0])
   ::  rebuild the noun in the grub's OWN shape (cord / wain / mime) and send
   ::  it under its OWN blot, with NO destination conversion. Converting
   ::  mime->blot at the destination needs the target marc to carry a mime
@@ -1077,7 +1577,7 @@
   =/  dst=blot:tarball  p.sang.u.ms
   =/  nn=*  (sang-noun:tarball sang.u.ms)
   ?:  &(?=(~ (mole |.(;;(@t nn)))) ?=(~ (mole |.(;;(wain nn)))) !=([/ %mime] dst))
-    (send-err eyre-id 415 'grub shape not editable as text')
+    (pure:m |+[415 'grub shape not editable as text'])
   =/  bd=[b=bask:tarball d=(unit blot:tarball)]
     ?:  ?=(^ (mole |.(;;(@t nn))))
       [[dst `*`body] ~]
@@ -1085,18 +1585,23 @@
       [[dst `*`(to-wain:format body)] ~]
     =/  mt=path  (fall (grub-mime-type sang.u.ms) /text/plain)
     [[[/ %mime] `*``mime`[mt (as-octs:mimes:html body)]] ~]
-  ;<  nak=(unit tang)  bind:m
-    (remote-load-poke u.shp [[/remote-save %& dir nam] %make %.y %.n |+[b.bd d.bd]])
-  ?^  nak
-    (send-err eyre-id 502 'remote rejected the write')
-  ;<  vs=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
-  =/  landed=?
-    ?~  vs  |
-    ?.  ?=([%file *] u.vs)  |
-    (gth ud.cass.u.vs ud0)
-  ?.  landed
-    (send-err eyre-id 403 'write did not land — no make permission on that path?')
-  (send-ok eyre-id)
+  =/  req=load:remo:nexus  [[/remote-save %& dir nam] %make %.y %.n |+[b.bd d.bd]]
+  ;<  ack=(unit (unit tang))  bind:m
+    ?~  wait
+      ;<  nak=(unit tang)  bind:(fiber:fiber:nexus ,(unit (unit tang)))
+        (remote-load-poke shp req)
+      (pure:(fiber:fiber:nexus ,(unit (unit tang))) `nak)
+    (remote-load-ack shp req u.wait)
+  ?~  ack  (pure:m |+[504 'unreachable or denied'])
+  ?^  u.ack  (pure:m |+[502 'remote rejected the write'])
+  ;<  vs=(unit view:nexus)  bind:m  (peek-remote-quiet file-road shp dl)
+  =/  ud1=@ud
+    ?~  vs  0
+    ?.  ?=([%file *] u.vs)  0
+    ud.cass.u.vs
+  ?.  (gth ud1 ud0)
+    (pure:m |+[403 'write did not land — no make permission on that path?'])
+  (pure:m &+[ud0 ud1])
 ::  +handle-legacy-migrate: POST /legacy-migrate. Import the pages and memories
 ::  of a retired %lattice gall agent, once. It takes only eyre-id because it
 ::  reads everything it needs from the old agent rather than the request, and
@@ -1236,6 +1741,18 @@
   ::  sibling grubs, no command form. Everything else requires the owner.
   ?:  &(?=([%c ^] suffix) =(%'GET' method.request.req))
     (serve-clearweb eyre-id t.suffix authenticated.req)
+  ::  public forum boards: GET /forum/<board>[/<post>], read-only, the same
+  ::  anonymous surface as /c/. A private board 404s (+serve-forum-public).
+  ::  An authenticated GET (the owner's cookie; `authenticated` IS the owner
+  ::  gate, as below) gets the owner's forum views instead: every board, private
+  ::  ones included, with the action forms. An anonymous GET falls through to
+  ::  the public read, which is unchanged.
+  ?:  &(?=([%'forum-notes' ~] suffix) =(%'GET' method.request.req) authenticated.req)
+    (serve-forum-notes eyre-id)
+  ?:  &(?=([%forum *] suffix) =(%'GET' method.request.req) authenticated.req)
+    (serve-forum-owner eyre-id t.suffix args)
+  ?:  &(?=([%forum ^] suffix) =(%'GET' method.request.req))
+    (serve-forum-public eyre-id t.suffix args)
   ::  public form submissions: POST /f/<page>. The ONLY unauthenticated WRITE,
   ::  and it is opt-in twice over. The page must be %clearweb AND carry a
   ::  /forms-on flag (owner-set). The body becomes one command to that page,
@@ -1330,6 +1847,24 @@
   ::  (rear suffix) route table below.
   ?:  &(?=([%x *] suffix) =(%'GET' method.request.req))
     (explore eyre-id our t.suffix args url.request.req)
+  ::  cross-ship forum read: GET /forum-remote/<host>/<board>[/<post>]. Owner-
+  ::  only (gated above; a key never reaches it, it is not in +wants:ky), the
+  ::  viewer browsing a peer's PUBLIC board over scry. POST is Task 3.
+  ?:  &(?=([%'forum-remote' *] suffix) =(%'GET' method.request.req))
+    (serve-forum-remote eyre-id t.suffix args)
+  ::  cross-ship forum write: POST /forum-remote/<host>/<board>/... decodes
+  ::  the same forms as the local forum and pokes the action at <host>. Behind
+  ::  the same CSRF refusal and owner gate as the local forum POST above.
+  ?:  &(?=([%'forum-remote' *] suffix) =(%'POST' method.request.req) authenticated.req)
+    (serve-forum-remote-post eyre-id t.suffix (req-body req))
+  ::  the owner's forum action forms: POST /forum/... (behind the owner gate
+  ::  and the CSRF refusal above; a key never reaches here, it is not
+  ::  `authenticated`). Each pokes the one writer, then 303s back.
+  ?:  &(?=([%'forum-notes' %clear ~] suffix) =(%'POST' method.request.req) authenticated.req)
+    ;<  ~  bind:m  (poke-eval [%forum-notes-clear ~])
+    (send-see-other eyre-id "/apps/lattice/forum-notes")
+  ?:  &(?=([%forum *] suffix) =(%'POST' method.request.req) authenticated.req)
+    (serve-forum-post eyre-id our t.suffix (req-body req))
   ::  /f/<name>: serve a file's raw data as an asset, Content-Type from its
   ::  render mode (js -> text/javascript, css -> text/css, ...), so an html file
   ::  can import a js/css file by URL. Owner-gated (fetched with the session).
@@ -1391,6 +1926,24 @@
       ?~  pb  (send-err eyre-id 504 'that ship is unreachable, or is not sharing lattice')
       =/  to=path  (unfold-base:lu u.pb pax.u.ref)
       (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p ship.u.ref) (spud to) slash))
+    ::
+        %forum
+      ::  a peer's public board: redirect to the local remote-forum route.
+      ::  sort/page carry over for a board view. Host is the @p text.
+      =/  post=tape  ?~(post.u.ref "" (weld "/" (a-co:co u.post.u.ref)))
+      =/  kv
+        |=  k=@t
+        ^-  tape
+        =/  v=(unit @t)  (~(get by args) k)
+        ?~  v  ""
+        :(weld (trip k) "=" (en-urlt:html (trip u.v)))
+      =/  srt=tape  (kv 'sort')
+      =/  pgt=tape  (kv 'page')
+      =/  pairs=tape
+        ?:  &(!=("" srt) !=("" pgt))  :(weld srt "&" pgt)
+        (weld srt pgt)
+      =/  q=tape  ?:(|(=("" pairs) !=("" post)) "" (weld "?" pairs))
+      (send-redirect eyre-id :(weld "/apps/lattice/forum-remote/" (scow %p ship.u.ref) "/" (trip board.u.ref) post q))
     ::
         %pub
       ::  a folder's address reads its index, the way the bare ship reads
@@ -1652,6 +2205,13 @@
             !(may-path:ky u.key %local (pax-of u.name) %read)
         ==
       (send-err eyre-id 403 'outside this key\'s scope')
+    ::  a link (/lib/lattice-link) is another ship's page: a key needs that
+    ::  ship in its scope too, so notes/ alone never reaches ~host's page
+    ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at (pax-of u.name))
+    ?:  ?&  ?=([~ [%ship *] *] lk)  ?=(^ key)
+            !(may-path:ky u.key [%ship host.l.u.lk] pax.l.u.lk %read)
+        ==
+      (send-err eyre-id 403 'outside this key\'s scope')
     ::  sensitive gate: a key without clearance sees nothing, treated as
     ::  not-found so an uncleared key cannot learn the page exists.
     ::  A cleared key that reads a sensitive page is tainted for taint-for.
@@ -1660,8 +2220,28 @@
     ?:  &(ps ?=(^ key) !sensitive.scope.u.key)
       (send-err eyre-id 403 'not found')
     ;<  ~  bind:m  (taint-if key &(ps ?=(^ key) sensitive.scope.u.key))
+    =/  render=?  =('1' (~(gut by args) 'render' '0'))
+    ::  a link reads live from its host, 5s at most
+    ?:  ?=([~ [%ship *] *] lk)
+      =/  l=link:ll  l.u.lk
+      ;<  rd=(each [body=@t rev=@ud kind=@ta] @t)  bind:m  (link-read (pax-of u.name) l)
+      ::  failed: the owner's editor also gets the last-known copy, to show
+      ::  read-only under the badge. A key gets the failure alone: the cache
+      ::  is a copy only the owner keeps.
+      ?:  ?=(%| -.rd)
+        ?^  key  (send-err eyre-id 504 p.rd)
+        ?.  ?=(%ship -.l)  (send-err eyre-id 504 p.rd)
+        %+  send-simple:srv  eyre-id
+        :-  [504 ['content-type' 'application/json']~]
+        %-  some  %-  as-octs:mimes:html  %-  en:json:html
+        %-  pairs:enjs:format
+        :~  ['error' s+p.rd]
+            ['cached' (link-source-json l body.l rev.l at.u.lk |)]
+        ==
+      ;<  now=@da  bind:m  bowl-now
+      (send-json eyre-id (link-source-json l body.p.rd rev.p.rd now render))
     ;<  r=(each json [code=@ud msg=@t])  bind:m
-      (fs-source-result u.name =('1' (~(gut by args) 'render' '0')))
+      (fs-source-result u.name render)
     ?-  -.r
       %&  (send-json eyre-id p.r)
       %|  (send-err eyre-id code.p.r msg.p.r)
@@ -1812,7 +2392,21 @@
       =/  np=(each path tang)
         (mule |.((stab (crip (weld "/" (trip p.u.pj))))))
       ?:  ?=(%| -.np)  |
-      (may-path:ky u.key %local p.np %read)
+      ?.  (may-path:ky u.key %local p.np %read)  |
+      ::  a link (/lib/lattice-link) is listed only to a key that may read
+      ::  it, which takes the host's web scope too. Without it the node
+      ::  goes: its host, path, size and rev all describe another ship's
+      ::  page, and the key could neither read nor write it anyway.
+      =/  lj=(unit json)  (~(get by p.node) 'link')
+      ?~  lj  &
+      ?.  ?=([%o *] u.lj)  |
+      =/  hj=(unit json)  (~(get by p.u.lj) 'host')
+      =/  rj=(unit json)  (~(get by p.u.lj) 'path')
+      ?.  &(?=([~ %s @] hj) ?=([~ %s @] rj))  |
+      =/  hp=(unit @p)  (slaw %p p.u.hj)
+      =/  rp=(unit path)  (mole |.((stab p.u.rj)))
+      ?:  |(?=(~ hp) ?=(~ rp))  |
+      (may-path:ky u.key [%ship u.hp] u.rp %read)
     ::  a cleared key sees sensitive pages, so the per-node grub walk below
     ::  would never drop a node: skip it. Owner (key=~) already returned above.
     ?:  sensitive.scope.u.key
@@ -1966,10 +2560,16 @@
       (send-err eyre-id 400 'banlist is full')
     ;<  ~  bind:m
       (over:io (ban-road up) [[/lattice %banned] (~(put in bans) u.who)])
-    ::  and what the ship already wrote goes too, its moons' as well: a ban
-    ::  that freed no slots left the page full (security audit run-1)
-    ;<  *  bind:m  (cull-comments-of u.who)
+    ::  REVOKE FIRST. The group revocation is the security-critical half of a
+    ::  ban: it cuts the banned ship's private-board READ grants. The culls are
+    ::  best-effort cleanup and can fault (a deep board peek, a missing grub);
+    ::  if one did, running it before the revocation would kill this fiber with
+    ::  the grants still in place. So strip the groups (after the banned-flag
+    ::  write above, also durable), THEN cull what the ship wrote, its moons'
+    ::  too: a ban that freed no slots left the page full (security audit run-1).
     ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
+    ;<  *  bind:m  (cull-comments-of u.who)
+    ;<  *  bind:m  (cull-forum-of u.who)
     ::  the ban is written; the revocation is not. Say so: a ban that left
     ::  the grants in place is the label this route exists not to be.
     ?~  n
@@ -2051,7 +2651,7 @@
       %^  remote-load-poke-wait  u.shp
         :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
         [%poke [/lattice %share-notice] `action:ls`[%add npax mode]]
-      ~s15
+      ~s5
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['ok' b+&] ['notified' b+told]])
   ::  shared-with-me: the notices other ships sent us. Claims, not
@@ -2084,6 +2684,13 @@
       %+  poke:io  (rf up / %'shares.sig')
       [[/lattice %share-notice] `action:ls`[%del u.hp p.pp]]
     (send-ok eyre-id)
+  ::  link-make / link-unmake: move a page shared with us into our own tree
+  ::  as a link (/lib/lattice-link), and back out. Owner only: neither is in
+  ::  +wants:ky, so no key reaches them.
+      [%'POST' %link-make]
+    (handle-link-make eyre-id args our)
+      [%'POST' %link-unmake]
+    (handle-link-unmake eyre-id args)
       [%'POST' %share-group-del]
     =/  gname=(unit @t)  (~(get by args) 'name')
     ?~  gname  (send-err eyre-id 400 'missing name')
@@ -2092,6 +2699,16 @@
     ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| gdir])
     ?^  e  (ug-refused eyre-id)
     (send-ok eyre-id)
+  ::  ── private forum boards: invite and revoke (owner) ──
+  ::  A private board's members are a per-board usergroup, forum-<board>, whose
+  ::  peek roads are the board's pub and content dirs (so the grubbery weir
+  ::  does the read gate), plus the /forum/members/<board> roster that the
+  ::  writer (+forum-remote-apply) checks before it lets a post land. Invite lays both
+  ::  and sends the invitee a share notice; revoke takes the ship out of both.
+      [%'POST' %forum-invite]
+    (handle-forum-invite eyre-id args our up %.y)
+      [%'POST' %forum-revoke]
+    (handle-forum-invite eyre-id args our up %.n)
   ::  ── follows (the ship-level follow list) ──
       [%'GET' %follows]
     ;<  fs=follows:lp  bind:m  read-follows
@@ -2125,6 +2742,7 @@
         :~  ['know' s+(crip (weld base "know/vault?blot=/json"))]
             ['pub' s+(crip (weld base "pub/vault?blot=/json"))]
             ['follows' s+(crip (weld base "sub/follows?blot=/json"))]
+            ['forum' s+(crip (weld base "beacon/forum?blot=/json"))]
         ==
         :-  'protocol'
         :-  %s
@@ -2195,6 +2813,20 @@
     ::  sensitive gate: an uncleared key cannot write to a sensitive page.
     ?:  &(ps !sensitive.scope.u.key)
       (send-err eyre-id 403 'that page is sensitive: a cleared key is required')
+    ::  a link (/lib/lattice-link) writes to another ship's page, so a key
+    ::  needs that ship's write scope as well, and /remote-save's taint
+    ::  rule: a tainted key writes nowhere foreign. The page's own kind
+    ::  (frozen at create) is held to the same escaped-only rule as ?type=.
+    ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at (pax-of u.name))
+    ?:  ?=([~ [%ship *] *] lk)
+      =/  l=link:ll  l.u.lk
+      ?.  ?=(%ship -.l)  (send-err eyre-id 404 'no such page')
+      ?.  (may-path:ky u.key [%ship host.l] pax.l %write)
+        (send-err eyre-id 403 'outside this key\'s scope')
+      ?:  (tainted:ky u.key rnow)  (send-err eyre-id 403 tainted-msg)
+      ?.  (page-type-ok:ky kind.l)
+        (send-err eyre-id 403 'a key saves md, gmi, text, tex, css or index pages only')
+      (link-save-respond eyre-id (pax-of u.name) l args (req-body req))
     ::  cross-surface taint, aligned with the memory surface: a tainted key
     ::  (read sensitive content in the last 12h, so necessarily cleared) may
     ::  write only to a sensitive destination. An already-sensitive page is
@@ -2318,6 +2950,8 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    ;<  lm=(unit @t)  bind:m  (link-in-way (pax-of u.name))
+    ?^  lm  (send-err eyre-id 409 u.lm)
     ;<  ~  bind:m  (poke-eval [%mkdir (pax-of u.name)])
     ;<  ~  bind:m  (poke-dnames args (pax-of u.name))
     (send-ok eyre-id)
@@ -2703,7 +3337,7 @@
       %^  remote-load-poke-wait  u.shp
         :-  [/comment-notice %& (fall base desk-base:lu) %'comments.sig']
         [%poke [/lattice %comment-action] `comment-action:lc`[(pax-of u.page) body]]
-      ~s15
+      ~s5
     ::  303 back to the reader view of the page just commented on, the same
     ::  shape /comment uses for its own redirect. A plain form submit here
     ::  used to land on this route's raw JSON body, replacing the whole
@@ -2711,6 +3345,62 @@
     %+  send-see-other  eyre-id
     %+  weld  "/apps/lattice?url="
     (url-enc (trip (en-urb:lu u.shp (weld pub-prefix:lu (pax-of u.page)))))
+  ::  post, comment or vote on a board hosted on ANOTHER ship. Owner-gated
+  ::  like /comment-remote and for the same reasons: this is us, on our own
+  ::  session, choosing to act on a board we read. The host decides whether it
+  ::  lands (its banlist, roles, caps, rate) and stamps us as the author from
+  ::  the transport, so nothing we send can claim to be someone else.
+  ::
+  ::  op=post|comment|upvote|downvote|unvote. `sent` reports only that the
+  ::  poke was ACCEPTED for delivery; a refusal comes back asynchronously as a
+  ::  note on our /forum.sig (stored under /forum/notes), not in this response.
+      [%'POST' %forum-post-remote]
+    =/  hs=(unit @t)  (~(get by args) 'host')
+    ?~  hs  (send-err eyre-id 400 'missing host')
+    =/  shp=(unit @p)  (slaw %p u.hs)
+    ?~  shp  (send-err eyre-id 400 'bad host')
+    =/  bd=(unit @t)  (~(get by args) 'board')
+    ?~  bd  (send-err eyre-id 400 'missing board')
+    ?.  ((sane %tas) u.bd)  (send-err eyre-id 400 'bad board')
+    =/  name=board-name:ft  ;;(board-name:ft u.bd)
+    ::  text fields ride the POST body (like /comment-remote); ids and flags
+    ::  may come in either the query or the body.
+    =/  fargs=(map @t @t)
+      (malt args:(parse-url:http-utils (crip (weld "/?" (trip (req-body req))))))
+    =/  grab=$-(@t (unit @t))
+      |=  k=@t  ^-  (unit @t)
+      =/  v=@t  (~(gut by fargs) k (~(gut by args) k ''))
+      ?:(=('' v) ~ `v)
+    =/  op=@t  (fall (grab 'op') 'post')
+    =/  act=(unit action:ft)
+      ?:  =('post' op)
+        ?~  title=(grab 'title')  ~
+        `[%new-post name u.title (grab 'url') (grab 'body')]
+      ?:  =('comment' op)
+        ?~  pid=(grab 'post')  ~
+        ?~  id=(slaw %ud u.pid)  ~
+        ?~  body=(grab 'body')  ~
+        =/  par=(unit comment-id:ft)
+          ?~(p=(grab 'parent') ~ (slaw %ud u.p))
+        `[%new-comment name u.id par u.body]
+      ?.  ?|(=('upvote' op) =('downvote' op) =('unvote' op))  ~
+      =/  tgt=(unit vote-target:ft)
+        ?~  pid=(grab 'post')  ~
+        ?~  pn=(slaw %ud u.pid)  ~
+        ?~  cid=(grab 'comment')  `[%post u.pn]
+        ?~(cn=(slaw %ud u.cid) ~ `[%comment u.pn u.cn])
+      ?~  tgt  ~
+      ?:  =('upvote' op)    `[%upvote name u.tgt]
+      ?:  =('downvote' op)  `[%downvote name u.tgt]
+      `[%remove-vote name u.tgt]
+    ?~  act  (send-err eyre-id 400 'bad or missing forum action fields')
+    ;<  base=(unit path)  bind:m  (peer-base-cached u.shp)
+    ;<  sent=?  bind:m
+      %^  remote-load-poke-wait  u.shp
+        :-  [/forum-post %& (fall base desk-base:lu) %'forum.sig']
+        [%poke [/lattice %forum-action] `action:ft`u.act]
+      ~s5
+    (send-json eyre-id (pairs:enjs:format ~[['ok' b+&] ['sent' b+sent]]))
       ::  bookmark the current browser url (title defaults to the url). Newest
       ::  first, deduped by url. Shown under Browser on the home page.
       [%'POST' %bookmark]
@@ -3161,6 +3851,15 @@
       [%'GET' %marks]
     ;<  bms=bookmarks:lb  bind:m  read-bookmarks
     (send-view eyre-id (render-page-titled "" "" "" "marks" (marks-html bms)))
+  ::  the same list as a bare array, for the editor's Bookmarks tab
+      [%'GET' %bookmarks-json]
+    ;<  bms=bookmarks:lb  bind:m  read-bookmarks
+    %+  send-json  eyre-id
+    :-  %a
+    %+  turn  bms
+    |=  b=bookmark:lb
+    %-  pairs:enjs:format
+    ~[['url' s+url.b] ['title' s+title.b] ['folder' s+folder.b]]
   ::  ── editing arbitrary grubs (write apps in the editor) ──────────────────
   ::  grub-source: any grub's editable text. `editable` is false for a binary
   ::  or opaque grub. The client shows it read-only rather than offering a save
@@ -4766,6 +5465,549 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   (poke-writer %history-action act)
+::  +forum-owner-only: the board-level actions. +act:fa has no owner guard
+::  (it only checks roles), so +apply-forum refuses these unless the sender
+::  is us. Nothing else may be added to the cross-ship inbox's reach: a
+::  caller with a foreign src gets this refusal from the one writer.
+::
+++  forum-owner-only
+  |=  act=action:ft
+  ^-  ?
+  ?=(?(%create-board %delete-board %set-role %set-public %set-prune %edit-board-info) -.act)
+::  +forum-read-grubs: every grub under a board's directory, relative to it
+::  (pax last = grub name), or ~ if there is no such board. Read by noun,
+::  so a boomed grub still reaches +load:fb, which names what it cannot read.
+::
+++  forum-read-grubs
+  |=  [up=@ud bdir=path]
+  =/  m  (fiber:fiber:nexus ,(unit (list grub:fb)))
+  ^-  form:m
+  ;<  v=view:nexus  bind:m  (peek:io (rv up bdir) ~)
+  ?.  ?=([%ball *] v)  (pure:m ~)
+  (pure:m `(forum-ball-grubs ball.v ~))
+++  forum-ball-grubs
+  |=  [b=ball:tarball rel=path]
+  ^-  (list grub:fb)
+  =/  fils  ?~(fil.b ~ contents.u.fil.b)
+  =/  here=(list grub:fb)
+    %+  turn  ~(tap in ~(key by fils))
+    |=  nom=@ta
+    [(weld rel /[nom]) (sang-noun:tarball sang:(~(got by fils) nom))]
+  =/  kids=(list grub:fb)
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=  [nom=@ta kid=ball:tarball]
+    (forum-ball-grubs kid (weld rel /[nom]))
+  (weld here kids)
+::  +forum-read-grubs-remote: the remote analogue of +forum-read-grubs. A
+::  peer's public board is granted as two dirs in its /public usergroup:
+::  /forum/boards/<board>/pub and /content (+send-public-how, line 12448).
+::  Resolve the host's lattice base (+peer-base-cached), deep-peek each dir
+::  built the same way +peek-page-at builds a remote road (an absolute %|
+::  dir road; +peek-remote-wait adds the ames prefix), turn each ball to
+::  grubs with its own /pub or /content prefix, and weld. The result is
+::  exactly the grub set a local single-dir read of /forum/boards/<board>
+::  produces, so load:fb assembles the same board.
+::
+::  ~ when the host is unreachable, not running lattice, timed out, or the
+::  board is not granted (private, deleted, or missing): a peek resolves to
+::  ~ or a non-ball, and the caller surfaces a 504, never a half page.
+::
+++  forum-read-grubs-remote
+  |=  [host=@p board=@ta]
+  =/  m  (fiber:fiber:nexus ,(unit (list grub:fb)))
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  (peer-base-cached host)
+  ?~  base  (pure:m ~)
+  =/  bdir=path  (weld u.base /forum/boards/[board])
+  ;<  pv=(unit view:nexus)  bind:m
+    (peek-remote-wait [%& %| (weld bdir /pub)] host)
+  ?.  ?=([~ %ball *] pv)  (pure:m ~)
+  ;<  cv=(unit view:nexus)  bind:m
+    (peek-remote-wait [%& %| (weld bdir /content)] host)
+  ?.  ?=([~ %ball *] cv)  (pure:m ~)
+  =/  pg=(list grub:fb)  (forum-ball-grubs ball.u.pv /pub)
+  =/  cg=(list grub:fb)  (forum-ball-grubs ball.u.cv /content)
+  (pure:m `(weld pg cg))
+::  +forum-put: put the changed grubs of a board and cull the gone ones.
+::
+++  forum-put
+  |=  [up=@ud bdir=path puts=(list grub:fb) dels=(list path)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m  (ensure-dirs up /forum/boards (slag 2 bdir))
+  ;<  ~  bind:m
+    |-  ^-  form:m
+    ?~  puts  (pure:m ~)
+    ;<  ~  bind:m  (ensure-dirs up bdir (snip pax.i.puts))
+    ;<  ~  bind:m
+      (put-file (rf up (weld bdir (snip pax.i.puts)) (rear pax.i.puts)) [/ %noun] val.i.puts)
+    $(puts t.puts)
+  |-  ^-  form:m
+  ?~  dels  (pure:m ~)
+  ;<  *  bind:m  (cull-soft:io (rf up (weld bdir (snip i.dels)) (rear i.dels)))
+  $(dels t.dels)
+::  +apply-forum: route one forum action to the writer. The OWNER route (src
+::  is our) applies directly and a refusal faults in +apply-eval. A CROSS-SHIP
+::  route (src a remote ship, stamped from the transport by the /forum.sig
+::  inbox) runs every gate HERE in the one writer -- ban-drop, rate limit,
+::  owner-gate, private-board membership, role and caps -- applies on success,
+::  and sends the poster a refusal note on failure. The inbox fiber never
+::  writes /forum, so /main.sig is the sole writer and no second fiber can
+::  race the board grubs (next-post-id, buckets). This is Task 4's single
+::  writer, held across the trust boundary.
+::
+::  Returns ~ when it landed OR when it was a remote action (whose refusal is
+::  already a note, never a fault), or `reason for an OWNER refusal, which
+::  +apply-eval records as a fault. A board-level action only ever lands for
+::  the owner, so +apply-eval gates its /public re-lay on src==our.
+::
+++  apply-forum
+  |=  [now=@da src=@p act=action:ft]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  our=@p  bind:m  bowl-our
+  ?:  =(src our)  (apply-forum-core now src act)
+  (apply-forum-remote now src act)
+::  +apply-forum-core: apply one forum action by `src`, in the writer. Create
+::  and delete make and cull the whole board directory (not in +act:fa); every
+::  other action deep-peeks the board, runs +act:fa, writes only the grubs it
+::  changed and culls the ones it removed (+gone:fb, as after delete-post).
+::  Returns ~ on success or `reason on refusal. The owner-only gate is defence
+::  in depth: the cross-ship path refuses board-level actions before here.
+::
+++  apply-forum-core
+  |=  [now=@da src=@p act=action:ft]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  our=@p  bind:m  bowl-our
+  ?:  &((forum-owner-only act) !=(src our))
+    (pure:m `(crip "forum: {<-.act>} is owner-only"))
+  =/  tail  +.act
+  =/  nom=@ta  ?@(tail tail ;;(@ta -.tail))
+  ?:  |(=('' nom) !((sane %tas) nom))  (pure:m `'forum: bad board name')
+  =/  bdir=path  /forum/boards/[nom]
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up bdir)
+  ?:  ?=(%create-board -.act)
+    ?^  gs  (pure:m `(crip "forum: board exists: {(trip nom)}"))
+    ?:  =('' title.act)  (pure:m `'forum: a board needs a title')
+    =/  info=board-info:ft
+      :*  nom
+          (crip (scag 200 (trip title.act)))
+          (crip (scag 2.000 (trip description.act)))
+          our
+          now
+          default-role.act
+          %.y
+      ==
+    =/  brd=board:ft  [info ~ 1 ~ ~ ~ ~ '' ~]
+    ;<  ~  bind:m  (forum-put up bdir ~(tap by (grubs:fb brd)) ~)
+    ;<  ~  bind:m  (bump-beacon %forum now)
+    (pure:m ~)
+  ?~  gs  (pure:m `(crip "forum: no such board: {(trip nom)}"))
+  ?:  ?=(%delete-board -.act)
+    ;<  *  bind:m  (cull-soft:io (rv up bdir))
+    ;<  ~  bind:m  (bump-beacon %forum now)
+    (pure:m ~)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (pure:m `(crip "forum: board unreadable: {(trip p.lod)}"))
+  =/  res=(each [brd=board:ft puts=(list grub:fb)] @t)  (act:fa p.lod src now act)
+  ?:  ?=(%| -.res)  (pure:m `(crip "forum: refused: {(trip p.res)}"))
+  ;<  ~  bind:m  (forum-put up bdir puts.p.res (gone:fb p.lod brd.p.res))
+  ;<  ~  bind:m  (bump-beacon %forum now)
+  (pure:m ~)
+::  +apply-forum-remote: a forum action from a REMOTE ship, author stamped from
+::  the transport. Runs, in the ONE writer, the gates the inbox used to run: a
+::  banned ship is dropped silently; the per-[ship board] rate limit is
+::  consulted BEFORE any refusal note and a cooldown is accrued on every
+::  attempt that clears the limit (success OR refusal), so a ship streaming
+::  refused pokes backs off; a refusal (bad board, owner-only, private, role,
+::  caps, or +act) rides back to the poster as a best-effort note. Always
+::  returns ~: a remote refusal is a note, never a fault.
+::
+++  apply-forum-remote
+  |=  [now=@da src=@p act=action:ft]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ::  a banned ship is dropped silently: a refusal note would just confirm the
+  ::  address is live, the same reasoning the comment and share inboxes use.
+  ;<  bans=banned:ls  bind:m  read-banned
+  ?:  (is-banned:ls bans src)  (pure:m ~)
+  =/  tail  +.act
+  =/  nom=@ta  ?@(tail tail ;;(@ta -.tail))
+  =/  name=board-name:ft  ;;(board-name:ft nom)
+  =/  valid-name=?  &(!=('' nom) ((sane %tas) nom))
+  ::  load the board (for the mod rate-exemption and the member gate) when the
+  ::  payload names a valid, existing one; otherwise there is no board to load.
+  ;<  gs=(unit (list grub:fb))  bind:m
+    ?.  valid-name  (pure:(fiber:fiber:nexus ,(unit (list grub:fb))) ~)
+    (forum-read-grubs up /forum/boards/[nom])
+  =/  obrd=(unit board:ft)
+    ?~  gs  ~
+    =/  lod=(each board:ft @t)  (load:fb u.gs)
+    ?:(?=(%| -.lod) ~ `p.lod)
+  ::  the rate gate, FIRST, before any refusal note. A mod (owner or an
+  ::  explicit board mod) is exempt; with no board there is no mod to exempt,
+  ::  so the plain cooldown applies (this is +rate-ok:fr for the no-board case).
+  ;<  lim=limits:fr  bind:m  read-forum-limits
+  =/  mod=?  ?~(obrd %.n (is-mod:fr src u.obrd))
+  =/  entry  (~(get by lim) [src name])
+  =/  ratek=?
+    ?:  mod  %.y
+    ?~  entry  %.y
+    (gte (sub now last.u.entry) cooldown.u.entry)
+  ?.  ratek
+    (forum-note-send src name 'forum: you are acting too fast, slow down and retry')
+  ::  run the gates and the apply, collecting any refusal reason.
+  ;<  reason=(unit @t)  bind:m  (forum-remote-apply now src name act obrd)
+  ::  accrue backoff on success AND on refusal (mods excepted), so a stream of
+  ::  refused pokes keeps lengthening the cooldown.
+  ;<  ~  bind:m
+    ?:  mod  (pure:(fiber:fiber:nexus ,~) ~)
+    (write-forum-limits (rate-update:fr src name now lim))
+  ?~  reason  (pure:m ~)
+  (forum-note-send src name u.reason)
+::  +forum-remote-apply: the per-action gates for a REMOTE forum action -- bad
+::  board name, owner-only, board-exists, private-board membership, then role
+::  and caps so the refusal names itself -- then +apply-forum-core. +act:fa
+::  re-checks role and caps; these run here only to make the note specific.
+::
+++  forum-remote-apply
+  |=  [now=@da src=@p name=board-name:ft act=action:ft obrd=(unit board:ft)]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ?:  |(=('' name) !((sane %tas) name))  (pure:m `'forum: bad board name')
+  ::  board-level actions are owner-only; a remote src is never our.
+  ?:  (forum-owner-only act)
+    (pure:m `(crip "forum: {<-.act>} is owner-only"))
+  ?~  obrd  (pure:m `(crip "forum: no such board: {(trip name)}"))
+  ::  a PRIVATE board takes content only from its roster (/forum/members).
+  ;<  mem=(set @p)  bind:m  (read-forum-members name)
+  ?:  &(!public.info.u.obrd !(~(has in mem) src))
+    (pure:m `'forum: this board is private; you are not a member')
+  ::  role and caps for a post or a comment (votes need neither, as in +act).
+  =/  need=(unit @t)
+    ?+  -.act  ~
+        %new-post
+      ?.  (can-post:fr src u.obrd)  `'forum: your role on this board cannot post'
+      ?.  (sane-post:fr title.act url.act body.act)
+        `'forum: a post needs a title (300 bytes), a url (2,048) and a body (40,000)'
+      ~
+    ::
+        %new-comment
+      ?.  (can-post:fr src u.obrd)  `'forum: your role on this board cannot comment'
+      ?.  (sane-comment:fr body.act)  `'forum: a comment holds 1 to 10,000 bytes'
+      ~
+    ==
+  ?^  need  (pure:m need)
+  (apply-forum-core now src act)
+::  +forum-boards: the names of every board on this ship.
+::
+++  forum-boards
+  =/  m  (fiber:fiber:nexus ,(list @ta))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io (rv up /forum/boards) ~)
+  ?.  ?=([~ %ball *] vw)  (pure:m ~)
+  (pure:m ~(tap in ~(key by dir.ball.u.vw)))
+::  +forum-poke-all: send each [src action] to the writer, in order.
+::
+++  forum-poke-all
+  |=  acts=(list [src=@p act=action:ft])
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  acts  (pure:m ~)
+  ;<  ~  bind:m  (poke-eval [%forum src.i.acts act.i.acts])
+  $(acts t.acts)
+::  +forum-cull-actions: the actions that remove everything `who` (or its
+::  moons) left on one board: its posts (with their threads), its comments
+::  elsewhere, and its votes on what stays. Posts and comments are deleted as
+::  the host (a mod); a vote is removed as its own voter, which is the only
+::  author +act:fa lets remove it.
+::
+++  forum-cull-actions
+  |=  [who=@p brd=board:ft]
+  ^-  (list [src=@p act=action:ft])
+  =/  mine=$-(@p ?)  |=(a=@p |(=(who a) =(`@`who (family:ls a))))
+  =/  nom=board-name:ft  name.info.brd
+  =/  dead=(set post-id:ft)
+    %-  ~(gas in *(set post-id:ft))
+    (murn ~(tap by posts.brd) |=([id=post-id:ft p=post:ft] ?.((mine author.p) ~ `id)))
+  =/  out=(list [src=@p act=action:ft])  ~
+  ::  votes first, on every surviving post and comment
+  =.  out
+    %+  roll  ~(tap by posts.brd)
+    |=  [[id=post-id:ft p=post:ft] acc=_out]
+    ?:  (~(has in dead) id)  acc
+    =/  vs=(list @p)  (skim ~(tap in (~(uni in up-votes.p) down-votes.p)) mine)
+    %+  roll  vs
+    |=  [v=@p a=_acc]
+    [[v [%remove-vote nom [%post id]]] a]
+  =.  out
+    %+  roll  ~(tap by comments.brd)
+    |=  [[pid=post-id:ft cs=(map comment-id:ft comment:ft)] acc=_out]
+    ?:  (~(has in dead) pid)  acc
+    %+  roll  ~(tap by cs)
+    |=  [[cid=comment-id:ft c=comment:ft] a=_acc]
+    =/  vs=(list @p)  (skim ~(tap in (~(uni in up-votes.c) down-votes.c)) mine)
+    =.  a  (roll vs |=([v=@p b=_a] [[v [%remove-vote nom [%comment pid cid]]] b]))
+    ?.  (mine author.c)  a
+    [[host.info.brd [%delete-comment nom pid cid]] a]
+  %+  roll  ~(tap in dead)
+  |=  [id=post-id:ft acc=_out]
+  [[host.info.brd [%delete-post nom id]] acc]
+::  +cull-forum-of: the forum twin of +cull-comments-of, run from POST /ban.
+::  Every board, every post, comment and vote of `who` and its moons. Writes
+::  go to the one writer as ordinary %forum actions (no second writer), so
+::  each bumps /beacon/forum. A board that will not load is skipped, as a
+::  refused cull leaves a comment in place. Answers how many actions it sent.
+::
+++  cull-forum-of
+  |=  who=@p
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  noms=(list @ta)  bind:m  forum-boards
+  =/  n=@ud  0
+  |-  ^-  form:m
+  ?~  noms  (pure:m n)
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[i.noms])
+  ?~  gs  $(noms t.noms)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  $(noms t.noms)
+  =/  acts=(list [src=@p act=action:ft])  (forum-cull-actions who p.lod)
+  ;<  ~  bind:m  (forum-poke-all acts)
+  $(noms t.noms, n (add n (lent acts)))
+::  +forum-prune-ids: the posts a board's prune config drops: older than
+::  `after`, scoring under `min-score` (net votes, as +hot-score:fr counts
+::  them), and not pinned.
+::
+++  forum-prune-ids
+  |=  [now=@da brd=board:ft]
+  ^-  (list post-id:ft)
+  ?~  prune.brd  ~
+  %+  murn  ~(tap by posts.brd)
+  |=  [id=post-id:ft p=post:ft]
+  ^-  (unit post-id:ft)
+  ?:  (~(has in pinned.brd) id)  ~
+  ?.  (gte (sub now created.p) after.u.prune.brd)  ~
+  ?.  (lth n:(hot-score:fr now p) min-score.u.prune.brd)  ~
+  `id
+::  +forum-sweep: prune every board once. Deletes ride the one writer as the
+::  host's %delete-post. Answers how many posts it asked to drop.
+::
+++  forum-sweep
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  our=@p  bind:m  bowl-our
+  ;<  now=@da  bind:m  bowl-now
+  ;<  noms=(list @ta)  bind:m  forum-boards
+  =/  n=@ud  0
+  |-  ^-  form:m
+  ?~  noms  (pure:m n)
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[i.noms])
+  ?~  gs  $(noms t.noms)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  $(noms t.noms)
+  =/  ids=(list post-id:ft)  (forum-prune-ids now p.lod)
+  ;<  ~  bind:m
+    (forum-poke-all (turn ids |=(id=post-id:ft [our [%delete-post i.noms id]])))
+  $(noms t.noms, n (add n (lent ids)))
+::  +forum-sweep-loop: the timer fiber. Sweeps, then sleeps to the next
+::  six-hour grid line (so a restart does not shift the schedule), forever.
+::
+++  forum-sweep-loop
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  |-
+  ;<  *  bind:m  forum-sweep
+  ;<  now=@da  bind:m  bowl-now
+  =/  grid=@dr  ~h6
+  ;<  ~  bind:m  (sleep-draining (sub grid (mod now grid)))
+  $
+::  +forum-group-name: the usergroup that carries a private board's read road.
+::
+++  forum-group-name
+  |=  nom=@ta
+  ^-  @t
+  (crip (weld "forum-" (trip nom)))
+::  +read-forum-members / +write-forum-members: the /forum/members/<board>
+::  roster, stored [%1 (set @p)]. Empty when never written. The owner is never
+::  listed; the owner route (+apply-forum-core, src==our) never reaches the
+::  member gate, which is only run on the remote path (+forum-remote-apply).
+::
+++  read-forum-members
+  |=  nom=@ta
+  =/  m  (fiber:fiber:nexus ,(set @p))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:io (rf up /forum/members nom) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  =/  raw=(unit [%1 (set @p)])
+    (mole |.(;;([%1 (set @p)] (sang-noun:tarball sang.v))))
+  (pure:m ?~(raw ~ +.u.raw))
+++  write-forum-members
+  |=  [nom=@ta who=(set @p)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  (put-file (rf up /forum/members nom) [/ %noun] [%1 who])
+::  +handle-forum-invite: POST /forum-invite and /forum-revoke ?board=&ship=.
+::  add=%.y invites, %.n revokes. Owner-only (the owner session is the route's
+::  gate, as for /share-file). Only a PRIVATE board has members to manage.
+::
+::  Invite writes the group first (it can be refused: lattice may not own
+::  usergroups), then the roster, then pokes the invitee's /shares.sig with a
+::  read notice for the board's content dir. Revoke removes the ship from the
+::  group's who.ships and the roster; the road set stays on the group (the
+::  remaining members still need it). Reads are cut by the weir the moment the
+::  group loses the ship, posts by the roster check on the next poke.
+::
+++  handle-forum-invite
+  |=  [eyre-id=@ta args=(map @t @t) our=@p up=@ud add=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  bd=(unit @t)  (~(get by args) 'board')
+  ?~  bd  (send-err eyre-id 400 'missing board')
+  ?.  ((sane %tas) u.bd)  (send-err eyre-id 400 'bad board')
+  =/  nom=@ta  u.bd
+  =/  shp-t=(unit @t)  (~(get by args) 'ship')
+  ?~  shp-t  (send-err eyre-id 400 'missing ship')
+  =/  shp=(unit @p)  (slaw %p u.shp-t)
+  ?~  shp  (send-err eyre-id 400 'bad ship')
+  ?:  =(u.shp our)  (send-err eyre-id 400 'that is you')
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[nom])
+  ?~  gs  (send-err eyre-id 404 'no such board')
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (send-err eyre-id 500 'board unreadable')
+  ?:  public.info.p.lod  (send-err eyre-id 400 'a public board has no members to manage')
+  =/  gname=@t  (forum-group-name nom)
+  =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
+  ;<  cur=(set @p)  bind:m  (read-forum-members nom)
+  ?.  add
+    ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
+    =/  ships=(set @p)
+      ?.  ?=([%file *] wv)  ~
+      (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
+    ;<  ok=?  bind:m
+      ?.  (~(has in ships) u.shp)  (pure:(fiber:fiber:nexus ,?) %.y)
+      (ug-over [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) u.shp)])
+    ?.  ok  (ug-refused eyre-id)
+    ;<  ~  bind:m  (write-forum-members nom (~(del in cur) u.shp))
+    (send-ok eyre-id)
+  ;<  bans=banned:ls  bind:m  read-banned
+  ?:  (is-banned:ls bans u.shp)
+    (send-err eyre-id 403 'that ship is banned, unban it first')
+  ;<  sb=path  bind:m  self-base
+  =/  bpath=path  (weld sb /forum/boards/[nom])
+  =/  roads=(set road:tarball)
+    (~(gas in *(set road:tarball)) ~[[%& %| (snoc bpath %pub)] [%& %| (snoc bpath %content)]])
+  ;<  ok=?  bind:m  (ug-merge gname (~(gas in *(set @p)) ~[u.shp]) roads ~)
+  ?.  ok  (ug-refused eyre-id)
+  ;<  ~  bind:m  (write-forum-members nom (~(put in cur) u.shp))
+  ;<  base=(unit path)  bind:m  (peer-base-cached u.shp)
+  ;<  told=?  bind:m
+    %^  remote-load-poke-wait  u.shp
+      :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
+      [%poke [/lattice %share-notice] `action:ls`[%add (snoc bpath %content) 'read']]
+    ~s5
+  %+  send-json  eyre-id
+  (pairs:enjs:format ~[['ok' b+&] ['notified' b+told]])
+::  +apply-forum-notice: a forum action poked by ANOTHER ship over /forum.sig.
+::  The inbox fiber does the minimum: read the author from the TRANSPORT (never
+::  the payload), ignore a sourceless (local) poke, and hand the action to the
+::  ONE writer with the author stamped. It never reads board state and never
+::  writes /forum. Every gate -- ban-drop, rate limit, owner-gate, private-board
+::  membership, role, caps -- and the refusal note live in the writer
+::  (+apply-forum-remote), so /main.sig is the sole writer of /forum and no
+::  second fiber can race the board grubs (Task 4).
+::
+++  apply-forum-notice
+  |=  [=from:fiber:nexus =sage:tarball now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  src=(unit @p)  (get-poke-src:io from)
+  ::  a sourceless (local) poke belongs to the owner writer, not here
+  ?~  src  (pure:m ~)
+  ::  a host telling US one of our cross-ship posts was refused: route the
+  ::  store through the one writer, so the inbox fiber never writes /forum.
+  ?:  =([/lattice %forum-note] p.sage)
+    (poke-eval [%forum-note-store u.src q.q.sage])
+  ::  otherwise the one shape we accept is a forum action. Gate on the blot
+  ::  before parsing so a stray poke of another mark is ignored not misread.
+  ?.  =([/lattice %forum-action] p.sage)  (pure:m ~)
+  ::  clam under mule. A payload that is not an action (bad shape, oversize,
+  ::  anything) is dropped silently here; a well-formed action goes to the
+  ::  writer, which checks everything and notes any refusal to the poster.
+  =/  na=(unit action:ft)  (mole |.(;;(action:ft q.q.sage)))
+  ?~  na  (pure:m ~)
+  (poke-eval [%forum u.src u.na])
+::  +forum-note-send: tell a poster why their cross-ship action was refused.
+::  FIRE-AND-FORGET: the note rides the poster's own /forum.sig back to it (same
+::  code, same road), emitted as a bare gall-poke effect that does NOT bind this
+::  fiber on the round trip. The writer runs this; it must never serialise
+::  behind a ~s15 remote wait, or a ship that never succeeds could force
+::  unbounded serialized outbound sends through the one writer. The ack/nack
+::  returns unawaited and is dropped, exactly as the local notice pokes are.
+::  An offline poster simply never gets the note, as a share notice is
+::  best-effort. (+remote-load-poke-wait is the owner route's variant that does
+::  wait, because an owner action has an HTTP response to carry the result.)
+::
+++  forum-note-send
+  |=  [to=@p board=board-name:ft reason=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  (peer-base-cached to)
+  =/  req=load:remo:nexus
+    :-  [/forum-note %& (fall base desk-base:lu) %'forum.sig']
+    [%poke [/lattice %forum-note] `[board-name:ft @t]`[board reason]]
+  %+  poke:io  &+&+[/sys/gall %'main.sig']
+  [[/ %gall-poke] [[to %grubbery] grubbery-load+req]]
+::  +store-forum-note: a refusal note a host sent back about one of OUR posts.
+::  The host is the transport sender, the payload names the board and reason.
+::  Bounded like the comment store (this road is public); drop when full, the
+::  owner clears /forum/notes.
+::
+++  store-forum-note
+  |=  [host=@p now=@da payload=*]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  nn=(unit [board=board-name:ft reason=@t])
+    (mole |.(;;([board-name:ft @t] payload)))
+  ?~  nn  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:io (rv up /forum/notes) ~)
+  =/  stored=@ud
+    ?.  ?=([%ball *] v)  0
+    ?~  fil.ball.v  0
+    ~(wyt by contents.u.fil.ball.v)
+  ?:  (gte stored 100)  (pure:m ~)
+  =/  note=[host=@p board=board-name:ft reason=@t at=@da]
+    [host board.u.nn reason.u.nn now]
+  =/  id=@ta  (scot %uv (sham note))
+  ;<  ~  bind:m  (ensure-dirs up /forum /notes)
+  (put-file (rf up /forum/notes id) [/lattice %forum-note] note)
+::  +read-forum-limits / +write-forum-limits: the /forum/limits rate state,
+::  stored [%1 limits]. Empty when never written.
+::
+++  read-forum-limits
+  =/  m  (fiber:fiber:nexus ,limits:fr)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:io (rf up /forum %limits) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  =/  raw=(unit [%1 limits:fr])
+    (mole |.(;;([%1 limits:fr] (sang-noun:tarball sang.v))))
+  (pure:m ?~(raw ~ +.u.raw))
+++  write-forum-limits
+  |=  lim=limits:fr
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  (put-file (rf up /forum %limits) [/ %noun] [%1 lim])
 ::  +apply-eval: page create/command/delete, in the writer fiber.
 ::
 ++  apply-eval
@@ -4776,6 +6018,46 @@
   ::  name.act only resolves after ?- narrows the fork (%del is a 2-cell,
   ::  the others 3-cells. The face sits at different axes).
   ?-  -.act
+      %forum
+    ::  the one writer for both routes. An OWNER refusal (src is our) faults
+    ::  here; a REMOTE refusal was already noted to the poster inside
+    ::  +apply-forum-remote, which always returns ~, so this never faults for a
+    ::  remote src.
+    ;<  our=@p  bind:m  bowl-our
+    ;<  reason=(unit @t)  bind:m  (apply-forum now src.act act.act)
+    ?^  reason  (refuse (trip u.reason))
+    ::  a board made, deleted or flipped public/private changes what /public
+    ::  may peek; re-lay the whole set (a no-op for every other action). Only
+    ::  the OWNER can land a board-level action (a remote one is always
+    ::  refused), so gate on src==our: a refused remote board op returns ~ with
+    ::  -.act.act still %create-board etc., and must not re-lay grants.
+    ?.  &(=(src.act our) ?=(?(%create-board %delete-board %set-public) -.act.act))
+      (pure:m ~)
+    ::  a board made or deleted starts with no members: drop the old roster
+    ::  and member group so a re-created name does not inherit them. Soft.
+    ;<  ~  bind:m
+      ?.  ?=(?(%create-board %delete-board) -.act.act)  (pure:m ~)
+      =/  nom=@ta  ?:(?=(%create-board -.act.act) name.act.act +.act.act)
+      ;<  *  bind:m  (cull-soft:io (rf root /forum/members nom))
+      ;<  *  bind:m
+        %-  cull-soft:io
+        [%& %| (snoc ug-base (crip (weld (trip (forum-group-name nom)) ".grp")))]
+      (pure:m ~)
+    (send-public-how root)
+      %forum-note-store
+    ::  store a refusal note a host sent back about one of our cross-ship
+    ::  posts. Routed here from the /forum.sig inbox so /main.sig is the sole
+    ::  writer of /forum (the inbox fiber never writes).
+    (store-forum-note host.act now payload.act)
+      %forum-notes-clear
+    ;<  v=view:nexus  bind:m  (peek:io (rv up /forum/notes) ~)
+    ?.  ?=([%ball *] v)  (pure:m ~)
+    ?~  fil.ball.v  (pure:m ~)
+    =/  ids=(list @ta)  ~(tap in ~(key by contents.u.fil.ball.v))
+    |-  ^-  form:m
+    ?~  ids  (pure:m ~)
+    ;<  *  bind:m  (cull-soft:io (rf up /forum/notes i.ids))
+    $(ids t.ids)
       %make
     ;<  ~  bind:m  (make-page root pax.act src.act)
     ::  a shared page's vault copy follows every write, not just the share click
@@ -4842,6 +6124,13 @@
       (fall (mole |.(;;(eval-cmd:le (sang-noun:tarball sang.sn)))) [0 '' 0])
     (put-file (rf up pdir %cmd) [/lattice %eval-cmd] `eval-cmd:le`[+(seq.cur) txt.act bud.act])
       %del
+    ::  the links at or under pax first (they are ours, and live apart
+    ::  under /links). Never contacts a host.
+    =/  ldir=path  (weld /links pax.act)
+    ;<  lex=?  bind:m  (peek-exists:io (rv up ldir))
+    ;<  *  bind:m
+      ?.  lex  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
+      (cull-soft:io (rv up ldir))
     ::  cull-soft on an absent dir veto-crashes the writer (as apply-sub's
     ::  %unsub-page guards against). No-op a delete of a gone page. Also
     ::  drop the data road from the public weir so a deleted page leaves no
@@ -4909,6 +6198,34 @@
     ::  create an empty folder (and any missing parents). ensure-dirs is
     ::  idempotent, so mkdir over an existing page/folder is a harmless no-op.
     (ensure-dirs up /page pax.act)
+      %link-put
+    ::  a link (/lib/lattice-link): under /links, never /page (see the
+    ::  loader), so no evaluator spawns on it and no grant reaches it. Its
+    ::  folders are made under /page too, where the tree, moves and deletes
+    ::  find them, and they hold nothing of the link.
+    ;<  ~  bind:m  (ensure-dirs up /page (snip pax.act))
+    ;<  ~  bind:m  (ensure-dirs up /links pax.act)
+    (put-file (link-road up pax.act) [/lattice %link] link.act)
+      %link-seen
+    ::  a live read's result, onto the cache (+refresh:ll, +fail:ll). Only
+    ::  while the same link is still at pax, and only when something moved,
+    ::  so a background refresh never revives a link or rewrites a cache
+    ::  that is already right.
+    =/  lr=road:tarball  (link-road up pax.act)
+    ;<  lv=view:nexus  bind:m  (peek:io lr ~)
+    =/  l=(unit link:ll)
+      ?.  ?=([%file *] lv)  ~
+      (mole |.(;;(link:ll (sang-noun:tarball sang.lv))))
+    ?.  ?=([~ %ship *] l)  (pure:m ~)
+    ?.  &(=(host.u.l host.act) =(pax.u.l rpax.act))  (pure:m ~)
+    ::  a slow read that lands after a newer save or read never rolls the
+    ::  cache back: the mount keys its cache on rev
+    ?:  &(?=(^ got.act) (lth rev.u.got.act rev.u.l))  (pure:m ~)
+    =/  nl=link:ll
+      ?~  got.act  (fail:ll u.l now)
+      (refresh:ll u.l kind.u.got.act body.u.got.act rev.u.got.act now)
+    ?:  (link-same u.l nl)  (pure:m ~)
+    (put-file lr [/lattice %link] nl)
       %dname
     ::  the display name sits beside a page's %code or a folder's flags, as
     ::  a %name grub. '' clears it: the name typed at a rename was a valid
@@ -5388,6 +6705,15 @@
   ::  3+ wasted darts on every autosave. A half-created page (crash between
   ::  scaffold and code) just re-runs the scaffold. put-file is idempotent.
   ;<  ex=?  bind:m  (peek-exists:io (rf up pdir %code))
+  ::  never a %code grub at a link's path (/lib/lattice-link): its saves go
+  ::  to its host. Every route refuses or proxies first, so this is the
+  ::  backstop, paid only on a create.
+  ;<  isl=?  bind:m
+    ?:  ex  (pure:(fiber:fiber:nexus ,?) |)
+    (peek-exists:io (link-road up pax))
+  ?:  isl
+    %-  (say 2 ~[leaf+"lattice: not saving over the link at {(spud pax)}"])
+    (pure:m ~)
   ;<  ~  bind:m
     ?:  ex  (pure:m ~)
     ;<  ~  bind:m  (ensure-dirs up /page pax)
@@ -5492,12 +6818,12 @@
   (weld (weld pre (weld "[[" to)) $(hay aft))
 ::  +move-pages: move a page or a whole folder subtree under /page from src to
 ::  dst. Copies each page's code (share mode carried over, wikilink
-::  self-references rewritten like template instantiation rewrites its root),
-::  then deletes the source. Runs in a REQUEST fiber with one writer poke per
+::  self-references rewritten like template instantiation rewrites its root)
+::  and each link grub as it is, then deletes the source. Runs in a REQUEST fiber with one writer poke per
 ::  action. The same reasoning as +instantiate-template: a batch make in one
 ::  writer transaction arms dep-keeps that never establish. Returns ~ when
-::  nothing exists at src. `count is the number of pages moved (0 = an empty
-::  folder, still a successful move).
+::  nothing exists at src. `count is the number of pages and links moved (0 =
+::  an empty folder, still a successful move).
 ::
 ++  move-pages
   |=  [from=path to=path]
@@ -5510,13 +6836,20 @@
   =/  from-bare=tape  (pax-str from)
   =/  to-bare=tape    (pax-str to)
   ;<  dv=view:nexus  bind:m  (peek:io (rv up sdir) ~)
-  ?.  ?=([%ball *] dv)  (pure:m ~)
+  ;<  lv=view:nexus  bind:m  (peek:io (rv up (weld /links from)) ~)
+  ?.  |(?=([%ball *] dv) ?=([%ball *] lv))  (pure:m ~)
   ::  the deep peek holds every page's code, share and name already: each
-  ::  is read from this ball, not peeked again per page
-  =/  bl=ball:tarball  ball.dv
+  ::  is read from this ball, not peeked again per page. The links at or
+  ::  under `from` (they live under /links) go in at their paths.
+  =/  bl=ball:tarball
+    =/  pb=ball:tarball  ?:(?=([%ball *] dv) ball.dv *ball:tarball)
+    ?.  ?=([%ball *] lv)  pb
+    -:(graft-links pb *wave:nexus ball.lv wave.lv)
   =/  all=(list [pax=path page=?])  (collect-tree bl ~)
+  ::  a link's dir is not made under /page: +link-put keeps it in /links
+  =/  isl  |=(p=path (~(has by (ball-fils bl p)) %link))
   =/  dirs=(list path)
-    (sort (murn all |=([pax=path page=?] ?:(page ~ `pax))) aor)
+    (sort (murn all |=([pax=path page=?] ?:(|(page (isl pax)) ~ `pax))) aor)
   =/  rels=(list path)
     (sort (murn all |=([pax=path page=?] ?:(page `pax ~))) aor)
   ::  structure first, parents before children, preserves empty subfolders.
@@ -5532,16 +6865,27 @@
     %+  murn  all
     |=([pax=path *] ?.((~(has by (ball-fils bl pax)) %sensitive) ~ `pax))
   =/  sacts=(list eval-action:le)
-    %+  turn  (weld ?:(rs ~[`path`~] ~) own)
+    ::  not a link root's: its mark would make a /page dir beside it
+    %+  turn  (weld ?:(&(rs !(isl ~)) ~[`path`~] ~) own)
     |=(p=path `eval-action:le`[%page-sensitive (weld to p) &])
+  ::  links (+collect-tree lists them as folders) carry their link grub
+  ::  over whole, the root too when it is one. Nothing in one is rewritten:
+  ::  it names another ship's page.
+  =/  lacts=(list eval-action:le)
+    %+  murn  ^-((list path) [~ (turn all head)])
+    |=  p=path
+    ^-  (unit eval-action:le)
+    (bind (fils-link (ball-fils bl p)) |=(l=link:ll [%link-put (weld to p) l]))
   =/  todo=(list eval-action:le)
     ;:  weld
       sacts
       ^-  (list eval-action:le)
-      [[%mkdir to] (turn dirs |=(p=path `eval-action:le`[%mkdir (weld to p)]))]
+      =/  mk  (turn dirs |=(p=path `eval-action:le`[%mkdir (weld to p)]))
+      ?:((isl ~) mk [[%mkdir to] mk])
+      lacts
       dacts
     ==
-  =/  count=@ud  0
+  =/  count=@ud  (lent lacts)
   |-  ^-  form:m
   ?^  todo
     ;<  ~  bind:m  (poke-eval i.todo)
@@ -6227,9 +7571,53 @@
   ;<  up=@ud  bind:m  nexus-up
   ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
   ?.  ?=([%ball *] sn)  (pure:m (pairs:enjs:format ~[['nodes' a+~]]))
-  =/  nodes=(list [pax=path j=json])  (tree-walk ball.sn wave.sn ~)
+  ;<  [b=ball:tarball w=wave:nexus]  bind:m  (with-links ball.sn wave.sn)
+  =/  nodes=(list [pax=path j=json])  (tree-walk b w ~)
   =/  srt  (sort nodes |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
   (pure:m (pairs:enjs:format ~[['nodes' a+(turn srt |=([* j=json] j))]]))
+::  +with-links: the /page ball and wave with each link (/links) put back
+::  at its page path, for the owner's own listings: tree and dump. Every
+::  walk others read (publishing, search, indexes, the reader) takes /page
+::  alone, so a link never reaches them.
+++  with-links
+  |=  [b=ball:tarball w=wave:nexus]
+  =/  m  (fiber:fiber:nexus ,[ball:tarball wave:nexus])
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  ln=view:nexus  bind:m  (peek:io (rv up /links) ~)
+  ?.  ?=([%ball *] ln)  (pure:m [b w])
+  (pure:m (graft-links b w ball.ln wave.ln))
+::  +graft-links: +with-links' pure half. Each link grub, and its cass (the
+::  node's mtime), lands in the dir at its path, made if there is none.
+++  graft-links
+  |=  [b=ball:tarball w=wave:nexus lb=ball:tarball lw=wave:nexus]
+  ^-  [ball:tarball wave:nexus]
+  =/  ls=(list [rel=path g=[=sang:tarball gain=? bang=(unit tang)] cs=cass:clay])
+    (link-grubs lb lw ~)
+  |-  ^-  [ball:tarball wave:nexus]
+  ?~  ls  [b w]
+  =/  lp=lump:tarball  (fall (~(get of b) rel.i.ls) *lump:tarball)
+  =/  wl=[fold=cass:clay file=(map @ta cass:clay)]
+    (fall (~(get of w) rel.i.ls) *[fold=cass:clay file=(map @ta cass:clay)])
+  %=  $
+    ls  t.ls
+    b   (~(put of b) rel.i.ls lp(contents (~(put by contents.lp) %link g.i.ls)))
+    w   (~(put of w) rel.i.ls wl(file (~(put by file.wl) %link cs.i.ls)))
+  ==
+::  +link-grubs: every link grub in a /links ball, with its path and cass.
+++  link-grubs
+  |=  [lb=ball:tarball lw=wave:nexus rel=path]
+  ^-  (list [rel=path g=[=sang:tarball gain=? bang=(unit tang)] cs=cass:clay])
+  =/  kids=(list [rel=path g=[=sang:tarball gain=? bang=(unit tang)] cs=cass:clay])
+    %-  zing
+    %+  turn  ~(tap by dir.lb)
+    |=  [nom=@ta kb=ball:tarball]
+    (link-grubs kb (fall (~(get by dir.lw) nom) *wave:nexus) (snoc rel nom))
+  =/  g  ?~(fil.lb ~ (~(get by contents.u.fil.lb) %link))
+  ?~  g  kids
+  =/  cs=cass:clay
+    ?~(fil.lw *cass:clay (fall (~(get by file.u.fil.lw) %link) *cass:clay))
+  [[rel u.g cs] kids]
 ::  +index-walk: every page in the ball as [rel body share], from the SAME single
 ::  deep peek +tree-walk uses. That ball already carries each page's code and
 ::  share grub, so indexing the whole tree costs one dart, not two per page.
@@ -6245,6 +7633,8 @@
     |=  [nom=@ta kb=ball:tarball]
     (index-walk kb (weld rel /[nom]))
   ?~  rel  kids
+  ::  links live under /links, so a cached body (another ship's page) is
+  ::  never indexed here
   ?.  (~(has by fils) %code)  kids
   =/  cd  (~(got by fils) %code)
   =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')
@@ -6397,6 +7787,11 @@
     =/  kw=wave:nexus  (fall (~(get by dir.w) nom) *wave:nexus)
     (tree-walk kb kw (weld rel /[nom]))
   =/  drow=(list [@t json])  (dname-row fils)
+  ::  a link: a page, listed by its cache (+link-rows)
+  =/  lnk=(unit link:ll)  (fils-link fils)
+  ?:  &(?=(^ lnk) ?=(^ rel))
+    =/  lcs=cass:clay  (fall (~(get by wfil) %link) *cass:clay)
+    [[rel (pairs:enjs:format (weld drow (link-rows rel u.lnk lcs)))] kids]
   ?.  (~(has by fils) %code)
     ?~  rel  kids
     :_  kids
@@ -6463,7 +7858,8 @@
   ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
   ?.  ?=([%ball *] sn)
     (pure:m (pairs:enjs:format ~[['nodes' a+~] ['rev' rev] ['since' tok]]))
-  =/  nodes=(list [pax=path j=json])  (dump-walk ball.sn wave.sn ~ since)
+  ;<  [b=ball:tarball w=wave:nexus]  bind:m  (with-links ball.sn wave.sn)
+  =/  nodes=(list [pax=path j=json])  (dump-walk b w ~ since)
   =/  srt  (sort nodes |=([a=[pax=path *] b=[pax=path *]] (aor pax.a pax.b)))
   =/  js=(list json)  (turn srt |=([* j=json] j))
   (pure:m (pairs:enjs:format ~[['nodes' a+js] ['rev' rev] ['since' tok]]))
@@ -6503,6 +7899,12 @@
   ::  this node's own sensitive mark, so a vault export can carry it
   =/  srow=(list [@t json])
     ?.((~(has by fils) %sensitive) ~ ~[['sensitive' b+&]])
+  ::  a link: +tree-walk's node, and never its body. Reads go through the
+  ::  link, not the dump.
+  =/  lnk=(unit link:ll)  (fils-link fils)
+  ?:  &(?=(^ lnk) ?=(^ rel))
+    =/  lcs=cass:clay  (fall (~(get by wfil) %link) *cass:clay)
+    [[rel (pairs:enjs:format :(weld drow srow (link-rows rel u.lnk lcs)))] kids]
   ?.  (~(has by fils) %code)
     ?~  rel  kids
     :_  kids
@@ -6617,8 +8019,21 @@
   =/  pax=path  (pax-of name)
   =/  pdir=path  (weld /page pax)
   ;<  cn=view:nexus  bind:m  (peek:io (rf up pdir %code) ~)
-  ?.  ?=([%file *] cn)  (pure:m [%| 404 'no such page'])
+  ?.  ?=([%file *] cn)
+    ::  a link (/lib/lattice-link): its cached copy, now, and a live read in
+    ::  a fiber of its own. The lick port is this one, serving a request at
+    ::  a time, and a wait on an offline host would stall the whole mount.
+    ::  (HTTP page-source reads a link live before it gets here.)
+    ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at pax)
+    ?.  ?=([~ [%ship *] *] lk)  (pure:m [%| 404 'no such page'])
+    =/  l=link:ll  l.u.lk
+    ?.  ?=(%ship -.l)  (pure:m [%| 404 'no such page'])
+    ;<  ~  bind:m  (link-read-later pax)
+    (pure:m [%& (link-source-json l body.l rev.l at.u.lk render)])
   ;<  mode=share-mode:le  bind:m  (read-share pdir)
+  ::  whether other ships may comment here: the nearest flag at or above the
+  ::  page, the same walk the comment inbox applies (+comments-on)
+  ;<  con=?  bind:m  (comments-on pax)
   =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cn)))) '')
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
   =/  gen=?  =((make-folder-index pax) src)
@@ -6641,6 +8056,7 @@
         ['rev' (numb:enjs:format ud.cass.cn)]
         ['mtime' s+(scot %da da.cass.cn)]
         ['share' s+mode]
+        ['comments' b+con]
     ==
   html-row
 ::  +fs-err-text: a page's latest evaluator error ('' = clean or no such page).
@@ -6656,14 +8072,45 @@
   (pure:m (fall (mole |.(;;(@t (sang-noun:tarball sang.en)))) ''))
 ::  +fs-save: create/overwrite a page (POST /page-save + lick %page-save). The
 ::  name and body rules are +save-src, the same front half the HTTP route runs.
-::  ?new rejects an existing page with 409. The route's ?base= conflict protocol
-::  is HTTP-only: this surface answers [status body] and has nowhere to report a
-::  conflicted write or name the body it kept.
+::  ?new rejects an existing page with 409. On a local page the route's ?base=
+::  conflict protocol is HTTP-only: this surface answers [status body] and has
+::  nowhere to report a conflicted write or name the body it kept. On a link,
+::  `base` is the refusal rule below.
 ++  fs-save
-  |=  [name=@t ptype=@tas new=? raw=@t]
+  |=  [name=@t ptype=@tas new=? base=(unit @ud) raw=@t]
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
+  ?.  (valid-name name)  (pure:m [400 'bad name'])
+  ::  a link (/lib/lattice-link) saves on its host (+link-write). The port
+  ::  serves one request at a time, so a slow or offline owner must not hold
+  ::  it: a link last seen failing answers 503 at once and reads again in
+  ::  the background, and a live one gets 3s deadlines, in a fiber of its
+  ::  own (+link-write-apart), so a late answer never lands here. The base
+  ::  is the rev the mount read (?base=), or the cached rev from a mount that
+  ::  does not send one: an owner's newer text is a 409, never overwritten, and
+  ::  a fresh read is started so the mount sees it. The cache alone was not
+  ::  enough: a background read moves it past the text the mount holds.
+  ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at (pax-of name))
+  ?^  lk
+    ?:  new  (pure:m [409 'page exists'])
+    =/  l=link:ll  l.u.lk
+    ?:  &(?=(%ship -.l) !ok.seen.l)
+      ;<  ~  bind:m  (link-read-later (pax-of name))
+      (pure:m [503 (link-fail-msg host.l)])
+    =/  bas=(unit @ud)  ?.(?=(%ship -.l) ~ ?^(base base `rev.l))
+    ::  three remote steps of 3s each at most, and a little for the hop
+    ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
+      (link-write-apart (pax-of name) raw bas ~s10)
+    ::  the owner's new rev, so the mount claims it on its next save
+    ?:  ?=(%& -.r)
+      %-  pure:m
+      :-  200
+      (en:json:html (pairs:enjs:format ~[['ok' b+&] ['rev' (numb:enjs:format new.p.r)]]))
+    ;<  ~  bind:m
+      ?.  =(409 code.p.r)  (pure:(fiber:fiber:nexus ,~) ~)
+      (link-read-later (pax-of name))
+    (pure:m p.r)
   =/  sr  (save-src name ptype raw)
   ?:  ?=(%| -.sr)  (pure:m [code.p.sr msg.p.sr])
   =/  src=@t  p.sr
@@ -6673,6 +8120,15 @@
     ?.  new  (pure:(fiber:fiber:nexus ,?) |)
     (peek-exists:io (rf up (weld /page (pax-of name)) %code))
   ?:  ex  (pure:m [409 'page exists'])
+  ::  a new page under a link is refused: a link holds no pages. An
+  ::  overwrite (most saves) pays one peek to learn it is not new.
+  ;<  cx=?  bind:m
+    ?:  new  (pure:(fiber:fiber:nexus ,?) |)
+    (peek-exists:io (rf up (weld /page (pax-of name)) %code))
+  ;<  la=(unit path)  bind:m
+    ?:  cx  (pure:(fiber:fiber:nexus ,(unit path)) ~)
+    (link-above (pax-of name))
+  ?^  la  (pure:m [409 (link-above-msg u.la)])
   ;<  ~  bind:m  (poke-eval [%make (pax-of name) src])
   (pure:m [200 ''])
 ::  +fs-mkdir / +fs-del: folder create / page-or-folder delete.
@@ -6681,6 +8137,8 @@
   =/  m  (fiber:fiber:nexus ,[status=@ud rbody=@t])
   ^-  form:m
   ?.  (valid-name name)  (pure:m [400 'bad name'])
+  ;<  lm=(unit @t)  bind:m  (link-in-way (pax-of name))
+  ?^  lm  (pure:m [409 u.lm])
   ;<  ~  bind:m  (poke-eval [%mkdir (pax-of name)])
   (pure:m [200 ''])
 ++  fs-del
@@ -6711,8 +8169,13 @@
   =/  dbase=path  (weld /page pt)
   ;<  dpg=?  bind:m  (peek-exists:io (rf up dbase %code))
   ?:  dpg  (pure:m |+[409 'destination exists'])
+  ::  a folder, or a link (under /links)
   ;<  ddr=?  bind:m  (peek-exists:io (rv up dbase))
   ?:  ddr  (pure:m |+[409 'destination exists'])
+  ;<  dlk=?  bind:m  (peek-exists:io (link-road up pt))
+  ?:  dlk  (pure:m |+[409 'destination exists'])
+  ;<  la=(unit path)  bind:m  (link-above pt)
+  ?^  la  (pure:m |+[409 (link-above-msg u.la)])
   ;<  n=(unit @ud)  bind:m  (move-pages pf pt)
   ?~  n  (pure:m |+[404 'no such page or folder'])
   (pure:m &+u.n)
@@ -6749,7 +8212,10 @@
     =/  name=(unit @t)  (~(get by q) 'name')
     ?~  name  (pure:m [400 'missing name'])
     =/  ptype=@tas  `@tas`(~(gut by q) 'type' 'hoon')
-    (fs-save u.name ptype (~(has by q) 'new') body)
+    ::  ?base= (a link's save, the rev the mount read): an older client
+    ::  sends none, and an older ship ignores it
+    =/  base=(unit @ud)  (rush (~(gut by q) 'base' '') dim:ag)
+    (fs-save u.name ptype (~(has by q) 'new') base body)
       %folder-new
     =/  name=(unit @t)  (~(get by q) 'name')
     ?~  name  (pure:m [400 'missing name'])
@@ -6769,6 +8235,80 @@
     ;<  r=(each @ud [code=@ud msg=@t])  bind:m  (fs-move u.from u.to)
     ?:  ?=(%| -.r)  (pure:m p.r)
     (pure:m [200 (en:json:html (pairs:enjs:format ~[['moved' (numb:enjs:format p.r)]]))])
+  ==
+::  +sweep-link-done: delete every /link-done answer as the port starts.
+::  The port that polled for them is gone, so none has a reader. Each
+::  save fiber deletes its own a minute on, but a reload inside that
+::  minute ends the fiber first and leaves the answer for good.
+++  sweep-link-done
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:io (rv up /link-done) ~)
+  ?.  ?=([%ball *] v)  (pure:m ~)
+  ?~  fil.ball.v  (pure:m ~)
+  =/  ids=(list @ta)  ~(tap in ~(key by contents.u.fil.ball.v))
+  |-  ^-  form:m
+  ?~  ids  (pure:m ~)
+  ;<  *  bind:m  (cull-soft:io (rf up /link-done i.ids))
+  $(ids t.ids)
+::  +fs-serve: +lick-serve:io for the lattice-fs port, but waiting for the
+::  next request with +take-in-drain, which eats strays instead of skipping
+::  them. The port fiber lives until the next reload, and a reload keeps
+::  its skip queue (grubbery +spawn-proc), so every late answer to a remote
+::  read or poke it ever gave up on stayed there, re-offered on each take:
+::  the port slowed with every timeout, to seconds for a local page. Remote
+::  work now runs in fibers of its own (+link-write-apart, +link-read-later),
+::  and this drains what an older build left, and anything else that slips.
+++  fs-serve
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  name=path  fs-port
+  ;<  ~  bind:m  (lick-spin:io name |)
+  ;<  *  bind:m  (keep:io /in [%& %& (weld /sys/lick name) %in] ~)
+  |-
+  ;<  got=?  bind:m  take-in-drain
+  ?.  got  $
+  ;<  =view:nexus  bind:m  (peek:io [%& %& (weld /sys/lick name) %in] ~)
+  ?.  ?=([%file *] view)  $
+  =/  raw=(unit [seq=@ud mark=@tas noun=*])
+    (mole |.(!<([seq=@ud mark=@tas noun=*] (need-vase:tarball sang.view))))
+  ?~  raw  $
+  =/  req=(unit [verb=@t path=@t query=@t body=@t])
+    (mole |.(;;([@t @t @t @t] noun.u.raw)))
+  ?~  req  $
+  ;<  [status=@ud rbody=@t]  bind:m  (fs-op u.req)
+  ::  a client gone (killed, timed out) gets no spit: /live is advisory, so
+  ::  only a definitive %.n suppresses it
+  ;<  live=view:nexus  bind:m  (peek:io [%& %& (weld /sys/lick name) %live] ~)
+  =/  gone=?
+    ?.  ?=([%file *] live)  |
+    =(| (fall (mole |.(!<(? (need-vase:tarball sang.live)))) &))
+  ?:  gone  $
+  ;<  ~  bind:m  (lick-spit:io name %res [status rbody])
+  $
+::  +take-in-drain: the port's next request (& on news on /in), or a stray
+::  eaten (|): a late remote %peek or %veto, a timer wake, a keen answer or
+::  a poke-ack that nothing here awaits any more.
+++  take-in-drain
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %news * *]
+    ?:  =(/in wire.u.in)  [%done &]
+    [%skip ~]
+      [~ %peek * *]  [%done |]
+      [~ %veto *]    [%done |]
+      [~ %poke * *]
+    ?:  ?|  =([/ %timer-wake] p.sage.u.in)
+            =([/ %keen-response] p.sage.u.in)
+            =([/ %poke-ack] p.sage.u.in)
+        ==
+      [%done |]
+    [%skip ~]
   ==
 ::  +fs-port: the lick unix-socket port; vere serves it at the pier path
 ::  .urb/dev/grubbery/lattice/fs.
@@ -7316,20 +8856,47 @@
   =/  bases=(list path)  peer-bases:lu
   |-  ^-  form:m
   ?~  bases  (pure:m ~)
+  ::  a short per-base bound: a peer running lattice answers /pub/index in a
+  ::  few seconds, so do not sit on the full remote-timeout for a wrong layout
+  ::  or an unreachable peer, which blocks the user's request (a cross-ship
+  ::  comment/share send) long enough for eyre to drop the channel.
   ;<  ms=(unit view:nexus)  bind:m
-    (peek-remote-wait [%& %& (weld i.bases /pub) %index] shp)
+    (peek-remote-wait-in [%& %& (weld i.bases /pub) %index] shp ~s8)
   ?:  ?&(?=(^ ms) ?=([%file *] u.ms))  (pure:m `i.bases)
   $(bases t.bases)
 ++  peek-remote-wait
   |=  [=road:tarball shp=@p]
+  (peek-remote-wait-in road shp remote-timeout)
+::  +peek-remote-wait-in: peek-remote-wait with a caller-chosen deadline, so a
+::  probe that only needs a fast answer (peer-base) is not stuck behind the full
+::  remote-timeout when a base is the wrong layout or the peer is unreachable.
+++  peek-remote-wait-in
+  |=  [=road:tarball shp=@p wait=@dr]
   =/  m  (fiber:fiber:nexus ,(unit view:nexus))
   ^-  form:m
   ;<  now=@da  bind:m  bowl-now
-  =/  until=@da  (add now remote-timeout)
+  =/  until=@da  (add now wait)
   ;<  pw=wire  bind:m  (nonce:io /peek)
   ;<  ~  bind:m  (send-dart:io %node pw (remote-road road shp) %peek ~ ~ %.y)
   ;<  ~  bind:m  (send-wait-dated until)
   (take-peek-or-wake pw until)
+::  +peek-remote-quiet: +peek-remote-wait-in that also takes its timer down
+::  once the peek has answered. A long-lived fiber (the lick port, writing
+::  through a link) would otherwise keep every late wake in its skip queue,
+::  and each one is fed through again on every later step: the port slowed
+::  with each save. Request fibers end before their timers fire.
+++  peek-remote-quiet
+  |=  [=road:tarball shp=@p wait=@dr]
+  =/  m  (fiber:fiber:nexus ,(unit view:nexus))
+  ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  =/  until=@da  (add now wait)
+  ;<  pw=wire  bind:m  (nonce:io /peek)
+  ;<  ~  bind:m  (send-dart:io %node pw (remote-road road shp) %peek ~ ~ %.y)
+  ;<  ~  bind:m  (send-wait-dated until)
+  ;<  ms=(unit view:nexus)  bind:m  (take-peek-or-wake pw until)
+  ;<  ~  bind:m  (cancel-timer:io /wait/(scot %da until))
+  (pure:m ms)
 ::  +peek-remote-shallow-wait: peek-remote-wait but deep=%.n, one directory level
 ::  (files here + subdir names, no recursion). Used by the cross-ship browser: a
 ::  deep (%.y) peek of a foreign DIR would materialize its whole subtree, so a huge
@@ -7609,13 +9176,38 @@
     ?:  (is-banned:ls bans u.src)  (pure:m ~)
     ?.  ?=([%apps *] pax.u.na)  (pure:m ~)
     ?.  |(=('read' mode.u.na) =('edit' mode.u.na))  (pure:m ~)
+    ::  a page we already linked into our tree (/lib/lattice-link): the
+    ::  link takes the new mode, and the page does not come back to shared
+    ::  with me, which would give it two homes
+    ;<  hits=(list [rel=path l=link:ll])  bind:m  (links-to u.src pax.u.na)
+    ?^  hits
+      %-  put-links
+      %+  turn  `(list [rel=path l=link:ll])`hits
+      |=  [rel=path l=link:ll]
+      [rel ?:(?=(%local -.l) l l(mode mode.u.na))]
     %^  put-file  (rf root / %shared)  [/lattice %shared]
     (put-entry:ls cur [u.src pax.u.na mode.u.na now])
   ::
       %del
-    ?^  src  (pure:m ~)                      ::  curation is owner-only
+    ::  from the host itself, about a page we linked: the link stays, marked
+    ::  as failed (+fail:ll), until the owner removes it. Any other foreign
+    ::  %del is dropped: curation is owner-only.
+    ?^  src
+      ?.  =(u.src host.u.na)  (pure:m ~)
+      ?:  (is-banned:ls bans u.src)  (pure:m ~)
+      ;<  hits=(list [rel=path l=link:ll])  bind:m  (links-to u.src pax.u.na)
+      %-  put-links
+      %+  turn  hits
+      |=([rel=path l=link:ll] [rel (fail:ll l now)])
     %^  put-file  (rf root / %shared)  [/lattice %shared]
     (del-entry:ls cur host.u.na pax.u.na)
+  ::
+      %put
+    ::  a link going back to shared with me (+handle-link-unmake). Ours
+    ::  alone: a foreign ship naming any host would forge an entry.
+    ?^  src  (pure:m ~)
+    %^  put-file  (rf root / %shared)  [/lattice %shared]
+    (put-entry:ls cur [host.u.na pax.u.na mode.u.na now])
   ==
 ::  +strip-ship-from-groups: remove one ship from every usergroup's who.ships,
 ::  returning how many groups changed. This is what makes a ban a revocation
@@ -7731,6 +9323,72 @@
     =/  wak=path  !<(path q.sage.u.in)
     ?.  ?&(?=([%wait @ ~] wak) =(until (slav %da i.t.wak)))  [%skip ~]
     [%done %.n]
+  ==
+::  +remote-load-ack: +remote-load-poke with a deadline, waiting for the
+::  gall ack itself. The /sys/gall grub answers our poke with a %pack as
+::  soon as it takes it, and the target's ack comes later, as a %poke-ack
+::  poke on our own wire (+gall-poke:io), so that is what this waits for.
+::  `~ acked, ``tang nacked, ~ no answer before the deadline.
+::
+++  remote-load-ack
+  |=  [target=@p req=load:remo:nexus timeout=@dr]
+  =/  m  (fiber:fiber:nexus ,(unit (unit tang)))
+  ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  =/  until=@da  (add now timeout)
+  ;<  =wire  bind:m  (nonce:io /gall-poke)
+  ;<  ~  bind:m
+    %-  send-dart:io
+    :^  %node  wire  &+&+[/sys/gall %'main.sig']
+    [%poke [/ %gall-poke] [[target %grubbery] grubbery-load+req]]
+  ::  a local veto or a pack error is a nack, as in +remote-load-poke:
+  ::  take-pack:io would fail the fiber, and on the lick port that
+  ::  restarts the mount's serve loop
+  ;<  pe=(unit tang)  bind:m  (take-pack-soft wire)
+  ?^  pe  (pure:m ``u.pe)
+  ;<  ~  bind:m  (send-wait-dated until)
+  ;<  r=(unit (unit tang))  bind:m  (take-ack-or-wake wire until)
+  ::  quiet, as +peek-remote-quiet: no late wake left behind
+  ;<  ~  bind:m  (cancel-timer:io /wait/(scot %da until))
+  (pure:m r)
+::  +take-pack-soft: the %pack on `wire`, its error, or a veto of our dart
+::  as an error. Never fails the fiber.
+++  take-pack-soft
+  |=  =wire
+  =/  m  (fiber:fiber:nexus ,(unit tang))
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %veto %node * * *]
+    ?.  =(wire wire.dart.u.in)  [%skip ~]
+    [%done `~[leaf+"vetoed locally"]]
+      [~ %pack * *]
+    ?.  =(wire wire.u.in)  [%skip ~]
+    [%done err.u.in]
+  ==
+::  +take-ack-or-wake: +remote-load-ack's wait, the %poke-ack on `wire` or
+::  the wake at `until` (~).
+++  take-ack-or-wake
+  |=  [=wire until=@da]
+  =/  m  (fiber:fiber:nexus ,(unit (unit tang)))
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %poke * *]
+    ?:  =([/ %poke-ack] p.sage.u.in)
+      =/  ack=(unit [w=^wire err=(unit tang)])
+        (mole |.(!<([^wire (unit tang)] q.sage.u.in)))
+      ?~  ack  [%skip ~]
+      ?.  =(wire w.u.ack)  [%skip ~]
+      [%done `err.u.ack]
+    ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
+    =/  wak=path  !<(path q.sage.u.in)
+    ?.  ?&(?=([%wait @ ~] wak) =(until (slav %da i.t.wak)))  [%skip ~]
+    [%done ~]
   ==
 ::  +remote-load-poke: send a %grubbery-load to another ship and wait for the
 ::  gall ack. Modeled on +gall-poke-or-nack (fiberio), which is our-ship-only;
@@ -8893,6 +10551,41 @@
     head
     "</head><body>"  bar  inner  "</body></html>"
   ==
+::  +nav-history: the back/forward buttons (+nav-script drives them). Split
+::  out because the anonymous clearweb tier gets these and nothing else.
+::
+++  nav-history
+  ^-  tape
+  ;:  weld
+    "<button type=\"button\" class=\"navb\" id=\"navb\" title=\"back\" disabled>&#8592;</button>"
+    "<button type=\"button\" class=\"navb\" id=\"navf\" title=\"forward\" disabled>&#8594;</button>"
+  ==
+::  +nav-controls: the reader bar's shared controls, home, the omnibar input holding `current`, and Go. Per-surface
+::  extras (edit, star, orrery slot, autocomplete) stay at the call sites.
+::
+++  nav-controls
+  |=  current=tape
+  ^-  tape
+  ;:  weld
+    "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
+    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search your pages\">"
+    "<button type=\"submit\">Go</button>"
+  ==
+::  +nav-hamburger: the bar's last control, the menu button and its entries.
+::  One copy for every reader surface (page, browser view, clearweb).
+::
+++  nav-hamburger
+  ^-  tape
+  ;:  weld
+    "<span class=\"hamw\"><button type=\"button\" id=\"ham\" title=\"menu\">&#9776;</button>"
+    "<div id=\"hammenu\" hidden>"
+    "<a href=\"/apps/lattice/app\">&#9998; editor</a>"
+    "<a href=\"/apps/lattice/know\">&#9670; knowledge</a>"
+    "<a href=\"/apps/lattice/marks\">&#9733; bookmarks</a>"
+    "<a href=\"/apps/lattice/forum\">&#9993; forum</a>"
+    "<a href=\"/apps/lattice/settings\">&#9881; settings</a>"
+    "</div></span>"
+  ==
 ::  +clearweb-bar: the /c/ navigation affordance, in two tiers. EVERYONE
 ::  gets contextual back/forward — pure history traversal, no auth, so an
 ::  anonymous visitor is never stranded on a bare page. The authenticated
@@ -8905,12 +10598,17 @@
   |=  authed=?
   ^-  tape
   ::  single-quote cords: braces in a double-quoted tape INTERPOLATE.
-  %+  weld
+  ;:  weld
     %-  trip
-    '<style>.cbar{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid #8884}.cbar button,.cbar a.home{font:inherit;padding:4px 12px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer;text-decoration:none}.cbar button[disabled]{opacity:.35;cursor:default}.cbar input{flex:1;font:inherit;padding:5px 8px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbar .hamw{position:relative;margin-left:auto;display:flex}#hammenu{position:absolute;right:0;top:100%;z-index:60;background:#fff;border:1px solid #8886;border-radius:6px;min-width:160px;display:flex;flex-direction:column;padding:4px;box-shadow:0 4px 14px #0003}@media(prefers-color-scheme:dark){#hammenu{background:#1a1a1a}}#hammenu a{padding:7px 10px;text-decoration:none;color:inherit;border-radius:4px}#hammenu a:hover{background:#8882}#hammenu[hidden]{display:none}</style><form class="cbar" action="/apps/lattice" method="get"><button type="button" class="navb" id="navb" title="back" disabled>&#8592;</button><button type="button" class="navb" id="navf" title="forward" disabled>&#8594;</button>'
-  ?.  authed  "</form>"
-  %-  trip
-  '<a class="home" href="/apps/lattice" title="lattice home">&#8962;</a><input name="url" value="" autocomplete="off" placeholder="urb:// address or search your pages"><button type="submit">Go</button><span class="hamw"><button type="button" id="ham" title="menu">&#9776;</button><div id="hammenu" hidden><a href="/apps/lattice/app">&#9998; editor</a><a href="/apps/lattice/know">&#9670; knowledge</a><a href="/apps/lattice/marks">&#9733; bookmarks</a><a href="/apps/lattice/settings">&#9881; settings</a></div></span></form>'
+    '<style>.cbar{display:flex;gap:6px;align-items:center;padding:6px 8px;border-bottom:1px solid #8884}.cbar button,.cbar a.home{font:inherit;padding:4px 12px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer;text-decoration:none}.cbar button[disabled]{opacity:.35;cursor:default}.cbar input{flex:1;font:inherit;padding:5px 8px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbar .hamw{position:relative;margin-left:auto;display:flex}#hammenu{position:absolute;right:0;top:100%;z-index:60;background:#fff;border:1px solid #8886;border-radius:6px;min-width:160px;display:flex;flex-direction:column;padding:4px;box-shadow:0 4px 14px #0003}@media(prefers-color-scheme:dark){#hammenu{background:#1a1a1a}}#hammenu a{padding:7px 10px;text-decoration:none;color:inherit;border-radius:4px}#hammenu a:hover{background:#8882}#hammenu[hidden]{display:none}</style><form class="cbar" action="/apps/lattice" method="get">'
+    nav-history
+    ?.  authed  "</form>"
+    ;:  weld
+      (nav-controls "")
+      nav-hamburger
+      "</form>"
+    ==
+  ==
 ::  `preview`: the editor's preview frame asked (?preview=1). An html answer
 ::  gets the editor's flat scrollbar rules appended, because a document that
 ::  styles no scrollbars gets the engine's native, window-theme-following ones
@@ -9350,6 +11048,482 @@
     (peer-written pax)
   ?:  eg  (send-sandboxed eyre-id 'text/html' doc)
   (send-html eyre-id doc)
+::  +forum-doc: assemble a whole forum page from the lib's BODY manx. The
+::  body carries no chrome; here it gets the themed head (+pwa-head's first-
+::  paint theme line + deferred theme.js + manifest/icons/metas, the forum-css
+::  <style>, then the optional clearweb `theme` <link>) and the shared reader
+::  bar in a <form class="bar">, exactly as +render-page-titled wraps its bar,
+::  then +nav-script (which wires the hamburger and back/forward). The OWNER
+::  gets the full bar (history, home, omnibar + autocomplete, hamburger); an
+::  anonymous PUBLIC reader gets history only, matching +clearweb-bar's tiering
+::  (the omnibar and the hamburger's destinations are owner-gated routes that
+::  would only bounce a visitor to a login). No Edit, no bookmark star, no
+::  orrery slot. `theme-link` is the <link> tape (or "") the caller built from
+::  +find-theme; `current` seeds the omnibar input ("" on a forum page: it has
+::  no urb:// address and its http path is not meaningful to the omnibar).
+::
+++  forum-doc
+  |=  [page=[title=@t body=manx] current=tape theme-link=tape authed=? notes=@ud]
+  ^-  @t
+  =/  bar-tail=tape
+    ?.  authed  "</form>"
+    :(weld (nav-controls current) nav-hamburger (forum-notes-badge notes) "</form>")
+  %-  crip
+  ;:  weld
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, viewport-fit=cover\">"
+    pwa-head
+    "<title>"  (esc (trip title.page))  "</title>"
+    "<style>"  (trip forum-css:fre)  "</style>"
+    "<style>"  bar-css  "</style>"
+    theme-link
+    "</head><body>"
+    "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
+    nav-history
+    bar-tail
+    (en-xml:html body.page)
+    ?:(authed omni-autocomplete "")
+    nav-script
+    "</body></html>"
+  ==
+::  +forum-read-notes: the refusal notes under /forum/notes, newest first.
+::  Unparseable grubs are skipped.
+::
+++  forum-read-notes
+  =/  m  (fiber:fiber:nexus ,(list [host=@p board=@t reason=@t at=@da]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:io (rv up /forum/notes) ~)
+  ?.  ?=([%ball *] v)  (pure:m ~)
+  ?~  fil.ball.v  (pure:m ~)
+  =/  all=(list [host=@p board=@t reason=@t at=@da])
+    %+  murn  ~(val by contents.u.fil.ball.v)
+    |=  [=sang:tarball *]
+    ^-  (unit [host=@p board=@t reason=@t at=@da])
+    (mole |.(;;([host=@p board=@t reason=@t at=@da] (sang-noun:tarball sang))))
+  (pure:m (sort all |=([a=[@p @t @t at=@da] b=[@p @t @t at=@da]] (gth at.a at.b))))
+::  +forum-notes-badge: the bar link to the refusal notes, empty at zero.
+::
+++  forum-notes-badge
+  |=  n=@ud
+  ^-  tape
+  ?:  =(0 n)  ""
+  %+  weld  "<a href=\"/apps/lattice/forum-notes\" title=\"refused forum posts\" style=\"color:#c33;font-weight:bold\">"
+  "{(a-co:co n)} refused</a>"
+::  +serve-forum-notes: GET /forum-notes (owner-gated): why remote posts were refused.
+::
+++  serve-forum-notes
+  |=  eyre-id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  our=@p  bind:m  bowl-our
+  ;<  now=@da  bind:m  bowl-now
+  ;<  ns=(list [host=@p board=@t reason=@t at=@da])  bind:m  forum-read-notes
+  (send-html eyre-id (forum-doc (render-notes:fre [our %.y now "/apps/lattice/forum" ""] ns) "" "" %.y (lent ns)))
+::  +serve-forum-public: the anonymous read of a PUBLIC forum board
+::  (/forum/<board>) or one of its threads (/forum/<board>/<post>), through
+::  the same renderer as the owner's view with authed off, so no form shows.
+::  A private, missing or unreadable board is the same flat 404, so a private
+::  board's existence does not leak. The nearest clearweb `theme` at or above
+::  /page/forum/<board> is linked in the head, as on a clearweb page.
+::
+++  serve-forum-public
+  |=  [eyre-id=@ta pax=path args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  pax  (send-err eyre-id 404 'not found')
+  ?.  (levy `path`pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
+    (send-err eyre-id 404 'not found')
+  ?.  &((lte (lent pax) 2) ((sane %tas) i.pax))
+    (send-err eyre-id 404 'not found')
+  =/  nom=@ta  i.pax
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[nom])
+  ?~  gs  (send-err eyre-id 404 'not found')
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (send-err eyre-id 404 'not found')
+  =/  brd=board:ft  p.lod
+  ?.  public.info.brd  (send-err eyre-id 404 'not found')
+  =/  pid=(unit @ud)
+    ?~(t.pax ~ ((slat %ud) i.t.pax))
+  ?:  &(?=(^ t.pax) |(?=(~ pid) !(~(has by posts.brd) u.pid)))
+    (send-err eyre-id 404 'not found')
+  ;<  tf=(unit path)  bind:m  (find-theme /forum/[nom]/index)
+  ;<  now=@da  bind:m  bowl-now
+  =/  theme-link=tape
+    ?~  tf  ""
+    :(weld "<link rel=\"stylesheet\" href=\"/apps/lattice/c" (spud (weld u.tf /theme)) "\">")
+  =/  c=ctx:fre
+    :*  `@p`0
+        %.n
+        now
+        "/apps/lattice/forum/{(trip nom)}"
+        ""
+    ==
+  =/  page=[title=@t body=manx]
+    ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
+    (render-thread:fre c brd u.pid)
+  (send-html eyre-id (forum-doc page "" theme-link %.n 0))
+::  +serve-forum-remote: GET /apps/lattice/forum-remote/<host>/<board>[/<post>]
+::  (owner-gated; see the route at the /x explorer). Render a peer's PUBLIC
+::  board or thread through the same renderer as the local view, with the
+::  action forms ENABLED (authed=%.y, who=our): a viewer who is a mod or
+::  author on the host's board sees the delete/pin controls, and every form
+::  posts to the matching forum-remote POST path (Task 3). The renderer bakes
+::  the board into `base`, so every href and form action hangs off
+::  /apps/lattice/forum-remote/<host>/<board> and re-enters this route.
+::
+::  An unreachable host, a non-lattice peer, a timeout, or a private/missing/
+::  deleted board all read as ~ from +forum-read-grubs-remote and surface as
+::  the 504 "unreachable or denied" response, the same clean error the
+::  cross-ship /browse read gives (line 1999), never a crash or half page.
+::  A board that loads is one the host granted this peer the dirs for: a
+::  public board (granted to everyone in the /public usergroup) or a private
+::  board this peer is an invited member of (the invite grants the pub and
+::  content dirs in the per-board usergroup). A non-member is never granted,
+::  so its peek reads as ~ above and 504s. We therefore do NOT re-check the
+::  public flag here: a loaded non-public board implies membership, and a
+::  board flipped private re-lays /public without it, so no stale public
+::  grant survives the flip.
+::
+++  serve-forum-remote
+  |=  [eyre-id=@ta pax=path args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  ?=([host=@ta board=@ta *] pax)  (send-err eyre-id 404 'not found')
+  =/  host=(unit @p)  (slaw %p i.pax)
+  ?~  host  (send-err eyre-id 404 'not found')
+  =/  board=@ta  i.t.pax
+  ?.  ((sane %tas) board)  (send-err eyre-id 404 'not found')
+  ?.  ?=(?(~ [@ ~]) t.t.pax)  (send-err eyre-id 404 'not found')
+  =/  pid=(unit @ud)  ?~(t.t.pax ~ ((slat %ud) i.t.t.pax))
+  ?:  &(?=(^ t.t.pax) ?=(~ pid))  (send-err eyre-id 404 'not found')
+  ;<  our=@p  bind:m  bowl-our
+  ;<  now=@da  bind:m  bowl-now
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs-remote u.host board)
+  ?~  gs  (send-err eyre-id 504 'unreachable or denied')
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (send-err eyre-id 504 'unreachable or denied')
+  =/  brd=board:ft  p.lod
+  ?:  &(?=(^ pid) !(~(has by posts.brd) u.pid))
+    (send-err eyre-id 404 'not found')
+  =/  base=tape
+    "/apps/lattice/forum-remote/{(scow %p u.host)}/{(trip board)}"
+  ;<  ns=(list [host=@p board=@t reason=@t at=@da])  bind:m  forum-read-notes
+  =/  nn=@ud  (lent ns)
+  =/  c=ctx:fre
+    :*  our
+        %.y
+        now
+        base
+        ""
+    ==
+  =/  page=[title=@t body=manx]
+    ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
+    (render-thread:fre c brd u.pid)
+  (send-html eyre-id (forum-doc page "" "" %.y nn))
+::  +forum-load-board: a board by name, or ~ if missing or unreadable.
+::
+++  forum-load-board
+  |=  [up=@ud nom=@ta]
+  =/  m  (fiber:fiber:nexus ,(unit board:ft))
+  ^-  form:m
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[nom])
+  ?~  gs  (pure:m ~)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (pure:m ~)
+  (pure:m `p.lod)
+::  +forum-board-list: [name title public] of every readable board, by name.
+::
+++  forum-board-list
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(list [name=board-name:ft title=@t public=?]))
+  ^-  form:m
+  ;<  v=view:nexus  bind:m  (peek:io (rv up /forum/boards) ~)
+  ?.  ?=([%ball *] v)  (pure:m ~)
+  =/  noms=(list @ta)  (sort ~(tap in ~(key by dir.ball.v)) aor)
+  |-  ^-  form:m
+  ?~  noms  (pure:m ~)
+  ;<  brd=(unit board:ft)  bind:m  (forum-load-board up i.noms)
+  ;<  rest=(list [name=board-name:ft title=@t public=?])  bind:m  $(noms t.noms)
+  ?~  brd  (pure:m rest)
+  (pure:m [[;;(board-name:ft i.noms) title.info.u.brd public.info.u.brd] rest])
+::  +serve-forum-owner: the owner's forum views (an authenticated GET under
+::  /forum): the board list, create form, a board's ranked list, a thread, the
+::  submit form and the mod page. The same renderer as the public read, with
+::  authed on and who=our. Unlike +serve-forum-public a private board is served:
+::  only the owner's cookie reaches this arm.
+::
+++  serve-forum-owner
+  |=  [eyre-id=@ta pax=path args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  (levy `path`pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
+    (send-err eyre-id 404 'not found')
+  ;<  our=@p  bind:m  bowl-our
+  ;<  now=@da  bind:m  bowl-now
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  ns=(list [host=@p board=@t reason=@t at=@da])  bind:m  forum-read-notes
+  =/  nn=@ud  (lent ns)
+  =/  root=tape  "/apps/lattice/forum"
+  ?~  pax
+    ;<  bl=(list [name=board-name:ft title=@t public=?])  bind:m  (forum-board-list up)
+    (send-html eyre-id (forum-doc (render-boards:fre [our %.y now root ""] bl) "" "" %.y nn))
+  ?:  =('_new' i.pax)
+    ?.  ?=(~ t.pax)  (send-err eyre-id 404 'not found')
+    (send-html eyre-id (forum-doc (render-create:fre [our %.y now root ""]) "" "" %.y nn))
+  ?.  &(?=(?(~ [@ ~]) t.pax) ((sane %tas) i.pax))
+    (send-err eyre-id 404 'not found')
+  =/  nom=@ta  i.pax
+  ;<  bo=(unit board:ft)  bind:m  (forum-load-board up nom)
+  ?~  bo  (send-err eyre-id 404 'not found')
+  =/  brd=board:ft  u.bo
+  ;<  tf=(unit path)  bind:m  (find-theme /forum/[nom]/index)
+  =/  theme-link=tape
+    ?~  tf  ""
+    :(weld "<link rel=\"stylesheet\" href=\"/apps/lattice/c" (spud (weld u.tf /theme)) "\">")
+  =/  c=ctx:fre
+    :*  our
+        %.y
+        now
+        "{root}/{(trip nom)}"
+        ""
+    ==
+  ?~  t.pax
+    %-  send-html
+    :-  eyre-id
+    (forum-doc (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args)) "" theme-link %.y nn)
+  ?:  =('submit' i.t.pax)
+    (send-html eyre-id (forum-doc (render-submit:fre c nom) "" theme-link %.y nn))
+  ?:  =('mod' i.t.pax)
+    (send-html eyre-id (forum-doc (render-mod:fre c brd) "" theme-link %.y nn))
+  =/  pid=(unit @ud)  ((slat %ud) i.t.pax)
+  ?:  |(?=(~ pid) !(~(has by posts.brd) u.pid))
+    (send-err eyre-id 404 'not found')
+  (send-html eyre-id (forum-doc (render-thread:fre c brd u.pid) "" theme-link %.y nn))
+::  +forum-role-of / +forum-target-of: parse a form field.
+::
+++  forum-role-of
+  |=  r=@t
+  ^-  (unit role:ft)
+  ?:  =('mod' r)  `%mod
+  ?:  =('poster' r)  `%poster
+  ?:  =('reader' r)  `%reader
+  ~
+++  forum-target-of
+  |=  t=@t
+  ^-  (unit vote-target:ft)
+  %+  rust  (trip t)
+  ;~  pose
+    (stag %post ;~(pfix (jest 'post-') dim:ag))
+    ;~(plug (cold %comment (jest 'comment-')) dim:ag ;~(pfix hep dim:ag))
+  ==
+::  +serve-forum-post: the owner's forum action forms (POST /forum/...). Each
+::  becomes one action poked at the writer as the %forum eval-action with
+::  src=our, so +apply-forum is the only writer and its role checks still
+::  apply; then a 303 to the view. A refused action (the writer faults) still
+::  redirects: the page shows the unchanged state.
+::
+::    /_new                       create a board
+::    /<b>/vote /submit /sidebar  upvote, new post, set sidebar
+::    /<b>/<id>/comment|pin|delete|delete-comment
+::    /<b>/mod/role|remove-role|edit-info|public|prune|delete
+::
+++  serve-forum-post
+  |=  [eyre-id=@ta our=@p pax=path body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  (levy `path`pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
+    (send-err eyre-id 404 'not found')
+  ?~  pax  (send-err eyre-id 404 'not found')
+  =/  form=(map @t @t)
+    (malt args:(parse-url:http-utils (crip (weld "/?" (trip body)))))
+  =/  grab=$-(@t (unit @t))
+    |=  k=@t  ^-  (unit @t)
+    =/  v=@t  (~(gut by form) k '')
+    ?:(=('' v) ~ `v)
+  =/  root=tape  "/apps/lattice/forum"
+  ?:  =('_new' i.pax)
+    ?.  ?=(~ t.pax)  (send-err eyre-id 404 'not found')
+    =/  nm=(unit @t)  (grab 'name')
+    =/  ti=(unit @t)  (grab 'title')
+    ?:  |(?=(~ nm) ?=(~ ti))  (send-err eyre-id 400 'a board needs a name and a title')
+    ?.  ((sane %tas) u.nm)  (send-err eyre-id 400 'bad board name')
+    =/  rl=(unit role:ft)  (forum-role-of (fall (grab 'role') 'poster'))
+    ?~  rl  (send-err eyre-id 400 'bad role')
+    ;<  ~  bind:m
+      %-  poke-eval
+      [%forum our [%create-board u.nm u.ti (fall (grab 'description') '') u.rl]]
+    (send-see-other eyre-id "{root}/{(trip u.nm)}")
+  ?.  &(?=(^ t.pax) ((sane %tas) i.pax))  (send-err eyre-id 404 'not found')
+  =/  nom=@tas  i.pax
+  =/  base=tape  "{root}/{(trip nom)}"
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  bo=(unit board:ft)  bind:m  (forum-load-board up nom)
+  ?~  bo  (send-err eyre-id 404 'no such board')
+  =/  brd=board:ft  u.bo
+  =/  tl=path  t.pax
+  =/  res=(unit [act=action:ft to=tape])
+    ?+  tl  ~
+        [%vote ~]
+      =/  tg=(unit @t)  (grab 'target')
+      ?~  tg  ~
+      =/  vt=(unit vote-target:ft)  (forum-target-of u.tg)
+      ?~  vt  ~
+      :-  ~
+      :-  [%upvote nom u.vt]
+      ?-(-.u.vt %post base, %comment "{base}/{(a-co:co post.u.vt)}")
+    ::
+        [%submit ~]
+      =/  ti=(unit @t)  (grab 'title')
+      ?~  ti  ~
+      `[[%new-post nom u.ti (grab 'url') (grab 'body')] base]
+    ::
+        [%sidebar ~]
+      `[[%set-sidebar nom (fall (grab 'sidebar') '')] "{base}/mod"]
+    ::
+        [%mod %role ~]
+      =/  who=(unit @p)  (biff (grab 'who') (slat %p))
+      =/  rl=(unit role:ft)  (forum-role-of (fall (grab 'role') ''))
+      ?:  |(?=(~ who) ?=(~ rl))  ~
+      `[[%set-role nom u.who u.rl] "{base}/mod"]
+    ::
+        [%mod %remove-role ~]
+      =/  who=(unit @p)  (biff (grab 'who') (slat %p))
+      ?~  who  ~
+      `[[%set-role nom u.who default-role.info.brd] "{base}/mod"]
+    ::
+        [%mod %edit-info ~]
+      =/  ti=(unit @t)  (grab 'title')
+      ?~  ti  ~
+      `[[%edit-board-info nom u.ti (fall (grab 'description') '')] "{base}/mod"]
+    ::
+        [%mod %public ~]
+      `[[%set-public nom !public.info.brd] "{base}/mod"]
+    ::
+        [%mod %prune ~]
+      ?.  ?=(^ (grab 'prune-enabled'))
+        `[[%set-prune nom ~] "{base}/mod"]
+      =/  ms=(unit @ud)  (biff (grab 'min-score') (slat %ud))
+      =/  ad=(unit @ud)  (biff (grab 'after-days') (slat %ud))
+      ?:  |(?=(~ ms) ?=(~ ad) =(0 u.ad))  ~
+      `[[%set-prune nom `[u.ms (mul u.ad ~d1)]] "{base}/mod"]
+    ::
+        [%mod %delete ~]
+      `[[%delete-board nom] root]
+    ::
+        [@ @ ~]
+      =/  pid=(unit @ud)  ((slat %ud) i.tl)
+      ?~  pid  ~
+      =/  thread=tape  "{base}/{(a-co:co u.pid)}"
+      ?+  i.t.tl  ~
+          %comment
+        =/  bd=(unit @t)  (grab 'body')
+        ?~  bd  ~
+        =/  par=(unit comment-id:ft)  (biff (grab 'parent') (slat %ud))
+        `[[%new-comment nom u.pid par u.bd] thread]
+      ::
+          %pin
+        `[[%pin-post nom u.pid =(`'true' (grab 'pinned'))] base]
+      ::
+          %delete
+        `[[%delete-post nom u.pid] base]
+      ::
+          %delete-comment
+        =/  cid=(unit @ud)  (biff (grab 'comment-id') (slat %ud))
+        ?~  cid  ~
+        `[[%delete-comment nom u.pid u.cid] thread]
+      ==
+    ==
+  ?~  res  (send-err eyre-id 400 'bad or missing forum form fields')
+  ;<  ~  bind:m  (poke-eval [%forum our act.u.res])
+  (send-see-other eyre-id to.u.res)
+::  +serve-forum-remote-post: the owner's forms on a board hosted on ANOTHER
+::  ship (POST /forum-remote/<host>/<board>/...). Decodes the suffix and form
+::  into an action:ft exactly as +serve-forum-post does, but pokes it at the
+::  host (the /forum-post-remote send path) instead of the local writer, then
+::  303s back to the GET view so the page re-scries. A best-effort poke with a
+::  short bounded delivery wait (~s5); the result, applied or refused, is
+::  asynchronous and surfaces as a note under /forum/notes.
+::  The host stamps authorship from the transport; the payload carries none.
+::  Owner-only/board actions (create, delete-board, mod/*) never appear as
+::  forms on a remote board; such a suffix just redirects back unsent.
+::
+++  serve-forum-remote-post
+  |=  [eyre-id=@ta pax=path body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  (levy `path`pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
+    (send-err eyre-id 404 'not found')
+  ?.  ?=([host=@ta board=@ta *] pax)  (send-err eyre-id 404 'not found')
+  =/  host=(unit @p)  (slaw %p i.pax)
+  ?~  host  (send-err eyre-id 404 'not found')
+  =/  nom=@tas  i.t.pax
+  ?.  ((sane %tas) nom)  (send-err eyre-id 404 'not found')
+  =/  form=(map @t @t)
+    (malt args:(parse-url:http-utils (crip (weld "/?" (trip body)))))
+  =/  grab=$-(@t (unit @t))
+    |=  k=@t  ^-  (unit @t)
+    =/  v=@t  (~(gut by form) k '')
+    ?:(=('' v) ~ `v)
+  =/  base=tape
+    "/apps/lattice/forum-remote/{(scow %p u.host)}/{(trip nom)}"
+  =/  tl=path  t.t.pax
+  ::  ~ act = bad fields; act is ~ with a to = a refused suffix (no send)
+  =/  res=(unit [act=(unit action:ft) to=tape])
+    ?+  tl  ~
+        [%vote ~]
+      =/  tg=(unit @t)  (grab 'target')
+      ?~  tg  ~
+      =/  vt=(unit vote-target:ft)  (forum-target-of u.tg)
+      ?~  vt  ~
+      :-  ~
+      :-  `[%upvote nom u.vt]
+      ?-(-.u.vt %post base, %comment "{base}/{(a-co:co post.u.vt)}")
+    ::
+        [%submit ~]
+      =/  ti=(unit @t)  (grab 'title')
+      ?~  ti  ~
+      `[`[%new-post nom u.ti (grab 'url') (grab 'body')] base]
+    ::
+        [%sidebar ~]
+      `[`[%set-sidebar nom (fall (grab 'sidebar') '')] base]
+    ::
+        [%mod *]
+      `[~ base]
+    ::
+        [@ @ ~]
+      =/  pid=(unit @ud)  ((slat %ud) i.tl)
+      ?~  pid  ~
+      =/  thread=tape  "{base}/{(a-co:co u.pid)}"
+      ?+  i.t.tl  ~
+          %comment
+        =/  bd=(unit @t)  (grab 'body')
+        ?~  bd  ~
+        =/  par=(unit comment-id:ft)  (biff (grab 'parent') (slat %ud))
+        `[`[%new-comment nom u.pid par u.bd] thread]
+      ::
+          %pin
+        `[`[%pin-post nom u.pid =(`'true' (grab 'pinned'))] base]
+      ::
+          %delete
+        `[`[%delete-post nom u.pid] base]
+      ::
+          %delete-comment
+        =/  cid=(unit @ud)  (biff (grab 'comment-id') (slat %ud))
+        ?~  cid  ~
+        `[`[%delete-comment nom u.pid u.cid] thread]
+      ==
+    ==
+  ?~  res  (send-err eyre-id 400 'bad or missing forum form fields')
+  ?~  act.u.res  (send-see-other eyre-id to.u.res)
+  ;<  hbase=(unit path)  bind:m  (peer-base-cached u.host)
+  ;<  ?  bind:m
+    %^  remote-load-poke-wait  u.host
+      :-  [/forum-post %& (fall hbase desk-base:lu) %'forum.sig']
+      [%poke [/lattice %forum-action] `action:ft`u.act.u.res]
+    ~s5
+  (send-see-other eyre-id to.u.res)
 ::  +clearweb-body: the rendered body of a public page, from a per-page cache
 ::  keyed by the data grub's revision. The md and gmi renders are the costly
 ::  part of an unauthenticated hit (quadratic on hostile input, see
@@ -10344,6 +12518,11 @@
 ::  other non-root dir is a folder. Recurse through pages too (a page can also be
 ::  a parent of nested pages). Paths are relative to /page.
 ::
+::  A link (/lib/lattice-link), where a ball has one grafted in
+::  (+graft-links), comes back as a folder: it has no code, so every caller
+::  that reads, publishes or copies page code passes it by. +move-pages
+::  copies its link grub from the same ball and makes no dir for it.
+::
 ++  collect-tree
   |=  [b=ball:tarball rel=path]
   ^-  (list [pax=path page=?])
@@ -10373,6 +12552,9 @@
     %+  turn  ~(tap by dir.b)
     |=  [nom=@ta kid=ball:tarball]
     (collect-visible kid (weld rel /[nom]) mode sens)
+  ::  a link is another ship's page, never listed to anyone reading ours.
+  ::  /page holds none (see +with-links): this is the backstop.
+  ?:  (~(has by fils) %link)  kids
   ?:  (~(has by fils) %code)
     ?.  (gte (share-rank (fils-share fils)) (share-rank mode))  kids
     [[rel &] kids]
@@ -10451,8 +12633,11 @@
     "</script>"
   ==
 ::  +settings-html: the settings page. Search-index maintenance, the browser
-::  bookmarklets and the vault backup UI. Single-quote cords so the css and js
-::  braces stay literal (no ' or \ inside).
+::  bookmarklets, the vault backup UI, the editor and publishing preferences,
+::  the legacy import and (desktop only) connection and mounts. The editor
+::  opens it in a tab and scrolls it to a section by id (24-tools.js
+::  latOpenSettings), so every section a link can name carries one. Single-
+::  quote cords so the css and js braces stay literal (no ' or \ inside).
 ::
 ++  settings-html
   ^-  tape
@@ -10509,12 +12694,19 @@
     ::  exports are the same file. This page is a separate document from the
     ::  editor bundle, so it loads vault.js on its own; the external script is
     ::  parser-blocking, so LatticeVault exists by the time the wiring runs.
-    "<h2>Backup</h2>"
+    "<h2 id=\"backup\">Backup</h2>"
     "<div id=\"vaultui\"></div>"
     %-  trip
     '<script src="/apps/lattice/app/vault.js"></script>'
     %-  trip
     '<script>window.LatticeVault&&LatticeVault.mountSettings(document.getElementById("vaultui"))</script>'
+    ::  desktop only: the schedules live on the app's own manager page, where
+    ::  only the user's clicks can change them, so this is a way there and
+    ::  not a second copy. Same bridge and same questions as Connection below.
+    "<p id=\"bksched\" hidden><button type=\"button\" id=\"bkschedbtn\" class=\"btn\">Scheduled backups</button> "
+    "<span class=\"muted\">set up and check the automatic backups this computer writes.</span></p>"
+    %-  trip
+    '<script>(function(){var p=document.getElementById("bksched"),w=null;try{w=window.top}catch(x){}var t=w&&w.__TAURI__;if(!t||!t.core)return;p.hidden=false;document.getElementById("bkschedbtn").onclick=function(){if(w.latOpenManager)w.latOpenManager("backups");else t.core.invoke("open_manager",{section:"backups"})}})();</script>'
     ::  theme: ui-app/theme.js (loaded by +pwa-head) renders into #themeui
     "<h2>Theme</h2>"
     "<div id=\"themeui\"></div>"
@@ -10524,18 +12716,34 @@
     ::  open in another tab updates through the storage event, no reload.
     "<h2>Typography</h2>"
     "<p class=\"muted\">Font and size for the editor. Saved in this browser only &mdash; it never touches your ship, so it costs no round-trip. An editor open in another tab picks the change up immediately.</p>"
-    ::  vim mode. Same shape as the typography controls above: this page is a
-    ::  separate document, so it only writes localStorage and the editor picks
-    ::  the change up through the storage event. Off unless explicitly on.
-    "<p><label for=\"vimsel\"><input type=\"checkbox\" id=\"vimsel\"> vim mode in the editor</label> "
-    "<span class=\"muted\">modal editing: Esc for normal, i to insert, :w to save.</span></p>"
     "<p><label for=\"fontsel\">Font </label><select id=\"fontsel\"><option value=\"mono\">Monospace (default)</option><option value=\"system\">System sans</option><option value=\"serif\">Serif</option><option value=\"humanist\">Coding (Iosevka, JetBrains Mono)</option></select> <label for=\"fontsize\">Size </label><input type=\"range\" id=\"fontsize\" min=\"9\" max=\"32\" step=\"1\"> <span id=\"fontsizeo\" class=\"muted\"></span> <button type=\"button\" id=\"fontreset\" class=\"btn\">Reset</button></p>"
     ::  NB: no curly braces in this tape. hoon interpolates "{...}" inside a
     ::  double-quoted tape, so a literal brace is a syntax error here. (The
     ::  script below is a single-quoted cord, which is literal, braces and all.)
     "<p id=\"fontsample\" style=\"border:1px solid #8886;border-radius:8px;padding:12px\">The quick brown fox jumps over the lazy dog &middot; 0123456789 &middot; il1 O0 &middot; |= ^- @ud</p>"
     %-  trip
-    '<script>(function(){var f=document.getElementById("fontsel"),s=document.getElementById("fontsize"),o=document.getElementById("fontsizeo"),p=document.getElementById("fontsample");var M={mono:"ui-monospace, Menlo, Consolas, monospace",system:"system-ui, sans-serif",serif:"Georgia, Times New Roman, serif",humanist:"Iosevka, JetBrains Mono, Fira Code, ui-monospace, monospace"};function draw(){p.style.fontFamily=M[f.value]||M.mono;p.style.fontSize=s.value+"px";o.textContent=s.value+"px"}function save(){try{localStorage.latFont=f.value;localStorage.latFontSize=s.value}catch(e){}draw()}try{f.value=localStorage.latFont||"mono";s.value=localStorage.latFontSize||"13"}catch(e){}if(!M[f.value])f.value="mono";if(!(s.value>=9))s.value="13";draw();f.onchange=save;s.oninput=save;var v=document.getElementById("vimsel");try{v.checked=localStorage.edVim==="1"}catch(e){}v.onchange=function(){try{localStorage.edVim=v.checked?"1":"0"}catch(e){}};document.getElementById("fontreset").onclick=function(){try{localStorage.removeItem("latFont");localStorage.removeItem("latFontSize")}catch(e){}f.value="mono";s.value="13";draw()}})();</script>'
+    '<script>(function(){var f=document.getElementById("fontsel"),s=document.getElementById("fontsize"),o=document.getElementById("fontsizeo"),p=document.getElementById("fontsample");var M={mono:"ui-monospace, Menlo, Consolas, monospace",system:"system-ui, sans-serif",serif:"Georgia, Times New Roman, serif",humanist:"Iosevka, JetBrains Mono, Fira Code, ui-monospace, monospace"};function draw(){p.style.fontFamily=M[f.value]||M.mono;p.style.fontSize=s.value+"px";o.textContent=s.value+"px"}function save(){try{localStorage.latFont=f.value;localStorage.latFontSize=s.value}catch(e){}draw()}try{f.value=localStorage.latFont||"mono";s.value=localStorage.latFontSize||"13"}catch(e){}if(!M[f.value])f.value="mono";if(!(s.value>=9))s.value="13";draw();f.onchange=save;s.oninput=save;document.getElementById("fontreset").onclick=function(){try{localStorage.removeItem("latFont");localStorage.removeItem("latFontSize")}catch(e){}f.value="mono";s.value="13";draw()}})();</script>'
+    ::  editor: client-only preferences, the same shape as typography. This
+    ::  page only writes localStorage and the editor picks each change up
+    ::  through the storage event. Vim is off unless explicitly on. Wrap and
+    ::  autosave are on unless explicitly off, as the editor reads them
+    ::  (85-layout.js, 35-pages.js).
+    "<section id=\"editor\"><h2>Editor</h2>"
+    "<p class=\"muted\">Saved in this browser only. An editor open in another tab picks a change up immediately.</p>"
+    "<p><label for=\"vimsel\"><input type=\"checkbox\" id=\"vimsel\"> vim mode in the editor</label> "
+    "<span class=\"muted\">modal editing: Esc for normal, i to insert, :w to save.</span></p>"
+    "<p><label for=\"wrapdef\"><input type=\"checkbox\" id=\"wrapdef\"> Wrap long lines by default</label></p>"
+    "<p><label for=\"autosave\"><input type=\"checkbox\" id=\"autosave\"> Autosave pages</label> "
+    "<span class=\"muted\">pages and memories save two seconds after you stop typing. Off: pages and memories save only when you save them (Ctrl+S, the phone save button, or :w in vim). Closing a tab or leaving the editor asks about unsaved text. App files always wait for Ctrl+S.</span></p></section>"
+    %-  trip
+    '<script>(function(){function bind(id,k,on){var e=document.getElementById(id);function rd(){var v=null;try{v=localStorage.getItem(k)}catch(x){}e.checked=on?v!=="0":v==="1"}rd();e.onchange=function(){try{localStorage.setItem(k,e.checked?"1":"0")}catch(x){}};addEventListener("storage",function(ev){if(!ev.key||ev.key===k)rd()})}bind("vimsel","edVim",false);bind("wrapdef","appWrap",true);bind("autosave","latAutosave",true)})();</script>'
+    ::  publishing: the share dialog (15-dialog.js) skips its question once
+    ::  "do not ask again" is ticked, and this is the way back. The button
+    ::  shows only while that key is set.
+    "<h2 id=\"publishing\">Publishing</h2>"
+    "<p><span id=\"pubst\" class=\"muted\"></span> <button type=\"button\" id=\"pubreset\" class=\"btn\" hidden>Ask before making a page public</button></p>"
+    %-  trip
+    '<script>(function(){var b=document.getElementById("pubreset"),s=document.getElementById("pubst");function rd(){var on=false;try{on=localStorage.getItem("latPubOk")!==null}catch(x){}b.hidden=!on;s.textContent=on?"Making a page public does not ask first in this browser.":"Making a page public asks first."}b.onclick=function(){try{localStorage.removeItem("latPubOk")}catch(x){}rd()};addEventListener("storage",function(ev){if(!ev.key||ev.key==="latPubOk")rd()});rd()})();</script>'
     "<h2>Archive a web page</h2>"
     "<p class=\"muted\">Drag this to your bookmarks bar. On any web page, click it and your ship fetches that page, converts it to markdown and files it privately under <code>clips/</code> &mdash; a real lattice page you can edit, search and share.</p>"
     "<p><a id=\"clipbm\" class=\"btn\" href=\"#\">Clip to lattice</a></p>"
@@ -10555,6 +12763,25 @@
     ::  reverse proxy). location.origin is the only thing that knows.
     %-  trip
     '<script>(function(){var a=document.getElementById("clipbm");a.href="javascript:(function(){location.href=\'"+location.origin+"/apps/lattice/clip?url=\'+encodeURIComponent(location.href)})()";a.onclick=function(e){e.preventDefault()}})();</script>'
+    ::  legacy import: the same POST /legacy-migrate the editor offers once
+    ::  (98-legacy.js), here for as long as the old agent is waiting, whatever
+    ::  this browser was told. A server marker (dismissed or imported) ends it
+    ::  here too, since /legacy-migrate refuses once it is written.
+    "<h2 id=\"legacy\">Import from the old editor</h2>"
+    "<p><span id=\"legst\" class=\"muted\">checking&hellip;</span></p>"
+    "<p><button type=\"button\" id=\"legbtn\" class=\"btn\" hidden>Import from the old editor</button></p>"
+    %-  trip
+    '<script>(function(){var s=document.getElementById("legst"),b=document.getElementById("legbtn");function load(msg){fetch("/apps/lattice/legacy-status").then(function(r){return r.json()}).then(function(d){b.hidden=!d.prompt;s.textContent=msg||(d.prompt?"An older lattice agent is still installed on this ship, from before this store existed. Importing copies what it holds here. Anything already here is left as it is, and nothing is removed from the old agent.":d.reason==="resolved"?"This ship has closed the import from the older lattice agent: it either finished, or the offer was dismissed with never ask again.":"No older lattice agent is installed on this ship.")}).catch(function(){s.textContent=msg||"status unavailable"})}b.onclick=function(){b.disabled=true;s.textContent="importing from the old agent, this can take a few minutes...";fetch("/apps/lattice/legacy-migrate",{method:"POST"}).then(function(r){if(r.status===409){b.disabled=false;load("Nothing to import: the import was already closed on this ship, by another tab or device.");return null}if(!r.ok)return r.json().catch(function(){return {}}).then(function(j){throw new Error(j.error||"http "+r.status)});return r.json()}).then(function(j){if(!j)return;var n=j.imported||0,p=j.pagesImported||0;if(j.complete)try{localStorage.latLegacy="done"}catch(x){}b.disabled=false;load("Imported "+n+(n===1?" memory":" memories")+(j.skipped?" ("+j.skipped+" already here, left untouched)":"")+" and "+p+(p===1?" page. ":" pages. ")+(j.complete?"Everything it held is now here.":"Not everything moved, and the old agent still holds the only copy of the rest, so do not uninstall it. Run the import again to finish."))}).catch(function(e){b.disabled=false;load("import failed: "+e.message+". Nothing was removed from the old agent, and a re-run skips what already landed.")})};load()})();</script>'
+    ::  desktop only: the shell's own connection and mounts page. This page
+    ::  sits in a frame of the editor, so the Tauri bridge is the top
+    ::  window's. latOpenManager there asks about unsaved work first. The
+    ::  bare invoke is for this page opened on its own, with no editor
+    ::  around it and so no unsaved work to ask about.
+    "<div id=\"connection\" hidden><h2>Connection and mounts</h2>"
+    "<p class=\"muted\">Which ship this app talks to, and the folders mounted from it.</p>"
+    "<p><button type=\"button\" id=\"connbtn\" class=\"btn\">Connection and mounts</button></p></div>"
+    %-  trip
+    '<script>(function(){var c=document.getElementById("connection"),w=null;try{w=window.top}catch(x){}var t=w&&w.__TAURI__;if(!t||!t.core)return;c.hidden=false;document.getElementById("connbtn").onclick=function(){if(w.latOpenManager)w.latOpenManager();else t.core.invoke("open_manager")}})();</script>'
   ==
 ::  +home-index-html: the landing page. Always shows navigation (Pages,
 ::  Explorer) plus a live list of your programmable pages and any published
@@ -10605,7 +12832,8 @@
     home-css
     "<h1>Lattice</h1>"
     "<p class=\"muted\">Programmable pages &amp; published notes &middot; "  ship
-    " &middot; <a href=\"/apps/lattice/settings\">settings</a></p>"
+    " &middot; <a href=\"/apps/lattice/settings\">settings</a>"
+    " &middot; <a href=\"/apps/lattice/forum\">forum</a></p>"
     ::  two columns: each app card with its quick links below it.
     "<div class=\"apps\">"
     "<div class=\"col\">"
@@ -10717,11 +12945,68 @@
   '<script>document.addEventListener("input",function(e){if(e.target.id!=="bmq")return;var q=e.target.value.toLowerCase();document.querySelectorAll(".bmgrp").forEach(function(g){var vis=0;g.querySelectorAll("li").forEach(function(li){var on=li.dataset.t.toLowerCase().indexOf(q)>=0;li.hidden=!on;if(on)vis++;});g.hidden=!vis;});});document.addEventListener("click",async function(e){var b=e.target.closest("button[data-act]");if(!b)return;e.preventDefault();var u=encodeURIComponent(b.dataset.url);if(b.dataset.act==="del"){if(!confirm("remove this bookmark?"))return;await fetch("/apps/lattice/unbookmark?url="+u,{method:"POST"});}else{var f=b.parentElement.querySelector("input").value.trim();await fetch("/apps/lattice/bookmark-move?url="+u+"&folder="+encodeURIComponent(f),{method:"POST"});}location.reload();});</script>'
 ::  +web-css: minimal reader styling (single-quoted cord so braces are literal).
 ::
+::  +bar-css: the reader bar's STRUCTURAL rules (.navb/.hamw/#hammenu
+::  dropdown, .bar flex row, home/input/button, the narrow flex-wrap). One
+::  definition, shared: +web-css welds these same fragments in at their
+::  original positions so its output is byte-identical, and +forum-doc
+::  includes +bar-css so the forum bar lays out and the hamburger drops
+::  down (the forum head carries forum-css, not web-css). Single-quote
+::  cords: braces are literal, a double-quoted tape would interpolate them.
+::
+++  bar-css-nav
+  ^-  tape
+  %-  trip
+  '.navb{font-size:1.05em}.navb[disabled]{opacity:.35;cursor:default}.hamw{position:relative;margin-left:auto;display:flex}.hamw>button{font-size:1.1em}#hammenu{position:absolute;right:0;top:100%;z-index:60;background:var(--pop,var(--bg));border:1px solid #8886;border-radius:6px;min-width:160px;display:flex;flex-direction:column;padding:4px;box-shadow:0 4px 14px #0003}#hammenu a{padding:7px 10px;text-decoration:none;color:inherit;border-radius:4px}#hammenu a:hover{background:#8882}#hammenu[hidden]{display:none}'
+++  bar-css-bar
+  ^-  tape
+  %-  trip
+  '.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:var(--accent,#1a6ed8)}.bar a.nav{display:flex;align-items:center;padding:0 11px;font-size:1.05rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap}.bar a.nav:hover{border-color:var(--accent,#1a6ed8)}'
+++  bar-css-io
+  ^-  tape
+  %-  trip
+  '.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}.bar button:hover{border-color:var(--accent,#1a6ed8)}'
+++  bar-css-safe
+  ^-  tape
+  %-  trip
+  '.bar{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}'
+++  bar-css-narrow
+  ^-  tape
+  %-  trip
+  '.bar{flex-wrap:wrap}.bar input{flex:1 1 100%;order:3}'
+++  bar-css
+  ^-  tape
+  ;:  weld
+    bar-css-nav  bar-css-bar  bar-css-io  bar-css-safe
+    (trip '@media(max-width:520px){')  bar-css-narrow  (trip '}')
+  ==
+::  +web-css: the reader chrome css. The bar/nav rules come from +bar-css's
+::  fragments, welded back at their original spots so this is byte-for-byte
+::  what it was before the bar rules were factored out.
+::
 ++  web-css
   ^-  tape
-  %+  weld  know-css
-  %-  trip
-  ':root{color-scheme:light dark;--bg:#fafafa;--text:#111}.navb{font-size:1.05em}.navb[disabled]{opacity:.35;cursor:default}.hamw{position:relative;margin-left:auto;display:flex}.hamw>button{font-size:1.1em}#hammenu{position:absolute;right:0;top:100%;z-index:60;background:var(--pop,var(--bg));border:1px solid #8886;border-radius:6px;min-width:160px;display:flex;flex-direction:column;padding:4px;box-shadow:0 4px 14px #0003}#hammenu a{padding:7px 10px;text-decoration:none;color:inherit;border-radius:4px}#hammenu a:hover{background:#8882}#hammenu[hidden]{display:none}*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{background:var(--bg)}body{margin:0;font:16px/1.6 var(--font,system-ui,sans-serif);color:var(--text);background:var(--bg)}@media(prefers-color-scheme:dark){:root{--bg:#1a1a1a;--text:#e6e6e6}}.bar{display:flex;gap:6px;padding:8px;border-bottom:1px solid #8884}.bar a.home{display:flex;align-items:center;padding:0 12px;font-size:1.2rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit}.bar a.home:hover{border-color:var(--accent,#1a6ed8)}.bar a.nav{display:flex;align-items:center;padding:0 11px;font-size:1.05rem;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap}.bar a.nav:hover{border-color:var(--accent,#1a6ed8)}.rawf{width:100%;height:70vh;border:1px solid #8886;border-radius:6px;background:#fff}.muted{color:var(--muted,#8a8a8a);font-size:.9em}.bar input{flex:1;padding:6px 8px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.bar button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}.bar button:hover{border-color:var(--accent,#1a6ed8)}main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:var(--link,var(--accent,#1a6ed8))}.err{color:var(--error,#c0392b)}:root[style*="--selection"] ::selection{background:var(--selection)}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:var(--muted,#8a8a8a)}pre{background:var(--raised,#8881);padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}code{background:var(--raised,#8881);padding:.1em .3em;border-radius:4px;font-size:.9em}pre code{background:0;padding:0}table{border-collapse:collapse;margin:.7rem 0;display:block;overflow-x:auto;max-width:100%}th,td{border:1px solid #8887;padding:6px 11px}th{background:var(--raised,#8881);font-weight:600;text-align:left}img{max-width:100%;height:auto}del{opacity:.7}ul,ol{padding-left:1.5rem}li{margin:.15rem 0}sup.fnref{font-size:.72em}sup.fnref a{text-decoration:none}hr.fn-sep{margin-top:2rem}.footnotes{font-size:.88em;color:var(--muted,#8a8a8a)}.footnotes li{margin:.25rem 0}.bar{padding-left:max(8px,env(safe-area-inset-left));padding-right:max(8px,env(safe-area-inset-right))}main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}@media(max-width:520px){.bar{flex-wrap:wrap}.bar input{flex:1 1 100%;order:3}main{padding-top:12px;padding-bottom:12px}}'
+  ;:  weld
+    know-css
+    %-  trip
+    ':root{color-scheme:light dark;--bg:#fafafa;--text:#111}'
+    bar-css-nav
+    %-  trip
+    '*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{background:var(--bg)}body{margin:0;font:16px/1.6 var(--font,system-ui,sans-serif);color:var(--text);background:var(--bg)}@media(prefers-color-scheme:dark){:root{--bg:#1a1a1a;--text:#e6e6e6}}'
+    bar-css-bar
+    %-  trip
+    '.rawf{width:100%;height:70vh;border:1px solid #8886;border-radius:6px;background:#fff}.muted{color:var(--muted,#8a8a8a);font-size:.9em}'
+    bar-css-io
+    %-  trip
+    'main{max-width:46rem;margin:0 auto;padding:16px;overflow-wrap:anywhere}a{color:var(--link,var(--accent,#1a6ed8))}.err{color:var(--error,#c0392b)}:root[style*="--selection"] ::selection{background:var(--selection)}blockquote{margin:.6rem 0;padding-left:1rem;border-left:3px solid #8886;color:var(--muted,#8a8a8a)}pre{background:var(--raised,#8881);padding:10px;overflow-x:auto;border-radius:6px;white-space:pre}code{background:var(--raised,#8881);padding:.1em .3em;border-radius:4px;font-size:.9em}pre code{background:0;padding:0}table{border-collapse:collapse;margin:.7rem 0;display:block;overflow-x:auto;max-width:100%}th,td{border:1px solid #8887;padding:6px 11px}th{background:var(--raised,#8881);font-weight:600;text-align:left}img{max-width:100%;height:auto}del{opacity:.7}ul,ol{padding-left:1.5rem}li{margin:.15rem 0}sup.fnref{font-size:.72em}sup.fnref a{text-decoration:none}hr.fn-sep{margin-top:2rem}.footnotes{font-size:.88em;color:var(--muted,#8a8a8a)}.footnotes li{margin:.25rem 0}'
+    bar-css-safe
+    %-  trip
+    'main{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}'
+    (trip '@media(max-width:520px){')
+    bar-css-narrow
+    %-  trip
+    'main{padding-top:12px;padding-bottom:12px}'
+    (trip '}')
+  ==
 ::  +know-css: styles for the knowledge view (single-quote cord: braces literal).
 ::
 ++  know-css
@@ -10743,6 +13028,21 @@
 ::  +render-page-titled: +render-page with an explicit tab/history title
 ::  instead of the bare "lattice" fallback.
 ::
+::  +omni-autocomplete: the omnibar's STYLED completion dropdown (a
+::  <datalist> renders OS-drawn and ignores every style here). Shared by
+::  +render-page-titled and the forum wrapper (+forum-doc) so both get a
+::  working omnibar; the three elements concatenate exactly as before.
+::
+++  omni-autocomplete
+  ^-  tape
+  ;:  weld
+    %-  trip
+    '<style>.bar{position:relative}.omni{position:absolute;left:8px;right:8px;top:100%;z-index:40;background:var(--pop,var(--bg));border:1px solid #8886;border-radius:8px;overflow:hidden;box-shadow:0 6px 24px #0003;max-height:60vh;overflow-y:auto}.omnirow{display:flex;align-items:baseline;gap:.6em;padding:7px 10px;cursor:pointer;border-bottom:1px solid #8882}.omnirow:last-child{border-bottom:0}.omnirow:hover,.omnirow.on{background:var(--accent-tint,#1a6ed822)}.omnisrc{flex:none;font-size:.7rem;padding:1px 6px;border-radius:999px;border:1px solid #8886;opacity:.8}.omnisrc.bookmark{border-color:var(--accent,#1a6ed8);color:var(--accent,#1a6ed8)}.omnittl{flex:none;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.omniurl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.6;font-size:.85rem}@media(max-width:520px){.omnittl{max-width:50%}.omniurl{display:none}}</style>'
+    "<script>"
+    %-  trip
+    '(function(){var bar=document.querySelector(".bar");var inp=bar?bar.querySelector("input[name=url]"):null;if(!inp)return;var box=document.createElement("div");box.className="omni";box.hidden=true;bar.appendChild(box);var items=[],sel=-1,timer=null,seq=0;function hide(){box.hidden=true;sel=-1;}function pick(i){if(i<0||i>=items.length)return;inp.value=items[i].url;hide();bar.submit();}function draw(){box.textContent="";if(!items.length){hide();return}items.forEach(function(it,i){var row=document.createElement("div");row.className="omnirow"+(i===sel?" on":"");var b=document.createElement("span");b.className="omnisrc "+it.source;b.textContent=it.source==="bookmark"?"saved":"visited";var t=document.createElement("span");t.className="omnittl";t.textContent=it.title||it.url;var u=document.createElement("span");u.className="omniurl";u.textContent=it.url;row.appendChild(b);row.appendChild(t);row.appendChild(u);row.addEventListener("mousedown",function(e){e.preventDefault();pick(i)});box.appendChild(row);});box.hidden=false;}function fetchSug(){var q=inp.value.trim();var my=++seq;fetch("/apps/lattice/omni-suggest?q="+encodeURIComponent(q)).then(function(r){return r.ok?r.json():{items:[]}}).then(function(j){if(my!==seq)return;items=(j.items||[]);sel=-1;draw();}).catch(function(){if(my===seq){items=[];hide()}});}inp.addEventListener("input",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("focus",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("blur",function(){setTimeout(hide,120)});inp.addEventListener("keydown",function(e){if(box.hidden)return;if(e.key==="ArrowDown"){e.preventDefault();sel=Math.min(sel+1,items.length-1);draw()}else if(e.key==="ArrowUp"){e.preventDefault();sel=Math.max(sel-1,-1);draw()}else if(e.key==="Enter"){if(sel>=0){e.preventDefault();pick(sel)}}else if(e.key==="Escape"){hide()}});})();'
+    "</script>"
+  ==
 ++  render-page-titled
   |=  [current=tape keep=tape rev=tape title=tape inner=tape]
   ^-  @t
@@ -10767,29 +13067,15 @@
     ::  a row of nav links lives in the hamburger now — including the editor,
     ::  the knowledge store, bookmarks and settings — because an authored
     ::  /index takes over the home view and the bar is what survives it.
-    "<button type=\"button\" class=\"navb\" id=\"navb\" title=\"back\" disabled>&#8592;</button>"
-    "<button type=\"button\" class=\"navb\" id=\"navf\" title=\"forward\" disabled>&#8594;</button>"
-    "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
-    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search your pages\">"
-    "<button type=\"submit\">Go</button>"
+    nav-history
+    (nav-controls current)
     bmbtn
-    "<span class=\"hamw\"><button type=\"button\" id=\"ham\" title=\"menu\">&#9776;</button>"
-    "<div id=\"hammenu\" hidden>"
-    "<a href=\"/apps/lattice/app\">&#9998; editor</a>"
-    "<a href=\"/apps/lattice/know\">&#9670; knowledge</a>"
-    "<a href=\"/apps/lattice/marks\">&#9733; bookmarks</a>"
-    "<a href=\"/apps/lattice/settings\">&#9881; settings</a>"
-    "</div></span>"
+    nav-hamburger
     "</form><main>"  inner  "</main>"
     ::  omnibar completions. A STYLED list, deliberately. <datalist> is the
     ::  one-line version and renders as an OS-drawn dropdown that ignores every
     ::  style here, which is not acceptable in this UI.
-    %-  trip
-    '<style>.bar{position:relative}.omni{position:absolute;left:8px;right:8px;top:100%;z-index:40;background:var(--pop,var(--bg));border:1px solid #8886;border-radius:8px;overflow:hidden;box-shadow:0 6px 24px #0003;max-height:60vh;overflow-y:auto}.omnirow{display:flex;align-items:baseline;gap:.6em;padding:7px 10px;cursor:pointer;border-bottom:1px solid #8882}.omnirow:last-child{border-bottom:0}.omnirow:hover,.omnirow.on{background:var(--accent-tint,#1a6ed822)}.omnisrc{flex:none;font-size:.7rem;padding:1px 6px;border-radius:999px;border:1px solid #8886;opacity:.8}.omnisrc.bookmark{border-color:var(--accent,#1a6ed8);color:var(--accent,#1a6ed8)}.omnittl{flex:none;max-width:38%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.omniurl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;opacity:.6;font-size:.85rem}@media(max-width:520px){.omnittl{max-width:50%}.omniurl{display:none}}</style>'
-    "<script>"
-    %-  trip
-    '(function(){var bar=document.querySelector(".bar");var inp=bar?bar.querySelector("input[name=url]"):null;if(!inp)return;var box=document.createElement("div");box.className="omni";box.hidden=true;bar.appendChild(box);var items=[],sel=-1,timer=null,seq=0;function hide(){box.hidden=true;sel=-1;}function pick(i){if(i<0||i>=items.length)return;inp.value=items[i].url;hide();bar.submit();}function draw(){box.textContent="";if(!items.length){hide();return}items.forEach(function(it,i){var row=document.createElement("div");row.className="omnirow"+(i===sel?" on":"");var b=document.createElement("span");b.className="omnisrc "+it.source;b.textContent=it.source==="bookmark"?"saved":"visited";var t=document.createElement("span");t.className="omnittl";t.textContent=it.title||it.url;var u=document.createElement("span");u.className="omniurl";u.textContent=it.url;row.appendChild(b);row.appendChild(t);row.appendChild(u);row.addEventListener("mousedown",function(e){e.preventDefault();pick(i)});box.appendChild(row);});box.hidden=false;}function fetchSug(){var q=inp.value.trim();var my=++seq;fetch("/apps/lattice/omni-suggest?q="+encodeURIComponent(q)).then(function(r){return r.ok?r.json():{items:[]}}).then(function(j){if(my!==seq)return;items=(j.items||[]);sel=-1;draw();}).catch(function(){if(my===seq){items=[];hide()}});}inp.addEventListener("input",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("focus",function(){clearTimeout(timer);timer=setTimeout(fetchSug,140)});inp.addEventListener("blur",function(){setTimeout(hide,120)});inp.addEventListener("keydown",function(e){if(box.hidden)return;if(e.key==="ArrowDown"){e.preventDefault();sel=Math.min(sel+1,items.length-1);draw()}else if(e.key==="ArrowUp"){e.preventDefault();sel=Math.max(sel-1,-1);draw()}else if(e.key==="Enter"){if(sel>=0){e.preventDefault();pick(sel)}}else if(e.key==="Escape"){hide()}});})();'
-    "</script>"
+    omni-autocomplete
     bm-script
     (sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
   ==
@@ -10836,21 +13122,12 @@
     (trip 'html,body{height:100%}body.bp{display:flex;flex-direction:column;margin:0}.bp main{max-width:none;margin:0;padding:0;flex:1;display:flex}.bp .pf{flex:1;width:100%;border:0}.bar .eb,.bar .bm{display:flex;align-items:center;gap:.3em;padding:0 12px;border:1px solid #8886;border-radius:6px;text-decoration:none;color:inherit;white-space:nowrap;background:transparent;cursor:pointer;font-size:1rem}.bar .eb:hover,.bar .bm:hover{border-color:var(--accent,#1a6ed8)}')
     "</style></head><body class=\"bp\">"
     "<form class=\"bar\" action=\"/apps/lattice\" method=\"get\">"
-    "<button type=\"button\" class=\"navb\" id=\"navb\" title=\"back\" disabled>&#8592;</button>"
-    "<button type=\"button\" class=\"navb\" id=\"navf\" title=\"forward\" disabled>&#8594;</button>"
-    "<a class=\"home\" href=\"/apps/lattice\" title=\"lattice home\">&#8962;</a>"
-    "<input name=\"url\" value=\""  (esc current)  "\" autocomplete=\"off\" placeholder=\"urb:// address or search your pages\">"
-    "<button type=\"submit\">Go</button>"
+    nav-history
+    (nav-controls current)
     editbtn
     "<button type=\"button\" class=\"bm\" title=\"Bookmark this page\">&#9734;</button>"
     orrery-slot
-    "<span class=\"hamw\"><button type=\"button\" id=\"ham\" title=\"menu\">&#9776;</button>"
-    "<div id=\"hammenu\" hidden>"
-    "<a href=\"/apps/lattice/app\">&#9998; editor</a>"
-    "<a href=\"/apps/lattice/know\">&#9670; knowledge</a>"
-    "<a href=\"/apps/lattice/marks\">&#9733; bookmarks</a>"
-    "<a href=\"/apps/lattice/settings\">&#9881; settings</a>"
-    "</div></span>"
+    nav-hamburger
     "</form>"
     "<main><iframe class=\"pf\""  ?:(sandbox " sandbox=\"\"" "")
     " srcdoc=\""  (esc (trip doc))  "\"></iframe></main>"
@@ -11328,6 +13605,7 @@
     %-  silt
     :~  `road:tarball`(rf up / %'shares.sig')
         `road:tarball`(rf up / %'comments.sig')
+        `road:tarball`(rf up / %'forum.sig')
     ==
   ::  the share modes are in the deep peek's ball already, so one peek
   ::  covers every page, where a read-share per page was a dart each
@@ -11336,10 +13614,41 @@
     ?.  ?=([%ball *] sn)  ~
     %-  silt
     (turn (shared-rels ball.sn ~) |=(r=path (rf up (weld /page r) %data)))
+  ::  a PUBLIC board's pub (card, roles, conf) and content (posts, threads,
+  ::  votes, pins, sidebar) dirs, so its grubs read over peer scry. A private
+  ::  board is never listed, and one made private or deleted drops out here
+  ::  because %how replaces the whole set.
+  ;<  fv=view:nexus  bind:m  (peek:io (rv root /forum/boards) ~)
+  =/  brds=(list @ta)  ?.(?=([%ball *] fv) ~ (public-boards ball.fv))
+  =/  bpeeks=(set road:tarball)
+    %-  ~(gas in *(set road:tarball))
+    %-  zing
+    %+  turn  brds
+    |=  nom=@ta
+    ^-  (list road:tarball)
+    :~  (rv root /forum/boards/[nom]/pub)
+        (rv root /forum/boards/[nom]/content)
+    ==
   ;<  how=(unit tang)  bind:m
-    (reg-how-soft:io /public [make=~ poke=pokes peek=(~(put in peeks) pubdir)])
+    %+  reg-how-soft:io  /public
+    [make=~ poke=pokes peek=(~(uni in (~(put in peeks) pubdir)) bpeeks)]
   ?~  how  (fault-clear ~['public-group' 'registry-road' 'public-grant'])
   (fault 'public-grant' 0 "lattice: published pages stay on this ship: the registry refused the public grant" ~)
+::  +public-boards: the names of the boards under a /forum/boards ball whose
+::  card says public. An unreadable card is not public. Pure.
+::
+++  public-boards
+  |=  b=ball:tarball
+  ^-  (list @ta)
+  %+  murn  ~(tap by dir.b)
+  |=  [nom=@ta kb=ball:tarball]
+  ^-  (unit @ta)
+  =/  cd  (~(get by (ball-fils kb /pub)) %card)
+  ?~  cd  ~
+  =/  car=(unit [@ info=board-info:ft])
+    (mole |.(;;([@ board-info:ft] (sang-noun:tarball sang.u.cd))))
+  ?~  car  ~
+  ?:(public.info.u.car `nom ~)
 ::  +shared-rels: every page under a /page ball whose share mode is not
 ::  %private, read from the ball. Pure.
 ++  shared-rels
@@ -11390,6 +13699,30 @@
   =/  sd  (~(get by fils) %share)
   ?~  sd  %private
   (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.u.sd)))) %private)
+::  +fils-link: a dir's link grub (/lib/lattice-link), ~ if it has none or
+::  it does not read as one.
+++  fils-link
+  |=  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+  ^-  (unit link:ll)
+  =/  lg  (~(get by fils) %link)
+  ?~  lg  ~
+  (mole |.(;;(link:ll (sang-noun:tarball sang.u.lg))))
+::  +link-rows: a link's tree and dump node. A page in the owner's kind
+::  (frozen at create), never with its body, readonly when the grant was
+::  read, with the cached size and the owner's rev. mtime is the link
+::  grub's own, which moves when a read refreshes the cache.
+++  link-rows
+  |=  [rel=path l=link:ll cs=cass:clay]
+  ^-  (list [@t json])
+  ?:  ?=(%local -.l)
+    :~  ['path' s+(crip (pax-str rel))]  ['page' b+&]  ['link' (en-link:ll l)]  ==
+  :~  ['path' s+(crip (pax-str rel))]  ['page' b+&]  ['kind' s+kind.l]
+      ['link' (en-link:ll l)]
+      ['readonly' b+=('read' mode.l)]
+      ['size' (numb:enjs:format size.l)]
+      ['rev' (numb:enjs:format rev.l)]
+      ['mtime' s+(scot %da da.cs)]
+  ==
 ::  +apply: dispatch one knowledge action. root is the nexus dir (/lattice).
 ::
 ++  apply

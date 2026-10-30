@@ -1,5 +1,17 @@
-  $('save').onclick = () =>
-    (grubPath ? saveGrub() : mode === 'know' ? saveKnow() : save());
+  // Save, the button and Cmd+S alike. Nothing while the tab in front is not
+  // a document (a tool tab): what the editor holds then is a parked tab's
+  // buffer, and writing it from a screen that does not show it would leave
+  // that tab's snap claiming unsaved work the ship already has.
+  // grubPath first: it is the only mode with no `current`, and page save()
+  // would write to the wrong place (or nowhere) while a grub is open.
+  // Cmd+S matters more there than elsewhere, since grub mode has no autosave.
+  const saveFront = () => {
+    if (!docFront()) return;
+    if (grubPath) saveGrub();
+    else if (mode === 'know') saveKnow();
+    else save();
+  };
+  $('save').onclick = saveFront;
   // ── new page-tree from a template ────────────────────────────────────────
   // Templates stamp out a whole tree (the `site` template is four pages), and
   // each page is its own writer round-trip, so this is deliberately slow and
@@ -31,9 +43,9 @@
         // a multi-page template lands as a folder. Open its index if it made
         // one, else the page itself, else just select the new folder.
         const has = (p) => nodes.some((n) => n.page && n.path === p);
-        if (has(name)) await openPage(name);
-        else if (has(name + '/index')) await openPage(name + '/index');
-        else if (nodes.some((n) => !n.page && n.path === name)) selectFolder(name);
+        if (has(name)) await openIn('page', name);
+        else if (has(name + '/index')) await openIn('page', name + '/index');
+        else if (nodes.some((n) => !n.page && n.path === name)) await pickFolder(name);
         st('created ' + name + ' from ' + tmpl);
         return;
       }
@@ -45,17 +57,14 @@
     }
   }
   $('newtmpl').onclick = newFromTemplate;
-  $('newfile').onclick = () => newFile('');
+  // newFile paints over the editor, so whatever is unsaved there goes
+  // through guardDirty first, like any other way off a document
+  $('newfile').onclick = async () => { if (await guardDirty()) newFile(''); };
   $('newfolder').onclick = newFolder;
   window.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {
       e.preventDefault();
-      // grubPath first: it is the only mode with no `current`, and page save()
-      // would write to the wrong place (or nowhere) while a grub is open.
-      // Cmd+S matters more here than elsewhere, since grub mode has no autosave.
-      if (grubPath) saveGrub();
-      else if (mode === 'know') saveKnow();
-      else save();
+      saveFront();
     }
   });
   // Applies the list-continuation edit if the caret is in a list. Shared by
@@ -151,8 +160,8 @@
   // ── the same two moves, reachable by thumb ────────────────────────────────
   // A soft keyboard has no Tab key at all — the keydown branch above simply
   // never fires on a phone, the same hole Enter had before beforeinput. There
-  // is no beforeinput for Tab, so mobile gets buttons: a small fixed pair
-  // (like #fullt) that exists only while the caret sits somewhere listTab
+  // is no beforeinput for Tab, so mobile gets buttons: a small floating pair
+  // that exists only while the caret sits somewhere listTab
   // would actually act. The predicate IS listTab: the cluster shows exactly
   // when a tap would do something, fences and gemtext included, because it
   // asks the same function the tap will call.
@@ -178,8 +187,8 @@
     b.addEventListener('pointerdown', (e) => { e.preventDefault(); ltab(dir); });
     lbtns.appendChild(b);
   }
-  // inside .ws, not body: the show rule is scoped by the workspace's
-  // data-mv, and a descendant selector needs the descendant part. By id,
+  // inside .ws, not body: at phone width it is a grid item laid over the
+  // center's bottom corner (the 820px block). By id,
   // not the `ws` binding — that const lives in 85-layout.js, which
   // evaluates AFTER this file (TDZ: reaching it here killed the bundle).
   $('ws').appendChild(lbtns);

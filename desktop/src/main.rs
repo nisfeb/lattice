@@ -107,20 +107,18 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         .paste()
         .select_all()
         .build()?;
-    // View: which panes are on screen. Editor / split / preview is one
-    // three-way choice (85-layout.js), because an editor-less, preview-less
-    // layout is not a layout; the tree and controls panes are toggles. Like
-    // File, every item clicks the page's own button, so the state lives in
-    // the page and the menu has nothing to drift from it. Accelerators: the
-    // page owns ctrl-S and ctrl-K (and vim mode ctrl-R, ctrl-[); none of
+    // View: Edit or Read for the open tab (23-tabhead.js), and which side
+    // panes are on screen. Like File, the pane items click the page's own
+    // button, so the state lives in the page and the menu has nothing to
+    // drift from it; Edit and Read call latSetRead. Accelerators: the page
+    // owns ctrl-S, ctrl-K and ctrl-E (and vim mode ctrl-R, ctrl-[); none of
     // these collide.
     let view_item = |id: &str, label: &str, key: &str| {
         tauri::menu::MenuItemBuilder::with_id(id, label).accelerator(key).build(app)
     };
     let view = tauri::menu::SubmenuBuilder::new(app, "View")
-        .item(&view_item("view-editor", "Editor only", "CmdOrCtrl+1")?)
-        .item(&view_item("view-split", "Editor and preview", "CmdOrCtrl+2")?)
-        .item(&view_item("view-preview", "Preview only", "CmdOrCtrl+3")?)
+        .item(&view_item("view-editor", "Edit", "CmdOrCtrl+1")?)
+        .item(&view_item("view-preview", "Read", "CmdOrCtrl+3")?)
         .separator()
         .item(&view_item("view-tree", "Tree pane", "CmdOrCtrl+B")?)
         .item(&view_item("view-controls", "Controls pane", "CmdOrCtrl+Shift+B")?)
@@ -218,6 +216,18 @@ fn prefers_dark() -> bool {
     false
 }
 
+/// The Preferences items, run in the ship page. latOpenManager asks about
+/// unsaved work, then invokes open_manager itself. A ship build without it
+/// (older than the shell) gets open_manager directly, as the menu did before.
+/// `section` comes only from the menu's own constants, never from the page.
+fn manager_menu_js(section: Option<&str>) -> String {
+    let arg = section.map(|s| format!("\"{s}\"")).unwrap_or_else(|| "null".into());
+    format!(
+        "(function(){{var s={arg};if(window.latOpenManager)window.latOpenManager(s);\
+         else if(window.__TAURI__)window.__TAURI__.core.invoke('open_manager',{{section:s}});}})()"
+    )
+}
+
 fn main() {
     // webkit2gtk's dmabuf renderer crashes some Wayland stacks outright
     // ("Error 71 (Protocol error) dispatching to Wayland display"). Opt out
@@ -257,16 +267,26 @@ fn main() {
             // on its section: the item exists because scheduled backups are
             // not something you go looking for under connection && mounts,
             // and that reasoning covers the scroll past ship and mounts too
-            match ev.id().as_ref() {
-                "manager" => {
-                    commands::show_manager(app, None).ok();
-                    return;
+            //
+            // On the ship page, the page goes first: latOpenManager asks about
+            // unsaved work (the front document and parked tabs) before the
+            // window leaves, which a direct show_manager skips. The manager
+            // page itself, or no window yet, has nothing to ask about.
+            let section = match ev.id().as_ref() {
+                "manager" => Some(None),
+                "backups" => Some(Some("backups")),
+                _ => None,
+            };
+            if let Some(section) = section {
+                match app.get_webview_window("workspace") {
+                    Some(w) if !commands::on_shell_page(&w) => {
+                        let _ = w.eval(manager_menu_js(section));
+                    }
+                    _ => {
+                        commands::show_manager(app, section).ok();
+                    }
                 }
-                "backups" => {
-                    commands::show_manager(app, Some("backups")).ok();
-                    return;
-                }
-                _ => {}
+                return;
             }
             // The File menu drives the ship UI's OWN buttons instead of
             // reimplementing them here. The workspace webview is the lattice
@@ -274,6 +294,18 @@ fn main() {
             // frame it), so a click on the real element runs the real handler
             // — one code path, and the upload picker, template dialog and
             // dirty-state logic keep working with no Rust counterpart to drift.
+            // Edit and Read are state in the page, not a button to click
+            let read = match ev.id().as_ref() {
+                "view-editor" => Some("latSetRead(false)"),
+                "view-preview" => Some("latSetRead(true)"),
+                _ => None,
+            };
+            if let Some(call) = read {
+                if let Some(w) = app.get_webview_window("workspace") {
+                    let _ = w.eval(format!("if(window.latSetRead){call}"));
+                }
+                return;
+            }
             let btn = match ev.id().as_ref() {
                 "file-new" => "newfile",
                 "file-new-folder" => "newfolder",
@@ -281,9 +313,6 @@ fn main() {
                 "file-upload-files" => "upfiles",
                 "file-upload-folder" => "updir",
                 "file-save" => "save",
-                "view-editor" => "viewedit",
-                "view-split" => "viewsplit",
-                "view-preview" => "viewprev",
                 "view-tree" => "treet",
                 "view-controls" => "ctlt",
                 _ => return,
@@ -336,6 +365,7 @@ fn main() {
             commands::connect,
             commands::connection_status,
             commands::go_home,
+            commands::open_manager,
             commands::set_theme,
             commands::pick_upload,
             commands::open_external_url,
@@ -380,4 +410,17 @@ fn main() {
                 app.state::<mounts::MountMap>().0.lock().unwrap().clear();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::manager_menu_js;
+
+    #[test]
+    fn preferences_go_through_the_page_first() {
+        let js = manager_menu_js(Some("backups"));
+        assert!(js.contains("var s=\"backups\";if(window.latOpenManager)window.latOpenManager(s);"));
+        assert!(js.contains("invoke('open_manager',{section:s})"));
+        assert!(manager_menu_js(None).contains("var s=null;"));
+    }
 }

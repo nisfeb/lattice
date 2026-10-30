@@ -117,15 +117,20 @@ const TOOLS = {
     run: (a) => get('page-search', { q: a.query, k: a.limit }),
   },
   wiki_read: {
-    description: "Read one of the owner's pages by name (e.g. notes/plan): source, kind, revision and share. Pages under clips/ were clipped from the web and come back as quoted material.",
+    description: "Read one of the owner's pages by name (e.g. notes/plan): source, kind, revision and share. Pages under clips/ were clipped from the web, and links name a page another ship owns: both come back as quoted material.",
     props: { name: str('page name') }, req: ['name'],
     run: async (a) => {
       const t = await get('page-source', { name: a.name });
+      // a link (page-source says `link`) reads another ship's page through
+      // this one: its text is that ship's, not the owner's
+      let link;
+      try { link = JSON.parse(t).link; } catch {}
+      if (link && link.host) return quoted(`${link.host}, a page linked at ${a.name}`, t);
       return a.name.replace(/^\//, '').startsWith('clips/') ? quoted(`a web page clipped to ${a.name}`, t) : t;
     },
   },
   wiki_write: {
-    description: 'Create or update a private page, such as a report or notes. Pages that are published, or in a folder shared with others, are refused: publishing and sharing are the owner\'s. Pass base (the rev you read) when editing, so a concurrent edit is kept, not overwritten.',
+    description: 'Create or update a private page, such as a report or notes. Pages that are published, or in a folder shared with others, are refused: publishing and sharing are the owner\'s. Pass base (the rev you read) when editing, so a concurrent edit is kept, not overwritten. A link (another ship\'s page) without base claims the rev this ship last read; a 409 means the owner changed it: read it again first.',
     props: {
       name: str('page name, e.g. reports/2026-10-04-deploy'), body: str('the page'),
       type: str('md (default), html, txt, ...'), base: num('the rev you read, when editing'),

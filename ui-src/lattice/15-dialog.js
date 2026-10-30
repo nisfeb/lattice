@@ -40,13 +40,16 @@
   //  hides. So the one place a desktop user names a file was also the one
   //  place they could not say what it was, and everything arrived as md.
   //
-  //  Options are cloned from the bar's own picker rather than restated, so a
-  //  kind added there (tex was) appears here with no second edit.
-  const askNameKind = async (msg, value, okLabel, kind) => {
+  //  Options are cloned from the hidden kind picker (#pkind, 23-tabhead.js)
+  //  rather than restated, so a kind added there (tex was) appears here with
+  //  no second edit. `fixed` shows the kind without letting it change: a new
+  //  memory is always md.
+  const askNameKind = async (msg, value, okLabel, kind, fixed) => {
     dlgKind.textContent = '';
     const src = $('pkind');
     if (src) for (const o of src.options) dlgKind.appendChild(o.cloneNode(true));
     dlgKind.value = kind || (src && src.value) || 'md';
+    dlgKind.disabled = !!fixed;
     let seed = value || '';
     let note = '';
     for (;;) {

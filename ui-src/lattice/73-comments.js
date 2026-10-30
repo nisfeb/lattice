@@ -4,18 +4,17 @@
   // replied meant visiting each published page. This is the owner's side: what
   // came in, across every page, newest first, with a way to remove one.
   //
-  // Reuses the .aclwrap/.aclbar/.aclbody overlay styles rather than growing a
-  // second set that would drift from them.
+  // Reuses the .aclwrap/.aclbar/.aclbody styles rather than growing a second
+  // set that would drift from them. It shows in a tool tab (24-tools.js).
   customElements.define('lat-comments', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="aclwrap" id="cmwrap" hidden role="dialog" aria-modal="true" aria-label="comments">
+<div class="aclwrap" id="cmwrap" hidden role="region" aria-label="comments">
   <div class="aclbar">
     <h2>Comments</h2>
     <span class="muted" id="cmsum"></span>
     <span class="grow"></span>
     <button id="cmreload" class="ico" title="reload from ship">&#8635;</button>
-    <button id="cmclose">close</button>
   </div>
   <div class="aclbody">
     <div id="cmlist"></div>
@@ -41,26 +40,34 @@
     renderComments(d.total || inbox.length);
   }
 
-  function renderComments(total) {
-    const host = $('cmlist');
+  // The inbox by default. The Comments tab (76-outline.js) passes one
+  // page's share of it, its own host and empty line, and its own reload,
+  // and leaves out the page link, which would only point at itself.
+  function renderComments(total, {
+    host = $('cmlist'), items = inbox, sum = $('cmsum'), reload = loadComments,
+    // say WHY it might be empty. Comments are opt-in per page, so "none yet"
+    // and "never enabled anywhere" look identical and mean different things
+    empty = 'No comments. They are opt-in per page: switch them on in a '
+      + 'page\'s Page tab.',
+    pageLink = true,
+  } = {}) {
     if (!host) return;
     host.textContent = '';
     host.className = '';
-    $('cmsum').textContent = inbox.length
-      ? inbox.length + (total > inbox.length ? ' of ' + total : '') + ' comment'
-        + (total === 1 ? '' : 's')
-      : '';
-    if (!inbox.length) {
+    if (sum) {
+      sum.textContent = items.length
+        ? items.length + (total > items.length ? ' of ' + total : '') + ' comment'
+          + (total === 1 ? '' : 's')
+        : '';
+    }
+    if (!items.length) {
       host.className = 'aclempty';
-      // say WHY it might be empty. Comments are opt-in per page, so "none yet"
-      // and "never enabled anywhere" look identical and mean different things
-      host.textContent = 'No comments. They are opt-in per page, and this app '
-        + 'has no switch for that yet.';
+      host.textContent = empty;
       return;
     }
     const grid = document.createElement('div');
     grid.className = 'aclgrid';
-    for (const c of inbox) {
+    for (const c of items) {
       const card = document.createElement('div');
       card.className = 'aclcard';
       const head = document.createElement('header');
@@ -75,19 +82,21 @@
           '&id=' + encodeURIComponent(c.id), { method: 'POST' }).catch(() => null);
         if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
         st('comment removed');
-        loadComments();
+        reload();
       };
       head.appendChild(who); head.appendChild(del);
       card.appendChild(head);
 
       // the page it landed on, clickable. The point of an inbox is getting
       // to the thing being talked about
-      const on = document.createElement('a');
-      on.className = 'gname';
-      on.textContent = c.page;
-      on.style.cursor = 'pointer';
-      on.onclick = () => { cmClose(); openPage(c.page); };
-      card.appendChild(on);
+      if (pageLink) {
+        const on = document.createElement('a');
+        on.className = 'gname';
+        on.textContent = c.page;
+        on.style.cursor = 'pointer';
+        on.onclick = (e) => openIn('page', c.page, { ev: e });
+        card.appendChild(on);
+      }
 
       const body = document.createElement('div');
       body.style.whiteSpace = 'pre-wrap';
@@ -120,14 +129,14 @@
   const lastSeen = () => { try { return localStorage[seenKey] || ''; } catch { return ''; } };
   const markSeen = (when) => { try { if (when) localStorage[seenKey] = when; } catch {} };
 
+  // on the ribbon's inbox button: the badge, and the count in its name, so
+  // a screen reader hears it too (title and label stay identical)
   function paintUnread(n) {
-    const b = $('cmt');
+    const b = $('rb-inbox');
     if (!b) return;
     if (n > 0) { b.dataset.n = n > 99 ? '99+' : String(n); b.classList.add('has-unread'); }
     else { delete b.dataset.n; b.classList.remove('has-unread'); }
-    b.title = n > 0
-      ? n + ' new comment' + (n === 1 ? '' : 's') + ' from other ships'
-      : 'comments from other ships';
+    tip(b, n > 0 ? 'Comments inbox, ' + b.dataset.n + ' unread' : 'Comments inbox');
   }
 
   // Counts without rendering, so it can run on a refresh without the pane open.
@@ -174,9 +183,10 @@
     paintUnread(unreadSeen);
   }
 
-  const cmOpen = () => {
-    $('cmwrap').hidden = false;
-    // opening IS reading: mark everything currently in the inbox as seen
+  const cmOpen = () => toolOpen('inbox');
+  // the inbox's tab came forward (24-tools.js). Opening IS reading: mark
+  // everything currently in the inbox as seen
+  const cmLoad = () => {
     loadComments().then(() => {
       const newest = inbox.reduce(
         (a, c) => (daKey(c.when) > daKey(a) ? String(c.when) : a), lastSeen());
@@ -188,10 +198,4 @@
       paintUnread(0);
     });
   };
-  const cmClose = () => { $('cmwrap').hidden = true; };
-  $('cmclose').onclick = cmClose;
   $('cmreload').onclick = loadComments;
-  $('cmt').onclick = cmOpen;
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('cmwrap').hidden) cmClose();
-  });

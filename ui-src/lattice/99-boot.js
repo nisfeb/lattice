@@ -8,16 +8,18 @@
   // (phase 3), whose read is async but single-digit ms, imperceptible next
   // to the ~0.5s network floor. It also frees the tree (which carries every
   // page body) from localStorage's ~5MB ceiling.
-  function bootSnap() {
+  // `name` is the page the front tab names, null for a new page. Only a
+  // `fresh` tab list (nothing saved, so a first run or a corrupt one) may
+  // resume the snapshot without a name: a restored new-page tab is a new page.
+  function bootSnap(name, fresh) {
     let p = null;
     try { p = JSON.parse(localStorage.appPage || 'null'); } catch {}
     if (!p || !p.name) return false;
-    const name = qs.get('name');
-    // No ?name means a bare launch, above all the PWA, whose start_url can
+    // No name means a bare launch, above all the PWA, whose start_url can
     // never carry one. Resume the snapshot page instead of landing on an
     // empty editor. "opens where I left off" is what an installed app means.
-    // A ?name that does not match the snapshot still defers to the network.
-    if (name && p.name !== name) return false;
+    // A name that does not match the snapshot still defers to the network.
+    if (name ? p.name !== name : !fresh) return false;
     applyPage(p.name, p);
     // openPage sets the upload-target folder. The snapshot path must too,
     // or uploads land at the root until the next explicit open
@@ -63,30 +65,27 @@
   // and can push the save past the offline timeout, which is a real failure
   // traded for a badge nobody is waiting on.
   setTimeout(() => { refreshCommentBadge(); }, 20000);
-  if (qs.get('grub')) {
-    // arrived from the explorer's edit link. Open that ball path directly. The
-    // tree still lists lattice pages, so clicking one leaves grub mode.
-    loadTree().then(loadPanels);
-    openGrub(qs.get('grub'), qs.get('ship'));
-  } else if (qs.get('view') === 'know') {
-    setMode('know');
-    legacyCheck();
-    loadPanels();
+  // The tabs come back first (21-tabs.js) and boot shows the front one. A
+  // page has the snapshot-first path below; every other kind shows through
+  // the tab model, with the tree and the panels loading beside it.
+  const { tab: bootTab, fresh: bootFresh } = tabsBoot();
+  if (bootTab.kind !== 'page') {
+    loadTree().then(() => { legacyCheck(); loadPanels(); });
+    tabShowBoot(bootTab);
   } else {
-    const painted = bootSnap();
-    // bootSnap's applyPage jumped the mobile pane to 'code'. Put it back to
-    // the pane the user last saw (bootMv, captured in 85-layout before this
-    // ran), so resuming a snapshot page on reload does not force the editor
-    // over the tree or preview they had open. Only on a real resume: a fresh
-    // ?name open below legitimately lands in the editor.
-    if (painted) setMv(bootMv);
+    // a folder in the address (?into=, a reload while one was selected)
+    // outranks the tab's page, as it did before tabs
+    const into = qs.get('into');
+    const name = into && !qs.get('name') ? null : bootTab.key || null;
+    const painted = bootSnap(name, bootFresh && !into);
     bootTree();
     // what the snapshot painted, if anything. The baseline for "did the USER
     // do something while the dump was in flight?"
     const bootCurrent = current;
+    // and what the name field said: a new page named in the dialog has no
+    // `current` until its create lands, but it is the user's all the same
+    const bootShown = pname.value;
     loadTree().then(() => {
-      const name = qs.get('name');
-      const into = qs.get('into');
       // The tree paints from localStorage at 0ms, so it is clickable long
       // before this resolves. Anything boot does by default would then land on
       // top of the user's own action, opening a page and having it close a
@@ -96,8 +95,9 @@
       // everTyped, not dirty. A keystroke followed by an autosave clears dirty
       // before a slow dump lands, and this branch then repainted the editor
       // from the dump's PRE-edit copy. Typing is a user action whether or not
-      // it has since been saved.
-      const touched = current !== bootCurrent || curFolder !== null || dirty || everTyped;
+      // it has since been saved. Going to another tab is a user action too.
+      const touched = current !== bootCurrent || curFolder !== null || dirty || everTyped
+        || activeTab !== bootTab || pname.value !== bootShown;
       if (touched) {
         legacyCheck();
         loadPanels();

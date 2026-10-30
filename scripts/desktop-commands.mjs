@@ -91,11 +91,57 @@ check('capabilities grant no command the handler lacks', ghostGrants.length === 
 //  ship, so in practice it never ran.)
 const appJs = readFileSync(join(here, '..', 'code', 'nex', 'lattice', 'ui-app', 'app.js'), 'utf8');
 const menu = [...main.matchAll(/"((?:file|view)-[a-z-]+)" => "([a-z]+)"/g)];
-check('the native menu maps its items to page elements', menu.length >= 11,
+check('the native menu maps its items to page elements', menu.length >= 8,
   'found ' + menu.length + ' mappings in src/main.rs');
 for (const [, item, id] of menu) {
   check('menu ' + item + ' clicks #' + id + ', which the shipped UI has',
     appJs.includes('id="' + id + '"'));
 }
+
+//  The view menu has no split: Edit and Read are the tab header's two
+//  states (23-tabhead.js). Those two items call latSetRead instead of
+//  clicking a button, and the page must expose that function.
+check('the view menu has no split item', !main.includes('view-split'));
+for (const [item, arg] of [['view-editor', 'false'], ['view-preview', 'true']]) {
+  const m = main.match(new RegExp('"' + item + '"\\s*=>\\s*\\{?\\s*[^;]*latSetRead\\(' + arg + '\\)'));
+  check('menu ' + item + ' calls latSetRead(' + arg + ')', !!m);
+}
+check('the shipped UI exposes window.latSetRead', appJs.includes('window.latSetRead'));
+
+//  Preferences > scheduled backups lands on the manager page's backups
+//  section from any page the window is on, as the Preferences menu always
+//  has. On the ship page the page goes first (latOpenManager), so the
+//  unsaved-work questions run before the window leaves; elsewhere the menu
+//  calls show_manager itself.
+check('menu backups names the backups section',
+  /"backups"\s*=>\s*Some\(Some\("backups"\)\)/.test(main));
+check('menu Preferences asks the ship page first, via latOpenManager',
+  /Some\(w\) if !commands::on_shell_page\(&w\) => \{\s*let _ = w\.eval\(manager_menu_js\(section\)\)/.test(main)
+  && /if\(window\.latOpenManager\)window\.latOpenManager\(s\)/.test(main));
+check('menu Preferences falls back to show_manager off the ship page',
+  /_ => \{\s*commands::show_manager\(app, section\)/.test(main));
+check('the shipped UI exposes window.latOpenManager', appJs.includes('window.latOpenManager'));
+check('the shipped UI exposes window.latOpenSettings', appJs.includes('window.latOpenSettings'));
+
+//  The settings page is ship-served, so on the desktop it runs at the
+//  bridge origin and only workspace-remote applies to it. The schedule
+//  commands must stay off that list: with them, anything the ship serves
+//  could delete or pause the schedules and wipe the archives with no
+//  dialog. They live on the local manager page, which the settings page
+//  reaches only through open_manager.
+const remote = new Set(JSON.parse(readFileSync(join(capDir, 'workspace-remote.json'), 'utf8'))
+  .permissions.filter((p) => typeof p === 'string' && p.startsWith('allow-')).map((p) => p.slice(6)));
+const scheduleCmds = ['backup_schedules', 'set_backup_schedules', 'pick_backup_dir', 'run_backup_now', 'verify_backup'];
+const leaked = scheduleCmds.filter((c) => remote.has(kebab(c)));
+check('no schedule command is granted to the ship page', leaked.length === 0, JSON.stringify(leaked));
+const hoon = readFileSync(join(here, '..', 'code', 'nex', 'lattice', 'app.hoon'), 'utf8');
+const vaultJs = readFileSync(join(here, '..', 'code', 'nex', 'lattice', 'ui-app', 'vault.js'), 'utf8');
+const shipCalls = new Set([...(vaultJs + hoon).matchAll(/invoke\(\s*["']([a-z_]+)["']/g)].map((m) => m[1]));
+const notRemote = [...shipCalls].filter((c) => !remote.has(kebab(c)));
+check('every command the settings page invokes is granted to the ship page',
+  shipCalls.has('open_manager') && notRemote.length === 0,
+  JSON.stringify({ calls: [...shipCalls], notRemote }));
+check('settings-html opens the manager at its backups section',
+  hoon.includes('open_manager",{section:"backups"}') && hoon.includes('latOpenManager("backups")'));
 
 check.done();

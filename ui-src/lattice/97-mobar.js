@@ -1,91 +1,130 @@
-  // ── mobile: one bar row + a ⋯ sheet ──────────────────────────────────────
-  // At phone width the bar used to wrap into three rows — the icon cluster
-  // was flex-wrap overflow, and the name input held a full-width row for a
-  // once-per-page action — 184px of chrome before the tab strip's content.
+  // ── phone: drawers and the bottom bar ────────────────────────────────────
+  // At phone width (the 820px block) the side panes are drawers over the
+  // document. Every way into a pane opens its drawer (paneOpen, 13-frame.js:
+  // the corner toggles, a pane tab's action, search), and so does a swipe in
+  // from that edge. The scrim, Escape or opening a document shuts them. The
+  // ribbon rides at the top of the left drawer by CSS alone, so its buttons
+  // stay the one set they are.
   //
-  // Same doctrine as the desktop deskbar (96-deskmenu.js): nothing is
-  // removed, and the ⋯ sheet CLICKS the page's own hidden buttons, so there
-  // is exactly one implementation of search/comments/access/mode and nothing
-  // to drift. Everything here is built unconditionally and shown or hidden
-  // by the 820px CSS block, so a resize across the breakpoint just works —
-  // no load-time isMobile branching to go stale.
+  // The bottom bar holds what a thumb reaches for most: a new page, search,
+  // today's brief and the open tabs. Like the drawers it is built always and
+  // shown only by the 820px block, so a resize across the breakpoint just
+  // works, with no load-time isMobile branching to go stale.
   {
-    const bar = document.querySelector('.bar');
+    const drawn = () => ws.classList.contains('ldraw') || ws.classList.contains('rdraw');
+    const scrim = document.createElement('div');
+    scrim.id = 'scrim';
+    scrim.onclick = drawersClose;
+    ws.append(scrim);
+    addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawn()) drawersClose(); });
+    // across the breakpoint the drawers start shut, and the corner toggles
+    // repaint for the layout that is now showing
+    matchMedia('(max-width: 820px)').addEventListener('change', drawersClose);
 
-    // the label: which page is open. Sits where the name input was; the
-    // input stays in the DOM with its value (everything reads pname.value).
-    const mpath = document.createElement('div');
-    mpath.id = 'mpath';
-    mpath.setAttribute('aria-live', 'polite');
-    pname.after(mpath);
-    // the name it last showed, so a repaint with nothing new never rewrites
-    // the aria-live label with the text it already holds
-    let mshown = null;
-    const mpaint = () => {
-      const v = (pname.value || '').trim();
-      if (v === mshown) return;
-      mshown = v;
-      mpath.textContent = v || 'no page open';
-      mpath.className = v ? '' : 'muted';
-    };
-    mpaint();
-    // setOpen (20-state.js) dispatches 'input' whenever what is open
-    // changes, and typing fires it natively, so this needs no poll
-    pname.addEventListener('input', mpaint);
+    // the edge swipe: it starts within EDGE px of a screen edge and travels
+    // EDGE px inward, more across than down. Never while text in the editor
+    // is selected, where dragging a handle to the edge means the selection,
+    // and never from the tab strip, where a sideways drag scrolls the tabs.
+    const EDGE = 24;
+    const selecting = () => document.activeElement === src && src.selectionStart !== src.selectionEnd;
+    let sw = null;
+    addEventListener('touchstart', (e) => {
+      sw = null;
+      if (!isMobile() || e.touches.length !== 1 || drawn() || selecting()
+        || document.querySelector('.dlg:not([hidden])')
+        || (e.target.closest && e.target.closest('.dtlist'))) return;
+      const { clientX: x, clientY: y } = e.touches[0];
+      const side = x <= EDGE ? 'l' : x >= innerWidth - EDGE ? 'r' : null;
+      if (side) sw = { side, x, y };
+    }, { passive: true });
+    addEventListener('touchmove', (e) => {
+      if (!sw) return;
+      if (selecting()) { sw = null; return; }
+      const t = e.touches[0];
+      const dx = (t.clientX - sw.x) * (sw.side === 'l' ? 1 : -1);
+      const dy = Math.abs(t.clientY - sw.y);
+      if (dy > EDGE && dy >= dx) { sw = null; return; }   // a scroll, not a swipe
+      if (dx >= EDGE && dx > dy) { const s = sw.side; sw = null; drawer(s, true); }
+    }, { passive: true });
+    addEventListener('touchend', () => { sw = null; }, { passive: true });
 
-    // tap: rename what is open (the controls pane's own move/rename flow),
-    // or start a page when nothing is. Both are existing buttons.
-    mpath.addEventListener('click', () => {
-      if (current || curFolder) { $('mv').click(); return; }
-      // current===null with text in the box is grub mode or an unsaved new
-      // page — the reset newFile() does would throw that work away
-      if (src.value.trim()) return;
-      newFile('');
-    });
-
-    // the ⋯ button and its sheet
-    const more = document.createElement('button');
-    more.id = 'mmore';
-    more.className = 'ico';
-    more.title = 'more';
-    more.innerHTML = '&#8943;';
-    bar.appendChild(more);
+    // the open-tabs sheet: one row per tab, the tab in front marked. A row
+    // switches to its tab; its x closes it, asking first as the strip's does.
     const sheet = document.createElement('div');
-    sheet.id = 'msheet';
+    sheet.id = 'mtsheet';
+    sheet.className = 'mtsheet';
+    sheet.setAttribute('role', 'menu');
+    sheet.setAttribute('aria-label', 'Open tabs');
     sheet.hidden = true;
-    // [sheet row id to create, real button id to click, icon, label]
-    const rows = [
-      ['ms-q', 'qt', 'search', 'search'],
-      ['ms-cm', 'cmt', 'comment', 'comments'],
-      ['ms-acl', 'aclt', 'key', 'access'],
-      ['ms-mode', 'modet', '', ''],   // label mirrors the live mode button
-    ];
-    for (const [rid, target, icon, label] of rows) {
-      const b = document.createElement('button');
-      b.id = rid;
-      if (icon) b.innerHTML = ico(icon) + ' ';
-      b.append(label);
-      b.onclick = () => { sheet.hidden = true; $(target).click(); };
-      sheet.appendChild(b);
-    }
-    bar.appendChild(sheet);
-    more.onclick = () => {
-      // the mode row's label is whatever the real button says right now
-      $('ms-mode').textContent = $('modet').textContent;
-      sheet.hidden = !sheet.hidden;
+    const sheetPaint = () => {
+      sheet.textContent = '';
+      for (const t of tabs) {
+        const k = TAB_KINDS[t.kind];
+        const name = k.label(t);
+        const row = document.createElement('div');
+        row.className = 'mtrow' + (t === activeTab ? ' on' : '');
+        row.dataset.key = t.key;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'mtname';
+        b.setAttribute('role', 'menuitem');
+        b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
+          + '<span></span>';
+        b.lastChild.textContent = name;
+        b.onclick = () => { sheet.hidden = true; switchTab(t.id); };
+        const x = tip(document.createElement('button'), 'Close ' + name);
+        x.type = 'button';
+        x.className = 'sbtn mtx';
+        x.innerHTML = ico('x');
+        x.onclick = async () => { await closeTab(t.id); if (!sheet.hidden) sheetPaint(); };
+        row.append(b, x);
+        sheet.append(row);
+      }
     };
-    // tapping anywhere else puts it away
-    document.addEventListener('click', (e) => {
-      if (!sheet.hidden && !sheet.contains(e.target) && e.target !== more) sheet.hidden = true;
-    });
 
-    // the unread-comments badge lives on the hidden #cmt; mirror it onto ⋯
-    // and the sheet row so hiding the button does not hide the signal.
+    // the bottom bar. Each button is its own home in the palette, listed
+    // only while the bar is on screen.
+    const mbar = document.createElement('nav');
+    mbar.id = 'mbar';
+    mbar.className = 'mbar';
+    mbar.setAttribute('aria-label', 'Bottom bar');
+    const mitem = (id, icon, name, run) => {
+      const b = tip(document.createElement('button'), name);
+      b.type = 'button';
+      b.className = 'sbtn';
+      b.id = id;
+      b.dataset.action = id;
+      b.innerHTML = ico(icon);
+      b.onclick = (ev) => run(ev);
+      action({ id, name, home: 'Bottom bar', run, when: isMobile });
+      mbar.append(b);
+      return b;
+    };
+    // the Files toolbar's new page does the same: newFile paints over the
+    // editor, so what is unsaved there goes through guardDirty first
+    mitem('mb-new', 'plus', 'New page', async () => { if (await guardDirty()) newFile(''); });
+    mitem('mb-search', 'search', 'Search', () => qOpen());
+    mitem('mb-brief', 'cal', "Today's brief", (ev) => openBrief(ev));
+    const tabsw = mitem('mtabsw', 'tabs', 'Open tabs', () => {
+      if (sheet.hidden) sheetPaint();
+      sheet.hidden = !sheet.hidden;
+    });
+    ws.append(mbar, sheet);
+    // tapping anywhere else puts the sheet away
+    document.addEventListener('click', (e) => {
+      if (!sheet.hidden && !sheet.contains(e.target) && !tabsw.contains(e.target)) sheet.hidden = true;
+    });
+    // the button carries the tab count, read off the strip it summarises
+    const count = () => { tabsw.dataset.n = String(tabs.length); };
+    count();
+    new MutationObserver(count).observe(tabList, { childList: true });
+
+    // the unread badge lives on the ribbon's inbox, which a phone shows
+    // only with the left drawer open; mirror it onto that drawer's toggle
     const mirror = () => {
-      const un = $('cmt').classList.contains('has-unread');
-      more.classList.toggle('has-unread', un);
-      $('ms-cm').classList.toggle('has-unread', un);
+      const n = $('rb-inbox').dataset.n;
+      if (n) $('treet').dataset.n = n; else delete $('treet').dataset.n;
     };
     mirror();
-    new MutationObserver(mirror).observe($('cmt'), { attributes: true, attributeFilter: ['class'] });
+    new MutationObserver(mirror).observe($('rb-inbox'), { attributes: true, attributeFilter: ['data-n'] });
   }

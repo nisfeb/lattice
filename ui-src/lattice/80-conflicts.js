@@ -11,12 +11,11 @@
   customElements.define('lat-conflicts', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="aclwrap" id="cfwrap" hidden role="dialog" aria-modal="true" aria-label="sync conflicts">
+<div class="aclwrap" id="cfwrap" hidden role="region" aria-label="sync conflicts">
   <div class="aclbar">
     <h2>Conflicts</h2>
     <span class="muted" id="cfsum"></span>
     <span class="grow"></span>
-    <button id="cfclose">close</button>
   </div>
   <div class="aclbody">
     <p class="aclnote">Each of these is a version that lost a sync race: your
@@ -44,15 +43,16 @@
   };
 
   // the badge: a CONDITION (unresolved conflicts exist), so like the offline
-  // badge it stays up rather than living in the scrolling status line
+  // badge it stays up rather than living in the scrolling status line. The
+  // ribbon's Sync conflicts button (24-tools.js) shows only while there are
+  // any, with their count.
   function renderConfBadge() {
-    const b = $('cflt');
+    const b = $('rb-conflicts');
     if (!b) return;
     const n = cfList().length;
     b.hidden = n === 0;
-    b.textContent = '⚑ ' + n;
-    b.title = n + ' unresolved conflict' + (n === 1 ? '' : 's') +
-      ' — a save replaced an edit from elsewhere';
+    if (n) b.dataset.n = n > 99 ? '99+' : String(n);
+    else delete b.dataset.n;
   }
 
   function renderConflicts() {
@@ -84,13 +84,13 @@
         live.textContent = 'open live (' + orig + ')';
         live.title = 'open the page this conflicted with';
         live.style.cursor = 'pointer';
-        live.onclick = () => { cfClose(); openPage(orig); };
+        live.onclick = (e) => openIn('page', orig, { ev: e });
         head.appendChild(live);
       }
 
       const view = document.createElement('button');
       view.textContent = 'read it';
-      view.onclick = () => { cfClose(); openPage(path); };
+      view.onclick = (e) => openIn('page', path, { ev: e });
       head.appendChild(view);
 
       const del = document.createElement('button');
@@ -113,10 +113,5 @@
     }
   }
 
-  const cfOpen = () => { $('cfwrap').hidden = false; renderConflicts(); };
-  const cfClose = () => { $('cfwrap').hidden = true; };
-  $('cfclose').onclick = cfClose;
-  $('cflt').onclick = cfOpen;
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !$('cfwrap').hidden) cfClose();
-  });
+  // its tab's coming forward renders it (24-tools.js)
+  const cfOpen = () => toolOpen('conflicts');

@@ -14,6 +14,8 @@
 ::    [dat=(unit *) dep=(list path)]
 ::  ~ dat means "no change". dep is the FULL dependency list each run.
 ::
+/<  ft  /lib/lattice-forum-types.hoon
+/<  ll  /lib/lattice-link.hoon
 |%
 ::  +$  eval-action: page writes poked at the writer fiber (main.sig).
 ::
@@ -45,6 +47,26 @@
       [%page-sensitive pax=path on=?]   ::  mark/unmark a page (or folder) sensitive
       [%legacy-seen imported=@ud]       ::  retired %lattice agent dealt with
       [%legacy-pages rels=(list path)]  ::  page rels this migration triggered
+      ::  one forum action by `src`. The writer is the only place a forum
+      ::  board is written. A board-level action (create/delete board, set
+      ::  role/public/prune, edit info) is refused unless src is our.
+      [%forum src=@p act=action:ft]
+      ::  a refusal note a HOST sent back about one of our cross-ship posts,
+      ::  stored under /forum/notes. Routed through the writer so the forum
+      ::  inbox fiber (/forum.sig) never writes /forum itself: /main.sig is
+      ::  the single writer of the whole /forum tree.
+      [%forum-note-store host=@p payload=*]
+      ::  the owner clears every stored refusal note (frees the 100-note cap).
+      [%forum-notes-clear ~]
+      ::  write a link (/lib/lattice-link) at /page/<pax>/link, making its
+      ::  dir. Through the writer like every page-tree write, so it lands
+      ::  in order with a move's mkdirs and bumps the change beacon.
+      [%link-put pax=path =link:ll]
+      ::  a live read of the link at /page/<pax> naming `rpax` on `host`:
+      ::  `got` its [kind body rev], ~ when it failed. Applied in the writer
+      ::  only while that same link is still there, so a read that finishes
+      ::  after a move or delete never brings it back.
+      [%link-seen pax=path host=@p rpax=path got=(unit [kind=@ta body=@t rev=@ud])]
   ==
 ::  +$  form-cfg: a page's public-form limits. cap=0 means no absolute limit.
 ::  gap=0 means no cooldown. Set by the owner (page-forms), read by serve-form

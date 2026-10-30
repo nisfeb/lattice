@@ -19,6 +19,7 @@
   // suffix-preserving remap, as does the offline queue's own move
   // reconciliation. Returns how many pages moved.
   const remapMoved = (from, to, rn) => {
+    tabsRemap('page', from, to);       // and the tabs naming them (21-tabs.js)
     let moved = 0;
     for (const n of nodes)
       if (n.path === from || n.path.startsWith(from + '/')) {

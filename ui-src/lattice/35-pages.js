@@ -15,12 +15,17 @@
   // `current` had not been set yet. Guarding on those meant an explicit open
   // was silently dropped. After an unsaved edit, clicking another file did
   // nothing, and a page absent from the local tree never applied at all.
+  // openKnow and openGrub take a number from the same sequence, and so does
+  // a tab switch (21-tabs.js), so any later open supersedes this one.
+  //
+  // Answers false when the open failed with nothing painted, which the tab
+  // model tells apart from an open that a later one superseded.
   let openSeq = 0;
   async function openPage(name) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
-    if (!(await guardDirty())) return;
+    if (!(await guardDirty())) return false;
     const my = ++openSeq;
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
@@ -38,10 +43,12 @@
       const d = { body: q.body, kind: q.kind, rev: q.baseRev || 0, share: 'private' };
       applyPage(name, d, true);
       snapPage(name, d);
-      return;
+      return true;
     }
-    const hit = pageCache.get(name);
-    if (hit) { applyPage(name, hit); snapPage(name, hit); return; }
+    // a link reads live from its host every time (the spec's rule), so the
+    // session cache never answers for one
+    const hit = !linkOf(name) && pageCache.get(name);
+    if (hit) { applyPage(name, hit); snapPage(name, hit); return true; }
     const node = nodes.find((n) => n.page && n.path === name);
     const painted = !!node && typeof node.body === 'string';
     // `quiet`: the render=1 request below carries the preview and the error
@@ -83,11 +90,42 @@
     let d = null;
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
-      if (!r.ok) { if (!painted) { st('open failed' + await errText(r), false); unwind(); } return; }
+      // a link whose host did not answer: its badge from now, and the last
+      // copy read, which the ship sends its owner along with the failure.
+      // Shown locked (linkStale): a save from it would claim a rev the host
+      // may have moved past, and there is no host to save to anyway.
+      if (r.status === 504 && linkOf(name)) {
+        linkSeen(name, false);
+        let j = null;
+        try { j = await r.json(); } catch {}
+        if (my !== openSeq) return;
+        const why = (j && j.error) || linkOf(name).host + ' is unreachable or no longer shares this page';
+        if (j && j.cached && typeof j.cached.body === 'string') {
+          linkStale.add(name);
+          applyPage(name, j.cached);
+          st(why + '. Showing the last copy read, read-only', false);
+          return true;
+        }
+        if (painted) return true;
+        st('open failed: ' + why, false); unwind();
+        return false;
+      }
+      if (!r.ok) {
+        if (painted) return true;
+        st('open failed' + await errText(r), false); unwind();
+        return my === openSeq ? false : undefined;
+      }
       d = await r.json();
-    } catch { if (!painted) { st('open failed', false); unwind(); } return; }
+    } catch {
+      if (painted) return true;
+      st('open failed', false); unwind();
+      return my === openSeq ? false : undefined;
+    }
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) return;
+    // a live read: the badge, the lock on a last-known copy and a conflict
+    // latched on this link all end here
+    if (d.link) { linkSeen(name, true); linkStale.delete(name); linkCf.delete(name); }
     // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
     // typed while it was in flight. On a busy pier this fetch lands many
     // seconds after the paint, and it carries the PRE-edit body: applying it
@@ -98,15 +136,21 @@
     // window, which is how the old dirty-guards kept failing to catch it.
     // The !painted arm stays unconditional on purpose — there the fetch IS the
     // open, and an explicit open must always land (see the head comment).
-    if (painted && src.value !== shown) return;
+    // The flag is not the body, though: the comments switch takes it from
+    // this answer whatever was typed meanwhile, or it stays unknown.
+    if (painted && src.value !== shown) {
+      if (current === name && typeof d.comments === 'boolean') cmtShow(name, d.comments);
+      return true;
+    }
     // Cache and snapshot BELOW the guards, not above. A stale or superseded
     // response that reached the cache here poisoned it with the pre-edit body:
     // the guard protected the editor but not the cache, so switching away and
     // back repainted the old text — the same data loss through a different
     // door. Only a response that is actually applied may be remembered.
-    pageCache.set(name, d);
+    if (!d.link) pageCache.set(name, d);
     snapPage(name, d);
     applyPage(name, d);
+    return true;
   }
   function applyPage(name, d, quiet) {
     curFolder = null;
@@ -126,8 +170,13 @@
     markCurrent();
     st(d.kind + ' · rev ' + d.rev);
     exitRev();
+    // after exitRev, which unlocks: a link with a read grant, or one shown
+    // from its last-known copy, stays locked (30-tree.js linkRO). The tab
+    // restore comes through here too.
+    src.readOnly = linkRO(name);
     resetPanels();
     showShare(d.share || 'private');
+    cmtShow(name, d.comments);
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
     //  a tex page's server render is its SOURCE as escaped text, because the
     //  ship has no LaTeX and is not getting one. The local conversion is the
@@ -152,22 +201,22 @@
     // Paint locally now; the fetch still corrects it when it arrives.
     else paintLocal();
     if (!CONTENT() && !quiet) checkErrors();
-    if (isMobile()) setMv('code');
+    drawersClose();
   }
 
-  // focusName: only when the USER asked for a new file. Boot calls this to
-  // land on an empty page, and focusing the name field there summons the
-  // phone keyboard before you have done anything. You arrive at the app
-  // already typing a filename you did not ask to type.
-  function newFile(into, focusName = true) {
+  // blankPage: the editor reset a new page starts from. Nothing named is
+  // open, the field (where shown) is editable, and `into` is the folder an
+  // upload or a save lands in. A page is never written in memory mode: the
+  // autosave there goes to /know-save, so a memory in front leaves it first.
+  function blankPage(into) {
+    if (mode === 'know') setMode('pages');
+    openSeq++;           // an open still in flight must not land over this
     folderCtx = into || '';
     curFolder = null;
     curKind = null;
     refreshTexButton();
     exitGrub();
     exitRev();
-    $('histsec').hidden = true;
-    $('linksec').hidden = true;
     setCtlLabels();
     setOpen(null, { shown: into ? into + '/' : '', url: '/apps/lattice/app' });
     src.value = '';
@@ -175,11 +224,79 @@
     everTyped = false;   // a new file is a fresh editor state, like applyPage
     render();
     renderTree();
-    if (focusName) pname.focus();
     st('new page — name it, write, save');
     prevBlank();
     showShare('private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
+  }
+
+  // ── new page: one name and kind dialog for web, desktop and phone ────────
+  //  Everything user-initiated routes through newFile: the toolbar
+  //  (newFile('')), the desktop File menu (which clicks it), the green + on
+  //  every tree folder (newFile(path)), the strip's + and the phone bar's
+  //  label. The name field left the screen with the old bar, so the dialog
+  //  is the one way a page gets its name, and its kind.
+  //
+  //  focusName false is boot and the tab model landing on an empty page.
+  //  That must not be interrupted by a dialog, and they are the callers that
+  //  say so: a plain reset, nothing asked.
+  function newFile(into, focusName = true) {
+    if (!focusName) return blankPage(into);
+    (async () => {
+      //  a folder's + pre-fills that folder; the toolbar keeps offering the
+      //  open page's path (never a memory's key: that names no page). Read
+      //  it BEFORE the reset below, which clears the field it comes from.
+      //  A tool tab in front hides the editor, so its name field is no seed.
+      const seed = into ? into.replace(/\/+$/, '') + '/'
+        : mode === 'know' || !docFront() ? '' : (pname.value || '');
+      const picked = await askNameKind('page name (e.g. notes/todo)', seed,
+        'create', pkind.value);
+      if (!picked) return;
+      //  reset the editor only once the create is confirmed, so a cancel
+      //  leaves the open page exactly as it was. Under a tool tab the page
+      //  gets a document tab of its own first (docTab, 21-tabs.js).
+      if (!(await docTab())) return;
+      blankPage(into);
+      let name = picked.name;
+      let kind = picked.kind;
+      //  a typed extension still wins, because typing notes/todo.md and being
+      //  given a page called "todo.md" would be absurd. The table is EXT_KIND
+      //  in 30-tree.js, the same one the uploader files by.
+      const dot = name.lastIndexOf('.');
+      const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
+      if (typed) { kind = typed; name = name.slice(0, dot); }
+      //  the field is seeded with the REAL path; the typed leaf, when it was
+      //  not a valid path, rides to save() as the display name
+      const rn = realName(name);
+      if (!rn) return;
+      name = rn.name;
+      newRn = rn;
+      pkind.value = kind;
+      //  blankPage above left nothing open; this names the buffer, and
+      //  setOpen's event repaints the labels
+      setOpen(null, { shown: name });
+      //  Show it in the tree NOW, pulsing, before the ship has agreed. The
+      //  write is a pier round trip and the tree sitting unchanged through it
+      //  reads as nothing having happened. The pulse is the honest part: it
+      //  says recorded, not yet confirmed. Cleared on success, and the row is
+      //  dropped on failure so a page that does not exist is never left there.
+      const already = nodes.some((n) => n.page && n.path === name);
+      if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
+      //  the button says create, so write the page here. Naming the buffer
+      //  and leaving it unwritten read as a create that did nothing. save()
+      //  owns the whole create: 409, the offline queue, the tree patch and
+      //  the url, so this must not reimplement any of it.
+      //  queued behind another save, the create has not happened yet: the
+      //  row keeps pulsing, and save() settles it when the create runs
+      const queued = (await save()) === 'queued';
+      if (!already && !queued) {
+        //  save() sets `current` on any outcome it considers a success,
+        //  including a queued offline write, which IS a success here.
+        if (current === name) setTreePending(name, false);
+        else { dropTreeNodes(name); snapTree(); renderTree(); }
+      }
+      src.focus();
+    })();
   }
 
   async function newFolder() {
@@ -227,8 +344,19 @@
     if (!savePending) return;
     const pending = savePending;
     savePending = false;
-    if (!dirty) return;
+    if (!dirty && !pending.create) return;
     if (typeof pending === 'function') pending(); else autosave();
+  };
+  //  queue `fn` behind the save in flight, replacing what waits there,
+  //  except a create: that is a page the user asked for and nothing else
+  //  would write it, so it is kept and runs first. `create` runs even on a
+  //  clean buffer (flushPending).
+  const queueSave = (fn, create) => {
+    const prev = savePending;
+    const keep = typeof prev === 'function' && prev.create;
+    savePending = Object.assign(keep
+      ? async () => { await prev(); if (create || dirty) return fn(); } : fn,
+    { create: !!create || keep });
   };
   //  we know exactly what we just wrote. Patch the local copies so reopening
   //  this page paints the saved text, not the dump's pre-save body. The
@@ -237,38 +365,117 @@
   const patchLocal = (name, kind, sent) => {
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
-    if (nd) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
+    // not a link's: its text is the host's, read live, and the rev beside
+    // a body here would be a base the next save claims falsely
+    if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
   };
   // an accidental tab close is the same data-loss shape as the grub-discard
   // guard up in openPage: a dirty edit, grub or page, exists only here
   // until it is saved. That guard catches deliberate in-app navigation. This
   // one catches the close and reload that never go through openPage at all.
+  // A parked tab's buffer counts too (__latUnsaved, 20-state.js).
   window.addEventListener('beforeunload', (e) => {
-    if (!dirty) return;
+    if (!window.__latUnsaved()) return;
     e.preventDefault();
     e.returnValue = '';
   });
 
-  // the realName() split the desktop create dialog made before seeding
+  //  A save through a link (30-tree.js) claims the owner's rev this editor
+  //  read, as ?base=. Unlike a page of our own, a link has nowhere to keep
+  //  a replaced body, so a stale claim is refused (409) and nothing is
+  //  written. linkBase is that claim for a save of `name`, '' for a page
+  //  (and for a link with no rev read yet: the ship then claims its cached
+  //  rev, never nothing).
+  const linkBase = (name) => (linkOf(name) && curRev ? '&base=' + curRev : '');
+  //  a save through a link that did not land: the host's page moved on past
+  //  what this editor read, or the host did not answer (a 502 or 504 the
+  //  ship itself sent, never queued: the queue is for this ship being
+  //  away). The text stays here, unsaved. -> true when it was one of those.
+  //  And a link save is NEVER queued for later, also when this ship is the
+  //  one away: a replay could only claim a base the host may have moved
+  //  past, and the queue drops what is refused. The text stays here.
+  async function linkSaveFail(name, w) {
+    const lk = linkOf(name);
+    const r = w.r;
+    if (!lk) return false;
+    if (r && r.status === 409) {
+      linkCf.add(name);           // autosave stands down; the bar offers the ways out
+      st('not saved: ' + lk.host + ' changed this page since you opened it', false);
+    } else if (w.gone) {
+      if (r && r.status === 504) linkSeen(name, false);
+      st('not saved: ' + lk.host + ' is unreachable or no longer shares this page', false);
+    } else return false;
+    if (current === name) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
+    paintLinkCf(current);
+    return true;
+  }
+
+  // the realName() split the create dialog (newFile) made before seeding
   // #pname with the real path; save() consumes it on create
   let newRn = null;
-  async function save(kindOverride) {
-    if (curFolder) { st('folder selected — open a page to edit', false); return; }
-    if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
-    let name = pname.value.trim().replace(/^\/+|\/+$/g, '');
+  // a create that lands with nothing else opened meanwhile: nothing is
+  // named yet and the name field still names this page. Not the body:
+  // text typed during the round trip changes it, which left the page
+  // unnamed and its typing never autosaved (autosave needs `current`), and
+  // two empty pages have the same one, so a create landing under a second
+  // New took the second page's blank buffer for its own.
+  const createdHere = (creating, name) => creating && current === null && pname.value === name;
+  //  the page `name` (as typed) is on the ship, or queued for it, and not
+  //  a create's pulsing row still waiting for its answer
+  const madePage = (name) => {
+    const rn = realName(name);
+    return !!rn && nodes.some((n) => n.page && n.path === rn.name && !n.pending);
+  };
+  //  `fixed`: a queued create whose page the editor no longer shows (see
+  //  below). It names what to write, and the editor is left alone.
+  async function save(kindOverride, fixed) {
+    if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
+    if (!fixed && viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
+    let name = fixed ? fixed.name : pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!name) { st('name required', false); return; }
-    const creating = current === null;
+    const creating = !!fixed || current === null;
     // carry kindOverride into the re-arm: a bare `true` here forgot which
     // kind THIS call wanted, and the trailing run picked whatever the
     // picker happened to show by the time it fired
-    if (saving) { savePending = () => save(kindOverride); return; }
+    //  a create queued here runs even when the buffer is clean by then (an
+    //  empty new page is clean from the start): flushPending sees `create`
+    //  It is queued for THIS document. By the time it runs the editor may
+    //  show another, and save() writes whatever name and buffer it finds
+    //  then, so it runs from the editor only if the editor still shows
+    //  this one. A create carries what it creates (name, body, kind, the
+    //  dialog's split), so a second New during the round trip still gets
+    //  the first page written. 'queued' tells newFile it has not run yet.
+    //  A create also waits behind the create before it for the same page (a
+    //  second Ctrl+S during the round trip). Once that one has made the page
+    //  it skips itself: a second create is a 409 about our own page. A page
+    //  that was already there when it was queued still gets its honest 409.
+    if (saving) {
+      const doc = current, shown = pname.value;
+      const own = fixed || (creating ? { name, body: src.value,
+        kind: kindOverride || curKind || pkind.value, rn: newRn,
+        existed: madePage(name), tab: activeTab && activeTab.id } : null);
+      if (creating && !fixed) newRn = null;
+      queueSave(() => {
+        if (own && !own.existed && madePage(own.name)) {
+          const rn = realName(own.name);
+          if (!fixed && mode !== 'know' && !grubPath && rn && current === rn.name && dirty)
+            return save(kindOverride);
+          return;
+        }
+        const here = !fixed && mode !== 'know' && !grubPath && current === doc
+          && (doc !== null || pname.value === shown);
+        if (here) { if (own) newRn = own.rn; return save(kindOverride); }
+        if (own) return save(kindOverride, own);
+      }, creating);
+      return 'queued';
+    }
     saving = true;
     st('saving…');
     // capture the exact body being sent: keystrokes landing during the round-trip
     // must NOT be marked clean, or the next refresh swaps the stale server copy
     // in and the typed text is lost (same guard autosave has always had).
-    const sent = src.value;
-    const kind = kindOverride || curKind || pkind.value;
+    const sent = fixed ? fixed.body : src.value;
+    const kind = fixed ? fixed.kind : kindOverride || curKind || pkind.value;
     // NO base on live saves, deliberately: base is the OFFLINE queue's tool,
     // where the divergence window is real. Online, any dirty-blocked refresh
     // or panel-driven save can leave curRev one step behind, and every stale
@@ -282,23 +489,34 @@
     }
     // a typed name that is not a valid path saves under its slug and keeps
     // the typed text as display names (the tree shows those, the name
-    // field shows the real path). newRn is the desktop dialog's copy of
+    // field shows the real path). newRn is the create dialog's copy of
     // the same split, made before it seeded the field with the slug.
-    const rnc = !creating ? null : rn.dnames ? rn : newRn;
-    newRn = null;
+    const rnc = !creating ? null : rn.dnames ? rn : fixed ? fixed.rn : newRn;
+    if (!fixed) newRn = null;
     const dname = rnc ? rnc.dname : '';
     //  the field shows the slug from here on; nothing else about what is
     //  open changes, so `current` and the lock are passed through as they are
     if (rn.name !== name) {
       name = rn.name;
-      setOpen(current, { shown: name, readOnly: pname.readOnly });
+      if (!fixed) setOpen(current, { shown: name, readOnly: pname.readOnly });
     }
+    //  a write that did not land: a create's pulsing row goes (newFile put
+    //  it there, and a create that ran from the queue settles its own row),
+    //  and the save queued behind this one still runs. It checks what it
+    //  was queued for, so it never writes another document.
+    const failed = () => {
+      if (creating && nodes.some((n) => n.page && n.path === name && n.pending)) {
+        dropTreeNodes(name); snapTree(); renderTree();
+      }
+      flushPending();
+    };
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
-      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc);
+      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc) + (creating ? '' : linkBase(name));
     let w = { gone: true };
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
     finally { saving = false; }
     const r = w.r;
+    if (await linkSaveFail(name, w)) return failed();
     if (w.gone) {
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
@@ -309,44 +527,54 @@
       // the page keeps behaving as unsaved. enqueueSave has already said so.
       if (!(await enqueueSave(name, kind, sent, creating, rnc))) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
-        return;
+        return failed();
       }
-      if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
+      if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
       // same stillHere guard as the online path: only touch live editor state
       // if the editor has not moved to another document during the round-trip.
-      const stillHere = current === name || (current === null && src.value === sent);
+      const stillHere = fixed ? tabAdopt(fixed, name)
+        : current === name || createdHere(creating, name);
       if (stillHere) {
         current = name;
+        tabFollow();         // a new page's tab is named now (21-tabs.js)
         curKind = kind;
         pname.readOnly = true;
         if (src.value === sent) dirty = false;
+        else if (!savePending) savePending = true;
         history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
         cerr.textContent = 'saved offline'; cerr.className = 'ok';
       }
       flushPending();
       return;
     }
-    if (r && r.status === 409) { st('that page already exists', false); return; }
-    if (!r.ok) { st('save failed' + await errText(r), false); return; }
+    if (r && r.status === 409) { st('that page already exists', false); return failed(); }
+    if (!r.ok) { st('save failed' + await errText(r), false); return failed(); }
     // the response carries the new revision and whether this save landed
     // on top of a revision made elsewhere; parse it regardless of focus.
     let vr = null;
     try { vr = await r.json(); } catch {}
     // saved-document bookkeeping, applied whether or not the editor still
     // shows it, so a New clicked mid-save keeps both documents. Only a
-    // CREATE changes the tree.
-    if (creating) { addTreeNode(name, kind); applyDnames(rnc); snapTree(); renderTree(); }
+    // CREATE changes the tree, and it confirms a row newFile left pulsing.
+    if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent);
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
     // name field, dirty or the URL here would brand the new page as this save.
-    const stillHere = current === name || (current === null && src.value === sent);
+    //  A create run from the queue (`fixed`) is still here only when its
+    //  own tab came back to the front, unnamed, during the round trip;
+    //  in the background that tab is named for it instead (tabAdopt).
+    const stillHere = fixed ? tabAdopt(fixed, name)
+      : current === name || createdHere(creating, name);
     if (stillHere) {
       current = name;
+      tabFollow();           // a new page's tab is named now (21-tabs.js)
       curKind = kind;
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
+      else if (!savePending) savePending = true;   // flushPending below saves it
       if (vr && vr.rev) curRev = vr.rev;
+      if (linkCf.delete(name)) paintLinkCf(name);   // a retried link save landed
       if (vr && vr.conflicted) {
         st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
       } else if (dname) st('saved as ' + name + ' (shown as ' + dname + ')');
@@ -360,6 +588,14 @@
   }
 
   let autoTimer = null;
+  const autosaveOn = () => { try { return localStorage.latAutosave !== '0'; } catch { return true; } };
+  // turned back on in Settings (another document) while text waits unsaved:
+  // it goes out on the usual debounce, as if just typed
+  window.addEventListener('storage', (e) => {
+    if (e.key !== 'latAutosave' || !autosaveOn() || !dirty) return;
+    clearTimeout(autoTimer);
+    autoTimer = setTimeout(autosave, 2000);
+  });
   async function autosave() {
     // GRUB MODE IS EXPLICIT-SAVE ONLY. Autosaving a lattice page is fine. It is
     // your own note and the editor has always worked that way. Autosaving
@@ -368,8 +604,19 @@
     // kept a revision fine-grained enough to step back to. Save/Cmd+S only.
     // The 2s debounce still fires. It just reports instead of writing, so the
     // moment you stop typing you can see the edit is not yet on the ship.
-    if (grubPath) { if (dirty) st('unsaved — press Save or Cmd+S'); return; }
+    if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
+    // a link whose save was refused as stale: no more writes until the
+    // user picks one of the bar's ways out, or saves on purpose (Ctrl+S)
+    if (mode !== 'know' && linkCf.has(current) && linkOf(current)) {
+      st('not saved: ' + linkOf(current).host + ' changed this page since you opened it', false);
+      return;
+    }
+    // Settings > Editor > Autosave pages, off: manual only. This debounce
+    // stops, and so do the flushes a tab switch or a navigation makes
+    // (flushNoAsk and guardDirty, 20-state.js, which ask instead). Only
+    // Ctrl+S, the save button and :w write.
+    if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
     // never overlap saves. The pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview
     // behind it. Coalesce to one trailing save instead.
@@ -383,26 +630,27 @@
     const url = mode === 'know'
       ? api + '/know-save?key=' + encodeURIComponent(target)
       : api + '/page-save?name=' + encodeURIComponent(target) +
-        '&type=' + (curKind || pkind.value);
+        '&type=' + (curKind || pkind.value) + linkBase(target);
     let w = { gone: true };
     try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
     finally { saving = false; }
     const r = w.r;
+    if (mode !== 'know' && await linkSaveFail(target, w)) { flushPending(); return; }
     if (w.gone) {
       //  same rule on the autosave path: if it did not queue, it is not saved,
       //  so the editor stays dirty and keeps the text under the cursor
       if (mode === 'know') {
-        if (!(await enqueueKnow(target, sent))) return;
+        if (!(await enqueueKnow(target, sent))) { flushPending(); return; }
         if (current === target && src.value === sent) dirty = false;
         flushPending();
         return;
       }
-      if (!(await enqueueSave(target, curKind || pkind.value, sent))) return;
+      if (!(await enqueueSave(target, curKind || pkind.value, sent))) { flushPending(); return; }
       if (current === target && src.value === sent) dirty = false;
       flushPending();
       return;
     }
-    if (!r.ok) { st('autosave failed' + await errText(r), false); return; }
+    if (!r.ok) { st('autosave failed' + await errText(r), false); flushPending(); return; }
     let vr = null;
     if (mode !== 'know') { try { vr = await r.json(); } catch {} }
     //  patch the saved doc's local cache regardless of focus. No kind: an
@@ -422,3 +670,63 @@
     flushPending();
     if (offCount) replayQueue(true);     // this autosave proves the ship is back too
   }
+
+  // ── a link whose save was refused as stale ──────────────────────────────
+  // The host's page moved on past the rev this editor read, so the text
+  // here was not written and is the only copy. A bar over the document
+  // offers the two ways out; until one is taken autosave stands down for
+  // that link (linkCf, 30-tree.js) and only Ctrl+S tries again.
+  const lcfBar = document.createElement('div');
+  lcfBar.id = 'lnkcf';
+  lcfBar.className = 'lnkcf';
+  lcfBar.hidden = true;
+  lcfBar.setAttribute('role', 'alert');
+  lcfBar.innerHTML = '<span id="lnkcfmsg"></span>' +
+    '<button type="button" id="lnkcfre">Reload theirs</button>' +
+    '<button type="button" id="lnkcfkeep">Keep mine as a copy</button>';
+  $('center').insertBefore(lcfBar, $('docarea'));
+  //  by id, not lcfBar: paintLink (65-ctl.js) can run before this file has
+  function paintLinkCf(name) {
+    const bar = $('lnkcf');
+    if (!bar) return;
+    const lk = name && name === current && linkCf.has(name) ? linkOf(name) : null;
+    bar.hidden = !lk;
+    if (lk) $('lnkcfmsg').textContent = lk.host + ' changed this page since you opened it. ' +
+      'Your text here is not saved.';
+  }
+  // drop what is here and read theirs again
+  async function linkReload() {
+    const name = current;
+    if (!linkOf(name)) return;
+    dirty = false;
+    clearTimeout(autoTimer);
+    linkCf.delete(name);
+    paintLinkCf(name);
+    await openPage(name);
+  }
+  // what is here becomes a page of my own beside the link (<name>-mine, or
+  // -mine-2 and on when that is taken), then theirs is read again
+  async function linkKeepMine() {
+    const name = current;
+    const lk = linkOf(name);
+    if (!lk) return;
+    const body = src.value;
+    const kind = curKind || pkind.value;
+    for (let i = 1; i < 100; i++) {
+      const copy = name + '-mine' + (i > 1 ? '-' + i : '');
+      if (nodes.some((n) => n.path === copy)) continue;
+      const r = await fetch(api + '/page-save?name=' + encodeURIComponent(copy) + '&type=' + kind +
+        '&new=1', { method: 'POST', body: body || '\n' }).catch(() => null);
+      if (r && r.status === 409) continue;
+      if (!r || !r.ok) { st('copy failed' + await errText(r) + ', your text is still here', false); return; }
+      if (current !== name) return;
+      addTreeNode(copy, kind, false);
+      snapTree();
+      renderTree();
+      await linkReload();
+      st('your text is kept at ' + copy + '; ' + name + ' shows ' + lk.host + '\u2019s again');
+      return;
+    }
+  }
+  $('lnkcfre').onclick = linkReload;
+  $('lnkcfkeep').onclick = linkKeepMine;

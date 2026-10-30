@@ -725,7 +725,7 @@
   //  The toggle lives on the settings page, which is a SEPARATE document on
   //  this origin, exactly like the font and size preferences. It writes the
   //  flag and the storage event brings it here, so no button is injected into
-  //  the bar (which is managed markup now). An unset flag is off: vimOn()
+  //  the shell (which is managed markup). An unset flag is off: vimOn()
   //  and the settings checkbox both test for "1".
   window.addEventListener("storage", function(e){
     if(!e.key || e.key === LS) applyVim();

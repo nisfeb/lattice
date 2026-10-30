@@ -65,6 +65,9 @@ try {
   }, NAME, TEX);
   await page.reload({ waitUntil: 'networkidle2', timeout: 90000 });
   await sleep(3500);
+  //  the preview renders in Read (Edit skips it, 60-preview.js); Read is the
+  //  tab's, and the page below opens in this tab
+  await page.evaluate(() => window.latSetRead(true));
   await page.evaluate((n) => {
     const a = [...document.querySelectorAll('#treelist a.pg')]
       .find((x) => x.href.includes(encodeURIComponent(n)));
