@@ -1032,7 +1032,7 @@
   // [id, icon, name, keys] per pane tab. Their sections are filled by the
   // components below and, for the empty ones, by later steps.
   const PANES = {
-    l: [['files', 'doc', 'Files', 'Alt+1'], ['know', 'know', 'Knowledge'],
+    l: [['files', 'doc', 'Files', 'Ctrl+Shift+L'], ['know', 'know', 'Knowledge'],
       ['search', 'search', 'Search', 'Ctrl+Shift+F'], ['marks', 'mark', 'Bookmarks']],
     r: [['page', 'gear', 'Page'], ['out', 'out', 'Outgoing links'],
       ['back', 'back', 'Backlinks'], ['outline', 'list', 'Outline'],
@@ -3051,9 +3051,7 @@
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
       const ours = (mod && !e.altKey && !e.shiftKey && (k === 'k' || k === 'p'))
-        || (mod && e.shiftKey && !e.altKey && k === 'f')
-        || (e.altKey && !mod && !e.shiftKey && e.code === 'Digit1'
-          && !(e.key !== '1' && e.target.closest && e.target.closest('input, textarea, select, [contenteditable]')));
+        || (mod && e.shiftKey && !e.altKey && (k === 'f' || e.code === 'KeyL'));
       if (!ours) return;
       const up = new KeyboardEvent('keydown', { key: e.key, code: e.code, ctrlKey: e.ctrlKey,
         metaKey: e.metaKey, shiftKey: e.shiftKey, altKey: e.altKey, bubbles: true, cancelable: true });
@@ -4633,9 +4631,9 @@
       if (to) to.focus();
     });
   }
-  // Alt+1: the Files tab (the pane opened if shut), its tree focused, the
-  // first of the left pane's tabs. By e.code, since Option+1 on a Mac
-  // types a character, and so in a text field there it is left to type.
+  // Ctrl/Cmd+Shift+L, L for list: the Files tab (the pane opened if shut),
+  // its tree focused. By e.code, so it is the same key on every layout.
+  // Not Alt+1, which Chrome and Firefox on Linux keep for switching tabs.
   // Not while a dialog or the palette is up: focus behind a modal is lost.
   // Registered on the Files tab's own action (13-frame.js), so the tab's
   // tooltip and the palette both show it.
@@ -4645,8 +4643,7 @@
     if (r) r.focus();
   }
   addEventListener('keydown', (e) => {
-    if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.code === 'Digit1'
-      && !(e.key !== '1' && e.target.closest && e.target.closest('input, textarea, select, [contenteditable]'))
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === 'KeyL'
       && !document.querySelector('.dlg:not([hidden])')) {
       e.preventDefault();
       e.stopPropagation();

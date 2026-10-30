@@ -2,7 +2,7 @@
 //  ui-reins-small.mjs: five small fixes to the editor shell, one block each.
 //
 //    the Files and Knowledge trees are ARIA trees the arrow keys walk, Enter
-//      opens a page (Ctrl+Enter in a new tab) and Alt+1 focuses Files
+//      opens a page (Ctrl+Enter in a new tab) and Ctrl+Shift+L focuses Files
 //      (not from behind the palette); type-ahead finds folders, and Enter on
 //      a folder's + is the +
 //    the discard dialog for a long grub path (a shared page's) wraps the
@@ -97,25 +97,25 @@ try {
   check('the Knowledge list is an ARIA tree once it has rows', know === 'tree', know);
   check('it was not a tree while it held only the loading note', aria.know === null, String(aria.know));
   check('the Files tree is one tab stop', aria.stops === 1, JSON.stringify(aria));
-  check('the Files tab tooltip names Alt+1', aria.tip === 'Files (Alt+1)', aria.tip);
+  check('the Files tab tooltip names Ctrl+Shift+L', aria.tip === 'Files (Ctrl+Shift+L)', aria.tip);
 
   await page.evaluate(() => window.latShell.paneTab('l', 'know'));
   await page.evaluate(() => document.body.focus());
-  await press('Digit1', ['Alt']);
+  await press('KeyL', ['Control', 'Shift']);
   const viaKey = await page.evaluate(() => ({
     files: !document.querySelector('#lbody > [data-pane=files]').hidden,
     inTree: document.getElementById('treelist').contains(document.activeElement),
   }));
-  check('Alt+1 shows Files and focuses its tree', viaKey.files && viaKey.inTree, JSON.stringify(viaKey));
+  check('Ctrl+Shift+L shows Files and focuses its tree', viaKey.files && viaKey.inTree, JSON.stringify(viaKey));
   // not from behind a modal: the palette keeps the focus
   await page.evaluate(() => document.getElementById('rb-palette').click());
   await sleep(300);
-  await press('Digit1', ['Alt']);
+  await press('KeyL', ['Control', 'Shift']);
   const behind = await page.evaluate(() => ({
     open: !document.getElementById('palette').hidden,
     inTree: document.getElementById('treelist').contains(document.activeElement),
   }));
-  check('Alt+1 does nothing while the palette is open', behind.open && !behind.inTree,
+  check('Ctrl+Shift+L does nothing while the palette is open', behind.open && !behind.inTree,
     JSON.stringify(behind));
   await press('Escape');
 

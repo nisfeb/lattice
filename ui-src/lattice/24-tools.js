@@ -183,9 +183,7 @@
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
       const ours = (mod && !e.altKey && !e.shiftKey && (k === 'k' || k === 'p'))
-        || (mod && e.shiftKey && !e.altKey && k === 'f')
-        || (e.altKey && !mod && !e.shiftKey && e.code === 'Digit1'
-          && !(e.key !== '1' && e.target.closest && e.target.closest('input, textarea, select, [contenteditable]')));
+        || (mod && e.shiftKey && !e.altKey && (k === 'f' || e.code === 'KeyL'));
       if (!ours) return;
       const up = new KeyboardEvent('keydown', { key: e.key, code: e.code, ctrlKey: e.ctrlKey,
         metaKey: e.metaKey, shiftKey: e.shiftKey, altKey: e.altKey, bubbles: true, cancelable: true });
