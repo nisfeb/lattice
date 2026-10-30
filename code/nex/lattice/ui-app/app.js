@@ -2979,6 +2979,18 @@
         f.remove();
       }
     for (const c of toolHost.children) c.hidden = c.dataset.tool !== toolShown;
+    // A frame in a hidden element still reads document.hidden false, so a
+    // parked reader page kept its live stream open (+sse-script, app.hoon),
+    // and six of them took every connection the browser gives this host:
+    // the editor's saves then queued with no error. So each frame is told
+    // when it is shown or put away, and its stream follows.
+    for (const f of toolHost.querySelectorAll('iframe')) {
+      const on = !toolHost.hidden && !f.hidden;
+      if (f.latOn === on) continue;
+      f.latOn = on;
+      try { f.contentWindow.dispatchEvent(new f.contentWindow.Event(on ? 'latshown' : 'lathidden')); }
+      catch {}
+    }
     // the right pane goes by what is in front (76-outline.js)
     if (was !== toolShown) rpSoon();
   }

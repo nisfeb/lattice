@@ -16,8 +16,11 @@
 //    Ctrl+K and Ctrl+P open the palette, Ctrl+Shift+F the Search field,
 //      Ctrl+Shift+L the Files tree; vim keeps Ctrl+P in the editor, not Ctrl+K;
 //      the tooltips name the new chords
+//    With six browser tabs and a forum tab parked, a save lands in seconds
+//      (a parked frame holds no live stream), and a closed tab's frame goes
 //
 //  SHOTS=1 saves the forum and browser tabs at 1400x900 under /tmp.
+//  PARTS=streams,nested runs only the parts named.
 //
 //  Usage: LATTICE_URL=http://localhost:8080 LATTICE_COOKIE=/tmp/tyr-cookie.txt \
 //           node scripts/ui-shell-tabs.mjs
@@ -73,7 +76,9 @@ const boot = async () => {
   await sleep(500);
   appAt = await page.evaluate(() => location.href);
 };
+const only = process.env.PARTS ? process.env.PARTS.split(',') : null;
 const part = async (name, fn) => {
+  if (only && !only.includes(name)) return;
   try { await boot(); await fn(); }
   catch (e) { check(name + ' threw: ' + String(e.message).slice(0, 140), false); }
 };
@@ -355,6 +360,59 @@ try {
       await page.emulateMediaFeatures([]);
     }
   });
+
+  //  a frame tab that is not in front holds no live stream: six browser
+  //  tabs and a forum tab, each parked with its keep stream open, took
+  //  every one of the six connections a browser gives one host, and the
+  //  editor's save then waited forever. A closed tab's frame goes too.
+  const frontLoaded = () => until(() => {
+    const s = window.latTabs.state();
+    const k = s.tabs[s.active]?.key;
+    const f = k && document.querySelector(`#toolhost iframe[data-tool="${k}"]`);
+    return !!f && f.contentDocument?.readyState === 'complete'
+      && f.contentWindow.location.href !== 'about:blank';
+  }, null, 30000);
+  await part('streams', async () => {
+    for (let i = 0; i < 6; i++) {
+      await page.evaluate(() => document.getElementById('rb-browser').click());
+      await frontLoaded();
+      await sleep(1500);
+    }
+    await page.evaluate(() => document.getElementById('rb-forum').click());
+    await frontLoaded();
+    await sleep(1500);
+    const nFrames = await page.evaluate(() => document.querySelectorAll('#toolhost iframe').length);
+    await page.evaluate((n) => window.latTabs.openIn('page', n), PAGE);
+    await until((n) => {
+      const s = window.latTabs.state();
+      return s.tabs[s.active]?.key === n && s.shows;
+    }, PAGE, 15000);
+    await sleep(1500);
+    const mark = 'C1SAVE' + Date.now();
+    await page.focus('#src');
+    await page.keyboard.press('End');
+    await page.keyboard.type(' ' + mark);
+    await page.keyboard.down('Control');
+    await page.keyboard.press('KeyS');
+    await page.keyboard.up('Control');
+    const t0 = Date.now();
+    let landed = false;
+    while (!landed && Date.now() - t0 < 20000) {
+      await sleep(400);
+      const r = await fetch(env.base + '/apps/lattice/page-source?name=' + encodeURIComponent(PAGE),
+        { headers: { Cookie: env.cookie } }).catch(() => null);
+      landed = !!r && r.ok && ((await r.json()).body || '').includes(mark);
+    }
+    const ms = Date.now() - t0;
+    check('with six browser tabs and a forum tab open, a save lands in seconds',
+      nFrames === 7 && landed && ms < 8000, JSON.stringify({ nFrames, landed, ms }));
+    //  the tabs close, and so do their frames
+    await closeTools();
+    await sleep(300);
+    const left = await page.evaluate(() => document.querySelectorAll('#toolhost iframe').length);
+    check('closing frame tabs removes their frames', left === 0, String(left));
+  });
+
 
   await part('chords', async () => {
     const palOpen = () => page.evaluate(() => document.getElementById('palette')?.hidden === false

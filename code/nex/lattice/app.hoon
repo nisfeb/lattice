@@ -13375,6 +13375,11 @@
 ::  A later `upd` is a live edit under the user's eyes: force-refresh the
 ::  cache — coalescing bumps that land mid-refresh — then swap to the
 ::  canonical URL, which sw-js serves from the copy just written (instant).
+::  Hidden (H) is the tab out of sight, or the page in an editor frame tab
+::  that is not in front: such a frame still reads document.hidden false,
+::  and parked streams took all six connections a browser gives a host.
+::  The shell fires lathidden/latshown on the frame as it parks or shows
+::  it (24-tools.js), and the stream drops or comes back on those.
 ::  "" -> no script (remote pages, error shells). Built from single-quote
 ::  cords so the JS braces stay literal (only \\ needs escaping); mirrors
 ::  counter.hoon's SSE parse loop.
@@ -13389,7 +13394,7 @@
     (trip '";var W=')
     ?~(revs (trip '{}') revs)
     %-  trip
-    ';var pend=0,ac=null,live=false;function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||document.hidden)return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;var k=ev.slice(ev.indexOf(" ")+1);if(!W.hasOwnProperty(k))continue;if(ev.slice(0,3)==="old"){if(W[k]&&dt&&dt.trim()!==W[k]){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!document.hidden)upd();continue}location.reload();return}}}catch(x){}live=false;if(!document.hidden)setTimeout(c,3000)}document.addEventListener("visibilitychange",function(){if(document.hidden){if(ac)ac.abort();return}if(window.__latRefresh)upd();setTimeout(c,200)});c()})();</script>'
+    ';var pend=0,ac=null,live=false;function H(){if(document.hidden)return true;try{var f=window.frameElement;return !!f&&!f.getClientRects().length}catch(e){return false}}function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||H())return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;var k=ev.slice(ev.indexOf(" ")+1);if(!W.hasOwnProperty(k))continue;if(ev.slice(0,3)==="old"){if(W[k]&&dt&&dt.trim()!==W[k]){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!H())upd();continue}location.reload();return}}}catch(x){}live=false;if(!H())setTimeout(c,3000)}function V(){if(H()){if(ac)ac.abort();return}if(live)return;if(window.__latRefresh)upd();setTimeout(c,200)}document.addEventListener("visibilitychange",V);addEventListener("lathidden",V);addEventListener("latshown",V);c()})();</script>'
   ==
 ::  +send-public-how: whitelist <root>/pub in the grubbery `public` usergroup's
 ::  peek set, so any foreign ship may peek/keep published pages. UNION, never
