@@ -531,13 +531,8 @@ try {
       f.method = 'get';
       f.target = '_top';
       f.id = 'latlate';
-      //  a field, so the address is not a bare "?" (the service worker
-      //  would add "&u=", and eyre answers "?&" with a redirect)
-      const i = d.createElement('input');
-      i.type = 'hidden';
-      i.name = 'late';
-      i.value = '1';
-      f.append(i);
+      //  no field, so the address ends in a bare "?": the service worker
+      //  must not make that "?&u=", which eyre answers with a redirect
       d.body.append(f);
       setTimeout(() => f.requestSubmit(), 50);
     }, frameOf(fk));
