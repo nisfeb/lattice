@@ -14345,12 +14345,21 @@
 ::
 ++  marks-version  1
 ::  +migrate-pub-marks: ONE-TIME, stamp-guarded. Pages published before the
-::  per-format marks were all grown as gmi. Re-grow the LATEST rev of each
-::  own published page at the same spur under its real mark, so a peer
-::  reads the right format without waiting for a re-edit. Never touches
-::  /pub/index or /pub/meta: the index and the ids stay valid. The stamp is
-::  written LAST, so a crash mid-batch re-runs rather than skips (a re-grow
-::  only appends a case with the same body).
+::  per-format marks were all grown as gmi, and a peer reads gall case 1 of
+::  a page's spur (+keen-path), so re-growing at the SAME spur cannot fix
+::  them: gall appends case 2 and case 1 stays gmi forever. Instead rotate
+::  the salt. Every id changes, so +pub-regrow-loop grows every page at a
+::  FRESH spur, whose case 1 carries the real mark, and the revision list
+::  names the new ids. Then cull each old-salt spur, keeping one binding
+::  per page (a later delete culls only the new-salt spur). Addresses are
+::  paths and do not change; no vault grub, index row or /pub/meta is
+::  written. An un-upgraded peer keens the new id, rejects a non-gmi mark
+::  and reads by slow peek, which is the behavior it had before.
+::
+::  ponytail: the stamp is written LAST, so a crash before it re-runs the
+::  whole pass under a third salt; that cull names second-salt spurs and
+::  any first-salt spur not yet culled stays bound, the same hand-cull gap
+::  +ensure-pub-ids documents.
 ::
 ++  migrate-pub-marks
   |=  root=@ud
@@ -14360,27 +14369,22 @@
   ;<  done=@ud  bind:m  (read-pub-seq sr)
   ?:  (gte done marks-version)  (pure:m ~)
   ;<  ix=pub-index:lp  bind:m  (read-pub-index (rf root /pub %index))
-  ;<  salt=@  bind:m  pub-salt
+  ;<  old=@  bind:m  pub-salt
   ::  no salt means no ids yet: nothing is grown to correct
-  ?:  =(0 salt)  (pure:m ~)
-  ;<  ~  bind:m  (migrate-pub-marks-loop salt ~(tap in ~(key by ix)))
-  (put-file sr [/ %ud] marks-version)
-++  migrate-pub-marks-loop
-  |=  [salt=@ keys=(list path)]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ?~  keys  (pure:m ~)
-  ;<  up=@ud  bind:m  nexus-up
-  =/  or=(unit vrail:lp)  (key-to-rail:lp /pub/vault i.keys)
-  ?~  or  (migrate-pub-marks-loop salt t.keys)
-  ;<  seen=view:nexus  bind:m  (peek:io (rf up pax.u.or nom.u.or) ~)
-  ?.  ?=([%file *] seen)  (migrate-pub-marks-loop salt t.keys)
-  =/  body=(unit @t)  (mole |.(!<(@t (need-vase:tarball sang.seen))))
-  ?~  body  (migrate-pub-marks-loop salt t.keys)
-  ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
-  ;<  mode=view-mode:pg  bind:m  (published-mode (snip (strip-pub:lp i.keys)))
-  ;<  ~  bind:m  (grow-pub-page salt i.keys u.body rev mode)
-  (migrate-pub-marks-loop salt t.keys)
+  ?:  =(0 old)  (pure:m ~)
+  ;<  eny=@uvJ  bind:m  get-entropy:io
+  =/  new=@  (end [3 32] eny)
+  ;<  ~  bind:m  (put-file (rf root / %salt) [/ %ud] `@ud`new)
+  ;<  [* revs=(map @t [rev=@ud id=@uv])]  bind:m
+    (pub-regrow-loop new ~(tap in ~(key by ix)) 0 ~)
+  ;<  ~  bind:m  (put-file (rf root /pub %revs) [/ %json] (revs-json:lp revs))
+  ::  each old spur was bound by the save or regrow that named this rev, and
+  ::  is culled exactly once here (+cull-farm:io must not re-cull a spur)
+  =/  culls=(list path)  (salt-spurs:lp old revs)
+  |-
+  ?~  culls  (put-file sr [/ %ud] marks-version)
+  ;<  ~  bind:m  (cull-farm:io i.culls)
+  $(culls t.culls)
 ++  pub-regrow-loop
   |=  [salt=@ keys=(list path) cnt=@ud revs=(map @t [rev=@ud id=@uv])]
   =/  m  (fiber:fiber:nexus ,[@ud (map @t [rev=@ud id=@uv])])
@@ -14646,6 +14650,8 @@
 ::                 that spur (a /pub-regrow re-grow gets key+1) carries the
 ::                 SAME body. The rev in the spur is what makes the content
 ::                 immutable. So case 1 is always present and always right.
+::                 A spur is never re-grown under a different mark: a mark
+::                 fix moves the page to a fresh spur (+migrate-pub-marks).
 ::      <agent>    q.bem, the yoke whose farm is read (see +mesa-agent)
 ::      ''         THE EMPTY SEGMENT, and it is load-bearing. The publisher's
 ::                 ames splits the spar into [ship rift life vane care case

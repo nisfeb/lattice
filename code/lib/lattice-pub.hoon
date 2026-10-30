@@ -114,6 +114,20 @@
   |=  [salt=@ nam=@t rev=@ud]
   ^-  @uv
   (end [3 16] (shax (jam [salt nam rev])))
+::  +salt-spurs: the scry binding each revision-list row names under
+::  `salt`, /pub/page/<name>/<id>. A salt rotation culls these under the
+::  OLD salt once every page is grown under the new one. A name that is
+::  not a path names no binding and is skipped.
+::
+++  salt-spurs
+  |=  [salt=@ revs=(map @t [rev=@ud id=@uv])]
+  ^-  (list path)
+  %+  murn  ~(tap by revs)
+  |=  [nam=@t rev=@ud id=@uv]
+  ^-  (unit path)
+  =/  inner=(unit path)  (rush nam stap)
+  ?~  inner  ~
+  `(snoc (weld /pub/page u.inner) (scot %uv (page-id salt nam rev)))
 ::  +revs-json / +json-revs: the revision list peers read, [/pub %revs],
 ::  as {"/<name>": {"rev": n, "id": "0v…"}}. A reader looks a page up
 ::  here and %keens exactly that id: remote scry has no "latest", and the

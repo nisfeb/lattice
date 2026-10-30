@@ -61,6 +61,19 @@
     (expect-eq !>(%.n) !>(=((page-id:lp 1 '/a' 3) (page-id:lp 1 '/a' 4))))
     (expect-eq !>(%.y) !>((lte (met 3 (page-id:lp 1 '/a' 3)) 16)))
   ==
+::  a rotation's culls name each row's revision under the OLD salt, never
+::  the new one the regrow just bound, and skip a name that is no path
+++  test-salt-spurs
+  =/  revs=(map @t [rev=@ud id=@uv])
+    (malt ~[['/a' 3 (page-id:lp 2 '/a' 3)] ['/b/c' 12 0v0] ['nope' 1 0v0]])
+  =/  got=(set path)  (silt (salt-spurs:lp 1 revs))
+  =/  a1=path  `path`/pub/page/a/(scot %uv (page-id:lp 1 '/a' 3))
+  =/  a2=path  `path`/pub/page/a/(scot %uv (page-id:lp 2 '/a' 3))
+  =/  bc=path  `path`/pub/page/b/c/(scot %uv (page-id:lp 1 '/b/c' 12))
+  ;:  weld
+    (expect-eq !>((silt `(list path)`~[a1 bc])) !>(got))
+    (expect-eq !>(%.n) !>((~(has in got) a2)))
+  ==
 ::  the revision list round-trips, and a row that does not parse is
 ::  dropped rather than failing the whole list
 ++  test-revs-json
