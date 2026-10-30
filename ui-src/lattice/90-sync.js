@@ -89,6 +89,14 @@
       st('updated from ship \u00b7 rev ' + d.rev);
     }
   }
+  // whether the dump just applied says the open page is not what the
+  // editor holds: gone, a link, a rev or kind other than the editor's
+  const openMoved = () => {
+    if (!current || curFolder) return false;
+    const n = nodes.find((x) => x.page && x.path === current);
+    return !n || !!n.link || typeof n.rev !== 'number' || n.rev !== curRev ||
+      (!!n.kind && n.kind !== curKind);
+  };
   const refreshAll = () => {
     if (document.hidden) return;
     // replay WINS the reconnect race. loadTree would repaint queued pages
@@ -100,9 +108,14 @@
     // Files and Knowledge both stay painted in their tabs, so neither is
     // skipped for the other: the one the front document works on always
     // reloads, the other when its beacon moved since it loaded
-    if (mode !== 'know' || !revFresh(treeAt)) loadTree();
+    const tree = (mode !== 'know' || !revFresh(treeAt)) ? loadTree() : null;
     if (mode === 'know' || (knowLive() && !knowFresh(knowAt))) loadKnow();
-    refreshOpen();
+    // the open page re-reads only when the fresh dump says it moved: a save
+    // of some other page then costs this tab one small since-dump and
+    // nothing else. A memory, a link (read live from its host) and a dump
+    // that failed still re-read as before.
+    if (mode === 'know' || !tree) refreshOpen();
+    else tree.then((ok) => { if (!ok || openMoved()) refreshOpen(); });
     // a catch-up call, not the primary path: the stream now wakes the badge
     // directly on its own /comments event (see commentBumped below). This
     // covers the tab that was HIDDEN while a comment landed, since the SSE
