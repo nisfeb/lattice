@@ -1,6 +1,38 @@
 /* BUILT FILE — do not edit. Source: ui-src/lattice/, build: scripts/build-ui.mjs */
 (function () {
 'use strict';
+// ── src/00-framed.js ──────────────────────────────────────────────────────
+  // ── never a second editor in a frame ─────────────────────────────────────
+  // The editor owns its window. Loaded in a frame (a link the shell did not
+  // catch, a redirect, a script), it would run a second set of buffers,
+  // autosave and stream over the same tab list and drafts in localStorage,
+  // and closing that frame would drop its unsaved work unasked. So it does
+  // not start. When the frame is one of the shell's own (24-tools.js), the
+  // shell opens the address as a tab of its own; the frame says so either
+  // way, and nothing else of this file runs.
+  if (window.top !== window) {
+    let sent = false;
+    try { sent = !!(window.top.latFrameEditor && window.top.latFrameEditor(location.href)); } catch {}
+    const p = document.createElement('p');
+    p.style.cssText = 'font:15px system-ui,sans-serif;margin:2rem;color:var(--text,inherit)';
+    p.textContent = sent ? 'Opened in the editor. ' : 'The editor runs in a window of its own. ';
+    const a = document.createElement('a');
+    if (sent) {
+      a.href = '#';
+      a.textContent = 'Back';
+      a.onclick = (e) => { e.preventDefault(); history.back(); };
+    } else {
+      a.href = location.href;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = 'Open the editor';
+    }
+    p.append(a);
+    document.title = 'Lattice';
+    document.body.replaceChildren(p);
+    return;
+  }
+
 // ── src/05-prefs.js ───────────────────────────────────────────────────────
   // ── typography preferences ───────────────────────────────────────────────
   // Set on the settings page, stored in localStorage, applied here. Two vars
@@ -3082,18 +3114,55 @@
         toolOpen(a.dataset.latTool);
         return;
       }
-      let u;
-      try { u = new URL(a.href); } catch { return; }
-      if (u.origin !== location.origin || !/^\/apps\/lattice\/app\/?$/.test(u.pathname)) return;
-      const q = u.searchParams;
-      const go = q.get('grub') ? ['grub', q.get('grub'), q.get('ship') || null]
-        : q.get('view') === 'know' ? ['know', q.get('key') || '', null]
-          : q.get('name') ? ['page', q.get('name'), null] : null;
+      const go = editorGo(a.href);
       if (!go) return;
       e.preventDefault();
-      openIn(go[0], go[1], { ship: go[2], newTab: true });
+      editorOpen(go);
     });
   }
+  // What an address of the editor asks for, null when it is not one: the
+  // editor (/app, and /edit, which redirects there) with a document, a
+  // folder to start a file in (?into=), or nothing in particular. An asset
+  // under /app/ is not the editor.
+  function editorGo(href) {
+    let u;
+    try { u = new URL(href, location.href); } catch { return null; }
+    if (u.origin !== location.origin || !/^\/apps\/lattice\/(app|edit)\/?$/.test(u.pathname)) return null;
+    const q = u.searchParams;
+    return q.get('grub') ? ['grub', q.get('grub'), q.get('ship') || null]
+      : q.get('view') === 'know' ? ['know', q.get('key') || '', null]
+        : q.get('name') ? ['page', q.get('name'), null]
+          : q.get('into') ? ['into', q.get('into')] : ['shell'];
+  }
+  // A document opens in a new tab of its own, never over the frame's. A
+  // folder gets a new page tab started in it, as ?into= did at boot. The
+  // bare editor is the shell itself: the nearest document tab comes to the
+  // front, or a new page when there is none.
+  async function editorOpen(go) {
+    if (go[0] === 'into') {
+      if (!(await docTab())) return;
+      if (nodes.some((n) => !n.page && n.path === go[1])) selectFolder(go[1]);
+      else newFile(go[1], false);
+      return;
+    }
+    if (go[0] === 'shell') {
+      const i = tabs.indexOf(activeTab);
+      const docs = tabs.filter((t) => t.kind !== 'tool');
+      const near = docs.filter((t) => tabs.indexOf(t) < i).pop() || docs[0];
+      if (near) await switchTab(near.id);
+      else await docTab();
+      return;
+    }
+    await openIn(go[0], go[1], { ship: go[2], newTab: true });
+  }
+  // the editor's own page loaded in a frame anyway (00-framed.js) hands
+  // its address here and does not start
+  window.latFrameEditor = (href) => {
+    const go = editorGo(href);
+    if (!go) return false;
+    editorOpen(go);
+    return true;
+  };
   // A frame wears the shell's look. theme.js sets the theme's colours inline
   // on <html> in every document, but with no theme (mode system) it sets
   // none and each stylesheet keeps its own: the shell's goes dark with the

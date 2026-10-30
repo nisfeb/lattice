@@ -18,6 +18,8 @@
 //      the tooltips name the new chords
 //    With six browser tabs and a forum tab parked, a save lands in seconds
 //      (a parked frame holds no live stream), and a closed tab's frame goes
+//    No editor boots inside a frame: the home page's Editor link focuses the
+//      shell, and an editor address loaded in a frame hands over and stops
 //
 //  SHOTS=1 saves the forum and browser tabs at 1400x900 under /tmp.
 //  PARTS=streams,nested runs only the parts named.
@@ -411,6 +413,66 @@ try {
     await sleep(300);
     const left = await page.evaluate(() => document.querySelectorAll('#toolhost iframe').length);
     check('closing frame tabs removes their frames', left === 0, String(left));
+  });
+
+  //  no editor ever boots inside a frame: a link to it opens the shell's
+  //  own tab, and the editor loaded in a frame anyway refuses to start
+  await part('nested', async () => {
+    await page.evaluate(() => document.getElementById('rb-browser').click());
+    await frontLoaded();
+    await sleep(1500);
+    const bkey = (await front()).key;
+    const card = await page.evaluate((s) => {
+      const d = document.querySelector(s).contentDocument;
+      const a = [...d.querySelectorAll('a[href]')].find((x) => /\/apps\/lattice\/app\/?$/.test(x.href));
+      if (!a) return null;
+      a.click();
+      return a.getAttribute('href');
+    }, frameOf(bkey));
+    await sleep(2500);
+    const after = await page.evaluate((s) => {
+      const f = document.querySelector(s);
+      let at = null, inner = null;
+      try { at = f.contentWindow.location.pathname; inner = !!f.contentWindow.latTabs; } catch {}
+      const st = window.latTabs.state();
+      return { at, inner, front: st.tabs[st.active]?.kind };
+    }, frameOf(bkey));
+    check('the home page\'s Editor link focuses the shell, not an editor in the tab',
+      !!card && after.at !== '/apps/lattice/app' && !after.inner && after.front !== 'tool',
+      JSON.stringify({ card, after }));
+    //  loaded in a frame by any other road, the editor does not boot, and
+    //  an ?into= hands its folder to the shell
+    await page.evaluate((k) => window.latTabs.switchTab(window.latTabs.state().tabs.find((t) => t.key === k).id),
+      bkey);
+    //  the reader's page cache swaps the document once after load, which
+    //  would cancel a navigation started before it
+    await sleep(4000);
+    //  the shell's own address follows the folder it shows (replaceState),
+    //  so it is the document that must stay, not its address
+    await page.evaluate(() => { window.latSameDoc = 1; });
+    await page.evaluate(([s, u]) => { document.querySelector(s).contentWindow.location.href = u; },
+      [frameOf(bkey), '/apps/lattice/app?into=x-' + process.pid]);
+    await until((s) => {
+      const f = document.querySelector(s);
+      return f?.contentWindow.location.pathname === '/apps/lattice/app'
+        && f.contentDocument.readyState === 'complete';
+    }, frameOf(bkey), 20000);
+    await sleep(2000);
+    const boxed = await page.evaluate((s) => {
+      const f = document.querySelector(s);
+      let at = null, inner = null, src = null;
+      try {
+        at = f.contentWindow.location.pathname;
+        inner = !!f.contentWindow.latTabs;
+        src = !!f.contentDocument.getElementById('src');
+      } catch {}
+      const st = window.latTabs.state();
+      return { at, inner, src, front: st.tabs[st.active]?.kind, same: window.latSameDoc === 1,
+        win: location.pathname + location.search };
+    }, frameOf(bkey));
+    check('an editor loaded in a frame does not boot, and its ?into= opens in the shell',
+      boxed.at === '/apps/lattice/app' && !boxed.inner && !boxed.src && boxed.front === 'page'
+        && boxed.same && boxed.win === '/apps/lattice/app?into=x-' + process.pid, JSON.stringify(boxed));
   });
 
 
