@@ -10826,8 +10826,10 @@
   ::  our own view also gets a comment box (posts to /comment as us). A peer's box
   ::  (which posts to OUR nexus, which then pokes the peer) comes with the
   ::  cross-ship path.
+  ::  Not in an edit-shared page (eg): it is framed sandbox="", where a
+  ::  form cannot be sent, so the box would be dead.
   =/  box=tape
-    ?.  con  ""
+    ?:  |(!con eg)  ""
     ;:  weld
       "<form class=\"cbox\" method=\"post\" target=\"_top\" action=\"/apps/lattice/comment?page="
       (trip name)
