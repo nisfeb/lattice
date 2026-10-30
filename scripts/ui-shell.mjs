@@ -442,7 +442,7 @@ try {
     .map((b) => (b.title === b.getAttribute('aria-label') ? b.title : '!' + b.title)
       .replace(/^(Comments inbox), \S+ unread$/, '$1')));
   check('ribbon order and tooltips', JSON.stringify(names) === JSON.stringify([
-    "Today's brief", 'Browser', 'Forum', 'Comments inbox', 'Access & groups', 'Explorer',
+    "Today's brief", 'Browser', 'Forum', 'Comments inbox', 'Access & groups',
     'Sync conflicts', 'Command palette (Ctrl+P)', 'Settings']), JSON.stringify(names));
 
   const front = () => page.evaluate(() => {
@@ -589,7 +589,7 @@ try {
   const homeless = await page.evaluate(() => {
     const P = window.latPalette;
     if (!P) return null;
-    return { n: P.ids().length, only: P.only.length,
+    return { n: P.ids().length, only: P.only,
       //  shtest is the ribbonAdd probe above, whose button the suite removed
       //  a home rendered on demand (the page menu's items, a shared row's
       //  control) is there exactly while its when() holds, so one whose
@@ -599,7 +599,8 @@ try {
   });
   await page.evaluate(() => document.getElementById('tmenu').click());
   check('every action has a home in the DOM',
-    !!homeless && homeless.n >= 30 && homeless.only === 0 && homeless.missing.length === 0,
+    !!homeless && homeless.n >= 30 && JSON.stringify(homeless.only) === '["explorer"]'
+      && homeless.missing.length === 0,
     JSON.stringify(homeless));
 
   await page.evaluate(() => document.getElementById('rb-settings').click());
@@ -808,8 +809,8 @@ try {
   }, null, 5000);
   check('save under a tool tab leaves the hidden grub alone',
     underTool && grubSaves === 0 && stillDirty, JSON.stringify({ underTool, grubSaves, stillDirty }));
-  //  a way off the editor (Browser and Forum are tabs now): the desktop's
-  //  manager page, here with a stand-in for the desktop's bridge
+  //  the one way off the editor left (Browser and Forum are tabs now): the
+  //  desktop's manager page, here with a stand-in for the desktop's bridge
   await page.evaluate(() => {
     window.__mgr = null;
     window.__TAURI__ = { core: { invoke: async (cmd) => { window.__mgr = cmd; } } };

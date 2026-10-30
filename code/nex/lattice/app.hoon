@@ -10312,8 +10312,15 @@
     ?:  &(?=(^ rest) =('' (rear `path`rest)))
       $(rest (snip `path`rest))
     rest
+  ::  bare /x, the way in (the palette, Settings, the home page): our own
+  ::  pages folder. The ship root is outside what a sandboxed lattice may
+  ::  read, so it was a refusal before anything showed. A 302, not the 301
+  ::  of +send-redirect: where lattice lives depends on how it is installed,
+  ::  and a browser keeps a 301 for good.
   ?~  rest
-    (send-redirect eyre-id :(weld "/apps/lattice/x/" (scow %p our) "/"))
+    ;<  sb=path  bind:m  self-base
+    =/  to=tape  :(weld "/apps/lattice/x/" (scow %p our) (spud sb) "/page/")
+    (send-simple:srv eyre-id [[302 ['location' (crip to)]~] ~])
   =/  shp=(unit @p)  (slaw %p i.rest)
   ?~  shp  (send-err eyre-id 400 'bad ship')
   =/  pax=path  t.rest
@@ -10335,37 +10342,43 @@
     ::  ship root: always a directory
     ?.  slashed  (send-redirect eyre-id (weld base "/"))
     ?:  =(u.shp our)
-      ;<  dn=view:nexus  bind:m  (peek-shallow:io dir-road ~)
-      ?.  ?=([%ball *] dn)  (send-err eyre-id 404 'not found')
-      (send-view eyre-id (render-page-titled canon "" "" (scow %p u.shp) (explore-dir-html u.shp pax ball.dn)))
+      ;<  dn=(unit view:nexus)  bind:m  (peek-local-soft dir-road %.n)
+      ?~  dn  (explore-refused eyre-id our pax canon)
+      ?.  ?=([%ball *] u.dn)  (send-err eyre-id 404 'not found')
+      (send-view eyre-id (render-page-titled canon "" "" (scow %p u.shp) (explore-dir-html u.shp pax ball.u.dn)))
     ;<  md=(unit view:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
     ?~  md  (send-err eyre-id 504 'unreachable or denied')
     ?.  ?=([%ball *] u.md)  (send-err eyre-id 404 'not found')
     (send-view eyre-id (render-page-titled canon "" "" (scow %p u.shp) (explore-dir-html u.shp pax ball.u.md)))
   =/  file-road=road:tarball  [%& %& (snip `path`pax) (rear pax)]
+  ::  our own tree: every peek is veto-tolerant (+peek-local-soft), and a
+  ::  refusal answers +explore-refused
   ?:  =(u.shp our)
     ?:  slashed
-      ;<  dn=view:nexus  bind:m  (peek-shallow:io dir-road ~)
-      ?:  ?=([%ball *] dn)
+      ;<  dn=(unit view:nexus)  bind:m  (peek-local-soft dir-road %.n)
+      ?~  dn  (explore-refused eyre-id our pax canon)
+      ?:  ?=([%ball *] u.dn)
         ::  our own /page/<name>/ dir -> the live page view (data + command
         ::  form + SSE), unless ?raw asks for the plain grub listing. A page has
         ::  a /code grub; a plain folder does not, so a folder just browses.
         =/  pn=(unit @t)  (page-dir-name pax)
         =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
-          ?~(fil.ball.dn ~ contents.u.fil.ball.dn)
+          ?~(fil.ball.u.dn ~ contents.u.fil.ball.u.dn)
         ?:  |(?=(~ pn) ?!((~(has by fils) %code)) (~(has by args) 'raw'))
-          (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-dir-html u.shp pax ball.dn)))
-        (render-page-view eyre-id u.shp pax canon u.pn ball.dn (~(has by args) 'embed') %.y)
-      ;<  fn=view:nexus  bind:m  (peek:io file-road ~)
-      ?.  ?=([%file *] fn)  (send-err eyre-id 404 'not found')
-      ?:  want-raw  (send-raw eyre-id sang.fn %.y)
-      (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.fn %.y)))
-    ;<  fn=view:nexus  bind:m  (peek:io file-road ~)
-    ?:  ?=([%file *] fn)
-      ?:  want-raw  (send-raw eyre-id sang.fn %.y)
-      (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.fn %.y)))
-    ;<  dn=view:nexus  bind:m  (peek-shallow:io dir-road ~)
-    ?.  ?=([%ball *] dn)  (send-err eyre-id 404 'not found')
+          (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-dir-html u.shp pax ball.u.dn)))
+        (render-page-view eyre-id u.shp pax canon u.pn ball.u.dn (~(has by args) 'embed') %.y)
+      ;<  fn=(unit view:nexus)  bind:m  (peek-local-soft file-road %.y)
+      ?~  fn  (explore-refused eyre-id our pax canon)
+      ?.  ?=([%file *] u.fn)  (send-err eyre-id 404 'not found')
+      ?:  want-raw  (send-raw eyre-id sang.u.fn %.y)
+      (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.u.fn %.y)))
+    ;<  fn=(unit view:nexus)  bind:m  (peek-local-soft file-road %.y)
+    ?:  ?=([~ %file *] fn)
+      ?:  want-raw  (send-raw eyre-id sang.u.fn %.y)
+      (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.u.fn %.y)))
+    ;<  dn=(unit view:nexus)  bind:m  (peek-local-soft dir-road %.n)
+    ?~  dn  (explore-refused eyre-id our pax canon)
+    ?.  ?=([%ball *] u.dn)  (send-err eyre-id 404 'not found')
     (send-redirect eyre-id (weld base "/"))
   ?:  slashed
     ;<  md=(unit view:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
@@ -10394,6 +10407,52 @@
   ?~  md  (send-err eyre-id 504 'unreachable or denied')
   ?.  ?=([%ball *] u.md)  (send-err eyre-id 404 'not found')
   (send-redirect eyre-id (weld base "/"))
+::  +peek-local-soft: one node of THIS ship's tree for the /x explorer, a
+::  refusal answering ~. A sandboxed lattice may read only inside its own
+::  tree (grubbery vetoes even its own root dir), and /x names any path, so
+::  a refusal is ordinary there. The plain peeks failed the request fiber
+::  on the veto, and the Explorer showed "lattice is recovering from a
+::  crash" in place of the whole editor, or never answered. `deep` %.n is
+::  a shallow peek: one level, subdir names only.
+::
+++  peek-local-soft
+  |=  [=road:tarball deep=?]
+  =/  m  (fiber:fiber:nexus ,(unit view:nexus))
+  ^-  form:m
+  ;<  pw=wire  bind:m  (nonce:io /peek)
+  ;<  ~  bind:m  (send-dart:io %node pw road %peek ~ ~ deep)
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      ::  only OUR dart's veto, as in +take-peek-or-wake
+      [~ %veto %node * * *]
+    ?.  =(pw wire.dart.u.in)  [%skip ~]
+    [%done ~]
+      [~ %peek * *]
+    ?.  =(pw wire.u.in)  [%skip ~]
+    [%done `view.u.in]
+  ==
+::  +explore-refused: the explorer's answer for a path of ours that lattice
+::  may not read: a 403 page with the crumbs and a way to our own pages.
+::
+++  explore-refused
+  |=  [eyre-id=@ta our=@p pax=path canon=tape]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  =/  pages=tape  :(weld "/apps/lattice/x/" (scow %p our) (spud sb) "/page/")
+  =/  htm=@t
+    %:  render-page-titled  canon  ""  ""  "not readable"
+      ;:  weld
+        (explore-crumbs our pax)
+        "<p class=\"err\">lattice is not allowed to read this on your ship. "
+        "Installed as a desk, it reads only inside its own folder.</p>"
+        "<p><a href=\""  (esc pages)  "\">your pages</a></p>"
+      ==
+    ==
+  %+  send-simple:srv  eyre-id
+  [[403 ['content-type' 'text/html']~] `(as-octs:mimes:html htm)]
 ::  +url-path-part: the path portion of a raw request url (strip ?query).
 ::
 ++  url-path-part
@@ -12847,6 +12906,12 @@
     "<p><button type=\"button\" id=\"legbtn\" class=\"btn\" hidden>Import from the old editor</button></p>"
     %-  trip
     '<script>(function(){var s=document.getElementById("legst"),b=document.getElementById("legbtn");function load(msg){fetch("/apps/lattice/legacy-status").then(function(r){return r.json()}).then(function(d){b.hidden=!d.prompt;s.textContent=msg||(d.prompt?"An older lattice agent is still installed on this ship, from before this store existed. Importing copies what it holds here. Anything already here is left as it is, and nothing is removed from the old agent.":d.reason==="resolved"?"This ship has closed the import from the older lattice agent: it either finished, or the offer was dismissed with never ask again.":"No older lattice agent is installed on this ship.")}).catch(function(){s.textContent=msg||"status unavailable"})}b.onclick=function(){b.disabled=true;s.textContent="importing from the old agent, this can take a few minutes...";fetch("/apps/lattice/legacy-migrate",{method:"POST"}).then(function(r){if(r.status===409){b.disabled=false;load("Nothing to import: the import was already closed on this ship, by another tab or device.");return null}if(!r.ok)return r.json().catch(function(){return {}}).then(function(j){throw new Error(j.error||"http "+r.status)});return r.json()}).then(function(j){if(!j)return;var n=j.imported||0,p=j.pagesImported||0;if(j.complete)try{localStorage.latLegacy="done"}catch(x){}b.disabled=false;load("Imported "+n+(n===1?" memory":" memories")+(j.skipped?" ("+j.skipped+" already here, left untouched)":"")+" and "+p+(p===1?" page. ":" pages. ")+(j.complete?"Everything it held is now here.":"Not everything moved, and the old agent still holds the only copy of the rest, so do not uninstall it. Run the import again to finish."))}).catch(function(e){b.disabled=false;load("import failed: "+e.message+". Nothing was removed from the old agent, and a re-run skips what already landed.")})};load()})();</script>'
+    ::  advanced: the explorer, a power tool, so it has no ribbon button.
+    ::  In the editor's Settings tab, data-lat-tool opens it in a tab of its
+    ::  own (24-tools.js frameDress); opened on its own, the link goes there.
+    "<h2 id=\"advanced\">Advanced</h2>"
+    "<p class=\"muted\">The explorer browses the files lattice keeps on your ship: each page's source, data and history, as grubbery stores them.</p>"
+    "<p><a id=\"openexplorer\" class=\"btn\" href=\"/apps/lattice/x\" data-lat-tool=\"explorer\">Open explorer</a></p>"
     ::  desktop only: the shell's own connection and mounts page. This page
     ::  sits in a frame of the editor, so the Tauri bridge is the top
     ::  window's. latOpenManager there asks about unsaved work first. The
@@ -12866,7 +12931,9 @@
   |=  [our=@p recent=(list [pax=path prev=@t]) bms=bookmarks:lb know=tape]
   ^-  tape
   =/  ship=tape  (scow %p our)
-  =/  tree=tape  :(weld "/apps/lattice/x/" ship "/")
+  ::  bare /x: our pages folder (+explore). The ship root is not readable
+  ::  by a lattice installed as a desk.
+  =/  tree=tape  "/apps/lattice/x"
   ::  under Editor: the 10 most recently edited pages, name + a preview, each
   ::  linking straight into the editor.
   =/  recent-list=tape

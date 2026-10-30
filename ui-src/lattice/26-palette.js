@@ -9,8 +9,9 @@
   // Every action must have a home in the DOM: its element carries
   // data-action="<id>" (the suite checks each one). A home that is built
   // on demand is checked while its when() says it applies. PALETTE_ONLY
-  // would name the exceptions, and it is empty by design.
-  const PALETTE_ONLY = [];
+  // names the exceptions: an action whose home is in a framed page, outside
+  // this document. The one is Explorer, at Settings > Advanced (24-tools.js).
+  const PALETTE_ONLY = ['explorer'];
   const pal = document.createElement('div');
   pal.id = 'palette';
   pal.className = 'dlg palette';
@@ -50,6 +51,7 @@
   // hidden (a pane tab's own section does not count), not disabled. A home
   // built only while open says so itself (when).
   const palUsable = (a) => {
+    if (PALETTE_ONLY.includes(a.id)) return true;
     if (a.when) return a.when();
     const el = actionHome(a.id);
     return !!el && !el.disabled && !el.closest('[hidden]:not([data-pane])');

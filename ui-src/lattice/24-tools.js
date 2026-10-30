@@ -1,7 +1,7 @@
   // ── tool tabs and the ribbon ─────────────────────────────────────────────
   // A tool tab holds no document: the comments inbox, access & groups, the
   // sync conflicts, or a same-origin page in a frame (Settings, the memory
-  // review, the forum, a browser). Its key names the tool
+  // review, the forum, the explorer, a browser). Its key names the tool
   // ('inbox', 'access', 'conflicts') or the frame
   // ('frame:/apps/lattice/settings'). While one is in front the
   // document area is hidden and #toolhost takes the center. The editor
@@ -26,15 +26,17 @@
     '/apps/lattice/know?lint=1': ['Memory review', 'tidy'],
     '/apps/lattice': ['Browser', 'globe'],
     '/apps/lattice/forum': ['Forum', 'forum'],
+    '/apps/lattice/x': ['Explorer', 'tree'],
   };
-  // the tools a frame opens by name: Settings, and the forum, one tab
-  // each. A browser is a new tab every time (browseIn).
+  // the tools a frame opens by name: Settings, and the two browsing frames
+  // that are one tab each. A browser is a new tab every time (browseIn).
   const FRAME_KEYS = {
     settings: 'frame:/apps/lattice/settings',
     forum: 'frame:/apps/lattice/forum',
+    explorer: 'frame:/apps/lattice/x',
   };
   const SETTINGS = FRAME_KEYS.settings;
-  // A browsing frame (the reader, the forum) is navigated
+  // A browsing frame (the reader, the forum, the explorer) is navigated
   // inside, so its tab is titled by the page it is on, and it keeps the
   // reader's bar: the omnibar is the way to an urb:// address, and Back and
   // Forward are the frame's own. Settings and the memory review are single
@@ -140,10 +142,11 @@
   // forum, settings) is a ribbon button or a pane tab of the shell already.
   // The tab takes the page's title. A link in it to a document in the
   // editor opens that document in a new tab of the shell, never over the
-  // frame's own tab and never as a second editor nested in the frame. Any
-  // other link navigates the frame as usual, and so does whatever aims at
-  // _top (the reader's comment box): the whole window is the editor's,
-  // never a page's to replace.
+  // frame's own tab and never as a second editor nested in the frame. A
+  // link carrying data-lat-tool (Settings > Advanced) opens that tool's
+  // tab. Any other link navigates the frame as usual, and so does whatever
+  // aims at _top (the reader's comment box): the whole window is the
+  // editor's, never a page's to replace.
   function frameDress(f) {
     let d = null;
     try { d = f.contentDocument; } catch {}
@@ -177,6 +180,11 @@
     d.addEventListener('click', (e) => {
       const a = e.target.closest && e.target.closest('a[href]');
       if (!a || e.defaultPrevented) return;
+      if (a.dataset.latTool && FRAME_KEYS[a.dataset.latTool]) {
+        e.preventDefault();
+        toolOpen(a.dataset.latTool);
+        return;
+      }
       let u;
       try { u = new URL(a.href); } catch { return; }
       if (u.origin !== location.origin || !/^\/apps\/lattice\/app\/?$/.test(u.pathname)) return;
@@ -229,11 +237,11 @@
   }
 
   // ── leaving the editor ───────────────────────────────────────────────────
-  // Explorer and the desktop's manager page take the window (Browser and
-  // Forum are tabs). The front document gets guardDirty, and the parked
-  // tabs holding unsaved work get one question naming them. Once the user
-  // has said discard, nothing is owed, so the unload guard (35-pages.js)
-  // does not ask a second time.
+  // Only the desktop's manager page takes the window now (Browser, Forum
+  // and Explorer are tabs). The front document gets guardDirty, and the
+  // parked tabs holding unsaved work get one question naming them. Once
+  // the user has said discard, nothing is owed, so the unload guard
+  // (35-pages.js) does not ask a second time.
   // With autosave off the parked tabs hold ordinary unsaved pages, so the
   // question offers to save them all, each brought forward and saved in
   // turn. One that does not save stops the leaving, with it in front.
@@ -260,7 +268,6 @@
     for (const t of bg) if (t.snap) t.snap.dirty = false;
     await go();
   });
-  const leaveTo = (url) => leaveThen(() => { location.href = url; });
   // Settings > Connection and mounts, and Settings > Backup > Scheduled
   // backups (section 'backups'), on the desktop. The shell rebuilds the
   // window onto its own manager page (open_manager in
@@ -312,8 +319,13 @@
   // (80-conflicts.js) are painted onto these two
   ribbonAdd({ id: 'inbox', icon: 'inbox', name: 'Comments inbox', run: () => toolOpen('inbox') });
   ribbonAdd({ id: 'access', icon: 'key', name: 'Access & groups', run: () => toolOpen('access') });
-  ribbonAdd({ id: 'explorer', icon: 'tree', name: 'Explorer', run: () => leaveTo('/apps/lattice/x') });
   ribbonAdd({ id: 'conflicts', icon: 'conflict', name: 'Sync conflicts', run: () => toolOpen('conflicts') })
     .hidden = true;
   ribbonAdd({ id: 'palette', icon: 'term', name: 'Command palette', keys: 'Ctrl+P', run: () => paletteOpen() });
   ribbonAdd({ id: 'settings', icon: 'gear', name: 'Settings', bottom: true, run: () => toolOpen('settings') });
+  // The explorer is a power tool: no ribbon button. Its home is the link in
+  // Settings > Advanced, which lives in the Settings frame and so outside
+  // this document, the one action the palette lists without a home here
+  // (PALETTE_ONLY, 26-palette.js).
+  action({ id: 'explorer', name: 'Explorer', home: 'Settings › Advanced',
+    run: () => toolOpen('explorer') });

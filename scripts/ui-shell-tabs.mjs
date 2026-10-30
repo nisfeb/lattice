@@ -7,6 +7,9 @@
 //    Browser opens a new browser tab per click at the reader home, with the
 //      reader's bar but not its menu, and the omnibar, links and the comment
 //      box's _top all stay inside the tab
+//    Explorer is not on the ribbon, the palette lists it under Settings >
+//      Advanced, it opens as a tab whose page answers, and the link in
+//      Settings > Advanced opens that tab
 //
 //  SHOTS=1 saves the forum and browser tabs at 1400x900 under /tmp.
 //
@@ -215,6 +218,69 @@ try {
       return docs.reduce((n, d) => n + d.querySelectorAll('[target=_top], [target=_parent]').length, 0);
     }, frameOf(key));
     check('no form or link in a browser tab aims at the whole window', tops === 0, String(tops));
+  });
+
+  await part('explorer', async () => {
+    const xk = 'frame:/apps/lattice/x';
+    const ribbonX = await page.evaluate(() => !!document.getElementById('rb-explorer')
+      || [...document.querySelectorAll('#ribbon button')].some((b) => /explorer/i.test(b.title)));
+    check('Explorer is not on the ribbon', !ribbonX);
+    await page.evaluate(() => document.getElementById('rb-palette').click());
+    await sleep(300);
+    await page.keyboard.type('explorer');
+    await sleep(300);
+    const xRow = await page.evaluate(() => {
+      const r = document.querySelector('#pallist .palrow');
+      return r ? { name: r.querySelector('.palname')?.textContent, home: r.querySelector('.palhome')?.textContent } : null;
+    });
+    check('the palette lists Explorer under Settings > Advanced',
+      xRow?.name === 'Explorer' && xRow?.home === 'Settings › Advanced', JSON.stringify(xRow));
+    const nx = (await front()).n;
+    await page.keyboard.press('Enter');
+    const xTab = await until((k) => {
+      const s = window.latTabs.state();
+      return s.tabs[s.active]?.key === k;
+    }, xk, 10000);
+    const xLoaded = await until((s) => {
+      const f = document.querySelector(s);
+      return !!f && f.contentDocument?.readyState === 'complete'
+        && f.contentWindow.location.pathname.startsWith('/apps/lattice/x/')
+        && f.contentDocument.body && f.contentDocument.body.textContent.trim().length > 0;
+    }, frameOf(xk), 45000);
+    const xAt = await frameAt(xk);
+    const x1 = await front();
+    check('Explorer opens as a tab and its page loads, the window stays',
+      xTab && xLoaded && x1.n === nx + 1 && (await page.evaluate(() => location.href)) === appAt,
+      JSON.stringify({ xTab, xLoaded, xAt, x1 }));
+    //  the page itself answers, and not with the crash note
+    const t0 = Date.now();
+    const xr = await fetch(env.base + '/apps/lattice/x', { headers: { Cookie: env.cookie },
+      signal: AbortSignal.timeout(30000) }).catch((e) => ({ status: 'threw ' + e.name }));
+    const xBody = xr.text ? await xr.text() : '';
+    check('the explorer answers, and not with a crash',
+      (xr.status === 200 || xr.status === 403) && !/recovering from a crash/.test(xBody),
+      JSON.stringify({ status: xr.status, ms: Date.now() - t0, body: xBody.slice(0, 120) }));
+    //  Settings > Advanced has the way in, and it opens the same tab
+    await page.evaluate((n) => window.latTabs.openIn('page', n), PAGE);
+    await page.evaluate(() => document.getElementById('rb-settings').click());
+    const sk = 'frame:/apps/lattice/settings';
+    const adv = await until((s) => {
+      const d = document.querySelector(s)?.contentDocument;
+      const a = d && d.getElementById('openexplorer');
+      return !!a && !!d.getElementById('advanced') && a.dataset.latTool === 'explorer';
+    }, frameOf(sk));
+    const ns = (await front()).n;
+    await page.evaluate((s) => document.querySelector(s).contentDocument.getElementById('openexplorer').click(),
+      frameOf(sk));
+    const viaSet = await until((k) => {
+      const s = window.latTabs.state();
+      return s.tabs[s.active]?.key === k;
+    }, xk, 10000);
+    await sleep(500);
+    const sAt = await frameAt(sk);
+    check('Settings > Advanced opens the explorer tab',
+      adv && viaSet && (await front()).n === ns && sAt === '/apps/lattice/settings',
+      JSON.stringify({ adv, viaSet, sAt, n: (await front()).n, ns }));
   });
 
 } catch (e) {
