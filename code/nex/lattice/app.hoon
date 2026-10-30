@@ -374,6 +374,8 @@
         ::  that keeps failing is dropped (+job-resume), never retried for
         ::  ever with every write waiting behind it.
             [%fall %& [/ %'tree-job-tries'] [[/ %ud] 0]]
+        ::  /pub-regrown: how many pages the last /pub-regrow grew
+            [%fall %& [/ %'pub-regrown'] [[/ %ud] 0]]
         ==
     ::
     ++  on-file
@@ -4096,10 +4098,16 @@
       [%'POST' %pub-regrow]
     ::  in the writer, which yields as it walks: a save that came in
     ::  meanwhile waits for it rather than racing the revision list
+    ::  `grown` is the pages that run grew; `running` when it is still at
+    ::  it past the eight minutes +poke-eval waits, and `grown` the last
     ;<  ~  bind:m  (poke-eval [%pub-regrow ~])
-    ;<  n=@ud  bind:m  pub-rev-count
+    ;<  n=@ud  bind:m  (read-pub-seq (rf up / %'pub-regrown'))
+    ;<  job=(unit @tas)  bind:m  tree-job-now
     %+  send-json  eyre-id
-    (pairs:enjs:format ~[['ok' b+&] ['grown' (numb:enjs:format n)]])
+    %-  pairs:enjs:format
+    :~  ['ok' b+&]  ['grown' (numb:enjs:format n)]
+        ['running' b+?=(^ job)]
+    ==
   ::  pub-reconcile: ONE-SHOT cleanup of the historical-rev namespace leak
   ::  left by any publish that ran BEFORE +apply-pub culled predecessors.
   ::  Each such save grew a fresh rev spur without culling the old one, and
@@ -6360,7 +6368,8 @@
     (apply-share root now pax.act mode.act %.y)
       %pub-regrow
     ;<  ~  bind:m  (job-set `act)
-    ;<  *  bind:m  pub-regrow
+    ;<  n=@ud  bind:m  pub-regrow
+    ;<  ~  bind:m  (put-file (rf up / %'pub-regrown') [/ %ud] n)
     (job-set ~)
       %unpub
     ::  the legacy POST /delete: unpublish a page, or every page of a
@@ -7632,15 +7641,6 @@
   =/  job=(unit eval-action:le)
     (fall (mole |.(;;((unit eval-action:le) (sang-noun:tarball sang.jv)))) ~)
   (pure:m ?~(job ~ `-.u.job))
-::  +pub-rev-count: how many pages the revision list names.
-++  pub-rev-count
-  =/  m  (fiber:fiber:nexus ,@ud)
-  ^-  form:m
-  ;<  up=@ud  bind:m  nexus-up
-  ;<  vw=view:nexus  bind:m  (peek:io (rf up /pub %revs) ~)
-  ?.  ?=([%file *] vw)  (pure:m 0)
-  %-  pure:m
-  ~(wyt by (fall (mole |.((json-revs:lp !<(json (need-vase:tarball sang.vw))))) ~))
 ++  sleep-draining
   |=  for=@dr
   =/  m  (fiber:fiber:nexus ,~)
