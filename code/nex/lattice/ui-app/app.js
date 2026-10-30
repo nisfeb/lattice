@@ -7013,8 +7013,13 @@
       : api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
         + (linkOf(name) && s.rev ? '&base=' + s.rev : '');
     let w = { gone: true };
-    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
-    finally { saving = false; }
+    //  behind a folder job a page's save queues instead of going out, as
+    //  the live editor's does (jobWait, 08-offline.js)
+    const sentAt = Date.now();
+    try {
+      if (!(jobWait && !know && !linkOf(name)))
+        w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+    } finally { saving = false; }
     const landed = (rev) => {
       tabLanded(t.kind, name, sent, rev);
       // back in front by now: the live editor holds it
@@ -7036,7 +7041,12 @@
       return;
     }
     let vr = null;
-    if (!know) { try { vr = await w.r.json(); } catch {} patchLocal(name, null, sent); }
+    //  and a queued edit older than this save is superseded by it
+    if (!know) {
+      try { vr = await w.r.json(); } catch {}
+      patchLocal(name, null, sent);
+      await dropQueued(name, sentAt);
+    }
     else knowGen++;
     landed(vr && vr.rev);
     st('autosaved ' + name);
