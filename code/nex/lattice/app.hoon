@@ -370,6 +370,16 @@
         ::  between pages, so a reload can land mid-way. The writer runs
         ::  it again as it starts (+job-resume), and each is idempotent.
             [%fall %& [/ %'tree-job'] [[/ %noun] ~]]
+        ::  /tree-job-tries: how many starts have run that job again. One
+        ::  that keeps failing is dropped (+job-resume), never retried for
+        ::  ever with every write waiting behind it.
+            [%fall %& [/ %'tree-job-tries'] [[/ %ud] 0]]
+        ::  /tree-job-dropped: the last job +job-resume gave up on, for the
+        ::  owner (GET /tree-job): a folder delete dropped part way leaves
+        ::  some of its pages published
+            [%fall %& [/ %'tree-job-dropped'] [[/ %json] ~]]
+        ::  /pub-regrown: how many pages the last /pub-regrow grew
+            [%fall %& [/ %'pub-regrown'] [[/ %ud] 0]]
         ==
     ::
     ++  on-file
@@ -1414,9 +1424,27 @@
   =?  base  |(?=(~ base) =(`0 base))  `rev.l
   ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
     (remote-write host.l pax.l body base wait)
-  ::  acked but unchecked: no rev to cache, so the next save re-reads
-  ?:  &(?=(%| -.r) =(202 code.p.r))
-    (pure:m |+[503 'the host took the write but did not confirm it: reload to check'])
+  ::  sent but unconfirmed (acked and the check did not answer, or the ack
+  ::  never came): read it again. Our text there is this write landing, and
+  ::  its rev is cached, so the next save does not 409 against it. Any
+  ::  other text leaves the cache alone: the lick port's next write claims
+  ::  the cached rev, and a third party's edit must still 409 it.
+  ?:  ?&  ?=(%| -.r)
+          |(=(202 code.p.r) &(=(504 code.p.r) =((unacked-msg host.l) msg.p.r)))
+      ==
+    ;<  got=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek host.l pax.l)
+    =/  unsure=@t  'the host took the write but did not confirm it: reload to check'
+    ?-  (after-unsure:ll body got)
+        %landed
+      ?>  ?=(^ got)
+      ;<  ~  bind:m  (link-note lpath l got)
+      (pure:m &+[(fall base rev.l) rev.u.got])
+        %keep  (pure:m ?:(=(202 code.p.r) |+[503 unsure] r))
+        %none
+      ?:  =(202 code.p.r)  (pure:m |+[503 unsure])
+      ;<  ~  bind:m  (link-note lpath l ~)
+      (pure:m |+[504 (link-fail-msg host.l)])
+    ==
   ?:  ?=(%| -.r)
     ?.  =(504 code.p.r)  (pure:m r)
     ;<  ~  bind:m  (link-note lpath l ~)
@@ -1608,13 +1636,6 @@
   ::  blot decision the client can't make for a tree it doesn't own.
   ?.  ?=([%file *] u.ms)  (pure:m |+[404 'no such file on that ship'])
   =/  ud0=@ud  ud.cass.u.ms
-  ::  the writer's base is behind the owner's page: refuse, so nothing
-  ::  overwrites text the writer never saw. Not a compare-and-swap: a third
-  ::  party's write landing between this peek and our make is overwritten,
-  ::  and the re-peek's rev below may already include a write after ours,
-  ::  which the writer then carries as its next base. The window is one
-  ::  round trip, the same apply-then-check caveat as a local page-save.
-  ?:  &(?=(^ base) !=(u.base ud0))  (pure:m |+[409 'conflict'])
   ::  a lattice content page was handed out as its prose (+browse-file-
   ::  respond): the edit goes back in that page's own envelope
   =/  cur=(unit @t)  (grub-text sang.u.ms)
@@ -1625,7 +1646,17 @@
   ?:  =(cur `body)
     ::  no-op save: nothing to send, and grubbery skips unchanged writes
     ::  anyway, so the revision check below would misread it as a denial.
+    ::  Before the base check: the host already holding this text is most
+    ::  often our own write that answered late (a 202, an ack timeout), and
+    ::  sending it again is landed, never a conflict with ourselves.
     (pure:m &+[ud0 ud0])
+  ::  the writer's base is behind the owner's page: refuse, so nothing
+  ::  overwrites text the writer never saw. Not a compare-and-swap: a third
+  ::  party's write landing between this peek and our make is overwritten,
+  ::  and the re-peek's rev below may already include a write after ours,
+  ::  which the writer then carries as its next base. The window is one
+  ::  round trip, the same apply-then-check caveat as a local page-save.
+  ?:  &(?=(^ base) !=(u.base ud0))  (pure:m |+[409 'conflict'])
   ::  rebuild the noun in the grub's OWN shape (cord / wain / mime) and send
   ::  it under its OWN blot, with NO destination conversion. Converting
   ::  mime->blot at the destination needs the target marc to carry a mime
@@ -1646,9 +1677,7 @@
     [[[/ %mime] `*``mime`[mt (as-octs:mimes:html body)]] ~]
   =/  req=load:remo:nexus  [[/remote-save %& dir nam] %make %.y %.n |+[b.bd d.bd]]
   ;<  ack=(unit (unit tang))  bind:m  (remote-load-ack shp req wait)
-  ?~  ack
-    %-  pure:m
-    |+[504 (crip "{(scow %p shp)} did not acknowledge the write in time: it may still land")]
+  ?~  ack  (pure:m |+[504 (unacked-msg shp)])
   ?^  u.ack  (pure:m |+[502 'remote rejected the write'])
   ;<  vs=(unit view:nexus)  bind:m  (peek-remote-quiet file-road shp wait)
   ?~  vs  (pure:m |+[202 'the host took the write but did not answer the check'])
@@ -1658,6 +1687,11 @@
   ?.  (gth ud1 ud0)
     (pure:m |+[403 'write did not land — no make permission on that path?'])
   (pure:m &+[ud0 ud1])
+::  +unacked-msg: a write sent that the host did not ack in time
+++  unacked-msg
+  |=  shp=@p
+  ^-  @t
+  (crip "{(scow %p shp)} did not acknowledge the write in time: it may still land")
 ::  +handle-legacy-migrate: POST /legacy-migrate. Import the pages and memories
 ::  of a retired %lattice gall agent, once. It takes only eyre-id because it
 ::  reads everything it needs from the old agent rather than the request, and
@@ -3748,7 +3782,9 @@
     ?~  rel  (send-err eyre-id 400 'missing path')
     =/  pp=(each path tang)  (mule |.((pub-path u.rel)))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'invalid path')
-    ;<  ~  bind:m  (poke-pub [%del-page (spat p.pp)])
+    ::  a folder's unpublish yields between its pages: in the writer as a
+    ::  job (/tree-job), answered once it is done (+poke-eval)
+    ;<  ~  bind:m  (poke-eval [%unpub (spat p.pp)])
     (send-ok eyre-id)
   ::  ── know version history ──
   ::  every know entry is a firm grub, so grubbery keeps its prior revisions. A live
@@ -4090,10 +4126,16 @@
       [%'POST' %pub-regrow]
     ::  in the writer, which yields as it walks: a save that came in
     ::  meanwhile waits for it rather than racing the revision list
+    ::  `grown` is the pages that run grew; `running` when it is still at
+    ::  it past the eight minutes +poke-eval waits, and `grown` the last
     ;<  ~  bind:m  (poke-eval [%pub-regrow ~])
-    ;<  n=@ud  bind:m  pub-rev-count
+    ;<  n=@ud  bind:m  (read-pub-seq (rf up / %'pub-regrown'))
+    ;<  job=(unit @tas)  bind:m  tree-job-now
     %+  send-json  eyre-id
-    (pairs:enjs:format ~[['ok' b+&] ['grown' (numb:enjs:format n)]])
+    %-  pairs:enjs:format
+    :~  ['ok' b+&]  ['grown' (numb:enjs:format n)]
+        ['running' b+=(`%pub-regrow job)]
+    ==
   ::  pub-reconcile: ONE-SHOT cleanup of the historical-rev namespace leak
   ::  left by any publish that ran BEFORE +apply-pub culled predecessors.
   ::  Each such save grew a fresh rev spur without culling the old one, and
@@ -4112,6 +4154,19 @@
         ['revs-culled' (numb:enjs:format revs.u.res)]
         ['seqs-culled' (numb:enjs:format seqs.u.res)]
     ==
+  ::  tree-job: the whole-tree job the writer is part way through (a folder
+  ::  share or delete, a regrow), null when none. Saves wait behind one, so
+  ::  the editor asks here when a save times out, and says so rather than
+  ::  offline. One peek, answered while the writer works.
+      [%'GET' %'tree-job']
+    ;<  job=(unit @tas)  bind:m  tree-job-now
+    ::  and the last job the writer gave up on (+job-given-up), or null
+    ;<  dv=view:nexus  bind:m  (peek:io (rf up / %'tree-job-dropped') ~)
+    =/  dropped=json
+      ?.  ?=([%file *] dv)  ~
+      (fall (mole |.(!<(json (need-vase:tarball sang.dv)))) ~)
+    %+  send-json  eyre-id
+    (pairs:enjs:format ~[['job' ?~(job ~ s+u.job)] ['dropped' dropped]])
   ::  ── legacy agent migration (see the +legacy-live block) ────────────────
   ::  legacy-status: should the UI offer to import from a retired %lattice
   ::  gall agent? One %gu liveness scry and nothing else. See below. The
@@ -5548,7 +5603,7 @@
   ::  Eight minutes at most, under eyre's ten: a folder of hundreds of
   ::  published pages runs longer, and its route then answers while the
   ::  writer finishes, rather than as a 504 a client reads as offline.
-  ?.  ?=(?(%share-tree %del %pub-regrow) -.act)  (pure:m ~)
+  ?.  (tree-jobs act)  (pure:m ~)
   ;<  up=@ud  bind:m  nexus-up
   ;<  now=@da  bind:m  bowl-now
   =/  until=@da  (add now ~m8)
@@ -6346,7 +6401,14 @@
     (apply-share root now pax.act mode.act %.y)
       %pub-regrow
     ;<  ~  bind:m  (job-set `act)
-    ;<  *  bind:m  pub-regrow
+    ;<  n=@ud  bind:m  pub-regrow
+    ;<  ~  bind:m  (put-file (rf up / %'pub-regrown') [/ %ud] n)
+    (job-set ~)
+      %unpub
+    ::  the legacy POST /delete: unpublish a page, or every page of a
+    ::  folder, which yields between pages, so it is a job like %del
+    ;<  ~  bind:m  (job-set `act)
+    ;<  ~  bind:m  (apply-pub root now [%del-page key.act])
     (job-set ~)
       %share-tree
     ::  publish/unpublish a whole subtree: apply the mode to every PAGE under
@@ -7532,17 +7594,30 @@
   ?.  &(!=(0 done) =(0 (mod done every)))  (pure:m ~)
   (sleep-draining (div ~s1 100))
 ::  +job-set: note the whole-tree action now running (/tree-job), or ~
-::  once it is done.
+::  once it is done. Done, its resume count goes too: a count left over
+::  would cut the resumes of the next job.
 ++  job-set
   |=  job=(unit eval-action:le)
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  (put-file (rf up / %'tree-job') [/ %noun] job)
+  ;<  ~  bind:m  (put-file (rf up / %'tree-job') [/ %noun] job)
+  ?^  job  (pure:m ~)
+  (put-file (rf up / %'tree-job-tries') [/ %ud] 0)
+::  +tree-jobs: the whole-tree actions, the ones +job-set records
+++  tree-jobs
+  |=  act=eval-action:le
+  ^-  ?
+  ?=(?(%share-tree %del %pub-regrow %unpub) -.act)
 ::  +job-resume: as the writer starts, run again the whole-tree action a
-::  reload cut short. Each such action (%share-tree, %del, %pub-regrow) is
-::  idempotent,
-::  so finishing it is running it. One the writer cannot read is dropped.
+::  reload cut short. Each such action (%share-tree, %del, %pub-regrow,
+::  %unpub) is idempotent, so finishing it is running it. One the writer
+::  cannot read is dropped.
+::
+::  It must never wedge the writer: a resume that crashed would crash every
+::  start after it, and every write with it. So the attempt is counted
+::  before it runs, the fourth start drops the job, and the run is guarded
+::  (+fiber-try): a crash is said once and the job dropped.
 ++  job-resume
   |=  root=@ud
   =/  m  (fiber:fiber:nexus ,~)
@@ -7552,20 +7627,76 @@
   =/  job=(unit eval-action:le)
     (fall (mole |.(;;((unit eval-action:le) (sang-noun:tarball sang.jv)))) ~)
   ?~  job  (pure:m ~)
-  ?.  ?=(?(%share-tree %del %pub-regrow) -.u.job)  (job-set ~)
+  ?.  (tree-jobs u.job)  (job-set ~)
+  =/  tr=road:tarball  (rf root / %'tree-job-tries')
+  ;<  tries=@ud  bind:m  (read-pub-seq tr)
+  ?:  (gte tries 3)
+    (job-given-up root u.job "did not finish in {<tries>} starts" ~)
+  ;<  ~  bind:m  (put-file tr [/ %ud] +(tries))
   ;<  now=@da  bind:m  bowl-now
-  ;<  ~  bind:m  (apply-eval root now u.job)
-  ;<  ~  bind:m  (job-set ~)
+  ;<  err=(unit tang)  bind:m  (fiber-try (apply-eval root now u.job))
+  ?^  err  (job-given-up root u.job "crashed" u.err)
+  ;<  ~  bind:m  (job-drop root)
   (bump-beacon %rev now)
-::  +pub-rev-count: how many pages the revision list names.
-++  pub-rev-count
-  =/  m  (fiber:fiber:nexus ,@ud)
+::  +job-given-up: +job-resume drops `job`, and says so where the owner
+::  will see it: a fault row, and /tree-job-dropped, which GET /tree-job
+::  answers and the editor shows once. A delete or unpublish dropped part
+::  way leaves some of the folder's pages published.
+++  job-given-up
+  |=  [root=@ud job=eval-action:le why=tape =tang]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  where=@t
+    ?+  -.job  ''
+      %del         (crip (pax-str pax.job))
+      %share-tree  (crip (pax-str pax.job))
+      %unpub       key.job
+    ==
+  =/  what=tape  "lattice /main.sig: a resumed {(trip -.job)} job {why} and was dropped"
+  ;<  ~  bind:m  (fault 'tree-job-dropped' 2 (weld what ": {(trip where)}") tang)
+  ;<  now=@da  bind:m  bowl-now
+  ;<  ~  bind:m
+    %^  put-file  (rf root / %'tree-job-dropped')  [/ %json]
+    %-  pairs:enjs:format
+    :~  ['job' s+-.job]  ['path' s+where]  ['why' s+(crip why)]
+        ['at' (numb:enjs:format (rise-da-ms now))]
+    ==
+  (job-drop root)
+::  +job-drop: no whole-tree job, and no tries counted for one (+job-set)
+++  job-drop
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (job-set ~)
+::  +fiber-try: run `a`, and answer ~ when it finished, or the trace when
+::  any of its steps crashed or failed, instead of failing this fiber. A
+::  failed step's state and darts are dropped, as the kernel drops them.
+++  fiber-try
+  |=  a=process:fiber:nexus
+  =/  m  (fiber:fiber:nexus ,(unit tang))
+  ^-  form:m
+  |=  inp=input:fiber:nexus
+  =/  r  (mule |.((a inp)))
+  ?:  ?=(%| -.r)  [~ q.state.inp %done `p.r]
+  =/  o  p.r
+  ?-  -.next.o
+    %wait  [darts.o state.o %wait ~]
+    %skip  [darts.o state.o %skip ~]
+    %cont  [darts.o state.o %cont ^$(a self.next.o)]
+    %fail  [~ q.state.inp %done `err.next.o]
+    %done  [darts.o state.o %done ~]
+  ==
+::  +tree-job-now: the whole-tree job the writer is part way through, by
+::  its name, ~ when none (/tree-job)
+++  tree-job-now
+  =/  m  (fiber:fiber:nexus ,(unit @tas))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  vw=view:nexus  bind:m  (peek:io (rf up /pub %revs) ~)
-  ?.  ?=([%file *] vw)  (pure:m 0)
-  %-  pure:m
-  ~(wyt by (fall (mole |.((json-revs:lp !<(json (need-vase:tarball sang.vw))))) ~))
+  ;<  jv=view:nexus  bind:m  (peek:io (rf up / %'tree-job') ~)
+  ?.  ?=([%file *] jv)  (pure:m ~)
+  =/  job=(unit eval-action:le)
+    (fall (mole |.(;;((unit eval-action:le) (sang-noun:tarball sang.jv)))) ~)
+  (pure:m ?~(job ~ `-.u.job))
 ++  sleep-draining
   |=  for=@dr
   =/  m  (fiber:fiber:nexus ,~)
@@ -8535,19 +8666,21 @@
   $
 ::  +take-in-drain: the port's next request (& on news on /in), or a stray
 ::  eaten (|): a late remote %peek or %veto, a timer wake, a keen answer or
-::  a poke-ack that nothing here awaits any more.
+::  a poke-ack that nothing here awaits any more. Between requests the port
+::  awaits nothing else, so every answer to a dart is late and eaten too:
+::  a %pack (a +poke-eval barrier that ran past its eight minutes, from a
+::  folder delete or move made here), a %made or %gone, and the rest. A
+::  skipped one stays in the skip queue for the life of the port.
 ++  take-in-drain
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   |=  input:fiber:nexus
   :+  ~  q.state
-  ?+  in  [%skip ~]
+  ?+  in  [%done |]
       ~  [%wait ~]
       [~ %news * *]
     ?:  =(/in wire.u.in)  [%done &]
-    [%skip ~]
-      [~ %peek * *]  [%done |]
-      [~ %veto *]    [%done |]
+    [%done |]
       [~ %poke * *]
     ?:  ?|  =([/ %timer-wake] p.sage.u.in)
             =([/ %keen-response] p.sage.u.in)
@@ -10634,8 +10767,10 @@
   ^-  form:m
   ?:  (lien to |=(c=@tD (lth c 32)))  (send-err eyre-id 400 'bad redirect')
   ;<  now=@da  bind:m  bowl-now
-  =/  sep=tape  ?:(?=(^ (find "?" to)) "&" "?")
-  =/  bust=tape  :(weld to sep "u=" (scow %ud (mod now 1.000.000.000)))
+  ::  the u= goes in the query, before any #fragment
+  =/  hx=@ud  (fall (find "#" to) (lent to))
+  =/  sep=tape  ?:(?=(^ (find "?" (scag hx to))) "&" "?")
+  =/  bust=tape  :(weld (scag hx to) sep "u=" (scow %ud (mod now 1.000.000.000)) (slag hx to))
   %+  send-simple:srv  eyre-id
   [[303 ['location' (crip bust)]~] ~]
 ::  +page-dir-name: is `pax` under our own /page/ tree? -> the slash-joined
@@ -10730,8 +10865,10 @@
   ::  our own view also gets a comment box (posts to /comment as us). A peer's box
   ::  (which posts to OUR nexus, which then pokes the peer) comes with the
   ::  cross-ship path.
+  ::  Not in an edit-shared page (eg): it is framed sandbox="", where a
+  ::  form cannot be sent, so the box would be dead.
   =/  box=tape
-    ?.  con  ""
+    ?:  |(!con eg)  ""
     ;:  weld
       "<form class=\"cbox\" method=\"post\" target=\"_top\" action=\"/apps/lattice/comment?page="
       (trip name)
@@ -12495,7 +12632,7 @@
       ver
       '";var PV="'
       pv
-      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var nu=(u.pathname==="/apps/lattice/app/app.js")?(u.origin+u.pathname+"?v="+V):q;return fetch(nu).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=q.url+(q.url.indexOf("?")<0?"?":/[?&]$/.test(q.url)?"":"&")+"u=sw"+Date.now();e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var nu=(u.pathname==="/apps/lattice/app/app.js")?(u.origin+u.pathname+"?v="+V):q;return fetch(nu).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
@@ -14585,8 +14722,8 @@
 ::
 ::  Chunked: it was one event, and 201 pages held the ship for 46s, so the
 ::  walk yields every other page (+pub-regrow-loop). It runs only in the
-::  writer (the %regrow pub-action, and +ensure-pub-ids as the writer
-::  starts), so no save interleaves with it.
+::  writer (the %pub-regrow eval-action from POST /pub-regrow, and
+::  +ensure-pub-ids as the writer starts), so no save interleaves with it.
 ::
 ::  Re-running it is cheap but not free. A %grow at an already-bound spur does
 ::  not overwrite but appends a case (gall's +grow takes key+1). The body is
@@ -14599,9 +14736,8 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ::  Grants live in the registry-canonical %how act, laid at writer boot
-  ::  (+send-public-how). The regrow route runs in a request fiber, whose
-  ::  rail the registry does not know, so grant repair belongs to a writer
-  ::  restart and this route only rebuilds namespace bindings.
+  ::  (+send-public-how), so grant repair belongs to a writer restart and
+  ::  a regrow only rebuilds namespace bindings.
   ;<  ix=pub-index:lp  bind:m
     (read-pub-index (rf up /pub %index))
   ;<  salt=@  bind:m  pub-salt

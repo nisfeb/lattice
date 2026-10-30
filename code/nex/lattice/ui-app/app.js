@@ -92,6 +92,11 @@
   let degraded = false;      // a save failed like the ship was unreachable
   let offCount = 0;          // queued page edits, drives the status text
   let offbadge = null;       // assigned by <lat-statusbar> (13-frame.js)
+  // a whole-tree job (a folder share or delete) holds the writer, and a save
+  // made meanwhile waits for it past its timeout. That is not offline: the
+  // save lands when the job ends, so the queue holds it and says so.
+  let jobWait = false;
+  const JOB_NOTE = 'a folder job is running, your save will land when it finishes';
   // The persistent offline indicator. The status line reports EVENTS and the
   // next one overwrites it, so "saved offline" scrolls away while you are
   // still offline and still queueing. This reports the CONDITION and stays up
@@ -105,10 +110,11 @@
     const q = offCount ? offCount + ' queued' : '';
     if (!degraded && !offCount) { offbadge.hidden = true; return; }
     offbadge.hidden = false;
-    offbadge.textContent = degraded ? (q ? 'offline \u00b7 ' + q : 'offline') : q;
+    offbadge.textContent = degraded ? (q ? 'offline \u00b7 ' + q : 'offline')
+      : jobWait ? (q ? 'folder job \u00b7 ' + q : 'folder job') : q;
     offbadge.title = degraded
       ? 'the ship is not answering. Edits are saved on this device and sent when it returns.'
-      : 'edits saved on this device, syncing now.';
+      : jobWait ? JOB_NOTE : 'edits saved on this device, syncing now.';
     offbadge.classList.toggle('syncing', !degraded);
   };
   let offDb = null;
@@ -345,6 +351,74 @@
   const REPLAY_DROP = [400, 404, 409, 410, 413, 422];
   const replayDrop = (r) => !!r && REPLAY_DROP.includes(r.status);
 
+  // the job the writer is in the middle of, null when none (GET /tree-job).
+  // Asked only after a save timed out, so an unreachable ship costs 5s more.
+  const treeJob = async () => {
+    try {
+      const r = await tfetch(api + '/tree-job', {}, 5000);
+      if (r && r.ok) return (await r.json()).job || null;
+    } catch {}
+    return null;
+  };
+  // a save timed out behind a job: hold the queue (not degraded, the ship is
+  // answering) and send it once the job is over
+  let jobTimer = null;
+  function waitJob() {
+    jobWait = true;
+    renderOffline();
+    if (jobTimer) return;
+    jobTimer = setInterval(async () => {
+      if (await treeJob()) return;
+      clearInterval(jobTimer); jobTimer = null;
+      jobWait = false;
+      renderOffline();
+      replayQueue(true);
+    }, 5000);
+  }
+  // after a failed save: the ship is away, said at once, unless a job is
+  // already known to hold the writer. The first failure asks /tree-job in
+  // the background and turns "offline" into the job's note when one runs;
+  // once degraded, nothing is asked. -> whether a job is known
+  function saveStalled() {
+    if (jobWait) return true;
+    const was = degraded;
+    setDegraded(true);
+    if (!was) {
+      treeJob().then((job) => {
+        if (!job || !degraded) return;
+        setDegraded(false);
+        waitJob();
+        st(JOB_NOTE);
+        if (cerr && cerr.textContent === 'saved offline') cerr.textContent = 'saves after the folder job';
+      });
+    }
+    return false;
+  }
+  // a whole-tree job the ship gave up on (a resume that kept failing) is
+  // said once, a while after boot: a folder delete dropped part way leaves
+  // some of its pages published, and nothing else would show it
+  setTimeout(async () => {
+    let d = null;
+    try {
+      const r = await tfetch(api + '/tree-job', {}, 10000);
+      if (r && r.ok) d = (await r.json()).dropped;
+    } catch {}
+    if (!d || !d.at) return;
+    try {
+      if (localStorage.latJobDropped === String(d.at)) return;
+      localStorage.latJobDropped = String(d.at);
+    } catch {}
+    st('a folder ' + d.job + ' of ' + (d.path || 'your pages') + ' stopped part way and was '
+      + 'dropped: some of its pages may still be published. Run it again.', false);
+  }, 15000);
+  // a save of `name` sent at `at` landed: a queued edit of it from before
+  // then is older text, and replayed it would overwrite the newer save
+  async function dropQueued(name, at) {
+    let q = null;
+    try { q = await offGet(name); } catch {}
+    if (q && !q.isNew && q.queuedAt <= at) await offDel(name);
+  }
+
   let probeTimer = null;
   function setDegraded(on) {
     if (degraded === on) return;
@@ -383,11 +457,13 @@
     // the same way.
     let prev = null;
     try { prev = await offGet(name); } catch {}
-    const queued = await offPut({ name, kind, body, baseRev: curRev || 0,
+    //  behind a job the timed-out writes still land, so a base would only
+    //  flag our own text as a conflict: no base claim, as a live save
+    const queued = await offPut({ name, kind, body, baseRev: jobWait ? 0 : curRev || 0,
       isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
-    setDegraded(true);
+    const job = saveStalled();
     if (!queued) {
       st('NOT SAVED — this device cannot store offline edits. Copy your text '
         + 'somewhere safe before closing this page.', false);
@@ -397,8 +473,9 @@
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
     snapPage(name, { body, kind, rev: curRev || 0 });
-    st('saved offline — ' + offCount + ' waiting to sync');
-    return true;
+    st(job ? JOB_NOTE : 'saved offline — ' + offCount + ' waiting to sync');
+    // truthy either way: 'job' tells the editor which words to show
+    return job ? 'job' : true;
   }
   // Queue a delete or a move. The caller has already done the local tree work
   // (dropTreeNodes, or remapping the paths) because that is the same work it
@@ -457,7 +534,7 @@
   // matching what know-save itself does.
   async function enqueueKnow(key, body) {
     const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
-    setDegraded(true);
+    const job = saveStalled();
     if (!queued) {
       st('NOT SAVED — this device cannot store offline edits. Copy your text '
         + 'somewhere safe before closing this page.', false);
@@ -469,8 +546,8 @@
     else knowKeys.push({ key, tags: [], updated: '', bytes: body.length });
     renderKnowChips();
     renderKnowTree();
-    st('saved offline — ' + offCount + ' waiting to sync');
-    return true;
+    st(job ? JOB_NOTE : 'saved offline — ' + offCount + ' waiting to sync');
+    return job ? 'job' : true;
   }
 
   let replaying = false;
@@ -489,7 +566,9 @@
   // try/finally because an exception part way through used to leave this true
   // for the life of the page, and replay never ran again.
   async function replayQueue(proven) {
-    if (replaying) return;
+    //  not while a job holds the writer: the replay would only queue behind
+    //  it, after the writes it timed out on (waitJob replays once it ends)
+    if (replaying || jobWait) return;
     replaying = true;
     try { await drainQueue(proven); } finally { replaying = false; }
   }
@@ -3140,22 +3219,28 @@
     // there opens the shell's tab, as in the frame's own document.
     const topish = (el, at) => !!el && /^_(top|parent)$/i.test(el.getAttribute(at) || '');
     const upward = (el, at) => topish(el, at) || (!!el && el.getAttribute(at) === f.name);
+    //
+    // In an inner doc the check runs last, on its window as the event
+    // bubbles out, so the page's own handlers have had their say: one that
+    // called preventDefault (a fetch-on-submit) is left alone. In the
+    // frame's own doc it only re-aims, so it runs first, as it always did.
     const aimTop = (doc, inner) => {
       if (doc.latAimed) return;
       doc.latAimed = true;
       for (const el of doc.querySelectorAll('[target=_top], [target=_parent]')) el.target = f.name;
-      doc.addEventListener('click', (e) => {
+      const on = inner ? (doc.defaultView || doc) : doc;
+      on.addEventListener('click', (e) => {
         const a = e.target.closest && e.target.closest('a[href], area[href]');
         if (!a) return;
         if (inner && !e.defaultPrevented) {
           const go = editorGo(a.href);
           if (go) { e.preventDefault(); editorOpen(go); return; }
-          if (upward(a, 'target')) { e.preventDefault(); f.contentWindow.location.assign(a.href); }
+          if (upward(a, 'target')) { e.preventDefault(); if (/^https?:/.test(a.href)) f.contentWindow.location.assign(a.href); }
           return;
         }
         if (topish(a, 'target')) a.target = f.name;
-      }, true);
-      doc.addEventListener('submit', (e) => {
+      }, !inner);
+      on.addEventListener('submit', (e) => {
         const form = e.target;
         const sub = e.submitter;
         if (inner) {
@@ -3167,7 +3252,7 @@
         }
         if (topish(form, 'target')) form.target = f.name;
         if (topish(sub, 'formtarget')) sub.formTarget = f.name;
-      }, true);
+      }, !inner);
     };
     aimTop(d, false);
     // the reader shows a page in a frame of its own (srcdoc), where the
@@ -3256,13 +3341,23 @@
   // A form from a frame inside a frame tab, sent again from this window
   // into the tab's frame `name`: the same method, encoding, address and
   // fields, the button that sent it included. Files go over in a file
-  // input of their own.
+  // input of their own. Read as attributes: a field named `action` or
+  // `method` shadows the form's own properties (form.action would be the
+  // input), so the replay would post to "[object HTMLInputElement]".
   function formAgain(form, sub, name) {
     const g = document.createElement('form');
+    const attr = (k, fk) => (sub && sub.hasAttribute(fk) ? sub.getAttribute(fk) : form.getAttribute(k));
     g.hidden = true;
-    g.method = (sub && sub.getAttribute('formmethod')) || form.method || 'get';
-    g.enctype = (sub && sub.getAttribute('formenctype')) || form.enctype;
-    g.action = (sub && sub.hasAttribute('formaction')) ? sub.formAction : form.action;
+    g.method = attr('method', 'formmethod') || 'get';
+    //  a dialog form closes its dialog and sends nothing; only http(s) goes
+    if (/^dialog$/i.test(g.getAttribute('method'))) return;
+    g.enctype = attr('enctype', 'formenctype') || 'application/x-www-form-urlencoded';
+    const act = attr('action', 'formaction');
+    g.action = act ? new URL(act, form.baseURI).href : form.ownerDocument.URL;
+    if (!/^https?:/.test(g.action)) return;
+    const cs = form.getAttribute('accept-charset');
+    if (cs) g.acceptCharset = cs;
+    if (form.hasAttribute('novalidate') || (sub && sub.hasAttribute('formnovalidate'))) g.noValidate = true;
     g.target = name;
     const files = {};
     let fd;
@@ -5738,8 +5833,13 @@
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc) + (creating ? '' : linkBase(name));
     let w = { gone: true };
-    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
-    finally { saving = false; }
+    //  behind a folder job a save would only wait out its timeout and land
+    //  after the queued ones: it joins the queue, which keeps the newest
+    const sentAt = Date.now();
+    try {
+      if (!(jobWait && !creating && !linkOf(name)))
+        w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+    } finally { saving = false; }
     const r = w.r;
     if (await linkSaveFail(name, w)) return failed();
     if (w.gone) {
@@ -5750,7 +5850,8 @@
       // Clearing dirty there would tell the editor the work is safe and let
       // the next navigation drop it, so the bookkeeping stays untouched and
       // the page keeps behaving as unsaved. enqueueSave has already said so.
-      if (!(await enqueueSave(name, kind, sent, creating, rnc))) {
+      const queued = await enqueueSave(name, kind, sent, creating, rnc);
+      if (!queued) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return failed();
       }
@@ -5767,7 +5868,8 @@
         if (src.value === sent) dirty = false;
         else if (!savePending) savePending = true;
         history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
-        cerr.textContent = 'saved offline'; cerr.className = 'ok';
+        cerr.textContent = queued === 'job' ? 'saves after the folder job' : 'saved offline';
+        cerr.className = 'ok';
       }
       flushPending();
       return;
@@ -5783,6 +5885,7 @@
     // CREATE changes the tree, and it confirms a row newFile left pulsing.
     if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent);
+    await dropQueued(name, sentAt);
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
     // name field, dirty or the URL here would brand the new page as this save.
@@ -5857,8 +5960,11 @@
       : api + '/page-save?name=' + encodeURIComponent(target) +
         '&type=' + (curKind || pkind.value) + linkBase(target);
     let w = { gone: true };
-    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
-    finally { saving = false; }
+    const sentAt = Date.now();
+    try {
+      if (!(jobWait && mode !== 'know' && !linkOf(target)))
+        w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+    } finally { saving = false; }
     const r = w.r;
     if (mode !== 'know' && await linkSaveFail(target, w)) { flushPending(); return; }
     if (w.gone) {
@@ -5880,7 +5986,7 @@
     if (mode !== 'know') { try { vr = await r.json(); } catch {} }
     //  patch the saved doc's local cache regardless of focus. No kind: an
     //  autosave writes the page's existing kind, it never sets one.
-    if (mode !== 'know') patchLocal(target, null, sent);
+    if (mode !== 'know') { patchLocal(target, null, sent); await dropQueued(target, sentAt); }
     // live-editor state only if the editor is still on the doc we autosaved
     if (current === target) {
       if (src.value === sent) dirty = false;   // typed during the request? stay dirty
@@ -5968,6 +6074,11 @@
   // the host's rev this editor read (or last wrote), a remote save's base:
   // a host page that moved past it answers a conflict, never an overwrite
   let grubRev = null;
+  // the text a remote save sent that the host did not confirm (a 202, or an
+  // ack that never came): it may have landed, past grubRev. The next save
+  // reads the host first, so it does not claim a base its own write moved
+  // the page past and 409 against itself.
+  let grubUnsure = null;
   // the picker's value before a grub took it over, restored on exitGrub. Set
   // only on the FIRST entry (see the guard in openGrub), so browsing straight
   // from one grub to another still remembers the page kind that came before.
@@ -5978,7 +6089,7 @@
   // overwrite wearing a 'saved' status. openPage clears inline; newFile,
   // selectFolder and setMode route through here.
   const exitGrub = () => {
-    grubPath = null; grubShip = null; grubRev = null;
+    grubPath = null; grubShip = null; grubRev = null; grubUnsure = null;
     if (grubPrevKind !== null) { pkind.value = grubPrevKind; grubPrevKind = null; }
   };
   // Answers false when the open failed, like openPage (35-pages.js).
@@ -6041,6 +6152,7 @@
     grubPath = p;
     grubShip = ship || null;
     grubRev = null;
+    grubUnsure = null;
     if (grubPrevKind === null) grubPrevKind = pkind.value;
     curFolder = null;
     // a shared lattice page reads as "~ship: its/name", not its whole ball
@@ -6062,6 +6174,18 @@
     st('saving…');
     const sent = src.value;
     const p = grubPath, s = grubShip;
+    if (s && grubUnsure !== null) {
+      // our unconfirmed text there is our write landed: its rev is the base
+      const was = grubUnsure;
+      grubUnsure = null;
+      try {
+        const g = await tfetch(api + '/browse-file?ship=' + encodeURIComponent(s) +
+          '&path=' + encodeURIComponent(p), {}, 15000);
+        const d = g && g.ok ? await g.json() : null;
+        if (d && typeof d.rev === 'number' && grubPath === p && grubShip === s
+          && (d.text || d.body || '') === was) grubRev = d.rev;
+      } catch {}
+    }
     let r = null;
     try {
       // a remote save is verified server-side by revision bump. A peer that
@@ -6088,10 +6212,12 @@
       const say = {
         unverified: 'sent — ' + s + ' took it but did not confirm; reload to check',
         conflict: 'not saved — ' + s + ' changed this page since you opened it; copy your text and reopen',
-        unreachable: 'not saved — ' + (j.error || s + ' did not answer'),
+        unreachable: (/may still land/.test(j.error || '') ? 'may not have saved — ' : 'not saved — ')
+          + (j.error || s + ' did not answer'),
         refused: 'not saved — ' + s + ' refused the write' + (j.error ? ': ' + j.error : ''),
       }[out] || 'save rejected: ' + (j.error || r.status);
       if (here) st(say, false);
+      if (here && (out === 'unverified' || /may still land/.test(j.error || ''))) grubUnsure = sent;
       flushPending();
       return;
     }

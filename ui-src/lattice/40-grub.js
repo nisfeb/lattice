@@ -9,6 +9,11 @@
   // the host's rev this editor read (or last wrote), a remote save's base:
   // a host page that moved past it answers a conflict, never an overwrite
   let grubRev = null;
+  // the text a remote save sent that the host did not confirm (a 202, or an
+  // ack that never came): it may have landed, past grubRev. The next save
+  // reads the host first, so it does not claim a base its own write moved
+  // the page past and 409 against itself.
+  let grubUnsure = null;
   // the picker's value before a grub took it over, restored on exitGrub. Set
   // only on the FIRST entry (see the guard in openGrub), so browsing straight
   // from one grub to another still remembers the page kind that came before.
@@ -19,7 +24,7 @@
   // overwrite wearing a 'saved' status. openPage clears inline; newFile,
   // selectFolder and setMode route through here.
   const exitGrub = () => {
-    grubPath = null; grubShip = null; grubRev = null;
+    grubPath = null; grubShip = null; grubRev = null; grubUnsure = null;
     if (grubPrevKind !== null) { pkind.value = grubPrevKind; grubPrevKind = null; }
   };
   // Answers false when the open failed, like openPage (35-pages.js).
@@ -82,6 +87,7 @@
     grubPath = p;
     grubShip = ship || null;
     grubRev = null;
+    grubUnsure = null;
     if (grubPrevKind === null) grubPrevKind = pkind.value;
     curFolder = null;
     // a shared lattice page reads as "~ship: its/name", not its whole ball
@@ -103,6 +109,18 @@
     st('saving…');
     const sent = src.value;
     const p = grubPath, s = grubShip;
+    if (s && grubUnsure !== null) {
+      // our unconfirmed text there is our write landed: its rev is the base
+      const was = grubUnsure;
+      grubUnsure = null;
+      try {
+        const g = await tfetch(api + '/browse-file?ship=' + encodeURIComponent(s) +
+          '&path=' + encodeURIComponent(p), {}, 15000);
+        const d = g && g.ok ? await g.json() : null;
+        if (d && typeof d.rev === 'number' && grubPath === p && grubShip === s
+          && (d.text || d.body || '') === was) grubRev = d.rev;
+      } catch {}
+    }
     let r = null;
     try {
       // a remote save is verified server-side by revision bump. A peer that
@@ -129,10 +147,12 @@
       const say = {
         unverified: 'sent — ' + s + ' took it but did not confirm; reload to check',
         conflict: 'not saved — ' + s + ' changed this page since you opened it; copy your text and reopen',
-        unreachable: 'not saved — ' + (j.error || s + ' did not answer'),
+        unreachable: (/may still land/.test(j.error || '') ? 'may not have saved — ' : 'not saved — ')
+          + (j.error || s + ' did not answer'),
         refused: 'not saved — ' + s + ' refused the write' + (j.error ? ': ' + j.error : ''),
       }[out] || 'save rejected: ' + (j.error || r.status);
       if (here) st(say, false);
+      if (here && (out === 'unverified' || /may still land/.test(j.error || ''))) grubUnsure = sent;
       flushPending();
       return;
     }

@@ -34,9 +34,19 @@ const qCount = () => page.evaluate(() => new Promise((res) => {
 // the switch: while down, saves and the reconnect probe abort at the network
 // layer, indistinguishable from an unreachable ship as far as fetch can see
 let shipDown = false;
+// a folder job holding the writer: saves time out (abort) while the ship
+// answers, and GET /tree-job names the job
+let jobOn = false;
+let jobSaves = 0;          // page-saves sent while the job runs
 await page.setRequestInterception(true);
 page.on('request', (r) => {
-  const down = shipDown && /page-save|legacy-status|page-cmd|know-save/.test(r.url());
+  if (jobOn && /page-save/.test(r.url())) jobSaves++;
+  if (jobOn && /\/tree-job/.test(r.url())) {
+    r.respond({ status: 200, contentType: 'application/json',
+      body: JSON.stringify({ job: 'share-tree' }) }).catch(() => {});
+    return;
+  }
+  const down = (shipDown || jobOn) && /page-save|legacy-status|page-cmd|know-save/.test(r.url());
   (down ? r.abort() : r.continue()).catch(() => {});
 });
 
@@ -221,11 +231,73 @@ try {
   const kb = kr.ok ? (await kr.json()).body : 'HTTP ' + kr.status;
   check('the ship has the offline memory (last write wins, no conflict page)',
     kb === 'memory OFFLINE', JSON.stringify(kb));
+
+  // ── 7. a save behind a folder job is not offline ─────────────────────────
+  // The writer takes no save while a whole-tree job runs, so the save times
+  // out. The ship still answers, and says a job is running: the editor
+  // says the save lands when the job ends, keeps it, and sends it then.
+  step = 'save behind a job';
+  await page.goto(APP + '?name=' + encodeURIComponent(A), { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await wait(() => document.getElementById('src').value.includes('alpha'));
+  jobOn = true;
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = '# alpha AFTER THE JOB'; s.dispatchEvent(new Event('input'));
+  });
+  const said = await page.waitForFunction(() => /folder job/.test(document.getElementById('status').textContent || ''),
+    { timeout: 90000 }).then(() => true, () => false);
+  const stat = await page.evaluate(() => document.getElementById('status').textContent);
+  check('a save that times out behind a folder job says so, not offline',
+    said && !/offline/.test(stat), stat.slice(0, 120));
+  const b3 = await badge();
+  check('the badge names the folder job, not offline',
+    b3 && !b3.hidden && /folder job/.test(b3.text) && !/offline/.test(b3.text), JSON.stringify(b3));
+  check('the save is kept in the queue meanwhile', await qCount() === 1, 'count=' + await qCount());
+  // more typing while the job runs joins the queue: nothing is sent, so no
+  // save of it can land after (or before) the queued text
+  const sent0 = jobSaves;
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = '# alpha NEWEST'; s.dispatchEvent(new Event('input'));
+  });
+  await sleep(5000);
+  check('a later save behind the job is queued, not sent', jobSaves === sent0 && await qCount() === 1,
+    JSON.stringify({ sent: jobSaves - sent0, q: await qCount() }));
+  // the first save's timed-out write lands as the job ends, as the
+  // writer's queue would land it (from outside the page)
+  await fetch(env.base + '/apps/lattice/page-save?name=' + encodeURIComponent(A) + '&type=md',
+    { method: 'POST', headers: { cookie: env.cookie }, body: '# alpha AFTER THE JOB' });
+  jobOn = false;
+  const drained = await page.waitForFunction(() => new Promise((res) => {
+    const rq = indexedDB.open('lattice-offline');
+    rq.onsuccess = () => {
+      try {
+        const c = rq.result.transaction('saves', 'readonly').objectStore('saves').count();
+        c.onsuccess = () => res(c.result === 0); c.onerror = () => res(false);
+      } catch { res(false); }
+    };
+    rq.onerror = () => res(false);
+  }), { timeout: 60000, polling: 1000 }).then(() => true, () => false);
+  await sleep(2000);
+  const after = await page.evaluate(async (n) => {
+    const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));
+    return (await r.json()).body;
+  }, A);
+  check('once the job is over the newest text lands, over the late write',
+    drained && after === '# alpha NEWEST', JSON.stringify({ drained, after }));
+  const cf = await fetch(env.base + '/apps/lattice/page-tree', { headers: { cookie: env.cookie } })
+    .then((r) => r.json()).then((j) => (j.nodes || []).filter((n) => n.page
+      && n.path.startsWith('conflicts/') && n.path.includes(A.replace(/\//g, '-')))).catch(() => []);
+  check('and no conflict page is made of our own writes', cf.length === 0,
+    JSON.stringify(cf.map((n) => n.path)));
+  const b4 = await badge();
+  check('and the badge clears', b4 && b4.hidden, JSON.stringify(b4));
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 140), false);
 } finally {
   try {
     shipDown = false;
+    jobOn = false;
     await page.evaluate(async (run) => {
       await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(run), { method: 'POST' });
       await fetch('/apps/lattice/page-del?name=conflicts', { method: 'POST' });

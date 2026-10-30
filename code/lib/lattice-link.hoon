@@ -66,4 +66,13 @@
   =/  p=path  (flop pax)
   =?  p  ?=([%code *] p)  t.p
   ?~(p '' i.p)
+::  +after-unsure: a write sent but not confirmed, read back as `got`:
+::  %landed when the host holds our text (cache its rev), %keep when it
+::  holds other text (cache nothing: the next write claims the cached rev
+::  and must 409 a third party's edit), %none when the read failed.
+++  after-unsure
+  |=  [ours=@t got=(unit [kind=@ta body=@t rev=@ud])]
+  ^-  ?(%landed %keep %none)
+  ?~  got  %none
+  ?:(=(ours body.u.got) %landed %keep)
 --

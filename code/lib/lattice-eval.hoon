@@ -36,6 +36,9 @@
       ::  re-grow every published page and the index (+pub-regrow), in
       ::  the writer so no save interleaves with its revision list
       [%pub-regrow ~]
+      ::  unpublish the page or folder at pub key `key` (the legacy POST
+      ::  /delete), in the writer as a job like %del
+      [%unpub key=@t]
       [%mkdir pax=path]                 ::  create an (empty) folder at pax
       ::  set ('' clears) the display name of a page or folder. Stored ONLY
       ::  when the typed name was not a valid path segment; a valid name is

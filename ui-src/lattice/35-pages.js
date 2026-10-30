@@ -513,8 +513,13 @@
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc) + (creating ? '' : linkBase(name));
     let w = { gone: true };
-    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
-    finally { saving = false; }
+    //  behind a folder job a save would only wait out its timeout and land
+    //  after the queued ones: it joins the queue, which keeps the newest
+    const sentAt = Date.now();
+    try {
+      if (!(jobWait && !creating && !linkOf(name)))
+        w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+    } finally { saving = false; }
     const r = w.r;
     if (await linkSaveFail(name, w)) return failed();
     if (w.gone) {
@@ -525,7 +530,8 @@
       // Clearing dirty there would tell the editor the work is safe and let
       // the next navigation drop it, so the bookkeeping stays untouched and
       // the page keeps behaving as unsaved. enqueueSave has already said so.
-      if (!(await enqueueSave(name, kind, sent, creating, rnc))) {
+      const queued = await enqueueSave(name, kind, sent, creating, rnc);
+      if (!queued) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return failed();
       }
@@ -542,7 +548,8 @@
         if (src.value === sent) dirty = false;
         else if (!savePending) savePending = true;
         history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
-        cerr.textContent = 'saved offline'; cerr.className = 'ok';
+        cerr.textContent = queued === 'job' ? 'saves after the folder job' : 'saved offline';
+        cerr.className = 'ok';
       }
       flushPending();
       return;
@@ -558,6 +565,7 @@
     // CREATE changes the tree, and it confirms a row newFile left pulsing.
     if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent);
+    await dropQueued(name, sentAt);
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
     // name field, dirty or the URL here would brand the new page as this save.
@@ -632,8 +640,11 @@
       : api + '/page-save?name=' + encodeURIComponent(target) +
         '&type=' + (curKind || pkind.value) + linkBase(target);
     let w = { gone: true };
-    try { w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true }); }
-    finally { saving = false; }
+    const sentAt = Date.now();
+    try {
+      if (!(jobWait && mode !== 'know' && !linkOf(target)))
+        w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+    } finally { saving = false; }
     const r = w.r;
     if (mode !== 'know' && await linkSaveFail(target, w)) { flushPending(); return; }
     if (w.gone) {
@@ -655,7 +666,7 @@
     if (mode !== 'know') { try { vr = await r.json(); } catch {} }
     //  patch the saved doc's local cache regardless of focus. No kind: an
     //  autosave writes the page's existing kind, it never sets one.
-    if (mode !== 'know') patchLocal(target, null, sent);
+    if (mode !== 'know') { patchLocal(target, null, sent); await dropQueued(target, sentAt); }
     // live-editor state only if the editor is still on the doc we autosaved
     if (current === target) {
       if (src.value === sent) dirty = false;   // typed during the request? stay dirty

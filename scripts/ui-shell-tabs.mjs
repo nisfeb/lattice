@@ -27,6 +27,8 @@
 //    The explorer refuses the ship root at once
 //    A comment posted on an own page in a browser tab lands (its box sits
 //      in the reader's srcdoc frame), and other forms there stay in it
+//    An upward link or form there that the page stopped stays stopped, and
+//      a field named action does not change where a form goes
 //
 //  SHOTS=1 saves the forum and browser tabs at 1400x900 under /tmp.
 //  PARTS=streams,nested runs only the parts named.
@@ -669,6 +671,79 @@ try {
         && f.contentWindow.location.pathname === new URL(src, location.href).pathname;
     }, [frameOf(ck), view], 15000);
     check('a form in the srcdoc frame not aimed upward stays in that frame', own);
+  });
+
+  //  the shell sends an upward link or form of the srcdoc frame again only
+  //  once the page's own handlers have run: one they stopped (a fetch on
+  //  submit) stays stopped. And a field named `action` does not become the
+  //  address the form goes to.
+  await part('innerform', async () => {
+    await post('page-comments?name=' + encodeURIComponent(PAGE) + '&on=1');
+    const cShip = (await (await fetch(env.base + '/~/host')).text()).trim();
+    const cBase = (await (await fetch(env.base + '/apps/lattice/streams',
+      { headers: { Cookie: env.cookie } })).json()).base;
+    const view = '/apps/lattice/x/' + cShip + cBase + '/page/' + PAGE + '/';
+    await page.evaluate(() => document.getElementById('rb-browser').click());
+    await frontLoaded();
+    await sleep(3000);
+    const ck = (await front()).key;
+    await page.evaluate(([s, u]) => { document.querySelector(s).contentWindow.location.href = u; },
+      [frameOf(ck), view]);
+    const inner = () => until(([s, src]) => {
+      const f = document.querySelector(s);
+      const box = [...(f?.contentDocument?.querySelectorAll('iframe') || [])].some((i) => {
+        try { return !!i.contentDocument.querySelector('form.cbox'); } catch { return false; }
+      });
+      return f.contentWindow.location.pathname === new URL(src, location.href).pathname
+        && f.contentDocument.readyState === 'complete' && box;
+    }, [frameOf(ck), view], 30000);
+    await inner();
+    await sleep(3000);
+    const up = await inner();
+    //  in the srcdoc frame: a stopped upward form, then a stopped upward link
+    const send = (how) => page.evaluate(([s, h]) => {
+      const fd = document.querySelector(s).contentDocument;
+      const d = [...fd.querySelectorAll('iframe')].map((i) => { try { return i.contentDocument; } catch { return null; } })
+        .find((x) => x && x.querySelector('form.cbox'));
+      if (h === 'link') {
+        const a = d.createElement('a');
+        a.href = '/apps/lattice/forum?stopped=link';
+        a.target = '_top';
+        a.textContent = 'up';
+        a.addEventListener('click', (e) => e.preventDefault());
+        d.body.append(a);
+        a.click();
+        return;
+      }
+      const g = d.createElement('form');
+      g.setAttribute('action', '/apps/lattice/forum');
+      g.setAttribute('method', 'get');
+      g.setAttribute('target', '_top');
+      const i = d.createElement('input');
+      i.type = 'hidden';
+      i.name = h === 'stopped' ? 'stopped' : 'action';
+      i.value = '1';
+      g.append(i);
+      if (h === 'stopped') g.addEventListener('submit', (e) => e.preventDefault());
+      d.body.append(g);
+      g.requestSubmit();
+    }, [frameOf(ck), how]);
+    await send('stopped');
+    await send('link');
+    await sleep(4000);
+    const stayed = await frameAt(ck);
+    check('an upward form or link the page itself stopped is not sent again by the shell',
+      up && !!stayed && new URL(stayed, env.base).pathname === new URL(view, env.base).pathname,
+      JSON.stringify({ up, stayed }));
+    await send('clobber');
+    const went = await until((s) => {
+      const f = document.querySelector(s);
+      //  the service worker may add its u= on the way
+      return f.contentWindow.location.pathname === '/apps/lattice/forum'
+        && new URLSearchParams(f.contentWindow.location.search).get('action') === '1';
+    }, frameOf(ck), 15000);
+    check('a form with a field named action goes to its own address', went,
+      JSON.stringify({ at: await frameAt(ck) }));
   });
 
   await part('chords', async () => {
