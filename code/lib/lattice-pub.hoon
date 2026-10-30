@@ -35,6 +35,20 @@
 ::  is no auto-repair yet. Add a pub arm to +reindex
 ::  if that drift is ever observed in practice.
 ::
+::  +pub-pending: the shared pages saved but not yet published, by page
+::  rel (spat), with when each was first and last saved and how many
+::  publishes of it have been tried. Only the key is kept: the publish
+::  reads the page as it is then, so it is always the newest text.
+::
++$  pub-pending  (map @t [first=@da last=@da tries=@ud])
+::  +pub-due: when a pending page is published. A quiet `gap` after its
+::  last save, so a burst of saves publishes once, but never later than
+::  `cap` after the first, so steady typing still reaches readers.
+::
+++  pub-due
+  |=  [row=[first=@da last=@da tries=@ud] gap=@dr cap=@dr]
+  ^-  @da
+  (min (add last.row gap) (add first.row cap))
 +$  pub-row    [updated=@da bytes=@ud hash=@uvH]
 +$  pub-index  (map path pub-row)
 ::  +to-pub-row: project a stored page onto its index row.
@@ -137,10 +151,24 @@
 ++  revs-json
   |=  revs=(map @t [rev=@ud id=@uv])
   ^-  json
-  :-  %o
-  %-  ~(run by revs)
+  [%o (~(run by revs) rev-json)]
+::  +rev-json / +json-rev: one row of the list, so a publish edits its own
+::  row and leaves the rest of the list as it is
+++  rev-json
   |=  [rev=@ud id=@uv]
+  ^-  json
   (pairs:enjs:format ~[['rev' (numb:enjs:format rev)] ['id' s+(scot %uv id)]])
+++  json-rev
+  |=  v=json
+  ^-  (unit [rev=@ud id=@uv])
+  ?.  ?=([%o *] v)  ~
+  =/  r=(unit json)  (~(get by p.v) 'rev')
+  =/  d=(unit json)  (~(get by p.v) 'id')
+  ?.  &(?=([~ %n *] r) ?=([~ %s *] d))  ~
+  =/  rev=(unit @ud)  (rush p.u.r dem)
+  =/  id=(unit @uv)  (slaw %uv p.u.d)
+  ?.  &(?=(^ rev) ?=(^ id))  ~
+  `[u.rev u.id]
 ++  json-revs
   |=  jon=json
   ^-  (map @t [rev=@ud id=@uv])
@@ -149,14 +177,8 @@
   %+  murn  ~(tap by p.jon)
   |=  [k=@t v=json]
   ^-  (unit [@t @ud @uv])
-  ?.  ?=([%o *] v)  ~
-  =/  r=(unit json)  (~(get by p.v) 'rev')
-  =/  d=(unit json)  (~(get by p.v) 'id')
-  ?.  &(?=([~ %n *] r) ?=([~ %s *] d))  ~
-  =/  rev=(unit @ud)  (rush p.u.r dem)
-  =/  id=(unit @uv)  (slaw %uv p.u.d)
-  ?.  &(?=(^ rev) ?=(^ id))  ~
-  `[k u.rev u.id]
+  =/  r=(unit [rev=@ud id=@uv])  (json-rev v)
+  ?~(r ~ `[k u.r])
 ::  +small-noun: does `n` have at most `cap` cells, counting a shared
 ::  subtree each time it is reached, the way a clam walks it? It stops once
 ::  past `cap`, so it costs at most `cap` steps whatever `n` claims. A
