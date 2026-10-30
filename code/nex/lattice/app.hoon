@@ -1420,9 +1420,22 @@
   =?  base  |(?=(~ base) =(`0 base))  `rev.l
   ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
     (remote-write host.l pax.l body base wait)
-  ::  acked but unchecked: no rev to cache, so the next save re-reads
-  ?:  &(?=(%| -.r) =(202 code.p.r))
-    (pure:m |+[503 'the host took the write but did not confirm it: reload to check'])
+  ::  sent but unconfirmed (acked and the check did not answer, or the ack
+  ::  never came): read it again, so the cache's rev is the host's. The next
+  ::  save claims that rev, and would 409 against this very write if it
+  ::  kept the old one. The text there being ours is this write landing.
+  ?:  ?&  ?=(%| -.r)
+          |(=(202 code.p.r) &(=(504 code.p.r) =((unacked-msg host.l) msg.p.r)))
+      ==
+    ;<  got=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek host.l pax.l)
+    ?~  got
+      ?:  =(202 code.p.r)
+        (pure:m |+[503 'the host took the write but did not confirm it: reload to check'])
+      ;<  ~  bind:m  (link-note lpath l ~)
+      (pure:m |+[504 (link-fail-msg host.l)])
+    ;<  ~  bind:m  (link-note lpath l got)
+    ?:  =(body body.u.got)  (pure:m &+[(fall base rev.l) rev.u.got])
+    (pure:m ?:(=(202 code.p.r) |+[503 'the host took the write but did not confirm it: reload to check'] r))
   ?:  ?=(%| -.r)
     ?.  =(504 code.p.r)  (pure:m r)
     ;<  ~  bind:m  (link-note lpath l ~)
@@ -1614,13 +1627,6 @@
   ::  blot decision the client can't make for a tree it doesn't own.
   ?.  ?=([%file *] u.ms)  (pure:m |+[404 'no such file on that ship'])
   =/  ud0=@ud  ud.cass.u.ms
-  ::  the writer's base is behind the owner's page: refuse, so nothing
-  ::  overwrites text the writer never saw. Not a compare-and-swap: a third
-  ::  party's write landing between this peek and our make is overwritten,
-  ::  and the re-peek's rev below may already include a write after ours,
-  ::  which the writer then carries as its next base. The window is one
-  ::  round trip, the same apply-then-check caveat as a local page-save.
-  ?:  &(?=(^ base) !=(u.base ud0))  (pure:m |+[409 'conflict'])
   ::  a lattice content page was handed out as its prose (+browse-file-
   ::  respond): the edit goes back in that page's own envelope
   =/  cur=(unit @t)  (grub-text sang.u.ms)
@@ -1631,7 +1637,17 @@
   ?:  =(cur `body)
     ::  no-op save: nothing to send, and grubbery skips unchanged writes
     ::  anyway, so the revision check below would misread it as a denial.
+    ::  Before the base check: the host already holding this text is most
+    ::  often our own write that answered late (a 202, an ack timeout), and
+    ::  sending it again is landed, never a conflict with ourselves.
     (pure:m &+[ud0 ud0])
+  ::  the writer's base is behind the owner's page: refuse, so nothing
+  ::  overwrites text the writer never saw. Not a compare-and-swap: a third
+  ::  party's write landing between this peek and our make is overwritten,
+  ::  and the re-peek's rev below may already include a write after ours,
+  ::  which the writer then carries as its next base. The window is one
+  ::  round trip, the same apply-then-check caveat as a local page-save.
+  ?:  &(?=(^ base) !=(u.base ud0))  (pure:m |+[409 'conflict'])
   ::  rebuild the noun in the grub's OWN shape (cord / wain / mime) and send
   ::  it under its OWN blot, with NO destination conversion. Converting
   ::  mime->blot at the destination needs the target marc to carry a mime
@@ -1652,9 +1668,7 @@
     [[[/ %mime] `*``mime`[mt (as-octs:mimes:html body)]] ~]
   =/  req=load:remo:nexus  [[/remote-save %& dir nam] %make %.y %.n |+[b.bd d.bd]]
   ;<  ack=(unit (unit tang))  bind:m  (remote-load-ack shp req wait)
-  ?~  ack
-    %-  pure:m
-    |+[504 (crip "{(scow %p shp)} did not acknowledge the write in time: it may still land")]
+  ?~  ack  (pure:m |+[504 (unacked-msg shp)])
   ?^  u.ack  (pure:m |+[502 'remote rejected the write'])
   ;<  vs=(unit view:nexus)  bind:m  (peek-remote-quiet file-road shp wait)
   ?~  vs  (pure:m |+[202 'the host took the write but did not answer the check'])
@@ -1664,6 +1678,11 @@
   ?.  (gth ud1 ud0)
     (pure:m |+[403 'write did not land — no make permission on that path?'])
   (pure:m &+[ud0 ud1])
+::  +unacked-msg: a write sent that the host did not ack in time
+++  unacked-msg
+  |=  shp=@p
+  ^-  @t
+  (crip "{(scow %p shp)} did not acknowledge the write in time: it may still land")
 ::  +handle-legacy-migrate: POST /legacy-migrate. Import the pages and memories
 ::  of a retired %lattice gall agent, once. It takes only eyre-id because it
 ::  reads everything it needs from the old agent rather than the request, and
