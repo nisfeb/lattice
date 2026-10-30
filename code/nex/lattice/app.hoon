@@ -8535,19 +8535,21 @@
   $
 ::  +take-in-drain: the port's next request (& on news on /in), or a stray
 ::  eaten (|): a late remote %peek or %veto, a timer wake, a keen answer or
-::  a poke-ack that nothing here awaits any more.
+::  a poke-ack that nothing here awaits any more. Between requests the port
+::  awaits nothing else, so every answer to a dart is late and eaten too:
+::  a %pack (a +poke-eval barrier that ran past its eight minutes, from a
+::  folder delete or move made here), a %made or %gone, and the rest. A
+::  skipped one stays in the skip queue for the life of the port.
 ++  take-in-drain
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   |=  input:fiber:nexus
   :+  ~  q.state
-  ?+  in  [%skip ~]
+  ?+  in  [%done |]
       ~  [%wait ~]
       [~ %news * *]
     ?:  =(/in wire.u.in)  [%done &]
-    [%skip ~]
-      [~ %peek * *]  [%done |]
-      [~ %veto *]    [%done |]
+    [%done |]
       [~ %poke * *]
     ?:  ?|  =([/ %timer-wake] p.sage.u.in)
             =([/ %keen-response] p.sage.u.in)
