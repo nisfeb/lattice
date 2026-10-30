@@ -4134,7 +4134,7 @@
     %+  send-json  eyre-id
     %-  pairs:enjs:format
     :~  ['ok' b+&]  ['grown' (numb:enjs:format n)]
-        ['running' b+?=(^ job)]
+        ['running' b+=(`%pub-regrow job)]
     ==
   ::  pub-reconcile: ONE-SHOT cleanup of the historical-rev namespace leak
   ::  left by any publish that ran BEFORE +apply-pub culled predecessors.
@@ -10767,8 +10767,10 @@
   ^-  form:m
   ?:  (lien to |=(c=@tD (lth c 32)))  (send-err eyre-id 400 'bad redirect')
   ;<  now=@da  bind:m  bowl-now
-  =/  sep=tape  ?:(?=(^ (find "?" to)) "&" "?")
-  =/  bust=tape  :(weld to sep "u=" (scow %ud (mod now 1.000.000.000)))
+  ::  the u= goes in the query, before any #fragment
+  =/  hx=@ud  (fall (find "#" to) (lent to))
+  =/  sep=tape  ?:(?=(^ (find "?" (scag hx to))) "&" "?")
+  =/  bust=tape  :(weld (scag hx to) sep "u=" (scow %ud (mod now 1.000.000.000)) (slag hx to))
   %+  send-simple:srv  eyre-id
   [[303 ['location' (crip bust)]~] ~]
 ::  +page-dir-name: is `pax` under our own /page/ tree? -> the slash-joined

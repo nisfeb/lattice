@@ -3195,7 +3195,7 @@
         if (inner && !e.defaultPrevented) {
           const go = editorGo(a.href);
           if (go) { e.preventDefault(); editorOpen(go); return; }
-          if (upward(a, 'target')) { e.preventDefault(); f.contentWindow.location.assign(a.href); }
+          if (upward(a, 'target')) { e.preventDefault(); if (/^https?:/.test(a.href)) f.contentWindow.location.assign(a.href); }
           return;
         }
         if (topish(a, 'target')) a.target = f.name;
@@ -3309,9 +3309,12 @@
     const attr = (k, fk) => (sub && sub.hasAttribute(fk) ? sub.getAttribute(fk) : form.getAttribute(k));
     g.hidden = true;
     g.method = attr('method', 'formmethod') || 'get';
+    //  a dialog form closes its dialog and sends nothing; only http(s) goes
+    if (/^dialog$/i.test(g.getAttribute('method'))) return;
     g.enctype = attr('enctype', 'formenctype') || 'application/x-www-form-urlencoded';
     const act = attr('action', 'formaction');
     g.action = act ? new URL(act, form.baseURI).href : form.ownerDocument.URL;
+    if (!/^https?:/.test(g.action)) return;
     const cs = form.getAttribute('accept-charset');
     if (cs) g.acceptCharset = cs;
     if (form.hasAttribute('novalidate') || (sub && sub.hasAttribute('formnovalidate'))) g.noValidate = true;
