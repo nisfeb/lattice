@@ -10381,11 +10381,11 @@
       ;<  fn=(unit view:nexus)  bind:m  (peek-local-soft file-road %.y)
       ?~  fn  (explore-refused eyre-id our pax canon)
       ?.  ?=([%file *] u.fn)  (send-err eyre-id 404 'not found')
-      ?:  want-raw  (send-raw eyre-id sang.u.fn %.y)
+      ?:  want-raw  (send-raw-own eyre-id sang.u.fn pax)
       (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.u.fn %.y)))
     ;<  fn=(unit view:nexus)  bind:m  (peek-local-soft file-road %.y)
     ?:  ?=([~ %file *] fn)
-      ?:  want-raw  (send-raw eyre-id sang.u.fn %.y)
+      ?:  want-raw  (send-raw-own eyre-id sang.u.fn pax)
       (send-view eyre-id (render-page-titled canon "" "" (trip (rear pax)) (explore-file-html u.shp pax sang.u.fn %.y)))
     ;<  dn=(unit view:nexus)  bind:m  (peek-local-soft dir-road %.n)
     ?~  dn  (explore-refused eyre-id our pax canon)
@@ -11917,11 +11917,33 @@
     " &middot; <a href=\"?data\">raw</a>"  edit-link  "</div>"
     body
   ==
+::  +send-raw-own: +send-raw for a grub of ours. One in a page a peer may
+::  have written (+peer-written) is served as /c/ and /f/ serve that page:
+::  an opaque origin (the CSP sandbox) and js as text/plain, so ?data never
+::  runs a peer's html, svg or script as the owner. A page name that will
+::  not parse counts as written, failing closed.
+::
+++  send-raw-own
+  |=  [eyre-id=@ta =sang:tarball pax=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  pn=(unit @t)  ?~(pax ~ (page-dir-name (snip `path`pax)))
+  ;<  pw=?  bind:m
+    ?~  pn  (pure:(fiber:fiber:nexus ,?) |)
+    =/  np=(unit path)  (raw-name-pax u.pn)
+    ?~  np  (pure:(fiber:fiber:nexus ,?) &)
+    (peer-written u.np)
+  (send-raw-in eyre-id sang & pw)
 ::  +send-raw: ?data, the file body verbatim with a mark-derived content-type.
 ::  Cords ship as their bytes. octs ship as-is. Anything else is 415.
 ::
 ++  send-raw
   |=  [eyre-id=@ta =sang:tarball local=?]
+  (send-raw-in eyre-id sang local |)
+::  +send-raw-in: +send-raw, `boxed` sandboxing an own grub (+send-raw-own).
+::
+++  send-raw-in
+  |=  [eyre-id=@ta =sang:tarball local=? boxed=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  mk=@tas  name.p.sang
@@ -11931,10 +11953,19 @@
   ::  origin (residual XSS the round-1 inline-render fix missed). Only our OWN
   ::  grubs get a mark-derived type; anything foreign is forced to an inert
   ::  download (octet-stream + attachment + nosniff).
+  ::  own grubs too get nosniff, so the type is the one served (see
+  ::  +send-typed). A boxed one runs no script as us.
+  =/  own
+    |=  ct=@t
+    ^-  (list [@t @t])
+    ?.  boxed  ~[['content-type' ct] ['x-content-type-options' 'nosniff']]
+    :~  :-  'content-type'
+        ?~((find "javascript" (trip ct)) ct 'text/plain; charset=utf-8')
+        ['x-content-type-options' 'nosniff']
+        ['content-security-policy' sandbox-csp]
+    ==
   =/  heads=(list [@t @t])
-    ::  own grubs too get nosniff, so the type is the one served (see
-    ::  +send-typed)
-    ?:  local  ~[['content-type' (mark-mime mk)] ['x-content-type-options' 'nosniff']]
+    ?:  local  (own (mark-mime mk))
     :~  ['content-type' 'application/octet-stream']
         ['content-disposition' 'attachment']
         ['x-content-type-options' 'nosniff']
@@ -11949,7 +11980,7 @@
       (send-err eyre-id 413 'too large')
     =/  mheads=(list [@t @t])
       ?.  local  heads
-      ~[['content-type' (mite-type p.p.mime-res)] ['x-content-type-options' 'nosniff']]
+      (own (mite-type p.p.mime-res))
     (send-simple:srv eyre-id [[200 mheads] `q.p.mime-res])
   ::  %json: re-encode the noun so ?data yields actual JSON text
   ?:  =(%json mk)
