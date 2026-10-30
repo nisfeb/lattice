@@ -3120,24 +3120,50 @@
     // _top and _parent are re-aimed here once at load, and again as a
     // link is followed or a form sent, which covers one a script adds
     // later. The frame's sandbox would only block the navigation.
+    //
+    // A frame inside the frame (the reader's srcdoc page, where the own
+    // page's comment box lives) takes on the sandbox, and a sandboxed frame
+    // may not navigate its parent: the box's post did nothing. So there a
+    // link or form aimed at the frame tab is stopped and sent again from
+    // this window, which may navigate any frame below it. An editor link
+    // there opens the shell's tab, as in the frame's own document.
     const topish = (el, at) => !!el && /^_(top|parent)$/i.test(el.getAttribute(at) || '');
-    const aimTop = (doc) => {
+    const upward = (el, at) => topish(el, at) || (!!el && el.getAttribute(at) === f.name);
+    const aimTop = (doc, inner) => {
+      if (doc.latAimed) return;
+      doc.latAimed = true;
       for (const el of doc.querySelectorAll('[target=_top], [target=_parent]')) el.target = f.name;
       doc.addEventListener('click', (e) => {
-        const a = e.target.closest && e.target.closest('a[target], area[target]');
+        const a = e.target.closest && e.target.closest('a[href], area[href]');
+        if (!a) return;
+        if (inner && !e.defaultPrevented) {
+          const go = editorGo(a.href);
+          if (go) { e.preventDefault(); editorOpen(go); return; }
+          if (upward(a, 'target')) { e.preventDefault(); f.contentWindow.location.assign(a.href); }
+          return;
+        }
         if (topish(a, 'target')) a.target = f.name;
       }, true);
       doc.addEventListener('submit', (e) => {
-        if (topish(e.target, 'target')) e.target.target = f.name;
-        if (topish(e.submitter, 'formtarget')) e.submitter.formTarget = f.name;
+        const form = e.target;
+        const sub = e.submitter;
+        if (inner) {
+          const up = sub && sub.hasAttribute('formtarget') ? upward(sub, 'formtarget') : upward(form, 'target');
+          if (!up || e.defaultPrevented) return;
+          e.preventDefault();
+          formAgain(form, sub, f.name);
+          return;
+        }
+        if (topish(form, 'target')) form.target = f.name;
+        if (topish(sub, 'formtarget')) sub.formTarget = f.name;
       }, true);
     };
-    aimTop(d);
+    aimTop(d, false);
     // the reader shows a page in a frame of its own (srcdoc), where the
     // comment box lives. A sandboxed one (a peer's page) is out of reach,
     // and has no box.
     for (const i of d.querySelectorAll('iframe')) {
-      const inner = () => { try { if (i.contentDocument) aimTop(i.contentDocument); } catch {} };
+      const inner = () => { try { if (i.contentDocument) aimTop(i.contentDocument, true); } catch {} };
       inner();
       i.addEventListener('load', inner);
     }
@@ -3211,6 +3237,45 @@
     editorOpen(go);
     return true;
   };
+  // A form from a frame inside a frame tab, sent again from this window
+  // into the tab's frame `name`: the same method, encoding, address and
+  // fields, the button that sent it included. Files go over in a file
+  // input of their own.
+  function formAgain(form, sub, name) {
+    const g = document.createElement('form');
+    g.hidden = true;
+    g.method = (sub && sub.getAttribute('formmethod')) || form.method || 'get';
+    g.enctype = (sub && sub.getAttribute('formenctype')) || form.enctype;
+    g.action = (sub && sub.hasAttribute('formaction')) ? sub.formAction : form.action;
+    g.target = name;
+    const files = {};
+    let fd;
+    // a webview whose FormData takes no submitter gets the button by hand
+    try { fd = new FormData(form, sub || undefined); }
+    catch { fd = new FormData(form); if (sub && sub.name) fd.append(sub.name, sub.value); }
+    for (const [k, v] of fd) {
+      if (typeof v === 'string') {
+        const i = document.createElement('input');
+        i.type = 'hidden';
+        i.name = k;
+        i.value = v;
+        g.append(i);
+      } else (files[k] = files[k] || []).push(v);
+    }
+    for (const [k, vs] of Object.entries(files)) {
+      const dt = new DataTransfer();
+      for (const v of vs) if (v.name || v.size) dt.items.add(v);
+      const i = document.createElement('input');
+      i.type = 'file';
+      i.name = k;
+      i.multiple = true;
+      i.files = dt.files;
+      g.append(i);
+    }
+    document.body.append(g);
+    g.submit();
+    g.remove();
+  }
   // A frame wears the shell's look. theme.js sets the theme's colours inline
   // on <html> in every document, but with no theme (mode system) it sets
   // none and each stylesheet keeps its own: the shell's goes dark with the

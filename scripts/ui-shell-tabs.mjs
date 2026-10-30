@@ -25,6 +25,8 @@
 //    A target=_top added to a frame after load still lands in the frame
 //    Closing a frame tab with typed text asks, and keeps it on cancel
 //    The explorer refuses the ship root at once
+//    A comment posted on an own page in a browser tab lands (its box sits
+//      in the reader's srcdoc frame), and other forms there stay in it
 //
 //  SHOTS=1 saves the forum and browser tabs at 1400x900 under /tmp.
 //  PARTS=streams,nested runs only the parts named.
@@ -564,6 +566,99 @@ try {
     const gone = !(await tabOpen());
     check('closing a frame tab with typed text asks, and keeps it on cancel',
       !clean.dlg && !clean.open && asked.dlg && kept && gone, JSON.stringify({ clean, asked, kept, gone }));
+  });
+
+  //  an own page's comment box lives in the reader's srcdoc frame, which
+  //  takes on the frame tab's sandbox and so may not navigate its parent:
+  //  its post is sent again from the shell, and lands. A form there not
+  //  aimed upward is left to navigate its own frame.
+  await part('comment', async () => {
+    await post('page-comments?name=' + encodeURIComponent(PAGE) + '&on=1');
+    const cShip = (await (await fetch(env.base + '/~/host')).text()).trim();
+    const cBase = (await (await fetch(env.base + '/apps/lattice/streams',
+      { headers: { Cookie: env.cookie } })).json()).base;
+    const view = '/apps/lattice/x/' + cShip + cBase + '/page/' + PAGE + '/';
+    await page.evaluate(() => document.getElementById('rb-browser').click());
+    await frontLoaded();
+    await sleep(3000);
+    const ck = (await front()).key;
+    await page.evaluate(() => { window.latSameDoc = 1; });
+    await page.evaluate(([s, u]) => { document.querySelector(s).contentWindow.location.href = u; },
+      [frameOf(ck), view]);
+    const boxUp = () => until(([s, src]) => {
+      const f = document.querySelector(s);
+      const box = [...(f?.contentDocument?.querySelectorAll('iframe') || [])].some((i) => {
+        try { return !!i.contentDocument.querySelector('form.cbox textarea'); } catch { return false; }
+      });
+      return f.contentWindow.location.pathname === new URL(src, location.href).pathname
+        && f.contentDocument.readyState === 'complete' && box;
+    }, [frameOf(ck), view], 30000);
+    const shown = await boxUp();
+    await sleep(1500);
+    const mark = 'shelltabscomment' + Date.now();
+    //  the reader's page cache may swap the document once more after load
+    await sleep(3000);
+    await boxUp();
+    //  the post must reload the tab's own frame, not open a window
+    const nPages = (await browser.pages()).length;
+    await page.evaluate((s) => { document.querySelector(s).contentWindow.latBefore = 1; }, frameOf(ck));
+    const typed = await page.evaluate(([s, m]) => {
+      const f = document.querySelector(s);
+      for (const i of f.contentDocument.querySelectorAll('iframe')) {
+        let d = null;
+        try { d = i.contentDocument; } catch {}
+        const t = d && d.querySelector('form.cbox textarea');
+        if (!t) continue;
+        t.value = m;
+        d.querySelector('form.cbox button[type=submit]').click();
+        return true;
+      }
+      return false;
+    }, [frameOf(ck), mark]);
+    const t0 = Date.now();
+    let landed = false;
+    while (!landed && Date.now() - t0 < 20000) {
+      await sleep(800);
+      const r = await fetch(env.base + view, { headers: { Cookie: env.cookie } }).catch(() => null);
+      landed = !!r && r.ok && (await r.text()).includes(mark);
+    }
+    //  the post's answer (303 to the page) reloads the tab's frame
+    const reloaded = await until((s) => document.querySelector(s).contentWindow.latBefore !== 1,
+      frameOf(ck), 20000);
+    const back = await boxUp();
+    const same = await page.evaluate(() => window.latSameDoc === 1);
+    const popups = (await browser.pages()).length - nPages;
+    check('a comment posted on an own page in a browser tab lands, and the tab shows the page',
+      shown && typed && landed && back && same && reloaded && !popups,
+      JSON.stringify({ shown, typed, landed, back, same, reloaded, popups, at: await frameAt(ck) }));
+    //  a form in the srcdoc frame aimed nowhere else navigates that frame only
+    await sleep(3000);
+    await boxUp();
+    await page.evaluate((s) => {
+      const fd = document.querySelector(s).contentDocument;
+      const d = [...fd.querySelectorAll('iframe')].map((i) => { try { return i.contentDocument; } catch { return null; } })
+        .find((x) => x && x.querySelector('form.cbox'));
+      const g = d.createElement('form');
+      g.action = '/apps/lattice/forum';
+      g.method = 'get';
+      const i = d.createElement('input');
+      i.type = 'hidden';
+      i.name = 'own';
+      i.value = '1';
+      g.append(i);
+      d.body.append(g);
+      g.requestSubmit();
+    }, frameOf(ck));
+    const own = await until(([s, src]) => {
+      const f = document.querySelector(s);
+      let at = null;
+      for (const i of f?.contentDocument?.querySelectorAll('iframe') || []) {
+        try { if (i.contentWindow.location.pathname === '/apps/lattice/forum') at = '/apps/lattice/forum'; } catch {}
+      }
+      return at === '/apps/lattice/forum'
+        && f.contentWindow.location.pathname === new URL(src, location.href).pathname;
+    }, [frameOf(ck), view], 15000);
+    check('a form in the srcdoc frame not aimed upward stays in that frame', own);
   });
 
   await part('chords', async () => {
