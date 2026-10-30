@@ -44,16 +44,13 @@
     return e;
   };
 
-  // leaving the editor for the reader: the same question every other way
-  // out asks. guardDirty flushes the front document or asks about it, and a
-  // parked tab's unsaved buffer still gets beforeunload (35-pages.js).
-  async function markGo(e, url) {
+  // a bookmark opens in the reader, in a browser tab of the shell, as the
+  // ribbon's Browser does (browseIn, 24-tools.js). Nothing is left, so
+  // nothing is asked. A new-tab click goes to a browser window as it is.
+  function markGo(e, url) {
     if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
     e.preventDefault();
-    if (!(await guardDirty())) return;
-    dirty = false;                       // flushed, or the user said discard
-    clearTimeout(autoTimer);
-    location.href = readerUrl(url);
+    browseIn(readerUrl(url));
   }
   async function markMove(b) {
     const f = await ask('move ' + (b.title || b.url) + ' to folder (empty for none):',

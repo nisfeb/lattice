@@ -1,7 +1,7 @@
   // ── tool tabs and the ribbon ─────────────────────────────────────────────
   // A tool tab holds no document: the comments inbox, access & groups, the
   // sync conflicts, or a same-origin page in a frame (Settings, the memory
-  // review, the forum). Its key names the tool
+  // review, the forum, a browser). Its key names the tool
   // ('inbox', 'access', 'conflicts') or the frame
   // ('frame:/apps/lattice/settings'). While one is in front the
   // document area is hidden and #toolhost takes the center. The editor
@@ -24,16 +24,17 @@
   const FRAMES = {
     '/apps/lattice/settings': ['Settings', 'gear'],
     '/apps/lattice/know?lint=1': ['Memory review', 'tidy'],
+    '/apps/lattice': ['Browser', 'globe'],
     '/apps/lattice/forum': ['Forum', 'forum'],
   };
   // the tools a frame opens by name: Settings, and the forum, one tab
-  // each
+  // each. A browser is a new tab every time (browseIn).
   const FRAME_KEYS = {
     settings: 'frame:/apps/lattice/settings',
     forum: 'frame:/apps/lattice/forum',
   };
   const SETTINGS = FRAME_KEYS.settings;
-  // A browsing frame (the forum, the reader) is navigated
+  // A browsing frame (the reader, the forum) is navigated
   // inside, so its tab is titled by the page it is on, and it keeps the
   // reader's bar: the omnibar is the way to an urb:// address, and Back and
   // Forward are the frame's own. Settings and the memory review are single
@@ -52,7 +53,7 @@
   const toolMeta = (key) => {
     if (TOOLS[key]) return [TOOLS[key].name, TOOLS[key].icon];
     const u = frameUrl(key);
-    return u ? FRAMES[u] || [u, 'globe'] : [key, 'gear'];
+    return u ? FRAMES[u] || ['Browser', 'globe'] : [key, 'gear'];
   };
   // every way into a tool. A tool gets a tab of its own rather than
   // replacing the document in front, and an open one is focused. On a phone
@@ -62,6 +63,15 @@
     await openIn('tool', FRAME_KEYS[id] || id, { newTab: true });
     drawersClose();
   };
+  // a browser tab at `url` (the reader home by default), new every time:
+  // the key carries a #fragment of its own, which the frame's address
+  // drops (frameUrl), so two tabs can show the same page
+  const browseIn = async (url = '/apps/lattice') => {
+    await openIn('tool', 'frame:' + url + '#b' + Date.now().toString(36)
+      + (++browseSeq), { newTab: true });
+    drawersClose();
+  };
+  let browseSeq = 0;
 
   // which tool the host shows, null while a document is in front
   let toolShown = null;
@@ -219,10 +229,11 @@
   }
 
   // ── leaving the editor ───────────────────────────────────────────────────
-  // Browser and Explorer navigate the window (Forum is a tab). The front
-  // document gets guardDirty, and the parked tabs holding unsaved work get
-  // one question naming them. Once the user has said discard, nothing is
-  // owed, so the unload guard (35-pages.js) does not ask a second time.
+  // Explorer and the desktop's manager page take the window (Browser and
+  // Forum are tabs). The front document gets guardDirty, and the parked
+  // tabs holding unsaved work get one question naming them. Once the user
+  // has said discard, nothing is owed, so the unload guard (35-pages.js)
+  // does not ask a second time.
   // With autosave off the parked tabs hold ordinary unsaved pages, so the
   // question offers to save them all, each brought forward and saved in
   // turn. One that does not save stops the leaving, with it in front.
@@ -295,7 +306,7 @@
 
   // top to bottom, with Settings in the lower group
   ribbonAdd({ id: 'brief', icon: 'cal', name: "Today's brief", run: (ev) => openBrief(ev) });
-  ribbonAdd({ id: 'browser', icon: 'globe', name: 'Browser', run: () => leaveTo('/apps/lattice') });
+  ribbonAdd({ id: 'browser', icon: 'globe', name: 'Browser', run: () => browseIn() });
   ribbonAdd({ id: 'forum', icon: 'forum', name: 'Forum', run: () => toolOpen('forum') });
   // the unread badge (73-comments.js) and the conflict count
   // (80-conflicts.js) are painted onto these two

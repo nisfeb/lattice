@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 //  ui-shell-tabs.mjs: the ribbon's ways off the editor stay in the editor.
-//  The forum first.
 //
 //    Forum opens the forum in a tab of its own (once), the window stays on
 //      the editor, the forum is navigated inside its tab, and the tab takes
 //      the page's title
+//    Browser opens a new browser tab per click at the reader home, with the
+//      reader's bar but not its menu, and the omnibar, links and the comment
+//      box's _top all stay inside the tab
 //
-//  SHOTS=1 saves the forum tab at 1400x900 under /tmp.
+//  SHOTS=1 saves the forum and browser tabs at 1400x900 under /tmp.
 //
 //  Usage: LATTICE_URL=http://localhost:8080 LATTICE_COOKIE=/tmp/tyr-cookie.txt \
 //           node scripts/ui-shell-tabs.mjs
@@ -117,6 +119,102 @@ try {
     await sleep(500);
     const f2 = await front();
     check('Forum again focuses the open forum tab', f2.key === fk && f2.n === n1, JSON.stringify(f2));
+  });
+
+  await part('browser', async () => {
+    const browserKeys = () => page.evaluate(() => window.latTabs.state().tabs
+      .filter((t) => t.kind === 'tool' && /^frame:\/apps\/lattice\/?(#|$)/.test(t.key)).map((t) => t.key));
+    const b0 = (await browserKeys()).length;
+    const nb = (await front()).n;
+    await page.evaluate(() => document.getElementById('rb-browser').click());
+    await sleep(800);
+    await page.evaluate(() => document.getElementById('rb-browser').click());
+    await sleep(800);
+    const bk = await browserKeys();
+    const b1 = await front();
+    const winB = await page.evaluate(() => location.href);
+    check('each Browser click opens a new browser tab, the window stays',
+      bk.length === b0 + 2 && b1.n === nb + 2 && bk.includes(b1.key) && winB === appAt,
+      JSON.stringify({ bk, b1, winB }));
+    const key = b1.key;
+    const bLoaded = await until((s) => {
+      const f = document.querySelector(s);
+      return !!f && f.contentDocument?.readyState === 'complete'
+        && /^\/apps\/lattice\/?$/.test(f.contentWindow.location.pathname)
+        && !!f.contentDocument.querySelector('form.bar');
+    }, frameOf(key));
+    const dress = await page.evaluate((s) => {
+      const d = document.querySelector(s).contentDocument;
+      const vis = (e) => !!e && getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0;
+      return { bar: vis(d.querySelector('form.bar')), omni: vis(d.querySelector('form.bar input[name=url]')),
+        ham: d.querySelector('.hamw') ? vis(d.querySelector('.hamw')) : 'absent' };
+    }, frameOf(key));
+    check('a browser tab keeps the reader bar and its omnibar, not its menu',
+      bLoaded && dress.bar && dress.omni && dress.ham !== true, JSON.stringify({ bLoaded, dress }));
+    const bTitle = await until((s) => {
+      const f = document.querySelector(s);
+      const t = f && f.contentDocument.title.trim();
+      return !!t && document.querySelector('.dtab.on .dtn')?.textContent === t;
+    }, frameOf(key), 10000);
+    check('the browser tab is titled by its page', bTitle, JSON.stringify(await front()));
+    if (process.env.SHOTS) await page.screenshot({ path: '/tmp/shell-tabs-browser.png' });
+    //  the omnibar goes to an urb:// address inside the tab
+    const ship = (await (await fetch(env.base + '/~/host')).text()).trim();
+    const typed = 'urb://' + ship + '/shell-tabs-probe';
+    await page.evaluate(([s, t]) => {
+      const d = document.querySelector(s).contentDocument;
+      const f = d.querySelector('form.bar');
+      f.querySelector('input[name=url]').value = t;
+      f.requestSubmit ? f.requestSubmit() : f.submit();
+    }, [frameOf(key), typed]);
+    const went = await until(([s, t]) => {
+      const f = document.querySelector(s);
+      try {
+        return new URLSearchParams(f.contentWindow.location.search).get('url') === t
+          && f.contentDocument.readyState === 'complete';
+      } catch { return false; }
+    }, [frameOf(key), typed]);
+    const winB2 = await page.evaluate(() => location.href);
+    const b2 = await front();
+    check('the omnibar navigates inside the browser tab',
+      went && winB2 === appAt && b2.key === key && b2.n === nb + 2,
+      JSON.stringify({ went, winB2, b2, at: await frameAt(key) }));
+    const bTitle2 = await until((s) => {
+      const f = document.querySelector(s);
+      const t = f && f.contentDocument.title.trim();
+      return !!t && document.querySelector('.dtab.on .dtn')?.textContent === t;
+    }, frameOf(key), 10000);
+    check('the title follows the browser tab to its new page', bTitle2, JSON.stringify(await front()));
+    //  a reader link stays inside too
+    const rl = await page.evaluate((s) => {
+      const d = document.querySelector(s).contentDocument;
+      const a = [...d.querySelectorAll('main a[href*="?url="]')][0];
+      if (!a) return null;
+      a.click();
+      return a.href;
+    }, frameOf(key));
+    const rlIn = !rl || await until(([s, h]) => {
+      const f = document.querySelector(s);
+      return f?.contentWindow.location.href === h && f.contentDocument.readyState === 'complete';
+    }, [frameOf(key), rl]);
+    check('a reader link stays inside the browser tab',
+      rlIn && (await page.evaluate(() => location.href)) === appAt, JSON.stringify({ rl, rlIn }));
+    //  nothing in the frame may aim at the whole window
+    await page.evaluate((s) => { document.querySelector(s).contentWindow.location.href = '/apps/lattice'; }, frameOf(key));
+    await until((s) => {
+      const f = document.querySelector(s);
+      return f?.contentWindow.location.search === '' && f.contentDocument.readyState === 'complete';
+    }, frameOf(key));
+    await sleep(800);
+    const tops = await page.evaluate((s) => {
+      const f = document.querySelector(s);
+      const docs = [f.contentDocument];
+      for (const i of f.contentDocument.querySelectorAll('iframe')) {
+        try { if (i.contentDocument) docs.push(i.contentDocument); } catch {}
+      }
+      return docs.reduce((n, d) => n + d.querySelectorAll('[target=_top], [target=_parent]').length, 0);
+    }, frameOf(key));
+    check('no form or link in a browser tab aims at the whole window', tops === 0, String(tops));
   });
 
 } catch (e) {
