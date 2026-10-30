@@ -3748,7 +3748,9 @@
     ?~  rel  (send-err eyre-id 400 'missing path')
     =/  pp=(each path tang)  (mule |.((pub-path u.rel)))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'invalid path')
-    ;<  ~  bind:m  (poke-pub [%del-page (spat p.pp)])
+    ::  a folder's unpublish yields between its pages: in the writer as a
+    ::  job (/tree-job), answered once it is done (+poke-eval)
+    ;<  ~  bind:m  (poke-eval [%unpub (spat p.pp)])
     (send-ok eyre-id)
   ::  ── know version history ──
   ::  every know entry is a firm grub, so grubbery keeps its prior revisions. A live
@@ -5548,7 +5550,7 @@
   ::  Eight minutes at most, under eyre's ten: a folder of hundreds of
   ::  published pages runs longer, and its route then answers while the
   ::  writer finishes, rather than as a 504 a client reads as offline.
-  ?.  ?=(?(%share-tree %del %pub-regrow) -.act)  (pure:m ~)
+  ?.  (tree-jobs act)  (pure:m ~)
   ;<  up=@ud  bind:m  nexus-up
   ;<  now=@da  bind:m  bowl-now
   =/  until=@da  (add now ~m8)
@@ -6347,6 +6349,12 @@
       %pub-regrow
     ;<  ~  bind:m  (job-set `act)
     ;<  *  bind:m  pub-regrow
+    (job-set ~)
+      %unpub
+    ::  the legacy POST /delete: unpublish a page, or every page of a
+    ::  folder, which yields between pages, so it is a job like %del
+    ;<  ~  bind:m  (job-set `act)
+    ;<  ~  bind:m  (apply-pub root now [%del-page key.act])
     (job-set ~)
       %share-tree
     ::  publish/unpublish a whole subtree: apply the mode to every PAGE under
@@ -7539,6 +7547,11 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   (put-file (rf up / %'tree-job') [/ %noun] job)
+::  +tree-jobs: the whole-tree actions, the ones +job-set records
+++  tree-jobs
+  |=  act=eval-action:le
+  ^-  ?
+  ?=(?(%share-tree %del %pub-regrow %unpub) -.act)
 ::  +job-resume: as the writer starts, run again the whole-tree action a
 ::  reload cut short. Each such action (%share-tree, %del, %pub-regrow) is
 ::  idempotent,
@@ -7552,7 +7565,7 @@
   =/  job=(unit eval-action:le)
     (fall (mole |.(;;((unit eval-action:le) (sang-noun:tarball sang.jv)))) ~)
   ?~  job  (pure:m ~)
-  ?.  ?=(?(%share-tree %del %pub-regrow) -.u.job)  (job-set ~)
+  ?.  (tree-jobs u.job)  (job-set ~)
   ;<  now=@da  bind:m  bowl-now
   ;<  ~  bind:m  (apply-eval root now u.job)
   ;<  ~  bind:m  (job-set ~)
