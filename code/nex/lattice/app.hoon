@@ -1405,7 +1405,10 @@
   ::  that skipped the read gets a 409 once the owner has moved on.
   =?  base  |(?=(~ base) =(`0 base))  `rev.l
   ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
-    (remote-write host.l pax.l body base `wait)
+    (remote-write host.l pax.l body base wait)
+  ::  acked but unchecked: no rev to cache, so the next save re-reads
+  ?:  &(?=(%| -.r) =(202 code.p.r))
+    (pure:m |+[503 'the host took the write but did not confirm it: reload to check'])
   ?:  ?=(%| -.r)
     ?.  =(504 code.p.r)  (pure:m r)
     ;<  ~  bind:m  (link-note lpath l ~)
@@ -1537,19 +1540,53 @@
   ::  key path-scope gate: when keyed, require write access to this ship+path
   ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] p.pp %write))
     (send-err eyre-id 403 'outside this key\'s scope')
+  ::  ?base= is the rev the editor read; a host page past it is a 409
+  =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
   ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
-    (remote-write u.shp p.pp (req-body req) ~ ~)
-  ?:  ?=(%| -.r)  (send-err eyre-id code.p.r msg.p.r)
-  (send-ok eyre-id)
+    (remote-write u.shp p.pp (req-body req) base ~s10)
+  (remote-save-respond eyre-id r)
+::  +remote-save-respond: /remote-save's answer, naming the outcome the
+::  write really had, so the editor never reads a host's silence as its
+::  own ship's, nor a landed write as a lost one: landed (200, with the
+::  revs), unverified (202: acked, the check did not answer), conflict
+::  (409), refused (the host nacked or dropped it), unreachable (504: no
+::  answer within the deadline; nothing was sent, or the ack never came
+::  and the write may still land), or a bad request.
+++  remote-save-respond
+  |=  [eyre-id=@ta r=(each [old=@ud new=@ud] [code=@ud msg=@t])]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  ?=(%& -.r)
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['ok' b+&]  ['outcome' s+'landed']
+        ['rev' (numb:enjs:format new.p.r)]
+        ['prev-rev' (numb:enjs:format old.p.r)]
+    ==
+  =/  out=@t
+    ?+  code.p.r  'bad-request'
+      %202  'unverified'
+      %409  'conflict'
+      %504  'unreachable'
+      %502  'refused'
+      %403  'refused'
+    ==
+  %+  send-simple:srv  eyre-id
+  :-  [code.p.r ['content-type' 'application/json']~]
+  :-  ~
+  %-  as-octs:mimes:html
+  %-  en:json:html
+  %-  pairs:enjs:format
+  :~  ['ok' b+=(%202 code.p.r)]  ['outcome' s+out]  ['error' s+msg.p.r]  ==
 ::  +remote-write: the write behind /remote-save and a save through a link
 ::  (+link-write): put `body` in the grub at pax on shp, an EXISTING one,
 ::  and answer its [old new] revs. `base`, when set, is the rev the writer
 ::  read, and a grub that has moved past it is a 409 with nothing sent.
-::  `wait` bounds each peek and the poke's ack; ~ is /remote-save's own
-::  remote-timeout on the peeks and no bound on the ack, as it always was.
+::  `wait` bounds each peek and the poke's ack. A write the host acked but
+::  whose re-peek did not answer is a 202: it most likely landed, unverified.
 ::
 ++  remote-write
-  |=  [shp=@p pax=path body=@t base=(unit @ud) wait=(unit @dr)]
+  |=  [shp=@p pax=path body=@t base=(unit @ud) wait=@dr]
   =/  m  (fiber:fiber:nexus ,(each [old=@ud new=@ud] [code=@ud msg=@t]))
   ^-  form:m
   ?~  pax  (pure:m |+[400 'empty path'])
@@ -1557,9 +1594,8 @@
   =/  dir=path  (scag n `path`pax)
   =/  nam=@ta  (snag n `path`pax)
   =/  file-road=road:tarball  [%& %& dir nam]
-  =/  dl=@dr  (fall wait remote-timeout)
-  ;<  ms=(unit view:nexus)  bind:m  (peek-remote-quiet file-road shp dl)
-  ?~  ms  (pure:m |+[504 'unreachable or denied'])
+  ;<  ms=(unit view:nexus)  bind:m  (peek-remote-quiet file-road shp wait)
+  ?~  ms  (pure:m |+[504 (crip "{(scow %p shp)} did not answer, or denies the read: not saved")])
   ::  v1 edits EXISTING files only. Remote create needs a make grant plus a
   ::  blot decision the client can't make for a tree it doesn't own.
   ?.  ?=([%file *] u.ms)  (pure:m |+[404 'no such file on that ship'])
@@ -1601,17 +1637,14 @@
     =/  mt=path  (fall (grub-mime-type sang.u.ms) /text/plain)
     [[[/ %mime] `*``mime`[mt (as-octs:mimes:html body)]] ~]
   =/  req=load:remo:nexus  [[/remote-save %& dir nam] %make %.y %.n |+[b.bd d.bd]]
-  ;<  ack=(unit (unit tang))  bind:m
-    ?~  wait
-      ;<  nak=(unit tang)  bind:(fiber:fiber:nexus ,(unit (unit tang)))
-        (remote-load-poke shp req)
-      (pure:(fiber:fiber:nexus ,(unit (unit tang))) `nak)
-    (remote-load-ack shp req u.wait)
-  ?~  ack  (pure:m |+[504 'unreachable or denied'])
+  ;<  ack=(unit (unit tang))  bind:m  (remote-load-ack shp req wait)
+  ?~  ack
+    %-  pure:m
+    |+[504 (crip "{(scow %p shp)} did not acknowledge the write in time: it may still land")]
   ?^  u.ack  (pure:m |+[502 'remote rejected the write'])
-  ;<  vs=(unit view:nexus)  bind:m  (peek-remote-quiet file-road shp dl)
+  ;<  vs=(unit view:nexus)  bind:m  (peek-remote-quiet file-road shp wait)
+  ?~  vs  (pure:m |+[202 'the host took the write but did not answer the check'])
   =/  ud1=@ud
-    ?~  vs  0
     ?.  ?=([%file *] u.vs)  0
     ud.cass.u.vs
   ?.  (gth ud1 ud0)
@@ -9367,37 +9400,23 @@
       poke.old
     (~(uni in peek.old) pk)
   (ug-put gdir (~(uni in cur) ships) weir)
-::  +remote-load-poke-wait: +remote-load-poke with a deadline. %.y = acked in
+::  +remote-load-poke-wait: +remote-load-ack as a flag. %.y = acked in
 ::  time. An offline ship never acks a gall poke, and a share notice must not
 ::  hang the save that triggered it. The GRANT is already durable by the time
 ::  this runs. The notice is best-effort and says so in the response.
+::  (Before release 76 this followed poke:io, which takes the %pack itself,
+::  with a wait for a second %pack, so every notice read as unacked.)
 ::
 ++  remote-load-poke-wait
   |=  [target=@p req=load:remo:nexus timeout=@dr]
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
-  ;<  now=@da  bind:m  bowl-now
-  =/  until=@da  (add now timeout)
-  ;<  ~  bind:m
-    %+  poke:io  &+&+[/sys/gall %'main.sig']
-    [[/ %gall-poke] [[target %grubbery] grubbery-load+req]]
-  ;<  ~  bind:m  (send-wait-dated until)
-  |=  input:fiber:nexus
-  :+  ~  q.state
-  ?+  in  [%skip ~]
-      ~  [%wait ~]
-      [~ %veto *]
-    [%done %.n]
-      [~ %pack *]
-    [%done ?=(~ err.u.in)]
-      [~ %poke * *]
-    ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
-    =/  wak=path  !<(path q.sage.u.in)
-    ?.  ?&(?=([%wait @ ~] wak) =(until (slav %da i.t.wak)))  [%skip ~]
-    [%done %.n]
-  ==
-::  +remote-load-ack: +remote-load-poke with a deadline, waiting for the
-::  gall ack itself. The /sys/gall grub answers our poke with a %pack as
+  ;<  r=(unit (unit tang))  bind:m  (remote-load-ack target req timeout)
+  (pure:m ?=([~ ~] r))
+::  +remote-load-ack: send a %grubbery-load to another ship and wait, up to
+::  `timeout`, for the gall ack itself. NOTE an ack is not proof the write
+::  LANDED (a weir denial on their side is applied after the ack, silently),
+::  so /remote-save verifies by revision number afterwards. The /sys/gall grub answers our poke with a %pack as
 ::  soon as it takes it, and the target's ack comes later, as a %poke-ack
 ::  poke on our own wire (+gall-poke:io), so that is what this waits for.
 ::  `~ acked, ``tang nacked, ~ no answer before the deadline.
@@ -9413,8 +9432,8 @@
     %-  send-dart:io
     :^  %node  wire  &+&+[/sys/gall %'main.sig']
     [%poke [/ %gall-poke] [[target %grubbery] grubbery-load+req]]
-  ::  a local veto or a pack error is a nack, as in +remote-load-poke:
-  ::  take-pack:io would fail the fiber, and on the lick port that
+  ::  a local veto or a pack error is a nack. take-pack:io would fail the
+  ::  fiber, and on the lick port that
   ::  restarts the mount's serve loop
   ;<  pe=(unit tang)  bind:m  (take-pack-soft wire)
   ?^  pe  (pure:m ``u.pe)
@@ -9461,30 +9480,6 @@
     =/  wak=path  !<(path q.sage.u.in)
     ?.  ?&(?=([%wait @ ~] wak) =(until (slav %da i.t.wak)))  [%skip ~]
     [%done ~]
-  ==
-::  +remote-load-poke: send a %grubbery-load to another ship and wait for the
-::  gall ack. Modeled on +gall-poke-or-nack (fiberio), which is our-ship-only;
-::  a bare +gall-poke:io would CRASH the request fiber on a remote nack, taking
-::  the HTTP response with it. ~ = acked; `tang = nacked (their side crashed or
-::  refused). NOTE an ack is not proof the write LANDED (a weir denial on
-::  their side is applied after the ack, silently), so /remote-save verifies
-::  by revision number afterwards.
-::
-++  remote-load-poke
-  |=  [target=@p req=load:remo:nexus]
-  =/  m  (fiber:fiber:nexus ,(unit tang))
-  ^-  form:m
-  ;<  ~  bind:m
-    %+  poke:io  &+&+[/sys/gall %'main.sig']
-    [[/ %gall-poke] [[target %grubbery] grubbery-load+req]]
-  |=  input:fiber:nexus
-  :+  ~  q.state
-  ?+  in  [%skip ~]
-      ~  [%wait ~]
-      [~ %veto *]
-    [%done `~[leaf+"vetoed locally"]]
-      [~ %pack *]
-    [%done err.u.in]
   ==
 ::  +take-peek-or-wake: resolve on the matching %peek response OR our timer wake.
 ::  Sibling of take-news-or-wake. A %veto counts as give-up (~), like a timeout.
@@ -12104,6 +12099,8 @@
       ['mark' s+name.p.sang.sn]
       ['builder' ?~(un ~ s+builder.u.un)]
       ['editable' b+&]
+      ::  the rev a save claims as its base (/remote-save ?base=)
+      ['rev' (numb:enjs:format ud.cass.sn)]
   ==
 ::  +send-html: a 200 text/html response.
 ::
