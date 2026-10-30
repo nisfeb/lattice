@@ -11,6 +11,8 @@
 //    Explorer is not on the ribbon, the palette lists it under Settings >
 //      Advanced, it opens as a tab whose page answers, and the link in
 //      Settings > Advanced opens that tab
+//    A frame tab's ground is the shell's, in the dark and the light, and
+//      follows the system and a theme mode changed while it is open
 //    Ctrl+K and Ctrl+P open the palette, Ctrl+Shift+F the Search field,
 //      Ctrl+Shift+L the Files tree; vim keeps Ctrl+P in the editor, not Ctrl+K;
 //      the tooltips name the new chords
@@ -305,6 +307,53 @@ try {
     check('Settings > Advanced opens the explorer tab',
       adv && viaSet && (await front()).n === ns && sAt === '/apps/lattice/settings',
       JSON.stringify({ adv, viaSet, sAt, n: (await front()).n, ns }));
+  });
+
+  //  a frame tab wears the shell's theme: with none set (mode system) the
+  //  forum's own stylesheet has no dark, so the shell's ground is copied
+  //  in, and it follows the system flipping and a theme picked elsewhere
+  await part('theme', async () => {
+    const fk = 'frame:/apps/lattice/forum';
+    const bgs = () => page.evaluate((s) => {
+      const d = document.querySelector(s)?.contentDocument;
+      return { shell: getComputedStyle(document.body).backgroundColor,
+        frame: d && d.body ? getComputedStyle(d.body).backgroundColor : null };
+    }, frameOf(fk));
+    const same = (b) => !!b.frame && b.frame === b.shell;
+    const scheme = (v) => page.emulateMediaFeatures([{ name: 'prefers-color-scheme', value: v }]);
+    try {
+      await scheme('dark');
+      await page.evaluate(() => document.getElementById('rb-forum').click());
+      await until((s) => document.querySelector(s)?.contentDocument?.readyState === 'complete'
+        && document.querySelector(s).contentWindow.location.pathname === '/apps/lattice/forum',
+      frameOf(fk));
+      await sleep(1500);
+      const dark = await bgs();
+      check('a frame tab takes the shell\'s dark ground', same(dark) && dark.shell === 'rgb(26, 26, 26)',
+        JSON.stringify(dark));
+      await scheme('light');
+      await sleep(800);
+      const light = await bgs();
+      check('an open frame tab follows the system going light', same(light) && light.shell !== dark.shell,
+        JSON.stringify(light));
+      //  a mode set from another document, as the settings tab sets it
+      await scheme('dark');
+      await page.evaluate((s) => {
+        const w = document.querySelector(s).contentWindow;
+        const t = JSON.parse(w.localStorage.latTheme || '{}');
+        w.localStorage.latTheme = JSON.stringify(Object.assign(t, { mode: 'light' }));
+      }, frameOf(fk));
+      await sleep(1500);
+      const forced = await bgs();
+      check('an open frame tab follows a theme picked elsewhere', same(forced) && forced.shell !== dark.shell,
+        JSON.stringify(forced));
+    } finally {
+      await page.evaluate(() => {
+        const t = JSON.parse(localStorage.latTheme || '{}');
+        localStorage.latTheme = JSON.stringify(Object.assign(t, { mode: 'system' }));
+      }).catch(() => {});
+      await page.emulateMediaFeatures([]);
+    }
   });
 
   await part('chords', async () => {

@@ -152,6 +152,10 @@
     try { d = f.contentDocument; } catch {}
     if (!d || !d.head) return;
     const key = f.dataset.tool;
+    frameTheme(f);
+    // the frame's own theme.js rewrites these on <html>, so they go back on
+    new MutationObserver(() => frameTheme(f))
+      .observe(d.documentElement, { attributes: true, attributeFilter: ['style'] });
     const s = d.createElement('style');
     s.textContent = browsing(key) ? '.hamw{display:none}' : 'form.bar{display:none}';
     d.head.append(s);
@@ -210,6 +214,43 @@
       openIn(go[0], go[1], { ship: go[2], newTab: true });
     });
   }
+  // A frame wears the shell's look. theme.js sets the theme's colours inline
+  // on <html> in every document, but with no theme (mode system) it sets
+  // none and each stylesheet keeps its own: the shell's goes dark with the
+  // system, the forum's does not. So the shell's inline colours are copied
+  // onto each frame, and its ground, ink and scheme as it shows them, again
+  // whenever the shell's change (a theme picked, the system going dark).
+  const THEME_KEYS = ['color-scheme', '--bg', '--text', '--muted', '--pop', '--accent',
+    '--accent-deep', '--on-accent', '--accent-tint', '--secondary', '--tertiary', '--link',
+    '--raised', '--error', '--selection', '--border', '--border-soft', '--font'];
+  const darkMq = matchMedia('(prefers-color-scheme: dark)');
+  function frameTheme(f) {
+    let d = null;
+    try { d = f.contentDocument; } catch {}
+    if (!d || !d.documentElement) return;
+    const hs = document.documentElement.style;
+    const cs = getComputedStyle(document.documentElement);
+    const fs = d.documentElement.style;
+    const shown = {
+      'color-scheme': /dark/.test(cs.colorScheme) && (darkMq.matches || !/light/.test(cs.colorScheme))
+        ? 'dark' : 'light',
+      '--bg': cs.getPropertyValue('--bg').trim(),
+      '--text': cs.getPropertyValue('--text').trim(),
+    };
+    for (const k of THEME_KEYS) {
+      const v = hs.getPropertyValue(k).trim() || shown[k] || '';
+      if (v && fs.getPropertyValue(k).trim() !== v) fs.setProperty(k, v);
+      else if (!v && fs.getPropertyValue(k)) fs.removeProperty(k);
+    }
+  }
+  const framesTheme = () => {
+    for (const f of toolHost.querySelectorAll('iframe')) frameTheme(f);
+  };
+  addEventListener('lattheme', framesTheme);
+  darkMq.addEventListener('change', framesTheme);
+  new MutationObserver(framesTheme)
+    .observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
+
   // Escape used to close the overlays. A tab is closed by its own close,
   // so here Escape only lets go of a field.
   addEventListener('keydown', (e) => {
