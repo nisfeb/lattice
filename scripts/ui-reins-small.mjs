@@ -391,7 +391,9 @@ try {
     }
   }
 
-  // ── 4c. a urb:// row leaves the editor through the unsaved-work guard ──
+  // ── 4c. a urb:// row opens the reader in a browser tab ────────────────
+  //  nothing leaves the editor, so the unsaved grub behind it is kept
+  //  as it is, with no question
   {
     const base = await page.evaluate(() => localStorage.latBase);
     const ship = (await (await fetch(env.base + '/~/host')).text()).trim();
@@ -408,19 +410,22 @@ try {
     const before = page.url();
     await page.evaluate((k) =>
       document.querySelector('#publist .pubrow[data-page="' + k + '"] a').click(), PS);
-    await sleep(800);
-    const asked = await page.evaluate(() => ({
-      dlg: !document.getElementById('dlg').hidden, msg: document.getElementById('dlgmsg').textContent,
+    const want = 'urb://' + ship + '/' + PS;
+    const tabbed = await page.waitForFunction((w) => {
+      const s = window.latTabs.state();
+      const t = s.tabs[s.active];
+      if (!t || t.kind !== 'tool' || !t.key.startsWith('frame:/apps/lattice?')) return false;
+      const f = document.querySelector('#toolhost iframe[data-tool="' + CSS.escape(t.key) + '"]');
+      try { return new URLSearchParams(f.contentWindow.location.search).get('url') === w; }
+      catch { return false; }
+    }, { timeout: 30000 }, want).then(() => true, () => false);
+    const kept = await page.evaluate(() => ({
+      dlg: !document.getElementById('dlg').hidden,
+      dirty: window.latTabs.state().tabs.some((t) => t.kind === 'grub' && t.dirty),
     }));
-    check('a urb:// row asks about unsaved work before leaving', asked.dlg && page.url() === before,
-      JSON.stringify(asked));
-    await Promise.all([
-      page.waitForNavigation({ timeout: 30000 }).catch(() => null),
-      page.evaluate(() => document.getElementById('dlgok').click()),
-    ]);
-    const u = new URL(page.url());
-    check('and then opens the page in the reader',
-      u.pathname === '/apps/lattice' && u.searchParams.get('url') === 'urb://' + ship + '/' + PS, page.url());
+    check('a urb:// row opens the page in a browser tab, the editor stays',
+      tabbed && page.url() === before && !kept.dlg && kept.dirty,
+      JSON.stringify({ tabbed, url: page.url(), kept }));
   }
 } catch (e) {
   check('threw: ' + String(e.message).slice(0, 140), false);

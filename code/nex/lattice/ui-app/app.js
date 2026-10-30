@@ -3498,14 +3498,13 @@
   // so it opens the palette from anywhere. Vim keeps P while the editor has
   // focus, the rule Ctrl+E follows (23-tabhead.js). An open dialog is left
   // to finish first. Capture phase on window, ahead of vim's handler on
-  // the textarea, which would otherwise swallow the chord.
+  // the textarea.
   addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
     const k = e.key.toLowerCase();
     if (k !== 'k' && k !== 'p') return;
     e.preventDefault();
     if (k === 'p' && localStorage.edVim === '1' && document.activeElement === src) return;
-    e.stopPropagation();
     if (!$('dlg').hidden) return;
     palShow();
   }, true);

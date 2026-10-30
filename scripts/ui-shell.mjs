@@ -817,12 +817,12 @@ try {
     window.__mgr = null;
     window.__TAURI__ = { core: { invoke: async (cmd) => { window.__mgr = cmd; } } };
   });
-  await page.evaluate(() => window.latOpenManager());
+  await page.evaluate(() => { window.latOpenManager(); });
   const asked = await until(() => !document.getElementById('dlg').hidden, null, 5000);
   await page.evaluate(() => document.getElementById('dlgcancel').click());
   await sleep(500);
   const stayed2 = await page.evaluate(() => window.__mgr);
-  await page.evaluate(() => window.latOpenManager());
+  await page.evaluate(() => { window.latOpenManager(); });
   await until(() => !document.getElementById('dlg').hidden, null, 5000);
   await page.evaluate(() => document.getElementById('dlgok').click());
   const left = await until(() => window.__mgr === 'open_manager', null, 10000);

@@ -515,7 +515,7 @@ try {
       window.__mgr = null;
       window.__TAURI__ = { core: { invoke: async (cmd) => { window.__mgr = cmd; } } };
     });
-    await page.evaluate(() => window.latOpenManager());
+    await page.evaluate(() => { window.latOpenManager(); });
     const lAsk = await dlgUp();
     await page.evaluate(() => document.getElementById('dlgcancel').click());
     await sleep(800);
@@ -558,7 +558,7 @@ try {
     await typeEnd('F2ALL');
     await page.click(tabSel('page', Q));
     await waitOn('page', Q);
-    await page.evaluate(() => window.latOpenManager());
+    await page.evaluate(() => { window.latOpenManager(); });
     const aAsk = await dlgUp();
     const aOpts = await page.evaluate(() => (document.getElementById('dlgopts').hidden ? []
       : [...document.querySelectorAll('#dlgopts [data-val]')].map((b) => b.dataset.val)));
