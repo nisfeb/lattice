@@ -374,6 +374,10 @@
         ::  that keeps failing is dropped (+job-resume), never retried for
         ::  ever with every write waiting behind it.
             [%fall %& [/ %'tree-job-tries'] [[/ %ud] 0]]
+        ::  /tree-job-dropped: the last job +job-resume gave up on, for the
+        ::  owner (GET /tree-job): a folder delete dropped part way leaves
+        ::  some of its pages published
+            [%fall %& [/ %'tree-job-dropped'] [[/ %json] ~]]
         ::  /pub-regrown: how many pages the last /pub-regrow grew
             [%fall %& [/ %'pub-regrown'] [[/ %ud] 0]]
         ==
@@ -4156,8 +4160,13 @@
   ::  offline. One peek, answered while the writer works.
       [%'GET' %'tree-job']
     ;<  job=(unit @tas)  bind:m  tree-job-now
+    ::  and the last job the writer gave up on (+job-given-up), or null
+    ;<  dv=view:nexus  bind:m  (peek:io (rf up / %'tree-job-dropped') ~)
+    =/  dropped=json
+      ?.  ?=([%file *] dv)  ~
+      (fall (mole |.(!<(json (need-vase:tarball sang.dv)))) ~)
     %+  send-json  eyre-id
-    (pairs:enjs:format ~[['job' ?~(job ~ s+u.job)]])
+    (pairs:enjs:format ~[['job' ?~(job ~ s+u.job)] ['dropped' dropped]])
   ::  ── legacy agent migration (see the +legacy-live block) ────────────────
   ::  legacy-status: should the UI offer to import from a retired %lattice
   ::  gall agent? One %gu liveness scry and nothing else. See below. The
@@ -7585,13 +7594,16 @@
   ?.  &(!=(0 done) =(0 (mod done every)))  (pure:m ~)
   (sleep-draining (div ~s1 100))
 ::  +job-set: note the whole-tree action now running (/tree-job), or ~
-::  once it is done.
+::  once it is done. Done, its resume count goes too: a count left over
+::  would cut the resumes of the next job.
 ++  job-set
   |=  job=(unit eval-action:le)
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  (put-file (rf up / %'tree-job') [/ %noun] job)
+  ;<  ~  bind:m  (put-file (rf up / %'tree-job') [/ %noun] job)
+  ?^  job  (pure:m ~)
+  (put-file (rf up / %'tree-job-tries') [/ %ud] 0)
 ::  +tree-jobs: the whole-tree actions, the ones +job-set records
 ++  tree-jobs
   |=  act=eval-action:le
@@ -7619,23 +7631,43 @@
   =/  tr=road:tarball  (rf root / %'tree-job-tries')
   ;<  tries=@ud  bind:m  (read-pub-seq tr)
   ?:  (gte tries 3)
-    %-  (say 2 ~[leaf+"lattice /main.sig: dropped a {(trip -.u.job)} job that did not finish in {<tries>} starts"])
-    (job-drop root)
+    (job-given-up root u.job "did not finish in {<tries>} starts" ~)
   ;<  ~  bind:m  (put-file tr [/ %ud] +(tries))
   ;<  now=@da  bind:m  bowl-now
   ;<  err=(unit tang)  bind:m  (fiber-try (apply-eval root now u.job))
-  ?^  err
-    %-  (say 3 [leaf+"lattice /main.sig: a resumed {(trip -.u.job)} job crashed and was dropped" u.err])
-    (job-drop root)
+  ?^  err  (job-given-up root u.job "crashed" u.err)
   ;<  ~  bind:m  (job-drop root)
   (bump-beacon %rev now)
-::  +job-drop: no whole-tree job, and no tries counted for one
+::  +job-given-up: +job-resume drops `job`, and says so where the owner
+::  will see it: a fault row, and /tree-job-dropped, which GET /tree-job
+::  answers and the editor shows once. A delete or unpublish dropped part
+::  way leaves some of the folder's pages published.
+++  job-given-up
+  |=  [root=@ud job=eval-action:le why=tape =tang]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  where=@t
+    ?+  -.job  ''
+      %del         (crip (pax-str pax.job))
+      %share-tree  (crip (pax-str pax.job))
+      %unpub       key.job
+    ==
+  =/  what=tape  "lattice /main.sig: a resumed {(trip -.job)} job {why} and was dropped"
+  ;<  ~  bind:m  (fault 'tree-job-dropped' 2 (weld what ": {(trip where)}") tang)
+  ;<  now=@da  bind:m  bowl-now
+  ;<  ~  bind:m
+    %^  put-file  (rf root / %'tree-job-dropped')  [/ %json]
+    %-  pairs:enjs:format
+    :~  ['job' s+-.job]  ['path' s+where]  ['why' s+(crip why)]
+        ['at' (numb:enjs:format (rise-da-ms now))]
+    ==
+  (job-drop root)
+::  +job-drop: no whole-tree job, and no tries counted for one (+job-set)
 ++  job-drop
   |=  root=@ud
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  ~  bind:m  (job-set ~)
-  (put-file (rf root / %'tree-job-tries') [/ %ud] 0)
+  (job-set ~)
 ::  +fiber-try: run `a`, and answer ~ when it finished, or the trace when
 ::  any of its steps crashed or failed, instead of failing this fiber. A
 ::  failed step's state and darts are dropped, as the kernel drops them.
