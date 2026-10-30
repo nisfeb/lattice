@@ -12934,17 +12934,16 @@
     %-  trip
     '<script>(function(){var c=document.getElementById("connection"),w=null;try{w=window.top}catch(x){}var t=w&&w.__TAURI__;if(!t||!t.core)return;c.hidden=false;document.getElementById("connbtn").onclick=function(){if(w.latOpenManager)w.latOpenManager();else t.core.invoke("open_manager")}})();</script>'
   ==
-::  +home-index-html: the landing page. Always shows navigation (Pages,
-::  Explorer) plus a live list of your programmable pages and any published
-::  pages, so an empty store is still a way in, not a dead end.
+::  +home-index-html: the landing page. Always shows navigation (Editor,
+::  Browser, Knowledge) plus a live list of your programmable pages and any
+::  published pages, so an empty store is still a way in, not a dead end.
+::  The Browser card is the reader, this page. The explorer's one home is
+::  Settings > Advanced; a second way in here was its leak.
 ::
 ++  home-index-html
   |=  [our=@p recent=(list [pax=path prev=@t]) bms=bookmarks:lb know=tape]
   ^-  tape
   =/  ship=tape  (scow %p our)
-  ::  bare /x: our pages folder (+explore). The ship root is not readable
-  ::  by a lattice installed as a desk.
-  =/  tree=tape  "/apps/lattice/x"
   ::  under Editor: the 10 most recently edited pages, name + a preview, each
   ::  linking straight into the editor.
   =/  recent-list=tape
@@ -12994,7 +12993,7 @@
     "<h3 class=\"qh\">Recent</h3>"
     recent-list
     "</div>"
-    :(weld "<div class=\"col\"><a class=\"appcard\" href=\"" tree "\"><span class=\"ico\">&#127760;</span><strong>Browser</strong><span class=\"d\">Read and explore content &mdash; your published pages and other ships via urb://.</span></a>")
+    "<div class=\"col\"><a class=\"appcard\" href=\"/apps/lattice\"><span class=\"ico\">&#127760;</span><strong>Browser</strong><span class=\"d\">Read and explore content &mdash; your published pages and other ships via urb://.</span></a>"
     "<h3 class=\"qh\"><a href=\"/apps/lattice/marks\">Bookmarks &#8594;</a></h3>"
     bm-list
     "</div>"
