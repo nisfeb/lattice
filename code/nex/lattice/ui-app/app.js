@@ -5592,7 +5592,16 @@
   // frame's page with the one before or after (location.replace, adding no
   // entry), and any other load (a link, a form, a redirect, Return here)
   // starts a new branch.
+  //
+  // location.replace refetches the page, about a second from the ship, where
+  // the frame's own history.go comes back in well under 100ms. So `jh`
+  // mirrors the joint history's entries made by frame loads, one tab key
+  // each, and Back or Forward use history.go when the entry they would
+  // cross is this tab's own. Anything that could put the mirror out of step
+  // (a replace, a closed tab) clears it, and the replace path takes over.
   const fnav = {};   // tab key -> { back, fwd, cur, addr, go, bar }
+  const jh = { keys: [], pos: -1 };
+  const jhClear = () => { jh.keys = []; jh.pos = -1; };
   const fnavOf = (key) => fnav[key] || (fnav[key] = { back: [], fwd: [], cur: null, addr: '', go: null, bar: null });
 
   // What the address field shows for a frame's page: the urb:// address or
@@ -5633,8 +5642,13 @@
     let url = null, d = null;
     try { d = f.contentDocument; url = f.contentWindow.location.href; } catch {}
     if (url === 'about:blank') return;
+    // the service worker's reload adds u=sw<time>: the same page, not a step
+    try { const u = new URL(url); u.searchParams.delete('u'); url = u.href; } catch {}
     if (n.go) n.go = null;            // Back or Forward landed: the stacks moved then
-    else if (n.cur !== null && url !== n.cur) { n.back.push(n.cur); n.fwd = []; }
+    else if (n.cur !== null && url !== n.cur) {
+      n.back.push(n.cur); n.fwd = [];
+      jh.keys.length = jh.pos + 1; jh.keys.push(key); jh.pos++;
+    }
     n.cur = url;
     n.addr = fnavAddr(d);
     n.bar = d ? d.querySelector('form.bar, form.cbar') : null;
@@ -5659,7 +5673,14 @@
     const url = from.pop();
     if (n.cur !== null) (how === 'back' ? n.fwd : n.back).push(n.cur);
     n.go = how;
-    try { f.contentWindow.location.replace(url); } catch {}
+    const at = how === 'back' ? jh.pos : jh.pos + 1;
+    if (jh.keys[at] === key && jh.keys.every((k) => frameOf(k))) {
+      jh.pos += how === 'back' ? -1 : 1;
+      try { f.contentWindow.history.go(how === 'back' ? -1 : 1); } catch {}
+    } else {
+      jhClear();
+      try { f.contentWindow.location.replace(url); } catch {}
+    }
     fhPaintKey(key);
   }
 
@@ -5744,7 +5765,10 @@
       + ' autocapitalize="off" enterkeyhint="go" aria-label="Address"'
       + ' placeholder="urb:// address or search your pages">'
       + '<div class="fhlist" role="listbox" aria-label="Suggestions" hidden></div></div>'
-      + '<span class="fhx"></span>';
+      + '<span class="fhx"></span>'
+      // ponytail: the star keeps one slot at the right end, reserved even
+      // while the page loads or has no star, so it never shifts
+      + '<button type="button" class="sbtn fhbm" data-fh="bm" disabled>' + ico('mark') + '</button>';
     h.key = null;
     const inp = h.querySelector('.fhin');
     h.querySelector('[data-fh=back]').onclick = () => h.key && fnavGo(h.key, 'back');
@@ -5760,24 +5784,26 @@
   // the reader bar's own extras, which hide with it: the bookmark star, the
   // orrery button, the forum's refused-posts link. Each shows here as a
   // button that clicks the original, so its own script still does the work.
+  // The star is updated in its fixed slot, never rebuilt.
   function fhExtras(h, bar) {
     const x = h.querySelector('.fhx');
+    const star = h.querySelector('[data-fh=bm]');
     x.textContent = '';
+    const bm = bar && bar.isConnected ? bar.querySelector('.bm') : null;
+    const live = bm && !bm.closest('[hidden]');
+    const on = !!live && /★/.test(bm.textContent);
+    star.disabled = !live;
+    star.classList.toggle('on', on);
+    star.style.visibility = live ? '' : 'hidden';
+    tip(star, on ? 'Bookmarked' : 'Bookmark this page');
+    star.onclick = live ? () => bm.click() : null;
     if (!bar || !bar.isConnected) return;
-    for (const el of bar.querySelectorAll('.bm, #orw button, #orw a, a[href*="forum-notes"]')) {
+    for (const el of bar.querySelectorAll('#orw button, #orw a, a[href*="forum-notes"]')) {
       if (el.closest('[hidden]')) continue;
-      let b;
-      if (el.classList.contains('bm')) {
-        const on = /★/.test(el.textContent);
-        b = tip(document.createElement('button'), on ? 'Bookmarked' : 'Bookmark this page');
-        b.className = 'sbtn fhbm' + (on ? ' on' : '');
-        b.innerHTML = ico('mark');
-      } else {
-        b = document.createElement('button');
-        b.className = 'fhtxt' + (/forum-notes/.test(el.getAttribute('href') || '') ? ' err' : '');
-        b.textContent = el.textContent.trim();
-        if (el.title) b.title = el.title;
-      }
+      const b = document.createElement('button');
+      b.className = 'fhtxt' + (/forum-notes/.test(el.getAttribute('href') || '') ? ' err' : '');
+      b.textContent = el.textContent.trim();
+      if (el.title) b.title = el.title;
       b.type = 'button';
       b.onclick = () => el.click();
       x.append(b);

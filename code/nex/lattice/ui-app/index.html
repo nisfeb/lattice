@@ -619,8 +619,10 @@ select, option { color-scheme: inherit; }
      the last lines would park the caret under the list pair. End the editor
      layers a button-row short of the container bottom, both layers alike so
      the highlight stays aligned. (height:auto lets top:0 + bottom size the
-     box; the base rule's height:100% would otherwise win.) */
-  .esrc, .ehl { height: auto; bottom: 56px; }
+     box; the base rule's height:100% would otherwise win.) Only while the
+     pair shows: otherwise the text runs down to the status bar. */
+  .esrc, .ehl { height: auto; bottom: 0; }
+  body:has(#lbtns.on) .esrc, body:has(#lbtns.on) .ehl { bottom: 56px; }
   /* never below 16px on mobile. A smaller textarea font makes iOS zoom on
      focus. Still one rule for both layers, so the metrics stay identical. */
   .esrc, .ehl { font-size: max(16px, var(--ed-size)); }
