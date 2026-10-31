@@ -35,20 +35,57 @@
 ::  is no auto-repair yet. Add a pub arm to +reindex
 ::  if that drift is ever observed in practice.
 ::
-::  +pub-pending: the shared pages saved but not yet published, by page
-::  rel (spat), with when each was first and last saved and how many
-::  publishes of it have been tried. Only the key is kept: the publish
+::  +pub-pending: the shared pages with a publish waiting or just made,
+::  by page rel (spat). Only the key is kept, never a body: the publish
 ::  reads the page as it is then, so it is always the newest text.
+::    last:  when the page was last saved
+::    tries: publishes of it tried since it last published
+::    sent:  when it last published (0: not since it was marked)
+::    dirty: a save is not published yet. A clean row only remembers
+::           `sent` for the throttle, and goes a `gap` after it.
 ::
-+$  pub-pending  (map @t [first=@da last=@da tries=@ud])
-::  +pub-due: when a pending page is published. A quiet `gap` after its
-::  last save, so a burst of saves publishes once, but never later than
-::  `cap` after the first, so steady typing still reaches readers.
++$  pub-wait     [last=@da tries=@ud sent=@da dirty=?]
++$  pub-pending  (map @t pub-wait)
+::  +pub-old: the map release 79 stored, [first last tries] a row, read
+::  so the pages a reload left waiting still publish
++$  pub-old      (map @t [first=@da last=@da tries=@ud])
+++  pub-from-old
+  |=  old=pub-old
+  ^-  pub-pending
+  (~(run by old) |=([first=@da last=@da tries=@ud] [last tries *@da &]))
+::  +pub-due: when a dirty row publishes. A throttle with a leading edge:
+::  a save a `gap` or more after the page's last publish goes at once,
+::  and saves inside the gap wait for its end, one publish of the newest
+::  text, so a page publishes at most once a gap.
 ::
 ++  pub-due
-  |=  [row=[first=@da last=@da tries=@ud] gap=@dr cap=@dr]
+  |=  [row=pub-wait gap=@dr]
   ^-  @da
-  (min (add last.row gap) (add first.row cap))
+  (add sent.row gap)
+::  +pub-note: a save of the page whose row is `old`, at `now`
+::
+++  pub-note
+  |=  [old=(unit pub-wait) now=@da]
+  ^-  pub-wait
+  ?~  old  [now 0 *@da &]
+  u.old(last now, tries 0, dirty &)
+::  +pub-prune: the rows that still mean something at `now`: every dirty
+::  one, and a clean one until its gap is over
+::
+++  pub-prune
+  |=  [pen=pub-pending now=@da gap=@dr]
+  ^-  pub-pending
+  %-  malt
+  %+  skim  ~(tap by pen)
+  |=([k=@t w=pub-wait] |(dirty.w (gth (pub-due w gap) now)))
+::  +pub-done: the row after a publish that started at `at` and ended at
+::  `now`, `cur` the row as it is now. A save that came in after `at` may
+::  have missed the copy, so it stays dirty for the next window.
+::
+++  pub-done
+  |=  [cur=pub-wait at=@da now=@da]
+  ^-  pub-wait
+  [last.cur 0 now (gth last.cur at)]
 +$  pub-row    [updated=@da bytes=@ud hash=@uvH]
 +$  pub-index  (map path pub-row)
 ::  +to-pub-row: project a stored page onto its index row.
