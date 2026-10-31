@@ -14,7 +14,12 @@
 <!-- theme (ui-app/theme.js): paint the last resolved one before the body does.
      Same line as app.hoon's +pwa-head, which the reader pages carry. -->
 <script>try{var v=JSON.parse(localStorage.latThemeVars||"{}"),s=document.documentElement.style;for(var k in v)s.setProperty(k,v[k])}catch(e){}</script>
-<script src="/apps/lattice/app/theme.js" defer></script>
+<!-- app.js is the one script the shell names, asked for first. theme.js,
+     prism, vault.js and orrery.js load from it after boot (99-boot.js): as
+     tags here they were four requests ahead of it and of the page-dump, on
+     a pier that answers one request at a time. defer runs it after the
+     parse, where the end of the body used to. -->
+<script src="/apps/lattice/app/app.js" defer></script>
 <title>lattice</title>
 <!-- css + icon inlined: every asset request costs ~2s on the serialized
      pier, so the shell ships as one document -->
@@ -653,22 +658,24 @@ select, option { color-scheme: inherit; }
   /* the drawers. Shut, each sits just off its edge and is not drawn at all
      (visibility, once the slide is over), so nothing in it takes a tap or
      the keyboard's focus. The ribbon is the left drawer's top row: the same
-     buttons, laid out across instead of down, sliding with the pane. */
+     buttons, laid out across instead of down, sliding with the pane.
+     The slide is 90ms of transform only, a flick that reads as instant: at
+     .2s ease each open or close was a quarter second of watching it. */
   .ws .pane, .ws.nt #lpane, .ws.nc #rpane { display: flex; position: fixed; z-index: 41;
     top: env(safe-area-inset-top); bottom: 0; width: var(--dw);
     padding-bottom: env(safe-area-inset-bottom);
-    visibility: hidden; transition: transform .2s ease, visibility 0s .2s; }
+    visibility: hidden; transition: transform 90ms ease-out, visibility 0s 90ms; }
   .ws #lpane { left: 0; top: calc(env(safe-area-inset-top) + var(--rib)); transform: translateX(-100%); }
   .ws #rpane { right: 0; transform: translateX(100%); }
   .ribbon { position: fixed; z-index: 41; left: 0; top: env(safe-area-inset-top);
     width: var(--dw); height: var(--rib); flex-direction: row; gap: 3px; padding: 0 8px;
     overflow: auto hidden; border-bottom: 1px solid var(--border-soft);
     transform: translateX(-100%); visibility: hidden;
-    transition: transform .2s ease, visibility 0s .2s; }
+    transition: transform 90ms ease-out, visibility 0s 90ms; }
   .ribbon .rtop, .ribbon .rbot { flex-direction: row; }
   .ribbon .rbot { margin: 0 0 0 auto; }
   .ws.ldraw #lpane, .ws.ldraw .ribbon, .ws.rdraw #rpane { transform: none; visibility: visible;
-    transition: transform .2s ease; }
+    transition: transform 90ms ease-out; }
   .ws.ldraw #scrim, .ws.rdraw #scrim { display: block; position: fixed; inset: 0; z-index: 40;
     background: color-mix(in srgb, var(--bg) 55%, transparent); }
   @media (prefers-reduced-motion: reduce) {
@@ -904,7 +911,6 @@ ul.qlist a:hover { background: var(--surface); }
 <lat-comments></lat-comments>
 <lat-conflicts></lat-conflicts>
 <lat-dialog></lat-dialog>
-<script src="/apps/lattice/prism.js"></script>
 <script>
 // The reader pages get this registration from app.hoon's sw-register-script.
 // The editor carries its own copy with one change: where a reader skips the
@@ -913,17 +919,24 @@ ul.qlist a:hover { background: var(--surface); }
 // the save lands and reloads then.
 // Not in a frame: there the editor does not start (00-framed.js), and a
 // takeover reload would only bring its note back.
+// app.js registers once the tree has landed (window.__latSwReg, 99-boot.js).
+// A first install precaches ten shell assets, and registered here those ten
+// requests went to the pier beside the boot's own, putting the page-dump
+// a second behind them.
 if ('serviceWorker' in navigator && window.top === window) {
-  navigator.serviceWorker.register('/apps/lattice/sw.js', { scope: '/apps/lattice' })
-    .then(function (r) {
-      r.addEventListener('updatefound', function () {
-        var w = r.installing;
-        if (w) w.addEventListener('statechange', function () {
-          if (w.state === 'installed' && navigator.serviceWorker.controller)
-            w.postMessage('skipWaiting');
+  window.__latSwReg = function () {
+    window.__latSwReg = null;
+    navigator.serviceWorker.register('/apps/lattice/sw.js', { scope: '/apps/lattice' })
+      .then(function (r) {
+        r.addEventListener('updatefound', function () {
+          var w = r.installing;
+          if (w) w.addEventListener('statechange', function () {
+            if (w.state === 'installed' && navigator.serviceWorker.controller)
+              w.postMessage('skipWaiting');
+          });
         });
-      });
-    }).catch(function (x) {});
+      }).catch(function (x) {});
+  };
   // a controller present now means this load was already SW-served, so a
   // later controllerchange is an update taking over. A first install also
   // fires controllerchange, and reloading on it would interrupt the very
@@ -946,8 +959,5 @@ if ('serviceWorker' in navigator && window.top === window) {
   }
 }
 </script>
-<script src="/apps/lattice/app/vault.js"></script>
-<script src="/apps/lattice/app/orrery.js"></script>
-<script src="/apps/lattice/app/app.js"></script>
 </body>
 </html>

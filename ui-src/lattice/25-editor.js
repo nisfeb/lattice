@@ -51,11 +51,20 @@
   const render = () => {
     if (rpHook) rpHook();
     const lang = LMAP[pkind.value];
-    const g = window.Prism && lang && Prism.languages[lang];
+    // the worker loads its own prism. This window's copy comes after boot
+    // (99-boot.js), and every LMAP language is in it, so until it lands a
+    // known language is taken as highlightable.
+    const g = lang && (!window.Prism || Prism.languages[lang]);
     if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; return; }
     hlRun({ body: src.value, lang });
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
+  // sync in the next frame's rAF, before it paints: for a new body, where
+  // reading scrollTop at once forces a layout the rest of the open undoes
+  let syncRaf = 0;
+  const syncSoon = () => {
+    if (!syncRaf) syncRaf = requestAnimationFrame(() => { syncRaf = 0; sync(); });
+  };
   // per-keystroke highlight throttle: Prism re-tokenizes the WHOLE document on
   // every render, which drops frames on large pages. Coalesce to one render per
   // frame. Past ~60KB fall back to a trailing debounce (even one full highlight

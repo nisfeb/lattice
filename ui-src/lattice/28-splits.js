@@ -301,6 +301,9 @@
         s.top = y * 100 + '%';
         s.width = w * 100 + '%';
         s.height = h * 100 + '%';
+        // its share of #groot, which is how splitWhy sizes it
+        n.fw = w;
+        n.fh = h;
         n.el.classList.toggle('gl', x > 1e-6);
         n.el.classList.toggle('gt', y > 1e-6);
         return;
@@ -381,11 +384,18 @@
       tabsSave();
     });
   }
-  // why `g` cannot split that way now, or '' when it can
+  // why `g` cannot split that way now, or '' when it can. A group's size
+  // is its share of #groot times #groot's size as the ResizeObserver last
+  // gave it, so asking never forces a layout. Measuring the group itself
+  // did, and at boot that one read was the first full layout, 42 ms
+  // inside the boot task. Only before the observer's first report does it
+  // measure, and nothing asks then but a split attempted in that frame.
+  let gsz = null;
   function splitWhy(g, dir) {
     if (!g) return 'no group';
     if (isMobile()) return 'one group at a time on a phone';
-    const r = g.el.getBoundingClientRect();
+    const r = gsz && g.fw != null ? { width: g.fw * gsz.w, height: g.fh * gsz.h }
+      : g.el.getBoundingClientRect();
     if (dir === 'r' && r.width < 2 * GMIN_W)
       return 'not enough room, each group needs at least ' + GMIN_W + 'px across';
     if (dir === 'd' && r.height < 2 * GMIN_H)
@@ -393,6 +403,7 @@
     return '';
   }
   function splitButtons() {
+    if (!gsz) return;     // the observer's first report paints them
     for (const g of groups) {
       for (const [b, d] of [[g.bsr, 'r'], [g.bsd, 'd']]) {
         const why = splitWhy(g, d);
@@ -403,7 +414,11 @@
       }
     }
   }
-  new ResizeObserver(() => splitButtons()).observe(groot);
+  new ResizeObserver((es) => {
+    const r = es[es.length - 1].contentRect;
+    gsz = { w: r.width, h: r.height };
+    splitButtons();
+  }).observe(groot);
 
   // ── the parked view ──────────────────────────────────────────────────
   // what the live editor showed a tab as it let go of it, so its group

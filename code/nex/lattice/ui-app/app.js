@@ -2656,8 +2656,14 @@
       w.append(b, x);
       g.list.append(w);
     }
-    const on = g.list.querySelector('.dtw.on');
-    if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    // the tab in front into view, in the next frame's rAF, before it lays
+    // out. Done here, it forced a layout of the whole shell in the middle
+    // of boot (46 ms), which the boot's later DOM work then threw away.
+    if (!g.scrollRaf) g.scrollRaf = requestAnimationFrame(() => {
+      g.scrollRaf = 0;
+      const on = g.list.querySelector('.dtw.on');
+      if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
   }
   function paintTabs() {
     for (const g of groups) paintStrip(g);
@@ -3895,11 +3901,20 @@
   const render = () => {
     if (rpHook) rpHook();
     const lang = LMAP[pkind.value];
-    const g = window.Prism && lang && Prism.languages[lang];
+    // the worker loads its own prism. This window's copy comes after boot
+    // (99-boot.js), and every LMAP language is in it, so until it lands a
+    // known language is taken as highlightable.
+    const g = lang && (!window.Prism || Prism.languages[lang]);
     if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; return; }
     hlRun({ body: src.value, lang });
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
+  // sync in the next frame's rAF, before it paints: for a new body, where
+  // reading scrollTop at once forces a layout the rest of the open undoes
+  let syncRaf = 0;
+  const syncSoon = () => {
+    if (!syncRaf) syncRaf = requestAnimationFrame(() => { syncRaf = 0; sync(); });
+  };
   // per-keystroke highlight throttle: Prism re-tokenizes the WHOLE document on
   // every render, which drops frames on large pages. Coalesce to one render per
   // frame. Past ~60KB fall back to a trailing debounce (even one full highlight
@@ -5203,6 +5218,9 @@
         s.top = y * 100 + '%';
         s.width = w * 100 + '%';
         s.height = h * 100 + '%';
+        // its share of #groot, which is how splitWhy sizes it
+        n.fw = w;
+        n.fh = h;
         n.el.classList.toggle('gl', x > 1e-6);
         n.el.classList.toggle('gt', y > 1e-6);
         return;
@@ -5283,11 +5301,18 @@
       tabsSave();
     });
   }
-  // why `g` cannot split that way now, or '' when it can
+  // why `g` cannot split that way now, or '' when it can. A group's size
+  // is its share of #groot times #groot's size as the ResizeObserver last
+  // gave it, so asking never forces a layout. Measuring the group itself
+  // did, and at boot that one read was the first full layout, 42 ms
+  // inside the boot task. Only before the observer's first report does it
+  // measure, and nothing asks then but a split attempted in that frame.
+  let gsz = null;
   function splitWhy(g, dir) {
     if (!g) return 'no group';
     if (isMobile()) return 'one group at a time on a phone';
-    const r = g.el.getBoundingClientRect();
+    const r = gsz && g.fw != null ? { width: g.fw * gsz.w, height: g.fh * gsz.h }
+      : g.el.getBoundingClientRect();
     if (dir === 'r' && r.width < 2 * GMIN_W)
       return 'not enough room, each group needs at least ' + GMIN_W + 'px across';
     if (dir === 'd' && r.height < 2 * GMIN_H)
@@ -5295,6 +5320,7 @@
     return '';
   }
   function splitButtons() {
+    if (!gsz) return;     // the observer's first report paints them
     for (const g of groups) {
       for (const [b, d] of [[g.bsr, 'r'], [g.bsd, 'd']]) {
         const why = splitWhy(g, d);
@@ -5305,7 +5331,11 @@
       }
     }
   }
-  new ResizeObserver(() => splitButtons()).observe(groot);
+  new ResizeObserver((es) => {
+    const r = es[es.length - 1].contentRect;
+    gsz = { w: r.width, h: r.height };
+    splitButtons();
+  }).observe(groot);
 
   // ── the parked view ──────────────────────────────────────────────────
   // what the live editor showed a tab as it let go of it, so its group
@@ -6271,6 +6301,9 @@
   // under it whichever way its siblings run.
   const SORTS = { name: 'Sort: name', 'name-desc': 'Sort: name, descending' };
   const treeSort = () => (localStorage.appSort === 'name-desc' ? 'name-desc' : 'name');
+  // one collator, the order localeCompare gives: localeCompare builds its
+  // own on every call, and that was most of an 18 ms sort at boot
+  const treeColl = new Intl.Collator();
   function treeOrder(list) {
     const dir = treeSort() === 'name-desc' ? -1 : 1;
     return list.map((n) => ({ n, s: n.path.split('/') })).sort((a, b) => {
@@ -6280,7 +6313,7 @@
         const fa = i < a.s.length - 1 || !a.n.page;
         const fb = i < b.s.length - 1 || !b.n.page;
         if (fa !== fb) return fa ? -1 : 1;
-        return dir * a.s[i].localeCompare(b.s[i]);
+        return dir * treeColl.compare(a.s[i], b.s[i]);
       }
       return (a.s.length - b.s.length) || (a.n.page - b.n.page);
     }).map((x) => x.n);
@@ -6731,7 +6764,7 @@
     // since this view was established?" for boot's reconcile guard; carrying
     // it across a navigation would mark every later untouched page as touched.
     everTyped = false;
-    render(); sync();
+    render(); syncSoon();
     markCurrent();
     st(d.kind + ' · rev ' + d.rev);
     exitRev();
@@ -10806,7 +10839,7 @@
 // ── src/78-export.js ──────────────────────────────────────────────────────
   // ── vault: scheduled-backup hook ───────────────────────────────────────────
   // The tar writer/reader and the whole export/restore path moved to the shared,
-  // standalone ui-app/vault.js (loaded before this bundle), so the editor, the
+  // standalone ui-app/vault.js (loaded after boot, 99-boot.js), so the editor, the
   // settings page and a scheduled backup all build the SAME archive. The manual
   // "export vault" / "restore vault" buttons moved to Settings; see +settings-html
   // and vault.js's mountSettings.
@@ -10814,8 +10847,9 @@
   // What stays here is only what is editor-specific: teach vault.js this page's
   // status line and offline state, then expose the hook the desktop scheduler
   // reaches in with (it evals window.__latticeBackup on whatever workspace page
-  // is showing, which is usually this editor).
-  if (window.LatticeVault) {
+  // is showing, which is usually this editor). Run once vault.js has loaded.
+  function vaultHook() {
+    if (!window.LatticeVault) return;
     LatticeVault.configure({
       status: (m, ok) => st(m, ok),
       isDegraded: () => degraded || !!offCount,
@@ -12537,6 +12571,32 @@
   //  background lane: these also yield to any user activity (see bgFetch),
   //  so a click during boot is no longer queued behind panel lists
   const loadPanels = () => { loadPerms(true); loadShared(true); };
+  // The side scripts: theme.js (the inline line in the shell has painted
+  // the last theme already), prism for the splits' parked views (the
+  // editor's highlighter is a worker that loads its own), vault.js and
+  // orrery.js. Nothing needs them to show or edit a page. As tags in the
+  // shell they were four requests ahead of app.js and the page-dump on a
+  // pier that answers one at a time, about 0.6 s each on a big ship. A
+  // load the worker serves takes them from its cache at once; a cold one
+  // asks for them once the tree has landed.
+  // The worker registers here too (index.html), for the same reason.
+  let sideOn = false;
+  function sideScripts() {
+    if (sideOn) return;
+    sideOn = true;
+    if (window.__latSwReg) window.__latSwReg();
+    const ready = { '/apps/lattice/app/vault.js': vaultHook, '/apps/lattice/app/orrery.js': orreryShow };
+    for (const u of ['/apps/lattice/app/theme.js', '/apps/lattice/prism.js',
+      '/apps/lattice/app/vault.js', '/apps/lattice/app/orrery.js']) {
+      const s = document.createElement('script');
+      s.src = u;
+      s.async = false;
+      if (ready[u]) s.onload = () => ready[u]();
+      document.head.append(s);
+    }
+  }
+  if (navigator.serviceWorker && navigator.serviceWorker.controller) sideScripts();
+  else setTimeout(sideScripts, 8000);
   // a queue left by a previous session syncs on open. With no Background
   // Sync (the SW must not intercept API calls), next-open IS the replay
   // moment, and the UI says so rather than implying closed-app sync exists
@@ -12558,7 +12618,7 @@
   // the tab model, with the tree and the panels loading beside it.
   const { tab: bootTab, fresh: bootFresh } = tabsBoot();
   if (bootTab.kind !== 'page') {
-    loadTree().then(() => { legacyCheck(); loadPanels(); });
+    loadTree().then(() => { legacyCheck(); sideScripts(); loadPanels(); });
     tabShowBoot(bootTab);
   } else {
     // a folder in the address (?into=, a reload while one was selected)
@@ -12588,6 +12648,7 @@
         || activeTab !== bootTab || pname.value !== bootShown;
       if (touched) {
         legacyCheck();
+        sideScripts();
         loadPanels();
         return;
       }
@@ -12603,6 +12664,7 @@
       else if (current) refreshOpen();
       else newFile('', false);
       legacyCheck();
+      sideScripts();
       loadPanels();
     });
   }
