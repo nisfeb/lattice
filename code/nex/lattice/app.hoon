@@ -587,7 +587,7 @@
         ::  in the save's own event. Its run waits for the next one
         ::  (+defer-drain), so the save answers first.
         ;<  ~  bind:m  (defer-drain /ev-defer)
-        ;<  ~  bind:m  (rise-later prod "lattice page evaluator" (spud path.rail))
+        ;<  ~  bind:m  (rise-later-as prod "lattice page evaluator" (spud path.rail) |)
         ::  this fiber IS the page dir: on-file hands it a rail already
         ::  relativised to the nexus, so its path is /page/<name> and its
         ::  length is the climb back to the root.
@@ -7106,8 +7106,7 @@
   |=  [root=@ud pax=path src=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  ~  bind:m  (make-page-as root pax src &)
-  (prune-page pax)
+  (make-page-as root pax src &)
 ::  +make-page-as: with trust=|, the write is a copy of a page a peer may
 ::  have written (+peer-written), so it sets the mark rather than lifting
 ::  it: a move or a conflict copy must not turn a peer's source into ours.
@@ -7707,15 +7706,26 @@
     ::  the write. The share mode is the one this run read above.
     =/  pub=?  !=(%private mode)
     ::  the same data again (a save of the same text) is not rewritten
+    =/  chg=?  !=(dat dat.p.res)
     ;<  ~  bind:n
-      ?:  =(dat dat.p.res)  (pure:n ~)
+      ?.  chg  (pure:n ~)
       ?:  pub
         (over-gained:fio (rf up pdir %data) [/lattice %eval-data] u.dat.p.res)
       (over:fio (rf up pdir %data) [/lattice %eval-data] u.dat.p.res)
     ::  record the render mode next to the data (read by the page view).
     ;<  ~  bind:n  (put-file (rf up pdir %show) [/lattice %eval-data] show.p.res)
+    ?.  chg  (pure:n ~)
+    ::  a %share in the meantime gained the data that was there, not this
+    ::  write: a page this run read as private is read again, and its new
+    ::  data gained if it is shared now
+    ;<  pub=?  bind:n
+      ?:  pub  (pure:(fiber:fiber:nexus ,?) &)
+      ;<  sm=share-mode:le  bind:(fiber:fiber:nexus ,?)  (read-share pdir)
+      (pure:(fiber:fiber:nexus ,?) !=(%private sm))
     ?.  pub  (pure:n ~)
-    ?:  =(dat dat.p.res)  (pure:n ~)
+    ;<  ~  bind:n
+      ?:  !=(%private mode)  (pure:n ~)
+      (gain:fio (rf up pdir %data) %.y)
     ::  a gained data grub keeps EVERY recompute forever otherwise. A timer
     ::  page, or a public form anyone can submit to, would grow the pier
     ::  without bound. Data has no history UI, so keep only a debugging
@@ -7892,6 +7902,50 @@
   ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
   ?.  =(`wire (mole |.(!<(^wire q.sage.u.in))))  [%skip ~]
   [%done ~]
+::  +drain-fio: eat the +fio answers an earlier run of this fiber left
+::  queued. A +fio wire names the request, so the next identical request
+::  would take that old answer for its own, and its own answer would be
+::  the next one left over: the fiber would read one behind on that wire
+::  for good, and a read-modify-write would lose updates. A behn timer
+::  fences the queue (+defer-at, past): every queued input is offered
+::  before its wake. The rest are skipped, and kept, as before. A refused
+::  or failed timer goes on at once.
+++  drain-fio
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  =wire  /rise/fio
+  ;<  ~  bind:m
+    %:  send-dart:io  %node  wire  &+&+[/sys/behn %'main.behn-state']
+      %poke  [/ %timer-set]  `[^wire @da]`[wire defer-at]
+    ==
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?~  in  [%wait ~]
+  ?:  (fio-answer u.in)  [%wait ~]
+  ?:  ?=([%veto %node *] u.in)
+    ?.(=(wire wire.dart.u.in) [%skip ~] [%done ~])
+  ?:  ?=([%pack * *] u.in)
+    ?.  =(wire wire.u.in)  [%skip ~]
+    ?~(err.u.in [%wait ~] [%done ~])
+  ?.  ?=([%poke * *] u.in)  [%skip ~]
+  ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
+  ?.  =(`wire (mole |.(!<(^wire q.sage.u.in))))  [%skip ~]
+  [%done ~]
+::  +fio-answer: an answer to a +fio request, by its wire
+++  fio-answer
+  |=  in=intake:fiber:nexus
+  ^-  ?
+  =/  w=(unit wire)
+    ?+  -.in  ~
+      %peek  `wire.in
+      %made  `wire.in
+      %gone  `wire.in
+      %lost  `wire.in
+      %gain  `wire.in
+      %born  `wire.in
+      %pack  `wire.in
+    ==
+  ?=([~ %fio *] w)
 ::  +defer-at: when +defer-drain's timer is set for. Past, so it wakes at
 ::  once, and before a publish due now (+pub-due:lp, a gap after 0): the
 ::  reader view of an own page renders the page's data, so a publish,
@@ -10148,6 +10202,12 @@
 ::  prunes it, which resets the counts.
 ++  rise-later
   |=  [=prod:fiber:nexus kind=tape who=tape]
+  (rise-later-as prod kind who &)
+::  +rise-later-as: +rise-later, with +drain-fio only when `fio`. A page
+::  evaluator has eaten its whole queue already (+defer-drain), and a
+::  second fence would put its run after its page's publish.
+++  rise-later-as
+  |=  [=prod:fiber:nexus kind=tape who=tape fio=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ::  the first step takes the start's own kick (~). A real input queued
@@ -10155,6 +10215,7 @@
   ::  step that only sends is a crash on every reload.
   ;<  ~  bind:m  take-kick
   ;<  ~  bind:m  drain-vetoes
+  ;<  ~  bind:m  ?.(fio (pure:m ~) drain-fio)
   ::  a clean start takes down any wait an earlier run left set
   ?~  prod
     ;<  *  bind:m  (soft-behn /rise/rest [[/ %timer-rest] `wire`/rise])
@@ -15717,7 +15778,8 @@
 ::  on every later take. A fiber is sequential, so a request it has made
 ::  is answered before it makes the next one: two of its own outstanding
 ::  requests never share a wire. An answer left over from a crashed run
-::  of the fiber names the same request, and is as good as its own.
+::  of the fiber would be taken by the next identical request, so a
+::  fiber's start eats them first (+drain-fio, in +rise-later).
 ++  fio
   |%
   ++  fw
