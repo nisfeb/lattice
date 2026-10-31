@@ -189,6 +189,18 @@
     (expect-eq !>(desk-page) !>((fold-base:lu app-base:lu desk-page)))
     (expect-eq !>(`path`(weld app-base:lu /page/x)) !>((unfold-base:lu app-base:lu (weld app-base:lu /page/x))))
   ==
+::  /unsub drops the keep at every base a /sub may have kept it at: the
+::  sub fiber's own keep dir is among them, whichever base it found
+++  test-sub-drop-dirs-cover-the-keep
+  =/  rel=path  /notes/intro
+  =/  dirs=(list path)  (sub-drop-dirs:lu rel)
+  ;:  weld
+    %+  expect-eq
+      !>  `(list path)`~[(weld desk-base:lu /pub/vault/notes/intro) (weld app-base:lu /pub/vault/notes/intro)]
+      !>  dirs
+    %-  expect
+    !>  (levy peer-bases:lu |=(b=path ?=(^ (find ~[(sub-keep-dir:lu b rel)] dirs))))
+  ==
 ::  /sys/link dest.lanes: develop's ordered list and dist's set both read,
 ::  directory lanes only, in claim order; junk reads as none
 ++  test-lane-dirs
