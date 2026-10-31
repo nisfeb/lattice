@@ -390,6 +390,9 @@ try {
     document.activeElement === document.getElementById('src')));
   await caretTo(3);
   check('on prose the pair is gone', !(await pairOn()));
+  const gap = await m.evaluate(() => document.getElementById('statusbar').getBoundingClientRect().top
+    - document.getElementById('src').getBoundingClientRect().bottom);
+  check('and the text runs down to the status bar', Math.abs(gap) <= 1, String(gap));
   await m.close();
 
   // ── desktop web: untouched ─────────────────────────────────────────────────
