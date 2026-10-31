@@ -86,6 +86,62 @@
   |=  [cur=pub-wait at=@da now=@da]
   ^-  pub-wait
   [last.cur 0 now (gth last.cur at)]
+::  +pub-failed: the row after a publish that failed at `now`: one more
+::  try, and dirty, so it is tried again a gap later. Only this counts a
+::  try; a writer restart (a deploy) leaves the row as it was.
+::
+++  pub-failed
+  |=  [row=pub-wait now=@da]
+  ^-  pub-wait
+  row(tries +(tries.row), sent now, dirty &)
+::  +pub-drop: whether a due row is given up on, after `max` failures
+::
+++  pub-drop
+  |=  [row=pub-wait max=@ud]
+  ^-  ?
+  (gte tries.row max)
+::  +pub-trying: the page whose publish is in flight, kept in a grub of
+::  its own and written in an event before the attempt, so a publish
+::  that takes its whole event down (which rolls back what it wrote)
+::  still leaves it. ~ when none.
+::
++$  pub-trying  (unit @t)
+::  +pub-restart: the rows and the in-flight mark as a writer starts.
+::  The page in flight, if still waiting, gets the try its attempt never
+::  recorded; every other row is left as it was, since a restart alone
+::  (a deploy) attempted nothing.
+::
+++  pub-restart
+  |=  [pen=pub-pending try=pub-trying]
+  ^-  pub-pending
+  ?~  try  pen
+  =/  w=(unit pub-wait)  (~(get by pen) u.try)
+  ?~  w  pen
+  ?.  dirty.u.w  pen
+  (~(put by pen) u.try u.w(tries +(tries.u.w)))
+::  +builder-mode: the view-mode a content page's run writes to /show,
+::  by the page's builder (lib/lattice-pg's text..tex), ~ for none
+::
+++  builder-mode
+  |=  b=@tas
+  ^-  (unit @tas)
+  ?:  =(%tex b)  `%text
+  ?:  ?=(?(%text %html %gmi %md %js %css) b)  `b
+  ~
+::  +pub-arm-at: when the one publish timer goes off, ~ when no row is
+::  dirty. A row already due arms the epoch, so its publish goes before
+::  every other past timer set after a save (+defer-at in the nexus),
+::  the page evaluator's run among them.
+::
+++  pub-arm-at
+  |=  [pen=pub-pending now=@da gap=@dr]
+  ^-  (unit @da)
+  =/  ds=(list @da)
+    %+  murn  ~(val by pen)
+    |=(w=pub-wait ?.(dirty.w ~ `(pub-due w gap)))
+  ?~  ds  ~
+  =/  at=@da  (roll t.ds |:([a=*@da b=i.ds] (min a b)))
+  `?:((lte at now) *@da at)
 +$  pub-row    [updated=@da bytes=@ud hash=@uvH]
 +$  pub-index  (map path pub-row)
 ::  +to-pub-row: project a stored page onto its index row.
