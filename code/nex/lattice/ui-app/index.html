@@ -220,6 +220,40 @@ select, option { color-scheme: inherit; }
 .tread button.on { color: var(--text); background: color-mix(in srgb, var(--text) 13%, transparent); }
 /* Save shows only on a phone, while a grub is in front (the 820px block) */
 #save { display: none; }
+/* a browsing tab's header (29-fhead.js): Back, Forward and the omnibar, the
+   tab header's height and look. Over the frame below it, so its list of
+   suggestions is too. */
+.fhead { position: relative; z-index: 4; flex: none; display: flex; align-items: center;
+  gap: 2px; min-width: 0; height: var(--strip); padding: 0 6px; box-sizing: border-box;
+  background: var(--bg); border-bottom: 1px solid var(--border-soft); }
+.fhead .sbtn:disabled { opacity: .35; cursor: default; background: none; }
+.fhomni { position: relative; flex: 1; min-width: 0; display: flex; margin: 0 4px; }
+.fhin { flex: 1; min-width: 0; height: 26px; padding: 0 8px; box-sizing: border-box;
+  border: 1px solid transparent; border-radius: 5px;
+  background: color-mix(in srgb, var(--text) 6%, transparent); color: var(--text);
+  font: .85rem ui-monospace, Menlo, Consolas, monospace; }
+.fhin:hover { background: color-mix(in srgb, var(--text) 9%, transparent); }
+.fhin:focus { outline: none; border-color: var(--green); background: var(--bg); }
+.fhin::placeholder { color: var(--muted); font-style: italic; }
+.fhlist { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 45;
+  display: flex; flex-direction: column; gap: 1px; max-height: min(420px, 60vh); overflow: auto;
+  padding: 4px; background: var(--pop, var(--bg)); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 6px 24px color-mix(in srgb, var(--text) 20%, transparent); }
+.fhrow { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 6px 8px;
+  border-radius: 5px; cursor: pointer; font-size: .85rem; }
+.fhrow.on, .fhrow:hover { background: color-mix(in srgb, var(--text) 10%, transparent); }
+.fhsrc { flex: none; padding: 0 6px; border: 1px solid var(--border); border-radius: 999px;
+  color: var(--muted); font-size: .7rem; }
+.fhsrc.bookmark { border-color: var(--green); color: var(--green); }
+.fhttl { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fhurl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--muted); font: .8rem ui-monospace, Menlo, Consolas, monospace; }
+.fhx { display: flex; align-items: center; gap: 2px; flex: none; }
+.fhx:empty { display: none; }
+.fhtxt { padding: 3px 8px; border: 0; border-radius: 5px; background: none; color: var(--muted);
+  font: inherit; font-size: .8rem; white-space: nowrap; cursor: pointer; }
+.fhtxt:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+.fhtxt.err { color: var(--err); }
 .tmenu .tsub { display: flex; flex-direction: column; padding-left: 12px; }
 .tmenu .tsub[hidden] { display: none; }
 .tmenu [aria-checked="true"]::after { content: " \2713"; color: var(--muted); }
@@ -536,6 +570,18 @@ select, option { color-scheme: inherit; }
   #lcorner { grid-column: 1; }
   .ws #rcorner, .ws.nc #rcorner { grid-column: 3; }
   .ws .corner .sbtn { width: 36px; height: 36px; }
+  /* the front group's frame header (29-fhead.js) rides in the top row,
+     between the toggles, with no Forward: the page gets its row back.
+     Fixed, since a phone shows one group and the row is outside it. */
+  .tgroup.gfocus > .fhead { position: fixed; z-index: 30; top: env(safe-area-inset-top);
+    left: 48px; right: 48px; height: 37px; padding: 0; background: none;
+    border-bottom: 1px solid var(--border-soft); }
+  .fhead [data-fh=fwd] { display: none; }
+  .fhead .sbtn { width: 36px; height: 36px; }
+  .fhin { height: 30px; font-size: 16px; }
+  .fhrow { padding: 10px 8px; font-size: 15px; }
+  /* the suggestions take the screen's width, under the top row */
+  .fhlist { position: fixed; left: 8px; right: 8px; top: calc(env(safe-area-inset-top) + 41px); }
   /* Save, the one way to save a grub without a keyboard (23-tabhead.js) */
   .ws.grubfront #save { display: inline-flex; }
   /* the unread count the ribbon's inbox carries, on the left drawer's
