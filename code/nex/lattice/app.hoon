@@ -435,8 +435,8 @@
         ;<  =sage:tarball  bind:m  take-poke:io
         ;<  now=@da  bind:m  bowl-now
         ::  a timer: the background publisher's (+pub-tick), or a stray
-        ::  wake an earlier sleep left behind, which is nothing to do. No
-        ::  beacon: a publish changes nothing an open tab shows.
+        ::  wake an earlier sleep left behind, which is nothing to do.
+        ::  +pub-tick bumps the beacon itself, once a copy is out.
         ?:  =([/ %timer-wake] p.sage)
           =/  wak=(unit path)  (mole |.(!<(path q.sage)))
           ;<  ~  bind:m
@@ -460,6 +460,8 @@
           ?:  =([/lattice %key-action] p.sage)  (pure:m ~)
           ?:  =([/lattice %know-action] p.sage)  (bump-beacon %know now)
           ?:  =([/lattice %know-batch] p.sage)  (bump-beacon %know now)
+          ;<  hold=?  bind:m  (pub-holds-beacon root sage)
+          ?:  hold  (pure:m ~)
           (bump-beacon %rev now)
         $
       ::  /shares.sig: the cross-ship share-notice inbox. Foreign ships %add.
@@ -6906,6 +6908,21 @@
     (~(put by pru) k (pub-note:lp (~(get by pen) k) now))
   ;<  ~  bind:m  (put-file (pub-pending-road root) [/ %noun] nen)
   (pub-arm-with nen)
+::  +pub-holds-beacon: whether the writer leaves /beacon/rev alone after
+::  this action: a save of a shared page, whose publish is waiting. An
+::  open reader view of it reloads on that beacon, once, and would
+::  reload to the old copy and stay there; +pub-tick bumps it instead
+::  once the copy is out. Every other tab learns of the save then too.
+++  pub-holds-beacon
+  |=  [root=@ud =sage:tarball]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ?.  =([/lattice %eval-action] p.sage)  (pure:m |)
+  =/  act=eval-action:le  !<(eval-action:le q.sage)
+  ?.  ?=(?(%make %make-marked) -.act)  (pure:m |)
+  ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
+  =/  w=(unit pub-wait:lp)  (~(get by pen) (spat pax.act))
+  (pure:m &(?=(^ w) dirty.u.w))
 ::  +pub-arm: set the publish timer for whatever is pending (writer start)
 ++  pub-arm
   |=  root=@ud
@@ -6972,6 +6989,9 @@
     ?~  err  (pure:m ~)
     (fault 'pub-failed' 3 "lattice /main.sig: publishing {(trip k)} failed" u.err)
   ;<  ~  bind:m  (put-file pr [/ %noun] nen)
+  ::  the bump the save held back (+pub-holds-beacon), now the copy an
+  ::  open reader view reloads to is out, or has failed for now
+  ;<  ~  bind:m  (bump-beacon %rev now)
   (pub-arm-with nen)
 ::  +pub-flush-one: publish the page at rel `k` as it is now, if it is
 ::  still there and still shared (an unshare or delete already took its
