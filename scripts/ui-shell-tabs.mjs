@@ -6,8 +6,8 @@
 //      the editor, the forum is navigated inside its tab, and the tab takes
 //      the page's title
 //    Browser opens a new browser tab per click at the reader home, with the
-//      reader's bar but not its menu, and the omnibar, links and the comment
-//      box's _top all stay inside the tab
+//      reader's bar hidden (the group's frame header stands in), and the
+//      bar's form, links and the comment box's _top all stay inside the tab
 //    Explorer is not on the ribbon, the palette lists it under Settings >
 //      Advanced, it opens as a tab whose page answers, and the link in
 //      Settings > Advanced opens that tab
@@ -174,8 +174,9 @@ try {
       return { bar: vis(d.querySelector('form.bar')), omni: vis(d.querySelector('form.bar input[name=url]')),
         ham: d.querySelector('.hamw') ? vis(d.querySelector('.hamw')) : 'absent' };
     }, frameOf(key));
-    check('a browser tab keeps the reader bar and its omnibar, not its menu',
-      bLoaded && dress.bar && dress.omni && dress.ham !== true, JSON.stringify({ bLoaded, dress }));
+    //  the group's frame header stands in for it (ui-mobrowse.mjs)
+    check('a browser tab hides the reader bar, its omnibar and its menu',
+      bLoaded && !dress.bar && !dress.omni && dress.ham !== true, JSON.stringify({ bLoaded, dress }));
     const bTitle = await until((s) => {
       const f = document.querySelector(s);
       const t = f && f.contentDocument.title.trim();
@@ -793,7 +794,7 @@ try {
     const fIn = await until(() => {
       const f = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/forum"]');
       return f?.contentDocument?.readyState === 'complete' && !!f.contentDocument.body
-        && [...f.contentDocument.querySelectorAll('style')].some((x) => x.textContent === '.hamw{display:none}');
+        && [...f.contentDocument.querySelectorAll('style')].some((x) => x.textContent === 'form.bar,form.cbar{display:none}');
     });
     //  the reader's page cache may swap the document once more after load
     await sleep(2000);
@@ -801,9 +802,9 @@ try {
       const f = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/forum"]');
       f.focus();
       f.contentWindow.focus();
-      //  a field that takes the focus (the bar's first button is a
-      //  disabled Back)
-      (f.contentDocument.querySelector('input, a[href]') || f.contentDocument.body).focus();
+      //  a field that takes the focus (the reader bar is hidden)
+      (f.contentDocument.querySelector('main a[href], body > a[href], a[href]:not(form.bar a)')
+        || f.contentDocument.body).focus();
     });
     await chord('KeyK', ['Control']);
     const inFrameK = await palOpen();

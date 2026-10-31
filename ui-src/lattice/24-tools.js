@@ -40,10 +40,10 @@
   };
   const SETTINGS = FRAME_KEYS.settings;
   // A browsing frame (the reader, the forum, the explorer) is navigated
-  // inside, so its tab is titled by the page it is on, and it keeps the
-  // reader's bar: the omnibar is the way to an urb:// address, and Back and
-  // Forward are the frame's own. Settings and the memory review are single
-  // pages whose bar would only lead away, so theirs is hidden.
+  // inside, so its tab is titled by the page it is on, and its group shows
+  // the frame header (29-fhead.js): Back, Forward and the omnibar, the way
+  // to an urb:// address. Settings and the memory review are single pages
+  // with no header. Every frame's own reader bar is hidden.
   // only a lattice path on this origin, whatever the key says: a frame is
   // dressed by reaching into it, and a key can come from typed input
   const frameUrl = (key) => {
@@ -133,6 +133,7 @@
     for (const f of allFrames())
       if (!open.some((x) => x.kind === 'tool' && x.key === f.dataset.tool)) {
         delete frameTitles[f.dataset.tool];
+        delete fnav[f.dataset.tool];
         f.remove();
       }
     for (const g of groups) {
@@ -141,7 +142,10 @@
       g.host.hidden = !key;
       if (key) toolMount(key, g.host);
       for (const c of g.host.children) c.hidden = c.dataset.tool !== key;
+      fhSync(g, key);
     }
+    // a browsing tab's header stands in for the tab header (29-fhead.js)
+    $('tabhead').hidden = !!t && browsing(t.key);
     // a wrap no group has in front waits in the stash, hidden
     for (const c of [...document.querySelectorAll('.toolhost > .intab')])
       if (!groups.some((g) => c.parentNode === g.host && !c.hidden)) { c.hidden = true; toolStash.append(c); }
@@ -189,15 +193,16 @@
     // stay, for frameDress and the pages themselves.
     f.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups '
       + 'allow-popups-to-escape-sandbox allow-modals allow-downloads');
-    f.onload = () => frameDress(f);
+    f.onload = () => { fnavLoad(f); frameDress(f); };
     f.src = url;
     toolHost.append(f);
   }
   let frameSeq = 0;
-  // Each load of a frame. Settings and the memory review lose the reader's
-  // bar, since the shell around them is the chrome. A browsing frame keeps
-  // it, less the menu, whose every entry (editor, knowledge, bookmarks,
-  // forum, settings) is a ribbon button or a pane tab of the shell already.
+  // Each load of a frame. Every frame loses the reader's bar, since the
+  // shell around it is the chrome: a browsing frame's group has the frame
+  // header instead (29-fhead.js), and the bar's menu entries (editor,
+  // knowledge, bookmarks, forum, settings) are ribbon buttons or pane tabs
+  // of the shell already.
   // The tab takes the page's title. A link in it to a document in the
   // editor opens that document in a new tab of the shell, never over the
   // frame's own tab and never as a second editor nested in the frame. A
@@ -217,7 +222,7 @@
     new MutationObserver(() => frameTheme(f))
       .observe(d.documentElement, { attributes: true, attributeFilter: ['style'] });
     const s = d.createElement('style');
-    s.textContent = browsing(key) ? '.hamw{display:none}' : 'form.bar{display:none}';
+    s.textContent = 'form.bar,form.cbar{display:none}';
     d.head.append(s);
     if (browsing(key)) {
       const title = () => {

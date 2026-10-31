@@ -451,6 +451,8 @@
     const t = g.active;
     const k = t && TAB_KINDS[t.kind];
     const doc = !!k && !!k.live;
+    // a browsing tab has its frame header instead (29-fhead.js)
+    g.ghead.hidden = !!t && t.kind === 'tool' && browsing(t.key);
     const s = t && t.snap;
     const body = !doc ? null : s ? s.body : gCache(t);
     const memo = [t, s, body, t && t.read, t && t.ghost, t && t.key, t && t.back.length, t && t.fwd.length,
