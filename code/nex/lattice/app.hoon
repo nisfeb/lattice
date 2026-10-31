@@ -1982,7 +1982,7 @@
     (serve-know eyre-id t.suffix args)
   ::  /app[/asset]: the lattice-hosted UI (grub-served; see ui-app/).
   ?:  &(?=([%app *] suffix) =(%'GET' method.request.req))
-    (serve-ui eyre-id t.suffix)
+    (serve-ui eyre-id t.suffix args)
   ::  root: the web reader (Landscape tile). ?url=urb://ship/rel renders that
   ::  page. No url renders the home index of our published pages. ponytail:
   ::  compact gemtext->HTML (headings/links/quotes/lists/pre). The full reader's
@@ -2903,7 +2903,8 @@
     =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
     ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
     %+  send-simple:srv  eyre-id
-    :-  [200 ~[['content-type' 'text/javascript'] ['cache-control' 'private, max-age=3600']]]
+    ::  application/javascript, as +serve-ui says, so vere gzips it
+    :-  [200 ~[['content-type' 'application/javascript'] ['cache-control' 'private, max-age=3600']]]
     `q.p.res
       [%'GET' %'manifest.webmanifest']
     (send-typed eyre-id 'application/manifest+json' 'public, max-age=86400' manifest-json)
@@ -8865,26 +8866,45 @@
 ::  anything unknown 404s. Assets are grubs so the request-fiber core stays
 ::  small. Never serve big blobs from core constants.
 ::
+::  Scripts go as application/javascript: vere's h2o gzips only the types
+::  in its mime table, which has that one and not text/javascript, so
+::  app.js went out as 600 KB raw (190 KB gzipped). And the
+::  worker's own fetch of app.js, ?v=V with V this release's +shell-ver,
+::  is immutable: that URL names exactly one build, so the browser keeps
+::  it and a warm boot stops pulling 600 KB over the pier. Any other v,
+::  or none, is no-cache as before, so a worker from an older release can
+::  never pin this one's app.js under its own key.
+::  The shell's HTML says which build it is (x-lattice-v), and the worker
+::  asks for its immutable app.js only behind HTML of its own build. Behind
+::  a newer one, the first load after a deploy, it asks with a unique v and
+::  gets the new app.js, so a page never pairs new HTML with an old app.js.
+::
 ++  serve-ui
-  |=  [eyre-id=@ta rest=path]
+  |=  [eyre-id=@ta rest=path args=(map @t @t)]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   =/  nam=@ta  ?~(rest %'index.html' i.rest)
   =/  ct=(unit @t)
     ?:  =(%'index.html' nam)  `'text/html'
-    ?:  =(%'app.js' nam)      `'text/javascript'
-    ?:  =(%'vault.js' nam)    `'text/javascript'
-    ?:  =(%'theme.js' nam)    `'text/javascript'
-    ?:  =(%'orrery.js' nam)   `'text/javascript'
+    ?:  =(%'app.js' nam)      `'application/javascript'
+    ?:  =(%'vault.js' nam)    `'application/javascript'
+    ?:  =(%'theme.js' nam)    `'application/javascript'
+    ?:  =(%'orrery.js' nam)   `'application/javascript'
     ~
   ?~  ct  (send-err eyre-id 404 'not found')
   ;<  pv=view:nexus  bind:m  (peek:io (rf up /app nam) ~)
   ?.  ?=([%file *] pv)  (send-err eyre-id 404 'not found')
   =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
   ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
+  =/  cc=@t
+    ?.  &(=(%'app.js' nam) =(`(cat 3 'lattice-' shell-ver) (~(get by args) 'v')))
+      'no-cache'
+    'private, max-age=31536000, immutable'
+  =/  heds=(list [@t @t])  ~[['content-type' u.ct] ['cache-control' cc]]
+  =?  heds  =(%'index.html' nam)  [['x-lattice-v' (cat 3 'lattice-' shell-ver)] heds]
   %+  send-simple:srv  eyre-id
-  :-  [200 ~[['content-type' u.ct] ['cache-control' 'no-cache']]]
+  :-  [200 heds]
   `q.p.res
 ::  +serve-know: the private knowledge view (builders in /lib/lattice-know-view).
 ::  The keep on /beacon/rev live-reloads an open view whenever the writer
@@ -12678,6 +12698,8 @@
 ::  fill, one to finally hit. That third-visit cliff reappeared on every
 ::  deploy, because a new V empties the shell cache. Assets are added one by
 ::  one, since addAll fails the whole install if any single asset 404s.
+::  app.js is fetched as ?v=V, the URL a boot later asks for, so its copy
+::  in the http cache is the immutable one +serve-ui sends there.
 ::  The HTML document and app.js, the two that decide which CODE runs, are
 ::  network-FIRST: try the pier, fall back to cache only when offline. So a
 ::  deploy, even a broken one, can never trap a client on a stale shell the way
@@ -12706,6 +12728,11 @@
 ::  Changing V is the only reliable eviction — activate deletes every cache
 ::  whose key is not V.
 ::
+::  +shell-ver: the worker's cache key, V without its lattice- prefix. Also
+::  what makes app.js?v=V immutable (+serve-ui).
+++  shell-ver
+  ^-  @t
+  (scot %ux (mug [uih uij vjs tjs ojs icon pjs manifest-json icon-192-b64 icon-512-b64]))
 ++  sw-js
   ^-  @t
   ::  The cache key is DERIVED from the two files it caches, never typed by
@@ -12746,8 +12773,7 @@
   ::  goes through as it is, as it would with no worker, and the pages cache
   ::  is dropped. Only a failed fetch (offline) falls back to the cached
   ::  shell. Owner content used to outlive the session in this browser.
-  =/  ver=@t
-    (scot %ux (mug [uih uij vjs tjs ojs icon pjs manifest-json icon-192-b64 icon-512-b64]))
+  =/  ver=@t  shell-ver
   ::  PV versions the RENDERED reader documents (their inline css + scripts).
   ::  V only covers shell assets, so a deploy that restyled the reader left
   ::  every cached page serving the old markup indefinitely: content revs
@@ -12760,7 +12786,7 @@
       ver
       '";var PV="'
       pv
-      '";var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var nu=(u.pathname==="/apps/lattice/app/app.js")?(u.origin+u.pathname+"?v="+V):q;return fetch(nu).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var HV=null;var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){e.waitUntil(caches.open(V).then(function(c){return Promise.all(SHELL.map(function(u){if(u==="/apps/lattice/app/app.js"){return fetch(u+"?v="+V).then(function(r){if(r.ok)return c.put(u,r)}).catch(function(){})}return c.add(u).catch(function(){})}))}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var nu=js?(u.origin+u.pathname+"?v="+(HV===V?V:V+"-"+Date.now())):q;return fetch(nu).then(function(r){if(!js&&r){HV=r.headers.get("x-lattice-v")}if(r&&r.ok){c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
