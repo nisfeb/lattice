@@ -13,7 +13,7 @@
 //  fails — which is precisely the regression.
 //
 //  Usage: node scripts/ui-preview-open.mjs      (defaults to the harness ship on :8080)
-import { shipEnv, launchBrowser, openPage, makeCheck } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, seed } from './lib/harness.mjs';
 
 const env = shipEnv();
 const APP = env.app;
@@ -31,6 +31,11 @@ const goto = async () => {
   await p.goto(APP, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await p.waitForFunction(() => document.querySelectorAll('#treelist a.pg').length > 0, { timeout: 90000 });
 };
+//  pages that already exist, with words the other lacks. A fresh ship's
+//  vault has none, so the suite brings two of its own, made before the
+//  first load so the dump carries them like any other page
+await seed(env, [['prevopen-fixture-a', '# Alpha\nPelican harbour lighthouse keeper\n'],
+  ['prevopen-fixture-b', '# Beta\nGranite mountain observatory dome\n']]);
 const srcdoc = () => p.evaluate(() => document.getElementById('prev').getAttribute('srcdoc') || '');
 
 await goto();

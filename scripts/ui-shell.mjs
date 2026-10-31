@@ -75,6 +75,10 @@ try {
   await post('know-restore?key=' + encodeURIComponent(FRESH)).catch(() => {});
   await post('know-delete?key=' + encodeURIComponent(FRESH)).catch(() => {});
   await post('bookmark?url=' + encodeURIComponent(MARK) + '&title=shell%20mark&folder=shellf');
+  //  a fresh ship's vault is empty and its tree has no rows to wait for
+  //  (two folders and two pages at the root, so the sort check has an order to flip)
+  await seed(env, [['uishell-fixture-1/tree', '# a page for the tree\n'], ['uishell-fixture-2/tree', '# another\n'],
+    ['uishell-fixture-a', '# a root page\n'], ['uishell-fixture-b', '# another root page\n']]);
   await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
   await page.evaluate(() => {
     for (const k of ['appNT', 'appNC', 'appLTab', 'appRTab', 'appPanes', 'appTabs']) localStorage.removeItem(k);

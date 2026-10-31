@@ -17,7 +17,7 @@
 //
 //  Usage: LATTICE_URL=http://localhost:8081 LATTICE_COOKIE=~/.config/lattice-fs/nec-cookie \
 //           node scripts/ui-createdialog.mjs
-import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep, seed } from './lib/harness.mjs';
 
 const env = shipEnv();
 const RUN = 'createdlg-' + process.pid;
@@ -28,6 +28,8 @@ const page = await openPage(browser, env, { viewport: { width: 700, height: 900 
 
 const made = [];
 try {
+  //  a fresh ship's vault is empty: one folder for the folder + to sit on
+  await seed(env, [['uicreatedialog-fixture/tree', '# a page for the tree\n']]);
   await page.goto(env.app, { waitUntil: 'networkidle2', timeout: 90000 });
   await page.waitForFunction(
     () => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0,

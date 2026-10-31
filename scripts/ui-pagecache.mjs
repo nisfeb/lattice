@@ -20,7 +20,7 @@
 import { rmSync, mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { shipEnv, launchBrowser, openPage, makeCheck, settle, sleep, shipName, seed } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, settle, sleep, waitFor, shipName, seed } from './lib/harness.mjs';
 
 const env = shipEnv();
 const BASE = env.base;
@@ -71,6 +71,13 @@ const waitCached = async (url, maxMs = 60000) => {
   return false;
 };
 
+//  does the ship's reader serve `text` for the page, past every cache
+const served = (name, text) => p.evaluate(async (n, s, ship) => {
+  const r = await fetch('/apps/lattice?url=urb%3A%2F%2F' + ship + '%2F' + n + '&u=pc' + Date.now(),
+    { cache: 'no-store' });
+  return (await r.text()).includes(s);
+}, name, text, SHIP).catch(() => false);
+
 try {
   // ── cold, then the background self-refetch populates the cache ──────────
   let t = await nav(PAGE);
@@ -97,12 +104,21 @@ try {
     await fetch('/apps/lattice/page-save?name=harnessdir%2Fone&type=md',
       { method: 'POST', body: b });
   }, '# one\n' + stamp1);
-  await sleep(3000);
+  //  the ship serves the new text: what the cached view is now stale against
+  const tS = Date.now();
+  const pubd = await waitFor(() => served('harnessdir%2Fone', stamp1), 30000, 500);
+  console.log('  (the ship served the new text after ' + (Date.now() - tS) + 'ms' + (pubd ? '' : ', or never') + ')');
   t = await nav(PAGE);
   check('stale-at-open paints instantly', t < 400, t + 'ms');
   navs = 0;
   await sleep(10000);
   check('convergence is quiet — no reload', navs === 0, navs + ' navs');
+  //  the quiet background refetch has put the new text in the cache
+  await waitFor(() => p.evaluate(async (u, s) => {
+    const hit = await (await caches.open('lattice-pages')).match(u);
+    return !!hit && (await hit.text()).includes(s);
+  }, PAGE, stamp1).catch(() => false), 30000, 500)
+    || console.log('  (the cached view still lacked the new text after 30 s)');
   t = await nav(PAGE);
   check('next view is fresh', (await p.content()).includes(stamp1));
   check('next view still instant', t < 400, t + 'ms');
@@ -115,15 +131,19 @@ try {
   // opening p2 made the viewing tab HIDDEN, and hidden tabs now hold no
   // stream and defer updates by design — bring it back before the bump so
   // this scenario tests the VISIBLE live path
+  //  the tab's stream reconnects once it is visible: wait for its answer,
+  //  so the bump below cannot land before anything is listening
+  const streamUp = p.waitForResponse((r) => (r.request().headers().accept || '').includes('text/event-stream'),
+    { timeout: 20000 }).catch(() => null);
   await p.bringToFront();
-  await sleep(1500);   // let the stream reconnect
+  await streamUp;
   navs = 0;
   await p2.evaluate(async (b) => {
     await fetch('/apps/lattice/page-save?name=harnessdir%2Fone&type=md',
       { method: 'POST', body: b });
   }, '# one\n' + stamp2);
   let seen = false;
-  for (let i = 0; i < 25 && !seen; i++) {
+  for (let i = 0; i < 60 && !seen; i++) {
     await sleep(1000);
     try { seen = (await p.content()).includes(stamp2); } catch {}
   }
@@ -174,12 +194,14 @@ try {
   // ── eviction: budget=1 empties the cache; next view takes the slow path ─
   await p.evaluate(() => { localStorage.latCacheBudget = '1'; });
   await nav(PAGE);
-  await sleep(12000);
-  const left = await p.evaluate(async () => {
+  const cached = () => p.evaluate(async () => {
     const c = await caches.open('lattice-pages');
     // the /__pv deploy-version marker lives in the cache and never evicts
     return (await c.keys()).filter((k) => !k.url.includes('__pv')).length;
   });
+  //  eviction runs after the page's background refetch, 12 s at most here
+  await waitFor(async () => (await cached()) === 0, 20000, 500);
+  const left = await cached();
   check('eviction empties the cache at budget=1', left === 0, left + ' entries');
   t = await nav(PAGE);
   check('post-eviction view takes the slow path',
@@ -219,11 +241,10 @@ try {
     }, stamp3, SHIP).catch(() => false);
   }
   check('(setup) editor save landed on ship', landed);
-  await sleep(2000);
-  const busted = await p.evaluate(async (page) => {
+  const busted = await waitFor(() => p.evaluate(async (page) => {
     const c = await caches.open('lattice-pages');
     return !(await c.match(page));
-  }, PAGE);
+  }, PAGE), 10000, 250);
   check('editor save busts the cached view', busted);
   t = await nav(PAGE);
   check('view after own edit is fresh', (await p.content()).includes(stamp3), t + 'ms');
@@ -246,11 +267,11 @@ try {
   await p3.close();
 
   // ── a DELETED page must fall out of the cache ───────────────────────────
-  await p.evaluate(async () => {
-    await fetch('/apps/lattice/page-save?name=harnessdir%2Ftmpdel&type=md',
-      { method: 'POST', body: '# doomed\ntmpdel-body' });
-  });
-  await sleep(2000);
+  //  from here, not the tab: the tab may be swapping its document as it
+  //  comes back to the front, which fails a fetch it has in flight
+  await fetch(env.base + '/apps/lattice/page-save?name=harnessdir%2Ftmpdel&type=md',
+    { method: 'POST', headers: { Cookie: env.cookie }, body: '# doomed\ntmpdel-body' });
+  await waitFor(() => served('harnessdir%2Ftmpdel', 'tmpdel-body'), 10000, 500);
   const DOOMED = BASE + '/apps/lattice?url=urb%3A%2F%2F' + SHIP + '%2Fharnessdir%2Ftmpdel';
   await nav(DOOMED);
   check('(setup) doomed page in cache', await waitCached(DOOMED));
@@ -290,8 +311,14 @@ try {
     return false;
   });
   check('clip confirmation never enters the cache', !clipCached);
-  t = await nav(CLIP);
-  check('repeat clip reaches the server', t > 400, t + 'ms');
+  //  reaches the server: the answer came over the network, not from the
+  //  worker or the HTTP cache. The time alone cannot say it: a quiet ship
+  //  answers a clip in under 400 ms
+  const t0c = Date.now();
+  const clipResp = await p.goto(CLIP, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  t = Date.now() - t0c;
+  check('repeat clip reaches the server',
+    !!clipResp && !clipResp.fromServiceWorker() && !clipResp.fromCache(), t + 'ms');
 
   // ── a manual reload must reach the network ──────────────────────────────
   check('(setup) view recached', await waitCached(PAGE));

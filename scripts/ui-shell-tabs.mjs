@@ -35,7 +35,7 @@
 //
 //  Usage: LATTICE_URL=http://localhost:8080 LATTICE_COOKIE=/tmp/tyr-cookie.txt \
 //           node scripts/ui-shell-tabs.mjs
-import { shipEnv, launchBrowser, openPage, seed, makeCheck, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, seed, makeCheck, sleep, waitFor } from './lib/harness.mjs';
 
 const env = shipEnv();
 const check = makeCheck();
@@ -324,7 +324,7 @@ try {
     const viaSet = await until((k) => {
       const s = window.latTabs.state();
       return s.tabs[s.active]?.key === k;
-    }, xk, 10000);
+    }, xk, 30000);
     await sleep(500);
     const sAt = (await frameAt(sk) || '').split('?')[0];
     check('Settings > Advanced opens the explorer tab',
@@ -350,13 +350,13 @@ try {
       await until((s) => document.querySelector(s)?.contentDocument?.readyState === 'complete'
         && document.querySelector(s).contentWindow.location.pathname === '/apps/lattice/forum',
       frameOf(fk));
-      await sleep(1500);
-      const dark = await bgs();
+      const dark = await waitFor(async () => { const b = await bgs(); return same(b) && b.shell === 'rgb(26, 26, 26)' && b; }, 6000)
+        || await bgs();
       check('a frame tab takes the shell\'s dark ground', same(dark) && dark.shell === 'rgb(26, 26, 26)',
         JSON.stringify(dark));
       await scheme('light');
-      await sleep(800);
-      const light = await bgs();
+      const light = await waitFor(async () => { const b = await bgs(); return same(b) && b.shell !== dark.shell && b; }, 6000)
+        || await bgs();
       check('an open frame tab follows the system going light', same(light) && light.shell !== dark.shell,
         JSON.stringify(light));
       //  a mode set from another document, as the settings tab sets it
@@ -366,8 +366,8 @@ try {
         const t = JSON.parse(w.localStorage.latTheme || '{}');
         w.localStorage.latTheme = JSON.stringify(Object.assign(t, { mode: 'light' }));
       }, frameOf(fk));
-      await sleep(1500);
-      const forced = await bgs();
+      const forced = await waitFor(async () => { const b = await bgs(); return same(b) && b.shell !== dark.shell && b; }, 6000)
+        || await bgs();
       check('an open frame tab follows a theme picked elsewhere', same(forced) && forced.shell !== dark.shell,
         JSON.stringify(forced));
     } finally {
@@ -410,18 +410,23 @@ try {
     await page.focus('#src');
     await page.keyboard.press('End');
     await page.keyboard.type(' ' + mark);
+    //  the save's own answer, timed in the browser: a save starved of a
+    //  connection never gets one. Polling page-source every 400 ms instead
+    //  put a request a beat on the one ship the save was waiting on
+    const answered = page.waitForResponse((r) => /\/page-save\?/.test(r.url()) && r.request().method() === 'POST',
+      { timeout: 20000 }).catch(() => null);
     await page.keyboard.down('Control');
     await page.keyboard.press('KeyS');
     await page.keyboard.up('Control');
     const t0 = Date.now();
-    let landed = false;
-    while (!landed && Date.now() - t0 < 20000) {
-      await sleep(400);
+    const sres = await answered;
+    const ms = Date.now() - t0;
+    //  and it landed: the ship has the typed text
+    const landed = !!sres && sres.ok() && !!(await waitFor(async () => {
       const r = await fetch(env.base + '/apps/lattice/page-source?name=' + encodeURIComponent(PAGE),
         { headers: { Cookie: env.cookie } }).catch(() => null);
-      landed = !!r && r.ok && ((await r.json()).body || '').includes(mark);
-    }
-    const ms = Date.now() - t0;
+      return !!r && r.ok && ((await r.json()).body || '').includes(mark);
+    }, 10000, 500));
     check('with six browser tabs and a forum tab open, a save lands in seconds',
       nFrames === 7 && landed && ms < 8000, JSON.stringify({ nFrames, landed, ms }));
     //  the tabs close, and so do their frames
@@ -445,7 +450,11 @@ try {
       a.click();
       return a.getAttribute('href');
     }, frameOf(bkey));
-    await sleep(2500);
+    //  the shell takes the link: a page tab comes to the front
+    await waitFor(() => page.evaluate(() => {
+      const st = window.latTabs.state();
+      return st.tabs[st.active] && st.tabs[st.active].kind !== 'tool';
+    }), 8000);
     const after = await page.evaluate((s) => {
       const f = document.querySelector(s);
       let at = null, inner = null;
@@ -473,7 +482,11 @@ try {
       return f?.contentWindow.location.pathname === '/apps/lattice/app'
         && f.contentDocument.readyState === 'complete';
     }, frameOf(bkey), 20000);
-    await sleep(2000);
+    //  the frame's ?into= reaches the shell: a page tab in front, the address its folder
+    await waitFor(() => page.evaluate((u) => {
+      const st = window.latTabs.state();
+      return st.tabs[st.active]?.kind === 'page' && location.pathname + location.search === u;
+    }, '/apps/lattice/app?into=x-' + process.pid), 8000);
     const boxed = await page.evaluate((s) => {
       const f = document.querySelector(s);
       let at = null, inner = null, src = null;

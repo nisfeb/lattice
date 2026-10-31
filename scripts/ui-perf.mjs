@@ -13,7 +13,7 @@
 // Needs puppeteer-core:  npm i --no-save puppeteer-core
 // Never run against production. It writes two probe pages and deletes them.
 
-import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep, waitFor } from './lib/harness.mjs';
 
 const env = shipEnv();
 const APP = env.app;
@@ -31,6 +31,11 @@ page.on('request', (r) => {
   const u = r.url();
   if (u.includes('/apps/lattice')) reqs.push(u.slice(u.indexOf('/apps/lattice') + 13));
 });
+//  and every one that has finished, so a wait can be on the answer itself
+let done = [];
+page.on('requestfinished', (r) => done.push(r.url()));
+const rendered = (n) => waitFor(() => done.some((u) => u.includes('/page-source?')
+  && u.includes('render=1') && u.includes('name=' + encodeURIComponent(n))), 20000, 100);
 const since = (mark, pat) => reqs.slice(mark).filter((u) => u.includes(pat)).length;
 const wait = (fn, ...args) => page.waitForFunction(fn, { timeout: 90000 }, ...args);
 
@@ -60,7 +65,11 @@ try {
   // revision (the evaluator settles after the writer), and a dump landing
   // mid-test legitimately prunes the entry it thinks is stale. That is a
   // cache miss, not a wrong answer, but it makes the assertions below flap.
-  await sleep(6000);
+  await waitFor(() => page.evaluate(async (a, b, ba, bb) => {
+    const j = await (await fetch('/apps/lattice/page-dump', { cache: 'no-store' })).json();
+    const body = (n) => ((j.nodes || []).find((x) => x.path && x.path.endsWith(n)) || {}).body;
+    return body(a) === ba && body(b) === bb;
+  }, A, B, BODY_A, BODY_B), 30000, 1000);
 
   // ── 1. cold boot: how many requests before the editor is usable? ─────────
   step = 'cold boot';
@@ -98,7 +107,8 @@ try {
   check('open A: editor text painted from the tree dump, no round-trip',
     paintedFast === BODY_A, JSON.stringify(paintedFast.slice(0, 40)));
   await wait(() => document.getElementById('src').value.length > 0);
-  await sleep(2500);
+  //  A's render answered (it fills the preview and the page cache)
+  await rendered(A); await sleep(500);
   console.log('       first open of A cost ' + since(mark, 'page-source') +
     ' page-source request(s) (fills preview + share)');
 
@@ -109,7 +119,7 @@ try {
       .find((a) => a.href.includes(encodeURIComponent(n))).click();
   }, B);
   await wait((b) => document.getElementById('src').value === b, BODY_B);
-  await sleep(2500);                       // let B's render land and cache
+  await rendered(B); await sleep(500);     // let B's render land and cache
   mark = reqs.length;                      // count only the re-open of A
   await page.evaluate((n) => {
     [...document.querySelectorAll('#treelist a.pg')]

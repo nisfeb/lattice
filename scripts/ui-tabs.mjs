@@ -24,7 +24,7 @@
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           node scripts/ui-tabs.mjs
-import { shipEnv, launchBrowser, openPage, makeCheck, seed, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, seed, sleep, waitFor, swControlled } from './lib/harness.mjs';
 
 const env = shipEnv();
 const RUN = 'x-' + process.pid;
@@ -54,6 +54,8 @@ const boot = async (url = env.app) => {
   await sleep(800);
 };
 const state = () => page.evaluate(() => window.latTabs ? window.latTabs.state() : null);
+//  no edit is waiting to be saved: an autosave in flight has landed
+const settled = () => waitFor(() => page.evaluate(() => !window.__latUnsaved || !window.__latUnsaved()), 10000, 250);
 //  the active tab is the one named and the editor shows its document
 const waitOn = async (kind, key) => {
   try {
@@ -85,8 +87,8 @@ try {
   await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
   await page.evaluate(() => { localStorage.removeItem('appTabs'); localStorage.removeItem('appPage'); });
   await boot();
-  //  a fresh load is taken over by the service worker, which reloads once
-  await sleep(8000);
+  //  a fresh load is taken over by the service worker
+  await swControlled(page);
   await page.waitForFunction(() => document.querySelectorAll('#treelist a.pg').length > 0, { timeout: 90000 });
 
   // ── Ctrl+click opens a second tab ──────────────────────────────────────
@@ -130,7 +132,7 @@ try {
   await page.click(tabSel('page', B));
   await waitOn('page', B);
   await typeEnd('BBB');
-  await sleep(4000);
+  await waitFor(async () => (await body(A)).includes('AAA') && (await body(B)).includes('BBB'), 12000, 500);
   const [ba, bb] = [await body(A), await body(B)];
   check('switch inside the autosave window keeps both', ba.includes('AAA') && bb.includes('BBB'),
     JSON.stringify({ ba, bb }));
@@ -201,7 +203,7 @@ try {
 
   // ── the tab list survives a reload ─────────────────────────────────────
   await waitOn(s.tabs[s.active].kind, s.tabs[s.active].key);
-  await sleep(2500);   // the last autosave lands, so the reload is not asked about
+  await settled();   // the last autosave lands, so the reload is not asked about
   const before = await state();
   await boot(page.url());
   const sa = s.tabs[s.active];
@@ -287,16 +289,17 @@ try {
   await page.click(tabSel('know', K));
   await waitOn('know', K);
   const mtext = await page.evaluate(() => document.getElementById('src').value);
-  await sleep(2000);
+  await waitFor(async () => (((await shipGet('know-read?key=' + encodeURIComponent(K))) || {}).body || '').includes('MMM'), 10000, 500);
   const mship = ((await shipGet('know-read?key=' + encodeURIComponent(K))) || {}).body || '';
   check('a dirty memory keeps its text across a switch, and it is saved',
     mtext.includes('MMM') && mship.includes('MMM'), JSON.stringify({ mtext, mship }));
 
   // ── a reload with a memory tab in front shows memories ────────────────
-  await sleep(2500);
+  await settled();
+  const dumped = page.waitForResponse((r) => r.url().includes('/page-dump'), { timeout: 60000 }).catch(() => null);
   await boot(page.url());
   await waitOn('know', K);
-  await sleep(8000);   // past the page dump boot also loads
+  await dumped; await sleep(1000);   // past the page dump boot also loads, and its paint
   await page.evaluate(() => document.querySelector('#ltabs [data-pt=know]').click());
   await page.waitForFunction(() => [...document.querySelectorAll('#knowlist a.pg')]
     .some((a) => a.textContent === 'm'), { timeout: 30000 }).catch(() => {});

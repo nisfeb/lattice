@@ -13,7 +13,7 @@
 //  behaviour needs one.
 //
 //  Usage: node scripts/ui-deskmenu.mjs      (defaults to the harness ship on :8080)
-import { shipEnv, launchBrowser, openPage, makeCheck } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, seed } from './lib/harness.mjs';
 
 const env = shipEnv();
 const APP = env.app;
@@ -56,6 +56,8 @@ const shown = (p) => p.evaluate((list) => Object.fromEntries(list.map((id) => {
 })), MOVED);
 
 // web: every one of them must still be reachable, because there is no menubar
+//  a fresh ship's vault is empty and its tree has no rows to wait for
+await seed(env, [['uideskmenu-fixture/tree', '# a page for the tree\n']]);
 const web = await boot(false);
 const onWeb = await shown(web);
 check('web: every moved command is still a visible button',
@@ -106,7 +108,12 @@ check('desktop: the emptied button rows are hidden too, not left as a blank band
 //  those. Here: everything else, the File menu's hidden homes included.
 const missing = await desk.evaluate(() => {
   const P = window.latPalette;
+  //  swm-move's home is the button beside a row another ship shared with
+  //  this one, so a ship nobody has shared with has none (ui-links checks
+  //  it beside a real row)
+  const swm = !!document.querySelector('#treelist a.pg.swm');
   return P.ids().filter((id) => !id.startsWith('pm-') && !P.only.includes(id)
+    && !(id === 'swm-move' && !swm)
     && !document.querySelector('[data-action="' + CSS.escape(id) + '"]'));
 });
 const palette = await desk.evaluate(async () => {

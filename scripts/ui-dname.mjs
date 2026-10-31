@@ -2,7 +2,7 @@
 // the new-page dialog, create, and the tree shows the typed name over the
 // slug path.
 //   LATTICE_URL=http://localhost:8080 LATTICE_COOKIE=~/.config/lattice-fs/cookie node scripts/ui-dname.mjs
-import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep, swControlled } from './lib/harness.mjs';
 
 const env = shipEnv();
 const check = makeCheck();
@@ -11,9 +11,9 @@ const browser = await launchBrowser();
 const errors = [];
 const page = await openPage(browser, env, { viewport: { width: 1280, height: 900 }, onPageError: (e) => errors.push(String(e)) });
 await page.goto(env.app, { waitUntil: 'domcontentloaded' });
-// the service worker takes control and reloads the shell once on a fresh
-// profile; anything typed before that reload is lost
-await sleep(8000);
+// the service worker takes control of the shell; anything typed before a
+// takeover reload would be lost, so wait for it to have the page
+await swControlled(page);
 await page.waitForSelector('#treelist', { timeout: 30000 });
 await sleep(1000);
 

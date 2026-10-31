@@ -15,7 +15,7 @@
 // Env:    LATTICE_URL, LATTICE_COOKIE, CHROME   (as ui-matrix.mjs)
 // Never run against production.
 
-import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep, waitFor } from './lib/harness.mjs';
 
 const env = shipEnv();
 const APP = env.app;
@@ -43,10 +43,15 @@ try {
     if (window.caches) for (const k of await caches.keys()) await caches.delete(k);
   });
 
+  //  the page's text as the ship has it, past the client and its caches
+  const body = (n) => page.evaluate(async (x) => {
+    const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(x), { cache: 'no-store' });
+    return r.ok ? (await r.json()).body : null;
+  }, n);
   step = 'seed';
   await page.evaluate((n, b) => fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
     '&type=md&new=1', { method: 'POST', body: b }), PAGE, BODY);
-  await sleep(6000);
+  await waitFor(async () => (await body(PAGE)) === BODY, 15000, 500);
 
   // warm boot: the snapshot is what makes the tree clickable at 0ms
   step = 'prime snapshot';
@@ -158,16 +163,15 @@ try {
     '&type=md&new=1', { method: 'POST', body: '# race' }), RACE);
   await sleep(12000);
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await sleep(8000);
+  const inTree = () => page.evaluate((n) => [...document.querySelectorAll('#treelist a.pg')]
+    .some((a) => a.href.includes(encodeURIComponent(n))), RACE);
   check('a page created during a save still lands in the tree',
-    await page.evaluate((n) => [...document.querySelectorAll('#treelist a.pg')]
-      .some((a) => a.href.includes(encodeURIComponent(n))), RACE),
-    'tree is missing ' + RACE);
+    await waitFor(inTree, 10000, 250), 'tree is missing ' + RACE);
   // this step deliberately edited the probe page. Put it back, because the
   // mobile checks below assert it resumes with its ORIGINAL body
   await page.evaluate((n, b) => fetch('/apps/lattice/page-save?name=' +
     encodeURIComponent(n) + '&type=md', { method: 'POST', body: b }), PAGE, BODY);
-  await sleep(4000);
+  await waitFor(async () => (await body(PAGE)) === BODY, 15000, 500);
 
   // ── 4. mobile: drawers shut, and do not summon the keyboard ─────────────
   step = 'mobile defaults';

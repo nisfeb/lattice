@@ -25,7 +25,7 @@
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           node scripts/ui-tabsafe.mjs
-import { shipEnv, launchBrowser, openPage, makeCheck, seed, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, seed, sleep, waitFor, swControlled } from './lib/harness.mjs';
 
 const env = shipEnv();
 const RUN = 'ts-' + process.pid;
@@ -143,7 +143,7 @@ try {
   await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
   await page.evaluate(() => { localStorage.removeItem('appTabs'); localStorage.removeItem('appPage'); });
   await boot();
-  await sleep(8000);   // the service worker's one reload on a fresh profile
+  await swControlled(page);   // the service worker has the page: no takeover reload to come
   await page.waitForFunction(() => document.querySelectorAll('#treelist a.pg').length > 0, { timeout: 90000 });
   await page.waitForSelector(row(P), { timeout: 30000 });
 
@@ -158,7 +158,9 @@ try {
     await page.click(row(P));
     await waitOn('page', P);
     await typeEnd('C1TYPED');
-    await sleep(9000);     // the memory lands at 4s, the page's autosave after
+    //  the memory lands at 4s, the page's autosave after
+    await waitFor(async () => ((await pageBody(P)) || '').includes('C1TYPED')
+      && !!(await shipGet('know-read?key=' + encodeURIComponent(K1))), 20000, 500);
     rule = null;
     const c1 = {
       tab: await front(),
@@ -308,10 +310,11 @@ try {
     for (let i = 0; i < 40 && !seen.length; i++) await sleep(100);
     await page.click(tabSel('page', Q));
     await waitOn('page', Q);
-    await sleep(5000);
+    //  the held move lands: the memory's own tab takes the new name
+    await waitFor(async () => (await state()).tabs.some((t) => t.kind === 'know' && t.key === K6B), 15000, 250);
     rule = null;
     await typeEnd('I6TYPED');
-    await sleep(4000);
+    await waitFor(async () => ((await pageBody(Q)) || '').includes('I6TYPED'), 12000, 500);
     const s6 = await state();
     const i6 = {
       tab: s6.tabs[s6.active], pname: await page.evaluate(() => document.getElementById('pname').value),
@@ -352,7 +355,7 @@ try {
     await sleep(1500);
     const tabB = await front();
     await typeEnd('F1ATYPED');
-    await sleep(4500);
+    await waitFor(async () => ((await pageBody(F1B)) || '').includes('F1ATYPED'), 12000, 500);
     const f1a = {
       created: b !== null, tab: tabB, body: await pageBody(F1B),
       pname: await page.evaluate(() => document.getElementById('pname').value),
@@ -419,7 +422,7 @@ try {
     await page.keyboard.down('Control');
     await page.keyboard.press('KeyS');
     await page.keyboard.up('Control');
-    await sleep(4000);
+    await waitFor(async () => ((await pageBody(F1F)) || '').includes('F1CTYPED'), 12000, 500);
     const f1c = {
       inFlight, created: f !== null, tab: tabF, body: await pageBody(F1F),
       sts: await page.evaluate(() => window.__sts.filter((s) => /already exists/.test(s))),

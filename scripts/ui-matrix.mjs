@@ -14,7 +14,7 @@
 import { writeFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep, waitFor, seed } from './lib/harness.mjs';
 
 const env = shipEnv();
 const APP = env.app;
@@ -87,6 +87,10 @@ try {
     for (const r of regs) await r.unregister();
     if (window.caches) for (const k of await caches.keys()) await caches.delete(k);
   });
+  //  a fresh ship's vault is empty, and an empty tree renders no rows: one
+  //  page of the matrix's own, so the boot check has something to show
+  //  (and one at the root, for the mobile step's top-level page row)
+  await seed(env, [['uimx-fixture/tree', '# a page for the boot check\n'], ['uimx-fixture-root', '# a root page\n']]);
   await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0);
   ok('boot: tree renders');
@@ -147,8 +151,9 @@ try {
   await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
     .some((a) => a.textContent === 'hello.md' && a.href.includes(n)), RUN);
   ok('save: new md page appears in tree');
+  //  Prism runs in a worker, so the overlay arrives a beat after the text
   check('highlight: Prism overlay rendered',
-    await page.evaluate(() => document.querySelectorAll('#hl .token').length > 0));
+    await waitFor(() => page.evaluate(() => document.querySelectorAll('#hl .token').length > 0), 10000));
   // a hostile body must not freeze the editor. Prism runs in a worker now;
   // on the main thread 32 KiB of '[' held the frame for about five seconds
   const stall = await page.evaluate(async () => {
@@ -304,7 +309,13 @@ try {
   await wait(() => !!document.querySelector('#linklist a'));
   check('backlinks: panel lists the linking page',
     (await page.evaluate(() => document.querySelector('#linklist a').textContent)) === RUN + '/linker');
-  await page.evaluate(async (n) => {   // done with the linker. Keep later folder ops light
+  //  done with the linker. Keep later folder ops light. Its tab goes first:
+  //  a background tab whose page is deleted under it was renamed by the
+  //  folder move below and came back dirty with no name, so the mode
+  //  toggle's openIn waited behind a "discard unsaved changes" prompt
+  await page.evaluate(async (n) => {
+    const t = window.latTabs.state().tabs.find((x) => x.kind === 'page' && x.key === n + '/linker');
+    if (t) await window.latTabs.closeTab(t.id);
     await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n + '/linker'), { method: 'POST' });
   }, RUN);
 
@@ -441,7 +452,7 @@ try {
     [...document.querySelectorAll('#treelist a.pg')]
       .find((a) => a.href.includes(encodeURIComponent(n))).click();
   }, RUN + '/other');
-  await sleep(4000);
+  await waitFor(() => page.evaluate(() => document.getElementById('src').value === '# other'), 20000);
   check('open: a dirty editor does not block opening another page',
     await page.evaluate(() => document.getElementById('src').value) === '# other',
     JSON.stringify(await page.evaluate(() => document.getElementById('src').value)));
@@ -501,18 +512,19 @@ try {
   await page.evaluate(() => [...document.querySelectorAll('.share button')]
     .find((b) => b.dataset.m === 'clearweb').click());
   await wait(() => document.getElementById('cwurl').textContent.includes('public'));
-  await sleep(1500);
-  const pub = await page.evaluate(async (u) =>
+  //  a folder share is a tree job: wait for it to reach the page
+  const pubStatus = () => page.evaluate(async (u) =>
     (await fetch(u, { credentials: 'omit' })).status, env.base + '/apps/lattice/c/' + RUN + '/hello');
+  await waitFor(async () => (await pubStatus()) === 200, 30000, 500);
+  const pub = await pubStatus();
   check('share-tree clearweb: page publicly readable', pub === 200, 'status ' + pub);
   await wait((n) => [...document.querySelectorAll('#treelist .fld')]
     .some((f) => f.textContent.includes(n.split('/')[0]) && f.querySelector('.cw')), RUN);
   ok('share-tree clearweb: folder shows the globe indicator');
   await page.evaluate(() => [...document.querySelectorAll('.share button')]
     .find((b) => b.dataset.m === 'private').click());
-  await sleep(1500);
-  const priv = await page.evaluate(async (u) =>
-    (await fetch(u, { credentials: 'omit' })).status, env.base + '/apps/lattice/c/' + RUN + '/hello');
+  await waitFor(async () => (await pubStatus()) !== 200, 30000, 500);
+  const priv = await pubStatus();
   check('share-tree private: public read revoked', priv !== 200, 'status ' + priv);
 
   step = 'folder rename';
@@ -532,7 +544,8 @@ try {
   const LIST = RUN + '-lists';
   await page.evaluate(async (n) => fetch('/apps/lattice/page-save?name=' +
     encodeURIComponent(n) + '&type=md&new=1', { method: 'POST', body: '# lists\n' }), LIST);
-  await sleep(5000);
+  await waitFor(() => page.evaluate(async (n) => (await fetch('/apps/lattice/page-source?name=' +
+    encodeURIComponent(n))).ok, LIST), 15000);
   await page.goto(APP + '?name=' + encodeURIComponent(LIST),
     { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.includes('# lists'));
@@ -625,7 +638,8 @@ try {
     await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
       '&type=md&new=1', { method: 'POST', body: '# notify' });
   }, CN);
-  await sleep(4000);
+  await waitFor(() => page.evaluate(async (n) => (await fetch('/apps/lattice/page-source?name=' +
+    encodeURIComponent(n))).ok, CN), 15000);
   await page.evaluate(async (n) => {
     await fetch('/apps/lattice/page-comments?name=' + encodeURIComponent(n) + '&on=1',
       { method: 'POST' });
@@ -637,7 +651,11 @@ try {
     await fetch('/apps/lattice/comment?page=' + encodeURIComponent(n),
       { method: 'POST', body: 'body=notify+probe' });
   }, CN);
-  await sleep(4000);
+  //  the comment is in the owner's inbox: the count has something to count
+  await waitFor(() => page.evaluate(async (n) => {
+    const r = await fetch('/apps/lattice/comments-inbox');
+    return ((await r.json()).items || []).some((c) => c.page === n);
+  }, CN), 20000, 500);
   //  The count is throttled to once a minute, because on a serialising pier a
   //  badge is not worth queueing ahead of the user's saves. A fresh load starts
   //  that clock at zero, so reloading is both how the count becomes immediate
@@ -891,15 +909,15 @@ try {
   await sleep(3000);
   await api2('/comment?page=' + encodeURIComponent(RUN + '/b1'),
     { method: 'POST', body: 'body=' + encodeURIComponent('a comment for the inbox') });
-  await sleep(5000);
-  const box = await api2('/comments-inbox', { method: 'GET' });
-  const mine = ((box.body || {}).items || []).find((c) => c.page === RUN + '/b1');
+  const inboxed = async () => (((await api2('/comments-inbox', { method: 'GET' })).body || {}).items || [])
+    .find((c) => c.page === RUN + '/b1');
+  const mine = await waitFor(inboxed, 20000, 500);
   check('comments: the inbox lists a comment left on a page',
     !!mine && /inbox/.test(mine.body), JSON.stringify(mine));
   if (mine) {
     const del = await api2('/comment-del?page=' + encodeURIComponent(mine.page) +
       '&id=' + encodeURIComponent(mine.id));
-    await sleep(4000);
+    await waitFor(async () => !(await inboxed()), 20000, 500);
     const after = await api2('/comments-inbox', { method: 'GET' });
     check('comments: moderation removes it',
       del.status === 200 &&
@@ -1442,11 +1460,15 @@ try {
 
   const qShown = () => !document.querySelector('section[data-pane=search]').hidden
     && document.activeElement && document.activeElement.id === 'qinput';
-  await page.keyboard.down('Control');
-  await page.keyboard.press('KeyK');
-  await page.keyboard.up('Control');
+  //  Ctrl+K is the command palette now (ui-shell-tabs); Search is Ctrl+Shift+F
+  const searchChord = async () => {
+    await page.keyboard.down('Control'); await page.keyboard.down('Shift');
+    await page.keyboard.press('KeyF');
+    await page.keyboard.up('Shift'); await page.keyboard.up('Control');
+  };
+  await searchChord();
   await wait(qShown);
-  ok('search: ctrl-K opens the Search tab');
+  ok('search: ctrl-shift-F opens the Search tab');
   check('search: the input takes focus',
     await page.evaluate(() => document.activeElement && document.activeElement.id === 'qinput'));
 
@@ -1501,13 +1523,11 @@ try {
     await sleep(300);
     await page.focus('#src');
     if (vim) { await page.keyboard.press('Escape'); await sleep(150); }
-    await page.keyboard.down('Control');
-    await page.keyboard.press('KeyK');
-    await page.keyboard.up('Control');
+    await searchChord();
     let opened = true;
     try { await page.waitForFunction(qShown, { timeout: 8000 }); }
     catch { opened = false; }
-    check('search: ctrl-K works from the editor with vim ' + (vim ? 'ON' : 'off'), opened);
+    check('search: ctrl-shift-F works from the editor with vim ' + (vim ? 'ON' : 'off'), opened);
     await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
   }
   await page.evaluate(() => {
@@ -1528,8 +1548,10 @@ try {
   check('mobile: search (bottom bar) opens the left drawer on Search',
     await page.evaluate(() => getComputedStyle(document.getElementById('qpane')).display) !== 'none');
   await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
-  await wait(() => document.querySelector('#treelist a.pg'));
-  await page.evaluate(() => document.querySelector('#treelist a.pg').click());
+  //  a page other than the one open: which row comes first depends on the
+  //  vault, and on a near-empty one it is the open page, which opens nothing
+  await wait(() => document.querySelector('#treelist a.pg:not(.cur)'));
+  await page.evaluate(() => document.querySelector('#treelist a.pg:not(.cur)').click());
   await wait(() => !document.getElementById('ws').classList.contains('ldraw'));
   ok('mobile: opening a page shuts the drawer');
   // the drawers and the tab header replaced full-screen editing
