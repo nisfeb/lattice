@@ -572,6 +572,8 @@
     //  it, after the writes it timed out on (waitJob replays once it ends)
     if (replaying || jobWait) return;
     replaying = true;
+    srcFlight.clear();    // replayed writes: no open read from before is shared
+    sensForget();         // and a replayed move or delete culls flags
     try { await drainQueue(proven); } finally { replaying = false; }
   }
 
@@ -900,7 +902,16 @@
   let lastAction = Date.now();
   addEventListener('pointerdown', () => { lastAction = Date.now(); }, true);
   addEventListener('keydown', () => { lastAction = Date.now(); }, true);
+  //  an edit that came without a key (a paste from a menu, dictation)
+  addEventListener('input', () => { lastAction = Date.now(); }, true);
   const BG_IDLE_MS = 4000;
+  //  and none while a save is on the wire or about to be: an unsaved
+  //  buffer is a save due within autosave's debounce, and the ship serves
+  //  one request at a time, so a background read sent first delays it.
+  //  At most BG_HOLD_MS, so a buffer that cannot save does not stall the
+  //  lane for good.
+  const BG_HOLD_MS = 15000;
+  const saveDue = () => saving || (dirty && autosaveOn());
   //  ONE background request at a time, idle re-checked before EACH send.
   //  Releasing them together is an ambush: the gate opens after 4 idle
   //  seconds, three requests hit the pier's FIFO queue at once (~2s each),
@@ -910,8 +921,10 @@
   let bgChain = Promise.resolve();
   const bgFetch = (url, opts) => {
     const run = async () => {
+      const t0 = Date.now();
       for (;;) {
-        const wait = BG_IDLE_MS - (Date.now() - lastAction);
+        let wait = BG_IDLE_MS - (Date.now() - lastAction);
+        if (wait <= 0 && saveDue() && Date.now() - t0 < BG_HOLD_MS) wait = 250;
         if (wait <= 0) break;
         await new Promise((r) => setTimeout(r, Math.max(wait, 250)));
       }
@@ -1747,6 +1760,45 @@
   // ~0.5s round-trip. Dropped whenever the ship reports a change (the beacon
   // clears it) or when this client writes the page.
   const pageCache = new Map();
+  // a page's (or folder's) OWN sensitive flag, by name, as the editor's
+  // open read it (page-source render=1 carries it) or the checkbox set
+  // it. The Page tab's checkbox reads this before it asks GET
+  // page-sensitive, so an open costs one request, not three. sensWait
+  // names the page whose render=1 read is in flight: its answer brings
+  // the flag, and a fresh one always replaces the kept one.
+  //
+  // Cleared on a change from elsewhere (refreshAll), which is how another
+  // device's toggle reaches this one, and on every write of ours that can
+  // move, delete or create a page (sensForget): a move or delete culls
+  // the marker, and a new page under the old name must not inherit the
+  // old page's flag. sensGen counts our writes, so a read sent before
+  // one never overwrites what the write made true.
+  const sensKnown = new Map();
+  let sensWait = null;
+  let sensGen = 0;
+  //  `url`: the write. A plain save of an existing page keeps the flags,
+  //  anything else (a create, a move, a delete, a folder job, an upload)
+  //  forgets them all. Unknown flags cost one GET page-sensitive each.
+  const sensForget = (url) => {
+    sensGen++;
+    if (!url || !/\/(page-save|know-save)\?/.test(url) || /[?&]new=1/.test(url)) sensKnown.clear();
+  };
+  // the open's render=1 page-source read, shared while in flight: a tab
+  // switched away from and back before the ship answered asks once, not
+  // twice. Each caller gets its own clone of the one answer. A write of
+  // the page drops the entry as it starts (shipWrite), so no read is
+  // ever shared across a save: a read made after it waits for its own.
+  const srcFlight = new Map();
+  const srcRead = (name) => {
+    let p = srcFlight.get(name);
+    if (!p) {
+      p = fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
+      srcFlight.set(name, p);
+      const done = () => { if (srcFlight.get(name) === p) srcFlight.delete(name); };
+      p.then(done, done);
+    }
+    return p.then((r) => r.clone());
+  };
   const snapTree = () => {
     treeGen++;                 // structural change: supersede in-flight fetches
     persistTree();
@@ -1797,6 +1849,8 @@
   // the flight guardDirty waits for.
   let saveFlight = null;
   async function shipWrite(url, init, { ms = 30000, save = false } = {}) {
+    srcFlight.clear();    // a read from before this write is shared no more
+    sensForget(url);
     const echo = echoOf(url);
     echo.until = Date.now() + 60000;
     echo.at = Date.now();             // when we last wrote (see refocused)
@@ -1829,6 +1883,7 @@
     // drain together. Everything else (sharing, tagging, the legacy migration)
     // still refuses honestly rather than pretending.
     const offline = async () => {
+      sensForget(url);      // a queued delete or move culls the flag too
       const q = offlineOp(url);
       if (q) {
         await enqueueOp(q);
@@ -6649,6 +6704,20 @@
     if (hit) { applyPage(name, hit); snapPage(name, hit); return true; }
     const node = nodes.find((n) => n.page && n.path === name);
     const painted = !!node && typeof node.body === 'string';
+    // the render=1 read below brings the page's sensitive flag, so the
+    // Page tab's checkbox waits for it rather than asking on its own
+    // (66-share.js refreshSensitive). Whatever way the read ends, the
+    // checkbox is settled once it has.
+    if (!linkOf(name)) sensWait = name;
+    try { return await openRead(name, my, node, painted); }
+    finally {
+      if (sensWait === name) {
+        sensWait = null;
+        if (current === name && !curFolder) refreshSensitive(name);
+      }
+    }
+  }
+  async function openRead(name, my, node, painted) {
     // `quiet`: the render=1 request below carries the preview and the error
     // report, so painting must not also fire refreshPreview/checkErrors.
     if (painted) {
@@ -6685,9 +6754,10 @@
     //  open has run meanwhile (that one owns the address now, so leave it).
     const unwind = () => { if (fromUrl && my === openSeq) history.replaceState(null, '', fromUrl); };
     const shown = src.value;
-    let d = null;
+    let d = null, gen = -1;
     try {
-      const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
+      gen = sensGen;
+      const r = await srcRead(name);
       // a link whose host did not answer: its badge from now, and the last
       // copy read, which the ship sends its owner along with the failure.
       // Shown locked (linkStale): a save from it would claim a rev the host
@@ -6719,8 +6789,21 @@
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
     }
+    // the ship's flag as of this read replaces the kept one, unless a
+    // write of ours (a toggle, a move, a delete) went out since it was sent
+    if (typeof d.sensitive === 'boolean' && sensGen === gen) sensKnown.set(name, d.sensitive);
     // a later openPage supersedes this one. Anything else still applies
-    if (my !== openSeq) return;
+    if (my !== openSeq) {
+      // ...but it is still the ship's answer for this page, so a switch
+      // back to it need not ask again. Remembered only when it holds the
+      // body the tree holds, the text a painted open would show anyway:
+      // a save from here since then patched the tree (patchLocal), and
+      // this older answer then stays out of the cache.
+      const nd = nodes.find((n) => n.page && n.path === name);
+      if (!d.link && !pageCache.has(name) && nd && !nd.link && nd.body === d.body
+          && !(typeof nd.rev === 'number' && nd.rev > d.rev)) pageCache.set(name, d);
+      return;
+    }
     // a live read: the badge, the lock on a last-known copy and a conflict
     // latched on this link all end here
     if (d.link) { linkSeen(name, true); linkStale.delete(name); linkCf.delete(name); }
@@ -6958,10 +7041,17 @@
   };
   //  we know exactly what we just wrote. Patch the local copies so reopening
   //  this page paints the saved text, not the dump's pre-save body. The
-  //  cached render is stale by definition. Drop it and let it re-render.
+  //  cached render is stale by definition. A content page's preview is
+  //  the local paint, so its cached answer is kept with the saved text and
+  //  rev and without the html: reopening it costs no page-source read.
+  //  Any other kind's render is the ship's: drop it and let it re-render.
   //  Only a save that can change the kind passes one.
-  const patchLocal = (name, kind, sent) => {
-    pageCache.delete(name);
+  const patchLocal = (name, kind, sent, rev) => {
+    const c = pageCache.get(name);
+    const k = kind || (c && c.kind);
+    if (c && rev && ['md', 'gmi', 'html', 'text', 'tex'].includes(k)) {
+      pageCache.set(name, { ...c, body: sent, kind: k, rev, html: undefined });
+    } else pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     // not a link's: its text is the host's, read live, and the rev beside
     // a body here would be a base the next save claims falsely
@@ -7166,7 +7256,7 @@
     // shows it, so a New clicked mid-save keeps both documents. Only a
     // CREATE changes the tree, and it confirms a row newFile left pulsing.
     if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
-    patchLocal(name, kind, sent);
+    patchLocal(name, kind, sent, vr && vr.rev);
     await dropQueued(name, sentAt);
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
@@ -7276,7 +7366,7 @@
     if (!know) { try { vr = await r.json(); } catch {} }
     //  patch the saved doc's local cache regardless of focus. No kind: an
     //  autosave writes the page's existing kind, it never sets one.
-    if (!know) { patchLocal(target, null, sent); await dropQueued(target, sentAt); }
+    if (!know) { patchLocal(target, null, sent, vr && vr.rev); await dropQueued(target, sentAt); }
     if (!here()) tabLanded(tk, target, sent, vr && vr.rev);
     // live-editor state only if the editor is still on the doc we autosaved
     if (here()) {
@@ -7359,7 +7449,7 @@
     //  and a queued edit older than this save is superseded by it
     if (!know) {
       try { vr = await w.r.json(); } catch {}
-      patchLocal(name, null, sent);
+      patchLocal(name, null, sent, vr && vr.rev);
       await dropQueued(name, sentAt);
     }
     else knowGen++;
@@ -8869,15 +8959,25 @@
   // agent key without the sensitive clearance, and such a key cannot write it.
   // The checkbox shows and sets this page's own marker; refreshed on every
   // target change through showShare, like the grant row above.
+  // the target whose toggle is on the wire: the box shows the ask until
+  // the answer, and no refresh meanwhile paints the flag from before it
+  let sensSetting = null;
   const refreshSensitive = async (target) => {
     const cb = $('shsens');
     if (!cb) return;
+    if (target && target === sensSetting) return;
     $('shsensres').textContent = '';
     if (!target) { cb.checked = false; cb.disabled = true; return; }
     cb.disabled = false;
+    // known: no request. In flight with the open's page-source: that
+    // answer brings it and comes back here (openPage).
+    if (sensKnown.has(target)) { cb.checked = sensKnown.get(target); return; }
+    if (sensWait === target) { cb.checked = false; return; }
+    const gen = sensGen;
     try {
       const r = await fetch(api + '/page-sensitive?name=' + encodeURIComponent(target));
       const on = r.ok && (await r.json()).on === true;
+      if (r.ok && gen === sensGen) sensKnown.set(target, on);
       // the target can change while this GET is in flight (same bug class the
       // showShare comment documents): only apply if it is still current.
       if ((curFolder || current) !== target) return;
@@ -8889,11 +8989,25 @@
     const cb = $('shsens');
     if (!target) { st('open a page first', false); cb.checked = false; return; }
     cb.disabled = true;
-    const r = await mutate(api + '/page-sensitive?name=' + encodeURIComponent(target) +
-      '&on=' + (cb.checked ? '1' : '0'));
-    cb.disabled = false;
-    if (!r || !r.ok) { cb.checked = !cb.checked; st('sensitive failed' + await errText(r), false); return; }
-    $('shsensres').textContent = cb.checked
+    // what was asked for, not what the box says when the answer lands
+    const want = cb.checked;
+    sensSetting = target;
+    let r = null;
+    try {
+      r = await mutate(api + '/page-sensitive?name=' + encodeURIComponent(target) +
+        '&on=' + (want ? '1' : '0'));
+    } finally { sensSetting = null; }
+    const here = (curFolder || current) === target;
+    if (here) cb.disabled = false;
+    if (!r || !r.ok) {
+      if (here) cb.checked = !want;
+      st('sensitive failed' + await errText(r), false);
+      return;
+    }
+    sensKnown.set(target, want);
+    if (!here) return;
+    cb.checked = want;
+    $('shsensres').textContent = want
       ? target + ' is sensitive'
       : target + ' is no longer sensitive';
   };
@@ -11525,6 +11639,9 @@
     // replay WINS the reconnect race. loadTree would repaint queued pages
     // from the server dump before their edits landed (design doc, gap 4)
     if (degraded || offCount) { replayQueue(); return; }
+    // a sensitive toggle made elsewhere moves no page rev, so the dump
+    // cannot say which flag moved: the next open reads them afresh
+    sensKnown.clear();
     // NB: stale cached renders are dropped by loadTree, which prunes against
     // the revs in the fresh dump. Clearing the whole cache here instead meant
     // one page's edit cost every other page its cache.

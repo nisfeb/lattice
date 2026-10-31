@@ -476,13 +476,17 @@ try {
     //  the shell's own address follows the folder it shows (replaceState),
     //  so it is the document that must stay, not its address
     await page.evaluate(() => { window.latSameDoc = 1; });
-    await page.evaluate(([s, u]) => { document.querySelector(s).contentWindow.location.href = u; },
-      [frameOf(bkey), '/apps/lattice/app?into=x-' + process.pid]);
-    await until((s) => {
-      const f = document.querySelector(s);
-      return f?.contentWindow.location.pathname === '/apps/lattice/app'
-        && f.contentDocument.readyState === 'complete';
-    }, frameOf(bkey), 20000);
+    //  ...and on a slow pier that swap can come later than the wait, so a
+    //  navigation it cancelled is started again, up to three times
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(([s, u]) => { document.querySelector(s).contentWindow.location.href = u; },
+        [frameOf(bkey), '/apps/lattice/app?into=x-' + process.pid]);
+      if (await until((s) => {
+        const f = document.querySelector(s);
+        return f?.contentWindow.location.pathname === '/apps/lattice/app'
+          && f.contentDocument.readyState === 'complete';
+      }, frameOf(bkey), 8000)) break;
+    }
     //  the frame's ?into= reaches the shell: a page tab in front, the address its folder
     await waitFor(() => page.evaluate((u) => {
       const st = window.latTabs.state();

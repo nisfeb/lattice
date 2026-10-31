@@ -89,7 +89,16 @@
   let lastAction = Date.now();
   addEventListener('pointerdown', () => { lastAction = Date.now(); }, true);
   addEventListener('keydown', () => { lastAction = Date.now(); }, true);
+  //  an edit that came without a key (a paste from a menu, dictation)
+  addEventListener('input', () => { lastAction = Date.now(); }, true);
   const BG_IDLE_MS = 4000;
+  //  and none while a save is on the wire or about to be: an unsaved
+  //  buffer is a save due within autosave's debounce, and the ship serves
+  //  one request at a time, so a background read sent first delays it.
+  //  At most BG_HOLD_MS, so a buffer that cannot save does not stall the
+  //  lane for good.
+  const BG_HOLD_MS = 15000;
+  const saveDue = () => saving || (dirty && autosaveOn());
   //  ONE background request at a time, idle re-checked before EACH send.
   //  Releasing them together is an ambush: the gate opens after 4 idle
   //  seconds, three requests hit the pier's FIFO queue at once (~2s each),
@@ -99,8 +108,10 @@
   let bgChain = Promise.resolve();
   const bgFetch = (url, opts) => {
     const run = async () => {
+      const t0 = Date.now();
       for (;;) {
-        const wait = BG_IDLE_MS - (Date.now() - lastAction);
+        let wait = BG_IDLE_MS - (Date.now() - lastAction);
+        if (wait <= 0 && saveDue() && Date.now() - t0 < BG_HOLD_MS) wait = 250;
         if (wait <= 0) break;
         await new Promise((r) => setTimeout(r, Math.max(wait, 250)));
       }
