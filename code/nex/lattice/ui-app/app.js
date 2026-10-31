@@ -3895,7 +3895,10 @@
   const render = () => {
     if (rpHook) rpHook();
     const lang = LMAP[pkind.value];
-    const g = window.Prism && lang && Prism.languages[lang];
+    // the worker loads its own prism. This window's copy comes after boot
+    // (99-boot.js), and every LMAP language is in it, so until it lands a
+    // known language is taken as highlightable.
+    const g = lang && (!window.Prism || Prism.languages[lang]);
     if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; return; }
     hlRun({ body: src.value, lang });
   };
@@ -10806,7 +10809,7 @@
 // ── src/78-export.js ──────────────────────────────────────────────────────
   // ── vault: scheduled-backup hook ───────────────────────────────────────────
   // The tar writer/reader and the whole export/restore path moved to the shared,
-  // standalone ui-app/vault.js (loaded before this bundle), so the editor, the
+  // standalone ui-app/vault.js (loaded after boot, 99-boot.js), so the editor, the
   // settings page and a scheduled backup all build the SAME archive. The manual
   // "export vault" / "restore vault" buttons moved to Settings; see +settings-html
   // and vault.js's mountSettings.
@@ -10814,8 +10817,9 @@
   // What stays here is only what is editor-specific: teach vault.js this page's
   // status line and offline state, then expose the hook the desktop scheduler
   // reaches in with (it evals window.__latticeBackup on whatever workspace page
-  // is showing, which is usually this editor).
-  if (window.LatticeVault) {
+  // is showing, which is usually this editor). Run once vault.js has loaded.
+  function vaultHook() {
+    if (!window.LatticeVault) return;
     LatticeVault.configure({
       status: (m, ok) => st(m, ok),
       isDegraded: () => degraded || !!offCount,
@@ -12537,6 +12541,32 @@
   //  background lane: these also yield to any user activity (see bgFetch),
   //  so a click during boot is no longer queued behind panel lists
   const loadPanels = () => { loadPerms(true); loadShared(true); };
+  // The side scripts: theme.js (the inline line in the shell has painted
+  // the last theme already), prism for the splits' parked views (the
+  // editor's highlighter is a worker that loads its own), vault.js and
+  // orrery.js. Nothing needs them to show or edit a page. As tags in the
+  // shell they were four requests ahead of app.js and the page-dump on a
+  // pier that answers one at a time, about 0.6 s each on a big ship. A
+  // load the worker serves takes them from its cache at once; a cold one
+  // asks for them once the tree has landed.
+  // The worker registers here too (index.html), for the same reason.
+  let sideOn = false;
+  function sideScripts() {
+    if (sideOn) return;
+    sideOn = true;
+    if (window.__latSwReg) window.__latSwReg();
+    const ready = { '/apps/lattice/app/vault.js': vaultHook, '/apps/lattice/app/orrery.js': orreryShow };
+    for (const u of ['/apps/lattice/app/theme.js', '/apps/lattice/prism.js',
+      '/apps/lattice/app/vault.js', '/apps/lattice/app/orrery.js']) {
+      const s = document.createElement('script');
+      s.src = u;
+      s.async = false;
+      if (ready[u]) s.onload = () => ready[u]();
+      document.head.append(s);
+    }
+  }
+  if (navigator.serviceWorker && navigator.serviceWorker.controller) sideScripts();
+  else setTimeout(sideScripts, 8000);
   // a queue left by a previous session syncs on open. With no Background
   // Sync (the SW must not intercept API calls), next-open IS the replay
   // moment, and the UI says so rather than implying closed-app sync exists
@@ -12558,7 +12588,7 @@
   // the tab model, with the tree and the panels loading beside it.
   const { tab: bootTab, fresh: bootFresh } = tabsBoot();
   if (bootTab.kind !== 'page') {
-    loadTree().then(() => { legacyCheck(); loadPanels(); });
+    loadTree().then(() => { legacyCheck(); sideScripts(); loadPanels(); });
     tabShowBoot(bootTab);
   } else {
     // a folder in the address (?into=, a reload while one was selected)
@@ -12588,6 +12618,7 @@
         || activeTab !== bootTab || pname.value !== bootShown;
       if (touched) {
         legacyCheck();
+        sideScripts();
         loadPanels();
         return;
       }
@@ -12603,6 +12634,7 @@
       else if (current) refreshOpen();
       else newFile('', false);
       legacyCheck();
+      sideScripts();
       loadPanels();
     });
   }

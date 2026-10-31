@@ -14,7 +14,12 @@
 <!-- theme (ui-app/theme.js): paint the last resolved one before the body does.
      Same line as app.hoon's +pwa-head, which the reader pages carry. -->
 <script>try{var v=JSON.parse(localStorage.latThemeVars||"{}"),s=document.documentElement.style;for(var k in v)s.setProperty(k,v[k])}catch(e){}</script>
-<script src="/apps/lattice/app/theme.js" defer></script>
+<!-- app.js is the one script the shell names, asked for first. theme.js,
+     prism, vault.js and orrery.js load from it after boot (99-boot.js): as
+     tags here they were four requests ahead of it and of the page-dump, on
+     a pier that answers one request at a time. defer runs it after the
+     parse, where the end of the body used to. -->
+<script src="/apps/lattice/app/app.js" defer></script>
 <title>lattice</title>
 <!-- css + icon inlined: every asset request costs ~2s on the serialized
      pier, so the shell ships as one document -->
@@ -904,7 +909,6 @@ ul.qlist a:hover { background: var(--surface); }
 <lat-comments></lat-comments>
 <lat-conflicts></lat-conflicts>
 <lat-dialog></lat-dialog>
-<script src="/apps/lattice/prism.js"></script>
 <script>
 // The reader pages get this registration from app.hoon's sw-register-script.
 // The editor carries its own copy with one change: where a reader skips the
@@ -913,17 +917,24 @@ ul.qlist a:hover { background: var(--surface); }
 // the save lands and reloads then.
 // Not in a frame: there the editor does not start (00-framed.js), and a
 // takeover reload would only bring its note back.
+// app.js registers once the tree has landed (window.__latSwReg, 99-boot.js).
+// A first install precaches ten shell assets, and registered here those ten
+// requests went to the pier beside the boot's own, putting the page-dump
+// a second behind them.
 if ('serviceWorker' in navigator && window.top === window) {
-  navigator.serviceWorker.register('/apps/lattice/sw.js', { scope: '/apps/lattice' })
-    .then(function (r) {
-      r.addEventListener('updatefound', function () {
-        var w = r.installing;
-        if (w) w.addEventListener('statechange', function () {
-          if (w.state === 'installed' && navigator.serviceWorker.controller)
-            w.postMessage('skipWaiting');
+  window.__latSwReg = function () {
+    window.__latSwReg = null;
+    navigator.serviceWorker.register('/apps/lattice/sw.js', { scope: '/apps/lattice' })
+      .then(function (r) {
+        r.addEventListener('updatefound', function () {
+          var w = r.installing;
+          if (w) w.addEventListener('statechange', function () {
+            if (w.state === 'installed' && navigator.serviceWorker.controller)
+              w.postMessage('skipWaiting');
+          });
         });
-      });
-    }).catch(function (x) {});
+      }).catch(function (x) {});
+  };
   // a controller present now means this load was already SW-served, so a
   // later controllerchange is an update taking over. A first install also
   // fires controllerchange, and reloading on it would interrupt the very
@@ -946,8 +957,5 @@ if ('serviceWorker' in navigator && window.top === window) {
   }
 }
 </script>
-<script src="/apps/lattice/app/vault.js"></script>
-<script src="/apps/lattice/app/orrery.js"></script>
-<script src="/apps/lattice/app/app.js"></script>
 </body>
 </html>

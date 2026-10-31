@@ -49,6 +49,32 @@
   //  background lane: these also yield to any user activity (see bgFetch),
   //  so a click during boot is no longer queued behind panel lists
   const loadPanels = () => { loadPerms(true); loadShared(true); };
+  // The side scripts: theme.js (the inline line in the shell has painted
+  // the last theme already), prism for the splits' parked views (the
+  // editor's highlighter is a worker that loads its own), vault.js and
+  // orrery.js. Nothing needs them to show or edit a page. As tags in the
+  // shell they were four requests ahead of app.js and the page-dump on a
+  // pier that answers one at a time, about 0.6 s each on a big ship. A
+  // load the worker serves takes them from its cache at once; a cold one
+  // asks for them once the tree has landed.
+  // The worker registers here too (index.html), for the same reason.
+  let sideOn = false;
+  function sideScripts() {
+    if (sideOn) return;
+    sideOn = true;
+    if (window.__latSwReg) window.__latSwReg();
+    const ready = { '/apps/lattice/app/vault.js': vaultHook, '/apps/lattice/app/orrery.js': orreryShow };
+    for (const u of ['/apps/lattice/app/theme.js', '/apps/lattice/prism.js',
+      '/apps/lattice/app/vault.js', '/apps/lattice/app/orrery.js']) {
+      const s = document.createElement('script');
+      s.src = u;
+      s.async = false;
+      if (ready[u]) s.onload = () => ready[u]();
+      document.head.append(s);
+    }
+  }
+  if (navigator.serviceWorker && navigator.serviceWorker.controller) sideScripts();
+  else setTimeout(sideScripts, 8000);
   // a queue left by a previous session syncs on open. With no Background
   // Sync (the SW must not intercept API calls), next-open IS the replay
   // moment, and the UI says so rather than implying closed-app sync exists
@@ -70,7 +96,7 @@
   // the tab model, with the tree and the panels loading beside it.
   const { tab: bootTab, fresh: bootFresh } = tabsBoot();
   if (bootTab.kind !== 'page') {
-    loadTree().then(() => { legacyCheck(); loadPanels(); });
+    loadTree().then(() => { legacyCheck(); sideScripts(); loadPanels(); });
     tabShowBoot(bootTab);
   } else {
     // a folder in the address (?into=, a reload while one was selected)
@@ -100,6 +126,7 @@
         || activeTab !== bootTab || pname.value !== bootShown;
       if (touched) {
         legacyCheck();
+        sideScripts();
         loadPanels();
         return;
       }
@@ -115,6 +142,7 @@
       else if (current) refreshOpen();
       else newFile('', false);
       legacyCheck();
+      sideScripts();
       loadPanels();
     });
   }

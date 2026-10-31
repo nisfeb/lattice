@@ -51,7 +51,10 @@
   const render = () => {
     if (rpHook) rpHook();
     const lang = LMAP[pkind.value];
-    const g = window.Prism && lang && Prism.languages[lang];
+    // the worker loads its own prism. This window's copy comes after boot
+    // (99-boot.js), and every LMAP language is in it, so until it lands a
+    // known language is taken as highlightable.
+    const g = lang && (!window.Prism || Prism.languages[lang]);
     if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; return; }
     hlRun({ body: src.value, lang });
   };

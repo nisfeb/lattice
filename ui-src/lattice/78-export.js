@@ -1,6 +1,6 @@
   // ── vault: scheduled-backup hook ───────────────────────────────────────────
   // The tar writer/reader and the whole export/restore path moved to the shared,
-  // standalone ui-app/vault.js (loaded before this bundle), so the editor, the
+  // standalone ui-app/vault.js (loaded after boot, 99-boot.js), so the editor, the
   // settings page and a scheduled backup all build the SAME archive. The manual
   // "export vault" / "restore vault" buttons moved to Settings; see +settings-html
   // and vault.js's mountSettings.
@@ -8,8 +8,9 @@
   // What stays here is only what is editor-specific: teach vault.js this page's
   // status line and offline state, then expose the hook the desktop scheduler
   // reaches in with (it evals window.__latticeBackup on whatever workspace page
-  // is showing, which is usually this editor).
-  if (window.LatticeVault) {
+  // is showing, which is usually this editor). Run once vault.js has loaded.
+  function vaultHook() {
+    if (!window.LatticeVault) return;
     LatticeVault.configure({
       status: (m, ok) => st(m, ok),
       isDegraded: () => degraded || !!offCount,
