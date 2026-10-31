@@ -547,7 +547,7 @@
         ::  probe keeps at the desk address so the failure reads as it did.
         ;<  base=(unit path)  bind:m  (peer-base ship.ps)
         =/  road=road:tarball
-          (remote-road [%& %& (weld (weld (fall base desk-base:lu) /pub/vault) rel) %gmi] ship.ps)
+          (remote-road [%& %& (sub-keep-dir:lu (fall base desk-base:lu) rel) %gmi] ship.ps)
         ::  keep:io RETURNS the bond wave (grubbery answers a new watcher with
         ::  +wave-at, the live state). Feed it through the same wave handler as
         ::  an edit wave, so a fresh subscription indexes NOW instead of at the
@@ -15717,7 +15717,18 @@
   ::  %unsub-page: cull only if present, so a stray /unsub can't veto-crash the writer.
   ;<  exists=?  bind:m  (peek-exists:fio road)
   ?.  exists  (pure:m ~)
-  (cull:fio road)
+  ;<  ~  bind:m  (cull:fio road)
+  ::  culling the grub wipes its keep here but tells the publisher
+  ::  nothing, so it would go on holding us as a watcher until its next
+  ::  wave reached us and grubbery's self-heal dropped it. Send the %drop
+  ::  now, at each base the keep may be at (+sub-drop-dirs).
+  =/  dirs=(list path)  (sub-drop-dirs:lu (page-rel pax.page-sub.act))
+  |-  ^-  form:m
+  ?~  dirs  (pure:m ~)
+  ;<  ~  bind:m
+    %+  drop:io  /unsub-drop
+    (remote-road [%& %& i.dirs %gmi] ship.page-sub.act)
+  $(dirs t.dirs)
 ::  +retag: %tag / %untag, touch the entry's tag set + refresh its index row.
 ::
 ++  retag

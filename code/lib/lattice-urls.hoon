@@ -53,6 +53,21 @@
 ++  desk-base
   `path`/apps/'shell.shell'/desks/'lattice.desk'/desk/data/'lattice.lattice_app'
 ++  peer-bases  ^-((list path) ~[desk-base app-base])
+::  +sub-keep-dir: the directory of a peer's published page that a /sub
+::  keeps, its file being %gmi there. The peer runs lattice at base, and
+::  rel is the page's spur (+page-rel).
+++  sub-keep-dir
+  |=  [base=path rel=path]
+  ^-  path
+  (weld (weld base /pub/vault) rel)
+::  +sub-drop-dirs: every directory a /sub of rel may have kept, one per
+::  +peer-bases. /unsub drops the keep at each, since the sub fiber found
+::  its base by asking the peer and no record of the answer is left.
+::  Dropping where nothing was kept costs one poke and changes nothing.
+++  sub-drop-dirs
+  |=  rel=path
+  ^-  (list path)
+  (turn peer-bases |=(b=path (sub-keep-dir b rel)))
 ::  +parse-urb-url: "urb://~ship/rel" -> [ship rel-path]. ~ on a malformed url
 ::  (+stab is mule-guarded against bad knots).
 ::
