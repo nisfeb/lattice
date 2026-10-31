@@ -380,8 +380,8 @@
             [%fall %& [/ %'tree-job-dropped'] [[/ %json] ~]]
         ::  /pub-regrown: how many pages the last /pub-regrow grew
             [%fall %& [/ %'pub-regrown'] [[/ %ud] 0]]
-        ::  /pub-pending: shared pages saved but not yet published, each
-        ::  with when it was first and last saved (+pub-mark). The writer
+        ::  /pub-pending: shared pages saved but not yet published, or
+        ::  published inside the last gap (+pub-mark). The writer
         ::  publishes them in the background (+pub-tick); covered, so a
         ::  reload resumes them instead of leaving the copy stale.
             [%fall %& [/ %'pub-pending'] [[/ %noun] *pub-pending:lp]]
@@ -6850,10 +6850,13 @@
 ::  urb:// names a LIVE page (docs/urls.md), so a shared page's vault copy
 ::  follows every write, not just the share click. That publish (the vault
 ::  copy, its namespace binding, the revision list) cost a shared save over
-::  a second in the writer, so a save now only marks the page pending
-::  (+pub-mark) and answers. The writer publishes it a quiet +pub-gap
-::  later (+pub-tick, on a behn timer on /pub-due), never more than
-::  +pub-cap after the first save, so a burst of autosaves publishes once.
+::  a second in the writer, so a save only marks the page pending
+::  (+pub-mark) and answers. The writer publishes it in the background
+::  (+pub-tick, on a behn timer on /pub-due), throttled per page: a save
+::  a +pub-gap or more after the page last published goes out at once,
+::  and the saves inside the gap become one publish at its end, so a
+::  burst of autosaves publishes twice at most, and a reader sees the
+::  first save in about the time the publish takes (+pub-due:lp).
 ::
 ::  The publish reads the page as it is THEN, never a body carried in the
 ::  mark, so it is always the newest text, and the writer runs one at a
@@ -6861,26 +6864,32 @@
 ::  is covered: a reload or crash before a publish finished leaves its row,
 ::  and the writer's start arms the timer again (+pub-arm). Redoing one is
 ::  safe: a revision already in the list is not grown twice (+apply-pub).
+::  A published row stays, clean, only until its gap is over, so the map
+::  holds no more than the shared pages saved in the last gap or waiting.
 ::
 ::  The body comes from the code src (unwrapped), NOT the data grub: the
 ::  evaluator recomputes data AFTER the writer moves on.
 ::  ponytail: computed (hoon/index) pages keep share-time snapshots.
 ::
 ++  pub-gap    ^-(@dr ~s6)
-++  pub-cap    ^-(@dr ~s30)
 ++  pub-tries  ^-(@ud 3)
 ++  pub-when
-  |=  row=[first=@da last=@da tries=@ud]
+  |=  row=pub-wait:lp
   ^-  @da
-  (pub-due:lp row pub-gap pub-cap)
+  (pub-due:lp row pub-gap)
 ++  pub-pending-road  |=(root=@ud (rf root / %'pub-pending'))
+::  +read-pub-pending: /pub-pending, or release 79's shape of it
 ++  read-pub-pending
   |=  root=@ud
   =/  m  (fiber:fiber:nexus ,pub-pending:lp)
   ^-  form:m
   ;<  vw=view:nexus  bind:m  (peek:io (pub-pending-road root) ~)
   ?.  ?=([%file *] vw)  (pure:m ~)
-  (pure:m (fall (mole |.(;;(pub-pending:lp (sang-noun:tarball sang.vw)))) ~))
+  =/  n=*  (sang-noun:tarball sang.vw)
+  =/  new=(unit pub-pending:lp)  (mole |.(;;(pub-pending:lp n)))
+  ?^  new  (pure:m u.new)
+  =/  old=(unit pub-old:lp)  (mole |.(;;(pub-old:lp n)))
+  (pure:m ?~(old ~ (pub-from-old:lp u.old)))
 ::  +pub-mark: after a write, note a shared page for publishing. A private
 ::  page costs one peek, and a non-content save nothing.
 ++  pub-mark
@@ -6892,9 +6901,9 @@
   ?:  ?=(%private mode)  (pure:m ~)
   ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
   =/  k=@t  (spat rel)
-  =/  old  (~(get by pen) k)
   =/  nen=pub-pending:lp
-    (~(put by pen) k ?~(old [now now 0] [first.u.old now 0]))
+    =/  pru  (pub-prune:lp pen now pub-gap)
+    (~(put by pru) k (pub-note:lp (~(get by pen) k) now))
   ;<  ~  bind:m  (put-file (pub-pending-road root) [/ %noun] nen)
   (pub-arm-with nen)
 ::  +pub-arm: set the publish timer for whatever is pending (writer start)
@@ -6904,16 +6913,18 @@
   ^-  form:m
   ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
   (pub-arm-with pen)
-::  +pub-arm-with: one timer, at the earliest due row. The wire is stable,
-::  so each arm replaces the last (behn-state drops a superseded wake).
+::  +pub-arm-with: one timer, at the earliest dirty row. The wire is
+::  stable, so each arm replaces the last (behn-state drops a superseded
+::  wake). A row already due arms a time past, which wakes at once.
 ++  pub-arm-with
   |=  pen=pub-pending:lp
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  ds=(list @da)  (turn ~(val by pen) pub-when)
+  =/  ds=(list @da)
+    %+  murn  ~(val by pen)
+    |=(w=pub-wait:lp ?.(dirty.w ~ `(pub-when w)))
   ?~  ds  (pure:m ~)
-  =/  at=@da
-    (roll `(list @da)`ds |=([a=@da b=@da] ?:(=(0 b) a (min a b))))
+  =/  at=@da  (roll t.ds |:([a=*@da b=i.ds] (min a b)))
   ;<  *  bind:m  (soft-behn /pub-arm [[/ %timer-set] `[wire @da]`[/pub-due at]])
   (pure:m ~)
 ::  +pub-tick: the timer fired. Publish ONE due page, then arm for the
@@ -6927,14 +6938,17 @@
   ^-  form:m
   =/  pr=road:tarball  (pub-pending-road root)
   ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
-  =/  due=(list [k=@t row=[first=@da last=@da tries=@ud]])
-    %+  skim  ~(tap by pen)
-    |=([k=@t row=[first=@da last=@da tries=@ud]] (lte (pub-when row) now))
-  ?~  due  (pub-arm-with pen)
+  =/  pru=pub-pending:lp  (pub-prune:lp pen now pub-gap)
+  =/  due=(list [k=@t row=pub-wait:lp])
+    %+  skim  ~(tap by pru)
+    |=([k=@t row=pub-wait:lp] &(dirty.row (lte (pub-when row) now)))
+  ?~  due
+    ;<  ~  bind:m  ?:(=(pru pen) (pure:m ~) (put-file pr [/ %noun] pru))
+    (pub-arm-with pru)
   =/  k=@t  k.i.due
   =/  row  row.i.due
   ?:  (gte tries.row pub-tries)
-    =/  nen=pub-pending:lp  (~(del by pen) k)
+    =/  nen=pub-pending:lp  (~(del by pru) k)
     ;<  ~  bind:m
       %:  fault  'pub-dropped'  2
         "lattice /main.sig: gave up publishing {(trip k)} after {<tries.row>} tries"
@@ -6942,14 +6956,18 @@
       ==
     ;<  ~  bind:m  (put-file pr [/ %noun] nen)
     (pub-arm-with nen)
-  ;<  ~  bind:m  (put-file pr [/ %noun] (~(put by pen) k row(tries +(tries.row))))
+  ;<  ~  bind:m  (put-file pr [/ %noun] (~(put by pru) k row(tries +(tries.row))))
   ;<  ~  bind:m  (sleep-draining (div ~s1 100))
   ;<  err=(unit tang)  bind:m  (fiber-try (pub-flush-one root now k))
+  ;<  end=@da  bind:m  bowl-now
   ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
+  ::  the row as it is now: a save meanwhile moved its `last`
+  =/  cur=pub-wait:lp  (fall (~(get by pen) k) row)
   =/  nen=pub-pending:lp
-    ?~  err  (~(del by pen) k)
+    %+  ~(put by pen)  k
+    ?~  err  (pub-done:lp cur now end)
     ::  failed: try again a gap from now
-    (~(put by pen) k row(tries +(tries.row), first now, last now))
+    cur(tries +(tries.row), sent end, dirty &)
   ;<  ~  bind:m
     ?~  err  (pure:m ~)
     (fault 'pub-failed' 3 "lattice /main.sig: publishing {(trip k)} failed" u.err)

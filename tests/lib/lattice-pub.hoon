@@ -97,4 +97,54 @@
     (expect-eq !>(&) !>((small-noun:lp 42 0)))
     (expect-eq !>(|) !>((small-noun:lp d 1.000)))
   ==
+::  +pub-due: a throttle with a leading edge. A page not published lately
+::  (sent 0, or a gap ago) is due at once; one published inside the gap
+::  waits for the gap's end, however often it is saved meanwhile.
+++  test-pub-due
+  =/  t=@da  ~2026.1.1
+  =/  gap=@dr  ~s6
+  ;:  weld
+    (expect-eq !>(&) !>((lte (pub-due:lp (pub-note:lp ~ t) gap) t)))
+    (expect-eq !>((add t gap)) !>((pub-due:lp [t 0 t &] gap)))
+    ::  a save 2 s after a publish waits 4 s more, not 6 after the save
+    =/  w=pub-wait:lp  (pub-note:lp `[t 0 t |] (add t ~s2))
+    (expect-eq !>((add t gap)) !>((pub-due:lp w gap)))
+  ==
+::  +pub-note: a save makes the row dirty, keeps its last publish and
+::  starts the tries again
+++  test-pub-note
+  =/  t=@da  ~2026.1.1
+  ;:  weld
+    (expect-eq !>(`pub-wait:lp`[t 0 *@da &]) !>((pub-note:lp ~ t)))
+    (expect-eq !>(`pub-wait:lp`[(add t ~s1) 0 t &]) !>((pub-note:lp `[t 2 t |] (add t ~s1))))
+  ==
+::  +pub-prune keeps every dirty row and a clean one only inside its gap,
+::  so the map never holds more than the pages waiting or just published
+++  test-pub-prune
+  =/  t=@da  ~2026.1.1
+  =/  pen=pub-pending:lp
+    %-  malt
+    ^-  (list [@t pub-wait:lp])
+    :~  ['/old' [t 0 t |]]
+        ['/new' [t 0 (add t ~s4) |]]
+        ['/wait' [t 1 t &]]
+    ==
+  =/  out  (pub-prune:lp pen (add t ~s7) ~s6)
+  ;:  weld
+    (expect-eq !>(`(list @t)`~['/new' '/wait']) !>((sort ~(tap in ~(key by out)) aor)))
+    (expect-eq !>(pen) !>((pub-prune:lp pen t ~s6)))
+  ==
+::  +pub-done: a publish leaves the row clean unless a save landed after
+::  the publish started, which may have missed the copy
+++  test-pub-done
+  =/  t=@da  ~2026.1.1
+  ;:  weld
+    (expect-eq !>(`pub-wait:lp`[t 0 (add t ~s2) |]) !>((pub-done:lp [t 1 *@da &] t (add t ~s2))))
+    (expect-eq !>(`pub-wait:lp`[(add t ~s1) 0 (add t ~s2) &]) !>((pub-done:lp [(add t ~s1) 1 *@da &] t (add t ~s2))))
+  ==
+::  +pub-from-old: release 79's rows still publish, as dirty rows due now
+++  test-pub-from-old
+  =/  t=@da  ~2026.1.1
+  =/  old=pub-old:lp  (malt ~[['/a' [t (add t ~s1) 2]]])
+  (expect-eq !>(`pub-pending:lp`(malt ~[['/a' `pub-wait:lp`[(add t ~s1) 2 *@da &]]])) !>((pub-from-old:lp old)))
 --
