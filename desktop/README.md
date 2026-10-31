@@ -105,3 +105,22 @@ macOS bundles are signed with a Developer ID Application certificate and notariz
 Each build job attaches a `SHA256SUMS-<target>.txt` and records a build provenance attestation, so a download can be checked with `gh attestation verify <file> -R nisfeb/lattice`.
 
 Windows is not built (see above). It would fail at compile, not at bundling.
+
+## Updates
+
+The app checks for a new release 20 seconds after it starts and every six
+hours after that (`src/update.rs`), the way Talon does. It offers the new
+version with its notes, and **Later** holds that version off for the rest
+of the run. The AppImage and the macOS app download it with a progress
+banner, check its minisign signature against the public key in
+`tauri.conf.json`, swap themselves, and offer to restart. A `.deb` belongs
+to the package manager, so it offers the release page instead. A check
+that cannot reach GitHub says nothing and tries again next time.
+
+It reads `latest.json` from the newest published release. release.yml
+writes it in the `updater-manifest` job, from the `.sig` files the builds
+make when the `TAURI_SIGNING_PRIVATE_KEY` secret is set. Without the secret
+the release still builds, with a warning and no updater files, and
+installed apps will not be offered it. The key has no password. Local
+builds do not sign: `createUpdaterArtifacts` is turned on by release.yml
+only.

@@ -11,6 +11,7 @@ mod proxy;
 mod queue;
 mod session;
 mod stack;
+mod update;
 #[cfg(test)]
 mod testutil;
 
@@ -259,6 +260,7 @@ fn main() {
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .manage(proxy::Bridge(Mutex::new(None)))
         .on_menu_event(|app, ev| {
@@ -346,6 +348,7 @@ fn main() {
                 });
             }
             spawn_backup_scheduler(handle.clone());
+            update::spawn(handle.clone());
             // remount OUTSIDE the url check. A lick mount is a local pier and
             // needs no configured ship at all, so it must come back on launch
             // even when nothing is connected over HTTP.
