@@ -64,7 +64,11 @@ check('and forward is now available', s.f === false, JSON.stringify(s.f));
 await p.evaluate(() => document.getElementById('navf').click());
 await p.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
 await sleep(800);
-check('forward returns to the page', p.url() === PAGE, p.url());
+//  the page by its address without the worker's ?u= marker: a page-cache
+//  miss is a redirect to the same address plus u=, and whether this one is
+//  a miss is a race with the worker (the reader's own canon drops u= too)
+const canon = (u) => { const x = new URL(u); x.searchParams.delete('u'); return x.href; };
+check('forward returns to the page', canon(p.url()) === canon(PAGE), p.url());
 
 // the hamburger opens, and a document click closes it
 await p.evaluate(() => document.getElementById('ham').click());

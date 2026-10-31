@@ -71,6 +71,24 @@ def find(name, c):
     sys.exit(f'offline-test: no source for /+ {name}; set OFFLINE_LIB_{name.replace("-", "_")}=path')
 
 
+GRUB = re.compile(r'^/<\s+(\*|[a-z][a-z0-9-]*)\s+/lib/(\S+)\.hoon\s*$')
+
+
+def splice(path, c):
+    """a lib's source with its grubbery imports (/<  face  /lib/x.hoon)
+    spliced in front, as the /+ imports are: vere eval cannot parse /<"""
+    pre, rest = [], []
+    for line in open(path).read().split('\n'):
+        m = GRUB.match(line.strip())
+        if not m:
+            rest.append(line)
+            continue
+        face, lib = m.groups()
+        text = splice(find(lib.replace('/', '-'), c), c)
+        pre.append(('=+\n' if face == '*' else f'=/  {face}\n') + text)
+    return '\n'.join(pre + rest)
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
@@ -86,10 +104,10 @@ def main():
     pre = []
     for item in (s.strip() for s in imports.split(',') if s.strip()):
         if item.startswith('*'):
-            pre.append('=+\n' + open(find(item[1:], c)).read())
+            pre.append('=+\n' + splice(find(item[1:], c), c))
         else:
             face, _, lib = item.partition('=')
-            pre.append(f'=/  {face}\n' + open(find(lib or face, c)).read())
+            pre.append(f'=/  {face}\n' + splice(find(lib or face, c), c))
     calls = '\n'.join(f'    [%{a} (mule |.({a}:t))]' for a in arms)
     hoon = '\n'.join(pre) + '\n=/  t\n' + body + f'''
 %+  turn

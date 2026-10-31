@@ -17,6 +17,30 @@ export { makeCheck } from './check.mjs';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+//  The event a fixed sleep used to guess at: poll `fn` every `every` ms
+//  until it returns something truthy or `ms` pass, and hand back its last
+//  value either way, so the check that follows still decides. The deadline
+//  is the old sleep or longer, never shorter. A sleep that is an
+//  observation window ("nothing clobbers it for 3 s") stays a sleep.
+export async function waitFor(fn, ms, every = 250) {
+  const end = Date.now() + ms;
+  for (;;) {
+    let v;
+    try { v = await fn(); } catch { v = undefined; }
+    if (v || Date.now() >= end) return v;
+    await sleep(every);
+  }
+}
+
+//  The service worker has this document. sw.js claims its clients, so on a
+//  first visit the takeover needs no reload, and once a controller is set
+//  no reload is still to come (the editor reloads only when a controller it
+//  booted under is replaced, by a deploy). This is the event the suites'
+//  "the service worker's one reload" sleeps were waiting out.
+export const swControlled = (page, ms = 20000) => page.waitForFunction(
+  () => !('serviceWorker' in navigator) || !!navigator.serviceWorker.controller,
+  { timeout: ms }).catch(() => {});
+
 //  Where the ship is and how to prove we are logged in. The vars are
 //  arguments because the desktop suites point at a second ship with its own
 //  cookie file; that divergence is easier to see as a call than as another

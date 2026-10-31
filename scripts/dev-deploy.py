@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Deploy this checkout's code/ to lattice on a FAKE grubbery ship.
 
-usage: dev-deploy.py <base-url> <cookie-jar> [--add] [--code DIR]
+usage: dev-deploy.py <base-url> <cookie-jar> [--add] [--approve] [--code DIR]
 
 Mirrors code/ into the ball at /lattice-dev/code through the explorer
 (create-folder, create-file, write-text), then stamps that tree's
@@ -9,7 +9,10 @@ version.json with a dev version, which makes the desk pull. With --add it
 first makes the desk: POST /apps/grubbery/desks/add {name: lattice, code:
 /lattice-dev/code}, so lattice lands at the same path as on ricsul,
 /apps/shell.shell/desks/lattice.desk. Files are written only when they
-differ, so a redeploy sends only what changed.
+differ, so a redeploy sends only what changed. --approve then grants the
+instance its own weir.json (approve-weir with it as `granted`; without
+`granted` the grant is empty and lattice stops serving) and reloads its
+permits, which a release that adds a road needs.
 
 Never point this at a real ship: it is for fleet ships (TESTING.md). Get
 a cookie jar with scripts/hoon-test-kit/ship-cookie.sh.
@@ -100,6 +103,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('base'); ap.add_argument('jar')
     ap.add_argument('--add', action='store_true', help='also make the desk (first deploy)')
+    ap.add_argument('--approve', action='store_true', help="grant the instance its own weir.json")
     ap.add_argument('--code', default=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'code'))
     a = ap.parse_args()
     ship = Ship(a.base, a.jar)
@@ -144,6 +148,22 @@ def main():
         print(f'dev-deploy: desks/add: {st} {body.decode(errors="replace")}')
         if st not in (200, 409):
             sys.exit(1)
+
+    if a.approve:
+        app = '/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app'
+        for _ in range(180):  # a first install makes the instance once the desk builds
+            st, weir = ship.req('/grubbery/api/file' + app + '/weir.json')
+            if st == 200 and weir.strip():
+                break
+            time.sleep(5)
+        else:
+            sys.exit(f'dev-deploy: no {app}/weir.json yet; run --approve again later')
+        grant = {'action': 'approve-weir', 'app': app, 'picks': {}, 'granted': json.loads(weir)}
+        for path, body in (('/apps/grubbery/permits', grant), ('/apps/grubbery/permits/reload', {'app': app})):
+            st, out = ship.req(path, json.dumps(body), 'application/json')
+            print(f'dev-deploy: {path}: {st}')
+            if st not in (200, 303):
+                sys.exit(out[:400].decode(errors='replace'))
 
 
 if __name__ == '__main__':

@@ -16,7 +16,7 @@
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           node scripts/ui-reins-small.mjs
-import { shipEnv, launchBrowser, openPage, seed, makeCheck, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, seed, makeCheck, sleep, waitFor } from './lib/harness.mjs';
 
 const env = shipEnv();
 const check = makeCheck();
@@ -380,6 +380,8 @@ try {
         JSON.stringify({ hit, was, now: await checked(id) }));
       await box(id);
       await page.waitForFunction((x) => !document.getElementById(x).disabled, { timeout: 20000 }, id);
+      //  the box shows what the ship answered: wait for that answer
+      await waitFor(async () => (await checked(id)) === !was, 10000);
       check('clicking the ' + id + ' box toggles it', await checked(id) === !was, '');
       await box(id);       // and back, so the page is left as it was
       await page.waitForFunction((x) => !document.getElementById(x).disabled, { timeout: 20000 }, id);

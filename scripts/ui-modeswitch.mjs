@@ -14,7 +14,7 @@
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           node scripts/ui-modeswitch.mjs
-import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep, seed, swControlled, waitFor } from './lib/harness.mjs';
 
 const env = shipEnv();
 //  generous against a remote pier: the round trip is seconds; a paint is not
@@ -37,11 +37,13 @@ const inKnow = () => p.evaluate(() => document.getElementById('ws').classList.co
 try {
   await post('know-restore?key=' + encodeURIComponent(MEM)).catch(() => {});
   await post('know-save?key=' + encodeURIComponent(MEM), 'modeswitch memory');
+  //  a fresh ship's vault is empty and its tree has no page rows to wait for
+  await seed(env, [['uimodeswitch-fixture', '# a page for the tree\n']]);
   await p.goto(env.app + '/no-such-asset', { timeout: 30000 });
   await p.evaluate(() => { localStorage.removeItem('appTabs'); localStorage.removeItem('appLTab'); });
   await p.goto(env.app, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await p.waitForFunction(() => document.querySelectorAll('#treelist a.pg').length > 0, { timeout: 90000 });
-  await sleep(9000);   // the SW takes over and reloads within seconds of a fresh load
+  await swControlled(p);   // the SW has the page: no takeover reload to come
   await p.waitForFunction(() => document.querySelectorAll('#treelist a.pg').length > 0, { timeout: 90000 });
 
   await p.evaluate(() => document.querySelector('#ltabs [data-pt=know]').click());
@@ -85,13 +87,14 @@ try {
 
   // a reload with the memory tab in front: Files is painted, not blank or
   // left holding memories
-  await sleep(2500);
+  await waitFor(() => p.evaluate(() => !window.__latUnsaved || !window.__latUnsaved()), 10000);
+  const dumped = p.waitForResponse((r) => r.url().includes('/page-dump'), { timeout: 60000 }).catch(() => null);
   await p.reload({ waitUntil: 'domcontentloaded', timeout: 90000 });
   await p.waitForFunction((k) => {
     const s = window.latTabs && window.latTabs.state();
     return s && s.tabs[s.active] && s.tabs[s.active].kind === 'know' && s.tabs[s.active].key === k && s.shows;
   }, { timeout: 60000 }, MEM);
-  await sleep(8000);   // past the page dump boot also loads
+  await dumped; await sleep(1000);   // past the page dump boot also loads, and its paint
   const after = await p.evaluate(() => ({
     pages: document.querySelectorAll('#treelist a.pg[href*="name="]').length,
     stray: document.querySelectorAll('#treelist a.pg:not([href*="name="])').length,
