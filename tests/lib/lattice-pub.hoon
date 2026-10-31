@@ -142,6 +142,30 @@
     (expect-eq !>(`pub-wait:lp`[t 0 (add t ~s2) |]) !>((pub-done:lp [t 1 *@da &] t (add t ~s2))))
     (expect-eq !>(`pub-wait:lp`[(add t ~s1) 0 (add t ~s2) &]) !>((pub-done:lp [(add t ~s1) 1 *@da &] t (add t ~s2))))
   ==
+::  +pub-recount: a writer start counts a try for each waiting page only
+++  test-pub-recount
+  =/  t=@da  ~2026.1.1
+  =/  pen=pub-pending:lp
+    (malt ~[['/a' `pub-wait:lp`[t 1 t &]] ['/b' `pub-wait:lp`[t 0 t |]]])
+  %+  expect-eq
+    !>(`pub-pending:lp`(malt ~[['/a' `pub-wait:lp`[t 2 t &]] ['/b' `pub-wait:lp`[t 0 t |]]]))
+  !>((pub-recount:lp pen))
+::  +pub-arm-at: the earliest dirty row's time, the epoch when one is due
+::  already, and nothing for a map with no dirty row
+++  test-pub-arm-at
+  =/  t=@da  ~2026.1.1
+  =/  gap=@dr  ~s6
+  =/  clean=pub-pending:lp  (malt ~[['/c' `pub-wait:lp`[t 0 t |]]])
+  =/  later=pub-pending:lp
+    (~(put by clean) '/w' `pub-wait:lp`[t 0 (add t ~s2) &])
+  =/  due=pub-pending:lp
+    (~(put by later) '/d' `pub-wait:lp`[t 0 *@da &])
+  ;:  weld
+    (expect-eq !>(`(unit @da)`~) !>((pub-arm-at:lp clean t gap)))
+    (expect-eq !>(`(unit @da)``(add t ~s8)) !>((pub-arm-at:lp later t gap)))
+    (expect-eq !>(`(unit @da)``*@da) !>((pub-arm-at:lp later (add t ~s8) gap)))
+    (expect-eq !>(`(unit @da)``*@da) !>((pub-arm-at:lp due t gap)))
+  ==
 ::  +pub-from-old: release 79's rows still publish, as dirty rows due now
 ++  test-pub-from-old
   =/  t=@da  ~2026.1.1

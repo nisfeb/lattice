@@ -282,6 +282,10 @@
         ::  there), so an open board page reloads without every page edit
         ::  waking it. Nested under /beacon like /rev (keep-SSE needs that).
             [%fall %& [/beacon %forum] [[/ %json] (numb:enjs:format 0)]]
+        ::  /beacon/data: bumped by a shared content page's evaluator once
+        ::  the run after a save is down (+eval-run), for the live data
+        ::  view, whose /rev the page's publish bumped before that run.
+            [%fall %& [/beacon %data] [[/ %json] (numb:enjs:format 0)]]
         ::  /idx: the grub-native term index (docs/native-index.md). 256 bucket
         ::  grubs, each term -> (key -> [scope tf]). ONE covering %fall row. A
         ::  nexus reload rewrites its whole covered subtree, so without a row
@@ -433,16 +437,22 @@
         ;<  ~  bind:m  (pub-arm root)
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
-        ;<  now=@da  bind:m  bowl-now
-        ::  a timer: the background publisher's (+pub-tick), or a stray
-        ::  wake an earlier sleep left behind, which is nothing to do.
+        ::  a timer: the background publisher's (+pub-tick) or the rest of
+        ::  a publish (+pub-settle), or a stray wake an earlier sleep or
+        ::  yield left behind, which is nothing to do, and asks no time.
         ::  +pub-tick bumps the beacon itself, once a copy is out.
         ?:  =([/ %timer-wake] p.sage)
           =/  wak=(unit path)  (mole |.(!<(path q.sage)))
+          ?.  ?=([~ ?(%pub-due %pub-tail) *] wak)  $
+          ;<  now=@da  bind:m  bowl-now
           ;<  ~  bind:m
-            ?.  ?=([~ %pub-due *] wak)  (pure:m ~)
-            (pub-tick root now)
+            ?:  ?=([~ %pub-tail *] wak)
+              ;<  *  bind:m  (fiber-try (pub-settle root now t.u.wak))
+              (pure:m ~)
+            ;<  *  bind:m  (pub-tick root now ~)
+            (pure:m ~)
           $
+        ;<  now=@da  bind:m  bowl-now
         ;<  ~  bind:m  (apply-action root now sage)
         ::  bump the change beacon so open readers live-reload (+bump-beacon).
         ::
@@ -460,7 +470,7 @@
           ?:  =([/lattice %key-action] p.sage)  (pure:m ~)
           ?:  =([/lattice %know-action] p.sage)  (bump-beacon %know now)
           ?:  =([/lattice %know-batch] p.sage)  (bump-beacon %know now)
-          ;<  hold=?  bind:m  (pub-holds-beacon root sage)
+          ;<  hold=?  bind:m  (pub-holds-beacon root now sage)
           ?:  hold  (pure:m ~)
           (bump-beacon %rev now)
         $
@@ -623,6 +633,9 @@
         ::  succeeding stops rewriting '' on every save and every timer tick.
         ::  Nothing else writes /err.
         =/  err-shown=(unit @t)  ~
+        ::  the first run of this fiber, which a save's /code write spawned
+        ::  (or a reload): +eval-run bumps /beacon/data after it
+        =/  boot=?  &
         |-
         ;<  src=@t  bind:m  (get-state-as:io ,@t)
         ::  a page shared for EDIT runs content only. Its source must be the
@@ -710,7 +723,8 @@
         ::  eval-run answers its error text ('' on success) and any timer the
         ::  page asked for (clamped, or ~ for none or a failed run)
         ;<  [err=@t wake=(unit @dr)]  bind:m
-          (eval-run pdir p.bild cmd deps run-bud now)
+          (eval-run pdir p.bild cmd deps run-bud now &(boot ?=(^ pb)))
+        =.  boot  |
         ;<  ~  bind:m
           ?:  =(`err err-shown)  (pure:m ~)
           (put-file (rf up pdir %err) [/lattice %page] err)
@@ -796,11 +810,18 @@
 ::  which only the writer is, at the root.
 =|  up=@ud
 |%
-::  +srv: HTTP response door, the road from a /ui/requests/* fiber up to
-::  /ui/main.sig, through which all responses are sent (so the dispatcher can
-::  cancel orphaned connections). Identical layout to counter.
+::  +srv: the HTTP answer, as +http-res:io sends it (a %send poke of the
+::  eyre service), but as a +fio poke, on a request-named wire: io's poke
+::  takes a nonce first, an entropy round trip to /sys/bowl.sig, two
+::  takes more on every answer the app gives.
 ::
-++  srv  ~(. http-res:io [%| 1 %& ~ %'main.sig'])
+++  srv
+  |%
+  ++  send-simple
+    |=  [eyre-id=@ta =simple-payload:http]
+    %+  poke:fio  [%& %& /sys/eyre %'main.server-state']
+    [[/ %eyre-action] `eyre-action:nexus`[%send eyre-id %simple simple-payload]]
+  --
 ::  +handle-page-save-batch: POST /page-save-batch. One %make-many transaction
 ::  for a whole upload or queue replay. ?report=1 switches to REPLAY mode, where
 ::  each item also carries the rev it was made from and the response reports
@@ -5535,7 +5556,7 @@
   =/  pgs=(list path)
     %+  turn  ~(tap in (~(gas in *(set path)) [sb peer-bases:lu]))
     |=(b=path (weld b (weld /page name)))
-  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %| ug-base] ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:fio [%& %| ug-base] ~)
   ?.  ?=([~ %ball *] vw)  (pure:m |)
   %-  pure:m
   ::  every group, nested ones too, and file roads as well as dir roads:
@@ -6276,16 +6297,16 @@
     ;<  ~  bind:m  (write-page root pax.act src.act &)
     ::  a shared page's vault copy follows every write, not just the share
     ::  click, published in the background so the save answers at once
-    ;<  ~  bind:m  (pub-mark root now pax.act src.act)
+    ;<  pen=(unit pub-pending:lp)  bind:m  (pub-mark root now pax.act src.act)
     ::  the save is down and marked. The history prune, and the beacon
     ::  the writer bumps after every action, wait for the next event, so
     ::  the request that sent this answers without them (+yield-event).
-    ;<  ~  bind:m  (yield-event /writer/yield)
+    ;<  ~  bind:m  (yield-event root now pen pax.act /writer/yield)
     (prune-page pax.act)
       %make-marked
     ;<  ~  bind:m  (write-page root pax.act src.act |)
-    ;<  ~  bind:m  (pub-mark root now pax.act src.act)
-    ;<  ~  bind:m  (yield-event /writer/yield)
+    ;<  pen=(unit pub-pending:lp)  bind:m  (pub-mark root now pax.act src.act)
+    ;<  ~  bind:m  (yield-event root now pen pax.act /writer/yield)
     (prune-page pax.act)
       %make-many
     ::  Same work as %make, once per page, but inside ONE writer transaction.
@@ -6304,7 +6325,7 @@
       ?.  &(!=(0 done) =(0 (mod done 10)))  (pure:m ~)
       (sleep-draining (div ~s1 100))
     ;<  ~  bind:m  (make-page root pax.i.pages.act src.i.pages.act)
-    ;<  ~  bind:m  (pub-mark root now pax.i.pages.act src.i.pages.act)
+    ;<  *  bind:m  (pub-mark root now pax.i.pages.act src.i.pages.act)
     $(pages.act t.pages.act, done +(done))
       %tmpl-save
     ::  save a page-tree as a template: copy every page's CODE under
@@ -6871,14 +6892,24 @@
 ::  burst of autosaves publishes twice at most, and a reader sees the
 ::  first save in about the time the publish takes (+pub-due:lp).
 ::
+::  A publish due at once arms the epoch (+pub-arm-at:lp), so it runs in
+::  the event after the save's, ahead of the page evaluator (+defer-at),
+::  and bumps the open reader views' beacon in the same event. Its view
+::  mode is the page's builder, which is what the evaluator would write
+::  to /show. An own page's live data view also follows /beacon/data,
+::  which the evaluator bumps after the run, so it does not stay on the
+::  old data. What only this ship reads is left for a later event
+::  (+pub-tail-lag).
+::
 ::  The publish reads the page as it is THEN, never a body carried in the
 ::  mark, so it is always the newest text, and the writer runs one at a
 ::  time, so an older body can never land after a newer one. /pub-pending
 ::  is covered: a reload or crash before a publish finished leaves its row,
-::  and the writer's start arms the timer again (+pub-arm). Redoing one is
-::  safe: a revision already in the list is not grown twice (+apply-pub).
-::  A published row stays, clean, only until its gap is over, so the map
-::  holds no more than the shared pages saved in the last gap or waiting.
+::  and the writer's start counts a try and arms the timer again
+::  (+pub-arm). Redoing one is safe: a revision already in the list is not
+::  grown twice (+apply-pub). A published row stays, clean, only until its
+::  gap is over, so the map holds no more than the shared pages saved in
+::  the last gap or waiting.
 ::
 ::  The body comes from the code src (unwrapped), NOT the data grub: the
 ::  evaluator recomputes data AFTER the writer moves on.
@@ -6890,6 +6921,12 @@
   |=  row=pub-wait:lp
   ^-  @da
   (pub-due:lp row pub-gap)
+::  +pub-tail-lag: how long after a publish the rest of it goes
+::  (+pub-settle): after the evaluator its save woke, and in real time,
+::  not on a past timer, so the ship idles first. The runtime lets the
+::  answers it holds out only then, a reader's view of the copy among
+::  them.
+++  pub-tail-lag  ^-(@dr ~s3)
 ++  pub-pending-road  |=(root=@ud (rf root / %'pub-pending'))
 ::  +read-pub-pending: /pub-pending, or release 79's shape of it
 ++  read-pub-pending
@@ -6903,11 +6940,18 @@
   ?^  new  (pure:m u.new)
   =/  old=(unit pub-old:lp)  (mole |.(;;(pub-old:lp n)))
   (pure:m ?~(old ~ (pub-from-old:lp u.old)))
+::  +pub-pending-or: the map the caller holds, else /pub-pending
+++  pub-pending-or
+  |=  [root=@ud had=(unit pub-pending:lp)]
+  =/  m  (fiber:fiber:nexus ,pub-pending:lp)
+  ^-  form:m
+  ?^  had  (pure:m u.had)
+  (read-pub-pending root)
 ::  +pub-mark: after a write, note a shared page for publishing. A private
 ::  page costs one peek, and a non-content save nothing.
 ++  pub-mark
   |=  [root=@ud now=@da rel=path src=@t]
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,(unit pub-pending:lp))
   ^-  form:m
   ?:  =(~ (unwrap-content src))  (pure:m ~)
   ;<  mode=share-mode:le  bind:m  (read-share (weld /page rel))
@@ -6918,14 +6962,17 @@
     =/  pru  (pub-prune:lp pen now pub-gap)
     (~(put by pru) k (pub-note:lp (~(get by pen) k) now))
   ;<  ~  bind:m  (put-file (pub-pending-road root) [/ %noun] nen)
-  (pub-arm-with nen)
+  ;<  ~  bind:m  (pub-arm-with nen now)
+  (pure:m `nen)
 ::  +pub-holds-beacon: whether the writer leaves /beacon/rev alone after
-::  this action: a save of a shared page, whose publish is waiting. An
-::  open reader view of it reloads on that beacon, once, and would
+::  this action: a save of a shared page, whose publish is waiting, or
+::  ran in the save's yield (+yield-event), which left its row clean and
+::  sent after the save's `now`.
+::  An open reader view of it reloads on that beacon, once, and would
 ::  reload to the old copy and stay there; +pub-tick bumps it instead
 ::  once the copy is out. Every other tab learns of the save then too.
 ++  pub-holds-beacon
-  |=  [root=@ud =sage:tarball]
+  |=  [root=@ud now=@da =sage:tarball]
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   ?.  =([/lattice %eval-action] p.sage)  (pure:m |)
@@ -6933,46 +6980,52 @@
   ?.  ?=(?(%make %make-marked) -.act)  (pure:m |)
   ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
   =/  w=(unit pub-wait:lp)  (~(get by pen) (spat pax.act))
-  (pure:m &(?=(^ w) dirty.u.w))
-::  +pub-arm: set the publish timer for whatever is pending (writer start)
+  (pure:m &(?=(^ w) |(dirty.u.w (gte sent.u.w now))))
+::  +pub-arm: at writer start, count a try for whatever is pending, then
+::  set the publish timer for it. The count is down in the start's own
+::  event, before the publish it arms, so one that keeps taking its event
+::  down (which restarts the writer) is dropped after +pub-tries.
 ++  pub-arm
   |=  root=@ud
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
-  (pub-arm-with pen)
-::  +pub-arm-with: one timer, at the earliest dirty row. The wire is
-::  stable, so each arm replaces the last (behn-state drops a superseded
-::  wake). A row already due arms a time past, which wakes at once.
+  =/  nen=pub-pending:lp  (pub-recount:lp pen)
+  ?:  =(nen pen)  (pure:m ~)
+  ;<  ~  bind:m  (put-file (pub-pending-road root) [/ %noun] nen)
+  ;<  now=@da  bind:m  bowl-now
+  (pub-arm-with nen now)
+::  +pub-arm-with: one timer, at the earliest dirty row (+pub-arm-at:lp).
+::  The wire is stable, so each arm replaces the last (behn-state drops a
+::  superseded wake).
 ++  pub-arm-with
-  |=  pen=pub-pending:lp
+  |=  [pen=pub-pending:lp now=@da]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  ds=(list @da)
-    %+  murn  ~(val by pen)
-    |=(w=pub-wait:lp ?.(dirty.w ~ `(pub-when w)))
-  ?~  ds  (pure:m ~)
-  =/  at=@da  (roll t.ds |:([a=*@da b=i.ds] (min a b)))
-  ;<  *  bind:m  (soft-behn /pub-arm [[/ %timer-set] `[wire @da]`[/pub-due at]])
+  =/  at=(unit @da)  (pub-arm-at:lp pen now pub-gap)
+  ?~  at  (pure:m ~)
+  ;<  *  bind:m  (soft-behn /pub-arm [[/ %timer-set] `[wire @da]`[/pub-due u.at]])
   (pure:m ~)
 ::  +pub-tick: the timer fired. Publish ONE due page, then arm for the
-::  next, so the pokes waiting behind the writer go between pages. The try
-::  is counted in its own event before the publish, so one that keeps
-::  failing (or takes its event down) is dropped after +pub-tries, never
-::  retried for ever.
+::  next, so the pokes waiting behind the writer go between pages. A
+::  publish that fails is tried again a gap later and dropped after
+::  +pub-tries; one that takes its event down restarts the writer, whose
+::  start counts the try (+pub-arm).
 ++  pub-tick
-  |=  [root=@ud now=@da]
-  =/  m  (fiber:fiber:nexus ,~)
+  |=  [root=@ud now=@da had=(unit pub-pending:lp)]
+  =/  m  (fiber:fiber:nexus ,pub-pending:lp)
+  =/  n  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  pr=road:tarball  (pub-pending-road root)
-  ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
+  ;<  pen=pub-pending:lp  bind:m  (pub-pending-or root had)
   =/  pru=pub-pending:lp  (pub-prune:lp pen now pub-gap)
   =/  due=(list [k=@t row=pub-wait:lp])
     %+  skim  ~(tap by pru)
     |=([k=@t row=pub-wait:lp] &(dirty.row (lte (pub-when row) now)))
   ?~  due
-    ;<  ~  bind:m  ?:(=(pru pen) (pure:m ~) (put-file pr [/ %noun] pru))
-    (pub-arm-with pru)
+    ;<  ~  bind:m  ?:(=(pru pen) (pure:n ~) (put-file pr [/ %noun] pru))
+    ;<  ~  bind:m  (pub-arm-with pru now)
+    (pure:m pru)
   =/  k=@t  k.i.due
   =/  row  row.i.due
   ?:  (gte tries.row pub-tries)
@@ -6983,45 +7036,126 @@
         ~
       ==
     ;<  ~  bind:m  (put-file pr [/ %noun] nen)
-    (pub-arm-with nen)
-  ;<  ~  bind:m  (put-file pr [/ %noun] (~(put by pru) k row(tries +(tries.row))))
-  ::  the try is down in this event; the publish runs in the next
-  ;<  ~  bind:m  (yield-event /writer/yield)
-  ;<  err=(unit tang)  bind:m  (fiber-try (pub-flush-one root now k))
-  ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
-  ::  the row as it is now: a save meanwhile moved its `last`
-  =/  cur=pub-wait:lp  (fall (~(get by pen) k) row)
+    ;<  ~  bind:m  (pub-arm-with nen now)
+    (pure:m nen)
+  ;<  res=(each ? tang)  bind:m  (fiber-try-flag (pub-flush-one root now k))
+  =/  err=(unit tang)  ?:(?=(%| -.res) `p.res ~)
+  ::  no event between the read and here, so no save moved the row
   =/  nen=pub-pending:lp
-    %+  ~(put by pen)  k
-    ?~  err  (pub-done:lp cur now now)
+    %+  ~(put by pru)  k
+    ?~  err  (pub-done:lp row now now)
     ::  failed: try again a gap from now
-    cur(tries +(tries.row), sent now, dirty &)
+    row(tries +(tries.row), sent now, dirty &)
   ;<  ~  bind:m
-    ?~  err  (pure:m ~)
+    ?~  err  (pure:n ~)
     (fault 'pub-failed' 3 "lattice /main.sig: publishing {(trip k)} failed" u.err)
   ;<  ~  bind:m  (put-file pr [/ %noun] nen)
-  ::  the bump the save held back (+pub-holds-beacon), now the copy an
-  ::  open reader view reloads to is out, or has failed for now
+  ;<  ~  bind:m  (pub-arm-with nen now)
+  ::  the bump the save held back (+pub-holds-beacon), in the copy's own
+  ::  event: the copy an open reader view reloads to is out, or has
+  ::  failed for now. A page's live data view follows /beacon/data too,
+  ::  which its evaluator bumps once its run is down (+eval-run).
   ;<  ~  bind:m  (bump-beacon %rev now)
-  (pub-arm-with nen)
-::  +pub-flush-one: publish the page at rel `k` as it is now, if it is
-::  still there and still shared (an unshare or delete already took its
-::  copy down, and a move publishes at the new path).
-++  pub-flush-one
-  |=  [root=@ud now=@da k=@t]
+  ::  what only this ship reads waits for a timer of its own, after the
+  ::  evaluator's run (+pub-tail-lag), so it is not on the copy's way out:
+  ::  the vault's old revisions and the index row (+pub-settle). A crash
+  ::  first leaves them as they were, and the page's next publish covers
+  ::  them.
+  ;<  *  bind:m
+    =/  rel=(unit path)  (rush k stap)
+    ?.  &(?=([%& %&] res) ?=(^ rel))  (pure:(fiber:fiber:nexus ,?) |)
+    %+  soft-behn  /pub-tail-arm
+    [[/ %timer-set] `[wire @da]`[(weld /pub-tail u.rel) (add now pub-tail-lag)]]
+  (pure:m nen)
+::  +pub-settle: after a background publish of the page at `rel`, drop
+::  its vault grub's revisions below the published one (nothing reads
+::  them: peers %keen the current one) and lay its index row, both as the
+::  vault holds the page now. A page unpublished meanwhile has neither.
+++  pub-settle
+  |=  [root=@ud now=@da rel=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  =/  key=path  (pub-path (crip (pax-str rel)))
+  =/  or=(unit vrail:lp)  (key-to-rail:lp /pub/vault key)
+  ?~  or  (pure:m ~)
+  =/  road=road:tarball  (rf root pax.u.or nom.u.or)
+  ;<  vv=view:nexus  bind:m  (peek-shallow:fio (rv root pax.u.or) ~)
+  ?.  ?=([%ball *] vv)  (pure:m ~)
+  =/  f  ?~(fil.ball.vv ~ (~(get by contents.u.fil.ball.vv) nom.u.or))
+  =/  c  ?~(fil.wave.vv ~ (~(get by file.u.fil.wave.vv) nom.u.or))
+  ?~  f  (pure:m ~)
+  ?~  c  (pure:m ~)
+  ;<  ~  bind:m
+    ?:  =(0 ud.u.c)  (pure:m ~)
+    (lose:fio road [%numb ~ `(dec ud.u.c)])
+  =/  body=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.u.f))))
+  ?~  body  (pure:m ~)
+  =/  px=road:tarball  (rf root /pub %index)
+  ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
+  ?.  (~(has by ix) key)  (pure:m ~)
+  (put-file px [/lattice %pub-index] (~(put by ix) key (to-pub-row:lp u.body now)))
+::  +give-up: a refusal, in a fiber that answers a flag
+++  give-up
+  |=  a=process:fiber:nexus
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  ~  bind:m  a
+  (pure:m |)
+::  +fiber-try-flag: +fiber-try for a fiber that answers a flag
+++  fiber-try-flag
+  |=  a=_*form:(fiber:fiber:nexus ,?)
+  =/  m  (fiber:fiber:nexus ,(each ? tang))
+  ^-  form:m
+  |=  inp=input:fiber:nexus
+  =/  r  (mule |.((a inp)))
+  ?:  ?=(%| -.r)  [~ q.state.inp %done %| p.r]
+  =/  o  p.r
+  ?-  -.next.o
+    %wait  [darts.o state.o %wait ~]
+    %skip  [darts.o state.o %skip ~]
+    %cont  [darts.o state.o %cont ^$(a self.next.o)]
+    %fail  [~ q.state.inp %done %| err.next.o]
+    %done  [darts.o state.o %done %& value.next.o]
+  ==
+::  +pub-flush-one: publish the page at rel `k` as it is now, if it is
+::  still there and still shared (an unshare or delete already took its
+::  copy down, and a move publishes at the new path). One shallow peek of
+::  the page dir reads its source, its share and its view-mode together.
+++  pub-flush-one
+  |=  [root=@ud now=@da k=@t]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
   =/  rel=(unit path)  (rush k stap)
-  ?~  rel  (pure:m ~)
-  ;<  cv=view:nexus  bind:m  (peek:fio (rf root (weld /page u.rel) %code) ~)
-  ?.  ?=([%file *] cv)  (pure:m ~)
-  =/  src=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.cv))))
-  ?~  src  (pure:m ~)
+  ?~  rel  (pure:m |)
+  ;<  pv=view:nexus  bind:m  (peek-shallow:fio (rv root (weld /page u.rel)) ~)
+  ?.  ?=([%ball *] pv)  (pure:m |)
+  =/  grub
+    =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+      ?~(fil.ball.pv ~ contents.u.fil.ball.pv)
+    |=(nom=@ta ^-((unit *) =/(v (~(get by fils) nom) ?~(v ~ `(sang-noun:tarball sang.u.v)))))
+  =/  src=(unit @t)
+    =/  c  (grub %code)
+    ?~(c ~ (mole |.(;;(@t u.c))))
+  ?~  src  (pure:m |)
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content u.src)
-  ?~  un  (pure:m ~)
-  ;<  mode=share-mode:le  bind:m  (read-share (weld /page u.rel))
-  ?:  ?=(%private mode)  (pure:m ~)
-  (apply-pub root now [%save-page (spat (pub-path (crip (pax-str u.rel)))) body.u.un])
+  ?~  un  (pure:m |)
+  ::  as +read-share: absent or malformed is private
+  =/  mode=share-mode:le
+    =/  s  (grub %share)
+    ?~(s %private (fall (mole |.(;;(share-mode:le u.s))) %private))
+  ?:  ?=(%private mode)  (pure:m |)
+  ::  the builder is the mode a content page's run writes to /show, and
+  ::  this publish goes before that run. Else as +published-mode: the
+  ::  show grub, absent or malformed %gmi.
+  =/  vm=view-mode:pg
+    =/  b=(unit view-mode:pg)  (mole |.(;;(view-mode:pg builder.u.un)))
+    ?^  b  u.b
+    =/  s  (grub %show)
+    ?~(s %gmi (fall (mole |.(;;(view-mode:pg u.s))) %gmi))
+  %:  pub-save-page  root  now
+    (spat (pub-path (crip (pax-str u.rel))))
+    body.u.un  `vm  |  &
+  ==
 ::  +make-page: create a page at `pax` under /page with the given code, the
 ::  shared body of the %make action and template instantiation. cmd + deps
 ::  first (the code grub's fiber reads both at spawn), then the code.
@@ -7670,7 +7804,7 @@
 ::  and takes the loop's `now` rather than reading the clock again.
 ::
 ++  eval-run
-  |=  [pdir=path bild=vase cmd=(unit @t) deps=(list path) bud=@ud now=@da]
+  |=  [pdir=path bild=vase cmd=(unit @t) deps=(list path) bud=@ud now=@da boot=?]
   =/  m  (fiber:fiber:nexus ,[err=@t wake=(unit @dr)])
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -7723,6 +7857,10 @@
       ;<  sm=share-mode:le  bind:(fiber:fiber:nexus ,?)  (read-share pdir)
       (pure:(fiber:fiber:nexus ,?) !=(%private sm))
     ?.  pub  (pure:n ~)
+    ::  a shared content page's first run after a save: its publish went
+    ::  out ahead of this run, with the reader views' beacon, so the live
+    ::  data view, which renders this data, learns of it here
+    ;<  ~  bind:n  ?.(boot (pure:n ~) (bump-beacon %data now))
     ;<  ~  bind:n
       ?:  !=(%private mode)  (pure:n ~)
       (gain:fio (rf up pdir %data) %.y)
@@ -7877,31 +8015,61 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   (job-set ~)
-::  +yield-event: go on in the next arvo event (a behn timer for a time
-::  already past), taking nothing but the timer's own ack and wake: the
-::  pokes that come meanwhile wait their turn, as they do behind any
-::  writer step. An HTTP answer leaves at the end of its event, so work
-::  after this is not on it. A refused or failed timer goes on at once.
+::  +yield-event: go on in a later arvo event (a behn timer for a time
+::  already past, +yield-at), taking nothing but the timer's own ack and
+::  wake: the pokes that come meanwhile wait their turn, as they do
+::  behind any writer step. An HTTP answer leaves at the end of its
+::  event, so work after this is not on it. A refused or failed timer
+::  goes on at once.
+::
+::  Except the publish timer (+pub-tick): a shared save's publish is due
+::  at once and set for the epoch, so it wakes first, and is run here, in
+::  its own event, ahead of the page evaluator (+defer-at) and of the
+::  writer's own wake. When it was this save's page, the yield is over
+::  and the writer goes on in that event. Else the wake comes after a
+::  private page's evaluator run (+defer-at), so the beacon the writer
+::  bumps for a private save still follows the data.
+++  yield-at  ^-(@da (add *@da ~s3))
 ++  yield-event
-  |=  =wire
+  |=  [root=@ud now=@da pen=(unit pub-pending:lp) rel=path =wire]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  ~  bind:m
     %:  send-dart:io  %node  wire  &+&+[/sys/behn %'main.behn-state']
-      %poke  [/ %timer-set]  `[^wire @da]`[wire *@da]
+      %poke  [/ %timer-set]  `[^wire @da]`[wire yield-at]
     ==
+  |-
+  ;<  pub=?  bind:m  (take-yield wire)
+  ?.  pub  (pure:m ~)
+  ::  the save's own `now` will do: the row it marked was due then, and
+  ::  only this fiber writes the map, which `pen` holds as written
+  ;<  nen=pub-pending:lp  bind:m  (pub-tick root now pen)
+  ::  this save's own page went out: its answer left an event ago, so
+  ::  the rest goes on here, and the writer is free when this event
+  ::  ends. Its own wake comes later, a stray one.
+  =/  w=(unit pub-wait:lp)  (~(get by nen) (spat rel))
+  ?:  &(?=(^ w) !dirty.u.w (gte sent.u.w now))  (pure:m ~)
+  $(pen `nen)
+::  +take-yield: & on the publish timer's wake, | on our own (or when our
+::  timer was refused or failed)
+++  take-yield
+  |=  =wire
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
   |=  input:fiber:nexus
   :+  ~  q.state
   ?~  in  [%wait ~]
   ?:  ?=([%veto %node *] u.in)
-    ?.(=(wire wire.dart.u.in) [%skip ~] [%done ~])
+    ?.(=(wire wire.dart.u.in) [%skip ~] [%done |])
   ?:  ?=([%pack * *] u.in)
     ?.  =(wire wire.u.in)  [%skip ~]
-    ?~(err.u.in [%wait ~] [%done ~])
+    ?~(err.u.in [%wait ~] [%done |])
   ?.  ?=([%poke * *] u.in)  [%skip ~]
   ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
-  ?.  =(`wire (mole |.(!<(^wire q.sage.u.in))))  [%skip ~]
-  [%done ~]
+  =/  wak=(unit ^wire)  (mole |.(!<(^wire q.sage.u.in)))
+  ?:  =(`wire wak)  [%done |]
+  ?:  ?=([~ %pub-due *] wak)  [%done &]
+  [%skip ~]
 ::  +drain-fio: eat the +fio answers an earlier run of this fiber left
 ::  queued. A +fio wire names the request, so the next identical request
 ::  would take that old answer for its own, and its own answer would be
@@ -7947,10 +8115,13 @@
     ==
   ?=([~ %fio *] w)
 ::  +defer-at: when +defer-drain's timer is set for. Past, so it wakes at
-::  once, and before a publish due now (+pub-due:lp, a gap after 0): the
-::  reader view of an own page renders the page's data, so a publish,
-::  whose index bump makes an open view reload, waits for the evaluator.
-++  defer-at  ^-(@da *@da)
+::  once, but after a publish due now (+pub-arm-at:lp, the epoch), so a
+::  shared save's copy goes out before its page is run, and before the
+::  save's own yield (+yield-at): the live view of an own page renders
+::  the page's data, so the beacon a private save bumps waits for the
+::  evaluator. A shared page's live view follows /beacon/data as well,
+::  which the run bumps (+eval-run).
+++  defer-at  ^-(@da (add *@da ~s2))
 ::  +defer-drain: put the rest of a fiber off to a later arvo event: a
 ::  behn timer for a time already past (+defer-at), and wait for its wake. Every input
 ::  before the wake is eaten, the start's kick included, which is what a
@@ -11205,7 +11376,9 @@
   ::  stream here.
   ;<  sb=path  bind:m  self-base
   =/  keep=tape  (keep-url sb "beacon/rev")
-  ;<  rev=tape  bind:m  ?:(local beacon-rev-tape (pure:(fiber:fiber:nexus ,tape) ""))
+  ::  /data too: a shared page's publish bumps /rev before its run is
+  ::  down, and its evaluator bumps /data once it is (+eval-run)
+  ;<  rev=tape  bind:m  ?:(local (beacons ~[%rev %data]) (pure:(fiber:fiber:nexus ,tape) ""))
   ::  the page-relative path, from the page dir's name. It was (slag 3 pax),
   ::  which assumed a two-segment base: on a desk install it named no page,
   ::  so an own page in the reader showed no comments, no box and no theme.
@@ -14048,7 +14221,7 @@
   =/  m  (fiber:fiber:nexus ,path)
   ^-  form:m
   ;<  vw=(unit view:nexus)  bind:m
-    (peek-soft:io [%& %& /sys/link/lattice %'dest.lanes'] ~)
+    (peek-soft:fio [%& %& /sys/link/lattice %'dest.lanes'] ~)
   ?.  ?=([~ %file *] vw)  (pure:m desk-base:lu)
   ::  our own row is a DIRECTORY lane; a file lane is ignored. Any app may
   ::  claim the name lattice, and the head of the list is whoever claimed
@@ -14775,102 +14948,7 @@
   =/  px=road:tarball  (rf root /pub %index)
   ?-    -.act
       %save-page
-    ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
-    ::  would crash this single writer fiber, and rise-later would then refuse the
-    ::  mutations that follow, for a minute or more. know-key mule-guards the stab. skip+log
-    ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
-    =/  ko=(unit path)  (know-key key.act)
-    ?~  ko  (refuse "a publish: the key does not parse: {(trip key.act)}")
-    =/  key=path  u.ko
-    ::  a top-level single-char pub name would shadow a urb:// mount letter
-    ::  (p/n/k/t and the rest of the reserved 1-char space), so its bare
-    ::  canonical url could never resolve back to it. Refuse it. The whole
-    ::  single-char first-component space stays reserved to the protocol forever.
-    ?:  ?&(?=([@ ~] key) =(1 (met 3 i.key)))
-      (refuse "a publish: one-letter top-level names are reserved: {(spud key)}")
-    =/  or=(unit vrail:lp)  (key-to-rail:lp vbase key)
-    ?~  or  (refuse "a publish: the key names no page: {(spud key)}")
-    =/  road=road:tarball  (rf up pax.u.or nom.u.or)
-    ::  the rev bound in the namespace by the PREVIOUS publish of this page,
-    ::  read BEFORE this save's put-file bumps the vault grub's cass. This is
-    ::  the exact predecessor spur the keep-only-current cull below retracts.
-    ::  The last save grew a body at this cass, or, on a re-save after delete,
-    ::  the delete grew its TOMBSTONE at this cass. A tombed grub does NOT
-    ::  drop out of the dir wave. born is a high-water mark, so it reads the
-    ::  [%temp ~] cass the cull appended, which is exactly where %del-page
-    ::  bound the tombstone. 0 only when the page has never been published.
-    ;<  prev-rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
-    ::  a page published before has its vault dirs: only a first publish
-    ::  makes them, a peek a segment
-    ;<  ~  bind:m
-      ?.  =(0 prev-rev)  (pure:m ~)
-      (ensure-dirs up vbase (slag (lent vbase) pax.u.or))
-    ;<  ~  bind:m  (put-file road [/lattice %page] body.act)
-    ::  the rev just written (the vault grub's cass, read AFTER the
-    ::  put-file), and the one the revision list names now, read once
-    ::  for the row and for its update below
-    ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
-    ;<  revs=(map @t json)  bind:m  (read-pub-revs root)
-    =/  was=(unit @ud)
-      =/  r=(unit json)  (~(get by revs) (page-name:lp key))
-      ?~(r ~ (bind (json-rev:lp u.r) head))
-    ::  INCREMENTAL. The list already names this revision: the same text
-    ::  published again, or a background publish redone after it landed.
-    ::  Its binding is grown, and a second %grow of a bound spur would only
-    ::  append a gall case that readers (who read case 1) never see, so
-    ::  there is nothing to do. A changed body is always a new cass, so a
-    ::  new spur whose case 1 is this body.
-    ?:  =(`rev was)  (pure:m ~)
-    ;<  ~  bind:m  (gain:fio road %.y)
-    ::  nothing reads a published page's old revisions (peers %keen the
-    ::  current one, and the page keeps its own history), so keep only
-    ::  it: one lose of every revision below `rev`, the newest, which is
-    ::  what +prune-hist with keep 1 comes to, without its +born read
-    ;<  ~  bind:m
-      ?:  =(0 rev)  (pure:m ~)
-      (lose:fio road [%numb ~ `(dec rev)])
-    ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
-    ::  the manifest is the key set only, so only a page new to the index
-    ::  grows one (an edit used to regrow it whole every save)
-    =/  fresh=?  !(~(has by ix) key)
-    =/  nix=pub-index:lp  (~(put by ix) key (to-pub-row:lp body.act now))
-    ;<  ~  bind:m  (put-file px [/lattice %pub-index] nix)
-    ;<  ~  bind:m  ?.(brk (pure:m ~) (sleep-draining (div ~s1 100)))
-    ::  mesa (D1): mirror the publish into the remote-scry namespace, so a
-    ::  peer can %keen the page instead of negotiating a grubbery peek: the
-    ::  body at /pub/page/<name>/<id of rev>, and its row in the revision
-    ::  list. %grow is fire-and-forget.
-    ::  ORDERING (mesa D2): the subscriber's wave carries this cass, and gall
-    ::  PARKS a keen at an unbound spur. The put-file above already emitted
-    ::  the wave card, but ames transmission is orders slower than local
-    ::  card application, so growing here binds the rev well before any
-    ::  keen can arrive.
-    ;<  salt=@  bind:m  pub-salt
-    ;<  mode=view-mode:pg  bind:m  (published-mode (snip (strip-pub:lp key)))
-    ;<  ~  bind:m  (grow-pub-page salt key body.act rev mode)
-    ;<  ~  bind:m  (put-pub-revs root salt key `rev revs)
-    ::  keep-only-current INVARIANT: at most one rev spur per page is ever
-    ::  bound. Retract the PREDECESSOR now that the new one is grown and
-    ::  listed: grow, list, cull, so a reader never finds zero bindings,
-    ::  and a crash before the cull leaves one bound spur too many rather
-    ::  than a list naming a culled one. The predecessor is the rev the list
-    ::  named (the vault's own cass before this write, for a page the list
-    ::  lacks): a publish redone after its vault write still culls the
-    ::  right spur. Guards:
-    ::    prev=0      no prior publish, nothing to cull
-    ::    prev=rev    a no-op save (save-file suppressed the cass bump)
-    ::  The predecessor was grown and not yet culled, so this hits a bound
-    ::  spur exactly once. A re-cull would crash in +farm-top's %gw lookup
-    ::  on the emptied plot (+cull-farm:io). A pre-mesa page whose old rev
-    ::  was never grown culls as a no-op (farm-top finds nothing listed).
-    =/  prev=@ud  (fall was prev-rev)
-    ;<  ~  bind:m
-      ?:  |(=(0 prev) =(prev rev))  (pure:m ~)
-      (cull-farm:io (page-spur salt (snip (strip-pub:lp key)) prev))
-    ?.  fresh  (pure:m ~)
-    ::  and one before the manifest
-    ;<  ~  bind:m  ?.(brk (pure:m ~) (sleep-draining (div ~s1 100)))
-    ;<  *  bind:m  (grow-pub-index root nix)
+    ;<  *  bind:m  (pub-save-page root now key.act body.act ~ brk |)
     (pure:m ~)
   ::
       %del-page
@@ -14969,6 +15047,159 @@
     ;<  *  bind:m  (grow-pub-index root nix)
     (pure:m ~)
   ==
+::  +pub-save-page: +apply-pub-in's %save-page. `vm` is the page's
+::  view-mode when the caller read it already (+pub-flush-one), else ~
+::  and it is read here (+published-mode).
+::
+::  Its reads are two shallow dir peeks: the vault grub's dir (its cass
+::  and its body) and /pub (the revision list and the index). A changed
+::  body's write gives the cass after the grub's newest one (grubbery's
+::  +next-cass, the newest a tomb's too), and a body the vault holds
+::  already is not written, so no peek after the write is needed. The
+::  write sets the gain flag in the same dart, and the namespace's grow
+::  and cull are +fio pokes, with no nonce (+pub-grow, +pub-cull).
+::
+::  With `lag` (a background publish) the lose of the vault's old
+::  revisions and an edited page's index row are left to +pub-settle. It
+::  answers whether it published, so the caller knows to arm that.
+::
+++  pub-save-page
+  |=  [root=@ud now=@da key-t=@t body=@t vm=(unit view-mode:pg) brk=? lag=?]
+  =/  m  (fiber:fiber:nexus ,?)
+  =/  n  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  vbase=path  /pub/vault
+  =/  px=road:tarball  (rf root /pub %index)
+  ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
+  ::  would crash this single writer fiber, and rise-later would then refuse the
+  ::  mutations that follow, for a minute or more. know-key mule-guards the stab. skip+log
+  ::  instead of crashing. The route also pre-validates, so this is belt-and-braces.
+  =/  ko=(unit path)  (know-key key-t)
+  ?~  ko  (give-up (refuse "a publish: the key does not parse: {(trip key-t)}"))
+  =/  key=path  u.ko
+  ::  a top-level single-char pub name would shadow a urb:// mount letter
+  ::  (p/n/k/t and the rest of the reserved 1-char space), so its bare
+  ::  canonical url could never resolve back to it. Refuse it. The whole
+  ::  single-char first-component space stays reserved to the protocol forever.
+  ?:  ?&(?=([@ ~] key) =(1 (met 3 i.key)))
+    (give-up (refuse "a publish: one-letter top-level names are reserved: {(spud key)}"))
+  =/  or=(unit vrail:lp)  (key-to-rail:lp vbase key)
+  ?~  or  (give-up (refuse "a publish: the key names no page: {(spud key)}"))
+  =/  road=road:tarball  (rf up pax.u.or nom.u.or)
+  =/  inner=path  (snip (strip-pub:lp key))
+  ;<  vv=view:nexus  bind:m  (peek-shallow:fio (rv up pax.u.or) ~)
+  ::  the rev bound in the namespace by the PREVIOUS publish of this page,
+  ::  the vault grub's cass before this save's write. This is the exact
+  ::  predecessor spur the keep-only-current cull below retracts. The
+  ::  last save grew a body at this cass, or, on a re-save after delete,
+  ::  the delete grew its TOMBSTONE at this cass. A tombed grub does NOT
+  ::  drop out of the dir wave. born is a high-water mark, so it reads the
+  ::  [%temp ~] cass the cull appended, which is exactly where %del-page
+  ::  bound the tombstone. 0 only when the page has never been published.
+  =/  prev-rev=@ud
+    ?.  ?=([%ball *] vv)  0
+    =/  wfil=(map @ta cass:clay)  ?~(fil.wave.vv ~ file.u.fil.wave.vv)
+    =/  c=(unit cass:clay)  (~(get by wfil) nom.u.or)
+    ?~(c 0 ud.u.c)
+  ::  the vault holds this body already, as grubbery's +save-file sees it:
+  ::  the same mark and noun, a write that would not move the cass
+  =/  same=?
+    ?.  ?=([%ball *] vv)  |
+    =/  f  ?~(fil.ball.vv ~ (~(get by contents.u.fil.ball.vv) nom.u.or))
+    ?~  f  |
+    &(=([/lattice %page] p.sang.u.f) =(body (sang-noun:tarball sang.u.f)))
+  ::  the rev this publish binds: the vault grub's cass after the write
+  =/  rev=@ud  ?:(same prev-rev +(prev-rev))
+  ;<  pv=view:nexus  bind:m  (peek-shallow:fio (rv root /pub) ~)
+  =/  pfil=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+    ?.  ?=([%ball *] pv)  ~
+    ?~(fil.ball.pv ~ contents.u.fil.ball.pv)
+  ::  as +read-pub-revs: an unreadable list starts over empty
+  =/  revs=(map @t json)
+    =/  r  (~(get by pfil) %revs)
+    ?~  r  ~
+    =/  j=(unit json)  (mole |.(!<(json (need-vase:tarball sang.u.r))))
+    ?.(?=([~ %o *] j) ~ p.u.j)
+  =/  was=(unit @ud)
+    =/  r=(unit json)  (~(get by revs) (page-name:lp key))
+    ?~(r ~ (bind (json-rev:lp u.r) head))
+  ::  INCREMENTAL. The list already names this revision: the same text
+  ::  published again, or a background publish redone after it landed.
+  ::  Its binding is grown, and a second %grow of a bound spur would only
+  ::  append a gall case that readers (who read case 1) never see, so
+  ::  there is nothing to do. A changed body is always a new cass, so a
+  ::  new spur whose case 1 is this body.
+  ?:  =(`rev was)  (pure:m |)
+  ::  a page published before has its vault dirs: only a first publish
+  ::  makes them, a peek a segment
+  ;<  ~  bind:m
+    ?.  =(0 prev-rev)  (pure:n ~)
+    (ensure-dirs up vbase (slag (lent vbase) pax.u.or))
+  ;<  ~  bind:m
+    ?:  same  (gain:fio road %.y)
+    (over-gained:fio road [/lattice %page] body)
+  ::  nothing reads a published page's old revisions (peers %keen the
+  ::  current one, and the page keeps its own history), so keep only
+  ::  it: one lose of every revision below `rev`, the newest, which is
+  ::  what +prune-hist with keep 1 comes to, without its +born read
+  ;<  ~  bind:m
+    ?:  |(lag =(0 rev))  (pure:n ~)
+    (lose:fio road [%numb ~ `(dec rev)])
+  ::  as +read-pub-index
+  =/  ix=pub-index:lp
+    =/  r  (~(get by pfil) %index)
+    ?~  r  *pub-index:lp
+    !<(pub-index:lp (need-vase:tarball sang.u.r))
+  ::  the manifest is the key set only, so only a page new to the index
+  ::  grows one (an edit used to regrow it whole every save)
+  =/  fresh=?  !(~(has by ix) key)
+  =/  row=pub-row:lp  (to-pub-row:lp body now)
+  =/  nix=pub-index:lp  (~(put by ix) key row)
+  ;<  ~  bind:m
+    ?:  &(lag !fresh)  (pure:n ~)
+    (put-file px [/lattice %pub-index] nix)
+  ;<  ~  bind:m  ?.(brk (pure:n ~) (sleep-draining (div ~s1 100)))
+  ::  mesa (D1): mirror the publish into the remote-scry namespace, so a
+  ::  peer can %keen the page instead of negotiating a grubbery peek: the
+  ::  body at /pub/page/<name>/<id of rev>, and its row in the revision
+  ::  list. %grow is fire-and-forget.
+  ::  ORDERING (mesa D2): the subscriber's wave carries this cass, and gall
+  ::  PARKS a keen at an unbound spur. The write above already emitted
+  ::  the wave card, but ames transmission is orders slower than local
+  ::  card application, so growing here binds the rev well before any
+  ::  keen can arrive.
+  ;<  salt=@  bind:m  pub-salt
+  ;<  mode=view-mode:pg  bind:m
+    ?^  vm  (pure:(fiber:fiber:nexus ,view-mode:pg) u.vm)
+    (published-mode inner)
+  ;<  ~  bind:m  (grow-pub-page salt key body rev mode)
+  ;<  ~  bind:m  (put-pub-revs root salt key `rev revs)
+  ::  keep-only-current INVARIANT: at most one rev spur per page is ever
+  ::  bound. Retract the PREDECESSOR now that the new one is grown and
+  ::  listed: grow, list, cull, so a reader never finds zero bindings,
+  ::  and a crash before the cull leaves one bound spur too many rather
+  ::  than a list naming a culled one. The predecessor is the rev the list
+  ::  named (the vault's own cass before this write, for a page the list
+  ::  lacks): a publish redone after its vault write still culls the
+  ::  right spur. Guards:
+  ::    prev=0      no prior publish, nothing to cull
+  ::    prev=rev    a no-op save (the vault held this body already)
+  ::  The predecessor was grown and not yet culled, so this hits a bound
+  ::  spur exactly once. A re-cull would crash in +farm-top's %gw lookup
+  ::  on the emptied plot (+cull-farm:io). A pre-mesa page whose old rev
+  ::  was never grown culls as a no-op (farm-top finds nothing listed).
+  =/  prev=@ud  (fall was prev-rev)
+  ;<  ~  bind:m
+    ?:  |(=(0 prev) =(prev rev))  (pure:n ~)
+    (pub-cull (page-spur salt inner prev))
+  ::  with `lag`, the lose and an edited page's index row are left to
+  ::  the caller (+pub-settle), for an event after the copy is out
+  ?.  fresh  (pure:m lag)
+  ::  and one before the manifest
+  ;<  ~  bind:m  ?.(brk (pure:n ~) (sleep-draining (div ~s1 100)))
+  ;<  *  bind:m  (grow-pub-index root nix)
+  (pure:m lag)
 ::  +read-pub-index: peek the /pub/index grub. Empty if absent.
 ::
 ++  read-pub-index
@@ -15050,7 +15281,17 @@
   |=  [salt=@ key=path body=@t rev=@ud mode=view-mode:pg]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (grow:io (page-spur salt (snip (strip-pub:lp key)) rev) [(mode-mark mode) body])
+  (pub-grow (page-spur salt (snip (strip-pub:lp key)) rev) [(mode-mark mode) body])
+::  +pub-grow, +pub-cull: +grow:io and +cull-farm:io as +fio pokes of the
+::  /sys/scry service, on request-named wires. io's take a nonce first,
+::  an entropy round trip to /sys/bowl.sig, two takes more apiece.
+++  scry-road  ^-(road:tarball &+&+[/sys/scry %'main.sig'])
+++  pub-grow
+  |=  [=spur pag=(pair mark *)]
+  (poke:fio scry-road [/ %scry-grow] `path`spur pag)
+++  pub-cull
+  |=  =spur
+  (poke:fio scry-road [/ %scry-cull] `path`spur)
 ::  +pub-salt: the private salt behind every +page-id:lp, [/ %salt] at the
 ::  nexus root. 0 until +ensure-pub-ids mints it.
 ::
@@ -15112,7 +15353,7 @@
   ::  worth testing first.
   ::  [/ %ud], grubbery's own atom mark (see the /pub/meta covering row in
   ::  +on-load). A put-file under a mark with no source file lays a boom.
-  ;<  ~  bind:m  (grow:io /pub/index/[(scot %ud nseq)] [%gmi (manifest-gmi ix)])
+  ;<  ~  bind:m  (pub-grow /pub/index/[(scot %ud nseq)] [%gmi (manifest-gmi ix)])
   ::  keep-only-current INVARIANT for the manifest: at most one /pub/index seq
   ::  is ever bound. Retract the predecessor seq now that the successor is
   ::  grown. Grow-then-cull, so a reader never sees zero manifests. seq
@@ -15125,7 +15366,7 @@
   ::  boom-recovery keeps the counter alive so a lost counter can't re-grow a
   ::  live seq and break that. Runs on save, delete AND regrow, so every
   ::  manifest grow maintains the one-live-seq rule.
-  ;<  ~  bind:m  (cull-farm:io /pub/index/[(scot %ud seq)])
+  ;<  ~  bind:m  (pub-cull /pub/index/[(scot %ud seq)])
   ;<  ~  bind:m  (put-file mx [/ %ud] nseq)
   (pure:m nseq)
 ::  +pub-regrow: backfill the namespace from the existing pub vault, every
@@ -15800,6 +16041,20 @@
     =/  =wire  (fw %peek-shallow road blot)
     ;<  ~  bind:m  (send-dart:io %node wire road %peek blot ~ %.n)
     (take-peek:io wire)
+  ::  +peek-soft: +peek-soft:io, a veto answering ~
+  ++  peek-soft
+    |=  [=road:tarball blot=(unit blot:tarball)]
+    =/  m  (fiber:fiber:nexus ,(unit view:nexus))
+    ^-  form:m
+    =/  =wire  (fw %peek-soft road blot)
+    ;<  ~  bind:m  (send-dart:io %node wire road %peek blot ~ %.y)
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?~  in  [%wait ~]
+    ?:  ?=([%veto %node *] u.in)
+      ?.(=(wire wire.dart.u.in) [%skip ~] [%done ~])
+    ?.  ?=([%peek * *] u.in)  [%skip ~]
+    ?.(=(wire wire.u.in) [%skip ~] [%done `view.u.in])
   ++  peek-exists
     |=  =road:tarball
     =/  m  (fiber:fiber:nexus ,?)

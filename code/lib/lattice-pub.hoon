@@ -86,6 +86,29 @@
   |=  [cur=pub-wait at=@da now=@da]
   ^-  pub-wait
   [last.cur 0 now (gth last.cur at)]
+::  +pub-recount: every dirty row with one more try counted, for a writer
+::  that starts. A publish that took its event down restarts the writer,
+::  so counting here, in the start's own event, is what drops a page
+::  that keeps doing it.
+::
+++  pub-recount
+  |=  pen=pub-pending
+  ^-  pub-pending
+  (~(run by pen) |=(w=pub-wait ?.(dirty.w w w(tries +(tries.w)))))
+::  +pub-arm-at: when the one publish timer goes off, ~ when no row is
+::  dirty. A row already due arms the epoch, so its publish goes before
+::  every other past timer set after a save (+defer-at in the nexus),
+::  the page evaluator's run among them.
+::
+++  pub-arm-at
+  |=  [pen=pub-pending now=@da gap=@dr]
+  ^-  (unit @da)
+  =/  ds=(list @da)
+    %+  murn  ~(val by pen)
+    |=(w=pub-wait ?.(dirty.w ~ `(pub-due w gap)))
+  ?~  ds  ~
+  =/  at=@da  (roll t.ds |:([a=*@da b=i.ds] (min a b)))
+  `?:((lte at now) *@da at)
 +$  pub-row    [updated=@da bytes=@ud hash=@uvH]
 +$  pub-index  (map path pub-row)
 ::  +to-pub-row: project a stored page onto its index row.
