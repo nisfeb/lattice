@@ -583,6 +583,10 @@
       ::  shared for edit runs content only (+plain-content). A divergent dep
       ::  cycle spins. A converging one terminates via no-op suppression.
           [[%page @ *] %code]
+        ::  every save of the page remakes /code, which respawns this fiber
+        ::  in the save's own event. Its run waits for the next one
+        ::  (+defer-drain), so the save answers first.
+        ;<  ~  bind:m  (defer-drain /ev-defer)
         ;<  ~  bind:m  (rise-later prod "lattice page evaluator" (spud path.rail))
         ::  this fiber IS the page dir: on-file hands it a rail already
         ::  relativised to the nexus, so its path is /page/<name> and its
@@ -642,7 +646,7 @@
           =/  rel=path  (slag 1 pdir)
           ?:  =(src held)  (pure:n |)
           =/  pc=?  |(?=(^ pb) (folder-index-src src rel))
-          ;<  lx=?  bind:n  (peek-exists:io (lock-road up rel))
+          ;<  lx=?  bind:n  (peek-exists:fio (lock-road up rel))
           ?:  &(lx !pc)  (pure:n &)
           ;<  eg=?  bind:n  (edit-granted rel)
           ?.  eg  (pure:n |)
@@ -775,7 +779,7 @@
         =/  done=road:tarball  (rf up /link-done name.rail)
         ;<  ~  bind:m  (put-file done [/ %noun] r)
         ;<  ~  bind:m  (sleep:io ~m1)
-        ;<  ex=?  bind:m  (peek-exists:io done)
+        ;<  ex=?  bind:m  (peek-exists:fio done)
         ?.  ex  (pure:m ~)
         ;<  *  bind:m  (cull-soft:io done)
         (pure:m ~)
@@ -883,7 +887,7 @@
     ::  non-sensitive target: an uncleared key writes it as before; a tainted
     ::  key may create a NEW one (marked sensitive) but not flip an EXISTING.
     ?.  tnt  $(todo t.todo)
-    ;<  exists=?  bind:n  (peek-exists:io (rv up (weld /page pax)))
+    ;<  exists=?  bind:n  (peek-exists:fio (rv up (weld /page pax)))
     ?:  exists  (pure:n [`[403 tainted-msg] ~])
     $(todo t.todo, mark [pax mark])
   ?^  err.gate  (send-err eyre-id code.u.err.gate msg.u.err.gate)
@@ -1068,7 +1072,7 @@
   ::  never used the answer.
   ;<  ex=?  bind:m
     ?.  (~(has by args) 'new')  (pure:(fiber:fiber:nexus ,?) %.n)
-    (peek-exists:io (rf up (weld /page (pax-of u.name)) %code))
+    (peek-exists:fio (rf up (weld /page (pax-of u.name)) %code))
   ?:  &((~(has by args) 'new') ex)  (send-err eyre-id 409 'page exists')
   ::  ?base=<rev>: the revision the caller edited FROM (the offline queue
   ::  stamps it at enqueue). Compared HERE rather than by the client. A
@@ -1262,8 +1266,8 @@
     ?~(hit ~ `i.hit)
   ?~  en  (send-err eyre-id 404 'not shared with you')
   ::  a page or a folder (a dir under /page), or a link (under /links)
-  ;<  ex=?  bind:m  (peek-exists:io (rv up (weld /page tp)))
-  ;<  lx=?  bind:m  (peek-exists:io (link-road up tp))
+  ;<  ex=?  bind:m  (peek-exists:fio (rv up (weld /page tp)))
+  ;<  lx=?  bind:m  (peek-exists:fio (link-road up tp))
   ?:  |(ex lx)  (send-err eyre-id 409 'destination exists')
   ;<  got=(unit [kind=@ta body=@t rev=@ud])  bind:m  (link-peek u.hp u.pp)
   ?~  got
@@ -1304,7 +1308,7 @@
 ++  read-shared
   =/  m  (fiber:fiber:nexus ,shared:ls)
   ^-  form:m
-  ;<  sn=view:nexus  bind:m  (peek:io (rf up / %shared) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rf up / %shared) ~)
   %-  pure:m
   ?.  ?=([%file *] sn)  ~
   (fall (mole |.(;;(shared:ls (sang-noun:tarball sang.sn)))) ~)
@@ -1348,7 +1352,7 @@
   =/  i=@ud  1
   |-  ^-  form:m
   ?:  (gte i (lent pax))  (pure:m ~)
-  ;<  ex=?  bind:m  (peek-exists:io (link-road up (scag i pax)))
+  ;<  ex=?  bind:m  (peek-exists:fio (link-road up (scag i pax)))
   ?:  ex  (pure:m `(scag i pax))
   $(i +(i))
 ::  +link-in-way: why a folder can't be made at pax, ~ if it can: a link is
@@ -1358,7 +1362,7 @@
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  lx=?  bind:m  (peek-exists:io (link-road up pax))
+  ;<  lx=?  bind:m  (peek-exists:fio (link-road up pax))
   ?:  lx  (pure:m `(crip "{(pax-str pax)} is a link"))
   ;<  la=(unit path)  bind:m  (link-above pax)
   (pure:m (bind la link-above-msg))
@@ -1374,7 +1378,7 @@
   =/  m  (fiber:fiber:nexus ,(unit [l=link:ll at=@da]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  lv=view:nexus  bind:m  (peek:io (link-road up pax) ~)
+  ;<  lv=view:nexus  bind:m  (peek:fio (link-road up pax) ~)
   ?.  ?=([%file *] lv)  (pure:m ~)
   =/  l=(unit link:ll)  (mole |.(;;(link:ll (sang-noun:tarball sang.lv))))
   (pure:m ?~(l ~ `[u.l da.cass.lv]))
@@ -1487,7 +1491,7 @@
   =/  done=road:tarball  (rf up /link-done id)
   =/  until=@da  (add now wait)
   |-  ^-  form:m
-  ;<  dv=view:nexus  bind:m  (peek:io done ~)
+  ;<  dv=view:nexus  bind:m  (peek:fio done ~)
   ?:  ?=([%file *] dv)
     ;<  *  bind:m  (cull-soft:io done)
     =/  r
@@ -1543,7 +1547,7 @@
   |=  [host=@p pax=path]
   =/  m  (fiber:fiber:nexus ,(list [rel=path l=link:ll]))
   ^-  form:m
-  ;<  sn=view:nexus  bind:m  (peek:io (rv up /links) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rv up /links) ~)
   ?.  ?=([%ball *] sn)  (pure:m ~)
   %-  pure:m
   %+  skim  (find-links ball.sn ~)
@@ -2322,7 +2326,7 @@
     ::  peek just the one entry grub. Hydrating the whole vault to serve a
     ::  single memory made this route degrade linearly with the store's size.
     ;<  kn=view:nexus  bind:m
-      (peek:io [%| 2 %& (weld /know/vault u.ko) entry-leaf:lk] ~)
+      (peek:fio [%| 2 %& (weld /know/vault u.ko) entry-leaf:lk] ~)
     ?.  ?=([%file *] kn)  (send-err eyre-id 404 'not found')
     ?:  (is-boom:tarball sang.kn)  (send-err eyre-id 404 'not found')
     =/  e=(unit know-entry:lk)
@@ -2471,7 +2475,7 @@
     ?:  &(ps ?=(^ key) !sensitive.scope.u.key)
       (send-err eyre-id 403 'not found')
     ;<  ~  bind:m  (taint-if key &(ps ?=(^ key) sensitive.scope.u.key))
-    ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
+    ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
     ?.  ?=([%ball *] sn)
       (send-json eyre-id (pairs:enjs:format ~[['links' a+~]]))
     =/  pages=(list [pax=path when=@da code=@t])  (recent-walk ball.sn wave.sn ~)
@@ -2636,7 +2640,7 @@
       (send-err eyre-id 403 'outside this key\'s scope')
     =/  dir-road=road:tarball  [%& %| p.pp]
     ?:  =(u.shp our)
-      ;<  sn=view:nexus  bind:m  (peek-shallow:io dir-road ~)
+      ;<  sn=view:nexus  bind:m  (peek-shallow:fio dir-road ~)
       ?.  ?=([%ball *] sn)  (send-err eyre-id 404 'not a directory')
       (send-json eyre-id (browse-json u.shp p.pp ball.sn))
     ;<  ms=(unit view:nexus)  bind:m  (peek-remote-shallow-wait dir-road u.shp)
@@ -2664,7 +2668,7 @@
     =/  n=@ud  (dec (lent p.pp))
     =/  file-road=road:tarball  [%& %& (scag n p.pp) (snag n p.pp)]
     ?:  =(u.shp our)
-      ;<  sn=view:nexus  bind:m  (peek:io file-road ~)
+      ;<  sn=view:nexus  bind:m  (peek:fio file-road ~)
       (browse-file-respond eyre-id sn)
     ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
     ?~  ms  (send-err eyre-id 504 'unreachable or denied')
@@ -2766,7 +2770,7 @@
     =/  mode=@t  (~(gut by args) 'mode' 'read')
     ?.  |(=('read' mode) =('edit' mode))  (send-err eyre-id 400 'mode: read or edit')
     =/  pdir=path  (weld /page (pax-of u.name))
-    ;<  pe=?  bind:m  (peek-exists:io (rv up pdir))
+    ;<  pe=?  bind:m  (peek-exists:fio (rv up pdir))
     ?.  pe  (send-err eyre-id 404 'no such page')
     ::  absolute, the road the ACL pane shows and the peer's weir matches
     ::  (see +handle-share-group-save). The page's code grub only, which is
@@ -2800,7 +2804,7 @@
   ::  shared-with-me: the notices other ships sent us. Claims, not
   ::  capabilities. Opening one is what proves the grant is still real.
       [%'GET' %shared-with-me]
-    ;<  sn=view:nexus  bind:m  (peek:io (rf up / %shared) ~)
+    ;<  sn=view:nexus  bind:m  (peek:fio (rf up / %shared) ~)
     =/  sh=shared:ls
       ?.  ?=([%file *] sn)  ~
       (fall (mole |.(;;(shared:ls (sang-noun:tarball sang.sn)))) ~)
@@ -2900,7 +2904,7 @@
   ::  ── pub writes (POST) ──
   ::  ── programmable pages (docs/platform.md step 2) ──
       [%'GET' %'prism.js']
-    ;<  pv=view:nexus  bind:m  (peek:io (rf up / %'prism.js') ~)
+    ;<  pv=view:nexus  bind:m  (peek:fio (rf up / %'prism.js') ~)
     ?.  ?=([%file *] pv)  (send-err eyre-id 404 'not found')
     =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
     ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
@@ -2978,7 +2982,7 @@
     ::  non-sensitive page must not be flipped to sensitive, so it is refused.
     ?:  (tainted:ky u.key rnow)
       ?:  ps  (handle-page-save eyre-id req args)
-      ;<  exists=?  bind:m  (peek-exists:io (rv up (weld /page (pax-of u.name))))
+      ;<  exists=?  bind:m  (peek-exists:fio (rv up (weld /page (pax-of u.name))))
       ?:  exists  (send-err eyre-id 403 tainted-msg)
       ;<  ~  bind:m  (poke-eval [%page-sensitive (pax-of u.name) &])
       (handle-page-save eyre-id req args)
@@ -2992,7 +2996,7 @@
     =/  q=@t  (~(gut by args) 'q' '')
     ?:  =('' q)  (send-err eyre-id 400 'missing q')
     =/  k=@ud  (fall (rush (~(gut by args) 'k' '10') dem) 10)
-    ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
+    ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
     =/  scope-pages=(list [rel=path body=@t shr=share-mode:le])
       ?.  ?=([%ball *] sn)  ~
       ::  keyed: filter to paths within the key's read scope
@@ -3119,7 +3123,7 @@
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     ::  404 a command to a nonexistent page (the writer guards too, but this
     ::  gives the client real feedback instead of a fire-and-forget 200).
-    ;<  ex=?  bind:m  (peek-exists:io (rf up (weld /page (pax-of u.name)) %code))
+    ;<  ex=?  bind:m  (peek-exists:fio (rf up (weld /page (pax-of u.name)) %code))
     ?.  ex  (send-err eyre-id 404 'no such page')
     ::  a browser form POSTs cmd in the (form-urlencoded) body; parse it as a
     ::  query (same k=v&k=v grammar). Query cmd is the fallback for programmatic
@@ -3319,7 +3323,7 @@
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     =/  mode=(unit share-mode:le)  (mode-arg args)
     ?~  mode  (send-err eyre-id 400 'mode: shared, urbit, or clearweb')
-    ;<  ex=?  bind:m  (peek-exists:io (rf up (weld /page (pax-of u.name)) %code))
+    ;<  ex=?  bind:m  (peek-exists:fio (rf up (weld /page (pax-of u.name)) %code))
     ?.  ex  (send-err eyre-id 404 'no such page')
     ;<  ~  bind:m  (poke-eval [%share (pax-of u.name) u.mode])
     ?.  (~(has by args) 'web')  (send-ok eyre-id)
@@ -3384,7 +3388,7 @@
   ::  so an old store self-heals on its next comment.
       [%'GET' %comments-latest]
     ;<  v=view:nexus  bind:m
-      (peek:io (rf up /beacon %comments) ~)
+      (peek:fio (rf up /beacon %comments) ~)
     =/  latest=json
       ?.  ?=([%file *] v)  ~
       (fall (mole |.(;;(json (sang-noun:tarball sang.v)))) ~)
@@ -3409,7 +3413,7 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    ;<  ex=?  bind:m  (peek-exists:io (rv up (weld /page (pax-of u.name))))
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up (weld /page (pax-of u.name))))
     ?.  ex  (send-err eyre-id 404 'no such page or folder')
     ;<  ~  bind:m  (poke-eval [%comments (pax-of u.name) =('1' (~(gut by args) 'on' '0'))])
     (send-ok eyre-id)
@@ -3420,7 +3424,7 @@
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
-    ;<  ex=?  bind:m  (peek-exists:io (rv up (weld /page (pax-of u.name))))
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up (weld /page (pax-of u.name))))
     ?.  ex  (send-err eyre-id 404 'no such page or folder')
     ;<  ~  bind:m  (poke-eval [%page-sensitive (pax-of u.name) =('1' (~(gut by args) 'on' '0'))])
     (send-ok eyre-id)
@@ -3431,7 +3435,7 @@
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     ;<  seen=view:nexus  bind:m
-      (peek:io (rf up (weld /page (pax-of u.name)) %sensitive) ~)
+      (peek:fio (rf up (weld /page (pax-of u.name)) %sensitive) ~)
     (send-json eyre-id (pairs:enjs:format ~[['on' b+?=([%file *] seen)]]))
       ::  owner commenting on their OWN page (author = us). Other ships comment
       ::  through the public inbox fiber. body is the raw POST body.
@@ -3736,7 +3740,7 @@
     ?.  ((sane %tas) u.nm)   (send-err eyre-id 400 'bad template name')
     ::  a template carries no peer-written mark, so a page a peer may have
     ::  written would come back out of it as the owner's (+peer-written)
-    ;<  tv=view:nexus  bind:m  (peek:io (rv up (weld /page (pax-of u.from))) ~)
+    ;<  tv=view:nexus  bind:m  (peek:fio (rv up (weld /page (pax-of u.from))) ~)
     =/  rels=(list path)
       :-  /
       ?.  ?=([%ball *] tv)  ~
@@ -3760,7 +3764,7 @@
     (send-ok eyre-id)
       ::  what templates exist, so a client can offer them by name.
       [%'GET' %template-list]
-    ;<  sn=view:nexus  bind:m  (peek:io (rv up /template) ~)
+    ;<  sn=view:nexus  bind:m  (peek:fio (rv up /template) ~)
     =/  names=(list @ta)
       ?.  ?=([%ball *] sn)  ~
       (turn ~(tap by dir.ball.sn) |=([nom=@ta *] nom))
@@ -3778,7 +3782,7 @@
     ?.  ((sane %tas) u.tmpl)  (send-err eyre-id 400 'bad template')
     ?.  (valid-name u.nm)     (send-err eyre-id 400 'bad name')
     ;<  ex=?  bind:m
-      (peek-exists:io (rf up (weld /page (pax-of u.nm)) %code))
+      (peek-exists:fio (rf up (weld /page (pax-of u.nm)) %code))
     ?:  ex  (send-err eyre-id 409 'a page by that name exists')
     ;<  ~  bind:m  (instantiate-template `@tas`u.tmpl (pax-of u.nm))
     ;<  ~  bind:m  (poke-dnames args (pax-of u.nm))
@@ -3922,7 +3926,7 @@
     =/  drop-set=(set cass:clay)  (~(del in (sy (scag (sub ntot u.keep) revs))) top)
     ?:  =(~ drop-set)
       (send-json eyre-id (pairs:enjs:format ~[['dropped' (numb:enjs:format 0)] ['kept' (numb:enjs:format ntot)]]))
-    ;<  ~  bind:m  (lose:io road [%pick drop-set])
+    ;<  ~  bind:m  (lose:fio road [%pick drop-set])
     =/  nd=@ud  ~(wyt in drop-set)
     (send-json eyre-id (pairs:enjs:format ~[['dropped' (numb:enjs:format nd)] ['kept' (numb:enjs:format (sub ntot nd))]]))
   ::  ── follow writes (POST) ──
@@ -4015,7 +4019,7 @@
     ?~  raw  (send-err eyre-id 400 'missing path')
     =/  ro=(unit [rod=road:tarball nom=@ta])  (grub-road u.raw)
     ?~  ro  (send-err eyre-id 400 'invalid path')
-    ;<  vn=view:nexus  bind:m  (peek:io rod.u.ro ~)
+    ;<  vn=view:nexus  bind:m  (peek:fio rod.u.ro ~)
     ?.  ?=([%file *] vn)  (send-err eyre-id 404 'no such grub')
     =/  txt=(unit @t)  (grub-text sang.vn)
     =/  blot=tape  (spud (rail-to-path:tarball p.sang.vn))
@@ -4037,7 +4041,7 @@
     =/  fresh=?  =('1' (~(gut by args) 'new' '0'))
     ::  a full peek, not peek-exists. An overwrite needs the grub's CURRENT blot
     ::  (and content-type, if it is a mime grub) so the save cannot retype it.
-    ;<  vn=view:nexus  bind:m  (peek:io rod.u.ro ~)
+    ;<  vn=view:nexus  bind:m  (peek:fio rod.u.ro ~)
     =/  ex=?  ?=([%file *] vn)
     ?:  &(fresh ex)      (send-err eyre-id 409 'already exists')
     ?:  &(!fresh !ex)    (send-err eyre-id 404 'no such grub')
@@ -4054,7 +4058,7 @@
       (send-err eyre-id 400 (tang-text p.bk))
     ;<  ~  bind:m
       ?:  ex  (over:io rod.u.ro p.bk)
-      (make:io rod.u.ro |+[p.bk ~])
+      (make:fio rod.u.ro |+[p.bk ~])
     (send-ok eyre-id)
   ::  grub-folder: create a directory, how a NEW app starts, since an app is
   ::  just a folder of grubs under /apps.
@@ -4064,7 +4068,7 @@
     =/  pp=(each path tang)  (mule |.((stab u.raw)))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'invalid path')
     ?~  p.pp  (send-err eyre-id 400 'invalid path')
-    ;<  ex=?  bind:m  (peek-exists:io [%& %| p.pp])
+    ;<  ex=?  bind:m  (peek-exists:fio [%& %| p.pp])
     ?:  ex  (send-err eyre-id 409 'already exists')
     ::  +ensure-dirs walks the whole chain, so a new app's nested folders come
     ::  up in one call and it is idempotent if a parent already exists.
@@ -4119,7 +4123,7 @@
   ::
   ::  Same walk +content-reindex does, without the term extraction.
       [%'GET' %page-scopes]
-    ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
+    ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
     =/  pages=(list [rel=path body=@t shr=share-mode:le])
       ?.  ?=([%ball *] sn)  ~
       (index-walk ball.sn ~)
@@ -4180,7 +4184,7 @@
       [%'GET' %'tree-job']
     ;<  job=(unit @tas)  bind:m  tree-job-now
     ::  and the last job the writer gave up on (+job-given-up), or null
-    ;<  dv=view:nexus  bind:m  (peek:io (rf up / %'tree-job-dropped') ~)
+    ;<  dv=view:nexus  bind:m  (peek:fio (rf up / %'tree-job-dropped') ~)
     =/  dropped=json
       ?.  ?=([%file *] dv)  ~
       (fall (mole |.(!<(json (need-vase:tarball sang.dv)))) ~)
@@ -4388,7 +4392,7 @@
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  (peek-exists:io (legacy-mark-road up))
+  (peek-exists:fio (legacy-mark-road up))
 ::  +legacy-pages: how many PAGES the retired agent still holds. This import
 ::  moves knowledge only. The old agent exposes no arm for page BODIES
 ::  (%published and %live-list give paths and hashes, nothing more), so pages
@@ -4452,7 +4456,7 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  sn=view:nexus  bind:m
-    (peek:io (rf up /legacy %pages) ~)
+    (peek:fio (rf up /legacy %pages) ~)
   ?.  ?=([%file *] sn)  (pure:m ~)
   =/  j=(unit json)  (mole |.(;;(json (sang-noun:tarball sang.sn))))
   ?~  j  (pure:m ~)
@@ -4510,7 +4514,7 @@
   ;<  up=@ud  bind:m  nexus-up
   ?~  rels  (pure:m ~)
   ;<  ex=?  bind:m
-    (peek-exists:io (rf up (weld /pub/vault i.rels) %gmi))
+    (peek-exists:fio (rf up (weld /pub/vault i.rels) %gmi))
   ;<  rest=(list path)  bind:m  $(rels t.rels)
   (pure:m ?:(ex [i.rels rest] rest))
 ::  +page-sources-present: which of `rels` already exist as editable pages.
@@ -4523,7 +4527,7 @@
   ;<  up=@ud  bind:m  nexus-up
   ?~  rels  (pure:m ~)
   ;<  ex=?  bind:m
-    (peek-exists:io (rf up (weld /page i.rels) %code))
+    (peek-exists:fio (rf up (weld /page i.rels) %code))
   ;<  rest=(list path)  bind:m  $(rels t.rels)
   (pure:m ?:(ex [i.rels rest] rest))
 ::  +write-legacy-pages: create an editable page per legacy body. Skips any
@@ -4536,7 +4540,7 @@
   ;<  up=@ud  bind:m  nexus-up
   ?~  items  (pure:m made)
   =/  pdir=path  (weld /page rel.i.items)
-  ;<  ex=?  bind:m  (peek-exists:io (rf up pdir %code))
+  ;<  ex=?  bind:m  (peek-exists:fio (rf up pdir %code))
   ?:  ex  $(items t.items)
   ::  the editable source…
   ;<  ~  bind:m  (poke-eval [%make rel.i.items (wrap-content %gmi body.i.items)])
@@ -4561,10 +4565,10 @@
   |-  ^-  form:m
   ?~  rels  (pure:m made)
   =/  pdir=path  (weld /page i.rels)
-  ;<  ex=?  bind:m  (peek-exists:io (rf up pdir %code))
+  ;<  ex=?  bind:m  (peek-exists:fio (rf up pdir %code))
   ?:  ex  $(rels t.rels)
   ;<  vn=view:nexus  bind:m
-    (peek:io (rf up (weld /pub/vault i.rels) %gmi) ~)
+    (peek:fio (rf up (weld /pub/vault i.rels) %gmi) ~)
   ?.  ?=([%file *] vn)  $(rels t.rels)
   =/  body=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.vn)))) '')
   ?:  =('' body)  $(rels t.rels)
@@ -5029,7 +5033,7 @@
   ?:  (gth n 9)  (pure:m ~)
   =/  nom=@t  ?:(=(0 n) slug (crip :(weld (trip slug) "-" (a-co:co +(n)))))
   =/  rel=path  ~[%clips nom]
-  ;<  ex=?  bind:m  (peek-exists:io (rf up (weld /page rel) %code))
+  ;<  ex=?  bind:m  (peek-exists:fio (rf up (weld /page rel) %code))
   ?.  ex  (pure:m `rel)
   $(n +(n))
 ::  +poke-know / +poke-pub: poke the single writer fiber (root /main.sig) with a
@@ -5047,7 +5051,7 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  (poke:io (rf up / %'main.sig') [[/lattice mak] act])
+  (poke:fio (rf up / %'main.sig') [[/lattice mak] act])
 ++  poke-know
   |=  act=know-action:lk
   =/  m  (fiber:fiber:nexus ,~)
@@ -5112,7 +5116,7 @@
   |=  tr=road:tarball
   =/  m  (fiber:fiber:nexus ,term-cache:lk)
   ^-  form:m
-  ;<  tv=view:nexus  bind:m  (peek:io tr ~)
+  ;<  tv=view:nexus  bind:m  (peek:fio tr ~)
   ?.  ?=([%file *] tv)  (pure:m ~)
   (pure:m (fall (mole |.(!<(term-cache:lk (need-vase:tarball sang.tv)))) ~))
 ::  +current-terms: the term cache made current for es, stored back when
@@ -5136,7 +5140,7 @@
   |=  kr=road:tarball
   =/  m  (fiber:fiber:nexus ,keys:ky)
   ^-  form:m
-  ;<  kv=view:nexus  bind:m  (peek:io kr ~)
+  ;<  kv=view:nexus  bind:m  (peek:fio kr ~)
   ?.  ?=([%file *] kv)  (pure:m ~)
   ::  by noun, so a row stored before clearance (lattice 45) still reads
   (pure:m (upgrade-keys:ky (sang-noun:tarball sang.kv)))
@@ -5164,7 +5168,7 @@
   =/  m  (fiber:fiber:nexus ,ledger:ky)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  v=view:nexus  bind:m  (peek:io (rf up / %'key-bytes') ~)
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up / %'key-bytes') ~)
   ?.  ?=([%file *] v)  (pure:m ~)
   (pure:m (fall (mole |.(;;(ledger:ky (sang-noun:tarball sang.v)))) ~))
 ::  +key-spend: may this key write `len` more bytes today? Charges them when
@@ -5506,7 +5510,7 @@
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  lx=?  bind:m  (peek-exists:io (lock-road up name))
+  ;<  lx=?  bind:m  (peek-exists:fio (lock-road up name))
   ?:  lx  (pure:m &)
   (edit-granted name)
 ::  +granted-via: +granted (mak=|, peek roads) and +edit-granted (mak=&,
@@ -5692,7 +5696,7 @@
   |=  [up=@ud bdir=path]
   =/  m  (fiber:fiber:nexus ,(unit (list grub:fb)))
   ^-  form:m
-  ;<  v=view:nexus  bind:m  (peek:io (rv up bdir) ~)
+  ;<  v=view:nexus  bind:m  (peek:fio (rv up bdir) ~)
   ?.  ?=([%ball *] v)  (pure:m ~)
   (pure:m `(forum-ball-grubs ball.v ~))
 ++  forum-ball-grubs
@@ -6054,7 +6058,7 @@
   =/  m  (fiber:fiber:nexus ,(set @p))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  v=view:nexus  bind:m  (peek:io (rf up /forum/members nom) ~)
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up /forum/members nom) ~)
   ?.  ?=([%file *] v)  (pure:m ~)
   =/  raw=(unit [%1 (set @p)])
     (mole |.(;;([%1 (set @p)] (sang-noun:tarball sang.v))))
@@ -6098,7 +6102,7 @@
   =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
   ;<  cur=(set @p)  bind:m  (read-forum-members nom)
   ?.  add
-    ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
+    ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
     =/  ships=(set @p)
       ?.  ?=([%file *] wv)  ~
       (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
@@ -6189,7 +6193,7 @@
     (mole |.(;;([board-name:ft @t] payload)))
   ?~  nn  (pure:m ~)
   ;<  up=@ud  bind:m  nexus-up
-  ;<  v=view:nexus  bind:m  (peek:io (rv up /forum/notes) ~)
+  ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/notes) ~)
   =/  stored=@ud
     ?.  ?=([%ball *] v)  0
     ?~  fil.ball.v  0
@@ -6207,7 +6211,7 @@
   =/  m  (fiber:fiber:nexus ,limits:fr)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  v=view:nexus  bind:m  (peek:io (rf up /forum %limits) ~)
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up /forum %limits) ~)
   ?.  ?=([%file *] v)  (pure:m ~)
   =/  raw=(unit [%1 limits:fr])
     (mole |.(;;([%1 limits:fr] (sang-noun:tarball sang.v))))
@@ -6260,7 +6264,7 @@
     ::  writer of /forum (the inbox fiber never writes).
     (store-forum-note host.act now payload.act)
       %forum-notes-clear
-    ;<  v=view:nexus  bind:m  (peek:io (rv up /forum/notes) ~)
+    ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/notes) ~)
     ?.  ?=([%ball *] v)  (pure:m ~)
     ?~  fil.ball.v  (pure:m ~)
     =/  ids=(list @ta)  ~(tap in ~(key by contents.u.fil.ball.v))
@@ -6269,13 +6273,20 @@
     ;<  *  bind:m  (cull-soft:io (rf up /forum/notes i.ids))
     $(ids t.ids)
       %make
-    ;<  ~  bind:m  (make-page root pax.act src.act)
+    ;<  ~  bind:m  (write-page root pax.act src.act &)
     ::  a shared page's vault copy follows every write, not just the share
     ::  click, published in the background so the save answers at once
-    (pub-mark root now pax.act src.act)
+    ;<  ~  bind:m  (pub-mark root now pax.act src.act)
+    ::  the save is down and marked. The history prune, and the beacon
+    ::  the writer bumps after every action, wait for the next event, so
+    ::  the request that sent this answers without them (+yield-event).
+    ;<  ~  bind:m  (yield-event /writer/yield)
+    (prune-page pax.act)
       %make-marked
-    ;<  ~  bind:m  (make-page-as root pax.act src.act |)
-    (pub-mark root now pax.act src.act)
+    ;<  ~  bind:m  (write-page root pax.act src.act |)
+    ;<  ~  bind:m  (pub-mark root now pax.act src.act)
+    ;<  ~  bind:m  (yield-event /writer/yield)
+    (prune-page pax.act)
       %make-many
     ::  Same work as %make, once per page, but inside ONE writer transaction.
     ::  The saving is the ~0.5s pier floor an upload used to pay per FILE. The
@@ -6317,7 +6328,7 @@
     ::  delete a template, cull its subtree. A shipped template comes back on
     ::  the next writer start (ensure-shipped-templates), which is intended.
     =/  tdir=path  (weld /template /[name.act])
-    ;<  ex=?  bind:m  (peek-exists:io (rv up tdir))
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up tdir))
     ?.  ex  (pure:m ~)
     ;<  *  bind:m  (cull-soft:io (rv up tdir))
     (pure:m ~)
@@ -6327,9 +6338,9 @@
     ::  evaluator fiber), so writing a cmd grub would orphan it inside a
     ::  possibly-culled dir and swallow the command (caught by review). The
     ::  route also 404s, but this closes the create-then-poke race.
-    ;<  cx=?  bind:m  (peek-exists:io (rf up pdir %code))
+    ;<  cx=?  bind:m  (peek-exists:fio (rf up pdir %code))
     ?.  cx  (pure:m ~)
-    ;<  sn=view:nexus  bind:m  (peek:io (rf up pdir %cmd) ~)
+    ;<  sn=view:nexus  bind:m  (peek:fio (rf up pdir %cmd) ~)
     =/  cur=eval-cmd:le
       ?.  ?=([%file *] sn)  [0 '' 0]
       (fall (mole |.(;;(eval-cmd:le (sang-noun:tarball sang.sn)))) [0 '' 0])
@@ -6338,7 +6349,7 @@
     ::  the links at or under pax first (they are ours, and live apart
     ::  under /links). Never contacts a host.
     =/  ldir=path  (weld /links pax.act)
-    ;<  lex=?  bind:m  (peek-exists:io (rv up ldir))
+    ;<  lex=?  bind:m  (peek-exists:fio (rv up ldir))
     ;<  *  bind:m
       ?.  lex  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
       (cull-soft:io (rv up ldir))
@@ -6347,11 +6358,11 @@
     ::  drop the data road from the public weir so a deleted page leaves no
     ::  dangling grant.
     =/  pdir=path  (weld /page pax.act)
-    ;<  ex=?  bind:m  (peek-exists:io (rv up pdir))
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up pdir))
     ?.  ex  (pure:m ~)
     ::  the pages under pax, before anything is touched: unpublishing
     ::  leaves /page as it is
-    ;<  dv=view:nexus  bind:m  (peek:io (rv up pdir) ~)
+    ;<  dv=view:nexus  bind:m  (peek:fio (rv up pdir) ~)
     =/  rels=(list path)
       ?.  ?=([%ball *] dv)  ~[/]
       (murn (collect-tree ball.dv ~) |=([pax=path page=?] ?:(page `pax ~)))
@@ -6393,7 +6404,7 @@
       ?~  i.deep  $(deep t.deep)
       ;<  ~  bind:m  (tree-yield done 2)
       =/  d=road:tarball  (rv up (weld pdir i.deep))
-      ;<  dx=?  bind:m  (peek-exists:io d)
+      ;<  dx=?  bind:m  (peek-exists:fio d)
       ;<  *  bind:m
         ?.  dx  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
         (cull-soft:io d)
@@ -6413,7 +6424,7 @@
     ::  Guarded, because cull-soft on an absent dir veto-crashes the writer,
     ::  and most pages never had a comment.
     =/  cdir=path  (weld /comments pax.act)
-    ;<  cex=?  bind:m  (peek-exists:io (rv up cdir))
+    ;<  cex=?  bind:m  (peek-exists:fio (rv up cdir))
     ?.  cex  (pure:m ~)
     ;<  *  bind:m  (cull-soft:io (rv up cdir))
     (pure:m ~)
@@ -6435,7 +6446,7 @@
     ::  pax (folders have no /data grub, so skip them). Idempotent, so
     ::  re-publishing is safe. A %private sweep revokes each page's weir too.
     =/  base=path  (weld /page pax.act)
-    ;<  dn=view:nexus  bind:m  (peek:io (rv up base) ~)
+    ;<  dn=view:nexus  bind:m  (peek:fio (rv up base) ~)
     ?.  ?=([%ball *] dn)  (pure:m ~)
     =/  rels=(list path)
       %+  murn  (collect-tree ball.dn ~)
@@ -6471,7 +6482,7 @@
     ::  so a background refresh never revives a link or rewrites a cache
     ::  that is already right.
     =/  lr=road:tarball  (link-road up pax.act)
-    ;<  lv=view:nexus  bind:m  (peek:io lr ~)
+    ;<  lv=view:nexus  bind:m  (peek:fio lr ~)
     =/  l=(unit link:ll)
       ?.  ?=([%file *] lv)  ~
       (mole |.(;;(link:ll (sang-noun:tarball sang.lv))))
@@ -6490,7 +6501,7 @@
     ::  a %name grub. '' clears it: the name typed at a rename was a valid
     ::  segment, which is its own display name, so nothing is stored.
     =/  fdir=path  (weld /page pax.act)
-    ;<  ex=?  bind:m  (peek-exists:io (rv up fdir))
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up fdir))
     ?.  ex  (pure:m ~)
     ?:  =('' name.act)
       ;<  *  bind:m  (cull-soft:io (rf up fdir %name))
@@ -6501,7 +6512,7 @@
     ::  at/above a page decides, so this enables/disables a whole subtree or one
     ::  page. Owner-only (an eval-action), unlike the public comment-add path.
     =/  fdir=path  (weld /page pax.act)
-    ;<  ex=?  bind:m  (peek-exists:io (rv up fdir))
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up fdir))
     ?.  ex  (pure:m ~)
     (put-file (rf up fdir %comment-on) [/lattice %comment-flag] on.act)
       %forms
@@ -6509,7 +6520,7 @@
     ::  %comments, and equally owner-only: this is the switch that makes a
     ::  clearweb page publicly writable, so it is never implicit.
     =/  fdir=path  (weld /page pax.act)
-    ;<  ex=?  bind:m  (peek-exists:io (rv up fdir))
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up fdir))
     ?.  ex  (pure:m ~)
     ;<  ~  bind:m  (put-file (rf up fdir %forms-on) [/lattice %comment-flag] on.act)
     (put-file (rf up fdir %forms-cfg) [/lattice %eval-data] `form-cfg:le`[cap.act gap.act])
@@ -6518,13 +6529,13 @@
     ::  concurrent submissions serialize (the cap check itself happens in the
     ::  request fiber, so a burst can overshoot by the number in flight).
     =/  fdir=path  (weld /page pax.act)
-    ;<  ex=?  bind:m  (peek-exists:io (rv up fdir))
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up fdir))
     ?.  ex  (pure:m ~)
     ;<  u=form-use:le  bind:m  (read-form-use pax.act)
     (put-file (rf up fdir %forms-use) [/lattice %eval-data] `form-use:le`[+(count.u) now.act])
       %form-reset
     =/  fdir=path  (weld /page pax.act)
-    ;<  ex=?  bind:m  (peek-exists:io (rv up fdir))
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up fdir))
     ?.  ex  (pure:m ~)
     (put-file (rf up fdir %forms-use) [/lattice %eval-data] `form-use:le`[0 *@da])
       %page-sensitive
@@ -6563,14 +6574,14 @@
   ::  comment-on would otherwise let any un-banned ship spray grubs under
   ::  invented sub-paths of a commentable site.
   ;<  ex=?  bind:m
-    (peek-exists:io (rf root (weld /page page.act) %code))
+    (peek-exists:fio (rf root (weld /page page.act) %code))
   ?.  ex  (pure:m ~)
   ::  and the store is BOUNDED, for the reason the shares inbox is bounded:
   ::  anyone may poke this road, each poke files a fresh time-salted grub,
   ::  and without a cap a hostile ship grows the pier without limit. 200
   ::  per page, matching the shares cap; the owner moderates from there.
   ;<  cv=view:nexus  bind:m
-    (peek:io (rv root (weld /comments page.act)) ~)
+    (peek:fio (rv root (weld /comments page.act)) ~)
   =/  stored=@ud
     ?.  ?=([%ball *] cv)  0
     ?~  fil.ball.cv  0
@@ -6615,7 +6626,7 @@
   ;<  up=@ud  bind:m  nexus-up
   |-  ^-  form:m
   =/  fdir=path  (weld /page page)
-  ;<  seen=view:nexus  bind:m  (peek:io (rf up fdir %sensitive) ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio (rf up fdir %sensitive) ~)
   ?:  ?=([%file *] seen)
     ::  a present marker that will not parse fails CLOSED (treat as sensitive):
     ::  this gates a default-deny feature, so an unreadable flag must not open.
@@ -6633,7 +6644,7 @@
   ;<  up=@ud  bind:m  nexus-up
   |-  ^-  form:m
   =/  fdir=path  (weld /page page)
-  ;<  seen=view:nexus  bind:m  (peek:io (rf up fdir %comment-on) ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio (rf up fdir %comment-on) ~)
   ?:  ?=([%file *] seen)
     (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.n))
   ?~  page  (pure:m %.n)
@@ -6716,7 +6727,7 @@
   =/  m  (fiber:fiber:nexus ,history:lh)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  seen=view:nexus  bind:m  (peek:io (rf up / %history) ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio (rf up / %history) ~)
   ?.  ?=([%file *] seen)  (pure:m ~)
   (pure:m (fall (mole |.(!<(history:lh (need-vase:tarball sang.seen)))) ~))
 ::  +read-bookmarks: the stored bookmark list (newest first; ~ if none yet).
@@ -6725,7 +6736,7 @@
   =/  m  (fiber:fiber:nexus ,bookmarks:lb)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  seen=view:nexus  bind:m  (peek:io (rf up / %bookmarks) ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio (rf up / %bookmarks) ~)
   ?.  ?=([%file *] seen)  (pure:m ~)
   =/  vs=vase  (need-vase:tarball sang.seen)
   =/  new=(unit bookmarks:lb)  (mole |.(!<(bookmarks:lb vs)))
@@ -6748,7 +6759,7 @@
   ::  ONE deep peek: the ball carries every code grub and the wave every cass.
   ::  The old shape listed the names then re-peeked each page, O(pages)
   ::  serialized darts on every home load, just to pick the newest n.
-  ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
   ?.  ?=([%ball *] sn)  (pure:m ~)
   =/  sorted=(list [pax=path when=@da code=@t])
     %+  sort  (recent-walk ball.sn wave.sn ~)
@@ -6813,12 +6824,12 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   =/  pdir=path  (weld /page rel)
-  ;<  cx=?  bind:m  (peek-exists:io (rf up pdir %code))
+  ;<  cx=?  bind:m  (peek-exists:fio (rf up pdir %code))
   ?.  cx  (pure:m ~)
   =/  data-road=road:tarball  (rf up pdir %data)
   =/  pub=?  !=(%private mode)
-  ;<  dx=?  bind:m  (peek-exists:io data-road)
-  ;<  ~  bind:m  ?:(dx (gain:io data-road pub) (pure:m ~))
+  ;<  dx=?  bind:m  (peek-exists:fio data-road)
+  ;<  ~  bind:m  ?:(dx (gain:fio data-road pub) (pure:m ~))
   ;<  ~  bind:m  (put-file (rf up pdir %share) [/lattice %eval-data] mode)
   ::  the grant act walks share grubs, so it runs AFTER the mode write and
   ::  reflects this share (or unshare) immediately. A %share-tree sends it
@@ -6832,7 +6843,7 @@
   ::  publish the page's own output. A page whose data is not a cord (a
   ::  computed noun) has no gemtext form, so it keeps its preset without a
   ::  vault copy rather than publishing something meaningless.
-  ;<  dn=view:nexus  bind:m  (peek:io data-road ~)
+  ;<  dn=view:nexus  bind:m  (peek:fio data-road ~)
   ?:  ?=([%file *] dn)
     =/  body=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.dn))))
     ?~  body  (pure:m ~)
@@ -6841,7 +6852,7 @@
   ::  is queued right behind %make, and the evaluator computes /data later).
   ::  Publish from the code src, exactly as +pub-flush-one does; the
   ::  evaluator's eventual output republishes over this if it differs.
-  ;<  cv=view:nexus  bind:m  (peek:io (rf up pdir %code) ~)
+  ;<  cv=view:nexus  bind:m  (peek:fio (rf up pdir %code) ~)
   ?.  ?=([%file *] cv)  (pure:m ~)
   =/  src=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.cv))))
   ?~  src  (pure:m ~)
@@ -6885,7 +6896,7 @@
   |=  root=@ud
   =/  m  (fiber:fiber:nexus ,pub-pending:lp)
   ^-  form:m
-  ;<  vw=view:nexus  bind:m  (peek:io (pub-pending-road root) ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio (pub-pending-road root) ~)
   ?.  ?=([%file *] vw)  (pure:m ~)
   =/  n=*  (sang-noun:tarball sang.vw)
   =/  new=(unit pub-pending:lp)  (mole |.(;;(pub-pending:lp n)))
@@ -6974,17 +6985,17 @@
     ;<  ~  bind:m  (put-file pr [/ %noun] nen)
     (pub-arm-with nen)
   ;<  ~  bind:m  (put-file pr [/ %noun] (~(put by pru) k row(tries +(tries.row))))
-  ;<  ~  bind:m  (sleep-draining (div ~s1 100))
+  ::  the try is down in this event; the publish runs in the next
+  ;<  ~  bind:m  (yield-event /writer/yield)
   ;<  err=(unit tang)  bind:m  (fiber-try (pub-flush-one root now k))
-  ;<  end=@da  bind:m  bowl-now
   ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
   ::  the row as it is now: a save meanwhile moved its `last`
   =/  cur=pub-wait:lp  (fall (~(get by pen) k) row)
   =/  nen=pub-pending:lp
     %+  ~(put by pen)  k
-    ?~  err  (pub-done:lp cur now end)
+    ?~  err  (pub-done:lp cur now now)
     ::  failed: try again a gap from now
-    cur(tries +(tries.row), sent end, dirty &)
+    cur(tries +(tries.row), sent now, dirty &)
   ;<  ~  bind:m
     ?~  err  (pure:m ~)
     (fault 'pub-failed' 3 "lattice /main.sig: publishing {(trip k)} failed" u.err)
@@ -7002,7 +7013,7 @@
   ^-  form:m
   =/  rel=(unit path)  (rush k stap)
   ?~  rel  (pure:m ~)
-  ;<  cv=view:nexus  bind:m  (peek:io (rf root (weld /page u.rel) %code) ~)
+  ;<  cv=view:nexus  bind:m  (peek:fio (rf root (weld /page u.rel) %code) ~)
   ?.  ?=([%file *] cv)  (pure:m ~)
   =/  src=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.cv))))
   ?~  src  (pure:m ~)
@@ -7048,7 +7059,7 @@
   |=  [road=road:tarball keep=@ud window=@dr]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  bo=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:io road)
+  ;<  bo=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:fio road)
   ?:  ?=(%| -.bo)  (pure:m ~)
   ::  live revisions, NEWEST FIRST. Both passes below want that order, and one
   ::  +born read feeds both so a save costs no extra dart than it used to.
@@ -7064,7 +7075,7 @@
   ::  have taken the writer down on every page delete.
   ?:  =(0 keep)
     ?~  live  (pure:m ~)
-    (lose:io road [%numb ~ ~])
+    (lose:fio road [%numb ~ ~])
   ::  ── time coalesce ──
   ::  live is [head, prev, anchor, ...]. Drop `prev` when it sits inside one
   ::  window of `anchor`, i.e. it is an intermediate between two kept points.
@@ -7082,7 +7093,7 @@
     ~
   ;<  ~  bind:m
     ?~  victim  (pure:m ~)
-    (lose:io road [%pick (sy ~[u.victim])])
+    (lose:fio road [%pick (sy ~[u.victim])])
   ::  count cap, as a backstop, over what the coalesce left behind
   =/  kept=(list cass:clay)
     ?~  victim  live
@@ -7090,14 +7101,25 @@
   ?:  (lte (lent kept) keep)  (pure:m ~)
   =/  cut=@ud  ud:(snag (dec keep) kept)
   ?:  =(0 cut)  (pure:m ~)
-  (lose:io road [%numb ~ `(dec cut)])
+  (lose:fio road [%numb ~ `(dec cut)])
 ++  make-page
   |=  [root=@ud pax=path src=@t]
-  (make-page-as root pax src &)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m  (make-page-as root pax src &)
+  (prune-page pax)
 ::  +make-page-as: with trust=|, the write is a copy of a page a peer may
 ::  have written (+peer-written), so it sets the mark rather than lifting
 ::  it: a move or a conflict copy must not turn a peer's source into ours.
 ++  make-page-as
+  |=  [root=@ud pax=path src=@t trust=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m  (write-page root pax src trust)
+  (prune-page pax)
+::  +write-page: +make-page-as without the history prune, which a save
+::  puts off past its answer (apply-eval %make)
+++  write-page
   |=  [root=@ud pax=path src=@t trust=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
@@ -7107,13 +7129,13 @@
   ::  cmd and deps from creation. The old per-save re-probing of each was
   ::  3+ wasted darts on every autosave. A half-created page (crash between
   ::  scaffold and code) just re-runs the scaffold. put-file is idempotent.
-  ;<  ex=?  bind:m  (peek-exists:io (rf up pdir %code))
+  ;<  ex=?  bind:m  (peek-exists:fio (rf up pdir %code))
   ::  never a %code grub at a link's path (/lib/lattice-link): its saves go
   ::  to its host. Every route refuses or proxies first, so this is the
   ::  backstop, paid only on a create.
   ;<  isl=?  bind:m
     ?:  ex  (pure:(fiber:fiber:nexus ,?) |)
-    (peek-exists:io (link-road up pax))
+    (peek-exists:fio (link-road up pax))
   ?:  isl
     %-  (say 2 ~[leaf+"lattice: not saving over the link at {(spud pax)}"])
     (pure:m ~)
@@ -7125,18 +7147,24 @@
   ::  an owner save is the owner's word on this source, so it lifts an edit
   ::  lock (+set-edit-lock). Before the code write, so the evaluator it wakes
   ::  no longer sees the lock.
-  ;<  lx=?  bind:m  (peek-exists:io (lock-road up pax))
+  ;<  lx=?  bind:m  (peek-exists:fio (lock-road up pax))
   ;<  ~  bind:m
     ?.  trust  (set-edit-lock up pax)
-    ?.(lx (pure:m ~) (cull:io (lock-road up pax)))
-  ;<  ~  bind:m  (put-file (rf up pdir %code) [/lattice %page] src)
-  ::  gain the code grub so every save is a kept %firm revision. That is
-  ::  what page-history / page-source-at read. Privacy is unchanged. gain
-  ::  makes a grub namespace-addressable but cross-ship reads stay weir-gated
-  ::  deny-all, the same model the know vault uses (every private entry
-  ::  gained, for exactly this history).
-  ;<  ~  bind:m  (gain:io (rf up pdir %code) %.y)
-  (prune-hist (rf up pdir %code) history-keep history-window)
+    ?.(lx (pure:m ~) (cull:fio (lock-road up pax)))
+  ::  the code grub is made gained, in the same dart, so every save is a
+  ::  kept %firm revision. That is what page-history / page-source-at
+  ::  read. Privacy is unchanged. gain makes a grub namespace-addressable
+  ::  but cross-ship reads stay weir-gated deny-all, the same model the
+  ::  know vault uses (every private entry gained, for exactly this
+  ::  history).
+  (over-gained:fio (rf up pdir %code) [/lattice %page] src)
+::  +prune-page: a page's source history held to its caps (+prune-hist)
+++  prune-page
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  (prune-hist (rf up (weld /page pax) %code) history-keep history-window)
 ::  +rewrite-root: replace the path-prefix `from` with `to` in code, only where
 ::  `from` ends at a path boundary (/ ) space " ] , or end), so a short root
 ::  can't clobber a longer path that merely starts with it.
@@ -7184,7 +7212,7 @@
   =/  src-root=path  (weld /[base.src] rel.src)
   =/  from-str=tape  (spud rel.src)
   =/  to-str=tape    (spud rel.dst)
-  ;<  dn=view:nexus  bind:m  (peek:io (rv up src-root) ~)
+  ;<  dn=view:nexus  bind:m  (peek:fio (rv up src-root) ~)
   ?.  ?=([%ball *] dn)  (pure:m ~)
   =/  rels=(list path)
     %+  murn  (collect-tree ball.dn ~)
@@ -7238,8 +7266,8 @@
   =/  to-str=tape     (spud to)
   =/  from-bare=tape  (pax-str from)
   =/  to-bare=tape    (pax-str to)
-  ;<  dv=view:nexus  bind:m  (peek:io (rv up sdir) ~)
-  ;<  lv=view:nexus  bind:m  (peek:io (rv up (weld /links from)) ~)
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up sdir) ~)
+  ;<  lv=view:nexus  bind:m  (peek:fio (rv up (weld /links from)) ~)
   ?.  |(?=([%ball *] dv) ?=([%ball *] lv))  (pure:m ~)
   ::  the deep peek holds every page's code, share and name already: each
   ::  is read from this ball, not peeked again per page. The links at or
@@ -7364,7 +7392,7 @@
   =/  troot=path    (weld /template /[name])
   =/  from-str=tape  (spud /[name])
   =/  to-str=tape    (spud to)
-  ;<  dn=view:nexus  bind:m  (peek:io (rv up troot) ~)
+  ;<  dn=view:nexus  bind:m  (peek:fio (rv up troot) ~)
   ?.  ?=([%ball *] dn)  (pure:m ~)
   =/  rels=(list path)
     %+  sort
@@ -7414,7 +7442,7 @@
   ::  per-page: skip a page that already exists (never overwrite a user edit,
   ::  and a laydown interrupted after some pages completes on the next start),
   ::  else write it.
-  ;<  ex=?  bind:m  (peek-exists:io (rf up pdir %code))
+  ;<  ex=?  bind:m  (peek-exists:fio (rf up pdir %code))
   ?:  ex  $(pages t.pages)
   =/  code=@t  (page-code prel kind.i.pages body.i.pages)
   ;<  ~  bind:m  (ensure-dirs up /template prel)
@@ -7436,7 +7464,7 @@
   =/  m  (fiber:fiber:nexus ,share-mode:le)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  sn=view:nexus  bind:m  (peek:io (rf up pdir %share) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rf up pdir %share) ~)
   ?.  ?=([%file *] sn)  (pure:m %private)
   (pure:m (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.sn)))) %private))
 ::  +read-show-mode: a page's render mode grub, %text if absent/malformed.
@@ -7446,7 +7474,7 @@
   =/  m  (fiber:fiber:nexus ,view-mode:pg)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  sn=view:nexus  bind:m  (peek:io (rf up pdir %show) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rf up pdir %show) ~)
   ?.  ?=([%file *] sn)  (pure:m %text)
   (pure:m (fall (mole |.(;;(view-mode:pg (sang-noun:tarball sang.sn)))) %text))
 ::  +mode-mark: the mark a published page of this view-mode carries. The
@@ -7466,7 +7494,7 @@
   =/  m  (fiber:fiber:nexus ,view-mode:pg)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  sn=view:nexus  bind:m  (peek:io (rf up (weld /page rel) %show) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rf up (weld /page rel) %show) ~)
   ?.  ?=([%file *] sn)  (pure:m %gmi)
   (pure:m (fall (mole |.(;;(view-mode:pg (sang-noun:tarball sang.sn)))) %gmi))
 ::  +read-eval-cmd / +read-eval-deps: tolerant grub reads (absent or
@@ -7496,7 +7524,7 @@
   =/  m  (fiber:fiber:nexus ,eval-cmd:le)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  sn=view:nexus  bind:m  (peek:io (rf up pdir %cmd) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rf up pdir %cmd) ~)
   ?.  ?=([%file *] sn)  (pure:m [0 '' 0])
   (pure:m (fall (mole |.(;;(eval-cmd:le (sang-noun:tarball sang.sn)))) [0 '' 0]))
 ::  +read-eval-seen / +write-eval-seen: the last-PROCESSED command seq, stored
@@ -7508,7 +7536,7 @@
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  sn=view:nexus  bind:m  (peek:io (rf up pdir %seen) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rf up pdir %seen) ~)
   ?.  ?=([%file *] sn)  (pure:m 0)
   (pure:m (fall (mole |.(;;(@ud (sang-noun:tarball sang.sn)))) 0))
 ++  write-eval-seen
@@ -7522,7 +7550,7 @@
   =/  m  (fiber:fiber:nexus ,(list path))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  sn=view:nexus  bind:m  (peek:io (rf up pdir %deps) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rf up pdir %deps) ~)
   ?.  ?=([%file *] sn)  (pure:m ~)
   (pure:m (fall (mole |.(;;((list path) (sang-noun:tarball sang.sn)))) ~))
 ::  +view-src: if a dep path is a VIEW dependency on one of our OWN pages
@@ -7569,14 +7597,14 @@
     $(deps t.deps, armed (~(put in armed) i.deps))
   =/  n=@ud  (dec (lent i.deps))
   =/  file-road=road:tarball  (rf up (scag n i.deps) (snag n i.deps))
-  ;<  fsn=view:nexus  bind:m  (peek:io file-road ~)
+  ;<  fsn=view:nexus  bind:m  (peek:fio file-road ~)
   ?:  ?=([%file *] fsn)
     ;<  *  bind:m  (keep:io /ev file-road ~)
     $(deps t.deps, armed (~(put in armed) i.deps))
   ::  not a file: a DIRECTORY dep keeps on the dir road so a child add/remove
   ::  re-runs us. If it is neither (a not-yet-created grub), keep the file road
   ::  so a later write of that grub still fires. Mirrors read-dep-vals.
-  ;<  dsn=view:nexus  bind:m  (peek:io (rv up i.deps) ~)
+  ;<  dsn=view:nexus  bind:m  (peek:fio (rv up i.deps) ~)
   =/  keep-road=road:tarball  ?:(?=([%ball *] dsn) (rv up i.deps) file-road)
   ;<  *  bind:m  (keep:io /ev keep-road ~)
   $(deps t.deps, armed (~(put in armed) i.deps))
@@ -7597,7 +7625,7 @@
   ?.  (page-dep i.deps)  $(deps t.deps)
   =/  src=(unit path)  (view-src i.deps)
   ?^  src
-    ;<  dsn=view:nexus       bind:m  (peek:io (rf up u.src %data) ~)
+    ;<  dsn=view:nexus       bind:m  (peek:fio (rf up u.src %data) ~)
     ;<  vmode=view-mode:pg   bind:m  (read-show-mode u.src)
     ::  an edit-granted source may hold a peer's markup, and its fragment
     ::  is welded raw into a composing page that is not sandboxed itself.
@@ -7617,7 +7645,7 @@
       (crip (render-shown sang.dsn vmode "/apps/lattice/c/"))
     (pure:m [[i.deps frag] rest])
   =/  n=@ud  (dec (lent i.deps))
-  ;<  sn=view:nexus  bind:m  (peek:io (rf up (scag n i.deps) (snag n i.deps)) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rf up (scag n i.deps) (snag n i.deps)) ~)
   ?:  ?=([%file *] sn)
     ::  a file grub -> its raw noun.
     ;<  rest=(list [path *])  bind:m  (read-dep-vals lim t.deps)
@@ -7625,7 +7653,7 @@
   ::  not a file -> a DIRECTORY dep resolves to its tree listing (a
   ::  (list [pax=path page=?]) of pages+folders under it, paths relative to the
   ::  dir), so a page can enumerate a structured subtree. ~ if it is neither.
-  ;<  dn=view:nexus  bind:m  (peek:io (rv up i.deps) ~)
+  ;<  dn=view:nexus  bind:m  (peek:fio (rv up i.deps) ~)
   ;<  rest=(list [path *])  bind:m  (read-dep-vals lim t.deps)
   ::  the listing is the composing page's data, read by whoever reads that
   ::  page: only what it may show (+collect-visible)
@@ -7647,11 +7675,11 @@
   =/  m  (fiber:fiber:nexus ,[err=@t wake=(unit @dr)])
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  dsn=view:nexus  bind:m  (peek:io (rf up pdir %data) ~)
+  ;<  dsn=view:nexus  bind:m  (peek:fio (rf up pdir %data) ~)
   =/  dat=(unit *)
     ?.(?=([%file *] dsn) ~ `(sang-noun:tarball sang.dsn))
   ::  what this page may show of others (+collect-visible)
-  ;<  shv=view:nexus  bind:m  (peek:io (rf up pdir %share) ~)
+  ;<  shv=view:nexus  bind:m  (peek:fio (rf up pdir %share) ~)
   =/  mode=share-mode:le
     ?.  ?=([%file *] shv)  %private
     (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.shv)))) %private)
@@ -7674,19 +7702,29 @@
   =/  n  (fiber:fiber:nexus ,~)
   ;<  ~  bind:m
     ?~  dat.p.res  (pure:n ~)
-    ;<  ~  bind:n  (put-file (rf up pdir %data) [/lattice %eval-data] u.dat.p.res)
+    ::  a shared page's data must stay gained across recomputes. Gain is
+    ::  per-revision (like apply-pub re-gaining on every save), so it rides
+    ::  the write. The share mode is the one this run read above.
+    =/  pub=?  !=(%private mode)
+    ::  the same data again (a save of the same text) is not rewritten
+    ;<  ~  bind:n
+      ?:  =(dat dat.p.res)  (pure:n ~)
+      ?:  pub
+        (over-gained:fio (rf up pdir %data) [/lattice %eval-data] u.dat.p.res)
+      (over:fio (rf up pdir %data) [/lattice %eval-data] u.dat.p.res)
     ::  record the render mode next to the data (read by the page view).
     ;<  ~  bind:n  (put-file (rf up pdir %show) [/lattice %eval-data] show.p.res)
-    ::  a shared page's data must stay gained across recomputes. Gain is
-    ::  per-revision (like apply-pub re-gaining on every save).
-    ;<  mode=share-mode:le  bind:n  (read-share pdir)
-    ?:  =(%private mode)  (pure:n ~)
-    ;<  ~  bind:n  (gain:io (rf up pdir %data) %.y)
+    ?.  pub  (pure:n ~)
+    ?:  =(dat dat.p.res)  (pure:n ~)
     ::  a gained data grub keeps EVERY recompute forever otherwise. A timer
     ::  page, or a public form anyone can submit to, would grow the pier
-    ::  without bound. Data has no history UI, so keep only a debugging tail.
-    ::  data has no history UI and keep=3 already, no window needed
-    (prune-hist (rf up pdir %data) data-keep ~s0)
+    ::  without bound. Data has no history UI, so keep only a debugging
+    ::  tail, data-keep deep: the write above is revision c+1 of a grub at
+    ::  c, so one lose of every revision to c+1-data-keep, without the
+    ::  +born read +prune-hist makes to find that out.
+    =/  c=@ud  ?.(?=([%file *] dsn) 0 ud.cass.dsn)
+    ?.  (gte +(c) +(data-keep))  (pure:n ~)
+    (lose:fio (rf up pdir %data) [%numb ~ `(sub +(c) data-keep)])
   ::  send this run's page-to-page pokes with the run's remaining budget
   ::  (capped per run so one page can't flood the writer).
   ;<  ~  bind:m  (emit-pokes bud (scag poke-cap pokes.p.res))
@@ -7783,7 +7821,7 @@
   |=  root=@ud
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  jv=view:nexus  bind:m  (peek:io (rf root / %'tree-job') ~)
+  ;<  jv=view:nexus  bind:m  (peek:fio (rf root / %'tree-job') ~)
   ?.  ?=([%file *] jv)  (pure:m ~)
   =/  job=(unit eval-action:le)
     (fall (mole |.(;;((unit eval-action:le) (sang-noun:tarball sang.jv)))) ~)
@@ -7829,6 +7867,66 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   (job-set ~)
+::  +yield-event: go on in the next arvo event (a behn timer for a time
+::  already past), taking nothing but the timer's own ack and wake: the
+::  pokes that come meanwhile wait their turn, as they do behind any
+::  writer step. An HTTP answer leaves at the end of its event, so work
+::  after this is not on it. A refused or failed timer goes on at once.
+++  yield-event
+  |=  =wire
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m
+    %:  send-dart:io  %node  wire  &+&+[/sys/behn %'main.behn-state']
+      %poke  [/ %timer-set]  `[^wire @da]`[wire *@da]
+    ==
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?~  in  [%wait ~]
+  ?:  ?=([%veto %node *] u.in)
+    ?.(=(wire wire.dart.u.in) [%skip ~] [%done ~])
+  ?:  ?=([%pack * *] u.in)
+    ?.  =(wire wire.u.in)  [%skip ~]
+    ?~(err.u.in [%wait ~] [%done ~])
+  ?.  ?=([%poke * *] u.in)  [%skip ~]
+  ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
+  ?.  =(`wire (mole |.(!<(^wire q.sage.u.in))))  [%skip ~]
+  [%done ~]
+::  +defer-at: when +defer-drain's timer is set for. Past, so it wakes at
+::  once, and before a publish due now (+pub-due:lp, a gap after 0): the
+::  reader view of an own page renders the page's data, so a publish,
+::  whose index bump makes an open view reload, waits for the evaluator.
+++  defer-at  ^-(@da *@da)
+::  +defer-drain: put the rest of a fiber off to a later arvo event: a
+::  behn timer for a time already past (+defer-at), and wait for its wake. Every input
+::  before the wake is eaten, the start's kick included, which is what a
+::  respawned page evaluator needs: grubbery hands a new process the old
+::  one's skipped inputs (stale acks, answers and waves), re-offered on
+::  every step until something takes them, and the run that follows reads
+::  everything fresh. A refused or failed timer goes on at once.
+++  defer-drain
+  |=  =wire
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  |=  input:fiber:nexus
+  :^    :~  :*  %node  wire  &+&+[/sys/behn %'main.behn-state']
+                %poke  [/ %timer-set]  `[^wire @da]`[wire defer-at]
+            ==
+        ==
+      q.state
+    %cont
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?~  in  [%wait ~]
+  ?:  ?=([%veto %node *] u.in)
+    ?.(=(wire wire.dart.u.in) [%wait ~] [%done ~])
+  ?:  ?=([%pack * *] u.in)
+    ?.(&(=(wire wire.u.in) ?=(^ err.u.in)) [%wait ~] [%done ~])
+  ?.  ?=([%poke * *] u.in)  [%wait ~]
+  ?.  =([/ %timer-wake] p.sage.u.in)  [%wait ~]
+  ?.  =(`wire (mole |.(!<(^wire q.sage.u.in))))  [%wait ~]
+  [%done ~]
 ::  +fiber-try: run `a`, and answer ~ when it finished, or the trace when
 ::  any of its steps crashed or failed, instead of failing this fiber. A
 ::  failed step's state and darts are dropped, as the kernel drops them.
@@ -7853,7 +7951,7 @@
   =/  m  (fiber:fiber:nexus ,(unit @tas))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  jv=view:nexus  bind:m  (peek:io (rf up / %'tree-job') ~)
+  ;<  jv=view:nexus  bind:m  (peek:fio (rf up / %'tree-job') ~)
   ?.  ?=([%file *] jv)  (pure:m ~)
   =/  job=(unit eval-action:le)
     (fall (mole |.(;;((unit eval-action:le) (sang-noun:tarball sang.jv)))) ~)
@@ -7962,7 +8060,7 @@
   =/  m  (fiber:fiber:nexus ,[rev=@ud src=(unit @t)])
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  cv=view:nexus  bind:m  (peek:io (rf up (weld /page rel) %code) ~)
+  ;<  cv=view:nexus  bind:m  (peek:fio (rf up (weld /page rel) %code) ~)
   ?.  ?=([%file *] cv)  (pure:m [0 ~])
   (pure:m [ud.cass.cv (mole |.(;;(@t (sang-noun:tarball sang.cv))))])
 ::  +pub-path: a relative publish path ("notes/intro") -> content-map key
@@ -8107,7 +8205,7 @@
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
   ?.  ?=([%ball *] sn)  (pure:m (pairs:enjs:format ~[['nodes' a+~]]))
   ;<  [b=ball:tarball w=wave:nexus]  bind:m  (with-links ball.sn wave.sn)
   =/  nodes=(list [pax=path j=json])  (tree-walk b w ~)
@@ -8122,7 +8220,7 @@
   =/  m  (fiber:fiber:nexus ,[ball:tarball wave:nexus])
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  ln=view:nexus  bind:m  (peek:io (rv up /links) ~)
+  ;<  ln=view:nexus  bind:m  (peek:fio (rv up /links) ~)
   ?.  ?=([%ball *] ln)  (pure:m [b w])
   (pure:m (graft-links b w ball.ln wave.ln))
 ::  +graft-links: +with-links' pure half. Each link grub, and its cass (the
@@ -8224,7 +8322,7 @@
   =/  m  (fiber:fiber:nexus ,(unit tang))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
   =/  pages=(list [rel=path body=@t shr=share-mode:le])
     ?.  ?=([%ball *] sn)  ~
     (index-walk ball.sn ~)
@@ -8305,7 +8403,7 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  vn=view:nexus  bind:m
-    (peek:io (rf up /idx/b (name-of:li term)) ~)
+    (peek:fio (rf up /idx/b (name-of:li term)) ~)
   ?.  ?=([%file *] vn)  (pure:m ~)
   =/  bk=bucket:li
     (fall (mole |.(!<(bucket:li (need-vase:tarball sang.vn)))) *bucket:li)
@@ -8383,7 +8481,7 @@
   ::  client always has a baseline, and the gap closes by comparison for
   ::  fresh profiles exactly as it does for returning ones.
   ;<  bv=view:nexus  bind:m
-    (peek:io (rf up /beacon %rev) ~)
+    (peek:fio (rf up /beacon %rev) ~)
   =/  rev=json
     ?.  ?=([%file *] bv)  ~
     (fall (mole |.(;;(json (sang-noun:tarball sang.bv)))) ~)
@@ -8393,7 +8491,7 @@
   ::  body a client skips on the strength of it is still checked against
   ::  the node's own rev, so the token only saves bytes.
   =/  tok=json  s+?.(?=([%n *] rev) '0' p.rev)
-  ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
   ?.  ?=([%ball *] sn)
     (pure:m (pairs:enjs:format ~[['nodes' a+~] ['rev' rev] ['since' tok]]))
   ;<  [b=ball:tarball w=wave:nexus]  bind:m  (with-links ball.sn wave.sn)
@@ -8413,7 +8511,7 @@
   =/  m  (fiber:fiber:nexus ,@t)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  bv=view:nexus  bind:m  (peek:io (rf up /beacon %rev) ~)
+  ;<  bv=view:nexus  bind:m  (peek:fio (rf up /beacon %rev) ~)
   ?.  ?=([%file *] bv)  (pure:m '0')
   =/  j=(unit json)  (mole |.(;;(json (sang-noun:tarball sang.bv))))
   (pure:m ?.(?=([~ %n *] j) '0' p.u.j))
@@ -8556,7 +8654,7 @@
   ?.  (valid-name name)  (pure:m [%| 400 'bad name'])
   =/  pax=path  (pax-of name)
   =/  pdir=path  (weld /page pax)
-  ;<  cn=view:nexus  bind:m  (peek:io (rf up pdir %code) ~)
+  ;<  cn=view:nexus  bind:m  (peek:fio (rf up pdir %code) ~)
   ?.  ?=([%file *] cn)
     ::  a link (/lib/lattice-link): its cached copy, now, and a live read in
     ::  a fiber of its own. The lick port is this one, serving a request at
@@ -8605,7 +8703,7 @@
   ;<  up=@ud  bind:m  nexus-up
   ?.  (valid-name name)  (pure:m '')
   =/  pdir=path  (weld /page (pax-of name))
-  ;<  en=view:nexus  bind:m  (peek:io (rf up pdir %err) ~)
+  ;<  en=view:nexus  bind:m  (peek:fio (rf up pdir %err) ~)
   ?.  ?=([%file *] en)  (pure:m '')
   (pure:m (fall (mole |.(;;(@t (sang-noun:tarball sang.en)))) ''))
 ::  +fs-save: create/overwrite a page (POST /page-save + lick %page-save). The
@@ -8656,13 +8754,13 @@
   ::  several write() calls, each of which paid this peek
   ;<  ex=?  bind:m
     ?.  new  (pure:(fiber:fiber:nexus ,?) |)
-    (peek-exists:io (rf up (weld /page (pax-of name)) %code))
+    (peek-exists:fio (rf up (weld /page (pax-of name)) %code))
   ?:  ex  (pure:m [409 'page exists'])
   ::  a new page under a link is refused: a link holds no pages. An
   ::  overwrite (most saves) pays one peek to learn it is not new.
   ;<  cx=?  bind:m
     ?:  new  (pure:(fiber:fiber:nexus ,?) |)
-    (peek-exists:io (rf up (weld /page (pax-of name)) %code))
+    (peek-exists:fio (rf up (weld /page (pax-of name)) %code))
   ;<  la=(unit path)  bind:m
     ?:  cx  (pure:(fiber:fiber:nexus ,(unit path)) ~)
     (link-above (pax-of name))
@@ -8705,12 +8803,12 @@
   ::  prune-hist's coalesce window could make it unrecoverable). /know-move
   ::  has refused this from the start; pages get the same 409.
   =/  dbase=path  (weld /page pt)
-  ;<  dpg=?  bind:m  (peek-exists:io (rf up dbase %code))
+  ;<  dpg=?  bind:m  (peek-exists:fio (rf up dbase %code))
   ?:  dpg  (pure:m |+[409 'destination exists'])
   ::  a folder, or a link (under /links)
-  ;<  ddr=?  bind:m  (peek-exists:io (rv up dbase))
+  ;<  ddr=?  bind:m  (peek-exists:fio (rv up dbase))
   ?:  ddr  (pure:m |+[409 'destination exists'])
-  ;<  dlk=?  bind:m  (peek-exists:io (link-road up pt))
+  ;<  dlk=?  bind:m  (peek-exists:fio (link-road up pt))
   ?:  dlk  (pure:m |+[409 'destination exists'])
   ;<  la=(unit path)  bind:m  (link-above pt)
   ?^  la  (pure:m |+[409 (link-above-msg u.la)])
@@ -8782,7 +8880,7 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  v=view:nexus  bind:m  (peek:io (rv up /link-done) ~)
+  ;<  v=view:nexus  bind:m  (peek:fio (rv up /link-done) ~)
   ?.  ?=([%ball *] v)  (pure:m ~)
   ?~  fil.ball.v  (pure:m ~)
   =/  ids=(list @ta)  ~(tap in ~(key by contents.u.fil.ball.v))
@@ -8807,7 +8905,7 @@
   |-
   ;<  got=?  bind:m  take-in-drain
   ?.  got  $
-  ;<  =view:nexus  bind:m  (peek:io [%& %& (weld /sys/lick name) %in] ~)
+  ;<  =view:nexus  bind:m  (peek:fio [%& %& (weld /sys/lick name) %in] ~)
   ?.  ?=([%file *] view)  $
   =/  raw=(unit [seq=@ud mark=@tas noun=*])
     (mole |.(!<([seq=@ud mark=@tas noun=*] (need-vase:tarball sang.view))))
@@ -8818,7 +8916,7 @@
   ;<  [status=@ud rbody=@t]  bind:m  (fs-op u.req)
   ::  a client gone (killed, timed out) gets no spit: /live is advisory, so
   ::  only a definitive %.n suppresses it
-  ;<  live=view:nexus  bind:m  (peek:io [%& %& (weld /sys/lick name) %live] ~)
+  ;<  live=view:nexus  bind:m  (peek:fio [%& %& (weld /sys/lick name) %live] ~)
   =/  gone=?
     ?.  ?=([%file *] live)  |
     =(| (fall (mole |.(!<(? (need-vase:tarball sang.live)))) &))
@@ -8878,7 +8976,7 @@
 ++  read-know-map
   =/  m  (fiber:fiber:nexus ,(map path know-entry:lk))
   ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io [%| 2 %| /know/vault] ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio [%| 2 %| /know/vault] ~)
   ?.  ?=([%ball *] seen)  (pure:m ~)
   (pure:m (collect-entries ~ ball.seen))
 ::  +know-one: one entry by key, one peek, ~ when absent or unreadable.
@@ -8887,7 +8985,7 @@
   =/  m  (fiber:fiber:nexus ,(unit know-entry:lk))
   ^-  form:m
   ;<  kn=view:nexus  bind:m
-    (peek:io [%| 2 %& (weld /know/vault key) entry-leaf:lk] ~)
+    (peek:fio [%| 2 %& (weld /know/vault key) entry-leaf:lk] ~)
   ?.  ?=([%file *] kn)  (pure:m ~)
   ?:  (is-boom:tarball sang.kn)  (pure:m ~)
   (pure:m (mole |.(!<(know-entry:lk (need-vase:tarball sang.kn)))))
@@ -8897,7 +8995,7 @@
 ++  read-know-vault-safe
   =/  m  (fiber:fiber:nexus ,(unit (map path know-entry:lk)))
   ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io [%| 2 %| /know/vault] ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio [%| 2 %| /know/vault] ~)
   ?.  ?=([%ball *] seen)  (pure:m ~)
   (pure:m `(collect-entries ~ ball.seen))
 ::  +serve-ui: stream a ui-app asset grub. MIME from the (whitelisted) name;
@@ -8935,7 +9033,7 @@
     ?:  =(%'orrery.js' nam)   `'application/javascript'
     ~
   ?~  ct  (send-err eyre-id 404 'not found')
-  ;<  pv=view:nexus  bind:m  (peek:io (rf up /app nam) ~)
+  ;<  pv=view:nexus  bind:m  (peek:fio (rf up /app nam) ~)
   ?.  ?=([%file *] pv)  (send-err eyre-id 404 'not found')
   =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
   ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
@@ -9348,7 +9446,7 @@
   =/  m  (fiber:fiber:nexus ,(map @t @t))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  vw=view:nexus  bind:m  (peek:io (rf up / %'journal-synced.json') ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf up / %'journal-synced.json') ~)
   ?.  ?=([%file *] vw)  (pure:m ~)
   =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.vw)))) ~)
   ?.  ?=([%o *] jon)  (pure:m ~)
@@ -9382,7 +9480,7 @@
 ++  read-peers
   =/  m  (fiber:fiber:nexus ,(map @t json))
   ^-  form:m
-  ;<  vw=view:nexus  bind:m  (peek:io peers-road ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio peers-road ~)
   ?.  ?=([%file *] vw)  (pure:m ~)
   =/  j=(unit json)  (mole |.(!<(json (need-vase:tarball sang.vw))))
   (pure:m ?.(?=([~ %o *] j) ~ p.u.j))
@@ -9527,7 +9625,7 @@
   ;<  pe=?  bind:m
     ?.  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))
       (pure:(fiber:fiber:nexus ,?) |)
-    (peek-exists:io (rf up (weld /page rel) %code))
+    (peek-exists:fio (rf up (weld /page rel) %code))
   =/  r=road:tarball  ?:(pe [%& %& i.ps %code] [%& %| i.ps])
   $(ps t.ps, out (~(put in out) r))
 ::  +narrow-page-grants: a page grant used to be a dir road on the page's
@@ -9678,14 +9776,14 @@
   |=  gdir=path
   =/  m  (fiber:fiber:nexus ,weir:nexus)
   ^-  form:m
-  ;<  hv=view:nexus  bind:m  (peek:io [%& %& gdir %'how.weir'] ~)
+  ;<  hv=view:nexus  bind:m  (peek:fio [%& %& gdir %'how.weir'] ~)
   ?.  ?=([%file *] hv)  (pure:m *weir:nexus)
   (pure:m (fall (mole |.(;;(weir:nexus (sang-noun:tarball sang.hv)))) *weir:nexus))
 ::  +share-groups-json: every usergroup, decoded for the editor.
 ++  share-groups-json
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
-  ;<  dn=view:nexus  bind:m  (peek:io [%& %| ug-base] ~)
+  ;<  dn=view:nexus  bind:m  (peek:fio [%& %| ug-base] ~)
   ?.  ?=([%ball *] dn)  (pure:m a+~)
   ::  nested groups too (+all-groups), named by their path, so the owner
   ::  sees every grant. The editor saves and deletes by a plain name only,
@@ -9697,7 +9795,7 @@
   =/  nt=tape  (trip (spat i.names))
   =/  base=@t  (crip (slag 1 (scag (sub (lent nt) 4) nt)))
   =/  gdir=path  (weld ug-base i.names)
-  ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
+  ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
   =/  ships=(list @p)
     ?.  ?=([%file *] wv)  ~
     %+  fall
@@ -9733,7 +9831,7 @@
   ?.  =([/lattice %share-notice] p.sage)  (pure:m ~)
   =/  na=(unit action:ls)  (mole |.(;;(action:ls q.q.sage)))
   ?~  na  (pure:m ~)
-  ;<  sn=view:nexus  bind:m  (peek:io (rf root / %shared) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rf root / %shared) ~)
   =/  cur=shared:ls
     ?.  ?=([%file *] sn)  ~
     (fall (mole |.(;;(shared:ls (sang-noun:tarball sang.sn)))) ~)
@@ -9815,7 +9913,7 @@
   |=  who=@p
   =/  m  (fiber:fiber:nexus ,(unit @ud))
   ^-  form:m
-  ;<  dn=view:nexus  bind:m  (peek:io [%& %| ug-base] ~)
+  ;<  dn=view:nexus  bind:m  (peek:fio [%& %| ug-base] ~)
   ?.  ?=([%ball *] dn)  (pure:m `0)
   ::  nested groups too (+all-groups): a ban that missed one left the ship
   ::  its grants there
@@ -9824,7 +9922,7 @@
   |-  ^-  form:m
   ?~  gs  (pure:m `hit)
   =/  gdir=path  (weld ug-base i.gs)
-  ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
+  ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
   =/  ships=(set @p)
     ?.  ?=([%file *] wv)  ~
     (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
@@ -9843,7 +9941,7 @@
   =/  m  (fiber:fiber:nexus ,banned:ls)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  bv=view:nexus  bind:m  (peek:io (ban-road up) ~)
+  ;<  bv=view:nexus  bind:m  (peek:fio (ban-road up) ~)
   ?.  ?=([%file *] bv)  (pure:m ~)
   (pure:m (fall (mole |.(;;(banned:ls (sang-noun:tarball sang.bv)))) ~))
 ::  +ug-merge: fold ships and grants INTO a usergroup, creating it if absent.
@@ -9856,7 +9954,7 @@
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
-  ;<  wv=view:nexus  bind:m  (peek:io [%& %& gdir %'who.ships'] ~)
+  ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
   =/  cur=(set @p)
     ?.  ?=([%file *] wv)  ~
     (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
@@ -9994,18 +10092,34 @@
     ?.  =([/ %ship] p.sage.u.in)  [%skip ~]
     [%done !<(ship q.sage.u.in)]
   ==
+::  +bowl-now: the time, from /sys/bowl.sig. On a fixed wire, not a
+::  +nonce (a second round trip to bowl.sig, for the wire alone), and it
+::  takes the poke's ack as well as the answer, in either order, so the
+::  ack never lands in the fiber's skip pile.
 ++  bowl-now
   =/  m  (fiber:fiber:nexus ,@da)
   ^-  form:m
-  ;<  ~  bind:m  (poke:io &+&+[/sys %'bowl.sig'] [[/ %bowl-req] %now])
+  =/  =wire  /bowl/now
+  ;<  ~  bind:m
+    (send-dart:io %node wire &+&+[/sys %'bowl.sig'] %poke [[/ %bowl-req] %now])
+  =/  pak=?  |
+  =/  got=(unit @da)  ~
+  |-  ^-  form:m
   |=  input:fiber:nexus
-  :+  ~  q.state
-  ?+  in  [%skip ~]
-      ~  [%wait ~]
-      [~ %poke * *]
-    ?.  =([/ %time] p.sage.u.in)  [%skip ~]
-    [%done !<(@da q.sage.u.in)]
-  ==
+  ?~  in  [~ q.state %wait ~]
+  ?:  ?=([%veto %node *] u.in)
+    ?.  =(wire wire.dart.u.in)  [~ q.state %skip ~]
+    [~ q.state %fail (veto-error:io dart.u.in)]
+  ?:  ?=([%pack * *] u.in)
+    ?.  =(wire wire.u.in)  [~ q.state %skip ~]
+    ?^  err.u.in  [~ q.state %fail %poke-failed u.err.u.in]
+    ?^  got  [~ q.state %done u.got]
+    [~ q.state %cont ^$(pak &)]
+  ?.  ?=([%poke * *] u.in)  [~ q.state %skip ~]
+  ?.  =([/ %time] p.sage.u.in)  [~ q.state %skip ~]
+  =/  t=@da  !<(@da q.sage.u.in)
+  ?:  pak  [~ q.state %done t]
+  [~ q.state %cont ^$(got `t)]
 ::  +rise-later: how a long-lived fiber comes back from a crash, ported from
 ::  calendar (hoon-test-kit PLAYBOOK, "Never ship a crash loop"). rise-wait
 ::  took the first poke after a crash as its restart signal and dropped it
@@ -10356,7 +10470,7 @@
   |=  =road:tarball
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
-  ;<  vw=view:nexus  bind:m  (peek:io road ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio road ~)
   ?.  ?=([%file *] vw)  (pure:m [%o ~])
   (pure:m (fall (mole |.(!<(json (need-vase:tarball sang.vw)))) [%o ~]))
 ::  milliseconds both ways: the record's times are numbers, and must be
@@ -10616,7 +10730,7 @@
   =/  road=road:tarball
     (rf up (weld /pub/vault rel) %gmi)
   ?:  =(shp our)
-    ;<  seen=view:nexus  bind:m  (peek:io road ~)
+    ;<  seen=view:nexus  bind:m  (peek:fio road ~)
     ?.  ?=([%file *] seen)  (pure:m ~)
     ::  the vault is %gmi-keyed, so its mark is NOT the page's mode. Resolve
     ::  the mode from the page's show grub (+published-mode, the single source
@@ -10685,7 +10799,7 @@
 ++  read-peer-revs
   =/  m  (fiber:fiber:nexus ,(map @t json))
   ^-  form:m
-  ;<  vw=view:nexus  bind:m  (peek:io peer-revs-road ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio peer-revs-road ~)
   ?.  ?=([%file *] vw)  (pure:m ~)
   =/  j=(unit json)  (mole |.(!<(json (need-vase:tarball sang.vw))))
   (pure:m ?.(?=([~ %o *] j) ~ p.u.j))
@@ -11242,7 +11356,7 @@
   ;<  up=@ud  bind:m  nexus-up
   ?.  (levy pax |=(seg=@ta ((sane %ta) seg)))  (send-err eyre-id 404 'not found')
   =/  pdir=path  (weld /page pax)
-  ;<  dsn=view:nexus  bind:m  (peek:io (rf up pdir %data) ~)
+  ;<  dsn=view:nexus  bind:m  (peek:fio (rf up pdir %data) ~)
   ?.  ?=([%file *] dsn)  (send-err eyre-id 404 'not found')
   ;<  vmode=view-mode:pg  bind:m  (read-show-mode pdir)
   =/  res=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.dsn))))
@@ -11346,7 +11460,7 @@
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  sn=view:nexus  bind:m  (peek:io (rv up /comments) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rv up /comments) ~)
   ?.  ?=([%ball *] sn)  (pure:m (pairs:enjs:format ~[['items' a+~]]))
   =/  all=(list [pax=path id=@ta c=comment:lc])  (comment-walk ball.sn ~)
   =/  sorted=(list [pax=path id=@ta c=comment:lc])
@@ -11377,7 +11491,7 @@
   ?.  on  (pure:m "")
   ::  shallow: only this page's own comments render, not those of the
   ::  pages under it
-  ;<  seen=view:nexus  bind:m  (peek-shallow:io (rv up (weld /comments page)) ~)
+  ;<  seen=view:nexus  bind:m  (peek-shallow:fio (rv up (weld /comments page)) ~)
   =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
     ?.  ?=([%ball *] seen)  ~
     ?~(fil.ball.seen ~ contents.u.fil.ball.seen)
@@ -11486,7 +11600,7 @@
   =/  tdir=path  (weld /page (weld anc /theme))
   ;<  show=view-mode:pg  bind:m  (read-show-mode tdir)
   ?:  ?=(%css show)
-    ;<  dsn=view:nexus  bind:m  (peek:io (rf up tdir %data) ~)
+    ;<  dsn=view:nexus  bind:m  (peek:fio (rf up tdir %data) ~)
     =/  css=(unit @t)
       ?.  ?=([%file *] dsn)  ~
       =/  r=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang.dsn))))
@@ -11521,7 +11635,7 @@
   ;<  up=@ud  bind:m  nexus-up
   |-  ^-  form:m
   =/  fdir=path  (weld /page page)
-  ;<  seen=view:nexus  bind:m  (peek:io (rf up fdir %forms-on) ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio (rf up fdir %forms-on) ~)
   ?:  ?=([%file *] seen)
     (pure:m (fall (mole |.(;;(? (sang-noun:tarball sang.seen)))) %.n))
   ?~  page  (pure:m %.n)
@@ -11536,7 +11650,7 @@
   ;<  up=@ud  bind:m  nexus-up
   |-  ^-  form:m
   =/  fdir=path  (weld /page page)
-  ;<  seen=view:nexus  bind:m  (peek:io (rf up fdir %'forms-cfg') ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio (rf up fdir %'forms-cfg') ~)
   ?:  ?=([%file *] seen)
     (pure:m (fall (mole |.(;;(form-cfg:le (sang-noun:tarball sang.seen)))) [0 *@dr]))
   ?~  page  (pure:m [0 *@dr])
@@ -11549,7 +11663,7 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   =/  fdir=path  (weld /page page)
-  ;<  seen=view:nexus  bind:m  (peek:io (rf up fdir %'forms-use') ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio (rf up fdir %'forms-use') ~)
   ?.  ?=([%file *] seen)  (pure:m [0 *@da])
   (pure:m (fall (mole |.(;;(form-use:le (sang-noun:tarball sang.seen)))) [0 *@da]))
 ::  +serve-form: accept a public form POST for a page and deliver it as a
@@ -11568,7 +11682,7 @@
   ?.  ?=(%clearweb mode)  (send-err eyre-id 404 'not found')
   ;<  on=?  bind:m  (forms-on pax)
   ?.  on  (send-err eyre-id 403 'forms not enabled')
-  ;<  ex=?  bind:m  (peek-exists:io (rf up pdir %code))
+  ;<  ex=?  bind:m  (peek-exists:fio (rf up pdir %code))
   ?.  ex  (send-err eyre-id 404 'not found')
   ?:  (gth (met 3 body) form-body-max)  (send-err eyre-id 413 'too large')
   ::  the two owner-set limits. Both are checked HERE rather than in the writer
@@ -11611,7 +11725,7 @@
   =/  pdir=path  (weld /page pax)
   ::  one shallow peek of the page dir holds its share mode, data, show mode
   ::  and render cache, which were four separate peeks of it
-  ;<  pv=view:nexus  bind:m  (peek-shallow:io (rv up pdir) ~)
+  ;<  pv=view:nexus  bind:m  (peek-shallow:fio (rv up pdir) ~)
   ?.  ?=([%ball *] pv)  (send-err eyre-id 404 'not found')
   =/  fils  ?~(fil.ball.pv ~ contents.u.fil.ball.pv)
   ?.  ?=(%clearweb (fils-share fils))  (send-err eyre-id 404 'not found')
@@ -11713,7 +11827,7 @@
   =/  m  (fiber:fiber:nexus ,(list [host=@p board=@t reason=@t at=@da]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  v=view:nexus  bind:m  (peek:io (rv up /forum/notes) ~)
+  ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/notes) ~)
   ?.  ?=([%ball *] v)  (pure:m ~)
   ?~  fil.ball.v  (pure:m ~)
   =/  all=(list [host=@p board=@t reason=@t at=@da])
@@ -11859,7 +11973,7 @@
   |=  up=@ud
   =/  m  (fiber:fiber:nexus ,(list [name=board-name:ft title=@t public=?]))
   ^-  form:m
-  ;<  v=view:nexus  bind:m  (peek:io (rv up /forum/boards) ~)
+  ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/boards) ~)
   ?.  ?=([%ball *] v)  (pure:m ~)
   =/  noms=(list @ta)  (sort ~(tap in ~(key by dir.ball.v)) aor)
   |-  ^-  form:m
@@ -13172,7 +13286,7 @@
   =/  m  (fiber:fiber:nexus ,(list [pax=path page=?]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  sn=view:nexus  bind:m  (peek:io (rv up /page) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
   ?.  ?=([%ball *] sn)  (pure:m ~)
   %-  pure:m
   %+  sort  (collect-tree ball.sn ~)
@@ -13837,7 +13951,7 @@
   =|  acc=(list [@t json])
   |-  ^-  form:m
   ?~  subs  (pure:m (trip (en:json:html (pairs:enjs:format (flop acc)))))
-  ;<  v=view:nexus  bind:m  (peek:io (rf up /beacon i.subs) ~)
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up /beacon i.subs) ~)
   =/  j=json
     ?.  ?=([%file *] v)  ~
     (fall (mole |.(;;(json (sang-noun:tarball sang.v)))) ~)
@@ -14034,7 +14148,7 @@
   ^-  form:m
   ?~  fis  (pure:m ~)
   ;<  ~  bind:m  (over:io (rf up / nam.i.fis) bask.i.fis)
-  ;<  ~  bind:m  (gain:io (rf up / nam.i.fis) gain.i.fis)
+  ;<  ~  bind:m  (gain:fio (rf up / nam.i.fis) gain.i.fis)
   (carry-files up t.fis)
 ::  +carry-dirs: one fold per top-level subtree, merged over what is there.
 ::
@@ -14057,7 +14171,7 @@
   ?~  kids  (pure:m ~)
   ?:  =(*bole:tarball sub.i.kids)  (carry-dirs up t.kids)
   =/  rod=road:tarball  (rv up ~[nam.i.kids])
-  ;<  cur=view:nexus  bind:m  (peek:io rod ~)
+  ;<  cur=view:nexus  bind:m  (peek:fio rod ~)
   =/  dst=bole:tarball
     ?.(?=([%ball *] cur) *bole:tarball (ball-to-bole:tarball ball.cur))
   ;<  ~  bind:m  (over-fold:io rod (carry-merge dst sub.i.kids))
@@ -14293,7 +14407,7 @@
     ==
   ::  the share modes are in the deep peek's ball already, so one peek
   ::  covers every page, where a read-share per page was a dart each
-  ;<  sn=view:nexus  bind:m  (peek:io (rv root /page) ~)
+  ;<  sn=view:nexus  bind:m  (peek:fio (rv root /page) ~)
   =/  peeks=(set road:tarball)
     ?.  ?=([%ball *] sn)  ~
     %-  silt
@@ -14302,7 +14416,7 @@
   ::  votes, pins, sidebar) dirs, so its grubs read over peer scry. A private
   ::  board is never listed, and one made private or deleted drops out here
   ::  because %how replaces the whole set.
-  ;<  fv=view:nexus  bind:m  (peek:io (rv root /forum/boards) ~)
+  ;<  fv=view:nexus  bind:m  (peek:fio (rv root /forum/boards) ~)
   =/  brds=(list @ta)  ?.(?=([%ball *] fv) ~ (public-boards ball.fv))
   =/  bpeeks=(set road:tarball)
     %-  ~(gas in *(set road:tarball))
@@ -14446,7 +14560,7 @@
     ::  segment, on every re-save, for nothing
     ;<  ~  bind:m  ?^(old (pure:m ~) (ensure-dirs up vbase key))
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] e)
-    ;<  ~  bind:m  (gain:io road %.y)
+    ;<  ~  bind:m  (gain:fio road %.y)
     ::  memories are gained too, and autosave saves one revision per typing
     ::  pause, the same ceiling pages get, or the vault grows forever.
     ::  know entries are a user-facing history surface too, so same window
@@ -14475,8 +14589,8 @@
     ::  never lose), then cull the live grub, then swing the index rows.
     ;<  ~  bind:m  (ensure-dirs up tvbase key)
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] u.old)
-    ;<  ~  bind:m  (gain:io troad %.y)
-    ;<  ~  bind:m  (cull:io road)
+    ;<  ~  bind:m  (gain:fio troad %.y)
+    ;<  ~  bind:m  (cull:fio road)
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     (put-file tx [/lattice %know-index] (~(put by trash) key (to-index-entry:lk u.old)))
   ::
@@ -14504,8 +14618,8 @@
     ::  make target first (duplicate-on-crash, never lose), cull source after.
     ;<  ~  bind:m  (ensure-dirs up vbase tk)
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] u.old)
-    ;<  ~  bind:m  (gain:io troad %.y)
-    ;<  ~  bind:m  (cull:io froad)
+    ;<  ~  bind:m  (gain:fio troad %.y)
+    ;<  ~  bind:m  (cull:fio froad)
     ::  if the target key was previously trashed, cull the orphan trash grub +
     ::  row so a later %restore can't resurrect it over the moved-in entry.
     ;<  trash=know-index:lk  bind:m  (read-index tx)
@@ -14534,8 +14648,8 @@
     ::  copy, then swing the index rows.
     ;<  ~  bind:m  (ensure-dirs up vbase key)
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] u.old)
-    ;<  ~  bind:m  (gain:io road %.y)
-    ;<  ~  bind:m  (cull:io troad)
+    ;<  ~  bind:m  (gain:fio road %.y)
+    ;<  ~  bind:m  (cull:fio troad)
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     (put-file tx [/lattice %know-index] (~(del by trash) key))
   ::
@@ -14553,7 +14667,7 @@
     =/  road=road:tarball  (entry-road up vbase key)
     ;<  ~  bind:m  (ensure-dirs up vbase key)
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] entry.act)
-    ;<  ~  bind:m  (gain:io road %.y)
+    ;<  ~  bind:m  (gain:fio road %.y)
     ;<  ~  bind:m  (prune-hist road know-keep history-window)
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     ?.  (~(has by trash) key)  (pure:m ~)
@@ -14573,7 +14687,7 @@
     =/  troad=road:tarball  (entry-road up tvbase key)
     ;<  ~  bind:m  (ensure-dirs up tvbase key)
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] entry.act)
-    ;<  ~  bind:m  (gain:io troad %.y)
+    ;<  ~  bind:m  (gain:fio troad %.y)
     ;<  ~  bind:m  (prune-hist troad know-keep history-window)
     ;<  trash=know-index:lk  bind:m  (read-index tx)
     (put-file tx [/lattice %know-index] (~(put by trash) key (to-index-entry:lk entry.act)))
@@ -14616,7 +14730,6 @@
     =/  or=(unit vrail:lp)  (key-to-rail:lp vbase key)
     ?~  or  (refuse "a publish: the key names no page: {(spud key)}")
     =/  road=road:tarball  (rf up pax.u.or nom.u.or)
-    ;<  ~  bind:m  (ensure-dirs up vbase (slag (lent vbase) pax.u.or))
     ::  the rev bound in the namespace by the PREVIOUS publish of this page,
     ::  read BEFORE this save's put-file bumps the vault grub's cass. This is
     ::  the exact predecessor spur the keep-only-current cull below retracts.
@@ -14626,11 +14739,20 @@
     ::  [%temp ~] cass the cull appended, which is exactly where %del-page
     ::  bound the tombstone. 0 only when the page has never been published.
     ;<  prev-rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
+    ::  a page published before has its vault dirs: only a first publish
+    ::  makes them, a peek a segment
+    ;<  ~  bind:m
+      ?.  =(0 prev-rev)  (pure:m ~)
+      (ensure-dirs up vbase (slag (lent vbase) pax.u.or))
     ;<  ~  bind:m  (put-file road [/lattice %page] body.act)
     ::  the rev just written (the vault grub's cass, read AFTER the
-    ::  put-file), and the one the revision list names now
+    ::  put-file), and the one the revision list names now, read once
+    ::  for the row and for its update below
     ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
-    ;<  was=(unit @ud)  bind:m  (pub-rev-row root key)
+    ;<  revs=(map @t json)  bind:m  (read-pub-revs root)
+    =/  was=(unit @ud)
+      =/  r=(unit json)  (~(get by revs) (page-name:lp key))
+      ?~(r ~ (bind (json-rev:lp u.r) head))
     ::  INCREMENTAL. The list already names this revision: the same text
     ::  published again, or a background publish redone after it landed.
     ::  Its binding is grown, and a second %grow of a bound spur would only
@@ -14638,10 +14760,14 @@
     ::  there is nothing to do. A changed body is always a new cass, so a
     ::  new spur whose case 1 is this body.
     ?:  =(`rev was)  (pure:m ~)
-    ;<  ~  bind:m  (gain:io road %.y)
+    ;<  ~  bind:m  (gain:fio road %.y)
     ::  nothing reads a published page's old revisions (peers %keen the
-    ::  current one, and the page keeps its own history), so keep only it
-    ;<  ~  bind:m  (prune-hist road 1 ~s0)
+    ::  current one, and the page keeps its own history), so keep only
+    ::  it: one lose of every revision below `rev`, the newest, which is
+    ::  what +prune-hist with keep 1 comes to, without its +born read
+    ;<  ~  bind:m
+      ?:  =(0 rev)  (pure:m ~)
+      (lose:fio road [%numb ~ `(dec rev)])
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
     ::  the manifest is the key set only, so only a page new to the index
     ::  grows one (an edit used to regrow it whole every save)
@@ -14661,7 +14787,7 @@
     ;<  salt=@  bind:m  pub-salt
     ;<  mode=view-mode:pg  bind:m  (published-mode (snip (strip-pub:lp key)))
     ;<  ~  bind:m  (grow-pub-page salt key body.act rev mode)
-    ;<  ~  bind:m  (set-pub-rev root salt key `rev)
+    ;<  ~  bind:m  (put-pub-revs root salt key `rev revs)
     ::  keep-only-current INVARIANT: at most one rev spur per page is ever
     ::  bound. Retract the PREDECESSOR now that the new one is grown and
     ::  listed: grow, list, cull, so a reader never finds zero bindings,
@@ -14697,7 +14823,7 @@
     =/  or=(unit vrail:lp)  (key-to-rail:lp vbase key)
     ?~  or  (refuse "an unpublish: the key names no page: {(spud key)}")
     =/  road=road:tarball  (rf up pax.u.or nom.u.or)
-    ;<  exists=?  bind:m  (peek-exists:io road)
+    ;<  exists=?  bind:m  (peek-exists:fio road)
     ?.  exists
       ::  FOLDER delete/move: the key names no gmi grub of its own. The eval
       ::  %del arm hands the FOLDER's key here, and +move-pages ends every
@@ -14732,7 +14858,7 @@
     ::  The history goes first: the /public peek grant covers this path, and
     ::  a peek at an old case read the last published body after the cull.
     ;<  ~  bind:m  (prune-hist road 0 ~s0)
-    ;<  ~  bind:m  (cull:io road)
+    ;<  ~  bind:m  (cull:fio road)
     ::  No tombstone binding: a subscriber learns of the delete from the
     ::  page leaving the revision list (+sub-apply-wave).
     ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
@@ -14788,7 +14914,7 @@
   |=  road=road:tarball
   =/  m  (fiber:fiber:nexus ,pub-index:lp)
   ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io road ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio road ~)
   ?.  ?=([%file *] seen)  (pure:m *pub-index:lp)
   (pure:m !<(pub-index:lp (need-vase:tarball sang.seen)))
 ::  ── mesa: the remote-scry publish mirror (docs D1) ───────────────────────
@@ -14825,7 +14951,7 @@
   ^-  form:m
   ::  shallow: only this dir's own files' cass is wanted, and a deep peek
   ::  of a vault dir also read every page published below it
-  ;<  dv=view:nexus  bind:m  (peek-shallow:io (rv up pax) ~)
+  ;<  dv=view:nexus  bind:m  (peek-shallow:fio (rv up pax) ~)
   ?.  ?=([%ball *] dv)  (pure:m 0)
   =/  wfil=(map @ta cass:clay)  ?~(fil.wave.dv ~ file.u.fil.wave.dv)
   =/  c=(unit cass:clay)  (~(get by wfil) nom)
@@ -14849,7 +14975,7 @@
   |=  road=road:tarball
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io road ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio road ~)
   ?.  ?=([%file *] seen)  (pure:m 0)
   (pure:m (fall (mole |.(;;(@ud (sang-noun:tarball sang.seen)))) 0))
 ::  +grow-pub-page: bind one page body in the namespace at its rev spur.
@@ -14871,7 +14997,7 @@
   =/  m  (fiber:fiber:nexus ,@)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  vw=view:nexus  bind:m  (peek:io (rf up / %salt) ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf up / %salt) ~)
   ?.  ?=([%file *] vw)  (pure:m 0)
   (pure:m (fall (mole |.(;;(@ (sang-noun:tarball sang.vw)))) 0))
 ::  +page-spur: the scry binding of one revision of the page at `inner`,
@@ -15028,7 +15154,7 @@
   ?~  keys  (pure:m [cnt revs])
   =/  or=(unit vrail:lp)  (key-to-rail:lp /pub/vault i.keys)
   ?~  or  (pub-regrow-loop salt t.keys cnt revs)
-  ;<  seen=view:nexus  bind:m  (peek:io (rf up pax.u.or nom.u.or) ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio (rf up pax.u.or nom.u.or) ~)
   ?.  ?=([%file *] seen)  (pub-regrow-loop salt t.keys cnt revs)
   ::  clam in a mole. One malformed grub (an index row whose vault copy was
   ::  hand-edited) must skip, not kill the whole backfill.
@@ -15056,6 +15182,12 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  old=(map @t json)  bind:m  (read-pub-revs root)
+  (put-pub-revs root salt key rev old)
+::  +put-pub-revs: +set-pub-rev over a list already read
+++  put-pub-revs
+  |=  [root=@ud salt=@ key=path rev=(unit @ud) old=(map @t json)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
   =/  nam=@t  (page-name:lp key)
   =/  new=(map @t json)
     ?~  rev  (~(del by old) nam)
@@ -15073,7 +15205,7 @@
   |=  root=@ud
   =/  m  (fiber:fiber:nexus ,(map @t json))
   ^-  form:m
-  ;<  vw=view:nexus  bind:m  (peek:io (rf root /pub %revs) ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf root /pub %revs) ~)
   ?.  ?=([%file *] vw)  (pure:m ~)
   =/  j=(unit json)  (mole |.(!<(json (need-vase:tarball sang.vw))))
   (pure:m ?.(?=([~ %o *] j) ~ p.u.j))
@@ -15090,7 +15222,7 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  salt=@  bind:m  pub-salt
-  ;<  has=?  bind:m  (peek-exists:io (rf root /pub %revs))
+  ;<  has=?  bind:m  (peek-exists:fio (rf root /pub %revs))
   ?:  &(!=(0 salt) has)  (pure:m ~)
   ?.  =(0 salt)
     ;<  *  bind:m  pub-regrow
@@ -15098,7 +15230,7 @@
   ;<  eny=@uvJ  bind:m  get-entropy:io
   ;<  ~  bind:m  (put-file (rf root / %salt) [/ %ud] `@ud`(end [3 32] eny))
   ;<  *  bind:m  pub-regrow
-  ;<  vw=view:nexus  bind:m  (peek:io (rf root /pub %revs) ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf root /pub %revs) ~)
   =/  revs=(map @t [rev=@ud id=@uv])
     ?.  ?=([%file *] vw)  ~
     (fall (mole |.((json-revs:lp !<(json (need-vase:tarball sang.vw))))) ~)
@@ -15113,7 +15245,7 @@
 ::  Walks the ENTIRE pub-vault tree in one dir peek. The wave is a full
 ::  recursive axal, and born is a high-water mark, so DELETED (tombed) grubs
 ::  are enumerated right alongside live ones. For every gmi grub it reads
-::  the full version history (born:io) and cull-farms every rev spur BELOW
+::  the full version history (born:fio) and cull-farms every rev spur BELOW
 ::  the current one, then culls every index seq below the live counter.
 ::  Each past live cass is a rev a pre-fix save grew into the namespace and
 ::  never culled. What survives is exactly the one live binding per page (a
@@ -15156,9 +15288,9 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   =/  markr=road:tarball  (rf up /pub %reconciled)
-  ;<  done=?  bind:m  (peek-exists:io markr)
+  ;<  done=?  bind:m  (peek-exists:fio markr)
   ?:  done  (pure:m ~)
-  ;<  dv=view:nexus  bind:m  (peek:io (rv up /pub/vault) ~)
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up /pub/vault) ~)
   =/  grubs=(list [segs=path nom=@ta])
     ?.  ?=([%ball *] dv)  ~
     (wave-grubs wave.dv)
@@ -15198,7 +15330,7 @@
   ::  only gmi grubs are pages. Nothing else was ever grown.
   ?.  =(%gmi nom.i.grubs)  (pub-reconcile-revs vbase t.grubs cnt)
   ;<  hs=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m
-    (born:io (rf up (weld vbase segs.i.grubs) nom.i.grubs))
+    (born:fio (rf up (weld vbase segs.i.grubs) nom.i.grubs))
   ?:  ?=(%| -.hs)  (pub-reconcile-revs vbase t.grubs cnt)
   ::  the LIVE (non-tomb) rev numbers, one per content write, each of which
   ::  +grow-pub-page bound a spur for. The current grown spur is the MAX of
@@ -15475,7 +15607,7 @@
   =/  m  (fiber:fiber:nexus ,follows:lp)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  seen=view:nexus  bind:m  (peek:io (rf up /sub %follows) ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio (rf up /sub %follows) ~)
   ?.  ?=([%file *] seen)  (pure:m *follows:lp)
   ::  sang-noun, not need-vase: a boomed grub (mark failed to vale) has no
   ::  vase, and need-vase would crash every fiber that reads the follows
@@ -15487,7 +15619,7 @@
   =/  m  (fiber:fiber:nexus ,(list page-sub:lp))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  seen=view:nexus  bind:m  (peek:io (rv up /sub/pages) ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio (rv up /sub/pages) ~)
   ?.  ?=([%ball *] seen)  (pure:m ~)
   =/  b=ball:tarball  ball.seen
   ?~  fil.b  (pure:m ~)
@@ -15522,9 +15654,9 @@
   ?:  ?=(%sub-page -.act)
     (put-file road [/lattice %sub-page] page-sub.act)
   ::  %unsub-page: cull only if present, so a stray /unsub can't veto-crash the writer.
-  ;<  exists=?  bind:m  (peek-exists:io road)
+  ;<  exists=?  bind:m  (peek-exists:fio road)
   ?.  exists  (pure:m ~)
-  (cull:io road)
+  (cull:fio road)
 ::  +retag: %tag / %untag, touch the entry's tag set + refresh its index row.
 ::
 ++  retag
@@ -15565,7 +15697,7 @@
   |=  road=road:tarball
   =/  m  (fiber:fiber:nexus ,(unit know-entry:lk))
   ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io road ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio road ~)
   ?.  ?=([%file *] seen)  (pure:m ~)
   (pure:m `!<(know-entry:lk (need-vase:tarball sang.seen)))
 ::  +read-index: peek an index grub. Empty if absent.
@@ -15574,9 +15706,137 @@
   |=  road=road:tarball
   =/  m  (fiber:fiber:nexus ,know-index:lk)
   ^-  form:m
-  ;<  seen=view:nexus  bind:m  (peek:io road ~)
+  ;<  seen=view:nexus  bind:m  (peek:fio road ~)
   ?.  ?=([%file *] seen)  (pure:m *know-index:lk)
   (pure:m !<(know-index:lk (need-vase:tarball sang.seen)))
+::  +fio: the file darts the app sends most, as +io sends them but on a
+::  wire named by the request itself instead of a +nonce. A nonce asks
+::  /sys/bowl.sig for entropy, a poke and its answer and their acks: on
+::  a big pier that cost more than the dart it named (a peek 47 ms, 16
+::  without), and the late ack sat in the fiber's skip pile, re-offered
+::  on every later take. A fiber is sequential, so a request it has made
+::  is answered before it makes the next one: two of its own outstanding
+::  requests never share a wire. An answer left over from a crashed run
+::  of the fiber names the same request, and is as good as its own.
+++  fio
+  |%
+  ++  fw
+    |=  [op=@ta key=*]
+    ^-  wire
+    /fio/[op]/(scot %uv (sham key))
+  ++  peek
+    |=  [=road:tarball blot=(unit blot:tarball)]
+    =/  m  (fiber:fiber:nexus ,view:nexus)
+    ^-  form:m
+    =/  =wire  (fw %peek road blot)
+    ;<  ~  bind:m  (send-dart:io %node wire road %peek blot ~ %.y)
+    (take-peek:io wire)
+  ++  peek-shallow
+    |=  [=road:tarball blot=(unit blot:tarball)]
+    =/  m  (fiber:fiber:nexus ,view:nexus)
+    ^-  form:m
+    =/  =wire  (fw %peek-shallow road blot)
+    ;<  ~  bind:m  (send-dart:io %node wire road %peek blot ~ %.n)
+    (take-peek:io wire)
+  ++  peek-exists
+    |=  =road:tarball
+    =/  m  (fiber:fiber:nexus ,?)
+    ^-  form:m
+    ;<  =view:nexus  bind:m  (peek road ~)
+    (pure:m !?=(?(%none %miss %veto %tomb) -.view))
+  ++  over
+    |=  [=road:tarball =bask:tarball]
+    =/  m  (fiber:fiber:nexus ,~)
+    ^-  form:m
+    =/  =wire  (fw %over road bask)
+    ;<  ~  bind:m  (send-dart:io %node wire road %make %.y %.n |+[bask ~])
+    (take-made:io wire)
+  ::  +over-gained: +over with the grub's gain set in the same event
+  ++  over-gained
+    |=  [=road:tarball =bask:tarball]
+    =/  m  (fiber:fiber:nexus ,~)
+    ^-  form:m
+    =/  =wire  (fw %over-gained road bask)
+    ;<  ~  bind:m  (send-dart:io %node wire road %make %.y %.y |+[bask ~])
+    (take-made:io wire)
+  ++  make
+    |=  [=road:tarball =make:nexus]
+    =/  m  (fiber:fiber:nexus ,~)
+    ^-  form:m
+    =/  =wire  (fw %make road make)
+    ;<  ~  bind:m  (send-dart:io %node wire road %make %.n %.n make)
+    (take-made:io wire)
+  ++  poke
+    |=  [=road:tarball =bask:tarball]
+    =/  m  (fiber:fiber:nexus ,~)
+    ^-  form:m
+    =/  =wire  (fw %poke road bask)
+    ;<  ~  bind:m  (send-dart:io %node wire road %poke bask)
+    (take-pack:io wire)
+  ++  gain
+    |=  [=road:tarball flag=?]
+    =/  m  (fiber:fiber:nexus ,~)
+    ^-  form:m
+    =/  =wire  (fw %gain road flag)
+    ;<  ~  bind:m  (send-dart:io %node wire road %gain flag)
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?+  in  [%skip ~]
+        ~  [%wait ~]
+        [~ %veto *]  [%fail (veto-error:io dart.u.in)]
+        [~ %gain * *]
+      ?.  =(wire wire.u.in)  [%skip ~]
+      ?~  err.u.in  [%done ~]
+      [%fail %gain-failed u.err.u.in]
+    ==
+  ++  born
+    |=  =road:tarball
+    =/  m  (fiber:fiber:nexus ,(each (list [=cass:clay tags=(set @t) tomb=?]) tang))
+    ^-  form:m
+    =/  =wire  (fw %born road)
+    ;<  ~  bind:m  (send-dart:io %node wire road %born ~)
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?+  in  [%skip ~]
+        ~  [%wait ~]
+        [~ %veto *]  [%fail (veto-error:io dart.u.in)]
+        [~ %born * *]
+      ?.  =(wire wire.u.in)  [%skip ~]
+      [%done res.u.in]
+    ==
+  ++  lose
+    |=  [=road:tarball =lose:nexus]
+    =/  m  (fiber:fiber:nexus ,~)
+    ^-  form:m
+    =/  =wire  (fw %lose road lose)
+    ;<  ~  bind:m  (send-dart:io %node wire road %lose lose)
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?+  in  [%skip ~]
+        ~  [%wait ~]
+        [~ %veto *]  [%fail (veto-error:io dart.u.in)]
+        [~ %lost * *]
+      ?.  =(wire wire.u.in)  [%skip ~]
+      ?~  err.u.in  [%done ~]
+      [%fail %lose-failed u.err.u.in]
+    ==
+  ++  cull
+    |=  =road:tarball
+    =/  m  (fiber:fiber:nexus ,~)
+    ^-  form:m
+    =/  =wire  (fw %cull road)
+    ;<  ~  bind:m  (send-dart:io %node wire road %cull ~)
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?+  in  [%skip ~]
+        ~  [%wait ~]
+        [~ %veto *]  [%fail (veto-error:io dart.u.in)]
+        [~ %gone * *]
+      ?.  =(wire wire.u.in)  [%skip ~]
+      ?~  err.u.in  [%done ~]
+      [%fail %cull-failed >road< u.err.u.in]
+    ==
+  --
 ::  +put-file: create-or-overwrite a grub (over = %make force=%.y).
 ::
 ::  +put-file: one dart, no probe. %over's %make-with-force creates when the
@@ -15587,7 +15847,7 @@
   |=  [road=road:tarball =blot:tarball noun=*]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  (over:io road [blot noun])
+  (over:fio road [blot noun])
 ::  +ensure-dirs: make each cumulative dir base/seg1, base/seg1/seg2 ... so a
 ::  deep key's entry has a parent. ponytail: empty key-dirs are left behind on
 ::  delete. Add pruning if the tree clutters.
@@ -15609,8 +15869,8 @@
   ?~  segs  (pure:m ~)
   =/  dir=path  (weld base /[i.segs])
   =/  road=road:tarball  (rv up dir)
-  ;<  exists=?  bind:m  (peek-exists:io road)
-  ;<  ~  bind:m  ?:(exists (pure:m ~) (make:io road &+empty-dir:loader))
+  ;<  exists=?  bind:m  (peek-exists:fio road)
+  ;<  ~  bind:m  ?:(exists (pure:m ~) (make:fio road &+empty-dir:loader))
   $(base dir, segs t.segs)
 ::  +collect-entries: walk a vault ball, harvesting one know-entry per `entry`
 ::  grub. base = accumulated key path of the current node. Booms/non-entry
@@ -15681,9 +15941,9 @@
   ::  the 191 rf/rv calls here, this and its sibling in +obelisk-read-data
   ::  were the only two aimed outside lattice's own tree.
   =/  road=road:tarball  `road:tarball`[%& %& (obelisk-sub-base our) %live]
-  ;<  ex=?  bind:m  (peek-exists:io road)
+  ;<  ex=?  bind:m  (peek-exists:fio road)
   ?.  ex  (pure:m %none)
-  ;<  vw=view:nexus  bind:m  (peek:io road ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio road ~)
   ?.  ?=([%file *] vw)  (pure:m %dead)
   =/  yes=?  (fall (mole |.(!<(? (need-vase:tarball sang.vw)))) %.n)
   (pure:m ?:(yes %live %dead))
@@ -15756,9 +16016,9 @@
   |=  road=road:tarball
   =/  m  (fiber:fiber:nexus ,(unit *))
   ^-  form:m
-  ;<  ex=?  bind:m  (peek-exists:io road)
+  ;<  ex=?  bind:m  (peek-exists:fio road)
   ?.  ex  (pure:m ~)
-  ;<  vw=view:nexus  bind:m  (peek:io road ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio road ~)
   ?.  ?=([%file *] vw)  (pure:m ~)
   ::  a BOOM sang (grub laid without a live marc) has no vase, and a
   ::  bare need-vase on it kills the whole fiber (the pub-meta lesson).
@@ -15925,7 +16185,7 @@
   |=  data-road=road:tarball
   =/  m  (fiber:fiber:nexus ,obk-out:lm)
   ^-  form:m
-  ;<  vw=view:nexus  bind:m  (peek:io data-road ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio data-road ~)
   ?.  ?=([%file *] vw)
     (pure:m [%| ~[leaf+"obelisk: no result grub"]])
   ::  mole the extraction: a BOOM sang has no vase and a bare need-vase
@@ -16117,7 +16377,7 @@
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  vw=view:nexus  bind:m  (peek:io (rf up /mirror %'config.json') ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf up /mirror %'config.json') ~)
   ?.  ?=([%file *] vw)  (pure:m %.n)
   =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.vw)))) ~)
   ?.  ?=([%o *] jon)  (pure:m %.n)
@@ -16141,7 +16401,7 @@
   =/  m  (fiber:fiber:nexus ,@ud)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  vw=view:nexus  bind:m  (peek:io (rf up /beacon sub) ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf up /beacon sub) ~)
   ?.  ?=([%file *] vw)  (pure:m 0)
   =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.vw)))) ~)
   ?.  ?=([%n *] jon)  (pure:m 0)
@@ -16150,7 +16410,7 @@
   =/  m  (fiber:fiber:nexus ,mirror-cursor:lm)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  vw=view:nexus  bind:m  (peek:io (rf up /mirror %cursor) ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf up /mirror %cursor) ~)
   ?.  ?=([%file *] vw)  (pure:m *mirror-cursor:lm)
   ::  the marc is a noun passthrough (see mar/lattice/mirror-cursor),
   ::  so the vase is untyped and molding (;;) is the only clam that
@@ -16377,7 +16637,7 @@
   ;<  ~  bind:m  (mirror-trace %pages-start)
   ;<  our=@p  bind:m  get-our:io
   ;<  now=@da  bind:m  get-time:io
-  ;<  vw=view:nexus  bind:m  (peek:io (rv up /page) ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio (rv up /page) ~)
   =/  pages=(list [rel=path body=@t shr=share-mode:le])
     ?.  ?=([%ball *] vw)  ~
     (index-walk ball.vw ~)
@@ -16420,7 +16680,7 @@
   ::  climbs past the nexus root into the void, crashing the fiber
   ::  into a respawn storm.
   ;<  seen=view:nexus  bind:m
-    (peek:io (rv up /know/vault) ~)
+    (peek:fio (rv up /know/vault) ~)
   =/  es=(map path know-entry:lk)
     ?.  ?=([%ball *] seen)  ~
     (collect-entries ~ ball.seen)
@@ -16473,7 +16733,7 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  ~  bind:m  (mirror-trace %follows-start)
-  ;<  vw=view:nexus  bind:m  (peek:io (rf up /sub %follows) ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf up /sub %follows) ~)
   =/  fs=(set @p)
     ?.  ?=([%file *] vw)  ~
     (fall (mole |.(!<(follows:lp (need-vase:tarball sang.vw)))) ~)
@@ -16494,7 +16754,7 @@
   =/  m  (fiber:fiber:nexus ,(list [url=@t stamp=@ r=visit-row:lm]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ;<  vw=view:nexus  bind:m  (peek:io (rf up / %history) ~)
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf up / %history) ~)
   =/  hist=history:lh
     ?.  ?=([%file *] vw)  ~
     (fall (mole |.(!<(history:lh (need-vase:tarball sang.vw)))) ~)

@@ -178,7 +178,8 @@ for n, t in bodies.items():
 reach = closure(direct)
 
 #  ── the app: which io arms does it call, and what does it name inline ─
-app = open(app_path).read()
+#  +fio's arms send the darts +io's do, on another wire: read them as +io's
+app = re.sub(r'(?<=[a-z0-9-]):fio\b', ':io', open(app_path).read())
 app_txt = hoonarms.uncomment(app)
 
 app_arms = arms(app)
