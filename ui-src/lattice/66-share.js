@@ -199,15 +199,24 @@
   // agent key without the sensitive clearance, and such a key cannot write it.
   // The checkbox shows and sets this page's own marker; refreshed on every
   // target change through showShare, like the grant row above.
+  // the target whose toggle is on the wire: the box shows the ask until
+  // the answer, and no refresh meanwhile paints the flag from before it
+  let sensSetting = null;
   const refreshSensitive = async (target) => {
     const cb = $('shsens');
     if (!cb) return;
+    if (target && target === sensSetting) return;
     $('shsensres').textContent = '';
     if (!target) { cb.checked = false; cb.disabled = true; return; }
     cb.disabled = false;
+    // known: no request. In flight with the open's page-source: that
+    // answer brings it and comes back here (openPage).
+    if (sensKnown.has(target)) { cb.checked = sensKnown.get(target); return; }
+    if (sensWait === target) { cb.checked = false; return; }
     try {
       const r = await fetch(api + '/page-sensitive?name=' + encodeURIComponent(target));
       const on = r.ok && (await r.json()).on === true;
+      if (r.ok) sensKnown.set(target, on);
       // the target can change while this GET is in flight (same bug class the
       // showShare comment documents): only apply if it is still current.
       if ((curFolder || current) !== target) return;
@@ -219,11 +228,25 @@
     const cb = $('shsens');
     if (!target) { st('open a page first', false); cb.checked = false; return; }
     cb.disabled = true;
-    const r = await mutate(api + '/page-sensitive?name=' + encodeURIComponent(target) +
-      '&on=' + (cb.checked ? '1' : '0'));
-    cb.disabled = false;
-    if (!r || !r.ok) { cb.checked = !cb.checked; st('sensitive failed' + await errText(r), false); return; }
-    $('shsensres').textContent = cb.checked
+    // what was asked for, not what the box says when the answer lands
+    const want = cb.checked;
+    sensSetting = target;
+    let r = null;
+    try {
+      r = await mutate(api + '/page-sensitive?name=' + encodeURIComponent(target) +
+        '&on=' + (want ? '1' : '0'));
+    } finally { sensSetting = null; }
+    const here = (curFolder || current) === target;
+    if (here) cb.disabled = false;
+    if (!r || !r.ok) {
+      if (here) cb.checked = !want;
+      st('sensitive failed' + await errText(r), false);
+      return;
+    }
+    sensKnown.set(target, want);
+    if (!here) return;
+    cb.checked = want;
+    $('shsensres').textContent = want
       ? target + ' is sensitive'
       : target + ' is no longer sensitive';
   };

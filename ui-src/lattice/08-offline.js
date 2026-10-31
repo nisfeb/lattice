@@ -494,6 +494,7 @@
     //  it, after the writes it timed out on (waitJob replays once it ends)
     if (replaying || jobWait) return;
     replaying = true;
+    srcFlight.clear();    // replayed writes: no open read from before is shared
     try { await drainQueue(proven); } finally { replaying = false; }
   }
 

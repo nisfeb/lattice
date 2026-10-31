@@ -102,6 +102,9 @@
     // replay WINS the reconnect race. loadTree would repaint queued pages
     // from the server dump before their edits landed (design doc, gap 4)
     if (degraded || offCount) { replayQueue(); return; }
+    // a sensitive toggle made elsewhere moves no page rev, so the dump
+    // cannot say which flag moved: the next open reads them afresh
+    sensKnown.clear();
     // NB: stale cached renders are dropped by loadTree, which prunes against
     // the revs in the fresh dump. Clearing the whole cache here instead meant
     // one page's edit cost every other page its cache.

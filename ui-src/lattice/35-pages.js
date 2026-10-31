@@ -51,6 +51,20 @@
     if (hit) { applyPage(name, hit); snapPage(name, hit); return true; }
     const node = nodes.find((n) => n.page && n.path === name);
     const painted = !!node && typeof node.body === 'string';
+    // the render=1 read below brings the page's sensitive flag, so the
+    // Page tab's checkbox waits for it rather than asking on its own
+    // (66-share.js refreshSensitive). Whatever way the read ends, the
+    // checkbox is settled once it has.
+    if (!linkOf(name)) sensWait = name;
+    try { return await openRead(name, my, node, painted); }
+    finally {
+      if (sensWait === name) {
+        sensWait = null;
+        if (current === name && !curFolder) refreshSensitive(name);
+      }
+    }
+  }
+  async function openRead(name, my, node, painted) {
     // `quiet`: the render=1 request below carries the preview and the error
     // report, so painting must not also fire refreshPreview/checkErrors.
     if (painted) {
@@ -89,7 +103,7 @@
     const shown = src.value;
     let d = null;
     try {
-      const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
+      const r = await srcRead(name);
       // a link whose host did not answer: its badge from now, and the last
       // copy read, which the ship sends its owner along with the failure.
       // Shown locked (linkStale): a save from it would claim a rev the host
@@ -121,8 +135,20 @@
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
     }
+    // only fills a gap: a toggle made here while this was in flight is newer
+    if (typeof d.sensitive === 'boolean' && !sensKnown.has(name)) sensKnown.set(name, d.sensitive);
     // a later openPage supersedes this one. Anything else still applies
-    if (my !== openSeq) return;
+    if (my !== openSeq) {
+      // ...but it is still the ship's answer for this page, so a switch
+      // back to it need not ask again. Remembered only when it holds the
+      // body the tree holds, the text a painted open would show anyway:
+      // a save from here since then patched the tree (patchLocal), and
+      // this older answer then stays out of the cache.
+      const nd = nodes.find((n) => n.page && n.path === name);
+      if (!d.link && !pageCache.has(name) && nd && !nd.link && nd.body === d.body
+          && !(typeof nd.rev === 'number' && nd.rev > d.rev)) pageCache.set(name, d);
+      return;
+    }
     // a live read: the badge, the lock on a last-known copy and a conflict
     // latched on this link all end here
     if (d.link) { linkSeen(name, true); linkStale.delete(name); linkCf.delete(name); }
@@ -360,10 +386,17 @@
   };
   //  we know exactly what we just wrote. Patch the local copies so reopening
   //  this page paints the saved text, not the dump's pre-save body. The
-  //  cached render is stale by definition. Drop it and let it re-render.
+  //  cached render is stale by definition. A content page's preview is
+  //  the local paint, so its cached answer is kept with the saved text and
+  //  rev and without the html: reopening it costs no page-source read.
+  //  Any other kind's render is the ship's: drop it and let it re-render.
   //  Only a save that can change the kind passes one.
-  const patchLocal = (name, kind, sent) => {
-    pageCache.delete(name);
+  const patchLocal = (name, kind, sent, rev) => {
+    const c = pageCache.get(name);
+    const k = kind || (c && c.kind);
+    if (c && rev && ['md', 'gmi', 'html', 'text', 'tex'].includes(k)) {
+      pageCache.set(name, { ...c, body: sent, kind: k, rev, html: undefined });
+    } else pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     // not a link's: its text is the host's, read live, and the rev beside
     // a body here would be a base the next save claims falsely
@@ -568,7 +601,7 @@
     // shows it, so a New clicked mid-save keeps both documents. Only a
     // CREATE changes the tree, and it confirms a row newFile left pulsing.
     if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
-    patchLocal(name, kind, sent);
+    patchLocal(name, kind, sent, vr && vr.rev);
     await dropQueued(name, sentAt);
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
@@ -678,7 +711,7 @@
     if (!know) { try { vr = await r.json(); } catch {} }
     //  patch the saved doc's local cache regardless of focus. No kind: an
     //  autosave writes the page's existing kind, it never sets one.
-    if (!know) { patchLocal(target, null, sent); await dropQueued(target, sentAt); }
+    if (!know) { patchLocal(target, null, sent, vr && vr.rev); await dropQueued(target, sentAt); }
     if (!here()) tabLanded(tk, target, sent, vr && vr.rev);
     // live-editor state only if the editor is still on the doc we autosaved
     if (here()) {
@@ -761,7 +794,7 @@
     //  and a queued edit older than this save is superseded by it
     if (!know) {
       try { vr = await w.r.json(); } catch {}
-      patchLocal(name, null, sent);
+      patchLocal(name, null, sent, vr && vr.rev);
       await dropQueued(name, sentAt);
     }
     else knowGen++;

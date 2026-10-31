@@ -187,6 +187,31 @@
   // ~0.5s round-trip. Dropped whenever the ship reports a change (the beacon
   // clears it) or when this client writes the page.
   const pageCache = new Map();
+  // a page's (or folder's) OWN sensitive flag, by name, as the editor's
+  // open read it (page-source render=1 carries it) or the checkbox set
+  // it. The Page tab's checkbox reads this before it asks GET
+  // page-sensitive, so an open costs one request, not three. sensWait
+  // names the page whose render=1 read is in flight: its answer brings
+  // the flag. Cleared on a change from elsewhere (refreshAll), which is
+  // how another device's toggle reaches this one.
+  const sensKnown = new Map();
+  let sensWait = null;
+  // the open's render=1 page-source read, shared while in flight: a tab
+  // switched away from and back before the ship answered asks once, not
+  // twice. Each caller gets its own clone of the one answer. A write of
+  // the page drops the entry as it starts (shipWrite), so no read is
+  // ever shared across a save: a read made after it waits for its own.
+  const srcFlight = new Map();
+  const srcRead = (name) => {
+    let p = srcFlight.get(name);
+    if (!p) {
+      p = fetch(api + '/page-source?name=' + encodeURIComponent(name) + '&render=1');
+      srcFlight.set(name, p);
+      const done = () => { if (srcFlight.get(name) === p) srcFlight.delete(name); };
+      p.then(done, done);
+    }
+    return p.then((r) => r.clone());
+  };
   const snapTree = () => {
     treeGen++;                 // structural change: supersede in-flight fetches
     persistTree();
@@ -237,6 +262,7 @@
   // the flight guardDirty waits for.
   let saveFlight = null;
   async function shipWrite(url, init, { ms = 30000, save = false } = {}) {
+    srcFlight.clear();    // a read from before this write is shared no more
     const echo = echoOf(url);
     echo.until = Date.now() + 60000;
     echo.at = Date.now();             // when we last wrote (see refocused)
