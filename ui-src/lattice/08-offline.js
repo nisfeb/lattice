@@ -495,6 +495,7 @@
     if (replaying || jobWait) return;
     replaying = true;
     srcFlight.clear();    // replayed writes: no open read from before is shared
+    sensForget();         // and a replayed move or delete culls flags
     try { await drainQueue(proven); } finally { replaying = false; }
   }
 

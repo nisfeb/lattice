@@ -573,6 +573,7 @@
     if (replaying || jobWait) return;
     replaying = true;
     srcFlight.clear();    // replayed writes: no open read from before is shared
+    sensForget();         // and a replayed move or delete culls flags
     try { await drainQueue(proven); } finally { replaying = false; }
   }
 
@@ -1764,10 +1765,24 @@
   // it. The Page tab's checkbox reads this before it asks GET
   // page-sensitive, so an open costs one request, not three. sensWait
   // names the page whose render=1 read is in flight: its answer brings
-  // the flag. Cleared on a change from elsewhere (refreshAll), which is
-  // how another device's toggle reaches this one.
+  // the flag, and a fresh one always replaces the kept one.
+  //
+  // Cleared on a change from elsewhere (refreshAll), which is how another
+  // device's toggle reaches this one, and on every write of ours that can
+  // move, delete or create a page (sensForget): a move or delete culls
+  // the marker, and a new page under the old name must not inherit the
+  // old page's flag. sensGen counts our writes, so a read sent before
+  // one never overwrites what the write made true.
   const sensKnown = new Map();
   let sensWait = null;
+  let sensGen = 0;
+  //  `url`: the write. A plain save of an existing page keeps the flags,
+  //  anything else (a create, a move, a delete, a folder job, an upload)
+  //  forgets them all. Unknown flags cost one GET page-sensitive each.
+  const sensForget = (url) => {
+    sensGen++;
+    if (!url || !/\/(page-save|know-save)\?/.test(url) || /[?&]new=1/.test(url)) sensKnown.clear();
+  };
   // the open's render=1 page-source read, shared while in flight: a tab
   // switched away from and back before the ship answered asks once, not
   // twice. Each caller gets its own clone of the one answer. A write of
@@ -1835,6 +1850,7 @@
   let saveFlight = null;
   async function shipWrite(url, init, { ms = 30000, save = false } = {}) {
     srcFlight.clear();    // a read from before this write is shared no more
+    sensForget(url);
     const echo = echoOf(url);
     echo.until = Date.now() + 60000;
     echo.at = Date.now();             // when we last wrote (see refocused)
@@ -1867,6 +1883,7 @@
     // drain together. Everything else (sharing, tagging, the legacy migration)
     // still refuses honestly rather than pretending.
     const offline = async () => {
+      sensForget(url);      // a queued delete or move culls the flag too
       const q = offlineOp(url);
       if (q) {
         await enqueueOp(q);
@@ -6737,8 +6754,9 @@
     //  open has run meanwhile (that one owns the address now, so leave it).
     const unwind = () => { if (fromUrl && my === openSeq) history.replaceState(null, '', fromUrl); };
     const shown = src.value;
-    let d = null;
+    let d = null, gen = -1;
     try {
+      gen = sensGen;
       const r = await srcRead(name);
       // a link whose host did not answer: its badge from now, and the last
       // copy read, which the ship sends its owner along with the failure.
@@ -6771,8 +6789,9 @@
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
     }
-    // only fills a gap: a toggle made here while this was in flight is newer
-    if (typeof d.sensitive === 'boolean' && !sensKnown.has(name)) sensKnown.set(name, d.sensitive);
+    // the ship's flag as of this read replaces the kept one, unless a
+    // write of ours (a toggle, a move, a delete) went out since it was sent
+    if (typeof d.sensitive === 'boolean' && sensGen === gen) sensKnown.set(name, d.sensitive);
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) {
       // ...but it is still the ship's answer for this page, so a switch
@@ -8954,10 +8973,11 @@
     // answer brings it and comes back here (openPage).
     if (sensKnown.has(target)) { cb.checked = sensKnown.get(target); return; }
     if (sensWait === target) { cb.checked = false; return; }
+    const gen = sensGen;
     try {
       const r = await fetch(api + '/page-sensitive?name=' + encodeURIComponent(target));
       const on = r.ok && (await r.json()).on === true;
-      if (r.ok) sensKnown.set(target, on);
+      if (r.ok && gen === sensGen) sensKnown.set(target, on);
       // the target can change while this GET is in flight (same bug class the
       // showShare comment documents): only apply if it is still current.
       if ((curFolder || current) !== target) return;

@@ -101,8 +101,9 @@
     //  open has run meanwhile (that one owns the address now, so leave it).
     const unwind = () => { if (fromUrl && my === openSeq) history.replaceState(null, '', fromUrl); };
     const shown = src.value;
-    let d = null;
+    let d = null, gen = -1;
     try {
+      gen = sensGen;
       const r = await srcRead(name);
       // a link whose host did not answer: its badge from now, and the last
       // copy read, which the ship sends its owner along with the failure.
@@ -135,8 +136,9 @@
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
     }
-    // only fills a gap: a toggle made here while this was in flight is newer
-    if (typeof d.sensitive === 'boolean' && !sensKnown.has(name)) sensKnown.set(name, d.sensitive);
+    // the ship's flag as of this read replaces the kept one, unless a
+    // write of ours (a toggle, a move, a delete) went out since it was sent
+    if (typeof d.sensitive === 'boolean' && sensGen === gen) sensKnown.set(name, d.sensitive);
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) {
       // ...but it is still the ship's answer for this page, so a switch

@@ -213,10 +213,11 @@
     // answer brings it and comes back here (openPage).
     if (sensKnown.has(target)) { cb.checked = sensKnown.get(target); return; }
     if (sensWait === target) { cb.checked = false; return; }
+    const gen = sensGen;
     try {
       const r = await fetch(api + '/page-sensitive?name=' + encodeURIComponent(target));
       const on = r.ok && (await r.json()).on === true;
-      if (r.ok) sensKnown.set(target, on);
+      if (r.ok && gen === sensGen) sensKnown.set(target, on);
       // the target can change while this GET is in flight (same bug class the
       // showShare comment documents): only apply if it is still current.
       if ((curFolder || current) !== target) return;
