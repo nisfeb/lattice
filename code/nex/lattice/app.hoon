@@ -12779,8 +12779,20 @@
   ::  every cached page serving the old markup indefinitely: content revs
   ::  converge quietly, but a CODE deploy bumped nothing — the activate
   ::  handler below wipes 'lattice-pages' when PV moves.
+  ::  sse-script is a gate, and a gate's mug is its whole core's, which
+  ::  holds every /< asset. So app.js alone moved PV, and every deploy
+  ::  wiped the pages cache: the first browser tab after one was a miss
+  ::  and a redirect, 7.3 s on ~mec. It is mugged by what it renders now,
+  ::  and the rest of what draws a reader page by battery, this core's
+  ::  and the render libraries': any change to this file or to them still
+  ::  wipes, and a deploy of the client alone (ui-app/, prism) does not.
   =/  pv=@t
-    (scot %ux (mug [web-css pwa-head orrery-slot nav-script page-cache-script sse-script]))
+    %-  scot  :-  %ux
+    %-  mug
+    :*  -:..shell-ver  -:gfm  -:lgmi  -:lkv  -:fre
+        web-css  pwa-head  orrery-slot  nav-script  page-cache-script
+        (sse-script "k" "r")
+    ==
   %+  rap  3
   :~  'var V="lattice-'
       ver
