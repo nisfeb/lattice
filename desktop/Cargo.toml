@@ -27,6 +27,7 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 #  already in the tree through lattice-fs. Backup retention asks who owns a
 #  file (geteuid), which std does not expose.
 libc = "0.2"
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls"] }
 
 [dev-dependencies]
 # property tests only. Never in a release build.

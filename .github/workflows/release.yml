@@ -242,6 +242,32 @@ jobs:
             exit 1
           fi
 
+      # The self-updater's signatures. With TAURI_SIGNING_PRIVATE_KEY set,
+      # tauri also makes the updater artifacts (the AppImage and the
+      # .app.tar.gz) with a minisign .sig beside each, and the
+      # updater-manifest job turns those into latest.json. Without it the
+      # release still builds, just with nothing the desktop app will
+      # update itself from. Through GITHUB_ENV, and only when set, for the
+      # same empty-string reason as the Apple secrets.
+      - name: updater signing
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEY" ]; then
+            echo "::warning::no TAURI_SIGNING_PRIVATE_KEY secret: building without signed updater files, so installed apps will not be offered this release"
+            exit 0
+          fi
+          d="EOF$(openssl rand -hex 8)"
+          put() { printf '%s<<%s\n%s\n%s\n' "$1" "$d" "$2" "$d" >> "$GITHUB_ENV"; }
+          put TAURI_SIGNING_PRIVATE_KEY "$KEY"
+          #  merged over tauri.conf.json by the build's --config. Off in
+          #  the file itself so a local `cargo tauri build` needs no key.
+          #  (The CLI has no TAURI_CONFIG variable: it takes a flag.)
+          conf="$RUNNER_TEMP/updater.conf.json"
+          echo '{"bundle":{"createUpdaterArtifacts":true}}' > "$conf"
+          echo "UPDATER_ARGS=--config $conf" >> "$GITHUB_ENV"
+
       - name: build and upload
         id: tauri
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1
@@ -261,7 +287,8 @@ jobs:
           # sets them only when they exist.
         with:
           projectPath: desktop
-          args: --target ${{ matrix.target }}
+          # UPDATER_ARGS is set by the updater signing step, or empty
+          args: --target ${{ matrix.target }} ${{ env.UPDATER_ARGS }}
           # upload into the release create-release already made. No tagName
           # or releaseName here on purpose: giving the action those is what
           # made it go looking for a release to create.
@@ -269,6 +296,10 @@ jobs:
           # It stays a DRAFT until a human publishes it: a release is
           # outward-facing and irreversible once people have the URL.
           releaseId: ${{ needs.create-release.outputs.release_id }}
+          # latest.json is written once, by updater-manifest, after every
+          # build is in. The action's own merges it read-modify-write from
+          # three concurrent jobs, the same race that once split a release.
+          uploadUpdaterJson: false
 
       # SHA-256 sums of what this job built, attached to the release, and a
       # signed build provenance attestation for each file. Anyone can check
@@ -298,3 +329,58 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-checksums: ${{ steps.sums.outputs.file }}
+
+  # latest.json for the desktop self-updater, written ONCE after every
+  # build is in, from the .sig files the builds uploaded. The app fetches
+  # it from releases/latest/download/latest.json, so it is seen only once
+  # this draft is published, and only if it is the newest release.
+  #
+  # Runs even when a platform failed: the platforms that built still get
+  # their update. No .sig at all (no TAURI_SIGNING_PRIVATE_KEY secret)
+  # is a warning, not a failure, and leaves no latest.json.
+  updater-manifest:
+    needs: [create-release, build]
+    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write    # uploads latest.json into the release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0   # the notes are the log since the previous tag
+      - name: write and upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RID: ${{ needs.create-release.outputs.release_id }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || format('untagged-{0}', github.sha) }}
+        run: |
+          set -euo pipefail
+          sigs="$RUNNER_TEMP/sigs"; mkdir -p "$sigs"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RID/assets" --paginate \
+            --jq '.[] | select(.name | endswith(".sig")) | "\(.id) \(.name)"' |
+            while read -r id name; do
+              gh api -H 'accept: application/octet-stream' \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$id" > "$sigs/$name"
+            done
+          if [ -z "$(ls -A "$sigs")" ]; then
+            echo "::warning::no updater signatures in this release (is TAURI_SIGNING_PRIVATE_KEY set?): no latest.json, so installed apps will not be offered it"
+            exit 0
+          fi
+          #  what changed in the desktop app since the previous release,
+          #  which is what the update offer shows as its notes
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_SHA^" 2>/dev/null || true)
+          git log --no-merges --format='- %s' ${prev:+"$prev..$GITHUB_SHA"} \
+            -- desktop lattice-fs-rs | head -n 40 > "$RUNNER_TEMP/notes.txt"
+          [ -s "$RUNNER_TEMP/notes.txt" ] || echo "Maintenance release." > "$RUNNER_TEMP/notes.txt"
+          version=$(node -p "require('./desktop/tauri.conf.json').version")
+          node scripts/updater-manifest.mjs "$version" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG" \
+            "$RUNNER_TEMP/notes.txt" "$sigs"/*.sig > "$RUNNER_TEMP/latest.json"
+          cat "$RUNNER_TEMP/latest.json"
+          old=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RID/assets" --paginate \
+                  --jq '.[] | select(.name == "latest.json") | .id')
+          [ -z "$old" ] || gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$old"
+          gh api -X POST -H 'content-type: application/json' \
+            "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RID/assets?name=latest.json" \
+            --input "$RUNNER_TEMP/latest.json" > /dev/null
