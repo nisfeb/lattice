@@ -100,6 +100,34 @@
   |=  [row=pub-wait max=@ud]
   ^-  ?
   (gte tries.row max)
+::  +pub-trying: the page whose publish is in flight, kept in a grub of
+::  its own and written in an event before the attempt, so a publish
+::  that takes its whole event down (which rolls back what it wrote)
+::  still leaves it. ~ when none.
+::
++$  pub-trying  (unit @t)
+::  +pub-restart: the rows and the in-flight mark as a writer starts.
+::  The page in flight, if still waiting, gets the try its attempt never
+::  recorded; every other row is left as it was, since a restart alone
+::  (a deploy) attempted nothing.
+::
+++  pub-restart
+  |=  [pen=pub-pending try=pub-trying]
+  ^-  pub-pending
+  ?~  try  pen
+  =/  w=(unit pub-wait)  (~(get by pen) u.try)
+  ?~  w  pen
+  ?.  dirty.u.w  pen
+  (~(put by pen) u.try u.w(tries +(tries.u.w)))
+::  +builder-mode: the view-mode a content page's run writes to /show,
+::  by the page's builder (lib/lattice-pg's text..tex), ~ for none
+::
+++  builder-mode
+  |=  b=@tas
+  ^-  (unit @tas)
+  ?:  =(%tex b)  `%text
+  ?:  ?=(?(%text %html %gmi %md %js %css) b)  `b
+  ~
 ::  +pub-arm-at: when the one publish timer goes off, ~ when no row is
 ::  dirty. A row already due arms the epoch, so its publish goes before
 ::  every other past timer set after a save (+defer-at in the nexus),

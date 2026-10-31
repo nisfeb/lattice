@@ -389,6 +389,9 @@
         ::  publishes them in the background (+pub-tick); covered, so a
         ::  reload resumes them instead of leaving the copy stale.
             [%fall %& [/ %'pub-pending'] [[/ %noun] *pub-pending:lp]]
+        ::  /pub-trying: the page whose publish is in flight, so a writer
+        ::  start can count the try a crashed event lost (+pub-arm)
+            [%fall %& [/ %'pub-trying'] [[/ %noun] *pub-trying:lp]]
         ==
     ::
     ++  on-file
@@ -449,7 +452,7 @@
             ?:  ?=([~ %pub-tail *] wak)
               ;<  *  bind:m  (fiber-try (pub-settle root now t.u.wak))
               (pure:m ~)
-            ;<  *  bind:m  (pub-tick root now ~)
+            ;<  *  bind:m  (pub-tick root now ~ ~)
             (pure:m ~)
           $
         ;<  now=@da  bind:m  bowl-now
@@ -6297,7 +6300,8 @@
     ;<  ~  bind:m  (write-page root pax.act src.act &)
     ::  a shared page's vault copy follows every write, not just the share
     ::  click, published in the background so the save answers at once
-    ;<  pen=(unit pub-pending:lp)  bind:m  (pub-mark root now pax.act src.act)
+    ;<  pen=(unit [pub-pending:lp pub-trying:lp])  bind:m
+      (pub-mark root now pax.act src.act)
     ::  the save is down and marked. The history prune, and the beacon
     ::  the writer bumps after every action, wait for the next event, so
     ::  the request that sent this answers without them (+yield-event).
@@ -6305,7 +6309,8 @@
     (prune-page pax.act)
       %make-marked
     ;<  ~  bind:m  (write-page root pax.act src.act |)
-    ;<  pen=(unit pub-pending:lp)  bind:m  (pub-mark root now pax.act src.act)
+    ;<  pen=(unit [pub-pending:lp pub-trying:lp])  bind:m
+      (pub-mark root now pax.act src.act)
     ;<  ~  bind:m  (yield-event root now pen pax.act /writer/yield)
     (prune-page pax.act)
       %make-many
@@ -6940,6 +6945,15 @@
   ?^  new  (pure:m u.new)
   =/  old=(unit pub-old:lp)  (mole |.(;;(pub-old:lp n)))
   (pure:m ?~(old ~ (pub-from-old:lp u.old)))
+::  +pub-trying-road, +read-pub-trying: the in-flight mark (+pub-trying:lp)
+++  pub-trying-road  |=(root=@ud (rf root / %'pub-trying'))
+++  read-pub-trying
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,pub-trying:lp)
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:fio (pub-trying-road root) ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  (pure:m (fall (mole |.(;;(pub-trying:lp (sang-noun:tarball sang.vw)))) ~))
 ::  +pub-pending-or: the map the caller holds, else /pub-pending
 ++  pub-pending-or
   |=  [root=@ud had=(unit pub-pending:lp)]
@@ -6949,9 +6963,12 @@
   (read-pub-pending root)
 ::  +pub-mark: after a write, note a shared page for publishing. A private
 ::  page costs one peek, and a non-content save nothing.
+::
+::  A row due at once publishes in the next event, so its attempt is
+::  marked in flight here, in an event before it (+pub-trying:lp).
 ++  pub-mark
   |=  [root=@ud now=@da rel=path src=@t]
-  =/  m  (fiber:fiber:nexus ,(unit pub-pending:lp))
+  =/  m  (fiber:fiber:nexus ,(unit [pub-pending:lp pub-trying:lp]))
   ^-  form:m
   ?:  =(~ (unwrap-content src))  (pure:m ~)
   ;<  mode=share-mode:le  bind:m  (read-share (weld /page rel))
@@ -6962,8 +6979,12 @@
     =/  pru  (pub-prune:lp pen now pub-gap)
     (~(put by pru) k (pub-note:lp (~(get by pen) k) now))
   ;<  ~  bind:m  (put-file (pub-pending-road root) [/ %noun] nen)
+  =/  due=?  (lte (pub-when (~(got by nen) k)) now)
+  ;<  ~  bind:m
+    ?.  due  (pure:(fiber:fiber:nexus ,~) ~)
+    (put-file (pub-trying-road root) [/ %noun] `pub-trying:lp``k)
   ;<  ~  bind:m  (pub-arm-with nen now)
-  (pure:m `nen)
+  (pure:m `[nen ?:(due `k ~)])
 ::  +pub-holds-beacon: whether the writer leaves /beacon/rev alone after
 ::  this action: a save of a shared page, whose publish is waiting, or
 ::  ran in the save's yield (+yield-event), which left its row clean and
@@ -6982,16 +7003,26 @@
   =/  w=(unit pub-wait:lp)  (~(get by pen) (spat pax.act))
   (pure:m &(?=(^ w) |(dirty.u.w (gte sent.u.w now))))
 ::  +pub-arm: at writer start, set the publish timer for whatever is
-::  pending. A restart counts no try (+pub-failed:lp): deploys are often,
-::  and a page waiting across them must still publish.
+::  pending. A restart counts no try of its own: deploys are often, and a
+::  page waiting across them must still publish.
 ++  pub-arm
   |=  root=@ud
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
-  ?:  =(~ pen)  (pure:m ~)
+  ;<  try=pub-trying:lp  bind:m  (read-pub-trying root)
+  ::  but an attempt marked in flight never recorded how it ended: it
+  ::  took its event down, and gets the try that lost (+pub-restart:lp)
+  =/  nen=pub-pending:lp  (pub-restart:lp pen try)
+  ;<  ~  bind:m
+    ?:  =(nen pen)  (pure:m ~)
+    (put-file (pub-pending-road root) [/ %noun] nen)
+  ;<  ~  bind:m
+    ?~  try  (pure:m ~)
+    (put-file (pub-trying-road root) [/ %noun] *pub-trying:lp)
+  ?:  =(~ nen)  (pure:m ~)
   ;<  now=@da  bind:m  bowl-now
-  (pub-arm-with pen now)
+  (pub-arm-with nen now)
 ::  +pub-arm-with: one timer, at the earliest dirty row (+pub-arm-at:lp).
 ::  The wire is stable, so each arm replaces the last (behn-state drops a
 ::  superseded wake).
@@ -7009,22 +7040,31 @@
 ::  tried again a gap later and dropped after +pub-tries failures. A
 ::  writer restart counts none.
 ++  pub-tick
-  |=  [root=@ud now=@da had=(unit pub-pending:lp)]
-  =/  m  (fiber:fiber:nexus ,pub-pending:lp)
+  |=  [root=@ud now=@da had=(unit pub-pending:lp) hat=(unit pub-trying:lp)]
+  =/  m  (fiber:fiber:nexus ,[pub-pending:lp pub-trying:lp])
   =/  n  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  pr=road:tarball  (pub-pending-road root)
   ;<  pen=pub-pending:lp  bind:m  (pub-pending-or root had)
   =/  pru=pub-pending:lp  (pub-prune:lp pen now pub-gap)
+  ;<  try=pub-trying:lp  bind:m
+    ?^  hat  (pure:(fiber:fiber:nexus ,pub-trying:lp) u.hat)
+    (read-pub-trying root)
   =/  due=(list [k=@t row=pub-wait:lp])
     %+  skim  ~(tap by pru)
     |=([k=@t row=pub-wait:lp] &(dirty.row (lte (pub-when row) now)))
   ?~  due
     ;<  ~  bind:m  ?:(=(pru pen) (pure:n ~) (put-file pr [/ %noun] pru))
     ;<  ~  bind:m  (pub-arm-with pru now)
-    (pure:m pru)
-  =/  k=@t  k.i.due
-  =/  row  row.i.due
+    (pure:m [pru try])
+  ::  the page already marked in flight first, if it is due
+  =/  pick=[k=@t row=pub-wait:lp]
+    =/  t=(list [k=@t row=pub-wait:lp])
+      ?~  try  ~
+      (skim `(list [k=@t row=pub-wait:lp])`due |=([k=@t *] =(k u.try)))
+    ?^(t i.t i.due)
+  =/  k=@t  k.pick
+  =/  row  row.pick
   ?:  (pub-drop:lp row pub-tries)
     =/  nen=pub-pending:lp  (~(del by pru) k)
     ;<  ~  bind:m
@@ -7034,10 +7074,22 @@
       ==
     ;<  ~  bind:m  (put-file pr [/ %noun] nen)
     ;<  ~  bind:m  (pub-arm-with nen now)
-    (pure:m nen)
+    (pure:m [nen try])
+  ::  the attempt is marked in flight in an event before it, so one that
+  ::  takes its event down (which rolls back all it wrote) still counts
+  ::  at the next start (+pub-arm). A save due at once marked it already
+  ::  (+pub-mark); else mark it now and go on in the next event.
+  ;<  ~  bind:m
+    ?:  =(try `k)  (pure:n ~)
+    ;<  ~  bind:n  (put-file (pub-trying-road root) [/ %noun] `pub-trying:lp``k)
+    ;<  ok=?  bind:n
+      (soft-behn /pub-try-arm [[/ %timer-set] `[wire @da]`[/pub-try *@da]])
+    ?.  ok  (pure:n ~)
+    (take-wake-on /pub-try)
   ;<  res=(each ? tang)  bind:m  (fiber-try-flag (pub-flush-one root now k))
   =/  err=(unit tang)  ?:(?=(%| -.res) `p.res ~)
-  ::  no event between the read and here, so no save moved the row
+  ::  the writer took no poke between the read and here (the wait above
+  ::  skips them), so no save moved the row
   =/  nen=pub-pending:lp
     %+  ~(put by pru)  k
     ?~  err  (pub-done:lp row now now)
@@ -7047,6 +7099,12 @@
     ?~  err  (pure:n ~)
     (fault 'pub-failed' 3 "lattice /main.sig: publishing {(trip k)} failed" u.err)
   ;<  ~  bind:m  (put-file pr [/ %noun] nen)
+  ::  a failure has counted its try, so the mark goes (a start would
+  ::  count it again). A success leaves it: its row is clean, which a
+  ::  start does not count.
+  ;<  ~  bind:m
+    ?~  err  (pure:n ~)
+    (put-file (pub-trying-road root) [/ %noun] *pub-trying:lp)
   ;<  ~  bind:m  (pub-arm-with nen now)
   ::  the bump the save held back (+pub-holds-beacon), in the copy's own
   ::  event: the copy an open reader view reloads to is out, or has
@@ -7063,7 +7121,7 @@
     ?.  &(?=([%& %&] res) ?=(^ rel))  (pure:(fiber:fiber:nexus ,?) |)
     %+  soft-behn  /pub-tail-arm
     [[/ %timer-set] `[wire @da]`[(weld /pub-tail u.rel) (add now pub-tail-lag)]]
-  (pure:m nen)
+  (pure:m [nen ?~(err `k ~)])
 ::  +pub-settle: after a background publish of the page at `rel`, drop
 ::  its vault grub's revisions below the published one (nothing reads
 ::  them: peers %keen the current one) and lay its index row, both as the
@@ -7091,6 +7149,21 @@
   ;<  ix=pub-index:lp  bind:m  (read-pub-index px)
   ?.  (~(has by ix) key)  (pure:m ~)
   (put-file px [/lattice %pub-index] (~(put by ix) key (to-pub-row:lp u.body now)))
+::  +take-wake-on: wait for this fiber's timer on `wire`, every other
+::  input left for later
+++  take-wake-on
+  |=  =wire
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?~  in  [%wait ~]
+  ?:  ?=([%veto %node *] u.in)
+    ?.(=(wire wire.dart.u.in) [%skip ~] [%done ~])
+  ?.  ?=([%poke * *] u.in)  [%skip ~]
+  ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
+  ?.  =(`wire (mole |.(!<(^wire q.sage.u.in))))  [%skip ~]
+  [%done ~]
 ::  +give-up: a refusal, in a fiber that answers a flag
 ++  give-up
   |=  a=process:fiber:nexus
@@ -7145,7 +7218,8 @@
   ::  this publish goes before that run. Else as +published-mode: the
   ::  show grub, absent or malformed %gmi.
   =/  vm=view-mode:pg
-    =/  b=(unit view-mode:pg)  (mole |.(;;(view-mode:pg builder.u.un)))
+    =/  b=(unit view-mode:pg)
+      (bind (builder-mode:lp builder.u.un) |=(a=@tas ;;(view-mode:pg a)))
     ?^  b  u.b
     =/  s  (grub %show)
     ?~(s %gmi (fall (mole |.(;;(view-mode:pg u.s))) %gmi))
@@ -7844,7 +7918,18 @@
         (over-gained:fio (rf up pdir %data) [/lattice %eval-data] u.dat.p.res)
       (over:fio (rf up pdir %data) [/lattice %eval-data] u.dat.p.res)
     ::  record the render mode next to the data (read by the page view).
+    ::  A shared content page's first run after a save reads the mode it
+    ::  replaces: its publish went out first and bumped the readers to
+    ::  the old one, so a builder change bumps them again here.
+    ;<  old=(unit *)  bind:n
+      ?.  &(boot !=(%private mode))  (pure:(fiber:fiber:nexus ,(unit *)) ~)
+      ;<  sv=view:nexus  bind:(fiber:fiber:nexus ,(unit *))  (peek:fio (rf up pdir %show) ~)
+      %-  pure:(fiber:fiber:nexus ,(unit *))
+      ?.(?=([%file *] sv) `~ `(sang-noun:tarball sang.sv))
     ;<  ~  bind:n  (put-file (rf up pdir %show) [/lattice %eval-data] show.p.res)
+    ;<  ~  bind:n
+      ?.  &(?=(^ old) !=(u.old show.p.res))  (pure:n ~)
+      (bump-beacon %rev now)
     ?.  chg  (pure:n ~)
     ::  a %share in the meantime gained the data that was there, not this
     ::  write: a page this run read as private is read again, and its new
@@ -8028,7 +8113,7 @@
 ::  bumps for a private save still follows the data.
 ++  yield-at  ^-(@da (add *@da ~s3))
 ++  yield-event
-  |=  [root=@ud now=@da pen=(unit pub-pending:lp) rel=path =wire]
+  |=  [root=@ud now=@da pen=(unit [pub-pending:lp pub-trying:lp]) rel=path =wire]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  ~  bind:m
@@ -8040,13 +8125,14 @@
   ?.  pub  (pure:m ~)
   ::  the save's own `now` will do: the row it marked was due then, and
   ::  only this fiber writes the map, which `pen` holds as written
-  ;<  nen=pub-pending:lp  bind:m  (pub-tick root now pen)
+  ;<  [nen=pub-pending:lp try=pub-trying:lp]  bind:m
+    (pub-tick root now (bind pen head) (bind pen tail))
   ::  this save's own page went out: its answer left an event ago, so
   ::  the rest goes on here, and the writer is free when this event
   ::  ends. Its own wake comes later, a stray one.
   =/  w=(unit pub-wait:lp)  (~(get by nen) (spat rel))
   ?:  &(?=(^ w) !dirty.u.w (gte sent.u.w now))  (pure:m ~)
-  $(pen `nen)
+  $(pen `[nen try])
 ::  +take-yield: & on the publish timer's wake, | on our own (or when our
 ::  timer was refused or failed)
 ++  take-yield
@@ -10772,8 +10858,11 @@
     ::  slower than a fresh fiber's. Nothing ever awaits these acks.
     ::  Except the writer's publish timer (+pub-tick): eaten during one of
     ::  the writer's sleeps, a pending publish would wait for the next save.
+    ::  So is the rest of a publish (+pub-settle): eaten, its page's index
+    ::  row and old vault revisions would wait for its next publish.
     ?:  ?&  =([/ %timer-wake] p.sage.u.in)
-            ?=([~ %pub-due *] (mole |.(!<(path q.sage.u.in))))
+            ?=  [~ ?(%pub-due %pub-tail %pub-try) *]
+            (mole |.(!<(path q.sage.u.in)))
         ==
       [%skip ~]
     ?:  ?|  =([/ %timer-wake] p.sage.u.in)

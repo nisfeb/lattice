@@ -175,6 +175,36 @@
     (expect-eq !>(`(unit @da)``*@da) !>((pub-arm-at:lp later (add t ~s8) gap)))
     (expect-eq !>(`(unit @da)``*@da) !>((pub-arm-at:lp due t gap)))
   ==
+::  +pub-restart: only the page whose attempt was in flight gets a try
+::  counted; a restart with nothing in flight counts none, so three
+::  attempts that each took their event down drop the page, and any
+::  number of plain deploys do not
+++  test-pub-restart
+  =/  t=@da  ~2026.1.1
+  =/  a=pub-wait:lp  [t 0 *@da &]
+  =/  pen=pub-pending:lp  (malt ~[['/a' a] ['/b' a]])
+  =/  three
+    =/  p  (pub-restart:lp pen `'/a')
+    =.  p  (pub-restart:lp p `'/a')
+    (pub-restart:lp p `'/a')
+  ;:  weld
+    (expect-eq !>(pen) !>((pub-restart:lp pen ~)))
+    (expect-eq !>(pen) !>((pub-restart:lp pen `'/gone')))
+    (expect-eq !>(1) !>(tries:(~(got by (pub-restart:lp pen `'/a')) '/a')))
+    (expect-eq !>(0) !>(tries:(~(got by (pub-restart:lp pen `'/a')) '/b')))
+    (expect-eq !>(&) !>((pub-drop:lp (~(got by three) '/a') 3)))
+    ::  a published (clean) row in flight is not counted
+    =/  c=pub-pending:lp  (malt ~[['/a' `pub-wait:lp`[t 0 t |]]])
+    (expect-eq !>(c) !>((pub-restart:lp c `'/a')))
+  ==
+::  +builder-mode: tex renders as text; an unknown builder has none
+++  test-builder-mode
+  ;:  weld
+    (expect-eq !>(`(unit @tas)``%text) !>((builder-mode:lp %tex)))
+    (expect-eq !>(`(unit @tas)``%md) !>((builder-mode:lp %md)))
+    (expect-eq !>(`(unit @tas)``%css) !>((builder-mode:lp %css)))
+    (expect-eq !>(`(unit @tas)`~) !>((builder-mode:lp %raw)))
+  ==
 ::  +pub-from-old: release 79's rows still publish, as dirty rows due now
 ++  test-pub-from-old
   =/  t=@da  ~2026.1.1
