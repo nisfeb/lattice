@@ -142,6 +142,39 @@
     (expect-eq !>(`pub-wait:lp`[t 0 (add t ~s2) |]) !>((pub-done:lp [t 1 *@da &] t (add t ~s2))))
     (expect-eq !>(`pub-wait:lp`[(add t ~s1) 0 (add t ~s2) &]) !>((pub-done:lp [(add t ~s1) 1 *@da &] t (add t ~s2))))
   ==
+::  +pub-failed, +pub-drop: only failed publishes count. A page waiting
+::  across any number of writer restarts (which arm, never count) stays
+::  due and is not dropped; three failures drop it.
+++  test-pub-tries
+  =/  t=@da  ~2026.1.1
+  =/  w=pub-wait:lp  (pub-note:lp ~ t)
+  =/  pen=pub-pending:lp  (malt ~[['/a' w]])
+  =/  f1  (pub-failed:lp w (add t ~s1))
+  =/  f3  (pub-failed:lp (pub-failed:lp f1 (add t ~s8)) (add t ~s15))
+  ;:  weld
+    ::  ten restarts: each arms the map as it is, due at once
+    (expect-eq !>(`(unit @da)``*@da) !>((pub-arm-at:lp pen t ~s6)))
+    (expect-eq !>(|) !>((pub-drop:lp (~(got by pen) '/a') 3)))
+    (expect-eq !>(`pub-wait:lp`[t 1 (add t ~s1) &]) !>(f1))
+    (expect-eq !>(|) !>((pub-drop:lp f1 3)))
+    (expect-eq !>(&) !>((pub-drop:lp f3 3)))
+  ==
+::  +pub-arm-at: the earliest dirty row's time, the epoch when one is due
+::  already, and nothing for a map with no dirty row
+++  test-pub-arm-at
+  =/  t=@da  ~2026.1.1
+  =/  gap=@dr  ~s6
+  =/  clean=pub-pending:lp  (malt ~[['/c' `pub-wait:lp`[t 0 t |]]])
+  =/  later=pub-pending:lp
+    (~(put by clean) '/w' `pub-wait:lp`[t 0 (add t ~s2) &])
+  =/  due=pub-pending:lp
+    (~(put by later) '/d' `pub-wait:lp`[t 0 *@da &])
+  ;:  weld
+    (expect-eq !>(`(unit @da)`~) !>((pub-arm-at:lp clean t gap)))
+    (expect-eq !>(`(unit @da)``(add t ~s8)) !>((pub-arm-at:lp later t gap)))
+    (expect-eq !>(`(unit @da)``*@da) !>((pub-arm-at:lp later (add t ~s8) gap)))
+    (expect-eq !>(`(unit @da)``*@da) !>((pub-arm-at:lp due t gap)))
+  ==
 ::  +pub-from-old: release 79's rows still publish, as dirty rows due now
 ++  test-pub-from-old
   =/  t=@da  ~2026.1.1

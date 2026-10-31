@@ -86,6 +86,34 @@
   |=  [cur=pub-wait at=@da now=@da]
   ^-  pub-wait
   [last.cur 0 now (gth last.cur at)]
+::  +pub-failed: the row after a publish that failed at `now`: one more
+::  try, and dirty, so it is tried again a gap later. Only this counts a
+::  try; a writer restart (a deploy) leaves the row as it was.
+::
+++  pub-failed
+  |=  [row=pub-wait now=@da]
+  ^-  pub-wait
+  row(tries +(tries.row), sent now, dirty &)
+::  +pub-drop: whether a due row is given up on, after `max` failures
+::
+++  pub-drop
+  |=  [row=pub-wait max=@ud]
+  ^-  ?
+  (gte tries.row max)
+::  +pub-arm-at: when the one publish timer goes off, ~ when no row is
+::  dirty. A row already due arms the epoch, so its publish goes before
+::  every other past timer set after a save (+defer-at in the nexus),
+::  the page evaluator's run among them.
+::
+++  pub-arm-at
+  |=  [pen=pub-pending now=@da gap=@dr]
+  ^-  (unit @da)
+  =/  ds=(list @da)
+    %+  murn  ~(val by pen)
+    |=(w=pub-wait ?.(dirty.w ~ `(pub-due w gap)))
+  ?~  ds  ~
+  =/  at=@da  (roll t.ds |:([a=*@da b=i.ds] (min a b)))
+  `?:((lte at now) *@da at)
 +$  pub-row    [updated=@da bytes=@ud hash=@uvH]
 +$  pub-index  (map path pub-row)
 ::  +to-pub-row: project a stored page onto its index row.
