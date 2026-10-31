@@ -291,7 +291,14 @@ async function runShip(b) {
   const work = [pool(order, LANES, async (name, i) => {
     const [cmd, args, o] = shipCmd(name, lanes[i]);
     record(name, lanes[i].id, await run(cmd, args, { ...o, log: `${LOGS}/${name}.log`, timeout: 1500, pin: true }));
-  }).then(() => retry(b, lanes.slice(0, LANES)))];
+  }).then(() => retry(b, lanes.slice(0, LANES))).then(async () => {
+    //  done with the suite lanes: their CPU goes to whatever still runs
+    const idle = clones.filter((c) => c !== lanes[LANES]);
+    if (idle.length && (TWO || flag('--stall')) && !flag('--keep')) {
+      await run(F, ['drop', ...idle.map((c) => c.id)], { timeout: 300 });
+      clones = clones.filter((c) => !idle.includes(c));
+    }
+  })];
   if (flag('--stall')) {
     const l = lanes[LANES]; const [cmd, args, o] = shipCmd('stall-check.py', l);
     work.push(run(cmd, args, { ...o, log: `${LOGS}/stall-check.log`, timeout: 7200 }).then((r) => record('stall-check.py', l.id, r)));
