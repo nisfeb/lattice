@@ -136,14 +136,33 @@ try {
       return f.getBoundingClientRect().top - document.getElementById('doctabs').getBoundingClientRect().bottom;
     });
     check('phone: the page starts right under the tab strip', Math.abs(gap) <= 1, String(gap));
+    // the star holds its slot through a toggle on and off
+    const starX = () => m.evaluate(() => {
+      const s = document.querySelector('#groot .tgroup.gfocus > .fhead [data-fh=bm]');
+      return s && s.style.visibility !== 'hidden' ? Math.round(s.getBoundingClientRect().left) : null;
+    });
+    const sx = [await starX()];
+    for (let i = 0; i < 2; i++) {
+      const was = await m.evaluate(() => document.querySelector('#groot .tgroup.gfocus > .fhead [data-fh=bm]').classList.contains('on'));
+      await m.tap('#groot .tgroup.gfocus > .fhead [data-fh=bm]');
+      await m.waitForFunction((w) => document.querySelector('#groot .tgroup.gfocus > .fhead [data-fh=bm]').classList.contains('on') !== w,
+        { timeout: 8000 }, was).catch(() => {});
+      sx.push(await starX());
+    }
+    check('phone: the bookmark star shows and never moves when toggled',
+      sx[0] !== null && sx.every((x) => x === sx[0]), JSON.stringify(sx));
 
     await typeGo(m, U2);
     check('phone: Return navigates', await frameReady(m, null, atUrl(U2)));
     h = await hdr(m);
     check('phone: the address follows the frame', h.addr === U2, h.addr);
     check('phone: and Back is enabled', h.back === true);
+    await sleep(1500);
+    const tb = Date.now();
     await m.tap('#groot .tgroup.gfocus > .fhead [data-fh=back]');
     check('phone: Back goes back', await frameReady(m, null, atUrl(U1)));
+    // the frame's own history, not a refetch from the ship (~1s)
+    check('phone: Back is quick', Date.now() - tb < 500, (Date.now() - tb) + 'ms');
     await until(m, () => document.querySelector('#groot .tgroup.gfocus > .fhead [data-fh=back]').disabled, null, 5000);
     h = await hdr(m);
     check('phone: back at the start, Back is disabled again', h.addr === U1 && h.back === false,
