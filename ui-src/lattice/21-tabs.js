@@ -765,8 +765,14 @@
       w.append(b, x);
       g.list.append(w);
     }
-    const on = g.list.querySelector('.dtw.on');
-    if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    // the tab in front into view, in the next frame's rAF, before it lays
+    // out. Done here, it forced a layout of the whole shell in the middle
+    // of boot (46 ms), which the boot's later DOM work then threw away.
+    if (!g.scrollRaf) g.scrollRaf = requestAnimationFrame(() => {
+      g.scrollRaf = 0;
+      const on = g.list.querySelector('.dtw.on');
+      if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
   }
   function paintTabs() {
     for (const g of groups) paintStrip(g);

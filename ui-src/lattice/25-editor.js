@@ -59,6 +59,12 @@
     hlRun({ body: src.value, lang });
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
+  // sync in the next frame's rAF, before it paints: for a new body, where
+  // reading scrollTop at once forces a layout the rest of the open undoes
+  let syncRaf = 0;
+  const syncSoon = () => {
+    if (!syncRaf) syncRaf = requestAnimationFrame(() => { syncRaf = 0; sync(); });
+  };
   // per-keystroke highlight throttle: Prism re-tokenizes the WHOLE document on
   // every render, which drops frames on large pages. Coalesce to one render per
   // frame. Past ~60KB fall back to a trailing debounce (even one full highlight

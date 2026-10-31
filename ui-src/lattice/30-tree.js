@@ -421,6 +421,9 @@
   // under it whichever way its siblings run.
   const SORTS = { name: 'Sort: name', 'name-desc': 'Sort: name, descending' };
   const treeSort = () => (localStorage.appSort === 'name-desc' ? 'name-desc' : 'name');
+  // one collator, the order localeCompare gives: localeCompare builds its
+  // own on every call, and that was most of an 18 ms sort at boot
+  const treeColl = new Intl.Collator();
   function treeOrder(list) {
     const dir = treeSort() === 'name-desc' ? -1 : 1;
     return list.map((n) => ({ n, s: n.path.split('/') })).sort((a, b) => {
@@ -430,7 +433,7 @@
         const fa = i < a.s.length - 1 || !a.n.page;
         const fb = i < b.s.length - 1 || !b.n.page;
         if (fa !== fb) return fa ? -1 : 1;
-        return dir * a.s[i].localeCompare(b.s[i]);
+        return dir * treeColl.compare(a.s[i], b.s[i]);
       }
       return (a.s.length - b.s.length) || (a.n.page - b.n.page);
     }).map((x) => x.n);

@@ -2656,8 +2656,14 @@
       w.append(b, x);
       g.list.append(w);
     }
-    const on = g.list.querySelector('.dtw.on');
-    if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    // the tab in front into view, in the next frame's rAF, before it lays
+    // out. Done here, it forced a layout of the whole shell in the middle
+    // of boot (46 ms), which the boot's later DOM work then threw away.
+    if (!g.scrollRaf) g.scrollRaf = requestAnimationFrame(() => {
+      g.scrollRaf = 0;
+      const on = g.list.querySelector('.dtw.on');
+      if (on) on.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
   }
   function paintTabs() {
     for (const g of groups) paintStrip(g);
@@ -3903,6 +3909,12 @@
     hlRun({ body: src.value, lang });
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
+  // sync in the next frame's rAF, before it paints: for a new body, where
+  // reading scrollTop at once forces a layout the rest of the open undoes
+  let syncRaf = 0;
+  const syncSoon = () => {
+    if (!syncRaf) syncRaf = requestAnimationFrame(() => { syncRaf = 0; sync(); });
+  };
   // per-keystroke highlight throttle: Prism re-tokenizes the WHOLE document on
   // every render, which drops frames on large pages. Coalesce to one render per
   // frame. Past ~60KB fall back to a trailing debounce (even one full highlight
@@ -5206,6 +5218,9 @@
         s.top = y * 100 + '%';
         s.width = w * 100 + '%';
         s.height = h * 100 + '%';
+        // its share of #groot, which is how splitWhy sizes it
+        n.fw = w;
+        n.fh = h;
         n.el.classList.toggle('gl', x > 1e-6);
         n.el.classList.toggle('gt', y > 1e-6);
         return;
@@ -5286,11 +5301,18 @@
       tabsSave();
     });
   }
-  // why `g` cannot split that way now, or '' when it can
+  // why `g` cannot split that way now, or '' when it can. A group's size
+  // is its share of #groot times #groot's size as the ResizeObserver last
+  // gave it, so asking never forces a layout. Measuring the group itself
+  // did, and at boot that one read was the first full layout, 42 ms
+  // inside the boot task. Only before the observer's first report does it
+  // measure, and nothing asks then but a split attempted in that frame.
+  let gsz = null;
   function splitWhy(g, dir) {
     if (!g) return 'no group';
     if (isMobile()) return 'one group at a time on a phone';
-    const r = g.el.getBoundingClientRect();
+    const r = gsz && g.fw != null ? { width: g.fw * gsz.w, height: g.fh * gsz.h }
+      : g.el.getBoundingClientRect();
     if (dir === 'r' && r.width < 2 * GMIN_W)
       return 'not enough room, each group needs at least ' + GMIN_W + 'px across';
     if (dir === 'd' && r.height < 2 * GMIN_H)
@@ -5298,6 +5320,7 @@
     return '';
   }
   function splitButtons() {
+    if (!gsz) return;     // the observer's first report paints them
     for (const g of groups) {
       for (const [b, d] of [[g.bsr, 'r'], [g.bsd, 'd']]) {
         const why = splitWhy(g, d);
@@ -5308,7 +5331,11 @@
       }
     }
   }
-  new ResizeObserver(() => splitButtons()).observe(groot);
+  new ResizeObserver((es) => {
+    const r = es[es.length - 1].contentRect;
+    gsz = { w: r.width, h: r.height };
+    splitButtons();
+  }).observe(groot);
 
   // ── the parked view ──────────────────────────────────────────────────
   // what the live editor showed a tab as it let go of it, so its group
@@ -6274,6 +6301,9 @@
   // under it whichever way its siblings run.
   const SORTS = { name: 'Sort: name', 'name-desc': 'Sort: name, descending' };
   const treeSort = () => (localStorage.appSort === 'name-desc' ? 'name-desc' : 'name');
+  // one collator, the order localeCompare gives: localeCompare builds its
+  // own on every call, and that was most of an 18 ms sort at boot
+  const treeColl = new Intl.Collator();
   function treeOrder(list) {
     const dir = treeSort() === 'name-desc' ? -1 : 1;
     return list.map((n) => ({ n, s: n.path.split('/') })).sort((a, b) => {
@@ -6283,7 +6313,7 @@
         const fa = i < a.s.length - 1 || !a.n.page;
         const fb = i < b.s.length - 1 || !b.n.page;
         if (fa !== fb) return fa ? -1 : 1;
-        return dir * a.s[i].localeCompare(b.s[i]);
+        return dir * treeColl.compare(a.s[i], b.s[i]);
       }
       return (a.s.length - b.s.length) || (a.n.page - b.n.page);
     }).map((x) => x.n);
@@ -6734,7 +6764,7 @@
     // since this view was established?" for boot's reconcile guard; carrying
     // it across a navigation would mark every later untouched page as touched.
     everTyped = false;
-    render(); sync();
+    render(); syncSoon();
     markCurrent();
     st(d.kind + ' · rev ' + d.rev);
     exitRev();

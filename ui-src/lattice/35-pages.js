@@ -166,7 +166,7 @@
     // since this view was established?" for boot's reconcile guard; carrying
     // it across a navigation would mark every later untouched page as touched.
     everTyped = false;
-    render(); sync();
+    render(); syncSoon();
     markCurrent();
     st(d.kind + ' · rev ' + d.rev);
     exitRev();
