@@ -13413,10 +13413,17 @@
   ^-  tape
   %-  trip
   '<script>(function(){var b=document.getElementById("navb"),f=document.getElementById("navf");var h=document.getElementById("ham"),m=document.getElementById("hammenu");if(h&&m){h.addEventListener("click",function(e){e.preventDefault();e.stopPropagation();m.hidden=!m.hidden});document.addEventListener("click",function(){m.hidden=true})}if(!b||!f)return;var ents=[],pos=-1;try{ents=JSON.parse(sessionStorage.latNav||"[]")}catch(e){}var prev=+(sessionStorage.latNavPos||-1);var st=history.state&&typeof history.state.latI==="number"?history.state.latI:null;if(st!==null&&st<ents.length){pos=st}else if(prev>=0&&ents[prev]===location.href){pos=prev;history.replaceState({latI:pos},"")}else{ents=ents.slice(0,prev+1);ents.push(location.href);if(ents.length>400){ents=[location.href]}pos=ents.length-1;history.replaceState({latI:pos},"")}try{sessionStorage.latNav=JSON.stringify(ents);sessionStorage.latNavPos=String(pos)}catch(e){}function sync(){var si=history.state&&typeof history.state.latI==="number"?history.state.latI:pos;pos=si;try{sessionStorage.latNavPos=String(pos)}catch(e){}if(pos>0){b.removeAttribute("disabled")}else{b.setAttribute("disabled","")}if(pos<ents.length-1){f.removeAttribute("disabled")}else{f.setAttribute("disabled","")}}sync();window.addEventListener("pageshow",function(ev){if(ev.persisted){try{ents=JSON.parse(sessionStorage.latNav||"[]")}catch(e){}sync()}});b.addEventListener("click",function(){history.back()});f.addEventListener("click",function(){history.forward()})})();</script>'
+::  +sw-register-script: registers the worker, and reloads the page when
+::  a new one takes over (a deploy), unless the page holds unsaved work.
+::  Not in a frame: the editor reloads itself on the same takeover, which
+::  remakes its frames, and while it holds off (unsaved work) a frame tab
+::  that reloaded on its own was only a request to the pier. Every open
+::  browser tab, parked ones included, sent one at the same moment.
+::
 ++  sw-register-script
   ^-  tape
   %-  trip
-  '<script>if("serviceWorker"in navigator){navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice",updateViaCache:"all"}).then(function(r){r.addEventListener("updatefound",function(){var w=r.installing;if(w)w.addEventListener("statechange",function(){if(w.state==="installed"&&navigator.serviceWorker.controller)w.postMessage("skipWaiting")})})}).catch(function(x){});var swReloading=false;if(navigator.serviceWorker.controller){navigator.serviceWorker.addEventListener("controllerchange",function(){if(swReloading)return;if(window.__latUnsaved&&window.__latUnsaved())return;swReloading=true;location.reload()})}}</script>'
+  '<script>if("serviceWorker"in navigator){navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice",updateViaCache:"all"}).then(function(r){r.addEventListener("updatefound",function(){var w=r.installing;if(w)w.addEventListener("statechange",function(){if(w.state==="installed"&&navigator.serviceWorker.controller)w.postMessage("skipWaiting")})})}).catch(function(x){});var swReloading=false;if(navigator.serviceWorker.controller&&window.top===window){navigator.serviceWorker.addEventListener("controllerchange",function(){if(swReloading)return;if(window.__latUnsaved&&window.__latUnsaved())return;swReloading=true;location.reload()})}}</script>'
 ::  +esc: HTML-escape a tape. +url-enc: percent-encode a tape for a query
 ::  value. +has-prefix: tape prefix test.
 ::
