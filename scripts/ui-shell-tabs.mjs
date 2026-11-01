@@ -20,6 +20,10 @@
 //      (a parked frame holds no live stream), and a closed tab's frame goes
 //    A cached reader page in a parked frame tab holds its refetch until it
 //      is shown, whether its tab or an ancestor of the frame hid it
+//    A frame tab keeps the page it left: Back and Forward show the same
+//      document again, a save made while it was kept reaches it once shown,
+//      and no more than two per tab and six in all are kept, none past their
+//      time, none once their tab has closed
 //    A frame that leaves the page, alone or with its group, is no longer
 //      watched for its box
 //    No editor boots inside a frame: the home page's Editor link focuses the
@@ -39,12 +43,15 @@
 //
 //  Usage: LATTICE_URL=http://localhost:8080 LATTICE_COOKIE=/tmp/tyr-cookie.txt \
 //           node scripts/ui-shell-tabs.mjs
-import { shipEnv, launchBrowser, openPage, seed, makeCheck, sleep, waitFor, swControlled } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, seed, makeCheck, sleep, waitFor, swControlled, shipName } from './lib/harness.mjs';
 
 const env = shipEnv();
 const check = makeCheck();
 //  a page to stand in front between the tools
 const PAGE = 'x-' + process.pid + '/shell-tabs';
+//  pages a browser tab steps through (keepdoc)
+const KEEP = [0, 1, 2, 3].map((i) => 'x-' + process.pid + '/keep' + i);
+const keepMark = (i) => 'keepmark' + i + 'q' + process.pid;
 const post = (path) => fetch(env.base + '/apps/lattice/' + path,
   { method: 'POST', headers: { Cookie: env.cookie } });
 const browser = await launchBrowser({ args: ['--disable-dev-shm-usage'] });
@@ -100,6 +107,7 @@ const part = async (name, fn) => {
 
 try {
   await seed(env, [[PAGE, '# shell tabs\n']]);
+  await seed(env, KEEP.map((n, i) => [n, '# keep ' + i + '\n\n' + keepMark(i) + '\n']), { share: 'shared' });
 
   await part('forum', async () => {
     const fk = 'frame:/apps/lattice/forum';
@@ -545,6 +553,157 @@ try {
     } finally {
       page.off('request', onReq);
       await page.evaluate(() => { for (const g of document.querySelectorAll('.tgroup')) g.style.display = ''; });
+    }
+  });
+
+  //  a frame tab keeps the page it leaves (29-fhead.js): Back and Forward
+  //  show the same document again instead of navigating the frame, a save
+  //  made while a page was kept reaches it once it is shown (the parked
+  //  frame's own catch-up), and the kept pages are bounded
+  await part('keepdoc', async () => {
+    const SHIP = await shipName(env);
+    const R = (i) => '/apps/lattice?url=' + encodeURIComponent('urb://' + SHIP + '/' + KEEP[i]);
+    //  the tab's frame shows page i, reading its srcdoc frame too
+    const shows = (key, text, ms = 15000) => until(([k, x]) => {
+      const f = document.querySelector(`.toolhost iframe[data-tool="${k}"]`);
+      try {
+        const d = f.contentDocument;
+        if (f.hidden || d.readyState !== 'complete') return false;
+        if (d.body.textContent.includes(x)) return true;
+        return [...d.querySelectorAll('iframe')].some((i) => {
+          try { return i.contentDocument.body.textContent.includes(x); } catch { return false; }
+        });
+      } catch { return false; }
+    }, [key, text], ms);
+    //  a link in the page, as the user follows one
+    const follow = (key, i) => page.evaluate(([k, u]) => {
+      const d = document.querySelector(`.toolhost iframe[data-tool="${k}"]`).contentDocument;
+      const a = d.createElement('a');
+      a.href = u;
+      d.body.append(a);
+      a.click();
+    }, [key, R(i)]);
+    const tag = (key, t) => page.evaluate(([k, x]) => {
+      document.querySelector(`.toolhost iframe[data-tool="${k}"]`).latTest = x;
+    }, [key, t]);
+    const shownTag = (key) => page.evaluate((k) =>
+      document.querySelector(`.toolhost iframe[data-tool="${k}"]`)?.latTest || null, key);
+    const kept = () => page.evaluate(() => ({
+      list: window.latKept(),
+      dom: document.querySelectorAll('.toolhost iframe[data-kept]').length,
+      shown: document.querySelectorAll('.toolhost iframe[data-kept]:not([hidden])').length,
+    }));
+    const openAt = async (i) => {
+      await page.evaluate((u) => window.latTabs.openIn('tool', 'frame:' + u + '#k' + Math.random().toString(36).slice(2),
+        { newTab: true }), R(i));
+      const key = (await front()).key;
+      await shows(key, keepMark(i));
+      return key;
+    };
+    const step = async (key, how) => {
+      const t0 = Date.now();
+      await page.click(`#groot .tgroup.gfocus > .fhead [data-fh=${how}]`);
+      return t0;
+    };
+    try {
+      const key = await openAt(0);
+      await tag(key, 'A');
+      await sleep(1200);
+      await follow(key, 1);
+      const onB = await shows(key, keepMark(1));
+      await tag(key, 'B');
+      const k1 = await kept();
+      check('following a link keeps the page left, hidden', onB && k1.list.length === 1
+        && k1.list[0].key === key && k1.dom === 1 && k1.shown === 0, JSON.stringify(k1));
+      await sleep(1200);
+      let t0 = await step(key, 'back');
+      const backOk = await shows(key, keepMark(0), 5000);
+      const backMs = Date.now() - t0;
+      const backTag = await shownTag(key);
+      check('Back shows the kept document itself, quickly', backOk && backTag === 'A' && backMs < 400,
+        JSON.stringify({ backOk, backTag, backMs }));
+      await sleep(1200);
+      t0 = await step(key, 'fwd');
+      const fwdOk = await shows(key, keepMark(1), 5000);
+      const fwdMs = Date.now() - t0;
+      const fwdTag = await shownTag(key);
+      const addr = await page.evaluate(() => document.querySelector('#groot .tgroup.gfocus > .fhead .fhin').value);
+      check('Forward shows the other kept document, and the address follows',
+        fwdOk && fwdTag === 'B' && fwdMs < 400 && addr.includes(KEEP[1]),
+        JSON.stringify({ fwdOk, fwdTag, fwdMs, addr }));
+
+      //  a save to page 0 while it is kept reaches it once shown, and a
+      //  kept page goes nowhere while out of sight: Back shows page 0 long
+      //  enough for its catch-up to start (0.3 s), Forward hides it before
+      //  the catch-up's replace lands, and the replace waits for the next
+      //  Back instead of loading a hidden page under the next click
+      await sleep(1500);
+      const fresh = 'keepfresh' + Date.now();
+      const sv = await fetch(env.base + '/apps/lattice/page-save?type=md&name=' + encodeURIComponent(KEEP[0]),
+        { method: 'POST', headers: { Cookie: env.cookie }, body: '# keep 0\n\n' + keepMark(0) + '\n\n' + fresh + '\n' });
+      await sleep(1500);
+      await step(key, 'back');
+      const stale = await shows(key, keepMark(0), 5000);
+      await sleep(380);
+      await step(key, 'fwd');
+      await shows(key, keepMark(1), 5000);
+      const keptA = await page.evaluateHandle(() =>
+        [...document.querySelectorAll('.toolhost iframe[data-kept]')].find((f) => f.latTest === 'A'));
+      const frA = keptA.asElement() ? await keptA.asElement().contentFrame() : null;
+      let navsA = 0;
+      const onNav = (r) => { if (frA && r.frame() === frA && r.isNavigationRequest()) navsA++; };
+      page.on('request', onNav);
+      await sleep(3000);
+      page.off('request', onNav);
+      const held = await page.evaluate((f) => !!(f && f.latStale), keptA);
+      check('a kept page does not navigate while out of sight', !!frA && navsA === 0,
+        JSON.stringify({ frA: !!frA, navsA, held }));
+      await step(key, 'back');
+      const gotFresh = await shows(key, fresh, 20000);
+      check('a save made while a page was kept shows once it is back in front',
+        sv.ok && stale && gotFresh, JSON.stringify({ save: sv.status, stale, gotFresh }));
+      await step(key, 'fwd');
+      await shows(key, keepMark(1));
+
+      //  per tab: four more pages, still no more than two kept
+      for (const i of [2, 3, 0, 1]) { await sleep(400); await follow(key, i); await shows(key, keepMark(i)); }
+      const k2 = await kept();
+      const mine = k2.list.filter((x) => x.key === key);
+      check('a tab keeps no more than two pages', mine.length === 2 && k2.dom === k2.list.length,
+        JSON.stringify(k2));
+      //  and the two are the nearest: Back is a kept one
+      await step(key, 'back');
+      const near = await shows(key, keepMark(0), 5000);
+      check('the pages kept are the nearest ones', near, JSON.stringify(await kept()));
+
+      //  in all: three more tabs, three steps each, no more than six kept
+      const keys = [key];
+      for (let t = 0; t < 3; t++) {
+        const k = await openAt(0);
+        keys.push(k);
+        for (const i of [1, 2, 3]) { await sleep(300); await follow(k, i); await shows(k, keepMark(i)); }
+      }
+      const k3 = await kept();
+      check('no more than six pages are kept in all', k3.list.length === 6 && k3.dom === 6
+        && k3.shown === 0, JSON.stringify(k3));
+
+      //  past their time they go
+      await page.evaluate(() => { localStorage.latKeepMs = '1'; });
+      await sleep(50);
+      const k4 = await page.evaluate(() => { window.latKept(true); return document.querySelectorAll('.toolhost iframe[data-kept]').length; });
+      await page.evaluate(() => { delete localStorage.latKeepMs; });
+      check('kept pages past their time are let go', k4 === 0, String(k4));
+
+      //  and with their tab
+      for (const i of [1, 2]) { await sleep(300); await follow(keys[3], i); await shows(keys[3], keepMark(i)); }
+      const k5 = (await kept()).dom;
+      await closeTools();
+      await sleep(300);
+      const k6 = await kept();
+      check('closing a tab lets its kept pages go', k5 > 0 && k6.dom === 0 && k6.list.length === 0,
+        JSON.stringify({ k5, k6 }));
+    } finally {
+      await page.evaluate(() => { delete localStorage.latKeepMs; }).catch(() => {});
     }
   });
 

@@ -24,10 +24,12 @@
   // each, and Back or Forward use history.go when the entry they would
   // cross is this tab's own. Anything that could put the mirror out of step
   // (a replace, a closed tab) clears it, and the replace path takes over.
-  const fnav = {};   // tab key -> { back, fwd, cur, addr, go, bar }
+  const fnav = {};   // tab key -> { back, fwd, cur, addr, go, bar, kept }
   const jh = { keys: [], pos: -1 };
   const jhClear = () => { jh.keys = []; jh.pos = -1; };
-  const fnavOf = (key) => fnav[key] || (fnav[key] = { back: [], fwd: [], cur: null, addr: '', go: null, bar: null });
+  const fnavOf = (key) => fnav[key] || (fnav[key] = { back: [], fwd: [], cur: null, addr: '', go: null, bar: null, kept: [] });
+  // an address as the stacks hold it: less the service worker's u=sw<time>
+  const fnavNorm = (url) => { try { const u = new URL(url); u.searchParams.delete('u'); return u.href; } catch { return url; } };
 
   // What the address field shows for a frame's page: the urb:// address or
   // query the reader's bar was served with, or else the page's route under
@@ -62,25 +64,34 @@
   // each load of a browsing frame (toolMount's onload, before frameDress)
   function fnavLoad(f) {
     const key = f.dataset.tool;
-    if (!browsing(key)) return;
+    if (!key || !browsing(key)) return;
     const n = fnavOf(key);
     let url = null, d = null;
     try { d = f.contentDocument; url = f.contentWindow.location.href; } catch {}
     if (url === 'about:blank') return;
     // the service worker's reload adds u=sw<time>: the same page, not a step
-    try { const u = new URL(url); u.searchParams.delete('u'); url = u.href; } catch {}
-    if (n.go) n.go = null;            // Back or Forward landed: the stacks moved then
+    url = fnavNorm(url);
+    // a frame made by a step (fkeepBeside): the stacks moved then
+    if (f.latStep) f.latStep = false;
+    else if (n.go) n.go = null;       // Back or Forward landed: the stacks moved then
     else if (n.cur !== null && url !== n.cur) {
       n.back.push(n.cur); n.fwd = [];
       jh.keys.length = jh.pos + 1; jh.keys.push(key); jh.pos++;
+      fkeepTrim();
     }
+    fnavShown(f, d, url);
+    // the bar's star and orrery button paint after load
+    if (n.bar) new MutationObserver(() => fhPaintKey(key))
+      .observe(n.bar, { subtree: true, childList: true, attributes: true, characterData: true });
+  }
+  // the tab's page is now `f`'s: the address, the bar and the title
+  function fnavShown(f, d, url) {
+    const key = f.dataset.tool;
+    const n = fnavOf(key);
     n.cur = url;
     n.addr = fnavAddr(d);
     n.bar = d ? d.querySelector('form.bar, form.cbar') : null;
     fhPaintKey(key);
-    // the bar's star and orrery button paint after load
-    if (n.bar) new MutationObserver(() => fhPaintKey(key))
-      .observe(n.bar, { subtree: true, childList: true, attributes: true, characterData: true });
   }
   // 'back', 'fwd', or 'to' an address typed or picked
   function fnavGo(key, how, v) {
@@ -96,7 +107,19 @@
     const from = how === 'back' ? n.back : n.fwd;
     if (!from.length) return;
     const url = from.pop();
+    const was = n.cur;
     if (n.cur !== null) (how === 'back' ? n.fwd : n.back).push(n.cur);
+    // the page kept is shown again; with none, it opens beside this one,
+    // which is kept for the step back
+    const e = n.kept.find((x) => x.url === url && x.f.isConnected);
+    if (e || fkeepCan(f)) {
+      jhClear();
+      if (e) fkeepSwap(key, f, e, was);
+      else { n.cur = url; fkeepBeside(key, f, url, was); }
+      fkeepTrim();
+      fhPaintKey(key);
+      return;
+    }
     n.go = how;
     const at = how === 'back' ? jh.pos : jh.pos + 1;
     if (jh.keys[at] === key && jh.keys.every((k) => frameOf(k))) {
@@ -108,6 +131,169 @@
     }
     fhPaintKey(key);
   }
+
+  // ── kept documents ───────────────────────────────────────────────────────
+  // Back in a frame used to be a navigation of the frame: commit, parse and
+  // layout of the page before, about 60 ms, as frames get no back/forward
+  // cache. Now the page a frame leaves stays alive beside it, hidden, and
+  // Back or Forward show it again: a swap of two frames.
+  //
+  // Leaving is caught in the page (the Navigation API's navigate event): a
+  // push to a lattice page on this origin (a link, a GET form, a script,
+  // the address field) is stopped and opened in a new frame next to this
+  // one, which is then kept. A POST, a reload, a replace, a page elsewhere
+  // and an engine with no Navigation API (webkitgtk) navigate the frame as
+  // before. The tab's frame is the one with data-tool, and its name moves
+  // with it, so a form aimed at the tab lands in the frame shown.
+  //
+  // Fresh: a kept page is hidden, so frameSeen tells it lathidden, and its
+  // live stream closes and its refetch clock stops, as in a parked tab.
+  // Shown again it hears latshown, once it has stayed in sight 0.3 s (the
+  // wait a cached paint makes before its refetch), and catches up the same
+  // way: a refetch (+sse-script), then location.replace when the page
+  // changed meanwhile.
+  //
+  // Bounded: two kept per tab (the ones nearest its page), six in all (two
+  // on a device with 2 GB or less), none older than five minutes, and all
+  // let go when the shell has been hidden a minute or is frozen, or when
+  // the JS heap is over 60% of its limit.
+  const KEEP_TAB = 2, KEEP_MS = 5 * 60 * 1000, KEEP_QUIET = 300;
+  const KEEP_ALL = (navigator.deviceMemory || 8) <= 2 ? 2 : 6;
+  let keepTimer = 0, keepHid = 0;
+  // (a suite shortens the time with localStorage.latKeepMs)
+  const keepMs = () => (+localStorage.latKeepMs) || KEEP_MS;
+  const keptAll = () => Object.values(fnav).flatMap((n) => n.kept.map((e) => ({ n, e })));
+  // whether a step may open a frame beside `f`: only where leaving is caught
+  const fkeepCan = (f) => { try { return KEEP_ALL > 0 && !!f.contentWindow.navigation; } catch { return false; } };
+  const frameGone = (f) => { frameSeen.unobserve(f); frameSeenAll.delete(f); f.remove(); };
+  function fkeepDrop(n, e) {
+    n.kept = n.kept.filter((x) => x !== e);
+    frameGone(e.f);
+  }
+  function fkeepDropKey(key) {
+    const n = fnav[key];
+    if (n) for (const e of n.kept.slice()) fkeepDrop(n, e);
+  }
+  const heapFull = () => {
+    try { const m = performance.memory; return !!m && m.usedJSHeapSize > 0.6 * m.jsHeapSizeLimit; }
+    catch { return false; }
+  };
+  // how many steps from the tab's page a kept one is, by its stacks
+  const keptSteps = (n, e) => Math.min(...[n.back, n.fwd].map((s) => {
+    const i = s.lastIndexOf(e.url);
+    return i < 0 ? Infinity : s.length - 1 - i;
+  }));
+  // let go of what the bound says, `all` for everything
+  function fkeepTrim(all) {
+    const now = Date.now();
+    const full = !all && heapFull();
+    for (const n of Object.values(fnav))
+      for (const e of n.kept.slice())
+        if (all || full || !e.f.isConnected || now - e.at > keepMs() || keptSteps(n, e) === Infinity) fkeepDrop(n, e);
+    for (const n of Object.values(fnav)) {
+      const ks = n.kept.slice().sort((a, b) => keptSteps(n, b) - keptSteps(n, a));
+      while (ks.length > KEEP_TAB) fkeepDrop(n, ks.shift());
+    }
+    const every = keptAll().sort((a, b) => a.e.at - b.e.at);
+    while (every.length > KEEP_ALL) { const x = every.shift(); fkeepDrop(x.n, x.e); }
+    // one no tab holds any more: its tab closed
+    const held = new Set(keptAll().map((x) => x.e.f));
+    for (const f of document.querySelectorAll('.toolhost iframe[data-kept]')) if (!held.has(f)) frameGone(f);
+    clearTimeout(keepTimer);
+    keepTimer = held.size ? setTimeout(() => fkeepTrim(), 60000) : 0;
+  }
+  document.addEventListener('visibilitychange', () => {
+    clearTimeout(keepHid);
+    if (document.hidden) keepHid = setTimeout(() => fkeepTrim(true), 60000);
+  });
+  document.addEventListener('freeze', () => fkeepTrim(true));
+  // `f` is the tab's frame no more; kept as `url`, or let go with none
+  function fkeepPark(key, f, url) {
+    delete f.dataset.tool;
+    f.dataset.kept = key;
+    f.name = '';
+    if (!url || KEEP_ALL < 1) { frameGone(f); return; }
+    fnavOf(key).kept.push({ f, url, at: Date.now() });
+  }
+  // a new frame for the tab at `url`, beside `f`, which is kept as `was`
+  function fkeepBeside(key, f, url, was) {
+    const g = frameMake(key, url);
+    g.name = f.name;
+    g.latAct = f.latAct;
+    g.latStep = true;
+    f.parentNode.insertBefore(g, f);
+    fkeepPark(key, f, was);
+    if (!f.isConnected) return g;
+    // the page left stays painted over the new one until that one loads,
+    // as a frame's own navigation holds its old paint
+    f.classList.add('fcover');
+    const un = () => { f.classList.remove('fcover'); if (!f.dataset.tool) f.hidden = true; };
+    g.addEventListener('load', un, { once: true });
+    setTimeout(un, 3000);
+    return g;
+  }
+  // the kept `e` is the tab's frame again, and `f` is kept as `was`
+  function fkeepSwap(key, f, e, was) {
+    const n = fnavOf(key);
+    const k = e.f;
+    n.kept = n.kept.filter((x) => x !== e);
+    k.name = f.name;
+    fkeepPark(key, f, was);
+    if (f.isConnected) { f.classList.remove('fcover'); f.hidden = true; }
+    // it hears latshown once it has stayed in sight a beat (frameSeen)
+    k.latQuiet = Date.now() + KEEP_QUIET;
+    delete k.dataset.kept;
+    k.dataset.tool = key;
+    k.classList.remove('fcover');
+    k.hidden = false;
+    let d = null;
+    try { d = k.contentDocument; } catch {}
+    fnavShown(k, d, e.url);
+    const t = d && d.title.trim();
+    if (t && frameTitles[key] !== t) { frameTitles[key] = t; paintTabs(); }
+    if (k.latStale) {
+      const u = k.latStale;
+      k.latStale = null;
+      try { k.contentWindow.location.replace(u); } catch {}
+    }
+  }
+  // catch the page in `f` leaving (frameDress, at each load)
+  function fkeepWatch(f, d, key) {
+    const nav = d.defaultView && d.defaultView.navigation;
+    if (!nav || KEEP_ALL < 1) return;
+    nav.addEventListener('navigate', (e) => {
+      // A kept page goes nowhere out of sight: what it asks for meanwhile
+      // (its catch-up's replace, landing after Forward hid it) waits until
+      // it is shown again (fkeepSwap). It went out as a navigation under
+      // the request of whatever was clicked next.
+      if (f.dataset.tool !== key) {
+        if (f.dataset.kept === key && e.cancelable && !e.destination.sameDocument && !e.formData) {
+          e.preventDefault();
+          f.latStale = e.destination.url;
+        }
+        return;
+      }
+      if (e.navigationType !== 'push' || !e.cancelable || e.hashChange
+        || e.destination.sameDocument || e.downloadRequest !== null || e.formData) return;
+      let u;
+      try { u = new URL(e.destination.url); } catch { return; }
+      if (u.origin !== location.origin || !/^\/apps\/lattice(\/|$)/.test(u.pathname) || editorGo(u.href)) return;
+      const n = fnavOf(key);
+      const to = fnavNorm(u.href);
+      if (n.cur === null || to === n.cur) return;
+      e.preventDefault();
+      jhClear();
+      const was = n.cur;
+      n.back.push(was);
+      n.fwd = [];
+      n.cur = to;
+      fkeepBeside(key, f, u.href, was);
+      fkeepTrim();
+      fhPaintKey(key);
+    });
+  }
+  // for the browser suites: what is kept, after a trim when asked
+  window.latKept = (trim) => (trim && fkeepTrim(), keptAll()).map(({ e }) => ({ key: e.f.dataset.kept, url: e.url, at: e.at }));
 
   // ── the omnibar ──────────────────────────────────────────────────────────
   // An address field and its completion list: the reader's saved and

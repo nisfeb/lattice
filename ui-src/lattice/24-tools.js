@@ -10,7 +10,9 @@
   // the front; the one in front is #toolhost. The editor underneath keeps
   // whatever the parked tab left there, untouched: the tool kind has no
   // live(), so nothing a tool does is ever filed under a document's tab.
-  const allFrames = () => [...document.querySelectorAll('.toolhost iframe')];
+  // a tab's frame carries data-tool; a document it left, kept for Back and
+  // Forward (29-fhead.js), carries data-kept instead
+  const allFrames = () => [...document.querySelectorAll('.toolhost iframe[data-tool]')];
   const frameOf = (key) => allFrames().find((f) => f.dataset.tool === key);
   // where a tool's wrap waits while no group shows it
   const toolStash = document.createElement('div');
@@ -138,6 +140,8 @@
         delete fnav[f.dataset.tool];
         f.remove();
       }
+    // and the pages they kept (29-fhead.js)
+    if (document.querySelector('.toolhost iframe[data-kept]')) fkeepTrim();
     // a frame that left the page (closed here, or with its group, gDrop
     // in 28-splits.js) is let go: the observer would hold it for good
     for (const f of frameSeenAll)
@@ -168,15 +172,23 @@
   // and a ResizeObserver hears each of them, after layout. The page's own
   // scripts (+page-cache-script) used to poll the frame's box ten times
   // a second instead, each poll a forced layout of the editor.
+  //
+  // A kept page that Back or Forward shows again (29-fhead.js) hears it
+  // only once it has stayed in sight `latQuiet`: its catch-up refetch and
+  // stream otherwise went out under the request of whatever was clicked
+  // next (a tab, the forum), as a cached paint waits 0.3 s to refetch.
   const frameSeen = new ResizeObserver((es) => {
-    for (const { target: f } of es) {
-      const on = f.isConnected && f.getClientRects().length > 0;
-      if (f.latOn === on) continue;
-      f.latOn = on;
-      try { f.contentWindow.dispatchEvent(new f.contentWindow.Event(on ? 'latshown' : 'lathidden')); }
-      catch {}
-    }
+    for (const { target: f } of es) frameSeenOne(f);
   });
+  function frameSeenOne(f) {
+    const on = f.isConnected && f.getClientRects().length > 0;
+    if (f.latOn === on) return;
+    const wait = on ? (f.latQuiet || 0) - Date.now() : 0;
+    if (wait > 0) { clearTimeout(f.latQuietT); f.latQuietT = setTimeout(() => frameSeenOne(f), wait); return; }
+    f.latOn = on;
+    try { f.contentWindow.dispatchEvent(new f.contentWindow.Event(on ? 'latshown' : 'lathidden')); }
+    catch {}
+  }
   // into `toolHost`, a group's host. A frame there already stays; one in
   // another group's host (its tab was moved) moves, and reloads.
   function toolMount(key, toolHost) {
@@ -190,8 +202,17 @@
     }
     const url = frameUrl(key);
     const had = frameOf(key);
-    if (had) { if (had.parentNode !== toolHost) toolHost.append(had); return; }
+    if (had) {
+      // a moved frame reloads, and so would the documents it kept
+      if (had.parentNode !== toolHost) { fkeepDropKey(key); toolHost.append(had); }
+      return;
+    }
     if (!url) return;
+    toolHost.append(frameMake(key, url));
+  }
+  // a tab's frame at `url`, watched by frameSeen. Back and Forward make one
+  // too, beside the frame they keep (29-fhead.js).
+  function frameMake(key, url) {
     const f = document.createElement('iframe');
     f.className = 'toolframe';
     f.dataset.tool = key;
@@ -210,9 +231,9 @@
     // must not hold the background lane shut
     f.onload = () => { if (Date.now() - (f.latAct || 0) < 10000) bgBusy(); fnavLoad(f); frameDress(f); };
     f.src = url;
-    toolHost.append(f);
     frameSeen.observe(f);
     frameSeenAll.add(f);
+    return f;
   }
   let frameSeq = 0;
   // Each load of a frame. Every frame loses the reader's bar, since the
@@ -231,7 +252,7 @@
     let d = null;
     try { d = f.contentDocument; } catch {}
     if (!d || !d.head) return;
-    const key = f.dataset.tool;
+    const key = f.dataset.tool || f.dataset.kept;
     // the editor's note marks its frame (00-framed.js); anywhere else clears it
     if (!editorGo(d.URL)) delete f.dataset.latEd;
     frameTheme(f);
@@ -243,6 +264,8 @@
     d.head.append(s);
     if (browsing(key)) {
       const title = () => {
+        // a kept document's title is not its tab's
+        if (f.dataset.tool !== key) return;
         const t = d.title.trim();
         if (!t || frameTitles[key] === t) return;
         frameTitles[key] = t;
@@ -303,6 +326,9 @@
       }, !inner);
     };
     aimTop(d, false);
+    // a link, form or script leaving this page opens beside it, which
+    // keeps it for Back (29-fhead.js)
+    if (browsing(key)) fkeepWatch(f, d, key);
     // the reader shows a page in a frame of its own (srcdoc), where the
     // comment box lives. A sandboxed one (a peer's page) is out of reach,
     // and has no box.
@@ -465,7 +491,7 @@
     }
   }
   const framesTheme = () => {
-    for (const f of allFrames()) frameTheme(f);
+    for (const f of document.querySelectorAll('.toolhost iframe')) frameTheme(f);
   };
   addEventListener('lattheme', framesTheme);
   darkMq.addEventListener('change', framesTheme);
