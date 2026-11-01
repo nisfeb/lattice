@@ -5,6 +5,11 @@
 //  goes in the query: joined on after a #fragment it was part of the
 //  fragment, so the worker never saw it and redirected again.
 //
+//  And the editor's HTML names the worker that goes with it (x-lattice-sw)
+//  exactly as sw.js spells its V and PV. sw.js is held five minutes in the
+//  http cache, and a worker that reads another tag there fetches itself
+//  again: a tag that drifted from sw.js would do that on every editor load.
+//
 //  Env:    LATTICE_URL, LATTICE_COOKIE, CHROME   (as ui-matrix.mjs)
 //  Never run against production.
 import { rmSync, mkdtempSync } from 'fs';
@@ -18,6 +23,15 @@ const PROFILE = mkdtempSync(join(tmpdir(), 'lat-swfrag-'));
 const check = makeCheck({ detailOnPass: true });
 const browser = await launchBrowser({ profile: PROFILE });
 try {
+  const [hr, sr] = await Promise.all([
+    fetch(HOME + '/app', { headers: { Cookie: env.cookie } }),
+    fetch(HOME + '/sw.js')]);
+  const m = (await sr.text()).match(/^var V="([^"]*)";var PV="([^"]*)"/);
+  const tag = hr.headers.get('x-lattice-sw');
+  check('the editor HTML names its worker as sw.js does (x-lattice-sw)',
+    hr.ok && !!m && tag === m[1] + ' ' + m[2], JSON.stringify({ status: hr.status, tag, sw: m && m.slice(1) }));
+  check('sw.js is held five minutes', sr.headers.get('cache-control') === 'max-age=300',
+    sr.headers.get('cache-control'));
   const p = await openPage(browser, env);
   await p.goto(HOME, { waitUntil: 'domcontentloaded', timeout: 60000 });
   let live = false;
