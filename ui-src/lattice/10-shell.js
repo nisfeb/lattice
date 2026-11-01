@@ -87,10 +87,14 @@
   //  one click pointerdown cannot have preceded. Measured before this: the
   //  first open queued behind three boot fetches and took 5.2s.
   let lastAction = Date.now();
-  addEventListener('pointerdown', () => { lastAction = Date.now(); }, true);
-  addEventListener('keydown', () => { lastAction = Date.now(); }, true);
-  //  an edit that came without a key (a paste from a menu, dictation)
-  addEventListener('input', () => { lastAction = Date.now(); }, true);
+  const bgBusy = () => { lastAction = Date.now(); };
+  //  an edit that came without a key (a paste from a menu, dictation), and
+  //  a click that came without a pointer (a menu, assistive tech)
+  for (const t of ['pointerdown', 'keydown', 'input', 'click']) addEventListener(t, bgBusy, true);
+  //  A frame tab's events never reach this window, so its frame passes them
+  //  on, and its loads count too (frameDress, 24-tools.js). Browsing in a
+  //  frame read as idle: the lane sent its panel reads mid-browse, and the
+  //  forum's first load queued behind 2 s of them.
   const BG_IDLE_MS = 4000;
   //  and none while a save is on the wire or about to be: an unsaved
   //  buffer is a save due within autosave's debounce, and the ship serves

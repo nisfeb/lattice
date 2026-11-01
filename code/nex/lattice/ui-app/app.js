@@ -900,10 +900,14 @@
   //  one click pointerdown cannot have preceded. Measured before this: the
   //  first open queued behind three boot fetches and took 5.2s.
   let lastAction = Date.now();
-  addEventListener('pointerdown', () => { lastAction = Date.now(); }, true);
-  addEventListener('keydown', () => { lastAction = Date.now(); }, true);
-  //  an edit that came without a key (a paste from a menu, dictation)
-  addEventListener('input', () => { lastAction = Date.now(); }, true);
+  const bgBusy = () => { lastAction = Date.now(); };
+  //  an edit that came without a key (a paste from a menu, dictation), and
+  //  a click that came without a pointer (a menu, assistive tech)
+  for (const t of ['pointerdown', 'keydown', 'input', 'click']) addEventListener(t, bgBusy, true);
+  //  A frame tab's events never reach this window, so its frame passes them
+  //  on, and its loads count too (frameDress, 24-tools.js). Browsing in a
+  //  frame read as idle: the lane sent its panel reads mid-browse, and the
+  //  forum's first load queued behind 2 s of them.
   const BG_IDLE_MS = 4000;
   //  and none while a save is on the wire or about to be: an unsaved
   //  buffer is a save due within autosave's debounce, and the ship serves
@@ -3508,7 +3512,10 @@
     // stay, for frameDress and the pages themselves.
     f.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups '
       + 'allow-popups-to-escape-sandbox allow-modals allow-downloads');
-    f.onload = () => { fnavLoad(f); frameDress(f); };
+    // a load counts as activity only when the user's own event in the frame
+    // led to it, within 10 s: a page that reloads itself on each keep event
+    // must not hold the background lane shut
+    f.onload = () => { if (Date.now() - (f.latAct || 0) < 10000) bgBusy(); fnavLoad(f); frameDress(f); };
     f.src = url;
     toolHost.append(f);
   }
@@ -3569,6 +3576,10 @@
     const aimTop = (doc, inner) => {
       if (doc.latAimed) return;
       doc.latAimed = true;
+      // what is done in the frame, the comment box's frame included, is done
+      // in the shell (bgFetch, 10-shell.js)
+      const act = () => { f.latAct = Date.now(); bgBusy(); };
+      for (const t of ['pointerdown', 'keydown', 'input', 'click']) doc.addEventListener(t, act, true);
       for (const el of doc.querySelectorAll('[target=_top], [target=_parent]')) el.target = f.name;
       const on = inner ? (doc.defaultView || doc) : doc;
       on.addEventListener('click', (e) => {
@@ -6701,7 +6712,16 @@
     // a link reads live from its host every time (the spec's rule), so the
     // session cache never answers for one
     const hit = !linkOf(name) && pageCache.get(name);
-    if (hit) { applyPage(name, hit); snapPage(name, hit); return true; }
+    if (hit) {
+      // a content page's preview paints locally, as a painted open's does
+      // first. The ship's render in the cache is a whole reader document,
+      // and loading it into the frame was most of a tab switch: 50 ms
+      // against 25 for the local paint.
+      const local = ['md', 'gmi', 'html', 'text'].includes(hit.kind);
+      applyPage(name, local ? { ...hit, html: undefined } : hit, local);
+      snapPage(name, hit);
+      return true;
+    }
     const node = nodes.find((n) => n.page && n.path === name);
     const painted = !!node && typeof node.body === 'string';
     // the render=1 read below brings the page's sensitive flag, so the

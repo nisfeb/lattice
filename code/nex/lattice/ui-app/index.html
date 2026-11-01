@@ -656,31 +656,27 @@ select, option { color-scheme: inherit; }
   .mtrow .mtx { width: 40px; height: 40px; }
 
   /* the drawers. Shut, each sits just off its edge and is not drawn at all
-     (visibility, once the slide is over), so nothing in it takes a tap or
-     the keyboard's focus. The ribbon is the left drawer's top row: the same
-     buttons, laid out across instead of down, sliding with the pane.
-     The slide is 90ms of transform only, a flick that reads as instant: at
-     .2s ease each open or close was a quarter second of watching it. */
+     (visibility), so nothing in it takes a tap or the keyboard's focus.
+     The ribbon is the left drawer's top row: the same buttons, laid out
+     across instead of down, moving with the pane.
+     No slide: a drawer is drawn open or shut on the frame its toggle
+     lands in. Even a 90ms slide measured 135 to 190 ms a drawer, which
+     is watching it, not using it. */
   .ws .pane, .ws.nt #lpane, .ws.nc #rpane { display: flex; position: fixed; z-index: 41;
     top: env(safe-area-inset-top); bottom: 0; width: var(--dw);
     padding-bottom: env(safe-area-inset-bottom);
-    visibility: hidden; transition: transform 90ms ease-out, visibility 0s 90ms; }
+    visibility: hidden; }
   .ws #lpane { left: 0; top: calc(env(safe-area-inset-top) + var(--rib)); transform: translateX(-100%); }
   .ws #rpane { right: 0; transform: translateX(100%); }
   .ribbon { position: fixed; z-index: 41; left: 0; top: env(safe-area-inset-top);
     width: var(--dw); height: var(--rib); flex-direction: row; gap: 3px; padding: 0 8px;
     overflow: auto hidden; border-bottom: 1px solid var(--border-soft);
-    transform: translateX(-100%); visibility: hidden;
-    transition: transform 90ms ease-out, visibility 0s 90ms; }
+    transform: translateX(-100%); visibility: hidden; }
   .ribbon .rtop, .ribbon .rbot { flex-direction: row; }
   .ribbon .rbot { margin: 0 0 0 auto; }
-  .ws.ldraw #lpane, .ws.ldraw .ribbon, .ws.rdraw #rpane { transform: none; visibility: visible;
-    transition: transform 90ms ease-out; }
+  .ws.ldraw #lpane, .ws.ldraw .ribbon, .ws.rdraw #rpane { transform: none; visibility: visible; }
   .ws.ldraw #scrim, .ws.rdraw #scrim { display: block; position: fixed; inset: 0; z-index: 40;
     background: color-mix(in srgb, var(--bg) 55%, transparent); }
-  @media (prefers-reduced-motion: reduce) {
-    .ws .pane, .ribbon, .ws.ldraw #lpane, .ws.ldraw .ribbon, .ws.rdraw #rpane { transition: none; }
-  }
   /* a long file name in the Files tab truncates within the drawer, and
      the button row wraps rather than widening it */
   .tree { min-width: 0; }
