@@ -13161,7 +13161,16 @@
   'sandbox allow-scripts allow-forms allow-popups allow-top-navigation-by-user-activation'
 ::  the service worker: extra Service-Worker-Allowed so its scope can be the
 ::  whole /apps/lattice prefix (it is served from .../sw.js, default scope
-::  .../), and no-cache so an updated worker propagates.
+::  .../), and a five-minute max-age. Chrome checks the worker for an
+::  update about a second after every navigation in scope, each frame
+::  tab's included. With no-cache each check was a request to the pier,
+::  0.3 to 0.7 s of it, landing beside the request the navigation was
+::  for, and the runtime holds a response back until the requests queued
+::  behind it are done. Both registrations ask for updateViaCache "all",
+::  so a check inside the max-age is answered by the http cache. A deploy
+::  reaches a browser at its first navigation five minutes after its last
+::  check at most; the editor and app.js are network-first in the worker,
+::  so a load in between still runs the new client.
 ::
 ++  send-sw
   |=  [eyre-id=@ta body=@t]
@@ -13171,7 +13180,7 @@
   :_  `(as-octs:mimes:html body)
   :-  200
   :~  ['content-type' 'text/javascript']
-      ['cache-control' 'no-cache']
+      ['cache-control' 'max-age=300']
       ['service-worker-allowed' '/apps/lattice']
   ==
 ::  a PNG from an embedded base64 constant (iOS apple-touch-icon must be a real
@@ -13403,7 +13412,7 @@
 ++  sw-register-script
   ^-  tape
   %-  trip
-  '<script>if("serviceWorker"in navigator){navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice"}).then(function(r){r.addEventListener("updatefound",function(){var w=r.installing;if(w)w.addEventListener("statechange",function(){if(w.state==="installed"&&navigator.serviceWorker.controller)w.postMessage("skipWaiting")})})}).catch(function(x){});var swReloading=false;if(navigator.serviceWorker.controller){navigator.serviceWorker.addEventListener("controllerchange",function(){if(swReloading)return;if(window.__latUnsaved&&window.__latUnsaved())return;swReloading=true;location.reload()})}}</script>'
+  '<script>if("serviceWorker"in navigator){navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice",updateViaCache:"all"}).then(function(r){r.addEventListener("updatefound",function(){var w=r.installing;if(w)w.addEventListener("statechange",function(){if(w.state==="installed"&&navigator.serviceWorker.controller)w.postMessage("skipWaiting")})})}).catch(function(x){});var swReloading=false;if(navigator.serviceWorker.controller){navigator.serviceWorker.addEventListener("controllerchange",function(){if(swReloading)return;if(window.__latUnsaved&&window.__latUnsaved())return;swReloading=true;location.reload()})}}</script>'
 ::  +esc: HTML-escape a tape. +url-enc: percent-encode a tape for a query
 ::  value. +has-prefix: tape prefix test.
 ::
