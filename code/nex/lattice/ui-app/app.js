@@ -900,10 +900,14 @@
   //  one click pointerdown cannot have preceded. Measured before this: the
   //  first open queued behind three boot fetches and took 5.2s.
   let lastAction = Date.now();
-  addEventListener('pointerdown', () => { lastAction = Date.now(); }, true);
-  addEventListener('keydown', () => { lastAction = Date.now(); }, true);
-  //  an edit that came without a key (a paste from a menu, dictation)
-  addEventListener('input', () => { lastAction = Date.now(); }, true);
+  const bgBusy = () => { lastAction = Date.now(); };
+  //  an edit that came without a key (a paste from a menu, dictation), and
+  //  a click that came without a pointer (a menu, assistive tech)
+  for (const t of ['pointerdown', 'keydown', 'input', 'click']) addEventListener(t, bgBusy, true);
+  //  A frame tab's events never reach this window, so its frame passes them
+  //  on, and its loads count too (frameDress, 24-tools.js). Browsing in a
+  //  frame read as idle: the lane sent its panel reads mid-browse, and the
+  //  forum's first load queued behind 2 s of them.
   const BG_IDLE_MS = 4000;
   //  and none while a save is on the wire or about to be: an unsaved
   //  buffer is a save due within autosave's debounce, and the ship serves
@@ -3508,7 +3512,7 @@
     // stay, for frameDress and the pages themselves.
     f.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups '
       + 'allow-popups-to-escape-sandbox allow-modals allow-downloads');
-    f.onload = () => { fnavLoad(f); frameDress(f); };
+    f.onload = () => { bgBusy(); fnavLoad(f); frameDress(f); };
     f.src = url;
     toolHost.append(f);
   }
@@ -3597,6 +3601,8 @@
       }, !inner);
     };
     aimTop(d, false);
+    // what is done in the frame is done in the shell (bgFetch, 10-shell.js)
+    for (const t of ['pointerdown', 'keydown', 'input', 'click']) d.addEventListener(t, bgBusy, true);
     // the reader shows a page in a frame of its own (srcdoc), where the
     // comment box lives. A sandboxed one (a peer's page) is out of reach,
     // and has no box.

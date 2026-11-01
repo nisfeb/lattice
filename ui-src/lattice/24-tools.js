@@ -193,7 +193,7 @@
     // stay, for frameDress and the pages themselves.
     f.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups '
       + 'allow-popups-to-escape-sandbox allow-modals allow-downloads');
-    f.onload = () => { fnavLoad(f); frameDress(f); };
+    f.onload = () => { bgBusy(); fnavLoad(f); frameDress(f); };
     f.src = url;
     toolHost.append(f);
   }
@@ -282,6 +282,8 @@
       }, !inner);
     };
     aimTop(d, false);
+    // what is done in the frame is done in the shell (bgFetch, 10-shell.js)
+    for (const t of ['pointerdown', 'keydown', 'input', 'click']) d.addEventListener(t, bgBusy, true);
     // the reader shows a page in a frame of its own (srcdoc), where the
     // comment box lives. A sandboxed one (a peer's page) is out of reach,
     // and has no box.
