@@ -157,11 +157,36 @@
     bsr.onclick = () => gSplit(g, 'r');
     bsd.onclick = () => gSplit(g, 'd');
 
-    // the parked view. Its buttons do what the live header's do, once the
-    // group is in front.
     const ghost = document.createElement('div');
     ghost.className = 'gghost';
     ghost.hidden = true;
+    const host = document.createElement('div');
+    host.className = 'toolhost';
+    host.hidden = true;
+    el.append(strip, ghost, host);
+    groot.append(el);
+    Object.assign(g, { el, strip, list, bnew, bsr, bsd, ghost, host, gmemo: null });
+    // a press anywhere in a group that is not in front brings it there,
+    // except on its tabs, which may be starting a drag (a click on one
+    // switches to it, group and all), and on the parked view, whose parts
+    // say where they lead themselves
+    el.addEventListener('pointerdown', (e) => {
+      if (g === focusG || !e.isPrimary) return;
+      if (e.target.closest('.gghost, .dtw')) return;
+      gFocus(g);
+    }, true);
+    gDragWire(g);
+    return g;
+  }
+  // the inside of a group's parked view, made the first time the group is
+  // painted out of front (gPaint). A lone group is never parked, and its
+  // editor and preview frame, made at boot, were a fifth of the boot task
+  // and a frame whose own long task the boot was counted twice for.
+  function gGhostBuild(g) {
+    if (g.ghead) return;
+    const ghost = g.ghost;
+    // the parked view. Its buttons do what the live header's do, once the
+    // group is in front.
     ghost.innerHTML =
       '<div class="tabhead ghead">'
       + sbtn('data-go="tback"', 'left', 'Back', 'Alt+Left')
@@ -175,16 +200,10 @@
       + '</div>'
       + '<div class="gdoc"><lat-editor ghost></lat-editor>'
       + '<div class="prevwrap"><iframe class="prev" title="preview" sandbox="allow-scripts"></iframe></div></div>';
-    const host = document.createElement('div');
-    host.className = 'toolhost';
-    host.hidden = true;
-    el.append(strip, ghost, host);
-    groot.append(el);
-    Object.assign(g, { el, strip, list, bnew, bsr, bsd, ghost, host,
+    Object.assign(g, {
       ghead: ghost.querySelector('.ghead'), gdoc: ghost.querySelector('.gdoc'),
       gta: ghost.querySelector('.esrc'), ghl: ghost.querySelector('.ehl'),
-      gprev: ghost.querySelector('.prev'), gmemo: null });
-
+      gprev: ghost.querySelector('.prev') });
     const LIVE = { tback: '#tback', tfwd: '#tfwd', tpath: '#tpath', tmenu: '#tmenu',
       edit: '#tread [data-r="0"]', read: '#tread [data-r="1"]' };
     for (const b of ghost.querySelectorAll('[data-go]'))
@@ -192,15 +211,6 @@
         const live = document.querySelector(LIVE[b.dataset.go]);
         if (live && !live.disabled) live.click();
       });
-    // a press anywhere in a group that is not in front brings it there,
-    // except on its tabs, which may be starting a drag (a click on one
-    // switches to it, group and all), and on the parked view, whose parts
-    // say where they lead themselves
-    el.addEventListener('pointerdown', (e) => {
-      if (g === focusG || !e.isPrimary) return;
-      if (e.target.closest('.gghost, .dtw')) return;
-      gFocus(g);
-    }, true);
     // the parked text: the caret goes where the press put it in the ghost
     // (readonly, so the press only selects), once the group is in front
     const ta = g.gta;
@@ -220,8 +230,6 @@
       g.ghl.scrollLeft = ta.scrollLeft;
     });
     g.gdoc.querySelector('.prevwrap').addEventListener('pointerdown', () => gFocus(g));
-    gDragWire(g);
-    return g;
   }
   // run `fn` once `g` is in front: at once, or after the queue brings it
   const gThen = (g, fn) => {
@@ -463,6 +471,7 @@
     const on = g === focusG;
     g.ghost.hidden = on;
     if (on) { g.gmemo = null; return; }
+    gGhostBuild(g);
     const t = g.active;
     const k = t && TAB_KINDS[t.kind];
     const doc = !!k && !!k.live;

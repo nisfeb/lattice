@@ -104,10 +104,10 @@
   =/  t=@da  ~2026.1.1
   =/  gap=@dr  ~s6
   ;:  weld
-    (expect-eq !>(&) !>((lte (pub-due:lp (pub-note:lp ~ t) gap) t)))
+    (expect-eq !>(&) !>((lte (pub-due:lp (pub-note:lp ~ t ~s4) gap) t)))
     (expect-eq !>((add t gap)) !>((pub-due:lp [t 0 t &] gap)))
     ::  a save 2 s after a publish waits 4 s more, not 6 after the save
-    =/  w=pub-wait:lp  (pub-note:lp `[t 0 t |] (add t ~s2))
+    =/  w=pub-wait:lp  (pub-note:lp `[t 0 t |] (add t ~s2) ~s4)
     (expect-eq !>((add t gap)) !>((pub-due:lp w gap)))
   ==
 ::  +pub-note: a save makes the row dirty, keeps its last publish and
@@ -115,8 +115,12 @@
 ++  test-pub-note
   =/  t=@da  ~2026.1.1
   ;:  weld
-    (expect-eq !>(`pub-wait:lp`[t 0 *@da &]) !>((pub-note:lp ~ t)))
-    (expect-eq !>(`pub-wait:lp`[(add t ~s1) 0 t &]) !>((pub-note:lp `[t 2 t |] (add t ~s1))))
+    (expect-eq !>(`pub-wait:lp`[t 0 *@da &]) !>((pub-note:lp ~ t ~s4)))
+    (expect-eq !>(`pub-wait:lp`[(add t ~s1) 0 t &]) !>((pub-note:lp `[t 2 t |] (add t ~s1) ~s4)))
+    ::  a lone save, `quiet` after the last, forgets the last publish
+    (expect-eq !>(`pub-wait:lp`[(add t ~s5) 0 *@da &]) !>((pub-note:lp `[t 0 (add t ~s1) |] (add t ~s5) ~s4)))
+    ::  but not while a publish is waiting
+    (expect-eq !>(`pub-wait:lp`[(add t ~s5) 0 (add t ~s1) &]) !>((pub-note:lp `[t 0 (add t ~s1) &] (add t ~s5) ~s4)))
   ==
 ::  +pub-prune keeps every dirty row and a clean one only inside its gap,
 ::  so the map never holds more than the pages waiting or just published
@@ -147,7 +151,7 @@
 ::  due and is not dropped; three failures drop it.
 ++  test-pub-tries
   =/  t=@da  ~2026.1.1
-  =/  w=pub-wait:lp  (pub-note:lp ~ t)
+  =/  w=pub-wait:lp  (pub-note:lp ~ t ~s4)
   =/  pen=pub-pending:lp  (malt ~[['/a' w]])
   =/  f1  (pub-failed:lp w (add t ~s1))
   =/  f3  (pub-failed:lp (pub-failed:lp f1 (add t ~s8)) (add t ~s15))

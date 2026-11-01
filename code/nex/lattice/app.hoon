@@ -606,6 +606,18 @@
         ::  length is the climb back to the root.
         =/  up=@ud  (lent path.rail)
         =/  pdir=path  path.rail
+        ::  a shared page's run waits a moment longer, in real time. Its
+        ::  save's publish went out ahead of it (+yield-event), and an
+        ::  open reader view of the page, told by the beacon, asks for
+        ::  the new copy next. Run here, on a past timer, the run would
+        ::  sit in front of that request; a second later it goes behind.
+        ;<  sv=view:nexus  bind:m  (peek:fio (rf up pdir %share) ~)
+        ;<  ~  bind:m
+          =/  sh=share-mode:le
+            ?.  ?=([%file *] sv)  %private
+            (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.sv)))) %private)
+          ?:  ?=(%private sh)  (pure:m ~)
+          (sleep-draining eval-pub-lag)
         ::  one wire for everything: code (self), cmd inbox, deps grub, and
         ::  each declared dep target. Any change wakes the loop.
         ;<  *  bind:m  (keep:io /ev (rf up pdir %code) ~)
@@ -6926,6 +6938,9 @@
 ::  ponytail: computed (hoon/index) pages keep share-time snapshots.
 ::
 ++  pub-gap    ^-(@dr ~s6)
+::  +pub-quiet: a save this long after the page's last one is no part of
+::  a burst, and publishes at once (+pub-note:lp)
+++  pub-quiet  ^-(@dr ~s4)
 ++  pub-tries  ^-(@ud 3)
 ++  pub-when
   |=  row=pub-wait:lp
@@ -6982,7 +6997,7 @@
   =/  k=@t  (spat rel)
   =/  nen=pub-pending:lp
     =/  pru  (pub-prune:lp pen now pub-gap)
-    (~(put by pru) k (pub-note:lp (~(get by pen) k) now))
+    (~(put by pru) k (pub-note:lp (~(get by pen) k) now pub-quiet))
   ;<  ~  bind:m  (put-file (pub-pending-road root) [/ %noun] nen)
   =/  due=?  (lte (pub-when (~(got by nen) k)) now)
   ;<  ~  bind:m
@@ -8210,6 +8225,9 @@
 ::  evaluator. A shared page's live view follows /beacon/data as well,
 ::  which the run bumps (+eval-run).
 ++  defer-at  ^-(@da (add *@da ~s2))
+::  +eval-pub-lag: how long a shared page's run waits after its defer, so
+::  a reader's request for the copy just published goes first
+++  eval-pub-lag  ^-(@dr ~s1)
 ::  +defer-drain: put the rest of a fiber off to a later arvo event: a
 ::  behn timer for a time already past (+defer-at), and wait for its wake. Every input
 ::  before the wake is eaten, the start's kick included, which is what a
@@ -10393,18 +10411,34 @@
 ::  neighbour's message and nest-fail (-need.@p / -need.@da). The one grubbery peek
 ::  turned into a poke-service means every our/now read must filter like this.
 ::
+::  +bowl-our: our ship, from /sys/bowl.sig, the way +bowl-now asks: on
+::  a fixed wire, not poke:io's +nonce, which cost a second round trip to
+::  bowl.sig for the wire alone. An answer left on the wire by a crashed
+::  run is our ship all the same.
 ++  bowl-our
   =/  m  (fiber:fiber:nexus ,ship)
   ^-  form:m
-  ;<  ~  bind:m  (poke:io &+&+[/sys %'bowl.sig'] [[/ %bowl-req] %our])
+  =/  =wire  /bowl/our
+  ;<  ~  bind:m
+    (send-dart:io %node wire &+&+[/sys %'bowl.sig'] %poke [[/ %bowl-req] %our])
+  =/  pak=?  |
+  =/  got=(unit ship)  ~
+  |-  ^-  form:m
   |=  input:fiber:nexus
-  :+  ~  q.state
-  ?+  in  [%skip ~]
-      ~  [%wait ~]
-      [~ %poke * *]
-    ?.  =([/ %ship] p.sage.u.in)  [%skip ~]
-    [%done !<(ship q.sage.u.in)]
-  ==
+  ?~  in  [~ q.state %wait ~]
+  ?:  ?=([%veto %node *] u.in)
+    ?.  =(wire wire.dart.u.in)  [~ q.state %skip ~]
+    [~ q.state %fail (veto-error:io dart.u.in)]
+  ?:  ?=([%pack * *] u.in)
+    ?.  =(wire wire.u.in)  [~ q.state %skip ~]
+    ?^  err.u.in  [~ q.state %fail %poke-failed u.err.u.in]
+    ?^  got  [~ q.state %done u.got]
+    [~ q.state %cont ^$(pak &)]
+  ?.  ?=([%poke * *] u.in)  [~ q.state %skip ~]
+  ?.  =([/ %ship] p.sage.u.in)  [~ q.state %skip ~]
+  =/  o=ship  !<(ship q.sage.u.in)
+  ?:  pak  [~ q.state %done o]
+  [~ q.state %cont ^$(got `o)]
 ::  +bowl-now: the time, from /sys/bowl.sig. On a fixed wire, not a
 ::  +nonce (a second round trip to bowl.sig, for the wire alone), and it
 ::  takes the poke's ack as well as the answer, in either order, so the
@@ -12292,21 +12326,28 @@
   =/  lod=(each board:ft @t)  (load:fb u.gs)
   ?:  ?=(%| -.lod)  (pure:m ~)
   (pure:m `p.lod)
-::  +forum-board-list: [name title public] of every readable board, by name.
+::  +forum-board-list: [name title public] of every board with a readable
+::  card, by name. The names come from a shallow peek and each title from
+::  the board's card alone: a deep peek and a whole +load of every board,
+::  posts and all, read a forum's every grub to list its boards.
 ::
 ++  forum-board-list
   |=  up=@ud
   =/  m  (fiber:fiber:nexus ,(list [name=board-name:ft title=@t public=?]))
   ^-  form:m
-  ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/boards) ~)
+  ;<  v=view:nexus  bind:m  (peek-shallow:fio (rv up /forum/boards) ~)
   ?.  ?=([%ball *] v)  (pure:m ~)
   =/  noms=(list @ta)  (sort ~(tap in ~(key by dir.ball.v)) aor)
   |-  ^-  form:m
   ?~  noms  (pure:m ~)
-  ;<  brd=(unit board:ft)  bind:m  (forum-load-board up i.noms)
+  ;<  cv=view:nexus  bind:m  (peek:fio (rf up /forum/boards/[i.noms]/pub %card) ~)
   ;<  rest=(list [name=board-name:ft title=@t public=?])  bind:m  $(noms t.noms)
-  ?~  brd  (pure:m rest)
-  (pure:m [[;;(board-name:ft i.noms) title.info.u.brd public.info.u.brd] rest])
+  ?.  ?=([%file *] cv)  (pure:m rest)
+  =/  cd=(unit card:ft)  (mole |.(;;(card:ft (sang-noun:tarball sang.cv))))
+  =/  nm=(unit board-name:ft)  (mole |.(;;(board-name:ft i.noms)))
+  ?:  |(?=(~ cd) ?=(~ nm))  (pure:m rest)
+  =/  inf=board-info:ft  +.u.cd
+  (pure:m [[u.nm title.inf public.inf] rest])
 ::  +serve-forum-owner: the owner's forum views (an authenticated GET under
 ::  /forum): the board list, create form, a board's ranked list, a thread, the
 ::  submit form and the mod page. The same renderer as the public read, with
@@ -12319,23 +12360,25 @@
   ^-  form:m
   ?.  (levy `path`pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
     (send-err eyre-id 404 'not found')
-  ;<  our=@p  bind:m  bowl-our
-  ;<  now=@da  bind:m  bowl-now
   ;<  up=@ud  bind:m  nexus-up
   ;<  ns=(list [host=@p board=@t reason=@t at=@da])  bind:m  forum-read-notes
   =/  nn=@ud  (lent ns)
   =/  root=tape  "/apps/lattice/forum"
+  ::  the board list and the create form show no author and no time, so
+  ::  they skip the two round trips to bowl.sig for `our` and `now`
   ?~  pax
     ;<  bl=(list [name=board-name:ft title=@t public=?])  bind:m  (forum-board-list up)
-    (send-html eyre-id (forum-doc (render-boards:fre [our %.y now root ""] bl) "" "" %.y nn))
+    (send-html eyre-id (forum-doc (render-boards:fre [*@p %.y *@da root ""] bl) "" "" %.y nn))
   ?:  =('_new' i.pax)
     ?.  ?=(~ t.pax)  (send-err eyre-id 404 'not found')
-    (send-html eyre-id (forum-doc (render-create:fre [our %.y now root ""]) "" "" %.y nn))
+    (send-html eyre-id (forum-doc (render-create:fre [*@p %.y *@da root ""]) "" "" %.y nn))
   ?.  &(?=(?(~ [@ ~]) t.pax) ((sane %tas) i.pax))
     (send-err eyre-id 404 'not found')
   =/  nom=@ta  i.pax
   ;<  bo=(unit board:ft)  bind:m  (forum-load-board up nom)
   ?~  bo  (send-err eyre-id 404 'not found')
+  ;<  our=@p  bind:m  bowl-our
+  ;<  now=@da  bind:m  bowl-now
   =/  brd=board:ft  u.bo
   ;<  tf=(unit path)  bind:m  (find-theme /forum/[nom]/index)
   =/  theme-link=tape
@@ -13325,8 +13368,11 @@
 ::  and firing it at 2s taxed every browse click — read for a moment, click
 ::  a link, and the click queued behind the previous page's refetch on the
 ::  one-event-at-a-time pier: ~5s per click, in exactly the read-then-click
-::  rhythm people browse at. A CACHE-served paint keeps the prompt window:
-::  engine), puts the fresh copy under its canonical URL (?u= stripped, so
+::  rhythm people browse at. A CACHE-served paint may be stale, so it
+::  refetches after a 1.5 s idle instead: that is how a stale paint
+::  learns it is stale, and a GET costs the pier about half what the
+::  keep stream it used to wait for did (+sse-script, which now opens
+::  later). The refetch puts the fresh copy under its canonical URL (?u= stripped, so
 ::  command results refresh the canonical entry), stamps an LRU index in
 ::  IndexedDB (url -> {size, at}), and evicts least-recently-viewed entries
 ::  past the budget. 200MB at ~15KB a page is ~13k pages: eviction is the
@@ -13341,7 +13387,7 @@
 ++  page-cache-script
   ^-  tape
   %-  trip
-  '<script>(function(){if(!("caches"in window)||!window.indexedDB)return;var PN=location.pathname;if(PN==="/apps/lattice/clip"||PN==="/apps/lattice/share")return;var BUDGET=(+localStorage.latCacheBudget)||200*1024*1024;var canon=(function(){var h=location.href.split("#")[0];var i=h.indexOf("?");if(i<0)return h;var q=h.slice(i+1).split("&").filter(function(s){return s.slice(0,2)!=="u="});return q.length?h.slice(0,i)+"?"+q.join("&"):h.slice(0,i)})();function idb(){return new Promise(function(res,rej){var r=indexedDB.open("lattice-lru",1);r.onupgradeneeded=function(){r.result.createObjectStore("e",{keyPath:"url"})};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}function tx(db,mode,fn){return new Promise(function(res,rej){var t=db.transaction("e",mode);fn(t.objectStore("e"));t.oncomplete=function(){res()};t.onerror=function(){rej(t.error)}})}function touch(url,size){return idb().then(function(db){return tx(db,"readwrite",function(st){var g=st.get(url);g.onsuccess=function(){var e=g.result||{url:url,size:0};e.at=Date.now();if(size)e.size=size;st.put(e)}})}).catch(function(x){})}function evict(){return idb().then(function(db){var all=[];return tx(db,"readonly",function(st){st.openCursor().onsuccess=function(ev){var c=ev.target.result;if(c){all.push(c.value);c.continue()}}}).then(function(){var total=all.reduce(function(a,e){return a+(e.size||0)},0);if(total<=BUDGET)return;all.sort(function(a,b){return(a.at||0)-(b.at||0)});return caches.open("lattice-pages").then(function(c){var i=0;function step(){if(i>=all.length||total<=BUDGET)return;var e=all[i++];total-=(e.size||0);return c.delete(e.url).then(function(){return tx(db,"readwrite",function(st){st.delete(e.url)})}).then(step)}return step()})})}).catch(function(x){})}var swReady=("serviceWorker"in navigator)?Promise.race([navigator.serviceWorker.ready.catch(function(){}),new Promise(function(r){setTimeout(r,3000)})]):Promise.resolve();var shown=null;caches.open("lattice-pages").then(function(c){return c.match(canon)}).then(function(r){return r?r.text():null}).then(function(t){shown=t}).catch(function(x){});function strip(t){return t.replace(/var REV="[^"]*"/,"")}function drop(){return caches.open("lattice-pages").then(function(c){return c.delete(canon)}).then(function(){return idb()}).then(function(db){return tx(db,"readwrite",function(st){st.delete(canon)})}).catch(function(x){})}function wipe(){return caches.delete("lattice-pages").then(function(){try{indexedDB.deleteDatabase("lattice-lru")}catch(x){}}).catch(function(x){})}var inflight=null;function refresh(force){if(inflight&&!force)return inflight;var p=swReady.then(function(){return fetch(location.href,{credentials:"same-origin",cache:"no-store",headers:{"x-lattice-bg":"1"}}).then(function(r){if(r.status===401||r.status===403){return wipe().then(function(){return false})}if(r.redirected||r.status===404||r.status===410){return drop().then(function(){return false})}if(!r.ok)return false;return r.blob().then(function(body){return caches.open("lattice-pages").then(function(c){return body.text().then(function(nt){var chg=shown===null||strip(shown)!==strip(nt);if(shown===null)shown=nt;return c.put(canon,new Response(body,{status:200,headers:{"content-type":r.headers.get("content-type")||"text/html"}})).then(function(){return touch(canon,body.size)}).then(evict).then(function(){return{ok:true,chg:chg}})})})})})}).catch(function(x){return false}).then(function(ok){if(inflight===p)inflight=null;return ok});inflight=p;return p}window.__latRefresh=refresh;window.__latCanon=canon;touch(canon,0);var last=Date.now();addEventListener("pointerdown",function(){last=Date.now()},true);addEventListener("keydown",function(){last=Date.now()},true);var nav0=performance.getEntriesByType("navigation")[0];var fresh=!!(nav0&&nav0.transferSize>0);var IDLE=fresh?12000:8000;var CAP=fresh?45000:20000;var t0=Date.now();var iv=setInterval(function(){if(Date.now()-last>IDLE||Date.now()-t0>CAP){clearInterval(iv);refresh()}},500);var oic=/Chrome\//.test(navigator.userAgent);if(fresh&&oic){swReady.then(function(){return fetch(location.href,{cache:"only-if-cached",mode:"same-origin",credentials:"same-origin"})}).then(function(r){if(!r.ok||r.redirected)throw 0;return r.blob()}).then(function(body){return body.text().then(function(nt){shown=nt;return caches.open("lattice-pages").then(function(c){return c.put(canon,new Response(body,{status:200,headers:{"content-type":"text/html"}}))}).then(function(){return touch(canon,body.size)})})}).then(function(){clearInterval(iv)}).catch(function(x){})}})();</script>'
+  '<script>(function(){if(!("caches"in window)||!window.indexedDB)return;var PN=location.pathname;if(PN==="/apps/lattice/clip"||PN==="/apps/lattice/share")return;var BUDGET=(+localStorage.latCacheBudget)||200*1024*1024;var canon=(function(){var h=location.href.split("#")[0];var i=h.indexOf("?");if(i<0)return h;var q=h.slice(i+1).split("&").filter(function(s){return s.slice(0,2)!=="u="});return q.length?h.slice(0,i)+"?"+q.join("&"):h.slice(0,i)})();function idb(){return new Promise(function(res,rej){var r=indexedDB.open("lattice-lru",1);r.onupgradeneeded=function(){r.result.createObjectStore("e",{keyPath:"url"})};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}function tx(db,mode,fn){return new Promise(function(res,rej){var t=db.transaction("e",mode);fn(t.objectStore("e"));t.oncomplete=function(){res()};t.onerror=function(){rej(t.error)}})}function touch(url,size){return idb().then(function(db){return tx(db,"readwrite",function(st){var g=st.get(url);g.onsuccess=function(){var e=g.result||{url:url,size:0};e.at=Date.now();if(size)e.size=size;st.put(e)}})}).catch(function(x){})}function evict(){return idb().then(function(db){var all=[];return tx(db,"readonly",function(st){st.openCursor().onsuccess=function(ev){var c=ev.target.result;if(c){all.push(c.value);c.continue()}}}).then(function(){var total=all.reduce(function(a,e){return a+(e.size||0)},0);if(total<=BUDGET)return;all.sort(function(a,b){return(a.at||0)-(b.at||0)});return caches.open("lattice-pages").then(function(c){var i=0;function step(){if(i>=all.length||total<=BUDGET)return;var e=all[i++];total-=(e.size||0);return c.delete(e.url).then(function(){return tx(db,"readwrite",function(st){st.delete(e.url)})}).then(step)}return step()})})}).catch(function(x){})}var swReady=("serviceWorker"in navigator)?Promise.race([navigator.serviceWorker.ready.catch(function(){}),new Promise(function(r){setTimeout(r,3000)})]):Promise.resolve();var shown=null;caches.open("lattice-pages").then(function(c){return c.match(canon)}).then(function(r){return r?r.text():null}).then(function(t){shown=t}).catch(function(x){});function strip(t){return t.replace(/var REV="[^"]*"/,"")}function drop(){return caches.open("lattice-pages").then(function(c){return c.delete(canon)}).then(function(){return idb()}).then(function(db){return tx(db,"readwrite",function(st){st.delete(canon)})}).catch(function(x){})}function wipe(){return caches.delete("lattice-pages").then(function(){try{indexedDB.deleteDatabase("lattice-lru")}catch(x){}}).catch(function(x){})}var inflight=null;function refresh(force){if(inflight&&!force)return inflight;var p=swReady.then(function(){return fetch(location.href,{credentials:"same-origin",cache:"no-store",headers:{"x-lattice-bg":"1"}}).then(function(r){if(r.status===401||r.status===403){return wipe().then(function(){return false})}if(r.redirected||r.status===404||r.status===410){return drop().then(function(){return false})}if(!r.ok)return false;return r.blob().then(function(body){return caches.open("lattice-pages").then(function(c){return body.text().then(function(nt){window.__latDoc=nt;var chg=shown===null||strip(shown)!==strip(nt);if(shown===null)shown=nt;return c.put(canon,new Response(body,{status:200,headers:{"content-type":r.headers.get("content-type")||"text/html"}})).then(function(){return touch(canon,body.size)}).then(evict).then(function(){return{ok:true,chg:chg}})})})})})}).catch(function(x){return false}).then(function(ok){if(inflight===p)inflight=null;return ok});inflight=p;return p}window.__latRefresh=refresh;window.__latCanon=canon;touch(canon,0);var last=Date.now();addEventListener("pointerdown",function(){last=Date.now()},true);addEventListener("keydown",function(){last=Date.now()},true);var nav0=performance.getEntriesByType("navigation")[0];var fresh=!!(nav0&&nav0.transferSize>0);var IDLE=fresh?12000:1500;var CAP=fresh?45000:20000;var t0=Date.now();var iv=setInterval(function(){if(Date.now()-last>IDLE||Date.now()-t0>CAP){clearInterval(iv);refresh()}},500);var oic=/Chrome\//.test(navigator.userAgent);if(fresh&&oic){swReady.then(function(){return fetch(location.href,{cache:"only-if-cached",mode:"same-origin",credentials:"same-origin"})}).then(function(r){if(!r.ok||r.redirected)throw 0;return r.blob()}).then(function(body){return body.text().then(function(nt){shown=nt;return caches.open("lattice-pages").then(function(c){return c.put(canon,new Response(body,{status:200,headers:{"content-type":"text/html"}}))}).then(function(){return touch(canon,body.size)})})}).then(function(){clearInterval(iv)}).catch(function(x){})}})();</script>'
 ::  +nav-script: contextual back/forward + the hamburger. The stack is the
 ::  TAB's own (sessionStorage), indexed by a latI stamped into history.state
 ::  so a traversal is told apart from a new navigation: a load carrying latI
@@ -14348,11 +14394,17 @@
 ::  and parked streams took all six connections a browser gives a host.
 ::  The shell fires lathidden/latshown on the frame as it parks or shows
 ::  it (24-tools.js), and the stream drops or comes back on those.
-::  The stream opens 2 s after load, not at once: each one opened and
-::  dropped costs the ship about half a second, and a page passed
-::  through on Back or Forward opened one for nothing. A forum tab opened
-::  right after a Back and a Forward waited 1.6 s behind them, 0.5 s
-::  without. The `old` event still checks the baked rev once it opens.
+::  The stream opens 5 s after load, not at once: each one opened costs
+::  the ship over a second, and the runtime keeps a dropped one until it
+::  next writes to it, so every bump pays for the dead ones too. A page
+::  passed through on Back or Forward opened one for nothing, and a forum
+::  tab opened right after waited 1.6 s behind them. A cached paint
+::  learns it is stale from its own refetch first (+page-cache-script).
+::  The `old` event checks the rev once the stream opens, against the
+::  newest copy this page has fetched (RW), else the one it painted. On
+::  a paint that came over the network (FR) a mismatch is a save made
+::  since the page was served, in the 5 s before its stream: the view is
+::  stale under the reader's eyes, so it swaps as a live `upd` does.
 ::  "" -> no script (remote pages, error shells). Built from single-quote
 ::  cords so the JS braces stay literal (only \\ needs escaping); mirrors
 ::  counter.hoon's SSE parse loop.
@@ -14367,7 +14419,7 @@
     (trip '";var W=')
     ?~(revs (trip '{}') revs)
     %-  trip
-    ';var pend=0,ac=null,live=false;function H(){if(document.hidden)return true;try{var f=window.frameElement;return !!f&&!f.getClientRects().length}catch(e){return false}}function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||H())return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;var k=ev.slice(ev.indexOf(" ")+1);if(!W.hasOwnProperty(k))continue;if(ev.slice(0,3)==="old"){if(W[k]&&dt&&dt.trim()!==W[k]){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!H())upd();continue}location.reload();return}}}catch(x){}live=false;if(!H())setTimeout(c,3000)}function V(){if(H()){if(ac)ac.abort();return}if(live)return;if(window.__latRefresh)upd();setTimeout(c,200)}document.addEventListener("visibilitychange",V);addEventListener("lathidden",V);addEventListener("latshown",V);setTimeout(c,2000)})();</script>'
+    ';var pend=0,ac=null,live=false;var FR=(function(){try{var n=performance.getEntriesByType("navigation")[0];return !!(n&&n.transferSize>0)}catch(e){return false}})();function RW(k){var w=W[k];try{var m=(window.__latDoc||"").match(/var W=(\\{[^;]*\\});var pend/);if(m){var j=JSON.parse(m[1]);if(j.hasOwnProperty(k))w=j[k]}}catch(e){}return w}function H(){if(document.hidden)return true;try{var f=window.frameElement;return !!f&&!f.getClientRects().length}catch(e){return false}}function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||H())return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;var k=ev.slice(ev.indexOf(" ")+1);if(!W.hasOwnProperty(k))continue;if(ev.slice(0,3)==="old"){var w=RW(k);if(w&&dt&&dt.trim()!==w){if(window.__latRefresh){if(FR)upd();else window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!H())upd();continue}location.reload();return}}}catch(x){}try{ac.abort()}catch(x){}live=false;if(!H())setTimeout(c,3000)}function V(){if(H()){if(ac)ac.abort();return}if(live)return;if(window.__latRefresh)upd();setTimeout(c,200)}document.addEventListener("visibilitychange",V);addEventListener("lathidden",V);addEventListener("latshown",V);setTimeout(c,5000)})();</script>'
   ==
 ::  +send-public-how: whitelist <root>/pub in the grubbery `public` usergroup's
 ::  peek set, so any foreign ship may peek/keep published pages. UNION, never
