@@ -3512,7 +3512,10 @@
     // stay, for frameDress and the pages themselves.
     f.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups '
       + 'allow-popups-to-escape-sandbox allow-modals allow-downloads');
-    f.onload = () => { bgBusy(); fnavLoad(f); frameDress(f); };
+    // a load counts as activity only when the user's own event in the frame
+    // led to it, within 10 s: a page that reloads itself on each keep event
+    // must not hold the background lane shut
+    f.onload = () => { if (Date.now() - (f.latAct || 0) < 10000) bgBusy(); fnavLoad(f); frameDress(f); };
     f.src = url;
     toolHost.append(f);
   }
@@ -3573,6 +3576,10 @@
     const aimTop = (doc, inner) => {
       if (doc.latAimed) return;
       doc.latAimed = true;
+      // what is done in the frame, the comment box's frame included, is done
+      // in the shell (bgFetch, 10-shell.js)
+      const act = () => { f.latAct = Date.now(); bgBusy(); };
+      for (const t of ['pointerdown', 'keydown', 'input', 'click']) doc.addEventListener(t, act, true);
       for (const el of doc.querySelectorAll('[target=_top], [target=_parent]')) el.target = f.name;
       const on = inner ? (doc.defaultView || doc) : doc;
       on.addEventListener('click', (e) => {
@@ -3601,8 +3608,6 @@
       }, !inner);
     };
     aimTop(d, false);
-    // what is done in the frame is done in the shell (bgFetch, 10-shell.js)
-    for (const t of ['pointerdown', 'keydown', 'input', 'click']) d.addEventListener(t, bgBusy, true);
     // the reader shows a page in a frame of its own (srcdoc), where the
     // comment box lives. A sandboxed one (a peer's page) is out of reach,
     // and has no box.
