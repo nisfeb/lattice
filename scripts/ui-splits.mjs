@@ -20,6 +20,9 @@
 //    S11 a read-only link is locked in its group and only there
 //    S12 a phone shows one group, splits nothing, and its tabs sheet switches
 //        groups
+//    S13 the live editor moves between groups with moveBefore, keeping the
+//        preview frame's page, and the same without moveBefore (Firefox,
+//        Safari, WebKitGTK), where the frame is made again
 //
 //  Slow writes are made by holding requests in the browser (request
 //  interception), so the races are deterministic. Everything seeded is under
@@ -598,6 +601,50 @@ try {
     await page.screenshot({ path: '/tmp/splits-phone.png' });
     await page.setViewport({ width: 1400, height: 900 });
     await sleep(800);
+  }
+  // ── S13: moving the live editor, with and without moveBefore ────────
+  //  last, because the second half takes moveBefore out of every document
+  //  this page loads from here on
+  if (on('S13')) {
+    const where = () => page.evaluate(() => {
+      const gl = document.getElementById('glive');
+      const gs = [...document.querySelectorAll('.tgroup')];
+      return { g: gs.indexOf(gl.parentNode), src: document.getElementById('src').value,
+        mb: typeof gl.moveBefore === 'function' };
+    });
+    //  a mark on the preview's window: kept while its page is, gone with it
+    const mark = () => page.evaluate(() => { window.__pvw = document.getElementById('prev').contentWindow; });
+    const kept = () => page.evaluate(() => document.getElementById('prev').contentWindow === window.__pvw);
+    const round = async (tag) => {
+      check(tag + ' two groups, A in front of the left', await twoGroups(A, B));
+      let w = await where();
+      check(tag + ' the live editor is in the left group, showing A',
+        w.g === 0 && w.src.includes('alpha page'), JSON.stringify(w));
+      await mark();
+      await clickGhost(1);
+      check(tag + ' a click into the right group brings B to the front', await waitFront('page', B));
+      w = await where();
+      check(tag + ' the live editor moved to the right group, showing B',
+        w.g === 1 && w.src.includes('beta page'), JSON.stringify(w));
+      const k = await kept();
+      await typeEnd(' moved ' + tag.slice(0, 4));
+      check(tag + ' typing there is saved', await shipHas(B, 'moved ' + tag.slice(0, 4)));
+      await clickGhost(0);
+      check(tag + ' and back to the left', await waitFront('page', A) && (await where()).g === 0);
+      return { w, k };
+    };
+    const nat = await page.evaluate(() => typeof Element.prototype.moveBefore === 'function');
+    if (nat) {
+      const r = await round('S13a moveBefore');
+      check('S13a the engine has moveBefore', r.w.mb);
+      check('S13a the move kept the preview\'s page', r.k);
+    }
+    await page.evaluateOnNewDocument(() => {
+      for (const P of [Element, Document, DocumentFragment]) delete P.prototype.moveBefore;
+    });
+    const r = await round('S13b without moveBefore');
+    check('S13b the engine has no moveBefore here', !r.w.mb);
+    check('S13b the move made the preview again (insertBefore)', !r.k);
   }
 } catch (e) {
   check('suite crashed: ' + e.message, false);

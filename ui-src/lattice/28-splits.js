@@ -256,10 +256,22 @@
     splitRemove(g);
     const i = groups.indexOf(g);
     if (i >= 0) groups.splice(i, 1);
-    if (glive.parentNode === g.el) $('center').append(glive);
+    if (glive.parentNode === g.el) liveMove($('center'), null);
     for (const w of [...g.host.querySelectorAll('.intab')]) { w.hidden = true; toolStash.append(w); }
     g.el.remove();
     if (groups.includes(focusG)) splitPaint();
+  }
+
+  // The live editor moves with moveBefore where the engine has it. A plain
+  // insert takes the node out of the document and back, and an iframe that
+  // leaves the document loses its page: the preview frame was made again,
+  // its blank page loaded again, on every move, boot's first one included
+  // (about 10 to 20 ms of boot's long task).
+  function liveMove(parent, before) {
+    if (parent.moveBefore) {
+      try { parent.moveBefore(glive, before); return; } catch {}
+    }
+    parent.insertBefore(glive, before);
   }
 
   // ── painting ─────────────────────────────────────────────────────────
@@ -272,7 +284,7 @@
     if (focusG && groups.includes(focusG) && glive.parentNode !== focusG.el) {
       const had = document.activeElement === src;
       // before the parked view, so the first .edwrap in the page is the live one
-      focusG.el.insertBefore(glive, focusG.ghost);
+      liveMove(focusG.el, focusG.ghost);
       if (had) src.focus({ preventScroll: true });
     }
     for (const g of groups) {

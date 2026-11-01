@@ -9346,6 +9346,11 @@
 ::  only from a page whose HTML it fetched itself and read that from, so
 ::  new HTML never runs an old cached app.js.
 ::
+::  The HTML also says which worker goes with it (x-lattice-sw, its V and
+::  PV). sw.js is held five minutes in the http cache (+send-sw), so a
+::  worker that reads another V or PV there has been replaced by a deploy
+::  and fetches itself again (+sw-js).
+::
 ++  js-tag
   |=  o=octs
   ^-  @t
@@ -9382,6 +9387,8 @@
     =/  jr=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.jv))))
     ?:(?=(%| -.jr) ~ `(js-tag q.p.jr))
   =?  heds  ?=(^ jt)  [['x-lattice-js' u.jt] heds]
+  =?  heds  =(%'index.html' nam)
+    [['x-lattice-sw' (rap 3 ~['lattice-' shell-ver ' ' page-ver])] heds]
   %+  send-simple:srv  eyre-id
   :-  [200 heds]
   `q.p.res
@@ -13161,7 +13168,21 @@
   'sandbox allow-scripts allow-forms allow-popups allow-top-navigation-by-user-activation'
 ::  the service worker: extra Service-Worker-Allowed so its scope can be the
 ::  whole /apps/lattice prefix (it is served from .../sw.js, default scope
-::  .../), and no-cache so an updated worker propagates.
+::  .../), and a five-minute max-age. Chrome checks the worker for an
+::  update about a second after every navigation in scope, each frame
+::  tab's included. With no-cache each check was a request to the pier,
+::  0.3 to 0.7 s of it, landing beside the request the navigation was
+::  for, and the runtime holds a response back until the requests queued
+::  behind it are done. Both registrations ask for updateViaCache "all",
+::  so a check inside the max-age is answered by the http cache. That
+::  alone left a worker up to five minutes behind a deploy, and an editor
+::  reloaded in them ran the new app.js beside the old worker's cached
+::  vault.js, theme.js and orrery.js with no takeover reload to follow
+::  until some later navigation. So the editor's HTML names the worker
+::  that goes with it (x-lattice-sw, +serve-ui), and a worker that reads
+::  another V or PV there fetches sw.js past the http cache, 2.5 s on so
+::  it is not beside the boot, and updates. Reader pages still wait for
+::  the max-age: their navigations do not pass through the worker's fetch.
 ::
 ++  send-sw
   |=  [eyre-id=@ta body=@t]
@@ -13171,7 +13192,7 @@
   :_  `(as-octs:mimes:html body)
   :-  200
   :~  ['content-type' 'text/javascript']
-      ['cache-control' 'no-cache']
+      ['cache-control' 'max-age=300']
       ['service-worker-allowed' '/apps/lattice']
   ==
 ::  a PNG from an embedded base64 constant (iOS apple-touch-icon must be a real
@@ -13237,7 +13258,15 @@
 ::  the URL a boot later asks for, so its copy in the http cache is the
 ::  immutable one +serve-ui sends there.
 ::  The HTML document and app.js, the two that decide which CODE runs, are
-::  network-FIRST: try the pier, fall back to cache only when offline. So a
+::  network-FIRST: try the pier, fall back to cache only when offline.
+::  app.js has one exception: when the HTML just fetched names an H the
+::  cached copy is known to be (/__jh, written after the copy and dropped
+::  before it is replaced), the cached copy is those very bytes and is
+::  served. /__jh is written only when the copy came back immutable, the
+::  ship's word that its bytes are H: asked for an H a deploy has just
+::  replaced, it answers the new bytes no-cache. A script from the cache comes with the code cache made when
+::  it was stored, so the first load after an install compiles about
+::  15 ms less of app.js inside boot's long task. So a
 ::  deploy, even a broken one, can never trap a client on a stale shell the way
 ::  a cache-first app.js once did. app.js carries a ?h= or ?v= cache-bust so an
 ::  upstream proxy cannot pin a stale copy either. The remaining shell assets
@@ -13268,6 +13297,29 @@
 ++  shell-ver
   ^-  @t
   (scot %ux (mug [uih uij vjs tjs ojs icon pjs manifest-json icon-192-b64 icon-512-b64]))
+::  PV versions the RENDERED reader documents (their inline css + scripts).
+::  V only covers shell assets, so a deploy that restyled the reader left
+::  every cached page serving the old markup indefinitely: content revs
+::  converge quietly, but a CODE deploy bumped nothing — the activate
+::  handler below wipes 'lattice-pages' when PV moves.
+::  sse-script is a gate, and a gate's mug is its whole core's, which
+::  holds every /< asset. So app.js alone moved PV, and every deploy
+::  wiped the pages cache: the first browser tab after one was a miss
+::  and a redirect, 7.3 s on ~mec. It is mugged by what it renders now,
+::  and the rest of what draws a reader page by battery, this core's
+::  and the libraries a reader body goes through (markdown, gemtext,
+::  know view, forum, comments, templates, orrery): any change to this file or to them still
+::  wipes, and a deploy of the client alone (ui-app/, prism) does not.
+::  The editor's HTML carries it, with V, as x-lattice-sw (+serve-ui),
+::  so a worker can tell that a deploy has replaced it (+sw-js).
+++  page-ver
+  ^-  @t
+  %-  scot  :-  %ux
+  %-  mug
+  :*  -:..shell-ver  -:gfm  -:lgmi  -:lkv  -:fre  -:lc  -:tpl  -:lo
+      web-css  pwa-head  orrery-slot  nav-script  page-cache-script
+      (sse-script "k" "r")
+  ==
 ++  sw-js
   ^-  @t
   ::  The cache key is DERIVED from the two files it caches, never typed by
@@ -13309,32 +13361,13 @@
   ::  is dropped. Only a failed fetch (offline) falls back to the cached
   ::  shell. Owner content used to outlive the session in this browser.
   =/  ver=@t  shell-ver
-  ::  PV versions the RENDERED reader documents (their inline css + scripts).
-  ::  V only covers shell assets, so a deploy that restyled the reader left
-  ::  every cached page serving the old markup indefinitely: content revs
-  ::  converge quietly, but a CODE deploy bumped nothing — the activate
-  ::  handler below wipes 'lattice-pages' when PV moves.
-  ::  sse-script is a gate, and a gate's mug is its whole core's, which
-  ::  holds every /< asset. So app.js alone moved PV, and every deploy
-  ::  wiped the pages cache: the first browser tab after one was a miss
-  ::  and a redirect, 7.3 s on ~mec. It is mugged by what it renders now,
-  ::  and the rest of what draws a reader page by battery, this core's
-  ::  and the libraries a reader body goes through (markdown, gemtext,
-  ::  know view, forum, comments, templates, orrery): any change to this file or to them still
-  ::  wipes, and a deploy of the client alone (ui-app/, prism) does not.
-  =/  pv=@t
-    %-  scot  :-  %ux
-    %-  mug
-    :*  -:..shell-ver  -:gfm  -:lgmi  -:lkv  -:fre  -:lc  -:tpl  -:lo
-        web-css  pwa-head  orrery-slot  nav-script  page-cache-script
-        (sse-script "k" "r")
-    ==
+  =/  pv=@t  page-ver
   %+  rap  3
   :~  'var V="lattice-'
       ver
       '";var PV="'
       pv
-      '";var HJ={};var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.put(J,j)})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(r&&r.ok){c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
@@ -13369,10 +13402,19 @@
 ::  a link, and the click queued behind the previous page's refetch on the
 ::  one-event-at-a-time pier: ~5s per click, in exactly the read-then-click
 ::  rhythm people browse at. A CACHE-served paint may be stale, so it
-::  refetches after a 1.5 s idle instead: that is how a stale paint
-::  learns it is stale, and a GET costs the pier about half what the
-::  keep stream it used to wait for did (+sse-script, which now opens
-::  later). The refetch puts the fresh copy under its canonical URL (?u= stripped, so
+::  refetches once the page has been left alone 0.3 s: that is how a
+::  stale paint learns it is stale, and a GET costs the pier about half
+::  what the keep stream it used to wait for did (+sse-script, which now
+::  opens later). At 1.5 s the cache was fresh about 2.3 s after the
+::  paint. At 0.3 s the GET is answered before most reads end, so it is
+::  not in the way of the click that ends one, which was why the wait
+::  was long to begin with; Back and Forward through several pages in a
+::  row refetch none of the pages passed. A page out of sight (a parked
+::  frame tab, a hidden window) does not refetch until it has been back
+::  in sight for the idle: the click that parked it is opening something
+::  else, and the runtime holds that answer back until any request queued
+::  behind it is done, so a refetch then cost the forum tab opened right
+::  after Forward about 100 ms. The refetch puts the fresh copy under its canonical URL (?u= stripped, so
 ::  command results refresh the canonical entry), stamps an LRU index in
 ::  IndexedDB (url -> {size, at}), and evicts least-recently-viewed entries
 ::  past the budget. 200MB at ~15KB a page is ~13k pages: eviction is the
@@ -13387,7 +13429,7 @@
 ++  page-cache-script
   ^-  tape
   %-  trip
-  '<script>(function(){if(!("caches"in window)||!window.indexedDB)return;var PN=location.pathname;if(PN==="/apps/lattice/clip"||PN==="/apps/lattice/share")return;var BUDGET=(+localStorage.latCacheBudget)||200*1024*1024;var canon=(function(){var h=location.href.split("#")[0];var i=h.indexOf("?");if(i<0)return h;var q=h.slice(i+1).split("&").filter(function(s){return s.slice(0,2)!=="u="});return q.length?h.slice(0,i)+"?"+q.join("&"):h.slice(0,i)})();function idb(){return new Promise(function(res,rej){var r=indexedDB.open("lattice-lru",1);r.onupgradeneeded=function(){r.result.createObjectStore("e",{keyPath:"url"})};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}function tx(db,mode,fn){return new Promise(function(res,rej){var t=db.transaction("e",mode);fn(t.objectStore("e"));t.oncomplete=function(){res()};t.onerror=function(){rej(t.error)}})}function touch(url,size){return idb().then(function(db){return tx(db,"readwrite",function(st){var g=st.get(url);g.onsuccess=function(){var e=g.result||{url:url,size:0};e.at=Date.now();if(size)e.size=size;st.put(e)}})}).catch(function(x){})}function evict(){return idb().then(function(db){var all=[];return tx(db,"readonly",function(st){st.openCursor().onsuccess=function(ev){var c=ev.target.result;if(c){all.push(c.value);c.continue()}}}).then(function(){var total=all.reduce(function(a,e){return a+(e.size||0)},0);if(total<=BUDGET)return;all.sort(function(a,b){return(a.at||0)-(b.at||0)});return caches.open("lattice-pages").then(function(c){var i=0;function step(){if(i>=all.length||total<=BUDGET)return;var e=all[i++];total-=(e.size||0);return c.delete(e.url).then(function(){return tx(db,"readwrite",function(st){st.delete(e.url)})}).then(step)}return step()})})}).catch(function(x){})}var swReady=("serviceWorker"in navigator)?Promise.race([navigator.serviceWorker.ready.catch(function(){}),new Promise(function(r){setTimeout(r,3000)})]):Promise.resolve();var shown=null;caches.open("lattice-pages").then(function(c){return c.match(canon)}).then(function(r){return r?r.text():null}).then(function(t){shown=t}).catch(function(x){});function strip(t){return t.replace(/var REV="[^"]*"/,"")}function drop(){return caches.open("lattice-pages").then(function(c){return c.delete(canon)}).then(function(){return idb()}).then(function(db){return tx(db,"readwrite",function(st){st.delete(canon)})}).catch(function(x){})}function wipe(){return caches.delete("lattice-pages").then(function(){try{indexedDB.deleteDatabase("lattice-lru")}catch(x){}}).catch(function(x){})}var inflight=null;function refresh(force){if(inflight&&!force)return inflight;var p=swReady.then(function(){return fetch(location.href,{credentials:"same-origin",cache:"no-store",headers:{"x-lattice-bg":"1"}}).then(function(r){if(r.status===401||r.status===403){return wipe().then(function(){return false})}if(r.redirected||r.status===404||r.status===410){return drop().then(function(){return false})}if(!r.ok)return false;return r.blob().then(function(body){return caches.open("lattice-pages").then(function(c){return body.text().then(function(nt){window.__latDoc=nt;var chg=shown===null||strip(shown)!==strip(nt);if(shown===null)shown=nt;return c.put(canon,new Response(body,{status:200,headers:{"content-type":r.headers.get("content-type")||"text/html"}})).then(function(){return touch(canon,body.size)}).then(evict).then(function(){return{ok:true,chg:chg}})})})})})}).catch(function(x){return false}).then(function(ok){if(inflight===p)inflight=null;return ok});inflight=p;return p}window.__latRefresh=refresh;window.__latCanon=canon;touch(canon,0);var last=Date.now();addEventListener("pointerdown",function(){last=Date.now()},true);addEventListener("keydown",function(){last=Date.now()},true);var nav0=performance.getEntriesByType("navigation")[0];var fresh=!!(nav0&&nav0.transferSize>0);var IDLE=fresh?12000:1500;var CAP=fresh?45000:20000;var t0=Date.now();var iv=setInterval(function(){if(Date.now()-last>IDLE||Date.now()-t0>CAP){clearInterval(iv);refresh()}},500);var oic=/Chrome\//.test(navigator.userAgent);if(fresh&&oic){swReady.then(function(){return fetch(location.href,{cache:"only-if-cached",mode:"same-origin",credentials:"same-origin"})}).then(function(r){if(!r.ok||r.redirected)throw 0;return r.blob()}).then(function(body){return body.text().then(function(nt){shown=nt;return caches.open("lattice-pages").then(function(c){return c.put(canon,new Response(body,{status:200,headers:{"content-type":"text/html"}}))}).then(function(){return touch(canon,body.size)})})}).then(function(){clearInterval(iv)}).catch(function(x){})}})();</script>'
+  '<script>(function(){if(!("caches"in window)||!window.indexedDB)return;var PN=location.pathname;if(PN==="/apps/lattice/clip"||PN==="/apps/lattice/share")return;var BUDGET=(+localStorage.latCacheBudget)||200*1024*1024;var canon=(function(){var h=location.href.split("#")[0];var i=h.indexOf("?");if(i<0)return h;var q=h.slice(i+1).split("&").filter(function(s){return s.slice(0,2)!=="u="});return q.length?h.slice(0,i)+"?"+q.join("&"):h.slice(0,i)})();function idb(){return new Promise(function(res,rej){var r=indexedDB.open("lattice-lru",1);r.onupgradeneeded=function(){r.result.createObjectStore("e",{keyPath:"url"})};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}function tx(db,mode,fn){return new Promise(function(res,rej){var t=db.transaction("e",mode);fn(t.objectStore("e"));t.oncomplete=function(){res()};t.onerror=function(){rej(t.error)}})}function touch(url,size){return idb().then(function(db){return tx(db,"readwrite",function(st){var g=st.get(url);g.onsuccess=function(){var e=g.result||{url:url,size:0};e.at=Date.now();if(size)e.size=size;st.put(e)}})}).catch(function(x){})}function evict(){return idb().then(function(db){var all=[];return tx(db,"readonly",function(st){st.openCursor().onsuccess=function(ev){var c=ev.target.result;if(c){all.push(c.value);c.continue()}}}).then(function(){var total=all.reduce(function(a,e){return a+(e.size||0)},0);if(total<=BUDGET)return;all.sort(function(a,b){return(a.at||0)-(b.at||0)});return caches.open("lattice-pages").then(function(c){var i=0;function step(){if(i>=all.length||total<=BUDGET)return;var e=all[i++];total-=(e.size||0);return c.delete(e.url).then(function(){return tx(db,"readwrite",function(st){st.delete(e.url)})}).then(step)}return step()})})}).catch(function(x){})}var swReady=("serviceWorker"in navigator)?Promise.race([navigator.serviceWorker.ready.catch(function(){}),new Promise(function(r){setTimeout(r,3000)})]):Promise.resolve();var shown=null;caches.open("lattice-pages").then(function(c){return c.match(canon)}).then(function(r){return r?r.text():null}).then(function(t){shown=t}).catch(function(x){});function strip(t){return t.replace(/var REV="[^"]*"/,"")}function drop(){return caches.open("lattice-pages").then(function(c){return c.delete(canon)}).then(function(){return idb()}).then(function(db){return tx(db,"readwrite",function(st){st.delete(canon)})}).catch(function(x){})}function wipe(){return caches.delete("lattice-pages").then(function(){try{indexedDB.deleteDatabase("lattice-lru")}catch(x){}}).catch(function(x){})}var inflight=null;function refresh(force){if(inflight&&!force)return inflight;var p=swReady.then(function(){return fetch(location.href,{credentials:"same-origin",cache:"no-store",headers:{"x-lattice-bg":"1"}}).then(function(r){if(r.status===401||r.status===403){return wipe().then(function(){return false})}if(r.redirected||r.status===404||r.status===410){return drop().then(function(){return false})}if(!r.ok)return false;return r.blob().then(function(body){return caches.open("lattice-pages").then(function(c){return body.text().then(function(nt){window.__latDoc=nt;var chg=shown===null||strip(shown)!==strip(nt);if(shown===null)shown=nt;return c.put(canon,new Response(body,{status:200,headers:{"content-type":r.headers.get("content-type")||"text/html"}})).then(function(){return touch(canon,body.size)}).then(evict).then(function(){return{ok:true,chg:chg}})})})})})}).catch(function(x){return false}).then(function(ok){if(inflight===p)inflight=null;return ok});inflight=p;return p}window.__latRefresh=refresh;window.__latCanon=canon;touch(canon,0);var last=Date.now();addEventListener("pointerdown",function(){last=Date.now()},true);addEventListener("keydown",function(){last=Date.now()},true);var nav0=performance.getEntriesByType("navigation")[0];var fresh=!!(nav0&&nav0.transferSize>0);var IDLE=fresh?12000:300;var CAP=fresh?45000:20000;var t0=Date.now();function hid(){if(document.hidden)return true;try{var f=window.frameElement;return !!f&&!f.getClientRects().length}catch(e){return false}}var iv=setInterval(function(){if(hid()){last=Date.now();t0=Math.max(t0,last-CAP+IDLE);return}if(Date.now()-last>IDLE||Date.now()-t0>CAP){clearInterval(iv);refresh()}},fresh?500:100);var oic=/Chrome\//.test(navigator.userAgent);if(fresh&&oic){swReady.then(function(){return fetch(location.href,{cache:"only-if-cached",mode:"same-origin",credentials:"same-origin"})}).then(function(r){if(!r.ok||r.redirected)throw 0;return r.blob()}).then(function(body){return body.text().then(function(nt){shown=nt;return caches.open("lattice-pages").then(function(c){return c.put(canon,new Response(body,{status:200,headers:{"content-type":"text/html"}}))}).then(function(){return touch(canon,body.size)})})}).then(function(){clearInterval(iv)}).catch(function(x){})}})();</script>'
 ::  +nav-script: contextual back/forward + the hamburger. The stack is the
 ::  TAB's own (sessionStorage), indexed by a latI stamped into history.state
 ::  so a traversal is told apart from a new navigation: a load carrying latI
@@ -13400,10 +13442,17 @@
   ^-  tape
   %-  trip
   '<script>(function(){var b=document.getElementById("navb"),f=document.getElementById("navf");var h=document.getElementById("ham"),m=document.getElementById("hammenu");if(h&&m){h.addEventListener("click",function(e){e.preventDefault();e.stopPropagation();m.hidden=!m.hidden});document.addEventListener("click",function(){m.hidden=true})}if(!b||!f)return;var ents=[],pos=-1;try{ents=JSON.parse(sessionStorage.latNav||"[]")}catch(e){}var prev=+(sessionStorage.latNavPos||-1);var st=history.state&&typeof history.state.latI==="number"?history.state.latI:null;if(st!==null&&st<ents.length){pos=st}else if(prev>=0&&ents[prev]===location.href){pos=prev;history.replaceState({latI:pos},"")}else{ents=ents.slice(0,prev+1);ents.push(location.href);if(ents.length>400){ents=[location.href]}pos=ents.length-1;history.replaceState({latI:pos},"")}try{sessionStorage.latNav=JSON.stringify(ents);sessionStorage.latNavPos=String(pos)}catch(e){}function sync(){var si=history.state&&typeof history.state.latI==="number"?history.state.latI:pos;pos=si;try{sessionStorage.latNavPos=String(pos)}catch(e){}if(pos>0){b.removeAttribute("disabled")}else{b.setAttribute("disabled","")}if(pos<ents.length-1){f.removeAttribute("disabled")}else{f.setAttribute("disabled","")}}sync();window.addEventListener("pageshow",function(ev){if(ev.persisted){try{ents=JSON.parse(sessionStorage.latNav||"[]")}catch(e){}sync()}});b.addEventListener("click",function(){history.back()});f.addEventListener("click",function(){history.forward()})})();</script>'
+::  +sw-register-script: registers the worker, and reloads the page when
+::  a new one takes over (a deploy), unless the page holds unsaved work.
+::  Not in a frame: the editor reloads itself on the same takeover, which
+::  remakes its frames, and while it holds off (unsaved work) a frame tab
+::  that reloaded on its own was only a request to the pier. Every open
+::  browser tab, parked ones included, sent one at the same moment.
+::
 ++  sw-register-script
   ^-  tape
   %-  trip
-  '<script>if("serviceWorker"in navigator){navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice"}).then(function(r){r.addEventListener("updatefound",function(){var w=r.installing;if(w)w.addEventListener("statechange",function(){if(w.state==="installed"&&navigator.serviceWorker.controller)w.postMessage("skipWaiting")})})}).catch(function(x){});var swReloading=false;if(navigator.serviceWorker.controller){navigator.serviceWorker.addEventListener("controllerchange",function(){if(swReloading)return;if(window.__latUnsaved&&window.__latUnsaved())return;swReloading=true;location.reload()})}}</script>'
+  '<script>if("serviceWorker"in navigator){navigator.serviceWorker.register("/apps/lattice/sw.js",{scope:"/apps/lattice",updateViaCache:"all"}).then(function(r){r.addEventListener("updatefound",function(){var w=r.installing;if(w)w.addEventListener("statechange",function(){if(w.state==="installed"&&navigator.serviceWorker.controller)w.postMessage("skipWaiting")})})}).catch(function(x){});var swReloading=false;if(navigator.serviceWorker.controller&&window.top===window){navigator.serviceWorker.addEventListener("controllerchange",function(){if(swReloading)return;if(window.__latUnsaved&&window.__latUnsaved())return;swReloading=true;location.reload()})}}</script>'
 ::  +esc: HTML-escape a tape. +url-enc: percent-encode a tape for a query
 ::  value. +has-prefix: tape prefix test.
 ::

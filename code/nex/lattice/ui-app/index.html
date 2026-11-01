@@ -912,7 +912,9 @@ ul.qlist a:hover { background: var(--surface); }
 // The editor carries its own copy with one change: where a reader skips the
 // takeover reload while work is unsaved, that skip here would leave the
 // editor on stale code for the life of the tab. So the editor polls until
-// the save lands and reloads then.
+// the save lands and reloads then. updateViaCache "all": the worker's own
+// update checks go through the http cache, which holds sw.js five minutes
+// (send-sw in app.hoon says why).
 // Not in a frame: there the editor does not start (00-framed.js), and a
 // takeover reload would only bring its note back.
 // app.js registers once the tree has landed (window.__latSwReg, 99-boot.js).
@@ -922,7 +924,7 @@ ul.qlist a:hover { background: var(--surface); }
 if ('serviceWorker' in navigator && window.top === window) {
   window.__latSwReg = function () {
     window.__latSwReg = null;
-    navigator.serviceWorker.register('/apps/lattice/sw.js', { scope: '/apps/lattice' })
+    navigator.serviceWorker.register('/apps/lattice/sw.js', { scope: '/apps/lattice', updateViaCache: 'all' })
       .then(function (r) {
         r.addEventListener('updatefound', function () {
           var w = r.installing;
