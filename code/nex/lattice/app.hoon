@@ -10411,18 +10411,34 @@
 ::  neighbour's message and nest-fail (-need.@p / -need.@da). The one grubbery peek
 ::  turned into a poke-service means every our/now read must filter like this.
 ::
+::  +bowl-our: our ship, from /sys/bowl.sig, the way +bowl-now asks: on
+::  a fixed wire, not poke:io's +nonce, which cost a second round trip to
+::  bowl.sig for the wire alone. An answer left on the wire by a crashed
+::  run is our ship all the same.
 ++  bowl-our
   =/  m  (fiber:fiber:nexus ,ship)
   ^-  form:m
-  ;<  ~  bind:m  (poke:io &+&+[/sys %'bowl.sig'] [[/ %bowl-req] %our])
+  =/  =wire  /bowl/our
+  ;<  ~  bind:m
+    (send-dart:io %node wire &+&+[/sys %'bowl.sig'] %poke [[/ %bowl-req] %our])
+  =/  pak=?  |
+  =/  got=(unit ship)  ~
+  |-  ^-  form:m
   |=  input:fiber:nexus
-  :+  ~  q.state
-  ?+  in  [%skip ~]
-      ~  [%wait ~]
-      [~ %poke * *]
-    ?.  =([/ %ship] p.sage.u.in)  [%skip ~]
-    [%done !<(ship q.sage.u.in)]
-  ==
+  ?~  in  [~ q.state %wait ~]
+  ?:  ?=([%veto %node *] u.in)
+    ?.  =(wire wire.dart.u.in)  [~ q.state %skip ~]
+    [~ q.state %fail (veto-error:io dart.u.in)]
+  ?:  ?=([%pack * *] u.in)
+    ?.  =(wire wire.u.in)  [~ q.state %skip ~]
+    ?^  err.u.in  [~ q.state %fail %poke-failed u.err.u.in]
+    ?^  got  [~ q.state %done u.got]
+    [~ q.state %cont ^$(pak &)]
+  ?.  ?=([%poke * *] u.in)  [~ q.state %skip ~]
+  ?.  =([/ %ship] p.sage.u.in)  [~ q.state %skip ~]
+  =/  o=ship  !<(ship q.sage.u.in)
+  ?:  pak  [~ q.state %done o]
+  [~ q.state %cont ^$(got `o)]
 ::  +bowl-now: the time, from /sys/bowl.sig. On a fixed wire, not a
 ::  +nonce (a second round trip to bowl.sig, for the wire alone), and it
 ::  takes the poke's ack as well as the answer, in either order, so the
@@ -12310,21 +12326,28 @@
   =/  lod=(each board:ft @t)  (load:fb u.gs)
   ?:  ?=(%| -.lod)  (pure:m ~)
   (pure:m `p.lod)
-::  +forum-board-list: [name title public] of every readable board, by name.
+::  +forum-board-list: [name title public] of every board with a readable
+::  card, by name. The names come from a shallow peek and each title from
+::  the board's card alone: a deep peek and a whole +load of every board,
+::  posts and all, read a forum's every grub to list its boards.
 ::
 ++  forum-board-list
   |=  up=@ud
   =/  m  (fiber:fiber:nexus ,(list [name=board-name:ft title=@t public=?]))
   ^-  form:m
-  ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/boards) ~)
+  ;<  v=view:nexus  bind:m  (peek-shallow:fio (rv up /forum/boards) ~)
   ?.  ?=([%ball *] v)  (pure:m ~)
   =/  noms=(list @ta)  (sort ~(tap in ~(key by dir.ball.v)) aor)
   |-  ^-  form:m
   ?~  noms  (pure:m ~)
-  ;<  brd=(unit board:ft)  bind:m  (forum-load-board up i.noms)
+  ;<  cv=view:nexus  bind:m  (peek:fio (rf up /forum/boards/[i.noms]/pub %card) ~)
   ;<  rest=(list [name=board-name:ft title=@t public=?])  bind:m  $(noms t.noms)
-  ?~  brd  (pure:m rest)
-  (pure:m [[;;(board-name:ft i.noms) title.info.u.brd public.info.u.brd] rest])
+  ?.  ?=([%file *] cv)  (pure:m rest)
+  =/  cd=(unit card:ft)  (mole |.(;;(card:ft (sang-noun:tarball sang.cv))))
+  =/  nm=(unit board-name:ft)  (mole |.(;;(board-name:ft i.noms)))
+  ?:  |(?=(~ cd) ?=(~ nm))  (pure:m rest)
+  =/  inf=board-info:ft  +.u.cd
+  (pure:m [[u.nm title.inf public.inf] rest])
 ::  +serve-forum-owner: the owner's forum views (an authenticated GET under
 ::  /forum): the board list, create form, a board's ranked list, a thread, the
 ::  submit form and the mod page. The same renderer as the public read, with
@@ -12337,23 +12360,25 @@
   ^-  form:m
   ?.  (levy `path`pax |=(seg=@ta &(!=(%$ seg) ((sane %ta) seg))))
     (send-err eyre-id 404 'not found')
-  ;<  our=@p  bind:m  bowl-our
-  ;<  now=@da  bind:m  bowl-now
   ;<  up=@ud  bind:m  nexus-up
   ;<  ns=(list [host=@p board=@t reason=@t at=@da])  bind:m  forum-read-notes
   =/  nn=@ud  (lent ns)
   =/  root=tape  "/apps/lattice/forum"
+  ::  the board list and the create form show no author and no time, so
+  ::  they skip the two round trips to bowl.sig for `our` and `now`
   ?~  pax
     ;<  bl=(list [name=board-name:ft title=@t public=?])  bind:m  (forum-board-list up)
-    (send-html eyre-id (forum-doc (render-boards:fre [our %.y now root ""] bl) "" "" %.y nn))
+    (send-html eyre-id (forum-doc (render-boards:fre [*@p %.y *@da root ""] bl) "" "" %.y nn))
   ?:  =('_new' i.pax)
     ?.  ?=(~ t.pax)  (send-err eyre-id 404 'not found')
-    (send-html eyre-id (forum-doc (render-create:fre [our %.y now root ""]) "" "" %.y nn))
+    (send-html eyre-id (forum-doc (render-create:fre [*@p %.y *@da root ""]) "" "" %.y nn))
   ?.  &(?=(?(~ [@ ~]) t.pax) ((sane %tas) i.pax))
     (send-err eyre-id 404 'not found')
   =/  nom=@ta  i.pax
   ;<  bo=(unit board:ft)  bind:m  (forum-load-board up nom)
   ?~  bo  (send-err eyre-id 404 'not found')
+  ;<  our=@p  bind:m  bowl-our
+  ;<  now=@da  bind:m  bowl-now
   =/  brd=board:ft  u.bo
   ;<  tf=(unit path)  bind:m  (find-theme /forum/[nom]/index)
   =/  theme-link=tape
