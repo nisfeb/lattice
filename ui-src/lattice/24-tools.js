@@ -82,6 +82,8 @@
   let toolShown = null;
   // a browsing frame's page title, by tab key (frameDress)
   const frameTitles = {};
+  // every frame the observer below watches (frameSeen)
+  const frameSeenAll = new Set();
   TAB_KINDS.tool = {
     icon: (t) => toolMeta(t.key)[1],
     // a browsing frame's tab follows the title of the page it is on
@@ -136,6 +138,10 @@
         delete fnav[f.dataset.tool];
         f.remove();
       }
+    // a frame that left the page (closed here, or with its group, gDrop
+    // in 28-splits.js) is let go: the observer would hold it for good
+    for (const f of frameSeenAll)
+      if (!f.isConnected) { frameSeen.unobserve(f); frameSeenAll.delete(f); }
     for (const g of groups) {
       const f = gFront(g);
       const key = f && f.kind === 'tool' ? f.key : null;
@@ -149,22 +155,28 @@
     // a wrap no group has in front waits in the stash, hidden
     for (const c of [...document.querySelectorAll('.toolhost > .intab')])
       if (!groups.some((g) => c.parentNode === g.host && !c.hidden)) { c.hidden = true; toolStash.append(c); }
-    // A frame in a hidden element still reads document.hidden false, so a
-    // parked reader page kept its live stream open (+sse-script, app.hoon),
-    // and six of them took every connection the browser gives this host:
-    // the editor's saves then queued with no error. So each frame is told
-    // when it is shown or put away, and its stream follows.
-    for (const f of allFrames()) {
-      const toolHost = f.closest('.toolhost');
-      const on = !toolHost.hidden && !f.hidden;
+    // the right pane goes by what is in front (76-outline.js)
+    if (was !== toolShown) rpSoon();
+  }
+  // A frame in a hidden element still reads document.hidden false, so a
+  // parked reader page kept its live stream open (+sse-script, app.hoon),
+  // and six of them took every connection the browser gives this host:
+  // the editor's saves then queued with no error. So each frame is told
+  // when it is shown or put away, and its stream follows. A frame is
+  // shown when it has a box: its tab can be parked, its host hidden, or
+  // on a phone its group not the one in front (a CSS rule, index.html),
+  // and a ResizeObserver hears each of them, after layout. The page's own
+  // scripts (+page-cache-script) used to poll the frame's box ten times
+  // a second instead, each poll a forced layout of the editor.
+  const frameSeen = new ResizeObserver((es) => {
+    for (const { target: f } of es) {
+      const on = f.isConnected && f.getClientRects().length > 0;
       if (f.latOn === on) continue;
       f.latOn = on;
       try { f.contentWindow.dispatchEvent(new f.contentWindow.Event(on ? 'latshown' : 'lathidden')); }
       catch {}
     }
-    // the right pane goes by what is in front (76-outline.js)
-    if (was !== toolShown) rpSoon();
-  }
+  });
   // into `toolHost`, a group's host. A frame there already stays; one in
   // another group's host (its tab was moved) moves, and reloads.
   function toolMount(key, toolHost) {
@@ -199,6 +211,8 @@
     f.onload = () => { if (Date.now() - (f.latAct || 0) < 10000) bgBusy(); fnavLoad(f); frameDress(f); };
     f.src = url;
     toolHost.append(f);
+    frameSeen.observe(f);
+    frameSeenAll.add(f);
   }
   let frameSeq = 0;
   // Each load of a frame. Every frame loses the reader's bar, since the
