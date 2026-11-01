@@ -8590,43 +8590,54 @@
       // built once: the live editor moves between groups (28-splits.js)
       if (this.built) return;
       this.built = true;
-      this.innerHTML =
-        // SANDBOXED, and this is load-bearing rather than defensive.
-        //
-        // The pane renders page content, and an html page is served into it as
-        // its own document — including its scripts. Pages are not all
-        // hand-written: the clipper archives arbitrary web pages verbatim. On
-        // a same-origin frame, opening one of those in the editor ran its
-        // JavaScript with this session, which is read every page, rewrite the
-        // ACLs, exfiltrate the store. Verified before this line existed: a
-        // page containing <script>parent.__PWNED=1</script> set that global on
-        // the app and rewrote its title.
-        //
-        // allow-scripts WITHOUT allow-same-origin is the pair that matters.
-        // Scripts still run, so the footnote-anchor handler the ship injects
-        // into every server render keeps working, but the frame gets an opaque
-        // origin: no parent, no cookies, no session. The two together would
-        // hand the sandbox straight back.
-        //
-        // allow-top-navigation-by-user-activation is a narrower third token,
-        // added for a different reason: a wikilink is a plain <a> pointing at
-        // the app's own route, and clicking one used to navigate the frame
-        // itself, straight into the opaque origin's missing cookies, a live
-        // 403 in place of the page. This token opens exactly one door out of
-        // the sandbox, and only on an actual click. Nothing running inside
-        // the frame can drive the top page anywhere on its own; the click has
-        // to be real. The base target below is what points those clicks
-        // upward instead of at the frame.
-        // The frame sits in a scrolling DIV and is sized to its own content
-        // (see previewFit), so the frame's document never scrolls and never
-        // shows the engine's native scrollbar. That bar is the one WebKitGTK
-        // paints light no matter what: measured on 2.50, a sub-frame's bar
-        // ignores color-scheme, ::-webkit-scrollbar, scrollbar-color, the
-        // GTK dark variant and gtk-application-prefer-dark-theme alike.
-        // The div scrolls with the app's own styled bars instead.
-        '<div class="prevwrap"><iframe class="prev" id="prev" title="live preview" '
-          + 'sandbox="allow-scripts allow-top-navigation-by-user-activation"></iframe></div>';
-      prev = $('prev');
+      this.innerHTML = '<div class="prevwrap"></div>';
+      // The frame is made now, so everything that writes to `prev` can, but
+      // goes into the page a task later. A sandboxed frame is a frame of its
+      // own to the engine, and making one inside boot's task cost about
+      // 33 ms on the first load after the worker installs (no spare frame
+      // yet), the larger part of the one long task boot had. Its srcdoc,
+      // set meanwhile, loads as it goes in.
+      prev = document.createElement('iframe');
+      prev.className = 'prev';
+      prev.id = 'prev';
+      prev.title = 'live preview';
+      // SANDBOXED, and this is load-bearing rather than defensive.
+      //
+      // The pane renders page content, and an html page is served into it as
+      // its own document — including its scripts. Pages are not all
+      // hand-written: the clipper archives arbitrary web pages verbatim. On
+      // a same-origin frame, opening one of those in the editor ran its
+      // JavaScript with this session, which is read every page, rewrite the
+      // ACLs, exfiltrate the store. Verified before this line existed: a
+      // page containing <script>parent.__PWNED=1</script> set that global on
+      // the app and rewrote its title.
+      //
+      // allow-scripts WITHOUT allow-same-origin is the pair that matters.
+      // Scripts still run, so the footnote-anchor handler the ship injects
+      // into every server render keeps working, but the frame gets an opaque
+      // origin: no parent, no cookies, no session. The two together would
+      // hand the sandbox straight back.
+      //
+      // allow-top-navigation-by-user-activation is a narrower third token,
+      // added for a different reason: a wikilink is a plain <a> pointing at
+      // the app's own route, and clicking one used to navigate the frame
+      // itself, straight into the opaque origin's missing cookies, a live
+      // 403 in place of the page. This token opens exactly one door out of
+      // the sandbox, and only on an actual click. Nothing running inside
+      // the frame can drive the top page anywhere on its own; the click has
+      // to be real. The base target below is what points those clicks
+      // upward instead of at the frame.
+      // The frame sits in a scrolling DIV and is sized to its own content
+      // (see previewFit), so the frame's document never scrolls and never
+      // shows the engine's native scrollbar. That bar is the one WebKitGTK
+      // paints light no matter what: measured on 2.50, a sub-frame's bar
+      // ignores color-scheme, ::-webkit-scrollbar, scrollbar-color, the
+      // GTK dark variant and gtk-application-prefer-dark-theme alike.
+      // The div scrolls with the app's own styled bars instead.
+      prev.setAttribute('sandbox', 'allow-scripts allow-top-navigation-by-user-activation');
+      const wrap = this.querySelector('.prevwrap');
+      const f = prev;
+      setTimeout(() => { if (!f.parentNode) wrap.append(f); }, 0);
       // the frame reports its content height once its document has loaded;
       // the wrap scrolls. The FIRST report per document wins, measured with
       // the frame at pane height (previewFit clears min-height before every
