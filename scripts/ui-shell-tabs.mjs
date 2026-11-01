@@ -18,6 +18,8 @@
 //      the tooltips name the new chords
 //    With six browser tabs and a forum tab parked, a save lands in seconds
 //      (a parked frame holds no live stream), and a closed tab's frame goes
+//    A cached reader page in a parked frame tab holds its refetch until it
+//      is shown, whether its tab or an ancestor of the frame hid it
 //    No editor boots inside a frame: the home page's Editor link focuses the
 //      shell, and an editor address loaded in a frame hands over and stops
 //    A frame tab is sandboxed without top navigation, so its script cannot
@@ -35,7 +37,7 @@
 //
 //  Usage: LATTICE_URL=http://localhost:8080 LATTICE_COOKIE=/tmp/tyr-cookie.txt \
 //           node scripts/ui-shell-tabs.mjs
-import { shipEnv, launchBrowser, openPage, seed, makeCheck, sleep, waitFor } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, seed, makeCheck, sleep, waitFor, swControlled } from './lib/harness.mjs';
 
 const env = shipEnv();
 const check = makeCheck();
@@ -435,6 +437,113 @@ try {
     await sleep(300);
     const left = await page.evaluate(() => document.querySelectorAll('#toolhost iframe').length);
     check('closing frame tabs removes their frames', left === 0, String(left));
+  });
+
+  //  a cached reader page in a frame tab refetches itself once it has been
+  //  in sight 0.3 s, and a parked one holds that refetch until it is shown
+  //  again (+page-cache-script): its click went to open something else.
+  //  Shown, it refetches at once (+sse-script's catch-up on latshown).
+  //  It learns it is parked from the shell, not by asking for its box: a
+  //  frame that loads parked waits, its tab coming to the front wakes it,
+  //  and a frame shown by its tab but still without a box (an ancestor
+  //  hidden, as a phone hides a group not in front) waits until the box
+  //  comes back, which only the shell's ResizeObserver tells it.
+  await part('parkfetch', async () => {
+    const HOME = '/apps/lattice';
+    const bg = [];
+    const onReq = (r) => {
+      if (r.headers()['x-lattice-bg'] !== '1') return;
+      if (new URL(r.url()).pathname.replace(/\/$/, '') !== HOME) return;
+      bg.push({ at: Date.now(), frame: r.frame()?.name() });
+    };
+    page.on('request', onReq);
+    try {
+      await swControlled(page);
+      //  one browser tab in sight until its refetch puts the reader home
+      //  in the pages cache, so the tabs after it are cached paints
+      await page.evaluate(() => document.getElementById('rb-browser').click());
+      await frontLoaded();
+      const homeCached = await waitFor(() => page.evaluate(async () => {
+        const c = await caches.open('lattice-pages');
+        return !!(await c.match(location.origin + '/apps/lattice'));
+      }), 40000, 1000);
+      check('a browser tab in sight puts the reader home in the pages cache', !!homeCached);
+      //  a browser tab opened and parked in the same moment loads parked
+      const parkedTab = async () => {
+        //  the tab opens its frame a beat after the click; the switch away
+        //  goes in the microtask after the frame is added, long before the
+        //  page in it can run a line
+        const name = await page.evaluate((n) => new Promise((res) => {
+          const mo = new MutationObserver((ms) => {
+            for (const m of ms) for (const x of m.addedNodes) {
+              if (x.tagName !== 'IFRAME' || !x.closest('.toolhost')) continue;
+              mo.disconnect();
+              window.latTabs.openIn('page', n);
+              res(x.name);
+              return;
+            }
+          });
+          mo.observe(document.body, { childList: true, subtree: true });
+          document.getElementById('rb-browser').click();
+          setTimeout(() => { mo.disconnect(); res(null); }, 10000);
+        }), PAGE);
+        const sel = `.toolhost iframe[name="${name}"]`;
+        const loaded = await until((s) => {
+          const f = document.querySelector(s);
+          return !!f && f.contentDocument?.readyState === 'complete'
+            && f.contentWindow.location.href !== 'about:blank';
+        }, sel, 20000);
+        const paint = await page.evaluate((s) => {
+          const f = document.querySelector(s);
+          const n = f.contentWindow.performance.getEntriesByType('navigation')[0];
+          return { cached: !!n && n.transferSize === 0, key: f.dataset.tool };
+        }, sel);
+        return { name, sel, loaded, ...paint };
+      };
+      const show = (key) => page.evaluate((k) =>
+        window.latTabs.switchTab(window.latTabs.state().tabs.find((t) => t.key === k).id), key);
+      const of = (name, t0) => bg.filter((x) => x.frame === name && x.at >= t0);
+
+      const a = await parkedTab();
+      const ta = Date.now();
+      await sleep(2500);
+      const heldA = of(a.name, 0).length;
+      check('a cached reader page loaded in a parked frame tab does not refetch itself',
+        a.loaded && a.cached && heldA === 0, JSON.stringify({ ...a, heldA, after: Date.now() - ta }));
+      //  and nothing asks for a parked frame's box on a clock: each ask
+      //  forced the editor's layout, ten times a second per parked frame
+      const asks = await page.evaluate(async () => {
+        const o = Element.prototype.getClientRects;
+        let n = 0;
+        Element.prototype.getClientRects = function () { if (this.tagName === 'IFRAME') n++; return o.call(this); };
+        await new Promise((r) => setTimeout(r, 2000));
+        Element.prototype.getClientRects = o;
+        return n;
+      });
+      check('parked frames do not poll their box', asks === 0, asks + ' asks in 2 s');
+      const sa = Date.now();
+      await show(a.key);
+      const gotA = await waitFor(async () => of(a.name, sa).length > 0, 6000, 100);
+      const waitA = gotA ? of(a.name, sa)[0].at - sa : null;
+      //  (at once, by the live stream's catch-up on latshown, +sse-script)
+      check('shown, it refetches itself', gotA, JSON.stringify({ waitA, n: of(a.name, 0).length }));
+
+      const b = await parkedTab();
+      await sleep(1000);
+      //  its tab comes to the front, but its group has no box
+      await page.evaluate((s) => { document.querySelector(s).closest('.tgroup').style.display = 'none'; }, b.sel);
+      await show(b.key);
+      await sleep(2500);
+      const heldB = of(b.name, 0).length;
+      const sb = Date.now();
+      await page.evaluate((s) => { document.querySelector(s).closest('.tgroup').style.display = ''; }, b.sel);
+      const gotB = await waitFor(async () => of(b.name, sb).length > 0, 6000, 100);
+      check('a frame whose tab is in front but whose group has no box waits, and refetches once it has one',
+        b.loaded && b.cached && heldB === 0 && gotB, JSON.stringify({ ...b, heldB, gotB }));
+    } finally {
+      page.off('request', onReq);
+      await page.evaluate(() => { for (const g of document.querySelectorAll('.tgroup')) g.style.display = ''; });
+    }
   });
 
   //  no editor ever boots inside a frame: a link to it opens the shell's
