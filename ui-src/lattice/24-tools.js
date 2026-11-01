@@ -82,6 +82,8 @@
   let toolShown = null;
   // a browsing frame's page title, by tab key (frameDress)
   const frameTitles = {};
+  // every frame the observer below watches (frameSeen)
+  const frameSeenAll = new Set();
   TAB_KINDS.tool = {
     icon: (t) => toolMeta(t.key)[1],
     // a browsing frame's tab follows the title of the page it is on
@@ -134,9 +136,12 @@
       if (!open.some((x) => x.kind === 'tool' && x.key === f.dataset.tool)) {
         delete frameTitles[f.dataset.tool];
         delete fnav[f.dataset.tool];
-        frameSeen.unobserve(f);
         f.remove();
       }
+    // a frame that left the page (closed here, or with its group, gDrop
+    // in 28-splits.js) is let go: the observer would hold it for good
+    for (const f of frameSeenAll)
+      if (!f.isConnected) { frameSeen.unobserve(f); frameSeenAll.delete(f); }
     for (const g of groups) {
       const f = gFront(g);
       const key = f && f.kind === 'tool' ? f.key : null;
@@ -207,6 +212,7 @@
     f.src = url;
     toolHost.append(f);
     frameSeen.observe(f);
+    frameSeenAll.add(f);
   }
   let frameSeq = 0;
   // Each load of a frame. Every frame loses the reader's bar, since the

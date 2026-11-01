@@ -20,6 +20,8 @@
 //      (a parked frame holds no live stream), and a closed tab's frame goes
 //    A cached reader page in a parked frame tab holds its refetch until it
 //      is shown, whether its tab or an ancestor of the frame hid it
+//    A frame that leaves the page, alone or with its group, is no longer
+//      watched for its box
 //    No editor boots inside a frame: the home page's Editor link focuses the
 //      shell, and an editor address loaded in a frame hands over and stops
 //    A frame tab is sandboxed without top navigation, so its script cannot
@@ -543,6 +545,49 @@ try {
     } finally {
       page.off('request', onReq);
       await page.evaluate(() => { for (const g of document.querySelectorAll('.tgroup')) g.style.display = ''; });
+    }
+  });
+
+  //  the shell's ResizeObserver (24-tools.js) lets a frame go once it has
+  //  left the page, whether its tab closed or its whole group did (a
+  //  group's last tab closing from another group, gDrop): one kept
+  //  observed is held for as long as the editor is open
+  await part('frameleak', async () => {
+    const hook = await page.evaluateOnNewDocument(() => {
+      window.__roFrames = new Set();
+      const P = ResizeObserver.prototype;
+      const ob = P.observe, un = P.unobserve;
+      P.observe = function (t, o) { if (t.tagName === 'IFRAME') window.__roFrames.add(t); return ob.call(this, t, o); };
+      P.unobserve = function (t) { window.__roFrames.delete(t); return un.call(this, t); };
+    });
+    try {
+      await boot();
+      const kept = () => page.evaluate(() => ({
+        frames: document.querySelectorAll('.toolhost iframe').length,
+        watched: window.__roFrames.size,
+        gone: [...window.__roFrames].filter((f) => !f.isConnected).length,
+        groups: window.latTabs.groups().length,
+      }));
+      await page.evaluate(() => window.latSplits.split('r'));
+      await sleep(800);
+      for (let i = 0; i < 2; i++) {
+        await page.evaluate(() => document.getElementById('rb-browser').click());
+        await sleep(1500);
+      }
+      const k0 = await kept();
+      check('two frame tabs in a second group are watched', k0.groups === 2 && k0.frames === 2
+        && k0.watched === 2 && k0.gone === 0, JSON.stringify(k0));
+      await page.evaluate(async () => {
+        await window.latTabs.focus(0);
+        const g = window.latTabs.groups();
+        for (const t of g[g.length - 1].tabs) await window.latTabs.closeTab(t.id);
+      });
+      await sleep(1000);
+      const k1 = await kept();
+      check('closing that group from the other lets both frames go', k1.groups === 1
+        && k1.frames === 0 && k1.watched === 0, JSON.stringify(k1));
+    } finally {
+      await page.removeScriptToEvaluateOnNewDocument(hook.identifier);
     }
   });
 
