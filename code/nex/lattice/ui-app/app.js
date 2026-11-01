@@ -6701,7 +6701,16 @@
     // a link reads live from its host every time (the spec's rule), so the
     // session cache never answers for one
     const hit = !linkOf(name) && pageCache.get(name);
-    if (hit) { applyPage(name, hit); snapPage(name, hit); return true; }
+    if (hit) {
+      // a content page's preview paints locally, as a painted open's does
+      // first. The ship's render in the cache is a whole reader document,
+      // and loading it into the frame was most of a tab switch: 50 ms
+      // against 25 for the local paint.
+      const local = ['md', 'gmi', 'html', 'text'].includes(hit.kind);
+      applyPage(name, local ? { ...hit, html: undefined } : hit, local);
+      snapPage(name, hit);
+      return true;
+    }
     const node = nodes.find((n) => n.page && n.path === name);
     const painted = !!node && typeof node.body === 'string';
     // the render=1 read below brings the page's sensitive flag, so the
