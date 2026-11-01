@@ -173,6 +173,30 @@ try {
   }
   check('return to the tab catches up', caught, navs + ' navs');
   check('catch-up is exactly one navigation', navs === 1, navs + ' navs');
+
+  // ── a view served over the network catches a save made before its ──────
+  // stream opened (5 s after load): the stream's first `old` event is then
+  // the only word of it, and the view must not stay on the old text
+  const stamp2c = 'early-' + Math.floor(Math.random() * 1e6);
+  await sleep(5000);                   // the save below is no burst's part
+  await p.evaluate(async (u) => (await caches.open('lattice-pages')).delete(u), PAGE)
+    .catch(() => {});
+  await nav(PAGE);                     // a cache miss: over the network
+  const netPaint = await p.evaluate(() => {
+    const n = performance.getEntriesByType('navigation')[0];
+    return !!(n && n.transferSize > 0);
+  });
+  await p.evaluate(async (b) => {
+    await fetch('/apps/lattice/page-save?name=harnessdir%2Fone&type=md',
+      { method: 'POST', body: b });
+  }, '# one\n' + stamp2c);
+  let early = false;
+  for (let i = 0; i < 30 && !early; i++) {
+    await sleep(1000);
+    try { early = (await p.content()).includes(stamp2c); } catch {}
+  }
+  check('a network view catches a save made before its stream', early,
+    (netPaint ? 'network' : 'cached') + ' paint');
   await p2.close();
 
   // ── the cache and worker survive a browser restart ──────────────────────
@@ -183,7 +207,7 @@ try {
   await p.bringToFront();
   t = await nav(PAGE);
   check('instant across browser restart', t < 400, t + 'ms');
-  check('restart content is fresh', (await p.content()).includes(stamp2b));
+  check('restart content is fresh', (await p.content()).includes(stamp2c));
 
   // ── home is a cached surface too ────────────────────────────────────────
   await nav(HOME);
