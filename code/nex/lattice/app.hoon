@@ -606,6 +606,18 @@
         ::  length is the climb back to the root.
         =/  up=@ud  (lent path.rail)
         =/  pdir=path  path.rail
+        ::  a shared page's run waits a moment longer, in real time. Its
+        ::  save's publish went out ahead of it (+yield-event), and an
+        ::  open reader view of the page, told by the beacon, asks for
+        ::  the new copy next. Run here, on a past timer, the run would
+        ::  sit in front of that request; a second later it goes behind.
+        ;<  sv=view:nexus  bind:m  (peek:fio (rf up pdir %share) ~)
+        ;<  ~  bind:m
+          =/  sh=share-mode:le
+            ?.  ?=([%file *] sv)  %private
+            (fall (mole |.(;;(share-mode:le (sang-noun:tarball sang.sv)))) %private)
+          ?:  ?=(%private sh)  (pure:m ~)
+          (sleep-draining eval-pub-lag)
         ::  one wire for everything: code (self), cmd inbox, deps grub, and
         ::  each declared dep target. Any change wakes the loop.
         ;<  *  bind:m  (keep:io /ev (rf up pdir %code) ~)
@@ -6926,6 +6938,9 @@
 ::  ponytail: computed (hoon/index) pages keep share-time snapshots.
 ::
 ++  pub-gap    ^-(@dr ~s6)
+::  +pub-quiet: a save this long after the page's last one is no part of
+::  a burst, and publishes at once (+pub-note:lp)
+++  pub-quiet  ^-(@dr ~s4)
 ++  pub-tries  ^-(@ud 3)
 ++  pub-when
   |=  row=pub-wait:lp
@@ -6982,7 +6997,7 @@
   =/  k=@t  (spat rel)
   =/  nen=pub-pending:lp
     =/  pru  (pub-prune:lp pen now pub-gap)
-    (~(put by pru) k (pub-note:lp (~(get by pen) k) now))
+    (~(put by pru) k (pub-note:lp (~(get by pen) k) now pub-quiet))
   ;<  ~  bind:m  (put-file (pub-pending-road root) [/ %noun] nen)
   =/  due=?  (lte (pub-when (~(got by nen) k)) now)
   ;<  ~  bind:m
@@ -8210,6 +8225,9 @@
 ::  evaluator. A shared page's live view follows /beacon/data as well,
 ::  which the run bumps (+eval-run).
 ++  defer-at  ^-(@da (add *@da ~s2))
+::  +eval-pub-lag: how long a shared page's run waits after its defer, so
+::  a reader's request for the copy just published goes first
+++  eval-pub-lag  ^-(@dr ~s1)
 ::  +defer-drain: put the rest of a fiber off to a later arvo event: a
 ::  behn timer for a time already past (+defer-at), and wait for its wake. Every input
 ::  before the wake is eaten, the start's kick included, which is what a
@@ -13325,8 +13343,11 @@
 ::  and firing it at 2s taxed every browse click — read for a moment, click
 ::  a link, and the click queued behind the previous page's refetch on the
 ::  one-event-at-a-time pier: ~5s per click, in exactly the read-then-click
-::  rhythm people browse at. A CACHE-served paint keeps the prompt window:
-::  engine), puts the fresh copy under its canonical URL (?u= stripped, so
+::  rhythm people browse at. A CACHE-served paint may be stale, so it
+::  refetches after a 1.5 s idle instead: that is how a stale paint
+::  learns it is stale, and a GET costs the pier about half what the
+::  keep stream it used to wait for did (+sse-script, which now opens
+::  later). The refetch puts the fresh copy under its canonical URL (?u= stripped, so
 ::  command results refresh the canonical entry), stamps an LRU index in
 ::  IndexedDB (url -> {size, at}), and evicts least-recently-viewed entries
 ::  past the budget. 200MB at ~15KB a page is ~13k pages: eviction is the
@@ -13341,7 +13362,7 @@
 ++  page-cache-script
   ^-  tape
   %-  trip
-  '<script>(function(){if(!("caches"in window)||!window.indexedDB)return;var PN=location.pathname;if(PN==="/apps/lattice/clip"||PN==="/apps/lattice/share")return;var BUDGET=(+localStorage.latCacheBudget)||200*1024*1024;var canon=(function(){var h=location.href.split("#")[0];var i=h.indexOf("?");if(i<0)return h;var q=h.slice(i+1).split("&").filter(function(s){return s.slice(0,2)!=="u="});return q.length?h.slice(0,i)+"?"+q.join("&"):h.slice(0,i)})();function idb(){return new Promise(function(res,rej){var r=indexedDB.open("lattice-lru",1);r.onupgradeneeded=function(){r.result.createObjectStore("e",{keyPath:"url"})};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}function tx(db,mode,fn){return new Promise(function(res,rej){var t=db.transaction("e",mode);fn(t.objectStore("e"));t.oncomplete=function(){res()};t.onerror=function(){rej(t.error)}})}function touch(url,size){return idb().then(function(db){return tx(db,"readwrite",function(st){var g=st.get(url);g.onsuccess=function(){var e=g.result||{url:url,size:0};e.at=Date.now();if(size)e.size=size;st.put(e)}})}).catch(function(x){})}function evict(){return idb().then(function(db){var all=[];return tx(db,"readonly",function(st){st.openCursor().onsuccess=function(ev){var c=ev.target.result;if(c){all.push(c.value);c.continue()}}}).then(function(){var total=all.reduce(function(a,e){return a+(e.size||0)},0);if(total<=BUDGET)return;all.sort(function(a,b){return(a.at||0)-(b.at||0)});return caches.open("lattice-pages").then(function(c){var i=0;function step(){if(i>=all.length||total<=BUDGET)return;var e=all[i++];total-=(e.size||0);return c.delete(e.url).then(function(){return tx(db,"readwrite",function(st){st.delete(e.url)})}).then(step)}return step()})})}).catch(function(x){})}var swReady=("serviceWorker"in navigator)?Promise.race([navigator.serviceWorker.ready.catch(function(){}),new Promise(function(r){setTimeout(r,3000)})]):Promise.resolve();var shown=null;caches.open("lattice-pages").then(function(c){return c.match(canon)}).then(function(r){return r?r.text():null}).then(function(t){shown=t}).catch(function(x){});function strip(t){return t.replace(/var REV="[^"]*"/,"")}function drop(){return caches.open("lattice-pages").then(function(c){return c.delete(canon)}).then(function(){return idb()}).then(function(db){return tx(db,"readwrite",function(st){st.delete(canon)})}).catch(function(x){})}function wipe(){return caches.delete("lattice-pages").then(function(){try{indexedDB.deleteDatabase("lattice-lru")}catch(x){}}).catch(function(x){})}var inflight=null;function refresh(force){if(inflight&&!force)return inflight;var p=swReady.then(function(){return fetch(location.href,{credentials:"same-origin",cache:"no-store",headers:{"x-lattice-bg":"1"}}).then(function(r){if(r.status===401||r.status===403){return wipe().then(function(){return false})}if(r.redirected||r.status===404||r.status===410){return drop().then(function(){return false})}if(!r.ok)return false;return r.blob().then(function(body){return caches.open("lattice-pages").then(function(c){return body.text().then(function(nt){var chg=shown===null||strip(shown)!==strip(nt);if(shown===null)shown=nt;return c.put(canon,new Response(body,{status:200,headers:{"content-type":r.headers.get("content-type")||"text/html"}})).then(function(){return touch(canon,body.size)}).then(evict).then(function(){return{ok:true,chg:chg}})})})})})}).catch(function(x){return false}).then(function(ok){if(inflight===p)inflight=null;return ok});inflight=p;return p}window.__latRefresh=refresh;window.__latCanon=canon;touch(canon,0);var last=Date.now();addEventListener("pointerdown",function(){last=Date.now()},true);addEventListener("keydown",function(){last=Date.now()},true);var nav0=performance.getEntriesByType("navigation")[0];var fresh=!!(nav0&&nav0.transferSize>0);var IDLE=fresh?12000:8000;var CAP=fresh?45000:20000;var t0=Date.now();var iv=setInterval(function(){if(Date.now()-last>IDLE||Date.now()-t0>CAP){clearInterval(iv);refresh()}},500);var oic=/Chrome\//.test(navigator.userAgent);if(fresh&&oic){swReady.then(function(){return fetch(location.href,{cache:"only-if-cached",mode:"same-origin",credentials:"same-origin"})}).then(function(r){if(!r.ok||r.redirected)throw 0;return r.blob()}).then(function(body){return body.text().then(function(nt){shown=nt;return caches.open("lattice-pages").then(function(c){return c.put(canon,new Response(body,{status:200,headers:{"content-type":"text/html"}}))}).then(function(){return touch(canon,body.size)})})}).then(function(){clearInterval(iv)}).catch(function(x){})}})();</script>'
+  '<script>(function(){if(!("caches"in window)||!window.indexedDB)return;var PN=location.pathname;if(PN==="/apps/lattice/clip"||PN==="/apps/lattice/share")return;var BUDGET=(+localStorage.latCacheBudget)||200*1024*1024;var canon=(function(){var h=location.href.split("#")[0];var i=h.indexOf("?");if(i<0)return h;var q=h.slice(i+1).split("&").filter(function(s){return s.slice(0,2)!=="u="});return q.length?h.slice(0,i)+"?"+q.join("&"):h.slice(0,i)})();function idb(){return new Promise(function(res,rej){var r=indexedDB.open("lattice-lru",1);r.onupgradeneeded=function(){r.result.createObjectStore("e",{keyPath:"url"})};r.onsuccess=function(){res(r.result)};r.onerror=function(){rej(r.error)}})}function tx(db,mode,fn){return new Promise(function(res,rej){var t=db.transaction("e",mode);fn(t.objectStore("e"));t.oncomplete=function(){res()};t.onerror=function(){rej(t.error)}})}function touch(url,size){return idb().then(function(db){return tx(db,"readwrite",function(st){var g=st.get(url);g.onsuccess=function(){var e=g.result||{url:url,size:0};e.at=Date.now();if(size)e.size=size;st.put(e)}})}).catch(function(x){})}function evict(){return idb().then(function(db){var all=[];return tx(db,"readonly",function(st){st.openCursor().onsuccess=function(ev){var c=ev.target.result;if(c){all.push(c.value);c.continue()}}}).then(function(){var total=all.reduce(function(a,e){return a+(e.size||0)},0);if(total<=BUDGET)return;all.sort(function(a,b){return(a.at||0)-(b.at||0)});return caches.open("lattice-pages").then(function(c){var i=0;function step(){if(i>=all.length||total<=BUDGET)return;var e=all[i++];total-=(e.size||0);return c.delete(e.url).then(function(){return tx(db,"readwrite",function(st){st.delete(e.url)})}).then(step)}return step()})})}).catch(function(x){})}var swReady=("serviceWorker"in navigator)?Promise.race([navigator.serviceWorker.ready.catch(function(){}),new Promise(function(r){setTimeout(r,3000)})]):Promise.resolve();var shown=null;caches.open("lattice-pages").then(function(c){return c.match(canon)}).then(function(r){return r?r.text():null}).then(function(t){shown=t}).catch(function(x){});function strip(t){return t.replace(/var REV="[^"]*"/,"")}function drop(){return caches.open("lattice-pages").then(function(c){return c.delete(canon)}).then(function(){return idb()}).then(function(db){return tx(db,"readwrite",function(st){st.delete(canon)})}).catch(function(x){})}function wipe(){return caches.delete("lattice-pages").then(function(){try{indexedDB.deleteDatabase("lattice-lru")}catch(x){}}).catch(function(x){})}var inflight=null;function refresh(force){if(inflight&&!force)return inflight;var p=swReady.then(function(){return fetch(location.href,{credentials:"same-origin",cache:"no-store",headers:{"x-lattice-bg":"1"}}).then(function(r){if(r.status===401||r.status===403){return wipe().then(function(){return false})}if(r.redirected||r.status===404||r.status===410){return drop().then(function(){return false})}if(!r.ok)return false;return r.blob().then(function(body){return caches.open("lattice-pages").then(function(c){return body.text().then(function(nt){window.__latDoc=nt;var chg=shown===null||strip(shown)!==strip(nt);if(shown===null)shown=nt;return c.put(canon,new Response(body,{status:200,headers:{"content-type":r.headers.get("content-type")||"text/html"}})).then(function(){return touch(canon,body.size)}).then(evict).then(function(){return{ok:true,chg:chg}})})})})})}).catch(function(x){return false}).then(function(ok){if(inflight===p)inflight=null;return ok});inflight=p;return p}window.__latRefresh=refresh;window.__latCanon=canon;touch(canon,0);var last=Date.now();addEventListener("pointerdown",function(){last=Date.now()},true);addEventListener("keydown",function(){last=Date.now()},true);var nav0=performance.getEntriesByType("navigation")[0];var fresh=!!(nav0&&nav0.transferSize>0);var IDLE=fresh?12000:1500;var CAP=fresh?45000:20000;var t0=Date.now();var iv=setInterval(function(){if(Date.now()-last>IDLE||Date.now()-t0>CAP){clearInterval(iv);refresh()}},500);var oic=/Chrome\//.test(navigator.userAgent);if(fresh&&oic){swReady.then(function(){return fetch(location.href,{cache:"only-if-cached",mode:"same-origin",credentials:"same-origin"})}).then(function(r){if(!r.ok||r.redirected)throw 0;return r.blob()}).then(function(body){return body.text().then(function(nt){shown=nt;return caches.open("lattice-pages").then(function(c){return c.put(canon,new Response(body,{status:200,headers:{"content-type":"text/html"}}))}).then(function(){return touch(canon,body.size)})})}).then(function(){clearInterval(iv)}).catch(function(x){})}})();</script>'
 ::  +nav-script: contextual back/forward + the hamburger. The stack is the
 ::  TAB's own (sessionStorage), indexed by a latI stamped into history.state
 ::  so a traversal is told apart from a new navigation: a load carrying latI
@@ -14348,11 +14369,14 @@
 ::  and parked streams took all six connections a browser gives a host.
 ::  The shell fires lathidden/latshown on the frame as it parks or shows
 ::  it (24-tools.js), and the stream drops or comes back on those.
-::  The stream opens 2 s after load, not at once: each one opened and
-::  dropped costs the ship about half a second, and a page passed
-::  through on Back or Forward opened one for nothing. A forum tab opened
-::  right after a Back and a Forward waited 1.6 s behind them, 0.5 s
-::  without. The `old` event still checks the baked rev once it opens.
+::  The stream opens 5 s after load, not at once: each one opened costs
+::  the ship over a second, and the runtime keeps a dropped one until it
+::  next writes to it, so every bump pays for the dead ones too. A page
+::  passed through on Back or Forward opened one for nothing, and a forum
+::  tab opened right after waited 1.6 s behind them. A cached paint
+::  learns it is stale from its own refetch first (+page-cache-script).
+::  The `old` event checks the rev once the stream opens, against the
+::  newest copy this page has fetched (RW), else the one it painted.
 ::  "" -> no script (remote pages, error shells). Built from single-quote
 ::  cords so the JS braces stay literal (only \\ needs escaping); mirrors
 ::  counter.hoon's SSE parse loop.
@@ -14367,7 +14391,7 @@
     (trip '";var W=')
     ?~(revs (trip '{}') revs)
     %-  trip
-    ';var pend=0,ac=null,live=false;function H(){if(document.hidden)return true;try{var f=window.frameElement;return !!f&&!f.getClientRects().length}catch(e){return false}}function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||H())return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;var k=ev.slice(ev.indexOf(" ")+1);if(!W.hasOwnProperty(k))continue;if(ev.slice(0,3)==="old"){if(W[k]&&dt&&dt.trim()!==W[k]){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!H())upd();continue}location.reload();return}}}catch(x){}live=false;if(!H())setTimeout(c,3000)}function V(){if(H()){if(ac)ac.abort();return}if(live)return;if(window.__latRefresh)upd();setTimeout(c,200)}document.addEventListener("visibilitychange",V);addEventListener("lathidden",V);addEventListener("latshown",V);setTimeout(c,2000)})();</script>'
+    ';var pend=0,ac=null,live=false;function RW(k){var w=W[k];try{var m=(window.__latDoc||"").match(/var W=(\\{[^;]*\\});var pend/);if(m){var j=JSON.parse(m[1]);if(j.hasOwnProperty(k))w=j[k]}}catch(e){}return w}function H(){if(document.hidden)return true;try{var f=window.frameElement;return !!f&&!f.getClientRects().length}catch(e){return false}}function upd(){pend++;if(pend===1){(function go(){var n=pend;window.__latRefresh(true).then(function(ok){if(pend>n){setTimeout(go,1500);return}if(ok&&ok.chg&&window.__latCanon){pend=0;location.replace(window.__latCanon);return}if(!ok){location.reload();return}pend=0})})()}}async function c(){if(live||H())return;live=true;ac=new AbortController();try{var r=await fetch(K,{headers:{Accept:"text/event-stream"},signal:ac.signal});if(r.redirected||r.url.indexOf("/~/login")>=0)return;var R=r.body.getReader();var d=new TextDecoder();var b="";while(true){var x=await R.read();if(x.done)break;b+=d.decode(x.value,{stream:true});var ps=b.split("\\n\\n");b=ps.pop();for(var i=0;i<ps.length;i++){if(!ps[i].trim())continue;var ev="",dt="";var ls=ps[i].split("\\n");for(var j=0;j<ls.length;j++){if(ls[j].indexOf("event: ")===0)ev=ls[j].slice(7);else if(ls[j].indexOf("data: ")===0)dt=ls[j].slice(6)}if(!ev)continue;var k=ev.slice(ev.indexOf(" ")+1);if(!W.hasOwnProperty(k))continue;if(ev.slice(0,3)==="old"){var w=RW(k);if(w&&dt&&dt.trim()!==w){if(window.__latRefresh){window.__latRefresh()}else{location.reload();return}}continue}if(window.__latRefresh){if(!H())upd();continue}location.reload();return}}}catch(x){}live=false;if(!H())setTimeout(c,3000)}function V(){if(H()){if(ac)ac.abort();return}if(live)return;if(window.__latRefresh)upd();setTimeout(c,200)}document.addEventListener("visibilitychange",V);addEventListener("lathidden",V);addEventListener("latshown",V);setTimeout(c,5000)})();</script>'
   ==
 ::  +send-public-how: whitelist <root>/pub in the grubbery `public` usergroup's
 ::  peek set, so any foreign ship may peek/keep published pages. UNION, never

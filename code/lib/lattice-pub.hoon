@@ -56,19 +56,26 @@
 ::  +pub-due: when a dirty row publishes. A throttle with a leading edge:
 ::  a save a `gap` or more after the page's last publish goes at once,
 ::  and saves inside the gap wait for its end, one publish of the newest
-::  text, so a page publishes at most once a gap.
+::  text, so a burst of saves publishes at most once a gap. A save that
+::  is no part of a burst goes at once too (+pub-note).
 ::
 ++  pub-due
   |=  [row=pub-wait gap=@dr]
   ^-  @da
   (add sent.row gap)
-::  +pub-note: a save of the page whose row is `old`, at `now`
+::  +pub-note: a save of the page whose row is `old`, at `now`. A save
+::  `quiet` or more after the page's last one, with nothing waiting, is
+::  no part of a burst: it forgets the last publish, so it is due at
+::  once instead of at the end of that publish's gap. Autosave saves
+::  about every 2.5 s while someone types, inside `quiet`, so a burst
+::  is still held to one publish a gap.
 ::
 ++  pub-note
-  |=  [old=(unit pub-wait) now=@da]
+  |=  [old=(unit pub-wait) now=@da quiet=@dr]
   ^-  pub-wait
   ?~  old  [now 0 *@da &]
-  u.old(last now, tries 0, dirty &)
+  =/  lone=?  &(!dirty.u.old (gte now (add last.u.old quiet)))
+  u.old(last now, tries 0, dirty &, sent ?:(lone *@da sent.u.old))
 ::  +pub-prune: the rows that still mean something at `now`: every dirty
 ::  one, and a clean one until its gap is over
 ::
