@@ -39,6 +39,21 @@ const page = await openPage(browser, env, {
 });
 //  a dirty buffer makes a reload ask; the suite never wants to stay
 page.on('dialog', (d) => d.accept().catch(() => {}));
+//  The strip is rebuilt whole on every repaint (paintStrip, 21-tabs.js),
+//  and one landing between page.click's query and its press (an autosave,
+//  boot's late reads) fails it with "Node is detached from document".
+//  That took 1 run in 10 on main and on perf-ui alike, at the same step,
+//  each the first run after a deploy. The press never happened, so the
+//  click is safe to query and send again.
+const rawClick = page.click.bind(page);
+page.click = async (sel, opts) => {
+  for (let i = 0; ; i++) {
+    try { return await rawClick(sel, opts); } catch (e) {
+      if (i >= 4 || !/detached/i.test(e.message)) throw e;
+      await sleep(150);
+    }
+  }
+};
 
 const shipGet = async (path) => {
   const r = await fetch(env.base + '/apps/lattice/' + path, { headers: { Cookie: env.cookie } });
