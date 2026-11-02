@@ -41,6 +41,8 @@ const r = await build({
   minify: true,
   legalComments: 'none',
   charset: 'utf8',
+  //  ui-src/writer/blank.fodt, the new-page template, inlined as a string
+  loader: { '.fodt': 'text' },
   metafile: true,
   write: false,
   logLevel: 'warning',

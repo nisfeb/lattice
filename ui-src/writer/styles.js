@@ -333,3 +333,11 @@ export function namedStyles(st, family) {
   for (const s of st.styles.values()) if (!s.auto && s.family === family) out.push({ name: s.name, display: s.display });
   return out.sort((a, b) => a.display.localeCompare(b.display));
 }
+
+//  bullet or number, from a list style's first level
+export function listKind(st, name) {
+  const e = st.lists.get(name);
+  const lv = e && elements(e)[0];
+  if (!lv) return null;
+  return lv.name === 'text:list-level-style-number' ? 'number' : lv.name === 'text:list-level-style-bullet' ? 'bullet' : null;
+}

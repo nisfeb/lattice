@@ -15,7 +15,8 @@ import { importWriter } from './lib/writer-node.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const corpus = join(here, '..', 'tests', 'writer', 'corpus');
 const check = makeCheck();
-const core = await importWriter('xml.js', 'schema.js', 'styles.js', 'parse.js', 'serialize.js', 'edits.js');
+const core = await importWriter('xml.js', 'schema.js', 'styles.js', 'parse.js', 'serialize.js', 'edits.js',
+  'view.js', 'paste.js');
 const { Node: PMNode } = await import('prosemirror-model');
 const { EditorState } = await import('prosemirror-state');
 const { parseFodt, serializeFodt, applyEdit, schema } = core;
@@ -280,6 +281,65 @@ for (const f of readdirSync(join(corpus, 'hostile')).sort()) {
   const big = 'x'.repeat(8 * 1024 * 1024 + 1);
   check('a document over 8 MB is refused', !!parseFodt(big).error);
   check('a malformed document is refused', !!parseFodt('<office:document><office:body>').error);
+}
+
+console.log('# the view (Task 9), what node can check');
+{
+  const blank = readFileSync(join(here, '..', 'ui-src', 'writer', 'blank.fodt'), 'utf8');
+  const b = parseFodt(blank);
+  check('blank.fodt opens', !b.error, b.error);
+  check('blank.fodt no-op is byte-identical', !b.error && serializeFodt(b, blank).text === blank);
+  check('blank.fodt is not recording changes and has no macros', !b.error && !b.tracking && !b.macros);
+  const has = (n) => !!core.lookup(b.styles, 'paragraph', n);
+  check('blank.fodt defines Text body, Quotations and Heading 1 to 6',
+    ['Text_20_body', 'Quotations', ...[1, 2, 3, 4, 5, 6].map((i) => 'Heading_20_' + i)].every(has));
+  check('blank.fodt has a bullet and a numbered list style',
+    core.listStyleFor(b.styles, 'bullet') === 'List_20_1' && core.listStyleFor(b.styles, 'number') === 'Numbering_20_123');
+  check('blank.fodt was saved by LibreOffice', /<meta:generator>LibreOffice\//.test(blank));
+
+  check('cssStr escapes everything but letters, digits, - and _',
+    core.cssStr('a"]{x}</style>') === '"a\\22 \\5d \\7b x\\7d \\3c \\2f style\\3e "', core.cssStr('a"]{x}</style>'));
+  for (const f of ['hostile/style-injection.fodt', 'hostile/script-iframe.fodt', '07-styles.fodt', '13-large.fodt']) {
+    const p = parseFodt(read(f));
+    const css = core.docCss(p.styles, 'lat-writer[data-lw="1"]');
+    check(`${f}: the view's style sheet has no url(, expression, < or stray }`,
+      !/url\(|expression|</.test(css) && css.split('\n').every((l) => !l || /^[^{}]*\{[^{}]*\}$/.test(l)), css.slice(0, 200));
+  }
+  const lay = core.pageBox(parseFodt(read('09-layout.fodt')).layout);
+  check('the page box comes from the first master page', lay.width > 700 && lay.left > 0, JSON.stringify(lay));
+  check('a page box with nonsense margins falls back', core.pageBox({ width: '10cm', marginLeft: '9cm' }).left === 76);
+
+  const M = schema.marks;
+  const linkDom = M.link.spec.toDOM(M.link.create({ href: 'javascript:alert(1)' }));
+  check('a link in the editor carries no href', !('href' in linkDom[1]) && linkDom[1]['data-href'] === 'javascript:alert(1)');
+  check('safeHref takes http, https, mailto, urb, # and relative, and nothing else',
+    ['https://a', 'http://a', 'mailto:a@b', 'urb://~zod/x', '#x', 'other/report.fodt'].every(core.safeHref)
+    && !['javascript:alert(1)', ' JavaScript:x', 'java\tscript:x', 'data:text/html,x', 'file:///etc', 'vnd.sun.star.script:x', 'macro:x', '.uno:Open']
+      .some(core.safeHref));
+  const ss = M.spanStyle.spec.toDOM(M.spanStyle.create({ rest: [['fo:color', '#ff0000'], ['fo:font-size', 'url(x)'], ['fo:background-color', 'red;x:url(y)']] }));
+  check('a span\'s own properties show through the whitelist only', ss[1].style === 'color:#ff0000', JSON.stringify(ss[1]));
+
+  //  what a paste brings: the document's styles, no spans, no markers
+  const p10 = parseFodt(read('10-unknown.fodt'));
+  const S = schema.nodes;
+  const pasted = S.doc.create(null, [
+    S.list.create({ kind: 'number', src: [1, 2], xattrs: [['xml:id', 'x']] }, S.list_item.create(null, S.paragraph.create(null, schema.text('one')))),
+    S.paragraph.create({ src: [3, 4], xattrs: [['xml:id', 'y']] }, [schema.text('two'),
+      S.opaque_inline.create({ raw: '<text:bookmark-start text:name="b"/>', name: 'text:bookmark-start' }),
+      S.opaque_inline.create({ raw: '<text:date>x</text:date>', name: 'text:date', label: 'x' })]),
+  ]);
+  const fixed = [];
+  pasted.forEach((n) => fixed.push(core.fixPasted(n, b.styles)));
+  check('a pasted ol takes the numbered list style', fixed[0].attrs.xattrs[0][1] === 'Numbering_20_123' && fixed[0].attrs.kind === null);
+  check('pasted nodes keep no span and no file attributes', fixed.every((n) => n.attrs.src === null)
+    && fixed[1].attrs.xattrs.length === 0);
+  check('a pasted paragraph takes the body style', fixed[1].attrs.style === 'Text_20_body');
+  check('a paste leaves bookmarks behind and keeps fields',
+    !fixed[1].content.content.some((c) => c.attrs && c.attrs.name === 'text:bookmark-start')
+    && fixed[1].content.content.some((c) => c.attrs && c.attrs.name === 'text:date'));
+  check('a list style is found by kind in a corpus file', core.listStyleFor(parseFodt(read('04-lists.fodt')).styles, 'number') === 'L2');
+  check('a Basic library counts as macros, LibreOffice\'s empty libraries element does not',
+    p10.macros === true && parseFodt(read('01-paragraphs.fodt')).macros === false);
 }
 
 console.log('# speed');

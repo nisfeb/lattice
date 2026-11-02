@@ -11,6 +11,27 @@
 //  opaque_inline atom carrying the element's raw XML, moved or deleted
 //  whole and never edited inside.
 import { Schema } from 'prosemirror-model';
+import { css } from './styles.js';
+
+//  the DOM of a text block: its style by name (the view's style sheet
+//  matches on it), a page break and a quote as classes. Paste and copy
+//  read the style back, never `src` or `xattrs`
+const blockDom = (tag, n) => {
+  const a = {};
+  if (n.attrs.style != null) a['data-ps'] = n.attrs.style;
+  const cls = [n.attrs.pageBreak && 'lw-pb', n.attrs.quote && 'fodt-quote'].filter(Boolean).join(' ');
+  if (cls) a.class = cls;
+  return [tag, a, 0];
+};
+const blockAttrs = (el) => ({
+  style: el.getAttribute('data-ps') || null,
+  quote: el.classList.contains('fodt-quote'),
+  pageBreak: el.classList.contains('lw-pb'),
+});
+//  link targets a pasted link may keep: the schemes the reader makes live
+export const SAFE_HREF = /^(https?:|mailto:|urb:|#|[^:]*$)/i;
+export const safeHref = (h) => SAFE_HREF.test(String(h ?? '').replace(/[\u0000-\u0020\u007f]+/g, ''));
+const NOFONTS = { fonts: new Map() };
 
 const base = { src: { default: null }, xattrs: { default: [] } };
 const textBlock = (tag, extra = {}) => ({
@@ -25,25 +46,35 @@ export const schema = new Schema({
     doc: { content: 'block+' },
     paragraph: {
       ...textBlock('text:p', { placeholder: { default: false } }),
-      parseDOM: [{ tag: 'p' }],
-      toDOM: (n) => ['p', n.attrs.quote ? { class: 'fodt-quote' } : {}, 0],
+      parseDOM: [{ tag: 'p', getAttrs: blockAttrs }],
+      toDOM: (n) => blockDom('p', n),
     },
     heading: {
       ...textBlock('text:h', { level: { default: 1 } }),
-      parseDOM: [1, 2, 3, 4, 5, 6].map((level) => ({ tag: 'h' + level, attrs: { level } })),
-      toDOM: (n) => ['h' + Math.min(6, Math.max(1, n.attrs.level)), 0],
+      parseDOM: [1, 2, 3, 4, 5, 6].map((level) => ({ tag: 'h' + level, getAttrs: (el) => ({ ...blockAttrs(el), level }) })),
+      toDOM: (n) => blockDom('h' + Math.min(6, Math.max(1, n.attrs.level)), n),
     },
     list: {
-      attrs: { ...base },
+      //  `kind` is only for a pasted ul or ol, until paste.js gives it the
+      //  document's own list style
+      attrs: { ...base, kind: { default: null } },
       content: 'list_item+',
       group: 'block',
-      toDOM: () => ['ul', 0],
+      //  the list style decides bullet or number: the view's sheet matches
+      //  data-ls, and a pasted ul or ol gets the document's own (paste.js)
+      parseDOM: [{ tag: 'ul', getAttrs: () => ({ kind: 'bullet' }) },
+        { tag: 'ol', getAttrs: () => ({ kind: 'number' }) }],
+      toDOM: (n) => {
+        const s = n.attrs.xattrs.find(([k]) => k === 'text:style-name');
+        return ['ul', s ? { 'data-ls': s[1] } : {}, 0];
+      },
     },
     list_item: {
       attrs: { ...base, header: { default: false } },
       content: 'block+',
       defining: true,
-      toDOM: () => ['li', 0],
+      parseDOM: [{ tag: 'li' }],
+      toDOM: (n) => ['li', n.attrs.header ? { class: 'lw-lh' } : {}, 0],
     },
     table: {
       //  `pre` is the raw XML between the start tag and the first row (the
@@ -88,6 +119,7 @@ export const schema = new Schema({
       inline: true,
       group: 'inline',
       selectable: false,
+      parseDOM: [{ tag: 'br' }],
       toDOM: () => ['br'],
     },
     opaque_inline: {
@@ -106,12 +138,15 @@ export const schema = new Schema({
     link: {
       attrs: { href: { default: '' }, xattrs: { default: [] } },
       inclusive: false,
-      toDOM: (m) => ['a', { 'data-href': m.attrs.href }, 0],
+      //  never an href: a link in the editor is not followed by a click
+      //  (Ctrl+click opens a safe one, view.js)
+      parseDOM: [{ tag: 'a[href]', getAttrs: (el) => (safeHref(el.getAttribute('href')) ? { href: el.getAttribute('href') } : false) }],
+      toDOM: (m) => ['a', { 'data-href': m.attrs.href, title: m.attrs.href }, 0],
     },
     //  a named text style (office:styles)
     charStyle: {
       attrs: { name: {} },
-      toDOM: (m) => ['span', { 'data-style': m.attrs.name }, 0],
+      toDOM: (m) => ['span', { 'data-cs': m.attrs.name }, 0],
     },
     //  what a span's automatic style holds beyond the four marks below:
     //  `name` the style it came from (reused while the formatting matches),
@@ -125,19 +160,34 @@ export const schema = new Schema({
         name: { default: null }, rest: { default: [] }, xattrs: { default: [] },
         extra: { default: [] }, other: { default: {} }, opaque: { default: '' }, unknown: { default: false },
       },
-      toDOM: () => ['span', 0],
+      //  its other properties shown through the same whitelist as the
+      //  style sheet, never as written
+      toDOM: (m) => {
+        const c = css(NOFONTS, Object.fromEntries(m.attrs.rest));
+        return ['span', c ? { style: c } : {}, 0];
+      },
     },
     //  each keeps the property group it came from, so a double or wave
     //  underline, or a bold that also sets the Asian and complex weights,
     //  is written back as it was
-    strong: { attrs: { props: { default: [['fo:font-weight', 'bold']] } }, toDOM: () => ['strong', 0] },
-    em: { attrs: { props: { default: [['fo:font-style', 'italic']] } }, toDOM: () => ['em', 0] },
+    strong: {
+      attrs: { props: { default: [['fo:font-weight', 'bold']] } },
+      parseDOM: [{ tag: 'strong' }, { tag: 'b' }, { style: 'font-weight', getAttrs: (v) => /^(bold|bolder|[6-9]00)$/.test(v) && null }],
+      toDOM: () => ['strong', 0],
+    },
+    em: {
+      attrs: { props: { default: [['fo:font-style', 'italic']] } },
+      parseDOM: [{ tag: 'em' }, { tag: 'i' }, { style: 'font-style=italic' }],
+      toDOM: () => ['em', 0],
+    },
     underline: {
       attrs: { props: { default: [['style:text-underline-color', 'font-color'], ['style:text-underline-style', 'solid'], ['style:text-underline-width', 'auto']] } },
+      parseDOM: [{ tag: 'u' }],
       toDOM: () => ['u', 0],
     },
     strike: {
       attrs: { props: { default: [['style:text-line-through-style', 'solid'], ['style:text-line-through-type', 'single']] } },
+      parseDOM: [{ tag: 's' }, { tag: 'strike' }, { tag: 'del' }],
       toDOM: () => ['s', 0],
     },
   },

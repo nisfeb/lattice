@@ -50,7 +50,7 @@ function parseOrError(text) {
     styles: st,
     layout: pageLayout(st),
     tracking: !!tc && attr(tc, 'text:track-changes') !== 'false',
-    macros: !!child(doc, 'office:scripts') && elements(child(doc, 'office:scripts')).length > 0,
+    macros: hasMacros(child(doc, 'office:scripts')),
     opaque: p.opaque,
     //  what the serializer needs of the original, kept together so an
     //  edited copy of this object still carries the original document
@@ -63,6 +63,23 @@ function parseOrError(text) {
 }
 
 const ws = (s) => /^[ \t\r\n]*$/.test(s);
+
+//  whether office:scripts holds a macro: a library, a module or an event
+//  listener. LibreOffice writes an empty Basic libraries element in every
+//  document, which is none
+function hasMacros(el) {
+  if (!el) return false;
+  let found = false;
+  const walk = (e) => {
+    for (const k of elements(e)) {
+      if (/^(ooo:library-|ooo:module|script:event-listener|office:event-listener|presentation:event-listener)/.test(k.name)) found = true;
+      else walk(k);
+      if (found) return;
+    }
+  };
+  walk(el);
+  return found;
+}
 const tagName = (n) => n;
 
 class Parser {

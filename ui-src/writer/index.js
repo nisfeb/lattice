@@ -2,10 +2,11 @@
 //  code/nex/lattice/ui-app/writer.js, loaded lazily when a fodt page opens.
 //  app.js never imports or waits on this file at boot.
 //
-//  Phase 1: the build and its gates (Task 1) and the writer core (Task 8:
-//  tokenizer, model, styles, minimal-diff serializer). `extract` answers
-//  now; mount and render wait for the view (Task 9). Every ProseMirror
-//  module is bundled so the budget measures them.
+//  Phase 1: the build and its gates (Task 1), the writer core (Task 8:
+//  tokenizer, model, styles, minimal-diff serializer) and the view (Task
+//  9). The shell (ui-src/lattice/26-writer.js) mounts it over the editor
+//  when a fodt page is open. Every ProseMirror module is bundled so the
+//  budget measures them.
 
 import * as model from 'prosemirror-model';
 import * as state from 'prosemirror-state';
@@ -22,17 +23,27 @@ import * as gapcursor from 'prosemirror-gapcursor';
 import { parseFodt, fodtText, fodtOutline, fodtLinks } from './parse.js';
 import { serializeFodt, pairGuard } from './serialize.js';
 import { schema } from './schema.js';
+import { mount, render } from './view.js';
+//  a new Writer page: LibreOffice's own default document, saved by
+//  LibreOffice, with its body text, heading and list styles defined
+import blank from './blank.fodt';
 
 const pm = Object.freeze({
   model, state, view, transform, commands, keymap, history,
   inputrules, schemaList, tables, dropcursor, gapcursor,
 });
 
-const notYet = (what) => () => { throw new Error('LatWriter.' + what + ' is not built yet'); };
+//  the element the view mounts into; its behaviour is mount's
+if (typeof customElements !== 'undefined' && !customElements.get('lat-writer')) {
+  customElements.define('lat-writer', class extends HTMLElement {});
+}
 
 const LatWriter = {
-  mount: notYet('mount'),
-  render: notYet('render'),
+  //  mount(host, opts) -> controller | { error }, view.js
+  mount,
+  //  render(text) -> an HTML document string | null
+  render,
+  blank,
   //  the words, headings and link targets of a body (search, outline)
   extract: Object.freeze({ text: fodtText, outline: fodtOutline, links: fodtLinks }),
 };
