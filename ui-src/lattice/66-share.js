@@ -49,11 +49,12 @@
   const urbUrl = (target) => (ourShip ? 'urb://' + ourShip + '/' + target : null);
   const urbMissing = () => (ourShip === null ? 'address unavailable' : 'loading address');
   let shareShown = null;
-  fetch('/~/host').then((r) => (r.ok ? r.text() : '')).catch(() => '').then((t) => {
+  // (asked from a microtask, off app.js's top level: see boot, 99-boot.js)
+  queueMicrotask(() => fetch('/~/host').then((r) => (r.ok ? r.text() : '')).catch(() => '').then((t) => {
     ourShip = t.trim() || null;
     if (shareShown) paintShareCopy(shareShown);
     renderPublished();
-  });
+  }));
   const at = (u) => (u ? 'at ' + u : '(' + urbMissing() + ')');
   const SHARE_COPY = {
     private: () => 'Private: only you, and any ship or group you give access below. '

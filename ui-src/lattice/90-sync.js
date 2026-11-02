@@ -189,6 +189,8 @@
   const streamFail = (fail, registered, livedMs, bumpedLive) =>
     (registered && (livedMs >= 60000 || bumpedLive)) ? 0 : Math.min(fail + 1, 5);
   (async () => {
+    // off app.js's top level before the first request (boot, 99-boot.js)
+    await null;
     for (;;) {
       // a HIDDEN editor holds no stream: vere is HTTP/1.1 and the browser
       // caps the origin at six connections, so parked tabs' never-ending

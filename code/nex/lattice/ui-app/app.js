@@ -3329,7 +3329,9 @@
   // the front; the one in front is #toolhost. The editor underneath keeps
   // whatever the parked tab left there, untouched: the tool kind has no
   // live(), so nothing a tool does is ever filed under a document's tab.
-  const allFrames = () => [...document.querySelectorAll('.toolhost iframe')];
+  // a tab's frame carries data-tool; a document it left, kept for Back and
+  // Forward (29-fhead.js), carries data-kept instead
+  const allFrames = () => [...document.querySelectorAll('.toolhost iframe[data-tool]')];
   const frameOf = (key) => allFrames().find((f) => f.dataset.tool === key);
   // where a tool's wrap waits while no group shows it
   const toolStash = document.createElement('div');
@@ -3457,6 +3459,8 @@
         delete fnav[f.dataset.tool];
         f.remove();
       }
+    // and the pages they kept (29-fhead.js)
+    if (document.querySelector('.toolhost iframe[data-kept]')) fkeepTrim();
     // a frame that left the page (closed here, or with its group, gDrop
     // in 28-splits.js) is let go: the observer would hold it for good
     for (const f of frameSeenAll)
@@ -3487,15 +3491,23 @@
   // and a ResizeObserver hears each of them, after layout. The page's own
   // scripts (+page-cache-script) used to poll the frame's box ten times
   // a second instead, each poll a forced layout of the editor.
+  //
+  // A kept page that Back or Forward shows again (29-fhead.js) hears it
+  // only once it has stayed in sight `latQuiet`: its catch-up refetch and
+  // stream otherwise went out under the request of whatever was clicked
+  // next (a tab, the forum), as a cached paint waits 0.3 s to refetch.
   const frameSeen = new ResizeObserver((es) => {
-    for (const { target: f } of es) {
-      const on = f.isConnected && f.getClientRects().length > 0;
-      if (f.latOn === on) continue;
-      f.latOn = on;
-      try { f.contentWindow.dispatchEvent(new f.contentWindow.Event(on ? 'latshown' : 'lathidden')); }
-      catch {}
-    }
+    for (const { target: f } of es) frameSeenOne(f);
   });
+  function frameSeenOne(f) {
+    const on = f.isConnected && f.getClientRects().length > 0;
+    if (f.latOn === on) return;
+    const wait = on ? (f.latQuiet || 0) - Date.now() : 0;
+    if (wait > 0) { clearTimeout(f.latQuietT); f.latQuietT = setTimeout(() => frameSeenOne(f), wait); return; }
+    f.latOn = on;
+    try { f.contentWindow.dispatchEvent(new f.contentWindow.Event(on ? 'latshown' : 'lathidden')); }
+    catch {}
+  }
   // into `toolHost`, a group's host. A frame there already stays; one in
   // another group's host (its tab was moved) moves, and reloads.
   function toolMount(key, toolHost) {
@@ -3509,8 +3521,17 @@
     }
     const url = frameUrl(key);
     const had = frameOf(key);
-    if (had) { if (had.parentNode !== toolHost) toolHost.append(had); return; }
+    if (had) {
+      // a moved frame reloads, and so would the documents it kept
+      if (had.parentNode !== toolHost) { fkeepDropKey(key); toolHost.append(had); }
+      return;
+    }
     if (!url) return;
+    toolHost.append(frameMake(key, url));
+  }
+  // a tab's frame at `url`, watched by frameSeen. Back and Forward make one
+  // too, beside the frame they keep (29-fhead.js).
+  function frameMake(key, url) {
     const f = document.createElement('iframe');
     f.className = 'toolframe';
     f.dataset.tool = key;
@@ -3529,9 +3550,9 @@
     // must not hold the background lane shut
     f.onload = () => { if (Date.now() - (f.latAct || 0) < 10000) bgBusy(); fnavLoad(f); frameDress(f); };
     f.src = url;
-    toolHost.append(f);
     frameSeen.observe(f);
     frameSeenAll.add(f);
+    return f;
   }
   let frameSeq = 0;
   // Each load of a frame. Every frame loses the reader's bar, since the
@@ -3550,7 +3571,7 @@
     let d = null;
     try { d = f.contentDocument; } catch {}
     if (!d || !d.head) return;
-    const key = f.dataset.tool;
+    const key = f.dataset.tool || f.dataset.kept;
     // the editor's note marks its frame (00-framed.js); anywhere else clears it
     if (!editorGo(d.URL)) delete f.dataset.latEd;
     frameTheme(f);
@@ -3562,6 +3583,8 @@
     d.head.append(s);
     if (browsing(key)) {
       const title = () => {
+        // a kept document's title is not its tab's
+        if (f.dataset.tool !== key) return;
         const t = d.title.trim();
         if (!t || frameTitles[key] === t) return;
         frameTitles[key] = t;
@@ -3622,6 +3645,9 @@
       }, !inner);
     };
     aimTop(d, false);
+    // a link, form or script leaving this page opens beside it, which
+    // keeps it for Back (29-fhead.js)
+    if (browsing(key)) fkeepWatch(f, d, key);
     // the reader shows a page in a frame of its own (srcdoc), where the
     // comment box lives. A sandboxed one (a peer's page) is out of reach,
     // and has no box.
@@ -3784,7 +3810,7 @@
     }
   }
   const framesTheme = () => {
-    for (const f of allFrames()) frameTheme(f);
+    for (const f of document.querySelectorAll('.toolhost iframe')) frameTheme(f);
   };
   addEventListener('lattheme', framesTheme);
   darkMq.addEventListener('change', framesTheme);
@@ -5730,10 +5756,12 @@
   // each, and Back or Forward use history.go when the entry they would
   // cross is this tab's own. Anything that could put the mirror out of step
   // (a replace, a closed tab) clears it, and the replace path takes over.
-  const fnav = {};   // tab key -> { back, fwd, cur, addr, go, bar }
+  const fnav = {};   // tab key -> { back, fwd, cur, addr, go, bar, kept }
   const jh = { keys: [], pos: -1 };
   const jhClear = () => { jh.keys = []; jh.pos = -1; };
-  const fnavOf = (key) => fnav[key] || (fnav[key] = { back: [], fwd: [], cur: null, addr: '', go: null, bar: null });
+  const fnavOf = (key) => fnav[key] || (fnav[key] = { back: [], fwd: [], cur: null, addr: '', go: null, bar: null, kept: [] });
+  // an address as the stacks hold it: less the service worker's u=sw<time>
+  const fnavNorm = (url) => { try { const u = new URL(url); u.searchParams.delete('u'); return u.href; } catch { return url; } };
 
   // What the address field shows for a frame's page: the urb:// address or
   // query the reader's bar was served with, or else the page's route under
@@ -5768,30 +5796,41 @@
   // each load of a browsing frame (toolMount's onload, before frameDress)
   function fnavLoad(f) {
     const key = f.dataset.tool;
-    if (!browsing(key)) return;
+    if (!key || !browsing(key)) return;
     const n = fnavOf(key);
     let url = null, d = null;
     try { d = f.contentDocument; url = f.contentWindow.location.href; } catch {}
     if (url === 'about:blank') return;
     // the service worker's reload adds u=sw<time>: the same page, not a step
-    try { const u = new URL(url); u.searchParams.delete('u'); url = u.href; } catch {}
-    if (n.go) n.go = null;            // Back or Forward landed: the stacks moved then
+    url = fnavNorm(url);
+    // a frame made by a step (fkeepBeside): the stacks moved then
+    if (f.latStep) f.latStep = false;
+    else if (n.go) n.go = null;       // Back or Forward landed: the stacks moved then
     else if (n.cur !== null && url !== n.cur) {
       n.back.push(n.cur); n.fwd = [];
       jh.keys.length = jh.pos + 1; jh.keys.push(key); jh.pos++;
+      fkeepTrim();
     }
-    n.cur = url;
-    n.addr = fnavAddr(d);
-    n.bar = d ? d.querySelector('form.bar, form.cbar') : null;
-    fhPaintKey(key);
+    fnavShown(f, d, url);
     // the bar's star and orrery button paint after load
     if (n.bar) new MutationObserver(() => fhPaintKey(key))
       .observe(n.bar, { subtree: true, childList: true, attributes: true, characterData: true });
   }
-  // 'back', 'fwd', or 'to' an address typed or picked
-  function fnavGo(key, how, v) {
+  // the tab's page is now `f`'s: the address, the bar and the title
+  function fnavShown(f, d, url) {
+    const key = f.dataset.tool;
+    const n = fnavOf(key);
+    n.cur = url;
+    n.addr = fnavAddr(d);
+    n.bar = d ? d.querySelector('form.bar, form.cbar') : null;
+    fhPaintKey(key);
+  }
+  // 'back', 'fwd', or 'to' an address typed or picked. `fromTop` is the
+  // browser's own Back or Forward, which has moved the window's history
+  // already (topNav below). True when the tab took the step.
+  function fnavGo(key, how, v, fromTop) {
     const f = frameOf(key);
-    if (!f) return;
+    if (!f) return false;
     const n = fnavOf(key);
     if (how === 'to') {
       n.addr = v.trim();
@@ -5800,12 +5839,25 @@
       return;
     }
     const from = how === 'back' ? n.back : n.fwd;
-    if (!from.length) return;
+    if (!from.length) return false;
     const url = from.pop();
+    const was = n.cur;
     if (n.cur !== null) (how === 'back' ? n.fwd : n.back).push(n.cur);
+    // the page kept is shown again; with none, it opens beside this one,
+    // which is kept for the step back
+    const e = n.kept.find((x) => x.url === url && x.f.isConnected);
+    if (e || fkeepCan(f)) {
+      jhClear();
+      if (!fromTop) topStep(key, how);
+      if (e) fkeepSwap(key, f, e, was);
+      else { n.cur = url; fkeepBeside(key, f, url, was); }
+      fkeepTrim();
+      fhPaintKey(key);
+      return true;
+    }
     n.go = how;
     const at = how === 'back' ? jh.pos : jh.pos + 1;
-    if (jh.keys[at] === key && jh.keys.every((k) => frameOf(k))) {
+    if (!fromTop && jh.keys[at] === key && jh.keys.every((k) => frameOf(k))) {
       jh.pos += how === 'back' ? -1 : 1;
       try { f.contentWindow.history.go(how === 'back' ? -1 : 1); } catch {}
     } else {
@@ -5813,7 +5865,235 @@
       try { f.contentWindow.location.replace(url); } catch {}
     }
     fhPaintKey(key);
+    return true;
   }
+
+  // ── the browser's own Back and Forward ───────────────────────────────────
+  // A frame's navigation is an entry in the window's history, so the
+  // browser's Back (a phone's back gesture, a mouse's back button) stepped
+  // the frame back. A step a kept page takes (fkeepWatch) is no navigation
+  // and left no entry: that Back left the app instead. So each such step
+  // pushes an entry onto the shell's own history, `th` noting whose it
+  // is, and a traversal across those entries steps their tabs. The shell's
+  // own Back and Forward move over the entry too when it is the tab's, so
+  // the two stay in step; when it is not, the tab's entries are forgotten
+  // and crossed for nothing.
+  // A traversal lands a task later, so the entries topStep is moving to
+  // wait in `thPend`, in order: two quick clicks of Back are two of them.
+  const th = new Map();   // the shell's history entry key -> tab key
+  let thPend = [];        // entry keys topStep's traversals will land on
+  const topNav = (() => { try { return window.navigation || null; } catch { return null; } })();
+  function topPush(key) {
+    if (!topNav) return;
+    try { history.pushState(history.state, '', location.href); th.set(topNav.currentEntry.key, key); } catch {}
+  }
+  function topStep(key, how) {
+    const c = topNav && topNav.currentEntry;
+    if (!c) return;
+    const es = topNav.entries();
+    const i = thPend.length ? es.findIndex((x) => x.key === thPend[thPend.length - 1]) : c.index;
+    const over = es[how === 'back' ? i : i + 1], to = es[how === 'back' ? i - 1 : i + 1];
+    if (i >= 0 && over && to && th.get(over.key) === key) {
+      thPend.push(to.key);
+      try { how === 'back' ? history.back() : history.forward(); } catch { thPend = []; }
+      return;
+    }
+    for (const [k, v] of th) if (v === key) th.delete(k);
+  }
+  if (topNav) topNav.addEventListener('currententrychange', (ev) => {
+    if (ev.navigationType !== 'traverse' || !ev.from) return;
+    const c = topNav.currentEntry;
+    if (thPend.length && thPend[0] === c.key) { thPend.shift(); return; }
+    thPend = [];
+    const es = topNav.entries(), a = ev.from.index, b = c.index;
+    if (a < 0 || b < 0 || a === b) return;
+    let did = false;
+    if (b < a) {
+      for (let i = a; i > b; i--) if (th.has(es[i].key) && fnavGo(th.get(es[i].key), 'back', null, true)) did = true;
+      // only entries of closed tabs crossed: on to the next one of ours
+      if (!did && th.has(c.key)) history.back();
+    } else {
+      for (let i = a + 1; i <= b; i++) if (th.has(es[i].key) && fnavGo(th.get(es[i].key), 'fwd', null, true)) did = true;
+      if (!did && es[b + 1] && th.has(es[b + 1].key)) history.forward();
+    }
+  });
+
+  // ── kept documents ───────────────────────────────────────────────────────
+  // Back in a frame used to be a navigation of the frame: commit, parse and
+  // layout of the page before, about 60 ms, as frames get no back/forward
+  // cache. Now the page a frame leaves stays alive beside it, hidden, and
+  // Back or Forward show it again: a swap of two frames.
+  //
+  // Leaving is caught in the page (the Navigation API's navigate event): a
+  // push to a lattice page on this origin (a link, a GET form, a script,
+  // the address field) is stopped and opened in a new frame next to this
+  // one, which is then kept. A POST, a reload, a replace, a page elsewhere
+  // and an engine with no Navigation API (webkitgtk) navigate the frame as
+  // before. The tab's frame is the one with data-tool, and its name moves
+  // with it, so a form aimed at the tab lands in the frame shown.
+  //
+  // Fresh: a kept page is hidden, so frameSeen tells it lathidden, and its
+  // live stream closes and its refetch clock stops, as in a parked tab.
+  // Shown again it hears latshown, once it has stayed in sight 0.3 s (the
+  // wait a cached paint makes before its refetch), and catches up the same
+  // way: a refetch (+sse-script), then location.replace when the page
+  // changed meanwhile.
+  //
+  // Bounded: two kept per tab (the ones nearest its page), six in all (two
+  // on a device with 2 GB or less), none older than five minutes, and all
+  // let go when the shell has been hidden a minute or is frozen, or when
+  // the JS heap is over 60% of its limit.
+  const KEEP_TAB = 2, KEEP_MS = 5 * 60 * 1000, KEEP_QUIET = 300;
+  const KEEP_ALL = (navigator.deviceMemory || 8) <= 2 ? 2 : 6;
+  let keepTimer = 0, keepHid = 0;
+  // (a suite shortens the time with localStorage.latKeepMs)
+  const keepMs = () => (+localStorage.latKeepMs) || KEEP_MS;
+  const keptAll = () => Object.values(fnav).flatMap((n) => n.kept.map((e) => ({ n, e })));
+  // whether a step may open a frame beside `f`: only where leaving is caught
+  const fkeepCan = (f) => { try { return KEEP_ALL > 0 && !!f.contentWindow.navigation; } catch { return false; } };
+  const frameGone = (f) => { frameSeen.unobserve(f); frameSeenAll.delete(f); f.remove(); };
+  function fkeepDrop(n, e) {
+    n.kept = n.kept.filter((x) => x !== e);
+    frameGone(e.f);
+  }
+  function fkeepDropKey(key) {
+    const n = fnav[key];
+    if (n) for (const e of n.kept.slice()) fkeepDrop(n, e);
+  }
+  const heapFull = () => {
+    try { const m = performance.memory; return !!m && m.usedJSHeapSize > 0.6 * m.jsHeapSizeLimit; }
+    catch { return false; }
+  };
+  // how many steps from the tab's page a kept one is, by its stacks
+  const keptSteps = (n, e) => Math.min(...[n.back, n.fwd].map((s) => {
+    const i = s.lastIndexOf(e.url);
+    return i < 0 ? Infinity : s.length - 1 - i;
+  }));
+  // let go of what the bound says, `all` for everything
+  function fkeepTrim(all) {
+    const now = Date.now();
+    const full = !all && heapFull();
+    for (const n of Object.values(fnav))
+      for (const e of n.kept.slice())
+        if (all || full || !e.f.isConnected || now - e.at > keepMs() || keptSteps(n, e) === Infinity) fkeepDrop(n, e);
+    for (const n of Object.values(fnav)) {
+      const ks = n.kept.slice().sort((a, b) => keptSteps(n, b) - keptSteps(n, a));
+      while (ks.length > KEEP_TAB) fkeepDrop(n, ks.shift());
+    }
+    const every = keptAll().sort((a, b) => a.e.at - b.e.at);
+    while (every.length > KEEP_ALL) { const x = every.shift(); fkeepDrop(x.n, x.e); }
+    // one no tab holds any more: its tab closed
+    const held = new Set(keptAll().map((x) => x.e.f));
+    for (const f of document.querySelectorAll('.toolhost iframe[data-kept]')) if (!held.has(f)) frameGone(f);
+    clearTimeout(keepTimer);
+    keepTimer = held.size ? setTimeout(() => fkeepTrim(), 60000) : 0;
+  }
+  document.addEventListener('visibilitychange', () => {
+    clearTimeout(keepHid);
+    if (document.hidden) keepHid = setTimeout(() => fkeepTrim(true), 60000);
+  });
+  document.addEventListener('freeze', () => fkeepTrim(true));
+  // `f` is the tab's frame no more; kept as `url`, or let go with none
+  // The name goes with the window too: Chrome leaves a frame's window
+  // name as it was when the attribute changes, and a form aimed at the
+  // tab (formAgain) then went to the kept page, the first of the two.
+  const frameName = (f, n) => {
+    f.name = n;
+    try { f.contentWindow.name = n; } catch {}
+  };
+  function fkeepPark(key, f, url) {
+    delete f.dataset.tool;
+    f.dataset.kept = key;
+    frameName(f, '');
+    if (!url || KEEP_ALL < 1) { frameGone(f); return; }
+    fnavOf(key).kept.push({ f, url, at: Date.now() });
+  }
+  // a new frame for the tab at `url`, beside `f`, which is kept as `was`
+  function fkeepBeside(key, f, url, was) {
+    const g = frameMake(key, url);
+    g.name = f.name;
+    g.latAct = f.latAct;
+    g.latStep = true;
+    f.parentNode.insertBefore(g, f);
+    fkeepPark(key, f, was);
+    if (!f.isConnected) return g;
+    // the page left stays painted over the new one until that one loads,
+    // as a frame's own navigation holds its old paint
+    f.classList.add('fcover');
+    const un = () => { f.classList.remove('fcover'); if (!f.dataset.tool) f.hidden = true; };
+    g.addEventListener('load', un, { once: true });
+    setTimeout(un, 3000);
+    return g;
+  }
+  // the kept `e` is the tab's frame again, and `f` is kept as `was`
+  function fkeepSwap(key, f, e, was) {
+    const n = fnavOf(key);
+    const k = e.f;
+    n.kept = n.kept.filter((x) => x !== e);
+    const name = f.name;
+    fkeepPark(key, f, was);
+    frameName(k, name);
+    if (f.isConnected) { f.classList.remove('fcover'); f.hidden = true; }
+    // it hears latshown once it has stayed in sight a beat (frameSeen)
+    k.latQuiet = Date.now() + KEEP_QUIET;
+    delete k.dataset.kept;
+    k.dataset.tool = key;
+    k.classList.remove('fcover');
+    k.hidden = false;
+    let d = null;
+    try { d = k.contentDocument; } catch {}
+    fnavShown(k, d, e.url);
+    const t = d && d.title.trim();
+    if (t && frameTitles[key] !== t) { frameTitles[key] = t; paintTabs(); }
+    if (k.latStale) {
+      const u = k.latStale;
+      k.latStale = null;
+      try { k.contentWindow.location.replace(u); } catch {}
+    }
+  }
+  // catch the page in `f` leaving (frameDress, at each load)
+  function fkeepWatch(f, d, key) {
+    const nav = d.defaultView && d.defaultView.navigation;
+    if (!nav || KEEP_ALL < 1) return;
+    nav.addEventListener('navigate', (e) => {
+      // A kept page goes nowhere out of sight: what it asks for meanwhile
+      // (its catch-up's replace, landing after Forward hid it) waits until
+      // it is shown again (fkeepSwap). It went out as a navigation under
+      // the request of whatever was clicked next.
+      if (f.dataset.tool !== key) {
+        if (f.dataset.kept === key && e.cancelable && !e.destination.sameDocument && !e.formData) {
+          e.preventDefault();
+          // still painted over the tab's next page while it loads
+          // (fkeepBeside), a link followed there is the reader's own click,
+          // and the tab goes where it points rather than this page later
+          const g = f.classList.contains('fcover') && e.navigationType === 'push' && frameOf(key);
+          if (g) { try { g.contentWindow.location.href = e.destination.url; } catch {} }
+          else f.latStale = e.destination.url;
+        }
+        return;
+      }
+      if (e.navigationType !== 'push' || !e.cancelable || e.hashChange
+        || e.destination.sameDocument || e.downloadRequest !== null || e.formData) return;
+      let u;
+      try { u = new URL(e.destination.url); } catch { return; }
+      if (u.origin !== location.origin || !/^\/apps\/lattice(\/|$)/.test(u.pathname) || editorGo(u.href)) return;
+      const n = fnavOf(key);
+      const to = fnavNorm(u.href);
+      if (n.cur === null || to === n.cur) return;
+      e.preventDefault();
+      jhClear();
+      const was = n.cur;
+      n.back.push(was);
+      n.fwd = [];
+      n.cur = to;
+      fkeepBeside(key, f, u.href, was);
+      topPush(key);
+      fkeepTrim();
+      fhPaintKey(key);
+    });
+  }
+  // for the browser suites: what is kept, after a trim when asked
+  window.latKept = (trim) => (trim && fkeepTrim(), keptAll()).map(({ e }) => ({ key: e.f.dataset.kept, url: e.url, at: e.at }));
 
   // ── the omnibar ──────────────────────────────────────────────────────────
   // An address field and its completion list: the reader's saved and
@@ -8378,43 +8658,54 @@
       // built once: the live editor moves between groups (28-splits.js)
       if (this.built) return;
       this.built = true;
-      this.innerHTML =
-        // SANDBOXED, and this is load-bearing rather than defensive.
-        //
-        // The pane renders page content, and an html page is served into it as
-        // its own document — including its scripts. Pages are not all
-        // hand-written: the clipper archives arbitrary web pages verbatim. On
-        // a same-origin frame, opening one of those in the editor ran its
-        // JavaScript with this session, which is read every page, rewrite the
-        // ACLs, exfiltrate the store. Verified before this line existed: a
-        // page containing <script>parent.__PWNED=1</script> set that global on
-        // the app and rewrote its title.
-        //
-        // allow-scripts WITHOUT allow-same-origin is the pair that matters.
-        // Scripts still run, so the footnote-anchor handler the ship injects
-        // into every server render keeps working, but the frame gets an opaque
-        // origin: no parent, no cookies, no session. The two together would
-        // hand the sandbox straight back.
-        //
-        // allow-top-navigation-by-user-activation is a narrower third token,
-        // added for a different reason: a wikilink is a plain <a> pointing at
-        // the app's own route, and clicking one used to navigate the frame
-        // itself, straight into the opaque origin's missing cookies, a live
-        // 403 in place of the page. This token opens exactly one door out of
-        // the sandbox, and only on an actual click. Nothing running inside
-        // the frame can drive the top page anywhere on its own; the click has
-        // to be real. The base target below is what points those clicks
-        // upward instead of at the frame.
-        // The frame sits in a scrolling DIV and is sized to its own content
-        // (see previewFit), so the frame's document never scrolls and never
-        // shows the engine's native scrollbar. That bar is the one WebKitGTK
-        // paints light no matter what: measured on 2.50, a sub-frame's bar
-        // ignores color-scheme, ::-webkit-scrollbar, scrollbar-color, the
-        // GTK dark variant and gtk-application-prefer-dark-theme alike.
-        // The div scrolls with the app's own styled bars instead.
-        '<div class="prevwrap"><iframe class="prev" id="prev" title="live preview" '
-          + 'sandbox="allow-scripts allow-top-navigation-by-user-activation"></iframe></div>';
-      prev = $('prev');
+      this.innerHTML = '<div class="prevwrap"></div>';
+      // The frame is made now, so everything that writes to `prev` can, but
+      // goes into the page a task later. A sandboxed frame is a frame of its
+      // own to the engine, and making one inside boot's task cost about
+      // 33 ms on the first load after the worker installs (no spare frame
+      // yet), the larger part of the one long task boot had. Its srcdoc,
+      // set meanwhile, loads as it goes in.
+      prev = document.createElement('iframe');
+      prev.className = 'prev';
+      prev.id = 'prev';
+      prev.title = 'live preview';
+      // SANDBOXED, and this is load-bearing rather than defensive.
+      //
+      // The pane renders page content, and an html page is served into it as
+      // its own document — including its scripts. Pages are not all
+      // hand-written: the clipper archives arbitrary web pages verbatim. On
+      // a same-origin frame, opening one of those in the editor ran its
+      // JavaScript with this session, which is read every page, rewrite the
+      // ACLs, exfiltrate the store. Verified before this line existed: a
+      // page containing <script>parent.__PWNED=1</script> set that global on
+      // the app and rewrote its title.
+      //
+      // allow-scripts WITHOUT allow-same-origin is the pair that matters.
+      // Scripts still run, so the footnote-anchor handler the ship injects
+      // into every server render keeps working, but the frame gets an opaque
+      // origin: no parent, no cookies, no session. The two together would
+      // hand the sandbox straight back.
+      //
+      // allow-top-navigation-by-user-activation is a narrower third token,
+      // added for a different reason: a wikilink is a plain <a> pointing at
+      // the app's own route, and clicking one used to navigate the frame
+      // itself, straight into the opaque origin's missing cookies, a live
+      // 403 in place of the page. This token opens exactly one door out of
+      // the sandbox, and only on an actual click. Nothing running inside
+      // the frame can drive the top page anywhere on its own; the click has
+      // to be real. The base target below is what points those clicks
+      // upward instead of at the frame.
+      // The frame sits in a scrolling DIV and is sized to its own content
+      // (see previewFit), so the frame's document never scrolls and never
+      // shows the engine's native scrollbar. That bar is the one WebKitGTK
+      // paints light no matter what: measured on 2.50, a sub-frame's bar
+      // ignores color-scheme, ::-webkit-scrollbar, scrollbar-color, the
+      // GTK dark variant and gtk-application-prefer-dark-theme alike.
+      // The div scrolls with the app's own styled bars instead.
+      prev.setAttribute('sandbox', 'allow-scripts allow-top-navigation-by-user-activation');
+      const wrap = this.querySelector('.prevwrap');
+      const f = prev;
+      setTimeout(() => { if (!f.parentNode) wrap.append(f); }, 0);
       // the frame reports its content height once its document has loaded;
       // the wrap scrolls. The FIRST report per document wins, measured with
       // the frame at pane height (previewFit clears min-height before every
@@ -8864,11 +9155,12 @@
   const urbUrl = (target) => (ourShip ? 'urb://' + ourShip + '/' + target : null);
   const urbMissing = () => (ourShip === null ? 'address unavailable' : 'loading address');
   let shareShown = null;
-  fetch('/~/host').then((r) => (r.ok ? r.text() : '')).catch(() => '').then((t) => {
+  // (asked from a microtask, off app.js's top level: see boot, 99-boot.js)
+  queueMicrotask(() => fetch('/~/host').then((r) => (r.ok ? r.text() : '')).catch(() => '').then((t) => {
     ourShip = t.trim() || null;
     if (shareShown) paintShareCopy(shareShown);
     renderPublished();
-  });
+  }));
   const at = (u) => (u ? 'at ' + u : '(' + urbMissing() + ')');
   const SHARE_COPY = {
     private: () => 'Private: only you, and any ship or group you give access below. '
@@ -11781,6 +12073,8 @@
   const streamFail = (fail, registered, livedMs, bumpedLive) =>
     (registered && (livedMs >= 60000 || bumpedLive)) ? 0 : Math.min(fail + 1, 5);
   (async () => {
+    // off app.js's top level before the first request (boot, 99-boot.js)
+    await null;
     for (;;) {
       // a HIDDEN editor holds no stream: vere is HTTP/1.1 and the browser
       // caps the origin at six connections, so parked tabs' never-ending
@@ -12767,77 +13061,88 @@
       document.head.append(s);
     }
   }
-  if (navigator.serviceWorker && navigator.serviceWorker.controller) sideScripts();
-  else setTimeout(sideScripts, 8000);
-  // a queue left by a previous session syncs on open. With no Background
-  // Sync (the SW must not intercept API calls), next-open IS the replay
-  // moment, and the UI says so rather than implying closed-app sync exists
-  // Adoption first, replay after. On the desktop the durable queue is the
-  // ship-keyed one in Rust, so anything still sitting in this origin's
-  // IndexedDB is a leftover from before that existed. Move it across BEFORE
-  // the replay looks at the queue, or the first drain would not include it.
-  adoptIdbQueue().then(() => {
-    setTimeout(() => { if (offCount) replayQueue(); }, 4000);
-  });
-  // Well after boot has settled, never during it. Boot already spends five
-  // serialised pier requests and takes most of ten seconds on a slow ship. A
-  // count landing in the middle of that puts the user's first save behind it
-  // and can push the save past the offline timeout, which is a real failure
-  // traded for a badge nobody is waiting on.
-  setTimeout(() => { refreshCommentBadge(); }, 20000);
-  // The tabs come back first (21-tabs.js) and boot shows the front one. A
-  // page has the snapshot-first path below; every other kind shows through
-  // the tab model, with the tree and the panels loading beside it.
-  const { tab: bootTab, fresh: bootFresh } = tabsBoot();
-  if (bootTab.kind !== 'page') {
-    loadTree().then(() => { legacyCheck(); sideScripts(); loadPanels(); });
-    tabShowBoot(bootTab);
-  } else {
-    // a folder in the address (?into=, a reload while one was selected)
-    // outranks the tab's page, as it did before tabs
-    const into = qs.get('into');
-    const name = into && !qs.get('name') ? null : bootTab.key || null;
-    const painted = bootSnap(name, bootFresh && !into);
-    bootTree();
-    // what the snapshot painted, if anything. The baseline for "did the USER
-    // do something while the dump was in flight?"
-    const bootCurrent = current;
-    // and what the name field said: a new page named in the dialog has no
-    // `current` until its create lands, but it is the user's all the same
-    const bootShown = pname.value;
-    loadTree().then(() => {
-      // The tree paints from localStorage at 0ms, so it is clickable long
-      // before this resolves. Anything boot does by default would then land on
-      // top of the user's own action, opening a page and having it close a
-      // second later, which is exactly what the trailing newFile('') did.
-      // Compare against bootCurrent, not against null. A snapshot-painted page
-      // is not a user action and still wants its refreshOpen reconcile.
-      // everTyped, not dirty. A keystroke followed by an autosave clears dirty
-      // before a slow dump lands, and this branch then repainted the editor
-      // from the dump's PRE-edit copy. Typing is a user action whether or not
-      // it has since been saved. Going to another tab is a user action too.
-      const touched = current !== bootCurrent || curFolder !== null || dirty || everTyped
-        || activeTab !== bootTab || pname.value !== bootShown;
-      if (touched) {
+  // Boot runs in a microtask after app.js has been evaluated: the same
+  // task, before DOMContentLoaded, but not on app.js's top level. With
+  // DevTools attached (every perf-measure and suite run), each request
+  // records the script stack that made it, and a stack through the top
+  // level makes V8 reparse all of app.js (600 KB) for its source
+  // positions: about 35 ms inside the first request of the first load
+  // after the worker installs, which made boot one long task. From here
+  // the stack is boot's own functions. Without DevTools nothing is
+  // reparsed either way.
+  queueMicrotask(() => {
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) sideScripts();
+    else setTimeout(sideScripts, 8000);
+    // a queue left by a previous session syncs on open. With no Background
+    // Sync (the SW must not intercept API calls), next-open IS the replay
+    // moment, and the UI says so rather than implying closed-app sync exists
+    // Adoption first, replay after. On the desktop the durable queue is the
+    // ship-keyed one in Rust, so anything still sitting in this origin's
+    // IndexedDB is a leftover from before that existed. Move it across BEFORE
+    // the replay looks at the queue, or the first drain would not include it.
+    adoptIdbQueue().then(() => {
+      setTimeout(() => { if (offCount) replayQueue(); }, 4000);
+    });
+    // Well after boot has settled, never during it. Boot already spends five
+    // serialised pier requests and takes most of ten seconds on a slow ship. A
+    // count landing in the middle of that puts the user's first save behind it
+    // and can push the save past the offline timeout, which is a real failure
+    // traded for a badge nobody is waiting on.
+    setTimeout(() => { refreshCommentBadge(); }, 20000);
+    // The tabs come back first (21-tabs.js) and boot shows the front one. A
+    // page has the snapshot-first path below; every other kind shows through
+    // the tab model, with the tree and the panels loading beside it.
+    const { tab: bootTab, fresh: bootFresh } = tabsBoot();
+    if (bootTab.kind !== 'page') {
+      loadTree().then(() => { legacyCheck(); sideScripts(); loadPanels(); });
+      tabShowBoot(bootTab);
+    } else {
+      // a folder in the address (?into=, a reload while one was selected)
+      // outranks the tab's page, as it did before tabs
+      const into = qs.get('into');
+      const name = into && !qs.get('name') ? null : bootTab.key || null;
+      const painted = bootSnap(name, bootFresh && !into);
+      bootTree();
+      // what the snapshot painted, if anything. The baseline for "did the USER
+      // do something while the dump was in flight?"
+      const bootCurrent = current;
+      // and what the name field said: a new page named in the dialog has no
+      // `current` until its create lands, but it is the user's all the same
+      const bootShown = pname.value;
+      loadTree().then(() => {
+        // The tree paints from localStorage at 0ms, so it is clickable long
+        // before this resolves. Anything boot does by default would then land on
+        // top of the user's own action, opening a page and having it close a
+        // second later, which is exactly what the trailing newFile('') did.
+        // Compare against bootCurrent, not against null. A snapshot-painted page
+        // is not a user action and still wants its refreshOpen reconcile.
+        // everTyped, not dirty. A keystroke followed by an autosave clears dirty
+        // before a slow dump lands, and this branch then repainted the editor
+        // from the dump's PRE-edit copy. Typing is a user action whether or not
+        // it has since been saved. Going to another tab is a user action too.
+        const touched = current !== bootCurrent || curFolder !== null || dirty || everTyped
+          || activeTab !== bootTab || pname.value !== bootShown;
+        if (touched) {
+          legacyCheck();
+          sideScripts();
+          loadPanels();
+          return;
+        }
+        if (name) {
+          if (painted && current === name) refreshOpen();
+          else openPage(name);
+        }
+        else if (into && nodes.some((n) => !n.page && n.path === into)) selectFolder(into);
+        // no focus: boot did not ask for a new file, the user did not either
+        else if (into) newFile(into, false);
+        // bare launch, snapshot resumed a page above. Reconcile it, do not
+        // clobber it with an empty new-file view
+        else if (current) refreshOpen();
+        else newFile('', false);
         legacyCheck();
         sideScripts();
         loadPanels();
-        return;
-      }
-      if (name) {
-        if (painted && current === name) refreshOpen();
-        else openPage(name);
-      }
-      else if (into && nodes.some((n) => !n.page && n.path === into)) selectFolder(into);
-      // no focus: boot did not ask for a new file, the user did not either
-      else if (into) newFile(into, false);
-      // bare launch, snapshot resumed a page above. Reconcile it, do not
-      // clobber it with an empty new-file view
-      else if (current) refreshOpen();
-      else newFile('', false);
-      legacyCheck();
-      sideScripts();
-      loadPanels();
-    });
-  }
+      });
+    }
+  });
 })();
