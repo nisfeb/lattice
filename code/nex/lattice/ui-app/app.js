@@ -3298,7 +3298,8 @@
     const page = doc && mode !== 'know';
     const has = new Set(['wrap']);
     if (page) has.add('kind');
-    if (page && current) { has.add('dup'); has.add('raw'); }
+    if (page && current) { has.add('dup'); has.add('raw'); has.add('link'); }
+    if (grubUrb()) has.add('link');
     if (doc && current) { has.add('download'); has.add('del'); }
     if (page && linkOf(current)) has.add('linkback');
     // a folder view: Delete is #del's folder branch, its own confirm and all
@@ -3350,6 +3351,7 @@
       m.append(sub);
     }
     item('wrap', 'Line wrap', done(() => flip('appWrap')), localStorage.appWrap === '1');
+    if (has.has('link')) item('link', 'Copy link', done(() => copyLink(grubUrb() || pageUrb(current))));
     if (has.has('dup')) item('dup', 'Duplicate', done(dupPage));
     if (has.has('download')) item('download', 'Download', done(downloadDoc));
     // the hidden button's title says whether pandoc is there (71-latex.js)
@@ -3374,7 +3376,7 @@
   // with its list unfolded, as clicking Kind does. Convert to HTML exists
   // only in the desktop app.
   for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'],
-    ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
+    ['link', 'Copy link'], ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
     ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['del', 'Delete']]) {
     if (id === 'tex' && !window.__TAURI__) continue;
     action({ id: 'pm-' + id, name, home: 'Page menu',
@@ -7316,6 +7318,7 @@
       m.append(b);
     };
     if (t.kind === 'page') {
+      item('link', 'Copy link', () => copyLink(pageUrb(t.path)));
       item('mv', 'Rename / move', () => askMovePage(t.path));
       item('del', 'Delete', () => treeDelete(row));
     } else if (t.kind === 'folder') {
@@ -7323,6 +7326,7 @@
       item('mv', 'Rename / move', () => moveFolder(t.path));
       item('del', 'Delete', () => treeDelete(row));
     } else {
+      item('link', 'Copy link', () => copyLink(swmUrb(t.it)));
       item('in', 'Move into my pages', () => askMoveIn(t.it));
       item('del', 'Remove from list', () => treeDelete(row));
     }
@@ -9765,6 +9769,7 @@
   <button data-m="clearweb" data-action="share-clearweb">clearweb</button>
 </div>
 <div id="sharewhat" class="muted sharewhat"></div>
+<div class="row"><button id="shcopy" type="button" data-action="share-copylink">copy link</button></div>
 <div id="cwurl" class="muted"></div>
 <h3>give a ship access</h3>
 <div class="row"><input id="shwith" placeholder="~ship" autocomplete="off"><button id="shread">read</button><button id="shedit">edit</button></div>
@@ -9802,6 +9807,52 @@
   let ourShip = '';
   const urbUrl = (target) => (ourShip ? 'urb://' + ourShip + '/' + target : null);
   const urbMissing = () => (ourShip === null ? 'address unavailable' : 'loading address');
+  // ── copy link: a page's urb:// address on the clipboard ─────────────────
+  // navigator.clipboard first. It can be missing or refuse (a page that is
+  // not a secure context, an older WebKitGTK in the desktop app), so the
+  // fallback copies from a hidden textarea with execCommand, which works
+  // inside the click that asked. Neither needs a Tauri permission: only
+  // the clipboard-manager plugin does, and this uses no plugin.
+  async function copyText(t) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(t);
+        return true;
+      }
+    } catch {}
+    const ta = document.createElement('textarea');
+    ta.value = t;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+    const back = document.activeElement;
+    document.body.append(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch {}
+    ta.remove();
+    if (back && back.focus) back.focus();
+    return ok;
+  }
+  // The address a page answers at: mine at urb://<our ship>/<name>, a page
+  // linked in from another ship at the host's own address (linkFrom), and
+  // a shared with me entry at urb://<host>/<name>. A private page answers
+  // only to the ships it is shared with.
+  const pageUrb = (name) => {
+    const lk = linkOf(name);
+    return lk ? 'urb://' + linkFrom(lk) : urbUrl(name);
+  };
+  const swmUrb = (it) => 'urb://' + it.host + '/' + sharedName(it.path);
+  // a grub open from another ship is a shared page when it is a page's code
+  const grubUrb = () => {
+    const m = grubShip && /\/page\/(.+)\/code$/.exec(grubPath || '');
+    return m ? 'urb://' + grubShip + '/' + m[1] : null;
+  };
+  async function copyLink(u) {
+    if (!u) { st('no link to copy: ' + urbMissing(), false); return false; }
+    if (await copyText(u)) { st('link copied: ' + u); return true; }
+    st('could not copy ' + u, false);
+    return false;
+  }
   let shareShown = null;
   // (asked from a microtask, off app.js's top level: see boot, 99-boot.js)
   queueMicrotask(() => fetch('/~/host').then((r) => (r.ok ? r.text() : '')).catch(() => '').then((t) => {
@@ -9834,7 +9885,10 @@
     const u = curFolder ? null : urbUrl(t), w = cwUrl(t);
     for (const b of document.querySelectorAll('.share button')) b.title = copy[b.dataset.m](u, w);
     $('sharewhat').textContent = copy[m] ? copy[m](u, w) : '';
+    // a folder has no urb:// form, and an unsaved page no address yet
+    $('shcopy').hidden = !!curFolder || !current;
   }
+  $('shcopy').onclick = () => copyLink(current ? pageUrb(current) : null);
 
   function showShare(m) {
     // the grant result names "this page", so it MUST NOT outlive the page it
@@ -10896,10 +10950,7 @@
             browseIn(api + '?url=' + encodeURIComponent(u));
           };
         }
-        b.onclick = async () => {
-          try { await navigator.clipboard.writeText(u); st('copied ' + u); }
-          catch { st('could not copy ' + u, false); }
-        };
+        b.onclick = () => copyLink(u);
         row.append(a, b);
         host.appendChild(row);
       }
