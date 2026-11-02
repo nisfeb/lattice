@@ -105,6 +105,29 @@ mv -f "$LMNT/fsmatrix/b.md" "$LMNT/fsmatrix/a.md"; sleep 0.4
 is "dst replaced" 'clobber-src' "$(page fsmatrix/a)"
 is "src gone" '404' "$(page_http fsmatrix/b)"
 
+say "a stale writer after a folder move (a sync client on the mount)"
+mkdir -p "$LMNT/fsmatrix/mvold"
+printf 'one\n' > "$LMNT/fsmatrix/mvold/one.md"
+printf 'two\n' > "$LMNT/fsmatrix/mvold/two.md"
+sleep 0.4
+# the handle is opened before the move, the move happens on the ship (the
+# web client, another device), and the copy is written back after it
+stale=$(python3 - "$LMNT/fsmatrix/mvold/two.md" "$URL" "$CK" <<'PY'
+import sys, subprocess
+f = open(sys.argv[1], 'r+'); old = f.read()
+subprocess.run(['curl', '-s', '-X', 'POST', '-H', sys.argv[3],
+  sys.argv[2] + '/apps/lattice/page-move?from=fsmatrix/mvold&to=fsmatrix/mvnew'], capture_output=True)
+f.seek(0); f.write(old); f.truncate()
+try:
+    f.close(); print('accepted')
+except OSError as e:
+    print('refused', e.errno)
+PY
+)
+is "the write back is refused as gone (ENOENT)" "refused 2" "$stale"
+is "the old folder is not made again" '404' "$(page_http fsmatrix/mvold/two)"
+is "the moved copy is intact" 'two' "$(page fsmatrix/mvnew/two)"
+
 say "rmdir safety"
 mkdir "$LMNT/fsmatrix/sub" && printf 'x\n' > "$LMNT/fsmatrix/sub/c.md"; sleep 0.4
 rmdir "$LMNT/fsmatrix/sub" 2>/dev/null

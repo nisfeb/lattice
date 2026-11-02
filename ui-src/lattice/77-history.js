@@ -228,7 +228,8 @@
         st('moved to ' + newName + (mv.offline ? ' offline' : ''));
         //  same rule as the memory move: only the page still in front
         //  reopens under its new name
-        if (mode !== 'know' && !grubPath && current === from) openPage(newName);
+        if (mode !== 'know' && !grubPath && (current === from || current === newName))
+          openPage(newName);
         return;
       }
       // movePage already reported the cause — loop back into askName seeded
