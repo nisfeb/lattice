@@ -419,14 +419,23 @@ impl EyreTransport {
     /// (ui-src/lattice/20-state.js latBase). A desk install lives under
     /// /apps/shell.shell/desks/lattice.desk, and the keep on the old
     /// app-tier path there streams nothing. A ship too old to answer gets
-    /// that old path, which is where those ships keep lattice.
-    fn keep_base(&self) -> String {
-        self.get_bytes("/apps/lattice/streams", &[])
+    /// that old path, which is where those ships keep lattice, and so does
+    /// one whose /streams predates `base`. Any other failure (the ship down
+    /// or too busy to answer) is None, to be asked again: falling back then
+    /// would park a desk install's watch on a path that only heartbeats.
+    fn keep_base(&self) -> Option<String> {
+        const OLD: &str = "/apps/lattice.lattice_app";
+        let b = match self.get_bytes("/apps/lattice/streams", &[]) {
+            Ok(b) => b,
+            Err(e) if e.code == 404 => return Some(OLD.to_string()),
+            Err(_) => return None,
+        };
+        let base = serde_json::from_slice::<serde_json::Value>(&b)
             .ok()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
             .and_then(|v| v.get("base")?.as_str().map(str::to_string))
             .filter(|b| b.starts_with('/') && !b.contains(['?', '#', ' ']))
-            .unwrap_or_else(|| "/apps/lattice.lattice_app".to_string())
+            .unwrap_or_else(|| OLD.to_string());
+        Some(base)
     }
 }
 
@@ -478,7 +487,12 @@ impl Transport for EyreTransport {
         // covers the gap until we get back on — Down is what re-arms it.
         loop {
             // asked again on every connect, so a moved install is found
-            let url = format!("{}/grubbery/api/keep{}/beacon/rev", self.base, self.keep_base());
+            let Some(kb) = self.keep_base() else {
+                on_event(W::Down);
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                continue;
+            };
+            let url = format!("{}/grubbery/api/keep{kb}/beacon/rev", self.base);
             let cookie = self.cookie.lock().unwrap().clone().unwrap_or_default();
             // a dedicated agent, CONNECT timeout only, never a read timeout:
             // the beacon holds an idle connection open for hours between
@@ -675,6 +689,22 @@ mod tests {
             s.seen()[1],
             "GET /grubbery/api/keep/apps/lattice.lattice_app/beacon/rev HTTP/1.1 "
         );
+    }
+
+    #[test]
+    fn a_ship_that_cannot_say_where_lattice_lives_is_asked_again() {
+        // a busy or restarting ship is not an old one. Falling back to the
+        // old path on any failure parked a desk install's watch on a keep
+        // that only heartbeats, until the stream next dropped.
+        let s = stub(vec![
+            (500, "", None),
+            (200, r#"{"base":"/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app"}"#, None),
+            (200, "event: old /rev\ndata: 1\n\n", None),
+        ]);
+        let _ = watch_events(&s, 3, "watch-retry");
+        let seen = s.seen();
+        assert_eq!(seen[1], "GET /apps/lattice/streams HTTP/1.1 ");
+        assert_eq!(seen[2], format!("GET /grubbery/api/keep{DESK_BASE}/beacon/rev HTTP/1.1 "));
     }
 
     /// A throwaway HTTP server that answers `replies` in order, then stops.
