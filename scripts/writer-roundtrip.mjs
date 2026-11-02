@@ -258,8 +258,13 @@ if (!soffice) {
       bad.slice(0, 6).map((k) => `${k} ${ca[k] || 0}->${ce[k] || 0} (adds ${e.adds?.[k] || 0})`).join(', '));
     const A = txtLines(join(O.txt, n + '.txt')); const B = txtLines(join(E.txt, n + '.txt'));
     const rem = minus(A, B).sort(); const add = minus(B, A).sort();
+    //  LibreOffice 26.8 exports a table row as one line of tab-separated
+    //  cells and 24.2 (Ubuntu's) as one line a cell, so the lines are
+    //  compared with each cell on its own
+    const cells = (ls) => JSON.stringify(ls.flatMap((l) => l.split('\t')).sort());
+    const sameLines = (got, want) => JSON.stringify(got) === JSON.stringify([...want].sort()) || cells(got) === cells(want);
     check(`${f} edit: text export changes by exactly the edit`,
-      JSON.stringify(rem) === JSON.stringify([...e.txt.remove].sort()) && JSON.stringify(add) === JSON.stringify([...e.txt.add].sort()),
+      sameLines(rem, e.txt.remove) && sameLines(add, e.txt.add),
       `removed ${JSON.stringify(rem)} added ${JSON.stringify(add)}`);
   }
 
