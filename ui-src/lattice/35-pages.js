@@ -602,7 +602,13 @@
       flushPending();
       return;
     }
-    if (r && r.status === 409) { st('that page already exists', false); return failed(); }
+    if (r && r.status === 409) {
+      //  the ship refuses a save into a folder being moved, or onto a page
+      //  that moved away, and says where it went
+      const why = await errText(r);
+      st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
+      return failed();
+    }
     if (!r.ok) { st('save failed' + await errText(r), false); return failed(); }
     // the response carries the new revision and whether this save landed
     // on top of a revision made elsewhere; parse it regardless of focus.
@@ -663,6 +669,9 @@
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
+    // a move in flight may be carrying this page away: the save goes to
+    // its new name once the move has renamed the editor (75-move.js)
+    if (moving) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 1000); return; }
     // a link whose save was refused as stale: no more writes until the
     // user picks one of the bar's ways out, or saves on purpose (Ctrl+S)
     if (mode !== 'know' && linkCf.has(current) && linkOf(current)) {
@@ -751,7 +760,7 @@
   // front meanwhile is marked clean live, by the same rule.
   async function saveParked(t) {
     const s = t.snap;
-    if (!s || !s.dirty || !t.key || !autosaveOn()) return;
+    if (!s || !s.dirty || !t.key || !autosaveOn() || moving) return;
     if (t.kind !== 'page' && t.kind !== 'know') return;
     const know = t.kind === 'know';
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;

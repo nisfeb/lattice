@@ -131,6 +131,9 @@
   let folderCtx = '';      // folder uploads land in (last into / open page's dir)
   let nodes = [];          // last page-tree
   let saving = false;      // a save round-trip is in flight. Never overlap them.
+  let moving = 0;          // a move or rename is in flight (75-move.js): a
+                           // save of the old name would land in the folder
+                           // being deleted, so autosave waits it out
   let savePending = false; // The pier serializes, so a second save just queues
                            // 3.7s of stale-body work behind the first
   //  every successful mutation of ours produces exactly one beacon bump,

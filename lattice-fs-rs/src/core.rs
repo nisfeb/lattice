@@ -479,7 +479,9 @@ impl GrubberyFs {
             }
             return Ok(());
         }
-        self.proj.write(&rel, &kind, &buf, new)?;
+        self.proj
+            .write(&rel, &kind, &buf, new)
+            .map_err(|e| self.moved_away(e))?;
         let mut s = self.st.lock().unwrap();
         if let Some(h) = s.handles.get_mut(&fh) {
             h.dirty = h.gen != gen;
@@ -487,6 +489,17 @@ impl GrubberyFs {
         }
         publish(&mut s, &rel, &buf);
         Ok(())
+    }
+
+    /// A write the ship refused because its page moved (the projection
+    /// answers ENOENT, or EBUSY while the move runs): the listing that
+    /// offered the old path is stale, so it is listed again now, and a
+    /// sync client looking next sees where the page went.
+    fn moved_away(&self, e: PErr) -> PErr {
+        if e.errno == libc::ENOENT || e.errno == libc::EBUSY {
+            invalidate(&mut self.st.lock().unwrap());
+        }
+        e
     }
 
     /// Atomic save: temp -> real page. Promote the scratch bytes. Create
@@ -513,7 +526,9 @@ impl GrubberyFs {
             .get(src_path)
             .cloned()
             .ok_or_else(|| PErr::new(libc::ENOENT, "rename: no such temp"))?;
-        self.proj.write(dst_rel, dst_kind, &v, !dst_exists)?;
+        self.proj
+            .write(dst_rel, dst_kind, &v, !dst_exists)
+            .map_err(|e| self.moved_away(e))?;
         let mut s = self.st.lock().unwrap();
         // the temp no longer exists under its old name
         s.scratch.remove(src_path);
@@ -1922,6 +1937,7 @@ mod tests {
         probes: AtomicUsize,
         hold_probe: AtomicBool, // stall change_token() mid-flight
         fail_write: AtomicBool, // write() refuses, as an unreachable ship would
+        moved_write: AtomicBool, // write() refuses: the page moved (ENOENT)
         // runs once inside the next write(), while commit holds no lock. That
         // is where a second FUSE thread could land a write.
         during_write: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -2024,6 +2040,9 @@ mod tests {
         fn write(&self, rel: &str, kind: &str, data: &[u8], create: bool) -> Result<(), PErr> {
             if self.fail_write.load(Ordering::SeqCst) {
                 return Err(PErr::new(libc::EIO, "fake: write refused"));
+            }
+            if self.moved_write.load(Ordering::SeqCst) {
+                return Err(PErr::new(libc::ENOENT, "a/note moved to b/note: save it there"));
             }
             let hook = self.during_write.lock().unwrap().take();
             if let Some(f) = hook {
@@ -2275,6 +2294,24 @@ mod tests {
         // a write that ends exactly at the cap is allowed
         write_buf(&mut h, MAX_FILE - 1, b"x").unwrap();
         assert_eq!(h.buf.len() as u64, MAX_FILE);
+    }
+
+    #[test]
+    fn a_write_refused_as_moved_lists_the_tree_again() {
+        // a sync client writes its copy back to a path whose folder moved
+        // on the ship. The mount's listing still offered the old path, so
+        // the refusal also throws that listing away: the next readdir is
+        // the ship's, and shows where the page went.
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        let fs = warm_fs(f.clone());
+        assert!(fs.st.lock().unwrap().vt_ts.is_some(), "warm");
+        fs.st.lock().unwrap().scratch.insert("/.note.md.swp".into(), b"stale".to_vec());
+        f.moved_write.store(true, Ordering::SeqCst);
+        let e = fs.promote("/.note.md.swp", "/note.md", "note", "md", true).unwrap_err();
+        assert_eq!(e.errno, libc::ENOENT, "the writer is told the file is gone");
+        let s = fs.st.lock().unwrap();
+        assert!(s.vt_ts.is_none(), "the stale listing must go");
+        assert_eq!(s.scratch["/.note.md.swp"], b"stale", "the bytes stay, as any failed save");
     }
 
     #[test]

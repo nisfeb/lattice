@@ -8,10 +8,22 @@
   // rn: the realName() split of the new name. Its dname is ALWAYS sent: ''
   // (the typed name was a valid path) clears the one the move would
   // otherwise carry over; dnames names the folders the move creates.
-  const moveReq = (from, to, rn) =>
-    mutate(api + '/page-move?from=' + encodeURIComponent(from) +
-      '&to=' + encodeURIComponent(to) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
-      (rn && rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
+  //  The ship copies what it holds, so the text in the editor goes out
+  //  first, and no autosave or parked save writes the old name while the
+  //  move runs (`moving`, 35-pages.js). One landing in the folder being
+  //  moved was deleted with it, or made the old folder again.
+  const moveReq = async (from, to, rn) => {
+    //  held first: the save the flush makes queues an autosave behind it,
+    //  and that one would go out beside the move, under the old name
+    moving++;
+    try {
+      await flushNoAsk();
+      await waitSave();
+      return await mutate(api + '/page-move?from=' + encodeURIComponent(from) +
+        '&to=' + encodeURIComponent(to) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
+        (rn && rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
+    } finally { moving--; }
+  };
   // the server moves the WHOLE subtree (a page can parent nested pages, and
   // move-pages rewrites every rel under it). Renaming only the exact node
   // left those children pointing at paths that no longer exist, ghosts in
@@ -26,6 +38,14 @@
         if (n.page) moved++;
         n.path = to + n.path.slice(from.length);
       }
+    // and the editor, when it shows a page that moved: renamed in place,
+    // so text typed during the move saves under the new name, never as
+    // the old page made again
+    if (mode !== 'know' && !grubPath && current &&
+        (current === from || current.startsWith(from + '/'))) {
+      const nn = to + current.slice(from.length);
+      setOpen(nn, { readOnly: pname.readOnly, url: '/apps/lattice/app?name=' + encodeURIComponent(nn) });
+    }
     if (to.includes('/')) addFolderNodes(to.slice(0, to.lastIndexOf('/')));
     applyDnames(rn || { name: to, dname: '', dnames: '' });
     return moved;

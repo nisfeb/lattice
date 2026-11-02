@@ -235,7 +235,7 @@ impl Projection for LatticeProjection {
                 body = b"\n".to_vec();
             }
         }
-        let r = self.t.post("/apps/lattice/page-save", &q, &body)?;
+        let r = self.t.post("/apps/lattice/page-save", &q, &body).map_err(moved)?;
         // landed: the next save claims the rev this one made, which HTTP and
         // the lick port both answer. An older ship's lick port answers '':
         // the claim goes, and that ship falls back to its cached rev. A
@@ -282,6 +282,21 @@ impl Projection for LatticeProjection {
     fn watch(&self, on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync)) {
         self.t.watch(on_event);
     }
+}
+
+/// A save the ship refused because the page moved: a folder move is
+/// under way over it, or it moved away and nothing is there now. A sync
+/// client holding the old listing writes back the copy it has, which
+/// would make the old folder again. The writer is told the file is gone
+/// (ENOENT), or busy while the move runs (EBUSY), not that it exists,
+/// and the core lists the tree again so the old path drops out.
+fn moved(e: crate::transport::TErr) -> PErr {
+    let errno = match e.code {
+        409 if e.msg.contains(" is being moved to ") => libc::EBUSY,
+        409 if e.msg.contains(" moved to ") => libc::ENOENT,
+        _ => return e.into(),
+    };
+    PErr::new(errno, e.msg)
 }
 
 /// One page off the wire. page-tree and page-dump spell a page node the same
@@ -687,6 +702,28 @@ mod tests {
         *rec.0.script.lock().unwrap() = script.into();
         let p = LatticeProjection::new(Box::new(rec.clone()), root).unwrap();
         (rec, p)
+    }
+
+    #[test]
+    fn a_save_refused_as_moved_is_gone_or_busy_not_exists() {
+        // page-save 409s a write into a folder move under way, or onto a
+        // page that moved away. That is not "file exists": the writer
+        // (often a sync client) is told the file is gone, or busy while
+        // the move runs. Any other 409 is still EEXIST.
+        let r = |m: &str| Err(TErr::new(409, m));
+        let (_, p) = lp(
+            "",
+            vec![
+                r("a/c moved to b/c: save it there"),
+                r("a/c is being moved to b/c: save it there once the move is done"),
+                r("page exists"),
+            ],
+        );
+        let e = p.write("a/c", "md", b"x", false).unwrap_err();
+        assert_eq!(e.errno, libc::ENOENT);
+        assert!(e.msg.contains("b/c"), "the server's words survive: {}", e.msg);
+        assert_eq!(p.write("a/c", "md", b"x", false).unwrap_err().errno, libc::EBUSY);
+        assert_eq!(p.write("a/c", "md", b"x", true).unwrap_err().errno, libc::EEXIST);
     }
 
     #[test]
