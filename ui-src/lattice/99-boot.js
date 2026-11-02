@@ -105,6 +105,10 @@
     // page has the snapshot-first path below; every other kind shows through
     // the tab model, with the tree and the panels loading beside it.
     const { tab: bootTab, fresh: bootFresh } = tabsBoot();
+    // urb:// links the desktop shell kept for this page (24-tools.js). They
+    // open in tabs of their own, after the restored ones, through the same
+    // queue as every tab switch.
+    window.latUrbArrived();
     if (bootTab.kind !== 'page') {
       loadTree().then(() => { legacyCheck(); sideScripts(); loadPanels(); });
       tabShowBoot(bootTab);

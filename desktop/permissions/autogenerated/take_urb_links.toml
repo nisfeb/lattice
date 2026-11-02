@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-take-urb-links"
+description = "Enables the take_urb_links command without any pre-configured scope."
+commands.allow = ["take_urb_links"]
+
+[[permission]]
+identifier = "deny-take-urb-links"
+description = "Denies the take_urb_links command without any pre-configured scope."
+commands.deny = ["take_urb_links"]
