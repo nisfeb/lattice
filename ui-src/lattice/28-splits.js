@@ -272,6 +272,9 @@
       try { parent.moveBefore(glive, before); return; } catch {}
     }
     parent.insertBefore(glive, before);
+    // the preview frame left the page and came back, so it loads its
+    // document again: a write in the next few ms is one WebKit can drop
+    if (prev && glive.contains(prev)) prevBusy();
   }
 
   // ── painting ─────────────────────────────────────────────────────────

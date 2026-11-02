@@ -61,7 +61,7 @@
       // be replaced in. Inserting the first frame left every later write
       // going to a frame that was never in the page, a blank pane for good.
       const wrap = this.querySelector('.prevwrap');
-      setTimeout(() => { if (!prev.parentNode) wrap.append(prev); }, 0);
+      setTimeout(() => { if (!prev.parentNode) { wrap.append(prev); prevBusy(); } }, 0);
       // the frame reports its content height once its document has loaded;
       // the wrap scrolls. The FIRST report per document wins, measured with
       // the frame at pane height (previewFit clears min-height before every
@@ -174,7 +174,7 @@
       // one, else after <html>, else in front. The rules touch nothing but
       // scrollbars (an alpha grey that reads on both schemes), so the
       // document's own colour scheme is left exactly as written.
-      if (pkind.value === 'html') { prev.srcdoc = withPreviewScrollbars(src.value); return; }
+      if (pkind.value === 'html') { prevDoc(withPreviewScrollbars(src.value)); return; }
       // color-scheme belongs on :root, not body — on body it does not reach the
       // canvas, so the frame painted opaque WHITE in dark theme. That was true
       // of every local paint since it landed and went unseen because only the
@@ -187,7 +187,7 @@
       // wikilink used to navigate the frame itself and land on an
       // authenticated route the opaque origin has no cookies for; escaping
       // to the top page is what the sandbox token above actually permits.
-      prev.srcdoc = localShell(previewFit()) + localHtml(kindNow(), src.value);
+      prevDoc(localShell(previewFit()) + localHtml(kindNow(), src.value));
     } catch {}
   };
   // the bare document a content kind's local render goes into. `fit` is
@@ -220,8 +220,8 @@
   const prevNone = () => {
     prev.removeAttribute('src');
     prev.style.minHeight = '';
-    prev.srcdoc = localShell('') + '<p style="opacity:.6;text-align:center;margin-top:3em">'
-      + 'No preview for this file</p>';
+    prevDoc(localShell('') + '<p style="opacity:.6;text-align:center;margin-top:3em">'
+      + 'No preview for this file</p>');
   };
   // a theme that lands after the frame was painted (theme.js runs after
   // this bundle, and the ship or another tab can change it later) repaints
@@ -261,12 +261,11 @@
     } else if (grubPath) {
       prevNone();
     } else if (current) {
-      prev.removeAttribute('srcdoc');
       fitCur = null; prev.style.minHeight = '';
       // preview=1: the ship adds the editor's scrollbar rules to an html
       // answer, so a computed page's live document scrolls like the rest of
       // the editor instead of with the engine's native, theme-following bars
-      prev.src = api + '/f/' + current + '?preview=1&t=' + Date.now();
+      prevUrl(api + '/f/' + current + '?preview=1&t=' + Date.now());
     }
   }
   // The way back into view for the pane (the phone's preview tab, or a
