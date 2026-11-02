@@ -32,13 +32,23 @@
         const j = hlCur;
         if (j && j.body === src.value && j.lang === LMAP[pkind.value]) {
           hl.innerHTML = e.data + '\n'; sync();
+        } else if (j && !hlNext) {
+          // stale: the text or the kind moved on while this job ran. A
+          // fast answer has already cancelled the plain paint, so paint
+          // the current text plain and highlight it again, or the overlay
+          // keeps the old page and the transparent textarea shows nothing
+          // (a shared page opened, painted, then switched kind)
+          hlPaint(src.value);
+          scheduleRender();
         }
         hlDone();
       };
       hlWorker.onerror = () => { hlWorker = null; hlDone(); };
     }
     hlCur = job;
-    hlPlain = setTimeout(() => hlPaint(job.body), HL_PLAIN);
+    // only while this job's text is still the editor's: newer text was
+    // painted when it queued, and this must not paint over it
+    hlPlain = setTimeout(() => { if (job.body === src.value) hlPaint(job.body); }, HL_PLAIN);
     hlKill = setTimeout(() => {
       if (hlWorker) hlWorker.terminate();
       hlWorker = null; hlDone();
