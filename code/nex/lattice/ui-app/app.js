@@ -9705,8 +9705,13 @@
     //  that gap queued before the save did, so the save outlived the
     //  delete's cull of the queue and replayed the page back. Capped, so
     //  a save that never answers cannot hold the delete forever.
-    await savesSettled();
-    const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
+    //  the line (busy, 10-shell.js) from the confirm on, the wait included
+    const end = busy();
+    let r;
+    try {
+      await savesSettled();
+      r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
+    } finally { end(); }
     if (!r.ok) { st('delete failed' + await errText(r), false); return false; }
     dropTreeNodes(path);
     snapTree();
