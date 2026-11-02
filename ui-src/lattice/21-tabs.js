@@ -211,6 +211,7 @@
         curKind = s.kind;
         render();
         pname.dispatchEvent(new Event('input'));
+        refreshPreview();
         if (s.dirty) st('unsaved, Ctrl+S to save');
       },
       park: parkDoc,

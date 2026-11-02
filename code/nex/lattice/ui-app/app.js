@@ -2233,6 +2233,7 @@
         curKind = s.kind;
         render();
         pname.dispatchEvent(new Event('input'));
+        refreshPreview();
         if (s.dirty) st('unsaved, Ctrl+S to save');
       },
       park: parkDoc,
@@ -8499,6 +8500,9 @@
     // paint once the kind is known: a highlight of the old kind is thrown
     // away when it answers
     render();
+    // the pane follows too: a Read tab opened this grub in place, and
+    // nothing else repaints it, so it kept the page that was there before
+    refreshPreview();
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'
        : 'grub ' + blot + ', no autosave here: Ctrl+S to save');
@@ -8522,6 +8526,9 @@
     grubUnsure = null;
     if (grubPrevKind === null) grubPrevKind = pkind.value;
     curFolder = null;
+    // nothing of the document before it stays in the pane either, while
+    // the grub loads or after a load that fails
+    prevBlank();
     // a shared lattice page reads as "~ship: its/name", not its whole ball
     // path; the name field is only a label here (Save goes by grubPath)
     const pg = /\/page\/(.+)\/code$/.exec(p);
@@ -9259,9 +9266,13 @@
       // GTK dark variant and gtk-application-prefer-dark-theme alike.
       // The div scrolls with the app's own styled bars instead.
       prev.setAttribute('sandbox', 'allow-scripts allow-top-navigation-by-user-activation');
+      // Whatever frame is `prev` by then goes in, not the one made here:
+      // a tab restored in Read runs showPreview inside boot, which swaps
+      // in a new frame before this task, and the old one has no parent to
+      // be replaced in. Inserting the first frame left every later write
+      // going to a frame that was never in the page, a blank pane for good.
       const wrap = this.querySelector('.prevwrap');
-      const f = prev;
-      setTimeout(() => { if (!f.parentNode) wrap.append(f); }, 0);
+      setTimeout(() => { if (!prev.parentNode) wrap.append(prev); }, 0);
       // the frame reports its content height once its document has loaded;
       // the wrap scrolls. The FIRST report per document wins, measured with
       // the frame at pane height (previewFit clears min-height before every
@@ -9413,6 +9424,16 @@
     } catch { return null; }
   };
 
+  // A grub of a kind no client renderer knows (hoon, js, css, a binary
+  // file) has no preview: it is no page, so the /f/ route that shows a
+  // computed page's live data has nothing to serve. The pane says so, in
+  // the blank pane's colours, rather than keep the page that was there.
+  const prevNone = () => {
+    prev.removeAttribute('src');
+    prev.style.minHeight = '';
+    prev.srcdoc = localShell('') + '<p style="opacity:.6;text-align:center;margin-top:3em">'
+      + 'No preview for this file</p>';
+  };
   // a theme that lands after the frame was painted (theme.js runs after
   // this bundle, and the ship or another tab can change it later) repaints
   // it: the local render of a content page (an unsaved new one too), or
@@ -9420,6 +9441,7 @@
   // refetching it costs a request.
   window.addEventListener('lattheme', () => {
     if (CONTENT() && (current || src.value)) paintLocal();
+    else if (grubPath && !CONTENT()) prevNone();
     else if (!current) prevBlank();
   });
   async function refreshPreview() {
@@ -9447,6 +9469,8 @@
       // Computed kinds (hoon, js, css) take the /f/ branch below: their
       // preview is the page's live data, which no client renderer can know.
       paintLocal();
+    } else if (grubPath) {
+      prevNone();
     } else if (current) {
       prev.removeAttribute('srcdoc');
       fitCur = null; prev.style.minHeight = '';
@@ -9467,7 +9491,7 @@
     const n = prev.cloneNode(false);
     n.removeAttribute('srcdoc'); n.removeAttribute('src'); n.style.minHeight = '';
     prev.replaceWith(n); prev = n; fitCur = null;
-    if (CONTENT() || current) refreshPreview(); else prevBlank();
+    if (CONTENT() || current || grubPath) refreshPreview(); else prevBlank();
   }
   let localTimer = null;
   src.addEventListener('input', () => {
