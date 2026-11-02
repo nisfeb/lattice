@@ -91,10 +91,17 @@
     const end = owed ? busy('open') : null;
     const late = painted ? 0
       : setTimeout(() => { if (my === openSeq) stWork('opening ' + name + '\u2026'); }, BUSY_MS);
-    try { return await openReadRun(name, my, node, painted); }
+    // a big page's plain read paints the body before render=1 lands. For
+    // a content kind that paint is the whole page, so the wait the user
+    // sees is over there, as it is for a painted open
+    const bodyShown = (kind) => {
+      clearTimeout(late);
+      if (end && ['md', 'gmi', 'html', 'text'].includes(kind)) end();
+    };
+    try { return await openReadRun(name, my, node, painted, bodyShown); }
     finally { if (end) end(); clearTimeout(late); }
   }
-  async function openReadRun(name, my, node, painted) {
+  async function openReadRun(name, my, node, painted, bodyShown) {
     // `quiet`: the render=1 request below carries the preview and the error
     // report, so painting must not also fire refreshPreview/checkErrors.
     if (painted) {
@@ -146,6 +153,7 @@
           painted = true;
           applyPage(name, b, true);
           snapPage(name, b);
+          bodyShown(b.kind || node.kind);
         }
       }
     }
