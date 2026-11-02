@@ -13817,31 +13817,43 @@
   ?.  (gte ls 2)  ~
   ?.  =("')" (slag (sub ls 2) rest))  ~
   =/  mid=tape  (scag (sub ls 2) rest)
-  =/  dec=(unit tape)  (unesc-content mid)
+  =/  dec=(unit @t)  (unesc-content mid)
   ?~  dec  ~
-  `[`@tas`(crip builder) (crip u.dec)]
+  `[`@tas`(crip builder) u.dec]
 ::  +unesc-content: decode +wrap-content's escaping directly, a linear scan
 ::  instead of the old ream+slap (a full hoon parse + eval per page read,
 ::  which every page-tree/page-dump/home request paid per page). The scheme
 ::  is exactly what +wrap-content emits: \\ -> backslash, \' -> quote,
 ::  \XX -> hex byte (controls). Anything else malformed yields ~, and the
 ::  caller treats the page as raw hoon, same as a failed parse did.
+::
+::  It hops from backslash to backslash with +find and copies each run in
+::  between whole (+scag, +slag, +crip), so Hoon only loops once per
+::  escape. Those arms are jetted; the old loop stepped through every
+::  byte in Hoon. On a 1.5 MB page that loop took about 7 s inside the
+::  agent, and each read of the page paid it: page-source, page-tree,
+::  page-dump and home all unwrap the body. Each run goes through +crip
+::  and the pieces are joined with +rap, the same bytes the old
+::  `(crip (flop out))` built.
 ++  unesc-content
   |=  ec=tape
-  ^-  (unit tape)
-  =|  out=tape
-  |-  ^-  (unit tape)
-  ?~  ec  `(flop out)
-  ?.  =('\\' i.ec)  $(ec t.ec, out [i.ec out])
-  ?~  t.ec  ~
-  ?:  =('\\' i.t.ec)  $(ec t.t.ec, out ['\\' out])
-  ?:  =('\'' i.t.ec)  $(ec t.t.ec, out ['\'' out])
-  ?~  t.t.ec  ~
-  =/  h1=(unit @)  (de-hex i.t.ec)
-  =/  h2=(unit @)  (de-hex i.t.t.ec)
+  ^-  (unit @t)
+  =|  acc=(list @t)
+  |-  ^-  (unit @t)
+  =/  k=(unit @ud)  (find "\\" ec)
+  ?~  k  `(rap 3 (flop [(crip ec) acc]))
+  =/  run=@t  (crip (scag u.k ec))
+  ::  es: what follows the backslash
+  =/  es=tape  (slag +(u.k) ec)
+  ?~  es  ~
+  ?:  =('\\' i.es)  $(ec t.es, acc ['\\' run acc])
+  ?:  =('\'' i.es)  $(ec t.es, acc ['\'' run acc])
+  ?~  t.es  ~
+  =/  h1=(unit @)  (de-hex i.es)
+  =/  h2=(unit @)  (de-hex i.t.es)
   ?~  h1  ~
   ?~  h2  ~
-  $(ec t.t.t.ec, out [`@tD`(add (mul 16 u.h1) u.h2) out])
+  $(ec t.t.es, acc [(add (mul 16 u.h1) u.h2) run acc])
 ++  de-hex
   |=  c=@tD
   ^-  (unit @)

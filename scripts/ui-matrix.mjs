@@ -205,6 +205,14 @@ try {
   });
   check('highlight: an answer for a stale kind still leaves the text shown',
     raced.includes('race probe'), JSON.stringify(raced.slice(0, 40)));
+  //  the probes above type into a real page, and on a busy host an
+  //  autosave can land the probe text mid-step. Save the restored text and
+  //  wait for the ship to hold it, or the reopen below reads the probe
+  await tap('#save');
+  await page.waitForFunction(async (n) => {
+    const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));
+    return r.ok && (await r.json()).body.trim() === '# ui matrix probe';
+  }, { timeout: 90000, polling: 500 }, RUN + '/hello');
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
   check('open: body round-trips',
