@@ -263,13 +263,15 @@ class Parser {
       if (k.name === 'text:s' && (plain || (k.attrs.length === 1 && k.attrs[0][0] === 'text:c'))) {
         const c = Math.min(Math.max(parseInt(attr(k, 'text:c') ?? '1', 10) || 1, 1), 100000);
         out.push(schema.text(' '.repeat(c), marks));
-        ctx.prevSpace = true; ctx.atStart = false;
+        //  LibreOffice keeps a literal space after text:s, text:tab and
+        //  text:line-break: they end a collapsing run
+        ctx.prevSpace = false; ctx.atStart = false;
       } else if (k.name === 'text:tab' && plain) {
         out.push(schema.text('\t', marks));
         ctx.prevSpace = false; ctx.atStart = false;
       } else if (k.name === 'text:line-break' && plain) {
         out.push(S.hard_break.create({ src: [k.start, k.end] }, null, marks));
-        ctx.prevSpace = false; ctx.atStart = true;
+        ctx.prevSpace = false; ctx.atStart = false;
       } else if (k.name === 'text:span' && !this.mixedBlock(k)) {
         this.inlineInto(k, this.spanMarks(k, marks), out, ctx);
       } else if (k.name === 'text:a' && !this.mixedBlock(k)) {

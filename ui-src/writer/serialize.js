@@ -21,7 +21,7 @@
 //  gone, and was not already gone in the source, is refused, so a bug
 //  shows as a refused save, never a corrupt file.
 import { decode, escAttr, escText } from './xml.js';
-import { schema, ZERO_WIDTH } from './schema.js';
+import { schema } from './schema.js';
 import { parseFodt } from './parse.js';
 import { breaksPage, isAuto, lookup, registry } from './styles.js';
 
@@ -253,11 +253,11 @@ class Writer {
         if (st) { out += st; span = st; }
       }
       if (c.isText) out += text(c.text, ws);
-      else if (c.type === S.hard_break) { out += '<text:line-break/>'; ws.prevSpace = false; ws.atStart = true; }
-      else {
-        out += c.attrs.raw;
-        if (!ZERO_WIDTH.test(c.attrs.name)) { ws.prevSpace = false; ws.atStart = false; }
-      }
+      else if (c.type === S.hard_break) { out += '<text:line-break/>'; ws.prevSpace = false; ws.atStart = false; }
+      //  an inline element leaves the white space state alone, as
+      //  LibreOffice writes it: a space after a field that follows a space
+      //  is text:s. Reading keeps it either way
+      else out += c.attrs.raw;
     });
     closeLink();
     return out;
@@ -330,7 +330,8 @@ function linkTag(m) {
 
 //  text in ODF's white space rules: the first space of a run is literal
 //  unless it starts the paragraph or follows a space, the rest are
-//  text:s; tabs are text:tab and newlines text:line-break
+//  text:s; tabs are text:tab and newlines text:line-break. As LibreOffice
+//  writes it, a space right after a tab or a line break is literal
 function text(t, ws) {
   let out = '';
   let i = 0;
@@ -348,7 +349,7 @@ function text(t, ws) {
     } else if (c === '\t') {
       out += '<text:tab/>'; ws.prevSpace = false; ws.atStart = false; i++;
     } else if (c === '\n' || c === '\r') {
-      out += '<text:line-break/>'; ws.prevSpace = false; ws.atStart = true; i++;
+      out += '<text:line-break/>'; ws.prevSpace = false; ws.atStart = false; i++;
     } else {
       let j = i;
       while (j < t.length && t[j] !== ' ' && t[j] !== '\t' && t[j] !== '\n' && t[j] !== '\r') j++;

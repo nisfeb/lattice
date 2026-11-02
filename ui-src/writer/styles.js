@@ -36,6 +36,7 @@ export function readStyles(src, doc) {
     autoClose: -1,         // offset of </office:automatic-styles>, or -1
     autoEmpty: null,       // the <office:automatic-styles/> element, if empty
     autoMissing: true,
+    opaqueRaw: new Map(),  // family NUL opaque -> { inner, other }: the raw XML
   };
   if (!doc) return st;
   for (const sec of elements(doc)) {
@@ -58,6 +59,8 @@ export function readStyles(src, doc) {
         if (e.name === 'style:style') {
           const entry = styleEntry(src, e, auto);
           st.styles.set(keyOf(entry.family, entry.name), entry);
+          const ok = keyOf(entry.family, entry.opaque);
+          if (entry.opaque && !st.opaqueRaw.has(ok)) st.opaqueRaw.set(ok, entry.raw);
           if (auto) {
             st.autoNames.add(keyOf(entry.family, entry.name));
             if (!st.autoKeys.has(entry.key)) st.autoKeys.set(entry.key, entry.name);
@@ -96,6 +99,10 @@ function styleEntry(src, e, auto) {
   for (const [k, v] of e.attrs) if (!ID_ATTRS.has(k)) extra.push([k, decode(v)]);
   const pr = {};
   let opaque = '';
+  //  the raw XML behind `opaque`, so a new style derived from this one
+  //  writes it back: the content of each properties element that has
+  //  children, and every other child element
+  const raw = { inner: {}, other: [] };
   for (const k of elements(e)) {
     //  a properties element whose only content is attributes takes part
     //  in the key as a sorted property set; anything else (tab stops,
@@ -103,12 +110,18 @@ function styleEntry(src, e, auto) {
     //  such a style is reused only by an identical one
     if (/^style:[a-z-]+-properties$/.test(k.name)) {
       pr[k.name] = props(k);
-      if (elements(k).length) opaque += src.slice(k.openEnd, k.closeStart).replace(/\s+/g, ' ');
-    } else opaque += src.slice(k.start, k.end).replace(/\s+/g, ' ');
+      if (elements(k).length) {
+        opaque += src.slice(k.openEnd, k.closeStart).replace(/\s+/g, ' ');
+        raw.inner[k.name] = src.slice(k.openEnd, k.closeStart);
+      }
+    } else {
+      opaque += src.slice(k.start, k.end).replace(/\s+/g, ' ');
+      raw.other.push(src.slice(k.start, k.end));
+    }
   }
   const entry = {
     name, family, parent, auto, display: attr(e, 'style:display-name') || name,
-    extra, props: pr, opaque,
+    extra, props: pr, opaque, raw,
   };
   entry.key = canonicalKey(entry);
   return entry;
@@ -160,21 +173,28 @@ export function registry(st) {
       for (let n = 2; taken.has(keyOf(want.family, name)); n++) name = 'L' + letter + hash8(key) + '-' + n;
       taken.add(keyOf(want.family, name));
       addedKeys.set(key, name);
-      added.push({ name, family: want.family, xml: autoStyleXml(name, want) });
+      const raw = want.opaque ? st.opaqueRaw.get(keyOf(want.family, want.opaque)) : null;
+      added.push({ name, family: want.family, xml: autoStyleXml(name, want, raw) });
       return name;
     },
   };
 }
 
 //  a new automatic style in LibreOffice's layout, inside
-//  office:automatic-styles (one level in), properties sorted
-export function autoStyleXml(name, { family, parent, extra = [], props: pr = {} }) {
+//  office:automatic-styles (one level in), properties sorted. `raw` is
+//  the child XML of the style it was derived from (tab stops, drop caps,
+//  style:map), written back as it was
+export function autoStyleXml(name, { family, parent, extra = [], props: pr = {} }, raw = null) {
   const at = [['style:name', name], ['style:family', family]];
   if (parent) at.push(['style:parent-style-name', parent]);
   for (const p of [...extra].sort((a, b) => (a[0] < b[0] ? -1 : 1))) at.push(p);
   const open = '<style:style' + at.map(([k, v]) => ` ${k}="${escAttr(v)}"`).join('');
-  const kids = Object.keys(pr).sort().filter((k) => Object.keys(pr[k]).length).map((k) =>
-    '   <' + k + Object.keys(pr[k]).sort().map((a) => ` ${a}="${escAttr(pr[k][a])}"`).join('') + '/>');
+  const inner = (raw && raw.inner) || {};
+  const kids = Object.keys({ ...pr, ...inner }).sort().filter((k) => Object.keys(pr[k] || {}).length || inner[k] != null).map((k) => {
+    const tag = '   <' + k + Object.keys(pr[k] || {}).sort().map((a) => ` ${a}="${escAttr(pr[k][a])}"`).join('');
+    return inner[k] != null ? tag + '>' + inner[k] + '</' + k + '>' : tag + '/>';
+  });
+  for (const o of (raw && raw.other) || []) kids.push('   ' + o);
   if (!kids.length) return '  ' + open + '/>\n';
   return '  ' + open + '>\n' + kids.join('\n') + '\n  </style:style>\n';
 }

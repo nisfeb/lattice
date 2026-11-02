@@ -154,5 +154,6 @@ export const MARK_PROPS = {
 //  whether an inline element ends a run of white space, as LibreOffice
 //  reads it: anything that puts a character or object in the text does,
 //  a zero-width marker (bookmark, reference mark, change mark, index
-//  mark, comment end, soft page break) does not
-export const ZERO_WIDTH = /^(text:bookmark|text:reference-mark|text:change|text:toc-mark|text:alphabetical-index-mark|text:user-index-mark|text:soft-page-break|office:annotation-end|#)/;
+//  mark, comment end) does not. A soft page break, text:s, text:tab and
+//  text:line-break end it too (checked against LibreOffice 26.8)
+export const ZERO_WIDTH = /^(text:bookmark|text:reference-mark|text:change|text:toc-mark|text:alphabetical-index-mark|text:user-index-mark|office:annotation-end|#)/;

@@ -129,6 +129,57 @@ console.log('# automatic styles');
   check('and reads back as a page break', core.findBlock(back.doc, 'The last paragraph.').node.attrs.pageBreak === true);
 }
 
+{
+  //  a style a new one derives from keeps its child elements: tab stops
+  //  survive turning on a page break (review, Task 8)
+  let t = read('12-whitespace.fodt');
+  t = t.replace('</office:automatic-styles>', '<style:style style:name="P9" style:family="paragraph" style:parent-style-name="Text_20_body"><style:paragraph-properties fo:margin-left="1cm"><style:tab-stops><style:tab-stop style:position="3cm"/></style:tab-stops></style:paragraph-properties></style:style>\n </office:automatic-styles>')
+    .replace('<text:p text:style-name="Text_20_body">A trailing space. </text:p>', '<text:p text:style-name="P9">Tabbed<text:tab/>here.</text:p>');
+  const p = parseFodt(t);
+  const b = core.findBlock(p.doc, 'Tabbed');
+  const doc = p.doc.copy(p.doc.content.replaceChild(p.doc.content.findIndex(b.pos).index,
+    b.node.type.create({ ...b.node.attrs, pageBreak: true }, b.node.content)));
+  const o = serializeFodt({ ...p, doc }, t);
+  check('a page break on a style with tab stops keeps the tab stops',
+    /<style:paragraph-properties fo:break-before="page" fo:margin-left="1cm"><style:tab-stops><style:tab-stop style:position="3cm"\/><\/style:tab-stops><\/style:paragraph-properties>/.test(o.text || ''), o.error);
+  check('and that style reads back as a page break', core.findBlock(parseFodt(o.text).doc, 'Tabbed').node.attrs.pageBreak === true);
+}
+
+console.log('# white space as LibreOffice reads it');
+{
+  //  each source paragraph, and its text as LibreOffice 26.8 reads it
+  //  (its txt export). text:s, text:tab, text:line-break, a soft page
+  //  break and fields end a run of spaces; markers do not
+  const cases = [
+    ['a<text:line-break/> b', 'a\n b'],
+    ['a<text:s/> b', 'a  b'],
+    ['a<text:tab/> b', 'a\t b'],
+    ['a <text:bookmark text:name="bm"/> b', 'a b'],
+    ['a <text:bookmark-start text:name="b2"/> b<text:bookmark-end text:name="b2"/>', 'a b'],
+    ['a <text:reference-mark text:name="r"/> b', 'a b'],
+    ['a <text:alphabetical-index-mark text:string-value="k"/> b', 'a b'],
+    ['a <text:soft-page-break/> b', 'a  b'],
+    ['a <text:page-number text:select-page="current">1</text:page-number> b', 'a 1 b'],
+    ['a <text:span> b</text:span>', 'a b'],
+  ];
+  const base = read('12-whitespace.fodt');
+  const at = base.indexOf('<text:p '); const end = base.indexOf('  </office:text>');
+  const t = base.slice(0, at) + cases.map(([x]) => `<text:p text:style-name="Text_20_body">${x}</text:p>\n   `).join('') + base.slice(end);
+  const p = parseFodt(t);
+  const shown = (n) => { let s = ''; n.forEach((k) => { s += k.isText ? k.text : k.type === schema.nodes.hard_break ? '\n' : (k.attrs.label || ''); }); return s; };
+  const got = []; p.doc.forEach((n) => { if (n.isTextblock) got.push(shown(n)); });
+  cases.forEach(([x, want], i) => check(`reads ${JSON.stringify(x)} as LibreOffice does`, got[i] === want, JSON.stringify(got[i])));
+  //  what LibreOffice writes for those, which a rewrite must reproduce
+  const lo = [
+    'a<text:line-break/> b', 'a <text:s/>b', 'a<text:tab/> b', 'a <text:bookmark text:name="bm"/>b',
+    'a <text:page-number text:select-page="current">1</text:page-number><text:s/>b',
+    'a <text:note text:id="n1" text:note-class="footnote"><text:note-citation>1</text:note-citation><text:note-body><text:p>n</text:p></text:note-body></text:note><text:s/>b',
+  ];
+  const t2 = base.slice(0, at) + lo.map((x) => `<text:p text:style-name="Text_20_body">${x}</text:p>\n   `).join('') + base.slice(end);
+  const r = serializeFodt(parseFodt(t2), t2, { rewrite: true });
+  check('rewriting LibreOffice\'s own white space layout is byte-identical', r.text === t2, r.error || firstDiff(t2, r.text || ''));
+}
+
 console.log('# paired markers');
 {
   const t = read('10-unknown.fodt');
