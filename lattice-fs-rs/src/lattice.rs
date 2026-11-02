@@ -229,6 +229,10 @@ impl Projection for LatticeProjection {
         let mut body = data.to_vec();
         if create {
             q.push(("new", "1"));
+            // a create from a mount may be a sync client writing back a
+            // page that moved away (+move-guard): the ship checks it as
+            // it does an overwrite, which the editor's new page skips
+            q.push(("mount", "1"));
             // page-save 400s on an empty body for non-index kinds. Seed a newline
             // (the editor overwrites it on the real flush).
             if kind != "index" && body.is_empty() {
@@ -742,12 +746,12 @@ mod tests {
             vec![
                 r#"POST /apps/lattice/page-save?name=n&type=md "hi""#,
                 // %index accepts an empty body; it must NOT be seeded
-                r#"POST /apps/lattice/page-save?name=n&type=index&new=1 """#,
+                r#"POST /apps/lattice/page-save?name=n&type=index&new=1&mount=1 """#,
                 // page-save 400s on an empty body for every other kind, so a
                 // brand-new page is seeded with a newline
-                r#"POST /apps/lattice/page-save?name=n&type=md&new=1 "\n""#,
+                r#"POST /apps/lattice/page-save?name=n&type=md&new=1&mount=1 "\n""#,
                 // ...but only when it IS empty. Never overwrite real content.
-                r#"POST /apps/lattice/page-save?name=n&type=md&new=1 "hi""#,
+                r#"POST /apps/lattice/page-save?name=n&type=md&new=1&mount=1 "hi""#,
                 r#"POST /apps/lattice/page-save?name=n&type=hoon "x""#,
                 // LaTeX is its own kind: sent as hoon it went to the compiler
                 r#"POST /apps/lattice/page-save?name=n&type=tex "\\x""#,

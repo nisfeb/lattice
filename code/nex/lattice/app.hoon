@@ -1143,9 +1143,16 @@
   =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
   ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of u.name))
   ::  a save into a folder move under way, or an overwrite of a page
-  ::  that moved away, would be deleted or make the old folder again
+  ::  that moved away, would be deleted or make the old folder again.
+  ::  ?mount=1 (lattice-fs) puts its creates through the same check: a
+  ::  sync client writing back a page that moved, once the mount has
+  ::  listed the tree again, sends a create. The editor's new page and
+  ::  an API create (?new=1 alone) at a moved-away name land.
   ;<  mg=(unit @t)  bind:m
-    (move-guard (pax-of u.name) &(!(~(has by args) 'new') ?=(~ src.pc)))
+    %+  move-guard  (pax-of u.name)
+    ?&  ?=(~ src.pc)
+        |(!(~(has by args) 'new') (~(has by args) 'mount'))
+    ==
   ?^  mg  (send-err eyre-id 409 u.mg)
   ::  a new page under a link is refused: a link holds no pages
   ;<  la=(unit path)  bind:m
@@ -7685,10 +7692,10 @@
 ::  still the old one, writing the copy it holds back through the mount.
 ::  So a save into a move under way is refused, and an overwrite of a
 ::  page that is gone because it moved in the last hour is refused too
-::  (`gone`: the caller found no page there). A create (?new=1) of a
-::  path moved away long enough ago is a new page and lands.
-::  A move left part way for longer than eyre waits (+fs-move) blocks
-::  nothing.
+::  (`gone`: the caller found no page there), while the page it moved
+::  to is still there. A create (?new=1) at a moved-away path is a new
+::  page and lands. A move left part way (a reload ended it) blocks
+::  saves into its source for 10 minutes at most.
 ++  move-guard
   |=  [pax=path gone=?]
   =/  m  (fiber:fiber:nexus ,(unit @t))
@@ -7713,6 +7720,8 @@
     ?.  ?=([~ %a *] ms)  ~
     p.u.ms
   =/  since=@ud  (rise-da-ms (sub now (min now ~h1)))
+  ::  `newer`: the moves after the row being looked at, oldest first
+  =|  newer=(list [fr=path tt=path])
   |-  ^-  form:m
   ?~  rows  (pure:m ~)
   =/  o=(map @t json)  (rise-omap i.rows)
@@ -7727,12 +7736,29 @@
     =/  j=(unit json)  (~(get by o) 'to')
     ?.  ?=([~ %s *] j)  ~
     (name-pax p.u.j)
-  =/  dst=(unit path)
-    ?.  &(?=(^ fr) ?=(^ tt))  ~
-    (move-under pax u.fr u.tt)
-  ?~  dst  $(rows t.rows)
+  ?.  &(?=(^ fr) ?=(^ tt))  $(rows t.rows)
+  =/  dst=(unit path)  (move-under pax u.fr u.tt)
+  ?~  dst  $(rows t.rows, newer [[u.fr u.tt] newer])
+  ::  where the page is now, after the later moves too: a to b then b
+  ::  to c is at c, and moved back it is at `pax` itself. Only a page
+  ::  found there was carried away. Anything else saved at `pax` is a
+  ::  new page (a wiki_write into a folder that moved away, or into
+  ::  one moved back) and lands.
+  =/  end=path
+    =/  ls=(list [fr=path tt=path])  newer
+    =/  p=path  u.dst
+    |-  ^-  path
+    ?~  ls  p
+    $(ls t.ls, p (fall (move-under p fr.i.ls tt.i.ls) p))
+  ?:  =(end pax)  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  there=?  bind:m  (peek-exists:fio (rf up (weld /page end) %code))
+  ;<  lk=(unit [l=link:ll at=@da])  bind:m
+    ?:  there  (pure:(fiber:fiber:nexus ,(unit [l=link:ll at=@da])) ~)
+    (link-at end)
+  ?.  |(there ?=(^ lk))  (pure:m ~)
   %-  pure:m
-  `(crip "{(pax-str pax)} moved to {(pax-str u.dst)}: save it there")
+  `(crip "{(pax-str pax)} moved to {(pax-str end)}: save it there")
 ::  +instantiate-template: create a live page-tree from a template. Runs in a
 ::  REQUEST fiber and pokes one %make PER page (a separate writer transaction
 ::  each), in sorted order, so every page commits before the next and its
@@ -9225,8 +9251,10 @@
     ?:  new  (pure:(fiber:fiber:nexus ,?) |)
     (peek-exists:fio (rf up (weld /page (pax-of name)) %code))
   ::  as page-save: a write the mount holds from before a move
-  ::  (+move-guard) must not make the old folder again
-  ;<  mg=(unit @t)  bind:m  (move-guard (pax-of name) &(!new !cx))
+  ::  (+move-guard) must not make the old folder again. A create too:
+  ::  the port is a mount's, and once it has listed the tree again a
+  ::  sync client's write-back of a moved page arrives as a create
+  ;<  mg=(unit @t)  bind:m  (move-guard (pax-of name) !cx)
   ?^  mg  (pure:m [409 u.mg])
   ;<  la=(unit path)  bind:m
     ?:  cx  (pure:(fiber:fiber:nexus ,(unit path)) ~)
@@ -9300,7 +9328,12 @@
   ;<  now=@da  bind:m  bowl-now
   ;<  ~  bind:m  (move-job-set `[pf pt now])
   ;<  n=(unit @ud)  bind:m  (move-pages pf pt)
-  ;<  ~  bind:m  (move-job-set ~)
+  ::  cleared only while it is still this move's: a second move that
+  ::  started meanwhile keeps its note (and its guard)
+  ;<  job=(unit [from=path to=path at=@da])  bind:m  move-job-at
+  ;<  ~  bind:m
+    ?.  =(job `[pf pt now])  (pure:(fiber:fiber:nexus ,~) ~)
+    (move-job-set ~)
   (pure:m n)
 ::  +fs-op: the shared request dispatcher. `path`'s last segment selects the op.
 ::  `query` is "k=v&k=v" (raw, page names are @ta so need no url-decode). Returns
