@@ -345,11 +345,12 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 
 **Acceptance.** `.odt` in and out works in the browser with no desktop, and printing gives paginated output with the document's page size and margins.
 
-**Done (2026-11-02).** `ui-src/writer/odt.js` and `print.js`; tests in `scripts/writer-odt.mjs` (pure node plus LibreOffice, added to the CI round-trip job) and `scripts/ui-writer-import.mjs` (browser). writer.js is 376.3 KB raw and 113.0 KB gzipped. Notes:
+**Done (2026-11-02).** `ui-src/writer/odt.js` and `print.js`; tests in `scripts/writer-odt.mjs` (pure node plus LibreOffice, added to the CI round-trip job) and `scripts/ui-writer-import.mjs` (browser). writer.js is 378.3 KB raw and 113.7 KB gzipped. Notes:
 
 - **Inflate fallback** is `tiny-inflate` 1.0.3 (MIT), pinned in scripts/package.json and added to writer-licences.mjs's roots, so its notice is in vendor/LICENSES. An entry may inflate to 16 MB and to no more than its stated size; the parts together are held to the 8 MB document cap.
 - **Basic macros** are not dropped: `Basic/` libraries become the embedded `office:script` a flat file carries (10-unknown needs this to compare equal). Pictures, embedded objects and linked libraries are left out, named in the upload panel.
 - **Relative links.** LibreOffice resolves a relative `xlink:href` in a package from inside it and in a flat file from beside it (26.8), so import drops one leading `../` and export adds one. Without that, 05-links and 10-unknown move their link targets.
+- **Export split.** styles.xml gets the page layouts and the automatic styles the master pages use, transitively; content.xml gets the rest. LibreOffice 24.2 (CI) reads its own `.odt` of 06-quote-break and 09-layout differently from its `.fodt` (a paragraph style gains a list style or a master page name), so writer-odt.mjs accepts an export that matches LibreOffice's own `.odt` of the document there. Checked in an Ubuntu 24.04 container.
 - **Clash renaming** renames styles.xml's automatic style (`P1` to `MP1_1`) and rewrites `*style-name` and `style:page-layout-name` in styles.xml's automatic and master styles only.
 - **Export .odt and Print are toolbar buttons** in the editor (`.odt` and `⎙`), not page-menu items in 23-tabhead.js: app.js had no room, and the toolbar has the editor's current text. They work on read-only documents too. A refused body (shown as XML) has neither.
 - **Print** prints `render(text, true)`, which adds `@page` size and margins from the first master page (lengths through the strict grammar; Letter and 2 cm otherwise) and page breaks as `break-before:page`, from a `sandbox="allow-same-origin allow-modals"` frame, so nothing in it runs.

@@ -165,6 +165,10 @@ if (!soffice) {
   lo(O, stems.map((s) => join(corpus, s + '.fodt')));
   lo(I, stems.map((s) => join(imported, s + '.fodt')));
   lo(E, stems.map((s) => join(exported, s + '.odt')));
+  //  LibreOffice's own .odt of each document: some releases (24.2) read a
+  //  package and a flat file of the same document differently
+  const N = dir('lo-native');
+  lo(N, stems.map((s) => join(corpus, s + '.odt')));
   //  3: an edit to the imported document, saved by the writer core
   const edits = JSON.parse(readFileSync(join(corpus, 'edits.json'), 'utf8'));
   const editedStems = [];
@@ -187,14 +191,18 @@ if (!soffice) {
     try { got = canon(join(I, s + '.fodt')); } catch {}
     check(`${s}.odt imported equals the corpus .fodt (canonical, after LibreOffice)`, got === want, firstDiff(got, want));
     try { got = canon(join(E, s + '.fodt')); } catch { got = ''; }
-    check(`${s}.fodt exported as .odt equals the source (canonical, after LibreOffice)`, got === want, firstDiff(got, want));
+    let native = '';
+    if (got !== want) try { native = canon(join(N, s + '.fodt')); } catch {}
+    check(`${s}.fodt exported as .odt equals the source (canonical, after LibreOffice${native && got === native ? ", as LibreOffice's own .odt of it reads" : ''})`,
+      got === want || (native !== want && got === native), firstDiff(got, want));
   }
   for (const [s, ed] of editedStems) {
     let lines = [];
     try { lines = readFileSync(join(D, s + '.txt'), 'utf8').replace(/\r/g, '').split('\n'); } catch {}
     const add = (ed.txt && ed.txt.add) || [];
     check(`${s} imported, edited in the writer and read by LibreOffice has the edit`,
-      lines.length > 0 && add.every((l) => lines.includes(l)), JSON.stringify(add));
+      //  (LibreOffice 24.2 writes a table row's cells one per line, 26.8 on one line with tabs)
+      lines.length > 0 && add.every((l) => lines.includes(l) || l.split('\t').every((c) => lines.includes(c))), JSON.stringify(add));
   }
   console.log(`# ${editedStems.length} imported documents edited and read back by LibreOffice`);
 }

@@ -2,7 +2,7 @@
 (function () {
 'use strict';
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
-const WRITER_H = '0v1.nijd2.4kptj.fm8jb.db2ob.kpbg3';
+const WRITER_H = '0v3.pjqb5.qb6t8.h42j2.3nm6l.8m1d2';
 
 // ── src/00-framed.js ──────────────────────────────────────────────────────
   // ── never a second editor in a frame ─────────────────────────────────────

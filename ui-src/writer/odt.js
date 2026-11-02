@@ -273,8 +273,19 @@ export function exportOdt(text) {
   const ver = attr(doc, 'office:version') || '1.3';
   let at = '';
   for (const [k, v] of doc.attrs) if (k !== 'office:mimetype') at += ' ' + k + '="' + v + '"';
+  //  automatic styles as LibreOffice splits them: styles.xml gets the page
+  //  layouts and what the master pages use (and what those use), and
+  //  content.xml all but the page layouts
+  const autoEl = child(doc, 'office:automatic-styles');
+  const autos = autoEl ? elements(autoEl).map((e) => ({ name: attr(e, 'style:name'), el: e.name, raw: linksOut(text.slice(e.start, e.end)) })) : [];
+  const want = new Set();
+  const refs = (xml) => { for (const m of xml.matchAll(REF)) if (!want.has(m[2])) { want.add(m[2]); const a = autos.find((x) => x.name === m[2]); if (a) refs(a.raw); } };
+  refs(get('office:master-styles'));
+  const auto = (keep) => '<office:automatic-styles>' + autos.filter(keep).map((a) => a.raw).join('') + '</office:automatic-styles>';
+  const sAuto = auto((a) => a.el === 'style:page-layout' || want.has(a.name));
+  const cAuto = auto((a) => a.el !== 'style:page-layout');
   const part = (root, names) => '<?xml version="1.0" encoding="UTF-8"?>\n<' + root + at + '>'
-    + names.map(get).join('') + '</' + root + '>';
+    + names.map((n) => (n === 'office:automatic-styles' ? (root === 'office:document-styles' ? sAuto : cAuto) : get(n))).join('') + '</' + root + '>';
   const manifest = '<?xml version="1.0" encoding="UTF-8"?>\n<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="' + ver + '">'
     + '<manifest:file-entry manifest:full-path="/" manifest:version="' + ver + '" manifest:media-type="' + MIME + '"/>'
     + ['content.xml', 'styles.xml', 'meta.xml', 'settings.xml'].map((f) => '<manifest:file-entry manifest:full-path="' + f + '" manifest:media-type="text/xml"/>').join('')
