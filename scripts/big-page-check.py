@@ -10,13 +10,14 @@ Saves one md page of about N MB (default 1.5) under bigchk-<pid>/, then:
               backslashes, tabs, newlines, a control byte), so the decoder
               walks all of its branches on a big body.
   budget      page-source of the big page, page-tree and the home route
-              each answer within S seconds (default 3), best of two.
+              each answer within S seconds (default 5), best of two.
 
 Before perf pass 7 every read that unwrapped the page's source stepped
 through the body a byte at a time in Hoon: about 7 s for 1.5 MB, paid by
-page-source, page-tree, page-dump and home alike. After it they take well
-under a second. The page is deleted at the end. Never point this at a real
-ship.
+page-source, page-tree, page-dump and home alike. After it they take
+about 1.2 s on an idle host and up to 4 s on a saturated one, which is why
+the budget is 5 s: well clear of a loaded host, well under the old 7 s.
+The page is deleted at the end. Never point this at a real ship.
 """
 import argparse, json, os, sys, time, urllib.error, urllib.parse, urllib.request
 
@@ -43,7 +44,7 @@ def main():
     ap.add_argument('url')
     ap.add_argument('cookie')
     ap.add_argument('--mb', type=float, default=1.5)
-    ap.add_argument('--budget', type=float, default=3.0)
+    ap.add_argument('--budget', type=float, default=5.0)
     a = ap.parse_args()
     sys.stdout.reconfigure(line_buffering=True)
     root = a.url.rstrip('/')
