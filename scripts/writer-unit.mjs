@@ -1,0 +1,245 @@
+#!/usr/bin/env node
+//  writer-unit.mjs: the Writer core (ui-src/writer/), pure node, no ship
+//  and no LibreOffice (plan, Task 8). The round trip through LibreOffice
+//  is scripts/writer-roundtrip.mjs.
+//
+//  Needs the ProseMirror packages: npm ci --prefix scripts --ignore-scripts.
+//
+//  Usage: node scripts/writer-unit.mjs
+import { readFileSync, readdirSync } from 'fs';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
+import { makeCheck } from './lib/check.mjs';
+import { importWriter } from './lib/writer-node.mjs';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const corpus = join(here, '..', 'tests', 'writer', 'corpus');
+const check = makeCheck();
+const core = await importWriter('xml.js', 'schema.js', 'styles.js', 'parse.js', 'serialize.js', 'edits.js');
+const { Node: PMNode } = await import('prosemirror-model');
+const { EditorState } = await import('prosemirror-state');
+const { parseFodt, serializeFodt, applyEdit, schema } = core;
+
+const read = (f) => readFileSync(join(corpus, f), 'utf8');
+const files = readdirSync(corpus).filter((f) => f.endsWith('.fodt')).sort();
+const lines = (t) => t.split('\n');
+const changedLines = (a, b) => {
+  const A = lines(a); const B = lines(b);
+  if (A.length !== B.length) return -1;
+  return A.filter((l, i) => l !== B[i]).length;
+};
+const firstDiff = (a, b) => { let i = 0; while (i < a.length && a[i] === b[i]) i++; return JSON.stringify(b.slice(i, i + 80)); };
+
+console.log('# no-op round trip, every corpus file');
+for (const f of files) {
+  const t = read(f);
+  const p = parseFodt(t);
+  if (!check(`${f} parses`, !p.error, p.error)) continue;
+  const o = serializeFodt(p, t);
+  check(`${f} no-op is byte-identical`, o.text === t, o.error || firstDiff(t, o.text || ''));
+  //  a document that went through JSON (no shared node objects) is still
+  //  recognised as unchanged
+  const j = serializeFodt({ doc: PMNode.fromJSON(schema, p.doc.toJSON()) }, t);
+  check(`${f} no-op through JSON is byte-identical`, j.text === t, j.error || firstDiff(t, j.text || ''));
+  //  and the writer alone, copying nothing, reproduces LibreOffice's layout
+  const r = serializeFodt(p, t, { rewrite: true });
+  check(`${f} rewriting every node is byte-identical`, r.text === t, r.error || firstDiff(t, r.text || ''));
+  //  an EditorState serializes like the parse result
+  const s = serializeFodt(EditorState.create({ doc: p.doc }), t);
+  check(`${f} an EditorState serializes the same`, s.text === t, s.error);
+}
+
+console.log('# minimal diff');
+{
+  const t = read('01-paragraphs.fodt');
+  const p = parseFodt(t);
+  const b = core.findBlock(p.doc, 'A second paragraph');
+  const r = core.findText(b, 'second');
+  const doc = p.doc.replace(r.from, r.to, new (await import('prosemirror-model')).Slice(
+    (await import('prosemirror-model')).Fragment.from(schema.text('other')), 0, 0));
+  const o = serializeFodt({ ...p, doc }, t);
+  check('changing one word changes exactly one line', changedLines(t, o.text) === 1, o.error);
+  check('the changed line has the new word', o.text.includes('>A other paragraph follows it, also Text Body.<'));
+}
+{
+  //  an edit in one paragraph leaves the whitespace fixture's others alone
+  const t = read('12-whitespace.fodt');
+  const e = applyEdit(parseFodt(t), { op: 'insertText', find: 'A trailing space.', at: 'end', text: 'Now text follows.' });
+  const o = serializeFodt(e, t);
+  check('12-whitespace: an edit elsewhere changes one line', changedLines(t, o.text) === 1, o.error);
+  check('12-whitespace: the edited line keeps its literal space',
+    o.text.includes('<text:p text:style-name="Text_20_body">A trailing space. Now text follows.</text:p>'));
+  const again = parseFodt(o.text);
+  check('12-whitespace: the result parses and round-trips', serializeFodt(again, o.text).text === o.text);
+  //  white space typed in the editor is written as ODF needs it
+  const b = core.findBlock(again.doc, 'A trailing space.');
+  const end = b.pos + 1 + b.node.content.size;
+  const doc2 = again.doc.replace(end, end, new (await import('prosemirror-model')).Slice(
+    (await import('prosemirror-model')).Fragment.from(schema.text('  two\tand   three ')), 0, 0));
+  const o2 = serializeFodt({ ...again, doc: doc2 }, o.text);
+  check('runs of spaces become text:s, tabs text:tab',
+    o2.text.includes('Now text follows. <text:s/>two<text:tab/>and <text:s text:c="2"/>three </text:p>'), o2.text && o2.text.match(/Now text follows\.[^\n]*/)?.[0]);
+  const back = parseFodt(o2.text);
+  check('and read back as the same text', core.findBlock(back.doc, 'A trailing space.').node.textContent
+    === 'A trailing space. Now text follows.  two\tand   three ');
+}
+
+console.log('# automatic styles');
+{
+  const t = read('01-paragraphs.fodt');
+  const bold = () => serializeFodt(applyEdit(parseFodt(t), { op: 'toggleMark', find: 'Lorem ipsum', word: 'dolor', mark: 'strong' }), t).text;
+  const a = bold(); const b = bold();
+  const name = (a.match(/<text:span text:style-name="([^"]+)">dolor<\/text:span>/) || [])[1];
+  check('bolding a word makes a span with an L style', /^LT[0-9a-f]{8}$/.test(name || ''), name);
+  check('the same bold in two sessions gives the same style and text', a === b);
+  check('the new style is added once, before </office:automatic-styles>',
+    a.split(`style:name="${name}"`).length === 2
+    && new RegExp(`<style:style style:name="${name}" style:family="text">\\n   <style:text-properties fo:font-weight="bold"/>\\n  </style:style>\\n </office:automatic-styles>`).test(a));
+  check('the new style lands as LibreOffice lays it out', serializeFodt(parseFodt(a), a).text === a);
+}
+{
+  const t = read('03-inline.fodt');
+  const o = serializeFodt(applyEdit(parseFodt(t), { op: 'toggleMark', find: 'Plain, ', word: 'Plain', mark: 'strong' }), t);
+  check('bolding text reuses LibreOffice\'s T1 (exactly fo:font-weight="bold")',
+    o.text.includes('<text:span text:style-name="T1">Plain</text:span>, <text:span text:style-name="T1">bold</text:span>'), o.error);
+  check('and adds no style', !/style:name="L[TP][0-9a-f]{8}"/.test(o.text));
+  //  italic on top of T1's bold finds T7 (bold italic)
+  const o2 = serializeFodt(applyEdit(parseFodt(t), { op: 'toggleMark', find: 'Plain, ', word: 'bold', mark: 'em' }), t);
+  check('bold plus italic reuses T7', o2.text.includes('<text:span text:style-name="T7">bold</text:span>'), o2.error);
+  //  an underline keeps its double type when the paragraph is rewritten
+  const o3 = serializeFodt(applyEdit(parseFodt(t), { op: 'insertText', find: 'Underlines:', at: 'end', text: ' More.' }), t);
+  check('a rewritten paragraph keeps its spans\' styles',
+    o3.text.includes('Underlines: <text:span text:style-name="T3">single</text:span>, <text:span text:style-name="T4">double</text:span>, <text:span text:style-name="T5">wave</text:span>. More.</text:p>'), o3.error);
+  //  style names are per family: 13-large has a text T1 and a table T1
+  const big = parseFodt(read('13-large.fodt'));
+  check('styles are keyed by family', core.lookup(big.styles, 'text', 'T1')?.family === 'text'
+    && core.lookup(big.styles, 'table', 'T1')?.family === 'table');
+}
+{
+  //  a page break before adds a paragraph style, and reads back
+  const t = read('01-paragraphs.fodt');
+  const p = parseFodt(t);
+  const b = core.findBlock(p.doc, 'The last paragraph.');
+  const doc = p.doc.type.create(null, null) && p.doc.copy(p.doc.content.replaceChild(p.doc.content.findIndex(b.pos).index,
+    b.node.type.create({ ...b.node.attrs, pageBreak: true }, b.node.content)));
+  const o = serializeFodt({ ...p, doc }, t);
+  const back = parseFodt(o.text);
+  check('a page break before makes an LP style on Text Body',
+    /<style:style style:name="LP[0-9a-f]{8}" style:family="paragraph" style:parent-style-name="Text_20_body">\n   <style:paragraph-properties fo:break-before="page"\/>/.test(o.text), o.error);
+  check('and reads back as a page break', core.findBlock(back.doc, 'The last paragraph.').node.attrs.pageBreak === true);
+}
+
+console.log('# paired markers');
+{
+  const t = read('10-unknown.fodt');
+  const p = parseFodt(t);
+  const b = core.findBlock(p.doc, 'A bookmark starts in this paragraph');
+  const doc = p.doc.copy(p.doc.content.replaceChild(p.doc.content.findIndex(b.pos).index,
+    b.node.type.create(b.node.attrs, schema.text('A bookmark starts in this paragraph'))));
+  const o = serializeFodt({ ...p, doc }, t);
+  check('deleting one half of a bookmark pair is refused', !!o.error && /bookmark "span"/.test(o.error), o.error || 'saved');
+  const st = EditorState.create({ doc: p.doc });
+  check('the editor guard refuses the same step',
+    core.pairGuard(st.tr.delete(b.pos + 1, b.pos + 2), st) === false);
+  check('and lets an ordinary edit through',
+    core.pairGuard(st.tr.insertText('x', b.pos + 3), st) === true);
+  //  deleting both halves is allowed
+  const e = core.findBlock(p.doc, 'and ends in this one.');
+  const tr = st.tr.delete(e.pos + 1, e.pos + e.node.content.size + 1).delete(b.pos + 1, b.pos + 2);
+  check('deleting both halves of a pair is allowed', !serializeFodt({ ...p, doc: tr.doc }, t).error || unbalancedOther(tr.doc));
+}
+function unbalancedOther(doc) { return [...core.unbalanced(doc)].every((k) => !k.includes('"span"')); }
+
+console.log('# the model');
+{
+  const p = parseFodt(read('08-tables.fodt'));
+  const kinds = [];
+  p.doc.forEach((n) => kinds.push(n.type.name));
+  check('a simple table is a table', kinds.includes('table'));
+  const op = []; p.doc.forEach((n) => { if (n.type.name === 'opaque_block') op.push(n.attrs.name); });
+  check('a merged-cell table is one opaque_block', op.filter((n) => n === 'table:table').length === 1);
+  const t1 = []; p.doc.forEach((n) => { if (n.type.name === 'table') t1.push(n); });
+  check('the header row is marked', t1[0].firstChild.attrs.header === true && t1[0].child(1).attrs.header === false);
+  const e = applyEdit(p, { op: 'addTableRow', table: 'Table1', cells: ['Quinces', 'Yellow', '5'] });
+  const o = serializeFodt(e, read('08-tables.fodt'));
+  check('a new row copies the last row\'s cell styles',
+    o.text.includes('    <table:table-row>\n     <table:table-cell table:style-name="Table1.A2" office:value-type="string">\n      <text:p text:style-name="Table_20_Contents">Quinces</text:p>'), o.error);
+}
+{
+  const p = parseFodt(read('04-lists.fodt'));
+  let lists = 0; p.doc.forEach((n) => { if (n.type.name === 'list') lists++; });
+  check('lists are lists', lists >= 4);
+  const o = serializeFodt(applyEdit(p, { op: 'addListItem', find: 'Second, b', text: 'Second, c' }), read('04-lists.fodt'));
+  check('a new list item sits in LibreOffice\'s layout',
+    o.text.includes('       <text:p text:style-name="P2">Second, b</text:p>\n      </text:list-item>\n      <text:list-item>\n       <text:p text:style-name="P2">Second, c</text:p>\n      </text:list-item>\n     </text:list>'), o.error);
+}
+{
+  const p = parseFodt(read('10-unknown.fodt'));
+  check('10-unknown: tracking is on (no text:track-changes attribute)', p.tracking === true);
+  check('10-unknown: macros are noticed', p.macros === true);
+  check('01: tracking is off', parseFodt(read('01-paragraphs.fodt')).tracking === false);
+  const names = new Set(); p.doc.descendants((n) => { if (n.type.name.startsWith('opaque')) names.add(n.attrs.name); });
+  for (const n of ['text:note', 'text:bookmark-start', 'text:table-of-content', 'text:tracked-changes', 'office:annotation', 'text:date'])
+    check(`10-unknown: ${n} is opaque`, names.has(n));
+  let sections = 0; p.doc.descendants((n) => { if (n.type.name === 'section') sections++; });
+  check('10-unknown: a plain section is editable and a linked one opaque', sections === 1 && names.has('text:section'));
+  const q = parseFodt(read('06-quote-break.fodt'));
+  const qb = core.findBlock(q.doc, 'A paragraph before the quotation.');
+  let quote = false; let brk = false;
+  q.doc.descendants((n) => { if (n.attrs.quote) quote = true; if (n.attrs.pageBreak) brk = true; });
+  check('06: Quotations shows as a quote and a page break is seen', quote && brk && qb);
+  const l = parseFodt(read('09-layout.fodt')).layout;
+  check('09: the page width comes from the first master page', /^\d/.test(l.width || ''), JSON.stringify(l));
+}
+
+console.log('# extractors');
+{
+  const t = read('12-whitespace.fodt');
+  const txt = core.fodtText(t);
+  check('fodtText keeps spaces and tabs', txt.includes('Tab\tseparated\t\tvalues.') && txt.includes('three  spaces'), txt.slice(0, 120));
+  check('fodtText has no markup', !/style-name|office:/.test(core.fodtText(read('10-unknown.fodt'))));
+  const ol = core.fodtOutline(read('02-headings.fodt'));
+  check('fodtOutline lists the headings with levels', ol.length >= 6 && ol.some((h) => h.level === 3 && h.text.includes('Heading level 3')), JSON.stringify(ol.slice(0, 3)));
+  const ln = core.fodtLinks(read('05-links.fodt'));
+  check('fodtLinks lists the targets, decoded', ln.includes('https://example.org/page?a=1&b=2'), JSON.stringify(ln));
+  check('the extractors answer empty on a refused document',
+    core.fodtText(read('hostile/billion-laughs.fodt')) === '' && core.fodtOutline('<x') .length === 0);
+}
+
+console.log('# hostile files');
+for (const f of readdirSync(join(corpus, 'hostile')).sort()) {
+  const t = read('hostile/' + f);
+  let p; let threw = null;
+  try { p = parseFodt(t); } catch (e) { threw = e; }
+  check(`hostile/${f}: never throws`, !threw, threw && threw.message);
+  if (/billion|doctype|external-entity|deep/.test(f)) check(`hostile/${f}: refused with { error }`, !!(p && p.error), p && p.error);
+  else {
+    check(`hostile/${f}: opens`, !!(p && !p.error), p && p.error);
+    check(`hostile/${f}: no-op is byte-identical`, serializeFodt(p, t).text === t);
+  }
+}
+{
+  const p = parseFodt(read('hostile/script-iframe.fodt'));
+  const op = []; p.doc.descendants((n) => { if (n.type.name.startsWith('opaque')) op.push(n.attrs.name); });
+  check('script, iframe and svg stay opaque', ['script', 'iframe', 'html:script', 'svg:svg'].every((n) => op.includes(n)), op.join(' '));
+  const s = parseFodt(read('hostile/style-injection.fodt'));
+  const all = [...s.styles.styles.values()].map((e) => core.styleCss(s.styles, e.family, e.name)).join(';');
+  check('style values never reach CSS unparsed', !/url\(|expression|<|>|\}/.test(all), all);
+  check('the font-size with an injection is dropped', !/font-size/.test(core.styleCss(s.styles, 'paragraph', 'Evil_20_Para')));
+  const big = 'x'.repeat(8 * 1024 * 1024 + 1);
+  check('a document over 8 MB is refused', !!parseFodt(big).error);
+  check('a malformed document is refused', !!parseFodt('<office:document><office:body>').error);
+}
+
+console.log('# speed');
+{
+  const t = read('13-large.fodt');
+  parseFodt(t); // warm the JIT, as a page open after load would be
+  const t0 = performance.now();
+  const p = parseFodt(t);
+  const o = serializeFodt(applyEdit(p, { op: 'insertParagraph', find: 'Chapter 30', text: 'New.' }), t);
+  const ms = performance.now() - t0;
+  check(`13-large parses, edits and serializes in under 300 ms (${ms.toFixed(0)} ms)`, ms < 300 && !o.error, o.error);
+}
+
+check.done();

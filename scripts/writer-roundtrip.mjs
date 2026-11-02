@@ -20,11 +20,9 @@
 //    6. PDF.       The original and the no-op output print to the same
 //                  number of pages.
 //
-//  Steps 1, 2 and 5 need the writer core (ui-src/writer/parse.js and
-//  serialize.js, plan Task 8) and say so and skip until it exists. Until
-//  then the candidate for steps 3, 4 and 6 is the original itself, so the
-//  live steps check that a LibreOffice re-save of each corpus file loses
-//  nothing.
+//  Steps 1, 2 and 5 run the writer core (ui-src/writer/parse.js,
+//  serialize.js and edits.js, plan Task 8). Without it they would skip,
+//  and the candidate for steps 3, 4 and 6 would be the original itself.
 //
 //  Needs python3 and LibreOffice (soffice). Without soffice steps 3, 4 and
 //  6 skip, unless WRITER_REQUIRE_SOFFICE=1 (CI sets it), which fails.
@@ -87,13 +85,14 @@ const ver = existsSync(join(corpus, 'VERSION')) ? readFileSync(join(corpus, 'VER
 check('corpus VERSION names the LibreOffice that saved it', /^LibreOffice \d/.test(ver), ver);
 
 // ---------------------------------------------------------------- the core
+//  writer-node.mjs resolves the core's bare prosemirror-* imports from
+//  scripts/node_modules (npm ci --prefix scripts)
 let core = null;
 const coreFiles = ['parse.js', 'serialize.js'].map((f) => join(root, 'ui-src', 'writer', f));
 if (coreFiles.every(existsSync)) {
-  const mods = await Promise.all(coreFiles.map((f) => import(pathToFileURL(f).href)));
-  core = Object.assign({}, ...mods);
-  const editsMod = join(root, 'ui-src', 'writer', 'edits.js');
-  if (existsSync(editsMod)) Object.assign(core, await import(pathToFileURL(editsMod).href));
+  const { importWriter } = await import('./lib/writer-node.mjs');
+  core = await importWriter('parse.js', 'serialize.js');
+  if (existsSync(join(root, 'ui-src', 'writer', 'edits.js'))) Object.assign(core, await importWriter('edits.js'));
 }
 const noCore = 'needs the writer core (ui-src/writer/parse.js, serialize.js), plan Task 8';
 
@@ -274,8 +273,11 @@ if (!soffice) {
     const parsed = core.parseFodt(text);
     if (!check(`${f} LibreOffice re-save of the edit parses`, parsed && !parsed.error, parsed?.error)) continue;
     const e = edits[f];
-    const want = e.txt.add[0] ?? e.word ?? e.text;
-    if (want && core.fodtText) check(`${f} the edit is in LibreOffice's re-save`, core.fodtText(text).includes(want.trim()));
+    //  the words the edit put in, not LibreOffice's txt line, which adds
+    //  list labels and outline numbers and joins table cells with tabs
+    const wants = (e.cells ?? [e.text ?? e.word]).filter(Boolean).map((w) => w.trim());
+    const words = core.fodtText(text);
+    check(`${f} the edit is in LibreOffice's re-save`, wants.every((w) => words.includes(w)), JSON.stringify(wants));
     const out = core.serializeFodt(parsed, text);
     check(`${f} LibreOffice re-save no-op round trip is byte-identical`, out && out.text === text);
   }
