@@ -463,6 +463,9 @@ is  "scoped write ungranted"   403 "$(BC -X POST "$B/page-save?name=$P/note&type
 has "tree hides ungranted"     "$P/out" "$(BG "$B/page-tree")"
 is  "tree omits other ns"      "" "$(BG "$B/page-tree" | python3 -c 'import json,sys;print("".join(n["path"] for n in json.load(sys.stdin).get("nodes",[]) if not n["path"].startswith(sys.argv[1])))' "$P")"
 is  "scoped write hoon refused" 403 "$(BC -X POST "$B/page-save?name=$P/out/x&type=hoon" --data-binary '|=(x=@ x)')"
+# Writer documents stay owner-only for now (spec, Decisions 6)
+is  "scoped write fodt refused" 403 "$(BC -X POST "$B/page-save?name=$P/out/w&type=fodt" --data-binary '<office:document/>')"
+is  "scoped batch fodt refused" 403 "$(BC -X POST "$B/page-save-batch" -H 'content-type: application/json' --data-binary "[{\"name\":\"$P/out/w\",\"type\":\"fodt\",\"body\":\"x\"}]")"
 
 echo "==> sensitive pages"
 is "mark sensitive (owner)"          200 "$(sc -X POST "$B/page-sensitive?name=$P/note&on=1")"
