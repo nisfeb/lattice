@@ -2697,8 +2697,15 @@
     ::  nothing published: a peer's private page shared with us, which only
     ::  a ship on its ACL can read (+read-shared-page). Not for /manifest,
     ::  the publisher probe below, so a badge check costs no second peek.
+    ::  Not for a key whose web scope is %some: its paths name published
+    ::  pages, and the share was granted to this ship, not to the key. A
+    ::  web %all key already reads that page grub over /browse-file.
     ;<  sp=(unit [rel=path mode=view-mode:pg body=@t])  bind:m
-      ?:  |(=(ship.u.pu our) ?=(~ path.u.pu) =(/manifest path.u.pu))
+      ?:  ?|  =(ship.u.pu our)
+              ?=(~ path.u.pu)
+              =(/manifest path.u.pu)
+              &(?=(^ key) !?=(%all -.web.scope.u.key))
+          ==
         (pure:(fiber:fiber:nexus ,(unit [rel=path mode=view-mode:pg body=@t])) ~)
       (read-shared-page ship.u.pu path.u.pu)
     ?^  sp  (send-json eyre-id (mark-body-json mode.u.sp body.u.sp))
@@ -11371,8 +11378,11 @@
   =/  spur=path  (page-rel rel)
   ;<  base=(unit path)  bind:m  (peer-base-cached shp)
   ?~  base  (pure:m ~)
+  ::  bounded like +peer-base: a granting peer answers in a few seconds, and
+  ::  the published read already spent its wait on a peer that is down, so
+  ::  a miss must not sit on a second full remote-timeout
   ;<  ms=(unit view:nexus)  bind:m
-    (peek-remote-wait [%& %& :(weld u.base /page spur) %code] shp)
+    (peek-remote-wait-in [%& %& :(weld u.base /page spur) %code] shp ~s8)
   ?~  ms  (pure:m ~)
   ?.  ?=([%file *] u.ms)  (pure:m ~)
   ?.  =([/lattice %page] p.sang.u.ms)  (pure:m ~)

@@ -83,7 +83,7 @@
     const lk = linkOf(name);
     return lk ? 'urb://' + linkFrom(lk) : urbUrl(name);
   };
-  const swmUrb = (it) => 'urb://' + it.host + '/' + sharedName(it.path);
+  const swmUrb = (it) => 'urb://' + linkFrom(it);
   // a grub open from another ship is a shared page when it is a page's code
   const grubUrb = () => {
     const m = grubShip && /\/page\/(.+)\/code$/.exec(grubPath || '');

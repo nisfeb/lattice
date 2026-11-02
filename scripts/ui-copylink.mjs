@@ -9,7 +9,7 @@
 // With B_URL and B_COOKIE (a second ship that can reach this one) it also
 // proves the address resolves: B reads a private page this ship shared
 // with it over /fetch, and still gets a 404 for a private page it was not
-// given.
+// given, from a path-scoped agent key, or once the share is revoked.
 //   LATTICE_URL=http://localhost:8080 LATTICE_COOKIE=~/.config/lattice-fs/cookie node scripts/ui-copylink.mjs
 import { readFileSync } from 'fs';
 import { shipEnv, shipName, launchBrowser, openPage, makeCheck, swControlled, seed, waitFor } from './lib/harness.mjs';
@@ -188,6 +188,49 @@ try {
       rv && rv.status);
     const r1 = await bFetch(mine2).catch(() => null);
     check('a private page not shared with ' + bShip + ' stays a 404', !!r1 && r1.status === 404, r1 && r1.status);
+    // a miss costs one bounded extra ask, not a second full remote wait
+    const t0 = Date.now();
+    const r2 = await bFetch('urb://' + our + '/' + P('nothing-here')).catch(() => null);
+    const missMs = Date.now() - t0;
+    check('a name that is not there is a 404', !!r2 && r2.status === 404, r2 && r2.status);
+    check('and answers inside 20 s', missMs < 20000, missMs + ' ms');
+    // the share went to B's ship, not to its agent keys: a key whose web
+    // scope names paths on this ship reads published pages there only,
+    // while a web-wide key reads what B's ship could over /browse-file
+    const bMint = async (web) => {
+      const r = await fetch(bBase + '/apps/lattice/key-mint', { method: 'POST',
+        headers: { Cookie: bCookie, 'content-type': 'application/json' },
+        body: JSON.stringify({ name: RUN, by: RUN, scope: { memory: 'none', pages: { all: 'none' },
+          web, sensitive: false } }) }).then((x) => x.json()).catch(() => null);
+      return r && r.token ? r : null;
+    };
+    const bKeyFetch = (k, u) => fetch(bBase + '/apps/lattice/fetch?url=' + encodeURIComponent(u),
+      { headers: { Authorization: 'Bearer ' + k.token }, signal: AbortSignal.timeout(90000) }).catch(() => null);
+    const kSome = await bMint({ some: { [our]: { read: ['/' + RUN], write: [] } } });
+    const kAll = await bMint({ all: null });
+    check('B mints a path-scoped and a web-wide key', !!kSome && !!kAll);
+    if (kSome && kAll) {
+      const rs = await bKeyFetch(kSome, mine);
+      check('a path-scoped key does not read the page shared with B\'s ship', !!rs && rs.status === 404,
+        rs && rs.status);
+      const ra = await bKeyFetch(kAll, mine);
+      const ja = ra && ra.ok ? await ra.json() : null;
+      check('a web-wide key reads it, as /browse-file already lets it', !!ja && /# priv/.test(ja.body || ''),
+        ra && ra.status);
+    }
+    for (const k of [kSome, kAll]) if (k) await fetch(bBase + '/apps/lattice/key-revoke?id=' +
+      encodeURIComponent(k.key.id), { method: 'POST', headers: { Cookie: bCookie } }).catch(() => {});
+    // revoked: the link goes dark again, with nothing cached on B
+    const rg = await api('share-group-del?name=' + encodeURIComponent(bShip.replace(/^~/, '')),
+      { method: 'POST' });
+    check('the share with ' + bShip + ' is revoked', rg.ok, rg.status);
+    let dark = false;
+    await waitFor(async () => {
+      const r = await bFetch(mine).catch(() => null);
+      dark = !!r && r.status === 404;
+      return dark;
+    }, 60000, 3000);
+    check('after the revoke, ' + bShip + ' gets a 404 again', dark);
     // the share notice left an entry in B's shared with me: take it off,
     // so a re-run starts from the same list
     const sw = await fetch(bBase + '/apps/lattice/shared-with-me', { headers: { Cookie: bCookie } })
