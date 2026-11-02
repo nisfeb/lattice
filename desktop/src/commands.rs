@@ -314,7 +314,7 @@ pub fn open_external_url(url: String) -> Result<(), String> {
 /// ui-src/lattice/30-tree.js, and scripts/kind-parity.mjs checks the two agree.
 /// The page's own list is cut down to these, so a page cannot widen the pick
 /// to files that are not pages (a key file, a .env).
-const PAGE_EXTS: &[&str] = &["md", "gmi", "html", "htm", "txt", "text", "js", "css", "hoon", "tex", "latex"];
+const PAGE_EXTS: &[&str] = &["md", "gmi", "html", "htm", "txt", "text", "js", "css", "hoon", "tex", "latex", "fodt"];
 
 /// How much one pick may read and hand the page. A folder pick reads every
 /// matching file under it, so picking a home directory must not pull the

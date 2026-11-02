@@ -16,10 +16,10 @@
   // extension was conventionalised named those files `.text`, and a restore
   // has to keep reading archives this app already handed out.
   const KIND_EXT = { md: 'md', gmi: 'gmi', html: 'html', text: 'txt', js: 'js',
-                     css: 'css', hoon: 'hoon', index: 'md', tex: 'tex' };
+                     css: 'css', hoon: 'hoon', index: 'md', tex: 'tex', fodt: 'fodt' };
   const EXT_KIND = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
                      text: 'text', js: 'js', css: 'css', hoon: 'hoon', tex: 'tex',
-                     latex: 'tex' };
+                     latex: 'tex', fodt: 'fodt' };
   //  an unknown kind shows as hoon, the kind that holds arbitrary source
   const kindExt = (k) => KIND_EXT[k] || 'hoon';
   //  an unknown extension is null, never guessed: the caller skips that file

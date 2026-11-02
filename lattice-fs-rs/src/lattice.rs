@@ -217,7 +217,7 @@ impl Projection for LatticeProjection {
     fn write(&self, rel: &str, kind: &str, data: &[u8], create: bool) -> Result<(), PErr> {
         let ptype = match kind {
             "index" => "index",
-            "md" | "gmi" | "html" | "text" | "js" | "css" | "tex" => kind,
+            "md" | "gmi" | "html" | "text" | "js" | "css" | "tex" | "fodt" => kind,
             _ => "hoon",
         };
         let name = self.full(rel);
@@ -734,13 +734,14 @@ mod tests {
     fn write_maps_kind_to_page_type_and_seeds_only_a_new_empty_body() {
         // the `type` decides the mark the page is stored under. A wrong one
         // stores markdown as hoon (or worse, clobbers a generated %index).
-        let (rec, p) = lp("", (0..6).map(|_| ok("{}")).collect());
+        let (rec, p) = lp("", (0..7).map(|_| ok("{}")).collect());
         p.write("n", "md", b"hi", false).unwrap();
         p.write("n", "index", b"", true).unwrap();
         p.write("n", "md", b"", true).unwrap();
         p.write("n", "md", b"hi", true).unwrap();
         p.write("n", "bespoke", b"x", false).unwrap();
         p.write("n", "tex", b"\\x", false).unwrap();
+        p.write("n", "fodt", b"<o/>", false).unwrap();
         assert_eq!(
             rec.log(),
             vec![
@@ -755,6 +756,8 @@ mod tests {
                 r#"POST /apps/lattice/page-save?name=n&type=hoon "x""#,
                 // LaTeX is its own kind: sent as hoon it went to the compiler
                 r#"POST /apps/lattice/page-save?name=n&type=tex "\\x""#,
+                // a Writer document is its own kind, never hoon
+                r#"POST /apps/lattice/page-save?name=n&type=fodt "<o/>""#,
             ]
         );
     }
