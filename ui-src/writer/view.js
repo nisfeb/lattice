@@ -17,7 +17,7 @@
 //  render(text) is the same projection as an HTML document, for the
 //  preview and a parked tab: no script, no live link, nothing fetched.
 import { DOMSerializer } from 'prosemirror-model';
-import { EditorState, Plugin } from 'prosemirror-state';
+import { EditorState, Plugin, TextSelection } from 'prosemirror-state';
 import { EditorView } from 'prosemirror-view';
 import { history } from 'prosemirror-history';
 import { dropCursor } from 'prosemirror-dropcursor';
@@ -191,6 +191,32 @@ function dedupe() {
   });
 }
 
+//  The declaration blocks the view hides (sequence, variable and user
+//  field declarations, the tracked-changes log) hold what fields and
+//  change marks refer to. No one can see them, so no one can mean to
+//  delete them: a step that drops one, typing over a node selection of
+//  one or clearing the document, gets it back at the top of the body,
+//  where LibreOffice writes them.
+const HIDDEN = /^text:(sequence-decls|variable-decls|user-field-decls|dde-connection-decls|tracked-changes)$/;
+const hidden = (doc) => {
+  const out = [];
+  doc.descendants((n) => {
+    if (n.type === S.opaque_block && HIDDEN.test(n.attrs.name)) out.push(n);
+    return !n.isTextblock;
+  });
+  return out;
+};
+export function keepHidden() {
+  return new Plugin({
+    appendTransaction(trs, old, state) {
+      if (!trs.some((t) => t.docChanged)) return null;
+      const have = new Set(hidden(state.doc).map((n) => n.attrs.raw));
+      const lost = hidden(old.doc).filter((n) => !have.has(n.attrs.raw));
+      return lost.length ? state.tr.insert(0, lost) : null;
+    },
+  });
+}
+
 const PAIR_WHAT = 'one half of a bookmark, reference mark, comment or tracked change';
 
 // ---------------------------------------------------------------- mount
@@ -293,9 +319,12 @@ export function mount(host, opts = {}) {
     },
   });
   const toolbar = buildToolbar(bar, ctl, { schema, st });
+  //  the caret starts in the first text, never as a node selection of a
+  //  hidden declaration block the first key would replace
   const state = EditorState.create({
     doc: parsed.doc,
-    plugins: [guard, dedupe(), ...buildKeys(ctl), history(), dropCursor(), gapCursor(), pastePlugin(ctl, st)],
+    selection: TextSelection.findFrom(parsed.doc.resolve(0), 1, true) || undefined,
+    plugins: [guard, dedupe(), keepHidden(), ...buildKeys(ctl), history(), dropCursor(), gapCursor(), pastePlugin(ctl, st)],
   });
   const view = new EditorView(sheet, {
     state,

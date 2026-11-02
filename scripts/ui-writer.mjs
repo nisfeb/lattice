@@ -54,6 +54,7 @@ const P = {
   made: RUN + '/made',
   tabs: RUN + '/tabs',
   off: RUN + '/off',
+  focus: RUN + '/focus',
 };
 const api = (path, init = {}) => fetch(env.base + '/apps/lattice/' + path,
   { ...init, headers: { Cookie: env.cookie, ...(init.headers || {}) } });
@@ -165,6 +166,7 @@ try {
     [P.lists, corpus('04-lists.fodt')],
     [P.tabs, corpus('01-paragraphs.fodt')],
     [P.off, corpus('01-paragraphs.fodt')],
+    [P.focus, corpus('01-paragraphs.fodt')],
   ];
   for (const [n, b, t] of seeds) {
     const r = await put(n, b, t);
@@ -273,6 +275,20 @@ try {
     await page.keyboard.type('NOPE');
     await sleep(700);
     check('B: typing there changes nothing', (await srcVal()) === before);
+
+    //  the first key after focus lands in the first text, never over the
+    //  hidden sequence-decls the document starts with
+    await open(P.focus);
+    await mounted();
+    const fb = await srcVal();
+    await page.evaluate(() => document.querySelector('lat-writer .lw-doc').focus());
+    await page.keyboard.type('FOCUSED');
+    const fa = await changed(fb);
+    check('B: typing straight after focus keeps the hidden declarations',
+      !!fa && fa.includes('<text:sequence-decls>') && fa.includes('FOCUSED'), fa && fa.slice(fa.indexOf('<office:text>'), fa.indexOf('<office:text>') + 160));
+    //  saved before C, so the create below starts from a clean editor
+    await waitFor(async () => { const d = await shipBody(P.focus); return d && d.body.includes('FOCUSED'); }, 20000, 500);
+    await sleep(500);
   }
 
   // ------------------------------------------------------------ C: create and the toolbar

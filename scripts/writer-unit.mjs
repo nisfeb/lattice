@@ -17,7 +17,7 @@ const corpus = join(here, '..', 'tests', 'writer', 'corpus');
 const check = makeCheck();
 const core = await importWriter('xml.js', 'schema.js', 'styles.js', 'parse.js', 'serialize.js', 'edits.js',
   'view.js', 'paste.js');
-const { Node: PMNode } = await import('prosemirror-model');
+const { Node: PMNode, Slice, Fragment } = await import('prosemirror-model');
 const { EditorState } = await import('prosemirror-state');
 const { parseFodt, serializeFodt, applyEdit, schema } = core;
 
@@ -337,6 +337,34 @@ console.log('# the view (Task 9), what node can check');
   check('a paste leaves bookmarks behind and keeps fields',
     !fixed[1].content.content.some((c) => c.attrs && c.attrs.name === 'text:bookmark-start')
     && fixed[1].content.content.some((c) => c.attrs && c.attrs.name === 'text:date'));
+  //  a drag that moves a paragraph is a move: its comments go with it
+  {
+    const t = read('10-unknown.fodt');
+    const pp = parseFodt(t);
+    const plug = core.pastePlugin({}, pp.styles);
+    let at = -1, node = null;
+    pp.doc.descendants((n, pos) => { if (at < 0 && n.isTextblock && n.textContent.includes('point comment')) { at = pos; node = n; } return at < 0; });
+    const sl = new Slice(Fragment.from(node), 0, 0);
+    const n = (x) => (x.match(/<office:annotation[ >]/g) || []).length;
+    const moveOut = (drag) => {
+      const st0 = EditorState.create({ doc: pp.doc });
+      const got = plug.props.transformPasted(sl, { dragging: drag(sl) });
+      return serializeFodt(st0.apply(st0.tr.delete(at, at + node.nodeSize).insert(1, got.content)), t);
+    };
+    const moved = moveOut((x) => ({ slice: x, move: true }));
+    check('a paragraph dragged within the document keeps its comments', !moved.error && n(moved.text) === n(t) && n(t) === 2, n(moved.text || ''));
+    check('a pasted copy of it still leaves them behind', n(moveOut(() => null).text) === 0);
+  }
+  //  the hidden declaration blocks come back when a step drops one
+  {
+    const t = read('01-paragraphs.fodt');
+    const st0 = EditorState.create({ doc: parseFodt(t).doc, plugins: [core.keepHidden()] });
+    const first = st0.doc.firstChild;
+    const r = st0.applyTransaction(st0.tr.replaceWith(0, first.nodeSize, S.paragraph.create(null, schema.text('typed'))));
+    const out = serializeFodt(r.state, t);
+    check('typing over the hidden sequence-decls keeps them', first.attrs.name === 'text:sequence-decls'
+      && !out.error && out.text.includes('<text:sequence-decls>') && out.text.includes('typed'));
+  }
   check('a list style is found by kind in a corpus file', core.listStyleFor(parseFodt(read('04-lists.fodt')).styles, 'number') === 'L2');
   check('a Basic library counts as macros, LibreOffice\'s empty libraries element does not',
     p10.macros === true && parseFodt(read('01-paragraphs.fodt')).macros === false);

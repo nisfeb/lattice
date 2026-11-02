@@ -57,7 +57,11 @@ export function fixPasted(node, st) {
 export function pastePlugin(ctl, st) {
   return new Plugin({
     props: {
-      transformPasted(slice) {
+      //  a drag that moves within this document is a move, not a paste:
+      //  its markers, comments and attributes go with it, as they are
+      transformPasted(slice, view) {
+        const d = view && view.dragging;
+        if (d && d.move && d.slice === slice) return slice;
         const kids = [];
         slice.content.forEach((c) => {
           if (c.type === S.opaque_inline && NAMED.test(c.attrs.name)) return;
