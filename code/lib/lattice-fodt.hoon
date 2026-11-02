@@ -448,45 +448,68 @@
 ++  fodt-text
   |=  f=@t
   ^-  @t
-  =/  r
-    %-  mule  |.
-    ^-  @t
-    =/  d  (doc-of f)
-    ?~  d  ''
-    ?>  ?=(%e -.u.d)
-    =/  b  (office-text k.u.d)
-    ?~  b  ''
-    ?>  ?=(%e -.u.b)
-    (crip (join "\0a" (flop (lines k.u.b ~))))
+  =/  r  (mule |.((text-of (doc-of f))))
   ?:(?=(%& -.r) p.r '')
 ::
 ::  +fodt-title: dc:title when set, else the first heading's text
 ++  fodt-title
   |=  f=@t
   ^-  (unit @t)
-  =/  r
-    %-  mule  |.
-    ^-  (unit @t)
-    =/  d  (doc-of f)
-    ?~  d  ~
-    ?>  ?=(%e -.u.d)
-    =/  dt=tape
-      =/  m  (kid 'office:meta' k.u.d)
-      ?~  m  ~
-      ?>  ?=(%e -.u.m)
-      =/  t  (kid 'dc:title' k.u.m)
-      ?~  t  ~
-      ?>  ?=(%e -.u.t)
-      (trim (zing (flop (itext k.u.t ~))))
-    ?^  dt  `(crip dt)
-    =/  b  (office-text k.u.d)
-    ?~  b  ~
-    ?>  ?=(%e -.u.b)
-    =/  h  (first-h k.u.b)
-    ?~  h  ~
-    =/  ht=tape  (trim (zing (flop (itext u.h ~))))
-    ?~(ht ~ `(crip ht))
+  =/  r  (mule |.((title-of (doc-of f))))
   ?:(?=(%& -.r) p.r ~)
+::
+::  +fodt-all: the HTML, the text and the title from ONE parse, for the
+::  ship's render cache. Each is what +fodt-html, +fodt-text and
+::  +fodt-title answer, and a crash in one part spoils only that part.
+::  The parse is most of the cost (+scan alone is 2.8 s of the 4.7 to
+::  6.1 s +fodt-html takes on a 1.5 MB document), so the three together
+::  cost about one render, not three.
+++  fodt-all
+  |=  f=@t
+  ^-  [html=tape text=@t title=(unit @t)]
+  ?:  (gth (met 3 f) max-size)  [note-html '' ~]
+  =/  d  (mule |.((doc-of f)))
+  ?:  ?=(%| -.d)  [note-html '' ~]
+  =/  h  (mule |.((html-of p.d)))
+  =/  t  (mule |.((text-of p.d)))
+  =/  l  (mule |.((title-of p.d)))
+  :+  ?:(?=(%& -.h) p.h note-html)
+    ?:(?=(%& -.t) p.t '')
+  ?:(?=(%& -.l) p.l ~)
+::
+::  +text-of: +fodt-text of a parsed document
+++  text-of
+  |=  d=(unit node)
+  ^-  @t
+  ?~  d  ''
+  ?>  ?=(%e -.u.d)
+  =/  b  (office-text k.u.d)
+  ?~  b  ''
+  ?>  ?=(%e -.u.b)
+  (crip (join "\0a" (flop (lines k.u.b ~))))
+::
+::  +title-of: +fodt-title of a parsed document
+++  title-of
+  |=  d=(unit node)
+  ^-  (unit @t)
+  ?~  d  ~
+  ?>  ?=(%e -.u.d)
+  =/  dt=tape
+    =/  m  (kid 'office:meta' k.u.d)
+    ?~  m  ~
+    ?>  ?=(%e -.u.m)
+    =/  t  (kid 'dc:title' k.u.m)
+    ?~  t  ~
+    ?>  ?=(%e -.u.t)
+    (trim (zing (flop (itext k.u.t ~))))
+  ?^  dt  `(crip dt)
+  =/  b  (office-text k.u.d)
+  ?~  b  ~
+  ?>  ?=(%e -.u.b)
+  =/  h  (first-h k.u.b)
+  ?~  h  ~
+  =/  ht=tape  (trim (zing (flop (itext u.h ~))))
+  ?~(ht ~ `(crip ht))
 ::  +first-h: the kids of the first text:h, depth first through blocks
 ++  first-h
   |=  ks=(list node)
@@ -872,7 +895,11 @@
 ++  html-raw
   |=  f=@t
   ^-  tape
-  =/  d  (doc-of f)
+  (html-of (doc-of f))
+::  +html-of: +fodt-html of a parsed document
+++  html-of
+  |=  d=(unit node)
+  ^-  tape
   ?~  d  note-html
   ?>  ?=(%e -.u.d)
   =/  sh=sheet  (collect k.u.d)

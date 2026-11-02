@@ -79,6 +79,8 @@
 ::  (/forum.sig) runs the rate limit, which +act leaves to the caller.
 /<  fr   /lib/lattice-forum-rules.hoon
 /<  fre  /lib/lattice-forum-render.hoon
+::  flat ODT: the safe HTML, the search text and the title of a fodt page
+/<  lf   /lib/lattice-fodt.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -2160,9 +2162,21 @@
       =/  cbox=tape
         ?:  =(ship.u.ref our)  ""
         (remote-comment-box ship.u.ref rel)
+      ::  a %fodt mark never comes from a lattice (its pages publish as
+      ::  %html), but a peer may send one: render it once, here, for the
+      ::  body and the title, uncached (it is not our page)
+      =/  fv=(unit fodt-view)  ?.(?=(%fodt mode) ~ `(fodt-make body))
       ::  the tab/history title: a real `#` heading, else the raw address.
-      ::  Computed once here, shared with the history-log write below.
-      =/  ttl=@t  (page-title-of body u.raw)
+      ::  Computed once here, shared with the history-log write below. A
+      ::  fodt page's is its dc:title or first heading: ours is published
+      ::  as HTML, so it is asked of the page (+own-fodt-title).
+      ;<  oft=(unit @t)  bind:m
+        ?.  &(=(ship.u.ref our) ?=(%html mode))  (pure:(fiber:fiber:nexus ,(unit @t)) ~)
+        (own-fodt-title rel)
+      =/  ttl=@t
+        ?^  oft  u.oft
+        ?^  fv  (fall title.u.fv u.raw)
+        (page-title-of body u.raw)
       ;<  ~  bind:m
         ;<  rv=tape  bind:m  ?:(=("" rk) (pure:(fiber:fiber:nexus ,tape) "") beacon-rev-tape)
         ::  render by the page's RESOLVED view-mode, not by sniffing the body.
@@ -2219,7 +2233,8 @@
         ::  each one (raw HTML inside a peer's markdown is escaped by +render-md,
         ::  and text/js/css become an escaped <pre>), so the fragment is safe to
         ::  inline in our own chrome, with the comment box, like a gemtext page.
-        =/  inner=tape  (weld (preview-inner mode body) cbox)
+        =/  inner=tape
+          (weld ?^(fv (trip html.u.fv) (preview-inner mode body)) cbox)
         ?:  =("" rk)
           (send-view eyre-id (render-page-titled canon rk "" (trip ttl) inner))
         (send-view-long eyre-id (render-page-titled canon rk rv (trip ttl) inner))
@@ -3073,10 +3088,11 @@
     ?:  =('' q)  (send-err eyre-id 400 'missing q')
     =/  k=@ud  (fall (rush (~(gut by args) 'k' '10') dem) 10)
     ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
+    ;<  all=(list [rel=path body=@t shr=share-mode:le])  bind:m
+      ?.  ?=([%ball *] sn)  (pure:(fiber:fiber:nexus ,(list [rel=path body=@t shr=share-mode:le])) ~)
+      (search-walk ball.sn)
+    ::  keyed: filter to paths within the key's read scope
     =/  scope-pages=(list [rel=path body=@t shr=share-mode:le])
-      ?.  ?=([%ball *] sn)  ~
-      ::  keyed: filter to paths within the key's read scope
-      =/  all=(list [rel=path body=@t shr=share-mode:le])  (index-walk ball.sn ~)
       ?~  key  all
       (skip all |=([rel=path *] !(may-path:ky u.key %local rel %read)))
     ::  sensitive filter: an uncleared key never sees sensitive pages in search.
@@ -4202,7 +4218,7 @@
     ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
     =/  pages=(list [rel=path body=@t shr=share-mode:le])
       ?.  ?=([%ball *] sn)  ~
-      (index-walk ball.sn ~)
+      (raw-walk ball.sn ~)
     =/  items=(list json)
       %+  turn  pages
       |=  [rel=path body=@t shr=share-mode:le]
@@ -7866,11 +7882,27 @@
 ++  mode-mark
   |=  m=view-mode:pg
   ^-  @tas
-  ::  no %fodt mark goes over the wire, so a peer on an older lattice
-  ::  can read the page. Until the renderer publishes it as html, its
-  ::  source goes out as text.
-  ?:  ?=(%fodt m)  %text
+  ::  a fodt page publishes its rendered HTML (+pub-save-page, spec
+  ::  Decisions 4), so its vault copy is HTML and goes out as %html. No
+  ::  %fodt mark crosses the wire, and a peer on an older lattice reads
+  ::  the page through its existing %html branch.
+  ?:  ?=(%fodt m)  %html
   m
+::  +publish-mode: +published-mode for a publish. A fodt page's show
+::  grub is written by its first run, and a move or a share can publish
+::  before that (+apply-share), when +published-mode answers %gmi. Then
+::  the builder decides, so a fodt page never goes out as raw flat ODT.
+::  Only the source's first bytes are read (+content-builder).
+::
+++  publish-mode
+  |=  rel=path
+  =/  m  (fiber:fiber:nexus ,view-mode:pg)
+  ^-  form:m
+  ;<  md=view-mode:pg  bind:m  (published-mode rel)
+  ?.  ?=(%gmi md)  (pure:m md)
+  ;<  hd=[rev=@ud src=(unit @t)]  bind:m  (page-head rel)
+  ?~  src.hd  (pure:m md)
+  (pure:m ?:(=(`%fodt (content-builder u.src.hd)) %fodt md))
 ::  +published-mode: the view-mode a page publishes as. Reads the show grub
 ::  directly (not via +read-show-mode, which answers %text for both an absent
 ::  grub and an explicit %text, so the two could not be told apart). An absent
@@ -8022,15 +8054,16 @@
       (peer-written (slag 1 u.src))
     =?  vmode  eg  %text
     ;<  rest=(list [path *])  bind:m  (read-dep-vals lim t.deps)
-    =/  frag=@t
-      ?.  ?=([%file *] dsn)  ''
-      ::  a composed view fragment is rendered ONCE at eval time and stored in
-      ::  the composing page's data, then served on both surfaces, so no base
-      ::  is universally right. /c/ is the useful one. Composition (dashboards,
-      ::  indexes) is what gets published. Wikilinks inside an embedded
-      ::  fragment therefore always point at the public surface.
-      (crip (render-shown sang.dsn vmode "/apps/lattice/c/"))
-    (pure:m [[i.deps frag] rest])
+    ::  a composed view fragment is rendered ONCE at eval time and stored in
+    ::  the composing page's data, then served on both surfaces, so no base
+    ::  is universally right. /c/ is the useful one. Composition (dashboards,
+    ::  indexes) is what gets published. Wikilinks inside an embedded
+    ::  fragment therefore always point at the public surface. A fodt
+    ::  source renders from its cache (+shown-of).
+    ;<  frag=tape  bind:m
+      ?.  ?=([%file *] dsn)  (pure:(fiber:fiber:nexus ,tape) ~)
+      (shown-of `u.src sang.dsn vmode "/apps/lattice/c/")
+    (pure:m [[i.deps (crip frag)] rest])
   =/  n=@ud  (dec (lent i.deps))
   ;<  sn=view:nexus  bind:m  (peek:fio (rf up (scag n i.deps) (snag n i.deps)) ~)
   ?:  ?=([%file *] sn)
@@ -8748,12 +8781,13 @@
   =/  cs=cass:clay
     ?~(fil.lw *cass:clay (fall (~(get by file.u.fil.lw) %link) *cass:clay))
   [[rel u.g cs] kids]
-::  +index-walk: every page in the ball as [rel body share], from the SAME single
+::  +raw-walk: every page in the ball as [rel body share], from the SAME single
 ::  deep peek +tree-walk uses. That ball already carries each page's code and
 ::  share grub, so indexing the whole tree costs one dart, not two per page.
 ::  Folders and body-less nodes are skipped; an absent /share grub means
-::  %private, the same rule as +read-share.
-++  index-walk
+::  %private, the same rule as +read-share. The body is the page's own
+::  text, which +mirror-pages hashes. Search wants +search-walk.
+++  raw-walk
   |=  [b=ball:tarball rel=path]
   ^-  (list [rel=path body=@t shr=share-mode:le])
   =/  fils  ?~(fil.b ~ contents.u.fil.b)
@@ -8761,7 +8795,7 @@
     %-  zing
     %+  turn  ~(tap by dir.b)
     |=  [nom=@ta kb=ball:tarball]
-    (index-walk kb (weld rel /[nom]))
+    (raw-walk kb (weld rel /[nom]))
   ?~  rel  kids
   ::  links live under /links, so a cached body (another ship's page) is
   ::  never indexed here
@@ -8773,6 +8807,46 @@
   =/  body=@t  ?~(un src body.u.un)
   :_  kids
   [rel body shr]
+::  +search-walk: +raw-walk with the text search reads in place of the
+::  body. A fodt page's is its words (+fodt-text), so "invoice" does not
+::  match text:style-name. That comes from the page's render cache, in
+::  the same ball, and a page whose cache missed is rendered and stored.
+++  search-walk
+  |=  b=ball:tarball
+  =/  m  (fiber:fiber:nexus ,(list [rel=path body=@t shr=share-mode:le]))
+  ^-  form:m
+  =/  rows=(list index-row)  (index-walk b ~)
+  =/  new=(list [rel=path body=@t v=fodt-view])
+    (murn rows |=(r=index-row ?~(new.r ~ `[rel.r u.new.r])))
+  |-  ^-  form:m
+  ?~  new  (pure:m (turn rows |=(r=index-row [rel.r body.r shr.r])))
+  ;<  ~  bind:m  (fodt-store (weld /page rel.i.new) body.i.new v.i.new)
+  $(new t.new)
++$  index-row
+  [rel=path body=@t shr=share-mode:le new=(unit [body=@t v=fodt-view])]
+::  +index-walk: +search-walk's rows, with each fodt render it made and
+::  did not find in a cache (`new`) for the caller to store
+++  index-walk
+  |=  [b=ball:tarball rel=path]
+  ^-  (list index-row)
+  =/  fils  ?~(fil.b ~ contents.u.fil.b)
+  =/  kids=(list index-row)
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=  [nom=@ta kb=ball:tarball]
+    (index-walk kb (weld rel /[nom]))
+  ?~  rel  kids
+  ?.  (~(has by fils) %code)  kids
+  =/  cd  (~(got by fils) %code)
+  =/  src=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.cd)))) '')
+  =/  shr=share-mode:le  (fils-share fils)
+  =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
+  =/  body=@t  ?~(un src body.u.un)
+  ?.  &(?=(^ un) =(%fodt builder.u.un))  [[rel body shr ~] kids]
+  =/  hit=(unit fodt-view)  (fodt-hit (fodt-cached fils) body)
+  ?^  hit  [[rel text.u.hit shr ~] kids]
+  =/  v=fodt-view  (fodt-make body)
+  [[rel text.v shr `[body v]] kids]
 ::  +scope-of: a page's share preset -> the label a search result carries.
 ::  %shared is reported as %urbit, not "public": those pages ARE reachable by
 ::  any ship that knows the address but invisible to a browser, and collapsing
@@ -8817,9 +8891,9 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  sn=view:nexus  bind:m  (peek:fio (rv up /page) ~)
-  =/  pages=(list [rel=path body=@t shr=share-mode:le])
-    ?.  ?=([%ball *] sn)  ~
-    (index-walk ball.sn ~)
+  ;<  pages=(list [rel=path body=@t shr=share-mode:le])  bind:m
+    ?.  ?=([%ball *] sn)  (pure:(fiber:fiber:nexus ,(list [rel=path body=@t shr=share-mode:le])) ~)
+    (search-walk ball.sn)
   ;<  entries=(map path know-entry:lk)  bind:m  read-know-map
   =/  page-rows=(list [scope=@t key=@t terms=(list [term=@t tf=@ud])])
     %+  turn  pages
@@ -9171,9 +9245,13 @@
   =/  body=@t  ?~(un src body.u.un)
   ::  render=1 (the editor's page open): include the rendered preview, so
   ::  opening a page is ONE request instead of page-source + page-preview.
-  =/  html-row=(list [@t json])
-    ?.  &(render |((~(has in content-builders) kind) =(%index kind)))  ~
-    ~[['html' s+(render-bare (preview-inner kind body))]]
+  ::  A fodt page's comes from its render cache (+fodt-of-page).
+  ;<  html-row=(list [@t json])  bind:m
+    =/  n  (fiber:fiber:nexus ,(list [@t json]))
+    ?.  &(render |((~(has in content-builders) kind) =(%index kind)))  (pure:n ~)
+    ?.  =(%fodt kind)  (pure:n ~[['html' s+(render-bare (preview-inner kind body))]])
+    ;<  v=fodt-view  bind:n  (fodt-of-page pdir body)
+    (pure:n ~[['html' s+(render-bare (trip html.v))]])
   %-  pure:m
   :-  %&
   %-  pairs:enjs:format
@@ -11294,6 +11372,9 @@
     ::  the mode from the page's show grub (+published-mode, the single source
     ::  of truth); the vault body is the own-format source for it to render.
     ;<  mode=view-mode:pg  bind:m  (published-mode rel)
+    ::  except a fodt page, whose vault copy is its rendered HTML, the
+    ::  same body and mark a peer reads (+pub-save-page, +mode-mark)
+    =?  mode  ?=(%fodt mode)  %html
     (pure:m `[ud.cass.seen mode !<(@t (need-vase:tarball sang.seen))])
   ;<  ent=(unit [rev=@ud id=@uv])  bind:m  (peer-page-id shp (spat rel))
   ?~  ent  (peek-peer-page shp rel)
@@ -11715,9 +11796,26 @@
   ;<  eg=?  bind:m
     ?.  local  (pure:(fiber:fiber:nexus ,?) |)
     (peer-written (fall (raw-name-pax name) rel))
+  ::  a fodt page renders once, for its body and its title. Ours comes
+  ::  from its render cache. A peer's is rendered and dropped, and not at
+  ::  all past the 1 MB peer cap below (toobig shows the note instead).
+  ;<  fv=(unit fodt-view)  bind:m
+    =/  n  (fiber:fiber:nexus ,(unit fodt-view))
+    ?.  ?=(%fodt vmode)  (pure:n ~)
+    =/  txt=(unit @t)  ?~(cd ~ (mole |.(;;(@t (sang-noun:tarball u.cd)))))
+    ?~  txt  (pure:n ~)
+    ?.  local
+      ?:  (gth (met 3 u.txt) (bex 20))  (pure:n ~)
+      (pure:n `(fodt-make u.txt))
+    ;<  v=fodt-view  bind:n  (fodt-of-page (weld /page rel) u.txt)
+    (pure:n `v)
+  =/  shown
+    |=  [d=sang:tarball base=tape]
+    ^-  tape
+    ?^(fv (trip html.u.fv) (render-shown d vmode base))
   ?:  embed
     ::  bare preview: just the rendered data (+ any error) and the live stream.
-    =/  data-html=tape  ?~(cd "<p>no data yet</p>" (render-shown u.cd vmode "/apps/lattice/app?name="))
+    =/  data-html=tape  ?~(cd "<p>no data yet</p>" (shown u.cd "/apps/lattice/app?name="))
     =/  errh=tape  ?:(=('' err) "" :(weld "<pre class=\"err\">" (esc (trip err)) "</pre>"))
     =/  bare=@t  (render-bare :(weld errh "<section class=\"data\">" data-html "</section>" (sse-script keep rev)))
     ?:  eg  (send-sandboxed eyre-id 'text/html' bare)
@@ -11769,7 +11867,7 @@
     ::  public form (we cannot link into their editor).
     =/  base=tape  ?:(local "/apps/lattice/app?name=" "/apps/lattice/c/")
     %-  clearweb-doc
-    :*  rel  (render-shown u.cd vmode base)  vmode  head  ?!(?=(%html vmode))  ~
+    :*  rel  (shown u.cd base)  vmode  head  ?!(?=(%html vmode))  ~
         (weld errh extra)
         ::  no bar: this document is the browser view's iframed inner page
         ""
@@ -11777,7 +11875,9 @@
   ::  the tab/history title: a real `#` heading in the page's own data (same
   ::  derivation +page-title-of runs everywhere else), else just the page's
   ::  own name. Always something more useful than the bare app name.
+  ::  A fodt page's title is its dc:title or first heading (+fodt-title).
   =/  ttl=tape
+    ?^  fv  (trip (fall title.u.fv name))
     =/  txt=(unit @t)  ?~(cd ~ (mole |.(;;(@t (sang-noun:tarball u.cd)))))
     ?~  txt  (trip name)
     (trip (page-title-of u.txt name))
@@ -11806,48 +11906,114 @@
     %text  :(weld "<pre>" (esc (trip body)) "</pre>")
     %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip body)) "</code></pre>")
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip body)) "</code></pre>")
-    %fodt  :(weld "<pre>" (esc (fodt-plain body)) "</pre>")
+    %fodt  (fodt-html:lf body)
     %index  "<div style=\"color:#8a8a8a;text-align:center;padding:2rem\"><p><b>Folder index</b></p><p>Lists the pages in this page's folder automatically, once you name it (e.g. blog/index) and save. Live as pages come and go.</p></div>"
   ==
-::  +fodt-plain: the paragraph and heading text of a flat ODT body, one
-::  line each, with the five XML entities decoded. Text outside text:p and
-::  text:h (styles, macro source, embedded images, metadata) is dropped.
-::  A stopgap until /lib/lattice-fodt renders the document. The caller
-::  escapes the result. One pass, no recursion, so a deep or truncated
-::  document cannot crash it.
+::  ── the fodt render cache ─────────────────────────────────────────
+::  /lib/lattice-fodt takes 4.7 to 6.1 s to render a 1.5 MB document
+::  (plan, Task 6), and the reader, the /x and clearweb views, the
+::  editor's open, publishing, search and the title would each pay that
+::  on every call. So a fodt page's HTML, text and title are kept in one
+::  grub beside its code, `fodt.cache`, made from one parse on first use
+::  (+fodt-all:lf) and read after that.
 ::
-++  fodt-plain
-  |=  f=@t
-  ^-  tape
-  =/  s=tape  (trip f)
-  =|  out=tape
-  =|  lvl=@ud
-  |-  ^-  tape
-  ?~  s  (flop out)
-  ?:  =('<' i.s)
-    =/  e=(unit @ud)  (find ">" t.s)
-    ?~  e  (flop out)
-    =/  tag=tape  (scag u.e t.s)
-    =/  rest=tape  (slag +(u.e) t.s)
-    =/  shut=?  &(?=(^ tag) =('/' (rear tag)))
-    =/  nam=tape
-      =/  sp=(unit @ud)  (find " " tag)
-      ?^  sp  (scag u.sp tag)
-      ?:(shut (scag (dec (lent tag)) tag) tag)
-    =/  blk=?  |(=("text:p" nam) =("text:h" nam))
-    ?:  &(blk shut)  $(s rest, out ['\0a' out])
-    ?:  blk  $(s rest, lvl +(lvl))
-    ?:  &(|(=("/text:p" nam) =("/text:h" nam)) (gth lvl 0))
-      $(s rest, lvl (dec lvl), out ['\0a' out])
-    $(s rest)
-  ?:  =(0 lvl)  $(s t.s)
-  ?.  =('&' i.s)  $(s t.s, out [i.s out])
-  =/  ent=(list [tape @tD])
-    ~[["amp;" '&'] ["lt;" '<'] ["gt;" '>'] ["quot;" '"'] ["apos;" '\'']]
-  |-  ^-  tape
-  ?~  ent  ^$(s t.s, out ['&' out])
-  ?.  =(-.i.ent (scag (lent -.i.ent) t.s))  $(ent t.ent)
-  ^$(s (slag (lent -.i.ent) t.s), out [+.i.ent out])
+::  KEY. An entry holds the shax of the body it was made from and the
+::  renderer's version (+fodt-ver), and is used only when both match
+::  the body in hand. A new revision is new text, so it can never get an
+::  old render, whatever revision number its caller holds, and a change
+::  to the renderer retires every entry. A revision whose text equals
+::  the last one's rightly reuses its render.
+::
+::  BOUND. One entry per page, overwritten in place: it lives in the
+::  page's own dir, so a delete takes it and a move carries it. It is
+::  written only for a page with a code grub and a body of at most 2 MB
+::  (+max-size:lf), so it is at most one such render, about 4.5 times
+::  the source. A body that is not our own page's is never stored: a
+::  peer's published page arrives rendered, under %html, and a link's
+::  body or a peer's page in the /x view is rendered and dropped. A page
+::  shared with a peer for edit is still one of our pages, and the
+::  peer's saves overwrite its one entry as ours do. No peer can make
+::  this ship hold more than one entry per page it owns.
+::
+::  +fodt-ver: bump it when /lib/lattice-fodt's output changes
+++  fodt-ver  ^-(@ud 1)
++$  fodt-view  [html=@t text=@t title=(unit @t)]
++$  fodt-entry  [%fodt-cache ver=@ud key=@ view=fodt-view]
+::  +fodt-hit: the view in a page's cache grub, when it was made from
+::  `body` by this renderer
+++  fodt-hit
+  |=  [cache=(unit sang:tarball) body=@t]
+  ^-  (unit fodt-view)
+  ?~  cache  ~
+  =/  e=(unit fodt-entry)
+    (mole |.(;;(fodt-entry (sang-noun:tarball u.cache))))
+  ?~  e  ~
+  ?.  &(=(fodt-ver ver.u.e) =((shax body) key.u.e))  ~
+  `view.u.e
+::  +fodt-cached: the cache grub among a page dir's files
+++  fodt-cached
+  |=  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+  ^-  (unit sang:tarball)
+  (bind (~(get by fils) %'fodt.cache') |=([=sang:tarball *] sang))
+::  +fodt-make: render a body, uncached
+++  fodt-make
+  |=  body=@t
+  ^-  fodt-view
+  =/  a  (fodt-all:lf body)
+  [(crip html.a) text.a title.a]
+::  +fodt-of-page: the view of `body` for our page at `pdir` (/page/..),
+::  from its cache, else made and stored. One shallow peek of the page
+::  dir reads both the cache and whether the page exists.
+++  fodt-of-page
+  |=  [pdir=path body=@t]
+  =/  m  (fiber:fiber:nexus ,fodt-view)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  pv=view:nexus  bind:m  (peek-shallow:fio (rv up pdir) ~)
+  =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
+    ?.  ?=([%ball *] pv)  ~
+    ?~(fil.ball.pv ~ contents.u.fil.ball.pv)
+  =/  hit=(unit fodt-view)  (fodt-hit (fodt-cached fils) body)
+  ?^  hit  (pure:m u.hit)
+  =/  v=fodt-view  (fodt-make body)
+  ?.  (~(has by fils) %code)  (pure:m v)
+  ;<  ~  bind:m  (fodt-store pdir body v)
+  (pure:m v)
+::  +fodt-store: write a page's cache entry
+++  fodt-store
+  |=  [pdir=path body=@t v=fodt-view]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  (gth (met 3 body) max-size:lf)  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  %^  put-file  (rf up pdir %'fodt.cache')  [/ %noun]
+  `fodt-entry`[%fodt-cache fodt-ver (shax body) v]
+::  +own-fodt-title: the title of our own fodt page at `rel`, ~ when it
+::  is not one. Its published copy is HTML, so the reader asks here.
+::  The publish filled the cache, so this is a read.
+++  own-fodt-title
+  |=  rel=path
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  =/  rel=path  (page-rel rel)
+  ;<  hd=[rev=@ud src=(unit @t)]  bind:m  (page-head rel)
+  ?~  src.hd  (pure:m ~)
+  ?.  =(`%fodt (content-builder u.src.hd))  (pure:m ~)
+  =/  un=(unit [builder=@tas body=@t])  (unwrap-content u.src.hd)
+  ?~  un  (pure:m ~)
+  ;<  v=fodt-view  bind:m  (fodt-of-page (weld /page rel) body.u.un)
+  (pure:m title.v)
+::  +shown-of: +render-shown, but a fodt page of ours (at `pdir`) comes
+::  from its render cache
+++  shown-of
+  |=  [pdir=(unit path) =sang:tarball mode=view-mode:pg base=tape]
+  =/  m  (fiber:fiber:nexus ,tape)
+  ^-  form:m
+  ?.  &(?=(%fodt mode) ?=(^ pdir))  (pure:m (render-shown sang mode base))
+  =/  cr=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang))))
+  ?:  ?=(%| -.cr)  (pure:m (render-shown sang mode base))
+  ;<  v=fodt-view  bind:m  (fodt-of-page u.pdir p.cr)
+  (pure:m (trip html.v))
 ::  +render-bare: a minimal HTML doc (shared reader CSS, no address-bar chrome),
 ::  for the editor preview iframe, which supplies its own layout.
 ::
@@ -12883,6 +13049,8 @@
   =/  m  (fiber:fiber:nexus ,tape)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
+  ::  a fodt page has its own cache, of the HTML, text and title
+  ?:  ?=(%fodt vmode)  (shown-of `pdir sang vmode base)
   ?.  ?=(?(%md %gmi) vmode)  (pure:m (render-shown sang vmode base))
   =/  road=road:tarball  (rf up pdir %'render.json')
   =/  want=@t  (scot %ud rev)
@@ -12941,7 +13109,7 @@
            (render-md:gfm wl)
     %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip p.cr)) "</code></pre>")
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")
-    %fodt  :(weld "<pre>" (esc (fodt-plain p.cr)) "</pre>")
+    %fodt  (fodt-html:lf p.cr)
     %noun  (page-data-html sang)
   ==
 ::  +explore-crumbs: breadcrumb nav, absolute hrefs from the ship root down,
@@ -13776,6 +13944,18 @@
   ^-  @t
   (rap 3 ~[content-env-pre-cord builder ' \'' (esc-content body) '\')'])
 ++  content-env-pre-cord  ^~((crip content-env-pre))
+::  +content-builder: a content page's builder from the first bytes of
+::  its source, without decoding the body, which +unwrap-content trips
+::  and unescapes whole. ~ for a source that is not a content page.
+++  content-builder
+  |=  src=@t
+  ^-  (unit @tas)
+  =/  n=@ud  (met 3 content-env-pre-cord)
+  ?.  =(content-env-pre-cord (end [3 n] src))  ~
+  =/  aft=tape  (trip (cut 3 [n 16] src))
+  =/  sp=(unit @ud)  (find " '" aft)
+  ?~  sp  ~
+  `(crip (scag u.sp aft))
 ::  +esc-content: +wrap-content's escaping of a body, the inverse of
 ::  +unesc-content. It jumps from one byte that needs an escape to the next
 ::  and copies each run in between whole, so Hoon loops once per escape.
@@ -15626,6 +15806,21 @@
   ?~  or  (give-up (refuse "a publish: the key names no page: {(spud key)}"))
   =/  road=road:tarball  (rf up pax.u.or nom.u.or)
   =/  inner=path  (snip (strip-pub:lp key))
+  ::  the mode, read before the vault write. A fodt page publishes its
+  ::  rendered HTML under %html, not its flat ODT (spec, Decisions 4):
+  ::  the published copy is a view, every peer renders it through its
+  ::  %html branch, and none can copy it back as a Writer page. So the
+  ::  body the vault compares, holds and grows is that HTML, from the
+  ::  page's render cache (+fodt-of-page).
+  =/  q  (fiber:fiber:nexus ,[view-mode:pg @t])
+  ;<  pb=[mode=view-mode:pg body=@t]  bind:m
+    ;<  md=view-mode:pg  bind:q
+      ?^  vm  (pure:(fiber:fiber:nexus ,view-mode:pg) u.vm)
+      (publish-mode inner)
+    ?.  ?=(%fodt md)  (pure:q [md body])
+    ;<  v=fodt-view  bind:q  (fodt-of-page (weld /page inner) body)
+    (pure:q [%html html.v])
+  =.  body  body.pb
   ;<  vv=view:nexus  bind:m  (peek-shallow:fio (rv up pax.u.or) ~)
   ::  the rev bound in the namespace by the PREVIOUS publish of this page,
   ::  the vault grub's cass before this save's write. This is the exact
@@ -15708,10 +15903,7 @@
   ::  card application, so growing here binds the rev well before any
   ::  keen can arrive.
   ;<  salt=@  bind:m  pub-salt
-  ;<  mode=view-mode:pg  bind:m
-    ?^  vm  (pure:(fiber:fiber:nexus ,view-mode:pg) u.vm)
-    (published-mode inner)
-  ;<  ~  bind:m  (grow-pub-page salt key body rev mode)
+  ;<  ~  bind:m  (grow-pub-page salt key body rev mode.pb)
   ;<  ~  bind:m  (put-pub-revs root salt key `rev revs)
   ::  keep-only-current INVARIANT: at most one rev spur per page is ever
   ::  bound. Retract the PREDECESSOR now that the new one is grown and
@@ -17504,9 +17696,10 @@
   ;<  our=@p  bind:m  get-our:io
   ;<  now=@da  bind:m  get-time:io
   ;<  vw=view:nexus  bind:m  (peek:fio (rv up /page) ~)
+  ::  the raw body: the mirror hashes it for change detection
   =/  pages=(list [rel=path body=@t shr=share-mode:le])
     ?.  ?=([%ball *] vw)  ~
-    (index-walk ball.vw ~)
+    (raw-walk ball.vw ~)
   =/  rows=(list [rel=path stamp=@ r=page-row:lm])
     %+  turn  pages
     |=  [rel=path body=@t shr=share-mode:le]

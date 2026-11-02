@@ -203,6 +203,13 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 
 **Acceptance.** A fodt page reads correctly everywhere a markdown page does, search matches its words only, and the mirror still hashes the raw body.
 
+**Done (2026-11-02), with these deviations.**
+
+- **Publishing renders in `+pub-save-page`, not `+pub-flush-one`.** Every publish passes through it (a background flush, a share click through `+apply-share`, a regrow), so one place covers them all. It reads the mode before the vault write, and for a fodt page it publishes the cached HTML with mode `%html`. The vault then holds the HTML, so the body it compares, the namespace binding and the slow peek all carry the same view. `+mode-mark` maps `%fodt` to `%html` for the regrow, which reads the mode from the show grub. A publish that comes before the page's first run (no show grub yet) asks the builder (`+publish-mode`), so raw flat ODT never goes out. The reader maps our own `%fodt` page to `%html` (`+read-page-body-rev`) and asks the page for its title (`+own-fodt-title`).
+- **The cache.** It is a `fodt.cache` grub beside the page, holding the HTML, the text and the title from one parse (`+fodt-all` in the lib). The key is the shax of the body plus a renderer version, so a new revision can never get an old render. There is one entry per page, overwritten in place, written only for a page with a code grub and a body of at most 2 MB. A peer's body (a link, a peer's page in `/x`, a stray `%fodt` mark in the reader) is rendered and dropped, never stored. On ~wep, `13-large.fodt` opens in 6.7 s the first time and 0.7 s from the cache.
+- **Search.** `+search-walk` gives search the cached text and stores what it had to render. `+raw-walk` keeps the raw body for `+mirror-pages`, and `page-scopes` uses it too, so it never renders. Search still ranks every page's words on each query. A page as big as `13-large` costs about 7 s for that whatever its kind (a markdown page of the same text costs the same). That cost predates this work.
+- **The route checks are `scripts/fodt-views.sh`, not `route-smoke.sh`.** route-smoke records status codes only, as a before-and-after fingerprint. `page-dump` has no `render=1`, so `page-source?render=1` is checked instead. `B_URL` and `B_COOKIE` add the two-ship read.
+
 ### Task 8: Writer core (pure, node-testable)
 
 **Files:**

@@ -396,6 +396,23 @@
   (expect-eq !>(`'First one') !>((fodt-title:fo f)))
 ++  test-title-none
   (expect-eq !>(~) !>((fodt-title:fo (doc ~ "<text:p>no heading</text:p>"))))
+::  +fodt-all answers what the three entry points answer, from one parse
+++  test-all-is-the-three
+  =/  fs=(list @t)
+    :~  (doc "<office:meta><dc:title>Doc</dc:title></office:meta>" "<text:h text:outline-level=\"1\">Head</text:h><text:p>Body <text:span>words</text:span></text:p>")
+        (doc ~ "<text:p>no heading</text:p>")
+        '<office:document><text:p a="x'
+        f-doctype-entity
+        f-script-iframe
+    ==
+  %-  zing
+  %+  turn  fs
+  |=  f=@t
+  %+  expect-eq  !>([(fodt-html:fo f) (fodt-text:fo f) (fodt-title:fo f)])
+  !>((fodt-all:fo f))
+++  test-all-over-2mb
+  =/  f=@t  (cat 3 (doc ~ "<text:p>x</text:p>") (bex (mul 8 (mul 2 (bex 20)))))
+  (expect-eq !>([note '' ~]) !>((fodt-all:fo f)))
 ::
 ::  the hostile corpus: each gives the note or safe output
 ::
