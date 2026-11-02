@@ -83,6 +83,24 @@
 ::  reference labels are far shorter), and it stops "[a](" spam from costing
 ::  a full-tail scan per link.
 ++  link-scan-cap  ^~(512)
+::  +stop-run: how many characters at the head of `t` are not in `stops`,
+::  a bit mask of byte values (see +stop-mask).
+++  stop-run
+  |=  [t=tape stops=@]
+  ^-  @ud
+  =|  n=@ud
+  |-  ^-  @ud
+  ?~  t  n
+  ?.  =(0 (cut 0 [`@`i.t 1] stops))  n
+  $(t t.t, n +(n))
+::  +stop-mask: the bit mask of a set of characters, for +stop-run.
+++  stop-mask
+  |=  cs=tape
+  ^-  @
+  (roll cs |=([c=@tD a=@] (con a (bex c))))
+::  +ib-stop: every character that can start an inline construct in +ib-in
+::  (\ ` ! < [ * _ ~) or that +esc rewrites (& < > ").
+++  ib-stop  ^~((stop-mask "&<>\"\\`![*_~"))
 ::  +find-cap: (find nedl hay), giving up after +scan-cap characters.
 ++  find-cap
   |=  [nedl=tape hay=tape cap=@ud]
@@ -165,6 +183,14 @@
   |=  [t=tape refs=refm no=(set @tD)]
   ^-  tape
   ?~  t  ""
+  ::  a run of plain characters comes out as it went in, copied whole.
+  ::  Every branch below needs one of the +ib-stop characters at the head
+  ::  to fire, and +esc leaves the rest alone, so for any other character
+  ::  the old code took the literal branch and emitted it unchanged. It did
+  ::  that one character at a time, through every test and a weld, which
+  ::  was about 15 s of a 1.5 MB page's 20 s render.
+  =/  n=@ud  (stop-run t ib-stop)
+  ?.  =(0 n)  (weld (sc n t) (ib-in (sl n t) refs no))
   =/  c=@tD  i.t
   ::  backslash escape
   ?:  ?&(=('\\' c) ?=(^ t.t))
@@ -735,6 +761,24 @@
   ?|  ?=(^ (find :(weld "[[" name "]]") body))
       ?=(^ (find :(weld "[[" name "|") body))
   ==
+::  +next-at: where the next `c` in `t` is, as the length left there
+::  (`t` is `len` long). `old` is the last answer: ~ for none yet, [~ ~]
+::  for no `c` left at all, which holds for every suffix. An answer still
+::  at or ahead of here stands, so +find runs again only once the last
+::  hit is passed, and the finds cover `t` about once.
+++  next-at
+  |=  [c=@tD t=tape len=@ud old=(unit (unit @ud))]
+  ^-  (unit (unit @ud))
+  ?~  old  (find-at c t len)
+  ?~  u.old  old
+  ?:  (lte u.u.old len)  old
+  (find-at c t len)
+++  find-at
+  |=  [c=@tD t=tape len=@ud]
+  ^-  (unit (unit @ud))
+  =/  k=(unit @ud)  (find ~[c] t)
+  ?~  k  [~ ~]
+  [~ ~ (sub len u.k)]
 ++  wikilinkify
   |=  [t=tape base=tape]
   ^-  tape
@@ -746,8 +790,19 @@
   =/  len=@ud  (lent t)
   =|  rb=(unit @ud)
   =/  nob=?  |
+  ::  nb, nt: the `len` at the next [ and the next `, as +next-at last
+  ::  found them
+  =|  nb=(unit (unit @ud))
+  =|  nt=(unit (unit @ud))
   |-  ^-  tape
   ?~  t  ~
+  ::  a run with no ` or [ passes through whole. Each branch below needs
+  ::  one of them at the head, so the old code copied such a run one
+  ::  character at a time.
+  =.  nb  (next-at '[' t len nb)
+  =.  nt  (next-at '`' t len nt)
+  =/  pn=@ud  (sub len (max (fall (need nb) 0) (fall (need nt) 0)))
+  ?.  =(0 pn)  (weld (scag pn `tape`t) $(t (slag pn `tape`t), len (sub len pn)))
   ::  code is verbatim: skip a ``` fence or a ` span whole, so a wikilink
   ::  inside a code sample stays literal text. Without this there was no way
   ::  to SHOW [[x]] in a document, including documenting this syntax.

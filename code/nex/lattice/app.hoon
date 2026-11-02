@@ -13812,20 +13812,96 @@
 ::  pg constructor (md/gmi/html/text/js/css). Escapes body for a single-quote
 ::  hoon cord: \ -> \\, ' -> \', control bytes -> \0a hex.
 ::
+::  The pieces are joined with +rap. None of them holds a NUL (a NUL in the
+::  body is escaped), so these are the bytes the old `crip` of one tape built.
 ++  wrap-content
   |=  [builder=@tas body=@t]
   ^-  @t
+  (rap 3 ~[content-env-pre-cord builder ' \'' (esc-content body) '\')'])
+++  content-env-pre-cord  ^~((crip content-env-pre))
+::  +esc-content: +wrap-content's escaping of a body, the inverse of
+::  +unesc-content. It jumps from one byte that needs an escape to the next
+::  and copies each run in between whole, so Hoon loops once per escape.
+::  The old arm stepped through every byte in Hoon (a +turn and a +zing),
+::  about 5 s of each save of a 1.5 MB page.
+::
+::  +find is jetted but looks for one byte. So the first pass finds, for
+::  each byte that needs an escape, where it first occurs, and drops the
+::  ones that never do. The loop keeps those next hits sorted by position,
+::  emits the run up to the first, and finds that byte's next occurrence
+::  from there. Each byte's finds cover the body once, so the work is
+::  linear. A body that uses more than six kinds of escaped byte goes to
+::  +esc-content-bytes, the old byte-by-byte arm: its sorted list would no
+::  longer be short, and it is not a page anyone writes.
+++  esc-content
+  |=  body=@t
+  ^-  @t
+  =/  t=tape  (trip body)
+  ::  hits: the next occurrence of each byte that needs an escape, sorted
+  ::  by position: [position byte the-tape-from-there]
+  =/  hits=(list [p=@ud c=@tD s=tape])
+    %+  sort
+      %+  murn  esc-bytes
+      |=  c=@tD
+      ^-  (unit [p=@ud c=@tD s=tape])
+      =/  k=(unit @ud)  (find ~[c] t)
+      ?~  k  ~
+      `[u.k c (slag u.k t)]
+    |=([a=[p=@ud *] b=[p=@ud *]] (lth p.a p.b))
+  ?:  (gth (lent hits) 6)  (esc-content-bytes body)
+  ::  at: where the run being copied starts. A run holds no escaped byte,
+  ::  so no NUL, and is cut straight out of the body.
+  =|  acc=(list @t)
+  =/  at=@ud  0
+  |-  ^-  @t
+  ?~  hits  (rap 3 (flop [(rsh [3 at] body) acc]))
+  =/  h  i.hits
+  ::  s.h starts with the byte c.h, so it is not empty
+  ?~  s.h  !!
+  =/  nxt=tape  t.s.h
+  =/  np=@ud  +(p.h)
+  =/  k=(unit @ud)  (find ~[c.h] nxt)
+  =/  more=(list [p=@ud c=@tD s=tape])
+    ?~  k  t.hits
+    (put-hit t.hits [(add np u.k) c.h (slag u.k nxt)])
+  %=  $
+    hits  more
+    at    np
+    acc   [(esc-byte c.h) (cut 3 [at (sub p.h at)] body) acc]
+  ==
+::  +put-hit: insert a hit into a list sorted by position. Two bytes never
+::  share a position, so there are no ties.
+++  put-hit
+  |=  [l=(list [p=@ud c=@tD s=tape]) h=[p=@ud c=@tD s=tape]]
+  ^-  (list [p=@ud c=@tD s=tape])
+  ?~  l  ~[h]
+  ?:  (lth p.h p.i.l)  [h l]
+  [i.l $(l t.l)]
+::  +esc-bytes: the bytes +wrap-content escapes, the controls, ' and \.
+++  esc-bytes  ^~((turn (weld (gulf 0 31) ~[39 92]) |=(a=@ `@tD`a)))
+::  +esc-byte: the escape of one of +esc-bytes.
+++  esc-byte
+  |=  c=@tD
+  ^-  @t
+  ?:  =(c 92)  '\\\\'
+  ?:  =(c 39)  '\\\''
   =/  hx  |=(n=@ ^-(@tD ?:((lth n 10) (add '0' n) (add 87 n))))
-  =/  ec=tape
-    %-  zing
-    %+  turn  (trip body)
-    |=  c=@tD
-    ^-  tape
-    ?:  =(c 92)  "\\\\"
-    ?:  =(c 39)  ~[`@tD`92 `@tD`39]
-    ?:  (lth c 32)  ;:(weld "\\" ~[(hx (div c 16))] ~[(hx (mod c 16))])
-    ~[c]
-  (crip ;:(weld content-env-pre (trip builder) " '" ec "')"))
+  (rap 3 ~['\\' (hx (div c 16)) (hx (mod c 16))])
+::  +esc-content-bytes: the escaping one byte at a time, the original arm.
+::  +esc-content gives the same bytes, faster on any real page.
+++  esc-content-bytes
+  |=  body=@t
+  ^-  @t
+  =/  hx  |=(n=@ ^-(@tD ?:((lth n 10) (add '0' n) (add 87 n))))
+  %-  crip
+  %-  zing
+  %+  turn  (trip body)
+  |=  c=@tD
+  ^-  tape
+  ?:  =(c 92)  "\\\\"
+  ?:  =(c 39)  ~[`@tD`92 `@tD`39]
+  ?:  (lth c 32)  ;:(weld "\\" ~[(hx (div c 16))] ~[(hx (mod c 16))])
+  ~[c]
 ::  +plain-content: is this page source content only? True for the exact
 ::  shell +wrap-content writes around a known builder, and for the folder
 ::  index +make-folder-index generates for this page. +unwrap-content alone
