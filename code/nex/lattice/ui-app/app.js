@@ -1776,7 +1776,42 @@
   //  owed to us, `until` the window while a write is in flight and after.
   //  Without them every save triggers a tree+source refetch of content
   //  this client just wrote (~4s of pier time each).
-  const echoes = { rev: { n: 0, until: 0, at: 0 }, know: { n: 0, until: 0, at: 0 } };
+  //
+  //  `early` counts bumps the window swallowed that no landed write has
+  //  claimed yet. The ship can send our bump BEFORE the write's answer (a
+  //  page-del's arrives with it), and counting that write's echo on landing
+  //  as well left one owed forever: it swallowed the next real remote bump,
+  //  and a page made elsewhere after a delete never showed. So a landing
+  //  write claims an early bump first and only counts one when none came.
+  //  Early bumps still unclaimed when the window shuts were someone else's,
+  //  and `wake` refreshes for them then.
+  const echoes = {
+    rev: { n: 0, until: 0, at: 0, early: 0, timer: 0, wake: null },
+    know: { n: 0, until: 0, at: 0, early: 0, timer: 0, wake: null },
+  };
+  const echoArm = (echo) => {
+    clearTimeout(echo.timer);
+    if (!echo.early || !echo.wake) return;
+    echo.timer = setTimeout(() => {
+      if (Date.now() < echo.until) { echoArm(echo); return; }
+      echo.early = 0;
+      echo.wake();
+    }, Math.max(0, echo.until - Date.now()) + 50);
+  };
+  // a bump arrived on this beacon: true when it is (or may be) our own echo
+  const echoSeen = (echo, wake) => {
+    if (echo.n > 0) { echo.n--; return true; }
+    if (Date.now() >= echo.until) return false;
+    echo.early++;
+    echo.wake = wake;
+    echoArm(echo);
+    return true;
+  };
+  // a write answered. `ok`: it changed the ship, so one bump is ours
+  const echoLanded = (echo, ok) => {
+    if (ok) { if (echo.early > 0) echo.early--; else echo.n++; }
+    echoArm(echo);
+  };
   // the beacon a write route bumps: the memory routes bump /know, all the
   // rest /rev (know-publish too, since it publishes a page)
   const echoOf = (url) => {
@@ -1926,9 +1961,10 @@
       echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
     }
     // `r` too: a 504 can be a link's host (35-pages.js), not this ship
-    if (shipGone(r)) return { gone: true, r };
+    const gone = shipGone(r);
+    echoLanded(echo, !gone && r.ok);    // one bump is ours (see echoes)
+    if (gone) return { gone: true, r };
     if (r.ok) {
-      echo.n++;                         // one bump is ours; consume it on arrival
       // every write names its target the same way; a move dirties both ends
       try {
         const q = new URL(url, location.href).searchParams;
@@ -12365,6 +12401,7 @@
   let streamLive = false;
   let beaconTimer = null;
   const bumped = () => { clearTimeout(beaconTimer); beaconTimer = setTimeout(refreshAll, 300); };
+  const knowBumped = () => { if (knowLive()) bumped(); };
   // comments never bump /rev (apply-comment stamps only /beacon/comments), so
   // a foreign comment used to reach the badge only by accident, on whatever
   // next refreshAll a focus or poll happened to trigger. Give it the same
@@ -12470,9 +12507,8 @@
                 continue;
               }
               noteKnow(data);
-              if (echoes.know.n > 0) { echoes.know.n--; continue; }
-              if (Date.now() < echoes.know.until) continue;
-              if (knowLive()) bumped();
+              if (echoSeen(echoes.know, knowBumped)) continue;
+              knowBumped();
               continue;
             }
             if (name.slice(-5) !== ' /rev') {
@@ -12502,8 +12538,7 @@
             // consumed by count (see echoes, 20-state.js).
             bumpedLive = true;
             noteRev(data);
-            if (echoes.rev.n > 0) { echoes.rev.n--; continue; }
-            if (Date.now() < echoes.rev.until) continue;
+            if (echoSeen(echoes.rev, bumped)) continue;
             bumped();
           }
         }
