@@ -239,6 +239,20 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 
 **Acceptance.** `writer-unit.mjs` and the full `writer-roundtrip.mjs` pass for every corpus file and every scripted edit.
 
+**Task 7 follow-ups (review, 2026-11-02).**
+
+- **Publishing and the cache.** Checked on ~wep with a counting build: publishing already reads the per-revision cache. A publish of an unchanged revision, and one of a revision already rendered for a view (share after an open, unshare and share again), made no render. Each new revision is rendered once, by its publish or its first view, whichever comes first. What costs is that every autosave of a shared fodt page is a new revision, so its publish renders it (about 7 s for 13-large on ~wep), and a save that lands while a render runs waits for it: four saves 2.5 s apart made four renders, and two of the saves took 16.7 s and 14.6 s. Reducing that needs a decision (a longer publish gap for fodt pages, or the render off the save's path), not a cache change.
+- **The reader's extra read.** The reader asks a page for its fodt title only when the published body starts as a fodt render does (`+html-pres:lf`, `+fodt-rendered`). Ten reader views of an own html page made ten `page-head` reads before and none after, as on origin/main. A fodt page still gets its title (one read, a cache hit).
+
+**Done (2026-11-02).** `ui-src/writer/` holds `xml.js`, `schema.js`, `parse.js`, `styles.js`, `serialize.js` and `edits.js` (the scripted edits of `edits.json`, which the harness and the unit suite apply). `scripts/writer-unit.mjs` passes 136 checks, and `writer-roundtrip.mjs` runs steps 1, 2 and 5 and passes every corpus file and every scripted edit (`14-lo-gui.fodt` is still pending: it needs the GUI). Notes:
+
+- **Unchanged is decided by content.** A node is copied from its source span when it is the node the parse made, or equal to it (so a document that went through JSON still saves byte-identical). The suite also checks that writing every node again, copying nothing, reproduces each corpus file byte for byte, so the writer alone matches LibreOffice's layout and white space.
+- **Imports in node.** `scripts/lib/writer-node.mjs` adds a resolve hook (`module.registerHooks`, else `module.register`) that resolves the core's bare `prosemirror-*` imports from `scripts/node_modules`. The CI `writer-roundtrip` job now runs `npm ci --prefix scripts`, and the static job runs `writer-unit.mjs` after the writer.js build.
+- **White space after an inline element.** A zero-width marker (bookmark, reference mark, change mark, index mark, comment end, soft page break) does not end a run of spaces; any other inline element does, as LibreOffice reads it.
+- **edits.json.** 03-inline's scripted bold reuses LibreOffice's `T1`, so it adds a span and no style: its `adds` is now `text:span` only. Step 5 now looks for the words the edit put in, not LibreOffice's txt line, which carries list labels, outline numbers and tab-joined cells.
+- **Timing.** 13-large parses in about 150 ms in node; parse, edit and serialize together stay under 300 ms.
+- `writer.js` is 296.2 KB raw and 93.5 KB gzipped with the core in it.
+
 ### Task 9: The editor view
 
 **Files:**
