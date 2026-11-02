@@ -124,4 +124,143 @@ for (const [name, order] of [['ascending', asc], ['descending', desc]]) {
     })), why);
 }
 
+console.log('\na strict total order');
+// The checks above see only the rows one engine's sort happened to give.
+// These look at the comparator itself: it is pulled out of treeOrder's
+// .sort call, with the items it was handed, and tested for the axioms a
+// sort needs. They also run treeOrder under sorts that are not stable and
+// that compare other pairs than the engine's, which an inconsistent
+// comparator cannot survive. Names add case, unicode (e with a combining
+// accent, which the collator calls equal to the precomposed one) and
+// display names, which the order must ignore.
+const nativeSort = Array.prototype.sort;
+function withSort(impl, fn) {
+  Array.prototype.sort = impl;
+  try { return fn(); } finally { Array.prototype.sort = nativeSort; }
+}
+function grab(order, list) {
+  let got = null;
+  withSort(function (cmp) { got = { cmp, items: [...this] }; return nativeSort.call(this, cmp); },
+    () => order(list));
+  return got;
+}
+// heapsort: not stable, and compares pairs no merge or insertion sort would
+function heapSort(cmp) {
+  const a = this, n = a.length;
+  const down = (i, m) => {
+    for (;;) {
+      let c = 2 * i + 1;
+      if (c >= m) return;
+      if (c + 1 < m && cmp(a[c + 1], a[c]) > 0) c++;
+      if (cmp(a[c], a[i]) <= 0) return;
+      [a[c], a[i]] = [a[i], a[c]];
+      i = c;
+    }
+  };
+  for (let i = (n >> 1) - 1; i >= 0; i--) down(i, n);
+  for (let m = n - 1; m > 0; m--) { [a[0], a[m]] = [a[m], a[0]]; down(0, m); }
+  return a;
+}
+// quicksort on a seeded random pivot, also not stable
+function quickSort(seed) {
+  return function (cmp) {
+    const a = this;
+    let s = seed >>> 0 || 1;
+    const rnd = () => (s = (s * 1103515245 + 12345) >>> 0) / 4294967296;
+    const qs = (lo, hi) => {
+      if (lo >= hi) return;
+      const pv = a[lo + Math.floor(rnd() * (hi - lo + 1))];
+      let i = lo, j = hi;
+      while (i <= j) {
+        while (cmp(a[i], pv) < 0) i++;
+        while (cmp(a[j], pv) > 0) j--;
+        if (i <= j) { [a[i], a[j]] = [a[j], a[i]]; i++; j--; }
+      }
+      qs(lo, j); qs(i, hi);
+    };
+    qs(0, a.length - 1);
+    return a;
+  };
+}
+const useg = fc.constantFrom('a', 'A', 'b', 'B', 'e', 'E', 'é', 'é', 'ä', 'a-1', '10', '2');
+const unode = fc.record({ path: fc.array(useg, { minLength: 1, maxLength: 4 }).map((s) => s.join('/')),
+  page: fc.boolean(), dname: fc.option(fc.constantFrom('Zed', 'alpha', 'Été', ''), { nil: undefined }) });
+// as `tree` above, plus display names, and half the time no folder nodes
+// filled in, so pages are parents with nothing over them and folders can
+// be missing from a chain
+const utree = fc.tuple(fc.array(unode, { maxLength: 30 }), fc.boolean()).map(([ns, fill]) => {
+  const seen = new Map();
+  for (const n of ns) {
+    const o = { path: n.path, page: n.page, kind: 'md' };
+    if (n.dname !== undefined) o.dname = n.dname;
+    seen.set((n.page ? 'p:' : 'f:') + n.path, o);
+  }
+  if (fill) for (const n of [...seen.values()]) {
+    const s = n.path.split('/');
+    for (let i = 1; i < s.length; i++) {
+      const d = s.slice(0, i).join('/');
+      if (!seen.has('f:' + d) && !seen.has('p:' + d)) seen.set('f:' + d, { path: d, page: false });
+    }
+  }
+  return [...seen.values()];
+});
+const sign = (x) => (x > 0 ? 1 : x < 0 ? -1 : 0);
+const key = (n) => (n.page ? 'p:' : 'f:') + n.path;
+for (const [name, order] of [['ascending', asc], ['descending', desc]]) {
+  let why = '';
+  const ok = (prop, runs = 2000) => {
+    try { fc.assert(prop, { numRuns: runs }); return true; }
+    catch (e) { why = e.message.split('\n').slice(0, 3).join(' '); return false; }
+  };
+  check(name + ': the comparator is antisymmetric, and 0 only for one node',
+    ok(fc.property(utree, (t) => {
+      const { cmp, items } = grab(order, t);
+      for (const x of items) for (const y of items) {
+        const c = sign(cmp(x, y));
+        if (c !== -sign(cmp(y, x))) return false;
+        if ((c === 0) !== (key(x.n) === key(y.n))) return false;
+      }
+      return true;
+    })), why);
+  check(name + ': the comparator is transitive',
+    ok(fc.property(utree, (t) => {
+      const { cmp, items } = grab(order, t);
+      for (const x of items) for (const y of items) {
+        if (cmp(x, y) >= 0) continue;
+        for (const z of items) if (cmp(y, z) < 0 && cmp(x, z) >= 0) return false;
+      }
+      return true;
+    }), 500), why);
+  check(name + ': heapsort and random-pivot quicksort give the engine\'s rows',
+    ok(fc.property(utree, (t) => {
+      const want = paths(order(t));
+      return paths(withSort(heapSort, () => order(t))) === want
+        && paths(withSort(quickSort(1), () => order([...t].reverse()))) === want
+        && paths(withSort(quickSort(7), () => order(t))) === want;
+    })), why);
+  // only where every parent is in the tree: a missing one has no row to follow
+  check(name + ': under heapsort every row still follows its parent',
+    ok(fc.property(utree, (t) => {
+      const have = new Set(t.map((n) => n.path));
+      fc.pre(t.every((n) => !parent(n.path) || have.has(parent(n.path))));
+      return misplaced(withSort(heapSort, () => order(t))).length === 0;
+    })), why);
+  check(name + ': display names do not move a row',
+    ok(fc.property(utree, (t) => paths(order(t)) === paths(order(t.map(({ dname, ...n }) => n))))), why);
+}
+
+console.log('\nordinary trees, as before');
+// a folder node over every page, no page that is a parent and no page
+// that shares a folder's name: the rows treeOrder drew before the fix
+{
+  const t = [F('notes'), P('notes/zeta'), P('notes/Alpha'), F('notes/sub'), P('notes/sub/one'),
+    P('readme'), F('conflicts'), P('conflicts/offline-edit-x'), P('Beta'), F('archive')];
+  check.eq('ascending: folders first, then pages, by the collator',
+    asc(t).map((n) => n.path).join(' '),
+    'archive conflicts conflicts/offline-edit-x notes notes/sub notes/sub/one notes/Alpha notes/zeta Beta readme');
+  check.eq('descending: the same groups, names reversed',
+    desc(t).map((n) => n.path).join(' '),
+    'notes notes/sub notes/sub/one notes/zeta notes/Alpha conflicts conflicts/offline-edit-x archive readme Beta');
+}
+
 check.done();
