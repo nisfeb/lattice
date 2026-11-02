@@ -857,6 +857,7 @@
     left: ['0 0 24 24', 'M15 6l-6 6 6 6', 'stroke'],
     right: ['0 0 24 24', 'M9 6l6 6-6 6', 'stroke'],
     dots: ['0 0 24 24', 'M12 5h.01M12 12h.01M12 19h.01', 'stroke'],
+    more: ['0 0 24 24', 'M5 12h.01M12 12h.01M19 12h.01', 'stroke'],
     menu: ['0 0 24 24', 'M4 6h16M4 12h16M4 18h16', 'stroke'],
     plus: ['0 0 24 24', 'M12 5v14M5 12h14', 'stroke'],
     save: ['0 0 24 24', 'M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 3v5h7V3M7 21v-7h10v7', 'stroke'],
@@ -1159,6 +1160,55 @@
     status.title = msg;
     status.style.color = '';
     spinner.classList.add('on');
+  };
+  // ── busy: the one loading indicator ──────────────────────────────────────
+  // A thin moving line along the top of the region that is waiting on the
+  // ship (.lbusy in index.html): #center by default (an open phone drawer
+  // over it instead), a pane for a panel's load. busy() starts a wait and
+  // answers its end, which is safe to call more than once. The line shows
+  // only once a wait has run BUSY_MS, so an answer from a cache or a quick
+  // pier never flashes it. A `key` names a
+  // kind of wait that a newer one supersedes ('open': a later open, or a
+  // tab switch, ends the one before it), and busyEnd(key) ends it outright.
+  // Every wait ends by BUSY_MAX at the latest, so a path that forgot its
+  // end cannot leave the line running. The frame tabs keep their own line
+  // (frameLoading, 24-tools.js), and the reader pages theirs (app.hoon's
+  // +busy-script); all three look the same.
+  const BUSY_MS = 180;
+  const BUSY_MAX = 60000;
+  const busyKeys = new Map();          // key -> the end of its wait
+  const busyOn = new Map();            // region -> waits running in it
+  // on a phone an open drawer covers the center, so the line goes on it
+  const busyHome = () => {
+    const ws = $('ws');
+    return ws.classList.contains('ldraw') ? $('lpane')
+      : ws.classList.contains('rdraw') ? $('rpane') : $('center');
+  };
+  function busy(key, region) {
+    const el = region || busyHome();
+    if (key) busyEnd(key);
+    let live = true;
+    busyOn.set(el, (busyOn.get(el) || 0) + 1);
+    const show = setTimeout(() => { if (live) el.classList.add('lbusy'); }, BUSY_MS);
+    const end = () => {
+      if (!live) return;
+      live = false;
+      clearTimeout(show); clearTimeout(cap);
+      if (key && busyKeys.get(key) === end) busyKeys.delete(key);
+      const left = busyOn.get(el) - 1;
+      busyOn.set(el, left);
+      // only the last wait in the region takes the line away
+      if (!left) el.classList.remove('lbusy');
+    };
+    const cap = setTimeout(end, BUSY_MAX);
+    if (key) busyKeys.set(key, end);
+    return end;
+  }
+  const busyEnd = (key) => { const end = busyKeys.get(key); if (end) end(); };
+  // a fetch the user is waiting on, with the line while it flies
+  const busyFetch = (url, opts, key, region) => {
+    const end = busy(key, region);
+    return fetch(url, opts).finally(end);
   };
   // desktop shell: wry denies target=_blank new windows (the clearweb share
   // link would be a dead click). Same-origin and urb:// links stay in the
@@ -1510,6 +1560,20 @@
     $('dlgok').focus();
     return p.then((v) => v !== null);
   };
+  //  askDanger: askConfirm for what cannot be undone. Cancel holds the
+  //  focus, so Enter (a key a user leans on to dismiss things) cancels,
+  //  and the destructive button is reached only on purpose: a click, or
+  //  Tab then Enter. The button is painted as destructive while it shows.
+  const askDanger = (msg, okLabel) => {
+    dlgSel.hidden = true;
+    dlgKind.hidden = true;
+    dlgIn.hidden = true;
+    const ok = $('dlgok');
+    const p = dlgOpen(msg, okLabel);
+    ok.classList.add('danger');
+    $('dlgcancel').focus();
+    return p.then((v) => { ok.classList.remove('danger'); return v !== null; });
+  };
   // askPublish: publishing cannot be fully taken back. Once a peer has
   // read a page, its copy and the network's cached answer can outlive an
   // unpublish or a delete. -> true to publish. "don't ask again" is kept
@@ -1764,7 +1828,61 @@
   //  owed to us, `until` the window while a write is in flight and after.
   //  Without them every save triggers a tree+source refetch of content
   //  this client just wrote (~4s of pier time each).
-  const echoes = { rev: { n: 0, until: 0, at: 0 }, know: { n: 0, until: 0, at: 0 } };
+  //
+  //  `early` counts bumps the window swallowed that no landed write has
+  //  claimed yet. The ship can send our bump BEFORE the write's answer (a
+  //  page-del's arrives with it), and counting that write's echo on landing
+  //  as well left one owed forever: it swallowed the next real remote bump,
+  //  and a page made elsewhere after a delete never showed. So a landing
+  //  write claims an early bump first and only counts one when none came.
+  //  Early bumps still unclaimed when the window shuts were someone else's,
+  //  and `wake` refreshes for them then.
+  //
+  //  `fly` counts writes still in flight on the beacon and `tail` is the
+  //  latest tail a landed one asked for. One write landing must not shut
+  //  the window on another still flying (an autosave under a folder move):
+  //  that one's early bump would then refresh, and its landing would count
+  //  the bump again, leaving one owed.
+  const echoes = {
+    rev: { n: 0, until: 0, at: 0, early: 0, fly: 0, tail: 0, timer: 0, wake: null },
+    know: { n: 0, until: 0, at: 0, early: 0, fly: 0, tail: 0, timer: 0, wake: null },
+  };
+  const echoArm = (echo) => {
+    clearTimeout(echo.timer);
+    if (!echo.early || !echo.wake) return;
+    echo.timer = setTimeout(() => {
+      if (Date.now() < echo.until) { echoArm(echo); return; }
+      echo.early = 0;
+      echo.wake();
+    }, Math.max(0, echo.until - Date.now()) + 50);
+  };
+  // a bump arrived on this beacon: true when it is (or may be) our own echo
+  const echoSeen = (echo, wake) => {
+    if (echo.n > 0) { echo.n--; return true; }
+    if (Date.now() >= echo.until) return false;
+    echo.early++;
+    echo.wake = wake;
+    echoArm(echo);
+    return true;
+  };
+  // a write set off: hold the window open while it flies
+  const echoSent = (echo) => {
+    echo.fly++;
+    echo.until = Math.max(echo.until, Date.now() + 60000);
+    echo.at = Date.now();             // when we last wrote (see refocused)
+  };
+  // a write answered (or failed), sent at `sentAt`. The window stays open
+  // for twice the round trip, and while any other write still flies.
+  // `ok`: it changed the ship, so one bump is ours.
+  const echoLanded = (echo, ok, sentAt) => {
+    const now = Date.now();
+    const tail = now + Math.max(4000, 2 * (now - sentAt));
+    echo.fly = Math.max(0, echo.fly - 1);
+    echo.tail = Math.max(echo.tail, tail);
+    echo.until = echo.fly ? Math.max(echo.until, tail) : echo.tail;
+    if (ok) { if (echo.early > 0) echo.early--; else echo.n++; }
+    echoArm(echo);
+  };
   // the beacon a write route bumps: the memory routes bump /know, all the
   // rest /rev (know-publish too, since it publishes a page)
   const echoOf = (url) => {
@@ -1896,22 +2014,26 @@
     srcFlight.clear();    // a read from before this write is shared no more
     sensForget(url);
     const echo = echoOf(url);
-    echo.until = Date.now() + 60000;
-    echo.at = Date.now();             // when we last wrote (see refocused)
+    echoSent(echo);
     lastAction = Date.now();          // a write is user activity (see bgFetch)
     const sentAt = Date.now();
     const req = (ms ? tfetch(url, init, ms) : fetch(url, init)).catch(() => null);
     if (save) saveFlight = req;
+    // a move, a share, a delete and the rest show the loading line while
+    // they fly (busy, 10-shell.js). A save does not: it runs on its own as
+    // the user types, and its status already says saving and saved.
+    const end = save ? null : busy();
     let r = null;
     try { r = await req; }
     finally {
+      if (end) end();
       if (saveFlight === req) saveFlight = null;
-      echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
     }
     // `r` too: a 504 can be a link's host (35-pages.js), not this ship
-    if (shipGone(r)) return { gone: true, r };
+    const gone = shipGone(r);
+    echoLanded(echo, !gone && r.ok, sentAt);    // one bump is ours (see echoes)
+    if (gone) return { gone: true, r };
     if (r.ok) {
-      echo.n++;                         // one bump is ours; consume it on arrival
       // every write names its target the same way; a move dirties both ends
       try {
         const q = new URL(url, location.href).searchParams;
@@ -2265,7 +2387,7 @@
     st('');
     const gen = ++tabShown;
     src.readOnly = false;   // a blank or a binary grub left it locked
-    openSeq++;              // an open still loading for the tab left behind may not land
+    openNext();             // an open still loading for the tab left behind may not land
     const quick = snapOk && !!s && !s.hist && !!t.key && (t.kind === 'page' || t.kind === 'know');
     // a new page or memory already named (its create may still be queued,
     // and runs here once the name is back in the field) comes back named
@@ -2358,7 +2480,7 @@
     if (mine) { t.snap = snapNow(); gGhostKeep(t); }
     dirty = false;
     clearTimeout(autoTimer);
-    openSeq++;                         // an open in flight lands nowhere now
+    openNext();                        // an open in flight lands nowhere now
     if (tabLoading === t) tabLoading = null;
     if (t.snap && t.snap.dirty) saveParked(t);
     return true;
@@ -3516,6 +3638,7 @@
       g.host.hidden = !key;
       if (key) toolMount(key, g.host);
       for (const c of g.host.children) c.hidden = c.dataset.tool !== key;
+      frameBusySync(g.host);
       fhSync(g, key);
     }
     // a browsing tab's header stands in for the tab header (29-fhead.js)
@@ -3568,7 +3691,7 @@
     const had = frameOf(key);
     if (had) {
       // a moved frame reloads, and so would the documents it kept
-      if (had.parentNode !== toolHost) { fkeepDropKey(key); toolHost.append(had); }
+      if (had.parentNode !== toolHost) { fkeepDropKey(key); frameLoading(had, true); toolHost.append(had); }
       return;
     }
     if (!url) return;
@@ -3593,13 +3716,47 @@
     // a load counts as activity only when the user's own event in the frame
     // led to it, within 10 s: a page that reloads itself on each keep event
     // must not hold the background lane shut
-    f.onload = () => { if (Date.now() - (f.latAct || 0) < 10000) bgBusy(); fnavLoad(f); frameDress(f); };
+    f.onload = () => {
+      frameLoading(f, false);
+      if (Date.now() - (f.latAct || 0) < 10000) bgBusy();
+      fnavLoad(f); frameDress(f);
+    };
+    frameLoading(f, true);
     f.src = url;
     frameSeen.observe(f);
     frameSeenAll.add(f);
     return f;
   }
   let frameSeq = 0;
+  // A frame's loading line. A frame is loading from the moment it is made
+  // or sent somewhere until its load event, and its host shows the line
+  // (.lbusy, as busy() draws it, 10-shell.js) while the frame in FRONT
+  // there has been loading BUSY_MS. So a quick load never flashes it, a
+  // parked frame loading behind the tab in front shows nothing, and a tab
+  // switch (toolSync) takes the line with the frame. A load that never
+  // comes (a download, a 204, an aborted navigation) lets go by BUSY_MAX.
+  function frameLoading(f, on) {
+    clearTimeout(f.latLoadT); clearTimeout(f.latLoadCap);
+    f.latLoadAt = on ? Date.now() : 0;
+    if (on) {
+      f.latLoadT = setTimeout(() => frameBusySync(f.parentNode), BUSY_MS);
+      f.latLoadCap = setTimeout(() => frameLoading(f, false), BUSY_MAX);
+    }
+    frameBusySync(f.parentNode);
+  }
+  // whether a click on link `a` takes its document somewhere else: a plain
+  // click, no new window or download, and not to an anchor in the page
+  const linkLeaves = (a, target, e) => e.button === 0 && !e.ctrlKey && !e.metaKey
+    && !e.shiftKey && !e.altKey && !a.hasAttribute('download')
+    && !/^_blank$/i.test(target || '') && /^https?:/.test(a.href)
+    && !(a.hash && a.href.split('#')[0] === a.ownerDocument.URL.split('#')[0]);
+  function frameBusySync(host) {
+    if (!host || !host.classList || !host.classList.contains('toolhost')) return;
+    const now = Date.now();
+    const on = [...host.children].some((c) => c.tagName === 'IFRAME' && c.dataset.tool
+      && !c.hidden && c.latLoadAt && now - c.latLoadAt >= BUSY_MS - 10);
+    host.classList.toggle('lbusy', on);
+  }
   // Each load of a frame. Every frame loses the reader's bar, since the
   // shell around it is the chrome: a browsing frame's group has the frame
   // header instead (29-fhead.js), and the bar's menu entries (editor,
@@ -3670,7 +3827,10 @@
         if (inner && !e.defaultPrevented) {
           const go = editorGo(a.href);
           if (go) { e.preventDefault(); editorOpen(go); return; }
-          if (upward(a, 'target')) { e.preventDefault(); if (/^https?:/.test(a.href)) f.contentWindow.location.assign(a.href); }
+          if (upward(a, 'target')) {
+            e.preventDefault();
+            if (/^https?:/.test(a.href)) { frameLoading(f, true); f.contentWindow.location.assign(a.href); }
+          }
           return;
         }
         if (topish(a, 'target')) a.target = f.name;
@@ -3682,9 +3842,12 @@
           const up = sub && sub.hasAttribute('formtarget') ? upward(sub, 'formtarget') : upward(form, 'target');
           if (!up || e.defaultPrevented) return;
           e.preventDefault();
+          if (commentSend(f, form, sub)) return;
+          frameLoading(f, true);
           formAgain(form, sub, f.name);
           return;
         }
+        if (upward(form, 'target') && commentSend(f, form, sub)) { e.preventDefault(); return; }
         if (topish(form, 'target')) form.target = f.name;
         if (topish(sub, 'formtarget')) sub.formTarget = f.name;
       }, !inner);
@@ -3693,6 +3856,27 @@
     // a link, form or script leaving this page opens beside it, which
     // keeps it for Back (29-fhead.js)
     if (browsing(key)) fkeepWatch(f, d, key);
+    // and anything else that leaves it starts the frame's loading line:
+    // the navigation API hears links, forms, scripts and reloads alike,
+    // after fkeepWatch, so a step it took over (a new frame beside this
+    // one, loading of its own) is left to it. An engine without the API
+    // (webkitgtk) hears a link followed or a form sent instead.
+    const nav = d.defaultView && d.defaultView.navigation;
+    if (nav) {
+      nav.addEventListener('navigate', (e) => {
+        if (e.defaultPrevented || e.destination.sameDocument || e.downloadRequest !== null) return;
+        if (f.dataset.tool) frameLoading(f, true);
+      });
+      nav.addEventListener('navigateerror', () => frameLoading(f, false));
+    } else if (d.defaultView) {
+      d.defaultView.addEventListener('click', (e) => {
+        const a = e.target.closest && e.target.closest('a[href]');
+        if (a && !e.defaultPrevented && linkLeaves(a, a.target, e)) frameLoading(f, true);
+      });
+      d.defaultView.addEventListener('submit', (e) => {
+        if (!e.defaultPrevented && !/^_blank$/i.test(e.target.getAttribute('target') || '')) frameLoading(f, true);
+      });
+    }
     // the reader shows a page in a frame of its own (srcdoc), where the
     // comment box lives. A sandboxed one (a peer's page) is out of reach,
     // and has no box.
@@ -3776,6 +3960,69 @@
     editorOpen(go);
     return true;
   };
+  // A comment box (.cbox) in a frame tab posts from here, not by sending
+  // its form. Sent as a form it took the tab's frame to the reply, and a
+  // reply that was an error page left the page behind: a POST is no step
+  // fkeepWatch keeps, so Back made the page afresh and the typed comment
+  // was gone. Now the frame only moves once the ship has the comment (its
+  // 303 back to the page), as a reload; a refusal or no answer at all
+  // leaves the page as it is, the text in the box and the reason under
+  // it. Post is held off meanwhile, as +busy-script does for a form sent.
+  // True when it took the form.
+  function commentSend(f, form, sub) {
+    const attr = (k, fk) => (sub && sub.hasAttribute(fk) ? sub.getAttribute(fk) : form.getAttribute(k)) || '';
+    if (!form.matches('form.cbox') || !/^post$/i.test(attr('method', 'formmethod'))
+      || /multipart/i.test(attr('enctype', 'formenctype'))) return false;
+    let url;
+    try { url = new URL(attr('action', 'formaction') || form.ownerDocument.URL, form.baseURI); } catch { return false; }
+    // only lattice's two comment routes: a .cbox aimed anywhere else is no
+    // comment box of ours and goes as a form, as it always did
+    if (url.origin !== location.origin || !/^\/apps\/lattice\/comment(-remote)?$/.test(url.pathname)) return false;
+    const d = form.ownerDocument;
+    // the box's own page script has marked it sent already (the inner
+    // frame's runs first); the frame's own document has it run after
+    if (form.latSending) return true;
+    form.latSending = true;
+    let fd;
+    try { fd = new FormData(form, sub || undefined); }
+    catch { fd = new FormData(form); if (sub && sub.name) fd.append(sub.name, sub.value); }
+    const body = new URLSearchParams();
+    for (const [k, v] of fd) if (typeof v === 'string') body.append(k, v);
+    form.setAttribute('aria-busy', 'true');
+    const btns = [...form.querySelectorAll('button:not([type=button]), input[type=submit]')].filter((b) => !b.disabled);
+    for (const b of btns) { b.disabled = true; b.setAttribute('data-lat-off', ''); }
+    const old = d.getElementById('latcerr');
+    if (old) old.remove();
+    frameLoading(f, true);
+    const done = (why) => {
+      form.latSending = false;
+      form.removeAttribute('aria-busy');
+      form.removeAttribute('data-lat-sent');
+      for (const b of form.querySelectorAll('[data-lat-off]')) { b.disabled = false; b.removeAttribute('data-lat-off'); }
+      if (f.dataset.tool) frameLoading(f, false);
+      if (!why) return;
+      const p = d.createElement('p');
+      p.id = 'latcerr';
+      p.setAttribute('role', 'alert');
+      p.style.cssText = 'margin:.4rem 0 0;color:var(--error,#b3261e);font-size:.9em';
+      p.textContent = why;
+      form.after(p);
+    };
+    fetch(url.href, { method: 'POST', body, redirect: 'manual', credentials: 'same-origin' }).then((r) => {
+      // a 303 (opaque here) or a page: the ship has it, and the box stays
+      // held until the page comes back with the comment on it
+      if (r.type === 'opaqueredirect' || r.ok) {
+        for (const t of form.querySelectorAll('textarea')) t.value = '';
+        try { f.contentWindow.location.reload(); } catch { done(null); }
+        return;
+      }
+      // the ship's refusal says why ({"error": ...}); a short one is shown
+      const said = (j) => (j && typeof j.error === 'string' && j.error.length < 200 ? ': ' + j.error : '');
+      r.json().catch(() => null).then((j) => done('Not posted (the ship answered ' + r.status + said(j)
+        + '). Your comment is still here.'));
+    }, () => done('Not posted: no answer from the ship. Your comment is still here.'));
+    return true;
+  }
   // A form from a frame inside a frame tab, sent again from this window
   // into the tab's frame `name`: the same method, encoding, address and
   // fields, the button that sent it included. Files go over in a file
@@ -5892,6 +6139,7 @@
     const n = fnavOf(key);
     if (how === 'to') {
       n.addr = v.trim();
+      frameLoading(f, true);
       try { f.contentWindow.location.href = fnavTarget(v); } catch {}
       fhPaintKey(key);
       return;
@@ -5914,6 +6162,7 @@
       return true;
     }
     n.go = how;
+    frameLoading(f, true);
     const at = how === 'back' ? jh.pos : jh.pos + 1;
     if (!fromTop && jh.keys[at] === key && jh.keys.every((k) => frameOf(k))) {
       jh.pos += how === 'back' ? -1 : 1;
@@ -6060,6 +6309,7 @@
     try { f.contentWindow.name = n; } catch {}
   };
   function fkeepPark(key, f, url) {
+    frameLoading(f, false);           // a kept page's load is no tab's wait
     delete f.dataset.tool;
     f.dataset.kept = key;
     frameName(f, '');
@@ -6106,8 +6356,10 @@
     if (k.latStale) {
       const u = k.latStale;
       k.latStale = null;
+      frameLoading(k, true);
       try { k.contentWindow.location.replace(u); } catch {}
     }
+    frameBusySync(k.parentNode);
   }
   // catch the page in `f` leaving (frameDress, at each load)
   function fkeepWatch(f, d, key) {
@@ -6690,6 +6942,8 @@
     to.tabIndex = 0;
     if (refocus) to.focus();
   }
+  const IS_MAC = /Mac|iPhone|iPad|iPod/.test((navigator.userAgentData && navigator.userAgentData.platform)
+    || navigator.platform || '');
   function treeKeys(list, label) {
     list.setAttribute('aria-label', label);
     const lv = (r) => +r.getAttribute('aria-level');
@@ -6703,6 +6957,15 @@
     list.addEventListener('keydown', (e) => {
       const row = e.target.closest('[role=treeitem]');
       if (!row || e.altKey) return;
+      //  Delete, or Backspace (with or without Cmd) on a Mac, where the key
+      //  marked delete is Backspace: the list's own handler, which asks first
+      //  (34-treemenu.js). A tree without one lets the key through.
+      if (list.latDel && !e.shiftKey && ((e.key === 'Delete' && !e.ctrlKey && !e.metaKey)
+        || (e.key === 'Backspace' && IS_MAC && !e.ctrlKey))) {
+        e.preventDefault();
+        list.latDel(row);
+        return;
+      }
       const rows = treeRows(list);
       const i = rows.indexOf(row);
       const open = row.getAttribute('aria-expanded');
@@ -6856,6 +7119,7 @@
           row.append(cw);
         }
         tabLink(row, 'page', n.path);
+        rowMore(row, (n.dname || n.path.split('/').pop()) + '.' + kindExt(n.kind));   // 34-treemenu.js
       } else {
         row = folderRow(n.dname || n.path.split('/').pop(), depth, coll.includes(n.path),
           () => { paneColl.flip(n.path); renderTree(); }, () => pickFolder(n.path), 'f:' + n.path);
@@ -6881,6 +7145,7 @@
           if (await guardDirty()) newFile(n.path);
         };
         row.append(add);
+        rowMore(row, 'folder ' + (n.dname || n.path.split('/').pop()), n.dname || n.path.split('/').pop());
       }
       if (hidden) row.style.display = 'none';
       rowByPath.set(n.path, row);
@@ -7010,7 +7275,7 @@
     loadMarks();
   }
   async function markDrop(b) {
-    if (!(await askConfirm('remove bookmark ' + (b.title || b.url) + '?', 'remove'))) return;
+    if (!(await askDanger('remove bookmark ' + (b.title || b.url) + '?', 'remove'))) return;
     const r = await mutate(api + '/unbookmark?url=' + encodeURIComponent(b.url));
     if (!r.ok) { st('remove failed' + await errText(r), false); return; }
     st('bookmark removed');
@@ -7075,6 +7340,219 @@
   });
   if (paneShows('l', 'marks')) loadMarks();
 
+// ── src/34-treemenu.js ────────────────────────────────────────────────────
+  // ── the files tree's own menu, and its Delete key ───────────────────────
+  // A right-click on a row, a long press on a phone, or the keyboard's menu
+  // key (Shift+F10) opens a small menu for that row: a page or a folder of
+  // mine, or an entry in shared with me. Nothing in it needs the row opened
+  // first, and nothing changes what is open, except a delete or a move of
+  // the very page that is (65-ctl.js deletePath, 75-move.js, 77-history.js).
+  // Every delete in it asks first, in the same modal the page menu's does.
+  //
+  // What a row is comes from its tree key (treeItem, 30-tree.js): p:<path>
+  // a page, f:<path> a folder, and under shared with me (SWM, 69-shared.js)
+  // <SWM>/<host>/<path> an entry. The shared with me folder and its ship
+  // folders are not anything to delete, so they get no menu.
+  function treeTarget(row) {
+    const tk = (row && row.dataset.tk) || '';
+    if (tk.startsWith('p:')) return { kind: 'page', path: tk.slice(2) };
+    if (tk.startsWith('f:')) return { kind: 'folder', path: tk.slice(2) };
+    if (tk.startsWith(SWM + '/')) {
+      const rest = tk.slice(SWM.length + 1);
+      const cut = rest.indexOf('/');
+      if (cut < 0) return null;
+      const host = rest.slice(0, cut), path = rest.slice(cut + 1);
+      const it = sharedWithMe.find((s) => s.host === host && s.path === path);
+      return it ? { kind: 'swm', it } : null;
+    }
+    return null;
+  }
+  // a delete from the tree: the row's own path, confirmed (deletePath)
+  function treeDelete(row) {
+    const t = treeTarget(row);
+    if (!t) return;
+    if (t.kind === 'swm') removeShared(t.it);
+    else deletePath(t.path, t.kind === 'folder');
+  }
+  treeList.latDel = treeDelete;
+
+  let treeMenuEl = null;
+  let treeMenuRow = null;
+  let treeMenuAt = 0;
+  function treeMenuClose(refocus) {
+    if (!treeMenuEl) return;
+    treeMenuEl.remove();
+    treeMenuEl = null;
+    const row = treeMenuRow;
+    treeMenuRow = null;
+    if (refocus && row && row.isConnected) row.focus();
+  }
+  //  `right`: x is where the menu's right edge goes (the row's ⋯ button)
+  function treeMenu(row, x, y, right) {
+    const t = treeTarget(row);
+    if (!t) return false;
+    if (treeMenuEl && treeMenuRow === row) return true;
+    treeMenuClose(false);
+    const m = document.createElement('div');
+    m.className = 'dtmenu treemenu';
+    m.setAttribute('role', 'menu');
+    const item = (id, label, run) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.setAttribute('role', 'menuitem');
+      b.dataset.mi = id;
+      b.textContent = label;
+      //  the row takes the focus back first, so the dialog the item opens
+      //  hands it back there when it closes (dlgClose, 15-dialog.js)
+      b.onclick = () => { treeMenuClose(true); run(); };
+      if (id === 'del') b.classList.add('danger');
+      m.append(b);
+    };
+    if (t.kind === 'page') {
+      item('mv', 'Rename / move', () => askMovePage(t.path));
+      item('del', 'Delete', () => treeDelete(row));
+    } else if (t.kind === 'folder') {
+      item('new', 'New page here', async () => { if (await guardDirty()) newFile(t.path); });
+      item('mv', 'Rename / move', () => moveFolder(t.path));
+      item('del', 'Delete', () => treeDelete(row));
+    } else {
+      item('in', 'Move into my pages', () => askMoveIn(t.it));
+      item('del', 'Remove from list', () => treeDelete(row));
+    }
+    m.onkeydown = (e) => {
+      const bs = [...m.querySelectorAll('button')];
+      const i = bs.indexOf(document.activeElement);
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        bs[(i + (e.key === 'ArrowDown' ? 1 : bs.length - 1)) % bs.length].focus();
+      } else if (e.key === 'Escape' || e.key === 'Tab') {
+        e.preventDefault();
+        treeMenuClose(true);
+      }
+    };
+    m.style.visibility = 'hidden';
+    document.body.append(m);
+    //  kept on screen: a row near the bottom or the right edge opens it
+    //  upward or leftward instead of half off the page
+    const w = m.offsetWidth, h = m.offsetHeight;
+    m.style.left = Math.max(4, Math.min(right ? x - w : x, innerWidth - w - 4)) + 'px';
+    m.style.top = Math.max(4, y + h > innerHeight - 4 ? y - h : y) + 'px';
+    m.style.visibility = '';
+    treeMenuEl = m;
+    treeMenuRow = row;
+    treeMenuAt = performance.now();
+    m.querySelector('button').focus();
+    return true;
+  }
+  //  where a menu opened from the keyboard goes: under the row, since a
+  //  keyboard contextmenu event carries no pointer position
+  const rowSpot = (row) => {
+    const r = row.getBoundingClientRect();
+    return [r.left + 16, r.bottom];
+  };
+  treeList.addEventListener('contextmenu', (e) => {
+    const row = e.target.closest('[role=treeitem]');
+    if (!row || !treeTarget(row)) return;
+    e.preventDefault();
+    //  a phone's own long press (Android fires contextmenu for it) and ours
+    //  are one gesture: the tap that ends it must not open the row
+    if (lpDown) { lpFired = true; clearTimeout(lpTimer); }
+    const [x, y] = e.clientX || e.clientY ? [e.clientX, e.clientY] : rowSpot(row);
+    treeMenu(row, x, y);
+  });
+
+  // ── the row's ⋯ button ──────────────────────────────────────────────────
+  // The menu, where a user can see it: faint at the row's right end, shown
+  // on hover or focus, and always on a touch screen (index.html, .rmore).
+  // Its own click opens the menu under it and goes no further, so the row
+  // never sees it; everywhere else on the row clicks as before. Out of the
+  // tab order like a folder's +: the tree is one tab stop, and the keyboard
+  // has the menu key (Shift+F10) and Delete on the row itself.
+  function rowMore(row, name, rowName = name) {
+    //  the row keeps its own name: read from its content, it would take in
+    //  the button's label too
+    if (!row.hasAttribute('aria-label')) row.setAttribute('aria-label', rowName);
+    const b = document.createElement('span');
+    b.className = 'rmore';
+    b.setAttribute('role', 'button');
+    b.tabIndex = -1;
+    b.setAttribute('aria-label', 'More actions for ' + name);
+    b.title = 'More actions';
+    b.innerHTML = ico('more');
+    b.addEventListener('pointerdown', (e) => e.stopPropagation());
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (treeMenuEl && treeMenuRow === row) { treeMenuClose(true); return; }
+      const r = b.getBoundingClientRect();
+      treeMenu(row, r.right, r.bottom + 2, true);
+    });
+    //  a middle click on it opens nothing in a new tab either
+    b.addEventListener('auxclick', (e) => { e.preventDefault(); e.stopPropagation(); });
+    row.append(b);
+    return b;
+  }
+
+  // ── long press, for a phone ──────────────────────────────────────────────
+  // Held still for half a second on a row: the menu. A finger that moves
+  // is a scroll, and a short tap still opens the row, so only a press that
+  // fired swallows the click it ends with.
+  const LP_MS = 500, LP_SLOP = 10;
+  let lpTimer = 0, lpDown = null, lpFired = false;
+  const lpCancel = () => { clearTimeout(lpTimer); lpDown = null; };
+  treeList.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    const row = e.target.closest('[role=treeitem]');
+    if (!row || !treeTarget(row)) return;
+    lpDown = { row, x: e.clientX, y: e.clientY };
+    clearTimeout(lpTimer);
+    lpTimer = setTimeout(() => {
+      const d = lpDown;
+      if (!d || !d.row.isConnected) return;
+      lpFired = true;
+      if (navigator.vibrate) try { navigator.vibrate(10); } catch {}
+      treeMenu(d.row, d.x, d.y);
+    }, LP_MS);
+  });
+  treeList.addEventListener('pointermove', (e) => {
+    if (lpDown && Math.hypot(e.clientX - lpDown.x, e.clientY - lpDown.y) > LP_SLOP) lpCancel();
+  });
+  for (const t of ['pointerup', 'pointercancel', 'pointerleave']) treeList.addEventListener(t, lpCancel);
+  treeList.addEventListener('scroll', lpCancel, true);
+  treeList.addEventListener('click', (e) => {
+    if (!lpFired) return;
+    lpFired = false;
+    e.preventDefault();
+    e.stopPropagation();
+  }, true);
+
+  //  any later press or key starts fresh, so a press that fired can never
+  //  swallow a click that comes from somewhere else (Enter on a row is one)
+  addEventListener('pointerdown', (e) => {
+    lpFired = false;
+    //  a press on the open menu's own ⋯ is left to its click, which shuts it
+    const more = e.target.closest && e.target.closest('.rmore');
+    if (more && treeMenuRow && treeMenuRow.contains(more)) return;
+    if (treeMenuEl && !treeMenuEl.contains(e.target)) treeMenuClose(false);
+  }, true);
+  addEventListener('keydown', () => { lpFired = false; }, true);
+  addEventListener('resize', () => treeMenuClose(false));
+  //  a scroll shuts it, but not one already on its way when it opened:
+  //  scroll events land a frame late, so a row scrolled into view by the
+  //  press itself (focus on pointerdown) shut the menu as it appeared
+  addEventListener('scroll', (e) => {
+    if (treeMenuEl && !treeMenuEl.contains(e.target)
+      && performance.now() - treeMenuAt > 300) treeMenuClose(false);
+  }, true);
+
+  // for the browser suites, which cannot reach this scope
+  window.latTreeMenu = { open: (tk) => {
+    const row = [...treeList.querySelectorAll('[role=treeitem]')].find((r) => r.dataset.tk === tk);
+    if (!row) return false;
+    const [x, y] = rowSpot(row);
+    return treeMenu(row, x, y);
+  } };
+
 // ── src/35-pages.js ───────────────────────────────────────────────────────
   // ── open / new / save ────────────────────────────────────────────────────
   const setFolderCtx = (name) =>
@@ -7102,12 +7580,16 @@
   // Answers false when the open failed with nothing painted, which the tab
   // model tells apart from an open that a later one superseded.
   let openSeq = 0;
+  // the next open's number. Whatever an open before it still owed the
+  // loading line (busy, 10-shell.js) is let go with it: a later open, a
+  // tab switch and a blank page all supersede it.
+  function openNext() { busyEnd('open'); return ++openSeq; }
   async function openPage(name) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
     if (!(await guardDirty())) return false;
-    const my = ++openSeq;
+    const my = openNext();
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
     grubPath = null;
@@ -7154,7 +7636,28 @@
       }
     }
   }
+  // The loading line runs while the ship's answer is still owed to the
+  // eye: an open with nothing painted, or a painted one whose preview only
+  // the ship renders (hoon, noun and the other computed kinds). A painted
+  // content page already shows all of itself, so its upgrade fetch runs
+  // unmarked. The status names an unpainted open only once it is slow, so
+  // a quick one does not flash the spinner either.
   async function openRead(name, my, node, painted) {
+    const owed = !painted || !['md', 'gmi', 'html', 'text'].includes(node.kind);
+    const end = owed ? busy('open') : null;
+    const late = painted ? 0
+      : setTimeout(() => { if (my === openSeq) stWork('opening ' + name + '\u2026'); }, BUSY_MS);
+    // a big page's plain read paints the body before render=1 lands. For
+    // a content kind that paint is the whole page, so the wait the user
+    // sees is over there, as it is for a painted open
+    const bodyShown = (kind) => {
+      clearTimeout(late);
+      if (end && ['md', 'gmi', 'html', 'text'].includes(kind)) end();
+    };
+    try { return await openReadRun(name, my, node, painted, bodyShown); }
+    finally { if (end) end(); clearTimeout(late); }
+  }
+  async function openReadRun(name, my, node, painted, bodyShown) {
     // `quiet`: the render=1 request below carries the preview and the error
     // report, so painting must not also fire refreshPreview/checkErrors.
     if (painted) {
@@ -7171,11 +7674,10 @@
     //
     // When NOT painted (a body the dump did not carry), the user just clicked
     // and nothing changed on screen — on a slow pier that silence lasts
-    // seconds and reads as a dead click. Say the open is happening; every
-    // exit below already replaces this status.
+    // seconds and reads as a dead click. openRead says the open is
+    // happening once it is slow; every exit below replaces that status.
     let fromUrl = null;
     if (!painted) {
-      stWork('opening ' + name + '\u2026');
       // commit the address NOW, before the fetch. A reload mid-open (the
       // service-worker takeover) must resume THIS page. Painted opens already
       // set the address synchronously via applyPage; this fetch lands seconds
@@ -7207,6 +7709,7 @@
           painted = true;
           applyPage(name, b, true);
           snapPage(name, b);
+          bodyShown(b.kind || node.kind);
         }
       }
     }
@@ -7362,7 +7865,7 @@
   // autosave there goes to /know-save, so a memory in front leaves it first.
   function blankPage(into) {
     if (mode === 'know') setMode('pages');
-    openSeq++;           // an open still in flight must not land over this
+    openNext();          // an open still in flight must not land over this
     folderCtx = into || '';
     curFolder = null;
     curKind = null;
@@ -8050,7 +8553,7 @@
   };
   // Answers false when the open failed, like openPage (35-pages.js).
   async function openGrub(p, ship) {
-    const my = ++openSeq;
+    const my = openNext();
     enterGrub(p, ship);
     st('loading ' + p + '…');
     // remote files ride /browse-file (bounded cross-ship peek). Its JSON says
@@ -8060,7 +8563,7 @@
       ? api + '/browse-file?ship=' + encodeURIComponent(grubShip) + '&path=' + encodeURIComponent(p)
       : api + '/grub-source?path=' + encodeURIComponent(p);
     let r = null;
-    try { r = await fetch(url); } catch {}
+    try { r = await busyFetch(url, undefined, 'open'); } catch {}
     if (my !== openSeq) return;
     if (!r || !r.ok) {
       // the editor stays as enterGrub left it, empty and locked
@@ -8237,7 +8740,7 @@
   async function newFromTemplate() {
     let names = [];
     try {
-      const r = await fetch(api + '/template-list');
+      const r = await busyFetch(api + '/template-list');
       if (r.ok) names = (await r.json()).templates || [];
     } catch {}
     if (!names.length) { st('no templates available', false); return; }
@@ -9230,46 +9733,114 @@
   // the editor sends to it now.
 
   // ── delete ───────────────────────────────────────────────────────────────
+  //  One confirm and one delete for every way to a page or a folder: the
+  //  page menu's Delete (#del), the tree's menu and Delete key
+  //  (34-treemenu.js) and a conflict's resolve (80-conflicts.js). Nothing
+  //  deletes a page without coming through here, so nothing deletes one
+  //  without the confirm.
+  //
+  //  The confirm says what goes: the name, how many pages go with it, what
+  //  of it is published or granted (a reader's copy can outlive the delete),
+  //  and that it is permanent. Pages carry no trash: the writer prunes
+  //  every revision and offers no restore, unlike a memory's soft delete.
+  const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
+  //  the page tabs, not in front, that hold a page at or under `path`
+  const parkedUnder = (path) => allTabs().filter((t) => t !== activeTab && t.kind === 'page'
+    && !t.ship && t.snap && t.key && (t.key === path || t.key.startsWith(path + '/')));
+  function delWhat(path, folder) {
+    const n = nodes.find((x) => x.page === !folder && x.path === path);
+    const name = (n && n.dname ? n.dname + ' (' + path + ')' : path);
+    const c = pageCount(path);
+    const lines = [];
+    if (folder) lines.push('delete folder ' + name
+      + (c ? ' and the ' + plural(c, 'page') + ' in it?' : '? It is empty.'));
+    else lines.push('delete ' + name
+      + (c ? ' and the ' + plural(c, 'page') + ' under it?' : '?'));
+    if (n && n.link && n.link.host)
+      lines.push('This is a link to a page on ' + n.link.host
+        + '. Only the link goes; their page is untouched.');
+    //  published: the page's own share mode, or how many under the folder
+    const under = nodes.filter((x) => x.page && (x.path === path || x.path.startsWith(path + '/')));
+    const pub = under.filter((x) => x.share === 'shared' || x.share === 'clearweb');
+    if (pub.length) {
+      const web = pub.some((x) => x.share === 'clearweb');
+      const how = ' published (' + (web ? 'on the clearweb' : 'over Urbit') + ').';
+      lines.push(!folder && pub.length === 1 && pub[0].path === path
+        ? 'It is' + how + ' Anyone who already read it may keep a copy.'
+        : plural(pub.length, 'page') + (pub.length === 1 ? ' is' : ' are') + how
+          + ' Anyone who already read them may keep a copy.');
+    }
+    //  granted to a ship or a group: the grant goes with the page
+    if (selfBase && permsLoaded) {
+      const pp = selfBase + '/page/' + path;
+      const gs = permGroups.filter((g) => [...(g.peek || []), ...(g.make || [])]
+        .some((x) => x === pp || x.startsWith(pp + '/')));
+      if (gs.length) lines.push('It is shared with ' + gs.map((g) => g.name).join(', ')
+        + '. Their access ends with it.');
+    }
+    if (path === 'conflicts')
+      lines.push('Lattice makes this folder again on the next conflict.');
+    const open = mode !== 'know' && !grubPath && current
+      && (current === path || current.startsWith(path + '/'));
+    if (open && dirty) lines.push('The open page has unsaved changes, and they go too.');
+    const parked = parkedUnder(path).filter((t) => t.snap.dirty).length;
+    if (parked) lines.push(plural(parked, 'other tab') + ' with unsaved changes to it'
+      + (parked === 1 ? ' loses them.' : ' lose them.'));
+    if (degraded || offCount) lines.push('You are offline: the delete is queued and runs when the ship is back.');
+    lines.push('This is permanent and cannot be restored.');
+    return lines.join('\n');
+  }
+  //  -> true once deleted. `folder` says which node the path names (a page
+  //  can have pages under it and still be a page). `note` is a caller's own
+  //  line for the confirm. What is open stays open unless it is the page
+  //  deleted or is under the folder deleted; then a clean new page.
+  async function deletePath(path, folder, note) {
+    if (!path) return false;
+    if (!(await askDanger(delWhat(path, folder) + (note ? '\n' + note : ''), 'delete'))) return false;
+    const hit = (p) => !!p && (p === path || p.startsWith(path + '/'));
+    //  what is open goes with it: the editor lets go of it first, so no
+    //  autosave or trailing save can aim at it, and a save already on the
+    //  wire lands before the delete does, never after it (it made the page
+    //  again). A clean new page, and no focus: a focused newFile becomes
+    //  the create dialog under the desktop wrapper.
+    if ((mode !== 'know' && !grubPath && hit(current)) || hit(curFolder)) {
+      clearTimeout(autoTimer);
+      dirty = false;
+      savePending = false;
+      newFile('', false);
+    }
+    //  a tab not in front keeps its unsaved text in its snap, and brought
+    //  back it would autosave that text (21-tabs.js), and a parked save
+    //  still queued would send it (saveParked, 35-pages.js). Either one made
+    //  the page again, so the text the user just agreed to lose is let go.
+    const gone = parkedUnder(path).filter((t) => t.snap.dirty);
+    for (const t of gone) t.snap.dirty = false;
+    if (gone.length) paintTabs();
+    //  settled, not only off the wire: a save whose write failed clears
+    //  `saving` and only then queues its body offline. A delete sent in
+    //  that gap queued before the save did, so the save outlived the
+    //  delete's cull of the queue and replayed the page back. Capped, so
+    //  a save that never answers cannot hold the delete forever.
+    //  the line (busy, 10-shell.js) from the confirm on, the wait included
+    const end = busy();
+    let r;
+    try {
+      await savesSettled();
+      r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
+    } finally { end(); }
+    if (!r.ok) { st('delete failed' + await errText(r), false); return false; }
+    dropTreeNodes(path);
+    snapTree();
+    renderTree();
+    st(r.offline ? 'deleted ' + path + ' offline' : 'deleted ' + path);
+    return true;
+  }
   $('del').onclick = async () => {
     if (mode === 'know') { deleteKnow(); return; }
-    if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
-    if (curFolder) {
-      const path = curFolder;
-      const c = pageCount(path);
-      // pages carry no trash: the writer prunes every revision and never
-      // offers a restore route, unlike the memory delete confirm a click
-      // away, which correctly says restorable. Say permanent here instead.
-      const what = 'delete folder ' + path +
-        (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it' : '') +
-        '? (permanent, not restorable)';
-      if (!(await askConfirm(what, 'delete'))) return;
-      const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
-      if (!r.ok) { st('delete failed' + await errText(r), false); return; }
-      dropTreeNodes(path);
-      snapTree();
-      // no focus: a focused newFile becomes the create dialog under the
-      // desktop wrapper, and nobody asked to create a page by deleting one
-      newFile('', false);
-      st(r.offline ? 'deleted ' + path + ' offline' : 'deleted ' + path);
-      return;
-    }
+    if (viewingRev !== null) { st('viewing rev ' + viewingRev + ', use restore', false); return; }
+    if (curFolder) { deletePath(curFolder, true); return; }
     if (!current) { st('nothing to delete', false); return; }
-    const doomed = current;
-    // the server culls the page's whole dir, nested pages included, and
-    // dropTreeNodes below assumes exactly that. Count what goes the way the
-    // folder branch does, so the confirm is proportional to the loss
-    const c = pageCount(doomed);
-    // same reason as the folder confirm above: no trash, no restore, so say so
-    const what = 'delete ' + doomed +
-      (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it' : '') +
-      '? (permanent, not restorable)';
-    if (!(await askConfirm(what, 'delete'))) return;
-    const r = await mutate(api + '/page-del?name=' + encodeURIComponent(doomed));
-    if (!r.ok) { st('delete failed' + await errText(r), false); return; }
-    dropTreeNodes(doomed);
-    snapTree();
-    newFile('', false);
-    st(r.offline ? 'deleted ' + doomed + ' offline' : 'deleted ' + doomed);
+    deletePath(current, false);
   };
 
 // ── src/66-share.js ───────────────────────────────────────────────────────
@@ -9647,7 +10218,7 @@
     renderGroupAccess();
   }
   async function permSave(g) {
-    const r = await fetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {
+    const r = await busyFetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {
       method: 'POST',
       body: JSON.stringify({ ships: g.ships, peek: g.peek, make: g.make }),
     }).catch(() => null);
@@ -9696,6 +10267,21 @@
     sharedWithMe = await r.json();
     renderTree();
   }
+  //  Take an entry off the list, after a confirm. Nothing is deleted:
+  //  the page is theirs, and their grant stays as it is. The ×, the tree's
+  //  menu and its Delete key (34-treemenu.js) all come here.
+  async function removeShared(it) {
+    const what = 'remove ' + it.host + '/' + sharedName(it.path) + ' from shared with me?\n'
+      + 'Nothing is deleted: the page is ' + it.host + "'s, and their grant to you stays. "
+      + 'It comes back here if they share it again.';
+    if (!(await askDanger(what, 'remove'))) return false;
+    const r = await busyFetch(api + '/shared-with-me-del?host=' + encodeURIComponent(it.host) +
+      '&path=' + encodeURIComponent(it.path), { method: 'POST' }).catch(() => null);
+    if (!r || !r.ok) { st('remove failed' + await errText(r), false); return false; }
+    st('removed ' + sharedName(it.path) + ' from shared with me');
+    loadShared();
+    return true;
+  }
   // keys for the collapsed list: a leading space is in no page name, so a
   // page can never share a fold with this folder
   const SWM = ' shared';
@@ -9730,14 +10316,12 @@
         x.className = 'swrm';
         x.textContent = '×';
         x.title = 'remove from this list (their grant is untouched)';
-        x.onclick = async (e) => {
+        x.onclick = (e) => {
           e.preventDefault(); e.stopPropagation();
-          const r = await fetch(api + '/shared-with-me-del?host=' + encodeURIComponent(host) +
-            '&path=' + encodeURIComponent(it.path), { method: 'POST' }).catch(() => null);
-          if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
-          loadShared();
+          removeShared(it);
         };
         a.append(nm, md, x);
+        rowMore(a, sharedName(it.path) + ' from ' + host);   // its Remove from list (34-treemenu.js)
         a.draggable = true;
         a.ondragstart = (e) => {
           swmDrag = it;
@@ -9779,7 +10363,7 @@
   // -> true once the link is in, after saying why when it is not
   async function moveIn(it, to) {
     stWork('moving ' + swmLeaf(it) + ' into ' + to + '\u2026');
-    const r = await fetch(api + '/link-make?host=' + encodeURIComponent(it.host) +
+    const r = await busyFetch(api + '/link-make?host=' + encodeURIComponent(it.host) +
       '&path=' + encodeURIComponent(it.path) + '&to=' + encodeURIComponent(to),
     { method: 'POST' }).catch(() => null);
     if (!r || !r.ok) { st('move failed' + await errText(r), false); return false; }
@@ -9840,7 +10424,7 @@
     if (!lk) return;
     for (const t of allTabs().filter((x) => x.kind === 'page' && x.key === name))
       if ((await closeTab(t.id)) === false) return;
-    const r = await fetch(api + '/link-unmake?name=' + encodeURIComponent(name),
+    const r = await busyFetch(api + '/link-unmake?name=' + encodeURIComponent(name),
       { method: 'POST' }).catch(() => null);
     if (!r || !r.ok) { st('move failed' + await errText(r), false); return; }
     dropTreeNodes(name);
@@ -10468,8 +11052,8 @@
     del.textContent = 'delete';
     del.className = 'acl-del';
     del.onclick = async () => {
-      if (!(await askConfirm('delete group ' + g.name + ' and every grant it carries?', 'delete'))) return;
-      const r = await fetch(api + '/share-group-del?name=' + encodeURIComponent(g.name),
+      if (!(await askDanger('delete group ' + g.name + ' and every grant it carries?', 'delete'))) return;
+      const r = await busyFetch(api + '/share-group-del?name=' + encodeURIComponent(g.name),
         { method: 'POST' }).catch(() => null);
       // loadPerms repaints from the ship either way, so a delete that failed
       // and a group that came back on its own look identical. Say which it
@@ -10627,7 +11211,7 @@
       a.textContent = w + ' ×';
       a.title = 'unban ' + w;
       a.onclick = async () => {
-        const r = await fetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
+        const r = await busyFetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
           .catch(() => null);
         // announce the unban only once the ship has agreed to it
         if (!r || !r.ok) st('could not unban ' + w + await errText(r), false);
@@ -10644,8 +11228,8 @@
     // not bring them back (the nexus is explicit about that) — a mistyped
     // ship name is a permanent loss with no online undo, so ask first the
     // way delete already does.
-    if (!(await askConfirm('ban ' + w + '? this revokes every grant it holds, and unban will not restore them', 'ban'))) return;
-    const r = await fetch(api + '/ban?ship=' + encodeURIComponent(w), { method: 'POST' })
+    if (!(await askDanger('ban ' + w + '? this revokes every grant it holds, and unban will not restore them', 'ban'))) return;
+    const r = await busyFetch(api + '/ban?ship=' + encodeURIComponent(w), { method: 'POST' })
       .catch(() => null);
     if (!r || !r.ok) { st('could not ban ' + w + await errText(r), false); return; }
     const j = await r.json().catch(() => ({}));
@@ -10704,7 +11288,7 @@
     }
     let d = null;
     try {
-      const r = await fetch(api + '/comments-inbox');
+      const r = await busyFetch(api + '/comments-inbox');
       if (!r.ok) { st('comments failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { st('comments failed', false); return; }
@@ -10749,8 +11333,8 @@
       del.textContent = 'remove';
       del.className = 'acl-del';
       del.onclick = async () => {
-        if (!(await askConfirm('remove this comment by ' + c.author + '?', 'remove'))) return;
-        const r = await fetch(api + '/comment-del?page=' + encodeURIComponent(c.page) +
+        if (!(await askDanger('remove this comment by ' + c.author + '?', 'remove'))) return;
+        const r = await busyFetch(api + '/comment-del?page=' + encodeURIComponent(c.page) +
           '&id=' + encodeURIComponent(c.id), { method: 'POST' }).catch(() => null);
         if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
         st('comment removed');
@@ -10911,13 +11495,14 @@
     //  held first: the save the flush makes queues an autosave behind it,
     //  and that one would go out beside the move, under the old name
     moving++;
+    const end = busy();      // the line from the click, the flush included
     try {
       await flushNoAsk();
       await waitSave();
       return await mutate(api + '/page-move?from=' + encodeURIComponent(from) +
         '&to=' + encodeURIComponent(to) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
         (rn && rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
-    } finally { moving--; }
+    } finally { end(); moving--; }
   };
   // the server moves the WHOLE subtree (a page can parent nested pages, and
   // move-pages rewrites every rel under it). Renaming only the exact node
@@ -10973,15 +11558,18 @@
         seed = typed;
         continue;
       }
+      const inside = (p) => !!p && (p === oldPath || p.startsWith(oldPath + '/'));
+      //  read before the remap renames the open page in place
+      const wasOpen = mode !== 'know' && !grubPath && inside(current);
       const moved = remapMoved(oldPath, newPath, rn);
-      if (current && (current === oldPath || current.startsWith(oldPath + '/')))
-        current = newPath + current.slice(oldPath.length);
       snapTree();
       renderTree();
       st('moved ' + oldPath + ' \u2192 ' + newPath +
         (r.offline ? ' offline' : '') + ' (' + moved + ' pages)');
-      if (current) openPage(current);
-      else if (curFolder === oldPath) selectFolder(newPath);
+      //  only what was inside the folder reopens: a folder moved from the
+      //  tree's menu (34-treemenu.js) leaves an unrelated open page alone
+      if (wasOpen && current) openPage(current);
+      else if (inside(curFolder)) selectFolder(newPath + curFolder.slice(oldPath.length));
       return;
     }
   }
@@ -11209,7 +11797,7 @@
     host.textContent = 'loading…';
     let d = null;
     try {
-      const r = await fetch(api + '/comments-inbox');
+      const r = await busyFetch(api + '/comments-inbox', undefined, 'rp:comments', $('rpane'));
       if (!r.ok) { host.textContent = ''; st('comments failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { host.textContent = ''; st('comments failed', false); return; }
@@ -11235,11 +11823,11 @@
     $('rpcmpost').disabled = true;
     // the route answers a form post with a redirect to the reader. Not
     // followed: landing is all this needs to know.
-    const r = await fetch(api + '/comment?page=' + encodeURIComponent(page), {
+    const r = await busyFetch(api + '/comment?page=' + encodeURIComponent(page), {
       method: 'POST', redirect: 'manual',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: 'body=' + encodeURIComponent(body),
-    }).catch(() => null);
+    }, null, $('rpane')).catch(() => null);
     $('rpcmpost').disabled = false;
     if (!r || !(r.ok || r.type === 'opaqueredirect')) { st('comment failed' + await errText(r), false); return; }
     if (current === page) $('rpcmbody').value = '';
@@ -11289,7 +11877,7 @@
     // a panel nobody can see is not worth a rejection: an unreachable ship
     // leaves the list empty, the same as a refused request already does
     try {
-      const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(want));
+      const r = await busyFetch(api + '/page-backlinks?name=' + encodeURIComponent(want), undefined, 'rp:back', $('rpane'));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
@@ -11339,9 +11927,9 @@
     // same rules as loadBacklinks: an unreachable ship leaves the panel
     // empty, and an answer about a document no longer open is dropped
     try {
-      const r = await fetch(mode === 'know'
+      const r = await busyFetch(mode === 'know'
         ? api + '/know-history?key=' + encodeURIComponent(want)
-        : api + '/page-history?name=' + encodeURIComponent(want));
+        : api + '/page-history?name=' + encodeURIComponent(want), undefined, 'rp:hist', $('rpane'));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
@@ -11380,7 +11968,7 @@
     if (!(await guardDirty())) return;
     let d = null;
     try {
-      const r = await fetch(mode === 'know'
+      const r = await busyFetch(mode === 'know'
         ? api + '/know-read-at?key=' + encodeURIComponent(current) + '&rev=' + rev
         : api + '/page-source-at?name=' + encodeURIComponent(current) + '&rev=' + rev);
       if (!r.ok) {
@@ -11440,54 +12028,61 @@
     if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     if (curFolder) { moveFolder(curFolder); return; }
     if (!current) { st('open something first', false); return; }
+    if (mode !== 'know') { askMovePage(current); return; }
     let seed = current;
     for (;;) {
-      const typed = await askName('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
-        seed, 'move');
+      const typed = await askName('move memory ' + current + ' to:', seed, 'move');
+      if (!typed) return;
+      const newName = realName(typed).name;
+      if (newName === current) return;
+      //  the memory this move is for. A tab switch during the round trip
+      //  moves `current`, and only this memory is renamed or relabeled.
+      const from = current;
+      const r = await mutate(api + '/know-move?from=' + encodeURIComponent(from) +
+        '&to=' + encodeURIComponent(newName));
+      if (!(r.ok || r.offline)) {
+        // the server refused this name — loop back into askName seeded with
+        // it, so the retry is an edit, not a full retype
+        st('move failed' + await errText(r), false);
+        seed = newName;
+        continue;
+      }
+      // the body is already in the editor. Rename in place, no refetch
+      knowGen++;
+      const k = knowKeys.find((x) => x.key.replace(/^\//, '') === from);
+      if (k) k.key = newName;
+      tabsRemap('know', from, newName);
+      if (mode === 'know' && current === from) setOpen(newName, { readOnly: true });
+      renderKnowChips();
+      renderKnowTree();
+      st('moved to ' + newName);
+      return;
+    }
+  };
+  //  move or rename a page, open or not: the page menu (#mv) for the open
+  //  one, the tree's menu (34-treemenu.js) for any. Only the page in front
+  //  reopens, under its new name, and only when it is the one that moved.
+  async function askMovePage(from) {
+    let seed = from;
+    for (;;) {
+      const typed = await askName('move page ' + from + ' to:', seed, 'move');
       if (!typed) return;
       const rn = realName(typed);
       const newName = rn.name;
       // same path with a display name is still a rename (My Page over my-page)
-      if (newName === current && !(mode !== 'know' && rn.dname)) return;
-      if (mode === 'know') {
-        //  the memory this move is for. A tab switch during the round trip
-        //  moves `current`, and only this memory is renamed or relabeled.
-        const from = current;
-        const r = await mutate(api + '/know-move?from=' + encodeURIComponent(from) +
-          '&to=' + encodeURIComponent(newName));
-        if (!(r.ok || r.offline)) {
-          // the server refused this name — loop back into askName seeded with
-          // it, so the retry is an edit, not a full retype
-          st('move failed' + await errText(r), false);
-          seed = newName;
-          continue;
-        }
-        // the body is already in the editor. Rename in place, no refetch
-        knowGen++;
-        const k = knowKeys.find((x) => x.key.replace(/^\//, '') === from);
-        if (k) k.key = newName;
-        tabsRemap('know', from, newName);
-        if (mode === 'know' && current === from) setOpen(newName, { readOnly: true });
-        renderKnowChips();
-        renderKnowTree();
-        st('moved to ' + newName);
-        return;
-      }
-      const from = current;
+      if (newName === from && !rn.dname) return;
       const mv = await movePage(from, newName, rn);
       if (mv) {
         st('moved to ' + newName + (mv.offline ? ' offline' : ''));
-        //  same rule as the memory move: only the page still in front
-        //  reopens under its new name
         if (mode !== 'know' && !grubPath && (current === from || current === newName))
           openPage(newName);
         return;
       }
-      // movePage already reported the cause — loop back into askName seeded
+      // movePage already reported the cause: loop back into askName seeded
       // with the rejected name
       seed = typed;
     }
-  };
+  }
 
 // ── src/78-export.js ──────────────────────────────────────────────────────
   // ── vault: scheduled-backup hook ───────────────────────────────────────────
@@ -11757,7 +12352,8 @@
       //  that reads as "no results".
       host.className = 'aclempty';
       host.textContent = 'searching\u2026';
-      await qLoadContext();
+      const end = busy(null, $('lpane'));
+      try { await qLoadContext(); } finally { end(); }
       if (mine !== qSeq) return;
     }
     const { out, skipped } = qScan(q);
@@ -11928,15 +12524,10 @@
       del.textContent = 'resolve (delete)';
       del.className = 'acl-del';
       del.onclick = async () => {
-        if (!(await askConfirm('delete ' + path + '? Open it first if you need its text.', 'delete'))) return;
-        const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
-        if (!r.ok) { st('delete failed' + await errText(r), false); return; }
-        dropTreeNodes(path);
-        snapTree();
+        //  the one confirm and delete every page goes through (65-ctl.js)
+        if (!(await deletePath(path, false, 'Read it first if you need its text.'))) return;
         renderConflicts();
         renderConfBadge();
-        renderTree();
-        st(r.offline ? 'resolved ' + path + ' offline' : 'resolved ' + path);
       };
       head.appendChild(del);
       card.appendChild(head);
@@ -12217,6 +12808,7 @@
   let streamLive = false;
   let beaconTimer = null;
   const bumped = () => { clearTimeout(beaconTimer); beaconTimer = setTimeout(refreshAll, 300); };
+  const knowBumped = () => { if (knowLive()) bumped(); };
   // comments never bump /rev (apply-comment stamps only /beacon/comments), so
   // a foreign comment used to reach the badge only by accident, on whatever
   // next refreshAll a focus or poll happened to trigger. Give it the same
@@ -12322,9 +12914,8 @@
                 continue;
               }
               noteKnow(data);
-              if (echoes.know.n > 0) { echoes.know.n--; continue; }
-              if (Date.now() < echoes.know.until) continue;
-              if (knowLive()) bumped();
+              if (echoSeen(echoes.know, knowBumped)) continue;
+              knowBumped();
               continue;
             }
             if (name.slice(-5) !== ' /rev') {
@@ -12354,8 +12945,7 @@
             // consumed by count (see echoes, 20-state.js).
             bumpedLive = true;
             noteRev(data);
-            if (echoes.rev.n > 0) { echoes.rev.n--; continue; }
-            if (Date.now() < echoes.rev.until) continue;
+            if (echoSeen(echoes.rev, bumped)) continue;
             bumped();
           }
         }
@@ -12560,7 +13150,7 @@
     // the same sequence openPage keeps: a later open of anything supersedes
     // this one, so a slow answer cannot paint a memory over the page (or
     // the other memory) opened after it
-    const my = ++openSeq;
+    const my = openNext();
     if (mode !== 'know') setMode('know');
     // a queued edit outranks the ship's copy, same rule as pages
     const q = await offGet('know:' + key);
@@ -12568,7 +13158,7 @@
     if (q) d = { body: q.body, tags: (knowEntry(key) || { tags: [] }).tags, updated: 'queued offline' };
     else {
       let r = null;
-      try { r = await fetch(api + '/know-read?key=' + encodeURIComponent(key)); } catch {}
+      try { r = await busyFetch(api + '/know-read?key=' + encodeURIComponent(key), undefined, 'open'); } catch {}
       if (my !== openSeq) return;
       if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return false; }
       d = await r.json();
@@ -12699,7 +13289,7 @@
 
   async function deleteKnow() {
     if (!current) return;
-    if (!(await askConfirm('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
+    if (!(await askDanger('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
     const doomed = current;
     const r = await mutate(api + '/know-delete?key=' + encodeURIComponent(doomed));
     if (!r.ok) { st('delete failed' + await errText(r), false); return; }

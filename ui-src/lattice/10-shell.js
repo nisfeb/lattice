@@ -44,6 +44,7 @@
     left: ['0 0 24 24', 'M15 6l-6 6 6 6', 'stroke'],
     right: ['0 0 24 24', 'M9 6l6 6-6 6', 'stroke'],
     dots: ['0 0 24 24', 'M12 5h.01M12 12h.01M12 19h.01', 'stroke'],
+    more: ['0 0 24 24', 'M5 12h.01M12 12h.01M19 12h.01', 'stroke'],
     menu: ['0 0 24 24', 'M4 6h16M4 12h16M4 18h16', 'stroke'],
     plus: ['0 0 24 24', 'M12 5v14M5 12h14', 'stroke'],
     save: ['0 0 24 24', 'M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 3v5h7V3M7 21v-7h10v7', 'stroke'],
@@ -346,6 +347,55 @@
     status.title = msg;
     status.style.color = '';
     spinner.classList.add('on');
+  };
+  // ── busy: the one loading indicator ──────────────────────────────────────
+  // A thin moving line along the top of the region that is waiting on the
+  // ship (.lbusy in index.html): #center by default (an open phone drawer
+  // over it instead), a pane for a panel's load. busy() starts a wait and
+  // answers its end, which is safe to call more than once. The line shows
+  // only once a wait has run BUSY_MS, so an answer from a cache or a quick
+  // pier never flashes it. A `key` names a
+  // kind of wait that a newer one supersedes ('open': a later open, or a
+  // tab switch, ends the one before it), and busyEnd(key) ends it outright.
+  // Every wait ends by BUSY_MAX at the latest, so a path that forgot its
+  // end cannot leave the line running. The frame tabs keep their own line
+  // (frameLoading, 24-tools.js), and the reader pages theirs (app.hoon's
+  // +busy-script); all three look the same.
+  const BUSY_MS = 180;
+  const BUSY_MAX = 60000;
+  const busyKeys = new Map();          // key -> the end of its wait
+  const busyOn = new Map();            // region -> waits running in it
+  // on a phone an open drawer covers the center, so the line goes on it
+  const busyHome = () => {
+    const ws = $('ws');
+    return ws.classList.contains('ldraw') ? $('lpane')
+      : ws.classList.contains('rdraw') ? $('rpane') : $('center');
+  };
+  function busy(key, region) {
+    const el = region || busyHome();
+    if (key) busyEnd(key);
+    let live = true;
+    busyOn.set(el, (busyOn.get(el) || 0) + 1);
+    const show = setTimeout(() => { if (live) el.classList.add('lbusy'); }, BUSY_MS);
+    const end = () => {
+      if (!live) return;
+      live = false;
+      clearTimeout(show); clearTimeout(cap);
+      if (key && busyKeys.get(key) === end) busyKeys.delete(key);
+      const left = busyOn.get(el) - 1;
+      busyOn.set(el, left);
+      // only the last wait in the region takes the line away
+      if (!left) el.classList.remove('lbusy');
+    };
+    const cap = setTimeout(end, BUSY_MAX);
+    if (key) busyKeys.set(key, end);
+    return end;
+  }
+  const busyEnd = (key) => { const end = busyKeys.get(key); if (end) end(); };
+  // a fetch the user is waiting on, with the line while it flies
+  const busyFetch = (url, opts, key, region) => {
+    const end = busy(key, region);
+    return fetch(url, opts).finally(end);
   };
   // desktop shell: wry denies target=_blank new windows (the clearweb share
   // link would be a dead click). Same-origin and urb:// links stay in the

@@ -141,6 +141,7 @@
   let streamLive = false;
   let beaconTimer = null;
   const bumped = () => { clearTimeout(beaconTimer); beaconTimer = setTimeout(refreshAll, 300); };
+  const knowBumped = () => { if (knowLive()) bumped(); };
   // comments never bump /rev (apply-comment stamps only /beacon/comments), so
   // a foreign comment used to reach the badge only by accident, on whatever
   // next refreshAll a focus or poll happened to trigger. Give it the same
@@ -246,9 +247,8 @@
                 continue;
               }
               noteKnow(data);
-              if (echoes.know.n > 0) { echoes.know.n--; continue; }
-              if (Date.now() < echoes.know.until) continue;
-              if (knowLive()) bumped();
+              if (echoSeen(echoes.know, knowBumped)) continue;
+              knowBumped();
               continue;
             }
             if (name.slice(-5) !== ' /rev') {
@@ -278,8 +278,7 @@
             // consumed by count (see echoes, 20-state.js).
             bumpedLive = true;
             noteRev(data);
-            if (echoes.rev.n > 0) { echoes.rev.n--; continue; }
-            if (Date.now() < echoes.rev.until) continue;
+            if (echoSeen(echoes.rev, bumped)) continue;
             bumped();
           }
         }

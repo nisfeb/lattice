@@ -97,15 +97,10 @@
       del.textContent = 'resolve (delete)';
       del.className = 'acl-del';
       del.onclick = async () => {
-        if (!(await askConfirm('delete ' + path + '? Open it first if you need its text.', 'delete'))) return;
-        const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
-        if (!r.ok) { st('delete failed' + await errText(r), false); return; }
-        dropTreeNodes(path);
-        snapTree();
+        //  the one confirm and delete every page goes through (65-ctl.js)
+        if (!(await deletePath(path, false, 'Read it first if you need its text.'))) return;
         renderConflicts();
         renderConfBadge();
-        renderTree();
-        st(r.offline ? 'resolved ' + path + ' offline' : 'resolved ' + path);
       };
       head.appendChild(del);
       card.appendChild(head);

@@ -38,7 +38,7 @@
     // a panel nobody can see is not worth a rejection: an unreachable ship
     // leaves the list empty, the same as a refused request already does
     try {
-      const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(want));
+      const r = await busyFetch(api + '/page-backlinks?name=' + encodeURIComponent(want), undefined, 'rp:back', $('rpane'));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
@@ -88,9 +88,9 @@
     // same rules as loadBacklinks: an unreachable ship leaves the panel
     // empty, and an answer about a document no longer open is dropped
     try {
-      const r = await fetch(mode === 'know'
+      const r = await busyFetch(mode === 'know'
         ? api + '/know-history?key=' + encodeURIComponent(want)
-        : api + '/page-history?name=' + encodeURIComponent(want));
+        : api + '/page-history?name=' + encodeURIComponent(want), undefined, 'rp:hist', $('rpane'));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
@@ -129,7 +129,7 @@
     if (!(await guardDirty())) return;
     let d = null;
     try {
-      const r = await fetch(mode === 'know'
+      const r = await busyFetch(mode === 'know'
         ? api + '/know-read-at?key=' + encodeURIComponent(current) + '&rev=' + rev
         : api + '/page-source-at?name=' + encodeURIComponent(current) + '&rev=' + rev);
       if (!r.ok) {
@@ -189,51 +189,58 @@
     if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     if (curFolder) { moveFolder(curFolder); return; }
     if (!current) { st('open something first', false); return; }
+    if (mode !== 'know') { askMovePage(current); return; }
     let seed = current;
     for (;;) {
-      const typed = await askName('move ' + (mode === 'know' ? 'memory' : 'page') + ' ' + current + ' to:',
-        seed, 'move');
+      const typed = await askName('move memory ' + current + ' to:', seed, 'move');
+      if (!typed) return;
+      const newName = realName(typed).name;
+      if (newName === current) return;
+      //  the memory this move is for. A tab switch during the round trip
+      //  moves `current`, and only this memory is renamed or relabeled.
+      const from = current;
+      const r = await mutate(api + '/know-move?from=' + encodeURIComponent(from) +
+        '&to=' + encodeURIComponent(newName));
+      if (!(r.ok || r.offline)) {
+        // the server refused this name — loop back into askName seeded with
+        // it, so the retry is an edit, not a full retype
+        st('move failed' + await errText(r), false);
+        seed = newName;
+        continue;
+      }
+      // the body is already in the editor. Rename in place, no refetch
+      knowGen++;
+      const k = knowKeys.find((x) => x.key.replace(/^\//, '') === from);
+      if (k) k.key = newName;
+      tabsRemap('know', from, newName);
+      if (mode === 'know' && current === from) setOpen(newName, { readOnly: true });
+      renderKnowChips();
+      renderKnowTree();
+      st('moved to ' + newName);
+      return;
+    }
+  };
+  //  move or rename a page, open or not: the page menu (#mv) for the open
+  //  one, the tree's menu (34-treemenu.js) for any. Only the page in front
+  //  reopens, under its new name, and only when it is the one that moved.
+  async function askMovePage(from) {
+    let seed = from;
+    for (;;) {
+      const typed = await askName('move page ' + from + ' to:', seed, 'move');
       if (!typed) return;
       const rn = realName(typed);
       const newName = rn.name;
       // same path with a display name is still a rename (My Page over my-page)
-      if (newName === current && !(mode !== 'know' && rn.dname)) return;
-      if (mode === 'know') {
-        //  the memory this move is for. A tab switch during the round trip
-        //  moves `current`, and only this memory is renamed or relabeled.
-        const from = current;
-        const r = await mutate(api + '/know-move?from=' + encodeURIComponent(from) +
-          '&to=' + encodeURIComponent(newName));
-        if (!(r.ok || r.offline)) {
-          // the server refused this name — loop back into askName seeded with
-          // it, so the retry is an edit, not a full retype
-          st('move failed' + await errText(r), false);
-          seed = newName;
-          continue;
-        }
-        // the body is already in the editor. Rename in place, no refetch
-        knowGen++;
-        const k = knowKeys.find((x) => x.key.replace(/^\//, '') === from);
-        if (k) k.key = newName;
-        tabsRemap('know', from, newName);
-        if (mode === 'know' && current === from) setOpen(newName, { readOnly: true });
-        renderKnowChips();
-        renderKnowTree();
-        st('moved to ' + newName);
-        return;
-      }
-      const from = current;
+      if (newName === from && !rn.dname) return;
       const mv = await movePage(from, newName, rn);
       if (mv) {
         st('moved to ' + newName + (mv.offline ? ' offline' : ''));
-        //  same rule as the memory move: only the page still in front
-        //  reopens under its new name
         if (mode !== 'know' && !grubPath && (current === from || current === newName))
           openPage(newName);
         return;
       }
-      // movePage already reported the cause — loop back into askName seeded
+      // movePage already reported the cause: loop back into askName seeded
       // with the rejected name
       seed = typed;
     }
-  };
+  }

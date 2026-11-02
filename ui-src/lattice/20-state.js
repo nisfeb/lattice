@@ -150,7 +150,61 @@
   //  owed to us, `until` the window while a write is in flight and after.
   //  Without them every save triggers a tree+source refetch of content
   //  this client just wrote (~4s of pier time each).
-  const echoes = { rev: { n: 0, until: 0, at: 0 }, know: { n: 0, until: 0, at: 0 } };
+  //
+  //  `early` counts bumps the window swallowed that no landed write has
+  //  claimed yet. The ship can send our bump BEFORE the write's answer (a
+  //  page-del's arrives with it), and counting that write's echo on landing
+  //  as well left one owed forever: it swallowed the next real remote bump,
+  //  and a page made elsewhere after a delete never showed. So a landing
+  //  write claims an early bump first and only counts one when none came.
+  //  Early bumps still unclaimed when the window shuts were someone else's,
+  //  and `wake` refreshes for them then.
+  //
+  //  `fly` counts writes still in flight on the beacon and `tail` is the
+  //  latest tail a landed one asked for. One write landing must not shut
+  //  the window on another still flying (an autosave under a folder move):
+  //  that one's early bump would then refresh, and its landing would count
+  //  the bump again, leaving one owed.
+  const echoes = {
+    rev: { n: 0, until: 0, at: 0, early: 0, fly: 0, tail: 0, timer: 0, wake: null },
+    know: { n: 0, until: 0, at: 0, early: 0, fly: 0, tail: 0, timer: 0, wake: null },
+  };
+  const echoArm = (echo) => {
+    clearTimeout(echo.timer);
+    if (!echo.early || !echo.wake) return;
+    echo.timer = setTimeout(() => {
+      if (Date.now() < echo.until) { echoArm(echo); return; }
+      echo.early = 0;
+      echo.wake();
+    }, Math.max(0, echo.until - Date.now()) + 50);
+  };
+  // a bump arrived on this beacon: true when it is (or may be) our own echo
+  const echoSeen = (echo, wake) => {
+    if (echo.n > 0) { echo.n--; return true; }
+    if (Date.now() >= echo.until) return false;
+    echo.early++;
+    echo.wake = wake;
+    echoArm(echo);
+    return true;
+  };
+  // a write set off: hold the window open while it flies
+  const echoSent = (echo) => {
+    echo.fly++;
+    echo.until = Math.max(echo.until, Date.now() + 60000);
+    echo.at = Date.now();             // when we last wrote (see refocused)
+  };
+  // a write answered (or failed), sent at `sentAt`. The window stays open
+  // for twice the round trip, and while any other write still flies.
+  // `ok`: it changed the ship, so one bump is ours.
+  const echoLanded = (echo, ok, sentAt) => {
+    const now = Date.now();
+    const tail = now + Math.max(4000, 2 * (now - sentAt));
+    echo.fly = Math.max(0, echo.fly - 1);
+    echo.tail = Math.max(echo.tail, tail);
+    echo.until = echo.fly ? Math.max(echo.until, tail) : echo.tail;
+    if (ok) { if (echo.early > 0) echo.early--; else echo.n++; }
+    echoArm(echo);
+  };
   // the beacon a write route bumps: the memory routes bump /know, all the
   // rest /rev (know-publish too, since it publishes a page)
   const echoOf = (url) => {
@@ -282,22 +336,26 @@
     srcFlight.clear();    // a read from before this write is shared no more
     sensForget(url);
     const echo = echoOf(url);
-    echo.until = Date.now() + 60000;
-    echo.at = Date.now();             // when we last wrote (see refocused)
+    echoSent(echo);
     lastAction = Date.now();          // a write is user activity (see bgFetch)
     const sentAt = Date.now();
     const req = (ms ? tfetch(url, init, ms) : fetch(url, init)).catch(() => null);
     if (save) saveFlight = req;
+    // a move, a share, a delete and the rest show the loading line while
+    // they fly (busy, 10-shell.js). A save does not: it runs on its own as
+    // the user types, and its status already says saving and saved.
+    const end = save ? null : busy();
     let r = null;
     try { r = await req; }
     finally {
+      if (end) end();
       if (saveFlight === req) saveFlight = null;
-      echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
     }
     // `r` too: a 504 can be a link's host (35-pages.js), not this ship
-    if (shipGone(r)) return { gone: true, r };
+    const gone = shipGone(r);
+    echoLanded(echo, !gone && r.ok, sentAt);    // one bump is ours (see echoes)
+    if (gone) return { gone: true, r };
     if (r.ok) {
-      echo.n++;                         // one bump is ours; consume it on arrival
       // every write names its target the same way; a move dirties both ends
       try {
         const q = new URL(url, location.href).searchParams;

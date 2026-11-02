@@ -137,7 +137,7 @@
     // the same sequence openPage keeps: a later open of anything supersedes
     // this one, so a slow answer cannot paint a memory over the page (or
     // the other memory) opened after it
-    const my = ++openSeq;
+    const my = openNext();
     if (mode !== 'know') setMode('know');
     // a queued edit outranks the ship's copy, same rule as pages
     const q = await offGet('know:' + key);
@@ -145,7 +145,7 @@
     if (q) d = { body: q.body, tags: (knowEntry(key) || { tags: [] }).tags, updated: 'queued offline' };
     else {
       let r = null;
-      try { r = await fetch(api + '/know-read?key=' + encodeURIComponent(key)); } catch {}
+      try { r = await busyFetch(api + '/know-read?key=' + encodeURIComponent(key), undefined, 'open'); } catch {}
       if (my !== openSeq) return;
       if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return false; }
       d = await r.json();
@@ -276,7 +276,7 @@
 
   async function deleteKnow() {
     if (!current) return;
-    if (!(await askConfirm('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
+    if (!(await askDanger('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
     const doomed = current;
     const r = await mutate(api + '/know-delete?key=' + encodeURIComponent(doomed));
     if (!r.ok) { st('delete failed' + await errText(r), false); return; }
