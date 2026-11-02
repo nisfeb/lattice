@@ -1794,7 +1794,61 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
   //  owed to us, `until` the window while a write is in flight and after.
   //  Without them every save triggers a tree+source refetch of content
   //  this client just wrote (~4s of pier time each).
-  const echoes = { rev: { n: 0, until: 0, at: 0 }, know: { n: 0, until: 0, at: 0 } };
+  //
+  //  `early` counts bumps the window swallowed that no landed write has
+  //  claimed yet. The ship can send our bump BEFORE the write's answer (a
+  //  page-del's arrives with it), and counting that write's echo on landing
+  //  as well left one owed forever: it swallowed the next real remote bump,
+  //  and a page made elsewhere after a delete never showed. So a landing
+  //  write claims an early bump first and only counts one when none came.
+  //  Early bumps still unclaimed when the window shuts were someone else's,
+  //  and `wake` refreshes for them then.
+  //
+  //  `fly` counts writes still in flight on the beacon and `tail` is the
+  //  latest tail a landed one asked for. One write landing must not shut
+  //  the window on another still flying (an autosave under a folder move):
+  //  that one's early bump would then refresh, and its landing would count
+  //  the bump again, leaving one owed.
+  const echoes = {
+    rev: { n: 0, until: 0, at: 0, early: 0, fly: 0, tail: 0, timer: 0, wake: null },
+    know: { n: 0, until: 0, at: 0, early: 0, fly: 0, tail: 0, timer: 0, wake: null },
+  };
+  const echoArm = (echo) => {
+    clearTimeout(echo.timer);
+    if (!echo.early || !echo.wake) return;
+    echo.timer = setTimeout(() => {
+      if (Date.now() < echo.until) { echoArm(echo); return; }
+      echo.early = 0;
+      echo.wake();
+    }, Math.max(0, echo.until - Date.now()) + 50);
+  };
+  // a bump arrived on this beacon: true when it is (or may be) our own echo
+  const echoSeen = (echo, wake) => {
+    if (echo.n > 0) { echo.n--; return true; }
+    if (Date.now() >= echo.until) return false;
+    echo.early++;
+    echo.wake = wake;
+    echoArm(echo);
+    return true;
+  };
+  // a write set off: hold the window open while it flies
+  const echoSent = (echo) => {
+    echo.fly++;
+    echo.until = Math.max(echo.until, Date.now() + 60000);
+    echo.at = Date.now();             // when we last wrote (see refocused)
+  };
+  // a write answered (or failed), sent at `sentAt`. The window stays open
+  // for twice the round trip, and while any other write still flies.
+  // `ok`: it changed the ship, so one bump is ours.
+  const echoLanded = (echo, ok, sentAt) => {
+    const now = Date.now();
+    const tail = now + Math.max(4000, 2 * (now - sentAt));
+    echo.fly = Math.max(0, echo.fly - 1);
+    echo.tail = Math.max(echo.tail, tail);
+    echo.until = echo.fly ? Math.max(echo.until, tail) : echo.tail;
+    if (ok) { if (echo.early > 0) echo.early--; else echo.n++; }
+    echoArm(echo);
+  };
   // the beacon a write route bumps: the memory routes bump /know, all the
   // rest /rev (know-publish too, since it publishes a page)
   const echoOf = (url) => {
@@ -1926,8 +1980,7 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
     srcFlight.clear();    // a read from before this write is shared no more
     sensForget(url);
     const echo = echoOf(url);
-    echo.until = Date.now() + 60000;
-    echo.at = Date.now();             // when we last wrote (see refocused)
+    echoSent(echo);
     lastAction = Date.now();          // a write is user activity (see bgFetch)
     const sentAt = Date.now();
     const req = (ms ? tfetch(url, init, ms) : fetch(url, init)).catch(() => null);
@@ -1941,12 +1994,12 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
     finally {
       if (end) end();
       if (saveFlight === req) saveFlight = null;
-      echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
     }
     // `r` too: a 504 can be a link's host (35-pages.js), not this ship
-    if (shipGone(r)) return { gone: true, r };
+    const gone = shipGone(r);
+    echoLanded(echo, !gone && r.ok, sentAt);    // one bump is ours (see echoes)
+    if (gone) return { gone: true, r };
     if (r.ok) {
-      echo.n++;                         // one bump is ours; consume it on arrival
       // every write names its target the same way; a move dirties both ends
       try {
         const q = new URL(url, location.href).searchParams;
@@ -2236,6 +2289,7 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
         curKind = s.kind;
         render();
         pname.dispatchEvent(new Event('input'));
+        refreshPreview();
         if (s.dirty) st('unsaved, Ctrl+S to save');
       },
       park: parkDoc,
@@ -8624,6 +8678,9 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
     // paint once the kind is known: a highlight of the old kind is thrown
     // away when it answers
     render();
+    // the pane follows too: a Read tab opened this grub in place, and
+    // nothing else repaints it, so it kept the page that was there before
+    refreshPreview();
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'
        : 'grub ' + blot + ', no autosave here: Ctrl+S to save');
@@ -8647,6 +8704,9 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
     grubUnsure = null;
     if (grubPrevKind === null) grubPrevKind = pkind.value;
     curFolder = null;
+    // nothing of the document before it stays in the pane either, while
+    // the grub loads or after a load that fails
+    prevBlank();
     // a shared lattice page reads as "~ship: its/name", not its whole ball
     // path; the name field is only a label here (Save goes by grubPath)
     const pg = /\/page\/(.+)\/code$/.exec(p);
@@ -9384,9 +9444,13 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
       // GTK dark variant and gtk-application-prefer-dark-theme alike.
       // The div scrolls with the app's own styled bars instead.
       prev.setAttribute('sandbox', 'allow-scripts allow-top-navigation-by-user-activation');
+      // Whatever frame is `prev` by then goes in, not the one made here:
+      // a tab restored in Read runs showPreview inside boot, which swaps
+      // in a new frame before this task, and the old one has no parent to
+      // be replaced in. Inserting the first frame left every later write
+      // going to a frame that was never in the page, a blank pane for good.
       const wrap = this.querySelector('.prevwrap');
-      const f = prev;
-      setTimeout(() => { if (!f.parentNode) wrap.append(f); }, 0);
+      setTimeout(() => { if (!prev.parentNode) wrap.append(prev); }, 0);
       // the frame reports its content height once its document has loaded;
       // the wrap scrolls. The FIRST report per document wins, measured with
       // the frame at pane height (previewFit clears min-height before every
@@ -9542,6 +9606,16 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
     } catch { return null; }
   };
 
+  // A grub of a kind no client renderer knows (hoon, js, css, a binary
+  // file) has no preview: it is no page, so the /f/ route that shows a
+  // computed page's live data has nothing to serve. The pane says so, in
+  // the blank pane's colours, rather than keep the page that was there.
+  const prevNone = () => {
+    prev.removeAttribute('src');
+    prev.style.minHeight = '';
+    prev.srcdoc = localShell('') + '<p style="opacity:.6;text-align:center;margin-top:3em">'
+      + 'No preview for this file</p>';
+  };
   // a theme that lands after the frame was painted (theme.js runs after
   // this bundle, and the ship or another tab can change it later) repaints
   // it: the local render of a content page (an unsaved new one too), or
@@ -9549,6 +9623,7 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
   // refetching it costs a request.
   window.addEventListener('lattheme', () => {
     if (CONTENT() && (current || src.value)) paintLocal();
+    else if (grubPath && !CONTENT()) prevNone();
     else if (!current) prevBlank();
   });
   async function refreshPreview() {
@@ -9576,6 +9651,8 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
       // Computed kinds (hoon, js, css) take the /f/ branch below: their
       // preview is the page's live data, which no client renderer can know.
       paintLocal();
+    } else if (grubPath) {
+      prevNone();
     } else if (current) {
       prev.removeAttribute('srcdoc');
       fitCur = null; prev.style.minHeight = '';
@@ -9596,7 +9673,7 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
     const n = prev.cloneNode(false);
     n.removeAttribute('srcdoc'); n.removeAttribute('src'); n.style.minHeight = '';
     prev.replaceWith(n); prev = n; fitCur = null;
-    if (CONTENT() || current) refreshPreview(); else prevBlank();
+    if (CONTENT() || current || grubPath) refreshPreview(); else prevBlank();
   }
   let localTimer = null;
   src.addEventListener('input', () => {
@@ -12837,6 +12914,7 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
   let streamLive = false;
   let beaconTimer = null;
   const bumped = () => { clearTimeout(beaconTimer); beaconTimer = setTimeout(refreshAll, 300); };
+  const knowBumped = () => { if (knowLive()) bumped(); };
   // comments never bump /rev (apply-comment stamps only /beacon/comments), so
   // a foreign comment used to reach the badge only by accident, on whatever
   // next refreshAll a focus or poll happened to trigger. Give it the same
@@ -12942,9 +13020,8 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
                 continue;
               }
               noteKnow(data);
-              if (echoes.know.n > 0) { echoes.know.n--; continue; }
-              if (Date.now() < echoes.know.until) continue;
-              if (knowLive()) bumped();
+              if (echoSeen(echoes.know, knowBumped)) continue;
+              knowBumped();
               continue;
             }
             if (name.slice(-5) !== ' /rev') {
@@ -12974,8 +13051,7 @@ const WRITER_H = '0v7.im33g.3kmgb.140a0.opcfj.41k5l';
             // consumed by count (see echoes, 20-state.js).
             bumpedLive = true;
             noteRev(data);
-            if (echoes.rev.n > 0) { echoes.rev.n--; continue; }
-            if (Date.now() < echoes.rev.until) continue;
+            if (echoSeen(echoes.rev, bumped)) continue;
             bumped();
           }
         }
