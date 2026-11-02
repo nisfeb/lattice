@@ -121,6 +121,9 @@
   //  and that it is permanent. Pages carry no trash: the writer prunes
   //  every revision and offers no restore, unlike a memory's soft delete.
   const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
+  //  the page tabs, not in front, that hold a page at or under `path`
+  const parkedUnder = (path) => allTabs().filter((t) => t !== activeTab && t.kind === 'page'
+    && !t.ship && t.snap && t.key && (t.key === path || t.key.startsWith(path + '/')));
   function delWhat(path, folder) {
     const n = nodes.find((x) => x.page === !folder && x.path === path);
     const name = (n && n.dname ? n.dname + ' (' + path + ')' : path);
@@ -157,6 +160,9 @@
     const open = mode !== 'know' && !grubPath && current
       && (current === path || current.startsWith(path + '/'));
     if (open && dirty) lines.push('The open page has unsaved changes, and they go too.');
+    const parked = parkedUnder(path).filter((t) => t.snap.dirty).length;
+    if (parked) lines.push(plural(parked, 'other tab') + ' with unsaved changes to it'
+      + (parked === 1 ? ' loses them.' : ' lose them.'));
     if (degraded || offCount) lines.push('You are offline: the delete is queued and runs when the ship is back.');
     lines.push('This is permanent and cannot be restored.');
     return lines.join('\n');
@@ -180,7 +186,19 @@
       savePending = false;
       newFile('', false);
     }
-    await waitSave();
+    //  a tab not in front keeps its unsaved text in its snap, and brought
+    //  back it would autosave that text (21-tabs.js), and a parked save
+    //  still queued would send it (saveParked, 35-pages.js). Either one made
+    //  the page again, so the text the user just agreed to lose is let go.
+    const gone = parkedUnder(path).filter((t) => t.snap.dirty);
+    for (const t of gone) t.snap.dirty = false;
+    if (gone.length) paintTabs();
+    //  settled, not only off the wire: a save whose write failed clears
+    //  `saving` and only then queues its body offline. A delete sent in
+    //  that gap queued before the save did, so the save outlived the
+    //  delete's cull of the queue and replayed the page back. Capped, so
+    //  a save that never answers cannot hold the delete forever.
+    await savesSettled();
     const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
     if (!r.ok) { st('delete failed' + await errText(r), false); return false; }
     dropTreeNodes(path);
