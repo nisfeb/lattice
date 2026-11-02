@@ -161,6 +161,10 @@ jobs:
         env:
           WRITER_REQUIRE_SOFFICE: "1"
         run: node scripts/writer-roundtrip.mjs
+      - name: .odt import and export
+        env:
+          WRITER_REQUIRE_SOFFICE: "1"
+        run: node scripts/writer-odt.mjs
 
   static:
     name: web client + scripts — static checks

@@ -322,6 +322,12 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 
 **Acceptance.** Search and the right pane treat a fodt page as text.
 
+**Done (2026-11-02).** Notes:
+
+- **Outline and Outgoing** come from `LatWriter.extract` (`outline`, and a new `out`: the `text:a` targets that `safeHref` allows, not in-page, deduped). Before writer.js is here the tab asks for it and repaints when it lands (`wrX`, 26-writer.js); there is no regex extractor in app.js for these. A click on a heading puts the caret in it through the controller's new `heading(i)`.
+- **Omnibar.** `searchText(kind, body, path)` in 79-search.js, memoized per path on the body. It uses `LatWriter.extract.text` once loaded, else a three-regex extractor over `office:body` that decodes only `&amp;`.
+- **Budget.** app.js is 663,002 bytes, 51 under the 8 KB allowance. Room came from: `mount()` returning the whole refusal sentence, `LatWriter.show()` replacing 60-preview's `fodtHtml` fallback, and the `<lat-writer>` overlay and loading-frame styles moving to index.html. Any further shell work for Writer has to move something first; the next candidates are the loading frame in `wrBox` and `kindSwitchOk`'s messages.
+
 ### Task 12: Import and export
 
 **Files:**
@@ -338,6 +344,17 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 - Also (moved here from Task 4 in review): add the inbound alias `odt: 'fodt'` to EXT_KIND only together with the importer, so an `.odt` reaches `odt.js` and never the text read. kind-parity then needs named exceptions for projection.rs, KMAP and desktop `PAGE_EXTS` (or a desktop picker that hands `.odt` over as bytes), and a test that a vault restore and a mount never take a `.odt` as text.
 
 **Acceptance.** `.odt` in and out works in the browser with no desktop, and printing gives paginated output with the document's page size and margins.
+
+**Done (2026-11-02).** `ui-src/writer/odt.js` and `print.js`; tests in `scripts/writer-odt.mjs` (pure node plus LibreOffice, added to the CI round-trip job) and `scripts/ui-writer-import.mjs` (browser). writer.js is 376.3 KB raw and 113.0 KB gzipped. Notes:
+
+- **Inflate fallback** is `tiny-inflate` 1.0.3 (MIT), pinned in scripts/package.json and added to writer-licences.mjs's roots, so its notice is in vendor/LICENSES. An entry may inflate to 16 MB and to no more than its stated size; the parts together are held to the 8 MB document cap.
+- **Basic macros** are not dropped: `Basic/` libraries become the embedded `office:script` a flat file carries (10-unknown needs this to compare equal). Pictures, embedded objects and linked libraries are left out, named in the upload panel.
+- **Relative links.** LibreOffice resolves a relative `xlink:href` in a package from inside it and in a flat file from beside it (26.8), so import drops one leading `../` and export adds one. Without that, 05-links and 10-unknown move their link targets.
+- **Clash renaming** renames styles.xml's automatic style (`P1` to `MP1_1`) and rewrites `*style-name` and `style:page-layout-name` in styles.xml's automatic and master styles only.
+- **Export .odt and Print are toolbar buttons** in the editor (`.odt` and `⎙`), not page-menu items in 23-tabhead.js: app.js had no room, and the toolbar has the editor's current text. They work on read-only documents too. A refused body (shown as XML) has neither.
+- **Print** prints `render(text, true)`, which adds `@page` size and margins from the first master page (lengths through the strict grammar; Letter and 2 cm otherwise) and page breaks as `break-before:page`, from a `sandbox="allow-same-origin allow-modals"` frame, so nothing in it runs.
+- **`.odt` alias.** `EXT_KIND` has `odt: 'fodt'`. kind-parity.mjs names it as bytes-only and checks it is absent from vault.js's KMAP, projection.rs (where a `.odt` is scratch) and desktop PAGE_EXTS, so the desktop picker does not offer it yet.
+- **Checks.** Each corpus `.odt` imports to a fodt whose LibreOffice canonical form equals the corpus `.fodt`'s; each `.fodt` exports to an `.odt` that canonicalizes equal to it; each imported file takes its scripted edit and LibreOffice reads the edit; zip bombs (honest and lying sizes, both inflaters) are refused. In the browser, an uploaded `.odt` opens in the editor, an edit exported from the toolbar is read by LibreOffice, and Print's frame has the page size.
 
 ### Task 13: Security pass
 

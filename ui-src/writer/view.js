@@ -30,6 +30,8 @@ import { cssLength, styleCss } from './styles.js';
 import { buildKeys } from './keys.js';
 import { buildToolbar } from './toolbar.js';
 import { pastePlugin } from './paste.js';
+import { exportOdt } from './odt.js';
+import { printCss, printFrame } from './print.js';
 
 const S = schema.nodes;
 
@@ -226,7 +228,7 @@ const PAIR_WHAT = 'one half of a bookmark, reference mark, comment or tracked ch
 export function mount(host, opts = {}) {
   const text = String(opts.text ?? '');
   const parsed = parseFodt(text);
-  if (parsed.error) return { error: parsed.error };
+  if (parsed.error) return { error: 'The Writer editor cannot open this document (' + parsed.error + '), so it shows as XML.' };
   installBase();
   const st = parsed.styles;
   host.replaceChildren();
@@ -363,6 +365,34 @@ export function mount(host, opts = {}) {
     toolbar.update(view);
   };
   ctl.focus = () => view.focus();
+  //  the document out, as it stands in the editor
+  ctl.exportOdt = () => {
+    const r = ctl.text();
+    const e = r.error ? r : exportOdt(r.text);
+    if (e.error) return ctl.say(e.error);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(e.blob);
+    a.download = String(opts.name || 'document').split('/').pop() + '.odt';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  };
+  ctl.print = () => {
+    const r = ctl.text();
+    const h = !r.error && render(r.text, true);
+    if (!h) return ctl.say(r.error || 'This document cannot be printed.');
+    printFrame(h);
+  };
+  //  the outline's nth heading (fodtOutline's order): caret there, in view
+  ctl.heading = (i) => {
+    let at = -1;
+    view.state.doc.descendants((n, pos) => {
+      if (n.type === S.heading && i-- === 0) at = pos + 1;
+      return at < 0 && n.type !== S.heading && n.type !== S.paragraph;
+    });
+    if (at < 0) return;
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, at)).scrollIntoView());
+    view.focus();
+  };
   ctl.destroy = () => {
     if (ro) ro.disconnect();
     clearTimeout(flashTimer);
@@ -378,7 +408,7 @@ let mountSeq = 0;
 //  the body as a self-contained HTML document, or null when it cannot be
 //  parsed. Built with DOM APIs in a detached document, so every text and
 //  attribute is escaped by the serializer; no href, no script, no url.
-export function render(text) {
+export function render(text, print = false) {
   const p = parseFodt(String(text ?? ''));
   if (p.error || typeof document === 'undefined') return null;
   const d = document.implementation.createHTMLDocument('');
@@ -395,7 +425,8 @@ export function render(text) {
   const css = BASE_CSS + docCss(p.styles, 'lat-writer[data-lw="r"]')
     + `\nbody{margin:0}lat-writer{display:block;height:auto;overflow:visible}`
     + `.lw-sheet{max-width:${Math.round(box.width)}px;padding:${Math.round(box.top)}px ${Math.round(box.right)}px ${Math.round(box.bottom)}px ${Math.round(box.left)}px;box-shadow:none;min-height:0}`
-    + `@media (max-width:${Math.round(box.width)}px){.lw-sheet{padding:16px}}`;
+    + `@media (max-width:${Math.round(box.width)}px){.lw-sheet{padding:16px}}`
+    + (print ? printCss(p.layout) : '');
   const style = d.createElement('style');
   style.textContent = css;
   return '<!doctype html><html><head><meta charset="utf-8"><base target="_top">' + style.outerHTML

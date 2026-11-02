@@ -417,6 +417,9 @@ select, option { color-scheme: inherit; }
 .lnkcf button { background: none; color: var(--text); border: 1px solid var(--border);
   border-radius: 6px; padding: 3px 10px; font: inherit; font-size: .9em; cursor: pointer; }
 .lnkcf button:hover { background: var(--accent-tint, color-mix(in srgb, var(--accent) 16%, transparent)); }
+/*  the Writer editor over #src, and the ship's render while it loads (26-writer.js) */
+lat-writer { position: absolute; inset: 0; z-index: 3; background: var(--bg); }
+lat-writer > iframe { border: 0; width: 100%; height: 90%; }
 @keyframes latpend {
   0%, 100% { background: transparent; }
   50%      { background: color-mix(in srgb, currentColor 16%, transparent); }

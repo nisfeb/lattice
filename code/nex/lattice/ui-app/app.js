@@ -2,7 +2,7 @@
 (function () {
 'use strict';
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
-const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
+const WRITER_H = '0v1.nijd2.4kptj.fm8jb.db2ob.kpbg3';
 
 // ── src/00-framed.js ──────────────────────────────────────────────────────
   // ── never a second editor in a frame ─────────────────────────────────────
@@ -4443,23 +4443,21 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
       s.onerror = fail;
       document.head.append(s);
     })));
+  // headings and links (76-outline.js) once writer.js is here
+  const wrX = (f, b) => window.LatWriter ? LatWriter.extract[f](b) : (writerReady().then(() => rpSoon(), () => {}), []);
   const wrNote = document.createElement('div');
   wrNote.className = 'lnkcf';
   wrNote.hidden = true;
   $('docarea').before(wrNote);
   // in the live .edwrap; `msg` and the ship's render until writer.js is here
   function wrBox(msg) {
-    if (!wrHost) {
-      wrHost = document.createElement('lat-writer');
-      wrHost.style.cssText = 'position:absolute;inset:0;z-index:3;background:var(--bg)';
-    }
+    if (!wrHost) wrHost = document.createElement('lat-writer');
     if (wrHost.parentNode !== src.parentNode) src.parentNode.append(wrHost);
     if (msg) {
       const p = document.createElement('p'), f = document.createElement('iframe');
       const c = current && pageCache.get(current);
       p.textContent = msg;
       f.setAttribute('sandbox', '');
-      f.style.cssText = 'border:0;width:100%;height:90%';
       f.srcdoc = (c && c.html) || '';
       wrHost.replaceChildren(p, f);
     }
@@ -4477,7 +4475,7 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
     wrQ = false;
     const why = writerSourceOn() && wrSrc.get(wrKey());
     wrNote.hidden = !why;
-    wrNote.textContent = 'The Writer editor cannot open this document (' + why + '), so it shows as XML.';
+    wrNote.textContent = why;
     if (!fodtHere() || writerSourceOn()) return writerOff();
     const body = src.value, ed = !src.readOnly && viewingRev === null;
     wrShow(true);
@@ -4488,7 +4486,7 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
     const my = wrSeq;
     writerReady().then((LW) => {
       if (my !== wrSeq || src.value !== body || !fodtHere() || writerSourceOn()) return;
-      const c = LW.mount(wrBox(), { text: body, editable: ed, onChange: writerChanged });
+      const c = LW.mount(wrBox(), { text: body, editable: ed, name: current, onChange: writerChanged });
       if (c.error) { wrSrc.set(wrKey(), c.error); writerApply(); } else wr = c;
     }, () => { if (my === wrSeq) wrBox('The Writer editor did not load. Source in the page menu shows the XML.'); });
   }
@@ -6549,12 +6547,13 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
   //
   // `htm` and `text` are INBOUND-ONLY aliases: archives written before the
   // extension was conventionalised named those files `.text`, and a restore
-  // has to keep reading archives this app already handed out.
+  // has to keep reading archives this app already handed out. `odt` is
+  // upload-only, read as bytes by writer.js (70-upload.js).
   const KIND_EXT = { md: 'md', gmi: 'gmi', html: 'html', text: 'txt', js: 'js',
                      css: 'css', hoon: 'hoon', index: 'md', tex: 'tex', fodt: 'fodt' };
   const EXT_KIND = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
                      text: 'text', js: 'js', css: 'css', hoon: 'hoon', tex: 'tex',
-                     latex: 'tex', fodt: 'fodt' };
+                     latex: 'tex', fodt: 'fodt', odt: 'fodt' };
   //  an unknown kind shows as hoon, the kind that holds arbitrary source
   const kindExt = (k) => KIND_EXT[k] || 'hoon';
   //  an unknown extension is null, never guessed: the caller skips that file
@@ -9212,7 +9211,7 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
       // scrollbars (an alpha grey that reads on both schemes), so the
       // document's own colour scheme is left exactly as written.
       if (pkind.value === 'html') { prev.srcdoc = withPreviewScrollbars(src.value); return; }
-      if (kindNow() === 'fodt') { writerSync(); prev.srcdoc = withPreviewScrollbars(fodtHtml(src.value)); return; }
+      if (kindNow() === 'fodt') { writerSync(); prev.srcdoc = withPreviewScrollbars(LatWriter.show(src.value)); return; }
       // color-scheme belongs on :root, not body — on body it does not reach the
       // canvas, so the frame painted opaque WHITE in dark theme. That was true
       // of every local paint since it landed and went unseen because only the
@@ -9227,10 +9226,6 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
       // to the top page is what the sandbox token above actually permits.
       prev.srcdoc = localShell(previewFit()) + localHtml(kindNow(), src.value);
     } catch {}
-  };
-  //  a Writer page as its editor shows it (writer.js: no script, no link)
-  const fodtHtml = (body) => {
-    try { return window.LatWriter.render(body) || 'This document cannot be shown here.'; } catch { return ''; }
   };
   // the bare document a content kind's local render goes into. `fit` is
   // the height reporter, which only the live preview has.
@@ -9249,7 +9244,7 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
   // a parked group's Read (28-splits.js): the same local render of its
   // text, no fit, or null for a kind only the ship renders
   const ghostDoc = (kind, body) => {
-    if (kind === 'fodt') return window.LatWriter ? previewScrollbars() + fodtHtml(body) : null;
+    if (kind === 'fodt') return window.LatWriter ? previewScrollbars() + LatWriter.show(body) : null;
     if (!['md', 'gmi', 'html', 'text'].includes(kind)) return null;
     try {
       return kind === 'html' ? previewScrollbars() + body : localShell('') + localHtml(kind, body);
@@ -10124,7 +10119,7 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
       if (folderCtx) parts.unshift(...folderCtx.split('/'));
       const name = parts.join('/');
       if (!name) { skippedNames.push(rel); continue; }
-      list.push({ file, name, kind });
+      list.push({ file, name, kind, odt: /\.odt$/i.test(rel) });
     }
     if (!list.length) {
       upShow();
@@ -10160,7 +10155,11 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
       const payload = [];
       try {
         for (const it of part) {
-          payload.push({ name: it.name, type: it.kind, body: (await it.file.text()) || '\n' });
+          // an .odt goes through writer.js
+          const c = it.odt ? await (await writerReady()).importOdt(await it.file.arrayBuffer()) : { text: await it.file.text() };
+          if (c.error || c.note) upErr.textContent += it.name + ': ' + (c.error || c.note) + '\n';
+          if (c.error) { fails++; continue; }
+          payload.push({ name: it.name, type: it.kind, body: c.text || '\n' });
           // the read is awaited one file at a time, so the bar can move with
           // it instead of sitting at 0% for the whole chunk and then jumping
           upProg(done + payload.length, list.length, it.name, 'reading');
@@ -11233,6 +11232,7 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
   // link there: fences, images, unsafe schemes and escaping all come out the
   // same. A page link comes back as its page name, a urb:// link as itself.
   function outLinks(body, kind) {
+    if (kind === 'fodt') return wrX('out', body);
     const html = kind === 'md' ? mdToHtml(body) : kind === 'gmi' ? gmiToHtml(body) : '';
     const out = [];
     for (const m of html.matchAll(/<a href="([^"]*)"/g)) {
@@ -11252,6 +11252,7 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
   // `line` counts from 1.
   function outline(body, kind) {
     const out = [];
+    if (kind === 'fodt') return wrX('outline', body);
     if (kind !== 'md' && kind !== 'gmi') return out;
     const lines = String(body == null ? '' : body).split('\n');
     let fence = null;
@@ -11415,6 +11416,7 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
       if (el) el.scrollIntoView({ block: 'start' });
       return;
     }
+    if (wr) return wr.heading(idx);
     const lines = src.value.split('\n');
     let off = 0;
     for (let i = 0; i < line - 1 && i < lines.length; i++) off += lines[i].length + 1;
@@ -11861,6 +11863,15 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
     return (from ? '…' : '') + body.slice(from, to).replace(/\s+/g, ' ') + (to < body.length ? '…' : '');
   };
 
+  // a Writer page is searched as its words, not its XML
+  const qTx = new Map();
+  const searchText = (k, b, p) => {
+    if (k !== 'fodt') return b;
+    let m = qTx.get(p);
+    if (!m || m[0] !== b) qTx.set(p, m = [b, window.LatWriter ? LatWriter.extract.text(b) : (b.split('<office:body>')[1] || '')
+      .replace(/<\/text:[ph]>|<text:(s|tab|line-break)\b[^>]*>/g, ' ').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&')]);
+    return m[1];
+  };
   //  one hit builder for both corpora. A page and a memory differ only in
   //  where the key and the body come from, and in what the badge says.
   const qHit = (key, body, q, scope, know) => {
@@ -11889,7 +11900,7 @@ const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
       // page is newer than it, calling it private would be a false safety
       // signal on a clearweb page: exactly the misread this badge exists to
       // prevent. Unknown says unknown.
-      const h = qHit(n.path, n.body, q, (qScopes && qScopes.get(n.path)) || 'unknown', false);
+      const h = qHit(n.path, searchText(n.kind, n.body, n.path), q, (qScopes && qScopes.get(n.path)) || 'unknown', false);
       if (h) out.push(h);
     }
     for (const k of qKnow) {

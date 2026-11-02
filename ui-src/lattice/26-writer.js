@@ -17,23 +17,21 @@
       s.onerror = fail;
       document.head.append(s);
     })));
+  // headings and links (76-outline.js) once writer.js is here
+  const wrX = (f, b) => window.LatWriter ? LatWriter.extract[f](b) : (writerReady().then(() => rpSoon(), () => {}), []);
   const wrNote = document.createElement('div');
   wrNote.className = 'lnkcf';
   wrNote.hidden = true;
   $('docarea').before(wrNote);
   // in the live .edwrap; `msg` and the ship's render until writer.js is here
   function wrBox(msg) {
-    if (!wrHost) {
-      wrHost = document.createElement('lat-writer');
-      wrHost.style.cssText = 'position:absolute;inset:0;z-index:3;background:var(--bg)';
-    }
+    if (!wrHost) wrHost = document.createElement('lat-writer');
     if (wrHost.parentNode !== src.parentNode) src.parentNode.append(wrHost);
     if (msg) {
       const p = document.createElement('p'), f = document.createElement('iframe');
       const c = current && pageCache.get(current);
       p.textContent = msg;
       f.setAttribute('sandbox', '');
-      f.style.cssText = 'border:0;width:100%;height:90%';
       f.srcdoc = (c && c.html) || '';
       wrHost.replaceChildren(p, f);
     }
@@ -51,7 +49,7 @@
     wrQ = false;
     const why = writerSourceOn() && wrSrc.get(wrKey());
     wrNote.hidden = !why;
-    wrNote.textContent = 'The Writer editor cannot open this document (' + why + '), so it shows as XML.';
+    wrNote.textContent = why;
     if (!fodtHere() || writerSourceOn()) return writerOff();
     const body = src.value, ed = !src.readOnly && viewingRev === null;
     wrShow(true);
@@ -62,7 +60,7 @@
     const my = wrSeq;
     writerReady().then((LW) => {
       if (my !== wrSeq || src.value !== body || !fodtHere() || writerSourceOn()) return;
-      const c = LW.mount(wrBox(), { text: body, editable: ed, onChange: writerChanged });
+      const c = LW.mount(wrBox(), { text: body, editable: ed, name: current, onChange: writerChanged });
       if (c.error) { wrSrc.set(wrKey(), c.error); writerApply(); } else wr = c;
     }, () => { if (my === wrSeq) wrBox('The Writer editor did not load. Source in the page menu shows the XML.'); });
   }

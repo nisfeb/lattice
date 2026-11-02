@@ -31,8 +31,11 @@ const json = (p) => JSON.parse(readFileSync(p, 'utf8'));
 const pkg = json(join(here, 'package.json'));
 const lock = json(join(here, 'package-lock.json'));
 const dev = pkg.devDependencies || {};
-const roots = Object.keys(dev).filter((n) => n.startsWith('prosemirror-'));
-check('scripts/package.json names the ProseMirror packages', roots.length >= 12, roots.join(' '));
+//  the bundled packages: ProseMirror, and tiny-inflate (odt.js's inflate
+//  for a browser with no DecompressionStream)
+const RUNTIME = ['tiny-inflate'];
+const roots = Object.keys(dev).filter((n) => n.startsWith('prosemirror-') || RUNTIME.includes(n));
+check('scripts/package.json names the ProseMirror packages', roots.length >= 13, roots.join(' '));
 
 //  the closure of runtime dependencies from the ProseMirror roots
 const seen = new Map();

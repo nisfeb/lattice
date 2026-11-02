@@ -100,6 +100,15 @@
     return (from ? '…' : '') + body.slice(from, to).replace(/\s+/g, ' ') + (to < body.length ? '…' : '');
   };
 
+  // a Writer page is searched as its words, not its XML
+  const qTx = new Map();
+  const searchText = (k, b, p) => {
+    if (k !== 'fodt') return b;
+    let m = qTx.get(p);
+    if (!m || m[0] !== b) qTx.set(p, m = [b, window.LatWriter ? LatWriter.extract.text(b) : (b.split('<office:body>')[1] || '')
+      .replace(/<\/text:[ph]>|<text:(s|tab|line-break)\b[^>]*>/g, ' ').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&')]);
+    return m[1];
+  };
   //  one hit builder for both corpora. A page and a memory differ only in
   //  where the key and the body come from, and in what the badge says.
   const qHit = (key, body, q, scope, know) => {
@@ -128,7 +137,7 @@
       // page is newer than it, calling it private would be a false safety
       // signal on a clearweb page: exactly the misread this badge exists to
       // prevent. Unknown says unknown.
-      const h = qHit(n.path, n.body, q, (qScopes && qScopes.get(n.path)) || 'unknown', false);
+      const h = qHit(n.path, searchText(n.kind, n.body, n.path), q, (qScopes && qScopes.get(n.path)) || 'unknown', false);
       if (h) out.push(h);
     }
     for (const k of qKnow) {

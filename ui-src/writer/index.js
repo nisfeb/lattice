@@ -22,11 +22,14 @@ import * as dropcursor from 'prosemirror-dropcursor';
 import * as gapcursor from 'prosemirror-gapcursor';
 import { parseFodt, fodtText, fodtOutline, fodtLinks } from './parse.js';
 import { serializeFodt, pairGuard } from './serialize.js';
-import { schema } from './schema.js';
+import { schema, safeHref } from './schema.js';
 import { mount, render } from './view.js';
+import { importOdt, exportOdt } from './odt.js';
 //  a new Writer page: LibreOffice's own default document, saved by
 //  LibreOffice, with its body text, heading and list styles defined
 import blank from './blank.fodt';
+
+const NOSHOW = 'This document cannot be shown here.';
 
 const pm = Object.freeze({
   model, state, view, transform, commands, keymap, history,
@@ -43,9 +46,19 @@ const LatWriter = {
   mount,
   //  render(text) -> an HTML document string | null
   render,
+  //  show(text) -> render's document, or one saying it cannot be shown
+  show: (t) => { try { return render(t) || NOSHOW; } catch { return NOSHOW; } },
   blank,
+  //  importOdt(ArrayBuffer) -> Promise<{ text, note } | { error }>,
+  //  exportOdt(text) -> { blob } | { error }, odt.js
+  importOdt,
+  exportOdt,
   //  the words, headings and link targets of a body (search, outline)
-  extract: Object.freeze({ text: fodtText, outline: fodtOutline, links: fodtLinks }),
+  //  (out: the links the right pane lists, safe and not in-page, deduped)
+  extract: Object.freeze({
+    text: fodtText, outline: fodtOutline, links: fodtLinks,
+    out: (t) => [...new Set(fodtLinks(t).filter((h) => h && safeHref(h) && h[0] !== '#'))],
+  }),
 };
 //  internal, not part of the API: the core, for the view and its suites
 Object.defineProperty(LatWriter, 'core', {

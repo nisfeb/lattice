@@ -143,6 +143,13 @@ export function buildToolbar(bar, ctl, { schema, st }) {
   sep();
   button('undo', '↶', 'Undo (Ctrl+Z)', undo);
   button('redo', '↷', 'Redo (Ctrl+Y)', redo);
+  sep();
+  //  the document out, editable or not: an .odt file, and print or PDF
+  for (const [id, label, title] of [['odt', '.odt', 'Export .odt'], ['print', '⎙', 'Print or PDF']]) {
+    const b = button(id, label, title, () => true);
+    items.pop();
+    b.onclick = () => (id === 'odt' ? ctl.exportOdt() : ctl.print());
+  }
 
   // ------------------------------------------------------------ link
   //  a small form under the toolbar. An existing target is shown as it is
