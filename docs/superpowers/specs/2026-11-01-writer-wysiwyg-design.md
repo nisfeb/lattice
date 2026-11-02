@@ -90,7 +90,8 @@ The rule for anything not in the table is "opaque, carried verbatim". An opaque 
 - Direct formatting (bold, italic, underline, strike, page break) needs an **automatic** style. Lattice builds a canonical key for the wanted style (family, parent style, and the sorted property set) and reuses any existing automatic style with exactly that key, including ones LibreOffice wrote. Only when none matches does it append a new one.
 - A new automatic style is named `L` plus the family letter plus the first eight hex digits of a hash of its canonical key, for example `LT3fa9c210`. Same formatting gives the same name in every session and on every ship, so two edits that bold the same thing do not produce two styles or a spurious diff. It cannot collide with LibreOffice's `P1`, `T1`, `L1` names.
 - Lattice never deletes an automatic style it no longer uses. LibreOffice drops unused automatic styles on its next save anyway, and a lattice delete would be churn.
-- LibreOffice renumbers its own automatic styles, rewrites `office:settings` (cursor position, view area) and adds `officeooo:rsid` attributes on every save. That churn is LibreOffice's, not lattice's, and lattice cannot prevent it. It is why a LibreOffice save shows as a large revision diff. See Conflicts for how a later merge copes.
+- Style names are unique only within a family: a document can hold a text style `T1` and a table style `T1`, because LibreOffice names table styles after tables. Every style lookup is by family and name.
+- LibreOffice renumbers its own automatic styles, rewrites `office:settings` (cursor position, view area) and adds `officeooo:rsid` attributes on every save. It also issues new tracked-change ids and list `xml:id`s on every save, so lattice treats ids as opaque strings and never relies on one surviving a save. That churn is LibreOffice's, not lattice's, and lattice cannot prevent it. It is why a LibreOffice save shows as a large revision diff. See Conflicts for how a later merge copes.
 
 ### The serializer
 
@@ -126,7 +127,7 @@ Text is escaped with the five XML entities only. Runs of spaces become `text:s` 
 
 **Licence rules for the client.** Lattice is PolyForm Noncommercial. MIT, ISC and BSD code may go in a bundle with its notices kept. MPL-2.0 is file-level copyleft, so it is acceptable only as a separate, unmodified file whose source we point to, never concatenated into `app.js`. LGPL in a minified JS bundle cannot meet the relinking requirement in any clean way, so it is excluded. GPL and AGPL are excluded. A CI check (`scripts/writer-licences.mjs`) reads the vendored packages' `license` fields and fails on anything outside MIT, ISC, BSD-2 and BSD-3.
 
-**Recommendation.** ProseMirror, used directly. It is the only option that is permissive, small enough to lazy-load, mature on mobile, and built around a strict schema where an opaque atom carrying raw XML is a first-class node. This is lattice's first runtime client dependency, which breaks the "no deps" line in `build-ui.mjs:3` and the phase 1 shell plan's rule. The owner approved that on 2026-11-01 (Decisions, 1). The cost is contained. ProseMirror is vendored at pinned versions into `ui-src/writer/vendor/`, built by esbuild (a dev dependency, run with `npm ci --ignore-scripts` like the test packages in `scripts/package.json`) into one file, `code/nex/lattice/ui-app/writer.js`, and CI rebuilds and diffs it the way it does `app.js` (`ci.yml:144-146`).
+**Recommendation.** ProseMirror, used directly. It is the only option that is permissive, small enough to lazy-load, mature on mobile, and built around a strict schema where an opaque atom carrying raw XML is a first-class node. This is lattice's first runtime client dependency, which breaks the "no deps" line in `build-ui.mjs:3` and the phase 1 shell plan's rule. The owner approved that on 2026-11-01 (Decisions, 1). The cost is contained. ProseMirror is pinned exact in `scripts/package.json` and its lockfile (`ui-src/writer/vendor/` holds the version table and the generated notices), built by esbuild (a dev dependency, run with `npm ci --ignore-scripts` like the test packages in `scripts/package.json`) into one file, `code/nex/lattice/ui-app/writer.js`, and CI rebuilds and diffs it the way it does `app.js` (`ci.yml:144-146`).
 
 ## Bundle and lazy loading
 
@@ -256,7 +257,7 @@ The owner accepted every recommendation and chose HTML for publishing.
 2. The kind is named `fodt`.
 3. `writer.js` is cached by the service worker on first use, not precached at install.
 4. Publishing sends the rendered HTML subset under `%html`, not raw fodt. Every peer renders it, and the published copy is not a document.
-5. A document with change tracking switched on opens read-only with a banner in phase 1.
+5. A document with change tracking switched on opens read-only with a banner in phase 1. Tracking is on when the document has `text:tracked-changes` and its `text:track-changes` attribute is anything but `"false"`. The ODF default is true, so LibreOffice omits the attribute when recording is on and writes `"false"` only when it is off.
 6. Agent keys and the MCP `wiki_write` tool cannot write fodt pages for now.
 7. A stale save landing as a create at a moved-away path is treated as a bug and fixed in the folder-move work (release 93), not left open.
 8. Desktop `.docx` import prefers the user's `soffice` over pandoc when both are installed.

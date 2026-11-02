@@ -33,7 +33,7 @@
 
 ## Corpus
 
-The round-trip corpus lives in `tests/writer/corpus/`. Every file is saved by LibreOffice. `scripts/writer-corpus/make-corpus.py` builds most of them reproducibly by driving LibreOffice over UNO (`soffice --headless --accept="pipe,name=latcorpus;urp;"`, LibreOffice's bundled python with the `uno` module), and stores each with the filter `OpenDocument Text Flat XML` and, beside it, as `.odt` with `writer8` for the import tests. The LibreOffice version is written to `tests/writer/corpus/VERSION`. A few files are made by hand in the LibreOffice GUI and marked `-gui` in their names, because a GUI save sets things UNO does not (view settings, rsids, autocorrect side effects).
+The round-trip corpus lives in `tests/writer/corpus/`. Every file is saved by LibreOffice. `scripts/writer-corpus/make-corpus.py` builds most of them. It writes a hand-built flat ODT source for each file and has LibreOffice open and save it with `soffice --headless --convert-to "fodt:OpenDocument Text Flat XML"` and, beside it, `odt:writer8` for the import tests, using a throwaway profile. It does not use UNO: pyuno is an optional package and is often missing (it was when Task 2 ran), and `--convert-to` gives a real LibreOffice save without it. If UNO-only control is ever needed, a Basic macro run through `macro:///` works without pyuno. LibreOffice's output keeps changing over the first few saves of a new document (it added `style:writing-mode` on save 2 and `draw:fill-color` on save 3 in 26.8), so `make-corpus.py` re-saves until two saves canonicalize equal. The corpus is reproducible up to `canon.py`, not byte for byte, because tracked-change ids and list `xml:id`s change on every save. The LibreOffice version is written to `tests/writer/corpus/VERSION`. A few files are made by hand in the LibreOffice GUI and marked `-gui` in their names, because a GUI save sets things a headless save does not (view settings, rsids, autocorrect side effects). Until one exists, `features.json` marks it `pending` and the harness skips it with that reason.
 
 | File | Covers |
 | --- | --- |
@@ -46,12 +46,12 @@ The round-trip corpus lives in `tests/writer/corpus/`. Every file is saved by Li
 | `07-styles.fodt` | custom paragraph styles inheriting through three levels, custom fonts with and without a font-face declaration, line spacing, indents, alignment, spacing above and below |
 | `08-tables.fodt` | a table with a header row, column widths, cell borders, an empty cell, a cell with two paragraphs, and a second table with merged cells (must open as opaque) |
 | `09-layout.fodt` | A4 portrait, US Letter, a landscape page style, wide margins, a header and footer with a page number field |
-| `10-unknown.fodt` | footnotes, endnotes, a table of contents, bookmarks spanning two paragraphs, reference marks, fields (date, page count, user field, cross-reference), a section, a linked section, comments with ranges, tracked changes with recording on, a text frame, `dc:title` and custom metadata, RDF metadata, a Basic macro library |
+| `10-unknown.fodt` | footnotes, endnotes, a table of contents, bookmarks spanning two paragraphs, reference marks, fields (date, page count, user field, cross-reference), a section, a linked section, comments with ranges, tracked changes with recording on, a text frame, `dc:title` and custom metadata, RDF metadata as far as flat ODT allows (a `text:meta` with `xml:id`; LibreOffice 26.8 cannot load a fodt whose `text:meta` carries RDFa attributes), a Basic macro library |
 | `11-i18n.fodt` | right-to-left Arabic and Hebrew paragraphs, CJK with Asian fonts, emoji, combining marks, a soft hyphen |
 | `12-whitespace.fodt` | runs of spaces, a leading space, tabs, line breaks, a non-breaking space |
 | `13-large.fodt` | about 300 pages generated from the other fixtures, for performance |
 | `14-lo-gui.fodt` | a hand-made document saved from the GUI, with heavy rsid churn |
-| `hostile/*.fodt` | a DOCTYPE with an internal entity, billion laughs, an external entity, nesting depth 10,000, a 50 MB attribute, a style value carrying `url(` and `</style>`, `script` and `iframe` elements in the body, links to `javascript:` and `file:`, a draw:image with an external `xlink:href`. Hand-written, not LibreOffice saves. |
+| `hostile/*.fodt` | a DOCTYPE with an internal entity, billion laughs, an external entity, nesting depth 10,000, a 50 MB attribute, a style value carrying `url(` and `</style>`, `script` and `iframe` elements in the body, links to `javascript:` and `file:`, a draw:image with an external `xlink:href`. Hand-written, not LibreOffice saves, except that `scripts/writer-corpus/hostile-big.py` generates the 10,000-deep file (committed) and the 50 MB one (not committed; suites that need it generate it with `--huge`). |
 
 `tests/writer/corpus/edits.json` names a scripted edit per file (for example: insert text in the third paragraph, bold a word, add a list item, add a table row, apply the Quotations style) and the text change it should produce.
 
@@ -60,11 +60,13 @@ The round-trip corpus lives in `tests/writer/corpus/`. Every file is saved by Li
 1. **No-op.** Parse with the writer core, serialize, assert byte-identical.
 2. **Edit.** Apply the scripted edit to the ProseMirror state, serialize. Assert every opaque element's raw XML and the whole head except `office:automatic-styles` additions appear verbatim in the output.
 3. **LibreOffice reads it.** `soffice --headless --convert-to fodt --outdir <tmp>` on the original and on the edited output (LibreOffice opens and re-saves each), and `--convert-to txt` on both.
-4. **No loss.** Canonicalize both LibreOffice re-saves with `scripts/writer-corpus/canon.py` (drop `office:settings`, meta dates, generator and editing duration, `officeooo:rsid` attributes, rename automatic styles by content hash and rewrite references, sort `office:automatic-styles`). Assert per-element-name counts are equal except for the elements the edit adds, and that the txt diff is exactly the edit's expected text change.
+4. **No loss.** Canonicalize both LibreOffice re-saves with `scripts/writer-corpus/canon.py` (drop `office:settings`, meta dates, generator and editing duration, `officeooo:rsid` attributes, renumber `xml:id` and `text:id` with every reference to them, rename automatic styles by content hash within their family and rewrite references, sort `office:automatic-styles`, trim the whitespace LibreOffice appends to macro source on every save; it refuses any DOCTYPE). Assert per-element-name counts are equal except for the elements the edit adds, and that the txt diff is exactly the edit's expected text change.
 5. **Lattice reads LibreOffice's save.** Parse the LibreOffice re-save of the edited file in the writer core, assert it opens, that the edit is present, and that its own no-op round trip is byte-identical.
 6. **PDF sanity.** `--convert-to pdf` of the original and of the no-op output have the same page count.
 
-CI runs this in a new job that installs `libreoffice-writer-nogui` (it is too heavy for the existing jobs).
+CI runs this in a new job that installs `libreoffice-writer-nogui` (it is too heavy for the existing jobs). Ubuntu 24.04 ships an older LibreOffice (24.2) than the one that saved the corpus, so the check that the corpus is at LibreOffice's fixed point runs only when the releases match. The checks that pass both sides through the same LibreOffice run everywhere.
+
+LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) relative to where it saves. The harness keeps its scratch directories beside the corpus at the same depth (`tests/writer/.rt-*`, gitignored), and any test that compares saves from different directories, including a lattice-fs mount (Task 5), must expect it.
 
 ---
 
@@ -85,7 +87,7 @@ CI runs this in a new job that installs `libreoffice-writer-nogui` (it is too he
 - Produces `window.LatWriter` once `writer.js` has run. Nothing else is global.
 - Packages: `prosemirror-model`, `-state`, `-view`, `-transform`, `-commands`, `-keymap`, `-history`, `-inputrules`, `-schema-list`, `-tables`, `-dropcursor`, `-gapcursor`.
 
-- [ ] **Step 1:** Write `scripts/writer-licences.mjs`. It reads each vendored package's `package.json` `license` and fails on anything not in `MIT ISC BSD-2-Clause BSD-3-Clause`. It also fails if `code/nex/lattice/ui-app/app.js` contains `prosemirror`.
+- [ ] **Step 1:** Write `scripts/writer-licences.mjs`. It reads the `package.json` `license` of each package in the dependency closure of the `prosemirror-*` roots (installed from the lockfile into `scripts/node_modules`; `ui-src/writer/vendor/` holds only the README and the generated `LICENSES`) and fails on anything not in `MIT ISC BSD-2-Clause BSD-3-Clause`, on a version not pinned exact, and on a bundled package `LICENSES` names that is outside that closure. It also fails if `code/nex/lattice/ui-app/app.js` contains `prosemirror`.
 - [ ] **Step 2:** Write `build-writer.mjs`. Run it. Record raw and gzip size of `writer.js` with only ProseMirror in it.
 - [ ] **Step 3:** Add the CI steps. The size budget is 400 KB raw and 130 KB gzipped for the whole phase; CI fails above it.
 - [ ] **Step 4:** Commit: `feat: build gate and licence check for writer.js`.
@@ -204,9 +206,16 @@ CI runs this in a new job that installs `libreoffice-writer-nogui` (it is too he
 - Create: `scripts/writer-unit.mjs` (pure suite, imports the modules directly)
 
 **Interfaces:**
-- `parseFodt(text) -> { doc, head, tail, styles, layout } | { error }`
+- `parseFodt(text) -> { doc, head, tail, styles, layout, tracking } | { error }`
 - `serializeFodt(state, original) -> { text } | { error }` (refuses unbalanced pairs)
 - `fodtText(text) -> string`, `fodtOutline(text) -> [{level, text, pos}]`, `fodtLinks(text) -> [href]`
+
+**What Task 2 found about LibreOffice's output:**
+- Style names are unique only within a family. 13-large has a text style `T1` and a table style `T1` (LibreOffice names table styles after tables). The style table, the resolver and the canonical keys are keyed by family and name, never by name alone.
+- Recording changes is on when `text:tracked-changes` has no `text:track-changes` attribute, because the ODF default is true. LibreOffice writes `text:track-changes="false"` only when recording is off. `tracking` is true when a `text:tracked-changes` element exists and the attribute is not `"false"` (spec, Decisions 5).
+- Tracked-change ids (`ct94...`, memory addresses) and list `xml:id`s change on every LibreOffice save. The core treats every id as an opaque string and never assumes it survives a save.
+- LibreOffice normalizes on save: it rewrites `text:continue-list` to `text:continue-numbering` when the continued list is the previous one of that style, drops an absolute column width when a relative one exists, converts units to inches, collapses double spaces and splits nested spans. Step 5 must expect these on LibreOffice's side, not treat them as lattice loss.
+- Imports: core modules that import `prosemirror-*` do not resolve in plain node, because the packages live in `scripts/node_modules`. `writer-unit.mjs` and `writer-roundtrip.mjs` run with `NODE_PATH=scripts/node_modules` or a small resolve loader, and the CI `writer-roundtrip` job gains `npm ci --prefix scripts --ignore-scripts`.
 
 - [ ] **Step 1:** Failing unit tests: no-op round trip is byte-identical for every corpus file; changing one word changes exactly one line; bolding the same word in two sessions produces the same automatic style name; bolding text already covered by a LibreOffice `T1` with exactly `fo:font-weight="bold"` reuses `T1`; deleting one half of a bookmark pair is refused; a merged-cell table is one `opaque_block`; whitespace fixture round-trips after an edit elsewhere; hostile files return `{ error }` without throwing; 13-large parses and serializes in under 300 ms in node.
 - [ ] **Step 2:** Implement until green. Turn on steps 1, 2 and 5 of `writer-roundtrip.mjs`.
@@ -235,7 +244,7 @@ CI runs this in a new job that installs `libreoffice-writer-nogui` (it is too he
 - Create: `ui-src/lattice/26-writer.js` (loader `writerReady(): Promise`, mount and unmount on kind change, write-back to `src.value` through `edited()` on a 300 ms idle and before save, tab park, split park and unload)
 - Modify: `ui-src/lattice/25-editor.js` (hide `#src` and `#hl` while a fodt page is open; skip `render()` for fodt)
 - Modify: `ui-src/lattice/27-vim.js`, `22-listedit.js`, `55-autocomplete.js` (inactive for fodt)
-- Modify: `ui-src/lattice/35-pages.js` (on open, start the loader and show the server render read-only until it lands; on create, a fodt page starts from a blank template taken from LibreOffice's own default document, stored in `ui-src/writer/blank.fodt` and inlined at build)
+- Modify: `ui-src/lattice/35-pages.js` (on open, start the loader and show the server render read-only until it lands; a document whose `parseFodt` reports `tracking` opens read-only with a banner, spec Decisions 5; on create, a fodt page starts from a blank template taken from LibreOffice's own default document, stored in `ui-src/writer/blank.fodt` and inlined at build)
 - Modify: `ui-src/lattice/23-tabhead.js` (page menu: Source view, Export .odt, Print or PDF; kind picker refuses switching away from fodt with a note)
 - Modify: `ui-src/lattice/28-splits.js` (a parked fodt tab's ghost shows the server render)
 - Modify: `ui-src/lattice/60-preview.js` (`fodt` in the local-paint kinds once `LatWriter` exists, else wait for the ship)
