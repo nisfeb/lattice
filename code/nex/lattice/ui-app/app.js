@@ -2221,6 +2221,10 @@
     const k = TAB_KINDS[t.kind];
     const s = t.snap;
     t.snap = null;          // in front, the live editor is its state
+    // the status line belongs to the tab that wrote it. A page or memory
+    // writes its own on open, but a tool tab writes none, so a grub's
+    // "on ~ship: saves need its permission" stayed up over a browser tab
+    st('');
     const gen = ++tabShown;
     src.readOnly = false;   // a blank or a binary grub left it locked
     openSeq++;              // an open still loading for the tab left behind may not land
