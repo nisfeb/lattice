@@ -11,10 +11,11 @@
 //  other package files are left out, and the note says which.
 //
 //  Export splits a fodt back into content.xml, styles.xml, meta.xml and
-//  settings.xml (every automatic style goes to both of the first two) and
-//  zips them STORED, mimetype first, with META-INF/manifest.xml.
+//  settings.xml (styles.xml takes the page layouts and the automatic
+//  styles the master pages use, content.xml the rest) and zips them STORED, mimetype first, with
+//  META-INF/manifest.xml.
 import tinf from 'tiny-inflate';
-import { parseXml, elements, child, attr, LIMITS } from './xml.js';
+import { parseXml, elements, child, attr, escAttr, LIMITS } from './xml.js';
 
 const MIME = 'application/vnd.oasis.opendocument.text';
 //  what one entry may inflate to; a zip bomb stops here
@@ -76,8 +77,11 @@ async function bytes(u8, e) {
     for (const v of parts) { all.set(v, o); o += v.length; }
     return all;
   }
-  //  tiny-inflate writes into a buffer of the stated size and no further
-  return tinf(raw, new Uint8Array(e.size));
+  //  tiny-inflate drops what does not fit its buffer, so one byte more
+  //  than the stated size shows an entry that inflates past it
+  const out = tinf(raw, new Uint8Array(e.size + 1));
+  if (out.length > e.size) throw new Error('it inflates past its stated size');
+  return out;
 }
 
 //  LibreOffice reads a relative link in a package from inside it, as if
@@ -100,11 +104,11 @@ const styleNames = (el) => new Set(el ? elements(el).map((s) => attr(s, 'style:n
 
 //  the package's Basic libraries (Basic/) as the office:script a flat
 //  ODT embeds them in, or ''. A linked library stays behind.
-async function basic(u8, ents, used) {
+async function basic(ents, used, take) {
   const read = async (n) => {
     const e = ents.get(n);
-    if (!e) return null;
-    const src = new TextDecoder().decode(await bytes(u8, e));
+    if (!e || used.has(n)) return null;
+    const src = new TextDecoder().decode(await take(e));
     const x = parseXml(src);
     if (x.error) throw new Error(n + ': ' + x.error);
     used.add(n);
@@ -124,9 +128,9 @@ async function basic(u8, ents, used) {
       const mod = mn && await read('Basic/' + name + '/' + mn + '.xml');
       if (!mod || !mod.el) continue;
       const code = mod.el.empty ? '' : mod.src.slice(mod.el.openEnd, mod.el.closeStart);
-      mods += '<ooo:module ooo:name="' + mn + '"><ooo:source-code>' + code + '</ooo:source-code></ooo:module>';
+      mods += '<ooo:module ooo:name="' + escAttr(mn) + '"><ooo:source-code>' + code + '</ooo:source-code></ooo:module>';
     }
-    libs += '<ooo:library-embedded ooo:name="' + name + '">' + mods + '</ooo:library-embedded>';
+    libs += '<ooo:library-embedded ooo:name="' + escAttr(name) + '">' + mods + '</ooo:library-embedded>';
   }
   return libs && '<office:script script:language="ooo:Basic"><ooo:libraries xmlns:ooo="http://openoffice.org/2004/office" xmlns:xlink="http://www.w3.org/1999/xlink">'
     + libs + '</ooo:libraries></office:script>';
@@ -137,16 +141,20 @@ export async function importOdt(buf) {
   try {
     const u8 = new Uint8Array(buf);
     const ents = entries(u8);
-    const mt = ents.get('mimetype');
-    if (!mt || new TextDecoder().decode(await bytes(u8, mt)).trim() !== MIME) throw new Error('it is not a Writer document');
-    const parts = {};
+    //  every entry read counts toward the document cap, Basic too
     let total = 0;
+    const take = async (e) => {
+      const b = await bytes(u8, e);
+      if ((total += b.length) > LIMITS.size) throw new Error('it is too large to import');
+      return b;
+    };
+    const mt = ents.get('mimetype');
+    if (!mt || new TextDecoder().decode(await take(mt)).trim() !== MIME) throw new Error('it is not a Writer document');
+    const parts = {};
     for (const [file, root] of Object.entries(ROOTS)) {
       const e = ents.get(file);
       if (!e) { if (file === 'content.xml') throw new Error('it has no content.xml'); continue; }
-      const src = new TextDecoder().decode(await bytes(u8, e));
-      total += src.length;
-      if (total > LIMITS.size) throw new Error('it is too large to import');
+      const src = new TextDecoder().decode(await take(e));
       const x = parseXml(src);
       if (x.error) throw new Error(file + ': ' + x.error);
       const r = elements(x.root).find((k) => k.name === root);
@@ -190,7 +198,7 @@ export async function importOdt(buf) {
     }
     //  office:scripts, with the Basic libraries put in
     const used = new Set();
-    const bas = await basic(u8, ents, used);
+    const bas = await basic(ents, used, take);
     let scripts = c.get('office:scripts');
     if (bas) scripts = !scripts || /\/>$/.test(scripts) ? '<office:scripts>' + bas + '</office:scripts>' : scripts.replace(/<\/office:scripts>$/, bas + '</office:scripts>');
     //  the automatic styles of both, as one element

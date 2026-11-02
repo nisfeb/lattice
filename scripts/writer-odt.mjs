@@ -131,6 +131,10 @@ z.close()`, withPics]);
       delete globalThis.DecompressionStream;
       const bomb = await importOdt(await deflZip('content.xml', big, 1000));
       check('and the lying zip bomb is still refused', !!bomb.error, bomb.text && 'imported ' + bomb.text.length);
+      //  stated to end where a whole content.xml does, with more after it
+      const whole = '<?xml version="1.0"?><office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"><office:body><office:text/></office:body></office:document-content>';
+      const tail = await importOdt(await deflZip('content.xml', new TextEncoder().encode(whole + ' '.repeat(5000)), whole.length));
+      check('and an entry inflating past its stated size is refused, not cut short', tail.error && /inflates past/.test(tail.error), tail.error || 'imported');
     } finally { globalThis.DecompressionStream = DS; }
   }
 
@@ -146,6 +150,18 @@ z.close()`, withPics]);
   check('its master-page reference follows', t.includes('<style:header><text:p text:style-name="MP1_1">head'));
   check("content.xml's own P1 is untouched", t.includes('<text:p text:style-name="P1">body') && /style:name="P1" style:family="paragraph"><style:text-properties fo:font-weight="bold"/.test(t));
   check('a name that does not clash is kept', t.includes('style:page-layout-name="pm1"') && t.includes('style:name="pm1"'));
+
+  //  Basic: a module listed many times is read once, and what Basic holds
+  //  counts toward the document cap
+  const lc = '<?xml version="1.0"?><library:libraries xmlns:library="http://openoffice.org/2000/library"><library:library library:name="L&amp;&quot;1" library:link="false"/></library:libraries>';
+  const lb = (n) => '<?xml version="1.0"?><library:library xmlns:library="http://openoffice.org/2000/library" library:name="L">' + '<library:element library:name="M"/>'.repeat(n) + '</library:library>';
+  const mod = (code) => '<?xml version="1.0"?><script:module xmlns:script="http://openoffice.org/2000/script" script:name="M">' + code + '</script:module>';
+  const bz = (n, code) => zipStored([['mimetype', MIME], ['content.xml', content], ['Basic/script-lc.xml', lc], ['Basic/L&"1/script-lb.xml', lb(n)], ['Basic/L&"1/M.xml', mod(code)]]).arrayBuffer();
+  r = await importOdt(await bz(3, 'Sub Main'));
+  check('a Basic module listed three times is embedded once', r.text && (r.text.match(/<ooo:module /g) || []).length === 1, r.error || r.text);
+  check('a Basic library name is escaped', r.text && r.text.includes('ooo:name="L&amp;&quot;1"'), r.error);
+  r = await importOdt(await bz(1, 'x'.repeat(9 * 1024 * 1024)));
+  check('a Basic module past the document cap is refused', r.error && /too large/.test(r.error), r.error || 'imported');
 }
 
 // ---------------------------------------------------------------- LibreOffice
