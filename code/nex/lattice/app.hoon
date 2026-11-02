@@ -912,6 +912,17 @@
       `[403 'outside this key\'s scope']
     ~
   ?^  key-sync  (send-err eyre-id code.u.key-sync msg.u.key-sync)
+  ::  a key may not save over a fodt page (+fodt-at)
+  ;<  onto-fodt=?  bind:m
+    =/  n  (fiber:fiber:nexus ,?)
+    ?~  key  (pure:n |)
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    |-  ^-  form:n
+    ?~  todo  (pure:n |)
+    ;<  wf=?  bind:n  (fodt-at (pax-of nam.i.todo))
+    ?:  wf  (pure:n &)
+    $(todo t.todo)
+  ?:  onto-fodt  (send-err eyre-id 403 fodt-key-msg)
   ::  sensitive + taint check (fiber-based). Returns an early refusal, plus the
   ::  paths of a tainted key's NEW pages, which are marked sensitive before the
   ::  write (the batch mirror of the single page-save taint alignment).
@@ -3057,6 +3068,8 @@
     ::  the key's write grant is explicit consent from the owner.
     ?.  (may-path:ky u.key %local (pax-of u.name) %write)
       (send-err eyre-id 403 'outside this key\'s scope')
+    ;<  wf=?  bind:m  (fodt-at (pax-of u.name))
+    ?:  wf  (send-err eyre-id 403 fodt-key-msg)
     ;<  ps=?  bind:m  (page-sensitive (pax-of u.name))
     ::  sensitive gate: an uncleared key cannot write to a sensitive page.
     ?:  &(ps !sensitive.scope.u.key)
@@ -8698,6 +8711,19 @@
   ;<  cv=view:nexus  bind:m  (peek:fio (rf up (weld /page rel) %code) ~)
   ?.  ?=([%file *] cv)  (pure:m [0 ~])
   (pure:m [ud.cass.cv (mole |.(;;(@t (sang-noun:tarball sang.cv))))])
+::  +fodt-at: is the page at rel a Writer (fodt) page? A key may not
+::  save fodt (+page-type-ok:ky), so any keyed save onto one would change
+::  its kind; the keyed save paths refuse it (owner decision 2026-11-02).
+::
+++  fodt-at
+  |=  rel=path
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  hd=[rev=@ud src=(unit @t)]  bind:m  (page-head rel)
+  ?~  src.hd  (pure:m |)
+  (pure:m =(`%fodt (content-builder u.src.hd)))
+::
+++  fodt-key-msg  'that page is a Writer document: a key cannot change its kind'
 ::  +pub-path: a relative publish path ("notes/intro") -> content-map key
 ::  (/pub/notes/intro/gmi). Ported from /lib/lattice.
 ::
