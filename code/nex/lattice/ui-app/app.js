@@ -7024,8 +7024,10 @@
   //   1. seen this session -> pageCache has the rendered answer: 0 requests.
   //   2. body came with the tree dump -> paint the editor NOW, then fetch
   //      render=1 only to fill in `share` and the preview.
-  //   3. no body (oversized page, or a tree we never loaded) -> read the
-  //      body alone (plain page-source), paint it as in 2, then render=1.
+  //   3. no body (oversized page, or a tree we never loaded) -> render=1.
+  //      A page the tree lists without a body (the dump leaves out bodies
+  //      over 256 KB) reads the body alone first (plain page-source) and
+  //      paints it as in 2, then render=1.
   // History and backlinks stay lazy on panel expand. They were 2 more ~2s
   // round-trips paid on every open whether or not anyone looked at them.
   // Which open is current. Opening a page is an explicit user act, so the ONLY
@@ -7130,8 +7132,11 @@
       // page, against 1 s for its plain read. So read the body alone first
       // and paint it as a painted open does. render=1 below is then the
       // same upgrade it is there. A link reads from its host, and a failed
-      // plain read leaves the open to render=1 as before.
-      if (!linkOf(name)) {
+      // plain read leaves the open to render=1 as before. So does a page
+      // the tree does not list (a tree not loaded yet, a page made
+      // elsewhere): its size is unknown, and a small page must keep
+      // costing one request.
+      if (node && !linkOf(name)) {
         const b = await bodyRead(name);
         if (my !== openSeq) return;
         if (b) {
