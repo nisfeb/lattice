@@ -63,7 +63,7 @@
     loadMarks();
   }
   async function markDrop(b) {
-    if (!(await askConfirm('remove bookmark ' + (b.title || b.url) + '?', 'remove'))) return;
+    if (!(await askDanger('remove bookmark ' + (b.title || b.url) + '?', 'remove'))) return;
     const r = await mutate(api + '/unbookmark?url=' + encodeURIComponent(b.url));
     if (!r.ok) { st('remove failed' + await errText(r), false); return; }
     st('bookmark removed');
