@@ -3,7 +3,20 @@
   "private": true,
   "description": "The npm packages the test harnesses import. CI installs them with npm ci --ignore-scripts, so only the locked versions run beside a ship cookie.",
   "devDependencies": {
+    "esbuild": "0.28.2",
     "fast-check": "4.10.2",
+    "prosemirror-commands": "1.7.2",
+    "prosemirror-dropcursor": "1.8.4",
+    "prosemirror-gapcursor": "1.4.1",
+    "prosemirror-history": "1.5.1",
+    "prosemirror-inputrules": "1.5.1",
+    "prosemirror-keymap": "1.2.3",
+    "prosemirror-model": "1.25.12",
+    "prosemirror-schema-list": "1.6.0",
+    "prosemirror-state": "1.4.4",
+    "prosemirror-tables": "1.8.5",
+    "prosemirror-transform": "1.12.4",
+    "prosemirror-view": "1.42.9",
     "puppeteer-core": "25.15.0"
   }
 }
