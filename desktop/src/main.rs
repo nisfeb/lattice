@@ -258,6 +258,10 @@ fn listen_for_urb(handle: &tauri::AppHandle) {
     }
 }
 
+/// tauri.conf.json's identifier, which the single-instance name is built on
+/// before the config is loaded (a test in urb.rs keeps the two equal).
+const IDENTIFIER: &str = "org.lattice.desktop";
+
 fn main() {
     // webkit2gtk's dmabuf renderer crashes some Wayland stacks outright
     // ("Error 71 (Protocol error) dispatching to Wayland display"). Opt out
@@ -294,13 +298,26 @@ fn main() {
         // running. With the deep-link feature the plugin passes the link on
         // to deep-link's on_open_url (setup, below), so all this callback
         // has to do for a plain second launch is bring the window forward.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("workspace") {
-                w.unminimize().ok();
-                w.show().ok();
-                w.set_focus().ok();
-            }
-        }))
+        //
+        // One instance per config dir, not per user (urb::instance_id): a
+        // copy started with its own XDG_CONFIG_HOME for another ship still
+        // gets a window of its own.
+        .plugin(
+            tauri_plugin_single_instance::Builder::new()
+                .callback(|app, _argv, _cwd| {
+                    if let Some(w) = app.get_webview_window("workspace") {
+                        w.unminimize().ok();
+                        w.show().ok();
+                        w.set_focus().ok();
+                    }
+                })
+                .dbus_id(urb::instance_id(
+                    IDENTIFIER,
+                    std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+                    std::env::var_os("HOME").as_deref(),
+                ))
+                .build(),
+        )
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())

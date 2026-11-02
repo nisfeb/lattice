@@ -16,6 +16,8 @@
 //! A link is text some other program chose, and the page will put it in a
 //! reader URL, so only a plain `urb://~ship/path` gets through.
 
+use std::ffi::OsStr;
+use std::path::Path;
 use std::sync::Mutex;
 
 use tauri::{AppHandle, Manager};
@@ -216,6 +218,34 @@ pub fn take_urb_links(app: AppHandle) -> Vec<String> {
     std::mem::take(&mut *app.state::<Inbox>().0.lock().unwrap())
 }
 
+/// The D-Bus name base the single-instance plugin claims on Linux, one per
+/// config directory. The config dir holds the ship this copy is connected
+/// to, so a copy started with its own XDG_CONFIG_HOME (a second ship's
+/// workspace) is its own instance and is not folded into the first. The
+/// default config dir keeps the bare identifier, which is the instance an
+/// urb:// link from the desktop reaches, since the OS starts the handler
+/// with the user's ordinary environment. Mirrors how Tauri's
+/// app_config_dir reads the variables: a relative XDG_CONFIG_HOME is
+/// ignored. FNV-1a, not DefaultHasher, so every build names a profile the
+/// same way.
+pub fn instance_id(identifier: &str, xdg_config: Option<&OsStr>, home: Option<&OsStr>) -> String {
+    let default = home.map(|h| Path::new(h).join(".config"));
+    let cfg = xdg_config
+        .map(Path::new)
+        .filter(|p| p.is_absolute())
+        .map(Path::to_path_buf)
+        .or_else(|| default.clone());
+    match cfg {
+        Some(c) if Some(&c) != default.as_ref() => {
+            let h = c.as_os_str().as_encoded_bytes().iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+                (h ^ u64::from(*b)).wrapping_mul(0x0000_0100_0000_01b3)
+            });
+            format!("{identifier}.p{h:016x}")
+        }
+        _ => identifier.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -325,5 +355,33 @@ mod tests {
         let js = poke_js("urb://~zod/a/b");
         assert!(js.contains("if(window.latUrbArrived){window.latUrbArrived();}"));
         assert!(js.contains("else if(window.latTabs){location.href=\"/apps/lattice?url=urb%3A%2F%2F%7Ezod%2Fa%2Fb\";}"));
+    }
+
+    #[test]
+    fn each_config_dir_is_its_own_instance() {
+        let id = "org.lattice.desktop";
+        let home = Some(OsStr::new("/home/u"));
+        // the ordinary profile, however it is spelled, is the bare identifier
+        assert_eq!(instance_id(id, None, home), id);
+        assert_eq!(instance_id(id, Some(OsStr::new("/home/u/.config")), home), id);
+        assert_eq!(instance_id(id, Some(OsStr::new("rel/cfg")), home), id);
+        assert_eq!(instance_id(id, None, None), id);
+        // another profile is another instance, the same one every time
+        let a = instance_id(id, Some(OsStr::new("/home/u/ship-b")), home);
+        let b = instance_id(id, Some(OsStr::new("/home/u/ship-c")), home);
+        assert_ne!(a, id);
+        assert_ne!(a, b);
+        assert_eq!(a, instance_id(id, Some(OsStr::new("/home/u/ship-b")), home));
+        // a well-formed D-Bus name element: starts with a letter, then hex
+        let tail = a.strip_prefix("org.lattice.desktop.p").unwrap();
+        assert_eq!(tail.len(), 16);
+        assert!(tail.bytes().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn the_identifier_is_the_bundle_identifier() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(conf["identifier"], crate::IDENTIFIER);
     }
 }
