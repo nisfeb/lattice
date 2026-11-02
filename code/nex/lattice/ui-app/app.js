@@ -6727,16 +6727,31 @@
   // one collator, the order localeCompare gives: localeCompare builds its
   // own on every call, and that was most of an 18 ms sort at boot
   const treeColl = new Intl.Collator();
+  // A path sorts as a folder when anything sits under it, a page included:
+  // `a/b` can be a page AND the parent of `a/b/c`, and the ship sends no
+  // folder node for it then. Deciding by the node alone sorted page `a/b`
+  // among the pages while `a/b/c` sorted under a folder `b`. That made the
+  // comparator inconsistent (folder < page < child < folder), so where a
+  // child landed hung on the array's order, and children rendered at the
+  // top of the parent's folder, away from the page they belong under.
   function treeOrder(list) {
     const dir = treeSort() === 'name-desc' ? -1 : 1;
-    return list.map((n) => ({ n, s: n.path.split('/') })).sort((a, b) => {
+    const dirs = new Set();
+    for (const n of list) {
+      if (!n.page) dirs.add(n.path);
+      for (let i = n.path.indexOf('/'); i > 0; i = n.path.indexOf('/', i + 1))
+        dirs.add(n.path.slice(0, i));
+    }
+    return list.map((n) => ({ n, s: n.path.split('/'), d: dirs.has(n.path) })).sort((a, b) => {
       const m = Math.min(a.s.length, b.s.length);
       for (let i = 0; i < m; i++) {
         if (a.s[i] === b.s[i]) continue;
-        const fa = i < a.s.length - 1 || !a.n.page;
-        const fb = i < b.s.length - 1 || !b.n.page;
+        const fa = i < a.s.length - 1 || a.d;
+        const fb = i < b.s.length - 1 || b.d;
         if (fa !== fb) return fa ? -1 : 1;
-        return dir * treeColl.compare(a.s[i], b.s[i]);
+        // two names the collator calls equal still differ: break the tie
+        // by code unit, or the order would hang on the array's order again
+        return dir * (treeColl.compare(a.s[i], b.s[i]) || (a.s[i] < b.s[i] ? -1 : 1));
       }
       return (a.s.length - b.s.length) || (a.n.page - b.n.page);
     }).map((x) => x.n);
@@ -7028,7 +7043,10 @@
   //   1. seen this session -> pageCache has the rendered answer: 0 requests.
   //   2. body came with the tree dump -> paint the editor NOW, then fetch
   //      render=1 only to fill in `share` and the preview.
-  //   3. no body (oversized page, or a tree we never loaded) -> as before.
+  //   3. no body (oversized page, or a tree we never loaded) -> render=1.
+  //      A page the tree lists without a body (the dump leaves out bodies
+  //      over 256 KB) reads the body alone first (plain page-source) and
+  //      paints it as in 2, then render=1.
   // History and backlinks stay lazy on panel expand. They were 2 more ~2s
   // round-trips paid on every open whether or not anyone looked at them.
   // Which open is current. Opening a page is an explicit user act, so the ONLY
@@ -7127,6 +7145,29 @@
       // the document the editor is still showing.
       fromUrl = location.pathname + location.search;
       history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+      // An oversized page (the dump leaves out bodies over 256 KB) waited
+      // for render=1 before the editor showed anything, and the ship's
+      // render is most of that answer: about 7 s of 8 for a 1.5 MB md
+      // page, against 1 s for its plain read. So read the body alone first
+      // and paint it as a painted open does. render=1 below is then the
+      // same upgrade it is there. A link reads from its host, and a failed
+      // plain read leaves the open to render=1 as before. So does a page
+      // the tree does not list (a tree not loaded yet, a page made
+      // elsewhere): its size is unknown, and a small page must keep
+      // costing one request.
+      if (node && !linkOf(name)) {
+        const b = await bodyRead(name);
+        if (my !== openSeq) return;
+        if (b) {
+          // the upgrade's read goes out before the paint, whose layout of
+          // the big body holds the main thread for a second or so. srcRead
+          // shares it with the await below.
+          srcRead(name).catch(() => {});
+          painted = true;
+          applyPage(name, b, true);
+          snapPage(name, b);
+        }
+      }
     }
     //  undo the speculative address on a failed open, but only if no later
     //  open has run meanwhile (that one owns the address now, so leave it).
@@ -7211,6 +7252,17 @@
     applyPage(name, d);
     return true;
   }
+  // a page's body without the render (page-source, no render=1): what a
+  // painted open shows, or null
+  const bodyRead = async (name) => {
+    try {
+      const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name));
+      if (!r.ok) return null;
+      const d = await r.json();
+      if (typeof d.body !== 'string' || d.link) return null;
+      return { body: d.body, kind: d.kind, rev: d.rev, share: d.share, comments: d.comments };
+    } catch { return null; }
+  };
   function applyPage(name, d, quiet) {
     curFolder = null;
     setCtlLabels();
