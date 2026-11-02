@@ -64,6 +64,9 @@ fn main() {
             // the page reports its colour scheme so the GTK menubar and
             // native scrollbars follow it (both windows: manager + ship page)
             "set_theme",
+            // urb:// links other apps open wait in the app until the ship
+            // page takes them into tabs (src/urb.rs)
+            "take_urb_links",
         ]),
     ))
     .expect("tauri-build failed")

@@ -47,6 +47,8 @@ Ctrl/Cmd +/- zooms the workspace. The app is a single window. It opens on
 the connection page until a ship is configured, then lives on the ship UI.
 `lattice → connection & mounts…` in the menu returns to the settings page.
 
+The app is the system's handler for `urb://` links. One opened from another app (Talon, a terminal, a browser) goes to the running lattice, which opens it in a new browser tab of the workspace. If lattice is not running it starts and opens the link once the ship page is up. A link that arrives while the connection page is showing waits until a ship is connected. Only a plain `urb://~ship/path` with a valid ship name is accepted (`src/urb.rs`). The `.deb` and the macOS app declare the scheme when installed. The AppImage registers itself (a `~/.local/share/applications` entry and `xdg-mime`) each time it starts, since it can move. To try a dev build, point `x-scheme-handler/urb` at a `.desktop` file that runs `target/debug/lattice-desktop %u`. Starting lattice again brings the running window forward rather than opening a second one. That is per config directory: a copy started with its own `XDG_CONFIG_HOME`, for a second ship, is a separate instance with its own window, and links from other apps still go to the copy on the ordinary config directory.
+
 Once configured it opens straight on the editor. Landing on the reader made
 reaching the editor a second full page load. The bridge listens on a fixed
 port (26500, or the next free one in a 16-wide range). That is deliberate and

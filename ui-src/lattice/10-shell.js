@@ -249,6 +249,48 @@
       + (s.getPropertyValue('--link') ? 'a{color:var(--link)}' : '')
       + (s.getPropertyValue('--selection') ? '::selection{background:var(--selection)}' : '');
   };
+  // Every write to the preview frame goes through prevDoc / prevUrl.
+  //
+  // WebKit (2.50, the desktop app's engine) drops a srcdoc written while
+  // the frame's last navigation is still in flight. Measured in a bare
+  // MiniBrowser: write A, then B a few ms later (0 to ~30 ms, timing
+  // dependent), and one load fires with A on screen while the attribute
+  // holds B, about one time in seven. The editor does exactly that when a
+  // tab in Read comes to the front: showPreview paints the text still in
+  // the editor, and the tab's own text lands a moment later. So on WebKit
+  // a write made while one is in flight marks the frame, and its next
+  // load writes the current attribute again (the same value navigates
+  // again, also measured). Chromium honours the second write, so it skips
+  // all of this and keeps its one load per document.
+  const prevWK = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.test(navigator.userAgent);
+  // a navigation of frame `f` has started: a write, or the frame entering
+  // the page again with a document. A detached frame loads nothing, and
+  // one that has left the page (a replaced preview, a closed group) is
+  // not written again. Any preview frame, the live one or a group's
+  // parked one (28-splits.js), goes through here.
+  const navBusy = (f) => {
+    if (!prevWK || !f || !f.isConnected) return;
+    if (!f.latNav) {
+      f.latNav = { busy: false, again: false };
+      f.addEventListener('load', () => {
+        const n = f.latNav;
+        n.busy = false;
+        if (!n.again || !f.isConnected) return;
+        n.again = false;
+        n.busy = true;
+        if (f.hasAttribute('srcdoc')) f.srcdoc = f.getAttribute('srcdoc');
+        else if (f.hasAttribute('src')) f.src = f.getAttribute('src');
+        else n.busy = false;
+      });
+    }
+    if (f.latNav.busy) f.latNav.again = true;
+    f.latNav.busy = true;
+  };
+  const navDoc = (f, html) => { f.srcdoc = html; navBusy(f); };
+  const navUrl = (f, url) => { f.removeAttribute('srcdoc'); f.src = url; navBusy(f); };
+  const prevBusy = () => navBusy(prev);
+  const prevDoc = (html) => navDoc(prev, html);
+  const prevUrl = (url) => navUrl(prev, url);
   const prevBlank = () => {
     prev.removeAttribute('src');
     prev.style.minHeight = '';
@@ -256,9 +298,9 @@
     // engine to composite a mismatched-scheme iframe as transparent. That
     // reliance is exactly the kind of behavior that differs between the
     // Chromium the tests run and the webkitgtk the desktop runs
-    prev.srcdoc = '<style>:root{color-scheme:light dark}' +
+    prevDoc('<style>:root{color-scheme:light dark}' +
       'body{margin:0;background:var(--bg,#fafafa)}' +
-      '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot() + '</style>';
+      '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot() + '</style>');
   };
   // grant paths are shown in the share/ACL surfaces, and every one carries
   // the same app base, pure noise on screen: /apps/lattice.lattice_app, or

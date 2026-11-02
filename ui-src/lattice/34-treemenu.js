@@ -66,6 +66,7 @@
       m.append(b);
     };
     if (t.kind === 'page') {
+      item('link', 'Copy link', () => copyLink(pageUrb(t.path)));
       item('mv', 'Rename / move', () => askMovePage(t.path));
       item('del', 'Delete', () => treeDelete(row));
     } else if (t.kind === 'folder') {
@@ -73,6 +74,7 @@
       item('mv', 'Rename / move', () => moveFolder(t.path));
       item('del', 'Delete', () => treeDelete(row));
     } else {
+      item('link', 'Copy link', () => copyLink(swmUrb(t.it)));
       item('in', 'Move into my pages', () => askMoveIn(t.it));
       item('del', 'Remove from list', () => treeDelete(row));
     }
