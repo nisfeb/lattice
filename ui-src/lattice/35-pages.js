@@ -21,12 +21,16 @@
   // Answers false when the open failed with nothing painted, which the tab
   // model tells apart from an open that a later one superseded.
   let openSeq = 0;
+  // the next open's number. Whatever an open before it still owed the
+  // loading line (busy, 10-shell.js) is let go with it: a later open, a
+  // tab switch and a blank page all supersede it.
+  function openNext() { busyEnd('open'); return ++openSeq; }
   async function openPage(name) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
     if (!(await guardDirty())) return false;
-    const my = ++openSeq;
+    const my = openNext();
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
     grubPath = null;
@@ -73,7 +77,21 @@
       }
     }
   }
+  // The loading line runs while the ship's answer is still owed to the
+  // eye: an open with nothing painted, or a painted one whose preview only
+  // the ship renders (hoon, noun and the other computed kinds). A painted
+  // content page already shows all of itself, so its upgrade fetch runs
+  // unmarked. The status names an unpainted open only once it is slow, so
+  // a quick one does not flash the spinner either.
   async function openRead(name, my, node, painted) {
+    const owed = !painted || !['md', 'gmi', 'html', 'text'].includes(node.kind);
+    const end = owed ? busy('open') : null;
+    const late = painted ? 0
+      : setTimeout(() => { if (my === openSeq) stWork('opening ' + name + '\u2026'); }, BUSY_MS);
+    try { return await openReadRun(name, my, node, painted); }
+    finally { if (end) end(); clearTimeout(late); }
+  }
+  async function openReadRun(name, my, node, painted) {
     // `quiet`: the render=1 request below carries the preview and the error
     // report, so painting must not also fire refreshPreview/checkErrors.
     if (painted) {
@@ -90,11 +108,10 @@
     //
     // When NOT painted (a body the dump did not carry), the user just clicked
     // and nothing changed on screen — on a slow pier that silence lasts
-    // seconds and reads as a dead click. Say the open is happening; every
-    // exit below already replaces this status.
+    // seconds and reads as a dead click. openRead says the open is
+    // happening once it is slow; every exit below replaces that status.
     let fromUrl = null;
     if (!painted) {
-      stWork('opening ' + name + '\u2026');
       // commit the address NOW, before the fetch. A reload mid-open (the
       // service-worker takeover) must resume THIS page. Painted opens already
       // set the address synchronously via applyPage; this fetch lands seconds
@@ -247,7 +264,7 @@
   // autosave there goes to /know-save, so a memory in front leaves it first.
   function blankPage(into) {
     if (mode === 'know') setMode('pages');
-    openSeq++;           // an open still in flight must not land over this
+    openNext();          // an open still in flight must not land over this
     folderCtx = into || '';
     curFolder = null;
     curKind = null;

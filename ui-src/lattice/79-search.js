@@ -227,7 +227,8 @@
       //  that reads as "no results".
       host.className = 'aclempty';
       host.textContent = 'searching\u2026';
-      await qLoadContext();
+      const end = busy(null, $('lpane'));
+      try { await qLoadContext(); } finally { end(); }
       if (mine !== qSeq) return;
     }
     const { out, skipped } = qScan(q);

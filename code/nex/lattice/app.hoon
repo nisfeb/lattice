@@ -11831,6 +11831,7 @@
       "\"><textarea name=\"body\" placeholder=\"Comment as "
       (scow %p shp)
       "\" required></textarea><button type=\"submit\">Post</button></form>"
+      busy-script
     ==
   ;<  extra=tape  bind:m  (render-comments rel con box)
   ::  cap a hostile PEER's data (own data is trusted): a big cord, OR any non-cord
@@ -12379,7 +12380,7 @@
     (fall (mole |.(;;(view-mode:pg (sang-noun:tarball sang.u.sw)))) %text)
   =/  dat  (~(get by fils) %data)
   ?~  dat
-    (send-html eyre-id (render-clearweb (pax-str pax) "" "<p>no data</p>" (weld (clearweb-bar authed) nav-script)))
+    (send-html eyre-id (render-clearweb (pax-str pax) "" "<p>no data</p>" :(weld (clearweb-bar authed) nav-script busy-script)))
   =/  drev=@ud
     =/  wf=(map @ta cass:clay)  ?~(fil.wave.pv ~ file.u.fil.wave.pv)
     ud:(fall (~(get by wf) %data) *cass:clay)
@@ -12416,7 +12417,7 @@
   =/  doc=@t
     %:  clearweb-doc
       pax  shown  vmode  head  ?=(^ tf)  home  cmts
-      (weld (clearweb-bar authed) nav-script)
+      :(weld (clearweb-bar authed) nav-script busy-script)
     ==
   ::  raw html served on our own origin runs with the owner's session when
   ::  the owner opens it. A page shared for edit may hold a peer's markup,
@@ -12462,6 +12463,7 @@
     (en-xml:html body.page)
     ?:(authed omni-autocomplete "")
     nav-script
+    busy-script
     "</body></html>"
   ==
 ::  +forum-read-notes: the refusal notes under /forum/notes, newest first.
@@ -13595,7 +13597,7 @@
   %-  scot  :-  %ux
   %-  mug
   :*  -:..shell-ver  -:gfm  -:lgmi  -:lkv  -:fre  -:lc  -:tpl  -:lo
-      web-css  pwa-head  orrery-slot  nav-script  page-cache-script
+      web-css  pwa-head  orrery-slot  nav-script  busy-script  page-cache-script
       (sse-script "k" "r")
   ==
 ++  sw-js
@@ -13725,6 +13727,23 @@
   ^-  tape
   %-  trip
   '<script>(function(){var b=document.getElementById("navb"),f=document.getElementById("navf");var h=document.getElementById("ham"),m=document.getElementById("hammenu");if(h&&m){h.addEventListener("click",function(e){e.preventDefault();e.stopPropagation();m.hidden=!m.hidden});document.addEventListener("click",function(){m.hidden=true})}if(!b||!f)return;var ents=[],pos=-1;try{ents=JSON.parse(sessionStorage.latNav||"[]")}catch(e){}var prev=+(sessionStorage.latNavPos||-1);var st=history.state&&typeof history.state.latI==="number"?history.state.latI:null;if(st!==null&&st<ents.length){pos=st}else if(prev>=0&&ents[prev]===location.href){pos=prev;history.replaceState({latI:pos},"")}else{ents=ents.slice(0,prev+1);ents.push(location.href);if(ents.length>400){ents=[location.href]}pos=ents.length-1;history.replaceState({latI:pos},"")}try{sessionStorage.latNav=JSON.stringify(ents);sessionStorage.latNavPos=String(pos)}catch(e){}function sync(){var si=history.state&&typeof history.state.latI==="number"?history.state.latI:pos;pos=si;try{sessionStorage.latNavPos=String(pos)}catch(e){}if(pos>0){b.removeAttribute("disabled")}else{b.setAttribute("disabled","")}if(pos<ents.length-1){f.removeAttribute("disabled")}else{f.setAttribute("disabled","")}}sync();window.addEventListener("pageshow",function(ev){if(ev.persisted){try{ents=JSON.parse(sessionStorage.latNav||"[]")}catch(e){}sync()}});b.addEventListener("click",function(){history.back()});f.addEventListener("click",function(){history.forward()})})();</script>'
+::  +busy-script: the reader's loading line, and no second send of a form.
+::  A link followed or a form sent draws a 2px accent streak along the top
+::  of the page once the wait has run 180 ms (a quick answer never flashes
+::  it), the same line the editor draws (busy, ui-src/lattice/10-shell.js).
+::  A form sent is marked aria-busy and its submit buttons are disabled
+::  until the answer replaces the page, so a slow pier cannot take the same
+::  comment, post or vote twice. Everything clears when a page comes back
+::  from the back-forward cache, and after 30 s if no answer came (a
+::  download, a 204). In a frame of the editor the shell draws the line
+::  around the frame (frameLoading, 24-tools.js), so the page only guards
+::  its forms there. Once per document: the own-page comment box carries a
+::  copy into the reader's srcdoc frame, which has no other script.
+::
+++  busy-script
+  ^-  tape
+  %-  trip
+  '<script>(function(){if(window.latBusyOn)return;window.latBusyOn=1;var d=document,L=null,T=0,C=0,shell=false;try{shell=window.top!==window&&!!window.top.latFrameEditor}catch(x){}var s=d.createElement("style");s.textContent=".latbusy{position:fixed;top:0;left:0;right:0;height:2px;z-index:2147483647;pointer-events:none;background:linear-gradient(90deg,transparent,var(--accent,#4a7c59),transparent) no-repeat;background-size:40% 100%;animation:latbusy 1.2s ease-in-out infinite}.latbusy[hidden]{display:none}@keyframes latbusy{from{background-position:-70% 0}to{background-position:170% 0}}@media(prefers-reduced-motion:reduce){.latbusy{animation:none;background:var(--accent,#4a7c59);opacity:.45}}form[aria-busy=true] :disabled{opacity:.55;cursor:progress}";(d.head||d.documentElement).appendChild(s);function line(){if(shell)return;if(!L){L=d.createElement("div");L.className="latbusy";L.setAttribute("aria-hidden","true");d.body.appendChild(L)}L.hidden=false}function start(){clearTimeout(T);clearTimeout(C);T=setTimeout(line,180);C=setTimeout(stop,30000)}function stop(){clearTimeout(T);clearTimeout(C);if(L)L.hidden=true;var fs=d.querySelectorAll("form[data-lat-sent]");for(var i=0;i<fs.length;i++){fs[i].removeAttribute("data-lat-sent");fs[i].removeAttribute("aria-busy");var bs=fs[i].querySelectorAll("[data-lat-off]");for(var j=0;j<bs.length;j++){bs[j].disabled=false;bs[j].removeAttribute("data-lat-off")}}}addEventListener("click",function(e){var a=e.target.closest&&e.target.closest("a[href]");if(!a||e.defaultPrevented||e.button!==0||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey||a.hasAttribute("download"))return;if(/^_blank$/i.test(a.getAttribute("target")||"")||!/^https?:/.test(a.href))return;if(a.hash&&a.href.split("#")[0]===location.href.split("#")[0])return;start()});addEventListener("submit",function(e){var f=e.target,b=e.submitter;if(f.hasAttribute("data-lat-sent")){e.preventDefault();return}if(e.defaultPrevented)return;var at=function(k,fk){return b&&b.hasAttribute(fk)?b.getAttribute(fk):f.getAttribute(k)||""};if(/^dialog$/i.test(at("method","formmethod"))||/^_blank$/i.test(at("target","formtarget")))return;f.setAttribute("data-lat-sent","");f.setAttribute("aria-busy","true");setTimeout(function(){var bs=f.querySelectorAll("button:not([type=button]),input[type=submit]");for(var i=0;i<bs.length;i++)if(!bs[i].disabled){bs[i].disabled=true;bs[i].setAttribute("data-lat-off","")}},0);start()});addEventListener("pageshow",function(e){if(e.persisted)stop()})})()</script>'
 ::  +sw-register-script: registers the worker, and reloads the page when
 ::  a new one takes over (a deploy), unless the page holds unsaved work.
 ::  Not in a frame: the editor reloads itself on the same takeover, which
@@ -14664,7 +14683,8 @@
     ::  style here, which is not acceptable in this UI.
     omni-autocomplete
     bm-script
-    (sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
+    (sse-script keep rev)  nav-script  busy-script  page-cache-script  sw-register-script
+    "</body></html>"
   ==
 ::  +orrery-slot: the reader's place for "Send to orrery" (ui-app/orrery.js,
 ::  docs/orrery.md). orrery.js fills it on the owner's own pages while orrery
@@ -14721,7 +14741,8 @@
     ::  bookmark button: POST the address-bar url to /bookmark (owner-gated, same
     ::  origin). single-quote cord so the js braces stay literal.
     bm-script
-    (sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
+    (sse-script keep rev)  nav-script  busy-script  page-cache-script  sw-register-script
+    "</body></html>"
   ==
 ::  +beacon-rev-tape: the current /beacon/rev value, rendered as the same
 ::  text the keep-SSE stream sends in its event data. Baked into live pages

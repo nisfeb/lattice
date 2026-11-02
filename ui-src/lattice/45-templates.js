@@ -20,7 +20,7 @@
   async function newFromTemplate() {
     let names = [];
     try {
-      const r = await fetch(api + '/template-list');
+      const r = await busyFetch(api + '/template-list');
       if (r.ok) names = (await r.json()).templates || [];
     } catch {}
     if (!names.length) { st('no templates available', false); return; }

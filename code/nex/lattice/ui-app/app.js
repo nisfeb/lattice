@@ -1123,6 +1123,55 @@
     status.style.color = '';
     spinner.classList.add('on');
   };
+  // ── busy: the one loading indicator ──────────────────────────────────────
+  // A thin moving line along the top of the region that is waiting on the
+  // ship (.lbusy in index.html): #center by default (an open phone drawer
+  // over it instead), a pane for a panel's load. busy() starts a wait and
+  // answers its end, which is safe to call more than once. The line shows
+  // only once a wait has run BUSY_MS, so an answer from a cache or a quick
+  // pier never flashes it. A `key` names a
+  // kind of wait that a newer one supersedes ('open': a later open, or a
+  // tab switch, ends the one before it), and busyEnd(key) ends it outright.
+  // Every wait ends by BUSY_MAX at the latest, so a path that forgot its
+  // end cannot leave the line running. The frame tabs keep their own line
+  // (frameLoading, 24-tools.js), and the reader pages theirs (app.hoon's
+  // +busy-script); all three look the same.
+  const BUSY_MS = 180;
+  const BUSY_MAX = 60000;
+  const busyKeys = new Map();          // key -> the end of its wait
+  const busyOn = new Map();            // region -> waits running in it
+  // on a phone an open drawer covers the center, so the line goes on it
+  const busyHome = () => {
+    const ws = $('ws');
+    return ws.classList.contains('ldraw') ? $('lpane')
+      : ws.classList.contains('rdraw') ? $('rpane') : $('center');
+  };
+  function busy(key, region) {
+    const el = region || busyHome();
+    if (key) busyEnd(key);
+    let live = true;
+    busyOn.set(el, (busyOn.get(el) || 0) + 1);
+    const show = setTimeout(() => { if (live) el.classList.add('lbusy'); }, BUSY_MS);
+    const end = () => {
+      if (!live) return;
+      live = false;
+      clearTimeout(show); clearTimeout(cap);
+      if (key && busyKeys.get(key) === end) busyKeys.delete(key);
+      const left = busyOn.get(el) - 1;
+      busyOn.set(el, left);
+      // only the last wait in the region takes the line away
+      if (!left) el.classList.remove('lbusy');
+    };
+    const cap = setTimeout(end, BUSY_MAX);
+    if (key) busyKeys.set(key, end);
+    return end;
+  }
+  const busyEnd = (key) => { const end = busyKeys.get(key); if (end) end(); };
+  // a fetch the user is waiting on, with the line while it flies
+  const busyFetch = (url, opts, key, region) => {
+    const end = busy(key, region);
+    return fetch(url, opts).finally(end);
+  };
   // desktop shell: wry denies target=_blank new windows (the clearweb share
   // link would be a dead click). Same-origin and urb:// links stay in the
   // app. Only truly external http(s) leaves for the system browser.
@@ -1865,9 +1914,14 @@
     const sentAt = Date.now();
     const req = (ms ? tfetch(url, init, ms) : fetch(url, init)).catch(() => null);
     if (save) saveFlight = req;
+    // a move, a share, a delete and the rest show the loading line while
+    // they fly (busy, 10-shell.js). A save does not: it runs on its own as
+    // the user types, and its status already says saving and saved.
+    const end = save ? null : busy();
     let r = null;
     try { r = await req; }
     finally {
+      if (end) end();
       if (saveFlight === req) saveFlight = null;
       echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
     }
@@ -2223,7 +2277,7 @@
     t.snap = null;          // in front, the live editor is its state
     const gen = ++tabShown;
     src.readOnly = false;   // a blank or a binary grub left it locked
-    openSeq++;              // an open still loading for the tab left behind may not land
+    openNext();             // an open still loading for the tab left behind may not land
     const quick = snapOk && !!s && !s.hist && !!t.key && (t.kind === 'page' || t.kind === 'know');
     // a new page or memory already named (its create may still be queued,
     // and runs here once the name is back in the field) comes back named
@@ -2316,7 +2370,7 @@
     if (mine) { t.snap = snapNow(); gGhostKeep(t); }
     dirty = false;
     clearTimeout(autoTimer);
-    openSeq++;                         // an open in flight lands nowhere now
+    openNext();                        // an open in flight lands nowhere now
     if (tabLoading === t) tabLoading = null;
     if (t.snap && t.snap.dirty) saveParked(t);
     return true;
@@ -3474,6 +3528,7 @@
       g.host.hidden = !key;
       if (key) toolMount(key, g.host);
       for (const c of g.host.children) c.hidden = c.dataset.tool !== key;
+      frameBusySync(g.host);
       fhSync(g, key);
     }
     // a browsing tab's header stands in for the tab header (29-fhead.js)
@@ -3526,7 +3581,7 @@
     const had = frameOf(key);
     if (had) {
       // a moved frame reloads, and so would the documents it kept
-      if (had.parentNode !== toolHost) { fkeepDropKey(key); toolHost.append(had); }
+      if (had.parentNode !== toolHost) { fkeepDropKey(key); frameLoading(had, true); toolHost.append(had); }
       return;
     }
     if (!url) return;
@@ -3551,13 +3606,47 @@
     // a load counts as activity only when the user's own event in the frame
     // led to it, within 10 s: a page that reloads itself on each keep event
     // must not hold the background lane shut
-    f.onload = () => { if (Date.now() - (f.latAct || 0) < 10000) bgBusy(); fnavLoad(f); frameDress(f); };
+    f.onload = () => {
+      frameLoading(f, false);
+      if (Date.now() - (f.latAct || 0) < 10000) bgBusy();
+      fnavLoad(f); frameDress(f);
+    };
+    frameLoading(f, true);
     f.src = url;
     frameSeen.observe(f);
     frameSeenAll.add(f);
     return f;
   }
   let frameSeq = 0;
+  // A frame's loading line. A frame is loading from the moment it is made
+  // or sent somewhere until its load event, and its host shows the line
+  // (.lbusy, as busy() draws it, 10-shell.js) while the frame in FRONT
+  // there has been loading BUSY_MS. So a quick load never flashes it, a
+  // parked frame loading behind the tab in front shows nothing, and a tab
+  // switch (toolSync) takes the line with the frame. A load that never
+  // comes (a download, a 204, an aborted navigation) lets go by BUSY_MAX.
+  function frameLoading(f, on) {
+    clearTimeout(f.latLoadT); clearTimeout(f.latLoadCap);
+    f.latLoadAt = on ? Date.now() : 0;
+    if (on) {
+      f.latLoadT = setTimeout(() => frameBusySync(f.parentNode), BUSY_MS);
+      f.latLoadCap = setTimeout(() => frameLoading(f, false), BUSY_MAX);
+    }
+    frameBusySync(f.parentNode);
+  }
+  // whether a click on link `a` takes its document somewhere else: a plain
+  // click, no new window or download, and not to an anchor in the page
+  const linkLeaves = (a, target, e) => e.button === 0 && !e.ctrlKey && !e.metaKey
+    && !e.shiftKey && !e.altKey && !a.hasAttribute('download')
+    && !/^_blank$/i.test(target || '') && /^https?:/.test(a.href)
+    && !(a.hash && a.href.split('#')[0] === a.ownerDocument.URL.split('#')[0]);
+  function frameBusySync(host) {
+    if (!host || !host.classList || !host.classList.contains('toolhost')) return;
+    const now = Date.now();
+    const on = [...host.children].some((c) => c.tagName === 'IFRAME' && c.dataset.tool
+      && !c.hidden && c.latLoadAt && now - c.latLoadAt >= BUSY_MS - 10);
+    host.classList.toggle('lbusy', on);
+  }
   // Each load of a frame. Every frame loses the reader's bar, since the
   // shell around it is the chrome: a browsing frame's group has the frame
   // header instead (29-fhead.js), and the bar's menu entries (editor,
@@ -3628,7 +3717,10 @@
         if (inner && !e.defaultPrevented) {
           const go = editorGo(a.href);
           if (go) { e.preventDefault(); editorOpen(go); return; }
-          if (upward(a, 'target')) { e.preventDefault(); if (/^https?:/.test(a.href)) f.contentWindow.location.assign(a.href); }
+          if (upward(a, 'target')) {
+            e.preventDefault();
+            if (/^https?:/.test(a.href)) { frameLoading(f, true); f.contentWindow.location.assign(a.href); }
+          }
           return;
         }
         if (topish(a, 'target')) a.target = f.name;
@@ -3640,6 +3732,7 @@
           const up = sub && sub.hasAttribute('formtarget') ? upward(sub, 'formtarget') : upward(form, 'target');
           if (!up || e.defaultPrevented) return;
           e.preventDefault();
+          frameLoading(f, true);
           formAgain(form, sub, f.name);
           return;
         }
@@ -3651,6 +3744,27 @@
     // a link, form or script leaving this page opens beside it, which
     // keeps it for Back (29-fhead.js)
     if (browsing(key)) fkeepWatch(f, d, key);
+    // and anything else that leaves it starts the frame's loading line:
+    // the navigation API hears links, forms, scripts and reloads alike,
+    // after fkeepWatch, so a step it took over (a new frame beside this
+    // one, loading of its own) is left to it. An engine without the API
+    // (webkitgtk) hears a link followed or a form sent instead.
+    const nav = d.defaultView && d.defaultView.navigation;
+    if (nav) {
+      nav.addEventListener('navigate', (e) => {
+        if (e.defaultPrevented || e.destination.sameDocument || e.downloadRequest !== null) return;
+        if (f.dataset.tool) frameLoading(f, true);
+      });
+      nav.addEventListener('navigateerror', () => frameLoading(f, false));
+    } else if (d.defaultView) {
+      d.defaultView.addEventListener('click', (e) => {
+        const a = e.target.closest && e.target.closest('a[href]');
+        if (a && !e.defaultPrevented && linkLeaves(a, a.target, e)) frameLoading(f, true);
+      });
+      d.defaultView.addEventListener('submit', (e) => {
+        if (!e.defaultPrevented && !/^_blank$/i.test(e.target.getAttribute('target') || '')) frameLoading(f, true);
+      });
+    }
     // the reader shows a page in a frame of its own (srcdoc), where the
     // comment box lives. A sandboxed one (a peer's page) is out of reach,
     // and has no box.
@@ -5847,6 +5961,7 @@
     const n = fnavOf(key);
     if (how === 'to') {
       n.addr = v.trim();
+      frameLoading(f, true);
       try { f.contentWindow.location.href = fnavTarget(v); } catch {}
       fhPaintKey(key);
       return;
@@ -5869,6 +5984,7 @@
       return true;
     }
     n.go = how;
+    frameLoading(f, true);
     const at = how === 'back' ? jh.pos : jh.pos + 1;
     if (!fromTop && jh.keys[at] === key && jh.keys.every((k) => frameOf(k))) {
       jh.pos += how === 'back' ? -1 : 1;
@@ -6015,6 +6131,7 @@
     try { f.contentWindow.name = n; } catch {}
   };
   function fkeepPark(key, f, url) {
+    frameLoading(f, false);           // a kept page's load is no tab's wait
     delete f.dataset.tool;
     f.dataset.kept = key;
     frameName(f, '');
@@ -6061,8 +6178,10 @@
     if (k.latStale) {
       const u = k.latStale;
       k.latStale = null;
+      frameLoading(k, true);
       try { k.contentWindow.location.replace(u); } catch {}
     }
+    frameBusySync(k.parentNode);
   }
   // catch the page in `f` leaving (frameDress, at each load)
   function fkeepWatch(f, d, key) {
@@ -7039,12 +7158,16 @@
   // Answers false when the open failed with nothing painted, which the tab
   // model tells apart from an open that a later one superseded.
   let openSeq = 0;
+  // the next open's number. Whatever an open before it still owed the
+  // loading line (busy, 10-shell.js) is let go with it: a later open, a
+  // tab switch and a blank page all supersede it.
+  function openNext() { busyEnd('open'); return ++openSeq; }
   async function openPage(name) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
     if (!(await guardDirty())) return false;
-    const my = ++openSeq;
+    const my = openNext();
     // leaving grub mode: clear the flag or the save button would keep writing
     // to the grub while the editor shows a page
     grubPath = null;
@@ -7091,7 +7214,21 @@
       }
     }
   }
+  // The loading line runs while the ship's answer is still owed to the
+  // eye: an open with nothing painted, or a painted one whose preview only
+  // the ship renders (hoon, noun and the other computed kinds). A painted
+  // content page already shows all of itself, so its upgrade fetch runs
+  // unmarked. The status names an unpainted open only once it is slow, so
+  // a quick one does not flash the spinner either.
   async function openRead(name, my, node, painted) {
+    const owed = !painted || !['md', 'gmi', 'html', 'text'].includes(node.kind);
+    const end = owed ? busy('open') : null;
+    const late = painted ? 0
+      : setTimeout(() => { if (my === openSeq) stWork('opening ' + name + '\u2026'); }, BUSY_MS);
+    try { return await openReadRun(name, my, node, painted); }
+    finally { if (end) end(); clearTimeout(late); }
+  }
+  async function openReadRun(name, my, node, painted) {
     // `quiet`: the render=1 request below carries the preview and the error
     // report, so painting must not also fire refreshPreview/checkErrors.
     if (painted) {
@@ -7108,11 +7245,10 @@
     //
     // When NOT painted (a body the dump did not carry), the user just clicked
     // and nothing changed on screen — on a slow pier that silence lasts
-    // seconds and reads as a dead click. Say the open is happening; every
-    // exit below already replaces this status.
+    // seconds and reads as a dead click. openRead says the open is
+    // happening once it is slow; every exit below replaces that status.
     let fromUrl = null;
     if (!painted) {
-      stWork('opening ' + name + '\u2026');
       // commit the address NOW, before the fetch. A reload mid-open (the
       // service-worker takeover) must resume THIS page. Painted opens already
       // set the address synchronously via applyPage; this fetch lands seconds
@@ -7265,7 +7401,7 @@
   // autosave there goes to /know-save, so a memory in front leaves it first.
   function blankPage(into) {
     if (mode === 'know') setMode('pages');
-    openSeq++;           // an open still in flight must not land over this
+    openNext();          // an open still in flight must not land over this
     folderCtx = into || '';
     curFolder = null;
     curKind = null;
@@ -7953,7 +8089,7 @@
   };
   // Answers false when the open failed, like openPage (35-pages.js).
   async function openGrub(p, ship) {
-    const my = ++openSeq;
+    const my = openNext();
     enterGrub(p, ship);
     st('loading ' + p + '…');
     // remote files ride /browse-file (bounded cross-ship peek). Its JSON says
@@ -7963,7 +8099,7 @@
       ? api + '/browse-file?ship=' + encodeURIComponent(grubShip) + '&path=' + encodeURIComponent(p)
       : api + '/grub-source?path=' + encodeURIComponent(p);
     let r = null;
-    try { r = await fetch(url); } catch {}
+    try { r = await busyFetch(url, undefined, 'open'); } catch {}
     if (my !== openSeq) return;
     if (!r || !r.ok) {
       // the editor stays as enterGrub left it, empty and locked
@@ -8134,7 +8270,7 @@
   async function newFromTemplate() {
     let names = [];
     try {
-      const r = await fetch(api + '/template-list');
+      const r = await busyFetch(api + '/template-list');
       if (r.ok) names = (await r.json()).templates || [];
     } catch {}
     if (!names.length) { st('no templates available', false); return; }
@@ -9528,7 +9664,7 @@
     renderGroupAccess();
   }
   async function permSave(g) {
-    const r = await fetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {
+    const r = await busyFetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {
       method: 'POST',
       body: JSON.stringify({ ships: g.ships, peek: g.peek, make: g.make }),
     }).catch(() => null);
@@ -9613,7 +9749,7 @@
         x.title = 'remove from this list (their grant is untouched)';
         x.onclick = async (e) => {
           e.preventDefault(); e.stopPropagation();
-          const r = await fetch(api + '/shared-with-me-del?host=' + encodeURIComponent(host) +
+          const r = await busyFetch(api + '/shared-with-me-del?host=' + encodeURIComponent(host) +
             '&path=' + encodeURIComponent(it.path), { method: 'POST' }).catch(() => null);
           if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
           loadShared();
@@ -9660,7 +9796,7 @@
   // -> true once the link is in, after saying why when it is not
   async function moveIn(it, to) {
     stWork('moving ' + swmLeaf(it) + ' into ' + to + '\u2026');
-    const r = await fetch(api + '/link-make?host=' + encodeURIComponent(it.host) +
+    const r = await busyFetch(api + '/link-make?host=' + encodeURIComponent(it.host) +
       '&path=' + encodeURIComponent(it.path) + '&to=' + encodeURIComponent(to),
     { method: 'POST' }).catch(() => null);
     if (!r || !r.ok) { st('move failed' + await errText(r), false); return false; }
@@ -9721,7 +9857,7 @@
     if (!lk) return;
     for (const t of allTabs().filter((x) => x.kind === 'page' && x.key === name))
       if ((await closeTab(t.id)) === false) return;
-    const r = await fetch(api + '/link-unmake?name=' + encodeURIComponent(name),
+    const r = await busyFetch(api + '/link-unmake?name=' + encodeURIComponent(name),
       { method: 'POST' }).catch(() => null);
     if (!r || !r.ok) { st('move failed' + await errText(r), false); return; }
     dropTreeNodes(name);
@@ -10350,7 +10486,7 @@
     del.className = 'acl-del';
     del.onclick = async () => {
       if (!(await askConfirm('delete group ' + g.name + ' and every grant it carries?', 'delete'))) return;
-      const r = await fetch(api + '/share-group-del?name=' + encodeURIComponent(g.name),
+      const r = await busyFetch(api + '/share-group-del?name=' + encodeURIComponent(g.name),
         { method: 'POST' }).catch(() => null);
       // loadPerms repaints from the ship either way, so a delete that failed
       // and a group that came back on its own look identical. Say which it
@@ -10508,7 +10644,7 @@
       a.textContent = w + ' ×';
       a.title = 'unban ' + w;
       a.onclick = async () => {
-        const r = await fetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
+        const r = await busyFetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
           .catch(() => null);
         // announce the unban only once the ship has agreed to it
         if (!r || !r.ok) st('could not unban ' + w + await errText(r), false);
@@ -10526,7 +10662,7 @@
     // ship name is a permanent loss with no online undo, so ask first the
     // way delete already does.
     if (!(await askConfirm('ban ' + w + '? this revokes every grant it holds, and unban will not restore them', 'ban'))) return;
-    const r = await fetch(api + '/ban?ship=' + encodeURIComponent(w), { method: 'POST' })
+    const r = await busyFetch(api + '/ban?ship=' + encodeURIComponent(w), { method: 'POST' })
       .catch(() => null);
     if (!r || !r.ok) { st('could not ban ' + w + await errText(r), false); return; }
     const j = await r.json().catch(() => ({}));
@@ -10585,7 +10721,7 @@
     }
     let d = null;
     try {
-      const r = await fetch(api + '/comments-inbox');
+      const r = await busyFetch(api + '/comments-inbox');
       if (!r.ok) { st('comments failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { st('comments failed', false); return; }
@@ -10631,7 +10767,7 @@
       del.className = 'acl-del';
       del.onclick = async () => {
         if (!(await askConfirm('remove this comment by ' + c.author + '?', 'remove'))) return;
-        const r = await fetch(api + '/comment-del?page=' + encodeURIComponent(c.page) +
+        const r = await busyFetch(api + '/comment-del?page=' + encodeURIComponent(c.page) +
           '&id=' + encodeURIComponent(c.id), { method: 'POST' }).catch(() => null);
         if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
         st('comment removed');
@@ -10792,13 +10928,14 @@
     //  held first: the save the flush makes queues an autosave behind it,
     //  and that one would go out beside the move, under the old name
     moving++;
+    const end = busy();      // the line from the click, the flush included
     try {
       await flushNoAsk();
       await waitSave();
       return await mutate(api + '/page-move?from=' + encodeURIComponent(from) +
         '&to=' + encodeURIComponent(to) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
         (rn && rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
-    } finally { moving--; }
+    } finally { end(); moving--; }
   };
   // the server moves the WHOLE subtree (a page can parent nested pages, and
   // move-pages rewrites every rel under it). Renaming only the exact node
@@ -11090,7 +11227,7 @@
     host.textContent = 'loading…';
     let d = null;
     try {
-      const r = await fetch(api + '/comments-inbox');
+      const r = await busyFetch(api + '/comments-inbox', undefined, 'rp:comments', $('rpane'));
       if (!r.ok) { host.textContent = ''; st('comments failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { host.textContent = ''; st('comments failed', false); return; }
@@ -11116,11 +11253,11 @@
     $('rpcmpost').disabled = true;
     // the route answers a form post with a redirect to the reader. Not
     // followed: landing is all this needs to know.
-    const r = await fetch(api + '/comment?page=' + encodeURIComponent(page), {
+    const r = await busyFetch(api + '/comment?page=' + encodeURIComponent(page), {
       method: 'POST', redirect: 'manual',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: 'body=' + encodeURIComponent(body),
-    }).catch(() => null);
+    }, null, $('rpane')).catch(() => null);
     $('rpcmpost').disabled = false;
     if (!r || !(r.ok || r.type === 'opaqueredirect')) { st('comment failed' + await errText(r), false); return; }
     if (current === page) $('rpcmbody').value = '';
@@ -11170,7 +11307,7 @@
     // a panel nobody can see is not worth a rejection: an unreachable ship
     // leaves the list empty, the same as a refused request already does
     try {
-      const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(want));
+      const r = await busyFetch(api + '/page-backlinks?name=' + encodeURIComponent(want), undefined, 'rp:back', $('rpane'));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
@@ -11220,9 +11357,9 @@
     // same rules as loadBacklinks: an unreachable ship leaves the panel
     // empty, and an answer about a document no longer open is dropped
     try {
-      const r = await fetch(mode === 'know'
+      const r = await busyFetch(mode === 'know'
         ? api + '/know-history?key=' + encodeURIComponent(want)
-        : api + '/page-history?name=' + encodeURIComponent(want));
+        : api + '/page-history?name=' + encodeURIComponent(want), undefined, 'rp:hist', $('rpane'));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
@@ -11261,7 +11398,7 @@
     if (!(await guardDirty())) return;
     let d = null;
     try {
-      const r = await fetch(mode === 'know'
+      const r = await busyFetch(mode === 'know'
         ? api + '/know-read-at?key=' + encodeURIComponent(current) + '&rev=' + rev
         : api + '/page-source-at?name=' + encodeURIComponent(current) + '&rev=' + rev);
       if (!r.ok) {
@@ -11638,7 +11775,8 @@
       //  that reads as "no results".
       host.className = 'aclempty';
       host.textContent = 'searching\u2026';
-      await qLoadContext();
+      const end = busy(null, $('lpane'));
+      try { await qLoadContext(); } finally { end(); }
       if (mine !== qSeq) return;
     }
     const { out, skipped } = qScan(q);
@@ -12441,7 +12579,7 @@
     // the same sequence openPage keeps: a later open of anything supersedes
     // this one, so a slow answer cannot paint a memory over the page (or
     // the other memory) opened after it
-    const my = ++openSeq;
+    const my = openNext();
     if (mode !== 'know') setMode('know');
     // a queued edit outranks the ship's copy, same rule as pages
     const q = await offGet('know:' + key);
@@ -12449,7 +12587,7 @@
     if (q) d = { body: q.body, tags: (knowEntry(key) || { tags: [] }).tags, updated: 'queued offline' };
     else {
       let r = null;
-      try { r = await fetch(api + '/know-read?key=' + encodeURIComponent(key)); } catch {}
+      try { r = await busyFetch(api + '/know-read?key=' + encodeURIComponent(key), undefined, 'open'); } catch {}
       if (my !== openSeq) return;
       if (!r || !r.ok) { st('open failed' + (r ? await errText(r) : ' — offline'), false); return false; }
       d = await r.json();

@@ -311,6 +311,18 @@ select, option { color-scheme: inherit; }
   vertical-align: -1px; }
 #spin.on { display: inline-block; }
 @media (prefers-reduced-motion: reduce) { #spin { animation-duration: 2.4s; } }
+/* the loading line (busy(), 10-shell.js; frameLoading, 24-tools.js): a 2px
+   accent streak along the top of the region waiting on the ship, added only
+   once the wait has run 180 ms. app.hoon's +busy-script draws the same one
+   on the reader pages. Without motion it is a still, faint line. */
+.center, .toolhost, .pane { position: relative; }
+.lbusy::before { content: ""; position: absolute; top: 0; left: 0; right: 0;
+  height: 2px; z-index: 40; pointer-events: none;
+  background: linear-gradient(90deg, transparent, var(--green), transparent) no-repeat;
+  background-size: 40% 100%; animation: latbusy 1.2s ease-in-out infinite; }
+@keyframes latbusy { from { background-position: -70% 0; } to { background-position: 170% 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .lbusy::before { animation: none; background: var(--green); opacity: .45; } }
 
 .tree { min-height: 100%; padding: 10px; }
 .tree .ptool { display: flex; align-items: center; gap: 2px; margin: -4px -4px 6px; }
