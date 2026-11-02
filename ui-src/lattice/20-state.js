@@ -159,9 +159,15 @@
   //  write claims an early bump first and only counts one when none came.
   //  Early bumps still unclaimed when the window shuts were someone else's,
   //  and `wake` refreshes for them then.
+  //
+  //  `fly` counts writes still in flight on the beacon and `tail` is the
+  //  latest tail a landed one asked for. One write landing must not shut
+  //  the window on another still flying (an autosave under a folder move):
+  //  that one's early bump would then refresh, and its landing would count
+  //  the bump again, leaving one owed.
   const echoes = {
-    rev: { n: 0, until: 0, at: 0, early: 0, timer: 0, wake: null },
-    know: { n: 0, until: 0, at: 0, early: 0, timer: 0, wake: null },
+    rev: { n: 0, until: 0, at: 0, early: 0, fly: 0, tail: 0, timer: 0, wake: null },
+    know: { n: 0, until: 0, at: 0, early: 0, fly: 0, tail: 0, timer: 0, wake: null },
   };
   const echoArm = (echo) => {
     clearTimeout(echo.timer);
@@ -181,8 +187,21 @@
     echoArm(echo);
     return true;
   };
-  // a write answered. `ok`: it changed the ship, so one bump is ours
-  const echoLanded = (echo, ok) => {
+  // a write set off: hold the window open while it flies
+  const echoSent = (echo) => {
+    echo.fly++;
+    echo.until = Math.max(echo.until, Date.now() + 60000);
+    echo.at = Date.now();             // when we last wrote (see refocused)
+  };
+  // a write answered (or failed), sent at `sentAt`. The window stays open
+  // for twice the round trip, and while any other write still flies.
+  // `ok`: it changed the ship, so one bump is ours.
+  const echoLanded = (echo, ok, sentAt) => {
+    const now = Date.now();
+    const tail = now + Math.max(4000, 2 * (now - sentAt));
+    echo.fly = Math.max(0, echo.fly - 1);
+    echo.tail = Math.max(echo.tail, tail);
+    echo.until = echo.fly ? Math.max(echo.until, tail) : echo.tail;
     if (ok) { if (echo.early > 0) echo.early--; else echo.n++; }
     echoArm(echo);
   };
@@ -317,8 +336,7 @@
     srcFlight.clear();    // a read from before this write is shared no more
     sensForget(url);
     const echo = echoOf(url);
-    echo.until = Date.now() + 60000;
-    echo.at = Date.now();             // when we last wrote (see refocused)
+    echoSent(echo);
     lastAction = Date.now();          // a write is user activity (see bgFetch)
     const sentAt = Date.now();
     const req = (ms ? tfetch(url, init, ms) : fetch(url, init)).catch(() => null);
@@ -332,11 +350,10 @@
     finally {
       if (end) end();
       if (saveFlight === req) saveFlight = null;
-      echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
     }
     // `r` too: a 504 can be a link's host (35-pages.js), not this ship
     const gone = shipGone(r);
-    echoLanded(echo, !gone && r.ok);    // one bump is ours (see echoes)
+    echoLanded(echo, !gone && r.ok, sentAt);    // one bump is ours (see echoes)
     if (gone) return { gone: true, r };
     if (r.ok) {
       // every write names its target the same way; a move dirties both ends
