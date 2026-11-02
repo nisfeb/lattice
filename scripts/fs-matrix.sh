@@ -147,6 +147,93 @@ is "the moved copies are intact" 'one two' "$(page fsmatrix/mvnew/one) $(page fs
 printf 'three\n' > "$LMNT/fsmatrix/mvold/three.md"; sleep 0.4
 is "a new file at the old folder's name still lands" 'three' "$(page fsmatrix/mvold/three)"
 
+say "LibreOffice saves a fodt whose folder moved (spec, Decisions 7)"
+# LibreOffice 26.8's save onto an existing document, from the trace in
+# scripts/fs-libreoffice.sh: the new body goes to lu<pid><rand>.tmp
+# beside the document, the document is opened read-write and locked, an
+# O_EXCL create of it fails EEXIST, and the temp is renamed over it.
+# `hold` keeps the document open from before the move (a headless
+# save does); `reopen` opens it again at save time (the GUI does).
+lo_save() { # lo_save <doc> <url> <cookie> <from> <to> <refresh> <hold|reopen>
+  python3 - "$@" <<'PY'
+import sys, os, fcntl, subprocess, time
+doc, url, ck, fr, to, refresh, mode = sys.argv[1:8]
+d = os.path.dirname(doc)
+f = open(doc, 'r+b'); fcntl.lockf(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+body = f.read()
+if mode == 'reopen': f.close(); f = None
+subprocess.run(['curl', '-s', '-X', 'POST', '-H', ck,
+  url + '/apps/lattice/page-move?from=' + fr + '&to=' + to], capture_output=True)
+if refresh == '1':
+    # the mount lists the tree again, so the old folder is gone from it,
+    # and only a folder made again (a sync client, the user) takes a save
+    # force the re-list: a write-back of a sibling the move carried off
+    # is refused, and a refused write drops the listing (the mount's own
+    # clock does not notice a move, see the Task 5 report)
+    try:
+        with open(os.path.join(d, 'b.md'), 'w') as g: g.write('stale\n')
+    except OSError: pass
+    for _ in range(40):
+        if os.path.basename(d) not in os.listdir(os.path.dirname(d)): break
+        time.sleep(0.5)
+    else:
+        print('never relisted'); sys.exit()
+    try: os.mkdir(d)
+    except OSError: pass
+out = []
+tmp = os.path.join(d, 'lu4242xfodt1.tmp')
+try:
+    t = os.open(tmp, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o644)
+    os.write(t, body + b'<!-- stale -->'); os.close(t)
+except OSError as e:
+    print('temp', e.errno); sys.exit()
+if f is None:
+    try:
+        f = open(doc, 'r+b'); out.append('open ok')
+    except OSError as e:
+        out.append('open %d' % e.errno)
+try:
+    os.close(os.open(doc, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o644))
+    out.append('excl ok')
+except OSError as e:
+    out.append('excl %d' % e.errno)
+try:
+    os.rename(tmp, doc); out.append('rename ok')
+except OSError as e:
+    out.append('rename %d' % e.errno)
+try:
+    if f: f.close()
+except OSError: pass
+print(' '.join(out))
+PY
+}
+FODT="$(cd "$(dirname "$0")/.." && pwd)/tests/writer/corpus/01-paragraphs.fodt"
+kind() { curl -s -H "$CK" "$URL/apps/lattice/page-source?name=$1" | python3 -c 'import sys,json
+try: print(json.load(sys.stdin)["kind"], end="")
+except Exception: print("<missing>", end="")'; }
+pages_under() { curl -s -H "$CK" "$URL/apps/lattice/page-tree" | python3 -c 'import sys,json
+p = sys.argv[1]
+print(" ".join(n["path"] for n in json.load(sys.stdin)["nodes"] if n["path"].startswith(p) and n.get("page")), end="")' "$1"; }
+want=$(md5sum < "$FODT")
+# lo_case <name> <refresh> <mode> <expected result line>
+lo_case() {
+  local o="fsmatrix/lo$1" n="fsmatrix/lo$1-moved" r
+  mkdir -p "$LMNT/$o"; cp "$FODT" "$LMNT/$o/a.fodt"; printf 'b\n' > "$LMNT/$o/b.md"
+  sleep 0.6
+  is "$1: the document lands as fodt" 'fodt' "$(kind "$o/a")"
+  r=$(lo_save "$LMNT/$o/a.fodt" "$URL" "$CK" "$o" "$n" "$2" "$3")
+  is "$1: the save is refused as gone (ENOENT)" "$4" "$r"
+  is "  the old folder does not come back" '' "$(pages_under "$o/")"
+  is "  the moved copy keeps the body from before" "$want" "$(page "$n/a" | md5sum)"
+}
+# listing stale: the rename is an overwrite of a page that moved away
+lo_case stale 0 hold 'excl 17 rename 2'
+# listing refreshed (spec, Decisions 7): the old path is gone, so the
+# O_EXCL create and the rename are both creates at a moved-away path,
+# and +move-guard refuses both, with the document held open or not
+lo_case fresh 1 hold 'excl 2 rename 2'
+lo_case fresh-gui 1 reopen 'open 2 excl 2 rename 2'
+
 say "rmdir safety"
 mkdir "$LMNT/fsmatrix/sub" && printf 'x\n' > "$LMNT/fsmatrix/sub/c.md"; sleep 0.4
 rmdir "$LMNT/fsmatrix/sub" 2>/dev/null
