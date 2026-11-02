@@ -2275,6 +2275,11 @@
         const n = nodes.find((x) => x.page && x.path === t.key);
         applyPage(t.key, { body: s.body, kind: s.kind || s.pkind, rev: s.rev,
           share: (n && n.share) || 'private' }, true);
+        // a quiet applyPage paints a content kind only. A computed page
+        // kept whatever the pane showed before it came back: a grub's "no
+        // preview", painted while the grub's state was still live (fuzz
+        // seed 7027: its group closed, or the page's group came forward)
+        if (!CONTENT()) refreshPreview();
       },
       park: parkDoc,
       shows: showsLive,

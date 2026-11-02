@@ -57,6 +57,16 @@ const shows = async (word, gone) => {
   }
   return false;
 };
+//  a computed page's preview: the frame loads the page's /f/ document,
+//  which a cold ship builds first, so it gets longer than BUDGET
+const computed = async (n) => {
+  for (const t0 = Date.now(); Date.now() - t0 < 20000; await sleep(200)) {
+    const h = await p.$('#prev');
+    const f = h && await h.contentFrame();
+    if (f && f.url().includes('/f/' + n) && !(await shown()).includes(NONE)) return true;
+  }
+  return false;
+};
 const holds = async () => 'pane holds ' + JSON.stringify((await shown()).slice(0, 60));
 const front = (kind, key) => p.waitForFunction((k, y) => {
   const s = window.latTabs.state();
@@ -123,6 +133,31 @@ try {
   await p.evaluate((id) => window.latTabs.switchTab(id), gid);
   await front('grub', g);
   check("back on the grub tab, the pane shows its unsaved buffer", await shows('Zeppelin', 'harbour'), await holds());
+
+  //  fuzz-preview seed 7027: a hoon page in Read, a split, and a grub in
+  //  the new group (in Edit). Closing that group brought the page back
+  //  through its tab's restore, which painted no computed preview, so the
+  //  pane kept the "no preview" the grub's state had just painted on it.
+  //  Leaving the group for the page's group did the same.
+  for (const how of ['close', 'focus']) {
+    await p.evaluate(() => { for (const k of ['appTabs', 'appPage']) localStorage.removeItem(k); });
+    await boot();
+    await openPageRead(H);
+    check(how + ': the hoon page in Read shows its preview', await computed(H), await holds());
+    await p.keyboard.down('Control'); await p.keyboard.press('Backslash'); await p.keyboard.up('Control');
+    await p.waitForFunction(() => window.latTabs.groups().length === 2, { timeout: 30000 });
+    await openGrub(B);
+    if (how === 'close') {
+      const gs = await p.evaluate(() => window.latTabs.groups());
+      for (const t of gs[1].tabs) await p.evaluate((id) => window.latTabs.closeTab(id), t.id);
+      await p.waitForFunction(() => window.latTabs.groups().length === 1, { timeout: 30000 });
+    } else {
+      await p.evaluate(() => window.latTabs.focus(0));
+    }
+    await front('page', H);
+    check(how + ': back on the hoon page, the pane shows its preview, not "no preview"',
+      await computed(H), await holds());
+  }
 } catch (e) {
   check('suite crashed: ' + e.message, false);
 } finally {
