@@ -276,7 +276,7 @@
 
   async function deleteKnow() {
     if (!current) return;
-    if (!(await askConfirm('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
+    if (!(await askDanger('delete memory ' + current + '? (soft-delete, restorable)', 'delete'))) return;
     const doomed = current;
     const r = await mutate(api + '/know-delete?key=' + encodeURIComponent(doomed));
     if (!r.ok) { st('delete failed' + await errText(r), false); return; }

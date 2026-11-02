@@ -77,7 +77,7 @@
       del.textContent = 'remove';
       del.className = 'acl-del';
       del.onclick = async () => {
-        if (!(await askConfirm('remove this comment by ' + c.author + '?', 'remove'))) return;
+        if (!(await askDanger('remove this comment by ' + c.author + '?', 'remove'))) return;
         const r = await fetch(api + '/comment-del?page=' + encodeURIComponent(c.page) +
           '&id=' + encodeURIComponent(c.id), { method: 'POST' }).catch(() => null);
         if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }

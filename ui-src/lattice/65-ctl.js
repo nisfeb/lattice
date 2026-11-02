@@ -110,44 +110,89 @@
   // the editor sends to it now.
 
   // ── delete ───────────────────────────────────────────────────────────────
+  //  One confirm and one delete for every way to a page or a folder: the
+  //  page menu's Delete (#del), the tree's menu and Delete key
+  //  (34-treemenu.js) and a conflict's resolve (80-conflicts.js). Nothing
+  //  deletes a page without coming through here, so nothing deletes one
+  //  without the confirm.
+  //
+  //  The confirm says what goes: the name, how many pages go with it, what
+  //  of it is published or granted (a reader's copy can outlive the delete),
+  //  and that it is permanent. Pages carry no trash: the writer prunes
+  //  every revision and offers no restore, unlike a memory's soft delete.
+  const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
+  function delWhat(path, folder) {
+    const n = nodes.find((x) => x.page === !folder && x.path === path);
+    const name = (n && n.dname ? n.dname + ' (' + path + ')' : path);
+    const c = pageCount(path);
+    const lines = [];
+    if (folder) lines.push('delete folder ' + name
+      + (c ? ' and the ' + plural(c, 'page') + ' in it?' : '? It is empty.'));
+    else lines.push('delete ' + name
+      + (c ? ' and the ' + plural(c, 'page') + ' under it?' : '?'));
+    if (n && n.link && n.link.host)
+      lines.push('This is a link to a page on ' + n.link.host
+        + '. Only the link goes; their page is untouched.');
+    //  published: the page's own share mode, or how many under the folder
+    const under = nodes.filter((x) => x.page && (x.path === path || x.path.startsWith(path + '/')));
+    const pub = under.filter((x) => x.share === 'shared' || x.share === 'clearweb');
+    if (pub.length) {
+      const web = pub.some((x) => x.share === 'clearweb');
+      const how = ' published (' + (web ? 'on the clearweb' : 'over Urbit') + ').';
+      lines.push(!folder && pub.length === 1 && pub[0].path === path
+        ? 'It is' + how + ' Anyone who already read it may keep a copy.'
+        : plural(pub.length, 'page') + (pub.length === 1 ? ' is' : ' are') + how
+          + ' Anyone who already read them may keep a copy.');
+    }
+    //  granted to a ship or a group: the grant goes with the page
+    if (selfBase && permsLoaded) {
+      const pp = selfBase + '/page/' + path;
+      const gs = permGroups.filter((g) => [...(g.peek || []), ...(g.make || [])]
+        .some((x) => x === pp || x.startsWith(pp + '/')));
+      if (gs.length) lines.push('It is shared with ' + gs.map((g) => g.name).join(', ')
+        + '. Their access ends with it.');
+    }
+    if (path === 'conflicts')
+      lines.push('Lattice makes this folder again on the next conflict.');
+    const open = mode !== 'know' && !grubPath && current
+      && (current === path || current.startsWith(path + '/'));
+    if (open && dirty) lines.push('The open page has unsaved changes, and they go too.');
+    if (degraded || offCount) lines.push('You are offline: the delete is queued and runs when the ship is back.');
+    lines.push('This is permanent and cannot be restored.');
+    return lines.join('\n');
+  }
+  //  -> true once deleted. `folder` says which node the path names (a page
+  //  can have pages under it and still be a page). `note` is a caller's own
+  //  line for the confirm. What is open stays open unless it is the page
+  //  deleted or is under the folder deleted; then a clean new page.
+  async function deletePath(path, folder, note) {
+    if (!path) return false;
+    if (!(await askDanger(delWhat(path, folder) + (note ? '\n' + note : ''), 'delete'))) return false;
+    const hit = (p) => !!p && (p === path || p.startsWith(path + '/'));
+    //  what is open goes with it: the editor lets go of it first, so no
+    //  autosave or trailing save can aim at it, and a save already on the
+    //  wire lands before the delete does, never after it (it made the page
+    //  again). A clean new page, and no focus: a focused newFile becomes
+    //  the create dialog under the desktop wrapper.
+    if ((mode !== 'know' && !grubPath && hit(current)) || hit(curFolder)) {
+      clearTimeout(autoTimer);
+      dirty = false;
+      savePending = false;
+      newFile('', false);
+    }
+    await waitSave();
+    const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
+    if (!r.ok) { st('delete failed' + await errText(r), false); return false; }
+    dropTreeNodes(path);
+    snapTree();
+    renderTree();
+    st(r.offline ? 'deleted ' + path + ' offline' : 'deleted ' + path);
+    return true;
+  }
   $('del').onclick = async () => {
     if (mode === 'know') { deleteKnow(); return; }
-    if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
-    if (curFolder) {
-      const path = curFolder;
-      const c = pageCount(path);
-      // pages carry no trash: the writer prunes every revision and never
-      // offers a restore route, unlike the memory delete confirm a click
-      // away, which correctly says restorable. Say permanent here instead.
-      const what = 'delete folder ' + path +
-        (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it' : '') +
-        '? (permanent, not restorable)';
-      if (!(await askConfirm(what, 'delete'))) return;
-      const r = await mutate(api + '/page-del?name=' + encodeURIComponent(path));
-      if (!r.ok) { st('delete failed' + await errText(r), false); return; }
-      dropTreeNodes(path);
-      snapTree();
-      // no focus: a focused newFile becomes the create dialog under the
-      // desktop wrapper, and nobody asked to create a page by deleting one
-      newFile('', false);
-      st(r.offline ? 'deleted ' + path + ' offline' : 'deleted ' + path);
-      return;
-    }
+    if (viewingRev !== null) { st('viewing rev ' + viewingRev + ', use restore', false); return; }
+    if (curFolder) { deletePath(curFolder, true); return; }
     if (!current) { st('nothing to delete', false); return; }
-    const doomed = current;
-    // the server culls the page's whole dir, nested pages included, and
-    // dropTreeNodes below assumes exactly that. Count what goes the way the
-    // folder branch does, so the confirm is proportional to the loss
-    const c = pageCount(doomed);
-    // same reason as the folder confirm above: no trash, no restore, so say so
-    const what = 'delete ' + doomed +
-      (c ? ' and the ' + c + ' page' + (c === 1 ? '' : 's') + ' under it' : '') +
-      '? (permanent, not restorable)';
-    if (!(await askConfirm(what, 'delete'))) return;
-    const r = await mutate(api + '/page-del?name=' + encodeURIComponent(doomed));
-    if (!r.ok) { st('delete failed' + await errText(r), false); return; }
-    dropTreeNodes(doomed);
-    snapTree();
-    newFile('', false);
-    st(r.offline ? 'deleted ' + doomed + ' offline' : 'deleted ' + doomed);
+    deletePath(current, false);
   };
