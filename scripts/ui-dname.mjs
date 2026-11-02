@@ -74,7 +74,15 @@ for (let i = 0; i < 60; i++) {
   if (r.ok) break;
   await sleep(500);
 }
-const dump = await page.evaluate(async () => (await (await fetch('/apps/lattice/page-dump')).json()).nodes);
+// the display names go in after the page, one writer poke each, so a
+// dump read the moment the page answers can come before them: wait on
+// the folder's own name rather than read once
+const readDump = () => page.evaluate(async () => (await (await fetch('/apps/lattice/page-dump')).json()).nodes);
+let dump = await readDump();
+for (let i = 0; i < 30 && !(dump.find((n) => n.path === RUN + '/sub-folder') || {}).dname; i++) {
+  await sleep(500);
+  dump = await readDump();
+}
 const sf = dump.find((n) => n.path === RUN + '/sub-folder');
 check('page-dump carries the folder dname', sf && sf.dname === 'Sub Folder', JSON.stringify(sf));
 const mp = dump.find((n) => n.path === RUN + '/my-page');
