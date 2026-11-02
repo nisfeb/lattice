@@ -6996,6 +6996,12 @@
 ::  a burst, and publishes at once (+pub-note:lp)
 ++  pub-quiet  ^-(@dr ~s4)
 ++  pub-tries  ^-(@ud 3)
+::  +pub-slow-cap: the longest a fodt page's publish waits for a pause
+::  in its saves (+pub-hold:lp). Its publish renders the page, 7 to 9 s
+::  for a 1.5 MB document on a dev ship, and a save that lands then waits
+::  for it. So it trails the burst (+pub-due:lp) and renders only the
+::  newest revision, and the saves answer at their usual pace.
+++  pub-slow-cap  ^-(@dr ~m1)
 ++  pub-when
   |=  row=pub-wait:lp
   ^-  @da
@@ -7007,7 +7013,8 @@
 ::  them.
 ++  pub-tail-lag  ^-(@dr ~s3)
 ++  pub-pending-road  |=(root=@ud (rf root / %'pub-pending'))
-::  +read-pub-pending: /pub-pending, or release 79's shape of it
+::  +read-pub-pending: /pub-pending, or an older shape of it (before
+::  `hold`, or release 79's)
 ++  read-pub-pending
   |=  root=@ud
   =/  m  (fiber:fiber:nexus ,pub-pending:lp)
@@ -7017,6 +7024,8 @@
   =/  n=*  (sang-noun:tarball sang.vw)
   =/  new=(unit pub-pending:lp)  (mole |.(;;(pub-pending:lp n)))
   ?^  new  (pure:m u.new)
+  =/  four=(unit pub-four:lp)  (mole |.(;;(pub-four:lp n)))
+  ?^  four  (pure:m (pub-from-four:lp u.four))
   =/  old=(unit pub-old:lp)  (mole |.(;;(pub-old:lp n)))
   (pure:m ?~(old ~ (pub-from-old:lp u.old)))
 ::  +pub-trying-road, +read-pub-trying: the in-flight mark (+pub-trying:lp)
@@ -7051,7 +7060,10 @@
   =/  k=@t  (spat rel)
   =/  nen=pub-pending:lp
     =/  pru  (pub-prune:lp pen now pub-gap)
-    (~(put by pru) k (pub-note:lp (~(get by pen) k) now pub-quiet))
+    =/  row=pub-wait:lp  (pub-note:lp (~(get by pen) k) now pub-quiet)
+    ::  a fodt page's publish renders it: it waits for a pause
+    =?  row  =(`%fodt (content-builder src))  (pub-hold:lp row now pub-slow-cap)
+    (~(put by pru) k row)
   ;<  ~  bind:m  (put-file (pub-pending-road root) [/ %noun] nen)
   =/  due=?  (lte (pub-when (~(got by nen) k)) now)
   ;<  ~  bind:m
