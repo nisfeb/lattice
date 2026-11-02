@@ -166,6 +166,53 @@ try {
     return ms;
   });
   check('highlight: a hostile body does not freeze the editor', stall < 1000, Math.round(stall) + 'ms');
+  // a highlight answered after the kind changed (a shared page paints, then
+  // learns its kind) was dropped, and a fast answer had already cancelled
+  // the plain paint: the overlay kept the old text over a transparent
+  // textarea, an empty editor with the right scroll length
+  //  the hostile body above leaves its job running in the worker until the
+  //  deadline kills it, so let the overlay settle on the probe text first
+  check('highlight: the overlay settles on the text after a hostile body',
+    await waitFor(() => page.evaluate(() => {
+      // tokens mean the worker answered the probe itself, so it is idle:
+      // a plain paint of the probe text comes while the hostile job still
+      // runs, and a busy worker takes the other path
+      const h = document.getElementById('hl');
+      return h.textContent.startsWith('# ui matrix probe') && !!h.querySelector('.token');
+    }), 20000));
+  await sleep(500);
+  const raced = await page.evaluate(async () => {
+    const s = document.getElementById('src'), k = document.getElementById('pkind');
+    const was = k.value;
+    // the worker answers a short page in a few ms on a fast machine, before
+    // the 50 ms plain paint. Headless here is slower, so stretch that timer
+    // for the probe to make the worker answer first every time
+    const st0 = window.setTimeout;
+    window.setTimeout = (f, ms, ...a) => st0(f, ms === 50 ? 3000 : ms, ...a);
+    s.value = '# race probe'; s.dispatchEvent(new Event('input'));
+    // switch the kind in the frame the editor's render runs in (its rAF was
+    // queued first), so the worker cannot answer in between. No event, as
+    // openGrub does
+    await new Promise((r) => requestAnimationFrame(() => {
+      k.value = was === 'js' ? 'css' : 'js'; r();
+    }));
+    window.setTimeout = st0;
+    await new Promise((r) => setTimeout(r, 1500));
+    const shown = document.getElementById('hl').textContent;
+    k.value = was;
+    s.value = '# ui matrix probe'; s.dispatchEvent(new Event('input'));
+    return shown;
+  });
+  check('highlight: an answer for a stale kind still leaves the text shown',
+    raced.includes('race probe'), JSON.stringify(raced.slice(0, 40)));
+  //  the probes above type into a real page, and on a busy host an
+  //  autosave can land the probe text mid-step. Save the restored text and
+  //  wait for the ship to hold it, or the reopen below reads the probe
+  await tap('#save');
+  await page.waitForFunction(async (n) => {
+    const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));
+    return r.ok && (await r.json()).body.trim() === '# ui matrix probe';
+  }, { timeout: 90000, polling: 500 }, RUN + '/hello');
   await page.goto(APP + '?name=' + RUN + '/hello', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await wait(() => document.getElementById('src').value.length > 0);
   check('open: body round-trips',

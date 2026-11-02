@@ -3991,13 +3991,23 @@
         const j = hlCur;
         if (j && j.body === src.value && j.lang === LMAP[pkind.value]) {
           hl.innerHTML = e.data + '\n'; sync();
+        } else if (j && !hlNext) {
+          // stale: the text or the kind moved on while this job ran. A
+          // fast answer has already cancelled the plain paint, so paint
+          // the current text plain and highlight it again, or the overlay
+          // keeps the old page and the transparent textarea shows nothing
+          // (a shared page opened, painted, then switched kind)
+          hlPaint(src.value);
+          scheduleRender();
         }
         hlDone();
       };
       hlWorker.onerror = () => { hlWorker = null; hlDone(); };
     }
     hlCur = job;
-    hlPlain = setTimeout(() => hlPaint(job.body), HL_PLAIN);
+    // only while this job's text is still the editor's: newer text was
+    // painted when it queued, and this must not paint over it
+    hlPlain = setTimeout(() => { if (job.body === src.value) hlPaint(job.body); }, HL_PLAIN);
     hlKill = setTimeout(() => {
       if (hlWorker) hlWorker.terminate();
       hlWorker = null; hlDone();
@@ -7967,7 +7977,6 @@
     // a binary/opaque grub has no text form. Show it, never offer to save it
     src.readOnly = !d.editable;
     dirty = false;
-    render();
     const blot = d.blot || d.mark || '';
     // the picker drives syntax highlighting (LMAP) and list-continuation
     // rules (proseFlavor), so it needs to follow this file's real language.
@@ -7981,6 +7990,9 @@
     //  label (its tip names the kind) the same way setOpen does
     pname.dispatchEvent(new Event('input'));
     curKind = mk;
+    // paint once the kind is known: a highlight of the old kind is thrown
+    // away when it answers
+    render();
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'
        : 'grub ' + blot + ', no autosave here: Ctrl+S to save');

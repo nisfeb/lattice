@@ -168,7 +168,7 @@ const SHIPFREE_BROWSER = ['ui-manager.mjs'];
 const TWO_SHIP = ['ui-links.mjs'];
 const shipSuites = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
-  'job-check.py', 'hoon-suites',
+  'job-check.py', 'big-page-check.py', 'hoon-suites',
 ].filter((n) => !ONLY || ONLY.includes(n));
 function shipCmd(name, lane) {
   const env = { LATTICE_URL: lane.url, LATTICE_COOKIE: lane.cookie };
