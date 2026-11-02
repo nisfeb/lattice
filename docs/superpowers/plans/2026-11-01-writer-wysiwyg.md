@@ -303,6 +303,7 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 - [ ] **Step 1:** Open every hostile file as an owner page and as a peer's shared page, in the editor, the preview, the reader, `/c` and `page-dump?render=1`. Assert no script runs (a `window.__PWNED` probe, as `60-preview.js` describes), no request leaves the origin (puppeteer request interception), no fiber crash appears in `/rise.json`, and each surface shows the note or safe output.
 - [ ] **Step 2:** Run `fuzz-api.mjs` with fodt bodies for a fixed budget. Fix and add tests for anything found.
 - [ ] **Step 2b (from the Task 3 review):** A key cannot save `type=fodt`, but the local `page-save` path does not check the existing page's kind, so a key with write scope can replace a fodt page with an md or text body (the link path already checks `kind.l`). Decide with the owner whether Decisions 6 covers overwriting, and if so refuse a keyed save onto an existing fodt page, with an api-matrix case.
+- [ ] **Step 2c:** An agent key may not change an existing fodt page's kind (a page-save or batch save with type other than fodt onto a fodt page is refused 403), owner decision 2026-11-02. Add the refusal to the keyed save paths and an api-matrix case for `page-save` and `page-save-batch`.
 - [ ] **Step 3:** Commit: `test: hostile Writer documents`.
 
 **Acceptance.** The hostile suite and the fuzz budget pass.
