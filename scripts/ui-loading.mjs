@@ -14,6 +14,9 @@
 //    A comment posted from the reader view shows progress, disables Post
 //      until the reply, and a second click sends nothing; in a browser tab
 //      the tab's line shows while it is sent
+//    A comment that fails from a browser tab keeps its text: the frame
+//      stays on the page with the reason shown, and Back then Forward
+//      bring the box back with the text still in it
 //
 //  The slowness is request interception, not a slow ship, so the suite
 //  makes four pages and writes one comment.
@@ -48,6 +51,7 @@ const named = (u, n) => u.includes('page-source?') && new URL(u).searchParams.ge
 let frameDelay = 0;        // ms to hold a frame's document request
 let commentDelay = 0;      // ms to hold a comment post
 let comments = 0;          // comment posts seen
+let commentFail = false;   // answer comment posts with a 500
 page.on('request', async (r) => {
   const u = r.url();
   try {
@@ -66,7 +70,11 @@ page.on('request', async (r) => {
       await sleep(1200);
       return r.respond({ status: 500, contentType: 'application/json', body: '{"error":"held"}' });
     }
-    if (r.method() === 'POST' && /\/apps\/lattice\/comment\?/.test(u)) { comments++; if (commentDelay) await sleep(commentDelay); }
+    if (r.method() === 'POST' && /\/apps\/lattice\/comment\?/.test(u)) {
+      comments++;
+      if (commentDelay) await sleep(commentDelay);
+      if (commentFail) return r.respond({ status: 500, contentType: 'text/plain', body: 'held' });
+    }
     if (frameDelay && r.isNavigationRequest() && r.frame() !== page.mainFrame()) await sleep(frameDelay);
     await r.continue();
   } catch {}
@@ -226,6 +234,50 @@ try {
   check('a comment sent from a browser tab disables Post and shows the tab\'s line until the reply',
     tabBtn && tabOn && tabOff && comments === 1,
     JSON.stringify({ tabBtn, tabOn, tabOff, comments, log: await lineLog() }));
+
+  //  a comment that fails there: the text stays, through Back and Forward
+  commentDelay = 0;
+  commentFail = true;
+  comments = 0;
+  const failMark = 'loadingfail' + Date.now();
+  const tabBox = () => page.evaluate(() => {
+    const f = window.__frontF();
+    for (const i of f?.contentDocument?.querySelectorAll('iframe') || []) {
+      let d = null;
+      try { d = i.contentDocument; } catch {}
+      const t = d && d.querySelector('form.cbox textarea');
+      if (t) return { text: t.value, err: (d.getElementById('latcerr') || {}).textContent || '',
+        url: f.contentWindow.location.href };
+    }
+    return { text: null, url: f && f.contentWindow.location.href };
+  });
+  await page.evaluate((m) => {
+    for (const i of window.__frontF().contentDocument.querySelectorAll('iframe')) {
+      const d = i.contentDocument;
+      const t = d && d.querySelector('form.cbox textarea');
+      if (!t) continue;
+      t.value = m;
+      d.querySelector('form.cbox button[type=submit]').click();
+    }
+  }, failMark);
+  await sleep(2500);
+  const failed = await tabBox();
+  const key = await page.evaluate(() => { const s = window.latTabs.state(); return s.tabs[s.active].key; });
+  const fhClick = (b) => page.evaluate((b) => document.querySelector('.fhead:not([hidden]) [data-fh=' + b + ']').click(), b);
+  await fhClick('back');
+  await sleep(2500);
+  await fhClick('fwd');
+  await sleep(2500);
+  await boxIn('form.cbox textarea');
+  const again = await tabBox();
+  const fnavNow = await page.evaluate((k) => window.latFnav(k), key);
+  check('a comment that fails from a browser tab keeps its text and says why',
+    comments === 1 && failed.text === failMark && /Not posted/.test(failed.err),
+    JSON.stringify({ comments, failed }));
+  check('and the text is still there after Back and Forward',
+    again.text === failMark && fnavNow.cur === failed.url,
+    JSON.stringify({ again, fnavNow }));
+  commentFail = false;
 
   // ── the reader view on its own ─────────────────────────────────────────
   const rd = await openPage(browser, env, { viewport: { width: 1200, height: 900 } });

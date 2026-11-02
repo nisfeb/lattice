@@ -356,10 +356,12 @@
           const up = sub && sub.hasAttribute('formtarget') ? upward(sub, 'formtarget') : upward(form, 'target');
           if (!up || e.defaultPrevented) return;
           e.preventDefault();
+          if (commentSend(f, form, sub)) return;
           frameLoading(f, true);
           formAgain(form, sub, f.name);
           return;
         }
+        if (upward(form, 'target') && commentSend(f, form, sub)) { e.preventDefault(); return; }
         if (topish(form, 'target')) form.target = f.name;
         if (topish(sub, 'formtarget')) sub.formTarget = f.name;
       }, !inner);
@@ -472,6 +474,64 @@
     editorOpen(go);
     return true;
   };
+  // A comment box (.cbox) in a frame tab posts from here, not by sending
+  // its form. Sent as a form it took the tab's frame to the reply, and a
+  // reply that was an error page left the page behind: a POST is no step
+  // fkeepWatch keeps, so Back made the page afresh and the typed comment
+  // was gone. Now the frame only moves once the ship has the comment (its
+  // 303 back to the page), as a reload; a refusal or no answer at all
+  // leaves the page as it is, the text in the box and the reason under
+  // it. Post is held off meanwhile, as +busy-script does for a form sent.
+  // True when it took the form.
+  function commentSend(f, form, sub) {
+    const attr = (k, fk) => (sub && sub.hasAttribute(fk) ? sub.getAttribute(fk) : form.getAttribute(k)) || '';
+    if (!form.matches('form.cbox') || !/^post$/i.test(attr('method', 'formmethod'))
+      || /multipart/i.test(attr('enctype', 'formenctype'))) return false;
+    let url;
+    try { url = new URL(attr('action', 'formaction') || form.ownerDocument.URL, form.baseURI); } catch { return false; }
+    if (url.origin !== location.origin) return false;
+    const d = form.ownerDocument;
+    // the box's own page script has marked it sent already (the inner
+    // frame's runs first); the frame's own document has it run after
+    if (form.latSending) return true;
+    form.latSending = true;
+    let fd;
+    try { fd = new FormData(form, sub || undefined); }
+    catch { fd = new FormData(form); if (sub && sub.name) fd.append(sub.name, sub.value); }
+    const body = new URLSearchParams();
+    for (const [k, v] of fd) if (typeof v === 'string') body.append(k, v);
+    form.setAttribute('aria-busy', 'true');
+    const btns = [...form.querySelectorAll('button:not([type=button]), input[type=submit]')].filter((b) => !b.disabled);
+    for (const b of btns) { b.disabled = true; b.setAttribute('data-lat-off', ''); }
+    const old = d.getElementById('latcerr');
+    if (old) old.remove();
+    frameLoading(f, true);
+    const done = (why) => {
+      form.latSending = false;
+      form.removeAttribute('aria-busy');
+      form.removeAttribute('data-lat-sent');
+      for (const b of form.querySelectorAll('[data-lat-off]')) { b.disabled = false; b.removeAttribute('data-lat-off'); }
+      if (f.dataset.tool) frameLoading(f, false);
+      if (!why) return;
+      const p = d.createElement('p');
+      p.id = 'latcerr';
+      p.setAttribute('role', 'alert');
+      p.style.cssText = 'margin:.4rem 0 0;color:var(--error,#b3261e);font-size:.9em';
+      p.textContent = why;
+      form.after(p);
+    };
+    fetch(url.href, { method: 'POST', body, redirect: 'manual', credentials: 'same-origin' }).then((r) => {
+      // a 303 (opaque here) or a page: the ship has it, and the box stays
+      // held until the page comes back with the comment on it
+      if (r.type === 'opaqueredirect' || r.ok) {
+        for (const t of form.querySelectorAll('textarea')) t.value = '';
+        try { f.contentWindow.location.reload(); } catch { done(null); }
+        return;
+      }
+      done('Not posted (the ship answered ' + r.status + '). Your comment is still here.');
+    }, () => done('Not posted: no answer from the ship. Your comment is still here.'));
+    return true;
+  }
   // A form from a frame inside a frame tab, sent again from this window
   // into the tab's frame `name`: the same method, encoding, address and
   // fields, the button that sent it included. Files go over in a file
