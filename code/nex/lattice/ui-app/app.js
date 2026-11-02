@@ -4156,6 +4156,33 @@
     catch (e) { st('could not open the desktop settings: ' + e, false); }
   });
 
+  // urb:// links other apps opened with lattice, on the desktop. The shell
+  // keeps them until this page takes them (desktop/src/urb.rs), so one that
+  // came while the manager was showing, or before the page was up, opens
+  // now. Each opens in a browser tab of its own at the reader, as a
+  // bookmark does. The shell calls this when links arrive and boot calls it
+  // once (99-boot.js). A call while one is taking links runs again after
+  // it, so a link that lands meanwhile is not left waiting. The shell has
+  // validated every link already; the check here keeps a link that is not
+  // urb:// out of the reader whatever answered the invoke.
+  let urbTaking = null, urbAgain = false;
+  window.latUrbArrived = () => {
+    if (!window.__TAURI__) return Promise.resolve();
+    if (urbTaking) { urbAgain = true; return urbTaking; }
+    urbTaking = (async () => {
+      do {
+        urbAgain = false;
+        let links = [];
+        // a desktop build older than the command refuses it: nothing waits
+        try { links = await window.__TAURI__.core.invoke('take_urb_links'); } catch { return; }
+        for (const u of Array.isArray(links) ? links : [])
+          if (typeof u === 'string' && /^urb:\/\/~[a-z-]+\/[^\s?#]+$/.test(u))
+            await browseIn('/apps/lattice?url=' + encodeURIComponent(u));
+      } while (urbAgain);
+    })().finally(() => { urbTaking = null; });
+    return urbTaking;
+  };
+
   // the Settings tab, opened or focused, with its frame scrolled to the
   // section #anchor. A frame still loading scrolls once it has. Sections
   // above the anchor fill in after load (the key list), so the anchor is
@@ -13836,6 +13863,10 @@
     // page has the snapshot-first path below; every other kind shows through
     // the tab model, with the tree and the panels loading beside it.
     const { tab: bootTab, fresh: bootFresh } = tabsBoot();
+    // urb:// links the desktop shell kept for this page (24-tools.js). They
+    // open in tabs of their own, after the restored ones, through the same
+    // queue as every tab switch.
+    window.latUrbArrived();
     if (bootTab.kind !== 'page') {
       loadTree().then(() => { legacyCheck(); sideScripts(); loadPanels(); });
       tabShowBoot(bootTab);

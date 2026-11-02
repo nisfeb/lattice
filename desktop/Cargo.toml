@@ -1,6 +1,6 @@
 [package]
 name = "lattice-desktop"
-version = "1.0.14"
+version = "1.0.15"
 edition = "2021"
 #  Never goes to crates.io: the desktop app ships as bundles and lattice-fs
 #  is consumed by path. Saying so keeps `cargo publish` from being a slip, and
@@ -28,6 +28,11 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 #  file (geteuid), which std does not expose.
 libc = "0.2"
 tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls"] }
+#  urb:// links from other apps. deep-link declares the scheme to the OS and
+#  delivers the link; single-instance forwards a link opened while the app is
+#  running to that instance instead of starting a second one (src/urb.rs).
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 [dev-dependencies]
 # property tests only. Never in a release build.

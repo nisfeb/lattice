@@ -12,6 +12,7 @@ mod queue;
 mod session;
 mod stack;
 mod update;
+mod urb;
 #[cfg(test)]
 mod testutil;
 
@@ -229,6 +230,34 @@ fn manager_menu_js(section: Option<&str>) -> String {
     )
 }
 
+/// urb:// links from the OS (urb.rs). One that started this process is
+/// already in get_current; later ones, forwarded from a second launch or
+/// opened on macOS, come through on_open_url. Both go into the inbox before
+/// any window exists, so a cold start opens its link once the ship page is up.
+///
+/// An AppImage has no installer to tell the desktop it handles urb://, and it
+/// can move, so it registers itself on each launch. The .deb and the macOS
+/// bundle declare the scheme at install time (tauri.conf.json), and a dev
+/// build leaves the user's real handler alone.
+fn listen_for_urb(handle: &tauri::AppHandle) {
+    use tauri_plugin_deep_link::DeepLinkExt;
+    let dl = handle.deep_link();
+    let h = handle.clone();
+    dl.on_open_url(move |ev| {
+        let urls = ev.urls();
+        urb::arrive(&h, urls.iter().map(|u| u.as_str()));
+    });
+    if let Ok(Some(urls)) = dl.get_current() {
+        urb::arrive(handle, urls.iter().map(|u| u.as_str()));
+    }
+    #[cfg(target_os = "linux")]
+    if handle.env().appimage.is_some() {
+        if let Err(e) = dl.register_all() {
+            eprintln!("urb:// handler registration failed: {e}");
+        }
+    }
+}
+
 fn main() {
     // webkit2gtk's dmabuf renderer crashes some Wayland stacks outright
     // ("Error 71 (Protocol error) dispatching to Wayland display"). Opt out
@@ -259,10 +288,25 @@ fn main() {
         }
     }
     tauri::Builder::default()
+        // FIRST, as the plugin asks: a second launch must hand over its
+        // arguments and exit before anything else in it starts. An urb://
+        // link another app opens arrives that way when lattice is already
+        // running. With the deep-link feature the plugin passes the link on
+        // to deep-link's on_open_url (setup, below), so all this callback
+        // has to do for a plain second launch is bring the window forward.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("workspace") {
+                w.unminimize().ok();
+                w.show().ok();
+                w.set_focus().ok();
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .manage(proxy::Bridge(Mutex::new(None)))
+        .manage(urb::Inbox(Mutex::new(Vec::new())))
         .on_menu_event(|app, ev| {
             // single-window app: the manager is a page in the workspace, and
             // both of these items are ways of asking for it. "backups" lands
@@ -332,6 +376,7 @@ fn main() {
         .setup(|app| {
             build_menu(app)?;
             let handle = app.handle().clone();
+            listen_for_urb(&handle);
             let cfg = config::load(&handle);
             // before anything reads a session: older builds kept it in the
             // shared lattice-fs cookie file
@@ -396,6 +441,7 @@ fn main() {
             local::local_ships,
             stack::stack_status,
             install::install_grubbery,
+            urb::take_urb_links,
         ])
         .build(tauri::generate_context!())
         .expect("error building lattice desktop")
