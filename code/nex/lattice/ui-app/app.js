@@ -3869,7 +3869,9 @@
       || /multipart/i.test(attr('enctype', 'formenctype'))) return false;
     let url;
     try { url = new URL(attr('action', 'formaction') || form.ownerDocument.URL, form.baseURI); } catch { return false; }
-    if (url.origin !== location.origin) return false;
+    // only lattice's two comment routes: a .cbox aimed anywhere else is no
+    // comment box of ours and goes as a form, as it always did
+    if (url.origin !== location.origin || !/^\/apps\/lattice\/comment(-remote)?$/.test(url.pathname)) return false;
     const d = form.ownerDocument;
     // the box's own page script has marked it sent already (the inner
     // frame's runs first); the frame's own document has it run after
@@ -3908,7 +3910,10 @@
         try { f.contentWindow.location.reload(); } catch { done(null); }
         return;
       }
-      done('Not posted (the ship answered ' + r.status + '). Your comment is still here.');
+      // the ship's refusal says why ({"error": ...}); a short one is shown
+      const said = (j) => (j && typeof j.error === 'string' && j.error.length < 200 ? ': ' + j.error : '');
+      r.json().catch(() => null).then((j) => done('Not posted (the ship answered ' + r.status + said(j)
+        + '). Your comment is still here.'));
     }, () => done('Not posted: no answer from the ship. Your comment is still here.'));
     return true;
   }
