@@ -60,6 +60,7 @@ mcp write_grub '{"path":"/apps/lattice.lattice_app/fsmatrix/gdir","name":"inner"
 mkdir -p "$LMNT" "$GMNT"
 unset LATTICE_SOCK
 LATTICE_URL="$URL" "$BIN" mount "$LMNT" >/dev/null 2>"$WORK/lat.log" &
+MOUNTED_AT=$(date +%s)
 LATTICE_URL="$URL" "$BIN" mount "$GMNT" --root /apps/lattice.lattice_app/fsmatrix >/dev/null 2>"$WORK/gen.log" &
 sleep 2
 exec </dev/null
@@ -154,6 +155,24 @@ is "rmdir non-empty refused (ENOTEMPTY)" '1' "$?"
 is "page inside survives" '200' "$(page_http fsmatrix/sub/c)"
 rm -rf "$LMNT/fsmatrix/sub"; sleep 0.4
 is "rm -r removes subtree on ship" '404' "$(page_http fsmatrix/sub/c)"
+
+say "ship-side changes after the watch has settled (a move, then saves)"
+# The beacon stream must be one that sends events. A keep on a path with
+# no beacon (the old app-tier path, on a desk install) opens about 30 s
+# in and then only heartbeats, and the mount took that as a live stream:
+# the TTL poll went quiet, and after one more refresh no ship-side change
+# reached the mount until it was remounted. So wait that long, let the
+# mount settle with no write of its own, then change things on the ship.
+while [ $(( $(date +%s) - MOUNTED_AT )) -lt 35 ]; do sleep 1; done
+ls -R "$LMNT/fsmatrix" >/dev/null; sleep 3; ls -R "$LMNT/fsmatrix" >/dev/null; sleep 1
+curl -s -o /dev/null -X POST -H "$CK" "$URL/apps/lattice/page-move?from=fsmatrix/mvnew&to=fsmatrix/mvship"
+curl -s -o /dev/null -X POST -H "$CK" -H 'Content-Type: text/plain' --data 'from the ship' \
+  "$URL/apps/lattice/page-save?name=fsmatrix/shipside&type=md"
+seen() { # seen <path>: whether the mount shows it within 15 s
+  for _ in $(seq 1 15); do [ -e "$LMNT/fsmatrix/$1" ] && { echo y; return; }; sleep 1; done; echo n; }
+is "the mount shows a folder moved on the ship" 'y' "$(seen mvship/one.md)"
+is "the mount shows a page saved on the ship after it" 'y' "$(seen shipside.md)"
+is "and drops the folder's old name" 'n' "$( [ -e "$LMNT/fsmatrix/mvnew" ] && echo y || echo n)"
 
 say "── generic projection ($GMNT)"
 

@@ -413,6 +413,23 @@ impl EyreTransport {
     }
 }
 
+impl EyreTransport {
+    /// Where lattice is installed, as the tree path the keep endpoint takes.
+    /// The ship says so at /apps/lattice/streams, as it tells the editor
+    /// (ui-src/lattice/20-state.js latBase). A desk install lives under
+    /// /apps/shell.shell/desks/lattice.desk, and the keep on the old
+    /// app-tier path there streams nothing. A ship too old to answer gets
+    /// that old path, which is where those ships keep lattice.
+    fn keep_base(&self) -> String {
+        self.get_bytes("/apps/lattice/streams", &[])
+            .ok()
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+            .and_then(|v| v.get("base")?.as_str().map(str::to_string))
+            .filter(|b| b.starts_with('/') && !b.contains(['?', '#', ' ']))
+            .unwrap_or_else(|| "/apps/lattice.lattice_app".to_string())
+    }
+}
+
 impl Transport for EyreTransport {
     fn get_bytes(&self, path: &str, query: &[(&str, &str)]) -> Result<Vec<u8>, TErr> {
         self.do_req("GET", path, query, None, true)
@@ -456,14 +473,12 @@ impl Transport for EyreTransport {
         if self.origin.is_err() {
             return;
         }
-        let url = format!(
-            "{}/grubbery/api/keep/apps/lattice.lattice_app/beacon/rev",
-            self.base
-        );
         // reconnect forever. The stream severs on ship restart, pier hiccup,
         // or an idle proxy; each of those is transient, and the TTL poll
         // covers the gap until we get back on — Down is what re-arms it.
         loop {
+            // asked again on every connect, so a moved install is found
+            let url = format!("{}/grubbery/api/keep{}/beacon/rev", self.base, self.keep_base());
             let cookie = self.cookie.lock().unwrap().clone().unwrap_or_default();
             // a dedicated agent, CONNECT timeout only, never a read timeout:
             // the beacon holds an idle connection open for hours between
@@ -488,10 +503,14 @@ impl Transport for EyreTransport {
                     continue;
                 }
             };
-            // Up only once the stream is actually open. Anything that bumped
-            // during the gap before it is unseen, which is why the core
-            // treats Up itself as a change.
-            on_event(W::Up);
+            // Up only once the stream has sent its first event, the keep's
+            // "old /rev" snapshot. An open stream alone proves nothing: a
+            // keep on a path with no beacon under it answers 200 and then
+            // sends only heartbeats, and Up silences the core's TTL poll,
+            // so the mount would never see a ship-side change again.
+            // Anything that bumped during the gap before it is unseen,
+            // which is why the core treats Up itself as a change.
+            let mut up = false;
             let mut reader = std::io::BufReader::new(resp.into_reader());
             let mut line = String::new();
             let mut dirty = false;
@@ -505,7 +524,10 @@ impl Transport for EyreTransport {
                         if t.is_empty() {
                             // blank line = end of one SSE event. Fire at most
                             // once per event, not once per field line.
-                            if dirty && pages_changed(name.as_deref()) {
+                            if dirty && !up {
+                                up = true;
+                                on_event(W::Up);
+                            } else if dirty && pages_changed(name.as_deref()) {
                                 on_event(W::Changed);
                             }
                             dirty = false;
@@ -519,7 +541,7 @@ impl Transport for EyreTransport {
                     }
                 }
             }
-            if dirty && pages_changed(name.as_deref()) {
+            if dirty && up && pages_changed(name.as_deref()) {
                 on_event(W::Changed); // stream ended mid-event: keep the nudge
             }
             on_event(W::Down);
@@ -582,6 +604,77 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// Run watch() against `s` on a thread of its own (it never returns)
+    /// and hand back what it reported once the stub has answered `n`
+    /// requests and the stream it served has ended.
+    fn watch_events(s: &Stub, n: usize, tag: &str) -> Vec<crate::transport::WatchEvent> {
+        use crate::transport::WatchEvent as W;
+        let dir = tmpdir(tag);
+        let t = EyreTransport::new(&s.base, dir.join("cookie").to_str().unwrap());
+        t.store("urbauth-~tyr=0v1").unwrap();
+        let evs = Arc::new(Mutex::new(Vec::new()));
+        let sink = evs.clone();
+        std::thread::spawn(move || t.watch(&move |e| sink.lock().unwrap().push(e)));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while std::time::Instant::now() < deadline
+            && !(s.seen().len() >= n && evs.lock().unwrap().contains(&W::Down))
+        {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let got = evs.lock().unwrap().clone();
+        got
+    }
+
+    const DESK_BASE: &str = "/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app";
+
+    #[test]
+    fn the_watch_follows_the_beacon_where_the_ship_says_lattice_lives() {
+        // a desk install lives under the shell, not at the old app-tier
+        // path. The keep there answers 200 and then only heartbeats, so a
+        // mount watching it never heard a ship-side change.
+        use crate::transport::WatchEvent as W;
+        let s = stub(vec![
+            (200, r#"{"base":"/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app"}"#, None),
+            (200, "id: 1\nevent: old /rev\ndata: 1\n\nevent: upd /rev\ndata: 2\n\n", None),
+        ]);
+        let evs = watch_events(&s, 2, "watch-base");
+        let seen = s.seen();
+        assert_eq!(seen[0], "GET /apps/lattice/streams HTTP/1.1 ");
+        assert_eq!(
+            seen[1],
+            format!("GET /grubbery/api/keep{DESK_BASE}/beacon/rev HTTP/1.1 "),
+            "the keep must be asked at the installed base"
+        );
+        assert_eq!(&evs[..3], &[W::Up, W::Changed, W::Down]);
+    }
+
+    #[test]
+    fn a_stream_that_sends_only_heartbeats_never_stands_guard() {
+        // Up silences the core's TTL poll. A keep on a path with no beacon
+        // opens and then sends only ':' comments, and calling that Up left
+        // the mount deaf to the ship for as long as the stream stayed open.
+        use crate::transport::WatchEvent as W;
+        let s = stub(vec![
+            (200, r#"{"base":"/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app"}"#, None),
+            (200, ":\n\n:\n\n", None),
+        ]);
+        let evs = watch_events(&s, 2, "watch-quiet");
+        assert!(!evs.contains(&W::Up), "a stream with no event is not live: {evs:?}");
+        assert!(evs.contains(&W::Down));
+    }
+
+    #[test]
+    fn a_ship_without_streams_is_watched_at_the_old_path() {
+        // a ship from before /streams kept lattice at the app tier
+        let s = stub(vec![(404, "", None), (200, "event: old /rev\ndata: 1\n\n", None)]);
+        let _ = watch_events(&s, 2, "watch-old");
+        assert_eq!(
+            s.seen()[1],
+            "GET /grubbery/api/keep/apps/lattice.lattice_app/beacon/rev HTTP/1.1 "
+        );
     }
 
     /// A throwaway HTTP server that answers `replies` in order, then stops.
