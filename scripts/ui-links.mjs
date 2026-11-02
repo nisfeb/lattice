@@ -14,14 +14,23 @@
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //         B_URL=http://localhost:8135 B_COOKIE=/tmp/mun-cookie.txt \
-//         [B_PIER=~/fleet/piers/mun] [SHOTS=dir] node scripts/ui-links.mjs
+//         B_PIER=~/fleet/piers/mun [SHOTS=dir] node scripts/ui-links.mjs
+//
+//  Ship B has no defaults: it is frozen and written to, so the suite
+//  refuses to run unless B_URL, B_COOKIE and B_PIER all name a fake ship.
 import { execSync } from 'child_process';
 import { homedir } from 'os';
 import { shipEnv, launchBrowser, openPage, makeCheck, sleep, shipName } from './lib/harness.mjs';
 
+const unset = ['B_URL', 'B_COOKIE', 'B_PIER'].filter((v) => !process.env[v]);
+if (unset.length) {
+  console.error('ui-links: a two-ship suite; set ' + unset.join(', ')
+    + ' to a second fake ship (its URL, cookie file and pier). It never falls back to a real ship.');
+  process.exit(2);
+}
 const env = shipEnv();
-const benv = shipEnv({ urlVar: 'B_URL', cookieVar: 'B_COOKIE', cookieDefault: '/tmp/mun-cookie.txt' });
-const B_PIER = (process.env.B_PIER || homedir() + '/fleet/piers/mun').replace(/^~/, homedir());
+const benv = shipEnv({ urlVar: 'B_URL', cookieVar: 'B_COOKIE' });
+const B_PIER = process.env.B_PIER.replace(/^~/, homedir());
 const SHOTS = process.env.SHOTS || '';
 const check = makeCheck();
 
