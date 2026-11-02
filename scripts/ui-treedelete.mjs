@@ -16,7 +16,9 @@ const P = (s) => RUN + '/' + s;
 
 await seed(env, [[P('keep'), '# keep\n'], [P('a'), '# a\n'], [P('f/x'), '# x\n'], [P('f/y'), '# y\n'],
   [P('k'), '# k\n'], [P('kf/z'), '# z\n'], [P('e'), '# e\n'], [P('open'), '# open\n'], [P('ph'), '# ph\n'],
-  [P('mf/a'), '# a\n'], [P('mf/b'), '# b\n'], [P('click'), '# click\n'], [P('pf/a'), '# a\n'], [P('pf/b'), '# b\n']]);
+  [P('mf/a'), '# a\n'], [P('mf/b'), '# b\n'], [P('click'), '# click\n'], [P('pf/a'), '# a\n'], [P('pf/b'), '# b\n'],
+  [P('pa/x'), '# x\n'], [P('pab/y'), '# y\n'], [P('dbl1'), '# d1\n'], [P('dbl2'), '# d2\n'],
+  [P('tA'), '# tA\n'], [P('tB'), '# tB\n']]);
 await seed(env, [[P('pub'), '# pub\n']], { share: 'shared' });
 
 const browser = await launchBrowser();
@@ -246,6 +248,79 @@ try {
   check('with no dialog up', await page.evaluate(() => document.getElementById('dlg').hidden));
   await sleep(5000);
   check('and nothing saves it back', !(await exists(P('open'))));
+  // ── Space and Escape never delete either ───────────────────────────────
+  for (const key of [' ', 'Escape']) {
+    await focusRow(page, 'p:' + P('e'));
+    await page.keyboard.press('Delete');
+    await dlgUp(page);
+    await page.keyboard.press(key);
+    check('the modal closes on ' + JSON.stringify(key), await dlgDown(page));
+    await sleep(2000);
+    check('and the page is still there', await exists(P('e')));
+  }
+
+  // ── a double click on Delete deletes once, and only that row ────────────
+  await rightClick(page, 'p:' + P('dbl1'));
+  await menuPick(page, 'del');
+  await dlgUp(page);
+  const ok = await page.evaluate(() => {
+    const q = document.getElementById('dlgok').getBoundingClientRect();
+    return { x: q.left + q.width / 2, y: q.top + q.height / 2 };
+  });
+  await page.mouse.click(ok.x, ok.y, { clickCount: 1 });
+  await page.mouse.click(ok.x, ok.y, { clickCount: 2 });
+  check('a double click on Delete deletes the page', await gone(P('dbl1')));
+  await sleep(2000);
+  check('and nothing else', (await exists(P('dbl2'))) && (await exists(P('e'))) && (await exists(P('keep'))));
+  check('with no second modal up', await page.evaluate(() => document.getElementById('dlg').hidden));
+
+  // ── the menu's row is the row deleted, even after the tree re-renders ──
+  //  `pa` is a prefix of `pab`: neither may take the other with it
+  check('the menu opens on folder pa', await rightClick(page, 'f:' + P('pa')));
+  await page.evaluate(() => { for (const r of document.querySelectorAll('#treelist [role=treeitem]')) r.__old = 1; });
+  await seed(env, [[P('late'), '# late\n']]);
+  check('a ship update re-renders the tree under the open menu', await until(page, () =>
+    ![...document.querySelectorAll('#treelist [role=treeitem]')].some((r) => r.__old), null, 30000));
+  await menuPick(page, 'del');
+  await dlgUp(page);
+  msg = await dlgText(page);
+  check('the modal still names folder pa and its 1 page',
+    msg.includes('folder ' + P('pa') + ' ') && /\b1 page\b/.test(msg) && !msg.includes(P('pab')), msg);
+  await page.click('#dlgok');
+  check('pa goes', await gone(P('pa/x')));
+  await sleep(1500);
+  check('pab, whose name starts with pa, stays', (await exists(P('pab/y')))
+    && (await rowThere(page, 'f:' + P('pab'))));
+
+  // ── a tab not in front with unsaved text does not bring a page back ─────
+  await page.evaluate(() => { localStorage.latAutosave = '0'; });
+  await page.evaluate((n) => window.latTabs.openIn('page', n, { newTab: true }), P('tA'));
+  await until(page, () => document.getElementById('src').value.includes('# tA'), null, 30000);
+  await page.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = '# tA\nparked\n';
+    s.dispatchEvent(new Event('input'));
+  });
+  await page.evaluate((n) => window.latTabs.openIn('page', n, { newTab: true }), P('tB'));
+  await until(page, () => document.getElementById('src').value.includes('# tB'), null, 30000);
+  const tA = () => page.evaluate((n) => (window.latTabs.state().tabs.find((t) => t.key === n) || {}), P('tA'));
+  check('tA is parked with unsaved text', (await tA()).dirty === true, JSON.stringify(await tA()));
+  await rightClick(page, 'p:' + P('tA'));
+  await menuPick(page, 'del');
+  await dlgUp(page);
+  msg = await dlgText(page);
+  check('the modal says the other tab loses its unsaved changes', /other tab/.test(msg), msg);
+  await page.click('#dlgok');
+  check('tA is deleted', await gone(P('tA')));
+  check('its tab no longer holds unsaved text', (await tA()).dirty === false, JSON.stringify(await tA()));
+  await page.evaluate(() => { delete localStorage.latAutosave; });
+  await page.evaluate((n) => {
+    const t = window.latTabs.list().find((x) => x.key === n);
+    return window.latTabs.switchTab(t.id);
+  }, P('tA'));
+  await sleep(6000);
+  check('and brought back to the front, it does not save the page back', !(await exists(P('tA'))));
+
   check('no uncaught errors on desktop', errors.length === 0, errors.join(' | '));
   await page.close();
 
