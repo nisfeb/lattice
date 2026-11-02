@@ -35,6 +35,7 @@
 
   let treeMenuEl = null;
   let treeMenuRow = null;
+  let treeMenuAt = 0;
   function treeMenuClose(refocus) {
     if (!treeMenuEl) return;
     treeMenuEl.remove();
@@ -96,6 +97,7 @@
     m.style.visibility = '';
     treeMenuEl = m;
     treeMenuRow = row;
+    treeMenuAt = performance.now();
     m.querySelector('button').focus();
     return true;
   }
@@ -192,8 +194,12 @@
   }, true);
   addEventListener('keydown', () => { lpFired = false; }, true);
   addEventListener('resize', () => treeMenuClose(false));
+  //  a scroll shuts it, but not one already on its way when it opened:
+  //  scroll events land a frame late, so a row scrolled into view by the
+  //  press itself (focus on pointerdown) shut the menu as it appeared
   addEventListener('scroll', (e) => {
-    if (treeMenuEl && !treeMenuEl.contains(e.target)) treeMenuClose(false);
+    if (treeMenuEl && !treeMenuEl.contains(e.target)
+      && performance.now() - treeMenuAt > 300) treeMenuClose(false);
   }, true);
 
   // for the browser suites, which cannot reach this scope
