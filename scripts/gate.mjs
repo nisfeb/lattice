@@ -196,6 +196,7 @@ const localJobs = [
   ['ui-built', 'bash', ['-c', 'node scripts/build-ui.mjs && git diff --exit-code code/nex/lattice/ui-app/app.js && node --check code/nex/lattice/ui-app/app.js']],
   ['writer-built', 'bash', ['-c', 'node scripts/build-writer.mjs && git diff --exit-code code/nex/lattice/ui-app/writer.js ui-src/writer/vendor/LICENSES && node --check code/nex/lattice/ui-app/writer.js']],
   ['writer-licences', 'node', [S + '/writer-licences.mjs']],
+  ['writer-roundtrip', 'node', [S + '/writer-roundtrip.mjs']],
 ];
 
 const results = [];

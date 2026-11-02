@@ -40,3 +40,6 @@ mutants.out*/
 
 # reference-only scratch, never shipped
 .scratch-urbit/
+
+# writer-roundtrip.mjs scratch dirs (beside the corpus, removed on exit)
+tests/writer/.rt-*/
