@@ -2,7 +2,7 @@
 """One big page must not slow the ship (perf passes 7 and 8). Against a FAKE ship.
 
 usage: big-page-check.py <base-url> <raw-cookie-file> [--mb N] [--budget S]
-                         [--save-budget S] [--render-budget S]
+                         [--render-budget S]
 
 Saves one md page of about N MB (default 1.5) under bigchk-<pid>/, then:
 
@@ -12,9 +12,9 @@ Saves one md page of about N MB (default 1.5) under bigchk-<pid>/, then:
               and the decoder walk all of their branches on a big body.
   budget      page-source of the big page, page-tree and the home route
               each answer within S seconds (default 5), best of two.
-  save        a save of the big page with one line added answers within
-              --save-budget seconds (default 10), and page-source then
-              gives the edited body back byte for byte.
+  save        a save of the big page with one line added answers 200,
+              and page-source then gives the edited body back byte for
+              byte. Its time is printed but not checked (see below).
   render      the editor's open (page-source render=1) and the live
               preview (POST page-preview) of the big page each answer
               within --render-budget seconds (default 25), best of two.
@@ -30,9 +30,10 @@ time) and the markdown render (+ib-in and +wikilinkify copied plain text
 a character at a time). On an idle host the save took 3 to 7 s and the
 render 30 to 40 s; they now take about 2 s and 5 to 7 s. The render
 budget leaves room for a saturated host and still fails the old code.
-The save budget only leaves room: the old save of this body took 4 to
-5 s, so it would pass too. The page is deleted at the end. Never point
-this at a real ship.
+The save has no budget. The old save of this body took 3.7 to 6.7 s and
+the new one 2.3 to 6.0 s under the gate's load, so no budget a busy
+host passes also fails the old code. The page is deleted at the end.
+Never point this at a real ship.
 """
 import argparse, json, os, sys, time, urllib.error, urllib.parse, urllib.request
 
@@ -60,7 +61,6 @@ def main():
     ap.add_argument('cookie')
     ap.add_argument('--mb', type=float, default=1.5)
     ap.add_argument('--budget', type=float, default=5.0)
-    ap.add_argument('--save-budget', type=float, default=10.0)
     ap.add_argument('--render-budget', type=float, default=25.0)
     a = ap.parse_args()
     sys.stdout.reconfigure(line_buffering=True)
@@ -136,8 +136,7 @@ def main():
         t0 = time.monotonic()
         st, out = req('POST', f"{base}/page-save?{q}", edited.encode())
         dt = time.monotonic() - t0
-        check(f"save: the big page within {a.save_budget:g} s",
-              st == 200 and dt <= a.save_budget, f"{dt:.2f} s, status {st}")
+        check('save: the big page answers 200', st == 200, f"{dt:.2f} s, status {st}")
         settle()
         st, d = source_body()
         check('save: page-source gives the edited body back byte for byte',
