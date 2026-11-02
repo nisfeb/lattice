@@ -38,7 +38,7 @@
     // a panel nobody can see is not worth a rejection: an unreachable ship
     // leaves the list empty, the same as a refused request already does
     try {
-      const r = await fetch(api + '/page-backlinks?name=' + encodeURIComponent(want));
+      const r = await busyFetch(api + '/page-backlinks?name=' + encodeURIComponent(want), undefined, 'rp:back', $('rpane'));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
@@ -88,9 +88,9 @@
     // same rules as loadBacklinks: an unreachable ship leaves the panel
     // empty, and an answer about a document no longer open is dropped
     try {
-      const r = await fetch(mode === 'know'
+      const r = await busyFetch(mode === 'know'
         ? api + '/know-history?key=' + encodeURIComponent(want)
-        : api + '/page-history?name=' + encodeURIComponent(want));
+        : api + '/page-history?name=' + encodeURIComponent(want), undefined, 'rp:hist', $('rpane'));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
@@ -129,7 +129,7 @@
     if (!(await guardDirty())) return;
     let d = null;
     try {
-      const r = await fetch(mode === 'know'
+      const r = await busyFetch(mode === 'know'
         ? api + '/know-read-at?key=' + encodeURIComponent(current) + '&rev=' + rev
         : api + '/page-source-at?name=' + encodeURIComponent(current) + '&rev=' + rev);
       if (!r.ok) {

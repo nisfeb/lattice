@@ -27,7 +27,7 @@
       + 'Nothing is deleted: the page is ' + it.host + "'s, and their grant to you stays. "
       + 'It comes back here if they share it again.';
     if (!(await askDanger(what, 'remove'))) return false;
-    const r = await fetch(api + '/shared-with-me-del?host=' + encodeURIComponent(it.host) +
+    const r = await busyFetch(api + '/shared-with-me-del?host=' + encodeURIComponent(it.host) +
       '&path=' + encodeURIComponent(it.path), { method: 'POST' }).catch(() => null);
     if (!r || !r.ok) { st('remove failed' + await errText(r), false); return false; }
     st('removed ' + sharedName(it.path) + ' from shared with me');
@@ -115,7 +115,7 @@
   // -> true once the link is in, after saying why when it is not
   async function moveIn(it, to) {
     stWork('moving ' + swmLeaf(it) + ' into ' + to + '\u2026');
-    const r = await fetch(api + '/link-make?host=' + encodeURIComponent(it.host) +
+    const r = await busyFetch(api + '/link-make?host=' + encodeURIComponent(it.host) +
       '&path=' + encodeURIComponent(it.path) + '&to=' + encodeURIComponent(to),
     { method: 'POST' }).catch(() => null);
     if (!r || !r.ok) { st('move failed' + await errText(r), false); return false; }
@@ -176,7 +176,7 @@
     if (!lk) return;
     for (const t of allTabs().filter((x) => x.kind === 'page' && x.key === name))
       if ((await closeTab(t.id)) === false) return;
-    const r = await fetch(api + '/link-unmake?name=' + encodeURIComponent(name),
+    const r = await busyFetch(api + '/link-unmake?name=' + encodeURIComponent(name),
       { method: 'POST' }).catch(() => null);
     if (!r || !r.ok) { st('move failed' + await errText(r), false); return; }
     dropTreeNodes(name);

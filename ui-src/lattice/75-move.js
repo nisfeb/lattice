@@ -16,13 +16,14 @@
     //  held first: the save the flush makes queues an autosave behind it,
     //  and that one would go out beside the move, under the old name
     moving++;
+    const end = busy();      // the line from the click, the flush included
     try {
       await flushNoAsk();
       await waitSave();
       return await mutate(api + '/page-move?from=' + encodeURIComponent(from) +
         '&to=' + encodeURIComponent(to) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
         (rn && rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
-    } finally { moving--; }
+    } finally { end(); moving--; }
   };
   // the server moves the WHOLE subtree (a page can parent nested pages, and
   // move-pages rewrites every rel under it). Renaming only the exact node
