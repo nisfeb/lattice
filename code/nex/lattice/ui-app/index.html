@@ -835,6 +835,11 @@ select, option { color-scheme: inherit; }
 .tree .fld { cursor: pointer; }
 .tree .fld.cur > span:nth-child(2) { color: var(--green); font-weight: 600; }
 .tree .fld .cw { color: var(--accent, #1a6ed8); margin-left: 5px; font-size: .85em; }
+/* a folder lattice makes or draws itself (sysFlair, 30-tree.js): a faint
+   mark after the name, its tip says what the folder is */
+.tree .fld .sysf { display: inline-flex; flex: none; margin-left: 2px; opacity: .55; cursor: help; }
+.tree .fld .sysf .ic { width: .8em; height: .8em; margin-right: 0; }
+.tree .fld .sysf:hover { opacity: 1; }
 
 /* custom-element wrappers are invisible to layout. Their inner divs stay
    direct grid items of .ws (and .dlg stays a fixed overlay). Without this,

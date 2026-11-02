@@ -14,6 +14,8 @@ const L = 'ui-src/lattice/';
 const src = cut(L + '20-state.js', /const collStore = [\s\S]*?\n {2}const paneColl = .*/, 'collStore') + '\n'
   + cut(L + '30-tree.js', /function folderRow\([\s\S]*?\n {2}\}/, 'folderRow') + '\n'
   + cut(L + '30-tree.js', /function treeItem\([\s\S]*?\n {2}\}/, 'treeItem') + '\n'
+  + cut(L + '30-tree.js', /const SYSF = \{[\s\S]*?\n {2}\};/, 'SYSF') + '\n'
+  + cut(L + '30-tree.js', /function sysFlair\([\s\S]*?\n {2}\}/, 'sysFlair') + '\n'
   + cut(L + '21-tabs.js', /const tabLink = [\s\S]*?\n {2}\};/, 'tabLink') + '\n'
   + read(L + '69-shared.js');
 const check = makeCheck();
@@ -100,6 +102,24 @@ const items = [
       && mv.dataset.action === 'swm-move' && mv.title === 'Move into my pages'
       && mv.attrs['aria-label'] === mv.title,
     JSON.stringify(row && { draggable: row.draggable, mv: mv && mv.title }));
+}
+
+{
+  //  the folders lattice makes or draws itself carry a mark that says so:
+  //  shared with me here, conflicts/ in the files tree (renderTree)
+  const { treeList, ctx } = boot(items);
+  const top = treeList.kids[0];
+  const f = top.kids.find((k) => k.className === 'sysf');
+  check('shared with me carries the system folder mark, with what it is in its tip',
+    !!f && /Not a folder in your pages/.test(f.title) && f.attrs['aria-label'] === f.title,
+    JSON.stringify(f && f.title));
+  check('and only the top folder does, not a ship\'s',
+    treeList.kids.filter((r) => r.kids && r.kids.some((k) => k.className === 'sysf')).length === 1);
+  const row = new El('div');
+  const c = ctx.sysFlair(row, 'conflicts');
+  check('conflicts/ says it is safe to delete and made again on the next conflict',
+    row.kids[0] === c && /Safe to delete/.test(c.title) && /made again on the next conflict/.test(c.title),
+    c.title);
 }
 
 check.done();

@@ -25,8 +25,10 @@
   // appended by renderTree, after the pages
   function renderShared(coll) {
     const fold = (key, label, depth) => {
-      treeList.appendChild(folderRow(label, depth, coll.includes(key),
-        () => { paneColl.flip(key); renderTree(); }, undefined, key));
+      const row = folderRow(label, depth, coll.includes(key),
+        () => { paneColl.flip(key); renderTree(); }, undefined, key);
+      if (key === SWM) sysFlair(row, 'shared');
+      treeList.appendChild(row);
       return !coll.includes(key);
     };
     if (!fold(SWM, 'shared with me', 0)) return;
