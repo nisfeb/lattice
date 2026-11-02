@@ -229,13 +229,17 @@ impl Projection for LatticeProjection {
         let mut body = data.to_vec();
         if create {
             q.push(("new", "1"));
+            // a create from a mount may be a sync client writing back a
+            // page that moved away (+move-guard): the ship checks it as
+            // it does an overwrite, which the editor's new page skips
+            q.push(("mount", "1"));
             // page-save 400s on an empty body for non-index kinds. Seed a newline
             // (the editor overwrites it on the real flush).
             if kind != "index" && body.is_empty() {
                 body = b"\n".to_vec();
             }
         }
-        let r = self.t.post("/apps/lattice/page-save", &q, &body)?;
+        let r = self.t.post("/apps/lattice/page-save", &q, &body).map_err(moved)?;
         // landed: the next save claims the rev this one made, which HTTP and
         // the lick port both answer. An older ship's lick port answers '':
         // the claim goes, and that ship falls back to its cached rev. A
@@ -282,6 +286,21 @@ impl Projection for LatticeProjection {
     fn watch(&self, on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync)) {
         self.t.watch(on_event);
     }
+}
+
+/// A save the ship refused because the page moved: a folder move is
+/// under way over it, or it moved away and nothing is there now. A sync
+/// client holding the old listing writes back the copy it has, which
+/// would make the old folder again. The writer is told the file is gone
+/// (ENOENT), or busy while the move runs (EBUSY), not that it exists,
+/// and the core lists the tree again so the old path drops out.
+fn moved(e: crate::transport::TErr) -> PErr {
+    let errno = match e.code {
+        409 if e.msg.contains(" is being moved to ") => libc::EBUSY,
+        409 if e.msg.contains(" moved to ") => libc::ENOENT,
+        _ => return e.into(),
+    };
+    PErr::new(errno, e.msg)
 }
 
 /// One page off the wire. page-tree and page-dump spell a page node the same
@@ -690,6 +709,28 @@ mod tests {
     }
 
     #[test]
+    fn a_save_refused_as_moved_is_gone_or_busy_not_exists() {
+        // page-save 409s a write into a folder move under way, or onto a
+        // page that moved away. That is not "file exists": the writer
+        // (often a sync client) is told the file is gone, or busy while
+        // the move runs. Any other 409 is still EEXIST.
+        let r = |m: &str| Err(TErr::new(409, m));
+        let (_, p) = lp(
+            "",
+            vec![
+                r("a/c moved to b/c: save it there"),
+                r("a/c is being moved to b/c: save it there once the move is done"),
+                r("page exists"),
+            ],
+        );
+        let e = p.write("a/c", "md", b"x", false).unwrap_err();
+        assert_eq!(e.errno, libc::ENOENT);
+        assert!(e.msg.contains("b/c"), "the server's words survive: {}", e.msg);
+        assert_eq!(p.write("a/c", "md", b"x", false).unwrap_err().errno, libc::EBUSY);
+        assert_eq!(p.write("a/c", "md", b"x", true).unwrap_err().errno, libc::EEXIST);
+    }
+
+    #[test]
     fn write_maps_kind_to_page_type_and_seeds_only_a_new_empty_body() {
         // the `type` decides the mark the page is stored under. A wrong one
         // stores markdown as hoon (or worse, clobbers a generated %index).
@@ -705,12 +746,12 @@ mod tests {
             vec![
                 r#"POST /apps/lattice/page-save?name=n&type=md "hi""#,
                 // %index accepts an empty body; it must NOT be seeded
-                r#"POST /apps/lattice/page-save?name=n&type=index&new=1 """#,
+                r#"POST /apps/lattice/page-save?name=n&type=index&new=1&mount=1 """#,
                 // page-save 400s on an empty body for every other kind, so a
                 // brand-new page is seeded with a newline
-                r#"POST /apps/lattice/page-save?name=n&type=md&new=1 "\n""#,
+                r#"POST /apps/lattice/page-save?name=n&type=md&new=1&mount=1 "\n""#,
                 // ...but only when it IS empty. Never overwrite real content.
-                r#"POST /apps/lattice/page-save?name=n&type=md&new=1 "hi""#,
+                r#"POST /apps/lattice/page-save?name=n&type=md&new=1&mount=1 "hi""#,
                 r#"POST /apps/lattice/page-save?name=n&type=hoon "x""#,
                 // LaTeX is its own kind: sent as hoon it went to the compiler
                 r#"POST /apps/lattice/page-save?name=n&type=tex "\\x""#,

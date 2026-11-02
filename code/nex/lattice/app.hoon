@@ -382,6 +382,11 @@
         ::  owner (GET /tree-job): a folder delete dropped part way leaves
         ::  some of its pages published
             [%fall %& [/ %'tree-job-dropped'] [[/ %json] ~]]
+        ::  /move-job: the folder move a request is part way through
+        ::  (+fs-move), ~ when none. A save into its source is refused
+        ::  while it runs (+move-guard), and the same move asked again
+        ::  finishes it rather than 409 on its half-made destination.
+            [%fall %& [/ %'move-job'] [[/ %noun] ~]]
         ::  /pub-regrown: how many pages the last /pub-regrow grew
             [%fall %& [/ %'pub-regrown'] [[/ %ud] 0]]
         ::  /pub-pending: shared pages saved but not yet published, or
@@ -941,6 +946,24 @@
     ?^  la  (pure:n `(link-above-msg u.la))
     $(todo t.todo)
   ?^  onto  (send-err eyre-id 409 u.onto)
+  ::  +move-guard for every item. A replay's items are overwrites, so a
+  ::  page that moved away is refused (the client keeps the body); an
+  ::  upload only waits out a move under way.
+  ;<  mg=(unit @t)  bind:m
+    =/  n  (fiber:fiber:nexus ,(unit @t))
+    =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
+    |-  ^-  form:n
+    ?~  todo  (pure:n ~)
+    =/  pax=path  (pax-of nam.i.todo)
+    ;<  gone=?  bind:n
+      ?.  report  (pure:(fiber:fiber:nexus ,?) |)
+      ;<  ex=?  bind:(fiber:fiber:nexus ,?)
+        (peek-exists:fio (rf up (weld /page pax) %code))
+      (pure:(fiber:fiber:nexus ,?) !ex)
+    ;<  g=(unit @t)  bind:n  (move-guard pax gone)
+    ?^  g  (pure:n g)
+    $(todo t.todo)
+  ?^  mg  (send-err eyre-id 409 u.mg)
   ::  mark a tainted key's new pages sensitive before the write lands
   ;<  ~  bind:m
     =/  n  (fiber:fiber:nexus ,~)
@@ -1119,6 +1142,18 @@
   ::  is safe where refuse-and-block would need true writer-side CAS.
   =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
   ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of u.name))
+  ::  a save into a folder move under way, or an overwrite of a page
+  ::  that moved away, would be deleted or make the old folder again.
+  ::  ?mount=1 (lattice-fs) puts its creates through the same check: a
+  ::  sync client writing back a page that moved, once the mount has
+  ::  listed the tree again, sends a create. The editor's new page and
+  ::  an API create (?new=1 alone) at a moved-away name land.
+  ;<  mg=(unit @t)  bind:m
+    %+  move-guard  (pax-of u.name)
+    ?&  ?=(~ src.pc)
+        |(!(~(has by args) 'new') (~(has by args) 'mount'))
+    ==
+  ?^  mg  (send-err eyre-id 409 u.mg)
   ::  a new page under a link is refused: a link holds no pages
   ;<  la=(unit path)  bind:m
     ?^  src.pc  (pure:(fiber:fiber:nexus ,(unit path)) ~)
@@ -7541,11 +7576,21 @@
       dacts
     ==
   =/  count=@ud  (lent lacts)
+  ::  `late`: the catch-up pass has run (below)
+  =/  late=?  |
   |-  ^-  form:m
   ?^  todo
     ;<  ~  bind:m  (poke-eval i.todo)
     $(todo t.todo)
   ?~  rels
+    ::  a save that passed +move-guard just before /move-job was set can
+    ::  land after the peek above, and the %del would take it with the
+    ::  source. So the source is read once more, and any page it now
+    ::  holds differently is copied again before anything is deleted.
+    ;<  cu=[pages=(list path) bl=ball:tarball]  bind:m
+      ?:  late  (pure:(fiber:fiber:nexus ,[(list path) ball:tarball]) [~ bl])
+      (move-catch-up sdir bl)
+    ?^  pages.cu  $(rels pages.cu, bl bl.cu, late &)
     ;<  ~  bind:m  (poke-eval [%del from])
     ;<  ~  bind:m  (record-move from to)
     ;<  ~  bind:m  (move-grants from `to)
@@ -7569,7 +7614,23 @@
       ^-  (list eval-action:le)  ?~(dn ~ [%dname dst u.dn]~)
     ^-  (list eval-action:le)
     ?:(=(%private mode) ~ [%share dst mode]~)
-  $(todo acts, rels t.rels, count +(count))
+  $(todo acts, rels t.rels, count ?:(late count +(count)))
+::  +move-catch-up: the pages under `sdir` (a move's source, /page/<from>)
+::  whose code is not what `bl` read, and the ball they are in now
+++  move-catch-up
+  |=  [sdir=path bl=ball:tarball]
+  =/  m  (fiber:fiber:nexus ,[(list path) ball:tarball])
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up sdir) ~)
+  ?.  ?=([%ball *] dv)  (pure:m [~ bl])
+  =/  now=(list path)
+    (murn (collect-tree ball.dv ~) |=([pax=path page=?] ?:(page `pax ~)))
+  %-  pure:m
+  :_  ball.dv
+  %+  skim  now
+  |=  p=path
+  !=((fils-code (ball-fils ball.dv p)) (fils-code (ball-fils bl p)))
 ::  +record-move: /moves.json at the nexus root, the last 100 moves newest
 ::  first: {"moves": [{"from": "a/b", "to": "c/b", "at_ms": n}]}. A page at
 ::  `from` is now at `to`, and a page under from/ is under to/. So a reader
@@ -7601,6 +7662,103 @@
       (pairs:enjs:format ~[['moves' a+(scag 100 `(list json)`[row old])]])
     [/ %json]
   (pure:m ~)
+::  +move-job-road / +move-job-at / +move-job-set: the folder move under
+::  way (/move-job), as [from to at], ~ once it is done (+fs-move)
+++  move-job-road  (rf up / %'move-job')
+++  move-job-at
+  =/  m  (fiber:fiber:nexus ,(unit [from=path to=path at=@da]))
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:fio move-job-road ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  %-  pure:m
+  (fall (mole |.(;;((unit [path path @da]) (sang-noun:tarball sang.vw)))) ~)
+++  move-job-set
+  |=  job=(unit [from=path to=path at=@da])
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (put-file move-job-road [/ %noun] job)
+::  +move-under: `pax` at or under `from`, as the same place under `to`
+++  move-under
+  |=  [pax=path from=path to=path]
+  ^-  (unit path)
+  ?.  =(from (scag (lent from) pax))  ~
+  `(weld to (slag (lent from) pax))
+::  +move-guard: why a save of `pax` must not land, ~ when it may. A
+::  move copies a folder and then deletes it, so a write into its source
+::  while it runs is deleted with it, and one landing after it makes the
+::  old folder again with that one page in it. That is what a stale
+::  writer does: an editor tab, a queued offline edit, or a sync client
+::  (Seafile, Dropbox) watching a lattice-fs mount whose listing is
+::  still the old one, writing the copy it holds back through the mount.
+::  So a save into a move under way is refused, and an overwrite of a
+::  page that is gone because it moved in the last hour is refused too
+::  (`gone`: the caller found no page there), while the page it moved
+::  to is still there. A create (?new=1) at a moved-away path is a new
+::  page and lands. A move left part way (a reload ended it) blocks
+::  saves into its source for 10 minutes at most.
+++  move-guard
+  |=  [pax=path gone=?]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ::  one peek of a small grub for an ordinary save: the clock only
+  ::  when there is a move to date
+  ;<  job=(unit [from=path to=path at=@da])  bind:m  move-job-at
+  =/  hit=(unit path)  ?~(job ~ (move-under pax from.u.job to.u.job))
+  ?:  &(?=(~ hit) !gone)  (pure:m ~)
+  ;<  now=@da  bind:m  bowl-now
+  =/  mid=(unit path)
+    ?~  job  ~
+    ?:  (gth (sub now (min now at.u.job)) ~m10)  ~
+    hit
+  ?^  mid
+    %-  pure:m
+    `(crip "{(pax-str pax)} is being moved to {(pax-str u.mid)}: save it there once the move is done")
+  ?.  gone  (pure:m ~)
+  ;<  log=json  bind:m  (json-at moves-road)
+  =/  rows=(list json)
+    =/  ms=(unit json)  (~(get by (rise-omap log)) 'moves')
+    ?.  ?=([~ %a *] ms)  ~
+    p.u.ms
+  =/  since=@ud  (rise-da-ms (sub now (min now ~h1)))
+  ::  `newer`: the moves after the row being looked at, oldest first
+  =|  newer=(list [fr=path tt=path])
+  |-  ^-  form:m
+  ?~  rows  (pure:m ~)
+  =/  o=(map @t json)  (rise-omap i.rows)
+  =/  at=@ud  (fall (rise-gn i.rows 'at_ms') 0)
+  ::  newest first: the rest are older still
+  ?:  (lth at since)  (pure:m ~)
+  =/  fr=(unit path)
+    =/  j=(unit json)  (~(get by o) 'from')
+    ?.  ?=([~ %s *] j)  ~
+    (name-pax p.u.j)
+  =/  tt=(unit path)
+    =/  j=(unit json)  (~(get by o) 'to')
+    ?.  ?=([~ %s *] j)  ~
+    (name-pax p.u.j)
+  ?.  &(?=(^ fr) ?=(^ tt))  $(rows t.rows)
+  =/  dst=(unit path)  (move-under pax u.fr u.tt)
+  ?~  dst  $(rows t.rows, newer [[u.fr u.tt] newer])
+  ::  where the page is now, after the later moves too: a to b then b
+  ::  to c is at c, and moved back it is at `pax` itself. Only a page
+  ::  found there was carried away. Anything else saved at `pax` is a
+  ::  new page (a wiki_write into a folder that moved away, or into
+  ::  one moved back) and lands.
+  =/  end=path
+    =/  ls=(list [fr=path tt=path])  newer
+    =/  p=path  u.dst
+    |-  ^-  path
+    ?~  ls  p
+    $(ls t.ls, p (fall (move-under p fr.i.ls tt.i.ls) p))
+  ?:  =(end pax)  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  there=?  bind:m  (peek-exists:fio (rf up (weld /page end) %code))
+  ;<  lk=(unit [l=link:ll at=@da])  bind:m
+    ?:  there  (pure:(fiber:fiber:nexus ,(unit [l=link:ll at=@da])) ~)
+    (link-at end)
+  ?.  |(there ?=(^ lk))  (pure:m ~)
+  %-  pure:m
+  `(crip "{(pax-str pax)} moved to {(pax-str end)}: save it there")
 ::  +instantiate-template: create a live page-tree from a template. Runs in a
 ::  REQUEST fiber and pokes one %make PER page (a separate writer transaction
 ::  each), in sorted order, so every page commits before the next and its
@@ -9092,6 +9250,12 @@
   ;<  cx=?  bind:m
     ?:  new  (pure:(fiber:fiber:nexus ,?) |)
     (peek-exists:fio (rf up (weld /page (pax-of name)) %code))
+  ::  as page-save: a write the mount holds from before a move
+  ::  (+move-guard) must not make the old folder again. A create too:
+  ::  the port is a mount's, and once it has listed the tree again a
+  ::  sync client's write-back of a moved page arrives as a create
+  ;<  mg=(unit @t)  bind:m  (move-guard (pax-of name) !cx)
+  ?^  mg  (pure:m [409 u.mg])
   ;<  la=(unit path)  bind:m
     ?:  cx  (pure:(fiber:fiber:nexus ,(unit path)) ~)
     (link-above (pax-of name))
@@ -9130,6 +9294,14 @@
   =/  pt=path  (pax-of to)
   ?:  &((gth (lent pt) (lent pf)) =(pf `path`(scag (lent pf) `path`pt)))
     (pure:m |+[400 'cannot move under itself'])
+  ::  the same move, left part way (a reload ended its request, which
+  ::  then answered 503): its destination is its own half-made copy, so
+  ::  it is finished, never refused as a clobber. Every step of
+  ::  +move-pages lands the same way twice, and the source goes last.
+  ;<  job=(unit [from=path to=path at=@da])  bind:m  move-job-at
+  ?:  ?~(job | &(=(pf from.u.job) =(pt to.u.job)))
+    ;<  n=(unit @ud)  bind:m  (move-run pf pt)
+    (pure:m &+(fall n 0))
   ::  never clobber: a collision replaced the destination silently (and
   ::  prune-hist's coalesce window could make it unrecoverable). /know-move
   ::  has refused this from the start; pages get the same 409.
@@ -9143,9 +9315,26 @@
   ?:  dlk  (pure:m |+[409 'destination exists'])
   ;<  la=(unit path)  bind:m  (link-above pt)
   ?^  la  (pure:m |+[409 (link-above-msg u.la)])
-  ;<  n=(unit @ud)  bind:m  (move-pages pf pt)
+  ;<  n=(unit @ud)  bind:m  (move-run pf pt)
   ?~  n  (pure:m |+[404 'no such page or folder'])
   (pure:m &+u.n)
+::  +move-run: +move-pages, noted as the move under way (/move-job) for
+::  as long as it runs. The note is what lets the same move asked again
+::  finish it, and what +move-guard refuses saves into its source by.
+++  move-run
+  |=  [pf=path pt=path]
+  =/  m  (fiber:fiber:nexus ,(unit @ud))
+  ^-  form:m
+  ;<  now=@da  bind:m  bowl-now
+  ;<  ~  bind:m  (move-job-set `[pf pt now])
+  ;<  n=(unit @ud)  bind:m  (move-pages pf pt)
+  ::  cleared only while it is still this move's: a second move that
+  ::  started meanwhile keeps its note (and its guard)
+  ;<  job=(unit [from=path to=path at=@da])  bind:m  move-job-at
+  ;<  ~  bind:m
+    ?.  =(job `[pf pt now])  (pure:(fiber:fiber:nexus ,~) ~)
+    (move-job-set ~)
+  (pure:m n)
 ::  +fs-op: the shared request dispatcher. `path`'s last segment selects the op.
 ::  `query` is "k=v&k=v" (raw, page names are @ta so need no url-decode). Returns
 ::  [status body], for the lick port to spit, and for the HTTP routes to send.

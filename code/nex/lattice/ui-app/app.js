@@ -1708,6 +1708,9 @@
   let folderCtx = '';      // folder uploads land in (last into / open page's dir)
   let nodes = [];          // last page-tree
   let saving = false;      // a save round-trip is in flight. Never overlap them.
+  let moving = 0;          // a move or rename is in flight (75-move.js): a
+                           // save of the old name would land in the folder
+                           // being deleted, so autosave waits it out
   let savePending = false; // The pier serializes, so a second save just queues
                            // 3.7s of stale-body work behind the first
   //  every successful mutation of ours produces exactly one beacon bump,
@@ -6575,6 +6578,31 @@
     return row;
   }
 
+  // the folders lattice makes or draws itself get a small mark after the
+  // name, and the mark's tip says what the folder is and what deleting it
+  // does. conflicts/ is a real folder of pages, made by the first save
+  // that loses to a newer one (conflict-name in app.hoon, and the offline
+  // queue's kept copies in 08-offline.js). Shared with me is drawn from
+  // /shared-with-me and is in no one's pages (69-shared.js).
+  const SYSF = {
+    conflicts: [ico('conflict'), 'Made by lattice: when two edits of a page cross, the one '
+      + 'that lost is kept here as a page (Sync conflicts lists them). Safe to delete once '
+      + 'read: it is made again on the next conflict.'],
+    shared: [ico('inbox'), 'Pages other ships shared with you. Not a folder in your pages: '
+      + 'lattice shows it while anything is shared with you, and removing an entry leaves '
+      + 'their grant as it is.'],
+  };
+  function sysFlair(row, which) {
+    const [svg, what] = SYSF[which];
+    const s = document.createElement('span');
+    s.className = 'sysf';
+    s.innerHTML = svg;
+    s.title = what;
+    s.setAttribute('aria-label', what);
+    row.append(s);
+    return s;
+  }
+
   // ── keyboard: the files and memory trees as ARIA trees ──────────────────
   // The rows are flat siblings indented by depth, so the shape is read from
   // aria-level: a folder's children are the shown rows after it with a
@@ -6764,6 +6792,7 @@
         linkDrop(row, n.path);       // a shared-with-me row dropped here (69-shared.js)
         if (n.path === curFolder) row.classList.add('cur');
         if (n.dname) row.lastChild.title = n.path;     // the label's tip
+        if (n.path === 'conflicts') sysFlair(row, 'conflicts');
         if (treeShare(n.path) === 'clearweb') {
           const cw = document.createElement('span');
           cw.className = 'cw';
@@ -7581,7 +7610,13 @@
       flushPending();
       return;
     }
-    if (r && r.status === 409) { st('that page already exists', false); return failed(); }
+    if (r && r.status === 409) {
+      //  the ship refuses a save into a folder being moved, or onto a page
+      //  that moved away, and says where it went
+      const why = await errText(r);
+      st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
+      return failed();
+    }
     if (!r.ok) { st('save failed' + await errText(r), false); return failed(); }
     // the response carries the new revision and whether this save landed
     // on top of a revision made elsewhere; parse it regardless of focus.
@@ -7642,6 +7677,9 @@
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
     if (!current || curFolder || !dirty || viewingRev !== null) return;
+    // a move in flight may be carrying this page away: the save goes to
+    // its new name once the move has renamed the editor (75-move.js)
+    if (moving) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 1000); return; }
     // a link whose save was refused as stale: no more writes until the
     // user picks one of the bar's ways out, or saves on purpose (Ctrl+S)
     if (mode !== 'know' && linkCf.has(current) && linkOf(current)) {
@@ -7730,7 +7768,7 @@
   // front meanwhile is marked clean live, by the same rule.
   async function saveParked(t) {
     const s = t.snap;
-    if (!s || !s.dirty || !t.key || !autosaveOn()) return;
+    if (!s || !s.dirty || !t.key || !autosaveOn() || moving) return;
     if (t.kind !== 'page' && t.kind !== 'know') return;
     const know = t.kind === 'know';
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
@@ -9533,8 +9571,10 @@
   // appended by renderTree, after the pages
   function renderShared(coll) {
     const fold = (key, label, depth) => {
-      treeList.appendChild(folderRow(label, depth, coll.includes(key),
-        () => { paneColl.flip(key); renderTree(); }, undefined, key));
+      const row = folderRow(label, depth, coll.includes(key),
+        () => { paneColl.flip(key); renderTree(); }, undefined, key);
+      if (key === SWM) sysFlair(row, 'shared');
+      treeList.appendChild(row);
       return !coll.includes(key);
     };
     if (!fold(SWM, 'shared with me', 0)) return;
@@ -10732,10 +10772,22 @@
   // rn: the realName() split of the new name. Its dname is ALWAYS sent: ''
   // (the typed name was a valid path) clears the one the move would
   // otherwise carry over; dnames names the folders the move creates.
-  const moveReq = (from, to, rn) =>
-    mutate(api + '/page-move?from=' + encodeURIComponent(from) +
-      '&to=' + encodeURIComponent(to) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
-      (rn && rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
+  //  The ship copies what it holds, so the text in the editor goes out
+  //  first, and no autosave or parked save writes the old name while the
+  //  move runs (`moving`, 35-pages.js). One landing in the folder being
+  //  moved was deleted with it, or made the old folder again.
+  const moveReq = async (from, to, rn) => {
+    //  held first: the save the flush makes queues an autosave behind it,
+    //  and that one would go out beside the move, under the old name
+    moving++;
+    try {
+      await flushNoAsk();
+      await waitSave();
+      return await mutate(api + '/page-move?from=' + encodeURIComponent(from) +
+        '&to=' + encodeURIComponent(to) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
+        (rn && rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
+    } finally { moving--; }
+  };
   // the server moves the WHOLE subtree (a page can parent nested pages, and
   // move-pages rewrites every rel under it). Renaming only the exact node
   // left those children pointing at paths that no longer exist, ghosts in
@@ -10750,6 +10802,14 @@
         if (n.page) moved++;
         n.path = to + n.path.slice(from.length);
       }
+    // and the editor, when it shows a page that moved: renamed in place,
+    // so text typed during the move saves under the new name, never as
+    // the old page made again
+    if (mode !== 'know' && !grubPath && current &&
+        (current === from || current.startsWith(from + '/'))) {
+      const nn = to + current.slice(from.length);
+      setOpen(nn, { readOnly: pname.readOnly, url: '/apps/lattice/app?name=' + encodeURIComponent(nn) });
+    }
     if (to.includes('/')) addFolderNodes(to.slice(0, to.lastIndexOf('/')));
     applyDnames(rn || { name: to, dname: '', dnames: '' });
     return moved;
@@ -11288,7 +11348,8 @@
         st('moved to ' + newName + (mv.offline ? ' offline' : ''));
         //  same rule as the memory move: only the page still in front
         //  reopens under its new name
-        if (mode !== 'know' && !grubPath && current === from) openPage(newName);
+        if (mode !== 'know' && !grubPath && (current === from || current === newName))
+          openPage(newName);
         return;
       }
       // movePage already reported the cause — loop back into askName seeded

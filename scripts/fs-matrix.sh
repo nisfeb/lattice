@@ -105,6 +105,48 @@ mv -f "$LMNT/fsmatrix/b.md" "$LMNT/fsmatrix/a.md"; sleep 0.4
 is "dst replaced" 'clobber-src' "$(page fsmatrix/a)"
 is "src gone" '404' "$(page_http fsmatrix/b)"
 
+say "a stale writer after a folder move (a sync client on the mount)"
+mkdir -p "$LMNT/fsmatrix/mvold"
+printf 'one\n' > "$LMNT/fsmatrix/mvold/one.md"
+printf 'two\n' > "$LMNT/fsmatrix/mvold/two.md"
+sleep 0.4
+# the handle is opened before the move, the move happens on the ship (the
+# web client, another device), and the copy is written back after it
+stale=$(python3 - "$LMNT/fsmatrix/mvold/two.md" "$URL" "$CK" <<'PY'
+import sys, subprocess
+f = open(sys.argv[1], 'r+'); old = f.read()
+subprocess.run(['curl', '-s', '-X', 'POST', '-H', sys.argv[3],
+  sys.argv[2] + '/apps/lattice/page-move?from=fsmatrix/mvold&to=fsmatrix/mvnew'], capture_output=True)
+f.seek(0); f.write(old); f.truncate()
+try:
+    f.close(); print('accepted')
+except OSError as e:
+    print('refused', e.errno)
+PY
+)
+is "the write back is refused as gone (ENOENT)" "refused 2" "$stale"
+is "the old folder is not made again" '404' "$(page_http fsmatrix/mvold/two)"
+is "the moved copy is intact" 'two' "$(page fsmatrix/mvnew/two)"
+# once the mount has listed the tree again the old file is gone from it,
+# so the same write-back arrives as a create: a temp file renamed over
+# the old name (most editors, sync clients), or a plain new file
+# the old folder made again first, as a sync client does (an empty
+# folder: the refused writes below each list the tree again)
+sleep 6; ls "$LMNT/fsmatrix" >/dev/null
+mkold() { mkdir -p "$LMNT/fsmatrix/mvold" 2>/dev/null; [ -d "$LMNT/fsmatrix/mvold" ] && echo y; }
+is "the old folder can be made again" 'y' "$(mkold)"
+printf 'stale\n' > "$LMNT/fsmatrix/mvold/.one.md.tmp" 2>/dev/null
+mv "$LMNT/fsmatrix/mvold/.one.md.tmp" "$LMNT/fsmatrix/mvold/one.md" 2>/dev/null
+is "a temp-and-rename write-back is refused" '404' "$(page_http fsmatrix/mvold/one)"
+mkold >/dev/null
+twoerr=$( { printf 'stale\n' > "$LMNT/fsmatrix/mvold/two.md"; } 2>&1)
+has "a create write-back is refused as gone" 'No such file' "$twoerr"
+is "and lands nothing" '404' "$(page_http fsmatrix/mvold/two)"
+mkold >/dev/null
+is "the moved copies are intact" 'one two' "$(page fsmatrix/mvnew/one) $(page fsmatrix/mvnew/two)"
+printf 'three\n' > "$LMNT/fsmatrix/mvold/three.md"; sleep 0.4
+is "a new file at the old folder's name still lands" 'three' "$(page fsmatrix/mvold/three)"
+
 say "rmdir safety"
 mkdir "$LMNT/fsmatrix/sub" && printf 'x\n' > "$LMNT/fsmatrix/sub/c.md"; sleep 0.4
 rmdir "$LMNT/fsmatrix/sub" 2>/dev/null
