@@ -2,7 +2,7 @@
 (function () {
 'use strict';
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
-const WRITER_H = '0v1.4vdgp.1id9a.rg3ad.802jf.rfi33';
+const WRITER_H = '0v3.46lhn.31ict.usv5d.juqcc.dtip0';
 
 // ── src/00-framed.js ──────────────────────────────────────────────────────
   // ── never a second editor in a frame ─────────────────────────────────────
@@ -4370,10 +4370,7 @@ const WRITER_H = '0v1.4vdgp.1id9a.rg3ad.802jf.rfi33';
     const my = wrSeq;
     writerReady().then((LW) => {
       if (my !== wrSeq || src.value !== body || !fodtHere() || writerSourceOn()) return;
-      let seen = true;
-      try { seen = localStorage.latWriterDraft === '1'; } catch {}
-      const c = LW.mount(wrBox(), { text: body, editable: ed, draftNote: !seen, onChange: writerChanged,
-        onDraftSeen: () => { try { localStorage.latWriterDraft = '1'; } catch {} } });
+      const c = LW.mount(wrBox(), { text: body, editable: ed, onChange: writerChanged });
       if (c.error) { wrSrc.set(wrKey(), c.error); writerApply(); } else wr = c;
     }, () => { if (my === wrSeq) wrBox('The Writer editor did not load. Source in the page menu shows the XML.'); });
   }
@@ -5640,18 +5637,6 @@ const WRITER_H = '0v1.4vdgp.1id9a.rg3ad.802jf.rfi33';
     }).catch(() => {});
     return null;
   }
-  // a parked Writer page before writer.js: the ship's render, asked once
-  function fodtShip(t) {
-    const key = t.key;
-    if (t.ghtml && t.ghtml[0] === key) return t.ghtml[1];
-    if (key && t.gask !== key) {
-      t.gask = key;
-      srcRead(key).then((r) => r.json()).then((d) => {
-        if (t.key === key && typeof d.html === 'string') { t.ghtml = [key, d.html]; gPaintAll(); }
-      }).catch(() => {});
-    }
-    return null;
-  }
   const ghostHl = (body, kind) => {
     const lang = LMAP[kind];
     const g = window.Prism && lang && Prism.languages[lang];
@@ -5709,7 +5694,8 @@ const WRITER_H = '0v1.4vdgp.1id9a.rg3ad.802jf.rfi33';
     const fodt = kind === 'fodt';
     g.gdoc.classList.toggle('gread', !!t.read || fodt);
     if (fodt) {
-      const d = ghostDoc(kind, ta.value) || fodtShip(t) || '';
+      // before writer.js: blank, and painted again once it is here
+      const d = ghostDoc(kind, ta.value) || (writerReady().then(gPaintAll, () => {}), '');
       if (g.gprev.getAttribute('srcdoc') !== d) { g.gprev.removeAttribute('src'); g.gprev.srcdoc = d; }
     } else if (t.read) {
       const kept = t.ghost && t.ghost.body === ta.value ? t.ghost : null;

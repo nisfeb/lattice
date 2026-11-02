@@ -62,10 +62,7 @@
     const my = wrSeq;
     writerReady().then((LW) => {
       if (my !== wrSeq || src.value !== body || !fodtHere() || writerSourceOn()) return;
-      let seen = true;
-      try { seen = localStorage.latWriterDraft === '1'; } catch {}
-      const c = LW.mount(wrBox(), { text: body, editable: ed, draftNote: !seen, onChange: writerChanged,
-        onDraftSeen: () => { try { localStorage.latWriterDraft = '1'; } catch {} } });
+      const c = LW.mount(wrBox(), { text: body, editable: ed, onChange: writerChanged });
       if (c.error) { wrSrc.set(wrKey(), c.error); writerApply(); } else wr = c;
     }, () => { if (my === wrSeq) wrBox('The Writer editor did not load. Source in the page menu shows the XML.'); });
   }

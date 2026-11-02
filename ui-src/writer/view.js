@@ -222,7 +222,7 @@ const PAIR_WHAT = 'one half of a bookmark, reference mark, comment or tracked ch
 // ---------------------------------------------------------------- mount
 //  mount(host, opts): the controller, or { error } when the body cannot be
 //  opened (the shell then shows Source view with the reason).
-//  opts: text, editable, draftNote, onChange(), onDraftSeen(), onNote(msg)
+//  opts: text, editable, onChange(), onNote(msg)
 export function mount(host, opts = {}) {
   const text = String(opts.text ?? '');
   const parsed = parseFodt(text);
@@ -293,10 +293,13 @@ export function mount(host, opts = {}) {
     note('lw-ro lw-track', 'This document records tracked changes, so lattice opens it read-only. '
       + 'Edit it in LibreOffice, or turn off Edit, Track Changes, Record there to edit it here.');
   }
-  if (opts.draftNote) {
+  //  once per browser: dismissing it is remembered here, not by the shell
+  let seen = true;
+  try { seen = localStorage.latWriterDraft === '1'; } catch {}
+  if (!seen) {
     note('lw-draft', 'Draft layout: lines and page breaks will not fall where LibreOffice puts them, '
       + 'and headers, footers and page numbers are kept in the file but not shown here.',
-    'Got it', () => { if (opts.onDraftSeen) opts.onDraftSeen(); });
+    'Got it', () => { try { localStorage.latWriterDraft = '1'; } catch {} });
   }
   let flash = null;
   let flashTimer = 0;
