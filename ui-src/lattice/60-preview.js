@@ -55,9 +55,13 @@
       // GTK dark variant and gtk-application-prefer-dark-theme alike.
       // The div scrolls with the app's own styled bars instead.
       prev.setAttribute('sandbox', 'allow-scripts allow-top-navigation-by-user-activation');
+      // Whatever frame is `prev` by then goes in, not the one made here:
+      // a tab restored in Read runs showPreview inside boot, which swaps
+      // in a new frame before this task, and the old one has no parent to
+      // be replaced in. Inserting the first frame left every later write
+      // going to a frame that was never in the page, a blank pane for good.
       const wrap = this.querySelector('.prevwrap');
-      const f = prev;
-      setTimeout(() => { if (!f.parentNode) wrap.append(f); }, 0);
+      setTimeout(() => { if (!prev.parentNode) wrap.append(prev); }, 0);
       // the frame reports its content height once its document has loaded;
       // the wrap scrolls. The FIRST report per document wins, measured with
       // the frame at pane height (previewFit clears min-height before every
