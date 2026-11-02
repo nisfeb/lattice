@@ -5940,10 +5940,17 @@
   });
   document.addEventListener('freeze', () => fkeepTrim(true));
   // `f` is the tab's frame no more; kept as `url`, or let go with none
+  // The name goes with the window too: Chrome leaves a frame's window
+  // name as it was when the attribute changes, and a form aimed at the
+  // tab (formAgain) then went to the kept page, the first of the two.
+  const frameName = (f, n) => {
+    f.name = n;
+    try { f.contentWindow.name = n; } catch {}
+  };
   function fkeepPark(key, f, url) {
     delete f.dataset.tool;
     f.dataset.kept = key;
-    f.name = '';
+    frameName(f, '');
     if (!url || KEEP_ALL < 1) { frameGone(f); return; }
     fnavOf(key).kept.push({ f, url, at: Date.now() });
   }
@@ -5969,8 +5976,9 @@
     const n = fnavOf(key);
     const k = e.f;
     n.kept = n.kept.filter((x) => x !== e);
-    k.name = f.name;
+    const name = f.name;
     fkeepPark(key, f, was);
+    frameName(k, name);
     if (f.isConnected) { f.classList.remove('fcover'); f.hidden = true; }
     // it hears latshown once it has stayed in sight a beat (frameSeen)
     k.latQuiet = Date.now() + KEEP_QUIET;
