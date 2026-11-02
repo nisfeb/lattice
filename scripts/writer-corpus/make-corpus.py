@@ -33,8 +33,8 @@ LibreOffice behaviours to know when reading the output:
     flat ODT import fail outright in LibreOffice 26.8, so 10-unknown has
     an inline text:meta with an xml:id and no RDFa
 
-14-lo-gui.fodt is made by hand in the LibreOffice GUI (heavy rsid churn,
-view settings) and is not built here.
+14-lo-gui.fodt is saved from the LibreOffice window (rsid churn, view
+settings) by lo-gui.xba under Xvfb, and is not built here.
 
 Usage: python3 scripts/writer-corpus/make-corpus.py [--out DIR] [--keep-src DIR]
 """

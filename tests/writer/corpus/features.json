@@ -13,7 +13,7 @@
   "11-i18n.fodt": ["@style:writing-mode=rl-tb", "@style:language-complex=ar", "@style:language-complex=he", "@style:font-name-asian=Noto Sans CJK SC", "مرحبا", "שלום", "你好", "🎉", "👩🏽\u200d💻", "e\u0301", "\u00ad"],
   "12-whitespace.fodt": ["text:s", "@text:c", "text:tab", "text:line-break", "\u00a0", "<text:p text:style-name=\"Text_20_body\"><text:s/>A leading space.", "<text:tab/><text:tab/>"],
   "13-large.fodt": ["text:h", "text:list", "table:table", "@style:family=text", "@style:family=table"],
-  "14-lo-gui.fodt": {"pending": "made by hand in the LibreOffice GUI (rsid churn, view settings); no GUI was available when the corpus was built", "needs": ["@officeooo:rsid", "@officeooo:paragraph-rsid", "config:config-item-set"]},
+  "14-lo-gui.fodt": {"made": "saved from the LibreOffice window under Xvfb over three editing sessions (scripts/writer-corpus/lo-gui.xba)", "needs": ["@officeooo:rsid", "@officeooo:paragraph-rsid", "config:config-item-set"]},
   "hostile/doctype-entity.fodt": ["<!DOCTYPE", "<!ENTITY", "&greeting;"],
   "hostile/billion-laughs.fodt": ["<!DOCTYPE", "&lol9;"],
   "hostile/external-entity.fodt": ["<!ENTITY xxe SYSTEM", "&xxe;"],
