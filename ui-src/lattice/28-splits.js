@@ -529,10 +529,10 @@
     if (t.read) {
       const kept = t.ghost && t.ghost.body === ta.value ? t.ghost : null;
       if (kept && kept.psrc && !kept.prev) {
-        if (g.gprev.getAttribute('src') !== kept.psrc) { g.gprev.removeAttribute('srcdoc'); g.gprev.src = kept.psrc; }
+        if (g.gprev.getAttribute('src') !== kept.psrc) navUrl(g.gprev, kept.psrc);
       } else {
         const d = (kept && kept.prev) || ghostDoc(kind, ta.value) || '';
-        if (g.gprev.getAttribute('srcdoc') !== d) { g.gprev.removeAttribute('src'); g.gprev.srcdoc = d; }
+        if (g.gprev.getAttribute('srcdoc') !== d) { g.gprev.removeAttribute('src'); navDoc(g.gprev, d); }
       }
     }
   }
