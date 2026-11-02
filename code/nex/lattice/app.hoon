@@ -424,6 +424,8 @@
         ::  moment it could have happened anyway.
         ;<  ~  bind:m  (carry-old-data root)
         ;<  ~  bind:m  retire-old-app
+        ::  the beacon old lattice-fs builds watch (+old-beacon-arm)
+        ;<  ~  bind:m  (old-beacon-arm root)
         ::  lay lattice's COMPLETE public grant set through the registry's
         ::  %how action: /pub for foreign readers, every shared page's data
         ::  road, and the share/comment inboxes. One act, server-side merged,
@@ -4874,7 +4876,8 @@
         ::  on the first writer rise after the move, copies the data across
         ::  (+carry-old-data), then keeps a snapshot of it before the make
         ::  road below deletes it (+retire-old-app). A later release drops
-        ::  both roads, once installs have retired the old copy.
+        ::  the peek road, once installs have retired the old copy. The
+        ::  make road stays longer (+old-beacon-arm).
         ::
         ::  Refusing it is safe and loses nothing that is not still there:
         ::  the old instance keeps its data, so the carry can be re-run by a
@@ -4900,7 +4903,9 @@
           'share pages with other ships: add a ship to a sharing group and grant the group read or edit on your pages, and take a banned ship out of every group. This road can change any sharing group on this ship. Refuse it and lattice works fully for you; you just cannot share pages with other ships'
         ::  the retire road (+retire-old-app): the old app-tier copy is
         ::  deleted once it is carried and a snapshot of it is kept, so
-        ::  grants made on it stop reaching anything.
+        ::  grants made on it stop reaching anything. It also carries the
+        ::  beacon old lattice-fs builds watch (+old-beacon-arm), so keep
+        ::  it while those builds are about.
           %+  line  '/apps/lattice.lattice_app/'
           'delete the old copy from where lattice used to live, after its pages and notes are carried across and a snapshot of it is kept here. Grants made on the old copy stop working. Refuse it and the old copy stays where it is'
       ==
@@ -5686,7 +5691,91 @@
   ::  the beacon must be NESTED (under /beacon). grubbery's keep-SSE does not
   ::  stream a grub at the nexus root (verified: /rev and /bookmarks keeps stay
   ::  silent. Nested grubs like /pub/index stream fine). Gain is not required.
-  (put-file (rf up /beacon sub) [/ %json] (numb:enjs:format `@ud`now))
+  ;<  ~  bind:m  (put-file (rf up /beacon sub) [/ %json] (numb:enjs:format `@ud`now))
+  ?.  =(%rev sub)  (pure:m ~)
+  ;<  on=(unit json)  bind:m  (peek-as:io (rf up / %'old-beacon.json') ,json)
+  ?.  ?=([~ %b %.y] on)  (pure:m ~)
+  ;<  ok=?  bind:m  (old-beacon-put now)
+  ?:  ok  (pure:m ~)
+  ::  the mirror stopped taking writes (its folder was deleted, or the
+  ::  road taken away): stop trying until the writer next starts
+  (put-file (rf up / %'old-beacon.json') [/ %json] `json`[%b %.n])
+::  +old-beacon-arm, +old-beacon-put: THE OLD LATTICE-FS BEACON.
+::
+::    lattice-fs builds before 2026-11 (the desktop app's among them) watch
+::    the keep at /grubbery/api/keep/apps/lattice.lattice_app/beacon/rev,
+::    which is +app-base, hardcoded. On a desk install nothing is there, so
+::    grubbery's keep sends only its 30 s heartbeat. The mount takes the
+::    open stream as live and stops its own polling, and then never sees a
+::    change made on the ship until it is remounted.
+::
+::    So a desk install also writes each /rev bump to a grub under
+::    +app-base, through the make road weir.json already declares there
+::    for +retire-old-app. Weigh that before dropping the road.
+::
+::    The grub is the file `rev` in a FOLDER `rev`, at beacon/rev/rev. The
+::    keep takes beacon/rev as a file if there is one and as a folder if
+::    not, and a folder serves both kinds of client: one that opens after
+::    this lands gets "old /rev" then "upd /rev", as from the real beacon,
+::    and one that opened BEFORE it, while nothing was there, is already
+::    subscribed to that folder and hears every write into it.
+::
+::    One soft write per bump, and only once the writer start found it
+::    works. With the road refused it would print a veto on every save.
+::
+++  old-beacon-arm
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  ;<  now=@da  bind:m  bowl-now
+  ;<  ok=?  bind:m
+    ::  a ball-era install's own beacon is the one they watch
+    ?:  =(sb app-base:lu)  (pure:(fiber:fiber:nexus ,?) |)
+    (old-beacon-put now)
+  (put-file (rf root / %'old-beacon.json') [/ %json] `json`[%b ok])
+::
+++  old-beacon-put
+  |=  now=@da
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  dir=path  (weld app-base:lu /beacon/rev)
+  =/  =bask:tarball  [[/ %json] (numb:enjs:format `@ud`now)]
+  ;<  ok=?  bind:m  (ug-over [%& %& dir %rev] bask)
+  ?:  ok  (pure:m &)
+  ::  a folder on the way is missing (+retire-old-app deleted the old
+  ::  copy, and a fresh install never had one). An existing one answers
+  ::  "already exists", which is fine: the write after says whether the
+  ::  chain is there.
+  =/  dirs=(list path)
+    :~  app-base:lu
+        (weld app-base:lu /beacon)
+        dir
+    ==
+  |-  ^-  form:m
+  ?~  dirs  (ug-over [%& %& dir %rev] bask)
+  ;<  *  bind:m  (make-soft-dir i.dirs)
+  $(dirs t.dirs)
+::  +make-soft-dir: make an empty folder, %.n if it was refused or failed
+::  (an existing folder fails). A veto comes back as a value, so nothing
+::  the fiber wrote before it is rolled back.
+::
+++  make-soft-dir
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  =wire  bind:m  (nonce:io /make)
+  ;<  ~  bind:m
+    (send-dart:io %node wire [%& %| pax] %make %.n %.n &+[`[~ ~ %.n ~] ~])
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %veto *]  [%done %.n]
+      [~ %made * *]
+    ?.  =(wire wire.u.in)  [%skip ~]
+    [%done =(~ err.u.in)]
+  ==
 ::  +poke-eval: send an eval-action to the writer (serialized like all writes).
 ::
 ++  poke-eval
