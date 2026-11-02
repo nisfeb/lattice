@@ -167,4 +167,13 @@
     (expect-eq !>(|) !>(?=(^ (find "<b id=v02>" out))))
     (expect-eq !>(&) !>(?=(^ (find "&lt;b id=v02&gt;" out))))
   ==
+::  +fodt: a Writer document's page keeps its XML as data, byte for byte,
+::  and renders by its own view-mode
+++  test-fodt-result
+  =/  f=@t  '<office:document a=\'1\'>\0a\09<text:p>x &amp; y</text:p>'
+  =/  r=result:pg  (fodt:pg f)
+  ;:  weld
+    (expect-eq !>(`(unit *)``f) !>(dat.r))
+    (expect-eq !>(`view-mode:pg`%fodt) !>(show.r))
+  ==
 --

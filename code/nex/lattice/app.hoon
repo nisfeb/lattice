@@ -7860,11 +7860,16 @@
   ?.  ?=([%file *] sn)  (pure:m %text)
   (pure:m (fall (mole |.(;;(view-mode:pg (sang-noun:tarball sang.sn)))) %text))
 ::  +mode-mark: the mark a published page of this view-mode carries. The
-::  single place the view-mode to mark mapping lives; identity on the tags.
+::  single place the view-mode to mark mapping lives; identity on the tags
+::  except %fodt.
 ::
 ++  mode-mark
   |=  m=view-mode:pg
   ^-  @tas
+  ::  no %fodt mark goes over the wire, so a peer on an older lattice
+  ::  can read the page. Until the renderer publishes it as html, its
+  ::  source goes out as text.
+  ?:  ?=(%fodt m)  %text
   m
 ::  +published-mode: the view-mode a page publishes as. Reads the show grub
 ::  directly (not via +read-show-mode, which answers %text for both an absent
@@ -11801,8 +11806,48 @@
     %text  :(weld "<pre>" (esc (trip body)) "</pre>")
     %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip body)) "</code></pre>")
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip body)) "</code></pre>")
+    %fodt  :(weld "<pre>" (esc (fodt-plain body)) "</pre>")
     %index  "<div style=\"color:#8a8a8a;text-align:center;padding:2rem\"><p><b>Folder index</b></p><p>Lists the pages in this page's folder automatically, once you name it (e.g. blog/index) and save. Live as pages come and go.</p></div>"
   ==
+::  +fodt-plain: the paragraph and heading text of a flat ODT body, one
+::  line each, with the five XML entities decoded. Text outside text:p and
+::  text:h (styles, macro source, embedded images, metadata) is dropped.
+::  A stopgap until /lib/lattice-fodt renders the document. The caller
+::  escapes the result. One pass, no recursion, so a deep or truncated
+::  document cannot crash it.
+::
+++  fodt-plain
+  |=  f=@t
+  ^-  tape
+  =/  s=tape  (trip f)
+  =|  out=tape
+  =|  lvl=@ud
+  |-  ^-  tape
+  ?~  s  (flop out)
+  ?:  =('<' i.s)
+    =/  e=(unit @ud)  (find ">" t.s)
+    ?~  e  (flop out)
+    =/  tag=tape  (scag u.e t.s)
+    =/  rest=tape  (slag +(u.e) t.s)
+    =/  shut=?  &(?=(^ tag) =('/' (rear tag)))
+    =/  nam=tape
+      =/  sp=(unit @ud)  (find " " tag)
+      ?^  sp  (scag u.sp tag)
+      ?:(shut (scag (dec (lent tag)) tag) tag)
+    =/  blk=?  |(=("text:p" nam) =("text:h" nam))
+    ?:  &(blk shut)  $(s rest, out ['\0a' out])
+    ?:  blk  $(s rest, lvl +(lvl))
+    ?:  &(|(=("/text:p" nam) =("/text:h" nam)) (gth lvl 0))
+      $(s rest, lvl (dec lvl), out ['\0a' out])
+    $(s rest)
+  ?:  =(0 lvl)  $(s t.s)
+  ?.  =('&' i.s)  $(s t.s, out [i.s out])
+  =/  ent=(list [tape @tD])
+    ~[["amp;" '&'] ["lt;" '<'] ["gt;" '>'] ["quot;" '"'] ["apos;" '\'']]
+  |-  ^-  tape
+  ?~  ent  ^$(s t.s, out ['&' out])
+  ?.  =(-.i.ent (scag (lent -.i.ent) t.s))  $(ent t.ent)
+  ^$(s (slag (lent -.i.ent) t.s), out [+.i.ent out])
 ::  +render-bare: a minimal HTML doc (shared reader CSS, no address-bar chrome),
 ::  for the editor preview iframe, which supplies its own layout.
 ::
@@ -12896,6 +12941,7 @@
            (render-md:gfm wl)
     %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip p.cr)) "</code></pre>")
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")
+    %fodt  :(weld "<pre>" (esc (fodt-plain p.cr)) "</pre>")
     %noun  (page-data-html sang)
   ==
 ::  +explore-crumbs: breadcrumb nav, absolute hrefs from the ship root down,
@@ -13796,7 +13842,7 @@
 ++  edit-lock-msg
   ^-  tang
   :~  leaf+"this page was shared for editing, so it runs content only:"
-      leaf+"md, gmi, html, text, js, css, tex or a folder index."
+      leaf+"md, gmi, html, text, js, css, tex, fodt or a folder index."
       leaf+"To run hoon here, stop sharing it for edit, then save it yourself."
   ==
 ::  +unwrap-content: page source -> [builder body] if it matches the content
@@ -13851,7 +13897,7 @@
 ::  +content-builders: the pg constructors an editor file wraps its body in.
 ::  md/gmi/html render to a view; text/js/css are shown as code + served raw.
 ::
-++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css %tex])
+++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css %tex %fodt])
 ::  +name-pax: a ?name= value (slash-separated, e.g. notes/todo) -> a validated
 ::  page path under /page, or ~. Each segment must be a non-empty @ta knot.
 ::
@@ -13894,6 +13940,7 @@
     %html  'text/html; charset=utf-8'
     %md    'text/markdown; charset=utf-8'
     %gmi   'text/gemini; charset=utf-8'
+    %fodt  'application/vnd.oasis.opendocument.text-flat-xml'
   ==
 ::  +read-tree: every node under /page (sorted) as [path page=?]. page=%.y is a
 ::  programmable page (a dir with a /code grub), page=%.n a plain folder (incl.

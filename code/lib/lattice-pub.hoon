@@ -133,7 +133,7 @@
   |=  b=@tas
   ^-  (unit @tas)
   ?:  =(%tex b)  `%text
-  ?:  ?=(?(%text %html %gmi %md %js %css) b)  `b
+  ?:  ?=(?(%text %html %gmi %md %js %css %fodt) b)  `b
   ~
 ::  +pub-arm-at: when the one publish timer goes off, ~ when no row is
 ::  dirty. A row already due arms the epoch, so its publish goes before

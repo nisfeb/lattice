@@ -12,8 +12,9 @@
 ::  since a peer's page data is always escaped when browsed remotely).
 ::    %text  escaped text (default)   %html  raw HTML, your OWN page's markup
 ::    %gmi   gemtext rendered to HTML  %noun  opaque value, shown escaped
+::    %fodt  a flat ODT (LibreOffice Writer) document, rendered by the nexus
 ::
-+$  view-mode  ?(%text %html %gmi %md %js %css %noun)
++$  view-mode  ?(%text %html %gmi %md %js %css %fodt %noun)
 ::  +$  result: what a page gate produces.
 ::
 +$  result
@@ -35,6 +36,9 @@
 ::  and is not getting one: conversion happens in the desktop client, which
 ::  writes the result back as an ordinary html page.
 ++  tex   |=(t=@t `result`[`t ~ %text ~ ~])   ::  data is LaTeX source
+::  A LibreOffice Writer document stored as flat ODT XML. The nexus renders
+::  it (escaped, never raw), the browser edits it in the Writer view.
+++  fodt  |=(f=@t `result`[`f ~ %fodt ~ ~])   ::  data is flat ODT
 ++  raw   |=(n=* `result`[`n ~ %noun ~ ~])    ::  data is an opaque noun
 ++  same  ^-(result [~ ~ %text ~ ~])          ::  no change to data
 ::  modifiers. Chain onto a result:

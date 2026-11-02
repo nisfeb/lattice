@@ -503,6 +503,56 @@ is "uncleared key reads after unmark" 200 "$(BC "$B/page-source?name=$P/note")"
 KID="$(printf '%s' "$KEYJSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["key"]["id"])')"
 sc -o /dev/null -X POST "$B/key-revoke?id=$KID" >/dev/null
 
+echo "==> fodt: a Writer document is a content page"
+# The body is stored inside a hoon cord, so every byte that cord escapes
+# (quote, backslash, control bytes) has to come back exactly. The corpus
+# files are real LibreOffice saves.
+CORPUS="$(dirname "${BASH_SOURCE[0]}")/../tests/writer/corpus"
+same_body() { # same_body <page> <file>: page-source's body equals the file
+  G "$B/page-source?name=$1" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(d.get('kind'), d.get('body','').encode()==open(sys.argv[1],'rb').read())" "$2"; }
+for f in "$CORPUS"/[01]*.fodt; do
+  n=$(basename "$f" .fodt); [ "$n" = 13-large ] && continue
+  sc -X POST "$B/page-save?name=$P/fodt/$n&type=fodt&new=1" --data-binary @"$f" >/dev/null
+  is "fodt $n reads back byte-identical" "fodt True" "$(same_body "$P/fodt/$n" "$f")"
+done
+FX="/tmp/apimx-fodt-$$.fodt"
+printf '<office:document a='"'"'1'"'"'>\t<text:p>C:\\\\x \\'"'"' it'"'"'s\r\x01\x1f &lt;script&gt;alert(1)&lt;/script&gt;</text:p><script>alert(2)</script></office:document>\n' > "$FX"
+is "fodt with quotes, backslashes and control bytes saves" 200 \
+  "$(sc -X POST "$B/page-save?name=$P/fodt/esc&type=fodt&new=1" --data-binary @"$FX")"
+is "  and reads back byte-identical" "fodt True" "$(same_body "$P/fodt/esc" "$FX")"
+is "tree reports kind fodt"  fodt "$(field page-tree "$P/fodt/esc" kind)"
+is "dump reports kind fodt"  fodt "$(field page-dump "$P/fodt/esc" kind)"
+r=$(G "$B/page-source?name=$P/fodt/esc&render=1" | python3 -c 'import json,sys;print(json.load(sys.stdin)["html"])')
+has   "render=1 shows the paragraph text escaped" '&lt;script&gt;alert(1)' "$r"
+hasnt "render=1 runs no script from the body"     '<script>alert' "$r"
+r=$(G -X POST "$B/page-preview?type=fodt" --data-binary @"$FX")
+has   "page-preview shows the paragraph text"     'alert(1)' "$r"
+hasnt "page-preview runs no script from the body" '<script>alert' "$r"
+hasnt "page-preview drops the markup"             'office:document' "$r"
+is "/f/ serves the flat ODT type" 'application/vnd.oasis.opendocument.text-flat-xml' \
+  "$(curl -s -o /dev/null -w '%{content_type}' -H "$CK" "$B/f/$P/fodt/esc")"
+# a stale base keeps the losing body under conflicts/, as a fodt page
+RV=$(G "$B/page-source?name=$P/fodt/esc" | python3 -c 'import json,sys;print(json.load(sys.stdin)["rev"])')
+sc -X POST "$B/page-save?name=$P/fodt/esc&type=fodt&base=$RV" --data-binary @"$CORPUS/01-paragraphs.fodt" >/dev/null
+R=$(G -X POST "$B/page-save?name=$P/fodt/esc&type=fodt&base=$RV" --data-binary @"$CORPUS/02-headings.fodt")
+has "a stale fodt save conflicts" '"conflicted":true' "$R"
+KEPT=$(printf '%s' "$R" | python3 -c 'import json,sys;print(json.load(sys.stdin)["kept"])')
+is "  its conflicts/ copy is a fodt page with the losing body" "fodt True" \
+  "$(same_body "$KEPT" "$CORPUS/01-paragraphs.fodt")"
+G -X POST "$B/page-del?name=$KEPT" >/dev/null
+# the clearweb view renders the page's data by its view-mode (+render-shown)
+sc -X POST "$B/page-save?name=$P/fodt/esc&type=fodt" --data-binary @"$FX" >/dev/null
+sc -X POST "$B/page-share?name=$P/fodt/esc&mode=clearweb" >/dev/null
+sleep 2
+r=$(G "$B/c/$P/fodt/esc")
+has   "clearweb view shows the text escaped" '&lt;script&gt;alert(1)' "$r"
+hasnt "clearweb view runs no script from the body" '<script>alert' "$r"
+sc -X POST "$B/page-share?name=$P/fodt/esc&mode=private" >/dev/null
+rm -f "$FX"
+
 echo "==> recursive folder delete"
 is "page-del on folder" 200 "$(sc -X POST "$B/page-del?name=$P")"
 sleep 2
