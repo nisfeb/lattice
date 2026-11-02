@@ -10,6 +10,7 @@
   "ui-tabs.mjs": 103,
   "ui-offline.mjs": 99,
   "ui-since.mjs": 89,
+  "ui-loading.mjs": 80,
   "ui-boot.mjs": 79,
   "ui-queue.mjs": 77,
   "ui-acl-prefs.mjs": 70,
@@ -28,5 +29,6 @@
   "ui-clippaste.mjs": 21,
   "ui-preview-open.mjs": 16,
   "hoon-suites": 14,
-  "ui-swfrag.mjs": 12
+  "ui-swfrag.mjs": 12,
+  "ui-treedelete.mjs": 75
 }

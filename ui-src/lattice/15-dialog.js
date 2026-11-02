@@ -100,6 +100,20 @@
     $('dlgok').focus();
     return p.then((v) => v !== null);
   };
+  //  askDanger: askConfirm for what cannot be undone. Cancel holds the
+  //  focus, so Enter (a key a user leans on to dismiss things) cancels,
+  //  and the destructive button is reached only on purpose: a click, or
+  //  Tab then Enter. The button is painted as destructive while it shows.
+  const askDanger = (msg, okLabel) => {
+    dlgSel.hidden = true;
+    dlgKind.hidden = true;
+    dlgIn.hidden = true;
+    const ok = $('dlgok');
+    const p = dlgOpen(msg, okLabel);
+    ok.classList.add('danger');
+    $('dlgcancel').focus();
+    return p.then((v) => { ok.classList.remove('danger'); return v !== null; });
+  };
   // askPublish: publishing cannot be fully taken back. Once a peer has
   // read a page, its copy and the network's cached answer can outlive an
   // unpublish or a delete. -> true to publish. "don't ask again" is kept

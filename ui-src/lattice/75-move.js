@@ -16,13 +16,14 @@
     //  held first: the save the flush makes queues an autosave behind it,
     //  and that one would go out beside the move, under the old name
     moving++;
+    const end = busy();      // the line from the click, the flush included
     try {
       await flushNoAsk();
       await waitSave();
       return await mutate(api + '/page-move?from=' + encodeURIComponent(from) +
         '&to=' + encodeURIComponent(to) + '&dname=' + encodeURIComponent((rn && rn.dname) || '') +
         (rn && rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
-    } finally { moving--; }
+    } finally { end(); moving--; }
   };
   // the server moves the WHOLE subtree (a page can parent nested pages, and
   // move-pages rewrites every rel under it). Renaming only the exact node
@@ -78,15 +79,18 @@
         seed = typed;
         continue;
       }
+      const inside = (p) => !!p && (p === oldPath || p.startsWith(oldPath + '/'));
+      //  read before the remap renames the open page in place
+      const wasOpen = mode !== 'know' && !grubPath && inside(current);
       const moved = remapMoved(oldPath, newPath, rn);
-      if (current && (current === oldPath || current.startsWith(oldPath + '/')))
-        current = newPath + current.slice(oldPath.length);
       snapTree();
       renderTree();
       st('moved ' + oldPath + ' \u2192 ' + newPath +
         (r.offline ? ' offline' : '') + ' (' + moved + ' pages)');
-      if (current) openPage(current);
-      else if (curFolder === oldPath) selectFolder(newPath);
+      //  only what was inside the folder reopens: a folder moved from the
+      //  tree's menu (34-treemenu.js) leaves an unrelated open page alone
+      if (wasOpen && current) openPage(current);
+      else if (inside(curFolder)) selectFolder(newPath + curFolder.slice(oldPath.length));
       return;
     }
   }

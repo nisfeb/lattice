@@ -32,7 +32,7 @@
     }
     let d = null;
     try {
-      const r = await fetch(api + '/comments-inbox');
+      const r = await busyFetch(api + '/comments-inbox');
       if (!r.ok) { st('comments failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { st('comments failed', false); return; }
@@ -77,8 +77,8 @@
       del.textContent = 'remove';
       del.className = 'acl-del';
       del.onclick = async () => {
-        if (!(await askConfirm('remove this comment by ' + c.author + '?', 'remove'))) return;
-        const r = await fetch(api + '/comment-del?page=' + encodeURIComponent(c.page) +
+        if (!(await askDanger('remove this comment by ' + c.author + '?', 'remove'))) return;
+        const r = await busyFetch(api + '/comment-del?page=' + encodeURIComponent(c.page) +
           '&id=' + encodeURIComponent(c.id), { method: 'POST' }).catch(() => null);
         if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
         st('comment removed');

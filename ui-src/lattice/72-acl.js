@@ -195,8 +195,8 @@
     del.textContent = 'delete';
     del.className = 'acl-del';
     del.onclick = async () => {
-      if (!(await askConfirm('delete group ' + g.name + ' and every grant it carries?', 'delete'))) return;
-      const r = await fetch(api + '/share-group-del?name=' + encodeURIComponent(g.name),
+      if (!(await askDanger('delete group ' + g.name + ' and every grant it carries?', 'delete'))) return;
+      const r = await busyFetch(api + '/share-group-del?name=' + encodeURIComponent(g.name),
         { method: 'POST' }).catch(() => null);
       // loadPerms repaints from the ship either way, so a delete that failed
       // and a group that came back on its own look identical. Say which it
@@ -354,7 +354,7 @@
       a.textContent = w + ' ×';
       a.title = 'unban ' + w;
       a.onclick = async () => {
-        const r = await fetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
+        const r = await busyFetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
           .catch(() => null);
         // announce the unban only once the ship has agreed to it
         if (!r || !r.ok) st('could not unban ' + w + await errText(r), false);
@@ -371,8 +371,8 @@
     // not bring them back (the nexus is explicit about that) — a mistyped
     // ship name is a permanent loss with no online undo, so ask first the
     // way delete already does.
-    if (!(await askConfirm('ban ' + w + '? this revokes every grant it holds, and unban will not restore them', 'ban'))) return;
-    const r = await fetch(api + '/ban?ship=' + encodeURIComponent(w), { method: 'POST' })
+    if (!(await askDanger('ban ' + w + '? this revokes every grant it holds, and unban will not restore them', 'ban'))) return;
+    const r = await busyFetch(api + '/ban?ship=' + encodeURIComponent(w), { method: 'POST' })
       .catch(() => null);
     if (!r || !r.ok) { st('could not ban ' + w + await errText(r), false); return; }
     const j = await r.json().catch(() => ({}));

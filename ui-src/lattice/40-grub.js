@@ -29,7 +29,7 @@
   };
   // Answers false when the open failed, like openPage (35-pages.js).
   async function openGrub(p, ship) {
-    const my = ++openSeq;
+    const my = openNext();
     enterGrub(p, ship);
     st('loading ' + p + '…');
     // remote files ride /browse-file (bounded cross-ship peek). Its JSON says
@@ -39,7 +39,7 @@
       ? api + '/browse-file?ship=' + encodeURIComponent(grubShip) + '&path=' + encodeURIComponent(p)
       : api + '/grub-source?path=' + encodeURIComponent(p);
     let r = null;
-    try { r = await fetch(url); } catch {}
+    try { r = await busyFetch(url, undefined, 'open'); } catch {}
     if (my !== openSeq) return;
     if (!r || !r.ok) {
       // the editor stays as enterGrub left it, empty and locked

@@ -288,9 +288,14 @@
     const sentAt = Date.now();
     const req = (ms ? tfetch(url, init, ms) : fetch(url, init)).catch(() => null);
     if (save) saveFlight = req;
+    // a move, a share, a delete and the rest show the loading line while
+    // they fly (busy, 10-shell.js). A save does not: it runs on its own as
+    // the user types, and its status already says saving and saved.
+    const end = save ? null : busy();
     let r = null;
     try { r = await req; }
     finally {
+      if (end) end();
       if (saveFlight === req) saveFlight = null;
       echo.until = Date.now() + Math.max(4000, 2 * (Date.now() - sentAt));
     }
