@@ -416,6 +416,15 @@
 ::
 ::  the hostile corpus: each gives the note or safe output
 ::
+::  the reader tells a fodt render from other html by its first bytes
+++  test-html-pres
+  =/  pre  |=(o=tape (lien html-pres:fo |=(p=@t =((trip p) (scag (met 3 p) o)))))
+  ;:  weld
+    (yes (pre (h "<text:p>x</text:p>")))
+    (yes (pre (fodt-html:fo (crip (reap (add 1 max-size:fo) 'a')))))
+    (yes (pre (fodt-html:fo '<!DOCTYPE x [<!ENTITY a "b">]><x/>')))
+    (no (pre "<div class=\"fodtx\">"))
+  ==
 ++  test-hostile-entities
   ;:  weld
     (expect-eq !>(note) !>((fodt-html:fo f-billion-laughs)))

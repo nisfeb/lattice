@@ -56,6 +56,10 @@
 ++  max-size   ^~((mul 2 (bex 20)))
 ++  max-depth  256
 ++  note-html  "<p class=\"fodt-note\">page too large or not previewable</p>"
+::  +html-pres: how every +fodt-html output starts, the sheet
+::  (+page-open) or the note. The ship's reader tells a fodt render from
+::  other html by it, so it never reads an html page's source for a title.
+++  html-pres  `(list @t)`~['<div class="fodt" style="' '<p class="fodt-note">']
 ::
 ::  +scan: the document as tokens, or why it is refused
 ++  scan

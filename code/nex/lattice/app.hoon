@@ -2169,9 +2169,12 @@
       ::  the tab/history title: a real `#` heading, else the raw address.
       ::  Computed once here, shared with the history-log write below. A
       ::  fodt page's is its dc:title or first heading: ours is published
-      ::  as HTML, so it is asked of the page (+own-fodt-title).
+      ::  as HTML, so it is asked of the page (+own-fodt-title). Only a
+      ::  body that is a fodt render is asked about, so any other html
+      ::  page costs no read more than it did before fodt.
       ;<  oft=(unit @t)  bind:m
-        ?.  &(=(ship.u.ref our) ?=(%html mode))  (pure:(fiber:fiber:nexus ,(unit @t)) ~)
+        ?.  &(=(ship.u.ref our) ?=(%html mode) (fodt-rendered body))
+          (pure:(fiber:fiber:nexus ,(unit @t)) ~)
         (own-fodt-title rel)
       =/  ttl=@t
         ?^  oft  u.oft
@@ -12003,6 +12006,15 @@
   ?~  un  (pure:m ~)
   ;<  v=fodt-view  bind:m  (fodt-of-page (weld /page rel) body.u.un)
   (pure:m title.v)
+::  +fodt-rendered: whether an html body starts as /lib/lattice-fodt's
+::  output does (+html-pres:lf). A test on the first bytes: a
+::  hand-written html page that happens to start the same way costs one
+::  read in +own-fodt-title, which then answers ~.
+++  fodt-rendered
+  |=  body=@t
+  ^-  ?
+  %+  lien  html-pres:lf
+  |=(pre=@t =(pre (end [3 (met 3 pre)] body)))
 ::  +shown-of: +render-shown, but a fodt page of ours (at `pdir`) comes
 ::  from its render cache
 ++  shown-of
