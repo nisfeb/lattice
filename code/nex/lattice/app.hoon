@@ -2134,8 +2134,14 @@
       ::  a folder's address reads its index, the way the bare ship reads
       ::  /index, and the bar then names the index so its relative links
       ::  resolve under the folder
-      ;<  got=(unit [rel=path mode=view-mode:pg body=@t])  bind:m
+      ;<  pub=(unit [rel=path mode=view-mode:pg body=@t])  bind:m
         (read-page-or-index our ship.u.ref rel.u.ref)
+      ::  nothing published there: a peer's private page shared with us
+      ::  answers at its page grub, and only to a ship it granted
+      ;<  got=(unit [rel=path mode=view-mode:pg body=@t])  bind:m
+        ?:  |(?=(^ pub) =(ship.u.ref our) ?=(~ rel.u.ref))
+          (pure:(fiber:fiber:nexus ,(unit [rel=path mode=view-mode:pg body=@t])) pub)
+        (read-shared-page ship.u.ref rel.u.ref)
       =/  rel=path  ?~(got rel.u.ref rel.u.got)
       =/  canon=tape  (trip (en-urb:lu ship.u.ref (weld pub-prefix:lu rel)))
       ?~  got
@@ -2688,6 +2694,14 @@
       (send-err eyre-id 403 'outside this key\'s scope')
     ;<  body=(unit @t)  bind:m  (read-page-body our ship.u.pu path.u.pu)
     ?^  body  (send-json eyre-id (mark-body-json 'gmi' u.body))
+    ::  nothing published: a peer's private page shared with us, which only
+    ::  a ship on its ACL can read (+read-shared-page). Not for /manifest,
+    ::  the publisher probe below, so a badge check costs no second peek.
+    ;<  sp=(unit [rel=path mode=view-mode:pg body=@t])  bind:m
+      ?:  |(=(ship.u.pu our) ?=(~ path.u.pu) =(/manifest path.u.pu))
+        (pure:(fiber:fiber:nexus ,(unit [rel=path mode=view-mode:pg body=@t])) ~)
+      (read-shared-page ship.u.pu path.u.pu)
+    ?^  sp  (send-json eyre-id (mark-body-json mode.u.sp body.u.sp))
     ::  /manifest discovery fallback: the retired agent auto-published a manifest
     ::  at this reserved spur, and the client still probes urb://<ship>/manifest
     ::  to badge publishers (publishes()) + list their files. The grubbery-native
@@ -11340,6 +11354,35 @@
     (read-page-body-rev our shp i.try)
   ?^  got  (pure:m `[i.try mode.u.got body.u.got])
   $(try t.try)
+::  +read-shared-page: a peer's PRIVATE page that it shared with us, read at
+::  its page grub, for when urb://~peer/<name> finds nothing published. A
+::  private page has no vault copy (+apply-share), so the pub read misses,
+::  but a per-ship share grants us <base>/page/<name>/code, the same road a
+::  shared-with-me entry opens over /browse-file. The peer's weir is the ACL:
+::  a ship it never granted reads ~ here and keeps the 404. A content page
+::  only (a hoon page has no prose to show), its builder as the mode, %text
+::  for a builder the reader has no view-mode for. Hands back `rel` as given,
+::  the shape +read-page-or-index answers in.
+::
+++  read-shared-page
+  |=  [shp=@p rel=path]
+  =/  m  (fiber:fiber:nexus ,(unit [rel=path mode=view-mode:pg body=@t]))
+  ^-  form:m
+  =/  spur=path  (page-rel rel)
+  ;<  base=(unit path)  bind:m  (peer-base-cached shp)
+  ?~  base  (pure:m ~)
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-wait [%& %& :(weld u.base /page spur) %code] shp)
+  ?~  ms  (pure:m ~)
+  ?.  ?=([%file *] u.ms)  (pure:m ~)
+  ?.  =([/lattice %page] p.sang.u.ms)  (pure:m ~)
+  =/  txt=(unit @t)  (grub-text sang.u.ms)
+  ?~  txt  (pure:m ~)
+  =/  un=(unit [builder=@tas body=@t])  (unwrap-content u.txt)
+  ?~  un  (pure:m ~)
+  =/  mode=view-mode:pg
+    ?:(?=(view-mode:pg builder.u.un) builder.u.un %text)
+  (pure:m `[rel mode body.u.un])
 ::  +read-page-body-rev: +read-page-body, but it also hands back the REVISION
 ::  the body came from. The peek view already carries the grub's cass ([%file
 ::  =cass =sang], and a cross-ship discharge fills it from the remote's own
