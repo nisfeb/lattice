@@ -7028,7 +7028,10 @@
   //   1. seen this session -> pageCache has the rendered answer: 0 requests.
   //   2. body came with the tree dump -> paint the editor NOW, then fetch
   //      render=1 only to fill in `share` and the preview.
-  //   3. no body (oversized page, or a tree we never loaded) -> as before.
+  //   3. no body (oversized page, or a tree we never loaded) -> render=1.
+  //      A page the tree lists without a body (the dump leaves out bodies
+  //      over 256 KB) reads the body alone first (plain page-source) and
+  //      paints it as in 2, then render=1.
   // History and backlinks stay lazy on panel expand. They were 2 more ~2s
   // round-trips paid on every open whether or not anyone looked at them.
   // Which open is current. Opening a page is an explicit user act, so the ONLY
@@ -7127,6 +7130,29 @@
       // the document the editor is still showing.
       fromUrl = location.pathname + location.search;
       history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+      // An oversized page (the dump leaves out bodies over 256 KB) waited
+      // for render=1 before the editor showed anything, and the ship's
+      // render is most of that answer: about 7 s of 8 for a 1.5 MB md
+      // page, against 1 s for its plain read. So read the body alone first
+      // and paint it as a painted open does. render=1 below is then the
+      // same upgrade it is there. A link reads from its host, and a failed
+      // plain read leaves the open to render=1 as before. So does a page
+      // the tree does not list (a tree not loaded yet, a page made
+      // elsewhere): its size is unknown, and a small page must keep
+      // costing one request.
+      if (node && !linkOf(name)) {
+        const b = await bodyRead(name);
+        if (my !== openSeq) return;
+        if (b) {
+          // the upgrade's read goes out before the paint, whose layout of
+          // the big body holds the main thread for a second or so. srcRead
+          // shares it with the await below.
+          srcRead(name).catch(() => {});
+          painted = true;
+          applyPage(name, b, true);
+          snapPage(name, b);
+        }
+      }
     }
     //  undo the speculative address on a failed open, but only if no later
     //  open has run meanwhile (that one owns the address now, so leave it).
@@ -7211,6 +7237,17 @@
     applyPage(name, d);
     return true;
   }
+  // a page's body without the render (page-source, no render=1): what a
+  // painted open shows, or null
+  const bodyRead = async (name) => {
+    try {
+      const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name));
+      if (!r.ok) return null;
+      const d = await r.json();
+      if (typeof d.body !== 'string' || d.link) return null;
+      return { body: d.body, kind: d.kind, rev: d.rev, share: d.share, comments: d.comments };
+    } catch { return null; }
+  };
   function applyPage(name, d, quiet) {
     curFolder = null;
     setCtlLabels();
