@@ -5,11 +5,13 @@
 //  family, and asserts the ship never 5xxes, never hangs, never wedges, never
 //  reflects a payload unescaped, and never stores a name it just rejected.
 //
-//  Usage:  node scripts/fuzz-api.mjs [--quick] [--verbose]
-//  Env:    LATTICE_URL     ship base (default http://localhost:8081, the nec
-//                          harness). Refuses any non-loopback host: this
-//                          hammers a ship and must never touch production.
-//          LATTICE_COOKIE  cookie file (default ~/.config/lattice-fs/nec-cookie)
+//  Usage:  node scripts/fuzz-api.mjs [--quick] [--verbose] [--only fodt]
+//  Env:    LATTICE_URL     ship base (required). Refuses any non-loopback
+//                          host: this hammers a ship and must never touch
+//                          production.
+//          LATTICE_COOKIE  cookie file (required)
+//          FODT_N          fodt bodies the mutator makes (default 60, 12
+//                          with --quick), FODT_SEED its seed (default 1)
 //
 //  Cost: the pier serialises requests, and the render-heavy routes (the
 //  reader, /marks, the explorer) dominate. Measured ~3s/request against the
@@ -39,8 +41,13 @@ const TIMEOUT_MS = 30_000;
 //  requests headroom so the outcome is the server's, not the stopwatch's.
 const REMOTE_TIMEOUT_MS = 45_000;
 
-const URL_BASE = (process.env.LATTICE_URL || 'http://localhost:8081').replace(/\/+$/, '');
-const CKF = process.env.LATTICE_COOKIE || `${homedir()}/.config/lattice-fs/nec-cookie`;
+//  no default ship: a fuzzer must be pointed at a throwaway one on purpose
+if (!process.env.LATTICE_URL || !process.env.LATTICE_COOKIE) {
+  console.error('LATTICE_URL and LATTICE_COOKIE must be set to a throwaway ship (there is no default ship)');
+  process.exit(2);
+}
+const URL_BASE = process.env.LATTICE_URL.replace(/\/+$/, '');
+const CKF = process.env.LATTICE_COOKIE.replace(/^~/, homedir());
 
 //  Guard rail: this script generates load and writes garbage. Loopback only.
 {
@@ -785,6 +792,83 @@ async function famMethods() {
   return canary('methods');
 }
 
+//  fodt: Writer documents (Writer plan, Task 13). The hostile corpus, then
+//  FODT_N mutants of the small corpus files from a seeded generator. Each
+//  is saved as a fodt page and read back rendered (page-source?render=1),
+//  previewed (page-preview?type=fodt) and searched. Beyond the universal
+//  assertions: a save of a body under the 2 MB cap is a 200, the render is
+//  the sheet or the refusal note and never raw XML, and no marker the
+//  mutator planted comes back as live markup.
+async function famFodt() {
+  console.log('==> fodt: hostile and mutated Writer documents');
+  const { readdirSync } = await import('node:fs');
+  const { dirname, join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'tests', 'writer', 'corpus');
+  const hostile = readdirSync(join(dir, 'hostile')).filter((f) => f.endsWith('.fodt'))
+    .map((f) => ['hostile/' + f, readFileSync(join(dir, 'hostile', f), 'utf8')]);
+  const seeds = readdirSync(dir).filter((f) => /^(0\d|1[0-2])-.*\.fodt$/.test(f))
+    .map((f) => [f, readFileSync(join(dir, f), 'utf8')]);
+  let st = Number(process.env.FODT_SEED || 1) >>> 0 || 1;
+  const rnd = (n) => { st ^= st << 13; st >>>= 0; st ^= st >>> 17; st ^= st << 5; st >>>= 0; return st % n; };
+  const SNIPS = [
+    '<!DOCTYPE x [<!ENTITY a "aaaa">]>', '<!ENTITY b SYSTEM "file:///etc/passwd">', '&a;', '&#0;', '&#xD800;',
+    '&#1114112;', '&#999999999999;', '<![CDATA[<script>FUZZMARK</script>]]>', '<?php FUZZMARK ?>',
+    '<script>FUZZMARK</script>', '<text:p onclick="FUZZMARK">x</text:p>', '</text:p>', '</office:body>',
+    '<text:a xlink:href="javascript:FUZZMARK">j</text:a>', '<text:a xlink:href="java&#9;script:FUZZMARK">t</text:a>',
+    '<text:span text:style-name="P1\'\\"><script>FUZZMARK</script>">s</text:span>',
+    '<style:text-properties fo:color="red;background:url(FUZZMARK)"/>', '<text:p a=b>u</text:p>',
+    '<text:p ' + 'x="1" '.repeat(2000) + '/>', '<text:span>'.repeat(300) + 'deep' + '</text:span>'.repeat(300),
+    '<text:p>' + 'w'.repeat(70000) + '</text:p>', '<', '>', '&', '"', '\u0000', '\uFFFE', '\u202E',
+  ];
+  const mutate = (t) => {
+    let out = t;
+    for (let k = 1 + rnd(3); k > 0; k--) {
+      const i = rnd(out.length);
+      switch (rnd(5)) {
+        case 0: out = out.slice(0, i) + SNIPS[rnd(SNIPS.length)] + out.slice(i); break;
+        case 1: out = out.slice(0, i); break;                                     // truncate
+        case 2: { const j = i + rnd(400); out = out.slice(0, i) + out.slice(j); break; }  // cut
+        case 3: { const j = i + rnd(400); out = out.slice(0, j) + out.slice(i, j) + out.slice(j); break; }  // repeat
+        default: out = out.replace(/<\/text:p>/, '</text:h>');                    // mismatched close
+      }
+    }
+    return out;
+  };
+  const n = Number(process.env.FODT_N || (QUICK ? 12 : 60));
+  const bodies = [...hostile];
+  for (let k = 0; k < n; k++) { const [f, t] = seeds[rnd(seeds.length)]; bodies.push([`mut${k}<${f}`, mutate(t)]); }
+  //  (case-sensitive past the first group: the page's own doctype is fine)
+  const live = /<script>FUZZMARK|<[a-z]+[^>]*\son[a-z]+="FUZZMARK|href="javascript|url\(FUZZMARK|<\?php|<!DOCTYPE x|<!ENTITY/;
+  let k = 0;
+  for (const [label, body] of bodies) {
+    const name = `${P}/fodt/b${k++}`;
+    const save = await probe('fodt', 'POST', `/page-save?${q({ name, type: 'fodt' })}`, { body });
+    const repro = `${label}: curl -X POST "${B}/page-save?name=${name}&type=fodt" --data-binary @<body>`;
+    if (Buffer.byteLength(body) <= 2 * 1024 * 1024 && save.status !== 200) {
+      finding(SEV.HIGH, 'fodt', 'a fodt body under the cap was not saved', repro, `${save.status} ${trunc(save.text, 120)}`,
+        'a Writer page is text: any body saves, the renderer refuses what it cannot read', '+page-save');
+      continue;
+    }
+    const src = await probe('fodt', 'GET', `/page-source?${q({ name, render: '1' })}`);
+    let html = '';
+    try { html = JSON.parse(src.text).html || ''; } catch { /* probe reports it */ }
+    const frag = html.replace(/<script>[^]*?<\/script>/g, (m) => (/FUZZMARK/.test(m) ? m : ''));
+    if (src.status === 200 && !/class="fodt"|fodt-note/.test(html))
+      finding(SEV.HIGH, 'fodt', 'render=1 is neither the sheet nor the note', repro, trunc(html, 160),
+        'every fodt body renders as the sheet or the refusal note', '+fodt-all');
+    if (live.test(frag) || /office:document|<text:/.test(frag))
+      finding(SEV.CRIT, 'fodt', 'render=1 carries live markup or raw XML', repro, trunc(frag.match(live) || frag.match(/office:document|<text:/), 160),
+        'the renderer writes fixed tags only, and escapes every text', '+fodt-html');
+    const pv = await probe('fodt', 'POST', '/page-preview?type=fodt', { body });
+    const pfrag = pv.text.replace(/<script>[^]*?<\/script>/g, (m) => (/FUZZMARK/.test(m) ? m : ''));
+    if (live.test(pfrag))
+      finding(SEV.CRIT, 'fodt', 'page-preview carries live markup', repro, trunc(pfrag.match(live), 160), '', '+preview-inner');
+  }
+  await probe('fodt', 'GET', `/page-search?${q({ q: 'FUZZMARK' })}`);
+  return canary('fodt');
+}
+
 //  ── ship identity, snapshots, cleanup ────────────────────────────────────
 
 let _ship = null;
@@ -873,8 +957,11 @@ async function main() {
   const before = await snapshot();
   await ourShip();
 
-  const families = [famPageSave, famBatch, famStructure, famReads, famSharing,
-    famBanlist, famKnow, famBookmarks, famReader, famCmdForms, famMethods];
+  const all = { famPageSave, famBatch, famStructure, famReads, famSharing,
+    famBanlist, famKnow, famBookmarks, famReader, famCmdForms, famMethods, famFodt };
+  const oi = process.argv.indexOf('--only');
+  const only = oi > 0 ? process.argv[oi + 1].split(',').map((x) => 'fam' + x[0].toUpperCase() + x.slice(1)) : null;
+  const families = Object.entries(all).filter(([k]) => !only || only.includes(k)).map(([, f]) => f);
 
   for (const f of families) {
     const alive = await f();
