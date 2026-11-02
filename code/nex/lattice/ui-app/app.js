@@ -1,6 +1,9 @@
 /* BUILT FILE — do not edit. Source: ui-src/lattice/, build: scripts/build-ui.mjs */
 (function () {
 'use strict';
+// the served writer.js's hash (build-ui.mjs, 26-writer.js)
+const WRITER_H = '0vr7hbu.057l6.rfbuo.5hmde.n5a5j';
+
 // ── src/00-framed.js ──────────────────────────────────────────────────────
   // ── never a second editor in a frame ─────────────────────────────────────
   // The editor owns its window. Loaded in a frame (a link the shell did not
@@ -2048,7 +2051,7 @@
   // Answers false then.
   // what the live editor holds for the tab it shows
   // (`hist`: an old revision was on show, which is never the page's text)
-  const snapNow = () => ({
+  const snapNow = () => (writerSync(), {
     body: src.value, dirty, everTyped,
     sel: [src.selectionStart, src.selectionEnd], scroll: src.scrollTop,
     kind: curKind, pkind: pkind.value, rev: curRev, shown: pname.value,
@@ -3186,6 +3189,7 @@
   // <name>-copy until the user says otherwise
   async function dupPage() {
     if (!current || grubPath || mode === 'know' || curFolder !== null) return;
+    writerSync();
     const body = src.value;
     const kind = pkind.value;
     const picked = await askName('duplicate ' + current + ' as:', current + '-copy', 'create');
@@ -3207,6 +3211,7 @@
   const DLEXT = { text: 'txt' };
   function downloadDoc() {
     if (!current || grubPath || curFolder !== null) return;
+    writerSync();
     const kind = mode === 'know' ? 'md' : (pkind.value || 'md');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([src.value], { type: 'text/plain' }));
@@ -3230,6 +3235,7 @@
     // a folder view: Delete is #del's folder branch, its own confirm and all
     if (!grubPath && curFolder !== null) has.add('del');
     if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex')) has.add('tex');
+    if (fodtHere()) { has.add('source'); if (wr && wr.macros) has.add('macros'); }
     return has;
   }
   function pageMenu() {
@@ -3267,6 +3273,7 @@
         b.onclick = () => {
           pmenuClose();
           if (pkind.value === k) return;
+          if (!kindSwitchOk(k)) return;
           pkind.value = k;
           pkind.dispatchEvent(new Event('change'));
         };
@@ -3276,6 +3283,8 @@
       m.append(sub);
     }
     item('wrap', 'Line wrap', done(() => flip('appWrap')), localStorage.appWrap === '1');
+    if (has.has('source')) item('source', 'Source', done(() => writerSource(!writerSourceOn())), writerSourceOn());
+    if (has.has('macros')) item('macros', 'Contains macros, never run here', () => {}).disabled = true;
     if (has.has('dup')) item('dup', 'Duplicate', done(dupPage));
     if (has.has('download')) item('download', 'Download', done(downloadDoc));
     // the hidden button's title says whether pandoc is there (71-latex.js)
@@ -3299,7 +3308,7 @@
   // and clicks the item, which is the menu's own path. Kind opens the menu
   // with its list unfolded, as clicking Kind does. Convert to HTML exists
   // only in the desktop app.
-  for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'],
+  for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'], ['source', 'Source view'],
     ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
     ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['del', 'Delete']]) {
     if (id === 'tex' && !window.__TAURI__) continue;
@@ -4019,6 +4028,8 @@
   let rpHook = null;
   const render = () => {
     if (rpHook) rpHook();
+    writerFollow();
+    if (fodtHere() && !writerSourceOn()) { hl.textContent = ''; return; }
     const lang = LMAP[pkind.value];
     // the worker loads its own prism. This window's copy comes after boot
     // (99-boot.js), and every LMAP language is in it, so until it lands a
@@ -4087,6 +4098,7 @@
     }
   });
   pkind.addEventListener('change', () => {
+    if (!kindSwitchOk(pkind.value)) { pkind.value = curKind || 'fodt'; return; }
     curKind = pkind.value;
     render();
     //  the kind rides every save as a query param, so switching it on an open
@@ -4292,6 +4304,125 @@
   window.latPalette = { ids: () => ACTIONS.map((a) => a.id), only: PALETTE_ONLY,
     applies: (id) => { const a = ACTIONS.find((x) => x.id === id); return !!a && (!a.when || !!a.when()); } };
 
+// ── src/26-writer.js ──────────────────────────────────────────────────────
+  // ── Writer pages (fodt) ──────────────────────────────────────────────────
+  // writer.js, loaded when a fodt page shows, mounts over #src, which stays
+  // the one buffer. Its text lands there through edited() 300 ms after a
+  // change and at writerSync (save, autosave, park).
+  let wrLoad = null, wr = null, wrHost = null, wrText = null;
+  let wrDirty = false, wrTimer = 0, wrSeq = 0, wrQ = false;
+  const wrSrc = new Map();     // page -> why it shows as XML
+  const wrKey = () => current || '';
+  const fodtHere = () => mode !== 'know' && !grubPath && curFolder === null && pkind.value === 'fodt';
+  const writerSourceOn = () => fodtHere() && wrSrc.has(wrKey());
+  const writerReady = () => (window.LatWriter ? Promise.resolve(window.LatWriter)
+    : wrLoad || (wrLoad = new Promise((ok, no) => {
+      const s = document.createElement('script');
+      const fail = () => { wrLoad = null; s.remove(); no(); };
+      s.src = '/apps/lattice/app/writer.js?h=' + WRITER_H;
+      s.onload = () => (window.LatWriter ? ok(window.LatWriter) : fail());
+      s.onerror = fail;
+      document.head.append(s);
+    })));
+  const wrNote = document.createElement('div');
+  wrNote.className = 'lnkcf';
+  wrNote.hidden = true;
+  $('docarea').before(wrNote);
+  // in the live .edwrap; `msg` and the ship's render until writer.js is here
+  function wrBox(msg) {
+    if (!wrHost) {
+      wrHost = document.createElement('lat-writer');
+      wrHost.style.cssText = 'position:absolute;inset:0;z-index:3;background:var(--bg)';
+    }
+    if (wrHost.parentNode !== src.parentNode) src.parentNode.append(wrHost);
+    if (msg) {
+      const p = document.createElement('p'), f = document.createElement('iframe');
+      const c = current && pageCache.get(current);
+      p.textContent = msg;
+      f.setAttribute('sandbox', '');
+      f.style.cssText = 'border:0;width:100%;height:90%';
+      f.srcdoc = (c && c.html) || '';
+      wrHost.replaceChildren(p, f);
+    }
+    return wrHost;
+  }
+  function wrShow(on) {
+    if (wrHost) wrHost.hidden = !on;
+    src.style.visibility = hl.style.visibility = on ? 'hidden' : '';
+  }
+  // after render() (any new text or kind), once readOnly is set too
+  function writerFollow() {
+    if (!wrQ) { wrQ = true; queueMicrotask(writerApply); }
+  }
+  function writerApply() {
+    wrQ = false;
+    const why = writerSourceOn() && wrSrc.get(wrKey());
+    wrNote.hidden = !why;
+    wrNote.textContent = 'The Writer editor cannot open this document (' + why + '), so it shows as XML.';
+    if (!fodtHere() || writerSourceOn()) return writerOff();
+    const body = src.value, ed = !src.readOnly && viewingRev === null;
+    wrShow(true);
+    if (wr && wrText === body) return wr.setEditable(ed);
+    writerDrop();
+    wrText = body;
+    if (!window.LatWriter) wrBox('Loading the Writer editor…');
+    const my = wrSeq;
+    writerReady().then((LW) => {
+      if (my !== wrSeq || src.value !== body || !fodtHere() || writerSourceOn()) return;
+      let seen = true;
+      try { seen = localStorage.latWriterDraft === '1'; } catch {}
+      const c = LW.mount(wrBox(), { text: body, editable: ed, draftNote: !seen, onChange: writerChanged,
+        onDraftSeen: () => { try { localStorage.latWriterDraft = '1'; } catch {} } });
+      if (c.error) { wrSrc.set(wrKey(), c.error); writerApply(); } else wr = c;
+    }, () => { if (my === wrSeq) wrBox('The Writer editor did not load. Source in the page menu shows the XML.'); });
+  }
+  function writerChanged() {
+    wrDirty = dirty = everTyped = true;
+    clearTimeout(autoTimer);
+    clearTimeout(wrTimer);
+    wrTimer = setTimeout(writerSync, 300);
+  }
+  // false: it refused (a broken marker pair), the last good text stays
+  function writerSync() {
+    clearTimeout(wrTimer);
+    if (!wr || !wrDirty || src.value !== wrText) return true;
+    wrDirty = false;
+    const r = wr.text();
+    if (r.error) return st('not saved: ' + r.error, false), false;
+    if (r.text !== src.value) { src.value = wrText = r.text; edited(); }
+    return true;
+  }
+  function writerDrop() {
+    wrSeq++;
+    wrDirty = false;
+    if (wr) wr.destroy();
+    wr = wrText = null;
+  }
+  function writerOff() {
+    writerSync();
+    writerDrop();
+    if (wrHost) wrHost.replaceChildren();
+    wrShow(false);
+  }
+  function writerSource(on) {
+    writerSync();
+    if (on) wrSrc.set(wrKey(), ''); else wrSrc.delete(wrKey());
+    writerApply();
+  }
+  // fodt stays fodt, and nothing with text becomes one
+  function kindSwitchOk(to) {
+    const from = current ? curKind : src.value.trim() ? 'text' : to;
+    if ((from === 'fodt') === (to === 'fodt')) return true;
+    st(from === 'fodt' ? 'a Writer document cannot change kind' : 'a page with text cannot become a Writer document', false);
+    return false;
+  }
+  // a new fodt page: LibreOffice's blank document, from writer.js
+  async function writerBlank() {
+    try { src.value = (await writerReady()).blank; } catch { st('the Writer editor did not load', false); return false; }
+    render();
+    return true;
+  }
+
 // ── src/27-vim.js ─────────────────────────────────────────────────────────
   // ── vim mode ─────────────────────────────────────────────────────────────
   // RESTORED. This shipped in 7eff5b1 and was lost in 11d7f9b, the migration
@@ -4323,7 +4454,7 @@
 
   /* ---- persisted on/off flag (same pattern as edNT / edNC) ---- */
   var LS = "edVim";
-  function vimOn(){ return localStorage.getItem(LS) === "1"; }   // default OFF
+  function vimOn(){ return localStorage.getItem(LS) === "1" && pkind.value !== "fodt"; }   // default OFF
 
   /* ---- mode indicator element (created once, lives by the status bar) ---- */
   var ind = document.createElement("span");
@@ -5505,6 +5636,18 @@
     }).catch(() => {});
     return null;
   }
+  // a parked Writer page before writer.js: the ship's render, asked once
+  function fodtShip(t) {
+    const key = t.key;
+    if (t.ghtml && t.ghtml[0] === key) return t.ghtml[1];
+    if (key && t.gask !== key) {
+      t.gask = key;
+      srcRead(key).then((r) => r.json()).then((d) => {
+        if (t.key === key && typeof d.html === 'string') { t.ghtml = [key, d.html]; gPaintAll(); }
+      }).catch(() => {});
+    }
+    return null;
+  }
   const ghostHl = (body, kind) => {
     const lang = LMAP[kind];
     const g = window.Prism && lang && Prism.languages[lang];
@@ -5558,8 +5701,13 @@
     g.ghl.innerHTML = t.ghost && t.ghost.body === ta.value ? t.ghost.hl : ghostHl(ta.value, kind);
     ta.scrollTop = s ? s.scroll : 0;
     g.ghl.scrollTop = ta.scrollTop;
-    g.gdoc.classList.toggle('gread', !!t.read);
-    if (t.read) {
+    // a Writer page parks as the page, never its XML
+    const fodt = kind === 'fodt';
+    g.gdoc.classList.toggle('gread', !!t.read || fodt);
+    if (fodt) {
+      const d = ghostDoc(kind, ta.value) || fodtShip(t) || '';
+      if (g.gprev.getAttribute('srcdoc') !== d) { g.gprev.removeAttribute('src'); g.gprev.srcdoc = d; }
+    } else if (t.read) {
       const kept = t.ghost && t.ghost.body === ta.value ? t.ghost : null;
       if (kept && kept.psrc && !kept.prev) {
         if (g.gprev.getAttribute('src') !== kept.psrc) { g.gprev.removeAttribute('srcdoc'); g.gprev.src = kept.psrc; }
@@ -7327,6 +7475,7 @@
       name = rn.name;
       newRn = rn;
       pkind.value = kind;
+      if (kind === 'fodt' && !(await writerBlank())) return;
       //  blankPage above left nothing open; this names the buffer, and
       //  setOpen's event repaints the labels
       setOpen(null, { shown: name });
@@ -7494,6 +7643,7 @@
   //  `fixed`: a queued create whose page the editor no longer shows (see
   //  below). It names what to write, and the editor is left alone.
   async function save(kindOverride, fixed) {
+    if (!fixed) writerSync();     // a Writer page's text into src.value
     if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
     if (!fixed && viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     let name = fixed ? fixed.name : pname.value.trim().replace(/^\/+|\/+$/g, '');
@@ -7686,6 +7836,7 @@
     // The 2s debounce still fires. It just reports instead of writing, so the
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
+    writerSync();
     if (!current || curFolder || !dirty || viewingRev !== null) return;
     // a move in flight may be carrying this page away: the save goes to
     // its new name once the move has renamed the editor (75-move.js)
@@ -8423,7 +8574,7 @@
 
   // open only inside an UNCLOSED [[ on the caret's own line
   function acScan() {
-    if (src.readOnly || mode === 'know') return acClose();
+    if (src.readOnly || mode === 'know' || pkind.value === 'fodt') return acClose();
     const upto = src.value.slice(0, src.selectionStart);
     const line = upto.slice(upto.lastIndexOf('\n') + 1);
     const i = line.lastIndexOf('[[');
@@ -8787,7 +8938,9 @@
   //  a memory has no kind picker: it is markdown (proseFlavor in 45-templates
   //  says the same), so knowledge mode previews like an md page
   const kindNow = () => (mode === 'know' ? 'md' : pkind.value);
-  const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex'].includes(kindNow());
+  //  fodt paints locally once writer.js is here, else the ship renders it
+  const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex'].includes(kindNow())
+    || (kindNow() === 'fodt' && !!window.LatWriter);
 
   // Paint locally NOW, and let the ship's answer replace it when it arrives.
   //
@@ -8869,6 +9022,7 @@
       // scrollbars (an alpha grey that reads on both schemes), so the
       // document's own colour scheme is left exactly as written.
       if (pkind.value === 'html') { prev.srcdoc = withPreviewScrollbars(src.value); return; }
+      if (kindNow() === 'fodt') { writerSync(); prev.srcdoc = withPreviewScrollbars(fodtHtml(src.value)); return; }
       // color-scheme belongs on :root, not body — on body it does not reach the
       // canvas, so the frame painted opaque WHITE in dark theme. That was true
       // of every local paint since it landed and went unseen because only the
@@ -8883,6 +9037,10 @@
       // to the top page is what the sandbox token above actually permits.
       prev.srcdoc = localShell(previewFit()) + localHtml(kindNow(), src.value);
     } catch {}
+  };
+  //  a Writer page as its editor shows it (writer.js: no script, no link)
+  const fodtHtml = (body) => {
+    try { return window.LatWriter.render(body) || 'This document cannot be shown here.'; } catch { return ''; }
   };
   // the bare document a content kind's local render goes into. `fit` is
   // the height reporter, which only the live preview has.
@@ -8901,6 +9059,7 @@
   // a parked group's Read (28-splits.js): the same local render of its
   // text, no fit, or null for a kind only the ship renders
   const ghostDoc = (kind, body) => {
+    if (kind === 'fodt') return window.LatWriter ? previewScrollbars() + fodtHtml(body) : null;
     if (!['md', 'gmi', 'html', 'text'].includes(kind)) return null;
     try {
       return kind === 'html' ? previewScrollbars() + body : localShell('') + localHtml(kind, body);

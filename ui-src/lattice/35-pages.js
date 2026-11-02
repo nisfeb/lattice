@@ -309,6 +309,7 @@
       name = rn.name;
       newRn = rn;
       pkind.value = kind;
+      if (kind === 'fodt' && !(await writerBlank())) return;
       //  blankPage above left nothing open; this names the buffer, and
       //  setOpen's event repaints the labels
       setOpen(null, { shown: name });
@@ -476,6 +477,7 @@
   //  `fixed`: a queued create whose page the editor no longer shows (see
   //  below). It names what to write, and the editor is left alone.
   async function save(kindOverride, fixed) {
+    if (!fixed) writerSync();     // a Writer page's text into src.value
     if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
     if (!fixed && viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     let name = fixed ? fixed.name : pname.value.trim().replace(/^\/+|\/+$/g, '');
@@ -668,6 +670,7 @@
     // The 2s debounce still fires. It just reports instead of writing, so the
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
+    writerSync();
     if (!current || curFolder || !dirty || viewingRev !== null) return;
     // a move in flight may be carrying this page away: the save goes to
     // its new name once the move has renamed the editor (75-move.js)

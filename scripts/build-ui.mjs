@@ -2,7 +2,8 @@
 // Concatenate ui-src/lattice/*.js (filename order) into the served app.js.
 // One IIFE, one served asset. The pier serializes requests (~2s each),
 // so the client must stay a single file. No deps, no bundler.
-import { readdirSync, readFileSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -20,7 +21,29 @@ const body = files
     + readFileSync(join(srcDir, f), 'utf8').trimEnd() + '\n')
   .join('\n');
 
+// The hash the ship gives writer.js (+js-tag in app.hoon: the first 16
+// bytes of its SHA-256, read as a little-endian atom, printed @uv), so
+// 26-writer.js asks for writer.js?h=H and the ship can answer it
+// immutable. Build writer.js first (build-writer.mjs): a writer.js change
+// changes app.js too.
+const uv = (bytes) => {
+  let n = 0n;
+  for (let i = bytes.length - 1; i >= 0; i--) n = (n << 8n) | BigInt(bytes[i]);
+  const A = '0123456789abcdefghijklmnopqrstuv';
+  let s = '';
+  do { s = A[Number(n & 31n)] + s; n >>= 5n; } while (n > 0n);
+  const parts = [];
+  while (s.length > 5) { parts.unshift(s.slice(-5)); s = s.slice(0, -5); }
+  parts.unshift(s);
+  return '0v' + parts.join('.');
+};
+const wjs = join(ui, 'writer.js');
+const writerH = existsSync(wjs)
+  ? uv(createHash('sha256').update(readFileSync(wjs)).digest().subarray(0, 16)) : '';
+
 writeFileSync(join(ui, 'app.js'),
   '/* BUILT FILE — do not edit. Source: ui-src/lattice/, build: scripts/build-ui.mjs */\n'
-  + '(function () {\n\'use strict\';\n' + body + '})();\n');
+  + '(function () {\n\'use strict\';\n'
+  + `// the served writer.js's hash (build-ui.mjs, 26-writer.js)\nconst WRITER_H = '${writerH}';\n\n`
+  + body + '})();\n');
 console.log(`built app.js from ${files.length} src files`);

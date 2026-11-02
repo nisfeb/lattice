@@ -89,7 +89,9 @@
   //  a memory has no kind picker: it is markdown (proseFlavor in 45-templates
   //  says the same), so knowledge mode previews like an md page
   const kindNow = () => (mode === 'know' ? 'md' : pkind.value);
-  const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex'].includes(kindNow());
+  //  fodt paints locally once writer.js is here, else the ship renders it
+  const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex'].includes(kindNow())
+    || (kindNow() === 'fodt' && !!window.LatWriter);
 
   // Paint locally NOW, and let the ship's answer replace it when it arrives.
   //
@@ -171,6 +173,7 @@
       // scrollbars (an alpha grey that reads on both schemes), so the
       // document's own colour scheme is left exactly as written.
       if (pkind.value === 'html') { prev.srcdoc = withPreviewScrollbars(src.value); return; }
+      if (kindNow() === 'fodt') { writerSync(); prev.srcdoc = withPreviewScrollbars(fodtHtml(src.value)); return; }
       // color-scheme belongs on :root, not body — on body it does not reach the
       // canvas, so the frame painted opaque WHITE in dark theme. That was true
       // of every local paint since it landed and went unseen because only the
@@ -185,6 +188,10 @@
       // to the top page is what the sandbox token above actually permits.
       prev.srcdoc = localShell(previewFit()) + localHtml(kindNow(), src.value);
     } catch {}
+  };
+  //  a Writer page as its editor shows it (writer.js: no script, no link)
+  const fodtHtml = (body) => {
+    try { return window.LatWriter.render(body) || 'This document cannot be shown here.'; } catch { return ''; }
   };
   // the bare document a content kind's local render goes into. `fit` is
   // the height reporter, which only the live preview has.
@@ -203,6 +210,7 @@
   // a parked group's Read (28-splits.js): the same local render of its
   // text, no fit, or null for a kind only the ship renders
   const ghostDoc = (kind, body) => {
+    if (kind === 'fodt') return window.LatWriter ? previewScrollbars() + fodtHtml(body) : null;
     if (!['md', 'gmi', 'html', 'text'].includes(kind)) return null;
     try {
       return kind === 'html' ? previewScrollbars() + body : localShell('') + localHtml(kind, body);

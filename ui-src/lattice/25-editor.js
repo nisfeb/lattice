@@ -60,6 +60,8 @@
   let rpHook = null;
   const render = () => {
     if (rpHook) rpHook();
+    writerFollow();
+    if (fodtHere() && !writerSourceOn()) { hl.textContent = ''; return; }
     const lang = LMAP[pkind.value];
     // the worker loads its own prism. This window's copy comes after boot
     // (99-boot.js), and every LMAP language is in it, so until it lands a
@@ -128,6 +130,7 @@
     }
   });
   pkind.addEventListener('change', () => {
+    if (!kindSwitchOk(pkind.value)) { pkind.value = curKind || 'fodt'; return; }
     curKind = pkind.value;
     render();
     //  the kind rides every save as a query param, so switching it on an open

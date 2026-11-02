@@ -95,7 +95,7 @@
   // Answers false then.
   // what the live editor holds for the tab it shows
   // (`hist`: an old revision was on show, which is never the page's text)
-  const snapNow = () => ({
+  const snapNow = () => (writerSync(), {
     body: src.value, dirty, everTyped,
     sel: [src.selectionStart, src.selectionEnd], scroll: src.scrollTop,
     kind: curKind, pkind: pkind.value, rev: curRev, shown: pname.value,

@@ -28,7 +28,7 @@
 
   /* ---- persisted on/off flag (same pattern as edNT / edNC) ---- */
   var LS = "edVim";
-  function vimOn(){ return localStorage.getItem(LS) === "1"; }   // default OFF
+  function vimOn(){ return localStorage.getItem(LS) === "1" && pkind.value !== "fodt"; }   // default OFF
 
   /* ---- mode indicator element (created once, lives by the status bar) ---- */
   var ind = document.createElement("span");

@@ -469,6 +469,18 @@
     }).catch(() => {});
     return null;
   }
+  // a parked Writer page before writer.js: the ship's render, asked once
+  function fodtShip(t) {
+    const key = t.key;
+    if (t.ghtml && t.ghtml[0] === key) return t.ghtml[1];
+    if (key && t.gask !== key) {
+      t.gask = key;
+      srcRead(key).then((r) => r.json()).then((d) => {
+        if (t.key === key && typeof d.html === 'string') { t.ghtml = [key, d.html]; gPaintAll(); }
+      }).catch(() => {});
+    }
+    return null;
+  }
   const ghostHl = (body, kind) => {
     const lang = LMAP[kind];
     const g = window.Prism && lang && Prism.languages[lang];
@@ -522,8 +534,13 @@
     g.ghl.innerHTML = t.ghost && t.ghost.body === ta.value ? t.ghost.hl : ghostHl(ta.value, kind);
     ta.scrollTop = s ? s.scroll : 0;
     g.ghl.scrollTop = ta.scrollTop;
-    g.gdoc.classList.toggle('gread', !!t.read);
-    if (t.read) {
+    // a Writer page parks as the page, never its XML
+    const fodt = kind === 'fodt';
+    g.gdoc.classList.toggle('gread', !!t.read || fodt);
+    if (fodt) {
+      const d = ghostDoc(kind, ta.value) || fodtShip(t) || '';
+      if (g.gprev.getAttribute('srcdoc') !== d) { g.gprev.removeAttribute('src'); g.gprev.srcdoc = d; }
+    } else if (t.read) {
       const kept = t.ghost && t.ghost.body === ta.value ? t.ghost : null;
       if (kept && kept.psrc && !kept.prev) {
         if (g.gprev.getAttribute('src') !== kept.psrc) { g.gprev.removeAttribute('srcdoc'); g.gprev.src = kept.psrc; }

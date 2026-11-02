@@ -57,6 +57,7 @@
 /<  vjs  ui-app/vault.js
 /<  tjs  ui-app/theme.js
 /<  ojs  ui-app/orrery.js
+/<  wjs  ui-app/writer.js
 /<  lc   /lib/lattice-comment.hoon
 /<  lb   /lib/lattice-bookmark.hoon
 /<  lh   /lib/lattice-history.hoon
@@ -158,6 +159,9 @@
         ::  orrery.js: "Send to orrery" in the editor and the reader
         ::  (docs/orrery.md).
             [%over %& [/app %'orrery.js'] [[/ %mime] ojs]]
+        ::  writer.js: the Writer editor for fodt pages, loaded only when
+        ::  one opens (ui-src/lattice/26-writer.js), never at boot
+            [%over %& [/app %'writer.js'] [[/ %mime] wjs]]
             ::  carried.json: has the one-time carry from the app-tier
             ::  instance run? DECLARED, so it outlives a reload - an
             ::  undeclared grub does not, which is the lesson /mirror/tr
@@ -9654,14 +9658,18 @@
     ?:  =(%'vault.js' nam)    `'application/javascript'
     ?:  =(%'theme.js' nam)    `'application/javascript'
     ?:  =(%'orrery.js' nam)   `'application/javascript'
+    ?:  =(%'writer.js' nam)   `'application/javascript'
     ~
   ?~  ct  (send-err eyre-id 404 'not found')
   ;<  pv=view:nexus  bind:m  (peek:fio (rf up /app nam) ~)
   ?.  ?=([%file *] pv)  (send-err eyre-id 404 'not found')
   =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
   ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
+  ::  writer.js?h=H too: app.js names the H it was built with
   =/  cc=@t
-    ?.  &(=(%'app.js' nam) =(`(js-tag q.p.res) (~(get by args) 'h')))
+    ?.  ?&  |(=(%'app.js' nam) =(%'writer.js' nam))
+            =(`(js-tag q.p.res) (~(get by args) 'h'))
+        ==
       'no-cache'
     'private, max-age=31536000, immutable'
   =/  heds=(list [@t @t])  ~[['content-type' u.ct] ['cache-control' cc]]
@@ -13704,6 +13712,12 @@
 ::  auth-gated and dynamic, and a stale authed response must never be served.
 ::  No precache. A logged-out install would 403 and abort.
 ::
+::  LAZY is cached on first use, not at install: writer.js, the Writer
+::  editor, is fetched only when a fodt page opens, then served from this
+::  cache, so a Writer page opened once is editable offline. Precaching it
+::  would put it on every install for users who never open one. Its V
+::  covers it (+shell-ver), so a deploy that changes it drops the copy.
+::
 ::  Non-SHELL requests are NOT intercepted at all (no respondWith): some
 ::  webkitgtk builds drop cookies on SW-mediated fetch, so a blanket
 ::  passthrough turned every API call cookieless in the desktop webview
@@ -13723,7 +13737,7 @@
 ::  +shell-ver: the worker's cache key, V without its lattice- prefix
 ++  shell-ver
   ^-  @t
-  (scot %ux (mug [uih uij vjs tjs ojs icon pjs manifest-json icon-192-b64 icon-512-b64]))
+  (scot %ux (mug [uih uij vjs tjs ojs wjs icon pjs manifest-json icon-192-b64 icon-512-b64]))
 ::  PV versions the RENDERED reader documents (their inline css + scripts).
 ::  V only covers shell assets, so a deploy that restyled the reader left
 ::  every cached page serving the old markup indefinitely: content revs
@@ -13794,7 +13808,7 @@
       ver
       '";var PV="'
       pv
-      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];var LAZY=["/apps/lattice/app/writer.js"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(LAZY.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok)c.put(u.pathname,r.clone());return r})})}).catch(function(){return fetch(q)}));return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
