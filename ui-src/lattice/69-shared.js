@@ -19,6 +19,21 @@
     sharedWithMe = await r.json();
     renderTree();
   }
+  //  Take an entry off the list, after a confirm. Nothing is deleted:
+  //  the page is theirs, and their grant stays as it is. The ×, the tree's
+  //  menu and its Delete key (34-treemenu.js) all come here.
+  async function removeShared(it) {
+    const what = 'remove ' + it.host + '/' + sharedName(it.path) + ' from shared with me?\n'
+      + 'Nothing is deleted: the page is ' + it.host + "'s, and their grant to you stays. "
+      + 'It comes back here if they share it again.';
+    if (!(await askDanger(what, 'remove'))) return false;
+    const r = await busyFetch(api + '/shared-with-me-del?host=' + encodeURIComponent(it.host) +
+      '&path=' + encodeURIComponent(it.path), { method: 'POST' }).catch(() => null);
+    if (!r || !r.ok) { st('remove failed' + await errText(r), false); return false; }
+    st('removed ' + sharedName(it.path) + ' from shared with me');
+    loadShared();
+    return true;
+  }
   // keys for the collapsed list: a leading space is in no page name, so a
   // page can never share a fold with this folder
   const SWM = ' shared';
@@ -53,14 +68,12 @@
         x.className = 'swrm';
         x.textContent = '×';
         x.title = 'remove from this list (their grant is untouched)';
-        x.onclick = async (e) => {
+        x.onclick = (e) => {
           e.preventDefault(); e.stopPropagation();
-          const r = await busyFetch(api + '/shared-with-me-del?host=' + encodeURIComponent(host) +
-            '&path=' + encodeURIComponent(it.path), { method: 'POST' }).catch(() => null);
-          if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
-          loadShared();
+          removeShared(it);
         };
         a.append(nm, md, x);
+        rowMore(a, sharedName(it.path) + ' from ' + host);   // its Remove from list (34-treemenu.js)
         a.draggable = true;
         a.ondragstart = (e) => {
           swmDrag = it;

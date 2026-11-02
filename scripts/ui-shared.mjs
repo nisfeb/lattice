@@ -46,7 +46,7 @@ function boot(items, coll = []) {
     openIn: (kind, p, o) => opened.push([kind, p, o.ship]), ico: () => '',
     // the move in and out (Task 5 of shared page links): its palette home
     // and its registration, stubbed
-    action: () => {},
+    action: () => {}, rowMore: () => {},
     tip: (b, name) => { b.title = name; b.setAttribute('aria-label', name); return b; },
     document: { createElement: (t) => new El(t), createTextNode: (t) => ({ textContent: t }) },
   };

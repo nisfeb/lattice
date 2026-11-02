@@ -372,6 +372,8 @@
     to.tabIndex = 0;
     if (refocus) to.focus();
   }
+  const IS_MAC = /Mac|iPhone|iPad|iPod/.test((navigator.userAgentData && navigator.userAgentData.platform)
+    || navigator.platform || '');
   function treeKeys(list, label) {
     list.setAttribute('aria-label', label);
     const lv = (r) => +r.getAttribute('aria-level');
@@ -385,6 +387,15 @@
     list.addEventListener('keydown', (e) => {
       const row = e.target.closest('[role=treeitem]');
       if (!row || e.altKey) return;
+      //  Delete, or Backspace (with or without Cmd) on a Mac, where the key
+      //  marked delete is Backspace: the list's own handler, which asks first
+      //  (34-treemenu.js). A tree without one lets the key through.
+      if (list.latDel && !e.shiftKey && ((e.key === 'Delete' && !e.ctrlKey && !e.metaKey)
+        || (e.key === 'Backspace' && IS_MAC && !e.ctrlKey))) {
+        e.preventDefault();
+        list.latDel(row);
+        return;
+      }
       const rows = treeRows(list);
       const i = rows.indexOf(row);
       const open = row.getAttribute('aria-expanded');
@@ -538,6 +549,7 @@
           row.append(cw);
         }
         tabLink(row, 'page', n.path);
+        rowMore(row, (n.dname || n.path.split('/').pop()) + '.' + kindExt(n.kind));   // 34-treemenu.js
       } else {
         row = folderRow(n.dname || n.path.split('/').pop(), depth, coll.includes(n.path),
           () => { paneColl.flip(n.path); renderTree(); }, () => pickFolder(n.path), 'f:' + n.path);
@@ -563,6 +575,7 @@
           if (await guardDirty()) newFile(n.path);
         };
         row.append(add);
+        rowMore(row, 'folder ' + (n.dname || n.path.split('/').pop()), n.dname || n.path.split('/').pop());
       }
       if (hidden) row.style.display = 'none';
       rowByPath.set(n.path, row);
