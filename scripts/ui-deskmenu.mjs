@@ -106,16 +106,17 @@ check('desktop: the emptied button rows are hidden too, not left as a blank band
 //  the page menu's items exist only while it is open on a document of the
 //  right kind (pm-tex is desktop-only, for a tex page); ui-shell counts
 //  those. Here: everything else, the File menu's hidden homes included.
-const missing = await desk.evaluate(() => {
+//  A home built on demand says by its when() whether it is there now, as
+//  in ui-shell: swm-move's is the button beside a row another ship shared,
+//  and gnext/gprev's are the other groups of a split, so one group alone
+//  has none. The split at the end checks those two where they apply.
+const homeless = () => desk.evaluate(() => {
   const P = window.latPalette;
-  //  swm-move's home is the button beside a row another ship shared with
-  //  this one, so a ship nobody has shared with has none (ui-links checks
-  //  it beside a real row)
-  const swm = !!document.querySelector('#treelist a.pg.swm');
   return P.ids().filter((id) => !id.startsWith('pm-') && !P.only.includes(id)
-    && !(id === 'swm-move' && !swm)
+    && P.applies(id)
     && !document.querySelector('[data-action="' + CSS.escape(id) + '"]'));
 });
+const missing = await homeless();
 const palette = await desk.evaluate(async () => {
   document.dispatchEvent(new KeyboardEvent('keydown',
     { key: 'p', code: 'KeyP', ctrlKey: true, bubbles: true }));
@@ -201,6 +202,20 @@ if (plus === null) {
     { method: 'POST', credentials: 'same-origin' }).catch(() => {}), made);
   await new Promise((r) => setTimeout(r, 1500));
 }
+//  split the editor: now there is a group to go to, and both moves have
+//  their homes. Last, since a split changes what has the focus.
+const split = await desk.evaluate(async () => {
+  const why = window.latSplits.why('r');
+  if (why) return { why };
+  await window.latSplits.split('r');
+  await new Promise((r) => setTimeout(r, 500));
+  const P = window.latPalette;
+  return { applies: ['gnext', 'gprev'].map((id) => P.applies(id)) };
+});
+const splitMissing = split.why ? null : await homeless();
+check('desktop: in a split, the group moves apply and have homes too',
+  !split.why && split.applies.every(Boolean) && splitMissing.length === 0,
+  JSON.stringify({ split, splitMissing }));
 await desk.close();
 
 await browser.close();
