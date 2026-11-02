@@ -185,6 +185,10 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 
 **Acceptance.** All tests pass, every hostile file produces the note or safe output, and the measured cost is recorded.
 
+**Measured (2026-11-02), on ~mun.** Wall clock between thread events around one call, the library built from a test desk, a 20 ms empty baseline taken off. `fodt-html` of `13-large.fodt` (1,469,845 bytes) takes 4.7 to 6.1 s over five runs; `fodt-text` of it 5.3 s and `fodt-title` 3.3 s, since each parses the whole file and `scan` alone is 2.8 s. `fodt-html` of `10-unknown.fodt` (48 KB, most of it LibreOffice's style head) takes 100 to 170 ms. That is far over 300 ms, so Task 7 adds the per-revision render cache, and it should cache the extracted text and the title beside the HTML: `+page-title-of` and `+index-walk` would otherwise parse a large document on every call.
+
+**Deviation (2026-11-02).** The renderer writes its CSS into `style` attributes, not generated classes in a `<style>` block. The output stays inside the element whitelist (which has no `style` element), and two fodt fragments on one page (the reader, a split) cannot restyle each other through clashing class names. Every value is still rebuilt from the parsed grammar.
+
 ### Task 7: Wire the renderer into the ship's views and search
 
 **Files:**
