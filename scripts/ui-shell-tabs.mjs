@@ -23,7 +23,8 @@
 //    A frame tab keeps the page it left: Back and Forward show the same
 //      document again, a save made while it was kept reaches it once shown,
 //      and no more than two per tab and six in all are kept, none past their
-//      time, none once their tab has closed
+//      time, none once their tab has closed; the browser's own Back and
+//      Forward step such a tab too
 //    A frame that leaves the page, alone or with its group, is no longer
 //      watched for its box
 //    No editor boots inside a frame: the home page's Editor link focuses the
@@ -632,6 +633,32 @@ try {
         fwdOk && fwdTag === 'B' && fwdMs < 400 && addr.includes(KEEP[1]),
         JSON.stringify({ fwdOk, fwdTag, fwdMs, addr }));
 
+      //  the browser's own Back and Forward (a phone's back gesture) step
+      //  the tab as well, and stay in the editor: a step left no entry in
+      //  the window's history, so Back used to leave the app (topNav)
+      await sleep(600);
+      await page.evaluate(() => history.back());
+      const nbOk = await shows(key, keepMark(0), 5000);
+      const nbTag = await shownTag(key);
+      const nbAt = await page.evaluate(() => location.pathname);
+      await sleep(600);
+      await page.evaluate(() => history.forward());
+      const nfOk = await shows(key, keepMark(1), 5000);
+      const nfTag = await shownTag(key);
+      check("the browser's own Back and Forward step a frame tab",
+        nbOk && nbTag === 'A' && nfOk && nfTag === 'B' && nbAt.startsWith('/apps/lattice/app'),
+        JSON.stringify({ nbOk, nbTag, nbAt, nfOk, nfTag }));
+      //  and the shell's Back moves the window's history with it, so the
+      //  browser's Forward is the step back again
+      await sleep(600);
+      await step(key, 'back');
+      const sbOk = await shows(key, keepMark(0), 5000);
+      await sleep(600);
+      await page.evaluate(() => history.forward());
+      const sfOk = await shows(key, keepMark(1), 5000);
+      check("the shell's Back and the browser's Forward stay in step",
+        sbOk && sfOk && (await shownTag(key)) === 'B', JSON.stringify({ sbOk, sfOk }));
+
       //  a save to page 0 while it is kept reaches it once shown, and a
       //  kept page goes nowhere while out of sight: Back shows page 0 long
       //  enough for its catch-up to start (0.3 s), Forward hides it before
@@ -702,6 +729,28 @@ try {
       const k6 = await kept();
       check('closing a tab lets its kept pages go', k5 > 0 && k6.dom === 0 && k6.list.length === 0,
         JSON.stringify({ k5, k6 }));
+
+      //  the page left stays painted over the next one while it loads; a
+      //  link followed there takes the tab, not the kept page later
+      const kc = await openAt(0);
+      await sleep(800);
+      const cov = await page.evaluate(([k, u1, u2]) => {
+        const f = document.querySelector(`.toolhost iframe[data-tool="${k}"]`);
+        const d = f.contentDocument;
+        const a = d.createElement('a');
+        a.href = u1;
+        d.body.append(a);
+        a.click();
+        const covered = f.classList.contains('fcover');
+        const b = d.createElement('a');
+        b.href = u2;
+        d.body.append(b);
+        b.click();
+        return { covered, held: f.latStale || null };
+      }, [kc, R(1), R(2)]);
+      const cov2 = await shows(kc, keepMark(2), 15000);
+      check('a link followed on the page still painted over the next takes the tab',
+        cov.covered && !cov.held && cov2, JSON.stringify({ ...cov, cov2 }));
     } finally {
       await page.evaluate(() => { delete localStorage.latKeepMs; }).catch(() => {});
     }

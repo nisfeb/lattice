@@ -5825,10 +5825,12 @@
     n.bar = d ? d.querySelector('form.bar, form.cbar') : null;
     fhPaintKey(key);
   }
-  // 'back', 'fwd', or 'to' an address typed or picked
-  function fnavGo(key, how, v) {
+  // 'back', 'fwd', or 'to' an address typed or picked. `fromTop` is the
+  // browser's own Back or Forward, which has moved the window's history
+  // already (topNav below). True when the tab took the step.
+  function fnavGo(key, how, v, fromTop) {
     const f = frameOf(key);
-    if (!f) return;
+    if (!f) return false;
     const n = fnavOf(key);
     if (how === 'to') {
       n.addr = v.trim();
@@ -5837,7 +5839,7 @@
       return;
     }
     const from = how === 'back' ? n.back : n.fwd;
-    if (!from.length) return;
+    if (!from.length) return false;
     const url = from.pop();
     const was = n.cur;
     if (n.cur !== null) (how === 'back' ? n.fwd : n.back).push(n.cur);
@@ -5846,15 +5848,16 @@
     const e = n.kept.find((x) => x.url === url && x.f.isConnected);
     if (e || fkeepCan(f)) {
       jhClear();
+      if (!fromTop) topStep(key, how);
       if (e) fkeepSwap(key, f, e, was);
       else { n.cur = url; fkeepBeside(key, f, url, was); }
       fkeepTrim();
       fhPaintKey(key);
-      return;
+      return true;
     }
     n.go = how;
     const at = how === 'back' ? jh.pos : jh.pos + 1;
-    if (jh.keys[at] === key && jh.keys.every((k) => frameOf(k))) {
+    if (!fromTop && jh.keys[at] === key && jh.keys.every((k) => frameOf(k))) {
       jh.pos += how === 'back' ? -1 : 1;
       try { f.contentWindow.history.go(how === 'back' ? -1 : 1); } catch {}
     } else {
@@ -5862,7 +5865,58 @@
       try { f.contentWindow.location.replace(url); } catch {}
     }
     fhPaintKey(key);
+    return true;
   }
+
+  // ── the browser's own Back and Forward ───────────────────────────────────
+  // A frame's navigation is an entry in the window's history, so the
+  // browser's Back (a phone's back gesture, a mouse's back button) stepped
+  // the frame back. A step a kept page takes (fkeepWatch) is no navigation
+  // and left no entry: that Back left the app instead. So each such step
+  // pushes an entry onto the shell's own history, `th` noting whose it
+  // is, and a traversal across those entries steps their tabs. The shell's
+  // own Back and Forward move over the entry too when it is the tab's, so
+  // the two stay in step; when it is not, the tab's entries are forgotten
+  // and crossed for nothing.
+  // A traversal lands a task later, so the entries topStep is moving to
+  // wait in `thPend`, in order: two quick clicks of Back are two of them.
+  const th = new Map();   // the shell's history entry key -> tab key
+  let thPend = [];        // entry keys topStep's traversals will land on
+  const topNav = (() => { try { return window.navigation || null; } catch { return null; } })();
+  function topPush(key) {
+    if (!topNav) return;
+    try { history.pushState(history.state, '', location.href); th.set(topNav.currentEntry.key, key); } catch {}
+  }
+  function topStep(key, how) {
+    const c = topNav && topNav.currentEntry;
+    if (!c) return;
+    const es = topNav.entries();
+    const i = thPend.length ? es.findIndex((x) => x.key === thPend[thPend.length - 1]) : c.index;
+    const over = es[how === 'back' ? i : i + 1], to = es[how === 'back' ? i - 1 : i + 1];
+    if (i >= 0 && over && to && th.get(over.key) === key) {
+      thPend.push(to.key);
+      try { how === 'back' ? history.back() : history.forward(); } catch { thPend = []; }
+      return;
+    }
+    for (const [k, v] of th) if (v === key) th.delete(k);
+  }
+  if (topNav) topNav.addEventListener('currententrychange', (ev) => {
+    if (ev.navigationType !== 'traverse' || !ev.from) return;
+    const c = topNav.currentEntry;
+    if (thPend.length && thPend[0] === c.key) { thPend.shift(); return; }
+    thPend = [];
+    const es = topNav.entries(), a = ev.from.index, b = c.index;
+    if (a < 0 || b < 0 || a === b) return;
+    let did = false;
+    if (b < a) {
+      for (let i = a; i > b; i--) if (th.has(es[i].key) && fnavGo(th.get(es[i].key), 'back', null, true)) did = true;
+      // only entries of closed tabs crossed: on to the next one of ours
+      if (!did && th.has(c.key)) history.back();
+    } else {
+      for (let i = a + 1; i <= b; i++) if (th.has(es[i].key) && fnavGo(th.get(es[i].key), 'fwd', null, true)) did = true;
+      if (!did && es[b + 1] && th.has(es[b + 1].key)) history.forward();
+    }
+  });
 
   // ── kept documents ───────────────────────────────────────────────────────
   // Back in a frame used to be a navigation of the frame: commit, parse and
@@ -6009,7 +6063,12 @@
       if (f.dataset.tool !== key) {
         if (f.dataset.kept === key && e.cancelable && !e.destination.sameDocument && !e.formData) {
           e.preventDefault();
-          f.latStale = e.destination.url;
+          // still painted over the tab's next page while it loads
+          // (fkeepBeside), a link followed there is the reader's own click,
+          // and the tab goes where it points rather than this page later
+          const g = f.classList.contains('fcover') && e.navigationType === 'push' && frameOf(key);
+          if (g) { try { g.contentWindow.location.href = e.destination.url; } catch {} }
+          else f.latStale = e.destination.url;
         }
         return;
       }
@@ -6028,6 +6087,7 @@
       n.fwd = [];
       n.cur = to;
       fkeepBeside(key, f, u.href, was);
+      topPush(key);
       fkeepTrim();
       fhPaintKey(key);
     });
