@@ -1,9 +1,7 @@
   // ── Writer pages (fodt) ──────────────────────────────────────────────────
-  // writer.js, loaded when a fodt page shows, mounts over #src, which stays
-  // the one buffer. Its text lands there through edited() 300 ms after a
-  // change and at writerSync (save, autosave, park).
-  let wrLoad = null, wr = null, wrHost = null, wrText = null;
-  let wrDirty = false, wrTimer = 0, wrSeq = 0, wrQ = false;
+  // writer.js, loaded when a fodt page shows, mounts over #src, the one
+  // buffer, and writes it back (view.js, ctl.sync).
+  let wrLoad = null, wr = null, wrHost = null, wrSeq = 0, wrQ = false;
   const wrSrc = new Map();     // page -> why it shows as XML
   const wrKey = () => current || '';
   const fodtHere = () => mode !== 'know' && !grubPath && curFolder === null && pkind.value === 'fodt';
@@ -28,12 +26,10 @@
     if (!wrHost) wrHost = document.createElement('lat-writer');
     if (wrHost.parentNode !== src.parentNode) src.parentNode.append(wrHost);
     if (msg) {
-      const p = document.createElement('p'), f = document.createElement('iframe');
+      wrHost.replaceChildren($('wrload').content.cloneNode(true));
       const c = current && pageCache.get(current);
-      p.textContent = msg;
-      f.setAttribute('sandbox', '');
-      f.srcdoc = (c && c.html) || '';
-      wrHost.replaceChildren(p, f);
+      wrHost.firstChild.textContent = msg;
+      wrHost.lastChild.srcdoc = (c && c.html) || '';
     }
     return wrHost;
   }
@@ -53,38 +49,27 @@
     if (!fodtHere() || writerSourceOn()) return writerOff();
     const body = src.value, ed = !src.readOnly && viewingRev === null;
     wrShow(true);
-    if (wr && wrText === body) return wr.setEditable(ed);
+    if (wr && wr.base() === body) return wr.setEditable(ed);
     writerDrop();
-    wrText = body;
     if (!window.LatWriter) wrBox('Loading the Writer editor…');
     const my = wrSeq;
     writerReady().then((LW) => {
       if (my !== wrSeq || src.value !== body || !fodtHere() || writerSourceOn()) return;
-      const c = LW.mount(wrBox(), { text: body, editable: ed, name: current, onChange: writerChanged });
+      const c = LW.mount(wrBox(), { text: body, editable: ed, name: current, cur: () => src.value, onChange: writerChanged,
+        onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => st('not saved: ' + e, false) });
       if (c.error) { wrSrc.set(wrKey(), c.error); writerApply(); } else wr = c;
     }, () => { if (my === wrSeq) wrBox('The Writer editor did not load. Source in the page menu shows the XML.'); });
   }
   function writerChanged() {
-    wrDirty = dirty = everTyped = true;
+    dirty = everTyped = true;
     clearTimeout(autoTimer);
-    clearTimeout(wrTimer);
-    wrTimer = setTimeout(writerSync, 300);
   }
   // false: it refused (a broken marker pair), the last good text stays
-  function writerSync() {
-    clearTimeout(wrTimer);
-    if (!wr || !wrDirty || src.value !== wrText) return true;
-    wrDirty = false;
-    const r = wr.text();
-    if (r.error) return st('not saved: ' + r.error, false), false;
-    if (r.text !== src.value) { src.value = wrText = r.text; edited(); }
-    return true;
-  }
+  function writerSync() { return !wr || wr.sync(); }
   function writerDrop() {
     wrSeq++;
-    wrDirty = false;
     if (wr) wr.destroy();
-    wr = wrText = null;
+    wr = null;
   }
   function writerOff() {
     writerSync();

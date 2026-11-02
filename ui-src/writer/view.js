@@ -314,7 +314,7 @@ export function mount(host, opts = {}) {
   };
 
   // ------------------------------------------------------------ view
-  let refusedAt = 0;
+  let refusedAt = 0, dirty = false, syncTimer = 0, base = text;
   const guard = new Plugin({
     filterTransaction(tr, state) {
       if (pairGuard(tr, state)) return true;
@@ -339,7 +339,11 @@ export function mount(host, opts = {}) {
       const next = view.state.apply(tr);
       view.updateState(next);
       toolbar.update(view);
-      if (tr.docChanged && opts.onChange) opts.onChange();
+      if (!tr.docChanged) return;
+      dirty = true;
+      clearTimeout(syncTimer);
+      if (opts.onText) syncTimer = setTimeout(ctl.sync, 300);
+      if (opts.onChange) opts.onChange();
     },
     handleDOMEvents: {
       //  a link is never followed by a plain click; Ctrl or Cmd and click
@@ -359,6 +363,20 @@ export function mount(host, opts = {}) {
   toolbar.update(view);
 
   ctl.text = () => serializeFodt(view.state, text);
+  //  the shell's buffer (26-writer.js): opts.cur() reads it, onText writes
+  //  it 300 ms after a change and at sync(); base is what it last held from
+  //  here. sync() is false when the serializer refused (onRefuse), and does
+  //  nothing when the buffer changed under the editor.
+  ctl.base = () => base;
+  ctl.sync = () => {
+    clearTimeout(syncTimer);
+    if (!dirty || opts.cur() !== base) return true;
+    dirty = false;
+    const r = ctl.text();
+    if (r.error) return opts.onRefuse(r.error), false;
+    if (r.text !== base) opts.onText(base = r.text);
+    return true;
+  };
   ctl.setEditable = (on) => {
     ctl.editableWanted = !!on;
     view.setProps({ editable: () => ctl.editable });
@@ -396,6 +414,7 @@ export function mount(host, opts = {}) {
   ctl.destroy = () => {
     if (ro) ro.disconnect();
     clearTimeout(flashTimer);
+    clearTimeout(syncTimer);
     view.destroy();
     host.replaceChildren();
     host.removeAttribute('data-lw');
