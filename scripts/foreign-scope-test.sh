@@ -22,7 +22,7 @@
 #    (replace ~bus and ~mec with actual patp if different)
 #
 #    TOK=$(curl -s -H "$CK_MEC" -X POST \
-#      "http://localhost:8080/apps/lattice/key-mint" \
+#      "$LATTICE_URL/apps/lattice/key-mint" \
 #      -H 'content-type: application/json' \
 #      -d '{"name":"t5-success","by":"test","scope":{"web":{"some":{"~bus":{"read":["/x"],"write":["/x/out"]}}}}}' \
 #      | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
@@ -30,13 +30,13 @@
 #  Assert remote-save to granted path succeeds (200):
 #    is "remote-save to granted path" 200 $(curl -s -o /dev/null -w '%{http_code}' \
 #      -X POST -H "Authorization: Bearer $TOK" \
-#      "http://localhost:8080/apps/lattice/remote-save?ship=~bus&path=/x/out/file" \
+#      "$LATTICE_URL/apps/lattice/remote-save?ship=~bus&path=/x/out/file" \
 #      --data-binary 'hello world')
 #
 #  Assert fetch of granted page succeeds (200 or 404 if page absent — not 403):
 #    code=$(curl -s -o /dev/null -w '%{http_code}' \
 #      -H "Authorization: Bearer $TOK" \
-#      "http://localhost:8080/apps/lattice/fetch?url=urb://~bus/x/page")
+#      "$LATTICE_URL/apps/lattice/fetch?url=urb://~bus/x/page")
 #    [ "$code" != 403 ] && echo "ok - fetch granted path (got $code)" \
 #      || echo "FAIL - fetch granted path returned 403"
 #
@@ -45,7 +45,7 @@
 # ── END 2-SHIP SUCCESS PATH ────────────────────────────────────────────────
 #
 # Usage:  scripts/foreign-scope-test.sh
-# Env:    LATTICE_URL     ship base (default http://localhost:8080)
+# Env:    LATTICE_URL     ship base (required, a throwaway ship)
 #         LATTICE_COOKIE  session cookie file (default ~/.config/lattice-fs/cookie)
 
 set -uo pipefail

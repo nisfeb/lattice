@@ -1,7 +1,7 @@
 // Display names in the real UI: type a name with capitals and spaces into
 // the new-page dialog, create, and the tree shows the typed name over the
 // slug path.
-//   LATTICE_URL=http://localhost:8080 LATTICE_COOKIE=~/.config/lattice-fs/cookie node scripts/ui-dname.mjs
+//   LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> node scripts/ui-dname.mjs
 import { shipEnv, launchBrowser, openPage, makeCheck, sleep, swControlled } from './lib/harness.mjs';
 
 const env = shipEnv();

@@ -21,7 +21,7 @@
 //  The slowness is request interception, not a slow ship, so the suite
 //  makes four pages and writes one comment.
 //
-//  Usage: LATTICE_URL=http://localhost:8080 LATTICE_COOKIE=/tmp/tyr-cookie.txt \
+//  Usage: LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> \
 //           node scripts/ui-loading.mjs
 import { shipEnv, launchBrowser, openPage, seed, makeCheck, sleep, shipName } from './lib/harness.mjs';
 

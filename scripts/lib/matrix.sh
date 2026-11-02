@@ -8,9 +8,16 @@
 # A suite that takes the ship URL as an argument sets LATTICE_URL from it
 # before sourcing this.
 
-URL="${LATTICE_URL:-http://localhost:8080}"; URL="${URL%/}"
+# Both must be set: there is no default ship. The old fallback was
+# localhost:8080, the owner's own dev ship (~tyr). scripts/gate.mjs sets
+# both; by hand, point them at a fake ship or a fleet clone.
+if [ -z "${LATTICE_URL:-}" ] || [ -z "${LATTICE_COOKIE:-}" ]; then
+  echo "LATTICE_URL and LATTICE_COOKIE must be set to a throwaway ship (there is no default ship)" >&2
+  exit 2
+fi
+URL="${LATTICE_URL%/}"
 B="$URL/apps/lattice"
-CKF="${LATTICE_COOKIE:-$HOME/.config/lattice-fs/cookie}"; CKF="${CKF/#\~/$HOME}"
+CKF="${LATTICE_COOKIE/#\~/$HOME}"
 
 # A suite that sends the session cookie calls this first. A missing cookie
 # exits 2, "could not test", rather than failing every check with a 403.

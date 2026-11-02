@@ -8,9 +8,9 @@
 # mv clobber, generic folder delete no-op.
 #
 # Usage:  scripts/fs-matrix.sh [ship-url]
-#   env:  LATTICE_URL (default http://localhost:8080)
-#         cookie at ~/.config/lattice-fs/cookie (run `lattice-fs auth` first).
-#         The mount always reads that file, so leave LATTICE_COOKIE unset.
+#   env:  LATTICE_URL and LATTICE_COOKIE (required, a throwaway ship)
+#         The mounts run with a temporary HOME that holds only that
+#         cookie, so the user's lattice-fs config is never read or written.
 #
 # Exits non-zero if any assertion failed. Lattice test pages live
 # under fsmatrix/. Generic scratch lives under
@@ -59,8 +59,22 @@ mcp write_grub '{"path":"/apps/lattice.lattice_app/fsmatrix/gdir","name":"inner"
 
 mkdir -p "$LMNT" "$GMNT"
 unset LATTICE_SOCK
-LATTICE_URL="$URL" "$BIN" mount "$LMNT" >/dev/null 2>"$WORK/lat.log" &
-LATTICE_URL="$URL" "$BIN" mount "$GMNT" --root /apps/lattice.lattice_app/fsmatrix >/dev/null 2>"$WORK/gen.log" &
+# the mount reads cookie-<scheme>-<host>-<port> under $HOME/.config; a
+# HOME of its own, so the user's config (and their ship's cookie) is
+# never read
+CFILE=$(python3 - "$URL" <<'PY'
+import sys, re
+from urllib.parse import urlsplit
+u = urlsplit(sys.argv[1])
+port = u.port or (443 if u.scheme == 'https' else 80)
+print(re.sub(r'[^A-Za-z0-9._-]', '_', 'cookie-%s-%s-%d' % (u.scheme, u.hostname, port)))
+PY
+)
+mkdir -p "$WORK/home/.config/lattice-fs"
+chmod 700 "$WORK" "$WORK/home/.config/lattice-fs"
+install -m 600 "$CKF" "$WORK/home/.config/lattice-fs/$CFILE"
+HOME="$WORK/home" LATTICE_URL="$URL" "$BIN" mount "$LMNT" >/dev/null 2>"$WORK/lat.log" &
+HOME="$WORK/home" LATTICE_URL="$URL" "$BIN" mount "$GMNT" --root /apps/lattice.lattice_app/fsmatrix >/dev/null 2>"$WORK/gen.log" &
 sleep 2
 exec </dev/null
 

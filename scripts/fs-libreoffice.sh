@@ -7,8 +7,8 @@
 # serves, and that LibreOffice's lock file and temps never reach the ship.
 #
 # Usage:  scripts/fs-libreoffice.sh [ship-url]
-#   env:  LATTICE_URL (default http://localhost:8080)
-#         LATTICE_COOKIE (default ~/.config/lattice-fs/cookie). The mount
+#   env:  LATTICE_URL and LATTICE_COOKIE (required, a throwaway ship)
+#         The mount
 #           runs with a temporary HOME that holds only this cookie, so the
 #           user's lattice-fs config is never read or written.
 #         LO_TRACE=<dir>  also record every file call LibreOffice makes on

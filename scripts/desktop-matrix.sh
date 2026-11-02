@@ -21,7 +21,7 @@
 # app (LATTICE_PROBE_JS), so this can run against a ship it does not own.
 #
 # Usage:  scripts/desktop-matrix.sh [ship-url]
-# Env:    LATTICE_URL     ship base (default http://localhost:8080)
+# Env:    LATTICE_URL     ship base (required, a throwaway ship)
 #         LATTICE_COOKIE  cookie file (default ~/.config/lattice-fs/cookie)
 #         LATTICE_BIN     binary (default desktop/target/debug/lattice-desktop)
 #

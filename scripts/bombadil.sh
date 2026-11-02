@@ -12,8 +12,8 @@
 # the conflicts badge counts something).
 #
 # Usage: scripts/bombadil.sh [minutes] [output-dir]
-#   cookie: ~/.config/lattice-fs/cookie (tyr). Override with LATTICE_COOKIE_FILE.
-#   base:   http://localhost:8080 (tyr). Override with LATTICE_URL.
+#   cookie: LATTICE_COOKIE_FILE, required.
+#   base:   LATTICE_URL, required (a throwaway ship, never ~tyr).
 #   spec:   scripts/bombadil-spec.js. Override with LATTICE_SPEC ("" = defaults only).
 #   start:  /apps/lattice/app. Override with LATTICE_START.
 #
@@ -49,8 +49,11 @@
 set -euo pipefail
 MIN="${1:-5}"
 OUT="${2:-/tmp/bombadil-lattice-$(date +%s)}"
-BASE="${LATTICE_URL:-http://localhost:8080}"
-CK="$(cat "${LATTICE_COOKIE_FILE:-$HOME/.config/lattice-fs/cookie}")"
+# no default ship: the old one was localhost:8080, the owner's ~tyr
+: "${LATTICE_URL:?set LATTICE_URL to a throwaway ship (there is no default ship)}"
+: "${LATTICE_COOKIE_FILE:?set LATTICE_COOKIE_FILE to the cookie file of that ship}"
+BASE="$LATTICE_URL"
+CK="$(cat "$LATTICE_COOKIE_FILE")"
 SPEC="${LATTICE_SPEC-$(dirname "$0")/bombadil-spec.js}"
 START="${LATTICE_START:-/apps/lattice/app}"
 #  Viewport. Defaults match bombadil's own, so existing runs are

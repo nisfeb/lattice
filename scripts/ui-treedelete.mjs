@@ -3,7 +3,7 @@
 // row, asks in the app's own modal first. The modal names what goes and
 // how many pages, says it is permanent, and holds the focus on Cancel, so
 // Enter never deletes. What is open stays open unless it is what went.
-//   LATTICE_URL=http://localhost:8080 LATTICE_COOKIE=~/.config/lattice-fs/cookie node scripts/ui-treedelete.mjs
+//   LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> node scripts/ui-treedelete.mjs
 import { shipEnv, launchBrowser, openPage, makeCheck, sleep, swControlled, seed, waitFor } from './lib/harness.mjs';
 
 const env = shipEnv();

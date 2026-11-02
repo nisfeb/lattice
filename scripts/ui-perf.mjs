@@ -6,8 +6,8 @@
 // noise.
 //
 // Usage:  node scripts/ui-perf.mjs
-// Env:    LATTICE_URL     ship base (default http://localhost:8080)
-//         LATTICE_COOKIE  cookie file (default ~/.config/lattice-fs/cookie)
+// Env:    LATTICE_URL     ship base (required, a throwaway ship)
+//         LATTICE_COOKIE  cookie file (required)
 //         CHROME          browser binary (default /usr/bin/chromium)
 //
 // Needs puppeteer-core:  npm i --no-save puppeteer-core

@@ -45,13 +45,24 @@ export const swControlled = (page, ms = 20000) => page.waitForFunction(
 //  arguments because the desktop suites point at a second ship with its own
 //  cookie file; that divergence is easier to see as a call than as another
 //  copy of these six lines.
+//
+//  Both must be set. There is no default ship: the old fallback was
+//  localhost:8080, the owner's own dev ship (~tyr), so a suite run without
+//  the env wrote its fixtures there. scripts/gate.mjs sets both for every
+//  ship suite; by hand, point them at a fake ship or a fleet clone.
 export function shipEnv({
   urlVar = 'LATTICE_URL',
   cookieVar = 'LATTICE_COOKIE',
-  cookieDefault = homedir() + '/.config/lattice-fs/cookie',
 } = {}) {
-  const base = (process.env[urlVar] || 'http://localhost:8080').replace(/\/$/, '');
-  const file = (process.env[cookieVar] || cookieDefault).replace(/^~/, homedir());
+  const missing = [urlVar, cookieVar].filter((v) => !process.env[v]);
+  if (missing.length) {
+    console.error(`${missing.join(' and ')} not set. This suite needs a throwaway ship:\n`
+      + `  ${urlVar}=http://localhost:<port> ${cookieVar}=<cookie file> node ${process.argv[1] || 'suite.mjs'}\n`
+      + 'or run it through node scripts/gate.mjs --only <suite>. There is no default ship.');
+    process.exit(2);
+  }
+  const base = process.env[urlVar].replace(/\/$/, '');
+  const file = process.env[cookieVar].replace(/^~/, homedir());
   const cookie = readFileSync(file, 'utf8').trim();
   const [name, ...rest] = cookie.split('=');
   return {
