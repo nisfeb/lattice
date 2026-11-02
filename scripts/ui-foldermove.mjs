@@ -84,7 +84,41 @@ try {
     JSON.stringify(await under(RUN + '/src')));
   const nw = await api('page-save?type=md&new=1&name=' + encodeURIComponent(RUN + '/src/fresh'), { method: 'POST', body: '# new\n' });
   check('a create at the old path is a new page and lands', nw.ok, String(nw.status));
+  // a mount that has listed the tree again sends the write-back as a
+  // create (?mount=1): refused when the page it would shadow moved away
+  const save = (n, q, b = '# x\n') =>
+    api('page-save?type=md' + q + '&name=' + encodeURIComponent(n), { method: 'POST', body: b });
+  const mc = await save(RUN + '/src/c', '&new=1&mount=1');
+  const mcw = await mc.text();
+  check('a mount\'s create of a page that moved away is refused',
+    mc.status === 409 && mcw.includes(RUN + '/dst/c'), mc.status + ' ' + mcw);
+  const mn = await save(RUN + '/src/other', '&new=1&mount=1');
+  check('a mount\'s create of a new name in the old folder lands', mn.ok, String(mn.status));
+  // an API write (wiki_write upserts) of a page that never moved is new
+  const up = await save(RUN + '/src/never-moved', '');
+  check('an overwrite-style save of a new name in the old folder lands', up.ok, String(up.status));
   await api('page-del?name=' + encodeURIComponent(RUN + '/src'), { method: 'POST' });
+
+  // ── moves in a row ───────────────────────────────────────────────────────
+  await seed(env, [[RUN + '/ch1/x', '# x\n']]);
+  const move = (f, t) => api('page-move?from=' + encodeURIComponent(RUN + '/' + f) +
+    '&to=' + encodeURIComponent(RUN + '/' + t), { method: 'POST' });
+  await move('ch1', 'ch2'); await move('ch2', 'ch3');
+  const c1 = await save(RUN + '/ch1/x', '');
+  const c1w = await c1.text();
+  check('a stale write after two moves names where the page is now',
+    c1.status === 409 && c1w.includes(RUN + '/ch3/x'), c1.status + ' ' + c1w);
+  await move('ch3', 'ch1');
+  const bk = await save(RUN + '/ch1/new', '');
+  check('a new page in a folder moved back to its name lands', bk.ok, String(bk.status));
+  const ex = await save(RUN + '/ch1/x', '', '# x edited\n');
+  check('and so does a save of a page in it', ex.ok, String(ex.status));
+  const c3 = await save(RUN + '/ch3/x', '');
+  const c3w = await c3.text();
+  check('a stale write of the name it moved back from is refused',
+    c3.status === 409 && c3w.includes(RUN + '/ch1/x'), c3.status + ' ' + c3w);
+  check('nothing is left at the names it passed through',
+    !(await under(RUN + '/ch2')).length && !(await under(RUN + '/ch3')).length);
 
   // ── writes into a move while it runs ─────────────────────────────────────
   // The old folder's pages are refused while the move is under way, or
