@@ -268,9 +268,13 @@
     const k = TAB_KINDS[t.kind];
     const s = t.snap;
     t.snap = null;          // in front, the live editor is its state
+    // the status line belongs to the tab that wrote it. A page or memory
+    // writes its own on open, but a tool tab writes none, so a grub's
+    // "on ~ship: saves need its permission" stayed up over a browser tab
+    st('');
     const gen = ++tabShown;
     src.readOnly = false;   // a blank or a binary grub left it locked
-    openSeq++;              // an open still loading for the tab left behind may not land
+    openNext();             // an open still loading for the tab left behind may not land
     const quick = snapOk && !!s && !s.hist && !!t.key && (t.kind === 'page' || t.kind === 'know');
     // a new page or memory already named (its create may still be queued,
     // and runs here once the name is back in the field) comes back named
@@ -363,7 +367,7 @@
     if (mine) { t.snap = snapNow(); gGhostKeep(t); }
     dirty = false;
     clearTimeout(autoTimer);
-    openSeq++;                         // an open in flight lands nowhere now
+    openNext();                        // an open in flight lands nowhere now
     if (tabLoading === t) tabLoading = null;
     if (t.snap && t.snap.dirty) saveParked(t);
     return true;

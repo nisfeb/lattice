@@ -6,7 +6,8 @@
 //  snapshotted with `fleet --fast snap ~dep gate` and cloned into LANES
 //  throwaway copies (`fleet clone dep N gate`), each in its own network
 //  namespace on its own port. The ship-bound suites (browser ui-*.mjs,
-//  job-check.py and the Hoon suites) are handed to the lanes longest
+//  job-check.py, fs-old-beacon-check.sh, which mounts this checkout's
+//  lattice-fs, and the Hoon suites) are handed to the lanes longest
 //  first, by the times in scripts/gate-times.json. The ship-free work (the
 //  pure ui suites, ui-manager, offline-tests.sh and the static checks) runs
 //  locally at the same time. One table at the end; exit 1 on any failure.
@@ -168,11 +169,15 @@ const SHIPFREE_BROWSER = ['ui-manager.mjs'];
 const TWO_SHIP = ['ui-links.mjs'];
 const shipSuites = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
-  'job-check.py', 'big-page-check.py', 'hoon-suites',
+  'job-check.py', 'big-page-check.py', 'fs-old-beacon-check.sh', 'hoon-suites',
 ].filter((n) => !ONLY || ONLY.includes(n));
 function shipCmd(name, lane) {
   const env = { LATTICE_URL: lane.url, LATTICE_COOKIE: lane.cookie };
   if (name === 'hoon-suites') return ['bash', [S + '/hoon-test-kit/hoon-test.sh', lane.pier], { env: { VERE } }];
+  //  the lattice-fs this checkout builds, mounted over HTTP on the lane
+  if (name === 'fs-old-beacon-check.sh') return ['bash', ['-c',
+    'cargo build --release -q --manifest-path lattice-fs-rs/Cargo.toml && exec scripts/fs-old-beacon-check.sh "$0"',
+    lane.url], { env }];
   if (name.endsWith('.py')) return ['python3', ['-u', S + '/' + name, lane.url, lane.cookie, ...(name === 'stall-check.py' ? ['--resume'] : [])], { env }];
   return ['node', [S + '/' + name], { env }];
 }

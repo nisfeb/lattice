@@ -152,6 +152,7 @@
       g.host.hidden = !key;
       if (key) toolMount(key, g.host);
       for (const c of g.host.children) c.hidden = c.dataset.tool !== key;
+      frameBusySync(g.host);
       fhSync(g, key);
     }
     // a browsing tab's header stands in for the tab header (29-fhead.js)
@@ -204,7 +205,7 @@
     const had = frameOf(key);
     if (had) {
       // a moved frame reloads, and so would the documents it kept
-      if (had.parentNode !== toolHost) { fkeepDropKey(key); toolHost.append(had); }
+      if (had.parentNode !== toolHost) { fkeepDropKey(key); frameLoading(had, true); toolHost.append(had); }
       return;
     }
     if (!url) return;
@@ -229,13 +230,47 @@
     // a load counts as activity only when the user's own event in the frame
     // led to it, within 10 s: a page that reloads itself on each keep event
     // must not hold the background lane shut
-    f.onload = () => { if (Date.now() - (f.latAct || 0) < 10000) bgBusy(); fnavLoad(f); frameDress(f); };
+    f.onload = () => {
+      frameLoading(f, false);
+      if (Date.now() - (f.latAct || 0) < 10000) bgBusy();
+      fnavLoad(f); frameDress(f);
+    };
+    frameLoading(f, true);
     f.src = url;
     frameSeen.observe(f);
     frameSeenAll.add(f);
     return f;
   }
   let frameSeq = 0;
+  // A frame's loading line. A frame is loading from the moment it is made
+  // or sent somewhere until its load event, and its host shows the line
+  // (.lbusy, as busy() draws it, 10-shell.js) while the frame in FRONT
+  // there has been loading BUSY_MS. So a quick load never flashes it, a
+  // parked frame loading behind the tab in front shows nothing, and a tab
+  // switch (toolSync) takes the line with the frame. A load that never
+  // comes (a download, a 204, an aborted navigation) lets go by BUSY_MAX.
+  function frameLoading(f, on) {
+    clearTimeout(f.latLoadT); clearTimeout(f.latLoadCap);
+    f.latLoadAt = on ? Date.now() : 0;
+    if (on) {
+      f.latLoadT = setTimeout(() => frameBusySync(f.parentNode), BUSY_MS);
+      f.latLoadCap = setTimeout(() => frameLoading(f, false), BUSY_MAX);
+    }
+    frameBusySync(f.parentNode);
+  }
+  // whether a click on link `a` takes its document somewhere else: a plain
+  // click, no new window or download, and not to an anchor in the page
+  const linkLeaves = (a, target, e) => e.button === 0 && !e.ctrlKey && !e.metaKey
+    && !e.shiftKey && !e.altKey && !a.hasAttribute('download')
+    && !/^_blank$/i.test(target || '') && /^https?:/.test(a.href)
+    && !(a.hash && a.href.split('#')[0] === a.ownerDocument.URL.split('#')[0]);
+  function frameBusySync(host) {
+    if (!host || !host.classList || !host.classList.contains('toolhost')) return;
+    const now = Date.now();
+    const on = [...host.children].some((c) => c.tagName === 'IFRAME' && c.dataset.tool
+      && !c.hidden && c.latLoadAt && now - c.latLoadAt >= BUSY_MS - 10);
+    host.classList.toggle('lbusy', on);
+  }
   // Each load of a frame. Every frame loses the reader's bar, since the
   // shell around it is the chrome: a browsing frame's group has the frame
   // header instead (29-fhead.js), and the bar's menu entries (editor,
@@ -306,7 +341,10 @@
         if (inner && !e.defaultPrevented) {
           const go = editorGo(a.href);
           if (go) { e.preventDefault(); editorOpen(go); return; }
-          if (upward(a, 'target')) { e.preventDefault(); if (/^https?:/.test(a.href)) f.contentWindow.location.assign(a.href); }
+          if (upward(a, 'target')) {
+            e.preventDefault();
+            if (/^https?:/.test(a.href)) { frameLoading(f, true); f.contentWindow.location.assign(a.href); }
+          }
           return;
         }
         if (topish(a, 'target')) a.target = f.name;
@@ -318,6 +356,7 @@
           const up = sub && sub.hasAttribute('formtarget') ? upward(sub, 'formtarget') : upward(form, 'target');
           if (!up || e.defaultPrevented) return;
           e.preventDefault();
+          frameLoading(f, true);
           formAgain(form, sub, f.name);
           return;
         }
@@ -329,6 +368,27 @@
     // a link, form or script leaving this page opens beside it, which
     // keeps it for Back (29-fhead.js)
     if (browsing(key)) fkeepWatch(f, d, key);
+    // and anything else that leaves it starts the frame's loading line:
+    // the navigation API hears links, forms, scripts and reloads alike,
+    // after fkeepWatch, so a step it took over (a new frame beside this
+    // one, loading of its own) is left to it. An engine without the API
+    // (webkitgtk) hears a link followed or a form sent instead.
+    const nav = d.defaultView && d.defaultView.navigation;
+    if (nav) {
+      nav.addEventListener('navigate', (e) => {
+        if (e.defaultPrevented || e.destination.sameDocument || e.downloadRequest !== null) return;
+        if (f.dataset.tool) frameLoading(f, true);
+      });
+      nav.addEventListener('navigateerror', () => frameLoading(f, false));
+    } else if (d.defaultView) {
+      d.defaultView.addEventListener('click', (e) => {
+        const a = e.target.closest && e.target.closest('a[href]');
+        if (a && !e.defaultPrevented && linkLeaves(a, a.target, e)) frameLoading(f, true);
+      });
+      d.defaultView.addEventListener('submit', (e) => {
+        if (!e.defaultPrevented && !/^_blank$/i.test(e.target.getAttribute('target') || '')) frameLoading(f, true);
+      });
+    }
     // the reader shows a page in a frame of its own (srcdoc), where the
     // comment box lives. A sandboxed one (a peer's page) is out of reach,
     // and has no box.

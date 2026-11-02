@@ -220,7 +220,7 @@
     host.textContent = 'loading…';
     let d = null;
     try {
-      const r = await fetch(api + '/comments-inbox');
+      const r = await busyFetch(api + '/comments-inbox', undefined, 'rp:comments', $('rpane'));
       if (!r.ok) { host.textContent = ''; st('comments failed' + await errText(r), false); return; }
       d = await r.json();
     } catch { host.textContent = ''; st('comments failed', false); return; }
@@ -246,11 +246,11 @@
     $('rpcmpost').disabled = true;
     // the route answers a form post with a redirect to the reader. Not
     // followed: landing is all this needs to know.
-    const r = await fetch(api + '/comment?page=' + encodeURIComponent(page), {
+    const r = await busyFetch(api + '/comment?page=' + encodeURIComponent(page), {
       method: 'POST', redirect: 'manual',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: 'body=' + encodeURIComponent(body),
-    }).catch(() => null);
+    }, null, $('rpane')).catch(() => null);
     $('rpcmpost').disabled = false;
     if (!r || !(r.ok || r.type === 'opaqueredirect')) { st('comment failed' + await errText(r), false); return; }
     if (current === page) $('rpcmbody').value = '';

@@ -141,7 +141,9 @@ def hazardous(body):
 #  names app-base only as the ABSOLUTE path it falls back to returning, and
 #  reads /sys/link by an absolute road: right at every depth, and reached
 #  from them all once a filesystem delete moved grants (+move-grants).
-sens = {a for a,b in arms.items() if hazardous(b)} - {'nexus-up', 'self-base'}
+#  +old-beacon-put writes under app-base by absolute roads, the same at
+#  every depth, and +bump-beacon reaches it from several.
+sens = {a for a,b in arms.items() if hazardous(b)} - {'nexus-up', 'self-base', 'old-beacon-put'}
 #  `arms` holds STRIPPED lines already, so a mention of app-base in a
 #  comment no longer makes an arm look depth-sensitive.
 

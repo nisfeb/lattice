@@ -102,6 +102,7 @@
     const n = fnavOf(key);
     if (how === 'to') {
       n.addr = v.trim();
+      frameLoading(f, true);
       try { f.contentWindow.location.href = fnavTarget(v); } catch {}
       fhPaintKey(key);
       return;
@@ -124,6 +125,7 @@
       return true;
     }
     n.go = how;
+    frameLoading(f, true);
     const at = how === 'back' ? jh.pos : jh.pos + 1;
     if (!fromTop && jh.keys[at] === key && jh.keys.every((k) => frameOf(k))) {
       jh.pos += how === 'back' ? -1 : 1;
@@ -270,6 +272,7 @@
     try { f.contentWindow.name = n; } catch {}
   };
   function fkeepPark(key, f, url) {
+    frameLoading(f, false);           // a kept page's load is no tab's wait
     delete f.dataset.tool;
     f.dataset.kept = key;
     frameName(f, '');
@@ -316,8 +319,10 @@
     if (k.latStale) {
       const u = k.latStale;
       k.latStale = null;
+      frameLoading(k, true);
       try { k.contentWindow.location.replace(u); } catch {}
     }
+    frameBusySync(k.parentNode);
   }
   // catch the page in `f` leaving (frameDress, at each load)
   function fkeepWatch(f, d, key) {

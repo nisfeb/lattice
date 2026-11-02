@@ -430,6 +430,8 @@
         ::  moment it could have happened anyway.
         ;<  ~  bind:m  (carry-old-data root)
         ;<  ~  bind:m  retire-old-app
+        ::  the beacon old lattice-fs builds watch (+old-beacon-arm)
+        ;<  ~  bind:m  (old-beacon-arm root)
         ::  lay lattice's COMPLETE public grant set through the registry's
         ::  %how action: /pub for foreign readers, every shared page's data
         ::  road, and the share/comment inboxes. One act, server-side merged,
@@ -4897,7 +4899,8 @@
         ::  on the first writer rise after the move, copies the data across
         ::  (+carry-old-data), then keeps a snapshot of it before the make
         ::  road below deletes it (+retire-old-app). A later release drops
-        ::  both roads, once installs have retired the old copy.
+        ::  the peek road, once installs have retired the old copy. The
+        ::  make road stays longer (+old-beacon-arm).
         ::
         ::  Refusing it is safe and loses nothing that is not still there:
         ::  the old instance keeps its data, so the carry can be re-run by a
@@ -4923,7 +4926,9 @@
           'share pages with other ships: add a ship to a sharing group and grant the group read or edit on your pages, and take a banned ship out of every group. This road can change any sharing group on this ship. Refuse it and lattice works fully for you; you just cannot share pages with other ships'
         ::  the retire road (+retire-old-app): the old app-tier copy is
         ::  deleted once it is carried and a snapshot of it is kept, so
-        ::  grants made on it stop reaching anything.
+        ::  grants made on it stop reaching anything. It also carries the
+        ::  beacon old lattice-fs builds watch (+old-beacon-arm), so keep
+        ::  it while those builds are about.
           %+  line  '/apps/lattice.lattice_app/'
           'delete the old copy from where lattice used to live, after its pages and notes are carried across and a snapshot of it is kept here. Grants made on the old copy stop working. Refuse it and the old copy stays where it is'
       ==
@@ -5709,7 +5714,91 @@
   ::  the beacon must be NESTED (under /beacon). grubbery's keep-SSE does not
   ::  stream a grub at the nexus root (verified: /rev and /bookmarks keeps stay
   ::  silent. Nested grubs like /pub/index stream fine). Gain is not required.
-  (put-file (rf up /beacon sub) [/ %json] (numb:enjs:format `@ud`now))
+  ;<  ~  bind:m  (put-file (rf up /beacon sub) [/ %json] (numb:enjs:format `@ud`now))
+  ?.  =(%rev sub)  (pure:m ~)
+  ;<  on=(unit json)  bind:m  (peek-as:io (rf up / %'old-beacon.json') ,json)
+  ?.  ?=([~ %b %.y] on)  (pure:m ~)
+  ;<  ok=?  bind:m  (old-beacon-put now)
+  ?:  ok  (pure:m ~)
+  ::  the mirror stopped taking writes (its folder was deleted, or the
+  ::  road taken away): stop trying until the writer next starts
+  (put-file (rf up / %'old-beacon.json') [/ %json] `json`[%b %.n])
+::  +old-beacon-arm, +old-beacon-put: THE OLD LATTICE-FS BEACON.
+::
+::    lattice-fs builds before 2026-11 (the desktop app's among them) watch
+::    the keep at /grubbery/api/keep/apps/lattice.lattice_app/beacon/rev,
+::    which is +app-base, hardcoded. On a desk install nothing is there, so
+::    grubbery's keep sends only its 30 s heartbeat. The mount takes the
+::    open stream as live and stops its own polling, and then never sees a
+::    change made on the ship until it is remounted.
+::
+::    So a desk install also writes each /rev bump to a grub under
+::    +app-base, through the make road weir.json already declares there
+::    for +retire-old-app. Weigh that before dropping the road.
+::
+::    The grub is the file `rev` in a FOLDER `rev`, at beacon/rev/rev. The
+::    keep takes beacon/rev as a file if there is one and as a folder if
+::    not, and a folder serves both kinds of client: one that opens after
+::    this lands gets "old /rev" then "upd /rev", as from the real beacon,
+::    and one that opened BEFORE it, while nothing was there, is already
+::    subscribed to that folder and hears every write into it.
+::
+::    One soft write per bump, and only once the writer start found it
+::    works. With the road refused it would print a veto on every save.
+::
+++  old-beacon-arm
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  sb=path  bind:m  self-base
+  ;<  now=@da  bind:m  bowl-now
+  ;<  ok=?  bind:m
+    ::  a ball-era install's own beacon is the one they watch
+    ?:  =(sb app-base:lu)  (pure:(fiber:fiber:nexus ,?) |)
+    (old-beacon-put now)
+  (put-file (rf root / %'old-beacon.json') [/ %json] `json`[%b ok])
+::
+++  old-beacon-put
+  |=  now=@da
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  dir=path  (weld app-base:lu /beacon/rev)
+  =/  =bask:tarball  [[/ %json] (numb:enjs:format `@ud`now)]
+  ;<  ok=?  bind:m  (ug-over [%& %& dir %rev] bask)
+  ?:  ok  (pure:m &)
+  ::  a folder on the way is missing (+retire-old-app deleted the old
+  ::  copy, and a fresh install never had one). An existing one answers
+  ::  "already exists", which is fine: the write after says whether the
+  ::  chain is there.
+  =/  dirs=(list path)
+    :~  app-base:lu
+        (weld app-base:lu /beacon)
+        dir
+    ==
+  |-  ^-  form:m
+  ?~  dirs  (ug-over [%& %& dir %rev] bask)
+  ;<  *  bind:m  (make-soft-dir i.dirs)
+  $(dirs t.dirs)
+::  +make-soft-dir: make an empty folder, %.n if it was refused or failed
+::  (an existing folder fails). A veto comes back as a value, so nothing
+::  the fiber wrote before it is rolled back.
+::
+++  make-soft-dir
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  =wire  bind:m  (nonce:io /make)
+  ;<  ~  bind:m
+    (send-dart:io %node wire [%& %| pax] %make %.n %.n &+[`[~ ~ %.n ~] ~])
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %veto *]  [%done %.n]
+      [~ %made * *]
+    ?.  =(wire wire.u.in)  [%skip ~]
+    [%done =(~ err.u.in)]
+  ==
 ::  +poke-eval: send an eval-action to the writer (serialized like all writes).
 ::
 ++  poke-eval
@@ -11868,6 +11957,7 @@
       "\"><textarea name=\"body\" placeholder=\"Comment as "
       (scow %p shp)
       "\" required></textarea><button type=\"submit\">Post</button></form>"
+      busy-script
     ==
   ;<  extra=tape  bind:m  (render-comments rel con box)
   ::  cap a hostile PEER's data (own data is trusted): a big cord, OR any non-cord
@@ -12533,7 +12623,7 @@
     (fall (mole |.(;;(view-mode:pg (sang-noun:tarball sang.u.sw)))) %text)
   =/  dat  (~(get by fils) %data)
   ?~  dat
-    (send-html eyre-id (render-clearweb (pax-str pax) "" "<p>no data</p>" (weld (clearweb-bar authed) nav-script)))
+    (send-html eyre-id (render-clearweb (pax-str pax) "" "<p>no data</p>" :(weld (clearweb-bar authed) nav-script busy-script)))
   =/  drev=@ud
     =/  wf=(map @ta cass:clay)  ?~(fil.wave.pv ~ file.u.fil.wave.pv)
     ud:(fall (~(get by wf) %data) *cass:clay)
@@ -12570,7 +12660,7 @@
   =/  doc=@t
     %:  clearweb-doc
       pax  shown  vmode  head  ?=(^ tf)  home  cmts
-      (weld (clearweb-bar authed) nav-script)
+      :(weld (clearweb-bar authed) nav-script busy-script)
     ==
   ::  raw html served on our own origin runs with the owner's session when
   ::  the owner opens it. A page shared for edit may hold a peer's markup,
@@ -12616,6 +12706,7 @@
     (en-xml:html body.page)
     ?:(authed omni-autocomplete "")
     nav-script
+    busy-script
     "</body></html>"
   ==
 ::  +forum-read-notes: the refusal notes under /forum/notes, newest first.
@@ -13758,7 +13849,7 @@
   %-  scot  :-  %ux
   %-  mug
   :*  -:..shell-ver  -:gfm  -:lgmi  -:lkv  -:fre  -:lc  -:tpl  -:lo
-      web-css  pwa-head  orrery-slot  nav-script  page-cache-script
+      web-css  pwa-head  orrery-slot  nav-script  busy-script  page-cache-script
       (sse-script "k" "r")
   ==
 ++  sw-js
@@ -13888,6 +13979,23 @@
   ^-  tape
   %-  trip
   '<script>(function(){var b=document.getElementById("navb"),f=document.getElementById("navf");var h=document.getElementById("ham"),m=document.getElementById("hammenu");if(h&&m){h.addEventListener("click",function(e){e.preventDefault();e.stopPropagation();m.hidden=!m.hidden});document.addEventListener("click",function(){m.hidden=true})}if(!b||!f)return;var ents=[],pos=-1;try{ents=JSON.parse(sessionStorage.latNav||"[]")}catch(e){}var prev=+(sessionStorage.latNavPos||-1);var st=history.state&&typeof history.state.latI==="number"?history.state.latI:null;if(st!==null&&st<ents.length){pos=st}else if(prev>=0&&ents[prev]===location.href){pos=prev;history.replaceState({latI:pos},"")}else{ents=ents.slice(0,prev+1);ents.push(location.href);if(ents.length>400){ents=[location.href]}pos=ents.length-1;history.replaceState({latI:pos},"")}try{sessionStorage.latNav=JSON.stringify(ents);sessionStorage.latNavPos=String(pos)}catch(e){}function sync(){var si=history.state&&typeof history.state.latI==="number"?history.state.latI:pos;pos=si;try{sessionStorage.latNavPos=String(pos)}catch(e){}if(pos>0){b.removeAttribute("disabled")}else{b.setAttribute("disabled","")}if(pos<ents.length-1){f.removeAttribute("disabled")}else{f.setAttribute("disabled","")}}sync();window.addEventListener("pageshow",function(ev){if(ev.persisted){try{ents=JSON.parse(sessionStorage.latNav||"[]")}catch(e){}sync()}});b.addEventListener("click",function(){history.back()});f.addEventListener("click",function(){history.forward()})})();</script>'
+::  +busy-script: the reader's loading line, and no second send of a form.
+::  A link followed or a form sent draws a 2px accent streak along the top
+::  of the page once the wait has run 180 ms (a quick answer never flashes
+::  it), the same line the editor draws (busy, ui-src/lattice/10-shell.js).
+::  A form sent is marked aria-busy and its submit buttons are disabled
+::  until the answer replaces the page, so a slow pier cannot take the same
+::  comment, post or vote twice. Everything clears when a page comes back
+::  from the back-forward cache, and after 30 s if no answer came (a
+::  download, a 204). In a frame of the editor the shell draws the line
+::  around the frame (frameLoading, 24-tools.js), so the page only guards
+::  its forms there. Once per document: the own-page comment box carries a
+::  copy into the reader's srcdoc frame, which has no other script.
+::
+++  busy-script
+  ^-  tape
+  %-  trip
+  '<script>(function(){if(window.latBusyOn)return;window.latBusyOn=1;var d=document,L=null,T=0,C=0,shell=false;try{shell=window.top!==window&&!!window.top.latFrameEditor}catch(x){}var s=d.createElement("style");s.textContent=".latbusy{position:fixed;top:0;left:0;right:0;height:2px;z-index:2147483647;pointer-events:none;background:linear-gradient(90deg,transparent,var(--accent,#4a7c59),transparent) no-repeat;background-size:40% 100%;animation:latbusy 1.2s ease-in-out infinite}.latbusy[hidden]{display:none}@keyframes latbusy{from{background-position:-70% 0}to{background-position:170% 0}}@media(prefers-reduced-motion:reduce){.latbusy{animation:none;background:var(--accent,#4a7c59);opacity:.45}}form[aria-busy=true] :disabled{opacity:.55;cursor:progress}";(d.head||d.documentElement).appendChild(s);function line(){if(shell)return;if(!L){L=d.createElement("div");L.className="latbusy";L.setAttribute("aria-hidden","true");d.body.appendChild(L)}L.hidden=false}function start(){clearTimeout(T);clearTimeout(C);T=setTimeout(line,180);C=setTimeout(stop,30000)}function stop(){clearTimeout(T);clearTimeout(C);if(L)L.hidden=true;var fs=d.querySelectorAll("form[data-lat-sent]");for(var i=0;i<fs.length;i++){fs[i].removeAttribute("data-lat-sent");fs[i].removeAttribute("aria-busy");var bs=fs[i].querySelectorAll("[data-lat-off]");for(var j=0;j<bs.length;j++){bs[j].disabled=false;bs[j].removeAttribute("data-lat-off")}}}addEventListener("click",function(e){var a=e.target.closest&&e.target.closest("a[href]");if(!a||e.defaultPrevented||e.button!==0||e.ctrlKey||e.metaKey||e.shiftKey||e.altKey||a.hasAttribute("download"))return;if(/^_blank$/i.test(a.getAttribute("target")||"")||!/^https?:/.test(a.href))return;if(a.hash&&a.href.split("#")[0]===location.href.split("#")[0])return;start()});addEventListener("submit",function(e){var f=e.target,b=e.submitter;if(f.hasAttribute("data-lat-sent")){e.preventDefault();return}if(e.defaultPrevented)return;var at=function(k,fk){return b&&b.hasAttribute(fk)?b.getAttribute(fk):f.getAttribute(k)||""};if(/^dialog$/i.test(at("method","formmethod"))||/^_blank$/i.test(at("target","formtarget")))return;f.setAttribute("data-lat-sent","");f.setAttribute("aria-busy","true");setTimeout(function(){var bs=f.querySelectorAll("button:not([type=button]),input[type=submit]");for(var i=0;i<bs.length;i++)if(!bs[i].disabled){bs[i].disabled=true;bs[i].setAttribute("data-lat-off","")}},0);start()});addEventListener("pageshow",function(e){if(e.persisted)stop()})})()</script>'
 ::  +sw-register-script: registers the worker, and reloads the page when
 ::  a new one takes over (a deploy), unless the page holds unsaved work.
 ::  Not in a frame: the editor reloads itself on the same takeover, which
@@ -14840,7 +14948,8 @@
     ::  style here, which is not acceptable in this UI.
     omni-autocomplete
     bm-script
-    (sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
+    (sse-script keep rev)  nav-script  busy-script  page-cache-script  sw-register-script
+    "</body></html>"
   ==
 ::  +orrery-slot: the reader's place for "Send to orrery" (ui-app/orrery.js,
 ::  docs/orrery.md). orrery.js fills it on the owner's own pages while orrery
@@ -14897,7 +15006,8 @@
     ::  bookmark button: POST the address-bar url to /bookmark (owner-gated, same
     ::  origin). single-quote cord so the js braces stay literal.
     bm-script
-    (sse-script keep rev)  nav-script  page-cache-script  sw-register-script  "</body></html>"
+    (sse-script keep rev)  nav-script  busy-script  page-cache-script  sw-register-script
+    "</body></html>"
   ==
 ::  +beacon-rev-tape: the current /beacon/rev value, rendered as the same
 ::  text the keep-SSE stream sends in its event data. Baked into live pages

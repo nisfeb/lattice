@@ -37,7 +37,7 @@
     renderGroupAccess();
   }
   async function permSave(g) {
-    const r = await fetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {
+    const r = await busyFetch(api + '/share-group-save?name=' + encodeURIComponent(g.name), {
       method: 'POST',
       body: JSON.stringify({ ships: g.ships, peek: g.peek, make: g.make }),
     }).catch(() => null);

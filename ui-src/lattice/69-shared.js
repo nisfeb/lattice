@@ -55,7 +55,7 @@
         x.title = 'remove from this list (their grant is untouched)';
         x.onclick = async (e) => {
           e.preventDefault(); e.stopPropagation();
-          const r = await fetch(api + '/shared-with-me-del?host=' + encodeURIComponent(host) +
+          const r = await busyFetch(api + '/shared-with-me-del?host=' + encodeURIComponent(host) +
             '&path=' + encodeURIComponent(it.path), { method: 'POST' }).catch(() => null);
           if (!r || !r.ok) { st('remove failed' + await errText(r), false); return; }
           loadShared();
@@ -102,7 +102,7 @@
   // -> true once the link is in, after saying why when it is not
   async function moveIn(it, to) {
     stWork('moving ' + swmLeaf(it) + ' into ' + to + '\u2026');
-    const r = await fetch(api + '/link-make?host=' + encodeURIComponent(it.host) +
+    const r = await busyFetch(api + '/link-make?host=' + encodeURIComponent(it.host) +
       '&path=' + encodeURIComponent(it.path) + '&to=' + encodeURIComponent(to),
     { method: 'POST' }).catch(() => null);
     if (!r || !r.ok) { st('move failed' + await errText(r), false); return false; }
@@ -163,7 +163,7 @@
     if (!lk) return;
     for (const t of allTabs().filter((x) => x.kind === 'page' && x.key === name))
       if ((await closeTab(t.id)) === false) return;
-    const r = await fetch(api + '/link-unmake?name=' + encodeURIComponent(name),
+    const r = await busyFetch(api + '/link-unmake?name=' + encodeURIComponent(name),
       { method: 'POST' }).catch(() => null);
     if (!r || !r.ok) { st('move failed' + await errText(r), false); return; }
     dropTreeNodes(name);
