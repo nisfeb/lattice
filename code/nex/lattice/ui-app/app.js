@@ -6578,6 +6578,31 @@
     return row;
   }
 
+  // the folders lattice makes or draws itself get a small mark after the
+  // name, and the mark's tip says what the folder is and what deleting it
+  // does. conflicts/ is a real folder of pages, made by the first save
+  // that loses to a newer one (conflict-name in app.hoon, and the offline
+  // queue's kept copies in 08-offline.js). Shared with me is drawn from
+  // /shared-with-me and is in no one's pages (69-shared.js).
+  const SYSF = {
+    conflicts: [ico('conflict'), 'Made by lattice: when two edits of a page cross, the one '
+      + 'that lost is kept here as a page (Sync conflicts lists them). Safe to delete once '
+      + 'read: it is made again on the next conflict.'],
+    shared: [ico('inbox'), 'Pages other ships shared with you. Not a folder in your pages: '
+      + 'lattice shows it while anything is shared with you, and removing an entry leaves '
+      + 'their grant as it is.'],
+  };
+  function sysFlair(row, which) {
+    const [svg, what] = SYSF[which];
+    const s = document.createElement('span');
+    s.className = 'sysf';
+    s.innerHTML = svg;
+    s.title = what;
+    s.setAttribute('aria-label', what);
+    row.append(s);
+    return s;
+  }
+
   // ── keyboard: the files and memory trees as ARIA trees ──────────────────
   // The rows are flat siblings indented by depth, so the shape is read from
   // aria-level: a folder's children are the shown rows after it with a
@@ -6767,6 +6792,7 @@
         linkDrop(row, n.path);       // a shared-with-me row dropped here (69-shared.js)
         if (n.path === curFolder) row.classList.add('cur');
         if (n.dname) row.lastChild.title = n.path;     // the label's tip
+        if (n.path === 'conflicts') sysFlair(row, 'conflicts');
         if (treeShare(n.path) === 'clearweb') {
           const cw = document.createElement('span');
           cw.className = 'cw';
@@ -9545,8 +9571,10 @@
   // appended by renderTree, after the pages
   function renderShared(coll) {
     const fold = (key, label, depth) => {
-      treeList.appendChild(folderRow(label, depth, coll.includes(key),
-        () => { paneColl.flip(key); renderTree(); }, undefined, key));
+      const row = folderRow(label, depth, coll.includes(key),
+        () => { paneColl.flip(key); renderTree(); }, undefined, key);
+      if (key === SWM) sysFlair(row, 'shared');
+      treeList.appendChild(row);
       return !coll.includes(key);
     };
     if (!fold(SWM, 'shared with me', 0)) return;
