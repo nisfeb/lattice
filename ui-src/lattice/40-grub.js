@@ -69,6 +69,9 @@
     // paint once the kind is known: a highlight of the old kind is thrown
     // away when it answers
     render();
+    // the pane follows too: a Read tab opened this grub in place, and
+    // nothing else repaints it, so it kept the page that was there before
+    refreshPreview();
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'
        : 'grub ' + blot + ', no autosave here: Ctrl+S to save');
@@ -92,6 +95,9 @@
     grubUnsure = null;
     if (grubPrevKind === null) grubPrevKind = pkind.value;
     curFolder = null;
+    // nothing of the document before it stays in the pane either, while
+    // the grub loads or after a load that fails
+    prevBlank();
     // a shared lattice page reads as "~ship: its/name", not its whole ball
     // path; the name field is only a label here (Save goes by grubPath)
     const pg = /\/page\/(.+)\/code$/.exec(p);
