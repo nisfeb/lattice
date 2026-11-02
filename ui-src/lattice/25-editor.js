@@ -130,9 +130,10 @@
     }
   });
   pkind.addEventListener('change', () => {
-    if (!kindSwitchOk(pkind.value)) { pkind.value = curKind || 'fodt'; return; }
+    if (!kindSwitchOk(pkind.value)) { pkind.value = curKind || (pkind.value === 'fodt' ? 'md' : 'fodt'); return; }
     curKind = pkind.value;
-    render();
+    //  an empty new page made a Writer page starts as the blank document
+    if (curKind === 'fodt' && !src.value.trim()) writerBlank(); else render();
     //  the kind rides every save as a query param, so switching it on an open
     //  page must dirty the editor or navigating away silently reverts the
     //  choice. A page with no name yet gets its kind from the first save.

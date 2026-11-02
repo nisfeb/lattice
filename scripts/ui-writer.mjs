@@ -558,6 +558,28 @@ try {
       && /cannot become a Writer document/.test(await status()), await status());
     const shipMd = await shipBody(P.md);
     check('F: and the md page is still md on the ship', shipMd && shipMd.kind === 'md', shipMd && shipMd.kind);
+
+    //  a new page not saved yet: its kind is its text's
+    step = 'F new page kind';
+    //  a context of its own: no tabs to restore, so it boots on a new page
+    const npCtx = await browser.createBrowserContext();
+    const np = await openPage(npCtx, env, { viewport: { width: 1300, height: 900 } });
+    await np.goto(APP, { waitUntil: 'networkidle2', timeout: 60000 });
+    await np.waitForFunction(() => document.getElementById('pname').value === '' && !!document.getElementById('src'), { timeout: 60000 });
+    const npKind = async (k) => {
+      await np.evaluate((v) => { const p = document.getElementById('pkind'); p.value = v; p.dispatchEvent(new Event('change')); }, k);
+      await sleep(400);
+      return np.evaluate(() => document.getElementById('pkind').value);
+    };
+    await np.evaluate(() => { const t = document.getElementById('src'); t.value = 'hello world'; t.dispatchEvent(new Event('input')); });
+    check('F: a new page with text cannot become fodt', (await npKind('fodt')) === 'md');
+    await np.evaluate(() => { document.getElementById('src').value = ''; });
+    await npKind('fodt');
+    const nb = await np.waitForFunction(() => document.querySelector('lat-writer:not([hidden]) .lw-doc')
+      && document.getElementById('src').value.includes('<office:document'), { timeout: 30000 }).then(() => true, () => false);
+    check('F: an empty new page made fodt starts as the blank document, in the editor', nb);
+    check('F: and it cannot be made md again', (await npKind('md')) === 'fodt');
+    await npCtx.close();
   }
 
   // ------------------------------------------------------------ G: tabs and splits

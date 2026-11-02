@@ -102,9 +102,11 @@
     if (on) wrSrc.set(wrKey(), ''); else wrSrc.delete(wrKey());
     writerApply();
   }
-  // fodt stays fodt, and nothing with text becomes one
+  // fodt stays fodt, and nothing with text becomes one. A new page's kind
+  // is its text's: XML of a Writer document, other text, or none yet
   function kindSwitchOk(to) {
-    const from = current ? curKind : src.value.trim() ? 'text' : to;
+    const t = src.value.trim();
+    const from = current ? curKind : !t ? to : /^(<\?xml[^>]*>\s*)?<office:document[\s/>]/.test(t) ? 'fodt' : 'text';
     if ((from === 'fodt') === (to === 'fodt')) return true;
     st(from === 'fodt' ? 'a Writer document cannot change kind' : 'a page with text cannot become a Writer document', false);
     return false;
@@ -112,6 +114,7 @@
   // a new fodt page: LibreOffice's blank document, from writer.js
   async function writerBlank() {
     try { src.value = (await writerReady()).blank; } catch { st('the Writer editor did not load', false); return false; }
+    wrSrc.delete(wrKey());
     render();
     return true;
   }

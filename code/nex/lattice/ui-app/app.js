@@ -4098,9 +4098,10 @@ const WRITER_H = '0v1.4vdgp.1id9a.rg3ad.802jf.rfi33';
     }
   });
   pkind.addEventListener('change', () => {
-    if (!kindSwitchOk(pkind.value)) { pkind.value = curKind || 'fodt'; return; }
+    if (!kindSwitchOk(pkind.value)) { pkind.value = curKind || (pkind.value === 'fodt' ? 'md' : 'fodt'); return; }
     curKind = pkind.value;
-    render();
+    //  an empty new page made a Writer page starts as the blank document
+    if (curKind === 'fodt' && !src.value.trim()) writerBlank(); else render();
     //  the kind rides every save as a query param, so switching it on an open
     //  page must dirty the editor or navigating away silently reverts the
     //  choice. A page with no name yet gets its kind from the first save.
@@ -4409,9 +4410,11 @@ const WRITER_H = '0v1.4vdgp.1id9a.rg3ad.802jf.rfi33';
     if (on) wrSrc.set(wrKey(), ''); else wrSrc.delete(wrKey());
     writerApply();
   }
-  // fodt stays fodt, and nothing with text becomes one
+  // fodt stays fodt, and nothing with text becomes one. A new page's kind
+  // is its text's: XML of a Writer document, other text, or none yet
   function kindSwitchOk(to) {
-    const from = current ? curKind : src.value.trim() ? 'text' : to;
+    const t = src.value.trim();
+    const from = current ? curKind : !t ? to : /^(<\?xml[^>]*>\s*)?<office:document[\s/>]/.test(t) ? 'fodt' : 'text';
     if ((from === 'fodt') === (to === 'fodt')) return true;
     st(from === 'fodt' ? 'a Writer document cannot change kind' : 'a page with text cannot become a Writer document', false);
     return false;
@@ -4419,6 +4422,7 @@ const WRITER_H = '0v1.4vdgp.1id9a.rg3ad.802jf.rfi33';
   // a new fodt page: LibreOffice's blank document, from writer.js
   async function writerBlank() {
     try { src.value = (await writerReady()).blank; } catch { st('the Writer editor did not load', false); return false; }
+    wrSrc.delete(wrKey());
     render();
     return true;
   }
