@@ -270,6 +270,16 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 
 **Acceptance.** Every phase 1 feature can be applied, removed and undone, and the result passes the round-trip harness when saved.
 
+**Done (2026-11-02).** `ui-src/writer/` gains `view.js`, `toolbar.js`, `keys.js`, `paste.js` and `blank.fodt`; `writer.js` is 361.8 KB raw and 107.9 KB gzipped, which leaves 38 KB raw of the budget for Task 12. Notes:
+
+- **The sheet** takes the first master page's width and margins and scales both down to fit a narrow pane (no CSS zoom, so ProseMirror's coordinates stay true). The document's paragraph and named character styles become CSS through the strict grammar, matched on `data-ps` and `data-cs` attributes whose values are quoted for CSS by escaping everything but letters, digits, `-` and `_`. A span's other properties go through the same whitelist. List styles map to `list-style-type` for four levels (bullets to disc, circle and square). Table column widths and cell borders from styles are not drawn yet.
+- **Toolbar.** Paragraph style, body text and Heading 1 to 6, character style, B I U S, bullet and numbered list, outdent, indent, quote, link, page break before, undo, redo. Insert table, rows, columns and the header toggle are not in it; Tab moves between cells. Ctrl+1 to 6 are also bound as Ctrl+Alt+1 to 6, because Chromium keeps Ctrl+1 to 8 for its tabs. Enter at the end of a block starts one in the style's `style:next-style-name`.
+- **Lists** take the document's list style of that kind (List 1 or Numbering 123 when defined, else the first of the kind). With none the button says so: LibreOffice does not apply its built-in list styles by name (checked with 26.8), and lattice adds no named style.
+- **Headings and quotes.** LibreOffice 26.8 applies `Quotations` by name when the document does not define it, but drops an undefined `Heading_20_N` on load, so `blank.fodt` defines Text body, Quotations, Heading 1 to 6, List 1 and Numbering 123. It is LibreOffice's default document re-saved by LibreOffice until it settled (42 KB raw, 5 KB gzipped).
+- **Paste** keeps no span or file attributes, takes the document's body, heading and list styles, and leaves bookmarks, reference marks and change and comment anchors behind, since a copy would be a duplicate name or half a pair.
+- **Splits** (the Task 8 note): after a step that adds structure, the second node with a given span or `xml:id` loses both, and its page break.
+- **Macros.** LibreOffice writes an empty Basic `ooo:libraries` in every document, so `macros` now means a library, a module or an event listener.
+
 ### Task 10: Shell integration and lazy loading
 
 **Files:**
@@ -290,6 +300,14 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 - [ ] **Step 4:** Commit: `feat: open and edit Writer pages in the editor`.
 
 **Acceptance.** Fodt pages create, open, edit, autosave, park, split, go offline and come back like any other page, and the boot request count is unchanged.
+
+**Done (2026-11-02).** `ui-src/lattice/26-writer.js` is the shell side; `app.js` grows by 7.5 KB against release 97, so Task 11 has about 0.5 KB of the spec's 8 KB left and should trim before it adds. Notes:
+
+- **Loading.** `build-ui.mjs` writes `WRITER_H`, the ship's `+js-tag` of the built `writer.js` (first 16 bytes of its SHA-256 as a little-endian atom, printed `@uv`), into `app.js`, and the loader asks for `writer.js?h=H`, which `+serve-ui` answers immutable. A `writer.js` change therefore rebuilds `app.js` too: run `build-writer.mjs` first. The worker caches it on first use (`LAZY` in `+sw-js`), and `+shell-ver` covers it.
+- **Write-back.** `render()` (25-editor.js) is the hook: every new text or kind brings the editor up to date in a microtask, so `readOnly` and the revision view are settled. A change marks the page dirty at once; the text goes into `src.value` through `edited()` 300 ms later and at `writerSync`, called by `save`, `autosave`, `snapNow` (tab and split parks), Duplicate, Download and the preview.
+- **Refused bodies** show the XML in the textarea with the reason above it, editable for repair (the plan said read-only past a cap; repair needed it editable). Source in the page menu does the same on purpose. Export .odt and Print or PDF are left for Task 12.
+- **Kind picker.** A saved page cannot switch to or from fodt; a new page can become fodt only while empty. A new fodt page from the dialog starts from `blank.fodt`.
+- **Tests.** The fodt cases planned for `ui-tabsafe.mjs` and `ui-offline.mjs` are sections G and H of `ui-writer.mjs`, next to the rest; `ui-perf.mjs` asserts that boot and markdown opens never ask for `writer.js`. On a clone of ~dep, `ui-writer.mjs` passes 87 checks, and every other ship suite passes except `ui-deskmenu.mjs`, whose `gnext`/`gprev` home check fails the same way on 2e5c644.
 
 ### Task 11: Outline, outgoing links and omnibar search
 
