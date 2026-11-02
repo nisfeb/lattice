@@ -129,6 +129,8 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 
 **Acceptance.** A fodt page saves, reads back byte-identical, survives a conflicting save (its `conflicts/` copy has kind `fodt`), and `fodt` appears nowhere in `+page-type-ok`.
 
+**Review decision (2026-11-02), accepted.** `+mode-mark` maps `%fodt` to `%text`, so until Task 7 a published fodt page goes out as its escaped source under `%text`. This keeps a `%fodt` mark off the wire (Decisions 4) without pulling the renderer forward. Task 7 Step 3 removes the arm and maps `%fodt` to `%html`. The branch must not merge before Task 7 lands. Review also added the key refusal checks: `test-page-type-ok` asserts `fodt` is refused, and api-matrix asserts a scoped key gets 403 for `type=fodt` on `page-save` and `page-save-batch` (Decisions 6).
+
 ### Task 4: Kind tables everywhere
 
 **Files:**
@@ -145,6 +147,8 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 - [ ] **Step 4:** Commit: `feat: fodt in every kind table`.
 
 **Acceptance.** A fodt page shows as `name.fodt` in the tree, the mount and a vault export, and a vault restore brings it back as `fodt`.
+
+**Review decision (2026-11-02), accepted.** The inbound `odt: 'fodt'` alias and its `ACCEPTED_EXCEPTIONS` entry move to Task 12. kind-parity also holds KMAP (`vault.js`) and desktop `PAGE_EXTS` (`commands.rs`) to EXT_KIND, and the uploader, the vault restore and the desktop picker all read a matched file as text, so the alias today would turn a binary `.odt` into a garbage fodt page. Task 4 also added `fodt` to `PAGE_EXTS`, which the file list above missed.
 
 ### Task 5: lattice-fs and LibreOffice's save pattern
 
@@ -285,6 +289,8 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 - [ ] **Step 2:** Implement.
 - [ ] **Step 3:** Commit: `feat: import and export .odt, print Writer pages`.
 
+- Also (moved here from Task 4 in review): add the inbound alias `odt: 'fodt'` to EXT_KIND only together with the importer, so an `.odt` reaches `odt.js` and never the text read. kind-parity then needs named exceptions for projection.rs, KMAP and desktop `PAGE_EXTS` (or a desktop picker that hands `.odt` over as bytes), and a test that a vault restore and a mount never take a `.odt` as text.
+
 **Acceptance.** `.odt` in and out works in the browser with no desktop, and printing gives paginated output with the document's page size and margins.
 
 ### Task 13: Security pass
@@ -296,6 +302,7 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 
 - [ ] **Step 1:** Open every hostile file as an owner page and as a peer's shared page, in the editor, the preview, the reader, `/c` and `page-dump?render=1`. Assert no script runs (a `window.__PWNED` probe, as `60-preview.js` describes), no request leaves the origin (puppeteer request interception), no fiber crash appears in `/rise.json`, and each surface shows the note or safe output.
 - [ ] **Step 2:** Run `fuzz-api.mjs` with fodt bodies for a fixed budget. Fix and add tests for anything found.
+- [ ] **Step 2b (from the Task 3 review):** A key cannot save `type=fodt`, but the local `page-save` path does not check the existing page's kind, so a key with write scope can replace a fodt page with an md or text body (the link path already checks `kind.l`). Decide with the owner whether Decisions 6 covers overwriting, and if so refuse a keyed save onto an existing fodt page, with an api-matrix case.
 - [ ] **Step 3:** Commit: `test: hostile Writer documents`.
 
 **Acceptance.** The hostile suite and the fuzz budget pass.
