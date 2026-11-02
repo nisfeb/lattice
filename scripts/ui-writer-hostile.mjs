@@ -7,6 +7,7 @@
 //  is saved as a fodt page and shared clearweb, then shown in:
 //    the editor (a tab), the preview frame, the urb:// reader, /c, the /x
 //    view, and page-source?render=1 (what the editor shows before writer.js)
+//  The crafted document's macros are named in the page menu, never run.
 //  On each surface it asserts:
 //    no script from the document runs (window.__PWNED, in every frame),
 //    no request leaves the ship's origin (request interception),
@@ -232,6 +233,18 @@ for (const [n] of files) {
       const live = await page.evaluate(() => [...document.querySelectorAll('lat-writer a[href]')].map((a) => a.getAttribute('href'))
         .filter((h) => !/^(https?:|mailto:|urb:|#|\/|\.)/i.test(h) || /^\/\//.test(h)));
       check('editor ' + n + ': only safe links are live', live.length === 0, live.join(' '));
+      if (n === 'crafted') {
+        // a document with Basic macros says so in the page menu, and the
+        // item does nothing (spec, Security: macros)
+        const mi = await page.evaluate(() => {
+          document.getElementById('tmenu').click();
+          const b = document.querySelector('.tmenu [data-mi="macros"]');
+          const r = b ? { text: b.textContent, disabled: b.disabled } : null;
+          document.getElementById('tmenu').click();
+          return r;
+        });
+        check('editor crafted: the page menu says it contains macros, never run', !!mi && /macros/i.test(mi.text) && mi.disabled, JSON.stringify(mi));
+      }
     }
   });
 

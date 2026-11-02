@@ -372,6 +372,15 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 
 **Acceptance.** The hostile suite and the fuzz budget pass.
 
+**Done (2026-11-02).** Notes:
+
+- **Step 2c.** `+fodt-at` (app.hoon) reads the page's code grub and asks `+content-builder` for its kind. The keyed page-save checks it after the scope check, and page-save-batch checks every item before anything is written; either answers 403. api-matrix: a scoped key's md and text saves and a batch onto a fodt page are refused, the page keeps its kind and body, and an md save beside it still lands. Step 2b is covered by the same rule (a key cannot save fodt, so any keyed save onto a fodt page would change its kind).
+- **ui-writer-hostile.mjs** shows the eight hostile files and a crafted one (data:, macro:, .uno:, script, hex-encoded, tabbed and spaced javascript:, protocol-relative and file: links, style and display names carrying CSS and markup, an event listener inside a link, a linked section, an SVG in binary data, an external image, a comment carrying markup, a dc:title carrying a closing title tag) in the editor, the preview frame, the urb:// reader, /c, /x and page-source?render=1. Nothing runs, nothing leaves the origin, no element carries a handler, unsafe link or url() style, the published copy is inert HTML, the macros item is in the page menu and disabled, and /rise.json does not change. 246 checks pass on a clone of ~dep.
+- **Peers.** A real hostile peer was not run: clones are network-isolated and the gate's peer set is ~wep. A peer's %fodt mark is rendered by `+fodt-make`, which is `+fodt-all`, the function the hoon tests and this suite cover; a peer's %html is framed sandboxed, on this build and on release 92.
+- **fuzz-api.mjs --only fodt**: the hostile corpus plus 60 mutants (seed 1) and 150 (seed 7) of the small corpus files, saved, rendered, previewed and searched. No findings, so tests/lib/lattice-fodt.hoon gained nothing.
+- **JS tokenizer**, probed directly: a DOCTYPE with a subset, a lowercase one, a mid-body ENTITY and an external entity are refused; a bare DOCTYPE, unknown entities, CDATA and out-of-range numeric references open and round-trip byte-identical; depth 300, 200,001 elements and 8 MB plus one byte are refused.
+- **Protocol-relative links** (`//host/x`) pass `+safe-url` as relative and are live in the reader and /c. That is an ordinary off-site link (followed only on a click, like an https one), not a scheme bypass. The editor does not make them live.
+
 ### Task 14: Phase 1 acceptance
 
 - [ ] **Step 1:** Run the full round-trip harness, every `scripts/ui-*.mjs` suite, `cargo test` in both Rust crates, the hoon tests, `fs-matrix.sh` and `fs-libreoffice.sh` on a fake ship.
@@ -385,6 +394,15 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 - A LibreOffice save on the mount lands as one revision; temps and locks never reach the ship.
 - Reader, preview, `/c`, search and the omnibar show text, never raw XML, and never run or fetch anything from a document.
 - No `writer.js` request on a non-Writer cold open; `writer.js` within budget.
+
+**Run (2026-11-02), on clones of ~dep at 372363c and later.**
+
+- writer-roundtrip (LibreOffice 26.8): 528 checks, every corpus file no-op byte-identical, every scripted edit passes the no-loss check, every LibreOffice re-save opens and round-trips. 14-lo-gui is still pending (needs a GUI save).
+- Through a lattice-fs mount: each corpus file with its scripted edit, saved as a page, is served byte for byte and LibreOffice reads it with canonical element counts equal but the edit's adds (10-unknown keeps its notes, TOC, comments, tracked changes, bookmarks, reference marks, fields, sections, master pages, frame and Basic library). A paragraph typed in the browser editor reads back in LibreOffice the same way. A LibreOffice save onto the mount lands as a fodt page, a second save is one more revision, no lock, temp or conflict reaches the ship, and the saved document opens in the browser editor with the edit and no error.
+- Ship suites pass: ui-writer, ui-writer-import, ui-writer-hostile, ui-perf, ui-preview-open, ui-matrix, ui-tabs, ui-shell-tabs, ui-splits, ui-tabsafe, ui-offline, ui-queue, ui-loading, ui-treeorder, ui-treedelete, ui-createdialog and ui-modeswitch; api-matrix, fs-libreoffice.sh, 485 hoon tests on the ship, cargo test in both crates.
+- fs-matrix.sh fails 7 checks, none in the fodt cases: the mv-clobber case (coreutils 9.11 `mv` gets EEXIST) and the generic projection, which still uses the instance path from before the desks move. lattice-fs-rs differs from main only in the kind tables, so neither is from this branch.
+- Step 2 (Tauri, Firefox, a phone) is the owner's manual pass. Chromium at 390 px is covered by ui-writer, and WebKitGTK was smoke-tested in the Task 12 review.
+- Sizes: writer.js 387,772 bytes raw and 116,616 gzipped; app.js 682,763 bytes, 7,680 over release 104.
 
 ---
 
