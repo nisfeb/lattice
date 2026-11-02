@@ -302,6 +302,26 @@
   ==
 ++  test-depth-200-renders
   (yes (has "deep" (fodt-html:fo (deep 200))))
+::  +sneak: `n` spans, each followed by a close tag that matches nothing,
+::  so +scan's count stays low while the real nesting is `n` deep
+++  sneak
+  |=  n=@ud
+  ^-  @t
+  %+  doc  ~
+  ;:  weld
+    "<text:p>"
+    `tape`(zing `(list tape)`(reap n "<text:span></z>"))
+    "deep</text:p>"
+  ==
+++  test-unmatched-closes-do-not-lift-the-depth-cap
+  ;:  weld
+    (expect-eq !>(note) !>((fodt-html:fo (sneak 2.000))))
+    (expect-eq !>('') !>((fodt-text:fo (sneak 2.000))))
+    (expect-eq !>(~) !>((fodt-title:fo (sneak 2.000))))
+    (yes (has "deep" (fodt-html:fo (sneak 200))))
+  ==
+++  test-the-sheet-clips-its-content
+  (yes (has "overflow:auto;" (h "<text:p>x</text:p>")))
 ++  test-over-2mb-gives-the-note
   =/  f=@t  (cat 3 (doc ~ "<text:p>x</text:p>") (bex (mul 8 (mul 2 (bex 20)))))
   ;:  weld

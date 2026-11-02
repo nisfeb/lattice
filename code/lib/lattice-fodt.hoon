@@ -223,12 +223,17 @@
 ::
 ::  +tree: tokens to elements, with an explicit stack (no recursion on
 ::  depth). A close tag with no open match is dropped; one that matches
-::  further down closes what is above it.
+::  further down closes what is above it. The stack is capped at
+::  +max-depth here too: +scan counts every close tag, so unmatched
+::  closes (<a></z><a></z>...) would let the real nesting grow past its
+::  cap, and the +lien below would go quadratic. Over the cap it crashes,
+::  and the callers' +mule gives the note.
 ++  tree
   |=  ts=(list token)
   ^-  (list node)
   =|  stk=(list frame)
   =|  top=(list node)
+  =|  dep=@ud
   |-  ^-  (list node)
   ?~  ts
     ?~  stk  (flop top)
@@ -242,7 +247,9 @@
     $(ts t.ts, stk [i.stk(k [[%t t.t] k.i.stk]) t.stk])
   ::
       %open
-    ?.  e.t  $(ts t.ts, stk [[n.t a.t ~] stk])
+    ?.  e.t
+      ?:  (gte dep max-depth)  ~|(%fodt-too-deep !!)
+      $(ts t.ts, stk [[n.t a.t ~] stk], dep +(dep))
     =/  el=node  [%e n.t a.t ~]
     ?~  stk  $(ts t.ts, top [el top])
     $(ts t.ts, stk [i.stk(k [el k.i.stk]) t.stk])
@@ -250,7 +257,7 @@
       %close
     ?.  (lien stk |=(fr=frame =(n.fr n.t)))  $(ts t.ts)
     =/  [s2=(list frame) t2=(list node)]  (pop-to n.t stk top)
-    $(ts t.ts, stk s2, top t2)
+    $(ts t.ts, stk s2, top t2, dep (lent s2))
   ==
 ++  pop-to
   |=  [n=@t stk=(list frame) top=(list node)]
@@ -836,7 +843,9 @@
     (biff (g 'fo:letter-spacing') |=(v=tape ?:(=("normal" v) `"normal" (len v | &))))
   (join ";" (flop o))
 ::  +page-open: the sheet, its width and margins from the first master
-::  page's layout
+::  page's layout. overflow:auto clips the sheet: the grammar allows
+::  negative margins and indents and any font size, and without the clip
+::  a peer's page could lay text over lattice's own chrome.
 ++  page-open
   |=  sh=sheet
   ^-  tape
@@ -846,7 +855,7 @@
   =/  m  |=(k=@t (fall (l k) "0"))
   ;:  weld
     "<div class=\"fodt\" style=\"box-sizing:border-box;white-space:pre-wrap;"
-    "overflow-wrap:break-word;"
+    "overflow-wrap:break-word;overflow:auto;"
     `tape`?~(w "" :(weld "max-width:" u.w ";"))
     "padding:"  (m 'fo:margin-top')  " "  (m 'fo:margin-right')  " "
     (m 'fo:margin-bottom')  " "  (m 'fo:margin-left')
