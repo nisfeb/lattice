@@ -326,6 +326,21 @@ try {
   await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
   check('reload with a memory tab in front: Knowledge lists it, Files keeps the pages',
     tree.pages > 0 && !tree.stray && tree.mem, JSON.stringify(tree));
+  // the status line follows the tab in front: a grub's status (its
+  // loading line or its failure) must not stay up over a tool tab
+  await page.evaluate(() => window.latTabs.openIn('grub', '/no/such/grub', { newTab: true }));
+  await page.waitForFunction(() => document.getElementById('status').textContent !== '',
+    { timeout: 30000 }).catch(() => {});
+  const grubSt = await page.evaluate(() => document.getElementById('status').textContent);
+  await page.evaluate(() => window.latTabs.openIn('tool', 'frame:/apps/lattice/home#st' + Date.now(), { newTab: true }));
+  await page.waitForFunction(() => {
+    const s = window.latTabs.state();
+    return s.tabs[s.active] && s.tabs[s.active].kind === 'tool';
+  }, { timeout: 30000 }).catch(() => {});
+  await sleep(300);
+  const toolSt = await page.evaluate(() => document.getElementById('status').textContent);
+  check('a tool tab in front does not keep the grub tab\'s status',
+    grubSt !== '' && toolSt === '', JSON.stringify({ grubSt, toolSt }));
 } catch (e) {
   check('suite crashed: ' + e.message, false);
 } finally {
