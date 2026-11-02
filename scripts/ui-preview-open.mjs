@@ -12,6 +12,10 @@
 //  document you just opened. If it only paints when the ship answers, this
 //  fails — which is precisely the regression.
 //
+//  A page over the dump's 256 KB limit has no body in the tree, and its
+//  editor waited on the same held render (perf pass 9). It must show its
+//  text from a plain page-source read, and the render still lands after.
+//
 //  Usage: node scripts/ui-preview-open.mjs      (defaults to the harness ship on :8080)
 import { shipEnv, launchBrowser, openPage, makeCheck, seed } from './lib/harness.mjs';
 
@@ -21,6 +25,8 @@ const APP = env.app;
 //  cannot be a fast server answer wearing a local paint's clothes.
 const SHIP_DELAY = 9000;
 const BUDGET = 2000;
+//  an oversized page's plain read moves 300 KB, so it gets more room
+const BIG_BUDGET = 4000;
 
 const RUN = 'prevopen' + (process.pid % 100000);
 const check = makeCheck();
@@ -36,6 +42,13 @@ const goto = async () => {
 //  first load so the dump carries them like any other page
 await seed(env, [['prevopen-fixture-a', '# Alpha\nPelican harbour lighthouse keeper\n'],
   ['prevopen-fixture-b', '# Beta\nGranite mountain observatory dome\n']]);
+//  and one page over the dump's 256 KB inline limit (+dump-inline-max), so
+//  the dump leaves its body out and the open has to read it from the ship
+const BIG = 'prevopen-fixture-big';
+const bigBody = '# Gamma\n\nZeppelin hangar at dawn\n\n'
+  + Array.from({ length: 6000 }, (_, i) => 'line ' + i + ' of a long pasted document that goes on.\n').join('')
+  + '\nQuetzalcoatl closes it\n';
+await seed(env, [[BIG, bigBody]]);
 const srcdoc = () => p.evaluate(() => document.getElementById('prev').getAttribute('srcdoc') || '');
 
 await goto();
@@ -124,6 +137,45 @@ try {
   //  whole-word: the srcdoc shell wraps every render in script text, and a
   //  marker can be a prefix of an identifier there ("scroll" in scrollHeight)
   check('and it is the NEW document, not the one left behind', !new RegExp('\\b' + pair.wa + '\\b').test(await srcdoc()));
+
+  //  an oversized page: the dump has no body for it, and the editor used to
+  //  show nothing until render=1 answered, which for a big md page is most
+  //  of the open (about 8 s of 9 at 1.5 MB). Its body comes from a plain
+  //  page-source read now, which is not held here, and render=1 is the same
+  //  upgrade it is for a page the dump carries.
+  const bigNode = await p.evaluate(async (n) => {
+    const j = await (await fetch('/apps/lattice/page-dump')).json();
+    const x = (j.nodes || []).find((m) => m.path === n);
+    return x ? { size: x.size, body: typeof x.body === 'string' } : null;
+  }, BIG);
+  check('the dump leaves the oversized page\'s body out', !!bigNode && !bigNode.body, JSON.stringify(bigNode));
+  const tb = Date.now();
+  check('the tree lists the oversized page', await open(BIG));
+  let bigShown = false;
+  try {
+    await p.waitForFunction((w) => (document.getElementById('src').value || '').includes(w),
+      { timeout: BIG_BUDGET }, 'Quetzalcoatl');
+    bigShown = true;
+  } catch {}
+  check('an oversized page shows its text without waiting on the render ('
+    + (Date.now() - tb) + 'ms, render held ' + SHIP_DELAY + 'ms)', bigShown,
+    'editor held: ' + JSON.stringify((await p.evaluate(() => document.getElementById('src').value)).slice(0, 60)));
+  let bigPrev = false;
+  try {
+    await p.waitForFunction((w) => (document.getElementById('prev').getAttribute('srcdoc') || '').includes(w),
+      { timeout: BUDGET }, 'Quetzalcoatl');
+    bigPrev = true;
+  } catch {}
+  check('and its preview paints locally', bigPrev);
+  //  the held render=1 still lands and replaces the local paint
+  const local = await srcdoc();
+  let upgraded = false;
+  try {
+    await p.waitForFunction((l) => { const d = document.getElementById('prev').getAttribute('srcdoc') || '';
+      return d !== l && d.includes('Quetzalcoatl'); }, { timeout: SHIP_DELAY + 30000 }, local);
+    upgraded = true;
+  } catch {}
+  check('and the ship\'s render still replaces it when it lands', upgraded);
 
   //  typing must still be instant — the path that already worked
   await p.evaluate(() => {

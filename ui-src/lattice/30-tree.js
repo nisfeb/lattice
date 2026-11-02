@@ -460,16 +460,31 @@
   // one collator, the order localeCompare gives: localeCompare builds its
   // own on every call, and that was most of an 18 ms sort at boot
   const treeColl = new Intl.Collator();
+  // A path sorts as a folder when anything sits under it, a page included:
+  // `a/b` can be a page AND the parent of `a/b/c`, and the ship sends no
+  // folder node for it then. Deciding by the node alone sorted page `a/b`
+  // among the pages while `a/b/c` sorted under a folder `b`. That made the
+  // comparator inconsistent (folder < page < child < folder), so where a
+  // child landed hung on the array's order, and children rendered at the
+  // top of the parent's folder, away from the page they belong under.
   function treeOrder(list) {
     const dir = treeSort() === 'name-desc' ? -1 : 1;
-    return list.map((n) => ({ n, s: n.path.split('/') })).sort((a, b) => {
+    const dirs = new Set();
+    for (const n of list) {
+      if (!n.page) dirs.add(n.path);
+      for (let i = n.path.indexOf('/'); i > 0; i = n.path.indexOf('/', i + 1))
+        dirs.add(n.path.slice(0, i));
+    }
+    return list.map((n) => ({ n, s: n.path.split('/'), d: dirs.has(n.path) })).sort((a, b) => {
       const m = Math.min(a.s.length, b.s.length);
       for (let i = 0; i < m; i++) {
         if (a.s[i] === b.s[i]) continue;
-        const fa = i < a.s.length - 1 || !a.n.page;
-        const fb = i < b.s.length - 1 || !b.n.page;
+        const fa = i < a.s.length - 1 || a.d;
+        const fb = i < b.s.length - 1 || b.d;
         if (fa !== fb) return fa ? -1 : 1;
-        return dir * treeColl.compare(a.s[i], b.s[i]);
+        // two names the collator calls equal still differ: break the tie
+        // by code unit, or the order would hang on the array's order again
+        return dir * (treeColl.compare(a.s[i], b.s[i]) || (a.s[i] < b.s[i] ? -1 : 1));
       }
       return (a.s.length - b.s.length) || (a.n.page - b.n.page);
     }).map((x) => x.n);
