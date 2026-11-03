@@ -26,9 +26,25 @@ pub fn dlog(msg: &str) {
 /// is the url switched. A failure at any step leaves the old ship's url and
 /// cookie exactly as they were, and since a cookie is only ever attached by
 /// its own origin, neither ship can be sent the other's.
+///
+/// The ship page's Settings calls it too (Connection, under This computer),
+/// so there it asks first in a native dialog naming the ship: a page the
+/// ship serves must not be able to move this app onto another ship unseen.
 #[tauri::command]
-pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String, String> {
+pub async fn connect(
+    app: AppHandle,
+    webview: tauri::Webview,
+    url: String,
+    code: String,
+) -> Result<String, String> {
     let url = crate::session::check_ship_url(&url)?;
+    ship_page_asks(
+        &app,
+        &webview,
+        "Change ship",
+        format!("Connect lattice on this computer to {url}?\n\nThe window switches to that ship."),
+        "Connect",
+    )?;
     dlog(&format!("connect: logging in at {url}"));
     let cookie = crate::session::login(&url, &code)?;
     let ship = crate::session::ship_of(&cookie).ok_or("login: no urbauth cookie")?;
@@ -757,17 +773,26 @@ pub fn reader_status(app: AppHandle) -> Result<ReaderStatus, String> {
     }
 }
 
-/// Empty the shipless reader's local history (the manager's button).
+/// Empty the shipless reader's local history (the Connection tab's button).
+/// Asked in a native dialog when the ship page calls it, since what goes is
+/// the user's and cannot come back. Async, for the dialog's wait.
 #[tauri::command]
-pub fn clear_reader_history(app: AppHandle) -> Result<(), String> {
+pub async fn clear_reader_history(app: AppHandle, webview: tauri::Webview) -> Result<(), String> {
     #[cfg(feature = "urb-engine")]
     {
+        ship_page_asks(
+            &app,
+            &webview,
+            "Clear reading history",
+            "Clear the pages you read anonymously on this computer?".into(),
+            "Clear",
+        )?;
         let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("urb");
         crate::history::History::open(&dir).clear()
     }
     #[cfg(not(feature = "urb-engine"))]
     {
-        let _ = app;
+        let _ = (app, webview);
         Err("this build has no shipless reader".into())
     }
 }
@@ -943,11 +968,29 @@ pub fn backup_schedules(app: AppHandle) -> Vec<crate::config::BackupSchedule> {
 /// silently stops running. last_run is preserved from the stored copy by id,
 /// so editing a schedule's keep or directory does not make it immediately due
 /// again and re-backup on every save.
+///
+/// From the ship page every change is put to the user first in a native
+/// dialog that lists it (schedule_changes). A page the ship serves could
+/// otherwise add a schedule writing into any folder, or pause or remove the
+/// ones there are, and backups would stop with nobody told. Async, for the
+/// dialog's wait.
 #[tauri::command]
-pub fn set_backup_schedules(
+pub async fn set_backup_schedules(
     app: AppHandle,
+    webview: tauri::Webview,
     schedules: Vec<crate::config::BackupSchedule>,
 ) -> Result<(), String> {
+    let changes = schedule_changes(&config::load(&app).backups, &schedules);
+    if changes.is_empty() {
+        return Ok(());
+    }
+    ship_page_asks(
+        &app,
+        &webview,
+        "Scheduled backups",
+        format!("Change the scheduled backups on this computer?\n\n{}", changes.join("\n")),
+        "Change",
+    )?;
     config::update(&app, move |cfg| {
         let mut next = schedules;
         for s in next.iter_mut() {
@@ -958,6 +1001,74 @@ pub fn set_backup_schedules(
         cfg.backups = next;
     })
     .map(|_| ())
+}
+
+/// What a new schedule list changes, one line per schedule, for the dialog
+/// set_backup_schedules shows the ship page. last_run is the scheduler's,
+/// not the page's, so it is no change.
+fn schedule_changes(
+    old: &[crate::config::BackupSchedule],
+    new: &[crate::config::BackupSchedule],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let what = |s: &crate::config::BackupSchedule| {
+        format!("{}, every {}h, keeping {}, into {}", s.label, s.every_hours, s.keep, s.dir)
+    };
+    for n in new {
+        match old.iter().find(|o| o.id == n.id) {
+            None => out.push(format!("add {}", what(n))),
+            Some(o) if o.enabled && !n.enabled => out.push(format!("pause {}", n.label)),
+            Some(o) if !o.enabled && n.enabled => out.push(format!("resume {}", n.label)),
+            Some(o) if (o.label.as_str(), o.every_hours, o.keep, o.dir.as_str())
+                != (n.label.as_str(), n.every_hours, n.keep, n.dir.as_str()) =>
+            {
+                out.push(format!("change {} to {}", o.label, what(n)))
+            }
+            _ => {}
+        }
+    }
+    for o in old {
+        if !new.iter().any(|n| n.id == o.id) {
+            out.push(format!("remove {} (its archives stay)", o.label));
+        }
+    }
+    out
+}
+
+/// Did a page the ship serves make this call, rather than one of the
+/// shell's own pages? The ship page runs at the bridge origin, where every
+/// command it is granted (capabilities/workspace-remote.json) is reachable
+/// by anything the ship serves. An address that cannot be read counts as
+/// the ship's, so a doubt asks rather than skips the question.
+pub fn from_ship_page(w: &tauri::Webview) -> bool {
+    w.url()
+        .map(|u| !(u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost")))
+        .unwrap_or(true)
+}
+
+/// A change the ship page asked for, put to the user in a native dialog
+/// first. The shell's own pages are not asked: only the user's clicks reach
+/// them. Cancelled is an error, which the page shows where the change was.
+/// It blocks until answered, so only an async command may call it.
+pub fn ship_page_asks(
+    app: &AppHandle,
+    w: &tauri::Webview,
+    title: &str,
+    text: String,
+    ok: &str,
+) -> Result<(), String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    if !from_ship_page(w) {
+        return Ok(());
+    }
+    let yes = app
+        .dialog()
+        .message(text)
+        .title(title)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(ok.into(), "Cancel".into()))
+        .blocking_show();
+    if yes { Ok(()) } else { Err("cancelled, nothing changed".into()) }
 }
 
 /// The schedule with this id. One place, so "no backup schedule" reads the
@@ -1573,5 +1684,44 @@ mod backup_race_tests {
         assert_eq!(back.backups[0].last_run, 12_345, "the last_run stamp must survive");
         assert_eq!(back.backups[0].label, "renamed", "the schedule edit must survive");
         std::fs::remove_file(&p).ok();
+    }
+}
+
+#[cfg(test)]
+mod schedule_change_tests {
+    use super::schedule_changes;
+    use crate::config::BackupSchedule;
+
+    fn s(id: &str, label: &str, dir: &str, enabled: bool) -> BackupSchedule {
+        BackupSchedule {
+            id: id.into(),
+            label: label.into(),
+            every_hours: 24,
+            keep: 7,
+            dir: dir.into(),
+            last_run: 0,
+            enabled,
+        }
+    }
+
+    /// The ship page's dialog names every change, and a list that changes
+    /// nothing (last_run aside) asks nothing.
+    #[test]
+    fn every_change_is_named() {
+        let old = vec![s("a", "daily", "/b", true), s("b", "weekly", "/b", true), s("c", "old", "/b", true)];
+        let mut same = old.clone();
+        same[0].last_run = 99;
+        assert!(schedule_changes(&old, &same).is_empty());
+        let new = vec![
+            s("a", "daily", "/elsewhere", true),
+            s("b", "weekly", "/b", false),
+            s("d", "new", "/n", true),
+        ];
+        let c = schedule_changes(&old, &new);
+        assert_eq!(c.len(), 4, "{c:?}");
+        assert!(c[0].starts_with("change daily") && c[0].contains("/elsewhere"));
+        assert_eq!(c[1], "pause weekly");
+        assert!(c[2].starts_with("add new") && c[2].contains("/n"));
+        assert_eq!(c[3], "remove old (its archives stay)");
     }
 }

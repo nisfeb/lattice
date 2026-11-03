@@ -14621,8 +14621,9 @@
     "<div class=\"st-top\"><h1>Settings</h1></div>"
     ::  the tabs. Each href names a panel below; the latOpenSettings anchors
     ::  (backup, editor, publishing, legacy, advanced) sit inside them, and
-    ::  settings.js shows the right panel for any of them. "This computer"
-    ::  is the desktop manager page, reached through the shell (stGo below).
+    ::  settings.js shows the right panel for any of them. In the desktop,
+    ::  settings.js adds the "This computer" group after them (the script
+    ::  at the end).
     "<div class=\"st\"><nav class=\"st-nav\" aria-label=\"Settings sections\">"
     "<div class=\"st-group\"><div class=\"st-gh\">Lattice</div>"
     "<a class=\"st-tab\" href=\"#appearance\">Appearance</a>"
@@ -14632,11 +14633,7 @@
     "<a class=\"st-tab\" href=\"#clipping\">Clipping</a>"
     "<a class=\"st-tab\" href=\"#advanced\">Advanced</a>"
     "</div>"
-    "<div class=\"st-group\" id=\"connection\" hidden><div class=\"st-gh\">This computer</div>"
-    "<a class=\"st-tab\" href=\"#\" data-go=\"connection\">Connection</a>"
-    "<a class=\"st-tab\" href=\"#\" data-go=\"files\">Files</a>"
-    "<a class=\"st-tab\" href=\"#\" data-go=\"backups\">Scheduled backups</a>"
-    "</div></nav><div class=\"st-body\">"
+    "</nav><div class=\"st-body\">"
     "<section class=\"st-panel\" id=\"appearance\">"
     ::  theme: ui-app/theme.js (loaded by +pwa-head) renders into #themeui
     "<h2>Theme</h2>"
@@ -14720,13 +14717,11 @@
     '<script src="/apps/lattice/app/vault.js"></script>'
     %-  trip
     '<script>window.LatticeVault&&LatticeVault.mountSettings(document.getElementById("vaultui"))</script>'
-    ::  desktop only: the schedules live on the app's own manager page, where
-    ::  only the user's clicks can change them, so this is a way there and
-    ::  not a second copy. Same bridge and same questions as Connection below.
+    ::  desktop only: a way to the Scheduled backups tab beside the vault,
+    ::  shown by the script at the end.
     "<p id=\"bksched\" hidden><button type=\"button\" id=\"bkschedbtn\" class=\"btn\">Scheduled backups</button> "
     "<span class=\"muted\">set up and check the automatic backups this computer writes.</span></p>"
     %-  trip
-    '<script>(function(){var p=document.getElementById("bksched"),w=null;try{w=window.top}catch(x){}var t=w&&w.__TAURI__;if(!t||!t.core)return;p.hidden=false;document.getElementById("bkschedbtn").onclick=function(){if(w.latOpenManager)w.latOpenManager("backups");else t.core.invoke("open_manager",{section:"backups"})}})();</script>'
     "<h2>Search index</h2>"
     "<p class=\"muted\">The omnibar searches your published pages, your private page sources and your knowledge entries, labelling each result with where it lives. The index is rebuilt on demand rather than continuously, so reindex after a batch of edits to make them findable.</p>"
     "<p><button type=\"button\" id=\"sreidx\" class=\"btn\">Reindex my content</button> <span id=\"srst\" class=\"muted\"></span></p>"
@@ -14779,18 +14774,20 @@
     "<p><a id=\"openexplorer\" class=\"btn\" href=\"/apps/lattice/x\" data-lat-tool=\"explorer\">Open explorer</a></p>"
     "</section>"
     "</div></div>"
-    ::  desktop only: the "This computer" tabs are the shell's own manager
-    ::  page (connection, the folders mounted from the ship, the scheduled
-    ::  backups). Its commands stay on that local page, where only the
-    ::  user's clicks reach them (capabilities/workspace-remote.json), so
-    ::  these tabs go there rather than copy it. This page sits in a frame of
-    ::  the editor, so the Tauri bridge is the top window's, and
-    ::  latOpenManager there asks about unsaved work first. The bare invoke
-    ::  is for this page opened on its own, with nothing unsaved around it;
-    ::  a shell older than the connection and files sections lands on its
-    ::  one page.
+    ::  desktop only. The "This computer" tabs (Connection, Files,
+    ::  Scheduled backups) are settings.js latSettings.desk, which calls the
+    ::  shell's commands through the top window's Tauri bridge, so they sit in
+    ::  this tab with the rest. capabilities/workspace-remote.json grants this
+    ::  origin only those commands, and the shell asks in a native dialog
+    ::  before any of them changes something. A step that takes the window
+    ::  away (another ship, the reader) goes through the editor's questions
+    ::  about unsaved work first (latLeaveThen, 24-tools.js). Opened at the
+    ::  top of the desktop window, not in a tab, this page sends itself to
+    ::  the editor with the same section in its Settings tab: settings are
+    ::  always a tab. A desktop older than these grants refuses them, and
+    ::  there the tabs go to its manager page as they used to (older).
     %-  trip
-    '<script>(function(){var c=document.getElementById("connection"),w=null;try{w=window.top}catch(x){}var t=w&&w.__TAURI__;if(!t||!t.core)return;c.hidden=false;window.stGo=function(s){if(w.latOpenManager)w.latOpenManager(s);else t.core.invoke("open_manager",{section:s}).catch(function(){return t.core.invoke("open_manager",{section:null})})}})();</script>'
+    '<script>(function(){var w=null;try{w=window.top}catch(x){}var t=w&&w.__TAURI__;if(!t||!t.core||!window.latSettings)return;if(w===window){location.replace("/apps/lattice/app?settings="+encodeURIComponent(location.hash.slice(1)||"appearance"));return}latSettings.desk({invoke:t.core.invoke,leave:function(go){return w.latLeaveThen?w.latLeaveThen(go):go()},older:function(s){if(w.latOpenManager)w.latOpenManager(s);else t.core.invoke("open_manager",{section:s})}});var p=document.getElementById("bksched");p.hidden=false;document.getElementById("bkschedbtn").onclick=function(){if(latSettings.show("backups"))window.scrollTo(0,0);else if(window.stGo)stGo("backups")}})();</script>'
   ==
 ::  +home-index-html: the landing page. Always shows navigation (Editor,
 ::  Browser, Knowledge) plus a live list of your programmable pages and any

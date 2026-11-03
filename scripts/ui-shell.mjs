@@ -670,7 +670,7 @@ try {
   });
   check('settings has editor, publishing, legacy anchors',
     !!anchors && anchors.vim && anchors.wrap && anchors.auto && anchors.pub && anchors.legacy
-      && anchors.backup && anchors.conn === true && anchors.sched && anchors.schedNote,
+      && anchors.backup && anchors.conn === 'absent' && anchors.sched && anchors.schedNote,
     JSON.stringify(anchors));
   //  already open: no second tab, and the frame scrolls to the new section
   const nSet = (await front()).n;
@@ -691,6 +691,37 @@ try {
       && [...d.querySelectorAll('.st-panel')].filter((p) => !p.hidden).length === 1;
   });
   check('latOpenSettings(tab) shows that tab alone', atKeys);
+  //  In the desktop the This computer tabs sit in this same tab: the
+  //  frame calls the shell's commands through the top window's bridge
+  //  (stubbed here), with no trip to the manager page and no reload of
+  //  the editor.
+  const deskIn = await page.evaluate(async () => {
+    const calls = [];
+    window.__TAURI__ = { core: { invoke: (n) => { calls.push(n);
+      if (n === 'connection_status') return Promise.resolve({ url: 'https://s.example', ship: '~zod', connected: true });
+      if (n === 'status') return Promise.resolve({ fuse_available: true, hint: '', theme: {} });
+      if (n === 'reader_status') return Promise.reject('none');
+      return Promise.resolve([]); } } };
+    const f = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]');
+    const loaded = new Promise((r) => f.addEventListener('load', r, { once: true }));
+    f.contentWindow.location.hash = 'backups';
+    f.contentWindow.location.reload();
+    await loaded;
+    await new Promise((r) => setTimeout(r, 300));
+    const d = f.contentDocument;
+    const tabs = [...d.querySelectorAll('#desk-tabs .st-tab')].map((t) => t.getAttribute('href'));
+    const shown = [...d.querySelectorAll('.st-panel')].filter((p) => !p.hidden).map((p) => p.id);
+    const out = { tabs, shown, go: d.querySelectorAll('[data-go]').length, calls,
+      top: location.pathname };
+    delete window.__TAURI__;
+    return out;
+  });
+  check('desktop: This computer renders inside the Settings tab',
+    JSON.stringify(deskIn.tabs) === '["#connection","#files","#backups"]'
+      && JSON.stringify(deskIn.shown) === '["backups"]' && deskIn.go === 0
+      && deskIn.calls.includes('backup_schedules') && !deskIn.calls.includes('open_manager')
+      && deskIn.top === '/apps/lattice/app',
+    JSON.stringify(deskIn));
   check('latOpenSettings scrolls to its section, also when Settings is open',
     atLegacy && atBackup && (await front()).n === nSet, JSON.stringify({ atLegacy, atBackup }));
 
