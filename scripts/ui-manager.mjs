@@ -36,6 +36,8 @@ const browser = await launchBrowser();
 
 const dir = mkdtempSync(join(tmpdir(), 'mgr-'));
 const src = readFileSync(P, 'utf8');
+//  the page's shared settings look and tabs, beside it as in the app
+writeFileSync(join(dir, 'settings.js'), readFileSync(ROOT + 'desktop/ui/settings.js', 'utf8'));
 
 async function load(status, opts = {}) {
   const page = await browser.newPage();
@@ -54,13 +56,14 @@ async function load(status, opts = {}) {
           return new Promise((res) => setTimeout(() => res(s), o.statusDelayMs || 0));
         }
         if (name === 'go_home' && o.rejectGoHome) return Promise.reject('connect to a ship first');
+        if (name === 'status') return Promise.resolve({ fuse_available: true, hint: '', theme: o.theme || {} });
         return Promise.resolve(null); } },
       event: { listen: () => Promise.resolve(() => {}) },
     };
   }, status, opts);
   const f = join(dir, 'm.html');
   writeFileSync(f, src);
-  await page.goto('file://' + f, { waitUntil: 'domcontentloaded' });
+  await page.goto('file://' + f + (opts.hash || ''), { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => window.__CALLS__.includes('connection_status'), { timeout: 15000 });
   await new Promise((r) => setTimeout(r, 250));
   return page;
@@ -140,7 +143,7 @@ const o1 = await order(fresh);
 check('no node: the anonymous option is shown', o1.shown, JSON.stringify(o1));
 check('no node: it sits right after the connect form', o1.beside && !o1.above, JSON.stringify(o1));
 check('no node: the sections say what they are',
-  o1.heading === 'connect your node' && o1.anon === 'or use lattice anonymously', JSON.stringify(o1));
+  o1.heading === 'Connect your node' && o1.anon === 'Or use lattice anonymously', JSON.stringify(o1));
 const copy = await fresh.evaluate(() => document.getElementById('anon-copy').textContent.replace(/\s+/g, ' '));
 check('the option says they can browse and comment but not host without a node',
   copy.includes('browse') && copy.includes('comment') && copy.includes("can't host pages without a node"), copy);
@@ -187,8 +190,63 @@ await failed.close();
 const shipped = await load({ connected: true, ship: '~ricsul-bilwyt', url: 'https://s.example.com' });
 const o2 = await order(shipped);
 check('with a node: the option is still offered, after the ship section',
-  o2.shown && !o2.above && o2.heading === 'ship' && o2.anon === 'use lattice anonymously', JSON.stringify(o2));
+  o2.shown && !o2.above && o2.heading === 'Ship' && o2.anon === 'Use lattice anonymously', JSON.stringify(o2));
+
+// ── one settings surface: the tabs ────────────────────────────────────
+//  This computer's tabs are this page's panels; the Lattice tabs are the
+//  ship page's Settings, offered once a ship is configured, and go there
+//  through go_home with the tab named.
+const tabsOf = (p) => p.evaluate(() => ({
+  shown: [...document.querySelectorAll('.st-panel')].filter((x) => !x.hidden).map((x) => x.id),
+  current: document.querySelector('.st-tab[aria-current]')?.getAttribute('href'),
+  shipTabs: !document.getElementById('ship-tabs').hidden,
+  styled: !!document.getElementById('st-css'),
+}));
+const t1 = await tabsOf(shipped);
+check('tabs: the shared look is loaded and one panel shows, Connection first',
+  t1.styled && JSON.stringify(t1.shown) === '["connection"]' && t1.current === '#connection', JSON.stringify(t1));
+check('tabs: with a ship the Lattice tabs are offered', t1.shipTabs, JSON.stringify(t1));
+const t2 = await shipped.evaluate(async () => {
+  document.querySelector('.st-tab[href="#files"]').click();
+  const files = [...document.querySelectorAll('.st-panel')].filter((x) => !x.hidden).map((x) => x.id);
+  const n = window.__ARGS__.length;
+  document.querySelector('.st-tab[data-go="keys"]').click();
+  await new Promise((r) => setTimeout(r, 50));
+  return { files, hash: location.hash, go: window.__ARGS__.slice(n) };
+});
+check('tabs: Files shows the mounts panel alone and keeps it in the address',
+  JSON.stringify(t2.files) === '["files"]' && t2.hash === '#files', JSON.stringify(t2));
+check('tabs: a Lattice tab calls go_home with that tab',
+  JSON.stringify(t2.go) === '[["go_home",{"settings":"keys"}]]', JSON.stringify(t2.go));
 await shipped.close();
+
+const nonode = await load({ connected: false, ship: null, url: '', error: null });
+check('tabs: with no node the Lattice tabs are not offered', !(await tabsOf(nonode)).shipTabs);
+await nonode.close();
+
+//  the Preferences menu's "scheduled backups" lands on its tab
+const atBk = await load({ connected: true, ship: '~x', url: 'https://s.example.com' }, { hash: '#backups' });
+const t3 = await tabsOf(atBk);
+check('#backups opens the backups tab', JSON.stringify(t3.shown) === '["backups"]' && t3.current === '#backups',
+  JSON.stringify(t3));
+await atBk.close();
+
+//  the theme the ship page reported is worn here, and kept for next time
+const themed = await load({ connected: true, ship: '~x', url: 'https://s.example.com' },
+  { theme: { 'color-scheme': 'dark', '--bg': '#102030', '--accent': '#ff8800' } });
+await new Promise((r) => setTimeout(r, 200));
+const th = await themed.evaluate(() => ({
+  bg: getComputedStyle(document.body).backgroundColor,
+  accent: getComputedStyle(document.querySelector('.st-tab[aria-current]')).color,
+  kept: localStorage.latThemeVars,
+  told: (window.__ARGS__.filter(([n]) => n === 'set_theme').pop() || [])[1],
+}));
+check('theme: the ship page\'s colours are worn', th.bg === 'rgb(16, 32, 48)' && th.accent === 'rgb(255, 136, 0)',
+  JSON.stringify(th));
+check('theme: kept in this page\'s own storage', /#102030/.test(th.kept || ''), th.kept);
+check('theme: the window is told it is dark, and no variables are sent back',
+  !!th.told && th.told.dark === true && !('vars' in th.told), JSON.stringify(th.told));
+await themed.close();
 
 const nofeature = await load({ connected: false, ship: null, url: '', error: null }, { noReader: true });
 check('a build without the engine hides the card',

@@ -697,13 +697,14 @@
     for (const t of bg) if (t.snap) t.snap.dirty = false;
     await go();
   });
-  // Settings > Connection and mounts, and Settings > Backup > Scheduled
-  // backups (section 'backups'), on the desktop. The shell rebuilds the
-  // window onto its own manager page (open_manager in
-  // desktop/src/commands.rs), and no unload guard sees a window go, so the
-  // same questions come first.
+  // Settings > This computer (sections connection, files, backups), on the
+  // desktop. The shell rebuilds the window onto its own manager page
+  // (open_manager in desktop/src/commands.rs), and no unload guard sees a
+  // window go, so the same questions come first. A shell older than a
+  // section refuses its name, and then opens at the top.
   window.latOpenManager = (section) => leaveThen(async () => {
-    try { await window.__TAURI__.core.invoke('open_manager', { section: section || null }); }
+    const go = (s) => window.__TAURI__.core.invoke('open_manager', { section: s });
+    try { await go(section || null).catch(() => go(null)); }
     catch (e) { st('could not open the desktop settings: ' + e, false); }
   });
 
@@ -738,8 +739,9 @@
   // section #anchor. A frame still loading scrolls once it has. Sections
   // above the anchor fill in after load (the key list), so the anchor is
   // held at the top while the page settles, until the user scrolls or
-  // clicks or two seconds pass. Preferences on the desktop does not come
-  // here: it opens the manager page (latOpenManager above).
+  // clicks or two seconds pass. Each section sits in a tab of the page,
+  // and its settings.js shows that tab for any element scrolled into view.
+  // Preferences on the desktop opens the manager page (latOpenManager).
   function frameScroll(f, anchor) {
     let d = null;
     try { d = f.contentDocument; } catch {}

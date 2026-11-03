@@ -15,6 +15,7 @@ mod install;
 mod local;
 mod mounts;
 mod pandoc;
+mod pdf;
 mod proxy;
 mod queue;
 mod session;
@@ -444,7 +445,7 @@ fn main() {
                 // block the main loop
                 let h = handle.clone();
                 std::thread::spawn(move || {
-                    commands::open_workspace(&h, false).ok();
+                    commands::open_workspace(&h, false, None).ok();
                 });
             }
             spawn_backup_scheduler(handle.clone());
@@ -482,6 +483,7 @@ fn main() {
             commands::verify_backup,
             pandoc::pandoc_probe,
             pandoc::convert_tex,
+            pdf::export_pdf,
             queue::queue_list,
             queue::queue_get,
             queue::queue_put,

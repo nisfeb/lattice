@@ -209,9 +209,11 @@
   // default whatever the desktop portal says, so a dark page sat under a
   // white menubar. The page is the one that knows which it is, so it tells
   // the desktop shell, now and on every change. Outside the desktop, or on an
-  // older shell without the command, nothing happens.
-  const tell = () => {
-    try { window.__TAURI__.core.invoke('set_theme', { dark: isDark() }).catch(() => {}); } catch {}
+  // older shell without the command, nothing happens. The variables go
+  // too: the shell keeps them for its manager page (desktop/ui/manager.html),
+  // another origin, so the desktop's own settings wear this same theme.
+  const tell = (v) => {
+    try { window.__TAURI__.core.invoke('set_theme', { dark: isDark(), vars: v }).catch(() => {}); } catch {}
   };
   // what the page last drew with: the head line's paint, from the cache. A
   // change is announced, so the editor can repaint its preview frame, which
@@ -226,7 +228,7 @@
       if (!m.dataset.c) m.dataset.c = m.content;
       m.content = v['--bg'] || m.dataset.c;
     });
-    tell();
+    tell(v);
     const sig = JSON.stringify(v);
     if (sig !== shown) {
       shown = sig;

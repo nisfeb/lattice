@@ -48,14 +48,17 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
     // a reader identity made for the first-run page and never used goes
     #[cfg(feature = "urb-engine")]
     app.state::<crate::engine::Engine>().drop_unclaimed();
-    open_workspace(&app, true)?;
+    open_workspace(&app, true, None)?;
     Ok(ship)
 }
 
 /// manager page's "close" button (and Escape), back to the ship UI, or with
-/// no ship configured to the shipless reader's home.
+/// no ship configured to the shipless reader's home. `settings` is one of
+/// the manager's Lattice tabs (SETTINGS_TABS): the editor opens with that
+/// tab of its Settings in front, so the two pages read as one.
 #[tauri::command]
-pub fn go_home(app: AppHandle) -> Result<(), String> {
+pub fn go_home(app: AppHandle, settings: Option<String>) -> Result<(), String> {
+    let tab = settings_tab(settings.as_deref())?;
     // only once the reader has been used: a close on the first-run page is
     // not a request to read, and opening the reader makes its identity
     #[cfg(feature = "urb-engine")]
@@ -65,11 +68,29 @@ pub fn go_home(app: AppHandle) -> Result<(), String> {
         }
         return open_reader(app, None);
     }
-    open_workspace(&app, false)
+    open_workspace(&app, false, tab)
 }
 
-/// The sections of the manager page the ship page may ask for by name.
-const MANAGER_SECTIONS: &[&str] = &["backups"];
+/// The tabs of the ship page's Settings (+settings-html in app.hoon) the
+/// manager page may name on its way back.
+const SETTINGS_TABS: &[&str] = &["appearance", "editing", "keys", "data", "clipping", "advanced"];
+
+/// The Settings tab go_home lands on: none, or one of SETTINGS_TABS.
+/// Anything else is refused rather than passed into the page URL.
+fn settings_tab(tab: Option<&str>) -> Result<Option<&'static str>, String> {
+    match tab {
+        None => Ok(None),
+        Some(t) => SETTINGS_TABS
+            .iter()
+            .find(|k| **k == t)
+            .map(|k| Some(*k))
+            .ok_or_else(|| format!("no settings tab {t}")),
+    }
+}
+
+/// The sections of the manager page the ship page may ask for by name:
+/// its tabs, which the ship page's Settings lists under "This computer".
+const MANAGER_SECTIONS: &[&str] = &["connection", "files", "backups"];
 
 /// The section open_manager lands on: none, or one of MANAGER_SECTIONS.
 /// Anything else is refused rather than passed into the page URL.
@@ -184,11 +205,57 @@ pub fn show_manager(app: &AppHandle, section: Option<&str>) -> Result<(), String
 /// window theme is GTK's light default whatever the desktop portal says.
 /// The page does know prefers-color-scheme, so it tells us, on load and
 /// whenever it changes. macOS honours the same call.
+///
+/// The ship page also sends `vars`, the CSS variables its theme resolved to
+/// (theme.js), and they are kept for the manager page (status hands them
+/// back), which is another origin and may have no ship to ask. Only the
+/// variables theme.js sets are kept, each only with a value of its own
+/// shape, so a hostile page can at worst give the manager odd colours.
+/// The manager itself sends none, and a ship older than this sends none:
+/// both leave the stored theme as it is.
 #[tauri::command]
-pub fn set_theme(app: AppHandle, dark: bool) -> Result<(), String> {
+pub fn set_theme(
+    app: AppHandle,
+    dark: bool,
+    vars: Option<std::collections::BTreeMap<String, String>>,
+) -> Result<(), String> {
+    if let Some(v) = vars {
+        let v = theme_vars(v);
+        if config::load(&app).theme != v {
+            if let Err(e) = config::update(&app, move |c| c.theme = v) {
+                dlog(&format!("set_theme: keeping the theme failed: {e}"));
+            }
+        }
+    }
     let Some(w) = app.get_webview_window("workspace") else { return Ok(()) };
     w.set_theme(Some(if dark { tauri::Theme::Dark } else { tauri::Theme::Light }))
         .map_err(|e| e.to_string())
+}
+
+/// The theme variables worth keeping: theme.js's KEYS, colours as hex,
+/// color-scheme light or dark, the font as a plain family list.
+fn theme_vars(v: std::collections::BTreeMap<String, String>) -> std::collections::BTreeMap<String, String> {
+    const COLOURS: &[&str] = &[
+        "--bg", "--text", "--muted", "--pop", "--accent", "--accent-deep", "--on-accent",
+        "--accent-tint", "--secondary", "--tertiary", "--link", "--raised", "--error",
+        "--selection", "--border", "--border-soft",
+    ];
+    let hex = |s: &str| {
+        s.strip_prefix('#')
+            .is_some_and(|h| matches!(h.len(), 3 | 4 | 6 | 8) && h.bytes().all(|b| b.is_ascii_hexdigit()))
+    };
+    let font = |s: &str| {
+        !s.is_empty() && s.len() <= 200
+            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b" ,\"-_.".contains(&b))
+    };
+    v.into_iter()
+        .filter(|(k, val)| match k.as_str() {
+            "color-scheme" => val == "light" || val == "dark",
+            "--font" => font(val),
+            k => COLOURS.contains(&k) && hex(val),
+        })
+        .take(32)
+        .collect()
 }
 
 /// Up while show_manager is between destroying the workspace window and
@@ -451,7 +518,7 @@ fn push_file(path: &std::path::Path, rel: String, out: &mut Vec<PickedFile>, byt
 /// first-party token, which tells the bridge this window from any other
 /// local process. `fresh` (a new connect) also clears browsing data so stale
 /// service workers and caches from earlier sessions cannot linger.
-pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
+pub fn open_workspace(app: &AppHandle, fresh: bool, settings: Option<&str>) -> Result<(), String> {
     let cfg = config::load(app);
     if cfg.url.is_empty() {
         return Err("connect to a ship first".into());
@@ -474,7 +541,12 @@ pub fn open_workspace(app: &AppHandle, fresh: bool) -> Result<(), String> {
     // launch's token as an HttpOnly cookie, without which the bridge relays
     // nothing with the ship session, then redirects to the editor
     dlog(&format!("navigate: {home}"));
-    let boot: tauri::Url = crate::proxy::bootstrap_url(&local, home.path())
+    // a Settings tab rides along as the one query the bootstrap passes on
+    let to = match settings {
+        Some(t) => format!("{}?settings={t}", home.path()),
+        None => home.path().to_string(),
+    };
+    let boot: tauri::Url = crate::proxy::bootstrap_url(&local, &to)
         .parse()
         .map_err(|e| format!("{e}"))?;
     w.navigate(boot).map_err(|e| e.to_string())?;
@@ -1120,6 +1192,29 @@ mod reader_address_tests {
 }
 
 #[cfg(test)]
+mod theme_tests {
+    use super::theme_vars;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn only_theme_shaped_variables_are_kept() {
+        let m = |kv: &[(&str, &str)]| -> BTreeMap<String, String> {
+            kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        let good = m(&[
+            ("color-scheme", "dark"), ("--bg", "#1a1a1a"), ("--accent-tint", "#4a7c5938"),
+            ("--font", "\"Iosevka\", system-ui, sans-serif"),
+        ]);
+        assert_eq!(theme_vars(good.clone()), good);
+        let bad = m(&[
+            ("color-scheme", "dark;background:url(x)"), ("--bg", "red"), ("--accent", "#12"),
+            ("--font", "x}body{display:none"), ("--evil", "#fff"), ("background", "#fff"),
+        ]);
+        assert!(theme_vars(bad).is_empty());
+    }
+}
+
+#[cfg(test)]
 mod manager_section_tests {
     use super::manager_section;
 
@@ -1127,8 +1222,21 @@ mod manager_section_tests {
     fn only_known_sections_pass() {
         assert_eq!(manager_section(None), Ok(None));
         assert_eq!(manager_section(Some("backups")), Ok(Some("backups")));
+        assert_eq!(manager_section(Some("files")), Ok(Some("files")));
+        assert_eq!(manager_section(Some("connection")), Ok(Some("connection")));
         assert!(manager_section(Some("backups\"><script>")).is_err());
         assert!(manager_section(Some("")).is_err());
+    }
+
+    #[test]
+    fn only_known_settings_tabs_pass() {
+        use super::settings_tab;
+        assert_eq!(settings_tab(None), Ok(None));
+        assert_eq!(settings_tab(Some("keys")), Ok(Some("keys")));
+        assert_eq!(settings_tab(Some("appearance")), Ok(Some("appearance")));
+        assert!(settings_tab(Some("keys&name=x")).is_err());
+        assert!(settings_tab(Some("files")).is_err());
+        assert!(settings_tab(Some("")).is_err());
     }
 }
 
@@ -1417,6 +1525,7 @@ mod backup_race_tests {
             url: String::new(),
             ship: String::new(),
             queue_key: String::new(),
+            theme: Default::default(),
             mounts: Vec::new(),
             backups: vec![BackupSchedule {
                 id: "b1".into(),

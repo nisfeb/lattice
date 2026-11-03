@@ -61,6 +61,8 @@ fn main() {
             // capabilities, because three times is a pattern, not luck.
             "pandoc_probe",
             "convert_tex",
+            // Export PDF from the ship page's menus (src/pdf.rs)
+            "export_pdf",
             // the page reports its colour scheme so the GTK menubar and
             // native scrollbars follow it (both windows: manager + ship page)
             "set_theme",

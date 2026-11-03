@@ -58,6 +58,8 @@
 /<  tjs  ui-app/theme.js
 /<  ojs  ui-app/orrery.js
 /<  wjs  ui-app/writer.js
+/<  sjs  ui-app/settings.js
+/<  pdj  ui-app/pdf.js
 /<  lc   /lib/lattice-comment.hoon
 /<  lb   /lib/lattice-bookmark.hoon
 /<  lh   /lib/lattice-history.hoon
@@ -162,6 +164,12 @@
         ::  writer.js: the Writer editor for fodt pages, loaded only when
         ::  one opens (ui-src/lattice/26-writer.js), never at boot
             [%over %& [/app %'writer.js'] [[/ %mime] wjs]]
+        ::  settings.js: the Settings page's tabs and look, shared with the
+        ::  desktop manager page. Loaded by that page alone, never at boot.
+            [%over %& [/app %'settings.js'] [[/ %mime] sjs]]
+        ::  pdf.js: Export PDF's print layout, loaded on first use by the
+        ::  editor (ui-src/lattice/78-pdf.js) and the reader
+            [%over %& [/app %'pdf.js'] [[/ %mime] pdj]]
             ::  carried.json: has the one-time carry from the app-tier
             ::  instance run? DECLARED, so it outlives a reload - an
             ::  undeclared grub does not, which is the lesson /mirror/tr
@@ -9795,15 +9803,17 @@
     ?:  =(%'theme.js' nam)    `'application/javascript'
     ?:  =(%'orrery.js' nam)   `'application/javascript'
     ?:  =(%'writer.js' nam)   `'application/javascript'
+    ?:  =(%'settings.js' nam)  `'application/javascript'
+    ?:  =(%'pdf.js' nam)      `'application/javascript'
     ~
   ?~  ct  (send-err eyre-id 404 'not found')
   ;<  pv=view:nexus  bind:m  (peek:fio (rf up /app nam) ~)
   ?.  ?=([%file *] pv)  (send-err eyre-id 404 'not found')
   =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
   ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
-  ::  writer.js?h=H too: app.js names the H it was built with
+  ::  writer.js?h=H and pdf.js?h=H too: app.js names the H it was built with
   =/  cc=@t
-    ?.  ?&  |(=(%'app.js' nam) =(%'writer.js' nam))
+    ?.  ?&  |(=(%'app.js' nam) =(%'writer.js' nam) =(%'pdf.js' nam))
             =(`(js-tag q.p.res) (~(get by args) 'h'))
         ==
       'no-cache'
@@ -12285,8 +12295,20 @@
     "<a href=\"/apps/lattice/marks\">&#9733; bookmarks</a>"
     "<a href=\"/apps/lattice/forum\">&#9993; forum</a>"
     "<a href=\"/apps/lattice/settings\">&#9881; settings</a>"
+    "<a href=\"#\" id=\"hampdf\" hidden>&#8681; export pdf</a>"
     "</div></span>"
+    pdf-script
   ==
+::  +pdf-script: the menu's export pdf, on a page whose bar holds an urb://
+::  address (a published page, a page being browsed). It loads ui-app/pdf.js
+::  on the click and hands it what the page shows: the browser view's own
+::  document, or the reader's <main>. It sits in the bar, ahead of <main>,
+::  so it waits for the document.
+::
+++  pdf-script
+  ^-  tape
+  %-  trip
+  '<script>addEventListener("DOMContentLoaded",function(){var a=document.getElementById("hampdf"),u=document.querySelector("form input[name=url]");if(!a||!u||u.value.indexOf("urb://")!==0)return;var f=document.querySelector("iframe.pf"),m=document.querySelector("main");if(!f&&!(m&&m.textContent.trim()))return;a.hidden=false;a.onclick=function(e){e.preventDefault();var go=function(){var o;if(f){o={doc:true,html:f.getAttribute("srcdoc")||""}}else{var c=m.cloneNode(true);c.querySelectorAll("form,button,input,textarea,select,script").forEach(function(x){x.remove()});o={html:c.innerHTML}}o.title=document.title||"page";window.LatPdf.save(o).catch(function(x){alert("PDF: "+x)})};if(window.LatPdf)return go();var s=document.createElement("script");s.src="/apps/lattice/app/pdf.js";s.onload=go;document.head.appendChild(s)}});</script>'
 ::  +clearweb-bar: the /c/ navigation affordance, in two tiers. EVERYONE
 ::  gets contextual back/forward — pure history traversal, no auth, so an
 ::  anonymous visitor is never stranded on a bare page. The authenticated
@@ -13907,7 +13929,7 @@
 ::  +shell-ver: the worker's cache key, V without its lattice- prefix
 ++  shell-ver
   ^-  @t
-  (scot %ux (mug [uih uij vjs tjs ojs wjs icon pjs manifest-json icon-192-b64 icon-512-b64]))
+  (scot %ux (mug [uih uij vjs tjs ojs wjs sjs icon pjs manifest-json icon-192-b64 icon-512-b64]))
 ::  PV versions the RENDERED reader documents (their inline css + scripts).
 ::  V only covers shell assets, so a deploy that restyled the reader left
 ::  every cached page serving the old markup indefinitely: content revs
@@ -13978,7 +14000,7 @@
       ver
       '";var PV="'
       pv
-      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];var LAZY=["/apps/lattice/app/writer.js"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(LAZY.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok)c.put(u.pathname,r.clone());return r})})}).catch(function(){return fetch(q)}));return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];var LAZY=["/apps/lattice/app/writer.js","/apps/lattice/app/settings.js"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(LAZY.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok)c.put(u.pathname,r.clone());return r})})}).catch(function(){return fetch(q)}));return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
@@ -14591,12 +14613,72 @@
     ::  widget chrome. The native select arrow is kept (appearance:none with no
     ::  replacement chevron would leave no affordance at all).
     '<style>.btn{padding:8px 16px;font:inherit;border:1px solid #8886;border-radius:8px;background:transparent;color:inherit;cursor:pointer}.btn:hover{border-color:var(--accent,#1a6ed8)}.btn:disabled{opacity:.5;cursor:default}select,option,input[type=range]{color-scheme:inherit}select{font:inherit;color:inherit;background:transparent;border:1px solid #8886;border-radius:6px;padding:5px 8px;cursor:pointer}select:hover,select:focus{border-color:var(--accent,#1a6ed8);outline:none}input[type=range]{vertical-align:middle;accent-color:var(--accent,#1a6ed8);cursor:pointer}label{color:var(--muted,#8a8a8a)}.bklist{list-style:none;padding:0;margin:.4rem 0}.bklist li{margin:.4rem 0;padding:.5rem .7rem;border:1px solid #8886;border-radius:8px}.bkrow{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap;margin:.4rem 0}.err{color:var(--error,#c0392b)}</style>'
-    "<h1>Settings</h1>"
-    "<h2>Search index</h2>"
-    "<p class=\"muted\">The omnibar searches your published pages, your private page sources and your knowledge entries, labelling each result with where it lives. The index is rebuilt on demand rather than continuously, so reindex after a batch of edits to make them findable.</p>"
-    "<p><button type=\"button\" id=\"sreidx\" class=\"btn\">Reindex my content</button> <span id=\"srst\" class=\"muted\"></span></p>"
+    ::  the tabs and the shared look: ui-app/settings.js, which the desktop
+    ::  manager page loads too (its own copy), so the two surfaces are one.
+    ::  Parser-blocking, so its style is in before the body paints.
     %-  trip
-    '<script>(function(){var b=document.getElementById("sreidx");var s=document.getElementById("srst");b.onclick=function(){b.disabled=true;s.textContent="reindexing...";fetch("/apps/lattice/search-reindex",{method:"POST"}).then(function(r){return r.ok?"done - your pages and notes are searchable.":r.json().then(function(j){return "failed: "+(j.error||r.status)},function(){return "failed ("+r.status+")"})}).then(function(t){s.textContent=t;b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
+    '<script src="/apps/lattice/app/settings.js"></script>'
+    "<div class=\"st-top\"><h1>Settings</h1></div>"
+    ::  the tabs. Each href names a panel below; the latOpenSettings anchors
+    ::  (backup, editor, publishing, legacy, advanced) sit inside them, and
+    ::  settings.js shows the right panel for any of them. "This computer"
+    ::  is the desktop manager page, reached through the shell (stGo below).
+    "<div class=\"st\"><nav class=\"st-nav\" aria-label=\"Settings sections\">"
+    "<div class=\"st-group\"><div class=\"st-gh\">Lattice</div>"
+    "<a class=\"st-tab\" href=\"#appearance\">Appearance</a>"
+    "<a class=\"st-tab\" href=\"#editing\">Editor</a>"
+    "<a class=\"st-tab\" href=\"#keys\">Agent keys</a>"
+    "<a class=\"st-tab\" href=\"#data\">Data and backup</a>"
+    "<a class=\"st-tab\" href=\"#clipping\">Clipping</a>"
+    "<a class=\"st-tab\" href=\"#advanced\">Advanced</a>"
+    "</div>"
+    "<div class=\"st-group\" id=\"connection\" hidden><div class=\"st-gh\">This computer</div>"
+    "<a class=\"st-tab\" href=\"#\" data-go=\"connection\">Connection</a>"
+    "<a class=\"st-tab\" href=\"#\" data-go=\"files\">Files</a>"
+    "<a class=\"st-tab\" href=\"#\" data-go=\"backups\">Scheduled backups</a>"
+    "</div></nav><div class=\"st-body\">"
+    "<section class=\"st-panel\" id=\"appearance\">"
+    ::  theme: ui-app/theme.js (loaded by +pwa-head) renders into #themeui
+    "<h2>Theme</h2>"
+    "<div id=\"themeui\"></div>"
+    ::  typography: a CLIENT-ONLY preference. It writes localStorage and the
+    ::  editor (ui-app/src/05-prefs.js) applies it to --ed-font / --ed-size, so
+    ::  changing it costs zero requests and never touches the pier. An editor
+    ::  open in another tab updates through the storage event, no reload.
+    "<h2>Typography</h2>"
+    "<p class=\"muted\">Font and size for the editor. Saved in this browser only &mdash; it never touches your ship, so it costs no round-trip. An editor open in another tab picks the change up immediately.</p>"
+    "<p><label for=\"fontsel\">Font </label><select id=\"fontsel\"><option value=\"mono\">Monospace (default)</option><option value=\"system\">System sans</option><option value=\"serif\">Serif</option><option value=\"humanist\">Coding (Iosevka, JetBrains Mono)</option></select> <label for=\"fontsize\">Size </label><input type=\"range\" id=\"fontsize\" min=\"9\" max=\"32\" step=\"1\"> <span id=\"fontsizeo\" class=\"muted\"></span> <button type=\"button\" id=\"fontreset\" class=\"btn\">Reset</button></p>"
+    ::  NB: no curly braces in this tape. hoon interpolates "{...}" inside a
+    ::  double-quoted tape, so a literal brace is a syntax error here. (The
+    ::  script below is a single-quoted cord, which is literal, braces and all.)
+    "<p id=\"fontsample\" style=\"border:1px solid #8886;border-radius:8px;padding:12px\">The quick brown fox jumps over the lazy dog &middot; 0123456789 &middot; il1 O0 &middot; |= ^- @ud</p>"
+    %-  trip
+    '<script>(function(){var f=document.getElementById("fontsel"),s=document.getElementById("fontsize"),o=document.getElementById("fontsizeo"),p=document.getElementById("fontsample");var M={mono:"ui-monospace, Menlo, Consolas, monospace",system:"system-ui, sans-serif",serif:"Georgia, Times New Roman, serif",humanist:"Iosevka, JetBrains Mono, Fira Code, ui-monospace, monospace"};function draw(){p.style.fontFamily=M[f.value]||M.mono;p.style.fontSize=s.value+"px";o.textContent=s.value+"px"}function save(){try{localStorage.latFont=f.value;localStorage.latFontSize=s.value}catch(e){}draw()}try{f.value=localStorage.latFont||"mono";s.value=localStorage.latFontSize||"13"}catch(e){}if(!M[f.value])f.value="mono";if(!(s.value>=9))s.value="13";draw();f.onchange=save;s.oninput=save;document.getElementById("fontreset").onclick=function(){try{localStorage.removeItem("latFont");localStorage.removeItem("latFontSize")}catch(e){}f.value="mono";s.value="13";draw()}})();</script>'
+    "</section>"
+    "<section class=\"st-panel\" id=\"editing\">"
+    ::  editor: client-only preferences, the same shape as typography. This
+    ::  page only writes localStorage and the editor picks each change up
+    ::  through the storage event. Vim is off unless explicitly on. Wrap and
+    ::  autosave are on unless explicitly off, as the editor reads them
+    ::  (85-layout.js, 35-pages.js).
+    "<section id=\"editor\"><h2>Editor</h2>"
+    "<p class=\"muted\">Saved in this browser only. An editor open in another tab picks a change up immediately.</p>"
+    "<p><label for=\"vimsel\"><input type=\"checkbox\" id=\"vimsel\"> vim mode in the editor</label> "
+    "<span class=\"muted\">modal editing: Esc for normal, i to insert, :w to save.</span></p>"
+    "<p><label for=\"wrapdef\"><input type=\"checkbox\" id=\"wrapdef\"> Wrap long lines by default</label></p>"
+    "<p><label for=\"autosave\"><input type=\"checkbox\" id=\"autosave\"> Autosave pages</label> "
+    "<span class=\"muted\">pages and memories save two seconds after you stop typing. Off: pages and memories save only when you save them (Ctrl+S, the phone save button, or :w in vim). Closing a tab or leaving the editor asks about unsaved text. App files always wait for Ctrl+S.</span></p></section>"
+    %-  trip
+    '<script>(function(){function bind(id,k,on){var e=document.getElementById(id);function rd(){var v=null;try{v=localStorage.getItem(k)}catch(x){}e.checked=on?v!=="0":v==="1"}rd();e.onchange=function(){try{localStorage.setItem(k,e.checked?"1":"0")}catch(x){}};addEventListener("storage",function(ev){if(!ev.key||ev.key===k)rd()})}bind("vimsel","edVim",false);bind("wrapdef","appWrap",true);bind("autosave","latAutosave",true)})();</script>'
+    ::  publishing: the share dialog (15-dialog.js) skips its question once
+    ::  "do not ask again" is ticked, and this is the way back. The button
+    ::  shows only while that key is set.
+    "<h2 id=\"publishing\">Publishing</h2>"
+    "<p><span id=\"pubst\" class=\"muted\"></span> <button type=\"button\" id=\"pubreset\" class=\"btn\" hidden>Ask before making a page public</button></p>"
+    %-  trip
+    '<script>(function(){var b=document.getElementById("pubreset"),s=document.getElementById("pubst");function rd(){var on=false;try{on=localStorage.getItem("latPubOk")!==null}catch(x){}b.hidden=!on;s.textContent=on?"Making a page public does not ask first in this browser.":"Making a page public asks first."}b.onclick=function(){try{localStorage.removeItem("latPubOk")}catch(x){}rd()};addEventListener("storage",function(ev){if(!ev.key||ev.key==="latPubOk")rd()});rd()})();</script>'
+    "</section>"
+    "<section class=\"st-panel\" id=\"keys\">"
     ::  agent keys (/lib/lattice-keys). The token comes back once, from
     ::  /key-mint, and is shown in a code element; names are set as text.
     "<h2>Agent keys</h2>"
@@ -14623,15 +14705,10 @@
     "<ul id=\"keylist\" class=\"bklist\"></ul>"
     %-  trip
     '<script>(function(){var L=document.getElementById("keylist"),F=document.getElementById("keyform"),T=document.getElementById("keytok"),E=document.getElementById("keyerr");function pad(n){return ("0"+n).slice(-2)}function day(da){var p=da.slice(1).split(".."),d=p[0].split("."),t=(p[1]||"").split(".");return d[0]+"-"+pad(d[1])+"-"+pad(d[2])+(p[1]?" "+pad(t[0])+":"+pad(t[1])+" UTC":"")}function paths(v){return v.split(",").map(function(s){return s.trim()}).filter(function(s){return s}).map(function(s){return s.charAt(0)==="/"?s:"/"+s})}function pagesText(p){if(!p)return "none";if(p.all!==undefined)return p.all;if(p.some)return "scoped (read "+(p.some.read||[]).join(" ")+"; write "+(p.some.write||[]).join(" ")+")";return "none"}function webText(w){if(!w||w.off!==undefined)return "none";if(w.all!==undefined)return "all ships (read)";if(w.some){return Object.keys(w.some).map(function(k){var e=w.some[k];return k+" (read "+(e.read||[]).join(" ")+"; write "+(e.write||[]).join(" ")+")"}).join(", ")}return "none"}function row(k){var li=document.createElement("li"),a=document.createElement("div"),b=document.createElement("div"),x=document.createElement("button"),s=k.scope;a.textContent=k.name+" (writes as "+k.by+")";b.className="muted";b.textContent="memory "+s.memory+", pages "+pagesText(s.pages)+", other ships "+webText(s.web)+(s.sensitive?", reads sensitive memories":"")+". Made "+day(k.made)+(k.used?", last used "+day(k.used):", never used")+(k.tainted_until?". Read sensitive content, so until "+day(k.tainted_until)+" it writes only sensitive":"");x.type="button";x.className="btn";x.textContent="Revoke";x.onclick=function(){x.disabled=true;fetch("/apps/lattice/key-revoke?id="+encodeURIComponent(k.id),{method:"POST"}).then(load,load)};li.append(a,b,x);return li}function load(){fetch("/apps/lattice/keys").then(function(r){return r.json()}).then(function(ks){L.replaceChildren.apply(L,ks.map(row));if(!ks.length){var li=document.createElement("li");li.className="muted";li.textContent="No keys yet.";L.append(li)}}).catch(function(){E.textContent="could not load keys"})}function syncScoped(){var ff=F.elements,pg=ff.kpages.value==="some",wb=ff.kweb.value==="some";[["kpread",pg],["kpwrite",pg],["kwship",wb],["kwread",wb],["kwwrite",wb]].forEach(function(e){var el=document.getElementById(e[0]);if(!el)return;var lb=document.querySelector("label[for="+e[0]+"]");el.style.display=e[1]?"":"none";if(lb)lb.style.display=e[1]?"":"none"})}function pagesScope(f){var m=f.kpages.value;if(m==="some")return {some:{read:paths(f.kpread.value),write:paths(f.kpwrite.value)}};return {all:m}}function webScope(f){var m=f.kweb.value;if(m==="all")return {all:null};if(m==="some"){var sh=f.kwship.value.trim();if(!sh)return {off:null};var o={};o[sh]={read:paths(f.kwread.value),write:paths(f.kwwrite.value)};return {some:o}}return {off:null}}F.onsubmit=function(ev){ev.preventDefault();E.textContent="";T.hidden=true;var f=F.elements;if(f.kweb.value==="some"&&!f.kwship.value.trim()){E.textContent="pick a ship for scoped web access, or set Other ships to none";return}var body={name:f.kname.value.trim(),by:f.kby.value.trim(),scope:{memory:f.kmem.value,pages:pagesScope(f),web:webScope(f),sensitive:f.ksen.checked}};fetch("/apps/lattice/key-mint",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||r.status);return j})}).then(function(j){T.querySelector("code").textContent=j.token;T.hidden=false;F.reset();syncScoped();load()}).catch(function(e){E.textContent="could not make the key: "+e.message})};F.kpages.onchange=syncScoped;F.kweb.onchange=syncScoped;syncScoped();load()})();</script>'
+    "</section>"
+    "<section class=\"st-panel\" id=\"data\">"
     ::  backup: manual export/restore for everyone, plus (desktop only) the
     ::  scheduled backups. The whole UI is rendered by ui-app/vault.js's
-    "<h2>Commons mirror</h2>"
-    "<p class=\"muted\">Mirrors your pages, notes, tags, follows and browsing history into the %obelisk database, where you (and your agents) can query across apps with urQL. Turning it off deletes that copy. Optional: without %obelisk everything else works unchanged.</p>"
-    "<p><span id=\"obst\" class=\"muted\">checking&hellip;</span></p>"
-    "<p><button type=\"button\" id=\"obinst\" class=\"btn\" hidden>Install %obelisk</button> "
-    "<label for=\"obon\" id=\"obonl\" hidden><input type=\"checkbox\" id=\"obon\"> mirror enabled</label></p>"
-    %-  trip
-    '<script>(function(){var st=document.getElementById("obst");var bi=document.getElementById("obinst");var lb=document.getElementById("obonl");var cb=document.getElementById("obon");function show(d){if(d.installed){bi.hidden=true;lb.hidden=false;cb.checked=!!d.enabled;st.textContent="%obelisk is installed."}else{bi.hidden=false;lb.hidden=true;st.textContent="%obelisk is not installed."}}function load(){fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="status unavailable"})}bi.onclick=function(){bi.disabled=true;st.textContent="installing from ~dister-nomryg-nilref (this can take a while)...";fetch("/apps/lattice/obelisk-install",{method:"POST"}).then(function(){var n=0;var busy=false;var t=setInterval(function(){if(busy){return}n++;busy=true;fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(function(d){busy=false;if(d.installed){clearInterval(t);bi.disabled=false;show(d)}else if(n>40){clearInterval(t);bi.disabled=false;st.textContent="still not installed - check your ship is connected and retry."}}).catch(function(){busy=false;if(n>40){clearInterval(t);bi.disabled=false;st.textContent="still not installed - check your ship is connected and retry."}})},6000)}).catch(function(){bi.disabled=false;st.textContent="install request failed - retry."})};cb.onchange=function(){fetch("/apps/lattice/mirror-config?enabled="+(cb.checked?"true":"false"),{method:"POST"}).then(load).catch(load)};load()})();</script>'
     ::  the backup section shares the editor's exact tar writer/reader through
     ::  LatticeVault, so the archive a schedule writes and the one this page
     ::  exports are the same file. This page is a separate document from the
@@ -14650,43 +14727,29 @@
     "<span class=\"muted\">set up and check the automatic backups this computer writes.</span></p>"
     %-  trip
     '<script>(function(){var p=document.getElementById("bksched"),w=null;try{w=window.top}catch(x){}var t=w&&w.__TAURI__;if(!t||!t.core)return;p.hidden=false;document.getElementById("bkschedbtn").onclick=function(){if(w.latOpenManager)w.latOpenManager("backups");else t.core.invoke("open_manager",{section:"backups"})}})();</script>'
-    ::  theme: ui-app/theme.js (loaded by +pwa-head) renders into #themeui
-    "<h2>Theme</h2>"
-    "<div id=\"themeui\"></div>"
-    ::  typography: a CLIENT-ONLY preference. It writes localStorage and the
-    ::  editor (ui-app/src/05-prefs.js) applies it to --ed-font / --ed-size, so
-    ::  changing it costs zero requests and never touches the pier. An editor
-    ::  open in another tab updates through the storage event, no reload.
-    "<h2>Typography</h2>"
-    "<p class=\"muted\">Font and size for the editor. Saved in this browser only &mdash; it never touches your ship, so it costs no round-trip. An editor open in another tab picks the change up immediately.</p>"
-    "<p><label for=\"fontsel\">Font </label><select id=\"fontsel\"><option value=\"mono\">Monospace (default)</option><option value=\"system\">System sans</option><option value=\"serif\">Serif</option><option value=\"humanist\">Coding (Iosevka, JetBrains Mono)</option></select> <label for=\"fontsize\">Size </label><input type=\"range\" id=\"fontsize\" min=\"9\" max=\"32\" step=\"1\"> <span id=\"fontsizeo\" class=\"muted\"></span> <button type=\"button\" id=\"fontreset\" class=\"btn\">Reset</button></p>"
-    ::  NB: no curly braces in this tape. hoon interpolates "{...}" inside a
-    ::  double-quoted tape, so a literal brace is a syntax error here. (The
-    ::  script below is a single-quoted cord, which is literal, braces and all.)
-    "<p id=\"fontsample\" style=\"border:1px solid #8886;border-radius:8px;padding:12px\">The quick brown fox jumps over the lazy dog &middot; 0123456789 &middot; il1 O0 &middot; |= ^- @ud</p>"
+    "<h2>Search index</h2>"
+    "<p class=\"muted\">The omnibar searches your published pages, your private page sources and your knowledge entries, labelling each result with where it lives. The index is rebuilt on demand rather than continuously, so reindex after a batch of edits to make them findable.</p>"
+    "<p><button type=\"button\" id=\"sreidx\" class=\"btn\">Reindex my content</button> <span id=\"srst\" class=\"muted\"></span></p>"
     %-  trip
-    '<script>(function(){var f=document.getElementById("fontsel"),s=document.getElementById("fontsize"),o=document.getElementById("fontsizeo"),p=document.getElementById("fontsample");var M={mono:"ui-monospace, Menlo, Consolas, monospace",system:"system-ui, sans-serif",serif:"Georgia, Times New Roman, serif",humanist:"Iosevka, JetBrains Mono, Fira Code, ui-monospace, monospace"};function draw(){p.style.fontFamily=M[f.value]||M.mono;p.style.fontSize=s.value+"px";o.textContent=s.value+"px"}function save(){try{localStorage.latFont=f.value;localStorage.latFontSize=s.value}catch(e){}draw()}try{f.value=localStorage.latFont||"mono";s.value=localStorage.latFontSize||"13"}catch(e){}if(!M[f.value])f.value="mono";if(!(s.value>=9))s.value="13";draw();f.onchange=save;s.oninput=save;document.getElementById("fontreset").onclick=function(){try{localStorage.removeItem("latFont");localStorage.removeItem("latFontSize")}catch(e){}f.value="mono";s.value="13";draw()}})();</script>'
-    ::  editor: client-only preferences, the same shape as typography. This
-    ::  page only writes localStorage and the editor picks each change up
-    ::  through the storage event. Vim is off unless explicitly on. Wrap and
-    ::  autosave are on unless explicitly off, as the editor reads them
-    ::  (85-layout.js, 35-pages.js).
-    "<section id=\"editor\"><h2>Editor</h2>"
-    "<p class=\"muted\">Saved in this browser only. An editor open in another tab picks a change up immediately.</p>"
-    "<p><label for=\"vimsel\"><input type=\"checkbox\" id=\"vimsel\"> vim mode in the editor</label> "
-    "<span class=\"muted\">modal editing: Esc for normal, i to insert, :w to save.</span></p>"
-    "<p><label for=\"wrapdef\"><input type=\"checkbox\" id=\"wrapdef\"> Wrap long lines by default</label></p>"
-    "<p><label for=\"autosave\"><input type=\"checkbox\" id=\"autosave\"> Autosave pages</label> "
-    "<span class=\"muted\">pages and memories save two seconds after you stop typing. Off: pages and memories save only when you save them (Ctrl+S, the phone save button, or :w in vim). Closing a tab or leaving the editor asks about unsaved text. App files always wait for Ctrl+S.</span></p></section>"
+    '<script>(function(){var b=document.getElementById("sreidx");var s=document.getElementById("srst");b.onclick=function(){b.disabled=true;s.textContent="reindexing...";fetch("/apps/lattice/search-reindex",{method:"POST"}).then(function(r){return r.ok?"done - your pages and notes are searchable.":r.json().then(function(j){return "failed: "+(j.error||r.status)},function(){return "failed ("+r.status+")"})}).then(function(t){s.textContent=t;b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
+    "<h2>Commons mirror</h2>"
+    "<p class=\"muted\">Mirrors your pages, notes, tags, follows and browsing history into the %obelisk database, where you (and your agents) can query across apps with urQL. Turning it off deletes that copy. Optional: without %obelisk everything else works unchanged.</p>"
+    "<p><span id=\"obst\" class=\"muted\">checking&hellip;</span></p>"
+    "<p><button type=\"button\" id=\"obinst\" class=\"btn\" hidden>Install %obelisk</button> "
+    "<label for=\"obon\" id=\"obonl\" hidden><input type=\"checkbox\" id=\"obon\"> mirror enabled</label></p>"
     %-  trip
-    '<script>(function(){function bind(id,k,on){var e=document.getElementById(id);function rd(){var v=null;try{v=localStorage.getItem(k)}catch(x){}e.checked=on?v!=="0":v==="1"}rd();e.onchange=function(){try{localStorage.setItem(k,e.checked?"1":"0")}catch(x){}};addEventListener("storage",function(ev){if(!ev.key||ev.key===k)rd()})}bind("vimsel","edVim",false);bind("wrapdef","appWrap",true);bind("autosave","latAutosave",true)})();</script>'
-    ::  publishing: the share dialog (15-dialog.js) skips its question once
-    ::  "do not ask again" is ticked, and this is the way back. The button
-    ::  shows only while that key is set.
-    "<h2 id=\"publishing\">Publishing</h2>"
-    "<p><span id=\"pubst\" class=\"muted\"></span> <button type=\"button\" id=\"pubreset\" class=\"btn\" hidden>Ask before making a page public</button></p>"
+    '<script>(function(){var st=document.getElementById("obst");var bi=document.getElementById("obinst");var lb=document.getElementById("obonl");var cb=document.getElementById("obon");function show(d){if(d.installed){bi.hidden=true;lb.hidden=false;cb.checked=!!d.enabled;st.textContent="%obelisk is installed."}else{bi.hidden=false;lb.hidden=true;st.textContent="%obelisk is not installed."}}function load(){fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="status unavailable"})}bi.onclick=function(){bi.disabled=true;st.textContent="installing from ~dister-nomryg-nilref (this can take a while)...";fetch("/apps/lattice/obelisk-install",{method:"POST"}).then(function(){var n=0;var busy=false;var t=setInterval(function(){if(busy){return}n++;busy=true;fetch("/apps/lattice/obelisk-status").then(function(r){return r.json()}).then(function(d){busy=false;if(d.installed){clearInterval(t);bi.disabled=false;show(d)}else if(n>40){clearInterval(t);bi.disabled=false;st.textContent="still not installed - check your ship is connected and retry."}}).catch(function(){busy=false;if(n>40){clearInterval(t);bi.disabled=false;st.textContent="still not installed - check your ship is connected and retry."}})},6000)}).catch(function(){bi.disabled=false;st.textContent="install request failed - retry."})};cb.onchange=function(){fetch("/apps/lattice/mirror-config?enabled="+(cb.checked?"true":"false"),{method:"POST"}).then(load).catch(load)};load()})();</script>'
+    ::  legacy import: the same POST /legacy-migrate the editor offers once
+    ::  (98-legacy.js), here for as long as the old agent is waiting, whatever
+    ::  this browser was told. A server marker (dismissed or imported) ends it
+    ::  here too, since /legacy-migrate refuses once it is written.
+    "<h2 id=\"legacy\">Import from the old editor</h2>"
+    "<p><span id=\"legst\" class=\"muted\">checking&hellip;</span></p>"
+    "<p><button type=\"button\" id=\"legbtn\" class=\"btn\" hidden>Import from the old editor</button></p>"
     %-  trip
-    '<script>(function(){var b=document.getElementById("pubreset"),s=document.getElementById("pubst");function rd(){var on=false;try{on=localStorage.getItem("latPubOk")!==null}catch(x){}b.hidden=!on;s.textContent=on?"Making a page public does not ask first in this browser.":"Making a page public asks first."}b.onclick=function(){try{localStorage.removeItem("latPubOk")}catch(x){}rd()};addEventListener("storage",function(ev){if(!ev.key||ev.key==="latPubOk")rd()});rd()})();</script>'
+    '<script>(function(){var s=document.getElementById("legst"),b=document.getElementById("legbtn");function load(msg){fetch("/apps/lattice/legacy-status").then(function(r){return r.json()}).then(function(d){b.hidden=!d.prompt;s.textContent=msg||(d.prompt?"An older lattice agent is still installed on this ship, from before this store existed. Importing copies what it holds here. Anything already here is left as it is, and nothing is removed from the old agent.":d.reason==="resolved"?"This ship has closed the import from the older lattice agent: it either finished, or the offer was dismissed with never ask again.":"No older lattice agent is installed on this ship.")}).catch(function(){s.textContent=msg||"status unavailable"})}b.onclick=function(){b.disabled=true;s.textContent="importing from the old agent, this can take a few minutes...";fetch("/apps/lattice/legacy-migrate",{method:"POST"}).then(function(r){if(r.status===409){b.disabled=false;load("Nothing to import: the import was already closed on this ship, by another tab or device.");return null}if(!r.ok)return r.json().catch(function(){return {}}).then(function(j){throw new Error(j.error||"http "+r.status)});return r.json()}).then(function(j){if(!j)return;var n=j.imported||0,p=j.pagesImported||0;if(j.complete)try{localStorage.latLegacy="done"}catch(x){}b.disabled=false;load("Imported "+n+(n===1?" memory":" memories")+(j.skipped?" ("+j.skipped+" already here, left untouched)":"")+" and "+p+(p===1?" page. ":" pages. ")+(j.complete?"Everything it held is now here.":"Not everything moved, and the old agent still holds the only copy of the rest, so do not uninstall it. Run the import again to finish."))}).catch(function(e){b.disabled=false;load("import failed: "+e.message+". Nothing was removed from the old agent, and a re-run skips what already landed.")})};load()})();</script>'
+    "</section>"
+    "<section class=\"st-panel\" id=\"clipping\">"
     "<h2>Archive a web page</h2>"
     "<p class=\"muted\">Drag this to your bookmarks bar. On any web page, click it and your ship fetches that page, converts it to markdown and files it privately under <code>clips/</code> &mdash; a real lattice page you can edit, search and share.</p>"
     "<p><a id=\"clipbm\" class=\"btn\" href=\"#\">Clip to lattice</a></p>"
@@ -14706,31 +14769,28 @@
     ::  reverse proxy). location.origin is the only thing that knows.
     %-  trip
     '<script>(function(){var a=document.getElementById("clipbm");a.href="javascript:(function(){location.href=\'"+location.origin+"/apps/lattice/clip?url=\'+encodeURIComponent(location.href)})()";a.onclick=function(e){e.preventDefault()}})();</script>'
-    ::  legacy import: the same POST /legacy-migrate the editor offers once
-    ::  (98-legacy.js), here for as long as the old agent is waiting, whatever
-    ::  this browser was told. A server marker (dismissed or imported) ends it
-    ::  here too, since /legacy-migrate refuses once it is written.
-    "<h2 id=\"legacy\">Import from the old editor</h2>"
-    "<p><span id=\"legst\" class=\"muted\">checking&hellip;</span></p>"
-    "<p><button type=\"button\" id=\"legbtn\" class=\"btn\" hidden>Import from the old editor</button></p>"
-    %-  trip
-    '<script>(function(){var s=document.getElementById("legst"),b=document.getElementById("legbtn");function load(msg){fetch("/apps/lattice/legacy-status").then(function(r){return r.json()}).then(function(d){b.hidden=!d.prompt;s.textContent=msg||(d.prompt?"An older lattice agent is still installed on this ship, from before this store existed. Importing copies what it holds here. Anything already here is left as it is, and nothing is removed from the old agent.":d.reason==="resolved"?"This ship has closed the import from the older lattice agent: it either finished, or the offer was dismissed with never ask again.":"No older lattice agent is installed on this ship.")}).catch(function(){s.textContent=msg||"status unavailable"})}b.onclick=function(){b.disabled=true;s.textContent="importing from the old agent, this can take a few minutes...";fetch("/apps/lattice/legacy-migrate",{method:"POST"}).then(function(r){if(r.status===409){b.disabled=false;load("Nothing to import: the import was already closed on this ship, by another tab or device.");return null}if(!r.ok)return r.json().catch(function(){return {}}).then(function(j){throw new Error(j.error||"http "+r.status)});return r.json()}).then(function(j){if(!j)return;var n=j.imported||0,p=j.pagesImported||0;if(j.complete)try{localStorage.latLegacy="done"}catch(x){}b.disabled=false;load("Imported "+n+(n===1?" memory":" memories")+(j.skipped?" ("+j.skipped+" already here, left untouched)":"")+" and "+p+(p===1?" page. ":" pages. ")+(j.complete?"Everything it held is now here.":"Not everything moved, and the old agent still holds the only copy of the rest, so do not uninstall it. Run the import again to finish."))}).catch(function(e){b.disabled=false;load("import failed: "+e.message+". Nothing was removed from the old agent, and a re-run skips what already landed.")})};load()})();</script>'
+    "</section>"
+    "<section class=\"st-panel\" id=\"advanced\">"
     ::  advanced: the explorer, a power tool, so it has no ribbon button.
     ::  In the editor's Settings tab, data-lat-tool opens it in a tab of its
     ::  own (24-tools.js frameDress); opened on its own, the link goes there.
-    "<h2 id=\"advanced\">Advanced</h2>"
+    "<h2>Advanced</h2>"
     "<p class=\"muted\">The explorer browses the files lattice keeps on your ship: each page's source, data and history, as grubbery stores them.</p>"
     "<p><a id=\"openexplorer\" class=\"btn\" href=\"/apps/lattice/x\" data-lat-tool=\"explorer\">Open explorer</a></p>"
-    ::  desktop only: the shell's own connection and mounts page. This page
-    ::  sits in a frame of the editor, so the Tauri bridge is the top
-    ::  window's. latOpenManager there asks about unsaved work first. The
-    ::  bare invoke is for this page opened on its own, with no editor
-    ::  around it and so no unsaved work to ask about.
-    "<div id=\"connection\" hidden><h2>Connection and mounts</h2>"
-    "<p class=\"muted\">Which ship this app talks to, and the folders mounted from it.</p>"
-    "<p><button type=\"button\" id=\"connbtn\" class=\"btn\">Connection and mounts</button></p></div>"
+    "</section>"
+    "</div></div>"
+    ::  desktop only: the "This computer" tabs are the shell's own manager
+    ::  page (connection, the folders mounted from the ship, the scheduled
+    ::  backups). Its commands stay on that local page, where only the
+    ::  user's clicks reach them (capabilities/workspace-remote.json), so
+    ::  these tabs go there rather than copy it. This page sits in a frame of
+    ::  the editor, so the Tauri bridge is the top window's, and
+    ::  latOpenManager there asks about unsaved work first. The bare invoke
+    ::  is for this page opened on its own, with nothing unsaved around it;
+    ::  a shell older than the connection and files sections lands on its
+    ::  one page.
     %-  trip
-    '<script>(function(){var c=document.getElementById("connection"),w=null;try{w=window.top}catch(x){}var t=w&&w.__TAURI__;if(!t||!t.core)return;c.hidden=false;document.getElementById("connbtn").onclick=function(){if(w.latOpenManager)w.latOpenManager();else t.core.invoke("open_manager")}})();</script>'
+    '<script>(function(){var c=document.getElementById("connection"),w=null;try{w=window.top}catch(x){}var t=w&&w.__TAURI__;if(!t||!t.core)return;c.hidden=false;window.stGo=function(s){if(w.latOpenManager)w.latOpenManager(s);else t.core.invoke("open_manager",{section:s}).catch(function(){return t.core.invoke("open_manager",{section:null})})}})();</script>'
   ==
 ::  +home-index-html: the landing page. Always shows navigation (Editor,
 ::  Browser, Knowledge) plus a live list of your programmable pages and any

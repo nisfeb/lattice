@@ -29,6 +29,7 @@
 //  Never run against production. Everything it writes is under one folder
 //  and deleted at the end.
 import { readFileSync } from 'fs';
+import { MAX as SIZE_MAX } from './app-js-size.mjs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { shipEnv, launchBrowser, openPage, makeCheck, sleep, waitFor, swControlled } from './lib/harness.mjs';
@@ -40,9 +41,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const corpus = (f) => readFileSync(join(here, '..', 'tests', 'writer', 'corpus', f), 'utf8');
 const check = makeCheck();
 const on = (id) => !process.env.ONLY || process.env.ONLY.split(',').includes(id);
-//  app.js's budget: release 107's 685,369 bytes (the branch's base) plus
-//  the 8 KB the spec allows the Writer work (Bundle and lazy loading)
-const APP_JS_MAX = 685369 + 8 * 1024;
+//  app.js's budget: the size ratchet (scripts/app-js-size.mjs), measured
+//  here on the served file. It used to be release 107 plus the 8 KB the
+//  Writer spec allowed, which main outgrew by release 109.
+const APP_JS_MAX = SIZE_MAX;
 
 const P = {
   md: RUN + '/notes',

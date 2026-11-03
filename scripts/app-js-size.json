@@ -1,0 +1,5 @@
+{
+  "bytes": 698817,
+  "grow": 4096,
+  "why": "release 110: release 109 (693,810 bytes) plus the unified settings boot hand-off (546 bytes) and Export PDF's menu items and renderer glue (4,461 bytes, 1,497 gzipped). The Settings tabs (ui-app/settings.js) and the PDF print layout (ui-app/pdf.js) load lazily, on first use."
+}

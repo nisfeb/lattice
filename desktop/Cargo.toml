@@ -1,6 +1,6 @@
 [package]
 name = "lattice-desktop"
-version = "1.0.17"
+version = "1.0.18"
 edition = "2021"
 #  Never goes to crates.io: the desktop app ships as bundles and lattice-fs
 #  is consumed by path. Saying so keeps `cargo publish` from being a slip, and
@@ -47,6 +47,18 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 urb-engine = { package = "urb", git = "https://github.com/nisfeb/urb-fetch.git", rev = "15263de2000b38915b44740c3c10905cf7f041fc", features = ["native"], optional = true }
 urb-render = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "15263de2000b38915b44740c3c10905cf7f041fc", optional = true }
 urb-gateway = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "15263de2000b38915b44740c3c10905cf7f041fc", optional = true }
+
+#  Export PDF prints through the platform's own webview (src/pdf.rs). All
+#  four are already in the tree through tauri and wry, at these versions.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+webkit2gtk = "2.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSURL", "NSGeometry", "NSDictionary", "NSObject"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSPrintInfo", "NSPrintOperation", "NSView", "NSResponder", "NSWindow"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "objc2-app-kit", "WKWebView"] }
 
 [features]
 #  Off for a target that cannot build libmesa: the app then ships without

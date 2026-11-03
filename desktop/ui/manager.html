@@ -1,84 +1,48 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>lattice — connection &amp; mounts</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lattice settings</title>
+<!-- The ship page's theme, as it last told the shell (set_theme), painted
+     from this page's own copy before anything else, the way +pwa-head
+     paints the ship's documents. The status call below refreshes it. -->
+<script>try{var v=JSON.parse(localStorage.latThemeVars||"{}"),s=document.documentElement.style;for(var k in v)s.setProperty(k,v[k])}catch(e){}</script>
+<!-- The one look and tab model of lattice's settings, shared with the ship's
+     Settings page: a copy of code/nex/lattice/ui-app/settings.js, written
+     by scripts/build-ui.mjs. This page has to work with no node at all, so
+     it cannot load the ship's. -->
+<script src="settings.js"></script>
 <style>
-  /* mirrors the lattice app's flat green identity (ui-app/index.html) */
+  /* only what this page has and the ship's Settings does not; the rest is
+     settings.js */
   * { box-sizing: border-box; }
-  :root {
-    color-scheme: light dark;
-    --green: #4a7c59; --green-deep: #3a6347;
-    --bg: #fafafa; --text: #1a1a1a; --muted: #8a8a8a;
-    --border: #8886; --border-soft: #8883; --surface: #8881;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg: #1a1a1a; --text: #e6e6e6; }
-  }
-  html, body { margin: 0; background: var(--bg); color: var(--text);
-    font: 15px/1.5 system-ui, sans-serif; }
-  main { max-width: 560px; margin: 0 auto; padding: 2.5rem 1.5rem; }
-  h1 { font-size: 1.5rem; margin: 0 0 1.5rem; }
-  h2 { font-size: 1rem; margin: 2rem 0 .6rem; color: var(--muted);
-    text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
-  input, button {
-    font: inherit; color: inherit; background: var(--surface);
-    border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
-  }
-  input { width: 100%; margin-bottom: .5rem; background: transparent; }
-  input:focus { outline: none; border-color: var(--green); }
-  button { cursor: pointer; }
-  button:hover { border-color: var(--green); }
-  button.primary { background: var(--green); border-color: var(--green-deep); color: #fff; }
-  button.primary:hover { background: var(--green-deep); }
-  .row { display: flex; gap: 8px; align-items: center; }
-  .muted { color: var(--muted); }
-  .err { color: #c0392b; white-space: pre-wrap; }
-  ul { list-style: none; padding: 0; margin: .5rem 0; }
-  li { display: flex; gap: 8px; align-items: center; padding: 8px 0;
-    border-bottom: 1px solid var(--border-soft); }
-  li code { flex: 1; font-size: .9em; }
-  .top { display: flex; justify-content: space-between; align-items: baseline; }
-  .conn { border: 1px solid var(--border); border-radius: 8px; padding: 12px;
-    background: var(--surface); }
-  .conn .row { align-items: center; gap: 10px; }
-  .mono { font: 12px/1.5 ui-monospace, monospace; overflow-wrap: anywhere; }
-  /* state at a glance: green connected, amber reachable-but-logged-out, red
-     unreachable. Colour is never the only signal. The text says it too. */
-  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none;
-    background: var(--muted); }
-  .dot.on { background: var(--green); }
-  .dot.off { background: #d68910; }
-  .dot.err { background: #c0392b; }
+  main { max-width: 64rem; margin: 0 auto; padding: 1.5rem 1.5rem 3rem; }
+  .st-panel > p.lede { margin: .2rem 0 .8rem; }
+  .conn { border: 1px solid var(--border-soft, #8883); border-radius: 8px; padding: 12px;
+    background: var(--raised, #8881); }
+  .conn .row { gap: 10px; margin: 0; }
+  #connect { max-width: 32rem; margin-top: .8rem; }
+  #connect input { width: 100%; margin-bottom: .5rem; }
+  #add-mount input, #add-backup input:not(#bk-keep) { flex: 1; min-width: 12rem; }
+  #add-mount, #add-backup { max-width: 40rem; }
   /* ship-software checklist + install log */
   #stack-list li { gap: 10px; }
   .tick { width: 1.1em; flex: none; text-align: center; }
-  .tick.yes { color: var(--green); }
+  .tick.yes { color: var(--accent, #1a6ed8); }
   .tick.no { color: #d68910; }
-  pre.cmd, #log { background: var(--surface); border: 1px solid var(--border);
-    border-radius: 8px; padding: 10px 12px; overflow-x: auto;
-    font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; margin: .5rem 0; }
-  #log { max-height: 15rem; overflow-y: auto; white-space: pre-wrap;
-    word-break: break-word; }
+  #log { background: var(--raised, #8881); border: 1px solid var(--border-soft, #8883);
+    border-radius: 8px; padding: 10px 12px; overflow-x: auto; overflow-y: auto;
+    font: 12px/1.6 ui-monospace, Menlo, Consolas, monospace; margin: .5rem 0;
+    max-height: 15rem; white-space: pre-wrap; word-break: break-word; }
   #log .ln { display: block; }
   #log .ln.new { animation: fadein .35s ease-out; }
   @keyframes fadein { from { opacity: 0; transform: translateY(2px); } }
   @media (prefers-reduced-motion: reduce) { #log .ln.new { animation: none; } }
-  .chip { font-size: .78rem; padding: 2px 9px; border-radius: 999px;
-    border: 1px solid var(--border); color: var(--muted); }
-  .chip.running { border-color: var(--green); color: var(--green); }
-  .chip.ok { background: var(--green); border-color: var(--green-deep); color: #fff; }
-  .chip.failed { border-color: #c0392b; color: #c0392b; }
   /* the row is flex, so a two-word label wraps mid-button without this */
   #need-grubbery button { white-space: nowrap; }
-  #need-grubbery input { margin-bottom: 0; }
-  /* reading without a ship: first on the page when no ship was ever set */
-  .card { border: 1px solid var(--border); border-radius: 8px; padding: 14px;
-    background: var(--surface); margin-top: 1.2rem; }
-  .card h2 { margin-top: 0; }
-  .card p { margin: .3rem 0 .7rem; }
-  .card details { margin-top: .8rem; }
-  .card summary { cursor: pointer; color: var(--muted); }
+  #backup-list li { display: block; }
+  #backup-list li .row { margin-top: .3rem; }
   #read-status.busy::before { content: ""; display: inline-block; width: .7em; height: .7em;
-    margin-right: .4em; border-radius: 50%; border: 2px solid var(--green);
+    margin-right: .4em; border-radius: 50%; border: 2px solid var(--accent, #1a6ed8);
     border-right-color: transparent; animation: spin 1s linear infinite; vertical-align: -1px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { #read-status.busy::before { animation: none; } }
@@ -87,187 +51,234 @@
   <!-- Leaving this page is a CLOSE, in the place and the wording the in-app
        panes use (access control, search, comments, conflicts all put a plain
        "close" at the end of their header bar, and all close on Escape).
-       It replaced an "open lattice →" primary button down in the ship panel:
-       the only way out was a call to action buried three rows into the page,
-       which does not read as "leave this" and is not where anyone looks for
-       it. Same command either way — this is only where and how it is offered.
 
-       ALWAYS on screen, from the first paint. It was gated on the connection
-       check succeeding, and that check is a real round-trip to the ship —
-       seconds on a slow pier — so the one exit from the page spent those
-       seconds not existing. The exit must never wait on the network.
+       ALWAYS on screen, from the first paint. The exit must never wait on
+       the network: the connection check is a real round-trip to the ship.
        go_home refuses cleanly when no ship is configured ("connect to a
        ship first"), and that message is surfaced instead of navigating. -->
-  <div class="top">
-    <h1>lattice</h1>
+  <div class="st-top top">
+    <h1>Settings</h1>
     <button id="close">close</button>
   </div>
 
-  <h2 id="ship-h">ship</h2>
-  <!-- the connected state is its own panel. Showing the login form whenever
-       there was nothing better to say is what made an already-connected ship
-       look logged out. The form is now revealed only when it is actually
-       needed, or on request. -->
-  <div id="conn" class="conn" hidden>
-    <div class="row">
-      <span id="dot" class="dot"></span>
-      <div>
-        <div id="conn-ship"><b>checking…</b></div>
-        <div id="conn-url" class="muted mono"></div>
+  <!-- One settings surface with the ship's Settings page: the same tabs in
+       the same look. "This computer" is this page; "Lattice" is the ship
+       page's Settings, which go_home opens at the tab named (shown once a
+       ship is configured, since without one there is nothing to open). -->
+  <div class="st">
+    <nav class="st-nav" aria-label="Settings sections">
+      <div class="st-group" id="ship-tabs" hidden>
+        <div class="st-gh">Lattice</div>
+        <a class="st-tab" href="#" data-go="appearance">Appearance</a>
+        <a class="st-tab" href="#" data-go="editing">Editor</a>
+        <a class="st-tab" href="#" data-go="keys">Agent keys</a>
+        <a class="st-tab" href="#" data-go="data">Data and backup</a>
+        <a class="st-tab" href="#" data-go="clipping">Clipping</a>
+        <a class="st-tab" href="#" data-go="advanced">Advanced</a>
       </div>
-    </div>
-    <div class="row" style="margin-top:.7rem">
-      <button id="relog" hidden>reconnect</button>
-      <button id="switch">change ship</button>
+      <div class="st-group">
+        <div class="st-gh">This computer</div>
+        <a class="st-tab" href="#connection">Connection</a>
+        <a class="st-tab" href="#files">Files</a>
+        <a class="st-tab" href="#backups">Scheduled backups</a>
+      </div>
+    </nav>
+    <div class="st-body">
+      <section class="st-panel" id="connection">
+      <h2 id="ship-h">Ship</h2>
+      <!-- the connected state is its own panel. Showing the login form whenever
+           there was nothing better to say is what made an already-connected ship
+           look logged out. The form is now revealed only when it is actually
+           needed, or on request. -->
+      <div id="conn" class="conn" hidden>
+        <div class="row">
+          <span id="dot" class="dot"></span>
+          <div>
+            <div id="conn-ship"><b>checking…</b></div>
+            <div id="conn-url" class="muted mono"></div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:.7rem">
+          <button id="relog" hidden>Reconnect</button>
+          <button id="switch">Change ship</button>
+        </div>
+      </div>
+
+      <form id="connect" hidden>
+        <input id="url" placeholder="https://your-ship.example.com" required>
+        <input id="code" type="password" placeholder="+code" required>
+        <div class="row">
+          <button class="primary">Connect</button>
+          <button type="button" id="cancel" hidden>Cancel</button>
+          <span id="connect-status" class="muted"></span>
+        </div>
+      </form>
+
+      <!-- Using the app anonymously: the one path for someone with no node,
+           right beside connecting one. Choosing it enters the app on the
+           reader's start page, where they browse, and comment as this
+           computer's own reader identity. Hosting pages, bookmarks and follows
+           need a node. Connecting a node later stays open here and from the
+           reader's "Connect a node". Hidden in a build without the engine
+           (reader_status rejects). -->
+      <section id="reader" class="card st-card" hidden>
+        <h2 id="anon-h">Or use lattice anonymously</h2>
+        <p id="anon-copy">No node? You can use lattice anonymously. You can browse
+          pages and comment on them, but you can't host pages without a node.</p>
+        <div class="row">
+          <button type="button" id="anon" class="primary">Use anonymously</button>
+          <span id="read-status" class="muted" role="status"></span>
+        </div>
+        <details>
+          <summary>What this uses and keeps</summary>
+          <p class="muted">lattice makes a private reader identity on this
+            computer the first time, and your comments are signed with it: the
+            people you comment to see its name as the author. The network:
+            HTTPS to roller.urbit.org and bootstrap.urbit.org (to make the
+            reader identity and look up keys), and UDP to the Urbit network and
+            the ships you read. A network that blocks UDP cannot read. lattice
+            gets the reader ready while this page is open, and reads the start
+            list. What it keeps, on this computer only: the reader identity, the
+            network state, and the pages you read recently. A comment goes to
+            the page's publisher and is not kept here. Connecting a node before
+            you use lattice anonymously deletes the identity. Hosting pages,
+            bookmarking and following need a node of your own.</p>
+          <div class="row">
+            <button type="button" id="read-clear">Clear reading history</button>
+            <span id="read-clear-status" class="muted"></span>
+          </div>
+        </details>
+      </section>
+
+
+      <!-- What the ship is missing, and what to do about it. Shown only when
+           something IS missing. A fully-installed ship should not be nagged. -->
+      <div id="stack" hidden>
+        <h2>Ship software</h2>
+        <ul id="stack-list" class="st-list"></ul>
+
+        <div id="need-mcp" hidden>
+          <p class="err">%mcp is not installed on this ship.</p>
+          <p class="muted">lattice installs the rest through %mcp, so it has to go
+          on first — and it cannot install itself. From your ship's dojo:</p>
+          <pre class="cmd">|install ~nisfeb %mcp</pre>
+          <p class="muted">Then press check again.</p>
+          <button id="recheck">Check again</button>
+        </div>
+
+        <div id="need-grubbery" hidden>
+          <p class="muted">%grubbery is missing. lattice runs as a nexus inside it,
+          so it is installed first, over Ames from a publishing ship.</p>
+          <div class="row">
+            <input id="dist" spellcheck="false" autocomplete="off">
+            <button id="go-grubbery" class="primary">Install %grubbery</button>
+          </div>
+          <p class="muted" style="margin:.4rem 0 0">This takes a few minutes — the
+          whole desk transfers over Ames.</p>
+        </div>
+
+        <div id="runlog" hidden>
+          <div class="row" style="margin:.6rem 0 .4rem">
+            <span id="run-state" class="chip">running</span>
+            <span id="run-secs" class="muted"></span>
+          </div>
+          <pre id="log"></pre>
+        </div>
+      </div>
+      </section>
+
+      <section class="st-panel" id="files">
+      <h2>On this machine</h2>
+      <p class="muted lede">Ships running here can be
+      mounted directly over lick &mdash; no URL, no +code. The socket lives inside
+      the pier, so being able to open it <em>is</em> the permission.</p>
+      <div id="local" class="muted">looking&hellip;</div>
+
+      <h2>Mounts</h2>
+      <p class="muted lede">Project the page tree as local
+      files — edit in your own editor, search with your own tools.</p>
+      <p id="fuse-hint" class="err" hidden></p>
+      <ul id="mount-list" class="st-list"></ul>
+      <form id="add-mount">
+        <input id="mp" placeholder="~/lattice (mountpoint)" required>
+        <input id="mroot" placeholder="root (blank = whole tree)">
+        <div class="row">
+          <button>Mount</button>
+          <span id="mount-status" class="err"></span>
+        </div>
+      </form>
+      </section>
+
+      <!-- the id is a menu target: Preferences > "scheduled backups…" lands here -->
+      <section class="st-panel" id="backups">
+      <h2>Automatic backups</h2>
+      <p class="muted lede">Whole-store archives written to
+      this machine on a schedule — the same tar the vault export makes, so anything
+      here restores the same way. Add several: seven daily, four weekly and twelve
+      monthly is three schedules, each keeping its own count.</p>
+      <p class="muted lede">These run while lattice is
+      open. One that came due while the app was closed runs shortly after you next
+      open it, so a period is skipped only if the app never runs during it.</p>
+      <ul id="backup-list" class="st-list"></ul>
+      <form id="add-backup">
+        <div class="row">
+          <input id="bk-label" placeholder="name (e.g. daily)" required>
+          <select id="bk-every">
+            <option value="24">every day</option>
+            <option value="168">every week</option>
+            <option value="720">every 30 days</option>
+            <option value="1">every hour</option>
+          </select>
+          <input id="bk-keep" type="number" min="0" max="999" value="7" style="width:6rem"
+                 title="how many to keep — 0 keeps every one">
+        </div>
+        <div class="row">
+          <input id="bk-dir" placeholder="folder on this machine" required>
+          <button type="button" id="bk-pick">Choose…</button>
+        </div>
+        <div class="row">
+          <button>Add schedule</button>
+          <span id="backup-status" class="err"></span>
+        </div>
+      </form>
+      </section>
     </div>
   </div>
-
-  <form id="connect" hidden>
-    <input id="url" placeholder="https://your-ship.example.com" required>
-    <input id="code" type="password" placeholder="+code" required>
-    <div class="row">
-      <button class="primary">connect</button>
-      <button type="button" id="cancel" hidden>cancel</button>
-      <span id="connect-status" class="muted"></span>
-    </div>
-  </form>
-
-  <!-- Using the app anonymously: the one path for someone with no node,
-       right beside connecting one. Choosing it enters the app on the
-       reader's start page, where they browse, and comment as this
-       computer's own reader identity. Hosting pages, bookmarks and follows
-       need a node. Connecting a node later stays open here and from the
-       reader's "Connect a node". Hidden in a build without the engine
-       (reader_status rejects). -->
-  <section id="reader" class="card" hidden>
-    <h2 id="anon-h">or use lattice anonymously</h2>
-    <p id="anon-copy">No node? You can use lattice anonymously. You can browse
-      pages and comment on them, but you can't host pages without a node.</p>
-    <div class="row">
-      <button type="button" id="anon" class="primary">use anonymously</button>
-      <span id="read-status" class="muted" role="status"></span>
-    </div>
-    <details>
-      <summary>what this uses and keeps</summary>
-      <p class="muted">lattice makes a private reader identity on this
-        computer the first time, and your comments are signed with it: the
-        people you comment to see its name as the author. The network:
-        HTTPS to roller.urbit.org and bootstrap.urbit.org (to make the
-        reader identity and look up keys), and UDP to the Urbit network and
-        the ships you read. A network that blocks UDP cannot read. lattice
-        gets the reader ready while this page is open, and reads the start
-        list. What it keeps, on this computer only: the reader identity, the
-        network state, and the pages you read recently. A comment goes to
-        the page's publisher and is not kept here. Connecting a node before
-        you use lattice anonymously deletes the identity. Hosting pages,
-        bookmarking and following need a node of your own.</p>
-      <div class="row">
-        <button type="button" id="read-clear">clear reading history</button>
-        <span id="read-clear-status" class="muted"></span>
-      </div>
-    </details>
-  </section>
-
-
-  <!-- What the ship is missing, and what to do about it. Shown only when
-       something IS missing. A fully-installed ship should not be nagged. -->
-  <div id="stack" hidden>
-    <h2>ship software</h2>
-    <ul id="stack-list"></ul>
-
-    <div id="need-mcp" hidden>
-      <p class="err">%mcp is not installed on this ship.</p>
-      <p class="muted">lattice installs the rest through %mcp, so it has to go
-      on first — and it cannot install itself. From your ship's dojo:</p>
-      <pre class="cmd">|install ~nisfeb %mcp</pre>
-      <p class="muted">Then press check again.</p>
-      <button id="recheck">check again</button>
-    </div>
-
-    <div id="need-grubbery" hidden>
-      <p class="muted">%grubbery is missing. lattice runs as a nexus inside it,
-      so it is installed first, over Ames from a publishing ship.</p>
-      <div class="row">
-        <input id="dist" spellcheck="false" autocomplete="off">
-        <button id="go-grubbery" class="primary">install %grubbery</button>
-      </div>
-      <p class="muted" style="margin:.4rem 0 0">This takes a few minutes — the
-      whole desk transfers over Ames.</p>
-    </div>
-
-    <div id="runlog" hidden>
-      <div class="row" style="margin:.6rem 0 .4rem">
-        <span id="run-state" class="chip">running</span>
-        <span id="run-secs" class="muted"></span>
-      </div>
-      <pre id="log"></pre>
-    </div>
-  </div>
-
-  <h2>on this machine</h2>
-  <p class="muted" style="margin:.2rem 0 .8rem">Ships running here can be
-  mounted directly over lick &mdash; no URL, no +code. The socket lives inside
-  the pier, so being able to open it <em>is</em> the permission.</p>
-  <div id="local" class="muted">looking&hellip;</div>
-
-  <h2>mounts</h2>
-  <p class="muted" style="margin:.2rem 0 .8rem">Project the page tree as local
-  files — edit in your own editor, search with your own tools.</p>
-  <p id="fuse-hint" class="err" hidden></p>
-  <ul id="mount-list"></ul>
-  <form id="add-mount">
-    <input id="mp" placeholder="~/lattice (mountpoint)" required>
-    <input id="mroot" placeholder="root (blank = whole tree)">
-    <div class="row">
-      <button>mount</button>
-      <span id="mount-status" class="err"></span>
-    </div>
-  </form>
-
-  <!-- the id is a menu target: Preferences > "scheduled backups…" lands here -->
-  <h2 id="backups">automatic backups</h2>
-  <p class="muted" style="margin:.2rem 0 .8rem">Whole-store archives written to
-  this machine on a schedule — the same tar the vault export makes, so anything
-  here restores the same way. Add several: seven daily, four weekly and twelve
-  monthly is three schedules, each keeping its own count.</p>
-  <p class="muted" style="margin:.2rem 0 .8rem">These run while lattice is
-  open. One that came due while the app was closed runs shortly after you next
-  open it, so a period is skipped only if the app never runs during it.</p>
-  <ul id="backup-list"></ul>
-  <form id="add-backup">
-    <div class="row">
-      <input id="bk-label" placeholder="name (e.g. daily)" required>
-      <select id="bk-every">
-        <option value="24">every day</option>
-        <option value="168">every week</option>
-        <option value="720">every 30 days</option>
-        <option value="1">every hour</option>
-      </select>
-      <input id="bk-keep" type="number" min="0" max="999" value="7" style="width:6rem"
-             title="how many to keep — 0 keeps every one">
-    </div>
-    <div class="row">
-      <input id="bk-dir" placeholder="folder on this machine" required>
-      <button type="button" id="bk-pick">choose…</button>
-    </div>
-    <div class="row">
-      <button>add schedule</button>
-      <span id="backup-status" class="err"></span>
-    </div>
-  </form>
 </main>
 <script>
   const invoke = window.__TAURI__.core.invoke;
   const $ = (id) => document.getElementById(id);
-  // the window's native chrome (the GTK menubar) follows the window theme,
-  // not the page's; mirror prefers-color-scheme into it here too, so the
-  // manager page is not the one page with a white menubar over a dark ground
-  {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)');
-    const tell = () => { invoke('set_theme', { dark: mq.matches }).catch(() => {}); };
-    tell();
-    mq.addEventListener('change', tell);
+  // The ship page's theme, which it tells the shell (set_theme) and status
+  // hands back: the same CSS variables theme.js puts on the ship's <html>,
+  // kept here in this origin's own localStorage so the next load paints
+  // with them at once (the line at the top). Empty is lattice's default,
+  // light or dark as the system is.
+  //
+  // The window's native chrome (the GTK menubar) follows the window theme,
+  // not the page's, so the page's light or dark goes to the window too.
+  // This page sends no variables, which leaves the kept ones alone.
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  const isDark = () => {
+    const cs = document.documentElement.style.getPropertyValue('color-scheme');
+    return cs ? cs === 'dark' : mq.matches;
+  };
+  const tellTheme = () => { invoke('set_theme', { dark: isDark() }).catch(() => {}); };
+  function wearTheme(v) {
+    const s = document.documentElement.style;
+    for (const k of Array.from(s)) if (k === 'color-scheme' || k.startsWith('--')) s.removeProperty(k);
+    for (const k in v || {}) s.setProperty(k, v[k]);
+    try { localStorage.latThemeVars = JSON.stringify(v || {}); } catch {}
+    tellTheme();
   }
+  tellTheme();
+  mq.addEventListener('change', tellTheme);
+
+  // The Lattice tabs are the ship page's Settings: go_home opens the editor
+  // with that tab in front. A refusal (no ship) is shown like close's.
+  window.stGo = (tab) => invoke('go_home', { settings: tab }).catch((e) => {
+    const s = $('connect-status');
+    s.textContent = String(e); s.className = 'err';
+  });
 
   // Show the login form only when logging in is actually the thing to do.
   // `connected` comes from a real authenticated request, not from "we have a
@@ -306,6 +317,7 @@
       showForm(true, false);
     }
     placeReader(!s.url);
+    $('ship-tabs').hidden = !s.url;
   }
   refreshConn();
 
@@ -313,8 +325,8 @@
   // the card sits right after the connect form either way; with no node
   // the section says what connecting is, and the card is the other choice
   function placeReader(shipless) {
-    $('ship-h').textContent = shipless ? 'connect your node' : 'ship';
-    $('anon-h').textContent = shipless ? 'or use lattice anonymously' : 'use lattice anonymously';
+    $('ship-h').textContent = shipless ? 'Connect your node' : 'Ship';
+    $('anon-h').textContent = shipless ? 'Or use lattice anonymously' : 'Use lattice anonymously';
   }
   const readStatus = (text, cls) => {
     const r = $('read-status');
@@ -406,7 +418,7 @@
         li.appendChild(c);
       }
       const b = document.createElement('button');
-      b.textContent = 'unmount';
+      b.textContent = 'Unmount';
       b.onclick = () => {
         $('mount-status').textContent = '';
         invoke('remove_mount', { mountpoint: m.mountpoint })
@@ -436,6 +448,7 @@
     }
     host.className = '';
     const ul = document.createElement('ul');
+    ul.className = 'st-list';
     for (const s of ships) {
       const li = document.createElement('li');
       const c = document.createElement('code');
@@ -450,7 +463,7 @@
       if (s.lick) {
         const b = document.createElement('button');
         b.className = 'primary';
-        b.textContent = 'mount';
+        b.textContent = 'Mount';
         b.onclick = async () => {
           const mp = mountpointFor(s.ship);
           if (!mp) return;
@@ -609,14 +622,14 @@
       const row = document.createElement('div');
       row.className = 'row';
       const now = document.createElement('button');
-      now.textContent = 'back up now';
+      now.textContent = 'Back up now';
       now.onclick = async () => {
         $('backup-status').textContent = '';
         try { await invoke('run_backup_now', { id: s.id }); $('backup-status').textContent = 'building…'; }
         catch (e) { $('backup-status').textContent = String(e); }
       };
       const pause = document.createElement('button');
-      pause.textContent = s.enabled ? 'pause' : 'resume';
+      pause.textContent = s.enabled ? 'Pause' : 'Resume';
       pause.onclick = async () => { s.enabled = !s.enabled; await saveBackups(); };
       // The drill. An archive that EXISTS proves nothing — the desktop export
       // path was dead for weeks and looked exactly like this working. This
@@ -624,7 +637,7 @@
       // it, so "there are backups" and "the backups are good" stop being the
       // same sentence.
       const ver = document.createElement('button');
-      ver.textContent = 'verify latest';
+      ver.textContent = 'Verify latest';
       ver.onclick = async () => {
         sub.textContent = 'reading the newest archive…';
         try {
@@ -642,7 +655,7 @@
         }
       };
       const del = document.createElement('button');
-      del.textContent = 'remove';
+      del.textContent = 'Remove';
       // removing a SCHEDULE never removes its archives. Deleting backups is
       // not what "stop backing up" means, and the files are the user's.
       del.title = 'stops the schedule — the archives already written stay';
@@ -691,6 +704,7 @@
   refreshBackups();
 
   invoke('status').then((s) => {
+    if (s.theme) wearTheme(s.theme);
     if (!s.fuse_available) {
       const h = $('fuse-hint');
       h.textContent = s.hint; h.hidden = false;

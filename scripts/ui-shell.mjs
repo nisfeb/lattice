@@ -647,13 +647,16 @@ try {
   //  brings the named section to the top of the frame
   await openDoc('page', RP);
   await page.evaluate(() => window.latOpenSettings && window.latOpenSettings('legacy'));
+  //  and since the sections sit in tabs, the tab holding it is the one shown
   const atLegacy = await until(() => {
     const f = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]');
     const d = f && f.contentDocument;
     const e = d && d.getElementById('legacy');
     if (!e) return false;
     const top = e.getBoundingClientRect().top;
-    return f.contentWindow.scrollY > 0 && top >= 0 && top < f.contentWindow.innerHeight - 40;
+    const shown = [...d.querySelectorAll('.st-panel')].filter((p) => !p.hidden).map((p) => p.id);
+    return JSON.stringify(shown) === '["data"]' && e.offsetParent !== null
+      && top >= 0 && top < f.contentWindow.innerHeight - 40;
   });
   const anchors = await page.evaluate(() => {
     const d = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]')?.contentDocument;
@@ -673,10 +676,21 @@ try {
   const nSet = (await front()).n;
   await page.evaluate(() => window.latOpenSettings && window.latOpenSettings('backup'));
   const atBackup = await until(() => {
-    const d = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]')?.contentDocument;
+    const f = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]');
+    const d = f && f.contentDocument;
     const e = d && d.getElementById('backup');
-    return !!e && Math.abs(e.getBoundingClientRect().top) < 40;
+    return !!e && e.offsetParent !== null && e.getBoundingClientRect().top >= 0
+      && e.getBoundingClientRect().top < f.contentWindow.innerHeight / 2;
   });
+  //  a tab by name, as the desktop manager's Lattice tabs ask (?settings=)
+  await page.evaluate(() => window.latOpenSettings && window.latOpenSettings('keys'));
+  const atKeys = await until(() => {
+    const d = document.querySelector('#toolhost iframe[data-tool="frame:/apps/lattice/settings"]')?.contentDocument;
+    const k = d && d.getElementById('keys');
+    return !!k && !k.hidden && d.querySelector('.st-tab[aria-current]')?.getAttribute('href') === '#keys'
+      && [...d.querySelectorAll('.st-panel')].filter((p) => !p.hidden).length === 1;
+  });
+  check('latOpenSettings(tab) shows that tab alone', atKeys);
   check('latOpenSettings scrolls to its section, also when Settings is open',
     atLegacy && atBackup && (await front()).n === nSet, JSON.stringify({ atLegacy, atBackup }));
 

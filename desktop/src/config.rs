@@ -23,6 +23,13 @@ pub struct Config {
     /// written to anyone's disk until they ask for it.
     #[serde(default)]
     pub backups: Vec<BackupSchedule>,
+    /// The ship page's resolved theme (ui-app/theme.js), as the CSS
+    /// variables it sets on <html>, so the manager page, another origin
+    /// that may have no ship at all, wears the same one. Written only by
+    /// set_theme, which keeps known keys with well-formed values. Empty
+    /// means lattice's own light or dark, following the system.
+    #[serde(default)]
+    pub theme: std::collections::BTreeMap<String, String>,
 }
 
 /// One recurring backup: how often, where, and how many to keep.
@@ -171,6 +178,7 @@ mod tests {
             url: "http://localhost:8080".into(),
             ship: "~zod".into(),
             queue_key: "k1".into(),
+            theme: [("--bg".to_string(), "#1a1a1a".to_string())].into_iter().collect(),
             // a schedule must survive the round trip too: it is the only thing
             // in here whose loss silently stops backups from ever running
             backups: vec![BackupSchedule {
@@ -195,6 +203,7 @@ mod tests {
         assert_eq!(back.ship, c.ship);
         assert_eq!(back.queue_key, c.queue_key);
         assert_eq!(back.backups, c.backups);
+        assert_eq!(back.theme, c.theme);
         assert_eq!(back.mounts.len(), 1);
         assert_eq!(back.mounts[0].root, "notes");
         std::fs::remove_file(&p).ok();
@@ -237,6 +246,7 @@ mod tests {
                 url: url.clone(),
                 ship: String::new(),
                 queue_key: String::new(),
+                theme: Default::default(),
                 backups: Vec::new(),
                 mounts: mounts
                     .iter()

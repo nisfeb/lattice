@@ -144,4 +144,30 @@ check('every command the settings page invokes is granted to the ship page',
 check('settings-html opens the manager at its backups section',
   hoon.includes('open_manager",{section:"backups"}') && hoon.includes('latOpenManager("backups")'));
 
+//  One settings surface: the ship's Settings page and the manager page
+//  share ui-app/settings.js, and the manager carries a byte-identical copy
+//  (scripts/build-ui.mjs writes it) because it must work with no ship. Each
+//  side's tabs name only what the other side accepts: the ship page's
+//  "This computer" tabs are open_manager's sections, the manager's
+//  "Lattice" tabs are go_home's Settings tabs and the ship page's panels.
+const shared = readFileSync(join(here, '..', 'code', 'nex', 'lattice', 'ui-app', 'settings.js'), 'utf8');
+const copy = readFileSync(join(here, '..', 'desktop', 'ui', 'settings.js'), 'utf8');
+check('the manager carries the ship\'s settings.js byte for byte (node scripts/build-ui.mjs)', shared === copy);
+const manager = readFileSync(join(here, '..', 'desktop', 'ui', 'manager.html'), 'utf8');
+const cmds = readFileSync(join(here, '..', 'desktop', 'src', 'commands.rs'), 'utf8');
+const list = (name) => [...(cmds.match(new RegExp('const ' + name + ': &\\[&str\\] = &\\[([^\\]]*)\\]')) || ['', ''])[1]
+  .matchAll(/"([a-z]+)"/g)].map((m) => m[1]);
+const sections = list('MANAGER_SECTIONS'), tabsOk = list('SETTINGS_TABS');
+const shipGo = [...hoon.matchAll(/data-go=\\"([a-z]+)\\"/g)].map((m) => m[1]);
+const shipPanels = [...hoon.matchAll(/class=\\"st-panel\\" id=\\"([a-z]+)\\"/g)].map((m) => m[1]);
+const mgrGo = [...manager.matchAll(/data-go="([a-z]+)"/g)].map((m) => m[1]);
+const mgrPanels = [...manager.matchAll(/class="st-panel" id="([a-z]+)"/g)].map((m) => m[1]);
+const same = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+check('the ship page\'s This computer tabs are the manager\'s panels and open_manager\'s sections',
+  shipGo.length > 0 && same(shipGo, mgrPanels) && same(shipGo, sections),
+  JSON.stringify({ shipGo, mgrPanels, sections }));
+check('the manager\'s Lattice tabs are the ship page\'s panels and go_home\'s tabs',
+  mgrGo.length > 0 && same(mgrGo, shipPanels) && same(mgrGo, tabsOk),
+  JSON.stringify({ mgrGo, shipPanels, tabsOk }));
+
 check.done();
