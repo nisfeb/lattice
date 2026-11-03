@@ -235,6 +235,11 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     }
     let log: Log = Arc::new(log_line);
     libmesa_log(log.clone());
+    let fake = match fake.map(|f| fake_name(dir, f)).transpose() {
+        Ok(f) => f,
+        Err(e) => return fail(e),
+    };
+    let fake = fake.as_deref();
     let found = match state::find(dir, "", false, fake.unwrap_or("")) {
         Ok(f) => f,
         Err(e) => return fail(e),
@@ -279,6 +284,32 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         });
         host.turn();
     }
+}
+
+/// A fake identity for tests. `new-moon-of:~ship` is a moon of that ship
+/// (a galaxy, star or planet) made up once per state folder and kept in its `fake-moon`: a
+/// publisher remembers each identity's flows, so a fresh folder must not
+/// reuse a name an earlier run used.
+fn fake_name(dir: &Path, fake: &str) -> Result<String, String> {
+    let Some(parent) = fake.strip_prefix("new-moon-of:") else { return Ok(fake.to_string()) };
+    let kept = dir.join("fake-moon");
+    if let Ok(name) = std::fs::read_to_string(&kept) {
+        return Ok(name.trim().to_string());
+    }
+    let name = moon_of(parent)?;
+    std::fs::write(&kept, format!("{name}\n")).map_err(|e| format!("{}: {e}", kept.display()))?;
+    Ok(name)
+}
+
+/// A moon of `parent` no one has used, by its random high half.
+fn moon_of(parent: &str) -> Result<String, String> {
+    let (lo, hi) = urb_engine::engine::ship_parse(parent).ok_or_else(|| format!("not a ship: {parent}"))?;
+    if hi != 0 || lo >> 32 != 0 {
+        return Err(format!("{parent} has no moons"));
+    }
+    let r = random(4);
+    let high = u32::from_be_bytes([r[0], r[1], r[2], r[3]]).max(1) as u64;
+    Ok(urb_engine::engine::ship_text(((high << 32) | lo, 0)))
 }
 
 /// The one request the engine ever makes.
@@ -380,6 +411,21 @@ mod tests {
     }
 
     #[test]
+    fn a_fake_moon_is_made_once_per_folder() {
+        let m = moon_of("~wep").unwrap();
+        assert!(m.ends_with("-dozzod-dozwep") && m.len() == "~bidlys-donref-dozzod-dozwep".len(), "{m}");
+        assert_ne!(m, moon_of("~wep").unwrap());
+        assert!(moon_of(&m).is_err() && moon_of("nope").is_err());
+        let tmp = std::env::temp_dir().join(format!("engine-moon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let a = fake_name(&tmp, "new-moon-of:~wep").unwrap();
+        assert_eq!(fake_name(&tmp, "new-moon-of:~wep").unwrap(), a);
+        assert_eq!(fake_name(&tmp, "~zod").unwrap(), "~zod");
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[test]
     fn new_makes_nothing_on_disk() {
         let tmp = std::env::temp_dir().join(format!("engine-new-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
@@ -442,12 +488,16 @@ mod tests {
         let nonce = std::env::var("FLEET_NONCE").expect("FLEET_NONCE");
         let tmp = std::env::temp_dir().join(format!("engine-fleet-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        let e = Engine::fake(tmp.clone(), "~bidlys-donref-dozzod-dozwep");
+        let e = Engine::fake(tmp.clone(), "new-moon-of:~wep");
         let t = std::time::Instant::now();
         let p = e.read(&url, Duration::from_secs(60), true).expect("the first read");
         eprintln!("first read {:?} ({} by {})", t.elapsed(), p.key, p.how);
         assert!(p.body.contains(&nonce), "{}", p.body);
         assert_eq!(p.mark, "gmi");
+        let shown = crate::render::page(&url, &p, crate::render::Mode::Shipless, "k");
+        assert!(shown.html.contains("href=\"/read?url=urb%3A%2F%2F~wep%2Fother\""), "{}", shown.html);
+        assert!(shown.html.contains("href=\"/read?url=urb%3A%2F%2F~wep%2Fnotes%2Fmore\""));
+        assert_eq!(shown.title, "Desktop engine check");
         let t = std::time::Instant::now();
         let again = e.read(&url, Duration::from_secs(10), true).expect("the second read");
         let warm = t.elapsed();
