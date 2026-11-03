@@ -127,9 +127,11 @@
       <p class="muted">The network: HTTPS to roller.urbit.org and
         bootstrap.urbit.org (to make the reader identity and look up keys),
         and UDP to the Urbit network and the ships you read. A network that
-        blocks UDP cannot read. What it keeps, on this computer only: the
-        reader identity, the network state, and the pages you read
-        recently. Bookmarking, commenting and following need a ship of your
+        blocks UDP cannot read. lattice gets the reader ready while this
+        page is open, and reads the start list. What it keeps, on this
+        computer only, once you read: the reader identity, the network
+        state, and the pages you read recently. Close this page without
+        reading and nothing is kept. Bookmarking, commenting and following need a ship of your
         own.</p>
       <div class="row">
         <button type="button" id="read-clear">clear reading history</button>
@@ -327,14 +329,21 @@
     const r = $('read-status');
     r.textContent = text; r.className = cls || 'muted';
   };
+  const GETTING_READY = 'Getting ready to read (about 10 seconds the first time).';
   // the engine's state, as the card shows it
   async function refreshReader() {
     let st;
     try { st = await invoke('reader_status'); } catch { $('reader').hidden = true; return null; }
+    const shown = !$('reader').hidden;
     $('reader').hidden = false;
-    if ($('ship-h').textContent === 'connect your ship') $('read-url').focus();
+    if (!shown && $('ship-h').textContent === 'connect your ship') $('read-url').focus();
+    // once Open is pressed the card speaks for the open
+    if (refreshReader.opening) return st;
     if (st && st.engine === 'booting') {
-      readStatus('Setting up your reader. This happens once.' + (st.step ? ' ' + st.step + '\u2026' : ''), 'muted busy');
+      readStatus(GETTING_READY + (st.step ? ' ' + st.step + '\u2026' : ''), 'muted busy');
+      // the reader gets ready while this page is up: say when it is
+      clearTimeout(refreshReader.t);
+      refreshReader.t = setTimeout(refreshReader, 1000);
     } else if (st && st.engine === 'failed') {
       readStatus(st.error || "The reader couldn't start.", 'err');
     } else if (st && st.engine === 'ready') {
@@ -345,12 +354,14 @@
   refreshReader();
   async function openReader(url) {
     const st = await invoke('reader_status').catch(() => null);
-    readStatus(st && st.engine === 'ready' ? 'Opening\u2026' : 'Setting up your reader. This happens once.', 'muted busy');
+    refreshReader.opening = true;
+    readStatus(st && st.engine === 'ready' ? 'Opening\u2026' : GETTING_READY, 'muted busy');
     try {
       await invoke('open_reader', { url });
     } catch (err) {
       readStatus(String(err), 'err');
     }
+    refreshReader.opening = false;
   }
   $('read-form').addEventListener('submit', (e) => {
     e.preventDefault();

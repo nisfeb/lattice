@@ -558,6 +558,8 @@ pub fn start(app: &tauri::AppHandle) -> Result<String, String> {
     use tauri::Manager;
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("urb");
     let engine = app.state::<crate::engine::Engine>().inner().clone();
+    // the reader is in use: its identity is kept
+    engine.claim();
     ensure(&app.state::<Reader>(), |port| Ctx::new(Box::new(engine), History::open(&dir), port))
 }
 

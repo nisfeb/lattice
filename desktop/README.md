@@ -70,8 +70,13 @@ empty cache and made the desktop app slower than the same UI in a browser.
 Someone who has never run Urbit can still read: the connection page's
 "read without a ship" card opens a page by its `urb://~ship/page` address,
 or "start here" opens a starting list. The first time, lattice makes a
-private reader identity (an Urbit comet) on this computer, which takes a
-second or two, and the reader shows each step while it does. With no ship
+private reader identity (an Urbit comet) on this computer and makes first
+contact with the network, about 10 seconds in all. With no ship
+configured it does this as soon as the app starts, while the connection
+page is up, and reads the start list, so the first page opened is usually
+on its way already; the card and the reader say how far along it is. An
+identity made this way is kept only once the reader is used: quit without
+reading, or connect a ship, and it is deleted. With no ship
 configured, `urb://` links from other apps open in this reader at once.
 
 The reader only reads. Bookmarking, commenting and following a ship are
@@ -94,7 +99,9 @@ time, which is better avoided since each identity leaves a record on every
 ship it reads. If a file there is damaged (a crash while the identity
 was being made, a store that will not open), lattice moves it into a
 `damaged-<time>/` folder beside it and starts fresh; nothing is deleted.
-Connecting a ship later changes nothing here.
+Connecting a ship later changes nothing here, once the reader has been
+used. With a ship configured, the reader uses no network until it is
+opened.
 
 ## Local ships (lick)
 

@@ -172,10 +172,10 @@ check('clear reading history invokes clear_reader_history', cleared);
 await fresh.close();
 
 const booting = await load({ connected: false, ship: null, url: '', error: null },
-  { reader: { engine: 'booting', our: null, error: null, step: 'Making your private reader identity' } });
+  { reader: { engine: 'booting', our: null, error: null, step: 'Setting up this computer' } });
 const bt = await booting.evaluate(() => document.getElementById('read-status').textContent);
-check('while the engine boots the card says so, with its step',
-  bt.includes('Setting up your reader. This happens once.') && bt.includes('Making your private reader identity'), bt);
+check('while the engine boots the card says so, how long, and its step',
+  bt.includes('Getting ready to read (about 10 seconds the first time).') && bt.includes('Setting up this computer'), bt);
 await booting.close();
 
 const ready = await load({ connected: false, ship: null, url: '', error: null },

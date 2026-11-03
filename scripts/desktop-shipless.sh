@@ -118,7 +118,7 @@ cat > "$T/probe.js" <<'JS'
   var step = function () {
     var r = st.r;
     if (st.step === 0) {
-      if (text().indexOf('Setting up your reader') >= 0) { r.sawSetup = 1; save(); return; }
+      if (text().indexOf('Getting ready to read') >= 0) { r.sawSetup = 1; save(); return; }
       r.title = document.title;
       r.rendered = text().indexOf('Read with no ship.') >= 0 ? 1 : 0;
       r.disabled = document.querySelectorAll('.actions button[disabled]').length;
@@ -209,7 +209,9 @@ try: print(json.loads(sys.argv[1]).get(sys.argv[2], ""))
 except Exception: print("")' "$report" "$1"; }
 
 is "the first-run card opened the reader" 1 "$(grep -c 'reader: open /read?url=urb%3A%2F%2F~wep%2Fshipless-check' "$LOG")"
-is "the engine ran as a moon of ~wep, made on first use" 1 "$(grep -c 'engine: running as ~[a-z-]*-dozzod-dozwep' "$LOG")"
+is "the engine ran as a moon of ~wep, made once" 1 "$(grep -c 'engine: running as ~[a-z-]*-dozzod-dozwep' "$LOG")"
+ran=$(grep -n -m1 'engine: running as' "$LOG" | cut -d: -f1); opened=$(grep -n -m1 'reader: open /read' "$LOG" | cut -d: -f1)
+is "and got ready while the first-run page was up, before Open" yes "$([ -n "$ran" ] && [ -n "$opened" ] && [ "$ran" -lt "$opened" ] && echo yes || echo "no ($ran, $opened)")"
 is "the page rendered" 1 "$(r rendered)"
 is "titled by its first heading" "Shipless check" "$(r title)"
 is "three ship actions shown disabled" 3 "$(r disabled)"

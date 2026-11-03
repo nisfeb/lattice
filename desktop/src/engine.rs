@@ -18,8 +18,14 @@
 //! One comet per install: every new comet leaves a record on each ship it
 //! reads, so it is never remade per run, test or window.
 //!
-//! Nothing starts at launch. The thread starts the first time something
-//! asks for a read.
+//! With no ship configured, the app starts the engine at launch
+//! (`prewarm`), so the reader is ready, and the start list read, by the
+//! time someone opens it. A comet made that way is unclaimed (an
+//! `unclaimed` file beside it) until the reader is used (`claim`): one
+//! still unclaimed when the app exits, or when a ship is connected, is
+//! deleted (`drop_unclaimed`), so a first run closed without reading keeps
+//! no reader identity. With a ship configured the engine starts only when
+//! something asks for a read.
 
 
 use std::path::{Path, PathBuf};
@@ -42,6 +48,12 @@ pub const MAX_BODY: usize = 4 * 1024 * 1024;
 /// failure (another lattice on the store, no network) would show as
 /// "setting up" forever and never as what it is.
 pub const RETRY_AFTER: Duration = Duration::from_secs(5);
+
+/// Beside a comet made before anyone asked to read (see the top).
+const UNCLAIMED: &str = "unclaimed";
+
+/// How long the warm-up's reads wait each.
+const WARM_BUDGET: Duration = Duration::from_secs(30);
 
 /// A page as the engine read it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,9 +101,12 @@ pub trait Reads: Send + Sync {
     }
 }
 
+/// where a read's result goes
+type Answer = Sender<Result<NativePage, ReadError>>;
+
 /// what callers hand the host's thread
 enum Job {
-    Read(String, Sender<Result<NativePage, ReadError>>),
+    Read(String, Answer),
     Close(Sender<()>),
 }
 
@@ -107,6 +122,9 @@ struct Inner {
     /// what a start is doing, in words for the reader's setup page
     step: &'static str,
     run: Option<Running>,
+    /// an unclaimed comet is to go: the host's thread deletes it once its
+    /// start is done, rather than reach the network with it
+    discard: bool,
 }
 
 /// The engine, one per app (managed state). A clone is the same engine.
@@ -121,7 +139,7 @@ pub struct Engine {
 
 impl Engine {
     /// The engine for state in `dir`. Does nothing yet: nothing is made on
-    /// disk and no thread runs until the first read.
+    /// disk and no thread runs until `prewarm` or the first read.
     ///
     /// Debug builds take `LATTICE_ENGINE_FAKE=<ship>` to run as that ship
     /// on a fake network, so the end-to-end checks can read a fleet ship.
@@ -143,7 +161,7 @@ impl Engine {
         Engine {
             dir,
             fake,
-            inner: Arc::new(Mutex::new(Inner { status: Status::Off, failed_at: None, step: "", run: None })),
+            inner: Arc::new(Mutex::new(Inner { status: Status::Off, failed_at: None, step: "", run: None, discard: false })),
         }
     }
 
@@ -175,7 +193,7 @@ impl Engine {
         }
         let (jobs_tx, jobs_rx) = channel::<Job>();
         g.status = Status::Booting;
-        g.step = "Starting your reader";
+        g.step = "Starting";
         g.run = Some(Running { jobs: jobs_tx, waker: None });
         drop(g);
         let (dir, fake, inner) = (self.dir.clone(), self.fake.clone(), self.inner.clone());
@@ -220,6 +238,73 @@ impl Engine {
         }
     }
 
+    /// Start the engine before anyone reads, and read `warm` (the start
+    /// list) and the first page it links to, so the first page someone
+    /// opens is already on its way. A comet this makes is unclaimed until
+    /// `claim`. Only for an app with no ship configured.
+    pub fn prewarm(&self, warm: Option<&str>) {
+        if self.fake.is_none() && !self.dir.join("comet.key").exists() {
+            if let Err(e) = make_dir(&self.dir).and_then(|()| {
+                std::fs::write(self.dir.join(UNCLAIMED), b"").map_err(|e| format!("{UNCLAIMED}: {e}"))
+            }) {
+                log_line(&format!("prewarm: {e}"));
+                return;
+            }
+        }
+        self.inner.lock().unwrap().discard = false;
+        self.start();
+        // a fake network (the end-to-end checks) has no start list
+        let Some(warm) = warm.filter(|_| self.fake.is_none()).map(String::from) else { return };
+        let e = self.clone();
+        let _ = std::thread::Builder::new().name("urb-warm".into()).spawn(move || {
+            let Ok(p) = e.warm_read(&warm) else { return };
+            if let Some(next) = first_link(&p.body) {
+                let _ = e.warm_read(&next);
+            }
+        });
+    }
+
+    fn warm_read(&self, url: &str) -> Result<NativePage, ReadError> {
+        if self.inner.lock().unwrap().discard {
+            return Err(ReadError::Failed("discarded".into()));
+        }
+        let t = Instant::now();
+        let r = self.read(url, WARM_BUDGET, true);
+        log_line(&format!("warmed {url} in {} ms: {}", t.elapsed().as_millis(), if r.is_ok() { "ok" } else { "no page" }));
+        r
+    }
+
+    /// The reader is being used: its comet is kept from now on.
+    pub fn claim(&self) {
+        let mut g = self.inner.lock().unwrap();
+        g.discard = false;
+        let _ = std::fs::remove_file(self.dir.join(UNCLAIMED));
+    }
+
+    /// Has the reader been used (is there a claimed comet on disk)?
+    pub fn claimed(&self) -> bool {
+        self.dir.join("comet.key").exists() && !self.dir.join(UNCLAIMED).exists()
+    }
+
+    /// Delete a comet nobody claimed (the app is exiting, or a ship was
+    /// connected), closing the engine first. A start still in progress
+    /// deletes it itself when done. Nothing happens to a claimed comet.
+    pub fn drop_unclaimed(&self) {
+        if !self.dir.join(UNCLAIMED).exists() {
+            return;
+        }
+        {
+            let mut g = self.inner.lock().unwrap();
+            g.discard = true;
+            if g.status == Status::Booting {
+                return;
+            }
+        }
+        self.close();
+        log_line("deleting the unclaimed reader identity");
+        discard_identity(&self.dir);
+    }
+
     /// Close the engine, waiting up to 2 s so libmesa makes its last save.
     pub fn close(&self) {
         let (tx, rx) = channel();
@@ -260,6 +345,32 @@ fn make_dir(dir: &Path) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", dir.display()))
 }
 
+/// An unclaimed comet's files, deleted (the marker last, so a crash
+/// part way leaves it to be found next launch). The history is kept.
+fn discard_identity(dir: &Path) {
+    let names: Vec<String> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    for n in names {
+        if n == "comet.key" || [".db", ".db-wal", ".db-shm", ".db-journal", ".db.lock", ".db.port"].iter().any(|x| n.ends_with(x)) {
+            let _ = std::fs::remove_file(dir.join(n));
+        }
+    }
+    let _ = std::fs::remove_file(dir.join(UNCLAIMED));
+}
+
+/// The first urb:// link in a gemtext page.
+fn first_link(body: &str) -> Option<String> {
+    body.lines()
+        .filter_map(|l| l.strip_prefix("=>"))
+        .filter_map(|l| l.split_whitespace().next())
+        .find(|u| u.starts_with("urb://~"))
+        .map(String::from)
+}
+
 fn log_line(l: &str) {
     crate::commands::dlog(&format!("engine: {l}"));
 }
@@ -281,7 +392,7 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     libmesa_log(log.clone());
     let step = |w: &'static str| inner.lock().unwrap().step = w;
     if fake.is_none() && !dir.join("comet.key").exists() {
-        step("Making your private reader identity");
+        step("Setting up this computer");
     }
     let fake = match fake.map(|f| fake_name(dir, f)).transpose() {
         Ok(f) => f,
@@ -292,25 +403,41 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         Ok(f) => f,
         Err(e) => return fail(e),
     };
+    // a ship was connected while the comet was made: no network with it
+    if inner.lock().unwrap().discard && dir.join(UNCLAIMED).exists() {
+        drop(found);
+        return discarded(dir, inner);
+    }
     let udp = GatewayUdp { fake: fake.is_some(), port: found.port, log: log.clone(), udp: None };
     let io = NetIo::new(Box::new(udp), Box::new(found.store), log);
     let waker = io.waker();
     if let Some(run) = &mut inner.lock().unwrap().run {
         run.waker = Some(waker);
     }
-    step("Connecting to the Urbit network");
+    step("Joining the Urbit network");
     let mut host = Host::new(io, random);
     let our = match host.open(fake.is_some()) {
         Ok(o) => o,
         Err(f) => return fail(f.message),
     };
     log_line(&format!("running as {our}"));
-    inner.lock().unwrap().status = Status::Ready { our };
-    let mut pending: Vec<(u64, Sender<Result<NativePage, ReadError>>)> = Vec::new();
+    {
+        // one lock, so a drop_unclaimed that saw the start in progress is
+        // seen here
+        let mut g = inner.lock().unwrap();
+        if !(g.discard && dir.join(UNCLAIMED).exists()) {
+            g.status = Status::Ready { our };
+        } else {
+            drop(g);
+            let _ = host.close();
+            return discarded(dir, inner);
+        }
+    }
+    let mut pending: Vec<(u64, Answer, String, Instant)> = Vec::new();
     loop {
         loop {
             match jobs.try_recv() {
-                Ok(Job::Read(url, tx)) => pending.push((submit_read(&mut host, url), tx)),
+                Ok(Job::Read(url, tx)) => pending.push((submit_read(&mut host, url.clone()), tx, url, Instant::now())),
                 Ok(Job::Close(done)) => {
                     let _ = host.close();
                     let _ = done.send(());
@@ -324,8 +451,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                 }
             }
         }
-        pending.retain(|(id, tx)| match host.take(*id) {
+        pending.retain(|(id, tx, url, at)| match host.take(*id) {
             Some(r) => {
+                log_line(&format!("read {url} in {} ms", at.elapsed().as_millis()));
                 let _ = tx.send(result_of(r));
                 false
             }
@@ -333,6 +461,16 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         });
         host.turn();
     }
+}
+
+/// The end of a start whose unclaimed comet is to go.
+fn discarded(dir: &Path, inner: &Arc<Mutex<Inner>>) {
+    log_line("deleting the unclaimed reader identity");
+    discard_identity(dir);
+    let mut g = inner.lock().unwrap();
+    g.status = Status::Off;
+    g.run = None;
+    g.discard = false;
 }
 
 /// A fake identity for tests. `new-moon-of:~ship` is a moon of that ship
@@ -696,6 +834,64 @@ mod tests {
         let left: Vec<String> = std::fs::read_dir(&t).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(left.len(), 1, "{left:?}");
         assert!(left[0].starts_with("damaged-"));
+        std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    #[test]
+    fn the_warm_up_follows_the_first_urb_link() {
+        let body = "# Start\n=> https://x.example not this\n=>urb://~zod/a First\n=> urb://~nec/b\n";
+        assert_eq!(first_link(body).as_deref(), Some("urb://~zod/a"));
+        assert_eq!(first_link("# none\nurb://~zod/a\n"), None);
+    }
+
+    /// A comet made for the first-run page and never used is not kept; a
+    /// used one is, and so is the history either way.
+    #[test]
+    fn an_unclaimed_identity_goes_and_a_claimed_one_stays() {
+        let t = tmp("unclaimed");
+        let e = Engine::with(t.clone(), None);
+        let made = |t: &Path| {
+            make_dir(t).unwrap();
+            for n in ["comet.key", "ab.db", "ab.db-wal", "ab.db.port", "history.json", UNCLAIMED] {
+                std::fs::write(t.join(n), b"x").unwrap();
+            }
+        };
+        made(&t);
+        assert!(!e.claimed(), "made at launch, not yet used");
+        e.drop_unclaimed();
+        let left: Vec<String> = std::fs::read_dir(&t).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left, ["history.json"]);
+        made(&t);
+        e.claim();
+        assert!(e.claimed());
+        e.drop_unclaimed();
+        assert!(t.join("comet.key").exists() && t.join("ab.db").exists());
+        // a start in progress is left to delete it itself
+        std::fs::write(t.join(UNCLAIMED), b"").unwrap();
+        e.inner.lock().unwrap().status = Status::Booting;
+        e.drop_unclaimed();
+        assert!(t.join("comet.key").exists() && e.inner.lock().unwrap().discard);
+        std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    /// A ship connected while the reader got ready: the start ends without
+    /// the network, and its identity is gone.
+    #[test]
+    fn a_discarded_start_deletes_its_identity() {
+        let t = tmp("discard");
+        let e = Engine::fake(t.clone(), "~bidlys-donref-dozzod-dozwep");
+        make_dir(&t).unwrap();
+        std::fs::write(t.join(UNCLAIMED), b"").unwrap();
+        e.inner.lock().unwrap().discard = true;
+        e.start();
+        for _ in 0..200 {
+            if e.status() != Status::Booting {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(e.status(), Status::Off);
+        assert!(!t.join("fake-bidlys-donref-dozzod-dozwep.db").exists() && !t.join(UNCLAIMED).exists());
         std::fs::remove_dir_all(&t).unwrap();
     }
 

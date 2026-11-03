@@ -415,11 +415,23 @@ fn main() {
         .setup(|app| {
             build_menu(app)?;
             let handle = app.handle().clone();
-            // the urb engine, idle until the first read (engine.rs)
+            // the urb engine (engine.rs)
             #[cfg(feature = "urb-engine")]
             app.manage(engine::Engine::new(handle.path().app_data_dir()?.join("urb")));
             listen_for_urb(&handle);
             let cfg = config::load(&handle);
+            // with no ship, the reader gets ready (and reads the start list)
+            // while the first-run page is up; with one, no network for it,
+            // and a reader identity nobody used is let go
+            #[cfg(feature = "urb-engine")]
+            {
+                let e = app.state::<engine::Engine>();
+                if cfg.url.is_empty() {
+                    e.prewarm(Some(render::START_URL));
+                } else {
+                    e.drop_unclaimed();
+                }
+            }
             // before anything reads a session: older builds kept it in the
             // shared lattice-fs cookie file
             session::migrate_legacy(&cfg);
@@ -502,9 +514,11 @@ fn main() {
                 // drop every BackgroundSession -> clean unmounts before the
                 // process dies (drops of managed state are not otherwise run).
                 app.state::<mounts::MountMap>().0.lock().unwrap().clear();
-                // libmesa's last save, if the engine ever ran
+                // libmesa's last save, if the engine ever ran; a reader
+                // identity made at launch and never used is not kept
                 #[cfg(feature = "urb-engine")]
                 if let Some(e) = app.try_state::<engine::Engine>() {
+                    e.drop_unclaimed();
                     e.close();
                 }
             }

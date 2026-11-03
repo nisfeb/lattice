@@ -45,6 +45,9 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
         //  when the queue starts mattering
         cfg.ship = ship_for_cfg;
     })?;
+    // a reader identity made for the first-run page and never used goes
+    #[cfg(feature = "urb-engine")]
+    app.state::<crate::engine::Engine>().drop_unclaimed();
     open_workspace(&app, true)?;
     Ok(ship)
 }
@@ -612,10 +615,11 @@ pub struct ReaderStatus {
 }
 
 /// Has this install read without a ship before (is there a reader
-/// identity on disk)?
+/// identity on disk that was used)? One made at launch for the first-run
+/// page does not count.
 #[cfg(feature = "urb-engine")]
 fn reader_used(app: &AppHandle) -> bool {
-    app.path().app_data_dir().is_ok_and(|d| d.join("urb").join("comet.key").exists())
+    app.state::<crate::engine::Engine>().claimed()
 }
 
 /// The address the manager's card was given, as the reader reads it: an

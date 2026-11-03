@@ -302,11 +302,10 @@ pub fn error_page(url: &str, e: &ReadError, mode: Mode, step: &str) -> (u16, Sho
         ),
         ReadError::Booting => (
             503,
-            "Setting up",
+            "Getting ready",
             format!(
-                "<p>Setting up your reader. This happens once.</p>{}<p class=\"words\">lattice is making a private \
-                 reader identity on this computer and joining the Urbit network. The page opens by itself when it \
-                 is ready.</p>",
+                "<p>Getting ready to read. The first time takes about 10 seconds, and later starts take one or \
+                 two.</p>{}<p class=\"words\">The page opens by itself when it is ready.</p>",
                 if step.is_empty() { String::new() } else { format!("<p class=\"step\">{}\u{2026}</p>", esc(step)) }
             ),
             true,
@@ -480,10 +479,11 @@ mod tests {
         let (_, s) = error_page(PAGE, &ReadError::Busy, Mode::Shipless, "");
         assert!(s.html.contains("in use by another lattice window"));
         let (_, s) = error_page(PAGE, &ReadError::Booting, Mode::Shipless, "");
-        assert!(s.html.contains("Setting up your reader. This happens once."));
+        assert!(s.html.contains("Getting ready to read. The first time takes about 10 seconds"));
+        assert!(!s.html.contains("identity") && !s.html.contains("comet"));
         assert!(s.html.contains("http-equiv=\"refresh\""));
-        let (_, s) = error_page(PAGE, &ReadError::Booting, Mode::Shipless, "Making your private reader identity");
-        assert!(s.html.contains("<p class=\"step\">Making your private reader identity\u{2026}</p>"));
+        let (_, s) = error_page(PAGE, &ReadError::Booting, Mode::Shipless, "Setting up this computer");
+        assert!(s.html.contains("<p class=\"step\">Setting up this computer\u{2026}</p>"));
         let s = bad_address("http://x\"<");
         assert!(s.html.contains("That isn't an urb:// address") && s.html.contains("http://x&#34;&lt;"));
     }
