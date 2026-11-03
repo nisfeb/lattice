@@ -182,9 +182,28 @@ fn reader_path(link: &str) -> String {
     format!("{}?{}", t.path(), t.query().unwrap_or(""))
 }
 
-/// Links from the OS: validate, keep, and bring the window forward. If the
-/// workspace is on a ship page, tell it. If it is on the manager the links
-/// wait for a workspace to open.
+/// Where a link from the OS goes.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    /// no ship is configured: the shipless reader opens it at once
+    Reader,
+    /// the ship page takes it (or it waits in the inbox for one)
+    Inbox,
+}
+
+fn route(no_ship: bool, engine: bool) -> Route {
+    if no_ship && engine {
+        Route::Reader
+    } else {
+        Route::Inbox
+    }
+}
+
+/// Links from the OS: validate, keep, and bring the window forward. With no
+/// ship configured the newest opens in the shipless reader at once, rather
+/// than waiting for a ship that may never come (the inbox still keeps it,
+/// for a ship connected later). If the workspace is on a ship page, tell
+/// it. If it is on the manager the links wait for a workspace to open.
 pub fn arrive<'a>(app: &AppHandle, links: impl IntoIterator<Item = &'a str>) {
     let newest = {
         let inbox = app.state::<Inbox>();
@@ -197,6 +216,20 @@ pub fn arrive<'a>(app: &AppHandle, links: impl IntoIterator<Item = &'a str>) {
     crate::commands::dlog(&format!("urb: queued {newest:?}"));
     let Some(newest) = newest else { return };
     let h = app.clone();
+    if route(crate::config::load(app).url.is_empty(), cfg!(feature = "urb-engine")) == Route::Reader {
+        app.run_on_main_thread(move || {
+            if let Err(e) = crate::commands::open_reader(h.clone(), Some(newest)) {
+                crate::commands::dlog(&format!("urb: the reader would not open it: {e}"));
+            }
+            if let Some(w) = h.get_webview_window("workspace") {
+                w.unminimize().ok();
+                w.show().ok();
+                w.set_focus().ok();
+            }
+        })
+        .ok();
+        return;
+    }
     // eval and focus belong on the main thread, and this can be called from
     // the single-instance plugin's D-Bus thread
     app.run_on_main_thread(move || {
@@ -248,6 +281,15 @@ pub fn instance_id(identifier: &str, xdg_config: Option<&OsStr>, home: Option<&O
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn with_no_ship_a_link_opens_in_the_reader() {
+        use super::{route, Route};
+        assert_eq!(route(true, true), Route::Reader);
+        assert_eq!(route(false, true), Route::Inbox);
+        // a build with no engine waits for a ship, as before
+        assert_eq!(route(true, false), Route::Inbox);
+    }
+
     use super::*;
 
     #[test]
