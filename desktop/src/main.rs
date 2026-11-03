@@ -7,6 +7,8 @@ mod config;
 mod engine;
 #[cfg(feature = "urb-engine")]
 mod history;
+#[cfg(feature = "urb-engine")]
+mod render;
 mod install;
 mod local;
 mod mounts;
