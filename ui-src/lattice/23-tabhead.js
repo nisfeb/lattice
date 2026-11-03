@@ -175,7 +175,8 @@
     const page = doc && mode !== 'know';
     const has = new Set(['wrap']);
     if (page) has.add('kind');
-    if (page && current) { has.add('dup'); has.add('raw'); }
+    if (page && current) { has.add('dup'); has.add('raw'); has.add('link'); }
+    if (grubUrb()) has.add('link');
     if (doc && current) { has.add('download'); has.add('del'); }
     if (page && linkOf(current)) has.add('linkback');
     // a folder view: Delete is #del's folder branch, its own confirm and all
@@ -231,6 +232,7 @@
     item('wrap', 'Line wrap', done(() => flip('appWrap')), localStorage.appWrap === '1');
     if (has.has('source')) item('source', 'Source', done(() => writerSource(!writerSourceOn())), writerSourceOn());
     if (has.has('macros')) item('macros', 'Contains macros, never run here', () => {}).disabled = true;
+    if (has.has('link')) item('link', 'Copy link', done(() => copyLink(grubUrb() || pageUrb(current))));
     if (has.has('dup')) item('dup', 'Duplicate', done(dupPage));
     if (has.has('download')) item('download', 'Download', done(downloadDoc));
     // the hidden button's title says whether pandoc is there (71-latex.js)
@@ -255,7 +257,7 @@
   // with its list unfolded, as clicking Kind does. Convert to HTML exists
   // only in the desktop app.
   for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'], ['source', 'Source view'],
-    ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
+    ['link', 'Copy link'], ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
     ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['del', 'Delete']]) {
     if (id === 'tex' && !window.__TAURI__) continue;
     action({ id: 'pm-' + id, name, home: 'Page menu',

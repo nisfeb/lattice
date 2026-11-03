@@ -36,6 +36,10 @@ echo "==> lattice desktop against a stub ship on 127.0.0.1:$PORT"
 # the XDG dirs too: CI runners set XDG_CONFIG_HOME, which outranks HOME
 ( export HOME="$T/home" XDG_CONFIG_HOME="$T/home/.config" XDG_DATA_HOME="$T/home/.local/share" \
     XDG_CACHE_HOME="$T/home/.cache" LATTICE_LOG=1
+  # no session bus: the app is single-instance over the D-Bus
+  # session bus, so on a machine running the real app this launch would hand
+  # its arguments to that one and exit. With no bus it launches normally.
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=$T/no-bus"
   timeout 60 xvfb-run -a "$BIN" > "$T/app.log" 2>&1 ) &
 APP=$!
 # the port comes from THIS app's log: on a machine running the real app, the

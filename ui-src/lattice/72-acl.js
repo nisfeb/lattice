@@ -131,10 +131,7 @@
             browseIn(api + '?url=' + encodeURIComponent(u));
           };
         }
-        b.onclick = async () => {
-          try { await navigator.clipboard.writeText(u); st('copied ' + u); }
-          catch { st('could not copy ' + u, false); }
-        };
+        b.onclick = () => copyLink(u);
         row.append(a, b);
         host.appendChild(row);
       }

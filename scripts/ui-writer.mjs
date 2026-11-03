@@ -40,9 +40,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const corpus = (f) => readFileSync(join(here, '..', 'tests', 'writer', 'corpus', f), 'utf8');
 const check = makeCheck();
 const on = (id) => !process.env.ONLY || process.env.ONLY.split(',').includes(id);
-//  app.js's budget: release 106's 678,603 bytes (the branch's base) plus
+//  app.js's budget: release 107's 685,369 bytes (the branch's base) plus
 //  the 8 KB the spec allows the Writer work (Bundle and lazy loading)
-const APP_JS_MAX = 678603 + 8 * 1024;
+const APP_JS_MAX = 685369 + 8 * 1024;
 
 const P = {
   md: RUN + '/notes',

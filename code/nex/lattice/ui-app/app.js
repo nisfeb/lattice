@@ -1065,6 +1065,48 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
       + (s.getPropertyValue('--link') ? 'a{color:var(--link)}' : '')
       + (s.getPropertyValue('--selection') ? '::selection{background:var(--selection)}' : '');
   };
+  // Every write to the preview frame goes through prevDoc / prevUrl.
+  //
+  // WebKit (2.50, the desktop app's engine) drops a srcdoc written while
+  // the frame's last navigation is still in flight. Measured in a bare
+  // MiniBrowser: write A, then B a few ms later (0 to ~30 ms, timing
+  // dependent), and one load fires with A on screen while the attribute
+  // holds B, about one time in seven. The editor does exactly that when a
+  // tab in Read comes to the front: showPreview paints the text still in
+  // the editor, and the tab's own text lands a moment later. So on WebKit
+  // a write made while one is in flight marks the frame, and its next
+  // load writes the current attribute again (the same value navigates
+  // again, also measured). Chromium honours the second write, so it skips
+  // all of this and keeps its one load per document.
+  const prevWK = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.test(navigator.userAgent);
+  // a navigation of frame `f` has started: a write, or the frame entering
+  // the page again with a document. A detached frame loads nothing, and
+  // one that has left the page (a replaced preview, a closed group) is
+  // not written again. Any preview frame, the live one or a group's
+  // parked one (28-splits.js), goes through here.
+  const navBusy = (f) => {
+    if (!prevWK || !f || !f.isConnected) return;
+    if (!f.latNav) {
+      f.latNav = { busy: false, again: false };
+      f.addEventListener('load', () => {
+        const n = f.latNav;
+        n.busy = false;
+        if (!n.again || !f.isConnected) return;
+        n.again = false;
+        n.busy = true;
+        if (f.hasAttribute('srcdoc')) f.srcdoc = f.getAttribute('srcdoc');
+        else if (f.hasAttribute('src')) f.src = f.getAttribute('src');
+        else n.busy = false;
+      });
+    }
+    if (f.latNav.busy) f.latNav.again = true;
+    f.latNav.busy = true;
+  };
+  const navDoc = (f, html) => { f.srcdoc = html; navBusy(f); };
+  const navUrl = (f, url) => { f.removeAttribute('srcdoc'); f.src = url; navBusy(f); };
+  const prevBusy = () => navBusy(prev);
+  const prevDoc = (html) => navDoc(prev, html);
+  const prevUrl = (url) => navUrl(prev, url);
   const prevBlank = () => {
     prev.removeAttribute('src');
     prev.style.minHeight = '';
@@ -1072,9 +1114,9 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
     // engine to composite a mismatched-scheme iframe as transparent. That
     // reliance is exactly the kind of behavior that differs between the
     // Chromium the tests run and the webkitgtk the desktop runs
-    prev.srcdoc = '<style>:root{color-scheme:light dark}' +
+    prevDoc('<style>:root{color-scheme:light dark}' +
       'body{margin:0;background:var(--bg,#fafafa)}' +
-      '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot() + '</style>';
+      '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot() + '</style>');
   };
   // grant paths are shown in the share/ACL surfaces, and every one carries
   // the same app base, pure noise on screen: /apps/lattice.lattice_app, or
@@ -2236,6 +2278,11 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
         const n = nodes.find((x) => x.page && x.path === t.key);
         applyPage(t.key, { body: s.body, kind: s.kind || s.pkind, rev: s.rev,
           share: (n && n.share) || 'private' }, true);
+        // a quiet applyPage paints a content kind only. A computed page
+        // kept whatever the pane showed before it came back: a grub's "no
+        // preview", painted while the grub's state was still live (fuzz
+        // seed 7027: its group closed, or the page's group came forward)
+        if (!CONTENT()) refreshPreview();
       },
       park: parkDoc,
       shows: showsLive,
@@ -3356,7 +3403,8 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
     const page = doc && mode !== 'know';
     const has = new Set(['wrap']);
     if (page) has.add('kind');
-    if (page && current) { has.add('dup'); has.add('raw'); }
+    if (page && current) { has.add('dup'); has.add('raw'); has.add('link'); }
+    if (grubUrb()) has.add('link');
     if (doc && current) { has.add('download'); has.add('del'); }
     if (page && linkOf(current)) has.add('linkback');
     // a folder view: Delete is #del's folder branch, its own confirm and all
@@ -3412,6 +3460,7 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
     item('wrap', 'Line wrap', done(() => flip('appWrap')), localStorage.appWrap === '1');
     if (has.has('source')) item('source', 'Source', done(() => writerSource(!writerSourceOn())), writerSourceOn());
     if (has.has('macros')) item('macros', 'Contains macros, never run here', () => {}).disabled = true;
+    if (has.has('link')) item('link', 'Copy link', done(() => copyLink(grubUrb() || pageUrb(current))));
     if (has.has('dup')) item('dup', 'Duplicate', done(dupPage));
     if (has.has('download')) item('download', 'Download', done(downloadDoc));
     // the hidden button's title says whether pandoc is there (71-latex.js)
@@ -3436,7 +3485,7 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
   // with its list unfolded, as clicking Kind does. Convert to HTML exists
   // only in the desktop app.
   for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'], ['source', 'Source view'],
-    ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
+    ['link', 'Copy link'], ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
     ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['del', 'Delete']]) {
     if (id === 'tex' && !window.__TAURI__) continue;
     action({ id: 'pm-' + id, name, home: 'Page menu',
@@ -4164,6 +4213,33 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
     try { await window.__TAURI__.core.invoke('open_manager', { section: section || null }); }
     catch (e) { st('could not open the desktop settings: ' + e, false); }
   });
+
+  // urb:// links other apps opened with lattice, on the desktop. The shell
+  // keeps them until this page takes them (desktop/src/urb.rs), so one that
+  // came while the manager was showing, or before the page was up, opens
+  // now. Each opens in a browser tab of its own at the reader, as a
+  // bookmark does. The shell calls this when links arrive and boot calls it
+  // once (99-boot.js). A call while one is taking links runs again after
+  // it, so a link that lands meanwhile is not left waiting. The shell has
+  // validated every link already; the check here keeps a link that is not
+  // urb:// out of the reader whatever answered the invoke.
+  let urbTaking = null, urbAgain = false;
+  window.latUrbArrived = () => {
+    if (!window.__TAURI__) return Promise.resolve();
+    if (urbTaking) { urbAgain = true; return urbTaking; }
+    urbTaking = (async () => {
+      do {
+        urbAgain = false;
+        let links = [];
+        // a desktop build older than the command refuses it: nothing waits
+        try { links = await window.__TAURI__.core.invoke('take_urb_links'); } catch { return; }
+        for (const u of Array.isArray(links) ? links : [])
+          if (typeof u === 'string' && /^urb:\/\/~[a-z-]+\/[^\s?#]+$/.test(u))
+            await browseIn('/apps/lattice?url=' + encodeURIComponent(u));
+      } while (urbAgain);
+    })().finally(() => { urbTaking = null; });
+    return urbTaking;
+  };
 
   // the Settings tab, opened or focused, with its frame scrolled to the
   // section #anchor. A frame still loading scrolls once it has. Sections
@@ -5675,6 +5751,9 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
       try { parent.moveBefore(glive, before); return; } catch {}
     }
     parent.insertBefore(glive, before);
+    // the preview frame left the page and came back, so it loads its
+    // document again: a write in the next few ms is one WebKit can drop
+    if (prev && glive.contains(prev)) prevBusy();
   }
 
   // ── painting ─────────────────────────────────────────────────────────
@@ -5935,10 +6014,10 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
     } else if (t.read) {
       const kept = t.ghost && t.ghost.body === ta.value ? t.ghost : null;
       if (kept && kept.psrc && !kept.prev) {
-        if (g.gprev.getAttribute('src') !== kept.psrc) { g.gprev.removeAttribute('srcdoc'); g.gprev.src = kept.psrc; }
+        if (g.gprev.getAttribute('src') !== kept.psrc) navUrl(g.gprev, kept.psrc);
       } else {
         const d = (kept && kept.prev) || ghostDoc(kind, ta.value) || '';
-        if (g.gprev.getAttribute('srcdoc') !== d) { g.gprev.removeAttribute('src'); g.gprev.srcdoc = d; }
+        if (g.gprev.getAttribute('srcdoc') !== d) { g.gprev.removeAttribute('src'); navDoc(g.gprev, d); }
       }
     }
   }
@@ -7491,6 +7570,7 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
       m.append(b);
     };
     if (t.kind === 'page') {
+      item('link', 'Copy link', () => copyLink(pageUrb(t.path)));
       item('mv', 'Rename / move', () => askMovePage(t.path));
       item('del', 'Delete', () => treeDelete(row));
     } else if (t.kind === 'folder') {
@@ -7498,6 +7578,7 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
       item('mv', 'Rename / move', () => moveFolder(t.path));
       item('del', 'Delete', () => treeDelete(row));
     } else {
+      item('link', 'Copy link', () => copyLink(swmUrb(t.it)));
       item('in', 'Move into my pages', () => askMoveIn(t.it));
       item('del', 'Remove from list', () => treeDelete(row));
     }
@@ -7926,7 +8007,7 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
     //  engine's native (light) bar. Every screenshot taken before this answer
     //  landed looked fixed; the one the user looks at is after it.
     if (typeof d.html === 'string' && d.kind !== 'tex') {
-      prev.removeAttribute('src'); prev.srcdoc = withPreviewScrollbars(d.html, true);
+      prev.removeAttribute('src'); prevDoc(withPreviewScrollbars(d.html, true));
     }
     else if (!quiet) refreshPreview();
     // A quiet open is the COMMON one: the tree dump already carried the body,
@@ -9450,7 +9531,7 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
       // be replaced in. Inserting the first frame left every later write
       // going to a frame that was never in the page, a blank pane for good.
       const wrap = this.querySelector('.prevwrap');
-      setTimeout(() => { if (!prev.parentNode) wrap.append(prev); }, 0);
+      setTimeout(() => { if (!prev.parentNode) { wrap.append(prev); prevBusy(); } }, 0);
       // the frame reports its content height once its document has loaded;
       // the wrap scrolls. The FIRST report per document wins, measured with
       // the frame at pane height (previewFit clears min-height before every
@@ -9565,8 +9646,8 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
       // one, else after <html>, else in front. The rules touch nothing but
       // scrollbars (an alpha grey that reads on both schemes), so the
       // document's own colour scheme is left exactly as written.
-      if (pkind.value === 'html') { prev.srcdoc = withPreviewScrollbars(src.value); return; }
-      if (kindNow() === 'fodt') { writerSync(); prev.srcdoc = withPreviewScrollbars(LatWriter.show(src.value)); return; }
+      if (pkind.value === 'html') { prevDoc(withPreviewScrollbars(src.value)); return; }
+      if (kindNow() === 'fodt') { writerSync(); prevDoc(withPreviewScrollbars(LatWriter.show(src.value))); return; }
       // color-scheme belongs on :root, not body — on body it does not reach the
       // canvas, so the frame painted opaque WHITE in dark theme. That was true
       // of every local paint since it landed and went unseen because only the
@@ -9579,7 +9660,7 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
       // wikilink used to navigate the frame itself and land on an
       // authenticated route the opaque origin has no cookies for; escaping
       // to the top page is what the sandbox token above actually permits.
-      prev.srcdoc = localShell(previewFit()) + localHtml(kindNow(), src.value);
+      prevDoc(localShell(previewFit()) + localHtml(kindNow(), src.value));
     } catch {}
   };
   // the bare document a content kind's local render goes into. `fit` is
@@ -9613,8 +9694,8 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
   const prevNone = () => {
     prev.removeAttribute('src');
     prev.style.minHeight = '';
-    prev.srcdoc = localShell('') + '<p style="opacity:.6;text-align:center;margin-top:3em">'
-      + 'No preview for this file</p>';
+    prevDoc(localShell('') + '<p style="opacity:.6;text-align:center;margin-top:3em">'
+      + 'No preview for this file</p>');
   };
   // a theme that lands after the frame was painted (theme.js runs after
   // this bundle, and the ship or another tab can change it later) repaints
@@ -9654,12 +9735,11 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
     } else if (grubPath) {
       prevNone();
     } else if (current) {
-      prev.removeAttribute('srcdoc');
       fitCur = null; prev.style.minHeight = '';
       // preview=1: the ship adds the editor's scrollbar rules to an html
       // answer, so a computed page's live document scrolls like the rest of
       // the editor instead of with the engine's native, theme-following bars
-      prev.src = api + '/f/' + current + '?preview=1&t=' + Date.now();
+      prevUrl(api + '/f/' + current + '?preview=1&t=' + Date.now());
     }
   }
   // The way back into view for the pane (the phone's preview tab, or a
@@ -9947,6 +10027,7 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
   <button data-m="clearweb" data-action="share-clearweb">clearweb</button>
 </div>
 <div id="sharewhat" class="muted sharewhat"></div>
+<div class="row"><button id="shcopy" type="button" data-action="share-copylink">copy link</button></div>
 <div id="cwurl" class="muted"></div>
 <h3>give a ship access</h3>
 <div class="row"><input id="shwith" placeholder="~ship" autocomplete="off"><button id="shread">read</button><button id="shedit">edit</button></div>
@@ -9984,6 +10065,52 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
   let ourShip = '';
   const urbUrl = (target) => (ourShip ? 'urb://' + ourShip + '/' + target : null);
   const urbMissing = () => (ourShip === null ? 'address unavailable' : 'loading address');
+  // ── copy link: a page's urb:// address on the clipboard ─────────────────
+  // navigator.clipboard first. It can be missing or refuse (a page that is
+  // not a secure context, an older WebKitGTK in the desktop app), so the
+  // fallback copies from a hidden textarea with execCommand, which works
+  // inside the click that asked. Neither needs a Tauri permission: only
+  // the clipboard-manager plugin does, and this uses no plugin.
+  async function copyText(t) {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(t);
+        return true;
+      }
+    } catch {}
+    const ta = document.createElement('textarea');
+    ta.value = t;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+    const back = document.activeElement;
+    document.body.append(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch {}
+    ta.remove();
+    if (back && back.focus) back.focus();
+    return ok;
+  }
+  // The address a page answers at: mine at urb://<our ship>/<name>, a page
+  // linked in from another ship at the host's own address (linkFrom), and
+  // a shared with me entry at urb://<host>/<name>. A private page answers
+  // only to the ships it is shared with.
+  const pageUrb = (name) => {
+    const lk = linkOf(name);
+    return lk ? 'urb://' + linkFrom(lk) : urbUrl(name);
+  };
+  const swmUrb = (it) => 'urb://' + linkFrom(it);
+  // a grub open from another ship is a shared page when it is a page's code
+  const grubUrb = () => {
+    const m = grubShip && /\/page\/(.+)\/code$/.exec(grubPath || '');
+    return m ? 'urb://' + grubShip + '/' + m[1] : null;
+  };
+  async function copyLink(u) {
+    if (!u) { st('no link to copy: ' + urbMissing(), false); return false; }
+    if (await copyText(u)) { st('link copied: ' + u); return true; }
+    st('could not copy ' + u, false);
+    return false;
+  }
   let shareShown = null;
   // (asked from a microtask, off app.js's top level: see boot, 99-boot.js)
   queueMicrotask(() => fetch('/~/host').then((r) => (r.ok ? r.text() : '')).catch(() => '').then((t) => {
@@ -10016,7 +10143,10 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
     const u = curFolder ? null : urbUrl(t), w = cwUrl(t);
     for (const b of document.querySelectorAll('.share button')) b.title = copy[b.dataset.m](u, w);
     $('sharewhat').textContent = copy[m] ? copy[m](u, w) : '';
+    // a folder has no urb:// form, and an unsaved page no address yet
+    $('shcopy').hidden = !!curFolder || !current;
   }
+  $('shcopy').onclick = () => copyLink(current ? pageUrb(current) : null);
 
   function showShare(m) {
     // the grant result names "this page", so it MUST NOT outlive the page it
@@ -11082,10 +11212,7 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
             browseIn(api + '?url=' + encodeURIComponent(u));
           };
         }
-        b.onclick = async () => {
-          try { await navigator.clipboard.writeText(u); st('copied ' + u); }
-          catch { st('could not copy ' + u, false); }
-        };
+        b.onclick = () => copyLink(u);
         row.append(a, b);
         host.appendChild(row);
       }
@@ -13981,6 +14108,10 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
     // page has the snapshot-first path below; every other kind shows through
     // the tab model, with the tree and the panels loading beside it.
     const { tab: bootTab, fresh: bootFresh } = tabsBoot();
+    // urb:// links the desktop shell kept for this page (24-tools.js). They
+    // open in tabs of their own, after the restored ones, through the same
+    // queue as every tab switch.
+    window.latUrbArrived();
     if (bootTab.kind !== 'page') {
       loadTree().then(() => { legacyCheck(); sideScripts(); loadPanels(); });
       tabShowBoot(bootTab);

@@ -39,6 +39,13 @@ ignore = [
   "RUSTSEC-2025-0081",
   "RUSTSEC-2025-0098",
   "RUSTSEC-2025-0100",
+  #  zbus 5's split-out crates, folded into zbus 6 and so marked unmaintained.
+  #  Via tauri-plugin-single-instance (the urb:// handoff on Linux), which is
+  #  on zbus 5. Reviewed 2026-11-02: no vulnerability, nothing to do here
+  #  until the plugin moves to zbus 6.
+  "RUSTSEC-2026-0370",  # zvariant
+  "RUSTSEC-2026-0371",  # zbus_names
+  "RUSTSEC-2026-0372",  # zvariant_derive
 ]
 
 [licenses]

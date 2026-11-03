@@ -122,6 +122,10 @@ LOG="$T/app.log"
   export HOME="$T/home"
   export LATTICE_LOG=1
   export LATTICE_PROBE_JS="$T/probe.js"
+  # no session bus: the app is single-instance over the D-Bus
+  # session bus, so on a machine running the real app this launch would hand
+  # its arguments to that one and exit. With no bus it launches normally.
+  export DBUS_SESSION_BUS_ADDRESS="unix:path=$T/no-bus"
   timeout "$RUNFOR" xvfb-run -a "$BIN" > "$LOG" 2>&1
 ) &
 APP=$!
