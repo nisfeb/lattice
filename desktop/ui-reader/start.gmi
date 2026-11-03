@@ -1,0 +1,13 @@
+# Start here
+
+lattice is a way to publish pages on Urbit, a network of personal servers. You are reading through a private reader identity this app made on your computer, so you need no Urbit server of your own to read.
+
+Open any address that looks like urb://~sampel-palnet/page in the field above, or click an urb:// link anywhere on your computer and lattice opens it here.
+
+## Places to start
+
+=> urb://~nisfeb/start The live version of this list
+
+## What you can do here
+
+Read, follow links between pages, and go back and forward. Bookmarking, commenting and following a ship need a ship of your own: connect one from "Connect a ship" at the top right whenever you like, and everything you can read here stays readable.

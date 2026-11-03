@@ -13,6 +13,11 @@
 //  the exit used to take seconds to appear. Where there is no ship behind
 //  the page, go_home refuses cleanly and the refusal is shown.
 //
+//  It also covers the "use lattice anonymously" option: beside the connect
+//  form with no node (the one first-run path, no competing card above it),
+//  still offered with one, hidden without the engine, its copy, and that
+//  choosing it opens the reader's start page.
+//
 //  No ship and no app needed: the page is loaded from file:// with a stubbed
 //  Tauri backend, so this runs anywhere.
 //
@@ -38,7 +43,12 @@ async function load(status, opts = {}) {
   await page.evaluateOnNewDocument((s, o) => {
     window.__CALLS__ = [];
     window.__TAURI__ = {
-      core: { invoke: (name) => { window.__CALLS__.push(name);
+      core: { invoke: (name, args) => { window.__CALLS__.push(name);
+        (window.__ARGS__ = window.__ARGS__ || []).push([name, args]);
+        if (name === 'reader_status') {
+          if (o.noReader) return Promise.reject('this build has no shipless reader');
+          return Promise.resolve(o.reader || { engine: 'off', our: null, error: null, step: null });
+        }
         if (name === 'connection_status') {
           // statusDelayMs mimics the real thing: a round-trip to the ship
           return new Promise((res) => setTimeout(() => res(s), o.statusDelayMs || 0));
@@ -114,6 +124,76 @@ check('never configured: clicking it still calls go_home',
 check('and the refusal is shown, not swallowed',
   st2.statusText.includes('connect to a ship first'), JSON.stringify(st2.statusText));
 await off.close();
+
+// ── using the app anonymously ─────────────────────────────────────────
+const order = (p) => p.evaluate(() => {
+  const card = document.getElementById('reader'), form = document.getElementById('connect');
+  const h = document.getElementById('ship-h');
+  return { shown: !card.hidden,
+    // right after the connect form, and nothing of it above the ship section
+    beside: form.nextElementSibling === card,
+    above: !!(card.compareDocumentPosition(h) & Node.DOCUMENT_POSITION_FOLLOWING),
+    heading: h.textContent, anon: document.getElementById('anon-h').textContent };
+});
+const fresh = await load({ connected: false, ship: null, url: '', error: null });
+const o1 = await order(fresh);
+check('no node: the anonymous option is shown', o1.shown, JSON.stringify(o1));
+check('no node: it sits right after the connect form', o1.beside && !o1.above, JSON.stringify(o1));
+check('no node: the sections say what they are',
+  o1.heading === 'connect your node' && o1.anon === 'or use lattice anonymously', JSON.stringify(o1));
+const copy = await fresh.evaluate(() => document.getElementById('anon-copy').textContent.replace(/\s+/g, ' '));
+check('the option says they can browse and comment but not host without a node',
+  copy.includes('browse') && copy.includes('comment') && copy.includes("can't host pages without a node"), copy);
+const details = await fresh.evaluate(() => document.getElementById('reader').textContent);
+check('it says what network it uses', details.includes('UDP') && details.includes('roller.urbit.org'));
+check('and that comments are signed by the reader identity', details.includes('your comments are signed with it'));
+check('no address field or second card competes with it',
+  await fresh.evaluate(() => !document.getElementById('read-url') && !document.getElementById('read-start')
+    && document.querySelectorAll('.card').length === 1));
+const opened = await fresh.evaluate(async () => {
+  document.getElementById('anon').click();
+  await new Promise((r) => setTimeout(r, 50));
+  return window.__ARGS__.filter(([n]) => n === 'open_reader').map(([, a]) => a);
+});
+check('choosing it opens the reader on its start page', JSON.stringify(opened) === '[{"url":null}]',
+  JSON.stringify(opened));
+const cleared = await fresh.evaluate(async () => {
+  document.getElementById('read-clear').click();
+  await new Promise((r) => setTimeout(r, 50));
+  return window.__CALLS__.includes('clear_reader_history');
+});
+check('clear reading history invokes clear_reader_history', cleared);
+await fresh.close();
+
+const booting = await load({ connected: false, ship: null, url: '', error: null },
+  { reader: { engine: 'booting', our: null, error: null, step: 'Setting up this computer' } });
+const bt = await booting.evaluate(() => document.getElementById('read-status').textContent);
+check('while the engine boots the card says so, how long, and its step',
+  bt.includes('Getting ready (about 10 seconds the first time).') && bt.includes('Setting up this computer'), bt);
+await booting.close();
+
+const ready = await load({ connected: false, ship: null, url: '', error: null },
+  { reader: { engine: 'ready', our: '~doznec-sampel-palnet', error: null, step: null } });
+const rd = await ready.evaluate(() => document.getElementById('read-status').textContent);
+check('a ready reader says so without its identity\'s name', rd === 'Ready.', rd);
+await ready.close();
+
+const failed = await load({ connected: false, ship: null, url: '', error: null },
+  { reader: { engine: 'failed', our: null, error: "lattice couldn't reach the internet to set up the reader.", step: null } });
+const fd = await failed.evaluate(() => document.getElementById('read-status').textContent);
+check('a failed start shows the reason as given', fd === "lattice couldn't reach the internet to set up the reader.", fd);
+await failed.close();
+
+const shipped = await load({ connected: true, ship: '~ricsul-bilwyt', url: 'https://s.example.com' });
+const o2 = await order(shipped);
+check('with a node: the option is still offered, after the ship section',
+  o2.shown && !o2.above && o2.heading === 'ship' && o2.anon === 'use lattice anonymously', JSON.stringify(o2));
+await shipped.close();
+
+const nofeature = await load({ connected: false, ship: null, url: '', error: null }, { noReader: true });
+check('a build without the engine hides the card',
+  await nofeature.evaluate(() => document.getElementById('reader').hidden));
+await nofeature.close();
 
 await browser.close();
 console.log(check.fails ? '\n' + check.fails + ' FAILED' : '\nall checks passed');

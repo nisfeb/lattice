@@ -11,7 +11,16 @@ webkit2gtk-4.1 dev package, e.g. `lib64webkit4.1-devel` on OpenMandriva).
 Mounting needs fuse3 (`fusermount3`) on Linux or macFUSE
 (<https://macfuse.github.io>) on macOS.
 
+The urb engine (reading without a ship, below) builds libmesa's C, which
+needs clang 18 or newer (and libclang, for bindgen) and two C sources
+fetched once with their SHA-256s checked. Run cargo from `desktop/`: its
+`.cargo/config.toml` points `MESA_SYS_DEPS` at the fetched sources, and
+cargo only reads it from the directory it runs in. On macOS, use
+Homebrew's LLVM (`brew install llvm@20`) as the release workflow does.
+`cargo build --no-default-features` builds without the engine.
+
     cd desktop
+    sh scripts/mesa-deps.sh  # once: urcrypt and SQLite for the engine
     cargo tauri build        # bundles in target/release/bundle/
     cargo tauri dev          # run from source
 
@@ -42,7 +51,7 @@ interception is disabled for the workspace window so the UI's HTML5 drop
 handler receives the files.
 
 Ship links and `urb://` addresses stay in the app (`urb://` resolves through
-the ship's reader). Only truly external links open in your system browser.
+the ship's reader, or with no ship the shipless reader). Only truly external links open in your system browser.
 Ctrl/Cmd +/- zooms the workspace. The app is a single window. It opens on
 the connection page until a ship is configured, then lives on the ship UI.
 `lattice → connection & mounts…` in the menu returns to the settings page.
@@ -55,6 +64,45 @@ port (26500, or the next free one in a 16-wide range). That is deliberate and
 load-bearing, not cosmetic. The port is part of the webview's origin, and all
 web storage is keyed by origin, so an ephemeral port gave every launch an
 empty cache and made the desktop app slower than the same UI in a browser.
+
+## Reading without a ship
+
+Someone who has never run Urbit can still read: the connection page's
+"read without a ship" card opens a page by its `urb://~ship/page` address,
+or "start here" opens a starting list. The first time, lattice makes a
+private reader identity (an Urbit comet) on this computer and makes first
+contact with the network, about 10 seconds in all. With no ship
+configured it does this as soon as the app starts, while the connection
+page is up, and reads the start list, so the first page opened is usually
+on its way already; the card and the reader say how far along it is. An
+identity made this way and not yet used is kept for the next launch, so
+later launches make no new one, and connecting a ship before reading
+deletes it. With no ship
+configured, `urb://` links from other apps open in this reader at once.
+
+The reader only reads. Bookmarking, commenting and following a ship are
+your ship's: in the reader they are shown, disabled, with "Connect a ship
+to ..." beside each. A publisher's HTML is shown in a sandboxed frame. The
+reader's pages run on their own loopback origin (127.0.0.1:26520) and get
+no app commands at all.
+
+It uses HTTPS to roller.urbit.org and bootstrap.urbit.org (to make the
+identity and look up keys) and UDP to the Urbit network and the ships it
+reads, so a network that blocks UDP cannot read. Everything it keeps is in
+the app's data folder, under `urb/` (`~/.local/share/org.lattice.desktop/urb/`
+on Linux, `~/Library/Application Support/org.lattice.desktop/urb/` on
+macOS), private to you: `comet.key` (the identity), the engine's state
+(`<comet>.db` and its `.port`), and `history.json` (pages read recently,
+shown on the reader's home). "Clear history" on the reader's home, or
+"clear reading history" on the connection page, empties the history.
+Deleting the folder forgets the identity too; lattice makes a new one next
+time, which is better avoided since each identity leaves a record on every
+ship it reads. If a file there is damaged (a crash while the identity
+was being made, a store that will not open), lattice moves it into a
+`damaged-<time>/` folder beside it and starts fresh; nothing is deleted.
+Connecting a ship later changes nothing here, once the reader has been
+used. With a ship configured, the reader uses no network until it is
+opened.
 
 ## Local ships (lick)
 

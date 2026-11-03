@@ -70,6 +70,18 @@
   /* the row is flex, so a two-word label wraps mid-button without this */
   #need-grubbery button { white-space: nowrap; }
   #need-grubbery input { margin-bottom: 0; }
+  /* reading without a ship: first on the page when no ship was ever set */
+  .card { border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+    background: var(--surface); margin-top: 1.2rem; }
+  .card h2 { margin-top: 0; }
+  .card p { margin: .3rem 0 .7rem; }
+  .card details { margin-top: .8rem; }
+  .card summary { cursor: pointer; color: var(--muted); }
+  #read-status.busy::before { content: ""; display: inline-block; width: .7em; height: .7em;
+    margin-right: .4em; border-radius: 50%; border: 2px solid var(--green);
+    border-right-color: transparent; animation: spin 1s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { #read-status.busy::before { animation: none; } }
 </style>
 <main>
   <!-- Leaving this page is a CLOSE, in the place and the wording the in-app
@@ -91,7 +103,7 @@
     <button id="close">close</button>
   </div>
 
-  <h2>ship</h2>
+  <h2 id="ship-h">ship</h2>
   <!-- the connected state is its own panel. Showing the login form whenever
        there was nothing better to say is what made an already-connected ship
        look logged out. The form is now revealed only when it is actually
@@ -119,6 +131,43 @@
       <span id="connect-status" class="muted"></span>
     </div>
   </form>
+
+  <!-- Using the app anonymously: the one path for someone with no node,
+       right beside connecting one. Choosing it enters the app on the
+       reader's start page, where they browse, and comment as this
+       computer's own reader identity. Hosting pages, bookmarks and follows
+       need a node. Connecting a node later stays open here and from the
+       reader's "Connect a node". Hidden in a build without the engine
+       (reader_status rejects). -->
+  <section id="reader" class="card" hidden>
+    <h2 id="anon-h">or use lattice anonymously</h2>
+    <p id="anon-copy">No node? You can use lattice anonymously. You can browse
+      pages and comment on them, but you can't host pages without a node.</p>
+    <div class="row">
+      <button type="button" id="anon" class="primary">use anonymously</button>
+      <span id="read-status" class="muted" role="status"></span>
+    </div>
+    <details>
+      <summary>what this uses and keeps</summary>
+      <p class="muted">lattice makes a private reader identity on this
+        computer the first time, and your comments are signed with it: the
+        people you comment to see its name as the author. The network:
+        HTTPS to roller.urbit.org and bootstrap.urbit.org (to make the
+        reader identity and look up keys), and UDP to the Urbit network and
+        the ships you read. A network that blocks UDP cannot read. lattice
+        gets the reader ready while this page is open, and reads the start
+        list. What it keeps, on this computer only: the reader identity, the
+        network state, and the pages you read recently. A comment goes to
+        the page's publisher and is not kept here. Connecting a node before
+        you use lattice anonymously deletes the identity. Hosting pages,
+        bookmarking and following need a node of your own.</p>
+      <div class="row">
+        <button type="button" id="read-clear">clear reading history</button>
+        <span id="read-clear-status" class="muted"></span>
+      </div>
+    </details>
+  </section>
+
 
   <!-- What the ship is missing, and what to do about it. Shown only when
        something IS missing. A fully-installed ship should not be nagged. -->
@@ -256,8 +305,60 @@
       $('conn').hidden = true;
       showForm(true, false);
     }
+    placeReader(!s.url);
   }
   refreshConn();
+
+  // ── using the app anonymously ────────────────────────────────────────
+  // the card sits right after the connect form either way; with no node
+  // the section says what connecting is, and the card is the other choice
+  function placeReader(shipless) {
+    $('ship-h').textContent = shipless ? 'connect your node' : 'ship';
+    $('anon-h').textContent = shipless ? 'or use lattice anonymously' : 'use lattice anonymously';
+  }
+  const readStatus = (text, cls) => {
+    const r = $('read-status');
+    r.textContent = text; r.className = cls || 'muted';
+  };
+  const GETTING_READY = 'Getting ready (about 10 seconds the first time).';
+  // the engine's state, as the card shows it
+  async function refreshReader() {
+    let st;
+    try { st = await invoke('reader_status'); } catch { $('reader').hidden = true; return null; }
+    $('reader').hidden = false;
+    // once the option is chosen the card speaks for the open
+    if (refreshReader.opening) return st;
+    if (st && st.engine === 'booting') {
+      readStatus(GETTING_READY + (st.step ? ' ' + st.step + '\u2026' : ''), 'muted busy');
+      // the reader gets ready while this page is up: say when it is
+      clearTimeout(refreshReader.t);
+      refreshReader.t = setTimeout(refreshReader, 1000);
+    } else if (st && st.engine === 'failed') {
+      readStatus(st.error || "The reader couldn't start.", 'err');
+    } else if (st && st.engine === 'ready') {
+      readStatus('Ready.');
+    }
+    return st;
+  }
+  refreshReader();
+  // into the app, on the reader's start page
+  async function useAnonymously() {
+    const st = await invoke('reader_status').catch(() => null);
+    refreshReader.opening = true;
+    readStatus(st && st.engine === 'ready' ? 'Opening\u2026' : GETTING_READY, 'muted busy');
+    try {
+      await invoke('open_reader', { url: null });
+    } catch (err) {
+      readStatus(String(err), 'err');
+    }
+    refreshReader.opening = false;
+  }
+  $('anon').onclick = useAnonymously;
+  $('read-clear').onclick = async () => {
+    const c = $('read-clear-status');
+    try { await invoke('clear_reader_history'); c.textContent = 'cleared'; c.className = 'muted'; }
+    catch (err) { c.textContent = String(err); c.className = 'err'; }
+  };
   // Close never waits on anything. go_home navigates when a ship is
   // configured and refuses with a message when none is; that message lands
   // in the form's status line rather than vanishing into a rejected promise.

@@ -45,13 +45,26 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
         //  when the queue starts mattering
         cfg.ship = ship_for_cfg;
     })?;
+    // a reader identity made for the first-run page and never used goes
+    #[cfg(feature = "urb-engine")]
+    app.state::<crate::engine::Engine>().drop_unclaimed();
     open_workspace(&app, true)?;
     Ok(ship)
 }
 
-/// manager page's "close" button (and Escape), back to the ship UI.
+/// manager page's "close" button (and Escape), back to the ship UI, or with
+/// no ship configured to the shipless reader's home.
 #[tauri::command]
 pub fn go_home(app: AppHandle) -> Result<(), String> {
+    // only once the reader has been used: a close on the first-run page is
+    // not a request to read, and opening the reader makes its identity
+    #[cfg(feature = "urb-engine")]
+    if config::load(&app).url.is_empty() {
+        if !reader_used(&app) {
+            return Err("Connect your node, or use lattice anonymously.".into());
+        }
+        return open_reader(app, None);
+    }
     open_workspace(&app, false)
 }
 
@@ -480,6 +493,8 @@ enum Nav {
     External,
     /// nothing to open and nothing to rewrite, so the navigation just stops
     Block,
+    /// the shipless reader's "Connect a node": show the manager
+    Manager,
 }
 
 /// The whole navigation policy, with no AppHandle and no window in it, so the
@@ -490,10 +505,15 @@ enum Nav {
 /// Laziness is the point: the preview iframe is srcdoc-based and some webkits
 /// run every frame through this hook, so neither a mutex nor a config read
 /// belongs on the path that answers those.
+///
+/// `reader(start)` yields the shipless reader's base (reader.rs), starting
+/// it when `start` is true. With no ship configured an urb:// navigation
+/// opens there, through its bootstrap so the window holds its token.
 fn nav_decision(
     u: &tauri::Url,
     bridge: impl FnOnce() -> Option<u16>,
-    ship_url: impl FnOnce() -> String,
+    reader: impl Fn(bool) -> Option<String>,
+    ship_url: impl Fn() -> String,
 ) -> Nav {
     // local shell pages: tauri:// (macOS) or http://tauri.localhost (Linux)
     if u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost") {
@@ -510,6 +530,14 @@ fn nav_decision(
     if u.host_str() == Some("127.0.0.1") && u.port() == bridge {
         return Nav::Allow;
     }
+    // the shipless reader's own origin; its Connect a node is the manager
+    if u.host_str() == Some("127.0.0.1") {
+        if let Some(r) = reader(false).and_then(|b| b.parse::<tauri::Url>().ok()) {
+            if u.port() == r.port() {
+                return if u.path() == "/connect" { Nav::Manager } else { Nav::Allow };
+            }
+        }
+    }
     let local = bridge.map(|p| format!("http://127.0.0.1:{p}"));
     // urb:// names stay in the app. The ship's reader resolves them
     if let (Some(local), "urb") = (&local, u.scheme()) {
@@ -519,6 +547,16 @@ fn nav_decision(
                 Nav::Rewrite(t)
             }
             Err(_) => Nav::Block,
+        };
+    }
+    // with no ship at all, the shipless reader reads them
+    if u.scheme() == "urb" {
+        if !ship_url().is_empty() {
+            return Nav::Block;
+        }
+        return match reader(true) {
+            Some(base) => reader_boot(&base, u.as_str()).map_or(Nav::Block, Nav::Rewrite),
+            None => Nav::Block,
         };
     }
     // absolute links to the ship's real origin re-route through the
@@ -534,6 +572,132 @@ fn nav_decision(
     // only things a system handler can sensibly open leave the app.
     // Anything else is silently blocked (an opener error is a popup)
     Nav::External
+}
+
+/// The shipless reader's page for an urb:// address, through its bootstrap.
+#[cfg(feature = "urb-engine")]
+fn reader_boot(base: &str, urb: &str) -> Option<tauri::Url> {
+    crate::reader::boot_url(base, &crate::render::read_href(urb)).parse().ok()
+}
+#[cfg(not(feature = "urb-engine"))]
+fn reader_boot(_: &str, _: &str) -> Option<tauri::Url> {
+    None
+}
+
+/// The shipless reader's base url: `start` starts it if it is not running.
+/// None when it does not run (or this build has no engine).
+#[cfg(feature = "urb-engine")]
+pub fn reader_base(app: &AppHandle, start: bool) -> Option<String> {
+    if start {
+        return crate::reader::start(app).map_err(|e| dlog(&format!("reader: {e}"))).ok();
+    }
+    crate::reader::port(&app.state::<crate::reader::Reader>()).map(|p| format!("http://127.0.0.1:{p}"))
+}
+#[cfg(not(feature = "urb-engine"))]
+pub fn reader_base(_: &AppHandle, _: bool) -> Option<String> {
+    None
+}
+
+//  ── the shipless reader, from the manager ───────────────────────────────
+//  Local windows only (capabilities/local.json). The reader's own pages get
+//  no commands at all, and neither does the ship page.
+
+/// What the manager is told about the shipless reader.
+#[derive(serde::Serialize)]
+pub struct ReaderStatus {
+    /// off, booting, ready or failed
+    pub engine: &'static str,
+    /// the reader identity, once it runs
+    pub our: Option<String>,
+    pub error: Option<String>,
+    /// what a start in progress is doing, in words
+    pub step: Option<String>,
+}
+
+/// Has this install read without a ship before (is there a reader
+/// identity on disk that was used)? One made at launch for the first-run
+/// page does not count.
+#[cfg(feature = "urb-engine")]
+fn reader_used(app: &AppHandle) -> bool {
+    app.state::<crate::engine::Engine>().claimed()
+}
+
+/// The address the manager's card was given, as the reader reads it: an
+/// urb:// address, or a bare ~ship/path. Refused unless the gateway's
+/// own parse takes it.
+#[cfg(feature = "urb-engine")]
+fn reader_address(given: &str) -> Result<String, String> {
+    let g = given.trim();
+    let u = if g.starts_with('~') { format!("urb://{g}") } else { g.to_string() };
+    urb_render::gateway::de_urb(u.as_bytes())
+        .map(|_| u)
+        .map_err(|(_, w)| format!("That isn't an urb:// address: {}", String::from_utf8_lossy(&w)))
+}
+
+/// Open the shipless reader in the workspace window, at an address or at
+/// its home, and start the engine so the reader identity is being made
+/// while the page loads.
+#[tauri::command]
+pub fn open_reader(app: AppHandle, url: Option<String>) -> Result<(), String> {
+    #[cfg(feature = "urb-engine")]
+    {
+        let to = match url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+            Some(u) => crate::render::read_href(&reader_address(u)?),
+            None => "/".to_string(),
+        };
+        let base = crate::reader::start(&app)?;
+        app.state::<crate::engine::Engine>().start();
+        let (w, _) = ensure_workspace(&app)?;
+        let boot: tauri::Url = crate::reader::boot_url(&base, &to).parse().map_err(|e| format!("{e}"))?;
+        dlog(&format!("reader: open {to}"));
+        w.navigate(boot).map_err(|e| e.to_string())?;
+        w.set_focus().ok();
+        Ok(())
+    }
+    #[cfg(not(feature = "urb-engine"))]
+    {
+        let _ = (app, url);
+        Err("this build has no shipless reader".into())
+    }
+}
+
+/// Where the shipless reader's engine is, for the manager's card.
+#[tauri::command]
+pub fn reader_status(app: AppHandle) -> Result<ReaderStatus, String> {
+    #[cfg(feature = "urb-engine")]
+    {
+        use crate::engine::Status;
+        let e = app.state::<crate::engine::Engine>();
+        let step = Some(e.step()).filter(|s| !s.is_empty()).map(String::from);
+        Ok(match e.status() {
+            Status::Off => ReaderStatus { engine: "off", our: None, error: None, step },
+            Status::Booting => ReaderStatus { engine: "booting", our: None, error: None, step },
+            Status::Ready { our } => ReaderStatus { engine: "ready", our: Some(our), error: None, step },
+            Status::Failed(m) => {
+                ReaderStatus { engine: "failed", our: None, error: Some(crate::engine::plain_boot(&m)), step }
+            }
+        })
+    }
+    #[cfg(not(feature = "urb-engine"))]
+    {
+        let _ = app;
+        Err("this build has no shipless reader".into())
+    }
+}
+
+/// Empty the shipless reader's local history (the manager's button).
+#[tauri::command]
+pub fn clear_reader_history(app: AppHandle) -> Result<(), String> {
+    #[cfg(feature = "urb-engine")]
+    {
+        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("urb");
+        crate::history::History::open(&dir).clear()
+    }
+    #[cfg(not(feature = "urb-engine"))]
+    {
+        let _ = app;
+        Err("this build has no shipless reader".into())
+    }
 }
 
 fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
@@ -616,8 +780,20 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
                     .as_ref()
                     .map(|(_, p)| *p)
             };
-            match nav_decision(u, bridge, || config::load(&handle).url) {
+            let reader = |start: bool| reader_base(&handle, start);
+            match nav_decision(u, bridge, reader, || config::load(&handle).url) {
                 Nav::Allow => true,
+                Nav::Manager => {
+                    let h = handle.clone();
+                    std::thread::spawn(move || {
+                        let h2 = h.clone();
+                        h.run_on_main_thread(move || {
+                            show_manager(&h2, None).ok();
+                        })
+                        .ok();
+                    });
+                    false
+                }
                 Nav::Rewrite(t) => {
                     renav(t);
                     false
@@ -870,6 +1046,80 @@ pub async fn pick_vault(app: AppHandle) -> Result<String, String> {
 }
 
 #[cfg(test)]
+mod nav_tests {
+    use super::{nav_decision, Nav};
+
+    const SHIP: &str = "https://sampel-palnet.arvo.network";
+
+    fn decide(u: &str, bridge: Option<u16>, ship: &str) -> Nav {
+        let reader = |_: bool| Some("http://127.0.0.1:26520".to_string());
+        nav_decision(&u.parse().unwrap(), || bridge, reader, || ship.to_string())
+    }
+
+    fn rewrite(n: Nav) -> String {
+        match n {
+            Nav::Rewrite(t) => t.to_string(),
+            n => panic!("not a rewrite: {n:?}"),
+        }
+    }
+
+    #[test]
+    fn the_readers_origin_stays_and_its_connect_is_the_manager() {
+        assert_eq!(decide("http://127.0.0.1:26520/read?url=x", None, ""), Nav::Allow);
+        assert_eq!(decide("http://127.0.0.1:26520/raw?url=x&key=y", None, ""), Nav::Allow);
+        assert_eq!(decide("http://127.0.0.1:26520/connect", None, ""), Nav::Manager);
+        // any other loopback port is not the app's
+        assert_eq!(decide("http://127.0.0.1:26521/read", None, ""), Nav::External);
+        // and with no reader running, nothing on loopback is the reader
+        let none = |_: bool| None;
+        assert_eq!(
+            nav_decision(&"http://127.0.0.1:26520/".parse().unwrap(), || None, none, String::new),
+            Nav::External
+        );
+    }
+
+    #[cfg(feature = "urb-engine")]
+    #[test]
+    fn with_no_ship_an_urb_link_opens_in_the_shipless_reader() {
+        let t = rewrite(decide("urb://~nec/x/y", None, ""));
+        assert!(t.starts_with("http://127.0.0.1:26520/boot?k="), "{t}");
+        assert!(t.ends_with(&format!("&to={}", crate::render::enc("/read?url=urb%3A%2F%2F~nec%2Fx%2Fy"))), "{t}");
+    }
+
+    #[test]
+    fn with_a_ship_urb_links_are_the_ships() {
+        assert_eq!(
+            rewrite(decide("urb://~nec/x", Some(26500), SHIP)),
+            "http://127.0.0.1:26500/apps/lattice?url=urb%3A%2F%2F%7Enec%2Fx"
+        );
+        // configured but the bridge is not up yet: as before, nothing
+        assert_eq!(decide("urb://~nec/x", None, SHIP), Nav::Block);
+        assert_eq!(decide("http://127.0.0.1:26500/apps/lattice/app", Some(26500), SHIP), Nav::Allow);
+        assert_eq!(
+            rewrite(decide(&format!("{SHIP}/apps/lattice/app"), Some(26500), SHIP)),
+            "http://127.0.0.1:26500/apps/lattice/app"
+        );
+        assert_eq!(decide("https://example.com/", Some(26500), SHIP), Nav::External);
+        assert_eq!(decide("tauri://localhost/manager.html", None, ""), Nav::Allow);
+        assert_eq!(decide("about:srcdoc", None, ""), Nav::Allow);
+    }
+}
+
+#[cfg(all(test, feature = "urb-engine"))]
+mod reader_address_tests {
+    use super::reader_address;
+
+    #[test]
+    fn the_card_takes_urb_addresses_and_bare_ones() {
+        assert_eq!(reader_address(" urb://~zod/notes ").unwrap(), "urb://~zod/notes");
+        assert_eq!(reader_address("~zod/notes").unwrap(), "urb://~zod/notes");
+        for bad in ["https://example.com", "zod/x", "urb://~not a ship/x", "urb://~zod/p/x"] {
+            assert!(reader_address(bad).unwrap_err().starts_with("That isn't an urb:// address"), "{bad}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod manager_section_tests {
     use super::manager_section;
 
@@ -913,8 +1163,20 @@ mod tests {
             "http://evil.example:26500/apps/lattice/app",
             "https://sampel-palnet.arvo.network/apps/lattice/app",
             "http://localhost:26500/apps/lattice/app",
+            // the shipless reader's origin gets no commands at all
+            "http://127.0.0.1:26520/read?url=urb%3A%2F%2F~zod%2Fx",
+            "http://127.0.0.1:26520/raw?url=x&key=y",
+            "http://127.0.0.1:26535/",
+            "http://127.0.0.1:26516/",
         ] {
             assert!(!hit(u), "{u} must not get native commands");
+        }
+        // exactly the sixteen bridge ports
+        let urls: Vec<&str> = cap["remote"]["urls"].as_array().unwrap().iter().map(|u| u.as_str().unwrap()).collect();
+        let want: Vec<String> = (26500..26516).map(|p| format!("http://127.0.0.1:{p}")).collect();
+        assert_eq!(urls, want);
+        for p in 26500..26516 {
+            assert!(hit(&format!("http://127.0.0.1:{p}/apps/lattice/app")));
         }
     }
 

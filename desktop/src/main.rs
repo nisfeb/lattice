@@ -3,6 +3,14 @@
 mod backup;
 mod commands;
 mod config;
+#[cfg(feature = "urb-engine")]
+mod engine;
+#[cfg(feature = "urb-engine")]
+mod history;
+#[cfg(feature = "urb-engine")]
+mod reader;
+#[cfg(feature = "urb-engine")]
+mod render;
 mod install;
 mod local;
 mod mounts;
@@ -258,6 +266,19 @@ fn listen_for_urb(handle: &tauri::AppHandle) {
     }
 }
 
+/// The shipless reader's listener, idle until it is opened (reader.rs).
+#[cfg(feature = "urb-engine")]
+fn reader_state() -> reader::Reader {
+    reader::Reader(Mutex::new(None))
+}
+/// A build with no engine has no reader to keep.
+#[cfg(not(feature = "urb-engine"))]
+struct NoReader;
+#[cfg(not(feature = "urb-engine"))]
+fn reader_state() -> NoReader {
+    NoReader
+}
+
 /// tauri.conf.json's identifier, which the single-instance name is built on
 /// before the config is loaded (a test in urb.rs keeps the two equal).
 const IDENTIFIER: &str = "org.lattice.desktop";
@@ -324,6 +345,7 @@ fn main() {
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .manage(proxy::Bridge(Mutex::new(None)))
         .manage(urb::Inbox(Mutex::new(Vec::new())))
+        .manage(reader_state())
         .on_menu_event(|app, ev| {
             // single-window app: the manager is a page in the workspace, and
             // both of these items are ways of asking for it. "backups" lands
@@ -393,8 +415,24 @@ fn main() {
         .setup(|app| {
             build_menu(app)?;
             let handle = app.handle().clone();
+            // the urb engine (engine.rs)
+            #[cfg(feature = "urb-engine")]
+            app.manage(engine::Engine::new(handle.path().app_data_dir()?.join("urb")));
             listen_for_urb(&handle);
             let cfg = config::load(&handle);
+            // with no ship, the reader gets ready (and reads the start list)
+            // while the first-run page is up, reusing an identity an earlier
+            // launch made; with a ship, no network for it, and an identity
+            // nobody used is let go
+            #[cfg(feature = "urb-engine")]
+            {
+                let e = app.state::<engine::Engine>();
+                if cfg.url.is_empty() {
+                    e.prewarm(Some(render::START_URL));
+                } else {
+                    e.drop_unclaimed();
+                }
+            }
             // before anything reads a session: older builds kept it in the
             // shared lattice-fs cookie file
             session::migrate_legacy(&cfg);
@@ -459,6 +497,9 @@ fn main() {
             stack::stack_status,
             install::install_grubbery,
             urb::take_urb_links,
+            commands::open_reader,
+            commands::reader_status,
+            commands::clear_reader_history,
         ])
         .build(tauri::generate_context!())
         .expect("error building lattice desktop")
@@ -474,6 +515,12 @@ fn main() {
                 // drop every BackgroundSession -> clean unmounts before the
                 // process dies (drops of managed state are not otherwise run).
                 app.state::<mounts::MountMap>().0.lock().unwrap().clear();
+                // libmesa's last save, if the engine ever ran. An
+                // unclaimed reader identity is kept for the next launch
+                #[cfg(feature = "urb-engine")]
+                if let Some(e) = app.try_state::<engine::Engine>() {
+                    e.close();
+                }
             }
         });
 }

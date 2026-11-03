@@ -1,0 +1,35 @@
+/* the shipless reader (src/render.rs): one stylesheet, inline in every page */
+:root { color-scheme: light dark; --fg: #1d1d1f; --muted: #6b6b70; --bg: #fdfdfb; --line: #e2e2dc; --accent: #2f5d8a; }
+@media (prefers-color-scheme: dark) { :root { --fg: #e8e8e3; --muted: #9a9aa0; --bg: #17171a; --line: #2c2c31; --accent: #8db4dc; } }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body { font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; min-height: 100vh; }
+a { color: var(--accent); }
+.bar { display: flex; gap: .5rem; align-items: center; padding: .5rem .75rem; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); z-index: 1; }
+.bar nav { display: flex; gap: .25rem; align-items: center; }
+.bar .nav { font-size: 1.2rem; line-height: 1; width: 2rem; height: 2rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; }
+.bar .home, .bar .connect { white-space: nowrap; font-size: .9rem; }
+.addr { flex: 1; display: flex; gap: .25rem; }
+.addr input { flex: 1; min-width: 8rem; font: inherit; font-size: .9rem; padding: .3rem .5rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); }
+.addr button, .error button, .home-page button { font: inherit; font-size: .9rem; padding: .3rem .7rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; }
+.actions { display: flex; flex-wrap: wrap; gap: .25rem 1rem; padding: .4rem .75rem; border-bottom: 1px solid var(--line); font-size: .85rem; }
+.actions .act { display: inline-flex; gap: .4rem; align-items: center; }
+.actions button[disabled] { font: inherit; padding: .15rem .55rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); cursor: not-allowed; }
+.actions .why { color: var(--muted); }
+main.page { flex: 1; display: flex; flex-direction: column; }
+article, section { max-width: 46rem; width: 100%; margin: 0 auto; padding: 1.25rem 1.5rem 3rem; }
+article.html { max-width: none; padding: 0; flex: 1; display: flex; }
+iframe.pub { flex: 1; width: 100%; min-height: 80vh; border: 0; background: #fff; }
+pre { overflow-x: auto; padding: .75rem; border: 1px solid var(--line); border-radius: 6px; }
+blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--line); color: var(--muted); }
+.words { color: var(--muted); font-size: .9rem; }
+.home-page ul { padding-left: 1.2rem; }
+.home-page .when { color: var(--muted); font-size: .85rem; }
+.home-page .recent-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+.talk { border-top: 1px solid var(--line); padding-top: 1rem; }
+.talk h2 { font-size: 1rem; margin: 0 0 .5rem; }
+.talk textarea { width: 100%; font: inherit; padding: .5rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); resize: vertical; }
+.talk button { font: inherit; font-size: .9rem; padding: .3rem .7rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; }
+.talk .who { overflow-wrap: anywhere; }
+.talk .note { padding: .4rem .6rem; border-radius: 6px; border: 1px solid var(--line); }
+.talk .note.err { border-color: #c0392b; }
