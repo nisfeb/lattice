@@ -58,6 +58,11 @@ const UNCLAIMED: &str = "unclaimed";
 
 /// How long the warm-up's reads wait each.
 const WARM_BUDGET: Duration = Duration::from_secs(30);
+/// How long the warm-up keeps asking for the start list while its
+/// publisher does not answer: a new comet's first contact with a ship can
+/// take two minutes (~nisfeb took 117 s), and one read gives up at 30 s
+/// (the core's peek timeout, though its peek waits on for a late answer).
+const WARM_FOR: Duration = Duration::from_secs(180);
 
 /// A page as the engine read it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,6 +115,11 @@ pub enum CommentError {
 /// Something that reads pages: the engine, or a test's stand-in.
 pub trait Reads: Send + Sync {
     fn read(&self, url: &str, budget: Duration, wait_boot: bool) -> Result<NativePage, ReadError>;
+    /// Drop what is kept for `url`'s ship, so the next read of it is
+    /// fresh: a reload. The identity and its flows stay.
+    fn expire(&self, url: &str) {
+        let _ = url;
+    }
     /// what a start in progress is doing, in words
     fn step(&self) -> &'static str {
         ""
@@ -143,6 +153,8 @@ struct Comment {
 /// what callers hand the host's thread
 enum Job {
     Read(String, Answer),
+    /// the ship whose kept revision list is to go (`Engine::expire`)
+    Expire(String),
     Comment(Comment, Said),
     Close(Sender<()>),
 }
@@ -281,6 +293,25 @@ impl Engine {
         }
     }
 
+    /// A reload: the revision list kept for `url`'s ship (60 s, the
+    /// core's REVS_TTL) is aged, so the next read asks the publisher for
+    /// it again and keens the page's newest revision. The pages libmesa
+    /// keeps are each one revision's, under its own id, so a new revision
+    /// is never answered from them; nothing else is kept between reads.
+    /// The comet, its flows and the ship's base stay. Jobs run in order,
+    /// so a read asked for after this sees it. Nothing happens while the
+    /// engine is not running: it then keeps nothing.
+    pub fn expire(&self, url: &str) {
+        let Ok(u) = urb_engine::url::de_urb(url) else { return };
+        let g = self.inner.lock().unwrap();
+        let Some(run) = g.run.as_ref().filter(|_| matches!(g.status, Status::Ready { .. })) else { return };
+        if run.jobs.send(Job::Expire(u.ship)).is_ok() {
+            if let Some(w) = &run.waker {
+                let _ = w.send(Event::Wake);
+            }
+        }
+    }
+
     /// Comment on a published page as the reader identity: a
     /// `%comment-action` poked to the publisher's `comments.sig`, the inbox
     /// lattice opens to every foreign ship, as `/comment-remote` pokes it
@@ -344,7 +375,7 @@ impl Engine {
         let Some(warm) = warm.filter(|_| self.fake.is_none()).map(String::from) else { return };
         let e = self.clone();
         let _ = std::thread::Builder::new().name("urb-warm".into()).spawn(move || {
-            let Ok(p) = e.warm_read(&warm) else { return };
+            let Ok(p) = e.warm_until(&warm, WARM_FOR) else { return };
             if let Some(next) = first_link(&p.body) {
                 let _ = e.warm_read(&next);
             }
@@ -361,6 +392,20 @@ impl Engine {
         }
         make_dir(&self.dir)?;
         std::fs::write(self.dir.join(UNCLAIMED), b"").map_err(|e| format!("{UNCLAIMED}: {e}"))
+    }
+
+    /// `warm_read`, asked again while the publisher has not answered yet
+    /// (a first contact), until `within` has gone.
+    fn warm_until(&self, url: &str, within: Duration) -> Result<NativePage, ReadError> {
+        let t = Instant::now();
+        loop {
+            match self.warm_read(url) {
+                Err(ReadError::Unreachable { later: true, .. }) if t.elapsed() < within => {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+                r => return r,
+            }
+        }
     }
 
     fn warm_read(&self, url: &str) -> Result<NativePage, ReadError> {
@@ -425,6 +470,9 @@ impl Engine {
 impl Reads for Engine {
     fn read(&self, url: &str, budget: Duration, wait_boot: bool) -> Result<NativePage, ReadError> {
         Engine::read(self, url, budget, wait_boot)
+    }
+    fn expire(&self, url: &str) {
+        Engine::expire(self, url)
     }
     fn step(&self) -> &'static str {
         Engine::step(self)
@@ -547,6 +595,10 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
             match jobs.try_recv() {
                 Ok(Job::Read(url, tx)) => {
                     pending.push((submit_read(&mut host, url.clone()), Wait::Read(tx, url), Instant::now()))
+                }
+                Ok(Job::Expire(ship)) => {
+                    log_line(&format!("expire the revision list of {ship}"));
+                    host.core().expire_revs(&ship);
                 }
                 Ok(Job::Comment(c, tx)) => {
                     log_line(&format!("comment to {} on {} at {}", c.ship, c.page, c.base));

@@ -319,6 +319,7 @@ fn chrome(title: &str, url: &str, mode: Option<Mode>, main: &str, refresh: bool)
 <body><header class=\"bar\"><nav>\
 <button type=\"button\" class=\"nav\" data-go=\"back\" title=\"Back\" aria-label=\"Back\">&#8249;</button>\
 <button type=\"button\" class=\"nav\" data-go=\"forward\" title=\"Forward\" aria-label=\"Forward\">&#8250;</button>\
+<button type=\"button\" class=\"nav\" data-go=\"reload\" title=\"Reload\" aria-label=\"Reload\">&#8635;</button>\
 <a class=\"home\" href=\"/\">Home</a></nav>\
 <form class=\"addr\" action=\"/read\" method=\"get\"><input name=\"url\" value=\"{url}\" aria-label=\"Address\" \
 placeholder=\"urb://~ship/page\" spellcheck=\"false\" autocomplete=\"off\"><button type=\"submit\">Open</button></form>\
@@ -641,6 +642,16 @@ mod tests {
         // a start page that is not gemtext is not trusted into the home
         let s = home(Some(&native("<script>x</script>", "html")), &[]);
         assert!(s.html.contains("<h1>Start here</h1>") && !s.html.contains("<script>x"));
+    }
+
+    #[test]
+    fn the_bar_has_back_forward_and_reload() {
+        for s in [home(None, &[]), page(PAGE, &native("# Hi", "gmi"), Mode::Shipless, "", &Talk::default()), bad_address("x")] {
+            let nav = s.html.split("<nav>").nth(1).unwrap().split("</nav>").next().unwrap();
+            let order: Vec<&str> = nav.match_indices("data-go=\"").map(|(i, _)| nav[i + 9..].split('"').next().unwrap()).collect();
+            assert_eq!(order, ["back", "forward", "reload"]);
+            assert!(nav.contains("aria-label=\"Reload\""));
+        }
     }
 
     #[test]

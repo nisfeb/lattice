@@ -204,11 +204,7 @@ jobs:
       - name: clang 18 for the urb engine (linux)
         if: runner.os == 'Linux'
         run: |
-          wget -q https://apt.llvm.org/llvm.sh
-          sudo bash llvm.sh 18
-          sudo apt-get install -y libclang-18-dev
-          echo "CC_x86_64_unknown_linux_gnu=clang-18" >> "$GITHUB_ENV"
-          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
+          sh desktop/scripts/clang-18.sh
       - name: homebrew llvm for the urb engine (macos)
         if: runner.os == 'macOS'
         run: |
