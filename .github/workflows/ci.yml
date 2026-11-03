@@ -157,7 +157,12 @@ jobs:
           echo "CC_aarch64_apple_darwin=$llvm/bin/clang" >> "$GITHUB_ENV"
           echo "CC_x86_64_apple_darwin=$llvm/bin/clang" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=$llvm/lib" >> "$GITHUB_ENV"
-          echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
+          echo "CLANG_PATH=$llvm/bin/clang" >> "$GITHUB_ENV"
+          sdk="$(xcrun --show-sdk-path)"
+          echo "SDKROOT=$sdk" >> "$GITHUB_ENV"
+          # bindgen's libclang finds neither the SDK nor its own builtin
+          # headers (stdbool.h) by itself on a Homebrew LLVM
+          echo "BINDGEN_EXTRA_CLANG_ARGS=-isysroot $sdk -isystem $("$llvm/bin/clang" -print-resource-dir)/include" >> "$GITHUB_ENV"
           command -v sha256sum || brew install coreutils
       # from core/, so its rust-toolchain.toml picks the rustc
       - name: rust target
