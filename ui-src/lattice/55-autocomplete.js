@@ -95,7 +95,7 @@
 
   // open only inside an UNCLOSED [[ on the caret's own line
   function acScan() {
-    if (src.readOnly || mode === 'know') return acClose();
+    if (src.readOnly || mode === 'know' || pkind.value === 'fodt') return acClose();
     const upto = src.value.slice(0, src.selectionStart);
     const line = upto.slice(upto.lastIndexOf('\n') + 1);
     const i = line.lastIndexOf('[[');

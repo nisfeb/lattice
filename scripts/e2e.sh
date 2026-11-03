@@ -8,16 +8,17 @@
 # Usage:
 #   scripts/e2e.sh [ship-url] [code]
 # Env (override the args):
-#   LATTICE_URL   (default http://localhost:8081)
+#   LATTICE_URL   (required: there is no default ship)
 #   LATTICE_CODE  (default lidlut-tabwed-pillex-ridrup, a fresh fakezod)
 #   LATTICE_PEER_SHIP / LATTICE_PEER_FILE  if set, also test a cross-ship
 #                                          fetch of urb://<peer>/<file>
 set -uo pipefail
 
-LATTICE_URL="${1:-${LATTICE_URL:-http://localhost:8081}}"
+LATTICE_URL="${1:-${LATTICE_URL:-}}"
+[ -n "$LATTICE_URL" ] || { echo "set LATTICE_URL (or pass the ship URL): there is no default ship" >&2; exit 2; }
 CODE="${2:-${LATTICE_CODE:-lidlut-tabwed-pillex-ridrup}}"
 # no cookie file: e2e logs in with the code, as a real client does
-. "$(dirname "${BASH_SOURCE[0]}")/lib/matrix.sh"
+MATRIX_NO_SHIP=1 . "$(dirname "${BASH_SOURCE[0]}")/lib/matrix.sh"
 JAR="$(mktemp)"
 trap 'rm -f "$JAR"' EXIT
 

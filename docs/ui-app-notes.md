@@ -87,6 +87,7 @@ unless named; the built-in look sets none. The preview frame is its own document
 
 ## Dev loop
 
-Edit `src/` → `node scripts/build-ui.mjs` → deploy to the tyr harness →
-`node scripts/ui-matrix.mjs` (must be green) → screenshot dark AND light
+Edit `src/` → `node scripts/build-ui.mjs` → deploy to a fleet clone or
+fake ship → `LATTICE_URL=... LATTICE_COOKIE=... node scripts/ui-matrix.mjs`
+(must be green; there is no default ship) → screenshot dark AND light
 before calling visual work done. Never deploy to ricsul by hand.

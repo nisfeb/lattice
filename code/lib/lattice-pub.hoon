@@ -43,26 +43,54 @@
 ::    sent:  when it last published (0: not since it was marked)
 ::    dirty: a save is not published yet. A clean row only remembers
 ::           `sent` for the throttle, and goes a `gap` after it.
+::    hold:  0, or for a page slow to publish (a fodt page, whose publish
+::           renders it), the latest its dirty row waits to (+pub-due)
 ::
-+$  pub-wait     [last=@da tries=@ud sent=@da dirty=?]
++$  pub-wait     [last=@da tries=@ud sent=@da dirty=? hold=@da]
 +$  pub-pending  (map @t pub-wait)
+::  +pub-four: the map before `hold`, read so a reload keeps its rows
++$  pub-four     (map @t [last=@da tries=@ud sent=@da dirty=?])
+++  pub-from-four
+  |=  old=pub-four
+  ^-  pub-pending
+  (~(run by old) |=([last=@da tries=@ud sent=@da dirty=?] [last tries sent dirty *@da]))
 ::  +pub-old: the map release 79 stored, [first last tries] a row, read
 ::  so the pages a reload left waiting still publish
 +$  pub-old      (map @t [first=@da last=@da tries=@ud])
 ++  pub-from-old
   |=  old=pub-old
   ^-  pub-pending
-  (~(run by old) |=([first=@da last=@da tries=@ud] [last tries *@da &]))
+  (~(run by old) |=([first=@da last=@da tries=@ud] [last tries *@da & *@da]))
 ::  +pub-due: when a dirty row publishes. A throttle with a leading edge:
 ::  a save a `gap` or more after the page's last publish goes at once,
 ::  and saves inside the gap wait for its end, one publish of the newest
 ::  text, so a burst of saves publishes at most once a gap. A save that
 ::  is no part of a burst goes at once too (+pub-note).
 ::
+::  A slow row (`hold` set, +pub-hold) trails instead: it waits until
+::  the page has had no save for +pub-slow-quiet, or until its hold,
+::  and never comes within a `gap` of its last publish. Its publish
+::  renders the page for seconds, and the ship does nothing else
+::  meanwhile, so it goes in a pause, not between autosaves, and a burst
+::  renders only its newest text.
+::
 ++  pub-due
   |=  [row=pub-wait gap=@dr]
   ^-  @da
-  (add sent.row gap)
+  ?:  =(*@da hold.row)  (add sent.row gap)
+  (max (add sent.row gap) (min (add last.row pub-slow-quiet) hold.row))
+::  +pub-slow-quiet: how long a slow page has no save before its publish.
+::  Autosave saves about every 2.5 s while someone types.
+++  pub-slow-quiet  ^-(@dr ~s6)
+::  +pub-hold: a slow page's row after a save at `now`: the first save
+::  since its last publish sets the hold, `cap` from now, so a page saved
+::  without a pause still publishes once a `cap`
+::
+++  pub-hold
+  |=  [row=pub-wait now=@da cap=@dr]
+  ^-  pub-wait
+  ?.  =(*@da hold.row)  row
+  row(hold (add now cap))
 ::  +pub-note: a save of the page whose row is `old`, at `now`. A save
 ::  `quiet` or more after the page's last one, with nothing waiting, is
 ::  no part of a burst: it forgets the last publish, so it is due at
@@ -73,7 +101,7 @@
 ++  pub-note
   |=  [old=(unit pub-wait) now=@da quiet=@dr]
   ^-  pub-wait
-  ?~  old  [now 0 *@da &]
+  ?~  old  [now 0 *@da & *@da]
   =/  lone=?  &(!dirty.u.old (gte now (add last.u.old quiet)))
   u.old(last now, tries 0, dirty &, sent ?:(lone *@da sent.u.old))
 ::  +pub-prune: the rows that still mean something at `now`: every dirty
@@ -92,7 +120,8 @@
 ++  pub-done
   |=  [cur=pub-wait at=@da now=@da]
   ^-  pub-wait
-  [last.cur 0 now (gth last.cur at)]
+  =/  dirty=?  (gth last.cur at)
+  [last.cur 0 now dirty ?:(dirty hold.cur *@da)]
 ::  +pub-failed: the row after a publish that failed at `now`: one more
 ::  try, and dirty, so it is tried again a gap later. Only this counts a
 ::  try; a writer restart (a deploy) leaves the row as it was.
@@ -133,7 +162,7 @@
   |=  b=@tas
   ^-  (unit @tas)
   ?:  =(%tex b)  `%text
-  ?:  ?=(?(%text %html %gmi %md %js %css) b)  `b
+  ?:  ?=(?(%text %html %gmi %md %js %css %fodt) b)  `b
   ~
 ::  +pub-arm-at: when the one publish timer goes off, ~ when no row is
 ::  dirty. A row already due arms the epoch, so its publish goes before

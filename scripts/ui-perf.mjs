@@ -6,8 +6,8 @@
 // noise.
 //
 // Usage:  node scripts/ui-perf.mjs
-// Env:    LATTICE_URL     ship base (default http://localhost:8080)
-//         LATTICE_COOKIE  cookie file (default ~/.config/lattice-fs/cookie)
+// Env:    LATTICE_URL     ship base (required, a throwaway ship)
+//         LATTICE_COOKIE  cookie file (required)
 //         CHROME          browser binary (default /usr/bin/chromium)
 //
 // Needs puppeteer-core:  npm i --no-save puppeteer-core
@@ -90,6 +90,10 @@ try {
     iPerm === -1 || iPerm > iDump, 'dump@' + iDump + ' groups@' + iPerm);
   check('boot: shared-with-me deferred until after the tree',
     iShar === -1 || iShar > iDump, 'dump@' + iDump + ' shared@' + iShar);
+  //  writer.js, the Writer editor, loads only when a fodt page opens
+  //  (ui-src/lattice/26-writer.js); ui-writer.mjs covers the fodt side
+  check('boot: never asks for writer.js', !boot.some((u) => u.includes('writer.js')),
+    boot.filter((u) => u.includes('writer.js')).join(' '));
   console.log('       boot API calls: ' +
     JSON.stringify(boot.filter((u) => !/\.(js|png|svg|webmanifest)$/.test(u) && u !== '/app')));
 
@@ -133,6 +137,7 @@ try {
   const settled = since(mark, 'page-source') + since(mark, 'page-preview');
   check('re-open A: still zero after settling', settled === 0,
     settled + ' request(s): ' + JSON.stringify(reqs.slice(mark)));
+  check('markdown opens never ask for writer.js', !reqs.some((u) => u.includes('writer.js')));
 
   // ── 4. a save must not leave a stale body behind ─────────────────────────
   step = 'save invalidation';

@@ -1809,6 +1809,19 @@ mod tests {
         assert!(is_scratch("x.tex~", t_kind), "a tex backup must still be scratch");
     }
 
+    #[test]
+    fn libreoffice_document_is_a_page_and_its_lock_and_temp_are_scratch() {
+        // LibreOffice keeps a lock file beside the document while it is
+        // open and saves through a temp it renames over the document.
+        // Neither may reach the ship; the document itself must.
+        assert!(!is_scratch("report.fodt", t_kind), "a Writer document is a page");
+        assert!(!is_scratch("Report.FODT", t_kind), "in any case");
+        for tmp in [".~lock.report.fodt#", "lu12345abcd.tmp"] {
+            assert!(is_scratch(tmp, t_kind), "{tmp} should be scratch");
+            assert!(is_editor_temp(tmp), "{tmp} should be an editor temp");
+        }
+    }
+
     // ---------- property tests ----------
 
     use super::{build_vt, join, leaf_of};

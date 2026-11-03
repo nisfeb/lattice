@@ -5,8 +5,8 @@
 # must-not-regress. Run against the tyr harness, never production.
 #
 # Usage:  scripts/mcp-matrix.sh
-# Env:    LATTICE_URL     ship base (default http://localhost:8080)
-#         LATTICE_COOKIE  cookie file (default ~/.config/lattice-fs/cookie)
+# Env:    LATTICE_URL     ship base (required, a throwaway ship)
+#         LATTICE_COOKIE  cookie file (required)
 set -uo pipefail
 
 . "$(dirname "${BASH_SOURCE[0]}")/lib/matrix.sh"

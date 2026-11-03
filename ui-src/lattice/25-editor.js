@@ -60,6 +60,8 @@
   let rpHook = null;
   const render = () => {
     if (rpHook) rpHook();
+    writerFollow();
+    if (fodtHere() && !writerSourceOn()) { hl.textContent = ''; return; }
     const lang = LMAP[pkind.value];
     // the worker loads its own prism. This window's copy comes after boot
     // (99-boot.js), and every LMAP language is in it, so until it lands a
@@ -128,8 +130,10 @@
     }
   });
   pkind.addEventListener('change', () => {
+    if (!kindSwitchOk(pkind.value)) { pkind.value = curKind || (pkind.value === 'fodt' ? 'md' : 'fodt'); return; }
     curKind = pkind.value;
-    render();
+    //  an empty new page made a Writer page starts as the blank document
+    if (curKind === 'fodt' && !src.value.trim()) writerBlank(); else render();
     //  the kind rides every save as a query param, so switching it on an open
     //  page must dirty the editor or navigating away silently reverts the
     //  choice. A page with no name yet gets its kind from the first save.

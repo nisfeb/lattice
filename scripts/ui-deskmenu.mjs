@@ -12,7 +12,7 @@
 //  Both are checked here. The id contract is checked without a ship; the
 //  behaviour needs one.
 //
-//  Usage: node scripts/ui-deskmenu.mjs      (defaults to the harness ship on :8080)
+//  Usage: LATTICE_URL=... LATTICE_COOKIE=... node scripts/ui-deskmenu.mjs
 import { shipEnv, launchBrowser, openPage, makeCheck, seed } from './lib/harness.mjs';
 
 const env = shipEnv();

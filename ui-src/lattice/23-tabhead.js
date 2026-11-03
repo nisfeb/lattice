@@ -16,7 +16,7 @@
   // hides the editor.
 
   // the page kinds: the hidden picker's options and the page menu's Kind list
-  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'hoon'];
+  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'hoon'];
   const tabHead = document.createElement('div');
   tabHead.id = 'tabhead';
   tabHead.className = 'tabhead';
@@ -135,6 +135,7 @@
   // <name>-copy until the user says otherwise
   async function dupPage() {
     if (!current || grubPath || mode === 'know' || curFolder !== null) return;
+    writerSync();
     const body = src.value;
     const kind = pkind.value;
     const picked = await askName('duplicate ' + current + ' as:', current + '-copy', 'create');
@@ -156,6 +157,7 @@
   const DLEXT = { text: 'txt' };
   function downloadDoc() {
     if (!current || grubPath || curFolder !== null) return;
+    writerSync();
     const kind = mode === 'know' ? 'md' : (pkind.value || 'md');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([src.value], { type: 'text/plain' }));
@@ -180,6 +182,7 @@
     // a folder view: Delete is #del's folder branch, its own confirm and all
     if (!grubPath && curFolder !== null) has.add('del');
     if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex')) has.add('tex');
+    if (fodtHere()) { has.add('source'); if (wr && wr.macros) has.add('macros'); }
     return has;
   }
   function pageMenu() {
@@ -217,6 +220,7 @@
         b.onclick = () => {
           pmenuClose();
           if (pkind.value === k) return;
+          if (!kindSwitchOk(k)) return;
           pkind.value = k;
           pkind.dispatchEvent(new Event('change'));
         };
@@ -226,6 +230,8 @@
       m.append(sub);
     }
     item('wrap', 'Line wrap', done(() => flip('appWrap')), localStorage.appWrap === '1');
+    if (has.has('source')) item('source', 'Source', done(() => writerSource(!writerSourceOn())), writerSourceOn());
+    if (has.has('macros')) item('macros', 'Contains macros, never run here', () => {}).disabled = true;
     if (has.has('link')) item('link', 'Copy link', done(() => copyLink(grubUrb() || pageUrb(current))));
     if (has.has('dup')) item('dup', 'Duplicate', done(dupPage));
     if (has.has('download')) item('download', 'Download', done(downloadDoc));
@@ -250,7 +256,7 @@
   // and clicks the item, which is the menu's own path. Kind opens the menu
   // with its list unfolded, as clicking Kind does. Convert to HTML exists
   // only in the desktop app.
-  for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'],
+  for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'], ['source', 'Source view'],
     ['link', 'Copy link'], ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
     ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['del', 'Delete']]) {
     if (id === 'tex' && !window.__TAURI__) continue;

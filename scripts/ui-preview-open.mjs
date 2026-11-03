@@ -16,7 +16,7 @@
 //  editor waited on the same held render (perf pass 9). It must show its
 //  text from a plain page-source read, and the render still lands after.
 //
-//  Usage: node scripts/ui-preview-open.mjs      (defaults to the harness ship on :8080)
+//  Usage: LATTICE_URL=... LATTICE_COOKIE=... node scripts/ui-preview-open.mjs
 import { shipEnv, launchBrowser, openPage, makeCheck, seed } from './lib/harness.mjs';
 
 const env = shipEnv();

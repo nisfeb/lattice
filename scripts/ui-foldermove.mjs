@@ -5,7 +5,7 @@
 // (Seafile on a lattice-fs mount) writing back the copy it held. The ship
 // now refuses those (+move-guard), and the editor holds its saves while
 // its own move runs and renames itself in place after.
-//   LATTICE_URL=http://localhost:8080 LATTICE_COOKIE=~/.config/lattice-fs/cookie node scripts/ui-foldermove.mjs
+//   LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> node scripts/ui-foldermove.mjs
 import { shipEnv, launchBrowser, openPage, makeCheck, sleep, swControlled, seed, waitFor } from './lib/harness.mjs';
 
 const env = shipEnv();

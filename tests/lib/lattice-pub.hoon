@@ -105,22 +105,65 @@
   =/  gap=@dr  ~s6
   ;:  weld
     (expect-eq !>(&) !>((lte (pub-due:lp (pub-note:lp ~ t ~s4) gap) t)))
-    (expect-eq !>((add t gap)) !>((pub-due:lp [t 0 t &] gap)))
+    (expect-eq !>((add t gap)) !>((pub-due:lp [t 0 t & *@da] gap)))
     ::  a save 2 s after a publish waits 4 s more, not 6 after the save
-    =/  w=pub-wait:lp  (pub-note:lp `[t 0 t |] (add t ~s2) ~s4)
+    =/  w=pub-wait:lp  (pub-note:lp `[t 0 t | *@da] (add t ~s2) ~s4)
     (expect-eq !>((add t gap)) !>((pub-due:lp w gap)))
   ==
+::  +pub-due, +pub-hold: a slow row (a fodt page) trails its burst. It
+::  waits for +pub-slow-quiet with no save, or for its hold, and never
+::  comes within a gap of its last publish
+++  test-pub-slow
+  =/  t=@da  ~2026.1.1
+  =/  gap=@dr  ~s6
+  =/  q=@dr  pub-slow-quiet:lp
+  =/  w=pub-wait:lp  (pub-hold:lp (pub-note:lp ~ t ~s4) t ~m1)
+  ::  four saves 2.5 s apart
+  =/  w4=pub-wait:lp
+    =/  a  (pub-hold:lp (pub-note:lp `w (add t ~s2..8000) ~s4) (add t ~s2..8000) ~m1)
+    =/  b  (pub-hold:lp (pub-note:lp `a (add t ~s5) ~s4) (add t ~s5) ~m1)
+    (pub-hold:lp (pub-note:lp `b (add t ~s7..8000) ~s4) (add t ~s7..8000) ~m1)
+  ::  saved without a pause for most of a minute
+  =/  long=pub-wait:lp  w4(last (add t ~s59))
+  ::  published, then saved again
+  =/  d=pub-wait:lp  (pub-done:lp w4 (add t ~s14) (add t ~s22))
+  =/  e=pub-wait:lp  (pub-hold:lp (pub-note:lp `d (add t ~s23) ~s4) (add t ~s23) ~m1)
+  =/  f=pub-wait:lp  (pub-failed:lp long (add t ~m2))
+  ;:  weld
+    ::  due a quiet after the last save, not at once
+    (expect-eq !>((add t ~m1)) !>(hold.w))
+    (expect-eq !>((add t q)) !>((pub-due:lp w gap)))
+    (expect-eq !>((add (add t ~s7..8000) q)) !>((pub-due:lp w4 gap)))
+    ::  the hold is kept across the burst, so saves without a pause
+    ::  still publish by it
+    (expect-eq !>((add t ~m1)) !>(hold.w4))
+    (expect-eq !>((add t ~m1)) !>((pub-due:lp long gap)))
+    ::  a publish clears the hold, and the next save sets a new one
+    (expect-eq !>(*@da) !>(hold.d))
+    (expect-eq !>((add t ~s83)) !>(hold.e))
+    ::  and it is not due within a gap of that publish
+    (expect-eq !>((max (add (add t ~s22) gap) (add (add t ~s23) q))) !>((pub-due:lp e gap)))
+    ::  a failure tries again a gap later
+    (expect-eq !>((add (add t ~m2) gap)) !>((pub-due:lp f gap)))
+    ::  an ordinary row has no hold
+    (expect-eq !>(*@da) !>(hold:(pub-note:lp ~ t ~s4)))
+  ==
+::  +pub-from-four: rows stored before `hold` read back as ordinary rows
+++  test-pub-from-four
+  =/  t=@da  ~2026.1.1
+  =/  old=pub-four:lp  (malt ~[['/a' [t 1 t &]]])
+  (expect-eq !>(`pub-pending:lp`(malt ~[['/a' `pub-wait:lp`[t 1 t & *@da]]])) !>((pub-from-four:lp old)))
 ::  +pub-note: a save makes the row dirty, keeps its last publish and
 ::  starts the tries again
 ++  test-pub-note
   =/  t=@da  ~2026.1.1
   ;:  weld
-    (expect-eq !>(`pub-wait:lp`[t 0 *@da &]) !>((pub-note:lp ~ t ~s4)))
-    (expect-eq !>(`pub-wait:lp`[(add t ~s1) 0 t &]) !>((pub-note:lp `[t 2 t |] (add t ~s1) ~s4)))
+    (expect-eq !>(`pub-wait:lp`[t 0 *@da & *@da]) !>((pub-note:lp ~ t ~s4)))
+    (expect-eq !>(`pub-wait:lp`[(add t ~s1) 0 t & *@da]) !>((pub-note:lp `[t 2 t | *@da] (add t ~s1) ~s4)))
     ::  a lone save, `quiet` after the last, forgets the last publish
-    (expect-eq !>(`pub-wait:lp`[(add t ~s5) 0 *@da &]) !>((pub-note:lp `[t 0 (add t ~s1) |] (add t ~s5) ~s4)))
+    (expect-eq !>(`pub-wait:lp`[(add t ~s5) 0 *@da & *@da]) !>((pub-note:lp `[t 0 (add t ~s1) | *@da] (add t ~s5) ~s4)))
     ::  but not while a publish is waiting
-    (expect-eq !>(`pub-wait:lp`[(add t ~s5) 0 (add t ~s1) &]) !>((pub-note:lp `[t 0 (add t ~s1) &] (add t ~s5) ~s4)))
+    (expect-eq !>(`pub-wait:lp`[(add t ~s5) 0 (add t ~s1) & *@da]) !>((pub-note:lp `[t 0 (add t ~s1) & *@da] (add t ~s5) ~s4)))
   ==
 ::  +pub-prune keeps every dirty row and a clean one only inside its gap,
 ::  so the map never holds more than the pages waiting or just published
@@ -129,9 +172,9 @@
   =/  pen=pub-pending:lp
     %-  malt
     ^-  (list [@t pub-wait:lp])
-    :~  ['/old' [t 0 t |]]
-        ['/new' [t 0 (add t ~s4) |]]
-        ['/wait' [t 1 t &]]
+    :~  ['/old' [t 0 t | *@da]]
+        ['/new' [t 0 (add t ~s4) | *@da]]
+        ['/wait' [t 1 t & *@da]]
     ==
   =/  out  (pub-prune:lp pen (add t ~s7) ~s6)
   ;:  weld
@@ -143,8 +186,8 @@
 ++  test-pub-done
   =/  t=@da  ~2026.1.1
   ;:  weld
-    (expect-eq !>(`pub-wait:lp`[t 0 (add t ~s2) |]) !>((pub-done:lp [t 1 *@da &] t (add t ~s2))))
-    (expect-eq !>(`pub-wait:lp`[(add t ~s1) 0 (add t ~s2) &]) !>((pub-done:lp [(add t ~s1) 1 *@da &] t (add t ~s2))))
+    (expect-eq !>(`pub-wait:lp`[t 0 (add t ~s2) | *@da]) !>((pub-done:lp [t 1 *@da & *@da] t (add t ~s2))))
+    (expect-eq !>(`pub-wait:lp`[(add t ~s1) 0 (add t ~s2) & *@da]) !>((pub-done:lp [(add t ~s1) 1 *@da & *@da] t (add t ~s2))))
   ==
 ::  +pub-failed, +pub-drop: only failed publishes count. A page waiting
 ::  across any number of writer restarts (which arm, never count) stays
@@ -159,7 +202,7 @@
     ::  ten restarts: each arms the map as it is, due at once
     (expect-eq !>(`(unit @da)``*@da) !>((pub-arm-at:lp pen t ~s6)))
     (expect-eq !>(|) !>((pub-drop:lp (~(got by pen) '/a') 3)))
-    (expect-eq !>(`pub-wait:lp`[t 1 (add t ~s1) &]) !>(f1))
+    (expect-eq !>(`pub-wait:lp`[t 1 (add t ~s1) & *@da]) !>(f1))
     (expect-eq !>(|) !>((pub-drop:lp f1 3)))
     (expect-eq !>(&) !>((pub-drop:lp f3 3)))
   ==
@@ -168,11 +211,11 @@
 ++  test-pub-arm-at
   =/  t=@da  ~2026.1.1
   =/  gap=@dr  ~s6
-  =/  clean=pub-pending:lp  (malt ~[['/c' `pub-wait:lp`[t 0 t |]]])
+  =/  clean=pub-pending:lp  (malt ~[['/c' `pub-wait:lp`[t 0 t | *@da]]])
   =/  later=pub-pending:lp
-    (~(put by clean) '/w' `pub-wait:lp`[t 0 (add t ~s2) &])
+    (~(put by clean) '/w' `pub-wait:lp`[t 0 (add t ~s2) & *@da])
   =/  due=pub-pending:lp
-    (~(put by later) '/d' `pub-wait:lp`[t 0 *@da &])
+    (~(put by later) '/d' `pub-wait:lp`[t 0 *@da & *@da])
   ;:  weld
     (expect-eq !>(`(unit @da)`~) !>((pub-arm-at:lp clean t gap)))
     (expect-eq !>(`(unit @da)``(add t ~s8)) !>((pub-arm-at:lp later t gap)))
@@ -185,7 +228,7 @@
 ::  number of plain deploys do not
 ++  test-pub-restart
   =/  t=@da  ~2026.1.1
-  =/  a=pub-wait:lp  [t 0 *@da &]
+  =/  a=pub-wait:lp  [t 0 *@da & *@da]
   =/  pen=pub-pending:lp  (malt ~[['/a' a] ['/b' a]])
   =/  three
     =/  p  (pub-restart:lp pen `'/a')
@@ -198,12 +241,14 @@
     (expect-eq !>(0) !>(tries:(~(got by (pub-restart:lp pen `'/a')) '/b')))
     (expect-eq !>(&) !>((pub-drop:lp (~(got by three) '/a') 3)))
     ::  a published (clean) row in flight is not counted
-    =/  c=pub-pending:lp  (malt ~[['/a' `pub-wait:lp`[t 0 t |]]])
+    =/  c=pub-pending:lp  (malt ~[['/a' `pub-wait:lp`[t 0 t | *@da]]])
     (expect-eq !>(c) !>((pub-restart:lp c `'/a')))
   ==
-::  +builder-mode: tex renders as text; an unknown builder has none
+::  +builder-mode: tex renders as text, fodt as itself; an unknown
+::  builder has none
 ++  test-builder-mode
   ;:  weld
+    (expect-eq !>(`(unit @tas)``%fodt) !>((builder-mode:lp %fodt)))
     (expect-eq !>(`(unit @tas)``%text) !>((builder-mode:lp %tex)))
     (expect-eq !>(`(unit @tas)``%md) !>((builder-mode:lp %md)))
     (expect-eq !>(`(unit @tas)``%css) !>((builder-mode:lp %css)))
@@ -213,5 +258,5 @@
 ++  test-pub-from-old
   =/  t=@da  ~2026.1.1
   =/  old=pub-old:lp  (malt ~[['/a' [t (add t ~s1) 2]]])
-  (expect-eq !>(`pub-pending:lp`(malt ~[['/a' `pub-wait:lp`[(add t ~s1) 2 *@da &]]])) !>((pub-from-old:lp old)))
+  (expect-eq !>(`pub-pending:lp`(malt ~[['/a' `pub-wait:lp`[(add t ~s1) 2 *@da & *@da]]])) !>((pub-from-old:lp old)))
 --

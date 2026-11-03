@@ -29,7 +29,7 @@
       if (folderCtx) parts.unshift(...folderCtx.split('/'));
       const name = parts.join('/');
       if (!name) { skippedNames.push(rel); continue; }
-      list.push({ file, name, kind });
+      list.push({ file, name, kind, odt: /\.odt$/i.test(rel) });
     }
     if (!list.length) {
       upShow();
@@ -65,7 +65,11 @@
       const payload = [];
       try {
         for (const it of part) {
-          payload.push({ name: it.name, type: it.kind, body: (await it.file.text()) || '\n' });
+          // an .odt goes through writer.js
+          const c = it.odt ? await (await writerReady()).importOdt(await it.file.arrayBuffer()) : { text: await it.file.text() };
+          if (c.error || c.note) upErr.textContent += it.name + ': ' + (c.error || c.note) + '\n';
+          if (c.error) { fails++; continue; }
+          payload.push({ name: it.name, type: it.kind, body: c.text || '\n' });
           // the read is awaited one file at a time, so the bar can move with
           // it instead of sitting at 0% for the whole chunk and then jumping
           upProg(done + payload.length, list.length, it.name, 'reading');

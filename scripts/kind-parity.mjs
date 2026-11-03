@@ -88,8 +88,15 @@ console.log(
 //  KMAP and EXT_KIND are twins in the same language, duplicated only
 //  because vault.js is served alone to Settings with no bundle around it.
 //  Nothing excuses a difference between these two.
+//  An upload-only alias is read as bytes by the browser's uploader (an .odt
+//  goes to writer.js's importer), so every place that reads a file as text
+//  must NOT know it: vault.js's restore, the mount and the desktop picker.
+//  Each is named here and checked absent below.
+const BYTES_ONLY = {
+  odt: 'zipped ODF: 70-upload.js hands it to writer.js as an ArrayBuffer',
+};
 const kmapKeys = new Set([...Object.keys(extKind), ...Object.keys(kmap)]);
-const kmapDrift = [...kmapKeys].filter((e) => kmap[e] !== extKind[e]);
+const kmapDrift = [...kmapKeys].filter((e) => !(e in BYTES_ONLY) && kmap[e] !== extKind[e]);
 check(
   'KMAP (vault.js) matches EXT_KIND (30-tree.js)',
   kmapDrift.length === 0,
@@ -103,6 +110,7 @@ check(
 const ACCEPTED_EXCEPTIONS = {
   htm: 'browser-only inbound alias for html; the mount never writes a .htm file',
   text: "legacy inbound-only alias predating the .txt convention, read by vault.js's own restore, never written by the mount",
+  odt: 'upload-only, read as bytes (BYTES_ONLY): the mount keeps a .odt as scratch (kind_for_ext answers hoon), so it never reaches the ship as text',
   hoon: 'kind_for_ext has no literal "hoon" arm because hoon IS the match\'s own wildcard fallback (every unclaimed extension already becomes hoon). Correct, just invisible to a regex over literal arms',
 };
 
@@ -133,12 +141,20 @@ const cmdsPath = join(root, 'desktop/src/commands.rs');
 const pe = readFileSync(cmdsPath, 'utf8').match(/const PAGE_EXTS: &\[&str\] = &\[([^\]]*)\];/);
 const pageExts = pe ? [...pe[1].matchAll(/"(\w+)"/g)].map((m) => m[1]) : [];
 const peDrift = [...new Set([...Object.keys(extKind), ...pageExts])].filter(
-  (e) => !(e in extKind) || !pageExts.includes(e)
+  (e) => !(e in BYTES_ONLY) && (!(e in extKind) || !pageExts.includes(e))
 );
 check(
   'desktop PAGE_EXTS (commands.rs) matches EXT_KIND',
   pe && peDrift.length === 0,
   pe ? 'drifted: ' + JSON.stringify(peDrift) : 'could not find PAGE_EXTS in commands.rs'
 );
+
+//  and the bytes-only aliases are in none of the places that read text
+for (const [e, why] of Object.entries(BYTES_ONLY)) {
+  check(`.${e} is in EXT_KIND (${why})`, e in extKind, 'missing from EXT_KIND');
+  check(`vault.js restore never reads a .${e} as text`, !(e in kmap), 'KMAP has ' + e);
+  check(`the mount never takes a .${e} as a page`, !(e in kindForExt), 'kind_for_ext has ' + e);
+  check(`the desktop picker never hands over a .${e} as text`, pe && !pageExts.includes(e), 'PAGE_EXTS has ' + e);
+}
 
 check.done();

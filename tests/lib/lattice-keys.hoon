@@ -126,6 +126,7 @@
     (expect-eq !>(|) !>((page-type-ok 'hoon')))
     (expect-eq !>(|) !>((page-type-ok 'html')))
     (expect-eq !>(|) !>((page-type-ok 'js')))
+    (expect-eq !>(|) !>((page-type-ok 'fodt')))
     (expect-eq !>(|) !>((page-type-ok '')))
     (expect-eq !>(|) !>((page-type-ok 'MD')))
   ==

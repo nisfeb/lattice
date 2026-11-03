@@ -58,7 +58,9 @@ rebuilt pier) make the test desk once: `|new-desk %lattice-test` and
 `scripts/hoon-test-kit/hoon-test.sh ~/fleet/piers/mec setup`.
 
 The HTTP matrices run against the ship too. They write data, so reset
-afterwards:
+afterwards. Every suite needs `LATTICE_URL` and `LATTICE_COOKIE` and
+exits 2 without them: there is no default ship (the old default,
+localhost:8080, was the owner's own dev ship).
 
 ```sh
 scripts/hoon-test-kit/ship-cookie.sh ~/fleet/piers/mec http://localhost:8120 /tmp/mec.jar

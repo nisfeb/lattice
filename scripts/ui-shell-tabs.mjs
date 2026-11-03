@@ -42,7 +42,7 @@
 //  SHOTS=1 saves the forum and browser tabs at 1400x900 under /tmp.
 //  PARTS=streams,nested runs only the parts named.
 //
-//  Usage: LATTICE_URL=http://localhost:8080 LATTICE_COOKIE=/tmp/tyr-cookie.txt \
+//  Usage: LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> \
 //           node scripts/ui-shell-tabs.mjs
 import { shipEnv, launchBrowser, openPage, seed, makeCheck, sleep, waitFor, swControlled, shipName } from './lib/harness.mjs';
 

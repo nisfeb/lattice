@@ -208,4 +208,26 @@ console.log('\nexportVault: an incomplete scheduled backup');
   eq('the memory count is unknown, not zero', m && m.memories, null);
 }
 
+console.log('\nfodt: a Writer document survives export and restore');
+{
+  const doc = '<office:document a=\'1\'>\n\t<text:p>it\'s</text:p>\n</office:document>\n';
+  const ship = fakeShip({
+    dump: { nodes: [{ page: true, path: 'w', kind: 'fodt', body: doc }] },
+    know: { items: [] },
+    scopes: { items: [] },
+  });
+  const { files } = await scheduledExport(ship);
+  eq('it is exported as w.fodt, byte for byte', files.get('pages/w.fodt'), doc);
+  const { tarBlob } = load({}, null, null, null, () => {});
+  const arc = await tarBlob([{ name: 'pages/w.fodt', body: doc, mtime: MT }]).arrayBuffer();
+  const back = fakeShip();
+  const v = load({ confirm: () => true }, back.fetch, null, null, () => {});
+  v.configure({ status: () => {} });
+  await v.restoreVault({ arrayBuffer: async () => arc });
+  const batch = back.log.find((r) => r.url.includes('/page-save-batch'));
+  const sent = batch ? JSON.parse(batch.body) : [];
+  eq('restore saves it as kind fodt', JSON.stringify(sent.map((x) => [x.name, x.type])), '[["w","fodt"]]');
+  eq('with the same body', sent[0] && sent[0].body, doc);
+}
+
 done();

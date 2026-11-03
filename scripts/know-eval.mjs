@@ -17,8 +17,12 @@
 import { readFileSync } from 'fs';
 import { homedir } from 'os';
 
-const URL = (process.env.LATTICE_URL || 'http://localhost:8080').replace(/\/$/, '');
-const COOKIE_FILE = process.env.LATTICE_COOKIE || homedir() + '/.config/lattice-fs/cookie';
+if (!process.env.LATTICE_URL || !process.env.LATTICE_COOKIE) {
+  console.error('LATTICE_URL and LATTICE_COOKIE must be set (there is no default ship)');
+  process.exit(2);
+}
+const URL = process.env.LATTICE_URL.replace(/\/$/, '');
+const COOKIE_FILE = process.env.LATTICE_COOKIE.replace(/^~/, homedir());
 const cookie = readFileSync(COOKIE_FILE, 'utf8').trim();
 const src = process.argv[2] || 'page:eval/memory-recall';
 const get = async (path) => {

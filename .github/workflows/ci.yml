@@ -132,6 +132,40 @@ jobs:
           test -x result/bin/lattice-desktop
           echo "built: $(readlink -f result)"
 
+  # The Writer round-trip harness (plan 2026-11-01-writer-wysiwyg, Corpus).
+  # LibreOffice re-saves every corpus file, canon.py compares the saves,
+  # and the text and PDF exports must agree. Its own job because
+  # LibreOffice is too heavy for the others. The writer core's steps
+  # (no-op, scripted edit, lattice reads LibreOffice's save) import
+  # ui-src/writer/, so the job installs the ProseMirror packages. The
+  # corpus is saved by a newer LibreOffice than Ubuntu ships, so the
+  # corpus fixed-point check skips here; the both-sides-through-
+  # LibreOffice checks do not.
+  writer-roundtrip:
+    name: Writer round trip, LibreOffice headless
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: LibreOffice Writer (no GUI)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui
+          soffice --version
+      - name: canon.py is stable across two LibreOffice re-saves
+        run: python3 scripts/writer-corpus/canon.py --self-test
+      - name: ProseMirror for the writer core
+        run: npm ci --prefix scripts --no-audit --no-fund --ignore-scripts
+      - name: round-trip harness
+        env:
+          WRITER_REQUIRE_SOFFICE: "1"
+        run: node scripts/writer-roundtrip.mjs
+      - name: .odt import and export
+        env:
+          WRITER_REQUIRE_SOFFICE: "1"
+        run: node scripts/writer-odt.mjs
+
   static:
     name: web client + scripts — static checks
     runs-on: ubuntu-24.04
@@ -144,12 +178,31 @@ jobs:
           node scripts/build-ui.mjs
           git diff --exit-code code/nex/lattice/ui-app/app.js
           node --check code/nex/lattice/ui-app/app.js
+      # writer.js is the Writer editor, the one client asset with runtime
+      # dependencies (ProseMirror, pinned in scripts/package.json). It is
+      # rebuilt and diffed like app.js, with its generated notice file.
+      # build-writer.mjs fails over the phase 1 budget (400 KB raw, 130 KB
+      # gzipped), and writer-licences.mjs fails on any bundled licence
+      # outside MIT, ISC and BSD, or on app.js mentioning ProseMirror.
+      - name: writer.js builds, is current, in budget and licence-clean
+        run: |
+          npm ci --prefix scripts --no-audit --no-fund --ignore-scripts
+          node scripts/build-writer.mjs
+          git diff --exit-code code/nex/lattice/ui-app/writer.js ui-src/writer/vendor/LICENSES
+          node --check code/nex/lattice/ui-app/writer.js
+          node scripts/writer-licences.mjs
+      # the writer core (tokenizer, model, styles, minimal-diff serializer),
+      # pure node: no-op round trips, minimal diffs, style reuse, pairs,
+      # hostile files and the 13-large time budget
+      - name: writer core unit tests
+        run: node scripts/writer-unit.mjs
       # every suite, not just ui-matrix: a syntax error in one that CI never
       # parsed is a suite that silently stops testing anything.
       - name: test scripts parse
         run: |
           for f in scripts/*.mjs scripts/lib/*.mjs; do node --check "$f"; done
           for f in scripts/*.sh scripts/lib/*.sh; do bash -n "$f"; done
+          for f in scripts/writer-corpus/*.py; do python3 -m py_compile "$f"; done
       # the agent plugins (plugins/): they parse, their manifests are JSON,
       # and the Claude plugin's MCP server answers tools/list
       - name: agent plugins

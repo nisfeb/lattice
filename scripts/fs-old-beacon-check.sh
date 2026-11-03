@@ -16,7 +16,7 @@
 # binary both, both checks fail.
 #
 # Usage:  scripts/fs-old-beacon-check.sh [ship-url]
-#   env:  LATTICE_URL (default http://localhost:8080)
+#   env:  LATTICE_URL and LATTICE_COOKIE (required, a throwaway ship)
 #         BIN  the lattice-fs to mount with (default this checkout's build)
 #         LATTICE_COOKIE  the session cookie file, as for fs-matrix.sh
 #           (default ~/.config/lattice-fs/cookie). The mount is handed a

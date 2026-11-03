@@ -1,0 +1,137 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">
+<script:module xmlns:script="http://openoffice.org/2000/script" script:name="Module1" script:language="StarBasic">
+REM lo-gui.xba: makes tests/writer/corpus/14-lo-gui.fodt through the
+REM LibreOffice window. Three editing sessions type and format through the
+REM dispatcher, as the keyboard and menus do, and save with .uno:SaveAs and
+REM .uno:Save, so the file carries GUI rsid churn and view settings.
+REM
+REM   P=$(mktemp -d); soffice -env:UserInstallation=file://$P --headless --terminate_after_init
+REM   cp scripts/writer-corpus/lo-gui.xba $P/user/basic/Standard/Module1.xba
+REM   LO_GUI_OUT=file://$PWD/tests/writer/corpus/14-lo-gui.fodt SAL_USE_VCLPLUGIN=gen \
+REM     xvfb-run -a -s "-screen 0 1280x1024x24" soffice -env:UserInstallation=file://$P \
+REM     --norestore --nologo "macro:///Standard.Module1.Make"
+
+Dim oDisp As Object
+Dim oFrame As Object
+
+Function P(n As String, v) As Variant
+  Dim x As New com.sun.star.beans.PropertyValue
+  x.Name = n
+  x.Value = v
+  P = x
+End Function
+
+Sub D(cmd As String, Optional args)
+  If IsMissing(args) Then args = Array()
+  oDisp.executeDispatch(oFrame, ".uno:" &amp; cmd, "", 0, args)
+  Wait 50
+End Sub
+
+Sub T(s As String)
+  D("InsertText", Array(P("Text", s)))
+End Sub
+
+Sub Para()
+  D("InsertPara")
+End Sub
+
+Sub Sty(name As String)
+  D("StyleApply", Array(P("Template", name), P("Family", 2)))
+End Sub
+
+Function OpenDoc(url As String) As Object
+  Dim doc As Object
+  If url = "" Then
+    doc = StarDesktop.loadComponentFromURL("private:factory/swriter", "_blank", 0, Array())
+  Else
+    doc = StarDesktop.loadComponentFromURL(url, "_blank", 0, Array())
+  End If
+  oFrame = doc.getCurrentController().getFrame()
+  oFrame.getContainerWindow().setVisible(True)
+  oDisp = createUnoService("com.sun.star.frame.DispatchHelper")
+  Wait 500
+  OpenDoc = doc
+End Function
+
+Sub Make
+  Dim url As String
+  url = Environ("LO_GUI_OUT")
+  Dim doc As Object
+
+  REM session 1: a new document, typed and formatted, Save As
+  doc = OpenDoc("")
+  Sty("Heading 1")
+  T("Field notes")
+  Para()
+  Sty("Text Body")
+  T("This document was typed in the LibreOffice window and saved from it. ")
+  T("It has a ")
+  D("Bold")
+  T("bold")
+  D("Bold")
+  T(" word, an ")
+  D("Italic")
+  T("italic")
+  D("Italic")
+  T(" one, and some plain text after them.")
+  Para()
+  Sty("Heading 2")
+  T("A list")
+  Para()
+  Sty("Text Body")
+  D("DefaultBullet")
+  T("First item")
+  Para()
+  T("Second item")
+  Para()
+  T("Third item")
+  Para()
+  D("DefaultBullet")
+  T("A closing paragraph for the first session.")
+  D("SaveAs", Array(P("URL", url), P("FilterName", "OpenDocument Text Flat XML")))
+  Wait 500
+  doc.close(True)
+  Wait 500
+
+  REM session 2: reopen, edit in the middle and at the end, Save
+  doc = OpenDoc(url)
+  D("GoToStartOfDoc")
+  D("GoDown")
+  D("GoToEndOfLine")
+  T(" A sentence added in the second session, in the middle.")
+  D("GoToEndOfDoc")
+  Para()
+  Sty("Heading 2")
+  T("Second session")
+  Para()
+  Sty("Text Body")
+  T("Some ")
+  D("Underline")
+  T("underlined")
+  D("Underline")
+  T(" text, typed later.")
+  D("GoToStartOfDoc")
+  D("GoToEndOfLine")
+  T(", revised")
+  D("Save")
+  Wait 500
+  doc.close(True)
+  Wait 500
+
+  REM session 3: a few more small edits, Save
+  doc = OpenDoc(url)
+  D("GoToEndOfDoc")
+  T(" And a third session appended this.")
+  D("GoToStartOfDoc")
+  D("GoDown")
+  D("GoDown")
+  D("GoToEndOfLine")
+  T(" (edited)")
+  D("Save")
+  Wait 500
+  doc.close(True)
+  Wait 300
+  StarDesktop.terminate()
+End Sub
+</script:module>

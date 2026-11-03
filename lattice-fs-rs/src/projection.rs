@@ -115,6 +115,7 @@ pub trait Projection: Send + Sync {
             "js" => "js",
             "css" => "css",
             "tex" => "tex",
+            "fodt" => "fodt",
             "index" => "md",
             _ => "hoon",
         }
@@ -131,6 +132,7 @@ pub trait Projection: Send + Sync {
             "js" => "js",
             "css" => "css",
             "tex" => "tex",
+            "fodt" => "fodt",
             // .latex is inbound-only, matching the browser's EXT_KIND alias
             "latex" => "tex",
             _ => "hoon",

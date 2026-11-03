@@ -194,6 +194,55 @@
 ::  +has-sub: does `n` occur anywhere in `h`? +find is a prefix-free substring
 ::  search, so this is just its unit collapsed to a loobean. Case-sensitive;
 ::  callers case-fold first when they mean to.
+::  +fodt-pool: fragments for the body of a flat ODT, for /lib/lattice-fodt.
+::  The phase 1 elements open and closed and unbalanced, the elements it
+::  must skip or never pass through (office:scripts, script, iframe), DTD
+::  syntax it must refuse, entities valid and broken, the link schemes it
+::  must not make live, and runs of digits for text:c and colspan.
+++  fodt-pool
+  ^-  (list tape)
+  :~  "<text:p>"  "</text:p>"  "<text:p/>"  "<text:h text:outline-level=\""
+      "</text:h>"  "<text:span text:style-name=\"T1\">"  "</text:span>"
+      "<text:a xlink:href=\""  "\">"  "</text:a>"  "<text:list>"
+      "</text:list>"  "<text:list-item>"  "</text:list-item>"
+      "<text:list-header>"  "<table:table>"  "</table:table>"
+      "<table:table-header-rows>"  "<table:table-row>"  "</table:table-row>"
+      "<table:table-cell table:number-columns-spanned=\""
+      "</table:table-cell>"  "<table:covered-table-cell/>"
+      "<text:s text:c=\""  "\"/>"  "<text:s/>"  "<text:tab/>"
+      "<text:line-break/>"  "<text:soft-page-break/>"
+      "<text:note><text:note-citation>"  "</text:note-citation>"
+      "<text:note-body>"  "</text:note-body>"  "</text:note>"
+      "<text:section>"  "</text:section>"  "<text:table-of-content>"
+      "<text:index-body>"  "</text:index-body>"  "<text:tracked-changes>"
+      "<office:annotation>"  "</office:annotation>"  "<draw:frame>"
+      "<office:scripts>"  "</office:scripts>"  "<script>"  "</script>"
+      "<iframe src=\""  "<html:img onerror=\""  "<!DOCTYPE x>"
+      "<!DOCTYPE x ["  "<!ENTITY e \"boom\">"  "]>"  "&e;"  "<![CDATA["
+      "]]>"  "<!--"  "-->"  "<?pi x?>"  "&"  "&amp;"  "&lt;"  "&gt;"
+      "&quot;"  "&apos;"  "&#60;"  "&#x3c;"  "&#0;"  "&#x110000;"
+      "&#xD800;"  "&#;"  ";"  "javascript:"  " javascript:"  "\09javascript:"
+      "JaVaScRiPt:"  "vnd.sun.star.script:"  "macro:"  ".uno:"  "data:"
+      "file:"  "https://a.b/"  "#x"  "mailto:a@b"  "\""  "'"  "="  "<"
+      ">"  "/>"  "</"  " "  "  "  "\09"  "\0a"  "\0d"  "\01"  "text"
+      "url("  "expression("  "</style>"  "2"  "1000"  "99999999999"
+  ==
+::
+::  +fodt-style-pool: fragments for office:automatic-styles. A text style
+::  T1 the body pool refers to, with property values well-formed and
+::  hostile, so the CSS grammar sees both.
+++  fodt-style-pool
+  ^-  (list tape)
+  :~  "<style:style style:name=\"T1\" style:family=\"text\">"
+      "<style:style style:name=\"P1\" style:family=\"paragraph\" style:parent-style-name=\"P1\">"
+      "</style:style>"  "<style:text-properties"  "<style:paragraph-properties"
+      " fo:color=\""  " fo:font-family=\""  " fo:font-size=\""
+      " fo:margin-left=\""  " fo:font-weight=\""  " fo:break-before=\""
+      " style:font-name=\""  "\""  "/>"  ">"  "#c9211e"  "red"  "12pt"
+      "-1.5cm"  "150%"  "bold"  "page"  "Liberation Serif"  "'Comic Neue'"
+      ";background:url(x)"  "url(javascript:x)"  "expression(1)"
+      "</style><script>"  "}"  "&quot;"  "&lt;"
+  ==
 ++  has-sub
   |=  [n=tape h=tape]
   ^-  ?

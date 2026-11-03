@@ -15,7 +15,7 @@
 #         STUB_PORT    stub ship port (default 18765)
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-. "$ROOT/scripts/lib/matrix.sh"
+MATRIX_NO_SHIP=1 . "$ROOT/scripts/lib/matrix.sh"
 BIN="${LATTICE_BIN:-$ROOT/desktop/target/debug/lattice-desktop}"
 PORT="${STUB_PORT:-18765}"
 [ -x "$BIN" ] || { echo "no binary at $BIN (cargo build in desktop/)" >&2; exit 2; }
