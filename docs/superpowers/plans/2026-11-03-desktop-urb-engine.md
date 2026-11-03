@@ -45,6 +45,8 @@ The riskiest unknown first: libmesa has never been built by mesa-sys on macOS, a
 - [ ] Step 3: If a macOS target fails, fix it upstream in urb-fetch (a flag in `core/mesa-sys/build.rs`, or a libmesa warning under `-Werror`) by rule 2 of `docs/rust-core.md`, and re-pin later. If it cannot be fixed this slice, note it: Task 2's `urb-engine` feature lets that target ship without shipless reading.
 - [ ] Step 4: Commit (`ci: build the urb engine for every release target`).
 
+As built: all three targets build. macOS needed more than the plan said: Homebrew LLVM's libclang finds neither the SDK nor its own builtin headers for bindgen, so the job also sets `CLANG_PATH` and `BINDGEN_EXTRA_CLANG_ARGS="-isysroot $SDK -isystem $(clang -print-resource-dir)/include"`. Once Task 2 landed the job builds the whole desktop crate (release) per target instead of urb alone, and `ci.yml` gained `workflow_dispatch` so a branch can run it before its PR.
+
 ### Task 2: Take the engine as a dependency
 
 **Files:**
@@ -75,7 +77,11 @@ The riskiest unknown first: libmesa has never been built by mesa-sys on macOS, a
 - [ ] Step 7: Add the mesa-deps step to CI's `desktop` and `deny` jobs in `ci.yml`, before cargo runs.
 - [ ] Step 8: Commit (`build: link the urb-fetch engine into the desktop`).
 
+As built: cargo reads `.cargo/config.toml` from the directory it runs in, not from `--manifest-path`'s, so every build of the desktop must run from `desktop/` (CI's bridge-check build did not, and failed). The deny job needs no mesa-deps step (cargo-deny does not build).
+
 ### Task 3: Upstream: render with a link function
+
+As built: not needed for slice 1, and not pushed. The desktop renders with urb-render's public renderers and a link function, and rewrites a publisher's HTML through `rewrite_html` with an unguessable port (see the spec's Shipless reading section), so it stays pinned to 89ca9ec. The upstream change (`render_with(url, mark, body, link, base)` and `rewrite_html_with(body, base)`, where `base` maps a ship's name to what `urb://~ship` becomes, since the HTML rewrite only ever sees the scheme and ship) is committed on urb-fetch branch `render-with` with its vector test, for the owner to push and review.
 
 **Files (in `~/software/personal/urb-fetch`, a branch off main):**
 - Modify: `core/urb-render/src/gateway.rs`
@@ -112,6 +118,8 @@ The riskiest unknown first: libmesa has never been built by mesa-sys on macOS, a
 - [ ] Step 3: Run it: `FLEET_WHO=desktop-engine scripts/desktop-engine-fleet.sh`. Expected: one passing test, the claim released.
 - [ ] Step 4: CI: plain `cargo test` runs it as ignored (no fleet), which is the clean skip.
 - [ ] Step 5: Commit (`test: read a fleet page through the desktop engine`).
+
+As built: a fresh state folder must not reuse a fake moon name an earlier run used (the publisher remembers the identity's flows and does not answer), so the test reads as `new-moon-of:~wep`, a moon made up once per folder and kept in its `fake-moon` file. `LATTICE_ENGINE_FAKE` takes the same form. Measured: 1.16 s first read, 0.8 ms warm.
 
 ---
 
@@ -225,6 +233,8 @@ The riskiest unknown first: libmesa has never been built by mesa-sys on macOS, a
 - [ ] Step 5: README: a "Reading without a ship" section (what it is, what is stored in `<app_data_dir>/urb/`, the network it uses, how to clear it) and the build prerequisite (clang 18 or newer, `desktop/scripts/mesa-deps.sh`).
 - [ ] Step 6: Commit (`ci: build release bundles with the urb engine`), (`build: build the urb engine in the nix flake`), (`docs: explain reading without a ship`).
 
+As built (nix, done early so CI stayed green): importCargoLock vendors only the mesa-sys crate's own folder, and mesa-sys reads libmesa from `../../third_party/libmesa` of the checkout, so the flake fetches urb-fetch with its submodule once (`fetchgit`, the same hash serves `outputHashes`) and links its `third_party` and `wasm` folders into `$NIX_BUILD_TOP` in `preBuild`. stdenv names gcc as CC, so the flake sets `CC_<target>=clang`.
+
 ### Task 16: Slice 1 end-to-end check and release
 
 **Files:**
@@ -232,11 +242,13 @@ The riskiest unknown first: libmesa has never been built by mesa-sys on macOS, a
 
 - [ ] Step 1: desktop-matrix shipless case: empty config dir, the real binary, Open a fleet page from the manager (as a fake moon via the debug override), assert the page text, the disabled strip and its three reasons, a click on an in-page urb link staying in the reader, back returning, and the history entry on the home.
 - [ ] Step 2: First-run timing on a real network, by hand, on a clean data dir, reading one public page of the owner's choosing (once, from the persistent comet the app makes; not a test): record time to the comet being ready and to the first page in the PR.
-- [ ] Step 3: Bump the desktop to 1.1.0 in both files. Commit (`release: lattice desktop 1.1.0, read lattice without a ship`).
+- [ ] Step 3: Bump the desktop to 1.1.0 in both files. Commit (`release: lattice desktop 1.1.0, read lattice without a ship`). Not in the implementing PR: the owner bumps and tags.
 
 ---
 
-## Slice 2: ship users' published reads, natively, with fallback
+## Slice 2 (deferred): ship users' published reads, natively, with fallback
+
+Deferred (owner, 2026-11-03): "start to focus on getting users without ships able to use comets. I don't see evidence that comets are a compelling way to speed up normal operation." Nothing of slice 2 is built: no `reader-body` route, no interception in the bridge, and the ship-user path is exactly as it was. The design below is kept for if it is ever picked up again. Tasks 17 to 20 are not to be done.
 
 ### Task 17: Ship: one arm for the reader's page view
 
@@ -283,7 +295,7 @@ The riskiest unknown first: libmesa has never been built by mesa-sys on macOS, a
 
 ---
 
-## Slice 3 (staged, planned after slices 1 and 2 ship)
+## Slice 3 (staged, planned after slice 1 ships)
 
 ### Task 21: Forum and furum boards for shipless readers
 
