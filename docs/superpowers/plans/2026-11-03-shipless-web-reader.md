@@ -4,7 +4,7 @@
 
 **Goal:** Anyone with a browser opens `https://<ship>.<domain>/<path>` and reads a lattice page, served by urb-fetch's Rust `urb-gateway` in a new public, read-only mode. Every write or identity action is shown disabled with its reason.
 
-**Architecture:** A `-public <domain>` mode in `core/urb-gateway` (urb-fetch): a configurable host suffix, static chrome around each body, sandboxed `/raw` frames for peer HTML, hardened headers, rate limits, a blocklist, cache headers and path-free logs. A deploy recipe (TLS proxy with a wildcard certificate) is written and tested locally, never run publicly. Lattice later gains "Copy web link".
+**Architecture:** A `-public <domain>` mode in `core/urb-gateway` (urb-fetch): a configurable host suffix, static chrome around each body, sandboxed `?frame` frames for peer HTML, hardened headers, rate limits, a blocklist, cache headers and path-free logs. A deploy recipe (TLS proxy with a wildcard certificate) is written and tested locally, never run publicly. Lattice later gains "Copy web link".
 
 **Spec:** `docs/superpowers/specs/2026-11-03-shipless-web-reader-design.md` (wiki `specs/2026-11-03-shipless-web-reader-design`). It holds the spikes, the comparison with a PWA plus relay, and the owner decisions this plan waits on.
 
@@ -53,11 +53,11 @@
 
 - [ ] Public mode wraps every page: static HTML, no script, under `OWN` plus `frame-ancestors 'self'`. It shows the ship and path, a home link, the action strip ("Bookmark", "Comment", "Follow", each a disabled button with "Connect a ship to ..."), "Open in lattice" (the `urb://` address), "Get lattice", and the abuse contact (flag `-abuse <address>`).
 - [ ] Gemtext, Markdown and text render inside the chrome as today (`render_as`, same escaping).
-- [ ] HTML (by mark, or `%gmi` sniffed, exactly as `render_as`) renders as the interstitial line "This page is from ~ship, not from <domain>" and `<iframe sandbox="allow-scripts allow-forms allow-popups allow-top-navigation-by-user-activation" src="/raw-html?...">`. `/raw-html` answers the rewritten HTML with the `SANDBOX` CSP header, from the same ship host only, and is refused (403) when `Sec-Fetch-Dest` is `document` so it is never a top-level page.
+- [ ] HTML (by mark, or `%gmi` sniffed, exactly as `render_as`) renders as the interstitial line "This page is from ~ship, not from <domain>" and `<iframe sandbox="allow-scripts allow-forms allow-popups allow-top-navigation-by-user-activation" src="?frame">`. The `?frame` answer (a query, reserved like `?raw`, so no published path can collide) is the rewritten HTML with with the `SANDBOX` CSP header, from the same ship host only, and refused (403) when `Sec-Fetch-Dest` is `document` so it is never a top-level page.
 - [ ] `js`, `css` and `noun` marks render as escaped text in the chrome; `?raw` stays `text/plain` with `RAW`.
 - [ ] Forum and furum addresses answer the chrome with "Reading boards on the web is coming. Open in lattice to read it now." and status 501.
 - [ ] Errors use `fail_of`'s words inside the chrome; a `later` failure gets a retry link.
-- [ ] Tests: the chrome has no `<script`; a hostile HTML body (script, meta refresh, `<base>`, forms) appears only in `/raw-html`; `/raw-html` as a document is 403; each mark's path; the private page's words.
+- [ ] Tests: the chrome has no `<script`; a hostile HTML body (script, meta refresh, `<base>`, forms) appears only in the `?frame` answer; `?frame` as a document is 403; each mark's path; the private page's words.
 - [ ] Commit: `feat: the public gateway's chrome, with actions disabled`.
 
 ### Task 4: The home page
