@@ -58,7 +58,7 @@ if [ "$(curl -s -m 5 "$SHIP_URL/~/host")" != "$PUB" ]; then
   sleep 110
 fi
 
-echo "==> publishing three pages on $PUB, comments on for the first"
+echo "==> three pages on $PUB, comments on for the first"
 VERE=$(awk '$1=="stock"{print $2}' "$(dirname "$FLEET")/kernels.conf"); VERE=${VERE/#\~/$HOME}
 VERE=$VERE "$ROOT/scripts/hoon-test-kit/ship-cookie.sh" "$PIER" "$SHIP_URL" "$T/wep.jar" >/dev/null
 cookie="Cookie: $(awk '$6 ~ /^urbauth/ {print $6"="$7}' "$T/wep.jar")"
@@ -66,8 +66,14 @@ publish() {
   curl -s -m 60 -o /dev/null -w '%{http_code}' -H "$cookie" \
     -X POST "$SHIP_URL/apps/lattice/save?path=$1" --data-binary "$2"
 }
-is "publish shipless-check" 200 "$(publish shipless-check "$(printf '# Shipless check\n\nRead with no ship.\n\n=> urb://%s/shipless-next The next page\n' "$PUB")")"
-is "comments on for shipless-check" 200 "$(curl -s -m 30 -o /dev/null -w '%{http_code}' -H "$cookie" \
+# a page proper (not only a /pub entry, as /save makes): lattice takes a
+# comment only on a page that exists and has comments on
+is "make shipless-check" 200 "$(curl -s -m 60 -o /dev/null -w '%{http_code}' -H "$cookie" -X POST \
+  "$SHIP_URL/apps/lattice/page-save?name=shipless-check&type=gmi&new=1" \
+  --data-binary "$(printf '# Shipless check\n\nRead with no ship.\n\n=> urb://%s/shipless-next The next page\n' "$PUB")")"
+is "publish it" 200 "$(curl -s -m 60 -o /dev/null -w '%{http_code}' -H "$cookie" -X POST \
+  "$SHIP_URL/apps/lattice/page-share?name=shipless-check&mode=urbit")"
+is "comments on for it" 200 "$(curl -s -m 30 -o /dev/null -w '%{http_code}' -H "$cookie" \
   -X POST "$SHIP_URL/apps/lattice/page-comments?name=shipless-check&on=1")"
 NONCE="anon comment $(date +%s)-$RANDOM"
 is "publish shipless-next" 200 "$(publish shipless-next "$(printf '# The next page\n\nYou followed a link.\n')")"
@@ -268,7 +274,7 @@ except Exception:
 hit = [i for i in items if i.get("body") == sys.argv[2]]
 print("%s %s" % (hit[0]["page"], hit[0]["author"]) if hit else "none")' "$inbox" "$NONCE")
 is "it arrived on $PUB, on the page, with the reader identity as its author" "shipless-check $moon" "${got#/}"
-is "an in-page urb:// link stays in the reader" "/read?url=urb%3A%2F%2F${PUB/\~/~}%2Fshipless-next" "$(r followed)"
+is "an in-page urb:// link stays in the reader" "/read?url=urb%3A%2F%2F${PUB}%2Fshipless-next" "$(r followed)"
 is "and its page renders" 1 "$(r followedRendered)"
 is "back returns to the first page" 1 "$(r back)"
 is "a publisher's HTML is in a sandboxed frame" "allow-scripts allow-forms allow-popups allow-top-navigation-by-user-activation" "$(r frame)"
