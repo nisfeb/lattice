@@ -943,7 +943,7 @@ mod tests {
             *at -= by;
         };
         let (_, out) = ask(&c, &get("/", &cookie()));
-        assert!(out.contains("<h1>Start here</h1>"), "the compiled list");
+        assert!(out.contains("<h1>lattice</h1>"), "the compiled list");
         ask(&c, &get("/", &cookie()));
         assert_eq!(calls.load(Ordering::SeqCst), 1, "a failure is kept a little while");
         up.store(true, Ordering::SeqCst);
@@ -1247,7 +1247,7 @@ mod tests {
         let (c, calls) = ctx("home", pages);
         let (st, out) = ask(&c, &get("/", &cookie()));
         assert_eq!(st, 200);
-        assert!(out.contains("<h1>Start here</h1>"));
+        assert!(out.contains("<h1>lattice</h1>"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
@@ -1271,7 +1271,7 @@ mod tests {
         for _ in 0..3 {
             let (st, out) = ask(&c, &get("/", &cookie()));
             assert_eq!(st, 200);
-            assert!(out.contains("<h1>Start here</h1>"));
+            assert!(out.contains("<h1>lattice</h1>"));
         }
         assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
