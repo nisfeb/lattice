@@ -713,7 +713,9 @@ mod tests {
         // without our Referer, or with a key it never gave out, nothing
         assert_eq!(ask(&c, &get(&src, "")).0, 403);
         assert_eq!(ask(&c, &get(&src, "Referer: http://evil.example/\r\n")).0, 403);
-        let wrong = format!("{}0", &src[..src.len() - 1]);
+        // a different last digit (a fixed "0" was the same key one time in 16)
+        let last = if src.ends_with('0') { '1' } else { '0' };
+        let wrong = format!("{}{last}", &src[..src.len() - 1]);
         assert_eq!(ask(&c, &get(&wrong, &format!("Referer: http://127.0.0.1:{PORT}/\r\n"))).0, 404);
     }
 
