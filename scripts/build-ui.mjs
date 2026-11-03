@@ -3,7 +3,7 @@
 // One IIFE, one served asset. The pier serializes requests (~2s each),
 // so the client must stay a single file. No deps, no bundler.
 import { createHash } from 'crypto';
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { copyFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -47,3 +47,9 @@ writeFileSync(join(ui, 'app.js'),
   + `// the served writer.js's hash (build-ui.mjs, 26-writer.js)\nconst WRITER_H = '${writerH}';\n\n`
   + body + '})();\n');
 console.log(`built app.js from ${files.length} src files`);
+
+// settings.js is the one look and tab model of the ship's Settings page and
+// the desktop manager page. The manager must work with no ship, so it
+// carries a copy: this one, byte for byte. CI diffs it like app.js.
+copyFileSync(join(ui, 'settings.js'),
+  join(dirname(fileURLToPath(import.meta.url)), '..', 'desktop', 'ui', 'settings.js'));

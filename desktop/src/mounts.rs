@@ -60,12 +60,15 @@ pub fn fuse_check() -> (bool, String) {
 pub struct Status {
     pub fuse_available: bool,
     pub hint: String,
+    /// the theme the ship page last reported (set_theme), for the manager
+    /// page to wear. Empty: lattice's default light or dark.
+    pub theme: std::collections::BTreeMap<String, String>,
 }
 
 #[tauri::command]
-pub fn status() -> Status {
+pub fn status(app: AppHandle) -> Status {
     let (fuse_available, hint) = fuse_check();
-    Status { fuse_available, hint }
+    Status { fuse_available, hint, theme: config::load(&app).theme }
 }
 
 /// Build the projection for a mount. A `sock` selects lick, a ship on this

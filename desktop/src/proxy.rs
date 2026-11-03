@@ -302,11 +302,22 @@ fn has_token(cookie: Option<&str>) -> bool {
     })
 }
 
-/// A redirect target the bootstrap will accept: a plain path on the bridge.
+/// A redirect target the bootstrap will accept: a plain path on the bridge,
+/// with at most one query, `?settings=<tab>` and the tab lowercase letters
+/// only. That one is the manager page's way back to a tab of the editor's
+/// Settings (go_home in commands.rs, 99-boot.js).
 fn plain_path(to: &str) -> bool {
-    to.starts_with('/')
-        && !to.starts_with("//")
-        && to.bytes().all(|b| b.is_ascii_alphanumeric() || b"/_.-".contains(&b))
+    let (path, query) = match to.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (to, None),
+    };
+    path.starts_with('/')
+        && !path.starts_with("//")
+        && path.bytes().all(|b| b.is_ascii_alphanumeric() || b"/_.-".contains(&b))
+        && query.is_none_or(|q| {
+            q.strip_prefix("settings=")
+                .is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_lowercase()))
+        })
 }
 
 /// How the bridge may relay one request. See the module comment.
@@ -895,6 +906,9 @@ mod tests {
         let ok = get(&format!("{BOOT_PATH}?k={}&to=/apps/lattice/app", token()));
         assert!(ok.starts_with("HTTP/1.1 302 Found"), "{ok}");
         assert!(ok.contains("\r\nLocation: /apps/lattice/app\r\n"), "{ok}");
+        // the manager's way back to a Settings tab, and only that query
+        let tab = get(&format!("{BOOT_PATH}?k={}&to=/apps/lattice/app?settings=keys", token()));
+        assert!(tab.contains("\r\nLocation: /apps/lattice/app?settings=keys\r\n"), "{tab}");
         assert!(
             ok.contains(&format!("Set-Cookie: {TOKEN_COOKIE}={}; Path=/; HttpOnly; SameSite=Strict", token())),
             "{ok}"
@@ -906,6 +920,11 @@ mod tests {
             format!("{BOOT_PATH}?k={}&to=//evil.example/", token()),
             format!("{BOOT_PATH}?k={}&to=https://evil.example/", token()),
             format!("{BOOT_PATH}?k={}&to=/a%0d%0aSet-Cookie:x", token()),
+            format!("{BOOT_PATH}?k={}&to=/apps/lattice/app?name=x", token()),
+            format!("{BOOT_PATH}?k={}&to=/apps/lattice/app?settings=", token()),
+            format!("{BOOT_PATH}?k={}&to=/apps/lattice/app?settings=Keys", token()),
+            format!("{BOOT_PATH}?k={}&to=/apps/lattice/app?settings=a?settings=b", token()),
+            format!("{BOOT_PATH}?k={}&to=//evil.example/?settings=a", token()),
         ] {
             let back = get(&bad);
             assert!(back.starts_with("HTTP/1.1 403 Forbidden"), "{bad}: {back}");

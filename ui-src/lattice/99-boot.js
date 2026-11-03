@@ -109,6 +109,15 @@
     // open in tabs of their own, after the restored ones, through the same
     // queue as every tab switch.
     window.latUrbArrived();
+    // ?settings=<tab>: the desktop manager's Lattice tabs come back here
+    // (go_home in desktop/src/commands.rs) to that tab of Settings
+    const setTab = qs.get('settings');
+    if (setTab) {
+      const u = new URL(location.href);
+      u.searchParams.delete('settings');
+      history.replaceState(history.state, '', u);
+      latOpenSettings(setTab);
+    }
     if (bootTab.kind !== 'page') {
       loadTree().then(() => { legacyCheck(); sideScripts(); loadPanels(); });
       tabShowBoot(bootTab);

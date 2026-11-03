@@ -444,7 +444,7 @@ fn main() {
                 // block the main loop
                 let h = handle.clone();
                 std::thread::spawn(move || {
-                    commands::open_workspace(&h, false).ok();
+                    commands::open_workspace(&h, false, None).ok();
                 });
             }
             spawn_backup_scheduler(handle.clone());
