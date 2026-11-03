@@ -8,6 +8,18 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-03-shipless-web-reader-design.md` (wiki `specs/2026-11-03-shipless-web-reader-design`). It holds the spikes, the comparison with a PWA plus relay, and the owner decisions this plan waits on.
 
+## Status (2026-11-03)
+
+Tasks 1 to 8 are built in nisfeb/urb-fetch PR #16 (branch `public-gateway`, draft, not merged, nothing deployed). Where the build differs from the steps below:
+
+- **Publisher consent** is a flag, `-consent optin|all`, defaulting to `optin`: only ships or pages on an `-optin` file are served, and with no file every ship page answers 403. This stands in for the lattice-side flag until it exists. The owner picks the default before launch.
+- **The owner's values** are flags with safe defaults, none guessed: `-public` (the domain, off by default), `-abuse` (required with `-public`), `-start` (unset: the home page says "No start list yet."; the compiled-in fallback list is empty), the identity (a comet unless `-moon` is given; `~ricsul-bilwyt` and its moons are refused), and the log policy (`-log-engine`, off: status, duration and ship only).
+- **Task 8's proxy** is a node:https proxy in the test script, not Caddy, which this machine does not have. Links name the proxy's port through a test flag, `-public-port`. The Caddy recipe is in urb-fetch's `docs/rust-core.md`, written, not run.
+- **Pages are cached** for 60 s inside the gateway, so cached answers never reach the engine and never count against a publisher's limits.
+- **The usage text** without `-public` stays the Go gateway's: the public flags show in `-h` only when `-public` is given.
+
+Task 9 (Copy web link) waits on the owner: it needs the domain and a live gateway. Task 10 is the owner's.
+
 ## Global constraints
 
 - Work in nisfeb/urb-fetch on a branch off main (89ca9ec or later), in `core/urb-gateway` and, only where needed, `core/urb-render`. Lattice changes are Task 9 only.
