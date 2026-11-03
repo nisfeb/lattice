@@ -8,6 +8,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # a branch's run by hand (gh workflow run ci.yml --ref <branch>), for a
+  # build question that cannot wait for a PR
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -110,6 +113,65 @@ jobs:
         run: |
           cargo build --manifest-path desktop/Cargo.toml
           scripts/desktop-bridge-check.sh
+
+  # The urb engine (urb-fetch's libmesa, docs/superpowers/specs/
+  # 2026-11-03-desktop-urb-engine-design.md) on every release target and
+  # on the release's own runners. libmesa is C23 (-std=gnu23), which
+  # ubuntu-22.04's clang 14 and Xcode 15's Apple clang cannot compile, so
+  # each gets a newer clang: LLVM 18 from apt.llvm.org on Linux, Homebrew
+  # LLVM on macOS. release.yml takes the same steps.
+  engine-build:
+    name: urb engine — ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+          # cross from arm64, as release.yml builds it
+          - os: macos-14
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          repository: nisfeb/urb-fetch
+          ref: 89ca9ec6bbde7404f6b73ed67652ababdd2410e4
+          submodules: recursive
+      - name: clang 18 (linux)
+        if: runner.os == 'Linux'
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh 18
+          sudo apt-get install -y libclang-18-dev
+          echo "CC_x86_64_unknown_linux_gnu=clang-18" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
+      - name: homebrew llvm (macos)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm@20
+          llvm="$(brew --prefix llvm@20)"
+          echo "CC_aarch64_apple_darwin=$llvm/bin/clang" >> "$GITHUB_ENV"
+          echo "CC_x86_64_apple_darwin=$llvm/bin/clang" >> "$GITHUB_ENV"
+          echo "LIBCLANG_PATH=$llvm/lib" >> "$GITHUB_ENV"
+          echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
+          command -v sha256sum || brew install coreutils
+      # from core/, so its rust-toolchain.toml picks the rustc
+      - name: rust target
+        working-directory: core
+        run: rustup target add ${{ matrix.target }}
+      - name: urcrypt and SQLite
+        run: sh core/mesa-sys/fetch-deps.sh
+      - name: build urb (native)
+        working-directory: core
+        run: |
+          start=$(date +%s)
+          cargo build --release -p urb \
+            --features native --target ${{ matrix.target }}
+          echo "built in $(( $(date +%s) - start ))s"
 
   nix:
     name: nix — flake build
