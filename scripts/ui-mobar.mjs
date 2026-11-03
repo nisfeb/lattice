@@ -187,6 +187,33 @@ try {
     document.getElementById('tpath').textContent.includes(n), opened));
   check('the tab strip is on screen', await reach(m, '#doctabs .dtab.on'));
 
+  // ...but an open that lands late leaves alone a drawer opened since. The
+  // page's read is held 2.5 s (a busy pier, or a link to a host that is
+  // down); the drawer is opened again meanwhile and must still be open
+  // once the read has landed. It used to shut under the user's thumb.
+  await closeAll(m);
+  await m.evaluate(() => {
+    const f = window.fetch;
+    window.__mobarFetch = f;
+    window.fetch = (u, o) => (/page-source/.test(String(u))
+      ? new Promise((r) => setTimeout(r, 2500)).then(() => f(u, o)) : f(u, o));
+  });
+  await tap(m, '#treet');
+  const late = await m.evaluate((was) => {
+    const l = [...document.querySelectorAll('#treelist a.pg')]
+      .find((a) => new URL(a.href, location.href).searchParams.get('name') !== was);
+    l.click();
+    return new URL(l.href, location.href).searchParams.get('name');
+  }, opened);
+  await closeAll(m);
+  await tap(m, '#treet');
+  await until(m, (n) => document.getElementById('pname').value === n, late);
+  await sleep(3500);
+  check('a late open leaves a drawer opened since alone', await m.evaluate(() =>
+    document.getElementById('ws').classList.contains('ldraw')) && await inView(m, 'lpane'));
+  await m.evaluate(() => { window.fetch = window.__mobarFetch; });
+  await closeAll(m);
+
   // tab switcher: exactly two tabs, listed, and a tap switches
   await m.evaluate(async (a, b) => {
     const T = window.latTabs;

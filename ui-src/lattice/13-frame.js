@@ -144,9 +144,13 @@
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
   }
+  // counts the times a drawer was opened, so an open that lands late can
+  // tell whether the user opened one again while it was loading
+  let drawerSeq = 0;
   function drawer(side, open) {
     const ws = $('ws');
     if (open === undefined) open = !ws.classList.contains(side + 'draw');
+    if (open && !ws.classList.contains(side + 'draw')) drawerSeq++;
     ws.classList.toggle('ldraw', open && side === 'l');
     ws.classList.toggle('rdraw', open && side === 'r');
     paintPanes();
@@ -154,6 +158,11 @@
   }
   // opening a document puts both drawers away
   const drawersClose = () => drawer('l', false);
+  // ...unless a drawer was opened since the open began (`seq`, drawerSeq
+  // then). A link to a host that is down, or an upgrade on a busy pier,
+  // lands seconds after the tap, and shutting a drawer opened since then
+  // takes it away from under the user's thumb.
+  const drawersCloseSince = (seq) => { if (drawerSeq === seq) drawersClose(); };
   function paneOpen(side, open) {
     if (isMobile()) return drawer(side, open);
     if (open === undefined) open = localStorage[OPENKEY[side]] === '1';

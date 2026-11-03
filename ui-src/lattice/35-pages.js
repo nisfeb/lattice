@@ -24,10 +24,13 @@
   // Answers false when the open failed with nothing painted, which the tab
   // model tells apart from an open that a later one superseded.
   let openSeq = 0;
+  // drawerSeq (13-frame.js) when the latest open began: applyPage puts the
+  // drawers away only if none was opened since
+  let openDrawers = 0;
   // the next open's number. Whatever an open before it still owed the
   // loading line (busy, 10-shell.js) is let go with it: a later open, a
   // tab switch and a blank page all supersede it.
-  function openNext() { busyEnd('open'); return ++openSeq; }
+  function openNext() { busyEnd('open'); openDrawers = drawerSeq; return ++openSeq; }
   async function openPage(name) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
@@ -300,7 +303,7 @@
     // Paint locally now; the fetch still corrects it when it arrives.
     else paintLocal();
     if (!CONTENT() && !quiet) checkErrors();
-    drawersClose();
+    drawersCloseSince(openDrawers);
   }
 
   // blankPage: the editor reset a new page starts from. Nothing named is
