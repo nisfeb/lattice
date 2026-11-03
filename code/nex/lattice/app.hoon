@@ -14721,7 +14721,6 @@
     ::  shown by the script at the end.
     "<p id=\"bksched\" hidden><button type=\"button\" id=\"bkschedbtn\" class=\"btn\">Scheduled backups</button> "
     "<span class=\"muted\">set up and check the automatic backups this computer writes.</span></p>"
-    %-  trip
     "<h2>Search index</h2>"
     "<p class=\"muted\">The omnibar searches your published pages, your private page sources and your knowledge entries, labelling each result with where it lives. The index is rebuilt on demand rather than continuously, so reindex after a batch of edits to make them findable.</p>"
     "<p><button type=\"button\" id=\"sreidx\" class=\"btn\">Reindex my content</button> <span id=\"srst\" class=\"muted\"></span></p>"
