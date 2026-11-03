@@ -913,8 +913,20 @@ mod tests {
             "http://evil.example:26500/apps/lattice/app",
             "https://sampel-palnet.arvo.network/apps/lattice/app",
             "http://localhost:26500/apps/lattice/app",
+            // the shipless reader's origin gets no commands at all
+            "http://127.0.0.1:26520/read?url=urb%3A%2F%2F~zod%2Fx",
+            "http://127.0.0.1:26520/raw?url=x&key=y",
+            "http://127.0.0.1:26535/",
+            "http://127.0.0.1:26516/",
         ] {
             assert!(!hit(u), "{u} must not get native commands");
+        }
+        // exactly the sixteen bridge ports
+        let urls: Vec<&str> = cap["remote"]["urls"].as_array().unwrap().iter().map(|u| u.as_str().unwrap()).collect();
+        let want: Vec<String> = (26500..26516).map(|p| format!("http://127.0.0.1:{p}")).collect();
+        assert_eq!(urls, want);
+        for p in 26500..26516 {
+            assert!(hit(&format!("http://127.0.0.1:{p}/apps/lattice/app")));
         }
     }
 
