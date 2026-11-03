@@ -13,7 +13,10 @@
 //!   keeps for the page's ship goes (`Reads::expire`), then the plain
 //!   address, so back and forward to it read as any visit does. A request
 //!   the webview marks as a reload (`Cache-Control: max-age=0` or
-//!   `no-cache`, as its own reload sends) is fresh too, read in place;
+//!   `no-cache`, as its own reload sends) is fresh too, read in place.
+//!   Either is fresh only from the reader's own pages (`own_page`): a
+//!   publisher's sandboxed frame can navigate the window on a click, and
+//!   such a request is read as a plain visit;
 //! - `/raw?url=&key=` a publisher's HTML for the sandboxed frame, from the
 //!   read just made (`key` names it), never a second network read;
 //! - `/assets/reader.js`, compiled in;
@@ -482,18 +485,18 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
             }
             redirect(303, "/")
         }
-        ("/", true) if req.arg("fresh") == Some("1") => {
+        ("/", true) if Fresh::of(req, port) == Fresh::Asked => {
             ctx.start_list(true);
             redirect(303, "/")
         }
         ("/", true) => {
-            let live = ctx.start_list(req.reload);
+            let live = ctx.start_list(Fresh::of(req, port) == Fresh::Reload);
             shown(200, render::home(live.as_ref(), &ctx.history.list()))
         }
         // the app's navigation policy shows the manager for this before it
         // loads (commands.rs); this is only what a stray request sees
         ("/connect", true) => redirect(302, "/"),
-        ("/read", true) => read(ctx, req.arg("url").unwrap_or(""), Fresh::of(req)),
+        ("/read", true) => read(ctx, req.arg("url").unwrap_or(""), Fresh::of(req, port)),
         (_, false) => plain(405),
         _ => plain(404),
     }
@@ -571,15 +574,42 @@ enum Fresh {
 }
 
 impl Fresh {
-    fn of(req: &Req) -> Fresh {
-        if req.arg("fresh") == Some("1") {
+    /// A `trusted` request's freshness. `fresh=1` counts only from the
+    /// reader's own pages, and a reload header from anything but a
+    /// publisher's frame, so that a frame, which can navigate the window
+    /// on a click, cannot make each click a fresh read.
+    fn of(req: &Req, port: u16) -> Fresh {
+        if req.arg("fresh") == Some("1") && own_page(req, port) {
             Fresh::Asked
-        } else if req.reload {
+        } else if req.reload && !from_frame(req, port) {
             Fresh::Reload
         } else {
             Fresh::No
         }
     }
+}
+
+/// Did one of the reader's own pages (reader.js) make this request? Its
+/// navigations are `Sec-Fetch-Site: same-origin`; a frame's, from an
+/// opaque origin, are cross-site. A webview that sends no fetch metadata
+/// is judged by the Referer: a reader page, not a `/raw` frame.
+fn own_page(req: &Req, port: u16) -> bool {
+    match req.site.as_deref() {
+        Some(s) => s == "same-origin",
+        None => on_reader(req.referer.as_deref(), port) && !from_frame(req, port),
+    }
+}
+
+/// Did a publisher's sandboxed frame make this request?
+fn from_frame(req: &Req, port: u16) -> bool {
+    let raw = req
+        .referer
+        .as_deref()
+        .and_then(|r| r.strip_prefix("http://"))
+        .and_then(|r| r.find('/').map(|i| &r[i..]))
+        .is_some_and(|p| p == "/raw" || p.starts_with("/raw?"));
+    raw && on_reader(req.referer.as_deref(), port)
+        || req.site.as_deref().is_some_and(|s| s == "cross-site" || s == "same-site")
 }
 
 /// `/read`: the page, or why not.
@@ -800,13 +830,13 @@ mod tests {
     #[test]
     fn a_fresh_read_expires_the_page_then_goes_to_the_plain_address() {
         let (c, calls, expired) = expiring("fresh", pages);
-        let (st, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello&fresh=1", &cookie()));
+        let (st, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello&fresh=1", &own()));
         assert_eq!(st, 303, "{out}");
         assert!(out.contains("Location: /read?url=urb%3A%2F%2F~zod%2Fhello\r\n"), "{out}");
         assert_eq!(expired_urls(&expired), ["urb://~zod/hello"]);
         assert_eq!(calls.load(Ordering::SeqCst), 0, "the read is the redirect's");
         // a bare ~ship/path, and fresh=0 is no reload
-        assert_eq!(ask(&c, &get("/read?url=~zod/hello&fresh=1", &cookie())).0, 303);
+        assert_eq!(ask(&c, &get("/read?url=~zod/hello&fresh=1", &own())).0, 303);
         assert_eq!(ask(&c, &get("/read?url=~zod/hello&fresh=0", &cookie())).0, 200);
         assert_eq!(expired_urls(&expired), ["urb://~zod/hello", "urb://~zod/hello"]);
         // a plain read, as a link or back and forward make, keeps the cache
@@ -835,9 +865,43 @@ mod tests {
         assert_eq!(ask(&c, &get("/read?url=urb://~zod/hello&fresh=1", "")).0, 403);
         let x = get("/read?url=urb://~zod/hello&fresh=1", &format!("{}Origin: http://evil.example\r\n", cookie()));
         assert_eq!(ask(&c, &x).0, 403);
-        assert_eq!(ask(&c, &get("/read?url=http%3A%2F%2Fexample.com&fresh=1", &cookie())).0, 400);
+        assert_eq!(ask(&c, &get("/read?url=http%3A%2F%2Fexample.com&fresh=1", &own())).0, 400);
         assert!(expired.lock().unwrap().is_empty());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// A publisher's sandboxed frame can navigate the window on a click:
+    /// that is a plain visit, fresh=1 or not, so a frame cannot make each
+    /// click cost the publisher a list read.
+    #[test]
+    fn only_the_readers_own_pages_make_a_read_fresh() {
+        let (c, calls, expired) = expiring("freshframe", pages);
+        let raw = format!("http://127.0.0.1:{PORT}/raw?url=urb%3A%2F%2F~zod%2Fhello&key=k");
+        for h in [
+            "Sec-Fetch-Site: cross-site\r\n".to_string(),
+            "Sec-Fetch-Site: same-site\r\n".to_string(),
+            format!("Sec-Fetch-Site: cross-site\r\nReferer: {raw}\r\n"),
+            format!("Referer: {raw}\r\n"),
+            "Sec-Fetch-Site: none\r\n".to_string(),
+            String::new(),
+        ] {
+            let extra = format!("{}{h}", cookie());
+            let (st, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello&fresh=1", &extra));
+            assert_eq!(st, 200, "{h}: {out}");
+            assert!(out.contains("<h1>Hello</h1>"), "{h}");
+            assert_eq!(ask(&c, &get("/?fresh=1", &extra)).0, 200, "{h}");
+        }
+        // and a reload header from a frame's navigation is no reload
+        for h in ["Sec-Fetch-Site: cross-site\r\n".to_string(), format!("Referer: {raw}\r\n")] {
+            let extra = format!("{}{h}Cache-Control: max-age=0\r\n", cookie());
+            assert_eq!(ask(&c, &get("/read?url=urb://~zod/hello", &extra)).0, 200);
+        }
+        assert!(expired.lock().unwrap().is_empty(), "{:?}", expired_urls(&expired));
+        assert_eq!(calls.load(Ordering::SeqCst), 8 + 1, "the reads, and the start list once");
+        // a reader page without fetch metadata is judged by its Referer
+        let extra = format!("{}Referer: http://127.0.0.1:{PORT}/read?url=urb%3A%2F%2F~zod%2Fhello\r\n", cookie());
+        assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello&fresh=1", &extra)).0, 303);
+        assert_eq!(expired_urls(&expired), ["urb://~zod/hello"]);
     }
 
     #[test]
@@ -846,7 +910,7 @@ mod tests {
         assert_eq!(ask(&c, &get("/", &cookie())).0, 200);
         assert_eq!(ask(&c, &get("/", &cookie())).0, 200);
         assert_eq!(calls.load(Ordering::SeqCst), 1, "kept");
-        let (st, out) = ask(&c, &get("/?fresh=1", &cookie()));
+        let (st, out) = ask(&c, &get("/?fresh=1", &own()));
         assert_eq!(st, 303);
         assert!(out.contains("Location: /\r\n"), "{out}");
         assert_eq!(expired_urls(&expired), [render::START_URL]);
@@ -1009,6 +1073,11 @@ mod tests {
 
     fn cookie() -> String {
         format!("Cookie: other=1; {TOKEN_COOKIE}={}\r\n", token())
+    }
+
+    /// the token, on a navigation one of the reader's own pages made
+    fn own() -> String {
+        format!("{}Sec-Fetch-Site: same-origin\r\n", cookie())
     }
 
     #[test]
