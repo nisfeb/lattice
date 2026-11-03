@@ -49,9 +49,14 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
     Ok(ship)
 }
 
-/// manager page's "close" button (and Escape), back to the ship UI.
+/// manager page's "close" button (and Escape), back to the ship UI, or with
+/// no ship configured to the shipless reader's home.
 #[tauri::command]
 pub fn go_home(app: AppHandle) -> Result<(), String> {
+    #[cfg(feature = "urb-engine")]
+    if config::load(&app).url.is_empty() {
+        return open_reader(app, None);
+    }
     open_workspace(&app, false)
 }
 

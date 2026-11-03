@@ -13,6 +13,10 @@
 //  the exit used to take seconds to appear. Where there is no ship behind
 //  the page, go_home refuses cleanly and the refusal is shown.
 //
+//  It also covers the first-run "read without a ship" card: first with no
+//  ship, after the ship section with one, hidden without the engine, its
+//  address check, and what it invokes.
+//
 //  No ship and no app needed: the page is loaded from file:// with a stubbed
 //  Tauri backend, so this runs anywhere.
 //
@@ -38,7 +42,12 @@ async function load(status, opts = {}) {
   await page.evaluateOnNewDocument((s, o) => {
     window.__CALLS__ = [];
     window.__TAURI__ = {
-      core: { invoke: (name) => { window.__CALLS__.push(name);
+      core: { invoke: (name, args) => { window.__CALLS__.push(name);
+        (window.__ARGS__ = window.__ARGS__ || []).push([name, args]);
+        if (name === 'reader_status') {
+          if (o.noReader) return Promise.reject('this build has no shipless reader');
+          return Promise.resolve(o.reader || { engine: 'off', our: null, error: null, step: null });
+        }
         if (name === 'connection_status') {
           // statusDelayMs mimics the real thing: a round-trip to the ship
           return new Promise((res) => setTimeout(() => res(s), o.statusDelayMs || 0));
@@ -114,6 +123,70 @@ check('never configured: clicking it still calls go_home',
 check('and the refusal is shown, not swallowed',
   st2.statusText.includes('connect to a ship first'), JSON.stringify(st2.statusText));
 await off.close();
+
+// ── reading without a ship (the first-run card) ────────────────────────
+const order = (p) => p.evaluate(() => {
+  const card = document.getElementById('reader'), form = document.getElementById('connect');
+  return { shown: !card.hidden,
+    first: !!(card.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING),
+    heading: document.getElementById('ship-h').textContent };
+});
+const fresh = await load({ connected: false, ship: null, url: '', error: null });
+const o1 = await order(fresh);
+check('no ship: the read-without-a-ship card is shown', o1.shown, JSON.stringify(o1));
+check('no ship: it comes before the connect form', o1.first, JSON.stringify(o1));
+check('no ship: the ship section says what it is', o1.heading === 'connect your ship', o1.heading);
+const copy = await fresh.evaluate(() => document.getElementById('reader').textContent);
+check('the card says what it does', copy.includes('without running Urbit') &&
+  copy.includes('private reader identity'), copy);
+check('the card says what network it uses', copy.includes('UDP') && copy.includes('roller.urbit.org'));
+const opened = await fresh.evaluate(async () => {
+  document.getElementById('read-url').value = 'urb://~zod/x';
+  document.querySelector('#read-form button.primary').click();
+  await new Promise((r) => setTimeout(r, 50));
+  return window.__ARGS__.filter(([n]) => n === 'open_reader').map(([, a]) => a);
+});
+check('Open invokes open_reader with the address', JSON.stringify(opened) === '[{"url":"urb://~zod/x"}]',
+  JSON.stringify(opened));
+const bad = await fresh.evaluate(async () => {
+  const n = window.__CALLS__.length;
+  document.getElementById('read-url').value = 'https://example.com/x';
+  document.querySelector('#read-form button.primary').click();
+  await new Promise((r) => setTimeout(r, 50));
+  return { calls: window.__CALLS__.slice(n), text: document.getElementById('read-status').textContent };
+});
+check('a bad address says so and invokes nothing',
+  bad.calls.length === 0 && bad.text.includes("That isn't an urb:// address"), JSON.stringify(bad));
+const start = await fresh.evaluate(async () => {
+  document.getElementById('read-start').click();
+  await new Promise((r) => setTimeout(r, 50));
+  return window.__ARGS__.filter(([n]) => n === 'open_reader').map(([, a]) => a).pop();
+});
+check('Start here opens the reader home', JSON.stringify(start) === '{"url":null}', JSON.stringify(start));
+const cleared = await fresh.evaluate(async () => {
+  document.getElementById('read-clear').click();
+  await new Promise((r) => setTimeout(r, 50));
+  return window.__CALLS__.includes('clear_reader_history');
+});
+check('clear reading history invokes clear_reader_history', cleared);
+await fresh.close();
+
+const booting = await load({ connected: false, ship: null, url: '', error: null },
+  { reader: { engine: 'booting', our: null, error: null, step: 'Making your private reader identity' } });
+const bt = await booting.evaluate(() => document.getElementById('read-status').textContent);
+check('while the engine boots the card says so, with its step',
+  bt.includes('Setting up your reader. This happens once.') && bt.includes('Making your private reader identity'), bt);
+await booting.close();
+
+const shipped = await load({ connected: true, ship: '~ricsul-bilwyt', url: 'https://s.example.com' });
+const o2 = await order(shipped);
+check('with a ship: the card follows the ship section', o2.shown && !o2.first, JSON.stringify(o2));
+await shipped.close();
+
+const nofeature = await load({ connected: false, ship: null, url: '', error: null }, { noReader: true });
+check('a build without the engine hides the card',
+  await nofeature.evaluate(() => document.getElementById('reader').hidden));
+await nofeature.close();
 
 await browser.close();
 console.log(check.fails ? '\n' + check.fails + ' FAILED' : '\nall checks passed');

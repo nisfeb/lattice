@@ -70,6 +70,18 @@
   /* the row is flex, so a two-word label wraps mid-button without this */
   #need-grubbery button { white-space: nowrap; }
   #need-grubbery input { margin-bottom: 0; }
+  /* reading without a ship: first on the page when no ship was ever set */
+  .card { border: 1px solid var(--border); border-radius: 8px; padding: 14px;
+    background: var(--surface); margin-top: 1.2rem; }
+  .card h2 { margin-top: 0; }
+  .card p { margin: .3rem 0 .7rem; }
+  .card details { margin-top: .8rem; }
+  .card summary { cursor: pointer; color: var(--muted); }
+  #read-status.busy::before { content: ""; display: inline-block; width: .7em; height: .7em;
+    margin-right: .4em; border-radius: 50%; border: 2px solid var(--green);
+    border-right-color: transparent; animation: spin 1s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { #read-status.busy::before { animation: none; } }
 </style>
 <main>
   <!-- Leaving this page is a CLOSE, in the place and the wording the in-app
@@ -91,7 +103,42 @@
     <button id="close">close</button>
   </div>
 
-  <h2>ship</h2>
+  <!-- Reading without a ship: for someone who has never run Urbit. It comes
+       first while no ship has ever been configured, and moves below the ship
+       section once one is. Hidden in a build without the engine
+       (reader_status rejects). Bookmarks, comments and follows are the
+       ship's, so this card offers reading and nothing else. -->
+  <section id="reader" class="card" hidden>
+    <h2>read without a ship</h2>
+    <p>Read lattice pages people publish on Urbit, without running Urbit
+      yourself. lattice makes a private reader identity on this computer the
+      first time.</p>
+    <form id="read-form">
+      <input id="read-url" placeholder="urb://~ship/page" spellcheck="false" autocomplete="off"
+        aria-label="Page address">
+      <div class="row">
+        <button class="primary">open</button>
+        <button type="button" id="read-start">start here</button>
+        <span id="read-status" class="muted" role="status"></span>
+      </div>
+    </form>
+    <details>
+      <summary>what this uses and keeps</summary>
+      <p class="muted">The network: HTTPS to roller.urbit.org and
+        bootstrap.urbit.org (to make the reader identity and look up keys),
+        and UDP to the Urbit network and the ships you read. A network that
+        blocks UDP cannot read. What it keeps, on this computer only: the
+        reader identity, the network state, and the pages you read
+        recently. Bookmarking, commenting and following need a ship of your
+        own.</p>
+      <div class="row">
+        <button type="button" id="read-clear">clear reading history</button>
+        <span id="read-clear-status" class="muted"></span>
+      </div>
+    </details>
+  </section>
+
+  <h2 id="ship-h">ship</h2>
   <!-- the connected state is its own panel. Showing the login form whenever
        there was nothing better to say is what made an already-connected ship
        look logged out. The form is now revealed only when it is actually
@@ -256,8 +303,66 @@
       $('conn').hidden = true;
       showForm(true, false);
     }
+    placeReader(!s.url);
   }
   refreshConn();
+
+  // ── reading without a ship ───────────────────────────────────────────
+  // first when no ship was ever configured, after the ship section once
+  // one is; the ship heading says what connecting is for while it is second
+  function placeReader(shipless) {
+    const card = $('reader'), h = $('ship-h');
+    if (shipless) {
+      h.parentNode.insertBefore(card, h);
+      h.textContent = 'connect your ship';
+    } else {
+      $('connect').after(card);
+      h.textContent = 'ship';
+    }
+  }
+  const URB = /^\s*(urb:\/\/)?~[a-z][a-z-]*(\/\S*)?\s*$/;
+  const readStatus = (text, cls) => {
+    const r = $('read-status');
+    r.textContent = text; r.className = cls || 'muted';
+  };
+  // the engine's state, as the card shows it
+  async function refreshReader() {
+    let st;
+    try { st = await invoke('reader_status'); } catch { $('reader').hidden = true; return null; }
+    $('reader').hidden = false;
+    if (st && st.engine === 'booting') {
+      readStatus('Setting up your reader. This happens once.' + (st.step ? ' ' + st.step + '\u2026' : ''), 'muted busy');
+    } else if (st && st.engine === 'failed') {
+      readStatus('The reader could not start: ' + (st.error || 'unknown error'), 'err');
+    } else if (st && st.engine === 'ready') {
+      readStatus('Ready, reading as ' + st.our);
+    }
+    return st;
+  }
+  refreshReader();
+  async function openReader(url) {
+    readStatus('Setting up your reader. This happens once.', 'muted busy');
+    try {
+      await invoke('open_reader', { url });
+    } catch (err) {
+      readStatus(String(err), 'err');
+    }
+  }
+  $('read-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const v = $('read-url').value;
+    if (!URB.test(v)) {
+      readStatus("That isn't an urb:// address. Addresses look like urb://~sampel-palnet/page.", 'err');
+      return;
+    }
+    openReader(v.trim());
+  });
+  $('read-start').onclick = () => openReader(null);
+  $('read-clear').onclick = async () => {
+    const c = $('read-clear-status');
+    try { await invoke('clear_reader_history'); c.textContent = 'cleared'; c.className = 'muted'; }
+    catch (err) { c.textContent = String(err); c.className = 'err'; }
+  };
   // Close never waits on anything. go_home navigates when a ship is
   // configured and refuses with a message when none is; that message lands
   // in the form's status line rather than vanishing into a rejected promise.
