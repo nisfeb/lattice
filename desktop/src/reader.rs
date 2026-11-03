@@ -67,6 +67,10 @@ const READ_TRIES: usize = 5;
 const READ_TOTAL: Duration = Duration::from_secs(20);
 /// The live start list may hold the home up this long.
 const START_BUDGET: Duration = Duration::from_secs(3);
+/// What the live start list's read gave (the page, or that there was
+/// none) is kept this long, so a publisher that is slow or has no list
+/// does not hold up every visit to the home.
+const START_TTL: Duration = Duration::from_secs(600);
 
 /// This launch's reader token: 32 bytes from the OS, hex, never on disk.
 pub fn token() -> &'static str {
@@ -97,11 +101,12 @@ pub struct Ctx {
     pub history: History,
     pub port: u16,
     raws: Mutex<VecDeque<(String, String, Vec<u8>)>>,
+    start: Mutex<Option<(Instant, Option<NativePage>)>>,
 }
 
 impl Ctx {
     pub fn new(reads: Box<dyn Reads>, history: History, port: u16) -> Ctx {
-        Ctx { reads, history, port, raws: Mutex::new(VecDeque::new()) }
+        Ctx { reads, history, port, raws: Mutex::new(VecDeque::new()), start: Mutex::new(None) }
     }
 
     fn keep_raw(&self, url: &str, body: &[u8]) -> String {
@@ -116,6 +121,22 @@ impl Ctx {
             r.pop_front();
         }
         key
+    }
+
+    /// The live start list, read at most once per START_TTL. A read that
+    /// found the engine still starting is not kept.
+    fn start_list(&self) -> Option<NativePage> {
+        if let Some((at, p)) = &*self.start.lock().unwrap() {
+            if at.elapsed() < START_TTL {
+                return p.clone();
+            }
+        }
+        let got = self.reads.read(render::START_URL, START_BUDGET, false);
+        let p = got.as_ref().ok().cloned();
+        if !matches!(got, Err(ReadError::Booting)) {
+            *self.start.lock().unwrap() = Some((Instant::now(), p.clone()));
+        }
+        p
     }
 
     fn raw(&self, url: &str, key: &str) -> Option<Vec<u8>> {
@@ -394,7 +415,7 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
             redirect(303, "/")
         }
         ("/", true) => {
-            let live = ctx.reads.read(render::START_URL, START_BUDGET, false).ok();
+            let live = ctx.start_list();
             shown(200, render::home(live.as_ref(), &ctx.history.list()))
         }
         // the app's navigation policy shows the manager for this before it
@@ -774,6 +795,31 @@ mod tests {
         assert_eq!(st, 200);
         assert!(out.contains("<h1>Start here</h1>"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn the_live_start_list_is_read_once_in_a_while() {
+        let booting = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let b = booting.clone();
+        let (c, calls) = ctx("startttl", move |u| {
+            if b.load(Ordering::SeqCst) {
+                Err(ReadError::Booting)
+            } else {
+                pages(u)
+            }
+        });
+        // still starting: asked again next time
+        assert_eq!(ask(&c, &get("/", &cookie())).0, 200);
+        assert_eq!(ask(&c, &get("/", &cookie())).0, 200);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        // an answer (here: no such page) is kept
+        booting.store(false, Ordering::SeqCst);
+        for _ in 0..3 {
+            let (st, out) = ask(&c, &get("/", &cookie()));
+            assert_eq!(st, 200);
+            assert!(out.contains("<h1>Start here</h1>"));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 
     #[test]
