@@ -330,7 +330,9 @@ try {
     const adv = await until((s) => {
       const d = document.querySelector(s)?.contentDocument;
       const a = d && d.getElementById('openexplorer');
-      return !!a && !!d.getElementById('advanced') && a.dataset.latTool === 'explorer';
+      //  loaded, not only parsed: the shell dresses the frame's links on load
+      return !!a && !!d.getElementById('advanced') && a.dataset.latTool === 'explorer'
+        && d.readyState === 'complete';
     }, frameOf(sk));
     const ns = (await front()).n;
     await page.evaluate((s) => document.querySelector(s).contentDocument.getElementById('openexplorer').click(),
