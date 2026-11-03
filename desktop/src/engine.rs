@@ -21,11 +21,12 @@
 //! With no ship configured, the app starts the engine at launch
 //! (`prewarm`), so the reader is ready, and the start list read, by the
 //! time someone opens it. A comet made that way is unclaimed (an
-//! `unclaimed` file beside it) until the reader is used (`claim`): one
-//! still unclaimed when the app exits, or when a ship is connected, is
-//! deleted (`drop_unclaimed`), so a first run closed without reading keeps
-//! no reader identity. With a ship configured the engine starts only when
-//! something asks for a read.
+//! `unclaimed` file beside it) until the reader is used (`claim`). An
+//! unclaimed comet is kept across launches and reused, so launches that
+//! never read mint no new comet, but it does not count as the reader
+//! having been used, and connecting a ship deletes it (`drop_unclaimed`).
+//! With a ship configured the engine starts only when something asks for
+//! a read.
 
 
 use std::path::{Path, PathBuf};
@@ -243,13 +244,9 @@ impl Engine {
     /// opens is already on its way. A comet this makes is unclaimed until
     /// `claim`. Only for an app with no ship configured.
     pub fn prewarm(&self, warm: Option<&str>) {
-        if self.fake.is_none() && !self.dir.join("comet.key").exists() {
-            if let Err(e) = make_dir(&self.dir).and_then(|()| {
-                std::fs::write(self.dir.join(UNCLAIMED), b"").map_err(|e| format!("{UNCLAIMED}: {e}"))
-            }) {
-                log_line(&format!("prewarm: {e}"));
-                return;
-            }
+        if let Err(e) = self.mark_unclaimed() {
+            log_line(&format!("prewarm: {e}"));
+            return;
         }
         self.inner.lock().unwrap().discard = false;
         self.start();
@@ -262,6 +259,18 @@ impl Engine {
                 let _ = e.warm_read(&next);
             }
         });
+    }
+
+    /// Before a start nobody asked for: a comet about to be made is
+    /// marked unclaimed. One already there (claimed, or unclaimed from an
+    /// earlier launch) is reused as it is, so launches that never read
+    /// mint no new comet.
+    fn mark_unclaimed(&self) -> Result<(), String> {
+        if self.fake.is_some() || self.dir.join("comet.key").exists() {
+            return Ok(());
+        }
+        make_dir(&self.dir)?;
+        std::fs::write(self.dir.join(UNCLAIMED), b"").map_err(|e| format!("{UNCLAIMED}: {e}"))
     }
 
     fn warm_read(&self, url: &str) -> Result<NativePage, ReadError> {
@@ -286,8 +295,8 @@ impl Engine {
         self.dir.join("comet.key").exists() && !self.dir.join(UNCLAIMED).exists()
     }
 
-    /// Delete a comet nobody claimed (the app is exiting, or a ship was
-    /// connected), closing the engine first. A start still in progress
+    /// Delete a comet nobody claimed (a ship was connected, or is
+    /// configured at launch), closing the engine first. A start still in progress
     /// deletes it itself when done. Nothing happens to a claimed comet.
     pub fn drop_unclaimed(&self) {
         if !self.dir.join(UNCLAIMED).exists() {
@@ -871,6 +880,26 @@ mod tests {
         e.inner.lock().unwrap().status = Status::Booting;
         e.drop_unclaimed();
         assert!(t.join("comet.key").exists() && e.inner.lock().unwrap().discard);
+        std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    /// Two launches that never read: the second reuses the first's comet,
+    /// still unclaimed, and mints nothing.
+    #[test]
+    fn launches_without_reading_reuse_one_unclaimed_comet() {
+        let t = tmp("reuse");
+        let first = Engine::with(t.clone(), None);
+        first.mark_unclaimed().unwrap();
+        assert!(t.join(UNCLAIMED).exists());
+        // what the first launch's start mined
+        std::fs::write(t.join("comet.key"), b"0wfirst\n").unwrap();
+        first.close();
+        let second = Engine::with(t.clone(), None);
+        second.mark_unclaimed().unwrap();
+        assert_eq!(std::fs::read(t.join("comet.key")).unwrap(), b"0wfirst\n");
+        assert!(t.join(UNCLAIMED).exists() && !second.claimed());
+        second.claim();
+        assert!(second.claimed());
         std::fs::remove_dir_all(&t).unwrap();
     }
 

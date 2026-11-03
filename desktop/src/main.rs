@@ -421,8 +421,9 @@ fn main() {
             listen_for_urb(&handle);
             let cfg = config::load(&handle);
             // with no ship, the reader gets ready (and reads the start list)
-            // while the first-run page is up; with one, no network for it,
-            // and a reader identity nobody used is let go
+            // while the first-run page is up, reusing an identity an earlier
+            // launch made; with a ship, no network for it, and an identity
+            // nobody used is let go
             #[cfg(feature = "urb-engine")]
             {
                 let e = app.state::<engine::Engine>();
@@ -514,11 +515,10 @@ fn main() {
                 // drop every BackgroundSession -> clean unmounts before the
                 // process dies (drops of managed state are not otherwise run).
                 app.state::<mounts::MountMap>().0.lock().unwrap().clear();
-                // libmesa's last save, if the engine ever ran; a reader
-                // identity made at launch and never used is not kept
+                // libmesa's last save, if the engine ever ran. An
+                // unclaimed reader identity is kept for the next launch
                 #[cfg(feature = "urb-engine")]
                 if let Some(e) = app.try_state::<engine::Engine>() {
-                    e.drop_unclaimed();
                     e.close();
                 }
             }

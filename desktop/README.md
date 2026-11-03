@@ -75,8 +75,9 @@ contact with the network, about 10 seconds in all. With no ship
 configured it does this as soon as the app starts, while the connection
 page is up, and reads the start list, so the first page opened is usually
 on its way already; the card and the reader say how far along it is. An
-identity made this way is kept only once the reader is used: quit without
-reading, or connect a ship, and it is deleted. With no ship
+identity made this way and not yet used is kept for the next launch, so
+later launches make no new one, and connecting a ship before reading
+deletes it. With no ship
 configured, `urb://` links from other apps open in this reader at once.
 
 The reader only reads. Bookmarking, commenting and following a ship are
