@@ -50,7 +50,7 @@ The round-trip corpus lives in `tests/writer/corpus/`. Every file is saved by Li
 | `11-i18n.fodt` | right-to-left Arabic and Hebrew paragraphs, CJK with Asian fonts, emoji, combining marks, a soft hyphen |
 | `12-whitespace.fodt` | runs of spaces, a leading space, tabs, line breaks, a non-breaking space |
 | `13-large.fodt` | about 300 pages generated from the other fixtures, for performance |
-| `14-lo-gui.fodt` | a hand-made document saved from the GUI, with heavy rsid churn |
+| `14-lo-gui.fodt` | a document saved from the LibreOffice window over three editing sessions, with rsid churn and view settings (`scripts/writer-corpus/lo-gui.xba`) |
 | `hostile/*.fodt` | a DOCTYPE with an internal entity, billion laughs, an external entity, nesting depth 10,000, a 50 MB attribute, a style value carrying `url(` and `</style>`, `script` and `iframe` elements in the body, links to `javascript:` and `file:`, a draw:image with an external `xlink:href`. Hand-written, not LibreOffice saves, except that `scripts/writer-corpus/hostile-big.py` generates the 10,000-deep file (committed) and the 50 MB one (not committed; suites that need it generate it with `--huge`). |
 
 `tests/writer/corpus/edits.json` names a scripted edit per file (for example: insert text in the third paragraph, bold a word, add a list item, add a table row, apply the Quotations style) and the text change it should produce.
@@ -403,6 +403,16 @@ LibreOffice rewrites relative links (`text:a` hrefs, linked-section sources) rel
 - fs-matrix.sh fails 7 checks, none in the fodt cases: the mv-clobber case (coreutils 9.11 `mv` gets EEXIST) and the generic projection, which still uses the instance path from before the desks move. lattice-fs-rs differs from main only in the kind tables, so neither is from this branch.
 - Step 2 (Tauri, Firefox, a phone) is the owner's manual pass. Chromium at 390 px is covered by ui-writer, and WebKitGTK was smoke-tested in the Task 12 review.
 - Sizes: writer.js 387,772 bytes raw and 116,616 gzipped; app.js 682,763 bytes, 7,680 over release 104.
+
+**Finish (2026-11-02), on release 107.**
+
+- **14-lo-gui.fodt.** `scripts/writer-corpus/lo-gui.xba` drives LibreOffice 26.8 under Xvfb (a window, not --headless): three editing sessions type and format through the dispatcher and save with `.uno:SaveAs` and `.uno:Save`. The file has three rsids, `officeooo:paragraph-rsid` and the view settings. writer-roundtrip passes it: the no-op output is byte-identical and LibreOffice's re-saves are canonically identical.
+- **Step 2, scripted.** One pass per engine against a clone: open a fodt page, type with real key events, select a word and click Bold, wait for the autosave on the ship, reload, check the word is still there and bold, open Read and check the preview frame, share it and check the urb:// reader. WebKitGTK 2.50.4 (WebKitWebDriver and MiniBrowser), Firefox 155 (puppeteer over WebDriver BiDi; geckodriver is not installed) and Chromium at 390x844 with touch: 18 checks each, all pass.
+- **Found and fixed.** In WebKitGTK the toolbar's buttons did not take a click: once the bar overflowed, its horizontal scrollbar was hit-tested over the lower half of every button, so a click on a button's middle landed on the bar. Above phone width the bar now wraps. At phone width it stays one scrolling row (ui-writer E).
+- **Two ships.** `gate.mjs --two-ship lattice-gate-peer` deployed this build to ~dep and ~wep. fodt-views.sh with B_URL: ~wep reads four shared hostile files over urb:// (script and iframe, bad links, style injection, external image), each a sandboxed frame without same-origin around an inert render, with no element that runs or loads, no handler, no unsafe href and no url(). In Chromium on ~wep no frame sets `window.__PWNED`, no dialog opens and no request leaves the origin.
+- **Gate (b496a40).** 76 of 77 suites pass. ui-links fails one check, "phone: the badge shows in the drawer", and fails it the same way on origin/main (release 107) deployed to the same two ships, so it is not from this branch.
+- **Merge.** The branch now carries release 107. Its page menu keeps Source and the macros note beside Copy link, the fodt preview paints through `prevDoc`, and the parked fodt preview in a group goes through `navDoc` (ui-prevnav).
+- **Not Writer's.** In WebKitGTK, a reader navigation that the service worker answers with its 303 to `&u=sw<time>` can come back with a guest session that replaces the login cookie. Seen only under WebDriver, where the cookie is set from script, so it may be the harness; worth a look on the desktop app.
 
 ---
 
