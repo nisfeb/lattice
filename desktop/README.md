@@ -91,7 +91,10 @@ shown on the reader's home). "Clear history" on the reader's home, or
 "clear reading history" on the connection page, empties the history.
 Deleting the folder forgets the identity too; lattice makes a new one next
 time, which is better avoided since each identity leaves a record on every
-ship it reads. Connecting a ship later changes nothing here.
+ship it reads. If a file there is damaged (a crash while the identity
+was being made, a store that will not open), lattice moves it into a
+`damaged-<time>/` folder beside it and starts fresh; nothing is deleted.
+Connecting a ship later changes nothing here.
 
 ## Local ships (lick)
 

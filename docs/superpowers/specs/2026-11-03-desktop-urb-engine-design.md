@@ -76,6 +76,7 @@ One engine per app, started lazily the first time something asks for a read (the
 - Failures map from `urb::Failure` through `urb_gateway::routes::fail_of` (status and words), so the desktop says what the gateway says.
 - Bodies over 4 MB are refused as `Failed`, so a hostile publisher cannot balloon the app.
 - Two lattice instances on one data dir: the second gets `Busy` (libmesa's `.lock`) and says "The reader is in use by another lattice window."
+- A failed start is not tried again for 5 s (`RETRY_AFTER`), so the setup page's reload shows the failure in plain words instead of starting again forever. A damaged keyfile or store is moved into `damaged-<ms>/` and a new comet is made; a damaged `.port` file costs only the port. A store held by another instance is never treated as damage. (Review, 2026-11-03.)
 
 ### Shipless reading (`desktop/src/reader.rs`, slice 1)
 

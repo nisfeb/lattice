@@ -25,7 +25,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use urb_engine::host::net::{libmesa_log, random, Log, NetIo};
 use urb_engine::host::{Event, Host};
@@ -35,6 +35,13 @@ use urb_gateway::state::{self, GatewayUdp};
 /// A body larger than this is refused, so a hostile publisher cannot
 /// balloon the app.
 pub const MAX_BODY: usize = 4 * 1024 * 1024;
+
+/// A start that failed is not tried again for this long. The reader's
+/// setup page reloads itself every second, and each reload asks for a read:
+/// without the wait every reload would start the engine again, so a
+/// failure (another lattice on the store, no network) would show as
+/// "setting up" forever and never as what it is.
+pub const RETRY_AFTER: Duration = Duration::from_secs(5);
 
 /// A page as the engine read it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,6 +102,8 @@ struct Running {
 
 struct Inner {
     status: Status,
+    /// when the last start failed
+    failed_at: Option<Instant>,
     /// what a start is doing, in words for the reader's setup page
     step: &'static str,
     run: Option<Running>,
@@ -134,7 +143,7 @@ impl Engine {
         Engine {
             dir,
             fake,
-            inner: Arc::new(Mutex::new(Inner { status: Status::Off, step: "", run: None })),
+            inner: Arc::new(Mutex::new(Inner { status: Status::Off, failed_at: None, step: "", run: None })),
         }
     }
 
@@ -155,10 +164,13 @@ impl Engine {
 
     /// Start the host's thread unless it runs or is starting. A failed
     /// start (no network for the comet's first mining, another lattice on
-    /// the store) is tried again by the next read.
+    /// the store) is tried again by the first read RETRY_AFTER after it.
     pub fn start(&self) {
         let mut g = self.inner.lock().unwrap();
         if matches!(g.status, Status::Booting | Status::Ready { .. }) {
+            return;
+        }
+        if matches!(g.status, Status::Failed(_)) && g.failed_at.is_some_and(|t| t.elapsed() < RETRY_AFTER) {
             return;
         }
         let (jobs_tx, jobs_rx) = channel::<Job>();
@@ -259,6 +271,7 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         log_line(&format!("start failed: {m}"));
         let mut g = inner.lock().unwrap();
         g.status = Status::Failed(m);
+        g.failed_at = Some(Instant::now());
         g.run = None;
     };
     if let Err(e) = make_dir(dir) {
@@ -275,7 +288,7 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         Err(e) => return fail(e),
     };
     let fake = fake.as_deref();
-    let found = match state::find(dir, "", false, fake.unwrap_or("")) {
+    let found = match find_state(dir, fake.unwrap_or("")) {
         Ok(f) => f,
         Err(e) => return fail(e),
     };
@@ -348,6 +361,82 @@ fn moon_of(parent: &str) -> Result<String, String> {
     Ok(urb_engine::engine::ship_text(((high << 32) | lo, 0)))
 }
 
+/// `state::find`, and when a file in the folder is damaged (a keyfile cut
+/// short by a crash while it was mined, a store SQLite cannot open, a port
+/// file that is not a number), the damage set aside and one more try. A
+/// damaged port only costs the port, kept by the same identity. A damaged
+/// keyfile or store costs the identity: the keyfile and every store in the
+/// folder go into `damaged-<ms>/` (never deleted), and a new comet is made.
+/// A store held by another lattice is not damage and is left alone.
+fn find_state(dir: &Path, fake: &str) -> Result<state::Found, String> {
+    let e = match state::find(dir, "", false, fake) {
+        Ok(f) => return Ok(f),
+        Err(e) => e,
+    };
+    let what = damage(&e);
+    if what == Damage::None {
+        return Err(e);
+    }
+    log_line(&format!("state damaged ({e}), setting it aside"));
+    set_aside(dir, what)?;
+    state::find(dir, "", false, fake)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Damage {
+    None,
+    /// a `.db.port` file that is not a port
+    Port,
+    /// the keyfile or a store
+    Identity,
+}
+
+/// What a `state::find` failure says is damaged, by state.rs's and
+/// libmesa's words.
+fn damage(e: &str) -> Damage {
+    if e.ends_with("is in use by another process") || e.ends_with("can't open lockfile") {
+        Damage::None
+    } else if e.starts_with("strconv.Atoi: parsing") || e.starts_with("invalid port") {
+        Damage::Port
+    } else if e.ends_with(": mesa: not a keyfile")
+        || e.ends_with(": can't open database")
+        || e.ends_with(": can't initialize database")
+        || e.ends_with(": can't prepare statements")
+    {
+        Damage::Identity
+    } else {
+        Damage::None
+    }
+}
+
+/// Move the damaged files out of the way (see find_state).
+fn set_aside(dir: &Path, what: Damage) -> Result<(), String> {
+    let names: Vec<String> = std::fs::read_dir(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    let gone = |n: &str| match what {
+        Damage::Port => n.ends_with(".db.port"),
+        Damage::Identity => {
+            n == "comet.key" || [".db", ".db-wal", ".db-shm", ".db.port"].iter().any(|x| n.ends_with(x))
+        }
+        Damage::None => false,
+    };
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
+    let aside = dir.join(format!("damaged-{stamp}"));
+    for n in names.iter().filter(|n| gone(n)) {
+        if what == Damage::Port && std::fs::read_to_string(dir.join(n)).is_ok_and(|t| t.trim().parse::<u16>().is_ok()) {
+            continue;
+        }
+        std::fs::create_dir_all(&aside).map_err(|e| format!("{}: {e}", aside.display()))?;
+        std::fs::rename(dir.join(n), aside.join(n)).map_err(|e| format!("{n}: {e}"))?;
+    }
+    Ok(())
+}
+
 /// The one request the engine ever makes.
 fn submit_read<I: urb_engine::host::Io>(host: &mut Host<I>, url: String) -> u64 {
     host.submit(Request::Read(url))
@@ -389,7 +478,18 @@ fn boot_error(m: &str) -> ReadError {
     if m.ends_with("is in use by another process") {
         ReadError::Busy
     } else {
-        ReadError::Failed(m.to_string())
+        ReadError::Failed(plain_boot(m))
+    }
+}
+
+/// A failed start in words for someone new to Urbit. The first start
+/// fetches a list over HTTPS (`state::mine_comet`, "Get ..."); with no
+/// connection that is what fails. The engine's own words are in the log.
+pub fn plain_boot(m: &str) -> String {
+    if m.starts_with("Get \"") || m.starts_with("mesa: comet-stars") {
+        "lattice couldn't reach the internet to set up the reader. Check your connection and try again.".into()
+    } else {
+        format!("The reader couldn't start: {m}")
     }
 }
 
@@ -455,7 +555,9 @@ mod tests {
             ReadError::Unreachable { later: true, .. }
         ));
         assert_eq!(boot_error("mesa: /x/fake.db is in use by another process"), ReadError::Busy);
-        assert_eq!(boot_error("no network"), ReadError::Failed("no network".into()));
+        assert_eq!(boot_error("no network"), ReadError::Failed("The reader couldn't start: no network".into()));
+        let offline = "Get \"https://bootstrap.urbit.org/comet-stars.jam\": Dns Failed: resolve dns name";
+        assert!(matches!(boot_error(offline), ReadError::Failed(m) if m.contains("couldn't reach the internet")));
     }
 
     #[test]
@@ -487,6 +589,114 @@ mod tests {
         assert_eq!(fake_name(&tmp, "new-moon-of:~wep").unwrap(), a);
         assert_eq!(fake_name(&tmp, "~zod").unwrap(), "~zod");
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    fn tmp(name: &str) -> PathBuf {
+        let t = std::env::temp_dir().join(format!("engine-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&t);
+        t
+    }
+
+    /// The setup page reloads every 2 s and each reload reads: a failed
+    /// start must then say why, not start again and say "setting up".
+    #[test]
+    fn a_failed_start_says_why_and_waits_before_trying_again() {
+        let t = tmp("refail");
+        std::fs::create_dir_all(&t).unwrap();
+        // the state folder's place is taken by a file, so the start fails
+        std::fs::write(t.join("urb"), b"x").unwrap();
+        let e = Engine::with(t.join("urb"), Some("~zod".into()));
+        assert_eq!(e.read("urb://~zod/x", Duration::from_secs(5), false), Err(ReadError::Booting));
+        for _ in 0..200 {
+            if matches!(e.status(), Status::Failed(_)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(matches!(e.status(), Status::Failed(_)), "{:?}", e.status());
+        for _ in 0..3 {
+            let got = e.read("urb://~zod/x", Duration::from_secs(5), false);
+            assert!(matches!(got, Err(ReadError::Failed(ref m)) if m.starts_with("The reader couldn't start")), "{got:?}");
+            assert!(matches!(e.status(), Status::Failed(_)));
+        }
+        // after the wait, a read starts it again
+        e.inner.lock().unwrap().failed_at = Some(Instant::now() - RETRY_AFTER);
+        assert_eq!(e.read("urb://~zod/x", Duration::from_secs(5), false), Err(ReadError::Booting));
+        for _ in 0..200 {
+            if matches!(e.status(), Status::Failed(_)) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = std::fs::remove_dir_all(&t);
+    }
+
+    #[test]
+    fn damage_is_told_from_a_store_in_use() {
+        assert_eq!(damage("mesa: /d/x.db is in use by another process"), Damage::None);
+        assert_eq!(damage("/d/x.db: can't open lockfile"), Damage::None);
+        assert_eq!(damage("strconv.Atoi: parsing \"zz\": invalid syntax"), Damage::Port);
+        assert_eq!(damage("invalid port 70000"), Damage::Port);
+        assert_eq!(damage("/d/comet.key: mesa: not a keyfile"), Damage::Identity);
+        assert_eq!(damage("/d/x.db: can't initialize database"), Damage::Identity);
+        assert_eq!(damage("open /d/comet.key: permission denied"), Damage::None);
+        assert_eq!(damage("Get \"https://x\": timeout"), Damage::None);
+    }
+
+    /// A fake ship, so no network: find_state opens the store and the port.
+    #[test]
+    fn a_damaged_port_file_is_replaced_and_the_identity_kept() {
+        let t = tmp("badport");
+        std::fs::create_dir_all(&t).unwrap();
+        let ship = "~bidlys-donref-dozzod-dozwep";
+        let port = t.join("fake-bidlys-donref-dozzod-dozwep.db.port");
+        drop(find_state(&t, ship).unwrap());
+        assert!(t.join("fake-bidlys-donref-dozzod-dozwep.db").exists());
+        std::fs::write(&port, b"not a port").unwrap();
+        let f = find_state(&t, ship).unwrap();
+        assert_eq!(std::fs::read_to_string(&port).unwrap().trim(), f.port.to_string());
+        drop(f);
+        let aside: Vec<_> = std::fs::read_dir(&t).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().starts_with("damaged-")).collect();
+        assert_eq!(aside.len(), 1);
+        let kept: Vec<String> = std::fs::read_dir(aside[0].path()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(kept, ["fake-bidlys-donref-dozzod-dozwep.db.port"], "only the port goes");
+        std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    #[test]
+    fn a_damaged_store_is_set_aside_with_its_keyfile() {
+        let t = tmp("baddb");
+        std::fs::create_dir_all(&t).unwrap();
+        let ship = "~bidlys-donref-dozzod-dozwep";
+        let db = t.join("fake-bidlys-donref-dozzod-dozwep.db");
+        std::fs::write(&db, vec![0x5au8; 8192]).unwrap();
+        std::fs::write(t.join("comet.key"), b"0wkey\n").unwrap();
+        std::fs::write(t.join("history.json"), b"[]").unwrap();
+        let direct = state::find(&t, "", false, ship).err().unwrap_or_default();
+        assert_eq!(damage(&direct), Damage::Identity, "{direct}");
+        drop(find_state(&t, ship).unwrap());
+        let aside = std::fs::read_dir(&t).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("damaged-")).unwrap().path();
+        assert_eq!(std::fs::read(aside.join("fake-bidlys-donref-dozzod-dozwep.db")).unwrap(), vec![0x5au8; 8192]);
+        assert_eq!(std::fs::read(aside.join("comet.key")).unwrap(), b"0wkey\n");
+        // the history is the reader's, not the identity's
+        assert!(t.join("history.json").exists() && !t.join("comet.key").exists());
+        std::fs::remove_dir_all(&t).unwrap();
+    }
+
+    #[test]
+    fn a_keyfile_cut_short_is_set_aside() {
+        let t = tmp("badkey");
+        std::fs::create_dir_all(&t).unwrap();
+        std::fs::write(t.join("comet.key"), b"").unwrap();
+        let e = state::find(&t, "", false, "").err().unwrap_or_default();
+        assert_eq!(damage(&e), Damage::Identity, "{e}");
+        std::fs::write(t.join("ab.db"), b"x").unwrap();
+        std::fs::write(t.join("ab.db.port"), b"30000\n").unwrap();
+        set_aside(&t, Damage::Identity).unwrap();
+        let left: Vec<String> = std::fs::read_dir(&t).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(left.len(), 1, "{left:?}");
+        assert!(left[0].starts_with("damaged-"));
+        std::fs::remove_dir_all(&t).unwrap();
     }
 
     #[test]
