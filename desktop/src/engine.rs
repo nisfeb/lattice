@@ -426,4 +426,40 @@ mod tests {
         b.close();
         let _ = std::fs::remove_dir_all(&tmp);
     }
+
+    /// A real read on the fleet, as a fake moon of the publisher: run by
+    /// scripts/desktop-engine-fleet.sh, which publishes the page. Plain
+    /// `cargo test` (CI) skips it as ignored; run by hand with no fleet it
+    /// says so and passes.
+    #[test]
+    #[ignore = "needs a fleet ship: scripts/desktop-engine-fleet.sh"]
+    fn engine_reads_a_fleet_page() {
+        if std::env::var("LATTICE_FLEET").as_deref() != Ok("1") {
+            eprintln!("skipped: LATTICE_FLEET=1 is not set (run scripts/desktop-engine-fleet.sh)");
+            return;
+        }
+        let url = std::env::var("FLEET_PAGE").expect("FLEET_PAGE");
+        let nonce = std::env::var("FLEET_NONCE").expect("FLEET_NONCE");
+        let tmp = std::env::temp_dir().join(format!("engine-fleet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let e = Engine::fake(tmp.clone(), "~bidlys-donref-dozzod-dozwep");
+        let t = std::time::Instant::now();
+        let p = e.read(&url, Duration::from_secs(60), true).expect("the first read");
+        eprintln!("first read {:?} ({} by {})", t.elapsed(), p.key, p.how);
+        assert!(p.body.contains(&nonce), "{}", p.body);
+        assert_eq!(p.mark, "gmi");
+        let t = std::time::Instant::now();
+        let again = e.read(&url, Duration::from_secs(10), true).expect("the second read");
+        let warm = t.elapsed();
+        eprintln!("second read {warm:?}");
+        assert_eq!(again.body, p.body);
+        assert!(warm < Duration::from_millis(50), "warm read took {warm:?}");
+        let missing = format!("{url}-not-there");
+        assert!(matches!(
+            e.read(&missing, Duration::from_secs(60), true),
+            Err(ReadError::NotPublished(_))
+        ));
+        e.close();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
