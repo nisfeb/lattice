@@ -10,6 +10,26 @@
 //  shortcuts listen for keydown, so a synthetic one reaches them).
 const MINI = '/usr/libexec/webkit2gtk-4.1/MiniBrowser';
 
+//  WebKitGTK sends a navigation without the session's cookies when it is
+//  in a service worker's scope, the worker leaves it to the network (no
+//  respondWith), and the session is ephemeral, which a WebDriver session
+//  always is. Lattice's worker leaves every reader page to the network
+//  (directly, or after its 303 to u=sw<time> on a cache miss), so eyre
+//  sees no cookie, mints a guest session, and its Set-Cookie replaces the
+//  login: the page and every request after it are a guest's. Fetches from
+//  the page and the worker's own fetches keep the cookie, and a persistent
+//  session (the desktop app's, any browser window that is not private)
+//  keeps it on navigations too. The desktop app's bridge also drops
+//  Set-Cookie and signs every request itself, so users do not meet this;
+//  only the harness does. So goto() lets the worker go before it opens a
+//  lattice page other than the shell, which brings it back on the next
+//  load of the app, and fails loudly if the login is gone after a load.
+const SHELL = new Set(['/apps/lattice/app', '/apps/lattice/clip', '/apps/lattice/share']);
+const underSw = (url) => {
+  const u = new URL(url);
+  return u.pathname.startsWith('/apps/lattice') && !SHELL.has(u.pathname);
+};
+
 export async function wdSession(base = process.env.WD || 'http://localhost:4455') {
   const call = async (method, path, body) => {
     const r = await fetch(base + path, { method, headers: { 'content-type': 'application/json' },
@@ -36,13 +56,28 @@ export async function wdSession(base = process.env.WD || 'http://localhost:4455'
   };
   await C('POST', '/timeouts', { script: 30000 });
   let onNew = [];
+  let login = null;   // the session cookie setCookie wrote, as name=value
+  const kept = async () => {
+    if (login && !(await evaluate((c) => document.cookie.split('; ').includes(c), login).catch(() => true)))
+      throw new Error('wd-page: the session cookie was replaced (a guest session?) at '
+        + await evaluate(() => location.href).catch(() => '?'));
+  };
   const page = {
     _sid: sid,
     async goto(url) {
+      if (underSw(url)) await evaluate(async () => {
+        const rs = navigator.serviceWorker ? await navigator.serviceWorker.getRegistrations() : [];
+        await Promise.all(rs.map((r) => r.unregister()));
+      }).catch(() => {});
       await C('POST', '/url', { url });
       for (const f of onNew) await evaluate(f).catch(() => {});
+      await kept();
     },
-    async reload() { await C('POST', '/refresh', {}); for (const f of onNew) await evaluate(f).catch(() => {}); },
+    async reload() {
+      await C('POST', '/refresh', {});
+      for (const f of onNew) await evaluate(f).catch(() => {});
+      await kept();
+    },
     evaluate,
     async evaluateOnNewDocument(fn) { onNew.push(fn); },
     //  WebKitWebDriver's add and delete cookie answer success and change
@@ -53,7 +88,10 @@ export async function wdSession(base = process.env.WD || 'http://localhost:4455'
       for (let i = 0; i < 10; i++) {
         await evaluate((n, v, p) => { document.cookie = n + '=' + v + '; path=' + p + '; max-age=86400'; }, name, value, path || '/');
         await new Promise((r) => setTimeout(r, 1000));
-        if (await evaluate((n, v) => document.cookie.includes(n + '=' + v), name, value)) return;
+        if (await evaluate((n, v) => document.cookie.includes(n + '=' + v), name, value)) {
+          login = name + '=' + value;
+          return;
+        }
       }
       throw new Error('wd-page: the session cookie would not stay');
     },
