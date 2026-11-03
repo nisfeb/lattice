@@ -66,7 +66,7 @@
             # urb-fetch, the urb engine's git source (all its crates are one
             # checkout). fetchgit brings the libmesa submodule with it.
             outputHashes = {
-              "urb-0.0.1" = pkgs.lib.fakeHash;
+              "urb-0.0.1" = "sha256-aqrf4pDoXaojD5MiMa9qlQ3NTKcHViUT4z1tSvspaU4=";
             };
           };
 

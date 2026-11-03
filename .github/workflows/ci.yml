@@ -114,7 +114,9 @@ jobs:
       # xvfb against a stub ship, so no ship is needed.
       - name: the webview carries the bridge token
         run: |
-          cargo build --manifest-path desktop/Cargo.toml
+          # from desktop/: cargo reads .cargo/config.toml (MESA_SYS_DEPS)
+          # from the directory it runs in, not from --manifest-path's
+          (cd desktop && cargo build)
           scripts/desktop-bridge-check.sh
 
   # The desktop with its urb engine (urb-fetch's libmesa, docs/superpowers/
