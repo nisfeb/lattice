@@ -242,6 +242,10 @@
     body.insertAdjacentHTML('beforeend', DESK);
     const $ = (id) => document.getElementById(id);
     const say = (id, text, cls) => { const e = $(id); e.textContent = text; if (cls) e.className = cls; };
+    // a shell answer of the wrong shape (undefined, a string, an older
+    // desktop's reply) reads as "unavailable" rather than throwing
+    const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : null);
+    const arr = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === 'object') : []);
 
     // ── connection ──
     // the login form shows only when logging in is the thing to do.
@@ -256,6 +260,8 @@
       $('conn').hidden = false;
       let s;
       try { s = await invoke('connection_status'); } catch (e) { say('conn-ship', String(e)); return; }
+      s = obj(s);
+      if (!s) { say('conn-ship', 'connection status unavailable'); return; }
       $('url').value = s.url || $('url').value;
       $('conn-url').textContent = s.url || '';
       const dot = $('dot'), ship = $('conn-ship');
@@ -338,6 +344,7 @@
     async function refreshStack() {
       let s = null;
       try { s = await invoke('stack_status'); } catch { return; }
+      s = obj(s);
       if (!s || !s.checked) return;
       const ul = $('stack-list');
       ul.textContent = '';
@@ -403,7 +410,7 @@
     // ── files: local piers and mounts ──
     async function refreshMounts() {
       let list = [];
-      try { list = await invoke('list_mounts'); } catch (e) { say('mount-status', String(e)); }
+      try { list = arr(await invoke('list_mounts')); } catch (e) { say('mount-status', String(e)); }
       const ul = $('mount-list');
       ul.textContent = '';
       for (const m of list) {
@@ -436,7 +443,7 @@
     async function refreshLocal() {
       const host = $('local');
       let ships = [];
-      try { ships = await invoke('local_ships'); } catch { ships = []; }
+      try { ships = arr(await invoke('local_ships')); } catch { ships = []; }
       host.textContent = '';
       if (!ships.length) {
         host.className = 'muted';
@@ -449,7 +456,7 @@
       for (const s of ships) {
         const li = document.createElement('li');
         const c = document.createElement('code');
-        c.textContent = s.ship;
+        c.textContent = String(s.ship || '');
         const why = document.createElement('span');
         why.className = 'muted';
         why.style.flex = '1';
@@ -462,7 +469,7 @@
           b.textContent = 'Mount';
           b.onclick = async () => {
             // whatever is typed in the mountpoint box wins, else ~/<ship>
-            const mp = $('mp').value.trim() || '~/' + s.ship.replace(/^~/, '');
+            const mp = $('mp').value.trim() || '~/' + String(s.ship || '').replace(/^~/, '');
             b.disabled = true;
             try {
               await invoke('add_mount', { mountpoint: mp, root: '', sock: s.sock, ship: s.ship });
@@ -512,7 +519,7 @@
       await refreshBackups();
     };
     async function refreshBackups() {
-      try { backups = await invoke('backup_schedules'); } catch { backups = []; }
+      try { backups = arr(await invoke('backup_schedules')); } catch { backups = []; }
       const ul = $('backup-list');
       ul.textContent = '';
       for (const s of backups) {
@@ -547,7 +554,9 @@
         const ver = btn('Verify latest', async () => {
           sub.textContent = 'reading the newest archive…';
           try {
-            const r = await invoke('verify_backup', { id: s.id });
+            const r = obj(await invoke('verify_backup', { id: s.id }));
+            if (!r) { sub.textContent = 'verify unavailable'; sub.className = 'err'; return; }
+            if (!Array.isArray(r.problems)) r.problems = [];
             const bits = [r.pages + ' page(s)', r.has_share ? 'share modes' : 'NO share.json',
               r.has_know ? 'memories' : 'NO know.json'];
             sub.textContent = (r.problems.length ? '✗ ' : '✓ ') + bits.join(', ') + ' · '
@@ -583,7 +592,7 @@
       if (!label || !dir) { say('backup-status', 'a name and a folder are both needed'); return; }
       // two schedules sharing a name would share an archive prefix, and then
       // each would count the other's files against its own retention
-      if (backups.some((b) => b.label.toLowerCase() === label.toLowerCase())) {
+      if (backups.some((b) => String(b.label || '').toLowerCase() === label.toLowerCase())) {
         say('backup-status', 'there is already a schedule called ' + label);
         return;
       }
@@ -599,11 +608,12 @@
     refreshLocal();
     refreshMounts();
     refreshBackups();
-    invoke('status').then((s) => {
+    invoke('status').then((v) => {
+      const s = obj(v) || {};
       if (o.status) o.status(s);
       if (!s.fuse_available) {
         const h = $('fuse-hint');
-        h.textContent = s.hint; h.hidden = false;
+        h.textContent = s.hint || 'mounting is unavailable here'; h.hidden = false;
         document.querySelector('#add-mount button').disabled = true;
       }
     }, () => {
