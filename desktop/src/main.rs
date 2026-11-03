@@ -8,6 +8,8 @@ mod engine;
 #[cfg(feature = "urb-engine")]
 mod history;
 #[cfg(feature = "urb-engine")]
+mod reader;
+#[cfg(feature = "urb-engine")]
 mod render;
 mod install;
 mod local;
@@ -264,6 +266,14 @@ fn listen_for_urb(handle: &tauri::AppHandle) {
     }
 }
 
+/// The shipless reader's listener, idle until it is opened (reader.rs).
+#[cfg(feature = "urb-engine")]
+fn reader_state() -> reader::Reader {
+    reader::Reader(Mutex::new(None))
+}
+#[cfg(not(feature = "urb-engine"))]
+fn reader_state() {}
+
 /// tauri.conf.json's identifier, which the single-instance name is built on
 /// before the config is loaded (a test in urb.rs keeps the two equal).
 const IDENTIFIER: &str = "org.lattice.desktop";
@@ -330,6 +340,7 @@ fn main() {
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .manage(proxy::Bridge(Mutex::new(None)))
         .manage(urb::Inbox(Mutex::new(Vec::new())))
+        .manage(reader_state())
         .on_menu_event(|app, ev| {
             // single-window app: the manager is a page in the workspace, and
             // both of these items are ways of asking for it. "backups" lands

@@ -75,6 +75,12 @@ pub enum Status {
     Failed(String),
 }
 
+/// Something that reads pages: the engine, or a test's stand-in.
+pub trait Reads: Send + Sync {
+    fn read(&self, url: &str, budget: Duration, wait_boot: bool) -> Result<NativePage, ReadError>;
+    fn status(&self) -> Status;
+}
+
 /// what callers hand the host's thread
 enum Job {
     Read(String, Sender<Result<NativePage, ReadError>>),
@@ -91,7 +97,8 @@ struct Inner {
     run: Option<Running>,
 }
 
-/// The engine, one per app (managed state).
+/// The engine, one per app (managed state). A clone is the same engine.
+#[derive(Clone)]
 pub struct Engine {
     dir: PathBuf,
     /// a fake ship's name on a fake network (`urbit -F`), for tests: the
@@ -201,6 +208,15 @@ impl Engine {
             }
         }
         let _ = rx.recv_timeout(Duration::from_secs(2));
+    }
+}
+
+impl Reads for Engine {
+    fn read(&self, url: &str, budget: Duration, wait_boot: bool) -> Result<NativePage, ReadError> {
+        Engine::read(self, url, budget, wait_boot)
+    }
+    fn status(&self) -> Status {
+        Engine::status(self)
     }
 }
 
