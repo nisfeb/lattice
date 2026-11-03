@@ -3,6 +3,8 @@
 mod backup;
 mod commands;
 mod config;
+#[cfg(feature = "urb-engine")]
+mod engine;
 mod install;
 mod local;
 mod mounts;
@@ -393,6 +395,9 @@ fn main() {
         .setup(|app| {
             build_menu(app)?;
             let handle = app.handle().clone();
+            // the urb engine, idle until the first read (engine.rs)
+            #[cfg(feature = "urb-engine")]
+            app.manage(engine::Engine::new(handle.path().app_data_dir()?.join("urb")));
             listen_for_urb(&handle);
             let cfg = config::load(&handle);
             // before anything reads a session: older builds kept it in the
@@ -474,6 +479,11 @@ fn main() {
                 // drop every BackgroundSession -> clean unmounts before the
                 // process dies (drops of managed state are not otherwise run).
                 app.state::<mounts::MountMap>().0.lock().unwrap().clear();
+                // libmesa's last save, if the engine ever ran
+                #[cfg(feature = "urb-engine")]
+                if let Some(e) = app.try_state::<engine::Engine>() {
+                    e.close();
+                }
             }
         });
 }
