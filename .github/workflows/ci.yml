@@ -82,7 +82,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libfuse3-dev pkg-config libgtk-3-dev \
             libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev \
-            libsoup-3.0-dev pandoc xvfb
+            libsoup-3.0-dev pandoc xvfb clang libclang-dev
+      # libmesa's C sources for the urb engine (desktop/.cargo/config.toml)
+      - name: urb engine sources
+        run: sh desktop/scripts/mesa-deps.sh
       # A tauri command is registered in three places and missing any one of
       # them denies it at runtime with "not allowed. Command not found". That
       # has shipped three times here: save_vault, the whole offline queue, and
@@ -114,14 +117,14 @@ jobs:
           cargo build --manifest-path desktop/Cargo.toml
           scripts/desktop-bridge-check.sh
 
-  # The urb engine (urb-fetch's libmesa, docs/superpowers/specs/
-  # 2026-11-03-desktop-urb-engine-design.md) on every release target and
-  # on the release's own runners. libmesa is C23 (-std=gnu23), which
+  # The desktop with its urb engine (urb-fetch's libmesa, docs/superpowers/
+  # specs/2026-11-03-desktop-urb-engine-design.md), built for every release
+  # target on the release's own runners. libmesa is C23 (-std=gnu23), which
   # ubuntu-22.04's clang 14 and Xcode 15's Apple clang cannot compile, so
   # each gets a newer clang: LLVM 18 from apt.llvm.org on Linux, Homebrew
   # LLVM on macOS. release.yml takes the same steps.
   engine-build:
-    name: urb engine — ${{ matrix.target }}
+    name: desktop + urb engine — ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -138,21 +141,21 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          repository: nisfeb/urb-fetch
-          ref: 89ca9ec6bbde7404f6b73ed67652ababdd2410e4
-          submodules: recursive
-      - name: clang 18 (linux)
+      - name: clang 18 and the desktop's build deps (linux)
         if: runner.os == 'Linux'
         run: |
           wget -q https://apt.llvm.org/llvm.sh
           sudo bash llvm.sh 18
-          sudo apt-get install -y libclang-18-dev
+          sudo apt-get install -y libclang-18-dev libfuse3-dev pkg-config \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libsoup-3.0-dev
           echo "CC_x86_64_unknown_linux_gnu=clang-18" >> "$GITHUB_ENV"
           echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
-      - name: homebrew llvm (macos)
+      - name: homebrew llvm and macfuse (macos)
         if: runner.os == 'macOS'
         run: |
           brew install llvm@20
+          brew install --cask macfuse
           llvm="$(brew --prefix llvm@20)"
           echo "CC_aarch64_apple_darwin=$llvm/bin/clang" >> "$GITHUB_ENV"
           echo "CC_x86_64_apple_darwin=$llvm/bin/clang" >> "$GITHUB_ENV"
@@ -163,20 +166,20 @@ jobs:
           # bindgen's libclang finds neither the SDK nor its own builtin
           # headers (stdbool.h) by itself on a Homebrew LLVM
           echo "BINDGEN_EXTRA_CLANG_ARGS=-isysroot $sdk -isystem $("$llvm/bin/clang" -print-resource-dir)/include" >> "$GITHUB_ENV"
-          command -v sha256sum || brew install coreutils
-      # from core/, so its rust-toolchain.toml picks the rustc
       - name: rust target
-        working-directory: core
         run: rustup target add ${{ matrix.target }}
-      - name: urcrypt and SQLite
-        run: sh core/mesa-sys/fetch-deps.sh
-      - name: build urb (native)
-        working-directory: core
+      - name: urb engine sources
+        run: sh desktop/scripts/mesa-deps.sh
+      - name: build the desktop (release)
+        working-directory: desktop
+        env:
+          # fuser's pkg-config probe on the Intel cross, as release.yml
+          PKG_CONFIG_ALLOW_CROSS: '1'
         run: |
           start=$(date +%s)
-          cargo build --release -p urb \
-            --features native --target ${{ matrix.target }}
+          cargo build --locked --release --target ${{ matrix.target }}
           echo "built in $(( $(date +%s) - start ))s"
+          ls -l target/${{ matrix.target }}/release/lattice-desktop
 
   nix:
     name: nix — flake build
