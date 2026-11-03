@@ -24,6 +24,7 @@
 # Env:    LATTICE_URL     ship base (required, a throwaway ship)
 #         LATTICE_COOKIE  cookie file (default ~/.config/lattice-fs/cookie)
 #         LATTICE_BIN     binary (default desktop/target/debug/lattice-desktop)
+#         PDF_KEEP        copy the Export PDF probe's PDF there
 #
 # NOT for production ships: it writes a backup archive and drives real saves.
 set -uo pipefail
@@ -102,6 +103,21 @@ cat > "$T/probe.js" <<'JS'
     // since the reader takes the last value it overwrote it — the harness
     // passed on the very bug it exists to catch, which a negative control
     // caught and nothing else would have.
+    // Export PDF end to end: the ship's pdf.js lays a page out and invokes
+    // export_pdf, which prints it in a hidden window to LATTICE_PDF_TO (a
+    // debug-build stand-in for the save dialog). Before save_vault, whose
+    // dialog stays open for the rest of the run.
+    var pj = document.createElement('script');
+    pj.src = '/apps/lattice/app/pdf.js';
+    pj.onload = function () {
+      var long = '';
+      for (var i = 0; i < 60; i++) long += '<p>Paragraph ' + i + ' of the probe export, long enough to fill a line or two on the printed page.</p>';
+      window.LatPdf.save({ title: 'probe export', html: '<p>PROBE-PDF-START</p>' + long + '<p>PROBE-PDF-END</p>' })
+        .then(function (r) { say('pdf', r.path ? 'saved' : JSON.stringify(r)); },
+              function (e) { say('pdf', String(e).indexOf('not allowed') >= 0 ? 'DENIED' : 'threw ' + String(e).slice(0, 80)); });
+    };
+    pj.onerror = function () { say('pdf', 'no-pdf.js'); };
+    document.head.append(pj);
     var answered = false;
     window.__TAURI__.core.invoke('save_vault', { name: 'probe.tar', b64: '' })
       .then(function () { answered = true; say('savevault', 'returned'); })
@@ -122,6 +138,7 @@ LOG="$T/app.log"
   export HOME="$T/home"
   export LATTICE_LOG=1
   export LATTICE_PROBE_JS="$T/probe.js"
+  export LATTICE_PDF_TO="$T/probe.pdf"
   # no session bus: the app is single-instance over the D-Bus
   # session bus, so on a machine running the real app this launch would hand
   # its arguments to that one and exit. With no bus it launches normally.
@@ -177,6 +194,18 @@ echo "==> the commands the page is allowed to call"
 sv=$(probe savevault)
 chk "save_vault reaches the app (vault export was DENIED for weeks)" \
   "$([ "$sv" = "reached-dialog" ] || [ "$sv" = "returned" ] && echo 1 || echo 0)" "savevault=${sv:-<none>}"
+
+echo "==> Export PDF writes a PDF"
+pdf=$(probe pdf)
+chk "export_pdf reaches the app and saves" "$([ "$pdf" = "saved" ] && echo 1 || echo 0)" "pdf=${pdf:-<none>}"
+if command -v pdfinfo >/dev/null && [ -s "$T/probe.pdf" ]; then
+  pages=$(pdfinfo "$T/probe.pdf" 2>/dev/null | awk '/^Pages:/{print $2}')
+  chk "the PDF has more than one page" "$([ "${pages:-0}" -ge 2 ] && echo 1 || echo 0)" "pages=${pages:-<none>}"
+  txt=$(pdftotext "$T/probe.pdf" - 2>/dev/null)
+  chk "and the page's text, start to end" \
+    "$(grep -q PROBE-PDF-START <<<"$txt" && grep -q PROBE-PDF-END <<<"$txt" && echo 1 || echo 0)" "text missing"
+  [ -n "${PDF_KEEP:-}" ] && cp "$T/probe.pdf" "$PDF_KEEP"
+fi
 
 echo "==> a due schedule actually backs up"
 wrote=$(grep -c "backup: wrote" "$LOG")

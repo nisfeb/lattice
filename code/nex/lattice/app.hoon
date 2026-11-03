@@ -58,6 +58,7 @@
 /<  tjs  ui-app/theme.js
 /<  ojs  ui-app/orrery.js
 /<  wjs  ui-app/writer.js
+/<  pdj  ui-app/pdf.js
 /<  lc   /lib/lattice-comment.hoon
 /<  lb   /lib/lattice-bookmark.hoon
 /<  lh   /lib/lattice-history.hoon
@@ -162,6 +163,9 @@
         ::  writer.js: the Writer editor for fodt pages, loaded only when
         ::  one opens (ui-src/lattice/26-writer.js), never at boot
             [%over %& [/app %'writer.js'] [[/ %mime] wjs]]
+        ::  pdf.js: Export PDF's print layout, loaded on first use by the
+        ::  editor (ui-src/lattice/78-pdf.js) and the reader
+            [%over %& [/app %'pdf.js'] [[/ %mime] pdj]]
             ::  carried.json: has the one-time carry from the app-tier
             ::  instance run? DECLARED, so it outlives a reload - an
             ::  undeclared grub does not, which is the lesson /mirror/tr
@@ -9795,15 +9799,16 @@
     ?:  =(%'theme.js' nam)    `'application/javascript'
     ?:  =(%'orrery.js' nam)   `'application/javascript'
     ?:  =(%'writer.js' nam)   `'application/javascript'
+    ?:  =(%'pdf.js' nam)      `'application/javascript'
     ~
   ?~  ct  (send-err eyre-id 404 'not found')
   ;<  pv=view:nexus  bind:m  (peek:fio (rf up /app nam) ~)
   ?.  ?=([%file *] pv)  (send-err eyre-id 404 'not found')
   =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
   ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
-  ::  writer.js?h=H too: app.js names the H it was built with
+  ::  writer.js?h=H and pdf.js?h=H too: app.js names the H it was built with
   =/  cc=@t
-    ?.  ?&  |(=(%'app.js' nam) =(%'writer.js' nam))
+    ?.  ?&  |(=(%'app.js' nam) =(%'writer.js' nam) =(%'pdf.js' nam))
             =(`(js-tag q.p.res) (~(get by args) 'h'))
         ==
       'no-cache'
@@ -12285,8 +12290,20 @@
     "<a href=\"/apps/lattice/marks\">&#9733; bookmarks</a>"
     "<a href=\"/apps/lattice/forum\">&#9993; forum</a>"
     "<a href=\"/apps/lattice/settings\">&#9881; settings</a>"
+    "<a href=\"#\" id=\"hampdf\" hidden>&#8681; export pdf</a>"
     "</div></span>"
+    pdf-script
   ==
+::  +pdf-script: the menu's export pdf, on a page whose bar holds an urb://
+::  address (a published page, a page being browsed). It loads ui-app/pdf.js
+::  on the click and hands it what the page shows: the browser view's own
+::  document, or the reader's <main>. It sits in the bar, ahead of <main>,
+::  so it waits for the document.
+::
+++  pdf-script
+  ^-  tape
+  %-  trip
+  '<script>addEventListener("DOMContentLoaded",function(){var a=document.getElementById("hampdf"),u=document.querySelector("form input[name=url]");if(!a||!u||u.value.indexOf("urb://")!==0)return;var f=document.querySelector("iframe.pf"),m=document.querySelector("main");if(!f&&!(m&&m.textContent.trim()))return;a.hidden=false;a.onclick=function(e){e.preventDefault();var go=function(){var o;if(f){o={doc:true,html:f.getAttribute("srcdoc")||""}}else{var c=m.cloneNode(true);c.querySelectorAll("form,button,input,textarea,select,script").forEach(function(x){x.remove()});o={html:c.innerHTML}}o.title=document.title||"page";window.LatPdf.save(o).catch(function(x){alert("PDF: "+x)})};if(window.LatPdf)return go();var s=document.createElement("script");s.src="/apps/lattice/app/pdf.js";s.onload=go;document.head.appendChild(s)}});</script>'
 ::  +clearweb-bar: the /c/ navigation affordance, in two tiers. EVERYONE
 ::  gets contextual back/forward — pure history traversal, no auth, so an
 ::  anonymous visitor is never stranded on a bare page. The authenticated

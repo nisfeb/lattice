@@ -178,6 +178,7 @@
     if (page && current) { has.add('dup'); has.add('raw'); has.add('link'); }
     if (grubUrb()) has.add('link');
     if (doc && current) { has.add('download'); has.add('del'); }
+    if (doc && current && PDF_KINDS.includes(mode === 'know' ? 'md' : pkind.value)) has.add('pdf');
     if (page && linkOf(current)) has.add('linkback');
     // a folder view: Delete is #del's folder branch, its own confirm and all
     if (!grubPath && curFolder !== null) has.add('del');
@@ -235,6 +236,7 @@
     if (has.has('link')) item('link', 'Copy link', done(() => copyLink(grubUrb() || pageUrb(current))));
     if (has.has('dup')) item('dup', 'Duplicate', done(dupPage));
     if (has.has('download')) item('download', 'Download', done(downloadDoc));
+    if (has.has('pdf')) item('pdf', 'Export PDF', done(exportOpenPdf));
     // the hidden button's title says whether pandoc is there (71-latex.js)
     if (has.has('tex')) item('tex', 'Convert to HTML', done(() => $('texconv').click())).title =
       $('texconv').title;
@@ -257,7 +259,7 @@
   // with its list unfolded, as clicking Kind does. Convert to HTML exists
   // only in the desktop app.
   for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'], ['source', 'Source view'],
-    ['link', 'Copy link'], ['dup', 'Duplicate page'], ['download', 'Download'], ['tex', 'Convert to HTML'],
+    ['link', 'Copy link'], ['dup', 'Duplicate page'], ['download', 'Download'], ['pdf', 'Export PDF'], ['tex', 'Convert to HTML'],
     ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['del', 'Delete']]) {
     if (id === 'tex' && !window.__TAURI__) continue;
     action({ id: 'pm-' + id, name, home: 'Page menu',

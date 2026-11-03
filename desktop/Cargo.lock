@@ -1966,8 +1966,13 @@ version = "1.0.17"
 dependencies = [
  "base64 0.22.1",
  "fuser",
+ "gtk",
  "lattice-fs",
  "libc",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-web-kit",
  "proptest",
  "serde",
  "serde_json",
@@ -1981,6 +1986,7 @@ dependencies = [
  "urb-gateway",
  "urb-render",
  "ureq",
+ "webkit2gtk",
 ]
 
 [[package]]
