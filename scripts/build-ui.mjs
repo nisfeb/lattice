@@ -37,14 +37,18 @@ const uv = (bytes) => {
   parts.unshift(s);
   return '0v' + parts.join('.');
 };
-const wjs = join(ui, 'writer.js');
-const writerH = existsSync(wjs)
-  ? uv(createHash('sha256').update(readFileSync(wjs)).digest().subarray(0, 16)) : '';
+const tag = (f) => (existsSync(join(ui, f))
+  ? uv(createHash('sha256').update(readFileSync(join(ui, f))).digest().subarray(0, 16)) : '');
+const writerH = tag('writer.js');
+// pdf.js, the Export PDF layout (78-pdf.js), is hand-written in ui-app/
+// and loaded the same way
+const pdfH = tag('pdf.js');
 
 writeFileSync(join(ui, 'app.js'),
   '/* BUILT FILE — do not edit. Source: ui-src/lattice/, build: scripts/build-ui.mjs */\n'
   + '(function () {\n\'use strict\';\n'
-  + `// the served writer.js's hash (build-ui.mjs, 26-writer.js)\nconst WRITER_H = '${writerH}';\n\n`
+  + `// the served writer.js's hash (build-ui.mjs, 26-writer.js)\nconst WRITER_H = '${writerH}';\n`
+  + `// and pdf.js's (78-pdf.js)\nconst PDF_H = '${pdfH}';\n\n`
   + body + '})();\n');
 console.log(`built app.js from ${files.length} src files`);
 

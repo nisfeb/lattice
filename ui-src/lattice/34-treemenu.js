@@ -68,6 +68,7 @@
     if (t.kind === 'page') {
       item('link', 'Copy link', () => copyLink(pageUrb(t.path)));
       item('mv', 'Rename / move', () => askMovePage(t.path));
+      item('pdf', 'Export PDF', () => exportPagePdf(t.path));
       item('del', 'Delete', () => treeDelete(row));
     } else if (t.kind === 'folder') {
       item('new', 'New page here', async () => { if (await guardDirty()) newFile(t.path); });

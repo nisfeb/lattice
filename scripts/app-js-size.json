@@ -1,5 +1,5 @@
 {
-  "bytes": 694356,
+  "bytes": 698817,
   "grow": 4096,
-  "why": "release 109 (693,810 bytes) plus the unified settings work: the ?settings= boot hand-off from the desktop manager and the open_manager fallback for older shells (546 bytes). The Settings tabs themselves are ui-app/settings.js, loaded by the Settings page alone."
+  "why": "release 110: release 109 (693,810 bytes) plus the unified settings boot hand-off (546 bytes) and Export PDF's menu items and renderer glue (4,461 bytes, 1,497 gzipped). The Settings tabs (ui-app/settings.js) and the PDF print layout (ui-app/pdf.js) load lazily, on first use."
 }
