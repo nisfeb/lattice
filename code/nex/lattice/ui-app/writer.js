@@ -110,6 +110,7 @@ SOFTWARE.
 `)}function Rf(n){let e=Nf(n.width)||816,t=(o,i)=>{let r=Nf(o);return r!=null&&r>=0&&r<e/2?r:i};return{width:e,top:t(n.marginTop,76),bottom:t(n.marginBottom,76),left:t(n.marginLeft,76),right:t(n.marginRight,76)}}var If=`
 lat-writer{display:flex;flex-direction:column;min-height:0;height:100%;overflow:hidden}
 .lw-bar{display:flex;gap:2px;align-items:center;padding:4px 6px;border-bottom:1px solid var(--border,#8884);overflow-x:auto;flex:none;scrollbar-width:thin}
+@media (min-width:821px){.lw-bar{flex-wrap:wrap;overflow-x:visible}}
 .lw-bar button,.lw-bar select{flex:none;font:inherit;font-size:13px;min-height:30px;min-width:30px;padding:2px 6px;border:1px solid transparent;border-radius:4px;background:none;color:inherit;cursor:pointer}
 .lw-bar select{max-width:11em;border-color:var(--border,#8884)}
 .lw-bar button:hover:not(:disabled){border-color:var(--border,#8886)}

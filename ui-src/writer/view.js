@@ -94,10 +94,14 @@ export function pageBox(layout) {
   return { width: w, top: m(layout.marginTop, 76), bottom: m(layout.marginBottom, 76), left: m(layout.marginLeft, 76), right: m(layout.marginRight, 76) };
 }
 
-//  the view's own look, once per document
+//  the view's own look, once per document. The toolbar is one scrolling
+//  row at phone width and wraps above it: WebKitGTK 2.50 (the desktop
+//  app) hit-tests a horizontal scroller's scrollbar over the lower half of
+//  its children, so a mouse click on the middle of a button missed it
 const BASE_CSS = `
 lat-writer{display:flex;flex-direction:column;min-height:0;height:100%;overflow:hidden}
 .lw-bar{display:flex;gap:2px;align-items:center;padding:4px 6px;border-bottom:1px solid var(--border,#8884);overflow-x:auto;flex:none;scrollbar-width:thin}
+@media (min-width:821px){.lw-bar{flex-wrap:wrap;overflow-x:visible}}
 .lw-bar button,.lw-bar select{flex:none;font:inherit;font-size:13px;min-height:30px;min-width:30px;padding:2px 6px;border:1px solid transparent;border-radius:4px;background:none;color:inherit;cursor:pointer}
 .lw-bar select{max-width:11em;border-color:var(--border,#8884)}
 .lw-bar button:hover:not(:disabled){border-color:var(--border,#8886)}
