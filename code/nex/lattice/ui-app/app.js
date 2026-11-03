@@ -1378,9 +1378,13 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
   }
+  // counts the times a drawer was opened, so an open that lands late can
+  // tell whether the user opened one again while it was loading
+  let drawerSeq = 0;
   function drawer(side, open) {
     const ws = $('ws');
     if (open === undefined) open = !ws.classList.contains(side + 'draw');
+    if (open && !ws.classList.contains(side + 'draw')) drawerSeq++;
     ws.classList.toggle('ldraw', open && side === 'l');
     ws.classList.toggle('rdraw', open && side === 'r');
     paintPanes();
@@ -1388,6 +1392,11 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
   }
   // opening a document puts both drawers away
   const drawersClose = () => drawer('l', false);
+  // ...unless a drawer was opened since the open began (`seq`, drawerSeq
+  // then). A link to a host that is down, or an upgrade on a busy pier,
+  // lands seconds after the tap, and shutting a drawer opened since then
+  // takes it away from under the user's thumb.
+  const drawersCloseSince = (seq) => { if (drawerSeq === seq) drawersClose(); };
   function paneOpen(side, open) {
     if (isMobile()) return drawer(side, open);
     if (open === undefined) open = localStorage[OPENKEY[side]] === '1';
@@ -7743,10 +7752,13 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
   // Answers false when the open failed with nothing painted, which the tab
   // model tells apart from an open that a later one superseded.
   let openSeq = 0;
+  // drawerSeq (13-frame.js) when the latest open began: applyPage puts the
+  // drawers away only if none was opened since
+  let openDrawers = 0;
   // the next open's number. Whatever an open before it still owed the
   // loading line (busy, 10-shell.js) is let go with it: a later open, a
   // tab switch and a blank page all supersede it.
-  function openNext() { busyEnd('open'); return ++openSeq; }
+  function openNext() { busyEnd('open'); openDrawers = drawerSeq; return ++openSeq; }
   async function openPage(name) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
@@ -8019,7 +8031,7 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
     // Paint locally now; the fetch still corrects it when it arrives.
     else paintLocal();
     if (!CONTENT() && !quiet) checkErrors();
-    drawersClose();
+    drawersCloseSince(openDrawers);
   }
 
   // blankPage: the editor reset a new page starts from. Nothing named is

@@ -450,7 +450,12 @@ try {
   await drawer(m, 'l');
   check('phone: the badge shows in the drawer',
     await until(m, (s) => document.querySelector(s + ' .lbad')?.textContent, LP('notes/doc'), 15000)
-    && await reach(m, LP('notes/doc') + ' .lbad'));
+    && await reach(m, LP('notes/doc') + ' .lbad'), await m.evaluate((s) => {
+      const el = document.querySelector(s); if (!el) return 'no badge';
+      const r = el.getBoundingClientRect(); const h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return JSON.stringify({ r: [r.left, r.top, r.width, r.height], vw: innerWidth, vh: innerHeight,
+        hit: h && (h.id || h.className), ws: document.getElementById('ws').className });
+    }, LP('notes/doc') + ' .lbad'));
   await shot(m, 'links-phone-badge.png');
   await closeAll(m);
   await drawer(m, 'r');
