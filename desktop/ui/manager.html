@@ -336,15 +336,16 @@
     if (st && st.engine === 'booting') {
       readStatus('Setting up your reader. This happens once.' + (st.step ? ' ' + st.step + '\u2026' : ''), 'muted busy');
     } else if (st && st.engine === 'failed') {
-      readStatus('The reader could not start: ' + (st.error || 'unknown error'), 'err');
+      readStatus(st.error || "The reader couldn't start.", 'err');
     } else if (st && st.engine === 'ready') {
-      readStatus('Ready, reading as ' + st.our);
+      readStatus('Ready.');
     }
     return st;
   }
   refreshReader();
   async function openReader(url) {
-    readStatus('Setting up your reader. This happens once.', 'muted busy');
+    const st = await invoke('reader_status').catch(() => null);
+    readStatus(st && st.engine === 'ready' ? 'Opening\u2026' : 'Setting up your reader. This happens once.', 'muted busy');
     try {
       await invoke('open_reader', { url });
     } catch (err) {

@@ -163,7 +163,7 @@ cat > "$T/probe.js" <<'JS'
       // a ship that is not running: tried again, then said plainly
       location.href = '/read?url=' + encodeURIComponent('urb://~nec/shipless-offline');
     } else if (st.step === 5) {
-      r.offline = text().indexOf("The ship didn't answer") >= 0 ? 1 : 0;
+      r.offline = text().indexOf("publisher of this page didn't answer") >= 0 ? 1 : 0;
       r.retry = q('[data-go="retry"]') ? 1 : 0;
       done();
     }

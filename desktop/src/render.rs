@@ -227,7 +227,7 @@ fn chrome(title: &str, url: &str, mode: Option<Mode>, main: &str, refresh: bool)
 <form class=\"addr\" action=\"/read\" method=\"get\"><input name=\"url\" value=\"{url}\" aria-label=\"Address\" \
 placeholder=\"urb://~ship/page\" spellcheck=\"false\" autocomplete=\"off\"><button type=\"submit\">Open</button></form>\
 <a class=\"connect\" href=\"/connect\">Connect a ship</a></header>{strip}<main class=\"page\">{main}</main></body></html>",
-        refresh = if refresh { "<meta http-equiv=\"refresh\" content=\"2\">" } else { "" },
+        refresh = if refresh { "<meta http-equiv=\"refresh\" content=\"1\">" } else { "" },
         title = esc(title),
         url = esc(url),
     )
@@ -288,8 +288,8 @@ pub fn error_page(url: &str, e: &ReadError, mode: Mode, step: &str) -> (u16, Sho
             504,
             "No answer",
             format!(
-                "<p>The ship didn't answer. It may be offline. If no page opens, your network may block the Urbit \
-                 network: some networks block it.</p><p class=\"words\">{}</p>{retry}",
+                "<p>The publisher of this page didn't answer. Their ship may be offline. If no page opens at all, \
+                 your network may block Urbit: some networks block it.</p><p class=\"words\">{}</p>{retry}",
                 esc(words)
             ),
             false,

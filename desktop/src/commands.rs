@@ -53,8 +53,13 @@ pub async fn connect(app: AppHandle, url: String, code: String) -> Result<String
 /// no ship configured to the shipless reader's home.
 #[tauri::command]
 pub fn go_home(app: AppHandle) -> Result<(), String> {
+    // only once the reader has been used: a close on the first-run page is
+    // not a request to read, and opening the reader makes its identity
     #[cfg(feature = "urb-engine")]
     if config::load(&app).url.is_empty() {
+        if !reader_used(&app) {
+            return Err("Connect a ship, or open a page to read without one.".into());
+        }
         return open_reader(app, None);
     }
     open_workspace(&app, false)
@@ -606,6 +611,13 @@ pub struct ReaderStatus {
     pub step: Option<String>,
 }
 
+/// Has this install read without a ship before (is there a reader
+/// identity on disk)?
+#[cfg(feature = "urb-engine")]
+fn reader_used(app: &AppHandle) -> bool {
+    app.path().app_data_dir().is_ok_and(|d| d.join("urb").join("comet.key").exists())
+}
+
 /// The address the manager's card was given, as the reader reads it: an
 /// urb:// address, or a bare ~ship/path. Refused unless the gateway's
 /// own parse takes it.
@@ -657,7 +669,9 @@ pub fn reader_status(app: AppHandle) -> Result<ReaderStatus, String> {
             Status::Off => ReaderStatus { engine: "off", our: None, error: None, step },
             Status::Booting => ReaderStatus { engine: "booting", our: None, error: None, step },
             Status::Ready { our } => ReaderStatus { engine: "ready", our: Some(our), error: None, step },
-            Status::Failed(m) => ReaderStatus { engine: "failed", our: None, error: Some(m), step },
+            Status::Failed(m) => {
+                ReaderStatus { engine: "failed", our: None, error: Some(crate::engine::plain_boot(&m)), step }
+            }
         })
     }
     #[cfg(not(feature = "urb-engine"))]

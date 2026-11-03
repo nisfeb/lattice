@@ -178,6 +178,18 @@ check('while the engine boots the card says so, with its step',
   bt.includes('Setting up your reader. This happens once.') && bt.includes('Making your private reader identity'), bt);
 await booting.close();
 
+const ready = await load({ connected: false, ship: null, url: '', error: null },
+  { reader: { engine: 'ready', our: '~doznec-sampel-palnet', error: null, step: null } });
+const rd = await ready.evaluate(() => document.getElementById('read-status').textContent);
+check('a ready reader says so without its identity\'s name', rd === 'Ready.', rd);
+await ready.close();
+
+const failed = await load({ connected: false, ship: null, url: '', error: null },
+  { reader: { engine: 'failed', our: null, error: "lattice couldn't reach the internet to set up the reader.", step: null } });
+const fd = await failed.evaluate(() => document.getElementById('read-status').textContent);
+check('a failed start shows the reason as given', fd === "lattice couldn't reach the internet to set up the reader.", fd);
+await failed.close();
+
 const shipped = await load({ connected: true, ship: '~ricsul-bilwyt', url: 'https://s.example.com' });
 const o2 = await order(shipped);
 check('with a ship: the card follows the ship section', o2.shown && !o2.first, JSON.stringify(o2));
