@@ -85,6 +85,10 @@ const START_BUDGET: Duration = Duration::from_secs(3);
 /// none) is kept this long, so a publisher that is slow or has no list
 /// does not hold up every visit to the home.
 const START_TTL: Duration = Duration::from_secs(600);
+/// A start list read that failed is kept only this long: a comet's first
+/// contact with the publisher can take two minutes, and the home shows
+/// the live list as soon as that is done.
+const START_FAIL_TTL: Duration = Duration::from_secs(20);
 
 /// This launch's reader token: 32 bytes from the OS, hex, never on disk.
 pub fn token() -> &'static str {
@@ -163,7 +167,7 @@ impl Ctx {
             *self.start.lock().unwrap() = None;
         }
         if let Some((at, p)) = &*self.start.lock().unwrap() {
-            if at.elapsed() < START_TTL {
+            if at.elapsed() < if p.is_some() { START_TTL } else { START_FAIL_TTL } {
                 return p.clone();
             }
         }
@@ -852,6 +856,43 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 3);
         assert_eq!(ask(&c, &get("/?fresh=1", "")).0, 403);
         assert_eq!(expired.lock().unwrap().len(), 2);
+    }
+
+    /// A comet's first contact can take two minutes: a start list that
+    /// failed is asked for again soon, and the live one shown once read.
+    #[test]
+    fn a_failed_start_list_is_not_kept_for_long() {
+        let up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let u = up.clone();
+        let live = NativePage { key: "/start".into(), body: "# Live start\n".into(), mark: "gmi".into(), how: "keen".into() };
+        let l = live.clone();
+        let (c, calls) = ctx("startfail", move |_| {
+            if u.load(Ordering::SeqCst) {
+                Ok(l.clone())
+            } else {
+                Err(ReadError::Unreachable { later: true, words: "no answer within 3s".into() })
+            }
+        });
+        let age = |by: Duration| {
+            let mut g = c.start.lock().unwrap();
+            let (at, _) = g.as_mut().unwrap();
+            *at -= by;
+        };
+        let (_, out) = ask(&c, &get("/", &cookie()));
+        assert!(out.contains("<h1>Start here</h1>"), "the compiled list");
+        ask(&c, &get("/", &cookie()));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "a failure is kept a little while");
+        up.store(true, Ordering::SeqCst);
+        age(START_FAIL_TTL);
+        let (_, out) = ask(&c, &get("/", &cookie()));
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "and no longer");
+        assert!(out.contains("Live start"), "{out}");
+        // the live list is kept far longer
+        age(START_FAIL_TTL * 2);
+        let (_, out) = ask(&c, &get("/", &cookie()));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(out.contains("Live start"));
+        assert!(START_FAIL_TTL <= Duration::from_secs(30) && START_TTL > START_FAIL_TTL * 2);
     }
 
     /// a reader whose engine says what it was asked to comment, refusing

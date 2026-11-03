@@ -58,6 +58,11 @@ const UNCLAIMED: &str = "unclaimed";
 
 /// How long the warm-up's reads wait each.
 const WARM_BUDGET: Duration = Duration::from_secs(30);
+/// How long the warm-up keeps asking for the start list while its
+/// publisher does not answer: a new comet's first contact with a ship can
+/// take two minutes (~nisfeb took 117 s), and one read gives up at 30 s
+/// (the core's peek timeout, though its peek waits on for a late answer).
+const WARM_FOR: Duration = Duration::from_secs(180);
 
 /// A page as the engine read it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -370,7 +375,7 @@ impl Engine {
         let Some(warm) = warm.filter(|_| self.fake.is_none()).map(String::from) else { return };
         let e = self.clone();
         let _ = std::thread::Builder::new().name("urb-warm".into()).spawn(move || {
-            let Ok(p) = e.warm_read(&warm) else { return };
+            let Ok(p) = e.warm_until(&warm, WARM_FOR) else { return };
             if let Some(next) = first_link(&p.body) {
                 let _ = e.warm_read(&next);
             }
@@ -387,6 +392,20 @@ impl Engine {
         }
         make_dir(&self.dir)?;
         std::fs::write(self.dir.join(UNCLAIMED), b"").map_err(|e| format!("{UNCLAIMED}: {e}"))
+    }
+
+    /// `warm_read`, asked again while the publisher has not answered yet
+    /// (a first contact), until `within` has gone.
+    fn warm_until(&self, url: &str, within: Duration) -> Result<NativePage, ReadError> {
+        let t = Instant::now();
+        loop {
+            match self.warm_read(url) {
+                Err(ReadError::Unreachable { later: true, .. }) if t.elapsed() < within => {
+                    std::thread::sleep(Duration::from_secs(1));
+                }
+                r => return r,
+            }
+        }
     }
 
     fn warm_read(&self, url: &str) -> Result<NativePage, ReadError> {
