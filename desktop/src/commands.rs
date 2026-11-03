@@ -61,7 +61,7 @@ pub fn go_home(app: AppHandle) -> Result<(), String> {
     #[cfg(feature = "urb-engine")]
     if config::load(&app).url.is_empty() {
         if !reader_used(&app) {
-            return Err("Connect a ship, or open a page to read without one.".into());
+            return Err("Connect your node, or use lattice anonymously.".into());
         }
         return open_reader(app, None);
     }
@@ -493,7 +493,7 @@ enum Nav {
     External,
     /// nothing to open and nothing to rewrite, so the navigation just stops
     Block,
-    /// the shipless reader's "Connect a ship": show the manager
+    /// the shipless reader's "Connect a node": show the manager
     Manager,
 }
 
@@ -530,7 +530,7 @@ fn nav_decision(
     if u.host_str() == Some("127.0.0.1") && u.port() == bridge {
         return Nav::Allow;
     }
-    // the shipless reader's own origin; its Connect a ship is the manager
+    // the shipless reader's own origin; its Connect a node is the manager
     if u.host_str() == Some("127.0.0.1") {
         if let Some(r) = reader(false).and_then(|b| b.parse::<tauri::Url>().ok()) {
             if u.port() == r.port() {

@@ -13,9 +13,10 @@
 //  the exit used to take seconds to appear. Where there is no ship behind
 //  the page, go_home refuses cleanly and the refusal is shown.
 //
-//  It also covers the first-run "read without a ship" card: first with no
-//  ship, after the ship section with one, hidden without the engine, its
-//  address check, and what it invokes.
+//  It also covers the "use lattice anonymously" option: beside the connect
+//  form with no node (the one first-run path, no competing card above it),
+//  still offered with one, hidden without the engine, its copy, and that
+//  choosing it opens the reader's start page.
 //
 //  No ship and no app needed: the page is loaded from file:// with a stubbed
 //  Tauri backend, so this runs anywhere.
@@ -124,45 +125,38 @@ check('and the refusal is shown, not swallowed',
   st2.statusText.includes('connect to a ship first'), JSON.stringify(st2.statusText));
 await off.close();
 
-// ── reading without a ship (the first-run card) ────────────────────────
+// ── using the app anonymously ─────────────────────────────────────────
 const order = (p) => p.evaluate(() => {
   const card = document.getElementById('reader'), form = document.getElementById('connect');
+  const h = document.getElementById('ship-h');
   return { shown: !card.hidden,
-    first: !!(card.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING),
-    heading: document.getElementById('ship-h').textContent };
+    // right after the connect form, and nothing of it above the ship section
+    beside: form.nextElementSibling === card,
+    above: !!(card.compareDocumentPosition(h) & Node.DOCUMENT_POSITION_FOLLOWING),
+    heading: h.textContent, anon: document.getElementById('anon-h').textContent };
 });
 const fresh = await load({ connected: false, ship: null, url: '', error: null });
 const o1 = await order(fresh);
-check('no ship: the read-without-a-ship card is shown', o1.shown, JSON.stringify(o1));
-check('no ship: it comes before the connect form', o1.first, JSON.stringify(o1));
-check('no ship: the ship section says what it is', o1.heading === 'connect your ship', o1.heading);
-const copy = await fresh.evaluate(() => document.getElementById('reader').textContent);
-check('the card says what it does', copy.includes('without running Urbit') &&
-  copy.includes('private reader identity'), copy);
-check('the card says what network it uses', copy.includes('UDP') && copy.includes('roller.urbit.org'));
+check('no node: the anonymous option is shown', o1.shown, JSON.stringify(o1));
+check('no node: it sits right after the connect form', o1.beside && !o1.above, JSON.stringify(o1));
+check('no node: the sections say what they are',
+  o1.heading === 'connect your node' && o1.anon === 'or use lattice anonymously', JSON.stringify(o1));
+const copy = await fresh.evaluate(() => document.getElementById('anon-copy').textContent.replace(/\s+/g, ' '));
+check('the option says they can browse and comment but not host without a node',
+  copy.includes('browse') && copy.includes('comment') && copy.includes("can't host pages without a node"), copy);
+const details = await fresh.evaluate(() => document.getElementById('reader').textContent);
+check('it says what network it uses', details.includes('UDP') && details.includes('roller.urbit.org'));
+check('and that comments are signed by the reader identity', details.includes('your comments are signed with it'));
+check('no address field or second card competes with it',
+  await fresh.evaluate(() => !document.getElementById('read-url') && !document.getElementById('read-start')
+    && document.querySelectorAll('.card').length === 1));
 const opened = await fresh.evaluate(async () => {
-  document.getElementById('read-url').value = 'urb://~zod/x';
-  document.querySelector('#read-form button.primary').click();
+  document.getElementById('anon').click();
   await new Promise((r) => setTimeout(r, 50));
   return window.__ARGS__.filter(([n]) => n === 'open_reader').map(([, a]) => a);
 });
-check('Open invokes open_reader with the address', JSON.stringify(opened) === '[{"url":"urb://~zod/x"}]',
+check('choosing it opens the reader on its start page', JSON.stringify(opened) === '[{"url":null}]',
   JSON.stringify(opened));
-const bad = await fresh.evaluate(async () => {
-  const n = window.__CALLS__.length;
-  document.getElementById('read-url').value = 'https://example.com/x';
-  document.querySelector('#read-form button.primary').click();
-  await new Promise((r) => setTimeout(r, 50));
-  return { calls: window.__CALLS__.slice(n), text: document.getElementById('read-status').textContent };
-});
-check('a bad address says so and invokes nothing',
-  bad.calls.length === 0 && bad.text.includes("That isn't an urb:// address"), JSON.stringify(bad));
-const start = await fresh.evaluate(async () => {
-  document.getElementById('read-start').click();
-  await new Promise((r) => setTimeout(r, 50));
-  return window.__ARGS__.filter(([n]) => n === 'open_reader').map(([, a]) => a).pop();
-});
-check('Start here opens the reader home', JSON.stringify(start) === '{"url":null}', JSON.stringify(start));
 const cleared = await fresh.evaluate(async () => {
   document.getElementById('read-clear').click();
   await new Promise((r) => setTimeout(r, 50));
@@ -175,7 +169,7 @@ const booting = await load({ connected: false, ship: null, url: '', error: null 
   { reader: { engine: 'booting', our: null, error: null, step: 'Setting up this computer' } });
 const bt = await booting.evaluate(() => document.getElementById('read-status').textContent);
 check('while the engine boots the card says so, how long, and its step',
-  bt.includes('Getting ready to read (about 10 seconds the first time).') && bt.includes('Setting up this computer'), bt);
+  bt.includes('Getting ready (about 10 seconds the first time).') && bt.includes('Setting up this computer'), bt);
 await booting.close();
 
 const ready = await load({ connected: false, ship: null, url: '', error: null },
@@ -192,7 +186,8 @@ await failed.close();
 
 const shipped = await load({ connected: true, ship: '~ricsul-bilwyt', url: 'https://s.example.com' });
 const o2 = await order(shipped);
-check('with a ship: the card follows the ship section', o2.shown && !o2.first, JSON.stringify(o2));
+check('with a node: the option is still offered, after the ship section',
+  o2.shown && !o2.above && o2.heading === 'ship' && o2.anon === 'use lattice anonymously', JSON.stringify(o2));
 await shipped.close();
 
 const nofeature = await load({ connected: false, ship: null, url: '', error: null }, { noReader: true });
