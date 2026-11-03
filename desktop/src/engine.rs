@@ -110,6 +110,11 @@ pub enum CommentError {
 /// Something that reads pages: the engine, or a test's stand-in.
 pub trait Reads: Send + Sync {
     fn read(&self, url: &str, budget: Duration, wait_boot: bool) -> Result<NativePage, ReadError>;
+    /// Drop what is kept for `url`'s ship, so the next read of it is
+    /// fresh: a reload. The identity and its flows stay.
+    fn expire(&self, url: &str) {
+        let _ = url;
+    }
     /// what a start in progress is doing, in words
     fn step(&self) -> &'static str {
         ""
@@ -143,6 +148,8 @@ struct Comment {
 /// what callers hand the host's thread
 enum Job {
     Read(String, Answer),
+    /// the ship whose kept revision list is to go (`Engine::expire`)
+    Expire(String),
     Comment(Comment, Said),
     Close(Sender<()>),
 }
@@ -278,6 +285,25 @@ impl Engine {
                 Status::Failed(m) => Err(boot_error(&m)),
                 _ => Err(ReadError::Failed("the reader stopped".into())),
             },
+        }
+    }
+
+    /// A reload: the revision list kept for `url`'s ship (60 s, the
+    /// core's REVS_TTL) is aged, so the next read asks the publisher for
+    /// it again and keens the page's newest revision. The pages libmesa
+    /// keeps are each one revision's, under its own id, so a new revision
+    /// is never answered from them; nothing else is kept between reads.
+    /// The comet, its flows and the ship's base stay. Jobs run in order,
+    /// so a read asked for after this sees it. Nothing happens while the
+    /// engine is not running: it then keeps nothing.
+    pub fn expire(&self, url: &str) {
+        let Ok(u) = urb_engine::url::de_urb(url) else { return };
+        let g = self.inner.lock().unwrap();
+        let Some(run) = g.run.as_ref().filter(|_| matches!(g.status, Status::Ready { .. })) else { return };
+        if run.jobs.send(Job::Expire(u.ship)).is_ok() {
+            if let Some(w) = &run.waker {
+                let _ = w.send(Event::Wake);
+            }
         }
     }
 
@@ -426,6 +452,9 @@ impl Reads for Engine {
     fn read(&self, url: &str, budget: Duration, wait_boot: bool) -> Result<NativePage, ReadError> {
         Engine::read(self, url, budget, wait_boot)
     }
+    fn expire(&self, url: &str) {
+        Engine::expire(self, url)
+    }
     fn step(&self) -> &'static str {
         Engine::step(self)
     }
@@ -547,6 +576,10 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
             match jobs.try_recv() {
                 Ok(Job::Read(url, tx)) => {
                     pending.push((submit_read(&mut host, url.clone()), Wait::Read(tx, url), Instant::now()))
+                }
+                Ok(Job::Expire(ship)) => {
+                    log_line(&format!("expire the revision list of {ship}"));
+                    host.core().expire_revs(&ship);
                 }
                 Ok(Job::Comment(c, tx)) => {
                     log_line(&format!("comment to {} on {} at {}", c.ship, c.page, c.base));

@@ -9,6 +9,11 @@
 //!
 //! - `/` the home: the start list and recent reads;
 //! - `/read?url=urb://...` a page (a bare `~ship/path` works too);
+//! - `/read?url=...&fresh=1` and `/?fresh=1` a reload: what the engine
+//!   keeps for the page's ship goes (`Reads::expire`), then the plain
+//!   address, so back and forward to it read as any visit does. A request
+//!   the webview marks as a reload (`Cache-Control: max-age=0` or
+//!   `no-cache`, as its own reload sends) is fresh too, read in place;
 //! - `/raw?url=&key=` a publisher's HTML for the sandboxed frame, from the
 //!   read just made (`key` names it), never a second network read;
 //! - `/assets/reader.js`, compiled in;
@@ -152,7 +157,11 @@ impl Ctx {
 
     /// The live start list, read at most once per START_TTL. A read that
     /// found the engine still starting is not kept.
-    fn start_list(&self) -> Option<NativePage> {
+    fn start_list(&self, fresh: bool) -> Option<NativePage> {
+        if fresh {
+            self.reads.expire(render::START_URL);
+            *self.start.lock().unwrap() = None;
+        }
         if let Some((at, p)) = &*self.start.lock().unwrap() {
             if at.elapsed() < START_TTL {
                 return p.clone();
@@ -187,6 +196,8 @@ struct Req {
     dest: Option<String>,
     referer: Option<String>,
     token: bool,
+    /// the webview's own reload (see the module comment)
+    reload: bool,
     length: Option<usize>,
     body: Vec<u8>,
 }
@@ -326,6 +337,10 @@ fn read_req(reader: &mut impl BufRead) -> std::io::Result<Result<Req, u16>> {
             "sec-fetch-mode" => req.mode = Some(v.to_ascii_lowercase()),
             "sec-fetch-dest" => req.dest = Some(v.to_ascii_lowercase()),
             "referer" => req.referer = Some(v),
+            "cache-control" | "pragma" => {
+                let v = v.to_ascii_lowercase();
+                req.reload |= v.split(',').any(|d| matches!(d.trim(), "no-cache" | "max-age=0"));
+            }
             "content-length" => match v.parse::<usize>() {
                 Ok(n) => req.length = Some(n),
                 Err(_) => return Ok(Err(400)),
@@ -463,14 +478,18 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
             }
             redirect(303, "/")
         }
+        ("/", true) if req.arg("fresh") == Some("1") => {
+            ctx.start_list(true);
+            redirect(303, "/")
+        }
         ("/", true) => {
-            let live = ctx.start_list();
+            let live = ctx.start_list(req.reload);
             shown(200, render::home(live.as_ref(), &ctx.history.list()))
         }
         // the app's navigation policy shows the manager for this before it
         // loads (commands.rs); this is only what a stray request sees
         ("/connect", true) => redirect(302, "/"),
-        ("/read", true) => read(ctx, req.arg("url").unwrap_or("")),
+        ("/read", true) => read(ctx, req.arg("url").unwrap_or(""), Fresh::of(req)),
         (_, false) => plain(405),
         _ => plain(404),
     }
@@ -535,8 +554,32 @@ fn read_words(e: &ReadError) -> String {
     }
 }
 
+/// How fresh a `/read` is to be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fresh {
+    /// what the engine keeps will do
+    No,
+    /// `fresh=1`: drop what is kept, then go to the plain address
+    Asked,
+    /// the webview's reload: drop what is kept and read in place (a
+    /// redirect it followed could carry the same header again)
+    Reload,
+}
+
+impl Fresh {
+    fn of(req: &Req) -> Fresh {
+        if req.arg("fresh") == Some("1") {
+            Fresh::Asked
+        } else if req.reload {
+            Fresh::Reload
+        } else {
+            Fresh::No
+        }
+    }
+}
+
 /// `/read`: the page, or why not.
-fn read(ctx: &Ctx, given: &str) -> Resp {
+fn read(ctx: &Ctx, given: &str, fresh: Fresh) -> Resp {
     let url = address(given);
     if let Err((status, words)) = urb_render::gateway::de_urb(url.as_bytes()) {
         let mut s = render::bad_address(&url);
@@ -544,6 +587,13 @@ fn read(ctx: &Ctx, given: &str) -> Resp {
             s.html = s.html.replace("That isn't an urb:// address.", &render_words(&words));
         }
         return shown(400, s);
+    }
+    if fresh != Fresh::No {
+        crate::commands::dlog(&format!("reader: fresh read of {url}"));
+        ctx.reads.expire(&url);
+        if fresh == Fresh::Asked {
+            return redirect(303, &render::read_href(&url));
+        }
     }
     let start = Instant::now();
     let mut tries = 0;
@@ -693,6 +743,7 @@ mod tests {
     /// the comments it sent
     struct Fake {
         calls: Arc<AtomicUsize>,
+        expired: Said,
         answer: Answer,
         said: Said,
         refuse: Option<CommentError>,
@@ -702,6 +753,9 @@ mod tests {
         fn read(&self, url: &str, _: Duration, _: bool) -> Result<NativePage, ReadError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             (self.answer)(url)
+        }
+        fn expire(&self, url: &str) {
+            self.expired.lock().unwrap().push((url.into(), String::new(), String::new()));
         }
         fn our(&self) -> Option<String> {
             Some("~doznec-sampel-palnet".into())
@@ -717,11 +771,87 @@ mod tests {
     }
 
     fn ctx(name: &str, answer: impl Fn(&str) -> Result<NativePage, ReadError> + Send + Sync + 'static) -> (Ctx, Arc<AtomicUsize>) {
+        let (c, calls, _) = expiring(name, answer);
+        (c, calls)
+    }
+
+    /// a reader whose engine also says which addresses it was asked to
+    /// expire
+    fn expiring(
+        name: &str,
+        answer: impl Fn(&str) -> Result<NativePage, ReadError> + Send + Sync + 'static,
+    ) -> (Ctx, Arc<AtomicUsize>, Said) {
         let dir = std::env::temp_dir().join(format!("reader-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let calls = Arc::new(AtomicUsize::new(0));
-        let fake = Fake { calls: calls.clone(), answer: Box::new(answer), said: Said::default(), refuse: None };
-        (Ctx::new(Box::new(fake), History::open(&dir), PORT), calls)
+        let expired = Said::default();
+        let fake = Fake { calls: calls.clone(), expired: expired.clone(), answer: Box::new(answer), said: Said::default(), refuse: None };
+        (Ctx::new(Box::new(fake), History::open(&dir), PORT), calls, expired)
+    }
+
+    fn expired_urls(e: &Said) -> Vec<String> {
+        e.lock().unwrap().iter().map(|(u, _, _)| u.clone()).collect()
+    }
+
+    #[test]
+    fn a_fresh_read_expires_the_page_then_goes_to_the_plain_address() {
+        let (c, calls, expired) = expiring("fresh", pages);
+        let (st, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello&fresh=1", &cookie()));
+        assert_eq!(st, 303, "{out}");
+        assert!(out.contains("Location: /read?url=urb%3A%2F%2F~zod%2Fhello\r\n"), "{out}");
+        assert_eq!(expired_urls(&expired), ["urb://~zod/hello"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "the read is the redirect's");
+        // a bare ~ship/path, and fresh=0 is no reload
+        assert_eq!(ask(&c, &get("/read?url=~zod/hello&fresh=1", &cookie())).0, 303);
+        assert_eq!(ask(&c, &get("/read?url=~zod/hello&fresh=0", &cookie())).0, 200);
+        assert_eq!(expired_urls(&expired), ["urb://~zod/hello", "urb://~zod/hello"]);
+        // a plain read, as a link or back and forward make, keeps the cache
+        let (st, _) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
+        assert_eq!((st, expired.lock().unwrap().len()), (200, 2));
+    }
+
+    #[test]
+    fn the_webviews_own_reload_is_fresh_in_place() {
+        let (c, calls, expired) = expiring("reload", pages);
+        for h in ["Cache-Control: max-age=0\r\n", "Cache-Control: no-cache\r\nPragma: no-cache\r\n", "Pragma: no-cache\r\n"] {
+            let (st, out) = ask(&c, &get("/read?url=urb://~zod/hello", &format!("{}{h}", cookie())));
+            assert_eq!(st, 200, "{h}: {out}");
+            assert!(out.contains("<h1>Hello</h1>"));
+        }
+        assert_eq!(expired_urls(&expired), ["urb://~zod/hello"; 3]);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        // a long max-age is no reload
+        ask(&c, &get("/read?url=urb://~zod/hello", &format!("{}Cache-Control: max-age=60\r\n", cookie())));
+        assert_eq!(expired.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn a_fresh_read_needs_the_token_and_an_address() {
+        let (c, calls, expired) = expiring("freshbad", pages);
+        assert_eq!(ask(&c, &get("/read?url=urb://~zod/hello&fresh=1", "")).0, 403);
+        let x = get("/read?url=urb://~zod/hello&fresh=1", &format!("{}Origin: http://evil.example\r\n", cookie()));
+        assert_eq!(ask(&c, &x).0, 403);
+        assert_eq!(ask(&c, &get("/read?url=http%3A%2F%2Fexample.com&fresh=1", &cookie())).0, 400);
+        assert!(expired.lock().unwrap().is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_fresh_home_reads_the_start_list_again() {
+        let (c, calls, expired) = expiring("freshhome", pages);
+        assert_eq!(ask(&c, &get("/", &cookie())).0, 200);
+        assert_eq!(ask(&c, &get("/", &cookie())).0, 200);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "kept");
+        let (st, out) = ask(&c, &get("/?fresh=1", &cookie()));
+        assert_eq!(st, 303);
+        assert!(out.contains("Location: /\r\n"), "{out}");
+        assert_eq!(expired_urls(&expired), [render::START_URL]);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        // and the webview's reload of the home
+        ask(&c, &get("/", &format!("{}Cache-Control: max-age=0\r\n", cookie())));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(ask(&c, &get("/?fresh=1", "")).0, 403);
+        assert_eq!(expired.lock().unwrap().len(), 2);
     }
 
     /// a reader whose engine says what it was asked to comment, refusing
@@ -730,7 +860,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("reader-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let said = Said::default();
-        let fake = Fake { calls: Arc::default(), answer: Box::new(pages), said: said.clone(), refuse };
+        let fake = Fake { calls: Arc::default(), expired: Said::default(), answer: Box::new(pages), said: said.clone(), refuse };
         (Ctx::new(Box::new(fake), History::open(&dir), PORT), said)
     }
 
