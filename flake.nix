@@ -26,6 +26,24 @@
       packages = forSystems linuxSystems (pkgs: rec {
         default = lattice-desktop;
 
+        # The two C sources mesa-sys compiles into the urb engine, as
+        # urb-fetch's core/mesa-sys/fetch-deps.sh fetches them (same URLs,
+        # same SHA-256s), unpacked into the folder MESA_SYS_DEPS names.
+        mesa-deps = pkgs.runCommand "mesa-sys-deps" {
+          urcrypt = pkgs.fetchurl {
+            url = "https://github.com/urbit/urcrypt/archive/a4c229e9380636ace36325b6c8fe04eaee32a2ef.tar.gz";
+            sha256 = "a2a0cadf9b982a0e0aa12d22c27bdc76d8a25834f7f578b1f2b11c8b950e4ee5";
+          };
+          sqlite = pkgs.fetchurl {
+            url = "https://www.sqlite.org/2024/sqlite-autoconf-3460100.tar.gz";
+            sha256 = "67d3fe6d268e6eaddcae3727fce58fcc8e9c53869bdd07a0c61e38ddf2965071";
+          };
+        } ''
+          mkdir -p $out/urcrypt $out/sqlite
+          tar -xzf $urcrypt -C $out/urcrypt --strip-components=1
+          tar -xzf $sqlite -C $out/sqlite --strip-components=1
+        '';
+
         lattice-desktop = pkgs.rustPlatform.buildRustPackage {
           pname = "lattice-desktop";
           inherit version;
@@ -43,10 +61,24 @@
           # Rooting at desktop/ finds it, and the ../lattice-fs-rs path
           # dependency still resolves because it is a sibling inside src.
           sourceRoot = "source/desktop";
-          cargoLock.lockFile = ./desktop/Cargo.lock;
+          cargoLock = {
+            lockFile = ./desktop/Cargo.lock;
+            # urb-fetch, the urb engine's git source (all its crates are one
+            # checkout). fetchgit brings the libmesa submodule with it.
+            outputHashes = {
+              "urb-0.0.1" = pkgs.lib.fakeHash;
+            };
+          };
+
+          # libmesa is C23 and built by clang (mesa-sys asks for it when no
+          # CC is named, but stdenv names gcc); bindgen reads its headers
+          MESA_SYS_DEPS = mesa-deps;
+          "CC_${builtins.replaceStrings [ "-" ] [ "_" ] pkgs.stdenv.hostPlatform.rust.rustcTarget}" = "clang";
 
           nativeBuildInputs = with pkgs; [
             pkg-config
+            clang
+            rustPlatform.bindgenHook
             # wraps the binary so webkit finds its GIO modules and GSettings
             # schemas at runtime. Without it the window comes up blank.
             wrapGAppsHook3
