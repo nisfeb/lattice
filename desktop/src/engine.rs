@@ -4,11 +4,13 @@
 //! on the Urbit network, as a comet this app makes once and keeps, so
 //! someone with no ship can read them (the shipless reader, reader.rs).
 //!
-//! The engine is a read path for page content and nothing else. It never
-//! pokes, posts, comments, follows or bookmarks: every action that writes
-//! or acts as the user belongs to the user's ship. Every request it makes
-//! goes through `submit_read`, and a test reads this file's own source to
-//! hold it to that (`only_reads_are_submitted`).
+//! The engine reads page content, and makes one write: a comment on a
+//! published page, poked to the publisher's comment inbox as the comet
+//! itself (owner, 2026-11-03: someone using the app anonymously can browse
+//! and comment). It never posts, follows, bookmarks or publishes, and never
+//! acts as the user's ship. Every request it makes goes through
+//! `submit_read` or `submit_comment`, and a test reads this file's own
+//! source to hold it to that (`only_reads_and_comments_are_submitted`).
 //!
 //! State lives in `<app_data_dir>/urb/` (0700), opened as the Go and Rust
 //! gateways open theirs (`urb_gateway::state::find`): `comet.key` (0600,
@@ -36,7 +38,8 @@ use std::time::{Duration, Instant};
 
 use urb_engine::host::net::{libmesa_log, random, Log, NetIo};
 use urb_engine::host::{Event, Host};
-use urb_engine::{Failure, Reply, Request};
+use urb_engine::url::{APP_BASE, DESK_BASE};
+use urb_engine::{Failure, Reply, Request, Value};
 use urb_gateway::state::{self, GatewayUdp};
 
 /// A body larger than this is refused, so a hostile publisher cannot
@@ -93,6 +96,17 @@ pub enum Status {
     Failed(String),
 }
 
+/// Why a comment was not sent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommentError {
+    /// the publisher's ship refused the poke, in its words
+    Refused(String),
+    /// no answer in time; the comment may not have gone
+    Unanswered(String),
+    /// the reader could not send it at all (not started, stopped)
+    Failed(String),
+}
+
 /// Something that reads pages: the engine, or a test's stand-in.
 pub trait Reads: Send + Sync {
     fn read(&self, url: &str, budget: Duration, wait_boot: bool) -> Result<NativePage, ReadError>;
@@ -100,15 +114,43 @@ pub trait Reads: Send + Sync {
     fn step(&self) -> &'static str {
         ""
     }
+    /// the reader identity's name, once it runs
+    fn our(&self) -> Option<String> {
+        None
+    }
+    /// Comment `body` on the page `page` (its key, as a read gave it) of
+    /// `ship`, as the reader identity.
+    fn comment(&self, ship: &str, page: &str, body: &str, budget: Duration) -> Result<(), CommentError> {
+        let _ = (ship, page, body, budget);
+        Err(CommentError::Failed("this reader cannot comment".into()))
+    }
 }
 
 /// where a read's result goes
 type Answer = Sender<Result<NativePage, ReadError>>;
+/// where a comment's result goes
+type Said = Sender<Result<(), CommentError>>;
+
+/// A comment for the host's thread: the publisher, the lattice base to
+/// poke at, the page's path and the text.
+struct Comment {
+    ship: String,
+    base: &'static str,
+    page: String,
+    body: String,
+}
 
 /// what callers hand the host's thread
 enum Job {
     Read(String, Answer),
+    Comment(Comment, Said),
     Close(Sender<()>),
+}
+
+/// what the host's thread waits on
+enum Wait {
+    Read(Answer, String),
+    Comment(Said),
 }
 
 struct Running {
@@ -239,6 +281,54 @@ impl Engine {
         }
     }
 
+    /// Comment on a published page as the reader identity: a
+    /// `%comment-action` poked to the publisher's `comments.sig`, the inbox
+    /// lattice opens to every foreign ship, as `/comment-remote` pokes it
+    /// from a ship. Lattice runs at one of two bases; the desk install is
+    /// tried first, and the other only when the first is refused. The
+    /// publisher decides whether the comment lands, and says nothing when
+    /// it does not (banned, comments off), so `Ok` means sent, not posted.
+    pub fn comment(&self, ship: &str, page: &str, body: &str, budget: Duration) -> Result<(), CommentError> {
+        let start = Instant::now();
+        let mut first = None;
+        for base in [DESK_BASE, APP_BASE] {
+            let left = budget.saturating_sub(start.elapsed()).max(Duration::from_secs(1));
+            let c = Comment { ship: ship.into(), base, page: page.into(), body: body.into() };
+            match self.comment_at(c, left) {
+                Ok(()) => return Ok(()),
+                Err(CommentError::Refused(w)) => {
+                    first.get_or_insert(CommentError::Refused(w));
+                }
+                Err(e) => return Err(first.unwrap_or(e)),
+            }
+        }
+        Err(first.unwrap_or_else(|| CommentError::Failed("no lattice base".into())))
+    }
+
+    fn comment_at(&self, c: Comment, budget: Duration) -> Result<(), CommentError> {
+        let (tx, rx) = channel();
+        {
+            let g = self.inner.lock().unwrap();
+            if !matches!(g.status, Status::Ready { .. }) {
+                return Err(CommentError::Failed("the reader isn't ready yet".into()));
+            }
+            let Some(run) = &g.run else { return Err(CommentError::Failed("the reader stopped".into())) };
+            if run.jobs.send(Job::Comment(c, tx)).is_err() {
+                return Err(CommentError::Failed("the reader stopped".into()));
+            }
+            if let Some(w) = &run.waker {
+                let _ = w.send(Event::Wake);
+            }
+        }
+        match rx.recv_timeout(budget) {
+            Ok(r) => r,
+            Err(RecvTimeoutError::Timeout) => {
+                Err(CommentError::Unanswered(format!("no answer within {}s", budget.as_secs())))
+            }
+            Err(RecvTimeoutError::Disconnected) => Err(CommentError::Failed("the reader stopped".into())),
+        }
+    }
+
     /// Start the engine before anyone reads, and read `warm` (the start
     /// list) and the first page it links to, so the first page someone
     /// opens is already on its way. A comet this makes is unclaimed until
@@ -338,6 +428,15 @@ impl Reads for Engine {
     }
     fn step(&self) -> &'static str {
         Engine::step(self)
+    }
+    fn our(&self) -> Option<String> {
+        match self.status() {
+            Status::Ready { our } => Some(our),
+            _ => None,
+        }
+    }
+    fn comment(&self, ship: &str, page: &str, body: &str, budget: Duration) -> Result<(), CommentError> {
+        Engine::comment(self, ship, page, body, budget)
     }
 }
 
@@ -442,11 +541,17 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
             return discarded(dir, inner);
         }
     }
-    let mut pending: Vec<(u64, Answer, String, Instant)> = Vec::new();
+    let mut pending: Vec<(u64, Wait, Instant)> = Vec::new();
     loop {
         loop {
             match jobs.try_recv() {
-                Ok(Job::Read(url, tx)) => pending.push((submit_read(&mut host, url.clone()), tx, url, Instant::now())),
+                Ok(Job::Read(url, tx)) => {
+                    pending.push((submit_read(&mut host, url.clone()), Wait::Read(tx, url), Instant::now()))
+                }
+                Ok(Job::Comment(c, tx)) => {
+                    log_line(&format!("comment to {} on {} at {}", c.ship, c.page, c.base));
+                    pending.push((submit_comment(&mut host, c), Wait::Comment(tx), Instant::now()))
+                }
                 Ok(Job::Close(done)) => {
                     let _ = host.close();
                     let _ = done.send(());
@@ -460,10 +565,19 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                 }
             }
         }
-        pending.retain(|(id, tx, url, at)| match host.take(*id) {
+        pending.retain(|(id, wait, at)| match host.take(*id) {
             Some(r) => {
-                log_line(&format!("read {url} in {} ms", at.elapsed().as_millis()));
-                let _ = tx.send(result_of(r));
+                match wait {
+                    Wait::Read(tx, url) => {
+                        log_line(&format!("read {url} in {} ms", at.elapsed().as_millis()));
+                        let _ = tx.send(result_of(r));
+                    }
+                    Wait::Comment(tx) => {
+                        let got = said_of(r);
+                        log_line(&format!("comment in {} ms: {got:?}", at.elapsed().as_millis()));
+                        let _ = tx.send(got);
+                    }
+                }
                 false
             }
             None => true,
@@ -584,9 +698,39 @@ fn set_aside(dir: &Path, what: Damage) -> Result<(), String> {
     Ok(())
 }
 
-/// The one request the engine ever makes.
+/// A read: one of the two requests the engine ever makes.
 fn submit_read<I: urb_engine::host::Io>(host: &mut Host<I>, url: String) -> u64 {
     host.submit(Request::Read(url))
+}
+
+/// A comment, the engine's only write: `[page=path body=@t]` (lattice's
+/// `comment-action`) to the publisher's `comments.sig`. The publisher takes
+/// the author from the transport, so it names the reader identity.
+fn submit_comment<I: urb_engine::host::Io>(host: &mut Host<I>, c: Comment) -> u64 {
+    host.submit(Request::Poke {
+        ship: c.ship,
+        folder: c.base.into(),
+        name: "comments.sig".into(),
+        mark: ("/lattice".into(), "comment-action".into()),
+        value: comment_noun(&c.page, &c.body),
+    })
+}
+
+/// lattice's `comment-action`: the page's path, then the text
+fn comment_noun(page: &str, body: &str) -> Value<'static> {
+    Value::Array(vec![urb_engine::codec::path(page), Value::Text(body.into())])
+}
+
+/// A comment's result as the app sees it.
+fn said_of(r: Result<Reply, Failure>) -> Result<(), CommentError> {
+    match r {
+        Ok(Reply::Poke(p)) if p.ok => Ok(()),
+        Ok(Reply::Poke(p)) if p.later => Err(CommentError::Unanswered(p.error.unwrap_or_default())),
+        Ok(Reply::Poke(p)) => Err(CommentError::Refused(p.error.unwrap_or_else(|| "refused".into()))),
+        Ok(_) => Err(CommentError::Failed("the poke gave no answer".into())),
+        Err(f) if f.later => Err(CommentError::Unanswered(f.message)),
+        Err(f) => Err(CommentError::Failed(f.message)),
+    }
 }
 
 /// A read's result as the app sees it.
@@ -654,13 +798,13 @@ mod tests {
         }))
     }
 
-    /// The hard rule as a test: the engine reads and does nothing else.
-    /// Every request it names is a Read, it submits in one place, and it
-    /// never pokes, peeks, publishes, hears an inbox or calls a forum or
-    /// a furum board. A change that needs any of those has to delete
-    /// this test on purpose, and the spec says it must not.
+    /// The rule as a test: the engine reads, and its one write is a
+    /// comment to a publisher's comment inbox. Every request it names is a
+    /// Read or that Poke, it submits in two places, and it never peeks,
+    /// publishes, hears an inbox or calls a forum or a furum board. A
+    /// change that needs any of those has to change this test on purpose.
     #[test]
-    fn only_reads_are_submitted() {
+    fn only_reads_and_comments_are_submitted() {
         let src = include_str!("engine.rs");
         let code = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the tests")];
         let named: Vec<&str> = code
@@ -670,16 +814,57 @@ mod tests {
                 &rest[..rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len())]
             })
             .collect();
-        assert_eq!(named, ["Read"], "the engine names only Request::Read");
-        for word in ["Poke", "Peek", "Inbox", "Furum", "Forum", "PubPut", "PubRemove", "Pub {", "Watch"] {
+        assert_eq!(named, ["Read", "Poke"], "the engine names only Request::Read and one Poke");
+        for word in ["Peek", "Inbox", "Furum", "Forum", "PubPut", "PubRemove", "Pub {", "Watch"] {
             assert!(!code.contains(&format!("Request::{word}")), "{word}");
         }
         for word in ["FurumCall", "ForumCall", "submit_as", ".call(", "submit_open_as"] {
             assert!(!code.contains(word), "the engine uses {word}");
         }
-        assert_eq!(code.matches(".submit(").count(), 1, "one submit, in submit_read");
-        assert!(code.contains("fn submit_read<"));
+        assert_eq!(code.matches(".submit(").count(), 2, "two submits, in submit_read and submit_comment");
         assert_eq!(code.matches("submit_read(").count(), 1, "submit_read, called once");
+        assert_eq!(code.matches("submit_comment(").count(), 1, "submit_comment, called once");
+        // the poke goes to the comment inbox, with lattice's comment mark
+        let poke = &code[code.find("fn submit_comment<").unwrap()..];
+        let poke = &poke[..poke.find("\n}\n").unwrap()];
+        assert!(poke.contains("name: \"comments.sig\".into()"), "{poke}");
+        assert!(poke.contains("mark: (\"/lattice\".into(), \"comment-action\".into())"), "{poke}");
+    }
+
+    #[test]
+    fn a_comment_is_lattices_comment_action() {
+        use urb_engine::Noun;
+        let n = Noun::of(&comment_noun("/notes/a", "hi")).unwrap();
+        let want = Noun::cell(
+            Noun::cell(Noun::atom(b"notes"), Noun::cell(Noun::atom(b"a"), Noun::atom(&[]))),
+            Noun::atom(b"hi"),
+        );
+        assert!(n == want);
+    }
+
+    #[test]
+    fn a_comments_answer_says_what_happened() {
+        use urb_engine::core::Poked;
+        let poked = |ok, error: Option<&str>, later| Ok(Reply::Poke(Poked { ok, error: error.map(Into::into), later }));
+        assert_eq!(said_of(poked(true, None, false)), Ok(()));
+        assert_eq!(said_of(poked(false, Some("weir: denied"), false)), Err(CommentError::Refused("weir: denied".into())));
+        assert_eq!(said_of(poked(false, None, false)), Err(CommentError::Refused("refused".into())));
+        assert_eq!(
+            said_of(poked(false, Some("~zod did not answer"), true)),
+            Err(CommentError::Unanswered("~zod did not answer".into()))
+        );
+        assert!(matches!(said_of(Ok(Reply::True)), Err(CommentError::Failed(_))));
+        let f = Failure { later: true, ..Failure::urb("timeout") };
+        assert!(matches!(said_of(Err(f)), Err(CommentError::Unanswered(_))));
+    }
+
+    #[test]
+    fn a_comment_needs_a_running_reader() {
+        let e = Engine::with(tmp("nocomment"), None);
+        assert!(matches!(
+            e.comment("~zod", "/a", "hi", Duration::from_secs(1)),
+            Err(CommentError::Failed(m)) if m.contains("isn't ready")
+        ));
     }
 
     #[test]
@@ -993,7 +1178,7 @@ mod tests {
         eprintln!("first read {:?} ({} by {})", t.elapsed(), p.key, p.how);
         assert!(p.body.contains(&nonce), "{}", p.body);
         assert_eq!(p.mark, "gmi");
-        let shown = crate::render::page(&url, &p, crate::render::Mode::Shipless, "k");
+        let shown = crate::render::page(&url, &p, crate::render::Mode::Shipless, "k", &crate::render::Talk::default());
         assert!(shown.html.contains("href=\"/read?url=urb%3A%2F%2F~wep%2Fother\""), "{}", shown.html);
         assert!(shown.html.contains("href=\"/read?url=urb%3A%2F%2F~wep%2Fnotes%2Fmore\""));
         assert_eq!(shown.title, "Desktop engine check");

@@ -14,11 +14,15 @@
 //! - `/assets/reader.js`, compiled in;
 //! - `/boot?k=&to=` hands the window this launch's token as an HttpOnly
 //!   cookie, as the bridge's bootstrap does, then goes to `to`;
-//! - `POST /history/clear` empties the local history.
+//! - `POST /history/clear` empties the local history;
+//! - `POST /comment?url=` sends the form's `body` as a comment on that
+//!   page, as the reader identity (engine.rs), then goes back to the page,
+//!   which says what became of it.
 //!
 //! Loopback is not a boundary (see proxy.rs), and here the prize is the
 //! comet: a caller who could drive it could make it read whatever they
-//! like. So every route that reads, or changes anything, needs this
+//! like, or comment as it. The two POSTs need the reader's own Origin, so
+//! a publisher's sandboxed frame (Origin `null`) cannot comment either. So every route that reads, or changes anything, needs this
 //! launch's token cookie, and the request filter is the bridge's: Host
 //! `127.0.0.1:<port>` or `localhost:<port>`, Origin absent or the reader's
 //! own, and a request that is not same-origin only as a plain navigation
@@ -40,9 +44,9 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::engine::{NativePage, ReadError, Reads};
+use crate::engine::{CommentError, NativePage, ReadError, Reads};
 use crate::history::History;
-use crate::render::{self, Mode};
+use crate::render::{self, Mode, Note, Talk};
 
 /// The port the reader listens on, once it does.
 pub struct Reader(pub Mutex<Option<u16>>);
@@ -65,6 +69,11 @@ const RAWS: usize = 16;
 /// within READ_TOTAL, as the extension tries.
 const READ_TRIES: usize = 5;
 const READ_TOTAL: Duration = Duration::from_secs(20);
+/// Longest request body: a comment form, `body` percent-encoded (three
+/// bytes for each of lattice's 4096 at most), and a little more.
+const MAX_BODY: usize = 3 * render::COMMENT_MAX + 1024;
+/// How long a comment may wait for the publisher's answer.
+const COMMENT_BUDGET: Duration = Duration::from_secs(20);
 /// The live start list may hold the home up this long.
 const START_BUDGET: Duration = Duration::from_secs(3);
 /// What the live start list's read gave (the page, or that there was
@@ -102,11 +111,29 @@ pub struct Ctx {
     pub port: u16,
     raws: Mutex<VecDeque<(String, String, Vec<u8>)>>,
     start: Mutex<Option<(Instant, Option<NativePage>)>>,
+    /// what became of the last comment, for the page it was on, shown once
+    note: Mutex<Option<(String, Note)>>,
 }
 
 impl Ctx {
     pub fn new(reads: Box<dyn Reads>, history: History, port: u16) -> Ctx {
-        Ctx { reads, history, port, raws: Mutex::new(VecDeque::new()), start: Mutex::new(None) }
+        Ctx {
+            reads,
+            history,
+            port,
+            raws: Mutex::new(VecDeque::new()),
+            start: Mutex::new(None),
+            note: Mutex::new(None),
+        }
+    }
+
+    /// The note for `url`, once.
+    fn take_note(&self, url: &str) -> Option<Note> {
+        let mut g = self.note.lock().unwrap();
+        if g.as_ref().is_some_and(|(u, _)| u == url) {
+            return g.take().map(|(_, n)| n);
+        }
+        None
     }
 
     fn keep_raw(&self, url: &str, body: &[u8]) -> String {
@@ -160,6 +187,8 @@ struct Req {
     dest: Option<String>,
     referer: Option<String>,
     token: bool,
+    length: Option<usize>,
+    body: Vec<u8>,
 }
 
 impl Req {
@@ -185,6 +214,7 @@ fn reason(status: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        413 => "Content Too Large",
         414 => "URI Too Long",
         431 => "Request Header Fields Too Large",
         501 => "Not Implemented",
@@ -296,6 +326,10 @@ fn read_req(reader: &mut impl BufRead) -> std::io::Result<Result<Req, u16>> {
             "sec-fetch-mode" => req.mode = Some(v.to_ascii_lowercase()),
             "sec-fetch-dest" => req.dest = Some(v.to_ascii_lowercase()),
             "referer" => req.referer = Some(v),
+            "content-length" => match v.parse::<usize>() {
+                Ok(n) => req.length = Some(n),
+                Err(_) => return Ok(Err(400)),
+            },
             "cookie" => {
                 req.token |= v.split(';').any(|kv| {
                     kv.trim()
@@ -306,6 +340,15 @@ fn read_req(reader: &mut impl BufRead) -> std::io::Result<Result<Req, u16>> {
             }
             _ => {}
         }
+    }
+    // a body is read only for a POST, and only up to the cap
+    if req.method == "POST" {
+        let n = req.length.unwrap_or(0);
+        if n > MAX_BODY {
+            return Ok(Err(413));
+        }
+        req.body = vec![0; n];
+        reader.read_exact(&mut req.body)?;
     }
     Ok(Ok(req))
 }
@@ -404,7 +447,13 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
                 None => plain(404),
             }
         }
-        ("/" | "/read" | "/connect", true) | ("/history/clear", false) if !trusted(req, port) => plain(403),
+        ("/" | "/read" | "/connect", true) | ("/history/clear" | "/comment", false) if !trusted(req, port) => plain(403),
+        ("/comment", false) if req.method == "POST" => {
+            if !req.origin.as_deref().is_some_and(|o| reader_origin(o, port)) {
+                return plain(403);
+            }
+            comment(ctx, req)
+        }
         ("/history/clear", false) if req.method == "POST" => {
             if !req.origin.as_deref().is_some_and(|o| reader_origin(o, port)) {
                 return plain(403);
@@ -424,6 +473,65 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
         ("/read", true) => read(ctx, req.arg("url").unwrap_or("")),
         (_, false) => plain(405),
         _ => plain(404),
+    }
+}
+
+/// The form's `body` field, cut to lattice's cap on a character boundary.
+fn form_body(raw: &[u8]) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let v = text
+        .split('&')
+        .filter_map(|kv| kv.split_once('='))
+        .find(|(k, _)| unescape(k) == "body")
+        .map(|(_, v)| unescape(v))
+        .unwrap_or_default();
+    let mut end = v.len().min(render::COMMENT_MAX);
+    while !v.is_char_boundary(end) {
+        end -= 1;
+    }
+    v[..end].to_string()
+}
+
+/// `POST /comment`: the comment, sent as the reader identity, then back to
+/// the page, which says what became of it. The page is read again first
+/// (the read is warm by now) for its key, which is the path the publisher
+/// keeps it at; the form's own word for the page is never trusted.
+fn comment(ctx: &Ctx, req: &Req) -> Resp {
+    let url = address(req.arg("url").unwrap_or(""));
+    let Some(ship) = render::commentable(&url) else { return plain(400) };
+    let body = form_body(&req.body);
+    let note = if body.trim().is_empty() {
+        Note::Empty
+    } else {
+        match ctx.reads.read(&url, COMMENT_BUDGET, false) {
+            Err(e) => Note::Failed { words: format!("The page couldn't be read again: {}", read_words(&e)), body },
+            Ok(p) => match ctx.reads.comment(&ship, &p.key, &body, COMMENT_BUDGET) {
+                Ok(()) => Note::Sent,
+                Err(CommentError::Refused(words)) => Note::Refused { words, body },
+                Err(CommentError::Unanswered(words)) => Note::Unanswered { words, body },
+                Err(CommentError::Failed(words)) => Note::Failed { words, body },
+            },
+        }
+    };
+    // the outcome, never the text
+    let outcome = match &note {
+        Note::Sent => "sent".to_string(),
+        Note::Empty => "empty".to_string(),
+        Note::Refused { words, .. } => format!("refused: {words}"),
+        Note::Unanswered { words, .. } => format!("unanswered: {words}"),
+        Note::Failed { words, .. } => format!("failed: {words}"),
+    };
+    crate::commands::dlog(&format!("reader: comment on {url}: {outcome}"));
+    *ctx.note.lock().unwrap() = Some((url.clone(), note));
+    redirect(303, &render::read_href(&url))
+}
+
+/// A failed read, in a line.
+fn read_words(e: &ReadError) -> String {
+    match e {
+        ReadError::NotPublished(w) | ReadError::Failed(w) | ReadError::Unreachable { words: w, .. } => w.clone(),
+        ReadError::Busy => "the reader is in use by another lattice window".into(),
+        ReadError::Booting => "the reader is still getting ready".into(),
     }
 }
 
@@ -468,7 +576,9 @@ fn render_words(words: &[u8]) -> String {
 fn page(ctx: &Ctx, url: &str, p: &NativePage) -> Resp {
     let html = urb_render::gateway::render_as(&p.mark, p.body.as_bytes()) == "html";
     let key = if html { ctx.keep_raw(url, p.body.as_bytes()) } else { String::new() };
-    let s = render::page(url, p, Mode::Shipless, &key);
+    let our = ctx.reads.our();
+    let note = ctx.take_note(url);
+    let s = render::page(url, p, Mode::Shipless, &key, &Talk { our: our.as_deref(), note: note.as_ref() });
     if let Err(e) = ctx.history.add(url, &s.title) {
         crate::commands::dlog(&format!("reader: {e}"));
     }
@@ -577,16 +687,28 @@ mod tests {
 
     type Answer = Box<dyn Fn(&str) -> Result<NativePage, ReadError> + Send + Sync>;
 
-    /// a stand-in engine: the pages it has, and how often it was asked
+    type Said = Arc<Mutex<Vec<(String, String, String)>>>;
+
+    /// a stand-in engine: the pages it has, how often it was asked, and
+    /// the comments it sent
     struct Fake {
         calls: Arc<AtomicUsize>,
         answer: Answer,
+        said: Said,
+        refuse: Option<CommentError>,
     }
 
     impl Reads for Fake {
         fn read(&self, url: &str, _: Duration, _: bool) -> Result<NativePage, ReadError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             (self.answer)(url)
+        }
+        fn our(&self) -> Option<String> {
+            Some("~doznec-sampel-palnet".into())
+        }
+        fn comment(&self, ship: &str, page: &str, body: &str, _: Duration) -> Result<(), CommentError> {
+            self.said.lock().unwrap().push((ship.into(), page.into(), body.into()));
+            self.refuse.clone().map_or(Ok(()), Err)
         }
     }
 
@@ -598,8 +720,95 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("reader-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let calls = Arc::new(AtomicUsize::new(0));
-        let fake = Fake { calls: calls.clone(), answer: Box::new(answer) };
+        let fake = Fake { calls: calls.clone(), answer: Box::new(answer), said: Said::default(), refuse: None };
         (Ctx::new(Box::new(fake), History::open(&dir), PORT), calls)
+    }
+
+    /// a reader whose engine says what it was asked to comment, refusing
+    /// with `refuse`
+    fn talking(name: &str, refuse: Option<CommentError>) -> (Ctx, Said) {
+        let dir = std::env::temp_dir().join(format!("reader-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let said = Said::default();
+        let fake = Fake { calls: Arc::default(), answer: Box::new(pages), said: said.clone(), refuse };
+        (Ctx::new(Box::new(fake), History::open(&dir), PORT), said)
+    }
+
+    fn post_comment(url: &str, extra: &str, body: &str) -> String {
+        format!(
+            "POST /comment?url={} HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\n{extra}Content-Type: application/x-www-form-urlencoded\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            render::enc(url),
+            body.len()
+        )
+    }
+
+    fn ours() -> String {
+        format!("{}Origin: http://127.0.0.1:{PORT}\r\nSec-Fetch-Site: same-origin\r\n", cookie())
+    }
+
+    #[test]
+    fn a_comment_is_sent_as_the_reader_identity_and_said_once() {
+        let (c, said) = talking("comment", None);
+        let (st, out) = ask(&c, &post_comment("urb://~zod/hello", &ours(), "body=hello+there%21&x=1"));
+        assert_eq!(st, 303, "{out}");
+        assert!(out.contains("Location: /read?url=urb%3A%2F%2F~zod%2Fhello\r\n"), "{out}");
+        // to the publisher, at the page's key as the read gave it
+        assert_eq!(*said.lock().unwrap(), [("~zod".to_string(), "/k".to_string(), "hello there!".to_string())]);
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
+        assert!(out.contains("Sent to ~zod."), "{out}");
+        assert!(out.contains("<code class=\"who\">~doznec-sampel-palnet</code>"));
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
+        assert!(!out.contains("Sent to ~zod."), "said once");
+    }
+
+    #[test]
+    fn a_refused_comment_says_so_and_keeps_the_text() {
+        let (c, _) = talking("refused", Some(CommentError::Refused("weir: no".into())));
+        assert_eq!(ask(&c, &post_comment("urb://~zod/hello", &ours(), "body=mine")).0, 303);
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
+        assert!(out.contains("~zod refused this comment") && out.contains("weir: no") && out.contains(">mine</textarea>"));
+        let (c, _) = talking("unanswered", Some(CommentError::Unanswered("~zod did not answer".into())));
+        assert_eq!(ask(&c, &post_comment("urb://~zod/hello", &ours(), "body=mine")).0, 303);
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
+        assert!(out.contains("~zod didn't answer"));
+    }
+
+    #[test]
+    fn only_the_reader_itself_can_comment() {
+        let (c, said) = talking("comment403", None);
+        let ck = cookie();
+        for extra in [
+            String::new(),
+            ck.clone(),
+            format!("{ck}Origin: null\r\n"),
+            format!("{ck}Origin: http://evil.example\r\n"),
+            format!("{ck}Origin: http://127.0.0.1:26500\r\n"),
+            format!("Origin: http://127.0.0.1:{PORT}\r\n"),
+            format!("{ck}Origin: http://127.0.0.1:{PORT}\r\nSec-Fetch-Site: cross-site\r\nSec-Fetch-Mode: navigate\r\nSec-Fetch-Dest: document\r\n"),
+        ] {
+            assert_eq!(ask(&c, &post_comment("urb://~zod/hello", &extra, "body=x")).0, 403, "{extra}");
+        }
+        // a GET is no comment
+        assert_eq!(ask(&c, &get("/comment?url=urb://~zod/hello&body=x", &ck)).0, 404);
+        assert!(said.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_empty_or_huge_or_misplaced_comment_is_not_sent() {
+        let (c, said) = talking("commentbad", None);
+        assert_eq!(ask(&c, &post_comment("urb://~zod/hello", &ours(), "body=+++")).0, 303);
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
+        assert!(out.contains("Write something first."));
+        let huge = format!("body={}", "a".repeat(MAX_BODY));
+        assert_eq!(ask(&c, &post_comment("urb://~zod/hello", &ours(), &huge)).0, 413);
+        assert_eq!(ask(&c, &post_comment("urb://~zod/k/notes", &ours(), "body=x")).0, 400);
+        assert!(said.lock().unwrap().is_empty());
+        // a long one is cut to lattice's cap, on a character boundary
+        let long = format!("body={}", "%E2%9C%93".repeat(1400));
+        assert_eq!(ask(&c, &post_comment("urb://~zod/hello", &ours(), &long)).0, 303);
+        let sent = said.lock().unwrap()[0].2.clone();
+        assert!(sent.len() <= render::COMMENT_MAX && sent.len() > render::COMMENT_MAX - 3 && sent.chars().all(|ch| ch == '\u{2713}'));
     }
 
     fn pages(url: &str) -> Result<NativePage, ReadError> {
@@ -637,7 +846,8 @@ mod tests {
         let (st, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
         assert_eq!(st, 200, "{out}");
         assert!(out.contains(&format!("Content-Security-Policy: {}\r\n", render::OWN)));
-        assert!(out.contains("<h1>Hello</h1>") && out.contains("Connect a ship to bookmark"));
+        assert!(out.contains("<h1>Hello</h1>") && out.contains("Connect a node to bookmark"));
+        assert!(out.contains("class=\"talk-form\""), "a published page takes comments");
         assert!(out.contains("X-Content-Type-Options: nosniff"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(c.history.list()[0].url, "urb://~zod/hello");

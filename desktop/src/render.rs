@@ -13,8 +13,10 @@
 //! Links are urb-render's `page_link`, with its hostile-input filtering,
 //! then every urb:// target is pointed at `/read?url=...`, so links stay in
 //! the app. http and https leave for the system browser (the app's
-//! navigation policy, commands.rs). Every ship action is shown and
-//! disabled with its reason: the reader never acts as anyone.
+//! navigation policy, commands.rs). A published page gets a comment box,
+//! which comments as the reader's own anonymous identity (the comet); every
+//! action that needs a node of one's own (bookmarks, follows, hosting) is
+//! shown and disabled with its reason.
 
 
 use urb_render::gateway;
@@ -50,22 +52,116 @@ pub const JS: &str = include_str!("../ui-reader/reader.js");
 /// each one is mapped back to the urb:// address it names.
 const LINK_PORT: &str = "1";
 
-/// Why the ship actions are disabled. One reason today: no ship is
-/// configured. (Slice 2's "your ship isn't answering" is deferred.)
+/// Why the node actions are disabled. One reason today: the app is used
+/// anonymously, with no node configured. (Slice 2's "your ship isn't
+/// answering" is deferred.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Shipless,
 }
 
-/// The ship actions a reader page offers, each disabled, with its reason.
+/// The actions a reader page shows disabled, with their reasons: each
+/// needs a node of one's own. Commenting is not one of them.
 pub fn actions(mode: Mode) -> [(&'static str, &'static str); 3] {
     match mode {
         Mode::Shipless => [
-            ("Bookmark", "Connect a ship to bookmark"),
-            ("Comment", "Connect a ship to comment"),
-            ("Follow", "Connect a ship to follow"),
+            ("Bookmark", "Connect a node to bookmark"),
+            ("Follow", "Connect a node to follow"),
+            ("Host", "Hosting pages needs a node"),
         ],
     }
+}
+
+/// The longest comment lattice keeps (`max-body` in lattice-comment.hoon),
+/// in bytes. A longer one is cut here, as lattice would cut it.
+pub const COMMENT_MAX: usize = 4096;
+
+/// What became of the comment just sent, shown once above the box.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Note {
+    /// the publisher's ship took it in
+    Sent,
+    /// nothing was written
+    Empty,
+    /// the publisher's ship refused it, in its words; the text is kept
+    Refused { words: String, body: String },
+    /// no answer; the text is kept
+    Unanswered { words: String, body: String },
+    /// the reader could not send it; the text is kept
+    Failed { words: String, body: String },
+}
+
+/// The comment box on a page: who comments (the reader identity's name),
+/// and the note for the comment just sent.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Talk<'a> {
+    pub our: Option<&'a str>,
+    pub note: Option<&'a Note>,
+}
+
+/// The publisher a comment on `url` goes to: a published page's ship. A
+/// know entry (`/k/`) or a file in someone's tree (`/t/`) takes none.
+pub fn commentable(url: &str) -> Option<String> {
+    let u = urb_engine::url::de_urb(url).ok()?;
+    matches!(u.mount, urb_engine::url::Mount::N).then_some(u.ship)
+}
+
+/// `/comment`'s address for a page.
+pub fn comment_href(urb: &str) -> String {
+    format!("/comment?url={}", enc(urb))
+}
+
+/// The comment box, under the page.
+fn talk_box(url: &str, ship: &str, talk: &Talk) -> String {
+    let to = esc(ship);
+    let (note, kept) = match talk.note {
+        None => (String::new(), ""),
+        Some(Note::Sent) => (
+            format!(
+                "<p class=\"note ok\" role=\"status\">Sent to {to}. {to} decides whether it appears: it won't if they \
+                 haven't turned on comments for this page.</p>"
+            ),
+            "",
+        ),
+        Some(Note::Empty) => ("<p class=\"note err\" role=\"alert\">Write something first.</p>".into(), ""),
+        Some(Note::Refused { words, body }) => (
+            format!(
+                "<p class=\"note err\" role=\"alert\">{to} refused this comment, so it wasn't posted.</p>\
+                 <p class=\"words\">{}</p>",
+                esc(words)
+            ),
+            body.as_str(),
+        ),
+        Some(Note::Unanswered { words, body }) => (
+            format!(
+                "<p class=\"note err\" role=\"alert\">{to} didn't answer, so your comment may not have been sent. \
+                 Try again.</p><p class=\"words\">{}</p>",
+                esc(words)
+            ),
+            body.as_str(),
+        ),
+        Some(Note::Failed { words, body }) => (
+            format!(
+                "<p class=\"note err\" role=\"alert\">The reader couldn't send your comment.</p><p class=\"words\">{}</p>",
+                esc(words)
+            ),
+            body.as_str(),
+        ),
+    };
+    let who = match talk.our {
+        Some(o) => format!("as <code class=\"who\">{}</code>, the name {to} sees as the author", esc(o)),
+        None => format!("as this computer's anonymous reader identity, the name {to} sees as the author"),
+    };
+    format!(
+        "<section class=\"talk\" aria-labelledby=\"talk-h\"><h2 id=\"talk-h\">Comment</h2>{note}\
+         <form class=\"talk-form\" method=\"post\" action=\"{action}\">\
+         <textarea name=\"body\" rows=\"3\" maxlength=\"{COMMENT_MAX}\" required aria-label=\"Your comment\" \
+         placeholder=\"Say something to {to}\">{kept}</textarea>\
+         <p><button type=\"submit\">Send to {to}</button></p></form>\
+         <p class=\"words\">Sent anonymously from this computer {who}. They decide whether it appears.</p></section>",
+        action = esc(&comment_href(url)),
+        kept = esc(kept),
+    )
 }
 
 /// Percent-encode everything but RFC 3986's unreserved characters.
@@ -205,7 +301,7 @@ fn main_of(doc: &[u8]) -> &[u8] {
 /// The reader's document around `main`.
 fn chrome(title: &str, url: &str, mode: Option<Mode>, main: &str, refresh: bool) -> String {
     let strip = mode.map_or(String::new(), |m| {
-        let mut s = String::from("<div class=\"actions\" role=\"group\" aria-label=\"Ship actions\">");
+        let mut s = String::from("<div class=\"actions\" role=\"group\" aria-label=\"Actions that need a node\">");
         for (label, why) in actions(m) {
             s.push_str(&format!(
                 "<span class=\"act\"><button type=\"button\" disabled title=\"{why}\" aria-describedby=\"why-{l}\">{label}</button>\
@@ -226,7 +322,7 @@ fn chrome(title: &str, url: &str, mode: Option<Mode>, main: &str, refresh: bool)
 <a class=\"home\" href=\"/\">Home</a></nav>\
 <form class=\"addr\" action=\"/read\" method=\"get\"><input name=\"url\" value=\"{url}\" aria-label=\"Address\" \
 placeholder=\"urb://~ship/page\" spellcheck=\"false\" autocomplete=\"off\"><button type=\"submit\">Open</button></form>\
-<a class=\"connect\" href=\"/connect\">Connect a ship</a></header>{strip}<main class=\"page\">{main}</main></body></html>",
+<a class=\"connect\" href=\"/connect\">Connect a node</a></header>{strip}<main class=\"page\">{main}</main></body></html>",
         refresh = if refresh { "<meta http-equiv=\"refresh\" content=\"1\">" } else { "" },
         title = esc(title),
         url = esc(url),
@@ -241,8 +337,9 @@ pub struct Shown {
 }
 
 /// A page the engine read, in the reader. `raw_key` names this read for
-/// the frame's `/raw` request, when the page is a publisher's HTML.
-pub fn page(url: &str, p: &NativePage, mode: Mode, raw_key: &str) -> Shown {
+/// the frame's `/raw` request, when the page is a publisher's HTML. A
+/// published page gets the comment box, outside any frame.
+pub fn page(url: &str, p: &NativePage, mode: Mode, raw_key: &str, talk: &Talk) -> Shown {
     let kind = gateway::render_as(&p.mark, p.body.as_bytes());
     let title = title_of(url, kind, &p.body);
     let link = link_for(url);
@@ -260,7 +357,8 @@ pub fn page(url: &str, p: &NativePage, mode: Mode, raw_key: &str) -> Shown {
         "gmi" => (OWN, lossy(main_of(&gateway::render_gemtext(p.body.as_bytes(), url.as_bytes(), &link)))),
         _ => (OWN, lossy(main_of(&gateway::render_text(p.body.as_bytes(), url.as_bytes())))),
     };
-    let html = chrome(&title, url, Some(mode), &format!("<article class=\"{kind}\">{main}</article>"), false);
+    let talk = commentable(url).map_or(String::new(), |ship| talk_box(url, &ship, talk));
+    let html = chrome(&title, url, Some(mode), &format!("<article class=\"{kind}\">{main}</article>{talk}"), false);
     Shown { csp, html, title }
 }
 
@@ -371,6 +469,8 @@ mod tests {
     use super::*;
 
     const PAGE: &str = "urb://~zod/a/b";
+    /// a published page (`/a/` is a single-letter mount, which takes none)
+    const TALK: &str = "urb://~zod/notes/b";
 
     fn href(t: &str) -> String {
         String::from_utf8(link_for(PAGE)(t.as_bytes()).0).unwrap()
@@ -402,7 +502,7 @@ mod tests {
 
     #[test]
     fn gemtext_is_rendered_here_under_the_readers_policy() {
-        let s = page(PAGE, &native("# Hello\n=> urb://~nec/x there\n<script>x</script>", "gmi"), Mode::Shipless, "k");
+        let s = page(PAGE, &native("# Hello\n=> urb://~nec/x there\n<script>x</script>", "gmi"), Mode::Shipless, "k", &Talk::default());
         assert_eq!(s.csp, OWN);
         assert!(s.csp.starts_with("default-src 'none'; style-src 'unsafe-inline'; script-src 'self'"));
         assert!(s.html.contains("<h1>Hello</h1>"));
@@ -416,9 +516,9 @@ mod tests {
 
     #[test]
     fn markdown_and_text_are_escaped() {
-        let s = page(PAGE, &native("# T\n<img src=x onerror=alert(1)>", "md"), Mode::Shipless, "k");
+        let s = page(PAGE, &native("# T\n<img src=x onerror=alert(1)>", "md"), Mode::Shipless, "k", &Talk::default());
         assert!(!s.html.contains("<img"));
-        let s = page(PAGE, &native("<b>x</b>", "text"), Mode::Shipless, "k");
+        let s = page(PAGE, &native("<b>x</b>", "text"), Mode::Shipless, "k", &Talk::default());
         assert!(s.html.contains("&lt;b&gt;"));
         assert_eq!(s.title, PAGE);
     }
@@ -426,7 +526,7 @@ mod tests {
     #[test]
     fn a_publishers_html_only_ever_goes_in_the_sandboxed_frame() {
         for (body, mark) in [("<h1>x</h1><script>alert(1)</script>", "html"), ("  <p>looks like html", "gmi")] {
-            let s = page(PAGE, &native(body, mark), Mode::Shipless, "key1");
+            let s = page(PAGE, &native(body, mark), Mode::Shipless, "key1", &Talk::default());
             assert_eq!(s.csp, FRAMED);
             assert!(s.html.contains(&format!(
                 "<iframe class=\"pub\" title=\"urb://~zod/a/b\" sandbox=\"{FRAME_SANDBOX}\" \
@@ -452,19 +552,57 @@ mod tests {
     }
 
     #[test]
-    fn every_ship_action_is_shown_disabled_with_its_reason() {
-        let s = page(PAGE, &native("x", "gmi"), Mode::Shipless, "k");
+    fn every_node_action_is_shown_disabled_with_its_reason() {
+        let s = page(PAGE, &native("x", "gmi"), Mode::Shipless, "k", &Talk::default());
         for (label, why) in [
-            ("Bookmark", "Connect a ship to bookmark"),
-            ("Comment", "Connect a ship to comment"),
-            ("Follow", "Connect a ship to follow"),
+            ("Bookmark", "Connect a node to bookmark"),
+            ("Follow", "Connect a node to follow"),
+            ("Host", "Hosting pages needs a node"),
         ] {
             assert!(s.html.contains(&format!("disabled title=\"{why}\"")), "{label}");
             assert!(s.html.contains(&format!(">{label}</button>")));
             assert!(s.html.contains(&format!(">{why}</span>")));
         }
         assert_eq!(s.html.matches("<button type=\"button\" disabled").count(), 3);
-        assert!(!s.html.contains("method=\"post\""));
+        assert!(!s.html.contains("Connect a ship"));
+    }
+
+    #[test]
+    fn a_published_page_takes_a_comment_as_the_reader_identity() {
+        let talk = Talk { our: Some("~doznec-sampel-palnet"), note: None };
+        let s = page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &talk);
+        assert!(s.html.contains("<form class=\"talk-form\" method=\"post\" action=\"/comment?url=urb%3A%2F%2F~zod%2Fnotes%2Fb\">"), "{}", s.html);
+        assert!(s.html.contains("<textarea name=\"body\""));
+        assert!(s.html.contains(">Send to ~zod</button>"));
+        assert!(s.html.contains("as <code class=\"who\">~doznec-sampel-palnet</code>, the name ~zod sees as the author"));
+        assert_eq!(s.html.matches("method=\"post\"").count(), 1);
+        // outside the frame on a publisher's HTML page
+        let s = page(TALK, &native("<p>x", "html"), Mode::Shipless, "k", &talk);
+        let frame_end = s.html.find("</iframe>").unwrap();
+        assert!(s.html.find("class=\"talk-form\"").unwrap() > frame_end);
+        // a know entry or a tree file takes none
+        for u in ["urb://~zod/k/notes", "urb://~zod/t/a/b"] {
+            assert!(!page(u, &native("x", "gmi"), Mode::Shipless, "k", &talk).html.contains("talk-form"), "{u}");
+        }
+        assert_eq!(commentable("urb://~zod/about").as_deref(), Some("~zod"));
+        assert_eq!(commentable("urb://~zod").as_deref(), Some("~zod"));
+        assert_eq!(commentable("not an address"), None);
+    }
+
+    #[test]
+    fn what_became_of_a_comment_is_said_plainly() {
+        let say = |n: Note| page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &Talk { our: None, note: Some(&n) }).html;
+        let h = say(Note::Sent);
+        assert!(h.contains("Sent to ~zod. ~zod decides whether it appears"), "{h}");
+        assert!(h.contains("placeholder=\"Say something to ~zod\"></textarea>"), "the box is empty again");
+        let h = say(Note::Refused { words: "weir: <denied>".into(), body: "my <text>".into() });
+        assert!(h.contains("~zod refused this comment, so it wasn't posted.") && h.contains("weir: &lt;denied&gt;"));
+        assert!(h.contains(">my &lt;text&gt;</textarea>"), "the text is kept");
+        let h = say(Note::Unanswered { words: "no answer within 20s".into(), body: "b".into() });
+        assert!(h.contains("~zod didn't answer, so your comment may not have been sent."));
+        let h = say(Note::Failed { words: "the reader stopped".into(), body: "b".into() });
+        assert!(h.contains("The reader couldn't send your comment."));
+        assert!(say(Note::Empty).contains("Write something first."));
     }
 
     #[test]

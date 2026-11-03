@@ -26,3 +26,10 @@ blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--li
 .home-page ul { padding-left: 1.2rem; }
 .home-page .when { color: var(--muted); font-size: .85rem; }
 .home-page .recent-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+.talk { border-top: 1px solid var(--line); padding-top: 1rem; }
+.talk h2 { font-size: 1rem; margin: 0 0 .5rem; }
+.talk textarea { width: 100%; font: inherit; padding: .5rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); resize: vertical; }
+.talk button { font: inherit; font-size: .9rem; padding: .3rem .7rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; }
+.talk .who { overflow-wrap: anywhere; }
+.talk .note { padding: .4rem .6rem; border-radius: 6px; border: 1px solid var(--line); }
+.talk .note.err { border-color: #c0392b; }
