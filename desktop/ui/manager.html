@@ -315,6 +315,8 @@
     if (shipless) {
       h.parentNode.insertBefore(card, h);
       h.textContent = 'connect your ship';
+      // someone with no ship most likely came to read: start there
+      if (!card.hidden) $('read-url').focus();
     } else {
       $('connect').after(card);
       h.textContent = 'ship';
@@ -330,6 +332,7 @@
     let st;
     try { st = await invoke('reader_status'); } catch { $('reader').hidden = true; return null; }
     $('reader').hidden = false;
+    if ($('ship-h').textContent === 'connect your ship') $('read-url').focus();
     if (st && st.engine === 'booting') {
       readStatus('Setting up your reader. This happens once.' + (st.step ? ' ' + st.step + '\u2026' : ''), 'muted busy');
     } else if (st && st.engine === 'failed') {
