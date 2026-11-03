@@ -533,6 +533,15 @@ pub fn ensure(state: &Reader, make: impl FnOnce(u16) -> Ctx) -> Result<String, S
     Ok(format!("http://127.0.0.1:{port}"))
 }
 
+/// Start the reader for this app, on its engine and history (both in
+/// `<app_data_dir>/urb/`). Its base url.
+pub fn start(app: &tauri::AppHandle) -> Result<String, String> {
+    use tauri::Manager;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("urb");
+    let engine = app.state::<crate::engine::Engine>().inner().clone();
+    ensure(&app.state::<Reader>(), |port| Ctx::new(Box::new(engine), History::open(&dir), port))
+}
+
 /// The reader's port, if it listens.
 pub fn port(state: &Reader) -> Option<u16> {
     *state.0.lock().unwrap()

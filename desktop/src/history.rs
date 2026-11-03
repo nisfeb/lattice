@@ -76,7 +76,15 @@ impl History {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
         let dir = self.file.parent().ok_or("history: no folder")?;
-        std::fs::create_dir_all(dir).map_err(|e| format!("history: {e}"))?;
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            // the engine's folder, private as the engine makes it
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)
+                .map_err(|e| format!("history: {e}"))?;
+        }
         let tmp = dir.join(".history.json.tmp");
         let body = serde_json::to_vec(all).map_err(|e| format!("history: {e}"))?;
         let mut f = std::fs::OpenOptions::new()
