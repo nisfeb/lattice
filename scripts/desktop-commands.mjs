@@ -83,43 +83,37 @@ const ghostGrants = [...granted].filter((g) => !handledKebab.has(g));
 check('capabilities grant no command the handler lacks', ghostGrants.length === 0,
   'granted but not handled: ' + JSON.stringify(ghostGrants));
 
-//  ── native menu items click a button in the page ─────────────────────────
-//  main.rs maps each menu id to an element id and clicks it. Rename the
-//  button and the menu item silently does nothing. Every mapping is checked,
-//  read straight out of the match, so a new item is checked too. (This used
-//  to be copied into ui-view and ui-deskmenu, browser suites that need a
-//  ship, so in practice it never ran.)
+//  ── shortcuts click a button in the page ──────────────────────────────
+//  keys.rs maps each shortcut id to an element id and clicks it. Rename the
+//  button and the key silently does nothing. Every mapping is checked, read
+//  straight out of the match, so a new one is checked too.
+const keys = readFileSync(join(D, 'src', 'keys.rs'), 'utf8');
 const appJs = readFileSync(join(here, '..', 'code', 'nex', 'lattice', 'ui-app', 'app.js'), 'utf8');
-const menu = [...main.matchAll(/"((?:file|view)-[a-z-]+)" => "([a-z]+)"/g)];
-check('the native menu maps its items to page elements', menu.length >= 8,
-  'found ' + menu.length + ' mappings in src/main.rs');
+const menu = [...keys.matchAll(/"((?:file|view)-[a-z-]+)" => "([a-z]+)"/g)];
+check('the shortcuts map their ids to page elements', menu.length >= 4,
+  'found ' + menu.length + ' mappings in src/keys.rs');
 for (const [, item, id] of menu) {
-  check('menu ' + item + ' clicks #' + id + ', which the shipped UI has',
+  check('shortcut ' + item + ' clicks #' + id + ', which the shipped UI has',
     appJs.includes('id="' + id + '"'));
 }
 
-//  The view menu has no split: Edit and Read are the tab header's two
-//  states (23-tabhead.js). Those two items call latSetRead instead of
-//  clicking a button, and the page must expose that function.
-check('the view menu has no split item', !main.includes('view-split'));
+//  Edit and Read are the tab header's two states (23-tabhead.js). Those two
+//  call latSetRead instead of clicking a button, and the page must expose it.
 for (const [item, arg] of [['view-editor', 'false'], ['view-preview', 'true']]) {
-  const m = main.match(new RegExp('"' + item + '"\\s*=>\\s*\\{?\\s*[^;]*latSetRead\\(' + arg + '\\)'));
-  check('menu ' + item + ' calls latSetRead(' + arg + ')', !!m);
+  const m = keys.match(new RegExp('"' + item + '"\\s*=>\\s*Some\\("latSetRead\\(' + arg + '\\)'));
+  check('shortcut ' + item + ' calls latSetRead(' + arg + ')', !!m);
 }
 check('the shipped UI exposes window.latSetRead', appJs.includes('window.latSetRead'));
 
-//  Preferences > scheduled backups lands on the manager page's backups
-//  section from any page the window is on, as the Preferences menu always
-//  has. On the ship page the page goes first (latOpenManager), so the
-//  unsaved-work questions run before the window leaves; elsewhere the menu
-//  calls show_manager itself.
-check('menu backups names the backups section',
-  /"backups"\s*=>\s*Some\(Some\("backups"\)\)/.test(main));
-check('menu Preferences asks the ship page first, via latOpenManager',
-  /Some\(w\) if !commands::on_shell_page\(&w\) => \{\s*let _ = w\.eval\(manager_menu_js\(section\)\)/.test(main)
-  && /if\(window\.latOpenManager\)window\.latOpenManager\(s\)/.test(main));
-check('menu Preferences falls back to show_manager off the ship page',
-  /_ => \{\s*commands::show_manager\(app, section\)/.test(main));
+//  No menubar. Only macOS sets a menu, for WKWebView's Edit items, and the
+//  page is no longer told there is a File menu to hide its buttons behind.
+check('only macOS builds a menu',
+  /#\[cfg\(target_os = "macos"\)\]\s*build_menu\(app\)\?;/.test(main)
+  && /#\[cfg\(target_os = "macos"\)\]\s*fn build_menu/.test(main));
+const cmdsRs = readFileSync(join(D, 'src', 'commands.rs'), 'utf8');
+check('the page is not told to hide its buttons for a File menu',
+  !cmdsRs.includes('__LATTICE_FILE_MENU__'));
+check('the workspace window gets the shortcuts', cmdsRs.includes('crate::keys::attach(&w)'));
 check('the shipped UI exposes window.latOpenManager', appJs.includes('window.latOpenManager'));
 check('the shipped UI exposes window.latOpenSettings', appJs.includes('window.latOpenSettings'));
 

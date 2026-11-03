@@ -10,8 +10,9 @@
 #     found" for weeks. The browser tests take the <a download> branch and
 #     never invoke at all, so the one branch that only runs on desktop was the
 #     one branch nothing ran.
-#   - the File menu's buttons hid on a flag the binary injects. A browser can
-#     only be told the flag is there; it cannot check that the app sets it.
+#   - the File menu's buttons hid on a flag the binary injected. With the
+#     menubar gone the flag must be gone too, or the buttons stay hidden with
+#     nothing to replace them, and only the real binary can say which.
 #   - scheduled backups run Rust -> webview -> Rust -> disk. Every hop is
 #     outside a browser.
 #
@@ -181,13 +182,13 @@ anon=$(cat "$T/anon.code" 2>/dev/null)
 chk "another local process gets no session through the bridge" \
   "$([ -n "$anon" ] && [ "$anon" != "200" ] && echo 1 || echo 0)" "status=${anon:-<no request made>}"
 
-echo "==> the File menu contract"
+echo "==> no menubar, so the sidebar keeps its buttons"
 flag=$(probe filemenuflag)
-chk "the build announces its File menu to the page" "$([ "$flag" = "1" ] && echo 1 || echo 0)" "flag=${flag:-<none>}"
-for id in newfile newfolder newtmpl upfiles updir save; do
+chk "the build no longer announces a File menu to the page" "$([ "$flag" = "0" ] && echo 1 || echo 0)" "flag=${flag:-<none>}"
+for id in newfile newfolder upfiles updir; do
   h=$(probe "hidden.$id")
-  chk "#$id is hidden, its command having moved to the menubar" \
-    "$([ "$h" = "1" ] && echo 1 || echo 0)" "hidden=${h:-<none>}"
+  chk "#$id is shown, there being no menubar to hold it" \
+    "$([ "$h" = "0" ] && echo 1 || echo 0)" "hidden=${h:-<none>}"
 done
 
 echo "==> the commands the page is allowed to call"
