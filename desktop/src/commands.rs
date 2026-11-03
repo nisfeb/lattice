@@ -802,9 +802,8 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     // LATTICE_PROBE_JS=<path>: inject that file into the workspace page.
     //
     // The desktop-only paths are the ones that keep breaking in ways nothing
-    // catches — the File menu's hiding, the capability grants, the backup
-    // chain — because a browser test cannot reach any of them: no menubar, no
-    // invoke, no bridge. scripts/desktop-matrix.sh drives the REAL binary and
+    // catches (the capability grants, the backup chain, the shortcuts),
+    // because a browser test cannot reach any of them: no invoke, no bridge. scripts/desktop-matrix.sh drives the REAL binary and
     // needs a way to ask the page what it sees. Injecting from a file beats
     // editing the ship's app.js, which is what the throwaway versions of this
     // did and which meant the harness could not run against a ship it did not
@@ -833,22 +832,9 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
         b = b.icon(icon.clone()).map_err(|e| e.to_string())?;
     }
     let w = b
-        // Tell the page this build HAS the File menu, so it can hide the
-        // buttons that moved into it.
-        //
-        // __TAURI__ alone would be the wrong test: it answers "is this the
-        // desktop", not "does this desktop have the menu". The UI is served by
-        // the ship and the menu lives in this binary, so the two update
-        // independently — a ship that has the new UI reaching an older build
-        // would hide the buttons with no menubar to replace them, and new
-        // page, new folder, upload and save would all be unreachable. Keying
-        // on a flag only this build sets makes the order not matter.
-        .initialization_script("window.__LATTICE_FILE_MENU__ = true;")
         // tauri's own drag-drop interception would swallow the HTML5 drop
         // events the ship UI's drag-to-upload listens for
         .disable_drag_drop_handler()
-        // a webview without browser chrome has no other way to zoom
-        .zoom_hotkeys_enabled(true)
         // keep the workspace on the bridge (or the shell's own pages). Any
         // other top-level navigation opens in the system browser. The
         // webview has no back button or url bar to escape from
@@ -904,6 +890,8 @@ fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
         })
         .build()
         .map_err(|e| e.to_string())?;
+    // no menubar, so the window's shortcuts are caught here (keys.rs)
+    crate::keys::attach(&w);
     Ok(w)
 }
 

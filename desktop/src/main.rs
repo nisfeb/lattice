@@ -12,6 +12,7 @@ mod reader;
 #[cfg(feature = "urb-engine")]
 mod render;
 mod install;
+mod keys;
 mod local;
 mod mounts;
 mod pandoc;
@@ -56,60 +57,30 @@ fn remount(handle: &tauri::AppHandle, cfg: &config::Config) {
     }
 }
 
-/// The menubar: File, Edit, then Preferences.
+/// No menubar. Its commands live in the ship UI (the sidebar's buttons, the
+/// palette, Settings) and its shortcuts in keys.rs.
+///
+/// macOS keeps a menu anyway, and it shows nothing a Mac does not always
+/// show. A WKWebView only receives Cmd-C/V/X/A and undo through the
+/// standard Edit items, which the OS routes to the focused responder, so
+/// they need no handler; without them nobody could paste a +code on a
+/// Mac. The leading submenu is the application menu, which holds Quit and
+/// the shell's own shortcuts (keys.rs has no GTK window to listen on
+/// there). Linux sets no menu at all, so there is no bar to draw.
+#[cfg(target_os = "macos")]
 fn build_menu(app: &tauri::App) -> tauri::Result<()> {
-    // one menu, one item: mounts lived in an unreachable window once
-    // the manager auto-hid after connect
-    // "backups" opens the same manager page as "connection" — the
-    // settings all live there. It gets its own item anyway, because a
-    // scheduled backup is not something you go looking for under
-    // "connection && mounts", and an entry that is not in the menubar
-    // is, for this purpose, not there at all.
-    let prefs = tauri::menu::SubmenuBuilder::new(app, "Preferences")
-        .text("manager", "connection && mounts…")
-        .text("backups", "scheduled backups…")
-        .build()?;
-    // A real File menu. These commands were sidebar buttons, which is
-    // web convention, not desktop convention — in a window with a
-    // menubar the first place anyone looks for "new file" is File.
-    //
-    // Accelerators only where the page does not already own the key.
-    // ctrl-S is bound in the editor (45-templates.js), and registering
-    // it natively as well risks one keypress driving both paths and
-    // writing twice, so Save is menu-only here and the existing
-    // shortcut keeps working exactly as it did.
-    let file = tauri::menu::SubmenuBuilder::new(app, "File")
-        .item(
-            &tauri::menu::MenuItemBuilder::with_id("file-new", "New page")
-                .accelerator("CmdOrCtrl+N")
-                .build(app)?,
-        )
-        .item(
-            &tauri::menu::MenuItemBuilder::with_id("file-new-folder", "New folder")
-                .accelerator("CmdOrCtrl+Shift+N")
-                .build(app)?,
-        )
-        .text("file-new-template", "New from template…")
-        .separator()
-        .text("file-upload-files", "Upload files…")
-        .text("file-upload-folder", "Upload folder…")
-        .separator()
-        .text("file-save", "Save")
-        .build()?;
-    // File first, Preferences second — the conventional order, and
-    // where anyone reaches for either one.
-    //
-    // Worth knowing on macOS: the leading submenu becomes the
-    // application menu, so File takes that slot there. That is a
-    // cosmetic difference on a platform this has never been run on,
-    // and not a reason to keep an unconventional order on the one it
-    // has. Revisit when there is a mac to look at.
-    // Edit is not decoration. On macOS a webview only receives Cmd-C/V/X/A
-    // through the standard Edit items; Tauri installs them in its default
-    // menu, and setting our own menu threw that away, which is why nobody
-    // could paste a +code on a Mac. The items are predefined: the OS routes
-    // them to the focused responder, so they need no handler here.
-    let edit = tauri::menu::SubmenuBuilder::new(app, "Edit")
+    use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+    let item = |id: &str, label: &str, key: &str| MenuItemBuilder::with_id(id, label).accelerator(key).build(app);
+    let mut lattice = SubmenuBuilder::new(app, "lattice")
+        .item(&item("reload", "Reload", "Cmd+Shift+R")?)
+        .item(&item("zoom-in", "Zoom in", "Cmd+=")?)
+        .item(&item("zoom-out", "Zoom out", "Cmd+-")?)
+        .item(&item("zoom-reset", "Actual size", "Cmd+0")?);
+    if cfg!(debug_assertions) {
+        lattice = lattice.item(&item("devtools", "Inspector", "Cmd+Alt+I")?);
+    }
+    let lattice = lattice.separator().hide().hide_others().separator().quit().build()?;
+    let edit = SubmenuBuilder::new(app, "Edit")
         .undo()
         .redo()
         .separator()
@@ -118,23 +89,7 @@ fn build_menu(app: &tauri::App) -> tauri::Result<()> {
         .paste()
         .select_all()
         .build()?;
-    // View: Edit or Read for the open tab (23-tabhead.js), and which side
-    // panes are on screen. Like File, the pane items click the page's own
-    // button, so the state lives in the page and the menu has nothing to
-    // drift from it; Edit and Read call latSetRead. Accelerators: the page
-    // owns ctrl-S, ctrl-K and ctrl-E (and vim mode ctrl-R, ctrl-[); none of
-    // these collide.
-    let view_item = |id: &str, label: &str, key: &str| {
-        tauri::menu::MenuItemBuilder::with_id(id, label).accelerator(key).build(app)
-    };
-    let view = tauri::menu::SubmenuBuilder::new(app, "View")
-        .item(&view_item("view-editor", "Edit", "CmdOrCtrl+1")?)
-        .item(&view_item("view-preview", "Read", "CmdOrCtrl+3")?)
-        .separator()
-        .item(&view_item("view-tree", "Tree pane", "CmdOrCtrl+B")?)
-        .item(&view_item("view-controls", "Controls pane", "CmdOrCtrl+Shift+B")?)
-        .build()?;
-    app.set_menu(tauri::menu::MenuBuilder::new(app).items(&[&file, &edit, &view, &prefs]).build()?)?;
+    app.set_menu(MenuBuilder::new(app).items(&[&lattice, &edit]).build()?)?;
     Ok(())
 }
 
@@ -225,18 +180,6 @@ fn prefers_dark() -> bool {
         }
     }
     false
-}
-
-/// The Preferences items, run in the ship page. latOpenManager asks about
-/// unsaved work, then invokes open_manager itself. A ship build without it
-/// (older than the shell) gets open_manager directly, as the menu did before.
-/// `section` comes only from the menu's own constants, never from the page.
-fn manager_menu_js(section: Option<&str>) -> String {
-    let arg = section.map(|s| format!("\"{s}\"")).unwrap_or_else(|| "null".into());
-    format!(
-        "(function(){{var s={arg};if(window.latOpenManager)window.latOpenManager(s);\
-         else if(window.__TAURI__)window.__TAURI__.core.invoke('open_manager',{{section:s}});}})()"
-    )
 }
 
 /// urb:// links from the OS (urb.rs). One that started this process is
@@ -347,73 +290,9 @@ fn main() {
         .manage(proxy::Bridge(Mutex::new(None)))
         .manage(urb::Inbox(Mutex::new(Vec::new())))
         .manage(reader_state())
-        .on_menu_event(|app, ev| {
-            // single-window app: the manager is a page in the workspace, and
-            // both of these items are ways of asking for it. "backups" lands
-            // on its section: the item exists because scheduled backups are
-            // not something you go looking for under connection && mounts,
-            // and that reasoning covers the scroll past ship and mounts too
-            //
-            // On the ship page, the page goes first: latOpenManager asks about
-            // unsaved work (the front document and parked tabs) before the
-            // window leaves, which a direct show_manager skips. The manager
-            // page itself, or no window yet, has nothing to ask about.
-            let section = match ev.id().as_ref() {
-                "manager" => Some(None),
-                "backups" => Some(Some("backups")),
-                _ => None,
-            };
-            if let Some(section) = section {
-                match app.get_webview_window("workspace") {
-                    Some(w) if !commands::on_shell_page(&w) => {
-                        let _ = w.eval(manager_menu_js(section));
-                    }
-                    _ => {
-                        commands::show_manager(app, section).ok();
-                    }
-                }
-                return;
-            }
-            // The File menu drives the ship UI's OWN buttons instead of
-            // reimplementing them here. The workspace webview is the lattice
-            // page itself (the window navigates to the bridge, it does not
-            // frame it), so a click on the real element runs the real handler
-            // — one code path, and the upload picker, template dialog and
-            // dirty-state logic keep working with no Rust counterpart to drift.
-            // Edit and Read are state in the page, not a button to click
-            let read = match ev.id().as_ref() {
-                "view-editor" => Some("latSetRead(false)"),
-                "view-preview" => Some("latSetRead(true)"),
-                _ => None,
-            };
-            if let Some(call) = read {
-                if let Some(w) = app.get_webview_window("workspace") {
-                    let _ = w.eval(format!("if(window.latSetRead){call}"));
-                }
-                return;
-            }
-            let btn = match ev.id().as_ref() {
-                "file-new" => "newfile",
-                "file-new-folder" => "newfolder",
-                "file-new-template" => "newtmpl",
-                "file-upload-files" => "upfiles",
-                "file-upload-folder" => "updir",
-                "file-save" => "save",
-                "view-tree" => "treet",
-                "view-controls" => "ctlt",
-                _ => return,
-            };
-            if let Some(w) = app.get_webview_window("workspace") {
-                // The buttons are HIDDEN on desktop, not removed, precisely so
-                // this keeps working. A missing element is a no-op rather than
-                // an error: the menu exists before the page has finished
-                // booting, and early clicks must not throw into the webview.
-                let _ = w.eval(format!(
-                    "(function(){{var b=document.getElementById('{btn}');if(b)b.click();}})()"
-                ));
-            }
-        })
+        .on_menu_event(|app, ev| keys::run(app, ev.id().as_ref()))
         .setup(|app| {
+            #[cfg(target_os = "macos")]
             build_menu(app)?;
             let handle = app.handle().clone();
             // the urb engine (engine.rs)
@@ -525,17 +404,4 @@ fn main() {
                 }
             }
         });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::manager_menu_js;
-
-    #[test]
-    fn preferences_go_through_the_page_first() {
-        let js = manager_menu_js(Some("backups"));
-        assert!(js.contains("var s=\"backups\";if(window.latOpenManager)window.latOpenManager(s);"));
-        assert!(js.contains("invoke('open_manager',{section:s})"));
-        assert!(manager_menu_js(None).contains("var s=null;"));
-    }
 }
