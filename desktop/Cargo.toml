@@ -1,6 +1,6 @@
 [package]
 name = "lattice-desktop"
-version = "1.0.16"
+version = "1.0.17"
 edition = "2021"
 #  Never goes to crates.io: the desktop app ships as bundles and lattice-fs
 #  is consumed by path. Saying so keeps `cargo publish` from being a slip, and
@@ -42,9 +42,11 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 #  filled by scripts/mesa-deps.sh). The lock pins prettyplease to 0.2.37:
 #  bindgen 0.73 takes syn 2 or 3 and prettyplease 0.2 or 0.3, and a fresh
 #  resolve pairs syn 2 with prettyplease 0.3 (syn 3), which does not compile.
-urb-engine = { package = "urb", git = "https://github.com/nisfeb/urb-fetch.git", rev = "89ca9ec6bbde7404f6b73ed67652ababdd2410e4", features = ["native"], optional = true }
-urb-render = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "89ca9ec6bbde7404f6b73ed67652ababdd2410e4", optional = true }
-urb-gateway = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "89ca9ec6bbde7404f6b73ed67652ababdd2410e4", optional = true }
+#  The pin is 89ca9ec plus Core::expire_revs and its tests (urb-fetch PR #17, branch
+#  feat-expire-revs), which a reload uses to drop a ship's kept revision list.
+urb-engine = { package = "urb", git = "https://github.com/nisfeb/urb-fetch.git", rev = "15263de2000b38915b44740c3c10905cf7f041fc", features = ["native"], optional = true }
+urb-render = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "15263de2000b38915b44740c3c10905cf7f041fc", optional = true }
+urb-gateway = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "15263de2000b38915b44740c3c10905cf7f041fc", optional = true }
 
 [features]
 #  Off for a target that cannot build libmesa: the app then ships without
