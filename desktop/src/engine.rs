@@ -387,6 +387,34 @@ mod tests {
         }))
     }
 
+    /// The hard rule as a test: the engine reads and does nothing else.
+    /// Every request it names is a Read, it submits in one place, and it
+    /// never pokes, peeks, publishes, hears an inbox or calls a forum or
+    /// a furum board. A change that needs any of those has to delete
+    /// this test on purpose, and the spec says it must not.
+    #[test]
+    fn only_reads_are_submitted() {
+        let src = include_str!("engine.rs");
+        let code = &src[..src.find("\n#[cfg(test)]\nmod tests").expect("the tests")];
+        let named: Vec<&str> = code
+            .match_indices("Request::")
+            .map(|(i, _)| {
+                let rest = &code[i + 9..];
+                &rest[..rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len())]
+            })
+            .collect();
+        assert_eq!(named, ["Read"], "the engine names only Request::Read");
+        for word in ["Poke", "Peek", "Inbox", "Furum", "Forum", "PubPut", "PubRemove", "Pub {", "Watch"] {
+            assert!(!code.contains(&format!("Request::{word}")), "{word}");
+        }
+        for word in ["FurumCall", "ForumCall", "submit_as", ".call(", "submit_open_as"] {
+            assert!(!code.contains(word), "the engine uses {word}");
+        }
+        assert_eq!(code.matches(".submit(").count(), 1, "one submit, in submit_read");
+        assert!(code.contains("fn submit_read<"));
+        assert_eq!(code.matches("submit_read(").count(), 1, "submit_read, called once");
+    }
+
     #[test]
     fn failures_map_by_the_gateways_codes() {
         let f = |m: &str, later| Failure { later, ..Failure::urb(m) };
