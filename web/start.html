@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lattice</title>
+<style>
+:root{--amber:#f9a804;--amber-2:#ffcf6b;--coral:#ff8c5a;--bg:#101541;--deep:#080b25;--surface:#1a2058;--line:#2e3480;--text:#f7f5ee;--soft:#aeb0d1;--sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--deep);color:var(--text);font:17px/1.6 var(--sans);-webkit-font-smoothing:antialiased}
+a{color:var(--amber);text-decoration:none}
+a:hover{color:var(--amber-2)}
+.wrap{max-width:760px;margin:0 auto;padding:0 28px}
+.hero{position:relative;overflow:hidden;padding:96px 0 80px;background:radial-gradient(ellipse at 20% 10%,rgba(249,168,4,.22),transparent 55%),radial-gradient(ellipse at 90% 100%,rgba(255,140,90,.16),transparent 50%),linear-gradient(180deg,var(--bg),var(--deep))}
+.grid{position:absolute;inset:-40%;background-image:linear-gradient(45deg,rgba(249,168,4,.07) 1px,transparent 1px),linear-gradient(-45deg,rgba(249,168,4,.07) 1px,transparent 1px);background-size:44px 44px;animation:drift 40s linear infinite;pointer-events:none}
+@keyframes drift{to{transform:translate(44px,44px)}}
+.mark{display:flex;align-items:center;gap:14px;font:500 22px var(--mono);letter-spacing:.02em;color:var(--amber-2);position:relative}
+.mark svg{width:46px;height:46px;filter:drop-shadow(0 0 18px rgba(249,168,4,.45))}
+h1{position:relative;font-weight:800;font-size:clamp(40px,7vw,68px);line-height:1.02;letter-spacing:-.03em;margin:34px 0 22px}
+h1 em{font-style:normal;background:linear-gradient(90deg,var(--amber),var(--coral));-webkit-background-clip:text;background-clip:text;color:transparent}
+.lede{position:relative;font-size:20px;color:var(--soft);max-width:34em;margin:0}
+.lede b{color:var(--text);font-weight:600}
+.addr{position:relative;display:inline-block;margin-top:30px;padding:10px 16px;border:1px solid var(--line);border-radius:10px;background:rgba(26,32,88,.6);font:15px var(--mono);color:var(--amber-2)}
+.addr span{color:var(--soft)}
+section{padding:64px 0;border-top:1px solid #151a4a}
+h2{font-size:28px;letter-spacing:-.02em;margin:0 0 14px}
+h2 small{display:block;font:600 12px var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--amber);margin-bottom:10px}
+p{margin:0 0 16px;color:#dcdaf0}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:14px;margin-top:26px}
+.card{display:block;padding:20px;border-radius:14px;background:linear-gradient(160deg,var(--surface),#141a4e);border:1px solid var(--line);transition:transform .2s,border-color .2s,box-shadow .2s}
+.card:hover{transform:translateY(-3px);border-color:var(--amber);box-shadow:0 10px 30px rgba(249,168,4,.15)}
+.card b{display:block;color:var(--text);font-size:17px;margin-bottom:4px}
+.card span{color:var(--soft);font-size:15px}
+.versus{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:26px}
+@media (max-width:620px){.versus{grid-template-columns:1fr}}
+.id{padding:24px;border-radius:16px;border:1px solid var(--line);background:#11164a}
+.id.keep{border-color:rgba(249,168,4,.55);background:linear-gradient(160deg,rgba(249,168,4,.12),#11164a 60%)}
+.id h3{margin:0 0 4px;font-size:20px}
+.id .tag{font:12px var(--mono);color:var(--soft);margin-bottom:14px}
+.id ul{margin:0;padding-left:18px;color:#dcdaf0}
+.id li{margin:6px 0}
+.kinds{margin-top:18px;display:grid;gap:10px}
+.kind{padding:14px 16px;border-left:3px solid var(--amber);background:rgba(26,32,88,.5);border-radius:0 10px 10px 0}
+.kind b{color:var(--amber-2)}
+.powers{list-style:none;padding:0;margin:24px 0 0;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.powers li{padding:16px 18px;border-radius:12px;background:#11164a;border:1px solid #1f2566}
+.powers li b{display:block;color:var(--text)}
+.powers li span{color:var(--soft);font-size:15px}
+.go{display:flex;flex-wrap:wrap;gap:12px;margin-top:28px}
+.btn{padding:12px 20px;border-radius:999px;font-weight:600;border:1px solid var(--amber);color:var(--amber)}
+.btn.solid{background:var(--amber);color:var(--deep)}
+.btn.solid:hover{background:var(--amber-2);color:var(--deep)}
+.btn:hover{color:var(--amber-2);border-color:var(--amber-2)}
+footer{padding:40px 0 70px;color:var(--soft);font-size:14px;text-align:center;border-top:1px solid #151a4a}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="grid"></div>
+  <div class="wrap">
+    <div class="mark">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="14" fill="#101541"/><g stroke="#f9a804" stroke-width="3" stroke-linecap="round" fill="none"><path d="M8 24 24 8M8 40 40 8M8 56 56 8M24 56 56 24M40 56 56 40"/><path d="M40 8 56 24M24 8 56 40M8 8 56 56M8 24 40 56M8 40 24 56"/></g></svg>
+      lattice
+    </div>
+    <h1>The internet you <em>own</em>.</h1>
+    <p class="lede">Your notes live on someone else's server. Your posts live on someone else's platform. Your AI forgets you the moment you close the tab. <b>lattice turns that around.</b> People run it on personal servers they own outright, and use it to write, to publish, and to give their AI agents a memory that stays.</p>
+    <div class="addr"><span>you're reading</span> urb://~nisfeb/start</div>
+  </div>
+</header>
+
+<main>
+<section>
+  <div class="wrap">
+    <h2><small>Look around</small>Nothing to sign up for.</h2>
+    <p>This page came straight from someone's own node, not from a website. Type any <b>urb://</b> address in the bar above and you're there. Follow links wherever they lead, and leave comments wherever people have opened their pages to them. Click an urb:// link anywhere on your computer and it opens right here.</p>
+    <div class="cards">
+      <a class="card" href="urb://~nisfeb/site/lattice/lattice"><b>lattice, up close</b><span>What it does and how it works</span></a>
+      <a class="card" href="urb://~nisfeb/site/talon/index"><b>Talon</b><span>Chat and calls, on phone and desktop</span></a>
+      <a class="card" href="urb://~nisfeb/site/auspex/index"><b>Auspex</b><span>Mail between nodes, signed end to end</span></a>
+      <a class="card" href="urb://~nisfeb/site/index"><b>Everything else</b><span>The rest of what we make</span></a>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><small>Who you are here</small>Right now, you're a comet.</h2>
+    <p>The app made you one on this computer in a couple of seconds. It's a real identity on the network, good enough to read and to comment. It just isn't built to last.</p>
+    <div class="versus">
+      <div class="id">
+        <h3>Comet</h3>
+        <div class="tag">what you have now</div>
+        <ul>
+          <li>Free, instant, no account</li>
+          <li>A long name, eight words strung together</li>
+          <li>Lives on this computer only. Delete the app's data and it's gone</li>
+          <li>Publishers treat comets as strangers, and can mute them all at once</li>
+        </ul>
+      </div>
+      <div class="id keep">
+        <h3>Permanent identity</h3>
+        <div class="tag">a name you keep</div>
+        <ul>
+          <li>Yours for good, on every app and every device</li>
+          <li>People learn it and know it's you</li>
+          <li>What you say under it builds a reputation</li>
+          <li>Runs as your own node, with lattice on it</li>
+        </ul>
+      </div>
+    </div>
+    <div class="kinds">
+      <div class="kind"><b>Azimuth</b> is Urbit's original identity registry, kept on Ethereum. Its names are the short, memorable ones, like ~sampel-palnet.</div>
+      <div class="kind"><b>Groundwire</b> records identities on Bitcoin. They look like a comet's long name, but anyone can check the record and see you're not a throwaway.</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2><small>With a node of your own</small>This is where it gets good.</h2>
+    <ul class="powers">
+      <li><b>Publish anything</b><span>Pages to other nodes, or out to the open web</span></li>
+      <li><b>Write in Writer</b><span>Real documents, with every revision kept</span></li>
+      <li><b>Share precisely</b><span>Pages and folders, with exactly who you choose</span></li>
+      <li><b>Follow and bookmark</b><span>Keep up with the people you read</span></li>
+      <li><b>Give your AI a memory</b><span>Claude Code and Hermes remember what they learn and read your notes, each on a key you can revoke</span></li>
+      <li><b>Keep it all yours</b><span>On a server you control, not in someone's cloud</span></li>
+    </ul>
+    <p style="margin-top:26px">When you're ready, choose <b>Connect a node</b> at the top right. Everything you've read stays right where it is.</p>
+    <div class="go">
+      <a class="btn solid" href="https://groundwire.io">Get a Groundwire identity</a>
+      <a class="btn" href="https://urbit.org/overview/running-urbit">Run an Azimuth node</a>
+      <a class="btn" href="urb://~nisfeb/site/lattice/lattice">Put lattice on your node</a>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>Made for the people who'd rather own it. Published from ~nisfeb.</footer>
+</body>
+</html>

@@ -1,13 +1,33 @@
-# Start here
+# lattice
 
-lattice is a way to publish pages on Urbit, a network of personal servers. You are reading through a private reader identity this app made on your computer, so you need no Urbit server of your own to read.
+Most of the internet is rented. Your notes live on someone else's server, your posts live on someone else's platform, and your AI forgets you every time you close the tab.
 
-Open any address that looks like urb://~sampel-palnet/page in the field above, or click an urb:// link anywhere on your computer and lattice opens it here.
+lattice is the other way around. People run it on their own Urbit nodes, small personal servers they own outright, and use it to write, to publish, and to give their AI agents a memory that stays put. What you're reading right now came straight from one of those nodes, not from a website.
 
-## Places to start
+## Look around
 
-=> urb://~nisfeb/start The live version of this list
+You don't need anything to start. Put an urb:// address in the bar above, follow links wherever they go, and leave comments where people have opened their pages to them. Any urb:// link you click elsewhere on your computer opens here.
 
-## What you can do here
+=> urb://~nisfeb/site/lattice/lattice What lattice does, in more depth
+=> urb://~nisfeb/site/talon/index Talon, chat and calls on Urbit
+=> urb://~nisfeb/site/auspex/index Auspex, mail between nodes
+=> urb://~nisfeb/site/index Everything else we make
 
-Read, follow links between pages, and go back and forward. Bookmarking, commenting and following a ship need a ship of your own: connect one from "Connect a ship" at the top right whenever you like, and everything you can read here stays readable.
+## Who you are here
+
+Right now you're a comet. The app made you one on this computer in a few seconds: a free, throwaway identity with a long name made of eight words. It's enough to read and to comment. It isn't enough to be known. Comets cost nothing to make, so publishers tend to treat them as strangers, and a page owner can mute every comet at once. Delete the app's data and yours is gone for good.
+
+A permanent identity is a name you keep. People learn it, it follows you from app to app and device to device, and what you say under it builds up into a reputation. There are two kinds.
+
+* Azimuth is Urbit's original registry, kept on Ethereum. Its names are the short ones, like ~sampel-palnet.
+* Groundwire records identities on Bitcoin. They have a comet's long name, but nodes can check the record and see you're not a throwaway.
+
+## With a node of your own
+
+Run your identity as a node with lattice on it and the rest opens up. You can publish your own pages, to other nodes or to the open web. You can write in Writer and keep private notes with their full history. You can bookmark, follow the people you read, and share pages and folders with exactly who you choose. And your AI agents get a memory: Claude Code and Hermes can remember what they learn, read your notes, and pick up where they left off, each with its own key you can revoke.
+
+When you're ready, choose "Connect a node" at the top right. Everything you've read stays where it is.
+
+=> https://groundwire.io Get a Groundwire identity
+=> https://urbit.org/overview/running-urbit Run a node with an Azimuth identity
+=> urb://~nisfeb/site/lattice/lattice Put lattice on your node

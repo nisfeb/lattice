@@ -630,18 +630,18 @@ mod tests {
     #[test]
     fn home_shows_the_start_list_and_recent_reads() {
         let s = home(None, &[]);
-        assert!(s.html.contains("<h1>Start here</h1>"), "the compiled-in copy");
-        assert!(s.html.contains("href=\"/read?url=urb%3A%2F%2F~nisfeb%2Fstart\""));
+        assert!(s.html.contains("<h1>lattice</h1>"), "the compiled-in copy");
+        assert!(s.html.contains("href=\"/read?url=urb%3A%2F%2F~nisfeb%2Fsite%2Flattice%2Flattice\""));
         assert!(s.html.contains("kept only on this computer") && !s.html.contains("Clear history"));
         let live = native("# Live list\n=> urb://~nec/x A page", "gmi");
         let recent = [Entry { url: "urb://~zod/a".into(), title: "A <page>".into(), at: 1 }];
         let s = home(Some(&live), &recent);
-        assert!(s.html.contains("<h1>Live list</h1>") && !s.html.contains("Start here</h1>"));
+        assert!(s.html.contains("<h1>Live list</h1>") && !s.html.contains("<h1>lattice</h1>"));
         assert!(s.html.contains("<a href=\"/read?url=urb%3A%2F%2F~zod%2Fa\">A &lt;page&gt;</a>"));
         assert!(s.html.contains("action=\"/history/clear\""));
         // a start page that is not gemtext is not trusted into the home
         let s = home(Some(&native("<script>x</script>", "html")), &[]);
-        assert!(s.html.contains("<h1>Start here</h1>") && !s.html.contains("<script>x"));
+        assert!(s.html.contains("<h1>lattice</h1>") && !s.html.contains("<script>x"));
     }
 
     #[test]
