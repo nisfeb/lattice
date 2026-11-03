@@ -5,6 +5,8 @@ mod commands;
 mod config;
 #[cfg(feature = "urb-engine")]
 mod engine;
+#[cfg(feature = "urb-engine")]
+mod history;
 mod install;
 mod local;
 mod mounts;
