@@ -10,7 +10,9 @@
 # Env:    FODT_LARGE=1 also times 13-large.fodt (1.5 MB): its first view
 #         renders (seconds), the second reads the cache (well under one).
 #         B_URL and B_COOKIE: a second fake ship, which reads the page
-#         over urb:// as a peer (it must already know A, a |hi each way).
+#         over urb:// as a peer (it must already know A, a |hi each way),
+#         and then four shared hostile corpus files: each must arrive as
+#         a sandboxed frame holding an inert render.
 #
 # The vault copy and the reader are what a peer receives: a published
 # fodt page is its rendered HTML under %html (spec, Decisions 4).
@@ -33,7 +35,8 @@ SHIP=$(curl -s -m 30 -H "$CK" "$URL/~/host")
 INST=/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app
 
 cleanup() {
-  for p in w7test/doc w7test/big w7test/md; do
+  for p in w7test/doc w7test/big w7test/md w7test/h-script-iframe w7test/h-bad-links \
+           w7test/h-style-injection w7test/h-external-image; do
     code -X POST "$A/page-del?name=$p" >/dev/null
   done
 }
@@ -142,6 +145,57 @@ if [ -n "${B_URL:-}" ]; then
   has   "the peer's reader shows the heading" "Retitled level 1" "$r"
   has   "the peer frames it (the %html branch)" "<iframe" "$r"
   hasnt "the peer gets no flat ODT" "office:document" "$r"
+
+  # hostile documents, shared: the peer's reader shows their text and
+  # nothing from them can run. audit parses the reader page's frame and
+  # the document in its srcdoc, and prints the frame's sandbox, RENDER
+  # for the fodt sheet, TEXT for the words it shows, and one BAD line for
+  # each element or attribute that could run, load or navigate.
+  audit() { python3 -c 'import html,re,sys
+from html.parser import HTMLParser
+f=re.search(r"<iframe\b[^>]*>",sys.stdin.read())
+if not f: sys.exit(1)
+at=lambda n:(re.search(r"\s"+n+r"=\"([^\"]*)\"",f.group(0)) or [None,""])[1]
+print("SANDBOX="+html.unescape(at("sandbox")) if re.search(r"\ssandbox=",f.group(0)) else "NO-SANDBOX")
+doc=html.unescape(at("srcdoc"))
+class A(HTMLParser):
+  def __init__(s): super().__init__(); s.tag=None
+  def handle_starttag(s,t,a):
+    s.tag=t
+    if ":" in t: print("BAD raw tag "+t)
+    if t in ("iframe","img","svg","object","embed","form","meta","base","link","frame"): print("BAD element "+t)
+    for k,v in a:
+      v=(v or "").strip().lower()
+      if k.startswith("on"): print("BAD handler "+k)
+      if k in ("href","src","action","xlink:href") and not re.match(r"(https?:|mailto:|urb:|#|/[^/]|\.)",v): print("BAD "+k+"="+v[:40])
+      if "evil.example" in v: print("BAD off-site "+k)
+      if k=="style" and ("url(" in v or "expression(" in v): print("BAD style "+v[:40])
+      if k=="class" and "fodt" in v.split(): print("RENDER")
+  def handle_data(s,d):
+    if s.tag=="script" and re.search(r"PWNED|evil",d): print("BAD script from the page")
+    elif s.tag=="style" and re.search(r"url\(|expression\(",d): print("BAD style sheet")
+    elif d.strip(): print("TEXT "+d.strip()[:80])
+A().feed(doc)'; }
+  HOSTILE="script-iframe bad-links style-injection external-image"
+  for h in $HOSTILE; do
+    is "make hostile $h" 200 "$(save "w7test/h-$h" fodt "$CORPUS/hostile/$h.fodt")"
+    is "share hostile $h for ships" 200 "$(code -X POST "$A/page-share?name=w7test/h-$h&mode=shared")"
+  done
+  for h in $HOSTILE; do
+    d=""
+    for _ in $(seq 1 30); do
+      d=$(curl -s -m 120 -H "$BK" -G "$BA" --data-urlencode "url=urb://$SHIP/w7test/h-$h" | audit) &&
+        grep -qx RENDER <<<"$d" && break
+      d=""; sleep 3
+    done
+    has   "peer reads hostile $h: a framed render" RENDER "$d"
+    has   "peer reads hostile $h: the frame is sandboxed" "SANDBOX=" "$(head -1 <<<"$d")"
+    hasnt "peer reads hostile $h: without same-origin" "allow-same-origin" "$(head -1 <<<"$d")"
+    is    "peer reads hostile $h: nothing that runs, loads or navigates" "" "$(grep '^BAD' <<<"$d" | sort -u | head -5)"
+  done
+  has "peer reads hostile script-iframe: its text shows" "TEXT Escaped markup in text" \
+    "$(curl -s -m 120 -H "$BK" -G "$BA" --data-urlencode "url=urb://$SHIP/w7test/h-script-iframe" | audit)"
+  for h in $HOSTILE; do code -X POST "$A/page-del?name=w7test/h-$h" >/dev/null; done
 fi
 
 if [ -n "${FODT_LARGE:-}" ]; then
