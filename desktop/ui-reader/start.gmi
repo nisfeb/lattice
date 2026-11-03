@@ -1,13 +1,68 @@
 # Start here
 
-lattice is a way to publish pages on Urbit, a network of personal servers. You are reading through a private reader identity this app made on your computer, so you need no Urbit server of your own to read.
+Welcome to lattice. This page is the first thing you see, and you can come back to it any time.
 
-Open any address that looks like urb://~sampel-palnet/page in the field above, or click an urb:// link anywhere on your computer and lattice opens it here.
+## What lattice is
+
+lattice is a knowledge base for you and your AI agents. It gives your agents long-term memory and a library of reference they can read. It keeps your own notes and documents in one private store. And it publishes what you choose, to other people's servers or to the open web.
+
+It runs on Urbit, a network of personal servers. Each server is called a node (Urbit people also say "ship"), and each node has a name that starts with a tilde, like ~nisfeb. A page on the network has an address like urb://~nisfeb/start: the node's name, then the page's name. That is the address of this page.
+
+## What you can do right now
+
+You chose to use lattice anonymously. The app made a reader identity for you on this computer, so you can use the network without a node of your own. With it you can:
+
+* Read any page a node has published to the network. Type an urb:// address into the field above.
+* Follow links from page to page, and go back and forward.
+* Open urb:// links you click anywhere on your computer. lattice opens them here.
+* Comment on a page. The page's owner decides whether your comment appears, and many pages have comments turned off.
+
+## What a node adds
+
+A node is a personal server of your own. Connect one and lattice can do much more:
+
+* Host your own pages and publish them, to other nodes or to the open web.
+* Bookmark pages and follow other nodes, so you see what they publish.
+* Write documents in Writer, lattice's editor, and keep private notes with full history.
+* Share pages and folders with the people you choose.
+* Give your AI agents memory. Plugins for Claude Code and Hermes let an agent remember what it learns, recall it later, and read your notes and the pages you follow. Each agent gets its own key, and you can revoke any key on its own.
+
+Everything you can read here stays readable after you connect.
+
+## Anonymous reader or permanent identity
+
+On the network, every node and every reader has a name, and your comments carry yours. There are two kinds of name you can have.
+
+### The anonymous reader (a comet)
+
+The identity the app made for you is a comet. A comet is a free Urbit identity that a computer makes for itself in a few seconds, with nobody to ask. Yours lives in this install of the app.
+
+* It costs nothing and needs no sign-up.
+* It belongs to this computer. If you delete the app's data, it is gone for good, and you can't get the same name back.
+* Its name is long, eight two-syllable words in a row. That is the name publishers see when you comment.
+* Because anyone can make comets for free, publishers may trust them less. A page owner can mute every comet at once.
+
+A comet is a good way to look around. It is not a name to build a reputation on.
+
+### A permanent identity
+
+A permanent Urbit identity is a name you own and keep. It goes with you across apps and devices, and so does your reputation. People learn your name and can tell it is you. There are two kinds.
+
+* Azimuth is Urbit's original identity registry, kept on Ethereum. Its identities include planets, the names people use (short ones like ~sampel-palnet), and stars, which are fewer and help run the network.
+* Groundwire identities are recorded on Bitcoin. A Groundwire comet has a comet's long name, but its record on Bitcoin makes it permanent, and nodes that check that record can tell it apart from a throwaway comet.
+
+### Getting one and connecting it
+
+To use a permanent identity with lattice, you run it as a node with lattice installed. Then choose "Connect a node" at the top right of this app. You can do that whenever you like.
+
+=> https://groundwire.io Groundwire: get a Groundwire comet
+=> https://urbit.org/overview/running-urbit Urbit: run a node with an Azimuth identity
+=> urb://~nisfeb/site/lattice/lattice Install lattice on your node
 
 ## Places to start
 
-=> urb://~nisfeb/start The live version of this list
-
-## What you can do here
-
-Read, follow links between pages, and go back and forward. Bookmarking, commenting and following a ship need a ship of your own: connect one from "Connect a ship" at the top right whenever you like, and everything you can read here stays readable.
+=> urb://~nisfeb/start The live version of this page
+=> urb://~nisfeb/site/lattice/lattice lattice: what it is and how it works
+=> urb://~nisfeb/site/talon/index Talon: a chat and calls app for Urbit, on phone and desktop
+=> urb://~nisfeb/site/auspex/index Auspex: signed mail between Urbit nodes
+=> urb://~nisfeb/site/index nisfeb: chat, mail, calendar and more, built for Urbit
