@@ -22,6 +22,14 @@
 use urb_render::gateway;
 
 use crate::engine::{NativePage, ReadError};
+use crate::history::Entry;
+
+/// The start list's address: a page the owner keeps, read live on the
+/// reader's home, with a copy compiled in for the first run and for when
+/// it cannot be read.
+pub const START_URL: &str = "urb://~nisfeb/start";
+/// The compiled-in copy of the start list.
+pub const START: &str = include_str!("../ui-reader/start.gmi");
 
 /// The policy for the reader's own pages: its stylesheet inline, its one
 /// script file, nothing else, and never framed.
@@ -327,6 +335,41 @@ pub fn bad_address(given: &str) -> Shown {
     Shown { csp: OWN, html: chrome("Not an address", given, None, &main, false), title: "Not an address".into() }
 }
 
+/// The reader's home: the address field (in the bar), the start list
+/// (the live page when `live` has it, else the compiled-in copy), and the
+/// pages read recently, with Clear history.
+pub fn home(live: Option<&NativePage>, recent: &[Entry]) -> Shown {
+    let body = live.filter(|p| gateway::render_as(&p.mark, p.body.as_bytes()) == "gmi").map_or(START, |p| p.body.as_str());
+    let start = lossy(main_of(&gateway::render_gemtext(body.as_bytes(), START_URL.as_bytes(), &link_for(START_URL))));
+    let mut main = format!(
+        "<section class=\"home-page\"><div class=\"start{}\">{start}</div>",
+        if live.is_some() { " live" } else { "" }
+    );
+    main.push_str("<div class=\"recent-head\"><h2>Recently read</h2>");
+    if !recent.is_empty() {
+        main.push_str(
+            "<form method=\"post\" action=\"/history/clear\"><button type=\"submit\">Clear history</button></form>",
+        );
+    }
+    main.push_str("</div>");
+    if recent.is_empty() {
+        main.push_str("<p class=\"words\">Pages you read appear here. They are kept only on this computer.</p>");
+    } else {
+        main.push_str("<ul class=\"recent\">");
+        for e in recent.iter().take(50) {
+            main.push_str(&format!(
+                "<li><a href=\"{}\">{}</a> <span class=\"when\">{}</span></li>",
+                esc(&read_href(&e.url)),
+                esc(&e.title),
+                esc(&e.url)
+            ));
+        }
+        main.push_str("</ul>");
+    }
+    main.push_str("</section>");
+    Shown { csp: OWN, html: chrome("lattice reader", "", Some(Mode::Shipless), &main, false), title: "lattice reader".into() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,7 +470,7 @@ mod tests {
         assert_eq!(s.html.matches("<button type=\"button\" disabled").count(), 3);
         let s = page(PAGE, &native("x", "gmi"), Mode::ShipDown, "k");
         assert_eq!(s.html.matches("Your ship isn't answering</span>").count(), 3);
-        assert!(!s.html.contains("<form method=\"post\"") && !s.html.contains("method=\"post\""));
+        assert!(!s.html.contains("method=\"post\""));
     }
 
     #[test]
@@ -446,6 +489,23 @@ mod tests {
         assert!(s.html.contains("http-equiv=\"refresh\""));
         let s = bad_address("http://x\"<");
         assert!(s.html.contains("That isn't an urb:// address") && s.html.contains("http://x&#34;&lt;"));
+    }
+
+    #[test]
+    fn home_shows_the_start_list_and_recent_reads() {
+        let s = home(None, &[]);
+        assert!(s.html.contains("<h1>Start here</h1>"), "the compiled-in copy");
+        assert!(s.html.contains("href=\"/read?url=urb%3A%2F%2F~nisfeb%2Fstart\""));
+        assert!(s.html.contains("kept only on this computer") && !s.html.contains("Clear history"));
+        let live = native("# Live list\n=> urb://~nec/x A page", "gmi");
+        let recent = [Entry { url: "urb://~zod/a".into(), title: "A <page>".into(), at: 1 }];
+        let s = home(Some(&live), &recent);
+        assert!(s.html.contains("<h1>Live list</h1>") && !s.html.contains("Start here</h1>"));
+        assert!(s.html.contains("<a href=\"/read?url=urb%3A%2F%2F~zod%2Fa\">A &lt;page&gt;</a>"));
+        assert!(s.html.contains("action=\"/history/clear\""));
+        // a start page that is not gemtext is not trusted into the home
+        let s = home(Some(&native("<script>x</script>", "html")), &[]);
+        assert!(s.html.contains("<h1>Start here</h1>") && !s.html.contains("<script>x"));
     }
 
     #[test]
