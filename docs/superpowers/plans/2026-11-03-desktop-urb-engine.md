@@ -104,7 +104,7 @@ The riskiest unknown first: libmesa has never been built by mesa-sys on macOS, a
 ### Task 5: A real native read on the fleet
 
 **Files:**
-- Create: `desktop/tests/engine_fleet.rs` (needs `engine` exposed: add `desktop/src/lib.rs` re-exporting `engine` for integration tests, or put the test in `engine.rs` as an `#[ignore]` test; prefer the latter to avoid a lib target)
+- Modify: `desktop/src/engine.rs` (an `#[ignore]` test, `engine_reads_a_fleet_page`; the desktop has no lib target, so it lives beside the code)
 - Create: `scripts/desktop-engine-fleet.sh`
 
 - [ ] Step 1: Write `scripts/desktop-engine-fleet.sh`: require `FLEET_WHO`; `fleet claim lattice-gate-peer "$FLEET_WHO"` (exit 0 with `skipped: claimed by X` if held); `trap 'fleet release lattice-gate-peer' EXIT`; `fleet reset lattice-gate-peer lattice`; wait until the serf is over 110 s old (as urb-fetch's `core/ci/settle.mjs`); mint a cookie with `scripts/hoon-test-kit/ship-cookie.sh ~/fleet/piers/wep http://localhost:8151 "$tmp/wep.jar"` (VERE from fleet's `kernels.conf`); publish `POST /apps/lattice/save?path=desktop-engine-check` with a gemtext body holding a nonce, a link `=> urb://~wep/other` and a relative link; then `cd desktop && LATTICE_FLEET=1 FLEET_PAGE=urb://~wep/desktop-engine-check FLEET_NONCE=$nonce cargo test engine_reads_a_fleet_page -- --ignored --nocapture`.
