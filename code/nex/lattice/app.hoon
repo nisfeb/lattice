@@ -430,8 +430,10 @@
         ::  moment it could have happened anyway.
         ;<  ~  bind:m  (carry-old-data root)
         ;<  ~  bind:m  retire-old-app
-        ::  the beacon old lattice-fs builds watch (+old-beacon-arm)
-        ;<  ~  bind:m  (old-beacon-arm root)
+        ::  the beacon old lattice-fs builds watch (+old-beacon-arm).
+        ::  `mir`, whether it is written, is kept for the loop below, so
+        ::  its bumps skip the peek of old-beacon.json (+bump-beacon-as).
+        ;<  mir=?  bind:m  (old-beacon-arm root)
         ::  lay lattice's COMPLETE public grant set through the registry's
         ::  %how action: /pub for foreign readers, every shared page's data
         ::  road, and the share/comment inboxes. One act, server-side merged,
@@ -480,16 +482,17 @@
         ::  And memories have their own beacon, /beacon/know: an agent saves
         ::  one every few prompts, and on /rev each save made every open
         ::  editor, reader tab and mounted filesystem refetch its pages.
-        ;<  ~  bind:m
-          ?:  =([/ %noun] p.sage)  (pure:m ~)
-          ?:  =([/lattice %history-action] p.sage)  (pure:m ~)
-          ?:  =([/lattice %key-action] p.sage)  (pure:m ~)
-          ?:  =([/lattice %know-action] p.sage)  (bump-beacon %know now)
-          ?:  =([/lattice %know-batch] p.sage)  (bump-beacon %know now)
-          ;<  hold=?  bind:m  (pub-holds-beacon root now sage)
-          ?:  hold  (pure:m ~)
-          (bump-beacon %rev now)
-        $
+        ;<  nir=?  bind:m
+          =/  k  (fiber:fiber:nexus ,?)
+          ?:  =([/ %noun] p.sage)  (pure:k mir)
+          ?:  =([/lattice %history-action] p.sage)  (pure:k mir)
+          ?:  =([/lattice %key-action] p.sage)  (pure:k mir)
+          ?:  =([/lattice %know-action] p.sage)  (bump-beacon-as %know now mir)
+          ?:  =([/lattice %know-batch] p.sage)  (bump-beacon-as %know now mir)
+          ;<  hold=?  bind:k  (pub-holds-beacon root now sage)
+          ?:  hold  (pure:k mir)
+          (bump-beacon-as %rev now mir)
+        $(mir nir)
       ::  /shares.sig: the cross-ship share-notice inbox. Foreign ships %add.
       ::  Only our own UI may %del (sender is read from the TRANSPORT, so a
       ::  forged payload cannot curate our list). Same take-poke loop shape as
@@ -5745,18 +5748,36 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
+  ;<  on=(unit json)  bind:m
+    ?.  =(%rev sub)  (pure:(fiber:fiber:nexus ,(unit json)) ~)
+    (peek-as:io (rf up / %'old-beacon.json') ,json)
+  ;<  *  bind:m  (bump-beacon-as sub now ?=([~ %b %.y] on))
+  (pure:m ~)
+::  +bump-beacon-as: +bump-beacon for a caller that already knows whether
+::  the old beacon is written (`mir`, as old-beacon.json says), and so is
+::  spared the peek of it, about a third of the mirror's cost per save.
+::  The writer's loop keeps its own copy from +old-beacon-arm, and this
+::  answers the copy to keep: %.n once the mirror stops taking writes.
+::  A failure found by another bump (+pub-tick's, an evaluator's) writes
+::  the file but not the copy, so the loop's next bump finds it again,
+::  one refused write later.
+::
+++  bump-beacon-as
+  |=  [sub=@ta now=@da mir=?]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
   ::  the beacon must be NESTED (under /beacon). grubbery's keep-SSE does not
   ::  stream a grub at the nexus root (verified: /rev and /bookmarks keeps stay
   ::  silent. Nested grubs like /pub/index stream fine). Gain is not required.
   ;<  ~  bind:m  (put-file (rf up /beacon sub) [/ %json] (numb:enjs:format `@ud`now))
-  ?.  =(%rev sub)  (pure:m ~)
-  ;<  on=(unit json)  bind:m  (peek-as:io (rf up / %'old-beacon.json') ,json)
-  ?.  ?=([~ %b %.y] on)  (pure:m ~)
+  ?.  &(mir =(%rev sub))  (pure:m mir)
   ;<  ok=?  bind:m  (old-beacon-put now)
-  ?:  ok  (pure:m ~)
+  ?:  ok  (pure:m &)
   ::  the mirror stopped taking writes (its folder was deleted, or the
   ::  road taken away): stop trying until the writer next starts
-  (put-file (rf up / %'old-beacon.json') [/ %json] `json`[%b %.n])
+  ;<  ~  bind:m  (put-file (rf up / %'old-beacon.json') [/ %json] `json`[%b %.n])
+  (pure:m |)
 ::  +old-beacon-arm, +old-beacon-put: THE OLD LATTICE-FS BEACON.
 ::
 ::    lattice-fs builds before 2026-11 (the desktop app's among them) watch
@@ -5782,7 +5803,7 @@
 ::
 ++  old-beacon-arm
   |=  root=@ud
-  =/  m  (fiber:fiber:nexus ,~)
+  =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   ;<  sb=path  bind:m  self-base
   ;<  now=@da  bind:m  bowl-now
@@ -5790,7 +5811,8 @@
     ::  a ball-era install's own beacon is the one they watch
     ?:  =(sb app-base:lu)  (pure:(fiber:fiber:nexus ,?) |)
     (old-beacon-put now)
-  (put-file (rf root / %'old-beacon.json') [/ %json] `json`[%b ok])
+  ;<  ~  bind:m  (put-file (rf root / %'old-beacon.json') [/ %json] `json`[%b ok])
+  (pure:m ok)
 ::
 ++  old-beacon-put
   |=  now=@da
