@@ -26,6 +26,18 @@
       packages = forSystems linuxSystems (pkgs: rec {
         default = lattice-desktop;
 
+        # urb-fetch, the urb engine's git source, with its libmesa submodule.
+        # mesa-sys's build script reads libmesa from the checkout around the
+        # crate (../../third_party/libmesa), which cargo's git checkout has
+        # and nix's vendored copy of the one crate does not, so the build
+        # links it in beside the vendor folder (preBuild, below).
+        urb-fetch-src = pkgs.fetchgit {
+          url = "https://github.com/nisfeb/urb-fetch.git";
+          rev = "89ca9ec6bbde7404f6b73ed67652ababdd2410e4";
+          fetchSubmodules = true;
+          hash = "sha256-aqrf4pDoXaojD5MiMa9qlQ3NTKcHViUT4z1tSvspaU4=";
+        };
+
         # The two C sources mesa-sys compiles into the urb engine, as
         # urb-fetch's core/mesa-sys/fetch-deps.sh fetches them (same URLs,
         # same SHA-256s), unpacked into the folder MESA_SYS_DEPS names.
@@ -66,9 +78,16 @@
             # urb-fetch, the urb engine's git source (all its crates are one
             # checkout). fetchgit brings the libmesa submodule with it.
             outputHashes = {
-              "urb-0.0.1" = "sha256-aqrf4pDoXaojD5MiMa9qlQ3NTKcHViUT4z1tSvspaU4=";
+              "urb-0.0.1" = urb-fetch-src.outputHash;
             };
           };
+
+          # the vendored mesa-sys is at $NIX_BUILD_TOP/cargo-vendor-dir/<crate>,
+          # so ../.. is $NIX_BUILD_TOP
+          preBuild = ''
+            ln -sfn ${urb-fetch-src}/third_party "$NIX_BUILD_TOP/third_party"
+            ln -sfn ${urb-fetch-src}/wasm "$NIX_BUILD_TOP/wasm"
+          '';
 
           # libmesa is C23 and built by clang (mesa-sys asks for it when no
           # CC is named, but stdenv names gcc); bindgen reads its headers
