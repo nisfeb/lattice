@@ -4,8 +4,6 @@
 //! besides the engine's own state: bookmarks, follows and comments are ship
 //! actions and are not kept locally.
 
-// nothing reads it until the reader does
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

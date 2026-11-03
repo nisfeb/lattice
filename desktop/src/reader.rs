@@ -33,8 +33,6 @@
 //! none), but its key is unguessable and comes only from the page the
 //! reader just served, and its answer is lattice's `+sandbox-csp`.
 
-// nothing opens the reader until the manager's commands do
-#![allow(dead_code)]
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -436,7 +434,7 @@ fn read(ctx: &Ctx, given: &str) -> Resp {
         Ok(p) => page(ctx, &url, &p),
         Err(e) => {
             crate::commands::dlog(&format!("reader: {url}: {e:?}"));
-            let (status, s) = render::error_page(&url, &e, Mode::Shipless);
+            let (status, s) = render::error_page(&url, &e, Mode::Shipless, ctx.reads.step());
             shown(status, s)
         }
     }
@@ -550,7 +548,6 @@ pub fn port(state: &Reader) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::Status;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const PORT: u16 = 26599;
@@ -567,9 +564,6 @@ mod tests {
         fn read(&self, url: &str, _: Duration, _: bool) -> Result<NativePage, ReadError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             (self.answer)(url)
-        }
-        fn status(&self) -> Status {
-            Status::Ready { our: "~sampel".into() }
         }
     }
 

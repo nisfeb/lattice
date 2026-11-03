@@ -21,8 +21,6 @@
 //! Nothing starts at launch. The thread starts the first time something
 //! asks for a read.
 
-// nothing calls the engine until the reader does
-#![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -78,7 +76,10 @@ pub enum Status {
 /// Something that reads pages: the engine, or a test's stand-in.
 pub trait Reads: Send + Sync {
     fn read(&self, url: &str, budget: Duration, wait_boot: bool) -> Result<NativePage, ReadError>;
-    fn status(&self) -> Status;
+    /// what a start in progress is doing, in words
+    fn step(&self) -> &'static str {
+        ""
+    }
 }
 
 /// what callers hand the host's thread
@@ -94,6 +95,8 @@ struct Running {
 
 struct Inner {
     status: Status,
+    /// what a start is doing, in words for the reader's setup page
+    step: &'static str,
     run: Option<Running>,
 }
 
@@ -131,12 +134,23 @@ impl Engine {
         Engine {
             dir,
             fake,
-            inner: Arc::new(Mutex::new(Inner { status: Status::Off, run: None })),
+            inner: Arc::new(Mutex::new(Inner { status: Status::Off, step: "", run: None })),
         }
     }
 
     pub fn status(&self) -> Status {
         self.inner.lock().unwrap().status.clone()
+    }
+
+    /// What a start in progress is doing: making the identity (the first
+    /// time only) or opening it. Empty when not starting.
+    pub fn step(&self) -> &'static str {
+        let g = self.inner.lock().unwrap();
+        if g.status == Status::Booting {
+            g.step
+        } else {
+            ""
+        }
     }
 
     /// Start the host's thread unless it runs or is starting. A failed
@@ -149,6 +163,7 @@ impl Engine {
         }
         let (jobs_tx, jobs_rx) = channel::<Job>();
         g.status = Status::Booting;
+        g.step = "Starting your reader";
         g.run = Some(Running { jobs: jobs_tx, waker: None });
         drop(g);
         let (dir, fake, inner) = (self.dir.clone(), self.fake.clone(), self.inner.clone());
@@ -215,8 +230,8 @@ impl Reads for Engine {
     fn read(&self, url: &str, budget: Duration, wait_boot: bool) -> Result<NativePage, ReadError> {
         Engine::read(self, url, budget, wait_boot)
     }
-    fn status(&self) -> Status {
-        Engine::status(self)
+    fn step(&self) -> &'static str {
+        Engine::step(self)
     }
 }
 
@@ -251,6 +266,10 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     }
     let log: Log = Arc::new(log_line);
     libmesa_log(log.clone());
+    let step = |w: &'static str| inner.lock().unwrap().step = w;
+    if fake.is_none() && !dir.join("comet.key").exists() {
+        step("Making your private reader identity");
+    }
     let fake = match fake.map(|f| fake_name(dir, f)).transpose() {
         Ok(f) => f,
         Err(e) => return fail(e),
@@ -266,6 +285,7 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     if let Some(run) = &mut inner.lock().unwrap().run {
         run.waker = Some(waker);
     }
+    step("Connecting to the Urbit network");
     let mut host = Host::new(io, random);
     let our = match host.open(fake.is_some()) {
         Ok(o) => o,

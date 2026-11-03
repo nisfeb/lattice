@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clear-reader-history"
+description = "Enables the clear_reader_history command without any pre-configured scope."
+commands.allow = ["clear_reader_history"]
+
+[[permission]]
+identifier = "deny-clear-reader-history"
+description = "Denies the clear_reader_history command without any pre-configured scope."
+commands.deny = ["clear_reader_history"]

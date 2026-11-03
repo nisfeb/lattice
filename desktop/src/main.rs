@@ -271,8 +271,13 @@ fn listen_for_urb(handle: &tauri::AppHandle) {
 fn reader_state() -> reader::Reader {
     reader::Reader(Mutex::new(None))
 }
+/// A build with no engine has no reader to keep.
 #[cfg(not(feature = "urb-engine"))]
-fn reader_state() {}
+struct NoReader;
+#[cfg(not(feature = "urb-engine"))]
+fn reader_state() -> NoReader {
+    NoReader
+}
 
 /// tauri.conf.json's identifier, which the single-instance name is built on
 /// before the config is loaded (a test in urb.rs keeps the two equal).
@@ -479,6 +484,9 @@ fn main() {
             stack::stack_status,
             install::install_grubbery,
             urb::take_urb_links,
+            commands::open_reader,
+            commands::reader_status,
+            commands::clear_reader_history,
         ])
         .build(tauri::generate_context!())
         .expect("error building lattice desktop")

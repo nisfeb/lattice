@@ -21,6 +21,9 @@
     "allow-pick-backup-dir",
     "allow-run-backup-now",
     "allow-verify-backup",
-    "allow-set-theme"
+    "allow-set-theme",
+    "allow-open-reader",
+    "allow-reader-status",
+    "allow-clear-reader-history"
   ]
 }

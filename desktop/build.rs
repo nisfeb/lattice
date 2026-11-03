@@ -67,6 +67,11 @@ fn main() {
             // urb:// links other apps open wait in the app until the ship
             // page takes them into tabs (src/urb.rs)
             "take_urb_links",
+            // the shipless reader, from the manager only (local.json): open
+            // it, ask how its engine is, and empty its local history
+            "open_reader",
+            "reader_status",
+            "clear_reader_history",
         ]),
     ))
     .expect("tauri-build failed")

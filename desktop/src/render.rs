@@ -16,8 +16,6 @@
 //! navigation policy, commands.rs). Every ship action is shown and
 //! disabled with its reason: the reader never acts as anyone.
 
-// nothing shows a page until the reader does
-#![allow(dead_code)]
 
 use urb_render::gateway;
 
@@ -52,13 +50,11 @@ pub const JS: &str = include_str!("../ui-reader/reader.js");
 /// each one is mapped back to the urb:// address it names.
 const LINK_PORT: &str = "1";
 
-/// Why the ship actions are disabled.
+/// Why the ship actions are disabled. One reason today: no ship is
+/// configured. (Slice 2's "your ship isn't answering" is deferred.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// no ship is configured
     Shipless,
-    /// a ship is configured and not answering (slice 2's fallback)
-    ShipDown,
 }
 
 /// The ship actions a reader page offers, each disabled, with its reason.
@@ -68,11 +64,6 @@ pub fn actions(mode: Mode) -> [(&'static str, &'static str); 3] {
             ("Bookmark", "Connect a ship to bookmark"),
             ("Comment", "Connect a ship to comment"),
             ("Follow", "Connect a ship to follow"),
-        ],
-        Mode::ShipDown => [
-            ("Bookmark", "Your ship isn't answering"),
-            ("Comment", "Your ship isn't answering"),
-            ("Follow", "Your ship isn't answering"),
         ],
     }
 }
@@ -279,7 +270,8 @@ fn lossy(b: &[u8]) -> String {
 
 /// What a failed read says, in plain words, with the gateway's own words
 /// beneath where they add something.
-pub fn error_page(url: &str, e: &ReadError, mode: Mode) -> (u16, Shown) {
+/// `step` says what a reader still setting up is doing.
+pub fn error_page(url: &str, e: &ReadError, mode: Mode, step: &str) -> (u16, Shown) {
     let retry = "<p><button type=\"button\" data-go=\"retry\">Try again</button></p>";
     let (status, title, body, refresh) = match e {
         ReadError::NotPublished(w) => (
@@ -311,7 +303,12 @@ pub fn error_page(url: &str, e: &ReadError, mode: Mode) -> (u16, Shown) {
         ReadError::Booting => (
             503,
             "Setting up",
-            "<p>Setting up your reader. This happens once.</p>".to_string(),
+            format!(
+                "<p>Setting up your reader. This happens once.</p>{}<p class=\"words\">lattice is making a private \
+                 reader identity on this computer and joining the Urbit network. The page opens by itself when it \
+                 is ready.</p>",
+                if step.is_empty() { String::new() } else { format!("<p class=\"step\">{}\u{2026}</p>", esc(step)) }
+            ),
             true,
         ),
         ReadError::Failed(w) => (
@@ -468,25 +465,25 @@ mod tests {
             assert!(s.html.contains(&format!(">{why}</span>")));
         }
         assert_eq!(s.html.matches("<button type=\"button\" disabled").count(), 3);
-        let s = page(PAGE, &native("x", "gmi"), Mode::ShipDown, "k");
-        assert_eq!(s.html.matches("Your ship isn't answering</span>").count(), 3);
         assert!(!s.html.contains("method=\"post\""));
     }
 
     #[test]
     fn errors_say_what_happened() {
-        let (st, s) = error_page(PAGE, &ReadError::NotPublished("urb://~zod/a/b is not published".into()), Mode::Shipless);
+        let (st, s) = error_page(PAGE, &ReadError::NotPublished("urb://~zod/a/b is not published".into()), Mode::Shipless, "");
         assert_eq!(st, 404);
         assert!(s.html.contains("connect the ship it was shared with"));
         let (st, s) =
-            error_page(PAGE, &ReadError::Unreachable { later: true, words: "~zod did not answer".into() }, Mode::Shipless);
+            error_page(PAGE, &ReadError::Unreachable { later: true, words: "~zod did not answer".into() }, Mode::Shipless, "");
         assert_eq!(st, 504);
         assert!(s.html.contains("data-go=\"retry\"") && s.html.contains("some networks block it"));
-        let (_, s) = error_page(PAGE, &ReadError::Busy, Mode::Shipless);
+        let (_, s) = error_page(PAGE, &ReadError::Busy, Mode::Shipless, "");
         assert!(s.html.contains("in use by another lattice window"));
-        let (_, s) = error_page(PAGE, &ReadError::Booting, Mode::Shipless);
+        let (_, s) = error_page(PAGE, &ReadError::Booting, Mode::Shipless, "");
         assert!(s.html.contains("Setting up your reader. This happens once."));
         assert!(s.html.contains("http-equiv=\"refresh\""));
+        let (_, s) = error_page(PAGE, &ReadError::Booting, Mode::Shipless, "Making your private reader identity");
+        assert!(s.html.contains("<p class=\"step\">Making your private reader identity\u{2026}</p>"));
         let s = bad_address("http://x\"<");
         assert!(s.html.contains("That isn't an urb:// address") && s.html.contains("http://x&#34;&lt;"));
     }

@@ -585,6 +585,98 @@ pub fn reader_base(_: &AppHandle, _: bool) -> Option<String> {
     None
 }
 
+//  ── the shipless reader, from the manager ───────────────────────────────
+//  Local windows only (capabilities/local.json). The reader's own pages get
+//  no commands at all, and neither does the ship page.
+
+/// What the manager is told about the shipless reader.
+#[derive(serde::Serialize)]
+pub struct ReaderStatus {
+    /// off, booting, ready or failed
+    pub engine: &'static str,
+    /// the reader identity, once it runs
+    pub our: Option<String>,
+    pub error: Option<String>,
+    /// what a start in progress is doing, in words
+    pub step: Option<String>,
+}
+
+/// The address the manager's card was given, as the reader reads it: an
+/// urb:// address, or a bare ~ship/path. Refused unless the gateway's
+/// own parse takes it.
+#[cfg(feature = "urb-engine")]
+fn reader_address(given: &str) -> Result<String, String> {
+    let g = given.trim();
+    let u = if g.starts_with('~') { format!("urb://{g}") } else { g.to_string() };
+    urb_render::gateway::de_urb(u.as_bytes())
+        .map(|_| u)
+        .map_err(|(_, w)| format!("That isn't an urb:// address: {}", String::from_utf8_lossy(&w)))
+}
+
+/// Open the shipless reader in the workspace window, at an address or at
+/// its home, and start the engine so the reader identity is being made
+/// while the page loads.
+#[tauri::command]
+pub fn open_reader(app: AppHandle, url: Option<String>) -> Result<(), String> {
+    #[cfg(feature = "urb-engine")]
+    {
+        let to = match url.as_deref().map(str::trim).filter(|u| !u.is_empty()) {
+            Some(u) => crate::render::read_href(&reader_address(u)?),
+            None => "/".to_string(),
+        };
+        let base = crate::reader::start(&app)?;
+        app.state::<crate::engine::Engine>().start();
+        let (w, _) = ensure_workspace(&app)?;
+        let boot: tauri::Url = crate::reader::boot_url(&base, &to).parse().map_err(|e| format!("{e}"))?;
+        dlog(&format!("reader: open {to}"));
+        w.navigate(boot).map_err(|e| e.to_string())?;
+        w.set_focus().ok();
+        Ok(())
+    }
+    #[cfg(not(feature = "urb-engine"))]
+    {
+        let _ = (app, url);
+        Err("this build has no shipless reader".into())
+    }
+}
+
+/// Where the shipless reader's engine is, for the manager's card.
+#[tauri::command]
+pub fn reader_status(app: AppHandle) -> Result<ReaderStatus, String> {
+    #[cfg(feature = "urb-engine")]
+    {
+        use crate::engine::Status;
+        let e = app.state::<crate::engine::Engine>();
+        let step = Some(e.step()).filter(|s| !s.is_empty()).map(String::from);
+        Ok(match e.status() {
+            Status::Off => ReaderStatus { engine: "off", our: None, error: None, step },
+            Status::Booting => ReaderStatus { engine: "booting", our: None, error: None, step },
+            Status::Ready { our } => ReaderStatus { engine: "ready", our: Some(our), error: None, step },
+            Status::Failed(m) => ReaderStatus { engine: "failed", our: None, error: Some(m), step },
+        })
+    }
+    #[cfg(not(feature = "urb-engine"))]
+    {
+        let _ = app;
+        Err("this build has no shipless reader".into())
+    }
+}
+
+/// Empty the shipless reader's local history (the manager's button).
+#[tauri::command]
+pub fn clear_reader_history(app: AppHandle) -> Result<(), String> {
+    #[cfg(feature = "urb-engine")]
+    {
+        let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("urb");
+        crate::history::History::open(&dir).clear()
+    }
+    #[cfg(not(feature = "urb-engine"))]
+    {
+        let _ = app;
+        Err("this build has no shipless reader".into())
+    }
+}
+
 fn new_workspace(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
     let handle = app.clone();
     // LATTICE_PROBE_JS=<path>: inject that file into the workspace page.
@@ -963,6 +1055,7 @@ mod nav_tests {
         );
     }
 
+    #[cfg(feature = "urb-engine")]
     #[test]
     fn with_no_ship_an_urb_link_opens_in_the_shipless_reader() {
         let t = rewrite(decide("urb://~nec/x/y", None, ""));
@@ -986,6 +1079,20 @@ mod nav_tests {
         assert_eq!(decide("https://example.com/", Some(26500), SHIP), Nav::External);
         assert_eq!(decide("tauri://localhost/manager.html", None, ""), Nav::Allow);
         assert_eq!(decide("about:srcdoc", None, ""), Nav::Allow);
+    }
+}
+
+#[cfg(all(test, feature = "urb-engine"))]
+mod reader_address_tests {
+    use super::reader_address;
+
+    #[test]
+    fn the_card_takes_urb_addresses_and_bare_ones() {
+        assert_eq!(reader_address(" urb://~zod/notes ").unwrap(), "urb://~zod/notes");
+        assert_eq!(reader_address("~zod/notes").unwrap(), "urb://~zod/notes");
+        for bad in ["https://example.com", "zod/x", "urb://~not a ship/x", "urb://~zod/p/x"] {
+            assert!(reader_address(bad).unwrap_err().starts_with("That isn't an urb:// address"), "{bad}");
+        }
     }
 }
 
