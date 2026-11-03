@@ -531,7 +531,7 @@
     if (fodt) {
       // before writer.js: blank, and painted again once it is here
       const d = ghostDoc(kind, ta.value) || (writerReady().then(gPaintAll, () => {}), '');
-      if (g.gprev.getAttribute('srcdoc') !== d) { g.gprev.removeAttribute('src'); g.gprev.srcdoc = d; }
+      if (g.gprev.getAttribute('srcdoc') !== d) { g.gprev.removeAttribute('src'); navDoc(g.gprev, d); }
     } else if (t.read) {
       const kept = t.ghost && t.ghost.body === ta.value ? t.ghost : null;
       if (kept && kept.psrc && !kept.prev) {
