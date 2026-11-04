@@ -564,7 +564,9 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
         // the app's navigation policy shows the manager for this before it
         // loads (commands.rs); this is only what a stray request sees
         ("/connect", true) => redirect(302, "/"),
-        ("/read", true) => read(ctx, req.arg("url").unwrap_or(""), Fresh::of(req, port)),
+        ("/read", true) => {
+            read(ctx, req.arg("url").unwrap_or(""), Fresh::of(req, port), req.arg("sort") == Some("date"))
+        }
         (_, false) => plain(405),
         _ => plain(404),
     }
@@ -781,8 +783,9 @@ fn from_frame(req: &Req, port: u16) -> bool {
         || req.site.as_deref().is_some_and(|s| s == "cross-site" || s == "same-site")
 }
 
-/// `/read`: the page, or why not.
-fn read(ctx: &Ctx, given: &str, fresh: Fresh) -> Resp {
+/// `/read`: the page, or why not. A folder with no page of its own lists
+/// what is published in it (`folder`), by date when `by_date`.
+fn read(ctx: &Ctx, given: &str, fresh: Fresh, by_date: bool) -> Resp {
     let url = address(given);
     if let Err((status, words)) = urb_render::gateway::de_urb(url.as_bytes()) {
         let mut s = render::bad_address(&url);
@@ -798,7 +801,8 @@ fn read(ctx: &Ctx, given: &str, fresh: Fresh) -> Resp {
             ctx.opens.lock().unwrap().remove(&ship);
         }
         if fresh == Fresh::Asked {
-            return redirect(303, &render::read_href(&url));
+            let sort = if by_date { "&sort=date" } else { "" };
+            return redirect(303, &format!("{}{sort}", render::read_href(&url)));
         }
     }
     if let Some(at) = crate::boards::place(&url) {
@@ -822,11 +826,35 @@ fn read(ctx: &Ctx, given: &str, fresh: Fresh) -> Resp {
     match got {
         Ok(p) => page(ctx, &url, &p),
         Err(e) => {
+            if matches!(e, ReadError::NotPublished(_)) {
+                if let Some(r) = folder(ctx, &url, by_date) {
+                    return r;
+                }
+            }
             crate::commands::dlog(&format!("reader: {url}: {e:?}"));
             let (status, s) = render::error_page(&url, &e, Mode::Shipless, ctx.reads.step());
             shown(status, s)
         }
     }
+}
+
+/// A folder's index, for an address whose page the publisher does not
+/// have: what its revision list, just read, names under the folder. `None`
+/// when it names nothing there, or the address is not a published page's.
+fn folder(ctx: &Ctx, url: &str, by_date: bool) -> Option<Resp> {
+    let u = urb_engine::url::de_urb(url).ok()?;
+    if !matches!(u.mount, urb_engine::url::Mount::N) || u.rel.last().is_none_or(|l| l == "index") {
+        return None;
+    }
+    let rows = render::dir_rows(&ctx.reads.pages(&u.ship)?, &u.rel, by_date);
+    if rows.is_empty() {
+        return None;
+    }
+    let s = render::folder_page(&u.ship, &u.rel, &rows, by_date);
+    if let Err(e) = ctx.history.add(&render::folder_url(&u.ship, &u.rel), &s.title) {
+        crate::commands::dlog(&format!("reader: {e}"));
+    }
+    Some(shown(200, s))
 }
 
 fn render_words(words: &[u8]) -> String {
@@ -986,6 +1014,11 @@ mod tests {
         }
         fn our(&self) -> Option<String> {
             Some("~doznec-sampel-palnet".into())
+        }
+        fn pages(&self, ship: &str) -> Option<Vec<(String, Option<i64>)>> {
+            (ship == "~zod").then(|| {
+                ["/hello", "/site", "/docs/one", "/docs/sub/two"].iter().map(|k| (k.to_string(), None)).collect()
+            })
         }
         fn comment(&self, ship: &str, page: &str, body: &str, _: Duration) -> Result<(), CommentError> {
             self.said.lock().unwrap().push((ship.into(), page.into(), body.into()));
@@ -1495,6 +1528,27 @@ mod tests {
         // a bare ~ship/path is an address too
         let (st, _) = ask(&c, &get("/read?url=~zod/hello", &cookie()));
         assert_eq!(st, 200);
+    }
+
+    #[test]
+    fn a_folder_with_no_page_lists_what_is_published_in_it() {
+        let (c, _) = ctx("folder", pages);
+        for u in ["urb%3A%2F%2F~zod%2Fdocs%2F", "urb%3A%2F%2F~zod%2Fdocs"] {
+            let (st, out) = ask(&c, &get(&format!("/read?url={u}"), &cookie()));
+            assert_eq!(st, 200, "{out}");
+            let sub = out.find("/read?url=urb%3A%2F%2F~zod%2Fdocs%2Fsub%2F\"").expect("the subfolder");
+            let one = out.find("/read?url=urb%3A%2F%2F~zod%2Fdocs%2Fone\"").expect("the page");
+            assert!(sub < one, "folders first");
+            assert!(out.contains("&amp;sort=date"), "the toggle");
+        }
+        assert_eq!(c.history.list()[0].url, "urb://~zod/docs/");
+        let (st, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2F&sort=date", &cookie()));
+        assert_eq!(st, 200);
+        assert!(out.contains("Oldest first."));
+        // nothing under it, or a ship with no list: not published, as before
+        assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fnone%2F", &cookie())).0, 404);
+        assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~nec%2Fdocs%2F", &cookie())).0, 404);
+        assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2Findex", &cookie())).0, 404);
     }
 
     #[test]

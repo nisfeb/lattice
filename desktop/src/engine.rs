@@ -170,6 +170,14 @@ pub trait Reads: Send + Sync {
         let _ = budget;
         asks.iter().map(|_| Err(ReadError::Failed("this reader cannot read boards".into()))).collect()
     }
+    /// The pages of `ship` its kept revision list names (`/<path>`), as the
+    /// last read of one of its pages got it, with when each was last
+    /// changed where that is known. `None` when no list is kept. Asks
+    /// nothing of the network.
+    fn pages(&self, ship: &str) -> Option<Vec<(String, Option<i64>)>> {
+        let _ = ship;
+        None
+    }
 }
 
 /// What a publisher says of commenting: the pages that take comments
@@ -245,6 +253,8 @@ enum Job {
     Read(String, Answer),
     /// the ship whose kept revision list is to go (`Engine::expire`)
     Expire(String),
+    /// the names in the revision list kept for a ship (`Engine::pages`)
+    Pages(String, Sender<Option<Vec<String>>>),
     Comment(Comment, Said),
     /// a publisher's `/pub/comments` or `/pub/comets`, at a lattice base
     OpenList(String, &'static str, List, Cord),
@@ -406,6 +416,27 @@ impl Engine {
                 let _ = w.send(Event::Wake);
             }
         }
+    }
+
+    /// The pages of `ship` its kept revision list names
+    /// (`Reads::pages`). The list says each page's revision and id but not
+    /// when it changed: lattice keeps that in `/pub/index`, a noun map the
+    /// core's peeks cannot read, so every time is unknown here.
+    pub fn pages(&self, ship: &str) -> Option<Vec<(String, Option<i64>)>> {
+        let (tx, rx) = channel();
+        {
+            let g = self.inner.lock().unwrap();
+            if !matches!(g.status, Status::Ready { .. }) {
+                return None;
+            }
+            let run = g.run.as_ref()?;
+            run.jobs.send(Job::Pages(ship.into(), tx)).ok()?;
+            if let Some(w) = &run.waker {
+                let _ = w.send(Event::Wake);
+            }
+        }
+        let names = rx.recv_timeout(Duration::from_secs(2)).ok()??;
+        Some(names.into_iter().map(|n| (n, None)).collect())
     }
 
     /// Comment on a published page as the reader identity: a
@@ -717,6 +748,9 @@ impl Reads for Engine {
     fn comments_open(&self, ship: &str, budget: Duration) -> Option<Opened> {
         Engine::comments_open(self, ship, budget)
     }
+    fn pages(&self, ship: &str) -> Option<Vec<(String, Option<i64>)>> {
+        Engine::pages(self, ship)
+    }
     fn forum_open(&self, host: &str, budget: Duration) -> Option<Vec<String>> {
         Engine::forum_open(self, host, budget)
     }
@@ -847,6 +881,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
             match jobs.try_recv() {
                 Ok(Job::Read(url, tx)) => {
                     pending.push((submit_read(&mut host, url.clone()), Wait::Read(tx, url), Instant::now()))
+                }
+                Ok(Job::Pages(ship, tx)) => {
+                    let _ = tx.send(host.core().cached_revs(&ship).map(|l| l.into_iter().map(|(k, _)| k).collect()));
                 }
                 Ok(Job::Expire(ship)) => {
                     log_line(&format!("expire the revision list of {ship}"));

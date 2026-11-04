@@ -503,6 +503,89 @@ pub fn error_page(url: &str, e: &ReadError, mode: Mode, step: &str) -> (u16, Sho
     (status, Shown { csp: OWN, html: chrome(title, url, Some(mode), &main, refresh), title: title.into() })
 }
 
+/// One line of a folder's index: a page directly in it, or a folder
+/// below it, with when it (for a folder, its newest page) last changed, in
+/// unix ms, where that is known.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirRow {
+    pub name: String,
+    pub page: bool,
+    pub when: Option<i64>,
+}
+
+/// A folder's index from the published pages `keys` (each `/<path>`, as
+/// the revision list names it, and its last change), as lattice's
+/// `+dir-rows` makes it. Folders first, then pages, each by name, as the
+/// tree sorts; `by_date` lists everything oldest to newest instead, ties
+/// by name, an unknown time before any known one. A name can be a page and
+/// a folder both (a page with pages under it).
+pub fn dir_rows(keys: &[(String, Option<i64>)], dir: &[String], by_date: bool) -> Vec<DirRow> {
+    use std::collections::BTreeMap;
+    let mut pages: BTreeMap<String, Option<i64>> = BTreeMap::new();
+    let mut dirs: BTreeMap<String, Option<i64>> = BTreeMap::new();
+    for (key, when) in keys {
+        let r: Vec<&str> = key.split('/').filter(|s| !s.is_empty()).collect();
+        if r.len() <= dir.len() || r.iter().zip(dir).any(|(a, b)| *a != b) {
+            continue;
+        }
+        let name = r[dir.len()].to_string();
+        if r.len() == dir.len() + 1 {
+            pages.insert(name, *when);
+        } else {
+            let had = dirs.entry(name).or_insert(None);
+            *had = (*had).max(*when);
+        }
+    }
+    let row = |page| move |(name, when): (String, Option<i64>)| DirRow { name, page, when };
+    let mut rows: Vec<DirRow> =
+        dirs.into_iter().map(row(false)).chain(pages.into_iter().map(row(true))).collect();
+    if by_date {
+        rows.sort_by(|a, b| a.when.cmp(&b.when).then_with(|| a.name.cmp(&b.name)));
+    }
+    rows
+}
+
+/// A folder's address: `urb://~ship/<dir>/`, under `/n/` when its first
+/// name would read as a mount.
+pub fn folder_url(ship: &str, dir: &[String]) -> String {
+    let n = if dir.first().is_some_and(|d| d.len() == 1) { "n/" } else { "" };
+    format!("urb://{ship}/{n}{}/", dir.join("/"))
+}
+
+/// A folder's index in the reader: each row's name, linking to the page
+/// or the folder, and its last change as yyyy-mm-dd, with a toggle
+/// between the two orders.
+pub fn folder_page(ship: &str, dir: &[String], rows: &[DirRow], by_date: bool) -> Shown {
+    let url = folder_url(ship, dir);
+    let title = format!("{ship}/{}/", dir.join("/"));
+    let by_name = read_href(&url);
+    let dated = format!("{by_name}&sort=date");
+    let order = if by_date {
+        format!("Oldest first. <a href=\"{}\">Folders first</a>", esc(&by_name))
+    } else {
+        format!("Folders first. <a href=\"{}\">Oldest first</a>", esc(&dated))
+    };
+    let mut s = format!(
+        "<style>.dir{{list-style:none;padding:0}}.dir li{{display:flex;gap:1em;justify-content:space-between}}\
+         .dir time{{opacity:.7}}</style><section class=\"folder\"><h1>{}</h1><p class=\"words\">{order}</p>\
+         <ul class=\"dir\">",
+        esc(&title)
+    );
+    for r in rows {
+        let (to, shown) =
+            if r.page { (format!("{url}{}", r.name), r.name.clone()) } else { (format!("{url}{}/", r.name), format!("{}/", r.name)) };
+        let when = r.when.map_or(String::new(), |ms| urb_engine::js::iso(ms).chars().take(10).collect());
+        s.push_str(&format!(
+            "<li><a href=\"{}\">{}</a><time>{}</time></li>",
+            esc(&read_href(&to)),
+            esc(&shown),
+            esc(&when)
+        ));
+    }
+    s.push_str("</ul></section>");
+    Shown { csp: OWN, html: chrome(&title, &url, Some(Mode::Shipless), &s, false), title }
+}
+
 /// An address the reader cannot read.
 pub fn bad_address(given: &str) -> Shown {
     let main = format!(
@@ -817,5 +900,79 @@ mod tests {
         assert_eq!(title_of(PAGE, "gmi", "intro\n## sub\n# Main\n# Second"), "Main");
         assert_eq!(title_of(PAGE, "md", "no heading"), PAGE);
         assert_eq!(title_of(PAGE, "html", "# not this"), PAGE);
+    }
+
+    fn keys(k: &[(&str, i64)]) -> Vec<(String, Option<i64>)> {
+        k.iter().map(|(p, t)| (p.to_string(), Some(*t))).collect()
+    }
+
+    fn dir(d: &str) -> Vec<String> {
+        d.split('/').filter(|s| !s.is_empty()).map(String::from).collect()
+    }
+
+    fn row(name: &str, page: bool, when: i64) -> DirRow {
+        DirRow { name: name.into(), page, when: Some(when) }
+    }
+
+    #[test]
+    fn a_folder_lists_its_pages_and_subfolders() {
+        let k = keys(&[
+            ("/site/docs/one", 5),
+            ("/site/docs/b/two", 3),
+            ("/site/docs/b/deep/three", 9),
+            ("/site/docs/a", 7),
+            ("/site/docs/a/four", 2),
+            ("/site/other/x", 1),
+            ("/site/docsx/y", 1),
+            ("/site/docs", 4),
+            ("/top", 1),
+        ]);
+        // folders first, then pages, each by name; a folder's time is its newest page's
+        assert_eq!(
+            dir_rows(&k, &dir("site/docs"), false),
+            vec![row("a", false, 2), row("b", false, 9), row("a", true, 7), row("one", true, 5)]
+        );
+        // by date: oldest to newest, ties by name
+        let mut k2 = k.clone();
+        k2.push(("/site/docs/c".into(), Some(5)));
+        assert_eq!(
+            dir_rows(&k2, &dir("site/docs"), true),
+            vec![row("a", false, 2), row("c", true, 5), row("one", true, 5), row("a", true, 7), row("b", false, 9)]
+        );
+        // other folders, the folder's own page and pages above it are not in it
+        assert!(dir_rows(&k, &dir("site/nothing"), false).is_empty());
+        assert!(dir_rows(&[], &dir("site"), false).is_empty());
+        assert_eq!(dir_rows(&k, &dir("site"), false).iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["docs", "docsx", "other", "docs"]);
+    }
+
+    #[test]
+    fn unknown_times_sort_first_and_show_blank() {
+        let k = vec![("/d/b".to_string(), Some(1)), ("/d/a".to_string(), None), ("/d/s/x".to_string(), None)];
+        assert_eq!(
+            dir_rows(&k, &dir("d"), true),
+            vec![
+                DirRow { name: "a".into(), page: true, when: None },
+                DirRow { name: "s".into(), page: false, when: None },
+                row("b", true, 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_folder_index_escapes_names_and_links_each_row() {
+        let rows = vec![
+            DirRow { name: "<b>&\"x".into(), page: false, when: Some(1_700_000_000_000) },
+            DirRow { name: "p'<i>".into(), page: true, when: None },
+        ];
+        let s = folder_page("~zod", &dir("a<b>"), &rows, false);
+        assert!(!s.html.contains("<b>&") && !s.html.contains("<i>") && !s.html.contains("a<b>"), "{}", s.html);
+        assert!(s.html.contains("&lt;b&gt;&amp;&#34;x/"), "{}", s.html);
+        assert!(s.html.contains("<time>2023-11-14</time>"));
+        assert!(s.html.contains(&esc(&read_href("urb://~zod/a<b>/<b>&\"x/"))));
+        assert!(s.html.contains(&esc(&read_href("urb://~zod/a<b>/p'<i>"))));
+        assert!(s.html.contains(&esc(&format!("{}&sort=date", read_href("urb://~zod/a<b>/")))));
+        // a one-letter first name would read as a mount
+        assert_eq!(folder_url("~zod", &dir("k/x")), "urb://~zod/n/k/x/");
+        assert!(folder_page("~zod", &dir("a"), &rows, true).html.contains("Oldest first."));
     }
 }
