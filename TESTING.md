@@ -44,6 +44,10 @@ They run the suites in `tests/lib` through `vere eval` with the kit's
 `lattice-sign` needs `cric:crypto`, which `vere eval`'s zuse lacks, so it
 runs on the ship only. The ship run is the verdict.
 
+## Does code/ build (CI's hoon-build)
+
+`scripts/hoon-build.sh base DIR` boots a private fake ~zod into `DIR/zod` from `PILL` and installs grubbery from `GRUBBERY` (a `desk/` directory), then stops it. `scripts/hoon-build.sh check DIR` starts that pier, dev-deploys `code/` with `--add`, and `hoon-build-wait.py` asks every `.hoon` file's `?info=1` in the desk until each reports `build.status`. Anything but `vase`, or a bang on the lattice instance, fails with grubbery's error. Both need `VERE` and socat; `PORT` defaults to 8199. Copy the base pier before a check: a check changes it. CI caches the base pier on vere, grubbery's commit and the script, so a warm run is the check alone.
+
 ## Ship tests
 
 ```sh
