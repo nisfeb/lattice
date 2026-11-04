@@ -15,7 +15,7 @@
 //    the ribbon, top to bottom, and its tool tabs: Access & groups and the
 //      inbox render in a tab (the inbox carries the unread badge), Settings
 //      frames the settings page without its reader bar, the brief opens
-//      today's journal page, and leaving for the desktop's manager page
+//      the journal pass's dashed page, else a dotted note, else a new page, and leaving for the desktop's manager page
 //      asks about unsaved work first
 //    the command palette: Ctrl+P and the ribbon open it, actions match
 //      first with their home, pages after them open with Enter (Ctrl+Enter
@@ -789,13 +789,61 @@ try {
     JSON.stringify({ autoOn, autoOff, held: held && held.slice(0, 60), stillD, cleanAfter }));
   await page.evaluate(() => localStorage.removeItem('latAutosave'));
 
-  //  today's brief: the unpadded day, when that page exists
+  //  today's brief, on a fixed clock: 23:30 local on 5 Jan 2030, a single
+  //  digit month and day (so padded, unpadded and dashed all differ) and a
+  //  time that is already the next day in UTC west of Greenwich, so a name
+  //  built from toISOString would miss. The pass's dashed name wins, the
+  //  dotted forms are the fallbacks, and with none a new page is offered
+  //  under the unpadded dotted name.
+  const BD = 'journal/2030-01-05', BU = 'journal/2030.1.5', BP = 'journal/2030.01.05';
+  const fixClock = () => page.evaluate(() => {
+    const R = window.__realDate || Date;
+    window.__realDate = R;
+    const T = new R(2030, 0, 5, 23, 30).getTime();
+    window.Date = class extends R {
+      constructor(...a) { if (a.length) super(...a); else super(T); }
+    };
+  });
+  const unfixClock = () => page.evaluate(() => { if (window.__realDate) window.Date = window.__realDate; });
+  const exists = async (k) => (await fetch(env.base + '/apps/lattice/page-source?name=' + encodeURIComponent(k),
+    { headers: { Cookie: env.cookie } })).ok;
+  const briefPre = {};
+  for (const k of [BD, BU, BP]) briefPre[k] = await exists(k);
+  const briefClick = async () => {
+    await fixClock();
+    await page.evaluate(() => document.getElementById('rb-brief').click());
+  };
+  if (!briefPre[BD] && !briefPre[BU] && !briefPre[BP]) {
+    await briefClick();
+    const fresh = await until(() => {
+      const s = window.latTabs.state();
+      const t = s.tabs[s.active];
+      return t && t.kind === 'page' && !t.key && document.getElementById('pname').value === 'journal/2030.1.5';
+    });
+    await unfixClock();
+    check('brief with no page offers a new one', fresh, JSON.stringify({ front: await front() }));
+  }
+  if (!briefPre[BU]) await seed(env, [[BU, '# my own note\n']]);
+  await boot();
+  await briefClick();
+  const dotted = await isFront('page', BU);
+  await unfixClock();
+  check('brief falls back to the dotted note', dotted, JSON.stringify({ front: await front() }));
+  if (!briefPre[BD]) await seed(env, [[BD, '# Brief\n']]);
+  await boot();
+  await briefClick();
+  const dashed = await isFront('page', BD);
+  await unfixClock();
+  check('brief opens the mirrored dashed page first', dashed, JSON.stringify({ front: await front() }));
+  for (const k of [BD, BU]) if (!briefPre[k]) await post('page-del?name=' + encodeURIComponent(k)).catch(() => {});
+
+  //  the ribbon button on the real clock: today's dashed name
   const today = await page.evaluate(() => {
     const d = new Date();
-    return 'journal/' + d.getFullYear() + '.' + (d.getMonth() + 1) + '.' + d.getDate();
+    const p2 = (n) => String(n).padStart(2, '0');
+    return 'journal/' + d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate());
   });
-  const had = (await fetch(env.base + '/apps/lattice/page-source?name=' + encodeURIComponent(today),
-    { headers: { Cookie: env.cookie } })).ok;
+  const had = await exists(today);
   if (!had) await seed(env, [[today, '# brief\n']]);
   //  a comment on RP, unseen, for the inbox badge after the reload
   await post('page-comments?name=' + encodeURIComponent(RP) + '&on=1');
