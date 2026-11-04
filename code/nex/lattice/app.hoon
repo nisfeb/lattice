@@ -1360,6 +1360,8 @@
     (send-err eyre-id 403 'that group names a banned ship')
   ;<  ok=?  bind:m  (ug-put gdir who weir)
   ?.  ok  (ug-refused eyre-id)
+  ::  a folder granted here lists its pages to the group (+dir-index-acts)
+  ;<  ~  bind:m  (dir-index-pokes (weld sb /page) u.pkp)
   (send-ok eyre-id)
 ::  +handle-link-make: POST /link-make?host=&path=&to=. The shared-with-me
 ::  entry [host path] becomes a link at <to>. The host is peeked once,
@@ -2210,6 +2212,16 @@
           ?:  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,(unit (list dir-row:ls))) ~)
           (pub-folder-rows ship.u.ref rel.u.ref by-date)
         ?^  fix  (send-folder-index eyre-id ship.u.ref rel.u.ref u.fix by-date)
+        ::  a folder the peer granted us, not published: its dir-index, which
+        ::  its weir lets only the ships and groups it granted read
+        ;<  gix=(unit (map @t title-row:ls))  bind:m
+          ?:  |(=(ship.u.ref our) ?=(~ rel.u.ref))
+            (pure:(fiber:fiber:nexus ,(unit (map @t title-row:ls))) ~)
+          (peer-dir-index ship.u.ref rel.u.ref)
+        =/  grows=(list dir-row:ls)
+          ?~(gix ~ (dir-rows:ls (titles-keys:ls u.gix) rel.u.ref by-date))
+        ?^  grows
+          (send-folder-index-titled eyre-id ship.u.ref rel.u.ref grows by-date (fall gix ~))
         (send-view eyre-id (render-page canon "" "" "<p class=\"err\">not published here</p>"))
       =/  body=@t  body.u.got
       ::  the page's resolved view-mode: the mark it published under (own page:
@@ -2965,6 +2977,8 @@
     =/  pdir=path  (weld /page (pax-of u.name))
     ;<  pe=?  bind:m  (peek-exists:fio (rv up pdir))
     ?.  pe  (send-err eyre-id 404 'no such page')
+    ;<  isp=?  bind:m  (peek-exists:fio (rf up pdir %code))
+    ?.  isp  (share-folder-with eyre-id u.shp mode (pax-of u.name))
     ::  absolute, the road the ACL pane shows and the peer's weir matches
     ::  (see +handle-share-group-save). The page's code grub only, which is
     ::  all the peer opens. A grant on the dir also handed the peer the
@@ -6898,6 +6912,8 @@
     ;<  ~  bind:m  (job-set `act)
     ;<  ~  bind:m  (reinherit-tree root now pax.act |)
     (job-set ~)
+      %dir-index
+    (write-dir-index root pax.act)
       %share-clear
     ::  the page's own setting goes, and it takes its folder's, or none
     =/  pdir=path  (weld /page pax.act)
@@ -16488,15 +16504,17 @@
 ::  with when it last changed, and a switch between the tree's order and
 ::  oldest to newest (`here` is the index's own address, with no sort)
 ++  dir-index-html
-  |=  [title=tape rows=(list dir-row:ls) by-date=? here=tape href=$-([@ta ?] tape)]
+  |=  $:  title=tape  rows=(list dir-row:ls)  by-date=?  here=tape
+          href=$-([@ta ?] tape)  label=$-([@ta ?] tape)
+      ==
   ^-  tape
   =/  li=(list tape)
     %+  turn  rows
     |=  r=dir-row:ls
     ;:  weld
       "<li class=\""  ?:(page.r "dpage" "ddir")  "\"><a href=\""
-      (esc (href name.r page.r))  "\">"  (esc (trip name.r))
-      ?:(page.r "" "/")  "</a> <span class=\"muted\">"  (dir-date when.r)
+      (esc (href name.r page.r))  "\">"  (esc (label name.r page.r))
+      "</a> <span class=\"muted\">"  (dir-date when.r)
       "</span></li>"
     ==
   ::  hoisted, each bound with its type: a zing inline in a weld is a
@@ -16562,6 +16580,13 @@
   |=  [eyre-id=@ta shp=@p rel=path rows=(list dir-row:ls) by-date=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  tits=(map @t title-row:ls)  bind:m  (read-titles-any shp)
+  (send-folder-index-titled eyre-id shp rel rows by-date tits)
+::  +send-folder-index-titled: +send-folder-index with the titles in hand
+++  send-folder-index-titled
+  |=  [eyre-id=@ta shp=@p rel=path rows=(list dir-row:ls) by-date=? tits=(map @t title-row:ls)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
   =/  canon=tape  (weld (trip (en-urb:lu shp (weld pub-prefix:lu rel))) "/")
   =/  here=tape  :(weld "/apps/lattice?url=" (url-enc canon) "&")
   =/  href
@@ -16570,7 +16595,9 @@
     (weld "/apps/lattice?url=" (url-enc :(weld canon (trip n) ?:(page "" "/"))))
   %+  send-view  eyre-id
   %:  render-page-titled  canon  ""  ""  (pax-str rel)
-    (dir-index-html (weld (pax-str rel) "/") rows by-date here href)
+    %:  dir-index-html  (weld (pax-str rel) "/")  rows  by-date  here  href
+      |=([n=@ta pg=?] (row-label:ls tits rel n pg))
+    ==
   ==
 ::  +serve-clearweb-dir: /c/<folder>, a folder whose nearest setting (its
 ::  own or one above) is clearweb: its clearweb pages and subfolders. Any
@@ -16592,9 +16619,141 @@
     |=  [n=@ta page=?]
     ^-  tape
     :(weld base "/" (trip n) ?:(page "" "/"))
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  tits=(map @t title-row:ls)  bind:m  (read-pub-titles up)
   =/  inner=tape
-    (dir-index-html (weld (pax-str pax) "/") rows by-date (weld base "/?") href)
+    %:  dir-index-html  (weld (pax-str pax) "/")  rows  by-date  (weld base "/?")  href
+      |=([n=@ta pg=?] (row-label:ls tits pax n pg))
+    ==
   (send-html eyre-id (render-clearweb (pax-str pax) "" inner (clearweb-bar authed)))
+::  +read-pub-titles: /pub/titles (+titles-rows:ls), none when absent
+++  read-pub-titles
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,(map @t title-row:ls))
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf root /pub %titles) ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  =/  c=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.vw))))
+  (pure:m ?~(c ~ (titles-rows:ls u.c)))
+::  +put-pub-title: one page's row in /pub/titles, or none (~)
+++  put-pub-title
+  |=  [root=@ud nam=@t row=(unit title-row:ls)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  old=(map @t title-row:ls)  bind:m  (read-pub-titles root)
+  =/  new=(map @t title-row:ls)
+    ?~(row (~(del by old) nam) (~(put by old) nam u.row))
+  ?:  =(new old)  (pure:m ~)
+  (put-file (rf root /pub %titles) [/ %noun] (titles-cord:ls new))
+::  +read-titles-any: a ship's /pub/titles, ours here and a peer's over a
+::  bounded remote peek; none when it cannot be read (an older lattice),
+::  and the index shows names
+++  read-titles-any
+  |=  shp=@p
+  =/  m  (fiber:fiber:nexus ,(map @t title-row:ls))
+  ^-  form:m
+  ;<  our=@p  bind:m  bowl-our
+  ;<  up=@ud  bind:m  nexus-up
+  ?:  =(shp our)  (read-pub-titles up)
+  ;<  base=(unit path)  bind:m  (peer-base-cached shp)
+  ?~  base  (pure:m ~)
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-wait-in [%& %& (weld u.base /pub) %titles] shp ~s8)
+  ?.  ?=([~ %file *] ms)  (pure:m ~)
+  =/  c=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.u.ms))))
+  (pure:m ?~(c ~ (titles-rows:ls u.c)))
+::  +peer-dir-index: the dir-index of a folder on `shp` (+write-dir-index),
+::  ~ when its weir does not let us read it or it has none
+++  peer-dir-index
+  |=  [shp=@p rel=path]
+  =/  m  (fiber:fiber:nexus ,(unit (map @t title-row:ls)))
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  (peer-base-cached shp)
+  ?~  base  (pure:m ~)
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-wait-in [%& %& :(weld u.base /page rel) %'dir-index'] shp ~s8)
+  ?.  ?=([~ %file *] ms)  (pure:m ~)
+  =/  c=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.u.ms))))
+  ?~  c  (pure:m ~)
+  (pure:m `(titles-rows:ls u.c))
+::  +write-dir-index: a granted folder's index, for the ships and groups it
+::  is shared with: in the folder and each folder under it, a `dir-index`
+::  grub with the +titles-cord:ls lines of every page in it. It sits in the
+::  folder's dir, so a group's folder road reaches it, and a ship's folder
+::  grant names it (+share-folder-with). Rewritten on each grant.
+++  write-dir-index
+  |=  [root=@ud pax=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page pax)) ~)
+  ?.  ?=([%ball *] dv)  (pure:m ~)
+  =/  pages=(list [pax=path when=@da code=@t])  (recent-walk ball.dv wave.dv ~)
+  =/  dirs=(list path)
+    :-  `path`~
+    (murn (collect-tree ball.dv ~) |=([p=path page=?] ?:(page ~ `p)))
+  =|  done=@ud
+  |-  ^-  form:m
+  ?~  dirs  (pure:m ~)
+  =/  d=path  i.dirs
+  =/  rows=(map @t title-row:ls)
+    %-  ~(gas by *(map @t title-row:ls))
+    %+  murn  pages
+    |=  [r=path when=@da code=@t]
+    ^-  (unit [@t title-row:ls])
+    ?.  &((gth (lent r) (lent d)) =(d (scag (lent d) r)))  ~
+    =/  un=(unit [builder=@tas body=@t])  (unwrap-content code)
+    =/  ttl=@t  ?~(un '' (page-title-of body.u.un ''))
+    `[(spat (weld pax r)) (unix-s:ls when) (title-clean:ls ttl)]
+  ;<  ~  bind:m  (tree-yield done 8)
+  ;<  ~  bind:m
+    (put-file (rf up (weld /page (weld pax d)) %'dir-index') [/ %noun] (titles-cord:ls rows))
+  $(dirs t.dirs, done +(done))
+::  +dir-index-pokes: a %dir-index for each folder (no code grub) among
+::  the absolute paths `ps` of a grant, under `pre` (our /page)
+++  dir-index-pokes
+  |=  [pre=path ps=(list path)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  |-  ^-  form:m
+  ?~  ps  (pure:m ~)
+  =/  rel=path  (slag (lent pre) i.ps)
+  ?.  &(?=(^ rel) =(pre (scag (lent pre) i.ps)))  $(ps t.ps)
+  ;<  dx=?  bind:m  (peek-exists:fio (rv up (weld /page rel)))
+  ;<  cx=?  bind:m  (peek-exists:fio (rf up (weld /page rel) %code))
+  ;<  ~  bind:m  ?:(|(!dx cx) (pure:m ~) (poke-eval [%dir-index rel]))
+  $(ps t.ps)
+::  +share-folder-with: /share-file on a folder. The ship gets what it would
+::  get from a share of each page in it (its code grub, for read or edit),
+::  and the folder's index and each subfolder's (+write-dir-index), read
+::  only. Pages made in it later are not granted by this; share again.
+++  share-folder-with
+  |=  [eyre-id=@ta shp=@p mode=@t pax=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sb=path  bind:m  self-base
+  ;<  ~  bind:m  (poke-eval [%dir-index pax])
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page pax)) ~)
+  =/  all=(list [p=path page=?])  ?.(?=([%ball *] dv) ~ (collect-tree ball.dv ~))
+  =/  at  |=(r=path :(weld sb /page pax r))
+  =/  codes=(set road:tarball)
+    %-  silt
+    (murn all |=([p=path page=?] ?.(page ~ `[%& %& (at p) %code])))
+  =/  idx=(set road:tarball)
+    %-  silt
+    :-  [%& %& (at ~) %'dir-index']
+    (murn all |=([p=path page=?] ?:(page ~ `[%& %& (at p) %'dir-index'])))
+  ;<  ok=?  bind:m
+    %:  ug-merge  (crip (slag 1 (scow %p shp)))
+      (~(gas in *(set @p)) ~[shp])
+      (~(uni in codes) idx)
+      ?.(=('edit' mode) ~ codes)
+    ==
+  ?.  ok  (ug-refused eyre-id)
+  %+  send-json  eyre-id
+  (pairs:enjs:format ~[['ok' b+&] ['notified' b+|] ['folder' b+&]])
 ::  +clear-walk: the clearweb pages under a /page ball, each with when its
 ::  source last changed. Pure.
 ++  clear-walk
@@ -17058,6 +17217,9 @@
   ;<  salt=@  bind:m  pub-salt
   ;<  ~  bind:m  (grow-pub-page salt key body rev mode.pb)
   ;<  ~  bind:m  (put-pub-revs root salt key `rev revs)
+  ;<  ~  bind:m
+    %^  put-pub-title  root  (page-name:lp key)
+    `[(unix-s:ls now) (title-clean:ls (page-title-of body ''))]
   ::  keep-only-current INVARIANT: at most one rev spur per page is ever
   ::  bound. Retract the PREDECESSOR now that the new one is grown and
   ::  listed: grow, list, cull, so a reader never finds zero bindings,
@@ -17378,6 +17540,7 @@
     ?~  rev  (~(del by old) nam)
     (~(put by old) nam (rev-json:lp u.rev (page-id:lp salt nam u.rev)))
   ;<  ~  bind:m  (put-file (rf root /pub %revs) [/ %json] [%o new])
+  ;<  ~  bind:m  ?^(rev (pure:m ~) (put-pub-title root nam ~))
   ;<  ~  bind:m  (put-pub-comment root nam ?=(^ rev))
   (put-pub-comet root nam)
 ::  +pub-comments: [/pub %comments], the published pages that take comments,
