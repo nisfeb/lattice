@@ -235,6 +235,63 @@ jobs:
           WRITER_REQUIRE_SOFFICE: "1"
         run: node scripts/writer-odt.mjs
 
+  # Every .hoon file in code/ compiles on a fake ~zod with grubbery, as a
+  # ship builds it: dev-deploy.py sends code/ and hoon-build-wait.py asks
+  # each file's ?info=1 for its build status. Release 111 shipped an
+  # app.hoon that did not build (a nest-fail every text check passed).
+  # Booting ~zod and installing grubbery takes most of half an hour, so
+  # the stopped pier is cached on the vere, the pill and grubbery's commit.
+  hoon-build:
+    name: Hoon, code/ compiles on a fake ship
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      VERE_TAG: vere-v4.6
+      PILL_URL: https://bootstrap.urbit.org/urbit-v4.6.pill
+      VERE: ${{ github.workspace }}/../vere/vere
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: vere and socat
+        run: |
+          sudo apt-get install -y socat
+          mkdir -p "$RUNNER_TEMP/vere" "$(dirname "$VERE")"
+          curl -fsSL "https://github.com/urbit/vere/releases/download/$VERE_TAG/linux-x86_64.tgz" |
+            tar -xz -C "$RUNNER_TEMP/vere"
+          mv "$RUNNER_TEMP"/vere/* "$VERE"
+          "$VERE" --version | head -1
+      - name: grubbery's commit
+        id: grub
+        run: echo "sha=$(git ls-remote https://github.com/nisfeb/grubbery refs/heads/dist/single-release | cut -c1-12)" >> "$GITHUB_OUTPUT"
+      #  restore and save apart: a failing check must not cost the next
+      #  run the base build
+      - name: cached ~zod with grubbery
+        id: pier
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/hoon-pier
+          key: hoon-pier-${{ env.VERE_TAG }}-${{ steps.grub.outputs.sha }}-${{ hashFiles('scripts/hoon-build.sh') }}
+      - name: boot ~zod and install grubbery
+        if: steps.pier.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/urbit.pill" "$PILL_URL"
+          git clone -q --depth 1 --branch dist/single-release \
+            https://github.com/nisfeb/grubbery "$RUNNER_TEMP/grubbery"
+          PILL="$RUNNER_TEMP/urbit.pill" GRUBBERY="$RUNNER_TEMP/grubbery/desk" \
+            scripts/hoon-build.sh base ~/hoon-pier
+          rm -f ~/hoon-pier/vere.log
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.pier.outputs.cache-hit != 'true'
+        with:
+          path: ~/hoon-pier
+          key: ${{ steps.pier.outputs.cache-primary-key }}
+      - name: deploy code/ and check every file built
+        run: scripts/hoon-build.sh check ~/hoon-pier
+      - name: the ship's log
+        if: failure()
+        run: tail -100 ~/hoon-pier/vere.log || true
+
   static:
     name: web client + scripts — static checks
     runs-on: ubuntu-24.04
