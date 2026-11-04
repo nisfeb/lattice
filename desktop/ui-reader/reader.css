@@ -33,3 +33,9 @@ blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--li
 .talk .who { overflow-wrap: anywhere; }
 .talk .note { padding: .4rem .6rem; border-radius: 6px; border: 1px solid var(--line); }
 .talk .note.err { border-color: #c0392b; }
+/* the loading line and Reload's spin (reader.js), as the shell draws them */
+.lbusy body::before { content: ""; position: fixed; top: 0; left: 0; right: 0; height: 2px; z-index: 2147483647; pointer-events: none; background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 40% 100%; animation: latbusy 1.2s ease-in-out infinite; }
+.lbusy .bar .nav[data-go="reload"] { animation: latspin .7s linear infinite; }
+@keyframes latbusy { from { background-position: -70% 0; } to { background-position: 170% 0; } }
+@keyframes latspin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .lbusy body::before { animation: none; background: var(--accent); opacity: .45; } .lbusy .bar .nav[data-go="reload"] { animation-duration: 2.4s; } }

@@ -757,6 +757,7 @@
       b.dataset.id = t.id;
       b.dataset.kind = t.kind;
       b.dataset.key = t.key;
+      if (t.kind === 'tool' && frameSlow(t.key)) b.classList.add('lload');
       b.title = (t.ship ? t.ship + ' ' : '') + (t.key || name);
       b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
         + '<span class="dtn"></span>'

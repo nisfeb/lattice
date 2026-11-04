@@ -190,6 +190,13 @@ select, option { color-scheme: inherit; }
 .dtdot { display: none; flex: none; width: 7px; height: 7px; border-radius: 50%;
   background: var(--green); }
 .dtab.dirty .dtdot { display: inline-block; }
+/* a frame tab whose page is loading (frameLoading, 24-tools.js): its icon
+   gives way to the status bar's spinner (#spin) */
+.dtab.lload > .ic { display: none; }
+.dtab.lload::before { content: ""; flex: none; width: 10px; height: 10px;
+  border: 2px solid var(--border); border-top-color: var(--green);
+  border-radius: 50%; animation: latspin .7s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .dtab.lload::before { animation-duration: 2.4s; } }
 /* faded, not hidden, off the front tab: a hidden button could not take focus */
 .dtx { display: inline-flex; flex: none; padding: 2px; border: 0; border-radius: 4px;
   background: none; color: inherit; cursor: pointer; opacity: 0; }
