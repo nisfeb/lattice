@@ -79,8 +79,13 @@ pub const COMMENT_MAX: usize = 4096;
 /// What became of the comment just sent, shown once above the box.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Note {
-    /// the publisher's ship took it in
+    /// the publisher's ship took it in, and its page takes comments
+    Posted,
+    /// the publisher's ship took it in, and whether its page takes
+    /// comments is not known (a lattice too old to say)
     Sent,
+    /// the page stopped taking comments; nothing was sent, the text is kept
+    Closed { body: String },
     /// nothing was written
     Empty,
     /// the publisher's ship refused it, in its words; the text is kept
@@ -91,12 +96,24 @@ pub enum Note {
     Failed { words: String, body: String },
 }
 
+/// Does the page take comments, by its publisher's `/pub/comments`?
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Open {
+    /// the publisher did not say (an older lattice, or no answer): the
+    /// box is offered, and a comment is only "sent"
+    #[default]
+    Unknown,
+    Yes,
+    No,
+}
+
 /// The comment box on a page: who comments (the reader identity's name),
-/// and the note for the comment just sent.
+/// whether the page takes comments, and the note for the comment just sent.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Talk<'a> {
     pub our: Option<&'a str>,
     pub note: Option<&'a Note>,
+    pub open: Open,
 }
 
 /// The publisher a comment on `url` goes to: a published page's ship. A
@@ -116,6 +133,11 @@ fn talk_box(url: &str, ship: &str, talk: &Talk) -> String {
     let to = esc(ship);
     let (note, kept) = match talk.note {
         None => (String::new(), ""),
+        Some(Note::Posted) => (format!("<p class=\"note ok\" role=\"status\">Posted to {to}.</p>"), ""),
+        Some(Note::Closed { body }) => (
+            format!("<p class=\"note err\" role=\"alert\">{to} has turned comments off on this page, so it wasn't sent.</p>"),
+            body.as_str(),
+        ),
         Some(Note::Sent) => (
             format!(
                 "<p class=\"note ok\" role=\"status\">Sent to {to}. {to} decides whether it appears: it won't if they \
@@ -148,6 +170,22 @@ fn talk_box(url: &str, ship: &str, talk: &Talk) -> String {
             body.as_str(),
         ),
     };
+    if talk.open == Open::No {
+        // the note's text, when there is one, is kept for the reader to copy
+        let kept = if kept.is_empty() {
+            String::new()
+        } else {
+            format!("<textarea rows=\"3\" readonly aria-label=\"Your comment\">{}</textarea>", esc(kept))
+        };
+        return format!(
+            "<section class=\"talk\" aria-labelledby=\"talk-h\"><h2 id=\"talk-h\">Comment</h2>{note}{kept}\
+             <p class=\"words talk-off\">Comments are off on this page.</p></section>"
+        );
+    }
+    let (verb, done, decide) = match talk.open {
+        Open::Yes => ("Post", "Posted", ""),
+        _ => ("Send", "Sent", " They decide whether it appears."),
+    };
     let who = match talk.our {
         Some(o) => format!("as <code class=\"who\">{}</code>, the name {to} sees as the author", esc(o)),
         None => format!("as this computer's anonymous reader identity, the name {to} sees as the author"),
@@ -157,8 +195,8 @@ fn talk_box(url: &str, ship: &str, talk: &Talk) -> String {
          <form class=\"talk-form\" method=\"post\" action=\"{action}\">\
          <textarea name=\"body\" rows=\"3\" maxlength=\"{COMMENT_MAX}\" required aria-label=\"Your comment\" \
          placeholder=\"Say something to {to}\">{kept}</textarea>\
-         <p><button type=\"submit\">Send to {to}</button></p></form>\
-         <p class=\"words\">Sent anonymously from this computer {who}. They decide whether it appears.</p></section>",
+         <p><button type=\"submit\">{verb} to {to}</button></p></form>\
+         <p class=\"words\">{done} anonymously from this computer {who}.{decide}</p></section>",
         action = esc(&comment_href(url)),
         kept = esc(kept),
     )
@@ -182,7 +220,7 @@ pub fn read_href(urb: &str) -> String {
     format!("/read?url={}", enc(urb))
 }
 
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     String::from_utf8(gateway::html_escape(s.as_bytes())).unwrap_or_default()
 }
 
@@ -288,7 +326,7 @@ pub fn title_of(url: &str, kind: &str, body: &str) -> String {
 }
 
 /// What urb-render's page() put inside `<main>`.
-fn main_of(doc: &[u8]) -> &[u8] {
+pub(crate) fn main_of(doc: &[u8]) -> &[u8] {
     let start = find(doc, b"<main>").map_or(0, |n| n + 6);
     let end = doc.windows(7).rposition(|w| w == b"</main>").unwrap_or(doc.len());
     if start <= end {
@@ -299,7 +337,7 @@ fn main_of(doc: &[u8]) -> &[u8] {
 }
 
 /// The reader's document around `main`.
-fn chrome(title: &str, url: &str, mode: Option<Mode>, main: &str, refresh: bool) -> String {
+pub(crate) fn chrome(title: &str, url: &str, mode: Option<Mode>, main: &str, refresh: bool) -> String {
     let strip = mode.map_or(String::new(), |m| {
         let mut s = String::from("<div class=\"actions\" role=\"group\" aria-label=\"Actions that need a node\">");
         for (label, why) in actions(m) {
@@ -363,7 +401,7 @@ pub fn page(url: &str, p: &NativePage, mode: Mode, raw_key: &str, talk: &Talk) -
     Shown { csp, html, title }
 }
 
-fn lossy(b: &[u8]) -> String {
+pub(crate) fn lossy(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
@@ -584,7 +622,7 @@ mod tests {
 
     #[test]
     fn a_published_page_takes_a_comment_as_the_reader_identity() {
-        let talk = Talk { our: Some("~doznec-sampel-palnet"), note: None };
+        let talk = Talk { our: Some("~doznec-sampel-palnet"), ..Talk::default() };
         let s = page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &talk);
         assert!(s.html.contains("<form class=\"talk-form\" method=\"post\" action=\"/comment?url=urb%3A%2F%2F~zod%2Fnotes%2Fb\">"), "{}", s.html);
         assert!(s.html.contains("<textarea name=\"body\""));
@@ -606,7 +644,7 @@ mod tests {
 
     #[test]
     fn what_became_of_a_comment_is_said_plainly() {
-        let say = |n: Note| page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &Talk { our: None, note: Some(&n) }).html;
+        let say = |n: Note| page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &Talk { note: Some(&n), ..Talk::default() }).html;
         let h = say(Note::Sent);
         assert!(h.contains("Sent to ~zod. ~zod decides whether it appears"), "{h}");
         assert!(h.contains("placeholder=\"Say something to ~zod\"></textarea>"), "the box is empty again");
@@ -618,6 +656,20 @@ mod tests {
         let h = say(Note::Failed { words: "the reader stopped".into(), body: "b".into() });
         assert!(h.contains("The reader couldn't send your comment."));
         assert!(say(Note::Empty).contains("Write something first."));
+        assert!(say(Note::Posted).contains("Posted to ~zod.</p>"));
+        let h = say(Note::Closed { body: "b".into() });
+        assert!(h.contains("~zod has turned comments off on this page, so it wasn't sent.") && h.contains(">b</textarea>"));
+    }
+
+    #[test]
+    fn the_box_follows_whether_the_page_takes_comments() {
+        let at = |open: Open| page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &Talk { open, ..Talk::default() }).html;
+        let h = at(Open::Yes);
+        assert!(h.contains(">Post to ~zod</button>") && h.contains("Posted anonymously") && !h.contains("They decide"), "{h}");
+        let h = at(Open::No);
+        assert!(h.contains("Comments are off on this page.") && !h.contains("talk-form") && !h.contains("<textarea"), "{h}");
+        let h = at(Open::Unknown);
+        assert!(h.contains(">Send to ~zod</button>") && h.contains("They decide whether it appears."), "{h}");
     }
 
     #[test]

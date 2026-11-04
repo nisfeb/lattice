@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backup;
+#[cfg(feature = "urb-engine")]
+mod boards;
 mod commands;
 mod config;
 #[cfg(feature = "urb-engine")]

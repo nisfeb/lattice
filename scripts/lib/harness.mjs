@@ -12,6 +12,17 @@
 
 import { readFileSync } from 'fs';
 import { homedir } from 'os';
+import { killTagged, markChildren, noCores, procTag } from './hygiene.mjs';
+
+//  No core dumps from this suite or the browsers it starts, and every
+//  child marked as ours (lib/hygiene.mjs). Run by hand, the suite is its
+//  own owner and kills what it started on the way out; under gate.mjs the
+//  gate does.
+noCores();
+markChildren();
+if (process.env.LATTICE_TEST_OWNER === procTag()) {
+  process.on('exit', () => killTagged(process.env.LATTICE_TEST_TAG));
+}
 
 export { makeCheck } from './check.mjs';
 
