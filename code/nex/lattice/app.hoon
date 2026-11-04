@@ -6985,10 +6985,10 @@
   $(page (snip `path`page))
 ::  +read-held: the comet comments held on `page`, by id
 ++  read-held
-  |=  [dep=@ud page=path]
+  |=  [root=@ud page=path]
   =/  m  (fiber:fiber:nexus ,(list [id=@ta c=comment:lc]))
   ^-  form:m
-  ;<  cv=view:nexus  bind:m  (peek:fio (rv dep (weld /comments-held page)) ~)
+  ;<  cv=view:nexus  bind:m  (peek:fio (rv root (weld /comments-held page)) ~)
   ?.  ?=([%ball *] cv)  (pure:m ~)
   ?~  fil.ball.cv  (pure:m ~)
   %-  pure:m
