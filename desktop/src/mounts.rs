@@ -125,10 +125,15 @@ pub fn projection_for(
     Ok(proj)
 }
 
+/// From the ship page (Settings > Files) the mount is asked first in a
+/// native dialog naming the folder and what goes in it: a page the ship
+/// serves must not be able to put files in a folder of its choosing unseen.
+/// Async, for the dialog's wait.
 #[tauri::command]
-pub fn add_mount(
+pub async fn add_mount(
     app: AppHandle,
-    map: State<MountMap>,
+    webview: tauri::Webview,
+    map: State<'_, MountMap>,
     mountpoint: String,
     root: String,
     sock: Option<String>,
@@ -138,6 +143,19 @@ pub fn add_mount(
     let sock = sock.unwrap_or_default();
     let ship = ship.unwrap_or_default();
     validate_mountpoint(&mountpoint)?;
+    let from = if sock.is_empty() {
+        "your ship's pages".to_string()
+    } else {
+        format!("the pages of {} on this machine, over its socket {sock}", if ship.is_empty() { "a ship" } else { &ship })
+    };
+    let under = if root.is_empty() { String::new() } else { format!(", under {root}") };
+    crate::commands::ship_page_asks(
+        &app,
+        &webview,
+        "Mount",
+        format!("Mount {from}{under} as files at {mountpoint}?"),
+        "Mount",
+    )?;
     // Cheap checks under the locks, then RELEASE them. Neither lock spans I/O,
     // the same rule remount() follows: status, list_mounts and remove_mount
     // stay answerable while a mount is coming up, and healing a wedged

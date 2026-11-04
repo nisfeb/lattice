@@ -491,7 +491,12 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
         }
         ("/", true) => {
             let live = ctx.start_list(Fresh::of(req, port) == Fresh::Reload);
-            shown(200, render::home(live.as_ref(), &ctx.history.list()))
+            let html = live.as_ref().is_some_and(|p| urb_render::gateway::render_as(&p.mark, p.body.as_bytes()) == "html");
+            let key = match &live {
+                Some(p) if html => ctx.keep_raw(render::START_URL, p.body.as_bytes()),
+                _ => String::new(),
+            };
+            shown(200, render::home(live.as_ref(), &key, &ctx.history.list()))
         }
         // the app's navigation policy shows the manager for this before it
         // loads (commands.rs); this is only what a stray request sees
@@ -1167,6 +1172,29 @@ mod tests {
         let last = if src.ends_with('0') { '1' } else { '0' };
         let wrong = format!("{}{last}", &src[..src.len() - 1]);
         assert_eq!(ask(&c, &get(&wrong, &format!("Referer: http://127.0.0.1:{PORT}/\r\n"))).0, 404);
+    }
+
+    #[test]
+    fn an_html_start_page_is_framed_in_the_home() {
+        let (c, _) = ctx("htmlstart", |u| {
+            assert_eq!(u, render::START_URL);
+            Ok(page_of("<h1>Styled start</h1><a href=\"urb://~nec/y\">y</a>", "html"))
+        });
+        let (st, out) = ask(&c, &get("/", &cookie()));
+        assert_eq!(st, 200, "{out}");
+        assert!(out.contains(&format!("Content-Security-Policy: {}\r\n", render::FRAMED)));
+        assert!(!out.contains("<h1>lattice</h1>") && !out.contains("Styled start"), "not the fallback, not inline");
+        assert!(out.contains("Recently read"));
+        let src = out.split("<iframe").nth(1).unwrap().split("src=\"").nth(1).unwrap().split('"').next().unwrap().replace("&amp;", "&");
+        assert!(src.starts_with("/raw?url=urb%3A%2F%2F~nisfeb%2Fstart&key="), "{src}");
+        let frame = get(
+            &src,
+            &format!("Origin: null\r\nReferer: http://127.0.0.1:{PORT}/\r\nSec-Fetch-Site: same-origin\r\nSec-Fetch-Dest: iframe\r\n"),
+        );
+        let (st, out) = ask(&c, &frame);
+        assert_eq!(st, 200, "{out}");
+        assert!(out.contains(&format!("Content-Security-Policy: {}\r\n", render::SANDBOX)));
+        assert!(out.contains("<h1>Styled start</h1><a href=\"/read?url=urb://~nec/y\">"), "{out}");
     }
 
     #[test]

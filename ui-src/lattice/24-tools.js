@@ -404,7 +404,7 @@
     d.addEventListener('keydown', (e) => {
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
-      const ours = (mod && !e.altKey && !e.shiftKey && (k === 'k' || k === 'p'))
+      const ours = (mod && !e.altKey && !e.shiftKey && (k === 'k' || k === 'p' || k === ','))
         || (mod && e.shiftKey && !e.altKey && (k === 'f' || e.code === 'KeyL'));
       if (!ours) return;
       const up = new KeyboardEvent('keydown', { key: e.key, code: e.code, ctrlKey: e.ctrlKey,
@@ -420,11 +420,28 @@
         toolOpen(a.dataset.latTool);
         return;
       }
+      // Settings is always its own tab: a link to it from a page in a
+      // frame (the reader's menu, the home page) opens or focuses that tab
+      // at the section named, never Settings inside a browsing frame
+      const set = settingsAt(a.href);
+      if (set !== null && key !== SETTINGS) {
+        e.preventDefault();
+        latOpenSettings(set || undefined);
+        return;
+      }
       const go = editorGo(a.href);
       if (!go) return;
       e.preventDefault();
       editorOpen(go);
     });
+  }
+  // The section a link to Settings on this origin names ('' for none),
+  // null when it is not a link to Settings
+  function settingsAt(href) {
+    let u;
+    try { u = new URL(href, location.href); } catch { return null; }
+    if (u.origin !== location.origin || !/^\/apps\/lattice\/settings\/?$/.test(u.pathname)) return null;
+    return decodeURIComponent(u.hash.slice(1));
   }
   // What an address of the editor asks for, null when it is not one: the
   // editor (/app, and /edit, which redirects there) with a document, a
@@ -697,16 +714,26 @@
     for (const t of bg) if (t.snap) t.snap.dirty = false;
     await go();
   });
-  // Settings > This computer (sections connection, files, backups), on the
-  // desktop. The shell rebuilds the window onto its own manager page
-  // (open_manager in desktop/src/commands.rs), and no unload guard sees a
-  // window go, so the same questions come first. A shell older than a
-  // section refuses its name, and then opens at the top.
-  window.latOpenManager = (section) => leaveThen(async () => {
-    const go = (s) => window.__TAURI__.core.invoke('open_manager', { section: s });
-    try { await go(section || null).catch(() => go(null)); }
-    catch (e) { st('could not open the desktop settings: ' + e, false); }
-  });
+  // Settings > This computer (settings.js) runs a step that takes the
+  // window off this page, another ship or the reader, through the same
+  // questions, since no unload guard sees the shell move the window.
+  window.latLeaveThen = (go) => leaveThen(go);
+  // The desktop's Preferences menu and the This computer tabs call this.
+  // A shell that grants this page those tabs' commands (status answers)
+  // has them in the Settings tab, which opens or comes forward there:
+  // settings are always a tab. Only an older shell takes the window to its
+  // own manager page (open_manager in desktop/src/commands.rs), and a
+  // shell older than a section refuses its name, and then opens at the top.
+  window.latOpenManager = async (section) => {
+    const inv = window.__TAURI__.core.invoke;
+    if (await inv('status').then(() => true, () => false))
+      return latOpenSettings(section || 'connection');
+    return leaveThen(async () => {
+      const go = (s) => inv('open_manager', { section: s });
+      try { await go(section || null).catch(() => go(null)); }
+      catch (e) { st('could not open the desktop settings: ' + e, false); }
+    });
+  };
 
   // urb:// links other apps opened with lattice, on the desktop. The shell
   // keeps them until this page takes them (desktop/src/urb.rs), so one that
@@ -741,7 +768,6 @@
   // held at the top while the page settles, until the user scrolls or
   // clicks or two seconds pass. Each section sits in a tab of the page,
   // and its settings.js shows that tab for any element scrolled into view.
-  // Preferences on the desktop opens the manager page (latOpenManager).
   function frameScroll(f, anchor) {
     let d = null;
     try { d = f.contentDocument; } catch {}
@@ -780,7 +806,16 @@
   ribbonAdd({ id: 'conflicts', icon: 'conflict', name: 'Sync conflicts', run: () => toolOpen('conflicts') })
     .hidden = true;
   ribbonAdd({ id: 'palette', icon: 'term', name: 'Command palette', keys: 'Ctrl+K', run: () => paletteOpen() });
-  ribbonAdd({ id: 'settings', icon: 'gear', name: 'Settings', bottom: true, run: () => toolOpen('settings') });
+  ribbonAdd({ id: 'settings', icon: 'gear', name: 'Settings', keys: 'Ctrl+,', bottom: true,
+    run: () => toolOpen('settings') });
+  // Ctrl+, (Cmd+, on a Mac), the desktop convention for settings, from
+  // anywhere: frames hand it up (frameDress)
+  addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.key !== ',') return;
+    if (!$('dlg').hidden) return;
+    e.preventDefault();
+    toolOpen('settings');
+  }, true);
   // The explorer is a power tool: no ribbon button. Its home is the link in
   // Settings > Advanced, which lives in the Settings frame and so outside
   // this document, the one action the palette lists without a home here

@@ -432,10 +432,24 @@ pub fn bad_address(given: &str) -> Shown {
 
 /// The reader's home: the address field (in the bar), the start list
 /// (the live page when `live` has it, else the compiled-in copy), and the
-/// pages read recently, with Clear history.
-pub fn home(live: Option<&NativePage>, recent: &[Entry]) -> Shown {
-    let body = live.filter(|p| gateway::render_as(&p.mark, p.body.as_bytes()) == "gmi").map_or(START, |p| p.body.as_str());
-    let start = lossy(main_of(&gateway::render_gemtext(body.as_bytes(), START_URL.as_bytes(), &link_for(START_URL))));
+/// pages read recently, with Clear history. A live start page in HTML is
+/// framed from `/raw` under `raw_key`, as a published HTML page is.
+pub fn home(live: Option<&NativePage>, raw_key: &str, recent: &[Entry]) -> Shown {
+    let kind = live.map(|p| gateway::render_as(&p.mark, p.body.as_bytes()));
+    let (csp, start) = if kind == Some("html") && !raw_key.is_empty() {
+        (
+            FRAMED,
+            format!(
+                "<iframe class=\"pub\" title=\"{t}\" sandbox=\"{FRAME_SANDBOX}\" src=\"/raw?url={u}&amp;key={k}\"></iframe>",
+                t = esc(START_URL),
+                u = enc(START_URL),
+                k = enc(raw_key),
+            ),
+        )
+    } else {
+        let body = live.filter(|_| kind == Some("gmi")).map_or(START, |p| p.body.as_str());
+        (OWN, lossy(main_of(&gateway::render_gemtext(body.as_bytes(), START_URL.as_bytes(), &link_for(START_URL)))))
+    };
     let mut main = format!(
         "<section class=\"home-page\"><div class=\"start{}\">{start}</div>",
         if live.is_some() { " live" } else { "" }
@@ -462,7 +476,7 @@ pub fn home(live: Option<&NativePage>, recent: &[Entry]) -> Shown {
         main.push_str("</ul>");
     }
     main.push_str("</section>");
-    Shown { csp: OWN, html: chrome("lattice reader", "", Some(Mode::Shipless), &main, false), title: "lattice reader".into() }
+    Shown { csp, html: chrome("lattice reader", "", Some(Mode::Shipless), &main, false), title: "lattice reader".into() }
 }
 
 #[cfg(test)]
@@ -629,24 +643,34 @@ mod tests {
 
     #[test]
     fn home_shows_the_start_list_and_recent_reads() {
-        let s = home(None, &[]);
+        let s = home(None, "", &[]);
         assert!(s.html.contains("<h1>lattice</h1>"), "the compiled-in copy");
         assert!(s.html.contains("href=\"/read?url=urb%3A%2F%2F~nisfeb%2Fsite%2Flattice%2Flattice\""));
         assert!(s.html.contains("kept only on this computer") && !s.html.contains("Clear history"));
         let live = native("# Live list\n=> urb://~nec/x A page", "gmi");
         let recent = [Entry { url: "urb://~zod/a".into(), title: "A <page>".into(), at: 1 }];
-        let s = home(Some(&live), &recent);
+        let s = home(Some(&live), "", &recent);
         assert!(s.html.contains("<h1>Live list</h1>") && !s.html.contains("<h1>lattice</h1>"));
         assert!(s.html.contains("<a href=\"/read?url=urb%3A%2F%2F~zod%2Fa\">A &lt;page&gt;</a>"));
         assert!(s.html.contains("action=\"/history/clear\""));
         // a start page that is not gemtext is not trusted into the home
-        let s = home(Some(&native("<script>x</script>", "html")), &[]);
+        let s = home(Some(&native("<script>x</script>", "html")), "", &[]);
         assert!(s.html.contains("<h1>lattice</h1>") && !s.html.contains("<script>x"));
+        // an HTML start page is framed from /raw, as a published HTML page is
+        let s = home(Some(&native("<h1>Styled</h1><script>x</script>", "html")), "k1", &recent);
+        assert_eq!(s.csp, FRAMED);
+        assert!(s.html.contains(&format!(
+            "<iframe class=\"pub\" title=\"urb://~nisfeb/start\" sandbox=\"{FRAME_SANDBOX}\" \
+             src=\"/raw?url=urb%3A%2F%2F~nisfeb%2Fstart&amp;key=k1\"></iframe>"
+        )));
+        assert!(!s.html.contains("<h1>lattice</h1>") && !s.html.contains("Styled") && !s.html.contains("<script>x"));
+        assert!(s.html.find("</iframe>").unwrap() < s.html.find("Recently read").unwrap());
+        assert_eq!(home(Some(&live), "", &recent).csp, OWN);
     }
 
     #[test]
     fn the_bar_has_back_forward_and_reload() {
-        for s in [home(None, &[]), page(PAGE, &native("# Hi", "gmi"), Mode::Shipless, "", &Talk::default()), bad_address("x")] {
+        for s in [home(None, "", &[]), page(PAGE, &native("# Hi", "gmi"), Mode::Shipless, "", &Talk::default()), bad_address("x")] {
             let nav = s.html.split("<nav>").nth(1).unwrap().split("</nav>").next().unwrap();
             let order: Vec<&str> = nav.match_indices("data-go=\"").map(|(i, _)| nav[i + 9..].split('"').next().unwrap()).collect();
             assert_eq!(order, ["back", "forward", "reload"]);
