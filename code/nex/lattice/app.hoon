@@ -562,7 +562,6 @@
       ::  page-sub on reload. Culling the grub (via /unsub) tears down the
       ::  fiber and its keep (delete -> sub-wipe).
           [[%sub %pages ~] @]
-        %-  trip
         ;<  ~  bind:m  (rise-later prod "lattice /sub/pages" (trip name.rail))
         ;<  ps=page-sub:lp  bind:m  (get-state-as:io ,page-sub:lp)
         =/  rel=path  (page-rel pax.ps)
