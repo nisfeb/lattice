@@ -55,6 +55,9 @@ pub const RETRY_AFTER: Duration = Duration::from_secs(5);
 
 /// Beside a comet made before anyone asked to read (see the top).
 const UNCLAIMED: &str = "unclaimed";
+/// How long a publisher may take over a small grub (`/pub/comments`)
+/// before the peek gives up: the read just made has the flow open.
+const PEEK_WAIT_MS: u64 = 5_000;
 
 /// How long the warm-up's reads wait each.
 const WARM_BUDGET: Duration = Duration::from_secs(30);
@@ -134,12 +137,21 @@ pub trait Reads: Send + Sync {
         let _ = (ship, page, body, budget);
         Err(CommentError::Failed("this reader cannot comment".into()))
     }
+    /// The pages of `ship` that take comments, by the names its revision
+    /// list gives them (`/<path>`), from lattice's `/pub/comments`. `None`
+    /// when that is not known: no answer, or a lattice too old to say.
+    fn comments_open(&self, ship: &str, budget: Duration) -> Option<Vec<String>> {
+        let _ = (ship, budget);
+        None
+    }
 }
 
 /// where a read's result goes
 type Answer = Sender<Result<NativePage, ReadError>>;
 /// where a comment's result goes
 type Said = Sender<Result<(), CommentError>>;
+/// where a peek's result goes: the cord, `None` for no such grub
+type Cord = Sender<Result<Option<String>, String>>;
 
 /// A comment for the host's thread: the publisher, the lattice base to
 /// poke at, the page's path and the text.
@@ -156,6 +168,8 @@ enum Job {
     /// the ship whose kept revision list is to go (`Engine::expire`)
     Expire(String),
     Comment(Comment, Said),
+    /// a publisher's `/pub/comments`, at a lattice base
+    OpenList(String, &'static str, Cord),
     Close(Sender<()>),
 }
 
@@ -163,6 +177,7 @@ enum Job {
 enum Wait {
     Read(Answer, String),
     Comment(Said),
+    OpenList(Cord),
 }
 
 struct Running {
@@ -360,6 +375,38 @@ impl Engine {
         }
     }
 
+    /// The pages of `ship` that take comments (`Reads::comments_open`):
+    /// lattice's `/pub/comments` cord, at the desk install's base first and
+    /// the older base when the first has none.
+    pub fn comments_open(&self, ship: &str, budget: Duration) -> Option<Vec<String>> {
+        let start = Instant::now();
+        for base in [DESK_BASE, APP_BASE] {
+            let left = budget.saturating_sub(start.elapsed());
+            if left.is_zero() {
+                return None;
+            }
+            let (tx, rx) = channel();
+            {
+                let g = self.inner.lock().unwrap();
+                if !matches!(g.status, Status::Ready { .. }) {
+                    return None;
+                }
+                let run = g.run.as_ref()?;
+                run.jobs.send(Job::OpenList(ship.into(), base, tx)).ok()?;
+                if let Some(w) = &run.waker {
+                    let _ = w.send(Event::Wake);
+                }
+            }
+            match rx.recv_timeout(left) {
+                Ok(Ok(Some(cord))) => return Some(open_names(&cord)),
+                // none here, or not lattice's base: the other one may be
+                Ok(Ok(None)) | Ok(Err(_)) => {}
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
     /// Start the engine before anyone reads, and read `warm` (the start
     /// list) and the first page it links to, so the first page someone
     /// opens is already on its way. A comet this makes is unclaimed until
@@ -473,6 +520,9 @@ impl Reads for Engine {
     }
     fn expire(&self, url: &str) {
         Engine::expire(self, url)
+    }
+    fn comments_open(&self, ship: &str, budget: Duration) -> Option<Vec<String>> {
+        Engine::comments_open(self, ship, budget)
     }
     fn step(&self) -> &'static str {
         Engine::step(self)
@@ -604,6 +654,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                     log_line(&format!("comment to {} on {} at {}", c.ship, c.page, c.base));
                     pending.push((submit_comment(&mut host, c), Wait::Comment(tx), Instant::now()))
                 }
+                Ok(Job::OpenList(ship, base, tx)) => {
+                    pending.push((submit_open_list(&mut host, ship, base), Wait::OpenList(tx), Instant::now()))
+                }
                 Ok(Job::Close(done)) => {
                     let _ = host.close();
                     let _ = done.send(());
@@ -627,6 +680,11 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                     Wait::Comment(tx) => {
                         let got = said_of(r);
                         log_line(&format!("comment in {} ms: {got:?}", at.elapsed().as_millis()));
+                        let _ = tx.send(got);
+                    }
+                    Wait::OpenList(tx) => {
+                        let got = cord_of(r);
+                        log_line(&format!("peek in {} ms: {}", at.elapsed().as_millis(), if got.is_ok() { "ok" } else { "failed" }));
                         let _ = tx.send(got);
                     }
                 }
@@ -768,9 +826,38 @@ fn submit_comment<I: urb_engine::host::Io>(host: &mut Host<I>, c: Comment) -> u6
     })
 }
 
+/// The engine's one peek, a read of no page: lattice's `/pub/comments`,
+/// the published pages that take comments, as a cord. It is under `/pub`,
+/// which lattice opens to every foreign ship as it opens the pages.
+fn submit_open_list<I: urb_engine::host::Io>(host: &mut Host<I>, ship: String, base: &str) -> u64 {
+    host.submit(Request::Peek {
+        ship,
+        folder: format!("{base}/pub"),
+        name: Some("comments".into()),
+        conv: urb_engine::core::Conv::Cord,
+        wait: Some(PEEK_WAIT_MS),
+    })
+}
+
 /// lattice's `comment-action`: the page's path, then the text
 fn comment_noun(page: &str, body: &str) -> Value<'static> {
     Value::Array(vec![urb_engine::codec::path(page), Value::Text(body.into())])
+}
+
+/// A cord peek's result: the text, or `None` when the publisher has no
+/// such grub.
+fn cord_of(r: Result<Reply, Failure>) -> Result<Option<String>, String> {
+    match r {
+        Ok(Reply::Peek(urb_engine::core::Peeked::Text(t))) => Ok(Some(t)),
+        Ok(Reply::Peek(urb_engine::core::Peeked::Null)) => Ok(None),
+        Ok(_) => Err("the peek gave no text".into()),
+        Err(f) => Err(f.message),
+    }
+}
+
+/// `/pub/comments`'s cord: one published page's name a line
+pub fn open_names(cord: &str) -> Vec<String> {
+    cord.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
 }
 
 /// A comment's result as the app sees it.
@@ -852,9 +939,10 @@ mod tests {
 
     /// The rule as a test: the engine reads, and its one write is a
     /// comment to a publisher's comment inbox. Every request it names is a
-    /// Read or that Poke, it submits in two places, and it never peeks,
-    /// publishes, hears an inbox or calls a forum or a furum board. A
-    /// change that needs any of those has to change this test on purpose.
+    /// Read, that Poke, or one Peek of the publisher's list of pages that
+    /// take comments; it submits in three places, and it never publishes,
+    /// hears an inbox or calls a forum or a furum board. A change that
+    /// needs any of those has to change this test on purpose.
     #[test]
     fn only_reads_and_comments_are_submitted() {
         let src = include_str!("engine.rs");
@@ -866,14 +954,19 @@ mod tests {
                 &rest[..rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len())]
             })
             .collect();
-        assert_eq!(named, ["Read", "Poke"], "the engine names only Request::Read and one Poke");
-        for word in ["Peek", "Inbox", "Furum", "Forum", "PubPut", "PubRemove", "Pub {", "Watch"] {
+        assert_eq!(named, ["Read", "Poke", "Peek"], "the engine names only Request::Read, one Poke and one Peek");
+        for word in ["Inbox", "Furum", "Forum", "PubPut", "PubRemove", "Pub {", "Watch"] {
             assert!(!code.contains(&format!("Request::{word}")), "{word}");
         }
         for word in ["FurumCall", "ForumCall", "submit_as", ".call(", "submit_open_as"] {
             assert!(!code.contains(word), "the engine uses {word}");
         }
-        assert_eq!(code.matches(".submit(").count(), 2, "two submits, in submit_read and submit_comment");
+        assert_eq!(code.matches(".submit(").count(), 3, "three submits, in submit_read, submit_comment and submit_open_list");
+        assert_eq!(code.matches("submit_open_list(").count(), 1, "submit_open_list, called once");
+        // the peek reads /pub/comments and nothing else
+        let peek = &code[code.find("fn submit_open_list<").unwrap()..];
+        let peek = &peek[..peek.find("\n}\n").unwrap()];
+        assert!(peek.contains("folder: format!(\"{base}/pub\")") && peek.contains("name: Some(\"comments\".into())"), "{peek}");
         assert_eq!(code.matches("submit_read(").count(), 1, "submit_read, called once");
         assert_eq!(code.matches("submit_comment(").count(), 1, "submit_comment, called once");
         // the poke goes to the comment inbox, with lattice's comment mark

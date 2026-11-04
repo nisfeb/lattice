@@ -83,6 +83,19 @@
   ?:  (gth w 8)  (bex 128)
   ?:  (gth w 4)  (end 5 who)
   who
+::  +quota-family: whom a ship answers for in a per-author quota. As
+::  +family, but each comet answers for itself: a comet reader cannot
+::  share a quota with every other comet, and the page's overall cap
+::  still bounds what all of them together can file. A ban still takes
+::  +family, so banning the comets' family bans every comet at once.
+++  quota-family
+  |=  who=@p
+  ^-  @
+  ?:  (gth (met 3 who) 8)  who
+  (family who)
+::  +all-comets: the @p that stands for every comet in a ban, +family's
+::  answer for a comet. Banning it bans them all.
+++  all-comets  ^-(@p (bex 128))
 ::
 ::  ==  grant roads  ==
 ::
