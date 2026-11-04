@@ -56,7 +56,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::engine::{CometMode, Comets, CommentError, NativePage, Opened, ReadError, Reads};
+use crate::engine::{CometMode, Comets, CommentError, NativePage, Opened, PageTitle, ReadError, Reads};
 use crate::history::History;
 use crate::render::{self, Mode, Note, Open, Talk};
 
@@ -108,6 +108,8 @@ const OPEN_BUDGET: Duration = Duration::from_secs(6);
 type Forums = HashMap<String, (Instant, Option<Vec<String>>)>;
 /// each publisher's list (`Ctx::open`), and when it was asked for
 type Opens = HashMap<String, (Instant, Option<Opened>)>;
+/// each publisher's `/pub/titles` (`Ctx::titles`), and when it was asked for
+type Titles = HashMap<String, (Instant, Option<Vec<PageTitle>>)>;
 
 /// This launch's reader token: 32 bytes from the OS, hex, never on disk.
 pub fn token() -> &'static str {
@@ -145,6 +147,8 @@ pub struct Ctx {
     opens: Mutex<Opens>,
     /// each forum host's boards that take comet posts, when it was asked
     forums: Mutex<Forums>,
+    /// each publisher's page times and titles, when it was asked
+    titles: Mutex<Titles>,
 }
 
 impl Ctx {
@@ -158,6 +162,7 @@ impl Ctx {
             note: Mutex::new(None),
             opens: Mutex::new(HashMap::new()),
             forums: Mutex::new(HashMap::new()),
+            titles: Mutex::new(HashMap::new()),
         }
     }
 
@@ -194,6 +199,21 @@ impl Ctx {
         let open = if l.names.iter().any(|n| same_page(n, key)) { Open::Yes } else { Open::No };
         let comets = l.comets.iter().find(|(n, _)| same_page(n, key)).map_or_else(Comets::default, |(_, c)| *c);
         (open, comets)
+    }
+
+    /// The published pages of `ship` with their times and titles, from
+    /// the list kept for `ship`, or asked for now when that is stale.
+    /// `None` when the publisher does not say (an older lattice).
+    fn titles(&self, ship: &str) -> Option<Vec<PageTitle>> {
+        let kept = self.titles.lock().unwrap().get(ship).cloned();
+        match kept {
+            Some((at, l)) if at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
+            _ => {
+                let l = self.reads.titles(ship, OPEN_BUDGET);
+                self.titles.lock().unwrap().insert(ship.to_string(), (Instant::now(), l.clone()));
+                l
+            }
+        }
     }
 
     /// The note for `url`, once.
@@ -799,6 +819,7 @@ fn read(ctx: &Ctx, given: &str, fresh: Fresh, by_date: bool) -> Resp {
         ctx.reads.expire(&url);
         if let Some(ship) = render::commentable(&url) {
             ctx.opens.lock().unwrap().remove(&ship);
+            ctx.titles.lock().unwrap().remove(&ship);
         }
         if fresh == Fresh::Asked {
             let sort = if by_date { "&sort=date" } else { "" };
@@ -839,17 +860,30 @@ fn read(ctx: &Ctx, given: &str, fresh: Fresh, by_date: bool) -> Resp {
 }
 
 /// A folder's index, for an address whose page the publisher does not
-/// have: what its revision list, just read, names under the folder. `None`
-/// when it names nothing there, or the address is not a published page's.
+/// have: what its revision list, just read, names under the folder, each
+/// page with its time and title from `/pub/titles` where the publisher has
+/// that (`Ctx::titles`, asked only once the folder has something in it).
+/// `None` when it names nothing there, or the address is not a published
+/// page's.
 fn folder(ctx: &Ctx, url: &str, by_date: bool) -> Option<Resp> {
     let u = urb_engine::url::de_urb(url).ok()?;
     if !matches!(u.mount, urb_engine::url::Mount::N) || u.rel.last().is_none_or(|l| l == "index") {
         return None;
     }
-    let rows = render::dir_rows(&ctx.reads.pages(&u.ship)?, &u.rel, by_date);
-    if rows.is_empty() {
+    let pages = ctx.reads.pages(&u.ship)?;
+    let listed = |titles: &[PageTitle]| -> Vec<render::Listed> {
+        pages
+            .iter()
+            .map(|(key, when)| match titles.iter().find(|t| t.key == *key) {
+                Some(t) => render::Listed { key: key.clone(), when: Some(t.secs.saturating_mul(1000)), title: t.title.clone() },
+                None => render::Listed { key: key.clone(), when: *when, title: String::new() },
+            })
+            .collect()
+    };
+    if render::dir_rows(&listed(&[]), &u.rel, false).is_empty() {
         return None;
     }
+    let rows = render::dir_rows(&listed(&ctx.titles(&u.ship).unwrap_or_default()), &u.rel, by_date);
     let s = render::folder_page(&u.ship, &u.rel, &rows, by_date);
     if let Err(e) = ctx.history.add(&render::folder_url(&u.ship, &u.rel), &s.title) {
         crate::commands::dlog(&format!("reader: {e}"));
@@ -1016,8 +1050,17 @@ mod tests {
             Some("~doznec-sampel-palnet".into())
         }
         fn pages(&self, ship: &str) -> Option<Vec<(String, Option<i64>)>> {
+            (ship == "~zod" || ship == "~bus").then(|| {
+                ["/hello", "/site", "/docs/one", "/docs/sub/two", "/docs/zed"].iter().map(|k| (k.to_string(), None)).collect()
+            })
+        }
+        /// `~zod` publishes titles (`/docs/zed` oldest, `/docs/one`
+        /// untitled); `~bus` is an older lattice without them
+        fn titles(&self, ship: &str, _: Duration) -> Option<Vec<PageTitle>> {
             (ship == "~zod").then(|| {
-                ["/hello", "/site", "/docs/one", "/docs/sub/two"].iter().map(|k| (k.to_string(), None)).collect()
+                crate::engine::page_titles(
+                    "/docs/one\t1700000000\t\n/docs/sub/two\t1600000000\tTwo\n/docs/zed\t1500000000\tZed <b>&\n",
+                )
             })
         }
         fn comment(&self, ship: &str, page: &str, body: &str, _: Duration) -> Result<(), CommentError> {
@@ -1545,6 +1588,20 @@ mod tests {
         let (st, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2F&sort=date", &cookie()));
         assert_eq!(st, 200);
         assert!(out.contains("Oldest first."));
+        // titles from /pub/titles, escaped, the name where a page has none,
+        // a folder by its name; dates shown, and by date oldest first
+        let zed = out.find(">Zed &lt;b&gt;&amp;</a><time>2017-07-14</time>").expect("zed's title and date");
+        let sub = out.find(">sub/</a><time>2020-09-13</time>").expect("the folder, by its name");
+        let one = out.find(">one</a><time>2023-11-14</time>").expect("the untitled page by name");
+        assert!(zed < sub && sub < one, "oldest first");
+        assert!(!out.contains(">Two<"), "a page in a subfolder is not a row");
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2F", &cookie()));
+        let (sub, zed) = (out.find(">sub/</a>").unwrap(), out.find(">Zed &lt;b&gt;&amp;</a>").unwrap());
+        assert!(sub < out.find(">one</a>").unwrap() && out.find(">one</a>").unwrap() < zed, "folders first, then pages by name");
+        // a ship without /pub/titles: names, no dates
+        let (st, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~bus%2Fdocs%2F", &cookie()));
+        assert_eq!(st, 200, "{out}");
+        assert!(out.contains(">zed</a><time></time>") && out.contains(">one</a><time></time>"), "{out}");
         // nothing under it, or a ship with no list: not published, as before
         assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fnone%2F", &cookie())).0, 404);
         assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~nec%2Fdocs%2F", &cookie())).0, 404);
