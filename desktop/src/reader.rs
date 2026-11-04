@@ -634,6 +634,10 @@ fn read(ctx: &Ctx, given: &str, fresh: Fresh) -> Resp {
             return redirect(303, &render::read_href(&url));
         }
     }
+    if let Some(at) = crate::boards::place(&url) {
+        let (status, s) = crate::boards::read(ctx, &url, &at);
+        return shown(status, s);
+    }
     let start = Instant::now();
     let mut tries = 0;
     let got = loop {
