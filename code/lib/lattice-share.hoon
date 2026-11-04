@@ -97,6 +97,117 @@
 ::  answer for a comet. Banning it bans them all.
 ++  all-comets  ^-(@p (bex 128))
 ::
+::  ==  comet guard  ==
+::
+::  Comets are free to mint, so a per-author quota alone binds nothing:
+::  one person can be any number of authors. The guard bounds what all
+::  comets together may file on one page (a rate cap over a rolling
+::  window), and lets the owner hold or refuse comets per page. Planets
+::  and moons never pass through it. One gate for every place a comet
+::  writes (page comments, forum posts), so the rule cannot drift.
+::
+::  +$  comet-mode: a page's policy for comets. %open is the default.
++$  comet-mode  ?(%open %held %off)
+::  +$  comet-page: what the gate needs to know of a page: its mode, and
+::  when each comet write it accepted or held happened. Older stamps are
+::  harmless: the gate counts only those inside the window.
++$  comet-page  [mode=comet-mode recent=(list @da)]
+::  +$  comet-verdict: %ok to store, %held to queue for the owner,
+::  %refused with words a reader can show.
++$  comet-verdict  $%([%ok ~] [%held ~] [%refused why=@t])
+++  comet-cap     ^-(@ud 10)
+++  comet-window  ^-(@dr ~h1)
+++  comet-full-why  'Too many anonymous comments here right now, try again later'
+++  comet-off-why   'Anonymous comments are off on this page'
+::  +is-comet: sized by bytes, as +family is
+++  is-comet  |=(who=@p ^-(? (gth (met 3 who) 8)))
+::  +comet-mode-of: a stored mode, %open for anything unreadable
+++  comet-mode-of
+  |=  n=*
+  ^-  comet-mode
+  ?+(n %open %held %held, %off %off)
+::  +comet-live: the stamps inside the window ending at now, newest first
+++  comet-live
+  |=  [recent=(list @da) now=@da]
+  ^-  (list @da)
+  =/  from=@da  ?:((lth now comet-window) *@da (sub now comet-window))
+  (sort (skim recent |=(t=@da (gth t from))) gth)
+::  +comet-gate: may `who` write on a page in state `pg`? Anyone but a
+::  comet is %ok. A comet is refused on an %off page or over the cap,
+::  held on a %held page, and %ok otherwise.
+++  comet-gate
+  |=  [pg=comet-page who=@p now=@da]
+  ^-  comet-verdict
+  ?.  (is-comet who)  [%ok ~]
+  ?:  ?=(%off mode.pg)  [%refused comet-off-why]
+  ?:  (gte (lent (comet-live recent.pg now)) comet-cap)
+    [%refused comet-full-why]
+  ?:(?=(%held mode.pg) [%held ~] [%ok ~])
+::  +comet-full-until: when the page's cap frees, if it is at the cap now.
+::  The cap-th newest stamp in the window leaves it a window after it came.
+++  comet-full-until
+  |=  [recent=(list @da) now=@da]
+  ^-  (unit @da)
+  =/  live=(list @da)  (comet-live recent now)
+  ?.  (gte (lent live) comet-cap)  ~
+  `(add (snag (dec comet-cap) live) comet-window)
+::  +$  comet-row: one page's line in /pub/comets: its mode, and the unix
+::  second its cap frees when it is at the cap.
++$  comet-row  [mode=comet-mode until=(unit @ud)]
+::  +comets-cord: /pub/comets, one line per page whose comet policy is not
+::  plain open, `<name> <mode>` or `<name> <mode> <until>`. A page not in
+::  it is open, so a publisher without the grub reads as every page open.
+++  comets-cord
+  |=  rows=(map @t comet-row)
+  ^-  @t
+  =/  l=(list [n=@t r=comet-row])
+    (sort ~(tap by rows) |=([a=[n=@t *] b=[n=@t *]] (aor n.a n.b)))
+  %-  of-wain:format
+  %+  murn  l
+  |=  [n=@t r=comet-row]
+  ^-  (unit @t)
+  ?:  &(?=(%open mode.r) ?=(~ until.r))  ~
+  :-  ~
+  %-  crip
+  ;:  weld  (trip n)  " "  (trip mode.r)
+    ?~(until.r "" (weld " " ((d-co:co 1) u.until.r)))
+  ==
+::  +comets-rows: +comets-cord read back. A line that will not read is
+::  dropped, and an unknown mode reads as %open.
+++  comets-rows
+  |=  c=@t
+  ^-  (map @t comet-row)
+  %-  ~(gas by *(map @t comet-row))
+  %+  murn  (to-wain:format c)
+  |=  l=@t
+  ^-  (unit [@t comet-row])
+  =/  r
+    %+  rush  l
+    ;~  plug
+      (cook crip (plus ;~(less ace prn)))
+      ;~(pfix ace sym)
+      (punt ;~(pfix ace dem))
+    ==
+  ?~  r  ~
+  `[-.u.r (comet-mode-of +<.u.r) +>.u.r]
+::  +comet-full-mins: the whole minutes, rounded up and at least one, from
+::  now until a cap that frees at unix second `until`; 0 once it has passed,
+::  when the window has rolled over and the page is open again
+++  comet-full-mins
+  |=  [until=@ud now=@da]
+  ^-  @ud
+  =/  n=@ud  (unix-s now)
+  ?.  (gth until n)  0
+  (max 1 (div (add (sub until n) 59) 60))
+::  +comet-full-words: what a reader shows at the cap, `mins` before it frees
+++  comet-full-words
+  |=  mins=@ud
+  ^-  @t
+  %-  crip
+  "Too many anonymous comments here right now, try again in {((d-co:co 1) (max 1 mins))} min"
+::  +unix-s: a date as unix seconds
+++  unix-s  |=(d=@da ^-(@ud ?:((lth d ~1970.1.1) 0 (div (sub d ~1970.1.1) ~s1))))
+::
 ::  ==  grant roads  ==
 ::
 ::  A grant is a road in a usergroup's weir. Roads are taken as nouns here,

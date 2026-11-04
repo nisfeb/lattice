@@ -47,6 +47,10 @@
       [%tmpl-save from=path name=@tas]  ::  save page-tree `from` as template `name`
       [%tmpl-del name=@tas]             ::  delete template `name`
       [%comments pax=path on=?]         ::  turn comments on/off at pax (page or folder)
+      ::  set the comet mode at pax (open, held, off; +comet-gate:lattice-share)
+      [%comet-mode pax=path mode=@tas]
+      ::  approve (ok=&) or reject a held comet comment on page pax
+      [%comet-pending pax=path id=@ta ok=?]
       [%forms pax=path on=? cap=@ud gap=@dr]  ::  public forms: on/off + limits
       [%form-hit pax=path now=@da]      ::  record one accepted submission
       [%form-reset pax=path]            ::  zero a page's submission counter
@@ -64,6 +68,9 @@
       [%forum-note-store host=@p payload=*]
       ::  the owner clears every stored refusal note (frees the 100-note cap).
       [%forum-notes-clear ~]
+      ::  the owner turns comet posting on or off for one board, and the
+      ::  published list of boards that take comet posts follows
+      [%forum-comets name=@ta on=?]
       ::  write a link (/lib/lattice-link) at /page/<pax>/link, making its
       ::  dir. Through the writer like every page-tree write, so it lands
       ::  in order with a move's mkdirs and bumps the change beacon.

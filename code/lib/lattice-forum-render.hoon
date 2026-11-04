@@ -651,10 +651,11 @@
   ==
 ::
 ::  +render-mod: the moderation page. The host also sees the board-level
-::  settings (info, public, prune, delete).
+::  settings (info, public, comet posting, prune, delete). `comets` is
+::  whether the board takes posts and replies from comets.
 ::
 ++  render-mod
-  |=  [c=ctx brd=board]
+  |=  [c=ctx brd=board comets=?]
   ^-  [title=@t body=manx]
   =/  info=board-info  info.brd
   =/  is-host=?  =(who.c host.info)
@@ -713,6 +714,17 @@
       ;form(method "post", action "{base.c}/mod/public")
         ;p: {?:(public.info "This board is currently public." "This board is currently private.")}
         ;input.btn(type "submit", value ?:(public.info "make private" "make public"));
+      ==
+      ;hr;
+    ==
+  =/  comet-section=manx
+    ?.  is-host  ;span;
+    ;div
+      ;h4: Comet Posts
+      ;p.me: Comets, such as the desktop reader without a node, may start posts and reply on a public board, ten an hour across the board. They never vote.
+      ;form(method "post", action "{base.c}/mod/comets")
+        ;p: {?.(public.info "This board is private, so comets cannot post." ?:(comets "Comets may post on this board." "Comets may not post on this board."))}
+        ;input.btn(type "submit", value ?:(comets "turn comet posts off" "turn comet posts on"));
       ==
       ;hr;
     ==
@@ -792,6 +804,7 @@
       ;p.me: Default role: {(trip (role-to-text default-role.info))}
       info-section
       pub-section
+      comet-section
       sidebar-section
       prune-section
       ;h4: Set User Role

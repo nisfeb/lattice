@@ -27,6 +27,13 @@
     <!-- the box alone toggles, as with mark sensitive (66-share.js) -->
     <div class="chk"><input type="checkbox" id="cmton" data-action="cmton" aria-label="Comments on this page">
     <span class="muted">Comments on this page</span></div>
+    <!-- comets (anonymous ships): open, held for review, or off. Planets
+         and moons go by the box above alone. -->
+    <div id="cometrow" class="chk" hidden><span class="muted">Anonymous (comet) comments</span>
+    <select id="cometmode" aria-label="Anonymous (comet) comments">
+      <option value="open">open</option><option value="held">held for review</option>
+      <option value="off">off</option></select></div>
+    <div id="cometq" hidden></div>
   </div>
   <lat-share></lat-share>
   <!-- move and delete are reached from the tab header's path and the page
@@ -83,8 +90,82 @@
     cmtOn = typeof on === 'boolean' ? on : null;
     cb.checked = cmtOn === true;
     cb.disabled = !name || cmtOn === null;
+    cometLoad(name);
     rpSoon();            // the Comments tab's post box goes by it too
   }
+
+  // ── comets on this page ──────────────────────────────────────────────────
+  // A comet costs nothing to make, so the owner picks per page: open (the
+  // ship caps them at 10 an hour), held (each waits here for approve or
+  // reject) or off. Only shown while comments are on. `fg` is a refresh the
+  // user asked for; a page open loads in the background.
+  let cometFor = null;
+  async function cometLoad(name, fg) {
+    const row = $('cometrow'), q = $('cometq');
+    cometFor = cmtOn === true ? name : null;
+    if (!cometFor) { row.hidden = q.hidden = true; return; }
+    let d = null;
+    try {
+      const u = api + '/page-comets?name=' + encodeURIComponent(name);
+      const r = await (fg ? busyFetch(u) : bgFetch(u));
+      if (r.ok) d = await r.json();
+    } catch {}
+    if (cometFor !== name) return;
+    if (!d) { row.hidden = q.hidden = true; return; }
+    row.hidden = false;
+    $('cometmode').value = d.mode || 'open';
+    cometPaint(name, d.pending || []);
+  }
+  function cometPaint(name, items) {
+    const q = $('cometq');
+    q.textContent = '';
+    q.hidden = !items.length;
+    if (!items.length) return;
+    const h = document.createElement('div');
+    h.className = 'aclnote';
+    h.textContent = items.length + ' held for review';
+    q.appendChild(h);
+    for (const c of items) {
+      const card = document.createElement('div');
+      card.className = 'aclcard';
+      const who = document.createElement('b');
+      who.textContent = c.author;
+      const when = document.createElement('div');
+      when.className = 'aclnote';
+      when.textContent = new Date(c.when).toLocaleString();
+      const body = document.createElement('div');
+      body.style.whiteSpace = 'pre-wrap';
+      body.style.overflowWrap = 'anywhere';
+      body.textContent = c.body;           // text, never HTML
+      card.append(who, when, body);
+      for (const [act, label] of [['approve', 'approve'], ['reject', 'reject']]) {
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.onclick = async () => {
+          b.disabled = true;
+          const r = await mutate(api + '/comet-pending?page=' + encodeURIComponent(name)
+            + '&id=' + encodeURIComponent(c.id) + '&do=' + act);
+          if (!r || !r.ok) st(act + ' failed' + await errText(r), false);
+          else st(act === 'approve' ? 'comment approved' : 'comment rejected');
+          cometLoad(name, true);
+        };
+        card.appendChild(b);
+      }
+      q.appendChild(card);
+    }
+  }
+  $('cometmode').onchange = async () => {
+    const sel = $('cometmode');
+    const name = cometFor;
+    if (!name) return;
+    sel.disabled = true;
+    const r = await mutate(api + '/page-comets?name=' + encodeURIComponent(name)
+      + '&mode=' + sel.value);
+    sel.disabled = false;
+    if (!r || !r.ok) st('comet mode failed' + await errText(r), false);
+    else st('comet comments ' + sel.value + ' for ' + name);
+    cometLoad(name, true);
+  };
   $('cmton').onchange = async () => {
     const cb = $('cmton');
     const name = cmtFor;
@@ -97,6 +178,7 @@
     cb.disabled = false;
     if (!r || !r.ok) { cb.checked = !on; st('comments switch failed' + await errText(r), false); return; }
     cmtOn = on;
+    cometLoad(name, true);
     const hit = pageCache.get(name);
     if (hit) hit.comments = on;
     st(on ? 'comments on for ' + name : 'comments off for ' + name);

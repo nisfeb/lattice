@@ -225,6 +225,15 @@
         ::  "build it", which the writer start does, and a %fall {} would
         ::  read as every page closed.
             [%stay %& [/pub %comments]]
+        ::  /pub/comets: each published page whose comet policy is not
+        ::  plain open, and whether it is at its cap (+comets-cord in
+        ::  /lib/lattice-share). Absent reads as every page open.
+            [%stay %& [/pub %comets]]
+        ::  /pub/forum-comets: the boards that take posts from comets
+        ::  (+put-forum-comets), rebuilt at every writer start. %stay, as
+        ::  /pub/comments is: a reader takes its absence for "no comet
+        ::  posts", the answer an older lattice gives.
+            [%stay %& [/pub %forum-comets]]
         ::  /forum: the forum (docs/superpowers/specs, State layout). A
         ::  board is a directory of [/ %noun] grubs, each [%1 shape], laid
         ::  by +apply-forum:
@@ -244,6 +253,11 @@
             [%fall %| /forum/notes empty-dir:loader]
             [%fall %& [/forum %seen] [[/ %noun] [%1 ~]]]
             [%fall %& [/forum %limits] [[/ %noun] [%1 ~]]]
+        ::  /forum/comets-off: the boards whose owner turned comet posts
+        ::  off, a [%1 (set @ta)]. /forum/comet-hits: per board, when it
+        ::  last took a comet's post or reply (+comet-gate:ls's hits).
+            [%fall %& [/forum %comets-off] [[/ %noun] [%1 ~]]]
+            [%fall %& [/forum %comet-hits] [[/ %noun] [%1 ~]]]
         ::  /pub/marks-migrated: the version of the one-time re-grow of every
         ::  published page under its view-mode mark (+migrate-pub-marks). 0
         ::  until it has run. Covered, so the stamp survives reload.
@@ -285,6 +299,9 @@
         ::  area other ships may append to (via the public inbox fiber, added with
         ::  the cross-ship path). The owner writer (main.sig) also writes here.
             [%fall %| /comments empty-dir:loader]
+        ::  /comments-held/<page>/<id>: comet comments on a page whose comet
+        ::  mode is %held, waiting for the owner to approve or reject them.
+            [%fall %| /comments-held empty-dir:loader]
         ::  /bookmarks: the browser's saved-page list (newest first). A covering
         ::  file row (like /sub/follows) so it survives reload.
             [%fall %& [/ %bookmarks] [[/lattice %bookmarks] *bookmarks:lb]]
@@ -461,6 +478,9 @@
         ::  the published pages that take comments, when there is no list
         ;<  pc=(unit (set @t))  bind:m  (read-pub-comments root)
         ;<  ~  bind:m  ?^(pc (pure:(fiber:fiber:nexus ,~) ~) (put-pub-comments root))
+        ::  the boards that take comet posts, every start: a board's public
+        ::  flag may have moved under an older lattice
+        ;<  ~  bind:m  (put-forum-comets root)
         ::  pages published before per-format marks were grown as gmi
         ;<  ~  bind:m  (migrate-pub-marks root)
         ::  a whole-tree action a reload cut short (+job-set)
@@ -2201,9 +2221,15 @@
       ;<  copen=(unit ?)  bind:m
         ?:  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,(unit ?)) ~)
         (peer-comments-open ship.u.ref rel)
+      ::  the peer's comet policy for the page matters only to a comet
+      ;<  crow=(unit comet-row:ls)  bind:m
+        ?:  |(=(ship.u.ref our) !(is-comet:ls our))
+          (pure:(fiber:fiber:nexus ,(unit comet-row:ls)) ~)
+        (peer-comet-row ship.u.ref rel)
+      ;<  cnow=@da  bind:m  bowl-now
       =/  cbox=tape
         ?:  =(ship.u.ref our)  ""
-        (remote-comment-box ship.u.ref rel copen)
+        (remote-comment-box ship.u.ref rel copen (comet-note crow cnow))
       ::  a %fodt mark never comes from a lattice (its pages publish as
       ::  %html), but a peer may send one: render it once, here, for the
       ::  body and the title, uncached (it is not our page)
@@ -3574,6 +3600,53 @@
     ;<  ex=?  bind:m  (peek-exists:fio (rv up (weld /page (pax-of u.name))))
     ?.  ex  (send-err eyre-id 404 'no such page or folder')
     ;<  ~  bind:m  (poke-eval [%comments (pax-of u.name) =('1' (~(gut by args) 'on' '0'))])
+    (send-ok eyre-id)
+      ::  owner: a page's comet mode (the nearest at or above it) and the
+      ::  comet comments held on it, newest first
+      [%'GET' %page-comets]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  pax=path  (pax-of u.name)
+    ;<  mode=comet-mode:ls  bind:m  (comet-mode-at pax)
+    ;<  held=(list [id=@ta c=comment:lc])  bind:m  (read-held up pax)
+    =/  srt=(list [id=@ta c=comment:lc])
+      (sort held |=([a=[@ta c=comment:lc] b=[@ta c=comment:lc]] (gth when.c.a when.c.b)))
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['mode' s+mode]
+        :-  'pending'
+        :-  %a
+        %+  turn  srt
+        |=  [id=@ta c=comment:lc]
+        %-  pairs:enjs:format
+        :~  ['id' s+id]  ['author' s+(scot %p author.c)]
+            ['when' (numb:enjs:format (rise-da-ms when.c))]
+            ['body' s+body.c]
+        ==
+    ==
+      ::  owner: set a page's (or folder's) comet mode, open, held or off
+      [%'POST' %page-comets]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  mo=@t  (~(gut by args) 'mode' '')
+    ?.  ?=(?(%open %held %off) mo)  (send-err eyre-id 400 'bad mode')
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up (weld /page (pax-of u.name))))
+    ?.  ex  (send-err eyre-id 404 'no such page or folder')
+    ;<  ~  bind:m  (poke-eval [%comet-mode (pax-of u.name) mo])
+    (send-ok eyre-id)
+      ::  owner: approve or reject one held comet comment
+      [%'POST' %comet-pending]
+    =/  pg=(unit @t)  (~(get by args) 'page')
+    ?~  pg  (send-err eyre-id 400 'missing page')
+    ?.  (valid-name u.pg)  (send-err eyre-id 400 'bad page')
+    =/  id=(unit @t)  (~(get by args) 'id')
+    ?~  id  (send-err eyre-id 400 'missing id')
+    ?.  ((sane %ta) u.id)  (send-err eyre-id 400 'bad id')
+    =/  do=@t  (~(gut by args) 'do' '')
+    ?.  ?=(?(%approve %reject) do)  (send-err eyre-id 400 'bad do')
+    ;<  ~  bind:m  (poke-eval [%comet-pending (pax-of u.pg) `@ta`u.id =(%approve do)])
     (send-ok eyre-id)
       ::  owner: mark or unmark a page (or folder) as sensitive. on=1 sets the
       ::  marker; on=0 removes it. The +page-sensitive walk reads this grub and
@@ -6094,6 +6167,9 @@
   ::  address is live, the same reasoning the comment and share inboxes use.
   ;<  bans=banned:ls  bind:m  read-banned
   ?:  (is-banned:ls bans src)  (pure:m ~)
+  ::  a comet takes its own road: the board's comet gate, not the per-ship
+  ::  limit, which a comet escapes by minting another
+  ?:  (is-comet:fr src)  (apply-forum-comet now src act)
   =/  tail  +.act
   =/  nom=@ta  ?@(tail tail ;;(@ta -.tail))
   =/  name=board-name:ft  ;;(board-name:ft nom)
@@ -6128,6 +6204,89 @@
     (write-forum-limits (rate-update:fr src name now lim))
   ?~  reason  (pure:m ~)
   (forum-note-send src name u.reason)
+::  +apply-forum-comet: a forum action from a comet, such as the desktop's
+::  reader without a node. It lands only as a post or a reply on a public
+::  board whose owner left comet posting on (+comet-refusal:fr), past the
+::  board's comet gate (+comet-gate:ls, the cap comet comments meet, ten
+::  an hour across the board), and
+::  then through the role and caps every remote poster meets. Votes are
+::  refused: a comet is free to mint, so its vote would count for nothing.
+::  A refusal is silent. A comet runs no lattice, so it has no inbox for a
+::  note, and finding its base would stall the writer on remote waits; the
+::  reader reads /pub/forum-comets before anyone types instead.
+::
+++  apply-forum-comet
+  |=  [now=@da src=@p act=action:ft]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  tail  +.act
+  =/  nom=@ta  ?@(tail tail ;;(@ta -.tail))
+  ?.  &(!=('' nom) ((sane %tas) nom))  (pure:m ~)
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[nom])
+  ?~  gs  (pure:m ~)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (pure:m ~)
+  ;<  off=(set @ta)  bind:m  read-forum-comets-off
+  ?^  (comet-refusal:fr act p.lod (~(has in off) nom))  (pure:m ~)
+  ;<  hits=(map @ta (list @da))  bind:m  read-forum-comet-hits
+  ::  the board's comet gate, as a page's: open unless its owner turned
+  ::  comets off (refused above), and ten an hour across the board
+  =/  live=(list @da)  (comet-live:ls (~(gut by hits) nom ~) now)
+  =/  v=comet-verdict:ls  (comet-gate:ls [%open live] src now)
+  ?.  ?=(%ok -.v)  (pure:m ~)
+  ;<  ~  bind:m
+    %^  put-file  (rf up /forum %comet-hits)  [/ %noun]
+    [%1 (~(put by hits) nom (scag comet-cap:ls `(list @da)`[now live]))]
+  ;<  *  bind:m  (forum-remote-apply now src nom act `p.lod)
+  (pure:m ~)
+::  +read-forum-comets-off / +read-forum-comet-hits: the owner's comet
+::  switch and the comet gate's counts, empty when never written
+::
+++  read-forum-comets-off
+  =/  m  (fiber:fiber:nexus ,(set @ta))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up /forum %comets-off) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  =/  raw=(unit [%1 (set @ta)])
+    (mole |.(;;([%1 (set @ta)] (sang-noun:tarball sang.v))))
+  (pure:m ?~(raw ~ +.u.raw))
+++  read-forum-comet-hits
+  =/  m  (fiber:fiber:nexus ,(map @ta (list @da)))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up /forum %comet-hits) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  =/  raw=(unit [%1 (map @ta (list @da))])
+    (mole |.(;;([%1 (map @ta (list @da))] (sang-noun:tarball sang.v))))
+  (pure:m ?~(raw ~ +.u.raw))
+::  +put-forum-comets: [/pub %forum-comets], the boards that take posts
+::  and replies from comets, one name a line: every public board whose
+::  owner left comet posting on. A cord under the plain %noun mark, as
+::  /pub/comments is, so the desktop's comet reads it as text and shows
+::  New post and Reply only where they will land. It names only public
+::  boards, which any reader can already list.
+::
+++  put-forum-comets
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  noms=(list @ta)  bind:m  forum-boards
+  ;<  off=(set @ta)  bind:m  read-forum-comets-off
+  =|  open=(list @t)
+  |-  ^-  form:m
+  ?~  noms
+    =/  names=(list @t)  (sort open aor)
+    (put-file (rf root /pub %forum-comets) [/ %noun] `@t`?~(names '' (of-wain:format names)))
+  ?:  (~(has in off) i.noms)  $(noms t.noms)
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[i.noms])
+  =/  pub=?
+    ?~  gs  |
+    =/  lod=(each board:ft @t)  (load:fb u.gs)
+    &(?=(%& -.lod) public.info.p.lod)
+  $(noms t.noms, open ?:(pub [i.noms open] open))
 ::  +forum-remote-apply: the per-action gates for a REMOTE forum action -- bad
 ::  board name, owner-only, board-exists, private-board membership, then role
 ::  and caps so the refusal names itself -- then +apply-forum-core. +act:fa
@@ -6492,6 +6651,8 @@
     ::  -.act.act still %create-board etc., and must not re-lay grants.
     ?.  &(=(src.act our) ?=(?(%create-board %delete-board %set-public) -.act.act))
       (pure:m ~)
+    ::  and so does the list of boards that take comet posts
+    ;<  ~  bind:m  (put-forum-comets root)
     ::  a board made or deleted starts with no members: drop the old roster
     ::  and member group so a re-created name does not inherit them. Soft.
     ;<  ~  bind:m
@@ -6508,6 +6669,13 @@
     ::  posts. Routed here from the /forum.sig inbox so /main.sig is the sole
     ::  writer of /forum (the inbox fiber never writes).
     (store-forum-note host.act now payload.act)
+      %forum-comets
+    ::  the owner's per-board switch for comet posts, then the published
+    ::  list, so a comet reader sees the change on its next read
+    ;<  off=(set @ta)  bind:m  read-forum-comets-off
+    =/  new=(set @ta)  ?:(on.act (~(del in off) name.act) (~(put in off) name.act))
+    ;<  ~  bind:m  (put-file (rf up /forum %comets-off) [/ %noun] [%1 new])
+    (put-forum-comets root)
       %forum-notes-clear
     ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/notes) ~)
     ?.  ?=([%ball *] v)  (pure:m ~)
@@ -6762,7 +6930,29 @@
     ;<  ex=?  bind:m  (peek-exists:fio (rv up fdir))
     ?.  ex  (pure:m ~)
     ;<  ~  bind:m  (put-file (rf up fdir %comment-on) [/lattice %comment-flag] on.act)
-    (put-pub-comments root)
+    ;<  ~  bind:m  (put-pub-comments root)
+    (put-pub-comets root now)
+      %comet-mode
+    ::  the comet mode at pax, nearest-wins as %comments is. Owner-only.
+    =/  fdir=path  (weld /page pax.act)
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up fdir))
+    ?.  ex  (pure:m ~)
+    ;<  ~  bind:m
+      (put-file (rf up fdir %comet-mode) [/ %noun] (comet-mode-of:ls mode.act))
+    (put-pub-comets root now)
+      %comet-pending
+    ::  one held comet comment: approval files it as a comment, by the
+    ::  owner's choice, so neither the cap nor the page's 200 apply
+    =/  hr=road:tarball  (rf up (weld /comments-held pax.act) id.act)
+    ;<  vw=view:nexus  bind:m  (peek:fio hr ~)
+    ?.  ?=([%file *] vw)  (pure:m ~)
+    =/  c=(unit comment:lc)  (mole |.(;;(comment:lc (sang-noun:tarball sang.vw))))
+    ;<  *  bind:m  (cull-soft:io hr)
+    ?.  &(ok.act ?=(^ c))  (pure:m ~)
+    ;<  ~  bind:m  (ensure-dirs up /comments pax.act)
+    ;<  ~  bind:m
+      (put-file (rf up (weld /comments pax.act) id.act) [/lattice %comment] u.c)
+    (put-file (rf root /beacon %comments) [/ %json] (numb:enjs:format `@ud`now))
       %forms
     ::  set the public-form flag at pax. Same nearest-flag-wins shape as
     ::  %comments, and equally owner-only: this is the switch that makes a
@@ -6850,6 +7040,31 @@
     ?:((gth (met 3 body.act) max-body:lc) (end [3 max-body:lc] body.act) body.act)
   =/  =comment:lc  [author now body]
   =/  id=@ta  (scot %uv (sham comment))
+  ::  the comet guard (+comet-gate:lattice-share): every comet comment
+  ::  on the page, filed or held, counts toward its cap
+  ;<  held=(list [id=@ta c=comment:lc])  bind:m  (read-held root page.act)
+  ;<  mode=comet-mode:ls  bind:m  (comet-mode-at page.act)
+  =/  recent=(list @da)
+    =/  filed=(list comment:lc)
+      ?.  ?=([%ball *] cv)  ~
+      ?~  fil.ball.cv  ~
+      %+  murn  ~(val by contents.u.fil.ball.cv)
+      |=  [=sang:tarball *]
+      (mole |.(;;(comment:lc (sang-noun:tarball sang))))
+    %+  turn
+      %+  skim  (weld filed (turn held tail))
+      |=(c=comment:lc (is-comet:ls author.c))
+    |=(c=comment:lc when.c)
+  =/  v=comet-verdict:ls
+    ?:  =(author our)  [%ok ~]
+    (comet-gate:ls [mode recent] author now)
+  ?:  ?=(%refused -.v)
+    ?.  =(why.v comet-full-why:ls)  (pure:m ~)
+    (mark-comets-full root page.act mode (comet-full-until:ls recent now))
+  ?:  ?=(%held -.v)
+    ?:  (gte (lent held) 200)  (pure:m ~)
+    ;<  ~  bind:m  (ensure-dirs up /comments-held page.act)
+    (put-file (rf up (weld /comments-held page.act) id) [/lattice %comment] comment)
   =/  cbase=path  /comments
   ;<  ~  bind:m  (ensure-dirs up cbase page.act)
   ;<  ~  bind:m
@@ -6863,6 +7078,101 @@
   ::  they cannot create anything new, and the badge reads the stamp as a
   ::  CHANGE detector, not a count.
   (put-file (rf root /beacon %comments) [/ %json] (numb:enjs:format `@ud`now))
+::  +comet-mode-at: `page`'s comet mode, by the nearest comet-mode grub at
+::  or above it in /page, as +comments-on finds its flag. %open when none.
+++  comet-mode-at
+  |=  page=path
+  =/  m  (fiber:fiber:nexus ,comet-mode:ls)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  |-  ^-  form:m
+  ;<  seen=view:nexus  bind:m  (peek:fio (rf up (weld /page page) %comet-mode) ~)
+  ?:  ?=([%file *] seen)
+    (pure:m (comet-mode-of:ls (sang-noun:tarball sang.seen)))
+  ?~  page  (pure:m %open)
+  $(page (snip `path`page))
+::  +read-held: the comet comments held on `page`, by id
+++  read-held
+  |=  [root=@ud page=path]
+  =/  m  (fiber:fiber:nexus ,(list [id=@ta c=comment:lc]))
+  ^-  form:m
+  ;<  cv=view:nexus  bind:m  (peek:fio (rv root (weld /comments-held page)) ~)
+  ?.  ?=([%ball *] cv)  (pure:m ~)
+  ?~  fil.ball.cv  (pure:m ~)
+  %-  pure:m
+  %+  murn  ~(tap by contents.u.fil.ball.cv)
+  |=  [id=@ta =sang:tarball *]
+  ^-  (unit [id=@ta c=comment:lc])
+  =/  c  (mole |.(;;(comment:lc (sang-noun:tarball sang))))
+  ?~(c ~ `[id u.c])
+::  +read-pub-comets: /pub/comets as rows, none when it is absent
+++  read-pub-comets
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,(map @t comet-row:ls))
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf root /pub %comets) ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  =/  c=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.vw))))
+  (pure:m ?~(c ~ (comets-rows:ls u.c)))
+::  +put-pub-comets: /pub/comets whole, from /pub/comments and each page's
+::  mode. A cap that has not freed yet is kept.
+++  put-pub-comets
+  |=  [root=@ud now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  open=(unit (set @t))  bind:m  (read-pub-comments root)
+  ;<  old=(map @t comet-row:ls)  bind:m  (read-pub-comets root)
+  =/  todo=(list @t)  ?~(open ~ ~(tap in u.open))
+  =|  new=(map @t comet-row:ls)
+  |-  ^-  form:m
+  ?~  todo
+    ?:  &(=(~ new) =(~ old))  (pure:m ~)
+    (put-file (rf root /pub %comets) [/ %noun] (comets-cord:ls new))
+  =/  pax=(unit path)  (rush i.todo stap)
+  ?~  pax  $(todo t.todo)
+  ;<  mode=comet-mode:ls  bind:m  (comet-mode-at u.pax)
+  =/  wr=comet-row:ls  (~(gut by old) i.todo [%open ~])
+  =/  was=(unit @ud)  until.wr
+  =/  until=(unit @ud)
+    ?:  ?=(%off mode)  ~
+    ?:  &(?=(^ was) (gth u.was (unix-s:ls now)))  was
+    ~
+  $(todo t.todo, new (~(put by new) i.todo [mode until]))
+::  +put-pub-comet: one page's row of /pub/comets, after its publish or
+::  delete, by whether /pub/comments now names it
+++  put-pub-comet
+  |=  [root=@ud nam=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  open=(unit (set @t))  bind:m  (read-pub-comments root)
+  ;<  old=(map @t comet-row:ls)  bind:m  (read-pub-comets root)
+  =/  pax=(unit path)  (rush nam stap)
+  ;<  mode=comet-mode:ls  bind:m
+    ?.  &(?=(^ pax) ?=(^ open) (~(has in u.open) nam))
+      (pure:(fiber:fiber:nexus ,comet-mode:ls) %open)
+    (comet-mode-at u.pax)
+  =/  was=comet-row:ls  (~(gut by old) nam [%open ~])
+  =/  row=comet-row:ls  [mode ?:(?=(%off mode) ~ until.was)]
+  =/  new=(map @t comet-row:ls)
+    ?:  =([%open ~] row)  (~(del by old) nam)
+    (~(put by old) nam row)
+  ?:  =(new old)  (pure:m ~)
+  (put-file (rf root /pub %comets) [/ %noun] (comets-cord:ls new))
+::  +mark-comets-full: say in /pub/comets that a published page is at its
+::  comet cap until `until`, so a reader shows why before anyone types.
+::  One write when the cap is reached, none while it holds.
+++  mark-comets-full
+  |=  [root=@ud page=path mode=comet-mode:ls until=(unit @da)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  until  (pure:m ~)
+  =/  nam=@t  (spat page)
+  ;<  open=(unit (set @t))  bind:m  (read-pub-comments root)
+  ?.  &(?=(^ open) (~(has in u.open) nam))  (pure:m ~)
+  ;<  old=(map @t comet-row:ls)  bind:m  (read-pub-comets root)
+  =/  row=comet-row:ls  [mode `(unix-s:ls u.until)]
+  ?:  =(`row (~(get by old) nam))  (pure:m ~)
+  (put-file (rf root /pub %comets) [/ %noun] (comets-cord:ls (~(put by old) nam row)))
 ::  +page-sensitive: is `page` marked sensitive? The nearest `sensitive` flag
 ::  grub AT or ABOVE it in /page wins. Absent everywhere = |. A folder mark
 ::  makes every page under it sensitive; a page can carry its own mark too.
@@ -11688,12 +11998,17 @@
   ;<  open=(unit (list @t))  bind:m
     ?~  got  (pure:(fiber:fiber:nexus ,(unit (list @t))) ~)
     (fetch-peer-comments shp base)
+  ::  and its comet policies, asked only of a peer that lists comments
+  ;<  comets=(unit @t)  bind:m
+    ?~  open  (pure:(fiber:fiber:nexus ,(unit @t)) ~)
+    (fetch-peer-comets shp base)
   ;<  all=(map @t json)  bind:m  read-peer-revs
   =/  row=json
     %-  pairs:enjs:format
     :~  ['at' (numb:enjs:format (rise-da-ms now))]
         ['revs' (revs-json:lp got)]
         ['comments' ?~(open ~ a+(turn u.open |=(t=@t s+t)))]
+        ['comets' ?~(comets ~ s+u.comets)]
     ==
   ;<  *  bind:m
     (over-as-soft:io peer-revs-road [[/ %json] [%o (~(put by all) (scot %p shp) row)]] [/ %json])
@@ -11728,6 +12043,32 @@
   ?.  ?=(@ rn)  (pure:m ~)
   ?.  (lte (met 3 rn) 1.000.000)  (pure:m ~)
   (pure:m `(to-wain:format `@t`rn))
+::  +fetch-peer-comets: a peer's /pub/comets (+comets-cord:lattice-share),
+::  ~ when it has none (an older lattice: every page open)
+++  fetch-peer-comets
+  |=  [shp=@p base=(unit path)]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ?~  base  (pure:m ~)
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-wait-in [%& %& (weld u.base /pub) %comets] shp ~s5)
+  ?.  ?=([~ %file *] ms)  (pure:m ~)
+  =/  rn=*  (sang-noun:tarball sang.u.ms)
+  ?.  ?=(@ rn)  (pure:m ~)
+  ?.  (lte (met 3 rn) 1.000.000)  (pure:m ~)
+  (pure:m `rn)
+::  +peer-comet-row: the peer's comet policy for its page at `rel`, by the
+::  cached list. ~ when it says nothing, which is open.
+++  peer-comet-row
+  |=  [shp=@p rel=path]
+  =/  m  (fiber:fiber:nexus ,(unit comet-row:ls))
+  ^-  form:m
+  ;<  all=(map @t json)  bind:m  read-peer-revs
+  =/  hit=(unit json)  (~(get by all) (scot %p shp))
+  ?.  ?=([~ %o *] hit)  (pure:m ~)
+  =/  c=(unit json)  (~(get by p.u.hit) 'comets')
+  ?.  ?=([~ %s *] c)  (pure:m ~)
+  (pure:m (~(get by (comets-rows:ls p.u.c)) (spat rel)))
 ::  +peer-comments-open: does the peer's page at `rel` take comments, by
 ::  the list kept with its revision list? ~ when the peer does not say.
 ++  peer-comments-open
@@ -13083,7 +13424,8 @@
   ?:  =('submit' i.t.pax)
     (send-html eyre-id (forum-doc (render-submit:fre c nom) "" theme-link %.y nn))
   ?:  =('mod' i.t.pax)
-    (send-html eyre-id (forum-doc (render-mod:fre c brd) "" theme-link %.y nn))
+    ;<  off=(set @ta)  bind:m  read-forum-comets-off
+    (send-html eyre-id (forum-doc (render-mod:fre c brd !(~(has in off) nom)) "" theme-link %.y nn))
   =/  pid=(unit @ud)  ((slat %ud) i.t.pax)
   ?:  |(?=(~ pid) !(~(has by posts.brd) u.pid))
     (send-err eyre-id 404 'not found')
@@ -13150,6 +13492,11 @@
   ?~  bo  (send-err eyre-id 404 'no such board')
   =/  brd=board:ft  u.bo
   =/  tl=path  t.pax
+  ::  the comet switch is not a board action: it flips the owner's set
+  ?:  =([%mod %comets ~] tl)
+    ;<  off=(set @ta)  bind:m  read-forum-comets-off
+    ;<  ~  bind:m  (poke-eval [%forum-comets nom (~(has in off) nom)])
+    (send-see-other eyre-id "{base}/mod")
   =/  res=(unit [act=action:ft to=tape])
     ?+  tl  ~
         [%vote ~]
@@ -14921,13 +15268,21 @@
 ::  `open` is whether the page takes comments, by the peer's /pub/comments
 ::  (+peer-comments-open): ~ when the peer does not say (an older lattice),
 ::  and the box is offered as it always was.
+::
+::  `note` is what the page's comet policy says to us, a comet
+::  (+comet-note): [& words] with the box, [| words] instead of it.
 ++  remote-comment-box
-  |=  [shp=@p rel=path open=(unit ?)]
+  |=  [shp=@p rel=path open=(unit ?) note=(unit [box=? why=tape])]
   ^-  tape
   =/  st=tape   (scow %p shp)
   =/  pg=tape   (slag 1 (spud rel))
   ?:  =([~ |] open)
     "<section class=\"cbox-wrap\"><h3>Comment</h3><p class=\"muted\">Comments are off on this page.</p></section>"
+  ?:  &(?=(^ note) !box.u.note)
+    ;:  weld
+      "<section class=\"cbox-wrap\"><h3>Comment</h3><p class=\"muted\">"
+      why.u.note  ".</p></section>"
+    ==
   =/  yes=?  =([~ &] open)
   ;:  weld
     "<section class=\"cbox-wrap\"><h3>Comment</h3>"
@@ -14940,8 +15295,22 @@
     "<p class=\"muted\">"  ?:(yes "Posted" "Sent")  " over Ames from your ship, so "  (esc st)
     " sees your @p as the author."
     ?:(yes "" " They decide whether it appears.")
-    "</p></section>"
+    "</p>"
+    ?~(note "" :(weld "<p class=\"muted\">" why.u.note ".</p>"))
+    "</section>"
   ==
+::  +comet-note: what a peer's comet policy for a page says to a comet
+::  reader: refused outright when off or at the cap, a word with the box
+::  when held, nothing when open
+++  comet-note
+  |=  [row=(unit comet-row:ls) now=@da]
+  ^-  (unit [box=? why=tape])
+  ?~  row  ~
+  ?:  ?=(%off mode.u.row)  `[| (trip comet-off-why:ls)]
+  =/  mins=@ud  ?~(until.u.row 0 (comet-full-mins:ls u.until.u.row now))
+  ?:  (gth mins 0)  `[| (trip (comet-full-words:ls mins))]
+  ?:  ?=(%held mode.u.row)  `[& "Anonymous comments are reviewed before they appear"]
+  ~
 ::  +marks-html: the full bookmark list, every bookmark grouped by folder
 ::  (unfiled first: it is where the star button files things), a search box
 ::  filtering client-side over title+url+folder, and per-row refile/delete.
@@ -16569,7 +16938,8 @@
     ?~  rev  (~(del by old) nam)
     (~(put by old) nam (rev-json:lp u.rev (page-id:lp salt nam u.rev)))
   ;<  ~  bind:m  (put-file (rf root /pub %revs) [/ %json] [%o new])
-  (put-pub-comment root nam ?=(^ rev))
+  ;<  ~  bind:m  (put-pub-comment root nam ?=(^ rev))
+  (put-pub-comet root nam)
 ::  +pub-comments: [/pub %comments], the published pages that take comments,
 ::  one name a line, named as the revision list names them ('/<name>'). A
 ::  cord under the plain %noun mark, so a reader without lattice's marks,

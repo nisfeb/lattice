@@ -1,5 +1,5 @@
 {
-  "bytes": 698817,
+  "bytes": 703995,
   "grow": 4096,
-  "why": "release 110: release 109 (693,810 bytes) plus the unified settings boot hand-off (546 bytes) and Export PDF's menu items and renderer glue (4,461 bytes, 1,497 gzipped). The Settings tabs (ui-app/settings.js) and the PDF print layout (ui-app/pdf.js) load lazily, on first use."
+  "why": "release 112 comet guard: app.js was 700,414 bytes before it (release 110's 698,817 plus 1,597 since), plus the Page tab's per-page comet mode select and its held-for-review queue with approve and reject (3,581 bytes, 904 gzipped)."
 }
