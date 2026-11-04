@@ -234,6 +234,15 @@ impl Ctx {
         }
     }
 
+    /// Drop the comment lists of `ship` that gave no answer when asked, so
+    /// the page reader.js reloads once the publisher has said asks for them
+    /// again: a cold reader's first ask has none, and the page would show
+    /// the box without its comments until the failure aged out.
+    fn retry_threads(&self, ship: &str) {
+        self.threads.lock().unwrap().retain(|s, (_, l)| s != ship || l.is_some());
+        self.lists.lock().unwrap().retain(|u, (_, l)| l.is_some() || render::commentable(u).as_deref() != Some(ship));
+    }
+
     /// Drop what is kept of `ship`'s comment lists: a fresh read.
     fn forget_threads(&self, ship: &str) {
         self.threads.lock().unwrap().remove(ship);
@@ -836,7 +845,11 @@ fn answered(ctx: &Ctx, url: &str) -> Resp {
         None => match render::commentable(url) {
             Some(ship) => {
                 ctx.open(&ship, "", true);
-                !ctx.checking(&ship)
+                let said = !ctx.checking(&ship);
+                if said {
+                    ctx.retry_threads(&ship);
+                }
+                said
             }
             None => return plain(400),
         },
@@ -1441,6 +1454,26 @@ mod tests {
         assert!(out.contains("hello &lt;there&gt;"), "{out}");
         read(&c);
         assert_eq!(pubs.asked.load(Ordering::SeqCst), 1, "the list is kept");
+    }
+
+    #[test]
+    fn a_cold_reader_checks_then_shows_the_box_and_the_comments() {
+        let (c, pubs) = listing("coldpubs", false);
+        let read = |c: &Ctx| ask(c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie())).1;
+        let again = |c: &Ctx| ask(c, &get("/open?url=urb%3A%2F%2F~zod%2Fhello", &ours())).1;
+        // cold: no word on comments, no index yet
+        c.opens.lock().unwrap().insert("~zod".into(), (Instant::now(), None));
+        let out = read(&c);
+        assert!(out.contains("Checking whether this page takes comments") && !out.contains("Comments are off"), "{out}");
+        assert!(!out.contains("class=\"thread\""), "{out}");
+        // the publisher answers, and its index and list with it
+        *pubs.threads.lock().unwrap() = Some(vec!["/k".into()]);
+        *pubs.list.lock().unwrap() = Some(vec![listed("~sampel-palnet", "first")]);
+        assert!(again(&c).ends_with("answered"));
+        // reader.js reloads: the box and the comments, never off
+        let out = read(&c);
+        assert!(out.contains(">Post to ~zod</button>") && !out.contains("data-check") && !out.contains("Comments are off"), "{out}");
+        assert!(out.contains("Comments (1)") && out.contains(">first"), "{out}");
     }
 
     #[test]
