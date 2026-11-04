@@ -415,4 +415,38 @@
   =/  r=(unit title-row)  (~(get by rows) (spat (snoc dir name)))
   ?:  |(?=(~ r) =('' title.u.r))  (trip name)
   (trip title.u.r)
+::
+::  ==  folder grants to ships  ==
+::
+::  A folder shared with a ship keeps the grant in its `share-grants`
+::  (group to mode). A page made or moved in takes the grants of every
+::  folder above it, and notes them (`grant-via`), so moving it out takes
+::  back exactly those and never a grant the page was given by hand.
+::
+::  +grants-above: what the page at `rel` takes from the folders above it
+::  (`grants`, folder to group to mode), each group at its widest mode
+++  grants-above
+  |=  [grants=(map path (map @t @t)) rel=path]
+  ^-  (map @t @t)
+  ?~  rel  ~
+  =/  dir=path  (snip `path`rel)
+  =|  out=(map @t @t)
+  |-  ^-  (map @t @t)
+  =/  gs=(list [g=@t md=@t])  ~(tap by (~(gut by grants) dir ~))
+  =.  out
+    |-  ^-  (map @t @t)
+    ?~  gs  out
+    ?:  =('edit' (~(gut by out) g.i.gs ''))  $(gs t.gs)
+    $(gs t.gs, out (~(put by out) g.i.gs md.i.gs))
+  ?~  dir  out
+  $(dir (snip `path`dir))
+::  +revoke-groups: the groups a page leaving its folders loses its grant
+::  in: those of the folders that granted it (`vias`), none for a page
+::  whose grant is its own
+++  revoke-groups
+  |=  [grants=(map path (map @t @t)) vias=(list path)]
+  ^-  (set @t)
+  %-  ~(gas in *(set @t))
+  %-  zing
+  (turn vias |=(v=path ~(tap in ~(key by (~(gut by grants) v ~)))))
 --

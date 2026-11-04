@@ -4,7 +4,8 @@
 usage: A_URL=... A_COOKIE=<raw cookie file> B_URL=... B_COOKIE=... two-ship-dirshare.py
 
 Then A shares another folder with B alone, unpublished: B reads its index,
-with titles, and its pages, and gets the private page's refusal for a
+with titles, and its pages; a page A adds later B reads too, until A moves
+it out, and one A moves in B reads; and B gets the private page's refusal for a
 folder not shared with it.
 
 Ship A shares a folder of three pages, one of them in a subfolder. Ship B
@@ -109,6 +110,16 @@ def main():
     check('B sees the page titles there', '>Memo for B</a>' in txt, txt[-300:])
     until('B reads a page in it', lambda: reads(g + '/memo', 'Memo for B'))
     until('B reads its subfolder', lambda: True if index(g + '/sub') == ['note'] else index(g + '/sub'))
+    # a page added later is B's too, and moved out it is not
+    post(f'page-save?type=md&new=1&name={g}/later', '# Later for B\n')
+    until('B reads a page added to the folder later', lambda: reads(g + '/later', 'Later for B'))
+    until('B finds it in the folder index', lambda: True if 'later' in (index(g) or []) else index(g))
+    post(f'page-move?from={g}/later&to={ROOT}/out')
+    until('B loses the page moved out', lambda: reads(g + '/later', 'Later for B') is not True)
+    until('B cannot read it where it went', lambda: reads(ROOT + '/out', 'Later for B') is not True)
+    until('B no longer finds it in the index', lambda: True if 'later' not in (index(g) or ['later']) else index(g))
+    post(f'page-move?from={ROOT}/out&to={g}/back')
+    until('B reads a page moved into the folder', lambda: reads(g + '/back', 'Later for B'))
     st, txt = read(h + '/')
     check('B gets the private refusal for a folder not shared with it',
           index(h) is None and 'not published here' in txt, txt[-200:])

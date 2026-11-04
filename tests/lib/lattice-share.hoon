@@ -381,4 +381,39 @@
     (~(gas by *(map @t title-row:ls)) ~[['/site/a' 60 'A'] ['bad' 1 'X']])
   %+  expect-eq  !>(`(list [rel=path when=@da])`~[[/site/a (add ~1970.1.1 ~m1)]])
   !>((titles-keys:ls rows))
+::
+::  ==  folder grants to ships  ==
+::
+++  grants-fg
+  ^-  (map path (map @t @t))
+  %-  ~(gas by *(map path (map @t @t)))
+  :~  [/f (~(gas by *(map @t @t)) ~[['nec' 'read']])]
+      [/f/sub (~(gas by *(map @t @t)) ~[['nec' 'edit'] ['bus' 'read']])]
+  ==
+::  a page added to a folder shared with a ship is granted to it, at any
+::  depth, and a page elsewhere is not
+++  test-grants-above-added
+  ;:  weld
+    (expect-eq !>((~(gas by *(map @t @t)) ~[['nec' 'read']])) !>((grants-above:ls grants-fg /f/a)))
+    %+  expect-eq  !>((~(gas by *(map @t @t)) ~[['nec' 'edit'] ['bus' 'read']]))
+    !>((grants-above:ls grants-fg /f/sub/deep/b))
+    (expect-eq !>(*(map @t @t)) !>((grants-above:ls grants-fg /g/a)))
+    ::  a folder's grant is for the pages under it, not the folder
+    (expect-eq !>(*(map @t @t)) !>((grants-above:ls grants-fg /f)))
+  ==
+::  moved in: the grants of where it lands; moved out: nothing from where
+::  it was
+++  test-grants-above-moved
+  ;:  weld
+    (expect-eq !>((~(gas by *(map @t @t)) ~[['nec' 'read']])) !>((grants-above:ls grants-fg /f/moved-in)))
+    (expect-eq !>(*(map @t @t)) !>((grants-above:ls grants-fg /out/moved)))
+  ==
+::  moving out takes back what the folders gave, and nothing given by hand
+++  test-revoke-groups
+  ;:  weld
+    (expect-eq !>((silt ~['nec'])) !>((revoke-groups:ls grants-fg ~[/f])))
+    (expect-eq !>((silt ~['nec' 'bus'])) !>((revoke-groups:ls grants-fg ~[/f/sub /f])))
+    (expect-eq !>(*(set @t)) !>((revoke-groups:ls grants-fg ~)))
+    (expect-eq !>(*(set @t)) !>((revoke-groups:ls grants-fg ~[/gone])))
+  ==
 --
