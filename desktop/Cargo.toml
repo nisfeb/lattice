@@ -1,6 +1,6 @@
 [package]
 name = "lattice-desktop"
-version = "1.0.21"
+version = "1.0.22"
 edition = "2021"
 #  Never goes to crates.io: the desktop app ships as bundles and lattice-fs
 #  is consumed by path. Saying so keeps `cargo publish` from being a slip, and
@@ -42,12 +42,13 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 #  filled by scripts/mesa-deps.sh). The lock pins prettyplease to 0.2.37:
 #  bindgen 0.73 takes syn 2 or 3 and prettyplease 0.2 or 0.3, and a fresh
 #  resolve pairs syn 2 with prettyplease 0.3 (syn 3), which does not compile.
-#  The pin is urb-fetch main at the merge of PR #18 (fast first contact: a comet
-#  resends within 500 ms of handing a ship its proof, rate limited per peer),
-#  which also carries Core::expire_revs from PR #17 for reloads.
-urb-engine = { package = "urb", git = "https://github.com/nisfeb/urb-fetch.git", rev = "5d5927c5967f771d375961b1bd5ffcf1f4b2f5bd", features = ["native"], optional = true }
-urb-render = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "5d5927c5967f771d375961b1bd5ffcf1f4b2f5bd", optional = true }
-urb-gateway = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "5d5927c5967f771d375961b1bd5ffcf1f4b2f5bd", optional = true }
+#  The pin is urb-fetch main at the merge of PR #19 (fast first scry: the first
+#  datagram to a galaxy waits for its DNS instead of a resend, and the galaxy
+#  fan-out has its own hurry budget), on top of PR #18 (fast first contact)
+#  and PR #17 (Core::expire_revs for reloads).
+urb-engine = { package = "urb", git = "https://github.com/nisfeb/urb-fetch.git", rev = "43596e5b4f6f17daf76f8ef0d2f0add0d3866418", features = ["native"], optional = true }
+urb-render = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "43596e5b4f6f17daf76f8ef0d2f0add0d3866418", optional = true }
+urb-gateway = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "43596e5b4f6f17daf76f8ef0d2f0add0d3866418", optional = true }
 
 #  Export PDF prints through the platform's own webview (src/pdf.rs). All
 #  four are already in the tree through tauri and wry, at these versions.
