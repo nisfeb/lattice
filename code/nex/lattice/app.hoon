@@ -15193,8 +15193,8 @@
   ^-  (unit [box=? why=tape])
   ?~  row  ~
   ?:  ?=(%off mode.u.row)  `[| (trip comet-off-why:ls)]
-  ?:  &(?=(^ until.u.row) (gth u.until.u.row (unix-s:ls now)))
-    `[| (trip comet-full-why:ls)]
+  =/  mins=@ud  ?~(until.u.row 0 (comet-full-mins:ls u.until.u.row now))
+  ?:  (gth mins 0)  `[| (trip (comet-full-words:ls mins))]
   ?:  ?=(%held mode.u.row)  `[& "Anonymous comments are reviewed before they appear"]
   ~
 ::  +marks-html: the full bookmark list, every bookmark grouped by folder

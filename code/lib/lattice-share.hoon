@@ -190,6 +190,21 @@
     ==
   ?~  r  ~
   `[-.u.r (comet-mode-of +<.u.r) +>.u.r]
+::  +comet-full-mins: the whole minutes, rounded up and at least one, from
+::  now until a cap that frees at unix second `until`; 0 once it has passed,
+::  when the window has rolled over and the page is open again
+++  comet-full-mins
+  |=  [until=@ud now=@da]
+  ^-  @ud
+  =/  n=@ud  (unix-s now)
+  ?.  (gth until n)  0
+  (max 1 (div (add (sub until n) 59) 60))
+::  +comet-full-words: what a reader shows at the cap, `mins` before it frees
+++  comet-full-words
+  |=  mins=@ud
+  ^-  @t
+  %-  crip
+  "Too many anonymous comments here right now, try again in {((d-co:co 1) (max 1 mins))} min"
 ::  +unix-s: a date as unix seconds
 ++  unix-s  |=(d=@da ^-(@ud ?:((lth d ~1970.1.1) 0 (div (sub d ~1970.1.1) ~s1))))
 ::

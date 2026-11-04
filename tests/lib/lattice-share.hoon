@@ -209,4 +209,24 @@
     %+  expect-eq  !>((my ~[['/x' [%open ~]]]))
     !>((comets-rows:ls (of-wain:format ~['/x weird' 'nonsense' ''])))
   ==
+::  the whole path a reader sees: ten comets in the hour, the eleventh
+::  refused, the page published as full until the cap frees, and open
+::  again once the window rolls past
+++  test-comet-eleventh-and-roll-off
+  =/  until=(unit @da)  (comet-full-until:ls cg-ten cg-now)
+  =/  us=@ud  (unix-s:ls (need until))
+  ;:  weld
+    %+  expect-eq  !>([%refused comet-full-why:ls])
+    !>((comet-gate:ls [%open cg-ten] cg-comet cg-now))
+    (expect-eq !>(`(add cg-now ~m50)) !>(until))
+    (expect-eq !>(50) !>((comet-full-mins:ls us cg-now)))
+    (expect-eq !>(1) !>((comet-full-mins:ls us (sub (need until) ~s1))))
+    %+  expect-eq
+      !>('Too many anonymous comments here right now, try again in 50 min')
+    !>((comet-full-words:ls 50))
+    ::  at the cap's end the window has rolled: no minutes, and the next is taken
+    (expect-eq !>(0) !>((comet-full-mins:ls us (need until))))
+    (expect-eq !>([%ok ~]) !>((comet-gate:ls [%open cg-ten] cg-comet (need until))))
+    (expect-eq !>(~) !>((comet-full-until:ls cg-ten (need until))))
+  ==
 --

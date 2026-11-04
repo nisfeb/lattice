@@ -557,10 +557,12 @@ fn form_body(raw: &[u8]) -> String {
 
 /// Do a list's name and a read's key name the same page? Each is the path
 /// the publisher keeps it at, with or without its leading slash.
-/// Is a page at its cap of comets' comments now?
-fn full_now(c: &Comets) -> bool {
+/// The minutes, rounded up, until a page's cap of comets' comments frees,
+/// while it is at the cap now. A time that has passed is no cap: the
+/// window rolled over and the page is open again.
+fn full_mins(c: &Comets) -> Option<u64> {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    c.full_until.is_some_and(|u| u > now)
+    c.full_until.filter(|&u| u > now).map(|u| (u - now).div_ceil(60).max(1))
 }
 
 fn same_page(name: &str, key: &str) -> bool {
@@ -585,11 +587,17 @@ fn comment(ctx: &Ctx, req: &Req) -> Resp {
             Ok(p) => match ctx.open(&ship, &p.key, true) {
                 (Open::No, _) => Note::Closed { body },
                 (_, c) if c.mode == CometMode::Off => Note::CometsOff { body },
-                (_, c) if full_now(&c) => Note::Full { body },
+                (_, c) if full_mins(&c).is_some() => Note::Full { mins: full_mins(&c).unwrap_or(1), body },
                 (open, c) => match ctx.reads.comment(&ship, &p.key, &body, COMMENT_BUDGET) {
-                    Ok(()) if c.mode == CometMode::Held => Note::Held,
-                    Ok(()) if open == Open::Yes => Note::Posted,
-                    Ok(()) => Note::Sent,
+                    // the publisher turns a comet over the cap away without
+                    // a word, and says so in /pub/comets: ask again before
+                    // calling it posted
+                    Ok(()) => match full_mins(&ctx.open(&ship, &p.key, true).1) {
+                        Some(mins) => Note::Full { mins, body },
+                        None if c.mode == CometMode::Held => Note::Held,
+                        None if open == Open::Yes => Note::Posted,
+                        None => Note::Sent,
+                    },
                     Err(CommentError::Refused(words)) => Note::Refused { words, body },
                     Err(CommentError::Unanswered(words)) => Note::Unanswered { words, body },
                     Err(CommentError::Failed(words)) => Note::Failed { words, body },
@@ -734,7 +742,7 @@ fn page(ctx: &Ctx, url: &str, p: &NativePage) -> Resp {
     let note = ctx.take_note(url);
     let (open, comets) =
         render::commentable(url).map_or((Open::Unknown, Comets::default()), |ship| ctx.open(&ship, &p.key, false));
-    let talk = Talk { our: our.as_deref(), note: note.as_ref(), open, comets: comets.mode, full: full_now(&comets) };
+    let talk = Talk { our: our.as_deref(), note: note.as_ref(), open, comets: comets.mode, full: full_mins(&comets) };
     let s = render::page(url, p, Mode::Shipless, &key, &talk);
     if let Err(e) = ctx.history.add(url, &s.title) {
         crate::commands::dlog(&format!("reader: {e}"));
@@ -859,6 +867,9 @@ mod tests {
         opens: Arc<AtomicUsize>,
         /// the publisher's `/pub/comets`, by page
         comets: Arc<Mutex<Vec<(String, Comets)>>>,
+        /// what the first page's `/pub/comets` row becomes once a comment
+        /// is sent: a publisher that turned it away at the cap
+        fills: Arc<Mutex<Option<Comets>>>,
     }
 
     impl Reads for Fake {
@@ -874,6 +885,9 @@ mod tests {
         }
         fn comment(&self, ship: &str, page: &str, body: &str, _: Duration) -> Result<(), CommentError> {
             self.said.lock().unwrap().push((ship.into(), page.into(), body.into()));
+            if let Some(f) = self.fills.lock().unwrap().take() {
+                self.comets.lock().unwrap()[0].1 = f;
+            }
             self.refuse.clone().map_or(Ok(()), Err)
         }
         fn comments_open(&self, _: &str, _: Duration) -> Option<Opened> {
@@ -902,7 +916,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let calls = Arc::new(AtomicUsize::new(0));
         let expired = Said::default();
-        let fake = Fake { calls: calls.clone(), expired: expired.clone(), answer: Box::new(answer), said: Said::default(), refuse: None, open: Arc::default(), opens: Arc::default(), comets: Arc::default() };
+        let fake = Fake { calls: calls.clone(), expired: expired.clone(), answer: Box::new(answer), said: Said::default(), refuse: None, open: Arc::default(), opens: Arc::default(), comets: Arc::default(), fills: Arc::default() };
         (Ctx::new(Box::new(fake), History::open(&dir), PORT), calls, expired)
     }
 
@@ -1069,6 +1083,7 @@ mod tests {
             open: open.clone(),
             opens: opens.clone(),
             comets: Arc::default(),
+            fills: Arc::default(),
         };
         (Ctx::new(Box::new(fake), History::open(&dir), PORT), said, open, opens)
     }
@@ -1082,7 +1097,7 @@ mod tests {
         ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
         assert_eq!(opens.load(Ordering::SeqCst), 1, "the list is kept");
         assert_eq!(ask(&c, &post_comment("urb://~zod/hello", &ours(), "body=hi")).0, 303);
-        assert_eq!(opens.load(Ordering::SeqCst), 2, "a comment asks again");
+        assert_eq!(opens.load(Ordering::SeqCst), 3, "a comment asks again, before the send and after it");
         assert_eq!(said.lock().unwrap().len(), 1);
         let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
         assert!(out.contains("Posted to ~zod.") && !out.contains("Sent to ~zod."), "{out}");
@@ -1116,6 +1131,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let said = Said::default();
         let comets = Arc::new(Mutex::new(vec![("/k".to_string(), Comets { mode: CometMode::Held, full_until: None })]));
+        let fills: Arc<Mutex<Option<Comets>>> = Arc::default();
         let fake = Fake {
             calls: Arc::default(),
             expired: Said::default(),
@@ -1125,6 +1141,7 @@ mod tests {
             open: Arc::new(Mutex::new(Some(vec!["/k".into()]))),
             opens: Arc::default(),
             comets: comets.clone(),
+            fills: fills.clone(),
         };
         let c = Ctx::new(Box::new(fake), History::open(&dir), PORT);
         let read = |c: &Ctx| ask(c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie())).1;
@@ -1146,7 +1163,17 @@ mod tests {
         assert_eq!(ask(&c, &post_comment("urb://~zod/hello", &ours(), "body=more")).0, 303);
         assert_eq!(said.lock().unwrap().len(), 1);
         let out = read(&c);
-        assert!(out.contains("Too many anonymous comments here right now, try again later.") && !out.contains("talk-form"), "{out}");
+        assert!(out.contains("Too many anonymous comments here right now, try again in 60 min.") && !out.contains("talk-form"), "{out}");
+        // a send the publisher turned away at the cap: its /pub/comets says
+        // so after the send, and the reader says so instead of "Posted"
+        comets.lock().unwrap()[0].1 = Comets { mode: CometMode::Open, full_until: None };
+        c.opens.lock().unwrap().clear();
+        *fills.lock().unwrap() = Some(Comets { mode: CometMode::Open, full_until: Some(later) });
+        assert_eq!(ask(&c, &post_comment("urb://~zod/hello", &ours(), "body=over")).0, 303);
+        assert_eq!(said.lock().unwrap().len(), 2);
+        let out = read(&c);
+        assert!(out.contains("try again in 60 min. Your comment wasn't posted.") && !out.contains("Posted to"), "{out}");
+        assert!(out.contains(">over</textarea>"), "{out}");
         // a cap that is over is no cap
         comets.lock().unwrap()[0].1 = Comets { mode: CometMode::Open, full_until: Some(1) };
         c.opens.lock().unwrap().clear();
