@@ -784,7 +784,10 @@ fn from_frame(req: &Req, port: u16) -> bool {
 /// `/read`: the page, or why not.
 fn read(ctx: &Ctx, given: &str, fresh: Fresh) -> Resp {
     let url = address(given);
-    if let Err((status, words)) = urb_render::gateway::de_urb(url.as_bytes()) {
+    // A forum or furum board first: the gateway's de_urb refuses boards
+    // (501, "which this gateway does not read"), and boards.rs reads them.
+    let board = crate::boards::place(&url);
+    if let (None, Err((status, words))) = (&board, urb_render::gateway::de_urb(url.as_bytes())) {
         let mut s = render::bad_address(&url);
         if status != 400 {
             s.html = s.html.replace("That isn't an urb:// address.", &render_words(&words));
@@ -801,7 +804,7 @@ fn read(ctx: &Ctx, given: &str, fresh: Fresh) -> Resp {
             return redirect(303, &render::read_href(&url));
         }
     }
-    if let Some(at) = crate::boards::place(&url) {
+    if let Some(at) = board {
         let (status, s) = crate::boards::read(ctx, &url, &at);
         return shown(status, s);
     }
@@ -1033,6 +1036,20 @@ mod tests {
 
     fn expired_urls(e: &Said) -> Vec<String> {
         e.lock().unwrap().iter().map(|(u, _, _)| u.clone()).collect()
+    }
+
+    #[test]
+    fn a_forum_board_reaches_the_board_reader_not_the_gateways_refusal() {
+        // the gateway's de_urb answers 501 for boards; the reader must not
+        // stop there, as 1.0.22 did, or no board ever opens
+        assert!(urb_render::gateway::de_urb(b"urb://~zod/forum/b").is_err());
+        let (c, calls) = ctx("board", |_| Err(ReadError::Unreachable { later: false, words: "w".into() }));
+        for u in ["urb%3A%2F%2F~zod%2Fforum%2Fb", "urb%3A%2F%2F~zod%2Fforum%2Fb%2F170141184507"] {
+            let (_, out) = ask(&c, &get(&format!("/read?url={u}"), &cookie()));
+            assert!(!out.contains("which this gateway does not read"), "{out}");
+            assert!(!out.contains("Addresses look like"), "{out}");
+        }
+        assert!(calls.load(Ordering::SeqCst) > 0, "the board reader asked the engine");
     }
 
     #[test]
@@ -1620,9 +1637,8 @@ mod tests {
         let (st, out) = ask(&c, &get("/read?url=http%3A%2F%2Fexample.com", &cookie()));
         assert_eq!(st, 400);
         assert!(out.contains("That isn't an urb:// address"));
-        let (st, out) = ask(&c, &get("/read?url=urb://~zod/forum/general", &cookie()));
-        assert_eq!(st, 400);
-        assert!(out.contains("lattice forum board"), "{out}");
+        // a forum board is not a bad address: boards.rs reads it
+        // (a_forum_board_reaches_the_board_reader_not_the_gateways_refusal)
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
