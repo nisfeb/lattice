@@ -71,7 +71,43 @@ $F reset lattice-dev compiled
 
 ## Release gate
 
-`node scripts/gate.mjs` is the whole release check in about a quarter of an hour, and it never touches ~mec. It deploys this checkout with `dev-deploy.py --approve` to its own base ship (fleet set `lattice-gate`, ~dep on 8150, claimed as `FLEET_WHO=fast-gate` and released at the end), waits for the desk to hold the deploy's version stamp, the instance's bang to read null and the new app.js to be served, then runs `fleet --fast snap ~dep gate` and `fleet clone dep 4 gate`. The ship-bound suites (every browser `ui-*.mjs` but ui-manager and ui-links, `job-check.py`, `big-page-check.py` and the Hoon suites) are handed to the four clones longest first, by the times in `scripts/gate-times.json` (`--record` rewrites them), while the pure ui suites, ui-manager, `offline-tests.sh`, code-closure, bill-check, depth-check, quiet-check, weir-check, desktop-commands, kind-parity, the parse checks and the app.js freshness check run locally. Each lane's serf is pinned to a performance core of its own (CPUs 0, 2, 4 and 6; `GATE_PIN=0` turns it off) and everything else runs on the other CPUs. A ship suite that fails is run once more, alone, on a fresh clone after the others are dropped; if it passes there it is reported as flaky, which fails the gate only with `--strict`. It prints one table of suite, lane, seconds and result, exits 1 on any failure, keeps every log under `/tmp/lattice-gate/<run>`, and drops the clones on the way out, Ctrl+C included. Clones run in their own network namespaces and cannot reach each other, so the two-ship suites (ui-links, two-ship-links.sh, two-ship-save.sh) run only with `--two-ship SET`, which uses the base ship as A and the lattice ship of fleet set SET as B (`--two-ship lattice-gate-peer`, ~wep on 8151, set up the same way as ~dep), links them with a `|hi` each way, and drops the idle lanes while they run. stall-check takes about an hour and runs only with `--stall`, on a fifth clone of its own. A clone starts from a fresh vault, so a suite must make the pages it needs (`seed` in `lib/harness.mjs`) rather than find them, and must wait on the event it needs (`waitFor`, `swControlled`) rather than sleep. The one-time setup of ~dep was `PLATFORM_SET=lattice-gate platform/build.sh` in hoon-development, `dev-deploy.py http://localhost:8150 <jar> --add --approve`, the test desk as above, and `fleet snap lattice-gate lattice`.
+`node scripts/gate.mjs` is the whole release check in about a quarter of an hour, and it never touches ~mec. It deploys this checkout with `dev-deploy.py --approve` to its own base ship (fleet set `lattice-gate`, ~dep on 8150, claimed as `FLEET_WHO=fast-gate` and released at the end), waits for the desk to hold the deploy's version stamp, the instance's bang to read null and the new app.js to be served, then runs `fleet --fast snap ~dep gate` and `fleet clone dep 4 gate`. The ship-bound suites (every browser `ui-*.mjs` but ui-manager and ui-links, `job-check.py`, `big-page-check.py` and the Hoon suites) are handed to the four clones longest first, by the times in `scripts/gate-times.json` (`--record` rewrites them), while the pure ui suites, ui-manager, `offline-tests.sh`, code-closure, bill-check, depth-check, quiet-check, weir-check, desktop-commands, kind-parity, the parse checks and the app.js freshness check run locally. Each lane's serf is pinned to a performance core of its own (CPUs 0, 2, 4 and 6; `GATE_PIN=0` turns it off) and everything else runs on the other CPUs. A ship suite that fails is run once more, alone, on a fresh clone after the others are dropped; if it passes there it is reported as flaky, which fails the gate only with `--strict`. It prints one table of suite, lane, seconds and result, exits 1 on any failure, keeps the logs of the last ten runs under `~/.cache/lattice-gate/<run>` (`LATTICE_SCRATCH`, `GATE_KEEP_RUNS`), and drops the clones on the way out, Ctrl+C included. Clones run in their own network namespaces and cannot reach each other, so the two-ship suites (ui-links, two-ship-links.sh, two-ship-save.sh) run only with `--two-ship SET`, which uses the base ship as A and the lattice ship of fleet set SET as B (`--two-ship lattice-gate-peer`, ~wep on 8151, set up the same way as ~dep), links them with a `|hi` each way, and drops the idle lanes while they run. stall-check takes about an hour and runs only with `--stall`, on a fifth clone of its own. A clone starts from a fresh vault, so a suite must make the pages it needs (`seed` in `lib/harness.mjs`) rather than find them, and must wait on the event it needs (`waitFor`, `swControlled`) rather than sleep. The one-time setup of ~dep was `PLATFORM_SET=lattice-gate platform/build.sh` in hoon-development, `dev-deploy.py http://localhost:8150 <jar> --add --approve`, the test desk as above, and `fleet snap lattice-gate lattice`.
+
+### The fast loop
+
+For one suite while you work, `node scripts/gate.mjs --only ui-shell.mjs`. `--only` now limits the local checks too (add `--local` to run them as well), and the lanes default to no more than the suites asked for, so one suite gets one clone.
+
+The gate snapshot carries the deploy manifest (`<pier>/.lattice-deploy.json`, the sha256 of every file of `code/` it holds) and the session cookie minted before it was taken. So:
+
+- when the snapshot already holds this checkout's `code/`, the base ship is not booted, deployed, built or snapshotted: the lane is cloned straight from the snapshot and the suite starts;
+- when only the client differs (files of `code/nex/lattice/ui-app/`), the lanes are cloned from the snapshot and the changed files are written straight into each lane's `app/` grubs, then checked against what the lane serves. The nexus embeds those files at build time, so going through the desk costs a full rebuild of app.hoon (about three minutes) for a one-line JS change; the hot patch takes a second. It is the default with `--only` (`--hot` asks for it otherwise, `--cold` turns it off), and the lane runs the snapshot's nexus with this checkout's client, so the full gate always deploys;
+- when anything else differs, `dev-deploy.py --manifest` sends only those files, with no GET per file (that GET per file was a minute of every deploy, even of two files), and the new state becomes the snapshot.
+
+Keep the snapshot on main's latest code, so a branch's run deploys only its own diff: after a merge, run `node scripts/gate.mjs --warm` in a checkout of origin/main (deploy and snapshot, no suites). `--cold` ignores the snapshot and does the whole deploy. The run ends with a `phases:` line (base up, deploy, build until live, snapshot, clone and boot, suites, teardown) to show where the time went.
+
+`node scripts/gate.mjs --only ui-shell.mjs`, measured 2026-11-03 (the suite itself is 100 to 160 s, by the host's load):
+
+| phase | before | after, code unchanged | after, one ui-app JS file changed |
+|---|---|---|---|
+| local checks (ran beside it, all 30) | 116 s | none | none |
+| base up and cookie | 14 s | none | none |
+| deploy | 56 s | none | 1 s (hot patch; 170 s through the desk) |
+| build until live | 14 s | none | none (16 s after the desk deploy) |
+| snapshot and base down | 6 s | none | none |
+| clone and boot | 5 s | 6 s | 7 s |
+| teardown | 2 s | 2 s | 2 s |
+| setup before the suite | 95 s | 6 s | 8 s (213 s before) |
+
+### Keeping the machine healthy
+
+The gate and the suites share one machine with every other session, so:
+
+- core dumps are off for the gate, the suites and every browser, Xvfb and driver they start (`prlimit` in `lib/hygiene.mjs`, `ulimit -c 0` in `lib/hygiene.sh`), and fleet starts its ships without them too;
+- scratch, logs and `TMPDIR` live under `~/.cache/lattice-gate`, never `/tmp`; only the last ten runs are kept;
+- every child carries `LATTICE_TEST_OWNER` (the gate's `pid:starttime`) and a `LATTICE_TEST_TAG` of its own. When a suite ends, whatever still carries its tag is killed, even a browser in a process group of its own; at the end of the run, failure and Ctrl+C included, so is whatever carries the owner. A suite or shell suite run by hand is its own owner and does the same;
+- `scripts/sweep.sh` kills what a run that died left behind: processes whose owner is gone. It matches only our marker, never a name, so other sessions' browsers, relays and Xvfb displays are left alone (`-n` lists without killing);
+- the gate and the Xvfb suites refuse to start with under 10 GB free on `/` or 2 GB on `/tmp`;
+- `scripts/clean-targets.sh` lists the Rust `target/` dirs of worktrees whose HEAD is merged into origin/main, and `--yes` deletes them.
 
 ## Deploying a change to ~mec
 
