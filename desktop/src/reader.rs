@@ -25,11 +25,15 @@
 //! - `POST /history/clear` empties the local history;
 //! - `POST /comment?url=` sends the form's `body` as a comment on that
 //!   page, as the reader identity (engine.rs), then goes back to the page,
-//!   which says what became of it.
+//!   which says what became of it;
+//! - `POST /forum?url=` starts a post (`title`, `link`, `body`) on a
+//!   lattice forum board, or a reply (`body`) in one of its threads, as
+//!   the reader identity, on a board whose host lists it as taking them,
+//!   then goes back to the board or thread, which says what became of it.
 //!
 //! Loopback is not a boundary (see proxy.rs), and here the prize is the
 //! comet: a caller who could drive it could make it read whatever they
-//! like, or comment as it. The two POSTs need the reader's own Origin, so
+//! like, or comment and post as it. The POSTs need the reader's own Origin, so
 //! a publisher's sandboxed frame (Origin `null`) cannot comment either. So every route that reads, or changes anything, needs this
 //! launch's token cookie, and the request filter is the bridge's: Host
 //! `127.0.0.1:<port>` or `localhost:<port>`, Origin absent or the reader's
@@ -77,9 +81,9 @@ const RAWS: usize = 16;
 /// within READ_TOTAL, as the extension tries.
 const READ_TRIES: usize = 5;
 const READ_TOTAL: Duration = Duration::from_secs(20);
-/// Longest request body: a comment form, `body` percent-encoded (three
-/// bytes for each of lattice's 4096 at most), and a little more.
-const MAX_BODY: usize = 3 * render::COMMENT_MAX + 1024;
+/// Longest request body: a forum post, its fields percent-encoded (three
+/// bytes for each byte at most), and a little more. A comment is smaller.
+const MAX_BODY: usize = 3 * (crate::boards::TITLE_MAX + crate::boards::LINK_MAX + crate::boards::TEXT_MAX) + 1024;
 /// How long a comment may wait for the publisher's answer.
 const COMMENT_BUDGET: Duration = Duration::from_secs(20);
 /// The live start list may hold the home up this long.
@@ -100,6 +104,8 @@ const OPEN_FAIL_TTL: Duration = Duration::from_secs(20);
 /// How long the list may hold up a page (it is read after the page, on
 /// the flow the read opened, so it is quick when it comes at all).
 const OPEN_BUDGET: Duration = Duration::from_secs(6);
+/// each forum host's boards that take comet posts (`Ctx::forum_open`)
+type Forums = HashMap<String, (Instant, Option<Vec<String>>)>;
 /// each publisher's list (`Ctx::open`), and when it was asked for
 type Opens = HashMap<String, (Instant, Option<Opened>)>;
 
@@ -137,6 +143,8 @@ pub struct Ctx {
     note: Mutex<Option<(String, Note)>>,
     /// each publisher's pages that take comments, when it was asked
     opens: Mutex<Opens>,
+    /// each forum host's boards that take comet posts, when it was asked
+    forums: Mutex<Forums>,
 }
 
 impl Ctx {
@@ -149,7 +157,24 @@ impl Ctx {
             start: Mutex::new(None),
             note: Mutex::new(None),
             opens: Mutex::new(HashMap::new()),
+            forums: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Does `host`'s forum board `board` take the reader's posts? From the
+    /// list kept for `host`, or asked for now when that is stale or
+    /// `fresh`. `None` when the host does not say.
+    pub fn forum_open(&self, host: &str, board: &str, fresh: bool) -> Option<bool> {
+        let kept = self.forums.lock().unwrap().get(host).cloned();
+        let list = match kept {
+            Some((at, l)) if !fresh && at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
+            _ => {
+                let l = self.reads.forum_open(host, OPEN_BUDGET);
+                self.forums.lock().unwrap().insert(host.to_string(), (Instant::now(), l.clone()));
+                l
+            }
+        };
+        list.map(|l| l.iter().any(|n| n == board))
     }
 
     /// Does the page `key` of `ship` take comments, and how does it take a
@@ -172,7 +197,7 @@ impl Ctx {
     }
 
     /// The note for `url`, once.
-    fn take_note(&self, url: &str) -> Option<Note> {
+    pub fn take_note(&self, url: &str) -> Option<Note> {
         let mut g = self.note.lock().unwrap();
         if g.as_ref().is_some_and(|(u, _)| u == url) {
             return g.take().map(|(_, n)| n);
@@ -501,7 +526,13 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
                 None => plain(404),
             }
         }
-        ("/" | "/read" | "/connect", true) | ("/history/clear" | "/comment", false) if !trusted(req, port) => plain(403),
+        ("/" | "/read" | "/connect", true) | ("/history/clear" | "/comment" | "/forum", false) if !trusted(req, port) => plain(403),
+        ("/forum", false) if req.method == "POST" => {
+            if !req.origin.as_deref().is_some_and(|o| reader_origin(o, port)) {
+                return plain(403);
+            }
+            forum_write(ctx, req)
+        }
         ("/comment", false) if req.method == "POST" => {
             if !req.origin.as_deref().is_some_and(|o| reader_origin(o, port)) {
                 return plain(403);
@@ -541,18 +572,85 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
 
 /// The form's `body` field, cut to lattice's cap on a character boundary.
 fn form_body(raw: &[u8]) -> String {
+    form_field(raw, "body", render::COMMENT_MAX)
+}
+
+/// A form field, cut to `max` bytes on a character boundary.
+fn form_field(raw: &[u8], name: &str, max: usize) -> String {
     let text = String::from_utf8_lossy(raw);
     let v = text
         .split('&')
         .filter_map(|kv| kv.split_once('='))
-        .find(|(k, _)| unescape(k) == "body")
+        .find(|(k, _)| unescape(k) == name)
         .map(|(_, v)| unescape(v))
         .unwrap_or_default();
-    let mut end = v.len().min(render::COMMENT_MAX);
+    let mut end = v.len().min(max);
     while !v.is_char_boundary(end) {
         end -= 1;
     }
     v[..end].to_string()
+}
+
+/// `POST /forum`: a post on a lattice forum board, or a reply in one of
+/// its threads, sent as the reader identity, then back to the board or
+/// thread, which says what became of it. Only where the host lists the
+/// board as taking comet posts, asked again now; a furum board takes
+/// none.
+fn forum_write(ctx: &Ctx, req: &Req) -> Resp {
+    use crate::boards::{App, LINK_MAX, TEXT_MAX, TITLE_MAX};
+    use crate::engine::ForumWrite;
+    let url = address(req.arg("url").unwrap_or(""));
+    let Some(p) = crate::boards::place(&url).filter(|p| p.app == App::Forum) else { return plain(400) };
+    let body = form_field(&req.body, "body", TEXT_MAX);
+    let w = match &p.post {
+        None => {
+            let title = form_field(&req.body, "title", TITLE_MAX);
+            let link = form_field(&req.body, "link", LINK_MAX);
+            let some = |t: String| (!t.trim().is_empty()).then_some(t);
+            some(title.trim().to_string()).map(|title| ForumWrite::Post {
+                board: p.board.clone(),
+                title,
+                url: some(link.trim().to_string()),
+                body: some(body.clone()),
+            })
+        }
+        Some(_) => match (crate::boards::post_id(&p), body.trim().is_empty()) {
+            (Some(post), false) => Some(ForumWrite::Reply { board: p.board.clone(), post, parent: None, body: body.clone() }),
+            (None, _) => return plain(400),
+            _ => None,
+        },
+    };
+    let note = match w {
+        None => Note::Empty,
+        Some(w) => match ctx.forum_open(&p.host, &p.board, true) {
+            Some(true) => match ctx.reads.forum_write(&p.host, w, COMMENT_BUDGET) {
+                Ok(()) => Note::Sent,
+                Err(CommentError::Refused(words)) => Note::Refused { words, body },
+                Err(CommentError::Unanswered(words)) => Note::Unanswered { words, body },
+                Err(CommentError::Failed(words)) => Note::Failed { words, body },
+            },
+            _ => Note::Closed { body },
+        },
+    };
+    let outcome = match &note {
+        Note::Sent | Note::Posted | Note::Held => "sent".to_string(),
+        Note::Closed { .. } | Note::CometsOff { .. } | Note::Full { .. } => "board closed to comets".to_string(),
+        Note::Empty => "empty".to_string(),
+        Note::Refused { words, .. } => format!("refused: {words}"),
+        Note::Unanswered { words, .. } => format!("unanswered: {words}"),
+        Note::Failed { words, .. } => format!("failed: {words}"),
+    };
+    crate::commands::dlog(&format!("reader: forum write on {url}: {outcome}"));
+    // the board's own address, so the note meets the page it goes back to
+    let back = match &p.post {
+        None => p.board_url(),
+        Some(id) => p.thread_url(id),
+    };
+    if note == Note::Sent {
+        ctx.reads.expire(&back);
+    }
+    *ctx.note.lock().unwrap() = Some((back.clone(), note));
+    redirect(303, &render::read_href(&back))
 }
 
 /// Do a list's name and a read's key name the same page? Each is the path
@@ -870,7 +968,13 @@ mod tests {
         /// what the first page's `/pub/comets` row becomes once a comment
         /// is sent: a publisher that turned it away at the cap
         fills: Arc<Mutex<Option<Comets>>>,
+        /// the forum host's boards that take comet posts; None, it doesn't say
+        forum: Arc<Mutex<Option<Vec<String>>>>,
+        /// the forum posts and replies it sent
+        wrote: Wrote,
     }
+
+    type Wrote = Arc<Mutex<Vec<(String, crate::engine::ForumWrite)>>>;
 
     impl Reads for Fake {
         fn read(&self, url: &str, _: Duration, _: bool) -> Result<NativePage, ReadError> {
@@ -895,6 +999,13 @@ mod tests {
             let names = self.open.lock().unwrap().clone()?;
             Some(Opened { names, comets: self.comets.lock().unwrap().clone() })
         }
+        fn forum_open(&self, _: &str, _: Duration) -> Option<Vec<String>> {
+            self.forum.lock().unwrap().clone()
+        }
+        fn forum_write(&self, host: &str, w: crate::engine::ForumWrite, _: Duration) -> Result<(), CommentError> {
+            self.wrote.lock().unwrap().push((host.into(), w));
+            self.refuse.clone().map_or(Ok(()), Err)
+        }
     }
 
     fn page_of(body: &str, mark: &str) -> NativePage {
@@ -916,7 +1027,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let calls = Arc::new(AtomicUsize::new(0));
         let expired = Said::default();
-        let fake = Fake { calls: calls.clone(), expired: expired.clone(), answer: Box::new(answer), said: Said::default(), refuse: None, open: Arc::default(), opens: Arc::default(), comets: Arc::default(), fills: Arc::default() };
+        let fake = Fake { calls: calls.clone(), expired: expired.clone(), answer: Box::new(answer), said: Said::default(), refuse: None, open: Arc::default(), opens: Arc::default(), comets: Arc::default(), fills: Arc::default(), forum: Arc::default(), wrote: Wrote::default() };
         (Ctx::new(Box::new(fake), History::open(&dir), PORT), calls, expired)
     }
 
@@ -1082,6 +1193,8 @@ mod tests {
             refuse,
             open: open.clone(),
             opens: opens.clone(),
+            forum: Arc::default(),
+            wrote: Wrote::default(),
             comets: Arc::default(),
             fills: Arc::default(),
         };
@@ -1142,6 +1255,8 @@ mod tests {
             opens: Arc::default(),
             comets: comets.clone(),
             fills: fills.clone(),
+            forum: Arc::default(),
+            wrote: Wrote::default(),
         };
         let c = Ctx::new(Box::new(fake), History::open(&dir), PORT);
         let read = |c: &Ctx| ask(c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie())).1;
@@ -1179,6 +1294,79 @@ mod tests {
         c.opens.lock().unwrap().clear();
         let out = read(&c);
         assert!(out.contains(">Post to ~zod</button>") && !out.contains("Too many"), "{out}");
+    }
+
+    /// a reader whose forum host lists `boards` as taking comet posts
+    fn posting(name: &str, boards: Option<Vec<String>>) -> (Ctx, Wrote, Said) {
+        let dir = std::env::temp_dir().join(format!("reader-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (wrote, expired) = (Wrote::default(), Said::default());
+        let fake = Fake {
+            calls: Arc::default(),
+            expired: expired.clone(),
+            answer: Box::new(pages),
+            said: Said::default(),
+            refuse: None,
+            open: Arc::default(),
+            opens: Arc::default(),
+            forum: Arc::new(Mutex::new(boards)),
+            wrote: wrote.clone(),
+            comets: Arc::default(),
+            fills: Arc::default(),
+        };
+        (Ctx::new(Box::new(fake), History::open(&dir), PORT), wrote, expired)
+    }
+
+    fn post_forum(url: &str, extra: &str, body: &str) -> String {
+        post_comment(url, extra, body).replacen("POST /comment?", "POST /forum?", 1)
+    }
+
+    #[test]
+    fn a_forum_post_and_reply_go_as_the_reader_identity() {
+        use crate::engine::ForumWrite;
+        let (c, wrote, expired) = posting("forumpost", Some(vec!["general".into()]));
+        let (st, out) = ask(&c, &post_forum("urb://~wep/forum/general", &ours(), "title=Hi+there&link=&body=first%21"));
+        assert_eq!(st, 303, "{out}");
+        assert!(out.contains("Location: /read?url=urb%3A%2F%2F~wep%2Fforum%2Fgeneral"), "{out}");
+        let (st, _) = ask(&c, &post_forum("urb://~wep/forum/general/1.000", &ours(), "body=a+reply"));
+        assert_eq!(st, 303);
+        let got = wrote.lock().unwrap().clone();
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(
+            got[0],
+            ("~wep".into(), ForumWrite::Post { board: "general".into(), title: "Hi there".into(), url: None, body: Some("first!".into()) })
+        );
+        match &got[1] {
+            (h, ForumWrite::Reply { board, post, parent: None, body }) => {
+                assert_eq!((h.as_str(), board.as_str(), post.decimal().as_str(), body.as_str()), ("~wep", "general", "1000", "a reply"));
+            }
+            w => panic!("{w:?}"),
+        }
+        // the thread is read fresh, and says it was sent, once
+        assert!(expired_urls(&expired).contains(&"urb://~wep/forum/general/1.000".to_string()));
+        assert_eq!(c.take_note("urb://~wep/forum/general/1.000"), Some(Note::Sent));
+        assert_eq!(c.take_note("urb://~wep/forum/general/1.000"), None);
+    }
+
+    #[test]
+    fn a_forum_write_goes_only_where_the_host_takes_it() {
+        for (name, boards) in [("forumoff", Some(vec!["other".to_string()])), ("forumold", None)] {
+            let (c, wrote, _) = posting(name, boards);
+            assert_eq!(ask(&c, &post_forum("urb://~wep/forum/general", &ours(), "title=t&body=mine")).0, 303);
+            assert!(wrote.lock().unwrap().is_empty(), "{name}");
+            assert_eq!(c.take_note("urb://~wep/forum/general"), Some(Note::Closed { body: "mine".into() }), "{name}");
+        }
+        let (c, wrote, _) = posting("forumbad", Some(vec!["general".into()]));
+        // a furum board, a page, no title, an empty reply, a foreign caller
+        assert_eq!(ask(&c, &post_forum("urb://~rup/furum/m1c", &ours(), "title=t")).0, 400);
+        assert_eq!(ask(&c, &post_forum("urb://~rup/furum/m1c/3", &ours(), "body=x")).0, 400);
+        assert_eq!(ask(&c, &post_forum("urb://~wep/hello", &ours(), "title=t")).0, 400);
+        assert_eq!(ask(&c, &post_forum("urb://~wep/forum/general", &ours(), "title=+&body=x")).0, 303);
+        assert_eq!(c.take_note("urb://~wep/forum/general"), Some(Note::Empty));
+        assert_eq!(ask(&c, &post_forum("urb://~wep/forum/general/3", &ours(), "body=+")).0, 303);
+        let bad = format!("{}Origin: null\r\n", cookie());
+        assert_eq!(ask(&c, &post_forum("urb://~wep/forum/general", &bad, "title=t")).0, 403);
+        assert!(wrote.lock().unwrap().is_empty());
     }
 
     fn post_comment(url: &str, extra: &str, body: &str) -> String {

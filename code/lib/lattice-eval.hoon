@@ -68,6 +68,9 @@
       [%forum-note-store host=@p payload=*]
       ::  the owner clears every stored refusal note (frees the 100-note cap).
       [%forum-notes-clear ~]
+      ::  the owner turns comet posting on or off for one board, and the
+      ::  published list of boards that take comet posts follows
+      [%forum-comets name=@ta on=?]
       ::  write a link (/lib/lattice-link) at /page/<pax>/link, making its
       ::  dir. Through the writer like every page-tree write, so it lands
       ::  in order with a move's mkdirs and bumps the change beacon.

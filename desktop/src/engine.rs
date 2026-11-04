@@ -5,13 +5,16 @@
 //! someone with no ship can read them (the shipless reader, reader.rs).
 //!
 //! The engine reads page content, and lattice forum and furum boards
-//! (`boards`, read calls only), and makes one write: a comment on a
-//! published page, poked to the publisher's comment inbox as the comet
-//! itself (owner, 2026-11-03: someone using the app anonymously can browse
-//! and comment). It never posts, follows, bookmarks or publishes, and never
-//! acts as the user's ship. Every request it makes goes through
-//! `submit_read`, `submit_board` or `submit_comment`, and a test reads this file's own
-//! source to hold it to that (`only_reads_and_comments_are_submitted`).
+//! (`boards`, read calls only), and makes two writes, each as the comet
+//! itself: a comment on a published page, poked to the publisher's comment
+//! inbox (owner, 2026-11-03: someone using the app anonymously can browse
+//! and comment), and a post or a reply on a public lattice forum board,
+//! poked to the host's forum inbox (`forum_write`). It never votes,
+//! follows, bookmarks or publishes, never writes to a furum board, and
+//! never acts as the user's ship. Every request it makes goes through
+//! `submit_read`, `submit_board`, `submit_comment`, `submit_forum_write`
+//! or `submit_open_list`, and a test reads this file's own source to hold
+//! it to that (`only_reads_and_comments_are_submitted`).
 //!
 //! State lives in `<app_data_dir>/urb/` (0700), opened as the Go and Rust
 //! gateways open theirs (`urb_gateway::state::find`): `comet.key` (0600,
@@ -148,6 +151,19 @@ pub trait Reads: Send + Sync {
         let _ = (ship, budget);
         None
     }
+    /// The boards of `host` that take posts and replies from comets, from
+    /// lattice's `/pub/forum-comets`. `None` when the host does not say (an
+    /// older lattice, or no answer), which the reader takes as no.
+    fn forum_open(&self, host: &str, budget: Duration) -> Option<Vec<String>> {
+        let _ = (host, budget);
+        None
+    }
+    /// Start a post or reply on a lattice forum board as the reader
+    /// identity. `Ok` means the host took the poke in, not that it landed.
+    fn forum_write(&self, host: &str, w: ForumWrite, budget: Duration) -> Result<(), CommentError> {
+        let _ = (host, w, budget);
+        Err(CommentError::Failed("this reader cannot post".into()))
+    }
     /// Read boards and threads, all at once, each within `budget`: one
     /// result per ask, in order.
     fn boards(&self, asks: Vec<BoardAsk>, budget: Duration) -> Vec<Result<Js, ReadError>> {
@@ -196,6 +212,15 @@ pub enum BoardAsk {
     FurumComments { host: String, board: String, post: u64 },
 }
 
+/// A write on a lattice forum board, the only two a comet makes: a new
+/// post, or a reply in a thread. Never a vote: a comet is free to mint,
+/// so its vote would count for nothing, and the host refuses one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ForumWrite {
+    Post { board: String, title: String, url: Option<String>, body: Option<String> },
+    Reply { board: String, post: Int, parent: Option<Int>, body: String },
+}
+
 /// where a board read's result goes
 type Told = Sender<Result<Js, ReadError>>;
 
@@ -223,6 +248,7 @@ enum Job {
     Comment(Comment, Said),
     /// a publisher's `/pub/comments` or `/pub/comets`, at a lattice base
     OpenList(String, &'static str, List, Cord),
+    ForumWrite(String, ForumWrite, Said),
     Board(BoardAsk, Told),
     Close(Sender<()>),
 }
@@ -515,6 +541,65 @@ impl Engine {
         None
     }
 
+    /// The boards of `host` that take comet posts (`Reads::forum_open`):
+    /// lattice's `/pub/forum-comets` cord, as `comments_open` reads its list.
+    pub fn forum_open(&self, host: &str, budget: Duration) -> Option<Vec<String>> {
+        let start = Instant::now();
+        for base in [DESK_BASE, APP_BASE] {
+            let left = budget.saturating_sub(start.elapsed());
+            if left.is_zero() {
+                return None;
+            }
+            let (tx, rx) = channel();
+            {
+                let g = self.inner.lock().unwrap();
+                if !matches!(g.status, Status::Ready { .. }) {
+                    return None;
+                }
+                let run = g.run.as_ref()?;
+                run.jobs.send(Job::OpenList(host.into(), base, List::ForumComets, tx)).ok()?;
+                if let Some(w) = &run.waker {
+                    let _ = w.send(Event::Wake);
+                }
+            }
+            match rx.recv_timeout(left) {
+                Ok(Ok(Some(cord))) => return Some(open_names(&cord)),
+                // none here, or not lattice's base: the other one may be
+                Ok(Ok(None)) | Ok(Err(_)) => {}
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// A post or reply on a lattice forum board, as the reader identity:
+    /// the forum reader's newPost or newComment, an `action` poked to the
+    /// host's `forum.sig`, which stamps the author from the transport. The
+    /// host's base is the one its board reads found.
+    pub fn forum_write(&self, host: &str, w: ForumWrite, budget: Duration) -> Result<(), CommentError> {
+        let (tx, rx) = channel();
+        {
+            let g = self.inner.lock().unwrap();
+            if !matches!(g.status, Status::Ready { .. }) {
+                return Err(CommentError::Failed("the reader isn't ready yet".into()));
+            }
+            let Some(run) = &g.run else { return Err(CommentError::Failed("the reader stopped".into())) };
+            if run.jobs.send(Job::ForumWrite(host.into(), w, tx)).is_err() {
+                return Err(CommentError::Failed("the reader stopped".into()));
+            }
+            if let Some(w) = &run.waker {
+                let _ = w.send(Event::Wake);
+            }
+        }
+        match rx.recv_timeout(budget) {
+            Ok(r) => r,
+            Err(RecvTimeoutError::Timeout) => {
+                Err(CommentError::Unanswered(format!("no answer within {}s", budget.as_secs())))
+            }
+            Err(RecvTimeoutError::Disconnected) => Err(CommentError::Failed("the reader stopped".into())),
+        }
+    }
+
     /// Start the engine before anyone reads, and read `warm` (the start
     /// list) and the first page it links to, so the first page someone
     /// opens is already on its way. A comet this makes is unclaimed until
@@ -631,6 +716,12 @@ impl Reads for Engine {
     }
     fn comments_open(&self, ship: &str, budget: Duration) -> Option<Opened> {
         Engine::comments_open(self, ship, budget)
+    }
+    fn forum_open(&self, host: &str, budget: Duration) -> Option<Vec<String>> {
+        Engine::forum_open(self, host, budget)
+    }
+    fn forum_write(&self, host: &str, w: ForumWrite, budget: Duration) -> Result<(), CommentError> {
+        Engine::forum_write(self, host, w, budget)
     }
     fn step(&self) -> &'static str {
         Engine::step(self)
@@ -767,6 +858,10 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                 }
                 Ok(Job::OpenList(ship, base, list, tx)) => {
                     pending.push((submit_open_list(&mut host, ship, base, list), Wait::OpenList(tx), Instant::now()))
+                }
+                Ok(Job::ForumWrite(to, w, tx)) => {
+                    log_line(&format!("forum write to {to}"));
+                    pending.push((submit_forum_write(&mut host, to, w), Wait::Comment(tx), Instant::now()))
                 }
                 Ok(Job::Board(a, tx)) => {
                     log_line(&format!("board read {a:?}"));
@@ -971,13 +1066,32 @@ fn submit_comment<I: urb_engine::host::Io>(host: &mut Host<I>, c: Comment) -> u6
     })
 }
 
-/// The two cords the engine peeks, beside the pages.
+/// A forum write: the forum reader's newPost or newComment, and never a
+/// vote (`only_reads_and_comments_are_submitted`).
+fn submit_forum_write<I: urb_engine::host::Io>(host: &mut Host<I>, to: String, w: ForumWrite) -> u64 {
+    host.submit(Request::Forum { host: to, call: forum_call(w) })
+}
+
+/// the forum reader's call for a write
+fn forum_call(w: ForumWrite) -> ForumCall {
+    let big = |i: Int| urb_engine::msg::Id::Big(false, i);
+    match w {
+        ForumWrite::Post { board, title, url, body } => ForumCall::NewPost { name: board, title: Some(title), url, body },
+        ForumWrite::Reply { board, post, parent, body } => {
+            ForumCall::NewComment { name: board, post: big(post), body: Some(body), parent: parent.map(big) }
+        }
+    }
+}
+
+/// The cords the engine peeks, beside the pages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum List {
     /// `/pub/comments`, the published pages that take comments
     Comments,
     /// `/pub/comets`, each page's comet policy when it is not plain open
     Comets,
+    /// `/pub/forum-comets`, the forum boards that take comet posts
+    ForumComets,
 }
 
 impl List {
@@ -985,6 +1099,7 @@ impl List {
         match self {
             List::Comments => "comments",
             List::Comets => "comets",
+            List::ForumComets => "forum-comets",
         }
     }
 }
@@ -1123,13 +1238,15 @@ mod tests {
         }))
     }
 
-    /// The rule as a test: the engine reads, and its one write is a
-    /// comment to a publisher's comment inbox. Every request it names is a
-    /// Read, a board read, that Poke, or one Peek of the publisher's lists
-    /// of pages that take comments and their comet policies; it submits in four places, and it never
-    /// publishes or hears an inbox. Its forum and furum calls are the
-    /// readers' read calls, by name: never a post, comment, vote or note. A
-    /// change that needs any of those has to change this test on purpose.
+    /// The rule as a test: the engine reads, and its writes are a comment
+    /// to a publisher's comment inbox and a post or reply on a lattice
+    /// forum board. Every request it names is a Read, a board read, that
+    /// Poke, a forum write, or one Peek of a list under the publisher's
+    /// `/pub`; it submits in five places, and it never publishes or hears
+    /// an inbox. Its forum and furum calls are the readers' read calls and
+    /// the forum's newPost and newComment, by name: never a vote, a note or
+    /// a furum write. A change that needs any of those has to change this
+    /// test on purpose.
     #[test]
     fn only_reads_and_comments_are_submitted() {
         let src = include_str!("engine.rs");
@@ -1143,8 +1260,8 @@ mod tests {
             .collect();
         assert_eq!(
             named,
-            ["Read", "Forum", "Forum", "Furum", "Furum", "Poke", "Peek"],
-            "the engine names only Request::Read, the board reads, one Poke and one Peek"
+            ["Read", "Forum", "Forum", "Furum", "Furum", "Poke", "Forum", "Peek"],
+            "the engine names only Request::Read, the board reads, one Poke, the forum write and one Peek"
         );
         for word in ["Inbox", "PubPut", "PubRemove", "Pub {", "Watch"] {
             assert!(!code.contains(&format!("Request::{word}")), "{word}");
@@ -1161,10 +1278,18 @@ mod tests {
             .collect();
         assert_eq!(
             calls,
-            ["ForumCall::Board", "ForumCall::Thread", "FurumCall::Posts", "FurumCall::Comments"],
-            "only the board readers' read calls"
+            [
+                "ForumCall::Board",
+                "ForumCall::Thread",
+                "FurumCall::Posts",
+                "FurumCall::Comments",
+                "ForumCall::NewPost",
+                "ForumCall::NewComment"
+            ],
+            "only the board readers' read calls, and a forum post or reply"
         );
-        assert_eq!(code.matches(".submit(").count(), 4, "four submits: submit_read, submit_board, submit_comment, submit_open_list");
+        assert_eq!(code.matches(".submit(").count(), 5, "five submits: read, board, comment, forum write, open list");
+        assert_eq!(code.matches("submit_forum_write(").count(), 1, "submit_forum_write, called once");
         assert_eq!(code.matches("submit_board(").count(), 1, "submit_board, called once");
         assert_eq!(code.matches("submit_open_list(").count(), 1, "submit_open_list, called once");
         // the peek reads /pub/comments or /pub/comets and nothing else
@@ -1174,7 +1299,7 @@ mod tests {
         let names = &code[code.find("impl List {").unwrap()..];
         let names = &names[..names.find("\n}\n").unwrap()];
         let quoted: Vec<&str> = names.split('"').skip(1).step_by(2).collect();
-        assert_eq!(quoted, ["comments", "comets"], "{names}");
+        assert_eq!(quoted, ["comments", "comets", "forum-comets"], "{names}");
         assert_eq!(code.matches("submit_read(").count(), 1, "submit_read, called once");
         assert_eq!(code.matches("submit_comment(").count(), 1, "submit_comment, called once");
         // the poke goes to the comment inbox, with lattice's comment mark
@@ -1202,6 +1327,23 @@ mod tests {
             ]
         );
         assert!(comet_policies("").is_empty());
+    }
+
+    #[test]
+    fn a_forum_write_is_the_forum_readers_new_post_or_comment() {
+        let big = |n: u8| Int::from_le(&[n]);
+        match forum_call(ForumWrite::Post { board: "b".into(), title: "t".into(), url: None, body: Some("x".into()) }) {
+            ForumCall::NewPost { name, title, url, body } => {
+                assert_eq!((name.as_str(), title.as_deref(), url, body.as_deref()), ("b", Some("t"), None, Some("x")))
+            }
+            c => panic!("{c:?}"),
+        }
+        match forum_call(ForumWrite::Reply { board: "b".into(), post: big(7), parent: None, body: "r".into() }) {
+            ForumCall::NewComment { name, post: urb_engine::msg::Id::Big(false, p), body, parent: None } => {
+                assert_eq!((name.as_str(), p.decimal().as_str(), body.as_deref()), ("b", "7", Some("r")))
+            }
+            c => panic!("{c:?}"),
+        }
     }
 
     #[test]

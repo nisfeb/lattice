@@ -13,8 +13,14 @@
 //! and reply count. A thread is its post and then its comments, oldest
 //! first. Every title, name and body is the publisher's, so each is
 //! escaped, and bodies go through urb-render's Markdown renderer with the
-//! reader's link mapping, as a Markdown page does. Posting, replying and
-//! voting need a node of one's own, so they are shown and disabled.
+//! reader's link mapping, as a Markdown page does.
+//!
+//! On a lattice forum board the host lists in its `/pub/forum-comets`
+//! (public, and its owner left comet posting on), the reader starts posts
+//! and replies as its own identity (`POST /forum`, reader.rs). Anywhere
+//! else, posting and replying need a node of one's own, and are shown and
+//! disabled. Voting is disabled everywhere: a reader identity is free to
+//! make, so its vote would count for nothing, and the host refuses one.
 
 use std::time::Duration;
 
@@ -25,7 +31,7 @@ use urb_render::gateway;
 
 use crate::engine::{BoardAsk, ReadError};
 use crate::reader::Ctx;
-use crate::render::{self, chrome, esc, lossy, main_of, read_href, Shown, OWN};
+use crate::render::{self, chrome, enc, esc, lossy, main_of, read_href, Note, Shown, OWN};
 
 /// How long a board read waits: the first contact with a ship can be slow.
 const BUDGET: Duration = Duration::from_secs(20);
@@ -35,6 +41,26 @@ const COUNTED: usize = 50;
 const LISTED: usize = 200;
 /// Why every write on a board is disabled.
 pub const WHY: &str = "Connect a node to post";
+/// Why a forum board that says it takes no comet posts is read only.
+pub const CLOSED: &str = "This board takes no posts from readers without a node";
+/// Why voting is disabled on a forum board.
+pub const NO_VOTE: &str = "Readers without a node can't vote: their identity is free to make, so a vote would count for nothing";
+/// lattice's caps for a forum post's title and link (`sane-post`), in
+/// bytes. A post's text and a reply are cut at `TEXT_MAX`, under the
+/// host's 40,000 and 10,000.
+pub const TITLE_MAX: usize = 300;
+pub const LINK_MAX: usize = 2048;
+pub const TEXT_MAX: usize = 10_000;
+
+/// Whether a forum board takes writes from the reader, and what became of
+/// the last one. `open` is the host's word (`/pub/forum-comets`): `None`
+/// when it did not say, as an older lattice does not.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Write<'a> {
+    pub open: Option<bool>,
+    pub our: Option<&'a str>,
+    pub note: Option<&'a Note>,
+}
 
 const CSS: &str = "\
 .board, .thread { max-width: 46rem; width: 100%; margin: 0 auto; padding: 1.25rem 1.5rem 3rem; }\
@@ -53,6 +79,11 @@ ol.comments li { padding: .6rem 0 .6rem .75rem; border-left: 3px solid var(--lin
 .thread h2 { font-size: 1rem; margin: 1.25rem 0 .25rem; }\
 .reply textarea { width: 100%; font: inherit; padding: .5rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); resize: none; }\
 .reply button { font: inherit; font-size: .9rem; padding: .3rem .7rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--muted); cursor: not-allowed; }\
+.write { margin: 1rem 0; }\
+.write input, .write textarea { display: block; width: 100%; box-sizing: border-box; font: inherit; padding: .5rem; margin: 0 0 .5rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; }\
+.write textarea { resize: vertical; }\
+.write button { font: inherit; font-size: .9rem; padding: .3rem .7rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; cursor: pointer; }\
+.note.ok { color: var(--ok, inherit); } .note.err { color: var(--err, inherit); }\
 ";
 
 /// Which app keeps the board.
@@ -292,17 +323,127 @@ fn plural(n: usize, one: &str, many: &str) -> String {
 }
 
 /// The strip of writes a board would take, each disabled with its reason.
-fn strip(labels: &[&str]) -> String {
+fn strip(labels: &[(&str, &str)]) -> String {
+    if labels.is_empty() {
+        return String::new();
+    }
     let mut s = String::from("<div class=\"actions\" role=\"group\" aria-label=\"Actions that need a node\">");
-    for l in labels {
+    for (l, why) in labels {
         let id = l.to_ascii_lowercase().replace(' ', "-");
         s.push_str(&format!(
-            "<span class=\"act\"><button type=\"button\" disabled title=\"{WHY}\" aria-describedby=\"why-{id}\">{l}</button>\
-             <span class=\"why\" id=\"why-{id}\">{WHY}</span></span>"
+            "<span class=\"act\"><button type=\"button\" disabled title=\"{why}\" aria-describedby=\"why-{id}\">{l}</button>\
+             <span class=\"why\" id=\"why-{id}\">{why}</span></span>"
         ));
     }
     s.push_str("</div>");
     s
+}
+
+/// The reason the reader cannot post on `p`, or `None` when it can.
+fn closed_why(p: &Place, w: &Write) -> Option<&'static str> {
+    match (p.app, w.open) {
+        (App::Forum, Some(true)) => None,
+        (App::Forum, Some(false)) => Some(CLOSED),
+        _ => Some(WHY),
+    }
+}
+
+/// The disabled writes on `p`: posting (`write`, "New post" or "Reply")
+/// when the reader cannot, and voting on a forum.
+fn disabled<'a>(p: &Place, w: &Write, write: &'a str, vote: bool) -> Vec<(&'a str, &'static str)> {
+    let mut out = Vec::new();
+    if let Some(why) = closed_why(p, w) {
+        out.push((write, why));
+    }
+    if vote {
+        out.push(("Vote", if p.app == App::Forum { NO_VOTE } else { WHY }));
+    }
+    out
+}
+
+/// `/forum`'s address for a board or thread.
+pub fn write_href(urb: &str) -> String {
+    format!("/forum?url={}", enc(urb))
+}
+
+/// What became of the last post or reply, above the form, and the text it
+/// keeps for another try.
+fn note_of<'a>(host: &str, w: &Write<'a>) -> (String, &'a str) {
+    let to = esc(host);
+    match w.note {
+        None => (String::new(), ""),
+        Some(Note::Posted | Note::Sent | Note::Held) => (
+            format!(
+                "<p class=\"note ok\" role=\"status\">Sent to {to}. It shows here once {to} takes it in: reload if \
+                 it isn't here yet.</p>"
+            ),
+            "",
+        ),
+        Some(Note::Closed { body } | Note::CometsOff { body } | Note::Full { body, .. }) => (
+            format!("<p class=\"note err\" role=\"alert\">{to} takes no posts from readers without a node on this board, so it wasn't sent.</p>"),
+            body.as_str(),
+        ),
+        Some(Note::Empty) => ("<p class=\"note err\" role=\"alert\">Write something first.</p>".into(), ""),
+        Some(Note::Refused { words, body }) => (
+            format!("<p class=\"note err\" role=\"alert\">{to} refused this, so it wasn't posted.</p><p class=\"words\">{}</p>", esc(words)),
+            body.as_str(),
+        ),
+        Some(Note::Unanswered { words, body }) => (
+            format!(
+                "<p class=\"note err\" role=\"alert\">{to} didn't answer, so it may not have been sent. Try again.</p>\
+                 <p class=\"words\">{}</p>",
+                esc(words)
+            ),
+            body.as_str(),
+        ),
+        Some(Note::Failed { words, body }) => (
+            format!("<p class=\"note err\" role=\"alert\">The reader couldn't send it.</p><p class=\"words\">{}</p>", esc(words)),
+            body.as_str(),
+        ),
+    }
+}
+
+/// Who a post or reply is from, as the host will see it.
+fn as_whom(host: &str, w: &Write) -> String {
+    let to = esc(host);
+    let who = match w.our {
+        Some(o) => format!("as <code class=\"who\">{}</code>, the name {to} shows as the author", esc(o)),
+        None => format!("as this computer's anonymous reader identity, the name {to} shows as the author"),
+    };
+    format!("<p class=\"words\">Posted anonymously from this computer {who}. A board takes ten posts and replies an hour from readers without a node.</p>")
+}
+
+/// The new post form, on a board that takes them.
+fn post_form(p: &Place, w: &Write) -> String {
+    let (note, kept) = note_of(&p.host, w);
+    format!(
+        "<section class=\"write\" aria-labelledby=\"write-h\"><h2 id=\"write-h\">New post</h2>{note}\
+         <form class=\"write-form\" method=\"post\" action=\"{action}\">\
+         <input name=\"title\" maxlength=\"{TITLE_MAX}\" required aria-label=\"Title\" placeholder=\"Title\">\
+         <input name=\"link\" type=\"url\" maxlength=\"{LINK_MAX}\" aria-label=\"Link (optional)\" placeholder=\"Link (optional)\">\
+         <textarea name=\"body\" rows=\"4\" maxlength=\"{TEXT_MAX}\" aria-label=\"Text (optional)\" placeholder=\"Text (optional)\">{kept}</textarea>\
+         <p><button type=\"submit\">Post to {to}</button></p></form>{whom}</section>",
+        action = esc(&write_href(&p.board_url())),
+        kept = esc(kept),
+        to = esc(&p.host),
+        whom = as_whom(&p.host, w),
+    )
+}
+
+/// The reply form, under a thread on a board that takes replies.
+fn reply_form(p: &Place, url: &str, w: &Write) -> String {
+    let (note, kept) = note_of(&p.host, w);
+    format!(
+        "<section class=\"write\" aria-labelledby=\"write-h\"><h2 id=\"write-h\">Reply</h2>{note}\
+         <form class=\"write-form\" method=\"post\" action=\"{action}\">\
+         <textarea name=\"body\" rows=\"3\" maxlength=\"{TEXT_MAX}\" required aria-label=\"Your reply\" \
+         placeholder=\"Reply to this thread\">{kept}</textarea>\
+         <p><button type=\"submit\">Reply on {to}</button></p></form>{whom}</section>",
+        action = esc(&write_href(url)),
+        kept = esc(kept),
+        to = esc(&p.host),
+        whom = as_whom(&p.host, w),
+    )
 }
 
 /// A publisher's body, as Markdown, escaped, links mapped into the reader.
@@ -340,18 +481,23 @@ fn crumbs(p: &Place) -> String {
     )
 }
 
-fn page(title: &str, url: &str, labels: &[&str], inner: &str) -> Shown {
+fn page(title: &str, url: &str, labels: &[(&str, &str)], inner: &str) -> Shown {
     let main = format!("<style>{CSS}</style>{}{inner}", strip(labels));
     Shown { csp: OWN, html: chrome(title, url, None, &main, false), title: title.chars().take(crate::history::TITLE_MAX).collect() }
 }
 
 /// A board, as a list of its threads.
-pub fn board_page(p: &Place, b: &Board) -> Shown {
+pub fn board_page(p: &Place, b: &Board, w: &Write) -> Shown {
     let url = p.board_url();
     let title = if b.title.trim().is_empty() { p.board.clone() } else { b.title.clone() };
     let mut s = format!("<section class=\"board\">{}<h1>{}</h1>", crumbs(p), esc(&title));
     if !b.description.trim().is_empty() {
         s.push_str(&format!("<p class=\"words\">{}</p>", esc(&b.description)));
+    }
+    if closed_why(p, w).is_none() {
+        s.push_str(&post_form(p, w));
+    } else {
+        s.push_str(&note_of(&p.host, w).0);
     }
     if b.posts.is_empty() {
         s.push_str("<p class=\"words\">No posts yet.</p>");
@@ -378,11 +524,11 @@ pub fn board_page(p: &Place, b: &Board) -> Shown {
         }
     }
     s.push_str("</section>");
-    page(&title, &url, &["New post"], &s)
+    page(&title, &url, &disabled(p, w, "New post", false), &s)
 }
 
 /// A thread: its post, then its comments in order.
-pub fn thread_page(p: &Place, t: &Thread) -> Shown {
+pub fn thread_page(p: &Place, t: &Thread, w: &Write) -> Shown {
     let url = p.thread_url(&t.post.id);
     let title = if t.post.title.trim().is_empty() { "(untitled)".to_string() } else { t.post.title.clone() };
     let back = if t.board.trim().is_empty() { p.board.clone() } else { t.board.clone() };
@@ -421,12 +567,16 @@ pub fn thread_page(p: &Place, t: &Thread) -> Shown {
         }
         s.push_str("</ol>");
     }
-    s.push_str(&format!(
-        "<form class=\"reply\" aria-label=\"Reply\"><textarea rows=\"2\" disabled aria-label=\"Reply\" \
-         placeholder=\"{WHY}\"></textarea><p><button type=\"button\" disabled title=\"{WHY}\">Reply</button></p></form>"
-    ));
+    match closed_why(p, w) {
+        None => s.push_str(&reply_form(p, &url, w)),
+        Some(why) => s.push_str(&format!(
+            "{}<form class=\"reply\" aria-label=\"Reply\"><textarea rows=\"2\" disabled aria-label=\"Reply\" \
+             placeholder=\"{why}\"></textarea><p><button type=\"button\" disabled title=\"{why}\">Reply</button></p></form>",
+            note_of(&p.host, w).0
+        )),
+    }
     s.push_str("</section>");
-    page(&title, &url, &["Reply", "Vote"], &s)
+    page(&title, &url, &disabled(p, w, "Reply", true), &s)
 }
 
 /// What a failed board read says. A board that isn't there says so in a
@@ -450,6 +600,15 @@ pub fn error_page(url: &str, p: &Place, e: &ReadError, step: &str) -> (u16, Show
 
 // ------------------------------------------------------------ reading
 
+/// A forum thread's post id, as its address names it.
+pub fn post_id(p: &Place) -> Option<Int> {
+    let id = p.post.as_ref().filter(|_| p.app == App::Forum)?;
+    match de_urb(&p.thread_url(id)).map(|u| u.mount) {
+        Ok(Mount::Forum { post }) => post,
+        _ => None,
+    }
+}
+
 /// The asks that read `p`.
 fn asks(p: &Place) -> Vec<BoardAsk> {
     let (host, board) = (p.host.clone(), p.board.clone());
@@ -470,15 +629,24 @@ fn asks(p: &Place) -> Vec<BoardAsk> {
 /// Read and show `p` (at `url`): the page, or why not.
 pub fn read(ctx: &Ctx, url: &str, p: &Place) -> (u16, Shown) {
     let mut got = ctx.reads.boards(asks(p), BUDGET).into_iter();
+    // a forum board says whether it takes the reader's posts; a furum
+    // board is read only
+    let open = match p.app {
+        App::Forum => ctx.forum_open(&p.host, &p.board, false),
+        App::Furum => None,
+    };
+    let our = ctx.reads.our();
+    let note = ctx.take_note(url);
+    let w = Write { open, our: our.as_deref(), note: note.as_ref() };
     let first = match got.next().unwrap_or_else(|| Err(ReadError::Failed("no answer".into()))) {
         // forum.mjs's words for a thread the board lacks
         Err(ReadError::Failed(w)) if w.contains("no post ") => Err(ReadError::NotPublished(w)),
         r => r,
     };
     let shown = first.and_then(|v| match (p.app, &p.post) {
-        (App::Forum, None) => Ok(board_page(p, &forum_board(&v))),
+        (App::Forum, None) => Ok(board_page(p, &forum_board(&v), &w)),
         (App::Forum, Some(_)) => forum_thread(&v)
-            .map(|t| thread_page(p, &t))
+            .map(|t| thread_page(p, &t, &w))
             .ok_or_else(|| ReadError::Failed("the thread couldn't be read".into())),
         (App::Furum, None) => {
             let mut posts = furum_posts(&v);
@@ -491,14 +659,14 @@ pub fn read(ctx: &Ctx, url: &str, p: &Place) -> (u16, Shown) {
             for (q, c) in posts.iter_mut().zip(ctx.reads.boards(counted, BUDGET)) {
                 q.replies = c.ok().map(|c| furum_comments(&c).len());
             }
-            Ok(board_page(p, &Board { title: p.board.clone(), description: String::new(), posts }))
+            Ok(board_page(p, &Board { title: p.board.clone(), description: String::new(), posts }, &w))
         }
         (App::Furum, Some(id)) => {
             let post = furum_posts(&v).into_iter().find(|q| &q.id == id).ok_or_else(|| {
                 ReadError::NotPublished(format!("no post {id} on {}'s board {}", p.host, p.board))
             })?;
             let comments = got.next().unwrap_or_else(|| Err(ReadError::Failed("no answer".into())))?;
-            Ok(thread_page(p, &Thread { board: p.board.clone(), post, comments: furum_comments(&comments) }))
+            Ok(thread_page(p, &Thread { board: p.board.clone(), post, comments: furum_comments(&comments) }, &w))
         }
     });
     match shown {
@@ -582,7 +750,7 @@ mod tests {
         let b = forum_board(&forum_js());
         assert_eq!(b.posts.len(), 2);
         assert_eq!((b.posts[0].replies, b.posts[0].score), (Some(1), Some(2)));
-        let s = board_page(&p, &b);
+        let s = board_page(&p, &b, &Write::default());
         assert_eq!(s.csp, OWN);
         assert_eq!(s.title, "General <b>talk</b>");
         let h = &s.html;
@@ -600,9 +768,48 @@ mod tests {
     }
 
     #[test]
+    fn a_board_that_takes_comet_posts_offers_the_forms_but_never_a_vote() {
+        let open = Write { open: Some(true), our: Some("~doznec-sampel-palnet"), note: None };
+        let p = place_of("urb://~wep/forum/general");
+        let h = board_page(&p, &forum_board(&forum_js()), &open).html;
+        assert!(h.contains("<form class=\"write-form\" method=\"post\" action=\"/forum?url=urb%3A%2F%2F~wep%2Fforum%2Fgeneral\">"), "{h}");
+        assert!(h.contains("name=\"title\"") && h.contains("name=\"link\"") && h.contains(">Post to ~wep</button>"), "{h}");
+        assert!(h.contains("<code class=\"who\">~doznec-sampel-palnet</code>, the name ~wep shows as the author"), "{h}");
+        assert!(!h.contains(">New post</button>"), "no disabled New post");
+        let t = place_of("urb://~wep/forum/general/4");
+        let h = thread_page(&t, &thread_with("x", "y", None), &open).html;
+        assert!(h.contains("action=\"/forum?url=urb%3A%2F%2F~wep%2Fforum%2Fgeneral%2F4\"") && h.contains(">Reply on ~wep</button>"), "{h}");
+        assert!(!h.contains("<textarea rows=\"2\" disabled"), "{h}");
+        assert!(h.contains(&format!("disabled title=\"{NO_VOTE}\"")) && h.contains(">Vote</button>"), "{h}");
+        // what became of the last one, and its text kept on a refusal
+        let n = Note::Refused { words: "<no>".into(), body: "my <text>".into() };
+        let h = thread_page(&t, &thread_with("x", "y", None), &Write { note: Some(&n), ..open }).html;
+        assert!(h.contains("~wep refused this") && h.contains("&lt;no&gt;") && h.contains(">my &lt;text&gt;</textarea>"), "{h}");
+        let h = board_page(&p, &Board::default(), &Write { note: Some(&Note::Sent), ..open }).html;
+        assert!(h.contains("Sent to ~wep."), "{h}");
+    }
+
+    #[test]
+    fn a_board_closed_to_comets_or_silent_or_furum_stays_read_only() {
+        let p = place_of("urb://~wep/forum/general/4");
+        let closed = Write { open: Some(false), ..Write::default() };
+        let h = thread_page(&p, &thread_with("x", "y", None), &closed).html;
+        assert!(h.contains(&format!("disabled title=\"{CLOSED}\">Reply</button>")) && !h.contains("write-form"), "{h}");
+        let h = thread_page(&p, &thread_with("x", "y", None), &Write::default()).html;
+        assert!(h.contains(&format!("disabled title=\"{WHY}\">Reply</button>")) && !h.contains("write-form"), "{h}");
+        assert!(h.contains(&format!("disabled title=\"{NO_VOTE}\"")), "{h}");
+        // a furum board takes no writes, whatever it is told
+        let f = place_of("urb://~rup/furum/m1c/4");
+        let h = thread_page(&f, &thread_with("x", "y", None), &Write { open: Some(true), ..Write::default() }).html;
+        assert!(!h.contains("write-form") && h.contains(&format!("disabled title=\"{WHY}\" aria-describedby=\"why-vote\">Vote</button>")), "{h}");
+        assert_eq!(post_id(&place_of("urb://~wep/forum/general/1.000")).map(|i| i.decimal()), Some("1000".into()));
+        assert_eq!(post_id(&f), None);
+    }
+
+    #[test]
     fn an_empty_board_says_so() {
         let p = place_of("urb://~rup/furum/m1c");
-        let s = board_page(&p, &Board { title: "m1c".into(), ..Board::default() });
+        let s = board_page(&p, &Board { title: "m1c".into(), ..Board::default() }, &Write::default());
         assert!(s.html.contains("No posts yet."));
         assert!(s.html.contains("<h1>m1c</h1>"));
     }
@@ -630,7 +837,7 @@ mod tests {
     #[test]
     fn a_thread_shows_its_post_then_its_comments_in_order() {
         let p = place_of("urb://~wep/forum/general/4");
-        let s = thread_page(&p, &thread_with("**bold** and [a page](urb://~wep/other)", "second", None));
+        let s = thread_page(&p, &thread_with("**bold** and [a page](urb://~wep/other)", "second", None), &Write::default());
         let h = &s.html;
         assert_eq!(s.title, "A <i>thread</i>");
         assert!(h.contains("<h1>A &lt;i&gt;thread&lt;/i&gt;</h1>"));
@@ -654,7 +861,7 @@ mod tests {
     fn hostile_bodies_and_links_are_escaped() {
         let p = place_of("urb://~rup/furum/m1c/4");
         for url in ["javascript:alert(1)", "data:text/html,<script>alert(1)</script>", "https://example.com/\"><script>"] {
-            let s = thread_page(&p, &thread_with(hostile(), hostile(), Some(url)));
+            let s = thread_page(&p, &thread_with(hostile(), hostile(), Some(url)), &Write::default());
             let h = &s.html;
             let main = &h[h.find("<main").unwrap()..];
             assert!(!main.contains("<script"), "{url}: {main}");
@@ -663,9 +870,9 @@ mod tests {
             assert!(!main.contains("href=\"data:"), "{url}: {main}");
             assert!(main.contains("&lt;img src=x onerror=alert(2)&gt;"), "{url}: {main}");
         }
-        let s = thread_page(&p, &thread_with("x", "y", Some("https://example.com/a")));
+        let s = thread_page(&p, &thread_with("x", "y", Some("https://example.com/a")), &Write::default());
         assert!(s.html.contains("<a href=\"https://example.com/a\">https://example.com/a</a>"), "{}", s.html);
-        let s = thread_page(&p, &thread_with("x", "y", Some("urb://~rup/notes")));
+        let s = thread_page(&p, &thread_with("x", "y", Some("urb://~rup/notes")), &Write::default());
         assert!(s.html.contains("href=\"/read?url=urb%3A%2F%2F~rup%2Fnotes\""), "{}", s.html);
     }
 
@@ -752,6 +959,89 @@ mod tests {
             let recent: Vec<String> = ctx.history.list().into_iter().map(|e| e.url).collect();
             assert!(recent.iter().any(|u| u == url) && recent.contains(&thread), "{recent:?}");
         }
+        engine.close();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A real post and reply on the fleet, as a comet on the fake network:
+    /// `FLEET_AS` names the comet, `FLEET_FORUM` a public lattice forum
+    /// board whose host lists it in `/pub/forum-comets`. The comet starts
+    /// a post, then replies in its thread, and both are read back from the
+    /// host with the comet as their author. Plain `cargo test` skips it.
+    #[test]
+    #[ignore = "needs a fleet ship running this branch"]
+    fn a_comet_posts_and_replies_on_a_fleet_board() {
+        use crate::engine::{ForumWrite, Reads};
+        if std::env::var("LATTICE_FLEET").as_deref() != Ok("1") {
+            eprintln!("skipped: LATTICE_FLEET=1 is not set");
+            return;
+        }
+        // `new-comet`: a comet no run has used, as the fake network takes
+        // any name
+        let who = match std::env::var("FLEET_AS").expect("FLEET_AS") {
+            w if w == "new-comet" => {
+                let r = urb_engine::host::net::random(16);
+                let half = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
+                urb_engine::engine::ship_text((half(&r[..8]), half(&r[8..]).max(1)))
+            }
+            w => w,
+        };
+        let url = std::env::var("FLEET_FORUM").expect("FLEET_FORUM");
+        let p = place(&url).expect("a board address");
+        let tmp = std::env::temp_dir().join(format!("forum-post-fleet-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let engine = crate::engine::Engine::fake(tmp.join("urb"), &who);
+        let ctx = Ctx::new(Box::new(engine.clone()), crate::history::History::open(&tmp), 1);
+        let t = std::time::Instant::now();
+        let (mut status, mut s) = read(&ctx, &url, &p);
+        while status != 200 && t.elapsed() < Duration::from_secs(180) {
+            std::thread::sleep(Duration::from_secs(2));
+            (status, s) = read(&ctx, &url, &p);
+        }
+        let our = engine.our().expect("running");
+        eprintln!("{url}: {status} as {our} in {:?}", t.elapsed());
+        assert_eq!(status, 200, "{}", s.html);
+        assert_eq!(ctx.forum_open(&p.host, &p.board, true), Some(true), "the host lists the board");
+        let (_, s) = read(&ctx, &url, &p);
+        assert!(s.html.contains("write-form"), "{}", s.html);
+        let title = format!("comet post {}", std::process::id());
+        let w = ForumWrite::Post { board: p.board.clone(), title: title.clone(), url: None, body: Some("from a comet".into()) };
+        engine.forum_write(&p.host, w, Duration::from_secs(30)).expect("the post was taken in");
+        // the post lands, by the comet
+        let t = std::time::Instant::now();
+        let post = loop {
+            let b = ctx.reads.boards(vec![BoardAsk::Forum { host: p.host.clone(), board: p.board.clone() }], BUDGET);
+            if let Some(Ok(v)) = b.first() {
+                if let Some(q) = forum_board(v).posts.into_iter().find(|q| q.title == title) {
+                    break q;
+                }
+            }
+            assert!(t.elapsed() < Duration::from_secs(60), "the post never landed");
+            std::thread::sleep(Duration::from_secs(2));
+        };
+        eprintln!("post {} by {} in {:?}", post.id, post.author, t.elapsed());
+        assert_eq!(post.author, our);
+        // a ship that is not a comet meets the host's per-ship cooldown
+        // (ten seconds after its last write); a comet meets the board's gate
+        if !our.contains("--") {
+            std::thread::sleep(Duration::from_secs(12));
+        }
+        let thread = p.thread_url(&post.id);
+        let tp = place(&thread).unwrap();
+        let w = ForumWrite::Reply { board: p.board.clone(), post: post_id(&tp).unwrap(), parent: None, body: "a comet reply".into() };
+        engine.forum_write(&p.host, w, Duration::from_secs(30)).expect("the reply was taken in");
+        let t = std::time::Instant::now();
+        loop {
+            let (status, s) = read(&ctx, &thread, &tp);
+            if status == 200 && s.html.contains("a comet reply") {
+                assert!(s.html.contains(&format!("<span class=\"who\">{our}</span>")), "{}", s.html);
+                assert!(s.html.contains(&format!("disabled title=\"{NO_VOTE}\"")));
+                break;
+            }
+            assert!(t.elapsed() < Duration::from_secs(60), "the reply never landed: {}", s.html);
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        eprintln!("reply landed in {:?}", t.elapsed());
         engine.close();
         let _ = std::fs::remove_dir_all(&tmp);
     }

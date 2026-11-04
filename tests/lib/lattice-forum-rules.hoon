@@ -74,4 +74,26 @@
     (expect-eq !>(&) !>((hot-before:fr now nv-new nv-old)))
     (expect-eq !>(|) !>((hot-before:fr now nv-old nv-new)))
   ==
+::  a comet posts and replies on a public board with comet posting on,
+::  and nothing else: no vote, no edit, no private board, no board whose
+::  owner turned comets off
+++  test-comet-refusal
+  =/  c=@p  (cat 7 ~sampel-palnet 3)
+  =/  pub=board:ft  brd
+  =/  priv=board:ft  pub(public.info |)
+  =/  np=action:ft  [%new-post %main 'hi' ~ `'body']
+  =/  nc=action:ft  [%new-comment %main 1 ~ 'reply']
+  ;:  weld
+    (expect-eq !>(&) !>((is-comet:fr c)))
+    (expect-eq !>(|) !>((is-comet:fr ~sampel-palnet)))
+    (expect-eq !>(|) !>((is-comet:fr (cat 5 ~sampel-palnet 7))))
+    (expect-eq !>(~) !>((comet-refusal:fr np brd |)))
+    (expect-eq !>(~) !>((comet-refusal:fr nc brd |)))
+    (expect-eq !>(`'forum: a comet cannot vote') !>((comet-refusal:fr [%upvote %main [%post 1]] brd |)))
+    (expect-eq !>(`'forum: a comet cannot vote') !>((comet-refusal:fr [%remove-vote %main [%post 1]] brd |)))
+    (expect-eq !>(`'forum: a comet can only post and reply') !>((comet-refusal:fr [%delete-post %main 1] brd |)))
+    (expect-eq !>(`'forum: this board is private') !>((comet-refusal:fr np priv |)))
+    (expect-eq !>(`'forum: this board is private') !>((comet-refusal:fr nc priv |)))
+    (expect-eq !>(`'forum: this board takes no posts from comets') !>((comet-refusal:fr np brd &)))
+  ==
 --

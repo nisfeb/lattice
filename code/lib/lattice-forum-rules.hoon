@@ -48,6 +48,31 @@
   ^-  ?
   (sane-text body 10.000)
 ::
+::  +is-comet: a comet, by its size (more than 8 bytes), so no jael
+::
+++  is-comet
+  |=  who=@p
+  ^-  ?
+  (gth (met 3 who) 8)
+::
+::  +comet-refusal: why a comet may not do `act` on `brd`, or ~ when it
+::  may. A comet starts posts and replies on a public board whose owner
+::  left comet posting on (`off` is the owner's switch), and nothing
+::  else. Its vote is refused: a comet is free to mint, so a comet's
+::  vote counts for nothing. Role and caps are checked after, as for
+::  any remote poster.
+::
+++  comet-refusal
+  |=  [act=action brd=board off=?]
+  ^-  (unit @t)
+  ?:  ?=(?(%upvote %downvote %remove-vote) -.act)
+    `'forum: a comet cannot vote'
+  ?.  ?=(?(%new-post %new-comment) -.act)
+    `'forum: a comet can only post and reply'
+  ?.  public.info.brd  `'forum: this board is private'
+  ?:  off  `'forum: this board takes no posts from comets'
+  ~
+::
 ::  +rate-ok: may this ship act on this board now. mods always may; a
 ::  ship that never acted may; else the cooldown must have passed.
 ::

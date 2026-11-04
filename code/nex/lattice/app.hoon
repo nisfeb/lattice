@@ -229,6 +229,11 @@
         ::  plain open, and whether it is at its cap (+comets-cord in
         ::  /lib/lattice-share). Absent reads as every page open.
             [%stay %& [/pub %comets]]
+        ::  /pub/forum-comets: the boards that take posts from comets
+        ::  (+put-forum-comets), rebuilt at every writer start. %stay, as
+        ::  /pub/comments is: a reader takes its absence for "no comet
+        ::  posts", the answer an older lattice gives.
+            [%stay %& [/pub %forum-comets]]
         ::  /forum: the forum (docs/superpowers/specs, State layout). A
         ::  board is a directory of [/ %noun] grubs, each [%1 shape], laid
         ::  by +apply-forum:
@@ -248,6 +253,11 @@
             [%fall %| /forum/notes empty-dir:loader]
             [%fall %& [/forum %seen] [[/ %noun] [%1 ~]]]
             [%fall %& [/forum %limits] [[/ %noun] [%1 ~]]]
+        ::  /forum/comets-off: the boards whose owner turned comet posts
+        ::  off, a [%1 (set @ta)]. /forum/comet-hits: per board, when it
+        ::  last took a comet's post or reply (+comet-gate:ls's hits).
+            [%fall %& [/forum %comets-off] [[/ %noun] [%1 ~]]]
+            [%fall %& [/forum %comet-hits] [[/ %noun] [%1 ~]]]
         ::  /pub/marks-migrated: the version of the one-time re-grow of every
         ::  published page under its view-mode mark (+migrate-pub-marks). 0
         ::  until it has run. Covered, so the stamp survives reload.
@@ -468,6 +478,9 @@
         ::  the published pages that take comments, when there is no list
         ;<  pc=(unit (set @t))  bind:m  (read-pub-comments root)
         ;<  ~  bind:m  ?^(pc (pure:(fiber:fiber:nexus ,~) ~) (put-pub-comments root))
+        ::  the boards that take comet posts, every start: a board's public
+        ::  flag may have moved under an older lattice
+        ;<  ~  bind:m  (put-forum-comets root)
         ::  pages published before per-format marks were grown as gmi
         ;<  ~  bind:m  (migrate-pub-marks root)
         ::  a whole-tree action a reload cut short (+job-set)
@@ -6154,6 +6167,9 @@
   ::  address is live, the same reasoning the comment and share inboxes use.
   ;<  bans=banned:ls  bind:m  read-banned
   ?:  (is-banned:ls bans src)  (pure:m ~)
+  ::  a comet takes its own road: the board's comet gate, not the per-ship
+  ::  limit, which a comet escapes by minting another
+  ?:  (is-comet:fr src)  (apply-forum-comet now src act)
   =/  tail  +.act
   =/  nom=@ta  ?@(tail tail ;;(@ta -.tail))
   =/  name=board-name:ft  ;;(board-name:ft nom)
@@ -6188,6 +6204,89 @@
     (write-forum-limits (rate-update:fr src name now lim))
   ?~  reason  (pure:m ~)
   (forum-note-send src name u.reason)
+::  +apply-forum-comet: a forum action from a comet, such as the desktop's
+::  reader without a node. It lands only as a post or a reply on a public
+::  board whose owner left comet posting on (+comet-refusal:fr), past the
+::  board's comet gate (+comet-gate:ls, the cap comet comments meet, ten
+::  an hour across the board), and
+::  then through the role and caps every remote poster meets. Votes are
+::  refused: a comet is free to mint, so its vote would count for nothing.
+::  A refusal is silent. A comet runs no lattice, so it has no inbox for a
+::  note, and finding its base would stall the writer on remote waits; the
+::  reader reads /pub/forum-comets before anyone types instead.
+::
+++  apply-forum-comet
+  |=  [now=@da src=@p act=action:ft]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  tail  +.act
+  =/  nom=@ta  ?@(tail tail ;;(@ta -.tail))
+  ?.  &(!=('' nom) ((sane %tas) nom))  (pure:m ~)
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[nom])
+  ?~  gs  (pure:m ~)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (pure:m ~)
+  ;<  off=(set @ta)  bind:m  read-forum-comets-off
+  ?^  (comet-refusal:fr act p.lod (~(has in off) nom))  (pure:m ~)
+  ;<  hits=(map @ta (list @da))  bind:m  read-forum-comet-hits
+  ::  the board's comet gate, as a page's: open unless its owner turned
+  ::  comets off (refused above), and ten an hour across the board
+  =/  live=(list @da)  (comet-live:ls (~(gut by hits) nom ~) now)
+  =/  v=comet-verdict:ls  (comet-gate:ls [%open live] src now)
+  ?.  ?=(%ok -.v)  (pure:m ~)
+  ;<  ~  bind:m
+    %^  put-file  (rf up /forum %comet-hits)  [/ %noun]
+    [%1 (~(put by hits) nom (scag comet-cap:ls `(list @da)`[now live]))]
+  ;<  *  bind:m  (forum-remote-apply now src nom act `p.lod)
+  (pure:m ~)
+::  +read-forum-comets-off / +read-forum-comet-hits: the owner's comet
+::  switch and the comet gate's counts, empty when never written
+::
+++  read-forum-comets-off
+  =/  m  (fiber:fiber:nexus ,(set @ta))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up /forum %comets-off) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  =/  raw=(unit [%1 (set @ta)])
+    (mole |.(;;([%1 (set @ta)] (sang-noun:tarball sang.v))))
+  (pure:m ?~(raw ~ +.u.raw))
+++  read-forum-comet-hits
+  =/  m  (fiber:fiber:nexus ,(map @ta (list @da)))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up /forum %comet-hits) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  =/  raw=(unit [%1 (map @ta (list @da))])
+    (mole |.(;;([%1 (map @ta (list @da))] (sang-noun:tarball sang.v))))
+  (pure:m ?~(raw ~ +.u.raw))
+::  +put-forum-comets: [/pub %forum-comets], the boards that take posts
+::  and replies from comets, one name a line: every public board whose
+::  owner left comet posting on. A cord under the plain %noun mark, as
+::  /pub/comments is, so the desktop's comet reads it as text and shows
+::  New post and Reply only where they will land. It names only public
+::  boards, which any reader can already list.
+::
+++  put-forum-comets
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  noms=(list @ta)  bind:m  forum-boards
+  ;<  off=(set @ta)  bind:m  read-forum-comets-off
+  =|  open=(list @t)
+  |-  ^-  form:m
+  ?~  noms
+    =/  names=(list @t)  (sort open aor)
+    (put-file (rf root /pub %forum-comets) [/ %noun] `@t`?~(names '' (of-wain:format names)))
+  ?:  (~(has in off) i.noms)  $(noms t.noms)
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[i.noms])
+  =/  pub=?
+    ?~  gs  |
+    =/  lod=(each board:ft @t)  (load:fb u.gs)
+    &(?=(%& -.lod) public.info.p.lod)
+  $(noms t.noms, open ?:(pub [i.noms open] open))
 ::  +forum-remote-apply: the per-action gates for a REMOTE forum action -- bad
 ::  board name, owner-only, board-exists, private-board membership, then role
 ::  and caps so the refusal names itself -- then +apply-forum-core. +act:fa
@@ -6552,6 +6651,8 @@
     ::  -.act.act still %create-board etc., and must not re-lay grants.
     ?.  &(=(src.act our) ?=(?(%create-board %delete-board %set-public) -.act.act))
       (pure:m ~)
+    ::  and so does the list of boards that take comet posts
+    ;<  ~  bind:m  (put-forum-comets root)
     ::  a board made or deleted starts with no members: drop the old roster
     ::  and member group so a re-created name does not inherit them. Soft.
     ;<  ~  bind:m
@@ -6568,6 +6669,13 @@
     ::  posts. Routed here from the /forum.sig inbox so /main.sig is the sole
     ::  writer of /forum (the inbox fiber never writes).
     (store-forum-note host.act now payload.act)
+      %forum-comets
+    ::  the owner's per-board switch for comet posts, then the published
+    ::  list, so a comet reader sees the change on its next read
+    ;<  off=(set @ta)  bind:m  read-forum-comets-off
+    =/  new=(set @ta)  ?:(on.act (~(del in off) name.act) (~(put in off) name.act))
+    ;<  ~  bind:m  (put-file (rf up /forum %comets-off) [/ %noun] [%1 new])
+    (put-forum-comets root)
       %forum-notes-clear
     ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/notes) ~)
     ?.  ?=([%ball *] v)  (pure:m ~)
@@ -13316,7 +13424,8 @@
   ?:  =('submit' i.t.pax)
     (send-html eyre-id (forum-doc (render-submit:fre c nom) "" theme-link %.y nn))
   ?:  =('mod' i.t.pax)
-    (send-html eyre-id (forum-doc (render-mod:fre c brd) "" theme-link %.y nn))
+    ;<  off=(set @ta)  bind:m  read-forum-comets-off
+    (send-html eyre-id (forum-doc (render-mod:fre c brd !(~(has in off) nom)) "" theme-link %.y nn))
   =/  pid=(unit @ud)  ((slat %ud) i.t.pax)
   ?:  |(?=(~ pid) !(~(has by posts.brd) u.pid))
     (send-err eyre-id 404 'not found')
@@ -13383,6 +13492,11 @@
   ?~  bo  (send-err eyre-id 404 'no such board')
   =/  brd=board:ft  u.bo
   =/  tl=path  t.pax
+  ::  the comet switch is not a board action: it flips the owner's set
+  ?:  =([%mod %comets ~] tl)
+    ;<  off=(set @ta)  bind:m  read-forum-comets-off
+    ;<  ~  bind:m  (poke-eval [%forum-comets nom (~(has in off) nom)])
+    (send-see-other eyre-id "{base}/mod")
   =/  res=(unit [act=action:ft to=tape])
     ?+  tl  ~
         [%vote ~]
