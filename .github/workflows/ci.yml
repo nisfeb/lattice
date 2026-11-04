@@ -235,6 +235,49 @@ jobs:
           WRITER_REQUIRE_SOFFICE: "1"
         run: node scripts/writer-odt.mjs
 
+  # Every .hoon file in code/, app.hoon and its marks included, compiled
+  # the way grubbery does, with no ship. Release 111 shipped an app.hoon
+  # that did not build (a nest-fail every text check passed). The vere it
+  # runs has its eval kernel rebuilt from the arvo ships run (stock vere's
+  # is hoon 137), which takes twenty minutes, so it is cached on its pins.
+  hoon-build:
+    name: Hoon, code/ compiles
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      #  restore and save apart: a failing check must not cost the next
+      #  run the twenty-minute build
+      - name: cached vere with a 408k eval kernel
+        id: vere
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/hoon-vere
+          key: hoon-vere-${{ hashFiles('scripts/hoon-vere.sh', 'scripts/ivory-pill.py') }}
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        if: steps.vere.outputs.cache-hit != 'true'
+        with:
+          version: 0.15.2
+      - name: build that vere
+        if: steps.vere.outputs.cache-hit != 'true'
+        run: scripts/hoon-vere.sh ~/.cache/hoon-vere
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.vere.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/hoon-vere
+          key: ${{ steps.vere.outputs.cache-primary-key }}
+      - name: grubbery, as ships install it
+        run: |
+          git clone -q --depth 1 --branch dist/single-release \
+            https://github.com/nisfeb/grubbery "$RUNNER_TEMP/grubbery"
+      - name: compile code/
+        run: |
+          ulimit -c 0
+          VERE=~/.cache/hoon-vere/vere python3 scripts/hoon-build-check.py \
+            --grubbery "$RUNNER_TEMP/grubbery/desk"
+
   static:
     name: web client + scripts — static checks
     runs-on: ubuntu-24.04
