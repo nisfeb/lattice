@@ -8,6 +8,31 @@
 // ship and come back to the plain address. Links, back and forward read
 // as they always did.
 (function () {
+  // The loading line: every read blocks until the engine answers (a new
+  // comet's first read takes seconds), and the page left stays up till
+  // then. So a navigation leaving this page draws a thin line along the
+  // top and spins Reload once it has run BUSY_MS, which a quick read never
+  // reaches. The next page, or the reader's error page, takes its place;
+  // a leave that never lands (a download) lets go by BUSY_MAX.
+  var BUSY_MS = 180, BUSY_MAX = 30000, show = 0, cap = 0;
+  var line = function () {
+    document.documentElement.classList.add('lbusy');
+    if (document.body) document.body.setAttribute('aria-busy', 'true');
+  };
+  var stop = function () {
+    clearTimeout(show); clearTimeout(cap);
+    document.documentElement.classList.remove('lbusy');
+    if (document.body) document.body.removeAttribute('aria-busy');
+  };
+  var start = function () {
+    clearTimeout(show); clearTimeout(cap);
+    show = setTimeout(line, BUSY_MS);
+    cap = setTimeout(stop, BUSY_MAX);
+  };
+  // links, the address bar, Back, Forward, Reload and the webview's own
+  // steps alike; a page brought back from the cache is not loading
+  addEventListener('beforeunload', start);
+  addEventListener('pageshow', function (e) { if (e.persisted) stop(); });
   var here = function () {
     var q = new URLSearchParams(location.search);
     return location.pathname === '/read' ? q.get('url') : null;

@@ -216,7 +216,7 @@ async function live(url, cookie, stamp, secs = 900) {
 //  --- the suites ---
 const browser = (f) => /puppeteer|lib\/harness\.mjs/.test(readFileSync(S + '/' + f, 'utf8'));
 const uis = readdirSync(S).filter((f) => /^ui-.*\.mjs$/.test(f)).sort();
-const SHIPFREE_BROWSER = ['ui-manager.mjs'];
+const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs'];
 const TWO_SHIP = ['ui-links.mjs'];
 const shipSuites = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
@@ -249,6 +249,7 @@ function fiberio() {
 const allLocal = [
   ...uis.filter((f) => !browser(f)).map((f) => [f, 'node', [S + '/' + f]]),
   ['ui-manager.mjs', 'node', [S + '/ui-manager.mjs']],
+  ['ui-reader-loading.mjs', 'node', [S + '/ui-reader-loading.mjs']],
   ['offline-tests', 'bash', [S + '/offline-tests.sh']],
   ['code-closure', 'python3', [S + '/code-closure.py', 'code']],
   ['bill-check', 'python3', [S + '/bill-check.py', 'code']],

@@ -390,3 +390,7 @@ jobs:
         run: |
           npm ci --prefix scripts --no-audit --no-fund --ignore-scripts
           CHROME="$(command -v google-chrome)" node scripts/ui-manager.mjs
+      # ui-reader-loading serves reader.js and reader.css from a stand-in
+      # for the shipless reader's loopback, so it needs no ship either.
+      - name: browser unit test - reader loading line (no ship)
+        run: CHROME="$(command -v google-chrome)" node scripts/ui-reader-loading.mjs

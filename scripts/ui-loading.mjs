@@ -10,7 +10,8 @@
 //    A slow open superseded by another open clears at once, and the late
 //      answer brings it back nowhere; a failed open clears too
 //    A browser tab whose page is slow shows the line on its frame's host
-//      and clears once the page loads, and so does a navigation in it
+//      and a spinner on its tab, both clearing once the page loads, and so
+//      does a navigation in it
 //    A comment posted from the reader view shows progress, disables Post
 //      until the reply, and a second click sends nothing; in a browser tab
 //      the tab's line shows while it is sent
@@ -85,18 +86,21 @@ const until = (fn, arg, ms = 30000) => page.waitForFunction(fn, { timeout: ms },
 //  Records each change of the line on anything `sel` matches in the shell
 //  as [ms since the mark, on]. The action under test follows at once, so
 //  the times are near enough to it. lineLog() reads the record back.
-const mark = (sel) => page.evaluate((sel) => {
-  window.__bl = [];
+//  With `slot` 'tl' it records the tab's spinner (.lload) instead, beside
+//  the line's record, read back by tabLog().
+const mark = (sel, slot = 'bl', cls = slot === 'tl' ? 'lload' : 'lbusy') => page.evaluate((sel, slot, cls) => {
+  const log = window['__' + slot] = [];
   const t0 = performance.now();
   const look = () => {
-    const on = [...document.querySelectorAll(sel)].some((e) => e.classList.contains('lbusy'));
-    const last = window.__bl.length ? window.__bl[window.__bl.length - 1][1] : false;
-    if (on !== last) window.__bl.push([Math.round(performance.now() - t0), on]);
+    const on = [...document.querySelectorAll(sel)].some((e) => e.classList.contains(cls));
+    const last = log.length ? log[log.length - 1][1] : false;
+    if (on !== last) log.push([Math.round(performance.now() - t0), on]);
   };
-  if (window.__blObs) window.__blObs.disconnect();
-  window.__blObs = new MutationObserver(look);
-  window.__blObs.observe(document.body, { attributes: true, attributeFilter: ['class'], subtree: true });
-}, sel);
+  if (window['__' + slot + 'Obs']) window['__' + slot + 'Obs'].disconnect();
+  window['__' + slot + 'Obs'] = new MutationObserver(look);
+  window['__' + slot + 'Obs'].observe(document.body, { attributes: true, attributeFilter: ['class'], subtree: true, childList: true });
+}, sel, slot, cls);
+const tabLog = () => page.evaluate(() => window.__tl.slice());
 const openIn = (n) => page.evaluate((n) => { window.latTabs.openIn('page', n); }, n);
 const lineLog = () => page.evaluate(() => window.__bl.slice());
 const firstOn = (log) => (log.find((e) => e[1]) || [null])[0];
@@ -169,6 +173,7 @@ try {
   // ── a browser tab ──────────────────────────────────────────────────────
   frameDelay = 2500;
   await mark('.toolhost');
+  await mark('.dtab', 'tl');
   await page.evaluate(() => document.getElementById('rb-browser').click());
   const frameUp = await until(() => {
     const s = window.latTabs.state();
@@ -183,6 +188,11 @@ try {
   check('a slow browser tab shows the line on its frame after the delay and clears on load',
     frameUp && hostOff && firstOn(frameLog) >= 150 && firstOn(frameLog) < 1500 && lastOff(frameLog) >= 2000,
     JSON.stringify({ frameUp, hostOff, frameLog }));
+  const spinLog = await tabLog();
+  const spinOff = await page.evaluate(() => !document.querySelector('.dtab.lload'));
+  check('a slow browser tab spins on its tab after the delay and stops on load',
+    frameUp && spinOff && firstOn(spinLog) >= 150 && firstOn(spinLog) < 1500 && lastOff(spinLog) >= 2000,
+    JSON.stringify({ spinOff, spinLog }));
 
   //  a navigation inside it (a script's, which the navigation API hears)
   const ship = await shipName(env);

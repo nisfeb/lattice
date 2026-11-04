@@ -158,8 +158,9 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       HAS_SHIP: ${{ secrets.LATTICE_URL != '' && secrets.LATTICE_MCP_COOKIE != '' }}
-      # the ship job's suites, plus ui-manager, which is ship-free (ci.yml)
-      COVERED: ${{ join(fromJSON(needs.suites.outputs.list), ' ') }} ui-manager.mjs
+      # the ship job's suites, plus ui-manager and ui-reader-loading, which
+      # are ship-free (ci.yml)
+      COVERED: ${{ join(fromJSON(needs.suites.outputs.list), ' ') }} ui-manager.mjs ui-reader-loading.mjs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
