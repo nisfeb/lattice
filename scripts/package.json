@@ -17,7 +17,7 @@
     "prosemirror-tables": "1.8.5",
     "prosemirror-transform": "1.12.4",
     "prosemirror-view": "1.42.9",
-    "puppeteer-core": "25.15.0",
+    "puppeteer-core": "25.16.0",
     "tiny-inflate": "1.0.3"
   }
 }
