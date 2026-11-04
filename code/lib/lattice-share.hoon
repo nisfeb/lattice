@@ -247,4 +247,101 @@
   ?|  =(p.u.l (scag (lent p.u.l) pg))
       &(mak =(pg (scag (lent pg) p.u.l)))
   ==
+::
+::  ==  folder sharing  ==
+::
+::  A folder may carry a share setting (its `share-dir` grub) that every
+::  page below it takes, at any depth, unless the page has one of its own
+::  or is sensitive. The writer keeps the taken setting on the page as its
+::  `share` grub, with a `share-via` grub naming the folder, so whatever
+::  reads `share` needs no change. These are the pure halves of that.
+::
+::  +$  dir-mode: a share setting. On a folder, %private means none.
++$  dir-mode  ?(%private %shared %clearweb)
+::  +dir-nearest: the nearest folder strictly above the page at `rel` whose
+::  setting is not %private, from `dirs` (folder path to setting)
+++  dir-nearest
+  |=  [dirs=(map path dir-mode) rel=path]
+  ^-  (unit [dir=path mode=dir-mode])
+  ?~  rel  ~
+  =/  up=path  (snip `path`rel)
+  |-  ^-  (unit [dir=path mode=dir-mode])
+  =/  hit=(unit dir-mode)  (~(get by dirs) up)
+  ?:  &(?=(^ hit) !?=(%private u.hit))  `[up u.hit]
+  ?~  up  ~
+  $(up (snip `path`up))
+::  +dir-target: what a page with no setting of its own takes: the nearest
+::  folder's, and nothing when the page is sensitive (a folder rule never
+::  shares one, it needs its own explicit setting)
+++  dir-target
+  |=  [dirs=(map path dir-mode) rel=path sens=?]
+  ^-  (unit [dir=path mode=dir-mode])
+  ?:  sens  ~
+  (dir-nearest dirs rel)
+::  +$  dir-step: what the writer does to one page. %keep: nothing. %set:
+::  take `mode` from the folder at `dir`. %drop: unpublish and forget an
+::  inherited setting.
++$  dir-step  $%([%keep ~] [%set dir=path mode=dir-mode] [%drop ~])
+::  +dir-plan: the step for a page that holds `cur` (from `via` when that
+::  is set, its own when `own`) given the folder target `tgt`. A page's
+::  own setting always wins, so it is kept, and so is a page that already
+::  holds what the folder gives.
+++  dir-plan
+  |=  [own=? via=(unit path) cur=dir-mode tgt=(unit [dir=path mode=dir-mode])]
+  ^-  dir-step
+  ?:  own  [%keep ~]
+  ?~  tgt  ?~(via [%keep ~] [%drop ~])
+  ?:  &(=(via `dir.u.tgt) =(cur mode.u.tgt))  [%keep ~]
+  [%set dir.u.tgt mode.u.tgt]
+::  +dir-effective: a page's setting, all told: its own, else the
+::  folder's (+dir-target), else %private
+++  dir-effective
+  |=  [own=(unit dir-mode) dirs=(map path dir-mode) rel=path sens=?]
+  ^-  dir-mode
+  ?^  own  u.own
+  =/  t  (dir-target dirs rel sens)
+  ?~(t %private mode.u.t)
+::  +pub-key-rel: a /pub/index key (/pub/<rel>/gmi) as the page's rel
+++  pub-key-rel
+  |=  k=path
+  ^-  (unit path)
+  ?.  ?=([%pub *] k)  ~
+  =/  r=path  t.k
+  ?~  r  ~
+  ?.  =(%gmi (rear r))  ~
+  =/  out=path  (snip `path`r)
+  ?~(out ~ `out)
+::  +$  dir-row: one line of a folder's index: a page directly in it, or a
+::  folder below it, with when it (or its newest page) was last changed
++$  dir-row  [name=@ta page=? when=@da]
+::  +dir-rows: a folder's index from the published pages `keys` (rel and
+::  last change). Folders first, then pages, each by name, as the tree
+::  sorts; `by-date` lists everything oldest to newest instead. A name can
+::  be a page and a folder both (a page with pages under it).
+++  dir-rows
+  |=  [keys=(list [rel=path when=@da]) dir=path by-date=?]
+  ^-  (list dir-row)
+  =/  n=@ud  (lent dir)
+  =|  pages=(map @ta @da)
+  =|  dirs=(map @ta @da)
+  |-  ^-  (list dir-row)
+  ?^  keys
+    =/  r=path  rel.i.keys
+    ?.  &((gth (lent r) n) =(dir (scag n r)))  $(keys t.keys)
+    =/  nom=@ta  (snag n r)
+    ?:  =(+(n) (lent r))
+      $(keys t.keys, pages (~(put by pages) nom when.i.keys))
+    =/  had=@da  (~(gut by dirs) nom *@da)
+    $(keys t.keys, dirs (~(put by dirs) nom (max had when.i.keys)))
+  =/  fs=(list dir-row)
+    (turn ~(tap by dirs) |=([k=@ta w=@da] [k | w]))
+  =/  ps=(list dir-row)
+    (turn ~(tap by pages) |=([k=@ta w=@da] [k & w]))
+  =/  by-name  |=([a=dir-row b=dir-row] (aor name.a name.b))
+  ?.  by-date
+    (weld (sort fs by-name) (sort ps by-name))
+  %+  sort  (weld fs ps)
+  |=  [a=dir-row b=dir-row]
+  ?:  =(when.a when.b)  (aor name.a name.b)
+  (lth when.a when.b)
 --
