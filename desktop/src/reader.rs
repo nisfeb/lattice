@@ -46,7 +46,7 @@
 //! reader just served, and its answer is lattice's `+sandbox-csp`.
 
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -54,7 +54,7 @@ use std::time::{Duration, Instant};
 
 use crate::engine::{CommentError, NativePage, ReadError, Reads};
 use crate::history::History;
-use crate::render::{self, Mode, Note, Talk};
+use crate::render::{self, Mode, Note, Open, Talk};
 
 /// The port the reader listens on, once it does.
 pub struct Reader(pub Mutex<Option<u16>>);
@@ -92,6 +92,16 @@ const START_TTL: Duration = Duration::from_secs(600);
 /// contact with the publisher can take two minutes, and the home shows
 /// the live list as soon as that is done.
 const START_FAIL_TTL: Duration = Duration::from_secs(20);
+/// A publisher's list of the pages that take comments is kept this long,
+/// as the engine keeps its revision list; a reload drops it. When the
+/// list could not be had, for a shorter time.
+const OPEN_TTL: Duration = Duration::from_secs(60);
+const OPEN_FAIL_TTL: Duration = Duration::from_secs(20);
+/// How long the list may hold up a page (it is read after the page, on
+/// the flow the read opened, so it is quick when it comes at all).
+const OPEN_BUDGET: Duration = Duration::from_secs(6);
+/// each publisher's list (`Ctx::open`), and when it was asked for
+type Opens = HashMap<String, (Instant, Option<Vec<String>>)>;
 
 /// This launch's reader token: 32 bytes from the OS, hex, never on disk.
 pub fn token() -> &'static str {
@@ -125,6 +135,8 @@ pub struct Ctx {
     start: Mutex<Option<(Instant, Option<NativePage>)>>,
     /// what became of the last comment, for the page it was on, shown once
     note: Mutex<Option<(String, Note)>>,
+    /// each publisher's pages that take comments, when it was asked
+    opens: Mutex<Opens>,
 }
 
 impl Ctx {
@@ -136,6 +148,26 @@ impl Ctx {
             raws: Mutex::new(VecDeque::new()),
             start: Mutex::new(None),
             note: Mutex::new(None),
+            opens: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Does the page `key` of `ship` take comments? From the list kept
+    /// for `ship`, or asked for now when that is stale or `fresh`.
+    fn open(&self, ship: &str, key: &str, fresh: bool) -> Open {
+        let kept = self.opens.lock().unwrap().get(ship).cloned();
+        let list = match kept {
+            Some((at, l)) if !fresh && at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
+            _ => {
+                let l = self.reads.comments_open(ship, OPEN_BUDGET);
+                self.opens.lock().unwrap().insert(ship.to_string(), (Instant::now(), l.clone()));
+                l
+            }
+        };
+        match list {
+            None => Open::Unknown,
+            Some(l) if l.iter().any(|n| same_page(n, key)) => Open::Yes,
+            Some(_) => Open::No,
         }
     }
 
@@ -523,6 +555,12 @@ fn form_body(raw: &[u8]) -> String {
     v[..end].to_string()
 }
 
+/// Do a list's name and a read's key name the same page? Each is the path
+/// the publisher keeps it at, with or without its leading slash.
+fn same_page(name: &str, key: &str) -> bool {
+    !key.is_empty() && name.trim_start_matches('/') == key.trim_start_matches('/')
+}
+
 /// `POST /comment`: the comment, sent as the reader identity, then back to
 /// the page, which says what became of it. The page is read again first
 /// (the read is warm by now) for its key, which is the path the publisher
@@ -536,17 +574,25 @@ fn comment(ctx: &Ctx, req: &Req) -> Resp {
     } else {
         match ctx.reads.read(&url, COMMENT_BUDGET, false) {
             Err(e) => Note::Failed { words: format!("The page couldn't be read again: {}", read_words(&e)), body },
-            Ok(p) => match ctx.reads.comment(&ship, &p.key, &body, COMMENT_BUDGET) {
-                Ok(()) => Note::Sent,
-                Err(CommentError::Refused(words)) => Note::Refused { words, body },
-                Err(CommentError::Unanswered(words)) => Note::Unanswered { words, body },
-                Err(CommentError::Failed(words)) => Note::Failed { words, body },
+            // asked again, not kept: a comment said to be posted must be
+            // one the page takes now
+            Ok(p) => match ctx.open(&ship, &p.key, true) {
+                Open::No => Note::Closed { body },
+                open => match ctx.reads.comment(&ship, &p.key, &body, COMMENT_BUDGET) {
+                    Ok(()) if open == Open::Yes => Note::Posted,
+                    Ok(()) => Note::Sent,
+                    Err(CommentError::Refused(words)) => Note::Refused { words, body },
+                    Err(CommentError::Unanswered(words)) => Note::Unanswered { words, body },
+                    Err(CommentError::Failed(words)) => Note::Failed { words, body },
+                },
             },
         }
     };
     // the outcome, never the text
     let outcome = match &note {
+        Note::Posted => "posted".to_string(),
         Note::Sent => "sent".to_string(),
+        Note::Closed { .. } => "comments off".to_string(),
         Note::Empty => "empty".to_string(),
         Note::Refused { words, .. } => format!("refused: {words}"),
         Note::Unanswered { words, .. } => format!("unanswered: {words}"),
@@ -630,6 +676,9 @@ fn read(ctx: &Ctx, given: &str, fresh: Fresh) -> Resp {
     if fresh != Fresh::No {
         crate::commands::dlog(&format!("reader: fresh read of {url}"));
         ctx.reads.expire(&url);
+        if let Some(ship) = render::commentable(&url) {
+            ctx.opens.lock().unwrap().remove(&ship);
+        }
         if fresh == Fresh::Asked {
             return redirect(303, &render::read_href(&url));
         }
@@ -667,7 +716,8 @@ fn page(ctx: &Ctx, url: &str, p: &NativePage) -> Resp {
     let key = if html { ctx.keep_raw(url, p.body.as_bytes()) } else { String::new() };
     let our = ctx.reads.our();
     let note = ctx.take_note(url);
-    let s = render::page(url, p, Mode::Shipless, &key, &Talk { our: our.as_deref(), note: note.as_ref() });
+    let open = render::commentable(url).map_or(Open::Unknown, |ship| ctx.open(&ship, &p.key, false));
+    let s = render::page(url, p, Mode::Shipless, &key, &Talk { our: our.as_deref(), note: note.as_ref(), open });
     if let Err(e) = ctx.history.add(url, &s.title) {
         crate::commands::dlog(&format!("reader: {e}"));
     }
@@ -786,6 +836,9 @@ mod tests {
         answer: Answer,
         said: Said,
         refuse: Option<CommentError>,
+        /// the publisher's pages that take comments; None, it doesn't say
+        open: Arc<Mutex<Option<Vec<String>>>>,
+        opens: Arc<AtomicUsize>,
     }
 
     impl Reads for Fake {
@@ -802,6 +855,10 @@ mod tests {
         fn comment(&self, ship: &str, page: &str, body: &str, _: Duration) -> Result<(), CommentError> {
             self.said.lock().unwrap().push((ship.into(), page.into(), body.into()));
             self.refuse.clone().map_or(Ok(()), Err)
+        }
+        fn comments_open(&self, _: &str, _: Duration) -> Option<Vec<String>> {
+            self.opens.fetch_add(1, Ordering::SeqCst);
+            self.open.lock().unwrap().clone()
         }
     }
 
@@ -824,7 +881,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let calls = Arc::new(AtomicUsize::new(0));
         let expired = Said::default();
-        let fake = Fake { calls: calls.clone(), expired: expired.clone(), answer: Box::new(answer), said: Said::default(), refuse: None };
+        let fake = Fake { calls: calls.clone(), expired: expired.clone(), answer: Box::new(answer), said: Said::default(), refuse: None, open: Arc::default(), opens: Arc::default() };
         (Ctx::new(Box::new(fake), History::open(&dir), PORT), calls, expired)
     }
 
@@ -967,11 +1024,68 @@ mod tests {
     /// a reader whose engine says what it was asked to comment, refusing
     /// with `refuse`
     fn talking(name: &str, refuse: Option<CommentError>) -> (Ctx, Said) {
+        let (c, said, _, _) = talking_open(name, refuse, None);
+        (c, said)
+    }
+
+    /// as `talking`, with a publisher that says which pages take comments
+    #[allow(clippy::type_complexity)]
+    fn talking_open(
+        name: &str,
+        refuse: Option<CommentError>,
+        open: Option<Vec<String>>,
+    ) -> (Ctx, Said, Arc<Mutex<Option<Vec<String>>>>, Arc<AtomicUsize>) {
         let dir = std::env::temp_dir().join(format!("reader-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let said = Said::default();
-        let fake = Fake { calls: Arc::default(), expired: Said::default(), answer: Box::new(pages), said: said.clone(), refuse };
-        (Ctx::new(Box::new(fake), History::open(&dir), PORT), said)
+        let (open, opens) = (Arc::new(Mutex::new(open)), Arc::new(AtomicUsize::new(0)));
+        let fake = Fake {
+            calls: Arc::default(),
+            expired: Said::default(),
+            answer: Box::new(pages),
+            said: said.clone(),
+            refuse,
+            open: open.clone(),
+            opens: opens.clone(),
+        };
+        (Ctx::new(Box::new(fake), History::open(&dir), PORT), said, open, opens)
+    }
+
+    #[test]
+    fn a_page_that_takes_comments_offers_the_box_and_says_posted() {
+        let (c, said, _, opens) = talking_open("open", None, Some(vec!["/other".into(), "/k".into()]));
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
+        assert!(out.contains("class=\"talk-form\"") && out.contains(">Post to ~zod</button>"), "{out}");
+        assert!(!out.contains("They decide whether it appears"));
+        ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
+        assert_eq!(opens.load(Ordering::SeqCst), 1, "the list is kept");
+        assert_eq!(ask(&c, &post_comment("urb://~zod/hello", &ours(), "body=hi")).0, 303);
+        assert_eq!(opens.load(Ordering::SeqCst), 2, "a comment asks again");
+        assert_eq!(said.lock().unwrap().len(), 1);
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
+        assert!(out.contains("Posted to ~zod.") && !out.contains("Sent to ~zod."), "{out}");
+    }
+
+    #[test]
+    fn a_page_with_comments_off_says_so_and_sends_nothing() {
+        let (c, said, open, _) = talking_open("closed", None, Some(vec!["/other".into()]));
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
+        assert!(out.contains("Comments are off on this page") && !out.contains("talk-form"), "{out}");
+        // turned off after the box was shown: the text comes back, unsent
+        let (c2, said2, _, _) = talking_open("closed2", None, Some(vec!["/k".into()]));
+        assert!(ask(&c2, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie())).1.contains("talk-form"));
+        drop((c2, said2));
+        assert_eq!(ask(&c, &post_comment("urb://~zod/hello", &ours(), "body=mine")).0, 303);
+        assert!(said.lock().unwrap().is_empty());
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
+        assert!(out.contains("turned comments off on this page, so it wasn't sent") && out.contains(">mine</textarea>"), "{out}");
+        // a reload asks the publisher again
+        *open.lock().unwrap() = Some(vec!["k".into()]);
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
+        assert!(out.contains("Comments are off"), "kept");
+        c.opens.lock().unwrap().clear();
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
+        assert!(out.contains("talk-form"), "{out}");
     }
 
     fn post_comment(url: &str, extra: &str, body: &str) -> String {
@@ -1310,5 +1424,43 @@ mod tests {
         assert_eq!(unescape("100%"), "100%");
         assert_eq!(unescape("%zz%4"), "%zz%4");
         assert_eq!(unescape("%e2%9c%93"), "\u{2713}");
+    }
+
+    /// On the fleet: two reader identities comment on a page that takes
+    /// comments, each through the reader's own routes, and a page with
+    /// comments off shows no box. Run by the e2e that publishes the pages
+    /// (FLEET_OPEN, FLEET_CLOSED, on ~wep) and checks the publisher's
+    /// inbox after; plain `cargo test` skips it as ignored.
+    #[test]
+    #[ignore = "needs a fleet ship publishing FLEET_OPEN and FLEET_CLOSED"]
+    fn two_identities_comment_on_a_fleet_page() {
+        if std::env::var("LATTICE_FLEET").as_deref() != Ok("1") {
+            eprintln!("skipped: LATTICE_FLEET=1 is not set");
+            return;
+        }
+        let open = std::env::var("FLEET_OPEN").expect("FLEET_OPEN");
+        let closed = std::env::var("FLEET_CLOSED").expect("FLEET_CLOSED");
+        let nonce = std::env::var("FLEET_NONCE").expect("FLEET_NONCE");
+        for n in 1..=2 {
+            let tmp = std::env::temp_dir().join(format!("reader-fleet-{n}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&tmp);
+            let e = crate::engine::Engine::fake(tmp.join("engine"), "new-moon-of:~wep");
+            e.read(&open, Duration::from_secs(90), true).expect("the first read");
+            eprintln!("identity {n}: {:?}", e.our());
+            let c = Ctx::new(Box::new(e.clone()), History::open(&tmp), PORT);
+            let href = format!("/read?url={}", render::enc(&open));
+            let (st, out) = ask(&c, &get(&href, &cookie()));
+            assert_eq!(st, 200, "{out}");
+            assert!(out.contains("class=\"talk-form\"") && out.contains(">Post to ~wep</button>"), "{out}");
+            let body = format!("body=from+identity+{n}+{nonce}");
+            assert_eq!(ask(&c, &post_comment(&open, &ours(), &body)).0, 303);
+            let (_, out) = ask(&c, &get(&href, &cookie()));
+            assert!(out.contains("Posted to ~wep."), "{out}");
+            let (st, out) = ask(&c, &get(&format!("/read?url={}", render::enc(&closed)), &cookie()));
+            assert_eq!(st, 200, "{out}");
+            assert!(out.contains("Comments are off on this page") && !out.contains("talk-form"), "{out}");
+            e.close();
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 }

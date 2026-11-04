@@ -127,4 +127,20 @@
     (expect-eq !>(&) !>((is-banned:ls (sy ~[~sampel-palnet]) moon)))
     (expect-eq !>(|) !>((is-banned:ls (sy ~[moon]) ~sampel-palnet)))
   ==
+::  in a quota each comet answers for itself, a moon still for its
+::  planet; in a ban one comet, or every comet at once
+++  test-quota-family
+  =/  moon=@p  (cat 5 ~sampel-palnet 7)
+  =/  c1=@p  (cat 7 ~sampel-palnet 3)
+  =/  c2=@p  (cat 7 ~sampel-palnet 4)
+  ;:  weld
+    (expect-eq !>(`@`c1) !>((quota-family:ls c1)))
+    (expect-eq !>(|) !>(=((quota-family:ls c1) (quota-family:ls c2))))
+    (expect-eq !>(`@`~sampel-palnet) !>((quota-family:ls moon)))
+    (expect-eq !>(`@`~zod) !>((quota-family:ls ~zod)))
+    (expect-eq !>(&) !>((is-banned:ls (sy ~[c1]) c1)))
+    (expect-eq !>(|) !>((is-banned:ls (sy ~[c1]) c2)))
+    (expect-eq !>(&) !>((is-banned:ls (sy ~[all-comets:ls]) c2)))
+    (expect-eq !>(|) !>((is-banned:ls (sy ~[all-comets:ls]) ~sampel-palnet)))
+  ==
 --

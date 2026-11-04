@@ -220,6 +220,11 @@
         ::  so every reload re-grew every page and the index.
             [%stay %& [/pub %revs]]
             [%stay %& [/pub %reconciled]]
+        ::  /pub/comments: the published pages that take comments
+        ::  (+pub-comments). %stay for the reason revs is: absent means
+        ::  "build it", which the writer start does, and a %fall {} would
+        ::  read as every page closed.
+            [%stay %& [/pub %comments]]
         ::  /forum: the forum (docs/superpowers/specs, State layout). A
         ::  board is a directory of [/ %noun] grubs, each [%1 shape], laid
         ::  by +apply-forum:
@@ -453,6 +458,9 @@
         ;<  ~  bind:m  (ensure-shipped-templates root)
         ::  the salt and the revision list peers read (+ensure-pub-ids)
         ;<  ~  bind:m  (ensure-pub-ids root)
+        ::  the published pages that take comments, when there is no list
+        ;<  pc=(unit (set @t))  bind:m  (read-pub-comments root)
+        ;<  ~  bind:m  ?^(pc (pure:(fiber:fiber:nexus ,~) ~) (put-pub-comments root))
         ::  pages published before per-format marks were grown as gmi
         ;<  ~  bind:m  (migrate-pub-marks root)
         ::  a whole-tree action a reload cut short (+job-set)
@@ -2190,9 +2198,12 @@
       ::  lands, by their per-page flag and their banlist, and stamps us as the
       ::  author from the transport. Our own pages keep the owner box in the /x
       ::  view instead, so this does not double up there.
+      ;<  copen=(unit ?)  bind:m
+        ?:  =(ship.u.ref our)  (pure:(fiber:fiber:nexus ,(unit ?)) ~)
+        (peer-comments-open ship.u.ref rel)
       =/  cbox=tape
         ?:  =(ship.u.ref our)  ""
-        (remote-comment-box ship.u.ref rel)
+        (remote-comment-box ship.u.ref rel copen)
       ::  a %fodt mark never comes from a lattice (its pages publish as
       ::  %html), but a peer may send one: render it once, here, for the
       ::  body and the title, uncached (it is not our page)
@@ -2839,7 +2850,9 @@
       [%'POST' %ban]
     =/  st=(unit @t)  (~(get by args) 'ship')
     ?~  st  (send-err eyre-id 400 'missing ship')
-    =/  who=(unit @p)  (slaw %p u.st)
+    ::  "comets" is every comet at once (+all-comets:ls); one comet's
+    ::  own name is that comet alone
+    =/  who=(unit @p)  ?:(=('comets' u.st) `all-comets:ls (slaw %p u.st))
     ?~  who  (send-err eyre-id 400 'bad ship')
     ?:  =(u.who our)  (send-err eyre-id 400 'that is you')
     ;<  bans=banned:ls  bind:m  read-banned
@@ -2868,7 +2881,9 @@
       [%'POST' %unban]
     =/  st=(unit @t)  (~(get by args) 'ship')
     ?~  st  (send-err eyre-id 400 'missing ship')
-    =/  who=(unit @p)  (slaw %p u.st)
+    ::  "comets" is every comet at once (+all-comets:ls); one comet's
+    ::  own name is that comet alone
+    =/  who=(unit @p)  ?:(=('comets' u.st) `all-comets:ls (slaw %p u.st))
     ?~  who  (send-err eyre-id 400 'bad ship')
     ;<  bans=banned:ls  bind:m  read-banned
     ::  unban restores nothing. The grants were revoked, and re-granting is a
@@ -6746,7 +6761,8 @@
     =/  fdir=path  (weld /page pax.act)
     ;<  ex=?  bind:m  (peek-exists:fio (rv up fdir))
     ?.  ex  (pure:m ~)
-    (put-file (rf up fdir %comment-on) [/lattice %comment-flag] on.act)
+    ;<  ~  bind:m  (put-file (rf up fdir %comment-on) [/lattice %comment-flag] on.act)
+    (put-pub-comments root)
       %forms
     ::  set the public-form flag at pax. Same nearest-flag-wins shape as
     ::  %comments, and equally owner-only: this is the switch that makes a
@@ -6820,7 +6836,7 @@
     ~(wyt by contents.u.fil.ball.cv)
   ?:  (gte stored 200)  (pure:m ~)
   ;<  our=@p  bind:m  bowl-our
-  =/  fam=@  (family:ls author)
+  =/  fam=@  (quota-family:ls author)
   =/  mine=@ud
     ?.  ?=([%ball *] cv)  0
     ?~  fil.ball.cv  0
@@ -6828,7 +6844,7 @@
     %+  skim  ~(val by contents.u.fil.ball.cv)
     |=  [=sang:tarball *]
     =/  c  (mole |.(;;(comment:lc (sang-noun:tarball sang))))
-    &(?=(^ c) =(fam (family:ls author.u.c)))
+    &(?=(^ c) =(fam (quota-family:ls author.u.c)))
   ?:  &(!=(author our) (gte mine per-author:lc))  (pure:m ~)
   =/  body=@t
     ?:((gth (met 3 body.act) max-body:lc) (end [3 max-body:lc] body.act) body.act)
@@ -11667,9 +11683,18 @@
   ;<  now=@da  bind:m  bowl-now
   ;<  base=(unit path)  bind:m  (peer-base-cached shp)
   ;<  got=(map @t [rev=@ud id=@uv])  bind:m  (fetch-peer-revs shp base)
+  ::  and which of its pages take comments, asked only of a peer that
+  ::  publishes a list: one that answers has the flow up, so this is quick
+  ;<  open=(unit (list @t))  bind:m
+    ?~  got  (pure:(fiber:fiber:nexus ,(unit (list @t))) ~)
+    (fetch-peer-comments shp base)
   ;<  all=(map @t json)  bind:m  read-peer-revs
   =/  row=json
-    (pairs:enjs:format ~[['at' (numb:enjs:format (rise-da-ms now))] ['revs' (revs-json:lp got)]])
+    %-  pairs:enjs:format
+    :~  ['at' (numb:enjs:format (rise-da-ms now))]
+        ['revs' (revs-json:lp got)]
+        ['comments' ?~(open ~ a+(turn u.open |=(t=@t s+t)))]
+    ==
   ;<  *  bind:m
     (over-as-soft:io peer-revs-road [[/ %json] [%o (~(put by all) (scot %p shp) row)]] [/ %json])
   (pure:m got)
@@ -11688,6 +11713,35 @@
   =/  rn=*  (sang-noun:tarball sang.u.ms)
   ?.  (small-noun:lp rn 200.000)  (pure:m ~)
   (pure:m (fall (mole |.((json-revs:lp ;;(json rn)))) ~))
+::  +fetch-peer-comments: a peer's /pub/comments (+pub-comments), the
+::  names of its pages that take comments, or ~ when it has none to give
+++  fetch-peer-comments
+  |=  [shp=@p base=(unit path)]
+  =/  m  (fiber:fiber:nexus ,(unit (list @t)))
+  ^-  form:m
+  ?~  base  (pure:m ~)
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-wait-in [%& %& (weld u.base /pub) %comments] shp ~s5)
+  ?.  ?=([~ %file *] ms)  (pure:m ~)
+  ::  a peer's raw noun: a cord, and a bounded one, or nothing
+  =/  rn=*  (sang-noun:tarball sang.u.ms)
+  ?.  ?=(@ rn)  (pure:m ~)
+  ?.  (lte (met 3 rn) 1.000.000)  (pure:m ~)
+  (pure:m `(to-wain:format `@t`rn))
+::  +peer-comments-open: does the peer's page at `rel` take comments, by
+::  the list kept with its revision list? ~ when the peer does not say.
+++  peer-comments-open
+  |=  [shp=@p rel=path]
+  =/  m  (fiber:fiber:nexus ,(unit ?))
+  ^-  form:m
+  ;<  *  bind:m  (peer-revs-cached shp)
+  ;<  all=(map @t json)  bind:m  read-peer-revs
+  =/  hit=(unit json)  (~(get by all) (scot %p shp))
+  ?.  ?=([~ %o *] hit)  (pure:m ~)
+  =/  c=(unit json)  (~(get by p.u.hit) 'comments')
+  ?.  ?=([~ %a *] c)  (pure:m ~)
+  =/  nam=@t  (spat rel)
+  (pure:m `(lien p.u.c |=(j=json =(j s+nam))))
 ::  +drop-peer-revs: forget a peer's list after one of its ids missed, so
 ::  the next view fetches it again.
 ::
@@ -14864,22 +14918,29 @@
 ::  not "posted": a peer refuses silently by design (banlist, comments off),
 ::  so claiming success here would be inventing a fact we do not have.
 ::
+::  `open` is whether the page takes comments, by the peer's /pub/comments
+::  (+peer-comments-open): ~ when the peer does not say (an older lattice),
+::  and the box is offered as it always was.
 ++  remote-comment-box
-  |=  [shp=@p rel=path]
+  |=  [shp=@p rel=path open=(unit ?)]
   ^-  tape
   =/  st=tape   (scow %p shp)
   =/  pg=tape   (slag 1 (spud rel))
+  ?:  =([~ |] open)
+    "<section class=\"cbox-wrap\"><h3>Comment</h3><p class=\"muted\">Comments are off on this page.</p></section>"
+  =/  yes=?  =([~ &] open)
   ;:  weld
     "<section class=\"cbox-wrap\"><h3>Comment</h3>"
     "<form class=\"cbox\" method=\"post\" target=\"_top\" action=\"/apps/lattice/comment-remote?ship="
     (esc st)  "&amp;page="  (esc pg)  "\">"
     "<textarea name=\"body\" rows=\"3\" placeholder=\"say something to "
     (esc st)  "\"></textarea>"
-    "<button type=\"submit\">send to "  (esc st)  "</button>"
+    "<button type=\"submit\">"  ?:(yes "post to " "send to ")  (esc st)  "</button>"
     "</form>"
-    "<p class=\"muted\">Sent over Ames from your ship, so "  (esc st)
-    " sees your @p as the author. They decide whether it appears.</p>"
-    "</section>"
+    "<p class=\"muted\">"  ?:(yes "Posted" "Sent")  " over Ames from your ship, so "  (esc st)
+    " sees your @p as the author."
+    ?:(yes "" " They decide whether it appears.")
+    "</p></section>"
   ==
 ::  +marks-html: the full bookmark list, every bookmark grouped by folder
 ::  (unfiled first: it is where the star button files things), a search box
@@ -16507,7 +16568,90 @@
   =/  new=(map @t json)
     ?~  rev  (~(del by old) nam)
     (~(put by old) nam (rev-json:lp u.rev (page-id:lp salt nam u.rev)))
-  (put-file (rf root /pub %revs) [/ %json] [%o new])
+  ;<  ~  bind:m  (put-file (rf root /pub %revs) [/ %json] [%o new])
+  (put-pub-comment root nam ?=(^ rev))
+::  +pub-comments: [/pub %comments], the published pages that take comments,
+::  one name a line, named as the revision list names them ('/<name>'). A
+::  cord under the plain %noun mark, so a reader without lattice's marks,
+::  the desktop's comet among them, peeks it as text. A reader reads it
+::  with the page and shows its comment box only when the page is in it,
+::  so nobody types a comment the page will drop. Under /pub, so it is as
+::  world-readable as the revision list, and it names only pages that list
+::  already names. A publisher without the grub (an older lattice) tells a
+::  reader nothing, and the reader offers the box as it did before. The
+::  %comments action rebuilds it whole, since one folder's flag reaches
+::  every page under it; a publish or delete moves one row.
+::
+++  read-pub-comments
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,(unit (set @t)))
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf root /pub %comments) ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  =/  c=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.vw))))
+  (pure:m `(silt ?~(c ~ (to-wain:format u.c))))
+++  put-pub-comments-set
+  |=  [root=@ud open=(set @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  names=(list @t)  (sort ~(tap in open) aor)
+  (put-file (rf root /pub %comments) [/ %noun] `@t`?~(names '' (of-wain:format names)))
+::  +put-pub-comment: one page's row, after its publish or delete
+++  put-pub-comment
+  |=  [root=@ud nam=@t live=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  got=(unit (set @t))  bind:m  (read-pub-comments root)
+  ?~  got  (put-pub-comments root)
+  =/  pax=(unit path)  (rush nam stap)
+  ;<  on=?  bind:m
+    ?.  &(live ?=(^ pax))  (pure:(fiber:fiber:nexus ,?) |)
+    (comments-on u.pax)
+  =/  new=(set @t)  ?:(on (~(put in u.got) nam) (~(del in u.got) nam))
+  ?:  =(new u.got)  (pure:m ~)
+  (put-pub-comments-set root new)
+::  +put-pub-comments: the whole list, from the revision list and each
+::  page's nearest flag. A folder's answer is kept as it is found, so a
+::  site of many pages costs a peek per page and per folder, not per page
+::  per level.
+++  put-pub-comments
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  revs=(map @t json)  bind:m  (read-pub-revs root)
+  =/  todo=(list @t)  ~(tap in ~(key by revs))
+  =|  open=(set @t)
+  =|  seen=(map path ?)
+  |-  ^-  form:m
+  ?~  todo  (put-pub-comments-set root open)
+  =/  pax=(unit path)  (rush i.todo stap)
+  ?~  pax  $(todo t.todo)
+  ;<  [on=? memo=(map path ?)]  bind:m  (flag-memo up u.pax seen)
+  %=  $
+    todo  t.todo
+    seen  memo
+    open  ?.(on open (~(put in open) i.todo))
+  ==
+::  +flag-memo: +comments-on, answered from `seen` where a level was
+::  already walked, and every level walked here added to it
+++  flag-memo
+  |=  [up=@ud page=path seen=(map path ?)]
+  =/  m  (fiber:fiber:nexus ,[? (map path ?)])
+  ^-  form:m
+  =|  walked=(list path)
+  |-  ^-  form:m
+  =/  hit=(unit ?)  (~(get by seen) page)
+  ?^  hit
+    (pure:m [u.hit (~(gas by seen) (turn walked |=(p=path [p u.hit])))])
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf up (weld /page page) %comment-on) ~)
+  =/  here=(list path)  [page walked]
+  ?:  ?=([%file *] vw)
+    =/  on=?  (fall (mole |.(;;(? (sang-noun:tarball sang.vw)))) %.n)
+    (pure:m [on (~(gas by seen) (turn here |=(p=path [p on])))])
+  ?~  page
+    (pure:m [%.n (~(gas by seen) (turn here |=(p=path [p %.n])))])
+  $(walked here, page (snip `path`page))
 ::  +pub-rev-row: the revision the list names for the page at `key`
 ++  pub-rev-row
   |=  [root=@ud key=path]
