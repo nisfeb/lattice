@@ -192,8 +192,15 @@ impl Ctx {
         };
         let Some(l) = list else { return (Open::Unknown, Comets::default()) };
         let open = if l.names.iter().any(|n| same_page(n, key)) { Open::Yes } else { Open::No };
-        let comets = l.comets.iter().find(|(n, _)| same_page(n, key)).map_or_else(Comets::default, |(_, c)| *c);
+        let comets = l.comets.iter().flatten().find(|(n, _)| same_page(n, key)).map_or_else(Comets::default, |(_, c)| *c);
         (open, comets)
+    }
+
+    /// Is `ship`'s word on its pages still to come: no list, or no
+    /// `/pub/comets`, when it was last asked? A page says it is checking
+    /// rather than say comments are off, and reader.js asks again.
+    fn checking(&self, ship: &str) -> bool {
+        self.opens.lock().unwrap().get(ship).is_some_and(|(_, l)| l.as_ref().is_none_or(|l| l.comets.is_none()))
     }
 
     /// The note for `url`, once.
@@ -526,7 +533,8 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
                 None => plain(404),
             }
         }
-        ("/" | "/read" | "/connect", true) | ("/history/clear" | "/comment" | "/forum", false) if !trusted(req, port) => plain(403),
+        ("/" | "/read" | "/connect" | "/open", true) | ("/history/clear" | "/comment" | "/forum", false) if !trusted(req, port) => plain(403),
+        ("/open", true) => answered(ctx, &address(req.arg("url").unwrap_or(""))),
         ("/forum", false) if req.method == "POST" => {
             if !req.origin.as_deref().is_some_and(|o| reader_origin(o, port)) {
                 return plain(403);
@@ -623,13 +631,18 @@ fn forum_write(ctx: &Ctx, req: &Req) -> Resp {
     let note = match w {
         None => Note::Empty,
         Some(w) => match ctx.forum_open(&p.host, &p.board, true) {
+            Some(false) => Note::Closed { body },
+            // asked again and still no word: not sent, and not called off
+            None => Note::Failed {
+                words: format!("{} hasn't said yet whether this board takes posts from readers without a node. Try again.", p.host),
+                body,
+            },
             Some(true) => match ctx.reads.forum_write(&p.host, w, COMMENT_BUDGET) {
                 Ok(()) => Note::Sent,
                 Err(CommentError::Refused(words)) => Note::Refused { words, body },
                 Err(CommentError::Unanswered(words)) => Note::Unanswered { words, body },
                 Err(CommentError::Failed(words)) => Note::Failed { words, body },
             },
-            _ => Note::Closed { body },
         },
     };
     let outcome = match &note {
@@ -719,6 +732,27 @@ fn comment(ctx: &Ctx, req: &Req) -> Resp {
     crate::commands::dlog(&format!("reader: comment on {url}: {outcome}"));
     *ctx.note.lock().unwrap() = Some((url.clone(), note));
     redirect(303, &render::read_href(&url))
+}
+
+/// `GET /open`: asks again whether the page or forum board at `url` takes
+/// the reader's comments or posts, for reader.js while a page says it is
+/// checking. `answered` once the host has said, else `checking`.
+fn answered(ctx: &Ctx, url: &str) -> Resp {
+    let said = match crate::boards::place(url) {
+        Some(p) => ctx.forum_open(&p.host, &p.board, true).is_some(),
+        None => match render::commentable(url) {
+            Some(ship) => {
+                ctx.open(&ship, "", true);
+                !ctx.checking(&ship)
+            }
+            None => return plain(400),
+        },
+    };
+    Resp {
+        status: 200,
+        headers: vec![("Content-Type", "text/plain; charset=utf-8".into())],
+        body: if said { b"answered".to_vec() } else { b"checking".to_vec() },
+    }
 }
 
 /// A failed read, in a line.
@@ -840,7 +874,8 @@ fn page(ctx: &Ctx, url: &str, p: &NativePage) -> Resp {
     let note = ctx.take_note(url);
     let (open, comets) =
         render::commentable(url).map_or((Open::Unknown, Comets::default()), |ship| ctx.open(&ship, &p.key, false));
-    let talk = Talk { our: our.as_deref(), note: note.as_ref(), open, comets: comets.mode, full: full_mins(&comets) };
+    let checking = render::commentable(url).is_some_and(|ship| ctx.checking(&ship));
+    let talk = Talk { our: our.as_deref(), note: note.as_ref(), open, comets: comets.mode, full: full_mins(&comets), checking };
     let s = render::page(url, p, Mode::Shipless, &key, &talk);
     if let Err(e) = ctx.history.add(url, &s.title) {
         crate::commands::dlog(&format!("reader: {e}"));
@@ -997,7 +1032,7 @@ mod tests {
         fn comments_open(&self, _: &str, _: Duration) -> Option<Opened> {
             self.opens.fetch_add(1, Ordering::SeqCst);
             let names = self.open.lock().unwrap().clone()?;
-            Some(Opened { names, comets: self.comets.lock().unwrap().clone() })
+            Some(Opened { names, comets: Some(self.comets.lock().unwrap().clone()) })
         }
         fn forum_open(&self, _: &str, _: Duration) -> Option<Vec<String>> {
             self.forum.lock().unwrap().clone()
@@ -1296,6 +1331,62 @@ mod tests {
         assert!(out.contains(">Post to ~zod</button>") && !out.contains("Too many"), "{out}");
     }
 
+    #[test]
+    fn no_word_on_comments_is_checking_not_off_until_the_answer_comes() {
+        let read = |c: &Ctx| ask(c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie())).1;
+        let again = |c: &Ctx| ask(c, &get("/open?url=urb%3A%2F%2F~zod%2Fhello", &ours())).1;
+        let (c, _, open, opens) = talking_open("late", None, None);
+        let out = read(&c);
+        assert!(!out.contains("Comments are off") && out.contains("talk-form"), "{out}");
+        assert!(out.contains("Checking whether this page takes comments") && out.contains("data-check=\"/open?url=urb%3A%2F%2F~zod%2Fhello\""), "{out}");
+        // still nothing: reader.js is told to keep checking
+        assert!(again(&c).ends_with("checking"));
+        // the late answer, asked for fresh, and the page shows it
+        *open.lock().unwrap() = Some(vec!["/k".into()]);
+        assert!(again(&c).ends_with("answered"));
+        assert_eq!(opens.load(Ordering::SeqCst), 3);
+        let out = read(&c);
+        assert!(out.contains(">Post to ~zod</button>") && !out.contains("data-check"), "{out}");
+        // off only when the list is had and lacks the page
+        let (c, _, open, _) = talking_open("lateoff", None, None);
+        assert!(!read(&c).contains("Comments are off"));
+        *open.lock().unwrap() = Some(vec!["/other".into()]);
+        assert!(again(&c).ends_with("answered"));
+        let out = read(&c);
+        assert!(out.contains("Comments are off on this page") && !out.contains("data-check"), "{out}");
+        // only the reader's own pages ask, and only for a page or a board
+        assert_eq!(ask(&c, &get("/open?url=urb%3A%2F%2F~zod%2Fhello", "")).0, 403);
+        assert_eq!(ask(&c, &get("/open?url=nope", &ours())).0, 400);
+    }
+
+    #[test]
+    fn no_word_on_the_comet_cap_is_checking_too() {
+        /// a publisher whose `/pub/comments` came and `/pub/comets` didn't
+        struct NoComets;
+        impl Reads for NoComets {
+            fn read(&self, url: &str, _: Duration, _: bool) -> Result<NativePage, ReadError> {
+                pages(url)
+            }
+            fn comments_open(&self, _: &str, _: Duration) -> Option<Opened> {
+                Some(Opened { names: vec!["/k".into()], comets: None })
+            }
+        }
+        let dir = std::env::temp_dir().join(format!("reader-nocomets-{}", std::process::id()));
+        let c = Ctx::new(Box::new(NoComets), History::open(&dir), PORT);
+        let out = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie())).1;
+        assert!(out.contains("talk-form") && out.contains("Checking whether this page takes comments") && !out.contains("Too many"), "{out}");
+        assert!(ask(&c, &get("/open?url=urb%3A%2F%2F~zod%2Fhello", &ours())).1.ends_with("checking"));
+    }
+
+    #[test]
+    fn a_forum_host_that_has_not_said_is_checked_again() {
+        let (c, _, _) = posting("forumlate", None);
+        let again = || ask(&c, &get("/open?url=urb%3A%2F%2F~wep%2Fforum%2Fgeneral", &ours())).1;
+        assert!(again().ends_with("checking"));
+        let (c, _, _) = posting("forumlate2", Some(vec!["general".into()]));
+        assert!(ask(&c, &get("/open?url=urb%3A%2F%2F~wep%2Fforum%2Fgeneral", &ours())).1.ends_with("answered"));
+    }
+
     /// a reader whose forum host lists `boards` as taking comet posts
     fn posting(name: &str, boards: Option<Vec<String>>) -> (Ctx, Wrote, Said) {
         let dir = std::env::temp_dir().join(format!("reader-{name}-{}", std::process::id()));
@@ -1351,10 +1442,15 @@ mod tests {
     #[test]
     fn a_forum_write_goes_only_where_the_host_takes_it() {
         for (name, boards) in [("forumoff", Some(vec!["other".to_string()])), ("forumold", None)] {
-            let (c, wrote, _) = posting(name, boards);
+            let (c, wrote, _) = posting(name, boards.clone());
             assert_eq!(ask(&c, &post_forum("urb://~wep/forum/general", &ours(), "title=t&body=mine")).0, 303);
             assert!(wrote.lock().unwrap().is_empty(), "{name}");
-            assert_eq!(c.take_note("urb://~wep/forum/general"), Some(Note::Closed { body: "mine".into() }), "{name}");
+            let note = c.take_note("urb://~wep/forum/general");
+            match boards {
+                Some(_) => assert_eq!(note, Some(Note::Closed { body: "mine".into() }), "{name}"),
+                // no word is not off: nothing sent, the text kept, a try again
+                None => assert!(matches!(&note, Some(Note::Failed { words, body }) if body == "mine" && words.contains("hasn't said yet")), "{note:?}"),
+            }
         }
         let (c, wrote, _) = posting("forumbad", Some(vec!["general".into()]));
         // a furum board, a page, no title, an empty reply, a foreign caller

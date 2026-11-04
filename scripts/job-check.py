@@ -114,6 +114,11 @@ def main():
     # the comment box, read-shared and then edit-shared
     pg = names[0]
     req('POST', '/page-comments?name=' + urllib.parse.quote(pg) + '&on=1')
+    # a page's comet mode: a page there is has one, a page there isn't is a 404
+    st, out = req('GET', '/page-comets?name=' + urllib.parse.quote(pg))
+    check('comets: a page has its comet mode', st == 200 and b'"mode"' in out, (st, out[:80]))
+    st, _ = req('GET', '/page-comets?name=jobchk/no-such-page')
+    check('comets: a page there is not is a 404', st == 404, st)
     host = urllib.request.urlopen(a.url.rstrip('/') + '/~/host', timeout=30).read().decode().strip()
     sb = json.loads(req('GET', '/streams')[1]).get('base')
     view = f'/x/{host}{sb}/page/{pg}/'

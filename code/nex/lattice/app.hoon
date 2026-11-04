@@ -3608,6 +3608,8 @@
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
     =/  pax=path  (pax-of u.name)
+    ;<  ex=?  bind:m  (peek-exists:fio (rv up (weld /page pax)))
+    ?.  ex  (send-err eyre-id 404 'no such page or folder')
     ;<  mode=comet-mode:ls  bind:m  (comet-mode-at pax)
     ;<  held=(list [id=@ta c=comment:lc])  bind:m  (read-held up pax)
     =/  srt=(list [id=@ta c=comment:lc])
