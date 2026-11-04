@@ -33,6 +33,11 @@
       [%del pax=path]                   ::  delete a page
       [%share pax=path mode=share-mode] ::  set a page's sharing preset
       [%share-tree pax=path mode=share-mode] ::  set every page under pax
+      ::  set (%private clears) the share setting of the FOLDER at pax,
+      ::  which every page under it with none of its own takes
+      [%share-dir pax=path mode=share-mode]
+      ::  drop the page at pax's own share setting, so it takes its folder's
+      [%share-clear pax=path]
       ::  re-grow every published page and the index (+pub-regrow), in
       ::  the writer so no save interleaves with its revision list
       [%pub-regrow ~]
