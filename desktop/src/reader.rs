@@ -56,7 +56,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::engine::{CometMode, Comets, CommentError, NativePage, Opened, ReadError, Reads};
+use crate::engine::{CometMode, Comets, CommentError, NativePage, Opened, PubComment, ReadError, Reads};
 use crate::history::History;
 use crate::render::{self, Mode, Note, Open, Talk};
 
@@ -108,6 +108,12 @@ const OPEN_BUDGET: Duration = Duration::from_secs(6);
 type Forums = HashMap<String, (Instant, Option<Vec<String>>)>;
 /// each publisher's list (`Ctx::open`), and when it was asked for
 type Opens = HashMap<String, (Instant, Option<Opened>)>;
+/// each publisher's pages with a public comment list (`Ctx::threads`)
+type Threads = HashMap<String, (Instant, Option<Vec<String>>)>;
+/// each page's public comments (`Ctx::comments`), by its address
+type Lists = HashMap<String, (Instant, Option<Vec<PubComment>>)>;
+/// The most comments the reader keeps as pending on one page.
+const PENDING_MAX: usize = 20;
 
 /// This launch's reader token: 32 bytes from the OS, hex, never on disk.
 pub fn token() -> &'static str {
@@ -145,6 +151,13 @@ pub struct Ctx {
     opens: Mutex<Opens>,
     /// each forum host's boards that take comet posts, when it was asked
     forums: Mutex<Forums>,
+    /// each publisher's pages with a public comment list, when it was asked
+    threads: Mutex<Threads>,
+    /// each page's public comments, when they were asked for
+    lists: Mutex<Lists>,
+    /// by page address, the reader's own comments (author, text) sent there
+    /// that its list does not hold yet
+    pending: Mutex<HashMap<String, Vec<(String, String)>>>,
 }
 
 impl Ctx {
@@ -158,7 +171,73 @@ impl Ctx {
             note: Mutex::new(None),
             opens: Mutex::new(HashMap::new()),
             forums: Mutex::new(HashMap::new()),
+            threads: Mutex::new(HashMap::new()),
+            lists: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The pages of `ship` with a public comment list, kept as
+    /// `comments_open`'s list is. `None` when the publisher does not say.
+    fn threads(&self, ship: &str) -> Option<Vec<String>> {
+        let kept = self.threads.lock().unwrap().get(ship).cloned();
+        match kept {
+            Some((at, l)) if at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
+            _ => {
+                let l = self.reads.threads(ship, OPEN_BUDGET);
+                self.threads.lock().unwrap().insert(ship.to_string(), (Instant::now(), l.clone()));
+                l
+            }
+        }
+    }
+
+    /// The public comments on the page at `url` (key `key`, of `ship`),
+    /// and the texts of the reader's own comments there not listed yet.
+    /// The list is asked for when `/pub/threads` names the page, or when a
+    /// comment of the reader's waits on it (the index may be stale), and
+    /// then afresh, not kept, until the list holds it. A publisher without
+    /// these lists gives nothing.
+    fn comments(&self, url: &str, ship: &str, key: &str) -> (Vec<PubComment>, Vec<String>) {
+        let waiting = self.pending.lock().unwrap().get(url).is_some_and(|p| !p.is_empty());
+        let listed = waiting || self.threads(ship).is_some_and(|l| l.iter().any(|n| same_page(n, key)));
+        if !listed {
+            return (Vec::new(), Vec::new());
+        }
+        let kept = self.lists.lock().unwrap().get(url).cloned();
+        let list = match kept {
+            Some((at, l)) if !waiting && at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
+            _ => {
+                let l = self.reads.thread(ship, key, OPEN_BUDGET);
+                self.lists.lock().unwrap().insert(url.to_string(), (Instant::now(), l.clone()));
+                l
+            }
+        };
+        let list = list.unwrap_or_default();
+        let mut g = self.pending.lock().unwrap();
+        let mine = g.entry(url.to_string()).or_default();
+        mine.retain(|(who, body)| !list.iter().any(|c| same_comment(c, who, body)));
+        let pending = mine.iter().map(|(_, b)| b.clone()).collect();
+        if mine.is_empty() {
+            g.remove(url);
+        }
+        (list, pending)
+    }
+
+    /// A comment the reader just sent on `url` as `who`, shown pending
+    /// until the page's list holds it.
+    fn sent(&self, url: &str, who: String, body: &str) {
+        let mut g = self.pending.lock().unwrap();
+        let mine = g.entry(url.to_string()).or_default();
+        mine.push((who, body.to_string()));
+        if mine.len() > PENDING_MAX {
+            mine.remove(0);
+        }
+    }
+
+    /// Drop what is kept of `ship`'s comment lists: a fresh read.
+    fn forget_threads(&self, ship: &str) {
+        self.threads.lock().unwrap().remove(ship);
+        self.lists.lock().unwrap().retain(|u, _| render::commentable(u).as_deref() != Some(ship));
     }
 
     /// Does `host`'s forum board `board` take the reader's posts? From the
@@ -667,6 +746,14 @@ fn same_page(name: &str, key: &str) -> bool {
     !key.is_empty() && name.trim_start_matches('/') == key.trim_start_matches('/')
 }
 
+/// Is the listed comment `c` the reader's own, by `who`, saying `body`?
+/// The form's line ends are CRLF and the list's may not be; ends are
+/// trimmed as lattice may trim them.
+fn same_comment(c: &PubComment, who: &str, body: &str) -> bool {
+    let norm = |s: &str| s.replace("\r\n", "\n").trim().to_string();
+    c.author == who && norm(&c.body) == norm(body)
+}
+
 /// `POST /comment`: the comment, sent as the reader identity, then back to
 /// the page, which says what became of it. The page is read again first
 /// (the read is warm by now) for its key, which is the path the publisher
@@ -675,6 +762,7 @@ fn comment(ctx: &Ctx, req: &Req) -> Resp {
     let url = address(req.arg("url").unwrap_or(""));
     let Some(ship) = render::commentable(&url) else { return plain(400) };
     let body = form_body(&req.body);
+    let text = body.clone();
     let note = if body.trim().is_empty() {
         Note::Empty
     } else {
@@ -717,6 +805,11 @@ fn comment(ctx: &Ctx, req: &Req) -> Resp {
         Note::Failed { words, .. } => format!("failed: {words}"),
     };
     crate::commands::dlog(&format!("reader: comment on {url}: {outcome}"));
+    if matches!(note, Note::Posted | Note::Sent | Note::Held) {
+        if let Some(who) = ctx.reads.our() {
+            ctx.sent(&url, who, &text);
+        }
+    }
     *ctx.note.lock().unwrap() = Some((url.clone(), note));
     redirect(303, &render::read_href(&url))
 }
@@ -796,6 +889,7 @@ fn read(ctx: &Ctx, given: &str, fresh: Fresh) -> Resp {
         ctx.reads.expire(&url);
         if let Some(ship) = render::commentable(&url) {
             ctx.opens.lock().unwrap().remove(&ship);
+            ctx.forget_threads(&ship);
         }
         if fresh == Fresh::Asked {
             return redirect(303, &render::read_href(&url));
@@ -840,7 +934,17 @@ fn page(ctx: &Ctx, url: &str, p: &NativePage) -> Resp {
     let note = ctx.take_note(url);
     let (open, comets) =
         render::commentable(url).map_or((Open::Unknown, Comets::default()), |ship| ctx.open(&ship, &p.key, false));
-    let talk = Talk { our: our.as_deref(), note: note.as_ref(), open, comets: comets.mode, full: full_mins(&comets) };
+    let (comments, pending) =
+        render::commentable(url).map_or_else(Default::default, |ship| ctx.comments(url, &ship, &p.key));
+    let talk = Talk {
+        our: our.as_deref(),
+        note: note.as_ref(),
+        open,
+        comets: comets.mode,
+        full: full_mins(&comets),
+        comments: &comments,
+        pending: &pending,
+    };
     let s = render::page(url, p, Mode::Shipless, &key, &talk);
     if let Err(e) = ctx.history.add(url, &s.title) {
         crate::commands::dlog(&format!("reader: {e}"));
@@ -972,6 +1076,17 @@ mod tests {
         forum: Arc<Mutex<Option<Vec<String>>>>,
         /// the forum posts and replies it sent
         wrote: Wrote,
+        /// the publisher's public comment lists
+        pubs: Pubs,
+    }
+
+    /// A fake publisher's `/pub/threads` (None, it has none) and one page's
+    /// list, and how often that list was asked for.
+    #[derive(Clone, Default)]
+    struct Pubs {
+        threads: Arc<Mutex<Option<Vec<String>>>>,
+        list: Arc<Mutex<Option<Vec<PubComment>>>>,
+        asked: Arc<AtomicUsize>,
     }
 
     type Wrote = Arc<Mutex<Vec<(String, crate::engine::ForumWrite)>>>;
@@ -1002,6 +1117,14 @@ mod tests {
         fn forum_open(&self, _: &str, _: Duration) -> Option<Vec<String>> {
             self.forum.lock().unwrap().clone()
         }
+        fn threads(&self, _: &str, _: Duration) -> Option<Vec<String>> {
+            self.pubs.threads.lock().unwrap().clone()
+        }
+        fn thread(&self, _: &str, page: &str, _: Duration) -> Option<Vec<PubComment>> {
+            assert_eq!(page, "/k", "asked by the page's key");
+            self.pubs.asked.fetch_add(1, Ordering::SeqCst);
+            self.pubs.list.lock().unwrap().clone()
+        }
         fn forum_write(&self, host: &str, w: crate::engine::ForumWrite, _: Duration) -> Result<(), CommentError> {
             self.wrote.lock().unwrap().push((host.into(), w));
             self.refuse.clone().map_or(Ok(()), Err)
@@ -1027,7 +1150,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let calls = Arc::new(AtomicUsize::new(0));
         let expired = Said::default();
-        let fake = Fake { calls: calls.clone(), expired: expired.clone(), answer: Box::new(answer), said: Said::default(), refuse: None, open: Arc::default(), opens: Arc::default(), comets: Arc::default(), fills: Arc::default(), forum: Arc::default(), wrote: Wrote::default() };
+        let fake = Fake { calls: calls.clone(), expired: expired.clone(), answer: Box::new(answer), said: Said::default(), refuse: None, open: Arc::default(), opens: Arc::default(), comets: Arc::default(), fills: Arc::default(), forum: Arc::default(), wrote: Wrote::default(), pubs: Pubs::default() };
         (Ctx::new(Box::new(fake), History::open(&dir), PORT), calls, expired)
     }
 
@@ -1195,6 +1318,7 @@ mod tests {
             opens: opens.clone(),
             forum: Arc::default(),
             wrote: Wrote::default(),
+            pubs: Pubs::default(),
             comets: Arc::default(),
             fills: Arc::default(),
         };
@@ -1214,6 +1338,94 @@ mod tests {
         assert_eq!(said.lock().unwrap().len(), 1);
         let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie()));
         assert!(out.contains("Posted to ~zod.") && !out.contains("Sent to ~zod."), "{out}");
+    }
+
+    /// a reader on a publisher with public comment lists, every page open
+    fn listing(name: &str, held: bool) -> (Ctx, Pubs) {
+        let dir = std::env::temp_dir().join(format!("reader-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mode = if held { CometMode::Held } else { CometMode::Open };
+        let pubs = Pubs::default();
+        let fake = Fake {
+            calls: Arc::default(),
+            expired: Said::default(),
+            answer: Box::new(pages),
+            said: Said::default(),
+            refuse: None,
+            open: Arc::new(Mutex::new(Some(vec!["/k".into()]))),
+            opens: Arc::default(),
+            comets: Arc::new(Mutex::new(vec![("/k".to_string(), Comets { mode, full_until: None })])),
+            fills: Arc::default(),
+            forum: Arc::default(),
+            wrote: Wrote::default(),
+            pubs: pubs.clone(),
+        };
+        (Ctx::new(Box::new(fake), History::open(&dir), PORT), pubs)
+    }
+
+    fn listed(author: &str, body: &str) -> PubComment {
+        PubComment { id: "0v1".into(), author: author.into(), when: 0, body: body.into() }
+    }
+
+    #[test]
+    fn a_publishers_public_comments_show_under_the_page() {
+        let (c, pubs) = listing("pubs", false);
+        let read = |c: &Ctx| ask(c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie())).1;
+        // an older lattice: no index, nothing asked, nothing shown
+        assert!(!read(&c).contains("class=\"thread\""));
+        assert_eq!(pubs.asked.load(Ordering::SeqCst), 0);
+        // an index without the page: still nothing asked
+        *pubs.threads.lock().unwrap() = Some(vec!["/other".into()]);
+        c.threads.lock().unwrap().clear();
+        assert!(!read(&c).contains("class=\"thread\""));
+        assert_eq!(pubs.asked.load(Ordering::SeqCst), 0);
+        // named: the list is read, shown, and kept
+        *pubs.threads.lock().unwrap() = Some(vec!["/k".into()]);
+        *pubs.list.lock().unwrap() = Some(vec![listed("~sampel-palnet", "hello <there>")]);
+        c.threads.lock().unwrap().clear();
+        let out = read(&c);
+        assert!(out.contains("Comments (1)") && out.contains("<code class=\"who\">~sampel-palnet</code>"), "{out}");
+        assert!(out.contains("hello &lt;there&gt;"), "{out}");
+        read(&c);
+        assert_eq!(pubs.asked.load(Ordering::SeqCst), 1, "the list is kept");
+    }
+
+    #[test]
+    fn a_sent_comment_is_pending_until_the_list_holds_it() {
+        let (c, pubs) = listing("pending", false);
+        let read = |c: &Ctx| ask(c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie())).1;
+        // no index at all: the reader's own comment still asks for the list
+        *pubs.list.lock().unwrap() = Some(vec![listed("~sampel-palnet", "older")]);
+        assert_eq!(ask(&c, &post_comment("urb://~zod/hello", &ours(), "body=my+%3Cword%3E%0D%0Atwo")).0, 303);
+        let out = read(&c);
+        assert!(out.contains("class=\"c pending\"") && out.contains("<span class=\"state\">pending</span>"), "{out}");
+        assert!(out.contains("my &lt;word&gt;") && out.contains("older"), "{out}");
+        read(&c);
+        assert_eq!(pubs.asked.load(Ordering::SeqCst), 2, "asked afresh while it waits");
+        // someone else's comment with the same text is not it
+        pubs.list.lock().unwrap().as_mut().unwrap().push(listed("~zod", "my <word>\ntwo"));
+        assert!(read(&c).contains("class=\"c pending\""));
+        // listed: no longer pending, and the list is kept again
+        pubs.list.lock().unwrap().as_mut().unwrap().push(listed("~doznec-sampel-palnet", "my <word>\ntwo"));
+        let out = read(&c);
+        assert!(!out.contains("class=\"c pending\"") && out.contains("Comments (3)"), "{out}");
+        let n = pubs.asked.load(Ordering::SeqCst);
+        read(&c);
+        assert_eq!(pubs.asked.load(Ordering::SeqCst), n, "kept once confirmed");
+    }
+
+    #[test]
+    fn a_comment_on_a_held_page_awaits_approval() {
+        let (c, pubs) = listing("held", true);
+        *pubs.threads.lock().unwrap() = Some(vec!["/k".into()]);
+        *pubs.list.lock().unwrap() = Some(Vec::new());
+        assert_eq!(ask(&c, &post_comment("urb://~zod/hello", &ours(), "body=hi")).0, 303);
+        let out = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie())).1;
+        assert!(out.contains("<span class=\"state\">awaiting approval</span>") && out.contains("Sent to ~zod for review."), "{out}");
+        // a publisher that does not answer: the comment stays pending
+        *pubs.list.lock().unwrap() = None;
+        let out = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie())).1;
+        assert!(out.contains("awaiting approval"), "{out}");
     }
 
     #[test]
@@ -1257,6 +1469,7 @@ mod tests {
             fills: fills.clone(),
             forum: Arc::default(),
             wrote: Wrote::default(),
+            pubs: Pubs::default(),
         };
         let c = Ctx::new(Box::new(fake), History::open(&dir), PORT);
         let read = |c: &Ctx| ask(c, &get("/read?url=urb%3A%2F%2F~zod%2Fhello", &cookie())).1;
@@ -1312,7 +1525,7 @@ mod tests {
             forum: Arc::new(Mutex::new(boards)),
             wrote: wrote.clone(),
             comets: Arc::default(),
-            fills: Arc::default(),
+            fills: Arc::default(),            pubs: Pubs::default(),
         };
         (Ctx::new(Box::new(fake), History::open(&dir), PORT), wrote, expired)
     }
