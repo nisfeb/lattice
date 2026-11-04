@@ -41,11 +41,13 @@ poke() { # mark noun: poke hood, as a dojo |command would
 up() { [[ $(curl -s -m 5 "$url/~/host" 2>/dev/null) == '~zod' ]]; }
 start() { # [boot]: run vere detached, logging to DIR/vere.log
   local args=(-t zod)
+  ! up || die "port $port already answers; another ~zod is running"
   [[ ${1:-} == boot ]] && args=(-t -F zod -c zod -B "${PILL:?set PILL}")
   (cd "$dir" && setsid nohup "$VERE" "${args[@]}" --http-port "$port" --loom 32 \
     >>"$dir/vere.log" 2>&1 </dev/null & echo $! >"$dir/vere.pid")
   local t=$SECONDS
   until up; do
+    kill -0 "$(cat "$dir/vere.pid")" 2>/dev/null || { tail -40 "$dir/vere.log" >&2; die "vere exited"; }
     ((SECONDS - t < 900)) || { tail -40 "$dir/vere.log" >&2; die "~zod did not come up"; }
     sleep 2
   done
@@ -87,10 +89,12 @@ check() {
   [[ -d $pier ]] || die "no pier at $pier (run base first)"
   local logs=$dir/check; mkdir -p "$logs"
   start
-  VERE=$VERE "$here/hoon-test-kit/ship-cookie.sh" "$pier" "$url" "$logs/jar" >&2
+  VERE=$VERE "$here/hoon-test-kit/ship-cookie.sh" "$pier" "$url" "$logs/jar" >&2 || die "no cookie"
   local add=--add
   [[ -f $dir/deployed ]] && add=
-  python3 "$here/dev-deploy.py" "$url" "$logs/jar" $add | tee "$logs/deploy.log" | tail -3 >&2
+  python3 "$here/dev-deploy.py" "$url" "$logs/jar" $add >"$logs/deploy.log" 2>&1 ||
+    { cat "$logs/deploy.log" >&2; die "dev-deploy failed"; }
+  tail -2 "$logs/deploy.log" >&2
   touch "$dir/deployed"
   stamp=$(grep -oE 'version.json = \S+' "$logs/deploy.log" | awk '{print $3}')
   python3 "$here/hoon-build-wait.py" "$url" "$logs/jar" "$stamp" "$here/../code" --wait "${WAIT:-900}"
