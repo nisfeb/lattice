@@ -22,14 +22,17 @@ const st = () => p.evaluate(() => ({
   // outranked [hidden]{display:none} and the menu rendered open while
   // .hidden read true — the property lied, the box did not
   menuHidden: (document.getElementById('hammenu')?.getBoundingClientRect().height || 0) === 0,
+  // the entries a reader can see: export pdf ships hidden and shows only
+  // on a page whose bar holds an urb:// address
   links: [...(document.getElementById('hammenu')?.querySelectorAll('a') || [])]
-    .map((a) => a.getAttribute('href')),
+    .filter((a) => !a.hidden).map((a) => a.getAttribute('href')),
   // Go must be the input's NEXT element; the hamburger the bar's LAST
   goNext: document.querySelector('.bar input[name=url]')?.nextElementSibling?.textContent,
   // the omni suggest box is appended after everything and positioned
-  // absolutely — the hamburger must be the last CONTROL, not the last node
+  // absolutely, and the pdf export's <script> rides after the hamburger:
+  // the hamburger must be the last CONTROL, not the last node
   lastEl: (() => { const els = [...document.querySelectorAll('.bar > *')]
-    .filter((e) => !e.classList.contains('omni'));
+    .filter((e) => !e.classList.contains('omni') && e.tagName !== 'SCRIPT');
     return els[els.length - 1]?.className; })(),
 }));
 
