@@ -7,7 +7,7 @@ usage: dirshare-check.py <base-url> <raw-cookie-file>
              it, a subfolder's too, each with `via` naming the folder, and
              a page made in it later takes it
   index      urb://<ship>/<folder>/ and the address without the slash list
-             the folder's published pages and subfolders, by name or
+             the folder's published pages (by title) and subfolders, by name or
              (?sort=date) oldest first, and its pages open as normal
   override   a page's own setting wins (explicit private included), and
              /page-share-clear gives it the folder's again
@@ -93,7 +93,10 @@ def main():
         u = 'urb://' + ship + '/' + rel
         st, b = req('GET', '?url=' + urllib.parse.quote(u) + ('&sort=date' if sort else ''))
         m = re.search(r'<ul class="dindex">(.*?)</ul>', b, re.S)
-        return re.findall(r'>([A-Za-z0-9-]+/?)</a>', m.group(1)) if m else None
+        # the names from the links: a page row shows its title instead
+        if not m:
+            return None
+        return [n + ('/' if sl else '') for n, sl in re.findall(r'href="[^"]*%2F([A-Za-z0-9-]+)(%2F)?">', m.group(1))]
 
     def reads(rel, text):
         st, b = req('GET', '?url=' + urllib.parse.quote('urb://' + ship + '/' + rel))
@@ -124,6 +127,8 @@ def main():
     check('index: ?sort=date lists oldest first', srt is not None and srt.index('alpha') < srt.index('beta'), str(srt))
     check('index: a subfolder lists its own', index(s + '/docs/') == ['deep/', 'one'], str(index(s + '/docs/')))
     until('index: a page inside opens as normal', lambda: reads(s + '/alpha', 'Alpha page'))
+    st, b = req('GET', '?url=' + urllib.parse.quote('urb://' + ship + '/' + s + '/'))
+    check('index: a page row shows its title', '>Alpha page</a>' in b and '>Zeta page</a>' in b, b[-400:])
 
     # ── override ──
     post(f'page-share?name={s}/zeta&mode=private')

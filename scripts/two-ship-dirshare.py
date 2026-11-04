@@ -3,6 +3,10 @@
 
 usage: A_URL=... A_COOKIE=<raw cookie file> B_URL=... B_COOKIE=... two-ship-dirshare.py
 
+Then A shares another folder with B alone, unpublished: B reads its index,
+with titles, and its pages, and gets the private page's refusal for a
+folder not shared with it.
+
 Ship A shares a folder of three pages, one of them in a subfolder. Ship B
 reads the folder's index at urb://~a/<folder>/ and each page over urb://,
 in its own reader. Then A moves a page out of the folder, and B no longer
@@ -64,10 +68,12 @@ def main():
     def read(rel):
         return b('GET', '/apps/lattice?url=' + urllib.parse.quote(f'urb://{ship_a}/{rel}'), timeout=90)
 
-    def index():
-        st, txt = read(s + '/')
+    def index(where=None):
+        st, txt = read((where or s) + '/')
         m = re.search(r'<ul class="dindex">(.*?)</ul>', txt, re.S)
-        return re.findall(r'>([A-Za-z0-9-]+/?)</a>', m.group(1)) if m else None
+        if not m:
+            return None
+        return [n + ('/' if sl else '') for n, sl in re.findall(r'href="[^"]*%2F([A-Za-z0-9-]+)(%2F)?">', m.group(1))]
 
     def reads(rel, text):
         st, txt = read(rel)
@@ -90,6 +96,22 @@ def main():
     until('B loses the pages when the folder is unshared',
           lambda: reads(s + '/zeta', 'Zeta over urb') is not True and reads(s + '/docs/one', 'Doc one over urb') is not True)
     until('B loses the folder index', lambda: index() is None or index())
+
+    # ── a folder shared with B alone, not published ──
+    ship_b = b('GET', '/~/host')[1].strip()
+    g, h = f'{ROOT}/granted', f'{ROOT}/hidden'
+    post(f'page-save?type=md&new=1&name={g}/memo', '# Memo for B\n')
+    post(f'page-save?type=md&new=1&name={g}/sub/note', '# Note for B\n')
+    post(f'page-save?type=md&new=1&name={h}/secret', '# Not for B\n')
+    post(f'share-file?name={g}&ship={ship_b}&mode=read')
+    until('B reads the index of a folder shared with it', lambda: True if index(g) == ['sub/', 'memo'] else index(g))
+    st, txt = read(g + '/')
+    check('B sees the page titles there', '>Memo for B</a>' in txt, txt[-300:])
+    until('B reads a page in it', lambda: reads(g + '/memo', 'Memo for B'))
+    until('B reads its subfolder', lambda: True if index(g + '/sub') == ['note'] else index(g + '/sub'))
+    st, txt = read(h + '/')
+    check('B gets the private refusal for a folder not shared with it',
+          index(h) is None and 'not published here' in txt, txt[-200:])
 
     a('POST', '/apps/lattice/page-del?name=' + ROOT)
     print(f'{len(fails)} failed' if fails else 'all passed')
