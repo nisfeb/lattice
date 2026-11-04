@@ -4,12 +4,13 @@
 //! on the Urbit network, as a comet this app makes once and keeps, so
 //! someone with no ship can read them (the shipless reader, reader.rs).
 //!
-//! The engine reads page content, and makes one write: a comment on a
+//! The engine reads page content, and lattice forum and furum boards
+//! (`boards`, read calls only), and makes one write: a comment on a
 //! published page, poked to the publisher's comment inbox as the comet
 //! itself (owner, 2026-11-03: someone using the app anonymously can browse
 //! and comment). It never posts, follows, bookmarks or publishes, and never
 //! acts as the user's ship. Every request it makes goes through
-//! `submit_read` or `submit_comment`, and a test reads this file's own
+//! `submit_read`, `submit_board` or `submit_comment`, and a test reads this file's own
 //! source to hold it to that (`only_reads_and_comments_are_submitted`).
 //!
 //! State lives in `<app_data_dir>/urb/` (0700), opened as the Go and Rust
@@ -39,7 +40,9 @@ use std::time::{Duration, Instant};
 use urb_engine::host::net::{libmesa_log, random, Log, NetIo};
 use urb_engine::host::{Event, Host};
 use urb_engine::url::{APP_BASE, DESK_BASE};
-use urb_engine::{Failure, Reply, Request, Value};
+use urb_engine::core::{ForumCall, FurumCall};
+use urb_engine::js::Js;
+use urb_engine::{Failure, Int, Reply, Request, Value};
 use urb_gateway::state::{self, GatewayUdp};
 
 /// A body larger than this is refused, so a hostile publisher cannot
@@ -144,7 +147,27 @@ pub trait Reads: Send + Sync {
         let _ = (ship, budget);
         None
     }
+    /// Read boards and threads, all at once, each within `budget`: one
+    /// result per ask, in order.
+    fn boards(&self, asks: Vec<BoardAsk>, budget: Duration) -> Vec<Result<Js, ReadError>> {
+        let _ = budget;
+        asks.iter().map(|_| Err(ReadError::Failed("this reader cannot read boards".into()))).collect()
+    }
 }
+
+/// A read of a board, one of four: a lattice forum's board or one of its
+/// threads, or a furum board's posts or one post's comments. Nothing here
+/// posts, comments or votes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BoardAsk {
+    Forum { host: String, board: String },
+    ForumThread { host: String, board: String, post: Int },
+    FurumPosts { host: String, board: String },
+    FurumComments { host: String, board: String, post: u64 },
+}
+
+/// where a board read's result goes
+type Told = Sender<Result<Js, ReadError>>;
 
 /// where a read's result goes
 type Answer = Sender<Result<NativePage, ReadError>>;
@@ -170,6 +193,7 @@ enum Job {
     Comment(Comment, Said),
     /// a publisher's `/pub/comments`, at a lattice base
     OpenList(String, &'static str, Cord),
+    Board(BoardAsk, Told),
     Close(Sender<()>),
 }
 
@@ -178,6 +202,7 @@ enum Wait {
     Read(Answer, String),
     Comment(Said),
     OpenList(Cord),
+    Board(Told),
 }
 
 struct Running {
@@ -349,6 +374,48 @@ impl Engine {
             }
         }
         Err(first.unwrap_or_else(|| CommentError::Failed("no lattice base".into())))
+    }
+
+    /// Board reads (`BoardAsk`), sent together so they run at once, each
+    /// waiting at most `budget` from now. A board read waits for a start in
+    /// progress only as long as the budget, as a page read with
+    /// `wait_boot` false does not: the reader shows `Booting` instead.
+    pub fn boards(&self, asks: Vec<BoardAsk>, budget: Duration) -> Vec<Result<Js, ReadError>> {
+        self.start();
+        let mut rxs = Vec::with_capacity(asks.len());
+        {
+            let g = self.inner.lock().unwrap();
+            let refuse = match &g.status {
+                Status::Booting => Some(ReadError::Booting),
+                Status::Failed(m) => Some(boot_error(m)),
+                _ => None,
+            };
+            if let Some(e) = refuse {
+                return asks.iter().map(|_| Err(e.clone())).collect();
+            }
+            let Some(run) = &g.run else {
+                return asks.iter().map(|_| Err(ReadError::Failed("the reader stopped".into()))).collect();
+            };
+            for a in asks {
+                let (tx, rx) = channel();
+                let _ = run.jobs.send(Job::Board(a, tx));
+                rxs.push(rx);
+            }
+            if let Some(w) = &run.waker {
+                let _ = w.send(Event::Wake);
+            }
+        }
+        let start = Instant::now();
+        rxs.into_iter()
+            .map(|rx| match rx.recv_timeout(budget.saturating_sub(start.elapsed())) {
+                Ok(r) => r,
+                Err(RecvTimeoutError::Timeout) => Err(ReadError::Unreachable {
+                    later: true,
+                    words: format!("no answer within {}s", budget.as_secs()),
+                }),
+                Err(RecvTimeoutError::Disconnected) => Err(ReadError::Failed("the reader stopped".into())),
+            })
+            .collect()
     }
 
     fn comment_at(&self, c: Comment, budget: Duration) -> Result<(), CommentError> {
@@ -536,6 +603,9 @@ impl Reads for Engine {
     fn comment(&self, ship: &str, page: &str, body: &str, budget: Duration) -> Result<(), CommentError> {
         Engine::comment(self, ship, page, body, budget)
     }
+    fn boards(&self, asks: Vec<BoardAsk>, budget: Duration) -> Vec<Result<Js, ReadError>> {
+        Engine::boards(self, asks, budget)
+    }
 }
 
 /// The state folder, 0700, made on the engine's first start.
@@ -657,6 +727,10 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                 Ok(Job::OpenList(ship, base, tx)) => {
                     pending.push((submit_open_list(&mut host, ship, base), Wait::OpenList(tx), Instant::now()))
                 }
+                Ok(Job::Board(a, tx)) => {
+                    log_line(&format!("board read {a:?}"));
+                    pending.push((submit_board(&mut host, a), Wait::Board(tx), Instant::now()))
+                }
                 Ok(Job::Close(done)) => {
                     let _ = host.close();
                     let _ = done.send(());
@@ -676,6 +750,11 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                     Wait::Read(tx, url) => {
                         log_line(&format!("read {url} in {} ms", at.elapsed().as_millis()));
                         let _ = tx.send(result_of(r));
+                    }
+                    Wait::Board(tx) => {
+                        let got = board_of(r);
+                        log_line(&format!("board read in {} ms: {}", at.elapsed().as_millis(), got.is_ok()));
+                        let _ = tx.send(got);
                     }
                     Wait::Comment(tx) => {
                         let got = said_of(r);
@@ -813,6 +892,31 @@ fn submit_read<I: urb_engine::host::Io>(host: &mut Host<I>, url: String) -> u64 
     host.submit(Request::Read(url))
 }
 
+/// A board read: the read calls of furum's and lattice's forum readers,
+/// and no others (`only_reads_and_comments_are_submitted`).
+fn submit_board<I: urb_engine::host::Io>(host: &mut Host<I>, a: BoardAsk) -> u64 {
+    host.submit(match a {
+        BoardAsk::Forum { host, board } => Request::Forum { host, call: ForumCall::Board(board) },
+        BoardAsk::ForumThread { host, board, post } => Request::Forum {
+            host,
+            call: ForumCall::Thread(board, urb_engine::msg::Id::Big(false, post)),
+        },
+        BoardAsk::FurumPosts { host, board } => Request::Furum { host, call: FurumCall::Posts(board) },
+        BoardAsk::FurumComments { host, board, post } => {
+            Request::Furum { host, call: FurumCall::Comments(board, post as f64) }
+        }
+    })
+}
+
+/// A board read's result as the app sees it.
+fn board_of(r: Result<Reply, Failure>) -> Result<Js, ReadError> {
+    match r {
+        Ok(Reply::Js(j)) => Ok(j),
+        Ok(_) => Err(ReadError::Failed("the read gave no board".into())),
+        Err(f) => Err(error_of(&f)),
+    }
+}
+
 /// A comment, the engine's only write: `[page=path body=@t]` (lattice's
 /// `comment-action`) to the publisher's `comments.sig`. The publisher takes
 /// the author from the transport, so it names the reader identity.
@@ -939,10 +1043,11 @@ mod tests {
 
     /// The rule as a test: the engine reads, and its one write is a
     /// comment to a publisher's comment inbox. Every request it names is a
-    /// Read, that Poke, or one Peek of the publisher's list of pages that
-    /// take comments; it submits in three places, and it never publishes,
-    /// hears an inbox or calls a forum or a furum board. A change that
-    /// needs any of those has to change this test on purpose.
+    /// Read, a board read, that Poke, or one Peek of the publisher's list
+    /// of pages that take comments; it submits in four places, and it never
+    /// publishes or hears an inbox. Its forum and furum calls are the
+    /// readers' read calls, by name: never a post, comment, vote or note. A
+    /// change that needs any of those has to change this test on purpose.
     #[test]
     fn only_reads_and_comments_are_submitted() {
         let src = include_str!("engine.rs");
@@ -954,14 +1059,31 @@ mod tests {
                 &rest[..rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len())]
             })
             .collect();
-        assert_eq!(named, ["Read", "Poke", "Peek"], "the engine names only Request::Read, one Poke and one Peek");
-        for word in ["Inbox", "Furum", "Forum", "PubPut", "PubRemove", "Pub {", "Watch"] {
+        assert_eq!(
+            named,
+            ["Read", "Forum", "Forum", "Furum", "Furum", "Poke", "Peek"],
+            "the engine names only Request::Read, the board reads, one Poke and one Peek"
+        );
+        for word in ["Inbox", "PubPut", "PubRemove", "Pub {", "Watch"] {
             assert!(!code.contains(&format!("Request::{word}")), "{word}");
         }
-        for word in ["FurumCall", "ForumCall", "submit_as", ".call(", "submit_open_as"] {
+        for word in ["submit_as", ".call(", "submit_open_as"] {
             assert!(!code.contains(word), "the engine uses {word}");
         }
-        assert_eq!(code.matches(".submit(").count(), 3, "three submits, in submit_read, submit_comment and submit_open_list");
+        let calls: Vec<&str> = code
+            .match_indices("Call::")
+            .map(|(i, _)| {
+                let rest = &code[i - 5..];
+                &rest[..rest.find(['(', ' ']).unwrap_or(rest.len())]
+            })
+            .collect();
+        assert_eq!(
+            calls,
+            ["ForumCall::Board", "ForumCall::Thread", "FurumCall::Posts", "FurumCall::Comments"],
+            "only the board readers' read calls"
+        );
+        assert_eq!(code.matches(".submit(").count(), 4, "four submits: submit_read, submit_board, submit_comment, submit_open_list");
+        assert_eq!(code.matches("submit_board(").count(), 1, "submit_board, called once");
         assert_eq!(code.matches("submit_open_list(").count(), 1, "submit_open_list, called once");
         // the peek reads /pub/comments and nothing else
         let peek = &code[code.find("fn submit_open_list<").unwrap()..];

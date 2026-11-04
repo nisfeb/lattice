@@ -220,7 +220,7 @@ pub fn read_href(urb: &str) -> String {
     format!("/read?url={}", enc(urb))
 }
 
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     String::from_utf8(gateway::html_escape(s.as_bytes())).unwrap_or_default()
 }
 
@@ -326,7 +326,7 @@ pub fn title_of(url: &str, kind: &str, body: &str) -> String {
 }
 
 /// What urb-render's page() put inside `<main>`.
-fn main_of(doc: &[u8]) -> &[u8] {
+pub(crate) fn main_of(doc: &[u8]) -> &[u8] {
     let start = find(doc, b"<main>").map_or(0, |n| n + 6);
     let end = doc.windows(7).rposition(|w| w == b"</main>").unwrap_or(doc.len());
     if start <= end {
@@ -337,7 +337,7 @@ fn main_of(doc: &[u8]) -> &[u8] {
 }
 
 /// The reader's document around `main`.
-fn chrome(title: &str, url: &str, mode: Option<Mode>, main: &str, refresh: bool) -> String {
+pub(crate) fn chrome(title: &str, url: &str, mode: Option<Mode>, main: &str, refresh: bool) -> String {
     let strip = mode.map_or(String::new(), |m| {
         let mut s = String::from("<div class=\"actions\" role=\"group\" aria-label=\"Actions that need a node\">");
         for (label, why) in actions(m) {
@@ -401,7 +401,7 @@ pub fn page(url: &str, p: &NativePage, mode: Mode, raw_key: &str, talk: &Talk) -
     Shown { csp, html, title }
 }
 
-fn lossy(b: &[u8]) -> String {
+pub(crate) fn lossy(b: &[u8]) -> String {
     String::from_utf8_lossy(b).into_owned()
 }
 
