@@ -10,7 +10,7 @@ but vase fails, as does a non-null bang on the lattice instance once
 everything built. Each failure is printed with grubbery's error detail.
 Exits 0 on a clean build, 1 on a failed one, 2 on a timeout.
 """
-import argparse, json, os, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 
 DESK = '/grubbery/ball/apps/shell.shell/desks/lattice.desk'
 INST = DESK + '/desk/data/lattice.lattice_app'
@@ -99,7 +99,12 @@ def main():
             time.sleep(3)
 
     for f, (s, detail) in sorted(bad.items()):
-        print(f'\n::error file=code/{f}::code/{f} built to {s or "nothing"}, not a vase')
+        lines = detail.strip().splitlines()
+        at = next((l.strip() for l in lines if '.hoon::[' in l), '')
+        m = re.match(r'/?(.*\.hoon)::\[(\d+) (\d+)\]', at)
+        loc = f'file=code/{m[1]},line={m[2]},col={m[3]}' if m else f'file=code/{f}'
+        print(f'\n::error {loc}::code/{f} built to {s or "nothing"}, not a vase: '
+              f'{lines[0] if lines else "no detail"} at {at or "?"}')
         print(f'--- code/{f}: {s} ---\n{detail.rstrip()}')
     if bang:
         print(f'\n::error file=code/nex/lattice/app.hoon::the lattice instance has a bang')

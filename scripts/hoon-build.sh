@@ -43,8 +43,11 @@ start() { # [boot]: run vere detached, logging to DIR/vere.log
   local args=(-t zod)
   ! up || die "port $port already answers; another ~zod is running"
   [[ ${1:-} == boot ]] && args=(-t -F zod -c zod -B "${PILL:?set PILL}")
-  (cd "$dir" && setsid nohup "$VERE" "${args[@]}" --http-port "$port" --loom 32 \
-    >>"$dir/vere.log" 2>&1 </dev/null & echo $! >"$dir/vere.pid")
+  # & on vere alone, so $! is vere (the king) and stop can find it
+  (cd "$dir" || exit 1
+   setsid nohup "$VERE" "${args[@]}" --http-port "$port" --loom 32 \
+     >>"$dir/vere.log" 2>&1 </dev/null &
+   echo $! >"$dir/vere.pid")
   local t=$SECONDS
   until up; do
     kill -0 "$(cat "$dir/vere.pid")" 2>/dev/null || { tail -40 "$dir/vere.log" >&2; die "vere exited"; }
@@ -58,7 +61,10 @@ stop() {
   pid=$(cat "$dir/vere.pid" 2>/dev/null || true)
   [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null || return 0
   kill -TERM "$pid"
-  for _ in $(seq 120); do kill -0 "$pid" 2>/dev/null || { rm -f "$dir/vere.pid"; return 0; }; sleep 1; done
+  for _ in $(seq 120); do
+    if ! kill -0 "$pid" 2>/dev/null && ! up; then rm -f "$dir/vere.pid"; return 0; fi
+    sleep 1
+  done
   die "~zod (pid $pid) did not stop"
 }
 
