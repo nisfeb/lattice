@@ -23,6 +23,8 @@
 #                      lattice-gate-peer reset to lattice: ~wep on 8151)
 #         SHOTS        a folder to keep screenshots in
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib/hygiene.sh"   # no cores, marked children
+lattice_disk_ok || exit 2
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MATRIX_NO_SHIP=1 . "$ROOT/scripts/lib/matrix.sh"
 : "${FLEET_WHO:?set FLEET_WHO to who is claiming the set}"
@@ -43,6 +45,7 @@ if [ -n "$holder" ] && [ "$holder" != "$FLEET_WHO" ]; then
 fi
 T="$(mktemp -d)"
 cleanup() {
+  lattice_reap
   [ -n "${XVFB:-}" ] && kill "$XVFB" 2>/dev/null
   rm -rf "$T"
   if [ "${KEEP:-}" != 1 ]; then

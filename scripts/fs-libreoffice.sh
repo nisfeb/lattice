@@ -65,6 +65,8 @@
 # No change to core.rs was needed.
 
 set -u
+. "$(dirname "${BASH_SOURCE[0]}")/lib/hygiene.sh"   # no cores, marked children
+lattice_disk_ok || exit 2
 LATTICE_URL="${1:-${LATTICE_URL:-}}"
 . "$(dirname "${BASH_SOURCE[0]}")/lib/matrix.sh"
 need_cookie
@@ -79,6 +81,7 @@ XPID=""
 say() { printf '%s\n' "$*"; }
 
 cleanup() {
+  lattice_reap
   cd /
   [ -n "$XPID" ] && kill "$XPID" 2>/dev/null
   fusermount -u "$LMNT" 2>/dev/null || fusermount3 -u "$LMNT" 2>/dev/null

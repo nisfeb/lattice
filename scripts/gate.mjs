@@ -16,7 +16,8 @@
 //  usage: node scripts/gate.mjs [--lanes N] [--two-ship SET] [--stall]
 //                               [--only a,b] [--record] [--keep] [--no-deploy]
 //
-//    --lanes N        clones to run the ship suites on (default 4)
+//    --lanes N        clones to run the ship suites on (default: 4, or fewer
+//                     when fewer suites run or memory is short)
 //    --two-ship SET   also run ui-links, two-ship-links.sh and
 //                     two-ship-save.sh with A = the base ship and B = the
 //                     ship of fleet set SET (lattice installed, not ~mec,
@@ -24,7 +25,14 @@
 //                     so these need named ships and are off by default.
 //    --stall          also run stall-check.py --resume on a clone of its own
 //                     (about an hour, so never part of the default gate)
-//    --only a,b       only these ship suites (names as in the table)
+//    --only a,b       only these suites, ship or local (names as in the table);
+//                     the local checks run too only with --local
+//    --warm           deploy and snapshot, run no suite: refreshes the gate
+//                     snapshot (run it on main after a merge, so a branch's
+//                     run deploys only its own diff)
+//    --cold           always boot, deploy and snapshot the base ship
+//    --hot            hot patch a client-only diff into the lanes (the
+//                     default with --only; see UI_APP)
 //    --record         write the measured times back to gate-times.json
 //    --no-retry       no second run, alone, for a ship suite that failed
 //    --strict         a flaky suite (failed, then passed alone) fails the gate
@@ -32,11 +40,24 @@
 //    --no-deploy      snapshot the base ship as it is
 //
 //  Env: FLEET (the fleet script), FLEET_WHO (default fast-gate), GATE_SET
-//  (default lattice-gate), VERE, CHROME. Logs go to /tmp/lattice-gate/<run>.
+//  (default lattice-gate), VERE, CHROME, LATTICE_SCRATCH (default
+//  ~/.cache/lattice-gate), GATE_KEEP_RUNS (logs of the last 10 runs kept).
+//
+//  Fast path: when the gate snapshot already holds this checkout's code/
+//  (the pier's .lattice-deploy.json manifest matches), the base ship is
+//  not booted, deployed or snapshotted: the lanes are cloned straight from
+//  the snapshot. Otherwise dev-deploy sends only the files the manifest
+//  says differ, with no GET per file.
+//
+//  Hygiene (lib/hygiene.mjs): core dumps off for every child, scratch and
+//  TMPDIR under LATTICE_SCRATCH, every child marked and killed with its
+//  whole tree when it ends, and no start with under 10 GB free on / or
+//  2 GB on /tmp.
 import { spawn } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync } from 'fs';
-import { cpus, homedir, loadavg } from 'os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync } from 'fs';
+import { cpus, freemem, homedir, loadavg } from 'os';
 import { join } from 'path';
+import { SCRATCH, diskShort, killTagged, marked, noCores, procTag, unmarked } from './lib/hygiene.mjs';
 
 const HOME = homedir();
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
@@ -61,7 +82,7 @@ const NEVER = ['mec', 'mun', 'hus', 'ricsul-bilwyt-dozzod-nisfeb'];
 const argv = process.argv.slice(2);
 const flag = (n) => argv.includes(n);
 const opt = (n, d) => { const i = argv.indexOf(n); return i < 0 ? d : argv[i + 1]; };
-const LANES = Number(opt('--lanes', 4));
+const LANES_ASKED = opt('--lanes', '');
 const TWO = opt('--two-ship', '');
 const ONLY = opt('--only', '') ? opt('--only', '').split(',') : null;
 if (flag('--two-ship') && !TWO) die('--two-ship needs a fleet set for ship B');
@@ -70,17 +91,43 @@ function die(m) { console.error('gate: ' + m); process.exit(2); }
 const say = (m) => console.error(`gate: [${((Date.now() - T0) / 1000).toFixed(0)}s] ${m}`);
 const T0 = Date.now();
 const RUN = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-const LOGS = '/tmp/lattice-gate/' + RUN;
-mkdirSync(LOGS, { recursive: true });
+const LOGS = join(SCRATCH, RUN);
+const TMP = join(LOGS, 'tmp');
+{
+  const short = diskShort();
+  if (short.length) die('refusing to start: ' + short.join('; ') + ' (a full disk crashes the browsers and kills ships)');
+}
+noCores();
+mkdirSync(TMP, { recursive: true });
+//  keep the last GATE_KEEP_RUNS runs' logs
+{
+  const keep = Number(process.env.GATE_KEEP_RUNS || 10);
+  const runs = readdirSync(SCRATCH).filter((d) => /^\d{4}-\d\d-\d\dT/.test(d)).sort();
+  for (const d of runs.slice(0, Math.max(0, runs.length - keep))) rmSync(join(SCRATCH, d), { recursive: true, force: true });
+}
+const OWNER = procTag();
+let tags = 0;
+//  phase -> seconds, printed at the end
+const phases = [];
+const phase = async (name, p) => { const t = Date.now(); try { return await p; } finally { phases.push([name, (Date.now() - t) / 1000]); } };
 
 //  --- processes: every child in its own group, so Ctrl+C reaches all of it ---
 const kids = new Set();
+//  Every child but fleet's carries LATTICE_TEST_OWNER (this gate) and a
+//  LATTICE_TEST_TAG of its own, which its browsers and Xvfb inherit even
+//  when they start a process group of their own (puppeteer does): when it
+//  ends, whatever still carries its tag is killed. Fleet's ships and tmux
+//  sessions outlive the run on purpose, so they are never marked.
 function run(cmd, args, { env = {}, log, timeout = 0, cwd = ROOT, pin = false } = {}) {
   return new Promise((done) => {
     const t = Date.now();
+    const isFleet = cmd === F;
+    const tag = `${OWNER}/${++tags}`;
     if (pin && PIN) { args = ['-c', REST_CPUS, cmd, ...args]; cmd = 'taskset'; }
-    const p = spawn(cmd, args, { cwd, env: { ...process.env, FLEET_WHO: WHO, ...env }, detached: true,
-      stdio: ['ignore', 'pipe', 'pipe'] });
+    const base = { ...process.env, FLEET_WHO: WHO, TMPDIR: TMP, LATTICE_SCRATCH: SCRATCH, ...env };
+    const p = spawn(cmd, args, { cwd, env: isFleet ? unmarked(base) : { ...base, LATTICE_TEST_OWNER: OWNER, LATTICE_TEST_TAG: tag },
+      detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    p.tag = isFleet ? null : tag;
     kids.add(p);
     let out = '';
     const take = (b) => { out += b; };
@@ -88,13 +135,17 @@ function run(cmd, args, { env = {}, log, timeout = 0, cwd = ROOT, pin = false } 
     const timer = timeout && setTimeout(() => { out += `\ngate: timed out after ${timeout} s\n`; kill(p); }, timeout * 1000);
     p.on('close', (code, sig) => {
       kids.delete(p); if (timer) clearTimeout(timer);
+      if (p.tag) { const left = killTagged(p.tag); if (left.length) out += `\ngate: killed ${left.length} leftover processes (${left.join(' ')})\n`; }
       if (log) writeFileSync(log, out);
       done({ code: code ?? (sig ? 128 : 1), out, secs: (Date.now() - t) / 1000 });
     });
     p.on('error', (e) => { out += String(e); });
   });
 }
-function kill(p) { try { process.kill(-p.pid, 'SIGTERM'); } catch {} }
+function kill(p) {
+  try { process.kill(-p.pid, 'SIGTERM'); } catch {}
+  if (p.tag) for (const q of marked('LATTICE_TEST_TAG', p.tag)) { try { process.kill(q, 'SIGTERM'); } catch {} }
+}
 const sh = (line, o) => run('bash', ['-c', line], o);
 const fleet = (...a) => run(F, a, { timeout: 900 });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -171,6 +222,15 @@ const shipSuites = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
   'job-check.py', 'big-page-check.py', 'fs-old-beacon-check.sh', 'hoon-suites',
 ].filter((n) => !ONLY || ONLY.includes(n));
+//  A lane is a ~1.2 GB pier copy and a serf with a 2 GB loom that runs
+//  near 3 GB: no more lanes than suites, pinned performance cores (4), or
+//  about a third of the free memory in GB.
+const LANES = LANES_ASKED ? Number(LANES_ASKED)
+  : Math.max(1, Math.min(4, shipSuites.length || 1, Math.floor(availGB() / 3)));
+function availGB() {
+  const m = readFileSync('/proc/meminfo', 'utf8').match(/MemAvailable:\s+(\d+)/);
+  return m ? Number(m[1]) / 2 ** 20 : freemem() / 2 ** 30;
+}
 function shipCmd(name, lane) {
   const env = { LATTICE_URL: lane.url, LATTICE_COOKIE: lane.cookie };
   if (name === 'hoon-suites') return ['bash', [S + '/hoon-test-kit/hoon-test.sh', lane.pier], { env: { VERE } }];
@@ -186,7 +246,7 @@ function fiberio() {
   return `{ git -C ${g} show origin/dist/single-release:desk/lib/fiberio.hoon 2>/dev/null ||
     curl -fsSL https://raw.githubusercontent.com/nisfeb/grubbery/dist/single-release/desk/lib/fiberio.hoon; } > ${LOGS}/fiberio.hoon`;
 }
-const localJobs = [
+const allLocal = [
   ...uis.filter((f) => !browser(f)).map((f) => [f, 'node', [S + '/' + f]]),
   ['ui-manager.mjs', 'node', [S + '/ui-manager.mjs']],
   ['offline-tests', 'bash', [S + '/offline-tests.sh']],
@@ -203,6 +263,7 @@ const localJobs = [
   ['writer-licences', 'node', [S + '/writer-licences.mjs']],
   ['writer-roundtrip', 'node', [S + '/writer-roundtrip.mjs']],
 ];
+const localJobs = flag('--warm') ? [] : !ONLY || flag('--local') ? allLocal : allLocal.filter(([n]) => ONLY.includes(n));
 
 const results = [];
 const record = (suite, lane, r) => {
@@ -228,6 +289,10 @@ async function teardown() {
   if (tearing) return tearing;
   tearing = (async () => {
     for (const p of kids) kill(p);
+    await sleep(kids.size ? 3000 : 0);
+    //  anything this run started that is still about, browsers included
+    for (const q of marked('LATTICE_TEST_OWNER', OWNER)) { try { process.kill(q, 'SIGKILL'); } catch {} }
+    rmSync(TMP, { recursive: true, force: true });
     if (clones.length && !flag('--keep')) {
       say('dropping ' + clones.map((c) => c.id).join(' '));
       await run(F, ['drop', ...clones.map((c) => c.id)], { timeout: 300 });
@@ -243,33 +308,87 @@ for (const s of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(s, async () => { say(s + ': stopping'); await teardown(); process.exit(130); });
 }
 
+//  What the gate snapshot holds: its pier carries the deploy manifest and
+//  the session cookie minted before it was taken, which every clone takes.
+const MANIFEST = '.lattice-deploy.json', COOKIE = '.lattice-gate-cookie';
+//  The client files the instance lays as grubs at <instance>/app/<name>.
+//  The nexus embeds them at build time, so a change to one costs a full
+//  rebuild (about three minutes) through the desk. With --only (or --hot)
+//  a diff of only these is written straight into each lane's grubs
+//  instead, in about a second: the lane then runs the snapshot's nexus
+//  with this checkout's client. The full gate always deploys.
+const UI_APP = /^nex\/lattice\/ui-app\/[^/]+$/;
+const HOT = (ONLY || flag('--hot')) && !flag('--cold');
+async function hotPatch(lane, files, cookie) {
+  for (const f of files) {
+    const body = readFileSync(ROOT + '/code/' + f, 'utf8');
+    const ext = f.split('.').pop();
+    const mite = { js: 'application/javascript', html: 'text/html' }[ext] || 'text/plain';
+    const r = await fetch(lane.url + INST + '/app/' + encodeURIComponent(f.split('/').pop()), {
+      method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ action: 'write-text', content: body, mite }), redirect: 'manual',
+      signal: AbortSignal.timeout(120000) }).catch((e) => ({ status: 0, statusText: String(e) }));
+    if (r.status !== 200 && r.status !== 303) throw new Error(`hot patch of ${f} on ${lane.id}: ${r.status} ${r.statusText}`);
+    const served = await get(lane.url + '/apps/lattice/app/' + f.split('/').pop(), cookie, 60000);
+    if (served.text !== body) throw new Error(`hot patch of ${f} on ${lane.id} is not what it serves; run with --cold`);
+  }
+}
+function snapPier(b) { return `${HOME}/fleet/snaps/${SET}/${SNAP}.d/${b.ship}`; }
+async function warmSnapshot(b) {
+  if (flag('--cold') || flag('--no-deploy') || flag('--warm') || TWO) return false;
+  const pier = snapPier(b);
+  if (!existsSync(pier + '/' + MANIFEST) || !existsSync(pier + '/' + COOKIE)) return false;
+  //  eyre's session lasts 30 days; a week leaves a margin
+  if (Date.now() - statSync(pier + '/' + COOKIE).mtimeMs > 7 * 86400e3) { say('the gate snapshot is over a week old'); return false; }
+  const r = await run('python3', [S + '/dev-deploy.py', b.url, '/dev/null', '--dry-run', '--manifest', pier + '/' + MANIFEST]);
+  const diff = r.out.split('\n').map((l) => l.match(/^  (\S+)$/)).filter(Boolean).map((m) => m[1]);
+  if (r.code && !(HOT && diff.length && diff.every((f) => UI_APP.test(f)))) {
+    say('the snapshot is behind this checkout: ' + r.out.trim().split('\n').pop()); return false;
+  }
+  if (r.code) b.hot = diff;
+  const header = readFileSync(pier + '/' + COOKIE, 'utf8').trim();
+  writeFileSync(`${LOGS}/base.cookie`, header + '\n', { mode: 0o600 });
+  b.cookie = { raw: `${LOGS}/base.cookie`, header, jar: null };
+  return true;
+}
+
 async function baseShip() {
   const b = setLine(SET);
   const claim = existsSync(HOME + '/fleet/claims/' + SET) ? readFileSync(HOME + '/fleet/claims/' + SET, 'utf8').trim() : '';
   if (claim && claim !== WHO) die(`set ${SET} is claimed by ${claim}`);
   await fleet('claim', SET, WHO); claimed = true;
-  let r = await fleet('up', SET);
+  if (await warmSnapshot(b)) {
+    say(b.hot ? `the gate snapshot differs only in the client (${b.hot.join(' ')}): hot patching the lanes, no deploy`
+      : 'the gate snapshot already holds this code/: no deploy');
+    b.warm = true; return b;
+  }
+  let r = await phase('base up', fleet('up', SET));
   if (r.code) throw new Error('fleet up ' + SET + ': ' + r.out.trim());
-  b.cookie = await cookieFor(b.pier, b.url, 'base');
+  b.cookie = await phase('cookie', cookieFor(b.pier, b.url, 'base'));
   let stamp = '';
   if (!flag('--no-deploy')) {
     const fresh = (await get(b.url + INST + '?info=1', b.cookie.header)).status !== 200;
-    r = await run('python3', [S + '/dev-deploy.py', b.url, b.cookie.jar, ...(fresh ? ['--add'] : []), '--approve'],
-      { log: `${LOGS}/deploy.log`, timeout: 1800 });
+    r = await phase('deploy', run('python3', [S + '/dev-deploy.py', b.url, b.cookie.jar, ...(fresh ? ['--add'] : []), '--approve',
+      '--manifest', b.pier + '/' + MANIFEST], { log: `${LOGS}/deploy.log`, timeout: 1800 }));
     if (r.code) throw new Error('dev-deploy failed, see ' + LOGS + '/deploy.log');
     stamp = (r.out.match(/version\.json = (\S+)/) || [])[1];
     say(`deployed ${stamp} (${(r.out.match(/(\d+) files written/) || [])[1]} files) in ${r.secs.toFixed(0)} s`);
   }
-  await live(b.url, b.cookie.header, stamp);
+  await phase('build until live', live(b.url, b.cookie.header, stamp));
+  writeFileSync(b.pier + '/' + COOKIE, b.cookie.header + '\n', { mode: 0o600 });
   say('base ship is live');
   return b;
 }
-async function makeLanes(b, n) {
-  const r = await run(F, ['--fast', 'snap', '~' + b.ship, SNAP], { timeout: 900 });
+async function snapBase(b) {
+  if (b.warm) return;
+  const r = await phase('snapshot', run(F, ['--fast', 'snap', '~' + b.ship, SNAP], { timeout: 900 }));
   if (r.code) throw new Error('fleet snap: ' + r.out.trim());
   say('snapshotted ~' + b.ship + ' as ' + SNAP);
-  if (!TWO) await run(F, ['down', SET], { timeout: 300 });  // its CPU goes to the lanes
-  return cloneLanes(b, n);
+  if (!TWO) await phase('base down', run(F, ['down', SET], { timeout: 300 }));  // its CPU goes to the lanes
+}
+async function makeLanes(b, n) {
+  await snapBase(b);
+  return phase('clone and boot', cloneLanes(b, n));
 }
 async function cloneLanes(b, n) {
   const r = await run(F, ['clone', b.ship, String(n), SNAP], { timeout: 900 });
@@ -282,6 +401,7 @@ async function cloneLanes(b, n) {
   //  takes it; a clone that answers 200 without a login is a live lattice
   await Promise.all(got.map((c) => until(c.id + ' to serve lattice', 300, async () =>
     (await get(c.url + '/apps/lattice', b.cookie.header, 15000)).status === 200)));
+  if (b.hot) await phase('hot patch', Promise.all(got.map((c) => hotPatch(c, b.hot, b.cookie.header))));
   if (PIN) {
     for (const [i, c] of got.entries()) {
       const r = await sh(`for p in $(pgrep -f -- '--snap-dir ${c.pier}( |$)'); do taskset -cp ${SERF_CPU(i)} $p; done`);
@@ -293,6 +413,8 @@ async function cloneLanes(b, n) {
 }
 
 async function runShip(b) {
+  if (flag('--warm')) { await snapBase(b); say('the gate snapshot is warm'); return; }
+  if (!shipSuites.length) return;
   const times = JSON.parse(readFileSync(S + '/gate-times.json', 'utf8'));
   const order = [...shipSuites].sort((x, y) => (times[y] ?? 60) - (times[x] ?? 60));
   const lanes = await makeLanes(b, LANES + (flag('--stall') ? 1 : 0));
@@ -312,7 +434,7 @@ async function runShip(b) {
     work.push(run(cmd, args, { ...o, log: `${LOGS}/stall-check.log`, timeout: 7200 }).then((r) => record('stall-check.py', l.id, r)));
   }
   if (TWO) work.push(runTwo(b));
-  await Promise.all(work);
+  await phase('suites', Promise.all(work));
 }
 
 //  A ship suite that failed under the parallel load gets one more run, on
@@ -372,7 +494,7 @@ try {
   const ship = (async () => runShip(await baseShip()))().catch((e) => { fatal = e.message; });
   await Promise.all([local, ship]);
 } catch (e) { fatal = e.message; }
-await teardown();
+await phase('teardown', teardown());
 clearInterval(sampler);
 
 const wall = (Date.now() - T0) / 1000;
@@ -393,6 +515,7 @@ if (!TWO) console.log('not run: the two-ship suites (ui-links.mjs, two-ship-link
 if (!flag('--stall')) console.log('not run: stall-check.py; pass --stall');
 if (missing.length && fatal) console.log('never started: ' + missing.join(' '));
 if (fatal) console.log('gate error: ' + fatal);
+console.log('phases: ' + phases.map(([n, t]) => `${n} ${t.toFixed(0)} s`).join(', '));
 for (const r of flaky) console.log(`flaky: ${r.suite} failed under the parallel load and passed alone (${LOGS}/${r.suite}.log)`);
 for (const r of failed) console.log(`  ${r.suite}: ${LOGS}/${r.suite}${r.retry ? '.retry' : ''}.log`);
 if (flag('--record') && !fatal) {
