@@ -143,4 +143,54 @@
     (expect-eq !>(&) !>((is-banned:ls (sy ~[all-comets:ls]) c2)))
     (expect-eq !>(|) !>((is-banned:ls (sy ~[all-comets:ls]) ~sampel-palnet)))
   ==
+::  +comet-gate: the comet guard every comet write goes through.
+::
+++  cg-now  ~2026.11.4..12.00.00
+++  cg-comet  `@p`(add (bex 64) 7)
+::  ten stamps a minute apart, the newest a minute ago
+++  cg-ten
+  ^-  (list @da)
+  (turn (gulf 1 10) |=(i=@ud (sub cg-now (mul i ~m1))))
+++  test-comet-gate-cap
+  ;:  weld
+    ::  nine in the window: the tenth is taken
+    (expect-eq !>([%ok ~]) !>((comet-gate:ls [%open (scag 9 cg-ten)] cg-comet cg-now)))
+    ::  ten in the window: the eleventh is refused, with the words
+    %+  expect-eq  !>([%refused comet-full-why:ls])
+    !>((comet-gate:ls [%open cg-ten] cg-comet cg-now))
+    ::  planets and moons are never counted
+    (expect-eq !>([%ok ~]) !>((comet-gate:ls [%open cg-ten] ~zod cg-now)))
+    (expect-eq !>([%ok ~]) !>((comet-gate:ls [%open cg-ten] ~doznec-sampel-palnet cg-now)))
+  ==
+++  test-comet-gate-rolls-off
+  =/  later=@da  (add cg-now ~m50)
+  ;:  weld
+    ::  50 minutes on, the oldest stamp (ten minutes before now) has left
+    (expect-eq !>([%ok ~]) !>((comet-gate:ls [%open cg-ten] cg-comet later)))
+    (expect-eq !>(9) !>((lent (comet-live:ls cg-ten later))))
+    ::  and the cap frees when the tenth newest leaves the window
+    (expect-eq !>(`(add (sub cg-now ~m10) ~h1)) !>((comet-full-until:ls cg-ten cg-now)))
+    (expect-eq !>(~) !>((comet-full-until:ls cg-ten later)))
+    ::  stamps an hour old or older count for nothing
+    %+  expect-eq  !>([%ok ~])
+    !>((comet-gate:ls [%open (turn cg-ten |=(t=@da (sub t ~h1)))] cg-comet cg-now))
+  ==
+++  test-comet-gate-held
+  ;:  weld
+    (expect-eq !>([%held ~]) !>((comet-gate:ls [%held ~] cg-comet cg-now)))
+    ::  the cap binds a held page too, so the queue is bounded
+    %+  expect-eq  !>([%refused comet-full-why:ls])
+    !>((comet-gate:ls [%held cg-ten] cg-comet cg-now))
+    ::  a planet is never held
+    (expect-eq !>([%ok ~]) !>((comet-gate:ls [%held ~] ~zod cg-now)))
+  ==
+++  test-comet-gate-off
+  ;:  weld
+    %+  expect-eq  !>([%refused comet-off-why:ls])
+    !>((comet-gate:ls [%off ~] cg-comet cg-now))
+    (expect-eq !>([%ok ~]) !>((comet-gate:ls [%off ~] ~zod cg-now)))
+    ::  a stored mode that will not read is the default
+    (expect-eq !>(%open) !>((comet-mode-of:ls 'junk')))
+    (expect-eq !>(%held) !>((comet-mode-of:ls %held)))
+  ==
 --

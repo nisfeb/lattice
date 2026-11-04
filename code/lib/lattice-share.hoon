@@ -97,6 +97,61 @@
 ::  answer for a comet. Banning it bans them all.
 ++  all-comets  ^-(@p (bex 128))
 ::
+::  ==  comet guard  ==
+::
+::  Comets are free to mint, so a per-author quota alone binds nothing:
+::  one person can be any number of authors. The guard bounds what all
+::  comets together may file on one page (a rate cap over a rolling
+::  window), and lets the owner hold or refuse comets per page. Planets
+::  and moons never pass through it. One gate for every place a comet
+::  writes (page comments, forum posts), so the rule cannot drift.
+::
+::  +$  comet-mode: a page's policy for comets. %open is the default.
++$  comet-mode  ?(%open %held %off)
+::  +$  comet-page: what the gate needs to know of a page: its mode, and
+::  when each comet write it accepted or held happened. Older stamps are
+::  harmless: the gate counts only those inside the window.
++$  comet-page  [mode=comet-mode recent=(list @da)]
+::  +$  comet-verdict: %ok to store, %held to queue for the owner,
+::  %refused with words a reader can show.
++$  comet-verdict  $%([%ok ~] [%held ~] [%refused why=@t])
+++  comet-cap     ^-(@ud 10)
+++  comet-window  ^-(@dr ~h1)
+++  comet-full-why  'Too many anonymous comments here right now, try again later'
+++  comet-off-why   'Anonymous comments are off on this page'
+::  +is-comet: sized by bytes, as +family is
+++  is-comet  |=(who=@p ^-(? (gth (met 3 who) 8)))
+::  +comet-mode-of: a stored mode, %open for anything unreadable
+++  comet-mode-of
+  |=  n=*
+  ^-  comet-mode
+  ?+(n %open %held %held, %off %off)
+::  +comet-live: the stamps inside the window ending at now, newest first
+++  comet-live
+  |=  [recent=(list @da) now=@da]
+  ^-  (list @da)
+  =/  from=@da  ?:((lth now comet-window) *@da (sub now comet-window))
+  (sort (skim recent |=(t=@da (gth t from))) gth)
+::  +comet-gate: may `who` write on a page in state `pg`? Anyone but a
+::  comet is %ok. A comet is refused on an %off page or over the cap,
+::  held on a %held page, and %ok otherwise.
+++  comet-gate
+  |=  [pg=comet-page who=@p now=@da]
+  ^-  comet-verdict
+  ?.  (is-comet who)  [%ok ~]
+  ?:  ?=(%off mode.pg)  [%refused comet-off-why]
+  ?:  (gte (lent (comet-live recent.pg now)) comet-cap)
+    [%refused comet-full-why]
+  ?:(?=(%held mode.pg) [%held ~] [%ok ~])
+::  +comet-full-until: when the page's cap frees, if it is at the cap now.
+::  The cap-th newest stamp in the window leaves it a window after it came.
+++  comet-full-until
+  |=  [recent=(list @da) now=@da]
+  ^-  (unit @da)
+  =/  live=(list @da)  (comet-live recent now)
+  ?.  (gte (lent live) comet-cap)  ~
+  `(add (snag (dec comet-cap) live) comet-window)
+::
 ::  ==  grant roads  ==
 ::
 ::  A grant is a road in a usergroup's weir. Roads are taken as nouns here,
