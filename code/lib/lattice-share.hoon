@@ -151,6 +151,47 @@
   =/  live=(list @da)  (comet-live recent now)
   ?.  (gte (lent live) comet-cap)  ~
   `(add (snag (dec comet-cap) live) comet-window)
+::  +$  comet-row: one page's line in /pub/comets: its mode, and the unix
+::  second its cap frees when it is at the cap.
++$  comet-row  [mode=comet-mode until=(unit @ud)]
+::  +comets-cord: /pub/comets, one line per page whose comet policy is not
+::  plain open, `<name> <mode>` or `<name> <mode> <until>`. A page not in
+::  it is open, so a publisher without the grub reads as every page open.
+++  comets-cord
+  |=  rows=(map @t comet-row)
+  ^-  @t
+  =/  l=(list [n=@t r=comet-row])
+    (sort ~(tap by rows) |=([a=[n=@t *] b=[n=@t *]] (aor n.a n.b)))
+  %-  of-wain:format
+  %+  murn  l
+  |=  [n=@t r=comet-row]
+  ^-  (unit @t)
+  ?:  &(?=(%open mode.r) ?=(~ until.r))  ~
+  :-  ~
+  %-  crip
+  ;:  weld  (trip n)  " "  (trip mode.r)
+    ?~(until.r "" (weld " " ((d-co:co 1) u.until.r)))
+  ==
+::  +comets-rows: +comets-cord read back. A line that will not read is
+::  dropped, and an unknown mode reads as %open.
+++  comets-rows
+  |=  c=@t
+  ^-  (map @t comet-row)
+  %-  ~(gas by *(map @t comet-row))
+  %+  murn  (to-wain:format c)
+  |=  l=@t
+  ^-  (unit [@t comet-row])
+  =/  r
+    %+  rush  l
+    ;~  plug
+      (cook crip (plus ;~(less ace prn)))
+      ;~(pfix ace sym)
+      (punt ;~(pfix ace dem))
+    ==
+  ?~  r  ~
+  `[-.u.r (comet-mode-of +<.u.r) +>.u.r]
+::  +unix-s: a date as unix seconds
+++  unix-s  |=(d=@da ^-(@ud ?:((lth d ~1970.1.1) 0 (div (sub d ~1970.1.1) ~s1))))
 ::
 ::  ==  grant roads  ==
 ::

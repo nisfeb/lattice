@@ -47,6 +47,10 @@
       [%tmpl-save from=path name=@tas]  ::  save page-tree `from` as template `name`
       [%tmpl-del name=@tas]             ::  delete template `name`
       [%comments pax=path on=?]         ::  turn comments on/off at pax (page or folder)
+      ::  set the comet mode at pax (open, held, off; +comet-gate:lattice-share)
+      [%comet-mode pax=path mode=@tas]
+      ::  approve (ok=&) or reject a held comet comment on page pax
+      [%comet-pending pax=path id=@ta ok=?]
       [%forms pax=path on=? cap=@ud gap=@dr]  ::  public forms: on/off + limits
       [%form-hit pax=path now=@da]      ::  record one accepted submission
       [%form-reset pax=path]            ::  zero a page's submission counter

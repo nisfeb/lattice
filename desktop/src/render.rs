@@ -21,7 +21,7 @@
 
 use urb_render::gateway;
 
-use crate::engine::{NativePage, ReadError};
+use crate::engine::{CometMode, NativePage, ReadError};
 use crate::history::Entry;
 
 /// The start list's address: a page the owner keeps, read live on the
@@ -84,8 +84,17 @@ pub enum Note {
     /// the publisher's ship took it in, and whether its page takes
     /// comments is not known (a lattice too old to say)
     Sent,
+    /// the publisher's ship took it in, to review before it appears (the
+    /// page holds comets' comments)
+    Held,
     /// the page stopped taking comments; nothing was sent, the text is kept
     Closed { body: String },
+    /// the page stopped taking comets' comments; nothing was sent, the
+    /// text is kept
+    CometsOff { body: String },
+    /// the page is at its cap of comets' comments; nothing was sent, the
+    /// text is kept
+    Full { body: String },
     /// nothing was written
     Empty,
     /// the publisher's ship refused it, in its words; the text is kept
@@ -109,11 +118,15 @@ pub enum Open {
 
 /// The comment box on a page: who comments (the reader identity's name),
 /// whether the page takes comments, and the note for the comment just sent.
+/// The reader is always a comet, so the page's comet policy (`/pub/comets`)
+/// always applies: its mode, and whether it is at its cap now.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Talk<'a> {
     pub our: Option<&'a str>,
     pub note: Option<&'a Note>,
     pub open: Open,
+    pub comets: CometMode,
+    pub full: bool,
 }
 
 /// The publisher a comment on `url` goes to: a published page's ship. A
@@ -134,6 +147,21 @@ fn talk_box(url: &str, ship: &str, talk: &Talk) -> String {
     let (note, kept) = match talk.note {
         None => (String::new(), ""),
         Some(Note::Posted) => (format!("<p class=\"note ok\" role=\"status\">Posted to {to}.</p>"), ""),
+        Some(Note::Held) => (format!("<p class=\"note ok\" role=\"status\">Sent to {to} for review.</p>"), ""),
+        Some(Note::CometsOff { body }) => (
+            format!(
+                "<p class=\"note err\" role=\"alert\">{to} has turned anonymous comments off on this page, so it \
+                 wasn't sent.</p>"
+            ),
+            body.as_str(),
+        ),
+        Some(Note::Full { body }) => (
+            format!(
+                "<p class=\"note err\" role=\"alert\">{to} is taking no more anonymous comments on this page right \
+                 now, so it wasn't sent.</p>"
+            ),
+            body.as_str(),
+        ),
         Some(Note::Closed { body }) => (
             format!("<p class=\"note err\" role=\"alert\">{to} has turned comments off on this page, so it wasn't sent.</p>"),
             body.as_str(),
@@ -170,7 +198,16 @@ fn talk_box(url: &str, ship: &str, talk: &Talk) -> String {
             body.as_str(),
         ),
     };
-    if talk.open == Open::No {
+    let off = if talk.open == Open::No {
+        Some("Comments are off on this page.")
+    } else if talk.comets == CometMode::Off {
+        Some("Anonymous comments are off on this page.")
+    } else if talk.full {
+        Some("Too many anonymous comments here right now, try again later.")
+    } else {
+        None
+    };
+    if let Some(off) = off {
         // the note's text, when there is one, is kept for the reader to copy
         let kept = if kept.is_empty() {
             String::new()
@@ -179,11 +216,12 @@ fn talk_box(url: &str, ship: &str, talk: &Talk) -> String {
         };
         return format!(
             "<section class=\"talk\" aria-labelledby=\"talk-h\"><h2 id=\"talk-h\">Comment</h2>{note}{kept}\
-             <p class=\"words talk-off\">Comments are off on this page.</p></section>"
+             <p class=\"words talk-off\">{off}</p></section>"
         );
     }
-    let (verb, done, decide) = match talk.open {
-        Open::Yes => ("Post", "Posted", ""),
+    let (verb, done, decide) = match (talk.open, talk.comets) {
+        (_, CometMode::Held) => ("Send", "Sent", " Anonymous comments are reviewed before they appear."),
+        (Open::Yes, _) => ("Post", "Posted", ""),
         _ => ("Send", "Sent", " They decide whether it appears."),
     };
     let who = match talk.our {
@@ -670,6 +708,39 @@ mod tests {
         assert!(h.contains("Comments are off on this page.") && !h.contains("talk-form") && !h.contains("<textarea"), "{h}");
         let h = at(Open::Unknown);
         assert!(h.contains(">Send to ~zod</button>") && h.contains("They decide whether it appears."), "{h}");
+    }
+
+    #[test]
+    fn the_box_follows_the_pages_comet_policy() {
+        let at = |comets: CometMode, full: bool| {
+            let talk = Talk { open: Open::Yes, comets, full, ..Talk::default() };
+            page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &talk).html
+        };
+        let h = at(CometMode::Held, false);
+        assert!(h.contains("class=\"talk-form\"") && h.contains(">Send to ~zod</button>"), "{h}");
+        assert!(h.contains("Anonymous comments are reviewed before they appear."), "{h}");
+        let h = at(CometMode::Off, false);
+        assert!(h.contains("Anonymous comments are off on this page.") && !h.contains("talk-form") && !h.contains("<textarea"), "{h}");
+        let off_and_full = at(CometMode::Off, true);
+        assert!(off_and_full.contains("Anonymous comments are off") && !off_and_full.contains("Too many"), "off wins");
+        for mode in [CometMode::Open, CometMode::Held] {
+            let h = at(mode, true);
+            assert!(h.contains("Too many anonymous comments here right now, try again later."), "{h}");
+            assert!(!h.contains("talk-form") && !h.contains("<textarea"), "{h}");
+        }
+        let h = at(CometMode::Open, false);
+        assert!(h.contains(">Post to ~zod</button>") && !h.contains("Anonymous comments"), "{h}");
+        // what became of a comment the policy turned away: the text is kept
+        let talk = |n: &Note, comets, full| {
+            let t = Talk { open: Open::Yes, comets, full, note: Some(n), ..Talk::default() };
+            page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &t).html
+        };
+        let h = talk(&Note::CometsOff { body: "b".into() }, CometMode::Off, false);
+        assert!(h.contains("turned anonymous comments off on this page, so it wasn't sent.") && h.contains(">b</textarea>"), "{h}");
+        let h = talk(&Note::Full { body: "b".into() }, CometMode::Open, true);
+        assert!(h.contains("no more anonymous comments on this page right now") && h.contains(">b</textarea>"), "{h}");
+        let h = talk(&Note::Held, CometMode::Held, false);
+        assert!(h.contains("Sent to ~zod for review.") && h.contains("talk-form"), "{h}");
     }
 
     #[test]

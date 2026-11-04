@@ -193,4 +193,20 @@
     (expect-eq !>(%open) !>((comet-mode-of:ls 'junk')))
     (expect-eq !>(%held) !>((comet-mode-of:ls %held)))
   ==
+++  test-comets-cord
+  =/  rows=(map @t comet-row:ls)
+    %-  my
+    :~  ['/a' [%held ~]]  ['/b/c' [%off ~]]  ['/d' [%open `1.800.000.000]]
+        ['/e' [%open ~]]
+    ==
+  =/  c=@t  (comets-cord:ls rows)
+  ;:  weld
+    (expect-eq !>((of-wain:format ~['/a held' '/b/c off' '/d open 1800000000'])) !>(c))
+    ::  plain open pages are left out, and the rest read back
+    (expect-eq !>((~(del by rows) '/e')) !>((comets-rows:ls c)))
+    (expect-eq !>(*(map @t comet-row:ls)) !>((comets-rows:ls '')))
+    ::  junk lines are dropped, an unknown mode is open
+    %+  expect-eq  !>((my ~[['/x' [%open ~]]]))
+    !>((comets-rows:ls (of-wain:format ~['/x weird' 'nonsense' ''])))
+  ==
 --

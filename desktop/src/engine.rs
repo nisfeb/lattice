@@ -141,9 +141,10 @@ pub trait Reads: Send + Sync {
         Err(CommentError::Failed("this reader cannot comment".into()))
     }
     /// The pages of `ship` that take comments, by the names its revision
-    /// list gives them (`/<path>`), from lattice's `/pub/comments`. `None`
-    /// when that is not known: no answer, or a lattice too old to say.
-    fn comments_open(&self, ship: &str, budget: Duration) -> Option<Vec<String>> {
+    /// list gives them (`/<path>`), from lattice's `/pub/comments`, with
+    /// each page's comet policy from `/pub/comets` beside it. `None` when
+    /// that is not known: no answer, or a lattice too old to say.
+    fn comments_open(&self, ship: &str, budget: Duration) -> Option<Opened> {
         let _ = (ship, budget);
         None
     }
@@ -153,6 +154,35 @@ pub trait Reads: Send + Sync {
         let _ = budget;
         asks.iter().map(|_| Err(ReadError::Failed("this reader cannot read boards".into()))).collect()
     }
+}
+
+/// What a publisher says of commenting: the pages that take comments
+/// (`/pub/comments`), and the comet policy of each page that is not
+/// plainly open (`/pub/comets`, empty when the publisher has none).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Opened {
+    pub names: Vec<String>,
+    pub comets: Vec<(String, Comets)>,
+}
+
+/// How a page takes comments from comets, the anonymous identities the
+/// reader comments as.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CometMode {
+    #[default]
+    Open,
+    /// taken, but reviewed before they appear
+    Held,
+    /// not taken
+    Off,
+}
+
+/// A page's comet policy: its mode, and the unix second until which it is
+/// at its cap of comet comments, when it is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Comets {
+    pub mode: CometMode,
+    pub full_until: Option<u64>,
 }
 
 /// A read of a board, one of four: a lattice forum's board or one of its
@@ -191,8 +221,8 @@ enum Job {
     /// the ship whose kept revision list is to go (`Engine::expire`)
     Expire(String),
     Comment(Comment, Said),
-    /// a publisher's `/pub/comments`, at a lattice base
-    OpenList(String, &'static str, Cord),
+    /// a publisher's `/pub/comments` or `/pub/comets`, at a lattice base
+    OpenList(String, &'static str, List, Cord),
     Board(BoardAsk, Told),
     Close(Sender<()>),
 }
@@ -445,7 +475,9 @@ impl Engine {
     /// The pages of `ship` that take comments (`Reads::comments_open`):
     /// lattice's `/pub/comments` cord, at the desk install's base first and
     /// the older base when the first has none.
-    pub fn comments_open(&self, ship: &str, budget: Duration) -> Option<Vec<String>> {
+    /// `/pub/comets` is asked for at the same time, on the same budget; a
+    /// publisher without it (an older lattice) has every page open.
+    pub fn comments_open(&self, ship: &str, budget: Duration) -> Option<Opened> {
         let start = Instant::now();
         for base in [DESK_BASE, APP_BASE] {
             let left = budget.saturating_sub(start.elapsed());
@@ -453,19 +485,28 @@ impl Engine {
                 return None;
             }
             let (tx, rx) = channel();
+            let (ctx, crx) = channel();
             {
                 let g = self.inner.lock().unwrap();
                 if !matches!(g.status, Status::Ready { .. }) {
                     return None;
                 }
                 let run = g.run.as_ref()?;
-                run.jobs.send(Job::OpenList(ship.into(), base, tx)).ok()?;
+                run.jobs.send(Job::OpenList(ship.into(), base, List::Comments, tx)).ok()?;
+                run.jobs.send(Job::OpenList(ship.into(), base, List::Comets, ctx)).ok()?;
                 if let Some(w) = &run.waker {
                     let _ = w.send(Event::Wake);
                 }
             }
             match rx.recv_timeout(left) {
-                Ok(Ok(Some(cord))) => return Some(open_names(&cord)),
+                Ok(Ok(Some(cord))) => {
+                    let left = budget.saturating_sub(start.elapsed());
+                    let comets = match crx.recv_timeout(left) {
+                        Ok(Ok(Some(c))) => comet_policies(&c),
+                        _ => Vec::new(),
+                    };
+                    return Some(Opened { names: open_names(&cord), comets });
+                }
                 // none here, or not lattice's base: the other one may be
                 Ok(Ok(None)) | Ok(Err(_)) => {}
                 Err(_) => return None,
@@ -588,7 +629,7 @@ impl Reads for Engine {
     fn expire(&self, url: &str) {
         Engine::expire(self, url)
     }
-    fn comments_open(&self, ship: &str, budget: Duration) -> Option<Vec<String>> {
+    fn comments_open(&self, ship: &str, budget: Duration) -> Option<Opened> {
         Engine::comments_open(self, ship, budget)
     }
     fn step(&self) -> &'static str {
@@ -724,8 +765,8 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                     log_line(&format!("comment to {} on {} at {}", c.ship, c.page, c.base));
                     pending.push((submit_comment(&mut host, c), Wait::Comment(tx), Instant::now()))
                 }
-                Ok(Job::OpenList(ship, base, tx)) => {
-                    pending.push((submit_open_list(&mut host, ship, base), Wait::OpenList(tx), Instant::now()))
+                Ok(Job::OpenList(ship, base, list, tx)) => {
+                    pending.push((submit_open_list(&mut host, ship, base, list), Wait::OpenList(tx), Instant::now()))
                 }
                 Ok(Job::Board(a, tx)) => {
                     log_line(&format!("board read {a:?}"));
@@ -930,14 +971,32 @@ fn submit_comment<I: urb_engine::host::Io>(host: &mut Host<I>, c: Comment) -> u6
     })
 }
 
-/// The engine's one peek, a read of no page: lattice's `/pub/comments`,
-/// the published pages that take comments, as a cord. It is under `/pub`,
-/// which lattice opens to every foreign ship as it opens the pages.
-fn submit_open_list<I: urb_engine::host::Io>(host: &mut Host<I>, ship: String, base: &str) -> u64 {
+/// The two cords the engine peeks, beside the pages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum List {
+    /// `/pub/comments`, the published pages that take comments
+    Comments,
+    /// `/pub/comets`, each page's comet policy when it is not plain open
+    Comets,
+}
+
+impl List {
+    fn name(self) -> &'static str {
+        match self {
+            List::Comments => "comments",
+            List::Comets => "comets",
+        }
+    }
+}
+
+/// The engine's one peek, a read of no page: one of lattice's lists
+/// (`List`), as a cord. It is under `/pub`, which lattice opens to every
+/// foreign ship as it opens the pages.
+fn submit_open_list<I: urb_engine::host::Io>(host: &mut Host<I>, ship: String, base: &str, list: List) -> u64 {
     host.submit(Request::Peek {
         ship,
         folder: format!("{base}/pub"),
-        name: Some("comments".into()),
+        name: Some(list.name().into()),
         conv: urb_engine::core::Conv::Cord,
         wait: Some(PEEK_WAIT_MS),
     })
@@ -962,6 +1021,29 @@ fn cord_of(r: Result<Reply, Failure>) -> Result<Option<String>, String> {
 /// `/pub/comments`'s cord: one published page's name a line
 pub fn open_names(cord: &str) -> Vec<String> {
     cord.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
+}
+
+/// `/pub/comets`'s cord: a line a page, `<name> <mode>` or
+/// `<name> <mode> <until>`, `<mode>` one of `open`, `held` or `off` and
+/// `<until>` the unix second the page's comet cap lasts to. A line that is
+/// not that is skipped; a mode not known is open.
+pub fn comet_policies(cord: &str) -> Vec<(String, Comets)> {
+    cord.lines()
+        .filter_map(|l| {
+            let t: Vec<&str> = l.split_whitespace().collect();
+            let (name, mode, until) = match t.as_slice() {
+                [n, m] => (*n, *m, None),
+                [n, m, u] => (*n, *m, Some(u.parse::<u64>().ok()?)),
+                _ => return None,
+            };
+            let mode = match mode {
+                "held" => CometMode::Held,
+                "off" => CometMode::Off,
+                _ => CometMode::Open,
+            };
+            Some((name.to_string(), Comets { mode, full_until: until }))
+        })
+        .collect()
 }
 
 /// A comment's result as the app sees it.
@@ -1043,8 +1125,8 @@ mod tests {
 
     /// The rule as a test: the engine reads, and its one write is a
     /// comment to a publisher's comment inbox. Every request it names is a
-    /// Read, a board read, that Poke, or one Peek of the publisher's list
-    /// of pages that take comments; it submits in four places, and it never
+    /// Read, a board read, that Poke, or one Peek of the publisher's lists
+    /// of pages that take comments and their comet policies; it submits in four places, and it never
     /// publishes or hears an inbox. Its forum and furum calls are the
     /// readers' read calls, by name: never a post, comment, vote or note. A
     /// change that needs any of those has to change this test on purpose.
@@ -1085,10 +1167,14 @@ mod tests {
         assert_eq!(code.matches(".submit(").count(), 4, "four submits: submit_read, submit_board, submit_comment, submit_open_list");
         assert_eq!(code.matches("submit_board(").count(), 1, "submit_board, called once");
         assert_eq!(code.matches("submit_open_list(").count(), 1, "submit_open_list, called once");
-        // the peek reads /pub/comments and nothing else
+        // the peek reads /pub/comments or /pub/comets and nothing else
         let peek = &code[code.find("fn submit_open_list<").unwrap()..];
         let peek = &peek[..peek.find("\n}\n").unwrap()];
-        assert!(peek.contains("folder: format!(\"{base}/pub\")") && peek.contains("name: Some(\"comments\".into())"), "{peek}");
+        assert!(peek.contains("folder: format!(\"{base}/pub\")") && peek.contains("name: Some(list.name().into())"), "{peek}");
+        let names = &code[code.find("impl List {").unwrap()..];
+        let names = &names[..names.find("\n}\n").unwrap()];
+        let quoted: Vec<&str> = names.split('"').skip(1).step_by(2).collect();
+        assert_eq!(quoted, ["comments", "comets"], "{names}");
         assert_eq!(code.matches("submit_read(").count(), 1, "submit_read, called once");
         assert_eq!(code.matches("submit_comment(").count(), 1, "submit_comment, called once");
         // the poke goes to the comment inbox, with lattice's comment mark
@@ -1096,6 +1182,26 @@ mod tests {
         let poke = &poke[..poke.find("\n}\n").unwrap()];
         assert!(poke.contains("name: \"comments.sig\".into()"), "{poke}");
         assert!(poke.contains("mark: (\"/lattice\".into(), \"comment-action\".into())"), "{poke}");
+    }
+
+    #[test]
+    fn comet_policies_are_read_line_by_line() {
+        let c = |mode, full_until| Comets { mode, full_until };
+        let got = comet_policies(
+            "/notes/a held\n/notes/b off\n/notes/c open 1700000000\n/notes/d held 1700000001\n\
+             /notes/e sideways\n/notes/f held soon\n/notes/g\n/notes/h off 1 2\n\n  \n",
+        );
+        assert_eq!(
+            got,
+            [
+                ("/notes/a".to_string(), c(CometMode::Held, None)),
+                ("/notes/b".to_string(), c(CometMode::Off, None)),
+                ("/notes/c".to_string(), c(CometMode::Open, Some(1_700_000_000))),
+                ("/notes/d".to_string(), c(CometMode::Held, Some(1_700_000_001))),
+                ("/notes/e".to_string(), c(CometMode::Open, None)),
+            ]
+        );
+        assert!(comet_policies("").is_empty());
     }
 
     #[test]
