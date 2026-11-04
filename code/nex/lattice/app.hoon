@@ -234,6 +234,13 @@
         ::  /pub/comments is: a reader takes its absence for "no comet
         ::  posts", the answer an older lattice gives.
             [%stay %& [/pub %forum-comets]]
+        ::  /pub/thread/<page>/list: a published page's public comments
+        ::  (+put-pub-thread), and /pub/threads the pages that have one.
+        ::  Rebuilt at every writer start from /comments, so a reload loses
+        ::  nothing. /pub/threads is %stay, read by its presence as
+        ::  /pub/comments is.
+            [%fall %| /pub/thread empty-dir:loader]
+            [%stay %& [/pub %threads]]
         ::  /forum: the forum (docs/superpowers/specs, State layout). A
         ::  board is a directory of [/ %noun] grubs, each [%1 shape], laid
         ::  by +apply-forum:
@@ -478,6 +485,8 @@
         ::  the published pages that take comments, when there is no list
         ;<  pc=(unit (set @t))  bind:m  (read-pub-comments root)
         ;<  ~  bind:m  ?^(pc (pure:(fiber:fiber:nexus ,~) ~) (put-pub-comments root))
+        ::  each published page's public comment thread (+put-pub-thread)
+        ;<  ~  bind:m  (put-pub-threads root)
         ::  the boards that take comet posts, every start: a board's public
         ::  flag may have moved under an older lattice
         ;<  ~  bind:m  (put-forum-comets root)
@@ -2227,9 +2236,22 @@
           (pure:(fiber:fiber:nexus ,(unit comet-row:ls)) ~)
         (peer-comet-row ship.u.ref rel)
       ;<  cnow=@da  bind:m  bowl-now
+      ::  the page's public thread, with the comment we just sent (the
+      ::  sent= that /comment-remote hands back) shown until it lands
+      =/  sent=(unit @t)
+        =/  t=(unit @t)  (~(get by args) 'sent')
+        ?~(t ~ ?:(=('' u.t) ~ `(end [3 max-body:lc] u.t)))
+      ;<  thr=(list [id=@ta c=comment:lc])  bind:m
+        ?:  =([~ |] copen)  (pure:(fiber:fiber:nexus ,(list [id=@ta c=comment:lc])) ~)
+        (page-thread ship.u.ref our rel ?=(^ sent))
+      =/  more=tape
+        :(weld "/apps/lattice?url=" (url-enc canon) "&call=1")
+      =/  held=?  &(?=(^ crow) ?=(%held mode.u.crow))
+      =/  tbox=tape
+        (thread-html thr our ?:(=(ship.u.ref our) ~ sent) held (~(has by args) 'call') more)
       =/  cbox=tape
-        ?:  =(ship.u.ref our)  ""
-        (remote-comment-box ship.u.ref rel copen (comet-note crow cnow))
+        ?:  =(ship.u.ref our)  tbox
+        (weld tbox (remote-comment-box ship.u.ref rel copen (comet-note crow cnow)))
       ::  a %fodt mark never comes from a lattice (its pages publish as
       ::  %html), but a peer may send one: render it once, here, for the
       ::  body and the title, uncached (it is not our page)
@@ -2895,6 +2917,7 @@
     ::  too: a ban that freed no slots left the page full (security audit run-1).
     ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
     ;<  *  bind:m  (cull-comments-of u.who)
+    ;<  ~  bind:m  (put-pub-threads up)
     ;<  *  bind:m  (cull-forum-of u.who)
     ::  the ban is written; the revocation is not. Say so: a ban that left
     ::  the grants in place is the label this route exists not to be.
@@ -3591,6 +3614,8 @@
     =/  croad=road:tarball
       (rf up (weld /comments (pax-of u.pg)) `@ta`u.id)
     ;<  *  bind:m  (cull-soft:io croad)
+    ::  and out of the page's public thread
+    ;<  ~  bind:m  (put-pub-thread up (pax-of u.pg))
     (send-ok eyre-id)
   ::
       [%'POST' %page-comments]
@@ -3723,9 +3748,14 @@
     ::  shape /comment uses for its own redirect. A plain form submit here
     ::  used to land on this route's raw JSON body, replacing the whole
     ::  reader with {"ok":true,"sent":told}.
+    ::  `sent` carries the body back, so the reader shows it as pending
+    ::  until the page's public thread has it (+thread-html)
     %+  send-see-other  eyre-id
-    %+  weld  "/apps/lattice?url="
-    (url-enc (trip (en-urb:lu u.shp (weld pub-prefix:lu (pax-of u.page)))))
+    ;:  weld
+      "/apps/lattice?url="
+      (url-enc (trip (en-urb:lu u.shp (weld pub-prefix:lu (pax-of u.page)))))
+      ?.(told "" (weld "&sent=" (url-enc (trip body))))
+    ==
   ::  post, comment or vote on a board hosted on ANOTHER ship. Owner-gated
   ::  like /comment-remote and for the same reasons: this is us, on our own
   ::  session, choosing to act on a board we read. The host decides whether it
@@ -6933,7 +6963,8 @@
     ?.  ex  (pure:m ~)
     ;<  ~  bind:m  (put-file (rf up fdir %comment-on) [/lattice %comment-flag] on.act)
     ;<  ~  bind:m  (put-pub-comments root)
-    (put-pub-comets root now)
+    ;<  ~  bind:m  (put-pub-comets root now)
+    (put-pub-threads root)
       %comet-mode
     ::  the comet mode at pax, nearest-wins as %comments is. Owner-only.
     =/  fdir=path  (weld /page pax.act)
@@ -6954,6 +6985,7 @@
     ;<  ~  bind:m  (ensure-dirs up /comments pax.act)
     ;<  ~  bind:m
       (put-file (rf up (weld /comments pax.act) id.act) [/lattice %comment] u.c)
+    ;<  ~  bind:m  (put-pub-thread up pax.act)
     (put-file (rf root /beacon %comments) [/ %json] (numb:enjs:format `@ud`now))
       %forms
     ::  set the public-form flag at pax. Same nearest-flag-wins shape as
@@ -7071,6 +7103,8 @@
   ;<  ~  bind:m  (ensure-dirs up cbase page.act)
   ;<  ~  bind:m
     (put-file (rf up (weld cbase page.act) id) [/lattice %comment] comment)
+  ::  and into the page's public thread
+  ;<  ~  bind:m  (put-pub-thread up page.act)
   ::  stamp /beacon/comments so the badge can ask "anything new?" for the
   ::  price of ONE grub read. Without it the only answer was the full inbox
   ::  — every comment body under /comments materialized and sorted, ~6s of
@@ -12004,6 +12038,10 @@
   ;<  comets=(unit @t)  bind:m
     ?~  open  (pure:(fiber:fiber:nexus ,(unit @t)) ~)
     (fetch-peer-comets shp base)
+  ::  and which pages have a public thread, asked of the same peers
+  ;<  threads=(unit @t)  bind:m
+    ?~  open  (pure:(fiber:fiber:nexus ,(unit @t)) ~)
+    (fetch-peer-threads shp base)
   ;<  all=(map @t json)  bind:m  read-peer-revs
   =/  row=json
     %-  pairs:enjs:format
@@ -12011,6 +12049,7 @@
         ['revs' (revs-json:lp got)]
         ['comments' ?~(open ~ a+(turn u.open |=(t=@t s+t)))]
         ['comets' ?~(comets ~ s+u.comets)]
+        ['threads' ?~(threads ~ s+u.threads)]
     ==
   ;<  *  bind:m
     (over-as-soft:io peer-revs-road [[/ %json] [%o (~(put by all) (scot %p shp) row)]] [/ %json])
@@ -12059,6 +12098,56 @@
   ?.  ?=(@ rn)  (pure:m ~)
   ?.  (lte (met 3 rn) 1.000.000)  (pure:m ~)
   (pure:m `rn)
+::  +fetch-peer-threads: a peer's /pub/threads (+threads-cord:lc), the
+::  pages with a public thread, ~ when it has none (an older lattice)
+++  fetch-peer-threads
+  |=  [shp=@p base=(unit path)]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ?~  base  (pure:m ~)
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-wait-in [%& %& (weld u.base /pub) %threads] shp ~s5)
+  ?.  ?=([~ %file *] ms)  (pure:m ~)
+  =/  rn=*  (sang-noun:tarball sang.u.ms)
+  ?.  ?=(@ rn)  (pure:m ~)
+  ?.  (lte (met 3 rn) 1.000.000)  (pure:m ~)
+  (pure:m `rn)
+::  +peer-thread-listed: does the peer's cached /pub/threads name `rel`?
+++  peer-thread-listed
+  |=  [shp=@p rel=path]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  all=(map @t json)  bind:m  read-peer-revs
+  =/  hit=(unit json)  (~(get by all) (scot %p shp))
+  ?.  ?=([~ %o *] hit)  (pure:m |)
+  =/  c=(unit json)  (~(get by p.u.hit) 'threads')
+  ?.  ?=([~ %s *] c)  (pure:m |)
+  (pure:m (~(has in (thread-names:lc p.u.c)) (spat rel)))
+::  +page-thread: the public thread of `shp`'s page at `rel`, oldest
+::  first. Ours is read from /pub/thread. A peer's is asked for when its
+::  /pub/threads names the page, or when `force` (we just sent one, and
+::  the cached index may predate it). ~ for anything that will not read.
+++  page-thread
+  |=  [shp=@p our=@p rel=path force=?]
+  =/  m  (fiber:fiber:nexus ,(list [id=@ta c=comment:lc]))
+  ^-  form:m
+  ?:  =(~ rel)  (pure:m ~)
+  ?:  =(shp our)
+    ;<  up=@ud  bind:m  nexus-up
+    ;<  tv=view:nexus  bind:m  (peek:fio (rf up (weld /pub/thread rel) %list) ~)
+    ?.  ?=([%file *] tv)  (pure:m ~)
+    =/  c=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.tv))))
+    (pure:m ?~(c ~ (thread-rows:lc u.c)))
+  ;<  listed=?  bind:m  (peer-thread-listed shp rel)
+  ?.  |(listed force)  (pure:m ~)
+  ;<  base=(unit path)  bind:m  (peer-base-cached shp)
+  ?~  base  (pure:m ~)
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-wait-in [%& %& :(weld u.base /pub/thread rel) %list] shp ~s5)
+  ?.  ?=([~ %file *] ms)  (pure:m ~)
+  =/  rn=*  (sang-noun:tarball sang.u.ms)
+  ?.  ?=(@ rn)  (pure:m ~)
+  (pure:m (thread-rows:lc `@t`rn))
 ::  +peer-comet-row: the peer's comet policy for its page at `rel`, by the
 ::  cached list. ~ when it says nothing, which is open.
 ++  peer-comet-row
@@ -12924,8 +13013,7 @@
   ::  single-quote cord: a double-quote tape would interpolate the css { } braces.
   %-  pure:m
   ;:  weld
-    %-  trip
-    '<style>.comments{margin-top:2rem;border-top:1px solid #8886;padding-top:1rem}.comment{margin:.7rem 0;padding:.5rem .8rem;background:#8881;border-radius:8px}.cmeta{margin:0;font-size:.85em;opacity:.7}.cbody{margin:.2rem 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.cbox{margin-top:1rem;display:flex;gap:6px}.cbox textarea{flex:1;min-height:3rem;font:inherit;padding:6px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbox button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}</style>'
+    (trip comments-css)
     thread
     box
   ==
@@ -12970,6 +13058,48 @@
   ;:  weld
     "<article class=\"comment\"><p class=\"cmeta\">"  (scow %p author.c)
     "</p><p class=\"cbody\">"  (esc (trip body.c))  "</p></article>"
+  ==
+::  +comments-css: the comment thread's and comment box's style.
+::  Single-quote cord: a double-quote tape would interpolate the css braces.
+++  comments-css
+  ^-  @t
+  '<style>.comments{margin-top:2rem;border-top:1px solid #8886;padding-top:1rem}.comment{margin:.7rem 0;padding:.5rem .8rem;background:#8881;border-radius:8px}.cmeta{margin:0;font-size:.85em;opacity:.7}.pending{opacity:.7}.cbody{margin:.2rem 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.cbox{margin-top:1rem;display:flex;gap:6px}.cbox textarea{flex:1;min-height:3rem;font:inherit;padding:6px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbox button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}</style>'
+::  +thread-page: how many of a thread's newest comments the reader shows
+::  before "show older"
+++  thread-page  ^-(@ud 50)
+::  +thread-html: a page's public thread in the reader, oldest first, the
+::  newest +thread-page of it unless `all`, with "show older" linking to
+::  `more`. `sent` is a comment we just sent: shown, marked pending (or
+::  awaiting approval when the page holds comets' comments) until the
+::  thread has it. "" when there is nothing to show.
+++  thread-html
+  |=  [cs=(list [id=@ta c=comment:lc]) our=@p sent=(unit @t) held=? all=? more=tape]
+  ^-  tape
+  =/  landed=?
+    ?~  sent  |
+    (lien cs |=([* c=comment:lc] &(=(our author.c) =(body.c u.sent))))
+  =/  n=@ud  (lent cs)
+  =/  shown=(list [id=@ta c=comment:lc])
+    ?:  |(all (lte n thread-page))  cs
+    (slag (sub n thread-page) cs)
+  =/  pend=tape
+    ?:  |(?=(~ sent) landed)  ""
+    ;:  weld
+      "<article class=\"comment pending\"><p class=\"cmeta\">"  (scow %p our)
+      ?:(held " &middot; awaiting approval" " &middot; pending")
+      "</p><p class=\"cbody\">"  (esc (trip u.sent))  "</p></article>"
+    ==
+  ?:  &(=(~ cs) =("" pend))  ""
+  ;:  weld
+    (trip comments-css)
+    "<section class=\"comments\"><h3>"  (a-co:co n)
+    ?:(=(1 n) " comment</h3>" " comments</h3>")
+    ?:  =(n (lent shown))  ""
+    :(weld "<p class=\"cmeta\"><a href=\"" (esc more) "\">show older</a></p>")
+    ^-  tape
+    (zing (turn shown |=([* c=comment:lc] (comment-html c))))
+    pend
+    "</section>"
   ==
 ::  +find-theme-css: the nearest `theme` css page AT/ABOVE pax's parent, as inline
 ::  css text, for the owner-gated browser view, which (unlike /c/) themes a page
@@ -16941,7 +17071,91 @@
     (~(put by old) nam (rev-json:lp u.rev (page-id:lp salt nam u.rev)))
   ;<  ~  bind:m  (put-file (rf root /pub %revs) [/ %json] [%o new])
   ;<  ~  bind:m  (put-pub-comment root nam ?=(^ rev))
-  (put-pub-comet root nam)
+  ;<  ~  bind:m  (put-pub-comet root nam)
+  (put-pub-thread root (snip (strip-pub:lp key)))
+::  +put-pub-thread: one page's public thread, [/pub/thread/<page> %list],
+::  and its row of [/pub %threads], from what is filed under
+::  /comments/<page> and whether /pub/comments names the page
+::  (+public-thread:lc says what shows). Written only when it changed, and
+::  gone when it would be empty: unpublished, comments off, or nothing
+::  filed. Filed comments are left alone, so turning comments on again
+::  shows them again. Run after every change to what a thread shows: a
+::  comment filed or approved, the owner's delete, the comments flag, a
+::  publish or delete. Any fiber may run it.
+++  put-pub-thread
+  |=  [up=@ud page=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  =(~ page)  (pure:m ~)
+  =/  nam=@t  (spat page)
+  ;<  open=(unit (set @t))  bind:m  (read-pub-comments up)
+  =/  on=?  &(?=(^ open) (~(has in u.open) nam))
+  ;<  filed=(list [id=@ta c=comment:lc])  bind:m
+    =/  n  (fiber:fiber:nexus ,(list [id=@ta c=comment:lc]))
+    ?.  on  (pure:n ~)
+    ;<  cv=view:nexus  bind:n  (peek-shallow:fio (rv up (weld /comments page)) ~)
+    ?.  ?=([%ball *] cv)  (pure:n ~)
+    ?~  fil.ball.cv  (pure:n ~)
+    %-  pure:n
+    %+  murn  ~(tap by contents.u.fil.ball.cv)
+    |=  [id=@ta =sang:tarball *]
+    ^-  (unit [id=@ta c=comment:lc])
+    =/  c  (mole |.(;;(comment:lc (sang-noun:tarball sang))))
+    ?~(c ~ `[id u.c])
+  =/  shown=(list [id=@ta c=comment:lc])  (public-thread:lc on filed)
+  =/  troad=road:tarball  (rf up (weld /pub/thread page) %list)
+  ;<  tv=view:nexus  bind:m  (peek:fio troad ~)
+  =/  old=(unit @t)
+    ?.  ?=([%file *] tv)  ~
+    (mole |.(;;(@t (sang-noun:tarball sang.tv))))
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    ?~  shown
+      ?.  ?=([%file *] tv)  (pure:n ~)
+      ;<  *  bind:n  (cull-soft:io troad)
+      (pure:n ~)
+    =/  new=@t  (thread-cord:lc shown)
+    ?:  =(`new old)  (pure:n ~)
+    ;<  ~  bind:n  (ensure-dirs up /pub/thread page)
+    (put-file troad [/ %noun] new)
+  (put-threads-row up nam !=(~ shown))
+::  +put-threads-row: [/pub %threads] with `nam` in it or not. Laid on
+::  the first thread, so a reader that finds it knows this lattice
+::  publishes threads, and asks for a page's only when it is named.
+++  put-threads-row
+  |=  [up=@ud nam=@t has=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf up /pub %threads) ~)
+  =/  got=(unit @t)
+    ?.  ?=([%file *] vw)  ~
+    (mole |.(;;(@t (sang-noun:tarball sang.vw))))
+  =/  cur=(set @t)  ?~(got ~ (thread-names:lc u.got))
+  =/  new=(set @t)  ?:(has (~(put in cur) nam) (~(del in cur) nam))
+  ?:  &(?=(^ got) =(new cur))  (pure:m ~)
+  ?:  &(?=(~ got) !has)  (pure:m ~)
+  (put-file (rf up /pub %threads) [/ %noun] (threads-cord:lc new))
+::  +put-pub-threads: every page's thread, for the pages /pub/comments
+::  names and for every page /pub/threads still names. Run at writer start,
+::  after a %comments flag (a folder's reaches every page under it) and
+::  after a ban's cull.
+++  put-pub-threads
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  open=(unit (set @t))  bind:m  (read-pub-comments up)
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf up /pub %threads) ~)
+  =/  had=(set @t)
+    ?.  ?=([%file *] vw)  ~
+    =/  c=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.vw))))
+    ?~(c ~ (thread-names:lc u.c))
+  =/  todo=(list @t)  ~(tap in (~(uni in had) (fall open ~)))
+  |-  ^-  form:m
+  ?~  todo  (pure:m ~)
+  =/  pax=(unit path)  (rush i.todo stap)
+  ?~  pax  $(todo t.todo)
+  ;<  ~  bind:m  (put-pub-thread up u.pax)
+  $(todo t.todo)
 ::  +pub-comments: [/pub %comments], the published pages that take comments,
 ::  one name a line, named as the revision list names them ('/<name>'). A
 ::  cord under the plain %noun mark, so a reader without lattice's marks,

@@ -39,3 +39,13 @@ blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--li
 @keyframes latbusy { from { background-position: -70% 0; } to { background-position: 170% 0; } }
 @keyframes latspin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .lbusy body::before { animation: none; background: var(--accent); opacity: .45; } .lbusy .bar .nav[data-go="reload"] { animation-duration: 2.4s; } }
+.thread { border-top: 1px solid var(--line); padding-top: 1rem; margin-bottom: 1rem; }
+.thread h2 { font-size: 1rem; margin: 0 0 .5rem; }
+.thread ol.comments { list-style: none; padding: 0; margin: 0; }
+.thread .c { margin: 0 0 .75rem; }
+.thread .by { margin: 0; font-size: .85rem; opacity: .8; }
+.thread .who { overflow-wrap: anywhere; }
+.thread .body { margin: .2rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.thread .pending .state { font-style: italic; }
+.thread details.older { margin-bottom: .75rem; }
+.thread summary { cursor: pointer; font-size: .9rem; }
