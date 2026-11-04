@@ -11,6 +11,7 @@ probes. Content at a referent may change, since it names a live page. The
 ```
 urb://~ship                the ship's published front door (its /index)
 urb://~ship/<word>/...     a published note  (bare = canonical; "word" is 2+ chars)
+urb://~ship/<folder>/      a shared folder's index, when no page or <folder>/index is published there
 urb://~ship/p/<name>/...   a programmable page, or a grub inside it
 urb://~ship/n/<rel>        a published note, explicit form
 urb://~ship/k/<rel>        a knowledge-vault entry            (reserved; store TBD)
