@@ -1,6 +1,7 @@
 // The shipless reader's one script (src/render.rs): back, forward, reload
-// and try again, and Enter in the address bar. Nothing else runs in a
-// reader page, and no inline script is allowed there.
+// and try again, Enter in the address bar, and asking again while a page
+// is checking whether it takes comments. Nothing else runs in a reader
+// page, and no inline script is allowed there.
 //
 // A reload is fresh (src/reader.rs): the page as /read?url=<u>&fresh=1, or
 // the home as /?fresh=1, which drop what the engine keeps for the page's
@@ -47,4 +48,26 @@
     e.preventDefault();
     location.replace('/read?url=' + encodeURIComponent(v) + '&fresh=1');
   });
+  // a page or board whose host hadn't said whether it takes the reader's
+  // writes says it is checking: ask twice more, a little apart, and show
+  // the answer when it comes (a reload, unless something is typed)
+  var check = document.querySelector('[data-check]');
+  var waits = [500, 2000];
+  var ask = function () {
+    var wait = waits.shift();
+    if (wait === undefined) return check.remove();
+    setTimeout(function () {
+      fetch(check.getAttribute('data-check'), { credentials: 'same-origin' })
+        .then(function (r) { return r.ok ? r.text() : ''; })
+        .then(function (t) {
+          if (t !== 'answered') return ask();
+          var typed = Array.prototype.some.call(document.querySelectorAll('.talk-form textarea, .write-form textarea, .write-form input'), function (f) {
+            return f.value !== '';
+          });
+          if (typed) check.remove();
+          else location.replace(location.href);
+        }, ask);
+    }, wait);
+  };
+  if (check) ask();
 })();

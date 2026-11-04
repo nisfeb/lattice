@@ -153,7 +153,8 @@ pub trait Reads: Send + Sync {
     }
     /// The boards of `host` that take posts and replies from comets, from
     /// lattice's `/pub/forum-comets`. `None` when the host does not say (an
-    /// older lattice, or no answer), which the reader takes as no.
+    /// older lattice, or no answer): the reader offers the form and the host
+    /// decides.
     fn forum_open(&self, host: &str, budget: Duration) -> Option<Vec<String>> {
         let _ = (host, budget);
         None
@@ -178,7 +179,9 @@ pub trait Reads: Send + Sync {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Opened {
     pub names: Vec<String>,
-    pub comets: Vec<(String, Comets)>,
+    /// `None` when `/pub/comets` gave no answer in time: the cap state is
+    /// not known, which is not the same as open
+    pub comets: Option<Vec<(String, Comets)>>,
 }
 
 /// How a page takes comments from comets, the anonymous identities the
@@ -256,7 +259,8 @@ enum Job {
 /// what the host's thread waits on
 enum Wait {
     Read(Answer, String),
-    Comment(Said),
+    /// a comment or a forum write, by its label in the log
+    Comment(Said, &'static str),
     OpenList(Cord),
     Board(Told),
 }
@@ -528,8 +532,10 @@ impl Engine {
                 Ok(Ok(Some(cord))) => {
                     let left = budget.saturating_sub(start.elapsed());
                     let comets = match crx.recv_timeout(left) {
-                        Ok(Ok(Some(c))) => comet_policies(&c),
-                        _ => Vec::new(),
+                        Ok(Ok(Some(c))) => Some(comet_policies(&c)),
+                        // an older lattice keeps no /pub/comets
+                        Ok(Ok(None)) => Some(Vec::new()),
+                        _ => None,
                     };
                     return Some(Opened { names: open_names(&cord), comets });
                 }
@@ -854,14 +860,14 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                 }
                 Ok(Job::Comment(c, tx)) => {
                     log_line(&format!("comment to {} on {} at {}", c.ship, c.page, c.base));
-                    pending.push((submit_comment(&mut host, c), Wait::Comment(tx), Instant::now()))
+                    pending.push((submit_comment(&mut host, c), Wait::Comment(tx, "comment"), Instant::now()))
                 }
                 Ok(Job::OpenList(ship, base, list, tx)) => {
                     pending.push((submit_open_list(&mut host, ship, base, list), Wait::OpenList(tx), Instant::now()))
                 }
                 Ok(Job::ForumWrite(to, w, tx)) => {
                     log_line(&format!("forum write to {to}"));
-                    pending.push((submit_forum_write(&mut host, to, w), Wait::Comment(tx), Instant::now()))
+                    pending.push((submit_forum_write(&mut host, to, w), Wait::Comment(tx, "forum write"), Instant::now()))
                 }
                 Ok(Job::Board(a, tx)) => {
                     log_line(&format!("board read {a:?}"));
@@ -892,9 +898,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                         log_line(&format!("board read in {} ms: {}", at.elapsed().as_millis(), got.is_ok()));
                         let _ = tx.send(got);
                     }
-                    Wait::Comment(tx) => {
+                    Wait::Comment(tx, what) => {
                         let got = said_of(r);
-                        log_line(&format!("comment in {} ms: {got:?}", at.elapsed().as_millis()));
+                        log_line(&format!("{what} in {} ms: {got:?}", at.elapsed().as_millis()));
                         let _ = tx.send(got);
                     }
                     Wait::OpenList(tx) => {
@@ -1302,6 +1308,8 @@ mod tests {
         assert_eq!(quoted, ["comments", "comets", "forum-comets"], "{names}");
         assert_eq!(code.matches("submit_read(").count(), 1, "submit_read, called once");
         assert_eq!(code.matches("submit_comment(").count(), 1, "submit_comment, called once");
+        // a forum write is logged as one, not as a comment
+        assert!(code.contains("Wait::Comment(tx, \"comment\")") && code.contains("Wait::Comment(tx, \"forum write\")"));
         // the poke goes to the comment inbox, with lattice's comment mark
         let poke = &code[code.find("fn submit_comment<").unwrap()..];
         let poke = &poke[..poke.find("\n}\n").unwrap()];

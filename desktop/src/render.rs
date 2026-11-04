@@ -129,7 +129,9 @@ pub struct Talk<'a> {
     pub comets: CometMode,
     /// the minutes until the page's cap of comets' comments frees, while
     /// it is at the cap
-    pub full: Option<u64>,
+    pub full: Option<u64>,    /// the publisher has not said yet whether the page takes comments, or
+    /// how it takes a comet's: the box says it is checking
+    pub checking: bool,
 }
 
 /// The publisher a comment on `url` goes to: a published page's ship. A
@@ -142,6 +144,18 @@ pub fn commentable(url: &str) -> Option<String> {
 /// `/comment`'s address for a page.
 pub fn comment_href(urb: &str) -> String {
     format!("/comment?url={}", enc(urb))
+}
+
+/// `/open`'s address for a page or board, which reader.js asks while
+/// the page says it is checking.
+pub fn open_href(urb: &str) -> String {
+    format!("/open?url={}", enc(urb))
+}
+
+/// The line a page or board shows while its host has not said whether it
+/// takes the reader's writes, `what` the words for them.
+pub fn checking_line(urb: &str, what: &str) -> String {
+    format!("<p class=\"words checking\" role=\"status\" data-check=\"{}\">Checking whether this {what}...</p>", esc(&open_href(urb)))
 }
 
 /// What a page at its cap of comets' comments says, `mins` minutes
@@ -236,7 +250,7 @@ fn talk_box(url: &str, ship: &str, talk: &Talk) -> String {
         None => format!("as this computer's anonymous reader identity, the name {to} sees as the author"),
     };
     format!(
-        "<section class=\"talk\" aria-labelledby=\"talk-h\"><h2 id=\"talk-h\">Comment</h2>{note}\
+        "<section class=\"talk\" aria-labelledby=\"talk-h\"><h2 id=\"talk-h\">Comment</h2>{note}{check}\
          <form class=\"talk-form\" method=\"post\" action=\"{action}\">\
          <textarea name=\"body\" rows=\"3\" maxlength=\"{COMMENT_MAX}\" required aria-label=\"Your comment\" \
          placeholder=\"Say something to {to}\">{kept}</textarea>\
@@ -244,6 +258,7 @@ fn talk_box(url: &str, ship: &str, talk: &Talk) -> String {
          <p class=\"words\">{done} anonymously from this computer {who}.{decide}</p></section>",
         action = esc(&comment_href(url)),
         kept = esc(kept),
+        check = if talk.checking && talk.note.is_none() { checking_line(url, "page takes comments") } else { String::new() },
     )
 }
 
