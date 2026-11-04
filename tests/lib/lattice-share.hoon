@@ -336,4 +336,49 @@
     !>((dir-rows:ls keys /site/docs |))
     (expect-eq !>(*(list dir-row:ls)) !>((dir-rows:ls keys /nowhere |)))
   ==
+::
+::  ==  page titles  ==
+::
+++  test-titles-round-trip
+  =/  rows=(map @t title-row:ls)
+    %-  ~(gas by *(map @t title-row:ls))
+    :~  ['/site/a' 1.700.000.000 'Alpha page']
+        ['/site/docs/one' 1.700.000.500 '']
+    ==
+  ;:  weld
+    (expect-eq !>(rows) !>((titles-rows:ls (titles-cord:ls rows))))
+    ::  the lines are sorted by key, tab separated
+    %+  expect-eq  !>('/site/a\091700000000\09Alpha page\0a/site/docs/one\091700000500\09')
+    !>((titles-cord:ls rows))
+  ==
+::  a title cannot break its line or its fields
+++  test-titles-clean
+  =/  rows=(map @t title-row:ls)
+    (~(gas by *(map @t title-row:ls)) ~[['/a' 5 'one\09two\0athree']])
+  %+  expect-eq  !>(`title-row:ls`[5 'one two three'])
+  !>((~(got by (titles-rows:ls (titles-cord:ls rows))) '/a'))
+::  a line that will not read is dropped, the rest kept
+++  test-titles-bad-lines
+  =/  got=(map @t title-row:ls)
+    (titles-rows:ls 'junk\0a/a\09x\09T\0a\0912\09no key\0a/b\0912\09Bee')
+  ;:  weld
+    (expect-eq !>(1) !>(~(wyt by got)))
+    (expect-eq !>(`title-row:ls`[12 'Bee']) !>((~(got by got) '/b')))
+  ==
+::  the label falls back to the name, and a folder is its name
+++  test-row-label
+  =/  rows=(map @t title-row:ls)
+    (~(gas by *(map @t title-row:ls)) ~[['/site/a' 1 'Alpha'] ['/site/b' 1 '']])
+  ;:  weld
+    (expect-eq !>("Alpha") !>((row-label:ls rows /site %a &)))
+    (expect-eq !>("b") !>((row-label:ls rows /site %b &)))
+    (expect-eq !>("c") !>((row-label:ls rows /site %c &)))
+    (expect-eq !>("docs/") !>((row-label:ls rows /site %docs |)))
+  ==
+::  titles feed +dir-rows: rels and dates
+++  test-titles-keys
+  =/  rows=(map @t title-row:ls)
+    (~(gas by *(map @t title-row:ls)) ~[['/site/a' 60 'A'] ['bad' 1 'X']])
+  %+  expect-eq  !>(`(list [rel=path when=@da])`~[[/site/a (add ~1970.1.1 ~m1)]])
+  !>((titles-keys:ls rows))
 --

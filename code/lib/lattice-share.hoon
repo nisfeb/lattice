@@ -344,4 +344,75 @@
   |=  [a=dir-row b=dir-row]
   ?:  =(when.a when.b)  (aor name.a name.b)
   (lth when.a when.b)
+::
+::  ==  page titles  ==
+::
+::  /pub/titles: each published page's title and when it last changed, for
+::  a folder's index, one line a page: `<key>\t<unix-s>\t<title>`, the key
+::  named as the revision list names it ('/site/a'). A cord under %noun, as
+::  /pub/comments is, so a reader without lattice's marks reads it as text.
+::  A folder shared with ships or groups keeps the same lines for its own
+::  pages in its `dir-index` grub, which only they may read.
++$  title-row  [when=@ud title=@t]
+::  +title-clean: a title fit for one field of a line: no tab or line
+::  break, at most +title-cap bytes
+++  title-cap  ^-(@ud 300)
+++  title-clean
+  |=  t=@t
+  ^-  @t
+  =/  c=tape
+    %+  turn  (trip (end [3 title-cap] t))
+    |=(c=@tD ?:(|(=(c '\09') =(c '\0a') =(c '\0d')) ' ' c))
+  (crip c)
+::  +titles-cord: the rows as the grub holds them, by key
+++  titles-cord
+  |=  rows=(map @t title-row)
+  ^-  @t
+  =/  l=(list [k=@t r=title-row])
+    (sort ~(tap by rows) |=([a=[k=@t *] b=[k=@t *]] (aor k.a k.b)))
+  %-  of-wain:format
+  %+  turn  l
+  |=  [k=@t r=title-row]
+  (crip :(weld (trip k) "\09" ((d-co:co 1) when.r) "\09" (trip (title-clean title.r))))
+::  +titles-rows: +titles-cord read back; a line that will not read is
+::  dropped
+++  titles-rows
+  |=  c=@t
+  ^-  (map @t title-row)
+  %-  ~(gas by *(map @t title-row))
+  %+  murn  (to-wain:format c)
+  |=  l=@t
+  ^-  (unit [@t title-row])
+  =/  t=tape  (trip l)
+  =/  i=(unit @ud)  (find "\09" t)
+  ?~  i  ~
+  =/  k=tape  (scag u.i t)
+  ?~  k  ~
+  =/  rest=tape  (slag +(u.i) t)
+  =/  j=(unit @ud)  (find "\09" rest)
+  ?~  j  ~
+  =/  w=(unit @ud)  (rush (crip (scag u.j rest)) dem)
+  ?~  w  ~
+  `[(crip k) u.w (crip (slag +(u.j) rest))]
+::  +titles-keys: the rows as +dir-rows takes them: each key's rel, and its
+::  time as a date
+++  titles-keys
+  |=  rows=(map @t title-row)
+  ^-  (list [rel=path when=@da])
+  %+  murn  ~(tap by rows)
+  |=  [k=@t r=title-row]
+  ^-  (unit [rel=path when=@da])
+  =/  p=(unit path)  (rush k stap)
+  ?~  p  ~
+  ?~  u.p  ~
+  `[u.p (add ~1970.1.1 (mul when.r ~s1))]
+::  +row-label: what a folder index shows for a row: a page's title from
+::  `rows`, else its name; a folder's name and a slash
+++  row-label
+  |=  [rows=(map @t title-row) dir=path name=@ta page=?]
+  ^-  tape
+  ?.  page  (weld (trip name) "/")
+  =/  r=(unit title-row)  (~(get by rows) (spat (snoc dir name)))
+  ?:  |(?=(~ r) =('' title.u.r))  (trip name)
+  (trip title.u.r)
 --

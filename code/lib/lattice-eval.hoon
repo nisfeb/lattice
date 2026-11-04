@@ -38,6 +38,9 @@
       [%share-dir pax=path mode=share-mode]
       ::  drop the page at pax's own share setting, so it takes its folder's
       [%share-clear pax=path]
+      ::  write the `dir-index` of the folder at pax and each folder under it:
+      ::  its pages' titles and times, for ships and groups granted it
+      [%dir-index pax=path]
       ::  re-grow every published page and the index (+pub-regrow), in
       ::  the writer so no save interleaves with its revision list
       [%pub-regrow ~]
