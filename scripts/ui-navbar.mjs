@@ -22,10 +22,10 @@ const st = () => p.evaluate(() => ({
   // outranked [hidden]{display:none} and the menu rendered open while
   // .hidden read true — the property lied, the box did not
   menuHidden: (document.getElementById('hammenu')?.getBoundingClientRect().height || 0) === 0,
-  // the entries a reader can see: export pdf ships hidden and shows only
-  // on a page whose bar holds an urb:// address
+  // the fixed entries: export pdf (#hampdf) is contextual, shown only on a
+  // page whose bar holds an urb:// address, and ui-pdf.mjs covers it
   links: [...(document.getElementById('hammenu')?.querySelectorAll('a') || [])]
-    .filter((a) => !a.hidden).map((a) => a.getAttribute('href')),
+    .filter((a) => a.id !== 'hampdf').map((a) => a.getAttribute('href')),
   // Go must be the input's NEXT element; the hamburger the bar's LAST
   goNext: document.querySelector('.bar input[name=url]')?.nextElementSibling?.textContent,
   // the omni suggest box is appended after everything and positioned
