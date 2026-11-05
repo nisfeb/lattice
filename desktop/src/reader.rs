@@ -56,7 +56,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::engine::{CometMode, Comets, CommentError, NativePage, Opened, PubComment, ReadError, Reads};
+use crate::engine::{CometMode, Comets, CommentError, NativePage, Opened, PageTitle, PubComment, ReadError, Reads};
 use crate::history::History;
 use crate::render::{self, Mode, Note, Open, Talk};
 
@@ -114,6 +114,8 @@ type Threads = HashMap<String, (Instant, Option<Vec<String>>)>;
 type Lists = HashMap<String, (Instant, Option<Vec<PubComment>>)>;
 /// The most comments the reader keeps as pending on one page.
 const PENDING_MAX: usize = 20;
+/// each publisher's `/pub/titles` (`Ctx::titles`), and when it was asked for
+type Titles = HashMap<String, (Instant, Option<Vec<PageTitle>>)>;
 
 /// This launch's reader token: 32 bytes from the OS, hex, never on disk.
 pub fn token() -> &'static str {
@@ -158,6 +160,8 @@ pub struct Ctx {
     /// by page address, the reader's own comments (author, text) sent there
     /// that its list does not hold yet
     pending: Mutex<HashMap<String, Vec<(String, String)>>>,
+    /// each publisher's page times and titles, when it was asked
+    titles: Mutex<Titles>,
 }
 
 impl Ctx {
@@ -174,6 +178,7 @@ impl Ctx {
             threads: Mutex::new(HashMap::new()),
             lists: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
+            titles: Mutex::new(HashMap::new()),
         }
     }
 
@@ -289,6 +294,21 @@ impl Ctx {
     /// rather than say comments are off, and reader.js asks again.
     fn checking(&self, ship: &str) -> bool {
         self.opens.lock().unwrap().get(ship).is_some_and(|(_, l)| l.as_ref().is_none_or(|l| l.comets.is_none()))
+    }
+
+    /// The published pages of `ship` with their times and titles, from
+    /// the list kept for `ship`, or asked for now when that is stale.
+    /// `None` when the publisher does not say (an older lattice).
+    fn titles(&self, ship: &str) -> Option<Vec<PageTitle>> {
+        let kept = self.titles.lock().unwrap().get(ship).cloned();
+        match kept {
+            Some((at, l)) if at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
+            _ => {
+                let l = self.reads.titles(ship, OPEN_BUDGET);
+                self.titles.lock().unwrap().insert(ship.to_string(), (Instant::now(), l.clone()));
+                l
+            }
+        }
     }
 
     /// The note for `url`, once.
@@ -660,7 +680,9 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
         // the app's navigation policy shows the manager for this before it
         // loads (commands.rs); this is only what a stray request sees
         ("/connect", true) => redirect(302, "/"),
-        ("/read", true) => read(ctx, req.arg("url").unwrap_or(""), Fresh::of(req, port)),
+        ("/read", true) => {
+            read(ctx, req.arg("url").unwrap_or(""), Fresh::of(req, port), req.arg("sort") == Some("date"))
+        }
         (_, false) => plain(405),
         _ => plain(404),
     }
@@ -921,8 +943,9 @@ fn from_frame(req: &Req, port: u16) -> bool {
         || req.site.as_deref().is_some_and(|s| s == "cross-site" || s == "same-site")
 }
 
-/// `/read`: the page, or why not.
-fn read(ctx: &Ctx, given: &str, fresh: Fresh) -> Resp {
+/// `/read`: the page, or why not. A folder with no page of its own lists
+/// what is published in it (`folder`), by date when `by_date`.
+fn read(ctx: &Ctx, given: &str, fresh: Fresh, by_date: bool) -> Resp {
     let url = address(given);
     // A forum or furum board first: the gateway's de_urb refuses boards
     // (501, "which this gateway does not read"), and boards.rs reads them.
@@ -940,9 +963,11 @@ fn read(ctx: &Ctx, given: &str, fresh: Fresh) -> Resp {
         if let Some(ship) = render::commentable(&url) {
             ctx.opens.lock().unwrap().remove(&ship);
             ctx.forget_threads(&ship);
+            ctx.titles.lock().unwrap().remove(&ship);
         }
         if fresh == Fresh::Asked {
-            return redirect(303, &render::read_href(&url));
+            let sort = if by_date { "&sort=date" } else { "" };
+            return redirect(303, &format!("{}{sort}", render::read_href(&url)));
         }
     }
     if let Some(at) = board {
@@ -966,11 +991,48 @@ fn read(ctx: &Ctx, given: &str, fresh: Fresh) -> Resp {
     match got {
         Ok(p) => page(ctx, &url, &p),
         Err(e) => {
+            if matches!(e, ReadError::NotPublished(_)) {
+                if let Some(r) = folder(ctx, &url, by_date) {
+                    return r;
+                }
+            }
             crate::commands::dlog(&format!("reader: {url}: {e:?}"));
             let (status, s) = render::error_page(&url, &e, Mode::Shipless, ctx.reads.step());
             shown(status, s)
         }
     }
+}
+
+/// A folder's index, for an address whose page the publisher does not
+/// have: what its revision list, just read, names under the folder, each
+/// page with its time and title from `/pub/titles` where the publisher has
+/// that (`Ctx::titles`, asked only once the folder has something in it).
+/// `None` when it names nothing there, or the address is not a published
+/// page's.
+fn folder(ctx: &Ctx, url: &str, by_date: bool) -> Option<Resp> {
+    let u = urb_engine::url::de_urb(url).ok()?;
+    if !matches!(u.mount, urb_engine::url::Mount::N) || u.rel.last().is_none_or(|l| l == "index") {
+        return None;
+    }
+    let pages = ctx.reads.pages(&u.ship)?;
+    let listed = |titles: &[PageTitle]| -> Vec<render::Listed> {
+        pages
+            .iter()
+            .map(|(key, when)| match titles.iter().find(|t| t.key == *key) {
+                Some(t) => render::Listed { key: key.clone(), when: Some(t.secs.saturating_mul(1000)), title: t.title.clone() },
+                None => render::Listed { key: key.clone(), when: *when, title: String::new() },
+            })
+            .collect()
+    };
+    if render::dir_rows(&listed(&[]), &u.rel, false).is_empty() {
+        return None;
+    }
+    let rows = render::dir_rows(&listed(&ctx.titles(&u.ship).unwrap_or_default()), &u.rel, by_date);
+    let s = render::folder_page(&u.ship, &u.rel, &rows, by_date);
+    if let Err(e) = ctx.history.add(&render::folder_url(&u.ship, &u.rel), &s.title) {
+        crate::commands::dlog(&format!("reader: {e}"));
+    }
+    Some(shown(200, s))
 }
 
 fn render_words(words: &[u8]) -> String {
@@ -1153,6 +1215,20 @@ mod tests {
         }
         fn our(&self) -> Option<String> {
             Some("~doznec-sampel-palnet".into())
+        }
+        fn pages(&self, ship: &str) -> Option<Vec<(String, Option<i64>)>> {
+            (ship == "~zod" || ship == "~bus").then(|| {
+                ["/hello", "/site", "/docs/one", "/docs/sub/two", "/docs/zed"].iter().map(|k| (k.to_string(), None)).collect()
+            })
+        }
+        /// `~zod` publishes titles (`/docs/zed` oldest, `/docs/one`
+        /// untitled); `~bus` is an older lattice without them
+        fn titles(&self, ship: &str, _: Duration) -> Option<Vec<PageTitle>> {
+            (ship == "~zod").then(|| {
+                crate::engine::page_titles(
+                    "/docs/one\t1700000000\t\n/docs/sub/two\t1600000000\tTwo\n/docs/zed\t1500000000\tZed <b>&\n",
+                )
+            })
         }
         fn comment(&self, ship: &str, page: &str, body: &str, _: Duration) -> Result<(), CommentError> {
             self.said.lock().unwrap().push((ship.into(), page.into(), body.into()));
@@ -1855,6 +1931,41 @@ mod tests {
         // a bare ~ship/path is an address too
         let (st, _) = ask(&c, &get("/read?url=~zod/hello", &cookie()));
         assert_eq!(st, 200);
+    }
+
+    #[test]
+    fn a_folder_with_no_page_lists_what_is_published_in_it() {
+        let (c, _) = ctx("folder", pages);
+        for u in ["urb%3A%2F%2F~zod%2Fdocs%2F", "urb%3A%2F%2F~zod%2Fdocs"] {
+            let (st, out) = ask(&c, &get(&format!("/read?url={u}"), &cookie()));
+            assert_eq!(st, 200, "{out}");
+            let sub = out.find("/read?url=urb%3A%2F%2F~zod%2Fdocs%2Fsub%2F\"").expect("the subfolder");
+            let one = out.find("/read?url=urb%3A%2F%2F~zod%2Fdocs%2Fone\"").expect("the page");
+            assert!(sub < one, "folders first");
+            assert!(out.contains("&amp;sort=date"), "the toggle");
+        }
+        assert_eq!(c.history.list()[0].url, "urb://~zod/docs/");
+        let (st, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2F&sort=date", &cookie()));
+        assert_eq!(st, 200);
+        assert!(out.contains("Oldest first."));
+        // titles from /pub/titles, escaped, the name where a page has none,
+        // a folder by its name; dates shown, and by date oldest first
+        let zed = out.find(">Zed &lt;b&gt;&amp;</a><time>2017-07-14</time>").expect("zed's title and date");
+        let sub = out.find(">sub/</a><time>2020-09-13</time>").expect("the folder, by its name");
+        let one = out.find(">one</a><time>2023-11-14</time>").expect("the untitled page by name");
+        assert!(zed < sub && sub < one, "oldest first");
+        assert!(!out.contains(">Two<"), "a page in a subfolder is not a row");
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2F", &cookie()));
+        let (sub, zed) = (out.find(">sub/</a>").unwrap(), out.find(">Zed &lt;b&gt;&amp;</a>").unwrap());
+        assert!(sub < out.find(">one</a>").unwrap() && out.find(">one</a>").unwrap() < zed, "folders first, then pages by name");
+        // a ship without /pub/titles: names, no dates
+        let (st, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~bus%2Fdocs%2F", &cookie()));
+        assert_eq!(st, 200, "{out}");
+        assert!(out.contains(">zed</a><time></time>") && out.contains(">one</a><time></time>"), "{out}");
+        // nothing under it, or a ship with no list: not published, as before
+        assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fnone%2F", &cookie())).0, 404);
+        assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~nec%2Fdocs%2F", &cookie())).0, 404);
+        assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2Findex", &cookie())).0, 404);
     }
 
     #[test]

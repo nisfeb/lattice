@@ -33,6 +33,21 @@
       [%del pax=path]                   ::  delete a page
       [%share pax=path mode=share-mode] ::  set a page's sharing preset
       [%share-tree pax=path mode=share-mode] ::  set every page under pax
+      ::  set (%private clears) the share setting of the FOLDER at pax,
+      ::  which every page under it with none of its own takes
+      [%share-dir pax=path mode=share-mode]
+      ::  drop the page at pax's own share setting, so it takes its folder's
+      [%share-clear pax=path]
+      ::  write the `dir-index` of the folder at pax and each folder under it:
+      ::  its pages' titles and times, for ships and groups granted it
+      [%dir-index pax=path]
+      ::  the folder at pax is shared with group `gname` (a ship's own group
+      ::  for a ship) for `mode`: noted in its `share-grants`, so pages
+      ::  added or moved in later are granted too (+grant-new)
+      [%folder-grant pax=path gname=@t mode=@t]
+      ::  the page at pax was shared with a ship by hand: its grant is its
+      ::  own, and no folder takes it back on a move
+      [%grant-own pax=path]
       ::  re-grow every published page and the index (+pub-regrow), in
       ::  the writer so no save interleaves with its revision list
       [%pub-regrow ~]

@@ -11,6 +11,7 @@
   <button data-m="clearweb" data-action="share-clearweb">clearweb</button>
 </div>
 <div id="sharewhat" class="muted sharewhat"></div>
+<div id="shvia" class="muted" hidden></div>
 <div class="row"><button id="shcopy" type="button" data-action="share-copylink">copy link</button></div>
 <div id="cwurl" class="muted"></div>
 <h3>give a ship access</h3>
@@ -40,8 +41,9 @@
   //
   // The addresses are the real ones for the target. cwUrl is the one the
   // public link below shows and the Published pages list (72-acl.js)
-  // copies, so the two can never disagree. urb:// has no folder form, so a
-  // folder's copy points at its pages instead of printing one.
+  // copies, so the two can never disagree. A folder's setting is folder
+  // sharing (app.hoon %share-dir): its pages take it, and its address is
+  // its index, urb://<ship>/<folder>/.
   const cwUrl = (target) => location.origin + api + '/c/' + target;
   // our own ship, for the urb:// address: Eyre's /~/host, asked once. ''
   // while it is on its way, null if it failed. Until then there is no
@@ -110,27 +112,74 @@
     clearweb: (u, w) => 'Clearweb: anyone with the link can read it on the web at '
       + w + ', no login needed. Any ship can also read it over Urbit ' + at(u) + '.',
   };
+  const KEEP = ' Pages added or moved in later are shared too. A page with its own '
+    + 'setting, or marked sensitive, keeps its own.';
   const FOLDER_COPY = {
-    private: SHARE_COPY.private,
-    shared: () => 'Shared: any ship can read every page in it over Urbit, each at its '
-      + 'own urb:// address (Access & groups lists them). Not on the web.',
-    clearweb: (u, w) => 'Clearweb: anyone with the link can read it on the web at '
-      + w + ', no login needed. Any ship can also read every page in it over Urbit.',
-    mixed: () => 'Mixed: the pages in this folder are not all shared the same way. '
-      + 'Access & groups lists the published ones.',
+    private: () => 'Private: the folder shares nothing. Its pages keep their own settings.',
+    shared: (u) => 'Shared: any ship can read every page in it over Urbit, with an index '
+      + at(u) + '. Not on the web.' + KEEP,
+    clearweb: (u, w) => 'Clearweb: anyone with the link can read every page in it on the web at '
+      + w + ', no login needed, and any ship over Urbit ' + at(u) + '.' + KEEP,
   };
   function paintShareCopy(m) {
     shareShown = m;
     const target = curFolder || current;
     const copy = curFolder ? FOLDER_COPY : SHARE_COPY;
     const t = target ? target + (curFolder ? '/' : '') : 'this-page';
-    const u = curFolder ? null : urbUrl(t), w = cwUrl(t);
+    const u = urbUrl(t), w = cwUrl(t);
     for (const b of document.querySelectorAll('.share button')) b.title = copy[b.dataset.m](u, w);
     $('sharewhat').textContent = copy[m] ? copy[m](u, w) : '';
-    // a folder has no urb:// form, and an unsaved page no address yet
-    $('shcopy').hidden = !!curFolder || !current;
+    // a folder answers at its index once it is shared, and an unsaved page
+    // has no address yet
+    $('shcopy').hidden = curFolder ? m === 'private' : !current;
   }
-  $('shcopy').onclick = () => copyLink(current ? pageUrb(current) : null);
+  $('shcopy').onclick = () => copyLink(curFolder ? urbUrl(curFolder + '/')
+    : current ? pageUrb(current) : null);
+
+  // ── shared via folder ────────────────────────────────────────────────────
+  // A page with no setting of its own takes its nearest folder's (the
+  // tree's `via`); one with its own setting under a shared folder may go
+  // back to the folder's. Either way the folder's settings are a click.
+  const folderOf = (path) => {
+    for (let p = path; p.includes('/');) {
+      p = p.slice(0, p.lastIndexOf('/'));
+      const f = nodes.find((x) => !x.page && x.path === p);
+      if (f && f.dshare) return f;
+    }
+    return null;
+  };
+  function paintVia() {
+    const el = $('shvia');
+    el.textContent = '';
+    const n = !curFolder && current ? nodes.find((x) => x.page && x.path === current) : null;
+    const f = n ? (n.via ? nodes.find((x) => !x.page && x.path === n.via) || { path: n.via }
+      : folderOf(n.path)) : null;
+    el.hidden = !f;
+    if (!f) return;
+    const a = document.createElement('a');
+    a.href = '#';
+    a.textContent = f.path + '/';
+    a.title = 'Open the folder\u2019s settings';
+    a.onclick = (e) => { e.preventDefault(); pickFolder(f.path); };
+    if (n.via) {
+      el.append('Shared via folder ', a, '. Pick a mode above to give this page its own.');
+      return;
+    }
+    el.append('Its own setting. Folder ', a, ' is ' + f.dshare + '. ');
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = 'use folder setting';
+    b.onclick = async () => {
+      const name = current;
+      const r = await mutate(api + '/page-share-clear?name=' + encodeURIComponent(name));
+      if (!r.ok) { st('share failed' + await errText(r), false); return; }
+      st('sharing: from folder ' + f.path);
+      await loadTree();
+      const m = nodes.find((x) => x.page && x.path === name);
+      if (name === current) showShare((m && m.share) || 'private');
+    };
+    el.append(b);
+  }
 
   function showShare(m) {
     // the grant result names "this page", so it MUST NOT outlive the page it
@@ -145,6 +194,7 @@
     // every-target-change hook the grant message does
     renderGroupAccess();
     paintShareCopy(m);
+    paintVia();
     orreryShow();
     refreshSensitive(curFolder || current);
     const target = curFolder || current;
@@ -171,7 +221,7 @@
       const m = b.dataset.m;
       // going public from private (or from a folder, which may be mixed)
       // asks first; moving between the two public modes does not
-      const was = curFolder ? null
+      const was = curFolder ? (nodes.find((x) => !x.page && x.path === curFolder) || {}).dshare
         : (nodes.find((x) => x.page && x.path === current) || {}).share;
       const pub = (x) => x === 'shared' || x === 'clearweb';
       if (pub(m) && !pub(was) && !(await askPublish())) return;
@@ -184,17 +234,19 @@
       stWork('setting ' + m + '…');
       try {
         if (curFolder) {
-          const r = await mutate(api + '/page-share-tree?name=' + encodeURIComponent(curFolder) +
+          // the folder's own setting (folder sharing): its pages take it,
+          // later ones too, and which do is the server's to say, so the
+          // tree is fetched again rather than guessed
+          const f = curFolder;
+          const r = await mutate(api + '/page-share-dir?name=' + encodeURIComponent(f) +
             '&mode=' + m);
           if (!r.ok) { st('share failed' + await errText(r), false); return; }
+          const fn = nodes.find((x) => !x.page && x.path === f);
+          if (fn) { if (m === 'private') delete fn.dshare; else fn.dshare = m; }
           showShare(m);
-          st(m === 'clearweb' ? 'published tree at /c/' + curFolder + '/' : 'tree set ' + m);
-          // share-tree sets every page under the folder. Mirror that locally
-          // instead of refetching the tree to learn what we just did.
-          for (const n of nodes)
-            if (n.page && n.path.startsWith(curFolder + '/')) n.share = m;
-          snapTree();
-          renderTree();
+          st(m === 'private' ? 'folder ' + f + ' shares nothing'
+            : m === 'clearweb' ? 'folder shared at /c/' + f + '/' : 'folder ' + f + ' shared');
+          await loadTree();
           return;
         }
         if (!current) { st('save the page first', false); return; }
@@ -204,7 +256,8 @@
         showShare(m);
         st('sharing: ' + m);
         const n = nodes.find((x) => x.page && x.path === current);
-        if (n) n.share = m;
+        if (n) { n.share = m; delete n.via; }
+        paintVia();
         snapTree();
         renderTree();
       } finally {

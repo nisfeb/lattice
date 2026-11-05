@@ -247,4 +247,206 @@
   ?|  =(p.u.l (scag (lent p.u.l) pg))
       &(mak =(pg (scag (lent pg) p.u.l)))
   ==
+::
+::  ==  folder sharing  ==
+::
+::  A folder may carry a share setting (its `share-dir` grub) that every
+::  page below it takes, at any depth, unless the page has one of its own
+::  or is sensitive. The writer keeps the taken setting on the page as its
+::  `share` grub, with a `share-via` grub naming the folder, so whatever
+::  reads `share` needs no change. These are the pure halves of that.
+::
+::  +$  dir-mode: a share setting. On a folder, %private means none.
++$  dir-mode  ?(%private %shared %clearweb)
+::  +dir-nearest: the nearest folder strictly above the page at `rel` whose
+::  setting is not %private, from `dirs` (folder path to setting)
+++  dir-nearest
+  |=  [dirs=(map path dir-mode) rel=path]
+  ^-  (unit [dir=path mode=dir-mode])
+  ?~  rel  ~
+  =/  up=path  (snip `path`rel)
+  |-  ^-  (unit [dir=path mode=dir-mode])
+  =/  hit=(unit dir-mode)  (~(get by dirs) up)
+  ?:  &(?=(^ hit) !?=(%private u.hit))  `[up u.hit]
+  ?~  up  ~
+  $(up (snip `path`up))
+::  +dir-target: what a page with no setting of its own takes: the nearest
+::  folder's, and nothing when the page is sensitive (a folder rule never
+::  shares one, it needs its own explicit setting)
+++  dir-target
+  |=  [dirs=(map path dir-mode) rel=path sens=?]
+  ^-  (unit [dir=path mode=dir-mode])
+  ?:  sens  ~
+  (dir-nearest dirs rel)
+::  +$  dir-step: what the writer does to one page. %keep: nothing. %set:
+::  take `mode` from the folder at `dir`. %drop: unpublish and forget an
+::  inherited setting.
++$  dir-step  $%([%keep ~] [%set dir=path mode=dir-mode] [%drop ~])
+::  +dir-plan: the step for a page that holds `cur` (from `via` when that
+::  is set, its own when `own`) given the folder target `tgt`. A page's
+::  own setting always wins, so it is kept, and so is a page that already
+::  holds what the folder gives.
+++  dir-plan
+  |=  [own=? via=(unit path) cur=dir-mode tgt=(unit [dir=path mode=dir-mode])]
+  ^-  dir-step
+  ?:  own  [%keep ~]
+  ?~  tgt  ?~(via [%keep ~] [%drop ~])
+  ?:  &(=(via `dir.u.tgt) =(cur mode.u.tgt))  [%keep ~]
+  [%set dir.u.tgt mode.u.tgt]
+::  +dir-effective: a page's setting, all told: its own, else the
+::  folder's (+dir-target), else %private
+++  dir-effective
+  |=  [own=(unit dir-mode) dirs=(map path dir-mode) rel=path sens=?]
+  ^-  dir-mode
+  ?^  own  u.own
+  =/  t  (dir-target dirs rel sens)
+  ?~(t %private mode.u.t)
+::  +pub-key-rel: a /pub/index key (/pub/<rel>/gmi) as the page's rel
+++  pub-key-rel
+  |=  k=path
+  ^-  (unit path)
+  ?.  ?=([%pub *] k)  ~
+  =/  r=path  t.k
+  ?~  r  ~
+  ?.  =(%gmi (rear r))  ~
+  =/  out=path  (snip `path`r)
+  ?~(out ~ `out)
+::  +$  dir-row: one line of a folder's index: a page directly in it, or a
+::  folder below it, with when it (or its newest page) was last changed
++$  dir-row  [name=@ta page=? when=@da]
+::  +dir-rows: a folder's index from the published pages `keys` (rel and
+::  last change). Folders first, then pages, each by name, as the tree
+::  sorts; `by-date` lists everything oldest to newest instead. A name can
+::  be a page and a folder both (a page with pages under it).
+++  dir-rows
+  |=  [keys=(list [rel=path when=@da]) dir=path by-date=?]
+  ^-  (list dir-row)
+  =/  n=@ud  (lent dir)
+  =|  pages=(map @ta @da)
+  =|  dirs=(map @ta @da)
+  |-  ^-  (list dir-row)
+  ?^  keys
+    =/  r=path  rel.i.keys
+    ?.  &((gth (lent r) n) =(dir (scag n r)))  $(keys t.keys)
+    =/  nom=@ta  (snag n r)
+    ?:  =(+(n) (lent r))
+      $(keys t.keys, pages (~(put by pages) nom when.i.keys))
+    =/  had=@da  (~(gut by dirs) nom *@da)
+    $(keys t.keys, dirs (~(put by dirs) nom (max had when.i.keys)))
+  =/  fs=(list dir-row)
+    (turn ~(tap by dirs) |=([k=@ta w=@da] [k | w]))
+  =/  ps=(list dir-row)
+    (turn ~(tap by pages) |=([k=@ta w=@da] [k & w]))
+  =/  by-name  |=([a=dir-row b=dir-row] (aor name.a name.b))
+  ?.  by-date
+    (weld (sort fs by-name) (sort ps by-name))
+  %+  sort  (weld fs ps)
+  |=  [a=dir-row b=dir-row]
+  ?:  =(when.a when.b)  (aor name.a name.b)
+  (lth when.a when.b)
+::
+::  ==  page titles  ==
+::
+::  /pub/titles: each published page's title and when it last changed, for
+::  a folder's index, one line a page: `<key>\t<unix-s>\t<title>`, the key
+::  named as the revision list names it ('/site/a'). A cord under %noun, as
+::  /pub/comments is, so a reader without lattice's marks reads it as text.
+::  A folder shared with ships or groups keeps the same lines for its own
+::  pages in its `dir-index` grub, which only they may read.
++$  title-row  [when=@ud title=@t]
+::  +title-clean: a title fit for one field of a line: no tab or line
+::  break, at most +title-cap bytes
+++  title-cap  ^-(@ud 300)
+++  title-clean
+  |=  t=@t
+  ^-  @t
+  =/  c=tape
+    %+  turn  (trip (end [3 title-cap] t))
+    |=(c=@tD ?:(|(=(c '\09') =(c '\0a') =(c '\0d')) ' ' c))
+  (crip c)
+::  +titles-cord: the rows as the grub holds them, by key
+++  titles-cord
+  |=  rows=(map @t title-row)
+  ^-  @t
+  =/  l=(list [k=@t r=title-row])
+    (sort ~(tap by rows) |=([a=[k=@t *] b=[k=@t *]] (aor k.a k.b)))
+  %-  of-wain:format
+  %+  turn  l
+  |=  [k=@t r=title-row]
+  (crip :(weld (trip k) "\09" ((d-co:co 1) when.r) "\09" (trip (title-clean title.r))))
+::  +titles-rows: +titles-cord read back; a line that will not read is
+::  dropped
+++  titles-rows
+  |=  c=@t
+  ^-  (map @t title-row)
+  %-  ~(gas by *(map @t title-row))
+  %+  murn  (to-wain:format c)
+  |=  l=@t
+  ^-  (unit [@t title-row])
+  =/  t=tape  (trip l)
+  =/  i=(unit @ud)  (find "\09" t)
+  ?~  i  ~
+  =/  k=tape  (scag u.i t)
+  ?~  k  ~
+  =/  rest=tape  (slag +(u.i) t)
+  =/  j=(unit @ud)  (find "\09" rest)
+  ?~  j  ~
+  =/  w=(unit @ud)  (rush (crip (scag u.j rest)) dem)
+  ?~  w  ~
+  `[(crip k) u.w (crip (slag +(u.j) rest))]
+::  +titles-keys: the rows as +dir-rows takes them: each key's rel, and its
+::  time as a date
+++  titles-keys
+  |=  rows=(map @t title-row)
+  ^-  (list [rel=path when=@da])
+  %+  murn  ~(tap by rows)
+  |=  [k=@t r=title-row]
+  ^-  (unit [rel=path when=@da])
+  =/  p=(unit path)  (rush k stap)
+  ?~  p  ~
+  ?~  u.p  ~
+  `[u.p (add ~1970.1.1 (mul when.r ~s1))]
+::  +row-label: what a folder index shows for a row: a page's title from
+::  `rows`, else its name; a folder's name and a slash
+++  row-label
+  |=  [rows=(map @t title-row) dir=path name=@ta page=?]
+  ^-  tape
+  ?.  page  (weld (trip name) "/")
+  =/  r=(unit title-row)  (~(get by rows) (spat (snoc dir name)))
+  ?:  |(?=(~ r) =('' title.u.r))  (trip name)
+  (trip title.u.r)
+::
+::  ==  folder grants to ships  ==
+::
+::  A folder shared with a ship keeps the grant in its `share-grants`
+::  (group to mode). A page made or moved in takes the grants of every
+::  folder above it, and notes them (`grant-via`), so moving it out takes
+::  back exactly those and never a grant the page was given by hand.
+::
+::  +grants-above: what the page at `rel` takes from the folders above it
+::  (`grants`, folder to group to mode), each group at its widest mode
+++  grants-above
+  |=  [grants=(map path (map @t @t)) rel=path]
+  ^-  (map @t @t)
+  ?~  rel  ~
+  =/  dir=path  (snip `path`rel)
+  =|  out=(map @t @t)
+  |-  ^-  (map @t @t)
+  =/  gs=(list [g=@t md=@t])  ~(tap by (~(gut by grants) dir ~))
+  =.  out
+    |-  ^-  (map @t @t)
+    ?~  gs  out
+    ?:  =('edit' (~(gut by out) g.i.gs ''))  $(gs t.gs)
+    $(gs t.gs, out (~(put by out) g.i.gs md.i.gs))
+  ?~  dir  out
+  $(dir (snip `path`dir))
+::  +revoke-groups: the groups a page leaving its folders loses its grant
+::  in: those of the folders that granted it (`vias`), none for a page
+::  whose grant is its own
+++  revoke-groups
+  |=  [grants=(map path (map @t @t)) vias=(list path)]
+  ^-  (set @t)
+  %-  ~(gas in *(set @t))
+  %-  zing
+  (turn vias |=(v=path ~(tap in ~(key by (~(gut by grants) v ~)))))
 --

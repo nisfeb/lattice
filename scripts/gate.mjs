@@ -220,7 +220,7 @@ const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs'];
 const TWO_SHIP = ['ui-links.mjs'];
 const shipSuites = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
-  'job-check.py', 'big-page-check.py', 'fs-old-beacon-check.sh', 'hoon-suites',
+  'job-check.py', 'big-page-check.py', 'dirshare-check.py', 'fs-old-beacon-check.sh', 'hoon-suites',
 ].filter((n) => !ONLY || ONLY.includes(n));
 //  A lane is a ~1.2 GB pier copy and a serf with a 2 GB loom that runs
 //  near 3 GB: no more lanes than suites, pinned performance cores (4), or
@@ -478,7 +478,7 @@ async function runTwo(a) {
       B_URL: b.url, B_COOKIE: b.cookie.raw, B_PIER: b.pier, A_SOCK: a.pier + '/.urb/dev/grubbery/lattice/fs' };
     for (const [name, cmd, args] of [['two-ship-links.sh', 'bash', [S + '/two-ship-links.sh']],
       ['two-ship-save.sh', 'bash', [S + '/two-ship-save.sh']], ['two-ship-comments.sh', 'bash', [S + '/two-ship-comments.sh']],
-      ['ui-links.mjs', 'node', [S + '/ui-links.mjs']]]) {
+      ['ui-links.mjs', 'node', [S + '/ui-links.mjs']], ['two-ship-dirshare.py', 'python3', [S + '/two-ship-dirshare.py']]]) {
       record(name, '~' + a.ship + '+~' + b.ship, await run(cmd, args, { env, log: `${LOGS}/${name}.log`, timeout: 1500 }));
     }
   } finally {
@@ -513,7 +513,7 @@ const flaky = results.filter((r) => r.flaky);
 const missing = shipSuites.filter((n) => !results.some((r) => r.suite === n));
 console.log(`\n${names.length - failed.length - flaky.length} passed, ${flaky.length} flaky, ${failed.length} failed, wall ${(wall / 60).toFixed(1)} min (${wall.toFixed(0)} s), logs ${LOGS}`);
 if (loads.length) console.log(`host load (1 min): mean ${(loads.reduce((a, b) => a + b, 0) / loads.length).toFixed(1)}, peak ${Math.max(...loads).toFixed(1)}, on ${cpus().length} threads`);
-if (!TWO) console.log('not run: the two-ship suites (ui-links.mjs, two-ship-links.sh, two-ship-save.sh, two-ship-comments.sh); pass --two-ship SET');
+if (!TWO) console.log('not run: the two-ship suites (ui-links.mjs, two-ship-links.sh, two-ship-save.sh, two-ship-comments.sh, two-ship-dirshare.py); pass --two-ship SET');
 if (!flag('--stall')) console.log('not run: stall-check.py; pass --stall');
 if (missing.length && fatal) console.log('never started: ' + missing.join(' '));
 if (fatal) console.log('gate error: ' + fatal);

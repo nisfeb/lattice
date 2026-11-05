@@ -229,4 +229,191 @@
     (expect-eq !>([%ok ~]) !>((comet-gate:ls [%open cg-ten] cg-comet (need until))))
     (expect-eq !>(~) !>((comet-full-until:ls cg-ten (need until))))
   ==
+::
+::  ==  folder sharing  ==
+::
+++  dirs-ab
+  ^-  (map path dir-mode:ls)
+  %-  ~(gas by *(map path dir-mode:ls))
+  :~  [/a %shared]
+      [/a/b %clearweb]
+      [/a/c %private]
+  ==
+::  a page takes the nearest folder above it, at any depth
+++  test-dir-nearest
+  ;:  weld
+    (expect-eq !>(`[/a %shared]) !>((dir-nearest:ls dirs-ab /a/x)))
+    (expect-eq !>(`[/a %shared]) !>((dir-nearest:ls dirs-ab /a/x/y/z)))
+    ::  a nested folder with its own setting wins over the outer one
+    (expect-eq !>(`[/a/b %clearweb]) !>((dir-nearest:ls dirs-ab /a/b/p)))
+    (expect-eq !>(`[/a/b %clearweb]) !>((dir-nearest:ls dirs-ab /a/b/q/p)))
+    ::  a folder set private sets nothing: the outer folder shows through
+    (expect-eq !>(`[/a %shared]) !>((dir-nearest:ls dirs-ab /a/c/p)))
+    ::  a folder's own setting is for the pages under it, not the folder
+    (expect-eq !>(`[/a %shared]) !>((dir-nearest:ls dirs-ab /a/b)))
+    (expect-eq !>(~) !>((dir-nearest:ls dirs-ab /a)))
+    ::  moved out: nothing above it, so nothing taken
+    (expect-eq !>(~) !>((dir-nearest:ls dirs-ab /z/p)))
+    (expect-eq !>(~) !>((dir-nearest:ls dirs-ab /p)))
+    (expect-eq !>(~) !>((dir-nearest:ls dirs-ab /)))
+  ==
+::  a sensitive page is never shared by a folder rule
+++  test-dir-target-sensitive
+  ;:  weld
+    (expect-eq !>(~) !>((dir-target:ls dirs-ab /a/x &)))
+    (expect-eq !>(`[/a %shared]) !>((dir-target:ls dirs-ab /a/x |)))
+    ::  but its own explicit setting still stands
+    (expect-eq !>(%shared) !>((dir-effective:ls `%shared dirs-ab /a/x &)))
+    (expect-eq !>(%private) !>((dir-effective:ls ~ dirs-ab /a/x &)))
+  ==
+::  a page's own setting wins, explicit private included
+++  test-dir-effective-override
+  ;:  weld
+    (expect-eq !>(%private) !>((dir-effective:ls `%private dirs-ab /a/x |)))
+    (expect-eq !>(%clearweb) !>((dir-effective:ls `%clearweb dirs-ab /a/x |)))
+    (expect-eq !>(%shared) !>((dir-effective:ls ~ dirs-ab /a/x |)))
+    (expect-eq !>(%clearweb) !>((dir-effective:ls ~ dirs-ab /a/b/x |)))
+    (expect-eq !>(%private) !>((dir-effective:ls ~ dirs-ab /q/x |)))
+  ==
+::  +dir-plan: what the writer does to one page
+++  test-dir-plan
+  ;:  weld
+    ::  own setting: kept whatever the folder says
+    (expect-eq !>([%keep ~]) !>((dir-plan:ls & ~ %private `[/a %shared])))
+    ::  no setting: takes the folder's
+    (expect-eq !>([%set /a %shared]) !>((dir-plan:ls | ~ %private `[/a %shared])))
+    ::  already holds it from that folder: nothing to do
+    (expect-eq !>([%keep ~]) !>((dir-plan:ls | `/a %shared `[/a %shared])))
+    ::  the folder changed mode: follow it
+    (expect-eq !>([%set /a %clearweb]) !>((dir-plan:ls | `/a %shared `[/a %clearweb])))
+    ::  same mode from another folder (moved): restamp the via
+    (expect-eq !>([%set /b %shared]) !>((dir-plan:ls | `/a %shared `[/b %shared])))
+    ::  unshared, or moved out: the inherited setting goes
+    (expect-eq !>([%drop ~]) !>((dir-plan:ls | `/a %shared ~)))
+    ::  nothing inherited and nothing to take: nothing to do
+    (expect-eq !>([%keep ~]) !>((dir-plan:ls | ~ %private ~)))
+  ==
+::  unshare end to end: the folder's setting goes, its pages drop, a page
+::  with its own setting stays, and a nested folder's pages fall back
+++  test-dir-unshare
+  =/  after=(map path dir-mode:ls)  (~(del by dirs-ab) /a)
+  ;:  weld
+    (expect-eq !>([%drop ~]) !>((dir-plan:ls | `/a %shared (dir-target:ls after /a/x |))))
+    (expect-eq !>([%keep ~]) !>((dir-plan:ls & ~ %shared (dir-target:ls after /a/x |))))
+    (expect-eq !>([%keep ~]) !>((dir-plan:ls | `/a/b %clearweb (dir-target:ls after /a/b/x |))))
+    ::  a page under a folder set private took the outer one, and drops now
+    (expect-eq !>([%drop ~]) !>((dir-plan:ls | `/a %shared (dir-target:ls after /a/c/x |))))
+  ==
+++  test-pub-key-rel
+  ;:  weld
+    (expect-eq !>(`/a/b) !>((pub-key-rel:ls /pub/a/b/gmi)))
+    (expect-eq !>(~) !>((pub-key-rel:ls /pub/gmi)))
+    (expect-eq !>(~) !>((pub-key-rel:ls /a/b/gmi)))
+    (expect-eq !>(~) !>((pub-key-rel:ls /pub/a/b)))
+  ==
+::  a folder's index: its pages and subfolders, by name or by date
+++  test-dir-rows
+  =/  keys=(list [rel=path when=@da])
+    :~  [/site/zeta ~2026.1.3]
+        [/site/alpha ~2026.1.5]
+        [/site/docs/one ~2026.1.1]
+        [/site/docs/deep/two ~2026.1.4]
+        [/other/x ~2026.1.2]
+        [/site ~2026.1.9]
+    ==
+  ;:  weld
+    %+  expect-eq
+      !>  ^-  (list dir-row:ls)
+      ~[[%docs | ~2026.1.4] [%alpha & ~2026.1.5] [%zeta & ~2026.1.3]]
+    !>((dir-rows:ls keys /site |))
+    %+  expect-eq
+      !>  ^-  (list dir-row:ls)
+      ~[[%zeta & ~2026.1.3] [%docs | ~2026.1.4] [%alpha & ~2026.1.5]]
+    !>((dir-rows:ls keys /site &))
+    %+  expect-eq
+      !>  ^-  (list dir-row:ls)
+      ~[[%deep | ~2026.1.4] [%one & ~2026.1.1]]
+    !>((dir-rows:ls keys /site/docs |))
+    (expect-eq !>(*(list dir-row:ls)) !>((dir-rows:ls keys /nowhere |)))
+  ==
+::
+::  ==  page titles  ==
+::
+++  test-titles-round-trip
+  =/  rows=(map @t title-row:ls)
+    %-  ~(gas by *(map @t title-row:ls))
+    :~  ['/site/a' 1.700.000.000 'Alpha page']
+        ['/site/docs/one' 1.700.000.500 '']
+    ==
+  ;:  weld
+    (expect-eq !>(rows) !>((titles-rows:ls (titles-cord:ls rows))))
+    ::  the lines are sorted by key, tab separated
+    %+  expect-eq  !>('/site/a\091700000000\09Alpha page\0a/site/docs/one\091700000500\09')
+    !>((titles-cord:ls rows))
+  ==
+::  a title cannot break its line or its fields
+++  test-titles-clean
+  =/  rows=(map @t title-row:ls)
+    (~(gas by *(map @t title-row:ls)) ~[['/a' 5 'one\09two\0athree']])
+  %+  expect-eq  !>(`title-row:ls`[5 'one two three'])
+  !>((~(got by (titles-rows:ls (titles-cord:ls rows))) '/a'))
+::  a line that will not read is dropped, the rest kept
+++  test-titles-bad-lines
+  =/  got=(map @t title-row:ls)
+    (titles-rows:ls 'junk\0a/a\09x\09T\0a\0912\09no key\0a/b\0912\09Bee')
+  ;:  weld
+    (expect-eq !>(1) !>(~(wyt by got)))
+    (expect-eq !>(`title-row:ls`[12 'Bee']) !>((~(got by got) '/b')))
+  ==
+::  the label falls back to the name, and a folder is its name
+++  test-row-label
+  =/  rows=(map @t title-row:ls)
+    (~(gas by *(map @t title-row:ls)) ~[['/site/a' 1 'Alpha'] ['/site/b' 1 '']])
+  ;:  weld
+    (expect-eq !>("Alpha") !>((row-label:ls rows /site %a &)))
+    (expect-eq !>("b") !>((row-label:ls rows /site %b &)))
+    (expect-eq !>("c") !>((row-label:ls rows /site %c &)))
+    (expect-eq !>("docs/") !>((row-label:ls rows /site %docs |)))
+  ==
+::  titles feed +dir-rows: rels and dates
+++  test-titles-keys
+  =/  rows=(map @t title-row:ls)
+    (~(gas by *(map @t title-row:ls)) ~[['/site/a' 60 'A'] ['bad' 1 'X']])
+  %+  expect-eq  !>(`(list [rel=path when=@da])`~[[/site/a (add ~1970.1.1 ~m1)]])
+  !>((titles-keys:ls rows))
+::
+::  ==  folder grants to ships  ==
+::
+++  grants-fg
+  ^-  (map path (map @t @t))
+  %-  ~(gas by *(map path (map @t @t)))
+  :~  [/f (~(gas by *(map @t @t)) ~[['nec' 'read']])]
+      [/f/sub (~(gas by *(map @t @t)) ~[['nec' 'edit'] ['bus' 'read']])]
+  ==
+::  a page added to a folder shared with a ship is granted to it, at any
+::  depth, and a page elsewhere is not
+++  test-grants-above-added
+  ;:  weld
+    (expect-eq !>((~(gas by *(map @t @t)) ~[['nec' 'read']])) !>((grants-above:ls grants-fg /f/a)))
+    %+  expect-eq  !>((~(gas by *(map @t @t)) ~[['nec' 'edit'] ['bus' 'read']]))
+    !>((grants-above:ls grants-fg /f/sub/deep/b))
+    (expect-eq !>(*(map @t @t)) !>((grants-above:ls grants-fg /g/a)))
+    ::  a folder's grant is for the pages under it, not the folder
+    (expect-eq !>(*(map @t @t)) !>((grants-above:ls grants-fg /f)))
+  ==
+::  moved in: the grants of where it lands; moved out: nothing from where
+::  it was
+++  test-grants-above-moved
+  ;:  weld
+    (expect-eq !>((~(gas by *(map @t @t)) ~[['nec' 'read']])) !>((grants-above:ls grants-fg /f/moved-in)))
+    (expect-eq !>(*(map @t @t)) !>((grants-above:ls grants-fg /out/moved)))
+  ==
+::  moving out takes back what the folders gave, and nothing given by hand
+++  test-revoke-groups
+  ;:  weld
+    (expect-eq !>((silt ~['nec'])) !>((revoke-groups:ls grants-fg ~[/f])))
+    (expect-eq !>((silt ~['nec' 'bus'])) !>((revoke-groups:ls grants-fg ~[/f/sub /f])))
+    (expect-eq !>(*(set @t)) !>((revoke-groups:ls grants-fg ~)))
+    (expect-eq !>(*(set @t)) !>((revoke-groups:ls grants-fg ~[/gone])))
+  ==
 --
