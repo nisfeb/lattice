@@ -1,5 +1,5 @@
 {
-  "bytes": 708279,
+  "bytes": 711328,
   "grow": 4096,
-  "why": "release 115: app.js was 704,836 bytes at release 114, plus folder sharing in the share panel and the folder menu's Share folder (#397, 2,977 bytes, 778 gzipped) and the brief button opening journal/YYYY-MM-DD first (#396, 466 bytes, 204 gzipped)."
+  "why": "release 116: app.js was 708,279 bytes at release 115, plus live shared with me (#398: the /beacon/shares listener, refetch and toast) and a share's /rev bump refetching shared with me alone instead of the tree (3,049 bytes together)."
 }
