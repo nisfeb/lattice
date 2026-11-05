@@ -1,8 +1,8 @@
 //! The shipless reader's history: the pages read without a ship, newest
 //! first, kept in `<app_data_dir>/urb/history.json` and nowhere else. It is
-//! never sent anywhere, and it is the only thing the shipless reader keeps
-//! besides the engine's own state: bookmarks, follows and comments are ship
-//! actions and are not kept locally.
+//! never sent anywhere, and with the followed folders beside it
+//! (follows.rs) it is all the shipless reader keeps besides the engine's own
+//! state: bookmarks and comments are ship actions and are not kept locally.
 
 
 use std::path::{Path, PathBuf};
@@ -39,10 +39,9 @@ impl History {
         History { file: dir.join("history.json"), lock: Mutex::new(()) }
     }
 
-    /// The folder it is kept in, which keeps the reader's other local
-    /// lists too.
-    pub fn dir(&self) -> PathBuf {
-        self.file.parent().map_or_else(PathBuf::new, Path::to_path_buf)
+    /// The folder the history is kept in.
+    pub fn dir(&self) -> &Path {
+        self.file.parent().unwrap_or(Path::new("."))
     }
 
     /// Newest first. A missing or unreadable file is an empty history.

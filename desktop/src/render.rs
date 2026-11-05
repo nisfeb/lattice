@@ -22,6 +22,7 @@
 use urb_render::gateway;
 
 use crate::engine::{CometMode, NativePage, PubComment, ReadError};
+use crate::follows::{self, Follow, Status};
 use crate::history::Entry;
 
 /// The start list's address: a page the owner keeps, read live on the
@@ -652,10 +653,30 @@ pub fn folder_url(ship: &str, dir: &[String]) -> String {
     format!("urb://{ship}/{n}{}/", dir.join("/"))
 }
 
+/// The form that follows or unfollows the folder at `url`, back to `back`
+/// (`home` or the folder).
+fn follow_form(url: &str, following: bool, back: &str, label: &str) -> String {
+    format!(
+        "<form class=\"follow\" method=\"post\" action=\"/follow?url={}\"><input type=\"hidden\" name=\"do\" \
+         value=\"{}\"><input type=\"hidden\" name=\"back\" value=\"{back}\"><button type=\"submit\">{label}</button></form>",
+        enc(url),
+        if following { "unfollow" } else { "follow" },
+    )
+}
+
+/// What a follow shows of itself: `N new`, or unavailable.
+fn follow_state(f: &Follow) -> String {
+    match (f.status, f.new_count()) {
+        (Status::Unavailable, _) => "unavailable".into(),
+        (Status::Ok, n) => format!("{n} new"),
+    }
+}
+
 /// A folder's index in the reader: each row's name (a page's title, where
 /// it has one), linking to the page or the folder, and its last change as yyyy-mm-dd, with a toggle
-/// between the two orders.
-pub fn folder_page(ship: &str, dir: &[String], rows: &[DirRow], by_date: bool) -> Shown {
+/// between the two orders, and Follow, or Following with what is new
+/// when `follow` has the folder followed.
+pub fn folder_page(ship: &str, dir: &[String], rows: &[DirRow], by_date: bool, follow: Option<&Follow>) -> Shown {
     let url = folder_url(ship, dir);
     let title = format!("{ship}/{}/", dir.join("/"));
     let by_name = read_href(&url);
@@ -665,13 +686,25 @@ pub fn folder_page(ship: &str, dir: &[String], rows: &[DirRow], by_date: bool) -
     } else {
         format!("Folders first. <a href=\"{}\">Oldest first</a>", esc(&dated))
     };
+    let follow_bar = match follow {
+        Some(f) => format!(
+            "{}<span class=\"words\">{}</span>",
+            follow_form(&url, true, "folder", "Following"),
+            esc(&follow_state(f))
+        ),
+        None => follow_form(&url, false, "folder", "Follow"),
+    };
+    let fresh: Vec<&str> = follow.map(Follow::new_keys).unwrap_or_default();
     let mut s = format!(
         "<style>.dir{{list-style:none;padding:0}}.dir li{{display:flex;gap:1em;justify-content:space-between}}\
-         .dir time{{opacity:.7}}</style><section class=\"folder\"><h1>{}</h1><p class=\"words\">{order}</p>\
-         <ul class=\"dir\">",
+         .dir li a{{flex:1}}.dir time{{opacity:.7}}.follow-bar{{display:flex;gap:1em;align-items:baseline}}</style>\
+         <section class=\"folder\"><h1>{}</h1><div class=\"follow-bar\">{follow_bar}</div>\
+         <p class=\"words\">{order}</p><ul class=\"dir\">",
         esc(&title)
     );
     for r in rows {
+        let key = format!("{}/{}", follows::folder_key(dir), r.name);
+        let new = if r.page && fresh.contains(&key.as_str()) { "<strong class=\"new\">new</strong>" } else { "" };
         let (to, shown) =
             if r.page {
                 (format!("{url}{}", r.name), if r.title.is_empty() { r.name.clone() } else { r.title.clone() })
@@ -680,7 +713,7 @@ pub fn folder_page(ship: &str, dir: &[String], rows: &[DirRow], by_date: bool) -
             };
         let when = r.when.map_or(String::new(), |ms| urb_engine::js::iso(ms).chars().take(10).collect());
         s.push_str(&format!(
-            "<li><a href=\"{}\">{}</a><time>{}</time></li>",
+            "<li>{new}<a href=\"{}\">{}</a><time>{}</time></li>",
             esc(&read_href(&to)),
             esc(&shown),
             esc(&when)
@@ -703,8 +736,10 @@ pub fn bad_address(given: &str) -> Shown {
 /// The reader's home: the address field (in the bar), the start list
 /// (the live page when `live` has it, else the compiled-in copy), and the
 /// pages read recently, with Clear history. A live start page in HTML is
-/// framed from `/raw` under `raw_key`, as a published HTML page is.
-pub fn home(live: Option<&NativePage>, raw_key: &str, recent: &[Entry], replies: &[crate::notify::Unseen]) -> Shown {
+/// framed from `/raw` under `raw_key`, as a published HTML page is. The
+/// replies to the reader's posts, then the followed folders, each with what
+/// is new in it, come before the recent reads.
+pub fn home(live: Option<&NativePage>, raw_key: &str, recent: &[Entry], replies: &[crate::notify::Unseen], followed: &[Follow]) -> Shown {
     let kind = live.map(|p| gateway::render_as(&p.mark, p.body.as_bytes()));
     let (csp, start) = if kind == Some("html") && !raw_key.is_empty() {
         (
@@ -725,6 +760,20 @@ pub fn home(live: Option<&NativePage>, raw_key: &str, recent: &[Entry], replies:
         if live.is_some() { " live" } else { "" }
     );
     main.push_str(&replies_box(replies));
+    if !followed.is_empty() {
+        main.push_str("<div class=\"recent-head\"><h2>Following</h2></div><ul class=\"recent following\">");
+        for f in followed {
+            let url = folder_url(&f.ship, &follows::rel(&f.folder));
+            main.push_str(&format!(
+                "<li><a href=\"{}\">{}</a> <span class=\"when\">{}</span> {}</li>",
+                esc(&read_href(&url)),
+                esc(&format!("{}{}/", f.ship, f.folder)),
+                esc(&follow_state(f)),
+                follow_form(&url, true, "home", "Unfollow")
+            ));
+        }
+        main.push_str("</ul>");
+    }
     main.push_str("<div class=\"recent-head\"><h2>Recently read</h2>");
     if !recent.is_empty() {
         main.push_str(
@@ -1052,13 +1101,13 @@ mod tests {
         let t = Talk { our: Some("~doznec-sampel-palnet"), comments: &cs, new_after: Some(1_730_000_000_000), ..Talk::default() };
         let h = page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &t).html;
         assert_eq!(h.matches("new reply to you").count(), 1, "{h}");
-        let none = home(None, "", &[], &[crate::notify::Unseen { url: "urb://~zod/a".into(), title: "A".into(), count: 0 }]);
+        let none = home(None, "", &[], &[crate::notify::Unseen { url: "urb://~zod/a".into(), title: "A".into(), count: 0 }], &[]);
         assert!(!none.html.contains("to your posts"));
         let u = [
             crate::notify::Unseen { url: "urb://~zod/a".into(), title: "A <b>".into(), count: 2 },
             crate::notify::Unseen { url: "urb://~wep/forum/g/7".into(), title: String::new(), count: 1 },
         ];
-        let h = home(None, "", &[], &u).html;
+        let h = home(None, "", &[], &u, &[]).html;
         assert!(h.contains("3 new replies to your posts"), "{h}");
         assert!(h.contains("href=\"/read?url=urb%3A%2F%2F~zod%2Fa\">A &lt;b&gt;</a>"), "{h}");
         assert!(h.contains(">urb://~wep/forum/g/7</a>"), "{h}");
@@ -1066,21 +1115,21 @@ mod tests {
 
     #[test]
     fn home_shows_the_start_list_and_recent_reads() {
-        let s = home(None, "", &[], &[]);
+        let s = home(None, "", &[], &[], &[]);
         assert!(s.html.contains("<h1>lattice</h1>"), "the compiled-in copy");
         assert!(s.html.contains("href=\"/read?url=urb%3A%2F%2F~nisfeb%2Fsite%2Flattice%2Flattice\""));
         assert!(s.html.contains("kept only on this computer") && !s.html.contains("Clear history"));
         let live = native("# Live list\n=> urb://~nec/x A page", "gmi");
         let recent = [Entry { url: "urb://~zod/a".into(), title: "A <page>".into(), at: 1 }];
-        let s = home(Some(&live), "", &recent, &[]);
+        let s = home(Some(&live), "", &recent, &[], &[]);
         assert!(s.html.contains("<h1>Live list</h1>") && !s.html.contains("<h1>lattice</h1>"));
         assert!(s.html.contains("<a href=\"/read?url=urb%3A%2F%2F~zod%2Fa\">A &lt;page&gt;</a>"));
         assert!(s.html.contains("action=\"/history/clear\""));
         // a start page that is not gemtext is not trusted into the home
-        let s = home(Some(&native("<script>x</script>", "html")), "", &[], &[]);
+        let s = home(Some(&native("<script>x</script>", "html")), "", &[], &[], &[]);
         assert!(s.html.contains("<h1>lattice</h1>") && !s.html.contains("<script>x"));
         // an HTML start page is framed from /raw, as a published HTML page is
-        let s = home(Some(&native("<h1>Styled</h1><script>x</script>", "html")), "k1", &recent, &[]);
+        let s = home(Some(&native("<h1>Styled</h1><script>x</script>", "html")), "k1", &recent, &[], &[]);
         assert_eq!(s.csp, FRAMED);
         assert!(s.html.contains(&format!(
             "<iframe class=\"pub\" title=\"urb://~nisfeb/start\" sandbox=\"{FRAME_SANDBOX}\" \
@@ -1088,12 +1137,12 @@ mod tests {
         )));
         assert!(!s.html.contains("<h1>lattice</h1>") && !s.html.contains("Styled") && !s.html.contains("<script>x"));
         assert!(s.html.find("</iframe>").unwrap() < s.html.find("Recently read").unwrap());
-        assert_eq!(home(Some(&live), "", &recent, &[]).csp, OWN);
+        assert_eq!(home(Some(&live), "", &recent, &[], &[]).csp, OWN);
     }
 
     #[test]
     fn the_bar_has_back_forward_and_reload() {
-        for s in [home(None, "", &[], &[]), page(PAGE, &native("# Hi", "gmi"), Mode::Shipless, "", &Talk::default()), bad_address("x")] {
+        for s in [home(None, "", &[], &[], &[]), page(PAGE, &native("# Hi", "gmi"), Mode::Shipless, "", &Talk::default()), bad_address("x")] {
             let nav = s.html.split("<nav>").nth(1).unwrap().split("</nav>").next().unwrap();
             let order: Vec<&str> = nav.match_indices("data-go=\"").map(|(i, _)| nav[i + 9..].split('"').next().unwrap()).collect();
             assert_eq!(order, ["back", "forward", "reload"]);
@@ -1171,7 +1220,7 @@ mod tests {
             DirRow { name: "<b>&\"x".into(), page: false, when: Some(1_700_000_000_000), ..Default::default() },
             DirRow { name: "p'<i>".into(), page: true, when: None, ..Default::default() },
         ];
-        let s = folder_page("~zod", &dir("a<b>"), &rows, false);
+        let s = folder_page("~zod", &dir("a<b>"), &rows, false, None);
         assert!(!s.html.contains("<b>&") && !s.html.contains("<i>") && !s.html.contains("a<b>"), "{}", s.html);
         assert!(s.html.contains("&lt;b&gt;&amp;&#34;x/"), "{}", s.html);
         assert!(s.html.contains("<time>2023-11-14</time>"));
@@ -1180,7 +1229,7 @@ mod tests {
         assert!(s.html.contains(&esc(&format!("{}&sort=date", read_href("urb://~zod/a<b>/")))));
         // a one-letter first name would read as a mount
         assert_eq!(folder_url("~zod", &dir("k/x")), "urb://~zod/n/k/x/");
-        assert!(folder_page("~zod", &dir("a"), &rows, true).html.contains("Oldest first."));
+        assert!(folder_page("~zod", &dir("a"), &rows, true, None).html.contains("Oldest first."));
     }
 
     #[test]
@@ -1193,7 +1242,7 @@ mod tests {
         let rows = dir_rows(&k, &dir("d"), false);
         assert_eq!(rows[0], DirRow { name: "s".into(), page: false, when: Some(3_000), title: String::new() });
         assert_eq!(rows[1].title, "Alpha <one>");
-        let s = folder_page("~zod", &dir("d"), &rows, false);
+        let s = folder_page("~zod", &dir("d"), &rows, false, None);
         assert!(s.html.contains(">Alpha &lt;one&gt;</a>") && !s.html.contains("<one>"), "{}", s.html);
         assert!(s.html.contains(">b</a>"), "an empty title falls back to the name: {}", s.html);
         assert!(s.html.contains(">s/</a>") && !s.html.contains("Inside"), "{}", s.html);

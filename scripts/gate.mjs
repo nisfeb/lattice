@@ -18,7 +18,7 @@
 //
 //    --lanes N        clones to run the ship suites on (default: 4, or fewer
 //                     when fewer suites run or memory is short)
-//    --two-ship SET   also run ui-links, ui-shares-live, two-ship-links.sh
+//    --two-ship SET   also run ui-links, ui-shares-live, ui-follow-live, two-ship-links.sh
 //                     and two-ship-save.sh (with --only naming any of
 //                     them, just those) with A = the base ship and B = the
 //                     ship of fleet set SET (lattice installed, not ~mec,
@@ -218,7 +218,7 @@ async function live(url, cookie, stamp, secs = 900) {
 const browser = (f) => /puppeteer|lib\/harness\.mjs/.test(readFileSync(S + '/' + f, 'utf8'));
 const uis = readdirSync(S).filter((f) => /^ui-.*\.mjs$/.test(f)).sort();
 const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs'];
-const TWO_SHIP = ['ui-links.mjs', 'ui-shares-live.mjs'];
+const TWO_SHIP = ['ui-links.mjs', 'ui-shares-live.mjs', 'ui-follow-live.mjs'];
 const shipSuites = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
   'job-check.py', 'big-page-check.py', 'dirshare-check.py', 'fs-old-beacon-check.sh', 'hoon-suites',
@@ -480,7 +480,7 @@ async function runTwo(a) {
     const twos = [['two-ship-links.sh', 'bash', [S + '/two-ship-links.sh']],
       ['two-ship-save.sh', 'bash', [S + '/two-ship-save.sh']], ['two-ship-comments.sh', 'bash', [S + '/two-ship-comments.sh']],
       ['two-ship-notify.sh', 'bash', [S + '/two-ship-notify.sh']],
-      ['ui-links.mjs', 'node', [S + '/ui-links.mjs']], ['ui-shares-live.mjs', 'node', [S + '/ui-shares-live.mjs']],
+      ['ui-links.mjs', 'node', [S + '/ui-links.mjs']], ['ui-shares-live.mjs', 'node', [S + '/ui-shares-live.mjs']], ['ui-follow-live.mjs', 'node', [S + '/ui-follow-live.mjs']],
       ['two-ship-dirshare.py', 'python3', [S + '/two-ship-dirshare.py']]];
     //  --only naming a two-ship suite runs just the ones it names
     const named = ONLY && twos.some(([n]) => ONLY.includes(n));
@@ -519,7 +519,7 @@ const flaky = results.filter((r) => r.flaky);
 const missing = shipSuites.filter((n) => !results.some((r) => r.suite === n));
 console.log(`\n${names.length - failed.length - flaky.length} passed, ${flaky.length} flaky, ${failed.length} failed, wall ${(wall / 60).toFixed(1)} min (${wall.toFixed(0)} s), logs ${LOGS}`);
 if (loads.length) console.log(`host load (1 min): mean ${(loads.reduce((a, b) => a + b, 0) / loads.length).toFixed(1)}, peak ${Math.max(...loads).toFixed(1)}, on ${cpus().length} threads`);
-if (!TWO) console.log('not run: the two-ship suites (ui-links.mjs, ui-shares-live.mjs, two-ship-links.sh, two-ship-save.sh, two-ship-comments.sh, two-ship-notify.sh, two-ship-dirshare.py); pass --two-ship SET');
+if (!TWO) console.log('not run: the two-ship suites (ui-links.mjs, ui-shares-live.mjs, ui-follow-live.mjs, two-ship-links.sh, two-ship-save.sh, two-ship-comments.sh, two-ship-notify.sh, two-ship-dirshare.py); pass --two-ship SET');
 if (!flag('--stall')) console.log('not run: stall-check.py; pass --stall');
 if (missing.length && fatal) console.log('never started: ' + missing.join(' '));
 if (fatal) console.log('gate error: ' + fatal);

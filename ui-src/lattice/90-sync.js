@@ -140,6 +140,7 @@
   // arrive as upd events, exactly as before.
   let streamLive = false;
   let lastShares = '';
+  let lastFolds = '';
   let beaconTimer = null;
   // a share stamps /beacon/shares and then /rev, the file this keep wakes
   // on (+bump-shares). Its payload names that /rev, so a debounce window
@@ -296,6 +297,18 @@
               const nr = /"rev"\s*:\s*"?(\d+)/.exec(data);
               if (nr) sharesRevs.add(nr[1]);
               if (name.slice(0, 3) !== 'old' || was) refreshInboxBadge(true);
+              continue;
+            }
+            // /folds: a followed folder changed, or a share notice landed
+            // under one (69x-follow.js). Its /rev is quiet, as a share's.
+            if (name.slice(-7) === ' /folds') {
+              if (data === lastFolds) continue;
+              const was = lastFolds;
+              lastFolds = data;
+              const fr = /"rev"\s*:\s*"?(\d+)/.exec(data);
+              if (fr) sharesRevs.add(fr[1]);
+              if (name.slice(0, 3) !== 'old') foldsBumped(data);
+              else if (was) loadFolds();
               continue;
             }
             if (name.slice(-5) !== ' /rev') {

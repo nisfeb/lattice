@@ -291,6 +291,9 @@
         ::  /sub/follows: the ships this user follows. A covering file row
         ::  (not an empty-dir) so the set survives reload.
             [%fall %& [/sub %follows] [[/lattice %sub-follows] *follows:lp]]
+        ::  /sub/folders: the shared folders this reader follows, with what
+        ::  each listed when last read and what was seen (+fold:ls)
+            [%fall %& [/sub %folders] [[/ %noun] `folds:ls`[%1 ~]]]
         ::  /sub/pages/: one grub per live per-file subscription. Each grub's
         ::  on-file spawns a keep fiber that wakes whenever the peer edits that
         ::  remote page. /sub + /unsub make/cull these grubs.
@@ -341,6 +344,9 @@
         ::  an activity item arrives, before the /rev bump that wakes the
         ::  editor's keep, which then refetches only the inbox counts
             [%fall %& [/beacon %notify] [[/ %json] (numb:enjs:format 0)]]
+        ::  /beacon/folds: stamped by +bump-folds when a followed folder
+        ::  changes: new pages, unavailable, or a share notice under it
+            [%fall %& [/beacon %folds] [[/ %json] (numb:enjs:format 0)]]
         ::  /idx: the grub-native term index (docs/native-index.md). 256 bucket
         ::  grubs, each term -> (key -> [scope tf]). ONE covering %fall row. A
         ::  nexus reload rewrites its whole covered subtree, so without a row
@@ -546,6 +552,7 @@
                   =(%notify-read (head !<(eval-action:le q.sage)))
               ==
             (pure:m ~)
+          ?:  =([/lattice %fold-action] p.sage)  (pure:m ~)
           ?:  =([/lattice %know-action] p.sage)  (bump-beacon %know now)
           ?:  =([/lattice %know-batch] p.sage)  (bump-beacon %know now)
           ;<  hold=?  bind:m  (pub-holds-beacon root now sage)
@@ -3079,6 +3086,19 @@
       %+  poke:io  (rf up / %'shares.sig')
       [[/lattice %share-notice] `action:ls`[%del u.hp p.pp]]
     (send-ok eyre-id)
+  ::  followed folders (+read-folds): the list, follow, unfollow, read
+  ::  again (one, or every one with no host), and a page seen
+      [%'GET' %folder-follows]
+    ;<  fs=(list fold:ls)  bind:m  read-folds
+    (send-json eyre-id a+(turn fs fold-json))
+      [%'POST' %folder-follow]
+    (handle-folder eyre-id args our %add)
+      [%'POST' %folder-unfollow]
+    (handle-folder eyre-id args our %del)
+      [%'POST' %folder-check]
+    (handle-folder eyre-id args our ?:((~(has by args) 'host') %check %check-all))
+      [%'POST' %folder-seen]
+    (handle-folder eyre-id args our %seen)
   ::  link-make / link-unmake: move a page shared with us into our own tree
   ::  as a link (/lib/lattice-link), and back out. Owner only: neither is in
   ::  +wants:ky, so no key reaches them.
@@ -5992,6 +6012,8 @@
     (apply-history root now !<(history-action:lh q.sage))
   ?:  =([/lattice %key-action] p.sage)
     (apply-key root !<(key-action:ky q.sage))
+  ?:  =([/lattice %fold-action] p.sage)
+    (apply-fold root now !<(fold-action:ls q.sage))
   (refuse "a poke with an unknown mark: {<p.sage>}")
 ::  +bump-beacon: write `now` to a change beacon, /rev for pages and /know
 ::  for memories. A distinct value each call
@@ -11354,6 +11376,7 @@
     ;<  ~  bind:m
       %^  put-file  (rf root / %shared)  [/lattice %shared]
       (put-entry:ls cur [u.src pax.u.na mode.u.na now])
+    ;<  *  bind:m  (fold-stale root u.src pax.u.na now)
     (bump-shares root 'add' u.src pax.u.na now)
   ::
       %del
@@ -11370,8 +11393,9 @@
         %-  put-links
         %+  turn  hits
         |=([rel=path l=link:ll] [rel (fail:ll l now)])
+      ;<  hit=?  bind:m  (fold-stale root u.src pax.u.na now)
       ?.  (lien cur |=(e=entry:ls &(=(host.e u.src) =(pax.e pax.u.na))))
-        (pure:m ~)
+        ?.(hit (pure:m ~) (bump-beacon %rev now))
       ;<  ~  bind:m
         %^  put-file  (rf root / %shared)  [/lattice %shared]
         (del-entry:ls cur u.src pax.u.na)
@@ -11418,6 +11442,205 @@
         ['rev' (numb:enjs:format `@ud`now)]
     ==
   (bump-beacon %rev now)
+::  ==  followed folders  ==
+::
+::  A reader follows a folder another ship shared (+fold:ls), on a planet
+::  or moon. The follower pulls: it reads the folder's index (+read-fold)
+::  when the editor opens and every 20 minutes while it is open, which asks
+::  nothing new of the publisher. A share notice from the host under a
+::  followed folder (a page it grants, or takes back) stamps the folder
+::  stale (+fold-stale), and the open editor reads it at once.
+::
+::  /beacon/folds is the hook for anything that wants to know: its payload
+::  is {op, host, path, new, ok, rev}, op 'new' when a read finds more new
+::  pages than before, 'gone' when the folder stops reading, 'stale' for a
+::  notice under it, and 'list' for a follow, unfollow or seen.
+::
+::  +read-folds: the follows, none when absent or unreadable
+++  read-folds
+  =/  m  (fiber:fiber:nexus ,(list fold:ls))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf up /sub %folders) ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  =/  fs=(unit folds:ls)  (mole |.(;;(folds:ls (sang-noun:tarball sang.vw))))
+  (pure:m ?~(fs ~ l.u.fs))
+::  +read-fold: a peer's folder, every page under it by key with its title
+::  and last change: the folder's dir-index, which only a granted ship
+::  reads, else the published pages under it (/pub/titles, then
+::  /pub/index). ~ when nothing reads: unshared, or never shared.
+++  read-fold
+  |=  [shp=@p rel=path]
+  =/  m  (fiber:fiber:nexus ,(unit (map @t title-row:ls)))
+  ^-  form:m
+  ?~  rel  (pure:m ~)
+  ;<  gix=(unit (map @t title-row:ls))  bind:m  (peer-dir-index shp rel)
+  ?^  gix  (pure:m gix)
+  ;<  tits=(map @t title-row:ls)  bind:m  (read-titles-any shp)
+  =/  pub=(map @t title-row:ls)  (fold-under:ls tits rel)
+  ?^  pub  (pure:m `pub)
+  ;<  ix=(unit pub-index:lp)  bind:m  (read-pub-index-any shp)
+  ?~  ix  (pure:m ~)
+  =/  all=(map @t title-row:ls)
+    %-  ~(gas by *(map @t title-row:ls))
+    %+  murn  ~(tap by u.ix)
+    |=  [k=path r=pub-row:lp]
+    ^-  (unit [@t title-row:ls])
+    (bind (pub-key-rel:ls k) |=(p=path [(spat p) (unix-s:ls updated.r) '']))
+  =/  got=(map @t title-row:ls)  (fold-under:ls all rel)
+  (pure:m ?~(got ~ `got))
+::  +apply-fold: one fold-action in the writer. The beacons move only when
+::  something a reader sees changed, so a quiet read every 20 minutes wakes
+::  no open tab.
+++  apply-fold
+  |=  [root=@ud now=@da act=fold-action:ls]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  fs=(list fold:ls)  bind:m  read-folds
+  =/  new=(list fold:ls)  (fold-act:ls fs act now)
+  ;<  ~  bind:m  (put-file (rf root /sub %folders) [/ %noun] `folds:ls`[%1 new])
+  =/  who=[host=@p rel=path]  (fold-who:ls act)
+  =/  was=(unit fold:ls)  (fold-get:ls fs who)
+  =/  now-f=(unit fold:ls)  (fold-get:ls new who)
+  =/  n0=@ud  ?~(was 0 (fold-new:ls u.was))
+  =/  n1=@ud  ?~(now-f 0 (fold-new:ls u.now-f))
+  =/  ok=?  ?~(now-f | ok.u.now-f)
+  =/  op=(unit @t)
+    ?.  ?=(%read -.act)  `'list'
+    ?~  was  ~
+    ?:  &(ok.u.was !ok)  `'gone'
+    ?:  (gth n1 n0)  `'new'
+    ?:  |(!=(n1 n0) !=(ok.u.was ok))  `'list'
+    ~
+  ?~  op  (pure:m ~)
+  (bump-folds root u.op host.who rel.who n1 ok now)
+::  +bump-folds: stamp /beacon/folds, then /rev, which the editor's keep
+::  wakes on, as +bump-shares does. The payload's rev is that /rev, so a
+::  tab refetches its follows and not its tree (90-sync.js).
+++  bump-folds
+  |=  [root=@ud op=@t host=@p rel=path new=@ud ok=? now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m
+    %^  put-file  (rf root /beacon %folds)  [/ %json]
+    %-  pairs:enjs:format
+    :~  ['t' s+(scot %da now)]
+        ['op' s+op]
+        ['host' s+(scot %p host)]
+        ['path' s+(spat rel)]
+        ['new' (numb:enjs:format new)]
+        ['ok' b+ok]
+        ['rev' (numb:enjs:format `@ud`now)]
+    ==
+  (bump-beacon %rev now)
+::  +fold-stale: a share notice from `host` for the page `pax`. Under a
+::  followed folder, /beacon/folds says so, and the /rev the notice's own
+::  +bump-shares stamps carries it to the open editor, which reads the
+::  folder again. Nothing is read here: the inbox never waits on a peer.
+++  fold-stale
+  |=  [root=@ud host=@p pax=path now=@da]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  fs=(list fold:ls)  bind:m  read-folds
+  =/  hit=(list fold:ls)  (fold-hit:ls fs host pax)
+  ?~  hit  (pure:m |)
+  ;<  ~  bind:m
+    %^  put-file  (rf root /beacon %folds)  [/ %json]
+  %-  pairs:enjs:format
+  :~  ['t' s+(scot %da now)]
+      ['op' s+'stale']
+      ['host' s+(scot %p host)]
+      ['path' s+(spat rel.i.hit)]
+      ['new' (numb:enjs:format (fold-new:ls i.hit))]
+      ['ok' b+ok.i.hit]
+      ['rev' (numb:enjs:format `@ud`now)]
+  ==
+  (pure:m &)
+::  +fold-json: one follow for the editor
+++  fold-json
+  |=  f=fold:ls
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['host' s+(scot %p host.f)]
+      ['path' s+(spat rel.f)]
+      ['ok' b+ok.f]
+      ['new' (numb:enjs:format (fold-new:ls f))]
+      ['at' (numb:enjs:format (unix-s:ls at.f))]
+      :-  'pages'
+      :-  %a
+      %+  turn  (sort ~(tap by late.f) |=([a=[k=@t *] b=[k=@t *]] (aor k.a k.b)))
+      |=  [k=@t r=title-row:ls]
+      =/  s=(unit @ud)  (~(get by seen.f) k)
+      %-  pairs:enjs:format
+      :~  ['key' s+k]
+          ['title' s+title.r]
+          ['when' (numb:enjs:format when.r)]
+          ['new' b+|(?=(~ s) (gth when.r u.s))]
+      ==
+  ==
+::  +fold-args: host= and path= of a folder route, a peer's folder
+++  fold-args
+  |=  args=(map @t @t)
+  ^-  (each [host=@p rel=path] @t)
+  =/  ht=(unit @t)  (~(get by args) 'host')
+  ?~  ht  [%| 'missing host']
+  =/  hp=(unit @p)  (slaw %p u.ht)
+  ?~  hp  [%| 'bad host']
+  =/  pt=(unit @t)  (~(get by args) 'path')
+  ?~  pt  [%| 'missing path']
+  =/  pp=(unit path)  (rush (crip (trip-slash u.pt)) stap)
+  ?~  pp  [%| 'bad path']
+  ?~  u.pp  [%| 'no folder']
+  [%& u.hp u.pp]
+::  +trip-slash: a folder path without its trailing slash
+++  trip-slash
+  |=  t=@t
+  ^-  tape
+  =/  s=tape  (trip t)
+  =/  n=@ud  (lent s)
+  ?:  &((gth n 1) =('/' (snag (dec n) s)))  (scag (dec n) s)
+  s
+::  +handle-folder: the follow routes. /folder-follow and /folder-check
+::  read the folder here, in the request, and hand the writer the rows.
+++  handle-folder
+  |=  [eyre-id=@ta args=(map @t @t) our=@p what=@tas]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  ?=(%check-all what)
+    ;<  fs=(list fold:ls)  bind:m  read-folds
+    |-  ^-  form:m
+    ?~  fs  (send-ok eyre-id)
+    ;<  rows=(unit (map @t title-row:ls))  bind:m  (read-fold host.i.fs rel.i.fs)
+    ;<  ~  bind:m  (poke-writer %fold-action `fold-action:ls`[%read host.i.fs rel.i.fs rows])
+    $(fs t.fs)
+  =/  fa  (fold-args args)
+  ?:  ?=(%| -.fa)  (send-err eyre-id 400 p.fa)
+  =/  [host=@p rel=path]  p.fa
+  ?:  =(host our)  (send-err eyre-id 400 'a folder of your own')
+  =/  back=?  (~(has by args) 'back')
+  =/  done
+    ?.  back  (send-ok eyre-id)
+    %+  send-see-other  eyre-id
+    (weld "/apps/lattice?url=" (url-enc (weld (trip (en-urb:lu host (weld pub-prefix:lu rel))) "/")))
+  ?+    what  (send-err eyre-id 400 'bad route')
+      %del
+    ;<  ~  bind:m  (poke-writer %fold-action `fold-action:ls`[%del host rel])
+    done
+  ::
+      %seen
+    =/  key=(unit @t)  (~(get by args) 'key')
+    ?~  key  (send-err eyre-id 400 'missing key')
+    ;<  ~  bind:m  (poke-writer %fold-action `fold-action:ls`[%seen host rel u.key])
+    done
+  ::
+      ?(%add %check)
+    ;<  rows=(unit (map @t title-row:ls))  bind:m  (read-fold host rel)
+    ;<  ~  bind:m
+      %+  poke-writer  %fold-action
+      ^-  fold-action:ls
+      ?:(?=(%add what) [%add host rel rows] [%read host rel rows])
+    done
+  ==
 ::  +tell-unshared: a revoke, told to the ships that held it. Each page
 ::  road the group granted goes to each member as a %del notice, which
 ::  takes it off their shared with me (+apply-share-notice). Best-effort,
@@ -15992,6 +16215,9 @@
     know-css
     %-  trip
     ':root{color-scheme:light dark;--bg:#fafafa;--text:#111}'
+    ::  a followed folder's Follow / Following (+fold-button)
+    %-  trip
+    '.dfollow{float:right;margin:.6em 0 0 1em}.dfollow button{font:inherit;cursor:pointer;padding:.2em .8em;border-radius:6px;border:1px solid currentColor;background:none;color:inherit}.dfollow button.on{opacity:.75}'
     bar-css-nav
     %-  trip
     '*{box-sizing:border-box;scrollbar-width:thin;scrollbar-color:#8887 transparent}::-webkit-scrollbar{width:11px;height:11px}::-webkit-scrollbar-thumb{background:#8886;border-radius:6px;border:3px solid transparent;background-clip:content-box}::-webkit-scrollbar-thumb:hover{background:#888a;background-clip:content-box}::-webkit-scrollbar-track{background:transparent}html{background:var(--bg)}body{margin:0;font:16px/1.6 var(--font,system-ui,sans-serif);color:var(--text);background:var(--bg)}@media(prefers-color-scheme:dark){:root{--bg:#1a1a1a;--text:#e6e6e6}}'
@@ -17047,11 +17273,36 @@
     |=  [n=@ta page=?]
     ^-  tape
     (weld "/apps/lattice?url=" (url-enc :(weld canon (trip n) ?:(page "" "/"))))
-  %+  send-view  eyre-id
-  %:  render-page-titled  canon  ""  ""  (pax-str rel)
+  ;<  our=@p  bind:m  bowl-our
+  ;<  fs=(list fold:ls)  bind:m  read-folds
+  =/  fol=tape  (fold-button our shp rel (fold-get:ls fs shp rel))
+  =/  inner=tape
     %:  dir-index-html  (weld (pax-str rel) "/")  rows  by-date  here  href
       |=([n=@ta pg=?] (row-label:ls tits rel n pg))
     ==
+  %+  send-view  eyre-id
+  (render-page-titled canon "" "" (pax-str rel) (weld fol inner))
+::  +fold-button: a peer's folder index offers Follow, or Following, which
+::  unfollows. Not on our own folders, nor to a comet (the desktop reader
+::  keeps a comet's follows).
+++  fold-button
+  |=  [our=@p shp=@p rel=path f=(unit fold:ls)]
+  ^-  tape
+  ?:  |(=(our shp) ?=(~ rel) (is-comet:ls our))  ""
+  =/  q=tape
+    ;:  weld
+      "?host="  (url-enc (trip (scot %p shp)))
+      "&path="  (url-enc (trip (spat rel)))
+      "&back=1"
+    ==
+  ?~  f
+    ;:  weld
+      "<form class=\"dfollow\" method=\"post\" action=\"/apps/lattice/folder-follow"  (esc q)
+      "\"><button type=\"submit\" title=\"List this folder in your files, with a count of what is new\">Follow</button></form>"
+    ==
+  ;:  weld
+    "<form class=\"dfollow\" method=\"post\" action=\"/apps/lattice/folder-unfollow"  (esc q)
+    "\"><button type=\"submit\" class=\"on\" title=\"Unfollow\">Following</button></form>"
   ==
 ::  +serve-clearweb-dir: /c/<folder>, a folder whose nearest setting (its
 ::  own or one above) is clearweb: its clearweb pages and subfolders. Any

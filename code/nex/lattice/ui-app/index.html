@@ -410,6 +410,14 @@ select, option { color-scheme: inherit; }
 .tree .swmode { flex: none; color: var(--muted); font-size: .8em; }
 .tree .swrm { flex: none; margin-left: auto; color: var(--muted); padding: 0 4px; border-radius: 4px; }
 .tree .swrm:hover { color: var(--text); background: var(--accent-tint, #4a7c5922); }
+/*  followed folders (69x-follow.js): the count of what is new, a way to
+    the folder's index, and a new page in bold */
+.tree .folnew { flex: none; margin-left: 6px; color: var(--green); font-size: .8em; font-weight: 600; }
+.tree .folnew.gone { color: var(--muted); font-weight: normal; }
+.tree .fld.fol { display: flex; align-items: center; }
+.tree .folix { flex: none; margin-left: auto; color: var(--muted); padding: 0 4px; text-decoration: none; }
+.tree .folrm { margin-left: 0; }
+.tree a.folpg.new .swn { font-weight: 600; }
 /*  Move into my pages, ahead of the x. A link row shows the badge on a
     line of its own under the name, so a phone's narrow drawer keeps it. */
 .tree .swrow { display: flex; align-items: center; gap: 2px; }

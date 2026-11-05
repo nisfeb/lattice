@@ -8,6 +8,8 @@ mod config;
 #[cfg(feature = "urb-engine")]
 mod engine;
 #[cfg(feature = "urb-engine")]
+mod follows;
+#[cfg(feature = "urb-engine")]
 mod history;
 #[cfg(feature = "urb-engine")]
 mod reader;

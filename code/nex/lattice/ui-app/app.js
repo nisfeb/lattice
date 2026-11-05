@@ -6840,6 +6840,9 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   // pages other ships shared with us (/shared-with-me), drawn as a folder
   // after the pages. Filled by 69-shared.js.
   let sharedWithMe = [];
+  // shared folders this ship follows (/folder-follows), drawn after it.
+  // Filled by 69x-follow.js.
+  let folds = [];
   customElements.define('lat-tree', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -7132,6 +7135,9 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
     shared: [ico('inbox'), 'Pages other ships shared with you. Not a folder in your pages: '
       + 'lattice shows it while anything is shared with you, and removing an entry leaves '
       + 'their grant as it is.'],
+    following: [ico('inbox'), 'Folders other ships share that you follow, from a folder index\'s '
+      + 'Follow button. Not in your pages: the count is what was added or changed since you '
+      + 'last opened it, and the \u00d7 unfollows.'],
   };
   function sysFlair(row, which) {
     const [svg, what] = SYSF[which];
@@ -7386,6 +7392,7 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
       treeList.appendChild(row);
     }
     if (sharedWithMe.length) renderShared(coll);
+    if (folds.length) renderFolds(coll);
     treeRove(treeList, had);
     paintLink();                 // the Page tab's link section (65-ctl.js)
     // the Published pages list (72-acl.js) reads these share modes
@@ -10925,6 +10932,140 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
     } });
   // deferred to boot, same reason as loadPerms. See 67-perms.js.
 
+// ── src/69x-follow.js ─────────────────────────────────────────────────────
+  // ── following: shared folders this ship follows ─────────────────────────
+  // A peer's shared folder (urb://~host/<folder>/) followed from its index
+  // page's Follow button. The ship keeps the list and the pages each folder
+  // listed when last read (/folder-follows); a page added or changed since
+  // it was seen counts as new. Pull, nothing asked of the publisher: the
+  // ship reads every folder again on boot and every 20 minutes while this
+  // is open (/folder-check), and at once when a share notice lands under
+  // one ('stale' on /beacon/folds, 90-sync.js).
+  //
+  // For whatever wants to act on it (notifications): every /beacon/folds
+  // stamp with op 'new' is also a window event, lattice:folder-new, whose
+  // detail is {host, path, new}.
+  const FOL = ' following';
+  const foldName = (f) => f.host + f.path;
+  const foldLeaf = (f, p) => p.key.slice(f.path.length + 1);
+  const foldUrl = (host, path) => 'urb://' + host + path;
+  async function loadFolds(bg = false) {
+    let r = null;
+    try { r = await (bg ? bgFetch : fetch)(api + '/folder-follows'); } catch {}
+    if (!r || !r.ok) return;
+    try { folds = await r.json(); } catch { return; }
+    renderTree();
+  }
+  // read one folder again (its host and path), or every one
+  async function checkFolds(f) {
+    const q = f ? '?host=' + encodeURIComponent(f.host) + '&path=' + encodeURIComponent(f.path) : '';
+    if (!f && !folds.length) return;
+    try { await fetch(api + '/folder-check' + q, { method: 'POST' }); } catch {}
+    loadFolds(true);
+  }
+  setInterval(() => { if (!document.hidden) checkFolds(); }, 20 * 60000);
+  let foldTimer = null;
+  const foldsBumped = (data) => {
+    let j = null;
+    try { j = JSON.parse(data); } catch {}
+    // the notice can beat the folder's index being written again on the
+    // host, so it is read now and twice more shortly after
+    if (j && j.op === 'stale' && j.host && j.path) {
+      for (const ms of [0, 4000, 12000]) setTimeout(() => checkFolds(j), ms);
+      return;
+    }
+    if (j && j.op === 'new')
+      window.dispatchEvent(new CustomEvent('lattice:folder-new',
+        { detail: { host: j.host, path: j.path, new: j.new } }));
+    clearTimeout(foldTimer);
+    foldTimer = setTimeout(loadFolds, 300);
+  };
+  const foldPost = (route, f, extra = '') => fetch(api + route + '?host=' + encodeURIComponent(f.host)
+    + '&path=' + encodeURIComponent(f.path) + extra, { method: 'POST' }).catch(() => null);
+  async function unfollowFold(f) {
+    const r = await foldPost('/folder-unfollow', f);
+    if (!r || !r.ok) { st('unfollow failed' + await errText(r), false); return; }
+    folds = folds.filter((x) => !(x.host === f.host && x.path === f.path));
+    renderTree();
+    st('unfollowed ' + foldName(f));
+  }
+  // a page opened from the list is seen
+  function openFoldPage(f, p) {
+    if (p.new) {
+      p.new = false;
+      f.new = Math.max(0, f.new - 1);
+      renderTree();
+      foldPost('/folder-seen', f, '&key=' + encodeURIComponent(p.key));
+    }
+    browseIn(api + '?url=' + encodeURIComponent(foldUrl(f.host, p.key)));
+  }
+  // appended by renderTree, after shared with me
+  function renderFolds(coll) {
+    const all = folds.reduce((n, f) => n + (f.ok ? f.new : 0), 0);
+    const top = folderRow('following', 0, coll.includes(FOL),
+      () => { paneColl.flip(FOL); renderTree(); }, undefined, FOL);
+    sysFlair(top, 'following');
+    if (all) top.append(foldBadge(all + ' new'));
+    treeList.appendChild(top);
+    if (coll.includes(FOL)) return;
+    for (const f of [...folds].sort((a, b) => foldName(a).localeCompare(foldName(b)))) {
+      const key = FOL + '/' + foldName(f);
+      const row = folderRow(foldName(f), 1, coll.includes(key),
+        () => { paneColl.flip(key); renderTree(); }, undefined, key);
+      row.classList.add('fol');
+      row.dataset.fold = foldName(f);
+      if (!f.ok) {
+        const b = foldBadge('unavailable');
+        b.classList.add('gone');
+        b.title = f.host + ' no longer shares this folder with you, or cannot be reached';
+        row.append(b);
+      } else if (f.new) row.append(foldBadge(f.new + ' new'));
+      const ix = document.createElement('a');
+      ix.className = 'folix';
+      ix.href = api + '?url=' + encodeURIComponent(foldUrl(f.host, f.path) + '/');
+      ix.textContent = '↗';
+      ix.title = 'open the folder\'s index';
+      ix.onclick = (e) => {
+        e.stopPropagation();
+        if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+        e.preventDefault();
+        browseIn(ix.href);
+      };
+      const x = document.createElement('span');
+      x.className = 'swrm folrm';
+      x.textContent = '×';
+      x.title = 'unfollow';
+      x.onclick = (e) => { e.stopPropagation(); unfollowFold(f); };
+      row.append(ix, x);
+      treeList.appendChild(row);
+      if (coll.includes(key)) continue;
+      for (const p of f.pages) {
+        const a = document.createElement('a');
+        a.className = 'pg swm folpg' + (p.new ? ' new' : '');
+        a.href = api + '?url=' + encodeURIComponent(foldUrl(f.host, p.key));
+        a.title = f.host + p.key + (p.new ? ' (new)' : '');
+        const nm = document.createElement('span');
+        nm.className = 'swn';
+        nm.textContent = p.title || foldLeaf(f, p);
+        a.append(nm);
+        a.onclick = (e) => {
+          if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+          e.preventDefault();
+          openFoldPage(f, p);
+        };
+        treeItem(a, 2, key + '/' + p.key);
+        a.style.marginLeft = '28px';
+        treeList.appendChild(a);
+      }
+    }
+  }
+  function foldBadge(t) {
+    const b = document.createElement('span');
+    b.className = 'folnew';
+    b.textContent = t;
+    return b;
+  }
+
 // ── src/70-upload.js ──────────────────────────────────────────────────────
   // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────
   //  which extensions arrive as which kind is EXT_KIND, in 30-tree.js. Each
@@ -13515,6 +13656,7 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   // arrive as upd events, exactly as before.
   let streamLive = false;
   let lastShares = '';
+  let lastFolds = '';
   let beaconTimer = null;
   // a share stamps /beacon/shares and then /rev, the file this keep wakes
   // on (+bump-shares). Its payload names that /rev, so a debounce window
@@ -13671,6 +13813,18 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
               const nr = /"rev"\s*:\s*"?(\d+)/.exec(data);
               if (nr) sharesRevs.add(nr[1]);
               if (name.slice(0, 3) !== 'old' || was) refreshInboxBadge(true);
+              continue;
+            }
+            // /folds: a followed folder changed, or a share notice landed
+            // under one (69x-follow.js). Its /rev is quiet, as a share's.
+            if (name.slice(-7) === ' /folds') {
+              if (data === lastFolds) continue;
+              const was = lastFolds;
+              lastFolds = data;
+              const fr = /"rev"\s*:\s*"?(\d+)/.exec(data);
+              if (fr) sharesRevs.add(fr[1]);
+              if (name.slice(0, 3) !== 'old') foldsBumped(data);
+              else if (was) loadFolds();
               continue;
             }
             if (name.slice(-5) !== ' /rev') {
@@ -14573,7 +14727,11 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   // the pier serializes, pure delay on the only requests that matter.
   //  background lane: these also yield to any user activity (see bgFetch),
   //  so a click during boot is no longer queued behind panel lists
-  const loadPanels = () => { loadPerms(true); loadShared(true); };
+  //  and the followed folders: the list, then each read again (69x-follow.js)
+  const loadPanels = () => {
+    loadPerms(true); loadShared(true);
+    loadFolds(true).then(() => checkFolds());
+  };
   // The side scripts: theme.js (the inline line in the shell has painted
   // the last theme already), prism for the splits' parked views (the
   // editor's highlighter is a worker that loads its own), vault.js and
