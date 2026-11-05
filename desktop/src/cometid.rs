@@ -344,7 +344,7 @@ mod tests {
 
     #[test]
     fn exports_use_at_least_the_owasp_count_in_the_header() {
-        assert!(ITERATIONS >= 600_000);
+        const { assert!(ITERATIONS >= 600_000) };
         let f = seal(&id(), "correct horse").unwrap();
         assert_eq!(u32::from_be_bytes(f[10..14].try_into().unwrap()), ITERATIONS);
     }
