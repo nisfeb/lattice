@@ -4184,18 +4184,25 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   });
 
   // ── today's brief ────────────────────────────────────────────────────────
-  // orrery writes the brief to journal/<day>. Whether that day is padded is
-  // not settled, so the first of the two forms that exists wins, and with
-  // neither the unpadded one is the name a new page starts with.
+  // The journal pass (+orrery-journal-sync, app.hoon) mirrors orrery's brief
+  // to journal/<YYYY-MM-DD>, orrery's ISO day key, so that dashed name, for
+  // the LOCAL day, is looked for first. The two dotted forms after it are
+  // the names this button used before the pass settled the form; owners'
+  // hand-made notes under them still open when no brief is mirrored yet.
+  // With none of them, a new page starts with the unpadded dotted name and
+  // not the dashed one: the pass writes its page with a plain make, so a
+  // note the owner started at the dashed name before brief_at would be
+  // overwritten by the mirror.
   const briefForms = (d) => {
     const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate();
     const p2 = (n) => String(n).padStart(2, '0');
-    return ['journal/' + y + '.' + m + '.' + day, 'journal/' + y + '.' + p2(m) + '.' + p2(day)];
+    return ['journal/' + y + '-' + p2(m) + '-' + p2(day),
+      'journal/' + y + '.' + m + '.' + day, 'journal/' + y + '.' + p2(m) + '.' + p2(day)];
   };
   const hasPage = (k) => nodes.some((n) => n.page && n.path === k);
   function briefKey(d) {
     const forms = briefForms(d);
-    return forms.find(hasPage) || forms[0];
+    return forms.find(hasPage) || forms[1];
   }
   async function openBrief(ev) {
     const d = new Date();
