@@ -72,11 +72,15 @@ async function urbRun(a, list) {
     throw e;
   }
   const text = urbText(j, Math.max(0, Number(a.offset) || 0));
+  // a page's public comments are other people's words, ours included:
+  // always quoted, apart from the page
+  const cs = j.kind === 'page' ? (j.comments || []).map((c) => `- ${c.author} (${fmtDa(c.when)}): ${c.body}`) : [];
+  const tail = cs.length ? '\n\n' + quoted(`the public comments on ${url}`, `Public comments (${cs.length}):\n${cs.join('\n')}`) : '';
   // our own page needs no label, unless it is a link to another ship's
   // page or a clip of a website
-  if (j.own && !(j.link && j.link.host) && !String(j.name || '').startsWith('clips/')) return text;
+  if (j.own && !(j.link && j.link.host) && !String(j.name || '').startsWith('clips/')) return text + tail;
   const from = j.own ? (j.link && j.link.host ? `${j.link.host}, a page linked at ${j.name}` : `a web page clipped to ${j.name}`) : url;
-  return quoted(from, text);
+  return quoted(from, text) + tail;
 }
 const htmlText = (h) => h
   .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '')
@@ -122,8 +126,7 @@ function urbText(j, offset) {
       const notes = [mode, `${j.size ?? raw.length} bytes`];
       if (j.shared) notes.push('shared with this ship, not published');
       if (j.own && j.share) notes.push(`the owner's page, ${j.share}`);
-      const cs = (j.comments || []).map((c) => `- ${c.author} (${fmtDa(c.when)}): ${c.body}`);
-      return `${j.url} (${notes.join(', ')})\n\n${clip(body, offset)}${cs.length ? `\n\nPublic comments (${cs.length}):\n${cs.join('\n')}` : ''}`;
+      return `${j.url} (${notes.join(', ')})\n\n${clip(body, offset)}`;
     }
   }
 }

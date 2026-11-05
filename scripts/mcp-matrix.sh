@@ -31,7 +31,7 @@ print(r.get("result",{}).get("content",[{}])[0].get("text", "RPC-ERROR: "+json.d
 }
 
 echo "==> save / read / list / search"
-has "lattice-save"   "saved"            "$(tool lattice-save "{\"key\":\"$K\",\"body\":\"mcp matrix memory body\"}")"
+has "lattice-save"   "created"          "$(tool lattice-save "{\"key\":\"$K\",\"body\":\"mcp matrix memory body\"}")"
 has "lattice-read"   "mcp matrix memory body" "$(tool lattice-read "{\"key\":\"$K\"}")"
 has "lattice-list"   "$K"               "$(tool lattice-list '{}')"
 has "lattice-search body" "$K"          "$(tool lattice-search '{"query":"mcp matrix memory"}')"
@@ -58,7 +58,7 @@ has "read after delete errors" "not found" "$(tool lattice-read "{\"key\":\"$K-m
 has "lattice-restore" "restored"        "$(tool lattice-restore "{\"key\":\"$K-moved\"}")"
 has "body back after restore" "mcp matrix memory body" "$(tool lattice-read "{\"key\":\"$K-moved\"}")"
 has "delete again"   "deleted"          "$(tool lattice-delete "{\"key\":\"$K-moved\"}")"
-has "re-save a deleted key" "saved"     "$(tool lattice-save "{\"key\":\"$K-moved\",\"body\":\"second life\"}")"
+has "re-save a deleted key" "created"   "$(tool lattice-save "{\"key\":\"$K-moved\",\"body\":\"second life\"}")"
 has "re-saved body serves" "second life" "$(tool lattice-read "{\"key\":\"$K-moved\"}")"
 
 echo "==> cleanup"

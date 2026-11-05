@@ -2838,9 +2838,15 @@
     ?~  raw  (send-err eyre-id 400 'missing url param')
     =/  pu=(unit [=ship =path])  (parse-urb-url:lu u.raw)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
-    ::  key path-scope gate: when keyed, require read access to this ship+path
-    ?:  &(?=(^ key) !(may-path:ky u.key [%ship ship.u.pu] path.u.pu %read))
+    ::  key path-scope gate: when keyed, require read access to this ship+path.
+    ::  The web scope reaches other ships only: our own page takes the pages
+    ::  scope and sensitive clearance (+key-own-read)
+    ?:  &(?=(^ key) !=(ship.u.pu our) !(may-path:ky u.key [%ship ship.u.pu] path.u.pu %read))
       (send-err eyre-id 403 'outside this key\'s scope')
+    ;<  no=(unit @t)  bind:m
+      ?.  =(ship.u.pu our)  (pure:(fiber:fiber:nexus ,(unit @t)) ~)
+      (key-own-read key (page-rel path.u.pu))
+    ?^  no  (send-err eyre-id 403 u.no)
     ;<  body=(unit @t)  bind:m  (read-page-body our ship.u.pu path.u.pu)
     ?^  body  (send-json eyre-id (mark-body-json 'gmi' u.body))
     ::  nothing published: a peer's private page shared with us, which only
@@ -2887,7 +2893,11 @@
     ?~  shp  (send-err eyre-id 400 'bad ship')
     =/  pp=(each path tang)  (mule |.((stab (~(gut by args) 'path' '/'))))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
-    ::  key path-scope gate: when keyed, require read access to this ship+path
+    ::  key path-scope gate: when keyed, require read access to this ship+path.
+    ::  The web scope reaches other ships only: a key lists our own pages
+    ::  with page-tree, which its pages scope filters
+    ?:  &(?=(^ key) =(u.shp our))
+      (send-err eyre-id 403 'the web scope reads other ships; list your own pages with page-tree')
     ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] p.pp %read))
       (send-err eyre-id 403 'outside this key\'s scope')
     =/  dir-road=road:tarball  [%& %| p.pp]
@@ -2914,9 +2924,21 @@
     ::  to the input type (^+), so the possibly-empty dir would nest-fail, the same
     ::  footgun key-to-rail documents. Split via lent/scag/snag on the un-narrowed path.
     ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
-    ::  key path-scope gate: when keyed, require read access to this ship+path
-    ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] p.pp %read))
+    ::  key path-scope gate: when keyed, require read access to this ship+path.
+    ::  The web scope reaches other ships only. On our own ship a key reads
+    ::  a page's code grub and nothing else (not /know, /keys or any other
+    ::  grub), by its pages scope and sensitive clearance (+key-own-read)
+    ?:  &(?=(^ key) !=(u.shp our) !(may-path:ky u.key [%ship u.shp] p.pp %read))
       (send-err eyre-id 403 'outside this key\'s scope')
+    ;<  no=(unit @t)  bind:m
+      =/  n  (fiber:fiber:nexus ,(unit @t))
+      ?:  |(?=(~ key) !=(u.shp our))  (pure:n ~)
+      ;<  sb=path  bind:n  self-base
+      =/  r=(unit path)  (strip-prefix:lu (weld sb /page) p.pp)
+      ?.  ?&  ?=(^ r)  ?=([@ @ *] u.r)  =(%code (rear u.r))  ==
+        (pure:n `'the web scope reads other ships; read your own pages by name')
+      (key-own-read key (snip `path`u.r))
+    ?^  no  (send-err eyre-id 403 u.no)
     =/  n=@ud  (dec (lent p.pp))
     =/  file-road=road:tarball  [%& %& (scag n p.pp) (snag n p.pp)]
     ?:  =(u.shp our)
@@ -14148,7 +14170,12 @@
   ?-    -.u.ref
       %forum
     =/  nom=@ta  board.u.ref
-    ?:  &(?=(^ key) !(may-path:ky u.key [%ship shp] /forum/[nom] %read))
+    ::  the web scope reaches other ships; our own boards take the pages
+    ::  scope, as our own pages do
+    ?:  ?&  ?=(^ key)
+            ?:  own  !(may-path:ky u.key %local /forum/[nom] %read)
+            !(may-path:ky u.key [%ship shp] /forum/[nom] %read)
+        ==
       (send-err eyre-id 403 'outside this key\'s scope')
     ;<  pb=(unit path)  bind:m
       ?:  own  (pure:(fiber:fiber:nexus ,(unit path)) `/)
@@ -14156,11 +14183,6 @@
     ?~  pb  (send-err eyre-id 504 gone)
     ;<  bo=(unit board:ft)  bind:m  (urb-forum-board own shp nom)
     ?~  bo  (send-err eyre-id 404 'no such board, or it is not open to this ship')
-    ::  our own private board is the owner's, like an unpublished page
-    ?:  ?&  own  !public.info.u.bo  ?=(^ key)
-            !(may-path:ky u.key %local /forum/[nom] %read)
-        ==
-      (send-err eyre-id 404 'no such board, or it is not open to this ship')
     ?:  &(?=(^ post.u.ref) !(~(has by posts.u.bo) u.post.u.ref))
       (send-err eyre-id 404 'no such post on that board')
     (send-json eyre-id (pairs:enjs:format (weld hed (urb-forum-json shp u.bo post.u.ref))))
@@ -14203,6 +14225,8 @@
   ::
       %pub
     =/  rel=path  rel.u.ref
+    ::  our own address reads our page tree through the pages scope
+    ?:  own  (urb-own eyre-id key hed shp rel =('1' (~(gut by args) 'list' '0')))
     ?:  &(?=(^ key) !(may-path:ky u.key [%ship shp] rel %read))
       (send-err eyre-id 403 'outside this key\'s scope')
     ;<  pb=(unit path)  bind:m
@@ -14269,9 +14293,88 @@
     =/  grows=(list dir-row:ls)
       ?~(gix ~ (dir-rows:ls (titles-keys:ls u.gix) rel |))
     ?^  grows  (urb-send-folder eyre-id hed shp rel grows gix)
-    ?.  own  (send-err eyre-id 404 'not found, or not shared with this ship')
-    (urb-own-page eyre-id key hed rel)
+    (send-err eyre-id 404 'not found, or not shared with this ship')
   ==
+::  +urb-own: our own address, read from our page tree (published or
+::  not) through the pages scope: a page, a link, or else a folder. The
+::  bare address is the root folder when no /index page exists.
+++  urb-own
+  |=  [eyre-id=@ta key=(unit key-row:ky) hed=(list [@t json]) shp=@p rel=path lis=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  dir=path  ?:(=(/index rel) ~ rel)
+  ?:  lis  (urb-own-folder eyre-id key hed shp dir)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  cn=view:nexus  bind:m  (peek:fio (rf up (weld /page rel) %code) ~)
+  ?:  ?=([%file *] cn)  (urb-own-page eyre-id key hed rel)
+  ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at rel)
+  ?^  lk  (urb-own-page eyre-id key hed rel)
+  (urb-own-folder eyre-id key hed shp dir)
+::  +key-sees-dir: may this key list our folder `dir`? When it reads the
+::  folder, or a path under it (so it can find its way down)
+++  key-sees-dir
+  |=  [k=key-row:ky dir=path]
+  ^-  ?
+  ?:  (may-path:ky k %local dir %read)  &
+  ?.  ?=(%some -.pages.scope.k)  |
+  (lien ~(tap in read.paths.pages.scope.k) |=(g=path (under:ky dir g)))
+::  +urb-own-folder: one level of our page tree, only what the key may
+::  read: pages by its paths and sensitive clearance, folders it reads or
+::  holds a path under
+++  urb-own-folder
+  |=  [eyre-id=@ta key=(unit key-row:ky) hed=(list [@t json]) shp=@p dir=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  &(?=(^ key) !(key-sees-dir u.key dir))
+    (send-err eyre-id 403 'outside this key\'s page scope')
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page dir)) ~)
+  ?.  ?=([%ball *] dv)  (send-err eyre-id 404 'not found')
+  =/  kids=(list [pax=path page=?])
+    %+  sort
+      (skim (collect-tree ball.dv ~) |=([p=path *] =(1 (lent p))))
+    |=([a=[pax=path page=?] b=[pax=path page=?]] (aor (spat pax.a) (spat pax.b)))
+  =|  out=(list json)
+  |-  ^-  form:m
+  ?~  kids
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    %+  weld  hed
+    ^-  (list [@t json])
+    ~[['kind' s+'folder'] ['path' s+(spat dir)] ['entries' a+(flop out)]]
+  =/  full=path  (weld dir pax.i.kids)
+  =/  u=@t  (en-urb:lu shp (weld pub-prefix:lu full))
+  =/  row
+    |=  pg=?
+    ^-  json
+    %-  pairs:enjs:format
+    :~  ['name' s+(rear full)]
+        ['url' s+?:(pg u (cat 3 u '/'))]
+        ['folder' b+!pg]
+        ['title' s+?:(pg (rear full) (cat 3 (rear full) '/'))]
+    ==
+  ?.  page.i.kids
+    ?:  &(?=(^ key) !(key-sees-dir u.key full))  $(kids t.kids)
+    $(kids t.kids, out [(row |) out])
+  ?:  &(?=(^ key) !(may-path:ky u.key %local full %read))  $(kids t.kids)
+  ;<  ps=?  bind:m  (page-sensitive full)
+  ?:  &(ps ?=(^ key) !sensitive.scope.u.key)  $(kids t.kids)
+  $(kids t.kids, out [(row &) out])
+::  +key-own-read: may a key read our own page at `rel` through a web
+::  route? The web scope reaches other ships only. Our pages take the
+::  pages scope, by its paths and sensitive clearance (page-source's
+::  rules); ~ when it may, else the refusal.
+++  key-own-read
+  |=  [key=(unit key-row:ky) rel=path]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ?~  key  (pure:m ~)
+  ?.  (may-path:ky u.key %local rel %read)
+    (pure:m `'outside this key\'s page scope')
+  ;<  ps=?  bind:m  (page-sensitive rel)
+  ?:  &(ps !sensitive.scope.u.key)  (pure:m `'not found')
+  ;<  ~  bind:m  (taint-if key ps)
+  (pure:m ~)
 ::  +urb-send-folder: a folder's rows as entries an agent can follow
 ++  urb-send-folder
   |=  [eyre-id=@ta hed=(list [@t json]) shp=@p dir=path rows=(list dir-row:ls) tit=(unit (map @t title-row:ls))]
@@ -14305,7 +14408,13 @@
   =/  nam=@t  (crip (pax-str rel))
   ?.  (valid-name nam)  (send-err eyre-id 404 'not found')
   ?:  &(?=(^ key) !(may-path:ky u.key %local rel %read))
-    (send-err eyre-id 403 'not published, and outside this key\'s page scope')
+    (send-err eyre-id 403 'outside this key\'s page scope')
+  ::  a link is another ship's page: the key needs that ship too
+  ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at rel)
+  ?:  ?&  ?=([~ [%ship *] *] lk)  ?=(^ key)
+          !(may-path:ky u.key [%ship host.l.u.lk] pax.l.u.lk %read)
+      ==
+    (send-err eyre-id 403 'outside this key\'s scope')
   ;<  ps=?  bind:m  (page-sensitive rel)
   ?:  &(ps ?=(^ key) !sensitive.scope.u.key)  (send-err eyre-id 404 'not found')
   ;<  ~  bind:m  (taint-if key &(ps ?=(^ key) sensitive.scope.u.key))
@@ -14318,6 +14427,19 @@
   =.  o  (~(put by o) 'kind' s+'page')
   =.  o  (~(put by o) 'mode' mode)
   =.  o  (~(put by o) 'name' s+nam)
+  ::  a published page's public thread, other people's words
+  ;<  our=@p  bind:m  bowl-our
+  ;<  thr=(list [id=@ta c=comment:lc])  bind:m  (page-thread our our rel |)
+  =.  o
+    %+  ~(put by o)  'comments'
+    :-  %a
+    %+  turn  thr
+    |=  [id=@ta c=comment:lc]
+    %-  pairs:enjs:format
+    :~  ['author' s+(scot %p author.c)]
+        ['when' s+(scot %da when.c)]
+        ['body' s+body.c]
+    ==
   (send-json eyre-id [%o o])
 ::  +urb-forum-board: a board, ours or one a peer lets this ship read
 ++  urb-forum-board

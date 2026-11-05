@@ -29,7 +29,7 @@ until_() { local n=$1; shift; for _ in $(seq 1 "$n"); do "$@" && return 0; sleep
 
 ASHIP=$(A_ "${A_URL%/}/~/host"); BSHIP=$(B_ "${B_URL%/}/~/host")
 [ -n "$ASHIP" ] && [ -n "$BSHIP" ] || { echo "FAIL  ships answer /~/host"; exit 1; }
-P=urbrd$$; BRD=urbrd$$; KEY=
+P=urbrd$$; BRD=urbrd$$; KEY=; WKEY=
 
 # mcp <tool> <json args>: one tools/call to the plugin's MCP server, as B's key
 mcp() {
@@ -40,7 +40,9 @@ mcp() {
 read_() { mcp urb_read "{\"url\":\"$1\"}"; }
 
 cleanup() {
-  [ -n "$KEY" ] && B_ -o /dev/null -X POST "$B/key-revoke?id=$KEY"
+  for k in $KEY $WKEY; do B_ -o /dev/null -X POST "$B/key-revoke?id=$k"; done
+  B_ -o /dev/null -X POST "$B/page-del?name=${P}x"
+  B_ -o /dev/null -X POST "$B/know-delete?key=$P/secret"
   A_ -o /dev/null -X POST "$A/page-del?name=$P"
   A_ -o /dev/null -X POST "$A/share-group-del?name=${BSHIP#\~}"
   A_ -o /dev/null -X POST "$A/forum/$BRD/mod/delete"
@@ -81,6 +83,7 @@ has "a. a published page"         "Published by A" "$r"
 has "  ...quoted"                 "<quoted from=\"urb://$ASHIP/$P/pub\">" "$r"
 cm() { read_ "urb://$ASHIP/$P/pub" | grep -qF 'comment from B'; }
 if until_ 60 cm; then ok "f. its public comments"; else fail "f. its public comments"; fi
+has "  ...quoted apart from the page" "<quoted from=\"the public comments on urb://$ASHIP/$P/pub\">" "$(read_ "urb://$ASHIP/$P/pub")"
 has "b. a page shared with B alone" "Private for B" "$(read_ "urb://$ASHIP/$P/priv")"
 has "  ...said to be shared"        "shared with this ship" "$(read_ "urb://$ASHIP/$P/priv")"
 has "c. a clearweb page"            "Clearweb by A" "$(read_ "urb://$ASHIP/$P/cw")"
@@ -111,6 +114,48 @@ hasnt "  ...and shows nothing of it" "Not for B" "$(read_ "urb://$ASHIP/$P/hid")
 has "a missing post"                "not found" "$(read_ "urb://$ASHIP/forum/$BRD/99")"
 has "not a urb:// address"          "not a urb://" "$(read_ "https://example.com")"
 has "B's own page outside the key"  "no access" "$(read_ "urb://$BSHIP/other/page")"
+
+echo "==> the web scope never reaches B's own ship"
+is "B makes a page outside the key" 200 "$(code -H "$BK" -X POST "$B/page-save?name=${P}x/other&type=md&new=1" --data-binary '# beyond-scope words')"
+is "B makes a sensitive page"       200 "$(code -H "$BK" -X POST "$B/page-save?name=$P/sens&type=md&new=1" --data-binary '# sensitive words')"
+is "  ...marked sensitive"          200 "$(code -H "$BK" -X POST "$B/page-sensitive?name=$P/sens&on=1")"
+is "B saves a memory"               200 "$(code -H "$BK" -X POST "$B/know-save?key=$P/secret" --data-binary 'memory words')"
+BASE=$(B_ "$B/streams" | jq -r .base)
+[ -n "$BASE" ] && [ "$BASE" != null ] || fail "B's base from /streams"
+j=$(B_ -X POST "$B/key-mint" -H 'content-type: application/json' --data-binary \
+  '{"name":"urb-web","by":"two-ship-urb-read","scope":{"memory":"none","pages":{"all":"none"},"web":{"all":null},"sensitive":false}}')
+WKEY=$(jq -r .key.id <<<"$j"); WTOK=$(jq -r .token <<<"$j")
+kc() { curl -s -m 60 -o /dev/null -w '%{http_code}' -G -H "Authorization: Bearer $1" "${@:2}"; }
+kb() { curl -s -m 60 -G -H "Authorization: Bearer $1" "${@:2}"; }
+know="$BASE/know/vault/$P/secret/entry"
+is "web-all key: browse-file of B's /know is 403"  403 "$(kc "$WTOK" --data-urlencode "ship=$BSHIP" --data-urlencode "path=$know" "$B/browse-file")"
+hasnt "  ...and shows none of it"                  "memory words" "$(kb "$WTOK" --data-urlencode "ship=$BSHIP" --data-urlencode "path=$know" "$B/browse-file")"
+is "web-all key: browse-file of B's /keys is 403"  403 "$(kc "$WTOK" --data-urlencode "ship=$BSHIP" --data-urlencode "path=$BASE/keys/keys" "$B/browse-file")"
+is "web-all key: browse of B's tree is 403"        403 "$(kc "$WTOK" --data-urlencode "ship=$BSHIP" --data-urlencode "path=$BASE" "$B/browse")"
+is "web-all key: browse-file of B's private page is 403" 403 "$(kc "$WTOK" --data-urlencode "ship=$BSHIP" --data-urlencode "path=$BASE/page/$P/mine/code" "$B/browse-file")"
+is "web-all key: fetch of B's page is 403"         403 "$(kc "$WTOK" --data-urlencode "url=urb://$BSHIP/$P/mine" "$B/fetch")"
+is "web-all key: urb-read of B's page is 403"      403 "$(kc "$WTOK" --data-urlencode "url=urb://$BSHIP/$P/mine" "$B/urb-read")"
+is "web-all key: urb-read of B's /know tree is 403" 403 "$(kc "$WTOK" --data-urlencode "url=urb://$BSHIP/k/$P/secret" "$B/urb-read")"
+is "web-all key: urb-read of B's raw tree is 403"  403 "$(kc "$WTOK" --data-urlencode "url=urb://$BSHIP/t$know" "$B/urb-read")"
+is "web-all key: urb_list of B's root is 403"      403 "$(kc "$WTOK" --data-urlencode "url=urb://$BSHIP/" --data-urlencode list=1 "$B/urb-read")"
+is "web-all key: still reads A"                    200 "$(kc "$WTOK" --data-urlencode "url=urb://$ASHIP/$P/pub" "$B/urb-read")"
+
+echo "==> a pages-scoped key reads only its paths of B's own"
+is "browse-file of a page in its paths"            "# Mine, private" "$(kb "$TOK" --data-urlencode "ship=$BSHIP" --data-urlencode "path=$BASE/page/$P/mine/code" "$B/browse-file" | jq -r .body)"
+is "browse-file of a page outside them is 403"     403 "$(kc "$TOK" --data-urlencode "ship=$BSHIP" --data-urlencode "path=$BASE/page/${P}x/other/code" "$B/browse-file")"
+is "browse-file of /know is 403"                   403 "$(kc "$TOK" --data-urlencode "ship=$BSHIP" --data-urlencode "path=$know" "$B/browse-file")"
+is "fetch of a page outside them is 403"           403 "$(kc "$TOK" --data-urlencode "url=urb://$BSHIP/${P}x/other" "$B/fetch")"
+has "urb_read of a page outside them: no access"   "no access" "$(read_ "urb://$BSHIP/${P}x/other")"
+hasnt "  ...and none of its text"                  "beyond-scope words" "$(read_ "urb://$BSHIP/${P}x/other")"
+r=$(read_ "urb://$BSHIP/$P/sens")
+hasnt "a sensitive page, without clearance: nothing" "sensitive words" "$r"
+has "  ...an error"                                "not found" "$r"
+r=$(mcp urb_list "{\"url\":\"urb://$BSHIP/\"}")
+has "urb_list of B's root: the folder in its paths" "urb://$BSHIP/$P/" "$r"
+hasnt "  ...not the folder outside them"           "${P}x" "$r"
+r=$(read_ "urb://$BSHIP/$P/")
+has "B's folder lists its page"                     "urb://$BSHIP/$P/mine" "$r"
+hasnt "  ...not the sensitive one"                 "$P/sens" "$r"
 
 echo
 [ "$fails" -eq 0 ] && echo "two-ship-urb-read: all passed" || echo "two-ship-urb-read: $fails failed"

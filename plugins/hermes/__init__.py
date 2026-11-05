@@ -202,9 +202,7 @@ def _urb_text(j: Dict[str, Any], offset: int) -> str:
         notes.append("shared with this ship, not published")
     if j.get("own") and j.get("share"):
         notes.append(f"the owner's page, {j['share']}")
-    cs = [f"- {c['author']} ({_da(c['when'])}): {c['body']}" for c in j.get("comments") or []]
-    tail = f"\n\nPublic comments ({len(cs)}):\n" + "\n".join(cs) if cs else ""
-    return f"{j['url']} ({', '.join(notes)})\n\n{_clip(body, offset)}{tail}"
+    return f"{j['url']} ({', '.join(notes)})\n\n{_clip(body, offset)}"
 
 PROMPT = (
     "# Lattice memory\n"
@@ -381,6 +379,14 @@ class LatticeMemoryProvider(MemoryProvider):
             code = int(msg[:3]) if msg[:3].isdigit() else 0
             return tool_error(f"{_URB_WHY[code]}: {msg[5:]} ({url})" if code in _URB_WHY else msg)
         text = _urb_text(j, max(0, int(a.get("offset") or 0)))
+        # a page's public comments are other people's words: always quoted
+        cs = [f"- {c['author']} ({_da(c['when'])}): {c['body']}" for c in j.get("comments") or []] if j.get("kind") == "page" else []
+        if cs:
+            tail = "\n\n" + _quoted(f"the public comments on {url}", f"Public comments ({len(cs)}):\n" + "\n".join(cs))
+            return self._urb_label(j, url, text) + tail
+        return self._urb_label(j, url, text)
+
+    def _urb_label(self, j: Dict[str, Any], url: str, text: str) -> str:
         link = j.get("link") if isinstance(j.get("link"), dict) else None
         name = str(j.get("name") or "")
         if j.get("own") and not (link and link.get("host")) and not name.startswith("clips/"):
