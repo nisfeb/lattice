@@ -809,7 +809,14 @@ try {
     { headers: { Cookie: env.cookie } })).ok;
   const briefPre = {};
   for (const k of [BD, BU, BP]) briefPre[k] = await exists(k);
-  const briefClick = async () => {
+  //  the button reads the tree it holds (briefKey, 24-tools.js), and a boot
+  //  paints the tree from its snapshot before the fresh dump lands. Under
+  //  host load a page seeded just before the boot was not in it yet, and
+  //  the click opened the fallback. So a click waits for the row it needs.
+  const treeHas = (k) => until((n) => !!document.querySelector('#treelist a.pg[href$="name=' + n + '"]'),
+    encodeURIComponent(k), 60000);
+  const briefClick = async (k) => {
+    if (k) await treeHas(k);
     await fixClock();
     await page.evaluate(() => document.getElementById('rb-brief').click());
   };
@@ -825,13 +832,13 @@ try {
   }
   if (!briefPre[BU]) await seed(env, [[BU, '# my own note\n']]);
   await boot();
-  await briefClick();
+  await briefClick(BU);
   const dotted = await isFront('page', BU);
   await unfixClock();
   check('brief falls back to the dotted note', dotted, JSON.stringify({ front: await front() }));
   if (!briefPre[BD]) await seed(env, [[BD, '# Brief\n']]);
   await boot();
-  await briefClick();
+  await briefClick(BD);
   const dashed = await isFront('page', BD);
   await unfixClock();
   check('brief opens the mirrored dashed page first', dashed, JSON.stringify({ front: await front() }));
@@ -867,6 +874,7 @@ try {
     && !!document.querySelector('#cmlist .aclcard'));
   check('the inbox opens as a tab and clears the badge', inTab && read, JSON.stringify({ inTab, read }));
 
+  await treeHas(today);
   await page.evaluate(() => document.getElementById('rb-brief').click());
   const brief = await isFront('page', today);
   check('brief opens journal', brief, JSON.stringify({ today, front: await front() }));
