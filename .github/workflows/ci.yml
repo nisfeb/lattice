@@ -134,10 +134,11 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - os: macos-14
+          # macos-15, as release.yml: macos-14 stopped running on 2026-11-05
+          - os: macos-15
             target: aarch64-apple-darwin
           # cross from arm64, as release.yml builds it
-          - os: macos-14
+          - os: macos-15
             target: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
