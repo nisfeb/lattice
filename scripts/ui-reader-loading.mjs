@@ -86,7 +86,9 @@ const drawn = () => page.evaluate(() => ({
 const clean = (d) => !!d && !d.line && !d.spin && !d.busy;
 const shows = (what) => page.waitForFunction((w) => document.getElementById('at')?.textContent === w,
   { timeout: 10000 }, what);
-const lit = (s) => !!s && s.line && s.spin && s.busy && s.at >= 150 && s.at < 600;
+// after the delay, and before the slow page lands: a fixed 600 ms ceiling
+// failed on a busy CI runner (seen at 638 ms) with nothing wrong
+const lit = (s) => !!s && s.line && s.spin && s.busy && s.at >= 150 && s.at < SLOW_MS;
 
 try {
   await page.goto(base + '/', { waitUntil: 'load' });
