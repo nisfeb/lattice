@@ -596,6 +596,8 @@
   // A folder's share state is derived from its pages: uniform → that mode,
   // differing → 'mixed', empty → 'private'.
   const treeShare = (path) => {
+    const f = nodes.find((n) => !n.page && n.path === path);
+    if (f && f.dshare) return f.dshare;
     const pages = nodes.filter((n) => n.page && n.path.startsWith(path + '/'));
     if (!pages.length) return 'private';
     const s = pages[0].share || 'private';
@@ -634,7 +636,8 @@
     cerr.textContent = ' '; cerr.className = 'ok';
     markCurrent();
     setCtlLabels();
-    showShare(treeShare(path));
+    // the buttons are the folder's own setting, none when it has none
+    showShare((nodes.find((n) => !n.page && n.path === path) || {}).dshare || 'private');
     const c = pageCount(path);
     st('folder · ' + c + ' page' + (c === 1 ? '' : 's'));
   }

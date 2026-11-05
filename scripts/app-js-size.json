@@ -1,5 +1,5 @@
 {
-  "bytes": 703995,
+  "bytes": 708279,
   "grow": 4096,
-  "why": "release 112 comet guard: app.js was 700,414 bytes before it (release 110's 698,817 plus 1,597 since), plus the Page tab's per-page comet mode select and its held-for-review queue with approve and reject (3,581 bytes, 904 gzipped)."
+  "why": "release 115: app.js was 704,836 bytes at release 114, plus folder sharing in the share panel and the folder menu's Share folder (#397, 2,977 bytes, 778 gzipped) and the brief button opening journal/YYYY-MM-DD first (#396, 466 bytes, 204 gzipped)."
 }

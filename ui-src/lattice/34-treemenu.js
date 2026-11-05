@@ -72,6 +72,14 @@
       item('del', 'Delete', () => treeDelete(row));
     } else if (t.kind === 'folder') {
       item('new', 'New page here', async () => { if (await guardDirty()) newFile(t.path); });
+      item('share', 'Share folder', async () => {
+        await pickFolder(t.path);
+        if (curFolder !== t.path) return;
+        paneOpen('r', true);
+        paneTab('r', 'page');
+        const sec = $('sharesec');
+        if (sec && sec.scrollIntoView) sec.scrollIntoView({ block: 'nearest' });
+      });
       item('mv', 'Rename / move', () => moveFolder(t.path));
       item('del', 'Delete', () => treeDelete(row));
     } else {

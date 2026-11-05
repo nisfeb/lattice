@@ -206,8 +206,8 @@ try {
       .querySelector(':scope > .rmore')).opacity > 0, 'f:' + P('mf')));
   await page.mouse.click(mb.x, mb.y);
   check('⋯ opens the row\'s menu', await until(page, () => !!document.querySelector('.treemenu'), null, 5000));
-  check('the folder menu: New page here, Rename / move, Delete', await page.evaluate(() =>
-    [...document.querySelectorAll('.treemenu [data-mi]')].map((b) => b.dataset.mi).join() === 'new,mv,del'));
+  check('the folder menu: New page here, Share folder, Rename / move, Delete', await page.evaluate(() =>
+    [...document.querySelectorAll('.treemenu [data-mi]')].map((b) => b.dataset.mi).join() === 'new,share,mv,del'));
   check('anchored to the button', await page.evaluate(({ x, y }) => {
     const r = document.querySelector('.treemenu').getBoundingClientRect();
     return Math.abs(r.right - x) < 30 && r.top >= y - 2 && r.top - y < 30;

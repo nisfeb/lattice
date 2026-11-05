@@ -186,6 +186,31 @@ pub trait Reads: Send + Sync {
         let _ = budget;
         asks.iter().map(|_| Err(ReadError::Failed("this reader cannot read boards".into()))).collect()
     }
+    /// Each published page of `ship` with when it last changed (unix
+    /// seconds) and its title, from lattice's `/pub/titles`: one
+    /// `PageTitle` a page, keyed as its revision list names it. `None` when
+    /// that is not known: no answer, or a lattice too old to say.
+    fn titles(&self, ship: &str, budget: Duration) -> Option<Vec<PageTitle>> {
+        let _ = (ship, budget);
+        None
+    }
+    /// The pages of `ship` its kept revision list names (`/<path>`), as the
+    /// last read of one of its pages got it, with when each was last
+    /// changed where that is known. `None` when no list is kept. Asks
+    /// nothing of the network.
+    fn pages(&self, ship: &str) -> Option<Vec<(String, Option<i64>)>> {
+        let _ = ship;
+        None
+    }
+}
+
+/// A published page as `/pub/titles` names it: its key (`/<path>`), when
+/// it last changed in unix seconds, and its title, empty when it has none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageTitle {
+    pub key: String,
+    pub secs: i64,
+    pub title: String,
 }
 
 /// What a publisher says of commenting: the pages that take comments
@@ -275,6 +300,8 @@ enum Job {
     Read(String, Answer),
     /// the ship whose kept revision list is to go (`Engine::expire`)
     Expire(String),
+    /// the names in the revision list kept for a ship (`Engine::pages`)
+    Pages(String, Sender<Option<Vec<String>>>),
     Comment(Comment, Said),
     /// a publisher's `/pub/comments` or `/pub/comets`, at a lattice base
     OpenList(String, &'static str, List, Cord),
@@ -441,6 +468,27 @@ impl Engine {
         }
     }
 
+    /// The pages of `ship` its kept revision list names
+    /// (`Reads::pages`). The list says each page's revision and id but not
+    /// when it changed: lattice keeps that in `/pub/index`, a noun map the
+    /// core's peeks cannot read, so every time is unknown here.
+    pub fn pages(&self, ship: &str) -> Option<Vec<(String, Option<i64>)>> {
+        let (tx, rx) = channel();
+        {
+            let g = self.inner.lock().unwrap();
+            if !matches!(g.status, Status::Ready { .. }) {
+                return None;
+            }
+            let run = g.run.as_ref()?;
+            run.jobs.send(Job::Pages(ship.into(), tx)).ok()?;
+            if let Some(w) = &run.waker {
+                let _ = w.send(Event::Wake);
+            }
+        }
+        let names = rx.recv_timeout(Duration::from_secs(2)).ok()??;
+        Some(names.into_iter().map(|n| (n, None)).collect())
+    }
+
     /// Comment on a published page as the reader identity: a
     /// `%comment-action` poked to the publisher's `comments.sig`, the inbox
     /// lattice opens to every foreign ship, as `/comment-remote` pokes it
@@ -579,6 +627,20 @@ impl Engine {
     /// The boards of `host` that take comet posts (`Reads::forum_open`):
     /// lattice's `/pub/forum-comets` cord, as `comments_open` reads its list.
     pub fn forum_open(&self, host: &str, budget: Duration) -> Option<Vec<String>> {
+        self.list_cord(host, List::ForumComets, budget).map(|c| open_names(&c))
+    }
+
+    /// The published pages of `ship` with their times and titles
+    /// (`Reads::titles`): lattice's `/pub/titles` cord, as `comments_open`
+    /// reads its list.
+    pub fn titles(&self, ship: &str, budget: Duration) -> Option<Vec<PageTitle>> {
+        self.list_cord(ship, List::Titles, budget).map(|c| page_titles(&c))
+    }
+
+    /// One of lattice's lists of `ship` as a cord, at the desk install's
+    /// base first and the older base when the first has none. `None` when
+    /// neither has it or there is no answer within `budget`.
+    fn list_cord(&self, ship: &str, list: List, budget: Duration) -> Option<String> {
         let start = Instant::now();
         for base in [DESK_BASE, APP_BASE] {
             let left = budget.saturating_sub(start.elapsed());
@@ -592,13 +654,13 @@ impl Engine {
                     return None;
                 }
                 let run = g.run.as_ref()?;
-                run.jobs.send(Job::OpenList(host.into(), base, List::ForumComets, tx)).ok()?;
+                run.jobs.send(Job::OpenList(ship.into(), base, list, tx)).ok()?;
                 if let Some(w) = &run.waker {
                     let _ = w.send(Event::Wake);
                 }
             }
             match rx.recv_timeout(left) {
-                Ok(Ok(Some(cord))) => return Some(open_names(&cord)),
+                Ok(Ok(Some(cord))) => return Some(cord),
                 // none here, or not lattice's base: the other one may be
                 Ok(Ok(None)) | Ok(Err(_)) => {}
                 Err(_) => return None,
@@ -797,6 +859,12 @@ impl Reads for Engine {
     fn comments_open(&self, ship: &str, budget: Duration) -> Option<Opened> {
         Engine::comments_open(self, ship, budget)
     }
+    fn pages(&self, ship: &str) -> Option<Vec<(String, Option<i64>)>> {
+        Engine::pages(self, ship)
+    }
+    fn titles(&self, ship: &str, budget: Duration) -> Option<Vec<PageTitle>> {
+        Engine::titles(self, ship, budget)
+    }
     fn forum_open(&self, host: &str, budget: Duration) -> Option<Vec<String>> {
         Engine::forum_open(self, host, budget)
     }
@@ -933,6 +1001,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
             match jobs.try_recv() {
                 Ok(Job::Read(url, tx)) => {
                     pending.push((submit_read(&mut host, url.clone()), Wait::Read(tx, url), Instant::now()))
+                }
+                Ok(Job::Pages(ship, tx)) => {
+                    let _ = tx.send(host.core().cached_revs(&ship).map(|l| l.into_iter().map(|(k, _)| k).collect()));
                 }
                 Ok(Job::Expire(ship)) => {
                     log_line(&format!("expire the revision list of {ship}"));
@@ -1183,6 +1254,8 @@ enum List {
     ForumComets,
     /// `/pub/threads`, the published pages with a public comment list
     Threads,
+    /// `/pub/titles`, each published page's last change and title
+    Titles,
 }
 
 impl List {
@@ -1192,6 +1265,7 @@ impl List {
             List::Comets => "comets",
             List::ForumComets => "forum-comets",
             List::Threads => "threads",
+            List::Titles => "titles",
         }
     }
 }
@@ -1280,6 +1354,25 @@ fn cord_of(r: Result<Reply, Failure>) -> Result<Option<String>, String> {
 /// `/pub/comments`'s cord: one published page's name a line
 pub fn open_names(cord: &str) -> Vec<String> {
     cord.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
+}
+
+/// `/pub/titles`'s cord: a line a published page,
+/// `<key>\t<unix-seconds>\t<title>`, the key as the revision list names it
+/// and the title, which may be empty, with no tab or newline. A line that
+/// is not that (no key, a time that is not a number, a tab too many or too
+/// few) is skipped.
+pub fn page_titles(cord: &str) -> Vec<PageTitle> {
+    cord.lines()
+        .filter_map(|l| {
+            let l = l.strip_suffix('\r').unwrap_or(l);
+            let mut f = l.split('\t');
+            let (key, secs, title) = (f.next()?, f.next()?, f.next()?);
+            if f.next().is_some() || !key.starts_with('/') {
+                return None;
+            }
+            Some(PageTitle { key: key.into(), secs: secs.parse().ok()?, title: title.into() })
+        })
+        .collect()
 }
 
 /// `/pub/comets`'s cord: a line a page, `<name> <mode>` or
@@ -1441,14 +1534,14 @@ mod tests {
         assert_eq!(code.matches("submit_forum_write(").count(), 1, "submit_forum_write, called once");
         assert_eq!(code.matches("submit_board(").count(), 1, "submit_board, called once");
         assert_eq!(code.matches("submit_open_list(").count(), 1, "submit_open_list, called once");
-        // the peek reads /pub/comments or /pub/comets and nothing else
+        // the peek reads one of lattice's lists under /pub and nothing else
         let peek = &code[code.find("fn submit_open_list<").unwrap()..];
         let peek = &peek[..peek.find("\n}\n").unwrap()];
         assert!(peek.contains("folder: format!(\"{base}/pub\")") && peek.contains("name: Some(list.name().into())"), "{peek}");
         let names = &code[code.find("impl List {").unwrap()..];
         let names = &names[..names.find("\n}\n").unwrap()];
         let quoted: Vec<&str> = names.split('"').skip(1).step_by(2).collect();
-        assert_eq!(quoted, ["comments", "comets", "forum-comets", "threads"], "{names}");
+        assert_eq!(quoted, ["comments", "comets", "forum-comets", "threads", "titles"], "{names}");
         assert_eq!(code.matches("submit_read(").count(), 1, "submit_read, called once");
         assert_eq!(code.matches("submit_comment(").count(), 1, "submit_comment, called once");
         // a forum write is logged as one, not as a comment
@@ -1493,6 +1586,26 @@ mod tests {
         for bad in ["", "/", "/a//b", "/a/../b", "/a/.", "/a b", "/a/b/", "/a%2fb"] {
             assert_eq!(thread_page(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn page_titles_are_read_line_by_line() {
+        let t = |key: &str, secs, title: &str| PageTitle { key: key.into(), secs, title: title.into() };
+        let got = page_titles(
+            "/site/docs/one\t1700000000\tThe first one\n/site/docs/two\t1700000001\t\n\
+             /site/x\tsoon\tNo time\n/site/y\t1\tA\ttab too many\n/site/z\t2\n\
+             no-slash\t3\tNo key\n\n  \n/a b\t-5\t  spaced  \r\n/last\t4\tLast",
+        );
+        assert_eq!(
+            got,
+            [
+                t("/site/docs/one", 1_700_000_000, "The first one"),
+                t("/site/docs/two", 1_700_000_001, ""),
+                t("/a b", -5, "  spaced  "),
+                t("/last", 4, "Last"),
+            ]
+        );
+        assert!(page_titles("").is_empty());
     }
 
     #[test]
