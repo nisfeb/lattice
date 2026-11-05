@@ -32,8 +32,6 @@ use crate::render::{self, chrome, enc, esc, lossy, main_of, read_href, Note, Sho
 const BUDGET: Duration = Duration::from_secs(20);
 /// The most threads a board shows.
 const LISTED: usize = 200;
-/// Why every write on a board is disabled.
-pub const WHY: &str = "Connect a node to post";
 /// Why a forum board that says it takes no comet posts is read only.
 pub const CLOSED: &str = "This board takes no posts from readers without a node";
 /// Why voting is disabled on a forum board.
@@ -438,10 +436,9 @@ fn who(s: &str) -> String {
 
 fn crumbs(p: &Place) -> String {
     format!(
-        "<p class=\"crumbs\"><a href=\"{}\">{}</a> / {}</p>",
+        "<p class=\"crumbs\"><a href=\"{}\">{}</a> / forum</p>",
         esc(&read_href(&format!("urb://{}", p.host))),
         esc(&p.host),
-        p.prefix()
     )
 }
 
@@ -727,7 +724,7 @@ mod tests {
         assert!(h.contains(&format!("disabled title=\"{NO_VOTE}\"")), "{h}");
         // a host that has not said yet is not closed: the form, and a check
         let h = thread_page(&p, &thread_with("x", "y", None), &Write::default()).html;
-        assert!(h.contains("write-form") && !h.contains(CLOSED) && !h.contains(&format!("disabled title=\"{WHY}\">Reply")), "{h}");
+        assert!(h.contains("write-form") && !h.contains(CLOSED), "{h}");
         assert!(h.contains("Checking whether this board takes posts") && h.contains("data-check=\"/open?url=urb%3A%2F%2F~wep%2Fforum%2Fgeneral\""), "{h}");
         let h = thread_page(&p, &thread_with("x", "y", None), &Write { open: Some(true), ..Write::default() }).html;
         assert!(h.contains("write-form") && !h.contains("data-check"), "{h}");
