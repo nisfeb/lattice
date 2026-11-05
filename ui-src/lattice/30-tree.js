@@ -36,6 +36,9 @@
   // pages other ships shared with us (/shared-with-me), drawn as a folder
   // after the pages. Filled by 69-shared.js.
   let sharedWithMe = [];
+  // shared folders this ship follows (/folder-follows), drawn after it.
+  // Filled by 69x-follow.js.
+  let folds = [];
   customElements.define('lat-tree', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -328,6 +331,9 @@
     shared: [ico('inbox'), 'Pages other ships shared with you. Not a folder in your pages: '
       + 'lattice shows it while anything is shared with you, and removing an entry leaves '
       + 'their grant as it is.'],
+    following: [ico('inbox'), 'Folders other ships share that you follow, from a folder index\'s '
+      + 'Follow button. Not in your pages: the count is what was added or changed since you '
+      + 'last opened it, and the \u00d7 unfollows.'],
   };
   function sysFlair(row, which) {
     const [svg, what] = SYSF[which];
@@ -582,6 +588,7 @@
       treeList.appendChild(row);
     }
     if (sharedWithMe.length) renderShared(coll);
+    if (folds.length) renderFolds(coll);
     treeRove(treeList, had);
     paintLink();                 // the Page tab's link section (65-ctl.js)
     // the Published pages list (72-acl.js) reads these share modes

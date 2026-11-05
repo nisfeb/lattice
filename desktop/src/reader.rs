@@ -23,6 +23,9 @@
 //! - `/boot?k=&to=` hands the window this launch's token as an HttpOnly
 //!   cookie, as the bridge's bootstrap does, then goes to `to`;
 //! - `POST /history/clear` empties the local history;
+//! - `POST /follow?url=` follows the folder at that address, or with the
+//!   form's `do` as `unfollow` stops (follows.rs), then goes back to the
+//!   folder, or home when the form's `back` is `home`;
 //! - `POST /comment?url=` sends the form's `body` as a comment on that
 //!   page, as the reader identity (engine.rs), then goes back to the page,
 //!   which says what became of it;
@@ -57,6 +60,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::engine::{CometMode, Comets, CommentError, NativePage, Opened, PageTitle, PubComment, ReadError, Reads};
+use crate::follows::{self, Follows};
 use crate::history::History;
 use crate::render::{self, Mode, Note, Open, Talk};
 
@@ -144,6 +148,8 @@ pub fn boot_url(base: &str, to: &str) -> String {
 pub struct Ctx {
     pub reads: Box<dyn Reads>,
     pub history: History,
+    /// the followed folders, kept beside the history
+    pub follows: Arc<Follows>,
     pub port: u16,
     raws: Mutex<VecDeque<(String, String, Vec<u8>)>>,
     start: Mutex<Option<(Instant, Option<NativePage>)>>,
@@ -168,6 +174,7 @@ impl Ctx {
     pub fn new(reads: Box<dyn Reads>, history: History, port: u16) -> Ctx {
         Ctx {
             reads,
+            follows: Arc::new(Follows::open(history.dir())),
             history,
             port,
             raws: Mutex::new(VecDeque::new()),
@@ -641,7 +648,7 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
                 None => plain(404),
             }
         }
-        ("/" | "/read" | "/connect" | "/open", true) | ("/history/clear" | "/comment" | "/forum", false) if !trusted(req, port) => plain(403),
+        ("/" | "/read" | "/connect" | "/open", true) | ("/history/clear" | "/comment" | "/forum" | "/follow", false) if !trusted(req, port) => plain(403),
         ("/open", true) => answered(ctx, &address(req.arg("url").unwrap_or(""))),
         ("/forum", false) if req.method == "POST" => {
             if !req.origin.as_deref().is_some_and(|o| reader_origin(o, port)) {
@@ -654,6 +661,12 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
                 return plain(403);
             }
             comment(ctx, req)
+        }
+        ("/follow", false) if req.method == "POST" => {
+            if !req.origin.as_deref().is_some_and(|o| reader_origin(o, port)) {
+                return plain(403);
+            }
+            follow(ctx, req)
         }
         ("/history/clear", false) if req.method == "POST" => {
             if !req.origin.as_deref().is_some_and(|o| reader_origin(o, port)) {
@@ -675,7 +688,7 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
                 Some(p) if html => ctx.keep_raw(render::START_URL, p.body.as_bytes()),
                 _ => String::new(),
             };
-            shown(200, render::home(live.as_ref(), &key, &ctx.history.list()))
+            shown(200, render::home(live.as_ref(), &key, &ctx.history.list(), &ctx.follows.list()))
         }
         // the app's navigation policy shows the manager for this before it
         // loads (commands.rs); this is only what a stray request sees
@@ -707,6 +720,37 @@ fn form_field(raw: &[u8], name: &str, max: usize) -> String {
         end -= 1;
     }
     v[..end].to_string()
+}
+
+/// `POST /follow`: follow the folder at `url`, as much of it as can be
+/// read now counting as seen, or stop following it. Then back to the
+/// folder, or home.
+fn follow(ctx: &Ctx, req: &Req) -> Resp {
+    let url = address(req.arg("url").unwrap_or(""));
+    let Some(u) = urb_engine::url::de_urb(&url).ok().filter(|u| matches!(u.mount, urb_engine::url::Mount::N)) else {
+        return plain(400);
+    };
+    // a folder, as `folder` lists one: not the ship's root or an index
+    let rel = follows::rel(&follows::folder_key(&u.rel));
+    if rel.last().is_none_or(|l| l == "index") {
+        return plain(400);
+    }
+    let folder = follows::folder_key(&rel);
+    let done = if form_field(&req.body, "do", 16) == "unfollow" {
+        ctx.follows.unfollow(&u.ship, &folder)
+    } else {
+        let titles = ctx.titles(&u.ship);
+        let found =
+            follows::found(&folder, titles.as_deref(), || ctx.reads.dir_index(&u.ship, &folder, follows::BUDGET));
+        ctx.follows.follow(&u.ship, &folder, &found)
+    };
+    if let Err(e) = done {
+        crate::commands::dlog(&format!("reader: {e}"));
+    }
+    if form_field(&req.body, "back", 16) == "home" {
+        return redirect(303, "/");
+    }
+    redirect(303, &render::read_href(&render::folder_url(&u.ship, &follows::rel(&folder))))
 }
 
 /// `POST /forum`: a post on a lattice forum board, or a reply in one of
@@ -1027,8 +1071,18 @@ fn folder(ctx: &Ctx, url: &str, by_date: bool) -> Option<Resp> {
     if render::dir_rows(&listed(&[]), &u.rel, false).is_empty() {
         return None;
     }
-    let rows = render::dir_rows(&listed(&ctx.titles(&u.ship).unwrap_or_default()), &u.rel, by_date);
-    let s = render::folder_page(&u.ship, &u.rel, &rows, by_date);
+    let titles = ctx.titles(&u.ship);
+    let rows = render::dir_rows(&listed(titles.as_deref().unwrap_or_default()), &u.rel, by_date);
+    // a followed folder is checked as it is opened, from the same list
+    let key = follows::folder_key(&u.rel);
+    let follow = ctx.follows.get(&u.ship, &key).and_then(|_| {
+        let found = follows::found(&key, titles.as_deref(), || ctx.reads.dir_index(&u.ship, &key, follows::BUDGET));
+        if let Err(e) = ctx.follows.found(&u.ship, &key, &found) {
+            crate::commands::dlog(&format!("reader: {e}"));
+        }
+        ctx.follows.get(&u.ship, &key)
+    });
+    let s = render::folder_page(&u.ship, &u.rel, &rows, by_date, follow.as_ref());
     if let Err(e) = ctx.history.add(&render::folder_url(&u.ship, &u.rel), &s.title) {
         crate::commands::dlog(&format!("reader: {e}"));
     }
@@ -1062,6 +1116,12 @@ fn page(ctx: &Ctx, url: &str, p: &NativePage) -> Resp {
     let s = render::page(url, p, Mode::Shipless, &key, &talk);
     if let Err(e) = ctx.history.add(url, &s.title) {
         crate::commands::dlog(&format!("reader: {e}"));
+    }
+    // read: no longer new in a folder it is followed in
+    if let Ok(u) = urb_engine::url::de_urb(url) {
+        if let Err(e) = ctx.follows.saw(&u.ship, &follows::folder_key(&u.rel)) {
+            crate::commands::dlog(&format!("reader: {e}"));
+        }
     }
     shown(200, s)
 }
@@ -1151,7 +1211,17 @@ pub fn start(app: &tauri::AppHandle) -> Result<String, String> {
     let engine = app.state::<crate::engine::Engine>().inner().clone();
     // the reader is in use: its identity is kept
     engine.claim();
-    ensure(&app.state::<Reader>(), |port| Ctx::new(Box::new(engine), History::open(&dir), port))
+    ensure(&app.state::<Reader>(), |port| {
+        use tauri::Emitter;
+        // the hook a check's news goes out by: the follow-new event, for
+        // whatever listens (nothing yet)
+        let to = app.clone();
+        let follows = Arc::new(Follows::with_hook(&dir, move |n| {
+            let _ = to.emit(follows::EVENT, n);
+        }));
+        follows::watch(Box::new(engine.clone()), follows.clone());
+        Ctx { follows, ..Ctx::new(Box::new(engine), History::open(&dir), port) }
+    })
 }
 
 /// The reader's port, if it listens.
@@ -1966,6 +2036,59 @@ mod tests {
         assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fnone%2F", &cookie())).0, 404);
         assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~nec%2Fdocs%2F", &cookie())).0, 404);
         assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2Findex", &cookie())).0, 404);
+    }
+
+    fn post_follow(url: &str, extra: &str, body: &str) -> String {
+        format!(
+            "POST /follow?url={} HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\n{extra}Content-Type: application/x-www-form-urlencoded\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            render::enc(url),
+            body.len()
+        )
+    }
+
+    #[test]
+    fn a_folder_is_followed_from_its_index_and_new_pages_clear_on_reading() {
+        let (c, _) = ctx("follow", |u| match u {
+            "urb://~zod/docs/zed" => Ok(page_of("# Zed", "gmi")),
+            u => pages(u),
+        });
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2F", &cookie()));
+        assert!(out.contains("action=\"/follow?url=urb%3A%2F%2F~zod%2Fdocs%2F\"") && out.contains(">Follow</button>"), "{out}");
+        // the reader's own origin and token only
+        assert_eq!(ask(&c, &post_follow("urb://~zod/docs/", &cookie(), "do=follow")).0, 403);
+        assert_eq!(ask(&c, &post_follow("urb://~zod/docs/", "Origin: http://127.0.0.1:1\r\n", "do=follow")).0, 403);
+        assert!(c.follows.list().is_empty());
+        let (st, out) = ask(&c, &post_follow("urb://~zod/docs/", &ours(), "do=follow&back=folder"));
+        assert_eq!(st, 303);
+        assert!(out.contains("Location: /read?url=urb%3A%2F%2F~zod%2Fdocs%2F\r\n"), "{out}");
+        let f = c.follows.get("~zod", "/docs").expect("followed");
+        assert_eq!(f.latest.len(), 3);
+        assert_eq!(f.new_count(), 0, "what is there at first counts as seen");
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2F", &cookie()));
+        assert!(out.contains(">Following</button>") && out.contains("0 new"), "{out}");
+        // zed seen at an older time: new on the index and at home
+        let mut all = c.follows.list();
+        all[0].seen.insert("/docs/zed".into(), 1);
+        std::fs::write(c.history.dir().join("follows.json"), serde_json::to_vec(&all).unwrap()).unwrap();
+        let (_, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2F", &cookie()));
+        assert!(out.contains("1 new") && out.contains("<strong class=\"new\">new</strong><a"), "{out}");
+        let (_, out) = ask(&c, &get("/", &cookie()));
+        assert!(out.contains(">~zod/docs/</a> <span class=\"when\">1 new</span>") && out.contains(">Unfollow</button>"), "{out}");
+        // reading it clears it
+        assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2Fzed", &cookie())).0, 200);
+        assert_eq!(c.follows.get("~zod", "/docs").unwrap().new_count(), 0);
+        // unfollow from home goes home
+        let (st, out) = ask(&c, &post_follow("urb://~zod/docs/", &ours(), "do=unfollow&back=home"));
+        assert_eq!(st, 303);
+        assert!(out.contains("Location: /\r\n"), "{out}");
+        assert!(c.follows.list().is_empty());
+        // a folder that no longer answers with anything for us: unavailable
+        c.follows.follow("~zod", "/gone", &follows::Found::Pages(vec![])).unwrap();
+        c.follows.found("~zod", "/gone", &follows::check(c.reads.as_ref(), "~zod", "/gone")).unwrap();
+        let (_, out) = ask(&c, &get("/", &cookie()));
+        assert!(out.contains(">~zod/gone/</a> <span class=\"when\">unavailable</span>"), "{out}");
+        assert_eq!(ask(&c, &post_follow("urb://~zod/", &ours(), "do=follow")).0, 400);
     }
 
     #[test]

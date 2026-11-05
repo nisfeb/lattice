@@ -416,4 +416,67 @@
     (expect-eq !>(*(set @t)) !>((revoke-groups:ls grants-fg ~)))
     (expect-eq !>(*(set @t)) !>((revoke-groups:ls grants-fg ~[/gone])))
   ==
+::
+::  ==  followed folders  ==
+::
+++  fold-rows
+  ^-  (map @t title-row:ls)
+  (~(gas by *(map @t title-row:ls)) ~[['/f/a' 10 'A'] ['/f/sub/b' 20 'B']])
+::  following marks nothing new; a page added, or changed, since is new
+++  test-fold-new
+  =/  fs=(list fold:ls)  (fold-add:ls ~ nec /f `fold-rows ~2026.1.1)
+  =/  f0=fold:ls  (need (fold-get:ls fs nec /f))
+  =/  more  (~(put by (~(put by fold-rows) '/f/c' [30 'C'])) '/f/a' [11 'A2'])
+  =/  fs1=(list fold:ls)  (fold-read:ls fs nec /f `more ~2026.1.2)
+  =/  f1=fold:ls  (need (fold-get:ls fs1 nec /f))
+  ;:  weld
+    (expect-eq !>(0) !>((fold-new:ls f0)))
+    (expect-eq !>(%.y) !>(ok.f0))
+    (expect-eq !>(2) !>((fold-new:ls f1)))
+    ::  opening a page clears its new, and only its
+    (expect-eq !>(1) !>((fold-new:ls (need (fold-get:ls (fold-seen:ls fs1 nec /f '/f/c') nec /f)))))
+    ::  a key it does not list is nothing to see
+    (expect-eq !>(fs1) !>((fold-seen:ls fs1 nec /f '/f/zz')))
+  ==
+::  a folder that will not read turns unavailable and keeps its pages;
+::  reading again brings it back
+++  test-fold-unavailable
+  =/  fs=(list fold:ls)  (fold-add:ls ~ nec /f `fold-rows ~2026.1.1)
+  =/  gone=(list fold:ls)  (fold-read:ls fs nec /f ~ ~2026.1.2)
+  =/  g=fold:ls  (need (fold-get:ls gone nec /f))
+  =/  back=fold:ls  (need (fold-get:ls (fold-read:ls gone nec /f `fold-rows ~2026.1.3) nec /f))
+  ;:  weld
+    (expect-eq !>(%.n) !>(ok.g))
+    (expect-eq !>(fold-rows) !>(late.g))
+    (expect-eq !>(%.y) !>(ok.back))
+    ::  a folder unreadable when followed is followed, unavailable
+    (expect-eq !>(%.n) !>(ok:(need (fold-get:ls (fold-add:ls ~ bus /g ~ ~2026.1.1) bus /g))))
+    ::  a read of a folder nobody follows changes nothing
+    (expect-eq !>(fs) !>((fold-read:ls fs bus /f `fold-rows ~2026.1.2)))
+  ==
+::  following again keeps what was seen; unfollowing is one follow gone
+++  test-fold-add-del
+  =/  fs=(list fold:ls)  (fold-add:ls ~ nec /f `fold-rows ~2026.1.1)
+  =/  more  (~(put by fold-rows) '/f/c' [30 'C'])
+  =/  fs2=(list fold:ls)  (fold-add:ls fs nec /f `more ~2026.1.2)
+  =/  fs3=(list fold:ls)  (fold-add:ls fs2 bus /f `more ~2026.1.2)
+  ;:  weld
+    (expect-eq !>(1) !>((lent fs2)))
+    (expect-eq !>(1) !>((fold-new:ls (need (fold-get:ls fs2 nec /f)))))
+    (expect-eq !>(2) !>((lent fs3)))
+    (expect-eq !>(~[bus]) !>((turn (fold-del:ls fs3 nec /f) |=(f=fold:ls host.f))))
+  ==
+::  a ship's titles under a folder, at any depth, and nothing beside it
+++  test-fold-under
+  =/  all  (~(gas by *(map @t title-row:ls)) ~[['/f/a' 1 'A'] ['/f/s/b' 2 'B'] ['/fx/c' 3 'C'] ['/g' 4 'G']])
+  %+  expect-eq  !>((~(gas by *(map @t title-row:ls)) ~[['/f/a' 1 'A'] ['/f/s/b' 2 'B']]))
+  !>((fold-under:ls all /f))
+::  a share notice's page names the follow it falls under on that host
+++  test-fold-hit
+  =/  fs=(list fold:ls)  (fold-add:ls (fold-add:ls ~ nec /f `fold-rows ~2026.1.1) bus /f ~ ~2026.1.1)
+  ;:  weld
+    (expect-eq !>(~[/f]) !>((turn (fold-hit:ls fs nec /apps/lattice/page/f/a/code) |=(f=fold:ls rel.f))))
+    (expect-eq !>(~) !>((fold-hit:ls fs nec /apps/lattice/page/fx/a/code)))
+    (expect-eq !>(~) !>((fold-hit:ls fs zod /apps/lattice/page/f/a/code)))
+  ==
 --

@@ -202,6 +202,24 @@ pub trait Reads: Send + Sync {
         let _ = ship;
         None
     }
+    /// The pages in `folder` (`/<path>`) of `ship` as its `dir-index` grub
+    /// names them, the lines of `/pub/titles`, for a folder `ship` grants
+    /// to ships it names. Only those ships may read it.
+    fn dir_index(&self, ship: &str, folder: &str, budget: Duration) -> DirIndex {
+        let _ = (ship, folder, budget);
+        DirIndex::Silent
+    }
+}
+
+/// What a folder's `dir-index` peek heard (`Reads::dir_index`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DirIndex {
+    /// its pages
+    Got(Vec<PageTitle>),
+    /// an answer, and not an index: none there, or not ours to read
+    Refused,
+    /// no answer in time, or a reader not ready
+    Silent,
 }
 
 /// A published page as `/pub/titles` names it: its key (`/<path>`), when
@@ -307,6 +325,8 @@ enum Job {
     OpenList(String, &'static str, List, Cord),
     /// a publisher's public comment list for a page, at a lattice base
     Thread(String, &'static str, String, Cord),
+    /// a granted folder's `dir-index`, at a lattice base
+    DirIndex(String, &'static str, String, Cord),
     ForumWrite(String, ForumWrite, Said),
     Board(BoardAsk, Told),
     Close(Sender<()>),
@@ -675,6 +695,41 @@ impl Engine {
         self.peek_bases(budget, |base, tx| Job::OpenList(ship.into(), base, List::Threads, tx)).map(|c| open_names(&c))
     }
 
+    /// The pages in `folder` of `ship` its `dir-index` names
+    /// (`Reads::dir_index`), at the desk install's base first and the older
+    /// base when the first has none.
+    pub fn dir_index(&self, ship: &str, folder: &str, budget: Duration) -> DirIndex {
+        let Some(folder) = thread_page(folder) else { return DirIndex::Refused };
+        let start = Instant::now();
+        for base in [DESK_BASE, APP_BASE] {
+            let left = budget.saturating_sub(start.elapsed());
+            if left.is_zero() {
+                return DirIndex::Silent;
+            }
+            let (tx, rx) = channel();
+            {
+                let g = self.inner.lock().unwrap();
+                if !matches!(g.status, Status::Ready { .. }) {
+                    return DirIndex::Silent;
+                }
+                let Some(run) = g.run.as_ref() else { return DirIndex::Silent };
+                if run.jobs.send(Job::DirIndex(ship.into(), base, folder.clone(), tx)).is_err() {
+                    return DirIndex::Silent;
+                }
+                if let Some(w) = &run.waker {
+                    let _ = w.send(Event::Wake);
+                }
+            }
+            match rx.recv_timeout(left) {
+                Ok(Ok(Some(cord))) => return DirIndex::Got(page_titles(&cord)),
+                // none here, refused, or not lattice's base: the other one may be
+                Ok(Ok(None)) | Ok(Err(_)) => {}
+                Err(_) => return DirIndex::Silent,
+            }
+        }
+        DirIndex::Refused
+    }
+
     /// The public comments on `page` of `ship` (`Reads::thread`): lattice's
     /// `/pub/thread/<page>/list` cord, as `comments_open` reads its list.
     pub fn thread(&self, ship: &str, page: &str, budget: Duration) -> Option<Vec<PubComment>> {
@@ -865,6 +920,9 @@ impl Reads for Engine {
     fn titles(&self, ship: &str, budget: Duration) -> Option<Vec<PageTitle>> {
         Engine::titles(self, ship, budget)
     }
+    fn dir_index(&self, ship: &str, folder: &str, budget: Duration) -> DirIndex {
+        Engine::dir_index(self, ship, folder, budget)
+    }
     fn forum_open(&self, host: &str, budget: Duration) -> Option<Vec<String>> {
         Engine::forum_open(self, host, budget)
     }
@@ -1018,6 +1076,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                 }
                 Ok(Job::Thread(ship, base, page, tx)) => {
                     pending.push((submit_thread(&mut host, ship, base, &page), Wait::OpenList(tx), Instant::now()))
+                }
+                Ok(Job::DirIndex(ship, base, folder, tx)) => {
+                    pending.push((submit_dir_index(&mut host, ship, base, &folder), Wait::OpenList(tx), Instant::now()))
                 }
                 Ok(Job::ForumWrite(to, w, tx)) => {
                     log_line(&format!("forum write to {to}"));
@@ -1295,6 +1356,19 @@ fn submit_thread<I: urb_engine::host::Io>(host: &mut Host<I>, ship: String, base
     })
 }
 
+/// The third peek: a granted folder's index, the file `dir-index` in the
+/// folder's own dir under `/page`, which lattice lets only the ships the
+/// folder is granted to read. `folder` is a `thread_page`.
+fn submit_dir_index<I: urb_engine::host::Io>(host: &mut Host<I>, ship: String, base: &str, folder: &str) -> u64 {
+    host.submit(Request::Peek {
+        ship,
+        folder: format!("{base}/page{folder}"),
+        name: Some("dir-index".into()),
+        conv: urb_engine::core::Conv::Cord,
+        wait: Some(PEEK_WAIT_MS),
+    })
+}
+
 /// A page's key as the path under `/pub/thread`: `/<seg>/<seg>...`, each
 /// segment non-empty and not `.` or `..`, nothing but the characters a
 /// lattice path segment takes. `None` for anything else.
@@ -1497,8 +1571,8 @@ mod tests {
             .collect();
         assert_eq!(
             named,
-            ["Read", "Forum", "Forum", "Furum", "Furum", "Poke", "Forum", "Peek", "Peek"],
-            "the engine names only Request::Read, the board reads, one Poke, the forum write and two Peeks"
+            ["Read", "Forum", "Forum", "Furum", "Furum", "Poke", "Forum", "Peek", "Peek", "Peek"],
+            "the engine names only Request::Read, the board reads, one Poke, the forum write and three Peeks"
         );
         for word in ["Inbox", "PubPut", "PubRemove", "Pub {", "Watch"] {
             assert!(!code.contains(&format!("Request::{word}")), "{word}");
@@ -1525,7 +1599,12 @@ mod tests {
             ],
             "only the board readers' read calls, and a forum post or reply"
         );
-        assert_eq!(code.matches(".submit(").count(), 6, "six submits: read, board, comment, forum write, open list, thread");
+        assert_eq!(code.matches(".submit(").count(), 7, "seven submits: read, board, comment, forum write, open list, thread, dir index");
+        assert_eq!(code.matches("submit_dir_index(").count(), 1, "submit_dir_index, called once");
+        // the dir-index peek reads a folder's index under /page and nothing else
+        let peek = &code[code.find("fn submit_dir_index<").unwrap()..];
+        let peek = &peek[..peek.find("\n}\n").unwrap()];
+        assert!(peek.contains("folder: format!(\"{base}/page{folder}\")") && peek.contains("name: Some(\"dir-index\".into())"), "{peek}");
         assert_eq!(code.matches("submit_thread(").count(), 1, "submit_thread, called once");
         // the thread peek reads a page's list under /pub/thread and nothing else
         let peek = &code[code.find("fn submit_thread<").unwrap()..];
