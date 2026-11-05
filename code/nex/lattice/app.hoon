@@ -11072,8 +11072,10 @@
   =/  paxs=(list path)
     %+  murn  roads
     |=  r=road:tarball
-    ?.  ?=([%& %& * %code] r)  ~
-    `(snoc +>-.r %code)
+    ?.  ?=(%& -.r)  ~
+    ?.  ?=(%& -.p.r)  ~
+    ?.  =(%code name.p.p.r)  ~
+    `(snoc path.p.p.r %code)
   ?~  paxs  (pure:m ~)
   ;<  our=@p  bind:m  bowl-our
   |-  ^-  form:m
