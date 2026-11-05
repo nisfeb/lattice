@@ -128,4 +128,45 @@
   =/  n=reply-note:ln  [%reply-1 %main 1 'Hello' nec 'hi']
   %+  expect-eq  !>(~)
   !>((mole |.(;;([@tas @t] n))))
+::  a followed folder's new pages: one item, its count and folder in the title
+++  test-folder-item-title
+  =/  i=item:ln  (folder-item:ln t1 pla /docs/notes 3)
+  =/  o=item:ln  (folder-item:ln t1 pla /docs 1)
+  ;:  weld
+    (expect-eq !>(%folder) !>(kind.i))
+    (expect-eq !>(pla) !>(who.i))
+    (expect-eq !>(pla) !>(host.i))
+    (expect-eq !>('/docs/notes') !>(where.i))
+    (expect-eq !>(3) !>(post.i))
+    (expect-eq !>('3 new pages in /docs/notes from ~sampel-palnet') !>(title.i))
+    (expect-eq !>('1 new page in /docs from ~sampel-palnet') !>(title.o))
+  ==
+::  +folder-ids finds a folder's items only, not another folder's, another
+::  host's, or another kind
+++  test-folder-ids-per-folder
+  =/  a=item:ln  (folder-item:ln t1 pla /docs 2)
+  =/  items=(list [id=@ta i=item:ln])
+    :~  (row a)
+        (row (folder-item:ln t1 pla /other 1))
+        (row (folder-item:ln t1 nec /docs 1))
+        (row (make:ln %comment t1 pla pla '/docs' 0 '' 'x'))
+    ==
+  %+  expect-eq  !>(~[(item-id:ln a)])
+  !>((folder-ids:ln items pla /docs))
+::  coalescing: pages arriving over two reads leave one unread item with the
+::  latest count, and marking the folder's ids read clears it
+++  test-folder-coalesces-and-reads
+  =/  r1=(list [id=@ta i=item:ln])  ~[(row (folder-item:ln t1 pla /docs 2))]
+  =/  gone=(set @ta)  (sy (folder-ids:ln r1 pla /docs))
+  =/  r2=(list [id=@ta i=item:ln])
+    :-  (row (folder-item:ln t2 pla /docs 5))
+    (skip r1 |=([id=@ta *] (~(has in gone) id)))
+  =/  s0=seen:ln  (mark-all:ln t1)
+  =/  s1=seen:ln  (mark-ids:ln s0 (folder-ids:ln r2 pla /docs) (sy (ids r2)))
+  ;:  weld
+    (expect-eq !>(1) !>((lent r2)))
+    (expect-eq !>(5) !>(post.i:(snag 0 r2)))
+    (expect-eq !>(1) !>((unread:ln s0 r2)))
+    (expect-eq !>(0) !>((unread:ln s1 r2)))
+  ==
 --

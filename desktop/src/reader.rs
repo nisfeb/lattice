@@ -170,8 +170,9 @@ pub struct Ctx {
     titles: Mutex<Titles>,
     /// what the reader wrote on boards and under pages (notify.rs)
     pub mine: crate::notify::MyPosts,
-    /// the replies to it not seen yet, by place
-    pub counts: crate::notify::Counts,
+    /// the replies to it not seen yet, by place, and the followed
+    /// folders' new pages, by folder (shared with the follow-new hook)
+    pub counts: Arc<crate::notify::Counts>,
 }
 
 impl Ctx {
@@ -182,7 +183,7 @@ impl Ctx {
             follows: Arc::new(Follows::open(history.dir())),
             history,
             mine,
-            counts: crate::notify::Counts::default(),
+            counts: Arc::new(crate::notify::Counts::default()),
             port,
             raws: Mutex::new(VecDeque::new()),
             start: Mutex::new(None),
@@ -754,6 +755,7 @@ fn follow(ctx: &Ctx, req: &Req) -> Resp {
     if let Err(e) = done {
         crate::commands::dlog(&format!("reader: {e}"));
     }
+    crate::notify::folders_changed(ctx);
     if form_field(&req.body, "back", 16) == "home" {
         return redirect(303, "/");
     }
@@ -1146,6 +1148,7 @@ fn page(ctx: &Ctx, url: &str, p: &NativePage) -> Resp {
         if let Err(e) = ctx.follows.saw(&u.ship, &follows::folder_key(&u.rel)) {
             crate::commands::dlog(&format!("reader: {e}"));
         }
+        crate::notify::folders_changed(ctx);
     }
     shown(200, s)
 }
@@ -1240,14 +1243,20 @@ pub fn start(app: &tauri::AppHandle) -> Result<String, String> {
         &app.state::<Reader>(),
         |port| {
             use tauri::Emitter;
-            // the hook a check's news goes out by: the follow-new event, for
-            // whatever listens (nothing yet)
+            // the hook a check's news goes out by: the follow-new event,
+            // which feeds the home's count of what is new (notify.rs)
             let to = app.clone();
+            let counts = Arc::new(crate::notify::Counts::default());
+            let heard = counts.clone();
             let follows = Arc::new(Follows::with_hook(&dir, move |n| {
+                crate::notify::follow_new(&heard, n);
                 let _ = to.emit(follows::EVENT, n);
             }));
             follows::watch(Box::new(engine.clone()), follows.clone());
-            Ctx { follows, ..Ctx::new(Box::new(engine), History::open(&dir), port) }
+            let ctx = Ctx { follows, counts, ..Ctx::new(Box::new(engine), History::open(&dir), port) };
+            // the folders new since the last run count from the start
+            crate::notify::folders_changed(&ctx);
+            ctx
         },
         // the replies to the reader's posts are counted in the background
         crate::notify::watch,
@@ -2105,9 +2114,16 @@ mod tests {
         assert!(out.contains("1 new") && out.contains("<strong class=\"new\">new</strong><a"), "{out}");
         let (_, out) = ask(&c, &get("/", &cookie()));
         assert!(out.contains(">~zod/docs/</a> <span class=\"when\">1 new</span>") && out.contains(">Unfollow</button>"), "{out}");
-        // reading it clears it
+        // the home's count of what is new has the folder, once
+        crate::notify::folders_changed(&c);
+        let (_, out) = ask(&c, &get("/", &cookie()));
+        assert_eq!(out.matches(">1 new page in /docs from ~zod</a>").count(), 1, "{out}");
+        assert!(out.contains("1 new page in folders you follow"), "{out}");
+        // reading it clears it, there too
         assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2Fzed", &cookie())).0, 200);
         assert_eq!(c.follows.get("~zod", "/docs").unwrap().new_count(), 0);
+        let (_, out) = ask(&c, &get("/", &cookie()));
+        assert!(!out.contains("in folders you follow"), "{out}");
         // unfollow from home goes home
         let (st, out) = ask(&c, &post_follow("urb://~zod/docs/", &ours(), "do=unfollow&back=home"));
         assert_eq!(st, 303);

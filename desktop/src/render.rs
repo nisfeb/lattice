@@ -802,24 +802,39 @@ pub fn home(live: Option<&NativePage>, raw_key: &str, recent: &[Entry], replies:
 /// The home's line for replies to the reader's posts it has not seen,
 /// with a link to each place. Nothing when there are none.
 fn replies_box(replies: &[crate::notify::Unseen]) -> String {
-    let n: usize = replies.iter().map(|u| u.count).sum();
-    if n == 0 {
-        return String::new();
-    }
-    let mut h = format!(
-        "<section class=\"replies\" aria-labelledby=\"replies-h\"><h2 id=\"replies-h\">{n} new {} to your posts</h2><ul>",
-        if n == 1 { "reply" } else { "replies" }
-    );
-    for u in replies.iter().filter(|u| u.count > 0) {
-        let title = if u.title.trim().is_empty() { u.url.as_str() } else { u.title.as_str() };
+    let (folders, posts): (Vec<&crate::notify::Unseen>, Vec<&crate::notify::Unseen>) =
+        replies.iter().filter(|u| u.count > 0).partition(|u| u.folder);
+    let n: usize = posts.iter().map(|u| u.count).sum();
+    let mut h = String::new();
+    if n > 0 {
         h.push_str(&format!(
-            "<li><a href=\"{}\">{}</a> <span class=\"when\">{} new</span></li>",
-            esc(&read_href(&u.url)),
-            esc(title),
-            u.count
+            "<section class=\"replies\" aria-labelledby=\"replies-h\"><h2 id=\"replies-h\">{n} new {} to your posts</h2><ul>",
+            if n == 1 { "reply" } else { "replies" }
         ));
+        for u in posts {
+            let title = if u.title.trim().is_empty() { u.url.as_str() } else { u.title.as_str() };
+            h.push_str(&format!(
+                "<li><a href=\"{}\">{}</a> <span class=\"when\">{} new</span></li>",
+                esc(&read_href(&u.url)),
+                esc(title),
+                u.count
+            ));
+        }
+        h.push_str("</ul></section>");
     }
-    h.push_str("</ul></section>");
+    // a followed folder's new pages: one line per folder, its title the
+    // whole of it ("N new pages in <folder> from ~ship", notify.rs)
+    if !folders.is_empty() {
+        let p: usize = folders.iter().map(|u| u.count).sum();
+        h.push_str(&format!(
+            "<section class=\"replies folders\" aria-labelledby=\"folders-h\"><h2 id=\"folders-h\">{p} new {} in folders you follow</h2><ul>",
+            if p == 1 { "page" } else { "pages" }
+        ));
+        for u in folders {
+            h.push_str(&format!("<li><a href=\"{}\">{}</a></li>", esc(&read_href(&u.url)), esc(&u.title)));
+        }
+        h.push_str("</ul></section>");
+    }
     h
 }
 
@@ -1101,11 +1116,14 @@ mod tests {
         let t = Talk { our: Some("~doznec-sampel-palnet"), comments: &cs, new_after: Some(1_730_000_000_000), ..Talk::default() };
         let h = page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &t).html;
         assert_eq!(h.matches("new reply to you").count(), 1, "{h}");
-        let none = home(None, "", &[], &[crate::notify::Unseen { url: "urb://~zod/a".into(), title: "A".into(), count: 0 }], &[]);
+        let none = home(None, "", &[], &[crate::notify::Unseen { url: "urb://~zod/a".into(), title: "A".into(), count: 0, folder: false }], &[]);
         assert!(!none.html.contains("to your posts"));
+        let f = home(None, "", &[], &[crate::notify::folder_news("~zod", "/docs", 2)], &[]).html;
+        assert!(f.contains("2 new pages in folders you follow") && f.contains(">2 new pages in /docs from ~zod</a>"), "{f}");
+        assert!(!f.contains("to your posts"), "{f}");
         let u = [
-            crate::notify::Unseen { url: "urb://~zod/a".into(), title: "A <b>".into(), count: 2 },
-            crate::notify::Unseen { url: "urb://~wep/forum/g/7".into(), title: String::new(), count: 1 },
+            crate::notify::Unseen { url: "urb://~zod/a".into(), title: "A <b>".into(), count: 2, folder: false },
+            crate::notify::Unseen { url: "urb://~wep/forum/g/7".into(), title: String::new(), count: 1, folder: false },
         ];
         let h = home(None, "", &[], &u, &[]).html;
         assert!(h.contains("3 new replies to your posts"), "{h}");

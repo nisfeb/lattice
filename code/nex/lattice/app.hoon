@@ -11512,8 +11512,47 @@
     ?:  (gth n1 n0)  `'new'
     ?:  |(!=(n1 n0) !=(ok.u.was ok))  `'list'
     ~
+  ::  the inbox first, so the /rev the folds bump stamps carries
+  ::  /beacon/notify to the open editor too
+  ;<  ~  bind:m
+    ?:  ?=(%del -.act)  (notify-folder now host.who rel.who 0)
+    ?:  =(op `'new')  (notify-folder now host.who rel.who n1)
+    ?:  &(?=(%seen -.act) =(0 n1) (gth n0 0))
+      (notify-folder-read now host.who rel.who)
+    (pure:m ~)
   ?~  op  (pure:m ~)
   (bump-folds root u.op host.who rel.who n1 ok now)
+::  +notify-folder: the activity item of a followed folder (+folder-item:ln),
+::  coalesced: its older item culled, then one with `n` new pages filed,
+::  none when `n` is 0 (an unfollow)
+++  notify-folder
+  |=  [now=@da host=@p rel=path n=@ud]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  items=(list [id=@ta i=item:ln])  bind:m  notify-items
+  =/  old=(list @ta)  (folder-ids:ln items host rel)
+  ;<  ~  bind:m
+    |-  ^-  form:m
+    ?~  old  (pure:m ~)
+    ;<  *  bind:m  (cull-soft:io (rf up /notify/items i.old))
+    $(old t.old)
+  ?:  =(0 n)  (notify-stamp now)
+  (notify-add now (folder-item:ln now host rel n))
+::  +notify-folder-read: a followed folder's new pages were all opened, so
+::  its activity item is read
+++  notify-folder-read
+  |=  [now=@da host=@p rel=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  items=(list [id=@ta i=item:ln])  bind:m  notify-items
+  =/  mine=(list @ta)  (folder-ids:ln items host rel)
+  ?~  mine  (pure:m ~)
+  ;<  s=seen:ln  bind:m  notify-seen
+  =/  new=seen:ln  (mark-ids:ln s mine (~(gas in *(set @ta)) (turn items head)))
+  ;<  ~  bind:m  (put-file (rf up /notify %seen) [/ %noun] new)
+  (notify-stamp now)
 ::  +bump-folds: stamp /beacon/folds, then /rev, which the editor's keep
 ::  wakes on, as +bump-shares does. The payload's rev is that /rev, so a
 ::  tab refetches its follows and not its tree (90-sync.js).

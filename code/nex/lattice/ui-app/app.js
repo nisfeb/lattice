@@ -12112,10 +12112,14 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
     const t = a.title ? ': ' + a.title : '';
     if (a.kind === 'remote') return 'reply on ' + a.host + '/' + a.where + t;
     if (a.kind === 'reply') return 'reply on ' + a.where + t;
+    // a followed folder's new pages: the ship words it, "N new pages in
+    // <folder> from ~ship", one item per folder
+    if (a.kind === 'folder') return a.title || a.where;
     return a.where;
   };
   const actOpen = (a, e) => {
-    if (a.kind === 'comment' || a.kind === 'folder') return openIn('page', a.where, { ev: e });
+    if (a.kind === 'folder') return browseIn(api + '?url=' + encodeURIComponent('urb://' + a.host + a.where + '/'));
+    if (a.kind === 'comment') return openIn('page', a.where, { ev: e });
     const tail = encodeURIComponent(a.where) + '/' + a.post;
     return browseIn(a.kind === 'remote'
       ? '/apps/lattice/forum-remote/' + a.host + '/' + tail
@@ -12200,9 +12204,10 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   }
   // the old name, which the refresh paths call
   const refreshCommentBadge = () => refreshInboxBadge(false);
-  // A followed folder's new pages (the follow-a-folder work) would arrive as
-  // activity items of kind %folder (lib/lattice-notify): the ship files
-  // them, and this list and the badge show them with no change here.
+  // A followed folder's new pages arrive as one activity item of kind
+  // %folder per folder (lib/lattice-notify +folder-item): the ship files it
+  // when a read finds more new pages, and marks it read when they are all
+  // opened (69x-follow.js), stamping /beacon/notify both times.
 
   const cmOpen = () => toolOpen('inbox');
   // the inbox's tab came forward (24-tools.js): load all three tabs, and

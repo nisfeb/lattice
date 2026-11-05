@@ -16,9 +16,9 @@
 ::    %reply    a reply to our post or comment on a board we host
 ::    %remote   a reply to our post or comment on another ship's board,
 ::              told to us by its host (+reply-note)
-::    %folder   reserved for "a followed folder has new pages" (the
-::              follow-a-folder work). Nothing records it yet: a recorder
-::              files an item of this kind with +make and the inbox shows it.
+::    %folder   a folder we follow on another ship has new pages
+::              (+folder-item): one item per folder, filed again as the
+::              count grows, `post` the count and `where` the folder
 +$  kind  ?(%comment %reply %remote %folder)
 ::  +$  item: one activity item. `host` is the ship it happened on (us for
 ::  our own pages and boards), `where` a page path or a board name, `post`
@@ -99,6 +99,33 @@
   |=  now=@da
   ^-  seen
   [%1 now ~]
+::  +folder-item: the one item a followed folder `rel` on `host` keeps,
+::  `n` pages new in it. The writer culls the folder's older item
+::  (+folder-ids) before it files this one, so a folder that gains pages
+::  across reads is still one item, unread again with the new count.
+++  folder-item
+  |=  [now=@da host=@p rel=path n=@ud]
+  ^-  item
+  =/  where=@t  (spat rel)
+  %-  make
+  :*  %folder  now  host  host  where  n
+      %+  rap  3
+      :~  (crip ((d-co:co 1) n))
+          ?:(=(1 n) ' new page in ' ' new pages in ')
+          where  ' from '  (scot %p host)
+      ==
+      ''
+  ==
+::  +folder-ids: the ids of the %folder items about `rel` on `host`
+++  folder-ids
+  |=  [items=(list [id=@ta i=item]) host=@p rel=path]
+  ^-  (list @ta)
+  =/  where=@t  (spat rel)
+  %+  murn  items
+  |=  [id=@ta i=item]
+  ^-  (unit @ta)
+  ?.  &(?=(%folder kind.i) =(host host.i) =(where where.i))  ~
+  `id
 ::  +held-sorted: held comet comments across pages, newest first
 ++  held-sorted
   |=  held=(list [pax=path id=@ta c=comment:lc])

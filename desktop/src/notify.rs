@@ -264,6 +264,8 @@ pub struct Unseen {
     pub url: String,
     pub title: String,
     pub count: usize,
+    /// a followed folder's new pages (`folder_news`), not replies
+    pub folder: bool,
 }
 
 /// Each place's unseen replies as the last read of it found them, by
@@ -274,6 +276,14 @@ pub struct Counts(Mutex<HashMap<String, Unseen>>);
 impl Counts {
     pub fn set(&self, u: Unseen) {
         self.0.lock().unwrap().insert(u.url.clone(), u);
+    }
+    /// The followed folders' news, all of it replaced by `news`.
+    pub fn set_folders(&self, news: Vec<Unseen>) {
+        let mut g = self.0.lock().unwrap();
+        g.retain(|_, u| !u.folder);
+        for u in news {
+            g.insert(u.url.clone(), u);
+        }
     }
     /// The places with unseen replies, most first.
     pub fn list(&self) -> Vec<Unseen> {
@@ -302,7 +312,7 @@ pub fn visit_thread(ctx: &Ctx, url: &str, t: &Thread) -> HashSet<String> {
     });
     log(res);
     if found {
-        ctx.counts.set(Unseen { url: url.to_string(), title: t.post.title.clone(), count: 0 });
+        ctx.counts.set(Unseen { url: url.to_string(), title: t.post.title.clone(), count: 0, folder: false });
     }
     fresh
 }
@@ -325,7 +335,7 @@ pub fn visit_page(ctx: &Ctx, url: &str, title: &str, comments: &[PubComment]) ->
     });
     log(res);
     if after.is_some() {
-        ctx.counts.set(Unseen { url: url.to_string(), title: title.to_string(), count: 0 });
+        ctx.counts.set(Unseen { url: url.to_string(), title: title.to_string(), count: 0, folder: false });
     }
     after
 }
@@ -358,12 +368,41 @@ fn log(r: Result<(), String>) {
     }
 }
 
-/// Where a future source of things worth telling the reader plugs in: a
-/// folder the reader follows that has new pages. It gives nothing yet;
-/// `refresh` adds what it gives to the home's list.
+/// A followed folder's news, one entry per folder (by its address, so a
+/// later count replaces an earlier one): "N new pages in <folder> from
+/// ~ship".
+pub fn folder_news(ship: &str, folder: &str, new: usize) -> Unseen {
+    Unseen {
+        url: crate::render::folder_url(ship, &crate::follows::rel(folder)),
+        title: format!("{new} new {} in {folder} from {ship}", if new == 1 { "page" } else { "pages" }),
+        count: new,
+        folder: true,
+    }
+}
+
+/// What a follow-new event tells the home: the folder's entry, at the new
+/// count (`follows::NewPages`).
+pub fn follow_new(counts: &Counts, n: &crate::follows::NewPages) {
+    counts.set(folder_news(&n.ship, &n.folder, n.new));
+}
+
+/// The followed folders' news as the follows stand: one entry per folder
+/// with new pages, so a folder whose new pages were all read, or one
+/// unfollowed or unavailable, drops off the home.
 pub fn followed_folder_events(ctx: &Ctx) -> Vec<Unseen> {
-    let _ = ctx;
-    Vec::new()
+    ctx.follows
+        .list()
+        .iter()
+        .filter(|f| f.status == crate::follows::Status::Ok)
+        .map(|f| folder_news(&f.ship, &f.folder, f.new_count()))
+        .filter(|u| u.count > 0)
+        .collect()
+}
+
+/// The home's folder news again from the follows, after a read or an
+/// unfollow lowers a count (a follow-new event only ever raises one).
+pub fn folders_changed(ctx: &Ctx) {
+    ctx.counts.set_folders(followed_folder_events(ctx));
 }
 
 /// Read again the newest REFRESH_MAX places the reader wrote, and count
@@ -415,7 +454,7 @@ pub fn refresh(ctx: &Ctx) {
         match r.ok().and_then(|v| boards::forum_thread(&v)) {
             Some(t) => {
                 let n = unseen(&forum_replies(&our, &t), m.seen).len();
-                ctx.counts.set(Unseen { url: m.url.clone(), title: t.post.title.clone(), count: n });
+                ctx.counts.set(Unseen { url: m.url.clone(), title: t.post.title.clone(), count: n, folder: false });
             }
             None => {
                 failed.insert(m.host.clone());
@@ -433,7 +472,7 @@ pub fn refresh(ctx: &Ctx) {
         match ctx.reads.thread(&m.host, key, BUDGET) {
             Some(cs) => {
                 let n = unseen(&page_replies(&our, &cs), m.seen).len();
-                ctx.counts.set(Unseen { url: m.url.clone(), title: title_of(&m.url), count: n });
+                ctx.counts.set(Unseen { url: m.url.clone(), title: title_of(&m.url), count: n, folder: false });
             }
             None => {
                 failed.insert(m.host.clone());
@@ -441,9 +480,7 @@ pub fn refresh(ctx: &Ctx) {
         }
     }
 
-    for u in followed_folder_events(ctx) {
-        ctx.counts.set(u);
-    }
+    folders_changed(ctx);
 }
 
 /// The background pass: once the engine has had a minute to start, then
@@ -602,13 +639,30 @@ mod tests {
     }
 
     #[test]
+    fn follow_new_coalesces_per_folder_beside_the_replies() {
+        let c = Counts::default();
+        c.set(Unseen { url: "urb://~wep/forum/g/7".into(), title: "T".into(), count: 2, folder: false });
+        let n = |new| crate::follows::NewPages { ship: "~zod".into(), folder: "/docs".into(), new };
+        follow_new(&c, &n(1));
+        follow_new(&c, &n(3));
+        let folders: Vec<Unseen> = c.list().into_iter().filter(|u| u.folder).collect();
+        assert_eq!(folders.len(), 1, "one entry per folder, not per page");
+        assert_eq!((folders[0].count, folders[0].title.as_str()), (3, "3 new pages in /docs from ~zod"));
+        assert_eq!(folders[0].url, "urb://~zod/docs/");
+        assert_eq!(folder_news("~zod", "/a/b", 1).title, "1 new page in /a/b from ~zod");
+        // the folder's pages read: it drops, and the replies stay
+        c.set_folders(Vec::new());
+        assert_eq!(c.list().iter().map(|u| (u.count, u.folder)).collect::<Vec<_>>(), [(2, false)]);
+    }
+
+    #[test]
     fn counts_list_only_unseen_places_most_first() {
         let c = Counts::default();
-        c.set(Unseen { url: "a".into(), title: "A".into(), count: 1 });
-        c.set(Unseen { url: "b".into(), title: "B".into(), count: 3 });
-        c.set(Unseen { url: "z".into(), title: "Z".into(), count: 0 });
+        c.set(Unseen { url: "a".into(), title: "A".into(), count: 1, folder: false });
+        c.set(Unseen { url: "b".into(), title: "B".into(), count: 3, folder: false });
+        c.set(Unseen { url: "z".into(), title: "Z".into(), count: 0, folder: false });
         assert_eq!(c.list().iter().map(|u| u.url.as_str()).collect::<Vec<_>>(), ["b", "a"]);
-        c.set(Unseen { url: "b".into(), title: "B".into(), count: 0 });
+        c.set(Unseen { url: "b".into(), title: "B".into(), count: 0, folder: false });
         assert_eq!(c.list().len(), 1);
     }
 }
