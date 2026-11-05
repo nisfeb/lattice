@@ -16,6 +16,7 @@ neither the index nor the pages left in it.
 
 gate.mjs runs it with --two-ship. Exits non-zero on any failure.
 """
+import json
 import os, re, sys, time, urllib.error, urllib.parse, urllib.request
 
 ROOT = 'dirtwo'
@@ -114,10 +115,20 @@ def main():
     post(f'page-save?type=md&new=1&name={g}/later', '# Later for B\n')
     until('B reads a page added to the folder later', lambda: reads(g + '/later', 'Later for B'))
     until('B finds it in the folder index', lambda: True if 'later' in (index(g) or []) else index(g))
+
+    def swm(rel):
+        st, txt = b('GET', '/apps/lattice/shared-with-me')
+        try:
+            return any(e['host'] == ship_a and e['path'].endswith(f'/page/{rel}/code') for e in json.loads(txt))
+        except ValueError:
+            return False
+    # the folder's grant tells B, so its shared with me (and the live beacon) moves
+    until('B is told of the page added later', lambda: swm(g + '/later') or 'not in shared-with-me')
     post(f'page-move?from={g}/later&to={ROOT}/out')
     until('B loses the page moved out', lambda: reads(g + '/later', 'Later for B') is not True)
     until('B cannot read it where it went', lambda: reads(ROOT + '/out', 'Later for B') is not True)
     until('B no longer finds it in the index', lambda: True if 'later' not in (index(g) or ['later']) else index(g))
+    until('B is told it was taken back', lambda: (not swm(g + '/later')) or 'still in shared-with-me')
     post(f'page-move?from={ROOT}/out&to={g}/back')
     until('B reads a page moved into the folder', lambda: reads(g + '/back', 'Later for B'))
     st, txt = read(h + '/')
