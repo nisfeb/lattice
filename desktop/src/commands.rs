@@ -700,6 +700,10 @@ pub struct ReaderStatus {
     pub error: Option<String>,
     /// what a start in progress is doing, in words
     pub step: Option<String>,
+    /// the reader identity's @p, running or not, once there is one
+    pub identity: Option<String>,
+    /// when it was last exported (unix seconds): it may now run elsewhere
+    pub exported: Option<u64>,
 }
 
 /// Has this install read without a ship before (is there a reader
@@ -757,14 +761,14 @@ pub fn reader_status(app: AppHandle) -> Result<ReaderStatus, String> {
         use crate::engine::Status;
         let e = app.state::<crate::engine::Engine>();
         let step = Some(e.step()).filter(|s| !s.is_empty()).map(String::from);
-        Ok(match e.status() {
-            Status::Off => ReaderStatus { engine: "off", our: None, error: None, step },
-            Status::Booting => ReaderStatus { engine: "booting", our: None, error: None, step },
-            Status::Ready { our } => ReaderStatus { engine: "ready", our: Some(our), error: None, step },
-            Status::Failed(m) => {
-                ReaderStatus { engine: "failed", our: None, error: Some(crate::engine::plain_boot(&m)), step }
-            }
-        })
+        let (identity, exported) = (e.identity(), e.exported_at());
+        let (engine, our, error) = match e.status() {
+            Status::Off => ("off", None, None),
+            Status::Booting => ("booting", None, None),
+            Status::Ready { our } => ("ready", Some(our), None),
+            Status::Failed(m) => ("failed", None, Some(crate::engine::plain_boot(&m))),
+        };
+        Ok(ReaderStatus { engine, our, error, step, identity, exported })
     }
     #[cfg(not(feature = "urb-engine"))]
     {
@@ -794,6 +798,138 @@ pub async fn clear_reader_history(app: AppHandle, webview: tauri::Webview) -> Re
     {
         let _ = (app, webview);
         Err("this build has no shipless reader".into())
+    }
+}
+
+/// Export the anonymous identity to a file the user picks in a native save
+/// dialog, sealed with `passphrase` (cometid.rs). The path written, or an
+/// empty string when the dialog was cancelled. The page never gets the
+/// file's bytes: a ship page calling this gets a save dialog the user sees,
+/// and a file only where they put it.
+#[tauri::command]
+pub async fn export_reader_identity(app: AppHandle, passphrase: String) -> Result<String, String> {
+    #[cfg(feature = "urb-engine")]
+    {
+        use tauri_plugin_dialog::DialogExt;
+        if passphrase.chars().count() < crate::cometid::MIN_PASSPHRASE {
+            return Err(format!("Pick a passphrase of at least {} characters.", crate::cometid::MIN_PASSPHRASE));
+        }
+        let e = app.state::<crate::engine::Engine>().inner().clone();
+        let short = e.identity().map(|s| short_name(&s)).unwrap_or_default();
+        let Some(target) = app
+            .dialog()
+            .file()
+            .set_title("Export your anonymous identity")
+            .set_file_name(format!("lattice-identity-{short}.{}", crate::cometid::EXTENSION))
+            .add_filter("lattice identity", &[crate::cometid::EXTENSION])
+            .blocking_save_file()
+        else {
+            return Ok(String::new());
+        };
+        let path = target.into_path().map_err(|e| e.to_string())?;
+        // the engine closes for the copy and the KDF takes a moment: off
+        // the async runtime's threads
+        let file = tauri::async_runtime::spawn_blocking(move || {
+            let id = e.export_identity()?;
+            let f = crate::cometid::seal(&id, &passphrase)?;
+            crate::cometid::mark_exported(e.dir())?;
+            Ok::<_, String>(f)
+        })
+        .await
+        .map_err(|e| e.to_string())??;
+        crate::session::write_private(&path, &file).map_err(|e| format!("could not write {e}"))?;
+        dlog(&format!("reader: identity exported to {}", path.display()));
+        Ok(path.display().to_string())
+    }
+    #[cfg(not(feature = "urb-engine"))]
+    {
+        let _ = (app, passphrase);
+        Err("this build has no shipless reader".into())
+    }
+}
+
+/// Import an anonymous identity from a file the user picks in a native
+/// open dialog, unsealed with `passphrase`, in place of this computer's,
+/// after a native confirmation naming both @ps (asked on every page, the
+/// shell's own included: it replaces who the user is). The old identity is
+/// moved aside, not deleted. The new @p, or an empty string when the user
+/// cancelled the file dialog.
+#[tauri::command]
+pub async fn import_reader_identity(app: AppHandle, passphrase: String) -> Result<String, String> {
+    #[cfg(feature = "urb-engine")]
+    {
+        use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+        let Some(picked) = app
+            .dialog()
+            .file()
+            .set_title("Use an existing anonymous identity")
+            .add_filter("lattice identity", &[crate::cometid::EXTENSION])
+            .blocking_pick_file()
+        else {
+            return Ok(String::new());
+        };
+        let path = picked.into_path().map_err(|e| e.to_string())?;
+        let size = std::fs::metadata(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?.len();
+        if size > crate::cometid::MAX_FILE {
+            return Err(crate::cometid::OpenError::NotIdentity.to_string());
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+        let id = tauri::async_runtime::spawn_blocking(move || crate::cometid::open(&bytes, &passphrase))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        let e = app.state::<crate::engine::Engine>().inner().clone();
+        let old = e.identity();
+        if old.as_deref() == Some(id.ship.as_str()) {
+            return Err(format!("This computer already uses {}. Nothing changed.", id.ship));
+        }
+        let yes = app
+            .dialog()
+            .message(import_question(old.as_deref(), &id.ship))
+            .title("Use an existing anonymous identity")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancelCustom(format!("Use {}", short_name(&id.ship)), "Cancel".into()))
+            .blocking_show();
+        if !yes {
+            return Err("cancelled, nothing changed".into());
+        }
+        let ship = id.ship.clone();
+        tauri::async_runtime::spawn_blocking(move || e.import_identity(&id))
+            .await
+            .map_err(|e| e.to_string())??;
+        dlog(&format!("reader: identity {ship} imported"));
+        Ok(ship)
+    }
+    #[cfg(not(feature = "urb-engine"))]
+    {
+        let _ = (app, passphrase);
+        Err("this build has no shipless reader".into())
+    }
+}
+
+/// The import's confirmation, naming both identities.
+#[cfg(feature = "urb-engine")]
+fn import_question(old: Option<&str>, new: &str) -> String {
+    let now = match old {
+        Some(o) => format!(
+            "Replace this computer's anonymous identity {o} with {new}?\n\n{o} is set aside on this computer, not deleted, but lattice stops using it: its comments keep its name."
+        ),
+        None => format!("Use {new} as this computer's anonymous identity?"),
+    };
+    format!(
+        "{now}\n\nStop using {new} on the computer it came from. Two computers running one identity at once lose each other's comments and posts. And import from a fresh export: an older file can make your next messages go missing."
+    )
+}
+
+/// A ship's name for a file name or a button: a comet's last two words.
+#[cfg(feature = "urb-engine")]
+fn short_name(ship: &str) -> String {
+    let s = ship.trim_start_matches('~');
+    let tail: Vec<&str> = s.rsplit('-').filter(|w| !w.is_empty()).take(2).collect();
+    if s.len() > 14 && tail.len() == 2 {
+        format!("~{}-{}", tail[1], tail[0])
+    } else {
+        format!("~{s}")
     }
 }
 

@@ -88,6 +88,7 @@
     '.st .conn{border:1px solid var(--border-soft,#8883);border-radius:8px;padding:12px;background:var(--raised,#8881)}',
     '.st .conn .row{gap:10px;margin:0}',
     '.st #connect{max-width:32rem;margin-top:.8rem}.st #connect input{width:100%;margin-bottom:.5rem}',
+    '.st .ident input{display:block;width:100%;max-width:24rem;margin-bottom:.5rem}',
     '.st #add-mount input,.st #add-backup input:not(#bk-keep){flex:1;min-width:12rem}',
     '.st #add-mount,.st #add-backup{max-width:40rem}',
     '.st #stack-list li{gap:10px}.st .tick{width:1.1em;flex:none;text-align:center}',
@@ -195,6 +196,17 @@
     + '<p id="anon-copy">No node? You can use lattice anonymously. You can browse pages and comment on them, but you can\'t host pages without a node.</p>'
     + '<div class="row"><button type="button" id="anon" class="primary">Use anonymously</button>'
     + '<span id="read-status" class="muted" role="status"></span></div>'
+    + '<div class="ident"><p id="ident-who" class="muted" hidden></p><p id="ident-warn" class="err" hidden></p>'
+    + '<details id="ident-export" hidden><summary>Export this identity</summary>'
+    + '<p class="err">Anyone with this file and its passphrase can comment and post as you. Keep both private.</p>'
+    + '<p class="muted">The file keeps this identity, its name and its place in conversations, if you reinstall lattice or move to another computer. Run it on one computer at a time: two computers running one identity at once lose each other\'s comments and posts. The file is a snapshot, so export again just before you move.</p>'
+    + '<input id="ex-pass" type="password" placeholder="passphrase, 8 characters or more" autocomplete="new-password">'
+    + '<input id="ex-pass2" type="password" placeholder="the passphrase again" autocomplete="new-password">'
+    + '<div class="row"><button type="button" id="ex-go">Export…</button><span id="ex-status" class="muted" role="status"></span></div></details>'
+    + '<details id="ident-import"><summary>Use an existing anonymous identity</summary>'
+    + '<p class="muted">Import an identity file exported from lattice to comment and post under the same name as before. It replaces this computer\'s anonymous identity, which is set aside here, not deleted. Afterwards, stop using the identity on the computer it came from.</p>'
+    + '<input id="im-pass" type="password" placeholder="the file\'s passphrase" autocomplete="off">'
+    + '<div class="row"><button type="button" id="im-go">Choose the file…</button><span id="im-status" class="muted" role="status"></span></div></details></div>'
     + '<details><summary>What this uses and keeps</summary><p class="muted">lattice makes a private reader identity on this computer the first time, and your comments are signed with it: the people you comment to see its name as the author. The network: HTTPS to roller.urbit.org and bootstrap.urbit.org (to make the reader identity and look up keys), and UDP to the Urbit network and the ships you read. A network that blocks UDP cannot read. lattice gets the reader ready while this page is open, and reads the start list. What it keeps, on this computer only: the reader identity, the network state, and the pages you read recently. A comment goes to the page\'s publisher and is not kept here. Connecting a node before you use lattice anonymously deletes the identity. Hosting pages, bookmarking and following need a node of your own.</p>'
     + '<div class="row"><button type="button" id="read-clear">Clear reading history</button>'
     + '<span id="read-clear-status" class="muted"></span></div></details></section>'
@@ -315,6 +327,7 @@
       let st;
       try { st = await invoke('reader_status'); } catch { $('reader').hidden = true; return; }
       $('reader').hidden = false;
+      showIdentity(obj(st));
       if (opening) return;
       if (st && st.engine === 'booting') {
         say('read-status', GETTING_READY + (st.step ? ' ' + st.step + '…' : ''), 'muted busy');
@@ -326,6 +339,42 @@
         say('read-status', 'Ready.', 'muted');
       }
     }
+    // the identity: who it is, export it, or bring one from elsewhere
+    function showIdentity(st) {
+      const who = st && typeof st.identity === 'string' ? st.identity : '';
+      $('ident-who').hidden = !who;
+      $('ident-export').hidden = !who;
+      if (who) $('ident-who').textContent = 'Your anonymous identity: ' + who;
+      const at = st && typeof st.exported === 'number' ? st.exported : 0;
+      $('ident-warn').hidden = !(who && at);
+      if (who && at) {
+        $('ident-warn').textContent = 'You exported this identity on ' + new Date(at * 1000).toLocaleString()
+          + '. If it now runs on another computer, stop using it here: two computers running one identity lose each other\'s comments and posts.';
+      }
+    }
+    $('ex-go').onclick = async () => {
+      const p = $('ex-pass').value;
+      if (p.length < 8) { say('ex-status', 'Pick a passphrase of at least 8 characters.', 'err'); return; }
+      if (p !== $('ex-pass2').value) { say('ex-status', 'The two passphrases differ.', 'err'); return; }
+      say('ex-status', 'Exporting…', 'muted busy');
+      try {
+        const path = await invoke('export_reader_identity', { passphrase: p });
+        if (path) { say('ex-status', 'Saved to ' + path, 'muted'); $('ex-pass').value = ''; $('ex-pass2').value = ''; }
+        else say('ex-status', '', 'muted');
+      } catch (err) { say('ex-status', String(err), 'err'); }
+      refreshReader();
+    };
+    $('im-go').onclick = async () => {
+      const p = $('im-pass').value;
+      if (!p) { say('im-status', 'Enter the passphrase the file was exported with.', 'err'); return; }
+      say('im-status', 'Choose the file…', 'muted busy');
+      try {
+        const ship = await invoke('import_reader_identity', { passphrase: p });
+        if (ship) { say('im-status', 'Now using ' + ship + '.', 'muted'); $('im-pass').value = ''; }
+        else say('im-status', '', 'muted');
+      } catch (err) { say('im-status', String(err), 'err'); }
+      refreshReader();
+    };
     $('anon').onclick = () => leave(async () => {
       const st = await invoke('reader_status').catch(() => null);
       opening = true;

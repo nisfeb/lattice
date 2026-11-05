@@ -74,6 +74,12 @@ fn main() {
             "open_reader",
             "reader_status",
             "clear_reader_history",
+            // moving the anonymous identity between computers (cometid.rs):
+            // each opens a native file dialog and acts only on what the
+            // user picks there, and import asks a native confirmation
+            // naming both identities
+            "export_reader_identity",
+            "import_reader_identity",
         ]),
     ))
     .expect("tauri-build failed")

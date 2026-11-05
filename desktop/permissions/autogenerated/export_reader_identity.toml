@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-reader-identity"
+description = "Enables the export_reader_identity command without any pre-configured scope."
+commands.allow = ["export_reader_identity"]
+
+[[permission]]
+identifier = "deny-export-reader-identity"
+description = "Denies the export_reader_identity command without any pre-configured scope."
+commands.deny = ["export_reader_identity"]

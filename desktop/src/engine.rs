@@ -396,6 +396,11 @@ impl Engine {
         }
     }
 
+    /// The state folder.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     pub fn status(&self) -> Status {
         self.inner.lock().unwrap().status.clone()
     }
@@ -887,20 +892,98 @@ impl Engine {
     }
 
     /// Close the engine, waiting up to 2 s so libmesa makes its last save.
-    pub fn close(&self) {
+    /// False when it ran and did not say it had closed in that time.
+    pub fn close(&self) -> bool {
         let (tx, rx) = channel();
         {
             let mut g = self.inner.lock().unwrap();
-            let Some(run) = g.run.take() else { return };
+            let Some(run) = g.run.take() else { return true };
             g.status = Status::Off;
             if run.jobs.send(Job::Close(tx)).is_err() {
-                return;
+                return true;
             }
             if let Some(w) = &run.waker {
                 let _ = w.send(Event::Wake);
             }
         }
-        let _ = rx.recv_timeout(Duration::from_secs(2));
+        rx.recv_timeout(Duration::from_secs(2)).is_ok()
+    }
+
+    /// The reader identity's @p: the running one, or the one on disk.
+    /// `None` when there is none yet.
+    pub fn identity(&self) -> Option<String> {
+        if let Status::Ready { our } = self.status() {
+            return Some(our);
+        }
+        let text = std::fs::read_to_string(self.dir.join("comet.key")).ok()?;
+        comet_of_keyfile(text.trim())
+    }
+
+    /// When the identity here was last exported (cometid.rs).
+    pub fn exported_at(&self) -> Option<u64> {
+        self.dir.join("comet.key").exists().then(|| crate::cometid::exported_at(&self.dir)).flatten()
+    }
+
+    /// Closed for a move of the identity: refused while a start is in
+    /// progress (it may be mining or opening the store) and for a fake
+    /// ship. True when it was running, to start it again after.
+    fn close_for_move(&self) -> Result<bool, String> {
+        if self.fake.is_some() {
+            return Err("a fake test identity cannot be moved".into());
+        }
+        let was = match self.status() {
+            Status::Booting => {
+                return Err("The anonymous identity is still starting. Try again in a moment.".into())
+            }
+            Status::Ready { .. } => true,
+            _ => false,
+        };
+        if !self.close() {
+            return Err("The anonymous identity did not stop in time. Try again in a moment.".into());
+        }
+        Ok(was)
+    }
+
+    /// The identity, for an export file: the engine closed first, so the
+    /// store is copied whole, and started again after if it ran. An
+    /// exported identity is claimed, so connecting a node keeps it, and
+    /// marked exported, so the settings card can warn that it may now run
+    /// elsewhere.
+    pub fn export_identity(&self) -> Result<crate::cometid::Identity, String> {
+        let was = self.close_for_move()?;
+        let got = crate::cometid::read_dir(&self.dir, comet_of_keyfile);
+        if got.is_ok() {
+            self.claim();
+        }
+        if was {
+            self.start();
+        }
+        got
+    }
+
+    /// Make `id` (from an export file) the reader identity, in place of
+    /// whatever was here, which is moved aside (cometid::install, never
+    /// deleted). The engine is closed for it and started again on the new
+    /// identity. `Some(folder)` names where the old one went.
+    pub fn import_identity(&self, id: &crate::cometid::Identity) -> Result<Option<PathBuf>, String> {
+        if comet_of_keyfile(&id.keyfile).as_deref() != Some(id.ship.as_str()) {
+            return Err("That identity file does not hold an anonymous identity.".into());
+        }
+        self.close_for_move()?;
+        let aside = crate::cometid::install(&self.dir, id)?;
+        {
+            let mut g = self.inner.lock().unwrap();
+            g.discard = false;
+            g.failed_at = None;
+            if matches!(g.status, Status::Failed(_)) {
+                g.status = Status::Off;
+            }
+        }
+        if let Some(a) = &aside {
+            log_line(&format!("identity replaced by {}, the old one kept in {}", id.ship, a.display()));
+        }
+        self.start();
+        Ok(aside)
     }
 }
 
@@ -950,6 +1033,13 @@ impl Reads for Engine {
     fn boards(&self, asks: Vec<BoardAsk>, budget: Duration) -> Vec<Result<Js, ReadError>> {
         Engine::boards(self, asks, budget)
     }
+}
+
+/// The comet a keyfile names, or `None` when it is not a comet's keyfile
+/// (a comet is the one rank wider than 64 bits).
+pub fn comet_of_keyfile(text: &str) -> Option<String> {
+    let (ship, _, _) = urb_engine::engine::keyfile_ship(text)?;
+    (ship.1 != 0).then(|| urb_engine::engine::ship_text(ship))
 }
 
 /// The state folder, 0700, made on the engine's first start.
@@ -1090,6 +1180,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                 }
                 Ok(Job::Close(done)) => {
                     let _ = host.close();
+                    // the store closed before the answer, so a caller
+                    // that copies it (cometid's export) copies it whole
+                    drop(host);
                     let _ = done.send(());
                     return;
                 }
@@ -2088,5 +2181,49 @@ mod tests {
         ));
         e.close();
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The anonymous identity moved to a fresh profile, live, reads only:
+    /// a comet in `LATTICE_LIVE_A` (an app data `urb/` folder, mined there
+    /// if there is none) reads urb://~nisfeb/start, is exported to
+    /// `LATTICE_LIVE_FILE` and closed, and the file is imported into
+    /// `LATTICE_LIVE_B` (another profile's empty folder), which must run as
+    /// the same @p and read the same page. Never writes to a ship.
+    #[test]
+    #[ignore = "live: LATTICE_LIVE_A, LATTICE_LIVE_B and LATTICE_LIVE_FILE"]
+    fn an_identity_moves_to_a_fresh_profile_live() {
+        let (Ok(a), Ok(b), Ok(file)) =
+            (std::env::var("LATTICE_LIVE_A"), std::env::var("LATTICE_LIVE_B"), std::env::var("LATTICE_LIVE_FILE"))
+        else {
+            eprintln!("skipped: LATTICE_LIVE_A, LATTICE_LIVE_B and LATTICE_LIVE_FILE are not all set");
+            return;
+        };
+        const START: &str = "urb://~nisfeb/start";
+        let first = Engine::with(PathBuf::from(&a), None);
+        let p = first.read(START, Duration::from_secs(180), true).expect("A reads the start page");
+        let our_a = first.identity().expect("A has an identity");
+        eprintln!("A is {our_a}, read {} ({} bytes)", p.key, p.body.len());
+        let id = first.export_identity().expect("export");
+        assert_eq!(id.ship, our_a);
+        let sealed = crate::cometid::seal(&id, "live check passphrase").unwrap();
+        crate::cometid::mark_exported(first.dir()).unwrap();
+        std::fs::write(&file, &sealed).unwrap();
+        assert!(first.close(), "A closes");
+        assert!(first.exported_at().is_some());
+
+        let opened = crate::cometid::open(&std::fs::read(&file).unwrap(), "live check passphrase").unwrap();
+        assert_eq!(
+            crate::cometid::open(&sealed, "not the passphrase"),
+            Err(crate::cometid::OpenError::WrongPassphrase)
+        );
+        let second = Engine::with(PathBuf::from(&b), None);
+        assert_eq!(second.identity(), None, "B starts with no identity");
+        second.import_identity(&opened).expect("import");
+        let p = second.read(START, Duration::from_secs(180), true).expect("B reads the start page");
+        assert_eq!(second.identity().as_deref(), Some(our_a.as_str()));
+        assert_eq!(second.status(), Status::Ready { our: our_a.clone() });
+        assert!(second.claimed() && second.exported_at().is_none());
+        eprintln!("B is {our_a}, read {} ({} bytes)", p.key, p.body.len());
+        second.close();
     }
 }

@@ -24,6 +24,8 @@
     "allow-set-theme",
     "allow-open-reader",
     "allow-reader-status",
-    "allow-clear-reader-history"
+    "allow-clear-reader-history",
+    "allow-export-reader-identity",
+    "allow-import-reader-identity"
   ]
 }
