@@ -17151,7 +17151,6 @@
   =/  ships=(list @p)
     ?.  ?=([%file *] wv)  ~
     ~(tap in (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~))
-  ?~  ships  (pure:m ~)
   ;<  known=(map @t json)  bind:m  read-peers
   |-  ^-  form:m
   ?~  ships  (pure:m ~)
