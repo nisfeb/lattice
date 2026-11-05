@@ -22,7 +22,7 @@
   // the client tools: their name, icon, the overlay element each one used
   // to be (72-acl.js, 73-comments.js, 80-conflicts.js) and what fills it
   const TOOLS = {
-    inbox: { name: 'Comments inbox', icon: 'inbox', wrap: 'cmwrap', load: () => cmLoad() },
+    inbox: { name: 'Inbox', icon: 'inbox', wrap: 'cmwrap', load: () => cmLoad() },
     access: { name: 'Access & groups', icon: 'key', wrap: 'aclwrap', load: () => aclLoad() },
     conflicts: { name: 'Sync conflicts', icon: 'conflict', wrap: 'cfwrap', load: () => renderConflicts() },
   };
@@ -823,7 +823,7 @@
   ribbonAdd({ id: 'forum', icon: 'forum', name: 'Forum', run: () => toolOpen('forum') });
   // the unread badge (73-comments.js) and the conflict count
   // (80-conflicts.js) are painted onto these two
-  ribbonAdd({ id: 'inbox', icon: 'inbox', name: 'Comments inbox', run: () => toolOpen('inbox') });
+  ribbonAdd({ id: 'inbox', icon: 'inbox', name: 'Inbox', run: () => toolOpen('inbox') });
   ribbonAdd({ id: 'access', icon: 'key', name: 'Access & groups', run: () => toolOpen('access') });
   ribbonAdd({ id: 'conflicts', icon: 'conflict', name: 'Sync conflicts', run: () => toolOpen('conflicts') })
     .hidden = true;

@@ -125,7 +125,7 @@
     // loop pauses entirely on document.hidden and only reconnects here, on
     // focus. Cheap either way: it counts, it does not render, and it is
     // skipped entirely while the pane is open.
-    if ($('cmwrap') && $('cmwrap').hidden) refreshCommentBadge();
+    refreshCommentBadge();
   };
   // ── the beacon stream, read raw ──────────────────────────────────────────
   // Not an EventSource: the stream's INITIAL event is named "old <path>" (a
@@ -147,7 +147,11 @@
   // (69-shared.js) and skips the tree. Either may arrive first, hence the
   // window. Any other bump in it, or any other caller of bumped, refreshes.
   const digits = (s) => String(s || '').replace(/\D/g, '');
+  // a held comment or an activity item stamps /beacon/notify and then /rev
+  // (+notify-stamp). Its /rev joins this set too: a window of only those
+  // bumps recounts the inbox badge and skips the tree.
   const sharesRevs = new Set();
+  let lastNotify = '';
   let liveRevs = [];
   const revBumped = (data) => {
     liveRevs.push(digits(data));
@@ -169,7 +173,7 @@
   const commentBumped = () => {
     clearTimeout(cmBeaconTimer);
     cmBeaconTimer = setTimeout(() => {
-      if ($('cmwrap') && $('cmwrap').hidden) refreshCommentBadge();
+      refreshCommentBadge();
     }, 300);
   };
   let lastRev = '';
@@ -281,6 +285,17 @@
               if (sr) sharesRevs.add(sr[1]);
               if (name.slice(0, 3) !== 'old') sharesBumped(data);
               else if (was) loadShared();
+              continue;
+            }
+            // /notify: the inbox moved (73-comments.js). Registration
+            // reports the stamp as it stood; one that moved since is news.
+            if (name.slice(-8) === ' /notify') {
+              if (data === lastNotify) continue;
+              const was = lastNotify;
+              lastNotify = data;
+              const nr = /"rev"\s*:\s*"?(\d+)/.exec(data);
+              if (nr) sharesRevs.add(nr[1]);
+              if (name.slice(0, 3) !== 'old' || was) refreshInboxBadge(true);
               continue;
             }
             if (name.slice(-5) !== ' /rev') {
