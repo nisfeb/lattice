@@ -48,7 +48,9 @@ function boot(items, coll = []) {
     // and its registration, stubbed
     action: () => {}, rowMore: () => {},
     tip: (b, name) => { b.title = name; b.setAttribute('aria-label', name); return b; },
-    document: { createElement: (t) => new El(t), createTextNode: (t) => ({ textContent: t }) },
+    document: { createElement: (t) => new El(t), createTextNode: (t) => ({ textContent: t }), addEventListener() {}, hidden: false },
+    // the refocus refetch (69-shared.js) listens on the window
+    window: { addEventListener() {} },
   };
   vm.runInNewContext(src, ctx);
   ctx.renderShared(coll);
