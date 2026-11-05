@@ -1,6 +1,6 @@
 [package]
 name = "lattice-desktop"
-version = "1.0.24"
+version = "1.0.25"
 edition = "2021"
 #  Never goes to crates.io: the desktop app ships as bundles and lattice-fs
 #  is consumed by path. Saying so keeps `cargo publish` from being a slip, and
@@ -17,6 +17,10 @@ tauri-plugin-dialog = "2"
 #  The vault archive crosses the IPC encoded, and hand-rolling a codec on a
 #  path whose whole job is that the bytes arrive intact is not a saving.
 base64 = "0.22"
+#  already in the tree through rustls, with these features. The anonymous
+#  identity file (src/cometid.rs) is sealed with its PBKDF2 and
+#  ChaCha20-Poly1305, so moving an identity costs no new crate.
+ring = "0.17"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fuser = { version = "0.18", default-features = false }

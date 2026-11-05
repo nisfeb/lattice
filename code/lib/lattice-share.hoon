@@ -449,4 +449,127 @@
   %-  ~(gas in *(set @t))
   %-  zing
   (turn vias |=(v=path ~(tap in ~(key by (~(gut by grants) v ~)))))
+::
+::  ==  followed folders  ==
+::
+::  A reader follows a folder another ship shared (urb://~host/<rel>/).
+::  Each follow keeps the folder's pages as last read (`late`, key to
+::  title row, the keys +titles-cord uses) and what the reader has seen
+::  (`seen`, key to the change it saw). A page is new while its change is
+::  later than the one seen, or it was never seen. `ok` is | while the
+::  folder will not read (unshared), and the follow stays listed.
+::
++$  fold  [host=@p rel=path seen=(map @t @ud) late=(map @t title-row) ok=? at=@da]
++$  folds  [%1 l=(list fold)]
+::  +$  fold-action: what the writer does to the follows
++$  fold-action
+  $%  [%add host=@p rel=path rows=(unit (map @t title-row))]
+      [%read host=@p rel=path rows=(unit (map @t title-row))]
+      [%del host=@p rel=path]
+      [%seen host=@p rel=path key=@t]
+  ==
+::  +fold-act: one fold-action on the follows
+++  fold-act
+  |=  [fs=(list fold) act=fold-action now=@da]
+  ^-  (list fold)
+  ?-  -.act
+    %add   (fold-add fs host.act rel.act rows.act now)
+    %read  (fold-read fs host.act rel.act rows.act now)
+    %del   (fold-del fs host.act rel.act)
+    %seen  (fold-seen fs host.act rel.act key.act)
+  ==
+::  +fold-who: the folder an action names
+++  fold-who
+  |=  act=fold-action
+  ^-  [host=@p rel=path]
+  ?-  -.act
+    %add   [host.act rel.act]
+    %read  [host.act rel.act]
+    %del   [host.act rel.act]
+    %seen  [host.act rel.act]
+  ==
+::  +fold-cap: how many folders one ship may follow
+++  fold-cap  ^-(@ud 200)
+::  +fold-new: how many pages of a follow are new
+++  fold-new
+  |=  f=fold
+  ^-  @ud
+  %-  lent
+  %+  skim  ~(tap by late.f)
+  |=  [k=@t r=title-row]
+  =/  s=(unit @ud)  (~(get by seen.f) k)
+  |(?=(~ s) (gth when.r u.s))
+::  +fold-get: the follow of `rel` on `host`, if any
+++  fold-get
+  |=  [fs=(list fold) host=@p rel=path]
+  ^-  (unit fold)
+  |-  ^-  (unit fold)
+  ?~  fs  ~
+  ?:  &(=(host host.i.fs) =(rel rel.i.fs))  `i.fs
+  $(fs t.fs)
+::  +fold-put: `f` in place of the follow it names, or added at the end
+::  under +fold-cap
+++  fold-put
+  |=  [fs=(list fold) f=fold]
+  ^-  (list fold)
+  ?^  (fold-get fs host.f rel.f)
+    (turn fs |=(o=fold ?:(&(=(host.o host.f) =(rel.o rel.f)) f o)))
+  ?:  (gte (lent fs) fold-cap)  fs
+  (snoc fs f)
+::  +fold-del: the follows without `rel` on `host`
+++  fold-del
+  |=  [fs=(list fold) host=@p rel=path]
+  ^-  (list fold)
+  (skip fs |=(o=fold &(=(host host.o) =(rel rel.o))))
+::  +fold-add: follow, the folder read as `rows`. What is there now counts
+::  as seen: following marks nothing new. Following again keeps what was
+::  seen.
+++  fold-add
+  |=  [fs=(list fold) host=@p rel=path rows=(unit (map @t title-row)) now=@da]
+  ^-  (list fold)
+  ?^  (fold-get fs host rel)  (fold-read fs host rel rows now)
+  =/  late=(map @t title-row)  (fall rows ~)
+  =/  seen=(map @t @ud)  (~(run by late) |=(r=title-row when.r))
+  (fold-put fs [host rel seen late ?=(^ rows) now])
+::  +fold-read: a fresh read of the folder. ~ is a folder that will not
+::  read: the follow keeps its pages and turns unavailable.
+++  fold-read
+  |=  [fs=(list fold) host=@p rel=path rows=(unit (map @t title-row)) now=@da]
+  ^-  (list fold)
+  =/  f=(unit fold)  (fold-get fs host rel)
+  ?~  f  fs
+  ?~  rows  (fold-put fs u.f(ok |, at now))
+  (fold-put fs u.f(late u.rows, ok &, at now))
+::  +fold-seen: the page `key` is seen as it last read
+++  fold-seen
+  |=  [fs=(list fold) host=@p rel=path key=@t]
+  ^-  (list fold)
+  =/  f=(unit fold)  (fold-get fs host rel)
+  ?~  f  fs
+  =/  r=(unit title-row)  (~(get by late.u.f) key)
+  ?~  r  fs
+  (fold-put fs u.f(seen (~(put by seen.u.f) key when.u.r)))
+::  +fold-under: the rows of `rows` (titles, every page a ship lists)
+::  under the folder `rel`, at any depth
+++  fold-under
+  |=  [rows=(map @t title-row) rel=path]
+  ^-  (map @t title-row)
+  =/  pre=tape  (weld (trip (spat rel)) "/")
+  =/  n=@ud  (lent pre)
+  %-  ~(gas by *(map @t title-row))
+  %+  skim  ~(tap by rows)
+  |=  [k=@t r=title-row]
+  =(pre (scag n (trip k)))
+::  +fold-hit: the follows a share notice's page path falls under:
+::  <base>/page/<rel...>/code, under a followed `rel` on that host
+++  fold-hit
+  |=  [fs=(list fold) host=@p pax=path]
+  ^-  (list fold)
+  =/  t=tape  (trip (spat pax))
+  %+  skim  fs
+  |=  f=fold
+  ?.  =(host host.f)  |
+  ?~  rel.f  |
+  =/  pre=tape  :(weld "/page" (trip (spat rel.f)) "/")
+  ?=(^ (find pre t))
 --

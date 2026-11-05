@@ -692,21 +692,25 @@ try {
       { method: 'POST' });
   }, CN);
   await sleep(3000);
-  //  clear the high-water mark so this run's comment is genuinely new
-  await page.evaluate(() => localStorage.removeItem('cmtSeen'));
+  //  the badge counts held comet comments and unread activity (73-comments.js),
+  //  and the owner's own comment is neither. Start from a read inbox.
+  await page.evaluate(() => fetch('/apps/lattice/notify-read?all=1', { method: 'POST' }));
   await page.evaluate(async (n) => {
     await fetch('/apps/lattice/comment?page=' + encodeURIComponent(n),
       { method: 'POST', body: 'body=notify+probe' });
   }, CN);
-  //  the comment is in the owner's inbox: the count has something to count
+  //  the comment is in the owner's Comments tab
   await waitFor(() => page.evaluate(async (n) => {
     const r = await fetch('/apps/lattice/comments-inbox');
     return ((await r.json()).items || []).some((c) => c.page === n);
   }, CN), 20000, 500);
-  //  The count is throttled to once a minute, because on a serialising pier a
-  //  badge is not worth queueing ahead of the user's saves. A fresh load starts
-  //  that clock at zero, so reloading is both how the count becomes immediate
-  //  and how we prove the mark survives a reload, which is the point of it.
+  const counts = await page.evaluate(async () => (await fetch('/apps/lattice/notify-count')).json());
+  check('inbox: notify-count answers held and unread', Number.isInteger(counts.held)
+    && counts.unread === 0, JSON.stringify(counts));
+  const acts = await page.evaluate(async () => (await fetch('/apps/lattice/notify')).json());
+  check('inbox: the owner\'s own comment is no activity',
+    !(acts.items || []).some((a) => a.body === 'notify probe'), JSON.stringify(acts).slice(0, 300));
+  //  a fresh load counts at once (the count is throttled to once a minute)
   const reloadApp = async () => {
     await page.reload({ waitUntil: 'networkidle2', timeout: 90000 });
     await wait(() => !!document.getElementById('rb-inbox'));
@@ -714,33 +718,22 @@ try {
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   };
   await reloadApp();
-  await wait(() => document.getElementById('rb-inbox').classList.contains('has-unread'));
+  await sleep(3000);
   const u1 = await unread();
-  check('comments: an arrival marks the button unread', u1.marked, JSON.stringify(u1));
-  check('comments: and carries a count', u1.n && Number(u1.n) >= 1, JSON.stringify(u1));
-
-  //  opening the inbox IS reading it
+  check('inbox: the badge is the held count when nothing is unread',
+    counts.held ? u1.n === String(counts.held) : !u1.marked, JSON.stringify({ u1, counts }));
+  //  opening shows the tabs, and the Comments tab lists the comment
   await page.evaluate(() => document.getElementById('rb-inbox').click());
   await wait(() => !document.getElementById('cmwrap').hidden);
-  //  clearing is asynchronous by nature: opening has to LOAD the inbox before
-  //  it can know what the newest comment is. A fixed sleep raced that fetch
-  //  and blamed the badge. Waiting on the condition still fails if it never
-  //  clears, which is the thing actually worth asserting.
-  await wait(() => !document.getElementById('rb-inbox').classList.contains('has-unread'));
-  const u2 = await unread();
-  check('comments: opening the inbox clears the badge', !u2.marked, JSON.stringify(u2));
+  await page.evaluate(() => document.getElementById('ibtab-cm').click());
+  await wait(() => !document.getElementById('cmlist').hidden
+    && [...document.querySelectorAll('#cmlist .aclcard')].some((c) => c.textContent.includes('notify probe')));
+  check('inbox: the Comments tab lists the comment', true);
   await page.evaluate(() => {
     const s = window.latTabs.state();
     return window.latTabs.closeTab(s.tabs[s.active].id);
   });
   await sleep(500);
-  //  and it stays cleared across a reload, which recounts from scratch against
-  //  the mark opening the inbox just wrote. A refresh alone would be throttled
-  //  out and pass without counting anything.
-  await reloadApp();
-  await sleep(3000);
-  const u3 = await unread();
-  check('comments: and it stays cleared on the next refresh', !u3.marked, JSON.stringify(u3));
   await page.evaluate((n) => fetch('/apps/lattice/page-del?name=' +
     encodeURIComponent(n), { method: 'POST' }), CN);
 

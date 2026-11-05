@@ -3543,7 +3543,7 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   // the client tools: their name, icon, the overlay element each one used
   // to be (72-acl.js, 73-comments.js, 80-conflicts.js) and what fills it
   const TOOLS = {
-    inbox: { name: 'Comments inbox', icon: 'inbox', wrap: 'cmwrap', load: () => cmLoad() },
+    inbox: { name: 'Inbox', icon: 'inbox', wrap: 'cmwrap', load: () => cmLoad() },
     access: { name: 'Access & groups', icon: 'key', wrap: 'aclwrap', load: () => aclLoad() },
     conflicts: { name: 'Sync conflicts', icon: 'conflict', wrap: 'cfwrap', load: () => renderConflicts() },
   };
@@ -4344,7 +4344,7 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   ribbonAdd({ id: 'forum', icon: 'forum', name: 'Forum', run: () => toolOpen('forum') });
   // the unread badge (73-comments.js) and the conflict count
   // (80-conflicts.js) are painted onto these two
-  ribbonAdd({ id: 'inbox', icon: 'inbox', name: 'Comments inbox', run: () => toolOpen('inbox') });
+  ribbonAdd({ id: 'inbox', icon: 'inbox', name: 'Inbox', run: () => toolOpen('inbox') });
   ribbonAdd({ id: 'access', icon: 'key', name: 'Access & groups', run: () => toolOpen('access') });
   ribbonAdd({ id: 'conflicts', icon: 'conflict', name: 'Sync conflicts', run: () => toolOpen('conflicts') })
     .hidden = true;
@@ -6840,6 +6840,9 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   // pages other ships shared with us (/shared-with-me), drawn as a folder
   // after the pages. Filled by 69-shared.js.
   let sharedWithMe = [];
+  // shared folders this ship follows (/folder-follows), drawn after it.
+  // Filled by 69x-follow.js.
+  let folds = [];
   customElements.define('lat-tree', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -7132,6 +7135,9 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
     shared: [ico('inbox'), 'Pages other ships shared with you. Not a folder in your pages: '
       + 'lattice shows it while anything is shared with you, and removing an entry leaves '
       + 'their grant as it is.'],
+    following: [ico('inbox'), 'Folders other ships share that you follow, from a folder index\'s '
+      + 'Follow button. Not in your pages: the count is what was added or changed since you '
+      + 'last opened it, and the \u00d7 unfollows.'],
   };
   function sysFlair(row, which) {
     const [svg, what] = SYSF[which];
@@ -7386,6 +7392,7 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
       treeList.appendChild(row);
     }
     if (sharedWithMe.length) renderShared(coll);
+    if (folds.length) renderFolds(coll);
     treeRove(treeList, had);
     paintLink();                 // the Page tab's link section (65-ctl.js)
     // the Published pages list (72-acl.js) reads these share modes
@@ -10925,6 +10932,140 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
     } });
   // deferred to boot, same reason as loadPerms. See 67-perms.js.
 
+// ── src/69x-follow.js ─────────────────────────────────────────────────────
+  // ── following: shared folders this ship follows ─────────────────────────
+  // A peer's shared folder (urb://~host/<folder>/) followed from its index
+  // page's Follow button. The ship keeps the list and the pages each folder
+  // listed when last read (/folder-follows); a page added or changed since
+  // it was seen counts as new. Pull, nothing asked of the publisher: the
+  // ship reads every folder again on boot and every 20 minutes while this
+  // is open (/folder-check), and at once when a share notice lands under
+  // one ('stale' on /beacon/folds, 90-sync.js).
+  //
+  // For whatever wants to act on it (notifications): every /beacon/folds
+  // stamp with op 'new' is also a window event, lattice:folder-new, whose
+  // detail is {host, path, new}.
+  const FOL = ' following';
+  const foldName = (f) => f.host + f.path;
+  const foldLeaf = (f, p) => p.key.slice(f.path.length + 1);
+  const foldUrl = (host, path) => 'urb://' + host + path;
+  async function loadFolds(bg = false) {
+    let r = null;
+    try { r = await (bg ? bgFetch : fetch)(api + '/folder-follows'); } catch {}
+    if (!r || !r.ok) return;
+    try { folds = await r.json(); } catch { return; }
+    renderTree();
+  }
+  // read one folder again (its host and path), or every one
+  async function checkFolds(f) {
+    const q = f ? '?host=' + encodeURIComponent(f.host) + '&path=' + encodeURIComponent(f.path) : '';
+    if (!f && !folds.length) return;
+    try { await fetch(api + '/folder-check' + q, { method: 'POST' }); } catch {}
+    loadFolds(true);
+  }
+  setInterval(() => { if (!document.hidden) checkFolds(); }, 20 * 60000);
+  let foldTimer = null;
+  const foldsBumped = (data) => {
+    let j = null;
+    try { j = JSON.parse(data); } catch {}
+    // the notice can beat the folder's index being written again on the
+    // host, so it is read now and twice more shortly after
+    if (j && j.op === 'stale' && j.host && j.path) {
+      for (const ms of [0, 4000, 12000]) setTimeout(() => checkFolds(j), ms);
+      return;
+    }
+    if (j && j.op === 'new')
+      window.dispatchEvent(new CustomEvent('lattice:folder-new',
+        { detail: { host: j.host, path: j.path, new: j.new } }));
+    clearTimeout(foldTimer);
+    foldTimer = setTimeout(loadFolds, 300);
+  };
+  const foldPost = (route, f, extra = '') => fetch(api + route + '?host=' + encodeURIComponent(f.host)
+    + '&path=' + encodeURIComponent(f.path) + extra, { method: 'POST' }).catch(() => null);
+  async function unfollowFold(f) {
+    const r = await foldPost('/folder-unfollow', f);
+    if (!r || !r.ok) { st('unfollow failed' + await errText(r), false); return; }
+    folds = folds.filter((x) => !(x.host === f.host && x.path === f.path));
+    renderTree();
+    st('unfollowed ' + foldName(f));
+  }
+  // a page opened from the list is seen
+  function openFoldPage(f, p) {
+    if (p.new) {
+      p.new = false;
+      f.new = Math.max(0, f.new - 1);
+      renderTree();
+      foldPost('/folder-seen', f, '&key=' + encodeURIComponent(p.key));
+    }
+    browseIn(api + '?url=' + encodeURIComponent(foldUrl(f.host, p.key)));
+  }
+  // appended by renderTree, after shared with me
+  function renderFolds(coll) {
+    const all = folds.reduce((n, f) => n + (f.ok ? f.new : 0), 0);
+    const top = folderRow('following', 0, coll.includes(FOL),
+      () => { paneColl.flip(FOL); renderTree(); }, undefined, FOL);
+    sysFlair(top, 'following');
+    if (all) top.append(foldBadge(all + ' new'));
+    treeList.appendChild(top);
+    if (coll.includes(FOL)) return;
+    for (const f of [...folds].sort((a, b) => foldName(a).localeCompare(foldName(b)))) {
+      const key = FOL + '/' + foldName(f);
+      const row = folderRow(foldName(f), 1, coll.includes(key),
+        () => { paneColl.flip(key); renderTree(); }, undefined, key);
+      row.classList.add('fol');
+      row.dataset.fold = foldName(f);
+      if (!f.ok) {
+        const b = foldBadge('unavailable');
+        b.classList.add('gone');
+        b.title = f.host + ' no longer shares this folder with you, or cannot be reached';
+        row.append(b);
+      } else if (f.new) row.append(foldBadge(f.new + ' new'));
+      const ix = document.createElement('a');
+      ix.className = 'folix';
+      ix.href = api + '?url=' + encodeURIComponent(foldUrl(f.host, f.path) + '/');
+      ix.textContent = '↗';
+      ix.title = 'open the folder\'s index';
+      ix.onclick = (e) => {
+        e.stopPropagation();
+        if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+        e.preventDefault();
+        browseIn(ix.href);
+      };
+      const x = document.createElement('span');
+      x.className = 'swrm folrm';
+      x.textContent = '×';
+      x.title = 'unfollow';
+      x.onclick = (e) => { e.stopPropagation(); unfollowFold(f); };
+      row.append(ix, x);
+      treeList.appendChild(row);
+      if (coll.includes(key)) continue;
+      for (const p of f.pages) {
+        const a = document.createElement('a');
+        a.className = 'pg swm folpg' + (p.new ? ' new' : '');
+        a.href = api + '?url=' + encodeURIComponent(foldUrl(f.host, p.key));
+        a.title = f.host + p.key + (p.new ? ' (new)' : '');
+        const nm = document.createElement('span');
+        nm.className = 'swn';
+        nm.textContent = p.title || foldLeaf(f, p);
+        a.append(nm);
+        a.onclick = (e) => {
+          if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+          e.preventDefault();
+          openFoldPage(f, p);
+        };
+        treeItem(a, 2, key + '/' + p.key);
+        a.style.marginLeft = '28px';
+        treeList.appendChild(a);
+      }
+    }
+  }
+  function foldBadge(t) {
+    const b = document.createElement('span');
+    b.className = 'folnew';
+    b.textContent = t;
+    return b;
+  }
+
 // ── src/70-upload.js ──────────────────────────────────────────────────────
   // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────
   //  which extensions arrive as which kind is EXT_KIND, in 30-tree.js. Each
@@ -11745,15 +11886,23 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   customElements.define('lat-comments', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
-<div class="aclwrap" id="cmwrap" hidden role="region" aria-label="comments">
+<div class="aclwrap" id="cmwrap" hidden role="region" aria-label="inbox">
   <div class="aclbar">
-    <h2>Comments</h2>
+    <h2>Inbox</h2>
+    <span class="ibtabs" role="tablist">
+      <button id="ibtab-held" role="tab" data-ib="held">Held</button>
+      <button id="ibtab-act" role="tab" data-ib="act">Activity</button>
+      <button id="ibtab-cm" role="tab" data-ib="cm">Comments</button>
+    </span>
     <span class="muted" id="cmsum"></span>
     <span class="grow"></span>
+    <button id="ibreadall" hidden>mark all read</button>
     <button id="cmreload" class="ico" title="reload from ship">&#8635;</button>
   </div>
   <div class="aclbody">
-    <div id="cmlist"></div>
+    <div id="ibheld" hidden></div>
+    <div id="ibact" hidden></div>
+    <div id="cmlist" hidden></div>
   </div>
 </div>`;
     }
@@ -11849,92 +11998,227 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
     host.appendChild(grid);
   }
 
-  // ── unread ───────────────────────────────────────────────────────────────
-  // A comment from another ship used to land in total silence: the inbox is
-  // pull-only, so the only way to learn anyone had said anything was to open
-  // it and look. That makes the feature invisible in practice.
-  //
-  // "Seen" is a high-water mark, not a per-comment flag. The @da stamps the
-  // items carry are NOT fixed-width — scot %da leaves month and day unpadded
-  // (~2026.8.9 vs ~2026.10.1) — so a raw lexical compare misorders across
-  // every 9->10 boundary and the badge goes silent for months at a time.
-  // daKey pads the numeric fields into a genuinely sortable string; marks
-  // stored by older builds compare fine because both sides go through it.
-  const daKey = (w) => String(w || '').replace(/\d+/g, (d) => d.padStart(4, '0'));
-  const seenKey = 'cmtSeen';
-  const lastSeen = () => { try { return localStorage[seenKey] || ''; } catch { return ''; } };
-  const markSeen = (when) => { try { if (when) localStorage[seenKey] = when; } catch {} };
+  // ── held and activity ────────────────────────────────────────────────────
+  // The inbox has three tabs. Held: comet comments waiting on a page set to
+  // held, across every page (GET /held-comments), approved or rejected here
+  // as in a page's Page tab. Activity: what happened to the owner, a comment
+  // from another ship on one of their pages, a reply to their post or
+  // comment on a board they host, and a reply on another ship's board its
+  // host told this ship about (GET /notify). Each item is read or unread on
+  // the ship, so every tab and device agrees. Comments: every comment, with
+  // remove, as before.
+  let ibTab = null;
+  let held = [];
+  let acts = [];
+  const ago = (ms) => new Date(ms).toLocaleString();
 
-  // on the ribbon's inbox button: the badge, and the count in its name, so
-  // a screen reader hears it too (title and label stay identical)
+  function ibShow(tab) {
+    ibTab = tab;
+    for (const b of document.querySelectorAll('#cmwrap .ibtabs button')) {
+      b.setAttribute('aria-selected', String(b.dataset.ib === tab));
+    }
+    $('ibheld').hidden = tab !== 'held';
+    $('ibact').hidden = tab !== 'act';
+    $('cmlist').hidden = tab !== 'cm';
+    $('ibreadall').hidden = tab !== 'act' || !acts.some((a) => !a.read);
+    const sum = $('cmsum');
+    if (tab === 'held') sum.textContent = held.length ? held.length + ' held' : '';
+    else if (tab === 'act') {
+      const n = acts.filter((a) => !a.read).length;
+      sum.textContent = n ? n + ' unread' : '';
+    } else renderComments(inbox.length);
+  }
+  for (const b of document.querySelectorAll('#cmwrap .ibtabs button')) {
+    b.onclick = () => ibShow(b.dataset.ib);
+  }
+
+  function ibCard(author, label, onLabel, body, when) {
+    const card = document.createElement('div');
+    card.className = 'aclcard';
+    const head = document.createElement('header');
+    const who = document.createElement('b');
+    who.textContent = author;
+    head.appendChild(who);
+    card.appendChild(head);
+    if (label) {
+      const on = document.createElement('a');
+      on.className = 'gname';
+      on.textContent = label;
+      on.style.cursor = 'pointer';
+      on.onclick = onLabel;
+      card.appendChild(on);
+    }
+    const b = document.createElement('div');
+    b.style.whiteSpace = 'pre-wrap';
+    b.style.overflowWrap = 'anywhere';
+    b.textContent = body;               // text, never HTML
+    card.appendChild(b);
+    const w = document.createElement('div');
+    w.className = 'aclnote';
+    w.textContent = ago(when);
+    card.appendChild(w);
+    return card;
+  }
+  const ibButton = (card, label, run) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.onclick = async () => { b.disabled = true; await run(); b.disabled = false; };
+    card.querySelector('header').appendChild(b);
+    return b;
+  };
+  function ibEmpty(host, text) {
+    host.className = 'aclempty';
+    host.textContent = text;
+  }
+
+  async function loadHeld() {
+    try {
+      const r = await busyFetch(api + '/held-comments');
+      if (!r.ok) { st('held comments failed' + await errText(r), false); return; }
+      held = (await r.json()).items || [];
+    } catch { st('held comments failed', false); return; }
+    const host = $('ibheld');
+    host.textContent = '';
+    host.className = '';
+    if (!held.length) {
+      ibEmpty(host, 'Nothing held. Comet comments wait here when a page\'s comet '
+        + 'comments are set to held in its Page tab.');
+      return;
+    }
+    const grid = document.createElement('div');
+    grid.className = 'aclgrid';
+    for (const c of held) {
+      const card = ibCard(c.author, c.page, (e) => openIn('page', c.page, { ev: e }), c.body, c.when);
+      for (const act of ['approve', 'reject']) {
+        ibButton(card, act, async () => {
+          const r = await mutate(api + '/comet-pending?page=' + encodeURIComponent(c.page)
+            + '&id=' + encodeURIComponent(c.id) + '&do=' + act);
+          if (!r || !r.ok) { st(act + ' failed' + await errText(r), false); return; }
+          st(act === 'approve' ? 'comment approved' : 'comment rejected');
+          await loadHeld();
+          ibShow(ibTab);
+          refreshInboxBadge(true);
+        });
+      }
+      grid.appendChild(card);
+    }
+    host.appendChild(grid);
+  }
+
+  // where an activity item points: a page of ours, a thread on a board we
+  // host, or a thread on another ship's board read through this ship
+  const actLabel = (a) => {
+    if (a.kind === 'comment') return 'comment on ' + a.where;
+    const t = a.title ? ': ' + a.title : '';
+    if (a.kind === 'remote') return 'reply on ' + a.host + '/' + a.where + t;
+    if (a.kind === 'reply') return 'reply on ' + a.where + t;
+    // a followed folder's new pages: the ship words it, "N new pages in
+    // <folder> from ~ship", one item per folder
+    if (a.kind === 'folder') return a.title || a.where;
+    return a.where;
+  };
+  const actOpen = (a, e) => {
+    if (a.kind === 'folder') return browseIn(api + '?url=' + encodeURIComponent('urb://' + a.host + a.where + '/'));
+    if (a.kind === 'comment') return openIn('page', a.where, { ev: e });
+    const tail = encodeURIComponent(a.where) + '/' + a.post;
+    return browseIn(a.kind === 'remote'
+      ? '/apps/lattice/forum-remote/' + a.host + '/' + tail
+      : '/apps/lattice/forum/' + tail);
+  };
+  async function markRead(q) {
+    const r = await mutate(api + '/notify-read?' + q);
+    if (!r || !r.ok) { st('mark read failed' + await errText(r), false); return false; }
+    return true;
+  }
+
+  async function loadActivity() {
+    try {
+      const r = await busyFetch(api + '/notify');
+      if (!r.ok) { st('activity failed' + await errText(r), false); return; }
+      acts = (await r.json()).items || [];
+    } catch { st('activity failed', false); return; }
+    const host = $('ibact');
+    host.textContent = '';
+    host.className = '';
+    if (!acts.length) {
+      ibEmpty(host, 'No activity yet. Comments from other ships on your pages, and '
+        + 'replies to your forum posts and comments, show here.');
+      return;
+    }
+    const grid = document.createElement('div');
+    grid.className = 'aclgrid';
+    for (const a of acts) {
+      const read = async () => {
+        if (a.read || !(await markRead('id=' + encodeURIComponent(a.id)))) return;
+        a.read = true;
+        card.classList.remove('unread');
+        if (mk) mk.remove();
+        ibShow(ibTab);
+        refreshInboxBadge(true);
+      };
+      const card = ibCard(a.who, actLabel(a), (e) => { read(); actOpen(a, e); }, a.body, a.when);
+      card.classList.toggle('unread', !a.read);
+      const mk = a.read ? null : ibButton(card, 'mark read', read);
+      ibButton(card, 'open', async () => { read(); await actOpen(a); });
+      grid.appendChild(card);
+    }
+    host.appendChild(grid);
+  }
+  $('ibreadall').onclick = async () => {
+    if (!(await markRead('all=1'))) return;
+    st('all activity marked read');
+    await loadActivity();
+    ibShow('act');
+    refreshInboxBadge(true);
+  };
+
+  // ── the badge ────────────────────────────────────────────────────────────
+  // On the ribbon's inbox button: held comet comments plus unread activity,
+  // with the count in its name so a screen reader hears it too (title and
+  // label stay identical). No sound and no OS notification, by design.
   function paintUnread(n) {
     const b = $('rb-inbox');
     if (!b) return;
     if (n > 0) { b.dataset.n = n > 99 ? '99+' : String(n); b.classList.add('has-unread'); }
     else { delete b.dataset.n; b.classList.remove('has-unread'); }
-    tip(b, n > 0 ? 'Comments inbox, ' + b.dataset.n + ' unread' : 'Comments inbox');
+    tip(b, n > 0 ? 'Inbox, ' + b.dataset.n + ' unread' : 'Inbox');
   }
 
-  // Counts without rendering, so it can run on a refresh without the pane open.
-  // The pier serialises, so every count costs a real request in the same queue
-  // the user's saves are waiting in. A badge is not worth that: it is throttled
-  // to one count a minute no matter how often a sync asks for it. Opening the
-  // panel does not go through here, so reading is always immediate.
+  // GET /notify-count is two directory reads and no bodies. It runs on a
+  // refresh, throttled to once a minute, and at once (`now`) when the
+  // /beacon/notify stamp moves (90-sync.js) or the user acted here.
   const BADGE_MS = 60000;
   let badgeAt = 0;
-  // change detection: the /beacon/comments stamp as of the last full count,
-  // and what that count was. Same stamp = nothing arrived = repaint the old
-  // number for the price of ONE grub read, instead of the full inbox (every
-  // comment body materialized — ~6s of the pier's serial time). Deletes
-  // don't move the stamp, and don't need to: they can only lower a count,
-  // and opening the panel recomputes for real.
-  let stampSeen = null;
-  let unreadSeen = 0;
-
-  async function refreshCommentBadge() {
-    if (Date.now() - badgeAt < BADGE_MS) return;
+  async function refreshInboxBadge(now) {
+    if (!now && Date.now() - badgeAt < BADGE_MS) return;
     badgeAt = Date.now();
-    let stamp = null;
+    let d = null;
     try {
       // bgFetch: a badge must never queue ahead of something the user asked
       // for (this call is why page opens measured 6s+, see 10-shell.js)
-      const r = await bgFetch(api + '/comments-latest');
-      if (r.ok) {
-        stamp = (await r.json()).latest;
-        if (stamp !== null && stamp === stampSeen) { paintUnread(unreadSeen); return; }
-      }
-      // unknown stamp (old nexus, no comments yet) or a change: pay for the
-      // real count
-    } catch { return; }
-    let d = null;
-    try {
-      const r = await bgFetch(api + '/comments-inbox');
+      const r = await bgFetch(api + '/notify-count');
       if (!r.ok) return;                 // a failed count is not worth reporting
       d = await r.json();
     } catch { return; }
-    const items = d.items || [];
-    const mark = lastSeen();
-    unreadSeen = items.filter((c) => daKey(c.when) > daKey(mark)).length;
-    stampSeen = stamp;
-    paintUnread(unreadSeen);
+    paintUnread((d.held || 0) + (d.unread || 0));
   }
+  // the old name, which the refresh paths call
+  const refreshCommentBadge = () => refreshInboxBadge(false);
+  // A followed folder's new pages arrive as one activity item of kind
+  // %folder per folder (lib/lattice-notify +folder-item): the ship files it
+  // when a read finds more new pages, and marks it read when they are all
+  // opened (69x-follow.js), stamping /beacon/notify both times.
 
   const cmOpen = () => toolOpen('inbox');
-  // the inbox's tab came forward (24-tools.js). Opening IS reading: mark
-  // everything currently in the inbox as seen
+  // the inbox's tab came forward (24-tools.js): load all three tabs, and
+  // show Held when something waits there, else Activity
   const cmLoad = () => {
-    loadComments().then(() => {
-      const newest = inbox.reduce(
-        (a, c) => (daKey(c.when) > daKey(a) ? String(c.when) : a), lastSeen());
-      markSeen(newest);
-      // reading IS the recount: without dropping the cached stamp, the next
-      // same-stamp fast path repaints the PRE-read number forever
-      stampSeen = null;
-      unreadSeen = 0;
-      paintUnread(0);
+    Promise.all([loadHeld(), loadActivity(), loadComments()]).then(() => {
+      ibShow(ibTab || (held.length ? 'held' : 'act'));
+      refreshInboxBadge(true);
     });
   };
-  $('cmreload').onclick = loadComments;
+  $('cmreload').onclick = cmLoad;
 
 // ── src/74-orrery.js ──────────────────────────────────────────────────────
   // ── send the open page to orrery (ui-app/orrery.js, docs/orrery.md) ──────
@@ -13362,7 +13646,7 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
     // loop pauses entirely on document.hidden and only reconnects here, on
     // focus. Cheap either way: it counts, it does not render, and it is
     // skipped entirely while the pane is open.
-    if ($('cmwrap') && $('cmwrap').hidden) refreshCommentBadge();
+    refreshCommentBadge();
   };
   // ── the beacon stream, read raw ──────────────────────────────────────────
   // Not an EventSource: the stream's INITIAL event is named "old <path>" (a
@@ -13377,6 +13661,7 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   // arrive as upd events, exactly as before.
   let streamLive = false;
   let lastShares = '';
+  let lastFolds = '';
   let beaconTimer = null;
   // a share stamps /beacon/shares and then /rev, the file this keep wakes
   // on (+bump-shares). Its payload names that /rev, so a debounce window
@@ -13384,7 +13669,11 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   // (69-shared.js) and skips the tree. Either may arrive first, hence the
   // window. Any other bump in it, or any other caller of bumped, refreshes.
   const digits = (s) => String(s || '').replace(/\D/g, '');
+  // a held comment or an activity item stamps /beacon/notify and then /rev
+  // (+notify-stamp). Its /rev joins this set too: a window of only those
+  // bumps recounts the inbox badge and skips the tree.
   const sharesRevs = new Set();
+  let lastNotify = '';
   let liveRevs = [];
   const revBumped = (data) => {
     liveRevs.push(digits(data));
@@ -13406,7 +13695,7 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   const commentBumped = () => {
     clearTimeout(cmBeaconTimer);
     cmBeaconTimer = setTimeout(() => {
-      if ($('cmwrap') && $('cmwrap').hidden) refreshCommentBadge();
+      refreshCommentBadge();
     }, 300);
   };
   let lastRev = '';
@@ -13518,6 +13807,29 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
               if (sr) sharesRevs.add(sr[1]);
               if (name.slice(0, 3) !== 'old') sharesBumped(data);
               else if (was) loadShared();
+              continue;
+            }
+            // /notify: the inbox moved (73-comments.js). Registration
+            // reports the stamp as it stood; one that moved since is news.
+            if (name.slice(-8) === ' /notify') {
+              if (data === lastNotify) continue;
+              const was = lastNotify;
+              lastNotify = data;
+              const nr = /"rev"\s*:\s*"?(\d+)/.exec(data);
+              if (nr) sharesRevs.add(nr[1]);
+              if (name.slice(0, 3) !== 'old' || was) refreshInboxBadge(true);
+              continue;
+            }
+            // /folds: a followed folder changed, or a share notice landed
+            // under one (69x-follow.js). Its /rev is quiet, as a share's.
+            if (name.slice(-7) === ' /folds') {
+              if (data === lastFolds) continue;
+              const was = lastFolds;
+              lastFolds = data;
+              const fr = /"rev"\s*:\s*"?(\d+)/.exec(data);
+              if (fr) sharesRevs.add(fr[1]);
+              if (name.slice(0, 3) !== 'old') foldsBumped(data);
+              else if (was) loadFolds();
               continue;
             }
             if (name.slice(-5) !== ' /rev') {
@@ -14420,7 +14732,11 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   // the pier serializes, pure delay on the only requests that matter.
   //  background lane: these also yield to any user activity (see bgFetch),
   //  so a click during boot is no longer queued behind panel lists
-  const loadPanels = () => { loadPerms(true); loadShared(true); };
+  //  and the followed folders: the list, then each read again (69x-follow.js)
+  const loadPanels = () => {
+    loadPerms(true); loadShared(true);
+    loadFolds(true).then(() => checkFolds());
+  };
   // The side scripts: theme.js (the inline line in the shell has painted
   // the last theme already), prism for the splits' parked views (the
   // editor's highlighter is a worker that loads its own), vault.js and

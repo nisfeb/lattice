@@ -48,7 +48,11 @@
   // the pier serializes, pure delay on the only requests that matter.
   //  background lane: these also yield to any user activity (see bgFetch),
   //  so a click during boot is no longer queued behind panel lists
-  const loadPanels = () => { loadPerms(true); loadShared(true); };
+  //  and the followed folders: the list, then each read again (69x-follow.js)
+  const loadPanels = () => {
+    loadPerms(true); loadShared(true);
+    loadFolds(true).then(() => checkFolds());
+  };
   // The side scripts: theme.js (the inline line in the shell has painted
   // the last theme already), prism for the splits' parked views (the
   // editor's highlighter is a worker that loads its own), vault.js and

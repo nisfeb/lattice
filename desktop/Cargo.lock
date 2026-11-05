@@ -1962,7 +1962,7 @@ dependencies = [
 
 [[package]]
 name = "lattice-desktop"
-version = "1.0.24"
+version = "1.0.25"
 dependencies = [
  "base64 0.22.1",
  "fuser",
@@ -1974,6 +1974,7 @@ dependencies = [
  "objc2-foundation",
  "objc2-web-kit",
  "proptest",
+ "ring",
  "serde",
  "serde_json",
  "tauri",

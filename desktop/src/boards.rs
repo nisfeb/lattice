@@ -60,6 +60,9 @@ pub struct Write<'a> {
     pub open: Option<bool>,
     pub our: Option<&'a str>,
     pub note: Option<&'a Note>,
+    /// the ids of the replies to the reader's own posts here that it has
+    /// not seen before, marked new (notify.rs)
+    pub new: Option<&'a std::collections::HashSet<String>>,
 }
 
 const CSS: &str = "\
@@ -570,11 +573,14 @@ pub fn thread_page(p: &Place, t: &Thread, w: &Write) -> Shown {
                 Some(par) => format!(" · in reply to <a href=\"#c{0}\">#{0}</a>", esc(par)),
                 None => String::new(),
             };
+            let new = w.new.is_some_and(|n| n.contains(&c.id));
             s.push_str(&format!(
-                "<li id=\"c{}\"><div class=\"meta\">{} · <time>{}</time>{to}</div><div class=\"body\">{}</div></li>",
+                "<li id=\"c{}\"{}><div class=\"meta\">{} · <time>{}</time>{to}{}</div><div class=\"body\">{}</div></li>",
                 esc(&c.id),
+                if new { " class=\"new\"" } else { "" },
                 who(&c.author),
                 when(c.created),
+                if new { render::NEW_MARK } else { "" },
                 body_html(&c.body, &url)
             ));
         }
@@ -650,16 +656,23 @@ pub fn read(ctx: &Ctx, url: &str, p: &Place) -> (u16, Shown) {
     };
     let our = ctx.reads.our();
     let note = ctx.take_note(url);
-    let w = Write { open, our: our.as_deref(), note: note.as_ref() };
+    let w = Write { open, our: our.as_deref(), note: note.as_ref(), new: None };
     let first = match got.next().unwrap_or_else(|| Err(ReadError::Failed("no answer".into()))) {
         // forum.mjs's words for a thread the board lacks
         Err(ReadError::Failed(w)) if w.contains("no post ") => Err(ReadError::NotPublished(w)),
         r => r,
     };
     let shown = first.and_then(|v| match (p.app, &p.post) {
-        (App::Forum, None) => Ok(board_page(p, &forum_board(&v), &w)),
+        (App::Forum, None) => {
+            let b = forum_board(&v);
+            crate::notify::visit_board(ctx, p, &b);
+            Ok(board_page(p, &b, &w))
+        }
         (App::Forum, Some(_)) => forum_thread(&v)
-            .map(|t| thread_page(p, &t, &w))
+            .map(|t| {
+                let new = crate::notify::visit_thread(ctx, url, &t);
+                thread_page(p, &t, &Write { new: Some(&new), ..w })
+            })
             .ok_or_else(|| ReadError::Failed("the thread couldn't be read".into())),
         (App::Furum, None) => {
             let mut posts = furum_posts(&v);
@@ -782,7 +795,7 @@ mod tests {
 
     #[test]
     fn a_board_that_takes_comet_posts_offers_the_forms_but_never_a_vote() {
-        let open = Write { open: Some(true), our: Some("~doznec-sampel-palnet"), note: None };
+        let open = Write { open: Some(true), our: Some("~doznec-sampel-palnet"), note: None, new: None };
         let p = place_of("urb://~wep/forum/general");
         let h = board_page(&p, &forum_board(&forum_js()), &open).html;
         assert!(h.contains("<form class=\"write-form\" method=\"post\" action=\"/forum?url=urb%3A%2F%2F~wep%2Fforum%2Fgeneral\">"), "{h}");

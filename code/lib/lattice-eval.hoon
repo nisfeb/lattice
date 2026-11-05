@@ -83,6 +83,9 @@
       [%forum-note-store host=@p payload=*]
       ::  the owner clears every stored refusal note (frees the 100-note cap).
       [%forum-notes-clear ~]
+      ::  the owner read activity items (lib/lattice-notify): these ids, or
+      ::  every item so far when ids is empty
+      [%notify-read ids=(list @ta)]
       ::  the owner turns comet posting on or off for one board, and the
       ::  published list of boards that take comet posts follows
       [%forum-comets name=@ta on=?]

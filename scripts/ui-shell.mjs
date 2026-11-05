@@ -446,9 +446,9 @@ try {
   // ── the ribbon and tool tabs ───────────────────────────────────────────
   const names = await page.evaluate(() => [...document.querySelectorAll('#ribbon button')]
     .map((b) => (b.title === b.getAttribute('aria-label') ? b.title : '!' + b.title)
-      .replace(/^(Comments inbox), \S+ unread$/, '$1')));
+      .replace(/^(Inbox), \S+ unread$/, '$1')));
   check('ribbon order and tooltips', JSON.stringify(names) === JSON.stringify([
-    "Today's brief", 'Browser', 'Forum', 'Comments inbox', 'Access & groups',
+    "Today's brief", 'Browser', 'Forum', 'Inbox', 'Access & groups',
     'Sync conflicts', 'Command palette (Ctrl+K)', 'Settings (Ctrl+,)']), JSON.stringify(names));
 
   const front = () => page.evaluate(() => {
@@ -857,22 +857,23 @@ try {
   await sleep(2000);
   await post('comment?page=' + encodeURIComponent(RP), 'body=shell+inbox+probe');
   await sleep(2000);
-  await page.evaluate(() => localStorage.removeItem('cmtSeen'));
+  await post('notify-read?all=1');
   await boot();
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  const unread = await until(() => document.getElementById('rb-inbox').classList.contains('has-unread'), null, 45000);
+  await sleep(3000);
+  //  the owner's own comment is no activity, so with nothing held the
+  //  badge stays down, and its name is the inbox's
   const named = await page.evaluate(() => {
     const b = document.getElementById('rb-inbox');
-    return { t: b.title, l: b.getAttribute('aria-label') };
+    return { t: b.title, l: b.getAttribute('aria-label'), n: b.dataset.n || null };
   });
-  check('inbox badge moved', unread && named.t === named.l && /^Comments inbox, \S+ unread$/.test(named.l),
-    JSON.stringify({ unread, named }));
+  check('inbox badge names the inbox', named.t === named.l && /^Inbox(, \S+ unread)?$/.test(named.l),
+    JSON.stringify({ named }));
   await page.evaluate(() => document.getElementById('rb-inbox').click());
   const inTab = await isFront('tool', 'inbox');
-  const read = await until(() => !document.getElementById('rb-inbox').classList.contains('has-unread')
-    && document.getElementById('toolhost').contains(document.getElementById('cmlist'))
-    && !!document.querySelector('#cmlist .aclcard'));
-  check('the inbox opens as a tab and clears the badge', inTab && read, JSON.stringify({ inTab, read }));
+  const read = await until(() => document.getElementById('toolhost').contains(document.getElementById('cmlist'))
+    && !!document.querySelector('#cmlist .aclcard') && !!document.getElementById('ibtab-act'));
+  check('the inbox opens as a tab with its comments', inTab && read, JSON.stringify({ inTab, read }));
 
   await treeHas(today);
   await page.evaluate(() => document.getElementById('rb-brief').click());

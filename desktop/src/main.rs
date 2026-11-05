@@ -6,7 +6,11 @@ mod boards;
 mod commands;
 mod config;
 #[cfg(feature = "urb-engine")]
+mod cometid;
+#[cfg(feature = "urb-engine")]
 mod engine;
+#[cfg(feature = "urb-engine")]
+mod follows;
 #[cfg(feature = "urb-engine")]
 mod history;
 #[cfg(feature = "urb-engine")]
@@ -17,6 +21,7 @@ mod install;
 mod keys;
 mod local;
 mod mounts;
+mod notify;
 mod pandoc;
 mod pdf;
 mod proxy;
@@ -383,6 +388,8 @@ fn main() {
             commands::open_reader,
             commands::reader_status,
             commands::clear_reader_history,
+            commands::export_reader_identity,
+            commands::import_reader_identity,
         ])
         .build(tauri::generate_context!())
         .expect("error building lattice desktop")
