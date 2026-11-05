@@ -343,6 +343,20 @@ mod tests {
     }
 
     #[test]
+    fn exports_use_at_least_the_owasp_count_in_the_header() {
+        assert!(ITERATIONS >= 600_000);
+        let f = seal(&id(), "correct horse").unwrap();
+        assert_eq!(u32::from_be_bytes(f[10..14].try_into().unwrap()), ITERATIONS);
+    }
+
+    #[test]
+    fn a_file_with_a_higher_count_still_opens() {
+        let f = seal_with(&id(), "correct horse", ITERATIONS * 2).unwrap();
+        assert_eq!(u32::from_be_bytes(f[10..14].try_into().unwrap()), ITERATIONS * 2);
+        assert_eq!(open(&f, "correct horse").unwrap(), id());
+    }
+
+    #[test]
     fn a_wrong_passphrase_is_refused() {
         let f = seal_with(&id(), "correct horse", T).unwrap();
         assert_eq!(open(&f, "correct hors"), Err(OpenError::WrongPassphrase));
