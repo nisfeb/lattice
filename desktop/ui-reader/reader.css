@@ -49,3 +49,7 @@ blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--li
 .thread .pending .state { font-style: italic; }
 .thread details.older { margin-bottom: .75rem; }
 .thread summary { cursor: pointer; font-size: .9rem; }
+.new-mark { font-size: .75rem; font-weight: 600; color: var(--accent); margin-left: .35rem; }
+.home-page .replies { margin: 0 0 1.25rem; }
+.home-page .replies h2 { font-size: 1rem; margin: 0 0 .4rem; }
+.home-page .replies ul { margin: 0; padding-left: 1.1rem; }

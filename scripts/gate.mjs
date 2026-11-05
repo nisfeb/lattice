@@ -479,6 +479,7 @@ async function runTwo(a) {
       B_URL: b.url, B_COOKIE: b.cookie.raw, B_PIER: b.pier, A_SOCK: a.pier + '/.urb/dev/grubbery/lattice/fs' };
     const twos = [['two-ship-links.sh', 'bash', [S + '/two-ship-links.sh']],
       ['two-ship-save.sh', 'bash', [S + '/two-ship-save.sh']], ['two-ship-comments.sh', 'bash', [S + '/two-ship-comments.sh']],
+      ['two-ship-notify.sh', 'bash', [S + '/two-ship-notify.sh']],
       ['ui-links.mjs', 'node', [S + '/ui-links.mjs']], ['ui-shares-live.mjs', 'node', [S + '/ui-shares-live.mjs']],
       ['two-ship-dirshare.py', 'python3', [S + '/two-ship-dirshare.py']]];
     //  --only naming a two-ship suite runs just the ones it names
@@ -518,7 +519,7 @@ const flaky = results.filter((r) => r.flaky);
 const missing = shipSuites.filter((n) => !results.some((r) => r.suite === n));
 console.log(`\n${names.length - failed.length - flaky.length} passed, ${flaky.length} flaky, ${failed.length} failed, wall ${(wall / 60).toFixed(1)} min (${wall.toFixed(0)} s), logs ${LOGS}`);
 if (loads.length) console.log(`host load (1 min): mean ${(loads.reduce((a, b) => a + b, 0) / loads.length).toFixed(1)}, peak ${Math.max(...loads).toFixed(1)}, on ${cpus().length} threads`);
-if (!TWO) console.log('not run: the two-ship suites (ui-links.mjs, ui-shares-live.mjs, two-ship-links.sh, two-ship-save.sh, two-ship-comments.sh, two-ship-dirshare.py); pass --two-ship SET');
+if (!TWO) console.log('not run: the two-ship suites (ui-links.mjs, ui-shares-live.mjs, two-ship-links.sh, two-ship-save.sh, two-ship-comments.sh, two-ship-notify.sh, two-ship-dirshare.py); pass --two-ship SET');
 if (!flag('--stall')) console.log('not run: stall-check.py; pass --stall');
 if (missing.length && fatal) console.log('never started: ' + missing.join(' '));
 if (fatal) console.log('gate error: ' + fatal);

@@ -138,6 +138,9 @@ pub struct Talk<'a> {
     /// the texts of comments the reader sent here that the list does not
     /// hold yet, oldest first
     pub pending: &'a [String],
+    /// where the reader commented here before: the time after which a
+    /// comment by someone else is a reply it has not seen (notify.rs)
+    pub new_after: Option<i64>,
 }
 
 /// How many of a page's public comments show at first, the newest; the
@@ -150,14 +153,20 @@ fn when_ms(ms: i64) -> String {
     format!("{} UTC", iso.get(..16).unwrap_or(&iso).replace('T', " "))
 }
 
-fn comment_li(c: &PubComment) -> String {
+fn comment_li(c: &PubComment, talk: &Talk) -> String {
+    let new = talk.new_after.is_some_and(|t| c.when > t && talk.our.is_some_and(|o| o != c.author));
     format!(
-        "<li class=\"c\"><p class=\"by\"><code class=\"who\">{}</code> <time>{}</time></p><p class=\"body\">{}</p></li>",
+        "<li class=\"c{}\"><p class=\"by\"><code class=\"who\">{}</code> <time>{}</time>{}</p><p class=\"body\">{}</p></li>",
+        if new { " new" } else { "" },
         esc(&c.author),
         when_ms(c.when),
+        if new { NEW_MARK } else { "" },
         esc(&c.body)
     )
 }
+
+/// The mark on a reply to the reader it has not seen before.
+pub const NEW_MARK: &str = " <span class=\"new-mark\">new reply to you</span>";
 
 /// The page's public comments, under it: the newest THREAD_SHOWN, the
 /// older ones in a disclosure above them, then the reader's own comments
@@ -179,11 +188,11 @@ fn thread_box(talk: &Talk) -> String {
             older.len(),
             if older.len() == 1 { "" } else { "s" }
         ));
-        older.iter().for_each(|c| h.push_str(&comment_li(c)));
+        older.iter().for_each(|c| h.push_str(&comment_li(c, talk)));
         h.push_str("</ol></details>");
     }
     h.push_str("<ol class=\"comments\">");
-    newer.iter().for_each(|c| h.push_str(&comment_li(c)));
+    newer.iter().for_each(|c| h.push_str(&comment_li(c, talk)));
     let state = if talk.comets == CometMode::Held { "awaiting approval" } else { "pending" };
     let who = esc(talk.our.unwrap_or("you"));
     for body in talk.pending {
@@ -695,7 +704,7 @@ pub fn bad_address(given: &str) -> Shown {
 /// (the live page when `live` has it, else the compiled-in copy), and the
 /// pages read recently, with Clear history. A live start page in HTML is
 /// framed from `/raw` under `raw_key`, as a published HTML page is.
-pub fn home(live: Option<&NativePage>, raw_key: &str, recent: &[Entry]) -> Shown {
+pub fn home(live: Option<&NativePage>, raw_key: &str, recent: &[Entry], replies: &[crate::notify::Unseen]) -> Shown {
     let kind = live.map(|p| gateway::render_as(&p.mark, p.body.as_bytes()));
     let (csp, start) = if kind == Some("html") && !raw_key.is_empty() {
         (
@@ -715,6 +724,7 @@ pub fn home(live: Option<&NativePage>, raw_key: &str, recent: &[Entry]) -> Shown
         "<section class=\"home-page\"><div class=\"start{}\">{start}</div>",
         if live.is_some() { " live" } else { "" }
     );
+    main.push_str(&replies_box(replies));
     main.push_str("<div class=\"recent-head\"><h2>Recently read</h2>");
     if !recent.is_empty() {
         main.push_str(
@@ -738,6 +748,30 @@ pub fn home(live: Option<&NativePage>, raw_key: &str, recent: &[Entry]) -> Shown
     }
     main.push_str("</section>");
     Shown { csp, html: chrome("lattice reader", "", Some(Mode::Shipless), &main, false), title: "lattice reader".into() }
+}
+
+/// The home's line for replies to the reader's posts it has not seen,
+/// with a link to each place. Nothing when there are none.
+fn replies_box(replies: &[crate::notify::Unseen]) -> String {
+    let n: usize = replies.iter().map(|u| u.count).sum();
+    if n == 0 {
+        return String::new();
+    }
+    let mut h = format!(
+        "<section class=\"replies\" aria-labelledby=\"replies-h\"><h2 id=\"replies-h\">{n} new {} to your posts</h2><ul>",
+        if n == 1 { "reply" } else { "replies" }
+    );
+    for u in replies.iter().filter(|u| u.count > 0) {
+        let title = if u.title.trim().is_empty() { u.url.as_str() } else { u.title.as_str() };
+        h.push_str(&format!(
+            "<li><a href=\"{}\">{}</a> <span class=\"when\">{} new</span></li>",
+            esc(&read_href(&u.url)),
+            esc(title),
+            u.count
+        ));
+    }
+    h.push_str("</ul></section>");
+    h
 }
 
 #[cfg(test)]
@@ -1011,22 +1045,42 @@ mod tests {
     }
 
     #[test]
+    fn replies_to_the_reader_are_marked_new_and_counted_on_the_home() {
+        let mut cs = vec![pc(1), pc(2)];
+        cs[1].author = "~doznec-sampel-palnet".into();
+        cs[0].when += 5;
+        let t = Talk { our: Some("~doznec-sampel-palnet"), comments: &cs, new_after: Some(1_730_000_000_000), ..Talk::default() };
+        let h = page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &t).html;
+        assert_eq!(h.matches("new reply to you").count(), 1, "{h}");
+        let none = home(None, "", &[], &[crate::notify::Unseen { url: "urb://~zod/a".into(), title: "A".into(), count: 0 }]);
+        assert!(!none.html.contains("to your posts"));
+        let u = [
+            crate::notify::Unseen { url: "urb://~zod/a".into(), title: "A <b>".into(), count: 2 },
+            crate::notify::Unseen { url: "urb://~wep/forum/g/7".into(), title: String::new(), count: 1 },
+        ];
+        let h = home(None, "", &[], &u).html;
+        assert!(h.contains("3 new replies to your posts"), "{h}");
+        assert!(h.contains("href=\"/read?url=urb%3A%2F%2F~zod%2Fa\">A &lt;b&gt;</a>"), "{h}");
+        assert!(h.contains(">urb://~wep/forum/g/7</a>"), "{h}");
+    }
+
+    #[test]
     fn home_shows_the_start_list_and_recent_reads() {
-        let s = home(None, "", &[]);
+        let s = home(None, "", &[], &[]);
         assert!(s.html.contains("<h1>lattice</h1>"), "the compiled-in copy");
         assert!(s.html.contains("href=\"/read?url=urb%3A%2F%2F~nisfeb%2Fsite%2Flattice%2Flattice\""));
         assert!(s.html.contains("kept only on this computer") && !s.html.contains("Clear history"));
         let live = native("# Live list\n=> urb://~nec/x A page", "gmi");
         let recent = [Entry { url: "urb://~zod/a".into(), title: "A <page>".into(), at: 1 }];
-        let s = home(Some(&live), "", &recent);
+        let s = home(Some(&live), "", &recent, &[]);
         assert!(s.html.contains("<h1>Live list</h1>") && !s.html.contains("<h1>lattice</h1>"));
         assert!(s.html.contains("<a href=\"/read?url=urb%3A%2F%2F~zod%2Fa\">A &lt;page&gt;</a>"));
         assert!(s.html.contains("action=\"/history/clear\""));
         // a start page that is not gemtext is not trusted into the home
-        let s = home(Some(&native("<script>x</script>", "html")), "", &[]);
+        let s = home(Some(&native("<script>x</script>", "html")), "", &[], &[]);
         assert!(s.html.contains("<h1>lattice</h1>") && !s.html.contains("<script>x"));
         // an HTML start page is framed from /raw, as a published HTML page is
-        let s = home(Some(&native("<h1>Styled</h1><script>x</script>", "html")), "k1", &recent);
+        let s = home(Some(&native("<h1>Styled</h1><script>x</script>", "html")), "k1", &recent, &[]);
         assert_eq!(s.csp, FRAMED);
         assert!(s.html.contains(&format!(
             "<iframe class=\"pub\" title=\"urb://~nisfeb/start\" sandbox=\"{FRAME_SANDBOX}\" \
@@ -1034,12 +1088,12 @@ mod tests {
         )));
         assert!(!s.html.contains("<h1>lattice</h1>") && !s.html.contains("Styled") && !s.html.contains("<script>x"));
         assert!(s.html.find("</iframe>").unwrap() < s.html.find("Recently read").unwrap());
-        assert_eq!(home(Some(&live), "", &recent).csp, OWN);
+        assert_eq!(home(Some(&live), "", &recent, &[]).csp, OWN);
     }
 
     #[test]
     fn the_bar_has_back_forward_and_reload() {
-        for s in [home(None, "", &[]), page(PAGE, &native("# Hi", "gmi"), Mode::Shipless, "", &Talk::default()), bad_address("x")] {
+        for s in [home(None, "", &[], &[]), page(PAGE, &native("# Hi", "gmi"), Mode::Shipless, "", &Talk::default()), bad_address("x")] {
             let nav = s.html.split("<nav>").nth(1).unwrap().split("</nav>").next().unwrap();
             let order: Vec<&str> = nav.match_indices("data-go=\"").map(|(i, _)| nav[i + 9..].split('"').next().unwrap()).collect();
             assert_eq!(order, ["back", "forward", "reload"]);

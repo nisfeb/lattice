@@ -1,5 +1,5 @@
 {
-  "bytes": 711328,
+  "bytes": 717140,
   "grow": 4096,
-  "why": "release 116: app.js was 708,279 bytes at release 115, plus live shared with me (#398: the /beacon/shares listener, refetch and toast) and a share's /rev bump refetching shared with me alone instead of the tree (3,049 bytes together)."
+  "why": "feat-notifications: app.js was 711,328 bytes at release 116, plus the inbox (Held and Activity tabs with approve, reject, mark read and open, the badge from /notify-count, and the /beacon/notify listener), 5,812 bytes together."
 }

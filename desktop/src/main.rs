@@ -17,6 +17,7 @@ mod install;
 mod keys;
 mod local;
 mod mounts;
+mod notify;
 mod pandoc;
 mod pdf;
 mod proxy;

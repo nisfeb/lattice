@@ -162,13 +162,20 @@ pub struct Ctx {
     pending: Mutex<HashMap<String, Vec<(String, String)>>>,
     /// each publisher's page times and titles, when it was asked
     titles: Mutex<Titles>,
+    /// what the reader wrote on boards and under pages (notify.rs)
+    pub mine: crate::notify::MyPosts,
+    /// the replies to it not seen yet, by place
+    pub counts: crate::notify::Counts,
 }
 
 impl Ctx {
     pub fn new(reads: Box<dyn Reads>, history: History, port: u16) -> Ctx {
+        let mine = crate::notify::MyPosts::open(&history.dir());
         Ctx {
             reads,
             history,
+            mine,
+            counts: crate::notify::Counts::default(),
             port,
             raws: Mutex::new(VecDeque::new()),
             start: Mutex::new(None),
@@ -675,7 +682,7 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
                 Some(p) if html => ctx.keep_raw(render::START_URL, p.body.as_bytes()),
                 _ => String::new(),
             };
-            shown(200, render::home(live.as_ref(), &key, &ctx.history.list()))
+            shown(200, render::home(live.as_ref(), &key, &ctx.history.list(), &ctx.counts.list()))
         }
         // the app's navigation policy shows the manager for this before it
         // loads (commands.rs); this is only what a stray request sees
@@ -738,6 +745,10 @@ fn forum_write(ctx: &Ctx, req: &Req) -> Resp {
             _ => None,
         },
     };
+    let title = match &w {
+        Some(ForumWrite::Post { title, .. }) => Some(title.clone()),
+        _ => None,
+    };
     let note = match w {
         None => Note::Empty,
         Some(w) => match ctx.forum_open(&p.host, &p.board, true) {
@@ -771,6 +782,9 @@ fn forum_write(ctx: &Ctx, req: &Req) -> Resp {
     };
     if note == Note::Sent {
         ctx.reads.expire(&back);
+        if let Err(e) = ctx.mine.record(crate::notify::forum_entry(&p, title.as_deref())) {
+            crate::commands::dlog(&format!("reader: {e}"));
+        }
     }
     *ctx.note.lock().unwrap() = Some((back.clone(), note));
     redirect(303, &render::read_href(&back))
@@ -807,6 +821,7 @@ fn comment(ctx: &Ctx, req: &Req) -> Resp {
     let Some(ship) = render::commentable(&url) else { return plain(400) };
     let body = form_body(&req.body);
     let text = body.clone();
+    let mut key = String::new();
     let note = if body.trim().is_empty() {
         Note::Empty
     } else {
@@ -814,25 +829,28 @@ fn comment(ctx: &Ctx, req: &Req) -> Resp {
             Err(e) => Note::Failed { words: format!("The page couldn't be read again: {}", read_words(&e)), body },
             // asked again, not kept: a comment said to be posted must be
             // one the page takes now
-            Ok(p) => match ctx.open(&ship, &p.key, true) {
-                (Open::No, _) => Note::Closed { body },
-                (_, c) if c.mode == CometMode::Off => Note::CometsOff { body },
-                (_, c) if full_mins(&c).is_some() => Note::Full { mins: full_mins(&c).unwrap_or(1), body },
-                (open, c) => match ctx.reads.comment(&ship, &p.key, &body, COMMENT_BUDGET) {
-                    // the publisher turns a comet over the cap away without
-                    // a word, and says so in /pub/comets: ask again before
-                    // calling it posted
-                    Ok(()) => match full_mins(&ctx.open(&ship, &p.key, true).1) {
-                        Some(mins) => Note::Full { mins, body },
-                        None if c.mode == CometMode::Held => Note::Held,
-                        None if open == Open::Yes => Note::Posted,
-                        None => Note::Sent,
+            Ok(p) => {
+                key.clone_from(&p.key);
+                match ctx.open(&ship, &p.key, true) {
+                    (Open::No, _) => Note::Closed { body },
+                    (_, c) if c.mode == CometMode::Off => Note::CometsOff { body },
+                    (_, c) if full_mins(&c).is_some() => Note::Full { mins: full_mins(&c).unwrap_or(1), body },
+                    (open, c) => match ctx.reads.comment(&ship, &p.key, &body, COMMENT_BUDGET) {
+                        // the publisher turns a comet over the cap away without
+                        // a word, and says so in /pub/comets: ask again before
+                        // calling it posted
+                        Ok(()) => match full_mins(&ctx.open(&ship, &p.key, true).1) {
+                            Some(mins) => Note::Full { mins, body },
+                            None if c.mode == CometMode::Held => Note::Held,
+                            None if open == Open::Yes => Note::Posted,
+                            None => Note::Sent,
+                        },
+                        Err(CommentError::Refused(words)) => Note::Refused { words, body },
+                        Err(CommentError::Unanswered(words)) => Note::Unanswered { words, body },
+                        Err(CommentError::Failed(words)) => Note::Failed { words, body },
                     },
-                    Err(CommentError::Refused(words)) => Note::Refused { words, body },
-                    Err(CommentError::Unanswered(words)) => Note::Unanswered { words, body },
-                    Err(CommentError::Failed(words)) => Note::Failed { words, body },
-                },
-            },
+                }
+            }
         }
     };
     // the outcome, never the text
@@ -852,6 +870,9 @@ fn comment(ctx: &Ctx, req: &Req) -> Resp {
     if matches!(note, Note::Posted | Note::Sent | Note::Held) {
         if let Some(who) = ctx.reads.our() {
             ctx.sent(&url, who, &text);
+        }
+        if let Err(e) = ctx.mine.record(crate::notify::page_entry(&ship, &url, &key)) {
+            crate::commands::dlog(&format!("reader: {e}"));
         }
     }
     *ctx.note.lock().unwrap() = Some((url.clone(), note));
@@ -1049,6 +1070,8 @@ fn page(ctx: &Ctx, url: &str, p: &NativePage) -> Resp {
     let (comments, pending) =
         render::commentable(url).map_or_else(Default::default, |ship| ctx.comments(url, &ship, &p.key));
     let checking = render::commentable(url).is_some_and(|ship| ctx.checking(&ship));
+    let title = ctx.history.list().into_iter().find(|e| e.url == url).map(|e| e.title).unwrap_or_default();
+    let new_after = crate::notify::visit_page(ctx, url, &title, &comments);
     let talk = Talk {
         our: our.as_deref(),
         note: note.as_ref(),
@@ -1058,6 +1081,7 @@ fn page(ctx: &Ctx, url: &str, p: &NativePage) -> Resp {
         comments: &comments,
         pending: &pending,
         checking,
+        new_after,
     };
     let s = render::page(url, p, Mode::Shipless, &key, &talk);
     if let Err(e) = ctx.history.add(url, &s.title) {
@@ -1120,7 +1144,7 @@ fn bind_stable() -> Result<(TcpListener, u16), String> {
 }
 
 /// Start the reader unless it runs. Its base url.
-pub fn ensure(state: &Reader, make: impl FnOnce(u16) -> Ctx) -> Result<String, String> {
+pub fn ensure(state: &Reader, make: impl FnOnce(u16) -> Ctx, then: impl FnOnce(Arc<Ctx>)) -> Result<String, String> {
     let mut g = state.0.lock().unwrap();
     if let Some(port) = *g {
         return Ok(format!("http://127.0.0.1:{port}"));
@@ -1128,6 +1152,7 @@ pub fn ensure(state: &Reader, make: impl FnOnce(u16) -> Ctx) -> Result<String, S
     let (listener, port) = bind_stable()?;
     crate::commands::dlog(&format!("reader: listening on 127.0.0.1:{port}"));
     let ctx = Arc::new(make(port));
+    then(ctx.clone());
     std::thread::Builder::new()
         .name("reader".into())
         .spawn(move || {
@@ -1151,7 +1176,8 @@ pub fn start(app: &tauri::AppHandle) -> Result<String, String> {
     let engine = app.state::<crate::engine::Engine>().inner().clone();
     // the reader is in use: its identity is kept
     engine.claim();
-    ensure(&app.state::<Reader>(), |port| Ctx::new(Box::new(engine), History::open(&dir), port))
+    // the replies to the reader's posts are counted in the background
+    ensure(&app.state::<Reader>(), |port| Ctx::new(Box::new(engine), History::open(&dir), port), crate::notify::watch)
 }
 
 /// The reader's port, if it listens.

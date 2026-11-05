@@ -66,6 +66,7 @@
 /<  lcl  /lib/lattice-clip.hoon
 /<  li   /lib/lattice-index.hoon
 /<  ls   /lib/lattice-share.hoon
+/<  ln   /lib/lattice-notify.hoon
 ::  a page shared with us, moved into our tree. `ll` and not `lk`: that face
 ::  is lattice-know above.
 /<  ll   /lib/lattice-link.hoon
@@ -309,6 +310,9 @@
         ::  /comments-held/<page>/<id>: comet comments on a page whose comet
         ::  mode is %held, waiting for the owner to approve or reject them.
             [%fall %| /comments-held empty-dir:loader]
+        ::  /notify/items/<id>: the owner's activity, one item each
+        ::  (lib/lattice-notify), and /notify/seen its read state
+            [%fall %| /notify/items empty-dir:loader]
         ::  /bookmarks: the browser's saved-page list (newest first). A covering
         ::  file row (like /sub/follows) so it survives reload.
             [%fall %& [/ %bookmarks] [[/lattice %bookmarks] *bookmarks:lb]]
@@ -333,6 +337,10 @@
         ::  changes. A row, so the grub exists before a keep registers: the
         ::  keep streams only the grubs /beacon held when it began.
             [%fall %& [/beacon %shares] [[/ %json] (numb:enjs:format 0)]]
+        ::  /beacon/notify: stamped by +notify-stamp when a held comment or
+        ::  an activity item arrives, before the /rev bump that wakes the
+        ::  editor's keep, which then refetches only the inbox counts
+            [%fall %& [/beacon %notify] [[/ %json] (numb:enjs:format 0)]]
         ::  /idx: the grub-native term index (docs/native-index.md). 256 bucket
         ::  grubs, each term -> (key -> [scope tf]). ONE covering %fall row. A
         ::  nexus reload rewrites its whole covered subtree, so without a row
@@ -533,6 +541,11 @@
           ?:  =([/ %noun] p.sage)  (pure:m ~)
           ?:  =([/lattice %history-action] p.sage)  (pure:m ~)
           ?:  =([/lattice %key-action] p.sage)  (pure:m ~)
+          ::  nor for reading the inbox, which changes no page
+          ?:  ?&  =([/lattice %eval-action] p.sage)
+                  =(%notify-read (head !<(eval-action:le q.sage)))
+              ==
+            (pure:m ~)
           ?:  =([/lattice %know-action] p.sage)  (bump-beacon %know now)
           ?:  =([/lattice %know-batch] p.sage)  (bump-beacon %know now)
           ;<  hold=?  bind:m  (pub-holds-beacon root now sage)
@@ -3691,6 +3704,62 @@
             ['body' s+body.c]
         ==
     ==
+      ::  owner: the inbox counts for the badge, held comet comments and
+      ::  unread activity. Two directory reads, no bodies sent.
+      [%'GET' %notify-count]
+    ;<  held=(list [pax=path id=@ta c=comment:lc])  bind:m  notify-held
+    ;<  items=(list [id=@ta i=item:ln])  bind:m  notify-items
+    ;<  sn=seen:ln  bind:m  notify-seen
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['held' (numb:enjs:format (lent held))]
+        ['unread' (numb:enjs:format (unread:ln sn items))]
+    ==
+      ::  owner: every held comet comment across every page, newest first,
+      ::  in one read, so the inbox asks no page by page
+      [%'GET' %held-comments]
+    ;<  held=(list [pax=path id=@ta c=comment:lc])  bind:m  notify-held
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  :-  'items'
+        :-  %a
+        %+  turn  held
+        |=  [pax=path id=@ta c=comment:lc]
+        %-  pairs:enjs:format
+        :~  ['page' s+(crip (pax-str pax))]  ['id' s+id]
+            ['author' s+(scot %p author.c)]
+            ['when' (numb:enjs:format (rise-da-ms when.c))]
+            ['body' s+body.c]
+        ==
+    ==
+      ::  owner: the activity items, newest first, each with its read state
+      [%'GET' %notify]
+    ;<  items=(list [id=@ta i=item:ln])  bind:m  notify-items
+    ;<  sn=seen:ln  bind:m  notify-seen
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['unread' (numb:enjs:format (unread:ln sn items))]
+        :-  'items'
+        :-  %a
+        %+  turn  (newest-first:ln items)
+        |=  [id=@ta i=item:ln]
+        %-  pairs:enjs:format
+        :~  ['id' s+id]  ['kind' s+kind.i]
+            ['when' (numb:enjs:format (rise-da-ms when.i))]
+            ['who' s+(scot %p who.i)]  ['host' s+(scot %p host.i)]
+            ['where' s+where.i]  ['post' (numb:enjs:format post.i)]
+            ['title' s+title.i]  ['body' s+body.i]
+            ['read' b+(is-read:ln sn id i)]
+        ==
+    ==
+      ::  owner: mark one activity item read (id=), or all of them (all=1)
+      [%'POST' %notify-read]
+    =/  all=?  =('1' (~(gut by args) 'all' ''))
+    =/  id=@t  (~(gut by args) 'id' '')
+    ?.  |(all ((sane %ta) id))  (send-err eyre-id 400 'bad id')
+    ?:  &(!all =('' id))  (send-err eyre-id 400 'missing id')
+    ;<  ~  bind:m  (poke-eval [%notify-read ?:(all ~ ~[`@ta`id])])
+    (send-ok eyre-id)
       ::  owner: set a page's (or folder's) comet mode, open, held or off
       [%'POST' %page-comets]
     =/  name=(unit @t)  (~(get by args) 'name')
@@ -6241,6 +6310,9 @@
   ?:  ?=(%| -.res)  (pure:m `(crip "forum: refused: {(trip p.res)}"))
   ;<  ~  bind:m  (forum-put up bdir puts.p.res (gone:fb p.lod brd.p.res))
   ;<  ~  bind:m  (bump-beacon %forum now)
+  ;<  ~  bind:m
+    ?.  ?=(%new-comment -.act)  (pure:(fiber:fiber:nexus ,~) ~)
+    (forum-reply-tell now src p.lod post.act parent.act body.act)
   (pure:m ~)
 ::  +apply-forum-remote: a forum action from a REMOTE ship, author stamped from
 ::  the transport. Runs, in the ONE writer, the gates the inbox used to run: a
@@ -6686,6 +6758,13 @@
   |=  [host=@p now=@da payload=*]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ::  not a refusal: a host telling us someone replied to our post or
+  ::  comment on its board (+forum-reply-tell there)
+  =/  rn=(unit reply-note:ln)  (mole |.(;;(reply-note:ln payload)))
+  ?^  rn
+    ?:  (is-comet:fr host)  (pure:m ~)
+    %+  notify-add  now
+    (make:ln %remote now who.u.rn host board.u.rn post.u.rn title.u.rn body.u.rn)
   =/  nn=(unit [board=board-name:ft reason=@t])
     (mole |.(;;([board-name:ft @t] payload)))
   ?~  nn  (pure:m ~)
@@ -6769,6 +6848,13 @@
     =/  new=(set @ta)  ?:(on.act (~(del in off) name.act) (~(put in off) name.act))
     ;<  ~  bind:m  (put-file (rf up /forum %comets-off) [/ %noun] [%1 new])
     (put-forum-comets root)
+      %notify-read
+    ;<  items=(list [id=@ta i=item:ln])  bind:m  notify-items
+    ;<  s=seen:ln  bind:m  notify-seen
+    =/  new=seen:ln
+      ?~  ids.act  (mark-all:ln now)
+      (mark-ids:ln s ids.act (~(gas in *(set @ta)) (turn items head)))
+    (put-file (rf up /notify %seen) [/ %noun] new)
       %forum-notes-clear
     ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/notes) ~)
     ?.  ?=([%ball *] v)  (pure:m ~)
@@ -7115,6 +7201,8 @@
     ?.  ?=([%file *] vw)  (pure:m ~)
     =/  c=(unit comment:lc)  (mole |.(;;(comment:lc (sang-noun:tarball sang.vw))))
     ;<  *  bind:m  (cull-soft:io hr)
+    ::  the held count moved: the inbox badge follows on the writer's /rev
+    ;<  ~  bind:m  (notify-stamp now)
     ?.  &(ok.act ?=(^ c))  (pure:m ~)
     ;<  ~  bind:m  (ensure-dirs up /comments pax.act)
     ;<  ~  bind:m
@@ -7236,13 +7324,25 @@
   ?:  ?=(%held -.v)
     ?:  (gte (lent held) 200)  (pure:m ~)
     ;<  ~  bind:m  (ensure-dirs up /comments-held page.act)
-    (put-file (rf up (weld /comments-held page.act) id) [/lattice %comment] comment)
+    ;<  ~  bind:m
+      (put-file (rf up (weld /comments-held page.act) id) [/lattice %comment] comment)
+    ::  a comet comment, so never the writer: wake the owner's badge here
+    ;<  ~  bind:m  (notify-stamp now)
+    (bump-beacon %rev now)
   =/  cbase=path  /comments
   ;<  ~  bind:m  (ensure-dirs up cbase page.act)
   ;<  ~  bind:m
     (put-file (rf up (weld cbase page.act) id) [/lattice %comment] comment)
   ::  and into the page's public thread
   ;<  ~  bind:m  (put-pub-thread up page.act)
+  ::  another ship's comment is activity for the owner. It came through
+  ::  /comments.sig, not the writer, so it bumps /rev itself.
+  ;<  ~  bind:m
+    ?:  =(author our)  (pure:m ~)
+    ;<  ~  bind:m
+      %+  notify-add  now
+      (make:ln %comment now author our (crip (pax-str page.act)) 0 '' body)
+    (bump-beacon %rev now)
   ::  stamp /beacon/comments so the badge can ask "anything new?" for the
   ::  price of ONE grub read. Without it the only answer was the full inbox
   ::  — every comment body under /comments materialized and sorted, ~6s of
@@ -7279,6 +7379,91 @@
   ^-  (unit [id=@ta c=comment:lc])
   =/  c  (mole |.(;;(comment:lc (sang-noun:tarball sang))))
   ?~(c ~ `[id u.c])
+::  +notify-stamp: /beacon/notify, so an open editor refetches its inbox
+::  counts. `rev` is the /rev value the bump after it writes (+bump-beacon
+::  stamps `@ud`now), so a tab can tell a /rev that only carried this and
+::  skip its tree refresh, as for /beacon/shares.
+++  notify-stamp
+  |=  now=@da
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  %^  put-file  (rf up /beacon %notify)  [/ %json]
+  (pairs:enjs:format ~[['t' s+(scot %da now)] ['rev' (numb:enjs:format `@ud`now)]])
+::  +notify-add: file one activity item, cull past the cap, stamp the
+::  beacon. A caller outside the writer bumps /rev after it.
+++  notify-add
+  |=  [now=@da i=item:ln]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  ~  bind:m  (ensure-dirs up /notify /items)
+  ;<  ~  bind:m  (put-file (rf up /notify/items (item-id:ln i)) [/ %noun] i)
+  ;<  items=(list [id=@ta i=item:ln])  bind:m  notify-items
+  =/  gone=(list @ta)  (overflow:ln items)
+  ;<  ~  bind:m
+    |-  ^-  form:m
+    ?~  gone  (pure:m ~)
+    ;<  *  bind:m  (cull-soft:io (rf up /notify/items i.gone))
+    $(gone t.gone)
+  (notify-stamp now)
+::  +notify-items: the stored activity items, by id, in no order
+++  notify-items
+  =/  m  (fiber:fiber:nexus ,(list [id=@ta i=item:ln]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  cv=view:nexus  bind:m  (peek:fio (rv up /notify/items) ~)
+  ?.  ?=([%ball *] cv)  (pure:m ~)
+  ?~  fil.ball.cv  (pure:m ~)
+  %-  pure:m
+  %+  murn  ~(tap by contents.u.fil.ball.cv)
+  |=  [id=@ta =sang:tarball *]
+  ^-  (unit [id=@ta i=item:ln])
+  =/  i  (mole |.(;;(item:ln (sang-noun:tarball sang))))
+  ?~(i ~ `[id u.i])
+::  +notify-seen: the activity read state, nothing read when never written
+++  notify-seen
+  =/  m  (fiber:fiber:nexus ,seen:ln)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up /notify %seen) ~)
+  ?.  ?=([%file *] v)  (pure:m [%1 *@da ~])
+  (pure:m (fall (mole |.(;;(seen:ln (sang-noun:tarball sang.v)))) [%1 *@da ~]))
+::  +notify-held: every held comet comment on every page, newest first
+++  notify-held
+  =/  m  (fiber:fiber:nexus ,(list [pax=path id=@ta c=comment:lc]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  cv=view:nexus  bind:m  (peek:fio (rv up /comments-held) ~)
+  ?.  ?=([%ball *] cv)  (pure:m ~)
+  (pure:m (held-sorted:ln (comment-walk ball.cv ~)))
+::  +forum-reply-tell: a comment by `src` landed on `post` of a board we
+::  host. Each author it replies to hears of it (+reply-targets:ln): we
+::  file an activity item, and a planet or moon is poked a reply note on
+::  its /forum.sig, fire-and-forget as a refusal note is. A comet runs no
+::  lattice to tell; the desktop reader finds its replies on its own.
+++  forum-reply-tell
+  |=  [now=@da src=@p brd=board:ft post=post-id:ft parent=(unit comment-id:ft) body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  our=@p  bind:m  bowl-our
+  =/  who=(list @p)  ~(tap in (reply-targets:ln brd post parent src))
+  =/  title=@t  (post-title:ln brd post)
+  =/  nom=@tas  name.info.brd
+  |-  ^-  form:m
+  ?~  who  (pure:m ~)
+  ;<  ~  bind:m
+    ?:  =(i.who our)
+      (notify-add now (make:ln %reply now src our nom post title body))
+    ?:  (is-comet:fr i.who)  (pure:m ~)
+    ;<  base=(unit path)  bind:m  (peer-base-cached i.who)
+    =/  note=reply-note:ln  [%reply-1 nom post (clip:ln title) src (clip:ln body)]
+    =/  req=load:remo:nexus
+      :-  [/forum-note %& (fall base desk-base:lu) %'forum.sig']
+      [%poke [/lattice %forum-note] note]
+    %+  poke:io  &+&+[/sys/gall %'main.sig']
+    [[/ %gall-poke] [[i.who %grubbery] grubbery-load+req]]
+  $(who t.who)
 ::  +read-pub-comets: /pub/comets as rows, none when it is absent
 ++  read-pub-comets
   |=  root=@ud

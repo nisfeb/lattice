@@ -39,6 +39,12 @@ impl History {
         History { file: dir.join("history.json"), lock: Mutex::new(()) }
     }
 
+    /// The folder it is kept in, which keeps the reader's other local
+    /// lists too.
+    pub fn dir(&self) -> PathBuf {
+        self.file.parent().map_or_else(PathBuf::new, Path::to_path_buf)
+    }
+
     /// Newest first. A missing or unreadable file is an empty history.
     pub fn list(&self) -> Vec<Entry> {
         std::fs::read(&self.file)
