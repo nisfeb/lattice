@@ -11052,17 +11052,26 @@
 ::  every write a fresh event. The editor refetches /shared-with-me on it,
 ::  and says so for an 'add'.
 ::
+::  Then /rev moves too. The editor's keep is on the FILE /beacon/rev, and
+::  grubbery wakes a file keep only when that file changes. Each wake
+::  diffs all of /beacon, so /shares rides along, but a /shares write alone
+::  reaches no open tab (measured on fleet ships: the grub held the new
+::  stamp and the keep stayed silent until the next /rev). The extra /rev
+::  costs a tab one tree refresh per share, which is rare.
+::
 ++  bump-shares
   |=  [root=@ud op=@t host=@p pax=path now=@da]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  %^  put-file  (rf root /beacon %shares)  [/ %json]
-  %-  pairs:enjs:format
-  :~  ['t' s+(scot %da now)]
-      ['op' s+op]
-      ['host' s+(scot %p host)]
-      ['path' s+(spat pax)]
-  ==
+  ;<  ~  bind:m
+    %^  put-file  (rf root /beacon %shares)  [/ %json]
+    %-  pairs:enjs:format
+    :~  ['t' s+(scot %da now)]
+        ['op' s+op]
+        ['host' s+(scot %p host)]
+        ['path' s+(spat pax)]
+    ==
+  (bump-beacon %rev now)
 ::  +tell-unshared: a revoke, told to the ships that held it. Each page
 ::  road the group granted goes to each member as a %del notice, which
 ::  takes it off their shared with me (+apply-share-notice). Best-effort,
