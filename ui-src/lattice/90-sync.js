@@ -139,6 +139,7 @@
   // happened while nobody was watching — refresh. Bumps after registration
   // arrive as upd events, exactly as before.
   let streamLive = false;
+  let lastShares = '';
   let beaconTimer = null;
   const bumped = () => { clearTimeout(beaconTimer); beaconTimer = setTimeout(refreshAll, 300); };
   const knowBumped = () => { if (knowLive()) bumped(); };
@@ -249,6 +250,17 @@
               noteKnow(data);
               if (echoSeen(echoes.know, knowBumped)) continue;
               knowBumped();
+              continue;
+            }
+            // /shares: shared with me changed (69-shared.js). Registration
+            // reports the stamp as it stood. One that moved since the last
+            // registration is a change this client missed.
+            if (name.slice(-8) === ' /shares') {
+              if (data === lastShares) continue;
+              const was = lastShares;
+              lastShares = data;
+              if (name.slice(0, 3) !== 'old') sharesBumped(data);
+              else if (was) loadShared();
               continue;
             }
             if (name.slice(-5) !== ' /rev') {
