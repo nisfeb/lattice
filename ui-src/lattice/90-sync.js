@@ -141,7 +141,25 @@
   let streamLive = false;
   let lastShares = '';
   let beaconTimer = null;
-  const bumped = () => { clearTimeout(beaconTimer); beaconTimer = setTimeout(refreshAll, 300); };
+  // a share stamps /beacon/shares and then /rev, the file this keep wakes
+  // on (+bump-shares). Its payload names that /rev, so a debounce window
+  // whose live /rev bumps all came from shares refetches shared with me
+  // (69-shared.js) and skips the tree. Either may arrive first, hence the
+  // window. Any other bump in it, or any other caller of bumped, refreshes.
+  const digits = (s) => String(s || '').replace(/\D/g, '');
+  const sharesRevs = new Set();
+  let liveRevs = [];
+  const revBumped = (data) => {
+    liveRevs.push(digits(data));
+    clearTimeout(beaconTimer);
+    beaconTimer = setTimeout(() => {
+      const all = liveRevs.length && liveRevs.every((r) => r && sharesRevs.has(r));
+      liveRevs = [];
+      sharesRevs.clear();
+      if (!all) refreshAll();
+    }, 300);
+  };
+  const bumped = () => revBumped('');
   const knowBumped = () => { if (knowLive()) bumped(); };
   // comments never bump /rev (apply-comment stamps only /beacon/comments), so
   // a foreign comment used to reach the badge only by accident, on whatever
@@ -259,6 +277,8 @@
               if (data === lastShares) continue;
               const was = lastShares;
               lastShares = data;
+              const sr = /"rev"\s*:\s*"?(\d+)/.exec(data);
+              if (sr) sharesRevs.add(sr[1]);
               if (name.slice(0, 3) !== 'old') sharesBumped(data);
               else if (was) loadShared();
               continue;
@@ -291,7 +311,7 @@
             bumpedLive = true;
             noteRev(data);
             if (echoSeen(echoes.rev, bumped)) continue;
-            bumped();
+            revBumped(data);
           }
         }
       } catch {}
