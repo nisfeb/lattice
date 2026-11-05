@@ -253,10 +253,23 @@
     clearTimeout(f.latLoadT); clearTimeout(f.latLoadCap);
     f.latLoadAt = on ? Date.now() : 0;
     if (on) {
-      f.latLoadT = setTimeout(() => frameBusySync(f.parentNode), BUSY_MS);
+      f.latLoadT = setTimeout(() => { frameBusySync(f.parentNode); frameTabSync(f.dataset.tool); }, BUSY_MS);
       f.latLoadCap = setTimeout(() => frameLoading(f, false), BUSY_MAX);
     }
     frameBusySync(f.parentNode);
+    frameTabSync(f.dataset.tool);
+  }
+  // A frame's tab spins (.lload, its icon a spinner) while its frame has
+  // been loading BUSY_MS, in front or parked; paintStrip asks frameSlow.
+  const frameSlow = (key) => {
+    const f = frameOf(key);
+    return !!(f && f.latLoadAt && Date.now() - f.latLoadAt >= BUSY_MS - 10);
+  };
+  function frameTabSync(key) {
+    if (!key) return;
+    const on = frameSlow(key);
+    for (const b of document.querySelectorAll('.dtab[data-kind="tool"]'))
+      if (b.dataset.key === key) b.classList.toggle('lload', on);
   }
   // whether a click on link `a` takes its document somewhere else: a plain
   // click, no new window or download, and not to an anchor in the page
@@ -390,6 +403,8 @@
       d.defaultView.addEventListener('submit', (e) => {
         if (!e.defaultPrevented && !/^_blank$/i.test(e.target.getAttribute('target') || '')) frameLoading(f, true);
       });
+      // and a reload or a script leaving, which no click or form shows
+      d.defaultView.addEventListener('beforeunload', () => { if (f.dataset.tool) frameLoading(f, true); });
     }
     // the reader shows a page in a frame of its own (srcdoc), where the
     // comment box lives. A sandboxed one (a peer's page) is out of reach,

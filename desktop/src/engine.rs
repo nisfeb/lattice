@@ -151,9 +151,25 @@ pub trait Reads: Send + Sync {
         let _ = (ship, budget);
         None
     }
+    /// The published pages of `ship` with a public comment list, by the
+    /// names `/pub/comments` gives them, from lattice's `/pub/threads`.
+    /// `None` when that is not known: no answer, or a lattice too old to
+    /// publish comments.
+    fn threads(&self, ship: &str, budget: Duration) -> Option<Vec<String>> {
+        let _ = (ship, budget);
+        None
+    }
+    /// The public comments on the page `page` (its key) of `ship`, oldest
+    /// first, from lattice's `/pub/thread/<page>/list`. `None` when that is
+    /// not known; a list that is too big or malformed is empty.
+    fn thread(&self, ship: &str, page: &str, budget: Duration) -> Option<Vec<PubComment>> {
+        let _ = (ship, page, budget);
+        None
+    }
     /// The boards of `host` that take posts and replies from comets, from
     /// lattice's `/pub/forum-comets`. `None` when the host does not say (an
-    /// older lattice, or no answer), which the reader takes as no.
+    /// older lattice, or no answer): the reader offers the form and the host
+    /// decides.
     fn forum_open(&self, host: &str, budget: Duration) -> Option<Vec<String>> {
         let _ = (host, budget);
         None
@@ -178,7 +194,21 @@ pub trait Reads: Send + Sync {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Opened {
     pub names: Vec<String>,
-    pub comets: Vec<(String, Comets)>,
+    /// `None` when `/pub/comets` gave no answer in time: the cap state is
+    /// not known, which is not the same as open
+    pub comets: Option<Vec<(String, Comets)>>,
+}
+
+/// A public comment on a published page, as its publisher lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PubComment {
+    pub id: String,
+    /// the author's @p
+    pub author: String,
+    /// unix milliseconds
+    pub when: i64,
+    /// raw plain text
+    pub body: String,
 }
 
 /// How a page takes comments from comets, the anonymous identities the
@@ -248,6 +278,8 @@ enum Job {
     Comment(Comment, Said),
     /// a publisher's `/pub/comments` or `/pub/comets`, at a lattice base
     OpenList(String, &'static str, List, Cord),
+    /// a publisher's public comment list for a page, at a lattice base
+    Thread(String, &'static str, String, Cord),
     ForumWrite(String, ForumWrite, Said),
     Board(BoardAsk, Told),
     Close(Sender<()>),
@@ -256,7 +288,8 @@ enum Job {
 /// what the host's thread waits on
 enum Wait {
     Read(Answer, String),
-    Comment(Said),
+    /// a comment or a forum write, by its label in the log
+    Comment(Said, &'static str),
     OpenList(Cord),
     Board(Told),
 }
@@ -528,8 +561,10 @@ impl Engine {
                 Ok(Ok(Some(cord))) => {
                     let left = budget.saturating_sub(start.elapsed());
                     let comets = match crx.recv_timeout(left) {
-                        Ok(Ok(Some(c))) => comet_policies(&c),
-                        _ => Vec::new(),
+                        Ok(Ok(Some(c))) => Some(comet_policies(&c)),
+                        // an older lattice keeps no /pub/comets
+                        Ok(Ok(None)) => Some(Vec::new()),
+                        _ => None,
                     };
                     return Some(Opened { names: open_names(&cord), comets });
                 }
@@ -564,6 +599,51 @@ impl Engine {
             }
             match rx.recv_timeout(left) {
                 Ok(Ok(Some(cord))) => return Some(open_names(&cord)),
+                // none here, or not lattice's base: the other one may be
+                Ok(Ok(None)) | Ok(Err(_)) => {}
+                Err(_) => return None,
+            }
+        }
+        None
+    }
+
+    /// The pages of `ship` with a public comment list (`Reads::threads`):
+    /// lattice's `/pub/threads` cord, as `comments_open` reads its list.
+    pub fn threads(&self, ship: &str, budget: Duration) -> Option<Vec<String>> {
+        self.peek_bases(budget, |base, tx| Job::OpenList(ship.into(), base, List::Threads, tx)).map(|c| open_names(&c))
+    }
+
+    /// The public comments on `page` of `ship` (`Reads::thread`): lattice's
+    /// `/pub/thread/<page>/list` cord, as `comments_open` reads its list.
+    pub fn thread(&self, ship: &str, page: &str, budget: Duration) -> Option<Vec<PubComment>> {
+        let page = thread_page(page)?;
+        self.peek_bases(budget, |base, tx| Job::Thread(ship.into(), base, page.clone(), tx)).map(|c| thread_list(&c))
+    }
+
+    /// One peek at the desk install's base first and the older base when
+    /// the first has none, within `budget`: the cord, or `None` for none at
+    /// either, no answer, or a reader not ready.
+    fn peek_bases(&self, budget: Duration, job: impl Fn(&'static str, Cord) -> Job) -> Option<String> {
+        let start = Instant::now();
+        for base in [DESK_BASE, APP_BASE] {
+            let left = budget.saturating_sub(start.elapsed());
+            if left.is_zero() {
+                return None;
+            }
+            let (tx, rx) = channel();
+            {
+                let g = self.inner.lock().unwrap();
+                if !matches!(g.status, Status::Ready { .. }) {
+                    return None;
+                }
+                let run = g.run.as_ref()?;
+                run.jobs.send(job(base, tx)).ok()?;
+                if let Some(w) = &run.waker {
+                    let _ = w.send(Event::Wake);
+                }
+            }
+            match rx.recv_timeout(left) {
+                Ok(Ok(Some(cord))) => return Some(cord),
                 // none here, or not lattice's base: the other one may be
                 Ok(Ok(None)) | Ok(Err(_)) => {}
                 Err(_) => return None,
@@ -720,6 +800,12 @@ impl Reads for Engine {
     fn forum_open(&self, host: &str, budget: Duration) -> Option<Vec<String>> {
         Engine::forum_open(self, host, budget)
     }
+    fn threads(&self, ship: &str, budget: Duration) -> Option<Vec<String>> {
+        Engine::threads(self, ship, budget)
+    }
+    fn thread(&self, ship: &str, page: &str, budget: Duration) -> Option<Vec<PubComment>> {
+        Engine::thread(self, ship, page, budget)
+    }
     fn forum_write(&self, host: &str, w: ForumWrite, budget: Duration) -> Result<(), CommentError> {
         Engine::forum_write(self, host, w, budget)
     }
@@ -854,14 +940,17 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                 }
                 Ok(Job::Comment(c, tx)) => {
                     log_line(&format!("comment to {} on {} at {}", c.ship, c.page, c.base));
-                    pending.push((submit_comment(&mut host, c), Wait::Comment(tx), Instant::now()))
+                    pending.push((submit_comment(&mut host, c), Wait::Comment(tx, "comment"), Instant::now()))
                 }
                 Ok(Job::OpenList(ship, base, list, tx)) => {
                     pending.push((submit_open_list(&mut host, ship, base, list), Wait::OpenList(tx), Instant::now()))
                 }
+                Ok(Job::Thread(ship, base, page, tx)) => {
+                    pending.push((submit_thread(&mut host, ship, base, &page), Wait::OpenList(tx), Instant::now()))
+                }
                 Ok(Job::ForumWrite(to, w, tx)) => {
                     log_line(&format!("forum write to {to}"));
-                    pending.push((submit_forum_write(&mut host, to, w), Wait::Comment(tx), Instant::now()))
+                    pending.push((submit_forum_write(&mut host, to, w), Wait::Comment(tx, "forum write"), Instant::now()))
                 }
                 Ok(Job::Board(a, tx)) => {
                     log_line(&format!("board read {a:?}"));
@@ -892,9 +981,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
                         log_line(&format!("board read in {} ms: {}", at.elapsed().as_millis(), got.is_ok()));
                         let _ = tx.send(got);
                     }
-                    Wait::Comment(tx) => {
+                    Wait::Comment(tx, what) => {
                         let got = said_of(r);
-                        log_line(&format!("comment in {} ms: {got:?}", at.elapsed().as_millis()));
+                        log_line(&format!("{what} in {} ms: {got:?}", at.elapsed().as_millis()));
                         let _ = tx.send(got);
                     }
                     Wait::OpenList(tx) => {
@@ -1092,6 +1181,8 @@ enum List {
     Comets,
     /// `/pub/forum-comets`, the forum boards that take comet posts
     ForumComets,
+    /// `/pub/threads`, the published pages with a public comment list
+    Threads,
 }
 
 impl List {
@@ -1100,6 +1191,7 @@ impl List {
             List::Comments => "comments",
             List::Comets => "comets",
             List::ForumComets => "forum-comets",
+            List::Threads => "threads",
         }
     }
 }
@@ -1115,6 +1207,58 @@ fn submit_open_list<I: urb_engine::host::Io>(host: &mut Host<I>, ship: String, b
         conv: urb_engine::core::Conv::Cord,
         wait: Some(PEEK_WAIT_MS),
     })
+}
+
+/// The other peek: a page's public comment list, the file `list` in the
+/// dir `/pub/thread/<page>`. `page` is a `thread_page`.
+fn submit_thread<I: urb_engine::host::Io>(host: &mut Host<I>, ship: String, base: &str, page: &str) -> u64 {
+    host.submit(Request::Peek {
+        ship,
+        folder: format!("{base}/pub/thread{page}"),
+        name: Some("list".into()),
+        conv: urb_engine::core::Conv::Cord,
+        wait: Some(PEEK_WAIT_MS),
+    })
+}
+
+/// A page's key as the path under `/pub/thread`: `/<seg>/<seg>...`, each
+/// segment non-empty and not `.` or `..`, nothing but the characters a
+/// lattice path segment takes. `None` for anything else.
+pub fn thread_page(key: &str) -> Option<String> {
+    let segs: Vec<&str> = key.trim_start_matches('/').split('/').collect();
+    let ok = |s: &&str| {
+        !s.is_empty()
+            && *s != "."
+            && *s != ".."
+            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~".contains(&b))
+    };
+    (segs.iter().all(ok)).then(|| format!("/{}", segs.join("/")))
+}
+
+/// The most of a public comment list the reader takes.
+pub const THREAD_MAX: usize = 1024 * 1024;
+
+/// A page's public comment list, `{"v":1,"comments":[{"id", "author",
+/// "when", "body"}]}`, oldest first. A comment without an author or a body
+/// is skipped, other fields are ignored, and a list over THREAD_MAX or not
+/// that shape is empty.
+pub fn thread_list(cord: &str) -> Vec<PubComment> {
+    if cord.len() > THREAD_MAX {
+        return Vec::new();
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(cord) else { return Vec::new() };
+    let Some(cs) = v.get("comments").and_then(|c| c.as_array()) else { return Vec::new() };
+    cs.iter()
+        .filter_map(|c| {
+            let text = |k: &str| c.get(k).and_then(|x| x.as_str()).map(String::from);
+            Some(PubComment {
+                id: text("id").unwrap_or_default(),
+                author: text("author")?,
+                when: c.get("when").and_then(|w| w.as_i64().or_else(|| w.as_f64().map(|f| f as i64))).unwrap_or(0),
+                body: text("body")?,
+            })
+        })
+        .collect()
 }
 
 /// lattice's `comment-action`: the page's path, then the text
@@ -1260,8 +1404,8 @@ mod tests {
             .collect();
         assert_eq!(
             named,
-            ["Read", "Forum", "Forum", "Furum", "Furum", "Poke", "Forum", "Peek"],
-            "the engine names only Request::Read, the board reads, one Poke, the forum write and one Peek"
+            ["Read", "Forum", "Forum", "Furum", "Furum", "Poke", "Forum", "Peek", "Peek"],
+            "the engine names only Request::Read, the board reads, one Poke, the forum write and two Peeks"
         );
         for word in ["Inbox", "PubPut", "PubRemove", "Pub {", "Watch"] {
             assert!(!code.contains(&format!("Request::{word}")), "{word}");
@@ -1288,7 +1432,12 @@ mod tests {
             ],
             "only the board readers' read calls, and a forum post or reply"
         );
-        assert_eq!(code.matches(".submit(").count(), 5, "five submits: read, board, comment, forum write, open list");
+        assert_eq!(code.matches(".submit(").count(), 6, "six submits: read, board, comment, forum write, open list, thread");
+        assert_eq!(code.matches("submit_thread(").count(), 1, "submit_thread, called once");
+        // the thread peek reads a page's list under /pub/thread and nothing else
+        let peek = &code[code.find("fn submit_thread<").unwrap()..];
+        let peek = &peek[..peek.find("\n}\n").unwrap()];
+        assert!(peek.contains("folder: format!(\"{base}/pub/thread{page}\")") && peek.contains("name: Some(\"list\".into())"), "{peek}");
         assert_eq!(code.matches("submit_forum_write(").count(), 1, "submit_forum_write, called once");
         assert_eq!(code.matches("submit_board(").count(), 1, "submit_board, called once");
         assert_eq!(code.matches("submit_open_list(").count(), 1, "submit_open_list, called once");
@@ -1299,14 +1448,51 @@ mod tests {
         let names = &code[code.find("impl List {").unwrap()..];
         let names = &names[..names.find("\n}\n").unwrap()];
         let quoted: Vec<&str> = names.split('"').skip(1).step_by(2).collect();
-        assert_eq!(quoted, ["comments", "comets", "forum-comets"], "{names}");
+        assert_eq!(quoted, ["comments", "comets", "forum-comets", "threads"], "{names}");
         assert_eq!(code.matches("submit_read(").count(), 1, "submit_read, called once");
         assert_eq!(code.matches("submit_comment(").count(), 1, "submit_comment, called once");
+        // a forum write is logged as one, not as a comment
+        assert!(code.contains("Wait::Comment(tx, \"comment\")") && code.contains("Wait::Comment(tx, \"forum write\")"));
         // the poke goes to the comment inbox, with lattice's comment mark
         let poke = &code[code.find("fn submit_comment<").unwrap()..];
         let poke = &poke[..poke.find("\n}\n").unwrap()];
         assert!(poke.contains("name: \"comments.sig\".into()"), "{poke}");
         assert!(poke.contains("mark: (\"/lattice\".into(), \"comment-action\".into())"), "{poke}");
+    }
+
+    #[test]
+    fn a_public_comment_list_is_read_and_bounded() {
+        let got = thread_list(
+            r#"{"v":1,"extra":true,"comments":[
+              {"id":"0v1","author":"~sampel-palnet","when":1730000000000,"body":"first <b>\nline","x":1},
+              {"id":"0v2","author":"~zod","body":"no time"},
+              {"id":"0v3","body":"no author"},
+              {"author":"~nec","when":5,"body":""}]}"#,
+        );
+        let c = |id: &str, author: &str, when, body: &str| PubComment { id: id.into(), author: author.into(), when, body: body.into() };
+        assert_eq!(
+            got,
+            [
+                c("0v1", "~sampel-palnet", 1_730_000_000_000, "first <b>\nline"),
+                c("0v2", "~zod", 0, "no time"),
+                c("", "~nec", 5, ""),
+            ]
+        );
+        for bad in ["", "not json", "{\"v\":1}", "{\"comments\":{}}", "[1,2]"] {
+            assert!(thread_list(bad).is_empty(), "{bad}");
+        }
+        let big = format!("{{\"comments\":[{{\"author\":\"~zod\",\"body\":\"{}\"}}]}}", "x".repeat(THREAD_MAX));
+        assert!(thread_list(&big).is_empty(), "over the cap is empty");
+        assert_eq!(open_names("/blog/post\n\n /notes/a \n"), ["/blog/post", "/notes/a"]);
+    }
+
+    #[test]
+    fn a_thread_peek_names_only_a_plain_page_path() {
+        assert_eq!(thread_page("/blog/post").as_deref(), Some("/blog/post"));
+        assert_eq!(thread_page("blog/post").as_deref(), Some("/blog/post"));
+        for bad in ["", "/", "/a//b", "/a/../b", "/a/.", "/a b", "/a/b/", "/a%2fb"] {
+            assert_eq!(thread_page(bad), None, "{bad}");
+        }
     }
 
     #[test]

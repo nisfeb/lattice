@@ -21,7 +21,7 @@
 
 use urb_render::gateway;
 
-use crate::engine::{CometMode, NativePage, ReadError};
+use crate::engine::{CometMode, NativePage, PubComment, ReadError};
 use crate::history::Entry;
 
 /// The start list's address: a page the owner keeps, read live on the
@@ -130,6 +130,71 @@ pub struct Talk<'a> {
     /// the minutes until the page's cap of comets' comments frees, while
     /// it is at the cap
     pub full: Option<u64>,
+    /// the publisher has not said yet whether the page takes comments, or
+    /// how it takes a comet's: the box says it is checking
+    pub checking: bool,
+    /// the page's public comments, oldest first, as its publisher lists them
+    pub comments: &'a [PubComment],
+    /// the texts of comments the reader sent here that the list does not
+    /// hold yet, oldest first
+    pub pending: &'a [String],
+}
+
+/// How many of a page's public comments show at first, the newest; the
+/// older ones are behind a "show older" disclosure.
+pub const THREAD_SHOWN: usize = 50;
+
+/// A time in unix milliseconds as `2026-11-03 14:05 UTC`.
+fn when_ms(ms: i64) -> String {
+    let iso = urb_engine::js::iso(ms);
+    format!("{} UTC", iso.get(..16).unwrap_or(&iso).replace('T', " "))
+}
+
+fn comment_li(c: &PubComment) -> String {
+    format!(
+        "<li class=\"c\"><p class=\"by\"><code class=\"who\">{}</code> <time>{}</time></p><p class=\"body\">{}</p></li>",
+        esc(&c.author),
+        when_ms(c.when),
+        esc(&c.body)
+    )
+}
+
+/// The page's public comments, under it: the newest THREAD_SHOWN, the
+/// older ones in a disclosure above them, then the reader's own comments
+/// not listed yet, marked pending, or awaiting approval where the page
+/// holds comets' comments. Nothing when there are none.
+fn thread_box(talk: &Talk) -> String {
+    if talk.comments.is_empty() && talk.pending.is_empty() {
+        return String::new();
+    }
+    let n = talk.comments.len();
+    let cut = n.saturating_sub(THREAD_SHOWN);
+    let (older, newer) = talk.comments.split_at(cut);
+    let mut h = format!(
+        "<section class=\"thread\" aria-labelledby=\"thread-h\"><h2 id=\"thread-h\">Comments ({n})</h2>"
+    );
+    if !older.is_empty() {
+        h.push_str(&format!(
+            "<details class=\"older\"><summary>Show {} older comment{}</summary><ol class=\"comments\">",
+            older.len(),
+            if older.len() == 1 { "" } else { "s" }
+        ));
+        older.iter().for_each(|c| h.push_str(&comment_li(c)));
+        h.push_str("</ol></details>");
+    }
+    h.push_str("<ol class=\"comments\">");
+    newer.iter().for_each(|c| h.push_str(&comment_li(c)));
+    let state = if talk.comets == CometMode::Held { "awaiting approval" } else { "pending" };
+    let who = esc(talk.our.unwrap_or("you"));
+    for body in talk.pending {
+        h.push_str(&format!(
+            "<li class=\"c pending\"><p class=\"by\"><code class=\"who\">{who}</code> <span class=\"state\">{state}</span></p>\
+             <p class=\"body\">{}</p></li>",
+            esc(body)
+        ));
+    }
+    h.push_str("</ol></section>");
+    h
 }
 
 /// The publisher a comment on `url` goes to: a published page's ship. A
@@ -142,6 +207,18 @@ pub fn commentable(url: &str) -> Option<String> {
 /// `/comment`'s address for a page.
 pub fn comment_href(urb: &str) -> String {
     format!("/comment?url={}", enc(urb))
+}
+
+/// `/open`'s address for a page or board, which reader.js asks while
+/// the page says it is checking.
+pub fn open_href(urb: &str) -> String {
+    format!("/open?url={}", enc(urb))
+}
+
+/// The line a page or board shows while its host has not said whether it
+/// takes the reader's writes, `what` the words for them.
+pub fn checking_line(urb: &str, what: &str) -> String {
+    format!("<p class=\"words checking\" role=\"status\" data-check=\"{}\">Checking whether this {what}...</p>", esc(&open_href(urb)))
 }
 
 /// What a page at its cap of comets' comments says, `mins` minutes
@@ -236,7 +313,7 @@ fn talk_box(url: &str, ship: &str, talk: &Talk) -> String {
         None => format!("as this computer's anonymous reader identity, the name {to} sees as the author"),
     };
     format!(
-        "<section class=\"talk\" aria-labelledby=\"talk-h\"><h2 id=\"talk-h\">Comment</h2>{note}\
+        "<section class=\"talk\" aria-labelledby=\"talk-h\"><h2 id=\"talk-h\">Comment</h2>{note}{check}\
          <form class=\"talk-form\" method=\"post\" action=\"{action}\">\
          <textarea name=\"body\" rows=\"3\" maxlength=\"{COMMENT_MAX}\" required aria-label=\"Your comment\" \
          placeholder=\"Say something to {to}\">{kept}</textarea>\
@@ -244,6 +321,7 @@ fn talk_box(url: &str, ship: &str, talk: &Talk) -> String {
          <p class=\"words\">{done} anonymously from this computer {who}.{decide}</p></section>",
         action = esc(&comment_href(url)),
         kept = esc(kept),
+        check = if talk.checking && talk.note.is_none() { checking_line(url, "page takes comments") } else { String::new() },
     )
 }
 
@@ -441,7 +519,7 @@ pub fn page(url: &str, p: &NativePage, mode: Mode, raw_key: &str, talk: &Talk) -
         "gmi" => (OWN, lossy(main_of(&gateway::render_gemtext(p.body.as_bytes(), url.as_bytes(), &link)))),
         _ => (OWN, lossy(main_of(&gateway::render_text(p.body.as_bytes(), url.as_bytes())))),
     };
-    let talk = commentable(url).map_or(String::new(), |ship| talk_box(url, &ship, talk));
+    let talk = commentable(url).map_or(String::new(), |ship| format!("{}{}", thread_box(talk), talk_box(url, &ship, talk)));
     let html = chrome(&title, url, Some(mode), &format!("<article class=\"{kind}\">{main}</article>{talk}"), false);
     Shown { csp, html, title }
 }
@@ -752,6 +830,63 @@ mod tests {
         assert!(h.contains(">b</textarea>") && !h.contains("Posted to"), "{h}");
         let h = talk(&Note::Held, CometMode::Held, None);
         assert!(h.contains("Sent to ~zod for review.") && h.contains("talk-form"), "{h}");
+    }
+
+    fn pc(n: usize) -> PubComment {
+        PubComment { id: format!("0v{n}"), author: "~sampel-palnet".into(), when: 1_730_000_000_000, body: format!("c{n} <i>\n") }
+    }
+
+    #[test]
+    fn public_comments_show_under_the_page_escaped_with_author_and_time() {
+        let cs = [pc(1), pc(2)];
+        let t = Talk { comments: &cs, ..Talk::default() };
+        let h = page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &t).html;
+        assert!(h.contains("<h2 id=\"thread-h\">Comments (2)</h2>"), "{h}");
+        assert!(h.contains("<code class=\"who\">~sampel-palnet</code> <time>2024-10-27 03:33 UTC</time>"), "{h}");
+        assert!(h.contains("<p class=\"body\">c1 &lt;i&gt;\n</p>") && !h.contains("<i>"), "{h}");
+        assert!(h.find("c1 ").unwrap() < h.find("c2 ").unwrap(), "oldest first");
+        assert!(h.find("class=\"thread\"").unwrap() < h.find("class=\"talk\"").unwrap(), "above the box");
+        assert!(!h.contains("<details"), "nothing older");
+        // none: nothing new on the page
+        let h = page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &Talk::default()).html;
+        assert!(!h.contains("class=\"thread\""), "{h}");
+    }
+
+    #[test]
+    fn only_the_newest_fifty_show_until_asked() {
+        let cs: Vec<PubComment> = (1..=53).map(pc).collect();
+        let t = Talk { comments: &cs, ..Talk::default() };
+        let h = page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &t).html;
+        let older = &h[h.find("<details class=\"older\">").unwrap()..h.find("</details>").unwrap()];
+        assert!(older.contains("<summary>Show 3 older comments</summary>"), "{older}");
+        for n in 1..=3 {
+            assert!(older.contains(&format!(">c{n} ")), "{n}");
+        }
+        assert!(!older.contains(">c4 "));
+        let after = &h[h.find("</details>").unwrap()..];
+        assert_eq!(after.matches("<li class=\"c\">").count(), THREAD_SHOWN);
+        assert!(after.contains(">c4 ") && after.contains(">c53 "));
+        let cs: Vec<PubComment> = (1..=51).map(pc).collect();
+        let h = page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &Talk { comments: &cs, ..Talk::default() }).html;
+        assert!(h.contains("<summary>Show 1 older comment</summary>"), "{h}");
+    }
+
+    #[test]
+    fn the_readers_own_comment_shows_pending_or_awaiting_approval() {
+        let cs = [pc(1)];
+        let mine = ["mine <b>".to_string()];
+        let at = |comets| {
+            let t = Talk { our: Some("~doznec-sampel-palnet"), comments: &cs, pending: &mine, comets, ..Talk::default() };
+            page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &t).html
+        };
+        let h = at(CometMode::Open);
+        assert!(h.contains("<li class=\"c pending\"><p class=\"by\"><code class=\"who\">~doznec-sampel-palnet</code> <span class=\"state\">pending</span>"), "{h}");
+        assert!(h.contains("mine &lt;b&gt;") && h.find(">c1 ").unwrap() < h.find("mine ").unwrap(), "{h}");
+        assert!(at(CometMode::Held).contains("<span class=\"state\">awaiting approval</span>"));
+        // pending alone shows the list
+        let t = Talk { pending: &mine, ..Talk::default() };
+        let h = page(TALK, &native("x", "gmi"), Mode::Shipless, "k", &t).html;
+        assert!(h.contains("Comments (0)") && h.contains("class=\"c pending\""), "{h}");
     }
 
     #[test]

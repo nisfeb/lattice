@@ -216,7 +216,7 @@ async function live(url, cookie, stamp, secs = 900) {
 //  --- the suites ---
 const browser = (f) => /puppeteer|lib\/harness\.mjs/.test(readFileSync(S + '/' + f, 'utf8'));
 const uis = readdirSync(S).filter((f) => /^ui-.*\.mjs$/.test(f)).sort();
-const SHIPFREE_BROWSER = ['ui-manager.mjs'];
+const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs'];
 const TWO_SHIP = ['ui-links.mjs'];
 const shipSuites = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
@@ -249,6 +249,7 @@ function fiberio() {
 const allLocal = [
   ...uis.filter((f) => !browser(f)).map((f) => [f, 'node', [S + '/' + f]]),
   ['ui-manager.mjs', 'node', [S + '/ui-manager.mjs']],
+  ['ui-reader-loading.mjs', 'node', [S + '/ui-reader-loading.mjs']],
   ['offline-tests', 'bash', [S + '/offline-tests.sh']],
   ['code-closure', 'python3', [S + '/code-closure.py', 'code']],
   ['bill-check', 'python3', [S + '/bill-check.py', 'code']],
@@ -476,7 +477,8 @@ async function runTwo(a) {
     const env = { LATTICE_URL: a.url, LATTICE_COOKIE: a.cookie.raw, A_URL: a.url, A_COOKIE: a.cookie.raw,
       B_URL: b.url, B_COOKIE: b.cookie.raw, B_PIER: b.pier, A_SOCK: a.pier + '/.urb/dev/grubbery/lattice/fs' };
     for (const [name, cmd, args] of [['two-ship-links.sh', 'bash', [S + '/two-ship-links.sh']],
-      ['two-ship-save.sh', 'bash', [S + '/two-ship-save.sh']], ['ui-links.mjs', 'node', [S + '/ui-links.mjs']]]) {
+      ['two-ship-save.sh', 'bash', [S + '/two-ship-save.sh']], ['two-ship-comments.sh', 'bash', [S + '/two-ship-comments.sh']],
+      ['ui-links.mjs', 'node', [S + '/ui-links.mjs']]]) {
       record(name, '~' + a.ship + '+~' + b.ship, await run(cmd, args, { env, log: `${LOGS}/${name}.log`, timeout: 1500 }));
     }
   } finally {
@@ -511,7 +513,7 @@ const flaky = results.filter((r) => r.flaky);
 const missing = shipSuites.filter((n) => !results.some((r) => r.suite === n));
 console.log(`\n${names.length - failed.length - flaky.length} passed, ${flaky.length} flaky, ${failed.length} failed, wall ${(wall / 60).toFixed(1)} min (${wall.toFixed(0)} s), logs ${LOGS}`);
 if (loads.length) console.log(`host load (1 min): mean ${(loads.reduce((a, b) => a + b, 0) / loads.length).toFixed(1)}, peak ${Math.max(...loads).toFixed(1)}, on ${cpus().length} threads`);
-if (!TWO) console.log('not run: the two-ship suites (ui-links.mjs, two-ship-links.sh, two-ship-save.sh); pass --two-ship SET');
+if (!TWO) console.log('not run: the two-ship suites (ui-links.mjs, two-ship-links.sh, two-ship-save.sh, two-ship-comments.sh); pass --two-ship SET');
 if (!flag('--stall')) console.log('not run: stall-check.py; pass --stall');
 if (missing.length && fatal) console.log('never started: ' + missing.join(' '));
 if (fatal) console.log('gate error: ' + fatal);

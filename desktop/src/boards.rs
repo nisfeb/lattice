@@ -342,7 +342,8 @@ fn strip(labels: &[(&str, &str)]) -> String {
 /// The reason the reader cannot post on `p`, or `None` when it can.
 fn closed_why(p: &Place, w: &Write) -> Option<&'static str> {
     match (p.app, w.open) {
-        (App::Forum, Some(true)) => None,
+        // the host did not say: the form is offered, and it decides
+        (App::Forum, Some(true) | None) => None,
         (App::Forum, Some(false)) => Some(CLOSED),
         _ => Some(WHY),
     }
@@ -413,11 +414,21 @@ fn as_whom(host: &str, w: &Write) -> String {
     format!("<p class=\"words\">Posted anonymously from this computer {who}. A board takes ten posts and replies an hour from readers without a node.</p>")
 }
 
+/// The checking line above a form, while the host has not said whether
+/// the board takes the reader's posts.
+fn checking(p: &Place, w: &Write) -> String {
+    if w.open.is_none() && w.note.is_none() {
+        render::checking_line(&p.board_url(), "board takes posts from readers without a node")
+    } else {
+        String::new()
+    }
+}
+
 /// The new post form, on a board that takes them.
 fn post_form(p: &Place, w: &Write) -> String {
     let (note, kept) = note_of(&p.host, w);
     format!(
-        "<section class=\"write\" aria-labelledby=\"write-h\"><h2 id=\"write-h\">New post</h2>{note}\
+        "<section class=\"write\" aria-labelledby=\"write-h\"><h2 id=\"write-h\">New post</h2>{note}{check}\
          <form class=\"write-form\" method=\"post\" action=\"{action}\">\
          <input name=\"title\" maxlength=\"{TITLE_MAX}\" required aria-label=\"Title\" placeholder=\"Title\">\
          <input name=\"link\" type=\"url\" maxlength=\"{LINK_MAX}\" aria-label=\"Link (optional)\" placeholder=\"Link (optional)\">\
@@ -425,6 +436,7 @@ fn post_form(p: &Place, w: &Write) -> String {
          <p><button type=\"submit\">Post to {to}</button></p></form>{whom}</section>",
         action = esc(&write_href(&p.board_url())),
         kept = esc(kept),
+        check = checking(p, w),
         to = esc(&p.host),
         whom = as_whom(&p.host, w),
     )
@@ -434,13 +446,14 @@ fn post_form(p: &Place, w: &Write) -> String {
 fn reply_form(p: &Place, url: &str, w: &Write) -> String {
     let (note, kept) = note_of(&p.host, w);
     format!(
-        "<section class=\"write\" aria-labelledby=\"write-h\"><h2 id=\"write-h\">Reply</h2>{note}\
+        "<section class=\"write\" aria-labelledby=\"write-h\"><h2 id=\"write-h\">Reply</h2>{note}{check}\
          <form class=\"write-form\" method=\"post\" action=\"{action}\">\
          <textarea name=\"body\" rows=\"3\" maxlength=\"{TEXT_MAX}\" required aria-label=\"Your reply\" \
          placeholder=\"Reply to this thread\">{kept}</textarea>\
          <p><button type=\"submit\">Reply on {to}</button></p></form>{whom}</section>",
         action = esc(&write_href(url)),
         kept = esc(kept),
+        check = checking(p, w),
         to = esc(&p.host),
         whom = as_whom(&p.host, w),
     )
@@ -750,7 +763,7 @@ mod tests {
         let b = forum_board(&forum_js());
         assert_eq!(b.posts.len(), 2);
         assert_eq!((b.posts[0].replies, b.posts[0].score), (Some(1), Some(2)));
-        let s = board_page(&p, &b, &Write::default());
+        let s = board_page(&p, &b, &Write { open: Some(false), ..Write::default() });
         assert_eq!(s.csp, OWN);
         assert_eq!(s.title, "General <b>talk</b>");
         let h = &s.html;
@@ -762,7 +775,7 @@ mod tests {
         assert!(!h.contains("<script>alert") && !h.contains("<img"), "{h}");
         assert!(h.contains("by <span class=\"who\">~sampel-palnet</span> · <time>2025-11-03 14:05 UTC</time> · 1 reply · 2 points"), "{h}");
         assert!(h.contains("0 replies"));
-        assert!(h.contains("<button type=\"button\" disabled title=\"Connect a node to post\""));
+        assert!(h.contains(&format!("<button type=\"button\" disabled title=\"{CLOSED}\"")));
         assert!(h.contains(">New post</button>"));
         assert!(!h.contains("<form method=\"post\""), "no write form");
     }
@@ -790,14 +803,19 @@ mod tests {
     }
 
     #[test]
-    fn a_board_closed_to_comets_or_silent_or_furum_stays_read_only() {
+    fn a_board_closed_to_comets_or_furum_stays_read_only() {
         let p = place_of("urb://~wep/forum/general/4");
         let closed = Write { open: Some(false), ..Write::default() };
         let h = thread_page(&p, &thread_with("x", "y", None), &closed).html;
         assert!(h.contains(&format!("disabled title=\"{CLOSED}\">Reply</button>")) && !h.contains("write-form"), "{h}");
-        let h = thread_page(&p, &thread_with("x", "y", None), &Write::default()).html;
-        assert!(h.contains(&format!("disabled title=\"{WHY}\">Reply</button>")) && !h.contains("write-form"), "{h}");
+        assert!(!h.contains("data-check"), "{h}");
         assert!(h.contains(&format!("disabled title=\"{NO_VOTE}\"")), "{h}");
+        // a host that has not said yet is not closed: the form, and a check
+        let h = thread_page(&p, &thread_with("x", "y", None), &Write::default()).html;
+        assert!(h.contains("write-form") && !h.contains(CLOSED) && !h.contains(&format!("disabled title=\"{WHY}\">Reply")), "{h}");
+        assert!(h.contains("Checking whether this board takes posts") && h.contains("data-check=\"/open?url=urb%3A%2F%2F~wep%2Fforum%2Fgeneral\""), "{h}");
+        let h = thread_page(&p, &thread_with("x", "y", None), &Write { open: Some(true), ..Write::default() }).html;
+        assert!(h.contains("write-form") && !h.contains("data-check"), "{h}");
         // a furum board takes no writes, whatever it is told
         let f = place_of("urb://~rup/furum/m1c/4");
         let h = thread_page(&f, &thread_with("x", "y", None), &Write { open: Some(true), ..Write::default() }).html;
@@ -837,7 +855,7 @@ mod tests {
     #[test]
     fn a_thread_shows_its_post_then_its_comments_in_order() {
         let p = place_of("urb://~wep/forum/general/4");
-        let s = thread_page(&p, &thread_with("**bold** and [a page](urb://~wep/other)", "second", None), &Write::default());
+        let s = thread_page(&p, &thread_with("**bold** and [a page](urb://~wep/other)", "second", None), &Write { open: Some(false), ..Write::default() });
         let h = &s.html;
         assert_eq!(s.title, "A <i>thread</i>");
         assert!(h.contains("<h1>A &lt;i&gt;thread&lt;/i&gt;</h1>"));
