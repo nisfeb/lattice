@@ -4,7 +4,7 @@ A Hermes memory provider that makes lattice on your Urbit ship Hermes' memory, a
 
 - **System prompt:** the memory index (every area, and the core rules in full) loads once per session.
 - **Each message:** memories that strongly match it, three at most, are recalled and sent with that turn as recalled memory. A weak match adds nothing.
-- **Tools:** `lattice_recall`, `lattice_search`, `lattice_read`, `lattice_save`, `lattice_verify`, `lattice_supersede`, `lattice_wiki_search`, `lattice_wiki_read`, `lattice_wiki_write`, `lattice_web_read`.
+- **Tools:** `lattice_recall`, `lattice_search`, `lattice_read`, `lattice_save`, `lattice_verify`, `lattice_supersede`, `lattice_wiki_search`, `lattice_wiki_read`, `lattice_wiki_write`, `lattice_urb_read`, `lattice_urb_list`, and `lattice_web_read`, the old name of `lattice_urb_read`.
 
 Nothing is extracted from conversations automatically. Saving is the agent's deliberate act.
 

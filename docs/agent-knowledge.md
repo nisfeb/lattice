@@ -23,7 +23,7 @@ A key is for a client that does not hold your cookie. The design and the wire fo
 - **Scope.** Read and write are independent, and it is default-deny: a key reaches only what its scope grants. Build it in Settings, or send the JSON shape below.
   - `memory`: `none`; `read` (search, recall, index, read, list, explore, tags, history, lint); or `write` (also save, verify, supersede, tag, untag).
   - `pages`: `none`, or `read`/`write` over **all** pages, or **scoped** to named path subtrees with independent read and write sets. Read covers page-search, page-source, page-backlinks, page-tree; write adds page-save. A read-scoped key sees only its paths (the tree, search and backlinks are filtered to them).
-  - `web` (other ships' pages): `off`; read **all** ships (through `fetch`, `browse`, `browse-file`); or **scoped** per ship, each with its own read and write path sets. Write means `remote-save` to a page a peer shared to you for editing.
+  - `web` (other ships' pages): `off`; read **all** ships (through `fetch`, `urb-read`, `browse`, `browse-file`); or **scoped** per ship, each with its own read and write path sets. Write means `remote-save` to a page a peer shared to you for editing.
   - `sensitive`: clearance for content marked sensitive, both memories and pages ([Sensitive content](#sensitive-content)). Off unless you tick it.
   - `origin`: reserved. A source-ship hook in the mold that nothing reads or enforces yet.
   - Nothing else is reachable with a key. Publishing, sharing, deleting, moving, settings and the keys themselves stay yours, whatever the scope. `+wants` in `lib/lattice-keys.hoon` is the whole list.
@@ -116,6 +116,7 @@ All under `/apps/lattice/`. GET reads, POST writes, parameters go in the query s
 | `POST page-save` | `name`, `type` (send it: `md`, `html`, ...), `base`, `new=1` | create or update a page. With a key: within its write scope, published or not, and not hoon, html or js | pages write |
 | `POST page-save-batch` | JSON `[{name, type, body}]` | many page saves in one request, gated per item | pages write |
 | `GET fetch` | `url=urb://~ship/path` | a page another ship publishes | web read |
+| `GET urb-read` | `url=urb://...`, `list=1` | what the reader shows at any urb:// address, as JSON: a published or shared page (with its public comments), a folder's entries, a forum board or thread, a tree file (binary as type and size), or the owner's own page through the key's page scope. `list=1` lists the folder, or the ship's root. 504 the ship does not answer, 404 nothing there for this ship, 403 the key's scope | web read (own unpublished pages: pages read too) |
 | `GET browse`, `browse-file` | `ship`, `path` | a peer's shared tree, or one file in it | web read |
 | `POST remote-save` | `ship`, `path`, body | save to a page a peer shared to you for editing | web write |
 

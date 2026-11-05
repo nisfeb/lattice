@@ -4,7 +4,7 @@ This plugin makes lattice on your Urbit ship Claude's memory, and makes your wik
 
 - **At session start** a hook loads the memory index: every area, and the core rules (entries tagged `core`) in full, in two parts when they run past one hook's 10,000 characters.
 - **On each prompt** a hook recalls memories that strongly match it, three at most, and adds them as background. A weak or merely coincidental match adds nothing.
-- **Tools** cover memory (`memory_recall`, `memory_search`, `memory_read`, `memory_save`, `memory_verify`, `memory_supersede`, `memory_tag`, `memory_explore`, `memory_tidy`, `memory_index`) and knowledge (`wiki_search`, `wiki_read`, `wiki_write`, `web_read`).
+- **Tools** cover memory (`memory_recall`, `memory_search`, `memory_read`, `memory_save`, `memory_verify`, `memory_supersede`, `memory_tag`, `memory_explore`, `memory_tidy`, `memory_index`) and knowledge (`wiki_search`, `wiki_read`, `wiki_write`, `urb_read`, `urb_list`, and `web_read`, the old name of `urb_read`).
 - **Skills** say when and how to use them. **Commands:** `/lattice:recall`, `/lattice:remember`, `/lattice:tidy`.
 
 Saving stays deliberate: nothing is extracted from your sessions automatically.

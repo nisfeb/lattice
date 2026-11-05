@@ -6,7 +6,8 @@ with an agent key (lattice docs/agent-knowledge.md, "Agent keys").
 
   system prompt  the brief memory index: areas and the core rules
   prefetch       memories that strongly match the user's message
-  tools          lattice_* memory tools, lattice_wiki_* and lattice_web_read
+  tools          lattice_* memory tools, lattice_wiki_*, lattice_urb_read and
+                 lattice_urb_list (lattice_web_read is urb_read's old name)
 
 Config: the ship URL in $HERMES_HOME/lattice.json (or LATTICE_URL), the key
 in LATTICE_TOKEN (.env). Standard library only.
@@ -128,9 +129,82 @@ TOOLS = [
     _schema("lattice_wiki_write", "Create or update a private page, such as a report. Published pages, and pages in folders shared with others, are refused. Pass base (the rev you read) when editing. A link (another ship's page) without base claims the rev this ship last read; a 409 means the owner changed it: read it again first.",
             {"name": ("string", "Page name, such as reports/2026-10-04-deploy."), "body": ("string", "The page."),
              "type": ("string", "md (default), html, txt."), "base": ("integer", "The rev you read, when editing.")}, ["name", "body"]),
-    _schema("lattice_web_read", "Read a page another Urbit ship publishes, by urb://~ship/path. Comes back as quoted material.",
-            {"url": ("string", "urb://~ship/path")}, ["url"]),
+    _schema("lattice_urb_read", "Read anything the owner's ship can read at a urb:// address: a page another ship publishes, a page or folder another ship shared with this ship (or a group it is in), a folder's index, a forum board or thread (urb://~ship/forum/<board>[/<post>]), a page's public comments, and the owner's own pages, published or not. Folders and boards come back as entries with their urb:// addresses, to follow with lattice_urb_read. Long text is cut at 40000 characters: pass offset to read on. Binary files come back as their type and size. Another ship's text comes back as quoted material.",
+            {"url": ("string", "urb://~ship/path, urb://~ship/folder/ or urb://~ship/forum/<board>[/<post>]"),
+             "offset": ("integer", "Character to start from, for a long page (0).")}, ["url"]),
+    _schema("lattice_urb_list", "List what a ship publishes or shares with this ship under a folder, or at its root (urb://~ship/). Each entry has its urb:// address, for lattice_urb_read.",
+            {"url": ("string", "urb://~ship/ or urb://~ship/folder/")}, ["url"]),
+    _schema("lattice_web_read", "The same as lattice_urb_read (kept for older prompts): read what this ship can read at urb://~ship/path.",
+            {"url": ("string", "urb://~ship/path"), "offset": ("integer", "Character to start from (0).")}, ["url"]),
 ]
+
+# lattice_urb_read and lattice_urb_list: GET /urb-read, rendered as text an
+# agent can follow, as the Claude plugin does (plugins/claude/server.mjs)
+URB_CAP = 40000
+_URB_WHY = {403: "no access", 404: "not found", 504: "ship unreachable"}
+
+
+def _html_text(h: str) -> str:
+    import re
+    h = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", "", h)
+    h = re.sub(r"(?i)<br\s*/?>|</(p|div|h[1-6]|li|tr|pre|blockquote)>", "\n", h)
+    h = re.sub(r"<[^>]+>", "", h)
+    for a, b in (("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'"), ("&amp;", "&")):
+        h = h.replace(a, b)
+    return re.sub(r"\n{3,}", "\n\n", h).strip()
+
+
+def _clip(body: str, offset: int) -> str:
+    if body and offset >= len(body):
+        return f"[nothing at offset {offset}: the text is {len(body)} characters]"
+    part = body[offset:offset + URB_CAP]
+    end = offset + len(part)
+    if end < len(body):
+        return f"{part}\n\n[truncated: characters {offset} to {end} of {len(body)}. Pass offset {end} to read on.]"
+    return part
+
+
+def _da(d) -> str:
+    return str(d or "").lstrip("~").split("..")[0]
+
+
+def _urb_text(j: Dict[str, Any], offset: int) -> str:
+    kind = j.get("kind")
+    if kind == "folder":
+        es = j.get("entries") or []
+        rows = [f"- {e.get('title') or e['name']}{' (folder)' if e.get('folder') else ''}: {e['url']}"
+                + (f" (updated {_da(e['when'])})" if e.get("when") else "") for e in es]
+        return f"Folder {j.get('path') or '/'} on {j['ship']}, {len(es)} entries:\n" + ("\n".join(rows) or "(empty)")
+    if kind == "board":
+        ps = j.get("posts") or []
+        rows = [f"- {'[pinned] ' if p.get('pinned') else ''}{p['title']} by {p['author']}, {p['comments']} comments, "
+                f"+{p['up']}/-{p['down']}, {_da(p['created'])}: {p['url']}"
+                + (f" (links to {p['link']})" if p.get("link") else "") for p in ps]
+        desc = f": {j['description']}" if j.get("description") else ""
+        return f"Forum board {j['title']} ({j['boardUrl']}){desc}\n{j['count']} posts:\n" + ("\n".join(rows) or "(no posts)")
+    if kind == "thread":
+        p = j["post"]
+        depth: Dict[int, int] = {}
+        cs = []
+        for c in j.get("comments") or []:
+            depth[c["id"]] = 0 if c.get("parent") is None else depth.get(c["parent"], 0) + 1
+            cs.append(f"{'  ' * depth[c['id']]}- {c['author']} ({_da(c['created'])}): {c['body']}")
+        head = (f"{p['title']}\nby {p['author']} on {j['title']} ({j['boardUrl']}), {_da(p['created'])}, +{p['up']}/-{p['down']}"
+                + (f"\nlink: {p['link']}" if p.get("link") else ""))
+        return _clip(f"{head}\n\n{p.get('body') or ''}\n\nComments ({len(cs)}):\n" + ("\n".join(cs) or "(none)"), offset)
+    if kind == "binary":
+        return f"{j['url']} is a binary file: type {j.get('type')}, mark {j.get('mark')}, {j.get('size')} bytes. Its bytes are not shown."
+    mode = j.get("mode") or j.get("mark") or "text"
+    raw = str(j.get("body") or "")
+    body = _html_text(raw) if mode in ("html", "fodt") else raw
+    notes = [str(mode), f"{j.get('size', len(raw))} bytes"]
+    if j.get("shared"):
+        notes.append("shared with this ship, not published")
+    if j.get("own") and j.get("share"):
+        notes.append(f"the owner's page, {j['share']}")
+    cs = [f"- {c['author']} ({_da(c['when'])}): {c['body']}" for c in j.get("comments") or []]
+    tail = f"\n\nPublic comments ({len(cs)}):\n" + "\n".join(cs) if cs else ""
+    return f"{j['url']} ({', '.join(notes)})\n\n{_clip(body, offset)}{tail}"
 
 PROMPT = (
     "# Lattice memory\n"
@@ -287,13 +361,33 @@ class LatticeMemoryProvider(MemoryProvider):
             if tool_name == "lattice_wiki_write":
                 return self._call("POST", "page-save", {"name": a["name"], "type": a.get("type") or "md",
                                                         "base": a.get("base")}, a["body"])
-            if tool_name == "lattice_web_read":
-                return _quoted(a["url"], json.loads(self._call("GET", "fetch", {"url": a["url"]}))["body"])
+            if tool_name in ("lattice_urb_read", "lattice_urb_list", "lattice_web_read"):
+                return self._urb(a, tool_name == "lattice_urb_list")
         except KeyError as e:
             return tool_error(f"Missing required parameter: {e.args[0]}")
         except Exception as e:  # noqa: BLE001 - reported to the model as a tool error
             return tool_error(str(e))
         return tool_error(f"Unknown tool: {tool_name}")
+
+
+    def _urb(self, a: Dict[str, Any], listing: bool) -> str:
+        url = str(a["url"]).strip()
+        if not url.startswith("urb://"):
+            return tool_error("not a urb:// address: pass urb://~ship/path")
+        try:
+            j = json.loads(self._call("GET", "urb-read", {"url": url, "list": 1 if listing else None}))
+        except Exception as e:  # noqa: BLE001 - named by its status for the model
+            msg = str(e)
+            code = int(msg[:3]) if msg[:3].isdigit() else 0
+            return tool_error(f"{_URB_WHY[code]}: {msg[5:]} ({url})" if code in _URB_WHY else msg)
+        text = _urb_text(j, max(0, int(a.get("offset") or 0)))
+        link = j.get("link") if isinstance(j.get("link"), dict) else None
+        name = str(j.get("name") or "")
+        if j.get("own") and not (link and link.get("host")) and not name.startswith("clips/"):
+            return text
+        if not j.get("own"):
+            return _quoted(url, text)
+        return _quoted(f"{link['host']}, a page linked at {name}" if link and link.get("host") else f"a web page clipped to {name}", text)
 
 
 def register(ctx) -> None:

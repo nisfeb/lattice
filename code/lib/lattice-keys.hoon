@@ -224,6 +224,7 @@
     [%'POST' %page-save]      `[%pages %write]
     [%'POST' %page-save-batch]  `[%pages %write]
     [%'GET' %fetch]           `[%web %read]
+    [%'GET' %'urb-read']      `[%web %read]
     [%'GET' %browse]          `[%web %read]
     [%'GET' %browse-file]     `[%web %read]
     [%'POST' %remote-save]    `[%web %write]
