@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Real board reads through the desktop's shipless reader, on the fleet:
 # claims the furum set (~rup, ~hus), resets it to its m1c-traces snapshot
-# (urb-fetch traces/fixtures.sh: furum board m1c on ~rup with a post and a
-# comment, lattice on ~hus with forum board m1btest), and runs the boards
-# ignored test, which reads each board and its first thread as a fake moon
+# (urb-fetch traces/fixtures.sh: lattice on ~hus with forum board m1btest;
+# the set keeps its old name, though the reader no longer reads furum), and
+# runs the boards ignored test, which reads each board and its first thread
+# as a fake moon
 # (the fake network has no comets). The claim is released at the end, on
 # failure too. Fake fleet ships only, never a live one.
 #
@@ -49,5 +50,5 @@ fi
 
 # each board, and text its first thread shows ('+' for a space)
 LATTICE_FLEET=1 FLEET_PARENT='~rup' \
-  FLEET_BOARDS="urb://~rup/furum/m1c|the+host+comments ${FLEET_FORUM:-urb://~hus/forum/m1btest|Reply}" \
+  FLEET_BOARDS="${FLEET_FORUM:-urb://~hus/forum/m1btest|Reply}" \
   cargo test the_reader_reads_fleet_boards -- --ignored --nocapture

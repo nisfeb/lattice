@@ -712,13 +712,12 @@ fn form_field(raw: &[u8], name: &str, max: usize) -> String {
 /// `POST /forum`: a post on a lattice forum board, or a reply in one of
 /// its threads, sent as the reader identity, then back to the board or
 /// thread, which says what became of it. Only where the host lists the
-/// board as taking comet posts, asked again now; a furum board takes
-/// none.
+/// board as taking comet posts, asked again now.
 fn forum_write(ctx: &Ctx, req: &Req) -> Resp {
-    use crate::boards::{App, LINK_MAX, TEXT_MAX, TITLE_MAX};
+    use crate::boards::{LINK_MAX, TEXT_MAX, TITLE_MAX};
     use crate::engine::ForumWrite;
     let url = address(req.arg("url").unwrap_or(""));
-    let Some(p) = crate::boards::place(&url).filter(|p| p.app == App::Forum) else { return plain(400) };
+    let Some(p) = crate::boards::place(&url) else { return plain(400) };
     let body = form_field(&req.body, "body", TEXT_MAX);
     let w = match &p.post {
         None => {
@@ -947,7 +946,7 @@ fn from_frame(req: &Req, port: u16) -> bool {
 /// what is published in it (`folder`), by date when `by_date`.
 fn read(ctx: &Ctx, given: &str, fresh: Fresh, by_date: bool) -> Resp {
     let url = address(given);
-    // A forum or furum board first: the gateway's de_urb refuses boards
+    // A forum board first: the gateway's de_urb refuses boards
     // (501, "which this gateway does not read"), and boards.rs reads them.
     let board = crate::boards::place(&url);
     if let (None, Err((status, words))) = (&board, urb_render::gateway::de_urb(url.as_bytes())) {
@@ -1793,7 +1792,7 @@ mod tests {
             }
         }
         let (c, wrote, _) = posting("forumbad", Some(vec!["general".into()]));
-        // a furum board, a page, no title, an empty reply, a foreign caller
+        // a retired furum address, a page, no title, an empty reply, a foreign caller
         assert_eq!(ask(&c, &post_forum("urb://~rup/furum/m1c", &ours(), "title=t")).0, 400);
         assert_eq!(ask(&c, &post_forum("urb://~rup/furum/m1c/3", &ours(), "body=x")).0, 400);
         assert_eq!(ask(&c, &post_forum("urb://~wep/hello", &ours(), "title=t")).0, 400);

@@ -1,13 +1,8 @@
-//! Boards in the shipless reader: lattice forums and furum boards, read
-//! through the engine (`Reads::boards`, read calls only) and shown in the
-//! reader's chrome, read only.
+//! Boards in the shipless reader: lattice forums, read through the engine
+//! (`Reads::boards`, read calls only) and shown in the reader's chrome.
 //!
-//! Addresses:
-//!
-//! - `urb://~host/forum/<board>[/<post>]`, lattice's forum address (the
-//!   engine's `de_urb` names it `Mount::Forum`);
-//! - `urb://~host/furum/<board>[/<post>]`, the reader's own address for a
-//!   furum board, which has no urb:// form of its own.
+//! Address: `urb://~host/forum/<board>[/<post>]`, lattice's forum address
+//! (the engine's `de_urb` names it `Mount::Forum`).
 //!
 //! A board is its threads, newest first, each with its title, author, time
 //! and reply count. A thread is its post and then its comments, oldest
@@ -35,12 +30,8 @@ use crate::render::{self, chrome, enc, esc, lossy, main_of, read_href, Note, Sho
 
 /// How long a board read waits: the first contact with a ship can be slow.
 const BUDGET: Duration = Duration::from_secs(20);
-/// The most furum posts whose comments are counted for a board's list.
-const COUNTED: usize = 50;
 /// The most threads a board shows.
 const LISTED: usize = 200;
-/// Why every write on a board is disabled.
-pub const WHY: &str = "Connect a node to post";
 /// Why a forum board that says it takes no comet posts is read only.
 pub const CLOSED: &str = "This board takes no posts from readers without a node";
 /// Why voting is disabled on a forum board.
@@ -86,17 +77,9 @@ ol.comments li { padding: .6rem 0 .6rem .75rem; border-left: 3px solid var(--lin
 .note.ok { color: var(--ok, inherit); } .note.err { color: var(--err, inherit); }\
 ";
 
-/// Which app keeps the board.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum App {
-    Forum,
-    Furum,
-}
-
 /// A board or thread address.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Place {
-    pub app: App,
     pub host: String,
     pub board: String,
     /// the post, as its decimal id
@@ -104,23 +87,14 @@ pub struct Place {
 }
 
 impl Place {
-    fn prefix(&self) -> &'static str {
-        match self.app {
-            App::Forum => "forum",
-            App::Furum => "furum",
-        }
-    }
     /// the board's address
     pub fn board_url(&self) -> String {
-        format!("urb://{}/{}/{}", self.host, self.prefix(), self.board)
+        format!("urb://{}/forum/{}", self.host, self.board)
     }
     /// a thread's address on this board. A lattice forum's post is an
     /// @ud, dotted in threes (`1.000`), as its address takes it.
     pub fn thread_url(&self, id: &str) -> String {
-        match self.app {
-            App::Forum => format!("{}/{}", self.board_url(), dotted(id)),
-            App::Furum => format!("{}/{id}", self.board_url()),
-        }
+        format!("{}/{}", self.board_url(), dotted(id))
     }
 }
 
@@ -136,29 +110,15 @@ fn dotted(id: &str) -> String {
     out
 }
 
-/// a furum board name or id segment: lowercase, digits, `-`
-fn seg(s: &str) -> bool {
-    !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
 /// The board or thread `url` names, if it names one.
 pub fn place(url: &str) -> Option<Place> {
     let u = de_urb(url).ok()?;
     match (&u.mount, u.rel.as_slice()) {
         (Mount::Forum { post }, [board]) => Some(Place {
-            app: App::Forum,
             host: u.ship.clone(),
             board: board.clone(),
             post: post.as_ref().map(|i: &Int| i.decimal()),
         }),
-        (Mount::N, [furum, board]) if furum == "furum" && seg(board) => {
-            Some(Place { app: App::Furum, host: u.ship, board: board.clone(), post: None })
-        }
-        (Mount::N, [furum, board, id]) if furum == "furum" && seg(board) => {
-            // furum's ids are JS numbers: exact up to 2^53
-            let n = id.parse::<u64>().ok().filter(|n: &u64| *n < (1 << 53) && *id == n.to_string())?;
-            Some(Place { app: App::Furum, host: u.ship, board: board.clone(), post: Some(n.to_string()) })
-        }
         _ => None,
     }
 }
@@ -295,16 +255,6 @@ pub fn forum_thread(t: &Js) -> Option<Thread> {
     })
 }
 
-/// furum.mjs's posts(): its posts, newest first
-pub fn furum_posts(p: &Js) -> Vec<Post> {
-    arr(Some(p)).iter().filter_map(post_of).collect()
-}
-
-/// furum.mjs's comments(): a post's comments, oldest first
-pub fn furum_comments(c: &Js) -> Vec<Comment> {
-    arr(Some(c)).iter().filter_map(comment_of).collect()
-}
-
 // ------------------------------------------------------------ rendering
 
 /// A time as `2026-11-03 14:05 UTC`.
@@ -340,24 +290,23 @@ fn strip(labels: &[(&str, &str)]) -> String {
 }
 
 /// The reason the reader cannot post on `p`, or `None` when it can.
-fn closed_why(p: &Place, w: &Write) -> Option<&'static str> {
-    match (p.app, w.open) {
+fn closed_why(w: &Write) -> Option<&'static str> {
+    match w.open {
         // the host did not say: the form is offered, and it decides
-        (App::Forum, Some(true) | None) => None,
-        (App::Forum, Some(false)) => Some(CLOSED),
-        _ => Some(WHY),
+        Some(true) | None => None,
+        Some(false) => Some(CLOSED),
     }
 }
 
 /// The disabled writes on `p`: posting (`write`, "New post" or "Reply")
 /// when the reader cannot, and voting on a forum.
-fn disabled<'a>(p: &Place, w: &Write, write: &'a str, vote: bool) -> Vec<(&'a str, &'static str)> {
+fn disabled<'a>(w: &Write, write: &'a str, vote: bool) -> Vec<(&'a str, &'static str)> {
     let mut out = Vec::new();
-    if let Some(why) = closed_why(p, w) {
+    if let Some(why) = closed_why(w) {
         out.push((write, why));
     }
     if vote {
-        out.push(("Vote", if p.app == App::Forum { NO_VOTE } else { WHY }));
+        out.push(("Vote", NO_VOTE));
     }
     out
 }
@@ -487,10 +436,9 @@ fn who(s: &str) -> String {
 
 fn crumbs(p: &Place) -> String {
     format!(
-        "<p class=\"crumbs\"><a href=\"{}\">{}</a> / {}</p>",
+        "<p class=\"crumbs\"><a href=\"{}\">{}</a> / forum</p>",
         esc(&read_href(&format!("urb://{}", p.host))),
         esc(&p.host),
-        p.prefix()
     )
 }
 
@@ -507,7 +455,7 @@ pub fn board_page(p: &Place, b: &Board, w: &Write) -> Shown {
     if !b.description.trim().is_empty() {
         s.push_str(&format!("<p class=\"words\">{}</p>", esc(&b.description)));
     }
-    if closed_why(p, w).is_none() {
+    if closed_why(w).is_none() {
         s.push_str(&post_form(p, w));
     } else {
         s.push_str(&note_of(&p.host, w).0);
@@ -537,7 +485,7 @@ pub fn board_page(p: &Place, b: &Board, w: &Write) -> Shown {
         }
     }
     s.push_str("</section>");
-    page(&title, &url, &disabled(p, w, "New post", false), &s)
+    page(&title, &url, &disabled(w, "New post", false), &s)
 }
 
 /// A thread: its post, then its comments in order.
@@ -580,7 +528,7 @@ pub fn thread_page(p: &Place, t: &Thread, w: &Write) -> Shown {
         }
         s.push_str("</ol>");
     }
-    match closed_why(p, w) {
+    match closed_why(w) {
         None => s.push_str(&reply_form(p, &url, w)),
         Some(why) => s.push_str(&format!(
             "{}<form class=\"reply\" aria-label=\"Reply\"><textarea rows=\"2\" disabled aria-label=\"Reply\" \
@@ -589,7 +537,7 @@ pub fn thread_page(p: &Place, t: &Thread, w: &Write) -> Shown {
         )),
     }
     s.push_str("</section>");
-    page(&title, &url, &disabled(p, w, "Reply", true), &s)
+    page(&title, &url, &disabled(w, "Reply", true), &s)
 }
 
 /// What a failed board read says. A board that isn't there says so in a
@@ -615,7 +563,7 @@ pub fn error_page(url: &str, p: &Place, e: &ReadError, step: &str) -> (u16, Show
 
 /// A forum thread's post id, as its address names it.
 pub fn post_id(p: &Place) -> Option<Int> {
-    let id = p.post.as_ref().filter(|_| p.app == App::Forum)?;
+    let id = p.post.as_ref()?;
     match de_urb(&p.thread_url(id)).map(|u| u.mount) {
         Ok(Mount::Forum { post }) => post,
         _ => None,
@@ -625,29 +573,20 @@ pub fn post_id(p: &Place) -> Option<Int> {
 /// The asks that read `p`.
 fn asks(p: &Place) -> Vec<BoardAsk> {
     let (host, board) = (p.host.clone(), p.board.clone());
-    match (p.app, &p.post) {
-        (App::Forum, None) => vec![BoardAsk::Forum { host, board }],
-        (App::Forum, Some(id)) => match de_urb(&p.thread_url(id)).map(|u| u.mount) {
-            Ok(Mount::Forum { post: Some(post) }) => vec![BoardAsk::ForumThread { host, board, post }],
-            _ => Vec::new(),
+    match &p.post {
+        None => vec![BoardAsk::Forum { host, board }],
+        Some(_) => match post_id(p) {
+            Some(post) => vec![BoardAsk::ForumThread { host, board, post }],
+            None => Vec::new(),
         },
-        (App::Furum, None) => vec![BoardAsk::FurumPosts { host, board }],
-        (App::Furum, Some(id)) => vec![
-            BoardAsk::FurumPosts { host: host.clone(), board: board.clone() },
-            BoardAsk::FurumComments { host, board, post: id.parse().unwrap_or(0) },
-        ],
     }
 }
 
 /// Read and show `p` (at `url`): the page, or why not.
 pub fn read(ctx: &Ctx, url: &str, p: &Place) -> (u16, Shown) {
     let mut got = ctx.reads.boards(asks(p), BUDGET).into_iter();
-    // a forum board says whether it takes the reader's posts; a furum
-    // board is read only
-    let open = match p.app {
-        App::Forum => ctx.forum_open(&p.host, &p.board, false),
-        App::Furum => None,
-    };
+    // a forum board says whether it takes the reader's posts
+    let open = ctx.forum_open(&p.host, &p.board, false);
     let our = ctx.reads.our();
     let note = ctx.take_note(url);
     let w = Write { open, our: our.as_deref(), note: note.as_ref() };
@@ -656,31 +595,11 @@ pub fn read(ctx: &Ctx, url: &str, p: &Place) -> (u16, Shown) {
         Err(ReadError::Failed(w)) if w.contains("no post ") => Err(ReadError::NotPublished(w)),
         r => r,
     };
-    let shown = first.and_then(|v| match (p.app, &p.post) {
-        (App::Forum, None) => Ok(board_page(p, &forum_board(&v), &w)),
-        (App::Forum, Some(_)) => forum_thread(&v)
+    let shown = first.and_then(|v| match &p.post {
+        None => Ok(board_page(p, &forum_board(&v), &w)),
+        Some(_) => forum_thread(&v)
             .map(|t| thread_page(p, &t, &w))
             .ok_or_else(|| ReadError::Failed("the thread couldn't be read".into())),
-        (App::Furum, None) => {
-            let mut posts = furum_posts(&v);
-            let counted: Vec<BoardAsk> = posts
-                .iter()
-                .take(COUNTED)
-                .filter_map(|q| q.id.parse().ok())
-                .map(|id| BoardAsk::FurumComments { host: p.host.clone(), board: p.board.clone(), post: id })
-                .collect();
-            for (q, c) in posts.iter_mut().zip(ctx.reads.boards(counted, BUDGET)) {
-                q.replies = c.ok().map(|c| furum_comments(&c).len());
-            }
-            Ok(board_page(p, &Board { title: p.board.clone(), description: String::new(), posts }, &w))
-        }
-        (App::Furum, Some(id)) => {
-            let post = furum_posts(&v).into_iter().find(|q| &q.id == id).ok_or_else(|| {
-                ReadError::NotPublished(format!("no post {id} on {}'s board {}", p.host, p.board))
-            })?;
-            let comments = got.next().unwrap_or_else(|| Err(ReadError::Failed("no answer".into())))?;
-            Ok(thread_page(p, &Thread { board: p.board.clone(), post, comments: furum_comments(&comments) }, &w))
-        }
     });
     match shown {
         Ok(s) => {
@@ -711,20 +630,15 @@ mod tests {
     #[test]
     fn board_and_thread_addresses_are_told_apart() {
         let b = place_of("urb://~wep/forum/general");
-        assert_eq!((b.app, b.host.as_str(), b.board.as_str(), b.post.clone()), (App::Forum, "~wep", "general", None));
+        assert_eq!((b.host.as_str(), b.board.as_str(), b.post.clone()), ("~wep", "general", None));
         assert_eq!(place_of("urb://~wep/forum/general/12").post.as_deref(), Some("12"));
         assert_eq!(place_of("urb://~wep/forum/general/1.000").post.as_deref(), Some("1000"));
-        let f = place_of("urb://~rup/furum/m1c/3");
-        assert_eq!((f.app, f.board.as_str(), f.post.as_deref()), (App::Furum, "m1c", Some("3")));
-        assert_eq!(place_of("urb://~rup/furum/m1c").post, None);
         for no in [
             "urb://~wep/forum",
             "urb://~wep/page",
-            "urb://~wep/furum",
-            "urb://~rup/furum/m1c/03",
-            "urb://~rup/furum/m1c/x",
-            "urb://~rup/furum/m1c/9007199254740993",
-            "urb://~rup/furum/m1c/1/2",
+            // the retired furum address is no board
+            "urb://~rup/furum/m1c",
+            "urb://~rup/furum/m1c/3",
             "https://example.com/forum/x",
         ] {
             assert_eq!(place(no), None, "{no}");
@@ -733,8 +647,6 @@ mod tests {
         assert_eq!(b.thread_url("1000"), "urb://~wep/forum/general/1.000");
         assert_eq!(b.thread_url("1234567"), "urb://~wep/forum/general/1.234.567");
         assert_eq!(place_of(&b.thread_url("1234567")).post.as_deref(), Some("1234567"));
-        assert_eq!(f.thread_url("1000"), "urb://~rup/furum/m1c/1000");
-        assert_eq!(f.board_url(), "urb://~rup/furum/m1c");
     }
 
     fn forum_js() -> Js {
@@ -803,7 +715,7 @@ mod tests {
     }
 
     #[test]
-    fn a_board_closed_to_comets_or_furum_stays_read_only() {
+    fn a_board_closed_to_comets_stays_read_only() {
         let p = place_of("urb://~wep/forum/general/4");
         let closed = Write { open: Some(false), ..Write::default() };
         let h = thread_page(&p, &thread_with("x", "y", None), &closed).html;
@@ -812,21 +724,17 @@ mod tests {
         assert!(h.contains(&format!("disabled title=\"{NO_VOTE}\"")), "{h}");
         // a host that has not said yet is not closed: the form, and a check
         let h = thread_page(&p, &thread_with("x", "y", None), &Write::default()).html;
-        assert!(h.contains("write-form") && !h.contains(CLOSED) && !h.contains(&format!("disabled title=\"{WHY}\">Reply")), "{h}");
+        assert!(h.contains("write-form") && !h.contains(CLOSED), "{h}");
         assert!(h.contains("Checking whether this board takes posts") && h.contains("data-check=\"/open?url=urb%3A%2F%2F~wep%2Fforum%2Fgeneral\""), "{h}");
         let h = thread_page(&p, &thread_with("x", "y", None), &Write { open: Some(true), ..Write::default() }).html;
         assert!(h.contains("write-form") && !h.contains("data-check"), "{h}");
-        // a furum board takes no writes, whatever it is told
-        let f = place_of("urb://~rup/furum/m1c/4");
-        let h = thread_page(&f, &thread_with("x", "y", None), &Write { open: Some(true), ..Write::default() }).html;
-        assert!(!h.contains("write-form") && h.contains(&format!("disabled title=\"{WHY}\" aria-describedby=\"why-vote\">Vote</button>")), "{h}");
         assert_eq!(post_id(&place_of("urb://~wep/forum/general/1.000")).map(|i| i.decimal()), Some("1000".into()));
-        assert_eq!(post_id(&f), None);
+        assert_eq!(post_id(&place_of("urb://~wep/forum/general")), None);
     }
 
     #[test]
     fn an_empty_board_says_so() {
-        let p = place_of("urb://~rup/furum/m1c");
+        let p = place_of("urb://~rup/forum/m1c");
         let s = board_page(&p, &Board { title: "m1c".into(), ..Board::default() }, &Write::default());
         assert!(s.html.contains("No posts yet."));
         assert!(s.html.contains("<h1>m1c</h1>"));
@@ -877,7 +785,7 @@ mod tests {
 
     #[test]
     fn hostile_bodies_and_links_are_escaped() {
-        let p = place_of("urb://~rup/furum/m1c/4");
+        let p = place_of("urb://~rup/forum/m1c/4");
         for url in ["javascript:alert(1)", "data:text/html,<script>alert(1)</script>", "https://example.com/\"><script>"] {
             let s = thread_page(&p, &thread_with(hostile(), hostile(), Some(url)), &Write::default());
             let h = &s.html;
@@ -895,37 +803,13 @@ mod tests {
     }
 
     #[test]
-    fn furum_values_read_as_posts_and_comments() {
-        let posts = Js::Arr(vec![
-            Js::obj([
-                ("id", Js::Num(1.0)),
-                ("author", Js::Str("~hus".into())),
-                ("title", Js::Str("t".into())),
-                ("url", Js::Null),
-                ("body", Js::Null),
-                ("created", Js::Date(None)),
-            ]),
-            Js::obj([("title", Js::Str("no id".into()))]),
-            Js::Str("junk".into()),
-        ]);
-        let ps = furum_posts(&posts);
-        assert_eq!(ps.len(), 1);
-        assert_eq!((ps[0].id.as_str(), ps[0].replies, ps[0].score, ps[0].created), ("1", None, None, None));
-        let cs = furum_comments(&Js::Arr(vec![Js::obj([
-            ("id", Js::Num(0.0)),
-            ("parent", Js::Null),
-            ("author", Js::Str("~rup".into())),
-            ("body", Js::Str("c".into())),
-            ("created", Js::Date(Some(5))),
-        ])]));
-        assert_eq!(cs, vec![Comment { id: "0".into(), parent: None, author: "~rup".into(), body: "c".into(), created: Some(5) }]);
-        assert!(furum_comments(&Js::Null).is_empty());
+    fn an_unreadable_thread_is_none() {
         assert!(forum_thread(&Js::Null).is_none());
     }
 
     /// Real reads on the fleet, as a fake moon: run by
-    /// scripts/desktop-forum-fleet.sh on the furum set's m1c-traces
-    /// snapshot, a furum board on ~rup and a lattice forum on ~hus. Each
+    /// scripts/desktop-forum-fleet.sh on the fleet set's m1c-traces
+    /// snapshot, a lattice forum on ~hus. Each
     /// board (`FLEET_BOARDS`, `url|text` with text the board's first
     /// thread shows) is read, then that thread. Plain `cargo test` skips
     /// it as ignored.

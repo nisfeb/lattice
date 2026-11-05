@@ -4,14 +4,13 @@
 //! on the Urbit network, as a comet this app makes once and keeps, so
 //! someone with no ship can read them (the shipless reader, reader.rs).
 //!
-//! The engine reads page content, and lattice forum and furum boards
-//! (`boards`, read calls only), and makes two writes, each as the comet
+//! The engine reads page content, and lattice forum boards (`boards`,
+//! read calls only), and makes two writes, each as the comet
 //! itself: a comment on a published page, poked to the publisher's comment
 //! inbox (owner, 2026-11-03: someone using the app anonymously can browse
 //! and comment), and a post or a reply on a public lattice forum board,
 //! poked to the host's forum inbox (`forum_write`). It never votes,
-//! follows, bookmarks or publishes, never writes to a furum board, and
-//! never acts as the user's ship. Every request it makes goes through
+//! follows, bookmarks or publishes, and never acts as the user's ship. Every request it makes goes through
 //! `submit_read`, `submit_board`, `submit_comment`, `submit_forum_write`
 //! or `submit_open_list`, and a test reads this file's own source to hold
 //! it to that (`only_reads_and_comments_are_submitted`).
@@ -43,7 +42,7 @@ use std::time::{Duration, Instant};
 use urb_engine::host::net::{libmesa_log, random, Log, NetIo};
 use urb_engine::host::{Event, Host};
 use urb_engine::url::{APP_BASE, DESK_BASE};
-use urb_engine::core::{ForumCall, FurumCall};
+use urb_engine::core::ForumCall;
 use urb_engine::js::Js;
 use urb_engine::{Failure, Int, Reply, Request, Value};
 use urb_gateway::state::{self, GatewayUdp};
@@ -256,15 +255,12 @@ pub struct Comets {
     pub full_until: Option<u64>,
 }
 
-/// A read of a board, one of four: a lattice forum's board or one of its
-/// threads, or a furum board's posts or one post's comments. Nothing here
-/// posts, comments or votes.
+/// A read of a board, one of two: a lattice forum's board or one of its
+/// threads. Nothing here posts, comments or votes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BoardAsk {
     Forum { host: String, board: String },
     ForumThread { host: String, board: String, post: Int },
-    FurumPosts { host: String, board: String },
-    FurumComments { host: String, board: String, post: u64 },
 }
 
 /// A write on a lattice forum board, the only two a comet makes: a new
@@ -1188,7 +1184,7 @@ fn submit_read<I: urb_engine::host::Io>(host: &mut Host<I>, url: String) -> u64 
     host.submit(Request::Read(url))
 }
 
-/// A board read: the read calls of furum's and lattice's forum readers,
+/// A board read: the read calls of lattice's forum reader,
 /// and no others (`only_reads_and_comments_are_submitted`).
 fn submit_board<I: urb_engine::host::Io>(host: &mut Host<I>, a: BoardAsk) -> u64 {
     host.submit(match a {
@@ -1197,10 +1193,6 @@ fn submit_board<I: urb_engine::host::Io>(host: &mut Host<I>, a: BoardAsk) -> u64
             host,
             call: ForumCall::Thread(board, urb_engine::msg::Id::Big(false, post)),
         },
-        BoardAsk::FurumPosts { host, board } => Request::Furum { host, call: FurumCall::Posts(board) },
-        BoardAsk::FurumComments { host, board, post } => {
-            Request::Furum { host, call: FurumCall::Comments(board, post as f64) }
-        }
     })
 }
 
@@ -1480,9 +1472,8 @@ mod tests {
     /// forum board. Every request it names is a Read, a board read, that
     /// Poke, a forum write, or one Peek of a list under the publisher's
     /// `/pub`; it submits in five places, and it never publishes or hears
-    /// an inbox. Its forum and furum calls are the readers' read calls and
-    /// the forum's newPost and newComment, by name: never a vote, a note or
-    /// a furum write. A change that needs any of those has to change this
+    /// an inbox. Its forum calls are the readers' read calls and
+    /// the forum's newPost and newComment, by name: never a vote or a note. A change that needs any of those has to change this
     /// test on purpose.
     #[test]
     fn only_reads_and_comments_are_submitted() {
@@ -1497,7 +1488,7 @@ mod tests {
             .collect();
         assert_eq!(
             named,
-            ["Read", "Forum", "Forum", "Furum", "Furum", "Poke", "Forum", "Peek", "Peek"],
+            ["Read", "Forum", "Forum", "Poke", "Forum", "Peek", "Peek"],
             "the engine names only Request::Read, the board reads, one Poke, the forum write and two Peeks"
         );
         for word in ["Inbox", "PubPut", "PubRemove", "Pub {", "Watch"] {
@@ -1518,8 +1509,6 @@ mod tests {
             [
                 "ForumCall::Board",
                 "ForumCall::Thread",
-                "FurumCall::Posts",
-                "FurumCall::Comments",
                 "ForumCall::NewPost",
                 "ForumCall::NewComment"
             ],
