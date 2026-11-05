@@ -416,7 +416,7 @@ async function cloneLanes(b, n) {
 
 async function runShip(b) {
   if (flag('--warm')) { await snapBase(b); say('the gate snapshot is warm'); return; }
-  if (!shipSuites.length) return;
+  if (!shipSuites.length) { if (TWO) await phase('suites', runTwo(b)); return; }
   const times = JSON.parse(readFileSync(S + '/gate-times.json', 'utf8'));
   const order = [...shipSuites].sort((x, y) => (times[y] ?? 60) - (times[x] ?? 60));
   const lanes = await makeLanes(b, LANES + (flag('--stall') ? 1 : 0));

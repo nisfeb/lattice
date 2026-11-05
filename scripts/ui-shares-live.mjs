@@ -53,6 +53,8 @@ try {
   await cleanup();
   check('A has the page', (await post(A_, 'page-save?name=' + PAGE + '&type=md&new=1', '# live')).ok);
   const p = await openPage(browser, benv, { viewport: { width: 1280, height: 900 } });
+  let keepUrl = '';
+  p.on('request', (r) => { if (r.url().includes('/api/keep')) keepUrl = r.url(); });
   await p.goto(benv.app, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await p.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0,
     { timeout: 90000 });
@@ -61,11 +63,24 @@ try {
   await p.evaluate(() => { window.__noReload = 1; });
   check('the row is not there before the share', !(await p.$(ROW)));
 
+  // a second reader of the same keep, so a failure says what the stream carried
+  const seen = [];
+  const ac = new AbortController();
+  if (keepUrl) fetch(keepUrl, { headers: { Cookie: benv.cookie, Accept: 'text/event-stream' }, signal: ac.signal })
+    .then(async (res) => {
+      const dec = new TextDecoder();
+      for await (const c of res.body) seen.push(...dec.decode(c).split('\n').filter((l) => l.startsWith('event:') || l.startsWith('data:')));
+    }).catch(() => {});
+  await sleep(1500);
   const r = await post(A_, 'share-file?name=' + PAGE + '&ship=' + q(BSHIP) + '&mode=read');
   const j = r.ok ? await r.json() : {};
   check('A shares the page and B acks the notice', r.ok && j.notified, JSON.stringify(j));
   const t0 = Date.now();
-  check('B\'s tree shows it within 10s, no reload', await until(p, (s) => !!document.querySelector(s), ROW, 10000));
+  const shown = await until(p, (s) => !!document.querySelector(s), ROW, 10000);
+  check('B\'s tree shows it within 10s, no reload', shown, shown ? '' : JSON.stringify({ keepUrl,
+    seen: seen.slice(-12), entry: await entry(),
+    rows: await p.evaluate(() => [...document.querySelectorAll('#treelist a.pg.swm')].map((a) => a.title)) }));
+  ac.abort();
   console.log(`  (row appeared after ${((Date.now() - t0) / 1000).toFixed(1)} s)`);
   const toast = await p.evaluate(() => {
     const t = document.querySelector('.swtoast');

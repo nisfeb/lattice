@@ -329,6 +329,10 @@
         ::  the run after a save is down (+eval-run), for the live data
         ::  view, whose /rev the page's publish bumped before that run.
             [%fall %& [/beacon %data] [[/ %json] (numb:enjs:format 0)]]
+        ::  /beacon/shares: stamped by +bump-shares when shared with me
+        ::  changes. A row, so the grub exists before a keep registers: the
+        ::  keep streams only the grubs /beacon held when it began.
+            [%fall %& [/beacon %shares] [[/ %json] (numb:enjs:format 0)]]
         ::  /idx: the grub-native term index (docs/native-index.md). 256 bucket
         ::  grubs, each term -> (key -> [scope tf]). ONE covering %fall row. A
         ::  nexus reload rewrites its whole covered subtree, so without a row
