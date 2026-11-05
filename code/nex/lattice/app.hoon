@@ -11215,8 +11215,9 @@
 ::  grubbery wakes a file keep only when that file changes. Each wake
 ::  diffs all of /beacon, so /shares rides along, but a /shares write alone
 ::  reaches no open tab (measured on fleet ships: the grub held the new
-::  stamp and the keep stayed silent until the next /rev). The extra /rev
-::  costs a tab one tree refresh per share, which is rare.
+::  stamp and the keep stayed silent until the next /rev). The payload's
+::  `rev` is the /rev this write stamps, so a tab knows that /rev came from
+::  a share and refetches shared with me alone, not its tree (90-sync.js).
 ::
 ++  bump-shares
   |=  [root=@ud op=@t host=@p pax=path now=@da]
@@ -11229,6 +11230,7 @@
         ['op' s+op]
         ['host' s+(scot %p host)]
         ['path' s+(spat pax)]
+        ['rev' (numb:enjs:format `@ud`now)]
     ==
   (bump-beacon %rev now)
 ::  +tell-unshared: a revoke, told to the ships that held it. Each page
@@ -17091,6 +17093,9 @@
       %:  ug-merge  g.i.l  ~  (silt ~[code])
         ?.(=('edit' md.i.l) ~ (silt ~[code]))
       ==
+    ::  and its ships hear of it, so their shared with me lists it live
+    ;<  ~  bind:m
+      (notice-group g.i.l [%add (snoc :(weld sb /page rel) %code) md.i.l])
     $(l t.l)
   ;<  ix=?  bind:m  (peek-exists:fio (rf up (weld /page dir) %'dir-index'))
   ;<  ~  bind:m  ?.(ix (pure:m ~) (write-dir-index root dir))
@@ -17128,8 +17133,37 @@
     |-  ^-  form:m
     ?~  l  (pure:m ~)
     ;<  *  bind:m  (ug-drop i.l (silt ~[code]))
+    ;<  our=@p  bind:m  bowl-our
+    ;<  ~  bind:m  (notice-group i.l [%del our (snoc :(weld sb /page pax i.rels) %code)])
     $(l t.l)
   $(rels t.rels)
+::  +notice-group: a share notice to each ship in a group, as +grant-new
+::  and +revoke-folder-grants change what a folder granted. These run in
+::  the writer, so the notice is fire-and-forget (as +forum-note-send) and
+::  the peer's base comes from the cache alone, never a remote peek: an
+::  offline ship costs nothing, and simply misses the live update.
+++  notice-group
+  |=  [gname=@t act=action:ls]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
+  ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
+  =/  ships=(list @p)
+    ?.  ?=([%file *] wv)  ~
+    ~(tap in (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~))
+  ?~  ships  (pure:m ~)
+  ;<  known=(map @t json)  bind:m  read-peers
+  |-  ^-  form:m
+  ?~  ships  (pure:m ~)
+  =/  hit=(unit json)  (~(get by known) (scot %p i.ships))
+  =/  base=(unit path)  ?.(?=([~ %s *] hit) ~ (rush p.u.hit stap))
+  =/  req=load:remo:nexus
+    :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
+    [%poke [/lattice %share-notice] act]
+  ;<  ~  bind:m
+    %+  poke:io  &+&+[/sys/gall %'main.sig']
+    [[/ %gall-poke] [[i.ships %grubbery] grubbery-load+req]]
+  $(ships t.ships)
 ::  +refresh-dir-index-above: each folder at or above `dir` that keeps an
 ::  index (+write-dir-index) writes it again
 ++  refresh-dir-index-above
