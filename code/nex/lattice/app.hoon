@@ -329,6 +329,10 @@
         ::  the run after a save is down (+eval-run), for the live data
         ::  view, whose /rev the page's publish bumped before that run.
             [%fall %& [/beacon %data] [[/ %json] (numb:enjs:format 0)]]
+        ::  /beacon/shares: stamped by +bump-shares when shared with me
+        ::  changes. A row, so the grub exists before a keep registers: the
+        ::  keep streams only the grubs /beacon held when it began.
+            [%fall %& [/beacon %shares] [[/ %json] (numb:enjs:format 0)]]
         ::  /idx: the grub-native term index (docs/native-index.md). 256 bucket
         ::  grubs, each term -> (key -> [scope tf]). ONE covering %fall row. A
         ::  nexus reload rewrites its whole covered subtree, so without a row
@@ -3074,8 +3078,16 @@
     ?~  gname  (send-err eyre-id 400 'missing name')
     ?.  ((sane %tas) u.gname)  (send-err eyre-id 400 'bad name')
     =/  gdir=path  (snoc ug-base (crip (weld (trip u.gname) ".grp")))
+    ::  who held what, read before the group goes, so the members can be
+    ::  told (+tell-unshared) and their shared with me drops it live
+    ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
+    =/  held=(set @p)
+      ?.  ?=([%file *] wv)  ~
+      (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
+    ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
     ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| gdir])
     ?^  e  (ug-refused eyre-id)
+    ;<  ~  bind:m  (tell-unshared ~(tap in held) ~(tap in peek.old))
     (send-ok eyre-id)
   ::  ── private forum boards: invite and revoke (owner) ──
   ::  A private board's members are a per-board usergroup, forum-<board>, whose
@@ -11154,30 +11166,105 @@
       %+  turn  `(list [rel=path l=link:ll])`hits
       |=  [rel=path l=link:ll]
       [rel ?:(?=(%local -.l) l l(mode mode.u.na))]
-    %^  put-file  (rf root / %shared)  [/lattice %shared]
-    (put-entry:ls cur [u.src pax.u.na mode.u.na now])
+    ;<  ~  bind:m
+      %^  put-file  (rf root / %shared)  [/lattice %shared]
+      (put-entry:ls cur [u.src pax.u.na mode.u.na now])
+    (bump-shares root 'add' u.src pax.u.na now)
   ::
       %del
-    ::  from the host itself, about a page we linked: the link stays, marked
-    ::  as failed (+fail:ll), until the owner removes it. Any other foreign
-    ::  %del is dropped: curation is owner-only.
+    ::  from the host itself: the host revoked its grant (+tell-unshared).
+    ::  A page we linked keeps its link, marked as failed (+fail:ll), until
+    ::  the owner removes it. An entry still in shared with me goes, since
+    ::  the host is the one ship that may retract its own claim. Any other
+    ::  foreign %del is dropped: curation is owner-only.
     ?^  src
       ?.  =(u.src host.u.na)  (pure:m ~)
       ?:  (is-banned:ls bans u.src)  (pure:m ~)
       ;<  hits=(list [rel=path l=link:ll])  bind:m  (links-to u.src pax.u.na)
-      %-  put-links
-      %+  turn  hits
-      |=([rel=path l=link:ll] [rel (fail:ll l now)])
-    %^  put-file  (rf root / %shared)  [/lattice %shared]
-    (del-entry:ls cur host.u.na pax.u.na)
+      ;<  ~  bind:m
+        %-  put-links
+        %+  turn  hits
+        |=([rel=path l=link:ll] [rel (fail:ll l now)])
+      ?.  (lien cur |=(e=entry:ls &(=(host.e u.src) =(pax.e pax.u.na))))
+        (pure:m ~)
+      ;<  ~  bind:m
+        %^  put-file  (rf root / %shared)  [/lattice %shared]
+        (del-entry:ls cur u.src pax.u.na)
+      (bump-shares root 'del' u.src pax.u.na now)
+    ;<  ~  bind:m
+      %^  put-file  (rf root / %shared)  [/lattice %shared]
+      (del-entry:ls cur host.u.na pax.u.na)
+    (bump-shares root 'del' host.u.na pax.u.na now)
   ::
       %put
     ::  a link going back to shared with me (+handle-link-unmake). Ours
     ::  alone: a foreign ship naming any host would forge an entry.
     ?^  src  (pure:m ~)
-    %^  put-file  (rf root / %shared)  [/lattice %shared]
-    (put-entry:ls cur [host.u.na pax.u.na mode.u.na now])
+    ;<  ~  bind:m
+      %^  put-file  (rf root / %shared)  [/lattice %shared]
+      (put-entry:ls cur [host.u.na pax.u.na mode.u.na now])
+    (bump-shares root 'put' host.u.na pax.u.na now)
   ==
+::  +bump-shares: tell open clients that shared with me changed, on
+::  /beacon/shares (the keep they hold streams all of /beacon). The payload
+::  is who, which page and what happened, nothing more. The stamp makes
+::  every write a fresh event. The editor refetches /shared-with-me on it,
+::  and says so for an 'add'.
+::
+::  Then /rev moves too. The editor's keep is on the FILE /beacon/rev, and
+::  grubbery wakes a file keep only when that file changes. Each wake
+::  diffs all of /beacon, so /shares rides along, but a /shares write alone
+::  reaches no open tab (measured on fleet ships: the grub held the new
+::  stamp and the keep stayed silent until the next /rev). The payload's
+::  `rev` is the /rev this write stamps, so a tab knows that /rev came from
+::  a share and refetches shared with me alone, not its tree (90-sync.js).
+::
+++  bump-shares
+  |=  [root=@ud op=@t host=@p pax=path now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m
+    %^  put-file  (rf root /beacon %shares)  [/ %json]
+    %-  pairs:enjs:format
+    :~  ['t' s+(scot %da now)]
+        ['op' s+op]
+        ['host' s+(scot %p host)]
+        ['path' s+(spat pax)]
+        ['rev' (numb:enjs:format `@ud`now)]
+    ==
+  (bump-beacon %rev now)
+::  +tell-unshared: a revoke, told to the ships that held it. Each page
+::  road the group granted goes to each member as a %del notice, which
+::  takes it off their shared with me (+apply-share-notice). Best-effort,
+::  as the %add is: a ship that does not ack its first notice is skipped,
+::  so one offline ship costs one short wait, not one per page.
+::
+++  tell-unshared
+  |=  [ships=(list @p) roads=(list road:tarball)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  paxs=(list path)
+    %+  murn  roads
+    |=  r=road:tarball
+    ?.  ?=(%& -.r)  ~
+    ?.  ?=(%& -.p.r)  ~
+    ?.  =(%code name.p.p.r)  ~
+    `(snoc path.p.p.r %code)
+  ?~  paxs  (pure:m ~)
+  ;<  our=@p  bind:m  bowl-our
+  |-  ^-  form:m
+  ?~  ships  (pure:m ~)
+  ;<  base=(unit path)  bind:m  (peer-base-cached i.ships)
+  =/  ps=(list path)  paxs
+  |-  ^-  form:m
+  ?~  ps  ^$(ships t.ships)
+  ;<  told=?  bind:m
+    %^  remote-load-poke-wait  i.ships
+      :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
+      [%poke [/lattice %share-notice] `action:ls`[%del our i.ps]]
+    ~s3
+  ?.  told  ^$(ships t.ships)
+  $(ps t.ps)
 ::  +strip-ship-from-groups: remove one ship from every usergroup's who.ships,
 ::  returning how many groups changed. This is what makes a ban a revocation
 ::  rather than a note. Grants are unioned across the groups a ship belongs to,
@@ -17006,6 +17093,9 @@
       %:  ug-merge  g.i.l  ~  (silt ~[code])
         ?.(=('edit' md.i.l) ~ (silt ~[code]))
       ==
+    ::  and its ships hear of it, so their shared with me lists it live
+    ;<  ~  bind:m
+      (notice-group g.i.l [%add (snoc :(weld sb /page rel) %code) md.i.l])
     $(l t.l)
   ;<  ix=?  bind:m  (peek-exists:fio (rf up (weld /page dir) %'dir-index'))
   ;<  ~  bind:m  ?.(ix (pure:m ~) (write-dir-index root dir))
@@ -17043,8 +17133,36 @@
     |-  ^-  form:m
     ?~  l  (pure:m ~)
     ;<  *  bind:m  (ug-drop i.l (silt ~[code]))
+    ;<  our=@p  bind:m  bowl-our
+    ;<  ~  bind:m  (notice-group i.l [%del our (snoc :(weld sb /page pax i.rels) %code)])
     $(l t.l)
   $(rels t.rels)
+::  +notice-group: a share notice to each ship in a group, as +grant-new
+::  and +revoke-folder-grants change what a folder granted. These run in
+::  the writer, so the notice is fire-and-forget (as +forum-note-send) and
+::  the peer's base comes from the cache alone, never a remote peek: an
+::  offline ship costs nothing, and simply misses the live update.
+++  notice-group
+  |=  [gname=@t act=action:ls]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
+  ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
+  =/  ships=(list @p)
+    ?.  ?=([%file *] wv)  ~
+    ~(tap in (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~))
+  ;<  known=(map @t json)  bind:m  read-peers
+  |-  ^-  form:m
+  ?~  ships  (pure:m ~)
+  =/  hit=(unit json)  (~(get by known) (scot %p i.ships))
+  =/  base=(unit path)  ?.(?=([~ %s *] hit) ~ (rush p.u.hit stap))
+  =/  req=load:remo:nexus
+    :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
+    [%poke [/lattice %share-notice] act]
+  ;<  ~  bind:m
+    %+  poke:io  &+&+[/sys/gall %'main.sig']
+    [[/ %gall-poke] [[i.ships %grubbery] grubbery-load+req]]
+  $(ships t.ships)
 ::  +refresh-dir-index-above: each folder at or above `dir` that keeps an
 ::  index (+write-dir-index) writes it again
 ++  refresh-dir-index-above

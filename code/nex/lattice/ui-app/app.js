@@ -10708,7 +10708,43 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
     try { r = await (bg ? bgFetch : fetch)(api + '/shared-with-me'); } catch {}
     if (!r || !r.ok) return;           // the folder just stays as it was
     sharedWithMe = await r.json();
+    swmAt = Date.now();
     renderTree();
+  }
+  // ── live: /beacon/shares (90-sync.js) ───────────────────────────────────
+  // The ship stamps /beacon/shares whenever the list changes: a notice
+  // landed, the host revoked one, or we curated it. The stream hands us
+  // {op, host, path}, and the list is refetched rather than patched, so the
+  // tree only ever shows what /shared-with-me says.
+  let swmAt = 0;
+  let swmTimer = null;
+  const sharesBumped = (data) => {
+    clearTimeout(swmTimer);
+    swmTimer = setTimeout(loadShared, 300);
+    let j = null;
+    try { j = JSON.parse(data); } catch {}
+    if (j && j.op === 'add' && j.host && j.path) shareToast(j);
+  };
+  // the stream dropped (a hidden tab, a sleeping laptop): a window that
+  // comes back refetches, at most once a minute
+  const sharesRefocused = () => {
+    if (!document.hidden && Date.now() - swmAt >= 60000) loadShared(true);
+  };
+  window.addEventListener('focus', sharesRefocused);
+  document.addEventListener('visibilitychange', sharesRefocused);
+  // "~ship shared <page> with you": no sound, no badge, gone in 8s
+  let toastEl = null;
+  function shareToast(j) {
+    if (toastEl) toastEl.remove();
+    const t = toastEl = document.createElement('a');
+    t.className = 'swtoast';
+    t.setAttribute('role', 'status');
+    t.href = '/apps/lattice/app?grub=' + encodeURIComponent(j.path) +
+      '&ship=' + encodeURIComponent(j.host);
+    t.textContent = j.host + ' shared ' + sharedName(j.path) + ' with you';
+    t.title = 'open it';
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 8000);
   }
   //  Take an entry off the list, after a confirm. Nothing is deleted:
   //  the page is theirs, and their grant stays as it is. The ×, the tree's
@@ -13340,8 +13376,27 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   // happened while nobody was watching — refresh. Bumps after registration
   // arrive as upd events, exactly as before.
   let streamLive = false;
+  let lastShares = '';
   let beaconTimer = null;
-  const bumped = () => { clearTimeout(beaconTimer); beaconTimer = setTimeout(refreshAll, 300); };
+  // a share stamps /beacon/shares and then /rev, the file this keep wakes
+  // on (+bump-shares). Its payload names that /rev, so a debounce window
+  // whose live /rev bumps all came from shares refetches shared with me
+  // (69-shared.js) and skips the tree. Either may arrive first, hence the
+  // window. Any other bump in it, or any other caller of bumped, refreshes.
+  const digits = (s) => String(s || '').replace(/\D/g, '');
+  const sharesRevs = new Set();
+  let liveRevs = [];
+  const revBumped = (data) => {
+    liveRevs.push(digits(data));
+    clearTimeout(beaconTimer);
+    beaconTimer = setTimeout(() => {
+      const all = liveRevs.length && liveRevs.every((r) => r && sharesRevs.has(r));
+      liveRevs = [];
+      sharesRevs.clear();
+      if (!all) refreshAll();
+    }, 300);
+  };
+  const bumped = () => revBumped('');
   const knowBumped = () => { if (knowLive()) bumped(); };
   // comments never bump /rev (apply-comment stamps only /beacon/comments), so
   // a foreign comment used to reach the badge only by accident, on whatever
@@ -13452,6 +13507,19 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
               knowBumped();
               continue;
             }
+            // /shares: shared with me changed (69-shared.js). Registration
+            // reports the stamp as it stood. One that moved since the last
+            // registration is a change this client missed.
+            if (name.slice(-8) === ' /shares') {
+              if (data === lastShares) continue;
+              const was = lastShares;
+              lastShares = data;
+              const sr = /"rev"\s*:\s*"?(\d+)/.exec(data);
+              if (sr) sharesRevs.add(sr[1]);
+              if (name.slice(0, 3) !== 'old') sharesBumped(data);
+              else if (was) loadShared();
+              continue;
+            }
             if (name.slice(-5) !== ' /rev') {
               // registration ("old /comments") just reports the stamp as it
               // already stood, nothing to react to. A live bump is the
@@ -13480,7 +13548,7 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
             bumpedLive = true;
             noteRev(data);
             if (echoSeen(echoes.rev, bumped)) continue;
-            bumped();
+            revBumped(data);
           }
         }
       } catch {}
