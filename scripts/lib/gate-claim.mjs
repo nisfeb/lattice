@@ -68,6 +68,17 @@ export async function claim(dir, set, who, { secs = 0, say = () => {}, every = 1
   }
 }
 
+//  Why a gate run that executed no suite fails, or '' when it ran one (or
+//  was a --warm run, which runs none by design). Such a run used to print
+//  "0 passed, 0 failed" and exit 0, as when it gave up waiting for a set
+//  another live gate held. `planned` counts the suites it meant to run.
+export function noneRanWhy({ ran, planned, fatal = '', warm = false }) {
+  if (ran > 0 || warm) return '';
+  if (fatal) return 'no suite ran: ' + fatal;
+  if (!planned) return 'no suite ran: nothing matched what was asked (--only names a two-ship suite without --two-ship?)';
+  return `no suite ran: ${planned} were planned and none started`;
+}
+
 //  Removes the claim only while it is ours. Answers whether it did.
 export function release(dir, set, who) {
   const f = join(dir, set);

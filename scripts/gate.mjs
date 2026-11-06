@@ -63,7 +63,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync
 import { cpus, freemem, homedir, loadavg } from 'os';
 import { join } from 'path';
 import { SCRATCH, diskShort, killTagged, marked, noCores, procTag, unmarked } from './lib/hygiene.mjs';
-import { claim, ownerName, release, staleClones } from './lib/gate-claim.mjs';
+import { claim, noneRanWhy, ownerName, release, staleClones } from './lib/gate-claim.mjs';
 
 const HOME = homedir();
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
@@ -319,8 +319,9 @@ let clones = [];
 const claimed = new Set();
 const CLAIMS = HOME + '/fleet/claims';
 async function claimSet(set, ship) {
-  const r = await claim(CLAIMS, set, WHO, { secs: Number(process.env.GATE_WAIT ?? 2700), say });
-  if (!r.ok) throw new Error(`set ${set} is claimed by ${r.holder}`);
+  const secs = Number(process.env.GATE_WAIT ?? 2700);
+  const r = await claim(CLAIMS, set, WHO, { secs, say });
+  if (!r.ok) throw new Error(`the claim wait timed out after ${secs} s: set ${set} is held by ${r.holder}`);
   claimed.add(set);
   say(`claimed ${set} as ${WHO}`);
   //  clones of this set's ship that a gate now gone left behind
@@ -554,12 +555,16 @@ const names = [...new Set(results.map((r) => r.suite))];
 const failed = names.map(last).filter((r) => !r.ok);
 const flaky = results.filter((r) => r.flaky);
 const missing = shipSuites.filter((n) => !results.some((r) => r.suite === n));
+//  a run that ran nothing fails, saying why, rather than passing on 0 of 0
+const twoPlanned = !TWO ? 0 : ONLY && TWOS.some(([n]) => ONLY.includes(n)) ? TWOS.filter(([n]) => ONLY.includes(n)).length : TWOS.length;
+const none = noneRanWhy({ ran: results.length, planned: localJobs.length + shipSuites.length + twoPlanned, fatal, warm: flag('--warm') });
 console.log(`\n${names.length - failed.length - flaky.length} passed, ${flaky.length} flaky, ${failed.length} failed, wall ${(wall / 60).toFixed(1)} min (${wall.toFixed(0)} s), logs ${LOGS}`);
 if (loads.length) console.log(`host load (1 min): mean ${(loads.reduce((a, b) => a + b, 0) / loads.length).toFixed(1)}, peak ${Math.max(...loads).toFixed(1)}, on ${cpus().length} threads`);
 if (!TWO) console.log(`not run: the two-ship suites (${TWOS.map(([n]) => n).join(', ')}); pass --two-ship SET`);
 if (!flag('--stall')) console.log('not run: stall-check.py; pass --stall');
 if (missing.length && fatal) console.log('never started: ' + missing.join(' '));
 if (fatal) console.log('gate error: ' + fatal);
+if (none) console.log('gate error: ' + none);
 console.log('phases: ' + phases.map(([n, t]) => `${n} ${t.toFixed(0)} s`).join(', '));
 for (const r of flaky) console.log(`flaky: ${r.suite} failed under the parallel load and passed alone (${LOGS}/${r.suite}.log)`);
 for (const r of failed) console.log(`  ${r.suite}: ${LOGS}/${r.suite}${r.retry ? '.retry' : ''}.log`);
@@ -568,4 +573,4 @@ if (flag('--record') && !fatal) {
   for (const r of results) if (r.lane !== 'local' && r.ok && !r.retry) times[r.suite] = Math.round(r.secs);
   writeFileSync(S + '/gate-times.json', JSON.stringify(Object.fromEntries(Object.entries(times).sort((a, b) => b[1] - a[1])), null, 2) + '\n');
 }
-process.exit(failed.length || fatal || (flag('--strict') && flaky.length) ? 1 : 0);
+process.exit(failed.length || fatal || none || (flag('--strict') && flaky.length) ? 1 : 0);
