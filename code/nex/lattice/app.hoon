@@ -4580,6 +4580,30 @@
   ::  route, also behind the gate. The only unauthenticated surfaces (clearweb
   ::  /c/, public form POST /f/, PWA assets) dispatch above it.
       [%'GET' %content-search]
+    ::  ?q= is a whole query, tokenized here as the index was
+    ::  (+query-terms:li), one bucket peek per term, each row naming the
+    ::  term it matched. The omnibar asks this way. ?term= is one term.
+    ?:  (~(has by args) 'q')
+      =/  ts=(list @t)  (query-terms:li (trip (~(got by args) 'q')))
+      ;<  rows=(list json)  bind:m
+        =/  n  (fiber:fiber:nexus ,(list json))
+        =|  acc=(list (list json))
+        |-  ^-  form:n
+        ?~  ts  (pure:n (zing (flop acc)))
+        ;<  hits=(list [scope=@t key=@t tf=@ud])  bind:n  (index-look i.ts)
+        =/  rs=(list json)
+          %+  turn  hits
+          |=  [scope=@t key=@t tf=@ud]
+          a+~[s+scope s+key s+(scot %ud tf) s+i.ts]
+        $(ts t.ts, acc [rs acc])
+      %+  send-json  eyre-id
+      %-  pairs:enjs:format
+      :~  ['ok' b+&]
+          ['terms' a+(turn (query-terms:li (trip (~(got by args) 'q'))) |=(t=@t s+t))]
+          ['columns' a+(turn ~['scope' 'key' 'tf' 'term'] |=(c=@t s+c))]
+          ['count' (numb:enjs:format (lent rows))]
+          ['rows' a+rows]
+      ==
     =/  term=(unit @t)  (~(get by args) 'term')
     ?~  term  (send-err eyre-id 400 'missing term param')
     =/  nt=(unit @t)  (normalize-term:li (trip u.term))
@@ -16743,7 +16767,7 @@
     ::  being pasted here, and contains no single quote or backslash so it needs
     ::  no cord escaping.
     %-  trip
-    '<script>(function(){var p=new URLSearchParams(location.search);var q=(p.get("url")||"").trim();var out=document.getElementById("results");if(!q){out.textContent="";return}var words=q.toLowerCase().split(/[^a-z0-9]+/).filter(function(w){return w.length>=2});if(!words.length){out.textContent="Type at least one search word (2+ letters).";return}function get(u){return fetch(u).then(function(r){return r.ok?r.json():{rows:[]}}).catch(function(){return{rows:[]}})}var calls=words.map(function(w){return get("/apps/lattice/content-search?term="+encodeURIComponent(w))});Promise.all(calls).then(function(res){var hits={};function bump(scope,key,tf){var k=scope+"|"+key;if(!hits[k])hits[k]={scope:scope,key:key,terms:0,tf:0};hits[k].terms++;hits[k].tf+=tf;}res.forEach(function(j){var c=j.columns||[];var rows=j.rows||[];var si=c.indexOf("scope"),ki=c.indexOf("key"),ti=c.indexOf("tf");rows.forEach(function(row){var s=row[si],k=row[ki];if(!s||!k)return;bump(s,k,parseInt(row[ti],10)||0);});});var list=Object.keys(hits).map(function(k){return hits[k]});list.sort(function(a,b){return b.terms-a.terms||b.tf-a.tf});out.textContent="";out.className="";if(!list.length){out.className="muted";out.textContent="Nothing matches that.";return}var ul=document.createElement("ul");ul.className="qlist";list.slice(0,50).forEach(function(h){var href;if(h.scope==="knowledge"){href="/apps/lattice/app?view=know&name="+encodeURIComponent(h.key)}else if(h.scope==="private"){href="/apps/lattice/app?name="+encodeURIComponent(h.key)}else{href="/apps/lattice?url="+encodeURIComponent("urb://"+OUR+"/"+h.key)}var li=document.createElement("li");var a=document.createElement("a");a.href=href;var b=document.createElement("span");b.className="qbadge "+h.scope;b.textContent=h.scope;var n=document.createElement("span");n.className="qname";n.textContent=h.key;var s=document.createElement("span");s.className="qprev";s.textContent=h.terms+(h.terms>1?" terms":" term")+", tf "+h.tf;a.appendChild(b);a.appendChild(n);a.appendChild(s);li.appendChild(a);ul.appendChild(li);});out.appendChild(ul);}).catch(function(){out.className="muted";out.textContent="Search is unavailable.";});})();</script>'
+    '<script>(function(){var p=new URLSearchParams(location.search);var q=(p.get("url")||"").trim();var out=document.getElementById("results");if(!q){out.textContent="";return}fetch("/apps/lattice/content-search?q="+encodeURIComponent(q)).then(function(r){if(!r.ok)throw r;return r.json()}).then(function(j){if(!(j.terms||[]).length){out.textContent="Type at least one search word (3+ letters).";return}var hits={};function bump(scope,key,tf){var k=scope+"|"+key;if(!hits[k])hits[k]={scope:scope,key:key,terms:0,tf:0};hits[k].terms++;hits[k].tf+=tf;}var c=j.columns||[];var si=c.indexOf("scope"),ki=c.indexOf("key"),ti=c.indexOf("tf");(j.rows||[]).forEach(function(row){var s=row[si],k=row[ki];if(!s||!k)return;bump(s,k,parseInt(row[ti],10)||0);});var list=Object.keys(hits).map(function(k){return hits[k]});list.sort(function(a,b){return b.terms-a.terms||b.tf-a.tf});out.textContent="";out.className="";if(!list.length){out.className="muted";out.textContent="Nothing matches that.";return}var ul=document.createElement("ul");ul.className="qlist";list.slice(0,50).forEach(function(h){var href;if(h.scope==="knowledge"){href="/apps/lattice/app?view=know&name="+encodeURIComponent(h.key)}else if(h.scope==="private"){href="/apps/lattice/app?name="+encodeURIComponent(h.key)}else{href="/apps/lattice?url="+encodeURIComponent("urb://"+OUR+"/"+h.key)}var li=document.createElement("li");var a=document.createElement("a");a.href=href;var b=document.createElement("span");b.className="qbadge "+h.scope;b.textContent=h.scope;var n=document.createElement("span");n.className="qname";n.textContent=h.key;var s=document.createElement("span");s.className="qprev";s.textContent=h.terms+(h.terms>1?" terms":" term")+", tf "+h.tf;a.appendChild(b);a.appendChild(n);a.appendChild(s);li.appendChild(a);ul.appendChild(li);});out.appendChild(ul);}).catch(function(){out.className="muted";out.textContent="Search is unavailable.";});})();</script>'
   ==
 ::  +clip-paste-html: the landing page the send-page bookmarklet opens. Its only
 ::  job is to be same-origin with the api: it receives the html over

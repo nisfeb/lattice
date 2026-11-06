@@ -14,4 +14,16 @@
 ++  test-index-terms-lines
   %+  expect-eq  !>((~(gas by *(map @t @ud)) ~[['line' 1] ['next' 1] ['word' 2]]))
   !>((index-terms:li ~ "word line\0anext word"))
+::  +query-terms: a query is tokenized as the index is, so a hyphenated
+::  or dotted word is asked for whole, as +index-terms stored it
+++  test-query-terms
+  =/  doc  (index-terms:li ~ "met ~ricsul-bilwyt about foo.hoon")
+  ;:  weld
+    %+  expect-eq  !>(`(list @t)`~['ricsul-bilwyt' 'foo.hoon'])
+    !>((query-terms:li "~RICSUL-BILWYT  foo.hoon, foo.hoon"))
+    ::  every term a query asks for is one the indexer stored
+    %+  expect-eq  !>(&)
+    !>((levy (query-terms:li "ricsul-bilwyt foo.hoon") |=(t=@t (~(has by doc) t))))
+    (expect-eq !>(`(list @t)`~) !>((query-terms:li "a of the")))
+  ==
 --

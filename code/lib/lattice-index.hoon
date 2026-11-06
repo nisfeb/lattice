@@ -107,6 +107,21 @@
   =/  nt=(unit @t)  (normalize-term i.toks)
   ?~  nt  $(toks t.toks)
   $(toks t.toks, m (~(put by m) u.nt +((~(gut by m) u.nt 0))))
+::  +query-terms: the index terms a search query asks for, by the same
+::  split and normalization the indexer uses (+index-terms), in the order
+::  typed, each once. The omnibar used to split its query in the browser
+::  on every non-alphanumeric byte, so ricsul-bilwyt and foo.hoon, which
+::  the index holds whole, were asked for in pieces and never matched.
+++  query-terms
+  |=  t=tape
+  ^-  (list @t)
+  =|  [seen=(set @t) out=(list @t)]
+  =/  toks=(list tape)  (split-space t)
+  |-  ^-  (list @t)
+  ?~  toks  (flop out)
+  =/  nt=(unit @t)  (normalize-term i.toks)
+  ?:  |(?=(~ nt) (~(has in seen) u.nt))  $(toks t.toks)
+  $(toks t.toks, seen (~(put in seen) u.nt), out [u.nt out])
 ::  +top-terms: the [n] highest-frequency postings from [m], frequency-
 ::  descending, ties broken by term order so the output is deterministic
 ::  (and so the top-N cap selects the same terms on every rebuild).
