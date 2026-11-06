@@ -111,12 +111,17 @@ if [ -n "${B_PIER:-}" ] && [ -n "${VERE:-}" ]; then
   is "B's comment from before the flood stays" 1 "$(A_ "$A/notify" | jq --arg b "$BODY" '[.items[] | select(.body==$b)] | length')"
   is "B's reply from before the flood stays" 1 "$(A_ "$A/notify" | jq --arg b "$REPLY" '[.items[] | select(.body==$b)] | length')"
   echo "==> A bans B, and B's notes are dropped"
+  # B is past its cap, so a note would only move the held count: the
+  # count staying put is what shows the ban dropped it
+  heldn() { A_ "$A/notify" | jq -r --arg s "$BSHIP" '[.items[] | select(.title=="more notes held back" and .host==$s)][0].body'; }
+  h0=$(heldn)
   is "ban B" 200 "$(code -H "$AK" -X POST "$A/ban?ship=$BSHIP")"
   sleep 2
   TAG2="banned$RANDOM"
   flood 1 "$TAG2" >/dev/null
   sleep 10
   is "a banned ship's note is not filed" 0 "$(tagged "$TAG2")"
+  is "nor counted" "$h0" "$(heldn)"
   is "unban B" 200 "$(code -H "$AK" -X POST "$A/unban?ship=$BSHIP")"
 else
   echo "skip  the flood checks: no B_PIER or VERE"
