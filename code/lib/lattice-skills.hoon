@@ -220,8 +220,7 @@
 ++  sensitive
   |=  s=skill
   ^-  ?
-  =/  v=@t  (meta s 'sensitive')
-  |(=('yes' v) =('true' v))
+  (yes-word:lk (meta s 'sensitive'))
 ++  is-core  |=(s=skill ^-(? (~(has in tags.s) 'core')))
 ++  super
   |=  s=skill
@@ -314,7 +313,7 @@
   :~  ['body' s+body.s]
       ['files' (file-list s)]
   ==
-::  +index: the rows a caller may list, by name. lst=| leaves sensitive
+::  +index: the rows a caller may list, by name. sen=| leaves sensitive
 ::  skills out (a key's listing, unless it is cleared and asks).
 ++  index
   |=  [ss=(map @t skill) sen=?]

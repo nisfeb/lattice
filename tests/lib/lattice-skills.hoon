@@ -113,6 +113,12 @@
     (expect-eq !>(`(unit @t)`~) !>((super (sk (supersede out '') ~))))
   ==
 ::  ==  sensitive and core
+::  the mark reads any case, as memory's does
+++  test-sensitive-case
+  ;:  weld
+    (expect-eq !>(&) !>((sensitive (sk '---\0aname: x\0asensitive: Yes\0a---\0ab' ~))))
+    (expect-eq !>(|) !>((sensitive (sk '---\0aname: x\0asensitive: no\0a---\0ab' ~))))
+  ==
 ++  test-sensitive-core
   ;:  weld
     (expect !>((sensitive (sk '---\0aname: x\0adescription: d\0asensitive: yes\0a---\0ab' ~))))
