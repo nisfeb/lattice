@@ -231,6 +231,13 @@ check('#backups opens the backups tab', JSON.stringify(t3.shown) === '["backups"
   JSON.stringify(t3));
 await atBk.close();
 
+//  a malformed hash names nothing: the first tab still shows
+const badHash = await load({ connected: true, ship: '~x', url: 'https://s.example.com' }, { hash: '#%E0%A4%A' });
+const t4 = await tabsOf(badHash);
+check('a malformed hash still opens the Connection tab',
+  JSON.stringify(t4.shown) === '["connection"]' && t4.current === '#connection', JSON.stringify(t4));
+await badHash.close();
+
 //  the theme the ship page reported is worn here, and kept for next time
 const themed = await load({ connected: true, ship: '~x', url: 'https://s.example.com' },
   { theme: { 'color-scheme': 'dark', '--bg': '#102030', '--accent': '#ff8800' } });
