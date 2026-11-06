@@ -4788,6 +4788,11 @@
     ?~  k  (send-err eyre-id 400 'missing key')
     =/  ko=(unit path)  (know-key u.k)
     ?~  ko  (send-err eyre-id 400 'invalid key')
+    ::  the writer refuses a delete that would land on a deleted memory
+    ::  still in the trash under the key (+apply %del), so say why here
+    ;<  tx=know-index:lk  bind:m  (read-index [%| 2 %& /know %trash])
+    ?:  (~(has by tx) u.ko)
+      (send-err eyre-id 409 'a deleted memory with this key is in the trash: restore it, or move this one to another key first')
     ;<  ~  bind:m  (poke-know [%del (spat u.ko)])
     (send-ok eyre-id)
   ::
@@ -18732,29 +18737,26 @@
     ?:  =('' body.act)  (refuse "a save: the body is empty: {(spud key)}")
     =/  road=road:tarball  (entry-road up vbase key)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry road)
-    ::  reviving a soft-deleted key: %del culled the live grub, so `old` is ~ and
-    ::  a fresh merge-save would drop the tags+vector the trashed copy still holds.
-    ::  Read the trash-vault entry too and fall back to it, so a re-save recovers
-    ::  them (the trash tomb is then cleared below, as for any re-save).
-    ;<  tomb=(unit know-entry:lk)  bind:m
-      ?^(old (pure:(fiber:fiber:nexus ,(unit know-entry:lk)) ~) (read-entry (entry-road up tvbase key)))
-    =/  e=know-entry:lk  (merge-save:lk ?^(old old tomb) body.act now)
+    ::  a save at a key with no live entry is a new memory, whether or not
+    ::  a deleted one sits in the trash under the key. It used to take the
+    ::  trash copy's tags and vector and cull it, which lost the deleted
+    ::  memory for good, and the pre-delete revisions (a cull tombs only
+    ::  the head) came back under the new entry, readable through
+    ::  /know-history by any key that may read the new one. So the new
+    ::  entry starts fresh, its road's leftover revisions go first, and
+    ::  the trash copy stays for the owner to restore (after moving the
+    ::  new one aside: a restore never lands over a live entry).
+    =/  e=know-entry:lk  (merge-save:lk old body.act now)
     ::  a live entry already has its dirs: one existence peek per key
     ::  segment, on every re-save, for nothing
     ;<  ~  bind:m  ?^(old (pure:m ~) (ensure-dirs up vbase key))
+    ;<  ~  bind:m  ?^(old (pure:m ~) (prune-hist road 0 ~s0))
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] e)
     ;<  ~  bind:m  (gain:fio road %.y)
     ::  memories are gained too, and autosave saves one revision per typing
     ::  pause, the same ceiling pages get, or the vault grows forever.
     ::  know entries are a user-facing history surface too, so same window
-    ;<  ~  bind:m  (prune-hist road know-keep history-window)
-    ::  a re-saved key leaves trash; cull the orphaned trash-vault GRUB (not just
-    ::  the index row) so a later %restore can't resurrect the stale tomb over the
-    ::  live entry.
-    ;<  trash=know-index:lk  bind:m  (read-index tx)
-    ?.  (~(has by trash) key)  (pure:m ~)
-    ;<  *  bind:m  (cull-soft:io (entry-road up tvbase key))
-    (put-file tx [/lattice %know-index] (~(del by trash) key))
+    (prune-hist road know-keep history-window)
   ::
       %del
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
@@ -18768,6 +18770,11 @@
     =/  troad=road:tarball  (entry-road up tvbase key)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry road)
     ?~  old  (refuse "a delete: there is no such note: {(spud key)}")
+    ::  a memory saved at the key of one in the trash is a new one (%save),
+    ::  and the trash holds one memory a key: deleting the new one would
+    ::  write over the deleted one, the copy its owner may still restore
+    ;<  held=?  bind:m  (peek-exists:fio troad)
+    ?:  held  (refuse "a delete: a deleted note is in the trash at {(spud key)}")
     ::  MOVE to the trash vault: write the trash copy first (duplicate-on-crash,
     ::  never lose), then cull the live grub, then swing the index rows.
     ;<  ~  bind:m  (ensure-dirs up tvbase key)

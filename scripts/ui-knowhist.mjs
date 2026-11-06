@@ -73,5 +73,37 @@ check('the rewrite lands', res[0] && res[0].ok === true, JSON.stringify(res[0]))
 check('the new memory is not refused as a duplicate of the rewritten body',
   res[1] && res[1].ok === true, JSON.stringify(res[1]));
 
-for (const k of [A, B, D, E]) await post('know-delete?key=' + q(k), '');
+// A save at the key of a deleted memory is a new memory. It used to take
+// the trashed one's place: the trash copy was culled, so it could not be
+// restored, and its pre-delete revisions came back under the new entry.
+const T = RUN + '/t', T2 = RUN + '/t2';
+const inTrash = async (k) => {
+  const r = await api('know-trash');
+  return r.ok && JSON.stringify(await r.json()).includes(k + '"');
+};
+check('save the memory to delete', (await post('know-save?key=' + q(T), 'secret body one')).ok);
+await waitFor(() => has(T, 'secret body one'), 30000, 500);
+check('save it again', (await post('know-save?key=' + q(T), 'secret body two')).ok);
+await waitFor(() => has(T, 'secret body two'), 30000, 500);
+check('delete it', (await post('know-delete?key=' + q(T), '')).ok);
+check('it is in the trash', await waitFor(() => inTrash(T), 30000, 500));
+check('save a new memory at its key', (await post('know-save?key=' + q(T), 'a fresh note')).ok);
+check('the new memory lands', await waitFor(() => has(T, 'a fresh note'), 30000, 500));
+const th = await history(T);
+check.eq('the new memory has only its own revision', th && th.length, 1);
+let tleak = false;
+for (const v of th || []) {
+  const r = await api('know-read-at?key=' + q(T) + '&rev=' + v.rev);
+  if (r.ok && (await r.text()).includes('secret body')) tleak = true;
+}
+check('no revision of the new memory holds the deleted one\'s body', !tleak);
+check('the deleted one is still in the trash', await inTrash(T));
+const dr = await post('know-delete?key=' + q(T), '');
+check.eq('deleting the new one would overwrite the trash copy, so it is refused', dr.status, 409);
+check('move the new one aside', (await post('know-move?from=' + q(T) + '&to=' + q(T2), '')).ok);
+await waitFor(async () => (await body(T)) === null, 30000, 500);
+check('restore the deleted one', (await post('know-restore?key=' + q(T), '')).ok);
+check('the deleted memory comes back whole', await waitFor(() => has(T, 'secret body two'), 30000, 500));
+
+for (const k of [A, B, D, E, T, T2]) await post('know-delete?key=' + q(k), '');
 check.done();
