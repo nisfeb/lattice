@@ -1,5 +1,5 @@
 {
-  "bytes": 726303,
+  "bytes": 736325,
   "grow": 4096,
-  "why": "main after release 117 was 726,303 bytes (the ratchet's 724,231 plus follow-ups inside its grow). Re-based there for feat-preview-checkboxes: a task box in the editor's preview toggles its source line (59-md.js data-line and taskToggle, 60-preview.js taskFlip, about 3.2 KB). The preview paints on boot, so it cannot load lazily."
+  "why": "release 119: main after 117 was 726,303 bytes. feat-preview-checkboxes adds a task box in the editor's preview that toggles its source line (59-md.js data-line and taskToggle, 60-preview.js taskFlip, about 3.2 KB). fix-editor-cursor adds the vim block cursor (27-vim.js, 4,700 bytes) and hlSplice, which writes each edit straight into the highlight overlay so the caret no longer drifts on long pages (25-editor.js, 2,100 bytes). The preview, the editor and vim are all on screen from boot, so none can load lazily."
 }

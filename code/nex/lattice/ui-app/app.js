@@ -4392,7 +4392,45 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     clearTimeout(hlPlain); clearTimeout(hlKill); hlCur = null;
     if (hlNext) { const j = hlNext; hlNext = null; hlRun(j); }
   };
-  const hlPaint = (body) => { hl.innerHTML = esc(body) + '\n'; sync(); };
+  // hlPainted: told after every change to the overlay's text, so the vim
+  // block cursor (27-vim.js) measures the text it sits on, not the last one
+  let hlPainted = () => {};
+  const hlPaint = (body) => { hl.innerHTML = esc(body) + '\n'; sync(); hlPainted(); };
+  // hlSplice: the typed change, put straight into the overlay's text nodes.
+  // The textarea's text is invisible and the overlay's is what shows, so
+  // until the highlight comes back the overlay held the text from before
+  // the keystroke. Past 60 KB that is 120 ms after the LAST key, so a fast
+  // typist on a long page saw every character late, the lines below an
+  // Enter on their old rows, and the overlay, shorter than the textarea,
+  // clamped its scrollTop below the textarea's: the caret drifted off the
+  // text it was in. Splicing keeps the highlight's spans (their colours
+  // lag a little), and the text and its geometry are the textarea's at once.
+  const hlSplice = () => {
+    const old = hl.textContent, now = src.value;
+    // only over a copy of the editor's own text (not the Writer's blank)
+    if (!old.endsWith('\n') || old === now + '\n') return;
+    const ol = old.length - 1, nl = now.length, m = Math.min(ol, nl);
+    let a = 0; while (a < m && old.charCodeAt(a) === now.charCodeAt(a)) a++;
+    let z = 0; while (z < m - a && old.charCodeAt(ol - 1 - z) === now.charCodeAt(nl - 1 - z)) z++;
+    // never split a surrogate pair between the kept and the replaced text
+    if (a && (old.charCodeAt(a - 1) & 0xfc00) === 0xd800) a--;
+    if (z && (old.charCodeAt(ol - z) & 0xfc00) === 0xdc00) z--;
+    // offsets are the old text's: a deletion in one node moves no other
+    const w = document.createTreeWalker(hl, NodeFilter.SHOW_TEXT);
+    let n, at = 0, rest = ol - z - a, host = null, hostAt = 0;
+    while ((n = w.nextNode())) {
+      const len = n.length, end = at + len;
+      if (!host && a <= end) { host = n; hostAt = a - at; }
+      if (rest > 0 && end > a) {
+        const from = Math.max(0, a - at), k = Math.min(rest, len - from);
+        if (k > 0) { n.deleteData(from, k); rest -= k; }
+      }
+      if (host && rest <= 0) break;
+      at = end;
+    }
+    if (host) host.insertData(hostAt, now.slice(a, nl - z));
+    hlPainted();
+  };
   const hlRun = (job) => {
     // newer text while a job runs shows plain until its own turn
     if (hlCur) { hlNext = job; hlPaint(job.body); return; }
@@ -4403,7 +4441,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         hlFresh = false;
         const j = hlCur;
         if (j && j.body === src.value && j.lang === LMAP[pkind.value]) {
-          hl.innerHTML = e.data + '\n'; sync();
+          hl.innerHTML = e.data + '\n'; sync(); hlPainted();
         } else if (j && !hlNext) {
           // stale: the text or the kind moved on while this job ran. A
           // fast answer has already cancelled the plain paint, so paint
@@ -4439,7 +4477,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     // (99-boot.js), and every LMAP language is in it, so until it lands a
     // known language is taken as highlightable.
     const g = lang && (!window.Prism || Prism.languages[lang]);
-    if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; return; }
+    if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; hlPainted(); return; }
     hlRun({ body: src.value, lang });
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
@@ -4494,6 +4532,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       src.addEventListener('input', () => {
         dirty = true;
         everTyped = true;      // never cleared: see 20-state.js
+        hlSplice();
         scheduleRender();
         clearTimeout(autoTimer);
         autoTimer = setTimeout(autosave, 2000);
@@ -4871,13 +4910,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
 
   /* ---- indicator ---- */
   function setInd(){
-    if(!vimOn()){ ind.style.display = "none"; return; }
+    if(!vimOn()){ ind.style.display = "none"; drawCur(); return; }
     ind.style.display = "inline-block";
     // preview-only view: the editor is off screen and vim keys do not apply,
     // so show the view, not a stale mode. (split and edit keep the mode.)
     var pv = document.getElementById("ws");
     if(pv && pv.classList.contains("vp")){
-      ind.textContent = "-- PREVIEW --"; ind.style.background = "#607d8b"; return;
+      ind.textContent = "-- PREVIEW --"; ind.style.background = "#607d8b"; drawCur(); return;
     }
     if(cmdActive){ ind.textContent = ":" + cmdBuf; ind.style.background = "#455a64"; return; }
     var label, bg;
@@ -4887,7 +4926,94 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if(pending || count) label += " " + count + pending;
     ind.textContent = label;
     ind.style.background = bg;
+    drawCur();
   }
+
+  /* ============================================================================
+     THE CURSOR'S SHAPE: a block over the character in normal, visual and
+     operator-pending (the : line too, which leaves the cursor where it was),
+     an underline while r waits for its character, and the textarea's own bar
+     in insert and with vim off. A textarea draws only a bar, so the block is
+     an element over the editor, placed on the character as the highlight
+     overlay (#hl) lays it out: that is the text on screen, and since the
+     overlay is kept in step with every keystroke (hlSplice, 25-editor.js)
+     and draws with the textarea's metrics, it is where a typed character
+     lands. Redrawn at once on every key (setInd), and on the overlay's
+     repaints, scroll, focus, clicks, resizes and font loads.
+     ============================================================================ */
+  var cur = document.createElement("div");
+  cur.className = "vimcur";
+  cur.setAttribute("aria-hidden", "true");
+  cur.hidden = true;
+  function curShape(){
+    if(!vimOn() || MODE === "insert" || document.activeElement !== ta) return "";
+    var ws = document.getElementById("ws");
+    if(ws && ws.classList.contains("vp")) return "";
+    return pending === "r" ? "under" : "block";
+  }
+  // the overlay's text node and offset holding character i
+  function hlAt(i){
+    var w = document.createTreeWalker(hl, NodeFilter.SHOW_TEXT), n, last = null;
+    while((n = w.nextNode())){ if(i < n.length) return [n, i]; i -= n.length; last = n; }
+    return last ? [last, last.length] : null;
+  }
+  function drawCur(){
+    var shape = curShape(), v = val();
+    // the overlay not yet holding this text (a page loading): the bar, so
+    // the cursor never vanishes, until the overlay's repaint draws again
+    var ok = shape && hl && hl.textContent === v + "\n";
+    ta.classList.toggle("vim-block", !!ok);
+    if(!ok){ cur.hidden = true; return; }
+    var box = ta.parentNode;
+    if(cur.parentNode !== box) box.appendChild(cur);
+    var p = MODE === "visual" ? visCaret : pos();
+    var two = (v.charCodeAt(p) & 0xfc00) === 0xd800;
+    var a = hlAt(p), b = hlAt(p + (two ? 2 : 1));
+    if(!a || !b){ cur.hidden = true; return; }
+    var r = document.createRange();
+    r.setStart(a[0], a[1]); r.setEnd(b[0], b[1]);
+    // WebKit also answers the end of the line before; the last box is ours
+    var rs = r.getClientRects(), rc = null;
+    for(var i = rs.length - 1; i >= 0 && !rc; i--) if(rs[i].width > 0) rc = rs[i];
+    var ch = v.slice(p, p + (two ? 2 : 1));
+    if(!rc){
+      // a newline (an empty line, the end) has no box of its own in every
+      // engine: a zero-width mark there has, and goes again at once
+      var mk = document.createElement("span"), par;
+      mk.textContent = "\u200b";
+      r.collapse(true); r.insertNode(mk);
+      rs = mk.getClientRects(); rc = rs[rs.length - 1];
+      par = mk.parentNode; mk.remove(); par.normalize();
+    }
+    if(!rc){ cur.hidden = true; return; }
+    // only while the character is inside the textarea's text box
+    var tb = ta.getBoundingClientRect(), bb = box.getBoundingClientRect();
+    var mid = rc.top + rc.height / 2;
+    if(mid < tb.top + ta.clientTop || mid > tb.top + ta.clientTop + ta.clientHeight
+       || rc.left < tb.left || rc.left >= tb.left + ta.clientLeft + ta.clientWidth){
+      cur.hidden = true; return;
+    }
+    cur.className = "vimcur" + (shape === "under" ? " under" : "");
+    cur.textContent = (ch === "" || ch === "\n" || ch === "\t") ? " " : ch;
+    cur.hidden = false;
+    var lh = parseFloat(getComputedStyle(hl).lineHeight) || rc.height;
+    cur.style.left = (rc.left - bb.left - box.clientLeft) + "px";
+    cur.style.top = (mid - lh / 2 - bb.top - box.clientTop) + "px";
+    cur.style.height = lh + "px";
+    // a newline or the end has no width: one space's, from the text itself
+    cur.style.width = rc.width > 0 ? rc.width + "px" : "";
+  }
+  var curRaf = 0;
+  function curSoon(){ if(!curRaf) curRaf = requestAnimationFrame(function(){ curRaf = 0; drawCur(); }); }
+  hlPainted = drawCur;
+  ta.addEventListener("scroll", drawCur);
+  ta.addEventListener("focus", curSoon);
+  ta.addEventListener("blur", drawCur);
+  document.addEventListener("selectionchange", function(){ if(vimOn()) curSoon(); });
+  window.addEventListener("resize", curSoon);
+  if(window.ResizeObserver) new ResizeObserver(curSoon).observe(ta);
+  if(document.fonts && document.fonts.addEventListener) document.fonts.addEventListener("loadingdone", curSoon);
+  window.addEventListener("storage", curSoon);
 
   /* ---- caret / buffer helpers ---- */
   function val(){ return ta.value; }
