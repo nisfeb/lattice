@@ -14194,7 +14194,7 @@
 ::  Single-quote cord: a double-quote tape would interpolate the css braces.
 ++  comments-css
   ^-  @t
-  '<style>.comments{margin-top:2rem;border-top:1px solid #8886;padding-top:1rem}.comment{margin:.7rem 0;padding:.5rem .8rem;background:#8881;border-radius:8px}.cmeta{margin:0;font-size:.85em;opacity:.7}.pending{opacity:.7}.cbody{margin:.2rem 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.cbox{margin-top:1rem;display:flex;gap:6px}.cbox textarea{flex:1;min-height:3rem;font:inherit;padding:6px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbox button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}</style>'
+  '<style>.comments{margin-top:2rem;border-top:1px solid #8886;padding-top:1rem}.comment{margin:.7rem 0;padding:.5rem .8rem;background:#8881;border-radius:8px}.cmeta{margin:0;font-size:.85em;opacity:.7}.pending{opacity:.7}.cbody{margin:.2rem 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.cbox{margin-top:1rem;max-width:46rem;display:flex;flex-direction:column;align-items:flex-start;gap:6px}.cbox textarea{width:100%;box-sizing:border-box;min-height:3rem;resize:vertical;font:inherit;padding:6px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbox button{padding:.3rem .9rem;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}</style>'
 ::  +thread-page: how many of a thread's newest comments the reader shows
 ::  before "show older"
 ++  thread-page  ^-(@ud 50)
@@ -16956,6 +16956,8 @@
     ==
   =/  yes=?  =([~ &] open)
   ;:  weld
+    ::  the box's own style: the thread above it carries none when empty
+    (trip comments-css)
     "<section class=\"cbox-wrap\"><h3>Comment</h3>"
     "<form class=\"cbox\" method=\"post\" target=\"_top\" action=\"/apps/lattice/comment-remote?ship="
     (esc st)  "&amp;page="  (esc pg)  "\">"
