@@ -2,7 +2,7 @@
 // Code loads natively, so a skill saved once on the ship triggers like any
 // other skill in every session (docs/agent-knowledge.md, Skills).
 //
-// Where: ~/.claude/skills by default. Claude Code watches it and picks up
+// Where: <claudeHome()>/skills by default ($CLAUDE_CONFIG_DIR/skills, else ~/.claude/skills). Claude Code watches it and picks up
 // added, changed and removed skills without a restart. A plugin's own
 // skills/ dir would namespace them (/lattice:name), but it is the
 // installed plugin's copy and is replaced on every update, so it is not
@@ -15,9 +15,18 @@
 // or now sensitive) has its files removed, and the directory too once it
 // is empty. Sensitive skills are never written to disk.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export const MARKER = '.lattice-skill.json';
+
+// Claude Code's config dir: CLAUDE_CONFIG_DIR when set (a second account,
+// or a harness such as reins that gives each account its own), else
+// ~/.claude. Its skills/ is where Claude Code looks for user skills.
+export function claudeHome(env = process.env) {
+  const d = (env.CLAUDE_CONFIG_DIR || '').trim();
+  return d ? path.resolve(d.replace(/^~(?=$|\/)/, os.homedir())) : path.join(os.homedir(), '.claude');
+}
 const NAME = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,63}$/;
 const SEG = /^[A-Za-z0-9._-]+$/;
 const EXT = /\.(md|txt|json|ya?ml)$/i;

@@ -43,7 +43,7 @@ The plugin's skills skill tells Claude to check the index when a task might matc
 
 ### Your skills as Claude Code skills
 
-At session start a hook mirrors the ship's skills into `~/.claude/skills`, where Claude Code loads them like any other skill, triggering included, and picks up changes without a restart. Set the plugin's `skills_dir` option to mirror somewhere else, or to `off` to turn it off.
+At session start a hook mirrors the ship's skills into `skills/` in Claude Code's config dir (`$CLAUDE_CONFIG_DIR`, else `~/.claude`, so a second account or a harness like reins gets them too), where Claude Code loads them like any other skill, triggering included, and picks up changes without a restart. Set the plugin's `skills_dir` option to mirror somewhere else, or to `off` to turn it off.
 
 - It writes only directories it owns: each holds a `.lattice-skill.json` marker. A skill of your own with the same name is left alone, and the session start says so.
 - A skill deleted or superseded on the ship is removed from the mirror. A file you add inside a mirrored skill is kept.
@@ -56,7 +56,7 @@ LATTICE_URL=https://your-ship.example.com LATTICE_KEY=<key> node import-skills.m
 LATTICE_URL=https://your-ship.example.com LATTICE_KEY=<key> node import-skills.mjs --yes    # do it
 ```
 
-With no directories named it reads `~/.claude/skills` and every installed plugin's `skills/`. It imports `SKILL.md` and its text files (md, txt, json, yaml), lists the files it leaves out (scripts and the like), and lists a skill the ship already has as a duplicate to merge by hand rather than overwriting it. After importing, the mirror carries the ship's copy, so remove your local one when you are happy with it.
+With no directories named it reads that same `skills/` and every installed plugin's `skills/`. It imports `SKILL.md` and its text files (md, txt, json, yaml), lists the files it leaves out (scripts and the like), and lists a skill the ship already has as a duplicate to merge by hand rather than overwriting it. After importing, the mirror carries the ship's copy, so remove your local one when you are happy with it.
 
 Pages from other ships, and pages you clipped from the web, come back to Claude labelled as quoted material, not instructions, and the memory skill tells it not to save their claims as fact without you.
 

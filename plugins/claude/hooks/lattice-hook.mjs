@@ -3,7 +3,7 @@
 //   session:      the brief memory index (areas and core rules) as context.
 //   session-more: the core rules that did not fit in the first.
 //   prompt:       memories that strongly match the prompt, three at most.
-//   skills:       the ship's skills mirrored to ~/.claude/skills
+//   skills:       the ship's skills mirrored to $CLAUDE_CONFIG_DIR/skills (else ~/.claude/skills)
 //                 (skills-sync.mjs), for Claude Code to load natively.
 // A refused key is always reported. An unreachable ship is reported at
 // session start, so the agent does not work memoryless without saying so,
@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { urlProblem } from '../url-rule.mjs';
-import { syncSkills } from './skills-sync.mjs';
+import { syncSkills, claudeHome } from './skills-sync.mjs';
 
 const mode = process.argv[2];
 const opt = (k) => process.env[`CLAUDE_PLUGIN_OPTION_${k}`] || '';
@@ -200,7 +200,7 @@ async function prompt() {
 async function skills() {
   const where = opt('SKILLS_DIR').trim();
   if (!key || urlError || base === '/apps/lattice' || where === 'off') return;
-  const root = path.resolve((where || '~/.claude/skills').replace(/^~(?=$|\/)/, os.homedir()));
+  const root = where ? path.resolve(where.replace(/^~(?=$|\/)/, os.homedir())) : path.join(claudeHome(), 'skills');
   try {
     const r = await syncSkills({ get, root, ship: opt('SHIP_URL').replace(/\/$/, '') });
     const n = r.added.length + r.updated.length + r.removed.length;
