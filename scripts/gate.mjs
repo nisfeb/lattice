@@ -40,7 +40,11 @@
 //    --keep           leave the clones up (fleet drop dep removes them)
 //    --no-deploy      snapshot the base ship as it is
 //
-//  Env: FLEET (the fleet script), FLEET_WHO (default fast-gate), GATE_SET
+//    --as NAME        claim the fleet sets as NAME (default gate-<pid>-<start>,
+//                     one per run, so two gates never share a set)
+//
+//  Env: FLEET (the fleet script), GATE_WAIT (seconds to wait for a set
+//  another gate holds, default 2700), GATE_SET
 //  (default lattice-gate), VERE, CHROME, LATTICE_SCRATCH (default
 //  ~/.cache/lattice-gate), GATE_KEEP_RUNS (logs of the last 10 runs kept).
 //
@@ -59,13 +63,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync
 import { cpus, freemem, homedir, loadavg } from 'os';
 import { join } from 'path';
 import { SCRATCH, diskShort, killTagged, marked, noCores, procTag, unmarked } from './lib/hygiene.mjs';
+import { claim, ownerName, release, staleClones } from './lib/gate-claim.mjs';
 
 const HOME = homedir();
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const S = ROOT + '/scripts';
 const F = process.env.FLEET || HOME + '/software/personal/hoon-development/fleet/fleet';
 const FLEET_DIR = F.replace(/\/[^/]+$/, '');
-const WHO = process.env.FLEET_WHO || 'fast-gate';
 const SET = process.env.GATE_SET || 'lattice-gate';
 const VERE = process.env.VERE || HOME + '/software/vere-v4.6-linux-x86_64';
 const SNAP = 'gate';
@@ -89,7 +93,7 @@ if (argv.includes('--help') || argv.includes('-h')) {
   console.log(head.slice(0, head.findIndex((l) => !l.startsWith('//'))).map((l) => l.replace(/^\/\/ {0,2}/, '')).join('\n'));
   process.exit(0);
 }
-const TAKES = { '--lanes': 1, '--two-ship': 1, '--only': 1 };
+const TAKES = { '--lanes': 1, '--two-ship': 1, '--only': 1, '--as': 1 };
 const FLAGS = ['--stall', '--local', '--warm', '--cold', '--hot', '--record', '--no-retry', '--strict', '--keep', '--no-deploy'];
 for (let i = 0; i < argv.length; i++) {
   if (TAKES[argv[i]]) i++;
@@ -99,6 +103,9 @@ const flag = (n) => argv.includes(n);
 const opt = (n, d) => { const i = argv.indexOf(n); return i < 0 ? d : argv[i + 1]; };
 const LANES_ASKED = opt('--lanes', '');
 const TWO = opt('--two-ship', '');
+//  this run's fleet claim owner: unique per run unless --as names one
+const WHO = opt('--as', '') || ownerName();
+if (flag('--as') && !opt('--as', '')) die('--as needs a name');
 const ONLY = opt('--only', '') ? opt('--only', '').split(',') : null;
 if (flag('--two-ship') && !TWO) die('--two-ship needs a fleet set for ship B');
 if (LANES_ASKED && !(Number.isInteger(Number(LANES_ASKED)) && Number(LANES_ASKED) > 0)) die('--lanes needs a whole number of clones');
@@ -277,6 +284,7 @@ const allLocal = [
   ['desktop-commands', 'node', [S + '/desktop-commands.mjs']],
   ['kind-parity', 'node', [S + '/kind-parity.mjs']],
   ['hermes-plugin', 'python3', [S + '/hermes-plugin-check.py']],
+  ['gate-claim', 'node', [S + '/gate-claim-check.mjs']],
   ['scripts-parse', 'bash', ['-c', 'set -e; for f in scripts/*.mjs scripts/lib/*.mjs; do node --check "$f"; done; for f in scripts/*.sh scripts/lib/*.sh; do bash -n "$f"; done']],
   ['ui-built', 'bash', ['-c', 'node scripts/build-ui.mjs && git diff --exit-code code/nex/lattice/ui-app/app.js && node --check code/nex/lattice/ui-app/app.js']],
   ['writer-built', 'bash', ['-c', 'node scripts/build-writer.mjs && git diff --exit-code code/nex/lattice/ui-app/writer.js ui-src/writer/vendor/LICENSES && node --check code/nex/lattice/ui-app/writer.js']],
@@ -307,7 +315,20 @@ async function runLocal() {
 
 //  --- setup and teardown ---
 let clones = [];
-let claimed = false;
+//  the sets this run holds (lib/gate-claim.mjs), released on the way out
+const claimed = new Set();
+const CLAIMS = HOME + '/fleet/claims';
+async function claimSet(set, ship) {
+  const r = await claim(CLAIMS, set, WHO, { secs: Number(process.env.GATE_WAIT ?? 2700), say });
+  if (!r.ok) throw new Error(`set ${set} is claimed by ${r.holder}`);
+  claimed.add(set);
+  say(`claimed ${set} as ${WHO}`);
+  //  clones of this set's ship that a gate now gone left behind
+  for (const c of staleClones(HOME + '/fleet/clones', ship)) {
+    say(`dropping ${c.id}, left by ${c.who}`);
+    await run(F, ['--as', c.who, 'drop', c.id], { timeout: 300 });
+  }
+}
 let tearing = null;
 async function teardown() {
   if (tearing) return tearing;
@@ -321,10 +342,11 @@ async function teardown() {
       say('dropping ' + clones.map((c) => c.id).join(' '));
       await run(F, ['drop', ...clones.map((c) => c.id)], { timeout: 300 });
     }
-    if (claimed) {
-      await run(F, ['down', SET], { timeout: 300 });
-      await run(F, ['release', SET], { timeout: 60 });
+    for (const set of claimed) {
+      await run(F, ['down', set], { timeout: 300 });
+      release(CLAIMS, set, WHO);
     }
+    claimed.clear();
   })();
   return tearing;
 }
@@ -378,9 +400,7 @@ async function warmSnapshot(b) {
 
 async function baseShip() {
   const b = setLine(SET);
-  const claim = existsSync(HOME + '/fleet/claims/' + SET) ? readFileSync(HOME + '/fleet/claims/' + SET, 'utf8').trim() : '';
-  if (claim && claim !== WHO) die(`set ${SET} is claimed by ${claim}`);
-  await fleet('claim', SET, WHO); claimed = true;
+  await claimSet(SET, b.ship);
   if (await warmSnapshot(b)) {
     say(b.hot ? `the gate snapshot differs only in the client (${b.hot.join(' ')}): hot patching the lanes, no deploy`
       : 'the gate snapshot already holds this code/: no deploy');
@@ -482,10 +502,8 @@ async function retry(b, used) {
 
 async function runTwo(a) {
   const b = setLine(TWO);
-  if (b.set === SET) die('--two-ship needs another set than ' + SET);
-  const claim = existsSync(HOME + '/fleet/claims/' + TWO) ? readFileSync(HOME + '/fleet/claims/' + TWO, 'utf8').trim() : '';
-  if (claim && claim !== WHO) die(`set ${TWO} is claimed by ${claim}`);
-  await fleet('claim', TWO, WHO);
+  if (b.set === SET) throw new Error('--two-ship needs another set than ' + SET);
+  await claimSet(TWO, b.ship);
   try {
     await fleet('up', TWO);
     b.cookie = await cookieFor(b.pier, b.url, 'peer');
@@ -506,7 +524,7 @@ async function runTwo(a) {
     }
   } finally {
     await run(F, ['down', TWO], { timeout: 300 });
-    await run(F, ['release', TWO], { timeout: 60 });
+    release(CLAIMS, TWO, WHO); claimed.delete(TWO);
   }
 }
 

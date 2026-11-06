@@ -369,6 +369,7 @@ jobs:
             echo "--- $(basename "$f") ---"
             node "$f"
           done
+          node scripts/gate-claim-check.mjs
       # The desk's own closure: every marc and import the code names is in
       # code/ (a guest install resolves nothing outside it), and bill.json
       # names only nexuses that exist. code-closure caught the rise-later
