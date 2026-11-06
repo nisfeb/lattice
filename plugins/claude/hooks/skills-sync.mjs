@@ -45,23 +45,39 @@ function readMarker(dir) {
   } catch { return null; }
 }
 
-// a file inside dir, never through a link and never outside it
-function writeInside(dir, rel, text) {
+// rel under dir, or null when it climbs out or a directory on the way is
+// a link. A user who swaps a skill's references/ for a link to their own
+// notes would otherwise have the mirror write and delete there.
+function inside(dir, rel) {
   const target = path.resolve(dir, rel);
-  if (!target.startsWith(dir + path.sep)) throw new Error(`refused path ${rel}`);
+  if (!target.startsWith(dir + path.sep)) return null;
+  let p = dir;
+  for (const seg of path.relative(dir, path.dirname(target)).split(path.sep).filter(Boolean)) {
+    p = path.join(p, seg);
+    try { if (fs.lstatSync(p).isSymbolicLink()) return null; } catch { break; }
+  }
+  return target;
+}
+
+// a file inside dir, never through a link and never outside it; false
+// when refused
+function writeInside(dir, rel, text) {
+  const target = inside(dir, rel);
+  if (!target) return false;
   fs.mkdirSync(path.dirname(target), { recursive: true });
+  if (inside(dir, rel) !== target) return false;
   try { if (fs.lstatSync(target).isSymbolicLink()) fs.rmSync(target); } catch {}
   const tmp = `${target}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, text, { mode: 0o600 });
   fs.renameSync(tmp, target);
+  return true;
 }
 
 function removeOwned(dir, mark) {
   for (const rel of [...(mark.files || []), MARKER]) {
-    if (rel !== MARKER && !pathOk(rel) && rel !== 'SKILL.md') continue;
-    const f = path.resolve(dir, rel);
-    if (!f.startsWith(dir + path.sep)) continue;
-    try { if (!fs.lstatSync(f).isDirectory()) fs.rmSync(f); } catch {}
+    if (rel !== MARKER && !pathOk(rel)) continue;
+    const f = inside(dir, rel);
+    try { if (f && !fs.lstatSync(f).isDirectory()) fs.rmSync(f); } catch {}
   }
   pruneEmpty(dir);
 }
@@ -91,7 +107,9 @@ export async function syncSkills({ get, root, ship }) {
     if (!ent.isDirectory()) continue;
     const dir = path.join(root, ent.name);
     const mark = readMarker(dir);
-    if (!mark || mark.ship !== ship) continue;
+    // a marker naming another directory was copied there with the files:
+    // the user's fork of a mirrored skill, not ours to remove
+    if (!mark || mark.ship !== ship || mark.name !== ent.name) continue;
     if (!want.has(ent.name)) { removeOwned(dir, mark); out.removed.push(ent.name); }
   }
   for (const [name, s] of want) {
@@ -101,7 +119,7 @@ export async function syncSkills({ get, root, ship }) {
       const st = fs.lstatSync(dir);
       mark = st.isDirectory() && !st.isSymbolicLink() ? readMarker(dir) : null;
       // the user's own skill, or another ship's: leave it be
-      if (!mark || mark.ship !== ship) { out.skipped.push(name); continue; }
+      if (!mark || mark.ship !== ship || mark.name !== name) { out.skipped.push(name); continue; }
       if (mark.updated === s.updated) continue;
     }
     const full = JSON.parse(await get('skill', { name }));
@@ -111,20 +129,20 @@ export async function syncSkills({ get, root, ship }) {
       files.push([f.path, JSON.parse(await get('skill-file', { name, path: f.path })).body]);
     }
     fs.mkdirSync(dir, { recursive: true });
-    for (const [rel, text] of files) writeInside(dir, rel, text);
+    const wrote = files.filter(([rel, text]) => writeInside(dir, rel, text));
     // files an earlier version had and this one does not
     if (mark) {
       const now = new Set(files.map(([p]) => p));
       for (const rel of mark.files || []) {
         if (now.has(rel) || !pathOk(rel)) continue;
-        const f = path.resolve(dir, rel);
-        if (f.startsWith(dir + path.sep)) try { fs.rmSync(f); } catch {}
+        const f = inside(dir, rel);
+        if (f) try { fs.rmSync(f); } catch {}
       }
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         if (e.isDirectory()) pruneEmpty(path.join(dir, e.name));
       }
     }
-    writeInside(dir, MARKER, JSON.stringify({ ship, name, updated: full.updated, files: files.map(([p]) => p) }, null, 1) + '\n');
+    writeInside(dir, MARKER, JSON.stringify({ ship, name, updated: full.updated, files: wrote.map(([p]) => p) }, null, 1) + '\n');
     (mark ? out.updated : out.added).push(name);
   }
   return out;

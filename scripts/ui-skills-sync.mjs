@@ -77,6 +77,37 @@ try {
   fs.writeFileSync(path.join(root, 'other/SKILL.md'), 'theirs');
   await syncSkills({ get, root, ship: SHIP });
   check('another ship\'s mirror is left alone', read('other/SKILL.md') === 'theirs');
+
+  //  the user forks a mirrored skill by copying its directory, marker and
+  //  all: the copy is theirs, even once the ship drops the original
+  ship = { fork: { body: md('fork', 'd'), updated: '~1', files: {} } };
+  await syncSkills({ get, root, ship: SHIP });
+  fs.cpSync(path.join(root, 'fork'), path.join(root, 'fork-mine'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'fork-mine/SKILL.md'), 'my fork');
+  delete ship.fork;
+  r = await syncSkills({ get, root, ship: SHIP });
+  check.eq('a copied mirror under a new name is the user\'s', exists('fork-mine/SKILL.md') && read('fork-mine/SKILL.md'), 'my fork');
+  check('  ...and not reported removed', !r.removed.includes('fork-mine'), JSON.stringify(r));
+
+  //  a directory inside a mirrored skill swapped for a link: the mirror
+  //  never writes or deletes through it
+  const outside = fs.mkdtempSync(path.join(scratch, 'skills-outside-'));
+  try {
+    fs.writeFileSync(path.join(outside, 'notes.md'), 'my notes');
+    ship = { linked: { body: md('linked', 'd'), updated: '~1', files: { 'references/notes.md': 'ship notes' } } };
+    await syncSkills({ get, root, ship: SHIP });
+    fs.rmSync(path.join(root, 'linked/references'), { recursive: true });
+    fs.symlinkSync(outside, path.join(root, 'linked/references'));
+    ship.linked = { ...ship.linked, updated: '~2' };
+    await syncSkills({ get, root, ship: SHIP });
+    check.eq('an update does not write through a linked directory', fs.readFileSync(path.join(outside, 'notes.md'), 'utf8'), 'my notes');
+    check('  ...and still writes the rest', read('linked/SKILL.md').includes('name: linked'));
+    delete ship.linked;
+    await syncSkills({ get, root, ship: SHIP });
+    check('a removal does not delete through a linked directory', fs.existsSync(path.join(outside, 'notes.md')));
+  } finally {
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
