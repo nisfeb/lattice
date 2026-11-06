@@ -118,4 +118,47 @@ eqj('gemtext headings stop at three',
     { level: 2, text: 'b', line: 7 }]);
 eqj('other kinds have no outline', outline('# x', 'html'), []);
 
+console.log('task boxes: a click flips the one marker on its own source line');
+// mdToHtml(text, true) marks each live box with its source line, and
+// taskToggle(text, line, on) is the edit a click on it makes. Together: click
+// box k, apply the edit, and exactly that one character changes.
+const taskToggle = new Function(`${read('ui-src/lattice/59-md.js')}\nreturn taskToggle;`)();
+const boxes = (t) => [...mdToHtml(t, true).matchAll(/<input type="checkbox" data-line="(\d+)"( checked)?>/g)]
+  .map((m) => ({ line: +m[1], on: !!m[2] }));
+const click = (t, k) => {
+  const b = boxes(t)[k];
+  const r = b && taskToggle(t, b.line, !b.on);
+  return r ? t.slice(0, r.at) + r.ch + t.slice(r.at + 1) : null;
+};
+const eqs = (name, got, want) => check(name, got === want, `want ${JSON.stringify(want)} got ${JSON.stringify(got)}`);
+check('no live box without tasks', !mdToHtml('- [ ] a').includes('data-line')
+  && mdToHtml('- [ ] a').includes('disabled'), mdToHtml('- [ ] a'));
+check('a live box is not disabled', !mdToHtml('- [ ] a', true).includes('disabled'), mdToHtml('- [ ] a', true));
+eqs('dash checks', click('- [ ] a', 0), '- [x] a');
+eqs('x unchecks', click('* [x] a', 0), '* [ ] a');
+eqs('capital X unchecks', click('+ [X] a', 0), '+ [ ] a');
+eqs('ordered list', click('1. [ ] a\n2) [ ] b', 1), '1. [ ] a\n2) [x] b');
+const fenced = '```\n- [ ] in code\n```\n- [ ] real\n~~~\n* [x] also code\n~~~\n- [ ] second';
+eqj('fenced boxes are not boxes', boxes(fenced).map((b) => b.line), [3, 7]);
+eqs('a box after a fence flips its own line', click(fenced, 1),
+  '```\n- [ ] in code\n```\n- [ ] real\n~~~\n* [x] also code\n~~~\n- [x] second');
+eqs('duplicates: the second one', click('- [ ] same\n- [ ] same', 1), '- [ ] same\n- [x] same');
+eqs('duplicates: the first one', click('- [ ] same\n- [ ] same', 0), '- [x] same\n- [ ] same');
+const nest = '- [ ] top\n  - [ ] mid\n    1. [x] deep\n\t- [ ] tab';
+eqs('nested', click(nest, 2), '- [ ] top\n  - [ ] mid\n    1. [ ] deep\n\t- [ ] tab');
+eqs('tab indent', click(nest, 3), '- [ ] top\n  - [ ] mid\n    1. [x] deep\n\t- [x] tab');
+const quote = 'para\n- [ ] [x] text\n\n> - [ ] quoted\n> > * [X] deeper\n\n- [ ] after';
+eqj('quote lines keep their page lines', boxes(quote).map((b) => b.line), [1, 3, 4, 6]);
+eqs('in a blockquote', click(quote, 1), 'para\n- [ ] [x] text\n\n> - [x] quoted\n> > * [X] deeper\n\n- [ ] after');
+eqs('in a nested blockquote', click(quote, 2), 'para\n- [ ] [x] text\n\n> - [ ] quoted\n> > * [ ] deeper\n\n- [ ] after');
+eqs('only the marker, not later brackets', click(quote, 0), 'para\n- [x] [x] text\n\n> - [ ] quoted\n> > * [X] deeper\n\n- [ ] after');
+eqs('CRLF', click('# t\r\n- [ ] a\r\n- [x] b\r\n', 1), '# t\r\n- [ ] a\r\n- [ ] b\r\n');
+eqs('CRLF, an empty item', click('- [ ] \r\n- [ ] b', 0), '- [x] \r\n- [ ] b');
+eqj('a table cell is no box', boxes('| a | b |\n|---|---|\n| [ ] | x |'), []);
+eqj('a paragraph line is no box', boxes('text\n[ ] not a task'), []);
+eqj('html is text, its box no box', boxes('<input type="checkbox" data-line="0">'), []);
+eqj('a stale click changes nothing', taskToggle('- [x] a', 0, true), null);
+eqj('a line that is no longer a task', taskToggle('plain\n- [ ] a', 0, true), null);
+eqj('a line past the end', taskToggle('- [ ] a', 3, true), null);
+
 check.done();

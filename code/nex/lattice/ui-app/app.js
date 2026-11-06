@@ -9419,8 +9419,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
 
   //  block level. Deliberately a subset: headings, rules, fences, quotes,
   //  lists (including task lists), tables, paragraphs.
-  function mdToHtml(input) {
-    const lines = String(input == null ? '' : input).split('\n');
+  //  tasks: live boxes, each with data-line, its source line (base: where
+  //  this input starts, for a blockquote). Lines, not a count of boxes.
+  function mdToHtml(input, tasks, base = 0) {
+    //  CRLF: `.` stops at \r, so "(.*)$" failed on every line
+    const lines = String(input == null ? '' : input).split('\n').map((l) => l.replace(/\r$/, ''));
     const out = [];
     let i = 0;
     const listStack = [];
@@ -9465,7 +9468,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           q.push(lines[i].replace(/^\s*>\s?/, ''));
           i += 1;
         }
-        out.push('<blockquote>' + mdToHtml(q.join('\n')) + '</blockquote>');
+        out.push('<blockquote>' + mdToHtml(q.join('\n'), tasks, base + i - q.length) + '</blockquote>');
         continue;
       }
 
@@ -9500,7 +9503,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         let body = li[4];
         const task = body.match(/^\[([ xX])\]\s+(.*)$/);
         if (task) {
-          body = '<input type="checkbox" disabled'
+          body = '<input type="checkbox"' + (tasks ? ' data-line="' + (base + i) + '"' : ' disabled')
             + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(task[2]);
         } else body = mdInline(body);
         out.push('<li>' + body + '</li>');
@@ -9525,6 +9528,21 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     closeLists(0);
     return out.join('\n');
+  }
+
+  //  a box click's edit: the offset of the char in the brackets on `line`,
+  //  or null if that line is no task in the clicked-from state (stale)
+  const TASK_RE = /^((?:[ \t]*>[ \t]?)*[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])\](?=\s)/;
+  function taskToggle(text, line, on) {
+    let at = 0;
+    for (let n = 0; n < line; n++) {
+      at = text.indexOf('\n', at) + 1;
+      if (!at) return null;
+    }
+    const end = text.indexOf('\n', at);
+    const m = TASK_RE.exec(text.slice(at, end < 0 ? text.length : end));
+    if (!m || (m[2] !== ' ') === !!on) return null;
+    return { at: at + m[1].length, ch: on ? 'x' : ' ' };
   }
 
   // ── local gemtext, for the live preview only ────────────────────────────
@@ -9679,8 +9697,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   // output, so it srcdocs directly — the one case where local IS authoritative.
   // text is an escaped <pre>. Only the computed kinds (hoon, js, css) still
   // wait on the ship, because their preview is the page's live DATA, not text.
-  const localHtml = (kind, body) => {
-    if (kind === 'md') return mdToHtml(body);
+  const localHtml = (kind, body, tasks) => {
+    if (kind === 'md') return mdToHtml(body, tasks);
     if (kind === 'gmi') return gmiToHtml(body);
     if (kind === 'text') return '<pre>' + mdEsc(body) + '</pre>';
     //  pandoc is a subprocess, so it cannot answer inside this synchronous
@@ -9758,9 +9776,48 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       // wikilink used to navigate the frame itself and land on an
       // authenticated route the opaque origin has no cookies for; escaping
       // to the top page is what the sandbox token above actually permits.
-      prevDoc(localShell(previewFit()) + localHtml(kindNow(), src.value));
+      const tasks = taskLive();
+      prevDoc(localShell(previewFit()) + localHtml(kindNow(), src.value, tasks) + (tasks ? TASK_JS : ''));
     } catch {}
   };
+  // ── task boxes: a click in the preview edits the source ──────────────────
+  // only an md page this viewer may write (not linkRO, a foreign grub, a
+  // folder or a revision); gmi has no task syntax and render-gmi no lists
+  const taskLive = () => kindNow() === 'md' && !src.readOnly && viewingRev === null && !curFolder;
+  // the frame's origin is opaque: it can only say which line
+  const TASK_JS = '<script>addEventListener("click",function(e){var t=e.target;'
+    + 'if(t&&t.matches&&t.matches("input[data-line]"))parent.postMessage({latTask:+t.dataset.line,on:t.checked},"*")})</script>';
+  // execCommand keeps native undo and fires the input event (dirty,
+  // autosave, repaint). In Read the textarea is display:none, so it is shown
+  // off screen for this one task. Selection and scroll go back as they were.
+  function taskFlip(line, on) {
+    if (!taskLive()) return paintLocal();
+    const r = taskToggle(src.value, line, on);
+    if (!r) return paintLocal();
+    const wrap = src.closest('.edwrap'), hid = !!wrap && !src.offsetParent;
+    const keep = wrap ? wrap.style.cssText : '';
+    const had = document.activeElement === src;
+    const a = src.selectionStart, b = src.selectionEnd, dir = src.selectionDirection;
+    const top = src.scrollTop, left = src.scrollLeft;
+    if (hid) wrap.style.cssText = keep + ';display:block;position:fixed;left:-10000px;top:0;width:400px;height:200px';
+    let ok = false;
+    try {
+      src.focus({ preventScroll: true });
+      src.setSelectionRange(r.at, r.at + 1);
+      ok = document.activeElement === src && document.execCommand('insertText', false, r.ch);
+    } catch {}
+    if (!ok) src.setRangeText(r.ch, r.at, r.at + 1, 'preserve');
+    src.setSelectionRange(a, b, dir);
+    src.scrollTop = top; src.scrollLeft = left;
+    if (hid) wrap.style.cssText = keep;
+    if (!had) src.blur();
+    if (!ok) edited();
+  }
+  window.addEventListener('message', (e) => {
+    if (!prev || e.source !== prev.contentWindow) return;
+    const m = e.data;
+    if (m && Number.isInteger(m.latTask) && m.latTask >= 0) taskFlip(m.latTask, !!m.on);
+  });
   // the bare document a content kind's local render goes into. `fit` is
   // the height reporter, which only the live preview has.
   const localShell = (fit) => '<!doctype html><meta charset="utf-8"><base target="_top">'
