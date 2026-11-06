@@ -119,8 +119,10 @@
   ^-  ?
   ?:  =(f.a f.b)  (lth t.a t.b)
   (gth f.a f.b)
-::  +split-space: split a tape on runs of spaces. Empty segments dropped.
-::  In-order. No flop needed at the caller.
+::  +split-space: split a tape on runs of whitespace (a space, or any
+::  control byte: a newline, CR or tab). Empty segments dropped. In-order.
+::  No flop needed at the caller. Spaces alone glued the last word of a
+::  line to the first of the next, so neither could be found.
 ++  split-space
   |=  t=tape
   ^-  (list tape)
@@ -130,7 +132,7 @@
   ?~  t
     ?:  =(~ cur)  (flop out)
     (flop [(flop cur) out])
-  ?:  =(' ' i.t)
+  ?:  (lte i.t ' ')
     ?:  =(~ cur)  $(t t.t)
     $(t t.t, cur ~, out [(flop cur) out])
   $(t t.t, cur [i.t cur])
