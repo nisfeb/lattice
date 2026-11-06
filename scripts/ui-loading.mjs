@@ -310,6 +310,22 @@ try {
   };
   let box = null;
   for (let i = 0; i < 40 && !box; i++) { box = await inner(); if (!box) await sleep(250); }
+  //  the box's Post sits under its textarea, inside its edges, not out at
+  //  the frame's right edge (a flex row once pushed it there)
+  const boxAt = () => box.evaluate(() => {
+    const t = document.querySelector('form.cbox textarea').getBoundingClientRect();
+    const b = document.querySelector('form.cbox button[type=submit]').getBoundingClientRect();
+    return { taL: t.left, taR: t.right, taB: t.bottom, btL: b.left, btR: b.right, btT: b.top, vw: innerWidth };
+  });
+  const placed = (r) => r.btT >= r.taB - 1 && r.btL >= r.taL - 4 && r.btR <= r.taR + 4 && r.btR < r.vw - 8;
+  const wide = await boxAt();
+  await rd.setViewport({ width: 375, height: 800 });
+  await sleep(300);
+  const phone = await boxAt();
+  await rd.setViewport({ width: 1200, height: 900 });
+  await sleep(300);
+  check('the comment box\'s Post sits under its textarea, at desktop and phone width',
+    placed(wide) && placed(phone), JSON.stringify({ wide, phone }));
   await rd.evaluate(() => { window.__before = 1; });
   const rdMark = 'loadingrd' + Date.now();
   const t0 = Date.now();
