@@ -51,6 +51,26 @@ hasnt('a javascript: image is not sourced', '![a](javascript:alert(1))', 'src="j
 hasnt('quotes in a url cannot break out of the attribute',
   '[x](https://e.com/"onmouseover="alert(1))', 'onmouseover="alert');
 
+// Attribute names as a browser reads them: '/' and whitespace part them, a
+// value is quoted or runs to the next space. Anything but these is a live
+// attribute a document put there.
+const attrNames = (html) => [...html.matchAll(/<[a-z]+([^>]*)>/gi)].flatMap(([, a]) =>
+  [...a.matchAll(/[\s/]*([^\s/>=]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*))?/g)].map((m) => m[1].toLowerCase()));
+const tame = (name, input) => {
+  const got = mdToHtml(input);
+  const bad = attrNames(got).filter((n) => !['alt', 'src', 'href', 'type', 'checked', 'disabled', 'data-line', 'class'].includes(n));
+  check(name, !bad.length, `stray attributes ${JSON.stringify(bad)} in ${JSON.stringify(got)}`);
+};
+// a link's text started inside the image's alt and took its quotes, so the
+// second URL sat where attribute names go
+tame('a link inside an image cannot set attributes',
+  "![a[b](http://y) c](http://x/src/onerror=location='javascript:alert\\x28document.domain\\x29'//)");
+tame('a wikilink inside a url cannot set attributes', '[t](http://x/[[a" onmouseover="b]])');
+tame('emphasis inside a url stays out of the href', '[t](http://x/_a_/b) and ![i](http://x/*b*/c)');
+has('a linked image still renders', '[![alt](https://e.com/i.png)](https://e.com)',
+  '<a href="https://e.com"><img alt="alt" src="https://e.com/i.png"></a>');
+has('emphasis in link text still renders', '[a **b**](https://e.com)', '<a href="https://e.com">a <strong>b</strong></a>');
+
 console.log('\nblocks');
 has('a heading', '# Title', '<h1>Title</h1>');
 has('a deeper heading', '### Three', '<h3>Three</h3>');

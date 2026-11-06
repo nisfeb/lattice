@@ -9,17 +9,6 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
 
 // ── src/00-framed.js ──────────────────────────────────────────────────────
-  // ── never a second editor in a frame ─────────────────────────────────────
-  // The editor owns its window. Loaded in a frame (a link the shell did not
-  // catch, a redirect, a script), it would run a second set of buffers,
-  // autosave and stream over the same tab list and drafts in localStorage,
-  // and closing that frame would drop its unsaved work unasked. So it does
-  // not start. When the frame is one of the shell's own (24-tools.js), the
-  // shell opens the address as a tab of its own; the frame says so either
-  // way, and nothing else of this file runs.
-  // Once per arrival: a reload of this same note (a service worker
-  // taking over) finds its frame already marked and opens nothing again.
-  // The shell clears the mark when the frame goes anywhere else.
   if (window.top !== window) {
     let sent = false;
     let fe = null;
@@ -50,14 +39,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
 // ── src/05-prefs.js ───────────────────────────────────────────────────────
-  // ── typography preferences ───────────────────────────────────────────────
-  // Set on the settings page, stored in localStorage, applied here. Two vars
-  // only (--ed-font, --ed-size), because #src and #hl must keep byte-identical
-  // metrics. See the note beside them in index.html.
-  //
-  // Costs ZERO requests. Preferences are a client concern, so they never touch
-  // the pier. This file sorts first so the editor paints in the chosen font
-  // rather than flashing the default and re-laying out.
   const FONTS = {
     mono: 'ui-monospace, Menlo, Consolas, monospace',
     system: 'system-ui, sans-serif',
@@ -68,7 +49,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const r = document.documentElement.style;
     let f = null, s = null;
     try { f = localStorage.latFont; s = localStorage.latFontSize; } catch {}
-    // an unknown key must fall back rather than write `undefined` into CSS
     if (f && FONTS[f]) r.setProperty('--ed-font', FONTS[f]);
     else r.removeProperty('--ed-font');
     const n = parseInt(s, 10);
@@ -76,42 +56,18 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     else r.removeProperty('--ed-size');
   }
   applyPrefs();
-  // the settings page is a SEPARATE document on the same origin, so its writes
-  // reach an open editor through the storage event (no reload, no polling).
   window.addEventListener('storage', (e) => {
     if (!e.key || e.key === 'latFont' || e.key === 'latFontSize') applyPrefs();
   });
 
 // ── src/08-offline.js ─────────────────────────────────────────────────────
-  // ── offline edits: queue, detection, replay (docs/offline-edits.md) ──────
-  // Saves only: pages and know memories. The queue lives in IndexedDB, one per
-  // page, coalesced. Re-editing a queued page replaces its record, the same
-  // way autosave coalesces savePending. localStorage is synchronous and ~5MB,
-  // which is why the tree snapshot moved here too (phase 3).
-  //
-  // Detection is from RESPONSES, never navigator.onLine. The desktop webview
-  // talks to a localhost bridge that always answers and returns 502 when the
-  // ship is unreachable, and onLine lies about captive portals on mobile.
-  //
-  // THE QUEUE IS THE TOP READ TIER. Without that, cache-first opens painted
-  // the pre-edit body over a queued edit. The edit looked lost, and the next
-  // autosave would queue the OLD body back (review gap 1 in the design doc).
   let degraded = false;      // a save failed like the ship was unreachable
   let offCount = 0;          // queued page edits, drives the status text
   let offbadge = null;       // assigned by <lat-statusbar> (13-frame.js)
-  // a whole-tree job (a folder share or delete) holds the writer, and a save
-  // made meanwhile waits for it past its timeout. That is not offline: the
-  // save lands when the job ends, so the queue holds it and says so.
   let jobWait = false;
   const JOB_NOTE = 'a folder job is running, your save will land when it finishes';
-  // The persistent offline indicator. The status line reports EVENTS and the
-  // next one overwrites it, so "saved offline" scrolls away while you are
-  // still offline and still queueing. This reports the CONDITION and stays up
-  // until the queue is empty and the ship answers again.
-  //
-  // The two halves are independent: the ship can be unreachable with nothing
-  // queued yet, and the queue can be non-empty while the ship is back but the
-  // replay has not finished.
+  const NOT_SAVED = 'NOT SAVED — this device cannot store offline edits. Copy your text '
+    + 'somewhere safe before closing this page.';
   const renderOffline = () => {
     if (!offbadge) return;
     const q = offCount ? offCount + ' queued' : '';
@@ -133,16 +89,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       const d = rq.result;
       if (!d.objectStoreNames.contains('saves'))
         d.createObjectStore('saves', { keyPath: 'name' });
-      // Structural ops (delete, move, rename) are an ORDERED LOG, not a map.
-      // Saves coalesce because only the last body matters and autosave writes
-      // constantly. Deletes and moves do not: "rename A to B" then "delete B"
-      // is not the same as the reverse, and both are things a person does on
-      // purpose a handful of times, so there is nothing to coalesce away.
       if (!d.objectStoreNames.contains('ops'))
         d.createObjectStore('ops', { autoIncrement: true });
-      // kv: the tree snapshot (phase 3). It lived in localStorage, which is
-      // ~5MB, synchronous, and was re-STRINGIFIED whole on every save. IDB
-      // stores the structured clone directly and scales to the disk.
       if (!d.objectStoreNames.contains('kv'))
         d.createObjectStore('kv', { keyPath: 'k' });
     };
@@ -154,7 +102,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     rq.onsuccess = () => res(rq.result);
     rq.onerror = () => res(null);
   });
-  //  one object store of the three (saves, ops, kv), in its own transaction
   const idbStore = async (name, mode) => {
     const d = await offOpen();
     try { return d && d.transaction(name, mode).objectStore(name); } catch { return null; }
@@ -165,19 +112,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   const idbAll = async () => {
     const s = await idbStore('saves', 'readonly'); return (s && await offReq(s.getAll())) || [];
   };
-  //  how many records, without reading them: a queued save carries its
-  //  whole body, and the badge recount runs after every queue write
   const idbCount = async (name) => {
     const s = await idbStore(name, 'readonly'); return (s && await offReq(s.count())) || 0;
   };
-  //  getAll and getAllKeys both come back in key order, which is the order
-  //  they were queued in. That ordering IS the data structure here. The keys
-  //  come along so a partly drained queue can delete exactly what landed.
   const idbOpAll = async () => {
     const s = await idbStore('ops', 'readonly');
     if (!s) return [];
-    //  both requests are issued before either is awaited: a transaction ends
-    //  once the microtask queue drains with nothing pending on it
     const vp = offReq(s.getAll());
     const kp = offReq(s.getAllKeys());
     const vals = (await vp) || [];
@@ -192,17 +132,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const s = await idbStore('ops', 'readwrite'); if (s) await offReq(s.delete(k));
     await offRecount();
   };
-  // ── where the queue actually lives ───────────────────────────────────
-  // In a browser: IndexedDB, which is all there is. In the desktop shell:
-  // Rust, on disk, under the app's data dir and keyed by ship.
-  //
-  // The difference is not performance, it is survival. Web storage is keyed
-  // by ORIGIN, and the origin here is the bridge's port. Anything that moved
-  // that port moved the queue with it, so a relaunch that could not reclaim
-  // the canonical port came up unable to see edits queued minutes earlier.
-  // They were on disk the whole time, under an origin nothing would ask for
-  // again. A ship-keyed store on the Rust side cannot be lost that way: not
-  // by a port change, not by an upgrade, not by a second window.
   const qrust = () => (window.__TAURI__ && window.__TAURI__.core) || null;
   const qcall = async (cmd, args) => {
     const d = qrust();
@@ -212,14 +141,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
 
   const offGet = async (name) => {
     if (!qrust()) return idbGet(name);
-    //  one file, not the whole queue: this runs on every page open
     try { return (await qcall('queue_get', { name })) || null; } catch { return null; }
   };
   const offAll = async () => {
     if (!qrust()) return idbAll();
     try { return (await qcall('queue_list')) || []; } catch { return []; }
   };
-  //  the one that must never lie: it reports whether the edit is really down
   const offPut = async (rec) => {
     let ok = false;
     if (!qrust()) ok = await idbPut(rec);
@@ -230,8 +157,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   const offDel = async (name) => {
     if (!qrust()) await idbDel(name);
     else { try { await qcall('queue_del', { name }); } catch {} }
-    // a queue entry leaves the queue because it LANDED (or was dropped with
-    // a notice) — either way the reader's cached views of it are now lies
     bustPages(name);
     await offRecount();
   };
@@ -250,10 +175,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     await offRecount();
   };
 
-  // One-time adoption. A desktop user upgrading into this has edits sitting
-  // in the IndexedDB of whatever origin they were queued under, and the one
-  // we can still reach is our own. Move those across rather than leaving
-  // somebody's writing in a store nothing reads any more.
   async function adoptIdbQueue() {
     if (!qrust()) return;
     let mine = [];
@@ -261,14 +182,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     for (const rec of mine) {
       try { await qcall('queue_put', { rec }); await idbDel(rec.name); } catch {}
     }
-    // The ops too. Leaving them behind was a data-loss bug inside the very
-    // migration that exists to prevent one: a delete or a rename queued before
-    // the upgrade would be dropped, the tree would come back from the ship on
-    // the next load, and the change would silently undo itself.
-    //
-    // In order, and one at a time: the sequence is assigned on the Rust side,
-    // so the order they are pushed IS the order they replay in. `_k` is the
-    // old IndexedDB handle and must not travel with the record.
     let ops = [];
     try { ops = await idbOpAll(); } catch { ops = []; }
     for (const o of ops) {
@@ -281,25 +194,17 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     await offRecount();
   }
 
-  //  the desktop's Rust store has no count command, so there the lists
-  //  are still read whole
   const offRecount = async () => {
     offCount = qrust()
       ? (await offAll()).length + (await opAll()).length
       : (await idbCount('saves')) + (await idbCount('ops'));
     renderOffline();
   };
-  // Resolve TRUE only when the write actually completed. offReq resolves the
-  // request's RESULT, which for a put is the key, and a key is not a success
-  // signal you can trust. This one exists so a failed write is distinguishable
-  // from a successful one, because everything below depends on never claiming
-  // a save that did not happen.
   const offOk = (rq) => new Promise((res) => {
     if (!rq) return res(false);
     rq.onsuccess = () => res(true);
     rq.onerror = () => res(false);
   });
-  //  returns whether the record is now durably in the queue
   const idbPut = async (rec) => {
     const s = await idbStore('saves', 'readwrite');
     let ok = false;
@@ -315,51 +220,20 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const r = st && await offReq(st.get(k));
     return r ? r.v : null;
   };
-  // fire-and-forget by design: persistTree's callers are synchronous save
-  // paths, and a snapshot write that loses a race with app close costs one
-  // boot's paint, not data. The ship copy is the durable one.
   const kvPut = async (k, v) => {
     const st = await idbStore('kv', 'readwrite');
     if (st) await offReq(st.put({ k, v }));
   };
 
-  // fetch with a REAL deadline. "Detect offline by timeout" was in the design
-  // from day one, but nothing implemented a timeout. No AbortController
-  // anywhere, no ureq timeout in the bridge. So against a dead remote ship
-  // "degraded" was the OS TCP timeout, minutes away (review gap 2).
-  //
-  // The default is what the LIVE saves use, and it was 10s, which is the
-  // tightest deadline in the app. Replay gets 20s an item and 120s a batch.
-  // That was backwards. The pier serialises, so opening the app spends four
-  // or five round-trips before you touch anything, and on a loaded ship the
-  // first save is still queued behind them when its own clock runs out. It
-  // then gets treated as an outage: the edit is queued, replayed later, and
-  // lands on top of whatever happened in between as a conflicts/ page. A
-  // false offline FABRICATES a conflict and splits one page into two.
-  //
-  // Waiting longer to notice a genuinely dead ship costs the user some
-  // seconds. Guessing wrong costs them a duplicate page and the belief that
-  // their edit was lost. So the default is generous now, and the checks that
-  // are actually cheap (the reconnect probe at 5s) stay short.
   const tfetch = (url, opts = {}, ms = 30000) => {
     const ac = new AbortController();
     const t = setTimeout(() => ac.abort(), ms);
     return fetch(url, { ...opts, signal: ac.signal }).finally(() => clearTimeout(t));
   };
-  // the bridge answers 502 when the ship is unreachable. A proxy in front of
-  // eyre may say 504. Anything else means the ship SPOKE. That is a real
-  // error, not an outage, and must never be queued over.
   const shipGone = (r) => !r || r.status === 502 || r.status === 504;
-  // replay uses a stricter rule. A queued record is the user's only copy, so
-  // it is dropped only when the ship rejects it in a way a retry cannot fix:
-  // a bad request, a missing target, a conflict, a body too large. Anything
-  // else keeps it queued. That covers no response, any 5xx, an expired login
-  // (401, 403), a timeout (408) and rate limiting (429).
   const REPLAY_DROP = [400, 404, 409, 410, 413, 422];
   const replayDrop = (r) => !!r && REPLAY_DROP.includes(r.status);
 
-  // the job the writer is in the middle of, null when none (GET /tree-job).
-  // Asked only after a save timed out, so an unreachable ship costs 5s more.
   const treeJob = async () => {
     try {
       const r = await tfetch(api + '/tree-job', {}, 5000);
@@ -367,8 +241,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     } catch {}
     return null;
   };
-  // a save timed out behind a job: hold the queue (not degraded, the ship is
-  // answering) and send it once the job is over
   let jobTimer = null;
   function waitJob() {
     jobWait = true;
@@ -382,10 +254,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       replayQueue(true);
     }, 5000);
   }
-  // after a failed save: the ship is away, said at once, unless a job is
-  // already known to hold the writer. The first failure asks /tree-job in
-  // the background and turns "offline" into the job's note when one runs;
-  // once degraded, nothing is asked. -> whether a job is known
   function saveStalled() {
     if (jobWait) return true;
     const was = degraded;
@@ -401,9 +269,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     return false;
   }
-  // a whole-tree job the ship gave up on (a resume that kept failing) is
-  // said once, a while after boot: a folder delete dropped part way leaves
-  // some of its pages published, and nothing else would show it
   setTimeout(async () => {
     let d = null;
     try {
@@ -418,8 +283,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     st('a folder ' + d.job + ' of ' + (d.path || 'your pages') + ' stopped part way and was '
       + 'dropped: some of its pages may still be published. Run it again.', false);
   }, 15000);
-  // a save of `name` sent at `at` landed: a queued edit of it from before
-  // then is older text, and replayed it would overwrite the newer save
   async function dropQueued(name, at) {
     let q = null;
     try { q = await offGet(name); } catch {}
@@ -447,35 +310,16 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (!on && probeTimer) { clearInterval(probeTimer); probeTimer = null; }
   }
 
-  // queue one page's edit and make it the visible truth everywhere a read
-  // could come from: the render cache, the tree dump body, the boot snapshot.
-  // Returns whether the edit is actually safe. The old version returned
-  // nothing and said "saved offline" unconditionally, including when the
-  // queue write had silently failed, which is the worst thing this file can
-  // do: the editor then cleared its dirty flag and the work was gone with the
-  // UI reporting success. If the queue cannot take it, say so and say it in
-  // the words that matter, because there is nowhere else the edit now lives.
-  //  `rev`: the revision the edit was made on, when it is not the open
-  //  page's (a parked tab's, saveParked in 35-pages.js)
   async function enqueueSave(name, kind, body, isNew, rn, rev = curRev) {
-    // the queue coalesces by name, and the 2s autosave calls this WITHOUT
-    // the create flag — overwriting a queued create as a plain edit would
-    // route the replay around the 409 create protection and let an offline
-    // "new page" clobber one made online meanwhile. Once a create, always
-    // a create, until it drains. The display name rides with the create
-    // the same way.
     let prev = null;
     try { prev = await offGet(name); } catch {}
-    //  behind a job the timed-out writes still land, so a base would only
-    //  flag our own text as a conflict: no base claim, as a live save
     const queued = await offPut({ name, kind, body, baseRev: jobWait ? 0 : rev || 0,
       isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
     const job = saveStalled();
     if (!queued) {
-      st('NOT SAVED — this device cannot store offline edits. Copy your text '
-        + 'somewhere safe before closing this page.', false);
+      st(NOT_SAVED, false);
       return false;
     }
     pageCache.delete(name);
@@ -483,45 +327,21 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
     snapPage(name, { body, kind, rev: rev || 0 });
     st(job ? JOB_NOTE : 'saved offline — ' + offCount + ' waiting to sync');
-    // truthy either way: 'job' tells the editor which words to show
     return job ? 'job' : true;
   }
-  // Queue a delete or a move. The caller has already done the local tree work
-  // (dropTreeNodes, or remapping the paths) because that is the same work it
-  // does when the ship answers, so all that is left is remembering the intent.
-  //
-  // The queued SAVES are reconciled here, immediately, which is what lets the
-  // replay run every op before any save and still be right. Deleting a page
-  // drops the save nobody will ever want again. Renaming one carries its
-  // pending body along to the new name. Without that, a page edited and then
-  // renamed offline would replay as a move of the OLD body plus a save under
-  // the old name, resurrecting what was just renamed away.
   const under = (name, p) => name === p || name.startsWith(p + '/');
   async function enqueueOp(rec) {
-    // mkdir affects no queued save (it carries no content), so the
-    // reconciliation below only runs for del/move. A folder create is recorded
-    // and drained as-is; the local tree work (addFolderNodes) already happened.
     if (rec.op !== 'mkdir') {
       for (const q of await offAll()) {
         if (q.kind === 'know') continue;
         if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
         if (rec.op === 'move' && under(q.name, rec.from)) {
           await offDel(q.name);
-          // drop the CAS claim: a save rebased by a move cannot know the
-          // destination's rev (fresh rails land at 1, recreated ones at
-          // prior+1, merges at oldRev+1 — two releases guessed numbers and
-          // both were wrong somewhere). base 0 now MEANS "no base claim"
-          // on both server write paths; the move itself guarantees the
-          // destination's pre-save body is the one this edit was made from.
           await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 0 });
         }
       }
       for (const k of [...pageCache.keys()])
         if (under(k, rec.op === 'del' ? rec.name : rec.from)) pageCache.delete(k);
-      // the boot snapshot names one page. If that page was just deleted or moved
-      // away, the snapshot is stale: the next boot would paint a body whose name
-      // no longer resolves in the tree (it reads as "my change reverted"). Drop
-      // it so the boot defers to the network instead of painting a ghost.
       try {
         const p = JSON.parse(localStorage.appPage || 'null');
         if (p && p.name && under(p.name, rec.op === 'del' ? rec.name : rec.from))
@@ -530,23 +350,15 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     await opPut({ ...rec, queuedAt: Date.now() });
     setDegraded(true);
-    st(rec.op === 'del'
-      ? 'deleted offline — ' + offCount + ' waiting to sync'
-      : rec.op === 'mkdir'
-        ? 'folder created offline — ' + offCount + ' waiting to sync'
-        : 'moved offline — ' + offCount + ' waiting to sync');
+    st(({ del: 'deleted', mkdir: 'folder created' }[rec.op] || 'moved')
+      + ' offline — ' + offCount + ' waiting to sync');
   }
 
-  // know memories share the queue under a 'know:' prefix. Page names cannot
-  // contain a colon, so the two namespaces cannot collide in the one store.
-  // No baseRev: memories are last-write-wins (no CAS, no conflicts/ pages),
-  // matching what know-save itself does.
   async function enqueueKnow(key, body) {
     const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
     const job = saveStalled();
     if (!queued) {
-      st('NOT SAVED — this device cannot store offline edits. Copy your text '
-        + 'somewhere safe before closing this page.', false);
+      st(NOT_SAVED, false);
       return false;
     }
     knowGen++;
@@ -560,23 +372,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
   let replaying = false;
-  // The guard has to be taken BEFORE the first await. It used to be set four
-  // lines further down, after two of them, so two callers could both pass the
-  // check and drain the queue at the same time. Four things call this (boot,
-  // the reconnect probe, a save that succeeds, and refreshAll) and they fire
-  // close together by design.
-  //
-  // Concurrent drains are not merely wasteful. Both send the same baseRev; the
-  // first applies and moves the revision on; the second is then a CAS miss,
-  // which the server records as a conflict. That is a conflicts/ page invented
-  // out of one queue draining twice, which is the same failure as a false
-  // offline: a conflict manufactured where the user made none.
-  //
-  // try/finally because an exception part way through used to leave this true
-  // for the life of the page, and replay never ran again.
   async function replayQueue(proven) {
-    //  not while a job holds the writer: the replay would only queue behind
-    //  it, after the writes it timed out on (waitJob replays once it ends)
     if (replaying || jobWait) return;
     replaying = true;
     srcFlight.clear();    // replayed writes: no open read from before is shared
@@ -584,32 +380,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     try { await drainQueue(proven); } finally { replaying = false; }
   }
 
-  //  Each drain phase returns FALSE when it could not finish. Usually that is
-  //  the ship going away mid-drain, or any answer that is not a deterministic
-  //  rejection (see replayDrop). drainCreates also returns false
-  //  when the conflict-preservation write did not land for any other reason,
-  //  because the alternative is dropping the user's only copy of a document.
-  //  Either way everything the phase had not finished stays queued, in order,
-  //  for the next replay, and the caller stops there and goes degraded. For a
-  //  ship that is answering but refusing that one write, degraded is a
-  //  deliberate over-report.
 
-  // Structural ops go FIRST, in the order they were made. Their effect on
-  // the pending saves was already applied when they were queued, so a save
-  // landing afterwards is always a save the user still wants, under the name
-  // they want it under.
-  //
-  // An op the ship REJECTS (see replayDrop) is dropped, not retried. It
-  // means the intent was already satisfied some other way: deleting a page
-  // that only ever existed in this queue, or moving one whose source the
-  // queue never sent. Retrying that forever would wedge everything behind
-  // it, and there is nothing to recover because no content lives in an op.
-  // Any other failure keeps the op queued and stops the drain.
   async function drainOps(ops) {
     for (const o of ops) {
-      //  a record of any other shape is corrupt. Falling through to the move
-      //  branch would POST from=undefined&to=undefined, which is a confusing
-      //  400 rather than a dropped bad record.
       if (o.op !== 'del' && o.op !== 'move' && o.op !== 'mkdir') { await opDel(o._k); continue; }
       const u = o.op === 'del'
         ? api + '/page-del?name=' + encodeURIComponent(o.name)
@@ -632,10 +405,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return true;
   }
 
-  // Creates go PER-ITEM with new=1, never through the batch: the batch is an
-  // unconditional upsert, so a name that already exists on the ship would be
-  // silently overwritten. A create must keep its 409-on-exists protection,
-  // or an offline "new page" could clobber a page someone else made online.
   async function drainCreates(creates, conflicts) {
     for (const q of creates) {
       let one = null;
@@ -645,21 +414,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
       if (one && one.ok) { await offDel(q.name); continue; }
-      //  409 is in the drop set, so it falls through to its own branch below
       if (!replayDrop(one)) return false;
-      // 409: the name is taken on the ship. Do NOT drop the user's body — move
-      // it out of the way as a conflict page so nothing is lost, then let them
-      // rename. Overwriting is the one thing a create must never do. The alt
-      // write needs no new=1 (it is a preservation write, not a create-claim),
-      // and %make creates the conflicts/ parent server-side, as it does for
-      // the ship's own conflict pages.
       if (one && one.status === 409) {
-        // the 409 may be OUR OWN earlier attempt: tfetch's abort stops the
-        // wait, not the write, so a timed-out create can land ship-side and
-        // 409 its own replay (two tabs draining the shared queue race the
-        // same way). The single-save and batch paths have an identical-body
-        // dup rule for exactly this; a create must too, or a replay that
-        // raced its own landed write fabricates a "collided" conflict page.
         try {
           const sr = await tfetch(api + '/page-source?name=' +
             encodeURIComponent(q.name), {}, 20000);
@@ -669,14 +425,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           }
         } catch {}
         const alt = 'conflicts/offline-create-' + q.name.replace(/\//g, '-');
-        let two = null;
-        try {
-          two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
-            '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
-        } catch {}
-        //  the preservation write is the only thing standing between the user
-        //  and a lost document, so if it does not land the record stays queued
-        if (!(two && two.ok)) return false;
+        if (!await keepAside(q, alt)) return false;
         conflicts.push(alt);
         await offDel(q.name);
         st('offline create collided: ' + q.name + ' exists on the ship — your ' +
@@ -689,10 +438,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return true;
   }
 
-  // Drain through page-save-batch. The batch is all-or-nothing, right for
-  // uploads, wrong for replay. One poisoned record would block the queue
-  // forever. A rejected batch falls back to per-item saves so the bad record
-  // is isolated and DROPPED (it can never apply; review gap 3).
+  const keepAside = async (q, alt) => {
+    try {
+      const r = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
+        '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
+      return !!(r && r.ok);
+    } catch { return false; }
+  };
   async function drainEdits(edits, conflicts) {
     for (let i = 0; i < edits.length; i += 50) {
       const part = edits.slice(i, i + 50);
@@ -705,10 +457,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         }, 120000);
       } catch {}
       if (r && r.ok) {
-        // per-item verdicts: an edit whose base the ship moved past still
-        // APPLIED (it is the newest revision), but the overwritten revision
-        // is named so it can be recovered from history. Apply-and-flag,
-        // never silently drop either side
         try {
           for (const it of ((await r.json()).items || []))
             if (it.conflicted) conflicts.push(it.kept || it.name);
@@ -716,9 +464,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         for (const q of part) await offDel(q.name);
         continue;
       }
-      //  a 5xx from the batch may be one poisoned record, so retry per item
-      //  to isolate it. No response, an outage, a lapsed login or a rate
-      //  limit would fail the same way per item, so stop and keep them all.
       if (r && !shipGone(r) && (r.status >= 500 || replayDrop(r))) {
         for (const q of part) {
           let one = null;
@@ -736,18 +481,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
             continue;
           }
           if (!replayDrop(one)) return false;
-          // 409: refused as stale or as nothing-goes-there (a link's host
-          // moved on, a link where a page was). The body is the user's only
-          // copy, so it is kept as a page of its own first, as a create's
-          // collision is; if that write fails the record stays queued.
           if (one && one.status === 409) {
             const alt = 'conflicts/offline-edit-' + q.name.replace(/\//g, '-');
-            let two = null;
-            try {
-              two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
-                '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
-            } catch {}
-            if (!(two && two.ok)) return false;
+            if (!await keepAside(q, alt)) return false;
             conflicts.push(alt);
             await offDel(q.name);
             st('offline edit refused: ' + q.name + ', your version is kept at ' + alt, false);
@@ -763,8 +499,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return true;
   }
 
-  // memories drain per-item. There is no know batch route, and last-write-
-  // wins means a plain re-save with no verdict to collect
   async function drainKnows(knows) {
     for (const q of knows) {
       let one = null;
@@ -784,19 +518,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const whole = await offAll();
     const ops = await opAll();
     if (!whole.length && !ops.length) return;
-    // a proven-live caller already has a round-trip that answered, so the
-    // ship being gone is disproved before the first phase even runs. Clear
-    // the badge now instead of leaving it amber for a drain that is, by
-    // then, just bookkeeping.
     if (proven && degraded) { degraded = false; renderOffline(); }
     const all = whole.filter((q) => q.kind !== 'know');
     const knows = whole.filter((q) => q.kind === 'know');
     const total = whole.length + ops.length;
     stWork('syncing ' + total + ' offline edit' + (total === 1 ? '' : 's') + '…');
     const conflicts = [];
-    //  ORDER IS THE CONTRACT: ops, then creates, then edits, then memories.
-    //  && short-circuits, so the first phase that loses the ship stops the
-    //  drain and leaves the rest of the queue untouched for the next replay.
     const landed = await drainOps(ops)
       && await drainCreates(all.filter((q) => q.isNew), conflicts)
       && await drainEdits(all.filter((q) => !q.isNew), conflicts)
@@ -811,30 +538,18 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       st('synced — ' + conflicts.length + ' conflict(s): your offline version won; '
         + 'the other is saved at ' + conflicts.join(', '), false);
     } else st('offline edits synced');
-    // reconcile ONLY after the drain. refreshAll on reconnect would repaint
-    // queued pages from the server dump before their edits landed (gap 4)
     if (knows.length && knowLive()) loadKnow();
     loadTree();
   }
 
 // ── src/10-shell.js ───────────────────────────────────────────────────────
-// lattice app, served from ui-app/src/, built by scripts/build-ui.mjs
   const $ = (id) => document.getElementById(id);
   const api = '/apps/lattice';
-  // ── flat icons ───────────────────────────────────────────────────────────
-  // One-colour glyphs in place of colour emoji: the tree's folders and page
-  // kinds (NERDTree with devicons), and the shell's buttons.
-  // folder/open/search/comment/key are GitHub's Octicons, the page
-  // kinds Seti-UI's, the set NERDTree's devicons draw on; both MIT. Each is
-  // [viewBox, path]; Seti's boxes are cropped to match the Octicons' size.
-  // The colour is CSS (.ic-md and so on), currentColor where it has none.
   const ICON = {
     folder: ['0 0 16 16', 'M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z'],
     open: ['0 0 16 16', 'M.513 1.513A1.75 1.75 0 0 1 1.75 1h3.5c.55 0 1.07.26 1.4.7l.9 1.2a.25.25 0 0 0 .2.1H13a1 1 0 0 1 1 1v.5H2.75a.75.75 0 0 0 0 1.5h11.978a1 1 0 0 1 .994 1.117L15 13.25A1.75 1.75 0 0 1 13.25 15H1.75A1.75 1.75 0 0 1 0 13.25V2.75c0-.464.184-.91.513-1.237Z'],
     search: ['0 0 16 16', 'M10.68 11.74a6 6 0 0 1-7.922-8.982 6 6 0 0 1 8.982 7.922l3.04 3.04a.749.749 0 0 1-.326 1.275.749.749 0 0 1-.734-.215ZM11.5 7a4.499 4.499 0 1 0-8.997 0A4.499 4.499 0 0 0 11.5 7Z'],
     comment: ['0 0 16 16', 'M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0 1 13.25 12H9.06l-2.573 2.573A1.458 1.458 0 0 1 4 13.543V12H2.75A1.75 1.75 0 0 1 1 10.25Zm1.75-.25a.25.25 0 0 0-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 0 1 .75.75v2.19l2.72-2.72a.749.749 0 0 1 .53-.22h4.5a.25.25 0 0 0 .25-.25v-7.5a.25.25 0 0 0-.25-.25Z'],
-    // Stroke icons for the editor shell: 24x24 line art, drawn by ico() with
-    // fill none and a currentColor stroke. A third element 'stroke' marks them.
     pl: ['0 0 24 24', 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM9 4v16', 'stroke'],
     pr: ['0 0 24 24', 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM15 4v16', 'stroke'],
     cal: ['0 0 24 24', 'M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM8 3v4M16 3v4M3 10h18', 'stroke'],
@@ -870,7 +585,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     save: ['0 0 24 24', 'M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 3v5h7V3M7 21v-7h10v7', 'stroke'],
     pin: ['0 0 24 24', 'M9 3h6l-1 6 3 4H7l3-4zM12 13v8', 'stroke'],
     tabs: ['0 0 24 24', 'M8 8h12v12H8zM4 16V4h12', 'stroke'],
-    // split a tab group right or down (28-splits.js): a frame cut in two
     splitr: ['0 0 24 24', 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM12 4v16', 'stroke'],
     splitd: ['0 0 24 24', 'M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM3 12h18', 'stroke'],
     copy: ['0 0 24 24', 'M9 9h11v11H9zM5 15H4V4h11v1', 'stroke'],
@@ -878,7 +592,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     know: ['0 0 24 24', 'M12 3l8 9-8 9-8-9z', 'stroke'],
     skill: ['0 0 24 24', 'M13 3L5 13h6l-1 8 8-10h-6z', 'stroke'],
     doc: ['0 0 24 24', 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5', 'stroke'],
-    // a link to a page on another ship: a box with an arrow out of it
     link: ['0 0 24 24', 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5', 'stroke'],
     md: ['4 4 24 24', 'M20.7 6.7v9.9h3.8c-2.9 3-5.8 5.9-8.7 8.8-2.7-2.8-5.6-5.8-8.4-8.7h3.5V6.6c1.3.9 4.4 3.1 5 3.1.6 0 3.6-2.2 4.8-3z'],
     tex: ['4 4 24 24', 'M7.9 17.5H6.5v1.3h4.4v-1.3H9.6V11h.4c1.2 0 1.4.1 1.6 1h1.2l-.2-2.3H4.8l-.3 3.6h1.2v-.5c.2-1.7.3-1.8 1.8-1.8h.4v6.5zM15.8 21.1h-1.7v-2.8h.6c.7 0 .7 0 .7.9v.5h1.2v-4.1h-1.2v.5c0 .9 0 .9-.7.9h-.6v-2.4h1.6c1.5 0 1.6.4 1.7 1.8h1.2l-.3-3.2h-7v1.3h1v6.4h-1v1.3h7.1l.4-2.6h-1.3c0 1.1-.4 1.5-1.7 1.5zM21.7 17.6h-.5l1.5-2.2 1.5 2.2h-.3v1.1h3.6v-1.2H27c-.6 0-.6 0-.7-.2l-2.4-3.5 1.6-2.3c.2-.2.4-.6 1.1-.6h.5V9.6H24v1.2h.5l-.1.1-1.2 1.7-1.3-1.6h.3V9.6h-3.6V11h.5c.6 0 .6 0 .7.2l2.1 3.1-1.8 2.7-.3.3c-.2.2-.5.3-.8.3h-.5v1.2h3.2v-1.2z'],
@@ -893,44 +606,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return `<svg class="ic ic-${k}" viewBox="${ICON[k][0]}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICON[k][1]}"/></svg>`;
     return `<svg class="ic ic-${k}" viewBox="${ICON[k][0]}" fill="currentColor" aria-hidden="true"><path d="${ICON[k][1]}"/></svg>`;
   };
-  // ── background requests yield to the user ────────────────────────────────
-  // The pier runs one event at a time, so every request this client sends is
-  // one the user's next click queues behind — measured: a page open landed at
-  // 6.2s because three background fetches were in line ahead of it. There is
-  // no cancelling a request already on the wire, so priority here means one
-  // thing: do not SEND background traffic near user activity. bgFetch holds
-  // its request until BG_IDLE_MS have passed since the last pointer/key
-  // event; while you are actively browsing, background traffic is silent.
-  //
-  // For badges and syncs only. Anything the user asked for — opens, saves,
-  // panel loads — uses fetch directly and must never come through here.
-  //  seeded with NOW: page load counts as activity, so boot's background
-  //  lane waits out the window in which a user's FIRST click arrives — the
-  //  one click pointerdown cannot have preceded. Measured before this: the
-  //  first open queued behind three boot fetches and took 5.2s.
   let lastAction = Date.now();
   const bgBusy = () => { lastAction = Date.now(); };
-  //  an edit that came without a key (a paste from a menu, dictation), and
-  //  a click that came without a pointer (a menu, assistive tech)
   for (const t of ['pointerdown', 'keydown', 'input', 'click']) addEventListener(t, bgBusy, true);
-  //  A frame tab's events never reach this window, so its frame passes them
-  //  on, and its loads count too (frameDress, 24-tools.js). Browsing in a
-  //  frame read as idle: the lane sent its panel reads mid-browse, and the
-  //  forum's first load queued behind 2 s of them.
   const BG_IDLE_MS = 4000;
-  //  and none while a save is on the wire or about to be: an unsaved
-  //  buffer is a save due within autosave's debounce, and the ship serves
-  //  one request at a time, so a background read sent first delays it.
-  //  At most BG_HOLD_MS, so a buffer that cannot save does not stall the
-  //  lane for good.
   const BG_HOLD_MS = 15000;
   const saveDue = () => saving || (dirty && autosaveOn());
-  //  ONE background request at a time, idle re-checked before EACH send.
-  //  Releasing them together is an ambush: the gate opens after 4 idle
-  //  seconds, three requests hit the pier's FIFO queue at once (~2s each),
-  //  and the user's next click waits behind all of them — measured, that
-  //  was 6s to open a page. Sequenced, the worst a click can land behind
-  //  is the single background request already on the wire.
   let bgChain = Promise.resolve();
   const bgFetch = (url, opts) => {
     const run = async () => {
@@ -944,21 +625,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return fetch(url, opts);
     };
     const p = bgChain.then(run);
-    //  errors stay with the caller; the chain itself must survive them
     bgChain = p.catch(() => {});
     return p;
   };
-  // the reader's LRU pages cache (sw-js serves it with NO revalidation, and
-  // its beacon script converges stale paints QUIETLY — the next view is
-  // fresh, not this one). Fine for edits from elsewhere; a lie for our own:
-  // save here, Back into the reader, and the pre-save copy would paint with
-  // nothing visibly correcting it. So every successful write busts the
-  // cached views it could have changed — any entry naming the page, plus
-  // home, whose listings change under every write.
   const bustPages = (name) => {
     if (!('caches' in window)) return;
-    // ball paths arrive with a leading slash (spud); the needle below adds
-    // its own, and '//' matches no URL — normalize or the bust is a no-op
     name = String(name || '').replace(/^\/+/, '') || null;
     caches.open('lattice-pages').then(async (c) => {
       const home = location.origin + '/apps/lattice';
@@ -969,20 +640,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       }
     }).catch(() => {});
   };
-  // mirror of the server's +valid-name (@ta segments; no '.'/'..'): reject
-  // BEFORE saving or queueing. The server answers 400 — cryptic online, and
-  // fatal offline: the drain treats 400 as unsyncable and discards the
-  // queued document it earlier reported "saved offline".
   const validName = (n) => String(n || '').split('/').every(
     (s) => s.length && s !== '.' && s !== '..' && /^[a-z0-9._~-]+$/.test(s));
-  // realName: what a typed name becomes. A valid path is used as it is and
-  // gets NO display name (a name is never stored twice). Anything else —
-  // capitals, spaces, punctuation — is slugged per segment the way the
-  // uploader slugs file names, and each segment that changed keeps its
-  // typed text as the display name of the page or folder at that depth:
-  // `dname` is the leaf's, `dnames` is every segment's, '/'-joined with ''
-  // where the segment was fine as typed (so "notes/My Page" -> "/My Page").
-  // null when even the slug is empty: there is nothing to name it by.
   const slugSeg = (s) => s.toLowerCase().replace(/[^a-z0-9._~-]+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
   const realName = (typed) => {
     const t = String(typed || '').trim().replace(/^\/+|\/+$/g, '');
@@ -995,26 +654,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const per = segs.map((s, i) => (s === slugs[i] ? '' : s));
     return { name, dname: per[per.length - 1], dnames: per.some(Boolean) ? per.join('/') : '' };
   };
-  // the query-string form of a realName() result (nothing for a valid name)
   const dnameQ = (rn) => (!rn ? '' :
     (rn.dname ? '&dname=' + encodeURIComponent(rn.dname) : '') +
     (rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
-  // failure statuses name the actual cause. Every send-err answer carries
-  // {"error": msg}, and dropping it for a bare status code wasted a cause
-  // the pier already paid a round trip to deliver. Same parse the grub save
-  // path uses. The body has ONE read, so a caller hands the response here
-  // and reads nothing else from it.
   const errText = async (r) => {
     let msg = r ? ' ' + r.status : '';
     if (r) { try { const j = await r.json(); if (j && j.error) msg = ': ' + j.error; } catch {} }
     return msg;
   };
-  // the eyre session is gone: an owner route answered 401, or 403 with the
-  // gate's bare "forbidden" (every other refusal says why). What this browser
-  // keeps of the owner's content goes, so whoever uses it next sees none of
-  // it: the tree snapshot (every page body), the last page, the pages cache
-  // and its index. The offline queue stays. It holds edits not sent yet,
-  // and dropping it would lose them.
   const sessionGone = async (r) => {
     if (!r || (r.status !== 401 && r.status !== 403)) return false;
     if (r.status === 403) {
@@ -1030,16 +677,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     st('the session has ended: log in to the ship again', false);
     return true;
   };
-  // bulk writes (vault restore, drag-drop upload, know-import) name their
-  // targets only in the POST body — no per-name bust is possible from the
-  // URL, and a restore legitimately invalidates everything. Drop the whole
-  // pages cache; it rebuilds one view at a time.
   const bustAll = () => {
     if (!('caches' in window)) return;
-    // spare the /__pv marker: it is the SW's record of which page-format
-    // version this cache holds, and deleting it with the cache made the
-    // next activate read a mismatch and wipe every freshly cached page
-    // again. Read it out, drop the cache, put it back.
     caches.open('lattice-pages').then(async (c) => {
       const hit = await c.match('/__pv');
       const pv = hit ? await hit.text() : null;
@@ -1051,18 +690,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   let pname, pkind;                    // assigned by the tab header (23-tabhead.js)
   let status, spinner;                 // assigned by <lat-statusbar> (13-frame.js)
   let prev;                            // assigned by <lat-preview> (60-preview.js)
-  // blank preview: about:blank defaults to light color-scheme, which
-  // mismatches the app's declared scheme and makes the iframe an opaque
-  // white canvas in dark theme. Declare the scheme so it stays transparent
-  // and the pane's theme background shows through.
-  // the preview frame is its own document, out of the theme's reach, so it
-  // gets a copy of what theme.js set inline on <html>: the colours, the
-  // forced color-scheme, Talon's font. Empty when none is set, so the frame
-  // follows the OS as it always did. (An installed font is a face of THIS
-  // document, so the frame gets its name and falls back unless the system
-  // has it too.)
-  // the theme into a preview document, and its link and selection colours
-  // only where it names them: unset, the page keeps the engine's own
   const themeRoot = () => {
     const s = document.documentElement.style;
     if (!s.colorScheme && !s.getPropertyValue('--font')) return '';
@@ -1070,25 +697,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       + (s.getPropertyValue('--link') ? 'a{color:var(--link)}' : '')
       + (s.getPropertyValue('--selection') ? '::selection{background:var(--selection)}' : '');
   };
-  // Every write to the preview frame goes through prevDoc / prevUrl.
-  //
-  // WebKit (2.50, the desktop app's engine) drops a srcdoc written while
-  // the frame's last navigation is still in flight. Measured in a bare
-  // MiniBrowser: write A, then B a few ms later (0 to ~30 ms, timing
-  // dependent), and one load fires with A on screen while the attribute
-  // holds B, about one time in seven. The editor does exactly that when a
-  // tab in Read comes to the front: showPreview paints the text still in
-  // the editor, and the tab's own text lands a moment later. So on WebKit
-  // a write made while one is in flight marks the frame, and its next
-  // load writes the current attribute again (the same value navigates
-  // again, also measured). Chromium honours the second write, so it skips
-  // all of this and keeps its one load per document.
   const prevWK = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium/.test(navigator.userAgent);
-  // a navigation of frame `f` has started: a write, or the frame entering
-  // the page again with a document. A detached frame loads nothing, and
-  // one that has left the page (a replaced preview, a closed group) is
-  // not written again. Any preview frame, the live one or a group's
-  // parked one (28-splits.js), goes through here.
   const navBusy = (f) => {
     if (!prevWK || !f || !f.isConnected) return;
     if (!f.latNav) {
@@ -1115,20 +724,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   const prevBlank = () => {
     prev.removeAttribute('src');
     prev.style.minHeight = '';
-    // the srcdoc paints its OWN theme background rather than relying on the
-    // engine to composite a mismatched-scheme iframe as transparent. That
-    // reliance is exactly the kind of behavior that differs between the
-    // Chromium the tests run and the webkitgtk the desktop runs
     prevDoc('<style>:root{color-scheme:light dark}' +
       'body{margin:0;background:var(--bg,#fafafa)}' +
       '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot() + '</style>');
   };
-  // grant paths are shown in the share/ACL surfaces, and every one carries
-  // the same app base, pure noise on screen: /apps/lattice.lattice_app, or
-  // a desk install's longer path ending in it. Strip it, then keep the
-  // SHORTEST tail that stays unique among the paths shown alongside (`all`),
-  // growing only where disambiguation demands. Callers put the full path in
-  // `title`, so hover always has the truth.
   const shortPath = (p, all) => {
     const strip = (x) => x.replace(/^.*?\/lattice\.lattice_app\/(page\/)?/, '');
     const label = (x) => {
@@ -1140,21 +739,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       const clashes = () =>
         all.some((q) => q !== x && strip(q).split('/').slice(-n).join('/') === tail());
       while (n < segs.length && clashes()) n++;
-      // Out of segments and STILL ambiguous. strip() drops an optional "page/",
-      // so /…/page/foo and /…/foo both reduce to "foo" with nothing left to
-      // extend, and two different grants rendered identically in the ACL pane.
-      // Fall back to keeping that prefix, which is what actually distinguishes
-      // them. Showing a longer path beats showing the wrong one.
       if (clashes()) return x.replace(/^.*?\/lattice\.lattice_app\//, '');
       return (n < segs.length ? '\u2026/' : '') + tail();
     };
-    // Growing the tail compares TAILS, which is not the same as comparing
-    // LABELS. /…/page/b keeps its "page/" by the rule above and /…/page/page/b
-    // grows into those same two segments, so the pair collided anyway: found
-    // by property, not by eye, in scripts/ui-props.mjs. Once even the labels
-    // agree, nothing shorter than the whole path tells the grants apart.
-    // Every label ends in its own last segment, so only same-leaf grants can
-    // collide: that filter keeps this off the O(n²) path on a long ACL.
     const me = label(p);
     const leaf = (x) => x.slice(x.lastIndexOf('/') + 1);
     const near = all.filter((q) => q !== p && leaf(q) === leaf(p));
@@ -1167,31 +754,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     status.title = msg;                      // in full, when the bar cuts it short
     status.style.color = ok ? '' : '#c0392b';
   };
-  // stWork: a status that keeps spinning until the next plain st()
-  const stWork = (msg) => {
-    status.textContent = msg;
-    status.title = msg;
-    status.style.color = '';
-    spinner.classList.add('on');
-  };
-  // ── busy: the one loading indicator ──────────────────────────────────────
-  // A thin moving line along the top of the region that is waiting on the
-  // ship (.lbusy in index.html): #center by default (an open phone drawer
-  // over it instead), a pane for a panel's load. busy() starts a wait and
-  // answers its end, which is safe to call more than once. The line shows
-  // only once a wait has run BUSY_MS, so an answer from a cache or a quick
-  // pier never flashes it. A `key` names a
-  // kind of wait that a newer one supersedes ('open': a later open, or a
-  // tab switch, ends the one before it), and busyEnd(key) ends it outright.
-  // Every wait ends by BUSY_MAX at the latest, so a path that forgot its
-  // end cannot leave the line running. The frame tabs keep their own line
-  // (frameLoading, 24-tools.js), and the reader pages theirs (app.hoon's
-  // +busy-script); all three look the same.
+  const stWork = (msg) => { st(msg); spinner.classList.add('on'); };
   const BUSY_MS = 180;
   const BUSY_MAX = 60000;
   const busyKeys = new Map();          // key -> the end of its wait
   const busyOn = new Map();            // region -> waits running in it
-  // on a phone an open drawer covers the center, so the line goes on it
   const busyHome = () => {
     const ws = $('ws');
     return ws.classList.contains('ldraw') ? $('lpane')
@@ -1210,7 +777,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       if (key && busyKeys.get(key) === end) busyKeys.delete(key);
       const left = busyOn.get(el) - 1;
       busyOn.set(el, left);
-      // only the last wait in the region takes the line away
       if (!left) el.classList.remove('lbusy');
     };
     const cap = setTimeout(end, BUSY_MAX);
@@ -1218,14 +784,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return end;
   }
   const busyEnd = (key) => { const end = busyKeys.get(key); if (end) end(); };
-  // a fetch the user is waiting on, with the line while it flies
   const busyFetch = (url, opts, key, region) => {
     const end = busy(key, region);
     return fetch(url, opts).finally(end);
   };
-  // desktop shell: wry denies target=_blank new windows (the clearweb share
-  // link would be a dead click). Same-origin and urb:// links stay in the
-  // app. Only truly external http(s) leaves for the system browser.
   if (window.__TAURI__)
     document.addEventListener('click', (e) => {
       const a = e.target.closest && e.target.closest('a[target="_blank"]');
@@ -1237,15 +799,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     });
 
 // ── src/13-frame.js ───────────────────────────────────────────────────────
-  // ── shell frame: <lat-ribbon>, <lat-lpane>, <lat-rpane>, <lat-statusbar> ──
-  // The ribbon down the left edge, a tabbed pane either side of the editor,
-  // the status bar along the bottom and a corner toggle above each pane.
-  // The panes render the old components (lat-tree, lat-ctl, lat-history,
-  // lat-links) as children, so those upgrade into their sections when their
-  // own files run, with every id intact.
-  //
-  // Every icon button is titled "Name (shortcut)" with an identical
-  // aria-label: the glyph is its whole content, so the title is its name.
   const tip = (b, name, keys) => {
     const t = keys ? name + ' (' + keys + ')' : name;
     b.title = t;
@@ -1256,23 +809,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     `<button type="button" class="sbtn" ${attrs} title="${name}${keys ? ' (' + keys + ')' : ''}"`
     + ` aria-label="${name}${keys ? ' (' + keys + ')' : ''}">${ico(icon)}</button>`;
 
-  // ── actions ─────────────────────────────────────────────────────────────
-  // Every command the palette (26-palette.js) lists is registered by the
-  // file that builds its home, with the home's element carrying
-  // data-action="<id>". The palette is an index over those homes and holds
-  // no feature of its own: run does what clicking the home does. Declared
-  // here, ahead of every home, since files load in filename order.
-  // {id, name, home, keys?, run, when?}: `when`, for a home that exists
-  // only while it is open (the page menu), says whether it applies now.
   const ACTIONS = [];
   const action = (a) => { ACTIONS.push(a); };
   const actionHome = (id) => document.querySelector('[data-action="' + CSS.escape(id) + '"]');
-  // the common case: the home is one element, and running is clicking it
   const clickAction = (id, name, home, keys) => action({ id, name, home, keys,
     run: () => { const b = actionHome(id); if (b) b.click(); } });
 
-  // [id, icon, name, keys] per pane tab. Their sections are filled by the
-  // components below and, for the empty ones, by later steps.
   const PANES = {
     l: [['files', 'doc', 'Files', 'Ctrl+Shift+L'], ['know', 'know', 'Knowledge'],
       ['search', 'search', 'Search', 'Ctrl+Shift+F'], ['marks', 'mark', 'Bookmarks']],
@@ -1337,12 +879,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   });
 
-  // ── pane tabs and the corner toggles ────────────────────────────────────
-  // One section per pane is shown. The choice persists per side, and an id
-  // this build does not know (an older or newer layout) falls back to the
-  // default rather than leaving the pane blank. Showing a section announces
-  // it (lat-pane on document, detail {side, id}), so a section that loads
-  // its list lazily (Knowledge, Bookmarks) fetches when it is first seen.
   const TABKEY = { l: 'appLTab', r: 'appRTab' };
   const TABDEF = { l: 'files', r: 'page' };
   function paneTab(side, id) {
@@ -1357,18 +893,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     try { localStorage[TABKEY[side]] = id; } catch {}
     document.dispatchEvent(new CustomEvent('lat-pane', { detail: { side, id } }));
   }
-  // the section a pane shows right now, for a file whose listener was added
-  // after the boot-time paneTab below had already announced it
   const paneShows = (side, id) =>
     !document.querySelector('#' + side + 'body > [data-pane=' + id + ']').hidden;
-  // The stored keys still mean HIDDEN ('1'), as they always have, so a
-  // layout saved before the frame comes back the same. The buttons say
-  // whether the pane is OPEN: pressed means showing.
-  //
-  // On a phone the panes are drawers over the document instead (97-mobar.js
-  // has the scrim and the swipe), one at a time, and the same calls drive
-  // them: a corner toggle, a pane tab's action, search. Whether a drawer is
-  // open is not kept, and the desktop columns' stored state is left alone.
   const OPENKEY = { l: 'appNT', r: 'appNC' };
   const isMobile = () => matchMedia('(max-width: 820px)').matches;
   function paintPanes() {
@@ -1383,8 +909,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       b.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
   }
-  // counts the times a drawer was opened, so an open that lands late can
-  // tell whether the user opened one again while it was loading
   let drawerSeq = 0;
   function drawer(side, open) {
     const ws = $('ws');
@@ -1395,12 +919,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     paintPanes();
     return open;
   }
-  // opening a document puts both drawers away
   const drawersClose = () => drawer('l', false);
-  // ...unless a drawer was opened since the open began (`seq`, drawerSeq
-  // then). A link to a host that is down, or an upgrade on a busy pier,
-  // lands seconds after the tap, and shutting a drawer opened since then
-  // takes it away from under the user's thumb.
   const drawersCloseSince = (seq) => { if (drawerSeq === seq) drawersClose(); };
   function paneOpen(side, open) {
     if (isMobile()) return drawer(side, open);
@@ -1419,9 +938,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   paintPanes();
   clickAction('treet', 'Toggle left pane', 'Top-left corner');
   clickAction('ctlt', 'Toggle right pane', 'Top-right corner');
-  // A pane tab's action also opens its pane, which is what reaching the
-  // tab takes by hand. Search is Ctrl+Shift+F's qOpen (79-search.js), which
-  // does the same and focuses the field.
   for (const side of ['l', 'r']) {
     for (const [id, , name, keys] of PANES[side]) {
       const aid = 'pt-' + id;
@@ -1431,16 +947,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
             paneOpen(side, true);
             const b = actionHome(aid);
             if (b) b.click();
-            // Files' shortcut lands in its tree (30-tree.js)
             if (id === 'files') treeFocus();
           } });
     }
   }
 
-  // ── ribbon ──────────────────────────────────────────────────────────────
-  // Items are registered here by the feature that owns them, never written
-  // into the markup, so each one has exactly one home. bottom puts it in the
-  // lower group (settings). Each one is also a palette action.
   function ribbonAdd({ id, icon, name, keys, run, bottom }) {
     const b = tip(document.createElement('button'), name, keys);
     b.type = 'button';
@@ -1455,12 +966,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return b;
   }
 
-  // ── compile error chip ──────────────────────────────────────────────────
-  // The error itself lives in the Page tab (#cerr), which may be closed or
-  // behind another tab. While it holds an error the status bar says so, and
-  // a click brings the Page tab forward. Watched rather than called from
-  // each writer, since four files set #cerr. The watch is on the Page
-  // section because #cerr does not exist yet: <lat-ctl> upgrades later.
   {
     const chip = $('errchip');
     chip.title = 'Show the error in the Page tab';
@@ -1476,24 +981,15 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     sync();
   }
 
-  // for the browser suites, which cannot reach this scope
   window.latShell = { paneTab, paneOpen, ribbonAdd, drawer };
 
 // ── src/15-dialog.js ──────────────────────────────────────────────────────
-  // ── in-app dialogs, NEVER browser-native prompt/confirm/alert ────────────
-  // <lat-dialog> owns the dialog's markup AND wiring. The shell only carries
-  // the tag, so the served HTML can never be missing an element this file
-  // expects (the old cache-skew guards existed exactly for that gap).
   let dlg, dlgMsg, dlgIn, dlgSel, dlgOpts, dlgKind;
   let dlgDone = null;
   let dlgFrom = null;   // focus to hand back on close
   const dlgClose = (v) => {
     if (!dlgDone) return;
     dlg.hidden = true;
-    //  hand focus back to where it was before the dialog took it. Hiding the
-    //  focused element drops focus to body, which loses a keyboard or screen
-    //  reader user's place. The element may have been removed meanwhile
-    //  (a tree re-render replaces its rows), hence the isConnected guard.
     const f = dlgFrom; dlgFrom = null;
     if (f && f.isConnected) f.focus();
     const d = dlgDone; dlgDone = null; d(v);
@@ -1505,7 +1001,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     dlg.hidden = false;
     return new Promise((res) => { dlgDone = res; });
   };
-  // ask: text-input dialog → string | null (cancel)
   const ask = (msg, value, okLabel) => {
     dlgSel.hidden = true;
     dlgIn.hidden = false;
@@ -1516,16 +1011,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     dlgIn.setSelectionRange(dlgIn.value.length, dlgIn.value.length);
     return p;
   };
-  //  askNameKind: a name AND the kind to save it as, in one dialog.
-  //
-  //  The kind used to be reachable only from the bar, which the desktop shell
-  //  hides. So the one place a desktop user names a file was also the one
-  //  place they could not say what it was, and everything arrived as md.
-  //
-  //  Options are cloned from the hidden kind picker (#pkind, 23-tabhead.js)
-  //  rather than restated, so a kind added there (tex was) appears here with
-  //  no second edit. `fixed` shows the kind without letting it change: a new
-  //  memory is always md.
   const askNameKind = async (msg, value, okLabel, kind, fixed) => {
     dlgKind.textContent = '';
     const src = $('pkind');
@@ -1553,13 +1038,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       note = 'that name has nothing to go by — use at least one letter or digit. ';
     }
   };
-  // askName: ask() for a path-like name, re-prompting until the server would
-  // accept it. Every one of these prompts feeds a route that enforces
-  // +valid-name, and a rejection came back as a bare status code ("folder
-  // failed 400") that never said what was wrong. Returns the CLEANED name,
-  // so callers do not each re-implement the trim and slash strip. The name
-  // is what was TYPED: callers put it through realName() for the path the
-  // ship gets and the display name (if any) that goes with it.
   const askName = async (msg, value, okLabel) => {
     let seed = value || '';
     let note = '';
@@ -1573,7 +1051,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       note = 'that name has nothing to go by — use at least one letter or digit. ';
     }
   };
-  // askConfirm: yes/no dialog → boolean
   const askConfirm = (msg, okLabel) => {
     dlgSel.hidden = true;
     dlgKind.hidden = true;
@@ -1582,10 +1059,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     $('dlgok').focus();
     return p.then((v) => v !== null);
   };
-  //  askDanger: askConfirm for what cannot be undone. Cancel holds the
-  //  focus, so Enter (a key a user leans on to dismiss things) cancels,
-  //  and the destructive button is reached only on purpose: a click, or
-  //  Tab then Enter. The button is painted as destructive while it shows.
   const askDanger = (msg, okLabel) => {
     dlgSel.hidden = true;
     dlgKind.hidden = true;
@@ -1596,11 +1069,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     $('dlgcancel').focus();
     return p.then((v) => { ok.classList.remove('danger'); return v !== null; });
   };
-  // askPublish: publishing cannot be fully taken back. Once a peer has
-  // read a page, its copy and the network's cached answer can outlive an
-  // unpublish or a delete. -> true to publish. "don't ask again" is kept
-  // in localStorage, and only a publish sets it: ticking it and aborting
-  // must not turn the next click into a silent publish.
   const askPublish = async () => {
     try { if (localStorage.latPubOk === '1') return true; } catch {}
     dlgSel.hidden = true;
@@ -1620,10 +1088,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (ok && chk.checked) try { localStorage.latPubOk = '1'; } catch {}
     return ok;
   };
-  // askChoice: pick one of a list -> the chosen value, or null on cancel.
-  // Rendered as real buttons in the app's own style, NEVER a <select>. A
-  // select opens an OS-drawn list, which is a browser-native popup, and this
-  // UI does not use those anywhere.
   const askChoice = (msg, options, okLabel) => {
     dlgIn.hidden = true;
     dlgSel.hidden = true;
@@ -1643,7 +1107,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return b;
     });
     if (btns[0]) btns[0].focus();
-    // arrow keys move between options. Enter takes the focused one
     dlgOpts.onkeydown = (e) => {
       const i = btns.indexOf(document.activeElement);
       if (i < 0) return;
@@ -1698,45 +1161,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   });
 
 // ── src/20-state.js ───────────────────────────────────────────────────────
-  // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
   let mode = 'pages';      // 'know' while a memory is in front (95-know.js)
-  // read by the service-worker registration script, which lives in its own
-  // inline <script> and cannot see this scope. It reloads the page when a new
-  // worker takes over, and must never do that over typed work.
-  // A parked tab (21-tabs.js) holds its own dirty buffer, so the live flag
-  // alone misses work typed into any tab that is not in front, in any group.
   window.__latUnsaved = () => dirty === true
     || allTabs().some((t) => t !== activeTab && t.snap && t.snap.dirty);
-  // Whether the user has typed since the current editor view was established.
-  // Cleared by applyPage/newFile (a fresh view), NEVER by autosave — and that
-  // is the point: `dirty` cannot answer "did the user do something while
-  // boot's dump was in flight", because autosave clears it. The sequence
-  // type -> autosave -> dump-lands then looked untouched, and boot's reconcile
-  // called openPage, which repainted the editor from the PRE-edit dump copy.
-  // The next autosave wrote that stale body back over the good save: the
-  // editor visibly ate work the ship already had.
   let everTyped = false;
-  // guardDirty: the ONE place navigation asks "may I paint over what's here?"
-  // Rounds two and three answered that per call site (a guard bolted onto
-  // openKnow, another onto openPage, another onto openRev) and this round
-  // found three MORE unguarded paths to the same loss: the pages/knowledge
-  // toggle pill, a quick-open result crossing modes, and a same-mode page
-  // click landing inside the autosave debounce window. Three guards missed
-  // three doors. One chokepoint, called from every entry a user can click,
-  // closes all of them at once.
-  //
-  // A dirty grub has nowhere else to go until Save is pressed, so it only
-  // ever gets the dialog. A dirty page or memory usually CAN save itself in
-  // the time it takes to click somewhere else, so try that first, using the
-  // save path this mode already owns, and stay silent when it lands. Only a
-  // flush that leaves the buffer dirty anyway (the offline queue refused it,
-  // the ship rejected the write) falls back to naming what would be lost.
-  //
-  // With Settings > Editor > Autosave off, pages and memories save only when
-  // asked to, so nothing here writes on its own: after any save already in
-  // flight, unsaved text gets the question, with save as one answer.
   async function guardDirty() {
     if (!dirty) return true;
     if (grubPath)
@@ -1751,11 +1181,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (pick !== 'save') return false;
     return saveNow();
   }
-  // saveNow: the save an answer of "save" asks for. A save already in
-  // flight is waited out first (it may be this very text), then the front
-  // document's own explicit save runs. Answers whether the buffer is clean.
-  // Never a silent no-op: a failed save has said why, and a flight still
-  // running past the cap says so here.
   async function saveNow() {
     await waitSave();
     if (!dirty) return true;
@@ -1764,36 +1189,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     await waitSave();
     return !dirty;
   }
-  // flushNoAsk: guardDirty's flush without its question, answering whether
-  // the buffer is clean afterwards. A tab switch (21-tabs.js) uses it on its
-  // own: the tab it leaves keeps whatever is still unsaved, so there is
-  // nothing to ask about. A dirty grub has no flush (explicit save only) and
-  // answers false at once, and so does everything with autosave off, after
-  // waiting out a save already in flight (an explicit one, still landing).
   async function flushNoAsk() {
     if (!dirty) return true;
     if (grubPath) return false;
-    // save() coalesces concurrent calls by design. A save already in flight
-    // just arms savePending and returns on the spot, so calling save() here
-    // answered nothing while dirty stayed set. That read like a flush that
-    // failed, when the real save was actually about to land. Wait for the
-    // flight already under way instead. The cap keeps a hung request from
-    // trapping navigation forever, and it must OUTLAST the save's own
-    // timeout or the wait gives up on a flight that is still legal: tfetch
-    // defaults to 30s (08-offline.js, widened deliberately for a queued
-    // pier), so a shorter cap here reintroduced the false discard prompt
-    // for any save landing past it. 30s of flight plus a beat to settle.
-    //  a loop, not one wait: the save that lands can start the one that
-    //  waited behind it (flushPending), and that one is this document's.
-    //  And `saving` itself, not only the request: the request settles a
-    //  few microtasks before the save that sent it clears `saving` and
-    //  `dirty`, and waking in that gap offered to discard a save that was
-    //  about to succeed. Capped past tfetch's 30s, since a grub save holds
-    //  `saving` with no timeout of its own.
     await waitSave();
     if (!dirty) return true;
-    // still dirty and nothing is in flight: the wait either never started or
-    // timed out with the buffer untouched. Only now is a flush worth trying.
     if (!saving && autosaveOn()) {
       if (mode === 'know') await saveKnow(); else await save();
     }
@@ -1804,16 +1204,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     while (saving && Date.now() - t0 < 35000)
       await (saveFlight || new Promise((r) => setTimeout(r, 50)));
   }
-  // setOpen: what the tab header says is open, set in one place. `name` becomes
-  // `current`, the open page or memory, or null when nothing named is open
-  // (a new page, a folder, a grub, a fresh mode). The name field shows
-  // `name` unless `shown` says otherwise (a folder's path, a grub's road, a
-  // new page's folder prefix, a typed name slugged mid-save) and is locked
-  // when readOnly. `kind` moves the kind picker when it has that option.
-  // `url`, when given, replaces the address. Assigning .value fires no
-  // event, so this ends by dispatching 'input' on the field: the desktop
-  // and phone labels (96-deskmenu.js, 97-mobar.js) repaint on it. Then the
-  // active document tab learns what it now shows (tabFollow, 21-tabs.js).
   function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
     current = name;
     pname.value = shown === undefined ? (name || '') : shown;
@@ -1825,46 +1215,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
-                           // option, so pkind.value would silently convert it
   let curRev = 0;          // the open page's server revision (offline baseRev)
   let curFolder = null;    // selected folder path. Right-pane ops target it
   let folderCtx = '';      // folder uploads land in (last into / open page's dir)
   let nodes = [];          // last page-tree
   let saving = false;      // a save round-trip is in flight. Never overlap them.
   let moving = 0;          // a move or rename is in flight (75-move.js): a
-                           // save of the old name would land in the folder
-                           // being deleted, so autosave waits it out
   let savePending = false; // The pier serializes, so a second save just queues
-                           // 3.7s of stale-body work behind the first
-  //  every successful mutation of ours produces exactly one beacon bump,
-  //  eventually — and on a queued pier "eventually" outlives any time
-  //  window (measured: 14s behind the background lane's own traffic). So
-  //  count them: each expected echo swallows one 'upd'. A pier-side
-  //  coalesce or an untracked mutation can make this swallow a real remote
-  //  update; the 30s poll / focus refresh is the floor that catches it,
-  //  the same tradeoff the time window has always accepted.
-  //
-  //  Two beacons, so two of each: a page write bumps /beacon/rev and a
-  //  memory write /beacon/know. One shared count let a memory save's echo
-  //  swallow a real page bump that arrived first. `n` is the bumps still
-  //  owed to us, `until` the window while a write is in flight and after.
-  //  Without them every save triggers a tree+source refetch of content
-  //  this client just wrote (~4s of pier time each).
-  //
-  //  `early` counts bumps the window swallowed that no landed write has
-  //  claimed yet. The ship can send our bump BEFORE the write's answer (a
-  //  page-del's arrives with it), and counting that write's echo on landing
-  //  as well left one owed forever: it swallowed the next real remote bump,
-  //  and a page made elsewhere after a delete never showed. So a landing
-  //  write claims an early bump first and only counts one when none came.
-  //  Early bumps still unclaimed when the window shuts were someone else's,
-  //  and `wake` refreshes for them then.
-  //
-  //  `fly` counts writes still in flight on the beacon and `tail` is the
-  //  latest tail a landed one asked for. One write landing must not shut
-  //  the window on another still flying (an autosave under a folder move):
-  //  that one's early bump would then refresh, and its landing would count
-  //  the bump again, leaving one owed.
   const echoes = {
     rev: { n: 0, until: 0, at: 0, early: 0, fly: 0, tail: 0, timer: 0, wake: null },
     know: { n: 0, until: 0, at: 0, early: 0, fly: 0, tail: 0, timer: 0, wake: null },
@@ -1878,7 +1235,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       echo.wake();
     }, Math.max(0, echo.until - Date.now()) + 50);
   };
-  // a bump arrived on this beacon: true when it is (or may be) our own echo
   const echoSeen = (echo, wake) => {
     if (echo.n > 0) { echo.n--; return true; }
     if (Date.now() >= echo.until) return false;
@@ -1887,15 +1243,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     echoArm(echo);
     return true;
   };
-  // a write set off: hold the window open while it flies
   const echoSent = (echo) => {
     echo.fly++;
     echo.until = Math.max(echo.until, Date.now() + 60000);
     echo.at = Date.now();             // when we last wrote (see refocused)
   };
-  // a write answered (or failed), sent at `sentAt`. The window stays open
-  // for twice the round trip, and while any other write still flies.
-  // `ok`: it changed the ship, so one bump is ours.
   const echoLanded = (echo, ok, sentAt) => {
     const now = Date.now();
     const tail = now + Math.max(4000, 2 * (now - sentAt));
@@ -1905,8 +1257,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (ok) { if (echo.early > 0) echo.early--; else echo.n++; }
     echoArm(echo);
   };
-  // the beacon a write route bumps: the memory routes bump /know, all the
-  // rest /rev (know-publish too, since it publishes a page)
   const echoOf = (url) => {
     let p = '';
     try { p = new URL(url, location.href).pathname; } catch {}
@@ -1914,64 +1264,18 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
   const qs = new URLSearchParams(location.search);
 
-  // every request to the ship costs ~2s and they serialize (single-threaded
-  // pier), so the rules here are: never re-fetch what this client already
-  // knows, patch `nodes`/`knowKeys` locally after our own writes, and snapshot
-  // to localStorage so the next boot paints before the network answers.
-  // generation counters: a list fetch issued BEFORE a local patch must not
-  // land AFTER it and clobber newer local state with a stale server snapshot
-  // (the own-write echo is suppressed, so nothing would correct it until the
-  // 30s poll). Bumped on every local mutation. Stale responses are dropped.
   let treeGen = 0, knowGen = 0;
-  // persistTree: save the tree WITHOUT bumping the generation. The counter
-  // exists so a STRUCTURAL local patch (a page created, moved, deleted) is not
-  // overwritten by a list fetch that was issued before it. A body-only update
-  // changes no structure, so bumping for one just discards a legitimate
-  // in-flight refresh, which silently lost pages created while an autosave
-  // was in flight.
   const persistTree = () => {
-    // IDB, not localStorage (phase 3): the tree carries every page BODY via
-    // page-dump, so a growing vault was marching toward the ~5MB quota.
-    // Stringifying the whole tree on every save was main-thread work paid at
-    // the worst time. The structured clone goes straight in. The PAGE
-    // snapshot (appPage) stays in localStorage on purpose. It is small and
-    // synchronous, which is what keeps resume painting at 0ms.
     kvPut('tree', nodes);
   };
-  // rendered page-source answers, by name. The tree dump already carries every
-  // body, so this only adds what the dump lacks (`share` and the rendered
-  // `html`), which makes re-opening a page cost ZERO requests instead of a
-  // ~0.5s round-trip. Dropped whenever the ship reports a change (the beacon
-  // clears it) or when this client writes the page.
   const pageCache = new Map();
-  // a page's (or folder's) OWN sensitive flag, by name, as the editor's
-  // open read it (page-source render=1 carries it) or the checkbox set
-  // it. The Page tab's checkbox reads this before it asks GET
-  // page-sensitive, so an open costs one request, not three. sensWait
-  // names the page whose render=1 read is in flight: its answer brings
-  // the flag, and a fresh one always replaces the kept one.
-  //
-  // Cleared on a change from elsewhere (refreshAll), which is how another
-  // device's toggle reaches this one, and on every write of ours that can
-  // move, delete or create a page (sensForget): a move or delete culls
-  // the marker, and a new page under the old name must not inherit the
-  // old page's flag. sensGen counts our writes, so a read sent before
-  // one never overwrites what the write made true.
   const sensKnown = new Map();
   let sensWait = null;
   let sensGen = 0;
-  //  `url`: the write. A plain save of an existing page keeps the flags,
-  //  anything else (a create, a move, a delete, a folder job, an upload)
-  //  forgets them all. Unknown flags cost one GET page-sensitive each.
   const sensForget = (url) => {
     sensGen++;
     if (!url || !/\/(page-save|know-save)\?/.test(url) || /[?&]new=1/.test(url)) sensKnown.clear();
   };
-  // the open's render=1 page-source read, shared while in flight: a tab
-  // switched away from and back before the ship answered asks once, not
-  // twice. Each caller gets its own clone of the one answer. A write of
-  // the page drops the entry as it starts (shipWrite), so no read is
-  // ever shared across a save: a read made after it waits for its own.
   const srcFlight = new Map();
   const srcRead = (name) => {
     let p = srcFlight.get(name);
@@ -1995,14 +1299,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     } catch {}
   };
 
-  // every client-initiated write bumps the change beacon. Hold the echo window
-  // open while the request is in flight (a folder move pokes the writer many
-  // times) plus a short tail, so the SSE handler never refetches what this
-  // client just did itself.
-  // Deletes and moves that can be queued. Sharing and the ACL routes are
-  // deliberately NOT here. A grant that appears to work offline and is refused
-  // an hour later is a security surprise, and there is no version of that
-  // which is better than saying so now.
   const offlineOp = (url) => {
     let u = null;
     try { u = new globalThis.URL(url, location.origin); } catch { return null; }
@@ -2011,26 +1307,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return { op: 'del', name: p.get('name') };
     if (u.pathname.endsWith('/page-move') && p.get('from') && p.get('to'))
       return { op: 'move', from: p.get('from'), to: p.get('to') };
-    // folder-new carries no content, so it is a structural op like del/move,
-    // not a save. Idempotent on the ship (folder-new over an existing folder
-    // is a no-op), so a replayed mkdir can never conflict.
     if (u.pathname.endsWith('/folder-new') && p.get('name'))
       return { op: 'mkdir', name: p.get('name') };
     return null;
   };
 
-  // shipWrite: the one way a write reaches the ship, so what every write
-  // needs is done the same way each time. The echo it causes is expected on
-  // the right beacon (echoOf), held open while it flies and then for twice
-  // the round trip (our own bump arrives a queue-length late on a slow
-  // pier), and counted once it lands. The renders it touches are busted.
-  // It answers {r}, or {gone: true} when the ship is unreachable (no
-  // answer, or a bridge 502/504), and the caller queues what it can.
-  //
-  // `ms` is the timeout: 30s for a save (tfetch's own reasoning), 0 for none.
-  // A folder move pokes the writer for every page, and timing that out would
-  // read as offline and queue a second move. `save` marks a document save,
-  // the flight guardDirty waits for.
   let saveFlight = null;
   async function shipWrite(url, init, { ms = 30000, save = false } = {}) {
     srcFlight.clear();    // a read from before this write is shared no more
@@ -2041,9 +1322,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const sentAt = Date.now();
     const req = (ms ? tfetch(url, init, ms) : fetch(url, init)).catch(() => null);
     if (save) saveFlight = req;
-    // a move, a share, a delete and the rest show the loading line while
-    // they fly (busy, 10-shell.js). A save does not: it runs on its own as
-    // the user types, and its status already says saving and saved.
     const end = save ? null : busy();
     let r = null;
     try { r = await req; }
@@ -2051,12 +1329,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       if (end) end();
       if (saveFlight === req) saveFlight = null;
     }
-    // `r` too: a 504 can be a link's host (35-pages.js), not this ship
     const gone = shipGone(r);
     echoLanded(echo, !gone && r.ok, sentAt);    // one bump is ours (see echoes)
     if (gone) return { gone: true, r };
     if (r.ok) {
-      // every write names its target the same way; a move dirties both ends
       try {
         const q = new URL(url, location.href).searchParams;
         bustPages(q.get('name') || q.get('from') || q.get('key'));
@@ -2067,18 +1343,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
   async function mutate(url, opts) {
-    // Saves coalesce in a map, structural ops go in an ordered log, and both
-    // drain together. Everything else (sharing, tagging, the legacy migration)
-    // still refuses honestly rather than pretending.
     const offline = async () => {
       sensForget(url);      // a queued delete or move culls the flag too
       const q = offlineOp(url);
       if (q) {
         await enqueueOp(q);
-        //  the caller now does exactly the local tree work it does when the
-        //  ship answers: drop the nodes, or remap their paths. The flag sits
-        //  on the object itself so the success message can say the change is
-        //  queued without spending the body's single read
         return { ok: true, offline: true, status: 200,
                  json: async () => ({ offline: true }) };
       }
@@ -2087,19 +1356,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     };
     if (degraded || offCount) return offline();
     const w = await shipWrite(url, opts || { method: 'POST' }, { ms: 0 });
-    // an unreachable ship: queue what can be queued and ENGAGE degraded.
-    // The old path only queued when degraded was already true, so the FIRST
-    // offline action being structural threw past every caller and did
-    // nothing at all
     if (w.gone) { setDegraded(true); return offline(); }
     return w.r;
   }
 
-  // where this install lives in the tree: /apps/lattice.lattice_app for the
-  // ball-era instance, under /apps/shell.shell/desks/ for a desk install.
-  // Grubbery's own endpoints (the beacon keep) and grant roads on our pages
-  // spell it out. Asked of /streams once and remembered. forgetBase() when a
-  // keep under it fails, so a moved install is found again.
   let basePr = null;
   const latBase = () => basePr || (basePr = (async () => {
     try { if (localStorage.latBase) return localStorage.latBase; } catch {}
@@ -2111,11 +1371,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   })().catch((e) => { basePr = null; throw e; }));
   const forgetBase = () => { basePr = null; try { delete localStorage.latBase; } catch {} };
 
-  // a tree's folded folders, remembered under one localStorage key: get()
-  // reads the list, flip(key) folds or unfolds one folder in it, set(list)
-  // replaces it (collapse all). The files tree (with its shared-with-me
-  // folder) keeps appColl; memories keep knowColl (95-know.js) and
-  // bookmarks marksColl (31-marks.js).
   const collStore = (k) => {
     const get = () => {
       try { return JSON.parse(localStorage[k] || '[]'); } catch { return []; }
@@ -2132,46 +1387,16 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   const paneColl = collStore('appColl');
 
 // ── src/21-tabs.js ────────────────────────────────────────────────────────
-  // ── document tabs ───────────────────────────────────────────────────────
-  // Many documents open at once over ONE live editor. The editor's globals
-  // (current, dirty, everTyped, grubPath, mode, src) stay the truth for the
-  // tab in front. A tab that is not in front holds `snap`: what the editor
-  // held for it when it was last in front, and above all whether that was
-  // unsaved. A parked tab's unsaved buffer exists nowhere else, so
-  // __latUnsaved and beforeunload count it (20-state.js, 35-pages.js).
-  //
-  // One tab per document: opening one that is already open focuses its tab,
-  // so a document has one buffer, one dirty flag and one autosave, and two
-  // tabs can never write over each other's typing.
-  //
-  // Splits (28-splits.js): the tabs live in groups, laid out side by side
-  // in a split tree. One group is in front (focusG). Its list IS `tabs`
-  // and its front tab IS `activeTab`, so everything above stays about the
-  // group in front, and the live editor sits in that group. The front tab
-  // of every other group is parked, painted read-only into its group from
-  // its snap (a ghost), and becomes live when its group comes to the front
-  // (gTo). One tab per document holds across every group.
   let tabs = [];
   let activeTab = null;
   let tabSeq = 0;
   let groups = [];          // every group, in the order they were made
   let focusG = null;        // the group in front
-  // a group's front tab: the live one for the group in front
   const gFront = (g) => (g === focusG ? activeTab : g.active);
   const allTabs = () => groups.flatMap((g) => g.tabs);
   const groupOf = (t) => groups.find((g) => g.tabs.includes(t)) || null;
-  // the queue below is running something: a park, a switch, an open
   let tabRunning = 0;
-  // >0 while the tab model itself is painting the editor. setOpen calls
-  // tabFollow on every paint, and these paints are the tab model's own steps,
-  // not the user going somewhere.
   let tabNav = 0;
-  // the tab whose open is still on its way in. Until its document lands the
-  // paints are the open's own steps (openKnow's setMode passes through "no
-  // memory" on its way to the key), so tabFollow leaves this tab alone. Only
-  // until it lands, though: an open's promise can run on for seconds after
-  // the paint (openPage's upgrade fetch), and what the user does meanwhile
-  // must still be followed.
   let tabLoading = null;
 
   const mkTab = (kind, key, ship, { pinned = false, read = false } = {}) =>
@@ -2181,10 +1406,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   const mkGroup = () => ({ id: 'g' + (++gSeq), tabs: [], active: null });
   const sameDoc = (t, d) =>
     t.kind === d.kind && t.key === d.key && (t.ship || null) === (d.ship || null);
-  // a Back or Forward entry. Kind and ship ride along, since one tab can go
-  // from a page to a memory to a grub.
-  // a tab taking another document in place: what its group painted of the
-  // last one while parked (28-splits.js) goes with it
   const retarget = (t, d) => {
     Object.assign(t, d);
     t.ghost = null;
@@ -2195,9 +1416,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   const tabEnc = (t) => JSON.stringify([t.kind, t.key, t.ship || null]);
   const tabDec = (s) => { const [kind, key, ship] = JSON.parse(s); return { kind, key, ship }; };
 
-  // what the live editor shows, as a tab would name it: the one editor kind
-  // whose live() claims it. null for a folder, which is a view in a tab and
-  // not a document of its own.
   const liveDoc = () => {
     for (const [kind, k] of Object.entries(TAB_KINDS)) {
       const d = k.live && k.live();
@@ -2205,30 +1423,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     return null;
   };
-  // whether the tab in front is a document in the editor: its kind has
-  // live(). A tool tab is not, so the controls of the editor (Save, Edit /
-  // Read, rename, the Page tab) leave the document underneath alone.
   const docFront = () => !activeTab || !!TAB_KINDS[activeTab.kind].live;
-  // shows(t) for every editor kind: the live editor is this tab's document
   const showsLive = (t) => { const d = liveDoc(); return !!d && sameDoc(t, d); };
 
-  // Park: the editor's state for this tab goes into its snap, and the
-  // editor is released for the next one. A page or memory first gets the
-  // same flush guardDirty gives it, minus the question: whatever the flush
-  // cannot save simply stays in the snap, unsaved and counted. A grub never
-  // autosaves, so its buffer goes straight into the snap, and so does every
-  // buffer with autosave off (flushNoAsk writes nothing then).
-  //
-  // Only a tab whose document really is in the editor owns what is there.
-  // While a slow open is still loading, the editor shows the document
-  // before it, and filing that text under this tab would hand one
-  // document's words to another's autosave. When such text is still unsaved
-  // after the flush (a page deleted elsewhere and not yet recreated, typing
-  // in a load window), it belongs to no tab, so it gets guardDirty's
-  // question, and a cancel keeps it and the switch does not happen.
-  // Answers false then.
-  // what the live editor holds for the tab it shows
-  // (`hist`: an old revision was on show, which is never the page's text)
   const snapNow = () => (writerSync(), {
     body: src.value, dirty, everTyped,
     sel: [src.selectionStart, src.selectionEnd], scroll: src.scrollTop,
@@ -2244,30 +1441,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return false;
     t.snap = mine ? snapNow() : null;
     if (mine) gGhostKeep(t);
-    // the buffer lives in the snap now. The next open's own guardDirty must
-    // not ask about it again, and its debounce must not save it under
-    // whatever document comes next (autosave reads `current` when it fires).
     dirty = false;
     clearTimeout(autoTimer);
     return true;
   }
-  // The kinds of tab. switchTab and openIn only ever look a kind up here,
-  // so a new kind is a new entry and nothing else.
-  //   open(t)        show the document fresh, from the ship or a cache.
-  //                  Answers false when that failed with nothing shown.
-  //   restore(t, s)  paint a parked unsaved buffer back, with no fetch
-  //   park(t)        hand the editor back, keeping what is unsaved in t.snap.
-  //                  Answers false when the user chose to stay.
-  //   shows(t)       whether the editor is showing this tab's document
-  //   live()         editor kinds only: {key, ship} when the live editor
-  //                  holds a document of this kind, else null. The editor
-  //                  kinds claim mutually exclusive states. A kind without
-  //                  live() is never rewritten by tabFollow.
-  //   icon, label    for the strip. icon is a name, or a function of the tab
   const TAB_KINDS = {
     page: {
-      // a link (30-tree.js) is titled with its whole local path: its name
-      // alone would read as a page of my own
       icon: (t) => (linkOf(t.key) ? 'link' : 'doc'),
       label: (t) => !t.key ? 'new page' : linkOf(t.key) ? t.key : t.key.split('/').pop(),
       open: async (t) => {
@@ -2292,10 +1471,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         const n = nodes.find((x) => x.page && x.path === t.key);
         applyPage(t.key, { body: s.body, kind: s.kind || s.pkind, rev: s.rev,
           share: (n && n.share) || 'private' }, true);
-        // a quiet applyPage paints a content kind only. A computed page
-        // kept whatever the pane showed before it came back: a grub's "no
-        // preview", painted while the grub's state was still live (fuzz
-        // seed 7027: its group closed, or the page's group came forward)
         if (!CONTENT()) refreshPreview();
       },
       park: parkDoc,
@@ -2335,7 +1510,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         return t.ship ? t.ship + ': ' + n : n;
       },
       open: async (t) => {
-        // grub mode is an overlay on the pages view (40-grub.js)
         if (mode === 'know') setMode('pages');
         exitRev();
         return openGrub(t.key, t.ship);
@@ -2360,12 +1534,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
 
 
-  // ── persistence ──────────────────────────────────────────────────────
-  // Which documents are open, never their bodies: a body in localStorage
-  // could come back in another window as if it were that window's work.
-  // Every group's tabs and front tab, the group in front, and the split
-  // tree with its sizes (28-splits.js). `tabs` and `active` also name the
-  // group in front on their own, the shape this had before splits.
   const tabRec = ({ kind, key, ship, pinned, read }) => ({ kind, key, ship, pinned, read });
   const tabsSave = () => {
     try {
@@ -2381,12 +1549,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
   const tabsChanged = () => { tabsSave(); paintTabs(); };
 
-  // ── showing a tab ────────────────────────────────────────────────────
-  // Every switch, close and in-place open runs through one queue, so two
-  // quick clicks can never park the same buffer twice or interleave their
-  // halves. The queue waits for the park and for the paint to begin, not
-  // for a slow fetch: the next switch supersedes an open still loading
-  // (openSeq), and parks nothing for it, since nothing of it is shown yet.
   let tabQ = Promise.resolve();
   let tabShown = 0;         // counts showTab calls, so a late landing knows it is late
   const tabSerial = (fn) => {
@@ -2399,26 +1561,15 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return run;
   };
 
-  // show `t`, already the active tab, in the editor. `snapOk`: a group
-  // coming to the front (gTake) paints a clean page or memory back from its
-  // snap at once, as its group showed it while parked, and then asks the
-  // ship for anything newer (refreshOpen), rather than leaving the last
-  // group's text in the editor while a fetch runs.
   function showTab(t, { snapOk = false } = {}) {
     const k = TAB_KINDS[t.kind];
     const s = t.snap;
     t.snap = null;          // in front, the live editor is its state
-    // the status line belongs to the tab that wrote it. A page or memory
-    // writes its own on open, but a tool tab writes none, so a grub's
-    // "on ~ship: saves need its permission" stayed up over a browser tab
     st('');
     const gen = ++tabShown;
     src.readOnly = false;   // a blank or a binary grub left it locked
     openNext();             // an open still loading for the tab left behind may not land
     const quick = snapOk && !!s && !s.hist && !!t.key && (t.kind === 'page' || t.kind === 'know');
-    // a new page or memory already named (its create may still be queued,
-    // and runs here once the name is back in the field) comes back named
-    // even when clean. Opened fresh it would be a blank, nameless page.
     if (s && (s.dirty || (!t.key && s.shown) || quick)) {
       tabLoading = null;
       tabNav++;
@@ -2426,8 +1577,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         k.restore(t, s);
         dirty = s.dirty;
         everTyped = s.everTyped;
-        // a page or memory whose flush failed tries again on the usual
-        // debounce, exactly as if it had just been typed
         clearTimeout(autoTimer);
         if (dirty) autoTimer = setTimeout(autosave, 2000);
         tabCaret(s);
@@ -2443,8 +1592,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return p.then((ok) => {
       settle();
       if (activeTab !== t || gen !== tabShown) return ok;
-      // failed with nothing shown: an empty, locked editor under this tab's
-      // name, never the previous document wearing this tab's title
       if (ok === false && !k.shows(t)) tabBlank(t);
       else if (!k.shows(t)) tabFollow();   // something else opened over it
       else if (s && !dirty) tabCaret(s);
@@ -2470,8 +1617,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     } finally { tabNav--; }
   }
 
-  // park whatever is in front and bring `t` there. false: the user stayed.
-  // A tab in another group brings its group to the front first.
   async function tabTo(t) {
     const g = groupOf(t);
     if (g && g !== focusG && !(await gTo(g))) return false;
@@ -2487,15 +1632,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     showTab(t);
   }
 
-  // ── groups ───────────────────────────────────────────────────────────
-  // gRelease: the live editor lets go of the tab in front at once, with no
-  // flush and no question. What is unsaved stays in its snap, where
-  // __latUnsaved and beforeunload count it, and a page or memory saves it
-  // from there in the background on autosave's terms (saveParked,
-  // 35-pages.js). false when that cannot be done at once, with nothing
-  // changed: the editor holds typing no tab owns yet (an open still
-  // loading), or a create is in flight that names this tab when it lands.
-  // gTo then parks it the slow way, which flushes and asks.
   function gRelease() {
     const t = activeTab;
     if (!t) return true;
@@ -2512,9 +1648,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (t.snap && t.snap.dirty) saveParked(t);
     return true;
   }
-  // gTake: group `g` comes to the front with nothing live to let go of
-  // (gRelease ran, or the group in front just closed). The live editor
-  // moves into it (splitPaint, 28-splits.js) and shows its front tab.
   function gTake(g) {
     if (focusG && groups.includes(focusG)) focusG.active = activeTab;
     focusG = g;
@@ -2527,7 +1660,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     showTab(activeTab, { snapOk: true });
     rpSoon();
   }
-  // gTo: group `g` to the front, inside the queue. false: the user stayed
   async function gTo(g) {
     if (g === focusG) return true;
     if (!gRelease()) {
@@ -2537,17 +1669,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     gTake(g);
     return true;
   }
-  // gFocus: the same from a click or a key. At once when the queue is
-  // idle, so a click into a group never waits on a save, else behind
-  // what is running. Answers whether the group is in front now.
   function gFocus(g) {
     if (!g || g === focusG || !groups.includes(g)) return true;
     if (!tabRunning && gRelease()) { gTake(g); return true; }
     tabSerial(() => gTo(g));
     return false;
   }
-  // a tab leaves its group without being shown (a clean twin,
-  // tabFollow). Never the front tab of the group in front.
   function gDropTab(x) {
     const g = groupOf(x);
     if (!g) return;
@@ -2557,9 +1684,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (!g.tabs.length) { gDrop(g); return; }
     if (g.active === x) g.active = g.tabs[i] || g.tabs[i - 1];
   }
-  // gMove: a tab to group `g` at `at` (the end when null), in front there.
-  // The tab is parked on its way out, so the group it leaves never keeps a
-  // buffer it no longer holds. A group left empty closes.
   const gMove = (t, g, at = null) => tabSerial(async () => {
     const from = groupOf(t);
     if (!from || !groups.includes(g)) return false;
@@ -2596,12 +1720,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return true;
   });
 
-  // ── the entry points ─────────────────────────────────────────────────
-  // openIn: how every click on a document opens it. An open document
-  // focuses its tab, in whichever group it is. A new tab comes from
-  // Ctrl/Cmd+click, a middle click, opts.newTab, or a pinned tab in front.
-  // Anything else replaces the document in the front tab, after
-  // guardDirty, and that tab's Back remembers what it replaced.
   function openIn(kind, key, { ev, ship, newTab } = {}) {
     return tabSerial(async () => {
       const want = { kind, key, ship: ship || null };
@@ -2616,7 +1734,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         return;
       }
       if (!(await guardDirty())) return;
-      // flushed, or the user said discard: either way nothing here is owed
       dirty = false;
       const t = activeTab;
       if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
@@ -2630,21 +1747,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const t = allTabs().find((x) => x.id === id);
     if (t) await tabTo(t);
   });
-  // closeTab: false when the user kept it. A tab in another group brings
-  // its group to the front first. guardDirty runs on the tab being
-  // closed, in front, the one place it can flush or ask, so a background
-  // tab holding unsaved work comes forward first. A kind with no buffer
-  // may still hold typing of its own (held: a frame's half-written post),
-  // which also comes forward and is asked about. The last tab of a group
-  // closes the group, unless it is the only one.
   const closeTab = (id) => tabSerial(async () => {
     const t = allTabs().find((x) => x.id === id);
     if (!t) return false;
     const g = groupOf(t);
     const k0 = TAB_KINDS[t.kind];
-    // a clean tab in a group not in front closes where it is: the editor
-    // stays in the group being worked in. One holding unsaved work, or
-    // typing in its frame, comes forward to be asked about.
     if (g !== focusG && !(t.snap && t.snap.dirty) && !(k0.held && k0.held(t))) {
       const i = g.tabs.indexOf(t);
       g.tabs.splice(i, 1);
@@ -2682,9 +1789,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     showTab(next);
     return true;
   });
-  // Back and Forward within the front tab. A step is an in-place open, so
-  // it guards like one. A step onto a document open in another tab goes
-  // to that tab instead.
   const tabStep = (from, to) => tabSerial(async () => {
     const t = activeTab;
     if (!t || !t[from].length) return;
@@ -2706,31 +1810,19 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const i = tabs.indexOf(activeTab);
     switchTab(tabs[(i + dir + tabs.length) % tabs.length].id);
   };
-  // a new tab with a new page in it: the strip's +. Then newFile again, the
-  // way the + file button calls it, so the page gets named (the name field,
-  // or the create dialog where that field is hidden, 96-deskmenu.js)
   const tabNew = async () => {
     await openIn('page', '', { newTab: true });
     if (activeTab && activeTab.kind === 'page' && !activeTab.key) newFile('');
   };
-  // a tool tab in front hides the editor. Anything about to paint the
-  // editor (a new page, a folder) first gets a document tab of its own,
-  // as the strip's + gives one, so it never lands unseen under the tool.
-  // false: no document tab came to the front.
   const docTab = async () => {
     if (docFront()) return true;
     await openIn('page', '', { newTab: true });
     return docFront() && !!activeTab && activeTab.kind === 'page' && !activeTab.key;
   };
 
-  // tabFollow: the editor moved to another document by a road that did not
-  // come through openIn (a rename, a delete, the mode pill, a template, a
-  // new page in place, the live sync). The front tab follows, so the tab
-  // and what it parks always name the document that is really shown.
   function tabFollow() {
     if (tabNav || !activeTab) return;
     const t = activeTab;
-    // a tab that is not an editor document (no live()) keeps its identity
     if (!TAB_KINDS[t.kind].live) return;
     if (tabLoading === t) {
       if (TAB_KINDS[t.kind].shows(t)) tabLoading = null;
@@ -2741,20 +1833,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
     retarget(t, d);
     t.snap = null;
-    // one tab per document: a clean twin elsewhere, in any group, is now
-    // redundant
     const twin = d.key && allTabs().find((x) => x !== t && sameDoc(x, d) && !(x.snap && x.snap.dirty));
     if (twin) gDropTab(twin);
     tabsChanged();
   }
-  // a create that ran from the queue after its tab was left (save(),
-  // 35-pages.js). `own.tab` is the tab it was queued from, and only that
-  // tab, still unnamed and still showing the name it was created as, is
-  // the page's tab now. Named, it opens the page when it comes back
-  // (current set), so its later saves update the page instead of creating
-  // it again, which the ship refuses as a page that already exists.
-  // true: that tab is in front again, so the editor is on the page and
-  // save() takes it as still here.
   function tabAdopt(own, name) {
     const trim = (v) => v.trim().replace(/^\/+|\/+$/g, '');
     const t = allTabs().find((x) => x.id === own.tab);
@@ -2767,8 +1849,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     tabsChanged();
     return false;
   }
-  // a move or rename: tabs naming the old path, or anything under it, name
-  // the new one, so a parked buffer is never saved back to where it was
   function tabsRemap(kind, from, to) {
     for (const t of allTabs()) {
       if (t.kind !== kind || !t.key) continue;
@@ -2777,9 +1857,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     tabsChanged();
   }
-  // a save of `name` that landed after its tab was parked (35-pages.js,
-  // 95-know.js): the snap holding exactly what was sent is clean now, and
-  // a page's snap takes the new revision, which a link's next save claims
   function tabLanded(kind, name, sent, rev, ship = null) {
     for (const t of allTabs()) {
       if (t.kind !== kind || t.key !== name || (t.ship || null) !== ship || !t.snap) continue;
@@ -2788,17 +1865,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   }
 
-  // ── boot ─────────────────────────────────────────────────────────────
-  // The saved groups, and then the address on top of them: a ?name, ?grub
-  // or ?view=know&key names a document, which gets its tab focused, in
-  // whichever group, or a new one in the group in front. An entry that
-  // does not parse as a tab is dropped, and so is a second tab on one
-  // document. A layout that does not name every group once (28-splits.js)
-  // falls back to one group holding every tab, and nothing at all leaves
-  // one new page. Nothing is opened here; boot (99-boot.js) shows the tab
-  // this returns, and the other groups paint from their caches. `fresh`
-  // says the list was made up rather than restored, which is when a bare
-  // launch may resume the last page.
   function tabsBoot() {
     let saved = null;
     try { saved = JSON.parse(localStorage.appTabs || 'null'); } catch {}
@@ -2821,7 +1887,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     });
     let fi = saved && Number.isInteger(saved.focus) && made[saved.focus] ? saved.focus : 0;
     if (made.length > 1 && (made.some((g) => !g.tabs.length) || !splitLoad(saved.tree, made))) {
-      // one group, every tab in order, the one in front still in front
       const one = mkGroup();
       one.tabs = made.flatMap((g) => g.tabs);
       one.active = (made[fi] && made[fi].active) || one.tabs[0] || null;
@@ -2857,21 +1922,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     tabsChanged();
     return { tab: activeTab, fresh };
   }
-  // boot showing a tab through the tab model, for every kind without a
-  // boot path of its own
   const tabShowBoot = (t) => tabSerial(() => showTab(t));
 
-  // ── the strips ───────────────────────────────────────────────────────
-  // Each group has its own, first in the group (built by gAdd,
-  // 28-splits.js): its tabs, then + for a new page and the two splits.
-  // The group in front's strip is #doctabs and its + is #tabnew.
-  //
-  // Each tab is two buttons side by side in one wrapper: the tab itself
-  // and its close, so the close is a real button a keyboard can reach (a
-  // button cannot sit inside another). The state classes (on, dirty,
-  // pinned) go on both: the wrapper draws the tab, the tab button is what
-  // scripts and suites address. A tab drags to another group's strip, or
-  // to an edge of a group to split it (28-splits.js).
   function paintStrip(g) {
     const front = gFront(g);
     g.list.textContent = '';
@@ -2903,16 +1955,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       x.className = 'dtx';
       x.innerHTML = ico('x');
       x.onclick = () => closeTab(t.id);
-      // a middle click closes, and must not start the browser's autoscroll
       w.onmousedown = (e) => { if (e.button === 1) e.preventDefault(); };
       w.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(t.id); } };
       w.oncontextmenu = (e) => { e.preventDefault(); tabMenu(t, e.clientX, e.clientY); };
       w.append(b, x);
       g.list.append(w);
     }
-    // the tab in front into view, in the next frame's rAF, before it lays
-    // out. Done here, it forced a layout of the whole shell in the middle
-    // of boot (46 ms), which the boot's later DOM work then threw away.
     if (!g.scrollRaf) g.scrollRaf = requestAnimationFrame(() => {
       g.scrollRaf = 0;
       const on = g.list.querySelector('.dtw.on');
@@ -2927,8 +1975,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     gPaintAll();   // the other groups' parked fronts (28-splits.js)
     document.dispatchEvent(new Event('lat-tabs'));
   }
-  // The dot. `dirty` is set by typing and cleared by four save paths, so the
-  // dot is read off the state on a short beat instead of from each of them.
   function paintTabDirty() {
     for (const g of groups) {
       for (const w of g.list.children) {
@@ -2943,8 +1989,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   setInterval(paintTabDirty, 400);
   clickAction('tabnew', 'New page in a new tab', 'Tab strip');
 
-  // the context menu: pin, close, close the others, and move to a new
-  // group beside or below (the way to split without a drag)
   let tabMenuEl = null;
   const tabMenuClose = () => { if (tabMenuEl) { tabMenuEl.remove(); tabMenuEl = null; } };
   function tabMenu(t, x, y) {
@@ -2988,21 +2032,17 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       e.preventDefault();
       tabCycle(e.shiftKey ? -1 : 1);
     } else if (e.altKey && !mod && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')
-      // in a text field Alt+Arrow moves by word on a Mac, and that wins
       && !(e.target.closest && e.target.closest('input, textarea, select, [contenteditable]'))) {
       e.preventDefault();
       if (e.key === 'ArrowLeft') tabBack(); else tabFwd();
     }
   });
-  // a link to a document: a click goes through openIn with its event, so
-  // Ctrl/Cmd and the middle button open a new tab
   const tabLink = (el, kind, key, opts = {}) => {
     const go = (e) => { e.preventDefault(); openIn(kind, key, { ...opts, ev: e }); };
     el.onclick = go;
     el.onauxclick = (e) => { if (e.button === 1) go(e); };
   };
 
-  // for the browser suites, which cannot reach this scope
   window.latTabs = {
     openIn, switchTab, closeTab, tabBack, tabFwd,
     list: () => tabs.map(({ id, kind, key, ship, pinned }) => ({ id, kind, key, ship, pinned })),
@@ -3012,8 +2052,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       active: tabs.indexOf(activeTab),
       shows: !!activeTab && TAB_KINDS[activeTab.kind].shows(activeTab),
     }),
-    // every group: its tabs (dirty: unsaved, live or parked), its front,
-    // and which group is in front
     groups: () => groups.map((g) => ({
       id: g.id,
       focus: g === focusG,
@@ -3029,21 +2067,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
 
 // ── src/22-listedit.js ────────────────────────────────────────────────────
-  // ── smart list continuation ──────────────────────────────────────────────
-  // Pure on purpose. It takes the text and the selection and returns the edit
-  // to apply, touching no DOM, so the fiddly parts (nesting, mixed markers,
-  // renumbering) are unit tested by scripts/ui-listedit.mjs in milliseconds
-  // with no browser and no ship. The editor's keydown handler is the only
-  // place that knows about textareas.
-  //
-  // Returns null when Enter should do its ordinary thing. Otherwise
-  // {from, to, text, caret}: replace [from, to) with text, then put the caret
-  // at `caret`.
   const listEnter = (value, selStart, selEnd, flavor) => {
     const TAB = 4;
     const width = (s) => s.replace(/\t/g, ' '.repeat(TAB)).length;
-    // indent, then either a bullet or a number+delimiter, then the gap, then
-    // an optional task box. Kept in one place: every scan below reuses it.
     const ITEM = /^([ \t]*)(?:([-*+])|(\d+)([.)]))([ \t]+)(\[[ xX]\][ \t]+)?/;
     const parse = (ln) => {
       const m = ln.match(ITEM);
@@ -3054,17 +2080,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         gap: m[5], task: m[6] || '', w: width(m[1]),
       };
     };
-    // A fenced block is literal text: a "- " in a shell snippet is not a list.
-    // In gemtext ``` toggles a preformatted block, which is the same rule.
     const before = value.slice(0, selStart);
     const fences = before.match(/^[ \t]*(?:```|~~~)/gm);
     if (fences && fences.length % 2 === 1) return null;
 
-    // Gemtext is not markdown with fewer features, it is a different grammar.
-    // Its ONLY list form is "* " at the very start of a line: no ordered
-    // lists, no nesting, and leading whitespace makes a line ordinary text.
-    // Continuing markdown markers here would write "- " and "2." that gemtext
-    // renders as literal characters, so it gets its own small rule set.
     if (flavor === 'gmi') {
       const gLineStart = before.lastIndexOf('\n') + 1;
       let gLineEnd = value.indexOf('\n', selEnd);
@@ -3084,19 +2103,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (lineEnd === -1) lineEnd = value.length;
     const cur = parse(value.slice(lineStart, lineEnd));
     if (!cur) return null;
-    // Caret inside the marker itself, including at the very start of the line.
-    // Enter there pushes the item down and leaves it intact, which is what
-    // every editor does. Continuing would emit a second marker ("- - one") or
-    // split the marker in half ("1" / "2. . one").
     if (selStart < lineStart + cur.len) return null;
 
     const lines = value.split('\n');
-    // index of the line the caret sits on, by counting newlines before it
     const curIdx = before.split('\n').length - 1;
 
-    // How far this list block reaches. A blank line does not end it (loose
-    // lists have them), nor does a deeper-indented continuation. A line at or
-    // left of our indent that is not an item does.
     let lastIdx = curIdx;
     for (let i = curIdx + 1; i < lines.length; i++) {
       const ln = lines[i];
@@ -3108,12 +2119,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       lastIdx = i;
     }
 
-    // ── an item with nothing in it: Enter leaves the list ─────────────────
     const content = value.slice(lineStart, lineEnd).slice(cur.len);
     if (!content.trim()) {
-      // Nested, so step out one level instead of dropping the list entirely.
-      // The parent's own marker decides what we become, which is what makes a
-      // mixed list (numbers outside, dashes inside) walk back up correctly.
       for (let i = curIdx - 1; i >= 0 && cur.w > 0; i--) {
         const p = parse(lines[i]);
         if (!p || p.w >= cur.w) continue;
@@ -3123,21 +2130,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         const text = p.indent + marker + (p.task ? '[ ] ' : '');
         return { from: lineStart, to: lineEnd, text, caret: lineStart + text.length };
       }
-      // top level: clear the marker and end the list
       return { from: lineStart, to: lineEnd, text: '', caret: lineStart };
     }
 
-    // ── continue the list ─────────────────────────────────────────────────
     if (cur.bullet) {
-      // Unordered needs no bookkeeping: same bullet, same indent. A task item
-      // continues as an UNCHECKED box, never inheriting the tick.
       const text = '\n' + cur.indent + cur.bullet + cur.gap + (cur.task ? '[ ] ' : '');
       return { from: selStart, to: selEnd, text, caret: selStart + text.length };
     }
 
-    // Ordered. Collect this level's siblings inside the block so we can tell
-    // sequential numbering from the "all 1." style, which is valid markdown
-    // and must not be silently rewritten into 1, 2, 3.
     const sibs = [];
     for (let i = curIdx; i >= 0; i--) {
       const p = parse(lines[i]);
@@ -3154,13 +2154,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const nextNum = lazy ? cur.num : cur.num + 1;
     const marker = cur.indent + nextNum + cur.delim + cur.gap + (cur.task ? '[ ] ' : '');
 
-    // Everything from the caret to the end of the block gets rewritten in one
-    // edit: the text after the caret becomes the new item's content, and the
-    // items below it shift up by one. One replacement means one undo step.
-    // The replaced region must cover the whole selection AND the rest of the
-    // block. A selection reaching past the last item would otherwise be
-    // clamped to the block, leaving the part below it alive: the user's
-    // selection came back after being typed over.
     const blockEnd = Math.max(selEnd, lines.slice(0, lastIdx + 1).join('\n').length);
     const tail = value.slice(selEnd, blockEnd).split('\n');
     if (!lazy) {
@@ -3179,41 +2172,18 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return { from: selStart, to: blockEnd, text, caret: selStart + 1 + marker.length };
   };
 
-  // ── indent / outdent a list item ─────────────────────────────────────────
-  // Tab on a list line moves it a level deeper; Shift-Tab a level out. Same
-  // contract as listEnter: pure, returns {from, to, text, caret} or null for
-  // "not a list edit — let Tab do its ordinary thing". A selection spanning
-  // several lines moves every LIST line in it together, which is what makes
-  // reshaping a pasted outline a two-keystroke job.
-  //
-  // One level is TWO SPACES, because that is what the local renderer counts
-  // (59-md.js: depth = floor(indent/2) + 1). A tab character is one level of
-  // its own on the way out.
   const listTab = (value, selStart, selEnd, flavor, dir) => {
-    // gemtext has no nesting: "* " at column zero is the whole grammar, and
-    // an indented line is ordinary text. Tab must stay a plain tab there.
     if (flavor === 'gmi') return null;
     const ITEM = /^([ \t]*)(?:([-*+])|(\d+)([.)]))([ \t]+)/;
     const lineStart = value.slice(0, selStart).lastIndexOf('\n') + 1;
-    // fenced code is literal text (the same rule listEnter applies): a Tab
-    // inside a fence is indentation for CODE, not for a list that is not one.
-    // Parity is counted up to LINE start, not caret: this is a line
-    // operation, so the question is whether the line begins inside a fence —
-    // and a caret-relative count changed its answer between an indent and
-    // the outdent that undoes it when the line itself opens with a fence
-    // marker (found by the round-trip property, seed 1105911052).
     const fences = value.slice(0, lineStart).match(/^[ \t]*(?:```|~~~)/gm);
     if (fences && fences.length % 2 === 1) return null;
 
-    // a selection ending at column 0 does not include that line: shift-down
-    // leaves the anchor there, and indenting a line the user never touched
-    // is the surprise every editor avoids
     const effEnd = selEnd > selStart && value[selEnd - 1] === '\n' ? selEnd - 1 : selEnd;
     let spanEnd = value.indexOf('\n', Math.max(effEnd, selStart));
     if (spanEnd === -1) spanEnd = value.length;
     const span = value.slice(lineStart, spanEnd).split('\n');
 
-    // only item lines move; a selection that contains none is not a list edit
     if (!span.some((ln) => ITEM.test(ln))) return null;
 
     let firstDelta = 0;   // how the FIRST line's start moved, for the caret
@@ -3223,7 +2193,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         if (i === 0) firstDelta = 2;
         return '  ' + ln;
       }
-      // outdent: one tab is one level; otherwise up to two spaces
       const cut = ln.startsWith('\t') ? 1 : Math.min(2, (ln.match(/^ */) || [''])[0].length);
       if (i === 0) firstDelta = -cut;
       return ln.slice(cut);
@@ -3232,33 +2201,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (text === value.slice(lineStart, spanEnd)) return null;   // nothing to take out
 
     if (selStart === selEnd) {
-      // keep the caret on the same character it was on, clamped to its line
       const caret = Math.max(lineStart, selStart + firstDelta);
       return { from: lineStart, to: spanEnd, text, caret };
     }
-    // a multi-line selection stays a selection over the moved lines
     return { from: lineStart, to: spanEnd, text, caret: lineStart, caretEnd: lineStart + text.length };
   };
 
 // ── src/23-tabhead.js ─────────────────────────────────────────────────────
-  // ── tab header ───────────────────────────────────────────────────────────
-  // Between the tab strip and the document: Back and Forward, the path of
-  // what is open, Edit / Read, Save and the page menu. The name field, the
-  // kind picker and the LaTeX convert button sit here in a hidden holder:
-  // nothing shows them, but they are the stores and the handlers these
-  // buttons call (#pname, #pkind, #texconv), as #mv and #del in the Page tab
-  // are.
-  //
-  // Save is an icon on a phone while a grub is in front, the one document
-  // with no autosave and, there, no keyboard for Ctrl+S. Everywhere else it
-  // is hidden: pages and memories autosave, and the desktop has Ctrl+S and
-  // the File menu, which clicks #save, as vim's :w does.
-  //
-  // Edit and Read are one choice per tab, kept on the tab (`read`, which
-  // 21-tabs.js persists). There is no split: Edit hides the preview, Read
-  // hides the editor.
 
-  // the page kinds: the hidden picker's options and the page menu's Kind list
   const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'hoon'];
   const tabHead = document.createElement('div');
   tabHead.id = 'tabhead';
@@ -3285,8 +2235,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
   $('tback').onclick = () => tabBack();
   $('tfwd').onclick = () => tabFwd();
-  // the move / rename flow of the controls pane, unchanged. A tab that is
-  // not a document shows only its title there.
   $('tpath').onclick = () => { if (docFront()) $('mv').click(); };
   clickAction('tback', 'Back', 'Tab header', 'Alt+Left');
   clickAction('tfwd', 'Forward', 'Tab header', 'Alt+Right');
@@ -3295,8 +2243,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   clickAction('read', 'Read', 'Tab header', 'Ctrl+E');
   clickAction('tmenu', 'Page menu', 'Tab header');
 
-  // Read for the tab in front. Entering it shows the preview, which skipped
-  // its renders while off screen (60-preview.js)
   function applyRead() {
     const on = !!(activeTab && activeTab.read);
     const was = ws.classList.contains('ve');
@@ -3308,7 +2254,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       b.setAttribute('aria-pressed', p ? 'true' : 'false');
     }
     if (on && was) showPreview();
-    // the vim indicator reads PREVIEW in Read
     if (window.latVimSetInd) window.latVimSetInd();
   }
   function setRead(on) {
@@ -3319,11 +2264,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
   for (const b of $('tread').children) b.onclick = () => setRead(b.dataset.r === '1');
   const toggleRead = () => setRead(!(activeTab && activeTab.read));
-  // the desktop View menu evals these (desktop/src/main.rs)
   window.latSetRead = setRead;
   addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.key === 'e' || e.key === 'E')
-      // vim keeps Ctrl+E (scroll) while the editor has focus
       && !(localStorage.edVim === '1' && document.activeElement === src)) {
       e.preventDefault();
       toggleRead();
@@ -3339,19 +2282,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     p.classList.toggle('muted', !v);
     p.title = v && !tool ? v + ' · ' + (pkind.value || '') : '';
   }
-  // every writer of the name goes through setOpen (20-state.js), which fires
-  // 'input' on the field, and typing fires it natively
   pname.addEventListener('input', paintPath);
   pkind.addEventListener('change', paintPath);
 
-  // called by paintTabs: the tab in front changed, or its stacks did. A tab
-  // that is not a document (a tool, 24-tools.js) has no Edit / Read and no
-  // page menu.
   function paintHead() {
     const tool = !docFront();
     $('tread').hidden = tool;
     $('tmenu').hidden = tool;
-    // Save's one showing, on a phone (the 820px block): a grub in front
     $('ws').classList.toggle('grubfront', !!activeTab && activeTab.kind === 'grub');
     if (pmenuEl && pmenuTab !== activeTab) pmenuClose();
     for (const [id, st_] of [['tback', 'back'], ['tfwd', 'fwd']]) {
@@ -3366,16 +2303,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     paintLink();      // the Page tab's link section follows the tab in front
   }
 
-  // ── the page menu ────────────────────────────────────────────────────────
-  // Each item calls the handler that already exists. An item that does not
-  // apply to what is open is left out, not greyed: a grub has no kind, a
-  // memory has no raw source.
   let pmenuEl = null;
   let pmenuTab = null;   // the tab the open menu was made for
   const pmenuClose = () => { if (pmenuEl) { pmenuEl.remove(); pmenuEl = null; } };
 
-  // Duplicate: a new page beside this one, same kind and body, named
-  // <name>-copy until the user says otherwise
   async function dupPage() {
     if (!current || grubPath || mode === 'know' || curFolder !== null) return;
     writerSync();
@@ -3395,8 +2326,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     await save();
   }
 
-  // Download: what is in the editor now, as a file named for the last path
-  // segment. A memory is markdown.
   const DLEXT = { text: 'txt' };
   function downloadDoc() {
     if (!current || grubPath || curFolder !== null) return;
@@ -3411,8 +2340,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
-  // which items apply to what is open. The menu shows these and the
-  // palette lists these, so the two never disagree.
   function pmenuHas() {
     const doc = !grubPath && curFolder === null;       // a page or a memory
     const page = doc && mode !== 'know';
@@ -3423,7 +2350,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (doc && current) { has.add('download'); has.add('del'); }
     if (doc && current && PDF_KINDS.includes(mode === 'know' ? 'md' : pkind.value)) has.add('pdf');
     if (page && linkOf(current)) has.add('linkback');
-    // a folder view: Delete is #del's folder branch, its own confirm and all
     if (!grubPath && curFolder !== null) has.add('del');
     if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex')) has.add('tex');
     if (fodtHere()) { has.add('source'); if (wr && wr.macros) has.add('macros'); }
@@ -3480,7 +2406,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (has.has('dup')) item('dup', 'Duplicate', done(dupPage));
     if (has.has('download')) item('download', 'Download', done(downloadDoc));
     if (has.has('pdf')) item('pdf', 'Export PDF', done(exportOpenPdf));
-    // the hidden button's title says whether pandoc is there (71-latex.js)
     if (has.has('tex')) item('tex', 'Convert to HTML', done(() => $('texconv').click())).title =
       $('texconv').title;
     if (has.has('raw')) item('raw', 'Open raw', done(() =>
@@ -3497,10 +2422,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     m.querySelector('button').focus();
   }
   $('tmenu').onclick = pageMenu;
-  // The items are built when the menu opens, so a palette action opens it
-  // and clicks the item, which is the menu's own path. Kind opens the menu
-  // with its list unfolded, as clicking Kind does. Convert to HTML exists
-  // only in the desktop app.
   for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'], ['source', 'Source view'],
     ['link', 'Copy link'], ['dup', 'Duplicate page'], ['download', 'Download'], ['pdf', 'Export PDF'], ['tex', 'Convert to HTML'],
     ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['del', 'Delete']]) {
@@ -3522,29 +2443,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   });
 
 // ── src/24-tools.js ───────────────────────────────────────────────────────
-  // ── tool tabs and the ribbon ─────────────────────────────────────────────
-  // A tool tab holds no document: the comments inbox, access & groups, the
-  // sync conflicts, or a same-origin page in a frame (Settings, the memory
-  // review, the forum, the explorer, a browser). Its key names the tool
-  // ('inbox', 'access', 'conflicts') or the frame
-  // ('frame:/apps/lattice/settings'). While one is in front of its group
-  // the group's document area is hidden and the group's own tool host
-  // (.toolhost, 28-splits.js) takes its place. Each group has one, so a
-  // frame never moves (a moved frame reloads) when another group comes to
-  // the front; the one in front is #toolhost. The editor underneath keeps
-  // whatever the parked tab left there, untouched: the tool kind has no
-  // live(), so nothing a tool does is ever filed under a document's tab.
-  // a tab's frame carries data-tool; a document it left, kept for Back and
-  // Forward (29-fhead.js), carries data-kept instead
   const allFrames = () => [...document.querySelectorAll('.toolhost iframe[data-tool]')];
   const frameOf = (key) => allFrames().find((f) => f.dataset.tool === key);
-  // where a tool's wrap waits while no group shows it
   const toolStash = document.createElement('div');
   toolStash.hidden = true;
   document.body.append(toolStash);
 
-  // the client tools: their name, icon, the overlay element each one used
-  // to be (72-acl.js, 73-comments.js, 80-conflicts.js) and what fills it
   const TOOLS = {
     inbox: { name: 'Inbox', icon: 'inbox', wrap: 'cmwrap', load: () => cmLoad() },
     access: { name: 'Access & groups', icon: 'key', wrap: 'aclwrap', load: () => aclLoad() },
@@ -3557,21 +2461,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     '/apps/lattice/forum': ['Forum', 'forum'],
     '/apps/lattice/x': ['Explorer', 'tree'],
   };
-  // the tools a frame opens by name: Settings, and the two browsing frames
-  // that are one tab each. A browser is a new tab every time (browseIn).
   const FRAME_KEYS = {
     settings: 'frame:/apps/lattice/settings',
     forum: 'frame:/apps/lattice/forum',
     explorer: 'frame:/apps/lattice/x',
   };
   const SETTINGS = FRAME_KEYS.settings;
-  // A browsing frame (the reader, the forum, the explorer) is navigated
-  // inside, so its tab is titled by the page it is on, and its group shows
-  // the frame header (29-fhead.js): Back, Forward and the omnibar, the way
-  // to an urb:// address. Settings and the memory review are single pages
-  // with no header. Every frame's own reader bar is hidden.
-  // only a lattice path on this origin, whatever the key says: a frame is
-  // dressed by reaching into it, and a key can come from typed input
   const frameUrl = (key) => {
     if (!key.startsWith('frame:')) return null;
     let u;
@@ -3586,17 +2481,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const u = frameUrl(key);
     return u ? FRAMES[u] || ['Browser', 'globe'] : [key, 'gear'];
   };
-  // every way into a tool. A tool gets a tab of its own rather than
-  // replacing the document in front, and an open one is focused. On a phone
-  // the drawer it was opened from goes away, also when the tool was in
-  // front already.
   const toolOpen = async (id) => {
     await openIn('tool', FRAME_KEYS[id] || id, { newTab: true });
     drawersClose();
   };
-  // a browser tab at `url` (the reader home by default), new every time:
-  // the key carries a #fragment of its own, which the frame's address
-  // drops (frameUrl), so two tabs can show the same page
   const browseIn = async (url = '/apps/lattice') => {
     await openIn('tool', 'frame:' + url + '#b' + Date.now().toString(36)
       + (++browseSeq), { newTab: true });
@@ -3604,33 +2492,22 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
   let browseSeq = 0;
 
-  // which tool the host shows, null while a document is in front
   let toolShown = null;
-  // a browsing frame's page title, by tab key (frameDress)
   const frameTitles = {};
-  // every frame the observer below watches (frameSeen)
   const frameSeenAll = new Set();
   TAB_KINDS.tool = {
     icon: (t) => toolMeta(t.key)[1],
-    // a browsing frame's tab follows the title of the page it is on
     label: (t) => (browsing(t.key) && frameTitles[t.key]) || toolMeta(t.key)[0],
     open: async (t) => {
       toolSync();
       if (TOOLS[t.key]) TOOLS[t.key].load();
       return true;
     },
-    // a tool has no buffer, so nothing to park and nothing to restore
     restore: () => {},
     park: async () => true,
     shows: (t) => t === activeTab && toolShown === t.key,
-    // a frame holding text typed and not sent (a forum post, a settings
-    // field) is not closed unasked (closeTab, 21-tabs.js)
     held: (t) => frameTyped(t.key),
   };
-  // Whether a frame tab's page, or a same-origin frame in it (the reader's
-  // comment box), holds a text field the user has typed into: not empty,
-  // and not what the page put there. The reader's bar is left out, since
-  // its omnibar always holds the address.
   const TEXTY = ['text', 'search', 'url', 'email', 'tel', 'number'];
   function frameTyped(key) {
     const f = frameOf(key);
@@ -3647,11 +2524,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       && el.value.trim() !== '' && el.value !== el.defaultValue));
   }
 
-  // Called by paintHead on every change of the tab in front. In each group,
-  // shows the host or the document area, and in the host only that group's
-  // front tool. A wrap that is not in front of a group is hidden, which is
-  // how 90-sync.js knows the inbox is not being read. A frame whose tab has
-  // closed goes away.
   function toolSync() {
     const t = activeTab && activeTab.kind === 'tool' ? activeTab : null;
     const was = toolShown;
@@ -3664,10 +2536,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         delete fnav[f.dataset.tool];
         f.remove();
       }
-    // and the pages they kept (29-fhead.js)
     if (document.querySelector('.toolhost iframe[data-kept]')) fkeepTrim();
-    // a frame that left the page (closed here, or with its group, gDrop
-    // in 28-splits.js) is let go: the observer would hold it for good
     for (const f of frameSeenAll)
       if (!f.isConnected) { frameSeen.unobserve(f); frameSeenAll.delete(f); }
     for (const g of groups) {
@@ -3679,29 +2548,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       frameBusySync(g.host);
       fhSync(g, key);
     }
-    // a browsing tab's header stands in for the tab header (29-fhead.js)
     $('tabhead').hidden = !!t && browsing(t.key);
-    // a wrap no group has in front waits in the stash, hidden
     for (const c of [...document.querySelectorAll('.toolhost > .intab')])
       if (!groups.some((g) => c.parentNode === g.host && !c.hidden)) { c.hidden = true; toolStash.append(c); }
-    // the right pane goes by what is in front (76-outline.js)
     if (was !== toolShown) rpSoon();
   }
-  // A frame in a hidden element still reads document.hidden false, so a
-  // parked reader page kept its live stream open (+sse-script, app.hoon),
-  // and six of them took every connection the browser gives this host:
-  // the editor's saves then queued with no error. So each frame is told
-  // when it is shown or put away, and its stream follows. A frame is
-  // shown when it has a box: its tab can be parked, its host hidden, or
-  // on a phone its group not the one in front (a CSS rule, index.html),
-  // and a ResizeObserver hears each of them, after layout. The page's own
-  // scripts (+page-cache-script) used to poll the frame's box ten times
-  // a second instead, each poll a forced layout of the editor.
-  //
-  // A kept page that Back or Forward shows again (29-fhead.js) hears it
-  // only once it has stayed in sight `latQuiet`: its catch-up refetch and
-  // stream otherwise went out under the request of whatever was clicked
-  // next (a tab, the forum), as a cached paint waits 0.3 s to refetch.
   const frameSeen = new ResizeObserver((es) => {
     for (const { target: f } of es) frameSeenOne(f);
   });
@@ -3714,8 +2565,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     try { f.contentWindow.dispatchEvent(new f.contentWindow.Event(on ? 'latshown' : 'lathidden')); }
     catch {}
   }
-  // into `toolHost`, a group's host. A frame there already stays; one in
-  // another group's host (its tab was moved) moves, and reloads.
   function toolMount(key, toolHost) {
     if (TOOLS[key]) {
       const w = $(TOOLS[key].wrap);
@@ -3728,32 +2577,20 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const url = frameUrl(key);
     const had = frameOf(key);
     if (had) {
-      // a moved frame reloads, and so would the documents it kept
       if (had.parentNode !== toolHost) { fkeepDropKey(key); frameLoading(had, true); toolHost.append(had); }
       return;
     }
     if (!url) return;
     toolHost.append(frameMake(key, url));
   }
-  // a tab's frame at `url`, watched by frameSeen. Back and Forward make one
-  // too, beside the frame they keep (29-fhead.js).
   function frameMake(key, url) {
     const f = document.createElement('iframe');
     f.className = 'toolframe';
     f.dataset.tool = key;
     f.title = toolMeta(key)[0];
-    // a name, so a form or link in it aimed at _top lands here (frameDress)
     f.name = 'latframe' + (++frameSeq);
-    // Nothing in a frame may replace the editor's window: no top
-    // navigation token, which holds for every frame nested in it too (a
-    // page served sandboxed whose CSP would allow it, a site the frame
-    // went to, a script setting top.location). Same origin and scripts
-    // stay, for frameDress and the pages themselves.
     f.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups '
       + 'allow-popups-to-escape-sandbox allow-modals allow-downloads');
-    // a load counts as activity only when the user's own event in the frame
-    // led to it, within 10 s: a page that reloads itself on each keep event
-    // must not hold the background lane shut
     f.onload = () => {
       frameLoading(f, false);
       if (Date.now() - (f.latAct || 0) < 10000) bgBusy();
@@ -3766,13 +2603,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return f;
   }
   let frameSeq = 0;
-  // A frame's loading line. A frame is loading from the moment it is made
-  // or sent somewhere until its load event, and its host shows the line
-  // (.lbusy, as busy() draws it, 10-shell.js) while the frame in FRONT
-  // there has been loading BUSY_MS. So a quick load never flashes it, a
-  // parked frame loading behind the tab in front shows nothing, and a tab
-  // switch (toolSync) takes the line with the frame. A load that never
-  // comes (a download, a 204, an aborted navigation) lets go by BUSY_MAX.
   function frameLoading(f, on) {
     clearTimeout(f.latLoadT); clearTimeout(f.latLoadCap);
     f.latLoadAt = on ? Date.now() : 0;
@@ -3783,8 +2613,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     frameBusySync(f.parentNode);
     frameTabSync(f.dataset.tool);
   }
-  // A frame's tab spins (.lload, its icon a spinner) while its frame has
-  // been loading BUSY_MS, in front or parked; paintStrip asks frameSlow.
   const frameSlow = (key) => {
     const f = frameOf(key);
     return !!(f && f.latLoadAt && Date.now() - f.latLoadAt >= BUSY_MS - 10);
@@ -3795,8 +2623,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     for (const b of document.querySelectorAll('.dtab[data-kind="tool"]'))
       if (b.dataset.key === key) b.classList.toggle('lload', on);
   }
-  // whether a click on link `a` takes its document somewhere else: a plain
-  // click, no new window or download, and not to an anchor in the page
   const linkLeaves = (a, target, e) => e.button === 0 && !e.ctrlKey && !e.metaKey
     && !e.shiftKey && !e.altKey && !a.hasAttribute('download')
     && !/^_blank$/i.test(target || '') && /^https?:/.test(a.href)
@@ -3808,27 +2634,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       && !c.hidden && c.latLoadAt && now - c.latLoadAt >= BUSY_MS - 10);
     host.classList.toggle('lbusy', on);
   }
-  // Each load of a frame. Every frame loses the reader's bar, since the
-  // shell around it is the chrome: a browsing frame's group has the frame
-  // header instead (29-fhead.js), and the bar's menu entries (editor,
-  // knowledge, bookmarks, forum, settings) are ribbon buttons or pane tabs
-  // of the shell already.
-  // The tab takes the page's title. A link in it to a document in the
-  // editor opens that document in a new tab of the shell, never over the
-  // frame's own tab and never as a second editor nested in the frame. A
-  // link carrying data-lat-tool (Settings > Advanced) opens that tool's
-  // tab. Any other link navigates the frame as usual, and so does whatever
-  // aims at _top (the reader's comment box): the whole window is the
-  // editor's, never a page's to replace.
   function frameDress(f) {
     let d = null;
     try { d = f.contentDocument; } catch {}
     if (!d || !d.head) return;
     const key = f.dataset.tool || f.dataset.kept;
-    // the editor's note marks its frame (00-framed.js); anywhere else clears it
     if (!editorGo(d.URL)) delete f.dataset.latEd;
     frameTheme(f);
-    // the frame's own theme.js rewrites these on <html>, so they go back on
     new MutationObserver(() => frameTheme(f))
       .observe(d.documentElement, { attributes: true, attributeFilter: ['style'] });
     const s = d.createElement('style');
@@ -3836,7 +2648,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     d.head.append(s);
     if (browsing(key)) {
       const title = () => {
-        // a kept document's title is not its tab's
         if (f.dataset.tool !== key) return;
         const t = d.title.trim();
         if (!t || frameTitles[key] === t) return;
@@ -3846,28 +2657,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       title();
       new MutationObserver(title).observe(d.head, { childList: true, subtree: true, characterData: true });
     }
-    // _top and _parent are re-aimed here once at load, and again as a
-    // link is followed or a form sent, which covers one a script adds
-    // later. The frame's sandbox would only block the navigation.
-    //
-    // A frame inside the frame (the reader's srcdoc page, where the own
-    // page's comment box lives) takes on the sandbox, and a sandboxed frame
-    // may not navigate its parent: the box's post did nothing. So there a
-    // link or form aimed at the frame tab is stopped and sent again from
-    // this window, which may navigate any frame below it. An editor link
-    // there opens the shell's tab, as in the frame's own document.
     const topish = (el, at) => !!el && /^_(top|parent)$/i.test(el.getAttribute(at) || '');
     const upward = (el, at) => topish(el, at) || (!!el && el.getAttribute(at) === f.name);
-    //
-    // In an inner doc the check runs last, on its window as the event
-    // bubbles out, so the page's own handlers have had their say: one that
-    // called preventDefault (a fetch-on-submit) is left alone. In the
-    // frame's own doc it only re-aims, so it runs first, as it always did.
     const aimTop = (doc, inner) => {
       if (doc.latAimed) return;
       doc.latAimed = true;
-      // what is done in the frame, the comment box's frame included, is done
-      // in the shell (bgFetch, 10-shell.js)
       const act = () => { f.latAct = Date.now(); bgBusy(); };
       for (const t of ['pointerdown', 'keydown', 'input', 'click']) doc.addEventListener(t, act, true);
       for (const el of doc.querySelectorAll('[target=_top], [target=_parent]')) el.target = f.name;
@@ -3904,14 +2698,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       }, !inner);
     };
     aimTop(d, false);
-    // a link, form or script leaving this page opens beside it, which
-    // keeps it for Back (29-fhead.js)
     if (browsing(key)) fkeepWatch(f, d, key);
-    // and anything else that leaves it starts the frame's loading line:
-    // the navigation API hears links, forms, scripts and reloads alike,
-    // after fkeepWatch, so a step it took over (a new frame beside this
-    // one, loading of its own) is left to it. An engine without the API
-    // (webkitgtk) hears a link followed or a form sent instead.
     const nav = d.defaultView && d.defaultView.navigation;
     if (nav) {
       nav.addEventListener('navigate', (e) => {
@@ -3927,19 +2714,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       d.defaultView.addEventListener('submit', (e) => {
         if (!e.defaultPrevented && !/^_blank$/i.test(e.target.getAttribute('target') || '')) frameLoading(f, true);
       });
-      // and a reload or a script leaving, which no click or form shows
       d.defaultView.addEventListener('beforeunload', () => { if (f.dataset.tool) frameLoading(f, true); });
     }
-    // the reader shows a page in a frame of its own (srcdoc), where the
-    // comment box lives. A sandboxed one (a peer's page) is out of reach,
-    // and has no box.
     for (const i of d.querySelectorAll('iframe')) {
       const inner = () => { try { if (i.contentDocument) aimTop(i.contentDocument, true); } catch {} };
       inner();
       i.addEventListener('load', inner);
     }
-    // a key pressed in the frame never reaches this window, so the shell's
-    // own chords (the palette, Search, Files) are handed up to it
     d.addEventListener('keydown', (e) => {
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
@@ -3959,9 +2740,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         toolOpen(a.dataset.latTool);
         return;
       }
-      // Settings is always its own tab: a link to it from a page in a
-      // frame (the reader's menu, the home page) opens or focuses that tab
-      // at the section named, never Settings inside a browsing frame
       const set = settingsAt(a.href);
       if (set !== null && key !== SETTINGS) {
         e.preventDefault();
@@ -3974,18 +2752,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       editorOpen(go);
     });
   }
-  // The section a link to Settings on this origin names ('' for none),
-  // null when it is not a link to Settings
   function settingsAt(href) {
     let u;
     try { u = new URL(href, location.href); } catch { return null; }
     if (u.origin !== location.origin || !/^\/apps\/lattice\/settings\/?$/.test(u.pathname)) return null;
     return decodeURIComponent(u.hash.slice(1));
   }
-  // What an address of the editor asks for, null when it is not one: the
-  // editor (/app, and /edit, which redirects there) with a document, a
-  // folder to start a file in (?into=), or nothing in particular. An asset
-  // under /app/ is not the editor.
   function editorGo(href) {
     let u;
     try { u = new URL(href, location.href); } catch { return null; }
@@ -3996,10 +2768,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         : q.get('name') ? ['page', q.get('name'), null]
           : q.get('into') ? ['into', q.get('into')] : ['shell'];
   }
-  // A document opens in a new tab of its own, never over the frame's. A
-  // folder gets a new page tab started in it, as ?into= did at boot. The
-  // bare editor is the shell itself: the nearest document tab comes to the
-  // front, or a new page when there is none.
   async function editorOpen(go) {
     if (go[0] === 'into') {
       if (!(await docTab())) return;
@@ -4017,9 +2785,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     await openIn(go[0], go[1], { ship: go[2], newTab: true });
   }
-  // the editor's own page loaded in a frame anyway (00-framed.js) hands
-  // its address here and does not start. Only from the frame tab in front
-  // (or a frame inside it): a parked one has nothing the user just did.
   window.latFrameEditor = (href, from) => {
     let w = from;
     try { while (w && w.parent !== window) w = w === w.parent ? null : w.parent; } catch { w = null; }
@@ -4030,27 +2795,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     editorOpen(go);
     return true;
   };
-  // A comment box (.cbox) in a frame tab posts from here, not by sending
-  // its form. Sent as a form it took the tab's frame to the reply, and a
-  // reply that was an error page left the page behind: a POST is no step
-  // fkeepWatch keeps, so Back made the page afresh and the typed comment
-  // was gone. Now the frame only moves once the ship has the comment (its
-  // 303 back to the page), as a reload; a refusal or no answer at all
-  // leaves the page as it is, the text in the box and the reason under
-  // it. Post is held off meanwhile, as +busy-script does for a form sent.
-  // True when it took the form.
   function commentSend(f, form, sub) {
     const attr = (k, fk) => (sub && sub.hasAttribute(fk) ? sub.getAttribute(fk) : form.getAttribute(k)) || '';
     if (!form.matches('form.cbox') || !/^post$/i.test(attr('method', 'formmethod'))
       || /multipart/i.test(attr('enctype', 'formenctype'))) return false;
     let url;
     try { url = new URL(attr('action', 'formaction') || form.ownerDocument.URL, form.baseURI); } catch { return false; }
-    // only lattice's two comment routes: a .cbox aimed anywhere else is no
-    // comment box of ours and goes as a form, as it always did
     if (url.origin !== location.origin || !/^\/apps\/lattice\/comment(-remote)?$/.test(url.pathname)) return false;
     const d = form.ownerDocument;
-    // the box's own page script has marked it sent already (the inner
-    // frame's runs first); the frame's own document has it run after
     if (form.latSending) return true;
     form.latSending = true;
     let fd;
@@ -4079,32 +2831,22 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       form.after(p);
     };
     fetch(url.href, { method: 'POST', body, redirect: 'manual', credentials: 'same-origin' }).then((r) => {
-      // a 303 (opaque here) or a page: the ship has it, and the box stays
-      // held until the page comes back with the comment on it
       if (r.type === 'opaqueredirect' || r.ok) {
         for (const t of form.querySelectorAll('textarea')) t.value = '';
         try { f.contentWindow.location.reload(); } catch { done(null); }
         return;
       }
-      // the ship's refusal says why ({"error": ...}); a short one is shown
       const said = (j) => (j && typeof j.error === 'string' && j.error.length < 200 ? ': ' + j.error : '');
       r.json().catch(() => null).then((j) => done('Not posted (the ship answered ' + r.status + said(j)
         + '). Your comment is still here.'));
     }, () => done('Not posted: no answer from the ship. Your comment is still here.'));
     return true;
   }
-  // A form from a frame inside a frame tab, sent again from this window
-  // into the tab's frame `name`: the same method, encoding, address and
-  // fields, the button that sent it included. Files go over in a file
-  // input of their own. Read as attributes: a field named `action` or
-  // `method` shadows the form's own properties (form.action would be the
-  // input), so the replay would post to "[object HTMLInputElement]".
   function formAgain(form, sub, name) {
     const g = document.createElement('form');
     const attr = (k, fk) => (sub && sub.hasAttribute(fk) ? sub.getAttribute(fk) : form.getAttribute(k));
     g.hidden = true;
     g.method = attr('method', 'formmethod') || 'get';
-    //  a dialog form closes its dialog and sends nothing; only http(s) goes
     if (/^dialog$/i.test(g.getAttribute('method'))) return;
     g.enctype = attr('enctype', 'formenctype') || 'application/x-www-form-urlencoded';
     const act = attr('action', 'formaction');
@@ -4116,7 +2858,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     g.target = name;
     const files = {};
     let fd;
-    // a webview whose FormData takes no submitter gets the button by hand
     try { fd = new FormData(form, sub || undefined); }
     catch { fd = new FormData(form); if (sub && sub.name) fd.append(sub.name, sub.value); }
     for (const [k, v] of fd) {
@@ -4142,12 +2883,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     g.submit();
     g.remove();
   }
-  // A frame wears the shell's look. theme.js sets the theme's colours inline
-  // on <html> in every document, but with no theme (mode system) it sets
-  // none and each stylesheet keeps its own: the shell's goes dark with the
-  // system, the forum's does not. So the shell's inline colours are copied
-  // onto each frame, and its ground, ink and scheme as it shows them, again
-  // whenever the shell's change (a theme picked, the system going dark).
   const THEME_KEYS = ['color-scheme', '--bg', '--text', '--muted', '--pop', '--accent',
     '--accent-deep', '--on-accent', '--accent-tint', '--secondary', '--tertiary', '--link',
     '--raised', '--error', '--selection', '--border', '--border-soft', '--font'];
@@ -4179,23 +2914,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   new MutationObserver(framesTheme)
     .observe(document.documentElement, { attributes: true, attributeFilter: ['style'] });
 
-  // Escape used to close the overlays. A tab is closed by its own close,
-  // so here Escape only lets go of a field.
   addEventListener('keydown', (e) => {
     const a = document.activeElement;
     if (e.key === 'Escape' && a && a !== document.body && a.closest && a.closest('.toolhost')) a.blur();
   });
 
-  // ── today's brief ────────────────────────────────────────────────────────
-  // The journal pass (+orrery-journal-sync, app.hoon) mirrors orrery's brief
-  // to journal/<YYYY-MM-DD>, orrery's ISO day key, so that dashed name, for
-  // the LOCAL day, is looked for first. The two dotted forms after it are
-  // the names this button used before the pass settled the form; owners'
-  // hand-made notes under them still open when no brief is mirrored yet.
-  // With none of them, a new page starts with the unpadded dotted name and
-  // not the dashed one: the pass writes its page with a plain make, so a
-  // note the owner started at the dashed name before brief_at would be
-  // overwritten by the mirror.
   const briefForms = (d) => {
     const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate();
     const p2 = (n) => String(n).padStart(2, '0');
@@ -4211,8 +2934,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const d = new Date();
     let key = briefKey(d);
     let found = hasPage(key);
-    // an empty tree has not loaded yet, so the ship says which form exists.
-    // Opening a missing page would leave the tab blank and locked.
     if (!nodes.length) {
       for (const k of briefForms(d)) {
         const r = await fetch(api + '/page-source?name=' + encodeURIComponent(k)).catch(() => null);
@@ -4225,19 +2946,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       setOpen(null, { shown: key });
   }
 
-  // ── leaving the editor ───────────────────────────────────────────────────
-  // Only the desktop's manager page takes the window now (Browser, Forum
-  // and Explorer are tabs). The front document gets guardDirty, and the
-  // parked tabs holding unsaved work get one question naming them. Once
-  // the user has said discard, nothing is owed, so the unload guard
-  // (35-pages.js) does not ask a second time.
-  // With autosave off the parked tabs hold ordinary unsaved pages, so the
-  // question offers to save them all, each brought forward and saved in
-  // turn. One that does not save stops the leaving, with it in front.
   const leaveThen = (go) => tabSerial(async () => {
     if (!(await guardDirty())) return;
-    // a group left a moment ago is still saving its tab in the background
-    // (saveParked, 35-pages.js): what lands is not asked about
     await savesSettled();
     const bg = allTabs().filter((t) => t !== activeTab && t.snap && t.snap.dirty);
     const names = bg.map((t) => TAB_KINDS[t.kind].label(t)).join(', ');
@@ -4256,20 +2966,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     dirty = false;
     clearTimeout(autoTimer);
-    //  a saved tab came to the front, where it has no snap
     for (const t of bg) if (t.snap) t.snap.dirty = false;
     await go();
   });
-  // Settings > This computer (settings.js) runs a step that takes the
-  // window off this page, another ship or the reader, through the same
-  // questions, since no unload guard sees the shell move the window.
   window.latLeaveThen = (go) => leaveThen(go);
-  // The desktop's Preferences menu and the This computer tabs call this.
-  // A shell that grants this page those tabs' commands (status answers)
-  // has them in the Settings tab, which opens or comes forward there:
-  // settings are always a tab. Only an older shell takes the window to its
-  // own manager page (open_manager in desktop/src/commands.rs), and a
-  // shell older than a section refuses its name, and then opens at the top.
   window.latOpenManager = async (section) => {
     const inv = window.__TAURI__.core.invoke;
     if (await inv('status').then(() => true, () => false))
@@ -4281,15 +2981,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     });
   };
 
-  // urb:// links other apps opened with lattice, on the desktop. The shell
-  // keeps them until this page takes them (desktop/src/urb.rs), so one that
-  // came while the manager was showing, or before the page was up, opens
-  // now. Each opens in a browser tab of its own at the reader, as a
-  // bookmark does. The shell calls this when links arrive and boot calls it
-  // once (99-boot.js). A call while one is taking links runs again after
-  // it, so a link that lands meanwhile is not left waiting. The shell has
-  // validated every link already; the check here keeps a link that is not
-  // urb:// out of the reader whatever answered the invoke.
   let urbTaking = null, urbAgain = false;
   window.latUrbArrived = () => {
     if (!window.__TAURI__) return Promise.resolve();
@@ -4298,7 +2989,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       do {
         urbAgain = false;
         let links = [];
-        // a desktop build older than the command refuses it: nothing waits
         try { links = await window.__TAURI__.core.invoke('take_urb_links'); } catch { return; }
         for (const u of Array.isArray(links) ? links : [])
           if (typeof u === 'string' && /^urb:\/\/~[a-z-]+\/[^\s?#]+$/.test(u))
@@ -4308,12 +2998,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return urbTaking;
   };
 
-  // the Settings tab, opened or focused, with its frame scrolled to the
-  // section #anchor. A frame still loading scrolls once it has. Sections
-  // above the anchor fill in after load (the key list), so the anchor is
-  // held at the top while the page settles, until the user scrolls or
-  // clicks or two seconds pass. Each section sits in a tab of the page,
-  // and its settings.js shows that tab for any element scrolled into view.
   function frameScroll(f, anchor) {
     let d = null;
     try { d = f.contentDocument; } catch {}
@@ -4338,15 +3022,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     f.addEventListener('load', () => frameScroll(f, anchor), { once: true });
   };
 
-  // the command palette (26-palette.js) sets this to its opener
   let paletteOpen = () => {};
 
-  // top to bottom, with Settings in the lower group
   ribbonAdd({ id: 'brief', icon: 'cal', name: "Today's brief", run: (ev) => openBrief(ev) });
   ribbonAdd({ id: 'browser', icon: 'globe', name: 'Browser', run: () => browseIn() });
   ribbonAdd({ id: 'forum', icon: 'forum', name: 'Forum', run: () => toolOpen('forum') });
-  // the unread badge (73-comments.js) and the conflict count
-  // (80-conflicts.js) are painted onto these two
   ribbonAdd({ id: 'inbox', icon: 'inbox', name: 'Inbox', run: () => toolOpen('inbox') });
   ribbonAdd({ id: 'access', icon: 'key', name: 'Access & groups', run: () => toolOpen('access') });
   ribbonAdd({ id: 'conflicts', icon: 'conflict', name: 'Sync conflicts', run: () => toolOpen('conflicts') })
@@ -4354,68 +3034,36 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   ribbonAdd({ id: 'palette', icon: 'term', name: 'Command palette', keys: 'Ctrl+K', run: () => paletteOpen() });
   ribbonAdd({ id: 'settings', icon: 'gear', name: 'Settings', keys: 'Ctrl+,', bottom: true,
     run: () => toolOpen('settings') });
-  // Ctrl+, (Cmd+, on a Mac), the desktop convention for settings, from
-  // anywhere: frames hand it up (frameDress)
   addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.key !== ',') return;
     if (!$('dlg').hidden) return;
     e.preventDefault();
     toolOpen('settings');
   }, true);
-  // The explorer is a power tool: no ribbon button. Its home is the link in
-  // Settings > Advanced, which lives in the Settings frame and so outside
-  // this document, the one action the palette lists without a home here
-  // (PALETTE_ONLY, 26-palette.js).
   action({ id: 'explorer', name: 'Explorer', home: 'Settings › Advanced',
     run: () => toolOpen('explorer') });
 
 // ── src/25-editor.js ──────────────────────────────────────────────────────
-  // ── editor pane: <lat-editor> + highlighting (Prism overlay) ─────────────
   let src, hl;   // assigned when <lat-editor> upgrades (below, synchronously)
   const LMAP = { md: 'markdown', gmi: 'gemtext', html: 'markup',
                  js: 'javascript', css: 'css', hoon: 'hoon', tex: 'latex' };
   const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
-  // Prism runs in a worker (prism.js installs a message handler there).
-  // Some grammars scan to the end of the input from every start position
-  // when a construct is unterminated, so 32 KiB of '[' took five seconds on
-  // the main thread and froze the editor on every keystroke (security audit
-  // run-1). One job in flight, the newest text queued behind it. A job slow
-  // to answer leaves plain text painted, and past the deadline the worker
-  // is killed and the text stays plain.
-  // A fresh worker first fetches prism.js, which on the desktop goes through
-  // the bridge to the ship and can take seconds, so its first job gets a
-  // startup allowance on top of the deadline. Without it every new worker
-  // was killed before it could answer, and the editor never highlighted.
   const HL_PLAIN = 50, HL_DEADLINE = 1500, HL_STARTUP = 10000;
   let hlWorker = null, hlFresh = false, hlCur = null, hlNext = null, hlPlain = 0, hlKill = 0;
   const hlDone = () => {
     clearTimeout(hlPlain); clearTimeout(hlKill); hlCur = null;
     if (hlNext) { const j = hlNext; hlNext = null; hlRun(j); }
   };
-  // hlPainted: told after every change to the overlay's text, so the vim
-  // block cursor (27-vim.js) measures the text it sits on, not the last one
   let hlPainted = () => {};
   const hlPaint = (body) => { hl.innerHTML = esc(body) + '\n'; sync(); hlPainted(); };
-  // hlSplice: the typed change, put straight into the overlay's text nodes.
-  // The textarea's text is invisible and the overlay's is what shows, so
-  // until the highlight comes back the overlay held the text from before
-  // the keystroke. Past 60 KB that is 120 ms after the LAST key, so a fast
-  // typist on a long page saw every character late, the lines below an
-  // Enter on their old rows, and the overlay, shorter than the textarea,
-  // clamped its scrollTop below the textarea's: the caret drifted off the
-  // text it was in. Splicing keeps the highlight's spans (their colours
-  // lag a little), and the text and its geometry are the textarea's at once.
   const hlSplice = () => {
     const old = hl.textContent, now = src.value;
-    // only over a copy of the editor's own text (not the Writer's blank)
     if (!old.endsWith('\n') || old === now + '\n') return;
     const ol = old.length - 1, nl = now.length, m = Math.min(ol, nl);
     let a = 0; while (a < m && old.charCodeAt(a) === now.charCodeAt(a)) a++;
     let z = 0; while (z < m - a && old.charCodeAt(ol - 1 - z) === now.charCodeAt(nl - 1 - z)) z++;
-    // never split a surrogate pair between the kept and the replaced text
     if (a && (old.charCodeAt(a - 1) & 0xfc00) === 0xd800) a--;
     if (z && (old.charCodeAt(ol - z) & 0xfc00) === 0xdc00) z--;
-    // offsets are the old text's: a deletion in one node moves no other
     const w = document.createTreeWalker(hl, NodeFilter.SHOW_TEXT);
     let n, at = 0, rest = ol - z - a, host = null, hostAt = 0;
     while ((n = w.nextNode())) {
@@ -4432,7 +3080,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     hlPainted();
   };
   const hlRun = (job) => {
-    // newer text while a job runs shows plain until its own turn
     if (hlCur) { hlNext = job; hlPaint(job.body); return; }
     if (!hlWorker) {
       try { hlWorker = new Worker('/apps/lattice/prism.js'); } catch { hlPaint(job.body); return; }
@@ -4443,11 +3090,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         if (j && j.body === src.value && j.lang === LMAP[pkind.value]) {
           hl.innerHTML = e.data + '\n'; sync(); hlPainted();
         } else if (j && !hlNext) {
-          // stale: the text or the kind moved on while this job ran. A
-          // fast answer has already cancelled the plain paint, so paint
-          // the current text plain and highlight it again, or the overlay
-          // keeps the old page and the transparent textarea shows nothing
-          // (a shared page opened, painted, then switched kind)
           hlPaint(src.value);
           scheduleRender();
         }
@@ -4456,8 +3098,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       hlWorker.onerror = () => { hlWorker = null; hlDone(); };
     }
     hlCur = job;
-    // only while this job's text is still the editor's: newer text was
-    // painted when it queued, and this must not paint over it
     hlPlain = setTimeout(() => { if (job.body === src.value) hlPaint(job.body); }, HL_PLAIN);
     hlKill = setTimeout(() => {
       if (hlWorker) hlWorker.terminate();
@@ -4465,32 +3105,21 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }, HL_DEADLINE + (hlFresh ? HL_STARTUP : 0));
     hlWorker.postMessage(JSON.stringify({ language: job.lang, code: job.body }));
   };
-  // the right pane's Outline and Outgoing read the text, so every paint of
-  // it, typed or scripted, tells them (rpSoon, 76-outline.js, set there)
   let rpHook = null;
   const render = () => {
     if (rpHook) rpHook();
     writerFollow();
     if (fodtHere() && !writerSourceOn()) { hl.textContent = ''; return; }
     const lang = LMAP[pkind.value];
-    // the worker loads its own prism. This window's copy comes after boot
-    // (99-boot.js), and every LMAP language is in it, so until it lands a
-    // known language is taken as highlightable.
     const g = lang && (!window.Prism || Prism.languages[lang]);
     if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; hlPainted(); return; }
     hlRun({ body: src.value, lang });
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
-  // sync in the next frame's rAF, before it paints: for a new body, where
-  // reading scrollTop at once forces a layout the rest of the open undoes
   let syncRaf = 0;
   const syncSoon = () => {
     if (!syncRaf) syncRaf = requestAnimationFrame(() => { syncRaf = 0; sync(); });
   };
-  // per-keystroke highlight throttle: Prism re-tokenizes the WHOLE document on
-  // every render, which drops frames on large pages. Coalesce to one render per
-  // frame. Past ~60KB fall back to a trailing debounce (even one full highlight
-  // per frame is too heavy there).
   let hlRaf = 0, hlTimer = 0;
   const scheduleRender = () => {
     if (src.value.length > 60000) {
@@ -4500,18 +3129,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       hlRaf = requestAnimationFrame(() => { hlRaf = 0; render(); sync(); });
     }
   };
-  // +edited: announce a PROGRAMMATIC change to the editor exactly as if it had
-  // been typed. Setting src.value fires no input event, so anything that only
-  // called render() silently skipped the dirty flag, autosave and the preview.
-  // A Tab indent was shown but never saved, and a live refresh reverted it.
-  // Always route scripted edits through here.
   const edited = () => src.dispatchEvent(new Event('input'));
-  // <lat-editor>: one is live, #src and #hl, the editor every module works
-  // on, and it moves into whichever group is in front (28-splits.js), so
-  // vim, list editing, autocomplete and the preview follow it there. With
-  // `ghost` it is another group's: the same two layers, locked, painted
-  // from that group's parked tab, and live once its group comes to the
-  // front. Built once: a move between groups connects it again.
   customElements.define('lat-editor', class extends HTMLElement {
     connectedCallback() {
       if (this.built) return;
@@ -4543,29 +3161,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   pkind.addEventListener('change', () => {
     if (!kindSwitchOk(pkind.value)) { pkind.value = curKind || (pkind.value === 'fodt' ? 'md' : 'fodt'); return; }
     curKind = pkind.value;
-    //  an empty new page made a Writer page starts as the blank document
     if (curKind === 'fodt' && !src.value.trim()) writerBlank(); else render();
-    //  the kind rides every save as a query param, so switching it on an open
-    //  page must dirty the editor or navigating away silently reverts the
-    //  choice. A page with no name yet gets its kind from the first save.
     if (current) edited();
     refreshTexButton();
   });
 
 // ── src/26-palette.js ─────────────────────────────────────────────────────
-  // ── command palette: Ctrl/Cmd+K (or +P) and the ribbon ──────────────────
-  // An index over the homes, never a home itself (spec, principle 3). It
-  // lists the actions their homes registered (13-frame.js, action()), then
-  // pages and memories by name. An action row names its home and shortcut,
-  // so the palette also teaches where a thing lives. Running a row does what
-  // its home does: an action's run, or openIn for a document, which replaces
-  // the front tab or, with Ctrl/Cmd held, opens a new one.
-  //
-  // Every action must have a home in the DOM: its element carries
-  // data-action="<id>" (the suite checks each one). A home that is built
-  // on demand is checked while its when() says it applies. PALETTE_ONLY
-  // names the exceptions: an action whose home is in a framed page, outside
-  // this document. The one is Explorer, at Settings > Advanced (24-tools.js).
   const PALETTE_ONLY = ['explorer'];
   const pal = document.createElement('div');
   pal.id = 'palette';
@@ -4585,9 +3186,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   let palSel = 0;
   let palFrom = null;    // focus to hand back on close
 
-  // Subsequence match, case-insensitive. Lower is better: the query as a
-  // word start, then anywhere as one run, then spread out (tighter first).
-  // null is no match.
   function palScore(q, s) {
     const t = s.toLowerCase();
     const at = t.indexOf(q);
@@ -4602,9 +3200,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     return i === q.length ? 2 + (last - first) / 1e4 : null;
   }
-  // an action is listed while its home is there to use: present, not
-  // hidden (a pane tab's own section does not count), not disabled. A home
-  // built only while open says so itself (when).
   const palUsable = (a) => {
     if (PALETTE_ONLY.includes(a.id)) return true;
     if (a.when) return a.when();
@@ -4653,7 +3248,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         k.textContent = r.a.keys;
         row.append(k);
       }
-      // mousedown, so the input keeps focus until the row runs
       row.onmousedown = (e) => e.preventDefault();
       row.onclick = (e) => palRun(i, e);
       palList.append(row);
@@ -4685,8 +3279,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     palIn.value = '';
     palPaint();
     palIn.focus();
-    // the memory list loads when its tab is first shown (95-know.js), and
-    // the palette lists memories too
     if (!knowHave) loadKnow().then(() => { if (!pal.hidden) palPaint(); });
   }
   function palClose() {
@@ -4695,8 +3287,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const f = palFrom; palFrom = null;
     if (f && f.isConnected) f.focus();
   }
-  // closed first, so what the row opens (a menu, a dialog, a tab) gets
-  // the focus, not the palette's leftover
   function palRun(i, ev) {
     const r = palRows[i];
     if (!r) return;
@@ -4723,15 +3313,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       palClose();
     }
   });
-  // a click on the backdrop, outside the box, closes it
   pal.addEventListener('mousedown', (e) => { if (e.target === pal) palClose(); });
 
-  // Ctrl/Cmd+K, and Ctrl/Cmd+P as its alias, which never reaches the print
-  // dialog. K is the app's own chord in vim too (27-vim.js hands it back),
-  // so it opens the palette from anywhere. Vim keeps P while the editor has
-  // focus, the rule Ctrl+E follows (23-tabhead.js). An open dialog is left
-  // to finish first. Capture phase on window, ahead of vim's handler on
-  // the textarea.
   addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
     const k = e.key.toLowerCase();
@@ -4742,16 +3325,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     palShow();
   }, true);
 
-  // for the browser suites, which cannot reach this scope
-  //  `applies`: a home built on demand (a page menu item, a row's own
-  //  control) says by its when() whether it is there to be found now
   window.latPalette = { ids: () => ACTIONS.map((a) => a.id), only: PALETTE_ONLY,
     applies: (id) => { const a = ACTIONS.find((x) => x.id === id); return !!a && (!a.when || !!a.when()); } };
 
 // ── src/26-writer.js ──────────────────────────────────────────────────────
-  // ── Writer pages (fodt) ──────────────────────────────────────────────────
-  // writer.js, loaded when a fodt page shows, mounts over #src, the one
-  // buffer, and writes it back (view.js, ctl.sync).
   let wrLoad = null, wr = null, wrHost = null, wrSeq = 0, wrQ = false;
   const wrSrc = new Map();     // page -> why it shows as XML
   const wrKey = () => current || '';
@@ -4766,13 +3343,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       s.onerror = fail;
       document.head.append(s);
     })));
-  // headings and links (76-outline.js) once writer.js is here
   const wrX = (f, b) => window.LatWriter ? LatWriter.extract[f](b) : (writerReady().then(() => rpSoon(), () => {}), []);
   const wrNote = document.createElement('div');
   wrNote.className = 'lnkcf';
   wrNote.hidden = true;
   $('docarea').before(wrNote);
-  // in the live .edwrap; `msg` and the ship's render until writer.js is here
   function wrBox(msg) {
     if (!wrHost) wrHost = document.createElement('lat-writer');
     if (wrHost.parentNode !== src.parentNode) src.parentNode.append(wrHost);
@@ -4788,7 +3363,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (wrHost) wrHost.hidden = !on;
     src.style.visibility = hl.style.visibility = on ? 'hidden' : '';
   }
-  // after render() (any new text or kind), once readOnly is set too
   function writerFollow() {
     if (!wrQ) { wrQ = true; queueMicrotask(writerApply); }
   }
@@ -4815,7 +3389,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     dirty = everTyped = true;
     clearTimeout(autoTimer);
   }
-  // false: it refused (a broken marker pair), the last good text stays
   function writerSync() { return !wr || wr.sync(); }
   function writerDrop() {
     wrSeq++;
@@ -4833,8 +3406,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (on) wrSrc.set(wrKey(), ''); else wrSrc.delete(wrKey());
     writerApply();
   }
-  // fodt stays fodt, and nothing with text becomes one. A new page's kind
-  // is its text's: XML of a Writer document, other text, or none yet
   function kindSwitchOk(to) {
     const t = src.value.trim();
     const from = current ? curKind : !t ? to : /^(<\?xml[^>]*>\s*)?<office:document[\s/>]/.test(t) ? 'fodt' : 'text';
@@ -4842,7 +3413,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     st(from === 'fodt' ? 'a Writer document cannot change kind' : 'a page with text cannot become a Writer document', false);
     return false;
   }
-  // a new fodt page: LibreOffice's blank document, from writer.js
   async function writerBlank() {
     try { src.value = (await writerReady()).blank; } catch { st('the Writer editor did not load', false); return false; }
     wrSrc.delete(wrKey());
@@ -4851,27 +3421,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
 // ── src/27-vim.js ─────────────────────────────────────────────────────────
-  // ── vim mode ─────────────────────────────────────────────────────────────
-  // RESTORED. This shipped in 7eff5b1 and was lost in 11d7f9b, the migration
-  // that deleted the editor's HTML-and-JS-in-cords: its parity audit listed
-  // what survived and this was not on it, so it went silently. Recovered from
-  // that commit rather than rewritten.
-  //
-  // It was stored base64-encoded in a hoon cord and eval'd. Here it is just a
-  // source file the build concatenates, so there is no eval and no dependency.
-  //
-  // Self-contained, and inert unless localStorage.edVim is "1": the keydown
-  // listener returns immediately when off, so the ordinary editor is untouched.
-  //
-  // Sorts before 45-templates.js on purpose. In normal mode it consumes keys
-  // with stopImmediatePropagation, which is what keeps Enter from ALSO running
-  // list continuation and Tab from inserting two spaces. Registration order
-  // decides that, and the filename decides registration order.
 /* ============================================================================
    VIM MODE for the lattice code editor.
    Self-contained vanilla JS, no dependencies. Operates on <textarea id="src">.
-   Inline this INSIDE (or right after) the existing editor IIFE; it re-fetches
-   `ta` itself so ordering is not critical.
    ============================================================================ */
 (function vimMode(){
   "use strict";
@@ -4912,8 +3464,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   function setInd(){
     if(!vimOn()){ ind.style.display = "none"; drawCur(); return; }
     ind.style.display = "inline-block";
-    // preview-only view: the editor is off screen and vim keys do not apply,
-    // so show the view, not a stale mode. (split and edit keep the mode.)
     var pv = document.getElementById("ws");
     if(pv && pv.classList.contains("vp")){
       ind.textContent = "-- PREVIEW --"; ind.style.background = "#607d8b"; drawCur(); return;
@@ -4951,7 +3501,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if(ws && ws.classList.contains("vp")) return "";
     return pending === "r" ? "under" : "block";
   }
-  // the overlay's text node and offset holding character i
   function hlAt(i){
     var w = document.createTreeWalker(hl, NodeFilter.SHOW_TEXT), n, last = null;
     while((n = w.nextNode())){ if(i < n.length) return [n, i]; i -= n.length; last = n; }
@@ -4959,8 +3508,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
   function drawCur(){
     var shape = curShape(), v = val();
-    // the overlay not yet holding this text (a page loading): the bar, so
-    // the cursor never vanishes, until the overlay's repaint draws again
     var ok = shape && hl && hl.textContent === v + "\n";
     ta.classList.toggle("vim-block", !!ok);
     if(!ok){ cur.hidden = true; return; }
@@ -4972,13 +3519,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if(!a || !b){ cur.hidden = true; return; }
     var r = document.createRange();
     r.setStart(a[0], a[1]); r.setEnd(b[0], b[1]);
-    // WebKit also answers the end of the line before; the last box is ours
     var rs = r.getClientRects(), rc = null;
     for(var i = rs.length - 1; i >= 0 && !rc; i--) if(rs[i].width > 0) rc = rs[i];
     var ch = v.slice(p, p + (two ? 2 : 1));
     if(!rc){
-      // a newline (an empty line, the end) has no box of its own in every
-      // engine: a zero-width mark there has, and goes again at once
       var mk = document.createElement("span"), par;
       mk.textContent = "\u200b";
       r.collapse(true); r.insertNode(mk);
@@ -4986,7 +3530,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       par = mk.parentNode; mk.remove(); par.normalize();
     }
     if(!rc){ cur.hidden = true; return; }
-    // only while the character is inside the textarea's text box
     var tb = ta.getBoundingClientRect(), bb = box.getBoundingClientRect();
     var mid = rc.top + rc.height / 2;
     if(mid < tb.top + ta.clientTop || mid > tb.top + ta.clientTop + ta.clientHeight
@@ -5000,7 +3543,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     cur.style.left = (rc.left - bb.left - box.clientLeft) + "px";
     cur.style.top = (mid - lh / 2 - bb.top - box.clientTop) + "px";
     cur.style.height = lh + "px";
-    // a newline or the end has no width: one space's, from the text itself
     cur.style.width = rc.width > 0 ? rc.width + "px" : "";
   }
   var curRaf = 0;
@@ -5026,8 +3568,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   function lineEnd(p){ var v = val(); var i = v.indexOf("\n", p); return i < 0 ? v.length : i; }
   function lineText(p){ return val().slice(lineStart(p), lineEnd(p)); }
   function col(p){ return p - lineStart(p); }
-  // In NORMAL mode the caret rests ON a char, so max column is lineEnd-1
-  // (unless the line is empty, where it sits at lineStart).
   function lineLastCol(p){ var s = lineStart(p), e = lineEnd(p); return e > s ? e - 1 : s; }
   function normClamp(p){
     var ls = lineStart(p), le = lineEnd(p);
@@ -5039,7 +3579,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     while(i < le && (v[i] === " " || v[i] === "\t")) i++;
     return i < le ? i : ls;
   }
-  // Keep caret legal for the current mode.
   function fixCaret(){
     if(MODE === "insert") return;
     var p = pos(), last = lineLastCol(p);
@@ -5056,9 +3595,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }catch(e){}
     return false;
   }
-  // Replace [a,b) with text. execCommand keeps the native undo stack; setRangeText
-  // is the fallback. Always fires input for the live preview.
   function replaceRange(a, b, text, caret){
+    if(ta.readOnly) return false;
     a = clamp(a, 0, val().length);
     b = clamp(b, 0, val().length);
     if(a > b){ var t = a; a = b; b = t; }
@@ -5110,12 +3648,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     var lo = Math.min(a, b), hi = Math.max(a, b) + 1;
     return [lo, clamp(hi, 0, val().length)];
   }
-  // Show the selection, but leave the logical caret (visCaret) as the moving head.
   function visSync(){
     if(MODE !== "visual") return;
     var r = visRange();
-    // the selection runs low to high whichever way the caret moved: the
-    // visual handler reads visCaret directly, never the DOM caret.
     setSel(r[0], r[1]);
   }
 
@@ -5162,13 +3697,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     return clamp(p, 0, len);
   }
-  // cw behaves like ce: change to end of current word, do not eat trailing space.
   function changeWordEnd(p, n){
     var v = val();
     if(charClass(v[p]) === "sp" || charClass(v[p]) === "nl") return wordFwd(p, n);
     return clamp(wordEnd(p, n) + 1, p, v.length);
   }
-  // vertical move preserving column. delta>0 down, delta<0 up.
   function vertical(p, delta){
     var v = val(), c = col(p), cur = p;
     if(delta > 0){
@@ -5213,7 +3746,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     return clamp(i, 0, val().length);
   }
-  // f/F/t/T within the current line
   function findChar(p, ch, forward, till){
     var v = val(), ls = lineStart(p), le = lineEnd(p);
     if(forward){
@@ -5224,7 +3756,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return -1;
   }
   function lastLineStart(){ var v = val(); var i = v.lastIndexOf("\n"); return i === -1 ? 0 : i + 1; }
-  // 1-based line addressing; returns firstNonBlank of that line.
   function gotoLine(lineNo){
     var v = val(), idx = 0, cur = 1;
     if(lineNo <= 1) return firstNonBlank(0);
@@ -5239,8 +3770,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   /* ============================================================================
      LINEWISE span helpers (for dd/cc/yy/dj/dk and operator linewise motions)
      ============================================================================ */
-  // [start, end] covering `cnt` whole lines starting at the line of p,
-  // where end includes the trailing newline of the last line when present.
   function lineSpan(p, cnt){
     var start = lineStart(p), end = start, v = val();
     for(var k = 0; k < cnt; k++){
@@ -5250,13 +3779,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     return [start, end];
   }
-  // Linewise yank of cnt lines from p.
   function linewiseYank(p, cnt){
     var sp = lineSpan(p, cnt);
     yank(sp[0], sp[1], true);
   }
-  // Linewise delete of cnt lines from p; caret -> first non-blank of resulting line.
-  // Handles the last-line case (eat the preceding newline so no blank line lingers).
   function linewiseDelete(p, cnt){
     var v = val(), sp = lineSpan(p, cnt), a = sp[0], b = sp[1];
     yank(a, b, true);
@@ -5264,11 +3790,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     deleteRange(a, b, 0);
     setPos(firstNonBlank(clamp(a, 0, val().length)));
   }
-  // Linewise change of cnt lines: blank the block down to one empty line, enter insert.
   function linewiseChange(p, cnt){
     var sp = lineSpan(p, cnt), a = sp[0], b = sp[1], v = val();
     yank(a, b, true);
-    // keep one line: drop the trailing newline from the delete span if present
     var delTo = (b > a && v[b - 1] === "\n") ? b - 1 : b;
     deleteRange(a, delTo, a);
     setPos(a);
@@ -5287,7 +3811,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       if(after){
         var le = lineEnd(p);
         if(le >= v.length){
-          // last line, no trailing newline: prepend a newline, drop reg's trailing one
           insertAt(v.length, "\n" + text.replace(/\n$/, ""));
           setPos(firstNonBlank(lineStart(val().length)));
         } else {
@@ -5320,7 +3843,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       case "0": return { end: lineStart(p), linewise:false };
       case "^": return { end: firstNonBlank(p), linewise:false };
       case "$": return { end: lineEnd(vertical(p, n - 1)), linewise:false };
-      // linewise motions on an operator: dj / dk (and cc-ish via count are handled elsewhere)
       case "j": return { linewiseFrom: p, linewiseCount: n + 1, linewise:true };
       case "k": {
         var top = p;
@@ -5371,7 +3893,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   function runCmd(raw){
     var c = raw.trim();
     if(c.charAt(c.length - 1) === "!") c = c.slice(0, -1);   // tolerate a force !
-    // :w and its aliases (:wa, :waq, and the common :wq / :x) all just save.
     if(c === "w" || c === "wa" || c === "waq" || c === "wq" || c === "x"){ cmdSave(); return; }
     if(c === "") return;
     var st = document.getElementById("status");
@@ -5395,25 +3916,17 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   function handleKey(e){
     var k = e.key;
 
-    // A bare modifier keydown must not touch pending state. `rD` is r, then
-    // Shift (to reach the capital), then D — Shift is its own keydown, and if
-    // it fell through to the r-consumer below it would clear pending, so D
-    // then ran as its own delete-to-end-of-line command. Swallow it and wait
-    // for the real key. Same for any r/f/t followed by a shifted character.
     if(k === "Shift" || k === "Control" || k === "Alt" || k === "Meta") return true;
 
-    // Esc / Ctrl-[ -> clear pending, drop to NORMAL from visual
     if(k === "Escape" || (e.ctrlKey && k === "[")){
       if(MODE === "visual"){ var c = pos(); MODE = "normal"; setPos(normClamp(c)); }
       reset(); setInd(); return true;
     }
-    // Ctrl-R redo
     if(e.ctrlKey && (k === "r" || k === "R")){
-      try{ document.execCommand("redo"); }catch(x){}
+      if(!ta.readOnly) try{ document.execCommand("redo"); }catch(x){}
       fireInput(); reset(); fixCaret(); setInd(); return true;
     }
 
-    // ---- pending single-char consumers: r, f/F/t/T ----
     if(pending === "r"){
       var n0 = eff(); pending = "";
       if(k.length === 1){
@@ -5454,17 +3967,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       count = ""; setInd(); return true;
     }
 
-    // ---- digits -> count (0 is a motion when count is empty) ----
     if(/^[0-9]$/.test(k) && !(k === "0" && count === "")){
       count += k; setInd(); return true;
     }
 
     var n = eff();
 
-    // ---- operator pending (d / c / y) ----
     if(pending === "d" || pending === "c" || pending === "y"){
       var op = pending;
-      // doubled operator = linewise (dd, cc, yy)
       if((op === "d" && k === "d") || (op === "c" && k === "c") || (op === "y" && k === "y")){
         reset(); applyLinewiseOp(op, pos(), n); setInd(); return true;
       }
@@ -5476,7 +3986,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       setInd(); return true;
     }
 
-    // ---- VISUAL: motions move visCaret (the head) and extend the selection ----
     if(MODE === "visual"){
       var vc = visCaret, moved = null;
       switch(k){
@@ -5489,9 +3998,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         case "e": moved = wordEnd(vc, n); break;
         case "0": moved = lineStart(vc); break;
         case "^": moved = firstNonBlank(vc); break;
-        // $ lands the head on the last real column, not on the newline, so
-        // visRange's inclusive +1 stops at the line end and v$d/v$y keep the
-        // line break instead of swallowing it and joining the next line.
         case "$": moved = lineLastCol(vc); break;
         case "{": moved = paraBack(vc, n); break;
         case "}": moved = paraFwd(vc, n); break;
@@ -5507,31 +4013,22 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         case "c": case "s": yank(a, b, false); deleteRange(a, b, a); MODE = "normal"; setPos(a); reset(); toInsert(); return true;
         case "y": yank(a, b, false); MODE = "normal"; setPos(normClamp(a)); reset(); setInd(); return true;
         case "p": {
-          // paste over selection: snapshot register BEFORE the delete clobbers it
           var sText = reg, sLine = regLinewise;
           deleteRange(a, b, a);
           reg = sText; regLinewise = sLine;
           MODE = "normal";
-          // A charwise register fills the deleted hole exactly at `a`. The old
-          // `setPos(a-1); paste(true)` leaned on paste's after-offset, which
-          // cannot reach index 0, so a selection anchored at column 0 pasted
-          // one character late. Insert straight at `a`; a linewise register
-          // still goes through paste for its line-insert handling.
           if(sLine){ setPos(a > 0 ? a - 1 : a); paste(true); }
           else { insertAt(a, reg); setPos(normClamp(a + reg.length - 1)); }
           reset(); setInd(); return true;
         }
         case "v": MODE = "normal"; setPos(normClamp(visCaret)); reset(); setInd(); return true;
       }
-      // swallow any other printable key in visual
       if(k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey){ reset(); setInd(); return true; }
       reset(); setInd(); return true;
     }
 
-    // ---- NORMAL: single-key commands ----
     var p = pos();
     switch(k){
-      // motions
       case "h": case "ArrowLeft":  setPos(clamp(p - n, lineStart(p), p)); fixCaret(); break;
       case "l": case "ArrowRight": case " ": setPos(clamp(p + n, p, lineLastCol(p))); break;
       case "j": case "ArrowDown":  setPos(vertical(p, n)); break;
@@ -5548,7 +4045,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       case "g": pending = "g"; setInd(); return true;
       case "f": case "F": case "t": case "T": pending = k; setInd(); return true;
 
-      // enter insert
       case "i": toInsert(); break;
       case "a": if(lineText(p).length) setPos(p + 1); toInsert(); break;
       case "I": setPos(firstNonBlank(p)); toInsert(); break;
@@ -5556,13 +4052,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       case "o": { var le = lineEnd(p); insertAt(le, "\n"); setPos(le + 1); toInsert(); break; }
       case "O": { var ls = lineStart(p); insertAt(ls, "\n"); setPos(ls); toInsert(); break; }
 
-      // operators (pending)
       case "d": pending = "d"; setInd(); return true;
       case "c": pending = "c"; setInd(); return true;
       case "y": pending = "y"; setInd(); return true;
       case "r": pending = "r"; setInd(); return true;
 
-      // whole-line / end-of-line edits
       case "D": { var le2 = lineEnd(p); yank(p, le2, false); deleteRange(p, le2, p); fixCaret(); break; }
       case "C": { var le3 = lineEnd(p); yank(p, le3, false); deleteRange(p, le3, p); setPos(p); toInsert(); break; }
       case "s": {
@@ -5573,7 +4067,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       }
       case "S": linewiseChange(p, n); break;
 
-      // char deletes
       case "x": {
         var le5 = lineEnd(p), end5 = clamp(p + n, p, le5);
         if(end5 > p){ yank(p, end5, false); deleteRange(p, end5, p); fixCaret(); }
@@ -5585,21 +4078,16 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         break;
       }
 
-      // paste
       case "p": paste(true); break;
       case "P": paste(false); break;
 
-      // visual
       case "v": toVisual(); break;
 
-      // ex command line (:w / :wa / :waq ...)
       case ":": cmdActive = true; cmdBuf = ""; pending = ""; count = ""; setInd(); return true;
 
-      // undo
-      case "u": try{ document.execCommand("undo"); }catch(x){} fireInput(); fixCaret(); break;
+      case "u": if(!ta.readOnly) try{ document.execCommand("undo"); }catch(x){} fireInput(); fixCaret(); break;
 
       default:
-        // swallow any other printable key so it never types into the buffer
         reset(); setInd(); return true;
     }
     reset(); setInd(); return true;
@@ -5611,26 +4099,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   ta.addEventListener("keydown", function(e){
     if(!vimOn()) return;                    // vim off: native textarea (Tab, typing) unchanged
 
-    // Never intercept the app's OWN chords. This listener is capture-phase on
-    // the textarea and consumes normal-mode keys with stopImmediatePropagation,
-    // so anything it does not hand back never reaches the window-level
-    // handlers at all. Save was exempted from the start. Ctrl-K (search
-    // then, the command palette now) was not, and with vim on that read as
-    // "ctrl-K does nothing" rather than "vim ate it", which is the kind of
-    // bug people report as a missing feature.
-    //
-    // Listed explicitly rather than exempting every ctrl chord: vim's own
-    // Ctrl-d/u/f/b are bindings here and must keep working.
     if((e.metaKey || e.ctrlKey)
        && (e.key === "s" || e.key === "S" || e.key === "k" || e.key === "K")) return;
 
     if(MODE === "insert"){
-      // insert mode: only Esc / Ctrl-[ is special; everything else (incl. Tab=2sp) native
       if(e.key === "Escape" || (e.ctrlKey && e.key === "[")){ e.preventDefault(); toNormal(); }
       return;
     }
 
-    // ex command line (:w etc.): own the keyboard until Enter runs it or Esc cancels.
     if(cmdActive){
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -5638,14 +4114,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return;
     }
 
-    // NORMAL / VISUAL: we own the keyboard. Consume everything (so Tab, letters,
-    // etc. never reach the bubble-phase Tab handler or type into the buffer).
+    if((e.ctrlKey || e.metaKey) && !(e.ctrlKey && /^[rR[]$/.test(e.key))) return;
+
     handleKey(e);
     e.preventDefault();
     e.stopImmediatePropagation();
   }, true);
 
-  // Keep caret legal when focus lands on the textarea while in normal/visual.
   ta.addEventListener("focus", function(){ if(vimOn() && MODE !== "insert") fixCaret(); });
 
   /* ============================================================================
@@ -5663,56 +4138,20 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     setInd();
   }
 
-  //  The toggle lives on the settings page, which is a SEPARATE document on
-  //  this origin, exactly like the font and size preferences. It writes the
-  //  flag and the storage event brings it here, so no button is injected into
-  //  the shell (which is managed markup). An unset flag is off: vimOn()
-  //  and the settings checkbox both test for "1".
   window.addEventListener("storage", function(e){
     if(!e.key || e.key === LS) applyVim();
   });
   applyVim();
-  // setInd lives inside this IIFE, so the layout toggles (85-layout.js, in the
-  // outer shared scope) cannot see it directly. Expose it: a same-tab view
-  // change there must refresh the indicator (it reads PREVIEW in preview-only).
   window.latVimSetInd = setInd;
 })();
 
 // ── src/28-splits.js ──────────────────────────────────────────────────────
-  // ── splits: tab groups side by side ─────────────────────────────────────
-  // The center is a split tree of tab groups. A leaf is a group, whose tabs
-  // 21-tabs.js keeps; a split is { d, k, s }: its children `k` side by side
-  // (d 'r') or stacked (d 'd'), each taking its share of the sizes `s`. Any
-  // group splits right or down, with no cap, as long as both halves keep a
-  // group's least size (GMIN_W across, GMIN_H down). A split that would go
-  // under it is refused, and its buttons are disabled with a tooltip that
-  // says why.
-  //
-  // Each group is a section placed absolutely in #groot at its fractions of
-  // the tree, so a group never moves in the page: a moved frame reloads,
-  // and a group's tool host holds frames. Only the live editor (#glive:
-  // the tab header, the link conflict bar and the document area) moves,
-  // into the group in front. Every other group shows its front tab parked:
-  // its own <lat-editor ghost>, painted from the tab's snap (or the tree's
-  // copy of the page), with its own header. A click into one brings its
-  // group to the front (gFocus, 21-tabs.js), and a click into its text
-  // puts the caret where the click was.
-  //
-  // Keys: Ctrl+\ splits right, Ctrl+Shift+\ splits down, Ctrl+Shift+] and
-  // Ctrl+Shift+[ bring the next and the previous group to the front (by
-  // e.code, in the capture phase, so vim never sees them and a keyboard
-  // layout's shifted character does not matter). Browsers keep none of
-  // these, and vim's own Ctrl+[ (Escape) is unshifted.
-  //
-  // On a phone (the 820px block) one group shows at a time, the one in
-  // front, and the tabs sheet switches groups (97-mobar.js).
   const GMIN_W = 360, GMIN_H = 200;
   let sroot = null;
   const groot = $('groot');
   const glive = $('glive');
   const isG = (n) => !!n && Array.isArray(n.tabs);
 
-  // ── the tree ─────────────────────────────────────────────────────────
   function parentOf(x, n = sroot) {
     if (!n || isG(n)) return null;
     for (const c of n.k) {
@@ -5728,9 +4167,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (p) p.k[p.k.indexOf(old)] = nu;
   }
   const leaves = (n = sroot) => (!n ? [] : isG(n) ? [n] : n.k.flatMap((c) => leaves(c)));
-  // `ng` beside `target`: after it, or before it, in direction `dir`. A
-  // split already running that way takes it as one more child, halving
-  // the target's share; anything else becomes a new split of the two.
   function splitInsert(target, ng, dir, before = false) {
     const p = parentOf(target);
     if (p && p.d === dir) {
@@ -5743,8 +4179,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     replaceNode(target, { d: dir, k: before ? [ng, target] : [target, ng], s: [1, 1] });
   }
-  // a group out of the tree: its share goes to the neighbour before it (or
-  // after), and a split left with one child is that child
   function splitRemove(g) {
     const p = parentOf(g);
     if (!p) { if (sroot === g) sroot = null; return; }
@@ -5755,8 +4189,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     p.s.splice(i, 1);
     if (p.k.length === 1) replaceNode(p, p.k[0]);
   }
-  // the group that takes the front when `g` closes: the nearest one in
-  // the tree, the one before it first
   function gNeighbor(g) {
     const p = parentOf(g);
     if (p) {
@@ -5767,16 +4199,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     return groups.find((x) => x !== g) || null;
   }
-  // the tree for appTabs (21-tabs.js): a group is its index in `groups`
   const splitSave = () => {
     const enc = (n) => (isG(n) ? groups.indexOf(n)
       : { d: n.d, k: n.k.map(enc), s: n.s.map((v) => Math.round(v * 1e4) / 1e4) });
     return sroot ? enc(sroot) : 0;
   };
-  // a saved tree over `made`, the groups in their saved order. It must name
-  // each of them exactly once, with two or more children to a split and a
-  // positive size for each; false otherwise, and the caller falls back to
-  // one group.
   function splitLoad(x, made) {
     const seen = new Set();
     const dec = (n, depth) => {
@@ -5803,7 +4230,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return true;
   }
 
-  // ── a group's elements ───────────────────────────────────────────────
   const gBtn = (sb, icon, name, keys) => {
     const b = tip(document.createElement('button'), name, keys);
     b.type = 'button';
@@ -5813,9 +4239,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return b;
   };
   const SPLIT_NAME = { r: ['Split right', 'Ctrl+\\'], d: ['Split down', 'Ctrl+Shift+\\'] };
-  // the parts of a group: its strip (21-tabs.js paints the tabs), its
-  // parked view (the ghost: a header and an editor, hidden while the
-  // group is in front) and its tool host (24-tools.js)
   function gAdd(g) {
     if (!groups.includes(g)) groups.push(g);
     const el = document.createElement('section');
@@ -5847,10 +4270,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     el.append(strip, ghost, host);
     groot.append(el);
     Object.assign(g, { el, strip, list, bnew, bsr, bsd, ghost, host, gmemo: null });
-    // a press anywhere in a group that is not in front brings it there,
-    // except on its tabs, which may be starting a drag (a click on one
-    // switches to it, group and all), and on the parked view, whose parts
-    // say where they lead themselves
     el.addEventListener('pointerdown', (e) => {
       if (g === focusG || !e.isPrimary) return;
       if (e.target.closest('.gghost, .dtw')) return;
@@ -5859,15 +4278,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     gDragWire(g);
     return g;
   }
-  // the inside of a group's parked view, made the first time the group is
-  // painted out of front (gPaint). A lone group is never parked, and its
-  // editor and preview frame, made at boot, were a fifth of the boot task
-  // and a frame whose own long task the boot was counted twice for.
   function gGhostBuild(g) {
     if (g.ghead) return;
     const ghost = g.ghost;
-    // the parked view. Its buttons do what the live header's do, once the
-    // group is in front.
     ghost.innerHTML =
       '<div class="tabhead ghead">'
       + sbtn('data-go="tback"', 'left', 'Back', 'Alt+Left')
@@ -5892,8 +4305,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         const live = document.querySelector(LIVE[b.dataset.go]);
         if (live && !live.disabled) live.click();
       });
-    // the parked text: the caret goes where the press put it in the ghost
-    // (readonly, so the press only selects), once the group is in front
     const ta = g.gta;
     let down = false;
     ta.addEventListener('pointerdown', () => {
@@ -5912,14 +4323,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     });
     g.gdoc.querySelector('.prevwrap').addEventListener('pointerdown', () => gFocus(g));
   }
-  // run `fn` once `g` is in front: at once, or after the queue brings it
   const gThen = (g, fn) => {
     if (gFocus(g)) fn();
     else tabSerial(async () => {}).then(() => { if (focusG === g) fn(); });
   };
-  // the caret where a press in a parked group put it. Only when the live
-  // editor came up on the same text, painted from the snap: an open still
-  // loading puts the caret where its own load does.
   function gCaret(g, a, b, top) {
     const body = g.gta.value;
     gThen(g, () => {
@@ -5930,9 +4337,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       sync();
     });
   }
-  // a group out: out of the tree and the page. The live editor never
-  // leaves the page with it (gTake puts it in the next group), and a tool
-  // wrap waits in the stash (24-tools.js).
   function gDrop(g) {
     splitRemove(g);
     const i = groups.indexOf(g);
@@ -5943,31 +4347,18 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (groups.includes(focusG)) splitPaint();
   }
 
-  // The live editor moves with moveBefore where the engine has it. A plain
-  // insert takes the node out of the document and back, and an iframe that
-  // leaves the document loses its page: the preview frame was made again,
-  // its blank page loaded again, on every move, boot's first one included
-  // (about 10 to 20 ms of boot's long task).
   function liveMove(parent, before) {
     if (parent.moveBefore) {
       try { parent.moveBefore(glive, before); return; } catch {}
     }
     parent.insertBefore(glive, before);
-    // the preview frame left the page and came back, so it loads its
-    // document again: a write in the next few ms is one WebKit can drop
     if (prev && glive.contains(prev)) prevBusy();
   }
 
-  // ── painting ─────────────────────────────────────────────────────────
-  // where everything goes: the live editor into the group in front, which
-  // carries the ids (#doctabs, #tabnew, #toolhost) and the action homes,
-  // the groups at their places, the handles between them, the buttons'
-  // say on splitting
   function splitPaint() {
     if (!sroot && groups.length) sroot = groups[0];
     if (focusG && groups.includes(focusG) && glive.parentNode !== focusG.el) {
       const had = document.activeElement === src;
-      // before the parked view, so the first .edwrap in the page is the live one
       liveMove(focusG.el, focusG.ghost);
       if (had) src.focus({ preventScroll: true });
     }
@@ -5981,7 +4372,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       delete g.el.dataset.action;
       delete g.strip.dataset.action;
     }
-    // the homes of moving between groups: the group each one goes to
     const ls = leaves();
     const at = ls.indexOf(focusG);
     if (ls.length > 1 && at >= 0) {
@@ -5992,9 +4382,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     layout();
     gPaintAll();
   }
-  // each group at its fractions of the tree, and a handle on each inner
-  // boundary. Handles are kept from one layout to the next, so one being
-  // dragged is never replaced under the pointer.
   const handles = new Map();     // split node -> its handles
   function layout() {
     const used = new Set();
@@ -6005,7 +4392,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         s.top = y * 100 + '%';
         s.width = w * 100 + '%';
         s.height = h * 100 + '%';
-        // its share of #groot, which is how splitWhy sizes it
         n.fw = w;
         n.fh = h;
         n.el.classList.toggle('gl', x > 1e-6);
@@ -6045,13 +4431,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     splitButtons();
   }
-  // the least size of a subtree along an axis: groups side by side add up,
-  // stacked ones take the largest
   const minPx = (n, d) => (isG(n) ? (d === 'r' ? GMIN_W : GMIN_H)
     : n.d === d ? n.k.reduce((a, c) => a + minPx(c, d), 0) : Math.max(...n.k.map((c) => minPx(c, d))));
-  // a handle between children i and i+1 of split n. A drag moves their
-  // boundary, never past either side's least size; a double click shares
-  // the two out evenly.
   function resWire(r, n, i) {
     r.addEventListener('pointerdown', (e) => {
       e.preventDefault();
@@ -6088,12 +4469,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       tabsSave();
     });
   }
-  // why `g` cannot split that way now, or '' when it can. A group's size
-  // is its share of #groot times #groot's size as the ResizeObserver last
-  // gave it, so asking never forces a layout. Measuring the group itself
-  // did, and at boot that one read was the first full layout, 42 ms
-  // inside the boot task. Only before the observer's first report does it
-  // measure, and nothing asks then but a split attempted in that frame.
   let gsz = null;
   function splitWhy(g, dir) {
     if (!g) return 'no group';
@@ -6124,16 +4499,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     splitButtons();
   }).observe(groot);
 
-  // ── the parked view ──────────────────────────────────────────────────
-  // what the live editor showed a tab as it let go of it, so its group
-  // paints exactly that: the highlighted text and the preview's document
   function gGhostKeep(t) {
     t.ghost = { body: src.value, hl: hl.innerHTML,
       prev: prev.getAttribute('srcdoc'), psrc: prev.getAttribute('src') };
   }
-  // a tab's text when no snap holds it: the tree's copy of a page, or the
-  // ship's, fetched once and painted when it lands. null: none (a grub,
-  // which shows when its group comes to the front).
   function gCache(t) {
     if (t.kind === 'page') {
       if (!t.key) return '';
@@ -6156,8 +4525,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   const ghostHl = (body, kind) => {
     const lang = LMAP[kind];
     const g = window.Prism && lang && Prism.languages[lang];
-    // the main thread, so only a short text: some grammars crawl on long
-    // unterminated input (25-editor.js), which is why the live one uses a worker
     if (g && body.length <= 8000) {
       try { return Prism.highlight(body, g, lang) + '\n'; } catch {}
     }
@@ -6171,7 +4538,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const t = g.active;
     const k = t && TAB_KINDS[t.kind];
     const doc = !!k && !!k.live;
-    // a browsing tab has its frame header instead (29-fhead.js)
     g.ghead.hidden = !!t && t.kind === 'tool' && browsing(t.key);
     const s = t && t.snap;
     const body = !doc ? null : s ? s.body : gCache(t);
@@ -6200,17 +4566,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const ta = g.gta;
     ta.value = body === null ? '' : body;
     ta.placeholder = body === null ? 'click to show ' + k.label(t) : '';
-    // a link this editor may not write to is locked in its group as well
-    // as in front (linkRO, 30-tree.js)
     ta.title = t.kind === 'page' && t.key && linkRO(t.key) ? 'read-only' : '';
     g.ghl.innerHTML = t.ghost && t.ghost.body === ta.value ? t.ghost.hl : ghostHl(ta.value, kind);
     ta.scrollTop = s ? s.scroll : 0;
     g.ghl.scrollTop = ta.scrollTop;
-    // a Writer page parks as the page, never its XML
     const fodt = kind === 'fodt';
     g.gdoc.classList.toggle('gread', !!t.read || fodt);
     if (fodt) {
-      // before writer.js: blank, and painted again once it is here
       const d = ghostDoc(kind, ta.value) || (writerReady().then(gPaintAll, () => {}), '');
       if (g.gprev.getAttribute('srcdoc') !== d) { g.gprev.removeAttribute('src'); navDoc(g.gprev, d); }
     } else if (t.read) {
@@ -6225,9 +4587,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
   const gPaintAll = () => { for (const g of groups) gPaint(g); };
 
-  // ── splitting and moving between groups ─────────────────────────────
-  // a new group beside `g` with a new page in it, in front. Refused, and
-  // said so, when either half would be under a group's least size.
   const gSplit = (g = focusG, dir = 'r') => tabSerial(async () => {
     if (!g || !groups.includes(g)) return false;
     const why = splitWhy(g, dir);
@@ -6241,9 +4600,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     src.focus();
     return true;
   });
-  // tab `t` into a new group beside `g` (a drop on its edge, or the tab
-  // menu). The tab is the new group's only one; a group it leaves empty
-  // closes.
   async function gSplitWith(g, dir, t, before = false) {
     const why = splitWhy(g, dir);
     if (why) { st('cannot split: ' + why, false); return false; }
@@ -6263,18 +4619,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     gThen(g, () => { if (docFront() && !document.querySelector('.dlg:not([hidden])')) src.focus(); });
   }
 
-  // ── dragging a tab ───────────────────────────────────────────────────
-  // A tab drags to a strip, where it goes between the tabs it is dropped
-  // between, or onto a group: its middle takes it as the group's last tab,
-  // and an edge (the outer quarter) splits the group that way with the tab
-  // alone in the new half, where there is room for one. The live editor's
-  // own drop (text into the textarea) never sees a tab.
   let dragTab = null;
   let dropEl = null;
   const TAB_MIME = 'application/x-lat-tab';
-  // a drag carrying a tab of ours. The type, not only dragTab: a strip
-  // repainted mid-drag detaches the tab that started it, its dragend then
-  // reaches nobody, and a stale dragTab took a later text drag for a tab.
   const tabDrag = (e) => !!dragTab && !!e.dataTransfer
     && [...(e.dataTransfer.types || [])].includes(TAB_MIME);
   const dragDone = () => {
@@ -6353,7 +4700,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }, true);
   }
 
-  // ── keys and actions ─────────────────────────────────────────────────
   addEventListener('keydown', (e) => {
     if (!e.ctrlKey || e.altKey || e.metaKey) return;
     if (e.code === 'Backslash') {
@@ -6374,18 +4720,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     run: () => gCycle(1), when: () => groups.length > 1 && !isMobile() });
   action({ id: 'gprev', name: 'Previous group', home: 'Tab group', keys: 'Ctrl+Shift+[',
     run: () => gCycle(-1), when: () => groups.length > 1 && !isMobile() });
-  // a click into a frame in a group that is not in front: the frame takes
-  // the focus and this window only sees its own blur
   addEventListener('blur', () => setTimeout(() => {
     const a = document.activeElement;
     const el = a && a.tagName === 'IFRAME' && a.closest('.tgroup');
     const g = el && groups.find((x) => x.el === el);
     if (g && g !== focusG) gFocus(g);
   }, 0));
-  // the phone shows the group in front alone, and splits nothing
   matchMedia('(max-width: 820px)').addEventListener('change', () => splitButtons());
 
-  // for the browser suites
   window.latSplits = {
     split: (dir) => gSplit(focusG, dir),
     why: (dir) => splitWhy(focusG, dir),
@@ -6397,43 +4739,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
 
 // ── src/29-fhead.js ───────────────────────────────────────────────────────
-  // ── the frame header: a browsing tab's back, forward and address ─────────
-  // A browsing frame (the reader, the forum, the explorer, 24-tools.js) used
-  // to keep the reader's bar inside its page: a second, taller row of
-  // chrome in a style of its own. The frame now hides that bar and its
-  // group shows this header instead, one per group (28-splits.js), above the
-  // group's tool host, for the browsing tab in front of that group. Two
-  // browser tabs side by side each show their own address.
-  //
-  // On a phone (the 820px block) the group in front is the only one shown,
-  // and its header sits in the top row between the two drawer toggles, with
-  // no Forward: the page gets the row the header would take.
-  //
-  // History is the shell's, per tab. A frame's own history.back() walks the
-  // window's joint history, which takes back whichever frame navigated last,
-  // so the in-frame Back of one tab could undo another's. Here each tab
-  // keeps the addresses its frame loaded, Back and Forward replace the
-  // frame's page with the one before or after (location.replace, adding no
-  // entry), and any other load (a link, a form, a redirect, Return here)
-  // starts a new branch.
-  //
-  // location.replace refetches the page, about a second from the ship, where
-  // the frame's own history.go comes back in well under 100ms. So `jh`
-  // mirrors the joint history's entries made by frame loads, one tab key
-  // each, and Back or Forward use history.go when the entry they would
-  // cross is this tab's own. Anything that could put the mirror out of step
-  // (a replace, a closed tab) clears it, and the replace path takes over.
   const fnav = {};   // tab key -> { back, fwd, cur, addr, go, bar, kept }
   const jh = { keys: [], pos: -1 };
   const jhClear = () => { jh.keys = []; jh.pos = -1; };
   const fnavOf = (key) => fnav[key] || (fnav[key] = { back: [], fwd: [], cur: null, addr: '', go: null, bar: null, kept: [] });
-  // an address as the stacks hold it: less the service worker's u=sw<time>
   const fnavNorm = (url) => { try { const u = new URL(url); u.searchParams.delete('u'); return u.href; } catch { return url; } };
 
-  // What the address field shows for a frame's page: the urb:// address or
-  // query the reader's bar was served with, or else the page's route under
-  // /apps/lattice (a forum board or thread, an explorer path). Home is
-  // empty, so the field shows its placeholder.
   function fnavAddr(d) {
     if (!d) return '';
     const i = d.querySelector('form.bar input[name=url], form.cbar input[name=url]');
@@ -6441,15 +4752,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     let u;
     try { u = new URL(d.URL); } catch { return ''; }
     if (u.origin !== location.origin) return d.URL;
-    // less the service worker's cache-buster (u=sw<time>), as its page
-    // cache leaves it off
     u.searchParams.delete('u');
     const r = u.pathname.replace(/^\/apps\/lattice(?=\/|$)/, '') + u.search;
     return r === '' || r === '/' ? '' : r;
   }
-  // Where Return goes, the frame bar's rule: a route (a leading /) is a
-  // lattice page on this origin, anything else is what the bar's form sent,
-  // the reader's ?url= (an urb:// address or a search).
   function fnavTarget(v) {
     v = v.trim();
     if (!v) return location.origin + '/apps/lattice';
@@ -6460,7 +4766,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return location.origin + '/apps/lattice?url=' + encodeURIComponent(v);
   }
 
-  // each load of a browsing frame (toolMount's onload, before frameDress)
   function fnavLoad(f) {
     const key = f.dataset.tool;
     if (!key || !browsing(key)) return;
@@ -6468,9 +4773,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     let url = null, d = null;
     try { d = f.contentDocument; url = f.contentWindow.location.href; } catch {}
     if (url === 'about:blank') return;
-    // the service worker's reload adds u=sw<time>: the same page, not a step
     url = fnavNorm(url);
-    // a frame made by a step (fkeepBeside): the stacks moved then
     if (f.latStep) f.latStep = false;
     else if (n.go) n.go = null;       // Back or Forward landed: the stacks moved then
     else if (n.cur !== null && url !== n.cur) {
@@ -6479,11 +4782,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       fkeepTrim();
     }
     fnavShown(f, d, url);
-    // the bar's star and orrery button paint after load
     if (n.bar) new MutationObserver(() => fhPaintKey(key))
       .observe(n.bar, { subtree: true, childList: true, attributes: true, characterData: true });
   }
-  // the tab's page is now `f`'s: the address, the bar and the title
   function fnavShown(f, d, url) {
     const key = f.dataset.tool;
     const n = fnavOf(key);
@@ -6492,9 +4793,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     n.bar = d ? d.querySelector('form.bar, form.cbar') : null;
     fhPaintKey(key);
   }
-  // 'back', 'fwd', or 'to' an address typed or picked. `fromTop` is the
-  // browser's own Back or Forward, which has moved the window's history
-  // already (topNav below). True when the tab took the step.
   function fnavGo(key, how, v, fromTop) {
     const f = frameOf(key);
     if (!f) return false;
@@ -6511,8 +4809,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const url = from.pop();
     const was = n.cur;
     if (n.cur !== null) (how === 'back' ? n.fwd : n.back).push(n.cur);
-    // the page kept is shown again; with none, it opens beside this one,
-    // which is kept for the step back
     const e = n.kept.find((x) => x.url === url && x.f.isConnected);
     if (e || fkeepCan(f)) {
       jhClear();
@@ -6537,18 +4833,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return true;
   }
 
-  // ── the browser's own Back and Forward ───────────────────────────────────
-  // A frame's navigation is an entry in the window's history, so the
-  // browser's Back (a phone's back gesture, a mouse's back button) stepped
-  // the frame back. A step a kept page takes (fkeepWatch) is no navigation
-  // and left no entry: that Back left the app instead. So each such step
-  // pushes an entry onto the shell's own history, `th` noting whose it
-  // is, and a traversal across those entries steps their tabs. The shell's
-  // own Back and Forward move over the entry too when it is the tab's, so
-  // the two stay in step; when it is not, the tab's entries are forgotten
-  // and crossed for nothing.
-  // A traversal lands a task later, so the entries topStep is moving to
-  // wait in `thPend`, in order: two quick clicks of Back are two of them.
   const th = new Map();   // the shell's history entry key -> tab key
   let thPend = [];        // entry keys topStep's traversals will land on
   const topNav = (() => { try { return window.navigation || null; } catch { return null; } })();
@@ -6579,7 +4863,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     let did = false;
     if (b < a) {
       for (let i = a; i > b; i--) if (th.has(es[i].key) && fnavGo(th.get(es[i].key), 'back', null, true)) did = true;
-      // only entries of closed tabs crossed: on to the next one of ours
       if (!did && th.has(c.key)) history.back();
     } else {
       for (let i = a + 1; i <= b; i++) if (th.has(es[i].key) && fnavGo(th.get(es[i].key), 'fwd', null, true)) did = true;
@@ -6587,38 +4870,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   });
 
-  // ── kept documents ───────────────────────────────────────────────────────
-  // Back in a frame used to be a navigation of the frame: commit, parse and
-  // layout of the page before, about 60 ms, as frames get no back/forward
-  // cache. Now the page a frame leaves stays alive beside it, hidden, and
-  // Back or Forward show it again: a swap of two frames.
-  //
-  // Leaving is caught in the page (the Navigation API's navigate event): a
-  // push to a lattice page on this origin (a link, a GET form, a script,
-  // the address field) is stopped and opened in a new frame next to this
-  // one, which is then kept. A POST, a reload, a replace, a page elsewhere
-  // and an engine with no Navigation API (webkitgtk) navigate the frame as
-  // before. The tab's frame is the one with data-tool, and its name moves
-  // with it, so a form aimed at the tab lands in the frame shown.
-  //
-  // Fresh: a kept page is hidden, so frameSeen tells it lathidden, and its
-  // live stream closes and its refetch clock stops, as in a parked tab.
-  // Shown again it hears latshown, once it has stayed in sight 0.3 s (the
-  // wait a cached paint makes before its refetch), and catches up the same
-  // way: a refetch (+sse-script), then location.replace when the page
-  // changed meanwhile.
-  //
-  // Bounded: two kept per tab (the ones nearest its page), six in all (two
-  // on a device with 2 GB or less), none older than five minutes, and all
-  // let go when the shell has been hidden a minute or is frozen, or when
-  // the JS heap is over 60% of its limit.
   const KEEP_TAB = 2, KEEP_MS = 5 * 60 * 1000, KEEP_QUIET = 300;
   const KEEP_ALL = (navigator.deviceMemory || 8) <= 2 ? 2 : 6;
   let keepTimer = 0, keepHid = 0;
-  // (a suite shortens the time with localStorage.latKeepMs)
   const keepMs = () => (+localStorage.latKeepMs) || KEEP_MS;
   const keptAll = () => Object.values(fnav).flatMap((n) => n.kept.map((e) => ({ n, e })));
-  // whether a step may open a frame beside `f`: only where leaving is caught
   const fkeepCan = (f) => { try { return KEEP_ALL > 0 && !!f.contentWindow.navigation; } catch { return false; } };
   const frameGone = (f) => { frameSeen.unobserve(f); frameSeenAll.delete(f); f.remove(); };
   function fkeepDrop(n, e) {
@@ -6633,12 +4889,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     try { const m = performance.memory; return !!m && m.usedJSHeapSize > 0.6 * m.jsHeapSizeLimit; }
     catch { return false; }
   };
-  // how many steps from the tab's page a kept one is, by its stacks
   const keptSteps = (n, e) => Math.min(...[n.back, n.fwd].map((s) => {
     const i = s.lastIndexOf(e.url);
     return i < 0 ? Infinity : s.length - 1 - i;
   }));
-  // let go of what the bound says, `all` for everything
   function fkeepTrim(all) {
     const now = Date.now();
     const full = !all && heapFull();
@@ -6651,7 +4905,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     const every = keptAll().sort((a, b) => a.e.at - b.e.at);
     while (every.length > KEEP_ALL) { const x = every.shift(); fkeepDrop(x.n, x.e); }
-    // one no tab holds any more: its tab closed
     const held = new Set(keptAll().map((x) => x.e.f));
     for (const f of document.querySelectorAll('.toolhost iframe[data-kept]')) if (!held.has(f)) frameGone(f);
     clearTimeout(keepTimer);
@@ -6662,10 +4915,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (document.hidden) keepHid = setTimeout(() => fkeepTrim(true), 60000);
   });
   document.addEventListener('freeze', () => fkeepTrim(true));
-  // `f` is the tab's frame no more; kept as `url`, or let go with none
-  // The name goes with the window too: Chrome leaves a frame's window
-  // name as it was when the attribute changes, and a form aimed at the
-  // tab (formAgain) then went to the kept page, the first of the two.
   const frameName = (f, n) => {
     f.name = n;
     try { f.contentWindow.name = n; } catch {}
@@ -6678,7 +4927,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (!url || KEEP_ALL < 1) { frameGone(f); return; }
     fnavOf(key).kept.push({ f, url, at: Date.now() });
   }
-  // a new frame for the tab at `url`, beside `f`, which is kept as `was`
   function fkeepBeside(key, f, url, was) {
     const g = frameMake(key, url);
     g.name = f.name;
@@ -6687,15 +4935,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     f.parentNode.insertBefore(g, f);
     fkeepPark(key, f, was);
     if (!f.isConnected) return g;
-    // the page left stays painted over the new one until that one loads,
-    // as a frame's own navigation holds its old paint
     f.classList.add('fcover');
     const un = () => { f.classList.remove('fcover'); if (!f.dataset.tool) f.hidden = true; };
     g.addEventListener('load', un, { once: true });
     setTimeout(un, 3000);
     return g;
   }
-  // the kept `e` is the tab's frame again, and `f` is kept as `was`
   function fkeepSwap(key, f, e, was) {
     const n = fnavOf(key);
     const k = e.f;
@@ -6704,7 +4949,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     fkeepPark(key, f, was);
     frameName(k, name);
     if (f.isConnected) { f.classList.remove('fcover'); f.hidden = true; }
-    // it hears latshown once it has stayed in sight a beat (frameSeen)
     k.latQuiet = Date.now() + KEEP_QUIET;
     delete k.dataset.kept;
     k.dataset.tool = key;
@@ -6723,21 +4967,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     frameBusySync(k.parentNode);
   }
-  // catch the page in `f` leaving (frameDress, at each load)
   function fkeepWatch(f, d, key) {
     const nav = d.defaultView && d.defaultView.navigation;
     if (!nav || KEEP_ALL < 1) return;
     nav.addEventListener('navigate', (e) => {
-      // A kept page goes nowhere out of sight: what it asks for meanwhile
-      // (its catch-up's replace, landing after Forward hid it) waits until
-      // it is shown again (fkeepSwap). It went out as a navigation under
-      // the request of whatever was clicked next.
       if (f.dataset.tool !== key) {
         if (f.dataset.kept === key && e.cancelable && !e.destination.sameDocument && !e.formData) {
           e.preventDefault();
-          // still painted over the tab's next page while it loads
-          // (fkeepBeside), a link followed there is the reader's own click,
-          // and the tab goes where it points rather than this page later
           const g = f.classList.contains('fcover') && e.navigationType === 'push' && frameOf(key);
           if (g) { try { g.contentWindow.location.href = e.destination.url; } catch {} }
           else f.latStale = e.destination.url;
@@ -6764,14 +5000,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       fhPaintKey(key);
     });
   }
-  // for the browser suites: what is kept, after a trim when asked
   window.latKept = (trim) => (trim && fkeepTrim(), keptAll()).map(({ e }) => ({ key: e.f.dataset.kept, url: e.url, at: e.at }));
 
-  // ── the omnibar ──────────────────────────────────────────────────────────
-  // An address field and its completion list: the reader's saved and
-  // visited addresses (/omni-suggest), drawn in the shell's style. Arrow
-  // keys move through the list, Return takes the row picked or else what is
-  // typed, a tap on a row takes it, Escape gives up. `go` gets the address.
   function omniWire(inp, list, go) {
     let items = [], sel = -1, timer = 0, seq = 0;
     const hide = () => { list.hidden = true; sel = -1; };
@@ -6794,7 +5024,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         u.className = 'fhurl';
         u.textContent = it.url;
         row.append(s, t, u);
-        // the field keeps its focus through the press
         row.addEventListener('mousedown', (e) => e.preventDefault());
         row.addEventListener('click', () => pick(i));
         list.append(row);
@@ -6837,7 +5066,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return { hide };
   }
 
-  // ── a group's header ─────────────────────────────────────────────────────
   function fhMake(g) {
     const h = document.createElement('div');
     h.className = 'fhead';
@@ -6849,8 +5077,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       + ' placeholder="urb:// address or search your pages">'
       + '<div class="fhlist" role="listbox" aria-label="Suggestions" hidden></div></div>'
       + '<span class="fhx"></span>'
-      // ponytail: the star keeps one slot at the right end, reserved even
-      // while the page loads or has no star, so it never shifts
       + '<button type="button" class="sbtn fhbm" data-fh="bm" disabled>' + ico('mark') + '</button>';
     h.key = null;
     const inp = h.querySelector('.fhin');
@@ -6860,14 +5086,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       inp.blur();
       if (h.key) fnavGo(h.key, 'to', v);
     });
-    // left without going anywhere, the field shows the address again
     inp.addEventListener('blur', () => setTimeout(() => fhPaint(g), 130));
     return h;
   }
-  // the reader bar's own extras, which hide with it: the bookmark star, the
-  // orrery button, the forum's refused-posts link. Each shows here as a
-  // button that clicks the original, so its own script still does the work.
-  // The star is updated in its fixed slot, never rebuilt.
   function fhExtras(h, bar) {
     const x = h.querySelector('.fhx');
     const star = h.querySelector('[data-fh=bm]');
@@ -6908,8 +5129,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   const fhPaintKey = (key) => {
     for (const g of groups) if (g.fhead && g.fhead.key === key) fhPaint(g);
   };
-  // from toolSync: `key` is the tool in front of `g`, or null. A browsing
-  // one gets the header, made the first time a group needs it.
   function fhSync(g, key) {
     const on = !!key && browsing(key);
     if (!g.fhead) {
@@ -6927,50 +5146,19 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     fhPaint(g);
   }
-  // for the browser suites
   window.latFnav = (key) => { const n = fnav[key]; return n && { back: n.back.slice(), fwd: n.fwd.slice(), cur: n.cur, addr: n.addr }; };
 
 // ── src/30-tree.js ────────────────────────────────────────────────────────
-  // ── page kind <-> extension, once for the whole bundle ───────────────────
-  // `kind` is what the ship stores (page-save?type=); `ext` is what a filename
-  // shows. They differ for `text`, and `index` is a page the ship generates
-  // (+make-folder-index) whose file form is markdown. Everything in the bundle
-  // reads these two tables: the tree below, the uploader (70-upload.js) and
-  // the desktop File menu (96-deskmenu.js). Those files are numbered after
-  // this one and the build concatenates in filename order into one scope, so
-  // the names are visible there.
-  //
-  // Two copies live outside the bundle and have to be kept in step by hand:
-  // ui-app/vault.js, which is also served alone to the Settings page with no
-  // bundle around it, and lattice-fs-rs/src/projection.rs, another process in
-  // another language.
-  //
-  // `htm` and `text` are INBOUND-ONLY aliases: archives written before the
-  // extension was conventionalised named those files `.text`, and a restore
-  // has to keep reading archives this app already handed out. `odt` is
-  // upload-only, read as bytes by writer.js (70-upload.js).
   const KIND_EXT = { md: 'md', gmi: 'gmi', html: 'html', text: 'txt', js: 'js',
                      css: 'css', hoon: 'hoon', index: 'md', tex: 'tex', fodt: 'fodt' };
   const EXT_KIND = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
                      text: 'text', js: 'js', css: 'css', hoon: 'hoon', tex: 'tex',
                      latex: 'tex', fodt: 'fodt', odt: 'fodt' };
-  //  an unknown kind shows as hoon, the kind that holds arbitrary source
   const kindExt = (k) => KIND_EXT[k] || 'hoon';
-  //  an unknown extension is null, never guessed: the caller skips that file
   const extKind = (e) => EXT_KIND[String(e || '').toLowerCase()] || null;
 
-  // ── tree pane: <lat-tree> ────────────────────────────────────────────────
-  // The pane's buttons are wired where their handlers live (45-templates,
-  // 70-upload). Those files run after this component upgrades, so their
-  // $-lookups find the rendered elements. The create and upload buttons sit
-  // in their own .newbtns group because the desktop File menu takes them
-  // over and hides that group (96-deskmenu.js); sort and collapse stay.
   let treeList;
-  // pages other ships shared with us (/shared-with-me), drawn as a folder
-  // after the pages. Filled by 69-shared.js.
   let sharedWithMe = [];
-  // shared folders this ship follows (/folder-follows), drawn after it.
-  // Filled by 69x-follow.js.
   let folds = [];
   customElements.define('lat-tree', class extends HTMLElement {
     connectedCallback() {
@@ -7002,38 +5190,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       treeKeys(treeList, 'Files');
     }
   });
-  // page-dump, not page-tree: it returns the same nodes PLUS every page's body
-  // inline from ONE deep peek, and measures FASTER than page-tree (which
-  // re-peeks each code grub). Those bodies are what make opening a page cost
-  // zero requests. See openPage. Bodies over 256KB are omitted by the server.
-  // Such a node has no `body` and falls back to the per-page fetch.
-  // ponytail: whole-store payload (~55KB today). If the tree ever grows past
-  // a megabyte, page it or go back to page-tree plus a lazy body cache.
-  // the beacon rev the last applied dump was fetched at (see revFresh)
   let treeAt = '';
-  // whether `nodes` carries each page's share mode: a dump with a `since`
-  // token does (a share-less node is private). A tree an older ship sent,
-  // or one restored from before it did, does not, and absent there means
-  // unknown, not private.
   let treeShares = false;
-  // the `since` token of the last dump this session applied. The next dump
-  // hands it back and carries only the bodies written since: every node
-  // still comes (so deletes, moves and share modes land), and a node whose
-  // body stayed home keeps the one this tab holds when its rev is the same.
-  // Not persisted: a session's first dump is whole, so the bodies it keeps
-  // are ones this session saw arrive.
   let treeSince = '';
-  // Answers whether a dump was applied.
   async function loadTree() {
     const gen = treeGen;
     const at = lastRev;
     const since = treeSince;
     let d = null;
-    // this one RESOLVES, always. Boot chains its whole reconcile off it
-    // (99-boot.js) with no .catch, so a rejection here would silently cancel
-    // loadPanels, the open/reconcile branch and legacyCheck, and show nothing.
-    // A dead pier is a reportable condition, the way openPage and loadPerms
-    // already report theirs. Offline is a state this app is built for.
     try {
       const r = await fetch(api + '/page-dump' + (since ? '?since=' + since : ''));
       if (!r.ok) {
@@ -7043,10 +5207,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       d = await r.json();
     } catch { st('tree failed (network)', false); return false; }
     if (gen !== treeGen) return false;   // a local patch superseded this response
-    // a since-dump left out the bodies this tab already holds: keep each
-    // one whose rev did not move. A moved rev without a body (it cannot
-    // happen, but a client must not trust a token with text) stays bodiless
-    // and opens through page-source like an oversized page.
     if (since) {
       const had = new Map();
       for (const n of nodes) if (n.page && typeof n.body === 'string') had.set(n.path, n);
@@ -7056,43 +5216,20 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         if (o && !o.link && o.rev === n.rev && o.size === n.size) n.body = o.body;
       }
     }
-    // the dump's beacon rev is the baseline for a FIRST-EVER session: the
-    // stream only reports from registration onward, and with nothing
-    // remembered the registration comparison had nothing to catch a bump
-    // that landed between this snapshot and that registration. Never
-    // overwrite a stream-observed rev — the snapshot may already trail it.
-    //
-    // From `since`, the token string, never `rev`: that is a JSON number near
-    // 1.7e38, which JSON.parse rounds, so String(d.rev) read
-    // "1.701411845081946e+38" against the stream's exact digits. They never
-    // matched, and every first session refetched the whole dump once the
-    // stream registered.
     if (!lastRev && typeof d.since === 'string') noteRev(d.since);
     nodes = d.nodes;
     treeShares = typeof d.since === 'string';
     treeSince = treeShares ? d.since : '';
     treeAt = at;
-    // drop only the cached renders the dump says have moved FORWARD. Blanket-
-    // clearing on every change cost every other page its cache. Comparing
-    // for mere inequality evicted good entries whenever the dump trailed
-    // page-source by a revision, which it does right after a write (the
-    // evaluator settles after the writer).
     for (const [name, c] of pageCache) {
       const n = nodes.find((x) => x.page && x.path === name);
       if (!n || (typeof n.rev === 'number' && n.rev > c.rev)) pageCache.delete(name);
     }
     snapTree();
-    // always: #treelist holds only the files tree (the memory tree has its
-    // own #knowlist), so a memory tab in front is no reason to leave Files
-    // stale behind the Knowledge tab
     renderTree();
     return true;
   }
 
-  // selection changes only move the `cur` class. Never rebuild the pane's DOM
-  // for that. rowByPath is rebuilt by renderTree, knowRows by renderKnowTree
-  // (95-know.js). `current` names a page or a memory by the mode, so each
-  // tree marks it only in its own mode.
   let rowByPath = new Map();
   let knowRows = new Map();
   function markCurrent() {
@@ -7103,37 +5240,24 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     paintLink();
   }
 
-  // ── links: another ship's page in this tree ─────────────────────────────
-  // A node with `link` is a link the owner made from shared with me. It
-  // opens as a page tab: page-source and page-save go through it to the
-  // host, conflict-checked. linkOf names the open link, or null.
   function linkOf(name) {
     const n = name ? nodes.find((x) => x.page && x.path === name) : null;
     return n && n.link && n.link.host ? n.link : null;
   }
-  // where a link points, as ~host/<their page>. The path names the page's
-  // code grub under wherever lattice is installed there, so only the tail
-  // is read (the same rule as sharedName, 69-shared.js).
   function linkFrom(lk) {
     const m = /\/page\/(.+)\/code$/.exec(lk.path || '');
     return lk.host + '/' + (m ? m[1] : String(lk.path || '').replace(/^\/+/, ''));
   }
-  // @da (ship UTC) in the viewer's own zone, as the history list shows it
   function daLocal(da) {
     const m = /^~(\d+)\.(\d+)\.(\d+)\.\.(\d+)\.(\d+)\.(\d+)/.exec(da || '');
     return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6])).toLocaleString(undefined,
       { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
   }
-  // the badge for a link whose last read failed: {copy, since}, or null.
-  // The owner's ship cannot tell a revoke from being offline, so it says
-  // both. `at` is when a read first failed, which the ship keeps as is
-  // while reads go on failing.
   function linkBadge(lk) {
     if (!lk.seen || lk.seen.ok !== false) return null;
     const at = daLocal(lk.seen.at);
     return { copy: lk.host + ' unreachable or no longer sharing', since: at ? 'since ' + at : '' };
   }
-  // the badge as a tree row shows it, on a line of its own under the name
   function linkBadgeEl(bad) {
     const w = document.createElement('span');
     w.className = 'lbadw';
@@ -7149,17 +5273,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     return w;
   }
-  // the links this editor must not write to just now: a conflicted one
-  // (35-pages.js, its save was refused as stale) and a stale one (its open
-  // fell back on the last-known copy). A read grant is locked always.
   const linkCf = new Set();
   const linkStale = new Set();
   function linkRO(name) {
     const lk = linkOf(name);
     return !!lk && (lk.mode === 'read' || linkStale.has(name));
   }
-  // what a live read through a link just found. The ship records it too
-  // (the badge survives a reload); this repaints without waiting for that.
   function linkSeen(name, ok) {
     const lk = linkOf(name);
     if (!lk || !lk.seen || lk.seen.ok === ok) return;
@@ -7171,8 +5290,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     renderTree();
   }
 
-  // local `nodes` patching: this client performed the write, so it already
-  // knows the outcome. Applying it locally replaces a page-tree refetch.
+  const cwBadge = (path) => {
+    const cw = document.createElement('span');
+    cw.className = 'cw';
+    cw.textContent = '\u{1F310}';
+    cw.title = path + ' is clearweb public';
+    return cw;
+  };
   const hasNode = (path) => nodes.some((n) => n.path === path);
   function addFolderNodes(path) {
     const parts = path.split('/');
@@ -7187,17 +5311,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (n) { n.kind = kind; if (pending !== undefined) n.pending = pending; }
     else nodes.push({ path: name, page: true, kind, share: 'private', pending: !!pending });
   }
-  // the display name of a page or folder node ('' clears it). Mirrors the
-  // `dname` the ship sends in page-dump, so a local patch matches a refetch.
   function setNodeDname(path, dname) {
     const n = nodes.find((x) => x.path === path);
     if (!n) return;
     if (dname) n.dname = dname; else delete n.dname;
   }
-  // apply a realName() split to the local tree: the leaf follows rn.dname
-  // ('' clears, the way a rename to a valid name does on the ship); a parent
-  // folder is only ever SET, never cleared, because an existing folder keeps
-  // its own name when something is made inside it under the plain slug.
   function applyDnames(rn) {
     if (!rn) return;
     const segs = rn.name.split('/');
@@ -7206,10 +5324,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       if (per[i]) setNodeDname(segs.slice(0, i + 1).join('/'), per[i]);
     setNodeDname(rn.name, rn.dname);
   }
-  //  A node added before the ship has confirmed it. The row pulses until the
-  //  write lands, so the tree can answer instantly without claiming something
-  //  that has not happened yet. Clearing it is the success signal; dropping
-  //  the node is the failure one.
   function setTreePending(name, pending) {
     const n = nodes.find((x) => x.path === name && x.page);
     if (!n) return;
@@ -7220,13 +5334,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     nodes = nodes.filter((n) => n.path !== path && !n.path.startsWith(path + '/'));
   }
 
-  // one folder row, the same in all three trees (files, shared with me,
-  // memories): the fold arrow, then the folder icon (open when unfolded)
-  // and its label, both inside the label span, indented
-  // by depth. `fold` folds or unfolds it and repaints. A click anywhere on
-  // the row folds, unless the row has a `pick` of its own (the files tree
-  // selects the folder): then the row picks and only the arrow folds.
-  // `key`, in a tree that treeKeys drives, makes the row one of its items.
   function folderRow(label, depth, folded, fold, pick, key) {
     const row = document.createElement('div');
     row.className = 'fld';
@@ -7251,12 +5358,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return row;
   }
 
-  // the folders lattice makes or draws itself get a small mark after the
-  // name, and the mark's tip says what the folder is and what deleting it
-  // does. conflicts/ is a real folder of pages, made by the first save
-  // that loses to a newer one (conflict-name in app.hoon, and the offline
-  // queue's kept copies in 08-offline.js). Shared with me is drawn from
-  // /shared-with-me and is in no one's pages (69-shared.js).
   const SYSF = {
     conflicts: [ico('conflict'), 'Made by lattice: when two edits of a page cross, the one '
       + 'that lost is kept here as a page (Sync conflicts lists them). Safe to delete once '
@@ -7279,15 +5380,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return s;
   }
 
-  // ── keyboard: the files and memory trees as ARIA trees ──────────────────
-  // The rows are flat siblings indented by depth, so the shape is read from
-  // aria-level: a folder's children are the shown rows after it with a
-  // deeper level, and its parent the nearest shown row before it with a
-  // shallower one. One row at a time is in the tab order (roving tabindex).
-  // Enter is the row's own click, with Ctrl/Cmd carried, so a page opens
-  // through openIn (tabLink) and Ctrl+Enter gives it a new tab.
-  // treeItem marks up one row. `key` names it across a repaint: a fold
-  // rebuilds the whole list, and the focus has to land on the same row.
   function treeItem(row, depth, key) {
     row.setAttribute('role', 'treeitem');
     row.setAttribute('aria-level', depth + 1);
@@ -7297,11 +5389,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
   const treeRows = (list) => [...list.querySelectorAll('[role=treeitem]')]
     .filter((r) => r.style.display !== 'none');
-  // after a paint: the row last focused, else the open one, else the first,
-  // is the one Tab reaches. `refocus` when the focus was in the list before
-  // the paint took its rows away.
-  // A list with no rows (loading, or an empty-state note) is not a tree:
-  // a tree has to own treeitems, so the role comes and goes with them.
   function treeRove(list, refocus) {
     const rows = treeRows(list);
     if (rows.length) list.setAttribute('role', 'tree'); else list.removeAttribute('role');
@@ -7326,9 +5413,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     list.addEventListener('keydown', (e) => {
       const row = e.target.closest('[role=treeitem]');
       if (!row || e.altKey) return;
-      //  Delete, or Backspace (with or without Cmd) on a Mac, where the key
-      //  marked delete is Backspace: the list's own handler, which asks first
-      //  (34-treemenu.js). A tree without one lets the key through.
       if (list.latDel && !e.shiftKey && ((e.key === 'Delete' && !e.ctrlKey && !e.metaKey)
         || (e.key === 'Backspace' && IS_MAC && !e.ctrlKey))) {
         e.preventDefault();
@@ -7341,7 +5425,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       const mod = e.ctrlKey || e.metaKey;
       let to = null;
       if (e.key === 'Enter') {
-        // on a control inside the row (a folder's +), that control acts
         const hit = e.target !== row && e.target.closest('a, button') ? e.target : row;
         hit.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true,
           ctrlKey: e.ctrlKey, metaKey: e.metaKey }));
@@ -7350,7 +5433,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       else if (e.key === 'ArrowUp') to = rows[i - 1];
       else if (e.key === 'Home') to = rows[0];
       else if (e.key === 'End') to = rows[rows.length - 1];
-      // a fold repaints, and treeRove puts the focus back on this row
       else if (e.key === 'ArrowRight') {
         if (open === 'false') row.latFold();
         else if (open === 'true' && rows[i + 1] && lv(rows[i + 1]) > lv(row)) to = rows[i + 1];
@@ -7358,8 +5440,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         if (open === 'true') row.latFold();
         else for (let j = i - 1; j >= 0 && !to; j--) if (lv(rows[j]) < lv(row)) to = rows[j];
       } else if (e.key.length === 1 && e.key !== ' ') {
-        // type-ahead: the next row whose name starts with the letter. A
-        // folder's name is its label, not the fold arrow ahead of it.
         const k = e.key.toLowerCase();
         const name = (r) => (r.querySelector('.fln') || r).textContent.trim().toLowerCase();
         for (let n = 1; n <= rows.length && !to; n++) {
@@ -7371,12 +5451,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       if (to) to.focus();
     });
   }
-  // Ctrl/Cmd+Shift+L, L for list: the Files tab (the pane opened if shut),
-  // its tree focused. By e.code, so it is the same key on every layout.
-  // Not Alt+1, which Chrome and Firefox on Linux keep for switching tabs.
-  // Not while a dialog or the palette is up: focus behind a modal is lost.
-  // Registered on the Files tab's own action (13-frame.js), so the tab's
-  // tooltip and the palette both show it.
   function treeFocus() {
     treeRove(treeList, false);
     const r = treeList.querySelector('[role=treeitem][tabindex="0"]');
@@ -7391,22 +5465,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   }, true);
 
-  // ── sort order and collapse all ─────────────────────────────────────────
-  // Siblings sort by name, folders first, ascending or descending
-  // (localStorage.appSort). The order is per level, so a folder's pages stay
-  // under it whichever way its siblings run.
   const SORTS = { name: 'Sort: name', 'name-desc': 'Sort: name, descending' };
   const treeSort = () => (localStorage.appSort === 'name-desc' ? 'name-desc' : 'name');
-  // one collator, the order localeCompare gives: localeCompare builds its
-  // own on every call, and that was most of an 18 ms sort at boot
   const treeColl = new Intl.Collator();
-  // A path sorts as a folder when anything sits under it, a page included:
-  // `a/b` can be a page AND the parent of `a/b/c`, and the ship sends no
-  // folder node for it then. Deciding by the node alone sorted page `a/b`
-  // among the pages while `a/b/c` sorted under a folder `b`. That made the
-  // comparator inconsistent (folder < page < child < folder), so where a
-  // child landed hung on the array's order, and children rendered at the
-  // top of the parent's folder, away from the page they belong under.
   function treeOrder(list) {
     const dir = treeSort() === 'name-desc' ? -1 : 1;
     const dirs = new Set();
@@ -7422,8 +5483,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         const fa = i < a.s.length - 1 || a.d;
         const fb = i < b.s.length - 1 || b.d;
         if (fa !== fb) return fa ? -1 : 1;
-        // two names the collator calls equal still differ: break the tie
-        // by code unit, or the order would hang on the array's order again
         return dir * (treeColl.compare(a.s[i], b.s[i]) || (a.s[i] < b.s[i] ? -1 : 1));
       }
       return (a.s.length - b.s.length) || (a.n.page - b.n.page);
@@ -7441,8 +5500,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       ...nodes.filter((n) => !n.page).map((n) => n.path)])]);
     renderTree();
   };
-  // the toolbar's palette actions. The create and upload buttons are wired
-  // in 45-templates.js and 70-upload.js; a click reaches those handlers.
   for (const [id, name] of [['newfile', 'New page'], ['newfolder', 'New folder'],
     ['newtmpl', 'New from template'], ['upfiles', 'Upload files'], ['updir', 'Upload a folder'],
     ['tsort', 'Flip sort order'], ['tcoll', 'Collapse all folders']])
@@ -7465,13 +5522,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         row.className = 'pg' + (lk ? ' lnk' : '') + (mode !== 'know' && n.path === current ? ' cur' : '')
           + (n.pending ? ' pend' : '');
         row.href = '/apps/lattice/app?name=' + encodeURIComponent(n.path);
-        // the display name when there is one (a typed name that was not a
-        // valid path), the path segment otherwise; the real path in the tip
         row.innerHTML = ico(lk ? 'link' : kindExt(n.kind));
         row.append(document.createTextNode((n.dname || n.path.split('/').pop()) + '.' + kindExt(n.kind)));
         if (n.dname) row.title = n.path;
-        // a link to another ship's page: whose it is on hover, and the
-        // badge once a read through it has failed
         if (lk) {
           row.dataset.host = lk.host;
           row.dataset.path = n.path;
@@ -7480,13 +5533,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           if (bad) row.append(linkBadgeEl(bad));
         }
         treeItem(row, depth, 'p:' + n.path);
-        if (n.share === 'clearweb') {
-          const cw = document.createElement('span');
-          cw.className = 'cw';
-          cw.textContent = '\u{1F310}';
-          cw.title = n.path + ' is clearweb public';
-          row.append(cw);
-        }
+        if (n.share === 'clearweb') row.append(cwBadge(n.path));
         tabLink(row, 'page', n.path);
         rowMore(row, (n.dname || n.path.split('/').pop()) + '.' + kindExt(n.kind));   // 34-treemenu.js
       } else {
@@ -7496,13 +5543,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         if (n.path === curFolder) row.classList.add('cur');
         if (n.dname) row.lastChild.title = n.path;     // the label's tip
         if (n.path === 'conflicts') sysFlair(row, 'conflicts');
-        if (treeShare(n.path) === 'clearweb') {
-          const cw = document.createElement('span');
-          cw.className = 'cw';
-          cw.textContent = '\u{1F310}';
-          cw.title = n.path + ' is clearweb public';
-          row.append(cw);
-        }
+        if (treeShare(n.path) === 'clearweb') row.append(cwBadge(n.path));
         const add = document.createElement('a');
         add.className = 'addf';
         add.textContent = '+';
@@ -7524,17 +5565,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (folds.length) renderFolds(coll);
     treeRove(treeList, had);
     paintLink();                 // the Page tab's link section (65-ctl.js)
-    // the Published pages list (72-acl.js) reads these share modes
     const aw = $('aclwrap');
     if (aw && !aw.hidden) renderPublished();
-    // the conflict badge is a count of conflicts/ pages in this very tree, so
-    // it repaints exactly when the tree does. Defined in 80-conflicts.js.
     renderConfBadge();
   }
 
-  // ── folder selection ─────────────────────────────────────────────────────
-  // A folder's share state is derived from its pages: uniform → that mode,
-  // differing → 'mixed', empty → 'private'.
   const treeShare = (path) => {
     const f = nodes.find((n) => !n.page && n.path === path);
     if (f && f.dshare) return f.dshare;
@@ -7553,9 +5588,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     $('mv').textContent = t === 'page' ? 'move / rename' : 'move / rename ' + t;
   };
 
-  // a folder picked by the user: it paints over the editor, so it gets a
-  // document tab if a tool is in front, and what is unsaved there goes
-  // through guardDirty first, like any other way off a document
   async function pickFolder(path) {
     if (!(await docTab()) || !(await guardDirty())) return;
     dirty = false;
@@ -7576,21 +5608,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     cerr.textContent = ' '; cerr.className = 'ok';
     markCurrent();
     setCtlLabels();
-    // the buttons are the folder's own setting, none when it has none
     showShare((nodes.find((n) => !n.page && n.path === path) || {}).dshare || 'private');
     const c = pageCount(path);
     st('folder · ' + c + ' page' + (c === 1 ? '' : 's'));
   }
 
 // ── src/31-marks.js ───────────────────────────────────────────────────────
-  // ── bookmarks: <lat-marks> ───────────────────────────────────────────────
-  // The left pane's Bookmarks tab: the urb:// and web bookmarks the reader
-  // keeps (GET /bookmarks-json, newest first), grouped by folder, with a
-  // filter, and per bookmark a refile and a remove. A click opens the
-  // bookmark in the reader, in this window for now (the reader becomes a
-  // tab later), so it leaves the editor through guardDirty like any other
-  // navigation. Ctrl/Cmd or a middle click is the browser's own new tab and
-  // leaves nothing.
   customElements.define('lat-marks', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -7629,9 +5652,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return e;
   };
 
-  // a bookmark opens in the reader, in a browser tab of the shell, as the
-  // ribbon's Browser does (browseIn, 24-tools.js). Nothing is left, so
-  // nothing is asked. A new-tab click goes to a browser window as it is.
   function markGo(e, url) {
     if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
     e.preventDefault();
@@ -7677,8 +5697,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return row;
   }
 
-  // folders first by name, then the unfiled ones, each newest first as the
-  // ship keeps them. A filter shows every match, folded folder or not.
   function renderMarks() {
     if (!marks) return;
     const q = $('mfilter').value.trim().toLowerCase();
@@ -7706,26 +5724,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     for (const b of byFolder.get('') || []) markList.append(markRow(b, 0));
   }
   $('mfilter').oninput = renderMarks;
-  // fetched each time the tab is shown: the reader adds and removes
-  // bookmarks in other windows, and this is one small request
   document.addEventListener('lat-pane', (e) => {
     if (e.detail.side === 'l' && e.detail.id === 'marks') loadMarks();
   });
   if (paneShows('l', 'marks')) loadMarks();
 
 // ── src/34-treemenu.js ────────────────────────────────────────────────────
-  // ── the files tree's own menu, and its Delete key ───────────────────────
-  // A right-click on a row, a long press on a phone, or the keyboard's menu
-  // key (Shift+F10) opens a small menu for that row: a page or a folder of
-  // mine, or an entry in shared with me. Nothing in it needs the row opened
-  // first, and nothing changes what is open, except a delete or a move of
-  // the very page that is (65-ctl.js deletePath, 75-move.js, 77-history.js).
-  // Every delete in it asks first, in the same modal the page menu's does.
-  //
-  // What a row is comes from its tree key (treeItem, 30-tree.js): p:<path>
-  // a page, f:<path> a folder, and under shared with me (SWM, 69-shared.js)
-  // <SWM>/<host>/<path> an entry. The shared with me folder and its ship
-  // folders are not anything to delete, so they get no menu.
   function treeTarget(row) {
     const tk = (row && row.dataset.tk) || '';
     if (tk.startsWith('p:')) return { kind: 'page', path: tk.slice(2) };
@@ -7740,7 +5744,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     return null;
   }
-  // a delete from the tree: the row's own path, confirmed (deletePath)
   function treeDelete(row) {
     const t = treeTarget(row);
     if (!t) return;
@@ -7760,7 +5763,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     treeMenuRow = null;
     if (refocus && row && row.isConnected) row.focus();
   }
-  //  `right`: x is where the menu's right edge goes (the row's ⋯ button)
   function treeMenu(row, x, y, right) {
     const t = treeTarget(row);
     if (!t) return false;
@@ -7775,8 +5777,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       b.setAttribute('role', 'menuitem');
       b.dataset.mi = id;
       b.textContent = label;
-      //  the row takes the focus back first, so the dialog the item opens
-      //  hands it back there when it closes (dlgClose, 15-dialog.js)
       b.onclick = () => { treeMenuClose(true); run(); };
       if (id === 'del') b.classList.add('danger');
       m.append(b);
@@ -7816,8 +5816,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     };
     m.style.visibility = 'hidden';
     document.body.append(m);
-    //  kept on screen: a row near the bottom or the right edge opens it
-    //  upward or leftward instead of half off the page
     const w = m.offsetWidth, h = m.offsetHeight;
     m.style.left = Math.max(4, Math.min(right ? x - w : x, innerWidth - w - 4)) + 'px';
     m.style.top = Math.max(4, y + h > innerHeight - 4 ? y - h : y) + 'px';
@@ -7828,8 +5826,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     m.querySelector('button').focus();
     return true;
   }
-  //  where a menu opened from the keyboard goes: under the row, since a
-  //  keyboard contextmenu event carries no pointer position
   const rowSpot = (row) => {
     const r = row.getBoundingClientRect();
     return [r.left + 16, r.bottom];
@@ -7838,23 +5834,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const row = e.target.closest('[role=treeitem]');
     if (!row || !treeTarget(row)) return;
     e.preventDefault();
-    //  a phone's own long press (Android fires contextmenu for it) and ours
-    //  are one gesture: the tap that ends it must not open the row
     if (lpDown) { lpFired = true; clearTimeout(lpTimer); }
     const [x, y] = e.clientX || e.clientY ? [e.clientX, e.clientY] : rowSpot(row);
     treeMenu(row, x, y);
   });
 
-  // ── the row's ⋯ button ──────────────────────────────────────────────────
-  // The menu, where a user can see it: faint at the row's right end, shown
-  // on hover or focus, and always on a touch screen (index.html, .rmore).
-  // Its own click opens the menu under it and goes no further, so the row
-  // never sees it; everywhere else on the row clicks as before. Out of the
-  // tab order like a folder's +: the tree is one tab stop, and the keyboard
-  // has the menu key (Shift+F10) and Delete on the row itself.
   function rowMore(row, name, rowName = name) {
-    //  the row keeps its own name: read from its content, it would take in
-    //  the button's label too
     if (!row.hasAttribute('aria-label')) row.setAttribute('aria-label', rowName);
     const b = document.createElement('span');
     b.className = 'rmore';
@@ -7871,16 +5856,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       const r = b.getBoundingClientRect();
       treeMenu(row, r.right, r.bottom + 2, true);
     });
-    //  a middle click on it opens nothing in a new tab either
     b.addEventListener('auxclick', (e) => { e.preventDefault(); e.stopPropagation(); });
     row.append(b);
     return b;
   }
 
-  // ── long press, for a phone ──────────────────────────────────────────────
-  // Held still for half a second on a row: the menu. A finger that moves
-  // is a scroll, and a short tap still opens the row, so only a press that
-  // fired swallows the click it ends with.
   const LP_MS = 500, LP_SLOP = 10;
   let lpTimer = 0, lpDown = null, lpFired = false;
   const lpCancel = () => { clearTimeout(lpTimer); lpDown = null; };
@@ -7910,26 +5890,19 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     e.stopPropagation();
   }, true);
 
-  //  any later press or key starts fresh, so a press that fired can never
-  //  swallow a click that comes from somewhere else (Enter on a row is one)
   addEventListener('pointerdown', (e) => {
     lpFired = false;
-    //  a press on the open menu's own ⋯ is left to its click, which shuts it
     const more = e.target.closest && e.target.closest('.rmore');
     if (more && treeMenuRow && treeMenuRow.contains(more)) return;
     if (treeMenuEl && !treeMenuEl.contains(e.target)) treeMenuClose(false);
   }, true);
   addEventListener('keydown', () => { lpFired = false; }, true);
   addEventListener('resize', () => treeMenuClose(false));
-  //  a scroll shuts it, but not one already on its way when it opened:
-  //  scroll events land a frame late, so a row scrolled into view by the
-  //  press itself (focus on pointerdown) shut the menu as it appeared
   addEventListener('scroll', (e) => {
     if (treeMenuEl && !treeMenuEl.contains(e.target)
       && performance.now() - treeMenuAt > 300) treeMenuClose(false);
   }, true);
 
-  // for the browser suites, which cannot reach this scope
   window.latTreeMenu = { open: (tk) => {
     const row = [...treeList.querySelectorAll('[role=treeitem]')].find((r) => r.dataset.tk === tk);
     if (!row) return false;
@@ -7938,56 +5911,19 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   } };
 
 // ── src/35-pages.js ───────────────────────────────────────────────────────
-  // ── open / new / save ────────────────────────────────────────────────────
   const setFolderCtx = (name) =>
     { folderCtx = name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : ''; };
 
-  // Opening a page should cost nothing. Three tiers, cheapest first:
-  //   1. seen this session -> pageCache has the rendered answer: 0 requests.
-  //   2. body came with the tree dump -> paint the editor NOW, then fetch
-  //      render=1 only to fill in `share` and the preview.
-  //   3. no body (oversized page, or a tree we never loaded) -> render=1.
-  //      A page the tree lists without a body (the dump leaves out bodies
-  //      over 256 KB) reads the body alone first (plain page-source) and
-  //      paints it as in 2, then render=1.
-  // History and backlinks stay lazy on panel expand. They were 2 more ~2s
-  // round-trips paid on every open whether or not anyone looked at them.
-  // Which open is current. Opening a page is an explicit user act, so the ONLY
-  // reason to discard a landed response is that the user opened something else
-  // while it was in flight, not that the editor was dirty, and not that
-  // `current` had not been set yet. Guarding on those meant an explicit open
-  // was silently dropped. After an unsaved edit, clicking another file did
-  // nothing, and a page absent from the local tree never applied at all.
-  // openKnow and openGrub take a number from the same sequence, and so does
-  // a tab switch (21-tabs.js), so any later open supersedes this one.
-  //
-  // Answers false when the open failed with nothing painted, which the tab
-  // model tells apart from an open that a later one superseded.
   let openSeq = 0;
-  // drawerSeq (13-frame.js) when the latest open began: applyPage puts the
-  // drawers away only if none was opened since
   let openDrawers = 0;
-  // the next open's number. Whatever an open before it still owed the
-  // loading line (busy, 10-shell.js) is let go with it: a later open, a
-  // tab switch and a blank page all supersede it.
   function openNext() { busyEnd('open'); openDrawers = drawerSeq; return ++openSeq; }
   async function openPage(name) {
-    // guardDirty covers a dirty grub, page, or memory in one place (see
-    // 20-state.js): it flushes what it can and only asks when the flush
-    // still leaves something unsaved.
     if (!(await guardDirty())) return false;
     const my = openNext();
-    // leaving grub mode: clear the flag or the save button would keep writing
-    // to the grub while the editor shows a page
     grubPath = null;
-    // and knowledge mode: search results and the comments inbox open pages
-    // from know mode, and a stale mode routed the next save to /know-save —
-    // a new memory named after the page, while the page kept its old body
     if (mode === 'know') setMode('pages');
     src.readOnly = false;
     setFolderCtx(name);
-    // the queue outranks every other tier. A queued edit is the newest truth
-    // for this page whether or not the ship is reachable right now
     const q = await offGet(name);
     if (q) {
       const d = { body: q.body, kind: q.kind, rev: q.baseRev || 0, share: 'private' };
@@ -7995,14 +5931,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       snapPage(name, d);
       return true;
     }
-    // a link reads live from its host every time (the spec's rule), so the
-    // session cache never answers for one
     const hit = !linkOf(name) && pageCache.get(name);
     if (hit) {
-      // a content page's preview paints locally, as a painted open's does
-      // first. The ship's render in the cache is a whole reader document,
-      // and loading it into the frame was most of a tab switch: 50 ms
-      // against 25 for the local paint.
       const local = ['md', 'gmi', 'html', 'text'].includes(hit.kind);
       applyPage(name, local ? { ...hit, html: undefined } : hit, local);
       snapPage(name, hit);
@@ -8010,10 +5940,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     const node = nodes.find((n) => n.page && n.path === name);
     const painted = !!node && typeof node.body === 'string';
-    // the render=1 read below brings the page's sensitive flag, so the
-    // Page tab's checkbox waits for it rather than asking on its own
-    // (66-share.js refreshSensitive). Whatever way the read ends, the
-    // checkbox is settled once it has.
     if (!linkOf(name)) sensWait = name;
     try { return await openRead(name, my, node, painted); }
     finally {
@@ -8023,20 +5949,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       }
     }
   }
-  // The loading line runs while the ship's answer is still owed to the
-  // eye: an open with nothing painted, or a painted one whose preview only
-  // the ship renders (hoon, noun and the other computed kinds). A painted
-  // content page already shows all of itself, so its upgrade fetch runs
-  // unmarked. The status names an unpainted open only once it is slow, so
-  // a quick one does not flash the spinner either.
   async function openRead(name, my, node, painted) {
     const owed = !painted || !['md', 'gmi', 'html', 'text'].includes(node.kind);
     const end = owed ? busy('open') : null;
     const late = painted ? 0
       : setTimeout(() => { if (my === openSeq) stWork('opening ' + name + '\u2026'); }, BUSY_MS);
-    // a big page's plain read paints the body before render=1 lands. For
-    // a content kind that paint is the whole page, so the wait the user
-    // sees is over there, as it is for a painted open
     const bodyShown = (kind) => {
       clearTimeout(late);
       if (end && ['md', 'gmi', 'html', 'text'].includes(kind)) end();
@@ -8045,53 +5962,18 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     finally { if (end) end(); clearTimeout(late); }
   }
   async function openReadRun(name, my, node, painted, bodyShown) {
-    // `quiet`: the render=1 request below carries the preview and the error
-    // report, so painting must not also fire refreshPreview/checkErrors.
     if (painted) {
       applyPage(name, node, true);
-      // snapshot NOW, not only after the render fetch below. The snapshot is
-      // what a bare launch (the PWA) resumes from, and a session that ends
-      // during the fetch would otherwise remember nothing. The fetch's
-      // snapPage upgrades this with the rendered html when it lands.
       snapPage(name, node);
     }
-    // What the editor shows as the fetch leaves. When `painted`, the open has
-    // already visibly happened and the fetch below is an UPGRADE (share, the
-    // rendered html) — not the open itself.
-    //
-    // When NOT painted (a body the dump did not carry), the user just clicked
-    // and nothing changed on screen — on a slow pier that silence lasts
-    // seconds and reads as a dead click. openRead says the open is
-    // happening once it is slow; every exit below replaces that status.
     let fromUrl = null;
     if (!painted) {
-      // commit the address NOW, before the fetch. A reload mid-open (the
-      // service-worker takeover) must resume THIS page. Painted opens already
-      // set the address synchronously via applyPage; this fetch lands seconds
-      // later on a slow pier, and until it did the address still named the
-      // page open before the click, so a reload resumed the wrong document.
-      // Remember the old address so a FAILED open puts it back: without that,
-      // a reload after a 404 would strand on the bad name instead of resuming
-      // the document the editor is still showing.
       fromUrl = location.pathname + location.search;
       history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
-      // An oversized page (the dump leaves out bodies over 256 KB) waited
-      // for render=1 before the editor showed anything, and the ship's
-      // render is most of that answer: about 7 s of 8 for a 1.5 MB md
-      // page, against 1 s for its plain read. So read the body alone first
-      // and paint it as a painted open does. render=1 below is then the
-      // same upgrade it is there. A link reads from its host, and a failed
-      // plain read leaves the open to render=1 as before. So does a page
-      // the tree does not list (a tree not loaded yet, a page made
-      // elsewhere): its size is unknown, and a small page must keep
-      // costing one request.
       if (node && !linkOf(name)) {
         const b = await bodyRead(name);
         if (my !== openSeq) return;
         if (b) {
-          // the upgrade's read goes out before the paint, whose layout of
-          // the big body holds the main thread for a second or so. srcRead
-          // shares it with the await below.
           srcRead(name).catch(() => {});
           painted = true;
           applyPage(name, b, true);
@@ -8100,18 +5982,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         }
       }
     }
-    //  undo the speculative address on a failed open, but only if no later
-    //  open has run meanwhile (that one owns the address now, so leave it).
     const unwind = () => { if (fromUrl && my === openSeq) history.replaceState(null, '', fromUrl); };
     const shown = src.value;
     let d = null, gen = -1;
     try {
       gen = sensGen;
       const r = await srcRead(name);
-      // a link whose host did not answer: its badge from now, and the last
-      // copy read, which the ship sends its owner along with the failure.
-      // Shown locked (linkStale): a save from it would claim a rev the host
-      // may have moved past, and there is no host to save to anyway.
       if (r.status === 504 && linkOf(name)) {
         linkSeen(name, false);
         let j = null;
@@ -8139,52 +6015,23 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
     }
-    // the ship's flag as of this read replaces the kept one, unless a
-    // write of ours (a toggle, a move, a delete) went out since it was sent
     if (typeof d.sensitive === 'boolean' && sensGen === gen) sensKnown.set(name, d.sensitive);
-    // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) {
-      // ...but it is still the ship's answer for this page, so a switch
-      // back to it need not ask again. Remembered only when it holds the
-      // body the tree holds, the text a painted open would show anyway:
-      // a save from here since then patched the tree (patchLocal), and
-      // this older answer then stays out of the cache.
       const nd = nodes.find((n) => n.page && n.path === name);
       if (!d.link && !pageCache.has(name) && nd && !nd.link && nd.body === d.body
           && !(typeof nd.rev === 'number' && nd.rev > d.rev)) pageCache.set(name, d);
       return;
     }
-    // a live read: the badge, the lock on a last-known copy and a conflict
-    // latched on this link all end here
     if (d.link) { linkSeen(name, true); linkStale.delete(name); linkCf.delete(name); }
-    // An upgrade of an ALREADY-PAINTED open must never clobber keystrokes
-    // typed while it was in flight. On a busy pier this fetch lands many
-    // seconds after the paint, and it carries the PRE-edit body: applying it
-    // replaced what you just typed, and the next autosave wrote that stale
-    // text back over the good save. The editor ate work the ship had.
-    //
-    // Compared by TEXT, not by `dirty`: autosave clears dirty inside this very
-    // window, which is how the old dirty-guards kept failing to catch it.
-    // The !painted arm stays unconditional on purpose — there the fetch IS the
-    // open, and an explicit open must always land (see the head comment).
-    // The flag is not the body, though: the comments switch takes it from
-    // this answer whatever was typed meanwhile, or it stays unknown.
     if (painted && src.value !== shown) {
       if (current === name && typeof d.comments === 'boolean') cmtShow(name, d.comments);
       return true;
     }
-    // Cache and snapshot BELOW the guards, not above. A stale or superseded
-    // response that reached the cache here poisoned it with the pre-edit body:
-    // the guard protected the editor but not the cache, so switching away and
-    // back repainted the old text — the same data loss through a different
-    // door. Only a response that is actually applied may be remembered.
     if (!d.link) pageCache.set(name, d);
     snapPage(name, d);
     applyPage(name, d);
     return true;
   }
-  // a page's body without the render (page-source, no render=1): what a
-  // painted open shows, or null
   const bodyRead = async (name) => {
     try {
       const r = await fetch(api + '/page-source?name=' + encodeURIComponent(name));
@@ -8204,56 +6051,25 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     refreshTexButton();
     src.value = d.body;
     dirty = false;
-    // A fresh editor state begins here. everTyped answers "did the user type
-    // since this view was established?" for boot's reconcile guard; carrying
-    // it across a navigation would mark every later untouched page as touched.
     everTyped = false;
     render(); syncSoon();
     markCurrent();
     st(d.kind + ' · rev ' + d.rev);
     exitRev();
-    // after exitRev, which unlocks: a link with a read grant, or one shown
-    // from its last-known copy, stays locked (30-tree.js linkRO). The tab
-    // restore comes through here too.
     src.readOnly = linkRO(name);
     resetPanels();
     showShare(d.share || 'private');
     cmtShow(name, d.comments);
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
-    //  a tex page's server render is its SOURCE as escaped text, because the
-    //  ship has no LaTeX and is not getting one. The local conversion is the
-    //  only true render, and it arrives first, so letting the ship's answer
-    //  land here would overwrite a rendered document with its own source.
-    //  ...and through the same fit wrapper the local paint uses: the frame
-    //  is sized to its content by a reporter inside the document, and the
-    //  ship's render has none. Written verbatim it replaced the fitted local
-    //  paint a moment later, and the frame scrolled itself again with the
-    //  engine's native (light) bar. Every screenshot taken before this answer
-    //  landed looked fixed; the one the user looks at is after it.
-    //  ...except an md page with task boxes this viewer may tick: the
-    //  ship renders its boxes disabled, and this answer lands after the
-    //  local paint, so a page opened in Read (the daily journal from its
-    //  button) showed dead boxes. The local paint carries their lines.
     if (typeof d.html === 'string' && d.kind !== 'tex' && !(taskLive() && hasTask(d.body))) {
       prev.removeAttribute('src'); prevDoc(withPreviewScrollbars(d.html, true));
     }
     else if (!quiet) refreshPreview();
-    // A quiet open is the COMMON one: the tree dump already carried the body,
-    // so the editor painted instantly and the render=1 fetch is an upgrade.
-    // refreshPreview is suppressed there to avoid a second render — but that
-    // left the PREVIEW alone on the pier, still showing the document you just
-    // navigated away from until the fetch landed. That is the "previews are
-    // slow" report: the editor was never slow, the pane beside it was.
-    // Paint locally now; the fetch still corrects it when it arrives.
     else paintLocal();
     if (!CONTENT() && !quiet) checkErrors();
     drawersCloseSince(openDrawers);
   }
 
-  // blankPage: the editor reset a new page starts from. Nothing named is
-  // open, the field (where shown) is editable, and `into` is the folder an
-  // upload or a save lands in. A page is never written in memory mode: the
-  // autosave there goes to /know-save, so a memory in front leaves it first.
   function blankPage(into) {
     if (mode === 'know') setMode('pages');
     openNext();          // an open still in flight must not land over this
@@ -8276,69 +6092,32 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
   }
 
-  // ── new page: one name and kind dialog for web, desktop and phone ────────
-  //  Everything user-initiated routes through newFile: the toolbar
-  //  (newFile('')), the desktop File menu (which clicks it), the green + on
-  //  every tree folder (newFile(path)), the strip's + and the phone bar's
-  //  label. The name field left the screen with the old bar, so the dialog
-  //  is the one way a page gets its name, and its kind.
-  //
-  //  focusName false is boot and the tab model landing on an empty page.
-  //  That must not be interrupted by a dialog, and they are the callers that
-  //  say so: a plain reset, nothing asked.
   function newFile(into, focusName = true) {
     if (!focusName) return blankPage(into);
     (async () => {
-      //  a folder's + pre-fills that folder; the toolbar keeps offering the
-      //  open page's path (never a memory's key: that names no page). Read
-      //  it BEFORE the reset below, which clears the field it comes from.
-      //  A tool tab in front hides the editor, so its name field is no seed.
       const seed = into ? into.replace(/\/+$/, '') + '/'
         : mode === 'know' || !docFront() ? '' : (pname.value || '');
       const picked = await askNameKind('page name (e.g. notes/todo)', seed,
         'create', pkind.value);
       if (!picked) return;
-      //  reset the editor only once the create is confirmed, so a cancel
-      //  leaves the open page exactly as it was. Under a tool tab the page
-      //  gets a document tab of its own first (docTab, 21-tabs.js).
       if (!(await docTab())) return;
       blankPage(into);
       let name = picked.name;
       let kind = picked.kind;
-      //  a typed extension still wins, because typing notes/todo.md and being
-      //  given a page called "todo.md" would be absurd. The table is EXT_KIND
-      //  in 30-tree.js, the same one the uploader files by.
       const dot = name.lastIndexOf('.');
       const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
       if (typed) { kind = typed; name = name.slice(0, dot); }
-      //  the field is seeded with the REAL path; the typed leaf, when it was
-      //  not a valid path, rides to save() as the display name
       const rn = realName(name);
       if (!rn) return;
       name = rn.name;
       newRn = rn;
       pkind.value = kind;
       if (kind === 'fodt' && !(await writerBlank())) return;
-      //  blankPage above left nothing open; this names the buffer, and
-      //  setOpen's event repaints the labels
       setOpen(null, { shown: name });
-      //  Show it in the tree NOW, pulsing, before the ship has agreed. The
-      //  write is a pier round trip and the tree sitting unchanged through it
-      //  reads as nothing having happened. The pulse is the honest part: it
-      //  says recorded, not yet confirmed. Cleared on success, and the row is
-      //  dropped on failure so a page that does not exist is never left there.
       const already = nodes.some((n) => n.page && n.path === name);
       if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
-      //  the button says create, so write the page here. Naming the buffer
-      //  and leaving it unwritten read as a create that did nothing. save()
-      //  owns the whole create: 409, the offline queue, the tree patch and
-      //  the url, so this must not reimplement any of it.
-      //  queued behind another save, the create has not happened yet: the
-      //  row keeps pulsing, and save() settles it when the create runs
       const queued = (await save()) === 'queued';
       if (!already && !queued) {
-        //  save() sets `current` on any outcome it considers a success,
-        //  including a queued offline write, which IS a success here.
         if (current === name) setTreePending(name, false);
         else { dropTreeNodes(name); snapTree(); renderTree(); }
       }
@@ -8347,11 +6126,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
   async function newFolder() {
-    // a server-side rejection (colliding with an existing page, say) used to
-    // leave nothing to retype into: the dialog already closed the moment the
-    // typed name passed client-side validName(). Loop back into askName
-    // instead, seeded with the name that just failed, so the fix is an edit
-    // rather than a full restart.
     let seed = folderCtx ? folderCtx + '/' : '';
     for (;;) {
       const typed = await askName('folder name (e.g. notes or notes/sub)', seed, 'create');
@@ -8372,21 +6146,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   }
 
-  //  The three steps save() and autosave() both owe. They are two policies
-  //  over one protocol: what genuinely differs (a name to validate, 409 and
-  //  the create branch on one side, the debounce and the know branch on the
-  //  other) stays in each arm, and the bookkeeping that must never drift
-  //  between them lives here.
 
-  //  a save arriving mid-flight only set savePending: the save itself, to
-  //  run again (an explicit save with the kindOverride it wanted, or a
-  //  memory save), or bare `true` for an autosave. A re-run that forgot the
-  //  kind and fell back to autosave's curKind/pkind guess is how a
-  //  restore's revision kind used to vanish. And `true` for an explicit
-  //  save made it an autosave, which does nothing for a page or memory not
-  //  yet named: a Save clicked while another save was in flight on a slow
-  //  pier was simply lost. Take the trailing save now, only if the text
-  //  really is still unsaved.
   const flushPending = () => {
     if (!savePending) return;
     const pending = savePending;
@@ -8394,10 +6154,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (!dirty && !pending.create) return;
     if (typeof pending === 'function') pending(); else autosave();
   };
-  //  queue `fn` behind the save in flight, replacing what waits there,
-  //  except a create: that is a page the user asked for and nothing else
-  //  would write it, so it is kept and runs first. `create` runs even on a
-  //  clean buffer (flushPending).
   const queueSave = (fn, create) => {
     const prev = savePending;
     const keep = typeof prev === 'function' && prev.create;
@@ -8405,13 +6161,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       ? async () => { await prev(); if (create || dirty) return fn(); } : fn,
     { create: !!create || keep });
   };
-  //  we know exactly what we just wrote. Patch the local copies so reopening
-  //  this page paints the saved text, not the dump's pre-save body. The
-  //  cached render is stale by definition. A content page's preview is
-  //  the local paint, so its cached answer is kept with the saved text and
-  //  rev and without the html: reopening it costs no page-source read.
-  //  Any other kind's render is the ship's: drop it and let it re-render.
-  //  Only a save that can change the kind passes one.
   const patchLocal = (name, kind, sent, rev) => {
     const c = pageCache.get(name);
     const k = kind || (c && c.kind);
@@ -8419,35 +6168,15 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       pageCache.set(name, { ...c, body: sent, kind: k, rev, html: undefined });
     } else pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
-    // not a link's: its text is the host's, read live, and the rev beside
-    // a body here would be a base the next save claims falsely
     if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
   };
-  // an accidental tab close is the same data-loss shape as the grub-discard
-  // guard up in openPage: a dirty edit, grub or page, exists only here
-  // until it is saved. That guard catches deliberate in-app navigation. This
-  // one catches the close and reload that never go through openPage at all.
-  // A parked tab's buffer counts too (__latUnsaved, 20-state.js).
   window.addEventListener('beforeunload', (e) => {
     if (!window.__latUnsaved()) return;
     e.preventDefault();
     e.returnValue = '';
   });
 
-  //  A save through a link (30-tree.js) claims the owner's rev this editor
-  //  read, as ?base=. Unlike a page of our own, a link has nowhere to keep
-  //  a replaced body, so a stale claim is refused (409) and nothing is
-  //  written. linkBase is that claim for a save of `name`, '' for a page
-  //  (and for a link with no rev read yet: the ship then claims its cached
-  //  rev, never nothing).
   const linkBase = (name) => (linkOf(name) && curRev ? '&base=' + curRev : '');
-  //  a save through a link that did not land: the host's page moved on past
-  //  what this editor read, or the host did not answer (a 502 or 504 the
-  //  ship itself sent, never queued: the queue is for this ship being
-  //  away). The text stays here, unsaved. -> true when it was one of those.
-  //  And a link save is NEVER queued for later, also when this ship is the
-  //  one away: a replay could only claim a base the host may have moved
-  //  past, and the queue drops what is refused. The text stays here.
   async function linkSaveFail(name, w) {
     const lk = linkOf(name);
     const r = w.r;
@@ -8464,27 +6193,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return true;
   }
 
-  // the realName() split the create dialog (newFile) made before seeding
-  // #pname with the real path; save() consumes it on create
   let newRn = null;
-  // a create that lands with nothing else opened meanwhile: nothing is
-  // named yet and the name field still names this page. Not the body:
-  // text typed during the round trip changes it, which left the page
-  // unnamed and its typing never autosaved (autosave needs `current`), and
-  // two empty pages have the same one, so a create landing under a second
-  // New took the second page's blank buffer for its own.
   const createdHere = (creating, name) => creating && current === null && pname.value === name;
-  //  the editor holds a page: a group brought to the front during a save
-  //  (28-splits.js) can hold a memory or a grub of the same name
   const pageHere = () => mode !== 'know' && !grubPath;
-  //  the page `name` (as typed) is on the ship, or queued for it, and not
-  //  a create's pulsing row still waiting for its answer
   const madePage = (name) => {
     const rn = realName(name);
     return !!rn && nodes.some((n) => n.page && n.path === rn.name && !n.pending);
   };
-  //  `fixed`: a queued create whose page the editor no longer shows (see
-  //  below). It names what to write, and the editor is left alone.
   async function save(kindOverride, fixed) {
     if (!fixed) writerSync();     // a Writer page's text into src.value
     if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
@@ -8492,21 +6207,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     let name = fixed ? fixed.name : pname.value.trim().replace(/^\/+|\/+$/g, '');
     if (!name) { st('name required', false); return; }
     const creating = !!fixed || current === null;
-    // carry kindOverride into the re-arm: a bare `true` here forgot which
-    // kind THIS call wanted, and the trailing run picked whatever the
-    // picker happened to show by the time it fired
-    //  a create queued here runs even when the buffer is clean by then (an
-    //  empty new page is clean from the start): flushPending sees `create`
-    //  It is queued for THIS document. By the time it runs the editor may
-    //  show another, and save() writes whatever name and buffer it finds
-    //  then, so it runs from the editor only if the editor still shows
-    //  this one. A create carries what it creates (name, body, kind, the
-    //  dialog's split), so a second New during the round trip still gets
-    //  the first page written. 'queued' tells newFile it has not run yet.
-    //  A create also waits behind the create before it for the same page (a
-    //  second Ctrl+S during the round trip). Once that one has made the page
-    //  it skips itself: a second create is a 409 about our own page. A page
-    //  that was already there when it was queued still gets its honest 409.
     if (saving) {
       const doc = current, shown = pname.value;
       const own = fixed || (creating ? { name, body: src.value,
@@ -8529,39 +6229,21 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     saving = true;
     st('saving…');
-    // capture the exact body being sent: keystrokes landing during the round-trip
-    // must NOT be marked clean, or the next refresh swaps the stale server copy
-    // in and the typed text is lost (same guard autosave has always had).
     const sent = fixed ? fixed.body : src.value;
     const kind = fixed ? fixed.kind : kindOverride || curKind || pkind.value;
-    // NO base on live saves, deliberately: base is the OFFLINE queue's tool,
-    // where the divergence window is real. Online, any dirty-blocked refresh
-    // or panel-driven save can leave curRev one step behind, and every stale
-    // base manufactures a false conflict page out of nothing (ui-matrix
-    // caught exactly that). Online editing stays last-writer-wins.
     const rn = realName(name);
     if (!rn) {
       saving = false;
       st('bad name — use at least one letter or digit', false);
       return;
     }
-    // a typed name that is not a valid path saves under its slug and keeps
-    // the typed text as display names (the tree shows those, the name
-    // field shows the real path). newRn is the create dialog's copy of
-    // the same split, made before it seeded the field with the slug.
     const rnc = !creating ? null : rn.dnames ? rn : fixed ? fixed.rn : newRn;
     if (!fixed) newRn = null;
     const dname = rnc ? rnc.dname : '';
-    //  the field shows the slug from here on; nothing else about what is
-    //  open changes, so `current` and the lock are passed through as they are
     if (rn.name !== name) {
       name = rn.name;
       if (!fixed) setOpen(current, { shown: name, readOnly: pname.readOnly });
     }
-    //  a write that did not land: a create's pulsing row goes (newFile put
-    //  it there, and a create that ran from the queue settles its own row),
-    //  and the save queued behind this one still runs. It checks what it
-    //  was queued for, so it never writes another document.
     const failed = () => {
       if (creating && nodes.some((n) => n.page && n.path === name && n.pending)) {
         dropTreeNodes(name); snapTree(); renderTree();
@@ -8571,8 +6253,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc) + (creating ? '' : linkBase(name));
     let w = { gone: true };
-    //  behind a folder job a save would only wait out its timeout and land
-    //  after the queued ones: it joins the queue, which keeps the newest
     const sentAt = Date.now();
     try {
       if (!(jobWait && !creating && !linkOf(name)))
@@ -8581,21 +6261,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const r = w.r;
     if (await linkSaveFail(name, w)) return failed();
     if (w.gone) {
-      // the ship is unreachable. Queue the edit and complete the save's
-      // LOCAL bookkeeping exactly as a successful save would, so the editor
-      // does not care which kind it got
-      // A failed queue write means this edit exists ONLY in the textarea.
-      // Clearing dirty there would tell the editor the work is safe and let
-      // the next navigation drop it, so the bookkeeping stays untouched and
-      // the page keeps behaving as unsaved. enqueueSave has already said so.
       const queued = await enqueueSave(name, kind, sent, creating, rnc);
       if (!queued) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return failed();
       }
       if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
-      // same stillHere guard as the online path: only touch live editor state
-      // if the editor has not moved to another document during the round-trip.
       const stillHere = fixed ? tabAdopt(fixed, name)
         : pageHere() && (current === name || createdHere(creating, name));
       if (!stillHere) tabLanded('page', name, sent);
@@ -8614,29 +6285,16 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return;
     }
     if (r && r.status === 409) {
-      //  the ship refuses a save into a folder being moved, or onto a page
-      //  that moved away, and says where it went
       const why = await errText(r);
       st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
       return failed();
     }
     if (!r.ok) { st('save failed' + await errText(r), false); return failed(); }
-    // the response carries the new revision and whether this save landed
-    // on top of a revision made elsewhere; parse it regardless of focus.
     let vr = null;
     try { vr = await r.json(); } catch {}
-    // saved-document bookkeeping, applied whether or not the editor still
-    // shows it, so a New clicked mid-save keeps both documents. Only a
-    // CREATE changes the tree, and it confirms a row newFile left pulsing.
     if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent, vr && vr.rev);
     await dropQueued(name, sentAt);
-    // live-editor state ONLY if the editor still shows the saved document.
-    // A New or open during the round-trip moved it; rewriting current, the
-    // name field, dirty or the URL here would brand the new page as this save.
-    //  A create run from the queue (`fixed`) is still here only when its
-    //  own tab came back to the front, unnamed, during the round trip;
-    //  in the background that tab is named for it instead (tabAdopt).
     const stillHere = fixed ? tabAdopt(fixed, name)
       : pageHere() && (current === name || createdHere(creating, name));
     if (!stillHere) tabLanded('page', name, sent, vr && vr.rev);
@@ -8663,48 +6321,23 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
 
   let autoTimer = null;
   const autosaveOn = () => { try { return localStorage.latAutosave !== '0'; } catch { return true; } };
-  // turned back on in Settings (another document) while text waits unsaved:
-  // it goes out on the usual debounce, as if just typed
   window.addEventListener('storage', (e) => {
     if (e.key !== 'latAutosave' || !autosaveOn() || !dirty) return;
     clearTimeout(autoTimer);
     autoTimer = setTimeout(autosave, 2000);
   });
   async function autosave() {
-    // GRUB MODE IS EXPLICIT-SAVE ONLY. Autosaving a lattice page is fine. It is
-    // your own note and the editor has always worked that way. Autosaving
-    // another app's source is not. A half-typed edit to calendar.html would go
-    // live 2s after you paused, and the 5-minute history window may not have
-    // kept a revision fine-grained enough to step back to. Save/Cmd+S only.
-    // The 2s debounce still fires. It just reports instead of writing, so the
-    // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
     writerSync();
     if (!current || curFolder || !dirty || viewingRev !== null) return;
-    // a move in flight may be carrying this page away: the save goes to
-    // its new name once the move has renamed the editor (75-move.js)
     if (moving) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 1000); return; }
-    // a link whose save was refused as stale: no more writes until the
-    // user picks one of the bar's ways out, or saves on purpose (Ctrl+S)
     if (mode !== 'know' && linkCf.has(current) && linkOf(current)) {
       st('not saved: ' + linkOf(current).host + ' changed this page since you opened it', false);
       return;
     }
-    // Settings > Editor > Autosave pages, off: manual only. This debounce
-    // stops, and so do the flushes a tab switch or a navigation makes
-    // (flushNoAsk and guardDirty, 20-state.js, which ask instead). Only
-    // Ctrl+S, the save button and :w write.
     if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
-    // never overlap saves. The pier serializes, so a second in-flight save is
-    // 3.7s of stale-body work queued behind the first, delaying every preview
-    // behind it. Coalesce to one trailing save instead.
-    //  never over an explicit save already waiting: that one names its kind
     if (saving) { if (!savePending) savePending = true; return; }
     saving = true;
-    // the document this autosave owns. If the user navigates mid-flight,
-    // `current` moves; everything below acts on `target`, not the new current.
-    //  and what it is: a group coming to the front (28-splits.js) can
-    //  change the mode and the kind in the editor while this flies
     const target = current;
     const sent = src.value;
     const know = mode === 'know';
@@ -8723,12 +6356,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     } finally { saving = false; }
     const r = w.r;
     if (!know && await linkSaveFail(target, w)) { flushPending(); return; }
-    //  a document parked meanwhile keeps its own copy (21-tabs.js), which
-    //  is what was sent unless it was typed into after
     const tk = know ? 'know' : 'page';
     if (w.gone) {
-      //  same rule on the autosave path: if it did not queue, it is not saved,
-      //  so the editor stays dirty and keeps the text under the cursor
       if (!(await (know ? enqueueKnow(target, sent) : enqueueSave(target, tkind, sent, false, null, trev)))) {
         flushPending();
         return;
@@ -8741,16 +6370,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (!r.ok) { st('autosave failed' + await errText(r), false); flushPending(); return; }
     let vr = null;
     if (!know) { try { vr = await r.json(); } catch {} }
-    //  patch the saved doc's local cache regardless of focus. No kind: an
-    //  autosave writes the page's existing kind, it never sets one.
     if (!know) { patchLocal(target, null, sent, vr && vr.rev); await dropQueued(target, sentAt); }
     if (!here()) tabLanded(tk, target, sent, vr && vr.rev);
-    // live-editor state only if the editor is still on the doc we autosaved
     if (here()) {
       if (src.value === sent) dirty = false;   // typed during the request? stay dirty
       if (!know && vr && vr.rev) curRev = vr.rev;
-      // the conflict verdict must be the LAST word, not clobbered by the
-      // ordinary confirmation a line later
       if (vr && vr.conflicted)
         st('autosaved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
       else st('autosaved');
@@ -8760,16 +6384,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (offCount) replayQueue(true);     // this autosave proves the ship is back too
   }
 
-  // ── saving a parked buffer ──────────────────────────────────────────────
-  // A group that leaves the front (gRelease, 21-tabs.js) does not wait for
-  // its flush: its tab's unsaved text goes into the tab's snap, and this
-  // writes it from there, on autosave's terms. Pages and memories only,
-  // with a name, autosave on, and never a link autosave stands down for.
-  // It takes its turn behind any save in flight (one write at a time) and
-  // gives up once the tab is not parked any more, since then the live
-  // editor's own autosave owns the text. What lands marks the snap clean
-  // only if it still holds what was sent; a tab that came back to the
-  // front meanwhile is marked clean live, by the same rule.
   async function saveParked(t) {
     const s = t.snap;
     if (!s || !s.dirty || !t.key || !autosaveOn() || moving) return;
@@ -8780,10 +6394,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     try { await parkedSave(t, s, know); } finally { parkedRun--; }
   }
   async function parkedSave(t, s, know) {
-    // settled, not only off the wire: a save clears `saving` before its
-    // bookkeeping (tabLanded) marks this snap clean and gives it the new
-    // rev, and a write from the gap was a duplicate, on a link one that
-    // claimed the old rev and drew a false conflict
     await savesSettled(false);
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
     if (t.snap !== s || !s.dirty || !allTabs().includes(t)) return;
@@ -8795,8 +6405,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       : api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
         + (linkOf(name) && s.rev ? '&base=' + s.rev : '');
     let w = { gone: true };
-    //  behind a folder job a page's save queues instead of going out, as
-    //  the live editor's does (jobWait, 08-offline.js)
     const sentAt = Date.now();
     try {
       if (!(jobWait && !know && !linkOf(name)))
@@ -8804,7 +6412,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     } finally { saving = false; }
     const landed = (rev) => {
       tabLanded(t.kind, name, sent, rev);
-      // back in front by now: the live editor holds it
       if (t === activeTab && current === name && (mode === 'know') === know && !grubPath) {
         if (src.value === sent) dirty = false;
         if (!know && rev) curRev = rev;
@@ -8823,7 +6430,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return;
     }
     let vr = null;
-    //  and a queued edit older than this save is superseded by it
     if (!know) {
       try { vr = await w.r.json(); } catch {}
       patchLocal(name, null, sent, vr && vr.rev);
@@ -8836,10 +6442,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (offCount) replayQueue(true);
   }
 
-  // Every save is counted from its start to the end of its bookkeeping
-  // (saveTail), and every background save of a parked tab while it runs
-  // (parkedRun). savesSettled waits until none is left, `parked` saying
-  // whether the parked ones count, capped past a save's own timeout.
   let saveTail = 0, parkedRun = 0;
   const tailed = (fn) => async (...a) => {
     saveTail++;
@@ -8855,11 +6457,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       await new Promise((r) => setTimeout(r, 50));
   }
 
-  // ── a link whose save was refused as stale ──────────────────────────────
-  // The host's page moved on past the rev this editor read, so the text
-  // here was not written and is the only copy. A bar over the document
-  // offers the two ways out; until one is taken autosave stands down for
-  // that link (linkCf, 30-tree.js) and only Ctrl+S tries again.
   const lcfBar = document.createElement('div');
   lcfBar.id = 'lnkcf';
   lcfBar.className = 'lnkcf';
@@ -8869,7 +6466,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     '<button type="button" id="lnkcfre">Reload theirs</button>' +
     '<button type="button" id="lnkcfkeep">Keep mine as a copy</button>';
   $('docarea').before(lcfBar);
-  //  by id, not lcfBar: paintLink (65-ctl.js) can run before this file has
   function paintLinkCf(name) {
     const bar = $('lnkcf');
     if (!bar) return;
@@ -8878,7 +6474,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (lk) $('lnkcfmsg').textContent = lk.host + ' changed this page since you opened it. ' +
       'Your text here is not saved.';
   }
-  // drop what is here and read theirs again
   async function linkReload() {
     const name = current;
     if (!linkOf(name)) return;
@@ -8888,8 +6483,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     paintLinkCf(name);
     await openPage(name);
   }
-  // what is here becomes a page of my own beside the link (<name>-mine, or
-  // -mine-2 and on when that is taken), then theirs is read again
   async function linkKeepMine() {
     const name = current;
     const lk = linkOf(name);
@@ -8916,43 +6509,19 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   $('lnkcfkeep').onclick = linkKeepMine;
 
 // ── src/40-grub.js ────────────────────────────────────────────────────────
-  // ── editing an arbitrary grub (?grub=<ball path>) ────────────────────────
-  // Any file in the ball, not just a lattice page: an app's html/js/css/hoon.
-  // Deliberately NOT a third setMode branch. That function is wired into the
-  // tree, kind picker, chips and history panes, and a third mode would mean
-  // touching every one of them. This is a thin overlay: same textarea and save
-  // button, its own two endpoints.
   let grubPath = null;
   let grubShip = null;   // '~ship' when the grub lives on ANOTHER ship; null = local
-  // the host's rev this editor read (or last wrote), a remote save's base:
-  // a host page that moved past it answers a conflict, never an overwrite
   let grubRev = null;
-  // the text a remote save sent that the host did not confirm (a 202, or an
-  // ack that never came): it may have landed, past grubRev. The next save
-  // reads the host first, so it does not claim a base its own write moved
-  // the page past and 409 against itself.
   let grubUnsure = null;
-  // the picker's value before a grub took it over, restored on exitGrub. Set
-  // only on the FIRST entry (see the guard in openGrub), so browsing straight
-  // from one grub to another still remembers the page kind that came before.
   let grubPrevKind = null;
-  // Every editor reset that leaves grub mode MUST call this: Save gives
-  // grubPath top precedence, so a reset that forgets it leaves Save pointed
-  // at the app file while the textarea fills with unrelated content — an
-  // overwrite wearing a 'saved' status. openPage clears inline; newFile,
-  // selectFolder and setMode route through here.
   const exitGrub = () => {
     grubPath = null; grubShip = null; grubRev = null; grubUnsure = null;
     if (grubPrevKind !== null) { pkind.value = grubPrevKind; grubPrevKind = null; }
   };
-  // Answers false when the open failed, like openPage (35-pages.js).
   async function openGrub(p, ship) {
     const my = openNext();
     enterGrub(p, ship);
     st('loading ' + p + '…');
-    // remote files ride /browse-file (bounded cross-ship peek). Its JSON says
-    // body/mark where grub-source says text/blot. Normalize here, not there,
-    // since both routes have other consumers.
     const url = grubShip
       ? api + '/browse-file?ship=' + encodeURIComponent(grubShip) + '&path=' + encodeURIComponent(p)
       : api + '/grub-source?path=' + encodeURIComponent(p);
@@ -8960,7 +6529,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     try { r = await busyFetch(url, undefined, 'open'); } catch {}
     if (my !== openSeq) return;
     if (!r || !r.ok) {
-      // the editor stays as enterGrub left it, empty and locked
       st('could not open ' + p + (r ? ' (' + r.status + ')' : ''), false);
       return false;
     }
@@ -8968,40 +6536,20 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (my !== openSeq) return;
     src.value = d.text || d.body || '';
     if (grubShip && typeof d.rev === 'number') grubRev = d.rev;
-    // a binary/opaque grub has no text form. Show it, never offer to save it
     src.readOnly = !d.editable;
     dirty = false;
     const blot = d.blot || d.mark || '';
-    // the picker drives syntax highlighting (LMAP) and list-continuation
-    // rules (proseFlavor), so it needs to follow this file's real language.
-    // Left alone it keeps whatever page kind was open before, and editing
-    // calendar.html ends up highlighted and indented as that stale kind.
-    // a shared lattice page arrives as its prose, with the builder it is
-    // wrapped in, which is its page kind
     const mk = d.builder || extKind(String(blot).split('/').pop()) || 'hoon';
     if ([...pkind.options].some((o) => o.value === mk)) pkind.value = mk;
-    //  setOpen ran before this file's kind was known, so tell the desktop
-    //  label (its tip names the kind) the same way setOpen does
     pname.dispatchEvent(new Event('input'));
     curKind = mk;
-    // paint once the kind is known: a highlight of the old kind is thrown
-    // away when it answers
     render();
-    // the pane follows too: a Read tab opened this grub in place, and
-    // nothing else repaints it, so it kept the page that was there before
     refreshPreview();
     st(!d.editable ? 'read-only — ' + blot + ' has no text form'
        : grubShip ? 'on ' + grubShip + ': saves need its permission'
        : 'grub ' + blot + ', no autosave here: Ctrl+S to save');
     return true;
   }
-  // grub mode on, for `p` (on `ship`, or here), with its label and address,
-  // and an empty locked editor until its text is in: openGrub's first half,
-  // and all a tab's own unsaved grub buffer needs to come back (21-tabs.js).
-  // Empty, because grubPath is what Save and the tab model go by. Left
-  // showing the document before it while the grub loaded, the editor
-  // offered that text to Save as this grub's, and a tab switch in that
-  // window filed it as the grub's unsaved buffer.
   function enterGrub(p, ship) {
     src.value = '';
     src.readOnly = true;
@@ -9013,11 +6561,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     grubUnsure = null;
     if (grubPrevKind === null) grubPrevKind = pkind.value;
     curFolder = null;
-    // nothing of the document before it stays in the pane either, while
-    // the grub loads or after a load that fails
     prevBlank();
-    // a shared lattice page reads as "~ship: its/name", not its whole ball
-    // path; the name field is only a label here (Save goes by grubPath)
     const pg = /\/page\/(.+)\/code$/.exec(p);
     setOpen(null, { shown: grubShip ? grubShip + ': ' + (pg ? pg[1] : p) : p, readOnly: true,
       url: '/apps/lattice/app?grub=' + encodeURIComponent(p) +
@@ -9025,7 +6569,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
   async function saveGrub() {
     if (!grubPath || src.readOnly) return;
-    //  queued for this grub: a page or memory in front by then is not it
     if (saving) {
       const p = grubPath, s = grubShip;
       queueSave(() => { if (grubPath === p && grubShip === s) return saveGrub(); });
@@ -9036,7 +6579,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const sent = src.value;
     const p = grubPath, s = grubShip;
     if (s && grubUnsure !== null) {
-      // our unconfirmed text there is our write landed: its rev is the base
       const was = grubUnsure;
       grubUnsure = null;
       try {
@@ -9049,12 +6591,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     let r = null;
     try {
-      // a remote save is verified server-side by revision bump. A peer that
-      // never granted make ACKS the poke and silently drops the write, and
-      // "saved" on a dropped write is the one lie an editor must not tell.
-      // Bounded: the ship answers a remote save within ~30s (three ~10s
-      // steps at worst), and one that never answers must not hold `saving`
-      // and every save queued behind it.
       r = await tfetch(s
         ? api + '/remote-save?ship=' + encodeURIComponent(s) +
           '&path=' + encodeURIComponent(p) +
@@ -9063,8 +6599,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         { method: 'POST', body: sent }, s ? 45000 : 30000);
     } catch {}
     saving = false;
-    // a remote save names its outcome (+remote-save-respond); one with an
-    // outcome is our ship's answer about the HOST, never our ship's absence
     let j = null;
     if (s && r) { try { j = await r.clone().json(); } catch {} }
     const out = j && j.outcome;
@@ -9083,20 +6617,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return;
     }
     if (!r || !r.ok) {
-      // 'rejected' is the mark's word, and a 502 is the ship's absence, not
-      // the mark's opinion of the content. Grub edits have nowhere to queue
-      // the way page saves do, so the text just stays here until Save runs
-      // again with the ship back.
-      // the save queued behind this one still runs (flushPending, 35-pages.js)
       if (shipGone(r)) {
-        // no answer at all: the request may still have reached the ship
         st(r ? 'ship unreachable — grub edits do not queue'
           : 'no answer — the save may still land; Ctrl+S to try again', false);
         flushPending();
         return;
       }
-      // the mark can reject the source. Show ITS error, since the stored grub
-      // still holds the previous content and the user needs to know why
       st('save rejected' + await errText(r), false);
       flushPending();
       return;
@@ -9105,20 +6631,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (here && src.value === sent) dirty = false;
     if (!here) tabLanded('grub', p, sent, null, s);
     if (here) st('saved');
-    // bust the page DIRECTORY, not the grub: the cached views are the /x/
-    // dir listing and page view, and none of their URLs name '/code'
     bustPages(String(p).replace(/\/[^/]*$/, ''));
     flushPending();
   }
 
 // ── src/45-templates.js ───────────────────────────────────────────────────
-  // Save, the button and Cmd+S alike. Nothing while the tab in front is not
-  // a document (a tool tab): what the editor holds then is a parked tab's
-  // buffer, and writing it from a screen that does not show it would leave
-  // that tab's snap claiming unsaved work the ship already has.
-  // grubPath first: it is the only mode with no `current`, and page save()
-  // would write to the wrong place (or nowhere) while a grub is open.
-  // Cmd+S matters more there than elsewhere, since grub mode has no autosave.
   const saveFront = () => {
     if (!docFront()) return;
     if (grubPath) saveGrub();
@@ -9126,11 +6643,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     else save();
   };
   $('save').onclick = saveFront;
-  // ── new page-tree from a template ────────────────────────────────────────
-  // Templates stamp out a whole tree (the `site` template is four pages), and
-  // each page is its own writer round-trip, so this is deliberately slow and
-  // says so. Instantiation rewrites the template's self-references to the name
-  // you choose.
   async function newFromTemplate() {
     let names = [];
     try {
@@ -9154,8 +6666,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       } catch {}
       if (r && (r.ok || r.offline)) {
         await loadTree();
-        // a multi-page template lands as a folder. Open its index if it made
-        // one, else the page itself, else just select the new folder.
         const has = (p) => nodes.some((n) => n.page && n.path === p);
         if (has(name)) await openIn('page', name);
         else if (has(name + '/index')) await openIn('page', name + '/index');
@@ -9163,16 +6673,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         st('created ' + name + ' from ' + tmpl);
         return;
       }
-      // the server refused this name \u2014 loop back into askName seeded with
-      // it (keeping the template pick), so the retry is an edit not a redo
       if (r && r.status === 409) st('a page by that name exists', false);
       else st('template failed' + await errText(r), false);
       seed = name;
     }
   }
   $('newtmpl').onclick = newFromTemplate;
-  // newFile paints over the editor, so whatever is unsaved there goes
-  // through guardDirty first, like any other way off a document
   $('newfile').onclick = async () => { if (await guardDirty()) newFile(''); };
   $('newfolder').onclick = newFolder;
   window.addEventListener('keydown', (e) => {
@@ -9181,21 +6687,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       saveFront();
     }
   });
-  // Applies the list-continuation edit if the caret is in a list. Shared by
-  // the keydown path and the beforeinput path below, which is the ONLY one a
-  // phone reliably takes.
-  // prose kinds get list behaviour; anything else is code, where "- " and
-  // "1." are just characters. know memories are prose, so markdown rules.
   const proseFlavor = () => {
     if (mode === 'know') return 'md';
     return ['md', 'text', 'gmi'].includes(pkind.value) ? pkind.value : null;
   };
-  // Apply a {from, to, text, caret} edit from the pure list functions.
-  // execCommand keeps the textarea's OWN undo stack, so Ctrl+Z steps back
-  // through these edits like any typing. Assigning src.value wipes that
-  // stack outright (the old Tab handler's sin). Deprecated, not gone, and
-  // there is no replacement that preserves undo; setRangeText is the
-  // fallback when an engine refuses.
   const applyEdit = (r) => {
     src.setSelectionRange(r.from, r.to);
     let ok = false;
@@ -9214,23 +6709,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return true;
   };
   let plainBreak = false;
-  // A soft keyboard usually does NOT report Enter as a keydown. Android and
-  // GBoard send keyCode 229 (or key "Unidentified") because the IME owns the
-  // composition, so the keydown branch below never matched and lists simply
-  // did not continue on a phone. beforeinput carries insertLineBreak on every
-  // engine that matters, which is why the real handler hangs off it too.
-  //
-  // On a desktop press keydown gets there first and calls preventDefault,
-  // which cancels beforeinput, so exactly one of these two ever fires.
   src.addEventListener('beforeinput', (e) => {
     if (e.inputType !== 'insertLineBreak' && e.inputType !== 'insertParagraph') return;
-    // the autocomplete owns Enter while it is open, as on the keydown path
     if (ac.open) return;
     if (plainBreak) { plainBreak = false; return; }
     if (continueList()) e.preventDefault();
   });
   src.addEventListener('keydown', (e) => {
-    // autocomplete owns these keys while it is open
     if (ac.open) {
       if (e.key === 'Tab' || e.key === 'Enter') { e.preventDefault(); acAccept(); return; }
       if (e.key === 'ArrowDown') {
@@ -9241,12 +6726,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       }
       if (e.key === 'Escape') { e.preventDefault(); acClose(); return; }
     }
-    // Smart list continuation. Prose kinds only: a "- " in a hoon or js file is
-    // not a list item. Shift+Enter is the deliberate escape hatch, and it is
-    // also what the browser gives a user who wants a plain newline.
-    //
-    // A modifier here means "just break the line", and the beforeinput handler
-    // below has no modifier state of its own, so record the decision for it.
     if (e.key === 'Enter') plainBreak = e.shiftKey || e.metaKey || e.ctrlKey || e.altKey;
     if (e.key === 'Enter' && !plainBreak && continueList()) {
       e.preventDefault();
@@ -9255,30 +6734,18 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (e.key === 'Tab') {
       e.preventDefault();
       if (src.readOnly) return;   // readOnly blocks typing, not scripted edits
-      // On a list line, Tab is structure, not whitespace: indent the item a
-      // level, Shift-Tab brings it back out. A multi-line selection moves
-      // every list line in it together.
       const flavor = proseFlavor();
       if (flavor) {
         const r = listTab(src.value, src.selectionStart, src.selectionEnd,
           flavor, e.shiftKey ? -1 : 1);
         if (r) { applyEdit(r); return; }
       }
-      // Shift-Tab outside a list has nothing to take back
       if (e.shiftKey) return;
       applyEdit({ from: src.selectionStart, to: src.selectionEnd,
         text: '  ', caret: src.selectionStart + 2 });
     }
   });
 
-  // ── the same two moves, reachable by thumb ────────────────────────────────
-  // A soft keyboard has no Tab key at all — the keydown branch above simply
-  // never fires on a phone, the same hole Enter had before beforeinput. There
-  // is no beforeinput for Tab, so mobile gets buttons: a small floating pair
-  // that exists only while the caret sits somewhere listTab
-  // would actually act. The predicate IS listTab: the cluster shows exactly
-  // when a tap would do something, fences and gemtext included, because it
-  // asks the same function the tap will call.
   const ltab = (dir) => {
     if (src.readOnly) return;
     const flavor = proseFlavor();
@@ -9295,21 +6762,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const b = document.createElement('button');
     b.id = id; b.type = 'button'; b.textContent = glyph;
     b.title = title; b.setAttribute('aria-label', title);
-    // pointerdown + preventDefault: the tap must NOT move focus off the
-    // textarea, or the keyboard drops and the caret (the thing the edit is
-    // FOR) is gone before the handler runs.
     b.addEventListener('pointerdown', (e) => { e.preventDefault(); ltab(dir); });
     lbtns.appendChild(b);
   }
-  // inside .ws, not body: at phone width it is a grid item laid over the
-  // center's bottom corner (the 820px block). By id,
-  // not the `ws` binding — that const lives in 85-layout.js, which
-  // evaluates AFTER this file (TDZ: reaching it here killed the bundle).
   $('ws').appendChild(lbtns);
-  // shown while either direction would act. selectionchange covers taps and
-  // caret movement; input covers typing a marker into existence. Debounced:
-  // listTab scans fences over the whole document, which is nothing for the
-  // documents phones edit but not worth running per keystroke.
   let lbTimer = null;
   const lbPaint = () => {
     clearTimeout(lbTimer);
@@ -9326,18 +6782,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   src.addEventListener('blur', lbPaint);
 
 // ── src/55-autocomplete.js ────────────────────────────────────────────────
-  // ── wikilink autocomplete ────────────────────────────────────────────────
-  // Typing `[[` opens a list of pages from the tree we already hold (no
-  // request, no index). Wikilink names are absolute page paths, so a sibling
-  // still has to be written in full. Ranking exists to make that cheap.
   const acEl = $('ac'), acMirror = $('acmirror');
   let ac = { open: false, start: -1, items: [], sel: 0 };
 
   const dirOf = (p) => (p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '');
   const segOf = (p) => p.slice(p.lastIndexOf('/') + 1);
 
-  // rank: the last segment matching beats the path matching, a sibling of the
-  // page being edited beats a stranger, shallower and shorter break ties.
   function acRank(q) {
     const here = current ? dirOf(current) : folderCtx || '';
     const ql = q.toLowerCase();
@@ -9363,8 +6813,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return out.sort((a, b) => b.sc - a.sc).slice(0, 8).map((x) => x.path);
   }
 
-  // caret position, measured through a mirror that shares the textarea's
-  // geometry, correct on wrapped lines, where a column calculation is not.
   let acAnchor = null;   // {start, left, top, lh} - raw mirror offsets at ac.start
   const acCtx = document.createElement('canvas').getContext('2d');
   function acMeasureAnchor(pos) {
@@ -9383,9 +6831,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     acCtx.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily;
     return a;
   }
-  // the full-prefix mirror layout is expensive on large documents, so it runs
-  // once per [[ site. While the dropdown stays open only the short query after
-  // the anchor changes, and its width comes from measureText, not a relayout.
   function caretXY() {
     if (!acAnchor || acAnchor.start !== ac.start) acAnchor = acMeasureAnchor(ac.start);
     const q = src.value.slice(ac.start, src.selectionStart);
@@ -9415,13 +6860,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     });
     const [x, y] = caretXY();
     acEl.hidden = false;
-    // keep it inside the editor pane
     const w = src.clientWidth, h = src.clientHeight;
     acEl.style.left = Math.max(4, Math.min(x, w - acEl.offsetWidth - 8)) + 'px';
     acEl.style.top = (y + acEl.offsetHeight > h ? Math.max(4, y - acEl.offsetHeight - 20) : y) + 'px';
   }
 
-  // open only inside an UNCLOSED [[ on the caret's own line
   function acScan() {
     if (src.readOnly || mode === 'know' || pkind.value === 'fodt') return acClose();
     const upto = src.value.slice(0, src.selectionStart);
@@ -9441,8 +6884,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (!ac.open) return;
     const path = ac.items[i === undefined ? ac.sel : i];
     if (!path) return;
-    // through applyEdit, never src.value assignment: the latter wipes the
-    // textarea's entire undo stack (45-templates documents this exact sin)
     const to = src.selectionStart +
       (src.value.slice(src.selectionStart).startsWith(']]') ? 2 : 0);
     const caret = ac.start + path.length + 2;
@@ -9455,104 +6896,51 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   src.addEventListener('blur', acClose);
 
 // ── src/59-md.js ──────────────────────────────────────────────────────────
-  // ── local markdown, for the live preview only ────────────────────────────
-  // The preview POSTs the whole document to the ship and shows what comes
-  // back. That is the source-of-truth renderer, which is why it was built that
-  // way, and it costs a pier round trip EVERY time you stop typing. Measured
-  // against a real ship: 1.36s for an eight byte document and 3.0s for 106 KB.
-  // The floor is the pier, not the rendering, so no server-side work fixes it.
-  //
-  // So: paint this immediately, then let the server's answer replace it when it
-  // lands. That ordering is what makes a hand-written renderer acceptable here.
-  // It does not have to be perfect or complete, because anything it gets wrong
-  // is corrected within a second by the renderer that actually defines the
-  // page. It only has to be fast and safe.
-  //
-  // SAFE MATTERS MORE THAN COMPLETE. The preview iframe is not sandboxed, so
-  // its srcdoc runs on the app's own origin. Pages are not all hand-written
-  // either: the clipper archives arbitrary web pages. So every character of
-  // document text is escaped and NO raw HTML is passed through. A note that
-  // contains a <script> tag renders as the text of a script tag here. The
-  // server render may choose differently; that is its call to make, and it
-  // arrives a moment later.
   const mdEsc = (t) => String(t)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
 
-  // Undo mdEsc. Inline rendering escapes the WHOLE line first, so by the time
-  // a URL is captured out of it the entities are already in: a link whose
-  // query holds & arrived here as &amp;, and escaping again produced
-  // &amp;amp;, which the browser hands back to the server as a literal
-  // "&amp;". Wikilinks were worse than cosmetic — [[a&b]] encoded to
-  // name=a%26amp%3Bb and opened a page that does not exist.
-  //
-  // Reverses mdEsc's order: & LAST, or "&amp;lt;" would decode twice.
   const mdUnesc = (t) => String(t)
     .replace(/&quot;/g, '"').replace(/&gt;/g, '>')
     .replace(/&lt;/g, '<').replace(/&amp;/g, '&');
 
-  // Only http(s) and in-page anchors become links. A javascript: or data: href
-  // in a clipped page must not become a live link on our origin.
   const mdHref = (u) => {
-    // decode, THEN test the scheme: "javascript&#58;" must not sneak past a
-    // check run against still-escaped text, and then re-escape for the attr.
     const s = mdUnesc(u).trim();
     return /^(https?:\/\/|urb:\/\/|mailto:|#|\/)/i.test(s) ? mdEsc(s) : '';
   };
 
-  // Code-span placeholders. The token must be UNFORGEABLE by document text:
-  // a page that can write the token literally could otherwise smuggle content
-  // past the escaper. The trick is that the token contains '&', which mdEsc
-  // turns into '&amp;'. A token typed into the document is mangled by the
-  // escaper and can never match the restore regex; the only intact tokens are
-  // the ones the extractor mints AFTER escaping. Extraction runs on the
-  // ESCAPED string: mdEsc does not touch backticks, so code spans are still
-  // findable there and their contents are already escaped.
   const CD_RE = /&CD(\d+);/g;
   const mdInline = (t) => {
     let s = mdEsc(t);
-    // code first: its (already-escaped) contents must not be re-processed for
-    // emphasis. The token is minted now, after the escape, so it survives.
     const code = [];
     s = s.replace(/`([^`]+)`/g, (_, c) => {
       code.push(c);
       return '&CD' + (code.length - 1) + ';';
     });
+    const tags = [];
+    const tag = (html) => { tags.push(html); return '&TG' + (tags.length - 1) + ';'; };
     s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (m, alt, u) => {
       const h = mdHref(u);
-      return h ? '<img alt="' + alt + '" src="' + h + '">' : m;
+      return h ? tag('<img alt="' + alt + '" src="' + h + '">') : m;
     });
     s = s.replace(/\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, (m, txt, u) => {
       const h = mdHref(u);
-      return h ? '<a href="' + h + '">' + txt + '</a>' : m;
+      return h ? tag('<a href="' + h + '">') + txt + '</a>' : m;
     });
-    //  wikilinks, which lattice writes a lot of. The target is a page name, so
-    //  it is URI-encoded into the query — a name carrying &, = or quotes must
-    //  not smuggle extra params or break out of the href.
-    //  a bare [[a/b/c]] shows just the last segment ("c"), the filename people
-    //  expect, not the whole path. An explicit [[a/b/c|label]] still wins. The
-    //  href/target is unchanged, so navigation and backlinks are unaffected.
     s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-      (_, tgt, label) => '<a href="'
-        + mdHref('/apps/lattice/app?name=' + encodeURIComponent(mdUnesc(tgt).trim())) + '">'
+      (_, tgt, label) => tag('<a href="'
+        + mdHref('/apps/lattice/app?name=' + encodeURIComponent(mdUnesc(tgt).trim())) + '">')
         + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>');
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
     s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
     s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
-    // restore code spans. They were escaped when the whole string was, so no
-    // re-escape here (that would double-escape). Only extractor-minted tokens
-    // match; a forged one was mangled to '&amp;CD…;' by the escaper.
+    s = s.replace(/&TG(\d+);/g, (_, i) => tags[+i]);
     s = s.replace(CD_RE, (_, i) => '<code>' + code[+i] + '</code>');
     return s;
   };
 
-  //  block level. Deliberately a subset: headings, rules, fences, quotes,
-  //  lists (including task lists), tables, paragraphs.
-  //  tasks: live boxes, each with data-line, its source line (base: where
-  //  this input starts, for a blockquote). Lines, not a count of boxes.
   function mdToHtml(input, tasks, base = 0) {
-    //  CRLF: `.` stops at \r, so "(.*)$" failed on every line
     const lines = String(input == null ? '' : input).split('\n').map((l) => l.replace(/\r$/, ''));
     const out = [];
     let i = 0;
@@ -9602,7 +6990,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         continue;
       }
 
-      //  a table needs a delimiter row under the header
       if (ln.includes('|') && i + 1 < lines.length && /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(lines[i + 1])) {
         closeLists(0);
         const cells = (r) => r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c.trim());
@@ -9643,7 +7030,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
 
       if (!ln.trim()) { closeLists(0); i += 1; continue; }
 
-      //  paragraph: consume until a blank line or a block starter
       const para = [];
       while (i < lines.length && lines[i].trim()
              && !/^\s*(#{1,6}\s|>|```|~~~|-{3,}\s*$)/.test(lines[i])
@@ -9660,8 +7046,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return out.join('\n');
   }
 
-  //  a box click's edit: the offset of the char in the brackets on `line`,
-  //  or null if that line is no task in the clicked-from state (stale)
   const TASK_RE = /^((?:[ \t]*>[ \t]?)*[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])\](?=\s)/;
   const TASK_ANY = new RegExp(TASK_RE.source, 'm');
   const hasTask = (text) => typeof text === 'string' && TASK_ANY.test(text);
@@ -9677,12 +7061,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return { at: at + m[1].length, ch: on ? 'x' : ' ' };
   }
 
-  // ── local gemtext, for the live preview only ────────────────────────────
-  // Mirrors the ship's render-gmi (app.hoon) so the local paint matches the
-  // authoritative one it corrects to: ```-fenced pre, #/##/### headings,
-  // => links, > quotes, blank lines dropped, everything else a paragraph.
-  // Same safety contract as the markdown above: EVERY line is escaped, links
-  // only for urb:// and http(s) (a javascript: => target renders as text).
   const gmiToHtml = (input) => {
     const out = [];
     let pre = null;
@@ -9716,78 +7094,19 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
 
 // ── src/60-preview.js ─────────────────────────────────────────────────────
-  // ── preview pane: <lat-preview> ──────────────────────────────────────────
-  // Content kinds render locally (srcdoc). Computed kinds (hoon,
-  // js, css) show the page's live DATA via /f/<name>, refreshed after save/cmd.
-  // fit state for the document currently in the frame (see the message
-  // handler below). fitCur is the seq previewFit stamped into that document;
-  // null forces the next report to start a new document.
   let fitCur = null, fitH = 0, fitOff = false;
   customElements.define('lat-preview', class extends HTMLElement {
     connectedCallback() {
-      // built once: the live editor moves between groups (28-splits.js)
       if (this.built) return;
       this.built = true;
       this.innerHTML = '<div class="prevwrap"></div>';
-      // The frame is made now, so everything that writes to `prev` can, but
-      // goes into the page a task later. A sandboxed frame is a frame of its
-      // own to the engine, and making one inside boot's task cost about
-      // 33 ms on the first load after the worker installs (no spare frame
-      // yet), the larger part of the one long task boot had. Its srcdoc,
-      // set meanwhile, loads as it goes in.
       prev = document.createElement('iframe');
       prev.className = 'prev';
       prev.id = 'prev';
       prev.title = 'live preview';
-      // SANDBOXED, and this is load-bearing rather than defensive.
-      //
-      // The pane renders page content, and an html page is served into it as
-      // its own document — including its scripts. Pages are not all
-      // hand-written: the clipper archives arbitrary web pages verbatim. On
-      // a same-origin frame, opening one of those in the editor ran its
-      // JavaScript with this session, which is read every page, rewrite the
-      // ACLs, exfiltrate the store. Verified before this line existed: a
-      // page containing <script>parent.__PWNED=1</script> set that global on
-      // the app and rewrote its title.
-      //
-      // allow-scripts WITHOUT allow-same-origin is the pair that matters.
-      // Scripts still run, so the footnote-anchor handler the ship injects
-      // into every server render keeps working, but the frame gets an opaque
-      // origin: no parent, no cookies, no session. The two together would
-      // hand the sandbox straight back.
-      //
-      // allow-top-navigation-by-user-activation is a narrower third token,
-      // added for a different reason: a wikilink is a plain <a> pointing at
-      // the app's own route, and clicking one used to navigate the frame
-      // itself, straight into the opaque origin's missing cookies, a live
-      // 403 in place of the page. This token opens exactly one door out of
-      // the sandbox, and only on an actual click. Nothing running inside
-      // the frame can drive the top page anywhere on its own; the click has
-      // to be real. The base target below is what points those clicks
-      // upward instead of at the frame.
-      // The frame sits in a scrolling DIV and is sized to its own content
-      // (see previewFit), so the frame's document never scrolls and never
-      // shows the engine's native scrollbar. That bar is the one WebKitGTK
-      // paints light no matter what: measured on 2.50, a sub-frame's bar
-      // ignores color-scheme, ::-webkit-scrollbar, scrollbar-color, the
-      // GTK dark variant and gtk-application-prefer-dark-theme alike.
-      // The div scrolls with the app's own styled bars instead.
       prev.setAttribute('sandbox', 'allow-scripts allow-top-navigation-by-user-activation');
-      // Whatever frame is `prev` by then goes in, not the one made here:
-      // a tab restored in Read runs showPreview inside boot, which swaps
-      // in a new frame before this task, and the old one has no parent to
-      // be replaced in. Inserting the first frame left every later write
-      // going to a frame that was never in the page, a blank pane for good.
       const wrap = this.querySelector('.prevwrap');
       setTimeout(() => { if (!prev.parentNode) { wrap.append(prev); prevBusy(); } }, 0);
-      // the frame reports its content height once its document has loaded;
-      // the wrap scrolls. The FIRST report per document wins, measured with
-      // the frame at pane height (previewFit clears min-height before every
-      // write). If the content then grows in response to the frame growing,
-      // the document is viewport-relative (a 100vh slide deck) and fitting
-      // can never settle: drop the fit and let it scroll inside the frame,
-      // whose own bars are hidden. A late image load trips the same rule and
-      // degrades the same way, which beats a frame that grows without bound.
       window.addEventListener('message', (e) => {
         if (e.source !== prev.contentWindow) return;
         const m = e.data;
@@ -9797,79 +7116,28 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         if (!fitH) { fitH = m.latPrev; prev.style.minHeight = fitH + 'px'; return; }
         if (m.latPrev > fitH + 2) { fitOff = true; prev.style.minHeight = ''; }
       });
-      // blank it NOW, not when the first page opens. An iframe with no srcdoc
-      // is an opaque white canvas, and the first thing that used to call
-      // prevBlank was boot's trailing newFile(). So the pane sat white for
-      // the whole load and then popped to the theme background.
       prevBlank();
     }
   });
-  //  tex is here for the same reason html is: the ship cannot render it, so
-  //  the local paint IS the preview and there is no server answer to wait
-  //  for. It differs in one way, that its renderer is a subprocess and
-  //  therefore async, which is what texPreviewHtml in 71-latex.js handles.
-  //  a memory has no kind picker: it is markdown (proseFlavor in 45-templates
-  //  says the same), so knowledge mode previews like an md page
   const kindNow = () => (mode === 'know' ? 'md' : pkind.value);
-  //  fodt paints locally once writer.js is here, else the ship renders it
   const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex'].includes(kindNow())
     || (kindNow() === 'fodt' && !!window.LatWriter);
 
-  // Paint locally NOW, and let the ship's answer replace it when it arrives.
-  //
-  // The server render is the source of truth and stays that way. What changed
-  // is that it is no longer the ONLY thing that ever fills this pane, because
-  // it costs a pier round trip every time: measured against a real ship, 1.36s
-  // for an eight byte document and 3.0s for 106 KB. The floor is the pier, not
-  // the rendering, so the wait did not shrink with the document and a one line
-  // note took as long as a long one.
-  //
-  // All four content kinds paint locally now. md and gmi run the hand-written
-  // renderers (59-md.js) that the ship's answer then corrects. html is its own
-  // output, so it srcdocs directly — the one case where local IS authoritative.
-  // text is an escaped <pre>. Only the computed kinds (hoon, js, css) still
-  // wait on the ship, because their preview is the page's live DATA, not text.
   const localHtml = (kind, body, tasks) => {
     if (kind === 'md') return mdToHtml(body, tasks);
     if (kind === 'gmi') return gmiToHtml(body);
     if (kind === 'text') return '<pre>' + mdEsc(body) + '</pre>';
-    //  pandoc is a subprocess, so it cannot answer inside this synchronous
-    //  call. It returns whatever the last conversion produced and schedules
-    //  another, which repaints when it lands. Same contract as a cache.
     if (kind === 'tex') return texPreviewHtml(body);
     return body;   // html: the document is already its own rendering
   };
-  // color-scheme first: WebKit picks its NATIVE scrollbar colours from the
-  // document's colour scheme, and older WebKitGTK builds honour nothing else
-  // below. A document that declares none is light, whatever the app is, so
-  // its bars stayed white in a dark editor even with these rules present.
-  // The rules that follow style them where the engine supports that.
-  // WebKitGTK paints a sub-frame's OWN scrollbar light whatever the theme or
-  // the document's colour scheme say, so the frame's bar is hidden outright
-  // and the pane scrolls instead. Two things measured in a bare WebKit view:
-  // html::-webkit-scrollbar{display:none} does hide it, and ANY standard
-  // scrollbar-width / scrollbar-color on the document switches every
-  // ::-webkit-scrollbar rule off, so neither may appear in a preview
-  // document. Scoped to html so an inner scroll box (a wide <pre>) keeps its
-  // own styled bar.
-  // html:root, so a forced scheme outranks the document's own :root rule
   const previewScrollbars = () => '<style>html:root{color-scheme:'
     + (document.documentElement.style.colorScheme || 'light dark') + '}html::-webkit-scrollbar{display:none}</style>';
-  // the height reporter the wrap listens for: posts once the document has
-  // loaded, and again when its body resizes. Each call stamps a fresh seq so
-  // the parent can tell a new document from a resize of the old one. Mirrored
-  // (without the seq) in app.hoon (+preview-scrollbar-css) for the /f/
-  // computed-kind preview. Clearing min-height here is deliberate: every
-  // srcdoc write goes through this, and the first measurement must be taken
-  // with the frame at pane height, not at the previous document's.
   let fitSeq = 0;
   const previewFit = () => {
     if (prev) prev.style.minHeight = '';
     return previewScrollbars()
       + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)})})()</script>';
   };
-  // `ours`: the document is lattice's own render (the ship's reader css), so
-  // it takes the theme's colours too. A user's html page keeps its own.
   const withPreviewScrollbars = (html, ours) => {
     const head = /<head\b[^>]*>/i.exec(html);
     const fit = previewFit() + (ours && themeRoot() ? '<style>' + themeRoot() + '</style>' : '');
@@ -9878,50 +7146,20 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (root) return html.slice(0, root.index + root[0].length) + fit + html.slice(root.index + root[0].length);
     return fit + html;
   };
-  // nobody sees the preview in Edit (23-tabhead.js), on a phone or not;
-  // Read refreshes it on the way back
   const previewHidden = () => ws.classList.contains('ve');
   const paintLocal = () => {
     if (!CONTENT() || document.hidden) return;
     if (previewHidden()) return;
     try {
-      // html pages own their whole document, chrome and all. The content kinds
-      // get the same bare shell the markdown preview always used.
-      // ...but a document that styles no scrollbars gets the engine's NATIVE
-      // ones, which on WebKitGTK follow the window theme and drew white in a
-      // dark editor. Slip the same flat scrollbar rules the rest of the
-      // editor uses into the preview copy only: after <head> when there is
-      // one, else after <html>, else in front. The rules touch nothing but
-      // scrollbars (an alpha grey that reads on both schemes), so the
-      // document's own colour scheme is left exactly as written.
       if (pkind.value === 'html') { prevDoc(withPreviewScrollbars(src.value)); return; }
       if (kindNow() === 'fodt') { writerSync(); prevDoc(withPreviewScrollbars(LatWriter.show(src.value))); return; }
-      // color-scheme belongs on :root, not body — on body it does not reach the
-      // canvas, so the frame painted opaque WHITE in dark theme. That was true
-      // of every local paint since it landed and went unseen because only the
-      // BLANK pane was ever checked for theme; wiring this into the open path
-      // is what finally put it on screen. Backgrounds match prevBlank exactly,
-      // so a document appearing cannot flash a different colour than the empty
-      // pane it replaces.
-      // <base target="_top"> sends every plain link in this shell to the real
-      // top-level page instead of the sandboxed frame it is written into. A
-      // wikilink used to navigate the frame itself and land on an
-      // authenticated route the opaque origin has no cookies for; escaping
-      // to the top page is what the sandbox token above actually permits.
       const tasks = taskLive();
       prevDoc(localShell(previewFit()) + localHtml(kindNow(), src.value, tasks) + (tasks ? TASK_JS : ''));
     } catch {}
   };
-  // ── task boxes: a click in the preview edits the source ──────────────────
-  // only an md page this viewer may write (not linkRO, a foreign grub, a
-  // folder or a revision); gmi has no task syntax and render-gmi no lists
   const taskLive = () => kindNow() === 'md' && !src.readOnly && viewingRev === null && !curFolder;
-  // the frame's origin is opaque: it can only say which line
   const TASK_JS = '<script>addEventListener("click",function(e){var t=e.target;'
     + 'if(t&&t.matches&&t.matches("input[data-line]"))parent.postMessage({latTask:+t.dataset.line,on:t.checked},"*")})</script>';
-  // execCommand keeps native undo and fires the input event (dirty,
-  // autosave, repaint). In Read the textarea is display:none, so it is shown
-  // off screen for this one task. Selection and scroll go back as they were.
   function taskFlip(line, on) {
     if (!taskLive()) return paintLocal();
     const r = taskToggle(src.value, line, on);
@@ -9950,22 +7188,15 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const m = e.data;
     if (m && Number.isInteger(m.latTask) && m.latTask >= 0) taskFlip(m.latTask, !!m.on);
   });
-  // the bare document a content kind's local render goes into. `fit` is
-  // the height reporter, which only the live preview has.
   const localShell = (fit) => '<!doctype html><meta charset="utf-8"><base target="_top">'
         + '<style>:root{color-scheme:light dark}'
         + 'body{margin:0;padding:14px;font:15px/1.6 var(--font,system-ui,sans-serif);background:var(--bg,#fafafa);color:var(--text)}'
         + '@media(prefers-color-scheme:dark){body{background:var(--bg,#1a1a1a)}}' + themeRoot()
-        // NO scrollbar-width / scrollbar-color here: either one switches the
-        // ::-webkit-scrollbar rules off, including the html-level hide that
-        // previewFit appends. Inner scroll boxes (a wide <pre>) keep flat bars.
         + 'pre::-webkit-scrollbar{width:10px;height:10px}'
         + 'pre::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
         + 'img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
         + '</style>' + fit;
-  // a parked group's Read (28-splits.js): the same local render of its
-  // text, no fit, or null for a kind only the ship renders
   const ghostDoc = (kind, body) => {
     if (kind === 'fodt') return window.LatWriter ? previewScrollbars() + LatWriter.show(body) : null;
     if (!['md', 'gmi', 'html', 'text'].includes(kind)) return null;
@@ -9974,68 +7205,29 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     } catch { return null; }
   };
 
-  // A grub of a kind no client renderer knows (hoon, js, css, a binary
-  // file) has no preview: it is no page, so the /f/ route that shows a
-  // computed page's live data has nothing to serve. The pane says so, in
-  // the blank pane's colours, rather than keep the page that was there.
   const prevNone = () => {
     prev.removeAttribute('src');
     prev.style.minHeight = '';
     prevDoc(localShell('') + '<p style="opacity:.6;text-align:center;margin-top:3em">'
       + 'No preview for this file</p>');
   };
-  // a theme that lands after the frame was painted (theme.js runs after
-  // this bundle, and the ship or another tab can change it later) repaints
-  // it: the local render of a content page (an unsaved new one too), or
-  // blank with nothing open. A computed page's frame is the ship's, and
-  // refetching it costs a request.
   window.addEventListener('lattheme', () => {
     if (CONTENT() && (current || src.value)) paintLocal();
     else if (grubPath && !CONTENT()) prevNone();
     else if (!current) prevBlank();
   });
   async function refreshPreview() {
-    // a hidden pane renders to nobody, but the POST still costs ~2s of pier
-    // time and delays the autosave queued behind it (worst on mobile, where
-    // the code tab hides the preview entirely).
     if (document.hidden) return;
     if (previewHidden()) return;
     if (CONTENT()) {
-      // Paint locally FIRST, on every path into this function, not just while
-      // typing. The local render used to hang off the input event alone, so
-      // typing was instant and everything else — opening a page, switching to
-      // the preview pane, restoring a revision, a sync — still sat on the pier
-      // for its first frame. That is the slow case people actually report,
-      // because you open a document far more often than you type the first
-      // character into one. src.value is already the new body at every call
-      // site (applyPage sets it well before it calls here), so this paints the
-      // document that is about to be rendered, not the one leaving the screen.
-      // ...and the local paint IS the preview. The pier's "correcting"
-      // render is gone: every content kind here (CONTENT ≡ md/gmi/html/text)
-      // has a client renderer, and posting the whole document so the ship's
-      // renderer could overrule ours cost ~2s of serial pier time per save
-      // to fix divergence that would be a renderer BUG, not a runtime
-      // condition — the boot snapshot has always trusted the local render.
-      // Computed kinds (hoon, js, css) take the /f/ branch below: their
-      // preview is the page's live data, which no client renderer can know.
       paintLocal();
     } else if (grubPath) {
       prevNone();
     } else if (current) {
       fitCur = null; prev.style.minHeight = '';
-      // preview=1: the ship adds the editor's scrollbar rules to an html
-      // answer, so a computed page's live document scrolls like the rest of
-      // the editor instead of with the engine's native, theme-following bars
       prevUrl(api + '/f/' + current + '?preview=1&t=' + Date.now());
     }
   }
-  // The way back into view for the pane (the phone's preview tab, or a
-  // desktop view that shows it again). Chromium never paints a sandboxed
-  // frame whose first document loaded while its pane was display:none, or
-  // was replaced by a second write before it painted. Later documents, even
-  // written back to back, paint fine once one has. A phone hides the pane
-  // from boot (the tree tab comes first), so the preview tab stayed blank.
-  // So: a fresh frame, written exactly once while the pane is visible.
   function showPreview() {
     const n = prev.cloneNode(false);
     n.removeAttribute('srcdoc'); n.removeAttribute('src'); n.style.minHeight = '';
@@ -10045,18 +7237,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   let localTimer = null;
   src.addEventListener('input', () => {
     if (!CONTENT()) return;
-    // Typing sends nothing to the ship. The local render IS the preview for
-    // every content kind (md/gmi/html/text), with no second authoritative
-    // render behind it to wait for. refreshPreview says why. Computed kinds
-    // (hoon, js, css) return above; their preview is the page's live data and
-    // arrives from refreshPreview's /f/ branch after a save.
-    //
-    // local first, on a delay short enough to feel like typing
     clearTimeout(localTimer);
     localTimer = setTimeout(paintLocal, 60);
   });
 
-  // ── compile errors (hoon pages) ──────────────────────────────────────────
   async function checkErrors() {
     if (!current) return;
     let t = '';
@@ -10068,24 +7252,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     } else {
       cerr.textContent = CONTENT() ? 'saved' : 'compiled ok';
       cerr.className = 'ok';
-      // clear the STATUS too, not just the error box. save() sets
-      // 'compiling…' for computed kinds and only checkErrors can resolve it,
-      // so without this every hoon/js/css page sat at "compiling…" forever
-      // and looked wedged when it had in fact compiled fine.
       if (!CONTENT()) st('compiled ok');
       refreshPreview();
     }
   }
 
 // ── src/65-ctl.js ─────────────────────────────────────────────────────────
-  // ── controls pane: <lat-ctl> frame ───────────────────────────────────────
-  // Renders the Page tab's skeleton with one tag per panel. The panel
-  // components (lat-knowtags 68, lat-share 66) upgrade when
-  // NB: no lat-perms. Group EDITING lives in the full-window ACL pane now.
-  // This column only points existing groups at the open file (66-share).
-  // their own files run, in file order. Button handlers wired below in this
-  // file (and in later files) find their elements because the frame renders
-  // here first.
   let cerr;
   customElements.define('lat-ctl', class extends HTMLElement {
     connectedCallback() {
@@ -10124,10 +7296,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   });
 
-  // ── a link: whose page this is ──────────────────────────────────────────
-  // For a link in front (its tab, open or failed to open): where it points,
-  // the grant, and the badge once a read failed. Comments and sharing are
-  // the owner's, so this page's own controls for them stand down.
   function paintLink() {
     const row = $('lnkrow');
     if (!row) return;
@@ -10141,10 +7309,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (sh) sh.hidden = !!lk;
     if (lk) $('cmtrow').hidden = true;      // rpPaint shows it for a page
     if (!lk) return;
-    // a read link stays locked. A reload paints the page from its snapshot
-    // before the tree has loaded, when linkRO cannot know it is a link yet,
-    // so the lock lands here, once the tree knows. Only ever locks: the
-    // unlock belongs to applyPage.
     if (name === current && linkRO(name)) src.readOnly = true;
     $('lnkfrom').textContent = 'Linked from ' + linkFrom(lk);
     $('lnkmode').textContent = lk.mode === 'read' ? 'read only'
@@ -10156,12 +7320,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     $('lnkat').textContent = bad ? bad.since : '';
   }
 
-  // ── comments on this page ────────────────────────────────────────────────
-  // Comments from other ships are opt-in per page (or per folder: the
-  // nearest flag at or above a page wins). page-source reports the answer
-  // for the open page as `comments`, and this box shows it. An open painted
-  // from the tree dump has no answer yet; the box waits, disabled, for the
-  // page-source fetch that follows. cmtOn is what the Comments tab goes by.
   let cmtOn = null;
   let cmtFor = null;
   function cmtShow(name, on) {
@@ -10174,11 +7332,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     rpSoon();            // the Comments tab's post box goes by it too
   }
 
-  // ── comets on this page ──────────────────────────────────────────────────
-  // A comet costs nothing to make, so the owner picks per page: open (the
-  // ship caps them at 10 an hour), held (each waits here for approve or
-  // reject) or off. Only shown while comments are on. `fg` is a refresh the
-  // user asked for; a page open loads in the background.
   let cometFor = null;
   async function cometLoad(name, fg) {
     const row = $('cometrow'), q = $('cometq');
@@ -10266,24 +7419,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
   clickAction('cmton', 'Comments on this page', 'Right pane › Page');
 
-  // NB: the command box is gone from this panel. It POSTed to /page-cmd, the
-  // input channel for a programmable page. The ROUTE stays, since public form
-  // submissions (POST /f/<page>) go through the same handler, but nothing in
-  // the editor sends to it now.
 
-  // ── delete ───────────────────────────────────────────────────────────────
-  //  One confirm and one delete for every way to a page or a folder: the
-  //  page menu's Delete (#del), the tree's menu and Delete key
-  //  (34-treemenu.js) and a conflict's resolve (80-conflicts.js). Nothing
-  //  deletes a page without coming through here, so nothing deletes one
-  //  without the confirm.
-  //
-  //  The confirm says what goes: the name, how many pages go with it, what
-  //  of it is published or granted (a reader's copy can outlive the delete),
-  //  and that it is permanent. Pages carry no trash: the writer prunes
-  //  every revision and offers no restore, unlike a memory's soft delete.
   const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
-  //  the page tabs, not in front, that hold a page at or under `path`
   const parkedUnder = (path) => allTabs().filter((t) => t !== activeTab && t.kind === 'page'
     && !t.ship && t.snap && t.key && (t.key === path || t.key.startsWith(path + '/')));
   function delWhat(path, folder) {
@@ -10298,7 +7435,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (n && n.link && n.link.host)
       lines.push('This is a link to a page on ' + n.link.host
         + '. Only the link goes; their page is untouched.');
-    //  published: the page's own share mode, or how many under the folder
     const under = nodes.filter((x) => x.page && (x.path === path || x.path.startsWith(path + '/')));
     const pub = under.filter((x) => x.share === 'shared' || x.share === 'clearweb');
     if (pub.length) {
@@ -10309,7 +7445,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         : plural(pub.length, 'page') + (pub.length === 1 ? ' is' : ' are') + how
           + ' Anyone who already read them may keep a copy.');
     }
-    //  granted to a ship or a group: the grant goes with the page
     if (selfBase && permsLoaded) {
       const pp = selfBase + '/page/' + path;
       const gs = permGroups.filter((g) => [...(g.peek || []), ...(g.make || [])]
@@ -10329,38 +7464,19 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     lines.push('This is permanent and cannot be restored.');
     return lines.join('\n');
   }
-  //  -> true once deleted. `folder` says which node the path names (a page
-  //  can have pages under it and still be a page). `note` is a caller's own
-  //  line for the confirm. What is open stays open unless it is the page
-  //  deleted or is under the folder deleted; then a clean new page.
   async function deletePath(path, folder, note) {
     if (!path) return false;
     if (!(await askDanger(delWhat(path, folder) + (note ? '\n' + note : ''), 'delete'))) return false;
     const hit = (p) => !!p && (p === path || p.startsWith(path + '/'));
-    //  what is open goes with it: the editor lets go of it first, so no
-    //  autosave or trailing save can aim at it, and a save already on the
-    //  wire lands before the delete does, never after it (it made the page
-    //  again). A clean new page, and no focus: a focused newFile becomes
-    //  the create dialog under the desktop wrapper.
     if ((mode !== 'know' && !grubPath && hit(current)) || hit(curFolder)) {
       clearTimeout(autoTimer);
       dirty = false;
       savePending = false;
       newFile('', false);
     }
-    //  a tab not in front keeps its unsaved text in its snap, and brought
-    //  back it would autosave that text (21-tabs.js), and a parked save
-    //  still queued would send it (saveParked, 35-pages.js). Either one made
-    //  the page again, so the text the user just agreed to lose is let go.
     const gone = parkedUnder(path).filter((t) => t.snap.dirty);
     for (const t of gone) t.snap.dirty = false;
     if (gone.length) paintTabs();
-    //  settled, not only off the wire: a save whose write failed clears
-    //  `saving` and only then queues its body offline. A delete sent in
-    //  that gap queued before the save did, so the save outlived the
-    //  delete's cull of the queue and replayed the page back. Capped, so
-    //  a save that never answers cannot hold the delete forever.
-    //  the line (busy, 10-shell.js) from the confirm on, the wait included
     const end = busy();
     let r;
     try {
@@ -10383,7 +7499,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
 
 // ── src/66-share.js ───────────────────────────────────────────────────────
-  // ── sharing panel: <lat-share> (pages and folder trees share it) ─────────
   let cwurl;
   customElements.define('lat-share', class extends HTMLElement {
     connectedCallback() {
@@ -10415,33 +7530,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       cwurl = $('cwurl');
     }
   });
-  // ── what each mode does, said where it is picked ─────────────────────────
-  // The three read as a set, and each says who can read the page and where
-  // (apply-share in app.hoon): private is in no published copy at all;
-  // shared puts a copy under /pub, which is publicly granted, so any ship
-  // reads it over ames at its urb:// address; clearweb is shared plus the
-  // unauthenticated /c/ route. A ship or group granted below reads a
-  // private page too (share-file grants the code grub itself), so private
-  // says so.
-  //
-  // The addresses are the real ones for the target. cwUrl is the one the
-  // public link below shows and the Published pages list (72-acl.js)
-  // copies, so the two can never disagree. A folder's setting is folder
-  // sharing (app.hoon %share-dir): its pages take it, and its address is
-  // its index, urb://<ship>/<folder>/.
   const cwUrl = (target) => location.origin + api + '/c/' + target;
-  // our own ship, for the urb:// address: Eyre's /~/host, asked once. ''
-  // while it is on its way, null if it failed. Until then there is no
-  // address, never a made-up one: nothing shows or copies a placeholder.
   let ourShip = '';
   const urbUrl = (target) => (ourShip ? 'urb://' + ourShip + '/' + target : null);
   const urbMissing = () => (ourShip === null ? 'address unavailable' : 'loading address');
-  // ── copy link: a page's urb:// address on the clipboard ─────────────────
-  // navigator.clipboard first. It can be missing or refuse (a page that is
-  // not a secure context, an older WebKitGTK in the desktop app), so the
-  // fallback copies from a hidden textarea with execCommand, which works
-  // inside the click that asked. Neither needs a Tauri permission: only
-  // the clipboard-manager plugin does, and this uses no plugin.
   async function copyText(t) {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -10462,16 +7554,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (back && back.focus) back.focus();
     return ok;
   }
-  // The address a page answers at: mine at urb://<our ship>/<name>, a page
-  // linked in from another ship at the host's own address (linkFrom), and
-  // a shared with me entry at urb://<host>/<name>. A private page answers
-  // only to the ships it is shared with.
   const pageUrb = (name) => {
     const lk = linkOf(name);
     return lk ? 'urb://' + linkFrom(lk) : urbUrl(name);
   };
   const swmUrb = (it) => 'urb://' + linkFrom(it);
-  // a grub open from another ship is a shared page when it is a page's code
   const grubUrb = () => {
     const m = grubShip && /\/page\/(.+)\/code$/.exec(grubPath || '');
     return m ? 'urb://' + grubShip + '/' + m[1] : null;
@@ -10483,7 +7570,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return false;
   }
   let shareShown = null;
-  // (asked from a microtask, off app.js's top level: see boot, 99-boot.js)
   queueMicrotask(() => fetch('/~/host').then((r) => (r.ok ? r.text() : '')).catch(() => '').then((t) => {
     ourShip = t.trim() || null;
     if (shareShown) paintShareCopy(shareShown);
@@ -10514,17 +7600,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const u = urbUrl(t), w = cwUrl(t);
     for (const b of document.querySelectorAll('.share button')) b.title = copy[b.dataset.m](u, w);
     $('sharewhat').textContent = copy[m] ? copy[m](u, w) : '';
-    // a folder answers at its index once it is shared, and an unsaved page
-    // has no address yet
     $('shcopy').hidden = curFolder ? m === 'private' : !current;
   }
   $('shcopy').onclick = () => copyLink(curFolder ? urbUrl(curFolder + '/')
     : current ? pageUrb(current) : null);
 
-  // ── shared via folder ────────────────────────────────────────────────────
-  // A page with no setting of its own takes its nearest folder's (the
-  // tree's `via`); one with its own setting under a shared folder may go
-  // back to the folder's. Either way the folder's settings are a click.
   const folderOf = (path) => {
     for (let p = path; p.includes('/');) {
       p = p.slice(0, p.lastIndexOf('/'));
@@ -10567,16 +7647,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
   function showShare(m) {
-    // the grant result names "this page", so it MUST NOT outlive the page it
-    // was about. Every target change (page open, new file, folder select,
-    // beacon sync) routes through here. A fuzz run caught it claiming
-    // "~nec can now edit this page" while a different page was open, which
-    // is a permissions UI telling the user something false.
     $('shres').textContent = '';
     for (const b of document.querySelectorAll('.share button'))
       b.className = b.dataset.m === m ? 'on' : '';
-    // the group toggles are about THIS file, so they follow the same
-    // every-target-change hook the grant message does
     renderGroupAccess();
     paintShareCopy(m);
     paintVia();
@@ -10584,9 +7657,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     refreshSensitive(curFolder || current);
     const target = curFolder || current;
     const suffix = curFolder ? '/' : '';
-    // Build the public link as DOM, never innerHTML: a page/folder name is
-    // content (the codebase rule everywhere else), and interpolating it into
-    // markup makes this sink depend on every name source staying sane-%ta.
     cwurl.textContent = '';
     if (m === 'clearweb' && target) {
       const url = cwUrl(target + suffix);
@@ -10604,43 +7674,35 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   for (const b of document.querySelectorAll('.share button')) {
     b.onclick = async () => {
       const m = b.dataset.m;
-      // going public from private (or from a folder, which may be mixed)
-      // asks first; moving between the two public modes does not
       const was = curFolder ? (nodes.find((x) => !x.page && x.path === curFolder) || {}).dshare
         : (nodes.find((x) => x.page && x.path === current) || {}).share;
       const pub = (x) => x === 'shared' || x === 'clearweb';
       if (pub(m) && !pub(was) && !(await askPublish())) return;
-      // a share write is a real round trip (0.3-2s), and all three buttons
-      // stayed clickable through it — enough time for a second click to fire
-      // a second mutation against the same target. Freeze the row for the
-      // duration; the st() calls below already end the spin either way.
       const btns = document.querySelectorAll('.share button');
       for (const x of btns) x.disabled = true;
       stWork('setting ' + m + '…');
       try {
         if (curFolder) {
-          // the folder's own setting (folder sharing): its pages take it,
-          // later ones too, and which do is the server's to say, so the
-          // tree is fetched again rather than guessed
           const f = curFolder;
           const r = await mutate(api + '/page-share-dir?name=' + encodeURIComponent(f) +
             '&mode=' + m);
           if (!r.ok) { st('share failed' + await errText(r), false); return; }
           const fn = nodes.find((x) => !x.page && x.path === f);
           if (fn) { if (m === 'private') delete fn.dshare; else fn.dshare = m; }
-          showShare(m);
+          if (curFolder === f) showShare(m);
           st(m === 'private' ? 'folder ' + f + ' shares nothing'
             : m === 'clearweb' ? 'folder shared at /c/' + f + '/' : 'folder ' + f + ' shared');
           await loadTree();
           return;
         }
-        if (!current) { st('save the page first', false); return; }
-        const r = await mutate(api + '/page-share?name=' + encodeURIComponent(current) +
+        const name = current;
+        if (!name) { st('save the page first', false); return; }
+        const r = await mutate(api + '/page-share?name=' + encodeURIComponent(name) +
           '&mode=' + m);
         if (!r.ok) { st('share failed' + await errText(r), false); return; }
-        showShare(m);
+        if (current === name && !curFolder) showShare(m);
         st('sharing: ' + m);
-        const n = nodes.find((x) => x.page && x.path === current);
+        const n = nodes.find((x) => x.page && x.path === name);
         if (n) { n.share = m; delete n.via; }
         paintVia();
         snapTree();
@@ -10651,21 +7713,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     };
   }
 
-  // ── per-file share-with: grant one ship read/edit on the OPEN page ───────
-  // Writes through the same usergroups as the peers panel (an auto-group named
-  // after the ship), then notifies them. The response says whether the notice
-  // arrived. The grant is durable either way.
   const shareWith = async (mode) => {
     const shp = $('shwith').value.trim();
     if (!current) { st('open a page first', false); return; }
     if (!shp) { st('enter a ship', false); return; }
-    // NAME the page rather than saying "this page". The editor's target can
-    // change from eleven places (mode toggle, grub mode, memory open, rename,
-    // …) and only four of them route through showShare, so a clear-on-change
-    // hook is whack-a-mole. A fuzz run caught the message surviving the
-    // pages/knowledge toggle. A message that names its own subject cannot go
-    // false no matter what the editor does next, which is the property that
-    // actually matters for a permissions UI.
     const page = current;
     $('shres').textContent = 'granting…';
     const r = await mutate(api + '/share-file?name=' + encodeURIComponent(page) +
@@ -10683,13 +7734,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   $('shread').onclick = () => shareWith('read');
   $('shedit').onclick = () => shareWith('edit');
 
-  // ── mark-sensitive: the OPEN page or folder's OWN sensitive flag ─────────
-  // A sensitive page (or folder, inherited by its pages) is invisible to an
-  // agent key without the sensitive clearance, and such a key cannot write it.
-  // The checkbox shows and sets this page's own marker; refreshed on every
-  // target change through showShare, like the grant row above.
-  // the target whose toggle is on the wire: the box shows the ask until
-  // the answer, and no refresh meanwhile paints the flag from before it
   let sensSetting = null;
   const refreshSensitive = async (target) => {
     const cb = $('shsens');
@@ -10698,8 +7742,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     $('shsensres').textContent = '';
     if (!target) { cb.checked = false; cb.disabled = true; return; }
     cb.disabled = false;
-    // known: no request. In flight with the open's page-source: that
-    // answer brings it and comes back here (openPage).
     if (sensKnown.has(target)) { cb.checked = sensKnown.get(target); return; }
     if (sensWait === target) { cb.checked = false; return; }
     const gen = sensGen;
@@ -10707,8 +7749,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       const r = await fetch(api + '/page-sensitive?name=' + encodeURIComponent(target));
       const on = r.ok && (await r.json()).on === true;
       if (r.ok && gen === sensGen) sensKnown.set(target, on);
-      // the target can change while this GET is in flight (same bug class the
-      // showShare comment documents): only apply if it is still current.
       if ((curFolder || current) !== target) return;
       cb.checked = on;
     } catch { if ((curFolder || current) === target) cb.checked = false; }
@@ -10718,7 +7758,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const cb = $('shsens');
     if (!target) { st('open a page first', false); cb.checked = false; return; }
     cb.disabled = true;
-    // what was asked for, not what the box says when the answer lands
     const want = cb.checked;
     sensSetting = target;
     let r = null;
@@ -10741,17 +7780,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       : target + ' is no longer sensitive';
   };
 
-  // ── per-file group access ────────────────────────────────────────────────
-  // The same read/edit grant as the ship row above, but pointed at a group
-  // rather than one ship. This pane only SETS existing groups on this file.
-  // Creating and editing the groups themselves is the ACL pane's job (there is
-  // a link), which is what took the busy chip editor out of this narrow
-  // column. Grants go through permSave, so both surfaces agree.
-  //
-  // A group's grant on a page is the page's own ball path in its peek/make,
-  // exactly what the server's share-file writes, so a per-ship grant and a
-  // per-group grant are the same kind of rule and read back the same way.
-  // selfBase is set before permsLoaded, and nothing here runs before that.
   const pagePath = (name) => selfBase + '/page/' + name;
 
   function renderGroupAccess() {
@@ -10794,7 +7822,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       const canEdit = g.make.includes(path);
       mk('read', canRead, () => {
         if (canRead) {
-          // dropping read drops edit. Edit without read cannot be exercised
           g.peek = g.peek.filter((x) => x !== path);
           g.make = g.make.filter((x) => x !== path);
         } else g.peek.push(path);
@@ -10812,8 +7839,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   }
   $('aclopen').onclick = () => aclOpen();
-  // the panel's palette actions. Going public still asks (askPublish),
-  // since the action is the button's own click.
   clickAction('share-private', 'Make private', 'Right pane › Page');
   clickAction('share-shared', 'Share over Urbit', 'Right pane › Page');
   clickAction('share-clearweb', 'Publish to the clearweb', 'Right pane › Page');
@@ -10821,26 +7846,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   clickAction('aclopen', 'Manage groups', 'Right pane › Page');
 
 // ── src/67-perms.js ───────────────────────────────────────────────────────
-  // ── usergroups: the shared data layer ────────────────────────────────────
-  // No UI of its own any more. The busy chip editor that used to live in the
-  // editor's narrow right column moved to the full-window ACL pane (72-acl.js).
-  // The right column now only SETS existing groups on the open file (66-share).
-  // Both surfaces read permGroups and write through permSave, so they cannot
-  // disagree about what is in force.
-  //
-  // Backed by grubbery usergroups via /share-groups. The vocabulary is read
-  // and edit, where read is weir peek and edit is weir make. Poke grants and
-  // non-directory rules are real but dojo territory. The server preserves
-  // them verbatim on every save, and the ACL pane reports how many exist.
   let permGroups = [];
-  // "no groups yet" and "not loaded yet" are different claims, and the group
-  // list is deferred off boot's critical path. Without this flag the panel
-  // asserts you have no groups for the second or two before the answer lands.
   let permsLoaded = false;
-  // latBase(), once known: a grant on one of our pages is a road under it
   let selfBase = null;
-  //  bg: boot's deferred call yields to user activity (bgFetch). Panel
-  //  opens and post-save re-reads stay on the user lane.
   async function loadPerms(bg = false) {
     const get = bg ? bgFetch : fetch;
     let r = null;
@@ -10855,7 +7863,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     permGroups = await r.json();
     permsLoaded = true;
-    // every surface that renders groups repaints from this one load
     renderAcl();
     renderGroupAccess();
   }
@@ -10865,16 +7872,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       body: JSON.stringify({ ships: g.ships, peek: g.peek, make: g.make }),
     }).catch(() => null);
     if (!r || !r.ok) st('permissions' + await errText(r), false);
-    // re-read either way: the server is the authority, and a failed save must
-    // snap the panels back to what is actually in force rather than show the
-    // grant the user believes they made.
     loadPerms();
   }
 
 // ── src/68-knowtags.js ────────────────────────────────────────────────────
-  // ── knowledge tags panel: <lat-knowtags> ─────────────────────────────────
-  // Wiring and rendering live in 95-know.js (they are know-mode logic); this
-  // component only owns the markup. 95 runs later, so its $-lookups resolve.
   customElements.define('lat-knowtags', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -10888,20 +7889,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   });
 
 // ── src/69-shared.js ──────────────────────────────────────────────────────
-  // ── shared with me: a folder in the files tree ──────────────────────────
-  // Pages other ships granted us, fed by their share notices: "shared with
-  // me", a folder per ship, and each page by its own name on that ship.
-  // These are claims, not capabilities. An entry proves itself when opened,
-  // and a stale one can just be removed. The folder exists only while there
-  // is something in it.
-  //
-  // A notice names the page's code grub, <their base>/page/<name>/code. The
-  // base is wherever lattice is installed there, so only the tail is read.
   const sharedName = (p) => {
     const m = /\/page\/(.+)\/code$/.exec(p);
     return m ? m[1] : p.replace(/^\/+/, '');
   };
-  //  bg as in loadPerms: only boot uses it
   async function loadShared(bg = false) {
     let r = null;
     try { r = await (bg ? bgFetch : fetch)(api + '/shared-with-me'); } catch {}
@@ -10910,11 +7901,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     swmAt = Date.now();
     renderTree();
   }
-  // ── live: /beacon/shares (90-sync.js) ───────────────────────────────────
-  // The ship stamps /beacon/shares whenever the list changes: a notice
-  // landed, the host revoked one, or we curated it. The stream hands us
-  // {op, host, path}, and the list is refetched rather than patched, so the
-  // tree only ever shows what /shared-with-me says.
   let swmAt = 0;
   let swmTimer = null;
   const sharesBumped = (data) => {
@@ -10924,14 +7910,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     try { j = JSON.parse(data); } catch {}
     if (j && j.op === 'add' && j.host && j.path) shareToast(j);
   };
-  // the stream dropped (a hidden tab, a sleeping laptop): a window that
-  // comes back refetches, at most once a minute
+  let swmFly = null;
   const sharesRefocused = () => {
-    if (!document.hidden && Date.now() - swmAt >= 60000) loadShared(true);
+    if (document.hidden || swmFly || Date.now() - swmAt < 60000) return;
+    swmFly = loadShared(true).finally(() => { swmFly = null; });
   };
   window.addEventListener('focus', sharesRefocused);
   document.addEventListener('visibilitychange', sharesRefocused);
-  // "~ship shared <page> with you": no sound, no badge, gone in 8s
   let toastEl = null;
   function shareToast(j) {
     if (toastEl) toastEl.remove();
@@ -10945,9 +7930,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     document.body.appendChild(t);
     setTimeout(() => t.remove(), 8000);
   }
-  //  Take an entry off the list, after a confirm. Nothing is deleted:
-  //  the page is theirs, and their grant stays as it is. The ×, the tree's
-  //  menu and its Delete key (34-treemenu.js) all come here.
   async function removeShared(it) {
     const what = 'remove ' + it.host + '/' + sharedName(it.path) + ' from shared with me?\n'
       + 'Nothing is deleted: the page is ' + it.host + "'s, and their grant to you stays. "
@@ -10960,10 +7942,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     loadShared();
     return true;
   }
-  // keys for the collapsed list: a leading space is in no page name, so a
-  // page can never share a fold with this folder
   const SWM = ' shared';
-  // appended by renderTree, after the pages
   function renderShared(coll) {
     const fold = (key, label, depth) => {
       const row = folderRow(label, depth, coll.includes(key),
@@ -10983,7 +7962,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         a.href = '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
           '&ship=' + encodeURIComponent(host);
         a.title = host + ' ' + it.path;
-        // the name gives way to the tag and the ×, never the other way round
         const nm = document.createElement('span');
         nm.className = 'swn';
         nm.textContent = sharedName(it.path);
@@ -11008,11 +7986,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         };
         a.ondragend = () => { swmDrag = null; };
         treeItem(a, 2, SWM + '/' + host + '/' + it.path);
-        // a grub tab; openGrub (by way of enterGrub) sets the address
         tabLink(a, 'grub', it.path, { ship: host });
-        // into my own tree as a link: this, or a drag onto a folder. A
-        // button of its own beside the row (a button cannot sit in a link),
-        // so a keyboard reaches it too
         const mv = document.createElement('button');
         mv.type = 'button';
         mv.className = 'swmv';
@@ -11029,16 +8003,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   }
 
-  // ── moving in and out: a shared page becomes a link in my tree ──────────
-  // One home at a time: /link-make writes the link and drops the
-  // shared-with-me entry, /link-unmake puts the entry back and drops the
-  // link. Neither touches the owner's grant. Both need the host's page to
-  // have a kind, so a make with the host offline is refused, not queued.
   const SWM_DRAG = 'application/x-lattice-shared';
   let swmDrag = null;          // the entry being dragged, for the drop
-  // the link's local name: the folder it lands in, then the page's own name
   const swmLeaf = (it) => sharedName(it.path).split('/').pop();
-  // -> true once the link is in, after saying why when it is not
   async function moveIn(it, to) {
     stWork('moving ' + swmLeaf(it) + ' into ' + to + '\u2026');
     const r = await busyFetch(api + '/link-make?host=' + encodeURIComponent(it.host) +
@@ -11049,8 +8016,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     try { n = await r.json(); } catch {}
     sharedWithMe = sharedWithMe.filter((s) => !(s.host === it.host && s.path === it.path));
     if (to.includes('/')) addFolderNodes(to.slice(0, to.lastIndexOf('/')));
-    // the ship's node, kind and all (frozen at the host's). Without one,
-    // the tree is fetched rather than guessed at.
     if (n && n.path === to) {
       dropTreeNodes(to);
       nodes.push(n);
@@ -11060,8 +8025,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     st('moved into ' + to + ', linked from ' + it.host);
     return true;
   }
-  // the move dialog, seeded with the page's name (or <folder>/<name>), and
-  // back into it seeded with what was typed when the ship refuses
   async function askMoveIn(it, folder) {
     let seed = (folder ? folder + '/' : '') + swmLeaf(it);
     for (;;) {
@@ -11073,8 +8036,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       seed = typed;
     }
   }
-  // a folder row in Files takes a dragged shared-with-me row: the link
-  // goes in under that folder by the page's own name
   function linkDrop(row, folder) {
     row.addEventListener('dragover', (e) => {
       if (!swmDrag || ![...e.dataTransfer.types].includes(SWM_DRAG)) return;
@@ -11089,14 +8050,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       if (!it || ![...e.dataTransfer.types].includes(SWM_DRAG)) return;
       e.preventDefault();
       swmDrag = null;
-      // refused (a name already there, the host away): the dialog, as the
-      // button gives, seeded with this folder
       moveIn(it, folder + '/' + swmLeaf(it)).then((ok) => { if (!ok) askMoveIn(it, folder); });
     });
   }
-  // the link at `name` back to shared with me. Every tab on it closes
-  // first, through closeTab, so one holding unsaved text (in front or
-  // not) asks, and keeping it stops the move.
   async function linkBack(name) {
     const lk = linkOf(name);
     if (!lk) return;
@@ -11113,8 +8069,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     await loadShared();
     st('moved ' + name + ' back to shared with me');
   }
-  // the palette's way in is the rows' own buttons: with one shared page
-  // it is that page's, with several it goes to the first, to pick there
   action({ id: 'swm-move', name: 'Move into my pages', home: 'Files \u203a shared with me',
     when: () => !!actionHome('swm-move'),
     run: () => {
@@ -11122,21 +8076,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       if (all.length === 1) { all[0].click(); return; }
       if (all[0]) { all[0].focus(); st('pick the page to move: its Move into my pages button'); }
     } });
-  // deferred to boot, same reason as loadPerms. See 67-perms.js.
 
 // ── src/69x-follow.js ─────────────────────────────────────────────────────
-  // ── following: shared folders this ship follows ─────────────────────────
-  // A peer's shared folder (urb://~host/<folder>/) followed from its index
-  // page's Follow button. The ship keeps the list and the pages each folder
-  // listed when last read (/folder-follows); a page added or changed since
-  // it was seen counts as new. Pull, nothing asked of the publisher: the
-  // ship reads every folder again on boot and every 20 minutes while this
-  // is open (/folder-check), and at once when a share notice lands under
-  // one ('stale' on /beacon/folds, 90-sync.js).
-  //
-  // For whatever wants to act on it (notifications): every /beacon/folds
-  // stamp with op 'new' is also a window event, lattice:folder-new, whose
-  // detail is {host, path, new}.
   const FOL = ' following';
   const foldName = (f) => f.host + f.path;
   const foldLeaf = (f, p) => p.key.slice(f.path.length + 1);
@@ -11148,7 +8089,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     try { folds = await r.json(); } catch { return; }
     renderTree();
   }
-  // read one folder again (its host and path), or every one
   async function checkFolds(f) {
     const q = f ? '?host=' + encodeURIComponent(f.host) + '&path=' + encodeURIComponent(f.path) : '';
     if (!f && !folds.length) return;
@@ -11160,8 +8100,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   const foldsBumped = (data) => {
     let j = null;
     try { j = JSON.parse(data); } catch {}
-    // the notice can beat the folder's index being written again on the
-    // host, so it is read now and twice more shortly after
     if (j && j.op === 'stale' && j.host && j.path) {
       for (const ms of [0, 4000, 12000]) setTimeout(() => checkFolds(j), ms);
       return;
@@ -11181,7 +8119,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     renderTree();
     st('unfollowed ' + foldName(f));
   }
-  // a page opened from the list is seen
   function openFoldPage(f, p) {
     if (p.new) {
       p.new = false;
@@ -11191,7 +8128,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     browseIn(api + '?url=' + encodeURIComponent(foldUrl(f.host, p.key)));
   }
-  // appended by renderTree, after shared with me
   function renderFolds(coll) {
     const all = folds.reduce((n, f) => n + (f.ok ? f.new : 0), 0);
     const top = folderRow('following', 0, coll.includes(FOL),
@@ -11259,10 +8195,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
 // ── src/70-upload.js ──────────────────────────────────────────────────────
-  // ── upload (pickers + drag-and-drop, progress panel) ─────────────────────
-  //  which extensions arrive as which kind is EXT_KIND, in 30-tree.js. Each
-  //  path segment is slugged by slugSeg (10-shell.js), the same rule a typed
-  //  page name gets.
   const upPanel = $('uppanel'), upMsg = $('upmsg'), upFill = $('upfill'), upErr = $('uperr');
 
   const upShow = () => { upPanel.hidden = false; upErr.textContent = ''; upFill.style.width = '0%'; };
@@ -11278,8 +8210,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return;
     }
     const list = [];
-    //  names, not just a count: a batch of thirty dropped files that skips
-    //  three leaves the user guessing which three without this
     const skippedNames = [];
     for (const { file, rel } of items) {
       const dot = rel.lastIndexOf('.');
@@ -11294,9 +8224,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     if (!list.length) {
       upShow();
-      // EXT_KIND (30-tree.js) is the one table the picker filter and this
-      // message both have to agree with, so read it instead of hand-listing
-      // extensions that drift the moment a new kind is added.
       upMsg.textContent = 'no supported files (' + Object.keys(EXT_KIND).join(' ') + ')';
       return;
     }
@@ -11308,16 +8235,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         : skippedNames.join(', ');
       upErr.textContent = `skipped ${skippedNames.length} unsupported\n  ${shown}\n`;
     }
-    // No folder-new first: every name in the batch is a full path, and the
-    // ship's %make-many creates each page's missing parent folders itself
-    // (make-page, ensure-dirs), the way a single save does. A folder-new per
-    // directory was a ~2s writer round-trip apiece for nothing.
-    //
-    // ONE request per chunk, not one per file: every request pays the pier's
-    // ~0.5s floor serially, so a 20-file drop used to be ~20 round-trips of
-    // pure overhead doing work the server can batch. Chunked because the
-    // route bounds a single transaction (200) and a whole folder should not
-    // become one unbounded write.
     const CHUNK = 50;
     let fails = 0, done = 0;
     for (let i = 0; i < list.length; i += CHUNK) {
@@ -11326,23 +8243,16 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       const payload = [];
       try {
         for (const it of part) {
-          // an .odt goes through writer.js
           const c = it.odt ? await (await writerReady()).importOdt(await it.file.arrayBuffer()) : { text: await it.file.text() };
           if (c.error || c.note) upErr.textContent += it.name + ': ' + (c.error || c.note) + '\n';
           if (c.error) { fails++; continue; }
           payload.push({ name: it.name, type: it.kind, body: c.text || '\n' });
-          // the read is awaited one file at a time, so the bar can move with
-          // it instead of sitting at 0% for the whole chunk and then jumping
           upProg(done + payload.length, list.length, it.name, 'reading');
         }
         r = await mutate(api + '/page-save-batch',
           { method: 'POST', body: JSON.stringify(payload) });
       } catch {}
       if (!r || !r.ok) {
-        // the batch is all-or-nothing, so report the whole chunk rather than
-        // implying some of it landed, and name what it held: a count alone
-        // leaves the user diffing the tree by hand to find which files never
-        // made it
         fails += part.length;
         let msg = r ? r.status : 'network';
         if (r) { try { const j = await r.json(); if (j.error) msg = j.error; } catch {} }
@@ -11352,18 +8262,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           : names.join(', ');
         upErr.textContent += `failed: ${part.length} file(s) — ${msg}\n  ${held}\n`;
       } else {
-        // an upload can OVERWRITE an existing page, and the batch's targets
-        // live in the POST body where mutate() can't see them — so every
-        // session tier must be told by hand, or openPage's pageCache hit
-        // serves the pre-upload body with zero requests and the next
-        // autosave buries the uploaded content under it.
         for (const it of payload) {
           pageCache.delete(it.name);
           const nd = nodes.find((n) => n.page && n.path === it.name);
           if (nd) { nd.body = it.body; nd.kind = it.type; }
           else addTreeNode(it.name, it.type);
         }
-        // and the SW pages cache, blind to POST bodies the same way
         bustAll();
       }
       done += part.length;
@@ -11378,9 +8282,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   const fromFileList = (fl) =>
     [...fl].map((f) => ({ file: f, rel: f.webkitRelativePath || f.name }));
 
-  // desktop shell: webkit2gtk has no webkitdirectory (folder picks are dead
-  // on Linux), so the tauri pick_upload command opens the native dialog and
-  // hands back {rel, text} for user-picked files. Browsers keep the inputs.
   const deskPick = window.__TAURI__ && (async (dir) => {
     try {
       const picked = await window.__TAURI__.core.invoke('pick_upload',
@@ -11396,7 +8297,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   $('fpick').onchange = () => { if ($('fpick').files.length) uploadItems(fromFileList($('fpick').files)); };
   $('dpick').onchange = () => { if ($('dpick').files.length) uploadItems(fromFileList($('dpick').files)); };
 
-  // drag-and-drop (files or whole directories via entry walking)
   const walkEntry = (entry, path, out) => new Promise((res) => {
     if (entry.isFile) entry.file((f) => { out.push({ file: f, rel: path + f.name }); res(); }, res);
     else if (entry.isDirectory) {
@@ -11411,13 +8311,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     } else res();
   });
   const treePane = $('tree');
-  // A drag carries files, or it carries something else entirely, most often
-  // a text selection dragged around inside the editor. window used to
-  // preventDefault on every drag without asking which, which also cancels
-  // the browser's native text drop and paints the tree as a target for a
-  // drop it was never going to accept. types is populated the moment the
-  // drag starts, well before any drop, so the two handlers below check the
-  // same thing at two different points in the same gesture.
   const dragHasFiles = (e) => !!(e.dataTransfer && [...e.dataTransfer.types].includes('Files'));
   window.addEventListener('dragover', (e) => {
     if (!dragHasFiles(e)) return;
@@ -11441,33 +8334,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   });
 
 // ── src/71-latex.js ───────────────────────────────────────────────────────
-  // ── LaTeX to HTML ────────────────────────────────────────────────────────
-  //  A .tex page gets a convert button that runs pandoc on THIS machine and
-  //  writes the result back as an ordinary html page. The ship never learns
-  //  LaTeX: it stores tex source as text and serves the output as html, both
-  //  of which it already knew how to do.
-  //
-  //  Desktop only, because the conversion is a local subprocess. On the web
-  //  the button is simply absent, which is honest: there is nothing there that
-  //  could run it.
-  //
-  //  pandoc is NOT bundled (it is GPL, and 150MB). We detect the user's own
-  //  install and say where to get it when there is none.
   const texRust = () => (window.__TAURI__ && window.__TAURI__.core) || null;
 
-  //  The output page's name. A page name is a key, so the source and its
-  //  output cannot share one. The tree derives the shown extension from the
-  //  kind, so `paper` (tex) lists as paper.tex and `paper-web` (html) lists
-  //  as paper-web.html without either name carrying an extension itself.
   const texOut = (name) => name + '-web';
 
-  //  pandoc copies \href and \includegraphics targets through as written,
-  //  and the output is saved as an html page of OUR OWN, which runs as the
-  //  owner. A .tex a peer may edit could carry a javascript: link or a
-  //  remote media source. Links keep http(s), mailto and relative targets.
-  //  Media keeps relative sources only, so viewing the page tells no other
-  //  host. Anything that embeds or runs is dropped. A <template> parses
-  //  inertly: nothing in it loads or runs while it is cleaned.
   const TEX_DROP = 'script,style,iframe,frame,object,embed,video,audio,source,track,form,base,meta,link,svg';
   const TEX_SRC = ['src', 'srcset', 'poster', 'action', 'formaction', 'data', 'background'];
   function cleanTexHtml(html) {
@@ -11477,8 +8347,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     for (const e of t.content.querySelectorAll('*')) {
       for (const a of [...e.attributes]) {
         const n = a.name.toLowerCase();
-        //  browsers drop these characters inside a scheme ("java\tscript:")
-        //  and read a backslash as a slash ("\\host" is "//host")
         const v = a.value.replace(/[\u0000-\u0020]/g, '').replace(/\\/g, '/');
         const abs = /^[a-z][a-z0-9+.-]*:|^\/\//i.test(v);
         const bad = n.startsWith('on')
@@ -11494,9 +8362,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
 
   const texBtn = () => $('texconv');
 
-  //  Probed on every .tex page open rather than once at boot: someone who
-  //  installs pandoc and comes back should find the button live without
-  //  restarting the app.
   async function refreshTexButton() {
     const b = texBtn();
     if (!b) return;
@@ -11513,16 +8378,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       : texProbe.stale
         ? 'this desktop build predates LaTeX support (click for what to do)'
         : 'needs pandoc installed on this machine (click to find out how)';
-    //  The button stays CLICKABLE without pandoc, and explains itself when
-    //  pressed. A disabled control with no explanation is a dead end: the
-    //  person who most needs the message is the one who cannot click.
     b.classList.toggle('needsdep', !(texProbe && texProbe.available));
   }
 
-  //  A rejected invoke means one of two very different things, and saying the
-  //  wrong one sends someone off to install software they already have. An
-  //  app built before these commands existed rejects with "not found"; a real
-  //  probe answers {available:false} when pandoc is genuinely missing.
   async function probePandoc(rust) {
     try {
       const r = await rust.invoke('pandoc_probe');
@@ -11537,8 +8395,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   }
 
-  //  a double click must not launch two converts: both write the same output
-  //  page and the second surfaces the race as a write failure.
   let texConvBusy = false;
 
   async function convertTex() {
@@ -11553,9 +8409,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (!rust) return;
     if (!texProbe) texProbe = await probePandoc(rust);
     if (texProbe.stale) {
-      //  the UI comes from the ship and updates on reload. The commands it
-      //  calls live in the binary, which does not. That gap is exactly what
-      //  this branch exists to name.
       st('this desktop build has no LaTeX support yet', false);
       await askConfirm(
         'This copy of the desktop app was built before LaTeX support existed, ' +
@@ -11578,23 +8431,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     let html = null;
     try { html = cleanTexHtml(await rust.invoke('convert_tex', { src: src.value })); }
     catch (e) {
-      //  pandoc names the line and the construct it choked on. Show that,
-      //  not a generic failure.
       st('pandoc: ' + String(e && e.message ? e.message : e).slice(0, 160), false);
       return;
     }
-    //  A derived page. Say so IN the file, because the next convert
-    //  overwrites it and hand edits would vanish with no warning.
     const body = '<!-- generated from ' + current +
       '.tex by pandoc. Edits here are lost on the next convert. -->\n' + html;
-    //  &new=1 only the first time: page-save answers 409 to a create over an
-    //  existing name, and a re-convert is an overwrite by design.
     const known = nodes.some((n) => n.page && n.path === out);
     const url = api + '/page-save?name=' + encodeURIComponent(out) + '&type=html';
     let r = await mutate(url + (known ? '' : '&new=1'), { method: 'POST', body });
-    //  the local tree can run behind the ship: a sibling created elsewhere
-    //  answers our create with 409. The page exists, so retry the write the
-    //  way every re-convert already works, as an overwrite.
     if (!known && r && r.status === 409)
       r = await mutate(url, { method: 'POST', body });
     if (!r || !r.ok) { st('could not write ' + out + await errText(r), false); return; }
@@ -11603,23 +8447,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     st('wrote ' + out + '.html');
   }
 
-  //  wired here, where the handler lives (the same rule 45-templates and
-  //  75-move follow)
   if (texBtn()) texBtn().onclick = convertTex;
 
-  // ── live preview ─────────────────────────────────────────────────────────
-  //  60-preview paints every content kind synchronously. pandoc is a
-  //  subprocess and cannot answer inside that call, so this keeps the last
-  //  conversion and hands it over immediately, then repaints when a fresh one
-  //  lands. Declared with `function` rather than `const`: 60-preview.js loads
-  //  first and names texPreviewHtml, so it must be hoisted, not in a TDZ.
   let texCache = { src: null, html: null };
   let texTimer = 0;
   let texBusy = false;
 
-  //  400ms, not the 60ms the other kinds use. Those call a function; this
-  //  spawns a process, and one per keystroke would be a fork bomb with a
-  //  progress bar.
   const TEX_DEBOUNCE = 400;
 
   function texSourceFallback(body) {
@@ -11627,12 +8460,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
   function texPreviewHtml(body) {
-    //  On the web there is no pandoc, so show the source rather than an empty
-    //  pane. A blank preview reads as broken; the source reads as honest.
     if (!texRust()) return texSourceFallback(body);
     if (texCache.src !== body) scheduleTexRender(body);
-    //  until the first conversion returns, the source stands in. Typing then
-    //  refines rather than flashing empty.
     return texCache.html === null ? texSourceFallback(body) : texCache.html;
   }
 
@@ -11644,12 +8473,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   async function runTexRender(body) {
     const rust = texRust();
     if (!rust) return;
-    //  never two pandocs at once. The newer body wins, so re-arm rather than
-    //  queue: whatever is typed last is what anyone wants to see.
     if (texBusy) { scheduleTexRender(body); return; }
     if (!texProbe) texProbe = await probePandoc(rust);
-    //  no renderer to call: leave the source showing rather than blanking the
-    //  pane. The button carries the explanation; the preview stays quiet.
     if (!texProbe.available) { texCache = { src: body, html: null }; return; }
     texBusy = true;
     let html = null;
@@ -11657,35 +8482,17 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     try { html = cleanTexHtml(await rust.invoke('convert_tex', { src: body })); }
     catch (e) { err = String(e && e.message ? e.message : e); }
     texBusy = false;
-    //  A broken document must SAY so. Freezing the last good render would
-    //  leave a stale page on screen while the source no longer produces it.
     texCache = {
       src: body,
       html: html !== null ? html
         : '<pre style="color:#c33;white-space:pre-wrap">' +
           mdEsc(err || 'pandoc could not convert this document') + '</pre>',
     };
-    //  the body may have moved on while pandoc ran
     if (src.value !== body) { scheduleTexRender(src.value); return; }
     paintLocal();
   }
 
 // ── src/72-acl.js ─────────────────────────────────────────────────────────
-  // ── access control pane: <lat-acl>, the peers panel with room to work ────
-  // Same data and same endpoints as the narrow editor panel (67-perms.js).
-  // This is a tool tab for organising it (24-tools.js). Deliberately NOT a
-  // third setMode branch. setMode is wired into the tree/editor lifecycle and
-  // access control has nothing to do with either (same reasoning as 40-grub.js).
-  //
-  // Costs no boot requests. It renders permGroups, which boot already loads
-  // off the critical path, and only fetches if the pane is opened before that
-  // landed. Every mutation goes through permSave, so the narrow panel and this
-  // one can never disagree.
-  //
-  // POKE GRANTS ARE READ-ONLY HERE, deliberately. The server preserves them
-  // verbatim on save and refuses to set them from the editor ("the editor has
-  // no business granting eval power"). A grant of eval capability stays a
-  // dojo-level act. They are shown so this pane never hides live rules.
   customElements.define('lat-acl', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -11727,27 +8534,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   });
 
-  // every way in (#aclopen in the Page tab, the ribbon, the phone's sheet)
-  // lands on the one Access & groups tab, and its coming forward loads it
   const aclOpen = () => toolOpen('access');
   const aclLoad = () => {
-    // permGroups is populated by boot's deferred load. Only pay a request if
-    // the pane was opened before that landed. Guard on permsLoaded, not the
-    // array's length: a ship with zero groups is a real, load-complete
-    // answer, and checking length alone paid a live round trip on every open
-    // forever for exactly that ship. 66-share.js already made this call.
     if (!permsLoaded) loadPerms(); else renderAcl();
     loadBans();
     renderPublished();
   };
 
-  // ── published pages: every address worth handing out ─────────────────────
-  // Each shared page by its urb:// address and each clearweb page by its
-  // https link, the very strings the Page tab gives (urbUrl and cwUrl,
-  // 66-share.js), each with a copy button. Read off the tree's share modes,
-  // which page-dump already carries: no request of its own. renderTree
-  // repaints it while this tab is in front, so a page shared or made
-  // private elsewhere comes and goes here too.
   function renderPublished() {
     const host = $('publist');
     if (!host) return;
@@ -11779,7 +8572,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         b.type = 'button';
         b.className = 'sbtn';
         b.innerHTML = ico('copy');
-        // no ship name yet (or none to be had): no address, and nothing to copy
         if (!u) {
           const m = document.createElement('span');
           m.className = 'aclnote';
@@ -11789,10 +8581,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           host.appendChild(row);
           continue;
         }
-        // a clearweb link opens in a new window. A urb:// address opens in
-        // the reader (/apps/lattice?url=), in a browser tab of the shell as
-        // the ribbon's Browser does (browseIn, 24-tools.js). A new-tab click
-        // goes to a browser window as it is.
         const a = document.createElement('a');
         a.textContent = u;
         if (mode === 'clearweb') { a.href = u; a.target = '_blank'; a.rel = 'noopener'; }
@@ -11814,8 +8602,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   action({ id: 'published', name: 'Published pages', home: 'Ribbon › Access & groups',
     run: async () => { await aclOpen(); $('aclpub').scrollIntoView({ block: 'start' }); } });
 
-  // suggest the grantable paths this client already knows about, so a grant is
-  // a pick rather than a hand-typed ball path. Built from the tree we have.
   function aclPathOptions() {
     const dl = $('aclpaths');
     if (!dl) return;
@@ -11856,7 +8642,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     aclChips(card, items, onDel, disp);
   }
 
-  // the card's title bar: the group's name, and the button that removes it
   function aclHead(g) {
     const head = document.createElement('header');
     const b = document.createElement('b');
@@ -11868,9 +8653,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       if (!(await askDanger('delete group ' + g.name + ' and every grant it carries?', 'delete'))) return;
       const r = await busyFetch(api + '/share-group-del?name=' + encodeURIComponent(g.name),
         { method: 'POST' }).catch(() => null);
-      // loadPerms repaints from the ship either way, so a delete that failed
-      // and a group that came back on its own look identical. Say which it
-      // was, the rule permSave and the ban handler already follow.
       if (!r || !r.ok) st('could not delete ' + g.name + await errText(r), false);
       loadPerms();
     };
@@ -11878,7 +8660,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return head;
   }
 
-  // who is in the group: the chips, and the row that adds one more
   function aclShips(card, g) {
     aclSection(card, 'ships', g.ships, (v) => {
       g.ships = g.ships.filter((x) => x !== v); permSave(g);
@@ -11902,7 +8683,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     card.appendChild(srow);
   }
 
-  // granting a path: one input, and the two buttons that say how far it goes
   function aclPathRow(card, g) {
     const prow = document.createElement('div');
     prow.className = 'row';
@@ -11928,7 +8708,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     card.appendChild(prow);
   }
 
-  // the grants this pane carries but will not let you edit
   function aclReadOnlyNote(card, g) {
     if (!(g.poke && g.poke.length) && !g.opaque) return;
     const h = document.createElement('h4');
@@ -11951,16 +8730,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   }
 
-  // one card, one group. `disp` shortens a path against the whole pane.
   function aclCard(g, disp) {
     const card = document.createElement('div');
     card.className = 'aclcard';
     card.appendChild(aclHead(g));
     aclShips(card, g);
     aclSection(card, 'read', g.peek, (v) => {
-      // dropping read must drop edit too. Edit without read is a grant that
-      // cannot be exercised, and it would silently reappear as "read" on the
-      // next save because addPath re-adds it.
       g.peek = g.peek.filter((x) => x !== v);
       g.make = g.make.filter((x) => x !== v);
       permSave(g);
@@ -11988,17 +8763,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       grid.appendChild(e);
       return;
     }
-    // one disambiguation scope for the whole pane, so the same page shows
-    // the same short name in every card
     const allPaths = permGroups.flatMap((x) => [...x.peek, ...x.make]);
     const disp = (v) => shortPath(v, allPaths);
     for (const g of permGroups) grid.appendChild(aclCard(g, disp));
   }
 
-  // ── banlist ──────────────────────────────────────────────────────────────
-  // Deny is not something a weir can say, so it is the app's own list. Banning
-  // revokes group membership server-side. The response says how many groups
-  // changed, because "banned" with grants still live would be a lie.
   let banned = [];
   async function loadBans() {
     try {
@@ -12026,7 +8795,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       a.onclick = async () => {
         const r = await busyFetch(api + '/unban?ship=' + encodeURIComponent(w), { method: 'POST' })
           .catch(() => null);
-        // announce the unban only once the ship has agreed to it
         if (!r || !r.ok) st('could not unban ' + w + await errText(r), false);
         else st('unbanned ' + w + ' — it holds no access until you grant it again');
         loadBans();
@@ -12037,10 +8805,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   $('banadd').onclick = async () => {
     const w = $('banship').value.trim();
     if (!w) return;
-    // banning revokes every grant the ship holds right now, and unban does
-    // not bring them back (the nexus is explicit about that) — a mistyped
-    // ship name is a permanent loss with no online undo, so ask first the
-    // way delete already does.
     if (!(await askDanger('ban ' + w + '? this revokes every grant it holds, and unban will not restore them', 'ban'))) return;
     const r = await busyFetch(api + '/ban?ship=' + encodeURIComponent(w), { method: 'POST' })
       .catch(() => null);
@@ -12067,14 +8831,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
 
 // ── src/73-comments.js ────────────────────────────────────────────────────
-  // ── comments inbox: <lat-comments> ───────────────────────────────────────
-  // Comments arrive from OTHER ships, and until now the workspace had no view
-  // of them. The reader rendered a thread per page, so finding out anyone had
-  // replied meant visiting each published page. This is the owner's side: what
-  // came in, across every page, newest first, with a way to remove one.
-  //
-  // Reuses the .aclwrap/.aclbar/.aclbody styles rather than growing a second
-  // set that would drift from them. It shows in a tool tab (24-tools.js).
   customElements.define('lat-comments', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -12117,13 +8873,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     renderComments(d.total || inbox.length);
   }
 
-  // The inbox by default. The Comments tab (76-outline.js) passes one
-  // page's share of it, its own host and empty line, and its own reload,
-  // and leaves out the page link, which would only point at itself.
   function renderComments(total, {
     host = $('cmlist'), items = inbox, sum = $('cmsum'), reload = loadComments,
-    // say WHY it might be empty. Comments are opt-in per page, so "none yet"
-    // and "never enabled anywhere" look identical and mean different things
     empty = 'No comments. They are opt-in per page: switch them on in a '
       + 'page\'s Page tab.',
     pageLink = true,
@@ -12164,8 +8915,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       head.appendChild(who); head.appendChild(del);
       card.appendChild(head);
 
-      // the page it landed on, clickable. The point of an inbox is getting
-      // to the thing being talked about
       if (pageLink) {
         const on = document.createElement('a');
         on.className = 'gname';
@@ -12190,15 +8939,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     host.appendChild(grid);
   }
 
-  // ── held and activity ────────────────────────────────────────────────────
-  // The inbox has three tabs. Held: comet comments waiting on a page set to
-  // held, across every page (GET /held-comments), approved or rejected here
-  // as in a page's Page tab. Activity: what happened to the owner, a comment
-  // from another ship on one of their pages, a reply to their post or
-  // comment on a board they host, and a reply on another ship's board its
-  // host told this ship about (GET /notify). Each item is read or unread on
-  // the ship, so every tab and device agrees. Comments: every comment, with
-  // remove, as before.
   let ibTab = null;
   let held = [];
   let acts = [];
@@ -12297,15 +9037,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     host.appendChild(grid);
   }
 
-  // where an activity item points: a page of ours, a thread on a board we
-  // host, or a thread on another ship's board read through this ship
   const actLabel = (a) => {
     if (a.kind === 'comment') return 'comment on ' + a.where;
     const t = a.title ? ': ' + a.title : '';
     if (a.kind === 'remote') return 'reply on ' + a.host + '/' + a.where + t;
     if (a.kind === 'reply') return 'reply on ' + a.where + t;
-    // a followed folder's new pages: the ship words it, "N new pages in
-    // <folder> from ~ship", one item per folder
     if (a.kind === 'folder') return a.title || a.where;
     return a.where;
   };
@@ -12364,10 +9100,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     refreshInboxBadge(true);
   };
 
-  // ── the badge ────────────────────────────────────────────────────────────
-  // On the ribbon's inbox button: held comet comments plus unread activity,
-  // with the count in its name so a screen reader hears it too (title and
-  // label stay identical). No sound and no OS notification, by design.
   function paintUnread(n) {
     const b = $('rb-inbox');
     if (!b) return;
@@ -12376,9 +9108,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     tip(b, n > 0 ? 'Inbox, ' + b.dataset.n + ' unread' : 'Inbox');
   }
 
-  // GET /notify-count is two directory reads and no bodies. It runs on a
-  // refresh, throttled to once a minute, and at once (`now`) when the
-  // /beacon/notify stamp moves (90-sync.js) or the user acted here.
   const BADGE_MS = 60000;
   let badgeAt = 0;
   async function refreshInboxBadge(now) {
@@ -12386,24 +9115,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     badgeAt = Date.now();
     let d = null;
     try {
-      // bgFetch: a badge must never queue ahead of something the user asked
-      // for (this call is why page opens measured 6s+, see 10-shell.js)
       const r = await bgFetch(api + '/notify-count');
       if (!r.ok) return;                 // a failed count is not worth reporting
       d = await r.json();
     } catch { return; }
     paintUnread((d.held || 0) + (d.unread || 0));
   }
-  // the old name, which the refresh paths call
   const refreshCommentBadge = () => refreshInboxBadge(false);
-  // A followed folder's new pages arrive as one activity item of kind
-  // %folder per folder (lib/lattice-notify +folder-item): the ship files it
-  // when a read finds more new pages, and marks it read when they are all
-  // opened (69x-follow.js), stamping /beacon/notify both times.
 
-  const cmOpen = () => toolOpen('inbox');
-  // the inbox's tab came forward (24-tools.js): load all three tabs, and
-  // show Held when something waits there, else Activity
   const cmLoad = () => {
     Promise.all([loadHeld(), loadActivity(), loadComments()]).then(() => {
       ibShow(ibTab || (held.length ? 'held' : 'act'));
@@ -12413,10 +9132,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   $('cmreload').onclick = cmLoad;
 
 // ── src/74-orrery.js ──────────────────────────────────────────────────────
-  // ── send the open page to orrery (ui-app/orrery.js, docs/orrery.md) ──────
-  // A section of the controls pane, shown only while orrery is installed and
-  // a saved page is open: a folder, or a new page not saved yet, has nothing
-  // for orrery to follow. Follows every target change through +showShare.
   function orreryShow() {
     const sec = $('orrsec'), el = $('orr');
     if (!sec || !el || !window.LatticeOrrery) return;
@@ -12433,23 +9148,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
 // ── src/75-move.js ────────────────────────────────────────────────────────
-  // ── move / rename ────────────────────────────────────────────────────────
-  // page-move does the whole thing server-side (copy + share carry-over +
-  // delete, wikilink self-references rewritten) in ONE request. The old
-  // client choreography was 3 round-trips per page plus one per folder.
-  // Memories use the know-move route, which culls the source key outright.
-  // Only the current body carries over, not the history: the new key's own
-  // history starts fresh at rev 1.
-  // rn: the realName() split of the new name. Its dname is ALWAYS sent: ''
-  // (the typed name was a valid path) clears the one the move would
-  // otherwise carry over; dnames names the folders the move creates.
-  //  The ship copies what it holds, so the text in the editor goes out
-  //  first, and no autosave or parked save writes the old name while the
-  //  move runs (`moving`, 35-pages.js). One landing in the folder being
-  //  moved was deleted with it, or made the old folder again.
   const moveReq = async (from, to, rn) => {
-    //  held first: the save the flush makes queues an autosave behind it,
-    //  and that one would go out beside the move, under the old name
     moving++;
     const end = busy();      // the line from the click, the flush included
     try {
@@ -12460,12 +9159,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         (rn && rn.dnames ? '&dnames=' + encodeURIComponent(rn.dnames) : ''));
     } finally { end(); moving--; }
   };
-  // the server moves the WHOLE subtree (a page can parent nested pages, and
-  // move-pages rewrites every rel under it). Renaming only the exact node
-  // left those children pointing at paths that no longer exist, ghosts in
-  // the tree until the next full loadTree. So the local tree gets the same
-  // suffix-preserving remap, as does the offline queue's own move
-  // reconciliation. Returns how many pages moved.
   const remapMoved = (from, to, rn) => {
     tabsRemap('page', from, to);       // and the tabs naming them (21-tabs.js)
     let moved = 0;
@@ -12474,9 +9167,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         if (n.page) moved++;
         n.path = to + n.path.slice(from.length);
       }
-    // and the editor, when it shows a page that moved: renamed in place,
-    // so text typed during the move saves under the new name, never as
-    // the old page made again
     if (mode !== 'know' && !grubPath && current &&
         (current === from || current.startsWith(from + '/'))) {
       const nn = to + current.slice(from.length);
@@ -12492,8 +9182,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     remapMoved(oldName, newName, rn);
     snapTree();
     renderTree();
-    //  the response, not a bare true: the caller's message must say when the
-    //  move was queued offline, and only the response knows.
     return r;
   }
 
@@ -12508,22 +9196,17 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       st('moving ' + oldPath + ' \u2192 ' + newPath + '\u2026');
       const r = await moveReq(oldPath, newPath, rn);
       if (!(r.ok || r.offline)) {
-        // the server refused this name \u2014 loop back into askName seeded with
-        // it, so the retry is an edit, not a full retype
         st('move failed' + await errText(r), false);
         seed = typed;
         continue;
       }
       const inside = (p) => !!p && (p === oldPath || p.startsWith(oldPath + '/'));
-      //  read before the remap renames the open page in place
       const wasOpen = mode !== 'know' && !grubPath && inside(current);
       const moved = remapMoved(oldPath, newPath, rn);
       snapTree();
       renderTree();
       st('moved ' + oldPath + ' \u2192 ' + newPath +
         (r.offline ? ' offline' : '') + ' (' + moved + ' pages)');
-      //  only what was inside the folder reopens: a folder moved from the
-      //  tree's menu (34-treemenu.js) leaves an unrelated open page alone
       if (wasOpen && current) openPage(current);
       else if (inside(curFolder)) selectFolder(newPath + curFolder.slice(oldPath.length));
       return;
@@ -12531,20 +9214,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
 // ── src/76-outline.js ─────────────────────────────────────────────────────
-  // ── right pane: Outgoing, Outline, Comments, and what follows the document ─
-  // The right pane's tabs are about the document in front. Outgoing and
-  // Outline read its text, the rest fetch, and all of them repaint when the
-  // document changes: setOpen (every open, tab switch and mode change goes
-  // through it) fires 'input' on the name field, resetPanels runs on every
-  // fresh paint of a page or memory, and the editor's render tells them the
-  // text moved. A tab that does not apply to what is in front says so in
-  // one line, and never hides: a tab strip that changes shape under the
-  // pointer is worse than one that is sometimes empty.
 
-  // The link targets the preview renderer (59-md.js) makes of a document,
-  // deduped, in order. Read off its own output, so a link here is exactly a
-  // link there: fences, images, unsafe schemes and escaping all come out the
-  // same. A page link comes back as its page name, a urb:// link as itself.
   function outLinks(body, kind) {
     if (kind === 'fodt') return wrX('out', body);
     const html = kind === 'md' ? mdToHtml(body) : kind === 'gmi' ? gmiToHtml(body) : '';
@@ -12561,9 +9231,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return out;
   }
 
-  // The headings of a document, by the rules the same renderer uses: md
-  // #..###### with a space, gmi #..### with one, nothing inside a fence.
-  // `line` counts from 1.
   function outline(body, kind) {
     const out = [];
     if (kind === 'fodt') return wrX('outline', body);
@@ -12598,18 +9265,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
 </div>`;
   for (const id of ['back', 'hist', 'page']) rpSec(id).insertAdjacentHTML('afterbegin', NONE);
 
-  // What is in front, as the pane sees it: a page (named or not yet), a
-  // memory, a grub, or nothing it has tabs for (a folder, an empty editor
-  // after a close, a tab kind with no document such as a tool).
   const rpDoc = () => {
     if (activeTab && !['page', 'know', 'grub'].includes(activeTab.kind)) return null;
     if (grubPath) return { kind: 'grub', key: grubPath };
     if (curFolder !== null) return null;
     return { kind: mode === 'know' ? 'know' : 'page', key: current };
   };
-  // Outgoing and Outline need text a renderer reads. History needs a
-  // document with revisions, so a saved page or memory. Backlinks and
-  // Comments are about pages.
   const rpApplies = (id, d) => !!d && (
     id === 'out' || id === 'outline' ? d.kind !== 'grub'
       : id === 'hist' ? d.kind !== 'grub' && !!d.key
@@ -12617,8 +9278,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   const RP_BODY = { out: 'outsec', outline: 'olsec', back: 'linksec', comments: 'rpcmsec', hist: 'histsec' };
   const rpText = () => (mode === 'know' ? 'md' : pkind.value);
 
-  // which fetched tab holds which document ('page:a/b'). A tab whose entry
-  // differs from what is in front loads when it is next seen.
   const rpLoaded = {};
   let rpTimer = 0;
   let rpForce = null;
@@ -12628,9 +9287,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     rpForce = null;
     const d = rpDoc();
     const key = d && d.key ? d.kind + ':' + d.key : null;
-    // the Page tab is the controls of the document underneath, which a tab
-    // that is not a document (a tool) is not. A folder (d null) keeps them:
-    // they act on it.
     const tool = !docFront();
     rpSec('page').querySelector('.rpnone').hidden = !tool;
     rpSec('page').querySelector('lat-ctl').hidden = tool;
@@ -12648,21 +9304,15 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         else loadPageComments();
       }
     }
-    // a link's comments are its owner's (paintLink, 65-ctl.js)
     $('cmtrow').hidden = !(d && d.kind === 'page' && d.key && !linkOf(d.key));
-    // the post box follows the flag, which can land after the list did
     if (rpApplies('comments', d)) paintCmBox();
   }
-  // Always deferred: the callers are mid-paint (setOpen comes before the
-  // body lands), and some run while later files are still loading.
   function rpSoon(ms = 30) {
     clearTimeout(rpTimer);
     rpTimer = setTimeout(rpPaint, ms);
   }
   pname.addEventListener('input', () => rpSoon());
-  // typing repaints Outgoing and Outline once it pauses
   rpHook = () => rpSoon(300);
-  // a tab brought forward shows its document now, and a fetched one fresh
   document.addEventListener('lat-pane', (e) => {
     if (e.detail.side !== 'r') return;
     rpForce = e.detail.id;
@@ -12670,10 +9320,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   });
   rpSoon(0);
 
-  // ── Outgoing ─────────────────────────────────────────────────────────────
-  // A page target opens through the tab model, so Ctrl/Cmd and the middle
-  // button open it in a new tab. A page not in the tree is muted: following
-  // it creates it. A web or urb:// target is an ordinary link.
   function paintOut() {
     const host = $('outlist');
     host.textContent = '';
@@ -12701,9 +9347,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   }
 
-  // ── Outline ──────────────────────────────────────────────────────────────
-  // A click puts the caret on that heading's line and brings it into view.
-  // In Read the preview scrolls instead, to the heading of the same index.
   function paintOutline() {
     const host = $('ollist');
     host.textContent = '';
@@ -12736,18 +9379,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     for (let i = 0; i < line - 1 && i < lines.length; i++) off += lines[i].length + 1;
     src.focus();
     src.setSelectionRange(off, off);
-    // the textarea soft-wraps, so this is near the line, not on it. A third
-    // of the way down leaves room for the error of a few wrapped lines.
     const lh = parseFloat(getComputedStyle(src).lineHeight) || 20;
     src.scrollTop = Math.max(0, (line - 1) * lh - src.clientHeight / 3);
     sync();
   }
 
-  // ── Comments ─────────────────────────────────────────────────────────────
-  // This page's share of the inbox (73-comments.js), with remove as there,
-  // and a box to post one as the owner. A post only lands while comments
-  // are on for the page (the ship drops it otherwise), so the box says so
-  // and stays shut while they are off.
   async function loadPageComments() {
     const host = $('rpcmlist');
     const want = current;
@@ -12780,8 +9416,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const body = $('rpcmbody').value.trim();
     if (!page || !body) return;
     $('rpcmpost').disabled = true;
-    // the route answers a form post with a redirect to the reader. Not
-    // followed: landing is all this needs to know.
     const r = await busyFetch(api + '/comment?page=' + encodeURIComponent(page), {
       method: 'POST', redirect: 'manual',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -12791,15 +9425,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (!r || !(r.ok || r.type === 'opaqueredirect')) { st('comment failed' + await errText(r), false); return; }
     if (current === page) $('rpcmbody').value = '';
     st('comment posted');
-    // the write is its own transaction behind the answer
     setTimeout(() => { if (current === page) { rpForce = 'comments'; rpSoon(0); } }, 1500);
   };
 
 // ── src/77-history.js ─────────────────────────────────────────────────────
-  // ── history + backlinks panels: <lat-history>, <lat-links> ───────────────
-  // Defined here (before this file's own $-lookups). They upgrade inside
-  // their right pane tabs (13-frame.js), which load them when shown and
-  // when the document changes under them (76-outline.js, rpPaint).
   customElements.define('lat-history', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -12823,24 +9452,17 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   });
 
-  // ── backlinks: pages that wikilink [[this page]] ─────────────────────────
-  // fetched ONLY while the Backlinks tab is in front. This and history were
-  // two more ~2s round-trips paid on every page open whether or not anyone
-  // looked.
   const linkList = $('linklist');
   async function loadBacklinks() {
     linkList.textContent = '';
     if (!current || mode === 'know') return;
     const want = current;
     let j = null;
-    // a panel nobody can see is not worth a rejection: an unreachable ship
-    // leaves the list empty, the same as a refused request already does
     try {
       const r = await busyFetch(api + '/page-backlinks?name=' + encodeURIComponent(want), undefined, 'rp:back', $('rpane'));
       if (!r.ok) return;
       j = await r.json();
     } catch { return; }
-    // the document changed while this was in flight: its own load follows
     if (current !== want) return;
     const links = (j.links || []).filter((p) => p !== current);
     if (!links.length) {
@@ -12858,18 +9480,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   }
 
-  // A page or memory was painted fresh. rpPaint reloads whichever of these
-  // tabs is in front if it was about another document, and the other one
-  // when it is next shown. The same document painted again (the upgrade
-  // after a quiet open) costs nothing. History covers memories too.
-  // Backlinks stay pages-only, since a wikilink search over the vault is a
-  // different feature nobody asked for (rpApplies).
   function resetPanels() {
     histView.hidden = true;
     rpSoon();
   }
 
-  // ── version history (born keeps every save; autosave makes it dense) ────
   const histList = $('histlist'), histView = $('histview');
   let revKind = null;
   const exitRev = () => {
@@ -12883,8 +9498,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (!current) return;
     const want = current;
     let j = null;
-    // same rules as loadBacklinks: an unreachable ship leaves the panel
-    // empty, and an answer about a document no longer open is dropped
     try {
       const r = await busyFetch(mode === 'know'
         ? api + '/know-history?key=' + encodeURIComponent(want)
@@ -12903,16 +9516,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     for (const v of revs.slice(0, 30)) {
       const a = document.createElement('a');
-      // @da is always ship UTC. daToUnix (vault.js) runs the same fields
-      // through Date.UTC for the export mtime; do the same here so a chip
-      // reads in the viewer's own zone instead of bare, unlabeled ship time.
       const m = /^~(\d+)\.(\d+)\.(\d+)\.\.(\d+)\.(\d+)\.(\d+)/.exec(v.updated || '');
       const when = m && new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]));
       const label = when && when.toLocaleString(undefined,
         { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
-      // label by timestamp, not the raw clay revision id. prune-hist thins
-      // keystroke-scale autosaves, so the id skips (1, 2, 16) and the gaps
-      // read as missing versions. The id lives on dataset.rev for restore.
       a.textContent = label || ('rev ' + v.rev);
       a.dataset.rev = v.rev;
       a.className = v.rev === viewingRev ? 'on' : '';
@@ -12921,9 +9528,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   }
   async function openRev(rev, lbl) {
-    // guardDirty covers a dirty grub, page, or memory in one place (see
-    // 20-state.js): it flushes what it can and only asks when the flush
-    // still leaves something unsaved.
     if (!(await guardDirty())) return;
     let d = null;
     try {
@@ -12932,16 +9536,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         : api + '/page-source-at?name=' + encodeURIComponent(current) + '&rev=' + rev);
       if (!r.ok) {
         st('revision load failed' + await errText(r), false);
-        // prune-hist coalesces revisions inside its window on every save, so
-        // a chip the pane still lists can genuinely be gone. Resync the list
-        // instead of leaving a chip that will fail forever.
         if (r.status === 404) loadHistory();
         return;
       }
       d = await r.json();
     } catch { st('revision load failed (network)', false); return; }
     viewingRev = rev;
-    // restore under the REVISION's own kind. Memories carry no kind at all
     revKind = mode === 'know' ? null : (d.kind === 'index' ? 'md' : d.kind);
     dirty = false;
     src.value = d.body;
@@ -12962,8 +9562,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const rev = viewingRev;
     if (mode === 'know') {
       exitRev();
-      // the dedicated restore route re-imports the revision's OWN tags via
-      // %import, so the tag set that rev actually held comes back with it
       const r = await mutate(api + '/know-restore-rev?key=' + encodeURIComponent(current) +
         '&rev=' + rev);
       if (!r.ok) { st('restore failed' + await errText(r), false); return; }
@@ -12977,8 +9575,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     exitRev();
     dirty = true;          // the historical body is now an unsaved local edit
     await save(kind);      // under the revision's OWN kind, not the current select
-    // save() reports its own failures and leaves dirty SET on every path
-    // that did not durably hold the body — do not paint success over that
     if (!dirty) st('restored that version as the newest revision');
     loadHistory();
   };
@@ -12994,19 +9590,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       if (!typed) return;
       const newName = realName(typed).name;
       if (newName === current) return;
-      //  the memory this move is for. A tab switch during the round trip
-      //  moves `current`, and only this memory is renamed or relabeled.
       const from = current;
       const r = await mutate(api + '/know-move?from=' + encodeURIComponent(from) +
         '&to=' + encodeURIComponent(newName));
       if (!(r.ok || r.offline)) {
-        // the server refused this name — loop back into askName seeded with
-        // it, so the retry is an edit, not a full retype
         st('move failed' + await errText(r), false);
         seed = newName;
         continue;
       }
-      // the body is already in the editor. Rename in place, no refetch
       knowGen++;
       const k = knowKeys.find((x) => x.key.replace(/^\//, '') === from);
       if (k) k.key = newName;
@@ -13018,9 +9609,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return;
     }
   };
-  //  move or rename a page, open or not: the page menu (#mv) for the open
-  //  one, the tree's menu (34-treemenu.js) for any. Only the page in front
-  //  reopens, under its new name, and only when it is the one that moved.
   async function askMovePage(from) {
     let seed = from;
     for (;;) {
@@ -13028,7 +9616,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       if (!typed) return;
       const rn = realName(typed);
       const newName = rn.name;
-      // same path with a display name is still a rename (My Page over my-page)
       if (newName === from && !rn.dname) return;
       const mv = await movePage(from, newName, rn);
       if (mv) {
@@ -13037,24 +9624,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           openPage(newName);
         return;
       }
-      // movePage already reported the cause: loop back into askName seeded
-      // with the rejected name
       seed = typed;
     }
   }
 
 // ── src/78-export.js ──────────────────────────────────────────────────────
-  // ── vault: scheduled-backup hook ───────────────────────────────────────────
-  // The tar writer/reader and the whole export/restore path moved to the shared,
-  // standalone ui-app/vault.js (loaded after boot, 99-boot.js), so the editor, the
-  // settings page and a scheduled backup all build the SAME archive. The manual
-  // "export vault" / "restore vault" buttons moved to Settings; see +settings-html
-  // and vault.js's mountSettings.
-  //
-  // What stays here is only what is editor-specific: teach vault.js this page's
-  // status line and offline state, then expose the hook the desktop scheduler
-  // reaches in with (it evals window.__latticeBackup on whatever workspace page
-  // is showing, which is usually this editor). Run once vault.js has loaded.
   function vaultHook() {
     if (!window.LatticeVault) return;
     LatticeVault.configure({
@@ -13063,14 +9637,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     });
     if (window.__TAURI__) {
       window.__latticeBackup = (id) => LatticeVault.exportVault(id);
-      // "back up now" clicked while the manager page was showing: no workspace
-      // page existed to receive the eval, so Rust navigates here with
-      // ?backup=<id> and the boot runs it (3s: let the tree land first).
       const pend = new URLSearchParams(location.search).get('backup');
       if (pend) {
-        // the param is a one-shot instruction. A service-worker takeover or
-        // an offline fallback reloads this page with its query intact, and
-        // re-reading it would write a second archive.
         const q = new URLSearchParams(location.search);
         q.delete('backup');
         const rest = q.toString();
@@ -13082,12 +9650,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
 // ── src/78-pdf.js ─────────────────────────────────────────────────────────
-  // ── Export PDF ───────────────────────────────────────────────────────────
-  // The page as it reads, not its source: each kind goes through the same
-  // renderer its preview uses, and ui-app/pdf.js (loaded on first use, never
-  // at boot) lays that out for print and hands it to the runtime. A browser
-  // gets its print dialog, where Save as PDF is one choice; the desktop app
-  // writes the file through a save dialog of its own (desktop/src/pdf.rs).
   let pdfLoad = null;
   const pdfReady = () => (window.LatPdf ? Promise.resolve(window.LatPdf)
     : pdfLoad || (pdfLoad = new Promise((ok, no) => {
@@ -13099,8 +9661,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       document.head.append(s);
     })));
   const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'js', 'css', 'hoon'];
-  // what pdf.js lays out: `html` is a fragment, or a whole document when
-  // `doc` is set (an html page, a Writer document)
   async function pdfBody(kind, body) {
     if (kind === 'md') return { html: mdToHtml(body) };
     if (kind === 'gmi') return { html: gmiToHtml(body) };
@@ -13113,8 +9673,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return { html: h, doc: true, writer: true };
     }
     if (kind === 'tex') {
-      // pandoc's MathML where the desktop has it, else the source: the ship
-      // has no TeX, and the web has no converter
       const rust = texRust();
       if (rust) {
         try { return { html: cleanTexHtml(await rust.invoke('convert_tex', { src: body })) }; } catch {}
@@ -13124,7 +9682,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const lang = LMAP[kind];
     const g = window.Prism && lang && Prism.languages[lang];
     let code = '';
-    // the main thread, so a bounded text (ghostHl in 28-splits.js says why)
     if (g && body.length <= 200000) { try { code = Prism.highlight(body, g, lang); } catch {} }
     return { html: '<pre class="code language-' + lang + '">' + (code || mdEsc(body)) + '</pre>' };
   }
@@ -13140,13 +9697,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       st('PDF: ' + String(e && e.message ? e.message : e).slice(0, 160), false);
     }
   }
-  // the open page, its unsaved text included
   function exportOpenPdf() {
     if (!current || grubPath || curFolder !== null) return;
     writerSync();
     exportPdf(current, mode === 'know' ? 'md' : (pkind.value || 'md'), src.value);
   }
-  // a tree row's page: the editor's text when it is the open one
   async function exportPagePdf(name) {
     if (name === current && mode !== 'know' && !grubPath) { exportOpenPdf(); return; }
     stWork('preparing PDF…');
@@ -13160,35 +9715,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
 // ── src/79-search.js ──────────────────────────────────────────────────────
-  // ── search: <lat-search> ─────────────────────────────────────────────────
-  // Grep, not an index.
-  //
-  // The first version queried /content-search, the term index. Two things were
-  // wrong with that and only one was obvious. The obvious one: the index is
-  // exact whole words, so "zaphod" does not find "zaphodbeeblebrox" and
-  // "markers" does not find "marker". Searching as you type then says "nothing
-  // matches" for every keystroke until you finish a word.
-  //
-  // The one that actually decides it: THE INDEX IS STALE. It is rebuilt by
-  // /search-reindex and by nothing else, so a page written a minute ago is not
-  // in it. In a tool you write into all day, the material you most want to find
-  // is exactly the material the index does not have.
-  //
-  // The client already holds the corpus. page-dump carries every page body
-  // inline and is refetched as the tree changes, so a substring scan over what
-  // is already in memory is live, matches partial words and phrases, costs no
-  // request per keystroke, and needs no index to maintain. For a personal store
-  // this is milliseconds.
-  //
-  // The dump carries each page's share mode too. A results list that cannot
-  // say which hits are published would show private notes and clearweb pages
-  // looking identical, on a screen someone may be sharing. That badge is a
-  // safety signal, so a tree that may not carry share modes (treeShares,
-  // 30-tree.js) still asks /page-scopes rather than call a page private.
-  //
-  // It is the left pane's Search tab (13-frame.js renders <lat-search> into
-  // that section), so results sit beside the document they open rather than
-  // over it, and stay there for the next pick.
   customElements.define('lat-search', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -13200,27 +9726,15 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   });
 
-  // Loaded when the tab is shown, not per keystroke: the scopes and the
-  // memories are two requests, and then every keystroke is local.
   let qScopes = null;          // path -> 'private' | 'urbit' | 'clearweb'
   let qKnow = [];              // [{key, body}]
   let qKnowFailed = false;     // /know-all never answered this visit
   let qLoading = null;         // in-flight load, shared
   let qAt = '';                // both beacons when both last loaded (bothAt)
-  // never-loaded and load-failed are different states. qCtxAttempts counts
-  // how many times qLoadContextOnce has actually run since the tab was shown,
-  // capped at two: the open-time load and one retry. A failure short of that
-  // cap is worth trying again; past it, every keystroke would otherwise fire
-  // the same doomed pair of requests forever.
   let qCtxAttempts = 0;
-  // last painted hits and their rows, so ArrowUp/Down + Enter can act on
-  // what is actually on screen without rescanning
   let qResults = [];
   let qRows = [];
   let qSel = -1;
-  //  Showing the tab starts this, and the first keystroke wants it too. The
-  //  pier serialises, so letting both fire meant four queued requests and a
-  //  wait long enough to look like a hang. One load, both await it.
   function qLoadContext() {
     if (qLoading) return qLoading;
     qLoading = qLoadContextOnce().finally(() => { qLoading = null; });
@@ -13248,21 +9762,16 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       if (r.ok) { qKnow = (await r.json()).items || []; qKnowFailed = false; }
       else qKnowFailed = true;
     } catch { qKnowFailed = true; }
-    //  stamped only when BOTH landed, so a half-failed load is retried
     qAt = qScopes && !qKnowFailed ? at : '';
   }
 
-  // non-overlapping occurrence count: split yields pieces-1 = matches. The
-  // empty-needle guard stays, since split('') would count every character.
   const qCount = (hay, needle) => needle ? hay.split(needle).length - 1 : 0;
-  // a line of context around the hit, the way grep shows it
   const qSnip = (body, at, len) => {
     const from = Math.max(0, at - 40);
     const to = Math.min(body.length, at + len + 40);
     return (from ? '…' : '') + body.slice(from, to).replace(/\s+/g, ' ') + (to < body.length ? '…' : '');
   };
 
-  // a Writer page is searched as its words, not its XML
   const qTx = new Map();
   const searchText = (k, b, p) => {
     if (k !== 'fodt') return b;
@@ -13271,8 +9780,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       .replace(/<\/text:[ph]>|<text:(s|tab|line-break)\b[^>]*>/g, ' ').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&')]);
     return m[1];
   };
-  //  one hit builder for both corpora. A page and a memory differ only in
-  //  where the key and the body come from, and in what the badge says.
   const qHit = (key, body, q, scope, know) => {
     const hay = body.toLowerCase();
     const at = hay.indexOf(q);
@@ -13285,20 +9792,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     };
   };
 
-  //  the scan is pure: it reads the corpora already in memory and returns the
-  //  ranked hits plus how many pages it could not look inside.
   function qScan(q) {
     const out = [];
     let skipped = 0;
     for (const n of nodes) {
       if (!n.page) continue;
-      // A body over the dump's inline cap is not here, only its size. Say so
-      // rather than quietly returning a result set that is missing pages.
       if (typeof n.body !== 'string') { skipped += 1; continue; }
-      // NOT defaulted to 'private'. If the exposure lookup failed, or the
-      // page is newer than it, calling it private would be a false safety
-      // signal on a clearweb page: exactly the misread this badge exists to
-      // prevent. Unknown says unknown.
       const h = qHit(n.path, searchText(n.kind, n.body, n.path), q, (qScopes && qScopes.get(n.path)) || 'unknown', false);
       if (h) out.push(h);
     }
@@ -13307,25 +9806,16 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         String(k.body || ''), q, 'knowledge', true);
       if (h) out.push(h);
     }
-    // a name match is what you meant more often than a body match, then
-    // whichever mentions it most
     out.sort((a, b) => (b.inPath - a.inPath) || (b.hits - a.hits) || a.key.localeCompare(b.key));
     return { out, skipped };
   }
 
-  // opening a hit is the same move whether the mouse clicked it or Enter
-  // picked it off the highlighted row
   const qOpenResult = (h, ev) => openIn(h.know ? 'know' : 'page', h.key, { ev });
 
-  // the highlighted row alone, no rebuild: an inline background rather than
-  // a class, since the app's .on styling is defined per-component and this
-  // list has none of its own yet
   function qHighlight() {
     qRows.forEach((a, i) => { a.style.background = i === qSel ? 'var(--surface)' : ''; });
   }
 
-  //  the summary line and the list. Names and bodies are content, so every
-  //  string here goes in through textContent.
   function qPaint(host, sum, out, skipped) {
     const parts = [];
     if (out.length) parts.push(out.length + ' result' + (out.length === 1 ? '' : 's'));
@@ -13333,15 +9823,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (qKnowFailed) parts.push('memories not searched');
     sum.textContent = parts.join(' · ');
     host.textContent = '';
-    // a fresh result set starts with nothing highlighted
     qSel = -1;
     qRows = [];
     if (!out.length) {
       qResults = [];
       host.className = 'aclempty';
-      // nodes starts empty and fills once the page-dump lands, seconds away
-      // on a cold load. Zero hits against an empty corpus is not the same
-      // claim as zero hits against the real one.
       host.textContent = nodes.some((n) => n.page) ? 'nothing matches that' : 'pages still loading…';
       return;
     }
@@ -13388,14 +9874,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return;
     }
     const mine = ++qSeq;
-    // qScopes stays null both before the first load and after a failed one,
-    // so gate on the attempt count instead: one retry, then search on with
-    // scopes unknown rather than firing the same pair of requests every
-    // keystroke a slow or unreachable pier ever gets typed at.
     if (!qScopes && qCtxAttempts < 2) {
-      //  the exposure map and the memories are fetched once per open, and on a
-      //  slow pier that is seconds. Say so, rather than showing an empty list
-      //  that reads as "no results".
       host.className = 'aclempty';
       host.textContent = 'searching\u2026';
       const end = busy(null, $('lpane'));
@@ -13406,10 +9885,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     qPaint(host, sum, out, skipped);
   }
 
-  // qPrime: what showing the tab owes, however it was shown (Ctrl+Shift+F, the
-  // tab button, the phone sheet). The exposure map and the memories are
-  // refetched only when a beacon moved since they loaded (90-sync.js), not
-  // on every visit.
   const qPrime = () => {
     if (streamLive && qAt && qAt === bothAt()) return;
     qScopes = null;                          // refresh exposure
@@ -13419,7 +9894,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   document.addEventListener('lat-pane', (e) => {
     if (e.detail.side === 'l' && e.detail.id === 'search') qPrime();
   });
-  // the query stays in the box between visits; selected, so typing replaces it
   const qOpen = () => {
     paneOpen('l', true);
     paneTab('l', 'search');
@@ -13428,8 +9902,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     i.select();
   };
 
-  // Local now, so this can be short. It exists to avoid rescanning on every
-  // keystroke of a fast typist, not to avoid requests.
   let qTimer = null;
   $('qinput').oninput = () => {
     clearTimeout(qTimer);
@@ -13437,9 +9909,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     qTimer = setTimeout(() => runSearch(v), 80);
   };
   $('qinput').onkeydown = (e) => {
-    // the omnibar's pattern: arrows move a highlighted row, Enter opens it.
-    // With nothing highlighted, Enter falls through to its old job of
-    // re-running the scan.
     if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && qResults.length) {
       e.preventDefault();
       qSel = e.key === 'ArrowDown'
@@ -13456,12 +9925,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   };
 
-  // Ctrl/Cmd+Shift+F, find in files (Ctrl/Cmd+K is the palette). By e.key,
-  // so it is the F on the keyboard's own layout. CAPTURE phase on window,
-  // so nothing downstream can swallow it. Vim mode's handler is capture-
-  // phase on the textarea and consumes normal-mode keys whole; being ahead
-  // of it is more robust than listing exemptions there, and vim has no
-  // Ctrl+Shift chords of its own.
   window.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
       e.preventDefault();
@@ -13471,16 +9934,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }, true);
 
 // ── src/80-conflicts.js ───────────────────────────────────────────────────
-  // ── conflict inbox: <lat-conflicts> ─────────────────────────────────────
-  // When a save lands on top of an edit made elsewhere, the ship keeps the
-  // LOSING body as a real page under conflicts/ (see conflict-name in
-  // app.hoon), and the save's response names it. That is careful, but it is
-  // also write-only: nothing in the workspace ever listed them, so a conflict
-  // was preserved in a place nobody looked. This is the read side.
-  //
-  // No server route and no fetch: a conflict IS an ordinary page in the tree
-  // the client already holds, so the whole pane derives from `nodes`. The
-  // badge counts them; the pane lists them with the live page they came from.
   customElements.define('lat-conflicts', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -13501,9 +9954,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   });
 
-  // conflicts/<name-with-dashes>-rev<N>, the inverse of the ship's
-  // conflict-name. Best-effort: the rev suffix is stripped and the dashes
-  // become slashes, which is unambiguous for any name that itself has no dash.
   const cfOriginal = (path) => {
     const m = path.match(/^conflicts\/(.+)-rev\d+$/);
     return m ? m[1].replace(/-/g, '/') : null;
@@ -13515,10 +9965,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     return out.sort();
   };
 
-  // the badge: a CONDITION (unresolved conflicts exist), so like the offline
-  // badge it stays up rather than living in the scrolling status line. The
-  // ribbon's Sync conflicts button (24-tools.js) shows only while there are
-  // any, with their count.
   function renderConfBadge() {
     const b = $('rb-conflicts');
     if (!b) return;
@@ -13570,7 +10016,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       del.textContent = 'resolve (delete)';
       del.className = 'acl-del';
       del.onclick = async () => {
-        //  the one confirm and delete every page goes through (65-ctl.js)
         if (!(await deletePath(path, false, 'Read it first if you need its text.'))) return;
         renderConflicts();
         renderConfBadge();
@@ -13581,46 +10026,23 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
   }
 
-  // its tab's coming forward renders it (24-tools.js)
-  const cfOpen = () => toolOpen('conflicts');
-
 // ── src/85-layout.js ──────────────────────────────────────────────────────
-  // ── layout toggles ────────────────────────────────────────────────────────
   const ws = $('ws');
-  // soft-wrap is the default (long lines running off-screen are unusable on
-  // mobile). The toggle still turns it off, and a saved preference wins.
   if (!('appWrap' in localStorage)) localStorage.appWrap = '1';
   const applyToggles = () => {
     paintPanes();   // the side panes and their corner toggles (13-frame.js)
     ws.classList.toggle('wrap', localStorage.appWrap === '1');
-    // Edit or Read, per tab (23-tabhead.js)
     applyRead();
-    // keep the vim indicator in step with the view: it reads PREVIEW in
-    // preview-only. setInd is exposed by 27-vim.js (it lives in that file's
-    // own IIFE); guard in case that file is absent. A no-op when vim is off.
     if (window.latVimSetInd) window.latVimSetInd();
   };
   const flip = (k) => { localStorage[k] = localStorage[k] === '1' ? '0' : '1'; applyToggles(); };
-  // A throw in this boot-time layout pass must NOT halt the rest of app boot:
-  // the initial tree load and navigation wiring run in a later file (90-sync),
-  // so an uncaught error here blanks the whole app (that was the setInd bug).
-  // Contain it — a broken layout widget is survivable; a dead tree is not.
   try { applyToggles(); } catch (e) { console.error('[lattice] layout init failed', e); }
-  // Settings > Editor writes the wrap default from its own document (the
-  // Settings tab is a frame), and this window hears it as a storage event,
-  // the same way 05-prefs.js hears the font
   window.addEventListener('storage', (e) => {
     if (!e.key || e.key === 'appWrap') try { applyToggles(); } catch {}
   });
 
-  // The phone's old one-pane switcher and its full-screen mode are gone
-  // (the drawers in 97-mobar.js replaced them). Their stored state goes too.
   try { localStorage.removeItem('appMv'); localStorage.removeItem('appFull'); } catch {}
 
-  // ── pane resize: drag a boundary, double-click it to reset ───────────────
-  // Widths live in CSS custom properties on #ws (see .psplit in the shell
-  // css), in px. The left pane's handle measures from the ribbon's edge, so
-  // the stored width is the pane's own.
   {
     let panes = {};
     try { panes = JSON.parse(localStorage.appPanes || '{}'); } catch {}
@@ -13632,10 +10054,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const lim = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
     const wire = (id, key, drag) => {
       const h = $(id);
-      // the reset gesture is detected from pointerup pairs, NOT dblclick.
-      // pointerdown must preventDefault (otherwise native selection starts
-      // and eats the pointer stream mid-drag), and a cancelled pointerdown
-      // never produces the derived click/dblclick events at all.
       let lastTap = 0;
       h.addEventListener('pointerdown', (e) => {
         e.preventDefault();
@@ -13666,14 +10084,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     wire('ph3', 'ctl', (x) => { panes.ctl = Math.round(lim(innerWidth - x, 190, 520)); });
   }
 
-  // ── ?diag=1: a swipe readout for scroll bugs reported from phones ───────
-  // On with ?diag=1, off with ?diag=0. The setting is kept, and an installed
-  // PWA shares this storage with the browser, so turning it on in a Chrome
-  // tab shows it in the app too. After each touch it names what scrolled and
-  // by how much, and every scroller with room to move: a swipe latches to
-  // the innermost one that can move, however little. Read-only, so it
-  // cannot change the gesture it reports. Temporary: out once it has done
-  // its job, like the last one.
   {
     const q = location.search.match(/[?&]diag=([01])/);
     try { if (q) localStorage.latDiag = q[1]; } catch {}
@@ -13711,20 +10121,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
 // ── src/90-sync.js ────────────────────────────────────────────────────────
-  // ── live refresh (beacon keep-SSE + focus + idle poll) ───────────────────
-  // The writer bumps /beacon/rev on every mutation. On a real change refresh
-  // the tree AND the open page. So an edit made on another device shows up
-  // here without a reload. Local unsaved edits always win. `dirty` blocks the
-  // content swap until the page is saved or reopened.
   async function refreshOpen() {
     if (!current || curFolder || dirty || document.hidden || viewingRev !== null) return;
-    // remember WHAT we are fetching. By the time it lands the user may have opened
-    // another page, switched mode, selected a folder, or entered history view.
-    // Applying a stale body then would show the wrong content or, across modes,
-    // autosave a page body over a memory.
     const wasCurrent = current, wasMode = mode;
-    // a queued edit outranks the ship's copy. Reconciling now would paint
-    // the stale server body over work that has not synced yet
     if (await offGet(mode === 'know' ? 'know:' + current : current)) return;
     const url = mode === 'know'
       ? api + '/know-read?key=' + encodeURIComponent(current)
@@ -13740,24 +10139,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (dirty || current !== wasCurrent || mode !== wasMode) return;
     if (curFolder || viewingRev !== null) return;
     if (notFound) {
-      // the ship no longer has what this fetch is FOR (the staleness checks
-      // above already ruled out "the user moved on" as the explanation), so
-      // it was deleted elsewhere. Pages only: memories are meant to come
-      // back on the next save (know-save's own doc calls re-saving a
-      // deleted key a restore), so an autosave recreating one there is by
-      // design, not this bug. A page has no such route. Keep the buffer,
-      // never destroy what was typed, but stop autosave from writing it
-      // back over the delete: it guards on `!current`, so clear that and
-      // reopen the name field the way a brand-new page gets one.
       if (mode !== 'know') {
         const doomed = current;
         current = null;
         pname.readOnly = false;
-        // the tree row and the page cache still remember this page from
-        // before the delete. Left alone, the still-highlighted row (or a
-        // wikilink, or a search hit) repaints the dead body from cache with
-        // zero network calls, the exact resurrection this branch exists to
-        // stop. Clear them the way the explicit delete path does (65-ctl.js).
         dropTreeNodes(doomed);
         pageCache.delete(doomed);
         snapTree();
@@ -13767,24 +10152,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       }
       return;
     }
-    // a link shown from its last-known copy, read live again: open it
-    // properly, which lifts the lock and the badge
     if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent); return; }
-    // A KIND change with an UNCHANGED body still needs handling. Retagging a
-    // page (gmi -> md, say) leaves the text byte-identical, so the body check
-    // below returns early and the preview keeps rendering with the old builder.
-    // That lasts forever, because the boot snapshot caches the rendered html
-    // too. This request has no &render=1, so re-open the page properly rather
-    // than trying to patch the preview from a response that does not contain
-    // one.
     if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent); return; }
-    // track the rev even when the BODY is unchanged. A save from elsewhere
-    // that landed the same text still moved the revision, and a stale curRev
-    // makes the next save carry a stale base, manufacturing a false
-    // conflict (and a conflicts/ page) out of nothing
     if (mode !== 'know' && d.rev) curRev = d.rev;
     if (d.body === src.value) return;
-    // the ship's copy moved under us. This page's cached render is stale
     if (mode !== 'know') pageCache.delete(wasCurrent);
     const top = src.scrollTop;
     src.value = d.body;
@@ -13802,8 +10173,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       st('updated from ship \u00b7 rev ' + d.rev);
     }
   }
-  // whether the dump just applied says the open page is not what the
-  // editor holds: gone, a link, a rev or kind other than the editor's
   const openMoved = () => {
     if (!current || curFolder) return false;
     const n = nodes.find((x) => x.page && x.path === current);
@@ -13812,58 +10181,19 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
   const refreshAll = () => {
     if (document.hidden) return;
-    // replay WINS the reconnect race. loadTree would repaint queued pages
-    // from the server dump before their edits landed (design doc, gap 4)
     if (degraded || offCount) { replayQueue(); return; }
-    // a sensitive toggle made elsewhere moves no page rev, so the dump
-    // cannot say which flag moved: the next open reads them afresh
     sensKnown.clear();
-    // NB: stale cached renders are dropped by loadTree, which prunes against
-    // the revs in the fresh dump. Clearing the whole cache here instead meant
-    // one page's edit cost every other page its cache.
-    // Files and Knowledge both stay painted in their tabs, so neither is
-    // skipped for the other: the one the front document works on always
-    // reloads, the other when its beacon moved since it loaded
     const tree = (mode !== 'know' || !revFresh(treeAt)) ? loadTree() : null;
     if (mode === 'know' || (knowLive() && !knowFresh(knowAt))) loadKnow();
-    // the open page re-reads only when the fresh dump says it moved: a save
-    // of some other page then costs this tab one small since-dump and
-    // nothing else. A memory, a link (read live from its host) and a dump
-    // that failed still re-read as before.
     if (mode === 'know' || !tree) refreshOpen();
     else tree.then((ok) => { if (!ok || openMoved()) refreshOpen(); });
-    // a catch-up call, not the primary path: the stream now wakes the badge
-    // directly on its own /comments event (see commentBumped below). This
-    // covers the tab that was HIDDEN while a comment landed, since the SSE
-    // loop pauses entirely on document.hidden and only reconnects here, on
-    // focus. Cheap either way: it counts, it does not render, and it is
-    // skipped entirely while the pane is open.
     refreshCommentBadge();
   };
-  // ── the beacon stream, read raw ──────────────────────────────────────────
-  // Not an EventSource: the stream's INITIAL event is named "old <path>" (a
-  // dynamic name EventSource cannot subscribe to), and that event is the one
-  // that matters most. It is the pier's proof of REGISTRATION — the keep is
-  // a queued pier event of its own, so headers (and EventSource's onopen)
-  // arrive long before the fiber actually watches, and any bump in that
-  // window is missed with no replay. The old-event carries the CURRENT rev,
-  // so the gap closes by comparison, not by clocks: remember the last rev
-  // this client saw; if registration shows a different one, something
-  // happened while nobody was watching — refresh. Bumps after registration
-  // arrive as upd events, exactly as before.
   let streamLive = false;
   let lastShares = '';
   let lastFolds = '';
   let beaconTimer = null;
-  // a share stamps /beacon/shares and then /rev, the file this keep wakes
-  // on (+bump-shares). Its payload names that /rev, so a debounce window
-  // whose live /rev bumps all came from shares refetches shared with me
-  // (69-shared.js) and skips the tree. Either may arrive first, hence the
-  // window. Any other bump in it, or any other caller of bumped, refreshes.
   const digits = (s) => String(s || '').replace(/\D/g, '');
-  // a held comment or an activity item stamps /beacon/notify and then /rev
-  // (+notify-stamp). Its /rev joins this set too: a window of only those
-  // bumps recounts the inbox badge and skips the tree.
   const sharesRevs = new Set();
   let lastNotify = '';
   let liveRevs = [];
@@ -13879,10 +10209,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
   const bumped = () => revBumped('');
   const knowBumped = () => { if (knowLive()) bumped(); };
-  // comments never bump /rev (apply-comment stamps only /beacon/comments), so
-  // a foreign comment used to reach the badge only by accident, on whatever
-  // next refreshAll a focus or poll happened to trigger. Give it the same
-  // debounced path bumped() gives /rev, straight to the badge check.
   let cmBeaconTimer = null;
   const commentBumped = () => {
     clearTimeout(cmBeaconTimer);
@@ -13897,13 +10223,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     lastRev = rev;
     try { localStorage.latBeaconRev = rev; } catch {}
   };
-  // whether a listing fetched when the beacon stood at `at` is still the
-  // ship's truth. Every write on the ship bumps /rev, so while a stream is
-  // registered an unmoved rev means nothing changed. With the stream down
-  // nothing moves lastRev at all, so nothing counts as fresh then.
   const revFresh = (at) => streamLive && !!at && at === lastRev;
-  // memories have their own beacon, /beacon/know (a memory write never
-  // bumps /rev), with the same bookkeeping
   let lastKnow = '';
   try { lastKnow = localStorage.latBeaconKnow || ''; } catch {}
   const noteKnow = (rev) => {
@@ -13912,35 +10232,18 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     try { localStorage.latBeaconKnow = rev; } catch {}
   };
   const knowFresh = (at) => streamLive && !!at && at === lastKnow;
-  // a load that spans pages and memories (Search) is fresh while neither moved
   const bothAt = () => lastRev + '|' + lastKnow;
   let dropStream = null;
-  // consecutive attempts that failed. A stream that registers, then lives
-  // a minute or carries a live bump, and then ends is the NORMAL cycle: the
-  // keep closes itself after ~80s (measured against ~ricsul-bilwyt), so
-  // every open editor reconnects about once a minute and must do so
-  // promptly. A stream that registers and breaks sooner is a failure: a
-  // saturated ricsul breaks streams mid-body ("invalid chunked response"),
-  // and treating that as the normal cycle reconnected every 1.5 to 4.5 s
-  // into the load, 179 times in one afternoon from one client.
   let fail = 0;
   const streamFail = (fail, registered, livedMs, bumpedLive) =>
     (registered && (livedMs >= 60000 || bumpedLive)) ? 0 : Math.min(fail + 1, 5);
   (async () => {
-    // off app.js's top level before the first request (boot, 99-boot.js)
     await null;
     for (;;) {
-      // a HIDDEN editor holds no stream: vere is HTTP/1.1 and the browser
-      // caps the origin at six connections, so parked tabs' never-ending
-      // streams starved every live request (and tripped false offline mode
-      // at six open tabs). The registration rev-compare on reconnect —
-      // plus the visibilitychange refreshAll below — covers the gap.
       if (document.hidden) {
         await new Promise((r) => setTimeout(r, 1000));
         continue;
       }
-      // did this attempt get as far as the ship's registration event, when,
-      // and did it carry a live bump after it?
       let registered = false, registeredAt = 0, bumpedLive = false;
       try {
         const ac = new AbortController();
@@ -13964,18 +10267,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
               else if (ln.startsWith('data: ')) data = ln.slice(6).trim();
             }
             if (!name) continue;
-            // this keep streams the whole /beacon directory: events arrive
-            // as "old /rev", "old /comments", "upd /rev", ... — the name
-            // carries the grub's sub-path. /rev is the content beacon and
-            // drives lastRev below; folding a comment bump into that same
-            // bookkeeping corrupted lastRev and fired spurious refreshes, so
-            // /comments gets its own path straight to commentBumped instead,
-            // never touching lastRev. (Historical note: the pre-raw
-            // EventSource listened for a literal 'upd' event, which never
-            // existed — live refresh was ALWAYS the 30s poll.)
-            // /know: a memory changed. A listing loaded into the Knowledge
-            // tab (knowLive) refreshes. One never loaded only needs the moved
-            // beacon, which marks it stale for when it is first shown.
             if (name.slice(-6) === ' /know') {
               if (name.slice(0, 3) === 'old') {
                 echoes.know.n = 0;
@@ -13988,9 +10279,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
               knowBumped();
               continue;
             }
-            // /shares: shared with me changed (69-shared.js). Registration
-            // reports the stamp as it stood. One that moved since the last
-            // registration is a change this client missed.
             if (name.slice(-8) === ' /shares') {
               if (data === lastShares) continue;
               const was = lastShares;
@@ -14001,8 +10289,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
               else if (was) loadShared();
               continue;
             }
-            // /notify: the inbox moved (73-comments.js). Registration
-            // reports the stamp as it stood; one that moved since is news.
             if (name.slice(-8) === ' /notify') {
               if (data === lastNotify) continue;
               const was = lastNotify;
@@ -14012,8 +10298,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
               if (name.slice(0, 3) !== 'old' || was) refreshInboxBadge(true);
               continue;
             }
-            // /folds: a followed folder changed, or a share notice landed
-            // under one (69x-follow.js). Its /rev is quiet, as a share's.
             if (name.slice(-7) === ' /folds') {
               if (data === lastFolds) continue;
               const was = lastFolds;
@@ -14025,18 +10309,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
               continue;
             }
             if (name.slice(-5) !== ' /rev') {
-              // registration ("old /comments") just reports the stamp as it
-              // already stood, nothing to react to. A live bump is the
-              // event worth waking the badge for.
               if (name.slice(-10) === ' /comments' && name.slice(0, 3) !== 'old') commentBumped();
               continue;
             }
             if (name.slice(0, 3) === 'old') {
-              // registration. The stream is authoritative from HERE on;
-              // a rev that moved since we last looked is a missed change.
-              // Echoes still pending were emitted BEFORE this point and
-              // will never arrive as upd — left counted, each would
-              // swallow one real remote bump later.
               echoes.rev.n = 0;
               streamLive = true;
               registered = true;
@@ -14045,10 +10321,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
               noteRev(data);
               continue;
             }
-            // a live bump. Our own save bumps the beacon too: refetching
-            // tree + source to learn what this client just wrote was ~4s
-            // of pier time per save, so our own expected echoes are
-            // consumed by count (see echoes, 20-state.js).
             bumpedLive = true;
             noteRev(data);
             if (echoSeen(echoes.rev, bumped)) continue;
@@ -14056,22 +10328,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           }
         }
       } catch {}
-      // stream severed: pier restart or proxy hiccup. The rev comparison at
-      // the NEXT registration covers whatever happens in this gap.
-      //
-      // An attempt that registered and lived (+streamFail above) is the keep
-      // expiring on schedule, so go straight back and reset the count. Any
-      // other attempt failed: never registered (ship down, proxy refusing,
-      // 502) or broke soon after. Retrying that every 3s forever is how one
-      // outage becomes a steady drum on a pier that is already struggling.
-      // Double up to 30s.
-      //
-      // Jitter BOTH cases. A pier restart drops every client at the same
-      // instant, and tabs opened together expire their keeps together, so a
-      // fixed delay brings them all back on the same tick. Half to one and a
-      // half of the delay spreads them out and costs nothing when it is one
-      // tab. (Reconnect itself is cheap by design: registration replays the
-      // current rev and the client does nothing unless it moved.)
       streamLive = false;
       fail = streamFail(fail, registered, registered ? Date.now() - registeredAt : 0, bumpedLive);
       const base = Math.min(3000 * (1 << Math.max(0, fail - 1)), 30000);
@@ -14079,26 +10335,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       await new Promise((r) => setTimeout(r, wait));
     }
   })();
-  // coming back to the tab/window is the moment staleness shows. Catch it
-  // directly. The 30s poll exists for a stream that is DOWN — while one is
-  // registered it would have said so, and polling anyway cost one pier
-  // request per open editor per 30s, forever (the same clock-vs-stream
-  // trust the mount fixed in #160).
-  //
-  // Both events go through bumped()'s debounce: un-hiding a tab fires
-  // visibilitychange AND focus, and refreshAll has no in-flight guard, so
-  // each pair was two full tree-and-page refreshes. And while the stream
-  // is live it has already reported any change, so a focus refresh is a
-  // floor, not news: at most one per 30s, however often the window is
-  // clicked back into. An un-hidden tab dropped its stream, so it is not
-  // live and always refreshes.
-  //
-  // Except around our own writes. The stream can merge two quick bumps into
-  // one event, so an echo count still owed after one of ours swallows the
-  // next real bump: a page another device made right after our autosave
-  // never appeared (ui-boot's "created during a save" case). Only our own
-  // writes create that debt, so within 30s of one a focus always refreshes,
-  // the floor that catches it.
   let focusAt = 0;
   const refocused = () => {
     const wroteLately = Date.now() - Math.max(echoes.rev.at, echoes.know.at) < 30000;
@@ -14111,19 +10347,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     if (document.hidden) { if (dropStream) dropStream(); return; }
     refocused();
   });
-  //  the poll covers a DOWN stream — but a hidden tab's stream is down on
-  //  purpose, and polling for it would spend the pier request the parking
-  //  just saved
   setInterval(() => { if (!streamLive && !document.hidden) refreshOpen(); }, 30000);
 
 // ── src/95-know.js ────────────────────────────────────────────────────────
-  // ── knowledge: <lat-know>, the memories and the editor's memory mode ────
-  // The Knowledge tab lists the private memory store as a tree, filtered by
-  // tag chips, with its own toolbar. `mode` is the editor's state for the
-  // document tab in front (21-tabs.js): a memory tab sets it to 'know', so
-  // read, edit, save, tag and delete go to the memory routes. Nothing else
-  // switches it any more, and the listing never depends on it. (`mode`
-  // itself is declared in 20-state.js, since the files tree reads it.)
   customElements.define('lat-know', class extends HTMLElement {
     connectedCallback() {
       this.innerHTML = `
@@ -14153,20 +10379,15 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   const chipsEl = $('chips'), knowMeta = $('knowmeta'), ktagsEl = $('ktags');
   const knowList = $('knowlist');
   treeKeys(knowList, 'Memories');
-  // folded by default and remembered, like the other layout choices
   const tagSec = $('tagsec'), tagSum = $('tagsh');
   tagSec.open = localStorage.knowTagsOpen === '1';
   tagSec.addEventListener('toggle', () => { localStorage.knowTagsOpen = tagSec.open ? '1' : '0'; });
 
-  // the memory beacon the last applied know-list was fetched at (knowFresh)
   let knowAt = '';
   async function loadKnow() {
     const gen = knowGen;
     const at = lastKnow;
     let d = null;
-    // resolves either way, like loadTree: the drain and the mode switch both
-    // call this without a .catch, and a rejection there would take the rest of
-    // their work with it.
     try {
       const r = await fetch(api + '/know-list');
       if (!r.ok) { st('know-list failed' + await errText(r), false); return; }
@@ -14192,8 +10413,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     };
     mk('all', '');
     for (const t of tags) mk('#' + t, t);
-    // folded, the heading still says what the tree is filtered by, so a
-    // hidden filter can never silently narrow it
     tagSum.textContent = 'tags \u00b7 ' + (knowTag ? '#' + knowTag : tags.length);
   }
 
@@ -14243,23 +10462,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     treeRove(knowList, had);
   }
-  // one knowKeys entry by (normalized) key. Keys may carry a leading slash
   const knowEntry = (key) =>
     knowKeys.find((x) => x.key.replace(/^\//, '') === key);
 
-  // false when the open failed and nothing was painted, so the tab model
-  // (21-tabs.js) can tell a failure from an open a later one superseded
   async function openKnow(key) {
-    // guardDirty covers a dirty grub, page, or memory in one place (see
-    // 20-state.js): it flushes what it can and only asks when the flush
-    // still leaves something unsaved.
     if (!(await guardDirty())) return false;
-    // the same sequence openPage keeps: a later open of anything supersedes
-    // this one, so a slow answer cannot paint a memory over the page (or
-    // the other memory) opened after it
     const my = openNext();
     if (mode !== 'know') setMode('know');
-    // a queued edit outranks the ship's copy, same rule as pages
     const q = await offGet('know:' + key);
     let d = null;
     if (q) d = { body: q.body, tags: (knowEntry(key) || { tags: [] }).tags, updated: 'queued offline' };
@@ -14274,8 +10483,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     applyKnow(key, d);
     return true;
   }
-  // paint a memory that is already in hand: openKnow's answer, or a tab's
-  // own unsaved buffer coming back to the front (21-tabs.js)
   function applyKnow(key, d) {
     setOpen(key, { readOnly: true,
       url: '/apps/lattice/app?view=know&key=' + encodeURIComponent(key) });
@@ -14301,7 +10508,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         const r = await mutate(api + '/know-untag?key=' + encodeURIComponent(current) +
           '&tag=' + encodeURIComponent(t));
         if (!r.ok) { st('untag failed' + await errText(r), false); return; }
-        // this client made the change. Patch the list it already holds
         knowGen++;
         const k = knowEntry(current);
         if (k) k.tags = k.tags.filter((x) => x !== t);
@@ -14314,7 +10520,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
   $('ktagadd').onclick = async () => {
-    // the writer case-folds tags. Fold here too so the local patch matches
     const t = $('ktag').value.trim().toLowerCase();
     if (!t || !current || mode !== 'know') return;
     const r = await mutate(api + '/know-tag?key=' + encodeURIComponent(current) +
@@ -14329,12 +10534,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
 
   const knowField = () => pname.value.trim().replace(/^\/+|\/+$/g, '');
-  //  the editor still shows memory `key`: its own, or the new one the name
-  //  field names (the rule save() keeps for a page create, 35-pages.js)
   const knowHere = (key) => mode === 'know' && !grubPath &&
     (current === key || (current === null && knowField() === key));
-  // `create`: New memory writes the key before anything is typed, so an
-  // empty body is sent as a newline (as a new page is) rather than refused
   async function saveKnow(create) {
     const key = knowField();
     if (!key) { st('key required', false); return; }
@@ -14344,12 +10545,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     if (!src.value && !create) { st('empty body', false); return; }
     if (viewingRev !== null) { st('viewing a revision — use restore', false); return; }
-    // the pier serializes every write behind one shared `saving` flag, know
-    // or page (see save()/autosave()/saveGrub()). Without this guard,
-    // guardDirty's flush against a memory whose autosave was already mid-
-    // flight fired a second, fully concurrent POST to the same /know-save key.
-    //  queued for this memory: it runs only if the editor still shows it,
-    //  and a create runs even on a clean buffer, as a page create does
     if (saving) {
       queueSave(() => { if (knowHere(key)) return saveKnow(create); }, create);
       return;
@@ -14362,9 +10557,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         { method: 'POST', body: sent }, { save: true });
     } finally { saving = false; }
     const r = w.r;
-    //  the editor may have moved during the round trip (a page opened, New
-    //  memory again). Only the memory still shown takes the key and its
-    //  tab, never whatever is in front now.
     const claim = () => {
       if (!knowHere(key)) { tabLanded('know', key, sent); return; }
       current = key;
@@ -14373,10 +10565,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       if (src.value === sent) dirty = false;
     };
     if (w.gone) {
-      //  if the queue would not take it, it is NOT saved: leave the editor
-      //  dirty and the key still editable, so the text under the cursor is not
-      //  presented as stored. Same rule the page paths enforce (35-pages.js),
-      //  and enqueueKnow has already said why it refused.
       if (!(await enqueueKnow(key, sent))) { flushPending(); return; }
       claim();
       flushPending();
@@ -14400,12 +10588,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const doomed = current;
     const r = await mutate(api + '/know-delete?key=' + encodeURIComponent(doomed));
     if (!r.ok) { st('delete failed' + await errText(r), false); return; }
-    // a delete reachable from inside a revision view (mode='know' skips the
-    // viewingRev guard the pages path enforces) must not leave the editor
-    // behind it read-only forever. Exit ONLY on success: exiting up front
-    // left a declined confirm holding the old revision's body, editable and
-    // uncued, one keystroke from autosaving history over the live memory.
-    // An aborted delete keeps the revision view exactly as it was.
     exitRev();
     setOpen(null);
     src.value = '';
@@ -14417,11 +10599,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     renderKnowTree();
   }
 
-  // The editor's mode, set by what the front tab opens: openKnow and the
-  // know tab kind to 'know', openPage and the page and grub kinds back to
-  // 'pages'. Each of those has already passed guardDirty, so this does not
-  // ask again. It resets the editor to a blank document of that mode; the
-  // open that called it then paints its document.
   function setMode(m) {
     mode = m;
     curKind = null;
@@ -14437,32 +10614,18 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     render();
     prevBlank();
     markCurrent();
-    // both listings are always painted in their own tabs. Refetch the one
-    // this mode works on only when the beacon says it moved (revFresh,
-    // knowFresh in 90-sync.js), never to learn nothing.
     if (m === 'know') { if (!knowFresh(knowAt)) loadKnow(); }
     else if (!revFresh(treeAt)) loadTree();
     st(m === 'know' ? 'knowledge' : 'pages');
   }
 
-  // ── the Knowledge tab: lazy listing ─────────────────────────────────────
-  // Fetched the first time the tab is seen, and again when the memory
-  // beacon has moved since (knowFresh). Memories are one request the editor
-  // does not otherwise need, so a session that never looks never pays it.
   const knowShow = () => { if (!knowHave || !knowFresh(knowAt)) loadKnow(); };
-  // whether the memory listing is worth keeping current: in memory mode, or
-  // once it has been loaded and is sitting in its tab (90-sync.js, the drain)
   const knowLive = () => mode === 'know' || knowHave;
   document.addEventListener('lat-pane', (e) => {
     if (e.detail.side === 'l' && e.detail.id === 'know') knowShow();
   });
   if (paneShows('l', 'know')) knowShow();
 
-  // ── toolbar ─────────────────────────────────────────────────────────────
-  // New memory: the page create dialog, its kind fixed at md (a memory has
-  // no other), then a fresh memory tab named with the key and written at
-  // once, the way a new page is (newFile, 35-pages.js). The dialog comes
-  // first, so a cancel leaves the front tab exactly as it was.
   $('knew').onclick = async (ev) => {
     let seed = '';
     let note = '';
@@ -14476,11 +10639,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       seed = key;
       note = 'a key is lowercase letters, digits and - . _ ~ (no spaces). ';
     }
-    // the key must be free, and the ship is the one to ask: knowKeys is
-    // empty until the lazy list lands, or if it failed, and /know-save has
-    // no create-only form, so a write here would put a newline over an
-    // existing memory. A key that exists opens instead; a check that cannot
-    // complete creates nothing.
     if (!knowEntry(key)) {
       let r = null;
       try { r = await fetch(api + '/know-read?key=' + encodeURIComponent(key)); } catch {}
@@ -14501,9 +10659,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     await saveKnow(true);
     src.focus();
   };
-  // Tidy: the memory review (/know?lint=1) as a tool tab (24-tools.js)
   $('ktidy').onclick = () => toolOpen('frame:/apps/lattice/know?lint=1');
-  // Trash: the soft-deleted memories (GET /know-trash), each with Restore
   const trashList = $('ktrashlist');
   const kmuted = (t) => {
     const d = document.createElement('div');
@@ -14561,10 +10717,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   clickAction('ktrash', 'Memory trash', 'Knowledge toolbar');
 
 // ── src/95s-skills.js ─────────────────────────────────────────────────────
-  // ── skills: a tool tab drawn by ui-app/skills.js, loaded on first open ───
-  // The skills store (SKILL.md and its files, the /skill* routes). Reached
-  // from the Knowledge toolbar and the palette. skills.js holds the whole
-  // view, so app.js carries only this.
   const skWrap = document.createElement('div');
   skWrap.className = 'aclwrap';
   skWrap.id = 'skwrap';
@@ -14589,43 +10741,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   clickAction('kskills', 'Skills', 'Knowledge toolbar');
 
 // ── src/96-deskmenu.js ────────────────────────────────────────────────────
-  // ── desktop: these commands live in the native File menu ─────────────────
-  // The desktop window has a real menubar (desktop/src/main.rs). A "+ file"
-  // button in the sidebar sitting next to a File > New page menu item is the
-  // same command offered twice, in the one place a desktop user is least
-  // likely to look for it.
-  //
-  // HIDDEN, never removed. The menu works by clicking these very elements, so
-  // there is exactly one implementation of "new page" and no Rust counterpart
-  // to drift out of step. Removing them would take their handlers with them.
-  //
-  // Web and mobile are untouched: without the desktop shell there is no
-  // menubar to move anything into, and the buttons are the only affordance.
-  // Naming the new page is the same dialog everywhere (newFile, 35-pages.js).
-  //
-  // The flag is set by the desktop build that HAS the menu (commands.rs, an
-  // initialization_script), not inferred from __TAURI__. This UI ships from
-  // the ship and the menu ships in the binary, so they update independently:
-  // testing for the desktop alone would hide these on an older build with no
-  // menubar behind them and make every one of these commands unreachable.
-  //
-  // (The window's light/dark, set_theme, is ui-app/theme.js's job: a theme
-  // can force it, and the reader pages need it too.)
   if (window.__TAURI__ && window.__LATTICE_FILE_MENU__) {
     for (const id of ['newfile', 'newfolder', 'newtmpl', 'upfiles', 'updir', 'save']) {
       const el = document.getElementById(id);
       if (el) el.hidden = true;
     }
-    // The create and upload group is now empty, and an empty flex row still
-    // draws its gap: a blank band in the toolbar that reads as a rendering
-    // fault. Hide a group only when everything in it went, so one that keeps
-    // a button (a later one added to it) still shows.
     for (const row of document.querySelectorAll('#tree .newbtns')) {
       if ([...row.children].every((c) => c.hidden)) row.hidden = true;
     }
-    // The palette indexes every action, so these stay listed, homed in the
-    // File menu. A hidden button would drop them (palUsable), and running
-    // one clicks it, which is exactly what the menu item does.
     for (const a of ACTIONS) {
       if (!['newfile', 'newfolder', 'newtmpl', 'upfiles', 'updir'].includes(a.id)) continue;
       a.home = 'File menu';
@@ -14634,18 +10757,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
 // ── src/97-mobar.js ───────────────────────────────────────────────────────
-  // ── phone: drawers and the bottom bar ────────────────────────────────────
-  // At phone width (the 820px block) the side panes are drawers over the
-  // document. Every way into a pane opens its drawer (paneOpen, 13-frame.js:
-  // the corner toggles, a pane tab's action, search), and so does a swipe in
-  // from that edge. The scrim, Escape or opening a document shuts them. The
-  // ribbon rides at the top of the left drawer by CSS alone, so its buttons
-  // stay the one set they are.
-  //
-  // The bottom bar holds what a thumb reaches for most: a new page, search,
-  // today's brief and the open tabs. Like the drawers it is built always and
-  // shown only by the 820px block, so a resize across the breakpoint just
-  // works, with no load-time isMobile branching to go stale.
   {
     const drawn = () => ws.classList.contains('ldraw') || ws.classList.contains('rdraw');
     const scrim = document.createElement('div');
@@ -14653,14 +10764,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     scrim.onclick = drawersClose;
     ws.append(scrim);
     addEventListener('keydown', (e) => { if (e.key === 'Escape' && drawn()) drawersClose(); });
-    // across the breakpoint the drawers start shut, and the corner toggles
-    // repaint for the layout that is now showing
     matchMedia('(max-width: 820px)').addEventListener('change', drawersClose);
 
-    // the edge swipe: it starts within EDGE px of a screen edge and travels
-    // EDGE px inward, more across than down. Never while text in the editor
-    // is selected, where dragging a handle to the edge means the selection,
-    // and never from the tab strip, where a sideways drag scrolls the tabs.
     const EDGE = 24;
     const selecting = () => document.activeElement === src && src.selectionStart !== src.selectionEnd;
     let sw = null;
@@ -14684,17 +10789,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }, { passive: true });
     addEventListener('touchend', () => { sw = null; }, { passive: true });
 
-    // the open-tabs sheet: one row per tab, the tab in front marked. A row
-    // switches to its tab; its x closes it, asking first as the strip's does.
     const sheet = document.createElement('div');
     sheet.id = 'mtsheet';
     sheet.className = 'mtsheet';
     sheet.setAttribute('role', 'menu');
     sheet.setAttribute('aria-label', 'Open tabs');
     sheet.hidden = true;
-    // With more than one group (28-splits.js), the sheet starts with a row
-    // of them, the one in front marked: a phone shows one group at a time,
-    // and this is the way to the others. The tabs below are the front one's.
     const sheetPaint = () => {
       sheet.textContent = '';
       if (groups.length > 1) {
@@ -14738,8 +10838,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       }
     };
 
-    // the bottom bar. Each button is its own home in the palette, listed
-    // only while the bar is on screen.
     const mbar = document.createElement('nav');
     mbar.id = 'mbar';
     mbar.className = 'mbar';
@@ -14756,8 +10854,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       mbar.append(b);
       return b;
     };
-    // the Files toolbar's new page does the same: newFile paints over the
-    // editor, so what is unsaved there goes through guardDirty first
     mitem('mb-new', 'plus', 'New page', async () => { if (await guardDirty()) newFile(''); });
     mitem('mb-search', 'search', 'Search', () => qOpen());
     mitem('mb-brief', 'cal', "Today's brief", (ev) => openBrief(ev));
@@ -14766,17 +10862,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       sheet.hidden = !sheet.hidden;
     });
     ws.append(mbar, sheet);
-    // tapping anywhere else puts the sheet away
     document.addEventListener('click', (e) => {
       if (!sheet.hidden && !sheet.contains(e.target) && !tabsw.contains(e.target)) sheet.hidden = true;
     });
-    // the button carries the tab count, read off the strip it summarises
     const count = () => { tabsw.dataset.n = String(tabs.length); };
     count();
     document.addEventListener('lat-tabs', count);
 
-    // the unread badge lives on the ribbon's inbox, which a phone shows
-    // only with the left drawer open; mirror it onto that drawer's toggle
     const mirror = () => {
       const n = $('rb-inbox').dataset.n;
       if (n) $('treet').dataset.n = n; else delete $('treet').dataset.n;
@@ -14786,28 +10878,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
 // ── src/98-legacy.js ──────────────────────────────────────────────────────
-  // ── legacy agent import (one-time offer) ─────────────────────────────────
-  // A ship upgraded from the pre-grubbery %lattice gall agent may still have
-  // it installed with knowledge this store never saw. Ask once, in-app, then
-  // never again. The server marker is authoritative (it survives a new
-  // browser), and the localStorage flag keeps resolved installs from spending
-  // a request on the check at all.
   async function legacyCheck() {
     if (localStorage.latLegacy === 'done') return;
     let d = null;
-    //  background lane: a status check must never delay a user's click
     try { d = await (await bgFetch(api + '/legacy-status')).json(); } catch { return; }
     if (!d) return;
-    // ONLY the server's marker is permanent. 'absent' can mean the agent is
-    // merely suspended (|revive brings it back), and caching that as done
-    // would silently strand the user's data forever. Never infer permanence
-    // from a negative or transient answer.
     if (d.reason === 'resolved') { localStorage.latLegacy = 'done'; return; }
     if (!d.prompt) return;
-    // Quiet for the session only once the user has actually DECLINED. Setting
-    // this merely because the dialog was shown meant dismissing it (Esc, click
-    // outside, or a reload mid-dialog) locked the offer out of that tab
-    // entirely, with no way back short of a new tab.
     if (sessionStorage.latLegacyAsked === '1') return;
     const choice = await askChoice(
       'An older lattice agent is still installed on this ship, from before ' +
@@ -14829,8 +10906,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     let r = null;
     try { r = await mutate(api + '/legacy-migrate'); } catch {}
     if (!r || !r.ok) {
-      // the import can outlive the request (one serial writer poke per entry).
-      // Ask the server what actually happened before reporting a failure.
       let after = null;
       try { after = await (await fetch(api + '/legacy-status')).json(); } catch {}
       if (after && after.reason === 'resolved') {
@@ -14840,9 +10915,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         st('legacy import completed');
         return;
       }
-      // 504/502 is the reverse proxy giving up, not the ship failing. The
-      // import keeps running server-side and is usually PARTLY done. Say what
-      // landed, and name the cause, because the fix is a proxy setting.
       const cut = r && shipGone(r);
       let listed = null;
       try { listed = await (await fetch(api + '/know-list')).json(); } catch {}
@@ -14865,26 +10937,16 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       return;
     }
     const res = await r.json();
-    // only latch when the SERVER says it finished. A partial run deliberately
-    // leaves its marker unwritten so the offer returns and can be retried
     if (res.complete) localStorage.latLegacy = 'done';
     else delete sessionStorage.latLegacyAsked;
     knowGen++;
     st('imported ' + res.imported + ' memories from the old agent');
-    // the import can bring pages too, so Files refreshes as it always did
     if (knowLive()) loadKnow();
     loadTree();
-    // NEVER advise retiring the old agent while it still holds pages. This
-    // import moves knowledge only (the agent exposes no arm for page bodies),
-    // so an uninstall on that advice would destroy them permanently.
     const kept = res.imported + ' ' + (res.imported === 1 ? 'memory' : 'memories') +
       (res.skipped ? ' (' + res.skipped + ' already here, left untouched)' : '');
     const got = res.pagesImported || 0;
     let msg = 'Imported ' + kept + (got ? ', and ' + got + ' ' + (got === 1 ? 'page' : 'pages') : '') + '.';
-    // The agent is cleared for retirement ONLY when the server says the whole
-    // migration completed. Never infer it from a count. An unreadable page
-    // list reads as zero pages, and telling someone to uninstall on that
-    // would destroy the only copy of them.
     if (!res.complete) {
       const left = [];
       if (!res.pagesKnown) left.push('its page list could not be read');
@@ -14903,70 +10965,31 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   }
 
 // ── src/99-boot.js ────────────────────────────────────────────────────────
-  // ── boot ─────────────────────────────────────────────────────────────────
-  // paint from the last session's snapshot before the network answers. The
-  // tree and (when it matches ?name) the page body + preview appear at 0ms.
-  // Then loadTree/refreshOpen reconcile in the background. Local edits win,
-  // same rules as any live refresh.
-  // The PAGE snapshot is small synchronous localStorage, and it is what
-  // makes resume paint at literally 0ms. The TREE snapshot moved to IDB
-  // (phase 3), whose read is async but single-digit ms, imperceptible next
-  // to the ~0.5s network floor. It also frees the tree (which carries every
-  // page body) from localStorage's ~5MB ceiling.
-  // `name` is the page the front tab names, null for a new page. Only a
-  // `fresh` tab list (nothing saved, so a first run or a corrupt one) may
-  // resume the snapshot without a name: a restored new-page tab is a new page.
   function bootSnap(name, fresh) {
     let p = null;
     try { p = JSON.parse(localStorage.appPage || 'null'); } catch {}
     if (!p || !p.name) return false;
-    // No name means a bare launch, above all the PWA, whose start_url can
-    // never carry one. Resume the snapshot page instead of landing on an
-    // empty editor. "opens where I left off" is what an installed app means.
-    // A name that does not match the snapshot still defers to the network.
     if (name ? p.name !== name : !fresh) return false;
     applyPage(p.name, p);
-    // openPage sets the upload-target folder. The snapshot path must too,
-    // or uploads land at the root until the next explicit open
     setFolderCtx(p.name);
     return true;
   }
   async function bootTree() {
     let t = await kvGet('tree');
     if (!t || !t.length) {
-      // one-time migration from the localStorage era, then free the quota
       try { t = JSON.parse(localStorage.appTree || 'null'); } catch {}
       if (t && t.length) kvPut('tree', t);
     }
     try { localStorage.removeItem('appTree'); } catch {}
-    // if the network dump (or any local activity) beat us here, it is fresher
-    // than the snapshot. Also deliberately NO treeGen bump. A snapshot must
-    // never supersede an in-flight loadTree the way a real local patch does
     if (!t || !t.length || nodes.length) return;
     nodes = t;
     renderTree();
     markCurrent();
   }
-  // the control-panel lists (sharing groups, shared-with-me) are never needed
-  // to read or edit anything, so they load AFTER the editor is usable. Issued
-  // at parse time they were two pier round-trips queued ahead of the tree, and
-  // the pier serializes, pure delay on the only requests that matter.
-  //  background lane: these also yield to any user activity (see bgFetch),
-  //  so a click during boot is no longer queued behind panel lists
-  //  and the followed folders: the list, then each read again (69x-follow.js)
   const loadPanels = () => {
     loadPerms(true); loadShared(true);
     loadFolds(true).then(() => checkFolds());
   };
-  // The side scripts: theme.js (the inline line in the shell has painted
-  // the last theme already), prism for the splits' parked views (the
-  // editor's highlighter is a worker that loads its own), vault.js and
-  // orrery.js. Nothing needs them to show or edit a page. As tags in the
-  // shell they were four requests ahead of app.js and the page-dump on a
-  // pier that answers one at a time, about 0.6 s each on a big ship. A
-  // load the worker serves takes them from its cache at once; a cold one
-  // asks for them once the tree has landed.
-  // The worker registers here too (index.html), for the same reason.
   let sideOn = false;
   function sideScripts() {
     if (sideOn) return;
@@ -14982,44 +11005,15 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       document.head.append(s);
     }
   }
-  // Boot runs in a microtask after app.js has been evaluated: the same
-  // task, before DOMContentLoaded, but not on app.js's top level. With
-  // DevTools attached (every perf-measure and suite run), each request
-  // records the script stack that made it, and a stack through the top
-  // level makes V8 reparse all of app.js (600 KB) for its source
-  // positions: about 35 ms inside the first request of the first load
-  // after the worker installs, which made boot one long task. From here
-  // the stack is boot's own functions. Without DevTools nothing is
-  // reparsed either way.
   queueMicrotask(() => {
     if (navigator.serviceWorker && navigator.serviceWorker.controller) sideScripts();
     else setTimeout(sideScripts, 8000);
-    // a queue left by a previous session syncs on open. With no Background
-    // Sync (the SW must not intercept API calls), next-open IS the replay
-    // moment, and the UI says so rather than implying closed-app sync exists
-    // Adoption first, replay after. On the desktop the durable queue is the
-    // ship-keyed one in Rust, so anything still sitting in this origin's
-    // IndexedDB is a leftover from before that existed. Move it across BEFORE
-    // the replay looks at the queue, or the first drain would not include it.
     adoptIdbQueue().then(() => {
       setTimeout(() => { if (offCount) replayQueue(); }, 4000);
     });
-    // Well after boot has settled, never during it. Boot already spends five
-    // serialised pier requests and takes most of ten seconds on a slow ship. A
-    // count landing in the middle of that puts the user's first save behind it
-    // and can push the save past the offline timeout, which is a real failure
-    // traded for a badge nobody is waiting on.
     setTimeout(() => { refreshCommentBadge(); }, 20000);
-    // The tabs come back first (21-tabs.js) and boot shows the front one. A
-    // page has the snapshot-first path below; every other kind shows through
-    // the tab model, with the tree and the panels loading beside it.
     const { tab: bootTab, fresh: bootFresh } = tabsBoot();
-    // urb:// links the desktop shell kept for this page (24-tools.js). They
-    // open in tabs of their own, after the restored ones, through the same
-    // queue as every tab switch.
     window.latUrbArrived();
-    // ?settings=<tab>: the desktop manager's Lattice tabs come back here
-    // (go_home in desktop/src/commands.rs) to that tab of Settings
     const setTab = qs.get('settings');
     if (setTab) {
       const u = new URL(location.href);
@@ -15031,29 +11025,13 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       loadTree().then(() => { legacyCheck(); sideScripts(); loadPanels(); });
       tabShowBoot(bootTab);
     } else {
-      // a folder in the address (?into=, a reload while one was selected)
-      // outranks the tab's page, as it did before tabs
       const into = qs.get('into');
       const name = into && !qs.get('name') ? null : bootTab.key || null;
       const painted = bootSnap(name, bootFresh && !into);
       bootTree();
-      // what the snapshot painted, if anything. The baseline for "did the USER
-      // do something while the dump was in flight?"
       const bootCurrent = current;
-      // and what the name field said: a new page named in the dialog has no
-      // `current` until its create lands, but it is the user's all the same
       const bootShown = pname.value;
       loadTree().then(() => {
-        // The tree paints from localStorage at 0ms, so it is clickable long
-        // before this resolves. Anything boot does by default would then land on
-        // top of the user's own action, opening a page and having it close a
-        // second later, which is exactly what the trailing newFile('') did.
-        // Compare against bootCurrent, not against null. A snapshot-painted page
-        // is not a user action and still wants its refreshOpen reconcile.
-        // everTyped, not dirty. A keystroke followed by an autosave clears dirty
-        // before a slow dump lands, and this branch then repainted the editor
-        // from the dump's PRE-edit copy. Typing is a user action whether or not
-        // it has since been saved. Going to another tab is a user action too.
         const touched = current !== bootCurrent || curFolder !== null || dirty || everTyped
           || activeTab !== bootTab || pname.value !== bootShown;
         if (touched) {
@@ -15067,10 +11045,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           else openPage(name);
         }
         else if (into && nodes.some((n) => !n.page && n.path === into)) selectFolder(into);
-        // no focus: boot did not ask for a new file, the user did not either
         else if (into) newFile(into, false);
-        // bare launch, snapshot resumed a page above. Reconcile it, do not
-        // clobber it with an empty new-file view
         else if (current) refreshOpen();
         else newFile('', false);
         legacyCheck();
