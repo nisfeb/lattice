@@ -164,7 +164,7 @@ On your ship, in lattice's own store, not on any computer. Each memory is one en
 
 ## opencode and other MCP clients
 
-The Claude Code plugin is two things: a small MCP server, `plugins/claude/server.mjs` (plain Node 16 or later, no dependencies), which offers the `memory_*` tools over lattice's HTTP routes with an agent key; and Claude-specific wrapping around it, hooks that load the index at session start and add strong matches to each prompt, plus a skill and commands. Any client that can run a local MCP server can use the server as it is, and the skill as its instructions.
+The Claude Code plugin is two things: a small MCP server, `plugins/claude/server.mjs` (plain Node 16 or later, no dependencies), which offers the `memory_*`, `skill_*` and `wiki_*` tools, `urb_read`, `urb_list` and `web_read` over lattice's HTTP routes with an agent key; and Claude-specific wrapping around it, hooks that load the index at session start, add strong matches to each prompt and mirror the ship's skills, plus three skills (memory, wiki and skills) and commands. Any client that can run a local MCP server can use the server as it is, and the skill as its instructions.
 
 For opencode, copy `plugins/claude/` somewhere, make a key for it (Settings, Agent keys), and add to `opencode.json`:
 

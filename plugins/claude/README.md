@@ -23,7 +23,7 @@ Saving stays deliberate: nothing is extracted from your sessions automatically.
    { "permissions": { "allow": ["mcp__plugin_lattice_lattice__*"] } }
    ```
 
-Node 16 or later must be on your `PATH`.
+Node 16 or later must be on your `PATH` (Node 18 or later for `import-skills.mjs`, which uses `fetch`).
 
 ## What a key can do
 
@@ -45,7 +45,7 @@ The plugin's skills skill tells Claude to check the index when a task might matc
 
 At session start a hook mirrors the ship's skills into `skills/` in Claude Code's config dir (`$CLAUDE_CONFIG_DIR`, else `~/.claude`, so a second account or a harness like reins gets them too), where Claude Code loads them like any other skill, triggering included, and picks up changes without a restart. Set the plugin's `skills_dir` option to mirror somewhere else, or to `off` to turn it off.
 
-- It writes only directories it owns: each holds a `.lattice-skill.json` marker. A skill of your own with the same name is left alone, and the session start says so.
+- It writes only directories it owns: each holds a `.lattice-skill.json` marker naming that directory. A skill of your own with the same name is left alone, and the session start says so. A copy of a mirrored skill under another name is yours, and so is anything behind a link you put inside one.
 - A skill deleted or superseded on the ship is removed from the mirror. A file you add inside a mirrored skill is kept.
 - Sensitive skills are never written to disk. A key without the `skills` scope mirrors nothing.
 
@@ -75,3 +75,4 @@ If your `CLAUDE.md` describes reaching lattice some other way (such as grubbery'
 - **Ship URL**: such as `https://urbit.example.com`.
 - **Agent key**: from lattice's Settings.
 - **Prompt recall strength** (default 50): memories are added to a prompt only when the best match is at least this strong, from 0 to 100, and also scores at least 10,000, so a short prompt that happens to share common words with an entry adds nothing. 101 turns prompt recall off. The session index loads either way.
+- **Skills directory** (default empty): where the ship's skills are mirrored, `$CLAUDE_CONFIG_DIR/skills` (else `~/.claude/skills`) when empty. `off` turns the mirror off.

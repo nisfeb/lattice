@@ -302,7 +302,7 @@ async function handle(m) {
       });
     case 'tools/call': {
       //  own keys only: "constructor" or "toString" is no tool
-      const t = Object.hasOwn(TOOLS, String(m.params?.name)) ? TOOLS[m.params.name] : null;
+      const t = Object.prototype.hasOwnProperty.call(TOOLS, String(m.params?.name)) ? TOOLS[m.params.name] : null;
       if (!t) return send({ jsonrpc: '2.0', id: m.id, error: { code: -32602, message: `unknown tool ${m.params?.name}` } });
       try {
         return reply(m.id, { content: [{ type: 'text', text: await t.run(m.params.arguments || {}) }] });

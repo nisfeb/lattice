@@ -9,6 +9,7 @@
 //  scripts/two-ship-urb-read.sh checks the same tools against real ships.
 import { spawn } from 'child_process';
 import http from 'http';
+import { makeCheck } from './lib/check.mjs';
 
 const SERVER = new URL('../plugins/claude/server.mjs', import.meta.url).pathname;
 const A = '~zod', ME = '~nec';
@@ -62,8 +63,7 @@ child.stdout.on('data', (d) => {
 const rpc = (method, params) => new Promise((r) => { waiting.set(++id, r); child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n'); });
 const tool = async (name, args) => { const m = await rpc('tools/call', { name, arguments: args }); return { text: m.result.content[0].text, err: !!m.result.isError }; };
 
-let fails = 0;
-const check = (name, ok, why = '') => { console.log(`${ok ? 'ok  ' : 'FAIL'}  ${name}${ok ? '' : '  ' + why}`); if (!ok) fails++; };
+const check = makeCheck();
 const has = (name, t, s) => check(name, t.includes(s), `no [${s}] in: ${t.slice(0, 300)}`);
 const hasnt = (name, t, s) => check(name, !t.includes(s), `unexpected [${s}]`);
 
@@ -124,5 +124,4 @@ check('a web address is refused before any request', r.err && r.text.includes('n
 check('  ...and nothing was asked', !seen.some((s) => s.includes('example.com')));
 
 child.kill(); fake.close();
-console.log(fails ? `ui-plugin-urb: ${fails} failed` : 'ui-plugin-urb: all passed');
-process.exit(fails ? 1 : 0);
+check.done();
