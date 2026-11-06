@@ -6708,7 +6708,7 @@
   (weld here kids)
 ::  +forum-read-grubs-remote: the remote analogue of +forum-read-grubs. A
 ::  peer's public board is granted as two dirs in its /public usergroup:
-::  /forum/boards/<board>/pub and /content (+send-public-how, line 12448).
+::  /forum/boards/<board>/pub and /content (+send-public-how).
 ::  Resolve the host's lattice base (+peer-base-cached), deep-peek each dir
 ::  built the same way +peek-page-at builds a remote road (an absolute %|
 ::  dir road; +peek-remote-wait adds the ames prefix), turn each ball to
@@ -15039,7 +15039,7 @@
 ::  An unreachable host, a non-lattice peer, a timeout, or a private/missing/
 ::  deleted board all read as ~ from +forum-read-grubs-remote and surface as
 ::  the 504 "unreachable or denied" response, the same clean error the
-::  cross-ship /browse read gives (line 1999), never a crash or half page.
+::  cross-ship /browse read gives, never a crash or half page.
 ::  A board that loads is one the host granted this peer the dirs for: a
 ::  public board (granted to everyone in the /public usergroup) or a private
 ::  board this peer is an invited member of (the invite grants the pub and
@@ -15191,6 +15191,52 @@
     (stag %post ;~(pfix (jest 'post-') dim:ag))
     ;~(plug (cold %comment (jest 'comment-')) dim:ag ;~(pfix hep dim:ag))
   ==
+::  +forum-form-act: the content forms both forum routes take, on board
+::  `nom` whose views hang off `base`: a vote, a new post, and a post's
+::  comment, pin, delete and delete-comment. The action and the view to
+::  303 to, or ~ for a suffix or fields it doesn't take.
+::
+++  forum-form-act
+  |=  [nom=@tas base=tape tl=path grab=$-(@t (unit @t))]
+  ^-  (unit [act=action:ft to=tape])
+  ?+  tl  ~
+      [%vote ~]
+    =/  tg=(unit @t)  (grab 'target')
+    ?~  tg  ~
+    =/  vt=(unit vote-target:ft)  (forum-target-of u.tg)
+    ?~  vt  ~
+    :-  ~
+    :-  [%upvote nom u.vt]
+    ?-(-.u.vt %post base, %comment "{base}/{(a-co:co post.u.vt)}")
+  ::
+      [%submit ~]
+    =/  ti=(unit @t)  (grab 'title')
+    ?~  ti  ~
+    `[[%new-post nom u.ti (grab 'url') (grab 'body')] base]
+  ::
+      [@ @ ~]
+    =/  pid=(unit @ud)  ((slat %ud) i.tl)
+    ?~  pid  ~
+    =/  thread=tape  "{base}/{(a-co:co u.pid)}"
+    ?+  i.t.tl  ~
+        %comment
+      =/  bd=(unit @t)  (grab 'body')
+      ?~  bd  ~
+      =/  par=(unit comment-id:ft)  (biff (grab 'parent') (slat %ud))
+      `[[%new-comment nom u.pid par u.bd] thread]
+    ::
+        %pin
+      `[[%pin-post nom u.pid =(`'true' (grab 'pinned'))] base]
+    ::
+        %delete
+      `[[%delete-post nom u.pid] base]
+    ::
+        %delete-comment
+      =/  cid=(unit @ud)  (biff (grab 'comment-id') (slat %ud))
+      ?~  cid  ~
+      `[[%delete-comment nom u.pid u.cid] thread]
+    ==
+  ==
 ::  +serve-forum-post: the owner's forum action forms (POST /forum/...). Each
 ::  becomes one action poked at the writer as the %forum eval-action with
 ::  src=our, so +apply-forum is the only writer and its role checks still
@@ -15242,21 +15288,7 @@
     ;<  ~  bind:m  (poke-eval [%forum-comets nom (~(has in off) nom)])
     (send-see-other eyre-id "{base}/mod")
   =/  res=(unit [act=action:ft to=tape])
-    ?+  tl  ~
-        [%vote ~]
-      =/  tg=(unit @t)  (grab 'target')
-      ?~  tg  ~
-      =/  vt=(unit vote-target:ft)  (forum-target-of u.tg)
-      ?~  vt  ~
-      :-  ~
-      :-  [%upvote nom u.vt]
-      ?-(-.u.vt %post base, %comment "{base}/{(a-co:co post.u.vt)}")
-    ::
-        [%submit ~]
-      =/  ti=(unit @t)  (grab 'title')
-      ?~  ti  ~
-      `[[%new-post nom u.ti (grab 'url') (grab 'body')] base]
-    ::
+    ?+  tl  (forum-form-act nom base tl grab)
         [%sidebar ~]
       `[[%set-sidebar nom (fall (grab 'sidebar') '')] "{base}/mod"]
     ::
@@ -15289,29 +15321,6 @@
     ::
         [%mod %delete ~]
       `[[%delete-board nom] root]
-    ::
-        [@ @ ~]
-      =/  pid=(unit @ud)  ((slat %ud) i.tl)
-      ?~  pid  ~
-      =/  thread=tape  "{base}/{(a-co:co u.pid)}"
-      ?+  i.t.tl  ~
-          %comment
-        =/  bd=(unit @t)  (grab 'body')
-        ?~  bd  ~
-        =/  par=(unit comment-id:ft)  (biff (grab 'parent') (slat %ud))
-        `[[%new-comment nom u.pid par u.bd] thread]
-      ::
-          %pin
-        `[[%pin-post nom u.pid =(`'true' (grab 'pinned'))] base]
-      ::
-          %delete
-        `[[%delete-post nom u.pid] base]
-      ::
-          %delete-comment
-        =/  cid=(unit @ud)  (biff (grab 'comment-id') (slat %ud))
-        ?~  cid  ~
-        `[[%delete-comment nom u.pid u.cid] thread]
-      ==
     ==
   ?~  res  (send-err eyre-id 400 'bad or missing forum form fields')
   ;<  ~  bind:m  (poke-eval [%forum our act.u.res])
@@ -15349,49 +15358,14 @@
   =/  tl=path  t.t.pax
   ::  ~ act = bad fields; act is ~ with a to = a refused suffix (no send)
   =/  res=(unit [act=(unit action:ft) to=tape])
-    ?+  tl  ~
-        [%vote ~]
-      =/  tg=(unit @t)  (grab 'target')
-      ?~  tg  ~
-      =/  vt=(unit vote-target:ft)  (forum-target-of u.tg)
-      ?~  vt  ~
-      :-  ~
-      :-  `[%upvote nom u.vt]
-      ?-(-.u.vt %post base, %comment "{base}/{(a-co:co post.u.vt)}")
-    ::
-        [%submit ~]
-      =/  ti=(unit @t)  (grab 'title')
-      ?~  ti  ~
-      `[`[%new-post nom u.ti (grab 'url') (grab 'body')] base]
-    ::
+    ?+  tl
+      ?~  r=(forum-form-act nom base tl grab)  ~
+      `[`act.u.r to.u.r]
         [%sidebar ~]
       `[`[%set-sidebar nom (fall (grab 'sidebar') '')] base]
     ::
         [%mod *]
       `[~ base]
-    ::
-        [@ @ ~]
-      =/  pid=(unit @ud)  ((slat %ud) i.tl)
-      ?~  pid  ~
-      =/  thread=tape  "{base}/{(a-co:co u.pid)}"
-      ?+  i.t.tl  ~
-          %comment
-        =/  bd=(unit @t)  (grab 'body')
-        ?~  bd  ~
-        =/  par=(unit comment-id:ft)  (biff (grab 'parent') (slat %ud))
-        `[`[%new-comment nom u.pid par u.bd] thread]
-      ::
-          %pin
-        `[`[%pin-post nom u.pid =(`'true' (grab 'pinned'))] base]
-      ::
-          %delete
-        `[`[%delete-post nom u.pid] base]
-      ::
-          %delete-comment
-        =/  cid=(unit @ud)  (biff (grab 'comment-id') (slat %ud))
-        ?~  cid  ~
-        `[`[%delete-comment nom u.pid u.cid] thread]
-      ==
     ==
   ?~  res  (send-err eyre-id 400 'bad or missing forum form fields')
   ?~  act.u.res  (send-see-other eyre-id to.u.res)
