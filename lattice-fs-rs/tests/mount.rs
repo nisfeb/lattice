@@ -74,6 +74,7 @@ fn a_real_mount_behaves_like_a_filesystem() {
             exercise(&dir, &s);
             a_parked_truncate_is_applied_by_the_next_open(&dir, &s);
             a_reader_never_absorbs_a_truncate(&dir, &s);
+            a_backup_truncate_never_reaches_its_page(&dir, &s);
         }));
         let _ = tx.send(r);
     });
@@ -194,6 +195,55 @@ fn a_reader_never_absorbs_a_truncate(mnt: &Path, ship: &Ship) {
         );
         assert_eq!(read_to_string(&p), format!("after {i}\n"));
     }
+}
+
+/// `foo.md~` is scratch, but the name rel_kind_of strips it to is the page
+/// `foo`. A handle-less truncate of the backup used to land on a writer open
+/// on the page, and the page's close then saved it empty. The truncate also
+/// failed with ENOENT, because the reply looked the scratch file up in the
+/// vtree, where scratch files never are.
+fn a_backup_truncate_never_reaches_its_page(mnt: &Path, ship: &Ship) {
+    use std::ffi::CString;
+    let page = mnt.join("hello.md");
+    let backup = mnt.join("hello.md~");
+    fs::write(&page, "keep me\n").unwrap();
+    fs::write(&backup, "old backup\n").unwrap();
+    let w = fs::OpenOptions::new().read(true).write(true).open(&page).unwrap();
+    let c = CString::new(backup.to_str().unwrap()).unwrap();
+    assert_eq!(
+        unsafe { libc::truncate(c.as_ptr(), 0) },
+        0,
+        "truncate(2) on a backup must succeed: {}",
+        std::io::Error::last_os_error()
+    );
+    assert_eq!(read_to_string(&backup), "", "the backup is what was truncated");
+    drop(w);
+    assert_eq!(ship.body("hello").unwrap(), b"keep me\n", "the page was emptied");
+    assert_eq!(read_to_string(&page), "keep me\n");
+    fs::remove_file(&backup).unwrap();
+
+    // a scratch file unlinked while open stays gone when it is closed
+    let swp = mnt.join(".hello.md.swp");
+    let mut f = fs::OpenOptions::new().read(true).write(true).create_new(true).open(&swp).unwrap();
+    f.write_all(b"swap").unwrap();
+    fs::remove_file(&swp).unwrap();
+    drop(f);
+    assert!(
+        !names(mnt).contains(&".hello.md.swp".to_string()),
+        "closing an unlinked scratch file brought it back"
+    );
+    assert!(fs::metadata(&swp).is_err());
+
+    // and one renamed while open keeps what is written to it after the move
+    let (t1, t2) = (mnt.join(".hello.md.tmp1"), mnt.join(".hello.md.tmp2"));
+    let mut f = fs::OpenOptions::new().read(true).write(true).create_new(true).open(&t1).unwrap();
+    f.write_all(b"one ").unwrap();
+    fs::rename(&t1, &t2).unwrap();
+    f.write_all(b"two").unwrap();
+    drop(f);
+    assert_eq!(read_to_string(&t2), "one two");
+    assert!(fs::metadata(&t1).is_err(), "the temp came back under its old name");
+    fs::remove_file(&t2).unwrap();
 }
 
 fn exercise(mnt: &Path, ship: &Ship) {
