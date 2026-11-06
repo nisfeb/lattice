@@ -650,7 +650,7 @@ try {
   //  editor, so Ctrl+Z in one never undoes what was typed in the other
   if (on('I')) {
     step = 'I twins';
-    await open(P.twinA);
+    await page.goto(APP + '?name=' + encodeURIComponent(P.twinA), { waitUntil: 'networkidle2', timeout: 60000 });
     await mounted();
     await sleep(300);
     await select('The first paragraph', true);
