@@ -206,6 +206,8 @@ async function skills() {
     const n = r.added.length + r.updated.length + r.removed.length;
     const lines = [];
     if (n) lines.push(`Lattice skills mirrored to ${root}: ${[['added', r.added], ['updated', r.updated], ['removed', r.removed]].filter(([, l]) => l.length).map(([w, l]) => `${w} ${l.join(', ')}`).join('; ')}.`);
+    if (r.stripped.length) lines.push(`Lattice skills: front matter the owner did not set (it would grant tools or run code) left out of ${r.stripped.join('; ')}.`);
+    if (r.held.length) lines.push(`Lattice skills not mirrored, since their front matter does not close with a --- line: ${r.held.join(', ')}.`);
     if (r.skipped.length) lines.push(`Not mirrored, since a skill of your own has the name: ${r.skipped.join(', ')}.`);
     say('SessionStart', lines.join(' '));
   } catch (e) {

@@ -48,6 +48,7 @@ At session start a hook mirrors the ship's skills into `skills/` in Claude Code'
 - It writes only directories it owns: each holds a `.lattice-skill.json` marker naming that directory. A skill of your own with the same name is left alone, and the session start says so. A copy of a mirrored skill under another name is yours, and so is anything behind a link you put inside one.
 - A skill deleted or superseded on the ship is removed from the mirror. A file you add inside a mirrored skill is kept.
 - Sensitive skills are never written to disk. A key without the `skills` scope mirrors nothing.
+- Front matter that grants permissions or runs code in Claude Code (`allowed-tools`, `hooks`, `shell`, and any field an agent key may not set on the ship) is written only when the ship says you set it (`owner_permissions`). Otherwise it is left out, and the session start says which skills lost which fields. A skill whose front matter does not close with a line that is exactly `---` is not mirrored. A copy written by an older plugin is rewritten once, so a grant it kept goes. See [Permissions are yours](../../docs/agent-knowledge.md#skills).
 
 To bring skills you already have into lattice once, run `import-skills.mjs` from the plugin directory with a key that has `skills` write:
 
@@ -56,7 +57,7 @@ LATTICE_URL=https://your-ship.example.com LATTICE_KEY=<key> node import-skills.m
 LATTICE_URL=https://your-ship.example.com LATTICE_KEY=<key> node import-skills.mjs --yes    # do it
 ```
 
-With no directories named it reads that same `skills/` and every installed plugin's `skills/`. It imports `SKILL.md` and its text files (md, txt, json, yaml), lists the files it leaves out (scripts and the like), and lists a skill the ship already has as a duplicate to merge by hand rather than overwriting it. After importing, the mirror carries the ship's copy, so remove your local one when you are happy with it.
+With no directories named it reads that same `skills/` and every installed plugin's `skills/`. It imports `SKILL.md` and its text files (md, txt, json, yaml), lists the files it leaves out (scripts and the like), and lists a skill the ship already has as a duplicate to merge by hand rather than overwriting it. A key cannot import a skill whose front matter has `allowed-tools`, `hooks`, `shell` or another field that grants permissions: the ship refuses it with a 403. Import it without those lines and add them in the Skills view. After importing, the mirror carries the ship's copy, so remove your local one when you are happy with it.
 
 Pages from other ships, and pages you clipped from the web, come back to Claude labelled as quoted material, not instructions, and the memory skill tells it not to save their claims as fact without you.
 

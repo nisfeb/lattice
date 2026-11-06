@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { makeCheck } from './lib/check.mjs';
-import { syncSkills, MARKER, claudeHome } from '../plugins/claude/hooks/skills-sync.mjs';
+import { syncSkills, stripGrants, MARKER, claudeHome } from '../plugins/claude/hooks/skills-sync.mjs';
 
 const check = makeCheck();
 const scratch = process.env.LATTICE_SCRATCH || path.join(os.homedir(), '.cache/lattice-gate');
@@ -25,7 +25,7 @@ const get = async (route, a) => {
   }
   const s = ship[a.name];
   if (!s) throw Object.assign(new Error('404'), { status: 404 });
-  if (route === 'skill') return JSON.stringify({ name: a.name, body: s.body, updated: s.updated, files: Object.keys(s.files).map((p) => ({ path: p, bytes: 1 })) });
+  if (route === 'skill') return JSON.stringify({ name: a.name, body: s.body, updated: s.updated, owner_permissions: !!s.owner, files: Object.keys(s.files).map((p) => ({ path: p, bytes: 1 })) });
   if (route === 'skill-file') return JSON.stringify({ body: s.files[a.path] });
   throw new Error('route ' + route);
 };
@@ -109,9 +109,37 @@ try {
   } finally {
     fs.rmSync(outside, { recursive: true, force: true });
   }
+
+  //  front matter that grants Claude Code permissions reaches disk only
+  //  when the ship says the owner set it
+  const grant = (n, extra) => `---\nname: ${n}\ndescription: d\n${extra}---\n# ${n}\n`;
+  ship = {
+    agentmade: { body: grant('agentmade', 'allowed-tools:\n  - Bash\nhooks:\n  PreToolUse: []\nshell: bash\n"allowed-tools": Bash\ndisable-model-invocation: true\n'), updated: '~1', files: {} },
+    ownermade: { body: grant('ownermade', 'allowed-tools: Bash(git:*)\npermissions-by: owner\n'), updated: '~1', files: {}, owner: true },
+    lateclose: { body: '---\nname: lateclose\ndescription: d\n---x\nallowed-tools: Bash\n---\n# x\n', updated: '~1', files: {} },
+    unclosed: { body: '---\nname: unclosed\ndescription: d\n--- \nallowed-tools: Bash\n', updated: '~1', files: {} },
+  };
+  r = await syncSkills({ get, root, ship: SHIP });
+  const am = read('agentmade/SKILL.md');
+  check('an agent\'s skill is written without allowed-tools', !/allowed-tools/.test(am) && !/^hooks:/m.test(am) && !/^shell:/m.test(am) && !/PreToolUse/.test(am), am);
+  check('  ...keeping what grants nothing', am.includes('disable-model-invocation: true') && am.includes('# agentmade'), am);
+  check('  ...and says so', r.stripped.some((x) => x.startsWith('agentmade (allowed-tools, hooks, shell')), JSON.stringify(r.stripped));
+  check.eq('an owner\'s skill keeps its allowed-tools', read('ownermade/SKILL.md'), ship.ownermade.body);
+  check('  ...and is not reported', !r.stripped.some((x) => x.startsWith('ownermade')), JSON.stringify(r.stripped));
+  check('a ---x line does not hide a grant', !read('lateclose/SKILL.md').includes('allowed-tools'), read('lateclose/SKILL.md'));
+  check('a front matter that does not close with --- is not written', !exists('unclosed') && r.held.includes('unclosed'), JSON.stringify(r));
+  //  a copy an older mirror wrote, grant and all, is rewritten once
+  fs.writeFileSync(path.join(root, 'agentmade/SKILL.md'), grant('agentmade', 'allowed-tools: Bash\n'));
+  fs.writeFileSync(path.join(root, 'agentmade/' + MARKER), JSON.stringify({ ship: SHIP, name: 'agentmade', updated: '~1', files: ['SKILL.md'] }));
+  r = await syncSkills({ get, root, ship: SHIP });
+  check('an older mirror\'s copy loses its grant', !read('agentmade/SKILL.md').includes('allowed-tools') && r.updated.includes('agentmade'), JSON.stringify(r));
+  r = await syncSkills({ get, root, ship: SHIP });
+  check('  ...once', !r.updated.includes('agentmade'), JSON.stringify(r));
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
+check.eq('stripGrants leaves the body alone', stripGrants('---\nname: x\nallowed-tools: Bash\n---\nallowed-tools: Bash\n').text, '---\nname: x\n---\nallowed-tools: Bash\n');
+check('stripGrants refuses CRLF front matter', stripGrants('---\r\nname: x\r\n---\r\n') === null);
 // where the mirror goes by default: the config dir Claude Code runs with
 // (reins and second accounts set CLAUDE_CONFIG_DIR), else ~/.claude
 check('no CLAUDE_CONFIG_DIR is ~/.claude', claudeHome({}) === path.join(os.homedir(), '.claude'));
