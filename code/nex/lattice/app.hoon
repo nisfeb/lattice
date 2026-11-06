@@ -6419,6 +6419,12 @@
     [%| 400 'a skill holds at most 64 files']
   =/  bad=(unit @t)  ?.(main ~ (check:lsk nm bod))
   ?^  bad  [%| 400 u.bad]
+  ::  front matter that grants Claude Code permissions is the owner's
+  ::  (lib/lattice-skills, permissions). A key may not edit a skill that
+  ::  carries the owner's, nor store a SKILL.md that sets any.
+  =/  head=@t  ?:(main bod ?>(?=(^ old) body.u.old))
+  =/  grant=(unit [code=@ud msg=@t])  (perm-refuse:lsk ?=(^ key) old head)
+  ?^  grant  [%| u.grant]
   =/  conflicted=?  &(!=('' expect) |(?=(~ old) !=(expect (scot %da updated.u.old))))
   =/  was=?  ?~(old | (sensitive:lsk u.old))
   =/  sens=?
@@ -6429,8 +6435,9 @@
   =/  plain=?
     ?&  ?=(~ key)  =('' author)  =('' source)  =('' expect)  =('' sarg)
     ==
-  =/  head=@t  ?:(main bod ?>(?=(^ old) body.u.old))
   =/  stamped=@t  ?:(plain head (stamp:lsk old head author source now sens))
+  ::  the owner's SKILL.md: permissions-by records that the owner set them
+  =?  stamped  &(?=(~ key) main)  (owner-mark:lsk old stamped now)
   =/  acts=(list skill-action:lsk)
     ?:  main  ~[[%save nm main-file:lsk stamped now]]
     ?:  plain  ~[[%save nm pt bod now]]
@@ -6440,6 +6447,7 @@
   :~  ['ok' b+&]
       ['created' b+?=(~ old)]
       ['sensitive' b+?:(plain (sensitive:lsk [stamped ~ now ~]) sens)]
+      ['owner_permissions' b+(owner-perms:lsk [stamped ~ now ~])]
       ['conflicted' b+conflicted]
       ['prior' ?.(conflicted ~ ?~(old ~ s+(scot %da updated.u.old)))]
       ['updated' s+(scot %da now)]
