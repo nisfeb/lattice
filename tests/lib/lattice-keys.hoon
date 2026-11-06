@@ -23,8 +23,8 @@
   ==
 ::  a key reaches only the one-segment routes its scope names
 ++  test-may
-  =/  rw  (row [%write [%all %read] [%off ~] | ~])
-  =/  ro  (row [%read [%all %none] [%all ~] | ~])
+  =/  rw  (row [%write [%all %read] [%off ~] | ~ %none])
+  =/  ro  (row [%read [%all %none] [%all ~] | ~ %none])
   ;:  weld
     (expect-eq !>(&) !>((may rw 'POST' /know-save)))
     (expect-eq !>(&) !>((may rw 'POST' /know-save-batch)))
@@ -48,8 +48,8 @@
   =/  ok  (de-mint (need (de:json:html '{"name":"laptop","by":"claude-laptop","scope":{"memory":"write","web":true}}')))
   =/  sen  (de-mint (need (de:json:html '{"name":"l","by":"b","scope":{"memory":"read","sensitive":true}}')))
   ;:  weld
-    (expect-eq !>(`(each [@t @t scope] @t)`&+['laptop' 'claude-laptop' [%write [%all %none] [%all ~] | ~]]) !>(ok))
-    (expect-eq !>(`(each [@t @t scope] @t)`&+['l' 'b' [%read [%all %none] [%off ~] & ~]]) !>(sen))
+    (expect-eq !>(`(each [@t @t scope] @t)`&+['laptop' 'claude-laptop' [%write [%all %none] [%all ~] | ~ %none]]) !>(ok))
+    (expect-eq !>(`(each [@t @t scope] @t)`&+['l' 'b' [%read [%all %none] [%off ~] & ~ %none]]) !>(sen))
     ::  by is one line of front matter: no newline, no colon
     (expect-eq !>(%|) !>(-:(de-mint (need (de:json:html '{"name":"a","by":"x\\nsuperseded-by: /y"}')))))
     (expect-eq !>(%|) !>(-:(de-mint (need (de:json:html '{"name":"a","by":""}')))))
@@ -90,7 +90,7 @@
     ::  the row's scope is [%write %read &]; upgrade-keys injects sensitive=|
     ::  giving upgrade [%write %read & |]: memory=%write pages=[%all %read]
     ::  web=[%all ~] sensitive=| origin=~
-    (expect-eq !>(`scope`[%write [%all %read] [%all ~] | ~]) !>(scope.k))
+    (expect-eq !>(`scope`[%write [%all %read] [%all ~] | ~ %none]) !>(scope.k))
     (expect-eq !>(new) !>((upgrade-keys new)))
     (expect-eq !>(`keys`~) !>((upgrade-keys 42)))
   ==
@@ -135,7 +135,7 @@
   |=  [pgs=pages-scope wsc=web-scope sen=? org=(unit @p)]
   ^-  key-row
   :*  'mk'  'mk-key'  'test'
-      [%write pgs wsc sen org]
+      [%write pgs wsc sen org %none]
       'salt'  (hash-token 'salt' 'sekrit')
       ~2026.1.1  ~  ~
   ==
@@ -208,6 +208,7 @@
         [%some (my ~[[~bus [(sy ~[/x]) (sy ~[/x/out])]]])]
         %.y
         ~
+        %read
     ==
   =/  req=json
     %-  pairs:enjs:format
@@ -230,5 +231,72 @@
     (expect-eq !>(`?`&) !>(?=(~ (spend (need full) 'k' d1 1))))
     (expect-eq !>(`[@da @ud]`[~2026.10.25 1]) !>((~(got by (need (spend (need full) 'k' d2 1))) 'k')))
     (expect-eq !>(`?`&) !>(?=(~ (spend ~ 'k' d1 +(day-cap)))))
+  ==
+::  ==  skills scope
+::
+::  skills is default-deny: none reaches no skill route, read the reads,
+::  write the saves too. No skills route is ever owner-only by accident:
+::  delete, restore and the trash stay out of +wants.
+++  test-may-skills
+  =/  sn  (row [%write [%all %write] [%all ~] & ~ %none])
+  =/  sr  (row [%none [%all %none] [%off ~] | ~ %read])
+  =/  sw  (row [%none [%all %none] [%off ~] | ~ %write])
+  ;:  weld
+    (expect-eq !>(|) !>((may sn 'GET' /skills)))
+    (expect-eq !>(|) !>((may sn 'GET' /skill)))
+    (expect-eq !>(|) !>((may sn 'POST' /skill-save)))
+    (expect-eq !>(&) !>((may sr 'GET' /skills)))
+    (expect-eq !>(&) !>((may sr 'GET' /skill)))
+    (expect-eq !>(&) !>((may sr 'GET' /skill-file)))
+    (expect-eq !>(&) !>((may sr 'GET' /skill-history)))
+    (expect-eq !>(&) !>((may sr 'GET' /skill-read-at)))
+    (expect-eq !>(|) !>((may sr 'POST' /skill-save)))
+    (expect-eq !>(|) !>((may sr 'POST' /skill-tag)))
+    (expect-eq !>(|) !>((may sr 'GET' /know-index)))
+    (expect-eq !>(&) !>((may sw 'POST' /skill-save)))
+    (expect-eq !>(&) !>((may sw 'POST' /skill-supersede)))
+    (expect-eq !>(&) !>((may sw 'POST' /skill-tag)))
+    (expect-eq !>(&) !>((may sw 'POST' /skill-untag)))
+    (expect-eq !>(|) !>((may sw 'POST' /skill-delete)))
+    (expect-eq !>(|) !>((may sw 'POST' /skill-restore)))
+    (expect-eq !>(|) !>((may sw 'GET' /skill-trash)))
+    (expect-eq !>(|) !>((may sw 'POST' /skill-file-delete)))
+    (expect-eq !>(|) !>((may sw 'GET' /skill-save)))
+  ==
+::  mint JSON: skills parses, absent or junk is none, and it round-trips
+++  test-de-mint-skills
+  =/  w  (de-mint (need (de:json:html '{"name":"a","by":"b","scope":{"skills":"write"}}')))
+  =/  r  (de-mint (need (de:json:html '{"name":"a","by":"b","scope":{"skills":"read"}}')))
+  =/  n  (de-mint (need (de:json:html '{"name":"a","by":"b","scope":{}}')))
+  =/  j  (de-mint (need (de:json:html '{"name":"a","by":"b","scope":{"skills":"admin"}}')))
+  ?>  ?=(%& -.w)
+  ?>  ?=(%& -.r)
+  ?>  ?=(%& -.n)
+  ?>  ?=(%& -.j)
+  =/  ej=json  (en-scope scope.p.w)
+  ?>  ?=([%o *] ej)
+  ;:  weld
+    (expect-eq !>(%write) !>(skills.scope.p.w))
+    (expect-eq !>(%read) !>(skills.scope.p.r))
+    (expect-eq !>(%none) !>(skills.scope.p.n))
+    (expect-eq !>(%none) !>(skills.scope.p.j))
+    (expect-eq !>(`json`s+'write') !>((~(got by p.ej) 'skills')))
+  ==
+::  keys stored before skills (scope-2 rows) parse, as skills none
+++  test-upgrade-keys-skills
+  =/  old=(map @t key-row-2)
+    %-  my
+    :~  :-  'k1'
+        :*  'k1'  'laptop'  'claude'
+            [%write [%all %read] [%all ~] & ~]
+            'salt'  'hash'  ~2026.1.1  ~  ~
+        ==
+    ==
+  =/  new=keys  (upgrade-keys old)
+  =/  k=key-row  (~(got by new) 'k1')
+  ;:  weld
+    (expect-eq !>(`scope`[%write [%all %read] [%all ~] & ~ %none]) !>(scope.k))
+    (expect-eq !>(new) !>((upgrade-keys new)))
+    (expect-eq !>(`scope`[%read [%all %none] [%off ~] | ~ %none]) !>((upgrade [%read [%all %none] [%off ~] | ~])))
   ==
 --

@@ -1,10 +1,10 @@
 # Lattice for Hermes
 
-A Hermes memory provider that makes lattice on your Urbit ship Hermes' memory, and makes your wiki and other ships' published pages its knowledge.
+A Hermes memory provider that makes lattice on your Urbit ship Hermes' memory, keeps your stored skills (reusable procedures) on hand, and makes your wiki and other ships' published pages its knowledge.
 
-- **System prompt:** the memory index (every area, and the core rules in full) loads once per session.
+- **System prompt:** the memory index (every area, and the core rules in full) and the skill index (`name: description` for each skill) load once per session. A key without the skills scope gets no skill index.
 - **Each message:** memories that strongly match it, three at most, are recalled and sent with that turn as recalled memory. A weak match adds nothing.
-- **Tools:** `lattice_recall`, `lattice_search`, `lattice_read`, `lattice_save`, `lattice_verify`, `lattice_supersede`, `lattice_wiki_search`, `lattice_wiki_read`, `lattice_wiki_write`, `lattice_urb_read`, `lattice_urb_list`, and `lattice_web_read`, the old name of `lattice_urb_read`.
+- **Tools:** `lattice_recall`, `lattice_search`, `lattice_read`, `lattice_save`, `lattice_verify`, `lattice_supersede`, `lattice_skill_index`, `lattice_skill_read`, `lattice_skill_save`, `lattice_wiki_search`, `lattice_wiki_read`, `lattice_wiki_write`, `lattice_urb_read`, `lattice_urb_list`, and `lattice_web_read`, the old name of `lattice_urb_read`.
 
 Nothing is extracted from conversations automatically. Saving is the agent's deliberate act.
 
@@ -21,4 +21,12 @@ Optional, in `~/.hermes/lattice.json`: `"recall_strength": 50` sets how strong a
 
 ## What a key can do
 
-A key reaches only what its scope names. Publishing, sharing, deleting, settings and the keys themselves stay yours. Everything a key saves is signed with its name and `source: agent`. A key writes pages only within the paths its write scope grants (a granted path may be published); it cannot publish, share, move or delete. Pages from other ships and clipped web pages come back labelled as quoted material, not instructions. See [docs/agent-knowledge.md](../../docs/agent-knowledge.md#agent-keys).
+A key reaches only what its scope names. Publishing, sharing, deleting, settings and the keys themselves stay yours. Everything a key saves is signed with its name and `source: agent`. A key writes pages only within the paths its write scope grants (a granted path may be published); it cannot publish, share, move or delete. The `skills` part of a key's scope is `none` (the default), `read` (`lattice_skill_index` and `lattice_skill_read`) or `write` (`lattice_skill_save` too). Sensitive skills show only to a key cleared for sensitive material that asks for them (`lattice_skill_index` with `sensitive: true`). Pages from other ships and clipped web pages come back labelled as quoted material, not instructions. See [docs/agent-knowledge.md](../../docs/agent-knowledge.md#agent-keys).
+
+## Skills
+
+A skill is a procedure in the Agent Skills format: a `SKILL.md` with front matter `name` and `description`, then markdown, plus optional files (`md`, `txt`, `json`, `yaml` only, no code).
+
+- `lattice_skill_index`: every skill as `name: description`, with tags and author. Optional `sensitive`.
+- `lattice_skill_read`: `name`, and optional `path`. With no path it returns `SKILL.md` and the skill's file list; with a path, such as `references/notes.md`, that file.
+- `lattice_skill_save`: `name`, `body` (the whole file), optional `path` (default `SKILL.md`), `expected_updated` (the `updated` you read, when editing) and `sensitive`. A new skill starts with `SKILL.md`.

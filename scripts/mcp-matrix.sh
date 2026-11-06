@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # MCP knowledge-tool matrix: drives all eleven in-ball lattice-* tools over
 # JSON-RPC at /grubbery/mcp, end to end on one scratch key, then the
-# plugin's urb_read and urb_list as an agent key. This is the
+# plugin's urb_read, urb_list and skill_* tools as agent keys. This is the
 # contract every agent's memory store depends on; platform.md marks it
 # must-not-regress. Run against the tyr harness, never production.
 #
@@ -111,5 +111,34 @@ has "web_read is urb_read"                     "own published" "$(plug web_read 
 curl -s -m 30 -o /dev/null -H "$CK" -X POST "$B/key-revoke?id=$KID"
 for n in "$UP" "${UP}x"; do curl -s -m 30 -o /dev/null -H "$CK" -X POST "$B/page-del?name=$n"; done
 curl -s -m 30 -o /dev/null -H "$CK" -X POST "$B/forum/$UP/mod/delete"
+
+echo "==> plugin skill_index / skill_read / skill_save (as agent keys)"
+SK="mcpskill-$$"
+mintk() {  # mintk <skills scope>  -> "<id> <token>"
+  curl -s -m 30 -H "$CK" -X POST "$B/key-mint" -H 'content-type: application/json' --data-binary \
+    "{\"name\":\"mcp-skills-$1\",\"by\":\"mcp-matrix\",\"scope\":{\"memory\":\"none\",\"pages\":{\"all\":\"none\"},\"web\":{\"off\":null},\"sensitive\":false,\"skills\":\"$1\"}}" \
+  | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j["key"]["id"], j["token"])'
+}
+read -r WID WTOK <<<"$(mintk write)"; read -r RID RTOK <<<"$(mintk read)"; read -r NID NTOK <<<"$(mintk none)"
+# plugr <token> <tool> <json-args>  -> the tool's text, prefixed ERR: when it is an error
+plugr() {
+  python3 -c 'import json,sys; print(json.dumps({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":sys.argv[1],"arguments":json.loads(sys.argv[2])}}))' "$2" "$3" \
+  | LATTICE_URL="$URL" LATTICE_KEY="$1" node "$(dirname "${BASH_SOURCE[0]}")/../plugins/claude/server.mjs" \
+  | python3 -c 'import json,sys; r=json.load(sys.stdin)["result"]; print(("ERR: " if r.get("isError") else "")+r["content"][0]["text"])'
+}
+SKMD=$(printf -- '---\nname: %s\ndescription: mcp matrix skill. Use when the matrix runs.\n---\n\n# Steps\n\nmcp matrix skill body\n' "$SK")
+SKARGS=$(python3 -c 'import json,sys; print(json.dumps({"name":sys.argv[1],"body":sys.argv[2]}))' "$SK" "$SKMD")
+has "skill_save makes a skill"           '"created":true' "$(plugr "$WTOK" skill_save "$SKARGS")"
+has "skill_index: name: description"     "- $SK: mcp matrix skill." "$(plugr "$WTOK" skill_index '{}')"
+has "skill_read: SKILL.md"               "mcp matrix skill body" "$(plugr "$WTOK" skill_read "{\"name\":\"$SK\"}")"
+has "skill_save an extra file"           '"ok":true' "$(plugr "$WTOK" skill_save "{\"name\":\"$SK\",\"path\":\"references/notes.md\",\"body\":\"extra notes file\"}")"
+has "skill_read with a path"             "extra notes file" "$(plugr "$WTOK" skill_read "{\"name\":\"$SK\",\"path\":\"references/notes.md\"}")"
+has "  ...and in the file list"          "references/notes.md" "$(plugr "$WTOK" skill_read "{\"name\":\"$SK\"}")"
+has "a code file is refused"             "ERR: 400" "$(plugr "$WTOK" skill_save "{\"name\":\"$SK\",\"path\":\"run.sh\",\"body\":\"echo\"}")"
+has "a read key reads"                   "mcp matrix skill body" "$(plugr "$RTOK" skill_read "{\"name\":\"$SK\"}")"
+has "  ...but cannot save"               "ERR: 403" "$(plugr "$RTOK" skill_save "$SKARGS")"
+has "a none key cannot list"             "ERR: 403" "$(plugr "$NTOK" skill_index '{}')"
+curl -s -m 30 -o /dev/null -H "$CK" -X POST "$B/skill-delete?name=$SK"
+for k in "$WID" "$RID" "$NID"; do curl -s -m 30 -o /dev/null -H "$CK" -X POST "$B/key-revoke?id=$k"; done
 
 finish

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The lattice plugin's MCP server: lattice memory and pages as named,
+// The lattice plugin's MCP server: lattice memory, skills and pages as named,
 // advertised tools, over lattice's HTTP routes with an agent key
 // (docs/agent-knowledge.md, "Agent keys"). Stdio JSON-RPC, one message per
 // line, no dependencies.
@@ -131,6 +131,24 @@ function urbText(j, offset) {
   }
 }
 
+// skill_index: GET /skills as one line per skill, the name and description
+// an agent matches a task against, then tags and author. A skill on the
+// owner's own ship is the owner's procedure, so it is not quoted.
+function skillIndex(t) {
+  const ss = JSON.parse(t).skills || [];
+  if (!ss.length) return 'No skills stored.';
+  const rows = ss.map((s) => {
+    const notes = [];
+    if ((s.tags || []).length) notes.push('tags: ' + s.tags.join(', '));
+    if (s.author) notes.push('by ' + s.author);
+    if (s.sensitive) notes.push('sensitive');
+    if (s.superseded_by) notes.push('superseded by ' + s.superseded_by);
+    if (s.files) notes.push(s.files + ' more file' + (s.files === 1 ? '' : 's'));
+    return `- ${s.name}: ${s.description}${notes.length ? ' (' + notes.join('; ') + ')' : ''}`;
+  });
+  return `${ss.length} skill${ss.length === 1 ? '' : 's'}. Read one with skill_read before following it.\n${rows.join('\n')}`;
+}
+
 const TOOLS = {
   memory_index: {
     description: "Every memory key by area, plus the core rules in full. Load once per session (the session hook usually has). world: true adds orrery's digest of the owner's day, which is sensitive: it needs a cleared key, and for 12 hours after, this key's saves are kept sensitive.",
@@ -186,6 +204,30 @@ const TOOLS = {
     description: 'What a tidy would fix: likely duplicates, broken links, untagged, oversized and stale entries. Proposes only; ask the user before acting on it.',
     props: {}, req: [],
     run: () => get('know-lint'),
+  },
+  skill_index: {
+    description: "The owner's stored skills (reusable procedures): one line each, name: description, with tags and author. Check it when a task might match a stored procedure, then read the skill with skill_read. sensitive: true adds sensitive skills, for a cleared key.",
+    props: { sensitive: { type: 'boolean' } }, req: [],
+    run: async (a) => skillIndex(await get('skills', { sensitive: a.sensitive ? 1 : undefined })),
+  },
+  skill_read: {
+    description: 'Read one skill. With no path: its SKILL.md (front matter and body), tags, updated and the list of its other files. With a path (e.g. references/notes.md): that file. Pass updated as expected_updated when you save over it.',
+    props: { name: str('the skill, e.g. deploy-ship'), path: str('a file of the skill (SKILL.md when left out)') }, req: ['name'],
+    run: (a) => (a.path ? get('skill-file', { name: a.name, path: a.path }) : get('skill', { name: a.name })),
+  },
+  skill_save: {
+    description: 'Save a reusable procedure as a skill, when the user asks. Agent Skills format: SKILL.md starts with front matter holding name (equal to the skill name) and description (when to use it, up to 1024 characters), then the procedure in markdown. A new skill starts with SKILL.md; other files (md, txt, json, yaml only, no code) go at a path such as references/notes.md. Names: lowercase letters, digits and single hyphens. Updating: read first and pass expected_updated.',
+    props: {
+      name: str('the skill name, e.g. deploy-ship'), body: str('the whole file'),
+      path: str('the file (SKILL.md)'),
+      expected_updated: str('the updated value you read, when editing'),
+      sensitive: { type: 'boolean', description: 'mark the skill sensitive (or not)' },
+    },
+    req: ['name', 'body'],
+    run: (a) => post('skill-save', {
+      name: a.name, path: a.path, expected_updated: a.expected_updated,
+      sensitive: a.sensitive === undefined ? undefined : a.sensitive ? 1 : 0,
+    }, a.body),
   },
   wiki_search: {
     description: "Search the owner's wiki pages, ranked. Each hit says where it lives: private, urbit (shared with ships) or clearweb (public).",

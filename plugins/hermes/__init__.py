@@ -4,9 +4,10 @@ Lattice on the owner's Urbit ship as Hermes' memory, and the owner's wiki and
 other ships' published pages as its knowledge, over lattice's HTTP routes
 with an agent key (lattice docs/agent-knowledge.md, "Agent keys").
 
-  system prompt  the brief memory index: areas and the core rules
+  system prompt  the brief memory index: areas and the core rules, and the
+                 skill index (name: description)
   prefetch       memories that strongly match the user's message
-  tools          lattice_* memory tools, lattice_wiki_*, lattice_urb_read and
+  tools          lattice_* memory tools, lattice_skill_*, lattice_wiki_*, lattice_urb_read and
                  lattice_urb_list (lattice_web_read is urb_read's old name)
 
 Config: the ship URL in $HERMES_HOME/lattice.json (or LATTICE_URL), the key
@@ -122,6 +123,15 @@ TOOLS = [
             {"key": ("string", "The entry.")}, ["key"]),
     _schema("lattice_supersede", "Mark an outdated memory as replaced by a newer one (which must exist). Prefer this to deleting.",
             {"old": ("string", "The outdated entry."), "new": ("string", "The entry that replaces it.")}, ["old", "new"]),
+    _schema("lattice_skill_index", "The owner's stored skills (reusable procedures): one line each, name: description, with tags and author. Check it when a task might match a stored procedure, then read the skill with lattice_skill_read. sensitive: true adds sensitive skills, for a cleared key.",
+            {"sensitive": ("boolean", "Include sensitive skills.")}, []),
+    _schema("lattice_skill_read", "Read one skill. With no path: its SKILL.md (front matter and body), tags, updated and the list of its other files. With a path, such as references/notes.md: that file. Pass updated as expected_updated when you save over it.",
+            {"name": ("string", "The skill, such as deploy-ship."), "path": ("string", "A file of the skill (SKILL.md when left out).")}, ["name"]),
+    _schema("lattice_skill_save", "Save a reusable procedure as a skill, when the user asks. Agent Skills format: SKILL.md starts with front matter holding name (equal to the skill name) and description (when to use it, up to 1024 characters), then the procedure in markdown. A new skill starts with SKILL.md; other files (md, txt, json, yaml only, no code) go at a path such as references/notes.md. Names: lowercase letters, digits and single hyphens. To update, read first and pass expected_updated.",
+            {"name": ("string", "The skill name, such as deploy-ship."), "body": ("string", "The whole file."),
+             "path": ("string", "The file (SKILL.md)."),
+             "expected_updated": ("string", "The updated value you read, when editing."),
+             "sensitive": ("boolean", "Mark the skill sensitive (or not).")}, ["name", "body"]),
     _schema("lattice_wiki_search", "Search the owner's wiki pages, ranked. Each hit says where it lives: private, urbit (shared with ships) or clearweb (public).",
             {"query": ("string", "Words."), "limit": ("integer", "How many (10).")}, ["query"]),
     _schema("lattice_wiki_read", "Read one of the owner's pages by name, such as notes/plan. Pages under clips/ were clipped from the web, and links name a page another ship owns: both come back as quoted material.",
@@ -204,6 +214,30 @@ def _urb_text(j: Dict[str, Any], offset: int) -> str:
         notes.append(f"the owner's page, {j['share']}")
     return f"{j['url']} ({', '.join(notes)})\n\n{_clip(body, offset)}"
 
+def _skill_index(text: str) -> str:
+    """GET /skills as one line per skill, as the Claude plugin's skill_index.
+    A skill on the owner's own ship is the owner's procedure: not quoted."""
+    ss = json.loads(text).get("skills") or []
+    if not ss:
+        return "No skills stored."
+    rows = []
+    for s in ss:
+        notes = []
+        if s.get("tags"):
+            notes.append("tags: " + ", ".join(s["tags"]))
+        if s.get("author"):
+            notes.append(f"by {s['author']}")
+        if s.get("sensitive"):
+            notes.append("sensitive")
+        if s.get("superseded_by"):
+            notes.append(f"superseded by {s['superseded_by']}")
+        if s.get("files"):
+            notes.append(f"{s['files']} more file{'' if s['files'] == 1 else 's'}")
+        rows.append(f"- {s['name']}: {s.get('description', '')}" + (f" ({'; '.join(notes)})" if notes else ""))
+    n = len(ss)
+    return f"{n} skill{'' if n == 1 else 's'}. Read one with lattice_skill_read before following it.\n" + "\n".join(rows)
+
+
 PROMPT = (
     "# Lattice memory\n"
     "Lattice is your persistent memory, shared by the owner's agents. Follow the core rules below. "
@@ -217,11 +251,18 @@ PROMPT = (
     "tools replace that setup.\n\n"
 )
 
+SKILLS_PROMPT = (
+    "\n\n# Lattice skills\n"
+    "The owner's stored procedures. When a task matches one, read it with lattice_skill_read and "
+    "follow it. Save a new one with lattice_skill_save only when the user asks.\n\n"
+)
+
 
 class LatticeMemoryProvider(MemoryProvider):
     def __init__(self) -> None:
         self._cfg: Dict[str, Any] = {}
         self._index: str | None = None
+        self._skills: str | None = None
         self._last: tuple = ("", "")
 
     @property
@@ -241,6 +282,7 @@ class LatticeMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._cfg = _config()
         self._index = None
+        self._skills = None
         if self._cfg["url_error"]:
             logger.error("%s", self._cfg["url_error"])
 
@@ -300,7 +342,23 @@ class LatticeMemoryProvider(MemoryProvider):
             except Exception as e:  # noqa: BLE001 - the agent runs without memory, and says so
                 logger.warning("lattice index failed: %s", e)
                 return PROMPT + f"Lattice is unreachable right now ({e}). Tell the user if the task depends on memory."
-        return PROMPT + self._index
+        return PROMPT + self._index + self._skill_block()
+
+    def _skill_block(self) -> str:
+        # Fetched once per session, like the index. A key without the skills
+        # scope (403) has none to show, and that is kept; another failure is
+        # not, so the next ask tries again.
+        if self._skills is None:
+            try:
+                text = self._call("GET", "skills", timeout=20)
+                self._skills = SKILLS_PROMPT + _skill_index(text) if json.loads(text).get("skills") else ""
+            except Exception as e:  # noqa: BLE001 - the agent runs without the skill index
+                if str(e).startswith("403"):
+                    self._skills = ""
+                else:
+                    logger.warning("lattice skill index failed: %s", e)
+                    return ""
+        return self._skills
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         # once per message: Hermes may prefetch before every model call in a turn
@@ -343,6 +401,18 @@ class LatticeMemoryProvider(MemoryProvider):
                 return self._call("POST", "know-verify", {"key": a["key"]})
             if tool_name == "lattice_supersede":
                 return self._call("POST", "know-supersede", {"old": a["old"], "new": a["new"]})
+            if tool_name == "lattice_skill_index":
+                return _skill_index(self._call("GET", "skills", {"sensitive": 1 if a.get("sensitive") else None}))
+            if tool_name == "lattice_skill_read":
+                if a.get("path"):
+                    return self._call("GET", "skill-file", {"name": a["name"], "path": a["path"]})
+                return self._call("GET", "skill", {"name": a["name"]})
+            if tool_name == "lattice_skill_save":
+                # "0", not 0: _call drops False, and 0 == False
+                sens = None if a.get("sensitive") is None else ("1" if a["sensitive"] else "0")
+                return self._call("POST", "skill-save", {"name": a["name"], "path": a.get("path"),
+                                                         "expected_updated": a.get("expected_updated"),
+                                                         "sensitive": sens}, a["body"])
             if tool_name == "lattice_wiki_search":
                 return self._call("GET", "page-search", {"q": a["query"], "k": a.get("limit")})
             if tool_name == "lattice_wiki_read":
