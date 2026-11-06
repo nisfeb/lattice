@@ -330,7 +330,8 @@ function linkTag(m) {
 
 //  text in ODF's white space rules: the first space of a run is literal
 //  unless it starts the paragraph or follows a space, the rest are
-//  text:s; tabs are text:tab and newlines text:line-break. As LibreOffice
+//  text:s; tabs are text:tab and newlines (and Word's vertical tab, its
+//  manual line break) text:line-break. As LibreOffice
 //  writes it, a space right after a tab or a line break is literal
 function text(t, ws) {
   let out = '';
@@ -348,11 +349,11 @@ function text(t, ws) {
       i = j;
     } else if (c === '\t') {
       out += '<text:tab/>'; ws.prevSpace = false; ws.atStart = false; i++;
-    } else if (c === '\n' || c === '\r') {
+    } else if (c === '\n' || c === '\r' || c === '\v') {
       out += '<text:line-break/>'; ws.prevSpace = false; ws.atStart = false; i++;
     } else {
       let j = i;
-      while (j < t.length && t[j] !== ' ' && t[j] !== '\t' && t[j] !== '\n' && t[j] !== '\r') j++;
+      while (j < t.length && t[j] !== ' ' && t[j] !== '\t' && t[j] !== '\n' && t[j] !== '\r' && t[j] !== '\v') j++;
       out += escText(t.slice(i, j));
       ws.prevSpace = false; ws.atStart = false;
       i = j;

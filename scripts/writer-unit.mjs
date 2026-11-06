@@ -370,6 +370,37 @@ console.log('# the view (Task 9), what node can check');
     p10.macros === true && parseFodt(read('01-paragraphs.fodt')).macros === false);
 }
 
+console.log('# paste and save, from other editors');
+{
+  //  a pasted control character never reaches the file: XML 1.0 has no
+  //  way to write one, and LibreOffice refuses a file that holds one
+  const t = read('01-paragraphs.fodt');
+  const p = parseFodt(t);
+  const b = core.findBlock(p.doc, 'A second paragraph');
+  const tr = EditorState.create({ doc: p.doc }).tr.insertText('one\u000btwo\u0001\u000c￾three', b.pos + 1);
+  const o = serializeFodt({ doc: tr.doc }, t);
+  const para = ((o.text || '').match(/>(one[^]*?three)/) || [])[1] || '';
+  check('a pasted control character is not written', !o.error && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f￾￿]/.test(o.text), JSON.stringify(para));
+  check('and Word\'s vertical tab is a line break', para === 'one<text:line-break/>twothree', JSON.stringify(para));
+  //  the rules ProseMirror's DOMParser reads pasted HTML with. Google Docs
+  //  wraps a whole paste in <b style="font-weight:normal">, and says
+  //  underline and strike in a span's style
+  const rules = (m) => schema.marks[m].spec.parseDOM;
+  const matches = (m, style, v) => rules(m).filter((r) => r.style === style || r.style === style + '=' + v)
+    .find((r) => !r.getAttrs || r.getAttrs(v) !== false);
+  const b0 = rules('strong').find((r) => r.tag === 'b');
+  check('a <b> that says font-weight:normal is not bold', !!b0.getAttrs && b0.getAttrs({ style: { fontWeight: 'normal' } }) === false);
+  check('a plain <b> is', !b0.getAttrs || b0.getAttrs({ style: { fontWeight: '' } }) !== false);
+  check('font-weight:400 inside a bold run turns bold off', !!matches('strong', 'font-weight', '400')?.clearMark);
+  check('font-weight:700 is bold', !!matches('strong', 'font-weight', '700') && !matches('strong', 'font-weight', '700').clearMark);
+  check('font-style:normal turns italic off', !!matches('em', 'font-style', 'normal')?.clearMark);
+  check('text-decoration:underline is underline', !!matches('underline', 'text-decoration', 'underline'));
+  check('text-decoration:line-through is strike', !!matches('strike', 'text-decoration', 'line-through'));
+  check('text-decoration-line:underline line-through is both', !!matches('underline', 'text-decoration-line', 'underline line-through')
+    && !!matches('strike', 'text-decoration-line', 'underline line-through'));
+  check('text-decoration:none is neither', !matches('underline', 'text-decoration', 'none') && !matches('strike', 'text-decoration', 'none'));
+}
+
 console.log('# speed');
 {
   const t = read('13-large.fodt');

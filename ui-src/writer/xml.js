@@ -36,8 +36,12 @@ export function decode(s) {
   });
 }
 
+//  the characters XML 1.0 does not allow, even as a reference: a pasted
+//  control character (Word's vertical tab, a form feed) would leave a
+//  file LibreOffice refuses to open, so they are never written
+const NOT_XML = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g;
 //  text content: & < > only, as LibreOffice writes it
-export const escText = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+export const escText = (s) => s.replace(NOT_XML, '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 //  an attribute value in double quotes: LibreOffice also writes &quot; and &apos;
 export const escAttr = (s) => escText(s).replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 

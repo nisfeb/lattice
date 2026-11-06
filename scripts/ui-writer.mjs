@@ -402,6 +402,28 @@ try {
     await sleep(650);
     await undoBack(iorig);
 
+    //  Google Docs: the whole paste in <b style="font-weight:normal">, and
+    //  underline and strike in a span's style
+    step = 'D paste gdocs';
+    await select('Plain', true);
+    await page.evaluate(() => {
+      const dt = new DataTransfer();
+      dt.setData('text/html', '<meta charset="utf-8"><b style="font-weight:normal;" id="docs-internal-guid-1">'
+        + '<span style="font-weight:400;">Gplain</span> <span style="font-weight:700;">Gbold</span> '
+        + '<span style="text-decoration:underline;">Gunder</span> <span style="text-decoration:line-through;">Gstruck</span></b>');
+      dt.setData('text/plain', 'Gplain Gbold Gunder Gstruck');
+      document.querySelector('lat-writer .lw-doc').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+    });
+    const gd = await page.evaluate(() => {
+      const d = document.querySelector('lat-writer .lw-doc');
+      const inn = (w, sel) => [...d.querySelectorAll(sel)].some((e) => e.textContent.includes(w));
+      return { plainBold: inn('Gplain', 'strong'), bold: inn('Gbold', 'strong'), under: inn('Gunder', 'u'), struck: inn('Gstruck', 's') };
+    });
+    check('D: a Google Docs paste is not all bold, and keeps its bold, underline and strike',
+      !gd.plainBold && gd.bold && gd.under && gd.struck, JSON.stringify(gd));
+    await sleep(650);
+    await undoBack(iorig);
+
     step = 'D links';
     await open(P.links);
     await mounted();
