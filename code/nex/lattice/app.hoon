@@ -2673,8 +2673,14 @@
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io (rf up pdir %code) [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    ::  a revision a move carried is dated when it was saved (+rev-at:lk)
+    ;<  bo=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m
+      (born:fio (rf up pdir %code))
+    =/  at=(map @ud @da)
+      ?:  ?=(%| -.bo)  ~
+      (malt (turn p.bo |=([c=cass:clay tags=(set @t) *] [ud.c (rev-at:lk da.c tags)])))
     =/  revs=(list [ud=@ud da=@da])
-      %+  sort  (turn p.pe |=([c=cass:clay *] [ud.c da.c]))
+      %+  sort  (turn p.pe |=([c=cass:clay *] [ud.c (~(gut by at) ud.c da.c)]))
       |=([a=[ud=@ud da=@da] b=[ud=@ud da=@da]] (gth ud.a ud.b))
     %+  send-json  eyre-id
     %-  pairs:enjs:format
@@ -7629,11 +7635,23 @@
     ::
     ::  Guarded, because cull-soft on an absent dir veto-crashes the writer,
     ::  and most pages never had a comment.
+    ::  The held comet comments too: approving one filed it under the dead
+    ::  path, for the next page there to inherit.
     =/  cdir=path  (weld /comments pax.act)
     ;<  cex=?  bind:m  (peek-exists:fio (rv up cdir))
-    ?.  cex  (pure:m ~)
-    ;<  *  bind:m  (cull-soft:io (rv up cdir))
+    ;<  *  bind:m
+      ?.  cex  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
+      (cull-soft:io (rv up cdir))
+    =/  hdir=path  (weld /comments-held pax.act)
+    ;<  hex=?  bind:m  (peek-exists:fio (rv up hdir))
+    ?.  hex  (pure:m ~)
+    ;<  *  bind:m  (cull-soft:io (rv up hdir))
     (pure:m ~)
+      %carry-state
+    (carry-state from.act to.act)
+      %carry
+    ;<  ~  bind:m  (carry-hist from.act to.act)
+    (carry-comments now from.act to.act)
       %share
     ::  a page's own choice: it no longer takes its folder's
     ;<  ~  bind:m  (drop-via pax.act)
@@ -8786,6 +8804,9 @@
       ^-  (unit cass:clay)
       ?:(tomb ~ `c)
     |=([a=cass:clay b=cass:clay] (gth ud.a ud.b))
+  ::  each revision's time by +rev-at:lk: one a move carried keeps its own
+  =/  at=(map @ud @da)
+    (malt (turn p.bo |=([c=cass:clay tags=(set @t) *] [ud.c (rev-at:lk da.c tags)])))
   ::  keep=0 means drop the lot (used by delete). Guard it explicitly. The
   ::  general path below computes (dec keep), and dec 0 crashes, which would
   ::  have taken the writer down on every page delete.
@@ -8809,7 +8830,7 @@
   =/  victim=(unit cass:clay)
     ?.  ?=([* * * *] live)  ~
     =/  vn=(unit @ud)
-      (coalesce-victim:lk (turn live |=(c=cass:clay [ud.c da.c])) window)
+      (coalesce-victim:lk (turn live |=(c=cass:clay [ud.c (~(gut by at) ud.c da.c)])) window)
     ?~(vn ~ `i.t.live)
   ;<  ~  bind:m
     ?~  victim  (pure:m ~)
@@ -8954,7 +8975,8 @@
 ::  +move-pages: move a page or a whole folder subtree under /page from src to
 ::  dst. Copies each page's code (share mode carried over, wikilink
 ::  self-references rewritten like template instantiation rewrites its root)
-::  and each link grub as it is, then deletes the source. Runs in a REQUEST fiber with one writer poke per
+::  and each link grub as it is, with each page's state, history and
+::  comments (%carry-state, %carry), then deletes the source. Runs in a REQUEST fiber with one writer poke per
 ::  action. The same reasoning as +instantiate-template: a batch make in one
 ::  writer transaction arms dep-keeps that never establish. Returns ~ when
 ::  nothing exists at src. `count is the number of pages and links moved (0 =
@@ -9038,6 +9060,7 @@
       dacts
       ducts
       gacts
+      ^-  (list eval-action:le)  ~[[%carry-state from to]]
     ==
   =/  count=@ud  (lent lacts)
   ::  `late`: the catch-up pass has run (below)
@@ -9055,6 +9078,7 @@
       ?:  late  (pure:(fiber:fiber:nexus ,[(list path) ball:tarball]) [~ bl])
       (move-catch-up sdir bl)
     ?^  pages.cu  $(rels pages.cu, bl bl.cu, late &)
+    ;<  ~  bind:m  (poke-eval [%carry from to])
     ;<  ~  bind:m  (poke-eval [%del from])
     ;<  ~  bind:m  (record-move from to)
     ;<  ~  bind:m  (move-grants from `to)
@@ -9081,6 +9105,198 @@
     ^-  (list eval-action:le)
     ?~(own ~ [%share dst u.own]~)
   $(todo acts, rels t.rels, count ?:(late count +(count)))
+::  +carried-grubs: a page's or folder's own state that goes with it on a
+::  move, by grub name and mark. The rest is carried by the move's own
+::  actions (code, name, share, sensitive mark, grants, links) or remade
+::  where it lands (cmd, deps, err, show).
+++  carried-grubs
+  ^-  (list [nom=@ta =blot:tarball])
+  :~  [%data [/lattice %eval-data]]
+      [%comment-on [/lattice %comment-flag]]
+      [%comet-mode [/ %noun]]
+      [%forms-on [/lattice %comment-flag]]
+      [%forms-cfg [/lattice %eval-data]]
+      [%forms-use [/lattice %eval-data]]
+  ==
+::  +carry-state: %carry-state. Each carried grub of the pages and folders
+::  at or under /page/<from> is written at the same place under /page/<to>
+::  unless one is there already (a move resumed). Before the pages are
+::  made there, so a stateful page's first run reads its own data, and a
+::  published page's flags are in place when it publishes.
+++  carry-state
+  |=  [from=path to=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page from)) ~)
+  ?.  ?=([%ball *] dv)  (pure:m ~)
+  =/  all=(list path)
+    =/  ps=(list path)  [~ (turn (collect-tree ball.dv ~) head)]
+    ~(tap in (~(gas in *(set path)) ps))
+  |-  ^-  form:m
+  ?~  all  (pure:m ~)
+  =/  pf  (ball-fils ball.dv i.all)
+  =/  got=(list [nom=@ta =blot:tarball sang=sang:tarball gain=?])
+    %+  murn  carried-grubs
+    |=  [nom=@ta =blot:tarball]
+    ^-  (unit [nom=@ta =blot:tarball sang=sang:tarball gain=?])
+    =/  g  (~(get by pf) nom)
+    ?~  g  ~
+    `[nom blot sang.u.g gain.u.g]
+  ?~  got  $(all t.all)
+  =/  ddir=path  :(weld /page to i.all)
+  ;<  ~  bind:m  (ensure-dirs up /page (weld to i.all))
+  ;<  ~  bind:m
+    =/  gs=(list [nom=@ta =blot:tarball sang=sang:tarball gain=?])  got
+    |-  ^-  form:m
+    ?~  gs  (pure:m ~)
+    =/  r=road:tarball  (rf up ddir nom.i.gs)
+    ;<  ex=?  bind:m  (peek-exists:fio r)
+    ?:  ex  $(gs t.gs)
+    =/  bk=bask:tarball  [blot.i.gs (sang-noun:tarball sang.i.gs)]
+    ;<  ~  bind:m  ?:(gain.i.gs (over-gained:fio r bk) (over:fio r bk))
+    $(gs t.gs)
+  $(all t.all)
+::  +carry-hist: %carry's history half. Each page at or under /page/<from>
+::  gets its revisions at its new place (+carry-page-hist).
+++  carry-hist
+  |=  [from=path to=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page from)) ~)
+  ?.  ?=([%ball *] dv)  (pure:m ~)
+  =/  rels=(list path)
+    (murn (collect-tree ball.dv ~) |=([pax=path page=?] ?:(page `pax ~)))
+  =|  done=@ud
+  |-  ^-  form:m
+  ?~  rels  (pure:m ~)
+  ;<  ~  bind:m  (tree-yield done 2)
+  ;<  ~  bind:m
+    %+  carry-page-hist
+      (rf up :(weld /page from i.rels) %code)
+    (rf up :(weld /page to i.rels) %code)
+  $(rels t.rels, done +(done))
+::  +carry-page-hist: the source's revisions, oldest first and each tagged
+::  with the time it was saved (+rev-tag:lk), written at `dst` under the
+::  copy the move made there, which is then written again on top. There is
+::  no way to hand a revision to another road, so this is a replay. The
+::  move's own copy (and a catch-up copy) go, so the history reads as the
+::  source's with the moved head on top. A destination that already holds
+::  a tagged revision was carried before (a resumed move) and is left.
+++  carry-page-hist
+  |=  [src=road:tarball dst=road:tarball]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  sb=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:fio src)
+  ?:  ?=(%| -.sb)  (pure:m ~)
+  ;<  db=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:fio dst)
+  ?:  ?=(%| -.db)  (pure:m ~)
+  =/  dlive  (skip p.db |=([* * tomb=?] tomb))
+  ?:  (lien dlive |=([c=cass:clay t=(set @t) *] !=(da.c (rev-at:lk da.c t))))
+    (pure:m ~)
+  ?~  dlive  (pure:m ~)
+  ::  the source's live revisions, oldest first. Its head is the one the
+  ::  move copied; the older ones are what the destination lacks.
+  =/  slive=(list [c=cass:clay t=(set @t)])
+    %+  sort
+      (murn p.sb |=([c=cass:clay t=(set @t) tomb=?] ?:(tomb ~ `[c t])))
+    |=([a=[c=cass:clay *] b=[c=cass:clay *]] (lth ud.c.a ud.c.b))
+  ?.  ?=([* * *] slive)  (pure:m ~)
+  ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+    (peep:io src [%numb ~ ~])
+  ?:  ?=(%| -.pe)  (pure:m ~)
+  =/  bodies=(map @ud @t)
+    %-  malt
+    %+  murn  p.pe
+    |=  [c=cass:clay s=sage:tarball]
+    =/  b=(unit @t)  (mole |.(;;(@t (sang-noun:tarball (sage-to-sang:tarball s)))))
+    ?~(b ~ `[ud.c u.b])
+  ;<  hv=view:nexus  bind:m  (peek:fio dst ~)
+  ?.  ?=([%file *] hv)  (pure:m ~)
+  =/  hb=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.hv))))
+  ?~  hb  (pure:m ~)
+  =/  stop=[c=cass:clay t=(set @t)]  (rear slive)
+  =/  olds=(list [c=cass:clay t=(set @t)])  (snip `(list [c=cass:clay t=(set @t)])`slive)
+  =/  drop=(set cass:clay)  (~(gas in *(set cass:clay)) (turn dlive |=([c=cass:clay *] c)))
+  |-  ^-  form:m
+  ?~  olds
+    ;<  ~  bind:m  (over-gained:fio dst [/lattice %page] u.hb)
+    ;<  ~  bind:m  (tag:io dst ~ (sy ~[(rev-tag:lk (rev-at:lk da.c.stop t.stop))]))
+    (lose:fio dst [%pick drop])
+  =/  b=(unit @t)  (~(get by bodies) ud.c.i.olds)
+  ?~  b  $(olds t.olds)
+  ;<  ~  bind:m  (over-gained:fio dst [/lattice %page] u.b)
+  ;<  ~  bind:m  (tag:io dst ~ (sy ~[(rev-tag:lk (rev-at:lk da.c.i.olds t.i.olds))]))
+  $(olds t.olds)
+::  +carry-comments: %carry's comments half. The comments and held comet
+::  comments filed under /comments/<from> and /comments-held/<from> are
+::  filed again under <to>, each page's public thread is laid at its new
+::  name, and the inbox items naming a page at or under `from` name it
+::  where it went. The %del that follows culls the old ones. A remote
+::  ship's own record of a comment it sent names the old page, and is
+::  its own: a comment it sends there after the move is refused as a
+::  comment on a page that does not exist.
+++  carry-comments
+  |=  [now=@da from=path to=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  ~  bind:m  (copy-filed up /comments from to)
+  ;<  ~  bind:m  (copy-filed up /comments-held from to)
+  ;<  our=@p  bind:m  bowl-our
+  ;<  items=(list [id=@ta i=item:ln])  bind:m  notify-items
+  =/  moved  (move-items:ln items our (crip (pax-str from)) (crip (pax-str to)))
+  ;<  ~  bind:m
+    |-  ^-  form:m
+    ?~  moved  (pure:m ~)
+    ;<  ~  bind:m  (put-file (rf up /notify/items id.i.moved) [/ %noun] i.i.moved)
+    $(moved t.moved)
+  ;<  ~  bind:m  ?~(moved (pure:m ~) (notify-stamp now))
+  ::  each page's public thread at its new name. The old name's goes with
+  ::  its unpublish in the %del.
+  ;<  cv=view:nexus  bind:m  (peek:fio (rv up (weld /comments to)) ~)
+  ?.  ?=([%ball *] cv)  (pure:m ~)
+  =/  pgs=(list path)  (filed-dirs ball.cv ~)
+  |-  ^-  form:m
+  ?~  pgs  (pure:m ~)
+  ;<  ~  bind:m  (put-pub-thread up (weld to i.pgs))
+  $(pgs t.pgs)
+::  +filed-dirs: the dirs in a ball that hold grubs, relative to it
+++  filed-dirs
+  |=  [b=ball:tarball rel=path]
+  ^-  (list path)
+  =/  kids=(list path)
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=([nom=@ta kid=ball:tarball] (filed-dirs kid (weld rel /[nom])))
+  ?~  fil.b  kids
+  ?:  =(~ contents.u.fil.b)  kids
+  [rel kids]
+::  +copy-filed: every comment under base/<from> (/comments or
+::  /comments-held) filed again at the same place under base/<to>
+++  copy-filed
+  |=  [up=@ud base=path from=path to=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  cv=view:nexus  bind:m  (peek:fio (rv up (weld base from)) ~)
+  ?.  ?=([%ball *] cv)  (pure:m ~)
+  =/  dirs=(list path)  (filed-dirs ball.cv ~)
+  |-  ^-  form:m
+  ?~  dirs  (pure:m ~)
+  =/  fils  (ball-fils ball.cv i.dirs)
+  =/  ddir=path  :(weld base to i.dirs)
+  ;<  ~  bind:m  (ensure-dirs up base (weld to i.dirs))
+  ;<  ~  bind:m
+    =/  fs=(list [id=@ta =sang:tarball])
+      (turn ~(tap by fils) |=([id=@ta =sang:tarball *] [id sang]))
+    |-  ^-  form:m
+    ?~  fs  (pure:m ~)
+    =/  c=(unit comment:lc)  (mole |.(;;(comment:lc (sang-noun:tarball sang.i.fs))))
+    ?~  c  $(fs t.fs)
+    ;<  ~  bind:m  (put-file (rf up ddir id.i.fs) [/lattice %comment] u.c)
+    $(fs t.fs)
+  $(dirs t.dirs)
 ::  +move-catch-up: the pages under `sdir` (a move's source, /page/<from>)
 ::  whose code is not what `bl` read, and the ball they are in now
 ++  move-catch-up

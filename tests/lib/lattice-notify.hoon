@@ -229,4 +229,17 @@
     (expect-eq !>(1) !>((unread:ln s0 r2)))
     (expect-eq !>(0) !>((unread:ln s1 r2)))
   ==
+::  +move-items: our page's comment items follow it, a page under it
+::  too, and nothing else moves
+++  test-move-items
+  =/  t0  ~2026.1.1
+  =/  c1  (make:ln %comment t0 ~bus ~zod 'a/b' 0 '' 'hi')
+  =/  c2  (make:ln %comment t0 ~bus ~zod 'a/b/c' 0 '' 'hi')
+  =/  c3  (make:ln %comment t0 ~bus ~zod 'a/bc' 0 '' 'hi')
+  =/  c4  (make:ln %comment t0 ~bus ~nec 'a/b' 0 '' 'hi')
+  =/  r1  (make:ln %reply t0 ~bus ~zod 'a/b' 1 '' 'hi')
+  =/  got  (move-items:ln ~[[%x1 c1] [%x2 c2] [%x3 c3] [%x4 c4] [%x5 r1]] ~zod 'a/b' 'd')
+  %+  expect-eq
+    !>(`(list [@ta item:ln])`~[[%x1 c1(where 'd')] [%x2 c2(where 'd/c')]])
+  !>(got)
 --
