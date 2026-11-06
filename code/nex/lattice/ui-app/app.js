@@ -10636,19 +10636,21 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           if (!r.ok) { st('share failed' + await errText(r), false); return; }
           const fn = nodes.find((x) => !x.page && x.path === f);
           if (fn) { if (m === 'private') delete fn.dshare; else fn.dshare = m; }
-          showShare(m);
+          if (curFolder === f) showShare(m);
           st(m === 'private' ? 'folder ' + f + ' shares nothing'
             : m === 'clearweb' ? 'folder shared at /c/' + f + '/' : 'folder ' + f + ' shared');
           await loadTree();
           return;
         }
-        if (!current) { st('save the page first', false); return; }
-        const r = await mutate(api + '/page-share?name=' + encodeURIComponent(current) +
+        // the page this was asked for: another may be open by the answer
+        const name = current;
+        if (!name) { st('save the page first', false); return; }
+        const r = await mutate(api + '/page-share?name=' + encodeURIComponent(name) +
           '&mode=' + m);
         if (!r.ok) { st('share failed' + await errText(r), false); return; }
-        showShare(m);
+        if (current === name && !curFolder) showShare(m);
         st('sharing: ' + m);
-        const n = nodes.find((x) => x.page && x.path === current);
+        const n = nodes.find((x) => x.page && x.path === name);
         if (n) { n.share = m; delete n.via; }
         paintVia();
         snapTree();

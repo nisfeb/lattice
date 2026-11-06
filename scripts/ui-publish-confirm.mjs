@@ -12,6 +12,7 @@ import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harnes
 const env = shipEnv();
 const APP = env.app;
 const PAGE = 'pubconfirm' + (process.pid % 100000);
+const OTHER = PAGE + '-b';
 
 const check = makeCheck();
 const browser = await launchBrowser();
@@ -32,8 +33,9 @@ let step = 'setup';
 try {
   await page.goto(APP + '/no-such-asset', { timeout: 30000 });
   await page.evaluate(() => { localStorage.clear(); });
-  await page.evaluate((n) => fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
-    '&type=md&new=1', { method: 'POST', body: '# publish probe' }), PAGE);
+  for (const n of [PAGE, OTHER])
+    await page.evaluate((n) => fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
+      '&type=md&new=1', { method: 'POST', body: '# publish probe' }), n);
   await sleep(4000);
   await page.goto(APP + '?name=' + encodeURIComponent(PAGE),
     { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -80,6 +82,25 @@ try {
   await sleep(300);
   check('"don\'t ask again" skips the dialog', !(await dlgOpen()));
   await wait(() => document.querySelector('.share button.on')?.dataset.m === 'shared');
+
+  //  a share answered after another page was opened is the first page's:
+  //  it once painted the open page's panel and marked its tree row
+  step = 'switch mid-write';
+  await page.evaluate(() => {
+    const f = window.fetch;
+    window.fetch = (u, ...a) => (String(u).includes('/page-share?')
+      ? new Promise((r) => setTimeout(r, 2500)).then(() => f(u, ...a)) : f(u, ...a));
+  });
+  await click('clearweb');
+  await page.evaluate((n) => document.querySelector(
+    `#treelist a.pg[href$="name=${encodeURIComponent(n)}"]`).click(), OTHER);
+  await wait((n) => document.querySelector('#treelist a.pg.cur')?.href.endsWith('name=' + encodeURIComponent(n)), OTHER);
+  await sleep(5000);
+  check('the open page keeps its own mode', (await mode()) === 'private');
+  const cw = (n) => page.evaluate((n) => !!document.querySelector(
+    `#treelist a.pg[href$="name=${encodeURIComponent(n)}"] .cw`), n);
+  check('the open page is not marked clearweb', !(await cw(OTHER)));
+  check('the page asked for is', await cw(PAGE));
 } catch (e) {
   check('step ' + step + ': ' + e.message.slice(0, 120), false);
 } finally {
@@ -87,6 +108,7 @@ try {
     await fetch('/apps/lattice/page-share?name=' + encodeURIComponent(n) + '&mode=private',
       { method: 'POST' });
     await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n), { method: 'POST' });
+    await fetch('/apps/lattice/page-del?name=' + encodeURIComponent(n + '-b'), { method: 'POST' });
   }, PAGE).catch(() => {});
   await browser.close();
 }
