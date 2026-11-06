@@ -14,6 +14,13 @@
 //! no capability, runs no script and loads from a private temp file, so it
 //! has no origin worth having either.
 //!
+//! Nor does it load anything but the document (`sealed`). A file: URL in a
+//! page would print the user's own files into a PDF they may share, and an
+//! http one would show its host the user's address. Both are refused by a
+//! CSP put first in the document, which leaves only data: URLs (pdf.js
+//! inlines the ship's images and stylesheets as those), and the window
+//! goes nowhere but the document.
+//!
 //! WebKitGTK takes the paper and the margins from the job, not from CSS
 //! @page, so the page passes them in (pdf.js, pageOf): a Writer document's
 //! own page, else the system's default paper and pdf.js's margins.
@@ -134,6 +141,25 @@ fn finish(d: &Done, r: Result<(), String>) {
 
 static SEQ: AtomicUsize = AtomicUsize::new(0);
 
+/// What the print window may load besides the document: data: URLs and
+/// the document's own inline styles. No file:, no http, no frames.
+const SEAL: &str = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; \
+     img-src data:; style-src 'unsafe-inline' data:; font-src data:; media-src data:\">";
+
+/// `html` with SEAL ahead of everything it holds, so the policy is in
+/// force before the first load. After a doctype, so the page stays in
+/// standards mode; the parser opens the head for the meta, and the
+/// page's own <html> and <head> tags then join that.
+fn sealed(html: &str) -> String {
+    let t = html.trim_start_matches('\u{feff}').trim_start();
+    let doctype = t.get(..9).is_some_and(|p| p.eq_ignore_ascii_case("<!doctype"));
+    let rest = match t.find('>') {
+        Some(i) if doctype => &t[i + 1..],
+        _ => t,
+    };
+    format!("<!doctype html>{SEAL}{rest}")
+}
+
 /// Load the document into a hidden window, print it to `path` and close
 /// the window again.
 fn print_to(app: &AppHandle, html: &str, path: &Path, page: Page) -> Result<(), String> {
@@ -152,7 +178,7 @@ fn print_to(app: &AppHandle, html: &str, path: &Path, page: Page) -> Result<(), 
     let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
     let doc = dir.join(format!("pdf-{}-{seq}.html", std::process::id()));
-    crate::session::write_private(&doc, html.as_bytes())?;
+    crate::session::write_private(&doc, sealed(html).as_bytes())?;
     let r = print_doc(app, &doc, path, page, seq);
     std::fs::remove_file(&doc).ok();
     r
@@ -165,6 +191,7 @@ fn print_doc(app: &AppHandle, doc: &Path, path: &Path, page: Page, seq: usize) -
     let started = Arc::new(AtomicBool::new(false));
     let label = format!("pdf-{seq}");
     let (d, out) = (done.clone(), path.to_path_buf());
+    let home = url.clone();
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(url))
         .title("lattice PDF export")
         .visible(false)
@@ -172,6 +199,8 @@ fn print_doc(app: &AppHandle, doc: &Path, path: &Path, page: Page, seq: usize) -
         .skip_taskbar(true)
         .inner_size(816.0, 1056.0)
         .disable_javascript()
+        // the document only: no refresh or link takes the window elsewhere
+        .on_navigation(move |u| *u == home)
         .on_page_load(move |w, p| {
             if p.event() != tauri::webview::PageLoadEvent::Finished || started.swap(true, Ordering::SeqCst) {
                 return;
@@ -232,10 +261,21 @@ mod native {
     }
 
     pub fn print(w: &tauri::WebviewWindow, path: &Path, page: Page, done: Done) -> Result<(), String> {
-        let uri = tauri::Url::from_file_path(path).map_err(|()| "not a file path".to_string())?;
+        let path = path.to_path_buf();
         w.with_webview(move |pw| {
+            if let Err(e) = print_view(&pw.inner(), &path, page, done.clone()) {
+                finish(&done, Err(e));
+            }
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    /// Print what `view` shows to a PDF at `path`, on GTK's main thread.
+    pub fn print_view(view: &webkit2gtk::WebView, path: &Path, page: Page, done: Done) -> Result<(), String> {
+        let uri = tauri::Url::from_file_path(path).map_err(|()| "not a file path".to_string())?;
+        {
             use webkit2gtk::PrintOperationExt;
-            let op = webkit2gtk::PrintOperation::new(&pw.inner());
+            let op = webkit2gtk::PrintOperation::new(view);
             let s = gtk::PrintSettings::new();
             s.set_printer(&file_printer());
             s.set(gtk::PRINT_SETTINGS_OUTPUT_FILE_FORMAT, Some("pdf"));
@@ -255,8 +295,8 @@ mod native {
             let d = done.clone();
             op.connect_failed(move |_, e| finish(&d, Err(format!("printing failed: {e}"))));
             op.print();
-        })
-        .map_err(|e| e.to_string())
+        }
+        Ok(())
     }
 
     /// "finished" means the job is spooled; the file printer writes it out
@@ -389,6 +429,129 @@ mod tests {
         assert_eq!(file_name(""), "page.pdf");
         assert_eq!(file_name("..."), "page.pdf");
         assert_eq!(file_name("x\u{0}y"), "x y.pdf");
+    }
+
+    #[test]
+    fn the_seal_comes_first_and_keeps_standards_mode() {
+        let s = sealed("\u{feff}  <!DOCTYPE html><html lang=en><head><title>t</title></head><body>x</body></html>");
+        assert!(s.starts_with(&format!("<!doctype html>{SEAL}<html lang=en>")), "{s}");
+        assert_eq!(s.matches("<!doctype").count() + s.matches("<!DOCTYPE").count(), 1);
+        // no doctype, or a fragment: the seal still leads
+        assert_eq!(sealed("<p>x"), format!("<!doctype html>{SEAL}<p>x"));
+        assert_eq!(sealed(""), format!("<!doctype html>{SEAL}"));
+        assert!(SEAL.contains("default-src 'none'"));
+    }
+
+    /// In WebKitGTK, the engine the print window is on Linux: a page that
+    /// points an image, a stylesheet, a CSS url(), an iframe and an object
+    /// at local files, and the same at an http host, loads none of them
+    /// once sealed, and its PDF holds no local file's text. Unsealed, the
+    /// same page loads them and prints the file, which is what this guards.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs a display (xvfb-run) and pdftotext"]
+    fn webkit_prints_no_local_file_and_loads_no_outside_content() {
+        use std::cell::RefCell;
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        use std::rc::Rc;
+        use gtk::prelude::*;
+        use webkit2gtk::{glib, SettingsExt, URIRequestExt, WebViewExt};
+        let dir = std::env::temp_dir().join(format!("lattice-pdf-seal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mark = format!("LOCALSECRET{}", std::process::id());
+        std::fs::write(dir.join("secret.txt"), format!("{mark}\n")).unwrap();
+        std::fs::write(dir.join("secret.css"), "h1{color:red}").unwrap();
+        // the outside host, counting what reaches it
+        let out = TcpListener::bind(("127.0.0.2", 0)).unwrap();
+        let http = format!("http://127.0.0.2:{}", out.local_addr().unwrap().port());
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let s2 = seen.clone();
+        std::thread::spawn(move || {
+            for c in out.incoming().flatten() {
+                let mut line = String::new();
+                if BufReader::new(&c).read_line(&mut line).is_ok() {
+                    s2.lock().unwrap().push(line.split(' ').nth(1).unwrap_or("").to_string());
+                }
+                let _ = (&c).write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            }
+        });
+        let f = |n: &str| format!("file://{}/{n}", dir.display());
+        let html = format!(
+            "<!doctype html><html><head><title>t</title>\
+             <link rel=stylesheet href=\"{css}\"><link rel=stylesheet href=\"{http}/r.css\">\
+             <style>body{{background:url('{bg}')}}h1{{background:url('{http}/bg.png')}}</style></head>\
+             <body><h1>doc</h1><p>own text</p>\
+             <img src=\"{txt}\"><img src=\"file:///etc/hostname\"><img src=\"{http}/img.png\">\
+             <iframe src=\"{txt}\"></iframe><object data=\"{txt}\" type=\"text/plain\"></object>\
+             <iframe src=\"{http}/frame\"></iframe>\
+             <img src=\"data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACwAAAAAAQABAAACAkQBADs=\"></body></html>",
+            css = f("secret.css"), bg = f("bg.png"), txt = f("secret.txt"),
+        );
+        gtk::init().expect("a display");
+        let wv = webkit2gtk::WebView::new();
+        if let Some(s) = WebViewExt::settings(&wv) {
+            s.set_enable_javascript(false);
+        }
+        let win = gtk::Window::new(gtk::WindowType::Toplevel);
+        win.add(&wv);
+        win.set_default_size(816, 1056);
+        win.show_all();
+        let loads = Rc::new(RefCell::new(Vec::<String>::new()));
+        let l2 = loads.clone();
+        wv.connect_resource_load_started(move |_, _, req| {
+            if let Some(u) = req.uri() {
+                l2.borrow_mut().push(u.to_string());
+            }
+        });
+        let pump = |ms: u64| {
+            let until = Instant::now() + Duration::from_millis(ms);
+            while Instant::now() < until {
+                glib::MainContext::default().iteration(false);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        // load `doc` as the print window would, print it, and answer what
+        // it loaded besides itself and the PDF's text
+        let run = |name: &str, doc: String| -> (Vec<String>, String) {
+            let file = dir.join(format!("{name}.html"));
+            std::fs::write(&file, doc).unwrap();
+            let me = tauri::Url::from_file_path(&file).unwrap().to_string();
+            loads.borrow_mut().clear();
+            seen.lock().unwrap().clear();
+            wv.load_uri(&me);
+            pump(2500);
+            let pdf = dir.join(format!("{name}.pdf"));
+            let (tx, rx) = mpsc::channel();
+            let done: Done = Arc::new(Mutex::new(Some(tx)));
+            native::print_view(&wv, &pdf, Page { width: None, height: None, top: 18.0, right: 18.0, bottom: 18.0, left: 18.0 }, done).unwrap();
+            let until = Instant::now() + Duration::from_secs(30);
+            let mut r = None;
+            while r.is_none() && Instant::now() < until {
+                glib::MainContext::default().iteration(false);
+                r = rx.try_recv().ok();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(matches!(r, Some(Ok(()))), "printed: {r:?}");
+            native::written(&pdf).unwrap();
+            pump(1000);
+            let text = std::process::Command::new("pdftotext").arg(&pdf).arg("-").output().expect("pdftotext");
+            let mut got: Vec<String> = loads.borrow().iter().filter(|u| **u != me).cloned().collect();
+            got.extend(seen.lock().unwrap().iter().map(|p| format!("{http}{p}")));
+            (got, String::from_utf8_lossy(&text.stdout).into_owned())
+        };
+        // the control: unsealed, the local file is loaded and printed
+        let (got, text) = run("open", html.clone());
+        assert!(got.iter().any(|u| u.starts_with("file://")), "unsealed loads: {got:?}");
+        assert!(got.iter().any(|u| u.starts_with(&http)), "and reaches the outside host: {got:?}");
+        assert!(text.contains(&mark), "unsealed, the file's text is in the PDF: {text}");
+        // sealed: nothing but the document and its data: image
+        let (got, text) = run("sealed", sealed(&html));
+        let other: Vec<&String> = got.iter().filter(|u| !u.starts_with("data:")).collect();
+        assert!(other.is_empty(), "sealed loads: {other:?}");
+        assert!(text.contains("own text"), "the page itself still prints: {text}");
+        assert!(!text.contains(&mark), "and no local file: {text}");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
