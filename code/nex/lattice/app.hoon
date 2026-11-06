@@ -9087,6 +9087,9 @@
 ::  +move-job-road / +move-job-at / +move-job-set: the folder move under
 ::  way (/move-job), as [from to at], ~ once it is done (+fs-move)
 ++  move-job-road  (rf up / %'move-job')
+::  +move-job-ttl: how long a note left part way still holds saves out of
+::  its source (+move-guard) and lets the same move finish (+fs-move)
+++  move-job-ttl  ~m10
 ++  move-job-at
   =/  m  (fiber:fiber:nexus ,(unit [from=path to=path at=@da]))
   ^-  form:m
@@ -9130,7 +9133,7 @@
   ;<  now=@da  bind:m  bowl-now
   =/  mid=(unit path)
     ?~  job  ~
-    ?:  (gth (sub now (min now at.u.job)) ~m10)  ~
+    ?:  (gth (sub now (min now at.u.job)) move-job-ttl)  ~
     hit
   ?^  mid
     %-  pure:m
@@ -10808,8 +10811,11 @@
   ::  then answered 503): its destination is its own half-made copy, so
   ::  it is finished, never refused as a clobber. Every step of
   ::  +move-pages lands the same way twice, and the source goes last.
+  ::  Only while the note is fresh (+move-resumes:ls): an old one is a
+  ::  leftover, and the move is checked as a new one.
   ;<  job=(unit [from=path to=path at=@da])  bind:m  move-job-at
-  ?:  ?~(job | &(=(pf from.u.job) =(pt to.u.job)))
+  ;<  now=@da  bind:m  bowl-now
+  ?:  (move-resumes:ls job pf pt now move-job-ttl)
     ;<  n=(unit @ud)  bind:m  (move-run pf pt)
     (pure:m &+(fall n 0))
   ::  never clobber: a collision replaced the destination silently (and

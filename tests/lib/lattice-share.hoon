@@ -511,4 +511,17 @@
     ::  a page named b/page/f/a is not under /f
     (expect-eq !>(~) !>((fold-hit:ls fs nec /apps/lattice/page/b/page/f/a/code)))
   ==
+::  +move-resumes: a fresh note for the same move resumes it. A stale one,
+::  or one for another move, does not, so the move gets the clobber checks.
+++  test-move-resumes
+  =/  t0  ~2026.11.6..12.00.00
+  =/  job  `[/a /b t0]
+  ;:  weld
+    (expect-eq !>(&) !>((move-resumes:ls job /a /b (add t0 ~m3) ~m10)))
+    (expect-eq !>(|) !>((move-resumes:ls job /a /b (add t0 ~h1) ~m10)))
+    (expect-eq !>(|) !>((move-resumes:ls job /a /c (add t0 ~m1) ~m10)))
+    (expect-eq !>(|) !>((move-resumes:ls ~ /a /b t0 ~m10)))
+    ::  a clock that stepped back reads as fresh rather than crashing
+    (expect-eq !>(&) !>((move-resumes:ls job /a /b (sub t0 ~m1) ~m10)))
+  ==
 --
