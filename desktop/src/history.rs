@@ -23,10 +23,14 @@ pub struct Entry {
 
 pub struct History {
     file: PathBuf,
-    /// one writer at a time: two reads finishing together must not lose
-    /// either entry
-    lock: Mutex<()>,
 }
+
+/// One writer at a time, across every History in the process: two reads
+/// finishing together must not lose either entry. Process-wide, not per
+/// instance, because clear_reader_history opens its own History on the same
+/// file, and with a lock of its own a page read during the clear wrote back
+/// the list it read before the clear, undoing it.
+static LOCK: Mutex<()> = Mutex::new(());
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
@@ -36,7 +40,7 @@ fn now_ms() -> u64 {
 
 impl History {
     pub fn open(dir: &Path) -> History {
-        History { file: dir.join("history.json"), lock: Mutex::new(()) }
+        History { file: dir.join("history.json") }
     }
 
     /// The folder the history is kept in.
@@ -58,7 +62,7 @@ impl History {
     }
 
     fn add_at(&self, url: &str, title: &str, at: u64) -> Result<(), String> {
-        let _g = self.lock.lock().unwrap();
+        let _g = self.guard();
         let mut all = self.list();
         all.retain(|e| e.url != url);
         all.insert(
@@ -69,36 +73,20 @@ impl History {
         self.write(&all)
     }
 
+    fn guard(&self) -> std::sync::MutexGuard<'static, ()> {
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     pub fn clear(&self) -> Result<(), String> {
-        let _g = self.lock.lock().unwrap();
+        let _g = self.guard();
         self.write(&[])
     }
 
-    /// Whole or not at all: a temp file beside it, then a rename.
+    /// Whole or not at all, and private: write_private's temp file beside
+    /// it, then a rename, in a folder made 0700 as the engine makes it.
     fn write(&self, all: &[Entry]) -> Result<(), String> {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let dir = self.file.parent().ok_or("history: no folder")?;
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            // the engine's folder, private as the engine makes it
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(dir)
-                .map_err(|e| format!("history: {e}"))?;
-        }
-        let tmp = dir.join(".history.json.tmp");
         let body = serde_json::to_vec(all).map_err(|e| format!("history: {e}"))?;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(|e| format!("history: {e}"))?;
-        f.write_all(&body).and_then(|_| f.sync_all()).map_err(|e| format!("history: {e}"))?;
-        std::fs::rename(&tmp, &self.file).map_err(|e| format!("history: {e}"))
+        crate::session::write_private(&self.file, &body).map_err(|e| format!("history: {e}"))
     }
 }
 
@@ -111,6 +99,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         let h = History::open(&d);
         (d, h)
+    }
+
+    #[test]
+    fn a_second_history_on_the_same_file_waits_for_the_first() {
+        // clear_reader_history opens its own History. While one writer is
+        // mid load-modify-save, a write through the other must wait.
+        let (d, h) = fresh("shared-lock");
+        let other = History::open(&d);
+        let g = h.guard();
+        let t = std::thread::spawn(move || other.add_at("urb://~zod/x", "x", 1).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(h.list().is_empty(), "the other History wrote while this one held the lock");
+        drop(g);
+        t.join().unwrap();
+        assert_eq!(h.list().len(), 1);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
