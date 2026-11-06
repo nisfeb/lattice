@@ -17,8 +17,8 @@ use crate::sync::{thread, Arc, Condvar, Mutex};
 
 use fuser::{
     BsdFileFlags, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation,
-    INodeNo, LockOwner, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
-    ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow, WriteFlags,
+    INodeNo, LockOwner, OpenAccMode, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData,
+    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyWrite, Request, TimeOrNow, WriteFlags,
 };
 
 use crate::projection::{Node, PErr, Projection};
@@ -69,6 +69,13 @@ struct Handle {
     gen: u64,
     new: bool,
     scratch: bool, // an editor temp file: commit to the scratch map, never the ship
+    // Opened for writing. Only such a handle may take a handle-less truncate:
+    // a reader's buffer made empty and dirty would be committed by its RELEASE.
+    writable: bool,
+    // FLUSHed with no write since. FLUSH is sent by close(2), so this is a
+    // handle whose fd has most likely been closed with its async RELEASE still
+    // to come, and it must not take a handle-less truncate either.
+    flushed: bool,
 }
 
 struct State {
@@ -1156,10 +1163,22 @@ impl Filesystem for GrubberyFs {
                     done = true;
                 }
             }
-            // 2) an open handle for this file's rel (editor truncated without the fh)
+            // 2) an open WRITABLE handle for this file's rel: the kernel's
+            //    SETATTR for O_TRUNC never carries the fh, and an editor may
+            //    truncate by path. Never a read-only handle: RELEASE is async,
+            //    so a reader that already closed can still be in the table,
+            //    and its buffer made empty and dirty would be committed over
+            //    the save that follows. The same goes for a writer already
+            //    flushed by its close(2). The newest writer is the O_TRUNC opener.
             if !done {
                 let (rel, _) = self.rel_kind_of(&s, &path);
-                if let Some((&hfh, _)) = s.handles.iter().find(|(_, h)| h.rel == rel) {
+                let target = s
+                    .handles
+                    .iter()
+                    .filter(|(_, h)| h.rel == rel && h.writable && !h.flushed)
+                    .map(|(&fh, _)| fh)
+                    .max();
+                if let Some(hfh) = target {
                     let h = s.handles.get_mut(&hfh).unwrap();
                     h.buf.resize(sz as usize, 0);
                     h.dirty = true;
@@ -1255,8 +1274,9 @@ impl Filesystem for GrubberyFs {
         reply.ok();
     }
 
-    fn open(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+    fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         self.ensure_fresh();
+        let writable = flags.acc_mode() != OpenAccMode::O_RDONLY;
         // scratch file: serve its bytes from the in-memory map, never the ship.
         {
             let mut s = self.st.lock().unwrap();
@@ -1270,7 +1290,17 @@ impl Filesystem for GrubberyFs {
                 s.next_fh += 1;
                 s.handles.insert(
                     fh,
-                    Handle { rel: path, kind: String::new(), buf, dirty: false, gen: 0, new: false, scratch: true },
+                    Handle {
+                        rel: path,
+                        kind: String::new(),
+                        buf,
+                        dirty: false,
+                        gen: 0,
+                        new: false,
+                        scratch: true,
+                        writable,
+                        flushed: false,
+                    },
                 );
                 drop(s);
                 reply.opened(FileHandle(fh), FopenFlags::empty());
@@ -1318,7 +1348,7 @@ impl Filesystem for GrubberyFs {
         s.pending_trunc.remove(&ino.0);
         let fh = s.next_fh;
         s.next_fh += 1;
-        s.handles.insert(fh, Handle { rel, kind, buf, dirty, gen: 0, new: false, scratch: false });
+        s.handles.insert(fh, Handle { rel, kind, buf, dirty, gen: 0, new: false, scratch: false, writable, flushed: false });
         drop(s);
         reply.opened(FileHandle(fh), FopenFlags::empty());
     }
@@ -1376,7 +1406,11 @@ impl Filesystem for GrubberyFs {
         _lock: LockOwner,
         reply: ReplyEmpty,
     ) {
-        match self.commit(fh.0) {
+        let r = self.commit(fh.0);
+        if let Some(h) = self.st.lock().unwrap().handles.get_mut(&fh.0) {
+            h.flushed = true;
+        }
+        match r {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(err(e.errno)),
         }
@@ -1440,6 +1474,8 @@ impl Filesystem for GrubberyFs {
                     gen: 0,
                     new: true,
                     scratch: true,
+                    writable: true,
+                    flushed: false,
                 },
             );
             drop(s);
@@ -1461,6 +1497,8 @@ impl Filesystem for GrubberyFs {
                 gen: 0,
                 new: true,
                 scratch: false,
+                writable: true,
+                flushed: false,
             },
         );
         s.recent.insert(path.clone(), (Instant::now(), true));
@@ -1696,6 +1734,7 @@ fn write_buf(h: &mut Handle, offset: u64, data: &[u8]) -> Result<(), i32> {
     h.buf[offset as usize..end].copy_from_slice(data);
     h.dirty = true;
     h.gen += 1;
+    h.flushed = false; // still in use, whatever an earlier close flushed
     Ok(())
 }
 
@@ -2158,6 +2197,8 @@ mod tests {
             gen: 0,
             new: false,
             scratch,
+            writable: true,
+            flushed: false,
         }
     }
 

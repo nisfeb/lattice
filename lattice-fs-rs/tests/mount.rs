@@ -73,6 +73,7 @@ fn a_real_mount_behaves_like_a_filesystem() {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             exercise(&dir, &s);
             a_parked_truncate_is_applied_by_the_next_open(&dir, &s);
+            a_reader_never_absorbs_a_truncate(&dir, &s);
         }));
         let _ = tx.send(r);
     });
@@ -132,6 +133,67 @@ fn a_parked_truncate_is_applied_by_the_next_open(mnt: &Path, ship: &Ship) {
 
     // stable, not a one-shot that resurrects the body on the second read
     assert_eq!(read_to_string(&mnt.join("demo/child.gmi")), "");
+}
+
+/// A read-only handle still open must never take a truncate meant for the file.
+///
+/// RELEASE is asynchronous in FUSE: close(2) waits for FLUSH but not for
+/// RELEASE, so the daemon can see the next OPEN or SETATTR while the handle a
+/// reader just closed is still in its table. A handle-less truncate (truncate(2),
+/// or the kernel's own SETATTR for O_TRUNC, which never carries the fh) used to
+/// land on whichever handle for the page it found first. When that was the
+/// reader's, the reader's buffer went empty and dirty, and its late RELEASE then
+/// committed the emptiness over whatever had been saved since. That was the CI
+/// flake: a read-back after truncate(2) returning the old bytes, and "version
+/// two" becoming an empty page after the handle of an earlier read was let go.
+///
+/// Holding a reader open makes that window as wide as it gets, so this is
+/// deterministic where the CI failures needed an unlucky RELEASE.
+fn a_reader_never_absorbs_a_truncate(mnt: &Path, ship: &Ship) {
+    use std::ffi::CString;
+    let p = mnt.join("demo/demo.md");
+    fs::write(&p, "reader sees this\n").unwrap();
+
+    // truncate(2) with only a reader open parks, and the next open applies it
+    let reader = fs::File::open(&p).unwrap();
+    let c = CString::new(p.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::truncate(c.as_ptr(), 0) }, 0);
+    assert_eq!(read_to_string(&p), "", "truncate(2) beside an open reader must still apply");
+    drop(reader);
+    assert_eq!(ship.body("demo").unwrap(), b"", "and closing the reader must not undo it");
+
+    // a writer whose close(2) has flushed but whose RELEASE has not arrived
+    // yet. A dup'd fd pins that state: closing the dup sends FLUSH only.
+    {
+        use std::os::fd::AsRawFd;
+        fs::write(&p, "written\n").unwrap();
+        let w = fs::OpenOptions::new().write(true).open(&p).unwrap();
+        let dup = unsafe { libc::dup(w.as_raw_fd()) };
+        assert!(dup >= 0);
+        assert_eq!(unsafe { libc::close(dup) }, 0);
+        assert_eq!(unsafe { libc::truncate(c.as_ptr(), 0) }, 0);
+        assert_eq!(read_to_string(&p), "", "a flushed writer must not swallow the truncate");
+        drop(w);
+        assert_eq!(ship.body("demo").unwrap(), b"");
+    }
+
+    // `>` over a file a reader holds: the O_TRUNC SETATTR has no fh, so it must
+    // go to the writer, and the reader's close must not erase the save. Done a
+    // few times because which handle a lookup found first was down to HashMap
+    // order.
+    for i in 0..8 {
+        fs::write(&p, format!("before {i}\n")).unwrap();
+        let reader = fs::File::open(&p).unwrap();
+        fs::write(&p, format!("after {i}\n")).unwrap();
+        assert_eq!(ship.body("demo").unwrap(), format!("after {i}\n").as_bytes());
+        drop(reader);
+        assert_eq!(
+            ship.body("demo").unwrap(),
+            format!("after {i}\n").as_bytes(),
+            "a reader closing after a save must not write its stale buffer back"
+        );
+        assert_eq!(read_to_string(&p), format!("after {i}\n"));
+    }
 }
 
 fn exercise(mnt: &Path, ship: &Ship) {
