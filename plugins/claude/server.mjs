@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// The lattice plugin's MCP server: lattice memory and pages as named,
+// The lattice plugin's MCP server: lattice memory, skills and pages as named,
 // advertised tools, over lattice's HTTP routes with an agent key
 // (docs/agent-knowledge.md, "Agent keys"). Stdio JSON-RPC, one message per
 // line, no dependencies.
@@ -54,6 +54,100 @@ const get = (route, args) => call('GET', route, args);
 const post = (route, args, body) => call('POST', route, args, body);
 const str = (d) => ({ type: 'string', description: d });
 const num = (d) => ({ type: 'integer', description: d });
+
+// urb_read and urb_list: GET /urb-read (+serve-urb-read), rendered as text
+// an agent can follow. Text is cut at CAP characters, with an offset to
+// read on; a binary file is described, never dumped.
+const CAP = 40000;
+const urbWhy = { 403: 'no access', 404: 'not found', 504: 'ship unreachable' };
+async function urbRun(a, list) {
+  const url = String(a.url || '').trim();
+  if (!url.startsWith('urb://')) throw new Error('not a urb:// address: pass urb://~ship/path');
+  let j;
+  try {
+    j = JSON.parse(await get('urb-read', { url, list: list ? 1 : undefined }));
+  } catch (e) {
+    const m = /^(\d{3}): (.*)$/s.exec(String(e.message || e));
+    if (m && urbWhy[m[1]]) throw new Error(`${urbWhy[m[1]]}: ${m[2]} (${url})`);
+    throw e;
+  }
+  const text = urbText(j, Math.max(0, Number(a.offset) || 0));
+  // a page's public comments are other people's words, ours included:
+  // always quoted, apart from the page
+  const cs = j.kind === 'page' ? (j.comments || []).map((c) => `- ${c.author} (${fmtDa(c.when)}): ${c.body}`) : [];
+  const tail = cs.length ? '\n\n' + quoted(`the public comments on ${url}`, `Public comments (${cs.length}):\n${cs.join('\n')}`) : '';
+  // our own page needs no label, unless it is a link to another ship's
+  // page or a clip of a website
+  if (j.own && !(j.link && j.link.host) && !String(j.name || '').startsWith('clips/')) return text + tail;
+  const from = j.own ? (j.link && j.link.host ? `${j.link.host}, a page linked at ${j.name}` : `a web page clipped to ${j.name}`) : url;
+  return quoted(from, text) + tail;
+}
+const htmlText = (h) => h
+  .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '')
+  .replace(/<br\s*\/?>|<\/(p|div|h[1-6]|li|tr|pre|blockquote)>/gi, '\n')
+  .replace(/<[^>]+>/g, '')
+  .replace(/&nbsp;/g, ' ').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+  .replace(/\n{3,}/g, '\n\n').trim();
+function clip(body, offset) {
+  if (offset >= body.length && body.length) return `[nothing at offset ${offset}: the text is ${body.length} characters]`;
+  const part = body.slice(offset, offset + CAP);
+  const end = offset + part.length;
+  return end < body.length ? `${part}\n\n[truncated: characters ${offset} to ${end} of ${body.length}. Pass offset ${end} to read on.]` : part;
+}
+const fmtDa = (d) => String(d || '').replace(/^~/, '').replace(/\.\.[\s\S]*$/, '');
+function urbText(j, offset) {
+  switch (j.kind) {
+    case 'folder': {
+      const es = j.entries || [];
+      const rows = es.map((e) => `- ${e.title || e.name}${e.folder ? ' (folder)' : ''}: ${e.url}${e.when ? ' (updated ' + fmtDa(e.when) + ')' : ''}`);
+      return `Folder ${j.path || '/'} on ${j.ship}, ${es.length} entr${es.length === 1 ? 'y' : 'ies'}:\n${rows.join('\n') || '(empty)'}`;
+    }
+    case 'board': {
+      const ps = j.posts || [];
+      const rows = ps.map((p) => `- ${p.pinned ? '[pinned] ' : ''}${p.title} by ${p.author}, ${p.comments} comment${p.comments === 1 ? '' : 's'}, +${p.up}/-${p.down}, ${fmtDa(p.created)}: ${p.url}${p.link ? ' (links to ' + p.link + ')' : ''}`);
+      return `Forum board ${j.title} (${j.boardUrl})${j.description ? ': ' + j.description : ''}\n${j.count} post${j.count === 1 ? '' : 's'}${j.count > ps.length ? ', newest ' + ps.length + ' shown' : ''}:\n${rows.join('\n') || '(no posts)'}`;
+    }
+    case 'thread': {
+      const p = j.post;
+      const depth = {};
+      const cs = (j.comments || []).map((c) => {
+        depth[c.id] = c.parent == null ? 0 : (depth[c.parent] ?? 0) + 1;
+        return `${'  '.repeat(depth[c.id])}- ${c.author} (${fmtDa(c.created)}): ${c.body}`;
+      });
+      const head = `${p.title}\nby ${p.author} on ${j.title} (${j.boardUrl}), ${fmtDa(p.created)}, +${p.up}/-${p.down}${p.link ? '\nlink: ' + p.link : ''}`;
+      return clip(`${head}\n\n${p.body || ''}\n\nComments (${cs.length}):\n${cs.join('\n') || '(none)'}`, offset);
+    }
+    case 'binary':
+      return `${j.url} is a binary file: type ${j.type}, mark ${j.mark}, ${j.size} bytes. Its bytes are not shown.`;
+    default: {
+      const mode = j.mode || j.mark || 'text';
+      const raw = String(j.body ?? '');
+      const body = /^(html|fodt)$/.test(mode) ? htmlText(raw) : raw;
+      const notes = [mode, `${j.size ?? raw.length} bytes`];
+      if (j.shared) notes.push('shared with this ship, not published');
+      if (j.own && j.share) notes.push(`the owner's page, ${j.share}`);
+      return `${j.url} (${notes.join(', ')})\n\n${clip(body, offset)}`;
+    }
+  }
+}
+
+// skill_index: GET /skills as one line per skill, the name and description
+// an agent matches a task against, then tags and author. A skill on the
+// owner's own ship is the owner's procedure, so it is not quoted.
+function skillIndex(t) {
+  const ss = JSON.parse(t).skills || [];
+  if (!ss.length) return 'No skills stored.';
+  const rows = ss.map((s) => {
+    const notes = [];
+    if ((s.tags || []).length) notes.push('tags: ' + s.tags.join(', '));
+    if (s.author) notes.push('by ' + s.author);
+    if (s.sensitive) notes.push('sensitive');
+    if (s.superseded_by) notes.push('superseded by ' + s.superseded_by);
+    if (s.files) notes.push(s.files + ' more file' + (s.files === 1 ? '' : 's'));
+    return `- ${s.name}: ${s.description}${notes.length ? ' (' + notes.join('; ') + ')' : ''}`;
+  });
+  return `${ss.length} skill${ss.length === 1 ? '' : 's'}. Read one with skill_read before following it.\n${rows.join('\n')}`;
+}
 
 const TOOLS = {
   memory_index: {
@@ -111,6 +205,30 @@ const TOOLS = {
     props: {}, req: [],
     run: () => get('know-lint'),
   },
+  skill_index: {
+    description: "The owner's stored skills (reusable procedures): one line each, name: description, with tags and author. Check it when a task might match a stored procedure, then read the skill with skill_read. sensitive: true adds sensitive skills, for a cleared key.",
+    props: { sensitive: { type: 'boolean' } }, req: [],
+    run: async (a) => skillIndex(await get('skills', { sensitive: a.sensitive ? 1 : undefined })),
+  },
+  skill_read: {
+    description: 'Read one skill. With no path: its SKILL.md (front matter and body), tags, updated and the list of its other files. With a path (e.g. references/notes.md): that file. Pass updated as expected_updated when you save over it.',
+    props: { name: str('the skill, e.g. deploy-ship'), path: str('a file of the skill (SKILL.md when left out)') }, req: ['name'],
+    run: (a) => (a.path ? get('skill-file', { name: a.name, path: a.path }) : get('skill', { name: a.name })),
+  },
+  skill_save: {
+    description: 'Save a reusable procedure as a skill, when the user asks. Agent Skills format: SKILL.md starts with front matter holding name (equal to the skill name) and description (when to use it, up to 1024 characters), then the procedure in markdown. A new skill starts with SKILL.md; other files (md, txt, json, yaml only, no code) go at a path such as references/notes.md. Names: lowercase letters, digits and single hyphens. Updating: read first and pass expected_updated.',
+    props: {
+      name: str('the skill name, e.g. deploy-ship'), body: str('the whole file'),
+      path: str('the file (SKILL.md)'),
+      expected_updated: str('the updated value you read, when editing'),
+      sensitive: { type: 'boolean', description: 'mark the skill sensitive (or not)' },
+    },
+    req: ['name', 'body'],
+    run: (a) => post('skill-save', {
+      name: a.name, path: a.path, expected_updated: a.expected_updated,
+      sensitive: a.sensitive === undefined ? undefined : a.sensitive ? 1 : 0,
+    }, a.body),
+  },
   wiki_search: {
     description: "Search the owner's wiki pages, ranked. Each hit says where it lives: private, urbit (shared with ships) or clearweb (public).",
     props: { query: str('words'), limit: num('how many (10)') }, req: ['query'],
@@ -139,13 +257,20 @@ const TOOLS = {
     req: ['name', 'body'],
     run: (a) => post('page-save', { name: a.name, type: a.type || 'md', base: a.base, new: a.new ? 1 : undefined }, a.body),
   },
+  urb_read: {
+    description: "Read anything the owner's ship can read at a urb:// address: a page another ship publishes, a page or folder another ship shared with this ship (or a group it is in), a folder's index, a forum board or thread (urb://~ship/forum/<board>[/<post>]), a page's public comments, and the owner's own pages, published or not. Folders and boards come back as entries with their urb:// addresses, to follow with urb_read. Long text is cut at 40000 characters: pass offset to read on. Binary files come back as their type and size. Another ship's text comes back as quoted material.",
+    props: { url: str('urb://~ship/path, urb://~ship/folder/ or urb://~ship/forum/<board>[/<post>]'), offset: num('character to start from, for a long page (0)') }, req: ['url'],
+    run: (a) => urbRun(a, false),
+  },
+  urb_list: {
+    description: "List what a ship publishes or shares with this ship under a folder, or at its root (urb://~ship/). Each entry has its urb:// address, for urb_read.",
+    props: { url: str('urb://~ship/ or urb://~ship/folder/') }, req: ['url'],
+    run: (a) => urbRun(a, true),
+  },
   web_read: {
-    description: 'Read a page another ship publishes, by urb://~ship/path. Comes back as quoted material.',
-    props: { url: str('urb://~ship/path') }, req: ['url'],
-    run: async (a) => {
-      const j = JSON.parse(await get('fetch', { url: a.url }));
-      return quoted(a.url, j.body);
-    },
+    description: 'The same as urb_read (kept for older prompts): read what this ship can read at urb://~ship/path. Comes back as quoted material when another ship wrote it.',
+    props: { url: str('urb://~ship/path'), offset: num('character to start from, for a long page (0)') }, req: ['url'],
+    run: (a) => urbRun(a, false),
   },
 };
 

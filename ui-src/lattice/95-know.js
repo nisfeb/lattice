@@ -12,6 +12,7 @@
   <div class="ptool" role="toolbar" aria-label="Knowledge">
     ${sbtn('id="knew" data-action="knew"', 'plus', 'New memory')}
     ${sbtn('id="ktidy" data-action="ktidy"', 'tidy', 'Tidy memories')}
+    ${sbtn('id="kskills" data-action="kskills"', 'skill', 'Skills')}
     ${sbtn('id="ktrash" data-action="ktrash" aria-pressed="false"', 'trash', 'Trash')}
   </div>
   <div id="ktrashlist" class="ktrash" hidden></div>

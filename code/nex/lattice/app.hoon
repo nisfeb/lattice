@@ -39,6 +39,7 @@
 ::
 /<  lk   /lib/lattice-know.hoon
 /<  ky   /lib/lattice-keys.hoon
+/<  lsk  /lib/lattice-skills.hoon
 /<  lp   /lib/lattice-pub.hoon
 /<  lgmi  /lib/lattice-gmi.hoon
 /<  le   /lib/lattice-eval.hoon
@@ -60,6 +61,8 @@
 /<  wjs  ui-app/writer.js
 /<  sjs  ui-app/settings.js
 /<  pdj  ui-app/pdf.js
+::  the Skills view, loaded when it opens (ui-src/lattice/95s-skills.js)
+/<  skj  ui-app/skills.js
 /<  lc   /lib/lattice-comment.hoon
 /<  lb   /lib/lattice-bookmark.hoon
 /<  lh   /lib/lattice-history.hoon
@@ -171,6 +174,7 @@
         ::  pdf.js: Export PDF's print layout, loaded on first use by the
         ::  editor (ui-src/lattice/78-pdf.js) and the reader
             [%over %& [/app %'pdf.js'] [[/ %mime] pdj]]
+            [%over %& [/app %'skills.js'] [[/ %mime] skj]]
             ::  carried.json: has the one-time carry from the app-tier
             ::  instance run? DECLARED, so it outlives a reload - an
             ::  undeclared grub does not, which is the lesson /mirror/tr
@@ -193,6 +197,10 @@
             [%fall %| /legacy empty-dir:loader]
             [%fall %| /know/vault empty-dir:loader]
             [%fall %| /know/trash-vault empty-dir:loader]
+        ::  /skills: the shared skill store (lib/lattice-skills), one grub
+        ::  per skill, private by omission like /know
+            [%fall %| /skills/vault empty-dir:loader]
+            [%fall %| /skills/trash-vault empty-dir:loader]
             [%fall %& [/know %trash] [[/lattice %know-index] *know-index:lk]]
         ::  /know/terms: each memory's ranking terms (+term-cache:lk). A
         ::  cache: the writer keeps it current, /know-search fills and heals
@@ -553,6 +561,8 @@
               ==
             (pure:m ~)
           ?:  =([/lattice %fold-action] p.sage)  (pure:m ~)
+          ::  nor for skills: no page or memory changed
+          ?:  =([/lattice %skill-action] p.sage)  (pure:m ~)
           ?:  =([/lattice %know-action] p.sage)  (bump-beacon %know now)
           ?:  =([/lattice %know-batch] p.sage)  (bump-beacon %know now)
           ;<  hold=?  bind:m  (pub-holds-beacon root now sage)
@@ -2103,7 +2113,7 @@
     (key-spend id.u.key rnow blen)
   ?.  roomy  (send-err eyre-id 429 'this key has written its bytes for today')
   ::  a keyed request's src is not us, but of the routes a key reaches
-  ::  (+may:ky) /fetch, /browse, /browse-file, and /remote-save all read
+  ::  (+may:ky) /fetch, /urb-read, /browse, /browse-file, and /remote-save all read
   ::  `our` to compare or dispatch, so they pay the bowl read.
   ::  A route added to +wants:ky that reads `our` must be added here.
   =/  needs-our=?
@@ -2111,6 +2121,7 @@
         =(/browse suffix)
         =(/browse-file suffix)
         =(/remote-save suffix)
+        =(/urb-read suffix)
     ==
   ;<  our=@p  bind:m
     ?:  |(?=(~ key) !needs-our)  (pure:(fiber:fiber:nexus ,@p) src)
@@ -2837,9 +2848,15 @@
     ?~  raw  (send-err eyre-id 400 'missing url param')
     =/  pu=(unit [=ship =path])  (parse-urb-url:lu u.raw)
     ?~  pu  (send-err eyre-id 400 'bad urb:// url')
-    ::  key path-scope gate: when keyed, require read access to this ship+path
-    ?:  &(?=(^ key) !(may-path:ky u.key [%ship ship.u.pu] path.u.pu %read))
+    ::  key path-scope gate: when keyed, require read access to this ship+path.
+    ::  The web scope reaches other ships only: our own page takes the pages
+    ::  scope and sensitive clearance (+key-own-read)
+    ?:  &(?=(^ key) !=(ship.u.pu our) !(may-path:ky u.key [%ship ship.u.pu] path.u.pu %read))
       (send-err eyre-id 403 'outside this key\'s scope')
+    ;<  no=(unit @t)  bind:m
+      ?.  =(ship.u.pu our)  (pure:(fiber:fiber:nexus ,(unit @t)) ~)
+      (key-own-read key (page-rel path.u.pu))
+    ?^  no  (send-err eyre-id 403 u.no)
     ;<  body=(unit @t)  bind:m  (read-page-body our ship.u.pu path.u.pu)
     ?^  body  (send-json eyre-id (mark-body-json 'gmi' u.body))
     ::  nothing published: a peer's private page shared with us, which only
@@ -2868,6 +2885,10 @@
     ;<  mix=(unit pub-index:lp)  bind:m  (read-pub-index-any ship.u.pu)
     ?~  mix  (send-err eyre-id 404 'not found')
     (send-json eyre-id (mark-body-json 'gmi' (manifest-gmi u.mix)))
+  ::  urb-read: what the reader shows at any urb:// address, as JSON, for
+  ::  the plugin's urb_read (+serve-urb-read)
+      [%'GET' %'urb-read']
+    (serve-urb-read eyre-id our key args)
   ::  ── cross-ship browse (federated read-only tree reader) ──
   ::  list ANY grubbery ship's directory (not just lattice peers): ship=~x&path=/y.
   ::  SHALLOW (one level) so a huge/hostile remote tree can't balloon memory.
@@ -2882,7 +2903,11 @@
     ?~  shp  (send-err eyre-id 400 'bad ship')
     =/  pp=(each path tang)  (mule |.((stab (~(gut by args) 'path' '/'))))
     ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
-    ::  key path-scope gate: when keyed, require read access to this ship+path
+    ::  key path-scope gate: when keyed, require read access to this ship+path.
+    ::  The web scope reaches other ships only: a key lists our own pages
+    ::  with page-tree, which its pages scope filters
+    ?:  &(?=(^ key) =(u.shp our))
+      (send-err eyre-id 403 'the web scope reads other ships; list your own pages with page-tree')
     ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] p.pp %read))
       (send-err eyre-id 403 'outside this key\'s scope')
     =/  dir-road=road:tarball  [%& %| p.pp]
@@ -2909,9 +2934,21 @@
     ::  to the input type (^+), so the possibly-empty dir would nest-fail, the same
     ::  footgun key-to-rail documents. Split via lent/scag/snag on the un-narrowed path.
     ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
-    ::  key path-scope gate: when keyed, require read access to this ship+path
-    ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] p.pp %read))
+    ::  key path-scope gate: when keyed, require read access to this ship+path.
+    ::  The web scope reaches other ships only. On our own ship a key reads
+    ::  a page's code grub and nothing else (not /know, /keys or any other
+    ::  grub), by its pages scope and sensitive clearance (+key-own-read)
+    ?:  &(?=(^ key) !=(u.shp our) !(may-path:ky u.key [%ship u.shp] p.pp %read))
       (send-err eyre-id 403 'outside this key\'s scope')
+    ;<  no=(unit @t)  bind:m
+      =/  n  (fiber:fiber:nexus ,(unit @t))
+      ?:  |(?=(~ key) !=(u.shp our))  (pure:n ~)
+      ;<  sb=path  bind:n  self-base
+      =/  r=(unit path)  (strip-prefix:lu (weld sb /page) p.pp)
+      ?.  ?&  ?=(^ r)  ?=([@ @ *] u.r)  =(%code (rear u.r))  ==
+        (pure:n `'the web scope reads other ships; read your own pages by name')
+      (key-own-read key (snip `path`u.r))
+    ?^  no  (send-err eyre-id 403 u.no)
     =/  n=@ud  (dec (lent p.pp))
     =/  file-road=road:tarball  [%& %& (scag n p.pp) (snag n p.pp)]
     ?:  =(u.shp our)
@@ -4742,6 +4779,191 @@
     ;<  ~  bind:m  (poke-know [%untag (spat u.ko) u.tg])
     (send-ok eyre-id)
   ::
+  ::  ── skills (lib/lattice-skills, docs/agent-knowledge.md, Skills) ──
+  ::  the index: name, description, tags, updated, author. A key never
+  ::  lists a sensitive skill unless it is cleared and asks (sensitive=1),
+  ::  which taints it, so loading the index at session start exposes
+  ::  nothing.
+      [%'GET' %skills]
+    ;<  ss=(map @t skill:lsk)  bind:m  (read-skills /skills/vault)
+    =/  sen=?
+      ?~  key  &
+      &(sensitive.scope.u.key =('1' (~(gut by args) 'sensitive' '0')))
+    ;<  ~  bind:m  (taint-if key &(sen (lien ~(val by ss) sensitive:lsk)))
+    (send-json eyre-id (index:lsk ss sen))
+  ::  one skill: SKILL.md and its file list
+      [%'GET' %skill]
+    =/  nm=@t  (~(gut by args) 'name' '')
+    ?.  (name-ok:lsk nm)  (send-err eyre-id 400 'bad name')
+    ;<  s=(unit skill:lsk)  bind:m  (skill-get key nm)
+    ?~  s  (send-err eyre-id 404 'not found')
+    (send-json eyre-id (full:lsk nm u.s))
+  ::  one file of a skill, SKILL.md included
+      [%'GET' %skill-file]
+    =/  nm=@t  (~(gut by args) 'name' '')
+    =/  pt=@t  (~(gut by args) 'path' main-file:lsk)
+    ?.  (name-ok:lsk nm)  (send-err eyre-id 400 'bad name')
+    ?.  |(=(main-file:lsk pt) (path-ok:lsk pt))  (send-err eyre-id 400 'bad path')
+    ;<  s=(unit skill:lsk)  bind:m  (skill-get key nm)
+    ?~  s  (send-err eyre-id 404 'not found')
+    =/  f=(unit @t)  (file-of:lsk u.s pt)
+    ?~  f  (send-err eyre-id 404 'no such file')
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['name' s+nm]
+        ['path' s+pt]
+        ['body' s+u.f]
+        ['updated' s+(scot %da updated.u.s)]
+    ==
+  ::  a skill's revisions. A key reads only a live skill it may see; the
+  ::  owner reads a trashed one's too.
+      [%'GET' %skill-history]
+    =/  nm=@t  (~(gut by args) 'name' '')
+    ?.  (name-ok:lsk nm)  (send-err eyre-id 400 'bad name')
+    ;<  hr=(unit [road=road:tarball trashed=?])  bind:m  (skill-hist-road key nm)
+    ?~  hr  (send-err eyre-id 404 'not found')
+    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+      (peep:io road.u.hr [%numb ~ ~])
+    ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    =/  revs=(list [ud=@ud da=@da])
+      %+  sort  (turn p.pe |=([c=cass:clay *] [ud.c da.c]))
+      |=  [a=[ud=@ud da=@da] b=[ud=@ud da=@da]]
+      (lth ud.a ud.b)
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['name' s+nm]
+        ['trashed' b+trashed.u.hr]
+        :-  'revisions'
+        :-  %a
+        %+  turn  revs
+        |=  [ud=@ud da=@da]
+        (pairs:enjs:format ~[['rev' (numb:enjs:format ud)] ['updated' s+(scot %da da)]])
+    ==
+  ::  a skill as of one revision, shaped as GET /skill answers
+      [%'GET' %skill-read-at]
+    =/  nm=@t  (~(gut by args) 'name' '')
+    ?.  (name-ok:lsk nm)  (send-err eyre-id 400 'bad name')
+    =/  rev=(unit @ud)  (rush (~(gut by args) 'rev' '') dim:ag)
+    ?~  rev  (send-err eyre-id 400 'bad rev')
+    ;<  hr=(unit [road=road:tarball trashed=?])  bind:m  (skill-hist-road key nm)
+    ?~  hr  (send-err eyre-id 404 'not found')
+    ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+      (peep:io road.u.hr [%numb ~ ~])
+    ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    ?.  (lien p.pe |=([c=cass:clay *] =(ud.c u.rev)))
+      (send-err eyre-id 404 'no such revision')
+    ;<  sn=view:nexus  bind:m  (peek-at:io road.u.hr ~ [%ud u.rev])
+    ?.  ?=([%file *] sn)  (send-err eyre-id 404 'not found')
+    =/  s=(unit skill:lsk)  (mole |.(!<(skill:lsk (need-vase:tarball sang.sn))))
+    ?~  s  (send-err eyre-id 404 'not found')
+    ::  a revision can be sensitive when the skill is no longer
+    ?.  (skill-may-see key u.s)  (send-err eyre-id 404 'not found')
+    ;<  ~  bind:m  (taint-if key (sensitive:lsk u.s))
+    (send-json eyre-id (full:lsk nm u.s))
+  ::  save SKILL.md or one file (path=, SKILL.md when absent). The checks
+  ::  are memory's (+save-plan): a key writes as its by, source agent; it
+  ::  may not edit a core skill, nor, tainted, an ordinary one; a key never
+  ::  lowers the sensitive mark. SKILL.md's front matter is checked: name
+  ::  as the skill's, a description of at most 1,024 bytes.
+      [%'POST' %skill-save]
+    =/  nm=@t  (~(gut by args) 'name' '')
+    =/  pt=@t  (~(gut by args) 'path' main-file:lsk)
+    =/  main=?  =(main-file:lsk pt)
+    ?.  (name-ok:lsk nm)
+      (send-err eyre-id 400 'bad name: lower-case letters, digits and single hyphens, 1 to 64')
+    ?.  |(main (path-ok:lsk pt))
+      (send-err eyre-id 400 'bad path: a relative path of letters, digits, . - _ ending .md, .txt, .json, .yaml or .yml')
+    =/  bod=@t  (req-body req)
+    ?:  =('' bod)  (send-err eyre-id 400 'missing body')
+    ;<  up=@ud  bind:m  nexus-up
+    ;<  old=(unit skill:lsk)  bind:m  (read-skill (skill-road up /skills/vault nm))
+    ;<  bnow=@da  bind:m  bowl-now
+    =/  now=@da  ?~(key bnow rnow)
+    =/  pl  (skill-plan key now nm pt bod args old)
+    ?:  ?=(%| -.pl)  (send-err eyre-id code.p.pl msg.p.pl)
+    ;<  ~  bind:m  (skill-pokes acts.p.pl)
+    (send-json eyre-id out.p.pl)
+  ::  old is replaced by new (empty new clears it): reading old points at new
+      [%'POST' %skill-supersede]
+    =/  on=@t  (~(gut by args) 'old' '')
+    =/  nn=@t  (~(gut by args) 'new' '')
+    ?.  (name-ok:lsk on)  (send-err eyre-id 400 'bad old')
+    ?.  |(=('' nn) (name-ok:lsk nn))  (send-err eyre-id 400 'bad new')
+    ?:  =(on nn)  (send-err eyre-id 400 'a skill cannot replace itself')
+    ;<  g=(each skill:lsk [code=@ud msg=@t])  bind:m  (skill-guard key on & rnow)
+    ?:  ?=(%| -.g)  (send-err eyre-id code.p.g ?:(=(404 code.p.g) 'no such old skill' msg.p.g))
+    ?:  &(?=(^ key) (is-core:lsk p.g))
+      (send-err eyre-id 403 'an agent key cannot supersede a core skill: only the owner can')
+    ;<  n=(unit skill:lsk)  bind:m
+      ?:  =('' nn)  (pure:(fiber:fiber:nexus ,(unit skill:lsk)) ~)
+      (skill-get key nn)
+    ?:  &(!=('' nn) ?=(~ n))  (send-err eyre-id 404 'no such new skill')
+    ;<  bnow=@da  bind:m  bowl-now
+    =/  now=@da  ?~(key bnow rnow)
+    ;<  ~  bind:m  (skill-pokes ~[[%save on main-file:lsk (supersede:lsk body.p.g nn) now]])
+    (send-ok eyre-id)
+  ::
+      [%'POST' %skill-tag]
+    =/  nm=@t  (~(gut by args) 'name' '')
+    =/  tg=@t  (~(gut by args) 'tag' '')
+    ?.  (name-ok:lsk nm)  (send-err eyre-id 400 'bad name')
+    ?:  =('' tg)  (send-err eyre-id 400 'missing tag')
+    ;<  g=(each skill:lsk [code=@ud msg=@t])  bind:m  (skill-guard key nm & rnow)
+    ?:  ?=(%| -.g)  (send-err eyre-id code.p.g msg.p.g)
+    ;<  ~  bind:m  (skill-pokes ~[[%tag nm tg]])
+    (send-ok eyre-id)
+  ::
+      [%'POST' %skill-untag]
+    =/  nm=@t  (~(gut by args) 'name' '')
+    =/  tg=@t  (~(gut by args) 'tag' '')
+    ?.  (name-ok:lsk nm)  (send-err eyre-id 400 'bad name')
+    ?:  =('' tg)  (send-err eyre-id 400 'missing tag')
+    ;<  g=(each skill:lsk [code=@ud msg=@t])  bind:m  (skill-guard key nm & rnow)
+    ?:  ?=(%| -.g)  (send-err eyre-id code.p.g msg.p.g)
+    ::  only the owner takes a skill out of core
+    ?:  &(?=(^ key) (core-tag:lk tg))
+      (send-err eyre-id 403 'an agent key cannot remove the core tag: only the owner can')
+    ;<  ~  bind:m  (skill-pokes ~[[%untag nm tg]])
+    (send-ok eyre-id)
+  ::  the owner's: delete to the trash, restore, the trash, drop one file.
+  ::  None is in +wants:ky, so no key reaches them.
+      [%'POST' %skill-delete]
+    =/  nm=@t  (~(gut by args) 'name' '')
+    ?.  (name-ok:lsk nm)  (send-err eyre-id 400 'bad name')
+    ;<  up=@ud  bind:m  nexus-up
+    ;<  s=(unit skill:lsk)  bind:m  (read-skill (skill-road up /skills/vault nm))
+    ?~  s  (send-err eyre-id 404 'not found')
+    ;<  ~  bind:m  (skill-pokes ~[[%del nm]])
+    (send-ok eyre-id)
+  ::
+      [%'POST' %skill-restore]
+    =/  nm=@t  (~(gut by args) 'name' '')
+    ?.  (name-ok:lsk nm)  (send-err eyre-id 400 'bad name')
+    ;<  up=@ud  bind:m  nexus-up
+    ;<  s=(unit skill:lsk)  bind:m  (read-skill (skill-road up /skills/vault nm))
+    ?^  s  (send-err eyre-id 409 'a live skill has that name')
+    ;<  t=(unit skill:lsk)  bind:m  (read-skill (skill-road up /skills/trash-vault nm))
+    ?~  t  (send-err eyre-id 404 'not in the trash')
+    ;<  ~  bind:m  (skill-pokes ~[[%restore nm]])
+    (send-ok eyre-id)
+  ::
+      [%'GET' %skill-trash]
+    ;<  ts=(map @t skill:lsk)  bind:m  (read-skills /skills/trash-vault)
+    (send-json eyre-id (index:lsk ts &))
+  ::
+      [%'POST' %skill-file-delete]
+    =/  nm=@t  (~(gut by args) 'name' '')
+    =/  pt=@t  (~(gut by args) 'path' '')
+    ?.  (name-ok:lsk nm)  (send-err eyre-id 400 'bad name')
+    ?:  =(main-file:lsk pt)  (send-err eyre-id 400 'SKILL.md is the skill: delete the skill instead')
+    ?.  (path-ok:lsk pt)  (send-err eyre-id 400 'bad path')
+    ;<  up=@ud  bind:m  nexus-up
+    ;<  s=(unit skill:lsk)  bind:m  (read-skill (skill-road up /skills/vault nm))
+    ?~  s  (send-err eyre-id 404 'not found')
+    ?.  (~(has by files.u.s) pt)  (send-err eyre-id 404 'no such file')
+    ;<  ~  bind:m  (skill-pokes ~[[%drop nm pt]])
+    (send-ok eyre-id)
+  ::
       [%'POST' %know-move]
     =/  fr=(unit @t)  (~(get by args) 'from')
     =/  to=(unit @t)  (~(get by args) 'to')
@@ -6012,9 +6234,224 @@
     (apply-history root now !<(history-action:lh q.sage))
   ?:  =([/lattice %key-action] p.sage)
     (apply-key root !<(key-action:ky q.sage))
+  ?:  =([/lattice %skill-action] p.sage)
+    (apply-skill now !<(skill-action:lsk q.sage))
   ?:  =([/lattice %fold-action] p.sage)
     (apply-fold root now !<(fold-action:ls q.sage))
   (refuse "a poke with an unknown mark: {<p.sage>}")
+::  +apply-skill: the writer's skill actions (lib/lattice-skills). One grub
+::  per skill at /skills/vault/<name>/skill; a deleted one moves to
+::  /skills/trash-vault, as memory's do, so restore is a move back. The
+::  routes check names, paths, scope and front matter; the writer checks
+::  the name again, since a bad one would make a junk dir.
+::
+++  apply-skill
+  |=  [now=@da act=skill-action:lsk]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ::  split by shape: a bare name and a name with more fields sit at
+  ::  different axes, so one wing cannot name it for every case
+  =/  nm=@t
+    ?-  -.act
+      ?(%del %restore)  name.act
+      ?(%save %drop %tag %untag)  name.act
+    ==
+  ?.  (name-ok:lsk nm)
+    (refuse "a skill action: a bad name: {(trip nm)}")
+  =/  road=road:tarball   (skill-road up /skills/vault nm)
+  =/  troad=road:tarball  (skill-road up /skills/trash-vault nm)
+  ;<  old=(unit skill:lsk)  bind:m  (read-skill road)
+  ?-    -.act
+      %save
+    ?.  |(=(main-file:lsk path.act) (path-ok:lsk path.act))
+      (refuse "a skill save: a bad path: {(trip path.act)}")
+    ::  a re-save of a trashed name starts a new skill: the trash copy goes
+    ;<  ~  bind:m
+      ?^  old  (pure:m ~)
+      ;<  t=(unit skill:lsk)  bind:m  (read-skill troad)
+      ?~  t  (pure:m ~)
+      ;<  *  bind:m  (cull-soft:io troad)
+      (pure:m ~)
+    =/  r  (put-file:lsk old path.act body.act when.act)
+    ?:  ?=(%| -.r)  (refuse "a skill save: {(trip p.r)}")
+    ;<  ~  bind:m  ?^(old (pure:m ~) (ensure-dirs up /skills/vault /[`@ta`nm]))
+    ;<  ~  bind:m  (put-file road [/lattice %skill] p.r)
+    ;<  ~  bind:m  (gain:fio road %.y)
+    (prune-hist road know-keep history-window)
+  ::
+      %drop
+    ?~  old  (refuse "a skill file delete: no such skill: {(trip nm)}")
+    ?.  (~(has by files.u.old) path.act)  (pure:m ~)
+    (put-file road [/lattice %skill] u.old(files (~(del by files.u.old) path.act), updated now))
+  ::
+      %del
+    ?~  old  (refuse "a skill delete: no such skill: {(trip nm)}")
+    ;<  ~  bind:m  (ensure-dirs up /skills/trash-vault /[`@ta`nm])
+    ;<  ~  bind:m  (put-file troad [/lattice %skill] u.old)
+    ;<  ~  bind:m  (gain:fio troad %.y)
+    (cull:fio road)
+  ::
+      %restore
+    ?^  old  (refuse "a skill restore: a live skill has the name: {(trip nm)}")
+    ;<  t=(unit skill:lsk)  bind:m  (read-skill troad)
+    ?~  t  (refuse "a skill restore: it is not in the trash: {(trip nm)}")
+    ;<  ~  bind:m  (ensure-dirs up /skills/vault /[`@ta`nm])
+    ;<  ~  bind:m  (put-file road [/lattice %skill] u.t)
+    ;<  ~  bind:m  (gain:fio road %.y)
+    (cull:fio troad)
+  ::
+      ?(%tag %untag)
+    ?~  old  (refuse "a skill tag: no such skill: {(trip nm)}")
+    =/  tg=@t  (crip (cass (trip tag.act)))
+    ?:  =('' tg)  (pure:m ~)
+    =/  ts=(set @t)
+      ?:(?=(%tag -.act) (~(put in tags.u.old) tg) (~(del in tags.u.old) tg))
+    (put-file road [/lattice %skill] u.old(tags ts))
+  ==
+::  +skill-road: a skill's grub under a vault base
+++  skill-road
+  |=  [up=@ud base=path name=@t]
+  ^-  road:tarball
+  (rf up (snoc base `@ta`name) skill-leaf:lsk)
+::  +read-skill: a skill grub, ~ when absent or unreadable
+++  read-skill
+  |=  road=road:tarball
+  =/  m  (fiber:fiber:nexus ,(unit skill:lsk))
+  ^-  form:m
+  ;<  seen=view:nexus  bind:m  (peek:fio road ~)
+  ?.  ?=([%file *] seen)  (pure:m ~)
+  ?:  (is-boom:tarball sang.seen)  (pure:m ~)
+  (pure:m (mole |.(!<(skill:lsk (need-vase:tarball sang.seen)))))
+::  +read-skills: every skill under a vault base, by name
+++  read-skills
+  |=  base=path
+  =/  m  (fiber:fiber:nexus ,(map @t skill:lsk))
+  ^-  form:m
+  ;<  seen=view:nexus  bind:m  (peek:fio [%| 2 %| base] ~)
+  ?.  ?=([%ball *] seen)  (pure:m ~)
+  %-  pure:m
+  %-  malt
+  %+  murn  ~(tap by dir.ball.seen)
+  |=  [seg=@ta kid=ball:tarball]
+  ^-  (unit [@t skill:lsk])
+  ?~  fil.kid  ~
+  =/  got  (~(get by contents.u.fil.kid) skill-leaf:lsk)
+  ?~  got  ~
+  ?:  (is-boom:tarball sang.u.got)  ~
+  =/  s  (mole |.(!<(skill:lsk (need-vase:tarball sang.u.got))))
+  ?~(s ~ `[`@t`seg u.s])
+::  +skill-may-see: memory's +may-see for a skill
+++  skill-may-see
+  |=  [key=(unit key-row:ky) s=skill:lsk]
+  ^-  ?
+  ?~  key  &
+  |(sensitive.scope.u.key !(sensitive:lsk s))
+::  +skill-get: a live skill this caller may see, ~ otherwise. Reading a
+::  sensitive one taints a key.
+++  skill-get
+  |=  [key=(unit key-row:ky) nm=@t]
+  =/  m  (fiber:fiber:nexus ,(unit skill:lsk))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  s=(unit skill:lsk)  bind:m  (read-skill (skill-road up /skills/vault nm))
+  ?~  s  (pure:m ~)
+  ?.  (skill-may-see key u.s)  (pure:m ~)
+  ;<  ~  bind:m  (taint-if key (sensitive:lsk u.s))
+  (pure:m s)
+::  +skill-hist-road: where a skill's history lives. A key: the live skill
+::  only, when it may see it. The owner: live first, then the trash.
+++  skill-hist-road
+  |=  [key=(unit key-row:ky) nm=@t]
+  =/  m  (fiber:fiber:nexus ,(unit [road=road:tarball trashed=?]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  live=road:tarball   (skill-road up /skills/vault nm)
+  =/  trash=road:tarball  (skill-road up /skills/trash-vault nm)
+  ?^  key
+    ;<  s=(unit skill:lsk)  bind:m  (skill-get key nm)
+    ?~  s  (pure:m ~)
+    (pure:m `[live %.n])
+  ;<  l=(unit skill:lsk)  bind:m  (read-skill live)
+  ?^  l  (pure:m `[live %.n])
+  ;<  t=(unit skill:lsk)  bind:m  (read-skill trash)
+  ?^  t  (pure:m `[trash %.y])
+  (pure:m ~)
+::  +skill-guard: memory's +key-guard for a skill. The skill, or why not:
+::  one a key may not see is not found, and a tainted key may not put
+::  its words on one other keys can read.
+++  skill-guard
+  |=  [key=(unit key-row:ky) nm=@t words=? now=@da]
+  =/  m  (fiber:fiber:nexus ,(each skill:lsk [code=@ud msg=@t]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  s=(unit skill:lsk)  bind:m  (read-skill (skill-road up /skills/vault nm))
+  ?~  s  (pure:m |+[404 'not found'])
+  ?~  key  (pure:m &+u.s)
+  ?.  (skill-may-see key u.s)  (pure:m |+[404 'not found'])
+  ?:  &(words !(sensitive:lsk u.s) (tainted:ky u.key now))
+    (pure:m |+[403 tainted-msg])
+  (pure:m &+u.s)
+::  +skill-plan: one skill save checked and stamped, or its refusal. The
+::  rules are +save-plan's. A save of a file other than SKILL.md stamps
+::  SKILL.md too, so its author and verified name the last writer.
+++  skill-plan
+  |=  $:  key=(unit key-row:ky)  now=@da  nm=@t  pt=@t  bod=@t
+          args=(map @t @t)  old=(unit skill:lsk)
+      ==
+  ^-  (each [acts=(list skill-action:lsk) out=json] [code=@ud msg=@t])
+  =/  main=?  =(main-file:lsk pt)
+  =/  author=@t  ?^(key by.u.key (~(gut by args) 'author' ''))
+  =/  source=@t  ?^(key 'agent' (~(gut by args) 'source' ''))
+  =/  expect=@t  (~(gut by args) 'expected_updated' '')
+  =/  sarg=@t  (~(gut by args) 'sensitive' '')
+  ?.  |(=('' source) =('user' source) =('agent' source))
+    [%| 400 'source must be user or agent']
+  ?:  &(?=(^ old) !(skill-may-see key u.old))
+    [%| 403 'that skill is not available to this agent key']
+  ?:  &(?=(^ key) ?=(^ old) (is-core:lsk u.old))
+    [%| 403 'an agent key cannot edit a core skill: only the owner can']
+  ?:  &(?=(^ key) ?=(^ old) !(sensitive:lsk u.old) (tainted:ky u.key now))
+    [%| 403 tainted-msg]
+  ?:  &(!main ?=(~ old))
+    [%| 400 'a new skill starts with SKILL.md']
+  ?:  &(!main ?=(^ old) !(~(has by files.u.old) pt) (gte ~(wyt by files.u.old) max-files:lsk))
+    [%| 400 'a skill holds at most 64 files']
+  =/  bad=(unit @t)  ?.(main ~ (check:lsk nm bod))
+  ?^  bad  [%| 400 u.bad]
+  =/  conflicted=?  &(!=('' expect) |(?=(~ old) !=(expect (scot %da updated.u.old))))
+  =/  was=?  ?~(old | (sensitive:lsk u.old))
+  =/  sens=?
+    ?~  key  ?:(=('0' sarg) | |(=('1' sarg) was))
+    |(=('1' sarg) was (tainted:ky u.key now))
+  ::  the owner's save with no provenance is SKILL.md verbatim, as the
+  ::  editor's memory save is, so its own front matter stands
+  =/  plain=?
+    ?&  ?=(~ key)  =('' author)  =('' source)  =('' expect)  =('' sarg)
+    ==
+  =/  head=@t  ?:(main bod ?>(?=(^ old) body.u.old))
+  =/  stamped=@t  ?:(plain head (stamp:lsk old head author source now sens))
+  =/  acts=(list skill-action:lsk)
+    ?:  main  ~[[%save nm main-file:lsk stamped now]]
+    ?:  plain  ~[[%save nm pt bod now]]
+    ~[[%save nm pt bod now] [%save nm main-file:lsk stamped now]]
+  :+  %&  acts
+  %-  pairs:enjs:format
+  :~  ['ok' b+&]
+      ['created' b+?=(~ old)]
+      ['sensitive' b+?:(plain (sensitive:lsk [stamped ~ now ~]) sens)]
+      ['conflicted' b+conflicted]
+      ['prior' ?.(conflicted ~ ?~(old ~ s+(scot %da updated.u.old)))]
+      ['updated' s+(scot %da now)]
+  ==
+::  +skill-pokes: the writer's skill actions, in order
+++  skill-pokes
+  |=  acts=(list skill-action:lsk)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  acts  (pure:m ~)
+  ;<  ~  bind:m  (poke-writer %skill-action i.acts)
+  $(acts t.acts)
 ::  +bump-beacon: write `now` to a change beacon, /rev for pages and /know
 ::  for memories. A distinct value each call
 ::  (bowl-now is monotonic) guarantees a keep-SSE news event fires, so every open
@@ -10545,6 +10982,7 @@
     ?:  =(%'writer.js' nam)   `'application/javascript'
     ?:  =(%'settings.js' nam)  `'application/javascript'
     ?:  =(%'pdf.js' nam)      `'application/javascript'
+    ?:  =(%'skills.js' nam)   `'application/javascript'
     ~
   ?~  ct  (send-err eyre-id 404 'not found')
   ;<  pv=view:nexus  bind:m  (peek:fio (rf up /app nam) ~)
@@ -10553,7 +10991,7 @@
   ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
   ::  writer.js?h=H and pdf.js?h=H too: app.js names the H it was built with
   =/  cc=@t
-    ?.  ?&  |(=(%'app.js' nam) =(%'writer.js' nam) =(%'pdf.js' nam))
+    ?.  ?&  |(=(%'app.js' nam) =(%'writer.js' nam) =(%'pdf.js' nam) =(%'skills.js' nam))
             =(`(js-tag q.p.res) (~(get by args) 'h'))
         ==
       'no-cache'
@@ -14112,6 +14550,409 @@
     ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
     (render-thread:fre c brd u.pid)
   (send-html eyre-id (forum-doc page "" theme-link %.n 0))
+::  +serve-urb-read: GET /urb-read?url=urb://...[&list=1], what the reader
+::  shows at an address, as JSON for an agent key (the lattice plugin's
+::  urb_read). The same reads, in the same order, as the reader's %pub
+::  branch: a folder with pages published under it, a published page or a
+::  folder's index, a page the peer shared with this ship (its weir is the
+::  ACL), a folder it shared (its dir-index). A forum address reads the
+::  board or thread the host lets this ship read. Our own unpublished page
+::  reads through the key's page scope, like page-source. list=1 lists
+::  what is published under the address (the ship's root when bare).
+::  Errors name the cause: 504 the ship does not answer, 404 nothing there
+::  for this ship, 403 the key's scope.
+::
+++  serve-urb-read
+  |=  [eyre-id=@ta our=@p key=(unit key-row:ky) args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  raw=(unit @t)  (~(get by args) 'url')
+  ?~  raw  (send-err eyre-id 400 'missing url param')
+  =/  ref=(unit referent:lu)  (de-urb:lu u.raw)
+  ?~  ref  (send-err eyre-id 400 'not a urb:// address (urb://~ship/path)')
+  =/  shp=@p  ship.u.ref
+  =/  own=?  =(shp our)
+  =/  hed=(list [@t json])
+    ~[['url' s+u.raw] ['ship' s+(scot %p shp)] ['own' b+own]]
+  ::  a share was granted to this ship, not to a key whose web scope names
+  ::  paths (the /fetch rule)
+  =/  wide=?  |(?=(~ key) ?=(%all -.web.scope.u.key))
+  =/  gone  'that ship does not answer, or does not run lattice'
+  ?-    -.u.ref
+      %forum
+    =/  nom=@ta  board.u.ref
+    ::  the web scope reaches other ships; our own boards take the pages
+    ::  scope, as our own pages do
+    ?:  ?&  ?=(^ key)
+            ?:  own  !(may-path:ky u.key %local /forum/[nom] %read)
+            !(may-path:ky u.key [%ship shp] /forum/[nom] %read)
+        ==
+      (send-err eyre-id 403 'outside this key\'s scope')
+    ;<  pb=(unit path)  bind:m
+      ?:  own  (pure:(fiber:fiber:nexus ,(unit path)) `/)
+      (peer-base-cached shp)
+    ?~  pb  (send-err eyre-id 504 gone)
+    ;<  bo=(unit board:ft)  bind:m  (urb-forum-board own shp nom)
+    ?~  bo  (send-err eyre-id 404 'no such board, or it is not open to this ship')
+    ?:  &(?=(^ post.u.ref) !(~(has by posts.u.bo) u.post.u.ref))
+      (send-err eyre-id 404 'no such post on that board')
+    (send-json eyre-id (pairs:enjs:format (weld hed (urb-forum-json shp u.bo post.u.ref))))
+  ::
+      %tree
+    =/  pax=path  pax.u.ref
+    =/  pr=(unit path)  (strip-prefix:lu page-prefix:lu pax)
+    ?:  own
+      ?~  pr  (send-err eyre-id 403 'read your own pages by their name, not a raw tree path')
+      (urb-own-page eyre-id key hed u.pr)
+    ;<  pb=(unit path)  bind:m  (peer-base-cached shp)
+    ?~  pb  (send-err eyre-id 504 gone)
+    =/  to=path  (unfold-base:lu u.pb pax)
+    ?:  &(?=(^ key) !(may-path:ky u.key [%ship shp] to %read))
+      (send-err eyre-id 403 'outside this key\'s scope')
+    ::  a page's address names its dir; the text is its code grub
+    =/  fp=path  ?~(pr to (snoc to %code))
+    ?~  fp  (send-err eyre-id 400 'empty path')
+    ;<  fv=(unit view:nexus)  bind:m
+      (peek-remote-wait-in [%& %& (snip `path`fp) (rear fp)] shp ~s8)
+    ?:  ?=([~ %file *] fv)
+      (send-json eyre-id (pairs:enjs:format (weld hed (urb-file-json u.fv))))
+    ;<  dv=(unit view:nexus)  bind:m  (peek-remote-shallow-wait [%& %| to] shp)
+    ?.  ?=([~ %ball *] dv)
+      (send-err eyre-id 404 'not found, or not shared with this ship')
+    =/  b=ball:tarball  ball.u.dv
+    =/  kid
+      |=  [n=@ta dir=?]
+      ^-  json
+      =/  u=@t  (en-urb:lu shp (fold-base:lu u.pb (snoc to n)))
+      (pairs:enjs:format ~[['name' s+n] ['url' s+?:(dir (cat 3 u '/') u)] ['folder' b+dir]])
+    =/  ds=(list json)
+      (turn (scag browse-fan-cap (sort ~(tap in ~(key by dir.b)) aor)) |=(n=@ta (kid n &)))
+    =/  fs=(list json)
+      ?~  fil.b  ~
+      (turn (scag browse-fan-cap (sort ~(tap in ~(key by contents.u.fil.b)) aor)) |=(n=@ta (kid n |)))
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    (weld hed `(list [@t json])`~[['kind' s+'folder'] ['path' s+(spat to)] ['entries' a+(weld ds fs)]])
+  ::
+      %pub
+    =/  rel=path  rel.u.ref
+    ::  our own address reads our page tree through the pages scope
+    ?:  own  (urb-own eyre-id key hed shp rel =('1' (~(gut by args) 'list' '0')))
+    ?:  &(?=(^ key) !(may-path:ky u.key [%ship shp] rel %read))
+      (send-err eyre-id 403 'outside this key\'s scope')
+    ;<  pb=(unit path)  bind:m
+      ?:  own  (pure:(fiber:fiber:nexus ,(unit path)) `/)
+      (peer-base-cached shp)
+    ?~  pb  (send-err eyre-id 504 gone)
+    ?:  =('1' (~(gut by args) 'list' '0'))
+      =/  dir=path  ?:(=(/index rel) ~ rel)
+      ;<  ix=(unit pub-index:lp)  bind:m  (read-pub-index-any shp)
+      =/  keys=(list [rel=path when=@da])
+        ?~  ix  ~
+        %+  murn  ~(tap by u.ix)
+        |=  [k=path r=pub-row:lp]
+        ^-  (unit [rel=path when=@da])
+        (bind (pub-key-rel:ls k) |=(p=path [p updated.r]))
+      =/  rows=(list dir-row:ls)  (dir-rows:ls keys dir |)
+      ;<  gix=(unit (map @t title-row:ls))  bind:m
+        ?:  |(?=(^ rows) own ?=(~ dir) !wide)
+          (pure:(fiber:fiber:nexus ,(unit (map @t title-row:ls))) ~)
+        (peer-dir-index shp dir)
+      =?  rows  ?=(^ gix)  (dir-rows:ls (titles-keys:ls u.gix) dir |)
+      ?~  rows  (send-err eyre-id 404 'nothing published or shared with this ship there')
+      (urb-send-folder eyre-id hed shp dir rows gix)
+    ;<  dix=(unit (list dir-row:ls))  bind:m  (folder-first our shp rel |)
+    ?^  dix  (urb-send-folder eyre-id hed shp rel u.dix ~)
+    ;<  pub=(unit [rel=path mode=view-mode:pg body=@t])  bind:m
+      (read-page-or-index our shp rel)
+    ;<  got=(unit [rel=path mode=view-mode:pg body=@t])  bind:m
+      ?:  |(?=(^ pub) own ?=(~ rel) !wide)
+        (pure:(fiber:fiber:nexus ,(unit [rel=path mode=view-mode:pg body=@t])) pub)
+      (read-shared-page shp rel)
+    ?^  got
+      ;<  thr=(list [id=@ta c=comment:lc])  bind:m
+        ?.  ?=(^ pub)  (pure:(fiber:fiber:nexus ,(list [id=@ta c=comment:lc])) ~)
+        (page-thread shp our rel.u.got |)
+      %+  send-json  eyre-id
+      %-  pairs:enjs:format
+      %+  weld  hed
+      ^-  (list [@t json])
+      :~  ['kind' s+'page']
+          ['shared' b+?=(~ pub)]
+          ['path' s+(spat rel.u.got)]
+          ['mode' s+mode.u.got]
+          ['body' s+body.u.got]
+          ['size' (numb:enjs:format (met 3 body.u.got))]
+          :-  'comments'
+          :-  %a
+          %+  turn  thr
+          |=  [id=@ta c=comment:lc]
+          %-  pairs:enjs:format
+          :~  ['author' s+(scot %p author.c)]
+              ['when' s+(scot %da when.c)]
+              ['body' s+body.c]
+          ==
+      ==
+    ;<  fix=(unit (list dir-row:ls))  bind:m
+      ?:  own  (pure:(fiber:fiber:nexus ,(unit (list dir-row:ls))) ~)
+      (pub-folder-rows shp rel |)
+    ?^  fix  (urb-send-folder eyre-id hed shp rel u.fix ~)
+    ;<  gix=(unit (map @t title-row:ls))  bind:m
+      ?:  |(own ?=(~ rel) !wide)
+        (pure:(fiber:fiber:nexus ,(unit (map @t title-row:ls))) ~)
+      (peer-dir-index shp rel)
+    =/  grows=(list dir-row:ls)
+      ?~(gix ~ (dir-rows:ls (titles-keys:ls u.gix) rel |))
+    ?^  grows  (urb-send-folder eyre-id hed shp rel grows gix)
+    (send-err eyre-id 404 'not found, or not shared with this ship')
+  ==
+::  +urb-own: our own address, read from our page tree (published or
+::  not) through the pages scope: a page, a link, or else a folder. The
+::  bare address is the root folder when no /index page exists.
+++  urb-own
+  |=  [eyre-id=@ta key=(unit key-row:ky) hed=(list [@t json]) shp=@p rel=path lis=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  dir=path  ?:(=(/index rel) ~ rel)
+  ?:  lis  (urb-own-folder eyre-id key hed shp dir)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  cn=view:nexus  bind:m  (peek:fio (rf up (weld /page rel) %code) ~)
+  ?:  ?=([%file *] cn)  (urb-own-page eyre-id key hed rel)
+  ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at rel)
+  ?^  lk  (urb-own-page eyre-id key hed rel)
+  (urb-own-folder eyre-id key hed shp dir)
+::  +key-sees-dir: may this key list our folder `dir`? When it reads the
+::  folder, or a path under it (so it can find its way down)
+++  key-sees-dir
+  |=  [k=key-row:ky dir=path]
+  ^-  ?
+  ?:  (may-path:ky k %local dir %read)  &
+  ?.  ?=(%some -.pages.scope.k)  |
+  (lien ~(tap in read.paths.pages.scope.k) |=(g=path (under:ky dir g)))
+::  +urb-own-folder: one level of our page tree, only what the key may
+::  read: pages by its paths and sensitive clearance, folders it reads or
+::  holds a path under
+++  urb-own-folder
+  |=  [eyre-id=@ta key=(unit key-row:ky) hed=(list [@t json]) shp=@p dir=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  &(?=(^ key) !(key-sees-dir u.key dir))
+    (send-err eyre-id 403 'outside this key\'s page scope')
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page dir)) ~)
+  ?.  ?=([%ball *] dv)  (send-err eyre-id 404 'not found')
+  =/  kids=(list [pax=path page=?])
+    %+  sort
+      (skim (collect-tree ball.dv ~) |=([p=path *] =(1 (lent p))))
+    |=([a=[pax=path page=?] b=[pax=path page=?]] (aor (spat pax.a) (spat pax.b)))
+  =|  out=(list json)
+  |-  ^-  form:m
+  ?~  kids
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    %+  weld  hed
+    ^-  (list [@t json])
+    ~[['kind' s+'folder'] ['path' s+(spat dir)] ['entries' a+(flop out)]]
+  =/  full=path  (weld dir pax.i.kids)
+  =/  u=@t  (en-urb:lu shp (weld pub-prefix:lu full))
+  =/  row
+    |=  pg=?
+    ^-  json
+    %-  pairs:enjs:format
+    :~  ['name' s+(rear full)]
+        ['url' s+?:(pg u (cat 3 u '/'))]
+        ['folder' b+!pg]
+        ['title' s+?:(pg (rear full) (cat 3 (rear full) '/'))]
+    ==
+  ?.  page.i.kids
+    ?:  &(?=(^ key) !(key-sees-dir u.key full))  $(kids t.kids)
+    $(kids t.kids, out [(row |) out])
+  ?:  &(?=(^ key) !(may-path:ky u.key %local full %read))  $(kids t.kids)
+  ;<  ps=?  bind:m  (page-sensitive full)
+  ?:  &(ps ?=(^ key) !sensitive.scope.u.key)  $(kids t.kids)
+  $(kids t.kids, out [(row &) out])
+::  +key-own-read: may a key read our own page at `rel` through a web
+::  route? The web scope reaches other ships only. Our pages take the
+::  pages scope, by its paths and sensitive clearance (page-source's
+::  rules); ~ when it may, else the refusal.
+++  key-own-read
+  |=  [key=(unit key-row:ky) rel=path]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ?~  key  (pure:m ~)
+  ?.  (may-path:ky u.key %local rel %read)
+    (pure:m `'outside this key\'s page scope')
+  ;<  ps=?  bind:m  (page-sensitive rel)
+  ?:  &(ps !sensitive.scope.u.key)  (pure:m `'not found')
+  ;<  ~  bind:m  (taint-if key ps)
+  (pure:m ~)
+::  +urb-send-folder: a folder's rows as entries an agent can follow
+++  urb-send-folder
+  |=  [eyre-id=@ta hed=(list [@t json]) shp=@p dir=path rows=(list dir-row:ls) tit=(unit (map @t title-row:ls))]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  tits=(map @t title-row:ls)  bind:m
+    ?^  tit  (pure:(fiber:fiber:nexus ,(map @t title-row:ls)) u.tit)
+    (read-titles-any shp)
+  =/  ent
+    |=  r=dir-row:ls
+    ^-  json
+    =/  u=@t  (en-urb:lu shp (weld pub-prefix:lu (snoc dir name.r)))
+    %-  pairs:enjs:format
+    :~  ['name' s+name.r]
+        ['url' s+?:(page.r u (cat 3 u '/'))]
+        ['folder' b+!page.r]
+        ['title' s+(crip (row-label:ls tits dir name.r page.r))]
+        ['when' s+(scot %da when.r)]
+    ==
+  %+  send-json  eyre-id
+  %-  pairs:enjs:format
+  %+  weld  hed
+  ^-  (list [@t json])
+  ~[['kind' s+'folder'] ['path' s+(spat dir)] ['entries' a+(turn rows ent)]]
+::  +urb-own-page: our own page by its urb:// address, published or not,
+::  through the key's page scope and sensitive gate (page-source's rules)
+++  urb-own-page
+  |=  [eyre-id=@ta key=(unit key-row:ky) hed=(list [@t json]) rel=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  nam=@t  (crip (pax-str rel))
+  ?.  (valid-name nam)  (send-err eyre-id 404 'not found')
+  ?:  &(?=(^ key) !(may-path:ky u.key %local rel %read))
+    (send-err eyre-id 403 'outside this key\'s page scope')
+  ::  a link is another ship's page: the key needs that ship too
+  ;<  lk=(unit [l=link:ll at=@da])  bind:m  (link-at rel)
+  ?:  ?&  ?=([~ [%ship *] *] lk)  ?=(^ key)
+          !(may-path:ky u.key [%ship host.l.u.lk] pax.l.u.lk %read)
+      ==
+    (send-err eyre-id 403 'outside this key\'s scope')
+  ;<  ps=?  bind:m  (page-sensitive rel)
+  ?:  &(ps ?=(^ key) !sensitive.scope.u.key)  (send-err eyre-id 404 'not found')
+  ;<  ~  bind:m  (taint-if key &(ps ?=(^ key) sensitive.scope.u.key))
+  ;<  r=(each json [code=@ud msg=@t])  bind:m  (fs-source-result nam |)
+  ?:  ?=(%| -.r)  (send-err eyre-id code.p.r msg.p.r)
+  ?.  ?=([%o *] p.r)  (send-json eyre-id p.r)
+  =/  o=(map @t json)  p.p.r
+  =/  mode=json  (~(gut by o) 'kind' s+'md')
+  =.  o  (~(gas by o) hed)
+  =.  o  (~(put by o) 'kind' s+'page')
+  =.  o  (~(put by o) 'mode' mode)
+  =.  o  (~(put by o) 'name' s+nam)
+  ::  a published page's public thread, other people's words
+  ;<  our=@p  bind:m  bowl-our
+  ;<  thr=(list [id=@ta c=comment:lc])  bind:m  (page-thread our our rel |)
+  =.  o
+    %+  ~(put by o)  'comments'
+    :-  %a
+    %+  turn  thr
+    |=  [id=@ta c=comment:lc]
+    %-  pairs:enjs:format
+    :~  ['author' s+(scot %p author.c)]
+        ['when' s+(scot %da when.c)]
+        ['body' s+body.c]
+    ==
+  (send-json eyre-id [%o o])
+::  +urb-forum-board: a board, ours or one a peer lets this ship read
+++  urb-forum-board
+  |=  [own=? shp=@p nom=@ta]
+  =/  m  (fiber:fiber:nexus ,(unit board:ft))
+  ^-  form:m
+  ?.  ((sane %tas) nom)  (pure:m ~)
+  ?:  own
+    ;<  up=@ud  bind:m  nexus-up
+    (forum-load-board up nom)
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs-remote shp nom)
+  ?~  gs  (pure:m ~)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (pure:m ~)
+  (pure:m `p.lod)
+::  +urb-forum-json: a board's posts, newest first (at most 100), or one
+::  thread with its comments, each with the address to follow
+++  urb-forum-json
+  |=  [shp=@p brd=board:ft pid=(unit @ud)]
+  ^-  (list [@t json])
+  =/  burl=tape  :(weld "urb://" (scow %p shp) "/forum/" (trip name.info.brd))
+  =/  pj
+    |=  [p=post:ft full=?]
+    ^-  json
+    %-  pairs:enjs:format
+    ^-  (list [@t json])
+    :~  ['id' (numb:enjs:format id.p)]
+        ['url' s+(crip :(weld burl "/" (a-co:co id.p)))]
+        ['title' s+title.p]
+        ['author' s+(scot %p author.p)]
+        ['created' s+(scot %da created.p)]
+        ['link' ?~(url.p ~ s+u.url.p)]
+        ['body' ?:(|(!full ?=(~ body.p)) ~ s+(need body.p))]
+        ['up' (numb:enjs:format ~(wyt in up-votes.p))]
+        ['down' (numb:enjs:format ~(wyt in down-votes.p))]
+        ['comments' (numb:enjs:format comment-count.p)]
+        ['pinned' b+(~(has in pinned.brd) id.p)]
+    ==
+  =/  top=(list [@t json])
+    :~  ['board' s+name.info.brd]
+        ['title' s+title.info.brd]
+        ['description' s+description.info.brd]
+        ['public' b+public.info.brd]
+        ['boardUrl' s+(crip burl)]
+    ==
+  ?~  pid
+    =/  ps=(list post:ft)
+      %+  sort  ~(val by posts.brd)
+      |=([a=post:ft b=post:ft] (gth created.a created.b))
+    %+  weld  top
+    ^-  (list [@t json])
+    :~  ['kind' s+'board']
+        ['count' (numb:enjs:format (lent ps))]
+        ['posts' a+(turn (scag 100 ps) |=(p=post:ft (pj p |)))]
+    ==
+  =/  p=post:ft  (~(got by posts.brd) u.pid)
+  =/  cs=(list comment:ft)
+    %+  sort  ~(val by (~(gut by comments.brd) u.pid ~))
+    |=([a=comment:ft b=comment:ft] (lth id.a id.b))
+  %+  weld  top
+  ^-  (list [@t json])
+  :~  ['kind' s+'thread']
+      ['post' (pj p &)]
+      :-  'comments'
+      :-  %a
+      %+  turn  cs
+      |=  c=comment:ft
+      %-  pairs:enjs:format
+      ^-  (list [@t json])
+      :~  ['id' (numb:enjs:format id.c)]
+          ['parent' ?~(parent.c ~ (numb:enjs:format u.parent.c))]
+          ['author' s+(scot %p author.c)]
+          ['created' s+(scot %da created.c)]
+          ['body' s+body.c]
+      ==
+  ==
+::  +urb-file-json: a tree file as text, or, when it has none, a line
+::  saying what it is: its mark, type and size, never its bytes
+++  urb-file-json
+  |=  sn=view:nexus
+  ^-  (list [@t json])
+  ?.  ?=([%file *] sn)  ~
+  =/  mk=@t  name.p.sang.sn
+  =/  txt=(unit @t)  (grub-text sang.sn)
+  ?^  txt
+    =/  un=(unit [builder=@tas body=@t])
+      ?.  =([/lattice %page] p.sang.sn)  ~
+      (unwrap-content u.txt)
+    =/  bod=@t  ?~(un u.txt body.u.un)
+    :~  ['kind' s+'page']
+        ['mark' s+mk]
+        ['mode' s+?~(un mk builder.u.un)]
+        ['body' s+bod]
+        ['size' (numb:enjs:format (met 3 bod))]
+    ==
+  =/  nn=*  (sang-noun:tarball sang.sn)
+  =/  mm=(unit mime)  (mole |.(;;(mime nn)))
+  :~  ['kind' s+'binary']
+      ['mark' s+mk]
+      ['type' s+?~(mm mk (crip (pax-str p.u.mm)))]
+      ['size' (numb:enjs:format ?~(mm ?@(nn (met 3 nn) 0) p.q.u.mm))]
+  ==
 ::  +serve-forum-remote: GET /apps/lattice/forum-remote/<host>/<board>[/<post>]
 ::  (owner-gated; see the route at the /x explorer). Render a peer's PUBLIC
 ::  board or thread through the same renderer as the local view, with the
@@ -15159,7 +16000,7 @@
 ::  +shell-ver: the worker's cache key, V without its lattice- prefix
 ++  shell-ver
   ^-  @t
-  (scot %ux (mug [uih uij vjs tjs ojs wjs sjs icon pjs manifest-json icon-192-b64 icon-512-b64]))
+  (scot %ux (mug [uih uij vjs tjs ojs wjs sjs skj icon pjs manifest-json icon-192-b64 icon-512-b64]))
 ::  PV versions the RENDERED reader documents (their inline css + scripts).
 ::  V only covers shell assets, so a deploy that restyled the reader left
 ::  every cached page serving the old markup indefinitely: content revs
@@ -15230,7 +16071,7 @@
       ver
       '";var PV="'
       pv
-      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];var LAZY=["/apps/lattice/app/writer.js","/apps/lattice/app/settings.js"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(LAZY.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok)c.put(u.pathname,r.clone());return r})})}).catch(function(){return fetch(q)}));return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];var LAZY=["/apps/lattice/app/writer.js","/apps/lattice/app/settings.js","/apps/lattice/app/skills.js"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(LAZY.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok)c.put(u.pathname,r.clone());return r})})}).catch(function(){return fetch(q)}));return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
@@ -15923,6 +16764,7 @@
     "<label for=\"kwship\">Ship</label><input id=\"kwship\" name=\"kwship\" placeholder=\"~sampel-palnet (scoped)\">"
     "<label for=\"kwread\">Its read paths</label><input id=\"kwread\" name=\"kwread\" placeholder=\"/x (scoped)\">"
     "<label for=\"kwwrite\">Its write paths</label><input id=\"kwwrite\" name=\"kwwrite\" placeholder=\"/x/out (scoped)\">"
+    "<label for=\"kskills\">Skills</label><select id=\"kskills\" name=\"kskills\"><option value=\"none\">none</option><option value=\"read\">read</option><option value=\"write\">read and write</option></select>"
     "<label for=\"ksen\"><input type=\"checkbox\" id=\"ksen\" name=\"ksen\"> read sensitive memories</label>"
     "<button class=\"btn\" type=\"submit\">Make key</button></form>"
     ::  what the sensitive checkbox does, which its label alone never said
@@ -15931,7 +16773,7 @@
     "<p id=\"keyerr\" class=\"err\"></p>"
     "<ul id=\"keylist\" class=\"bklist\"></ul>"
     %-  trip
-    '<script>(function(){var L=document.getElementById("keylist"),F=document.getElementById("keyform"),T=document.getElementById("keytok"),E=document.getElementById("keyerr");function pad(n){return ("0"+n).slice(-2)}function day(da){var p=da.slice(1).split(".."),d=p[0].split("."),t=(p[1]||"").split(".");return d[0]+"-"+pad(d[1])+"-"+pad(d[2])+(p[1]?" "+pad(t[0])+":"+pad(t[1])+" UTC":"")}function paths(v){return v.split(",").map(function(s){return s.trim()}).filter(function(s){return s}).map(function(s){return s.charAt(0)==="/"?s:"/"+s})}function pagesText(p){if(!p)return "none";if(p.all!==undefined)return p.all;if(p.some)return "scoped (read "+(p.some.read||[]).join(" ")+"; write "+(p.some.write||[]).join(" ")+")";return "none"}function webText(w){if(!w||w.off!==undefined)return "none";if(w.all!==undefined)return "all ships (read)";if(w.some){return Object.keys(w.some).map(function(k){var e=w.some[k];return k+" (read "+(e.read||[]).join(" ")+"; write "+(e.write||[]).join(" ")+")"}).join(", ")}return "none"}function row(k){var li=document.createElement("li"),a=document.createElement("div"),b=document.createElement("div"),x=document.createElement("button"),s=k.scope;a.textContent=k.name+" (writes as "+k.by+")";b.className="muted";b.textContent="memory "+s.memory+", pages "+pagesText(s.pages)+", other ships "+webText(s.web)+(s.sensitive?", reads sensitive memories":"")+". Made "+day(k.made)+(k.used?", last used "+day(k.used):", never used")+(k.tainted_until?". Read sensitive content, so until "+day(k.tainted_until)+" it writes only sensitive":"");x.type="button";x.className="btn";x.textContent="Revoke";x.onclick=function(){x.disabled=true;fetch("/apps/lattice/key-revoke?id="+encodeURIComponent(k.id),{method:"POST"}).then(load,load)};li.append(a,b,x);return li}function load(){fetch("/apps/lattice/keys").then(function(r){return r.json()}).then(function(ks){L.replaceChildren.apply(L,ks.map(row));if(!ks.length){var li=document.createElement("li");li.className="muted";li.textContent="No keys yet.";L.append(li)}}).catch(function(){E.textContent="could not load keys"})}function syncScoped(){var ff=F.elements,pg=ff.kpages.value==="some",wb=ff.kweb.value==="some";[["kpread",pg],["kpwrite",pg],["kwship",wb],["kwread",wb],["kwwrite",wb]].forEach(function(e){var el=document.getElementById(e[0]);if(!el)return;var lb=document.querySelector("label[for="+e[0]+"]");el.style.display=e[1]?"":"none";if(lb)lb.style.display=e[1]?"":"none"})}function pagesScope(f){var m=f.kpages.value;if(m==="some")return {some:{read:paths(f.kpread.value),write:paths(f.kpwrite.value)}};return {all:m}}function webScope(f){var m=f.kweb.value;if(m==="all")return {all:null};if(m==="some"){var sh=f.kwship.value.trim();if(!sh)return {off:null};var o={};o[sh]={read:paths(f.kwread.value),write:paths(f.kwwrite.value)};return {some:o}}return {off:null}}F.onsubmit=function(ev){ev.preventDefault();E.textContent="";T.hidden=true;var f=F.elements;if(f.kweb.value==="some"&&!f.kwship.value.trim()){E.textContent="pick a ship for scoped web access, or set Other ships to none";return}var body={name:f.kname.value.trim(),by:f.kby.value.trim(),scope:{memory:f.kmem.value,pages:pagesScope(f),web:webScope(f),sensitive:f.ksen.checked}};fetch("/apps/lattice/key-mint",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||r.status);return j})}).then(function(j){T.querySelector("code").textContent=j.token;T.hidden=false;F.reset();syncScoped();load()}).catch(function(e){E.textContent="could not make the key: "+e.message})};F.kpages.onchange=syncScoped;F.kweb.onchange=syncScoped;syncScoped();load()})();</script>'
+    '<script>(function(){var L=document.getElementById("keylist"),F=document.getElementById("keyform"),T=document.getElementById("keytok"),E=document.getElementById("keyerr");function pad(n){return ("0"+n).slice(-2)}function day(da){var p=da.slice(1).split(".."),d=p[0].split("."),t=(p[1]||"").split(".");return d[0]+"-"+pad(d[1])+"-"+pad(d[2])+(p[1]?" "+pad(t[0])+":"+pad(t[1])+" UTC":"")}function paths(v){return v.split(",").map(function(s){return s.trim()}).filter(function(s){return s}).map(function(s){return s.charAt(0)==="/"?s:"/"+s})}function pagesText(p){if(!p)return "none";if(p.all!==undefined)return p.all;if(p.some)return "scoped (read "+(p.some.read||[]).join(" ")+"; write "+(p.some.write||[]).join(" ")+")";return "none"}function webText(w){if(!w||w.off!==undefined)return "none";if(w.all!==undefined)return "all ships (read)";if(w.some){return Object.keys(w.some).map(function(k){var e=w.some[k];return k+" (read "+(e.read||[]).join(" ")+"; write "+(e.write||[]).join(" ")+")"}).join(", ")}return "none"}function row(k){var li=document.createElement("li"),a=document.createElement("div"),b=document.createElement("div"),x=document.createElement("button"),s=k.scope;a.textContent=k.name+" (writes as "+k.by+")";b.className="muted";b.textContent="memory "+s.memory+", pages "+pagesText(s.pages)+", other ships "+webText(s.web)+", skills "+(s.skills||"none")+(s.sensitive?", reads sensitive memories":"")+". Made "+day(k.made)+(k.used?", last used "+day(k.used):", never used")+(k.tainted_until?". Read sensitive content, so until "+day(k.tainted_until)+" it writes only sensitive":"");x.type="button";x.className="btn";x.textContent="Revoke";x.onclick=function(){x.disabled=true;fetch("/apps/lattice/key-revoke?id="+encodeURIComponent(k.id),{method:"POST"}).then(load,load)};li.append(a,b,x);return li}function load(){fetch("/apps/lattice/keys").then(function(r){return r.json()}).then(function(ks){L.replaceChildren.apply(L,ks.map(row));if(!ks.length){var li=document.createElement("li");li.className="muted";li.textContent="No keys yet.";L.append(li)}}).catch(function(){E.textContent="could not load keys"})}function syncScoped(){var ff=F.elements,pg=ff.kpages.value==="some",wb=ff.kweb.value==="some";[["kpread",pg],["kpwrite",pg],["kwship",wb],["kwread",wb],["kwwrite",wb]].forEach(function(e){var el=document.getElementById(e[0]);if(!el)return;var lb=document.querySelector("label[for="+e[0]+"]");el.style.display=e[1]?"":"none";if(lb)lb.style.display=e[1]?"":"none"})}function pagesScope(f){var m=f.kpages.value;if(m==="some")return {some:{read:paths(f.kpread.value),write:paths(f.kpwrite.value)}};return {all:m}}function webScope(f){var m=f.kweb.value;if(m==="all")return {all:null};if(m==="some"){var sh=f.kwship.value.trim();if(!sh)return {off:null};var o={};o[sh]={read:paths(f.kwread.value),write:paths(f.kwwrite.value)};return {some:o}}return {off:null}}F.onsubmit=function(ev){ev.preventDefault();E.textContent="";T.hidden=true;var f=F.elements;if(f.kweb.value==="some"&&!f.kwship.value.trim()){E.textContent="pick a ship for scoped web access, or set Other ships to none";return}var body={name:f.kname.value.trim(),by:f.kby.value.trim(),scope:{memory:f.kmem.value,pages:pagesScope(f),web:webScope(f),sensitive:f.ksen.checked,skills:f.kskills.value}};fetch("/apps/lattice/key-mint",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||r.status);return j})}).then(function(j){T.querySelector("code").textContent=j.token;T.hidden=false;F.reset();syncScoped();load()}).catch(function(e){E.textContent="could not make the key: "+e.message})};F.kpages.onchange=syncScoped;F.kweb.onchange=syncScoped;syncScoped();load()})();</script>'
     "</section>"
     "<section class=\"st-panel\" id=\"data\">"
     ::  backup: manual export/restore for everyone, plus (desktop only) the

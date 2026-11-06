@@ -3,6 +3,8 @@
 //   session:      the brief memory index (areas and core rules) as context.
 //   session-more: the core rules that did not fit in the first.
 //   prompt:       memories that strongly match the prompt, three at most.
+//   skills:       the ship's skills mirrored to ~/.claude/skills
+//                 (skills-sync.mjs), for Claude Code to load natively.
 // A refused key is always reported. An unreachable ship is reported at
 // session start, so the agent does not work memoryless without saying so,
 // and is silent per prompt.
@@ -15,6 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { urlProblem } from '../url-rule.mjs';
+import { syncSkills } from './skills-sync.mjs';
 
 const mode = process.argv[2];
 const opt = (k) => process.env[`CLAUDE_PLUGIN_OPTION_${k}`] || '';
@@ -191,4 +194,23 @@ async function prompt() {
   }
 }
 
-await ({ session: () => session(0), 'session-more': () => session(1), prompt }[mode] || (() => {}))();
+// The mirror is quiet: a key without the skills scope (403), an
+// unreachable ship or the option set to off leaves the disk as it is. It
+// says one line when something changed, so the agent knows to look.
+async function skills() {
+  const where = opt('SKILLS_DIR').trim();
+  if (!key || urlError || base === '/apps/lattice' || where === 'off') return;
+  const root = path.resolve((where || '~/.claude/skills').replace(/^~(?=$|\/)/, os.homedir()));
+  try {
+    const r = await syncSkills({ get, root, ship: opt('SHIP_URL').replace(/\/$/, '') });
+    const n = r.added.length + r.updated.length + r.removed.length;
+    const lines = [];
+    if (n) lines.push(`Lattice skills mirrored to ${root}: ${[['added', r.added], ['updated', r.updated], ['removed', r.removed]].filter(([, l]) => l.length).map(([w, l]) => `${w} ${l.join(', ')}`).join('; ')}.`);
+    if (r.skipped.length) lines.push(`Not mirrored, since a skill of your own has the name: ${r.skipped.join(', ')}.`);
+    say('SessionStart', lines.join(' '));
+  } catch (e) {
+    if (e.status === 401) say('SessionStart', refused);
+  }
+}
+
+await ({ session: () => session(0), 'session-more': () => session(1), prompt, skills }[mode] || (() => {}))();

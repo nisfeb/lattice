@@ -5,6 +5,8 @@
 const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
+// and skills.js's (95s-skills.js)
+const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
 
 // ── src/00-framed.js ──────────────────────────────────────────────────────
   // ── never a second editor in a frame ─────────────────────────────────────
@@ -874,6 +876,7 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
     copy: ['0 0 24 24', 'M9 9h11v11H9zM5 15H4V4h11v1', 'stroke'],
     mark: ['0 0 24 24', 'M6 3h12v18l-6-4-6 4z', 'stroke'],
     know: ['0 0 24 24', 'M12 3l8 9-8 9-8-9z', 'stroke'],
+    skill: ['0 0 24 24', 'M13 3L5 13h6l-1 8 8-10h-6z', 'stroke'],
     doc: ['0 0 24 24', 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5', 'stroke'],
     // a link to a page on another ship: a box with an arrow out of it
     link: ['0 0 24 24', 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5', 'stroke'],
@@ -13939,6 +13942,7 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   <div class="ptool" role="toolbar" aria-label="Knowledge">
     ${sbtn('id="knew" data-action="knew"', 'plus', 'New memory')}
     ${sbtn('id="ktidy" data-action="ktidy"', 'tidy', 'Tidy memories')}
+    ${sbtn('id="kskills" data-action="kskills"', 'skill', 'Skills')}
     ${sbtn('id="ktrash" data-action="ktrash" aria-pressed="false"', 'trash', 'Trash')}
   </div>
   <div id="ktrashlist" class="ktrash" hidden></div>
@@ -14366,6 +14370,34 @@ const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
   clickAction('knew', 'New memory', 'Knowledge toolbar');
   clickAction('ktidy', 'Tidy memories', 'Knowledge toolbar');
   clickAction('ktrash', 'Memory trash', 'Knowledge toolbar');
+
+// ── src/95s-skills.js ─────────────────────────────────────────────────────
+  // ── skills: a tool tab drawn by ui-app/skills.js, loaded on first open ───
+  // The skills store (SKILL.md and its files, the /skill* routes). Reached
+  // from the Knowledge toolbar and the palette. skills.js holds the whole
+  // view, so app.js carries only this.
+  const skWrap = document.createElement('div');
+  skWrap.className = 'aclwrap';
+  skWrap.id = 'skwrap';
+  skWrap.hidden = true;
+  skWrap.setAttribute('role', 'region');
+  skWrap.setAttribute('aria-label', 'skills');
+  toolStash.append(skWrap);
+  let skLoad = null;
+  const skReady = () => (window.LatSkills ? Promise.resolve(window.LatSkills)
+    : skLoad || (skLoad = new Promise((ok, no) => {
+      const s = document.createElement('script');
+      const fail = () => { skLoad = null; s.remove(); no(); };
+      s.src = '/apps/lattice/app/skills.js?h=' + SKILLS_H;
+      s.onload = () => (window.LatSkills ? ok(window.LatSkills) : fail());
+      s.onerror = fail;
+      document.head.append(s);
+    })));
+  TOOLS.skills = { name: 'Skills', icon: 'skill', wrap: 'skwrap',
+    load: () => skReady().then((k) => k.show(skWrap, { api, st, ask, askConfirm, askDanger, md: mdToHtml }),
+      () => st('skills.js did not load', false)) };
+  $('kskills').onclick = () => toolOpen('skills');
+  clickAction('kskills', 'Skills', 'Knowledge toolbar');
 
 // ── src/96-deskmenu.js ────────────────────────────────────────────────────
   // ── desktop: these commands live in the native File menu ─────────────────

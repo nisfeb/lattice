@@ -1,6 +1,6 @@
 # Lattice for agents: memory and knowledge
 
-Lattice keeps a **private, tagged knowledge store** on your ship: the memory your AI agents share with you. Entries have path-like keys (`user/ai-models`), tags, a record of who wrote them, revision history and a restorable trash. Agents can also read your wiki pages and pages other ships publish, and write private pages such as reports.
+Lattice keeps a **private, tagged knowledge store** on your ship: the memory your AI agents share with you. Entries have path-like keys (`user/ai-models`), tags, a record of who wrote them, revision history and a restorable trash. Agents can also read your wiki pages and pages other ships publish, and write private pages such as reports. And they share [skills](#skills), reusable procedures you keep once on the ship.
 
 ## Ways in
 
@@ -23,7 +23,8 @@ A key is for a client that does not hold your cookie. The design and the wire fo
 - **Scope.** Read and write are independent, and it is default-deny: a key reaches only what its scope grants. Build it in Settings, or send the JSON shape below.
   - `memory`: `none`; `read` (search, recall, index, read, list, explore, tags, history, lint); or `write` (also save, verify, supersede, tag, untag).
   - `pages`: `none`, or `read`/`write` over **all** pages, or **scoped** to named path subtrees with independent read and write sets. Read covers page-search, page-source, page-backlinks, page-tree; write adds page-save. A read-scoped key sees only its paths (the tree, search and backlinks are filtered to them).
-  - `web` (other ships' pages): `off`; read **all** ships (through `fetch`, `browse`, `browse-file`); or **scoped** per ship, each with its own read and write path sets. Write means `remote-save` to a page a peer shared to you for editing.
+  - `web` (other ships' pages): `off`; read **all** ships (through `fetch`, `urb-read`, `browse`, `browse-file`); or **scoped** per ship, each with its own read and write path sets. Write means `remote-save` to a page a peer shared to you for editing. The web scope never reaches the owner's own ship: on these routes our own pages take the `pages` scope, by its paths and sensitive clearance, the same as `page-source`. `browse` of our own ship is refused to every key, and `browse-file` of our own ship reads a page's code grub and nothing else (`/know`, `/keys` or any other grub is a 403).
+  - `skills`: `none`; `read` (skills, skill, skill-file, skill-history, skill-read-at); or `write` (also skill-save, skill-supersede, skill-tag, skill-untag). See [Skills](#skills).
   - `sensitive`: clearance for content marked sensitive, both memories and pages ([Sensitive content](#sensitive-content)). Off unless you tick it.
   - `origin`: reserved. A source-ship hook in the mold that nothing reads or enforces yet.
   - Nothing else is reachable with a key. Publishing, sharing, deleting, moving, settings and the keys themselves stay yours, whatever the scope. `+wants` in `lib/lattice-keys.hoon` is the whole list.
@@ -34,7 +35,7 @@ A key is for a client that does not hold your cookie. The design and the wire fo
 - **Sensitive content** (memories and pages) stays out of reach of keys without clearance. See below.
 - **Revoking.** The list in Settings shows when each key was made and last used, to the hour. Revoke a key there, and its next request fails.
 
-Owner routes: `GET /keys`, `POST /key-mint`, `POST /key-revoke?id=`. The mint JSON is `{name, by, scope}`, where `scope` is `{memory, pages, web, sensitive}`: `memory` is `"none"|"read"|"write"`; `pages` is `{"all":"none|read|write"}` or `{"some":{"read":[path,...],"write":[path,...]}}`; `web` is `{"off":null}`, `{"all":null}` or `{"some":{"~ship":{"read":[...],"write":[...]}}}`; `sensitive` is a bool. The scope builder in Settings writes exactly this.
+Owner routes: `GET /keys`, `POST /key-mint`, `POST /key-revoke?id=`. The mint JSON is `{name, by, scope}`, where `scope` is `{memory, pages, web, sensitive, skills}`: `memory` and `skills` are each `"none"|"read"|"write"` (absent is `none`; keys made before skills existed are `none`); `pages` is `{"all":"none|read|write"}` or `{"some":{"read":[path,...],"write":[path,...]}}`; `web` is `{"off":null}`, `{"all":null}` or `{"some":{"~ship":{"read":[...],"write":[...]}}}`; `sensitive` is a bool. The scope builder in Settings writes exactly this.
 
 ## Sensitive content
 
@@ -115,11 +116,47 @@ All under `/apps/lattice/`. GET reads, POST writes, parameters go in the query s
 | `GET page-source`, `page-tree`, `page-backlinks` | `name` | a page's source and `rev`; the tree; backlinks. Filtered to the key's read paths, and sensitive pages hidden from an uncleared key | pages read |
 | `POST page-save` | `name`, `type` (send it: `md`, `html`, ...), `base`, `new=1` | create or update a page. With a key: within its write scope, published or not, and not hoon, html or js | pages write |
 | `POST page-save-batch` | JSON `[{name, type, body}]` | many page saves in one request, gated per item | pages write |
-| `GET fetch` | `url=urb://~ship/path` | a page another ship publishes | web read |
-| `GET browse`, `browse-file` | `ship`, `path` | a peer's shared tree, or one file in it | web read |
+| `GET fetch` | `url=urb://~ship/path` | a page another ship publishes (our own: by the pages scope) | web read |
+| `GET urb-read` | `url=urb://...`, `list=1` | what the reader shows at any urb:// address, as JSON: a published or shared page (with its public comments), a folder's entries, a forum board or thread, a tree file (binary as type and size), or the owner's own page or folder (published or not) through the key's page scope, filtered by its paths and sensitive clearance. `list=1` lists the folder, or the ship's root. 504 the ship does not answer, 404 nothing there for this ship, 403 the key's scope | web read (our own ship: the pages scope instead) |
+| `GET browse`, `browse-file` | `ship`, `path` | a peer's shared tree, or one file in it. Our own ship: `browse` 403, `browse-file` only a page's code grub, by the pages scope | web read |
 | `POST remote-save` | `ship`, `path`, body | save to a page a peer shared to you for editing | web write |
 
 [agent-guide.md](agent-guide.md) covers the rest of the HTTP API, the filesystem mount and search.
+
+## Skills
+
+A skill is a reusable procedure, stored once on your ship and shared with every agent whose key can read skills: Claude Code on any machine, Hermes, opencode. It uses Anthropic's Agent Skills format, so a Claude Code skill moves in and out unchanged: a `SKILL.md` with front matter and a markdown body, plus optional reference files.
+
+```
+---
+name: deploy-ship
+description: Deploying lattice to a fleet ship. Use when the user asks to deploy or ship a build.
+---
+# Deploy
+
+1. ...
+```
+
+- **Where they live.** In lattice's private store at `/skills/vault/<name>/skill`, beside `/know` and outside the page tree, one grub per skill holding `SKILL.md` and its files. They are not in the filesystem mount and no other ship can read them.
+- **Names and files.** A name is lower-case letters, digits and single hyphens, 1 to 64 characters, not starting or ending with a hyphen. A file is a relative path of letters, digits, `.`, `-` and `_`, ending `.md`, `.txt`, `.json`, `.yaml` or `.yml`, with no empty, `.` or `..` segment, so a path never leaves its skill. At most 64 files a skill. A new skill starts with `SKILL.md`.
+- **No code.** Text only. A skill never carries a script, html, js or hoon, and nothing in one runs. Tools an agent can run are a separate, later registry that points at tools without shipping them.
+- **Checked on save.** `SKILL.md` needs front matter whose `name` is the skill's own and a `description` of at most 1,024 bytes. Quoted values and YAML block descriptions (`>` or `|`) are read as YAML is. Any other front matter lines (`allowed-tools`, comments) are kept as they are.
+- **The same rules as memory.** A key's save is signed with its `by` and `source: agent` in `SKILL.md`'s front matter, with `created`, `verified` and `verified-by`; saving another file stamps `SKILL.md` too. Every save is a revision. Tags work as for memories. A key may not edit, add a file to, supersede or untag a skill tagged `core`. A deleted skill goes to the trash and comes back whole.
+- **Sensitive skills.** `sensitive: yes` in the front matter, or a save with `sensitive=1`, marks a skill sensitive, and the rules are memory's: a key without clearance never sees it (absent from the index, "not found" on reads, history and tags, refused on saves). A cleared key lists it only by asking (`GET skills?sensitive=1`), so loading the index at session start exposes and taints nothing; reading one taints the key for 12 hours, and a tainted key's new skills are sensitive and it may not edit an ordinary one. Only you can clear the mark.
+- **How an agent uses them.** Progressive disclosure, as Claude Code does: load the index (one `name: description` line each) at session start or when a task might match, read a skill's full `SKILL.md` when its description fits, and a reference file only when the steps call for it. Save a procedure as a skill when the user asks. The plugins carry this as `skill_index`, `skill_read` and `skill_save`. The Claude Code plugin also mirrors the skills into `~/.claude/skills` at session start, so Claude Code loads them natively, and `import-skills.mjs` brings existing Claude Code skills in ([the plugin README](../plugins/claude/README.md#your-skills-as-claude-code-skills)).
+
+| Route | Parameters | Does | Key scope |
+|---|---|---|---|
+| `GET skills` | `sensitive=1` | the index: `{"skills":[{name, description, tags, updated, author, sensitive, superseded_by, files}]}`, by name | skills read |
+| `GET skill` | `name` | `SKILL.md` as `body`, the index fields, and `files: [{path, bytes}]` | skills read |
+| `GET skill-file` | `name`, `path` | one file: `{name, path, body, updated}` | skills read |
+| `GET skill-history`, `skill-read-at` | `name`, `rev` | revisions, and the skill as of one | skills read |
+| `POST skill-save` | `name`, `path` (`SKILL.md`), body; `expected_updated`, `sensitive=1` (or `0`, owner only), `author`, `source` | create or update one file. Answers `{ok, created, sensitive, conflicted, prior, updated}`. A stale `expected_updated` saves and is flagged `conflicted`, as with memory. The owner's save with none of the options is stored verbatim | skills write |
+| `POST skill-supersede` | `old`, `new` | `old` is replaced by `new` (`superseded-by` in its front matter); empty `new` clears it | skills write |
+| `POST skill-tag`, `skill-untag` | `name`, `tag` | tags, folded to lower case | skills write |
+| `POST skill-delete`, `skill-restore`, `skill-file-delete`; `GET skill-trash` | `name`, `path` | to the trash and back, drop one file, list the trash | owner |
+
+The Skills view (Knowledge, then Skills) lists them with author and last change, and lets you read, edit, add files, tag core, mark sensitive, see history, delete and restore.
 
 ## Where your memories live
 
@@ -142,7 +179,7 @@ For opencode, copy `plugins/claude/` somewhere, make a key for it (Settings, Age
       "enabled": true
     }
   },
-  "instructions": ["/path/to/lattice-plugin/skills/memory/SKILL.md", "/path/to/lattice-plugin/skills/wiki/SKILL.md"]
+  "instructions": ["/path/to/lattice-plugin/skills/memory/SKILL.md", "/path/to/lattice-plugin/skills/wiki/SKILL.md", "/path/to/lattice-plugin/skills/skills/SKILL.md"]
 }
 ```
 

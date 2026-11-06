@@ -43,12 +43,15 @@ const writerH = tag('writer.js');
 // pdf.js, the Export PDF layout (78-pdf.js), is hand-written in ui-app/
 // and loaded the same way
 const pdfH = tag('pdf.js');
+// skills.js, the Skills tool tab (95s-skills.js), hand-written in ui-app/ too
+const skillsH = tag('skills.js');
 
 writeFileSync(join(ui, 'app.js'),
   '/* BUILT FILE — do not edit. Source: ui-src/lattice/, build: scripts/build-ui.mjs */\n'
   + '(function () {\n\'use strict\';\n'
   + `// the served writer.js's hash (build-ui.mjs, 26-writer.js)\nconst WRITER_H = '${writerH}';\n`
-  + `// and pdf.js's (78-pdf.js)\nconst PDF_H = '${pdfH}';\n\n`
+  + `// and pdf.js's (78-pdf.js)\nconst PDF_H = '${pdfH}';\n`
+  + `// and skills.js's (95s-skills.js)\nconst SKILLS_H = '${skillsH}';\n\n`
   + body + '})();\n');
 console.log(`built app.js from ${files.length} src files`);
 

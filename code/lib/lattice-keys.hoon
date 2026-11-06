@@ -20,10 +20,20 @@
 ::  +$  scope: memory and pages each none/read/write; web controls
 ::  reading other ships' published pages; sensitive is clearance for
 ::  memories marked sensitive; origin is a reserved hook (the source ship a
-::  key would be pinned to) that nothing reads or enforces yet.
+::  key would be pinned to) that nothing reads or enforces yet; skills is
+::  the shared skill store (/skills), none, read or write.
 ::  Publishing, sharing, bans, permissions, settings and the keys
 ::  themselves are never in a scope.
 +$  scope
+  $:  memory=level
+      pages=pages-scope
+      web=web-scope
+      sensitive=?
+      origin=(unit @p)
+      skills=level
+  ==
+::  +$  scope-2: the scope before skills (lattice 118). +upgrade reads it.
++$  scope-2
   $:  memory=level
       pages=pages-scope
       web=web-scope
@@ -55,6 +65,18 @@
       made=@da
       used=(unit @da)
   ==
+::  the row with scoped molds but before skills (lattice 118)
++$  key-row-2
+  $:  id=@t
+      name=@t
+      by=@t
+      scope=scope-2
+      salt=@t
+      hash=@t
+      made=@da
+      used=(unit @da)
+      taint=(unit @da)
+  ==
 ::  the row after clearance (lattice 45) but before scoped molds (this task).
 +$  key-row-1
   $:  id=@t
@@ -71,19 +93,22 @@
 ::  Old flat scope was [memory=level pages=level web=? sensitive=?]; map
 ::  pages=level to [%all level], web=& to [%all ~], web=| to [%off ~],
 ::  carry sensitive, set origin=~. If already the new shape, pass through.
+::  A scope from before skills gets skills=%none, default-deny.
 ++  upgrade
   |=  old=*
   ^-  scope
   ::  try the new shape first (pass-through for already-migrated scopes)
   =/  new=(unit scope)  (mole |.(;;(scope old)))
   ?^  new  u.new
+  =/  two=(unit scope-2)  (mole |.(;;(scope-2 old)))
+  ?^  two  [memory pages web sensitive origin %none]:u.two
   ::  otherwise read as old flat 4-field shape [memory pages web sensitive]
   =/  o  ;;([memory=level pages=* web=* sensitive=?] old)
   =/  pgs=pages-scope
     ?@(pages.o [%all ;;(level pages.o)] ;;(pages-scope pages.o))
   =/  wsc=web-scope
     ?@(web.o ?:(;;(? web.o) [%all ~] [%off ~]) ;;(web-scope web.o))
-  [memory.o pgs wsc sensitive.o ~]
+  [memory.o pgs wsc sensitive.o ~ %none]
 ::  +upgrade-keys: read any stored keys noun and return current keys.
 ::  Handles three storage eras: current keys, post-clearance (key-row-1)
 ::  and pre-clearance (key-row-0).
@@ -92,6 +117,12 @@
   ^-  keys
   =/  new=(unit keys)  (mole |.(;;(keys n)))
   ?^  new  u.new
+  =/  v2=(unit (map @t key-row-2))  (mole |.(;;((map @t key-row-2) n)))
+  ?^  v2
+    %-  ~(run by u.v2)
+    |=  k=key-row-2
+    ^-  key-row
+    k(scope (upgrade scope.k))
   =/  v1=(unit (map @t key-row-1))  (mole |.(;;((map @t key-row-1) n)))
   ?^  v1
     %-  ~(run by u.v1)
@@ -198,7 +229,7 @@
 ::  Everything not listed is the owner's.
 ++  wants
   |=  [meth=@t route=@ta]
-  ^-  (unit [area=?(%memory %pages %web) lvl=?(%read %write)])
+  ^-  (unit [area=?(%memory %pages %web %skills) lvl=?(%read %write)])
   ?+  [meth route]  ~
     [%'GET' %know-search]     `[%memory %read]
     [%'GET' %know-recall]     `[%memory %read]
@@ -224,14 +255,25 @@
     [%'POST' %page-save]      `[%pages %write]
     [%'POST' %page-save-batch]  `[%pages %write]
     [%'GET' %fetch]           `[%web %read]
+    [%'GET' %'urb-read']      `[%web %read]
     [%'GET' %browse]          `[%web %read]
     [%'GET' %browse-file]     `[%web %read]
     [%'POST' %remote-save]    `[%web %write]
+    [%'GET' %skills]          `[%skills %read]
+    [%'GET' %skill]           `[%skills %read]
+    [%'GET' %skill-file]      `[%skills %read]
+    [%'GET' %skill-history]   `[%skills %read]
+    [%'GET' %skill-read-at]   `[%skills %read]
+    [%'POST' %skill-save]     `[%skills %write]
+    [%'POST' %skill-supersede]  `[%skills %write]
+    [%'POST' %skill-tag]      `[%skills %write]
+    [%'POST' %skill-untag]    `[%skills %write]
   ==
 ++  allows
-  |=  [s=scope area=?(%memory %pages %web) lvl=?(%read %write)]
+  |=  [s=scope area=?(%memory %pages %web %skills) lvl=?(%read %write)]
   ^-  ?
   ?-  area
+    %skills  (level-ok skills.s lvl)
     %web
       ?-  web.s
         [%off ~]   |
@@ -382,7 +424,8 @@
           `[u.sp (de-paths (~(get by sm) 'read')) (de-paths (~(get by sm) 'write'))]
         [%some ships]
     ==
-  &+[p.u.name p.u.who [(de-level (~(get by sc) 'memory')) pgs wsc sen ~]]
+  =/  skl=level  (de-level (~(get by sc) 'skills'))
+  &+[p.u.name p.u.who [(de-level (~(get by sc) 'memory')) pgs wsc sen ~ skl]]
 ++  by-char
   |=  c=@t
   ^-  ?
@@ -426,6 +469,7 @@
       ['pages' pgs]
       ['web' wsc]
       ['sensitive' b+sensitive.s]
+      ['skills' s+skills.s]
   ==
 ::  +en-view: a key as the owner sees it: never the salt or the hash.
 ::  tainted_until only while the key is tainted.
