@@ -240,4 +240,16 @@
     (expect-eq !>(|) !>((y ~ ~ `'sampel.arvo.network')))
     (expect-eq !>(|) !>((y ~ ~ ~)))
   ==
+::  +known-base: the recorded base, else desk-base; a junk record is none
+++  test-known-base
+  =/  k=(map @t json)
+    %-  my
+    :~  ['~nec' s+'/apps/lattice']
+        ['~bud' n+'1']
+    ==
+  ;:  weld
+    (expect-eq !>(/apps/lattice) !>((known-base:lu k ~nec)))
+    (expect-eq !>(desk-base:lu) !>((known-base:lu k ~bud)))
+    (expect-eq !>(desk-base:lu) !>((known-base:lu k ~wes)))
+  ==
 --
