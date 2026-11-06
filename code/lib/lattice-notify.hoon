@@ -82,11 +82,91 @@
   |=  [a=[id=@ta i=item] b=[id=@ta i=item]]
   ?.  =(when.i.a when.i.b)  (gth when.i.a when.i.b)
   (aor id.a id.b)
-::  +overflow: the ids past +item-cap, oldest, for the writer to cull
+::  +source-cap: items kept from one source, so one ship cannot push
+::  everyone else's out of the store
+++  source-cap  ^-(@ud 50)
+::  +source-of: whose item it is: the host that told us of a remote
+::  reply, else the ship that did it
+++  source-of
+  |=  i=item
+  ^-  @p
+  ?:(?=(%remote kind.i) host.i who.i)
+::  +overflow: the ids to cull, oldest first among them last: each past
+::  +source-cap from its source, and each past +item-cap overall
 ++  overflow
   |=  items=(list [id=@ta i=item])
   ^-  (list @ta)
-  (turn (slag item-cap (newest-first items)) head)
+  =/  all  (newest-first items)
+  =|  per=(map @p @ud)
+  =|  kept=@ud
+  =|  out=(list @ta)
+  |-  ^-  (list @ta)
+  ?~  all  (flop out)
+  =/  s=@p  (source-of i.i.all)
+  =/  n=@ud  (~(gut by per) s 0)
+  ?:  |((gte n source-cap) (gte kept item-cap))
+    $(all t.all, out [id.i.all out])
+  $(all t.all, kept +(kept), per (~(put by per) s +(n)))
+::
+::  ==  note gate  ==
+::
+::  Any ship may poke a note (+reply-note, or a refusal) at our
+::  /forum.sig. Each sender files at most +note-cap in a rolling
+::  +note-window, as the comet gate counts comets. Past it, a note is
+::  held back and counted, and one item per sender says how many
+::  (+flood-item), so nothing is dropped unseen.
+::
+::  +$  note-hits: per sender, the stamps of the notes it filed (newest
+::  first, at most +note-cap), and how many it sent past the cap since
++$  note-hits  (map @p [at=(list @da) over=@ud])
+++  note-cap     ^-(@ud 30)
+++  note-window  ^-(@dr ~h1)
+::  +note-gate: may `who` file a note at `now`? ok, the count held back
+::  (when not ok), and the new state, senders with nothing live dropped
+++  note-gate
+  |=  [hits=note-hits who=@p now=@da]
+  ^-  [ok=? over=@ud hits=note-hits]
+  =/  from=@da  ?:((lth now note-window) *@da (sub now note-window))
+  =/  live  |=(at=(list @da) (skim at |=(t=@da (gth t from))))
+  =/  cur=[at=(list @da) over=@ud]  (~(gut by hits) who [~ 0])
+  =/  lv=(list @da)  (live at.cur)
+  =/  kept=note-hits
+    %-  ~(gas by *note-hits)
+    %+  murn  ~(tap by (~(del by hits) who))
+    |=  [s=@p r=[at=(list @da) over=@ud]]
+    ^-  (unit [@p [at=(list @da) over=@ud]])
+    =/  l=(list @da)  (live at.r)
+    ?~(l ~ `[s l over.r])
+  ?:  (lth (lent lv) note-cap)
+    [& 0 (~(put by kept) who [(scag note-cap `(list @da)`[now lv]) 0])]
+  =/  ov=@ud  +(over.cur)
+  [| ov (~(put by kept) who [lv ov])]
+::  +flood-title: the title of the item that counts a sender's held notes
+++  flood-title  'more notes held back'
+::  +flood-item: that item, about the last note `rn` held back from `host`
+++  flood-item
+  |=  [now=@da host=@p board=@tas post=@ud n=@ud]
+  ^-  item
+  %-  make
+  :*  %remote  now  host  host  board  post  flood-title
+      %+  rap  3
+      :~  (crip ((d-co:co 1) n))
+          ?:(=(1 n) ' note from ' ' notes from ')
+          (scot %p host)
+          ' held back: it sent more than '
+          (crip ((d-co:co 1) note-cap))
+          ' in an hour'
+      ==
+  ==
+::  +flood-ids: the ids of the items counting `host`'s held notes
+++  flood-ids
+  |=  [items=(list [id=@ta i=item]) host=@p]
+  ^-  (list @ta)
+  %+  murn  items
+  |=  [id=@ta i=item]
+  ^-  (unit @ta)
+  ?.  &(?=(%remote kind.i) =(host host.i) =(flood-title title.i))  ~
+  `id
 ::  +mark-ids: `ids` read, and ids of items gone dropped from the set so it
 ::  stays as small as the store
 ++  mark-ids

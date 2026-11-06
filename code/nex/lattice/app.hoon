@@ -274,6 +274,9 @@
         ::  last took a comet's post or reply (+comet-gate:ls's hits).
             [%fall %& [/forum %comets-off] [[/ %noun] [%1 ~]]]
             [%fall %& [/forum %comet-hits] [[/ %noun] [%1 ~]]]
+        ::  /forum/note-hits: per sender, the notes it filed in the last
+        ::  hour and how many it sent past the cap (+note-gate:ln)
+            [%fall %& [/forum %note-hits] [[/ %noun] [%1 ~]]]
         ::  /pub/marks-migrated: the version of the one-time re-grow of every
         ::  published page under its view-mode mark (+migrate-pub-marks). 0
         ::  until it has run. Covered, so the stamp survives reload.
@@ -7259,21 +7262,42 @@
 ::  Bounded like the comment store (this road is public); drop when full, the
 ::  owner clears /forum/notes.
 ::
+::  Any ship may send one, so a banned ship's is dropped, and each sender
+::  (a moon as its planet) files at most +note-cap an hour (+note-gate:ln).
+::  A reply note past that is counted in one item per sender
+::  (+flood-item:ln), never filed.
+::
 ++  store-forum-note
   |=  [host=@p now=@da payload=*]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  bans=banned:ls  bind:m  read-banned
+  ?:  (is-banned:ls bans host)  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  hits=note-hits:ln  bind:m  read-note-hits
+  =/  gate  (note-gate:ln hits `@p`(family:ls host) now)
+  ;<  ~  bind:m  (put-file (rf up /forum %note-hits) [/ %noun] [%1 hits.gate])
   ::  not a refusal: a host telling us someone replied to our post or
   ::  comment on its board (+forum-reply-tell there)
   =/  rn=(unit reply-note:ln)  (mole |.(;;(reply-note:ln payload)))
   ?^  rn
     ?:  (is-comet:fr host)  (pure:m ~)
+    ?:  ok.gate
+      %+  notify-add  now
+      (make:ln %remote now who.u.rn host board.u.rn post.u.rn title.u.rn body.u.rn)
+    ;<  items=(list [id=@ta i=item:ln])  bind:m  notify-items
+    =/  old=(list @ta)  (flood-ids:ln items host)
+    ;<  ~  bind:m
+      |-  ^-  form:m
+      ?~  old  (pure:m ~)
+      ;<  *  bind:m  (cull-soft:io (rf up /notify/items i.old))
+      $(old t.old)
     %+  notify-add  now
-    (make:ln %remote now who.u.rn host board.u.rn post.u.rn title.u.rn body.u.rn)
+    (flood-item:ln now host board.u.rn post.u.rn over.gate)
+  ?.  ok.gate  (pure:m ~)
   =/  nn=(unit [board=board-name:ft reason=@t])
     (mole |.(;;([board-name:ft @t] payload)))
   ?~  nn  (pure:m ~)
-  ;<  up=@ud  bind:m  nexus-up
   ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/notes) ~)
   =/  stored=@ud
     ?.  ?=([%ball *] v)  0
@@ -7285,6 +7309,17 @@
   =/  id=@ta  (scot %uv (sham note))
   ;<  ~  bind:m  (ensure-dirs up /forum /notes)
   (put-file (rf up /forum/notes id) [/lattice %forum-note] note)
+::  +read-note-hits: the note gate's counts (+note-gate:ln), none when
+::  never written
+++  read-note-hits
+  =/  m  (fiber:fiber:nexus ,note-hits:ln)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up /forum %note-hits) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  =/  raw=(unit [%1 note-hits:ln])
+    (mole |.(;;([%1 note-hits:ln] (sang-noun:tarball sang.v))))
+  (pure:m ?~(raw ~ +.u.raw))
 ::  +read-forum-limits / +write-forum-limits: the /forum/limits rate state,
 ::  stored [%1 limits]. Empty when never written.
 ::

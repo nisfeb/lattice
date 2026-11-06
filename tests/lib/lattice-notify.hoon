@@ -74,14 +74,74 @@
   =/  items=(list [id=@ta i=item:ln])  ~[(row (it t1 'a')) (row (it t3 'c')) (row (it t2 'b'))]
   %+  expect-eq  !>(~[t3 t2 t1])
   !>((turn (newest-first:ln items) |=([* i=item:ln] when.i)))
+::  an item from source `n` (a ship of its own), at t1 plus n seconds
+++  from
+  |=  [n=@ud src=@p]
+  ^-  item:ln
+  (make:ln %comment (add t1 (mul n ~s1)) src our 'notes/a' 0 '' 'x')
 ++  test-overflow-oldest
   =/  items=(list [id=@ta i=item:ln])
     %+  turn  (gulf 1 (add item-cap:ln 2))
-    |=(n=@ud (row (it (add t1 (mul n ~s1)) 'x')))
+    |=(n=@ud (row (from n `@p`(add 256 n))))
   =/  gone=(list @ta)  (overflow:ln items)
   ;:  weld
     (expect-eq !>(2) !>((lent gone)))
-    (expect-eq !>(id:(row (it (add t1 ~s1) 'x'))) !>((rear gone)))
+    (expect-eq !>(id:(row (from 1 `@p`257))) !>((rear gone)))
+  ==
+::  one source flooding the store loses its own oldest, never another's
+++  test-overflow-per-source
+  =/  flood=(list [id=@ta i=item:ln])
+    (turn (gulf 1 (add item-cap:ln 10)) |=(n=@ud (row (from (add 10 n) nec))))
+  =/  others=(list [id=@ta i=item:ln])
+    ~[(row (from 1 pla)) (row (from 2 ~bus))]
+  =/  gone=(set @ta)  (silt (overflow:ln (weld others flood)))
+  ;:  weld
+    (expect-eq !>(%.n) !>((~(has in gone) id:(row (from 1 pla)))))
+    (expect-eq !>(%.n) !>((~(has in gone) id:(row (from 2 ~bus)))))
+    (expect-eq !>((sub (add item-cap:ln 10) source-cap:ln)) !>(~(wyt in gone)))
+    ::  the flood's newest stay
+    %+  expect-eq  !>(%.n)
+    !>((~(has in gone) id:(row (from (add 10 (add item-cap:ln 10)) nec))))
+  ==
+::  a remote reply is its host's, whoever it names
+++  test-source-of-remote
+  =/  r=item:ln  (make:ln %remote t1 pla nec 'b' 1 '' 'x')
+  ;:  weld
+    (expect-eq !>(nec) !>((source-of:ln r)))
+    (expect-eq !>(pla) !>((source-of:ln (it t1 'a'))))
+  ==
+::  the note gate: note-cap an hour per sender, then held and counted,
+::  and free again once the window passes
+++  test-note-gate-cap
+  =/  h=note-hits:ln  ~
+  =/  n=@ud  0
+  |-
+  ?.  =(n note-cap:ln)
+    =/  g  (note-gate:ln h nec (add t1 (mul n ~s1)))
+    ?.  ok.g  (expect-eq !>(%.y) !>(ok.g))
+    $(n +(n), h hits.g)
+  =/  over  (note-gate:ln h nec (add t1 ~m30))
+  =/  over2  (note-gate:ln hits.over nec (add t1 ~m31))
+  =/  other  (note-gate:ln hits.over2 pla (add t1 ~m31))
+  =/  later  (note-gate:ln hits.over2 nec (add t1 ~h2))
+  ;:  weld
+    (expect-eq !>([%.n 1]) !>([ok.over over.over]))
+    (expect-eq !>([%.n 2]) !>([ok.over2 over.over2]))
+    (expect-eq !>(%.y) !>(ok.other))
+    (expect-eq !>([%.y 0]) !>([ok.later over.later]))
+    ::  a sender with nothing in the window is dropped from the state
+    (expect-eq !>(~[nec]) !>(~(tap in ~(key by hits.later))))
+  ==
+::  the held count is one item per sender, found again by +flood-ids
+++  test-flood-item
+  =/  f=item:ln  (flood-item:ln t2 nec %b 3 7)
+  =/  items=(list [id=@ta i=item:ln])
+    ~[(row f) (row (make:ln %remote t1 pla nec 'b' 3 'Post' 'x')) (row (it t1 'a'))]
+  ;:  weld
+    (expect-eq !>(~[(item-id:ln f)]) !>((flood-ids:ln items nec)))
+    (expect-eq !>(~) !>((flood-ids:ln items pla)))
+    %+  expect-eq  !>('7 notes from ~nec held back: it sent more than 30 in an hour')
+    !>(body.f)
   ==
 ++  test-overflow-none-under-cap
   %+  expect-eq  !>(~)

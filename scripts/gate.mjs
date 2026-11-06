@@ -476,7 +476,7 @@ async function runTwo(a) {
     { timeout: 300 });
     await hi(a, b); await hi(b, a);
     const env = { LATTICE_URL: a.url, LATTICE_COOKIE: a.cookie.raw, A_URL: a.url, A_COOKIE: a.cookie.raw,
-      B_URL: b.url, B_COOKIE: b.cookie.raw, B_PIER: b.pier, A_SOCK: a.pier + '/.urb/dev/grubbery/lattice/fs' };
+      B_URL: b.url, B_COOKIE: b.cookie.raw, B_PIER: b.pier, VERE, A_SOCK: a.pier + '/.urb/dev/grubbery/lattice/fs' };
     const twos = [['two-ship-links.sh', 'bash', [S + '/two-ship-links.sh']],
       ['two-ship-save.sh', 'bash', [S + '/two-ship-save.sh']], ['two-ship-comments.sh', 'bash', [S + '/two-ship-comments.sh']],
       ['two-ship-notify.sh', 'bash', [S + '/two-ship-notify.sh']],

@@ -3,10 +3,14 @@
 # B comments on a page of A's whose comet comments are held: B is no comet
 # (the fake network has none), so it is filed, not held, and lands in A's
 # Activity, which the badge count follows, and marking it read clears it.
-# Then B replies to A's forum post and A sees it in Activity. Fake fleet
-# ships only, never a real one. Cleans up after itself.
+# Then B replies to A's forum post and A sees it in Activity. Then B
+# floods A with reply notes, poked from B's pier: A files at most 30 an
+# hour from it, counts the rest in one item, and keeps the items before
+# the flood; once A bans B, B's notes are dropped. Fake fleet ships only,
+# never a real one. Cleans up after itself.
 #
-# Env:    A_URL, A_COOKIE, B_URL, B_COOKIE as two-ship-links.sh takes them.
+# Env:    A_URL, A_COOKIE, B_URL, B_COOKIE as two-ship-links.sh takes them,
+#         B_PIER and VERE for the flood (skipped without them).
 # Prints one ok/FAIL line per check, exits non-zero on any FAIL.
 set -uo pipefail
 
@@ -31,6 +35,7 @@ ENC=${BODY// /+}
 REPLY="reply from $BSHIP $BRD"
 
 cleanup() {
+  A_ -o /dev/null -X POST "$A/unban?ship=$BSHIP"
   A_ -o /dev/null -X POST "$A/page-del?name=$P"
   A_ -o /dev/null -X POST "$A/forum/$BRD/mod/delete"
 }
@@ -80,6 +85,42 @@ is "and its title"             First "$(jq -r .title <<<"$r")"
 is "the badge count follows"   1 "$(count .unread)"
 is "mark all read again" 200 "$(code -H "$AK" -X POST "$A/notify-read?all=1")"
 is "all read"                  0 "$(count .unread)"
+
+# flood <n> <tag>: B pokes A's /forum.sig with n reply notes, bodies
+# "<tag> <i>", from a khan thread on B's pier. Prints %sent when done.
+flood() {
+  local base hoon
+  base=$(A_ "$A/streams" | jq -r .base)
+  hoon="=/  m  (strand ,vase)  ;<  =bowl  bind:m  get-bowl  =/  n=@ud  0  |-  ^-  form:m  ?:  =(n $1)  (pure:m !>(%sent))  ;<  ~  bind:m  (poke [$ASHIP %grubbery] %grubbery-load !>([[/forum-note %& (stab '$base') %'forum.sig'] [%poke [/lattice %forum-note] [%reply-1 %$BRD 1 'Flood' $BSHIP (crip \"$2 {<n>}\")]]]))  \$(n +(n))"
+  hoon=${hoon//\\/\\\\}; hoon=${hoon//\'/\\\'}
+  printf '%s\n' "[0 %fyrd [%base %khan-eval %noun [%ted-eval '$hoon']]]" |
+    "$VERE" eval --jam -n 2>/dev/null |
+    socat -T 300 -,ignoreeof UNIX-CONNECT:"$B_PIER/.urb/conn.sock" 2>/dev/null |
+    "$VERE" eval --cue -n 2>/dev/null | tail -1
+}
+tagged() { A_ "$A/notify" | jq --arg t "$1 " '[.items[] | select(.body | startswith($t))] | length'; }
+if [ -n "${B_PIER:-}" ] && [ -n "${VERE:-}" ]; then
+  echo "==> B floods A with reply notes"
+  TAG="flood$RANDOM"
+  sent=$(flood 40 "$TAG")
+  case "$sent" in *sent*) ok "B sent 40 notes" ;; *) fail "B sent 40 notes" "$sent" ;; esac
+  held() { A_ "$A/notify" | jq -e --arg s "$BSHIP" '[.items[] | select(.title=="more notes held back" and .host==$s)] | length == 1' >/dev/null; }
+  if until_ 120 held; then ok "A counts what it held back in one item"; else fail "A counts what it held back in one item" "$(A_ "$A/notify" | head -c 400)"; fi
+  n=$(tagged "$TAG")
+  if [ "$n" -le 30 ]; then ok "A filed at most 30 of them ($n)"; else fail "A filed at most 30 of them" "$n"; fi
+  is "B's comment from before the flood stays" 1 "$(A_ "$A/notify" | jq --arg b "$BODY" '[.items[] | select(.body==$b)] | length')"
+  is "B's reply from before the flood stays" 1 "$(A_ "$A/notify" | jq --arg b "$REPLY" '[.items[] | select(.body==$b)] | length')"
+  echo "==> A bans B, and B's notes are dropped"
+  is "ban B" 200 "$(code -H "$AK" -X POST "$A/ban?ship=$BSHIP")"
+  sleep 2
+  TAG2="banned$RANDOM"
+  flood 1 "$TAG2" >/dev/null
+  sleep 10
+  is "a banned ship's note is not filed" 0 "$(tagged "$TAG2")"
+  is "unban B" 200 "$(code -H "$AK" -X POST "$A/unban?ship=$BSHIP")"
+else
+  echo "skip  the flood checks: no B_PIER or VERE"
+fi
 
 echo "$fails failure(s)"
 exit $((fails > 0))
