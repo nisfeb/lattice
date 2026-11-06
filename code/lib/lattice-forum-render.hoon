@@ -310,13 +310,18 @@
 ::
 ::  +flatten-comments: depth-first, oldest sibling first, [depth comment]
 ::
+::  A reply whose parent was deleted shows at the top level, not lost
+::  under a comment that is gone.
+::
 ++  flatten-comments
   |=  comments=(map comment-id comment)
   ^-  (list [@ud comment])
   =/  by-parent=(map (unit comment-id) (list comment))
     %+  roll  ~(val by comments)
     |=  [c=comment acc=(map (unit comment-id) (list comment))]
-    (~(put by acc) parent.c [c (~(gut by acc) parent.c ~)])
+    =/  up=(unit comment-id)
+      ?~(parent.c ~ ?:((~(has by comments) u.parent.c) parent.c ~))
+    (~(put by acc) up [c (~(gut by acc) up ~)])
   (walk-children 0 ~ by-parent)
 ::
 ++  walk-children
@@ -324,7 +329,9 @@
   ^-  (list [@ud comment])
   =/  kids=(list comment)
     %+  sort  (~(gut by by-parent) parent ~)
-    |=([a=comment b=comment] (lth created.a created.b))
+    |=  [a=comment b=comment]
+    ?.  =(created.a created.b)  (lth created.a created.b)
+    (lth id.a id.b)
   %-  zing
   %+  turn  kids
   |=  c=comment

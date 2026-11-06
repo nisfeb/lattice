@@ -92,6 +92,9 @@
       ::  inbox fiber (/forum.sig) never writes /forum itself: /main.sig is
       ::  the single writer of the whole /forum tree.
       [%forum-note-store host=@p payload=*]
+      ::  a ban's cleanup: every post, comment and vote of `who` and its
+      ::  moons (every comet for +all-comets:ls) off every board we host
+      [%forum-cull who=@p]
       ::  the owner clears every stored refusal note (frees the 100-note cap).
       [%forum-notes-clear ~]
       ::  the owner read activity items (lib/lattice-notify): these ids, or

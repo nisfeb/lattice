@@ -100,4 +100,41 @@
     (expect-eq !>(*(set @ud)) !>(pinned:(ok (ok b1 ~wet [%pin-post %main 1 &]) ~wet [%pin-post %main 1 |])))
     (expect-eq !>(`[5 ~d1]) !>(prune:(ok brd ~zod [%set-prune %main `[5 ~d1]])))
   ==
+::  a pin names a post; a deleted post leaves the pin set
+++  test-pin-missing
+  =/  b1=board:ft  (ok brd ~nec [%new-post %main 'hi' ~ ~])
+  =/  b2=board:ft  (ok b1 ~wet [%pin-post %main 1 &])
+  ;:  weld
+    (expect-eq !>(|) !>((good (act:fa b1 ~wet now [%pin-post %main 7 &]))))
+    ::  unpinning a stale id still works
+    (expect-eq !>(&) !>((good (act:fa b1 ~wet now [%pin-post %main 7 |]))))
+    (expect-eq !>((sy ~[1])) !>(pinned.b2))
+    (expect-eq !>(~) !>(pinned:(ok b2 ~nec [%delete-post %main 1])))
+  ==
+::  +cull: a banned ship's posts, comments and votes go, its moons' too,
+::  and what others wrote stays with their votes
+++  test-cull
+  =/  b1=board:ft  (ok brd ~nec [%new-post %main 'nec' ~ ~])
+  =/  b2=board:ft  (ok b1 ~wet [%new-post %main 'wet' ~ ~])
+  =/  b3=board:ft  (ok b2 ~nec [%new-comment %main 2 ~ 'by nec'])
+  =/  b4=board:ft  (ok b3 ~wet [%new-comment %main 2 `0 'reply to nec'])
+  =/  b5=board:ft  (ok b4 ~nec [%upvote %main [%post 2]])
+  =/  moon=@p  `@p`(add (bex 32) ~nec)
+  =/  b6=board:ft  (ok b5 moon [%downvote %main [%comment 2 1]])
+  =/  b7=board:ft  (ok b6 ~wet [%upvote %main [%post 2]])
+  =/  mine  |=(a=@p |(=(a ~nec) =(a moon)))
+  =/  out=board:ft  (cull:fa b7 mine)
+  =/  p2=post:ft  (~(got by posts.out) 2)
+  =/  cs  (~(got by comments.out) 2)
+  ;:  weld
+    (expect-eq !>(|) !>((~(has by posts.out) 1)))
+    (expect-eq !>((sy ~[~wet])) !>(up-votes.p2))
+    (expect-eq !>(|) !>((~(has by cs) 0)))
+    (expect-eq !>(~) !>(down-votes:(~(got by cs) 1)))
+    (expect-eq !>(1) !>(comment-count.p2))
+    ::  the write puts and culls only what changed, and reloads the same
+    =/  back  (load:fb (turn ~(tap by (grubs:fb out)) |=([p=path v=*] [p v])))
+    ?>  ?=(%& -.back)
+    (expect-eq !>(out) !>(p.back))
+  ==
 --
