@@ -8907,25 +8907,6 @@
     ;<  ~  bind:m  (ensure-dirs up /[base.dst] (weld rel.dst i.rels))
     (put-file (rf root ddir %code) [/lattice %page] newcode)
   $(rels t.rels)
-::  +rewrite-wikilinks: rewrite [[from]] and [[from/...]] references in code
-::  text to the new name, the bare-name form wikilinks use (+rewrite-root
-::  only covers /slash-prefixed hoon path literals). Boundary-checked so a
-::  [[fromX]] page is never clobbered by a move of [[from]].
-::
-++  rewrite-wikilinks
-  |=  [hay=tape from=tape to=tape]
-  ^-  tape
-  ?~  from  hay
-  =/  ndl=tape  (weld "[[" from)
-  =/  nl=@ud  (lent ndl)
-  |-  ^-  tape
-  =/  i  (find ndl hay)
-  ?~  i  hay
-  =/  pre=tape  (scag u.i hay)
-  =/  aft=tape  (slag (add u.i nl) hay)
-  ?.  ?|(?=(~ aft) =(']' i.aft) =('/' i.aft))
-    (weld (weld pre ndl) $(hay aft))
-  (weld (weld pre (weld "[[" to)) $(hay aft))
 ::  +move-pages: move a page or a whole folder subtree under /page from src to
 ::  dst. Copies each page's code (share mode carried over, wikilink
 ::  self-references rewritten like template instantiation rewrites its root)
@@ -9043,7 +9024,7 @@
   =/  dst=path  (weld to i.rels)
   =/  newcode=@t
     %-  crip
-    %^  rewrite-wikilinks
+    %^  rewrite-wikilinks:gfm
         (rewrite-root (trip code) from-str to-str)
       from-bare
     to-bare
