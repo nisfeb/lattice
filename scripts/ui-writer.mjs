@@ -22,6 +22,7 @@
 //      debounce saves, a split parks the page as a render, an offline edit
 //      queues and lands, a conflict keeps a fodt copy, and a page opened
 //      once opens offline with writer.js from the worker's cache
+//    twins: two pages with the same body keep their own undo history
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           node scripts/ui-writer.mjs
@@ -57,6 +58,8 @@ const P = {
   tabs: RUN + '/tabs',
   off: RUN + '/off',
   focus: RUN + '/focus',
+  twinA: RUN + '/twin-a',
+  twinB: RUN + '/twin-b',
 };
 const api = (path, init = {}) => fetch(env.base + '/apps/lattice/' + path,
   { ...init, headers: { Cookie: env.cookie, ...(init.headers || {}) } });
@@ -169,6 +172,7 @@ try {
     [P.tabs, corpus('01-paragraphs.fodt')],
     [P.off, corpus('01-paragraphs.fodt')],
     [P.focus, corpus('01-paragraphs.fodt')],
+    [P.twinA, corpus('01-paragraphs.fodt')],
   ];
   for (const [n, b, t] of seeds) {
     const r = await put(n, b, t);
@@ -639,6 +643,34 @@ try {
     check('G: a parked fodt tab shows as the page, not its XML', !!gh);
     check('G: the live editor moved to the new group', await page.evaluate(() => !document.querySelector('lat-writer:not([hidden]) .lw-doc')
       || document.getElementById('pname').value !== ''));
+  }
+
+  // ------------------------------------------------------------ I: twins
+  //  Two pages with the same body, as Duplicate makes: each gets its own
+  //  editor, so Ctrl+Z in one never undoes what was typed in the other
+  if (on('I')) {
+    step = 'I twins';
+    await open(P.twinA);
+    await mounted();
+    await sleep(300);
+    await select('The first paragraph', true);
+    await page.keyboard.type(' TWINA');
+    const typed = await waitFor(async () => { const d = await shipBody(P.twinA); return d && d.body.includes('TWINA') ? d.body : null; }, 20000, 300);
+    check('I: the edit in the first page saves', !!typed);
+    const tb = await put(P.twinB, typed || '');
+    check('I: a second page with the same body', tb.ok);
+    await open(P.twinB);
+    await wait(() => !!document.querySelector('lat-writer:not([hidden]) .lw-doc')
+      && document.getElementById('src').value.includes('TWINA'));
+    await sleep(500);
+    const before = await srcVal();
+    await page.evaluate(() => document.querySelector('lat-writer .lw-doc').focus());
+    await page.keyboard.down('Control'); await page.keyboard.press('z'); await page.keyboard.up('Control');
+    await sleep(1500);
+    check('I: Ctrl+Z in the second page has nothing of the first to undo', (await srcVal()) === before);
+    await sleep(2500);
+    const b = await shipBody(P.twinB);
+    check('I: and the second page keeps its body on the ship', b && b.body.includes('TWINA'));
   }
 
   // ------------------------------------------------------------ H: offline and conflicts
