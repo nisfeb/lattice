@@ -19,6 +19,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MARKER, nameOk, pathOk, claudeHome } from './hooks/skills-sync.mjs';
+import { urlProblem } from './url-rule.mjs';
 
 const args = process.argv.slice(2);
 const yes = args.includes('--yes');
@@ -29,10 +30,15 @@ if (!process.env.LATTICE_URL || !key) {
   console.error('set LATTICE_URL and LATTICE_KEY (a key with skills write)');
   process.exit(2);
 }
+// the key goes in every request: the same rule as the plugin's server
+if (urlProblem(process.env.LATTICE_URL)) {
+  console.error(urlProblem(process.env.LATTICE_URL));
+  process.exit(2);
+}
 
 async function call(method, route, params, body) {
   const r = await fetch(base + route + '?' + new URLSearchParams(params), {
-    method, headers: { authorization: `Bearer ${key}` }, body,
+    method, headers: { authorization: `Bearer ${key}` }, body, redirect: 'manual',
   });
   const t = await r.text();
   return { status: r.status, text: t };
@@ -89,20 +95,19 @@ const seen = new Map();
 for (const root of roots) {
   for (const d of safeList(root)) {
     const dir = path.join(root, d);
-    const where = path.join(root, d);
     if (fs.existsSync(path.join(dir, MARKER))) continue;
     if (!fs.existsSync(path.join(dir, 'SKILL.md'))) continue;
     const p = prepare(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), d);
-    if (p.problem) { console.log(`skip ${where}: ${p.problem}`); continue; }
-    if (seen.has(p.name)) { console.log(`duplicate ${p.name}: ${where} and ${seen.get(p.name)}; merge by hand`); continue; }
-    seen.set(p.name, where);
+    if (p.problem) { console.log(`skip ${dir}: ${p.problem}`); continue; }
+    if (seen.has(p.name)) { console.log(`duplicate ${p.name}: ${dir} and ${seen.get(p.name)}; merge by hand`); continue; }
+    seen.set(p.name, dir);
     const files = walk(dir).filter((f) => f !== 'SKILL.md');
     const keep = files.filter(pathOk);
     const left = files.filter((f) => !pathOk(f));
     const have = await call('GET', 'skill', { name: p.name });
-    if (have.status === 200) { console.log(`duplicate ${p.name}: the ship has one; merge ${where} by hand`); continue; }
+    if (have.status === 200) { console.log(`duplicate ${p.name}: the ship has one; merge ${dir} by hand`); continue; }
     if (have.status === 403 || have.status === 401) { console.error(`the key was refused (${have.status}): it needs skills write`); process.exit(1); }
-    console.log(`${yes ? 'import' : 'would import'} ${p.name} from ${where}${keep.length ? ` with ${keep.join(', ')}` : ''}${left.length ? `; leaving out ${left.join(', ')}` : ''}`);
+    console.log(`${yes ? 'import' : 'would import'} ${p.name} from ${dir}${keep.length ? ` with ${keep.join(', ')}` : ''}${left.length ? `; leaving out ${left.join(', ')}` : ''}`);
     if (!yes) continue;
     const r = await call('POST', 'skill-save', { name: p.name }, p.body);
     if (r.status !== 200) { console.log(`  refused: ${r.status} ${r.text}`); continue; }

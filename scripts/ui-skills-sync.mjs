@@ -7,6 +7,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { makeCheck } from './lib/check.mjs';
 import { syncSkills, MARKER, claudeHome } from '../plugins/claude/hooks/skills-sync.mjs';
 
@@ -117,4 +118,11 @@ check('no CLAUDE_CONFIG_DIR is ~/.claude', claudeHome({}) === path.join(os.homed
 check('CLAUDE_CONFIG_DIR wins', claudeHome({ CLAUDE_CONFIG_DIR: '/x/acct2' }) === '/x/acct2');
 check('  ...with ~ expanded', claudeHome({ CLAUDE_CONFIG_DIR: '~/.claude-acct2' }) === path.join(os.homedir(), '.claude-acct2'));
 check('  ...and blank ignored', claudeHome({ CLAUDE_CONFIG_DIR: '  ' }) === path.join(os.homedir(), '.claude'));
+// import-skills.mjs keeps the server's URL rule: no key over plain http
+// to a public address, refused before any request
+{
+  const r = spawnSync(process.execPath, [new URL('../plugins/claude/import-skills.mjs', import.meta.url).pathname, scratch],
+    { env: { ...process.env, LATTICE_URL: 'http://203.0.113.1', LATTICE_KEY: 'k.s' }, encoding: 'utf8', timeout: 20000 });
+  check('import-skills refuses a plain-http public ship', r.status === 2 && r.stderr.includes('unencrypted'), `${r.status} ${r.stderr.slice(0, 200)}`);
+}
 check.done();
