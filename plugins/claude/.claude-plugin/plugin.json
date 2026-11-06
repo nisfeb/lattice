@@ -27,6 +27,12 @@
       "default": 50,
       "min": 0,
       "max": 101
+    },
+    "skills_dir": {
+      "type": "string",
+      "title": "Skills directory",
+      "description": "Where the ship's skills are mirrored at session start, for Claude Code to load: ~/.claude/skills when empty. off turns the mirror off.",
+      "default": ""
     }
   }
 }
