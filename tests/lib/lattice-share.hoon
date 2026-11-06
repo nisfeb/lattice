@@ -511,4 +511,16 @@
     ::  a page named b/page/f/a is not under /f
     (expect-eq !>(~) !>((fold-hit:ls fs nec /apps/lattice/page/b/page/f/a/code)))
   ==
+::  a new page rewrites the indexes on its own path only: from the highest
+::  folder that keeps one down to its own, never a folder beside it
+++  test-index-ups
+  ;:  weld
+    (expect-eq !>(`(list path)`~[/f /f/s]) !>((index-ups:ls /f/s (silt `(list path)`~[/f /f/s /f/t]))))
+    ::  a new subfolder under an indexed one gets an index
+    (expect-eq !>(`(list path)`~[/f /f/s /f/s/n]) !>((index-ups:ls /f/s/n (silt `(list path)`~[/f /f/t]))))
+    ::  only the nearer index: the higher folder is not shared
+    (expect-eq !>(`(list path)`~[/f/s]) !>((index-ups:ls /f/s (silt `(list path)`~[/f/s /g]))))
+    (expect-eq !>(`(list path)`~) !>((index-ups:ls /f/s (silt `(list path)`~[/g]))))
+    (expect-eq !>(`(list path)`~[/]) !>((index-ups:ls / (silt ~[`path`/]))))
+  ==
 --

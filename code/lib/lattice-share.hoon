@@ -603,4 +603,20 @@
   ?~  rel.f  |
   =/  pre=tape  :(weld "/page" (trip (spat rel.f)) "/")
   =(pre (scag (lent pre) sub))
+::  +index-ups: the folders whose dir-index a page made in `dir` changes:
+::  `dir` and each folder above it, from the highest that keeps an index
+::  (`ixs` holds those) down. A folder's index lists every page under it,
+::  so these are the only ones; a folder beside the path is unchanged. A
+::  folder on the path with no index yet, under one that has, gets one,
+::  as a whole rewrite of the higher folder would have given it.
+++  index-ups
+  |=  [dir=path ixs=(set path)]
+  ^-  (list path)
+  =/  ups=(list path)  (turn (gulf 0 (lent dir)) |=(n=@ud (scag n dir)))
+  =/  on=?  |
+  |-  ^-  (list path)
+  ?~  ups  ~
+  =.  on  |(on (~(has in ixs) i.ups))
+  ?.  on  $(ups t.ups)
+  [i.ups $(ups t.ups)]
 --

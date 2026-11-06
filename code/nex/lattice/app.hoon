@@ -18379,6 +18379,11 @@
 ::  grant names it (+share-folder-with). Rewritten on each grant.
 ++  write-dir-index
   |=  [root=@ud pax=path]
+  (write-dir-index-in root pax &)
+::  +write-dir-index-in: +write-dir-index, or with all=| the folder's own
+::  index alone, not those of the folders under it (+grant-new)
+++  write-dir-index-in
+  |=  [root=@ud pax=path all=?]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -18387,6 +18392,7 @@
   =/  pages=(list [pax=path when=@da code=@t])  (recent-walk ball.dv wave.dv ~)
   =/  dirs=(list path)
     :-  `path`~
+    ?.  all  ~
     (murn (collect-tree ball.dv ~) |=([p=path page=?] ?:(page ~ `p)))
   =|  done=@ud
   |-  ^-  form:m
@@ -18524,10 +18530,23 @@
     ;<  ~  bind:m
       (notice-group g.i.l [%add (snoc :(weld sb /page rel) %code) md.i.l])
     $(l t.l)
-  ;<  ix=?  bind:m  (peek-exists:fio (rf up (weld /page dir) %'dir-index'))
-  ;<  ~  bind:m  ?.(ix (pure:m ~) (write-dir-index root dir))
-  ?~  dir  (pure:m ~)
-  $(dir (snip `path`dir))
+  ?^  dir  $(dir (snip `path`dir))
+  ::  the indexes that list it: only those on its own path change
+  ::  (+index-ups:ls), where a whole +write-dir-index of each folder above
+  ::  wrote every folder under it again, a save's worth of ship time per
+  ::  folder in a big shared tree
+  =/  dir=path  (snip `path`rel)
+  =/  ups=(list path)  (turn (gulf 0 (lent dir)) |=(n=@ud (scag n dir)))
+  =|  ixs=(set path)
+  |-  ^-  form:m
+  ?^  ups
+    ;<  ix=?  bind:m  (peek-exists:fio (rf up (weld /page i.ups) %'dir-index'))
+    $(ups t.ups, ixs ?.(ix ixs (~(put in ixs) i.ups)))
+  =/  todo=(list path)  (index-ups:ls dir ixs)
+  |-  ^-  form:m
+  ?~  todo  (pure:m ~)
+  ;<  ~  bind:m  (write-dir-index-in root i.todo |)
+  $(todo t.todo)
 ::  +revoke-folder-grants: the pages under `pax` (`bl` its ball) are going:
 ::  each grant a folder made them (`grant-via`) comes out of its groups.
 ::  A grant a page was given by hand has no grant-via, and stays.
