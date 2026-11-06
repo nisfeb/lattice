@@ -81,14 +81,27 @@ const NEVER = ['mec', 'mun', 'hus', 'ricsul-bilwyt-dozzod-nisfeb'];
 
 //  --- flags ---
 const argv = process.argv.slice(2);
+function die(m) { console.error('gate: ' + m); process.exit(2); }
+//  --help prints the comment above and starts nothing. An unknown flag is
+//  refused before anything starts, so a typo never runs the full gate.
+if (argv.includes('--help') || argv.includes('-h')) {
+  const head = readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1);
+  console.log(head.slice(0, head.findIndex((l) => !l.startsWith('//'))).map((l) => l.replace(/^\/\/ {0,2}/, '')).join('\n'));
+  process.exit(0);
+}
+const TAKES = { '--lanes': 1, '--two-ship': 1, '--only': 1 };
+const FLAGS = ['--stall', '--local', '--warm', '--cold', '--hot', '--record', '--no-retry', '--strict', '--keep', '--no-deploy'];
+for (let i = 0; i < argv.length; i++) {
+  if (TAKES[argv[i]]) i++;
+  else if (!FLAGS.includes(argv[i])) die(`unknown flag ${argv[i]} (--help lists them)`);
+}
 const flag = (n) => argv.includes(n);
 const opt = (n, d) => { const i = argv.indexOf(n); return i < 0 ? d : argv[i + 1]; };
 const LANES_ASKED = opt('--lanes', '');
 const TWO = opt('--two-ship', '');
 const ONLY = opt('--only', '') ? opt('--only', '').split(',') : null;
 if (flag('--two-ship') && !TWO) die('--two-ship needs a fleet set for ship B');
-
-function die(m) { console.error('gate: ' + m); process.exit(2); }
+if (LANES_ASKED && !(Number.isInteger(Number(LANES_ASKED)) && Number(LANES_ASKED) > 0)) die('--lanes needs a whole number of clones');
 const say = (m) => console.error(`gate: [${((Date.now() - T0) / 1000).toFixed(0)}s] ${m}`);
 const T0 = Date.now();
 const RUN = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -219,10 +232,14 @@ const browser = (f) => /puppeteer|lib\/harness\.mjs/.test(readFileSync(S + '/' +
 const uis = readdirSync(S).filter((f) => /^ui-.*\.mjs$/.test(f)).sort();
 const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs'];
 const TWO_SHIP = ['ui-links.mjs', 'ui-shares-live.mjs', 'ui-follow-live.mjs'];
-const shipSuites = [
+const allShip = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
   'job-check.py', 'big-page-check.py', 'dirshare-check.py', 'fs-old-beacon-check.sh', 'hoon-suites',
-].filter((n) => !ONLY || ONLY.includes(n));
+];
+const shipSuites = allShip.filter((n) => !ONLY || ONLY.includes(n));
+const TWOS = [['two-ship-links.sh', 'bash'], ['two-ship-save.sh', 'bash'], ['two-ship-comments.sh', 'bash'],
+  ['two-ship-notify.sh', 'bash'], ['ui-links.mjs', 'node'], ['ui-shares-live.mjs', 'node'], ['ui-follow-live.mjs', 'node'],
+  ['two-ship-dirshare.py', 'python3'], ['two-ship-urb-read.sh', 'bash']];
 //  A lane is a ~1.2 GB pier copy and a serf with a 2 GB loom that runs
 //  near 3 GB: no more lanes than suites, pinned performance cores (4), or
 //  about a third of the free memory in GB.
@@ -266,6 +283,10 @@ const allLocal = [
   ['writer-licences', 'node', [S + '/writer-licences.mjs']],
   ['writer-roundtrip', 'node', [S + '/writer-roundtrip.mjs']],
 ];
+//  a misspelt --only name would otherwise run nothing and pass
+for (const n of ONLY || []) {
+  if (![...allShip, ...allLocal.map(([x]) => x), ...TWOS.map(([x]) => x)].includes(n)) die(`--only: no suite ${n}`);
+}
 const localJobs = flag('--warm') ? [] : !ONLY || flag('--local') ? allLocal : allLocal.filter(([n]) => ONLY.includes(n));
 
 const results = [];
@@ -478,15 +499,10 @@ async function runTwo(a) {
     await hi(a, b); await hi(b, a);
     const env = { LATTICE_URL: a.url, LATTICE_COOKIE: a.cookie.raw, A_URL: a.url, A_COOKIE: a.cookie.raw,
       B_URL: b.url, B_COOKIE: b.cookie.raw, B_PIER: b.pier, A_SOCK: a.pier + '/.urb/dev/grubbery/lattice/fs' };
-    const twos = [['two-ship-links.sh', 'bash', [S + '/two-ship-links.sh']],
-      ['two-ship-save.sh', 'bash', [S + '/two-ship-save.sh']], ['two-ship-comments.sh', 'bash', [S + '/two-ship-comments.sh']],
-      ['two-ship-notify.sh', 'bash', [S + '/two-ship-notify.sh']],
-      ['ui-links.mjs', 'node', [S + '/ui-links.mjs']], ['ui-shares-live.mjs', 'node', [S + '/ui-shares-live.mjs']], ['ui-follow-live.mjs', 'node', [S + '/ui-follow-live.mjs']],
-      ['two-ship-dirshare.py', 'python3', [S + '/two-ship-dirshare.py']], ['two-ship-urb-read.sh', 'bash', [S + '/two-ship-urb-read.sh']]];
     //  --only naming a two-ship suite runs just the ones it names
-    const named = ONLY && twos.some(([n]) => ONLY.includes(n));
-    for (const [name, cmd, args] of twos.filter(([n]) => !named || ONLY.includes(n))) {
-      record(name, '~' + a.ship + '+~' + b.ship, await run(cmd, args, { env, log: `${LOGS}/${name}.log`, timeout: 1500 }));
+    const named = ONLY && TWOS.some(([n]) => ONLY.includes(n));
+    for (const [name, cmd] of TWOS.filter(([n]) => !named || ONLY.includes(n))) {
+      record(name, '~' + a.ship + '+~' + b.ship, await run(cmd, [S + '/' + name], { env, log: `${LOGS}/${name}.log`, timeout: 1500 }));
     }
   } finally {
     await run(F, ['down', TWO], { timeout: 300 });
@@ -500,7 +516,9 @@ const sampler = setInterval(() => loads.push(loadavg()[0]), 15000);
 let fatal = '';
 try {
   const local = runLocal();
-  const ship = (async () => runShip(await baseShip()))().catch((e) => { fatal = e.message; });
+  //  local suites alone need no ship: no claim, no boot, no deploy
+  const needShip = shipSuites.length || TWO || flag('--warm');
+  const ship = needShip ? (async () => runShip(await baseShip()))().catch((e) => { fatal = e.message; }) : null;
   await Promise.all([local, ship]);
 } catch (e) { fatal = e.message; }
 await phase('teardown', teardown());
@@ -520,7 +538,7 @@ const flaky = results.filter((r) => r.flaky);
 const missing = shipSuites.filter((n) => !results.some((r) => r.suite === n));
 console.log(`\n${names.length - failed.length - flaky.length} passed, ${flaky.length} flaky, ${failed.length} failed, wall ${(wall / 60).toFixed(1)} min (${wall.toFixed(0)} s), logs ${LOGS}`);
 if (loads.length) console.log(`host load (1 min): mean ${(loads.reduce((a, b) => a + b, 0) / loads.length).toFixed(1)}, peak ${Math.max(...loads).toFixed(1)}, on ${cpus().length} threads`);
-if (!TWO) console.log('not run: the two-ship suites (ui-links.mjs, ui-shares-live.mjs, ui-follow-live.mjs, two-ship-links.sh, two-ship-save.sh, two-ship-comments.sh, two-ship-notify.sh, two-ship-dirshare.py, two-ship-urb-read.sh); pass --two-ship SET');
+if (!TWO) console.log(`not run: the two-ship suites (${TWOS.map(([n]) => n).join(', ')}); pass --two-ship SET`);
 if (!flag('--stall')) console.log('not run: stall-check.py; pass --stall');
 if (missing.length && fatal) console.log('never started: ' + missing.join(' '));
 if (fatal) console.log('gate error: ' + fatal);
