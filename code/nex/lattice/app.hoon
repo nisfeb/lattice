@@ -11336,7 +11336,10 @@
 ::  <day>) when orrery's record `at` is new or moved forward, mark the page
 ::  sensitive, and remember the `at`. Idempotent: a day whose stored `at`
 ::  still matches is left untouched, so a hand-edit survives a re-run until
-::  orrery itself advances. The synced map is written once at the end.
+::  orrery itself advances. Then the owner's ticks on [T<n>] lines and a
+::  `## Notes` section are carried into the rewrite (+journal-merge:lo);
+::  other edits to the brief's own lines give way to orrery's text. The
+::  synced map is written once at the end.
 ::
 ++  orrery-journal-pass
   =/  m  (fiber:fiber:nexus ,~)
@@ -11378,7 +11381,14 @@
     ==
   ?.  move  $(days t.days)
   =/  pax=path  ~[%journal name]
-  =/  body=@t  (journal-body:lo head `@t`i.days text.u.rec)
+  =/  fresh=@t  (journal-body:lo head `@t`i.days text.u.rec)
+  ::  a page already there (the last mirror, ticked or noted since, or a
+  ::  note the owner started at this name) keeps its ticks and its
+  ::  `## Notes` section through the rewrite (+journal-merge:lo). Without
+  ::  it a remade brief undid every box not yet taken by orrery's round.
+  ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head pax)
+  =/  was=(unit [builder=@tas body=@t])  ?~(src.pc ~ (unwrap-content u.src.pc))
+  =/  body=@t  ?~(was fresh (journal-merge:lo body.u.was fresh))
   ::  marked first: between a make and a later mark, a key without
   ::  clearance could read the new brief
   ;<  ~  bind:m  (poke-eval [%page-sensitive pax &])
@@ -14194,7 +14204,7 @@
 ::  Single-quote cord: a double-quote tape would interpolate the css braces.
 ++  comments-css
   ^-  @t
-  '<style>.comments{margin-top:2rem;border-top:1px solid #8886;padding-top:1rem}.comment{margin:.7rem 0;padding:.5rem .8rem;background:#8881;border-radius:8px}.cmeta{margin:0;font-size:.85em;opacity:.7}.pending{opacity:.7}.cbody{margin:.2rem 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.cbox{margin-top:1rem;display:flex;gap:6px}.cbox textarea{flex:1;min-height:3rem;font:inherit;padding:6px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbox button{padding:0 14px;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}</style>'
+  '<style>.comments{margin-top:2rem;border-top:1px solid #8886;padding-top:1rem}.comment{margin:.7rem 0;padding:.5rem .8rem;background:#8881;border-radius:8px}.cmeta{margin:0;font-size:.85em;opacity:.7}.pending{opacity:.7}.cbody{margin:.2rem 0 0;white-space:pre-wrap;overflow-wrap:anywhere}.cbox{margin-top:1rem;max-width:46rem;display:flex;flex-direction:column;align-items:flex-start;gap:6px}.cbox textarea{width:100%;box-sizing:border-box;min-height:3rem;resize:vertical;font:inherit;padding:6px;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit}.cbox button{padding:.3rem .9rem;font:inherit;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit;cursor:pointer}</style>'
 ::  +thread-page: how many of a thread's newest comments the reader shows
 ::  before "show older"
 ++  thread-page  ^-(@ud 50)
@@ -16956,6 +16966,8 @@
     ==
   =/  yes=?  =([~ &] open)
   ;:  weld
+    ::  the box's own style: the thread above it carries none when empty
+    (trip comments-css)
     "<section class=\"cbox-wrap\"><h3>Comment</h3>"
     "<form class=\"cbox\" method=\"post\" target=\"_top\" action=\"/apps/lattice/comment-remote?ship="
     (esc st)  "&amp;page="  (esc pg)  "\">"

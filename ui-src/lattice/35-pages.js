@@ -290,7 +290,11 @@
     //  paint a moment later, and the frame scrolled itself again with the
     //  engine's native (light) bar. Every screenshot taken before this answer
     //  landed looked fixed; the one the user looks at is after it.
-    if (typeof d.html === 'string' && d.kind !== 'tex') {
+    //  ...except an md page with task boxes this viewer may tick: the
+    //  ship renders its boxes disabled, and this answer lands after the
+    //  local paint, so a page opened in Read (the daily journal from its
+    //  button) showed dead boxes. The local paint carries their lines.
+    if (typeof d.html === 'string' && d.kind !== 'tex' && !(taskLive() && hasTask(d.body))) {
       prev.removeAttribute('src'); prevDoc(withPreviewScrollbars(d.html, true));
     }
     else if (!quiet) refreshPreview();

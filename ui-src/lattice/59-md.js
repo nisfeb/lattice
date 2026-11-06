@@ -206,6 +206,8 @@
   //  a box click's edit: the offset of the char in the brackets on `line`,
   //  or null if that line is no task in the clicked-from state (stale)
   const TASK_RE = /^((?:[ \t]*>[ \t]?)*[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])\](?=\s)/;
+  const TASK_ANY = new RegExp(TASK_RE.source, 'm');
+  const hasTask = (text) => typeof text === 'string' && TASK_ANY.test(text);
   function taskToggle(text, line, on) {
     let at = 0;
     for (let n = 0; n < line; n++) {
