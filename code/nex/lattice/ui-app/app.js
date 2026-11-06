@@ -2,7 +2,7 @@
 (function () {
 'use strict';
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
-const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
+const WRITER_H = '0v6.mjanj.2h7ln.vmbk0.4rmug.2npm0';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
