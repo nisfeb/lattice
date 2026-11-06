@@ -95,4 +95,14 @@
     }, wait);
   };
   if (check) ask();
+  // a publisher's frame refused something from another host (render.rs's
+  // SHUT): show the note before it, whose button loads it for this page
+  addEventListener('message', function (e) {
+    if (!e.data || e.data.lattice !== 'outside') return;
+    var frames = document.querySelectorAll('iframe.pub');
+    for (var i = 0; i < frames.length; i++) {
+      var note = frames[i].previousElementSibling;
+      if (frames[i].contentWindow === e.source && note && note.classList.contains('outside')) note.hidden = false;
+    }
+  });
 })();

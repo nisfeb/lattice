@@ -32,7 +32,10 @@
 //! - `POST /forum?url=` starts a post (`title`, `link`, `body`) on a
 //!   lattice forum board, or a reply (`body`) in one of its threads, as
 //!   the reader identity, on a board whose host lists it as taking them,
-//!   then goes back to the board or thread, which says what became of it.
+//!   then goes back to the board or thread, which says what became of it;
+//! - `POST /outside?url=` lets that page's `/raw` load from other hosts
+//!   until the reader quits, then goes back to the page, or home when the
+//!   form's `back` is `home`.
 //!
 //! Loopback is not a boundary (see proxy.rs), and here the prize is the
 //! comet: a caller who could drive it could make it read whatever they
@@ -50,10 +53,13 @@
 //!
 //! `/raw` needs no cookie (a sandboxed frame has an opaque origin and gets
 //! none), but its key is unguessable and comes only from the page the
-//! reader just served, and its answer is lattice's `+sandbox-csp`.
+//! reader just served, and its answer is render.rs's `SHUT`: lattice's
+//! `+sandbox-csp` with nothing loaded from any host, which would show the
+//! publisher the reader's IP address. It is `+sandbox-csp` alone for a page
+//! the reader chose to load outside content for (`/outside`).
 
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
@@ -168,6 +174,9 @@ pub struct Ctx {
     pending: Mutex<HashMap<String, Vec<(String, String)>>>,
     /// each publisher's page times and titles, when it was asked
     titles: Mutex<Titles>,
+    /// the pages whose outside content the reader chose to load, this
+    /// session (`/outside`): their `/raw` is served under SANDBOX, not SHUT
+    outside: Mutex<HashSet<String>>,
     /// what the reader wrote on boards and under pages (notify.rs)
     pub mine: crate::notify::MyPosts,
     /// the replies to it not seen yet, by place, and the followed
@@ -194,6 +203,7 @@ impl Ctx {
             lists: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             titles: Mutex::new(HashMap::new()),
+            outside: Mutex::new(HashSet::new()),
         }
     }
 
@@ -644,19 +654,20 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
             if req.dest.as_deref() == Some("document") && trusted(req, port) {
                 return redirect(302, &render::read_href(url));
             }
+            let open = ctx.outside.lock().unwrap().contains(url);
             match ctx.raw(url, key) {
                 Some(body) => Resp {
                     status: 200,
                     headers: vec![
                         ("Content-Type", "text/html; charset=utf-8".into()),
-                        ("Content-Security-Policy", render::SANDBOX.into()),
+                        ("Content-Security-Policy", if open { render::SANDBOX } else { render::SHUT }.into()),
                     ],
-                    body: render::raw_html(&body),
+                    body: render::raw_html(&body, open),
                 },
                 None => plain(404),
             }
         }
-        ("/" | "/read" | "/connect" | "/open", true) | ("/history/clear" | "/comment" | "/forum" | "/follow", false) if !trusted(req, port) => plain(403),
+        ("/" | "/read" | "/connect" | "/open", true) | ("/history/clear" | "/comment" | "/forum" | "/follow" | "/outside", false) if !trusted(req, port) => plain(403),
         ("/open", true) => answered(ctx, &address(req.arg("url").unwrap_or(""))),
         ("/forum", false) if req.method == "POST" => {
             if !req.origin.as_deref().is_some_and(|o| reader_origin(o, port)) {
@@ -675,6 +686,23 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
                 return plain(403);
             }
             follow(ctx, req)
+        }
+        // the note's button: this page's outside content, loaded from now
+        // on until the reader quits. Never the frame's own doing: it has
+        // no cookie and an opaque origin.
+        ("/outside", false) if req.method == "POST" => {
+            if !req.origin.as_deref().is_some_and(|o| reader_origin(o, port)) {
+                return plain(403);
+            }
+            let url = req.arg("url").unwrap_or("");
+            if url.is_empty() {
+                return plain(400);
+            }
+            ctx.outside.lock().unwrap().insert(url.to_string());
+            if form_field(&req.body, "back", 16) == "home" {
+                return redirect(303, "/");
+            }
+            redirect(303, &render::read_href(url))
         }
         ("/history/clear", false) if req.method == "POST" => {
             if !req.origin.as_deref().is_some_and(|o| reader_origin(o, port)) {
@@ -1383,12 +1411,91 @@ mod tests {
         name: &str,
         answer: impl Fn(&str) -> Result<NativePage, ReadError> + Send + Sync + 'static,
     ) -> (Ctx, Arc<AtomicUsize>, Said) {
+        expiring_on(name, PORT, answer)
+    }
+
+    fn expiring_on(
+        name: &str,
+        port: u16,
+        answer: impl Fn(&str) -> Result<NativePage, ReadError> + Send + Sync + 'static,
+    ) -> (Ctx, Arc<AtomicUsize>, Said) {
         let dir = std::env::temp_dir().join(format!("reader-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let calls = Arc::new(AtomicUsize::new(0));
         let expired = Said::default();
         let fake = Fake { calls: calls.clone(), expired: expired.clone(), answer: Box::new(answer), said: Said::default(), refuse: None, open: Arc::default(), opens: Arc::default(), comets: Arc::default(), fills: Arc::default(), forum: Arc::default(), wrote: Wrote::default(), pubs: Pubs::default() };
-        (Ctx::new(Box::new(fake), History::open(&dir), PORT), calls, expired)
+        (Ctx::new(Box::new(fake), History::open(&dir), port), calls, expired)
+    }
+
+    /// In a real browser (scripts/reader-outside.mjs, puppeteer and
+    /// Chromium): a publisher's page that fetches, draws an image, imports
+    /// a stylesheet and opens a socket to another host reaches it with
+    /// none of them, and shows the note, until its button is clicked.
+    #[test]
+    #[ignore = "needs node, scripts/node_modules and Chromium"]
+    fn a_browser_loads_no_outside_content_until_asked() {
+        // the "outside" host: another loopback address, as a LAN host or
+        // the publisher's own server would be, counting what reaches it
+        let out = TcpListener::bind(("127.0.0.2", 0)).unwrap();
+        let base = format!("http://127.0.0.2:{}", out.local_addr().unwrap().port());
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let s2 = seen.clone();
+        std::thread::spawn(move || {
+            for c in out.incoming().flatten() {
+                let mut line = String::new();
+                if BufReader::new(&c).read_line(&mut line).is_err() {
+                    continue;
+                }
+                let path = line.split(' ').nth(1).unwrap_or("").split('?').next().unwrap_or("").to_string();
+                let body = if path == "/__hits" {
+                    s2.lock().unwrap().join("\n")
+                } else {
+                    s2.lock().unwrap().push(path);
+                    String::new()
+                };
+                let _ = (&c).write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: *\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let html = format!(
+            "<!doctype html><style>@import url('{base}/import.css');</style><img src=\"{base}/img.png\">\
+             <script>fetch('{base}/fetch').catch(function(){{}});try{{new WebSocket('{}/socket')}}catch(e){{}}</script><p>page",
+            base.replace("http:", "ws:")
+        );
+        let reader = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = reader.local_addr().unwrap().port();
+        let (c, _, _) = expiring_on("browser", port, move |u| {
+            if u == "urb://~zod/site" {
+                Ok(page_of(&html, "html"))
+            } else {
+                Err(ReadError::NotPublished(u.into()))
+            }
+        });
+        let c = Arc::new(c);
+        std::thread::spawn(move || {
+            for s in reader.incoming().flatten() {
+                let c = c.clone();
+                std::thread::spawn(move || {
+                    let _ = serve(&c, s);
+                });
+            }
+        });
+        let boot = format!(
+            "http://127.0.0.1:{port}/boot?k={}&to={}",
+            token(),
+            render::enc("/read?url=urb://~zod/site")
+        );
+        let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/reader-outside.mjs");
+        let run = std::process::Command::new("node").args([script, &boot, &base]).output().expect("node");
+        let said = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+        assert!(run.status.success(), "{said}");
+        println!("{said}");
     }
 
     fn expired_urls(e: &Said) -> Vec<String> {
@@ -2077,6 +2184,63 @@ mod tests {
         assert_eq!(ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2Findex", &cookie())).0, 404);
     }
 
+    /// the frame's `/raw` for the page just shown at `read`, and its policy
+    fn frame_policy(c: &Ctx, read: &str) -> String {
+        let (_, out) = ask(c, &get(read, &cookie()));
+        let src = out.split("<iframe").nth(1).unwrap().split("src=\"").nth(1).unwrap().split('"').next().unwrap().replace("&amp;", "&");
+        let frame = get(
+            &src,
+            &format!("Origin: null\r\nReferer: http://127.0.0.1:{PORT}/\r\nSec-Fetch-Site: same-origin\r\nSec-Fetch-Dest: iframe\r\n"),
+        );
+        let (st, out) = ask(c, &frame);
+        assert_eq!(st, 200, "{out}");
+        out.split("Content-Security-Policy: ").nth(1).unwrap().split("\r\n").next().unwrap().to_string()
+    }
+
+    fn post_outside(url: &str, extra: &str, body: &str) -> String {
+        format!(
+            "POST /outside?url={} HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\n{extra}Content-Type: application/x-www-form-urlencoded\r\n\
+             Content-Length: {}\r\n\r\n{body}",
+            render::enc(url),
+            body.len()
+        )
+    }
+
+    #[test]
+    fn outside_content_is_loaded_only_for_the_page_the_reader_chose() {
+        let (c, _) = ctx("outside", |u| match u {
+            "urb://~zod/site" | "urb://~zod/other" => Ok(page_of("<img src=\"https://evil.example/x.png\">", "html")),
+            u => Err(ReadError::NotPublished(u.into())),
+        });
+        let (_, out) = ask(&c, &get("/read?url=urb://~zod/site", &cookie()));
+        assert!(out.contains(
+            "<form class=\"outside\" method=\"post\" action=\"/outside?url=urb%3A%2F%2F~zod%2Fsite\" hidden>"
+        ));
+        assert_eq!(frame_policy(&c, "/read?url=urb://~zod/site"), render::SHUT);
+        // the frame (opaque origin, no cookie), another site, or no
+        // cookie cannot open it
+        let ours = format!("Origin: http://127.0.0.1:{PORT}\r\n");
+        for extra in [
+            format!("Origin: null\r\nReferer: http://127.0.0.1:{PORT}/\r\n"),
+            format!("{}Origin: null\r\n", own()),
+            format!("{}Origin: http://evil.example\r\n", own()),
+            ours.clone(),
+        ] {
+            assert_eq!(ask(&c, &post_outside("urb://~zod/site", &extra, "")).0, 403, "{extra}");
+        }
+        assert_eq!(frame_policy(&c, "/read?url=urb://~zod/site"), render::SHUT);
+        let (st, out) = ask(&c, &post_outside("urb://~zod/site", &format!("{}{ours}", own()), ""));
+        assert_eq!(st, 303);
+        assert!(out.contains("Location: /read?url=urb%3A%2F%2F~zod%2Fsite\r\n"), "{out}");
+        assert_eq!(frame_policy(&c, "/read?url=urb://~zod/site"), render::SANDBOX);
+        // that page only
+        assert_eq!(frame_policy(&c, "/read?url=urb://~zod/other"), render::SHUT);
+        // from the home's start list, back home
+        let (st, out) = ask(&c, &post_outside(render::START_URL, &format!("{}{ours}", own()), "back=home"));
+        assert_eq!(st, 303);
+        assert!(out.contains("Location: /\r\n"), "{out}");
+    }
+
     fn post_follow(url: &str, extra: &str, body: &str) -> String {
         format!(
             "POST /follow?url={} HTTP/1.1\r\nHost: 127.0.0.1:{PORT}\r\n{extra}Content-Type: application/x-www-form-urlencoded\r\n\
@@ -2197,8 +2361,9 @@ mod tests {
         );
         let (st, out) = ask(&c, &frame);
         assert_eq!(st, 200, "{out}");
-        assert!(out.contains(&format!("Content-Security-Policy: {}\r\n", render::SANDBOX)));
-        assert!(out.contains("<base target=\"_top\"><h1>site</h1><a href=\"/read?url=urb://~nec/y\">"));
+        assert!(out.contains(&format!("Content-Security-Policy: {}\r\n", render::SHUT)));
+        assert!(out.contains("<base target=\"_top\"><script>(function(){"));
+        assert!(out.contains("</script><h1>site</h1><a href=\"/read?url=urb://~nec/y\">"));
         assert_eq!(calls.load(Ordering::SeqCst), 1, "/raw read again");
         // without our Referer, or with a key it never gave out, nothing
         assert_eq!(ask(&c, &get(&src, "")).0, 403);
@@ -2228,7 +2393,7 @@ mod tests {
         );
         let (st, out) = ask(&c, &frame);
         assert_eq!(st, 200, "{out}");
-        assert!(out.contains(&format!("Content-Security-Policy: {}\r\n", render::SANDBOX)));
+        assert!(out.contains(&format!("Content-Security-Policy: {}\r\n", render::SHUT)));
         assert!(out.contains("<h1>Styled start</h1><a href=\"/read?url=urb://~nec/y\">"), "{out}");
     }
 
