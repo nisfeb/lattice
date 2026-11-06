@@ -1,6 +1,6 @@
 {
   "name": "lattice",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Lattice on your Urbit ship as Claude's memory, and your wiki and other ships' pages as its knowledge.",
   "author": { "name": "nisfeb" },
   "homepage": "https://github.com/nisfeb/lattice/tree/main/plugins/claude",
@@ -31,7 +31,7 @@
     "skills_dir": {
       "type": "string",
       "title": "Skills directory",
-      "description": "Where the ship's skills are mirrored at session start, for Claude Code to load: ~/.claude/skills when empty. off turns the mirror off.",
+      "description": "Where the ship's skills are mirrored at session start, for Claude Code to load: $CLAUDE_CONFIG_DIR/skills (else ~/.claude/skills) when empty. off turns the mirror off.",
       "default": ""
     }
   }

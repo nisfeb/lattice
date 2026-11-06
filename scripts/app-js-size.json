@@ -1,5 +1,5 @@
 {
-  "bytes": 724231,
+  "bytes": 736325,
   "grow": 4096,
-  "why": "release 117: app.js was 711,328 bytes at release 116, plus the inbox (feat-notifications: Held and Activity tabs with approve, reject, mark read and open, the badge from /notify-count, and the /beacon/notify listener, 5,812 bytes) and the following folder in the tree (feat-follow-folder: 69x-follow.js, the list, the N new counts, the 20 minute re-read, unfollow and seen, and its /beacon/folds listener, 7,091 bytes). Both are drawn on boot (the badge and the tree), so neither can load lazily."
+  "why": "release 119: main after 117 was 726,303 bytes. feat-preview-checkboxes adds a task box in the editor's preview that toggles its source line (59-md.js data-line and taskToggle, 60-preview.js taskFlip, about 3.2 KB). fix-editor-cursor adds the vim block cursor (27-vim.js, 4,700 bytes) and hlSplice, which writes each edit straight into the highlight overlay so the caret no longer drifts on long pages (25-editor.js, 2,100 bytes). The preview, the editor and vim are all on screen from boot, so none can load lazily."
 }

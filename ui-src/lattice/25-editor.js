@@ -20,7 +20,45 @@
     clearTimeout(hlPlain); clearTimeout(hlKill); hlCur = null;
     if (hlNext) { const j = hlNext; hlNext = null; hlRun(j); }
   };
-  const hlPaint = (body) => { hl.innerHTML = esc(body) + '\n'; sync(); };
+  // hlPainted: told after every change to the overlay's text, so the vim
+  // block cursor (27-vim.js) measures the text it sits on, not the last one
+  let hlPainted = () => {};
+  const hlPaint = (body) => { hl.innerHTML = esc(body) + '\n'; sync(); hlPainted(); };
+  // hlSplice: the typed change, put straight into the overlay's text nodes.
+  // The textarea's text is invisible and the overlay's is what shows, so
+  // until the highlight comes back the overlay held the text from before
+  // the keystroke. Past 60 KB that is 120 ms after the LAST key, so a fast
+  // typist on a long page saw every character late, the lines below an
+  // Enter on their old rows, and the overlay, shorter than the textarea,
+  // clamped its scrollTop below the textarea's: the caret drifted off the
+  // text it was in. Splicing keeps the highlight's spans (their colours
+  // lag a little), and the text and its geometry are the textarea's at once.
+  const hlSplice = () => {
+    const old = hl.textContent, now = src.value;
+    // only over a copy of the editor's own text (not the Writer's blank)
+    if (!old.endsWith('\n') || old === now + '\n') return;
+    const ol = old.length - 1, nl = now.length, m = Math.min(ol, nl);
+    let a = 0; while (a < m && old.charCodeAt(a) === now.charCodeAt(a)) a++;
+    let z = 0; while (z < m - a && old.charCodeAt(ol - 1 - z) === now.charCodeAt(nl - 1 - z)) z++;
+    // never split a surrogate pair between the kept and the replaced text
+    if (a && (old.charCodeAt(a - 1) & 0xfc00) === 0xd800) a--;
+    if (z && (old.charCodeAt(ol - z) & 0xfc00) === 0xdc00) z--;
+    // offsets are the old text's: a deletion in one node moves no other
+    const w = document.createTreeWalker(hl, NodeFilter.SHOW_TEXT);
+    let n, at = 0, rest = ol - z - a, host = null, hostAt = 0;
+    while ((n = w.nextNode())) {
+      const len = n.length, end = at + len;
+      if (!host && a <= end) { host = n; hostAt = a - at; }
+      if (rest > 0 && end > a) {
+        const from = Math.max(0, a - at), k = Math.min(rest, len - from);
+        if (k > 0) { n.deleteData(from, k); rest -= k; }
+      }
+      if (host && rest <= 0) break;
+      at = end;
+    }
+    if (host) host.insertData(hostAt, now.slice(a, nl - z));
+    hlPainted();
+  };
   const hlRun = (job) => {
     // newer text while a job runs shows plain until its own turn
     if (hlCur) { hlNext = job; hlPaint(job.body); return; }
@@ -31,7 +69,7 @@
         hlFresh = false;
         const j = hlCur;
         if (j && j.body === src.value && j.lang === LMAP[pkind.value]) {
-          hl.innerHTML = e.data + '\n'; sync();
+          hl.innerHTML = e.data + '\n'; sync(); hlPainted();
         } else if (j && !hlNext) {
           // stale: the text or the kind moved on while this job ran. A
           // fast answer has already cancelled the plain paint, so paint
@@ -67,7 +105,7 @@
     // (99-boot.js), and every LMAP language is in it, so until it lands a
     // known language is taken as highlightable.
     const g = lang && (!window.Prism || Prism.languages[lang]);
-    if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; return; }
+    if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; hlPainted(); return; }
     hlRun({ body: src.value, lang });
   };
   const sync = () => { hl.scrollTop = src.scrollTop; hl.scrollLeft = src.scrollLeft; };
@@ -122,6 +160,7 @@
       src.addEventListener('input', () => {
         dirty = true;
         everTyped = true;      // never cleared: see 20-state.js
+        hlSplice();
         scheduleRender();
         clearTimeout(autoTimer);
         autoTimer = setTimeout(autosave, 2000);

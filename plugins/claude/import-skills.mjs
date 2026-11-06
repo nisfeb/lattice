@@ -3,7 +3,8 @@
 //
 //   LATTICE_URL=https://ship.example.com LATTICE_KEY=<key> node import-skills.mjs [--yes] [dir ...]
 //
-// With no dirs it reads ~/.claude/skills and every installed plugin's
+// With no dirs it reads <config dir>/skills ($CLAUDE_CONFIG_DIR, else
+// ~/.claude) and every installed plugin's
 // skills (~/.claude/plugins/cache/*/*/*/skills, newest version of each
 // plugin). Each <dir>/<name>/SKILL.md becomes a lattice skill, with its md,
 // txt, json and yaml files. Anything else (scripts, binaries) is left out
@@ -17,7 +18,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MARKER, nameOk, pathOk } from './hooks/skills-sync.mjs';
+import { MARKER, nameOk, pathOk, claudeHome } from './hooks/skills-sync.mjs';
 
 const args = process.argv.slice(2);
 const yes = args.includes('--yes');
@@ -38,7 +39,7 @@ async function call(method, route, params, body) {
 }
 
 function pluginSkillDirs() {
-  const cache = path.join(os.homedir(), '.claude/plugins/cache');
+  const cache = path.join(claudeHome(), 'plugins/cache');
   const out = [];
   for (const mk of safeList(cache)) {
     for (const pl of safeList(path.join(cache, mk))) {
@@ -82,7 +83,7 @@ function prepare(text, fallback) {
   return { name, body: `---\n${lines.join('\n')}\n---\n${text.slice(m[0].length)}` };
 }
 
-const roots = dirs.length ? dirs : [path.join(os.homedir(), '.claude/skills'), ...pluginSkillDirs()];
+const roots = dirs.length ? dirs : [path.join(claudeHome(), 'skills'), ...pluginSkillDirs()];
 let saved = 0;
 const seen = new Map();
 for (const root of roots) {

@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { makeCheck } from './lib/check.mjs';
-import { syncSkills, MARKER } from '../plugins/claude/hooks/skills-sync.mjs';
+import { syncSkills, MARKER, claudeHome } from '../plugins/claude/hooks/skills-sync.mjs';
 
 const check = makeCheck();
 const scratch = process.env.LATTICE_SCRATCH || path.join(os.homedir(), '.cache/lattice-gate');
@@ -80,4 +80,10 @@ try {
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
+// where the mirror goes by default: the config dir Claude Code runs with
+// (reins and second accounts set CLAUDE_CONFIG_DIR), else ~/.claude
+check('no CLAUDE_CONFIG_DIR is ~/.claude', claudeHome({}) === path.join(os.homedir(), '.claude'));
+check('CLAUDE_CONFIG_DIR wins', claudeHome({ CLAUDE_CONFIG_DIR: '/x/acct2' }) === '/x/acct2');
+check('  ...with ~ expanded', claudeHome({ CLAUDE_CONFIG_DIR: '~/.claude-acct2' }) === path.join(os.homedir(), '.claude-acct2'));
+check('  ...and blank ignored', claudeHome({ CLAUDE_CONFIG_DIR: '  ' }) === path.join(os.homedir(), '.claude'));
 check.done();
