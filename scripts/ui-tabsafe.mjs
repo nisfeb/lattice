@@ -512,11 +512,16 @@ try {
       && kept.tab === P && kept.text && kept.dot, JSON.stringify(kept));
 
     //  leaving the editor asks too, and cancel stays. The one way off it
-    //  is the desktop's manager page (Browser and Forum are tabs), here
-    //  with a stand-in for the desktop's bridge.
+    //  is an older desktop's manager page (Browser and Forum are tabs),
+    //  here with a stand-in for that shell's bridge. It refuses status,
+    //  as an older shell does: one that answers it opens the Settings tab
+    //  instead (latOpenManager, 24-tools.js, since release 118).
     await page.evaluate(() => {
       window.__mgr = null;
-      window.__TAURI__ = { core: { invoke: async (cmd) => { window.__mgr = cmd; } } };
+      window.__TAURI__ = { core: { invoke: async (cmd) => {
+        if (cmd === 'status') throw new Error('unknown command status');
+        window.__mgr = cmd;
+      } } };
     });
     await page.evaluate(() => { window.latOpenManager(); });
     const lAsk = await dlgUp();

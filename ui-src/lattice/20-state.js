@@ -7,8 +7,10 @@
   // worker takes over, and must never do that over typed work.
   // A parked tab (21-tabs.js) holds its own dirty buffer, so the live flag
   // alone misses work typed into any tab that is not in front, in any group.
+  // A SKILL.md being edited in the Skills tab (95s-skills.js) counts too.
   window.__latUnsaved = () => dirty === true
-    || allTabs().some((t) => t !== activeTab && t.snap && t.snap.dirty);
+    || allTabs().some((t) => t !== activeTab && t.snap && t.snap.dirty)
+    || skUnsaved();
   // Whether the user has typed since the current editor view was established.
   // Cleared by applyPage/newFile (a fresh view), NEVER by autosave — and that
   // is the point: `dirty` cannot answer "did the user do something while

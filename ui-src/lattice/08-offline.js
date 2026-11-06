@@ -19,6 +19,8 @@
   // save lands when the job ends, so the queue holds it and says so.
   let jobWait = false;
   const JOB_NOTE = 'a folder job is running, your save will land when it finishes';
+  const NOT_SAVED = 'NOT SAVED — this device cannot store offline edits. Copy your text '
+    + 'somewhere safe before closing this page.';
   // The persistent offline indicator. The status line reports EVENTS and the
   // next one overwrites it, so "saved offline" scrolls away while you are
   // still offline and still queueing. This reports the CONDITION and stays up
@@ -150,6 +152,28 @@
     bustPages(name);
     await offRecount();
   };
+  //  A replay sent q, and q landed. The queue is keyed by name, so a newer
+  //  edit of the same page queued while q flew (a live save that timed out
+  //  behind the replay) sits under the same key: deleting by name dropped
+  //  it. Only the exact record sent goes. A newer one is kept, and the
+  //  drain runs again for it.
+  const sameRec = (a, b) => a.queuedAt === b.queuedAt && a.body === b.body;
+  let offKept = false;
+  const offDone = async (q) => {
+    if (!qrust()) await idbDelSent(q);
+    else {
+      try { await qcall('queue_del', { name: q.name, sent: { queuedAt: q.queuedAt, body: q.body } }); }
+      catch {}
+    }
+    let v = null;
+    try { v = await offGet(q.name); } catch {}
+    const kept = !!v && !sameRec(v, q);
+    //  the create it rode on has landed, so the newer text is a plain edit
+    if (kept && v.isNew) await offPut({ ...v, isNew: false, baseRev: 0 });
+    if (kept) offKept = true;
+    bustPages(q.name);
+    await offRecount();
+  };
   const opAll = async () => {
     if (!qrust()) return idbOpAll();
     try { return (await qcall('queue_ops')) || []; } catch { return []; }
@@ -223,6 +247,22 @@
   };
   const idbDel = async (name) => {
     const s = await idbStore('saves', 'readwrite'); if (s) await offReq(s.delete(name));
+  };
+  //  delete `q.name` only while the stored record is still q, in one
+  //  transaction
+  const idbDelSent = async (q) => {
+    const s = await idbStore('saves', 'readwrite');
+    if (!s) return;
+    return new Promise((res) => {
+      const g = s.get(q.name);
+      g.onsuccess = () => {
+        const v = g.result;
+        if (!v || !sameRec(v, q)) return res();
+        const d = s.delete(q.name);
+        d.onsuccess = d.onerror = () => res();
+      };
+      g.onerror = () => res();
+    });
   };
   offRecount();
   const kvGet = async (k) => {
@@ -383,14 +423,14 @@
     try { prev = await offGet(name); } catch {}
     //  behind a job the timed-out writes still land, so a base would only
     //  flag our own text as a conflict: no base claim, as a live save
-    const queued = await offPut({ name, kind, body, baseRev: jobWait ? 0 : rev || 0,
+    //  so does a replay: the editor's rev is from before the replayed text
+    const queued = await offPut({ name, kind, body, baseRev: jobWait || replaying ? 0 : rev || 0,
       isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
     const job = saveStalled();
     if (!queued) {
-      st('NOT SAVED — this device cannot store offline edits. Copy your text '
-        + 'somewhere safe before closing this page.', false);
+      st(NOT_SAVED, false);
       return false;
     }
     pageCache.delete(name);
@@ -445,11 +485,8 @@
     }
     await opPut({ ...rec, queuedAt: Date.now() });
     setDegraded(true);
-    st(rec.op === 'del'
-      ? 'deleted offline — ' + offCount + ' waiting to sync'
-      : rec.op === 'mkdir'
-        ? 'folder created offline — ' + offCount + ' waiting to sync'
-        : 'moved offline — ' + offCount + ' waiting to sync');
+    st(({ del: 'deleted', mkdir: 'folder created' }[rec.op] || 'moved')
+      + ' offline — ' + offCount + ' waiting to sync');
   }
 
   // know memories share the queue under a 'know:' prefix. Page names cannot
@@ -460,8 +497,7 @@
     const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
     const job = saveStalled();
     if (!queued) {
-      st('NOT SAVED — this device cannot store offline edits. Copy your text '
-        + 'somewhere safe before closing this page.', false);
+      st(NOT_SAVED, false);
       return false;
     }
     knowGen++;
@@ -496,7 +532,10 @@
     replaying = true;
     srcFlight.clear();    // replayed writes: no open read from before is shared
     sensForget();         // and a replayed move or delete culls flags
+    offKept = false;
     try { await drainQueue(proven); } finally { replaying = false; }
+    //  a newer edit outlived its replayed older copy: send it now
+    if (offKept && !degraded) setTimeout(() => replayQueue(true), 0);
   }
 
   //  Each drain phase returns FALSE when it could not finish. Usually that is
@@ -559,7 +598,7 @@
           '&type=' + q.kind + '&new=1' + dnameQ(q),
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
-      if (one && one.ok) { await offDel(q.name); continue; }
+      if (one && one.ok) { await offDone(q); continue; }
       //  409 is in the drop set, so it falls through to its own branch below
       if (!replayDrop(one)) return false;
       // 409: the name is taken on the ship. Do NOT drop the user's body — move
@@ -579,27 +618,22 @@
           const sr = await tfetch(api + '/page-source?name=' +
             encodeURIComponent(q.name), {}, 20000);
           if (sr && sr.ok && ((await sr.json()).body || '') === (q.body || '\n')) {
-            await offDel(q.name);
+            await offDone(q);
             continue;
           }
         } catch {}
         const alt = 'conflicts/offline-create-' + q.name.replace(/\//g, '-');
-        let two = null;
-        try {
-          two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
-            '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
-        } catch {}
         //  the preservation write is the only thing standing between the user
         //  and a lost document, so if it does not land the record stays queued
-        if (!(two && two.ok)) return false;
+        if (!await keepAside(q, alt)) return false;
         conflicts.push(alt);
-        await offDel(q.name);
+        await offDone(q);
         st('offline create collided: ' + q.name + ' exists on the ship — your ' +
           'version is kept at ' + alt, false);
         continue;
       }
       st('dropped an unsyncable offline create: ' + q.name, false);
-      await offDel(q.name);
+      await offDone(q);
     }
     return true;
   }
@@ -608,6 +642,14 @@
   // uploads, wrong for replay. One poisoned record would block the queue
   // forever. A rejected batch falls back to per-item saves so the bad record
   // is isolated and DROPPED (it can never apply; review gap 3).
+  // a queued body kept as a page of its own at `alt`; true once it landed
+  const keepAside = async (q, alt) => {
+    try {
+      const r = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
+        '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
+      return !!(r && r.ok);
+    } catch { return false; }
+  };
   async function drainEdits(edits, conflicts) {
     for (let i = 0; i < edits.length; i += 50) {
       const part = edits.slice(i, i + 50);
@@ -628,7 +670,7 @@
           for (const it of ((await r.json()).items || []))
             if (it.conflicted) conflicts.push(it.kept || it.name);
         } catch {}
-        for (const q of part) await offDel(q.name);
+        for (const q of part) await offDone(q);
         continue;
       }
       //  a 5xx from the batch may be one poisoned record, so retry per item
@@ -647,7 +689,7 @@
               const j = await one.json();
               if (j.conflicted) conflicts.push(j.kept || q.name);
             } catch {}
-            await offDel(q.name);
+            await offDone(q);
             continue;
           }
           if (!replayDrop(one)) return false;
@@ -657,19 +699,14 @@
           // collision is; if that write fails the record stays queued.
           if (one && one.status === 409) {
             const alt = 'conflicts/offline-edit-' + q.name.replace(/\//g, '-');
-            let two = null;
-            try {
-              two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
-                '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
-            } catch {}
-            if (!(two && two.ok)) return false;
+            if (!await keepAside(q, alt)) return false;
             conflicts.push(alt);
-            await offDel(q.name);
+            await offDone(q);
             st('offline edit refused: ' + q.name + ', your version is kept at ' + alt, false);
             continue;
           }
           st('dropped an unsyncable offline edit: ' + q.name, false);
-          await offDel(q.name);
+          await offDone(q);
         }
         continue;
       }
@@ -687,10 +724,10 @@
         one = await tfetch(api + '/know-save?key=' + encodeURIComponent(q.name.slice(5)),
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
-      if (one && one.ok) { await offDel(q.name); continue; }
+      if (one && one.ok) { await offDone(q); continue; }
       if (!replayDrop(one)) return false;
       st('dropped an unsyncable offline edit: ' + q.name, false);
-      await offDel(q.name);
+      await offDone(q);
     }
     return true;
   }

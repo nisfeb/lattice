@@ -82,12 +82,13 @@ pub fn load_at(p: &Path) -> Config {
         .unwrap_or_default()
 }
 
+/// Via a temp file and a rename. A plain write truncates config.json first,
+/// so a full disk or a crash mid-write left it empty, and load_at reads an
+/// empty file as the default: the ship, the mounts, the backup schedules and
+/// the frozen queue key all gone, the last orphaning every queued edit.
 pub fn save_at(p: &Path, c: &Config) -> Result<(), String> {
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
     let s = serde_json::to_string_pretty(c).map_err(|e| e.to_string())?;
-    std::fs::write(p, s).map_err(|e| e.to_string())
+    crate::session::write_private(p, s.as_bytes())
 }
 
 fn path(app: &tauri::AppHandle) -> Option<PathBuf> {
@@ -207,6 +208,22 @@ mod tests {
         assert_eq!(back.mounts.len(), 1);
         assert_eq!(back.mounts[0].root, "notes");
         std::fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn a_save_replaces_the_file_and_never_rewrites_it_in_place() {
+        // In place means a failed write leaves a truncated config.json. A
+        // second link to the old file is how a test can see the difference:
+        // a rename leaves it holding the old bytes.
+        let p = tmp("atomic");
+        save_at(&p, &Config { url: "http://old:8080".into(), ..Default::default() }).unwrap();
+        let old = tmp("atomic-old");
+        std::fs::hard_link(&p, &old).unwrap();
+        save_at(&p, &Config { url: "http://new:8080".into(), ..Default::default() }).unwrap();
+        assert_eq!(load_at(&p).url, "http://new:8080");
+        assert_eq!(load_at(&old).url, "http://old:8080", "config.json was rewritten in place");
+        std::fs::remove_file(&p).ok();
+        std::fs::remove_file(&old).ok();
     }
 
     use proptest::prelude::*;

@@ -127,10 +127,14 @@ try {
     [...document.querySelectorAll('.tmenu [data-mi]')].map((b) => b.dataset.mi));
   check('the menu lists its items',
     ['kind', 'wrap', 'dup', 'download', 'raw', 'del'].every((i) => items.includes(i)), JSON.stringify(items));
+  //  Export PDF (data-mi pdf) exports this page alone and shows on a page
+  //  of a printable kind, an md page here; ui-pdf.mjs covers it. Any other
+  //  export (the vault's) stays out of the page menu.
   const labels = await desk.evaluate(() =>
-    [...document.querySelectorAll('.tmenu [data-mi]')].map((b) => b.textContent));
+    [...document.querySelectorAll('.tmenu [data-mi]')].filter((b) => b.dataset.mi !== 'pdf').map((b) => b.textContent));
   check('the menu has Download and no Export vault',
     labels.includes('Download') && !labels.some((l) => /export/i.test(l)), JSON.stringify(labels));
+  check('an md page offers Export PDF', items.includes('pdf'), JSON.stringify(items));
   check('convert to html is not offered off the desktop app and off tex', !items.includes('tex'),
     JSON.stringify(items));
   await desk.click('.tmenu [data-mi="kind"]');

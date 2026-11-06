@@ -264,7 +264,11 @@ jobs:
           "$VERE" --version | head -1
       - name: grubbery's commit
         id: grub
-        run: echo "sha=$(git ls-remote https://github.com/nisfeb/grubbery refs/heads/dist/single-release | cut -c1-12)" >> "$GITHUB_OUTPUT"
+        # a failed ls-remote would key the pier cache on an empty commit
+        run: |
+          sha=$(set -o pipefail; git ls-remote https://github.com/nisfeb/grubbery refs/heads/dist/single-release | cut -c1-12)
+          [ -n "$sha" ]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       #  restore and save apart: a failing check must not cost the next
       #  run the base build
       - name: cached ~zod with grubbery
@@ -333,13 +337,17 @@ jobs:
           for f in scripts/*.sh scripts/lib/*.sh; do bash -n "$f"; done
           for f in scripts/writer-corpus/*.py; do python3 -m py_compile "$f"; done
       # the agent plugins (plugins/): they parse, their manifests are JSON,
+      # the Hermes plugin passes its fake-ship check (hermes-plugin-check.py),
       # and the Claude plugin's MCP server answers tools/list
       - name: agent plugins
         run: |
           node --check plugins/claude/server.mjs
           node --check plugins/claude/hooks/lattice-hook.mjs
           node --check plugins/claude/url-rule.mjs
+          node --check plugins/claude/hooks/skills-sync.mjs
+          node --check plugins/claude/import-skills.mjs
           python3 -m py_compile plugins/hermes/__init__.py
+          python3 scripts/hermes-plugin-check.py
           for f in .claude-plugin/marketplace.json plugins/claude/.claude-plugin/plugin.json plugins/claude/.mcp.json plugins/claude/hooks/hooks.json; do python3 -m json.tool "$f" >/dev/null; done
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node plugins/claude/server.mjs | grep -q memory_recall
       # Every pure (non-browser) harness, found by glob rather than a hand-kept
@@ -361,6 +369,7 @@ jobs:
             echo "--- $(basename "$f") ---"
             node "$f"
           done
+          node scripts/gate-claim-check.mjs
       # The desk's own closure: every marc and import the code names is in
       # code/ (a guest install resolves nothing outside it), and bill.json
       # names only nexuses that exist. code-closure caught the rise-later

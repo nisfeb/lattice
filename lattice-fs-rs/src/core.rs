@@ -479,7 +479,12 @@ impl GrubberyFs {
         // the vpath for a scratch handle.
         if scratch {
             let mut s = self.st.lock().unwrap();
-            s.scratch.insert(rel, buf);
+            // Only into an entry that is still there. An unlink while the file
+            // was open removed it, and inserting here brought the file back
+            // at the close, listed again for the life of the mount.
+            if let Some(v) = s.scratch.get_mut(&rel) {
+                *v = buf;
+            }
             if let Some(h) = s.handles.get_mut(&fh) {
                 h.dirty = h.gen != gen;
                 h.new = false;
@@ -685,6 +690,21 @@ impl State {
         self.body_rev.remove(rel);
         cache_take(&mut self.read_cache, &mut self.read_cache_bytes, rel)
     }
+
+    /// A rename the ship accepted: the source's cached body now belongs to
+    /// the destination. Only a fresh one is carried. A stale body (an
+    /// external edit since it was cached) put back as fresh served the
+    /// pre-edit bytes under the new name, and a save through it overwrote
+    /// the edit. Whatever the destination had cached goes either way: it is
+    /// the page that used to have that name, not the one that has it now.
+    fn carry_body(&mut self, src_rel: &str, dst_rel: &str) {
+        let fresh = !self.stale.contains(src_rel);
+        let body = self.cache_take(src_rel);
+        self.cache_take(dst_rel);
+        if let (true, Some(b)) = (fresh, body) {
+            self.cache_put(dst_rel, b);
+        }
+    }
 }
 
 /// An external change happened (the watch stream said so, or reconnected
@@ -874,8 +894,18 @@ pub(crate) fn now_secs() -> i64 {
 // the dirty flag. The vtree node's size can lag a write (the re-dump is async), so
 // an append that opened right after a write would otherwise seek to a stale offset
 // and corrupt the file.
+//
+// With several handles open, the one that answers is the one whose buffer is
+// going to the ship: a dirty one first, then a live writer, then the newest.
+// `find` over the HashMap picked one at random, so a reader left open beside
+// a writer made stat flip between the two lengths, and an append could seek
+// to the reader's.
 fn open_size(s: &State, rel: &str) -> Option<u64> {
-    s.handles.values().find(|h| h.rel == rel).map(|h| h.buf.len() as u64)
+    s.handles
+        .iter()
+        .filter(|(_, h)| h.rel == rel)
+        .max_by_key(|(&fh, h)| (h.dirty, h.writable && !h.flushed, fh))
+        .map(|(_, h)| h.buf.len() as u64)
 }
 
 fn dir_attr(ino: u64, mtime: SystemTime, uid: u32, gid: u32) -> FileAttr {
@@ -1148,6 +1178,7 @@ impl Filesystem for GrubberyFs {
             reply.error(err(libc::ENOENT));
             return;
         };
+        let scratch = is_scratch(leaf_of(&path), |ext| self.proj.kind_for_ext(ext));
         if let Some(sz) = size {
             if sz > MAX_FILE {
                 reply.error(err(libc::EFBIG));
@@ -1170,12 +1201,19 @@ impl Filesystem for GrubberyFs {
             //    and its buffer made empty and dirty would be committed over
             //    the save that follows. The same goes for a writer already
             //    flushed by its close(2). The newest writer is the O_TRUNC opener.
+            //
+            //    A scratch file is matched by its own vpath, the rel its
+            //    handles carry. rel_kind_of strips `foo.md~` to the page `foo`,
+            //    so asking it here made truncating a backup empty the page
+            //    open beside it, and the page's close then saved the emptiness.
             if !done {
-                let (rel, _) = self.rel_kind_of(&s, &path);
+                let rel = if scratch { path.clone() } else { self.rel_kind_of(&s, &path).0 };
                 let target = s
                     .handles
                     .iter()
-                    .filter(|(_, h)| h.rel == rel && h.writable && !h.flushed)
+                    .filter(|(_, h)| {
+                        h.scratch == scratch && h.rel == rel && h.writable && !h.flushed
+                    })
                     .map(|(&fh, _)| fh)
                     .max();
                 if let Some(hfh) = target {
@@ -1186,21 +1224,35 @@ impl Filesystem for GrubberyFs {
                     done = true;
                 }
             }
-            // 3) handle-less -> defer to the next open() (the `>`/O_TRUNC path)
+            // 3) handle-less -> defer to the next open() (the `>`/O_TRUNC path).
+            //    A scratch file's bytes are the scratch map itself, and its
+            //    open never reads pending_trunc, so truncate it there and now.
             if !done {
-                s.pending_trunc.insert(ino.0, sz);
+                if scratch {
+                    if let Some(b) = s.scratch.get_mut(&path) {
+                        b.resize(sz as usize, 0);
+                    }
+                } else {
+                    s.pending_trunc.insert(ino.0, sz);
+                }
             }
         }
-        let e = match s.vt.get(&path).cloned() {
-            Some(e) => e,
-            None => {
-                reply.error(err(libc::ENOENT));
-                return;
+        // The same answer getattr gives, scratch files included (they are not
+        // in the vtree, so a vtree lookup here failed every chmod or utimensat
+        // on one with ENOENT), with the file TTL of zero rather than a second
+        // of a size the next write may change. A parked truncate has no
+        // buffer yet to report its size, so the size asked for is the answer.
+        match self.attr_for(&mut s, &path, Some(ino.0)) {
+            Ok((mut attr, ttl)) => {
+                drop(s);
+                if let (Some(sz), FileType::RegularFile) = (size, attr.kind) {
+                    attr.size = sz;
+                    attr.blocks = sz.div_ceil(512);
+                }
+                reply.attr(&ttl, &attr);
             }
-        };
-        drop(s);
-        let attr = self.mk_attr(ino.0, &e, size);
-        reply.attr(&TTL, &attr);
+            Err(e) => reply.error(err(e)),
+        }
     }
 
     fn readdir(
@@ -1575,6 +1627,8 @@ impl Filesystem for GrubberyFs {
                 let mut s = self.st.lock().unwrap();
                 s.mutated(&path, false);
                 s.vt.remove(&path);
+                // a page made again under this name must not read as this one
+                s.cache_take(&rel);
                 drop(s);
                 reply.ok();
             }
@@ -1670,6 +1724,13 @@ impl Filesystem for GrubberyFs {
                     // the temp no longer exists under its old name
                     s.scratch.remove(&src_path);
                     s.vt.remove(&src_path);
+                    // a handle still open on the temp follows it, so its close
+                    // lands under the new name rather than nowhere
+                    for h in s.handles.values_mut() {
+                        if h.scratch && h.rel == src_path {
+                            h.rel = dst_path.clone();
+                        }
+                    }
                     remap_ino(&mut s, &src_path, &dst_path);
                     Ok(())
                 }
@@ -1693,17 +1754,13 @@ impl Filesystem for GrubberyFs {
                 // whole refresh interval. Carry the cached body across with it
                 // so the read after the rename also skips the round trip.
                 let moved = s.vt.remove(&src_path);
-                let body = s.cache_take(&src_rel);
                 if let Some(mut e) = moved {
                     if let Some(n) = e.node.as_mut() {
                         n.rel = dst_rel.clone();
                     }
                     s.vt.insert(dst_path.clone(), e);
                 }
-                if let Some(b) = body {
-                    // the destination may already have been cached
-                    s.cache_put(&dst_rel, b);
-                }
+                s.carry_body(&src_rel, &dst_rel);
                 s.recent.insert(src_path.clone(), (Instant::now(), false));
                 s.mutated(&dst_path, true);
                 remap_ino(&mut s, &src_path, &dst_path);
@@ -2188,6 +2245,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_size_of_an_open_file_is_the_writers_not_a_readers() {
+        // HashMap order differs per map, so a fresh map each round: a pick
+        // by iteration order loses one of these 32 times in 2^32
+        for _ in 0..32 {
+            let mut s = bare_state();
+            let mut reader = handle("a", "md", b"0123456789", false, false);
+            reader.writable = false;
+            s.handles.insert(1, reader);
+            s.handles.insert(2, handle("a", "md", b"abc", true, false));
+            assert_eq!(open_size(&s, "a"), Some(3));
+        }
+    }
+
+    #[test]
+    fn a_rename_carries_only_a_fresh_body_and_drops_the_destinations_own() {
+        let mut s = bare_state();
+        s.cache_put("a", b"pre-edit".to_vec());
+        s.stale.insert("a".into());
+        s.cache_put("b", b"the old b".to_vec());
+        s.carry_body("a", "b");
+        assert!(!s.read_cache.contains_key("a"));
+        assert!(
+            !s.read_cache.contains_key("b"),
+            "a stale body came back fresh under the new name, or the old b survived"
+        );
+        assert_eq!(s.read_cache_bytes, 0, "the byte total drifted");
+
+        s.cache_put("a", b"fresh".to_vec());
+        s.carry_body("a", "b");
+        assert_eq!(s.read_cache.get("b").map(Vec::as_slice), Some(&b"fresh"[..]));
+        assert!(!s.stale.contains("b"));
+        assert_eq!(s.read_cache_bytes, "b".len() + 5);
+    }
+
     fn handle(rel: &str, kind: &str, buf: &[u8], dirty: bool, scratch: bool) -> Handle {
         Handle {
             rel: rel.into(),
@@ -2424,11 +2516,12 @@ mod tests {
         // scratch map. If it ever POSTed, it would overwrite the page it shadows.
         let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
         let fs = warm_fs(f.clone());
-        fs.st
-            .lock()
-            .unwrap()
-            .handles
-            .insert(3, handle("/note.md~", "", b"backup bytes", true, true));
+        {
+            // as create leaves it: an entry in the map, and a handle on it
+            let mut s = fs.st.lock().unwrap();
+            s.scratch.insert("/note.md~".into(), Vec::new());
+            s.handles.insert(3, handle("/note.md~", "", b"backup bytes", true, true));
+        }
         fs.commit(3).unwrap();
 
         assert!(f.log().is_empty(), "a scratch handle must never POST to the ship");

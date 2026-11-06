@@ -53,6 +53,15 @@
 ++  desk-base
   `path`/apps/'shell.shell'/desks/'lattice.desk'/desk/data/'lattice.lattice_app'
 ++  peer-bases  ^-((list path) ~[desk-base app-base])
+::  +known-base: where the peers record (peers.json, a ship to its base)
+::  last found a peer, else desk-base. The one writer's sends use it, so a
+::  peer that never answers costs no wait there.
+++  known-base
+  |=  [known=(map @t json) shp=@p]
+  ^-  path
+  =/  hit=(unit json)  (~(get by known) (scot %p shp))
+  =/  pb=(unit path)  ?.(?=([~ %s *] hit) ~ (rush p.u.hit stap))
+  (fall pb desk-base)
 ::  +sub-keep-dir: the directory of a peer's published page that a /sub
 ::  keeps, its file being %gmi there. The peer runs lattice at base, and
 ::  rel is the page's spur (+page-rel).

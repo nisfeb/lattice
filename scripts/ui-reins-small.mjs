@@ -243,16 +243,24 @@ try {
     check('private says who can read it', /^Private: only you/.test(c.t.private || ''), JSON.stringify(c.t.private));
     check('the open page\'s mode is described under the buttons', /^Private: /.test(c.what), c.what);
     check('no em-dash in the share copy', !JSON.stringify(c).includes('\u2014'), '');
-    // a folder has no urb:// address, and a mixed one still says something
+    // A folder has a setting of its own (folder sharing). zpub has none,
+    // though its pages do, so it says it shares nothing and its pages keep
+    // theirs. Its only address is its index, urb://<ship>/<folder>/, never
+    // one of its pages', and with nothing shared there is no link to copy.
     await page.evaluate((k) => document.querySelector('#treelist [data-tk="' + CSS.escape(k) + '"]').click(),
       'f:' + RUN + '/zpub');
     await sleep(1200);
     const f = await page.evaluate(() => ({
       t: [...document.querySelectorAll('.share button')].map((b) => b.title),
       what: document.getElementById('sharewhat').textContent,
+      copy: !document.getElementById('shcopy').hidden,
     }));
-    check('a mixed folder is described, not left blank', /^Mixed: /.test(f.what), f.what);
-    check('no folder gets a urb:// address', !/urb:\/\/~/.test(JSON.stringify(f)), JSON.stringify(f));
+    check('a folder with no setting of its own says its pages keep theirs',
+      /^Private: the folder shares nothing\. Its pages keep their own settings\.$/.test(f.what), f.what);
+    const urbs = JSON.stringify(f.t).match(/urb:\/\/[^ "]*/g) || [];
+    check('a folder\'s only urb:// address is its index',
+      urbs.length > 0 && urbs.every((u) => u.replace(/[.,]$/, '') === 'urb://' + ship + '/' + RUN + '/zpub/'), JSON.stringify(urbs));
+    check('a private folder offers no link to copy', !f.copy, JSON.stringify(f));
   }
 
   // ── 4. Published pages in Access & groups ──────────────────────────────

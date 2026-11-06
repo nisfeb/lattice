@@ -205,6 +205,203 @@
   ?:  =('' u.d)  `'SKILL.md description: is empty'
   ?:  (gth (met 3 u.d) max-desc)  `'SKILL.md description: is over 1024 bytes'
   ~
+::  ==  permissions
+::
+::  Claude Code acts on some front matter: allowed-tools pre-approves
+::  tools (Bash among them) with no prompt, hooks registers commands for
+::  the session, shell picks what runs !`command` lines. The plugin
+::  mirrors skills into every machine's Claude Code, so a key's save could
+::  plant shell access everywhere the owner syncs. So an agent key writes
+::  only the fields below, which describe, restrict or route a skill and
+::  grant nothing. Anything else, an unknown field included (a later
+::  Claude Code may add one that grants), is the owner's. A skill whose
+::  SKILL.md the owner saved with such fields carries permissions-by:
+::  owner and permissions-set: the day, set by the ship and never by the
+::  writer, and no key may edit it at all: keeping the owner's grants
+::  while a key rewrites the steps they cover would hand the key the
+::  grants.
+++  agent-keys
+  ^-  (set @t)
+  %-  silt
+  ^-  (list @t)
+  :~  'name'  'description'  'when_to_use'  'argument-hint'  'arguments'
+      'disable-model-invocation'  'user-invocable'  'disallowed-tools'
+      'model'  'effort'  'context'  'agent'  'background'  'paths'
+      'metadata'  'license'  'compatibility'  'version'  'tags'
+      'created'  'author'  'source'  'verified'  'verified-by'
+      'sensitive'  'superseded-by'
+  ==
+++  perm-by   'permissions-by'
+++  perm-set  'permissions-set'
+::  +fm-strict: the front matter's lines up to the first line that is
+::  exactly ---. ~ when there is none. +fm also stops at ---x or a --- with
+::  trailing spaces; a stricter YAML reader reads on past those, so the
+::  permission check reads this, the longest front matter any reader sees.
+++  fm-strict
+  |=  body=@t
+  ^-  (unit (list @t))
+  =/  ls=(list @t)  (to-wain:format body)
+  ?~  ls  ~
+  ?.  =('---' i.ls)  ~
+  =|  acc=(list @t)
+  =/  r=(list @t)  t.ls
+  |-  ^-  (unit (list @t))
+  ?~  r  ~
+  ?:  =('---' i.r)  `(flop acc)
+  $(r t.r, acc [i.r acc])
+::  +grant-lines: the front matter lines an agent may not write: each
+::  top-level line whose key is not in +agent-keys, with the indented
+::  lines under it, and any top-level line that is not a plain `key:`
+::  (a quoted or explicit key, a merge, a flow map). The ship's own
+::  permissions-by and permissions-set count only when mark=&, so two
+::  saves compare by what they grant. ~ when the front matter does not
+::  close: see +agent-bad.
+++  grant-lines
+  |=  [body=@t mark=?]
+  ^-  (list @t)
+  =/  ls=(unit (list @t))  (fm-strict body)
+  ?~  ls  ~
+  =|  out=(list @t)
+  =/  under=?  |
+  =/  r=(list @t)  u.ls
+  |-  ^-  (list @t)
+  ?~  r  (flop out)
+  =/  t=tape  (trip i.r)
+  ?:  |(?=(~ t) =('#' -.t))  $(r t.r)
+  ?:  |(=(' ' -.t) =('\09' -.t))
+    $(r t.r, out ?:(under [i.r out] out))
+  =/  k=(unit @t)  (plain-key i.r)
+  =/  bad=?
+    ?~  k  &
+    ?:  |(=(perm-by u.k) =(perm-set u.k))  mark
+    !(~(has in agent-keys) u.k)
+  $(r t.r, under bad, out ?:(bad [i.r out] out))
+::  +plain-key: the key of a `key: ...` line whose key is lower-case
+::  letters, digits, - and _, or ~
+++  plain-key
+  |=  l=@t
+  ^-  (unit @t)
+  =/  t=tape  (trip l)
+  =/  c=(unit @ud)  (find ":" t)
+  ?~  c  ~
+  =/  k=tape  (scag u.c t)
+  ?~  k  ~
+  =/  ok=?
+    %+  levy  `tape`k
+    |=  a=@t
+    ?|  &((gte a 'a') (lte a 'z'))
+        &((gte a '0') (lte a '9'))
+        =('-' a)  =('_' a)
+    ==
+  ?.  ok  ~
+  `(crip k)
+::  +agent-bad: why an agent key may not store this SKILL.md, or ~
+++  agent-bad
+  |=  body=@t
+  ^-  (unit @t)
+  ?~  (fm-strict body)
+    `'SKILL.md front matter must close with a line that is exactly ---'
+  =/  g=(list @t)  (grant-lines body &)
+  ?~  g  ~
+  :-  ~
+  %+  rap  3
+  :~  'SKILL.md front matter line "'  i.g
+      '" is the owner\'s: an agent key writes only name, description and '
+      'the fields that grant nothing. allowed-tools, hooks, shell and any '
+      'field Claude Code may act on to grant permissions or run code are '
+      'set by the owner only, in the Skills view'
+  ==
+::  +perm-refuse: an agent's save refused for permissions, or ~. head is
+::  the SKILL.md the save leaves: the new one, or the old one when the
+::  save is of another file. The owner (agent=|) is never refused.
+::  file is the other file a save writes, '' for a save of SKILL.md.
+++  perm-refuse
+  |=  [agent=? old=(unit skill) head=@t file=@t]
+  ^-  (unit [code=@ud msg=@t])
+  ?.  agent  ~
+  ?:  &(?=(^ old) (owner-perms u.old))
+    `[403 'this skill carries permissions the owner set (allowed-tools, hooks, shell or the like): only the owner can edit it, in the Skills view']
+  =/  sh=(list @t)  (weld (shell-lines head) (shell-lines file))
+  ?^  sh
+    :-  ~
+    :-  403
+    %+  rap  3
+    :~  'the line "'  i.sh
+        '" runs a shell command when Claude Code loads the skill (!`command` '
+        'or a ```! block), so only the owner writes one, in the Skills view'
+    ==
+  =/  b=(unit @t)  (agent-bad head)
+  ?~  b  ~
+  `[403 u.b]
+::  +shell-lines: the lines Claude Code runs as shell when it loads a
+::  skill: a !` at the start of a line or after a space or tab, and a
+::  fence of three or more ` or ~ whose info string starts with !.
+++  shell-lines
+  |=  body=@t
+  ^-  (list @t)
+  %+  skim  (to-wain:format body)
+  |=  l=@t
+  ^-  ?
+  =/  t=tape  (trip l)
+  ?:  (shell-fence t)  &
+  =/  prev=@t  ' '
+  |-  ^-  ?
+  ?~  t  |
+  ?:  &(=('!' i.t) ?=(^ t.t) =('`' i.t.t) |(=(' ' prev) =('\09' prev)))  &
+  $(prev i.t, t t.t)
+++  shell-fence
+  |=  t=tape
+  ^-  ?
+  =.  t  (drop-ws t)
+  ?~  t  |
+  ?.  |(=('`' i.t) =('~' i.t))  |
+  =/  c=@t  i.t
+  =/  r=tape  t
+  =/  n=@ud  0
+  |-  ^-  ?
+  ?:  &(?=(^ r) =(c i.r))  $(r t.r, n +(n))
+  ?:  (lth n 3)  |
+  =.  r  (drop-ws r)
+  &(?=(^ r) =('!' i.r))
+++  drop-ws
+  |=  t=tape
+  ^-  tape
+  ?~  t  ~
+  ?:  |(=(' ' i.t) =('\09' i.t))  $(t t.t)
+  t
+::  +owner-perms: the owner set this skill's permission fields
+++  owner-perms
+  |=  s=skill
+  ^-  ?
+  =('owner' (meta s perm-by))
+::  +owner-mark: SKILL.md as the owner saves it, permissions-by set by
+::  the ship. Fields that grant are marked the owner's when this save
+::  changes them, or the old skill already had the owner's mark. A skill
+::  a key wrote before this check, with fields that grant and no mark,
+::  stays unmarked when the owner saves it with those fields unchanged
+::  (marking it sensitive, say): the owner approves a grant by writing
+::  it, not by saving near it. No fields that grant, no mark.
+++  owner-mark
+  |=  [old=(unit skill) body=@t now=@da]
+  ^-  @t
+  =/  f  (fm body)
+  ?.  has.f  body
+  ::  a shell line in SKILL.md is a grant too: the mirror keeps it only
+  ::  on a skill the owner marked
+  =/  g=(list @t)  (weld (grant-lines body |) (shell-lines body))
+  =/  og=(list @t)
+    ?~  old  ~
+    (weld (grant-lines body.u.old |) (shell-lines body.u.old))
+  =/  was=?  ?~(old | (owner-perms u.old))
+  =/  on=?  &(?=(^ g) |(was !=(g og)))
+  =/  day=@t
+    ?:  &(was =(g og))  (meta (need old) perm-set)
+    (iso-day:lk now)
+  =/  ls=(list @t)  (fm-put lines.f perm-by ?:(on 'owner' ''))
+  =.  ls  (fm-put ls perm-set ?:(on day ''))
+  ::  nothing to mark: the save stays verbatim
+  ?:  =(ls lines.f)  body
+  (un-fm ls rest.f)
 ::  +describe: a SKILL.md's description, '' when it has none
 ++  describe
   |=  body=@t
@@ -220,8 +417,7 @@
 ++  sensitive
   |=  s=skill
   ^-  ?
-  =/  v=@t  (meta s 'sensitive')
-  |(=('yes' v) =('true' v))
+  (yes-word:lk (meta s 'sensitive'))
 ++  is-core  |=(s=skill ^-(? (~(has in tags.s) 'core')))
 ++  super
   |=  s=skill
@@ -301,6 +497,7 @@
       ['author' s+(meta s 'author')]
       ['sensitive' b+(sensitive s)]
       ['superseded_by' =/(sp (super s) ?~(sp ~ s+u.sp))]
+      ['owner_permissions' b+(owner-perms s)]
       ['files' (numb:enjs:format ~(wyt by files.s))]
   ==
 ::  +full: a skill as GET /skill answers, SKILL.md and the file list
@@ -314,7 +511,7 @@
   :~  ['body' s+body.s]
       ['files' (file-list s)]
   ==
-::  +index: the rows a caller may list, by name. lst=| leaves sensitive
+::  +index: the rows a caller may list, by name. sen=| leaves sensitive
 ::  skills out (a key's listing, unless it is cleared and asks).
 ++  index
   |=  [ss=(map @t skill) sen=?]

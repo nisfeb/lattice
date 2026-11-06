@@ -45,6 +45,10 @@
       ::  for a ship) for `mode`: noted in its `share-grants`, so pages
       ::  added or moved in later are granted too (+grant-new)
       [%folder-grant pax=path gname=@t mode=@t]
+      ::  the folder at pax is no longer shared with group `gname`: it
+      ::  leaves the folder's `share-grants`, so pages added later stay
+      ::  private (+unshare-folder takes back what it granted)
+      [%folder-ungrant pax=path gname=@t]
       ::  the page at pax was shared with a ship by hand: its grant is its
       ::  own, and no folder takes it back on a move
       [%grant-own pax=path]

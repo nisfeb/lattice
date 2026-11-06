@@ -315,6 +315,14 @@
     (expect-eq !>(|) !>((sensitive [off ~2026.1.1 ~ ~])))
     (expect-eq !>('a fact') !>(rest:(front on)))
   ==
+::  the mark fails closed on the shapes a hand edit or an import brings
+++  test-sensitive-lenient
+  ;:  weld
+    (expect-eq !>(&) !>((sensitive ['---\0asensitive: Yes\0a---\0ax' ~2026.1.1 ~ ~])))
+    (expect-eq !>(&) !>((sensitive ['---\0asensitive:\09TRUE\0a---\0ax' ~2026.1.1 ~ ~])))
+    (expect-eq !>(&) !>((sensitive ['---\0d\0asensitive: yes\0d\0a---\0d\0ax' ~2026.1.1 ~ ~])))
+    (expect-eq !>(|) !>((sensitive ['---\0asensitive: no\0a---\0ax' ~2026.1.1 ~ ~])))
+  ==
 ::  +is-core reads the stored tag exactly, as +index-text does. +core-tag
 ::  folds case, as the writer folds a requested tag.
 ++  test-core

@@ -19,6 +19,8 @@ a { color: var(--accent); }
 main.page { flex: 1; display: flex; flex-direction: column; }
 article, section { max-width: 46rem; width: 100%; margin: 0 auto; padding: 1.25rem 1.5rem 3rem; }
 article.html { max-width: none; padding: 0; flex: 1; display: flex; }
+.outside:not([hidden]) { display: flex; flex-wrap: wrap; gap: .4rem .75rem; align-items: center; padding: .4rem .75rem; margin-bottom: .5rem; border: 1px solid var(--line); border-radius: 6px; font-size: .85rem; color: var(--muted); }
+.outside button { font: inherit; padding: .15rem .55rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; }
 iframe.pub { flex: 1; width: 100%; min-height: 80vh; border: 0; background: #fff; }
 pre { overflow-x: auto; padding: .75rem; border: 1px solid var(--line); border-radius: 6px; }
 blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--line); color: var(--muted); }

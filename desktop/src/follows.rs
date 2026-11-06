@@ -319,24 +319,11 @@ impl Follows {
         self.write(&all)
     }
 
-    /// Whole or not at all: a temp file beside it, then a rename.
+    /// Whole or not at all, and private: write_private's temp file beside
+    /// it, then a rename, in a folder made 0700 as the engine makes it.
     fn write(&self, all: &[Follow]) -> Result<(), String> {
-        use std::io::Write;
-        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-        let dir = self.file.parent().ok_or("follows: no folder")?;
-        // the engine's folder, private as the engine makes it
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| format!("follows: {e}"))?;
-        let tmp = dir.join(".follows.json.tmp");
         let body = serde_json::to_vec(all).map_err(|e| format!("follows: {e}"))?;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(|e| format!("follows: {e}"))?;
-        f.write_all(&body).and_then(|_| f.sync_all()).map_err(|e| format!("follows: {e}"))?;
-        std::fs::rename(&tmp, &self.file).map_err(|e| format!("follows: {e}"))
+        crate::session::write_private(&self.file, &body).map_err(|e| format!("follows: {e}"))
     }
 }
 

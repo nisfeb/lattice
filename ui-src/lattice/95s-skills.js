@@ -10,6 +10,8 @@
   skWrap.setAttribute('aria-label', 'skills');
   toolStash.append(skWrap);
   let skLoad = null;
+  //  an edit in the Skills tab not saved yet (the guards, 20-state.js)
+  const skUnsaved = () => !!(window.LatSkills && window.LatSkills.unsaved && window.LatSkills.unsaved());
   const skReady = () => (window.LatSkills ? Promise.resolve(window.LatSkills)
     : skLoad || (skLoad = new Promise((ok, no) => {
       const s = document.createElement('script');

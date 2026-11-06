@@ -22,10 +22,20 @@ const page = await openPage(browser, env, { viewport: { width: 1400, height: 900
 // the switch: while down, every write and the reconnect probe abort at the
 // network layer — indistinguishable from an unreachable ship
 let shipDown = false;
+//  the replay race (scenario 5): the replay's batch is held, and single
+//  saves abort, so a live autosave times out behind it and queues
+let holdBatch = 0, singleDown = false, batchSent = 0;
 await page.setRequestInterception(true);
-page.on('request', (r) => {
-  const down = shipDown &&
-    /page-save|page-save-batch|page-move|page-del|folder-new|know-save|legacy-status/.test(r.url());
+page.on('request', async (r) => {
+  const u = r.url();
+  if (holdBatch && /page-save-batch/.test(u)) {
+    batchSent++;
+    await sleep(holdBatch);
+    return r.continue().catch(() => {});
+  }
+  const down = (shipDown &&
+    /page-save|page-save-batch|page-move|page-del|folder-new|know-save|legacy-status/.test(u))
+    || (singleDown && /page-save\?/.test(u));
   (down ? r.abort() : r.continue()).catch(() => {});
 });
 
@@ -130,6 +140,7 @@ try {
     await put('qh/orig', '# orig v1', '&new=1');
     await put('qh/orig', '# orig v2');           // a second rev: destinations
     await put('qh/doomed', '# doomed', '&new=1'); // with history broke #177
+    await put('qh/race', '# race v0', '&new=1');
   });
   await sleep(5000);
   await page.goto(APP, { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -210,6 +221,35 @@ try {
   const doomed = await shipSource('qh/doomed');
   check('the deleted page is gone', doomed.status !== 200, 'status=' + doomed.status);
   check('NO conflicts/ page was manufactured', await conflictRows() === 0,
+    'rows=' + await conflictRows());
+
+  // ── 5. a newer edit queued while its older copy replays survives ─────────
+  //  The queue is keyed by name, and the replay deleted by name: the live
+  //  save that timed out behind the replay queued v2, the replay of v1
+  //  landed, and its delete took v2 with it. The editor said saved.
+  shipDown = true;
+  await page.evaluate(() => {
+    [...document.querySelectorAll('#treelist a.pg')]
+      .find((a) => a.href.includes('qh%2Frace')).click();
+  });
+  await wait(() => document.getElementById('src').value.includes('race v0'));
+  await type('# race v1 offline');
+  await sleep(4000);
+  check('(setup) v1 queued', await qCount() === 1, 'saves=' + await qCount());
+  holdBatch = 12000; singleDown = true; shipDown = false;
+  const t0 = Date.now();
+  while (!batchSent && Date.now() - t0 < 60000) await sleep(250);   // the probe's replay
+  check('(setup) the replay sent v1', batchSent > 0);
+  await type('# race v2 typed during the replay');
+  await wait(() => /saved offline|waiting to sync/.test(document.getElementById('status').textContent),
+    undefined, 15000).catch(() => {});
+  await sleep(12000);   // the held batch lands, and the replay deletes what it sent
+  singleDown = false; holdBatch = 0;
+  await drain();
+  const race = await shipSource('qh/race');
+  check('the edit typed during the replay reached the ship',
+    race.status === 200 && /race v2/.test(race.body || ''), JSON.stringify(race).slice(0, 80));
+  check('and replaying it made no conflicts/ page', await conflictRows() === 0,
     'rows=' + await conflictRows());
 } catch (e) {
   check('the suite threw: ' + String(e.message).slice(0, 140), false);

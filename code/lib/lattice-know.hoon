@@ -664,11 +664,22 @@
   (with-front meta prose)
 ::  +sensitive: marked `sensitive: yes` in its front matter. Only the owner
 ::  and keys cleared for it see such an entry (docs/agent-knowledge.md).
+::  It fails closed on the shapes a hand edit or an import brings: any case,
+::  a tab, and CRLF line endings.
 ++  sensitive
   |=  e=know-entry
   ^-  ?
-  =/  v=(unit @t)  (meta-get meta:(front body.e) 'sensitive')
-  ?~(v | |(=('yes' u.v) =('true' u.v)))
+  =/  b=@t
+    ?.  =("---\0d\0a" (scag 5 (trip body.e)))  body.e
+    (crip (skip (trip body.e) |=(c=@tD =('\0d' c))))
+  =/  v=(unit @t)  (meta-get meta:(front b) 'sensitive')
+  ?~(v | (yes-word u.v))
+::  +yes-word: a front-matter yes or true, in any case, with no tab or CR
+++  yes-word
+  |=  v=@t
+  ^-  ?
+  =/  w=tape  (cass (skip (trip v) |=(c=@tD |(=('\09' c) =('\0d' c)))))
+  |(=("yes" w) =("true" w))
 ::  +is-core: tagged core, so every session loads it (+index-text). An
 ::  agent key may add the tag. It may not rewrite, supersede or untag an
 ::  entry that has it.

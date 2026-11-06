@@ -112,7 +112,107 @@
     (expect-eq !>(`(unit @t)``'deploy-v2') !>((super (sk out ~))))
     (expect-eq !>(`(unit @t)`~) !>((super (sk (supersede out '') ~))))
   ==
+::  ==  permissions
+::
+::  an agent's SKILL.md with allowed-tools, hooks, shell or an unknown
+::  field is a 403; the fields that grant nothing pass
+++  test-agent-grants
+  =/  ok=@t
+    %-  crip
+    ;:  weld  "---\0aname: x\0adescription: >\0a  folded\0a"
+      "disable-model-invocation: true\0adisallowed-tools: Bash\0a"
+      "metadata:\0a  allowed-tools: Bash\0a# allowed-tools: Bash\0a"
+      "author: k\0asource: agent\0a---\0aallowed-tools: Bash in the body\0a"
+    ==
+  =/  bad
+    |=  extra=tape
+    (crip :(weld "---\0aname: x\0adescription: d\0a" extra "---\0abody"))
+  =/  no
+    |=  b=@t
+    ^-  ?
+    =/  r  (perm-refuse & ~ b '')
+    &(?=(^ r) =(403 code.u.r))
+  ;:  weld
+    (expect-eq !>(`(unit [@ud @t])`~) !>((perm-refuse & ~ ok '')))
+    (expect-eq !>(`(unit [@ud @t])`~) !>((perm-refuse & ~ good '')))
+    (expect !>((no (bad "allowed-tools: Bash\0a"))))
+    (expect !>((no (bad "allowed-tools:\0a  - Bash\0a"))))
+    (expect !>((no (bad "hooks:\0a  PreToolUse: []\0a"))))
+    (expect !>((no (bad "shell: powershell\0a"))))
+    ::  spellings a YAML reader takes as the same key
+    (expect !>((no (bad "\"allowed-tools\": Bash\0a"))))
+    (expect !>((no (bad "allowed-tools : Bash\0a"))))
+    (expect !>((no (bad "? allowed-tools\0a: Bash\0a"))))
+    (expect !>((no (bad "<<: *grant\0a"))))
+    (expect !>((no (bad "Allowed-Tools: Bash\0a"))))
+    ::  a field Claude Code may add later is the owner's until listed
+    (expect !>((no (bad "grant-everything: yes\0a"))))
+    ::  the ship's mark is never the writer's
+    (expect !>((no (bad "permissions-by: owner\0a"))))
+    ::  a close a strict reader reads past
+    (expect !>((no '---\0aname: x\0adescription: d\0a--- \0aallowed-tools: Bash\0a---\0abody')))
+    (expect !>((no '---\0aname: x\0adescription: d\0a---x\0aallowed-tools: Bash\0a---\0abody')))
+    (expect !>((no '---\0aname: x\0adescription: d\0a---x\0aallowed-tools: Bash')))
+    ::  a shell line Claude Code runs on load, in SKILL.md or a file
+    (expect !>(?=(^ (perm-refuse & ~ (crip "{(trip good)}- now: !`id`\0a") ''))))
+    (expect !>(?=(^ (perm-refuse & ~ (crip "{(trip good)}!`id`\0a") ''))))
+    (expect !>(?=(^ (perm-refuse & ~ (crip "{(trip good)}```!\0aid\0a```\0a") ''))))
+    (expect !>(?=(^ (perm-refuse & ~ (crip "{(trip good)}  ~~~~ !\0aid\0a~~~~\0a") ''))))
+    (expect !>(?=(^ (perm-refuse & ~ good '!`id`'))))
+    ::  one that stays text
+    (expect-eq !>(`(unit [@ud @t])`~) !>((perm-refuse & ~ (crip "{(trip good)}KEY=!`id` and wow!\0a```sh\0a!x\0a```\0a") '')))
+    ::  the owner is never refused
+    (expect-eq !>(`(unit [@ud @t])`~) !>((perm-refuse | ~ (bad "allowed-tools: Bash\0a") '')))
+  ==
+::  the owner's save marks the grant hers; a key may not edit it after
+++  test-owner-grants
+  =/  body=@t  '---\0aname: x\0adescription: d\0aallowed-tools: Bash(git:*)\0a---\0a1. push'
+  =/  mine=@t  (owner-mark ~ body ~2026.11.6)
+  =/  s=skill  (sk mine ~)
+  =/  edit=@t  '---\0aname: x\0adescription: d\0a---\0a1. rm -rf'
+  =/  r  (perm-refuse & `s edit '')
+  ;:  weld
+    (expect !>((owner-perms s)))
+    (expect-eq !>('2026-11-06') !>((meta s 'permissions-set')))
+    (expect-eq !>('Bash(git:*)') !>((meta s 'allowed-tools')))
+    (expect-eq !>('1. push') !>(rest:(fm mine)))
+    ::  a key's edit, even one that drops the grant, is refused
+    (expect !>(&(?=(^ r) =(403 code.u.r))))
+    (expect !>(?=(^ (perm-refuse & `s mine ''))))
+    ::  the owner edits it, and the mark keeps its day
+    (expect-eq !>(`(unit [@ud @t])`~) !>((perm-refuse | `s edit '')))
+    =/  again=skill  (sk (owner-mark `s mine ~2026.12.1) ~)
+    (expect-eq !>('2026-11-06') !>((meta again 'permissions-set')))
+    ::  with the grant gone the mark goes too
+    (expect !>(!(owner-perms (sk (owner-mark `s edit ~2026.12.1) ~))))
+    (expect !>(!(owner-perms (sk (owner-mark ~ good ~2026.12.1) ~))))
+    ::  the owner's shell line marks it hers, so the mirror keeps it
+    (expect !>((owner-perms (sk (owner-mark ~ (crip "{(trip good)}!`date`\0a") ~2026.12.1) ~))))
+    ::  a save with nothing to mark is verbatim
+    (expect-eq !>('---\0a---x\0ab') !>((owner-mark ~ '---\0a---x\0ab' ~2026.12.1)))
+    (expect-eq !>(good) !>((owner-mark ~ good ~2026.12.1)))
+  ==
+::  a grant a key stored before the check stays unmarked when the owner
+::  saves it unchanged, and is marked once the owner writes it
+++  test-legacy-grants
+  =/  old=skill  (sk '---\0aname: x\0adescription: d\0aallowed-tools: Bash\0a---\0ab' ~)
+  =/  same=@t  '---\0aname: x\0adescription: d\0aallowed-tools: Bash\0asensitive: yes\0a---\0ab'
+  =/  wrote=@t  '---\0aname: x\0adescription: d\0aallowed-tools: Read\0a---\0ab'
+  ;:  weld
+    (expect !>(!(owner-perms old)))
+    (expect !>(!(owner-perms (sk (owner-mark `old same ~2026.11.6) ~))))
+    (expect !>((owner-perms (sk (owner-mark `old wrote ~2026.11.6) ~))))
+    ::  a key may not save over it while it keeps the grant
+    (expect !>(?=(^ (perm-refuse & `old body.old ''))))
+    (expect-eq !>(`(unit [@ud @t])`~) !>((perm-refuse & `old good '')))
+  ==
 ::  ==  sensitive and core
+::  the mark reads any case, as memory's does
+++  test-sensitive-case
+  ;:  weld
+    (expect-eq !>(&) !>((sensitive (sk '---\0aname: x\0asensitive: Yes\0a---\0ab' ~))))
+    (expect-eq !>(|) !>((sensitive (sk '---\0aname: x\0asensitive: no\0a---\0ab' ~))))
+  ==
 ++  test-sensitive-core
   ;:  weld
     (expect !>((sensitive (sk '---\0aname: x\0adescription: d\0asensitive: yes\0a---\0ab' ~))))

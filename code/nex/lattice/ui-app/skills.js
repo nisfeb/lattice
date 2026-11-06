@@ -611,5 +611,7 @@
     await openSkill(cur.name, 'SKILL.md', { force: true });
   }
 
-  window.LatSkills = { show, open: (n) => openSkill(n) };
+  //  unsaved: read by the app's guards (beforeunload, the service worker's
+  //  reload and closing the tab), which cannot see into this file
+  window.LatSkills = { show, open: (n) => openSkill(n), unsaved: () => !!unsaved() };
 })();

@@ -40,7 +40,11 @@
 //    --keep           leave the clones up (fleet drop dep removes them)
 //    --no-deploy      snapshot the base ship as it is
 //
-//  Env: FLEET (the fleet script), FLEET_WHO (default fast-gate), GATE_SET
+//    --as NAME        claim the fleet sets as NAME (default gate-<pid>-<start>,
+//                     one per run, so two gates never share a set)
+//
+//  Env: FLEET (the fleet script), GATE_WAIT (seconds to wait for a set
+//  another gate holds, default 2700), GATE_SET
 //  (default lattice-gate), VERE, CHROME, LATTICE_SCRATCH (default
 //  ~/.cache/lattice-gate), GATE_KEEP_RUNS (logs of the last 10 runs kept).
 //
@@ -59,13 +63,13 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync
 import { cpus, freemem, homedir, loadavg } from 'os';
 import { join } from 'path';
 import { SCRATCH, diskShort, killTagged, marked, noCores, procTag, unmarked } from './lib/hygiene.mjs';
+import { claim, ownerName, release, staleClones } from './lib/gate-claim.mjs';
 
 const HOME = homedir();
 const ROOT = new URL('..', import.meta.url).pathname.replace(/\/$/, '');
 const S = ROOT + '/scripts';
 const F = process.env.FLEET || HOME + '/software/personal/hoon-development/fleet/fleet';
 const FLEET_DIR = F.replace(/\/[^/]+$/, '');
-const WHO = process.env.FLEET_WHO || 'fast-gate';
 const SET = process.env.GATE_SET || 'lattice-gate';
 const VERE = process.env.VERE || HOME + '/software/vere-v4.6-linux-x86_64';
 const SNAP = 'gate';
@@ -81,14 +85,30 @@ const NEVER = ['mec', 'mun', 'hus', 'ricsul-bilwyt-dozzod-nisfeb'];
 
 //  --- flags ---
 const argv = process.argv.slice(2);
+function die(m) { console.error('gate: ' + m); process.exit(2); }
+//  --help prints the comment above and starts nothing. An unknown flag is
+//  refused before anything starts, so a typo never runs the full gate.
+if (argv.includes('--help') || argv.includes('-h')) {
+  const head = readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1);
+  console.log(head.slice(0, head.findIndex((l) => !l.startsWith('//'))).map((l) => l.replace(/^\/\/ {0,2}/, '')).join('\n'));
+  process.exit(0);
+}
+const TAKES = { '--lanes': 1, '--two-ship': 1, '--only': 1, '--as': 1 };
+const FLAGS = ['--stall', '--local', '--warm', '--cold', '--hot', '--record', '--no-retry', '--strict', '--keep', '--no-deploy'];
+for (let i = 0; i < argv.length; i++) {
+  if (TAKES[argv[i]]) i++;
+  else if (!FLAGS.includes(argv[i])) die(`unknown flag ${argv[i]} (--help lists them)`);
+}
 const flag = (n) => argv.includes(n);
 const opt = (n, d) => { const i = argv.indexOf(n); return i < 0 ? d : argv[i + 1]; };
 const LANES_ASKED = opt('--lanes', '');
 const TWO = opt('--two-ship', '');
+//  this run's fleet claim owner: unique per run unless --as names one
+const WHO = opt('--as', '') || ownerName();
+if (flag('--as') && !opt('--as', '')) die('--as needs a name');
 const ONLY = opt('--only', '') ? opt('--only', '').split(',') : null;
 if (flag('--two-ship') && !TWO) die('--two-ship needs a fleet set for ship B');
-
-function die(m) { console.error('gate: ' + m); process.exit(2); }
+if (LANES_ASKED && !(Number.isInteger(Number(LANES_ASKED)) && Number(LANES_ASKED) > 0)) die('--lanes needs a whole number of clones');
 const say = (m) => console.error(`gate: [${((Date.now() - T0) / 1000).toFixed(0)}s] ${m}`);
 const T0 = Date.now();
 const RUN = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -219,10 +239,14 @@ const browser = (f) => /puppeteer|lib\/harness\.mjs/.test(readFileSync(S + '/' +
 const uis = readdirSync(S).filter((f) => /^ui-.*\.mjs$/.test(f)).sort();
 const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs'];
 const TWO_SHIP = ['ui-links.mjs', 'ui-shares-live.mjs', 'ui-follow-live.mjs'];
-const shipSuites = [
+const allShip = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
   'job-check.py', 'big-page-check.py', 'dirshare-check.py', 'fs-old-beacon-check.sh', 'hoon-suites',
-].filter((n) => !ONLY || ONLY.includes(n));
+];
+const shipSuites = allShip.filter((n) => !ONLY || ONLY.includes(n));
+const TWOS = [['two-ship-links.sh', 'bash'], ['two-ship-save.sh', 'bash'], ['two-ship-comments.sh', 'bash'],
+  ['two-ship-notify.sh', 'bash'], ['ui-links.mjs', 'node'], ['ui-shares-live.mjs', 'node'], ['ui-follow-live.mjs', 'node'],
+  ['two-ship-dirshare.py', 'python3'], ['two-ship-urb-read.sh', 'bash']];
 //  A lane is a ~1.2 GB pier copy and a serf with a 2 GB loom that runs
 //  near 3 GB: no more lanes than suites, pinned performance cores (4), or
 //  about a third of the free memory in GB.
@@ -259,12 +283,18 @@ const allLocal = [
   ['weir-check', 'bash', ['-c', `${fiberio()} && python3 ${S}/weir-check.py code/nex/lattice/app.hoon --io ${LOGS}/fiberio.hoon`]],
   ['desktop-commands', 'node', [S + '/desktop-commands.mjs']],
   ['kind-parity', 'node', [S + '/kind-parity.mjs']],
+  ['hermes-plugin', 'python3', [S + '/hermes-plugin-check.py']],
+  ['gate-claim', 'node', [S + '/gate-claim-check.mjs']],
   ['scripts-parse', 'bash', ['-c', 'set -e; for f in scripts/*.mjs scripts/lib/*.mjs; do node --check "$f"; done; for f in scripts/*.sh scripts/lib/*.sh; do bash -n "$f"; done']],
   ['ui-built', 'bash', ['-c', 'node scripts/build-ui.mjs && git diff --exit-code code/nex/lattice/ui-app/app.js && node --check code/nex/lattice/ui-app/app.js']],
   ['writer-built', 'bash', ['-c', 'node scripts/build-writer.mjs && git diff --exit-code code/nex/lattice/ui-app/writer.js ui-src/writer/vendor/LICENSES && node --check code/nex/lattice/ui-app/writer.js']],
   ['writer-licences', 'node', [S + '/writer-licences.mjs']],
   ['writer-roundtrip', 'node', [S + '/writer-roundtrip.mjs']],
 ];
+//  a misspelt --only name would otherwise run nothing and pass
+for (const n of ONLY || []) {
+  if (![...allShip, ...allLocal.map(([x]) => x), ...TWOS.map(([x]) => x)].includes(n)) die(`--only: no suite ${n}`);
+}
 const localJobs = flag('--warm') ? [] : !ONLY || flag('--local') ? allLocal : allLocal.filter(([n]) => ONLY.includes(n));
 
 const results = [];
@@ -285,7 +315,20 @@ async function runLocal() {
 
 //  --- setup and teardown ---
 let clones = [];
-let claimed = false;
+//  the sets this run holds (lib/gate-claim.mjs), released on the way out
+const claimed = new Set();
+const CLAIMS = HOME + '/fleet/claims';
+async function claimSet(set, ship) {
+  const r = await claim(CLAIMS, set, WHO, { secs: Number(process.env.GATE_WAIT ?? 2700), say });
+  if (!r.ok) throw new Error(`set ${set} is claimed by ${r.holder}`);
+  claimed.add(set);
+  say(`claimed ${set} as ${WHO}`);
+  //  clones of this set's ship that a gate now gone left behind
+  for (const c of staleClones(HOME + '/fleet/clones', ship)) {
+    say(`dropping ${c.id}, left by ${c.who}`);
+    await run(F, ['--as', c.who, 'drop', c.id], { timeout: 300 });
+  }
+}
 let tearing = null;
 async function teardown() {
   if (tearing) return tearing;
@@ -299,10 +342,11 @@ async function teardown() {
       say('dropping ' + clones.map((c) => c.id).join(' '));
       await run(F, ['drop', ...clones.map((c) => c.id)], { timeout: 300 });
     }
-    if (claimed) {
-      await run(F, ['down', SET], { timeout: 300 });
-      await run(F, ['release', SET], { timeout: 60 });
+    for (const set of claimed) {
+      await run(F, ['down', set], { timeout: 300 });
+      release(CLAIMS, set, WHO);
     }
+    claimed.clear();
   })();
   return tearing;
 }
@@ -356,9 +400,7 @@ async function warmSnapshot(b) {
 
 async function baseShip() {
   const b = setLine(SET);
-  const claim = existsSync(HOME + '/fleet/claims/' + SET) ? readFileSync(HOME + '/fleet/claims/' + SET, 'utf8').trim() : '';
-  if (claim && claim !== WHO) die(`set ${SET} is claimed by ${claim}`);
-  await fleet('claim', SET, WHO); claimed = true;
+  await claimSet(SET, b.ship);
   if (await warmSnapshot(b)) {
     say(b.hot ? `the gate snapshot differs only in the client (${b.hot.join(' ')}): hot patching the lanes, no deploy`
       : 'the gate snapshot already holds this code/: no deploy');
@@ -460,10 +502,8 @@ async function retry(b, used) {
 
 async function runTwo(a) {
   const b = setLine(TWO);
-  if (b.set === SET) die('--two-ship needs another set than ' + SET);
-  const claim = existsSync(HOME + '/fleet/claims/' + TWO) ? readFileSync(HOME + '/fleet/claims/' + TWO, 'utf8').trim() : '';
-  if (claim && claim !== WHO) die(`set ${TWO} is claimed by ${claim}`);
-  await fleet('claim', TWO, WHO);
+  if (b.set === SET) throw new Error('--two-ship needs another set than ' + SET);
+  await claimSet(TWO, b.ship);
   try {
     await fleet('up', TWO);
     b.cookie = await cookieFor(b.pier, b.url, 'peer');
@@ -476,20 +516,15 @@ async function runTwo(a) {
     { timeout: 300 });
     await hi(a, b); await hi(b, a);
     const env = { LATTICE_URL: a.url, LATTICE_COOKIE: a.cookie.raw, A_URL: a.url, A_COOKIE: a.cookie.raw,
-      B_URL: b.url, B_COOKIE: b.cookie.raw, B_PIER: b.pier, A_SOCK: a.pier + '/.urb/dev/grubbery/lattice/fs' };
-    const twos = [['two-ship-links.sh', 'bash', [S + '/two-ship-links.sh']],
-      ['two-ship-save.sh', 'bash', [S + '/two-ship-save.sh']], ['two-ship-comments.sh', 'bash', [S + '/two-ship-comments.sh']],
-      ['two-ship-notify.sh', 'bash', [S + '/two-ship-notify.sh']],
-      ['ui-links.mjs', 'node', [S + '/ui-links.mjs']], ['ui-shares-live.mjs', 'node', [S + '/ui-shares-live.mjs']], ['ui-follow-live.mjs', 'node', [S + '/ui-follow-live.mjs']],
-      ['two-ship-dirshare.py', 'python3', [S + '/two-ship-dirshare.py']], ['two-ship-urb-read.sh', 'bash', [S + '/two-ship-urb-read.sh']]];
+      B_URL: b.url, B_COOKIE: b.cookie.raw, B_PIER: b.pier, VERE, A_SOCK: a.pier + '/.urb/dev/grubbery/lattice/fs' };
     //  --only naming a two-ship suite runs just the ones it names
-    const named = ONLY && twos.some(([n]) => ONLY.includes(n));
-    for (const [name, cmd, args] of twos.filter(([n]) => !named || ONLY.includes(n))) {
-      record(name, '~' + a.ship + '+~' + b.ship, await run(cmd, args, { env, log: `${LOGS}/${name}.log`, timeout: 1500 }));
+    const named = ONLY && TWOS.some(([n]) => ONLY.includes(n));
+    for (const [name, cmd] of TWOS.filter(([n]) => !named || ONLY.includes(n))) {
+      record(name, '~' + a.ship + '+~' + b.ship, await run(cmd, [S + '/' + name], { env, log: `${LOGS}/${name}.log`, timeout: 1500 }));
     }
   } finally {
     await run(F, ['down', TWO], { timeout: 300 });
-    await run(F, ['release', TWO], { timeout: 60 });
+    release(CLAIMS, TWO, WHO); claimed.delete(TWO);
   }
 }
 
@@ -499,7 +534,9 @@ const sampler = setInterval(() => loads.push(loadavg()[0]), 15000);
 let fatal = '';
 try {
   const local = runLocal();
-  const ship = (async () => runShip(await baseShip()))().catch((e) => { fatal = e.message; });
+  //  local suites alone need no ship: no claim, no boot, no deploy
+  const needShip = shipSuites.length || TWO || flag('--warm');
+  const ship = needShip ? (async () => runShip(await baseShip()))().catch((e) => { fatal = e.message; }) : null;
   await Promise.all([local, ship]);
 } catch (e) { fatal = e.message; }
 await phase('teardown', teardown());
@@ -519,7 +556,7 @@ const flaky = results.filter((r) => r.flaky);
 const missing = shipSuites.filter((n) => !results.some((r) => r.suite === n));
 console.log(`\n${names.length - failed.length - flaky.length} passed, ${flaky.length} flaky, ${failed.length} failed, wall ${(wall / 60).toFixed(1)} min (${wall.toFixed(0)} s), logs ${LOGS}`);
 if (loads.length) console.log(`host load (1 min): mean ${(loads.reduce((a, b) => a + b, 0) / loads.length).toFixed(1)}, peak ${Math.max(...loads).toFixed(1)}, on ${cpus().length} threads`);
-if (!TWO) console.log('not run: the two-ship suites (ui-links.mjs, ui-shares-live.mjs, ui-follow-live.mjs, two-ship-links.sh, two-ship-save.sh, two-ship-comments.sh, two-ship-notify.sh, two-ship-dirshare.py, two-ship-urb-read.sh); pass --two-ship SET');
+if (!TWO) console.log(`not run: the two-ship suites (${TWOS.map(([n]) => n).join(', ')}); pass --two-ship SET`);
 if (!flag('--stall')) console.log('not run: stall-check.py; pass --stall');
 if (missing.length && fatal) console.log('never started: ' + missing.join(' '));
 if (fatal) console.log('gate error: ' + fatal);

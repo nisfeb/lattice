@@ -416,6 +416,36 @@
     (expect-eq !>(*(set @t)) !>((revoke-groups:ls grants-fg ~)))
     (expect-eq !>(*(set @t)) !>((revoke-groups:ls grants-fg ~[/gone])))
   ==
+::  unsharing a folder takes back what its rule granted: the pages whose
+::  grant-via names it, and its folders' indexes
+++  test-ungrant
+  =/  g=(map path (map @t @t))
+    (~(put by grants-fg) /f/sub (~(gas by *(map @t @t)) ~[['bus' 'read']]))
+  =/  pages=(list [rel=path vias=(list path)])
+    :~  [/f/a ~[/f]]
+        [/f/own ~]
+        [/f/sub/b ~[/f/sub /f]]
+    ==
+  %+  expect-eq  !>([~[/f/a /f/sub/b] ~[/f /f/sub]])
+  !>((ungrant:ls g 'nec' /f pages ~[/f /f/sub]))
+::  what another folder still sharing with the group covers stays
+++  test-ungrant-covered
+  =/  pages=(list [rel=path vias=(list path)])
+    :~  [/f/a ~[/f]]
+        [/f/sub/b ~[/f/sub /f]]
+    ==
+  ;:  weld
+    ::  /f/sub shares with nec too: its page and index stay
+    %+  expect-eq  !>([~[/f/a] ~[/f]])
+    !>((ungrant:ls grants-fg 'nec' /f pages ~[/f /f/sub]))
+    ::  a folder above sharing with nec covers all of it
+    =/  up  (~(put by grants-fg) / (~(gas by *(map @t @t)) ~[['nec' 'read']]))
+    %+  expect-eq  !>([`(list path)`~ `(list path)`~])
+    !>((ungrant:ls up 'nec' /f pages ~[/f /f/sub]))
+    ::  a group the folder never shared with takes nothing
+    %+  expect-eq  !>([~[/f/a /f/sub/b] ~[/f /f/sub]])
+    !>((ungrant:ls grants-fg 'zod' /f pages ~[/f /f/sub]))
+  ==
 ::
 ::  ==  followed folders  ==
 ::
@@ -478,5 +508,7 @@
     (expect-eq !>(~[/f]) !>((turn (fold-hit:ls fs nec /apps/lattice/page/f/a/code) |=(f=fold:ls rel.f))))
     (expect-eq !>(~) !>((fold-hit:ls fs nec /apps/lattice/page/fx/a/code)))
     (expect-eq !>(~) !>((fold-hit:ls fs zod /apps/lattice/page/f/a/code)))
+    ::  a page named b/page/f/a is not under /f
+    (expect-eq !>(~) !>((fold-hit:ls fs nec /apps/lattice/page/b/page/f/a/code)))
   ==
 --

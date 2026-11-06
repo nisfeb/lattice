@@ -779,6 +779,23 @@ try {
   check('vim: insert mode types normally again',
     (await srcVal()).includes('XY'), JSON.stringify(await srcVal()));
 
+  //  a chord vim does not bind is not read as its bare key
+  await setSrc('abc');
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => document.getElementById('src').setSelectionRange(0, 0));
+  for (const k of ['KeyX', 'KeyA']) {
+    await page.keyboard.down('Control'); await page.keyboard.press(k); await page.keyboard.up('Control');
+  }
+  await sleep(150);
+  check('vim: ctrl-X does not delete like x', (await srcVal()) === 'abc', JSON.stringify(await srcVal()));
+  check('vim: ctrl-A does not append like a', !/INSERT/.test(await vimMode()), String(await vimMode()));
+  //  and a read-only buffer (a history revision) is not edited by vim
+  await page.keyboard.press('Escape');
+  await page.evaluate(() => { const s = document.getElementById('src'); s.readOnly = true; s.setSelectionRange(0, 0); });
+  for (const k of ['KeyX', 'KeyP']) await page.keyboard.press(k);
+  check('vim: x and p leave a read-only buffer alone', (await srcVal()) === 'abc', JSON.stringify(await srcVal()));
+  await page.evaluate(() => { document.getElementById('src').readOnly = false; });
+
   await vimOn(false);
   check('vim: turning it off hides the indicator again', (await vimMode()) === null,
     String(await vimMode()));

@@ -124,4 +124,24 @@ const items = [
     c.title);
 }
 
+{
+  //  un-hiding a tab fires focus and visibilitychange together: one GET
+  const on = [];
+  let gets = 0;
+  const slow = async () => { gets++; await new Promise((r) => setTimeout(r, 20)); return { ok: true, json: async () => [] }; };
+  const ctx = {
+    treeList: new El('div'), sharedWithMe: [], mode: 'pages', api: '/apps/lattice',
+    localStorage: { appColl: '[]' }, renderTree() {}, guardDirty: async () => true,
+    history: { replaceState() {} }, openIn() {}, ico: () => '', action() {}, rowMore() {},
+    tip: (b) => b, bgFetch: slow, fetch: slow, Date,
+    document: { createElement: (t) => new El(t), createTextNode: (t) => ({ textContent: t }),
+      addEventListener: (t, f) => on.push(f), hidden: false },
+    window: { addEventListener: (t, f) => on.push(f) },
+  };
+  vm.runInNewContext(src, ctx);
+  for (const f of on) f();
+  await new Promise((r) => setTimeout(r, 50));
+  check('focus and visibilitychange together fetch shared-with-me once', gets === 1, String(gets));
+}
+
 check.done();

@@ -1,5 +1,5 @@
 {
-  "bytes": 736325,
+  "bytes": 449110,
   "grow": 4096,
-  "why": "release 119: main after 117 was 726,303 bytes. feat-preview-checkboxes adds a task box in the editor's preview that toggles its source line (59-md.js data-line and taskToggle, 60-preview.js taskFlip, about 3.2 KB). fix-editor-cursor adds the vim block cursor (27-vim.js, 4,700 bytes) and hlSplice, which writes each edit straight into the highlight overlay so the caret no longer drifts on long pages (25-editor.js, 2,100 bytes). The preview, the editor and vim are all on screen from boot, so none can load lazily."
+  "why": "hunt-2026-11-06-ui: main after 120 was 736,780 bytes. build-ui.mjs now leaves the sources' whole-line // comments out of the served app.js (287 KB of it); they stay in ui-src, and ui-app-comments.mjs proves the minified program is unchanged. The hunt's fixes and merges (59-md.js link and image tokens, the vim chord and read-only guards, the share and shared-with-me races, keepAside, cwBadge, stWork) net about +500 bytes of code. Before: release 119: main after 117 was 726,303 bytes, and the preview task box, the vim block cursor and hlSplice added about 10 KB."
 }

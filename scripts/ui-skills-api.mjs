@@ -14,6 +14,7 @@ const run = Date.now().toString(36);
 const NAME = 'api-skill-' + run;
 const SECRET = 'api-secret-' + run;
 const CORE = 'api-core-' + run;
+const PERM = 'api-perm-' + run;
 
 async function call(auth, method, p, body) {
   const headers = auth === 'owner' ? { Cookie: env.cookie } : { Authorization: 'Bearer ' + auth };
@@ -149,6 +150,43 @@ try {
   r = await call(C, 'POST', `skill-save?${q({ name: SECRET, sensitive: 0 })}`, md(SECRET, 'still'));
   check('a key never lowers the mark', r.j.sensitive === true, JSON.stringify(r.j));
 
+  //  permissions: front matter that grants Claude Code tools is the owner's
+  for (const [what, extra] of [
+    ['allowed-tools', 'allowed-tools: Bash\n'],
+    ['allowed-tools as a list', 'allowed-tools:\n  - Bash\n'],
+    ['hooks', 'hooks:\n  PreToolUse: []\n'],
+    ['shell', 'shell: powershell\n'],
+    ['a quoted allowed-tools', '"allowed-tools": Bash\n'],
+    ['an unknown field', 'grant-all: yes\n'],
+    ['the ship\'s own mark', 'permissions-by: owner\n'],
+  ]) {
+    r = await call(W, 'POST', `skill-save?name=${PERM}`, md(PERM, 'd', extra));
+    check(`a key's save with ${what} is 403`, r.status === 403 && /owner/.test(r.j.error || r.j.raw || JSON.stringify(r.j)), `${r.status} ${JSON.stringify(r.j)}`);
+  }
+  r = await call(W, 'POST', `skill-save?name=${PERM}`, md(PERM, 'd') + 'Who: !`id`\n');
+  check('a key\'s save with a !`command` line is 403', r.status === 403, `${r.status} ${JSON.stringify(r.j)}`);
+  r = await call(W, 'POST', `skill-save?name=${PERM}`, md(PERM, 'd') + '```!\nid\n```\n');
+  check.eq('  ...and with a ```! block', r.status, 403);
+  check.eq('  ...and stores nothing', (await owner('GET', `skill?name=${PERM}`)).status, 404);
+  r = await call(W, 'POST', `skill-save?name=${PERM}`, md(PERM, 'd', 'disable-model-invocation: true\ndisallowed-tools: Bash\n'));
+  check('a key may set fields that grant nothing', r.status === 200 && r.j.owner_permissions === false, JSON.stringify(r.j));
+  const permBody = md(PERM, 'd', 'allowed-tools: Bash(git status:*)\n');
+  r = await owner('POST', `skill-save?name=${PERM}`, permBody);
+  check('the owner saves allowed-tools', r.status === 200 && r.j.owner_permissions === true, JSON.stringify(r.j));
+  r = await call(R, 'GET', `skill?name=${PERM}`);
+  check('  ...a key reads it as the owner\'s', r.j.owner_permissions === true && /\nallowed-tools: Bash\(git status:\*\)\n/.test(r.j.body) && /\npermissions-by: owner\n/.test(r.j.body), JSON.stringify(r.j).slice(0, 400));
+  check('  ...and so does the index', ((await call(R, 'GET', 'skills')).j.skills || []).some((x) => x.name === PERM && x.owner_permissions === true));
+  r = await call(W, 'POST', `skill-save?name=${PERM}`, md(PERM, 'd'));
+  check.eq('  ...a key cannot edit it, even to drop the grant', r.status, 403);
+  check.eq('  ...nor keep it and change the steps', (await call(W, 'POST', `skill-save?name=${PERM}`, (await call(R, 'GET', `skill?name=${PERM}`)).j.body.replace('step one', 'rm -rf'))).status, 403);
+  check.eq('  ...nor add a file', (await call(W, 'POST', `skill-save?${q({ name: PERM, path: 'references/x.md' })}`, 'x')).status, 403);
+  r = await owner('POST', `skill-save?name=${PERM}`, permBody.replace('step one', 'step one, at !`date`'));
+  check('the owner may write a !`command` line', r.status === 200 && r.j.owner_permissions === true, JSON.stringify(r.j));
+  check('  ...and it is unchanged', /\nallowed-tools: Bash\(git status:\*\)\n/.test((await owner('GET', `skill?name=${PERM}`)).j.body));
+  r = await owner('POST', `skill-save?name=${PERM}`, md(PERM, 'd'));
+  check('the owner drops the grant, and the mark goes', r.status === 200 && r.j.owner_permissions === false && !/permissions-by/.test((await owner('GET', `skill?name=${PERM}`)).j.body), JSON.stringify(r.j));
+  check.eq('  ...and a key may edit it again', (await call(W, 'POST', `skill-save?name=${PERM}`, md(PERM, 'again'))).status, 200);
+
   //  history
   r = await call(R, 'GET', `skill-history?name=${NAME}`);
   const revs = r.j.revisions || [];
@@ -179,7 +217,7 @@ try {
   check.eq('the owner saves verbatim', (await owner('POST', `skill-save?name=${NAME}`, own)).status, 200);
   check.eq('  ...exactly', (await owner('GET', `skill?name=${NAME}`)).j.body, own);
 } finally {
-  for (const n of [NAME, SECRET, CORE, NAME + '-t', SECRET + '-w']) await owner('POST', `skill-delete?name=${n}`).catch(() => {});
+  for (const n of [NAME, SECRET, CORE, PERM, NAME + '-t', SECRET + '-w']) await owner('POST', `skill-delete?name=${n}`).catch(() => {});
   for (const id of minted) await owner('POST', `key-revoke?id=${id}`).catch(() => {});
 }
 check.done();

@@ -77,7 +77,7 @@
       used=(unit @da)
       taint=(unit @da)
   ==
-::  the row after clearance (lattice 45) but before scoped molds (this task).
+::  the row after clearance (lattice 45) but before scoped molds (key-row-2).
 +$  key-row-1
   $:  id=@t
       name=@t
@@ -110,8 +110,8 @@
     ?@(web.o ?:(;;(? web.o) [%all ~] [%off ~]) ;;(web-scope web.o))
   [memory.o pgs wsc sensitive.o ~ %none]
 ::  +upgrade-keys: read any stored keys noun and return current keys.
-::  Handles three storage eras: current keys, post-clearance (key-row-1)
-::  and pre-clearance (key-row-0).
+::  Handles four storage eras: current keys, scoped molds before skills
+::  (key-row-2), post-clearance (key-row-1) and pre-clearance (key-row-0).
 ++  upgrade-keys
   |=  n=*
   ^-  keys

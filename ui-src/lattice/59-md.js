@@ -61,13 +61,20 @@
       code.push(c);
       return '&CD' + (code.length - 1) + ';';
     });
+    //  the tags made here are tokens too, minted the same way: the passes
+    //  after this one see only text. A link's text could otherwise start
+    //  inside an image's alt and take its quotes, and a wikilink inside a
+    //  URL rewrote the href: either put the URL in attribute position, as
+    //  ![a[b](http://y) c](http://x/src/onerror=...//) did.
+    const tags = [];
+    const tag = (html) => { tags.push(html); return '&TG' + (tags.length - 1) + ';'; };
     s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (m, alt, u) => {
       const h = mdHref(u);
-      return h ? '<img alt="' + alt + '" src="' + h + '">' : m;
+      return h ? tag('<img alt="' + alt + '" src="' + h + '">') : m;
     });
     s = s.replace(/\[([^\]]+)\]\(([^)\s]+)[^)]*\)/g, (m, txt, u) => {
       const h = mdHref(u);
-      return h ? '<a href="' + h + '">' + txt + '</a>' : m;
+      return h ? tag('<a href="' + h + '">') + txt + '</a>' : m;
     });
     //  wikilinks, which lattice writes a lot of. The target is a page name, so
     //  it is URI-encoded into the query — a name carrying &, = or quotes must
@@ -76,8 +83,8 @@
     //  expect, not the whole path. An explicit [[a/b/c|label]] still wins. The
     //  href/target is unchanged, so navigation and backlinks are unaffected.
     s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-      (_, tgt, label) => '<a href="'
-        + mdHref('/apps/lattice/app?name=' + encodeURIComponent(mdUnesc(tgt).trim())) + '">'
+      (_, tgt, label) => tag('<a href="'
+        + mdHref('/apps/lattice/app?name=' + encodeURIComponent(mdUnesc(tgt).trim())) + '">')
         + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>');
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
@@ -86,6 +93,7 @@
     // restore code spans. They were escaped when the whole string was, so no
     // re-escape here (that would double-escape). Only extractor-minted tokens
     // match; a forged one was mangled to '&amp;CD…;' by the escaper.
+    s = s.replace(/&TG(\d+);/g, (_, i) => tags[+i]);
     s = s.replace(CD_RE, (_, i) => '<code>' + code[+i] + '</code>');
     return s;
   };

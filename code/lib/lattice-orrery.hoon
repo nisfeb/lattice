@@ -33,12 +33,12 @@
 ::  tag, text and indent: a remade brief may give a tag to another task).
 ::  Lines from a `## Notes` heading to the end of `old` are carried after
 ::  `new` when `new` has no such heading. Other edits to the brief's own
-::  lines are replaced by orrery's text.
+::  lines are replaced by orrery's text. CRLF on either side is read as LF.
 ++  journal-merge
   |=  [old=@t new=@t]
   ^-  @t
   =/  ol=(list tape)  (turn (lines-of (trip old)) un-cr)
-  =/  nl=(list tape)  (lines-of (trip new))
+  =/  nl=(list tape)  (turn (lines-of (trip new)) un-cr)
   =/  ticked=(set tape)
     %-  silt
     %+  murn  ol

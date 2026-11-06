@@ -332,7 +332,6 @@
   // when a read finds more new pages, and marks it read when they are all
   // opened (69x-follow.js), stamping /beacon/notify both times.
 
-  const cmOpen = () => toolOpen('inbox');
   // the inbox's tab came forward (24-tools.js): load all three tabs, and
   // show Held when something waits there, else Activity
   const cmLoad = () => {

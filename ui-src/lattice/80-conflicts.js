@@ -108,5 +108,3 @@
     }
   }
 
-  // its tab's coming forward renders it (24-tools.js)
-  const cfOpen = () => toolOpen('conflicts');

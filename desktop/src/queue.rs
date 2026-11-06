@@ -61,6 +61,29 @@ fn hex(name: &str) -> String {
     s
 }
 
+/// Hex names longer than this are hashed instead. A file name is at most 255
+/// bytes, and write_private's temp name adds about 20 to it, so a page name of
+/// 120 bytes or more (40 CJK characters) used to fail with ENAMETOOLONG and
+/// could not be queued offline at all.
+const MAX_HEX_NAME: usize = 200;
+
+/// The file one queued save lives in. Hex up to MAX_HEX_NAME, so every name
+/// an older build wrote is still found where it was. Past that, a SHA-256 of
+/// the name: still stable, still free of traversal, and the record inside
+/// carries the full name for list_saves_at.
+fn save_file(dir: &Path, name: &str) -> PathBuf {
+    let h = hex(name);
+    if h.len() <= MAX_HEX_NAME {
+        return dir.join(format!("{h}.json"));
+    }
+    let d = ring::digest::digest(&ring::digest::SHA256, name.as_bytes());
+    let mut s = String::from("h-");
+    for b in d.as_ref() {
+        s.push_str(&format!("{b:02x}"));
+    }
+    dir.join(format!("{s}.json"))
+}
+
 /// A filesystem-safe, stable directory name for a ship key. The key is either
 /// an @p or a URL, and a URL has slashes and colons in it.
 fn key_dir_name(key: &str) -> String {
@@ -212,25 +235,36 @@ pub fn put_save_at(dir: &Path, rec: &Value) -> Result<(), String> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| "queued record has no name".to_string())?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let p = dir.join(format!("{}.json", hex(name)));
+    let p = save_file(dir, name);
     let body = serde_json::to_vec(rec).map_err(|e| e.to_string())?;
     write_atomic(&p, &body)
 }
 
 pub fn get_save_at(dir: &Path, name: &str) -> Option<Value> {
-    let p = dir.join(format!("{}.json", hex(name)));
+    let p = save_file(dir, name);
     std::fs::read_to_string(p)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
 }
 
 pub fn del_save_at(dir: &Path, name: &str) -> Result<(), String> {
-    let p = dir.join(format!("{}.json", hex(name)));
+    let p = save_file(dir, name);
     match std::fs::remove_file(&p) {
         Ok(()) => Ok(()),
         //  already gone is the desired state, not a failure
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("{}: {e}", p.display())),
+    }
+}
+
+/// Delete `name` only while its record is the one `sent` names (same
+/// `queuedAt`, same `body`). A newer record is kept; a missing one is fine.
+pub fn del_sent_at(dir: &Path, name: &str, sent: &Value) -> Result<(), String> {
+    match get_save_at(dir, name) {
+        Some(v) if v.get("queuedAt") == sent.get("queuedAt") && v.get("body") == sent.get("body") => {
+            del_save_at(dir, name)
+        }
+        _ => Ok(()),
     }
 }
 
@@ -245,9 +279,18 @@ pub fn read_ops_at(path: &Path) -> Vec<Op> {
 /// rare (a delete, a rename), so the cost is nothing and the ordering is free.
 /// Two windows queueing ops in the same instant could lose one; per-op files
 /// with a sequence allocator is the upgrade if that ever stops being theory.
+///
+/// The client deletes an op by its seq once the op landed, so a seq must
+/// never be issued twice. Taking max + 1 of the log alone reissued 1 once the
+/// log drained empty, and a second window still replaying the old op 1 then
+/// deleted the new one. The last seq issued is kept beside the log
+/// (`ops.json.seq`), as IndexedDB's autoIncrement keeps its own.
 pub fn push_op_at(path: &Path, rest: Value) -> Result<u64, String> {
     let mut ops = read_ops_at(path);
-    let seq = ops.iter().map(|o| o.seq).max().map_or(1, |m| m + 1);
+    let hw = path.with_extension("json.seq");
+    let last = std::fs::read_to_string(&hw).ok().and_then(|s| s.trim().parse::<u64>().ok());
+    let seq = ops.iter().map(|o| o.seq).chain(last).max().map_or(1, |m| m + 1);
+    write_atomic(&hw, seq.to_string().as_bytes())?;
     ops.push(Op { seq, rest });
     let body = serde_json::to_vec(&ops).map_err(|e| e.to_string())?;
     write_atomic(path, &body)?;
@@ -281,9 +324,17 @@ pub fn queue_put(app: AppHandle, rec: Value) -> Result<(), String> {
     put_save_at(&saves_dir(&app)?, &rec)
 }
 
+/// `sent`: the record a replay sent (its `queuedAt` and `body`). Saves are
+/// keyed by name, so a newer edit of the page queued while that replay flew
+/// sits in the same file, and deleting by name alone dropped it. With `sent`
+/// the file goes only while it still holds what was sent.
 #[tauri::command]
-pub fn queue_del(app: AppHandle, name: String) -> Result<(), String> {
-    del_save_at(&saves_dir(&app)?, &name)
+pub fn queue_del(app: AppHandle, name: String, sent: Option<Value>) -> Result<(), String> {
+    let d = saves_dir(&app)?;
+    match sent {
+        Some(s) => del_sent_at(&d, &name, &s),
+        None => del_save_at(&d, &name),
+    }
 }
 
 #[tauri::command]
@@ -392,6 +443,24 @@ mod tests {
     }
 
     #[test]
+    fn a_long_page_name_can_still_be_queued() {
+        // 60 CJK characters is 180 bytes, 360 hex digits: past the 255-byte
+        // file name limit, so the queue refused it with ENAMETOOLONG
+        let d = tmp("long");
+        let long = format!("notes/{}", "日".repeat(60));
+        put_save_at(&d, &json!({"name": long, "body": "kept"})).unwrap();
+        assert_eq!(get_save_at(&d, &long).unwrap()["body"], "kept");
+        assert_eq!(list_saves_at(&d)[0]["name"], long.as_str());
+        // a short name keeps its old hex file, so older queues still read
+        put_save_at(&d, &json!({"name": "a", "body": "x"})).unwrap();
+        assert!(d.join("61.json").exists());
+        del_save_at(&d, &long).unwrap();
+        assert!(get_save_at(&d, &long).is_none());
+        assert_eq!(list_saves_at(&d).len(), 1);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
     fn unicode_and_awkward_names_survive() {
         let d = tmp("unicode");
         for name in ["日本/メモ", "a b/c d", "emoji ⚡", "quote\"and\\slash"] {
@@ -461,6 +530,42 @@ mod tests {
         //  and a new op still sorts after everything, never reusing a seq
         let d2 = push_op_at(&p, json!({"op": "del", "name": "four"})).unwrap();
         assert!(d2 > c, "sequences never go backwards after a delete");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_drained_op_log_never_reissues_a_sequence() {
+        // window B is still replaying op 1 when window A drains it and
+        // queues a new op. If that op were seq 1 again, B's delete of the
+        // old op 1 would take it.
+        let d = tmp("reseq");
+        let p = d.join("ops.json");
+        let a = push_op_at(&p, json!({"op": "del", "name": "one"})).unwrap();
+        del_op_at(&p, a).unwrap();
+        let b = push_op_at(&p, json!({"op": "del", "name": "two"})).unwrap();
+        assert_ne!(a, b, "a drained log must not hand out seq {a} again");
+        del_op_at(&p, a).unwrap();
+        assert_eq!(read_ops_at(&p).len(), 1, "the stale delete left the new op alone");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_replay_deletes_only_the_record_it_sent() {
+        // the replay sent v1; a live save that timed out behind it queued
+        // v2 under the same name. v1 landing must not delete v2.
+        let d = tmp("sent");
+        let v1 = json!({"name": "x", "body": "v1", "queuedAt": 100});
+        put_save_at(&d, &v1).unwrap();
+        put_save_at(&d, &json!({"name": "x", "body": "v2", "queuedAt": 200})).unwrap();
+        del_sent_at(&d, "x", &v1).unwrap();
+        assert_eq!(get_save_at(&d, "x").expect("the newer edit survived")["body"], "v2");
+        // the same body at another time is another record too
+        del_sent_at(&d, "x", &json!({"body": "v2", "queuedAt": 100})).unwrap();
+        assert!(get_save_at(&d, "x").is_some());
+        // and the exact record does go
+        del_sent_at(&d, "x", &json!({"body": "v2", "queuedAt": 200})).unwrap();
+        assert!(get_save_at(&d, "x").is_none());
+        del_sent_at(&d, "x", &v1).expect("an absent record is not an error");
         std::fs::remove_dir_all(&d).ok();
     }
 
