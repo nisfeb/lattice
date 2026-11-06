@@ -5173,20 +5173,6 @@
   ?~  ko  ~
   ?:  =('' v)  ~
   `[u.ko v]
-::  +await-vault: wait for `rels` to appear in the vault, checking every 2s up
-::  to `tries`. Replaces a fixed sleep. The arrivals are one writer
-::  transaction per page, so the time needed scales with page count, and a
-::  fixed window would strand the tail.
-++  await-vault
-  |=  [rels=(list path) tries=@ud]
-  =/  m  (fiber:fiber:nexus ,(list path))
-  ^-  form:m
-  |-  ^-  form:m
-  ;<  here=(list path)  bind:m  (vault-present rels)
-  ?:  =((lent here) (lent rels))  (pure:m here)
-  ?:  =(0 tries)  (pure:m here)
-  ;<  ~  bind:m  (sleep:io ~s2)
-  $(tries (dec tries))
 ::  +vault-present: which of `rels` currently have a vault body.
 ++  vault-present
   |=  rels=(list path)
@@ -5233,28 +5219,6 @@
   ;<  ~  bind:m
     (poke-pub [%save-page (spat (pub-path (crip (pax-str rel.i.items)))) body.i.items])
   $(items t.items, made +(made))
-::  +promote-pages: create an editable /page source for each named rel that
-::  has a vault body and no source yet. SCOPED to the rels passed in - never
-::  walks the whole vault, so it can neither resurrect a page the user deleted
-::  nor manufacture pages from their own published-only content.
-++  promote-pages
-  |=  rels=(list path)
-  =/  m  (fiber:fiber:nexus ,@ud)
-  ^-  form:m
-  ;<  up=@ud  bind:m  nexus-up
-  =|  made=@ud
-  |-  ^-  form:m
-  ?~  rels  (pure:m made)
-  =/  pdir=path  (weld /page i.rels)
-  ;<  ex=?  bind:m  (peek-exists:fio (rf up pdir %code))
-  ?:  ex  $(rels t.rels)
-  ;<  vn=view:nexus  bind:m
-    (peek:fio (rf up (weld /pub/vault i.rels) %gmi) ~)
-  ?.  ?=([%file *] vn)  $(rels t.rels)
-  =/  body=@t  (fall (mole |.(;;(@t (sang-noun:tarball sang.vn)))) '')
-  ?:  =('' body)  $(rels t.rels)
-  ;<  ~  bind:m  (poke-eval [%make i.rels (wrap-content %gmi body)])
-  $(rels t.rels, made +(made))
 ::  ── editing arbitrary grubs (write apps in the lattice editor) ─────────
 ::
 ::  The editor's own pages are /page/<rel>/code grubs. These arms let it open
@@ -6171,16 +6135,11 @@
   ?.  (may-see key u.e)  (pure:m |)
   ;<  ~  bind:m  (taint-if key (sensitive:lk u.e))
   (pure:m &)
-::  +granted: does a sharing group's read road reach this page, on it or
-::  on a folder above it? Soft, like +move-grants: when lattice may not
-::  read the groups it cannot have granted one either. A group whose weir
-::  is there but will not decode counts as granted (+granted-via).
-::
-++  granted  |=(name=path (granted-via name |))
-::  +edit-granted: the make-road twin of +granted. Does any sharing group
-::  hold an edit grant on this page, on a folder above it, or on anything
-::  inside its dir? Such a page runs content only, and its own-page views
-::  are sandboxed. Soft the same way: no usergroup read means no grant.
+::  +edit-granted: does any sharing group hold an edit grant on this page,
+::  on a folder above it, or on anything inside its dir? Such a page runs
+::  content only, and its own-page views are sandboxed. Soft, like
+::  +move-grants: when lattice may not read the groups it cannot have
+::  granted one either. No usergroup read means no grant.
 ::
 ++  edit-granted  |=(name=path (granted-via name &))
 ::  +peer-written: may a peer have written this page's source? While the
@@ -6197,8 +6156,8 @@
   ;<  lx=?  bind:m  (peek-exists:fio (lock-road up name))
   ?:  lx  (pure:m &)
   (edit-granted name)
-::  +granted-via: +granted (mak=|, peek roads) and +edit-granted (mak=&,
-::  make roads). A make road under the page dir counts as well, since it
+::  +granted-via: does a group grant this page, by peek roads (mak=|) or
+::  make roads (mak=&, +edit-granted)? A make road under the page dir counts as well, since it
 ::  reaches the page's code grub too.
 ::
 ::  It fails closed on a group it cannot read. A how.weir that is present
@@ -16330,14 +16289,6 @@
     ~[c]
   ~['%' (hx (div c 16)) (hx (mod c 16))]
 ++  has-prefix  |=([pre=tape t=tape] =(pre (scag (lent pre) t)))
-::  +ltrim: drop leading spaces from a tape (gemtext allows extra whitespace
-::  after the "=> " sigil; the analyzer already strips it, render-gmi must too).
-::
-++  ltrim
-  |=  a=tape
-  ^-  tape
-  ?~  a  a
-  ?:(=(' ' i.a) $(a t.a) a)
 ::  +render-gmi: gemtext body -> HTML fragment. Lives in /lib/lattice-gmi
 ::  now, beside its tests, the same way render-md always has. It sat here
 ::  untested and had shipped two bugs a single test would have caught.
@@ -16465,17 +16416,6 @@
   ?:  =(c 39)  ~[`@tD`92 `@tD`39]
   ?:  (lth c 32)  ;:(weld "\\" ~[(hx (div c 16))] ~[(hx (mod c 16))])
   ~[c]
-::  +plain-content: is this page source content only? True for the exact
-::  shell +wrap-content writes around a known builder, and for the folder
-::  index +make-folder-index generates for this page. +unwrap-content alone
-::  is not enough: it accepts any text before the quote as the builder and
-::  a bare quote in the body, and both are hoon. Re-wrapping and comparing
-::  rules them out. `pax` is the page's own path (no /page in front).
-::
-++  plain-content
-  |=  [src=@t pax=path]
-  ^-  ?
-  |((folder-index-src src pax) ?=(^ (plain-body src)))
 ++  folder-index-src
   |=  [src=@t pax=path]
   ^-  ?
@@ -16649,15 +16589,6 @@
   %-  pure:m
   %+  sort  (collect-tree ball.sn ~)
   |=([a=[pax=path page=?] b=[pax=path page=?]] (aor pax.a pax.b))
-::  +read-page-names: just the page paths (folders dropped). The home landing
-::  lists what you can open. (+read-template-names was removed with the home
-::  redesign, which no longer lists templates.)
-::
-++  read-page-names
-  =/  m  (fiber:fiber:nexus ,(list path))
-  ^-  form:m
-  ;<  tree=(list [pax=path page=?])  bind:m  read-tree
-  (pure:m (murn tree |=([pax=path page=?] ?:(page `pax ~))))
 ::  +collect-tree: walk a page-tree ball. A dir with a /code grub IS a page; any
 ::  other non-root dir is a folder. Recurse through pages too (a page can also be
 ::  a parent of nested pages). Paths are relative to /page.
@@ -19652,14 +19583,6 @@
   ?~  page
     (pure:m [%.n (~(gas by seen) (turn here |=(p=path [p %.n])))])
   $(walked here, page (snip `path`page))
-::  +pub-rev-row: the revision the list names for the page at `key`
-++  pub-rev-row
-  |=  [root=@ud key=path]
-  =/  m  (fiber:fiber:nexus ,(unit @ud))
-  ^-  form:m
-  ;<  old=(map @t json)  bind:m  (read-pub-revs root)
-  =/  r=(unit json)  (~(get by old) (page-name:lp key))
-  (pure:m ?~(r ~ (bind (json-rev:lp u.r) head)))
 ++  read-pub-revs
   |=  root=@ud
   =/  m  (fiber:fiber:nexus ,(map @t json))
@@ -20013,17 +19936,6 @@
   ::  understand, so the mule reads it as ~ rather than crashing.
   =/  got=(each [p=@tas q=@t] tang)  (mule |.(;;([p=@tas q=@t] [p q]:pag)))
   ?:(?=(%| -.got) (pure:m ~) (pure:m `p.got))
-::  +keen-page: the body-only read, a [%gmi body] binding's body, ~ for a
-::  miss, a tombstone, or a mark we do not understand.
-::
-++  keen-page
-  |=  [shp=@p rel=path id=@uv]
-  =/  m  (fiber:fiber:nexus ,(unit @t))
-  ^-  form:m
-  ;<  pg=(unit [p=@tas q=@t])  bind:m  (keen-page-raw shp rel id)
-  ?~  pg  (pure:m ~)
-  ?.  =(%gmi p.u.pg)  (pure:m ~)
-  (pure:m `q.u.pg)
 ::  +read-pub-index-remote: a peer's /pub/index via peek-remote, at whichever
 ::  install +peer-base finds.
 ::
