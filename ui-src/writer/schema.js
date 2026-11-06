@@ -65,7 +65,9 @@ export const schema = new Schema({
       group: 'block',
       //  the list style decides bullet or number: the view's sheet matches
       //  data-ls, and a pasted ul or ol gets the document's own (paste.js)
-      parseDOM: [{ tag: 'ul', getAttrs: () => ({ kind: 'bullet' }) },
+      //  a list copied from a Writer document names its list style, which
+      //  paste.js keeps when this document has one of that name
+      parseDOM: [{ tag: 'ul', getAttrs: (el) => ({ kind: 'bullet', xattrs: el.hasAttribute('data-ls') ? [['text:style-name', el.getAttribute('data-ls')]] : [] }) },
         { tag: 'ol', getAttrs: () => ({ kind: 'number' }) }],
       toDOM: (n) => {
         const s = n.attrs.xattrs.find(([k]) => k === 'text:style-name');
@@ -143,12 +145,17 @@ export const schema = new Schema({
       inclusive: false,
       //  never an href: a link in the editor is not followed by a click
       //  (Ctrl+click opens a safe one, view.js)
-      parseDOM: [{ tag: 'a[href]', getAttrs: (el) => (safeHref(el.getAttribute('href')) ? { href: el.getAttribute('href') } : false) }],
+      //  (a link copied from a Writer document carries its target as data-href)
+      parseDOM: ['href', 'data-href'].map((a) => ({
+        tag: 'a[' + a + ']', getAttrs: (el) => (safeHref(el.getAttribute(a)) ? { href: el.getAttribute(a) } : false),
+      })),
       toDOM: (m) => ['a', { 'data-href': m.attrs.href, title: m.attrs.href }, 0],
     },
     //  a named text style (office:styles)
     charStyle: {
       attrs: { name: {} },
+      //  paste.js drops one this document does not define
+      parseDOM: [{ tag: 'span[data-cs]', getAttrs: (el) => ({ name: el.getAttribute('data-cs') }) }],
       toDOM: (m) => ['span', { 'data-cs': m.attrs.name }, 0],
     },
     //  what a span's automatic style holds beyond the four marks below:

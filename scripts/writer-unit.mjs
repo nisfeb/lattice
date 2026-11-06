@@ -410,6 +410,36 @@ console.log('# paste and save, from other editors');
   check('text-decoration:none is neither', !matches('underline', 'text-decoration', 'none') && !matches('strike', 'text-decoration', 'none'));
 }
 
+console.log('# copy and paste within Writer');
+{
+  const S = schema.nodes;
+  //  what the view writes to the clipboard is read back: a link's
+  //  data-href, a character style's data-cs, a list's data-ls
+  const rules = (t) => (schema.marks[t] || schema.nodes[t]).spec.parseDOM;
+  const el = (attrs) => ({ getAttribute: (k) => attrs[k] ?? null, hasAttribute: (k) => k in attrs });
+  const lr = rules('link').find((r) => r.tag === 'a[data-href]');
+  check('a copied link keeps its target', !!lr && lr.getAttrs(el({ 'data-href': 'https://example.org/' })).href === 'https://example.org/');
+  check('and a copied javascript: link is still dropped', !!lr && lr.getAttrs(el({ 'data-href': 'javascript:alert(1)' })) === false);
+  const cr = (rules('charStyle') || []).find((r) => r.tag === 'span[data-cs]');
+  check('a copied character style is read back', !!cr && cr.getAttrs(el({ 'data-cs': 'Emphasis' })).name === 'Emphasis');
+  const ul = rules('list').find((r) => r.tag === 'ul');
+  const ua = ul.getAttrs(el({ 'data-ls': 'L2' }));
+  check('a copied list names its list style', (ua.xattrs || []).some(([k, v]) => k === 'text:style-name' && v === 'L2'));
+  //  paste.js keeps a style this document has, and drops one it has not
+  const st = parseFodt(read('04-lists.fodt')).styles;
+  const item = S.list_item.create(null, S.paragraph.create(null, schema.text('x')));
+  const num = core.fixPasted(S.list.create({ kind: 'bullet', xattrs: [['text:style-name', 'L2']] }, item), st);
+  check('a pasted numbered list keeps its numbering', num.attrs.xattrs.some(([k, v]) => k === 'text:style-name' && v === 'L2'), JSON.stringify(num.attrs.xattrs));
+  const other = core.fixPasted(S.list.create({ kind: 'bullet', xattrs: [['text:style-name', 'Nope"/><x']] }, item), st);
+  check('a list style this document lacks becomes its own', other.attrs.xattrs.length === 1 && other.attrs.xattrs[0][1] === core.listStyleFor(st, 'bullet'), JSON.stringify(other.attrs.xattrs));
+  const st7 = parseFodt(read('07-styles.fodt')).styles;
+  const cs = (n) => schema.text('w', [schema.marks.charStyle.create({ name: n })]);
+  const para = (n) => core.fixPasted(S.paragraph.create(null, cs(n)), st7).firstChild.marks.length;
+  const known = [...st7.styles.values()].find((e) => e.family === 'text' && !e.auto);
+  check('a pasted character style this document defines stays', !!known && para(known.name) === 1);
+  check('one it does not define goes', para('No_20_Such') === 0);
+}
+
 console.log('# speed');
 {
   const t = read('13-large.fodt');
