@@ -39,8 +39,29 @@ pub const OWN: &str =
 /// The same, for the page around a publisher's HTML: it may frame `/raw`.
 pub const FRAMED: &str = "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; frame-src 'self'; \
      frame-ancestors 'none'; base-uri 'none'";
-/// A publisher's HTML (`/raw`): lattice's `+sandbox-csp`.
+/// A publisher's HTML (`/raw`) once the reader chose to load its outside
+/// content: lattice's `+sandbox-csp`, which lets the page load from any
+/// host.
 pub const SANDBOX: &str = gateway::SANDBOX;
+/// A publisher's HTML (`/raw`) by default: the same sandbox, and nothing
+/// fetched from any host. A fetch, an image, a stylesheet or a socket to
+/// another host would show the publisher (or anyone it names, the LAN
+/// included) the anonymous reader's IP address. Its own inline script and
+/// style run, and data: and blob: load. The reader serves none of a
+/// page's other files, so even its own origin is left out. `OUTSIDE`
+/// tells the reader when something was refused.
+pub const SHUT: &str = "sandbox allow-scripts allow-forms allow-popups allow-top-navigation-by-user-activation; \
+     default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' data: blob:; style-src 'unsafe-inline' data: blob:; \
+     img-src data: blob:; font-src data: blob:; media-src data: blob:; connect-src data: blob:; \
+     frame-src data: blob:; worker-src data: blob:; form-action 'self'";
+/// The script put first in a publisher's HTML under `SHUT`: when the page
+/// is refused something from another host, it tells the reader's page
+/// once, which shows the note that offers to load it (reader.js). A
+/// publisher can send the same message itself; all that does is show the
+/// note.
+const OUTSIDE: &str = "<script>(function(){var t=0;addEventListener('securitypolicyviolation',function(e){\
+if(t||!/^(https?|wss?):/i.test(e.blockedURI||''))return;t=1;\
+try{parent.postMessage({lattice:'outside'},'*')}catch(x){}})})()</script>";
 /// The frame's sandbox attribute: the same four allowances.
 pub const FRAME_SANDBOX: &str =
     "allow-scripts allow-forms allow-popups allow-top-navigation-by-user-activation";
@@ -398,8 +419,9 @@ fn nonce() -> String {
 /// gateway rewrites them) pointed at the reader, and a `<base
 /// target="_top">` so a click on one opens in the reader rather than inside
 /// the frame. The gateway's rewrite is given a port no publisher can guess,
-/// so only the links it rewrote carry it.
-pub fn raw_html(body: &[u8]) -> Vec<u8> {
+/// so only the links it rewrote carry it. Unless `open` (served under
+/// `SANDBOX`), `OUTSIDE` goes in too, for `SHUT`.
+pub fn raw_html(body: &[u8], open: bool) -> Vec<u8> {
     let port = nonce();
     let out = gateway::rewrite_html(body, &port);
     let mark = format!("{}:{port}", gateway::HOST_SUFFIX);
@@ -422,24 +444,24 @@ pub fn raw_html(body: &[u8]) -> Vec<u8> {
         i = at + mark.len();
     }
     done.extend_from_slice(&out[last..]);
-    with_base(&done)
+    with_base(&done, if open { "" } else { OUTSIDE })
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
 }
 
-/// `<base target="_top">`, after a leading doctype so the document keeps
-/// its mode
-fn with_base(html: &[u8]) -> Vec<u8> {
-    let base = b"<base target=\"_top\">";
+/// `<base target="_top">`, then `then`, after a leading doctype so the
+/// document keeps its mode
+fn with_base(html: &[u8], then: &str) -> Vec<u8> {
+    let base = [b"<base target=\"_top\">".as_slice(), then.as_bytes()].concat();
     let lead = html.iter().take_while(|b| b.is_ascii_whitespace()).count();
     let at = if html[lead..].len() >= 9 && html[lead..lead + 9].eq_ignore_ascii_case(b"<!doctype") {
         html[lead..].iter().position(|&b| b == b'>').map_or(0, |n| lead + n + 1)
     } else {
         0
     };
-    [&html[..at], base, &html[at..]].concat()
+    [&html[..at], &base, &html[at..]].concat()
 }
 
 /// The page's title: its first `# ` heading in gemtext or Markdown, else
@@ -516,15 +538,7 @@ pub fn page(url: &str, p: &NativePage, mode: Mode, raw_key: &str, talk: &Talk) -
     let title = title_of(url, kind, &p.body);
     let link = link_for(url);
     let (csp, main) = match kind {
-        "html" => (
-            FRAMED,
-            format!(
-                "<iframe class=\"pub\" title=\"{t}\" sandbox=\"{FRAME_SANDBOX}\" src=\"/raw?url={u}&amp;key={k}\"></iframe>",
-                t = esc(&title),
-                u = enc(url),
-                k = enc(raw_key),
-            ),
-        ),
+        "html" => (FRAMED, framed(&title, url, raw_key, false)),
         "md" => (OWN, lossy(main_of(&gateway::render_markdown(p.body.as_bytes(), url.as_bytes(), &link)))),
         "gmi" => (OWN, lossy(main_of(&gateway::render_gemtext(p.body.as_bytes(), url.as_bytes(), &link)))),
         _ => (OWN, lossy(main_of(&gateway::render_text(p.body.as_bytes(), url.as_bytes())))),
@@ -532,6 +546,23 @@ pub fn page(url: &str, p: &NativePage, mode: Mode, raw_key: &str, talk: &Talk) -
     let talk = commentable(url).map_or(String::new(), |ship| format!("{}{}", thread_box(talk), talk_box(url, &ship, talk)));
     let html = chrome(&title, url, Some(mode), &format!("<article class=\"{kind}\">{main}</article>{talk}"), false);
     Shown { csp, html, title }
+}
+
+/// A publisher's HTML: the sandboxed frame of `/raw` under `raw_key`,
+/// after the note, hidden until the frame says it was refused something from
+/// another host (reader.js), whose button loads it for this page. `home`:
+/// the button comes back to the home.
+fn framed(title: &str, url: &str, raw_key: &str, home: bool) -> String {
+    format!(
+        "<form class=\"outside\" method=\"post\" action=\"/outside?url={u}\" hidden>{back}\
+         <span>This page tried to load content from other sites. It was blocked, because loading it would show them \
+         your IP address.</span> <button type=\"submit\">Load outside content for this page</button></form>\
+         <iframe class=\"pub\" title=\"{t}\" sandbox=\"{FRAME_SANDBOX}\" src=\"/raw?url={u}&amp;key={k}\"></iframe>",
+        t = esc(title),
+        u = enc(url),
+        k = enc(raw_key),
+        back = if home { "<input type=\"hidden\" name=\"back\" value=\"home\">" } else { "" },
+    )
 }
 
 pub(crate) fn lossy(b: &[u8]) -> String {
@@ -742,15 +773,7 @@ pub fn bad_address(given: &str) -> Shown {
 pub fn home(live: Option<&NativePage>, raw_key: &str, recent: &[Entry], replies: &[crate::notify::Unseen], followed: &[Follow]) -> Shown {
     let kind = live.map(|p| gateway::render_as(&p.mark, p.body.as_bytes()));
     let (csp, start) = if kind == Some("html") && !raw_key.is_empty() {
-        (
-            FRAMED,
-            format!(
-                "<iframe class=\"pub\" title=\"{t}\" sandbox=\"{FRAME_SANDBOX}\" src=\"/raw?url={u}&amp;key={k}\"></iframe>",
-                t = esc(START_URL),
-                u = enc(START_URL),
-                k = enc(raw_key),
-            ),
-        )
+        (FRAMED, framed(START_URL, START_URL, raw_key, true))
     } else {
         let body = live.filter(|_| kind == Some("gmi")).map_or(START, |p| p.body.as_str());
         (OWN, lossy(main_of(&gateway::render_gemtext(body.as_bytes(), START_URL.as_bytes(), &link_for(START_URL)))))
@@ -909,11 +932,15 @@ mod tests {
             assert!(!s.html.contains("alert(1)") && !s.html.contains("looks like html"));
         }
         assert_eq!(SANDBOX, "sandbox allow-scripts allow-forms allow-popups allow-top-navigation-by-user-activation");
+        // the frame may not navigate itself to another host: frame-src
+        // covers its own navigations, which CSP's fetch directives in the
+        // frame cannot (reader.rs's webkit test)
+        assert!(FRAMED.contains(" frame-src 'self'; "));
     }
 
     #[test]
     fn raw_html_points_urb_links_at_the_reader_and_the_top() {
-        let out = raw_html(b"<!DOCTYPE html><a href=\"urb://~nec/x?y\">a</a> <img src='urb://~bus'> urb://~zod plain");
+        let out = raw_html(b"<!DOCTYPE html><a href=\"urb://~nec/x?y\">a</a> <img src='urb://~bus'> urb://~zod plain", true);
         let out = String::from_utf8(out).unwrap();
         assert_eq!(
             out,
@@ -921,8 +948,70 @@ mod tests {
              <img src='/read?url=urb://~bus'> urb://~zod plain"
         );
         // a publisher who writes the gateway's form by hand gets no rewrite
-        let out = String::from_utf8(raw_html(b"<a href=\"http://nec.urb.localhost:1/x\">")).unwrap();
+        let out = String::from_utf8(raw_html(b"<a href=\"http://nec.urb.localhost:1/x\">", true)).unwrap();
         assert_eq!(out, "<base target=\"_top\"><a href=\"http://nec.urb.localhost:1/x\">");
+    }
+
+    #[test]
+    fn a_publishers_html_loads_nothing_from_any_host_by_default() {
+        // the same sandbox, then fetch directives
+        let (sandbox, rest) = SHUT.split_once("; ").unwrap();
+        assert_eq!(sandbox, SANDBOX);
+        let dirs: Vec<(&str, Vec<&str>)> = rest
+            .split("; ")
+            .map(|d| {
+                let mut w = d.split(' ');
+                (w.next().unwrap(), w.collect())
+            })
+            .collect();
+        let src = |name: &str| dirs.iter().find(|(n, _)| *n == name).map(|(_, v)| v.clone()).unwrap();
+        assert_eq!(src("default-src"), ["'none'"]);
+        // every fetch a page can make: an outside fetch, image, stylesheet
+        // (and its @import), font, media, socket, frame or worker
+        for d in ["img-src", "connect-src", "font-src", "media-src", "frame-src", "worker-src"] {
+            assert_eq!(src(d), ["data:", "blob:"], "{d}");
+        }
+        assert_eq!(src("style-src"), ["'unsafe-inline'", "data:", "blob:"]);
+        assert_eq!(src("script-src"), ["'unsafe-inline'", "'unsafe-eval'", "data:", "blob:"]);
+        assert_eq!(src("form-action"), ["'self'"]);
+        // no host, scheme or wildcard source anywhere
+        for (n, v) in &dirs {
+            for s in v {
+                assert!(s.starts_with('\'') || *s == "data:" || *s == "blob:", "{n} {s}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_shut_frame_tells_the_reader_once_what_it_refused() {
+        let out = String::from_utf8(raw_html(b"<!doctype html><p>x", false)).unwrap();
+        assert_eq!(out, format!("<!doctype html><base target=\"_top\">{OUTSIDE}<p>x"));
+        assert!(OUTSIDE.contains("securitypolicyviolation") && OUTSIDE.contains("parent.postMessage({lattice:'outside'}"));
+        // loaded with outside content, nothing to say
+        assert!(!String::from_utf8(raw_html(b"<p>x", true)).unwrap().contains("<script>"));
+    }
+
+    #[test]
+    fn a_framed_page_has_the_hidden_note_before_its_frame() {
+        let s = page(PAGE, &native("<p>x", "html"), Mode::Shipless, "k", &Talk::default());
+        let note = "<form class=\"outside\" method=\"post\" action=\"/outside?url=urb%3A%2F%2F~zod%2Fa%2Fb\" hidden>";
+        let at = s.html.find(note).unwrap();
+        assert!(at < s.html.find("<iframe class=\"pub\"").unwrap());
+        assert!(s.html.contains(">Load outside content for this page</button></form><iframe"));
+        let h = home(Some(&native("<p>x", "html")), "k", &[], &[], &[]).html;
+        assert!(h.contains("action=\"/outside?url=urb%3A%2F%2F~nisfeb%2Fstart\" hidden><input type=\"hidden\" name=\"back\" value=\"home\">"));
+    }
+
+    #[test]
+    fn markdown_and_gemtext_reach_no_outside_host() {
+        // no image is ever drawn, and the policy would refuse one
+        let md = page(PAGE, &native("# t\n\n![x](https://evil.example/a.png)\n\n<img src=\"http://10.0.0.1/b\">", "md"), Mode::Shipless, "", &Talk::default());
+        let gmi = page(PAGE, &native("# t\n=> https://evil.example/a.png an image", "gmi"), Mode::Shipless, "", &Talk::default());
+        for s in [&md, &gmi] {
+            assert_eq!(s.csp, OWN);
+            assert!(!s.html.contains("<img"), "{}", s.html);
+        }
+        assert!(OWN.starts_with("default-src 'none';") && !OWN.contains("img-src") && !OWN.contains("connect-src"));
     }
 
     #[test]
