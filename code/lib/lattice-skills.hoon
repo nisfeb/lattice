@@ -314,15 +314,61 @@
 ::  +perm-refuse: an agent's save refused for permissions, or ~. head is
 ::  the SKILL.md the save leaves: the new one, or the old one when the
 ::  save is of another file. The owner (agent=|) is never refused.
+::  file is the other file a save writes, '' for a save of SKILL.md.
 ++  perm-refuse
-  |=  [agent=? old=(unit skill) head=@t]
+  |=  [agent=? old=(unit skill) head=@t file=@t]
   ^-  (unit [code=@ud msg=@t])
   ?.  agent  ~
   ?:  &(?=(^ old) (owner-perms u.old))
     `[403 'this skill carries permissions the owner set (allowed-tools, hooks, shell or the like): only the owner can edit it, in the Skills view']
+  =/  sh=(list @t)  (weld (shell-lines head) (shell-lines file))
+  ?^  sh
+    :-  ~
+    :-  403
+    %+  rap  3
+    :~  'the line "'  i.sh
+        '" runs a shell command when Claude Code loads the skill (!`command` '
+        'or a ```! block), so only the owner writes one, in the Skills view'
+    ==
   =/  b=(unit @t)  (agent-bad head)
   ?~  b  ~
   `[403 u.b]
+::  +shell-lines: the lines Claude Code runs as shell when it loads a
+::  skill: a !` at the start of a line or after a space or tab, and a
+::  fence of three or more ` or ~ whose info string starts with !.
+++  shell-lines
+  |=  body=@t
+  ^-  (list @t)
+  %+  skim  (to-wain:format body)
+  |=  l=@t
+  ^-  ?
+  =/  t=tape  (trip l)
+  ?:  (shell-fence t)  &
+  =/  prev=@t  ' '
+  |-  ^-  ?
+  ?~  t  |
+  ?:  &(=('!' i.t) ?=(^ t.t) =('`' i.t.t) |(=(' ' prev) =('\09' prev)))  &
+  $(prev i.t, t t.t)
+++  shell-fence
+  |=  t=tape
+  ^-  ?
+  =.  t  (drop-ws t)
+  ?~  t  |
+  ?.  |(=('`' i.t) =('~' i.t))  |
+  =/  c=@t  i.t
+  =/  r=tape  t
+  =/  n=@ud  0
+  |-  ^-  ?
+  ?:  &(?=(^ r) =(c i.r))  $(r t.r, n +(n))
+  ?:  (lth n 3)  |
+  =.  r  (drop-ws r)
+  &(?=(^ r) =('!' i.r))
+++  drop-ws
+  |=  t=tape
+  ^-  tape
+  ?~  t  ~
+  ?:  |(=(' ' i.t) =('\09' i.t))  $(t t.t)
+  t
 ::  +owner-perms: the owner set this skill's permission fields
 ++  owner-perms
   |=  s=skill
@@ -340,8 +386,12 @@
   ^-  @t
   =/  f  (fm body)
   ?.  has.f  body
-  =/  g=(list @t)  (grant-lines body |)
-  =/  og=(list @t)  ?~(old ~ (grant-lines body.u.old |))
+  ::  a shell line in SKILL.md is a grant too: the mirror keeps it only
+  ::  on a skill the owner marked
+  =/  g=(list @t)  (weld (grant-lines body |) (shell-lines body))
+  =/  og=(list @t)
+    ?~  old  ~
+    (weld (grant-lines body.u.old |) (shell-lines body.u.old))
   =/  was=?  ?~(old | (owner-perms u.old))
   =/  on=?  &(?=(^ g) |(was !=(g og)))
   =/  day=@t

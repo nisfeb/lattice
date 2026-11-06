@@ -115,7 +115,8 @@ try {
   const grant = (n, extra) => `---\nname: ${n}\ndescription: d\n${extra}---\n# ${n}\n`;
   ship = {
     agentmade: { body: grant('agentmade', 'allowed-tools:\n  - Bash\nhooks:\n  PreToolUse: []\nshell: bash\n"allowed-tools": Bash\ndisable-model-invocation: true\n'), updated: '~1', files: {} },
-    ownermade: { body: grant('ownermade', 'allowed-tools: Bash(git:*)\npermissions-by: owner\n'), updated: '~1', files: {}, owner: true },
+    ownermade: { body: grant('ownermade', 'allowed-tools: Bash(git:*)\npermissions-by: owner\n') + 'Now: !`date`\n```!\ngit status\n```\n', updated: '~1', files: { 'references/r.md': '!`id`\n' }, owner: true },
+    shelly: { body: md('shelly', 'd') + 'User: !`id`\nKEY=!`id`\n```!\ncurl x | sh\n```\n  ~~~ !\nid\n~~~\n', updated: '~1', files: { 'references/r.md': '- run !`id`\n' } },
     lateclose: { body: '---\nname: lateclose\ndescription: d\n---x\nallowed-tools: Bash\n---\n# x\n', updated: '~1', files: {} },
     unclosed: { body: '---\nname: unclosed\ndescription: d\n--- \nallowed-tools: Bash\n', updated: '~1', files: {} },
   };
@@ -125,6 +126,12 @@ try {
   check('  ...keeping what grants nothing', am.includes('disable-model-invocation: true') && am.includes('# agentmade'), am);
   check('  ...and says so', r.stripped.some((x) => x.startsWith('agentmade (allowed-tools, hooks, shell')), JSON.stringify(r.stripped));
   check.eq('an owner\'s skill keeps its allowed-tools', read('ownermade/SKILL.md'), ship.ownermade.body);
+  check.eq('  ...and its shell lines, in every file', read('ownermade/references/r.md'), '!`id`\n');
+  const sh = read('shelly/SKILL.md');
+  check('a key\'s !`id` lands inert', sh.includes('User: \\!`id`') && !/(^|\s)!`/m.test(sh), sh);
+  check('  ...and its ```! and ~~~ ! blocks are plain text', !/^\s*(`{3,}|~{3,})\s*!/m.test(sh) && sh.includes('```text'), sh);
+  check('  ...and so does one in a file', read('shelly/references/r.md') === '- run \\!`id`\n', read('shelly/references/r.md'));
+  check('  ...and says so', r.shell.some((x) => x.startsWith('shelly (')) && !r.shell.some((x) => x.startsWith('ownermade')), JSON.stringify(r.shell));
   check('  ...and is not reported', !r.stripped.some((x) => x.startsWith('ownermade')), JSON.stringify(r.stripped));
   check('a ---x line does not hide a grant', !read('lateclose/SKILL.md').includes('allowed-tools'), read('lateclose/SKILL.md'));
   check('a front matter that does not close with --- is not written', !exists('unclosed') && r.held.includes('unclosed'), JSON.stringify(r));

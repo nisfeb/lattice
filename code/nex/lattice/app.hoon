@@ -6423,7 +6423,7 @@
   ::  (lib/lattice-skills, permissions). A key may not edit a skill that
   ::  carries the owner's, nor store a SKILL.md that sets any.
   =/  head=@t  ?:(main bod ?>(?=(^ old) body.u.old))
-  =/  grant=(unit [code=@ud msg=@t])  (perm-refuse:lsk ?=(^ key) old head)
+  =/  grant=(unit [code=@ud msg=@t])  (perm-refuse:lsk ?=(^ key) old head ?:(main '' bod))
   ?^  grant  [%| u.grant]
   =/  conflicted=?  &(!=('' expect) |(?=(~ old) !=(expect (scot %da updated.u.old))))
   =/  was=?  ?~(old | (sensitive:lsk u.old))

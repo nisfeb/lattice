@@ -21,6 +21,7 @@
 // owner_permissions. Any other skill is written with only the front
 // matter an agent key may set (AGENT_KEYS, the ship's +agent-keys), so a
 // key's grant, or one stored before the ship checked, never reaches disk.
+// Its shell lines (!`cmd`, ```!) are made text in every file too.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -138,6 +139,21 @@ function pruneEmpty(dir) {
   try { fs.rmdirSync(dir); } catch {}
 }
 
+// Claude Code runs shell when it loads a skill: !`cmd` at the start of a
+// line or after whitespace, and a ```! fenced block. inertShell makes
+// every such form text: a \ before each !` (a ! after another character
+// is left as text, and markdown shows \! as !), and a fence whose info
+// string starts with ! gets the info string text instead. n counts them.
+const FENCE = /^([ \t]*)(`{3,}|~{3,})[ \t]*!/;
+export function inertShell(text) {
+  let n = 0;
+  const out = text.split('\n').map((l) => {
+    if (FENCE.test(l)) { n++; l = l.replace(FENCE, '$1$2text '); }
+    return l.replace(/(^|[^\\])!`/g, (m, pre) => { n++; return `${pre}\\!\``; });
+  }).join('\n');
+  return { text: out, n };
+}
+
 // get(route, args) answers the route's text or throws with .status.
 // Returns what changed, for a one-line note.
 export async function syncSkills({ get, root, ship }) {
@@ -148,7 +164,7 @@ export async function syncSkills({ get, root, ship }) {
     want.set(s.name, s);
   }
   fs.mkdirSync(root, { recursive: true });
-  const out = { added: [], updated: [], removed: [], skipped: [], stripped: [], held: [] };
+  const out = { added: [], updated: [], removed: [], skipped: [], stripped: [], held: [], shell: [] };
   // ours that the ship no longer has
   for (const ent of fs.readdirSync(root, { withFileTypes: true })) {
     if (!ent.isDirectory()) continue;
@@ -185,6 +201,11 @@ export async function syncSkills({ get, root, ship }) {
     for (const f of full.files || []) {
       if (!pathOk(f.path)) continue;
       files.push([f.path, JSON.parse(await get('skill-file', { name, path: f.path })).body]);
+    }
+    if (!full.owner_permissions) {
+      let n = 0;
+      for (const f of files) { const r = inertShell(f[1]); f[1] = r.text; n += r.n; }
+      if (n) out.shell.push(`${name} (${n})`);
     }
     fs.mkdirSync(dir, { recursive: true });
     const wrote = files.filter(([rel, text]) => writeInside(dir, rel, text));

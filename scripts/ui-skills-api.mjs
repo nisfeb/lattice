@@ -163,6 +163,10 @@ try {
     r = await call(W, 'POST', `skill-save?name=${PERM}`, md(PERM, 'd', extra));
     check(`a key's save with ${what} is 403`, r.status === 403 && /owner/.test(r.j.error || r.j.raw || JSON.stringify(r.j)), `${r.status} ${JSON.stringify(r.j)}`);
   }
+  r = await call(W, 'POST', `skill-save?name=${PERM}`, md(PERM, 'd') + 'Who: !`id`\n');
+  check('a key\'s save with a !`command` line is 403', r.status === 403, `${r.status} ${JSON.stringify(r.j)}`);
+  r = await call(W, 'POST', `skill-save?name=${PERM}`, md(PERM, 'd') + '```!\nid\n```\n');
+  check.eq('  ...and with a ```! block', r.status, 403);
   check.eq('  ...and stores nothing', (await owner('GET', `skill?name=${PERM}`)).status, 404);
   r = await call(W, 'POST', `skill-save?name=${PERM}`, md(PERM, 'd', 'disable-model-invocation: true\ndisallowed-tools: Bash\n'));
   check('a key may set fields that grant nothing', r.status === 200 && r.j.owner_permissions === false, JSON.stringify(r.j));
@@ -176,6 +180,8 @@ try {
   check.eq('  ...a key cannot edit it, even to drop the grant', r.status, 403);
   check.eq('  ...nor keep it and change the steps', (await call(W, 'POST', `skill-save?name=${PERM}`, (await call(R, 'GET', `skill?name=${PERM}`)).j.body.replace('step one', 'rm -rf'))).status, 403);
   check.eq('  ...nor add a file', (await call(W, 'POST', `skill-save?${q({ name: PERM, path: 'references/x.md' })}`, 'x')).status, 403);
+  r = await owner('POST', `skill-save?name=${PERM}`, permBody.replace('step one', 'step one, at !`date`'));
+  check('the owner may write a !`command` line', r.status === 200 && r.j.owner_permissions === true, JSON.stringify(r.j));
   check('  ...and it is unchanged', /\nallowed-tools: Bash\(git status:\*\)\n/.test((await owner('GET', `skill?name=${PERM}`)).j.body));
   r = await owner('POST', `skill-save?name=${PERM}`, md(PERM, 'd'));
   check('the owner drops the grant, and the mark goes', r.status === 200 && r.j.owner_permissions === false && !/permissions-by/.test((await owner('GET', `skill?name=${PERM}`)).j.body), JSON.stringify(r.j));
