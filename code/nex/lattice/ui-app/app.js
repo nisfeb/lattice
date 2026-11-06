@@ -160,6 +160,22 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     bustPages(name);
     await offRecount();
   };
+  const sameRec = (a, b) => a.queuedAt === b.queuedAt && a.body === b.body;
+  let offKept = false;
+  const offDone = async (q) => {
+    if (!qrust()) await idbDelSent(q);
+    else {
+      try { await qcall('queue_del', { name: q.name, sent: { queuedAt: q.queuedAt, body: q.body } }); }
+      catch {}
+    }
+    let v = null;
+    try { v = await offGet(q.name); } catch {}
+    const kept = !!v && !sameRec(v, q);
+    if (kept && v.isNew) await offPut({ ...v, isNew: false, baseRev: 0 });
+    if (kept) offKept = true;
+    bustPages(q.name);
+    await offRecount();
+  };
   const opAll = async () => {
     if (!qrust()) return idbOpAll();
     try { return (await qcall('queue_ops')) || []; } catch { return []; }
@@ -213,6 +229,20 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   };
   const idbDel = async (name) => {
     const s = await idbStore('saves', 'readwrite'); if (s) await offReq(s.delete(name));
+  };
+  const idbDelSent = async (q) => {
+    const s = await idbStore('saves', 'readwrite');
+    if (!s) return;
+    return new Promise((res) => {
+      const g = s.get(q.name);
+      g.onsuccess = () => {
+        const v = g.result;
+        if (!v || !sameRec(v, q)) return res();
+        const d = s.delete(q.name);
+        d.onsuccess = d.onerror = () => res();
+      };
+      g.onerror = () => res();
+    });
   };
   offRecount();
   const kvGet = async (k) => {
@@ -313,7 +343,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   async function enqueueSave(name, kind, body, isNew, rn, rev = curRev) {
     let prev = null;
     try { prev = await offGet(name); } catch {}
-    const queued = await offPut({ name, kind, body, baseRev: jobWait ? 0 : rev || 0,
+    const queued = await offPut({ name, kind, body, baseRev: jobWait || replaying ? 0 : rev || 0,
       isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
@@ -377,7 +407,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     replaying = true;
     srcFlight.clear();    // replayed writes: no open read from before is shared
     sensForget();         // and a replayed move or delete culls flags
+    offKept = false;
     try { await drainQueue(proven); } finally { replaying = false; }
+    if (offKept && !degraded) setTimeout(() => replayQueue(true), 0);
   }
 
 
@@ -413,27 +445,27 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           '&type=' + q.kind + '&new=1' + dnameQ(q),
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
-      if (one && one.ok) { await offDel(q.name); continue; }
+      if (one && one.ok) { await offDone(q); continue; }
       if (!replayDrop(one)) return false;
       if (one && one.status === 409) {
         try {
           const sr = await tfetch(api + '/page-source?name=' +
             encodeURIComponent(q.name), {}, 20000);
           if (sr && sr.ok && ((await sr.json()).body || '') === (q.body || '\n')) {
-            await offDel(q.name);
+            await offDone(q);
             continue;
           }
         } catch {}
         const alt = 'conflicts/offline-create-' + q.name.replace(/\//g, '-');
         if (!await keepAside(q, alt)) return false;
         conflicts.push(alt);
-        await offDel(q.name);
+        await offDone(q);
         st('offline create collided: ' + q.name + ' exists on the ship — your ' +
           'version is kept at ' + alt, false);
         continue;
       }
       st('dropped an unsyncable offline create: ' + q.name, false);
-      await offDel(q.name);
+      await offDone(q);
     }
     return true;
   }
@@ -461,7 +493,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           for (const it of ((await r.json()).items || []))
             if (it.conflicted) conflicts.push(it.kept || it.name);
         } catch {}
-        for (const q of part) await offDel(q.name);
+        for (const q of part) await offDone(q);
         continue;
       }
       if (r && !shipGone(r) && (r.status >= 500 || replayDrop(r))) {
@@ -477,7 +509,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
               const j = await one.json();
               if (j.conflicted) conflicts.push(j.kept || q.name);
             } catch {}
-            await offDel(q.name);
+            await offDone(q);
             continue;
           }
           if (!replayDrop(one)) return false;
@@ -485,12 +517,12 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
             const alt = 'conflicts/offline-edit-' + q.name.replace(/\//g, '-');
             if (!await keepAside(q, alt)) return false;
             conflicts.push(alt);
-            await offDel(q.name);
+            await offDone(q);
             st('offline edit refused: ' + q.name + ', your version is kept at ' + alt, false);
             continue;
           }
           st('dropped an unsyncable offline edit: ' + q.name, false);
-          await offDel(q.name);
+          await offDone(q);
         }
         continue;
       }
@@ -506,10 +538,10 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         one = await tfetch(api + '/know-save?key=' + encodeURIComponent(q.name.slice(5)),
           { method: 'POST', body: q.body || '\n' }, 20000);
       } catch {}
-      if (one && one.ok) { await offDel(q.name); continue; }
+      if (one && one.ok) { await offDone(q); continue; }
       if (!replayDrop(one)) return false;
       st('dropped an unsyncable offline edit: ' + q.name, false);
-      await offDel(q.name);
+      await offDone(q);
     }
     return true;
   }
