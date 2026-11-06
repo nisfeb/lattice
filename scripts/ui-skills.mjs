@@ -106,6 +106,36 @@ check('the edit is on the ship',
 check('and the view shows it', !!(await waitFor(async () => ((await text('#skview')) || '').includes(MARK), 15000)),
   await text('#skview'));
 
+// ── 3b. an unsaved edit is guarded ──────────────────────────────────────
+//  reload, window close and tab close used to drop it without a word
+await click('skedit');
+await waitFor(() => has('#sktext'), 10000);
+await page.evaluate(() => {
+  const t = document.getElementById('sktext');
+  t.value += '\nunsaved line';
+  t.dispatchEvent(new Event('input', { bubbles: true }));
+});
+check('an unsaved skill edit counts as unsaved work',
+  await page.evaluate(() => window.__latUnsaved()), '');
+check('and a reload or window close asks', await page.evaluate(() => {
+  const e = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(e);
+  return e.defaultPrevented;
+}), '');
+await page.evaluate(() => document.querySelector('.dtw.on .dtx').click());
+const skAsk = !!(await waitFor(() => page.evaluate(() => !document.getElementById('dlg').hidden), 5000));
+await page.evaluate(() => document.getElementById('dlgcancel').click());
+await sleep(500);
+check('closing the Skills tab asks, and cancel keeps the edit', skAsk && await page.evaluate(() => {
+  const s = window.latTabs.state();
+  const t = document.getElementById('sktext');
+  return s.tabs[s.active].key === 'skills' && !!t && t.value.includes('unsaved line');
+}), String(skAsk));
+await click('skcancel');
+await dlg(null);   // discard
+await sleep(300);
+check('once cancelled, nothing is unsaved', !(await page.evaluate(() => window.__latUnsaved())), '');
+
 // ── 4. core ─────────────────────────────────────────────────────────────
 await click('skcore');
 check('Core: on tags core',

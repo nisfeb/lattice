@@ -100,8 +100,9 @@
     park: async () => true,
     shows: (t) => t === activeTab && toolShown === t.key,
     // a frame holding text typed and not sent (a forum post, a settings
-    // field) is not closed unasked (closeTab, 21-tabs.js)
-    held: (t) => frameTyped(t.key),
+    // field), or the Skills tab an unsaved edit, is not closed unasked
+    // (closeTab, 21-tabs.js)
+    held: (t) => frameTyped(t.key) || (t.key === 'skills' && skUnsaved()),
   };
   // Whether a frame tab's page, or a same-origin frame in it (the reader's
   // comment box), holds a text field the user has typed into: not empty,
