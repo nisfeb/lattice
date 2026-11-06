@@ -8753,12 +8753,16 @@
   ::  continuous editing session would collapse to a single revision and you
   ::  could never step back. Anchoring on the revision BEFORE prev keeps one
   ::  revision per window no matter how fast the writes arrive.
+  ::
+  ::  And prev must sit inside one window of the head too. A prev that was
+  ::  the head across a pause is the end of a session, the state the page
+  ::  held until now. Dropping it on the next day's first save left only
+  ::  the session's opening revision to restore.
   =/  victim=(unit cass:clay)
     ?.  ?=([* * * *] live)  ~
-    =/  prev=cass:clay    i.t.live
-    =/  anchor=cass:clay  i.t.t.live
-    ?:  (lth (sub da.prev da.anchor) window)  `prev
-    ~
+    =/  vn=(unit @ud)
+      (coalesce-victim:lk (turn live |=(c=cass:clay [ud.c da.c])) window)
+    ?~(vn ~ `i.t.live)
   ;<  ~  bind:m
     ?~  victim  (pure:m ~)
     (lose:fio road [%pick (sy ~[u.victim])])

@@ -385,4 +385,27 @@
     (expect-eq !>(&) !>((sen-of ~ /s sen)))
     (expect-eq !>(|) !>((sen-of ~ /x e1)))
   ==
+::  +coalesce-victim: an intermediate of one burst goes; the end of a
+::  session (the head across a pause) stays, even when it came soon after
+::  the revision before it.
+::
+++  test-coalesce-victim
+  =/  t0  ~2026.1.1
+  ;:  weld
+    ::  a burst: 0, +1m, +2m. The middle goes.
+    %+  expect-eq  !>(`(unit @ud)``2)
+    !>((coalesce-victim ~[[3 (add t0 ~m2)] [2 (add t0 ~m1)] [1 t0]] ~m5))
+    ::  a session 0, +1m, then the next day's save: +1m was the page for a
+    ::  day, the end of that session, so it is kept
+    %+  expect-eq  !>(`(unit @ud)`~)
+    !>((coalesce-victim ~[[3 (add t0 ~d1)] [2 (add t0 ~m1)] [1 t0]] ~m5))
+    ::  prev a window past the anchor: kept
+    %+  expect-eq  !>(`(unit @ud)`~)
+    !>((coalesce-victim ~[[3 (add t0 ~m11)] [2 (add t0 ~m10)] [1 t0]] ~m5))
+    ::  under three revisions there is nothing to coalesce
+    (expect-eq !>(`(unit @ud)`~) !>((coalesce-victim ~[[2 (add t0 ~m1)] [1 t0]] ~m5)))
+    ::  a clock step back does not crash
+    %+  expect-eq  !>(`(unit @ud)``2)
+    !>((coalesce-victim ~[[3 t0] [2 (add t0 ~s1)] [1 t0]] ~m5))
+  ==
 --

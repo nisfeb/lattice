@@ -859,4 +859,23 @@
       a+(turn stale.l |=([k=path d=@ud] (pairs:enjs:format ~[['key' (ks k)] ['days' (num d)]])))
       ['orphans' a+(turn orphans.l ks)]
   ==
+::  +coalesce-victim: which revision a save's history prune drops, given
+::  the live revisions [number date] NEWEST FIRST. The middle of three
+::  goes when it sits inside one window of BOTH neighbours: it is then a
+::  keystroke-scale intermediate of one burst. A revision that was the
+::  head across a pause is the end of a session, so it stays, even when
+::  it came soon after the one before it.
+::
+++  coalesce-victim
+  |=  [live=(list [n=@ud d=@da]) window=@dr]
+  ^-  (unit @ud)
+  ?.  ?=([* * * *] live)  ~
+  =/  top  i.live
+  =/  prev  i.t.live
+  =/  anchor  i.t.t.live
+  ::  a clock step backwards reads as no gap, rather than crashing sub
+  =/  gap  |=([a=@da b=@da] ?:((lth a b) `@dr`0 (sub a b)))
+  ?.  (lth (gap d.prev d.anchor) window)  ~
+  ?.  (lth (gap d.top d.prev) window)  ~
+  `n.prev
 --
