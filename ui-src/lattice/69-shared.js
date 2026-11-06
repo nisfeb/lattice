@@ -35,9 +35,13 @@
     if (j && j.op === 'add' && j.host && j.path) shareToast(j);
   };
   // the stream dropped (a hidden tab, a sleeping laptop): a window that
-  // comes back refetches, at most once a minute
+  // comes back refetches, at most once a minute. Un-hiding fires focus and
+  // visibilitychange both, before the first answer sets swmAt, so the one
+  // in flight is shared: it was two GETs of /shared-with-me each time.
+  let swmFly = null;
   const sharesRefocused = () => {
-    if (!document.hidden && Date.now() - swmAt >= 60000) loadShared(true);
+    if (document.hidden || swmFly || Date.now() - swmAt < 60000) return;
+    swmFly = loadShared(true).finally(() => { swmFly = null; });
   };
   window.addEventListener('focus', sharesRefocused);
   document.addEventListener('visibilitychange', sharesRefocused);
