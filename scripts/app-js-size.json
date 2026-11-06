@@ -1,5 +1,5 @@
 {
-  "bytes": 724231,
+  "bytes": 733113,
   "grow": 4096,
-  "why": "release 117: app.js was 711,328 bytes at release 116, plus the inbox (feat-notifications: Held and Activity tabs with approve, reject, mark read and open, the badge from /notify-count, and the /beacon/notify listener, 5,812 bytes) and the following folder in the tree (feat-follow-folder: 69x-follow.js, the list, the N new counts, the 20 minute re-read, unfollow and seen, and its /beacon/folds listener, 7,091 bytes). Both are drawn on boot (the badge and the tree), so neither can load lazily."
+  "why": "fix-editor-cursor: app.js was 726,303 bytes on main, plus the vim block cursor (27-vim.js: the block, underline and bar per mode, placed on the overlay's character and redrawn on every key, scroll, focus, resize and font load, 4,700 bytes) and hlSplice (25-editor.js: each edit written straight into the highlight overlay so its text never lags the textarea's, the cause of the caret drifting on long pages, 2,100 bytes). The editor and vim are on screen from boot, so neither can load lazily."
 }

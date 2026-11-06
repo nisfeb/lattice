@@ -589,6 +589,17 @@ lat-writer > iframe { border: 0; width: 100%; height: 90%; }
 .esrc { resize: none; background: transparent; color: transparent;
   caret-color: var(--text); overflow: auto; z-index: 1; outline: none; }
 .esrc::placeholder { color: var(--muted); }
+/* vim's cursor (27-vim.js): a block over the character in normal, visual
+   and operator-pending, an underline for r, the native bar in insert. The
+   block is drawn over the overlay in the theme's text colour, with the
+   character under it in the background colour, so it reads on any theme. */
+.esrc.vim-block { caret-color: transparent; }
+.vimcur { position: absolute; z-index: 2; pointer-events: none; overflow: hidden;
+  font: var(--ed-size)/1.55 var(--ed-font); white-space: pre; tab-size: 2;
+  background: var(--text); color: var(--bg); }
+.vimcur.under { background: transparent; color: transparent;
+  border-bottom: 2px solid var(--text); box-sizing: border-box; }
+@media (max-width: 820px) { .vimcur { font-size: max(16px, var(--ed-size)); } }
 /* .ehl scrolls like .esrc (overflow auto, NOT hidden) so both layers have
    identical scrollbar geometry. With classic scrollbars an overflow-hidden
    overlay is wider than the textarea, wrap points diverge, and the caret
@@ -750,20 +761,28 @@ lat-writer > iframe { border: 0; width: 100%; height: 90%; }
   .tree .swmv { padding: 4px 8px; }   /* a finger's width, in the drawer */
 }
 
+/* The overlay's glyphs must keep the textarea's advances, so no token may
+   change the face: no font-weight, no font-style. A bold or italic face is
+   wider than the regular one in any proportional font (the System and Serif
+   typography choices) and in WebKit's synthetic bold, so every heading and
+   **bold** run pushed the rest of its line right of where the textarea,
+   which draws the caret, had it, and moved soft-wrap points, which on a long
+   page put the caret rows away from its text. Weight is drawn with a
+   shadow and emphasis with a dotted underline; neither moves a glyph. */
 .ehl .token.comment, .ehl .token.blockquote, .ehl .token.pre, .ehl .token.prolog,
-.ehl .token.cdata { color: var(--muted); font-style: italic; }
+.ehl .token.cdata { color: var(--muted); }
 .ehl .token.string, .ehl .token.char, .ehl .token.attr-value, .ehl .token.code,
 .ehl .token.code-block { color: #b07a3f; }
 .ehl .token.keyword, .ehl .token.rune, .ehl .token.important, .ehl .token.title,
 .ehl .token.list, .ehl .token.atrule, .ehl .token.property,
 .ehl .token.attr-name { color: var(--green); }
-.ehl .token.keyword, .ehl .token.rune, .ehl .token.title { font-weight: 600; }
+.ehl .token.keyword, .ehl .token.rune, .ehl .token.title { text-shadow: .35px 0 currentColor; }
 .ehl .token.tag, .ehl .token.function, .ehl .token.selector, .ehl .token.url,
 .ehl .token.term, .ehl .token.symbol, .ehl .token.class-name { color: #1a6ed8; }
 .ehl .token.number, .ehl .token.boolean, .ehl .token.aura, .ehl .token.hexcode,
 .ehl .token.regex { color: #7a5cc0; }
-.ehl .token.bold { font-weight: 700; }
-.ehl .token.italic { font-style: italic; }
+.ehl .token.bold { text-shadow: .5px 0 currentColor; }
+.ehl .token.italic { text-decoration: underline dotted; text-underline-offset: 3px; }
 .ehl .token.punctuation, .ehl .token.operator { opacity: .75; }
 .ehl .token.url { text-decoration: underline; }
 
