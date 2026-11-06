@@ -55,6 +55,12 @@
 ++  test-merge-crlf
   %+  expect-eq  !>('- [x] a [T1]')
   !>((journal-merge:lo '- [x] a [T1]\0d\0a' '- [ ] a [T1]'))
+++  test-merge-crlf-new
+  ;:  weld
+    (expect-eq !>('- [x] a [T1]') !>((journal-merge:lo '- [x] a [T1]' '- [ ] a [T1]\0d')))
+    %+  expect-eq  !>('x\0a## Notes\0atheirs')
+    !>((journal-merge:lo 'x\0a## Notes\0amine' 'x\0d\0a## Notes\0d\0atheirs'))
+  ==
 ++  test-merge-quoted-and-numbered
   %+  expect-eq  !>('> 1. [x] a [T4]')
   !>((journal-merge:lo '> 1. [x] a [T4]' '> 1. [ ] a [T4]'))
