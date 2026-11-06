@@ -561,15 +561,19 @@
   |=  [k=@t r=title-row]
   =(pre (scag n (trip k)))
 ::  +fold-hit: the follows a share notice's page path falls under:
-::  <base>/page/<rel...>/code, under a followed `rel` on that host
+::  <base>/page/<rel...>/code, under a followed `rel` on that host. The
+::  page dir is the first /page/ in the path; a later one is part of rel.
 ++  fold-hit
   |=  [fs=(list fold) host=@p pax=path]
   ^-  (list fold)
   =/  t=tape  (trip (spat pax))
+  =/  at=(unit @ud)  (find "/page/" t)
+  ?~  at  ~
+  =/  sub=tape  (slag u.at t)
   %+  skim  fs
   |=  f=fold
   ?.  =(host host.f)  |
   ?~  rel.f  |
   =/  pre=tape  :(weld "/page" (trip (spat rel.f)) "/")
-  ?=(^ (find pre t))
+  =(pre (scag (lent pre) sub))
 --

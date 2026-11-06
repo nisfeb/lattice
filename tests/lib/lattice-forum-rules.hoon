@@ -57,6 +57,20 @@
     =/  l4  (rate-update:fr ~nec %main (add t0 ~m9) big)
     (expect-eq !>(`[(add t0 ~m9) ~m10]) !>((~(get by l4) [~nec %main])))
   ==
+::  a stale entry reads as a missing one, so an update drops it: a ship
+::  naming a new board on every poke cannot grow the map
+++  test-rate-limit-prunes
+  =/  t0=@da  ~2026.6.1
+  =/  l1  (rate-update:fr ~nec %a t0 ~)
+  =/  l2  (rate-update:fr ~nec %b (add t0 ~s20) l1)
+  =/  l3  (rate-update:fr ~nec %c (add t0 ~s45) l2)
+  ;:  weld
+    (expect-eq !>(2) !>(~(wyt by l2)))
+    (expect-eq !>(2) !>(~(wyt by l3)))
+    (expect-eq !>(~) !>((~(get by l3) [~nec %a])))
+    (expect-eq !>(`[(add t0 ~s20) ~s10]) !>((~(get by l3) [~nec %b])))
+    (expect-eq !>(&) !>((rate-ok:fr ~nec %a brd (add t0 ~s45) l3)))
+  ==
 ++  test-hot-score
   =/  now=@da  ~2026.6.1
   =/  more   (mk-post 1 5 ~h1)

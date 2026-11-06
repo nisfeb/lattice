@@ -7205,14 +7205,17 @@
 ::  An offline poster simply never gets the note, as a share notice is
 ::  best-effort. (+remote-load-poke-wait is the owner route's variant that does
 ::  wait, because an owner action has an HTTP response to carry the result.)
+::  The poster's base comes from the peers record only (+known-base), never
+::  a probe: +peer-base waits on the peer, and a probe that fails is not
+::  recorded, so each poke from a silent ship would pay it again.
 ::
 ++  forum-note-send
   |=  [to=@p board=board-name:ft reason=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  base=(unit path)  bind:m  (peer-base-cached to)
+  ;<  known=(map @t json)  bind:m  read-peers
   =/  req=load:remo:nexus
-    :-  [/forum-note %& (fall base desk-base:lu) %'forum.sig']
+    :-  [/forum-note %& (known-base:lu known to) %'forum.sig']
     [%poke [/lattice %forum-note] `[board-name:ft @t]`[board reason]]
   %+  poke:io  &+&+[/sys/gall %'main.sig']
   [[/ %gall-poke] [[to %grubbery] grubbery-load+req]]
@@ -7907,7 +7910,8 @@
 ::  +forum-reply-tell: a comment by `src` landed on `post` of a board we
 ::  host. Each author it replies to hears of it (+reply-targets:ln): we
 ::  file an activity item, and a planet or moon is poked a reply note on
-::  its /forum.sig, fire-and-forget as a refusal note is. A comet runs no
+::  its /forum.sig, fire-and-forget as a refusal note is, at its base in
+::  the peers record (+forum-note-send says why). A comet runs no
 ::  lattice to tell; the desktop reader finds its replies on its own.
 ++  forum-reply-tell
   |=  [now=@da src=@p brd=board:ft post=post-id:ft parent=(unit comment-id:ft) body=@t]
@@ -7917,16 +7921,16 @@
   =/  who=(list @p)  ~(tap in (reply-targets:ln brd post parent src))
   =/  title=@t  (post-title:ln brd post)
   =/  nom=@tas  name.info.brd
+  ;<  known=(map @t json)  bind:m  read-peers
   |-  ^-  form:m
   ?~  who  (pure:m ~)
   ;<  ~  bind:m
     ?:  =(i.who our)
       (notify-add now (make:ln %reply now src our nom post title body))
     ?:  (is-comet:fr i.who)  (pure:m ~)
-    ;<  base=(unit path)  bind:m  (peer-base-cached i.who)
     =/  note=reply-note:ln  [%reply-1 nom post (clip:ln title) src (clip:ln body)]
     =/  req=load:remo:nexus
-      :-  [/forum-note %& (fall base desk-base:lu) %'forum.sig']
+      :-  [/forum-note %& (known-base:lu known i.who) %'forum.sig']
       [%poke [/lattice %forum-note] note]
     %+  poke:io  &+&+[/sys/gall %'main.sig']
     [[/ %gall-poke] [[i.who %grubbery] grubbery-load+req]]
@@ -18491,10 +18495,8 @@
   ;<  known=(map @t json)  bind:m  read-peers
   |-  ^-  form:m
   ?~  ships  (pure:m ~)
-  =/  hit=(unit json)  (~(get by known) (scot %p i.ships))
-  =/  base=(unit path)  ?.(?=([~ %s *] hit) ~ (rush p.u.hit stap))
   =/  req=load:remo:nexus
-    :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
+    :-  [/share-notice %& (known-base:lu known i.ships) %'shares.sig']
     [%poke [/lattice %share-notice] act]
   ;<  ~  bind:m
     %+  poke:io  &+&+[/sys/gall %'main.sig']
