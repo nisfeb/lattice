@@ -4,8 +4,10 @@
 // Driven by desktop's reader test `a_browser_loads_no_outside_content_until_asked`
 // (cargo test -- --ignored), which serves the reader and an "outside"
 // host that counts what reaches it. The page in the frame tries a fetch,
-// an img, a CSS @import and a WebSocket to that host. Before the toggle
-// none may arrive and the note must show; after it, all four arrive.
+// an img, a CSS @import and a WebSocket to that host, and navigates its
+// own frame there. Before the toggle none may arrive and the note must
+// show; after it, the four loads arrive and the navigation still never
+// does (the reader page's frame-src).
 //
 // Usage:  node scripts/reader-outside.mjs <boot-url> <outside-base>
 // Env:    CHROME  browser binary (default /usr/bin/chromium)
@@ -39,6 +41,7 @@ try {
   const after = await hits();
   const want = ['/fetch', '/import.css', '/img.png', '/socket'];
   const missing = want.filter((w) => !after.includes(w));
+  if (after.includes('/nav')) fail('the frame navigated itself to the outside host');
   if (missing.length) fail(`after the toggle, missing: ${missing.join(' ')} (got ${after.join(' ')})`);
   else console.log(`ok: after the toggle, ${after.join(' ')}`);
   if (await page.$('form.outside:not([hidden])')) fail('the note still shows after the toggle');

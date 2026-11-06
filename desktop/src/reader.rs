@@ -1427,15 +1427,13 @@ mod tests {
         (Ctx::new(Box::new(fake), History::open(&dir), port), calls, expired)
     }
 
-    /// In a real browser (scripts/reader-outside.mjs, puppeteer and
-    /// Chromium): a publisher's page that fetches, draws an image, imports
-    /// a stylesheet and opens a socket to another host reaches it with
-    /// none of them, and shows the note, until its button is clicked.
-    #[test]
-    #[ignore = "needs node, scripts/node_modules and Chromium"]
-    fn a_browser_loads_no_outside_content_until_asked() {
-        // the "outside" host: another loopback address, as a LAN host or
-        // the publisher's own server would be, counting what reaches it
+    /// The reader, on a port of its own, showing `urb://~zod/site`: a page
+    /// that fetches, draws an image, imports a stylesheet and opens a
+    /// socket to an "outside" host (another loopback address, as a LAN host
+    /// or the publisher's own server would be), then `then`. That host
+    /// counts what reaches it, and answers `/__hits` with the list.
+    /// (boot url, outside base, the outside host's list, the reader)
+    fn outside_rig(name: &str, then: &str) -> (String, String, Arc<Mutex<Vec<String>>>, Arc<Ctx>) {
         let out = TcpListener::bind(("127.0.0.2", 0)).unwrap();
         let base = format!("http://127.0.0.2:{}", out.local_addr().unwrap().port());
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -1465,12 +1463,13 @@ mod tests {
         });
         let html = format!(
             "<!doctype html><style>@import url('{base}/import.css');</style><img src=\"{base}/img.png\">\
-             <script>fetch('{base}/fetch').catch(function(){{}});try{{new WebSocket('{}/socket')}}catch(e){{}}</script><p>page",
-            base.replace("http:", "ws:")
+             <script>{t}fetch('{base}/fetch').catch(function(){{}});try{{new WebSocket('{}/socket')}}catch(e){{}}</script><p>page",
+            base.replace("http:", "ws:"),
+            t = then.replace("BASE", &base)
         );
         let reader = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = reader.local_addr().unwrap().port();
-        let (c, _, _) = expiring_on("browser", port, move |u| {
+        let (c, _, _) = expiring_on(name, port, move |u| {
             if u == "urb://~zod/site" {
                 Ok(page_of(&html, "html"))
             } else {
@@ -1478,9 +1477,10 @@ mod tests {
             }
         });
         let c = Arc::new(c);
+        let c2 = c.clone();
         std::thread::spawn(move || {
             for s in reader.incoming().flatten() {
-                let c = c.clone();
+                let c = c2.clone();
                 std::thread::spawn(move || {
                     let _ = serve(&c, s);
                 });
@@ -1491,11 +1491,112 @@ mod tests {
             token(),
             render::enc("/read?url=urb://~zod/site")
         );
+        (boot, base, seen, c)
+    }
+
+    /// The page's script navigating its own frame to other hosts, nobody
+    /// having clicked: the outside host, and one off this computer.
+    const FRAME_LEAVES: &str = "setTimeout(function(){location.href='BASE/nav'},200);\
+                                setTimeout(function(){location.href='http://192.0.2.1/nav'},400);";
+
+    /// In a real browser (scripts/reader-outside.mjs, puppeteer and
+    /// Chromium): a publisher's page that fetches, draws an image, imports
+    /// a stylesheet and opens a socket to another host reaches it with
+    /// none of them, and shows the note, until its button is clicked.
+    #[test]
+    #[ignore = "needs node, scripts/node_modules and Chromium"]
+    fn a_browser_loads_no_outside_content_until_asked() {
+        let (boot, base, _, _) = outside_rig("browser", FRAME_LEAVES);
         let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../scripts/reader-outside.mjs");
         let run = std::process::Command::new("node").args([script, &boot, &base]).output().expect("node");
         let said = format!("{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
         assert!(run.status.success(), "{said}");
         println!("{said}");
+    }
+
+    /// The same in WebKitGTK, the app's engine on Linux: the four loads
+    /// are refused and the note shows, and all four arrive after its
+    /// button. The page's script also navigates its own frame to another
+    /// host, which CSP's frame-src on the reader's page (render.rs's
+    /// `FRAMED`) refuses before the webview's policy is even asked, so it
+    /// never reaches the app's navigation policy and the system browser.
+    /// That holds after the button too.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs a display (xvfb-run)"]
+    fn webkit_loads_no_outside_content_and_no_frame_leaves_until_asked() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        use webkit2gtk::{gio, glib, NavigationPolicyDecisionExt, URIRequestExt, WebViewExt};
+        use webkit2gtk::glib::prelude::*;
+        use gtk::prelude::*;
+        let (boot, _, seen, _) = outside_rig("webkit", FRAME_LEAVES);
+        gtk::init().expect("a display");
+        let wv = webkit2gtk::WebView::new();
+        let win = gtk::Window::new(gtk::WindowType::Toplevel);
+        win.add(&wv);
+        win.set_default_size(800, 600);
+        win.show_all();
+        // every navigation the webview's policy is asked about
+        let asked = Rc::new(RefCell::new(Vec::<String>::new()));
+        let a2 = asked.clone();
+        wv.connect_decide_policy(move |_, d, t| {
+            if t == webkit2gtk::PolicyDecisionType::NavigationAction {
+                if let Some(u) = d
+                    .downcast_ref::<webkit2gtk::NavigationPolicyDecision>()
+                    .and_then(|nd| nd.navigation_action())
+                    .and_then(|a| a.request())
+                    .and_then(|r| r.uri())
+                {
+                    a2.borrow_mut().push(u.to_string());
+                }
+            }
+            false
+        });
+        let pump = |ms: u64| {
+            let until = Instant::now() + Duration::from_millis(ms);
+            while Instant::now() < until {
+                glib::MainContext::default().iteration(false);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+        let js = |script: &str| {
+            // the answer comes back as the page's title (no JSC here)
+            let done = Rc::new(RefCell::new(false));
+            let d2 = done.clone();
+            let set = format!("document.title = String((function(){{ return {script}; }})())");
+            wv.evaluate_javascript(&set, Some("probe"), None, None::<&gio::Cancellable>, move |r| {
+                if let Err(e) = r {
+                    eprintln!("probe: {e}");
+                }
+                *d2.borrow_mut() = true
+            });
+            let until = Instant::now() + Duration::from_secs(5);
+            while !*done.borrow() && Instant::now() < until {
+                glib::MainContext::default().iteration(false);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            // the title reaches the UI process a moment later
+            let until = Instant::now() + Duration::from_millis(500);
+            while Instant::now() < until {
+                glib::MainContext::default().iteration(false);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            wv.title().map(|t| t.to_string()).unwrap_or_default()
+        };
+        let left = |asked: &[String]| asked.iter().any(|u| u.ends_with("/nav"));
+        wv.load_uri(&boot);
+        pump(3000);
+        assert_eq!(js("!!document.querySelector('form.outside:not([hidden])')"), "true", "the note shows");
+        assert_eq!(*seen.lock().unwrap(), Vec::<String>::new(), "nothing reached the outside host");
+        assert!(!left(&asked.borrow()), "the frame's leave never reached the policy: {:?}", asked.borrow());
+        js("(document.querySelector('form.outside button').click(), 'ok')");
+        pump(3000);
+        let mut got = seen.lock().unwrap().clone();
+        got.sort();
+        assert_eq!(got, ["/fetch", "/img.png", "/import.css", "/socket"], "after the button");
+        assert!(!left(&asked.borrow()), "nor after the button: {:?}", asked.borrow());
+        assert_eq!(js("!!document.querySelector('form.outside:not([hidden])')"), "false");
     }
 
     fn expired_urls(e: &Said) -> Vec<String> {

@@ -932,6 +932,10 @@ mod tests {
             assert!(!s.html.contains("alert(1)") && !s.html.contains("looks like html"));
         }
         assert_eq!(SANDBOX, "sandbox allow-scripts allow-forms allow-popups allow-top-navigation-by-user-activation");
+        // the frame may not navigate itself to another host: frame-src
+        // covers its own navigations, which CSP's fetch directives in the
+        // frame cannot (reader.rs's webkit test)
+        assert!(FRAMED.contains(" frame-src 'self'; "));
     }
 
     #[test]
