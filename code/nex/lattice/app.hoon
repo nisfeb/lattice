@@ -3019,7 +3019,7 @@
     ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
     ;<  *  bind:m  (cull-comments-of u.who)
     ;<  ~  bind:m  (put-pub-threads up)
-    ;<  *  bind:m  (cull-forum-of u.who)
+    ;<  ~  bind:m  (poke-eval [%forum-cull u.who])
     ::  the ban is written; the revocation is not. Say so: a ban that left
     ::  the grants in place is the label this route exists not to be.
     ?~  n
@@ -7017,65 +7017,30 @@
   ?~  acts  (pure:m ~)
   ;<  ~  bind:m  (poke-eval [%forum src.i.acts act.i.acts])
   $(acts t.acts)
-::  +forum-cull-actions: the actions that remove everything `who` (or its
-::  moons) left on one board: its posts (with their threads), its comments
-::  elsewhere, and its votes on what stays. Posts and comments are deleted as
-::  the host (a mod); a vote is removed as its own voter, which is the only
-::  author +act:fa lets remove it.
-::
-++  forum-cull-actions
-  |=  [who=@p brd=board:ft]
-  ^-  (list [src=@p act=action:ft])
-  =/  mine=$-(@p ?)  |=(a=@p |(=(who a) =(`@`who (family:ls a))))
-  =/  nom=board-name:ft  name.info.brd
-  =/  dead=(set post-id:ft)
-    %-  ~(gas in *(set post-id:ft))
-    (murn ~(tap by posts.brd) |=([id=post-id:ft p=post:ft] ?.((mine author.p) ~ `id)))
-  =/  out=(list [src=@p act=action:ft])  ~
-  ::  votes first, on every surviving post and comment
-  =.  out
-    %+  roll  ~(tap by posts.brd)
-    |=  [[id=post-id:ft p=post:ft] acc=_out]
-    ?:  (~(has in dead) id)  acc
-    =/  vs=(list @p)  (skim ~(tap in (~(uni in up-votes.p) down-votes.p)) mine)
-    %+  roll  vs
-    |=  [v=@p a=_acc]
-    [[v [%remove-vote nom [%post id]]] a]
-  =.  out
-    %+  roll  ~(tap by comments.brd)
-    |=  [[pid=post-id:ft cs=(map comment-id:ft comment:ft)] acc=_out]
-    ?:  (~(has in dead) pid)  acc
-    %+  roll  ~(tap by cs)
-    |=  [[cid=comment-id:ft c=comment:ft] a=_acc]
-    =/  vs=(list @p)  (skim ~(tap in (~(uni in up-votes.c) down-votes.c)) mine)
-    =.  a  (roll vs |=([v=@p b=_a] [[v [%remove-vote nom [%comment pid cid]]] b]))
-    ?.  (mine author.c)  a
-    [[host.info.brd [%delete-comment nom pid cid]] a]
-  %+  roll  ~(tap in dead)
-  |=  [id=post-id:ft acc=_out]
-  [[host.info.brd [%delete-post nom id]] acc]
-::  +cull-forum-of: the forum twin of +cull-comments-of, run from POST /ban.
-::  Every board, every post, comment and vote of `who` and its moons. Writes
-::  go to the one writer as ordinary %forum actions (no second writer), so
-::  each bumps /beacon/forum. A board that will not load is skipped, as a
-::  refused cull leaves a comment in place. Answers how many actions it sent.
+::  +cull-forum-of: the forum twin of +cull-comments-of, run from POST /ban
+::  through the writer. Every board, every post, comment and vote of `who`
+::  and its moons (+cull:fa), one write a board, so each bumps
+::  /beacon/forum. A board that will not load is skipped, as a refused cull
+::  leaves a comment in place.
 ::
 ++  cull-forum-of
-  |=  who=@p
-  =/  m  (fiber:fiber:nexus ,@ud)
+  |=  [up=@ud now=@da who=@p]
+  =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  up=@ud  bind:m  nexus-up
+  =/  mine=$-(@p ?)  |=(a=@p |(=(who a) =(`@`who (family:ls a))))
   ;<  noms=(list @ta)  bind:m  forum-boards
-  =/  n=@ud  0
   |-  ^-  form:m
-  ?~  noms  (pure:m n)
-  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[i.noms])
+  ?~  noms  (pure:m ~)
+  =/  bdir=path  /forum/boards/[i.noms]
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up bdir)
   ?~  gs  $(noms t.noms)
   =/  lod=(each board:ft @t)  (load:fb u.gs)
   ?:  ?=(%| -.lod)  $(noms t.noms)
-  =/  acts=(list [src=@p act=action:ft])  (forum-cull-actions who p.lod)
-  ;<  ~  bind:m  (forum-poke-all acts)
-  $(noms t.noms, n (add n (lent acts)))
+  =/  new=board:ft  (cull:fa p.lod mine)
+  ?:  =(new p.lod)  $(noms t.noms)
+  ;<  ~  bind:m  (forum-put up bdir (changed:fb p.lod new) (gone:fb p.lod new))
+  ;<  ~  bind:m  (bump-beacon %forum now)
+  $(noms t.noms)
 ::  +forum-prune-ids: the posts a board's prune config drops: older than
 ::  `after`, scoring under `min-score` (net votes, as +hot-score:fr counts
 ::  them), and not pinned.
@@ -7403,6 +7368,7 @@
       ?~  ids.act  (mark-all:ln now)
       (mark-ids:ln s ids.act (~(gas in *(set @ta)) (turn items head)))
     (put-file (rf up /notify %seen) [/ %noun] new)
+      %forum-cull  (cull-forum-of up now who.act)
       %forum-notes-clear
     ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/notes) ~)
     ?.  ?=([%ball *] v)  (pure:m ~)
