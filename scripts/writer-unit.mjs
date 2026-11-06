@@ -264,7 +264,7 @@ for (const f of readdirSync(join(corpus, 'hostile')).sort()) {
   let p; let threw = null;
   try { p = parseFodt(t); } catch (e) { threw = e; }
   check(`hostile/${f}: never throws`, !threw, threw && threw.message);
-  if (/billion|doctype|external-entity|deep/.test(f)) check(`hostile/${f}: refused with { error }`, !!(p && p.error), p && p.error);
+  if (/billion|doctype|external-entity|deep|space-bomb/.test(f)) check(`hostile/${f}: refused with { error }`, !!(p && p.error), p && p.error);
   else {
     check(`hostile/${f}: opens`, !!(p && !p.error), p && p.error);
     check(`hostile/${f}: no-op is byte-identical`, serializeFodt(p, t).text === t);
@@ -278,6 +278,15 @@ for (const f of readdirSync(join(corpus, 'hostile')).sort()) {
   const all = [...s.styles.styles.values()].map((e) => core.styleCss(s.styles, e.family, e.name)).join(';');
   check('style values never reach CSS unparsed', !/url\(|expression|<|>|\}/.test(all), all);
   check('the font-size with an injection is dropped', !/font-size/.test(core.styleCss(s.styles, 'paragraph', 'Evil_20_Para')));
+  //  10 KB of text:s that says 40 million spaces: the editor refuses it,
+  //  and search reads at most a million of them, in linear time
+  const sb = read('hostile/space-bomb.fodt');
+  const t0 = performance.now();
+  const words = core.fodtText(sb);
+  const ms = performance.now() - t0;
+  check(`hostile/space-bomb.fodt: its words in linear time (${ms.toFixed(0)} ms)`, ms < 1000 && /^spaced {1000,}out$/.test(words)
+    && words.length <= core.SPACES + 9, words.length);
+  check('the spaces around a line break still go', core.fodtText(read('12-whitespace.fodt')).split('\n').every((l) => l === l.replace(/^ +| +$/g, '')));
   const big = 'x'.repeat(8 * 1024 * 1024 + 1);
   check('a document over 8 MB is refused', !!parseFodt(big).error);
   check('a malformed document is refused', !!parseFodt('<office:document><office:body>').error);

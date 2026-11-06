@@ -64,6 +64,11 @@ function parseOrError(text) {
 
 const ws = (s) => /^[ \t\r\n]*$/.test(s);
 
+//  the spaces text:s may spell out in one document: a 25-byte element
+//  says up to 100000, so a small hostile file would otherwise open as
+//  hundreds of millions of characters in the editor
+export const SPACES = 1000000;
+
 //  whether office:scripts holds a macro: a library, a module or an event
 //  listener. LibreOffice writes an empty Basic libraries element in every
 //  document, which is none
@@ -91,6 +96,7 @@ class Parser {
     this.gaps = new Map();  // start -> { gap, prevEnd }
     this.tails = new Map(); // container start -> { gap, prevEnd }
     this.opens = new Map(); // container start -> the end of its start tag
+    this.spaces = 0;        // what text:s has spelled out so far
   }
 
   raw(el) { return this.src.slice(el.start, el.end); }
@@ -279,6 +285,7 @@ class Parser {
       const plain = k.attrs.length === 0;
       if (k.name === 'text:s' && (plain || (k.attrs.length === 1 && k.attrs[0][0] === 'text:c'))) {
         const c = Math.min(Math.max(parseInt(attr(k, 'text:c') ?? '1', 10) || 1, 1), 100000);
+        if ((this.spaces += c) > SPACES) throw new Error('it spells out more than a million spaces');
         out.push(schema.text(' '.repeat(c), marks));
         //  LibreOffice keeps a literal space after text:s, text:tab and
         //  text:line-break: they end a collapsing run
@@ -389,12 +396,17 @@ export function fodtText(text) {
   const otext = body && child(body, 'office:text');
   if (!otext) return '';
   let out = '';
+  let spaces = 0;
   const walk = (el) => {
     for (const k of el.kids) {
       if (k.text) { out += decode(text.slice(k.start, k.end)).replace(/[\t\r\n ]+/g, ' '); continue; }
       if (!k.name) continue;
       if (k.name === 'text:tracked-changes' || k.name === 'office:annotation' || k.name === 'text:sequence-decls') continue;
-      if (k.name === 'text:s') { out += ' '.repeat(Math.min(parseInt(attr(k, 'text:c') ?? '1', 10) || 1, 1000)); continue; }
+      if (k.name === 'text:s') {
+        const c = Math.min(parseInt(attr(k, 'text:c') ?? '1', 10) || 1, 1000, SPACES - spaces);
+        if (c > 0) { out += ' '.repeat(c); spaces += c; }
+        continue;
+      }
       if (k.name === 'text:tab') { out += '\t'; continue; }
       if (k.name === 'text:line-break') { out += '\n'; continue; }
       const blk = k.name === 'text:p' || k.name === 'text:h';
@@ -403,8 +415,18 @@ export function fodtText(text) {
     }
   };
   walk(otext);
-  return out.replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  //  the spaces around each line break go. Not / *\n */, which backtracks
+  //  over a long run of spaces with no break after it: quadratic, minutes
+  //  on a few KB of text:s
+  return out.split('\n').map(trimSpaces).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
+
+const trimSpaces = (l) => {
+  let a = 0, b = l.length;
+  while (a < b && l.charCodeAt(a) === 32) a++;
+  while (b > a && l.charCodeAt(b - 1) === 32) b--;
+  return l.slice(a, b);
+};
 
 //  +fodtOutline: the headings, with their position in the document
 export function fodtOutline(text) {
