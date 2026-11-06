@@ -18808,9 +18808,17 @@
     ;<  liv=(unit know-entry:lk)  bind:m  (read-entry troad)
     ?^  liv  (refuse "a move: the target exists: {(spud tk)}")
     ::  make target first (duplicate-on-crash, never lose), cull source after.
+    ::  A cull tombs only the head and keeps every stored revision (the page
+    ::  %del arm says the same), and the next write at that road picks the
+    ::  old ones up again. So the target's leftover revisions (an entry once
+    ::  there that moved away) go before it is written, and the source's go
+    ::  before its cull, or the next memory saved at the old key shows this
+    ::  one's old bodies in its history, to any key that may read it.
+    ;<  ~  bind:m  (prune-hist troad 0 ~s0)
     ;<  ~  bind:m  (ensure-dirs up vbase tk)
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] u.old)
     ;<  ~  bind:m  (gain:fio troad %.y)
+    ;<  ~  bind:m  (prune-hist froad 0 ~s0)
     ;<  ~  bind:m  (cull:fio froad)
     ::  if the target key was previously trashed, cull the orphan trash grub +
     ::  row so a later %restore can't resurrect it over the moved-in entry.
