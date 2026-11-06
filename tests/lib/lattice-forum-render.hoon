@@ -94,6 +94,25 @@
     (expect-eq !>(&) !>((lth (at "margin-left: 20px" h) (at "child-reply" h))))
     (expect-eq !>(&) !>((lth (at "top-level" h) (at "margin-left: 20px" h))))
   ==
+::  a reply whose parent was deleted still shows, at the top level
+++  test-thread-orphan-shows
+  =/  p=post:ft  (mk-post 1 0 ~)
+  =/  kid=comment:ft  [2 `1 ~zod 'orphan-reply' (sub now ~m4) ~ ~]
+  =/  h=tape  (to-html body:(render-thread:rn c (mk-board ~[p] ~[kid]) 1))
+  ;:  weld
+    (expect-eq !>(&) !>((has h "orphan-reply")))
+    (expect-eq !>(&) !>((has h "margin-left: 0px")))
+  ==
+::  replies made at the same instant read in the order they were made
+++  test-thread-same-time-by-id
+  =/  p=post:ft  (mk-post 1 0 ~)
+  =/  t=@da  (sub now ~m4)
+  =/  cs=(list comment:ft)
+    (turn (gulf 1 9) |=(i=@ud `comment:ft`[i ~ ~zod (crip "reply-{(a-co:co i)}-x") t ~ ~]))
+  =/  h=tape  (to-html body:(render-thread:rn c (mk-board ~[p] cs) 1))
+  %+  expect-eq  !>(&)
+  !>  %+  levy  (gulf 1 8)
+  |=(i=@ud (lth (at "reply-{(a-co:co i)}-x" h) (at "reply-{(a-co:co +(i))}-x" h)))
 ++  test-escapes
   =/  p=post:ft  (mk-post 1 0 `'<script>alert(1)</script>')
   =/  evil=comment:ft  [1 ~ ~zod '<img onerror=x>' (sub now ~m5) ~ ~]
