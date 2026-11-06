@@ -100,6 +100,17 @@
     (expect-eq !>(*(set @ud)) !>(pinned:(ok (ok b1 ~wet [%pin-post %main 1 &]) ~wet [%pin-post %main 1 |])))
     (expect-eq !>(`[5 ~d1]) !>(prune:(ok brd ~zod [%set-prune %main `[5 ~d1]])))
   ==
+::  a pin names a post; a deleted post leaves the pin set
+++  test-pin-missing
+  =/  b1=board:ft  (ok brd ~nec [%new-post %main 'hi' ~ ~])
+  =/  b2=board:ft  (ok b1 ~wet [%pin-post %main 1 &])
+  ;:  weld
+    (expect-eq !>(|) !>((good (act:fa b1 ~wet now [%pin-post %main 7 &]))))
+    ::  unpinning a stale id still works
+    (expect-eq !>(&) !>((good (act:fa b1 ~wet now [%pin-post %main 7 |]))))
+    (expect-eq !>((sy ~[1])) !>(pinned.b2))
+    (expect-eq !>(~) !>(pinned:(ok b2 ~nec [%delete-post %main 1])))
+  ==
 ::  +cull: a banned ship's posts, comments and votes go, its moons' too,
 ::  and what others wrote stays with their votes
 ++  test-cull

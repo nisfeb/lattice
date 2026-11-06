@@ -42,6 +42,8 @@
   ::
       %pin-post
     ?.  mod  |+'only a moderator may pin'
+    ::  a pin names a post: an id with none would only grow the set
+    ?:  &(pinned.action !(~(has by posts.brd) id.action))  |+'post not found'
     %-  done
     %=  brd
       pinned  ?:  pinned.action
@@ -119,6 +121,7 @@
     posts             (~(del by posts.b) id)
     comments          (~(del by comments.b) id)
     next-comment-ids  (~(del by next-comment-ids.b) id)
+    pinned            (~(del in pinned.b) id)
   ==
 ::  +cull: a board without what `mine` wrote: its posts (with their
 ::  threads) and comments gone, and its votes off what stays. A ban runs
