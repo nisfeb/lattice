@@ -67,7 +67,9 @@ jobs:
           LATTICE_URL: ${{ secrets.LATTICE_URL }}
           LATTICE_MCP_COOKIE: ${{ secrets.LATTICE_MCP_COOKIE }}
         run: |
-          set -uo pipefail
+          # +e: the runner's bash -e would end the step at the first curl
+          # that times out, so the files after it never ran or said FAIL
+          set +e -uo pipefail
           fail=0
           for f in tests/lib/*.hoon; do
             name=$(basename "$f" .hoon)

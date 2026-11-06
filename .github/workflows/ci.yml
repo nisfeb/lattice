@@ -264,7 +264,11 @@ jobs:
           "$VERE" --version | head -1
       - name: grubbery's commit
         id: grub
-        run: echo "sha=$(git ls-remote https://github.com/nisfeb/grubbery refs/heads/dist/single-release | cut -c1-12)" >> "$GITHUB_OUTPUT"
+        # a failed ls-remote would key the pier cache on an empty commit
+        run: |
+          sha=$(set -o pipefail; git ls-remote https://github.com/nisfeb/grubbery refs/heads/dist/single-release | cut -c1-12)
+          [ -n "$sha" ]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
       #  restore and save apart: a failing check must not cost the next
       #  run the base build
       - name: cached ~zod with grubbery
