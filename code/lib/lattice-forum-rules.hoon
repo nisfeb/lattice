@@ -90,10 +90,19 @@
 ::
 ::  +rate-update: record an action. If a full 4x cooldown has passed
 ::  since the last, the cooldown resets to base; else it doubles, capped.
+::  Other entries that have gone 4x their cooldown are dropped: one is
+::  read just as a missing one is, and a ship naming a new board on each
+::  poke would otherwise grow the map without end.
 ::
 ++  rate-update
   |=  [who=@p name=board-name now=@da lim=limits]
   ^-  limits
+  =.  lim
+    %-  ~(rep by lim)
+    |=  [[k=[@p board-name] v=[last=@da cooldown=@dr]] acc=_lim]
+    ?:  (lth now last.v)  acc
+    ?.  (gte (sub now last.v) (mul 4 cooldown.v))  acc
+    (~(del by acc) k)
   =/  entry  (~(get by lim) [who name])
   =/  new-cd=@dr
     ?~  entry  rate-limit-base
