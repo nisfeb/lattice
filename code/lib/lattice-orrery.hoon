@@ -27,6 +27,115 @@
   ^-  @t
   %-  crip
   :(weld "# " head ", " (trip day) "\0a\0a" (brief-link-rewrite (trip text)))
+::  +journal-merge: the re-mirrored page `new` keeps what the owner did to
+::  the page `old`. A task line ticked in `old` that carries a [T<n>] tag
+::  is ticked in `new` when `new` has the very same line unticked (same
+::  tag, text and indent: a remade brief may give a tag to another task).
+::  Lines from a `## Notes` heading to the end of `old` are carried after
+::  `new` when `new` has no such heading. Other edits to the brief's own
+::  lines are replaced by orrery's text.
+++  journal-merge
+  |=  [old=@t new=@t]
+  ^-  @t
+  =/  ol=(list tape)  (turn (lines-of (trip old)) un-cr)
+  =/  nl=(list tape)  (lines-of (trip new))
+  =/  ticked=(set tape)
+    %-  silt
+    %+  murn  ol
+    |=  l=tape
+    ^-  (unit tape)
+    =/  at=(unit @ud)  (task-at l)
+    ?~  at  ~
+    ?:  |(=(' ' (snag u.at l)) !(has-tag l))  ~
+    `(snap l u.at ' ')
+  =/  merged=(list tape)
+    %+  turn  nl
+    |=  l=tape
+    ^-  tape
+    =/  at=(unit @ud)  (task-at l)
+    ?~  at  l
+    ?.  &(=(' ' (snag u.at l)) (~(has in ticked) l))  l
+    (snap l u.at 'x')
+  =/  notes=(list tape)  (notes-of ol)
+  =?  merged  &(?=(^ notes) =(~ (notes-of nl)))
+    (weld merged [*tape notes])
+  (crip (join-lines merged))
+::  +lines-of: split on newlines; "" is one empty line.
+++  lines-of
+  |=  t=tape
+  ^-  (list tape)
+  =|  cur=tape
+  =|  acc=(list tape)
+  |-  ^-  (list tape)
+  ?~  t  (flop [(flop cur) acc])
+  ?:  =('\0a' i.t)  $(t t.t, acc [(flop cur) acc], cur ~)
+  $(t t.t, cur [i.t cur])
+++  join-lines
+  |=  ls=(list tape)
+  ^-  tape
+  ?~  ls  ~
+  ?~  t.ls  i.ls
+  :(weld i.ls "\0a" $(ls t.ls))
+++  un-cr
+  |=  l=tape
+  ^-  tape
+  ?:  &(?=(^ l) =('\0d' (rear l)))  (snip `tape`l)
+  l
+::  +notes-of: the lines from the first `## Notes` heading on, or ~.
+++  notes-of
+  |=  ls=(list tape)
+  ^-  (list tape)
+  ?~  ls  ~
+  ?:  =("## Notes" (flop (trim-sp (flop i.ls))))  ls
+  $(ls t.ls)
+++  trim-sp
+  |=  t=tape
+  ^-  tape
+  ?~  t  t
+  ?:  |(=(' ' i.t) =('\09' i.t))  $(t t.t)
+  t
+++  is-sp  |=(c=@tD |(=(' ' c) =('\09' c)))
+++  is-dig  |=(c=@tD &((gte c '0') (lte c '9')))
+::  +task-at: the index of a task line's box character, the shape
+::  59-md.js's TASK_RE takes: quote marks and blanks, a - * + or 1. 1)
+::  marker, blanks, then [ ] [x] or [X] and a blank. ~ for no task.
+++  task-at
+  |=  l=tape
+  ^-  (unit @ud)
+  =/  n=@ud  (lent l)
+  =/  i=@ud  0
+  =.  i  |-(?:(&((lth i n) |((is-sp (snag i l)) =('>' (snag i l)))) $(i +(i)) i))
+  ?:  (gte i n)  ~
+  =/  c=@tD  (snag i l)
+  =/  j=@ud
+    ?:  |(=('-' c) =('*' c) =('+' c))  +(i)
+    =/  k=@ud  i
+    =.  k  |-(?:(&((lth k n) (is-dig (snag k l))) $(k +(k)) k))
+    ?:  |(=(k i) (gte k n))  n
+    ?.  |(=('.' (snag k l)) =(')' (snag k l)))  n
+    +(k)
+  ?.  &((lth j n) (is-sp (snag j l)))  ~
+  =.  j  |-(?:(&((lth j n) (is-sp (snag j l))) $(j +(j)) j))
+  ?.  (lth (add j 3) n)  ~
+  ?.  &(=('[' (snag j l)) =(']' (snag (add j 2) l)) (is-sp (snag (add j 3) l)))  ~
+  =/  m=@tD  (snag +(j) l)
+  ?.  |(=(' ' m) =('x' m) =('X' m))  ~
+  `+(j)
+::  +has-tag: does the line carry a [T<n>] tag (orrery's +todo-tags)?
+++  has-tag
+  |=  l=tape
+  ^-  ?
+  ?~  l  |
+  ?:  ?&  ?=([%'[' %'T' *] l)
+          =/  r=tape  t.t.l
+          =/  d=@ud  0
+          |-  ^-  ?
+          ?~  r  |
+          ?:  (is-dig i.r)  $(r t.r, d +(d))
+          &((gth d 0) =(']' i.r))
+      ==
+    &
+  $(l t.l)
 ::  +fresh-world: is orrery's at (YYYY-MM-DDTHH:MM:SSZ) within win of now.
 ::  Malformed is stale. A time after now (clock skew) is fresh.
 ++  fresh-world

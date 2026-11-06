@@ -6,6 +6,14 @@
 //  box, and a duplicate item flips only itself. A read-only view (a past
 //  revision) draws its boxes disabled.
 //
+//  The daily journal (sneagan, 2026-11-06: "checking the box should edit
+//  the document to include the X marking it complete"): a page shaped as
+//  +orrery-journal-sync writes it (journal/<day>, md, sensitive, orrery's
+//  `- [ ] <name> [T<n>]` lines), opened in a tab already in Read. The
+//  open's render=1 answer used to repaint the preview with the ship's
+//  render, whose boxes are disabled, so a click did nothing. Ticking it
+//  must put [x] in the ship's copy, and unticking [ ] back.
+//
 //  Usage: LATTICE_URL=... LATTICE_COOKIE=... node scripts/ui-taskbox.mjs
 import { shipEnv, launchBrowser, openPage, makeCheck, seed, waitFor } from './lib/harness.mjs';
 
@@ -15,10 +23,20 @@ const NAME = 'taskbox-' + (process.pid % 100000);
 const BODY = '# Tasks\n\n```\n- [ ] fenced\n```\n\n- [ ] same\n- [ ] same\n\n> - [x] quoted\n';
 //  line 7 is the second "same"
 const WANT = BODY.replace('- [ ] same\n- [ ] same', '- [ ] same\n- [x] same');
-await seed(env, [[NAME, BODY]]);
+const today = new Date();
+const p2 = (n) => String(n).padStart(2, '0');
+const JNAME = 'journal/' + today.getFullYear() + '-' + p2(today.getMonth() + 1) + '-' + p2(today.getDate())
+  + '-tb' + (process.pid % 100000);
+//  +journal-body: "# Brief, <day>" then orrery's text, [a/b] made [[a/b]]
+const JBODY = '# Brief, ' + JNAME.slice(8) + '\n\nGood morning. Two things today.\n\n## To do\n\n'
+  + '- [ ] Call Sam about [[situation/roof]] [T1]\n- [ ] Pay the invoice [T2]\n- To do: water the plants\n';
+const JWANT = JBODY.replace('- [ ] Pay the invoice [T2]', '- [x] Pay the invoice [T2]');
+await seed(env, [[NAME, BODY], [JNAME, JBODY]]);
+await fetch(env.base + '/apps/lattice/page-sensitive?on=1&name=' + encodeURIComponent(JNAME),
+  { method: 'POST', headers: { Cookie: env.cookie } });
 
-const shipBody = async () => {
-  const r = await fetch(env.base + '/apps/lattice/page-source?name=' + encodeURIComponent(NAME),
+const shipBody = async (n = NAME) => {
+  const r = await fetch(env.base + '/apps/lattice/page-source?name=' + encodeURIComponent(n),
     { headers: { Cookie: env.cookie } });
   return r.ok ? (await r.json()).body : null;
 };
@@ -72,11 +90,34 @@ try {
   await (await frame()).click('input[type=checkbox]').catch(() => {});
   await new Promise((r) => setTimeout(r, 500));
   check('and a click there changes nothing', (await srcVal()) === before);
+
+  //  the journal, opened in a tab that is in Read already: the open's
+  //  render=1 answer lands after the local paint and must leave it live
+  const rendered = p.waitForResponse((r) => r.url().includes('/page-source?')
+    && r.url().includes(encodeURIComponent(JNAME)) && r.url().includes('render=1'), { timeout: 60000 });
+  await p.evaluate((n) => window.latTabs.openIn('page', n), JNAME);
+  await p.waitForFunction((t) => document.getElementById('src').value === t, { timeout: 60000 }, JBODY);
+  await rendered;
+  await new Promise((r) => setTimeout(r, 1500));
+  const jb = await boxes();
+  check('the journal in Read draws live boxes after the ship\'s render lands',
+    JSON.stringify(jb.map((x) => [x.line, x.on, x.off])) === '[[6,false,false],[7,false,false]]',
+    JSON.stringify(jb));
+  await (await frame()).click('input[data-line="7"]').catch(() => {});
+  const jsaved = await waitFor(async () => (await shipBody(JNAME)) === JWANT, 30000, 500);
+  check('ticking a journal box saves [x] on that line', !!jsaved, JSON.stringify(await shipBody(JNAME)));
+  await p.waitForFunction(() => (document.getElementById('prev').getAttribute('srcdoc') || '')
+    .includes('data-line="7" checked'), { timeout: 10000 }).catch(() => {});
+  await (await frame()).click('input[data-line="7"]').catch(() => {});
+  const junsaved = await waitFor(async () => (await shipBody(JNAME)) === JBODY, 30000, 500);
+  check('and unticking it saves [ ] back', !!junsaved, JSON.stringify(await shipBody(JNAME)));
 } catch (e) {
   check('suite crashed: ' + e.message, false);
 } finally {
-  await fetch(env.base + '/apps/lattice/page-del?name=' + encodeURIComponent(NAME),
-    { method: 'POST', headers: { Cookie: env.cookie } }).catch(() => {});
+  for (const n of [NAME, JNAME]) {
+    await fetch(env.base + '/apps/lattice/page-del?name=' + encodeURIComponent(n),
+      { method: 'POST', headers: { Cookie: env.cookie } }).catch(() => {});
+  }
   await b.close();
 }
 check.done();

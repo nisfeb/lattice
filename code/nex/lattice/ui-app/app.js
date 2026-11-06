@@ -8230,7 +8230,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     //  paint a moment later, and the frame scrolled itself again with the
     //  engine's native (light) bar. Every screenshot taken before this answer
     //  landed looked fixed; the one the user looks at is after it.
-    if (typeof d.html === 'string' && d.kind !== 'tex') {
+    //  ...except an md page with task boxes this viewer may tick: the
+    //  ship renders its boxes disabled, and this answer lands after the
+    //  local paint, so a page opened in Read (the daily journal from its
+    //  button) showed dead boxes. The local paint carries their lines.
+    if (typeof d.html === 'string' && d.kind !== 'tex' && !(taskLive() && hasTask(d.body))) {
       prev.removeAttribute('src'); prevDoc(withPreviewScrollbars(d.html, true));
     }
     else if (!quiet) refreshPreview();
@@ -9659,6 +9663,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   //  a box click's edit: the offset of the char in the brackets on `line`,
   //  or null if that line is no task in the clicked-from state (stale)
   const TASK_RE = /^((?:[ \t]*>[ \t]?)*[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])\](?=\s)/;
+  const TASK_ANY = new RegExp(TASK_RE.source, 'm');
+  const hasTask = (text) => typeof text === 'string' && TASK_ANY.test(text);
   function taskToggle(text, line, on) {
     let at = 0;
     for (let n = 0; n < line; n++) {

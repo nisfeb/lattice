@@ -11336,7 +11336,10 @@
 ::  <day>) when orrery's record `at` is new or moved forward, mark the page
 ::  sensitive, and remember the `at`. Idempotent: a day whose stored `at`
 ::  still matches is left untouched, so a hand-edit survives a re-run until
-::  orrery itself advances. The synced map is written once at the end.
+::  orrery itself advances. Then the owner's ticks on [T<n>] lines and a
+::  `## Notes` section are carried into the rewrite (+journal-merge:lo);
+::  other edits to the brief's own lines give way to orrery's text. The
+::  synced map is written once at the end.
 ::
 ++  orrery-journal-pass
   =/  m  (fiber:fiber:nexus ,~)
@@ -11378,7 +11381,14 @@
     ==
   ?.  move  $(days t.days)
   =/  pax=path  ~[%journal name]
-  =/  body=@t  (journal-body:lo head `@t`i.days text.u.rec)
+  =/  fresh=@t  (journal-body:lo head `@t`i.days text.u.rec)
+  ::  a page already there (the last mirror, ticked or noted since, or a
+  ::  note the owner started at this name) keeps its ticks and its
+  ::  `## Notes` section through the rewrite (+journal-merge:lo). Without
+  ::  it a remade brief undid every box not yet taken by orrery's round.
+  ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head pax)
+  =/  was=(unit [builder=@tas body=@t])  ?~(src.pc ~ (unwrap-content u.src.pc))
+  =/  body=@t  ?~(was fresh (journal-merge:lo body.u.was fresh))
   ::  marked first: between a make and a later mark, a key without
   ::  clearance could read the new brief
   ;<  ~  bind:m  (poke-eval [%page-sensitive pax &])
