@@ -16,9 +16,15 @@ const srcDir = join(dirname(fileURLToPath(import.meta.url)),
 const files = readdirSync(srcDir).filter((f) => f.endsWith('.js')).sort();
 if (!files.length) { console.error('no src files'); process.exit(1); }
 
+// The sources' whole-line // comments stay in ui-src and are left out of
+// the served file: they were 287 KB of its 737 KB, compiled into the nexus
+// and read by every cold boot. Only whole lines go, never a comment after
+// code, and ui-app-comments.mjs proves the result is the same program
+// (the same tokens) as the sources with every comment in.
+const dropComments = (t) => t.replace(/^[ \t]*\/\/.*\n/gm, '');
 const body = files
   .map((f) => `// ── src/${f} ` + '─'.repeat(Math.max(1, 66 - f.length)) + '\n'
-    + readFileSync(join(srcDir, f), 'utf8').trimEnd() + '\n')
+    + dropComments(readFileSync(join(srcDir, f), 'utf8').trimEnd() + '\n'))
   .join('\n');
 
 // The hash the ship gives writer.js (+js-tag in app.hoon: the first 16
