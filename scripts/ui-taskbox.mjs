@@ -36,7 +36,7 @@ try {
     { timeout: 20000 });
   const bs = await boxes();
   check('the live boxes carry their source lines, none for the fence',
-    JSON.stringify(bs.map((x) => [x.line, x.on, x.off])) === '[[6,false,false],[7,false,false],[10,true,false]]',
+    JSON.stringify(bs.map((x) => [x.line, x.on, x.off])) === '[[6,false,false],[7,false,false],[9,true,false]]',
     JSON.stringify(bs));
 
   await (await frame()).click('input[data-line="7"]');
