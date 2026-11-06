@@ -61,6 +61,29 @@ fn hex(name: &str) -> String {
     s
 }
 
+/// Hex names longer than this are hashed instead. A file name is at most 255
+/// bytes, and write_private's temp name adds about 20 to it, so a page name of
+/// 120 bytes or more (40 CJK characters) used to fail with ENAMETOOLONG and
+/// could not be queued offline at all.
+const MAX_HEX_NAME: usize = 200;
+
+/// The file one queued save lives in. Hex up to MAX_HEX_NAME, so every name
+/// an older build wrote is still found where it was. Past that, a SHA-256 of
+/// the name: still stable, still free of traversal, and the record inside
+/// carries the full name for list_saves_at.
+fn save_file(dir: &Path, name: &str) -> PathBuf {
+    let h = hex(name);
+    if h.len() <= MAX_HEX_NAME {
+        return dir.join(format!("{h}.json"));
+    }
+    let d = ring::digest::digest(&ring::digest::SHA256, name.as_bytes());
+    let mut s = String::from("h-");
+    for b in d.as_ref() {
+        s.push_str(&format!("{b:02x}"));
+    }
+    dir.join(format!("{s}.json"))
+}
+
 /// A filesystem-safe, stable directory name for a ship key. The key is either
 /// an @p or a URL, and a URL has slashes and colons in it.
 fn key_dir_name(key: &str) -> String {
@@ -212,20 +235,20 @@ pub fn put_save_at(dir: &Path, rec: &Value) -> Result<(), String> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| "queued record has no name".to_string())?;
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let p = dir.join(format!("{}.json", hex(name)));
+    let p = save_file(dir, name);
     let body = serde_json::to_vec(rec).map_err(|e| e.to_string())?;
     write_atomic(&p, &body)
 }
 
 pub fn get_save_at(dir: &Path, name: &str) -> Option<Value> {
-    let p = dir.join(format!("{}.json", hex(name)));
+    let p = save_file(dir, name);
     std::fs::read_to_string(p)
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
 }
 
 pub fn del_save_at(dir: &Path, name: &str) -> Result<(), String> {
-    let p = dir.join(format!("{}.json", hex(name)));
+    let p = save_file(dir, name);
     match std::fs::remove_file(&p) {
         Ok(()) => Ok(()),
         //  already gone is the desired state, not a failure
@@ -388,6 +411,24 @@ mod tests {
         }
         assert_eq!(n, 4, "four distinct names, four files");
         assert_eq!(list_saves_at(&d).len(), 4);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_long_page_name_can_still_be_queued() {
+        // 60 CJK characters is 180 bytes, 360 hex digits: past the 255-byte
+        // file name limit, so the queue refused it with ENAMETOOLONG
+        let d = tmp("long");
+        let long = format!("notes/{}", "日".repeat(60));
+        put_save_at(&d, &json!({"name": long, "body": "kept"})).unwrap();
+        assert_eq!(get_save_at(&d, &long).unwrap()["body"], "kept");
+        assert_eq!(list_saves_at(&d)[0]["name"], long.as_str());
+        // a short name keeps its old hex file, so older queues still read
+        put_save_at(&d, &json!({"name": "a", "body": "x"})).unwrap();
+        assert!(d.join("61.json").exists());
+        del_save_at(&d, &long).unwrap();
+        assert!(get_save_at(&d, &long).is_none());
+        assert_eq!(list_saves_at(&d).len(), 1);
         std::fs::remove_dir_all(&d).ok();
     }
 
