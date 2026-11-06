@@ -4870,8 +4870,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
 /* ============================================================================
    VIM MODE for the lattice code editor.
    Self-contained vanilla JS, no dependencies. Operates on <textarea id="src">.
-   Inline this INSIDE (or right after) the existing editor IIFE; it re-fetches
-   `ta` itself so ordering is not critical.
    ============================================================================ */
 (function vimMode(){
   "use strict";
@@ -5059,6 +5057,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   // Replace [a,b) with text. execCommand keeps the native undo stack; setRangeText
   // is the fallback. Always fires input for the live preview.
   function replaceRange(a, b, text, caret){
+    // setRangeText ignores readOnly (a history revision, a read-only link),
+    // so an edit there changed the text and dirtied it
+    if(ta.readOnly) return false;
     a = clamp(a, 0, val().length);
     b = clamp(b, 0, val().length);
     if(a > b){ var t = a; a = b; b = t; }
@@ -5409,7 +5410,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     // Ctrl-R redo
     if(e.ctrlKey && (k === "r" || k === "R")){
-      try{ document.execCommand("redo"); }catch(x){}
+      if(!ta.readOnly) try{ document.execCommand("redo"); }catch(x){}
       fireInput(); reset(); fixCaret(); setInd(); return true;
     }
 
@@ -5596,7 +5597,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       case ":": cmdActive = true; cmdBuf = ""; pending = ""; count = ""; setInd(); return true;
 
       // undo
-      case "u": try{ document.execCommand("undo"); }catch(x){} fireInput(); fixCaret(); break;
+      case "u": if(!ta.readOnly) try{ document.execCommand("undo"); }catch(x){} fireInput(); fixCaret(); break;
 
       default:
         // swallow any other printable key so it never types into the buffer
@@ -5619,8 +5620,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     // "ctrl-K does nothing" rather than "vim ate it", which is the kind of
     // bug people report as a missing feature.
     //
-    // Listed explicitly rather than exempting every ctrl chord: vim's own
-    // Ctrl-d/u/f/b are bindings here and must keep working.
     if((e.metaKey || e.ctrlKey)
        && (e.key === "s" || e.key === "S" || e.key === "k" || e.key === "K")) return;
 
@@ -5637,6 +5636,11 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       cmdKey(e);
       return;
     }
+
+    // A chord vim does not bind (only Ctrl-r and Ctrl-[ are) is the browser's
+    // or the app's: read as its bare key, Ctrl-X deleted a character, Ctrl-A
+    // entered insert mode and Ctrl-C was eaten.
+    if((e.ctrlKey || e.metaKey) && !(e.ctrlKey && /^[rR[]$/.test(e.key))) return;
 
     // NORMAL / VISUAL: we own the keyboard. Consume everything (so Tab, letters,
     // etc. never reach the bubble-phase Tab handler or type into the buffer).
