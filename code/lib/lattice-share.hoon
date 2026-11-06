@@ -449,6 +449,33 @@
   %-  ~(gas in *(set @t))
   %-  zing
   (turn vias |=(v=path ~(tap in ~(key by (~(gut by grants) v ~)))))
+::  +ungrant: what goes when the folder at `pax` stops being shared with
+::  group `g`: each page under it whose grant it made (`vias`, its
+::  grant-via, names pax), and each folder index it listed (`dirs`, pax
+::  and its subfolders), less what another folder still sharing with `g`
+::  covers (`grants`, folder to group to mode, pax's own included). A
+::  page granted by hand has no grant-via, and keeps its grant.
+++  ungrant
+  |=  $:  grants=(map path (map @t @t))  g=@t  pax=path
+          pages=(list [rel=path vias=(list path)])  dirs=(list path)
+      ==
+  ^-  [pages=(list path) dirs=(list path)]
+  =/  others=(list path)
+    %+  murn  ~(tap by grants)
+    |=  [f=path gs=(map @t @t)]
+    ^-  (unit path)
+    ?:  |(=(f pax) !(~(has by gs) g))  ~
+    `f
+  =/  covered
+    |=  p=path
+    ^-  ?
+    (lien others |=(f=path =(f (scag (lent f) p))))
+  :_  (skip dirs covered)
+  %+  murn  pages
+  |=  [rel=path vias=(list path)]
+  ^-  (unit path)
+  ?:  |(?=(~ (find ~[pax] vias)) (covered rel))  ~
+  `rel
 ::
 ::  ==  followed folders  ==
 ::

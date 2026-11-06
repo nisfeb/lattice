@@ -498,7 +498,7 @@ async function runTwo(a) {
     { timeout: 300 });
     await hi(a, b); await hi(b, a);
     const env = { LATTICE_URL: a.url, LATTICE_COOKIE: a.cookie.raw, A_URL: a.url, A_COOKIE: a.cookie.raw,
-      B_URL: b.url, B_COOKIE: b.cookie.raw, B_PIER: b.pier, A_SOCK: a.pier + '/.urb/dev/grubbery/lattice/fs' };
+      B_URL: b.url, B_COOKIE: b.cookie.raw, B_PIER: b.pier, VERE, A_SOCK: a.pier + '/.urb/dev/grubbery/lattice/fs' };
     //  --only naming a two-ship suite runs just the ones it names
     const named = ONLY && TWOS.some(([n]) => ONLY.includes(n));
     for (const [name, cmd] of TWOS.filter(([n]) => !named || ONLY.includes(n))) {

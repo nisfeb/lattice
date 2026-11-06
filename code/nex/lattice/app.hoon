@@ -274,6 +274,9 @@
         ::  last took a comet's post or reply (+comet-gate:ls's hits).
             [%fall %& [/forum %comets-off] [[/ %noun] [%1 ~]]]
             [%fall %& [/forum %comet-hits] [[/ %noun] [%1 ~]]]
+        ::  /forum/note-hits: per sender, the notes it filed in the last
+        ::  hour and how many it sent past the cap (+note-gate:ln)
+            [%fall %& [/forum %note-hits] [[/ %noun] [%1 ~]]]
         ::  /pub/marks-migrated: the version of the one-time re-grow of every
         ::  published page under its view-mode mark (+migrate-pub-marks). 0
         ::  until it has run. Covered, so the stamp survives reload.
@@ -1403,6 +1406,19 @@
     (send-err eyre-id 403 'that group names a banned ship')
   ;<  ok=?  bind:m  (ug-put gdir who weir)
   ?.  ok  (ug-refused eyre-id)
+  ::  a folder shared with the group (+share-folder-with) whose last
+  ::  page this save took out is unshared, rule and index too, so a page
+  ::  added to it later is not shared again (+unshare-folder)
+  ;<  ~  bind:m
+    =/  fs=(list path)  (folders-granted sb peek.old)
+    |-  ^-  form:m
+    ?~  fs  (pure:m ~)
+    ?.  ?&  (page-roads-under sb i.fs peek.old)
+            !(page-roads-under sb i.fs peek.weir)
+        ==
+      $(fs t.fs)
+    ;<  ~  bind:m  (unshare-folder u.gname i.fs)
+    $(fs t.fs)
   ::  a folder granted here lists its pages to the group (+dir-index-acts)
   ;<  ~  bind:m  (dir-index-pokes (weld sb /page) u.pkp)
   (send-ok eyre-id)
@@ -3093,6 +3109,27 @@
       ~s5
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['ok' b+&] ['notified' b+told]])
+  ::  unshare-file: /share-file undone. A folder stops being shared with
+  ::  the ship (+unshare-folder): its rule goes, with every grant it made,
+  ::  so a page added later stays private. A page loses the ship's grant.
+  ::  Either way the ship is told, and its shared with me drops it live.
+      [%'POST' %unshare-file]
+    =/  name=(unit @t)  (~(get by args) 'name')
+    ?~  name  (send-err eyre-id 400 'missing name')
+    ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
+    =/  shp=(unit @p)  (biff (~(get by args) 'ship') (cury slaw %p))
+    ?~  shp  (send-err eyre-id 400 'bad ship')
+    =/  pdir=path  (weld /page (pax-of u.name))
+    ;<  pe=?  bind:m  (peek-exists:fio (rv up pdir))
+    ?.  pe  (send-err eyre-id 404 'no such page')
+    =/  gname=@t  (crip (slag 1 (scow %p u.shp)))
+    ;<  isp=?  bind:m  (peek-exists:fio (rf up pdir %code))
+    ;<  ~  bind:m
+      ?.  isp  (unshare-folder gname (pax-of u.name))
+      ;<  sb=path  bind:m  self-base
+      ;<  *  bind:m  (ug-drop gname (silt ~[`road:tarball`[%& %& (weld sb pdir) %code]]))
+      (notice-group gname [%del our :(weld sb pdir /code)])
+    (send-ok eyre-id)
   ::  shared-with-me: the notices other ships sent us. Claims, not
   ::  capabilities. Opening one is what proves the grant is still real.
       [%'GET' %shared-with-me]
@@ -3157,6 +3194,15 @@
     ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
     ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| gdir])
     ?^  e  (ug-refused eyre-id)
+    ::  and the folders shared with it share no more, or a page added
+    ::  to one would make the group again (+grant-new)
+    ;<  sb=path  bind:m  self-base
+    ;<  ~  bind:m
+      =/  fs=(list path)  (folders-granted sb peek.old)
+      |-  ^-  form:m
+      ?~  fs  (pure:m ~)
+      ;<  ~  bind:m  (poke-eval [%folder-ungrant i.fs u.gname])
+      $(fs t.fs)
     ;<  ~  bind:m  (tell-unshared ~(tap in held) ~(tap in peek.old))
     (send-ok eyre-id)
   ::  ── private forum boards: invite and revoke (owner) ──
@@ -7224,21 +7270,42 @@
 ::  Bounded like the comment store (this road is public); drop when full, the
 ::  owner clears /forum/notes.
 ::
+::  Any ship may send one, so a banned ship's is dropped, and each sender
+::  (a moon as its planet) files at most +note-cap an hour (+note-gate:ln).
+::  A reply note past that is counted in one item per sender
+::  (+flood-item:ln), never filed.
+::
 ++  store-forum-note
   |=  [host=@p now=@da payload=*]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  bans=banned:ls  bind:m  read-banned
+  ?:  (is-banned:ls bans host)  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  hits=note-hits:ln  bind:m  read-note-hits
+  =/  gate  (note-gate:ln hits `@p`(family:ls host) now)
+  ;<  ~  bind:m  (put-file (rf up /forum %note-hits) [/ %noun] [%1 hits.gate])
   ::  not a refusal: a host telling us someone replied to our post or
   ::  comment on its board (+forum-reply-tell there)
   =/  rn=(unit reply-note:ln)  (mole |.(;;(reply-note:ln payload)))
   ?^  rn
     ?:  (is-comet:fr host)  (pure:m ~)
+    ?:  ok.gate
+      %+  notify-add  now
+      (make:ln %remote now who.u.rn host board.u.rn post.u.rn title.u.rn body.u.rn)
+    ;<  items=(list [id=@ta i=item:ln])  bind:m  notify-items
+    =/  old=(list @ta)  (flood-ids:ln items host)
+    ;<  ~  bind:m
+      |-  ^-  form:m
+      ?~  old  (pure:m ~)
+      ;<  *  bind:m  (cull-soft:io (rf up /notify/items i.old))
+      $(old t.old)
     %+  notify-add  now
-    (make:ln %remote now who.u.rn host board.u.rn post.u.rn title.u.rn body.u.rn)
+    (flood-item:ln now host board.u.rn post.u.rn over.gate)
+  ?.  ok.gate  (pure:m ~)
   =/  nn=(unit [board=board-name:ft reason=@t])
     (mole |.(;;([board-name:ft @t] payload)))
   ?~  nn  (pure:m ~)
-  ;<  up=@ud  bind:m  nexus-up
   ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/notes) ~)
   =/  stored=@ud
     ?.  ?=([%ball *] v)  0
@@ -7250,6 +7317,17 @@
   =/  id=@ta  (scot %uv (sham note))
   ;<  ~  bind:m  (ensure-dirs up /forum /notes)
   (put-file (rf up /forum/notes id) [/lattice %forum-note] note)
+::  +read-note-hits: the note gate's counts (+note-gate:ln), none when
+::  never written
+++  read-note-hits
+  =/  m  (fiber:fiber:nexus ,note-hits:ln)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up /forum %note-hits) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  =/  raw=(unit [%1 note-hits:ln])
+    (mole |.(;;([%1 note-hits:ln] (sang-noun:tarball sang.v))))
+  (pure:m ?~(raw ~ +.u.raw))
 ::  +read-forum-limits / +write-forum-limits: the /forum/limits rate state,
 ::  stored [%1 limits]. Empty when never written.
 ::
@@ -7549,6 +7627,14 @@
     ?~  rels  (pure:m ~)
     ;<  ~  bind:m  (add-grant-via (weld pax.act i.rels) pax.act)
     $(rels t.rels)
+      %folder-ungrant
+    =/  r=road:tarball  (rf up (weld /page pax.act) %'share-grants')
+    ;<  old=(map @t @t)  bind:m  (read-share-grants pax.act)
+    ?.  (~(has by old) gname.act)  (pure:m ~)
+    =/  new=(map @t @t)  (~(del by old) gname.act)
+    ?^  new  (put-file r [/lattice %eval-data] new)
+    ;<  *  bind:m  (cull-soft:io r)
+    (pure:m ~)
       %grant-own
     =/  r=road:tarball  (rf up (weld /page pax.act) %'grant-via')
     ;<  vx=?  bind:m  (peek-exists:fio r)
@@ -18478,6 +18564,84 @@
     ;<  ~  bind:m  (notice-group i.l [%del our (snoc :(weld sb /page pax i.rels) %code)])
     $(l t.l)
   $(rels t.rels)
+::  +unshare-folder: the folder at `pax` is no longer shared with group
+::  `g`. Its rule goes first (%folder-ungrant), so a page made meanwhile
+::  is not granted again, then what the rule granted (+ungrant:ls): each
+::  page's code grub and each folder's index, out of the group's weir.
+::  The group's ships are told of each page, so their shared with me and
+::  its beacon drop it live (+notice-group).
+++  unshare-folder
+  |=  [g=@t pax=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  sb=path  bind:m  self-base
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page pax)) ~)
+  ?.  ?=([%ball *] dv)  (pure:m ~)
+  =/  all=(list [p=path page=?])  (collect-tree ball.dv ~)
+  =/  vias
+    |=  p=path
+    ^-  (list path)
+    =/  v  (~(get by (ball-fils ball.dv p)) %'grant-via')
+    ?~  v  ~
+    (fall (mole |.(;;((list path) (sang-noun:tarball sang.u.v)))) ~)
+  =/  pages=(list [rel=path vias=(list path)])
+    (murn all |=([p=path page=?] ?.(page ~ `[(weld pax p) (vias p)])))
+  =/  subs=(list path)  (murn all |=([p=path page=?] ?:(page ~ `p)))
+  =/  dirs=(list path)  [pax (turn subs |=(p=path (weld pax p)))]
+  ::  the share-grants of the folder, the folders under it, and those
+  ::  above it (any of them may share with g too)
+  =/  below=(map path (map @t @t))
+    %-  ~(gas by *(map path (map @t @t)))
+    %+  turn  ^-((list path) [~ subs])
+    |=(p=path [(weld pax p) (fils-grants (ball-fils ball.dv p))])
+  ;<  grants=(map path (map @t @t))  bind:m
+    =/  n  (fiber:fiber:nexus ,(map path (map @t @t)))
+    =/  d=path  pax
+    =/  acc=(map path (map @t @t))  below
+    |-  ^-  form:n
+    ?~  d  (pure:n acc)
+    =/  dd=path  (snip `path`d)
+    ;<  gs=(map @t @t)  bind:n  (read-share-grants dd)
+    $(d dd, acc (~(put by acc) dd gs))
+  =/  [pg=(list path) dr=(list path)]  (ungrant:ls grants g pax pages dirs)
+  ;<  ~  bind:m  (poke-eval [%folder-ungrant pax g])
+  =/  codes=(list road:tarball)
+    (turn pg |=(r=path `road:tarball`[%& %& :(weld sb /page r) %code]))
+  =/  idx=(list road:tarball)
+    (turn dr |=(r=path `road:tarball`[%& %& :(weld sb /page r) %'dir-index']))
+  ;<  *  bind:m  (ug-drop g (~(gas in *(set road:tarball)) (weld codes idx)))
+  ;<  our=@p  bind:m  bowl-our
+  |-  ^-  form:m
+  ?~  pg  (pure:m ~)
+  ;<  ~  bind:m  (notice-group g [%del our :(weld sb /page i.pg /code)])
+  $(pg t.pg)
+::  +folders-granted: the folders whose index a group's peek roads list
+::  (`dir-index`), each one a folder +share-folder-with shared with it
+++  folders-granted
+  |=  [sb=path rs=(set road:tarball)]
+  ^-  (list path)
+  =/  pre=path  (weld sb /page)
+  %+  murn  ~(tap in rs)
+  |=  r=road:tarball
+  ^-  (unit path)
+  ?.  ?=([%& %& *] r)  ~
+  ?.  =(%'dir-index' name.p.p.r)  ~
+  ?.  =(pre (scag (lent pre) path.p.p.r))  ~
+  `(slag (lent pre) path.p.p.r)
+::  +page-roads-under: whether any page or folder road in `rs` is at or
+::  under the folder at `rel` (a folder's own index roads aside)
+++  page-roads-under
+  |=  [sb=path rel=path rs=(set road:tarball)]
+  ^-  ?
+  =/  f=path  :(weld sb /page rel)
+  =/  n=@ud  (lent f)
+  %+  lien  ~(tap in rs)
+  |=  r=road:tarball
+  ?+  r  |
+    [%& %| *]  =(f (scag n p.p.r))
+    [%& %& *]  &(=(%code name.p.p.r) =(f (scag n path.p.p.r)))
+  ==
 ::  +notice-group: a share notice to each ship in a group, as +grant-new
 ::  and +revoke-folder-grants change what a folder granted. These run in
 ::  the writer, so the notice is fire-and-forget (as +forum-note-send) and
