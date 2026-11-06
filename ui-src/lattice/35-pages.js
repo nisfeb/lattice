@@ -255,6 +255,7 @@
     } catch { return null; }
   };
   function applyPage(name, d, quiet) {
+    if (name !== current) writerNewDoc();
     curFolder = null;
     setCtlLabels();
     setOpen(name, { readOnly: true, kind: d.kind,
@@ -317,6 +318,7 @@
   function blankPage(into) {
     if (mode === 'know') setMode('pages');
     openNext();          // an open still in flight must not land over this
+    writerNewDoc();
     folderCtx = into || '';
     curFolder = null;
     curKind = null;

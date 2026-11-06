@@ -32,6 +32,9 @@ const blockAttrs = (el) => ({
 export const SAFE_HREF = /^(https?:|mailto:|urb:|#|[^:]*$)/i;
 export const safeHref = (h) => SAFE_HREF.test(String(h ?? '').replace(/[\u0000-\u0020\u007f]+/g, ''));
 const NOFONTS = { fonts: new Map() };
+//  the parse rules for a text-decoration line in a pasted element's style
+const deco = (line) => ['text-decoration', 'text-decoration-line']
+  .map((style) => ({ style, getAttrs: (v) => v.split(/\s+/).includes(line) && null }));
 
 const base = { src: { default: null }, xattrs: { default: [] } };
 const textBlock = (tag, extra = {}) => ({
@@ -62,7 +65,9 @@ export const schema = new Schema({
       group: 'block',
       //  the list style decides bullet or number: the view's sheet matches
       //  data-ls, and a pasted ul or ol gets the document's own (paste.js)
-      parseDOM: [{ tag: 'ul', getAttrs: () => ({ kind: 'bullet' }) },
+      //  a list copied from a Writer document names its list style, which
+      //  paste.js keeps when this document has one of that name
+      parseDOM: [{ tag: 'ul', getAttrs: (el) => ({ kind: 'bullet', xattrs: el.hasAttribute('data-ls') ? [['text:style-name', el.getAttribute('data-ls')]] : [] }) },
         { tag: 'ol', getAttrs: () => ({ kind: 'number' }) }],
       toDOM: (n) => {
         const s = n.attrs.xattrs.find(([k]) => k === 'text:style-name');
@@ -140,12 +145,17 @@ export const schema = new Schema({
       inclusive: false,
       //  never an href: a link in the editor is not followed by a click
       //  (Ctrl+click opens a safe one, view.js)
-      parseDOM: [{ tag: 'a[href]', getAttrs: (el) => (safeHref(el.getAttribute('href')) ? { href: el.getAttribute('href') } : false) }],
+      //  (a link copied from a Writer document carries its target as data-href)
+      parseDOM: ['href', 'data-href'].map((a) => ({
+        tag: 'a[' + a + ']', getAttrs: (el) => (safeHref(el.getAttribute(a)) ? { href: el.getAttribute(a) } : false),
+      })),
       toDOM: (m) => ['a', { 'data-href': m.attrs.href, title: m.attrs.href }, 0],
     },
     //  a named text style (office:styles)
     charStyle: {
       attrs: { name: {} },
+      //  paste.js drops one this document does not define
+      parseDOM: [{ tag: 'span[data-cs]', getAttrs: (el) => ({ name: el.getAttribute('data-cs') }) }],
       toDOM: (m) => ['span', { 'data-cs': m.attrs.name }, 0],
     },
     //  what a span's automatic style holds beyond the four marks below:
@@ -172,22 +182,29 @@ export const schema = new Schema({
     //  is written back as it was
     strong: {
       attrs: { props: { default: [['fo:font-weight', 'bold']] } },
-      parseDOM: [{ tag: 'strong' }, { tag: 'b' }, { style: 'font-weight', getAttrs: (v) => /^(bold|bolder|[6-9]00)$/.test(v) && null }],
+      //  Google Docs wraps a whole paste in <b style="font-weight:normal">,
+      //  so a b that says normal is not bold, and a normal weight inside a
+      //  bold one turns it off
+      parseDOM: [{ tag: 'strong' }, { tag: 'b', getAttrs: (el) => !/^(normal|[1-5]00)$/.test(el.style.fontWeight) && null },
+        { style: 'font-weight', getAttrs: (v) => /^(bold|bolder|[6-9]00)$/.test(v) && null },
+        { style: 'font-weight', clearMark: (m) => m.type.name === 'strong', getAttrs: (v) => /^(normal|[1-5]00)$/.test(v) && null }],
       toDOM: () => ['strong', 0],
     },
     em: {
       attrs: { props: { default: [['fo:font-style', 'italic']] } },
-      parseDOM: [{ tag: 'em' }, { tag: 'i' }, { style: 'font-style=italic' }],
+      parseDOM: [{ tag: 'em' }, { tag: 'i' }, { style: 'font-style=italic' },
+        { style: 'font-style=normal', clearMark: (m) => m.type.name === 'em' }],
       toDOM: () => ['em', 0],
     },
     underline: {
       attrs: { props: { default: [['style:text-underline-color', 'font-color'], ['style:text-underline-style', 'solid'], ['style:text-underline-width', 'auto']] } },
-      parseDOM: [{ tag: 'u' }],
+      //  Google Docs and Word Online say it in the style
+      parseDOM: [{ tag: 'u' }, ...deco('underline')],
       toDOM: () => ['u', 0],
     },
     strike: {
       attrs: { props: { default: [['style:text-line-through-style', 'solid'], ['style:text-line-through-type', 'single']] } },
-      parseDOM: [{ tag: 's' }, { tag: 'strike' }, { tag: 'del' }],
+      parseDOM: [{ tag: 's' }, { tag: 'strike' }, { tag: 'del' }, ...deco('line-through')],
       toDOM: () => ['s', 0],
     },
   },

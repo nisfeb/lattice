@@ -2,6 +2,12 @@
   // writer.js, loaded when a fodt page shows, mounts over #src, the one
   // buffer, and writes it back (view.js, ctl.sync).
   let wrLoad = null, wr = null, wrHost = null, wrSeq = 0, wrQ = false;
+  // the document the editor was mounted for: its tab, and wrDoc, which
+  // applyPage and blankPage move on for each new document in front. Two
+  // pages with the same body never share an editor or its undo history.
+  // A rename or a new page's first save keeps it.
+  let wrDoc = 0, wrFor = null;
+  const writerNewDoc = () => { wrDoc++; };
   const wrSrc = new Map();     // page -> why it shows as XML
   const wrKey = () => current || '';
   const fodtHere = () => mode !== 'know' && !grubPath && curFolder === null && pkind.value === 'fodt';
@@ -49,7 +55,8 @@
     if (!fodtHere() || writerSourceOn()) return writerOff();
     const body = src.value, ed = !src.readOnly && viewingRev === null;
     wrShow(true);
-    if (wr && wr.base() === body) return wr.setEditable(ed);
+    const doc = { tab: activeTab, n: wrDoc };
+    if (wr && wrFor && wrFor.tab === doc.tab && wrFor.n === doc.n && wr.base() === body) return wr.setEditable(ed);
     writerDrop();
     if (!window.LatWriter) wrBox('Loading the Writer editor…');
     const my = wrSeq;
@@ -57,7 +64,7 @@
       if (my !== wrSeq || src.value !== body || !fodtHere() || writerSourceOn()) return;
       const c = LW.mount(wrBox(), { text: body, editable: ed, name: current, cur: () => src.value, onChange: writerChanged,
         onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => st('not saved: ' + e, false) });
-      if (c.error) { wrSrc.set(wrKey(), c.error); writerApply(); } else wr = c;
+      if (c.error) { wrSrc.set(wrKey(), c.error); writerApply(); } else { wr = c; wrFor = doc; }
     }, () => { if (my === wrSeq) wrBox('The Writer editor did not load. Source in the page menu shows the XML.'); });
   }
   function writerChanged() {

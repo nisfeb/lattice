@@ -127,11 +127,14 @@ function styleEntry(src, e, auto) {
   return entry;
 }
 
+//  [name, value] pairs in name order
+export const byName = (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
+
 //  +canonicalKey: family, parent, the other attributes and each
 //  properties element's attributes, all sorted, as one string
 export function canonicalKey({ family, parent, extra = [], props: pr = {}, opaque = '' }) {
-  const sortPairs = (o) => Object.entries(o).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  const ex = [...extra].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const sortPairs = (o) => Object.entries(o).sort(byName);
+  const ex = [...extra].sort(byName);
   const pe = Object.keys(pr).sort().map((k) => [k, sortPairs(pr[k])]).filter(([, v]) => v.length);
   return JSON.stringify([family, parent || '', ex, pe, opaque]);
 }
@@ -187,7 +190,7 @@ export function registry(st) {
 export function autoStyleXml(name, { family, parent, extra = [], props: pr = {} }, raw = null) {
   const at = [['style:name', name], ['style:family', family]];
   if (parent) at.push(['style:parent-style-name', parent]);
-  for (const p of [...extra].sort((a, b) => (a[0] < b[0] ? -1 : 1))) at.push(p);
+  for (const p of [...extra].sort(byName)) at.push(p);
   const open = '<style:style' + at.map(([k, v]) => ` ${k}="${escAttr(v)}"`).join('');
   const inner = (raw && raw.inner) || {};
   const kids = Object.keys({ ...pr, ...inner }).sort().filter((k) => Object.keys(pr[k] || {}).length || inner[k] != null).map((k) => {

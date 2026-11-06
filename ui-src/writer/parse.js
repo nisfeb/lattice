@@ -12,7 +12,7 @@
 //  serialization of an untouched neighbourhood writes it back as it was.
 import { attr, child, decode, elements, parseXml, textOf } from './xml.js';
 import { schema, ZERO_WIDTH } from './schema.js';
-import { breaksPage, isQuote, layout as pageLayout, lookup, readStyles } from './styles.js';
+import { breaksPage, byName, isQuote, layout as pageLayout, lookup, readStyles } from './styles.js';
 
 const S = schema.nodes;
 const M = schema.marks;
@@ -64,6 +64,11 @@ function parseOrError(text) {
 
 const ws = (s) => /^[ \t\r\n]*$/.test(s);
 
+//  the spaces text:s may spell out in one document: a 25-byte element
+//  says up to 100000, so a small hostile file would otherwise open as
+//  hundreds of millions of characters in the editor
+export const SPACES = 1000000;
+
 //  whether office:scripts holds a macro: a library, a module or an event
 //  listener. LibreOffice writes an empty Basic libraries element in every
 //  document, which is none
@@ -80,7 +85,9 @@ function hasMacros(el) {
   walk(el);
   return found;
 }
-const tagName = (n) => n;
+//  a node's source span and its attributes as written, copied
+const rawAttrs = (e) => e.attrs.map((a) => [a[0], a[1]]);
+const spanOf = (e) => ({ src: [e.start, e.end], xattrs: rawAttrs(e) });
 
 class Parser {
   constructor(src, st) {
@@ -91,6 +98,7 @@ class Parser {
     this.gaps = new Map();  // start -> { gap, prevEnd }
     this.tails = new Map(); // container start -> { gap, prevEnd }
     this.opens = new Map(); // container start -> the end of its start tag
+    this.spaces = 0;        // what text:s has spelled out so far
   }
 
   raw(el) { return this.src.slice(el.start, el.end); }
@@ -126,7 +134,7 @@ class Parser {
   }
 
   block(el) {
-    switch (tagName(el.name)) {
+    switch (el.name) {
       case 'text:p': case 'text:h': return this.textBlock(el);
       case 'text:list': return this.list(el) || this.opaqueBlock(el);
       case 'table:table': return this.table(el) || this.opaqueBlock(el);
@@ -138,7 +146,7 @@ class Parser {
   textBlock(el) {
     const style = attr(el, 'text:style-name') ?? null;
     const at = {
-      src: [el.start, el.end], xattrs: el.attrs.map((a) => [a[0], a[1]]), style,
+      ...spanOf(el), style,
       pageBreak: style != null && breaksPage(this.st, style),
       quote: style != null && isQuote(this.st, style),
     };
@@ -163,12 +171,12 @@ class Parser {
       if (!kids.length) return null;
       this.gaps.set(k.start, { gap: this.src.slice(prevEnd, k.start), prevEnd });
       items.push(this.keep(S.list_item.create(
-        { src: [k.start, k.end], xattrs: k.attrs.map((a) => [a[0], a[1]]), header: k.name === 'text:list-header' }, kids), k));
+        { ...spanOf(k), header: k.name === 'text:list-header' }, kids), k));
       prevEnd = k.end;
     }
     if (!items.length) return null;
     this.tails.set(el.start, { gap: this.src.slice(prevEnd, el.closeStart), prevEnd });
-    return this.keep(S.list.create({ src: [el.start, el.end], xattrs: el.attrs.map((a) => [a[0], a[1]]) }, items), el);
+    return this.keep(S.list.create(spanOf(el), items), el);
   }
 
   section(el) {
@@ -177,7 +185,7 @@ class Parser {
     if (el.kids.some((k) => k.name === 'text:section-source' || k.name === 'office:dde-source')) return null;
     const kids = this.blocks(el);
     if (!kids.length) return null;
-    return this.keep(S.section.create({ src: [el.start, el.end], xattrs: el.attrs.map((a) => [a[0], a[1]]) }, kids), el);
+    return this.keep(S.section.create(spanOf(el), kids), el);
   }
 
   //  a simple table: columns, an optional header-rows group, rows of
@@ -206,13 +214,13 @@ class Parser {
         const kids = this.blocks(c);
         if (!kids.length) return null;
         this.gaps.set(c.start, { gap: this.src.slice(pe, c.start), prevEnd: pe });
-        cells.push(this.keep(S.table_cell.create({ src: [c.start, c.end], xattrs: c.attrs.map((a) => [a[0], a[1]]) }, kids), c));
+        cells.push(this.keep(S.table_cell.create(spanOf(c), kids), c));
         pe = c.end;
       }
       if (!cells.length) return null;
       this.tails.set(r.start, { gap: this.src.slice(pe, r.closeStart), prevEnd: pe });
       this.gaps.set(r.start, { gap: this.src.slice(prev, r.start), prevEnd: prev });
-      return this.keep(S.table_row.create({ src: [r.start, r.end], xattrs: r.attrs.map((a) => [a[0], a[1]]), header }, cells), r);
+      return this.keep(S.table_row.create({ ...spanOf(r), header }, cells), r);
     };
     for (; i < ks.length; i++) {
       const k = ks[i];
@@ -242,7 +250,7 @@ class Parser {
     const width = rows[0].childCount;
     if (rows.some((r) => r.childCount !== width)) return null;
     return this.keep(S.table.create({
-      src: [el.start, el.end], xattrs: el.attrs.map((a) => [a[0], a[1]]),
+      ...spanOf(el),
       pre: { text: this.src.slice(el.openEnd, preEnd), end: preEnd }, hdr,
     }, rows), el);
   }
@@ -279,6 +287,7 @@ class Parser {
       const plain = k.attrs.length === 0;
       if (k.name === 'text:s' && (plain || (k.attrs.length === 1 && k.attrs[0][0] === 'text:c'))) {
         const c = Math.min(Math.max(parseInt(attr(k, 'text:c') ?? '1', 10) || 1, 1), 100000);
+        if ((this.spaces += c) > SPACES) throw new Error('it spells out more than a million spaces');
         out.push(schema.text(' '.repeat(c), marks));
         //  LibreOffice keeps a literal space after text:s, text:tab and
         //  text:line-break: they end a collapsing run
@@ -292,7 +301,7 @@ class Parser {
       } else if (k.name === 'text:span' && !this.mixedBlock(k)) {
         this.inlineInto(k, this.spanMarks(k, marks), out, ctx);
       } else if (k.name === 'text:a' && !this.mixedBlock(k)) {
-        const link = M.link.create({ href: attr(k, 'xlink:href') ?? '', xattrs: k.attrs.map((a) => [a[0], a[1]]) });
+        const link = M.link.create({ href: attr(k, 'xlink:href') ?? '', xattrs: rawAttrs(k) });
         this.inlineInto(k, link.addToSet(marks), out, ctx);
       } else {
         const raw = this.raw(k);
@@ -345,7 +354,7 @@ class Parser {
     }
     for (const g of Object.keys(group)) {
       const t = M[g];
-      if (on[g]) marks = t.create({ props: group[g].sort(cmp) }).addToSet(marks);
+      if (on[g]) marks = t.create({ props: group[g].sort(byName) }).addToSet(marks);
       //  an inner span that turns a mark off (fo:font-weight="normal")
       else if (Object.keys(tp).some((k) => (g === 'strong' ? /font-weight/ : g === 'em' ? /font-style/
         : g === 'underline' ? /^style:text-underline-/ : /^style:text-line-through-/).test(k))) marks = t.removeFromSet(marks);
@@ -353,13 +362,11 @@ class Parser {
     const other = {};
     for (const [k, v] of Object.entries(s.props)) if (k !== 'style:text-properties') other[k] = v;
     return M.spanStyle.create({
-      name: s.name, rest: [...rest].sort(cmp), xattrs,
+      name: s.name, rest: [...rest].sort(byName), xattrs,
       extra: s.extra, other, opaque: s.opaque,
     }).addToSet(marks);
   }
 }
-
-const cmp = (a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0);
 
 //  what an opaque node shows: a field's current value, a note's marker,
 //  the text of a block; nothing for markers, comments and drawings
@@ -389,12 +396,17 @@ export function fodtText(text) {
   const otext = body && child(body, 'office:text');
   if (!otext) return '';
   let out = '';
+  let spaces = 0;
   const walk = (el) => {
     for (const k of el.kids) {
       if (k.text) { out += decode(text.slice(k.start, k.end)).replace(/[\t\r\n ]+/g, ' '); continue; }
       if (!k.name) continue;
       if (k.name === 'text:tracked-changes' || k.name === 'office:annotation' || k.name === 'text:sequence-decls') continue;
-      if (k.name === 'text:s') { out += ' '.repeat(Math.min(parseInt(attr(k, 'text:c') ?? '1', 10) || 1, 1000)); continue; }
+      if (k.name === 'text:s') {
+        const c = Math.min(parseInt(attr(k, 'text:c') ?? '1', 10) || 1, 1000, SPACES - spaces);
+        if (c > 0) { out += ' '.repeat(c); spaces += c; }
+        continue;
+      }
       if (k.name === 'text:tab') { out += '\t'; continue; }
       if (k.name === 'text:line-break') { out += '\n'; continue; }
       const blk = k.name === 'text:p' || k.name === 'text:h';
@@ -403,8 +415,18 @@ export function fodtText(text) {
     }
   };
   walk(otext);
-  return out.replace(/ *\n */g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  //  the spaces around each line break go. Not / *\n */, which backtracks
+  //  over a long run of spaces with no break after it: quadratic, minutes
+  //  on a few KB of text:s
+  return out.split('\n').map(trimSpaces).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
+
+const trimSpaces = (l) => {
+  let a = 0, b = l.length;
+  while (a < b && l.charCodeAt(a) === 32) a++;
+  while (b > a && l.charCodeAt(b - 1) === 32) b--;
+  return l.slice(a, b);
+};
 
 //  +fodtOutline: the headings, with their position in the document
 export function fodtOutline(text) {

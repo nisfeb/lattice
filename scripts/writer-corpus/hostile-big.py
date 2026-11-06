@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """hostile-big.py: the two machine-sized hostile Writer documents.
 
-The rest of tests/writer/corpus/hostile/ is hand-written. These two are
+The rest of tests/writer/corpus/hostile/ is hand-written. These are
 too regular or too large to write by hand:
 
   deep-nesting.fodt    10,000 nested text:span elements in one paragraph
                        (committed, about 230 KB)
+  space-bomb.fodt      400 text:s elements of 100,000 spaces each, 40
+                       million spaces from about 10 KB (committed)
   huge-attribute.fodt  one attribute value of 50 MB (not committed;
                        generate it where a suite needs it)
 
@@ -21,6 +23,7 @@ ROOT = ('<?xml version="1.0" encoding="UTF-8"?>\n'
         ' <office:body>\n  <office:text>\n')
 END = '  </office:text>\n </office:body>\n</office:document>\n'
 DEPTH = 10_000
+SPACES = 400
 HUGE = 50 * 1024 * 1024
 
 
@@ -32,6 +35,9 @@ def main():
     with open(os.path.join(out, 'deep-nesting.fodt'), 'w') as fh:
         fh.write(ROOT + '   <text:p>' + '<text:span>' * DEPTH + 'deep'
                  + '</text:span>' * DEPTH + '</text:p>\n' + END)
+    with open(os.path.join(out, 'space-bomb.fodt'), 'w') as fh:
+        fh.write(ROOT + '   <text:p>spaced' + '<text:s text:c="100000"/>' * SPACES
+                 + 'out</text:p>\n' + END)
     if '--huge' in sys.argv:
         with open(os.path.join(out, 'huge-attribute.fodt'), 'w') as fh:
             fh.write(ROOT + '   <text:p text:style-name="')

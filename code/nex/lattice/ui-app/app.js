@@ -2,7 +2,7 @@
 (function () {
 'use strict';
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
-const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
+const WRITER_H = '0v6.mjanj.2h7ln.vmbk0.4rmug.2npm0';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
@@ -3363,6 +3363,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
 // ── src/26-writer.js ──────────────────────────────────────────────────────
   let wrLoad = null, wr = null, wrHost = null, wrSeq = 0, wrQ = false;
+  let wrDoc = 0, wrFor = null;
+  const writerNewDoc = () => { wrDoc++; };
   const wrSrc = new Map();     // page -> why it shows as XML
   const wrKey = () => current || '';
   const fodtHere = () => mode !== 'know' && !grubPath && curFolder === null && pkind.value === 'fodt';
@@ -3407,7 +3409,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!fodtHere() || writerSourceOn()) return writerOff();
     const body = src.value, ed = !src.readOnly && viewingRev === null;
     wrShow(true);
-    if (wr && wr.base() === body) return wr.setEditable(ed);
+    const doc = { tab: activeTab, n: wrDoc };
+    if (wr && wrFor && wrFor.tab === doc.tab && wrFor.n === doc.n && wr.base() === body) return wr.setEditable(ed);
     writerDrop();
     if (!window.LatWriter) wrBox('Loading the Writer editor…');
     const my = wrSeq;
@@ -3415,7 +3418,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       if (my !== wrSeq || src.value !== body || !fodtHere() || writerSourceOn()) return;
       const c = LW.mount(wrBox(), { text: body, editable: ed, name: current, cur: () => src.value, onChange: writerChanged,
         onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => st('not saved: ' + e, false) });
-      if (c.error) { wrSrc.set(wrKey(), c.error); writerApply(); } else wr = c;
+      if (c.error) { wrSrc.set(wrKey(), c.error); writerApply(); } else { wr = c; wrFor = doc; }
     }, () => { if (my === wrSeq) wrBox('The Writer editor did not load. Source in the page menu shows the XML.'); });
   }
   function writerChanged() {
@@ -6075,6 +6078,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     } catch { return null; }
   };
   function applyPage(name, d, quiet) {
+    if (name !== current) writerNewDoc();
     curFolder = null;
     setCtlLabels();
     setOpen(name, { readOnly: true, kind: d.kind,
@@ -6106,6 +6110,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   function blankPage(into) {
     if (mode === 'know') setMode('pages');
     openNext();          // an open still in flight must not land over this
+    writerNewDoc();
     folderCtx = into || '';
     curFolder = null;
     curKind = null;
