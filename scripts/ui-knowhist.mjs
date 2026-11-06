@@ -2,7 +2,8 @@
 // and the next write at that road picks them up again. So a move that
 // only culled its source left the moved memory's old bodies behind, and
 // the next memory saved at the old key listed them in its own history,
-// readable by any key that may read the new one.
+// readable by any key that may read the new one. And a batch save's
+// duplicate check against a memory the same batch rewrote.
 //   LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> node scripts/ui-knowhist.mjs
 import { shipEnv, makeCheck, waitFor } from './lib/harness.mjs';
 
@@ -51,5 +52,26 @@ for (const v of after || []) {
 }
 check('no revision of the new memory holds the moved one\'s body', !leaked);
 
-for (const k of [A, B]) await post('know-delete?key=' + q(k), '');
+// A batch that rewrites a memory, then saves a new one resembling the
+// rewritten memory's OLD body: the old body is gone, so the new one is
+// no duplicate of it. The duplicate pool kept the old body and refused it.
+const D = RUN + '/d', E = RUN + '/e';
+const OLD = 'quartz harbor lantern meadow violin glacier pepper saddle tundra orchid marble falcon';
+check('seed the memory to rewrite', (await post('know-save?key=' + q(D), OLD)).ok);
+await waitFor(() => has(D, 'quartz harbor'), 30000, 500);
+const br = await api('know-save-batch', {
+  method: 'POST', headers: { ...H, 'content-type': 'application/json' },
+  body: JSON.stringify({ items: [
+    { key: D, body: 'nothing alike remains here after this rewrite of it', author: 'ukh' },
+    { key: E, body: OLD + ' sparrow', author: 'ukh' },
+  ] }),
+});
+const bj = br.ok ? await br.json() : null;
+const res = (bj && bj.results) || [];
+check('the batch answers', br.ok, br.status);
+check('the rewrite lands', res[0] && res[0].ok === true, JSON.stringify(res[0]));
+check('the new memory is not refused as a duplicate of the rewritten body',
+  res[1] && res[1].ok === true, JSON.stringify(res[1]));
+
+for (const k of [A, B, D, E]) await post('know-delete?key=' + q(k), '');
 check.done();

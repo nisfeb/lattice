@@ -6087,16 +6087,20 @@
   =/  pl  (save-plan key rnow bnow u.ko b.i.items a.i.items old near)
   ?:  ?=(%| -.pl)  $(items t.items, outs [(batch-err k.i.items p.pl) outs])
   ::  later items see this one: as the entry under its key, and as a
-  ::  candidate unless +listed would hide it from this caller
+  ::  candidate unless +listed would hide it from this caller. The body
+  ::  it replaced leaves the pool, or a later item that resembles that
+  ::  old body is refused as a duplicate of text no longer stored.
   =/  e=know-entry:lk
     (merge-save:lk old ?>(?=(%save -.act.p.pl) body.act.p.pl) bnow)
+  =/  rest=(list [path know-entry:lk])
+    (skip pool |=([k=path *] =(k u.ko)))
   %=  $
     items  t.items
     acts   [act.p.pl acts]
     outs   [(batch-ok k.i.items out.p.pl) outs]
     es     (~(put by es) u.ko e)
     tc     (~(put by tc) u.ko (row-of:lk u.ko e))
-    pool   ?:(&(?=(^ key) (sensitive:lk e)) pool [[u.ko e] pool])
+    pool   ?:(&(?=(^ key) (sensitive:lk e)) rest [[u.ko e] rest])
   ==
 ::  +batch-ok, +batch-err: one /know-save-batch result, named by its key
 ++  batch-ok
