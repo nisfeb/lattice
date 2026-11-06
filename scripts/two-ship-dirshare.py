@@ -6,7 +6,9 @@ usage: A_URL=... A_COOKIE=<raw cookie file> B_URL=... B_COOKIE=... two-ship-dirs
 Then A shares another folder with B alone, unpublished: B reads its index,
 with titles, and its pages; a page A adds later B reads too, until A moves
 it out, and one A moves in B reads; and B gets the private page's refusal for a
-folder not shared with it.
+folder not shared with it. Then A unshares the folder: B is told live,
+reads neither the pages nor the index, and a page A adds after is not
+B's; and a shared folder deleted and made again is not shared.
 
 Ship A shares a folder of three pages, one of them in a subfolder. Ship B
 reads the folder's index at urb://~a/<folder>/ and each page over urb://,
@@ -134,6 +136,45 @@ def main():
     st, txt = read(h + '/')
     check('B gets the private refusal for a folder not shared with it',
           index(h) is None and 'not published here' in txt, txt[-200:])
+
+    # ── A unshares the folder: its rule and every grant it made go ──
+    gname = ship_b.lstrip('~')
+
+    def group():
+        st, txt = a('GET', '/apps/lattice/share-groups')
+        try:
+            return next((x for x in json.loads(txt) if x['name'] == gname), None)
+        except ValueError:
+            return None
+
+    def under(rel):
+        gr = group() or {}
+        return [p for p in gr.get('peek', []) + gr.get('make', []) if f'/page/{rel}/' in p + '/']
+    check('the group holds the folder before the unshare', bool(under(g)), str(group())[:300])
+    opaque = (group() or {}).get('opaque', 0)
+    post(f'unshare-file?name={g}&ship={ship_b}')
+    check('the group holds nothing under the folder', under(g) == [], str(under(g)))
+    check('nor its index roads', (group() or {}).get('opaque', 0) < opaque, str(group())[:300])
+    until('B is told live it was unshared', lambda: (not swm(g + '/memo')) or 'still in shared-with-me')
+    until('B cannot read a page of it', lambda: reads(g + '/memo', 'Memo for B') is not True)
+    until('B cannot read its index', lambda: index(g) is None or index(g))
+    post(f'page-save?type=md&new=1&name={g}/after', '# After for B\n')
+    time.sleep(5)
+    check('a page added after the unshare is not granted', under(g) == [], str(under(g)))
+    check('B cannot read it', reads(g + '/after', 'After for B') is not True)
+    check('B is not told of it', not swm(g + '/after'))
+
+    # ── deleting a shared folder leaves nothing behind ──
+    d = f'{ROOT}/gone'
+    post(f'page-save?type=md&new=1&name={d}/p', '# Gone for B\n')
+    post(f'share-file?name={d}&ship={ship_b}&mode=read')
+    until('B reads a page of the folder to delete', lambda: reads(d + '/p', 'Gone for B'))
+    post(f'page-del?name={d}')
+    until('the group holds nothing under the deleted folder', lambda: under(d) == [] or under(d))
+    post(f'page-save?type=md&new=1&name={d}/p', '# Again not for B\n')
+    time.sleep(5)
+    check('a folder made again at its name is not shared', under(d) == [], str(under(d)))
+    check('B cannot read its page', reads(d + '/p', 'Again not for B') is not True)
 
     a('POST', '/apps/lattice/page-del?name=' + ROOT)
     print(f'{len(fails)} failed' if fails else 'all passed')
