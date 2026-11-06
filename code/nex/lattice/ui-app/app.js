@@ -6,7 +6,7 @@ const WRITER_H = '0v6.0532q.i6tsc.i97k0.o86tj.b5kh3';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
-const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
+const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
 // ── src/00-framed.js ──────────────────────────────────────────────────────
   if (window.top !== window) {
@@ -1197,7 +1197,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
   let mode = 'pages';      // 'know' while a memory is in front (95-know.js)
   window.__latUnsaved = () => dirty === true
-    || allTabs().some((t) => t !== activeTab && t.snap && t.snap.dirty);
+    || allTabs().some((t) => t !== activeTab && t.snap && t.snap.dirty)
+    || skUnsaved();
   let everTyped = false;
   async function guardDirty() {
     if (!dirty) return true;
@@ -2538,7 +2539,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     restore: () => {},
     park: async () => true,
     shows: (t) => t === activeTab && toolShown === t.key,
-    held: (t) => frameTyped(t.key),
+    held: (t) => frameTyped(t.key) || (t.key === 'skills' && skUnsaved()),
   };
   const TEXTY = ['text', 'search', 'url', 'email', 'tel', 'number'];
   function frameTyped(key) {
@@ -10757,6 +10758,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   skWrap.setAttribute('aria-label', 'skills');
   toolStash.append(skWrap);
   let skLoad = null;
+  const skUnsaved = () => !!(window.LatSkills && window.LatSkills.unsaved && window.LatSkills.unsaved());
   const skReady = () => (window.LatSkills ? Promise.resolve(window.LatSkills)
     : skLoad || (skLoad = new Promise((ok, no) => {
       const s = document.createElement('script');
