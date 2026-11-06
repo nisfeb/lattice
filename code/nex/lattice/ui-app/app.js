@@ -104,6 +104,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   // save lands when the job ends, so the queue holds it and says so.
   let jobWait = false;
   const JOB_NOTE = 'a folder job is running, your save will land when it finishes';
+  const NOT_SAVED = 'NOT SAVED — this device cannot store offline edits. Copy your text '
+    + 'somewhere safe before closing this page.';
   // The persistent offline indicator. The status line reports EVENTS and the
   // next one overwrites it, so "saved offline" scrolls away while you are
   // still offline and still queueing. This reports the CONDITION and stays up
@@ -474,8 +476,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
     const job = saveStalled();
     if (!queued) {
-      st('NOT SAVED — this device cannot store offline edits. Copy your text '
-        + 'somewhere safe before closing this page.', false);
+      st(NOT_SAVED, false);
       return false;
     }
     pageCache.delete(name);
@@ -530,11 +531,8 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     }
     await opPut({ ...rec, queuedAt: Date.now() });
     setDegraded(true);
-    st(rec.op === 'del'
-      ? 'deleted offline — ' + offCount + ' waiting to sync'
-      : rec.op === 'mkdir'
-        ? 'folder created offline — ' + offCount + ' waiting to sync'
-        : 'moved offline — ' + offCount + ' waiting to sync');
+    st(({ del: 'deleted', mkdir: 'folder created' }[rec.op] || 'moved')
+      + ' offline — ' + offCount + ' waiting to sync');
   }
 
   // know memories share the queue under a 'know:' prefix. Page names cannot
@@ -545,8 +543,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
     const job = saveStalled();
     if (!queued) {
-      st('NOT SAVED — this device cannot store offline edits. Copy your text '
-        + 'somewhere safe before closing this page.', false);
+      st(NOT_SAVED, false);
       return false;
     }
     knowGen++;
@@ -669,14 +666,9 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           }
         } catch {}
         const alt = 'conflicts/offline-create-' + q.name.replace(/\//g, '-');
-        let two = null;
-        try {
-          two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
-            '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
-        } catch {}
         //  the preservation write is the only thing standing between the user
         //  and a lost document, so if it does not land the record stays queued
-        if (!(two && two.ok)) return false;
+        if (!await keepAside(q, alt)) return false;
         conflicts.push(alt);
         await offDel(q.name);
         st('offline create collided: ' + q.name + ' exists on the ship — your ' +
@@ -693,6 +685,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   // uploads, wrong for replay. One poisoned record would block the queue
   // forever. A rejected batch falls back to per-item saves so the bad record
   // is isolated and DROPPED (it can never apply; review gap 3).
+  // a queued body kept as a page of its own at `alt`; true once it landed
+  const keepAside = async (q, alt) => {
+    try {
+      const r = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
+        '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
+      return !!(r && r.ok);
+    } catch { return false; }
+  };
   async function drainEdits(edits, conflicts) {
     for (let i = 0; i < edits.length; i += 50) {
       const part = edits.slice(i, i + 50);
@@ -742,12 +742,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           // collision is; if that write fails the record stays queued.
           if (one && one.status === 409) {
             const alt = 'conflicts/offline-edit-' + q.name.replace(/\//g, '-');
-            let two = null;
-            try {
-              two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
-                '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
-            } catch {}
-            if (!(two && two.ok)) return false;
+            if (!await keepAside(q, alt)) return false;
             conflicts.push(alt);
             await offDel(q.name);
             st('offline edit refused: ' + q.name + ', your version is kept at ' + alt, false);
@@ -1168,12 +1163,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
     status.style.color = ok ? '' : '#c0392b';
   };
   // stWork: a status that keeps spinning until the next plain st()
-  const stWork = (msg) => {
-    status.textContent = msg;
-    status.title = msg;
-    status.style.color = '';
-    spinner.classList.add('on');
-  };
+  const stWork = (msg) => { st(msg); spinner.classList.add('on'); };
   // ── busy: the one loading indicator ──────────────────────────────────────
   // A thin moving line along the top of the region that is waiting on the
   // ship (.lbusy in index.html): #center by default (an open phone drawer
@@ -7177,6 +7167,14 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
 
   // local `nodes` patching: this client performed the write, so it already
   // knows the outcome. Applying it locally replaces a page-tree refetch.
+  // the globe on a clearweb row, page or folder
+  const cwBadge = (path) => {
+    const cw = document.createElement('span');
+    cw.className = 'cw';
+    cw.textContent = '\u{1F310}';
+    cw.title = path + ' is clearweb public';
+    return cw;
+  };
   const hasNode = (path) => nodes.some((n) => n.path === path);
   function addFolderNodes(path) {
     const parts = path.split('/');
@@ -7484,13 +7482,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
           if (bad) row.append(linkBadgeEl(bad));
         }
         treeItem(row, depth, 'p:' + n.path);
-        if (n.share === 'clearweb') {
-          const cw = document.createElement('span');
-          cw.className = 'cw';
-          cw.textContent = '\u{1F310}';
-          cw.title = n.path + ' is clearweb public';
-          row.append(cw);
-        }
+        if (n.share === 'clearweb') row.append(cwBadge(n.path));
         tabLink(row, 'page', n.path);
         rowMore(row, (n.dname || n.path.split('/').pop()) + '.' + kindExt(n.kind));   // 34-treemenu.js
       } else {
@@ -7500,13 +7492,7 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
         if (n.path === curFolder) row.classList.add('cur');
         if (n.dname) row.lastChild.title = n.path;     // the label's tip
         if (n.path === 'conflicts') sysFlair(row, 'conflicts');
-        if (treeShare(n.path) === 'clearweb') {
-          const cw = document.createElement('span');
-          cw.className = 'cw';
-          cw.textContent = '\u{1F310}';
-          cw.title = n.path + ' is clearweb public';
-          row.append(cw);
-        }
+        if (treeShare(n.path) === 'clearweb') row.append(cwBadge(n.path));
         const add = document.createElement('a');
         add.className = 'addf';
         add.textContent = '+';
@@ -12419,7 +12405,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
   // when a read finds more new pages, and marks it read when they are all
   // opened (69x-follow.js), stamping /beacon/notify both times.
 
-  const cmOpen = () => toolOpen('inbox');
   // the inbox's tab came forward (24-tools.js): load all three tabs, and
   // show Held when something waits there, else Activity
   const cmLoad = () => {
@@ -13598,9 +13583,6 @@ const SKILLS_H = '0vp8i1n.clpkn.kdlr1.tsp81.ofl5e';
       host.appendChild(card);
     }
   }
-
-  // its tab's coming forward renders it (24-tools.js)
-  const cfOpen = () => toolOpen('conflicts');
 
 // ── src/85-layout.js ──────────────────────────────────────────────────────
   // ── layout toggles ────────────────────────────────────────────────────────

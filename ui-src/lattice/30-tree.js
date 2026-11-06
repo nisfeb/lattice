@@ -240,6 +240,14 @@
 
   // local `nodes` patching: this client performed the write, so it already
   // knows the outcome. Applying it locally replaces a page-tree refetch.
+  // the globe on a clearweb row, page or folder
+  const cwBadge = (path) => {
+    const cw = document.createElement('span');
+    cw.className = 'cw';
+    cw.textContent = '\u{1F310}';
+    cw.title = path + ' is clearweb public';
+    return cw;
+  };
   const hasNode = (path) => nodes.some((n) => n.path === path);
   function addFolderNodes(path) {
     const parts = path.split('/');
@@ -547,13 +555,7 @@
           if (bad) row.append(linkBadgeEl(bad));
         }
         treeItem(row, depth, 'p:' + n.path);
-        if (n.share === 'clearweb') {
-          const cw = document.createElement('span');
-          cw.className = 'cw';
-          cw.textContent = '\u{1F310}';
-          cw.title = n.path + ' is clearweb public';
-          row.append(cw);
-        }
+        if (n.share === 'clearweb') row.append(cwBadge(n.path));
         tabLink(row, 'page', n.path);
         rowMore(row, (n.dname || n.path.split('/').pop()) + '.' + kindExt(n.kind));   // 34-treemenu.js
       } else {
@@ -563,13 +565,7 @@
         if (n.path === curFolder) row.classList.add('cur');
         if (n.dname) row.lastChild.title = n.path;     // the label's tip
         if (n.path === 'conflicts') sysFlair(row, 'conflicts');
-        if (treeShare(n.path) === 'clearweb') {
-          const cw = document.createElement('span');
-          cw.className = 'cw';
-          cw.textContent = '\u{1F310}';
-          cw.title = n.path + ' is clearweb public';
-          row.append(cw);
-        }
+        if (treeShare(n.path) === 'clearweb') row.append(cwBadge(n.path));
         const add = document.createElement('a');
         add.className = 'addf';
         add.textContent = '+';

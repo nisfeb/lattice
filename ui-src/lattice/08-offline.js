@@ -19,6 +19,8 @@
   // save lands when the job ends, so the queue holds it and says so.
   let jobWait = false;
   const JOB_NOTE = 'a folder job is running, your save will land when it finishes';
+  const NOT_SAVED = 'NOT SAVED — this device cannot store offline edits. Copy your text '
+    + 'somewhere safe before closing this page.';
   // The persistent offline indicator. The status line reports EVENTS and the
   // next one overwrites it, so "saved offline" scrolls away while you are
   // still offline and still queueing. This reports the CONDITION and stays up
@@ -389,8 +391,7 @@
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
     const job = saveStalled();
     if (!queued) {
-      st('NOT SAVED — this device cannot store offline edits. Copy your text '
-        + 'somewhere safe before closing this page.', false);
+      st(NOT_SAVED, false);
       return false;
     }
     pageCache.delete(name);
@@ -445,11 +446,8 @@
     }
     await opPut({ ...rec, queuedAt: Date.now() });
     setDegraded(true);
-    st(rec.op === 'del'
-      ? 'deleted offline — ' + offCount + ' waiting to sync'
-      : rec.op === 'mkdir'
-        ? 'folder created offline — ' + offCount + ' waiting to sync'
-        : 'moved offline — ' + offCount + ' waiting to sync');
+    st(({ del: 'deleted', mkdir: 'folder created' }[rec.op] || 'moved')
+      + ' offline — ' + offCount + ' waiting to sync');
   }
 
   // know memories share the queue under a 'know:' prefix. Page names cannot
@@ -460,8 +458,7 @@
     const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
     const job = saveStalled();
     if (!queued) {
-      st('NOT SAVED — this device cannot store offline edits. Copy your text '
-        + 'somewhere safe before closing this page.', false);
+      st(NOT_SAVED, false);
       return false;
     }
     knowGen++;
@@ -584,14 +581,9 @@
           }
         } catch {}
         const alt = 'conflicts/offline-create-' + q.name.replace(/\//g, '-');
-        let two = null;
-        try {
-          two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
-            '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
-        } catch {}
         //  the preservation write is the only thing standing between the user
         //  and a lost document, so if it does not land the record stays queued
-        if (!(two && two.ok)) return false;
+        if (!await keepAside(q, alt)) return false;
         conflicts.push(alt);
         await offDel(q.name);
         st('offline create collided: ' + q.name + ' exists on the ship — your ' +
@@ -608,6 +600,14 @@
   // uploads, wrong for replay. One poisoned record would block the queue
   // forever. A rejected batch falls back to per-item saves so the bad record
   // is isolated and DROPPED (it can never apply; review gap 3).
+  // a queued body kept as a page of its own at `alt`; true once it landed
+  const keepAside = async (q, alt) => {
+    try {
+      const r = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
+        '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
+      return !!(r && r.ok);
+    } catch { return false; }
+  };
   async function drainEdits(edits, conflicts) {
     for (let i = 0; i < edits.length; i += 50) {
       const part = edits.slice(i, i + 50);
@@ -657,12 +657,7 @@
           // collision is; if that write fails the record stays queued.
           if (one && one.status === 409) {
             const alt = 'conflicts/offline-edit-' + q.name.replace(/\//g, '-');
-            let two = null;
-            try {
-              two = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
-                '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
-            } catch {}
-            if (!(two && two.ok)) return false;
+            if (!await keepAside(q, alt)) return false;
             conflicts.push(alt);
             await offDel(q.name);
             st('offline edit refused: ' + q.name + ', your version is kept at ' + alt, false);

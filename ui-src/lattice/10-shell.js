@@ -348,12 +348,7 @@
     status.style.color = ok ? '' : '#c0392b';
   };
   // stWork: a status that keeps spinning until the next plain st()
-  const stWork = (msg) => {
-    status.textContent = msg;
-    status.title = msg;
-    status.style.color = '';
-    spinner.classList.add('on');
-  };
+  const stWork = (msg) => { st(msg); spinner.classList.add('on'); };
   // ── busy: the one loading indicator ──────────────────────────────────────
   // A thin moving line along the top of the region that is waiting on the
   // ship (.lbusy in index.html): #center by default (an open phone drawer
