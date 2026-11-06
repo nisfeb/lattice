@@ -92,8 +92,11 @@
 
   //  block level. Deliberately a subset: headings, rules, fences, quotes,
   //  lists (including task lists), tables, paragraphs.
-  function mdToHtml(input) {
-    const lines = String(input == null ? '' : input).split('\n');
+  //  tasks: live boxes, each with data-line, its source line (base: where
+  //  this input starts, for a blockquote). Lines, not a count of boxes.
+  function mdToHtml(input, tasks, base = 0) {
+    //  CRLF: `.` stops at \r, so "(.*)$" failed on every line
+    const lines = String(input == null ? '' : input).split('\n').map((l) => l.replace(/\r$/, ''));
     const out = [];
     let i = 0;
     const listStack = [];
@@ -138,7 +141,7 @@
           q.push(lines[i].replace(/^\s*>\s?/, ''));
           i += 1;
         }
-        out.push('<blockquote>' + mdToHtml(q.join('\n')) + '</blockquote>');
+        out.push('<blockquote>' + mdToHtml(q.join('\n'), tasks, base + i - q.length) + '</blockquote>');
         continue;
       }
 
@@ -173,7 +176,7 @@
         let body = li[4];
         const task = body.match(/^\[([ xX])\]\s+(.*)$/);
         if (task) {
-          body = '<input type="checkbox" disabled'
+          body = '<input type="checkbox"' + (tasks ? ' data-line="' + (base + i) + '"' : ' disabled')
             + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(task[2]);
         } else body = mdInline(body);
         out.push('<li>' + body + '</li>');
@@ -198,6 +201,21 @@
     }
     closeLists(0);
     return out.join('\n');
+  }
+
+  //  a box click's edit: the offset of the char in the brackets on `line`,
+  //  or null if that line is no task in the clicked-from state (stale)
+  const TASK_RE = /^((?:[ \t]*>[ \t]?)*[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])\](?=\s)/;
+  function taskToggle(text, line, on) {
+    let at = 0;
+    for (let n = 0; n < line; n++) {
+      at = text.indexOf('\n', at) + 1;
+      if (!at) return null;
+    }
+    const end = text.indexOf('\n', at);
+    const m = TASK_RE.exec(text.slice(at, end < 0 ? text.length : end));
+    if (!m || (m[2] !== ' ') === !!on) return null;
+    return { at: at + m[1].length, ch: on ? 'x' : ' ' };
   }
 
   // ── local gemtext, for the live preview only ────────────────────────────
