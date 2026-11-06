@@ -260,10 +260,10 @@ async function suite(tag, page, shot, { zooms, widths }) {
     && Math.abs(L.dx) <= 1 && Math.abs(L.dw) <= 1 && L.ch === L.at, JSON.stringify(L));
   check(`${tag} the block wears the theme: text colour behind, background colour on the character`,
     L.bg === L.theme[0] && L.fg === L.theme[1] && /rgba\(0, 0, 0, 0\)|transparent/.test(L.caret), JSON.stringify(L));
-  const x0 = (await ev(() => document.querySelector('.vimcur').getBoundingClientRect().left));
+  const x0 = (await ev(() => (document.querySelector('.vimcur') || { getBoundingClientRect: () => ({ left: NaN }) }).getBoundingClientRect().left));
   await key('l');
   L = await look();
-  const x1 = await ev(() => document.querySelector('.vimcur').getBoundingClientRect().left);
+  const x1 = await ev(() => (document.querySelector('.vimcur') || { getBoundingClientRect: () => ({ left: NaN }) }).getBoundingClientRect().left);
   check(`${tag} l moves the block one character right`, x1 > x0 && Math.abs(L.dx) <= 1, `${x0} -> ${x1}`);
   for (const [k, back] of [['i', 'Escape'], ['a', 'Escape'], ['o', 'Escape'], ['A', 'Escape']]) {
     await key(k);
