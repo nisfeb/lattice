@@ -333,13 +333,17 @@ jobs:
           for f in scripts/*.sh scripts/lib/*.sh; do bash -n "$f"; done
           for f in scripts/writer-corpus/*.py; do python3 -m py_compile "$f"; done
       # the agent plugins (plugins/): they parse, their manifests are JSON,
+      # the Hermes plugin passes its fake-ship check (hermes-plugin-check.py),
       # and the Claude plugin's MCP server answers tools/list
       - name: agent plugins
         run: |
           node --check plugins/claude/server.mjs
           node --check plugins/claude/hooks/lattice-hook.mjs
           node --check plugins/claude/url-rule.mjs
+          node --check plugins/claude/hooks/skills-sync.mjs
+          node --check plugins/claude/import-skills.mjs
           python3 -m py_compile plugins/hermes/__init__.py
+          python3 scripts/hermes-plugin-check.py
           for f in .claude-plugin/marketplace.json plugins/claude/.claude-plugin/plugin.json plugins/claude/.mcp.json plugins/claude/hooks/hooks.json; do python3 -m json.tool "$f" >/dev/null; done
           printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node plugins/claude/server.mjs | grep -q memory_recall
       # Every pure (non-browser) harness, found by glob rather than a hand-kept
