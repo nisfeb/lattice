@@ -7,7 +7,7 @@
 // Env:    LATTICE_URL, LATTICE_COOKIE, CHROME   (as ui-matrix.mjs)
 // Never run against production: it publishes a throwaway page.
 
-import { shipEnv, launchBrowser, openPage, makeCheck, sleep } from './lib/harness.mjs';
+import { shipEnv, launchBrowser, openPage, makeCheck, sleep, waitFor } from './lib/harness.mjs';
 
 const env = shipEnv();
 const APP = env.app;
@@ -95,12 +95,14 @@ try {
   await page.evaluate((n) => document.querySelector(
     `#treelist a.pg[href$="name=${encodeURIComponent(n)}"]`).click(), OTHER);
   await wait((n) => document.querySelector('#treelist a.pg.cur')?.href.endsWith('name=' + encodeURIComponent(n)), OTHER);
-  await sleep(5000);
-  check('the open page keeps its own mode', (await mode()) === 'private');
+  //  the answer has landed once a row shows the globe, whichever row it is
   const cw = (n) => page.evaluate((n) => !!document.querySelector(
     `#treelist a.pg[href$="name=${encodeURIComponent(n)}"] .cw`), n);
-  check('the open page is not marked clearweb', !(await cw(OTHER)));
-  check('the page asked for is', await cw(PAGE));
+  await waitFor(async () => (await cw(PAGE)) || (await cw(OTHER)), 60000);
+  await sleep(500);
+  check('the page asked for is marked clearweb', await cw(PAGE));
+  check('the open page is not', !(await cw(OTHER)));
+  check('the open page keeps its own mode', (await mode()) === 'private');
 } catch (e) {
   check('step ' + step + ': ' + e.message.slice(0, 120), false);
 } finally {
