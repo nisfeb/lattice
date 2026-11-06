@@ -2673,8 +2673,14 @@
     ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
       (peep:io (rf up pdir %code) [%numb ~ ~])
     ?:  ?=(%| -.pe)  (send-err eyre-id 404 'no history')
+    ::  a revision a move carried is dated when it was saved (+rev-at:lk)
+    ;<  bo=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m
+      (born:fio (rf up pdir %code))
+    =/  at=(map @ud @da)
+      ?:  ?=(%| -.bo)  ~
+      (malt (turn p.bo |=([c=cass:clay tags=(set @t) *] [ud.c (rev-at:lk da.c tags)])))
     =/  revs=(list [ud=@ud da=@da])
-      %+  sort  (turn p.pe |=([c=cass:clay *] [ud.c da.c]))
+      %+  sort  (turn p.pe |=([c=cass:clay *] [ud.c (~(gut by at) ud.c da.c)]))
       |=([a=[ud=@ud da=@da] b=[ud=@ud da=@da]] (gth ud.a ud.b))
     %+  send-json  eyre-id
     %-  pairs:enjs:format
@@ -4580,6 +4586,30 @@
   ::  route, also behind the gate. The only unauthenticated surfaces (clearweb
   ::  /c/, public form POST /f/, PWA assets) dispatch above it.
       [%'GET' %content-search]
+    ::  ?q= is a whole query, tokenized here as the index was
+    ::  (+query-terms:li), one bucket peek per term, each row naming the
+    ::  term it matched. The omnibar asks this way. ?term= is one term.
+    ?:  (~(has by args) 'q')
+      =/  ts=(list @t)  (query-terms:li (trip (~(got by args) 'q')))
+      ;<  rows=(list json)  bind:m
+        =/  n  (fiber:fiber:nexus ,(list json))
+        =|  acc=(list (list json))
+        |-  ^-  form:n
+        ?~  ts  (pure:n (zing (flop acc)))
+        ;<  hits=(list [scope=@t key=@t tf=@ud])  bind:n  (index-look i.ts)
+        =/  rs=(list json)
+          %+  turn  hits
+          |=  [scope=@t key=@t tf=@ud]
+          a+~[s+scope s+key s+(scot %ud tf) s+i.ts]
+        $(ts t.ts, acc [rs acc])
+      %+  send-json  eyre-id
+      %-  pairs:enjs:format
+      :~  ['ok' b+&]
+          ['terms' a+(turn (query-terms:li (trip (~(got by args) 'q'))) |=(t=@t s+t))]
+          ['columns' a+(turn ~['scope' 'key' 'tf' 'term'] |=(c=@t s+c))]
+          ['count' (numb:enjs:format (lent rows))]
+          ['rows' a+rows]
+      ==
     =/  term=(unit @t)  (~(get by args) 'term')
     ?~  term  (send-err eyre-id 400 'missing term param')
     =/  nt=(unit @t)  (normalize-term:li (trip u.term))
@@ -4788,6 +4818,11 @@
     ?~  k  (send-err eyre-id 400 'missing key')
     =/  ko=(unit path)  (know-key u.k)
     ?~  ko  (send-err eyre-id 400 'invalid key')
+    ::  the writer refuses a delete that would land on a deleted memory
+    ::  still in the trash under the key (+apply %del), so say why here
+    ;<  tx=know-index:lk  bind:m  (read-index [%| 2 %& /know %trash])
+    ?:  (~(has by tx) u.ko)
+      (send-err eyre-id 409 'a deleted memory with this key is in the trash: restore it, or move this one to another key first')
     ;<  ~  bind:m  (poke-know [%del (spat u.ko)])
     (send-ok eyre-id)
   ::
@@ -5771,7 +5806,7 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   =/  tr=road:tarball  (rf root /know %terms)
-  ;<  tc=term-cache:lk  bind:m  (read-terms tr)
+  ;<  tc=term-cache:lk  bind:m  (read-terms tr (rf root /know %'terms-stem'))
   ::  each touched key, with the entry an import carries (so no read back)
   =/  ks=(list [k=path imp=(unit know-entry:lk)])
     %-  zing
@@ -5789,17 +5824,27 @@
       ==
     |=(t=@t (bind (know-key t) |=(p=path [p imp])))
   |-  ^-  form:m
-  ?~  ks  (put-file tr [/lattice %know-terms] tc)
+  ?~  ks
+    ;<  ~  bind:m  (put-file tr [/lattice %know-terms] tc)
+    (put-file (rf root /know %'terms-stem') [/ %ud] stem-ver:lk)
   ;<  e=(unit know-entry:lk)  bind:m
     ?^  imp.i.ks  (pure:(fiber:fiber:nexus ,(unit know-entry:lk)) imp.i.ks)
     (read-entry (entry-road up /know/vault k.i.ks))
   $(ks t.ks, tc ?~(e (~(del by tc) k.i.ks) (~(put by tc) k.i.ks (row-of:lk k.i.ks u.e))))
-::  +read-terms: the term cache, ~ when absent or undecodable.
+::  +read-terms: the term cache, ~ when absent or undecodable, or when
+::  its rows were stemmed by another rule set (`sr`, /know/terms-stem
+::  beside it, is not +stem-ver:lk). A row is checked against its entry's time
+::  and tags only, so a stemmer change would otherwise never reach it.
 ::
 ++  read-terms
-  |=  tr=road:tarball
+  |=  [tr=road:tarball sr=road:tarball]
   =/  m  (fiber:fiber:nexus ,term-cache:lk)
   ^-  form:m
+  ;<  sv=view:nexus  bind:m  (peek:fio sr ~)
+  ?.  ?&  ?=([%file *] sv)
+          =(`stem-ver:lk (mole |.(;;(@ud (sang-noun:tarball sang.sv)))))
+      ==
+    (pure:m ~)
   ;<  tv=view:nexus  bind:m  (peek:fio tr ~)
   ?.  ?=([%file *] tv)  (pure:m ~)
   (pure:m (fall (mole |.(!<(term-cache:lk (need-vase:tarball sang.tv)))) ~))
@@ -5812,11 +5857,16 @@
   =/  m  (fiber:fiber:nexus ,term-cache:lk)
   ^-  form:m
   =/  tr=road:tarball  (rf up /know %terms)
-  ;<  tc=term-cache:lk  bind:m  (read-terms tr)
+  ;<  tc=term-cache:lk  bind:m  (read-terms tr (rf up /know %'terms-stem'))
   =/  [chg=? cur=term-cache:lk]  (refresh:lk ~(tap by es) tc)
   ;<  *  bind:m
     ?.  chg  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
-    (over-as-soft:io tr [[/lattice %know-terms] cur] [/lattice %know-terms])
+    ;<  r=(unit tang)  bind:(fiber:fiber:nexus ,(unit tang))
+      (over-as-soft:io tr [[/lattice %know-terms] cur] [/lattice %know-terms])
+    ?^  r  (pure:(fiber:fiber:nexus ,(unit tang)) r)
+    %^  over-as-soft:io  (rf up /know %'terms-stem')
+      [[/ %ud] stem-ver:lk]
+    [/ %ud]
   (pure:m cur)
 ::  +read-keys: the agent keys, ~ when absent or undecodable.
 ::
@@ -6087,16 +6137,20 @@
   =/  pl  (save-plan key rnow bnow u.ko b.i.items a.i.items old near)
   ?:  ?=(%| -.pl)  $(items t.items, outs [(batch-err k.i.items p.pl) outs])
   ::  later items see this one: as the entry under its key, and as a
-  ::  candidate unless +listed would hide it from this caller
+  ::  candidate unless +listed would hide it from this caller. The body
+  ::  it replaced leaves the pool, or a later item that resembles that
+  ::  old body is refused as a duplicate of text no longer stored.
   =/  e=know-entry:lk
     (merge-save:lk old ?>(?=(%save -.act.p.pl) body.act.p.pl) bnow)
+  =/  rest=(list [path know-entry:lk])
+    (skip pool |=([k=path *] =(k u.ko)))
   %=  $
     items  t.items
     acts   [act.p.pl acts]
     outs   [(batch-ok k.i.items out.p.pl) outs]
     es     (~(put by es) u.ko e)
     tc     (~(put by tc) u.ko (row-of:lk u.ko e))
-    pool   ?:(&(?=(^ key) (sensitive:lk e)) pool [[u.ko e] pool])
+    pool   ?:(&(?=(^ key) (sensitive:lk e)) rest [[u.ko e] rest])
   ==
 ::  +batch-ok, +batch-err: one /know-save-batch result, named by its key
 ++  batch-ok
@@ -7581,11 +7635,23 @@
     ::
     ::  Guarded, because cull-soft on an absent dir veto-crashes the writer,
     ::  and most pages never had a comment.
+    ::  The held comet comments too: approving one filed it under the dead
+    ::  path, for the next page there to inherit.
     =/  cdir=path  (weld /comments pax.act)
     ;<  cex=?  bind:m  (peek-exists:fio (rv up cdir))
-    ?.  cex  (pure:m ~)
-    ;<  *  bind:m  (cull-soft:io (rv up cdir))
+    ;<  *  bind:m
+      ?.  cex  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
+      (cull-soft:io (rv up cdir))
+    =/  hdir=path  (weld /comments-held pax.act)
+    ;<  hex=?  bind:m  (peek-exists:fio (rv up hdir))
+    ?.  hex  (pure:m ~)
+    ;<  *  bind:m  (cull-soft:io (rv up hdir))
     (pure:m ~)
+      %carry-state
+    (carry-state from.act to.act)
+      %carry
+    ;<  ~  bind:m  (carry-hist from.act to.act)
+    (carry-comments now from.act to.act)
       %share
     ::  a page's own choice: it no longer takes its folder's
     ;<  ~  bind:m  (drop-via pax.act)
@@ -8738,6 +8804,9 @@
       ^-  (unit cass:clay)
       ?:(tomb ~ `c)
     |=([a=cass:clay b=cass:clay] (gth ud.a ud.b))
+  ::  each revision's time by +rev-at:lk: one a move carried keeps its own
+  =/  at=(map @ud @da)
+    (malt (turn p.bo |=([c=cass:clay tags=(set @t) *] [ud.c (rev-at:lk da.c tags)])))
   ::  keep=0 means drop the lot (used by delete). Guard it explicitly. The
   ::  general path below computes (dec keep), and dec 0 crashes, which would
   ::  have taken the writer down on every page delete.
@@ -8753,12 +8822,16 @@
   ::  continuous editing session would collapse to a single revision and you
   ::  could never step back. Anchoring on the revision BEFORE prev keeps one
   ::  revision per window no matter how fast the writes arrive.
+  ::
+  ::  And prev must sit inside one window of the head too. A prev that was
+  ::  the head across a pause is the end of a session, the state the page
+  ::  held until now. Dropping it on the next day's first save left only
+  ::  the session's opening revision to restore.
   =/  victim=(unit cass:clay)
     ?.  ?=([* * * *] live)  ~
-    =/  prev=cass:clay    i.t.live
-    =/  anchor=cass:clay  i.t.t.live
-    ?:  (lth (sub da.prev da.anchor) window)  `prev
-    ~
+    =/  vn=(unit @ud)
+      (coalesce-victim:lk (turn live |=(c=cass:clay [ud.c (~(gut by at) ud.c da.c)])) window)
+    ?~(vn ~ `i.t.live)
   ;<  ~  bind:m
     ?~  victim  (pure:m ~)
     (lose:fio road [%pick (sy ~[u.victim])])
@@ -8899,29 +8972,11 @@
     ;<  ~  bind:m  (ensure-dirs up /[base.dst] (weld rel.dst i.rels))
     (put-file (rf root ddir %code) [/lattice %page] newcode)
   $(rels t.rels)
-::  +rewrite-wikilinks: rewrite [[from]] and [[from/...]] references in code
-::  text to the new name, the bare-name form wikilinks use (+rewrite-root
-::  only covers /slash-prefixed hoon path literals). Boundary-checked so a
-::  [[fromX]] page is never clobbered by a move of [[from]].
-::
-++  rewrite-wikilinks
-  |=  [hay=tape from=tape to=tape]
-  ^-  tape
-  ?~  from  hay
-  =/  ndl=tape  (weld "[[" from)
-  =/  nl=@ud  (lent ndl)
-  |-  ^-  tape
-  =/  i  (find ndl hay)
-  ?~  i  hay
-  =/  pre=tape  (scag u.i hay)
-  =/  aft=tape  (slag (add u.i nl) hay)
-  ?.  ?|(?=(~ aft) =(']' i.aft) =('/' i.aft))
-    (weld (weld pre ndl) $(hay aft))
-  (weld (weld pre (weld "[[" to)) $(hay aft))
 ::  +move-pages: move a page or a whole folder subtree under /page from src to
 ::  dst. Copies each page's code (share mode carried over, wikilink
 ::  self-references rewritten like template instantiation rewrites its root)
-::  and each link grub as it is, then deletes the source. Runs in a REQUEST fiber with one writer poke per
+::  and each link grub as it is, with each page's state, history and
+::  comments (%carry-state, %carry), then deletes the source. Runs in a REQUEST fiber with one writer poke per
 ::  action. The same reasoning as +instantiate-template: a batch make in one
 ::  writer transaction arms dep-keeps that never establish. Returns ~ when
 ::  nothing exists at src. `count is the number of pages and links moved (0 =
@@ -9005,6 +9060,7 @@
       dacts
       ducts
       gacts
+      ^-  (list eval-action:le)  ~[[%carry-state from to]]
     ==
   =/  count=@ud  (lent lacts)
   ::  `late`: the catch-up pass has run (below)
@@ -9022,6 +9078,7 @@
       ?:  late  (pure:(fiber:fiber:nexus ,[(list path) ball:tarball]) [~ bl])
       (move-catch-up sdir bl)
     ?^  pages.cu  $(rels pages.cu, bl bl.cu, late &)
+    ;<  ~  bind:m  (poke-eval [%carry from to])
     ;<  ~  bind:m  (poke-eval [%del from])
     ;<  ~  bind:m  (record-move from to)
     ;<  ~  bind:m  (move-grants from `to)
@@ -9035,7 +9092,7 @@
   =/  dst=path  (weld to i.rels)
   =/  newcode=@t
     %-  crip
-    %^  rewrite-wikilinks
+    %^  rewrite-wikilinks:gfm
         (rewrite-root (trip code) from-str to-str)
       from-bare
     to-bare
@@ -9048,6 +9105,198 @@
     ^-  (list eval-action:le)
     ?~(own ~ [%share dst u.own]~)
   $(todo acts, rels t.rels, count ?:(late count +(count)))
+::  +carried-grubs: a page's or folder's own state that goes with it on a
+::  move, by grub name and mark. The rest is carried by the move's own
+::  actions (code, name, share, sensitive mark, grants, links) or remade
+::  where it lands (cmd, deps, err, show).
+++  carried-grubs
+  ^-  (list [nom=@ta =blot:tarball])
+  :~  [%data [/lattice %eval-data]]
+      [%comment-on [/lattice %comment-flag]]
+      [%comet-mode [/ %noun]]
+      [%forms-on [/lattice %comment-flag]]
+      [%forms-cfg [/lattice %eval-data]]
+      [%forms-use [/lattice %eval-data]]
+  ==
+::  +carry-state: %carry-state. Each carried grub of the pages and folders
+::  at or under /page/<from> is written at the same place under /page/<to>
+::  unless one is there already (a move resumed). Before the pages are
+::  made there, so a stateful page's first run reads its own data, and a
+::  published page's flags are in place when it publishes.
+++  carry-state
+  |=  [from=path to=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page from)) ~)
+  ?.  ?=([%ball *] dv)  (pure:m ~)
+  =/  all=(list path)
+    =/  ps=(list path)  [~ (turn (collect-tree ball.dv ~) head)]
+    ~(tap in (~(gas in *(set path)) ps))
+  |-  ^-  form:m
+  ?~  all  (pure:m ~)
+  =/  pf  (ball-fils ball.dv i.all)
+  =/  got=(list [nom=@ta =blot:tarball sang=sang:tarball gain=?])
+    %+  murn  carried-grubs
+    |=  [nom=@ta =blot:tarball]
+    ^-  (unit [nom=@ta =blot:tarball sang=sang:tarball gain=?])
+    =/  g  (~(get by pf) nom)
+    ?~  g  ~
+    `[nom blot sang.u.g gain.u.g]
+  ?~  got  $(all t.all)
+  =/  ddir=path  :(weld /page to i.all)
+  ;<  ~  bind:m  (ensure-dirs up /page (weld to i.all))
+  ;<  ~  bind:m
+    =/  gs=(list [nom=@ta =blot:tarball sang=sang:tarball gain=?])  got
+    |-  ^-  form:m
+    ?~  gs  (pure:m ~)
+    =/  r=road:tarball  (rf up ddir nom.i.gs)
+    ;<  ex=?  bind:m  (peek-exists:fio r)
+    ?:  ex  $(gs t.gs)
+    =/  bk=bask:tarball  [blot.i.gs (sang-noun:tarball sang.i.gs)]
+    ;<  ~  bind:m  ?:(gain.i.gs (over-gained:fio r bk) (over:fio r bk))
+    $(gs t.gs)
+  $(all t.all)
+::  +carry-hist: %carry's history half. Each page at or under /page/<from>
+::  gets its revisions at its new place (+carry-page-hist).
+++  carry-hist
+  |=  [from=path to=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page from)) ~)
+  ?.  ?=([%ball *] dv)  (pure:m ~)
+  =/  rels=(list path)
+    (murn (collect-tree ball.dv ~) |=([pax=path page=?] ?:(page `pax ~)))
+  =|  done=@ud
+  |-  ^-  form:m
+  ?~  rels  (pure:m ~)
+  ;<  ~  bind:m  (tree-yield done 2)
+  ;<  ~  bind:m
+    %+  carry-page-hist
+      (rf up :(weld /page from i.rels) %code)
+    (rf up :(weld /page to i.rels) %code)
+  $(rels t.rels, done +(done))
+::  +carry-page-hist: the source's revisions, oldest first and each tagged
+::  with the time it was saved (+rev-tag:lk), written at `dst` under the
+::  copy the move made there, which is then written again on top. There is
+::  no way to hand a revision to another road, so this is a replay. The
+::  move's own copy (and a catch-up copy) go, so the history reads as the
+::  source's with the moved head on top. A destination that already holds
+::  a tagged revision was carried before (a resumed move) and is left.
+++  carry-page-hist
+  |=  [src=road:tarball dst=road:tarball]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  sb=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:fio src)
+  ?:  ?=(%| -.sb)  (pure:m ~)
+  ;<  db=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:fio dst)
+  ?:  ?=(%| -.db)  (pure:m ~)
+  =/  dlive  (skip p.db |=([* * tomb=?] tomb))
+  ?:  (lien dlive |=([c=cass:clay t=(set @t) *] !=(da.c (rev-at:lk da.c t))))
+    (pure:m ~)
+  ?~  dlive  (pure:m ~)
+  ::  the source's live revisions, oldest first. Its head is the one the
+  ::  move copied; the older ones are what the destination lacks.
+  =/  slive=(list [c=cass:clay t=(set @t)])
+    %+  sort
+      (murn p.sb |=([c=cass:clay t=(set @t) tomb=?] ?:(tomb ~ `[c t])))
+    |=([a=[c=cass:clay *] b=[c=cass:clay *]] (lth ud.c.a ud.c.b))
+  ?.  ?=([* * *] slive)  (pure:m ~)
+  ;<  pe=(each (list [c=cass:clay s=sage:tarball]) tang)  bind:m
+    (peep:io src [%numb ~ ~])
+  ?:  ?=(%| -.pe)  (pure:m ~)
+  =/  bodies=(map @ud @t)
+    %-  malt
+    %+  murn  p.pe
+    |=  [c=cass:clay s=sage:tarball]
+    =/  b=(unit @t)  (mole |.(;;(@t (sang-noun:tarball (sage-to-sang:tarball s)))))
+    ?~(b ~ `[ud.c u.b])
+  ;<  hv=view:nexus  bind:m  (peek:fio dst ~)
+  ?.  ?=([%file *] hv)  (pure:m ~)
+  =/  hb=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.hv))))
+  ?~  hb  (pure:m ~)
+  =/  stop=[c=cass:clay t=(set @t)]  (rear slive)
+  =/  olds=(list [c=cass:clay t=(set @t)])  (snip `(list [c=cass:clay t=(set @t)])`slive)
+  =/  drop=(set cass:clay)  (~(gas in *(set cass:clay)) (turn dlive |=([c=cass:clay *] c)))
+  |-  ^-  form:m
+  ?~  olds
+    ;<  ~  bind:m  (over-gained:fio dst [/lattice %page] u.hb)
+    ;<  ~  bind:m  (tag:io dst ~ (sy ~[(rev-tag:lk (rev-at:lk da.c.stop t.stop))]))
+    (lose:fio dst [%pick drop])
+  =/  b=(unit @t)  (~(get by bodies) ud.c.i.olds)
+  ?~  b  $(olds t.olds)
+  ;<  ~  bind:m  (over-gained:fio dst [/lattice %page] u.b)
+  ;<  ~  bind:m  (tag:io dst ~ (sy ~[(rev-tag:lk (rev-at:lk da.c.i.olds t.i.olds))]))
+  $(olds t.olds)
+::  +carry-comments: %carry's comments half. The comments and held comet
+::  comments filed under /comments/<from> and /comments-held/<from> are
+::  filed again under <to>, each page's public thread is laid at its new
+::  name, and the inbox items naming a page at or under `from` name it
+::  where it went. The %del that follows culls the old ones. A remote
+::  ship's own record of a comment it sent names the old page, and is
+::  its own: a comment it sends there after the move is refused as a
+::  comment on a page that does not exist.
+++  carry-comments
+  |=  [now=@da from=path to=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  ~  bind:m  (copy-filed up /comments from to)
+  ;<  ~  bind:m  (copy-filed up /comments-held from to)
+  ;<  our=@p  bind:m  bowl-our
+  ;<  items=(list [id=@ta i=item:ln])  bind:m  notify-items
+  =/  moved  (move-items:ln items our (crip (pax-str from)) (crip (pax-str to)))
+  ;<  ~  bind:m
+    |-  ^-  form:m
+    ?~  moved  (pure:m ~)
+    ;<  ~  bind:m  (put-file (rf up /notify/items id.i.moved) [/ %noun] i.i.moved)
+    $(moved t.moved)
+  ;<  ~  bind:m  ?~(moved (pure:m ~) (notify-stamp now))
+  ::  each page's public thread at its new name. The old name's goes with
+  ::  its unpublish in the %del.
+  ;<  cv=view:nexus  bind:m  (peek:fio (rv up (weld /comments to)) ~)
+  ?.  ?=([%ball *] cv)  (pure:m ~)
+  =/  pgs=(list path)  (filed-dirs ball.cv ~)
+  |-  ^-  form:m
+  ?~  pgs  (pure:m ~)
+  ;<  ~  bind:m  (put-pub-thread up (weld to i.pgs))
+  $(pgs t.pgs)
+::  +filed-dirs: the dirs in a ball that hold grubs, relative to it
+++  filed-dirs
+  |=  [b=ball:tarball rel=path]
+  ^-  (list path)
+  =/  kids=(list path)
+    %-  zing
+    %+  turn  ~(tap by dir.b)
+    |=([nom=@ta kid=ball:tarball] (filed-dirs kid (weld rel /[nom])))
+  ?~  fil.b  kids
+  ?:  =(~ contents.u.fil.b)  kids
+  [rel kids]
+::  +copy-filed: every comment under base/<from> (/comments or
+::  /comments-held) filed again at the same place under base/<to>
+++  copy-filed
+  |=  [up=@ud base=path from=path to=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  cv=view:nexus  bind:m  (peek:fio (rv up (weld base from)) ~)
+  ?.  ?=([%ball *] cv)  (pure:m ~)
+  =/  dirs=(list path)  (filed-dirs ball.cv ~)
+  |-  ^-  form:m
+  ?~  dirs  (pure:m ~)
+  =/  fils  (ball-fils ball.cv i.dirs)
+  =/  ddir=path  :(weld base to i.dirs)
+  ;<  ~  bind:m  (ensure-dirs up base (weld to i.dirs))
+  ;<  ~  bind:m
+    =/  fs=(list [id=@ta =sang:tarball])
+      (turn ~(tap by fils) |=([id=@ta =sang:tarball *] [id sang]))
+    |-  ^-  form:m
+    ?~  fs  (pure:m ~)
+    =/  c=(unit comment:lc)  (mole |.(;;(comment:lc (sang-noun:tarball sang.i.fs))))
+    ?~  c  $(fs t.fs)
+    ;<  ~  bind:m  (put-file (rf up ddir id.i.fs) [/lattice %comment] u.c)
+    $(fs t.fs)
+  $(dirs t.dirs)
 ::  +move-catch-up: the pages under `sdir` (a move's source, /page/<from>)
 ::  whose code is not what `bl` read, and the ball they are in now
 ++  move-catch-up
@@ -9098,6 +9347,9 @@
 ::  +move-job-road / +move-job-at / +move-job-set: the folder move under
 ::  way (/move-job), as [from to at], ~ once it is done (+fs-move)
 ++  move-job-road  (rf up / %'move-job')
+::  +move-job-ttl: how long a note left part way still holds saves out of
+::  its source (+move-guard) and lets the same move finish (+fs-move)
+++  move-job-ttl  ~m10
 ++  move-job-at
   =/  m  (fiber:fiber:nexus ,(unit [from=path to=path at=@da]))
   ^-  form:m
@@ -9141,7 +9393,7 @@
   ;<  now=@da  bind:m  bowl-now
   =/  mid=(unit path)
     ?~  job  ~
-    ?:  (gth (sub now (min now at.u.job)) ~m10)  ~
+    ?:  (gth (sub now (min now at.u.job)) move-job-ttl)  ~
     hit
   ?^  mid
     %-  pure:m
@@ -10819,8 +11071,11 @@
   ::  then answered 503): its destination is its own half-made copy, so
   ::  it is finished, never refused as a clobber. Every step of
   ::  +move-pages lands the same way twice, and the source goes last.
+  ::  Only while the note is fresh (+move-resumes:ls): an old one is a
+  ::  leftover, and the move is checked as a new one.
   ;<  job=(unit [from=path to=path at=@da])  bind:m  move-job-at
-  ?:  ?~(job | &(=(pf from.u.job) =(pt to.u.job)))
+  ;<  now=@da  bind:m  bowl-now
+  ?:  (move-resumes:ls job pf pt now move-job-ttl)
     ;<  n=(unit @ud)  bind:m  (move-run pf pt)
     (pure:m &+(fall n 0))
   ::  never clobber: a collision replaced the destination silently (and
@@ -16743,7 +16998,7 @@
     ::  being pasted here, and contains no single quote or backslash so it needs
     ::  no cord escaping.
     %-  trip
-    '<script>(function(){var p=new URLSearchParams(location.search);var q=(p.get("url")||"").trim();var out=document.getElementById("results");if(!q){out.textContent="";return}var words=q.toLowerCase().split(/[^a-z0-9]+/).filter(function(w){return w.length>=2});if(!words.length){out.textContent="Type at least one search word (2+ letters).";return}function get(u){return fetch(u).then(function(r){return r.ok?r.json():{rows:[]}}).catch(function(){return{rows:[]}})}var calls=words.map(function(w){return get("/apps/lattice/content-search?term="+encodeURIComponent(w))});Promise.all(calls).then(function(res){var hits={};function bump(scope,key,tf){var k=scope+"|"+key;if(!hits[k])hits[k]={scope:scope,key:key,terms:0,tf:0};hits[k].terms++;hits[k].tf+=tf;}res.forEach(function(j){var c=j.columns||[];var rows=j.rows||[];var si=c.indexOf("scope"),ki=c.indexOf("key"),ti=c.indexOf("tf");rows.forEach(function(row){var s=row[si],k=row[ki];if(!s||!k)return;bump(s,k,parseInt(row[ti],10)||0);});});var list=Object.keys(hits).map(function(k){return hits[k]});list.sort(function(a,b){return b.terms-a.terms||b.tf-a.tf});out.textContent="";out.className="";if(!list.length){out.className="muted";out.textContent="Nothing matches that.";return}var ul=document.createElement("ul");ul.className="qlist";list.slice(0,50).forEach(function(h){var href;if(h.scope==="knowledge"){href="/apps/lattice/app?view=know&name="+encodeURIComponent(h.key)}else if(h.scope==="private"){href="/apps/lattice/app?name="+encodeURIComponent(h.key)}else{href="/apps/lattice?url="+encodeURIComponent("urb://"+OUR+"/"+h.key)}var li=document.createElement("li");var a=document.createElement("a");a.href=href;var b=document.createElement("span");b.className="qbadge "+h.scope;b.textContent=h.scope;var n=document.createElement("span");n.className="qname";n.textContent=h.key;var s=document.createElement("span");s.className="qprev";s.textContent=h.terms+(h.terms>1?" terms":" term")+", tf "+h.tf;a.appendChild(b);a.appendChild(n);a.appendChild(s);li.appendChild(a);ul.appendChild(li);});out.appendChild(ul);}).catch(function(){out.className="muted";out.textContent="Search is unavailable.";});})();</script>'
+    '<script>(function(){var p=new URLSearchParams(location.search);var q=(p.get("url")||"").trim();var out=document.getElementById("results");if(!q){out.textContent="";return}fetch("/apps/lattice/content-search?q="+encodeURIComponent(q)).then(function(r){if(!r.ok)throw r;return r.json()}).then(function(j){if(!(j.terms||[]).length){out.textContent="Type at least one search word (3+ letters).";return}var hits={};function bump(scope,key,tf){var k=scope+"|"+key;if(!hits[k])hits[k]={scope:scope,key:key,terms:0,tf:0};hits[k].terms++;hits[k].tf+=tf;}var c=j.columns||[];var si=c.indexOf("scope"),ki=c.indexOf("key"),ti=c.indexOf("tf");(j.rows||[]).forEach(function(row){var s=row[si],k=row[ki];if(!s||!k)return;bump(s,k,parseInt(row[ti],10)||0);});var list=Object.keys(hits).map(function(k){return hits[k]});list.sort(function(a,b){return b.terms-a.terms||b.tf-a.tf});out.textContent="";out.className="";if(!list.length){out.className="muted";out.textContent="Nothing matches that.";return}var ul=document.createElement("ul");ul.className="qlist";list.slice(0,50).forEach(function(h){var href;if(h.scope==="knowledge"){href="/apps/lattice/app?view=know&name="+encodeURIComponent(h.key)}else if(h.scope==="private"){href="/apps/lattice/app?name="+encodeURIComponent(h.key)}else{href="/apps/lattice?url="+encodeURIComponent("urb://"+OUR+"/"+h.key)}var li=document.createElement("li");var a=document.createElement("a");a.href=href;var b=document.createElement("span");b.className="qbadge "+h.scope;b.textContent=h.scope;var n=document.createElement("span");n.className="qname";n.textContent=h.key;var s=document.createElement("span");s.className="qprev";s.textContent=h.terms+(h.terms>1?" terms":" term")+", tf "+h.tf;a.appendChild(b);a.appendChild(n);a.appendChild(s);li.appendChild(a);ul.appendChild(li);});out.appendChild(ul);}).catch(function(){out.className="muted";out.textContent="Search is unavailable.";});})();</script>'
   ==
 ::  +clip-paste-html: the landing page the send-page bookmarklet opens. Its only
 ::  job is to be same-origin with the api: it receives the html over
@@ -18737,29 +18992,26 @@
     ?:  =('' body.act)  (refuse "a save: the body is empty: {(spud key)}")
     =/  road=road:tarball  (entry-road up vbase key)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry road)
-    ::  reviving a soft-deleted key: %del culled the live grub, so `old` is ~ and
-    ::  a fresh merge-save would drop the tags+vector the trashed copy still holds.
-    ::  Read the trash-vault entry too and fall back to it, so a re-save recovers
-    ::  them (the trash tomb is then cleared below, as for any re-save).
-    ;<  tomb=(unit know-entry:lk)  bind:m
-      ?^(old (pure:(fiber:fiber:nexus ,(unit know-entry:lk)) ~) (read-entry (entry-road up tvbase key)))
-    =/  e=know-entry:lk  (merge-save:lk ?^(old old tomb) body.act now)
+    ::  a save at a key with no live entry is a new memory, whether or not
+    ::  a deleted one sits in the trash under the key. It used to take the
+    ::  trash copy's tags and vector and cull it, which lost the deleted
+    ::  memory for good, and the pre-delete revisions (a cull tombs only
+    ::  the head) came back under the new entry, readable through
+    ::  /know-history by any key that may read the new one. So the new
+    ::  entry starts fresh, its road's leftover revisions go first, and
+    ::  the trash copy stays for the owner to restore (after moving the
+    ::  new one aside: a restore never lands over a live entry).
+    =/  e=know-entry:lk  (merge-save:lk old body.act now)
     ::  a live entry already has its dirs: one existence peek per key
     ::  segment, on every re-save, for nothing
     ;<  ~  bind:m  ?^(old (pure:m ~) (ensure-dirs up vbase key))
+    ;<  ~  bind:m  ?^(old (pure:m ~) (prune-hist road 0 ~s0))
     ;<  ~  bind:m  (put-file road [/lattice %know-entry] e)
     ;<  ~  bind:m  (gain:fio road %.y)
     ::  memories are gained too, and autosave saves one revision per typing
     ::  pause, the same ceiling pages get, or the vault grows forever.
     ::  know entries are a user-facing history surface too, so same window
-    ;<  ~  bind:m  (prune-hist road know-keep history-window)
-    ::  a re-saved key leaves trash; cull the orphaned trash-vault GRUB (not just
-    ::  the index row) so a later %restore can't resurrect the stale tomb over the
-    ::  live entry.
-    ;<  trash=know-index:lk  bind:m  (read-index tx)
-    ?.  (~(has by trash) key)  (pure:m ~)
-    ;<  *  bind:m  (cull-soft:io (entry-road up tvbase key))
-    (put-file tx [/lattice %know-index] (~(del by trash) key))
+    (prune-hist road know-keep history-window)
   ::
       %del
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
@@ -18773,6 +19025,11 @@
     =/  troad=road:tarball  (entry-road up tvbase key)
     ;<  old=(unit know-entry:lk)  bind:m  (read-entry road)
     ?~  old  (refuse "a delete: there is no such note: {(spud key)}")
+    ::  a memory saved at the key of one in the trash is a new one (%save),
+    ::  and the trash holds one memory a key: deleting the new one would
+    ::  write over the deleted one, the copy its owner may still restore
+    ;<  held=?  bind:m  (peek-exists:fio troad)
+    ?:  held  (refuse "a delete: a deleted note is in the trash at {(spud key)}")
     ::  MOVE to the trash vault: write the trash copy first (duplicate-on-crash,
     ::  never lose), then cull the live grub, then swing the index rows.
     ;<  ~  bind:m  (ensure-dirs up tvbase key)
@@ -18804,9 +19061,17 @@
     ;<  liv=(unit know-entry:lk)  bind:m  (read-entry troad)
     ?^  liv  (refuse "a move: the target exists: {(spud tk)}")
     ::  make target first (duplicate-on-crash, never lose), cull source after.
+    ::  A cull tombs only the head and keeps every stored revision (the page
+    ::  %del arm says the same), and the next write at that road picks the
+    ::  old ones up again. So the target's leftover revisions (an entry once
+    ::  there that moved away) go before it is written, and the source's go
+    ::  before its cull, or the next memory saved at the old key shows this
+    ::  one's old bodies in its history, to any key that may read it.
+    ;<  ~  bind:m  (prune-hist troad 0 ~s0)
     ;<  ~  bind:m  (ensure-dirs up vbase tk)
     ;<  ~  bind:m  (put-file troad [/lattice %know-entry] u.old)
     ;<  ~  bind:m  (gain:fio troad %.y)
+    ;<  ~  bind:m  (prune-hist froad 0 ~s0)
     ;<  ~  bind:m  (cull:fio froad)
     ::  if the target key was previously trashed, cull the orphan trash grub +
     ::  row so a later %restore can't resurrect it over the moved-in entry.
