@@ -5800,7 +5800,7 @@
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   =/  tr=road:tarball  (rf root /know %terms)
-  ;<  tc=term-cache:lk  bind:m  (read-terms tr)
+  ;<  tc=term-cache:lk  bind:m  (read-terms tr (rf root /know %'terms-stem'))
   ::  each touched key, with the entry an import carries (so no read back)
   =/  ks=(list [k=path imp=(unit know-entry:lk)])
     %-  zing
@@ -5818,17 +5818,27 @@
       ==
     |=(t=@t (bind (know-key t) |=(p=path [p imp])))
   |-  ^-  form:m
-  ?~  ks  (put-file tr [/lattice %know-terms] tc)
+  ?~  ks
+    ;<  ~  bind:m  (put-file tr [/lattice %know-terms] tc)
+    (put-file (rf root /know %'terms-stem') [/ %ud] stem-ver:lk)
   ;<  e=(unit know-entry:lk)  bind:m
     ?^  imp.i.ks  (pure:(fiber:fiber:nexus ,(unit know-entry:lk)) imp.i.ks)
     (read-entry (entry-road up /know/vault k.i.ks))
   $(ks t.ks, tc ?~(e (~(del by tc) k.i.ks) (~(put by tc) k.i.ks (row-of:lk k.i.ks u.e))))
-::  +read-terms: the term cache, ~ when absent or undecodable.
+::  +read-terms: the term cache, ~ when absent or undecodable, or when
+::  its rows were stemmed by another rule set (`sr`, /know/terms-stem
+::  beside it, is not +stem-ver:lk). A row is checked against its entry's time
+::  and tags only, so a stemmer change would otherwise never reach it.
 ::
 ++  read-terms
-  |=  tr=road:tarball
+  |=  [tr=road:tarball sr=road:tarball]
   =/  m  (fiber:fiber:nexus ,term-cache:lk)
   ^-  form:m
+  ;<  sv=view:nexus  bind:m  (peek:fio sr ~)
+  ?.  ?&  ?=([%file *] sv)
+          =(`stem-ver:lk (mole |.(;;(@ud (sang-noun:tarball sang.sv)))))
+      ==
+    (pure:m ~)
   ;<  tv=view:nexus  bind:m  (peek:fio tr ~)
   ?.  ?=([%file *] tv)  (pure:m ~)
   (pure:m (fall (mole |.(!<(term-cache:lk (need-vase:tarball sang.tv)))) ~))
@@ -5841,11 +5851,16 @@
   =/  m  (fiber:fiber:nexus ,term-cache:lk)
   ^-  form:m
   =/  tr=road:tarball  (rf up /know %terms)
-  ;<  tc=term-cache:lk  bind:m  (read-terms tr)
+  ;<  tc=term-cache:lk  bind:m  (read-terms tr (rf up /know %'terms-stem'))
   =/  [chg=? cur=term-cache:lk]  (refresh:lk ~(tap by es) tc)
   ;<  *  bind:m
     ?.  chg  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
-    (over-as-soft:io tr [[/lattice %know-terms] cur] [/lattice %know-terms])
+    ;<  r=(unit tang)  bind:(fiber:fiber:nexus ,(unit tang))
+      (over-as-soft:io tr [[/lattice %know-terms] cur] [/lattice %know-terms])
+    ?^  r  (pure:(fiber:fiber:nexus ,(unit tang)) r)
+    %^  over-as-soft:io  (rf up /know %'terms-stem')
+      [[/ %ud] stem-ver:lk]
+    [/ %ud]
   (pure:m cur)
 ::  +read-keys: the agent keys, ~ when absent or undecodable.
 ::

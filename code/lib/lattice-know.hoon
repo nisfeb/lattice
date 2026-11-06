@@ -174,18 +174,52 @@
 ::  +stem: plurals and the commonest suffixes off, so releases, released and
 ::  releasing meet release. Cheaper than Porter, and on the eval it was the
 ::  difference between 38 and 40.
+::
+::  Two passes. The first takes one suffix off. The second evens out the
+::  ending the first can leave, so the bare word and its inflections meet:
+::  a final e goes (release and releas-ed), a final y reads as i (policy
+::  and polic-ies), and a doubled consonant left by -ed or -ing is undone
+::  (stopp-ed). Without it release stemmed to release and released to
+::  releas, which never met. +stem-ver names this rule set: the term cache
+::  is rebuilt when it changes.
+++  stem-ver  ^-(@ud 2)
 ++  stem
   |=  w=tape
   ^-  tape
   =/  n=@ud  (lent w)
-  ?:  (lth n 5)  w
+  ?:  (lth n 4)  w
   =/  ends  |=(x=tape =(x (slag (sub n (lent x)) w)))
-  ?:  (ends "ies")  (weld (scag (sub n 3) w) "y")
-  ?:  (ends "sses")  (scag (sub n 2) w)
-  ?:  &((ends "ing") (gth n 6))  (scag (sub n 3) w)
-  ?:  &((ends "ed") (gth n 5))  (scag (sub n 2) w)
-  ?:  &((ends "s") !(ends "ss") !(ends "us"))  (scag (dec n) w)
-  w
+  =/  cut   |=(k=@ud (scag (sub n k) w))
+  =/  [s=tape vb=?]
+    ?:  (ends "sses")  [(cut 2) |]
+    ?:  &((ends "ies") (gth n 4))  [(weld (cut 3) "i") |]
+    ?:  ?&  (gth n 4)
+            ?|((ends "xes") (ends "ches") (ends "shes") (ends "zzes"))
+        ==
+      [(cut 2) |]
+    ?:  &((ends "ing") (gth n 6))  [(cut 3) &]
+    ?:  &((ends "ed") (gth n 5))  [(cut 2) &]
+    ?:  ?&  (ends "s")  !(ends "ss")  !(ends "us")  !(ends "is")
+        ==
+      [(cut 1) |]
+    [w |]
+  (stem-tail s vb)
+::  +stem-tail: the second pass of +stem over `s`. `vb` when a verb ending
+::  (-ed, -ing) came off.
+++  stem-tail
+  |=  [s=tape vb=?]
+  ^-  tape
+  =/  n=@ud  (lent s)
+  ?:  (lth n 4)  s
+  =/  z=@tD  (rear s)
+  =/  y=@tD  (snag (sub n 2) s)
+  ?:  &(=('e' z) (gth n 4))  (snip s)
+  ?:  =('y' z)  (snoc (snip s) 'i')
+  ?:  ?&  vb  =(y z)
+          !?=(?(%'l' %'s' %'z' %'a' %'e' %'i' %'o' %'u') z)
+      ==
+    (snip s)
+  s
 ::  +front: an entry body's front matter (`name: value` lines between two
 ::  `---` lines at the very top) and the text after it. The tools keep
 ::  provenance there (author, source, created, verified, superseded-by), so
@@ -878,4 +912,22 @@
   ?.  (lth (gap d.prev d.anchor) window)  ~
   ?.  (lth (gap d.top d.prev) window)  ~
   `n.prev
+::  +rev-tag / +rev-at: a revision's own time. A move copies a page's
+::  history to its new name one revision at a time, so each copy is dated
+::  the move. It is tagged with the time it was first saved, and the
+::  history list and the prune read that rather than the copy's date.
+++  rev-tag
+  |=  d=@da
+  ^-  @t
+  (cat 3 'at:' (scot %da d))
+++  rev-at
+  |=  [d=@da tags=(set @t)]
+  ^-  @da
+  =/  ts=(list @t)  ~(tap in tags)
+  |-  ^-  @da
+  ?~  ts  d
+  ?.  =('at:' (end [3 3] i.ts))  $(ts t.ts)
+  =/  t=(unit @da)  (slaw %da (rsh [3 3] i.ts))
+  ?~  t  $(ts t.ts)
+  u.t
 --

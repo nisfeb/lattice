@@ -55,7 +55,7 @@
 ++  test-terms
   ;:  weld
     %+  expect-eq
-      !>(`(list @t)`~['release' 'ricsul-bilwyt' 'ricsul' 'bilwyt' 'ship'])
+      !>(`(list @t)`~['releas' 'ricsul-bilwyt' 'ricsul' 'bilwyt' 'ship'])
     !>((terms 'Releases of ~ricsul-bilwyt, the Ship!'))
     ::  a key reads as its whole path and its segments
     (expect-eq !>(`(list @t)`~['user/ai-model' 'user' 'ai' 'model']) !>((terms '/user/ai-models')))
@@ -66,11 +66,52 @@
     (expect-eq !>("follow") !>((stem "following")))
     (expect-eq !>("follow") !>((stem "follows")))
     (expect-eq !>("class") !>((stem "classes")))
-    (expect-eq !>("policy") !>((stem "policies")))
     (expect-eq !>("status") !>((stem "status")))
     (expect-eq !>("glass") !>((stem "glass")))
     (expect-eq !>("ship") !>((stem "ship")))
     (expect-eq !>("used") !>((stem "used")))
+  ==
+::  +stem: a word and its inflections meet, -e words included. Each row is
+::  a set of words that must all stem alike.
+++  test-stem-meets
+  ;:  weld
+    (expect-eq !>((stem "release")) !>((stem "releases")))
+    (expect-eq !>((stem "release")) !>((stem "released")))
+    (expect-eq !>((stem "release")) !>((stem "releasing")))
+    (expect-eq !>((stem "follow")) !>((stem "follows")))
+    (expect-eq !>((stem "follow")) !>((stem "followed")))
+    (expect-eq !>((stem "follow")) !>((stem "following")))
+    (expect-eq !>((stem "policy")) !>((stem "policies")))
+    (expect-eq !>((stem "movie")) !>((stem "movies")))
+    (expect-eq !>((stem "copy")) !>((stem "copies")))
+    (expect-eq !>((stem "agree")) !>((stem "agreed")))
+    (expect-eq !>((stem "stop")) !>((stem "stops")))
+    (expect-eq !>((stem "stop")) !>((stem "stopped")))
+    (expect-eq !>((stem "run")) !>((stem "runs")))
+    (expect-eq !>((stem "run")) !>((stem "running")))
+    (expect-eq !>((stem "box")) !>((stem "boxes")))
+    (expect-eq !>((stem "match")) !>((stem "matches")))
+    (expect-eq !>((stem "cache")) !>((stem "caches")))
+    (expect-eq !>((stem "note")) !>((stem "notes")))
+    (expect-eq !>((stem "play")) !>((stem "plays")))
+    (expect-eq !>((stem "play")) !>((stem "played")))
+    (expect-eq !>((stem "key")) !>((stem "keys")))
+  ==
+::  +stem leaves apart what only looks inflected
+++  test-stem-apart
+  ;:  weld
+    (expect-eq !>("dress") !>((stem "dressed")))
+    (expect-eq !>("fall") !>((stem "falling")))
+    (expect-eq !>("analysis") !>((stem "analysis")))
+    (expect-eq !>("status") !>((stem "status")))
+    (expect-eq !>("class") !>((stem "class")))
+  ==
+::  +rev-at: a moved revision reads as the time it was first saved
+++  test-rev-at
+  ;:  weld
+    (expect-eq !>(~2026.1.1) !>((rev-at ~2026.2.2 (sy ~[(rev-tag ~2026.1.1)]))))
+    (expect-eq !>(~2026.2.2) !>((rev-at ~2026.2.2 ~)))
+    (expect-eq !>(~2026.2.2) !>((rev-at ~2026.2.2 (sy ~['at:junk' 'x']))))
   ==
 ::  +front / +with-front: front matter round-trips byte for byte, and a body
 ::  without it passes through.
