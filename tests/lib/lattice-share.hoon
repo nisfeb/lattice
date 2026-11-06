@@ -478,5 +478,7 @@
     (expect-eq !>(~[/f]) !>((turn (fold-hit:ls fs nec /apps/lattice/page/f/a/code) |=(f=fold:ls rel.f))))
     (expect-eq !>(~) !>((fold-hit:ls fs nec /apps/lattice/page/fx/a/code)))
     (expect-eq !>(~) !>((fold-hit:ls fs zod /apps/lattice/page/f/a/code)))
+    ::  a page named b/page/f/a is not under /f
+    (expect-eq !>(~) !>((fold-hit:ls fs nec /apps/lattice/page/b/page/f/a/code)))
   ==
 --
