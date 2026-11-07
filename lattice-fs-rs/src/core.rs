@@ -1147,9 +1147,12 @@ fn now_millis() -> u128 {
 
 /// A name from the kernel as a page name segment. Names are UTF-8: one that
 /// is not is refused (EILSEQ), never turned into U+FFFD, which would make
-/// two different names the same page.
+/// two different names the same page. And NFC: macOS and some input methods
+/// hand over `é` decomposed (e + U+0301), which otherwise names a second
+/// page that looks exactly like the first.
 fn fs_name(name: &OsStr) -> Result<String, i32> {
-    name.to_str().map(str::to_string).ok_or(libc::EILSEQ)
+    let s = name.to_str().ok_or(libc::EILSEQ)?;
+    Ok(icu_normalizer::ComposingNormalizerBorrowed::new_nfc().normalize(s).into_owned())
 }
 
 fn join(parent: &str, name: &str) -> String {
@@ -3473,7 +3476,13 @@ mod tests {
     fn a_name_that_is_not_utf8_is_refused() {
         use std::os::unix::ffi::OsStrExt;
         assert_eq!(fs_name(OsStr::from_bytes(b"caf\xe9.md")), Err(libc::EILSEQ));
-        assert_eq!(fs_name(OsStr::new("café.md")), Ok("café.md".to_string()));
+        assert_eq!(fs_name(OsStr::new("caf\u{e9}.md")), Ok("caf\u{e9}.md".to_string()));
+    }
+
+    #[test]
+    fn a_decomposed_name_is_the_composed_one() {
+        assert_eq!(fs_name(OsStr::new("cafe\u{301}.md")), Ok("caf\u{e9}.md".to_string()));
+        assert_eq!(fs_name(OsStr::new("plain.md")), Ok("plain.md".to_string()));
     }
 
     #[test]

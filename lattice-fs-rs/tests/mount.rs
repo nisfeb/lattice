@@ -584,3 +584,20 @@ fn a_name_that_is_not_utf8_never_becomes_a_page() {
         assert_eq!(read_to_string(&dir.join("ok.md")), "fine\n");
     });
 }
+
+/// A name typed decomposed (e + U+0301, as macOS spells it) is the same file
+/// as the composed one, not a second page that looks identical.
+#[test]
+fn a_decomposed_name_finds_the_composed_page() {
+    let ship = Ship::with(&[("ok", "md", "fine\n")], &[]);
+    let s = ship.clone();
+    with_mount("nfc", &ship, 10, move |dir| {
+        fs::write(dir.join("cafe\u{301}.txt"), "one\n").unwrap();
+        assert_eq!(read_to_string(&dir.join("caf\u{e9}.txt")), "one\n");
+        fs::write(dir.join("caf\u{e9}.txt"), "two\n").unwrap();
+        assert_eq!(read_to_string(&dir.join("cafe\u{301}.txt")), "two\n");
+        let mut pages: Vec<String> = s.pages.lock().unwrap().keys().cloned().collect();
+        pages.sort();
+        assert_eq!(pages, vec!["caf\u{e9}".to_string(), "ok".to_string()]);
+    });
+}
