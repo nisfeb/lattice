@@ -82,17 +82,18 @@ share f read >/dev/null
 wait-for "1: folder shared, listed on B" 60 listed f/dir-index
 is-mode f/p read "1: folder share grants the plain page"
 is-mode f/s none "1: folder share does not grant the sensitive page"
-# the index A keeps for B, read as A's own file
-abs=$(A_ "$A/share-groups" | jq -r --arg g "$BG" --arg t "/page/$T/f/dir-index" \
+# the index A keeps for B, read as A's own file (the code road's
+# folder, with dir-index for its name)
+code=$(A_ "$A/share-groups" | jq -r --arg g "$BG" --arg t "/page/$T/f/p" \
   '.[] | select(.name==$g) | .peek[] | select(endswith($t))' | head -1)
-if [ -n "$abs" ]; then
-  body=$(A_ -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=$abs" "$A/browse-file")
+if [ -n "$code" ]; then
+  body=$(A_ -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=${code%/p}/dir-index" "$A/browse-file")
   grep -q "Plain page" <<<"$body" && ok "1: the index lists the plain page" ||
     fail "1: the index lists the plain page" "${body:0:200}"
   grep -q "Secret title\|/$T/f/s" <<<"$body" && fail "1: the index omits the sensitive page" "${body:0:300}" ||
     ok "1: the index omits the sensitive page"
 else
-  fail "1: B holds the folder's index road"
+  fail "1: B holds the plain page's road"
 fi
 # a page made in the shared folder, then marked sensitive, loses B's grant
 mkpage f/n "New page"
@@ -131,7 +132,8 @@ members inv-fam | grep -qx "~bus" && ok "3: other members stay" || fail "3: othe
 share m/p read >/dev/null
 wait-for "3: page shared, listed on B" 60 listed m/p/code
 A_ -o /dev/null -X POST "$A/ban?ship=$BSHIP"
-is-mode m/p none "3: a banned ship holds nothing"
+members "$BG" | grep -qx "$BSHIP" && fail "3: a banned ship is in no group" ||
+  ok "3: a banned ship is in no group"
 wait-for "3: B hears the ban's %del" 60 unlisted m/p/code
 A_ -o /dev/null -X POST "$A/unban?ship=$BSHIP"
 

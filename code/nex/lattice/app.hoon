@@ -1543,7 +1543,7 @@
     (fall (mole |.(;;(shared:ls (sang-noun:tarball sang.sn)))) ~)
   =/  ok=shared:ls  (clean-shared:ls raw)
   ?:  =((lent ok) (lent raw))  (pure:m raw)
-  %-  (slog leaf+"lattice: {<(sub (lent raw) (lent ok))>} shared-with-me entries dropped, bad mode or path" ~)
+  %-  (say 2 ~[leaf+"lattice: {<(sub (lent raw) (lent ok))>} shared-with-me entries dropped, bad mode or path"])
   (pure:m ok)
 ::  +link-peek: one read of a linked page on its host, with a 5s deadline:
 ::  [kind body rev], or ~ when the host is offline or no longer grants it.
@@ -12113,7 +12113,7 @@
   =/  l=(list [g=@t f=path md=@t])  (grant-orphans:ls idx recs)
   |-  ^-  form:m
   ?~  l  (pure:m ~)
-  %-  (slog leaf+"lattice: folder grant to {(trip g.i.l)} on {(spud f.i.l)} had no note, noted" ~)
+  %-  (say 2 ~[leaf+"lattice: folder grant to {(trip g.i.l)} on {(spud f.i.l)} had no note, noted"])
   ;<  ~  bind:m  (folder-grant-do f.i.l g.i.l md.i.l)
   $(l t.l)
 ::  +ug-dirfold-paths: the roads a UI can render (absolute dir folds), plus a
@@ -12313,7 +12313,7 @@
     ?:  (host-full:ls cur u.src u.pax)  `"over {<host-cap:ls>} entries"
     ~
   ?^  over
-    %-  (slog leaf+"lattice: share notice from {<(need src)>} dropped, {u.over}" ~)
+    %-  (say 2 ~[leaf+"lattice: share notice from {<(need src)>} dropped, {u.over}"])
     (pure:m ~)
   ?-    -.u.na
       %add
@@ -18932,7 +18932,7 @@
   ^-  (map @t @t)
   =/  ok=(map @t @t)  (clean-modes:ls gs)
   ?:  =(~(wyt by ok) ~(wyt by gs))  gs
-  %-  (slog leaf+"lattice: grant modes other than read or edit dropped: {<(~(dif by gs) ok)>}" ~)
+  %-  (say 2 ~[leaf+"lattice: grant modes other than read or edit dropped: {<(~(dif by gs) ok)>}"])
   ok
 ::  +fils-grants: a folder's ship grants (`share-grants`), group to mode
 ++  fils-grants
@@ -19456,7 +19456,7 @@
     $(l t.l, done +(done))
   ::  over the cap, a revoke is sent once, as every notice was before
   ?:  (gte waiting del-cap:ls)
-    %-  (slog leaf+"lattice: revoke queue full, {<who.i.l>} told once" ~)
+    %-  (say 2 ~[leaf+"lattice: revoke queue full, {<who.i.l>} told once"])
     ;<  ~  bind:m  (share-notice-send known who.i.l na.i.l)
     $(l t.l, done +(done))
   ;<  ~  bind:m  (put-file dr [/ %noun] `del-job:ls`[who.i.l pax])
@@ -19487,7 +19487,7 @@
   ?:  |(?=(^ r) ?=(~ w))
     ;<  ~  bind:m
       ?^  r  (pure:m ~)
-      %-  (slog leaf+"lattice: revoke to {<who.job>} unacked after {<+(tries)>} tries, dropped" ~)
+      %-  (say 2 ~[leaf+"lattice: revoke to {<who.job>} unacked after {<+(tries)>} tries, dropped"])
       (pure:m ~)
     ;<  *  bind:m  (cull-soft:io me)
     (pure:m ~)
