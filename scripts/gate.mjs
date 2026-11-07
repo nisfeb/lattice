@@ -247,7 +247,7 @@ const shipSuites = allShip.filter((n) => !ONLY || ONLY.includes(n));
 const TWOS = [['two-ship-links.sh', 'bash'], ['two-ship-save.sh', 'bash'], ['two-ship-comments.sh', 'bash'],
   ['two-ship-notify.sh', 'bash'], ['ui-links.mjs', 'node'], ['ui-shares-live.mjs', 'node'], ['ui-follow-live.mjs', 'node'],
   ['two-ship-dirshare.py', 'python3'], ['two-ship-urb-read.sh', 'bash'], ['two-ship-forum.sh', 'bash'], ['two-ship-share-race.sh', 'bash'], ['two-ship-group-share.sh', 'bash'],
-  ['two-ship-hand-share.sh', 'bash']];
+  ['two-ship-hand-share.sh', 'bash'], ['two-ship-invariants.sh', 'bash']];
 //  A lane is a ~1.2 GB pier copy and a serf with a 2 GB loom that runs
 //  near 3 GB: no more lanes than suites, pinned performance cores (4), or
 //  about a third of the free memory in GB.
@@ -519,7 +519,7 @@ async function runTwo(a) {
     { timeout: 300 });
     await hi(a, b); await hi(b, a);
     const env = { LATTICE_URL: a.url, LATTICE_COOKIE: a.cookie.raw, A_URL: a.url, A_COOKIE: a.cookie.raw,
-      B_URL: b.url, B_COOKIE: b.cookie.raw, B_PIER: b.pier, VERE, A_SOCK: a.pier + '/.urb/dev/grubbery/lattice/fs' };
+      B_URL: b.url, B_COOKIE: b.cookie.raw, B_PIER: b.pier, B_SET: TWO, VERE, A_SOCK: a.pier + '/.urb/dev/grubbery/lattice/fs' };
     //  --only naming a two-ship suite runs just the ones it names
     const named = ONLY && TWOS.some(([n]) => ONLY.includes(n));
     for (const [name, cmd] of TWOS.filter(([n]) => !named || ONLY.includes(n))) {
