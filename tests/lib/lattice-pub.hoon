@@ -265,11 +265,39 @@
   =/  hw=rev-high:lp  (rev-high-put:lp ~ '/a' 5)
   =.  hw  (rev-high-put:lp hw '/a' 3)
   ;:  weld
-    (expect-eq !>(5) !>((~(got by hw) '/a')))
+    (expect-eq !>(5) !>(high:(~(got by hw) '/a')))
     (expect-eq !>(|) !>((rev-rises:lp hw '/a' 5)))
     (expect-eq !>(|) !>((rev-rises:lp hw '/a' 4)))
     (expect-eq !>(&) !>((rev-rises:lp hw '/a' 6)))
     (expect-eq !>(&) !>((rev-rises:lp hw '/b' 1)))
+  ==
+::  +rev-off: publish (vault cass 1, 2, 3), unpublish at 3, publish
+::  again: the vault grub is made anew at cass 1, and the revision it is
+::  published at climbs above 3, and goes on climbing
+++  test-rev-off-republish
+  =/  nam=@t  '/a'
+  =|  hw=rev-high:lp
+  ::  first publish and two edits: no offset
+  =/  o1=@ud  (rev-off:lp hw nam 0)
+  =.  hw  (rev-high-put:lp (rev-off-put:lp hw nam o1) nam (add 1 o1))
+  =.  hw  (rev-high-put:lp hw nam (add 2 (rev-off:lp hw nam 1)))
+  =.  hw  (rev-high-put:lp hw nam (add 3 (rev-off:lp hw nam 2)))
+  ::  unpublish: the delete records the revision it culled
+  =.  hw  (rev-high-put:lp hw nam 3)
+  ::  publish again: the vault grub's prior cass is 0
+  =/  o2=@ud  (rev-off:lp hw nam 0)
+  =/  r2=@ud  (add 1 o2)
+  =.  hw  (rev-off-put:lp hw nam o2)
+  =/  rises=?  (rev-rises:lp hw nam r2)
+  =.  hw  (rev-high-put:lp hw nam r2)
+  ::  and an edit after it
+  =/  r3=@ud  (add 2 (rev-off:lp hw nam 1))
+  ;:  weld
+    (expect-eq !>(0) !>(o1))
+    (expect-eq !>(4) !>(r2))
+    (expect-eq !>(&) !>(rises))
+    (expect-eq !>(5) !>(r3))
+    (expect-eq !>(&) !>((rev-rises:lp hw nam r3)))
   ==
 ::  +salt-switch: a resumed migration keeps the salt it already wrote
 ++  test-salt-switch

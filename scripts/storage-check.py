@@ -7,9 +7,8 @@ usage: storage-check.py <base-url> <raw-cookie-file>
            from the published pages when it is missing (before its loader
            row every reload dropped it)
   seen     /notify/seen survives a reload
-  revs     a page unpublished and published again is published again; its
-           revision does NOT climb today (a known fault, recorded in
-           /faults.json as pub-rev-fell), so that is reported, not failed
+  revs     a page unpublished and published again is published again, at a
+           revision above the one it had, so under a new id
   corrupt  a corrupt /notify/seen is kept aside under /corrupt before the
            writer replaces it
 
@@ -100,8 +99,8 @@ def main():
     lat('POST', '/page-share?name=storchk/t1&mode=shared')
     r2 = until(lambda: revs().get('/storchk/t1'), 60)
     check('revs: published again', bool(r2), revs())
-    if r1 and r2 and r2['rev'] <= r1['rev']:
-        print(f"note  revs: rev {r2['rev']} after {r1['rev']}: the revision did not climb (pub-rev-fell)")
+    check('revs: the revision climbs', bool(r1 and r2) and r2['rev'] > r1['rev'], (r1, r2))
+    check('revs: under a new id', bool(r1 and r2) and r2['id'] != r1['id'], (r1, r2))
 
     # --- seen, and a corrupt seen kept aside ---
     st, _ = lat('POST', '/notify-read?all=1')

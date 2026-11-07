@@ -10390,7 +10390,10 @@
   =/  c=(unit cass:clay)  (~(get by wfil) %gmi)
   =/  r=@ud  ?~(c 0 ud.u.c)
   ?:  =(0 r)  (pure:m lrev)
-  ?.  (gth r lrev)  (pure:m lrev)
+  ::  a new cass, not only a higher one: a page unpublished and published
+  ::  again has its vault grub made anew, at cass 1, below the lrev the
+  ::  delete left. Its listed rev still climbs (+rev-off:lp).
+  ?:  =(r lrev)  (pure:m lrev)
   ::  the wave names a revision, the publisher's list names its id: read
   ::  the list fresh, since the cached one predates the wave
   =/  nam=@t  (spat (page-rel rel))
@@ -10398,8 +10401,8 @@
   |-
   ;<  revs=(map @t [rev=@ud id=@uv])  bind:m  (fresh-peer-revs pub)
   =/  ent=(unit [rev=@ud id=@uv])  (~(get by revs) nam)
-  ::  DELETE: a list that answered without the page. lrev advances to r so
-  ::  a later re-publish (cass r+1 and up) still registers. An empty list
+  ::  DELETE: a list that answered without the page. lrev advances to r,
+  ::  and a later publish again (any other cass) still registers. An empty list
   ::  is no answer (unreachable reads the same), so it retries instead.
   ?:  &(?=(~ ent) !=(~ revs))  (pure:m r)
   ;<  kp=(unit [p=@tas q=@t])  bind:m
@@ -19672,7 +19675,10 @@
     ::  the latest published rev, read BEFORE the vault cull appends its
     ::  [%temp ~] hist entry. It names the body binding the cull-farm below
     ::  retracts.
-    ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
+    ::  plus the name's offset: the rev it was published at (+rev-off:lp)
+    ;<  vrev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
+    ;<  hw=rev-high:lp  bind:m  (read-rev-high root)
+    =/  rev=@ud  (add vrev (rev-off:lp hw (page-name:lp key) vrev))
     ;<  ~  bind:m  (put-rev-high root (page-name:lp key) rev)
     ::  cull tombs the grub (gain=%.y keeps the body in born history). Drop its
     ::  index row so it's no longer live. No trash row. Pages have no restore.
@@ -19806,8 +19812,27 @@
     =/  f  ?~(fil.ball.vv ~ (~(get by contents.u.fil.ball.vv) nom.u.or))
     ?~  f  |
     &(=([/lattice %page] p.sang.u.f) =(body (sang-noun:tarball sang.u.f)))
-  ::  the rev this publish binds: the vault grub's cass after the write
-  =/  rev=@ud  ?:(same prev-rev +(prev-rev))
+  ::  the rev this publish binds: the vault grub's cass after the write,
+  ::  plus the name's offset (+rev-off:lp). An unpublish culls the vault
+  ::  grub, so a publish again makes it anew at cass 1; the offset keeps
+  ::  its revision above every one the name was published or deleted at,
+  ::  so it names a fresh id: never a spur the delete culled (gall parks
+  ::  its case, so a grow there is never read) nor one a peer holds for
+  ::  the old text. A peer only ever sees a higher revision, which every
+  ::  reader takes (+sub-apply-wave), and the listed rev stays at or above
+  ::  the cass the keep's wave carries.
+  =/  vrev=@ud  ?:(same prev-rev +(prev-rev))
+  ;<  hw=rev-high:lp  bind:m  (read-rev-high root)
+  =/  nam=@t  (page-name:lp key)
+  =/  top=@ud  high:(~(gut by hw) nam [high=0 off=0])
+  =/  off=@ud
+    =/  o=@ud  (rev-off:lp hw nam prev-rev)
+    ::  a guard: a changed body that would still not climb (the record
+    ::  lost or behind) goes above the high-water all the same. The same
+    ::  body may stay at the rev it is bound at.
+    ?:  |(same (rev-rises:lp hw nam (add o vrev)))  o
+    (sub +(top) vrev)
+  =/  rev=@ud  (add off vrev)
   ;<  pv=view:nexus  bind:m  (peek-shallow:fio (rv root /pub) ~)
   =/  pfil=(map @ta [=sang:tarball gain=? bang=(unit tang)])
     ?.  ?=([%ball *] pv)  ~
@@ -19828,21 +19853,12 @@
   ::  there is nothing to do. A changed body is always a new cass, so a
   ::  new spur whose case 1 is this body.
   ?:  =(`rev was)  (pure:m |)
-  ::  a page's revision should climb past every one it was ever published
-  ::  or deleted at (+rev-rises:lp): a lower one names an id gall culled,
-  ::  or one a peer holds for older text. It does not after an unpublish
-  ::  and a publish again (the vault grub is made anew, at rev 1), so this
-  ::  records the fault for the owner. Refusing would leave the page
-  ::  unpublished; the fix (an offset per name) changes what peers read
-  ::  and is proposed, not made, here.
-  ;<  hw=rev-high:lp  bind:m  (read-rev-high root)
+  ::  the offset is recorded BEFORE the vault write: once the grub is
+  ::  made, a publish redone after a crash reads a nonzero cass and takes
+  ::  the recorded offset, so it must already be there
   ;<  ~  bind:m
-    ?:  (rev-rises:lp hw (page-name:lp key) rev)  (pure:n ~)
-    =/  top=@ud  (~(gut by hw) (page-name:lp key) 0)
-    %:  fault  'pub-rev-fell'  1
-      "lattice: a publish of {(spud key)} at rev {<rev>} is not above rev {<top>}"
-      ~
-    ==
+    ?:  =(off off:(~(gut by hw) nam [high=0 off=0]))  (pure:n ~)
+    (put-file (rf root / %'rev-high') [/ %noun] (rev-off-put:lp hw nam off))
   ::  a page published before has its vault dirs: only a first publish
   ::  makes them, a peek a segment
   ;<  ~  bind:m
@@ -19856,8 +19872,8 @@
   ::  it: one lose of every revision below `rev`, the newest, which is
   ::  what +prune-hist with keep 1 comes to, without its +born read
   ;<  ~  bind:m
-    ?:  |(lag =(0 rev))  (pure:n ~)
-    (lose:fio road [%numb ~ `(dec rev)])
+    ?:  |(lag =(0 vrev))  (pure:n ~)
+    (lose:fio road [%numb ~ `(dec vrev)])
   ::  as +read-pub-index
   =/  ix=pub-index:lp
     =/  r  (~(get by pfil) %index)
@@ -19902,7 +19918,7 @@
   ::  spur exactly once. A re-cull would crash in +farm-top's %gw lookup
   ::  on the emptied plot (+cull-farm:io). A pre-mesa page whose old rev
   ::  was never grown culls as a no-op (farm-top finds nothing listed).
-  =/  prev=@ud  (fall was prev-rev)
+  =/  prev=@ud  (fall was ?:(=(0 prev-rev) 0 (add off prev-rev)))
   ;<  ~  bind:m
     ?:  |(=(0 prev) =(prev rev))  (pure:n ~)
     (pub-cull (page-spur salt inner prev))
@@ -20227,7 +20243,9 @@
   ::  hand-edited) must skip, not kill the whole backfill.
   =/  body=(unit @t)  (mole |.(!<(@t (need-vase:tarball sang.seen))))
   ?~  body  (pub-regrow-loop salt t.keys cnt revs)
-  ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
+  ;<  vrev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
+  ;<  hw=rev-high:lp  bind:m  (read-rev-high up)
+  =/  rev=@ud  (add vrev (rev-off:lp hw (page-name:lp i.keys) vrev))
   ;<  mode=view-mode:pg  bind:m  (published-mode (snip (strip-pub:lp i.keys)))
   ;<  ~  bind:m  (grow-pub-page salt i.keys u.body rev mode)
   ::  a page is about a third of a second: yield every other (+tree-yield),
