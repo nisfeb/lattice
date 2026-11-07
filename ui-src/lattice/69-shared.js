@@ -68,6 +68,15 @@
     document.body.appendChild(t);
     setTimeout(() => t.remove(), 8000);
   }
+  // the x at a row's end (the follow list's too, 69x-follow.js)
+  function rmX(title, fn) {
+    const x = document.createElement('span');
+    x.className = 'swrm';
+    x.textContent = '×';
+    x.title = title;
+    x.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(); };
+    return x;
+  }
   //  Take an entry off the list, after a confirm. Nothing is deleted:
   //  the page is theirs, and their grant stays as it is. The ×, the tree's
   //  menu and its Delete key (34-treemenu.js) all come here.

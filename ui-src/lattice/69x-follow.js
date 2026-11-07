@@ -107,15 +107,6 @@
     };
     return ix;
   }
-  // the x at a row's end
-  function rmX(title, fn) {
-    const x = document.createElement('span');
-    x.className = 'swrm';
-    x.textContent = '×';
-    x.title = title;
-    x.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(); };
-    return x;
-  }
   // one page of a folder `rel` on `host`, by its title, bold while new
   function foldPage(host, rel, p, depth, key, open) {
     const a = document.createElement('a');

@@ -41,6 +41,12 @@ cleanup() {
   A_ -o /dev/null -X POST "$A/share-group-del?name=$GX"
   for n in g1 g2 h1 h2 f; do A_ -o /dev/null -X POST "$A/page-del?name=$T/$n"; done
   A_ -o /dev/null -X POST "$A/page-del?name=$T"
+  # the 300 pages take A a while to delete. A is the gate's base ship,
+  # whose state later runs snapshot, so wait until they are gone.
+  for _ in $(seq 1 180); do
+    curl -s -m 30 -H "$AK" "$A/page-tree" | grep -q "\"$T" || break
+    sleep 10
+  done
   B_ "$B/shared-with-me" | jq -r --arg h "$ASHIP" --arg t "/page/$T/" \
     '.[] | select(.host==$h and (.path|contains($t))) | .path' |
   while read -r pa; do

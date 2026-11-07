@@ -7974,6 +7974,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     document.body.appendChild(t);
     setTimeout(() => t.remove(), 8000);
   }
+  function rmX(title, fn) {
+    const x = document.createElement('span');
+    x.className = 'swrm';
+    x.textContent = '×';
+    x.title = title;
+    x.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(); };
+    return x;
+  }
   async function removeShared(it) {
     const kind = swmDir(it.path) ? 'folder' : 'page';
     const what = 'remove ' + it.host + '/' + sharedName(it.path) + ' from shared with me?\n'
@@ -8271,14 +8279,6 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       browseIn(ix.href);
     };
     return ix;
-  }
-  function rmX(title, fn) {
-    const x = document.createElement('span');
-    x.className = 'swrm';
-    x.textContent = '×';
-    x.title = title;
-    x.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(); };
-    return x;
   }
   function foldPage(host, rel, p, depth, key, open) {
     const a = document.createElement('a');
