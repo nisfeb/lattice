@@ -77,7 +77,7 @@ B_ -o /dev/null -X POST "$B/comment-remote?ship=$ASHIP&page=$P/pub" --data "body
 B_ -o /dev/null -X POST "$B/forum-remote/$ASHIP/$BRD/1/comment" --data "body=reply+from+B"
 
 j=$(B_ -X POST "$B/key-mint" -H 'content-type: application/json' --data-binary \
-  "{\"name\":\"urb-read\",\"by\":\"two-ship-urb-read\",\"scope\":{\"memory\":\"none\",\"pages\":{\"some\":{\"read\":[\"/$P\"],\"write\":[]}},\"web\":{\"all\":null},\"sensitive\":false}}")
+  "{\"name\":\"urb-read\",\"by\":\"two-ship-urb-read-$$\",\"scope\":{\"memory\":\"none\",\"pages\":{\"some\":{\"read\":[\"/$P\"],\"write\":[]}},\"web\":{\"all\":null},\"sensitive\":false}}")
 KEY=$(jq -r .key.id <<<"$j"); TOK=$(jq -r .token <<<"$j")
 [ -n "$TOK" ] && [ "$TOK" != null ] || { fail "B mints a key" "$j"; exit 1; }
 
@@ -154,7 +154,7 @@ is "B saves a memory"               200 "$(code -H "$BK" -X POST "$B/know-save?k
 BASE=$(B_ "$B/streams" | jq -r .base)
 [ -n "$BASE" ] && [ "$BASE" != null ] || fail "B's base from /streams"
 j=$(B_ -X POST "$B/key-mint" -H 'content-type: application/json' --data-binary \
-  '{"name":"urb-web","by":"two-ship-urb-read-web","scope":{"memory":"none","pages":{"all":"none"},"web":{"all":null},"sensitive":false}}')
+  "{\"name\":\"urb-web\",\"by\":\"two-ship-urb-read-web-$$\",\"scope\":{\"memory\":\"none\",\"pages\":{\"all\":\"none\"},\"web\":{\"all\":null},\"sensitive\":false}}")
 WKEY=$(jq -r .key.id <<<"$j"); WTOK=$(jq -r .token <<<"$j")
 kc() { curl -s -m 60 -o /dev/null -w '%{http_code}' -G -H "Authorization: Bearer $1" "${@:2}"; }
 kb() { curl -s -m 60 -G -H "Authorization: Bearer $1" "${@:2}"; }
