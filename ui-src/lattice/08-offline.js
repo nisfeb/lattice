@@ -12,6 +12,25 @@
   // the pre-edit body over a queued edit. The edit looked lost, and the next
   // autosave would queue the OLD body back (review gap 1 in the design doc).
   let degraded = false;      // a save failed like the ship was unreachable
+  // This window, for the ship (?by=, so the history prune never folds one
+  // window's revision into another's) and for the queue: a queued record
+  // names the window that queued it, and carries a sequence number from
+  // this window's own counter. Order and identity come from those, never
+  // from the wall clock, which can step back.
+  const winId = Math.random().toString(36).slice(2, 10);
+  let offSeqN = 0;
+  const offSeq = () => ++offSeqN;
+  const qStamp = () => { const n = offSeq(); return { id: winId + '-' + n, win: winId, seq: n }; };
+  // the most one save sends. A proxy in front of the ship may refuse less
+  // (a 413); this is the line past which the client refuses up front.
+  const SAVE_MAX = 25 * 1024 * 1024;
+  const bodyBytes = (b) => {
+    const t = String(b || '');
+    return t.length * 3 < SAVE_MAX ? t.length : new TextEncoder().encode(t).length;
+  };
+  const tooBig = (b) => bodyBytes(b) > SAVE_MAX;
+  const TOO_BIG = 'NOT saved: this page is over the 25 MB one save can send. Split it into '
+    + 'smaller pages, or copy the text somewhere safe.';
   let offCount = 0;          // queued page edits, drives the status text
   let offbadge = null;       // assigned by <lat-statusbar> (13-frame.js)
   // a whole-tree job (a folder share or delete) holds the writer, and a save
@@ -157,7 +176,7 @@
   //  behind the replay) sits under the same key: deleting by name dropped
   //  it. Only the exact record sent goes. A newer one is kept, and the
   //  drain runs again for it.
-  const sameRec = (a, b) => a.queuedAt === b.queuedAt && a.body === b.body;
+  const sameRec = (a, b) => (a.id || b.id ? a.id === b.id : a.queuedAt === b.queuedAt && a.body === b.body);
   let offKept = false;
   const offDone = async (q) => {
     if (!qrust()) await idbDelSent(q);
@@ -306,10 +325,11 @@
   // error, not an outage, and must never be queued over.
   const shipGone = (r) => !r || r.status === 502 || r.status === 504;
   // replay uses a stricter rule. A queued record is the user's only copy, so
-  // it is dropped only when the ship rejects it in a way a retry cannot fix:
-  // a bad request, a missing target, a conflict, a body too large. Anything
-  // else keeps it queued. That covers no response, any 5xx, an expired login
-  // (401, 403), a timeout (408) and rate limiting (429).
+  // it leaves the queue only when the ship refuses it in a way a retry
+  // cannot fix (a bad request, a missing target, a conflict, a body too
+  // large), and then only once its body is kept elsewhere (keepSafe).
+  // Anything else keeps it queued. That covers no response, any 5xx, an
+  // expired login (401, 403), a timeout (408) and rate limiting (429).
   const REPLAY_DROP = [400, 404, 409, 410, 413, 422];
   const replayDrop = (r) => !!r && REPLAY_DROP.includes(r.status);
 
@@ -375,10 +395,13 @@
   }, 15000);
   // a save of `name` sent at `at` landed: a queued edit of it from before
   // then is older text, and replayed it would overwrite the newer save
-  async function dropQueued(name, at) {
+  //  Only a record THIS window queued, from before the save (its sequence
+  //  number below `seq`), and only that exact record: another window's
+  //  queued edit is that window's text, which this save never saw.
+  async function dropQueued(name, seq) {
     let q = null;
     try { q = await offGet(name); } catch {}
-    if (q && !q.isNew && q.queuedAt <= at) await offDel(name);
+    if (q && !q.isNew && q.win === winId && q.seq < seq) await offDone(q);
   }
 
   let probeTimer = null;
@@ -424,8 +447,9 @@
     //  behind a job the timed-out writes still land, so a base would only
     //  flag our own text as a conflict: no base claim, as a live save
     //  so does a replay: the editor's rev is from before the replayed text
+    if (tooBig(body)) { st(TOO_BIG, false); return false; }
     const queued = await offPut({ name, kind, body, baseRev: jobWait || replaying ? 0 : rev || 0,
-      isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(),
+      isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(), ...qStamp(),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
     const job = saveStalled();
@@ -452,7 +476,39 @@
   // renamed offline would replay as a move of the OLD body plus a save under
   // the old name, resurrecting what was just renamed away.
   const under = (name, p) => name === p || name.startsWith(p + '/');
+  //  The rewrite page-move makes in each page it moves (+rewrite-root in
+  //  app.hoon, then +rewrite-wikilinks in lattice-md), for a queued save
+  //  rebased onto the move: without it the replay put the old links back.
+  //  A path literal /from at path boundaries, then [[from followed by
+  //  nothing, ], / or |.
+  function rwRoot(hay, from, to) {
+    let out = '', bef = null;
+    for (;;) {
+      const i = hay.indexOf(from);
+      if (i < 0) return out + hay;
+      const pre = hay.slice(0, i), aft = hay.slice(i + from.length);
+      const bnd = !aft || aft[0] <= ' ' || '/)([]",'.includes(aft[0]);
+      const pc = pre ? pre[pre.length - 1] : bef;
+      const seg = pre + (bnd && (pc === null || pc <= ' ' || '([",'.includes(pc)) ? to : from);
+      out += seg;
+      if (seg) bef = seg[seg.length - 1];
+      hay = aft;
+    }
+  }
+  function rwWiki(hay, from, to) {
+    const ndl = '[[' + from;
+    let out = '';
+    for (;;) {
+      const i = hay.indexOf(ndl);
+      if (i < 0) return out + hay;
+      const nx = hay[i + ndl.length];
+      out += hay.slice(0, i) + (nx === undefined || ']/|'.includes(nx) ? '[[' + to : ndl);
+      hay = hay.slice(i + ndl.length);
+    }
+  }
+  const moveBody = (b, from, to) => (from ? rwWiki(rwRoot(b, '/' + from, '/' + to), from, to) : b);
   async function enqueueOp(rec) {
+    const stamp = qStamp();
     // mkdir affects no queued save (it carries no content), so the
     // reconciliation below only runs for del/move. A folder create is recorded
     // and drained as-is; the local tree work (addFolderNodes) already happened.
@@ -468,7 +524,11 @@
           // both were wrong somewhere). base 0 now MEANS "no base claim"
           // on both server write paths; the move itself guarantees the
           // destination's pre-save body is the one this edit was made from.
-          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 0 });
+          //  the body gets the move's link rewrite, and names the move it
+          //  rides on (`via`): it waits for that move, and is kept aside
+          //  rather than written at the new name if the move is refused
+          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 0,
+            body: moveBody(q.body || '', rec.from, rec.to), via: stamp.id, from: q.name });
         }
       }
       for (const k of [...pageCache.keys()])
@@ -483,7 +543,7 @@
           localStorage.removeItem('appPage');
       } catch {}
     }
-    await opPut({ ...rec, queuedAt: Date.now() });
+    await opPut({ ...rec, queuedAt: Date.now(), ...stamp });
     setDegraded(true);
     st(({ del: 'deleted', mkdir: 'folder created' }[rec.op] || 'moved')
       + ' offline — ' + offCount + ' waiting to sync');
@@ -494,7 +554,7 @@
   // No baseRev: memories are last-write-wins (no CAS, no conflicts/ pages),
   // matching what know-save itself does.
   async function enqueueKnow(key, body) {
-    const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
+    const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now(), ...qStamp() });
     const job = saveStalled();
     if (!queued) {
       st(NOT_SAVED, false);
@@ -533,7 +593,14 @@
     srcFlight.clear();    // replayed writes: no open read from before is shared
     sensForget();         // and a replayed move or delete culls flags
     offKept = false;
-    try { await drainQueue(proven); } finally { replaying = false; }
+    //  one drain across every window of this origin: two windows share the
+    //  one queue, and two drains at once sent the same records twice, the
+    //  second claiming a base the first had moved past (a made-up conflict)
+    const drain = () => drainQueue(proven);
+    try {
+      if (navigator.locks) await navigator.locks.request('lat-drain', { ifAvailable: true }, (l) => (l ? drain() : null));
+      else await drain();
+    } finally { replaying = false; }
     //  a newer edit outlived its replayed older copy: send it now
     if (offKept && !degraded) setTimeout(() => replayQueue(true), 0);
   }
@@ -548,6 +615,144 @@
   //  ship that is answering but refusing that one write, degraded is a
   //  deliberate over-report.
 
+  // ── refused, stuck and kept records ─────────────────────────────────────
+  // A queued record is the user's only copy, so no refusal deletes it
+  // unkept. A body the ship refuses (a 409 or any of 400, 404, 410, 422) is
+  // written as a page of its own under conflicts/, under a name never used
+  // before. One too large to send (413, or past SAVE_MAX before sending),
+  // or one even that copy is refused for, goes to this device's recovery
+  // store, and the bar above the editor offers it back. A record the ship
+  // keeps answering with a 5xx is STUCK at the third try: it stays queued,
+  // no longer holds up the rest, and the same bar offers to retry or clear.
+  //  the ship's conflict-name flattening (lattice-pg), injective: a/b and
+  //  a-b keep different copies
+  const cfEnc = (n) => n.replace(/~/g, '~~').replace(/-/g, '~d').replace(/\//g, '-');
+  const keptName = (tag, name) => {
+    const d = new Date(), p = (n) => String(n).padStart(2, '0');
+    return 'conflicts/' + tag + '-' + cfEnc(name) + '-' + d.getFullYear() + p(d.getMonth() + 1)
+      + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+  };
+  //  the body as a page of its own at `base`, or the first free -2, -3:
+  //  a create, so no kept copy is ever written over. -> its name, false
+  //  when the ship did not answer, null when it refused
+  const keepAside = async (q, base) => {
+    for (let i = 1; i < 30; i++) {
+      const alt = base + (i > 1 ? '-' + i : '');
+      let r = null;
+      try {
+        r = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) + '&type='
+          + (q.kind === 'know' ? 'md' : q.kind) + '&new=1', { method: 'POST', body: q.body || '\n' }, 20000);
+      } catch {}
+      if (r && r.ok) return alt;
+      if (shipGone(r)) return false;
+      if (r.status !== 409) return null;
+    }
+    return null;
+  };
+  const RECOVER = 'recover:';
+  const recoverPut = async (q, why) => {
+    const s = await idbStore('kv', 'readwrite');
+    if (!s) return false;
+    try {
+      return await offOk(s.put({ k: RECOVER + (q.id || q.name + '@' + q.queuedAt),
+        v: { name: q.name, kind: q.kind, body: q.body || '', why, at: Date.now() } }));
+    } catch { return false; }
+  };
+  const recoverAll = async () => {
+    const s = await idbStore('kv', 'readonly');
+    const all = (s && await offReq(s.getAll())) || [];
+    return all.filter((r) => typeof r.k === 'string' && r.k.startsWith(RECOVER));
+  };
+  //  a refused body kept somewhere. true once it is, and the record may
+  //  go; false leaves it queued and stops the drain
+  async function keepSafe(q, why, tag, conflicts) {
+    if (why !== 413 && !tooBig(q.body)) {
+      const alt = await keepAside(q, keptName('offline-' + tag, q.name));
+      if (alt === false) return false;
+      if (alt) {
+        conflicts.push(alt);
+        st('offline ' + tag + ' refused (' + why + '): ' + q.name + ', your version is kept at ' + alt, false);
+        return true;
+      }
+    }
+    if (!await recoverPut(q, why)) return false;
+    st('offline ' + tag + ' of ' + q.name + ' could not be sent (' + (why === 413 ? 'too large' : why)
+      + '). It is kept on this device, in the bar above the editor', false);
+    stuckRender();
+    return true;
+  }
+  const stuckTries = new Map();     // record id -> 5xx answers this session
+  const stuckRec = new Map();       // record id -> the record, once stuck
+  const recId = (q) => (q.op && q._k !== undefined ? 'op' + q._k : q.id || q.name + '@' + q.queuedAt);
+  const isStuck = (q) => stuckRec.has(recId(q));
+  //  a 5xx, counted: -> true when that made it stuck
+  function failTry(q) {
+    const k = recId(q), n = (stuckTries.get(k) || 0) + 1;
+    stuckTries.set(k, n);
+    if (n < 3) return false;
+    stuckRec.set(k, q);
+    stuckRender();
+    return true;
+  }
+  const stuckBar = document.createElement('div');
+  stuckBar.className = 'lnkcf';
+  stuckBar.id = 'qstuck';
+  stuckBar.hidden = true;
+  stuckBar.setAttribute('role', 'alert');
+  const stuckRow = (text, btns) => {
+    const row = document.createElement('div');
+    row.textContent = text;
+    for (const [label, fn] of btns) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.onclick = fn;
+      row.append(' ', b);
+    }
+    stuckBar.append(row);
+  };
+  async function stuckRender() {
+    const d = $('docarea');
+    if (d && !stuckBar.isConnected) d.before(stuckBar);
+    const recs = await recoverAll();
+    stuckBar.textContent = '';
+    for (const [k, q] of stuckRec) {
+      stuckRow('stuck in the queue: ' + (q.op ? q.op + ' ' + (q.name || q.from) : 'save of ' + q.name), [
+        ['Retry', () => { stuckRec.delete(k); stuckTries.delete(k); stuckRender(); replayQueue(true); }],
+        //  a save's text goes to this device's store first: clearing drops
+        //  the queue's copy, never the only one
+        ['Clear', async () => {
+          if (!q.op && !await recoverPut(q, 'cleared')) { st('could not keep a copy, so nothing was cleared', false); return; }
+          if (q.op) await opDel(q._k); else await offDone(q);
+          stuckRec.delete(k);
+          stuckRender();
+        }]]);
+    }
+    for (const r of recs) {
+      stuckRow('kept on this device, not on the ship: ' + r.v.name + ' (' + r.v.why + ')', [
+        ['Download', () => {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(new Blob([r.v.body], { type: 'text/plain' }));
+          a.download = r.v.name.replace(/[/:]/g, '-') + '.' + (r.v.kind === 'know' ? 'md' : r.v.kind || 'txt');
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        }],
+        ['Discard', async () => {
+          if (!(await askDanger('Discard the kept copy of ' + r.v.name + '? It is not on the ship.', 'discard'))) return;
+          const s = await idbStore('kv', 'readwrite');
+          if (s) await offReq(s.delete(r.k));
+          stuckRender();
+        }]]);
+    }
+    stuckBar.hidden = !stuckBar.childNodes.length;
+  }
+  setTimeout(stuckRender, 0);
+  //  what to do with a write the ship answered `r`: 'ok', 'refused' (keep
+  //  it aside), 'skip' (stuck, pass it by) or 'stop' (the ship is away, or
+  //  a retry may yet land: the drain ends and the rest stays queued)
+  const verdict = (q, r) => (r && r.ok ? 'ok' : replayDrop(r) ? 'refused'
+    : r && !shipGone(r) && r.status >= 500 && failTry(q) ? 'skip' : 'stop');
+
   // Structural ops go FIRST, in the order they were made. Their effect on
   // the pending saves was already applied when they were queued, so a save
   // landing afterwards is always a save the user still wants, under the name
@@ -556,10 +761,11 @@
   // An op the ship REJECTS (see replayDrop) is dropped, not retried. It
   // means the intent was already satisfied some other way: deleting a page
   // that only ever existed in this queue, or moving one whose source the
-  // queue never sent. Retrying that forever would wedge everything behind
-  // it, and there is nothing to recover because no content lives in an op.
-  // Any other failure keeps the op queued and stops the drain.
-  async function drainOps(ops) {
+  // queue never sent. No content lives in an op, but a refused MOVE has
+  // saves riding on it (`via`, enqueueOp): those are kept aside, never
+  // written at a name the move did not make. One the ship keeps failing on
+  // is stuck and passed by; anything else keeps it queued and stops.
+  async function drainOps(ops, saves, conflicts) {
     for (const o of ops) {
       //  a record of any other shape is corrupt. Falling through to the move
       //  branch would POST from=undefined&to=undefined, which is a confusing
@@ -573,10 +779,16 @@
             '&to=' + encodeURIComponent(o.to);
       let r = null;
       try { r = await tfetch(u, { method: 'POST' }, 30000); } catch {}
-      if (!(r && r.ok) && !replayDrop(r)) return false;
-      if (!(r && r.ok)) {
-        st('offline ' + o.op + ' no longer applies: ' +
-          (o.name || o.from) + ' (skipped)', false);
+      const v = verdict(o, r);
+      if (v === 'skip') continue;
+      if (v === 'stop') return false;
+      if (v === 'refused') {
+        st('offline ' + o.op + ' no longer applies: ' + (o.name || o.from) + ' (skipped)', false);
+        for (const q of saves) {
+          if (!o.id || q.via !== o.id) continue;
+          if (!await keepSafe({ ...q, name: q.from || q.name }, r.status, 'edit', conflicts)) return false;
+          await offDone(q);
+        }
       } else {
         bustPages(o.name || o.from);
         if (o.to) bustPages(o.to);
@@ -593,27 +805,23 @@
   async function drainCreates(creates, conflicts) {
     for (const q of creates) {
       let one = null;
-      try {
-        one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
-          '&type=' + q.kind + '&new=1' + dnameQ(q),
-          { method: 'POST', body: q.body || '\n' }, 20000);
-      } catch {}
-      if (one && one.ok) { await offDone(q); continue; }
-      //  409 is in the drop set, so it falls through to its own branch below
-      if (!replayDrop(one)) return false;
-      // 409: the name is taken on the ship. Do NOT drop the user's body — move
-      // it out of the way as a conflict page so nothing is lost, then let them
-      // rename. Overwriting is the one thing a create must never do. The alt
-      // write needs no new=1 (it is a preservation write, not a create-claim),
-      // and %make creates the conflicts/ parent server-side, as it does for
-      // the ship's own conflict pages.
-      if (one && one.status === 409) {
-        // the 409 may be OUR OWN earlier attempt: tfetch's abort stops the
-        // wait, not the write, so a timed-out create can land ship-side and
-        // 409 its own replay (two tabs draining the shared queue race the
-        // same way). The single-save and batch paths have an identical-body
-        // dup rule for exactly this; a create must too, or a replay that
-        // raced its own landed write fabricates a "collided" conflict page.
+      if (tooBig(q.body)) one = { status: 413 };
+      else {
+        try {
+          one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
+            '&type=' + q.kind + '&new=1' + dnameQ(q),
+            { method: 'POST', body: q.body || '\n' }, 20000);
+        } catch {}
+      }
+      const v = verdict(q, one);
+      if (v === 'skip') continue;
+      if (v === 'stop') return false;
+      // 409: the name is taken on the ship. The 409 may be OUR OWN earlier
+      // attempt: tfetch's abort stops the wait, not the write, so a
+      // timed-out create can land ship-side and 409 its own replay. Only a
+      // body other than ours there is a collision, kept aside like any
+      // other refusal. Overwriting is the one thing a create must never do.
+      if (v === 'refused' && one.status === 409) {
         try {
           const sr = await tfetch(api + '/page-source?name=' +
             encodeURIComponent(q.name), {}, 20000);
@@ -622,45 +830,41 @@
             continue;
           }
         } catch {}
-        const alt = 'conflicts/offline-create-' + q.name.replace(/\//g, '-');
-        //  the preservation write is the only thing standing between the user
-        //  and a lost document, so if it does not land the record stays queued
-        if (!await keepAside(q, alt)) return false;
-        conflicts.push(alt);
-        await offDone(q);
-        st('offline create collided: ' + q.name + ' exists on the ship — your ' +
-          'version is kept at ' + alt, false);
-        continue;
       }
-      st('dropped an unsyncable offline create: ' + q.name, false);
+      if (v === 'refused' && !await keepSafe(q, one.status, 'create', conflicts)) return false;
       await offDone(q);
     }
     return true;
   }
 
-  // Drain through page-save-batch. The batch is all-or-nothing, right for
-  // uploads, wrong for replay. One poisoned record would block the queue
-  // forever. A rejected batch falls back to per-item saves so the bad record
-  // is isolated and DROPPED (it can never apply; review gap 3).
-  // a queued body kept as a page of its own at `alt`; true once it landed
-  const keepAside = async (q, alt) => {
-    try {
-      const r = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
-        '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
-      return !!(r && r.ok);
-    } catch { return false; }
-  };
+  // Drain through page-save-batch, in parts of at most 50 records and
+  // BATCH_MAX bytes, so one request never carries more than a proxy in
+  // front of the ship takes. The batch is all-or-nothing, right for
+  // uploads, wrong for replay: a rejected part falls back to per-item
+  // saves so a bad record is isolated and kept aside (review gap 3).
+  const BATCH_MAX = 4 * 1024 * 1024;
   async function drainEdits(edits, conflicts) {
-    for (let i = 0; i < edits.length; i += 50) {
-      const part = edits.slice(i, i + 50);
+    const parts = [];
+    let cur = [], bytes = 0;
+    for (const q of edits) {
+      const b = bodyBytes(q.body);
+      if (cur.length && (cur.length >= 50 || bytes + b > BATCH_MAX)) { parts.push(cur); cur = []; bytes = 0; }
+      cur.push(q);
+      bytes += b;
+    }
+    if (cur.length) parts.push(cur);
+    for (const part of parts) {
       let r = null;
-      try {
-        r = await tfetch(api + '/page-save-batch?report=1', {
-          method: 'POST',
-          body: JSON.stringify(part.map((q) =>
-            ({ name: q.name, type: q.kind, body: q.body || '\n', base: q.baseRev || 0 }))),
-        }, 120000);
-      } catch {}
+      //  a part of one record too large to send is that record's 413
+      if (part.length > 1 || !tooBig(part[0].body)) {
+        try {
+          r = await tfetch(api + '/page-save-batch?report=1', {
+            method: 'POST',
+            body: JSON.stringify(part.map((q) =>
+              ({ name: q.name, type: q.kind, body: q.body || '\n', base: q.baseRev || 0 }))),
+          }, 120000);
+        } catch {}
+      } else r = { status: 413 };
       if (r && r.ok) {
         // per-item verdicts: an edit whose base the ship moved past still
         // APPLIED (it is the newest revision), but the overwritten revision
@@ -676,83 +880,87 @@
       //  a 5xx from the batch may be one poisoned record, so retry per item
       //  to isolate it. No response, an outage, a lapsed login or a rate
       //  limit would fail the same way per item, so stop and keep them all.
-      if (r && !shipGone(r) && (r.status >= 500 || replayDrop(r))) {
-        for (const q of part) {
-          let one = null;
+      if (!(r && !shipGone(r) && (r.status >= 500 || replayDrop(r)))) return false;
+      for (const q of part) {
+        let one = null;
+        if (tooBig(q.body)) one = { status: 413 };
+        else {
           try {
             one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
-              '&type=' + q.kind + '&base=' + (q.baseRev || 0),
+              '&type=' + q.kind + '&base=' + (q.baseRev || 0) + '&by=' + (q.win || winId),
               { method: 'POST', body: q.body || '\n' }, 20000);
           } catch {}
-          if (one && one.ok) {
-            try {
-              const j = await one.json();
-              if (j.conflicted) conflicts.push(j.kept || q.name);
-            } catch {}
-            await offDone(q);
-            continue;
-          }
-          if (!replayDrop(one)) return false;
-          // 409: refused as stale or as nothing-goes-there (a link's host
-          // moved on, a link where a page was). The body is the user's only
-          // copy, so it is kept as a page of its own first, as a create's
-          // collision is; if that write fails the record stays queued.
-          if (one && one.status === 409) {
-            const alt = 'conflicts/offline-edit-' + q.name.replace(/\//g, '-');
-            if (!await keepAside(q, alt)) return false;
-            conflicts.push(alt);
-            await offDone(q);
-            st('offline edit refused: ' + q.name + ', your version is kept at ' + alt, false);
-            continue;
-          }
-          st('dropped an unsyncable offline edit: ' + q.name, false);
-          await offDone(q);
         }
-        continue;
+        const v = verdict(q, one);
+        if (v === 'skip') continue;
+        if (v === 'stop') return false;
+        if (v === 'ok') {
+          try {
+            const j = await one.json();
+            if (j.conflicted) conflicts.push(j.kept || q.name);
+          } catch {}
+        // refused as stale or as nothing-goes-there (a link's host moved
+        // on, a link where a page was), or as a bad or too large body: the
+        // body is the user's only copy, so it is kept first
+        } else if (!await keepSafe(q, one.status, 'edit', conflicts)) return false;
+        await offDone(q);
       }
-      return false;
     }
     return true;
   }
 
   // memories drain per-item. There is no know batch route, and last-write-
   // wins means a plain re-save with no verdict to collect
-  async function drainKnows(knows) {
+  async function drainKnows(knows, conflicts) {
     for (const q of knows) {
       let one = null;
-      try {
-        one = await tfetch(api + '/know-save?key=' + encodeURIComponent(q.name.slice(5)),
-          { method: 'POST', body: q.body || '\n' }, 20000);
-      } catch {}
-      if (one && one.ok) { await offDone(q); continue; }
-      if (!replayDrop(one)) return false;
-      st('dropped an unsyncable offline edit: ' + q.name, false);
+      if (tooBig(q.body)) one = { status: 413 };
+      else {
+        try {
+          one = await tfetch(api + '/know-save?key=' + encodeURIComponent(q.name.slice(5)),
+            { method: 'POST', body: q.body || '\n' }, 20000);
+        } catch {}
+      }
+      const v = verdict(q, one);
+      if (v === 'skip') continue;
+      if (v === 'stop') return false;
+      if (v === 'refused' && !await keepSafe(q, one.status, 'memory', conflicts)) return false;
       await offDone(q);
     }
     return true;
   }
 
   async function drainQueue(proven) {
-    const whole = await offAll();
-    const ops = await opAll();
-    if (!whole.length && !ops.length) return;
+    const ops = (await opAll()).filter((o) => !isStuck(o));
+    const first = (await offAll()).filter((q) => !isStuck(q));
+    if (!first.length && !ops.length) return;
     // a proven-live caller already has a round-trip that answered, so the
     // ship being gone is disproved before the first phase even runs. Clear
     // the badge now instead of leaving it amber for a drain that is, by
     // then, just bookkeeping.
     if (proven && degraded) { degraded = false; renderOffline(); }
-    const all = whole.filter((q) => q.kind !== 'know');
-    const knows = whole.filter((q) => q.kind === 'know');
-    const total = whole.length + ops.length;
+    const total = first.length + ops.length;
     stWork('syncing ' + total + ' offline edit' + (total === 1 ? '' : 's') + '…');
     const conflicts = [];
     //  ORDER IS THE CONTRACT: ops, then creates, then edits, then memories.
     //  && short-circuits, so the first phase that loses the ship stops the
     //  drain and leaves the rest of the queue untouched for the next replay.
-    const landed = await drainOps(ops)
-      && await drainCreates(all.filter((q) => q.isNew), conflicts)
-      && await drainEdits(all.filter((q) => !q.isNew), conflicts)
-      && await drainKnows(knows);
+    //  The saves are read again after the ops: a refused move kept some
+    //  aside, and a save riding on a move still queued (stuck) waits for it.
+    let knows = [];
+    const saves = async () => {
+      const wait = new Set((await opAll()).map((o) => o.id).filter(Boolean));
+      return (await offAll()).filter((q) => !isStuck(q) && !(q.via && wait.has(q.via)));
+    };
+    const landed = await drainOps(ops, first, conflicts)
+      && await (async () => {
+        const whole = await saves();
+        const all = whole.filter((q) => q.kind !== 'know');
+        knows = whole.filter((q) => q.kind === 'know');
+        return await drainCreates(all.filter((q) => q.isNew), conflicts)
+          && await drainEdits(all.filter((q) => !q.isNew), conflicts)
+          && await drainKnows(knows, conflicts);
+      })();
     if (!landed) {
       setDegraded(true);
       st(offCount + ' offline edit' + (offCount === 1 ? '' : 's') + ' still waiting', false);
@@ -760,8 +968,8 @@
     }
     setDegraded(false);
     if (conflicts.length) {
-      st('synced — ' + conflicts.length + ' conflict(s): your offline version won; '
-        + 'the other is saved at ' + conflicts.join(', '), false);
+      st('synced, with ' + conflicts.length + ' version(s) kept as pages of their own: '
+        + conflicts.join(', '), false);
     } else st('offline edits synced');
     // reconcile ONLY after the drain. refreshAll on reconnect would repaint
     // queued pages from the server dump before their edits landed (gap 4)
