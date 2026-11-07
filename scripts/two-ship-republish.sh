@@ -31,13 +31,13 @@ ASHIP=$(A_ "${A_URL%/}/~/host"); BSHIP=$(B_ "${B_URL%/}/~/host")
 [ -n "$ASHIP" ] && [ -n "$BSHIP" ] || { echo "FAIL  ships answer /~/host"; exit 1; }
 
 P=repub$$
-NAME=x/$P
+NAME=$P/page   # not x/: urb://~ship/x/ is the explorer
 URL="urb://$ASHIP/$NAME"
 OLD="old words $P"; NEW="new words $P"
 cleanup() {
   B_ -o /dev/null -X POST --data-urlencode "url=$URL" -G "$B/unsub"
   A_ -o /dev/null -X POST "$A/page-share?name=$NAME&mode=private"
-  A_ -o /dev/null -X POST "$A/page-del?name=$NAME"
+  A_ -o /dev/null -X POST "$A/page-del?name=$P"
 }
 trap cleanup EXIT
 

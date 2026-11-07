@@ -390,9 +390,13 @@
   ==
 ::  +corrupt-name: label, then the time, as one knot
 ++  test-corrupt-name
+  ::  the date as the kernel prints it (one pads the month, one does
+  ::  not), so read it back rather than match the text
   =/  n=@ta  (corrupt-name:ls %shared ~2026.11.7..12.00.00)
+  =/  t=tape  (trip n)
   ;:  weld
-    (expect-eq !>('shared-corrupt-2026.11.7..12.00.00') !>(n))
+    (expect-eq !>("shared-corrupt-") !>((scag 15 t)))
+    (expect-eq !>(`~2026.11.7..12.00.00) !>((slaw %da (crip ['~' (slag 15 t)]))))
     (expect-eq !>(%.y) !>(((sane %ta) n)))
   ==
 ::  a line that will not read is dropped, the rest kept
