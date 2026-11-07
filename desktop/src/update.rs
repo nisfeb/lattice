@@ -44,6 +44,35 @@ pub enum Flavor {
     ReleasePage,
 }
 
+/// A version's parts: the numbers, then whether it is a pre-release
+/// (`1.0.30-rc.1`), which comes before the release of the same numbers.
+/// Build metadata (`+...`) is ignored, as semver does. None when it is not
+/// three dotted numbers.
+fn version_key(v: &str) -> Option<([u64; 3], bool)> {
+    let v = v.trim().trim_start_matches('v');
+    let v = v.split('+').next()?;
+    let (nums, pre) = match v.split_once('-') {
+        Some((n, p)) => (n, !p.is_empty()),
+        None => (v, false),
+    };
+    let mut it = nums.split('.').map(|p| p.parse::<u64>().ok());
+    let key = [it.next()??, it.next()??, it.next()??];
+    if it.next().is_some() {
+        return None;
+    }
+    Some((key, pre))
+}
+
+/// Whether `remote` is a version after `current`. latest.json's version is
+/// not signed (only the artifacts are), so a manifest naming an older or
+/// equal version, or one that does not parse, is never offered.
+pub fn newer(remote: &str, current: &str) -> bool {
+    match (version_key(remote), version_key(current)) {
+        (Some((r, rp)), Some((c, cp))) => r > c || (r == c && !rp && cp),
+        _ => false,
+    }
+}
+
 /// From the process's own environment, as Talon does: the AppImage runtime
 /// sets APPIMAGE to the file it was started from.
 pub fn flavor(appimage: Option<&str>, macos: bool) -> Flavor {
@@ -184,7 +213,15 @@ struct Seen {
 }
 
 fn check_once(h: &AppHandle, flavor: &Flavor, seen: &mut Seen) {
-    let mut b = h.updater_builder();
+    // refuse, and log, a manifest whose version is not after this one
+    let mut b = h.updater_builder().version_comparator(|current, release| {
+        let (r, c) = (release.version.to_string(), current.to_string());
+        let ok = newer(&r, &c);
+        if !ok && r != c {
+            dlog(&format!("update: refused the manifest's {r}, which is not newer than {c}"));
+        }
+        ok
+    });
     if let Flavor::AppImage(p) = flavor {
         b = b.executable_path(p);
     }
@@ -199,6 +236,10 @@ fn check_once(h: &AppHandle, flavor: &Flavor, seen: &mut Seen) {
         Err(e) => return dlog(&format!("update: check failed: {e}")),
     };
     let v = update.version.clone();
+    // and again here, whatever the comparator answered
+    if !newer(&v, &update.current_version) {
+        return dlog(&format!("update: refused {v}, which is not newer than {}", update.current_version));
+    }
     if seen.later.contains(&v) || seen.installed.as_deref() == Some(v.as_str()) {
         return;
     }
@@ -318,6 +359,22 @@ mod tests {
         let s = offer_text("1.0.15", "1.0.14", None, &Flavor::ReleasePage);
         assert!(s.contains("release page"));
         assert!(!s.contains("\n\n\n"));
+    }
+
+    #[test]
+    fn only_a_newer_version_is_offered() {
+        assert!(newer("1.0.30", "1.0.29"));
+        assert!(newer("1.1.0", "1.0.99"));
+        assert!(newer("2.0.0", "1.9.9"));
+        assert!(newer("1.0.30", "1.0.30-rc.1"), "the release after its rc");
+        assert!(!newer("1.0.29", "1.0.29"), "the same version is not an update");
+        assert!(!newer("1.0.28", "1.0.29"), "a downgrade is refused");
+        assert!(!newer("1.0.9", "1.0.29"), "numbers, not strings");
+        assert!(!newer("1.0.29-rc.1", "1.0.29"));
+        assert!(!newer("latest", "1.0.29"));
+        assert!(!newer("1.0", "1.0.29"));
+        assert!(!newer("1.0.30.1", "1.0.29"));
+        assert!(newer("v1.0.30+build.7", "1.0.29"));
     }
 
     #[test]
