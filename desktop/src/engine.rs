@@ -1085,6 +1085,18 @@ fn log_line(l: &str) {
     crate::commands::dlog(&format!("engine: {l}"));
 }
 
+/// The folder of ships' points (urb-fetch's FileKeys) inside the state
+/// folder `dir`, shared by every identity that runs from it: a point is
+/// public, and a comet made after another one then finds the publishers'
+/// points on disk instead of asking the roller. Not for a fake ship, whose
+/// network is the fleet's.
+fn key_cache(dir: &Path, fake: Option<&str>) -> Option<std::rc::Rc<dyn urb_engine::keys::KeyStore>> {
+    fake.is_none().then(|| std::rc::Rc::new(urb_engine::host::keys::FileKeys::new(dir.join(KEYS))) as _)
+}
+
+/// key_cache's folder in the state folder
+const KEYS: &str = "keys";
+
 /// The host's thread: find or mine the identity, open it, then take jobs
 /// and turn the host until closed.
 fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: Receiver<Job>) {
@@ -1126,6 +1138,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     }
     step("Joining the Urbit network");
     let mut host = Host::new(io, random);
+    if let Some(keys) = key_cache(dir, fake) {
+        host.set_keys(keys);
+    }
     let our = match host.open(fake.is_some()) {
         Ok(o) => o,
         Err(f) => return fail(f.message),
@@ -2225,5 +2240,73 @@ mod tests {
         assert!(second.claimed() && second.exported_at().is_none());
         eprintln!("B is {our_a}, read {} ({} bytes)", p.key, p.body.len());
         second.close();
+    }
+
+    #[test]
+    fn a_real_identity_keeps_ships_points_in_the_state_folder() {
+        // Without this the engine started with no key cache, and every
+        // comet's first read of a publisher waited on the roller.
+        let d = std::env::temp_dir().join(format!("engine-keys-{}", std::process::id()));
+        assert!(key_cache(&d, None).is_some(), "a real identity gets the cache");
+        assert!(key_cache(&d, Some("~zod")).is_none(), "a fake ship is the fleet's");
+        let src = include_str!("engine.rs");
+        let wired = src.find(&["if let Some(keys) = key_cache(dir, fake) {\n", "        host.set_keys(keys);"].concat());
+        let opened = src.find(&["let our = match host.open(", "fake.is_some()) {"].concat());
+        assert!(matches!((wired, opened), (Some(w), Some(o)) if w < o), "set_keys must come before open");
+    }
+
+    /// The second comet in one state folder, live, reads only: a comet
+    /// reads urb://~nisfeb/start, is set aside as an import sets it aside,
+    /// and a new comet mined in the same folder reads it again. With the
+    /// key cache its first read skips the roller. A third comet in a fresh
+    /// folder, with no cache, is the control. Never writes to a ship.
+    #[test]
+    #[ignore = "live: LATTICE_LIVE_KEYS=1"]
+    fn a_second_comet_reads_from_the_key_cache_live() {
+        if std::env::var("LATTICE_LIVE_KEYS").as_deref() != Ok("1") {
+            eprintln!("skipped: LATTICE_LIVE_KEYS=1 is not set");
+            return;
+        }
+        const START: &str = "urb://~nisfeb/start";
+        let base = std::env::temp_dir().join(format!("engine-keys-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let ready = |e: &Engine| {
+            e.start();
+            let t = Instant::now();
+            while !matches!(e.status(), Status::Ready { .. }) {
+                assert!(t.elapsed() < Duration::from_secs(300), "never ready: {:?}", e.status());
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        };
+        let first_read = |e: &Engine, label: &str| {
+            ready(e);
+            let t = Instant::now();
+            e.read(START, Duration::from_secs(120), true).expect("reads the start page");
+            let took = t.elapsed();
+            eprintln!("{label}: first read {took:?} as {}", e.identity().unwrap_or_default());
+            took
+        };
+        let shared = base.join("shared");
+        let a = Engine::with(shared.clone(), None);
+        first_read(&a, "comet 1");
+        assert!(a.close());
+        assert!(std::fs::read_dir(shared.join(KEYS)).map(|d| d.count() > 0).unwrap_or(false), "points were kept");
+        // set aside as an import does, keeping the cache
+        let aside = shared.join("aside");
+        std::fs::create_dir_all(&aside).unwrap();
+        for e in std::fs::read_dir(&shared).unwrap().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n == "comet.key" || n.contains(".db") || n == UNCLAIMED {
+                std::fs::rename(e.path(), aside.join(&n)).unwrap();
+            }
+        }
+        let b = Engine::with(shared.clone(), None);
+        let warm = first_read(&b, "comet 2, same folder");
+        b.close();
+        let c = Engine::with(base.join("fresh"), None);
+        let cold = first_read(&c, "comet 3, fresh folder");
+        c.close();
+        eprintln!("second comet {warm:?}, control {cold:?}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
