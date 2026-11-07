@@ -1215,8 +1215,8 @@
 ::  page's rev is a 409 that begins "stale", and nothing is written. The
 ::  editor's live saves send it, so two windows on one page cannot write
 ::  over each other, and the window refused keeps its text aside itself.
-::  The writer checks the base again (%make-by), so a save racing another
-::  past this check is not written either; it is then answered 409 too.
+::  The check sits one fiber bind before the write, so two saves racing
+::  through it at once can both land; each is still a kept revision.
 ::  `wid`: who writes, tagged on the revision (+make-by): the window's
 ::  ?by= session id, or the key's name.
 ::
@@ -1302,7 +1302,10 @@
     ;<  ~  bind:n  ?.(ps (pure:n ~) (poke-eval [%page-sensitive (pax-of kept) &]))
     (poke-eval ?:(pw [%make-marked (pax-of kept) u.old] [%make (pax-of kept) u.old]))
   ;<  ~  bind:m
-    (poke-eval [%make-by (pax-of u.name) src wid ?:(&(cas ?=(^ base)) u.base 0)])
+    ::  base 0: the writer does not check again. A refusal there could not
+    ::  be told from a write still on its way (+save-landed), and a save
+    ::  answered ok but not written is the one outcome never allowed.
+    (poke-eval [%make-by (pax-of u.name) src wid 0])
   ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
   ::  client only when the typed name was not a valid path and the path is
   ::  its slug. Absent on every ordinary save, so autosave never touches them.
@@ -1312,15 +1315,11 @@
   ::  first then claimed the other's rev as its base. The page holding
   ::  this save's body is this save's rev. When it does not (a later save
   ::  is already on top, or the read is from before the write), prev+1 is
-  ::  the answer as before, except for a ?cas=1 save, which the writer
-  ::  may have refused: that answers stale, and the editor reads the page
-  ::  again (finding its own text there if it did land).
+  ::  the answer as before.
   ;<  ph=[rev=@ud src=(unit @t)]  bind:m
     ?:  =(src.pc `src)  (pure:(fiber:fiber:nexus ,[rev=@ud src=(unit @t)]) pc)
     (save-landed (pax-of u.name) prev src)
   =/  mine=?  =(src.ph `src)
-  ?:  &(cas !mine)
-    (send-err eyre-id 409 (crip "stale: the page is at rev {(num-tape:pg rev.ph)}"))
   ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
   %+  send-json  eyre-id
   %-  pairs:enjs:format
