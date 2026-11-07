@@ -4849,6 +4849,12 @@
     =/  pl  (save-plan key rnow bnow u.ko bod args old near)
     ?:  ?=(%| -.pl)  (send-err eyre-id code.p.pl msg.p.pl)
     ;<  ~  bind:m  (poke-know act.p.pl)
+    ?~  key  (send-json eyre-id out.p.pl)
+    ::  the writer checks a key's save again and may refuse it, so wait
+    ::  for its outcome rather than answer ok for a save that never landed
+    ;<  ~  bind:m  writer-sync
+    ;<  bad=(unit [code=@ud msg=@t])  bind:m  (key-landed u.key u.ko ?>(?=(%key-save -.act.p.pl) body.act.p.pl))
+    ?^  bad  (send-err eyre-id code.u.bad msg.u.bad)
     (send-json eyre-id out.p.pl)
   ::  many saves in one writer event: one store read, one duplicate pass,
   ::  one term-cache write and one beacon bump, however many items. Body
@@ -4872,9 +4878,26 @@
     =/  [acts=(list know-action:lk) outs=(list json)]
       (plan-batch key rnow bnow es tc u.items)
     ;<  ~  bind:m  ?~(acts (pure:m ~) (poke-writer %know-batch acts))
+    ::  a key's saves: wait for the writer, and report any it refused
+    ;<  bad=(map path [code=@ud msg=@t])  bind:m
+      =/  n  (fiber:fiber:nexus ,(map path [code=@ud msg=@t]))
+      ?~  key  (pure:n ~)
+      ;<  ~  bind:n  writer-sync
+      (batch-landed u.key acts)
+    =/  outs=(list json)
+      %+  turn  outs
+      |=  o=json
+      ?.  ?=([%o *] o)  o
+      =/  k=(unit json)  (~(get by p.o) 'key')
+      ?.  ?=([~ %s *] k)  o
+      =/  ko=(unit path)  (know-key p.u.k)
+      ?~  ko  o
+      =/  b  (~(get by bad) u.ko)
+      ?~  b  o
+      (batch-err p.u.k u.b)
     %+  send-json  eyre-id
     %-  pairs:enjs:format
-    :~  ['saved' (numb:enjs:format (lent acts))]
+    :~  ['saved' (numb:enjs:format (sub (lent acts) ~(wyt by bad)))]
         ['results' a+outs]
     ==
   ::
@@ -5057,9 +5080,28 @@
     ?:  &(make !main)  (send-err eyre-id 400 'a new skill starts with SKILL.md')
     =/  pl  (skill-plan key now nm pt bod args old)
     ?:  ?=(%| -.pl)  (send-err eyre-id code.p.pl msg.p.pl)
-    ?.  make
+    ?:  &(!make ?=(~ key))
       ;<  ~  bind:m  (skill-pokes acts.p.pl)
       (send-json eyre-id out.p.pl)
+    ?.  make
+      ::  a key's save: the writer checks it again (%ksave), so wait for
+      ::  its outcome and read the skill back before answering
+      ?>  ?=(^ key)
+      ;<  ~  bind:m
+        %-  skill-pokes
+        %+  turn  acts.p.pl
+        |=(a=skill-action:lsk ?.(?=(%save -.a) a [%ksave name.a path.a body.a when.a id.u.key]))
+      ;<  ~  bind:m  writer-sync
+      ;<  got=(unit skill:lsk)  bind:m  (read-skill (skill-road up /skills/vault nm))
+      =/  landed=?
+        ?~  got  |
+        %+  levy  acts.p.pl
+        |=(a=skill-action:lsk ?.(?=(%save -.a) & =(`body.a (file-of:lsk u.got path.a))))
+      ?:  landed  (send-json eyre-id out.p.pl)
+      ;<  tnow=@da  bind:m  get-time:io
+      =/  why=(unit tape)  (key-check:lsk got sensitive.scope.u.key (tainted:ky u.key tnow) ~)
+      ?^  why  (send-err eyre-id 403 (crip u.why))
+      (send-err eyre-id 409 'the skill changed before this save landed: read it again')
     ;<  ~  bind:m
       %-  skill-pokes
       %+  turn  acts.p.pl
@@ -5987,6 +6029,39 @@
   ?~  (spend:ky led id now len)  (pure:m |)
   ;<  ~  bind:m  (poke-keys [%spend id now len])
   (pure:m &)
+::  +key-landed: after +writer-sync, did a key's memory save land? ~ when
+::  the entry holds its body, or that body with the sensitive mark the
+::  writer raised. Else the writer refused it: why, as +key-save-check
+::  says against the entry now, or a 409 when another write came first.
+++  key-landed
+  |=  [key=key-row:ky ko=path bod=@t]
+  =/  m  (fiber:fiber:nexus ,(unit [code=@ud msg=@t]))
+  ^-  form:m
+  ;<  e=(unit know-entry:lk)  bind:m  (know-one ko)
+  ?:  &(?=(^ e) |(=(body.u.e bod) =(body.u.e (raise-sens:lk bod))))
+    (pure:m ~)
+  ;<  now=@da  bind:m  get-time:io
+  =/  r  (key-save-check:lk e sensitive.scope.key (tainted:ky key now) bod)
+  ?:  ?=(%| -.r)  (pure:m `[403 (crip p.r)])
+  (pure:m `[409 'the entry changed before this save landed: read it again'])
+::  +batch-landed: +key-landed for each of a batch's key saves, the
+::  refused ones by key
+++  batch-landed
+  |=  [key=key-row:ky acts=(list know-action:lk)]
+  =/  m  (fiber:fiber:nexus ,(map path [code=@ud msg=@t]))
+  ^-  form:m
+  =|  bad=(map path [code=@ud msg=@t])
+  |-  ^-  form:m
+  ?~  acts  (pure:m bad)
+  ?.  ?=(%key-save -.i.acts)  $(acts t.acts)
+  ::  a later save to the same key replaces this one's body: check that
+  =/  kt=@t  key.i.acts
+  ?:  (lien t.acts |=(a=know-action:lk &(?=(%key-save -.a) =(key.a kt))))
+    $(acts t.acts)
+  =/  ko=(unit path)  (know-key key.i.acts)
+  ?~  ko  $(acts t.acts)
+  ;<  b=(unit [code=@ud msg=@t])  bind:m  (key-landed key u.ko body.i.acts)
+  $(acts t.acts, bad ?~(b bad (~(put by bad) u.ko u.b)))
 ::  +writer-sync: return once the writer has finished every poke sent to
 ::  it before this one. It takes one poke at a time and answers a poke
 ::  when it next waits, so a no-op poke (+apply-action skips [/ %noun])
@@ -6439,7 +6514,7 @@
   =/  nm=@t
     ?-  -.act
       ?(%del %restore)  name.act
-      ?(%save %make %drop %tag %untag)  name.act
+      ?(%save %make %ksave %drop %tag %untag)  name.act
     ==
   ?.  (name-ok:lsk nm)
     (refuse "a skill action: a bad name: {(trip nm)}")
@@ -6449,6 +6524,18 @@
   ?-    -.act
       %make
     ?^  old  (refuse "a skill create: the name is taken: {(trip nm)}")
+    (apply-skill now [%save name.act path.act body.act when.act])
+  ::  the route checked the skill as it read it; the owner may have
+  ::  tagged it core or marked it sensitive since
+      %ksave
+    ;<  ks=keys:ky  bind:m  (read-keys (rf up / %keys))
+    =/  kr=(unit key-row:ky)  (~(get by ks) kid.act)
+    ?~  kr  (refuse "a key skill save: no such agent key: {(trip kid.act)}")
+    =/  why=(unit tape)
+      %:  key-check:lsk  old  sensitive.scope.u.kr  (tainted:ky u.kr now)
+        ?.(=(main-file:lsk path.act) ~ `body.act)
+      ==
+    ?^  why  (refuse "a key skill save of {(trip nm)}: {u.why}")
     (apply-skill now [%save name.act path.act body.act when.act])
   ::
       %save

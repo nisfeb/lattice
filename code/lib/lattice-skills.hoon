@@ -26,6 +26,8 @@
   $%  [%save name=@t path=@t body=@t when=@da]
   ::  %save of a new skill only: refused when the name is taken by then
       [%make name=@t path=@t body=@t when=@da]
+  ::  an agent key's %save, by key id: the writer checks it again
+      [%ksave name=@t path=@t body=@t when=@da kid=@t]
       [%drop name=@t path=@t]
       [%del name=@t]
       [%restore name=@t]
@@ -421,6 +423,21 @@
   ^-  ?
   (yes-word:lk (meta s 'sensitive'))
 ++  is-core  |=(s=skill ^-(? (~(has in tags.s) 'core')))
+::  +key-check: why an agent key's save may not land on the skill as it
+::  is now, or ~. cleared: the key reads sensitive skills. tainted: it
+::  read sensitive text lately. main: the save's SKILL.md, when it is one,
+::  which may not lower the sensitive mark.
+++  key-check
+  |=  [old=(unit skill) cleared=? tainted=? main=(unit @t)]
+  ^-  (unit tape)
+  ?~  old  ~
+  ?:  (is-core u.old)  `"an agent key may not edit a core skill"
+  =/  sen=?  (sensitive u.old)
+  ?:  &(sen !cleared)  `"the skill is not available to this agent key"
+  ?:  &(!sen tainted)  `"a tainted key may not edit an ordinary skill"
+  ?:  &(sen ?=(^ main) !(sensitive u.old(body u.main)))
+    `"an agent key may not lower the sensitive mark"
+  ~
 ++  super
   |=  s=skill
   ^-  (unit @t)

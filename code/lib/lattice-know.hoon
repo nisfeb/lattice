@@ -773,9 +773,15 @@
   =/  sen=?  (sensitive u.old)
   ?:  &(sen !cleared)  [%| "the entry is not available to this agent key"]
   ?:  &(!sen tainted)  [%| "a tainted key may not edit an ordinary entry"]
-  ?.  &(sen !(sensitive [body *@da ~ ~]))  [%& body]
+  ?.  sen  [%& body]
+  [%& (raise-sens body)]
+::  +raise-sens: a body marked sensitive, as it is or with the mark set
+++  raise-sens
+  |=  body=@t
+  ^-  @t
+  ?:  (sensitive [body *@da ~ ~])  body
   =/  f  (front body)
-  [%& (with-front (meta-put meta.f 'sensitive' 'yes') rest.f)]
+  (with-front (meta-put meta.f 'sensitive' 'yes') rest.f)
 ::  +core-tag: does a requested tag name core once the writer case-folds
 ::  it? An untag drops the folded tag, so 'Core' removes 'core' too.
 ++  core-tag
