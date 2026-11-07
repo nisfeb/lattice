@@ -486,7 +486,8 @@ async function runShip(b) {
 //  a fresh clone of its own with the other lanes gone. Passing there makes
 //  it "flaky": named in the summary, and a failure only with --strict.
 async function retry(b, used) {
-  const failed = results.filter((r) => !r.ok && r.lane !== 'local').map((r) => r.suite);
+  //  not a two-ship suite (lane ~a+~b): a lone clone has no ship B for it
+  const failed = results.filter((r) => !r.ok && r.lane !== 'local' && !r.lane.startsWith('~')).map((r) => r.suite);
   if (!failed.length || flag('--no-retry')) return;
   say('retrying alone: ' + failed.join(' '));
   await run(F, ['drop', ...used.map((c) => c.id)], { timeout: 300 });
