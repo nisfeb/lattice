@@ -29,7 +29,7 @@
       ::  writer's run (+coalesce-victim). base: not 0, the rev the writer
       ::  edited from, checked again here in the writer, so a save that
       ::  raced another past the route's check is not written over it.
-      [%make-by pax=path src=@t by=@t base=@ud]
+      [%make-by pax=path src=@t who=@t base=@ud]
       ::  N pages in ONE writer transaction. An upload used to be one HTTP
       ::  request (and one poke) per file, and every request pays the pier's
       ::  ~0.5s floor serially. A 20-file drop was ~20 round-trips of pure

@@ -7530,8 +7530,8 @@
     ;<  old=?  bind:m  (peek-exists:fio (rf up (weld /page pax.act) %code))
     ;<  ~  bind:m  (write-page root pax.act src.act &)
     ;<  ~  bind:m
-      ?:  =('' by.act)  (pure:m ~)
-      (note-writer up pax.act +(rev.pc) by.act)
+      ?:  =('' who.act)  (pure:m ~)
+      (note-writer up pax.act +(rev.pc) who.act)
     ;<  pen=(unit [pub-pending:lp pub-trying:lp])  bind:m
       (pub-mark root now pax.act src.act)
     ;<  ~  bind:m  (yield-event root now pen pax.act /writer/yield)
@@ -8890,11 +8890,11 @@
   ?.  ?=([%file *] v)  (pure:m ~)
   (pure:m (fall (mole |.(;;((map @ud @t) (sang-noun:tarball sang.v)))) ~))
 ++  note-writer
-  |=  [up=@ud pax=path rev=@ud by=@t]
+  |=  [up=@ud pax=path rev=@ud who=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  old=(map @ud @t)  bind:m  (read-writers up pax)
-  =/  new=(map @ud @t)  (~(put by old) rev by)
+  =/  new=(map @ud @t)  (~(put by old) rev who)
   =/  ks=(list @ud)  (sort ~(tap in ~(key by new)) gth)
   =?  new  (gth (lent ks) 64)
     (malt (turn (scag 64 ks) |=(k=@ud [k (~(got by new) k)])))
