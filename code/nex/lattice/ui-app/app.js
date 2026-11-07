@@ -7766,7 +7766,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     const j = await r.json();
     $('shres').textContent = shp + ' can now ' + mode + ' ' + page +
-      (j.notified ? ' — notified.' : ' — could not notify (offline?); the grant holds.');
+      (j.notified ? ' — notified.' : j.folder ? ', and each page is sent to them.'
+        : ' — could not notify (offline?); the grant holds.');
     loadPerms();          // the peers panel shows the auto-group
   };
   $('shread').onclick = () => shareWith('read');

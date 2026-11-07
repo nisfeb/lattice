@@ -536,4 +536,43 @@
     (expect-eq !>(`(list path)`~) !>((index-ups:ls /f/s (silt `(list path)`~[/g]))))
     (expect-eq !>(`(list path)`~[/]) !>((index-ups:ls / (silt ~[`path`/]))))
   ==
+::  +holds-of: who reads which page, across every group. A ship in two
+::  groups reads the union, and edit wins over read.
+::
+++  test-holds-of
+  =/  gs=(list [who=(set @p) peek=(set path) make=(set path)])
+    :~  [(silt ~[zod bus]) (silt ~[/a/code /b/code]) (silt ~[/b/code])]
+        [(silt ~[zod]) (silt ~[/b/code /c/code]) ~]
+        [(silt ~[nec]) ~ ~]
+    ==
+  =/  h=holds:ls  (holds-of:ls gs)
+  ;:  weld
+    %+  expect-eq
+      !>((malt ~[[/a/code 'read'] [/b/code 'edit'] [/c/code 'read']]))
+      !>((~(got by h) zod))
+    %+  expect-eq
+      !>((malt ~[[/a/code 'read'] [/b/code 'edit']]))
+      !>((~(got by h) bus))
+    ::  a ship in a group with no pages holds nothing
+    (expect-eq !>(|) !>((~(has by h) nec)))
+  ==
+::  +holds-diff: only the change is told. A page a ship held already is no
+::  add (the duplicate notice this exists to avoid), a new mode is one, a
+::  page held through another group after a revoke is no del.
+::
+++  test-holds-diff
+  =/  old=holds:ls
+    (malt ~[[zod (malt ~[[/a/code 'read'] [/b/code 'read']])] [bus (malt ~[[/a/code 'read']])]])
+  =/  new=holds:ls
+    (malt ~[[zod (malt ~[[/a/code 'read'] [/b/code 'edit'] [/c/code 'read']])] [nec (malt ~[[/a/code 'read']])]])
+  =/  d  (holds-diff:ls old new)
+  ;:  weld
+    %+  expect-eq
+      !>  %+  sort  ~[[zod /b/code 'edit'] [zod /c/code 'read'] [nec /a/code 'read']]
+          |=([a=[@p path @t] b=[@p path @t]] (aor a b))
+      !>(add.d)
+    (expect-eq !>(~[[bus /a/code]]) !>(del.d))
+    ::  no change, nothing told
+    (expect-eq !>([~ ~]) !>((holds-diff:ls new new)))
+  ==
 --

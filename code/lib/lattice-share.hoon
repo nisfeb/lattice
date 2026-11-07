@@ -633,4 +633,58 @@
   =.  on  |(on (~(has in ixs) i.ups))
   ?.  on  $(ups t.ups)
   [i.ups $(ups t.ups)]
+::
+::  ==  who holds which page  ==
+::
+::  A share notice goes to the ships a grant reaches and a revoke leaves.
+::  Grants are unioned across every group a ship is in, so "reaches" is
+::  read from all of them, before and after a change, and only the
+::  difference is told: a ship that held a page already hears nothing.
+::
+::  +$  holds: per ship, each page code path it reads and its mode
++$  holds  (map @p (map path @t))
+::  +holds-of: the groups' ships, each with its page code paths: those it
+::  reads (peek) and those it writes (make). Edit wins across groups.
+++  holds-of
+  |=  gs=(list [who=(set @p) peek=(set path) make=(set path)])
+  ^-  holds
+  =|  acc=holds
+  |-  ^-  holds
+  ?~  gs  acc
+  =/  ss=(list @p)  ~(tap in who.i.gs)
+  =/  ps=(list path)  ~(tap in peek.i.gs)
+  |-  ^-  holds
+  ?~  ss  ^$(gs t.gs)
+  =/  cur=(map path @t)  (~(gut by acc) i.ss ~)
+  =/  l=(list path)  ps
+  |-  ^-  holds
+  ?~  l
+    ?~  cur  ^$(ss t.ss)
+    ^$(ss t.ss, acc (~(put by acc) i.ss cur))
+  =/  md=@t  ?:((~(has in make.i.gs) i.l) 'edit' 'read')
+  ?:  =(`'edit' (~(get by cur) i.l))  $(l t.l)
+  $(l t.l, cur (~(put by cur) i.l md))
+::  +holds-diff: what to tell. Each page a ship reads now and did not, or
+::  reads with a new mode, is an add; each it read and reads no more, a
+::  del. Sorted, so the order is the same on every run.
+++  holds-diff
+  |=  [old=holds new=holds]
+  ^-  [add=(list [who=@p pax=path mode=@t]) del=(list [who=@p pax=path])]
+  =/  add=(list [who=@p pax=path mode=@t])
+    %-  zing
+    %+  turn  ~(tap by new)
+    |=  [s=@p ps=(map path @t)]
+    =/  was=(map path @t)  (~(gut by old) s ~)
+    %+  murn  ~(tap by ps)
+    |=  [p=path md=@t]
+    ?:(=(`md (~(get by was) p)) ~ `[s p md])
+  =/  del=(list [who=@p pax=path])
+    %-  zing
+    %+  turn  ~(tap by old)
+    |=  [s=@p ps=(map path @t)]
+    =/  now=(map path @t)  (~(gut by new) s ~)
+    %+  murn  ~(tap in ~(key by ps))
+    |=(p=path ?:((~(has by now) p) ~ `[s p]))
+  :-  (sort add |=([a=[@p path @t] b=[@p path @t]] (aor a b)))
+  (sort del |=([a=[@p path] b=[@p path]] (aor a b)))
 --
