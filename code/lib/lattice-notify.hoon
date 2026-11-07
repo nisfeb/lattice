@@ -235,4 +235,22 @@
   ^-  @t
   =/  p=(unit post:ft)  (~(get by posts.brd) post)
   ?~(p '' title.u.p)
+::  +move-items: the items about one of our own pages at or under `from`
+::  (a page path as `where` holds it, a/b), changed to name the same page
+::  under `to`, by id. A move takes a page's comments with it, and these
+::  are what the inbox lists them by. Items about another ship's page or
+::  a board stay as they are.
+++  move-items
+  |=  [items=(list [id=@ta i=item]) our=@p from=@t to=@t]
+  ^-  (list [id=@ta i=item])
+  =/  f=tape  (trip from)
+  %+  murn  items
+  |=  [id=@ta i=item]
+  ^-  (unit [id=@ta i=item])
+  ?.  &(?=(%comment kind.i) =(our host.i))  ~
+  =/  w=tape  (trip where.i)
+  ?:  =(w f)  `[id i(where to)]
+  =/  pre=tape  (weld f "/")
+  ?.  =(pre (scag (lent pre) w))  ~
+  `[id i(where (crip (weld (trip to) (slag (lent f) w))))]
 --

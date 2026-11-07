@@ -264,7 +264,7 @@ for (const f of readdirSync(join(corpus, 'hostile')).sort()) {
   let p; let threw = null;
   try { p = parseFodt(t); } catch (e) { threw = e; }
   check(`hostile/${f}: never throws`, !threw, threw && threw.message);
-  if (/billion|doctype|external-entity|deep/.test(f)) check(`hostile/${f}: refused with { error }`, !!(p && p.error), p && p.error);
+  if (/billion|doctype|external-entity|deep|space-bomb/.test(f)) check(`hostile/${f}: refused with { error }`, !!(p && p.error), p && p.error);
   else {
     check(`hostile/${f}: opens`, !!(p && !p.error), p && p.error);
     check(`hostile/${f}: no-op is byte-identical`, serializeFodt(p, t).text === t);
@@ -278,6 +278,15 @@ for (const f of readdirSync(join(corpus, 'hostile')).sort()) {
   const all = [...s.styles.styles.values()].map((e) => core.styleCss(s.styles, e.family, e.name)).join(';');
   check('style values never reach CSS unparsed', !/url\(|expression|<|>|\}/.test(all), all);
   check('the font-size with an injection is dropped', !/font-size/.test(core.styleCss(s.styles, 'paragraph', 'Evil_20_Para')));
+  //  10 KB of text:s that says 40 million spaces: the editor refuses it,
+  //  and search reads at most a million of them, in linear time
+  const sb = read('hostile/space-bomb.fodt');
+  const t0 = performance.now();
+  const words = core.fodtText(sb);
+  const ms = performance.now() - t0;
+  check(`hostile/space-bomb.fodt: its words in linear time (${ms.toFixed(0)} ms)`, ms < 1000 && /^spaced {1000,}out$/.test(words)
+    && words.length <= core.SPACES + 9, words.length);
+  check('the spaces around a line break still go', core.fodtText(read('12-whitespace.fodt')).split('\n').every((l) => l === l.replace(/^ +| +$/g, '')));
   const big = 'x'.repeat(8 * 1024 * 1024 + 1);
   check('a document over 8 MB is refused', !!parseFodt(big).error);
   check('a malformed document is refused', !!parseFodt('<office:document><office:body>').error);
@@ -368,6 +377,67 @@ console.log('# the view (Task 9), what node can check');
   check('a list style is found by kind in a corpus file', core.listStyleFor(parseFodt(read('04-lists.fodt')).styles, 'number') === 'L2');
   check('a Basic library counts as macros, LibreOffice\'s empty libraries element does not',
     p10.macros === true && parseFodt(read('01-paragraphs.fodt')).macros === false);
+}
+
+console.log('# paste and save, from other editors');
+{
+  //  a pasted control character never reaches the file: XML 1.0 has no
+  //  way to write one, and LibreOffice refuses a file that holds one
+  const t = read('01-paragraphs.fodt');
+  const p = parseFodt(t);
+  const b = core.findBlock(p.doc, 'A second paragraph');
+  const tr = EditorState.create({ doc: p.doc }).tr.insertText('one\u000btwo\u0001\u000c￾three', b.pos + 1);
+  const o = serializeFodt({ doc: tr.doc }, t);
+  const para = ((o.text || '').match(/>(one[^]*?three)/) || [])[1] || '';
+  check('a pasted control character is not written', !o.error && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f￾￿]/.test(o.text), JSON.stringify(para));
+  check('and Word\'s vertical tab is a line break', para === 'one<text:line-break/>twothree', JSON.stringify(para));
+  //  the rules ProseMirror's DOMParser reads pasted HTML with. Google Docs
+  //  wraps a whole paste in <b style="font-weight:normal">, and says
+  //  underline and strike in a span's style
+  const rules = (m) => schema.marks[m].spec.parseDOM;
+  const matches = (m, style, v) => rules(m).filter((r) => r.style === style || r.style === style + '=' + v)
+    .find((r) => !r.getAttrs || r.getAttrs(v) !== false);
+  const b0 = rules('strong').find((r) => r.tag === 'b');
+  check('a <b> that says font-weight:normal is not bold', !!b0.getAttrs && b0.getAttrs({ style: { fontWeight: 'normal' } }) === false);
+  check('a plain <b> is', !b0.getAttrs || b0.getAttrs({ style: { fontWeight: '' } }) !== false);
+  check('font-weight:400 inside a bold run turns bold off', !!matches('strong', 'font-weight', '400')?.clearMark);
+  check('font-weight:700 is bold', !!matches('strong', 'font-weight', '700') && !matches('strong', 'font-weight', '700').clearMark);
+  check('font-style:normal turns italic off', !!matches('em', 'font-style', 'normal')?.clearMark);
+  check('text-decoration:underline is underline', !!matches('underline', 'text-decoration', 'underline'));
+  check('text-decoration:line-through is strike', !!matches('strike', 'text-decoration', 'line-through'));
+  check('text-decoration-line:underline line-through is both', !!matches('underline', 'text-decoration-line', 'underline line-through')
+    && !!matches('strike', 'text-decoration-line', 'underline line-through'));
+  check('text-decoration:none is neither', !matches('underline', 'text-decoration', 'none') && !matches('strike', 'text-decoration', 'none'));
+}
+
+console.log('# copy and paste within Writer');
+{
+  const S = schema.nodes;
+  //  what the view writes to the clipboard is read back: a link's
+  //  data-href, a character style's data-cs, a list's data-ls
+  const rules = (t) => (schema.marks[t] || schema.nodes[t]).spec.parseDOM;
+  const el = (attrs) => ({ getAttribute: (k) => attrs[k] ?? null, hasAttribute: (k) => k in attrs });
+  const lr = rules('link').find((r) => r.tag === 'a[data-href]');
+  check('a copied link keeps its target', !!lr && lr.getAttrs(el({ 'data-href': 'https://example.org/' })).href === 'https://example.org/');
+  check('and a copied javascript: link is still dropped', !!lr && lr.getAttrs(el({ 'data-href': 'javascript:alert(1)' })) === false);
+  const cr = (rules('charStyle') || []).find((r) => r.tag === 'span[data-cs]');
+  check('a copied character style is read back', !!cr && cr.getAttrs(el({ 'data-cs': 'Emphasis' })).name === 'Emphasis');
+  const ul = rules('list').find((r) => r.tag === 'ul');
+  const ua = ul.getAttrs(el({ 'data-ls': 'L2' }));
+  check('a copied list names its list style', (ua.xattrs || []).some(([k, v]) => k === 'text:style-name' && v === 'L2'));
+  //  paste.js keeps a style this document has, and drops one it has not
+  const st = parseFodt(read('04-lists.fodt')).styles;
+  const item = S.list_item.create(null, S.paragraph.create(null, schema.text('x')));
+  const num = core.fixPasted(S.list.create({ kind: 'bullet', xattrs: [['text:style-name', 'L2']] }, item), st);
+  check('a pasted numbered list keeps its numbering', num.attrs.xattrs.some(([k, v]) => k === 'text:style-name' && v === 'L2'), JSON.stringify(num.attrs.xattrs));
+  const other = core.fixPasted(S.list.create({ kind: 'bullet', xattrs: [['text:style-name', 'Nope"/><x']] }, item), st);
+  check('a list style this document lacks becomes its own', other.attrs.xattrs.length === 1 && other.attrs.xattrs[0][1] === core.listStyleFor(st, 'bullet'), JSON.stringify(other.attrs.xattrs));
+  const st7 = parseFodt(read('07-styles.fodt')).styles;
+  const cs = (n) => schema.text('w', [schema.marks.charStyle.create({ name: n })]);
+  const para = (n) => core.fixPasted(S.paragraph.create(null, cs(n)), st7).firstChild.marks.length;
+  const known = [...st7.styles.values()].find((e) => e.family === 'text' && !e.auto);
+  check('a pasted character style this document defines stays', !!known && para(known.name) === 1);
+  check('one it does not define goes', para('No_20_Such') === 0);
 }
 
 console.log('# speed');

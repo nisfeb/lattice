@@ -751,6 +751,27 @@
   ?:  =('/' i.nam)
     $(nam t.nam, last ?~(cur last cur), cur ~)
   $(nam t.nam, cur [i.nam cur])
+::  +rewrite-wikilinks: rewrite [[from]] and [[from/...]] references in code
+::  text to the new name, the bare-name form wikilinks use (app.hoon's
+::  +rewrite-root only covers /slash-prefixed hoon path literals).
+::  Boundary-checked so a [[fromX]] page is never clobbered by a move of
+::  [[from]]. A labelled [[from|label]] is a link too (+backlink-hit).
+::
+++  rewrite-wikilinks
+  |=  [hay=tape from=tape to=tape]
+  ^-  tape
+  ?~  from  hay
+  =/  ndl=tape  (weld "[[" from)
+  =/  nl=@ud  (lent ndl)
+  |-  ^-  tape
+  =/  i  (find ndl hay)
+  ?~  i  hay
+  =/  pre=tape  (scag u.i hay)
+  =/  aft=tape  (slag (add u.i nl) hay)
+  =/  nx=tape  (scag 1 aft)
+  ?.  |(=(~ nx) =("]" nx) =("/" nx) =("|" nx))
+    (weld (weld pre ndl) $(hay aft))
+  (weld (weld pre (weld "[[" to)) $(hay aft))
 ::  +backlink-hit: does `body` wikilink to page `name`? True for the plain
 ::  [[name]] and for a labelled [[name|label]]. The closing "]]" or "|"
 ::  in the needle keeps [[name2]] from counting as a link to name.

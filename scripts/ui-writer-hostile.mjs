@@ -75,11 +75,14 @@ End Sub</office:script><office:event-listeners><script:event-listener script:lan
 //  what each file should show: a word of its safe text, or the refusal
 //  (a DOCTYPE with a subset, any ENTITY, and depth past 256 are refused)
 const REFUSED = new Set(['billion-laughs', 'doctype-entity', 'external-entity', 'deep-nesting']);
+//  refused by the editor only: the ship's renderer spells out at most 100
+//  spaces a text:s, so its surfaces show the sheet
+const EDITOR_REFUSED = new Set(['space-bomb']);
 const files = readdirSync(HDIR).filter((f) => f.endsWith('.fodt')).sort()
   .map((f) => [f.replace(/\.fodt$/, ''), readFileSync(join(HDIR, f), 'utf8')]);
 files.push(['crafted', CRAFTED]);
 const word = {
-  'bad-links': 'javascript', 'external-image': '', 'script-iframe': '', 'style-injection': '',
+  'bad-links': 'javascript', 'external-image': '', 'script-iframe': '', 'style-injection': '', 'space-bomb': 'spaced',
   crafted: 'Crafted heading',
 };
 
@@ -219,7 +222,7 @@ for (const [n] of files) {
       text: (document.querySelector('lat-writer .lw-doc') || {}).textContent || '',
       note: [...document.querySelectorAll('.lnkcf')].filter((e) => !e.hidden).map((e) => e.textContent).join(' '),
     }));
-    if (refused) check('editor ' + n + ': refused, shown as XML with the reason', !st.writer && /cannot open/i.test(st.note), st.note.slice(0, 100));
+    if (refused || EDITOR_REFUSED.has(n)) check('editor ' + n + ': refused, shown as XML with the reason', !st.writer && /cannot open/i.test(st.note), st.note.slice(0, 100));
     else check('editor ' + n + ': opens in the editor', st.writer && (!word[n] || st.text.includes(word[n])), st.note.slice(0, 100));
     if (st.writer) {
       // hover and click every link: none may navigate or run anything

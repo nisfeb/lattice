@@ -140,4 +140,15 @@
   =/  q=tape  (zing (reap 4.000 "> "))
   =/  t=@t  (crip (weld q "x"))
   (expect-eq !>(32) !>((lent (fand "<blockquote>" (r t)))))
+::  +rewrite-wikilinks: a move rewrites [[from]], [[from/x]] and the
+::  labelled [[from|label]], and leaves [[fromx]] alone
+++  test-rewrite-wikilinks
+  =/  rw  |=(h=tape (rewrite-wikilinks:md h "a/b" "c/d"))
+  ;:  weld
+    (expect-eq !>("see [[c/d]]") !>((rw "see [[a/b]]")))
+    (expect-eq !>("[[c/d/x]]") !>((rw "[[a/b/x]]")))
+    (expect-eq !>("[[c/d|the b page]]") !>((rw "[[a/b|the b page]]")))
+    (expect-eq !>("[[a/bc]] [[c/d]]") !>((rw "[[a/bc]] [[a/b]]")))
+    (expect-eq !>("[[c/d") !>((rw "[[a/b")))
+  ==
 --

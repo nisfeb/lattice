@@ -12,6 +12,7 @@
 import { Fragment, Slice } from 'prosemirror-model';
 import { Plugin } from 'prosemirror-state';
 import { schema } from './schema.js';
+import { decode, escAttr } from './xml.js';
 import { listKind, lookup } from './styles.js';
 import { bodyStyle, headingStyle } from './keys.js';
 
@@ -38,7 +39,10 @@ export function fixPasted(node, st) {
     kids.push(fixPasted(c, st));
   });
   const content = node.isLeaf ? null : Fragment.from(kids);
-  if (node.isText) return node;
+  //  a character style this document does not define would be a dangling
+  //  reference in the file
+  const marks = node.marks.filter((m) => m.type !== schema.marks.charStyle || lookup(st, 'text', m.attrs.name));
+  if (node.isText) return marks.length === node.marks.length ? node : node.mark(marks);
   if (node.type === S.opaque_block || node.type === S.opaque_inline) return node;
   const attrs = { ...node.attrs };
   if ('src' in attrs) attrs.src = null;
@@ -47,11 +51,15 @@ export function fixPasted(node, st) {
   if (node.type === S.paragraph && attrs.style == null) attrs.style = bodyStyle(st);
   if (node.type === S.heading && (attrs.style == null || !lookup(st, 'paragraph', attrs.style))) attrs.style = headingStyle(st, attrs.level);
   if (node.type === S.list) {
-    const name = listStyleFor(st, attrs.kind || 'bullet');
-    attrs.xattrs = name ? [['text:style-name', name]] : [];
+    //  the list style a copy from a Writer document names, if this
+    //  document has it, else this document's own of that kind
+    const was = node.attrs.xattrs.find(([k]) => k === 'text:style-name');
+    const own = was && decode(was[1]);
+    const name = own && st.lists.has(own) ? own : listStyleFor(st, attrs.kind || 'bullet');
+    attrs.xattrs = name ? [['text:style-name', escAttr(name)]] : [];
     attrs.kind = null;
   }
-  return node.type.create(attrs, content, node.marks);
+  return node.type.create(attrs, content, marks);
 }
 
 export function pastePlugin(ctl, st) {

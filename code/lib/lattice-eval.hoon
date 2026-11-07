@@ -31,6 +31,13 @@
       [%make-many pages=(list [pax=path src=@t])]
       [%cmd pax=path txt=@t bud=@ud]    ::  send a command (bud = poke budget)
       [%del pax=path]                   ::  delete a page
+      ::  a move's state, copied from the pages and folders at or under
+      ::  `from` to the same places under `to`: before the pages are made
+      ::  there, each one's evaluator data and its comment, comet and form
+      ::  flags (%carry-state); after, each page's revision history, its
+      ::  comments, held comments and inbox items (%carry)
+      [%carry-state from=path to=path]
+      [%carry from=path to=path]
       [%share pax=path mode=share-mode] ::  set a page's sharing preset
       [%share-tree pax=path mode=share-mode] ::  set every page under pax
       ::  set (%private clears) the share setting of the FOLDER at pax,
@@ -85,6 +92,9 @@
       ::  inbox fiber (/forum.sig) never writes /forum itself: /main.sig is
       ::  the single writer of the whole /forum tree.
       [%forum-note-store host=@p payload=*]
+      ::  a ban's cleanup: every post, comment and vote of `who` and its
+      ::  moons (every comet for +all-comets:ls) off every board we host
+      [%forum-cull who=@p]
       ::  the owner clears every stored refusal note (frees the 100-note cap).
       [%forum-notes-clear ~]
       ::  the owner read activity items (lib/lattice-notify): these ids, or

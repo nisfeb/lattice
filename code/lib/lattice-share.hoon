@@ -603,4 +603,34 @@
   ?~  rel.f  |
   =/  pre=tape  :(weld "/page" (trip (spat rel.f)) "/")
   =(pre (scag (lent pre) sub))
+::  +move-resumes: is a move from `pf` to `pt` asked at `now` the one the
+::  /move-job note `job` says a reload left part way? Only then may it
+::  finish without the destination checks a fresh move gets: its
+::  destination is its own half-made copy. A note stays behind when the
+::  reload falls between the source's delete and the note's clear, and
+::  read as a resume for good it let the same move asked again later
+::  overwrite whatever had been made at the destination since. So a note
+::  counts for `ttl`, the time +move-guard holds saves out of the source.
+++  move-resumes
+  |=  [job=(unit [from=path to=path at=@da]) pf=path pt=path now=@da ttl=@dr]
+  ^-  ?
+  ?~  job  |
+  ?.  &(=(pf from.u.job) =(pt to.u.job))  |
+  (lte (sub now (min now at.u.job)) ttl)
+::  +index-ups: the folders whose dir-index a page made in `dir` changes:
+::  `dir` and each folder above it, from the highest that keeps an index
+::  (`ixs` holds those) down. A folder's index lists every page under it,
+::  so these are the only ones; a folder beside the path is unchanged. A
+::  folder on the path with no index yet, under one that has, gets one,
+::  as a whole rewrite of the higher folder would have given it.
+++  index-ups
+  |=  [dir=path ixs=(set path)]
+  ^-  (list path)
+  =/  ups=(list path)  (turn (gulf 0 (lent dir)) |=(n=@ud (scag n dir)))
+  =/  on=?  |
+  |-  ^-  (list path)
+  ?~  ups  ~
+  =.  on  |(on (~(has in ixs) i.ups))
+  ?.  on  $(ups t.ups)
+  [i.ups $(ups t.ups)]
 --

@@ -5,7 +5,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { claim, ownerName, ownerState, release, staleClones, tryClaim } from './lib/gate-claim.mjs';
+import { claim, noneRanWhy, ownerName, ownerState, release, staleClones, tryClaim } from './lib/gate-claim.mjs';
 import { procTag } from './lib/hygiene.mjs';
 
 let fails = 0;
@@ -53,6 +53,12 @@ try {
   clone('dep-1', 'dep', gone); clone('dep-2', 'dep', me); clone('dep-3', 'dep', 'fast-gate'); clone('wep-1', 'wep', gone);
   const s = staleClones(clones, 'dep', isAlive);
   check(s.length === 1 && s[0].id === 'dep-1' && s[0].who === gone, 'only a gone gate\'s clones of the ship are stale');
+
+  //  a run that executed no suite fails, and says why
+  check(noneRanWhy({ ran: 3, planned: 3 }) === '' && noneRanWhy({ ran: 0, planned: 0, warm: true }) === '', 'a run with suites, or a --warm run, is not failed for running none');
+  check(/claim wait timed out/.test(noneRanWhy({ ran: 0, planned: 2, fatal: 'the claim wait timed out after 2700 s: set lattice-gate is held by ' + other })), 'giving up on a held claim with nothing run fails, naming the claim wait');
+  check(/nothing matched/.test(noneRanWhy({ ran: 0, planned: 0 })), 'nothing to run fails as nothing matched');
+  check(/2 were planned/.test(noneRanWhy({ ran: 0, planned: 2 })), 'planned suites that never started fail');
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

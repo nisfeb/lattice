@@ -511,4 +511,29 @@
     ::  a page named b/page/f/a is not under /f
     (expect-eq !>(~) !>((fold-hit:ls fs nec /apps/lattice/page/b/page/f/a/code)))
   ==
+::  +move-resumes: a fresh note for the same move resumes it. A stale one,
+::  or one for another move, does not, so the move gets the clobber checks.
+++  test-move-resumes
+  =/  t0  ~2026.11.6..12.00.00
+  =/  job  `[/a /b t0]
+  ;:  weld
+    (expect-eq !>(&) !>((move-resumes:ls job /a /b (add t0 ~m3) ~m10)))
+    (expect-eq !>(|) !>((move-resumes:ls job /a /b (add t0 ~h1) ~m10)))
+    (expect-eq !>(|) !>((move-resumes:ls job /a /c (add t0 ~m1) ~m10)))
+    (expect-eq !>(|) !>((move-resumes:ls ~ /a /b t0 ~m10)))
+    ::  a clock that stepped back reads as fresh rather than crashing
+    (expect-eq !>(&) !>((move-resumes:ls job /a /b (sub t0 ~m1) ~m10)))
+  ==
+::  a new page rewrites the indexes on its own path only: from the highest
+::  folder that keeps one down to its own, never a folder beside it
+++  test-index-ups
+  ;:  weld
+    (expect-eq !>(`(list path)`~[/f /f/s]) !>((index-ups:ls /f/s (silt `(list path)`~[/f /f/s /f/t]))))
+    ::  a new subfolder under an indexed one gets an index
+    (expect-eq !>(`(list path)`~[/f /f/s /f/s/n]) !>((index-ups:ls /f/s/n (silt `(list path)`~[/f /f/t]))))
+    ::  only the nearer index: the higher folder is not shared
+    (expect-eq !>(`(list path)`~[/f/s]) !>((index-ups:ls /f/s (silt `(list path)`~[/f/s /g]))))
+    (expect-eq !>(`(list path)`~) !>((index-ups:ls /f/s (silt `(list path)`~[/g]))))
+    (expect-eq !>(`(list path)`~[/]) !>((index-ups:ls / (silt ~[`path`/]))))
+  ==
 --

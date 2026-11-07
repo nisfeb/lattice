@@ -42,6 +42,8 @@
   ::
       %pin-post
     ?.  mod  |+'only a moderator may pin'
+    ::  a pin names a post: an id with none would only grow the set
+    ?:  &(pinned.action !(~(has by posts.brd) id.action))  |+'post not found'
     %-  done
     %=  brd
       pinned  ?:  pinned.action
@@ -119,7 +121,38 @@
     posts             (~(del by posts.b) id)
     comments          (~(del by comments.b) id)
     next-comment-ids  (~(del by next-comment-ids.b) id)
+    pinned            (~(del in pinned.b) id)
   ==
+::  +cull: a board without what `mine` wrote: its posts (with their
+::  threads) and comments gone, and its votes off what stays. A ban runs
+::  it as the host, in one write. A vote can't be culled through +act,
+::  which removes a vote only as its voter, and a banned voter's own
+::  action is dropped.
+::
+++  cull
+  |=  [brd=board mine=$-(@p ?)]
+  ^-  board
+  =/  keep  |=(s=(set @p) `(set @p)`(silt (skip ~(tap in s) mine)))
+  =.  brd
+    %+  drop-posts  brd
+    (murn ~(tap by posts.brd) |=([id=post-id p=post] ?.((mine author.p) ~ `id)))
+  =.  comments.brd
+    %-  ~(run by comments.brd)
+    |=  cs=(map comment-id comment)
+    %-  malt
+    %+  murn  ~(tap by cs)
+    |=  [cid=comment-id c=comment]
+    ?:  (mine author.c)  ~
+    `[cid c(up-votes (keep up-votes.c), down-votes (keep down-votes.c))]
+  =.  posts.brd
+    %-  ~(urn by posts.brd)
+    |=  [id=post-id p=post]
+    %=  p
+      up-votes       (keep up-votes.p)
+      down-votes     (keep down-votes.p)
+      comment-count  ?~(cs=(~(get by comments.brd) id) comment-count.p ~(wyt by u.cs))
+    ==
+  brd
 ::  +vote: one ship's vote on a post or comment; a vote on nothing is
 ::  nothing
 ::

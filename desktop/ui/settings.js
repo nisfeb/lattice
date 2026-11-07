@@ -148,9 +148,11 @@
       const id = (t.getAttribute('href') || '').slice(1);
       if (show(id)) window.scrollTo(0, 0);
     });
-    // the hash names a panel, or an element inside one
+    // the hash names a panel, or an element inside one. A malformed one
+    // (#%) names nothing, so the first panel still shows
     const pick = () => {
-      const id = decodeURIComponent(location.hash.slice(1));
+      let id = '';
+      try { id = decodeURIComponent(location.hash.slice(1)); } catch {}
       const el = id && document.getElementById(id);
       if (el && el.classList.contains('st-panel')) return show(id, true);
       if (el && el.closest('.st-panel')) { reveal(el); el.scrollIntoView({ block: 'start' }); return true; }
