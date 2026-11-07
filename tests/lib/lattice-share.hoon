@@ -365,6 +365,55 @@
     (expect-eq !>(1) !>(~(wyt by got)))
     (expect-eq !>(`title-row:ls`[12 'Bee']) !>((~(got by got) '/b')))
   ==
+::  a peer's titles: each title cleaned and capped, and a cord past the
+::  1 MB guard is not parsed at all
+++  test-peer-titles
+  =/  long=@t  (crip (reap 400 'x'))
+  =/  c=@t  (crip :(weld "/a\0912\09one\09two\0a/b\0913\09" (trip long)))
+  =/  got=(map @t title-row:ls)  (peer-titles:ls c)
+  =/  big=@t  (crip (reap +(peer-titles-max:ls) 'y'))
+  ;:  weld
+    (expect-eq !>(`title-row:ls`[12 'one two']) !>((~(got by got) '/a')))
+    (expect-eq !>(title-cap:ls) !>((met 3 title:(~(got by got) '/b'))))
+    (expect-eq !>(~) !>((peer-titles:ls (cat 3 '/c\0914\09T\0a' big))))
+  ==
+::  the reader's policy for a peer's page loads nothing from another
+::  host, and the outside toggle opens https images alone
+++  test-peer-csp
+  =/  shut=tape  (trip (peer-csp:ls |))
+  =/  open=tape  (trip (peer-csp:ls &))
+  =/  has  |=([n=tape h=tape] ?=(^ (find n h)))
+  ;:  weld
+    (expect-eq !>(&) !>((has "img-src 'self' data:;" shut)))
+    (expect-eq !>(|) !>((has "https:" shut)))
+    (expect-eq !>(|) !>((has "*" shut)))
+    (expect-eq !>(&) !>((has "connect-src 'self';" shut)))
+    (expect-eq !>(&) !>((has "img-src 'self' data: https:;" open)))
+    (expect-eq !>(&) !>((has "font-src 'self' data:;" open)))
+  ==
+::  the policy goes first in the head and the foot before </body>; a
+::  document of another shape is left alone
+++  test-peer-doc
+  =/  d=@t  '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>t</title></head><body>B</body></html>'
+  =/  got=@t  (peer-doc:ls 'img-src x' '<p>F</p>' d)
+  ;:  weld
+    %+  expect-eq
+      !>('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="img-src x"><title>t</title></head><body>B<p>F</p></body></html>')
+      !>(got)
+    (expect-eq !>('<p>x</p>') !>((peer-doc:ls 'c' 'f' '<p>x</p>')))
+  ==
+::  the outside toggle is per page: the cookie names the page by hash
+++  test-outside-on
+  =/  a=@t  'urb://~zod/pub/a'
+  =/  k=tape  (outside-key:ls a)
+  =/  ck=@t  (crip :(weld "x=1; latout=" (outside-key:ls 'urb://~zod/pub/b') "." k "; y=2"))
+  ;:  weld
+    (expect-eq !>(&) !>((outside-on:ls ck a)))
+    (expect-eq !>(|) !>((outside-on:ls ck 'urb://~zod/pub/c')))
+    (expect-eq !>(|) !>((outside-on:ls '' a)))
+    (expect-eq !>(|) !>((outside-on:ls (crip (weld "xlatout=" k)) a)))
+    (expect-eq !>(16) !>((lent k)))
+  ==
 ::  the label falls back to the name, and a folder is its name
 ++  test-row-label
   =/  rows=(map @t title-row:ls)
@@ -673,5 +722,123 @@
     (expect-eq !>(~[[bus /a/code]]) !>(del.d))
     ::  no change, nothing told
     (expect-eq !>([~ ~]) !>((holds-diff:ls new new)))
+  ==
+::
+::  ==  invariants pass, 2026-11-07  ==
+::
+::  item 1: a page is sensitive by the nearest flag at or above it in the
+::  folder, else by what the folder takes from above
+++  test-sens-at
+  =/  fl=(map path ?)  (~(gas by *(map path ?)) ~[[/a &] [/a/b/c |]])
+  ;:  weld
+    (expect-eq !>(&) !>((sens-at:ls fl | /a/x)))
+    (expect-eq !>(&) !>((sens-at:ls fl | /a/b/d)))
+    (expect-eq !>(|) !>((sens-at:ls fl | /a/b/c)))
+    (expect-eq !>(|) !>((sens-at:ls fl | /z)))
+    (expect-eq !>(&) !>((sens-at:ls fl & /z)))
+    (expect-eq !>(&) !>((sens-at:ls ~ & ~)))
+  ==
+::  item 2: a tainted key writes only a sensitive page that is not
+::  published and granted to no ship
+++  test-taint-dest
+  ;:  weld
+    (expect-eq !>(&) !>((taint-dest:ls & | |)))
+    (expect-eq !>(|) !>((taint-dest:ls & & |)))
+    (expect-eq !>(|) !>((taint-dest:ls & | &)))
+    (expect-eq !>(|) !>((taint-dest:ls | | |)))
+  ==
+::  item 3: a ban strips the ship's whole family from a group: moons of a
+::  banned planet, every comet when the comets are banned
+++  test-ban-drop-family
+  =/  pl=@p  ~sampel-palnet
+  =/  moon=@p  (cat 5 pl 7)
+  =/  other=@p  (cat 5 ~nec 7)
+  =/  comet=@p  (cat 7 (bex 64) 1)
+  =/  ships=(set @p)  (~(gas in *(set @p)) ~[pl moon other comet ~bus])
+  ;:  weld
+    %+  expect-eq  !>((~(gas in *(set @p)) ~[other comet ~bus]))
+    !>((ban-drop:ls (~(gas in *(set @p)) ~[pl]) ships))
+    %+  expect-eq  !>((~(gas in *(set @p)) ~[pl moon other ~bus]))
+    !>((ban-drop:ls (~(gas in *(set @p)) ~[all-comets:ls]) ships))
+    (expect-eq !>(ships) !>((ban-drop:ls ~ ships)))
+  ==
+::  item 4: a group write drops whoever is banned at write time, so a
+::  share that read the old members cannot write a stripped ship back
+++  test-ban-drop-race
+  =/  old=(set @p)  (~(gas in *(set @p)) ~[~nec ~bus])
+  =/  bans=banned:ls  (~(gas in *(set @p)) ~[~nec])
+  (expect-eq !>((~(gas in *(set @p)) ~[~bus ~wes])) !>((ban-drop:ls bans (~(put in old) ~wes))))
+::  item 5: a folder grant in a weir with no note is found, at its mode,
+::  and a subfolder's index under a noted folder is no orphan
+++  test-grant-orphans
+  =/  recs=(map path (map @t @t))
+    (~(gas by *(map path (map @t @t))) ~[[/f (~(gas by *(map @t @t)) ~[['nec' 'read']])]])
+  ;:  weld
+    %+  expect-eq
+      !>(`(list [g=@t f=path md=@t])`~[['bus' /f 'edit'] ['nec' /g 'read']])
+    !>((grant-orphans:ls ~[['nec' /f |] ['bus' /f &] ['nec' /g |] ['nec' /f/s |]] recs))
+    ::  the orphan's own subfolders are covered once it is noted
+    %+  expect-eq
+      !>(`(list [g=@t f=path md=@t])`~[['nec' /g 'read']])
+    !>((grant-orphans:ls ~[['nec' /g/s |] ['nec' /g |]] ~))
+  ==
+::  item 6: one host holds at most +host-cap entries, and a re-share of
+::  one it holds still lands; paths are bounded
+++  test-host-full
+  =/  many=shared:ls
+    %+  turn  (gulf 1 host-cap:ls)
+    |=(i=@ud `entry:ls`[~nec /apps/(scot %ud i) 'read' ~2024.1.1])
+  ;:  weld
+    (expect-eq !>(&) !>((host-full:ls many ~nec /apps/new)))
+    (expect-eq !>(|) !>((host-full:ls many ~nec /apps/'1')))
+    (expect-eq !>(|) !>((host-full:ls many ~bus /apps/new)))
+    (expect-eq !>(|) !>((host-full:ls (slag 1 many) ~nec /apps/new)))
+  ==
+++  test-pax-ok
+  ;:  weld
+    (expect-eq !>(&) !>((pax-ok:ls /apps/lattice/page/a/code)))
+    (expect-eq !>(|) !>((pax-ok:ls (reap 65 %a))))
+    (expect-eq !>(|) !>((pax-ok:ls ~[%apps (crip (reap 3.000 'a'))])))
+    (expect-eq !>(|) !>((pax-ok:ls ~[%apps %$])))
+    (expect-eq !>(|) !>((pax-ok:ls ~[%apps 'A B'])))
+  ==
+::  item 7: an unacked revoke is sent again a bounded number of times
+++  test-del-waits
+  ;:  weld
+    (expect-eq !>(`~s30) !>((del-waits:ls 0)))
+    (expect-eq !>(`~h6) !>((del-waits:ls 4)))
+    (expect-eq !>(~) !>((del-waits:ls 5)))
+  ==
+::  item 8: a stored mode other than read or edit is no grant
+++  test-clean-modes
+  =/  gs=(map @t @t)
+    (~(gas by *(map @t @t)) ~[['a' 'read'] ['b' 'edit'] ['c' 'admin'] ['d' '']])
+  ;:  weld
+    %+  expect-eq  !>((~(gas by *(map @t @t)) ~[['a' 'read'] ['b' 'edit']]))
+    !>((clean-modes:ls gs))
+    %+  expect-eq  !>(`shared:ls`~[[~nec /apps/a 'read' ~2024.1.1]])
+    !>((clean-shared:ls ~[[~nec /apps/a 'read' ~2024.1.1] [~nec /apps/b 'own' ~2024.1.1]]))
+    (expect-eq !>(|) !>((mode-ok:ls 'Edit')))
+  ==
+::  item 9: a sub-folder notice wider than the folder that covers it is
+::  new; one no wider is a touch
+++  test-dir-touch
+  =/  top=entry:ls  [~nec /apps/x/page/f/'dir-index' 'read' ~2024.1.1]
+  ;:  weld
+    (expect-eq !>(|) !>((dir-touch:ls `top /apps/x/page/f/g/'dir-index' 'edit')))
+    (expect-eq !>(&) !>((dir-touch:ls `top /apps/x/page/f/g/'dir-index' 'read')))
+    (expect-eq !>(&) !>((dir-touch:ls `top pax.top 'read')))
+    (expect-eq !>(|) !>((dir-touch:ls `top pax.top 'edit')))
+    (expect-eq !>(|) !>((dir-touch:ls ~ pax.top 'read')))
+  ==
+::  item 10: the banlist holds +ban-cap ships, not one more
+++  test-ban-full
+  =/  full=banned:ls
+    (~(gas in *(set @p)) (turn (gulf 1 ban-cap:ls) |=(i=@ud `@p`(add 256 i))))
+  ;:  weld
+    (expect-eq !>(ban-cap:ls) !>(~(wyt in full)))
+    (expect-eq !>(&) !>((ban-full:ls full ~sampel-palnet)))
+    (expect-eq !>(|) !>((ban-full:ls full `@p`257)))
+    (expect-eq !>(|) !>((ban-full:ls (~(del in full) `@p`257) ~sampel-palnet)))
   ==
 --

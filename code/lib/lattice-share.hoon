@@ -72,6 +72,63 @@
     %+  skip  cur
     |=(e=entry &(=(host.e host.new) =(pax.e pax.new)))
   (scag cap all)
+::  +host-cap: how many entries one host may hold in the list. The global
+::  +cap alone let one ship evict every other host's entries by sending
+::  +cap notices; with this, one host fills at most its own share.
+++  host-cap  ^-(@ud 500)
+::  +pax-segs, +pax-bytes: the longest notice path the inbox keeps. A page
+::  path is a base, /page, the page's rel and a grub name, so these are
+::  far beyond any real one, and bound what a stranger can make us store.
+++  pax-segs   ^-(@ud 64)
+++  pax-bytes  ^-(@ud 2.048)
+::  +pax-ok: is a notice path within those bounds, every segment sane
+++  pax-ok
+  |=  p=path
+  ^-  ?
+  ?&  (lte (lent p) pax-segs)
+      (lte (roll p |=([s=@ta n=@ud] :(add n 1 (met 3 s)))) pax-bytes)
+      (levy p |=(s=@ta &(!=(%$ s) ((sane %ta) s))))
+  ==
+::  +host-full: may `host` not add the entry `pax`: it holds +host-cap
+::  entries and this is not one of them (a re-share of one it holds only
+::  updates it)
+++  host-full
+  |=  [cur=shared host=@p pax=path]
+  ^-  ?
+  =/  n=@ud  0
+  |-  ^-  ?
+  ?~  cur  (gte n host-cap)
+  ?.  =(host host.i.cur)  $(cur t.cur)
+  ?:  =(pax pax.i.cur)  |
+  $(cur t.cur, n +(n))
+::  +dir-touch: is a folder notice `pax` at `mode` nothing new, given the
+::  entry `hit` (+dir-cover) that covers it? The folder's own entry at the
+::  same mode is, and so is a folder under a listed one at no wider a
+::  mode. A sub-folder shared wider (edit under a folder read) is new: it
+::  gets its own entry, as +holds-trim keeps it on the sending side.
+++  dir-touch
+  |=  [hit=(unit entry) pax=path mode=@t]
+  ^-  ?
+  ?~  hit  |
+  ?:  =(pax pax.u.hit)  =(mode mode.u.hit)
+  (lte (mode-rank mode) (mode-rank mode.u.hit))
+::  +$  gmode: the grant modes there are. A mode is stored as a cord, and
+::  'read' and 'edit' are these atoms, so a stored mode is checked by mold.
++$  gmode  ?(%read %edit)
+::  +mode-ok: is a stored mode one of them
+++  mode-ok  |=(md=* ^-(? ?=(gmode md)))
+::  +clean-modes: a stored group-to-mode map with anything but read or
+::  edit dropped: no grant, never a wider one. The caller logs a drop.
+++  clean-modes
+  |=  gs=(map @t @t)
+  ^-  (map @t @t)
+  %-  ~(gas by *(map @t @t))
+  (skim ~(tap by gs) |=([g=@t md=@t] (mode-ok md)))
+::  +clean-shared: the inbox's entries with a bad mode or path dropped
+++  clean-shared
+  |=  cur=shared
+  ^-  shared
+  (skim cur |=(e=entry &((mode-ok mode.e) (pax-ok pax.e))))
 ::  +del-entry: drop one [host pax].
 ++  del-entry
   |=  [cur=shared host=@p pax=path]
@@ -129,6 +186,21 @@
 ::  +all-comets: the @p that stands for every comet in a ban, +family's
 ::  answer for a comet. Banning it bans them all.
 ++  all-comets  ^-(@p (bex 128))
+::  +ban-full: is the banlist full for `who`: it holds +ban-cap ships and
+::  `who` is not one of them
+++  ban-full
+  |=  [bans=banned who=@p]
+  ^-  ?
+  &(!(~(has in bans) who) (gte ~(wyt in bans) ban-cap))
+::  +ban-drop: `ships` without any the bans cover (+is-banned): a banned
+::  planet's moons, and every comet when the comets are banned, as well
+::  as the ship itself
+++  ban-drop
+  |=  [bans=banned ships=(set @p)]
+  ^-  (set @p)
+  ?:  =(~ bans)  ships
+  %-  ~(gas in *(set @p))
+  (skip ~(tap in ships) |=(s=@p (is-banned bans s)))
 ::
 ::  ==  comet guard  ==
 ::
@@ -334,6 +406,25 @@
   ?^  own  u.own
   =/  t  (dir-target dirs rel sens)
   ?~(t %private mode.u.t)
+::  +sens-at: is the page at `rel` (under a folder) sensitive, from the
+::  `sensitive` flags found in that folder's tree (`flags`, rel to flag)
+::  and `base`, what the folder itself takes from above. The nearest flag
+::  at or above the page wins, as +page-sensitive reads it.
+++  sens-at
+  |=  [flags=(map path ?) base=? rel=path]
+  ^-  ?
+  |-  ^-  ?
+  =/  f=(unit ?)  (~(get by flags) rel)
+  ?^  f  u.f
+  ?~  rel  base
+  $(rel (snip `path`rel))
+::  +taint-dest: may a tainted key write the page: only one that is
+::  sensitive, not published, and granted to no ship by hand. A tainted
+::  key's writes must stay where its reading came from.
+++  taint-dest
+  |=  [sens=? pub=? granted=?]
+  ^-  ?
+  &(sens !pub !granted)
 ::  +pub-key-rel: a /pub/index key (/pub/<rel>/gmi) as the page's rel
 ++  pub-key-rel
   |=  k=path
@@ -448,6 +539,89 @@
   =/  r=(unit title-row)  (~(get by rows) (spat (snoc dir name)))
   ?:  |(?=(~ r) =('' title.u.r))  (trip name)
   (trip title.u.r)
+::
+::  ==  the reader of a peer's page  ==
+::
+::  +peer-titles-max: the most of a peer's /pub/titles or dir-index the
+::  reader will parse. A real one is a line a page, far below this.
+++  peer-titles-max  ^~((mul 1.024 1.024))
+::  +peer-titles: a peer's titles cord as rows, none past
+::  +peer-titles-max, and each title through +title-clean, since the
+::  peer wrote it and +titles-rows keeps whatever follows the 2nd tab
+++  peer-titles
+  |=  c=@t
+  ^-  (map @t title-row)
+  ?:  (gth (met 3 c) peer-titles-max)  ~
+  %-  ~(run by (titles-rows c))
+  |=(r=title-row r(title (title-clean title.r)))
+::  +peer-csp: the policy the reader serves a peer's page under. Nothing
+::  loads from another host: no image, style, font, fetch or frame. The
+::  chrome's own scripts and styles are inline, so those take
+::  'unsafe-inline' (a peer's markup is escaped or framed sandboxed, and
+::  this is the backstop). `outside` lets images load over https, for a
+::  page the owner chose to load outside content on.
+++  peer-csp
+  |=  outside=?
+  ^-  @t
+  %-  crip
+  ;:  weld
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    ?:(outside " https:" "")
+    "; font-src 'self' data:; connect-src 'self'; media-src 'self' data:; "
+    "object-src 'none'; base-uri 'self'"
+  ==
+::  +peer-doc: a reader document with `csp` in a <meta> at the top of its
+::  head, and `foot` before its </body>. The meta keeps the policy when
+::  the page cache (+page-cache-script) serves the copy without our
+::  headers. A document not in the chrome's shape comes back unchanged.
+++  peer-doc
+  |=  [csp=@t foot=@t htm=@t]
+  ^-  @t
+  =/  hed=@t  '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+  =/  tal=@t  '</body></html>'
+  =/  n=@ud  (met 3 hed)
+  =/  e=@ud  (met 3 tal)
+  =/  len=@ud  (met 3 htm)
+  ?.  (gte len (add n e))  htm
+  ?.  =(hed (end [3 n] htm))  htm
+  ?.  =(tal (rsh [3 (sub len e)] htm))  htm
+  =/  mid=@t  (cut 3 [n (sub len (add n e))] htm)
+  %-  crip
+  ;:  weld
+    (trip hed)
+    "<meta http-equiv=\"Content-Security-Policy\" content=\""
+    (trip csp)  "\">"
+    (trip mid)  (trip foot)  (trip tal)
+  ==
+::  +outside-key: a page's name in the `latout` cookie, the reader's list
+::  of pages it loads outside content on. A hash, so the cookie holds no
+::  address and needs no escaping.
+++  outside-key
+  |=  url=@t
+  ^-  tape
+  ((x-co:co 16) (end [3 8] (shax url)))
+::  +outside-on: does the Cookie header `cookie` turn outside content on
+::  for the page at `url`?
+++  outside-on
+  |=  [cookie=@t url=@t]
+  ^-  ?
+  =/  k=tape  (outside-key url)
+  %+  lien  (split-on ';' (trip cookie))
+  |=  i=tape
+  =/  v=tape  |-(?~(i i ?:(=(' ' i.i) $(i t.i) i)))
+  ?.  =("latout=" (scag 7 v))  |
+  (lien (split-on '.' (slag 7 v)) |=(x=tape =(x k)))
+::  +split-on: `t` cut at each `c`
+++  split-on
+  |=  [c=@tD t=tape]
+  ^-  (list tape)
+  =|  cur=tape
+  =|  out=(list tape)
+  |-  ^-  (list tape)
+  ?~  t  (flop [(flop cur) out])
+  ?:  =(c i.t)  $(t t.t, out [(flop cur) out], cur ~)
+  $(t t.t, cur [i.t cur])
 ::
 ::  ==  folder grants to ships  ==
 ::
@@ -678,6 +852,49 @@
   ?|  =(pre (scag (lent pre) sub))
       ::  a folder notice (+dir-key) also reaches the follows below it
       &(dir =(sub (scag (lent sub) pre)))
+  ==
+::  +del-waits: how long a revoke notice (%del) that went unacked waits
+::  before it is sent again, by the tries so far; ~ once it has had them
+::  all, when it is dropped. About seven hours in all, so a peer offline
+::  for an afternoon still hears it, and the queue stays bounded.
+++  del-waits
+  |=  tries=@ud
+  ^-  (unit @dr)
+  =/  l=(list @dr)  ~[~s30 ~m2 ~m10 ~h1 ~h6]
+  ?:  (gte tries (lent l))  ~
+  `(snag tries l)
+::  +$  del-job: a revoke notice waiting for its ack: to whom, which page
++$  del-job  [who=@p pax=path]
+::  +del-cap: the most revoke notices waiting at once
+++  del-cap  ^-(@ud 2.000)
+::  +grant-orphans: the folder grants a group's weir holds (`idx`: each
+::  group and folder whose dir-index road it holds, and whether it may
+::  edit) that no `share-grants` note covers (`recs`, folder to group to
+::  mode: the folder's own or one above it, since a folder share holds
+::  each subfolder's index too). A crash between the weir write and the
+::  note leaves one, and an unshare then leaves every page under the
+::  folder granted. Highest first, so a subfolder is covered by the note
+::  its folder gets.
+++  grant-orphans
+  |=  [idx=(list [g=@t f=path ed=?]) recs=(map path (map @t @t))]
+  ^-  (list [g=@t f=path md=@t])
+  =/  l  (sort idx |=([a=[@t f=path ?] b=[@t f=path ?]] (lth (lent f.a) (lent f.b))))
+  =|  out=(list [g=@t f=path md=@t])
+  |-  ^-  (list [g=@t f=path md=@t])
+  ?~  l  (flop out)
+  =/  [g=@t f=path ed=?]  i.l
+  =/  up=path  f
+  =/  hit=?
+    |-  ^-  ?
+    ?:  (~(has by (~(gut by recs) up ~)) g)  &
+    ?~  up  |
+    $(up (snip `path`up))
+  ?:  hit  $(l t.l)
+  =/  md=@t  ?:(ed 'edit' 'read')
+  %=  $
+    l     t.l
+    out   [[g f md] out]
+    recs  (~(put by recs) f (~(put by (~(gut by recs) f ~)) g md))
   ==
 ::  +move-resumes: is a move from `pf` to `pt` asked at `now` the one the
 ::  /move-job note `job` says a reload left part way? Only then may it

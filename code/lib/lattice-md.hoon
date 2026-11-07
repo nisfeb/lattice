@@ -1,7 +1,12 @@
 ::  /lib/lattice-md, a GitHub-Flavored Markdown -> HTML renderer (server-side).
 ::  Own-page content: raw HTML is escaped. Only safe link schemes become hrefs.
 ::
-|%
+::  `outside` lets an image load from another host. Off by default: an
+::  <img> from a remote http(s) source shows the reader's IP to that host
+::  (a tracking pixel), so it renders as a link to the image instead.
+::  ~(render-md gfm &) turns it on for a page the reader chose to load.
+::
+|_  outside=_|
 +$  refm  (map tape [url=tape title=tape])
 +$  footm  (map tape [num=@ud text=tape])
 ::  +esc: HTML-escape a tape.
@@ -37,11 +42,20 @@
   ?:  (lth (lent s) need)  |
   |-  ^-  ?  ?~(s & ?:((lien cs |=(c=@tD =(c i.s))) $(s t.s) |))
 ::  +safe-url: allow http(s)/urb/mailto/relative. Block javascript:/data:/etc.
+::  A protocol-relative `//host` is another host, not a relative ref, and
+::  a browser reads `/\host` and `\\host` the same way, tabs and line
+::  breaks dropped: all refused.
 ++  safe-url
   |=  u=tape
   ^-  ?
   =/  l=tape  (cass u)
   ?:  |((has "http://" l) (has "https://" l) (has "urb://" l) (has "mailto:" l))  &
+  =/  s=tape  (skip (lstrip u) |=(c=@tD |(=(c '\09') =(c '\0a') =(c '\0d'))))
+  ?:  ?&  ?=([@ @ *] s)
+          |(=('/' i.s) =('\\' i.s))
+          |(=('/' i.t.s) =('\\' i.t.s))
+      ==
+    |
   ?:  ?|(?=(~ u) =('/' i.u) =('#' i.u))  &
   ::  a relative ref has no scheme: no ':' before the first '/'
   =/  col  (find ":" l)
@@ -61,10 +75,33 @@
     "<a href=\""  (esc url)  "\""  ti
     " target=\"_blank\" rel=\"noopener noreferrer\">"  inner  "</a>"
   ==
+::  +lstrip: `u` without the leading spaces and control bytes a browser
+::  drops before it reads a url
+++  lstrip
+  |=  u=tape
+  ^-  tape
+  ?~  u  u
+  ?:  (lte i.u ' ')  $(u t.u)
+  u
+::  +remote-url: does `u` name another host over http(s)?
+++  remote-url
+  |=  u=tape
+  ^-  ?
+  =/  l=tape  (cass (lstrip u))
+  |((has "http://" l) (has "https://" l))
+::  +safe-img: +safe-url, and no remote source unless `outside`
+++  safe-img
+  |=  u=tape
+  ^-  ?
+  ?&  (safe-url u)
+      |(outside !(remote-url u))
+  ==
 ++  img-html
   |=  [alt=tape url=tape title=tape]
   ^-  tape
-  ?.  (safe-url url)  (esc alt)
+  ?:  &((safe-url url) !(safe-img url))
+    (a-html (esc ?~(alt url alt)) url title)
+  ?.  (safe-img url)  (esc alt)
   =/  ti=tape  ?~(title "" :(weld " title=\"" (esc title) "\""))
   :(weld "<img src=\"" (esc url) "\" alt=\"" (esc alt) "\"" ti " loading=\"lazy\">")
 ::  +scan-cap: how far an INLINE scan looks for its closing delimiter before
