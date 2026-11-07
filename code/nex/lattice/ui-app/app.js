@@ -6856,7 +6856,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   let lockHeld = false;
   let lockFree = null;     // lets go of the held lock
   let lockWait = null;     // stops the wait for it
-  const editLocked = () => !!navigator.locks && !!lockName && current === lockName
+  let lockBusy = false;    // known to be held by another window
+  const editLocked = () => !!navigator.locks && lockBusy && !!lockName && current === lockName
     && !lockHeld && mode !== 'know' && !grubPath;
   const LOCK_NOTE = 'This page is open for editing in another window, so it is read-only here.';
   const lockBar = document.createElement('div');
@@ -6878,9 +6879,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (lockWait) { lockWait.abort(); lockWait = null; }
     if (lockFree) { lockFree(); lockFree = null; }
     lockHeld = false;
+    lockBusy = false;
   }
   function hold(name, late) {
     lockHeld = true;
+    lockBusy = false;
     paintLock();
     if (late && current === name && mode !== 'know' && !grubPath) openPage(name);
     return new Promise((res) => { lockFree = res; });
@@ -6897,6 +6900,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     navigator.locks.request('lat-edit:' + name, { ifAvailable: true }, (l) => {
       if (lockName !== name || ac.signal.aborted) return null;
       if (l) return hold(name);
+      lockBusy = true;
       paintLock();
       navigator.locks.request('lat-edit:' + name, { signal: ac.signal },
         () => (lockName === name ? hold(name, true) : null)).catch(() => {});
