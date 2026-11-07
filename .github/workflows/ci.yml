@@ -388,6 +388,8 @@ jobs:
           #  every grub the app writes has a covering on-load row: the
           #  loader drops anything uncovered on every reload
           python3 scripts/onload-check.py code/nex/lattice/app.hoon
+          #  clean-targets deletes only targets of merged, idle worktrees
+          bash scripts/clean-targets-check.sh
       #  every system road the app reaches is declared in weir.json, in the
       #  category it is reached in. On a desk install an undeclared road is
       #  a veto that parks the fiber; sharing with ships shipped that way.
