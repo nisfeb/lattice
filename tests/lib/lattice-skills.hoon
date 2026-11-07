@@ -3,6 +3,20 @@
 ::
 /+  *test, *lattice-skills
 |%
+::  the writer's second look at a key's skill save
+++  test-key-check
+  =/  plain=skill  ['---\0aname: a\0a---\0ax' ~ ~2026.1.1 ~]
+  =/  core=skill  plain(tags (sy 'core' ~))
+  =/  sen=skill  plain(body '---\0aname: a\0asensitive: yes\0a---\0ax')
+  ;:  weld
+    (expect-eq !>(`(unit tape)`~) !>((key-check ~ | | ~)))
+    (expect-eq !>(`(unit tape)`~) !>((key-check `plain | | ~)))
+    (expect !>(?=(^ (key-check `core & | ~))))
+    (expect !>(?=(^ (key-check `sen | | ~))))
+    (expect !>(?=(^ (key-check `plain & & ~))))
+    (expect !>(?=(^ (key-check `sen & | `'---\0aname: a\0a---\0ay'))))
+    (expect-eq !>(`(unit tape)`~) !>((key-check `sen & | `'---\0aname: a\0asensitive: yes\0a---\0ay')))
+  ==
 ++  good
   ^-  @t
   '---\0aname: deploy\0adescription: Deploy lattice to a fleet ship\0a---\0a# Steps\0a1. build\0a'

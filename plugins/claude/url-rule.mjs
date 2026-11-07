@@ -28,3 +28,19 @@ export function urlProblem(raw) {
   if (url.protocol === 'http:' && host && privateHost(host)) return '';
   return `lattice: the ship URL "${raw}" would send the agent key unencrypted. Use https, or a loopback or LAN address.`;
 }
+
+// The ship URL, one option for the server and the hooks alike. Claude Code
+// hands the hooks CLAUDE_PLUGIN_OPTION_SHIP_URL and the server LATTICE_URL
+// (.mcp.json), both from the ship_url setting. When both are set and
+// differ (a LATTICE_URL left in the shell, say), the plugin option wins
+// and warning says so, so the two never talk to different ships unseen.
+export function shipUrl(env = process.env) {
+  const norm = (u) => String(u || '').trim().replace(/\/+$/, '');
+  const opt = norm(env.CLAUDE_PLUGIN_OPTION_SHIP_URL);
+  const lat = norm(env.LATTICE_URL);
+  const url = opt || lat;
+  const warning = opt && lat && opt !== lat
+    ? `lattice: two ship URLs are set and they differ: the plugin's ship_url (${opt}) and LATTICE_URL (${lat}). Using ${opt}. Tell the user to set one ship URL (/plugin, lattice, configure) and unset the other.`
+    : '';
+  return { url, warning };
+}

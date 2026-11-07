@@ -2627,7 +2627,8 @@
     ?:  &(?=(^ nk) ?=(^ n) !(may-see key u.n))  (send-err eyre-id 404 'no such new entry')
     =/  f  (front:lk body.u.e)
     =/  meta  (meta-put:lk meta.f 'superseded-by' ?~(nk '' (spat u.nk)))
-    ;<  ~  bind:m  (poke-know [%save (spat u.ok) (with-front:lk meta rest.f)])
+    =/  bod=@t  (with-front:lk meta rest.f)
+    ;<  ~  bind:m  (poke-know ?~(key [%save (spat u.ok) bod] [%key-save (spat u.ok) bod id.u.key]))
     (send-ok eyre-id)
   ::
       [%'GET' %know-read]
@@ -3533,7 +3534,8 @@
     =/  r  (de-mint:ky u.jon)
     ?:  ?=(%| -.r)  (send-err eyre-id 400 p.r)
     ;<  ks=keys:ky  bind:m  (read-keys (rf up / %keys))
-    ?:  (gte ~(wyt by ks) max-keys:ky)  (send-err eyre-id 409 'keys: 50 at most')
+    =/  why=(unit @t)  (mint-refusal:ky ks by.p.r)
+    ?^  why  (send-err eyre-id 409 u.why)
     ;<  eny=@uvJ  bind:m  get-entropy:io
     ;<  now=@da  bind:m  bowl-now
     =/  id=@t  (id-of:ky eny)
@@ -3542,6 +3544,15 @@
     =/  secret=@t  (secret-of:ky (rsh [3 15] eny))
     =/  row=key-row:ky  [id name.p.r by.p.r scope.p.r salt (hash-token:ky salt secret) now ~ ~]
     ;<  ~  bind:m  (poke-keys [%add row])
+    ::  the writer checks the cap and the by again, and two mints racing
+    ::  past the read above may not both land. So wait for the writer to
+    ::  finish the add, read the keys again, and answer with the token
+    ::  only when the row is stored: a token that is never stored would
+    ::  never work.
+    ;<  ~  bind:m  writer-sync
+    ;<  ks2=keys:ky  bind:m  (read-keys (rf up / %keys))
+    ?.  (~(has by ks2) id)
+      (send-err eyre-id 409 (fall (mint-refusal:ky ks2 by.p.r) 'the key was not stored, try again'))
     %+  send-json  eyre-id
     (pairs:enjs:format ~[['key' (en-view:ky row now)] ['token' s+(rap 3 id '.' secret ~)]])
       [%'POST' %key-revoke]
@@ -4899,6 +4910,12 @@
     =/  pl  (save-plan key rnow bnow u.ko bod args old near)
     ?:  ?=(%| -.pl)  (send-err eyre-id code.p.pl msg.p.pl)
     ;<  ~  bind:m  (poke-know act.p.pl)
+    ?~  key  (send-json eyre-id out.p.pl)
+    ::  the writer checks a key's save again and may refuse it, so wait
+    ::  for its outcome rather than answer ok for a save that never landed
+    ;<  ~  bind:m  writer-sync
+    ;<  bad=(unit [code=@ud msg=@t])  bind:m  (key-landed u.key u.ko ?>(?=(%key-save -.act.p.pl) body.act.p.pl))
+    ?^  bad  (send-err eyre-id code.u.bad msg.u.bad)
     (send-json eyre-id out.p.pl)
   ::  many saves in one writer event: one store read, one duplicate pass,
   ::  one term-cache write and one beacon bump, however many items. Body
@@ -4922,9 +4939,26 @@
     =/  [acts=(list know-action:lk) outs=(list json)]
       (plan-batch key rnow bnow es tc u.items)
     ;<  ~  bind:m  ?~(acts (pure:m ~) (poke-writer %know-batch acts))
+    ::  a key's saves: wait for the writer, and report any it refused
+    ;<  bad=(map path [code=@ud msg=@t])  bind:m
+      =/  n  (fiber:fiber:nexus ,(map path [code=@ud msg=@t]))
+      ?~  key  (pure:n ~)
+      ;<  ~  bind:n  writer-sync
+      (batch-landed u.key acts)
+    =/  outs=(list json)
+      %+  turn  outs
+      |=  o=json
+      ?.  ?=([%o *] o)  o
+      =/  k=(unit json)  (~(get by p.o) 'key')
+      ?.  ?=([~ %s *] k)  o
+      =/  ko=(unit path)  (know-key p.u.k)
+      ?~  ko  o
+      =/  b  (~(get by bad) u.ko)
+      ?~  b  o
+      (batch-err p.u.k u.b)
     %+  send-json  eyre-id
     %-  pairs:enjs:format
-    :~  ['saved' (numb:enjs:format (lent acts))]
+    :~  ['saved' (numb:enjs:format (sub (lent acts) ~(wyt by bad)))]
         ['results' a+outs]
     ==
   ::
@@ -4955,6 +4989,10 @@
     ?:  |(?=(~ k) ?=(~ tg))  (send-err eyre-id 400 'missing key or tag')
     =/  ko=(unit path)  (know-key u.k)
     ?~  ko  (send-err eyre-id 400 'invalid key')
+    ::  core is what every session loads as rules, so only the owner puts
+    ::  an entry in it: text a key read elsewhere must not become one
+    ?:  &(?=(^ key) (core-tag:lk u.tg))
+      (send-err eyre-id 403 'an agent key cannot add the core tag: only the owner can')
     ;<  g=(unit [code=@ud msg=@t])  bind:m  (key-guard key u.ko & rnow)
     ?^  g  (send-err eyre-id code.u.g msg.u.g)
     ;<  ~  bind:m  (poke-know [%tag (spat u.ko) u.tg])
@@ -4968,11 +5006,30 @@
     ?~  ko  (send-err eyre-id 400 'invalid key')
     ;<  g=(unit [code=@ud msg=@t])  bind:m  (key-guard key u.ko & rnow)
     ?^  g  (send-err eyre-id code.u.g msg.u.g)
-    ::  a key may add the core tag but never remove it: core is what every
-    ::  session loads, so only the owner takes an entry out of it
+    ::  core is what every session loads, so only the owner takes an
+    ::  entry out of it (or puts one in, /know-tag)
     ?:  &(?=(^ key) (core-tag:lk u.tg))
       (send-err eyre-id 403 'an agent key cannot remove the core tag: only the owner can')
     ;<  ~  bind:m  (poke-know [%untag (spat u.ko) u.tg])
+    (send-ok eyre-id)
+  ::  core entries an agent key tagged while keys still could: the
+  ::  Knowledge view shows them in a notice until the owner keeps or
+  ::  untags each. Neither route is in +wants:ky, so no key reaches them.
+      [%'GET' %know-core-agents]
+    ;<  es=(map path know-entry:lk)  bind:m  read-know-map
+    %+  send-json  eyre-id
+    [%a (turn (agent-core-keys:lk es) |=(k=path s+(spat k)))]
+  ::  keep one: the owner vouches for it, so it is source user from now
+  ::  on and loads as the owner's. author stays the key's by.
+      [%'POST' %know-core-keep]
+    =/  ko=(unit path)  (know-key (~(gut by args) 'key' ''))
+    ?~  ko  (send-err eyre-id 400 'bad key')
+    ;<  e=(unit know-entry:lk)  bind:m  (know-one u.ko)
+    ?~  e  (send-err eyre-id 404 'not found')
+    ;<  now=@da  bind:m  bowl-now
+    =/  f  (front:lk body.u.e)
+    =/  meta  (meta-put:lk (meta-put:lk meta.f 'source' 'user') 'kept' (iso-day:lk now))
+    ;<  ~  bind:m  (poke-know [%save (spat u.ko) (with-front:lk meta rest.f)])
     (send-ok eyre-id)
   ::
   ::  ── skills (lib/lattice-skills, docs/agent-knowledge.md, Skills) ──
@@ -5075,9 +5132,45 @@
     ;<  old=(unit skill:lsk)  bind:m  (read-skill (skill-road up /skills/vault nm))
     ;<  bnow=@da  bind:m  bowl-now
     =/  now=@da  ?~(key bnow rnow)
+    ::  new=1: create only. The route refuses a taken name, and the
+    ::  writer refuses it again (%make), since two creates may race past
+    ::  this read. So wait for the writer and read the skill back: it is
+    ::  ours when it holds this save's time.
+    =/  make=?  =('1' (~(gut by args) 'new' ''))
+    ?:  &(make ?=(^ old))  (send-err eyre-id 409 'a skill with this name exists')
+    ?:  &(make !main)  (send-err eyre-id 400 'a new skill starts with SKILL.md')
     =/  pl  (skill-plan key now nm pt bod args old)
     ?:  ?=(%| -.pl)  (send-err eyre-id code.p.pl msg.p.pl)
-    ;<  ~  bind:m  (skill-pokes acts.p.pl)
+    ?:  &(!make ?=(~ key))
+      ;<  ~  bind:m  (skill-pokes acts.p.pl)
+      (send-json eyre-id out.p.pl)
+    ?.  make
+      ::  a key's save: the writer checks it again (%ksave), so wait for
+      ::  its outcome and read the skill back before answering
+      ?>  ?=(^ key)
+      ;<  ~  bind:m
+        %-  skill-pokes
+        %+  turn  acts.p.pl
+        |=(a=skill-action:lsk ?.(?=(%save -.a) a [%ksave name.a path.a body.a when.a id.u.key]))
+      ;<  ~  bind:m  writer-sync
+      ;<  got=(unit skill:lsk)  bind:m  (read-skill (skill-road up /skills/vault nm))
+      =/  landed=?
+        ?~  got  |
+        %+  levy  acts.p.pl
+        |=(a=skill-action:lsk ?.(?=(%save -.a) & =(`body.a (file-of:lsk u.got path.a))))
+      ?:  landed  (send-json eyre-id out.p.pl)
+      ;<  tnow=@da  bind:m  get-time:io
+      =/  why=(unit tape)  (key-check:lsk got sensitive.scope.u.key (tainted:ky u.key tnow) ~)
+      ?^  why  (send-err eyre-id 403 (crip u.why))
+      (send-err eyre-id 409 'the skill changed before this save landed: read it again')
+    ;<  ~  bind:m
+      %-  skill-pokes
+      %+  turn  acts.p.pl
+      |=(a=skill-action:lsk ?.(?=(%save -.a) a [%make +.a]))
+    ;<  ~  bind:m  writer-sync
+    ;<  got=(unit skill:lsk)  bind:m  (read-skill (skill-road up /skills/vault nm))
+    ?.  &(?=(^ got) =(updated.u.got now))
+      (send-err eyre-id 409 'a skill with this name exists')
     (send-json eyre-id out.p.pl)
   ::  old is replaced by new (empty new clears it): reading old points at new
       [%'POST' %skill-supersede]
@@ -5104,6 +5197,9 @@
     =/  tg=@t  (~(gut by args) 'tag' '')
     ?.  (name-ok:lsk nm)  (send-err eyre-id 400 'bad name')
     ?:  =('' tg)  (send-err eyre-id 400 'missing tag')
+    ::  only the owner puts a skill in core, as with memories
+    ?:  &(?=(^ key) (core-tag:lk tg))
+      (send-err eyre-id 403 'an agent key cannot add the core tag: only the owner can')
     ;<  g=(each skill:lsk [code=@ud msg=@t])  bind:m  (skill-guard key nm & rnow)
     ?:  ?=(%| -.g)  (send-err eyre-id code.p.g msg.p.g)
     ;<  ~  bind:m  (skill-pokes ~[[%tag nm tg]])
@@ -5899,7 +5995,7 @@
       ::  split by shape: a bare key and a key with a second field sit at
       ::  different axes, so one case cannot name key.act for both
         ?(%del %restore)  ~[key.act]
-        ?(%save %tag %untag %import %import-trashed)  ~[key.act]
+        ?(%save %key-save %tag %untag %import %import-trashed)  ~[key.act]
       ==
     |=(t=@t (bind (know-key t) |=(p=path [p imp])))
   |-  ^-  form:m
@@ -5994,6 +6090,48 @@
   ?~  (spend:ky led id now len)  (pure:m |)
   ;<  ~  bind:m  (poke-keys [%spend id now len])
   (pure:m &)
+::  +key-landed: after +writer-sync, did a key's memory save land? ~ when
+::  the entry holds its body, or that body with the sensitive mark the
+::  writer raised. Else the writer refused it: why, as +key-save-check
+::  says against the entry now, or a 409 when another write came first.
+++  key-landed
+  |=  [key=key-row:ky ko=path bod=@t]
+  =/  m  (fiber:fiber:nexus ,(unit [code=@ud msg=@t]))
+  ^-  form:m
+  ;<  e=(unit know-entry:lk)  bind:m  (know-one ko)
+  ?:  &(?=(^ e) |(=(body.u.e bod) =(body.u.e (raise-sens:lk bod))))
+    (pure:m ~)
+  ;<  now=@da  bind:m  get-time:io
+  =/  r  (key-save-check:lk e sensitive.scope.key (tainted:ky key now) bod)
+  ?:  ?=(%| -.r)  (pure:m `[403 (crip p.r)])
+  (pure:m `[409 'the entry changed before this save landed: read it again'])
+::  +batch-landed: +key-landed for each of a batch's key saves, the
+::  refused ones by key
+++  batch-landed
+  |=  [key=key-row:ky acts=(list know-action:lk)]
+  =/  m  (fiber:fiber:nexus ,(map path [code=@ud msg=@t]))
+  ^-  form:m
+  =|  bad=(map path [code=@ud msg=@t])
+  |-  ^-  form:m
+  ?~  acts  (pure:m bad)
+  ?.  ?=(%key-save -.i.acts)  $(acts t.acts)
+  ::  a later save to the same key replaces this one's body: check that
+  =/  kt=@t  key.i.acts
+  ?:  (lien t.acts |=(a=know-action:lk &(?=(%key-save -.a) =(key.a kt))))
+    $(acts t.acts)
+  =/  ko=(unit path)  (know-key key.i.acts)
+  ?~  ko  $(acts t.acts)
+  ;<  b=(unit [code=@ud msg=@t])  bind:m  (key-landed key u.ko body.i.acts)
+  $(acts t.acts, bad ?~(b bad (~(put by bad) u.ko u.b)))
+::  +writer-sync: return once the writer has finished every poke sent to
+::  it before this one. It takes one poke at a time and answers a poke
+::  when it next waits, so a no-op poke (+apply-action skips [/ %noun])
+::  is answered only after the work before it is done.
+++  writer-sync
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  (poke:fio (rf up / %'main.sig') [[/ %noun] ~])
 ++  poke-keys
   |=  act=key-action:ky
   =/  m  (fiber:fiber:nexus ,~)
@@ -6019,7 +6157,9 @@
   ;<  ks=keys:ky  bind:m  (read-keys kr)
   =.  ks
     ?-  -.act
-      %add  ?:((gte ~(wyt by ks) max-keys:ky) ks (~(put by ks) id.row.act row.act))
+      ::  /key-mint read the keys before this, so check the cap and the
+      ::  by again here, where adds are one at a time
+      %add  ?^((mint-refusal:ky ks by.row.act) ks (~(put by ks) id.row.act row.act))
       %del  (~(del by ks) id.act)
         %touch
       =/  k=(unit key-row:ky)  (~(get by ks) id.act)
@@ -6176,7 +6316,9 @@
   =/  sens=?
     ?~  key  ?:(=('0' sarg) | |(=('1' sarg) was))
     |(=('1' sarg) was (tainted:ky u.key now))
-  :+  %&  [%save (spat ko) (stamp:lk old prose author source now sens)]
+  =/  body=@t  (stamp:lk old prose author source now sens)
+  :+  %&
+    ?~(key [%save (spat ko) body] [%key-save (spat ko) body id.u.key])
   %-  pairs:enjs:format
   :~  ['ok' b+&]
       ['created' b+?=(~ old)]
@@ -6220,7 +6362,11 @@
   ::  it replaced leaves the pool, or a later item that resembles that
   ::  old body is refused as a duplicate of text no longer stored.
   =/  e=know-entry:lk
-    (merge-save:lk old ?>(?=(%save -.act.p.pl) body.act.p.pl) bnow)
+    %^  merge-save:lk  old
+      ::  the body sits at another axis in each, so one case per shape
+      ?:  ?=(%save -.act.p.pl)  body.act.p.pl
+      ?>(?=(%key-save -.act.p.pl) body.act.p.pl)
+    bnow
   =/  rest=(list [path know-entry:lk])
     (skip pool |=([k=path *] =(k u.ko)))
   %=  $
@@ -6429,7 +6575,7 @@
   =/  nm=@t
     ?-  -.act
       ?(%del %restore)  name.act
-      ?(%save %drop %tag %untag)  name.act
+      ?(%save %make %ksave %drop %tag %untag)  name.act
     ==
   ?.  (name-ok:lsk nm)
     (refuse "a skill action: a bad name: {(trip nm)}")
@@ -6437,6 +6583,22 @@
   =/  troad=road:tarball  (skill-road up /skills/trash-vault nm)
   ;<  old=(unit skill:lsk)  bind:m  (read-skill road)
   ?-    -.act
+      %make
+    ?^  old  (refuse "a skill create: the name is taken: {(trip nm)}")
+    (apply-skill now [%save name.act path.act body.act when.act])
+  ::  the route checked the skill as it read it; the owner may have
+  ::  tagged it core or marked it sensitive since
+      %ksave
+    ;<  ks=keys:ky  bind:m  (read-keys (rf up / %keys))
+    =/  kr=(unit key-row:ky)  (~(get by ks) kid.act)
+    ?~  kr  (refuse "a key skill save: no such agent key: {(trip kid.act)}")
+    =/  why=(unit tape)
+      %:  key-check:lsk  old  sensitive.scope.u.kr  (tainted:ky u.kr now)
+        ?.(=(main-file:lsk path.act) ~ `body.act)
+      ==
+    ?^  why  (refuse "a key skill save of {(trip nm)}: {u.why}")
+    (apply-skill now [%save name.act path.act body.act when.act])
+  ::
       %save
     ?.  |(=(main-file:lsk path.act) (path-ok:lsk path.act))
       (refuse "a skill save: a bad path: {(trip path.act)}")
@@ -19665,6 +19827,21 @@
   =/  tvbase=path  /know/trash-vault
   =/  tx=road:tarball  (rf root /know %trash)
   ?-    -.act
+  ::  +save-plan checked the entry as the request read it. The owner may
+  ::  have changed it since: tagged it core, marked it sensitive, or the
+  ::  key may have been revoked or tainted. So check again here, against
+  ::  the entry this save replaces, and never lower the sensitive mark.
+      %key-save
+    =/  ko=(unit path)  (know-key key.act)
+    ?~  ko  (refuse "a key save: the key does not parse: {(trip key.act)}")
+    ;<  ks=keys:ky  bind:m  (read-keys (rf root / %keys))
+    =/  kr=(unit key-row:ky)  (~(get by ks) kid.act)
+    ?~  kr  (refuse "a key save: no such agent key: {(trip kid.act)}")
+    ;<  old=(unit know-entry:lk)  bind:m  (read-entry (entry-road up vbase u.ko))
+    =/  r  (key-save-check:lk old sensitive.scope.u.kr (tainted:ky u.kr now) body.act)
+    ?:  ?=(%| -.r)  (refuse "a key save at {(spud u.ko)}: {p.r}")
+    (apply root now [%save key.act p.r])
+  ::
       %save
     ::  guard the key parse: a bad imported key (space, uppercase, no leading /)
     ::  would crash this single writer fiber, and rise-later would then refuse the

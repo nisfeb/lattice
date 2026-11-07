@@ -488,7 +488,7 @@ is "tree hides sensitive (uncleared)"    "" "$(BG "$B/page-tree" | python3 -c 'i
 # page taints the CLEARED key, after which it may write only to a sensitive
 # destination. A NEW page is created and force-marked sensitive; an EXISTING
 # non-sensitive page is refused. $P/note is still marked sensitive here.
-CKEYJSON="$(G -X POST "$B/key-mint" -H 'content-type: application/json' --data-binary "$(python3 -c "import json,sys;print(json.dumps({'name':'apimx-cleared','by':'apimx','scope':{'memory':'none','pages':{'some':{'read':['/'+sys.argv[1]],'write':['/'+sys.argv[1]+'/out']}},'web':{'off':None},'sensitive':True}}))" "$P")")"
+CKEYJSON="$(G -X POST "$B/key-mint" -H 'content-type: application/json' --data-binary "$(python3 -c "import json,sys;print(json.dumps({'name':'apimx-cleared','by':'apimx-cleared','scope':{'memory':'none','pages':{'some':{'read':['/'+sys.argv[1]],'write':['/'+sys.argv[1]+'/out']}},'web':{'off':None},'sensitive':True}}))" "$P")")"
 CTOK="$(printf '%s' "$CKEYJSON" | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')"
 CC() { curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $CTOK" "$@"; }
 # an existing, non-sensitive page written BEFORE the key is tainted

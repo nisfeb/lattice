@@ -344,6 +344,7 @@ jobs:
           node --check plugins/claude/server.mjs
           node --check plugins/claude/hooks/lattice-hook.mjs
           node --check plugins/claude/url-rule.mjs
+          node --check plugins/claude/quote.mjs
           node --check plugins/claude/hooks/skills-sync.mjs
           node --check plugins/claude/import-skills.mjs
           python3 -m py_compile plugins/hermes/__init__.py

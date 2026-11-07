@@ -178,6 +178,17 @@
   ?:  (gth (add used len) day-cap)  ~
   `(~(put by led) id [day (add used len)])
 ++  max-keys  50
+::  +mint-refusal: why a new key with this by may not be added, or ~.
+::  The cap, and a by another live key writes as: memory and skills sign
+::  each save with the by, so two keys sharing one could not be told
+::  apart. Checked by /key-mint and again by the writer.
+++  mint-refusal
+  |=  [ks=keys who=@t]
+  ^-  (unit @t)
+  ?:  (gte ~(wyt by ks) max-keys)  `'keys: 50 at most'
+  ?:  (lien ~(val by ks) |=(k=key-row =(by.k who)))
+    `'another key already writes as this by: pick a name no live key uses'
+  ~
 ::  +hash-token: a salted sha-256 as text
 ++  hash-token
   |=  [salt=@t secret=@t]

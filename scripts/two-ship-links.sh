@@ -199,9 +199,11 @@ section_make() {
 
 # mint <web-scope json>: a key reading and writing notes/ on A, with the
 # given web scope. Prints "<id> <token>"; the caller puts the id on KEYS.
+# Each key gets its own by: a by that a live key writes as is refused.
+# It runs in a subshell (<(mint ...)), so a counter would not carry.
 mint() {
   local j; j=$(A_ -X POST "$A/key-mint" -H 'content-type: application/json' --data-binary \
-    "{\"name\":\"links-proxy\",\"by\":\"two-ship-links\",\"scope\":{\"memory\":\"none\",\"pages\":{\"some\":{\"read\":[\"/notes\"],\"write\":[\"/notes\"]}},\"web\":$1,\"sensitive\":false}}")
+    "{\"name\":\"links-proxy\",\"by\":\"two-ship-links-$(date +%s%N)\",\"scope\":{\"memory\":\"none\",\"pages\":{\"some\":{\"read\":[\"/notes\"],\"write\":[\"/notes\"]}},\"web\":$1,\"sensitive\":false}}")
   jq -r '"\(.key.id) \(.token)"' <<<"$j"
 }
 # lick_read <name>: one page-source over A's lick port, timed (lick_live.rs)

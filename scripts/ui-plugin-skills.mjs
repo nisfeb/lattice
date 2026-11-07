@@ -22,7 +22,7 @@ const owner = (method, p, body) => fetch(B + p, {
 const minted = [];
 async function mint(skills) {
   const scope = { memory: 'none', pages: { all: 'none' }, web: { off: null }, sensitive: false, skills };
-  const r = await owner('POST', 'key-mint', JSON.stringify({ name: `ui-skills-${skills}`, by: 'ui-plugin-skills', scope }));
+  const r = await owner('POST', 'key-mint', JSON.stringify({ name: `ui-skills-${skills}`, by: `ui-plugin-skills-${skills}`, scope }));
   const j = await r.json().catch(() => ({}));
   if (!j.token) { console.error(`key-mint (skills ${skills}) failed: ${r.status} ${JSON.stringify(j)}`); process.exit(1); }
   minted.push(j.key.id);
@@ -66,8 +66,10 @@ try {
   has('skill_read returns SKILL.md', r, '1. Save it.');
   has('  ...its description', r, "Checking the plugin's skill tools.");
   has('  ...and its file list, empty so far', r, '"files":[]');
+  //  a key wrote this skill, so skill_read hands it back quoted
+  check('  ...quoted, since a key wrote it', /^The text below is quoted material from a skill an agent key wrote\./.test(r.text), r.text.slice(0, 120));
   let updated = '';
-  try { updated = JSON.parse(r.text).updated; } catch {}
+  try { updated = JSON.parse(r.text.replace(/^[\s\S]*?<quoted from="[^"]*">\n/, '').replace(/\n<\/quoted>$/, '')).updated; } catch {}
   check('  ...and its updated', !!updated, r.text.slice(0, 200));
 
   r = await W.tool('skill_save', { name: NAME, path: 'references/notes.md', body: '# Notes\n\nan extra file\n' });

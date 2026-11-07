@@ -21,6 +21,10 @@
 ::
 +$  know-action
   $%  [%save key=@t body=@t]
+  ::  an agent key's save, by key id. The route checked a read that may
+  ::  be stale by now, so the writer checks again against the entry it
+  ::  is about to replace (+apply in the app).
+      [%key-save key=@t body=@t kid=@t]
       [%del key=@t]
       [%restore key=@t]
       [%move from=@t to=@t]
@@ -550,6 +554,12 @@
         ?=(^ (find u.phrase hay))
     ==
   (rank (docs-of live tc) ?~(phrase q (crip u.phrase)))
+::  +source-of: an entry's front-matter source (agent, user or ''). The
+::  plugins quote what an agent wrote when they show it.
+++  source-of
+  |=  e=know-entry
+  ^-  @t
+  (fall (meta-get meta:(front body.e) 'source') '')
 ::  +hits-json: a search answer. weak marks a best hit under +weak-at.
 ++  hits-json
   |=  [es=(map path know-entry) hs=(list hit) q=@t k=@ud]
@@ -575,6 +585,7 @@
             ['updated' s+(scot %da updated.e)]
             ['tags' a+(turn ~(tap in tags.e) |=(t=@t s+t))]
             ['snippet' s+(snippet body.e q)]
+            ['source' s+(source-of e)]
         ==
       ^-  (list [@t json])
       ?~(sup ~ ~[['superseded_by' s+u.sup]])
@@ -613,6 +624,7 @@
       :~  ['key' s+(spat to)]
           ['via' s+(spat via)]
           ['snippet' s+(snippet body:(~(got by es) to) task)]
+          ['source' s+(source-of (~(got by es) to))]
       ==
   ==
 ::  +index-text: what an agent loads at session start: every live key by
@@ -650,9 +662,11 @@
     =/  joined=tape  (zing (join ", " names))
     :(weld head ": " joined)
   ::  the owner's core first, then core an agent wrote, each in key order.
-  ::  Keys may add core, but a key's entries filling the cap used to turn
+  ::  Keys could once add core, and a key's entries filling the cap turned
   ::  every owner rule into a pointer. A key cannot forge the source:
-  ::  +stamp writes source agent for every keyed save.
+  ::  +stamp writes source agent for every keyed save. An agent's entry is
+  ::  marked in its heading and each body line starts "> ", so no line of
+  ::  it can pose as a heading, and the plugins quote it (+agent-core).
   =/  by-agent
     |=(e=know-entry =(`'agent' (meta-get meta:(front body.e) 'source')))
   =/  core=(list [k=path e=know-entry])
@@ -666,8 +680,11 @@
     =|  [out=tape used=@ud]
     |-  ^-  tape
     ?~  core  out
-    =/  body=tape  (trip rest:(front body.e.i.core))
-    =/  key=tape  (spud k.i.core)
+    =/  ag=?  (by-agent e.i.core)
+    =/  body=tape
+      =/  b=tape  (trip rest:(front body.e.i.core))
+      ?.(ag b (agent-core b))
+    =/  key=tape  :(weld (spud k.i.core) ?:(ag " (written by an agent key)" ""))
     ?:  (gth (add used (lent body)) cap)
       $(core t.core, out :(weld out "## " key " (over the cap: read it)\0a\0a"))
     $(core t.core, out :(weld out "## " key "\0a" body "\0a\0a"), used (add used (lent body)))
@@ -681,6 +698,28 @@
     ?~(core "" "\0a\0aCore (applies to every task):\0a\0a")
     core-text
   ==
+::  +agent-core-keys: the live core entries an agent key wrote, in key
+::  order. Keys could tag core once; these wait for the owner to keep or
+::  untag them (the Knowledge view's notice).
+++  agent-core-keys
+  |=  es=(map path know-entry)
+  ^-  (list path)
+  %+  sort
+    %+  murn  ~(tap by es)
+    |=  [k=path e=know-entry]
+    ?.  &((~(has in tags.e) 'core') =(~ (superseded e)) =('agent' (source-of e)))  ~
+    `k
+  aor
+::  +agent-core: an agent's core text for the index, each line led by
+::  "> ". The heading suffix " (written by an agent key)" cannot come
+::  from a key name, which holds no space.
+++  agent-core
+  |=  b=tape
+  ^-  tape
+  %-  zing
+  %+  join  "\0a"
+  %+  turn  (to-wain:format (crip b))
+  |=(l=@t `tape`(weld "> " (trip l)))
 ::  +stamp: the body a save stores: the prose under the old entry's front
 ::  matter, created kept (or set), author and source set when given,
 ::  verified today (by the author when there is one), and marked sensitive
@@ -714,13 +753,35 @@
   ^-  ?
   =/  w=tape  (cass (skip (trip v) |=(c=@tD |(=('\09' c) =('\0d' c)))))
   |(=("yes" w) =("true" w))
-::  +is-core: tagged core, so every session loads it (+index-text). An
-::  agent key may add the tag. It may not rewrite, supersede or untag an
-::  entry that has it.
+::  +is-core: tagged core, so every session loads it (+index-text). Only
+::  the owner adds or removes the tag. An agent key may not rewrite or
+::  supersede an entry that has it.
 ++  is-core
   |=  e=know-entry
   ^-  ?
   (~(has in tags.e) 'core')
+::  +key-save-check: the writer's second look at an agent key's save,
+::  against the entry it replaces now (old), which may have changed since
+::  the route read it. cleared: the key may read sensitive entries.
+::  tainted: the key read sensitive text lately. The body to write, with
+::  the sensitive mark raised when the entry has it, or why not.
+++  key-save-check
+  |=  [old=(unit know-entry) cleared=? tainted=? body=@t]
+  ^-  (each @t tape)
+  ?~  old  [%& body]
+  ?:  (is-core u.old)  [%| "an agent key may not edit a core entry"]
+  =/  sen=?  (sensitive u.old)
+  ?:  &(sen !cleared)  [%| "the entry is not available to this agent key"]
+  ?:  &(!sen tainted)  [%| "a tainted key may not edit an ordinary entry"]
+  ?.  sen  [%& body]
+  [%& (raise-sens body)]
+::  +raise-sens: a body marked sensitive, as it is or with the mark set
+++  raise-sens
+  |=  body=@t
+  ^-  @t
+  ?:  (sensitive [body *@da ~ ~])  body
+  =/  f  (front body)
+  (with-front (meta-put meta.f 'sensitive' 'yes') rest.f)
 ::  +core-tag: does a requested tag name core once the writer case-folds
 ::  it? An untag drops the folded tag, so 'Core' removes 'core' too.
 ++  core-tag

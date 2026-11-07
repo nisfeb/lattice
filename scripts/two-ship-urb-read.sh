@@ -87,7 +87,9 @@ has "a. a published page"         "Published by A" "$r"
 has "  ...quoted"                 "<quoted from=\"urb://$ASHIP/$P/pub\">" "$r"
 cm() { read_ "urb://$ASHIP/$P/pub" | grep -qF 'comment from B'; }
 if until_ 60 cm; then ok "f. its public comments"; else fail "f. its public comments"; fi
-has "  ...quoted apart from the page" "<quoted from=\"the public comments on urb://$ASHIP/$P/pub\">" "$(read_ "urb://$ASHIP/$P/pub")"
+r=$(read_ "urb://$ASHIP/$P/pub")
+is "  ...quoted apart from the page" 2 "$(grep -cF "<quoted from=\"urb://$ASHIP/$P/pub\">" <<<"$r")"
+has "  ...as public comments" "Public comments (" "$r"
 has "b. a page shared with B alone" "Private for B" "$(read_ "urb://$ASHIP/$P/priv")"
 has "  ...said to be shared"        "shared with this ship" "$(read_ "urb://$ASHIP/$P/priv")"
 has "c. a clearweb page"            "Clearweb by A" "$(read_ "urb://$ASHIP/$P/cw")"
@@ -152,7 +154,7 @@ is "B saves a memory"               200 "$(code -H "$BK" -X POST "$B/know-save?k
 BASE=$(B_ "$B/streams" | jq -r .base)
 [ -n "$BASE" ] && [ "$BASE" != null ] || fail "B's base from /streams"
 j=$(B_ -X POST "$B/key-mint" -H 'content-type: application/json' --data-binary \
-  '{"name":"urb-web","by":"two-ship-urb-read","scope":{"memory":"none","pages":{"all":"none"},"web":{"all":null},"sensitive":false}}')
+  '{"name":"urb-web","by":"two-ship-urb-read-web","scope":{"memory":"none","pages":{"all":"none"},"web":{"all":null},"sensitive":false}}')
 WKEY=$(jq -r .key.id <<<"$j"); WTOK=$(jq -r .token <<<"$j")
 kc() { curl -s -m 60 -o /dev/null -w '%{http_code}' -G -H "Authorization: Bearer $1" "${@:2}"; }
 kb() { curl -s -m 60 -G -H "Authorization: Bearer $1" "${@:2}"; }

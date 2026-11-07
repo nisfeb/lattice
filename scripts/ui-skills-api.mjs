@@ -30,7 +30,7 @@ const q = (o) => Object.entries(o).map(([k, v]) => `${k}=${encodeURIComponent(v)
 const minted = [];
 async function mint(skills, sensitive = false) {
   const scope = { memory: 'none', pages: { all: 'none' }, web: { off: null }, sensitive, skills };
-  const r = await owner('POST', 'key-mint', JSON.stringify({ name: `api-skills-${skills}`, by: `skills-${skills}`, scope }));
+  const r = await owner('POST', 'key-mint', JSON.stringify({ name: `api-skills-${skills}`, by: `skills-${skills}${sensitive ? '-cleared' : ''}`, scope }));
   if (!r.j.token) { console.error('key-mint failed', r.status, JSON.stringify(r.j)); process.exit(1); }
   minted.push(r.j.key.id);
   check.eq(`a minted key keeps skills ${skills}`, r.j.key.scope.skills, skills);
