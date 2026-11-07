@@ -6226,7 +6226,11 @@
   ::  it replaced leaves the pool, or a later item that resembles that
   ::  old body is refused as a duplicate of text no longer stored.
   =/  e=know-entry:lk
-    (merge-save:lk old ?>(?=(?(%save %key-save) -.act.p.pl) body.act.p.pl) bnow)
+    %^  merge-save:lk  old
+      ::  the body sits at another axis in each, so one case per shape
+      ?:  ?=(%save -.act.p.pl)  body.act.p.pl
+      ?>(?=(%key-save -.act.p.pl) body.act.p.pl)
+    bnow
   =/  rest=(list [path know-entry:lk])
     (skip pool |=([k=path *] =(k u.ko)))
   %=  $
