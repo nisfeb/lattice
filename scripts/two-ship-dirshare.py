@@ -124,8 +124,17 @@ def main():
             return any(e['host'] == ship_a and e['path'].endswith(f'/page/{rel}/code') for e in json.loads(txt))
         except ValueError:
             return False
-    # the folder's grant tells B, so its shared with me (and the live beacon) moves
-    until('B is told of the page added later', lambda: swm(g + '/later') or 'not in shared-with-me')
+    def swm_dir(rel):
+        st, txt = b('GET', '/apps/lattice/shared-with-me')
+        try:
+            return any(e['host'] == ship_a and e['path'].endswith(f'/page/{rel}/dir-index') for e in json.loads(txt))
+        except ValueError:
+            return False
+    # the folder is one entry in B's shared with me, and a page made in it
+    # later adds none: the folder's entry covers it
+    until('B lists the folder as one entry', lambda: swm_dir(g) or 'no folder entry in shared-with-me')
+    check('B has no entry of its own for the page added later', not swm(g + '/later'))
+    check('nor for a page that was in it', not swm(g + '/memo'))
     post(f'page-move?from={g}/later&to={ROOT}/out')
     until('B loses the page moved out', lambda: reads(g + '/later', 'Later for B') is not True)
     until('B cannot read it where it went', lambda: reads(ROOT + '/out', 'Later for B') is not True)
@@ -155,7 +164,7 @@ def main():
     post(f'unshare-file?name={g}&ship={ship_b}')
     check('the group holds nothing under the folder', under(g) == [], str(under(g)))
     check('nor its index roads', (group() or {}).get('opaque', 0) < opaque, str(group())[:300])
-    until('B is told live it was unshared', lambda: (not swm(g + '/memo')) or 'still in shared-with-me')
+    until('B is told live it was unshared', lambda: (not swm_dir(g)) or 'still in shared-with-me')
     until('B cannot read a page of it', lambda: reads(g + '/memo', 'Memo for B') is not True)
     until('B cannot read its index', lambda: index(g) is None or index(g))
     post(f'page-save?type=md&new=1&name={g}/after', '# After for B\n')
