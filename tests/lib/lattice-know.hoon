@@ -113,13 +113,6 @@
     (expect-eq !>(~2026.2.2) !>((rev-at ~2026.2.2 ~)))
     (expect-eq !>(~2026.2.2) !>((rev-at ~2026.2.2 (sy ~['at:junk' 'x']))))
   ==
-::  +rev-by: a revision's writer, '' for none
-++  test-rev-by
-  ;:  weld
-    (expect-eq !>('w-1') !>((rev-by (sy ~[(by-tag 'w-1') (rev-tag ~2026.1.1)]))))
-    (expect-eq !>('') !>((rev-by (sy ~['at:x' 'b:y']))))
-    (expect-eq !>('') !>((rev-by ~)))
-  ==
 ::  +front / +with-front: front matter round-trips byte for byte, and a body
 ::  without it passes through.
 ++  test-front

@@ -109,6 +109,10 @@ try {
 
   // ── 2. remote images wait for "Load outside content" ──────────────────────
   await open('qi/img', 'outside.invalid');
+  //  the ship's render may be what is painted; an input repaints locally
+  await p.waitForFunction(() => /Content-Security-Policy/.test(document.getElementById('prev').getAttribute('srcdoc') || ''),
+    { timeout: 30000 });
+  await p.evaluate(() => document.getElementById('src').dispatchEvent(new Event('input')));
   await p.waitForFunction(() => (document.getElementById('prev').getAttribute('srcdoc') || '').includes('ximg'),
     { timeout: 20000 });
   const sd = await p.evaluate(() => document.getElementById('prev').getAttribute('srcdoc'));

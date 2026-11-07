@@ -24,8 +24,8 @@
       ::  +make, for a copy of a page a peer may have written (a move, a
       ::  conflict copy). The copy keeps the original's peer-written mark.
       [%make-marked pax=path src=@t]
-      ::  +make, by one writer (a window's session id, a key, the mount),
-      ::  tagged on the revision so the history prune coalesces only one
+      ::  +make, by one writer (a window's session id, a key), noted
+      ::  beside the page (+note-writer) so the history prune coalesces only one
       ::  writer's run (+coalesce-victim). base: not 0, the rev the writer
       ::  edited from, checked again here in the writer, so a save that
       ::  raced another past the route's check is not written over it.

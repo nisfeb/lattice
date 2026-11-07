@@ -7531,7 +7531,7 @@
     ;<  ~  bind:m  (write-page root pax.act src.act &)
     ;<  ~  bind:m
       ?:  =('' by.act)  (pure:m ~)
-      (tag:io (rf up (weld /page pax.act) %code) ~ (sy ~[(by-tag:lk by.act)]))
+      (note-writer up pax.act +(rev.pc) by.act)
     ;<  pen=(unit [pub-pending:lp pub-trying:lp])  bind:m
       (pub-mark root now pax.act src.act)
     ;<  ~  bind:m  (yield-event root now pen pax.act /writer/yield)
@@ -8873,6 +8873,36 @@
 ::
 ++  prune-hist
   |=  [road=road:tarball keep=@ud window=@dr]
+  (prune-hist-by road keep window ~)
+::  +writers-road / +read-writers / +note-writer: who wrote each of a
+::  page's revisions (+make-by), a map of rev to writer id beside its
+::  code grub. Not a tag on the revision: tagging makes a revision of its
+::  own, which moved the rev a save had just answered. The last 64 kept.
+++  writers-road
+  |=  [up=@ud pax=path]
+  ^-  road:tarball
+  (rf up (weld /page pax) %writers)
+++  read-writers
+  |=  [up=@ud pax=path]
+  =/  m  (fiber:fiber:nexus ,(map @ud @t))
+  ^-  form:m
+  ;<  v=view:nexus  bind:m  (peek:fio (writers-road up pax) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  (pure:m (fall (mole |.(;;((map @ud @t) (sang-noun:tarball sang.v)))) ~))
+++  note-writer
+  |=  [up=@ud pax=path rev=@ud by=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  old=(map @ud @t)  bind:m  (read-writers up pax)
+  =/  new=(map @ud @t)  (~(put by old) rev by)
+  =/  ks=(list @ud)  (sort ~(tap in ~(key by new)) gth)
+  =?  new  (gth (lent ks) 64)
+    (malt (turn (scag 64 ks) |=(k=@ud [k (~(got by new) k)])))
+  (put-file (writers-road up pax) [/ %noun] new)
+::  +prune-hist-by: +prune-hist, with each revision's writer (`wr`, rev to
+::  writer id) for the coalesce: one writer's run only
+++  prune-hist-by
+  |=  [road=road:tarball keep=@ud window=@dr wr=(map @ud @t)]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  bo=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:fio road)
@@ -8889,9 +8919,6 @@
   ::  each revision's time by +rev-at:lk: one a move carried keeps its own
   =/  at=(map @ud @da)
     (malt (turn p.bo |=([c=cass:clay tags=(set @t) *] [ud.c (rev-at:lk da.c tags)])))
-  ::  and its writer (+rev-by:lk): coalesced only within one writer's run
-  =/  wr=(map @ud @t)
-    (malt (turn p.bo |=([c=cass:clay tags=(set @t) *] [ud.c (rev-by:lk tags)])))
   ::  keep=0 means drop the lot (used by delete). Guard it explicitly. The
   ::  general path below computes (dec keep), and dec 0 crashes, which would
   ::  have taken the writer down on every page delete.
@@ -8995,7 +9022,8 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  (prune-hist (rf up (weld /page pax) %code) history-keep history-window)
+  ;<  wr=(map @ud @t)  bind:m  (read-writers up pax)
+  (prune-hist-by (rf up (weld /page pax) %code) history-keep history-window wr)
 ::  +rewrite-root: replace the path-prefix `from` with `to` in code, only where
 ::  `from` ends at a path boundary (/ ) space " ] , or end), so a short root
 ::  can't clobber a longer path that merely starts with it.

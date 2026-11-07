@@ -901,7 +901,7 @@
 ::  it came soon after the one before it.
 ::
 ::
-::  w: each revision's writer (+rev-by). prev goes only when the head is
+::  w: each revision's writer (+note-writer in app.hoon). prev goes only when the head is
 ::  the same writer's: a revision one window or writer made and another
 ::  then wrote over is the only copy of that writer's text, and is kept.
 ++  coalesce-victim
@@ -925,20 +925,6 @@
   |=  d=@da
   ^-  @t
   (cat 3 'at:' (scot %da d))
-::  +by-tag / +rev-by: who wrote a revision (+make-by in the writer), ''
-::  for one written without a writer id
-++  by-tag
-  |=  w=@t
-  ^-  @t
-  (cat 3 'by:' w)
-++  rev-by
-  |=  tags=(set @t)
-  ^-  @t
-  =/  ts=(list @t)  ~(tap in tags)
-  |-  ^-  @t
-  ?~  ts  ''
-  ?:  =('by:' (end [3 3] i.ts))  (rsh [3 3] i.ts)
-  $(ts t.ts)
 ++  rev-at
   |=  [d=@da tags=(set @t)]
   ^-  @da
