@@ -352,11 +352,17 @@
       return;
     }
     sensKnown.set(target, want);
+    // marking takes back folder and group grants, but the page's own share
+    // stays: say so, since it still leaves this ship
+    let shared = false;
+    try { shared = (await r.json()).shared === true; } catch {}
     if (!here) return;
     cb.checked = want;
-    $('shsensres').textContent = want
-      ? target + ' is sensitive'
-      : target + ' is no longer sensitive';
+    $('shsensres').textContent = !want
+      ? target + ' is no longer sensitive'
+      : shared
+        ? target + ' is sensitive, but still shared on its own: unshare it to keep it here'
+        : target + ' is sensitive';
   };
 
   // ── per-file group access ────────────────────────────────────────────────

@@ -7812,11 +7812,15 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       return;
     }
     sensKnown.set(target, want);
+    let shared = false;
+    try { shared = (await r.json()).shared === true; } catch {}
     if (!here) return;
     cb.checked = want;
-    $('shsensres').textContent = want
-      ? target + ' is sensitive'
-      : target + ' is no longer sensitive';
+    $('shsensres').textContent = !want
+      ? target + ' is no longer sensitive'
+      : shared
+        ? target + ' is sensitive, but still shared on its own: unshare it to keep it here'
+        : target + ' is sensitive';
   };
 
   const pagePath = (name) => selfBase + '/page/' + name;
