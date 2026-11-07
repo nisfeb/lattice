@@ -357,6 +357,44 @@
     (~(gas by *(map @t title-row:ls)) ~[['/a' 5 'one\09two\0athree']])
   %+  expect-eq  !>(`title-row:ls`[5 'one two three'])
   !>((~(got by (titles-rows:ls (titles-cord:ls rows))) '/a'))
+::  a title is cut where a character starts, never inside one: 299 ASCII
+::  bytes then a two-byte e-acute would cut at 300 between its bytes
+++  test-titles-clean-utf8
+  =/  pad=tape  (reap 299 'a')
+  =/  t=@t  (crip (weld pad "\c3\a9z"))
+  =/  got=@t  (title-clean:ls t)
+  ;:  weld
+    (expect-eq !>(299) !>((met 3 got)))
+    (expect-eq !>((crip pad)) !>(got))
+    ::  a three-byte character at the cut, and a cut that falls just after one
+    (expect-eq !>('ab') !>((utf8-cut:ls 3 'ab\e2\82\ac')))
+    (expect-eq !>('ab\e2\82\ac') !>((utf8-cut:ls 5 'ab\e2\82\acx')))
+    (expect-eq !>('short') !>((utf8-cut:ls 300 'short')))
+    (expect-eq !>('') !>((utf8-cut:ls 1 '\c3\a9')))
+  ==
+::  +page-title: the first heading, capped at the title cap
+++  test-page-title
+  =/  long=@t  (crip (weld "# " (reap 1.000 'x')))
+  ;:  weld
+    (expect-eq !>('Hello') !>((page-title:ls 'intro\0a## Hello\0abody' 'fb')))
+    (expect-eq !>('fb') !>((page-title:ls 'no heading' 'fb')))
+    (expect-eq !>('fb') !>((page-title:ls '#  ' 'fb')))
+    (expect-eq !>(title-cap:ls) !>((met 3 (page-title:ls long 'fb'))))
+  ==
+::  +beacon-next: strictly rising, even for two bumps at one now
+++  test-beacon-next
+  ;:  weld
+    (expect-eq !>(100) !>((beacon-next:ls 5 100)))
+    (expect-eq !>(101) !>((beacon-next:ls 100 100)))
+    (expect-eq !>(201) !>((beacon-next:ls 200 100)))
+  ==
+::  +corrupt-name: label, then the time, as one knot
+++  test-corrupt-name
+  =/  n=@ta  (corrupt-name:ls %shared ~2026.11.7..12.00.00)
+  ;:  weld
+    (expect-eq !>('shared-corrupt-2026.11.7..12.00.00') !>(n))
+    (expect-eq !>(%.y) !>(((sane %ta) n)))
+  ==
 ::  a line that will not read is dropped, the rest kept
 ++  test-titles-bad-lines
   =/  got=(map @t title-row:ls)

@@ -327,6 +327,36 @@
         ::  /notify/items/<id>: the owner's activity, one item each
         ::  (lib/lattice-notify), and /notify/seen its read state
             [%fall %| /notify/items empty-dir:loader]
+            [%stay %& [/notify %seen]]
+        ::  /pub/titles: each published page's title (+put-pub-title). %stay:
+        ::  +ensure-pub-titles lays it from the pages when it is absent.
+            [%stay %& [/pub %titles]]
+        ::  /rev-high: each page name's highest published or deleted
+        ::  revision (+rev-high:lp), which a publish must climb past
+            [%fall %& [/ %'rev-high'] [[/ %noun] *rev-high:lp]]
+        ::  /salt-retire: the salt +migrate-pub-marks is retiring, so a
+        ::  crash part way resumes it
+            [%fall %& [/ %'salt-retire'] [[/ %noun] ~]]
+        ::  /corrupt: grubs that would not read, kept aside before their
+        ::  writer replaced them (+aside-corrupt)
+            [%fall %| /corrupt empty-dir:loader]
+        ::  /move-resume/<at>: a move a reload cut short (+move-resume-arm)
+            [%fall %| /move-resume empty-dir:loader]
+        ::  caches, kept across a reload: each is checked or timed out by
+        ::  its readers, and a reload that dropped them only cost the work
+        ::  of filling them again. /know/terms-stem says which stemming
+        ::  /know/terms was made by: without it every reload took the
+        ::  covered terms as stale. /peers.json (+peer-base-cached),
+        ::  /peer-revs.json (+peer-revs-cached), /old-beacon.json
+        ::  (+old-beacon-arm), /fodt-peers (+fodt-peer) and /comments-cache
+        ::  (peers' threads). /rise.json, the crash record, has no row on
+        ::  purpose: a reload resets its counts (+rise-later).
+            [%stay %& [/know %'terms-stem']]
+            [%stay %& [/ %'peers.json']]
+            [%stay %& [/ %'peer-revs.json']]
+            [%stay %& [/ %'old-beacon.json']]
+            [%stay %& [/ %'fodt-peers']]
+            [%fall %| /comments-cache empty-dir:loader]
         ::  /bookmarks: the browser's saved-page list (newest first). A covering
         ::  file row (like /sub/follows) so it survives reload.
             [%fall %& [/ %bookmarks] [[/lattice %bookmarks] *bookmarks:lb]]
@@ -358,6 +388,11 @@
         ::  /beacon/folds: stamped by +bump-folds when a followed folder
         ::  changes: new pages, unavailable, or a share notice under it
             [%fall %& [/beacon %folds] [[/ %json] (numb:enjs:format 0)]]
+        ::  /beacon/know: memories' own stamp (+bump-beacon %know), and
+        ::  /beacon/comments the comment badge's (+comments-latest). %stay:
+        ::  a reader takes an absent comments stamp for "unknown".
+            [%stay %& [/beacon %know]]
+            [%stay %& [/beacon %comments]]
         ::  /idx: the grub-native term index (docs/native-index.md). 256 bucket
         ::  grubs, each term -> (key -> [scope tf]). ONE covering %fall row. A
         ::  nexus reload rewrites its whole covered subtree, so without a row
@@ -511,6 +546,8 @@
         ;<  ~  bind:m  (ensure-shipped-templates root)
         ::  the salt and the revision list peers read (+ensure-pub-ids)
         ;<  ~  bind:m  (ensure-pub-ids root)
+        ::  /pub/titles, when a reload before its row dropped it
+        ;<  ~  bind:m  (ensure-pub-titles root)
         ::  the published pages that take comments, when there is no list
         ;<  pc=(unit (set @t))  bind:m  (read-pub-comments root)
         ;<  ~  bind:m  ?^(pc (pure:(fiber:fiber:nexus ,~) ~) (put-pub-comments root))
@@ -523,6 +560,8 @@
         ;<  ~  bind:m  (migrate-pub-marks root)
         ::  a whole-tree action a reload cut short (+job-set)
         ;<  ~  bind:m  (job-resume root)
+        ::  a folder move a reload cut short, finished (+move-resume-arm)
+        ;<  ~  bind:m  (move-resume-arm root)
         ::  publishes a reload cut short, or that were still waiting
         ;<  ~  bind:m  (pub-arm root)
         |-
@@ -906,6 +945,17 @@
         ;<  ex=?  bind:m  (peek-exists:fio done)
         ?.  ex  (pure:m ~)
         ;<  *  bind:m  (cull-soft:io done)
+        (pure:m ~)
+      ::  /move-resume/<at>: a folder move a reload cut short, run again
+      ::  to its end (+move-resume-arm). Each step of a move lands the same
+      ::  way twice and the source goes last, so running it again is how
+      ::  it finishes. Run again after another reload too, until it culls
+      ::  itself.
+          [[%move-resume ~] @]
+        ;<  ~  bind:m  take-kick
+        ;<  [pf=path pt=path]  bind:m  (get-state-as:io ,[path path])
+        ;<  *  bind:m  (move-run pf pt)
+        ;<  *  bind:m  (cull-soft:io (rf up /move-resume name.rail))
         (pure:m ~)
       ::  /mirror/mirror.sig: the commons reconciler (docs/obelisk-mirror.md
       ::  section 5). The loop lives in +mirror-loop.
@@ -1488,7 +1538,12 @@
     :*  %ship  u.hp  u.pp  mode.u.en
         kind.u.got  body.u.got  rev.u.got  (met 3 body.u.got)  [& now]
     ==
-  ;<  ~  bind:m  (poke-eval [%link-put tp l])
+  ;<  ~  bind:m  (poke-eval [%link-new tp l])
+  ;<  ~  bind:m  writer-drain
+  ::  the writer refuses a link over a page or link that landed while the
+  ::  host was asked: the entry stays in shared with me then
+  ;<  now-at=(unit [l=link:ll at=@da])  bind:m  (link-at tp)
+  ?.  &(?=(^ now-at) =(l.u.now-at l))  (send-err eyre-id 409 'destination exists')
   ;<  ~  bind:m
     %+  poke:io  (rf up / %'shares.sig')
     [[/lattice %share-notice] `action:ls`[%del u.hp u.pp]]
@@ -3047,7 +3102,7 @@
     ::  too: a ban that freed no slots left the page full (security audit run-1).
     ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
     ;<  *  bind:m  (cull-comments-of u.who)
-    ;<  ~  bind:m  (put-pub-threads up)
+    ;<  ~  bind:m  (poke-eval [%pub-threads ~])
     ;<  ~  bind:m  (poke-eval [%forum-cull u.who])
     ::  the ban is written; the revocation is not. Say so: a ban that left
     ::  the grants in place is the label this route exists not to be.
@@ -3829,8 +3884,8 @@
     =/  croad=road:tarball
       (rf up (weld /comments (pax-of u.pg)) `@ta`u.id)
     ;<  *  bind:m  (cull-soft:io croad)
-    ::  and out of the page's public thread
-    ;<  ~  bind:m  (put-pub-thread up (pax-of u.pg))
+    ::  and out of the page's public thread, in the writer
+    ;<  ~  bind:m  (poke-eval [%pub-thread (pax-of u.pg)])
     (send-ok eyre-id)
   ::
       [%'POST' %page-comments]
@@ -5923,6 +5978,29 @@
   ;<  v=view:nexus  bind:m  (peek:fio (rf up / %'key-bytes') ~)
   ?.  ?=([%file *] v)  (pure:m ~)
   (pure:m (fall (mole |.(;;(ledger:ky (sang-noun:tarball sang.v)))) ~))
+::  +aside-corrupt: before a writer overwrites a grub its reader took as
+::  empty, keep what was there if it would not read. `ok` says whether a
+::  noun reads; a grub present that does not is copied whole, under the
+::  plain %noun mark, to /corrupt/<label>-corrupt-<time> (+corrupt-name:ls),
+::  and the fault is recorded and said once. Without this a corrupt
+::  /shared, ledger or activity read state was replaced by an empty one
+::  with no trace.
+++  aside-corrupt
+  |=  [up=@ud =road:tarball label=@ta ok=$-(* ?)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:fio road ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  =/  n=(unit *)  (mole |.((sang-noun:tarball sang.vw)))
+  ?:  &(?=(^ n) (ok u.n))  (pure:m ~)
+  ;<  now=@da  bind:m  bowl-now
+  =/  nam=@ta  (corrupt-name:ls label now)
+  ;<  ~  bind:m  (ensure-dirs up / /corrupt)
+  ;<  ~  bind:m  (put-file (rf up /corrupt nam) [/ %noun] (fall n ~))
+  %:  fault  (crip "corrupt-{(trip label)}")  1
+    "lattice: {(trip label)} would not read: kept it aside at /corrupt/{(trip nam)}"
+    ~
+  ==
 ::  +key-spend: may this key write `len` more bytes today? Charges them when
 ::  it may.
 ++  key-spend
@@ -5953,6 +6031,9 @@
     =/  day=@da  (sub when.act (mod when.act ~d1))
     =/  e  (~(get by led) id.act)
     =/  used=@ud  ?~(e 0 ?:(=(day day.u.e) n.u.e 0))
+    ;<  ~  bind:m
+      %^  aside-corrupt  root  (rf root / %'key-bytes')
+      [%key-bytes |=(n=* ?=(^ (mole |.(;;(ledger:ky n)))))]
     (put-file (rf root / %'key-bytes') [/ %noun] (~(put by led) id.act [day (add used len.act)]))
   =/  kr=road:tarball  (rf root / %keys)
   ;<  ks=keys:ky  bind:m  (read-keys kr)
@@ -6586,15 +6667,30 @@
   ::  the beacon must be NESTED (under /beacon). grubbery's keep-SSE does not
   ::  stream a grub at the nexus root (verified: /rev and /bookmarks keeps stay
   ::  silent. Nested grubs like /pub/index stream fine). Gain is not required.
-  ;<  ~  bind:m  (put-file (rf up /beacon sub) [/ %json] (numb:enjs:format `@ud`now))
+  ;<  val=@ud  bind:m  (beacon-put up sub now)
   ?.  =(%rev sub)  (pure:m ~)
   ;<  on=(unit json)  bind:m  (peek-as:io (rf up / %'old-beacon.json') ,json)
   ?.  ?=([~ %b %.y] on)  (pure:m ~)
-  ;<  ok=?  bind:m  (old-beacon-put now)
+  ;<  ok=?  bind:m  (old-beacon-put val)
   ?:  ok  (pure:m ~)
   ::  the mirror stopped taking writes (its folder was deleted, or the
   ::  road taken away): stop trying until the writer next starts
   (put-file (rf up / %'old-beacon.json') [/ %json] `json`[%b %.n])
+::  +beacon-put: write a numeric change beacon, strictly above its last
+::  value (+beacon-next:ls), and answer the value written. Two bumps in
+::  one event share one `now`; written as `now` both, the second was no
+::  change and no keep-SSE news event fired for it.
+++  beacon-put
+  |=  [up=@ud sub=@ta now=@da]
+  =/  m  (fiber:fiber:nexus ,@ud)
+  ^-  form:m
+  ;<  last=(unit json)  bind:m  (peek-as:io (rf up /beacon sub) ,json)
+  =/  was=@ud
+    ?.  ?=([~ %n *] last)  0
+    (fall (rush p.u.last dem) 0)
+  =/  val=@ud  (beacon-next:ls was `@ud`now)
+  ;<  ~  bind:m  (put-file (rf up /beacon sub) [/ %json] (numb:enjs:format val))
+  (pure:m val)
 ::  +old-beacon-arm, +old-beacon-put: THE OLD LATTICE-FS BEACON.
 ::
 ::    lattice-fs builds before 2026-11 (the desktop app's among them) watch
@@ -6627,15 +6723,15 @@
   ;<  ok=?  bind:m
     ::  a ball-era install's own beacon is the one they watch
     ?:  =(sb app-base:lu)  (pure:(fiber:fiber:nexus ,?) |)
-    (old-beacon-put now)
+    (old-beacon-put `@ud`now)
   (put-file (rf root / %'old-beacon.json') [/ %json] `json`[%b ok])
 ::
 ++  old-beacon-put
-  |=  now=@da
+  |=  val=@ud
   =/  m  (fiber:fiber:nexus ,?)
   ^-  form:m
   =/  dir=path  (weld app-base:lu /beacon/rev)
-  =/  =bask:tarball  [[/ %json] (numb:enjs:format `@ud`now)]
+  =/  =bask:tarball  [[/ %json] (numb:enjs:format val)]
   ;<  ok=?  bind:m  (ug-over [%& %& dir %rev] bask)
   ?:  ok  (pure:m &)
   ::  a folder on the way is missing (+retire-old-app deleted the old
@@ -6687,6 +6783,13 @@
   ::  published pages runs longer, and its route then answers while the
   ::  writer finishes, rather than as a 504 a client reads as offline.
   ?.  (tree-jobs act)  (pure:m ~)
+  writer-drain
+::  +writer-drain: wait until the writer is done with every poke before
+::  this one: a no-op poke, answered only once those are over (see
+::  +poke-eval), or after eight minutes
+++  writer-drain
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  now=@da  bind:m  bowl-now
   =/  until=@da  (add now ~m8)
@@ -7434,6 +7537,7 @@
     =/  new=seen:ln
       ?~  ids.act  (mark-all:ln now)
       (mark-ids:ln s ids.act (~(gas in *(set @ta)) (turn items head)))
+    ;<  ~  bind:m  (aside-seen up)
     (put-file (rf up /notify %seen) [/ %noun] new)
       %forum-cull  (cull-forum-of up now who.act)
       %forum-notes-clear
@@ -7762,14 +7866,30 @@
     ::  create an empty folder (and any missing parents). ensure-dirs is
     ::  idempotent, so mkdir over an existing page/folder is a harmless no-op.
     (ensure-dirs up /page pax.act)
-      %link-put
+      ?(%link-put %link-new)
     ::  a link (/lib/lattice-link): under /links, never /page (see the
     ::  loader), so no evaluator spawns on it and no grant reaches it. Its
     ::  folders are made under /page too, where the tree, moves and deletes
     ::  find them, and they hold nothing of the link.
+    ::
+    ::  Checked HERE, at write time, in the one writer every page save goes
+    ::  through: a request's own check ran before its waits, and a save or
+    ::  another make could land in between. A page or folder at pax refuses
+    ::  either. A new link is refused over a link, and a rewrite of one
+    ::  (a share notice's new mode) is dropped once the link has gone.
+    ;<  pg=?  bind:m  (peek-exists:fio (rv up (weld /page pax.act)))
+    ?:  pg  (pure:m ~)
+    ;<  lx=?  bind:m  (peek-exists:fio (link-road up pax.act))
+    ?:  =(lx ?=(%link-new -.act))  (pure:m ~)
     ;<  ~  bind:m  (ensure-dirs up /page (snip pax.act))
     ;<  ~  bind:m  (ensure-dirs up /links pax.act)
     (put-file (link-road up pax.act) [/lattice %link] link.act)
+      %journal-put  (journal-put root now +.act)
+      %del-from
+    ;<  ~  bind:m  (del-from root now +.act)
+    (apply-eval root now [%del from.act])
+      %pub-thread  (put-pub-thread up page.act)
+      %pub-threads  (put-pub-threads up)
       %link-seen
     ::  a live read's result, onto the cache (+refresh:ll, +fail:ll). Only
     ::  while the same link is still at pax, and only when something moved,
@@ -7835,7 +7955,8 @@
     ;<  ~  bind:m
       (put-file (rf up (weld /comments pax.act) id.act) [/lattice %comment] u.c)
     ;<  ~  bind:m  (put-pub-thread up pax.act)
-    (put-file (rf root /beacon %comments) [/ %json] (numb:enjs:format `@ud`now))
+    ;<  *  bind:m  (beacon-put root %comments now)
+    (pure:m ~)
       %forms
     ::  set the public-form flag at pax. Same nearest-flag-wins shape as
     ::  %comments, and equally owner-only: this is the switch that makes a
@@ -7960,8 +8081,13 @@
   ;<  ~  bind:m  (ensure-dirs up cbase page.act)
   ;<  ~  bind:m
     (put-file (rf up (weld cbase page.act) id) [/lattice %comment] comment)
-  ::  and into the page's public thread
-  ;<  ~  bind:m  (put-pub-thread up page.act)
+  ::  and into the page's public thread. The owner's own comment is
+  ::  already in the writer; another ship's came through /comments.sig,
+  ::  which hands the thread to the writer, the one writer of
+  ::  /pub/threads (a read, then a write, from two fibers lost a row)
+  ;<  ~  bind:m
+    ?:  =(author our)  (put-pub-thread up page.act)
+    (poke-eval [%pub-thread page.act])
   ::  another ship's comment is activity for the owner. It came through
   ::  /comments.sig, not the writer, so it bumps /rev itself.
   ;<  ~  bind:m
@@ -7978,7 +8104,8 @@
   ::  here, so this stamp cannot miss a comment. Deletes leave it alone:
   ::  they cannot create anything new, and the badge reads the stamp as a
   ::  CHANGE detector, not a count.
-  (put-file (rf root /beacon %comments) [/ %json] (numb:enjs:format `@ud`now))
+  ;<  *  bind:m  (beacon-put root %comments now)
+  (pure:m ~)
 ::  +comet-mode-at: `page`'s comet mode, by the nearest comet-mode grub at
 ::  or above it in /page, as +comments-on finds its flag. %open when none.
 ++  comet-mode-at
@@ -8056,6 +8183,11 @@
   ;<  v=view:nexus  bind:m  (peek:fio (rf up /notify %seen) ~)
   ?.  ?=([%file *] v)  (pure:m [%1 *@da ~])
   (pure:m (fall (mole |.(;;(seen:ln (sang-noun:tarball sang.v)))) [%1 *@da ~]))
+::  +aside-seen: +aside-corrupt for the activity read state
+++  aside-seen
+  |=  up=@ud
+  %^  aside-corrupt  up  (rf up /notify %seen)
+  [%notify-seen |=(n=* ?=(^ (mole |.(;;(seen:ln n)))))]
 ::  +notify-held: every held comet comment on every page, newest first
 ++  notify-held
   =/  m  (fiber:fiber:nexus ,(list [pax=path id=@ta c=comment:lc]))
@@ -8251,22 +8383,8 @@
     ==
   (put-file (rf root / %history) [/lattice %history] new)
 ::  +page-title-of: a page's display title for history, its first heading line,
-::  falling back to the url. Gemtext and markdown both open a heading with '#',
-::  so one rule covers every page kind the reader serves.
-++  page-title-of
-  |=  [body=@t fallback=@t]
-  ^-  @t
-  =/  lines=(list @t)  (to-wain:format body)
-  |-  ^-  @t
-  ?~  lines  fallback
-  ?.  =('#' (end [3 1] i.lines))  $(lines t.lines)
-  =/  t=tape  (trip i.lines)
-  =/  txt=tape
-    |-  ^-  tape
-    ?~  t  ~
-    ?:  |(=('#' i.t) =(' ' i.t))  $(t t.t)
-    t
-  ?~(txt fallback (crip `tape`txt))
+::  falling back to the url, at most +title-cap:ls bytes (+page-title:ls)
+++  page-title-of  page-title:ls
 ::  +read-history: the stored visit list (newest first; ~ if none yet).
 ++  read-history
   =/  m  (fiber:fiber:nexus ,history:lh)
@@ -9037,7 +9155,7 @@
     %+  murn  ^-((list path) [~ (turn all head)])
     |=  p=path
     ^-  (unit eval-action:le)
-    (bind (fils-link (ball-fils bl p)) |=(l=link:ll [%link-put (weld to p) l]))
+    (bind (fils-link (ball-fils bl p)) |=(l=link:ll [%link-new (weld to p) l]))
   ::  a folder's share setting goes with it, before its pages land, so
   ::  they take it there (+inherit-new)
   =/  ducts=(list eval-action:le)
@@ -9084,7 +9202,16 @@
       (move-catch-up sdir bl)
     ?^  pages.cu  $(rels pages.cu, bl bl.cu, late &)
     ;<  ~  bind:m  (poke-eval [%carry from to])
-    ;<  ~  bind:m  (poke-eval [%del from])
+    ::  and once more in the writer itself, just before the delete
+    ::  (+del-from): past +move-job-ttl a save into the source is no longer
+    ::  refused, and one landing after the catch-up above went with it
+    =/  seen=(map path @uv)
+      %-  ~(gas by *(map path @uv))
+      %+  murn  (collect-tree bl ~)
+      |=  [pax=path page=?]
+      ?.  page  ~
+      `[pax (sham (fils-code (ball-fils bl pax)))]
+    ;<  ~  bind:m  (poke-eval [%del-from from to seen])
     ;<  ~  bind:m  (record-move from to)
     ;<  ~  bind:m  (move-grants from `to)
     (pure:m `count)
@@ -9306,6 +9433,39 @@
     ;<  ~  bind:m  (put-file (rf up ddir id.i.fs) [/lattice %comment] u.c)
     $(fs t.fs)
   $(dirs t.dirs)
+::  +del-from: %del-from's catch-up, in the writer. Each page under
+::  /page/<from> whose code is not what the move copied (a save that
+::  landed after the move read it) is copied to `to` as the move copies
+::  one, so the delete after it loses nothing.
+++  del-from
+  |=  [root=@ud now=@da from=path to=path seen=(map path @uv)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  dv=view:nexus  bind:m  (peek:fio (rv up (weld /page from)) ~)
+  ?.  ?=([%ball *] dv)  (pure:m ~)
+  =/  late=(list path)
+    %+  murn  (collect-tree ball.dv ~)
+    |=  [pax=path page=?]
+    ?.  page  ~
+    =/  code=@t  (fils-code (ball-fils ball.dv pax))
+    ?:  =(`(sham code) (~(get by seen) pax))  ~
+    `pax
+  |-  ^-  form:m
+  ?~  late  (pure:m ~)
+  =/  code=@t  (fils-code (ball-fils ball.dv i.late))
+  =/  newcode=@t
+    %-  crip
+    %^  rewrite-wikilinks:gfm
+        (rewrite-root (trip code) (spud from) (spud to))
+      (pax-str from)
+    (pax-str to)
+  =/  dst=path  (weld to i.late)
+  ;<  pw=?  bind:m  (peer-written (weld from i.late))
+  ;<  ~  bind:m  (ensure-dirs up /page (snip dst))
+  ;<  ~  bind:m
+    (apply-eval root now ?:(pw [%make-marked dst newcode] [%make dst newcode]))
+  $(late t.late)
 ::  +move-catch-up: the pages under `sdir` (a move's source, /page/<from>)
 ::  whose code is not what `bl` read, and the ball they are in now
 ++  move-catch-up
@@ -9371,6 +9531,24 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   (put-file move-job-road [/ %noun] job)
+::  +move-resume-arm: as the writer starts, a /move-job note still fresh
+::  (+move-resumes:ls) is a move whose request the reload ended, its copy
+::  half made beside its source. It is finished in a fiber of its own
+::  (/move-resume), as the request would have: a move pokes the writer
+::  one step at a time, which the writer cannot do for itself. An old
+::  note is a leftover and is left alone (+fs-move).
+++  move-resume-arm
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  job=(unit [from=path to=path at=@da])  bind:m  move-job-at
+  ?~  job  (pure:m ~)
+  ;<  now=@da  bind:m  bowl-now
+  ?.  (move-resumes:ls job from.u.job to.u.job now move-job-ttl)  (pure:m ~)
+  ;<  *  bind:m
+    %+  make-soft:io  (rf root /move-resume (scot %da at.u.job))
+    |+[[[/ %noun] `*`[from.u.job to.u.job]] ~]
+  (pure:m ~)
 ::  +move-under: `pax` at or under `from`, as the same place under `to`
 ++  move-under
   |=  [pax=path from=path to=path]
@@ -9931,7 +10109,7 @@
 ++  tree-jobs
   |=  act=eval-action:le
   ^-  ?
-  ?=(?(%share-tree %share-dir %del %pub-regrow %unpub) -.act)
+  ?=(?(%share-tree %share-dir %del %del-from %pub-regrow %unpub) -.act)
 ::  +job-resume: as the writer starts, run again the whole-tree action a
 ::  reload cut short. Each such action (%share-tree, %del, %pub-regrow,
 ::  %unpub) is idempotent, so finishing it is running it. One the writer
@@ -11693,37 +11871,31 @@
   (pure:m (mole |.(!<(json (need-vase:tarball sang.u.vw)))))
 ::  +orrery-journal-pass: mirror orrery's briefs and reviews into private
 ::  /journal pages. A no-op when orrery is absent, so a ship without it pays
-::  one soft peek and writes nothing. Otherwise, for each day
-::  under briefs then reviews, write /journal/<day> (reviews: /journal/week-
-::  <day>) when orrery's record `at` is new or moved forward, mark the page
-::  sensitive, and remember the `at`. Idempotent: a day whose stored `at`
-::  still matches is left untouched, so a hand-edit survives a re-run until
-::  orrery itself advances. Then the owner's ticks on [T<n>] lines and a
-::  `## Notes` section are carried into the rewrite (+journal-merge:lo);
-::  other edits to the brief's own lines give way to orrery's text. The
-::  synced map is written once at the end.
+::  one soft peek and writes nothing. Otherwise, for each day under briefs
+::  then reviews whose record `at` is new or moved forward, the writer
+::  writes /journal/<day> (reviews: /journal/week-<day>) by +journal-put,
+::  which keeps every owner edit, and remembers the `at`.
 ::
 ++  orrery-journal-pass
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  base=(unit path)  bind:m  orrery-base
   ?~  base  (pure:m ~)
-  ;<  synced=(map @t @t)  bind:m  read-journal-synced
-  ;<  synced=(map @t @t)  bind:m  (orrery-journal-sync synced %briefs "Brief")
-  ;<  synced=(map @t @t)  bind:m  (orrery-journal-sync synced %reviews "Review")
-  (write-journal-synced synced)
-::  +orrery-journal-sync: mirror one directory (briefs or reviews), folding
-::  the synced map through each day. A review's page is named week-<day> so
-::  it cannot collide with a brief of the same date.
+  ;<  synced=(map @t [at=@t hash=(unit @uv)])  bind:m  read-journal-synced
+  ;<  ~  bind:m  (orrery-journal-sync synced %briefs "Brief")
+  (orrery-journal-sync synced %reviews "Review")
+::  +orrery-journal-sync: mirror one directory (briefs or reviews). A
+::  review's page is named week-<day> so it cannot collide with a brief of
+::  the same date.
 ::
 ++  orrery-journal-sync
-  |=  [synced=(map @t @t) dir=@tas head=tape]
-  =/  m  (fiber:fiber:nexus ,(map @t @t))
+  |=  [synced=(map @t [at=@t hash=(unit @uv)]) dir=@tas head=tape]
+  =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  rev=?  =(%reviews dir)
   ;<  days=(list @ta)  bind:m  (orrery-days dir)
   |-  ^-  form:m
-  ?~  days  (pure:m synced)
+  ?~  days  (pure:m ~)
   ;<  doc=(unit json)  bind:m  (orrery-doc dir i.days)
   =/  rec=(unit [at=@t text=@t])  ?~(doc ~ (orrery-rec u.doc))
   ?~  rec  $(days t.days)
@@ -11734,7 +11906,7 @@
   ::  a later-stamped brief of the same date (and vice versa). Reviews take the
   ::  week- prefix the page path already uses.
   =/  name=@ta  ?:(rev (crip (weld "week-" (trip `@t`i.days))) i.days)
-  =/  stored=(unit @t)  (~(get by synced) `@t`name)
+  =/  stored=(unit @t)  (bind (~(get by synced) `@t`name) |=([a=@t *] a))
   ::  rewrite when nothing is stored, or the stored `at` sorts strictly
   ::  before orrery's (ISO timestamps are fixed width, so aor is chronological)
   =/  move=?
@@ -11742,20 +11914,41 @@
         &(!=(u.stored at.u.rec) (aor u.stored at.u.rec))
     ==
   ?.  move  $(days t.days)
-  =/  pax=path  ~[%journal name]
   =/  fresh=@t  (journal-body:lo head `@t`i.days text.u.rec)
-  ::  a page already there (the last mirror, ticked or noted since, or a
-  ::  note the owner started at this name) keeps its ticks and its
-  ::  `## Notes` section through the rewrite (+journal-merge:lo). Without
-  ::  it a remade brief undid every box not yet taken by orrery's round.
+  ;<  ~  bind:m  (poke-eval [%journal-put name at.u.rec fresh])
+  $(days t.days)
+::  +journal-put: %journal-put, in the writer. The page is rewritten whole
+::  only when it is still exactly what the mirror last wrote (the hash
+::  kept in /journal-synced.json). One the owner edited, or one from
+::  before the hash was kept, takes the new brief's [T<n>] lines folded
+::  in (+journal-fold:lo), keeping all of the owner's other text. A page
+::  that is not a markdown page is never touched. The read and the write
+::  are one writer step, so no save lands between them: the base this
+::  write is made from is the page as it stands.
+++  journal-put
+  |=  [root=@ud now=@da name=@ta at=@t fresh=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  pax=path  ~[%journal name]
+  ;<  synced=(map @t [at=@t hash=(unit @uv)])  bind:m  read-journal-synced
+  =/  last=(unit @uv)  (biff (~(get by synced) `@t`name) |=([* h=(unit @uv)] h))
   ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head pax)
   =/  was=(unit [builder=@tas body=@t])  ?~(src.pc ~ (unwrap-content u.src.pc))
-  =/  body=@t  ?~(was fresh (journal-merge:lo body.u.was fresh))
-  ::  marked first: between a make and a later mark, a key without
-  ::  clearance could read the new brief
-  ;<  ~  bind:m  (poke-eval [%page-sensitive pax &])
-  ;<  ~  bind:m  (poke-eval [%make pax (wrap-content %md body)])
-  $(days t.days, synced (~(put by synced) `@t`name at.u.rec))
+  =/  body=(unit @t)
+    ?~  src.pc  `fresh
+    ?.  ?=([~ %md *] was)  ~
+    ?:  =(last `(sham body.u.was))  `fresh
+    `(journal-fold:lo body.u.was fresh)
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    ?~  body  (pure:n ~)
+    ?:  &(?=(^ was) =(body.u.was u.body))  (pure:n ~)
+    ::  marked first: between a make and a later mark, a key without
+    ::  clearance could read the new brief
+    ;<  ~  bind:n  (apply-eval root now [%page-sensitive pax &])
+    (apply-eval root now [%make pax (wrap-content %md u.body)])
+  =/  hash=(unit @uv)  ?~(body last `(sham u.body))
+  (write-journal-synced (~(put by synced) `@t`name [at hash]))
 ::  +orrery-rec: pull the `at` and `text` strings out of one orrery day
 ::  record. ~ when the json is not an object or either field is missing or
 ::  not a string.
@@ -11768,11 +11961,14 @@
   =/  tx=(unit json)  (~(get by p.j) 'text')
   ?.  ?&(?=([~ %s *] at) ?=([~ %s *] tx))  ~
   `[p.u.at p.u.tx]
-::  +read-journal-synced: the day -> last-synced-`at` map, the root json grub
-::  /journal-synced.json. Empty when absent or not a string-valued object.
+::  +read-journal-synced: the day -> [last-synced `at`, hash of the body
+::  the mirror last wrote] map, the root json grub /journal-synced.json.
+::  A value is {"at": .., "hash": "0v.."}, or a bare `at` string as an
+::  older lattice wrote it (no hash: the page is taken as edited). Empty
+::  when absent or not an object.
 ::
 ++  read-journal-synced
-  =/  m  (fiber:fiber:nexus ,(map @t @t))
+  =/  m  (fiber:fiber:nexus ,(map @t [at=@t hash=(unit @uv)]))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  vw=view:nexus  bind:m  (peek:fio (rf up / %'journal-synced.json') ~)
@@ -11780,15 +11976,20 @@
   =/  jon=json  (fall (mole |.(!<(json (need-vase:tarball sang.vw)))) ~)
   ?.  ?=([%o *] jon)  (pure:m ~)
   %-  pure:m
-  %-  ~(gas by *(map @t @t))
+  %-  ~(gas by *(map @t [at=@t hash=(unit @uv)]))
   %+  murn  ~(tap by p.jon)
   |=  [k=@t v=json]
-  ^-  (unit [@t @t])
-  ?.(?=([%s *] v) ~ `[k p.v])
-::  +write-journal-synced: persist the day -> `at` map as the root json grub.
+  ^-  (unit [@t at=@t hash=(unit @uv)])
+  ?:  ?=([%s *] v)  `[k p.v ~]
+  ?.  ?=([%o *] v)  ~
+  =/  a=(unit json)  (~(get by p.v) 'at')
+  ?.  ?=([~ %s *] a)  ~
+  =/  h=(unit json)  (~(get by p.v) 'hash')
+  `[k p.u.a ?.(?=([~ %s *] h) ~ (slaw %uv p.u.h))]
+::  +write-journal-synced: persist the map as the root json grub.
 ::
 ++  write-journal-synced
-  |=  synced=(map @t @t)
+  |=  synced=(map @t [at=@t hash=(unit @uv)])
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -11796,14 +11997,19 @@
     :-  %o
     %-  ~(gas by *(map @t json))
     %+  turn  ~(tap by synced)
-    |=([k=@t v=@t] [k s+v])
+    |=  [k=@t at=@t hash=(unit @uv)]
+    :-  k
+    %-  pairs:enjs:format
+    %+  weld  ~[['at' s+at]]
+    ^-  (list [@t json])
+    ?~(hash ~ ~[['hash' s+(scot %uv u.hash)]])
   (put-file (rf up / %'journal-synced.json') [/ %json] jon)
 ::  +peer-base-cached: +peer-base, remembered. The probe asks the peer for
 ::  its /pub/index to learn which layout it runs: a remote round trip, and
 ::  the whole index, before every page read from that peer. The answer only
 ::  changes when the peer migrates, so it is kept in /peers.json at the
-::  nexus root. It is a cache: a reload prunes the file, and a stale entry
-::  is found out by +read-page-body-rev, which asks again.
+::  nexus root. It is a cache, kept across a reload (its loader row): a
+::  stale entry is found out by +read-page-body-rev, which asks again.
 ::
 ++  peers-road  (rf up / %'peers.json')
 ++  read-peers
@@ -12164,6 +12370,10 @@
   =/  cur=shared:ls
     ?.  ?=([%file *] sn)  ~
     (fall (mole |.(;;(shared:ls (sang-noun:tarball sang.sn)))) ~)
+  ::  every branch below writes /shared from `cur`
+  ;<  ~  bind:m
+    %^  aside-corrupt  root  (rf root / %shared)
+    [%shared |=(n=* ?=(^ (mole |.(;;(shared:ls n)))))]
   ;<  bans=banned:ls  bind:m  read-banned
   ?-    -.u.na
       %add
@@ -12383,6 +12593,7 @@
   ?~  mine  (pure:m ~)
   ;<  s=seen:ln  bind:m  notify-seen
   =/  new=seen:ln  (mark-ids:ln s mine (~(gas in *(set @ta)) (turn items head)))
+  ;<  ~  bind:m  (aside-seen up)
   ;<  ~  bind:m  (put-file (rf up /notify %seen) [/ %noun] new)
   (notify-stamp now)
 ::  +bump-folds: stamp /beacon/folds, then /rev, which the editor's keep
@@ -13486,8 +13697,8 @@
 ::  edited page's old revision: the publisher's runtime keeps answering an
 ::  id it once served, cull or not, so an id stays readable to whoever
 ::  holds it. A peer that publishes no list (an older lattice) is kept as
-::  an empty one, so it is not asked again every view. A cache: a reload
-::  prunes the file.
+::  an empty one, so it is not asked again every view. A cache, kept
+::  across a reload: each row carries its time and goes stale by the ttl.
 ::
 ++  peer-revs-road  (rf up / %'peer-revs.json')
 ++  revs-ttl  ^-(@dr ~s60)
@@ -13977,8 +14188,9 @@
     ?.  local  (pure:(fiber:fiber:nexus ,?) |)
     (peer-written (fall (raw-name-pax name) rel))
   ::  a fodt page renders once, for its body and its title. Ours comes
-  ::  from its render cache. A peer's is rendered and dropped, and not at
-  ::  all past the 1 MB peer cap below (toobig shows the note instead).
+  ::  from its render cache, a peer's from the few kept by revision
+  ::  (+fodt-peer), and not at all past the 1 MB peer cap below (toobig
+  ::  shows the note instead).
   ;<  fv=(unit fodt-view)  bind:m
     =/  n  (fiber:fiber:nexus ,(unit fodt-view))
     ?.  ?=(%fodt vmode)  (pure:n ~)
@@ -13986,7 +14198,8 @@
     ?~  txt  (pure:n ~)
     ?.  local
       ?:  (gth (met 3 u.txt) (bex 20))  (pure:n ~)
-      (pure:n `(fodt-make u.txt))
+      ;<  v=fodt-view  bind:n  (fodt-peer u.txt)
+      (pure:n `v)
     ;<  v=fodt-view  bind:n  (fodt-of-page (weld /page rel) u.txt)
     (pure:n `v)
   =/  shown
@@ -14142,6 +14355,28 @@
   ^-  fodt-view
   =/  a  (fodt-all:lf body)
   [(crip html.a) text.a title.a]
+::  +fodt-peer: the view of a PEER's fodt body, from /fodt-peers (the
+::  last +peer-cap:lf renders, keyed by the body's shax, which is its
+::  revision's text), else made and kept there. Without it every view of
+::  a peer's 1.5 MB document cost a 4.7 to 6.1 s render. Bounded, so no
+::  peer makes this ship hold more than +peer-cap:lf renders of bodies
+::  under the 1 MB peer cap.
+++  fodt-peer
+  |=  body=@t
+  =/  m  (fiber:fiber:nexus ,fodt-view)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  road=road:tarball  (rf up / %'fodt-peers')
+  ;<  vw=view:nexus  bind:m  (peek:fio road ~)
+  =/  c=peer-cache:lf
+    ?.  ?=([%file *] vw)  ~
+    (fall (mole |.(;;(peer-cache:lf (sang-noun:tarball sang.vw)))) ~)
+  =/  key=@  (shax body)
+  =/  hit=(unit peer-view:lf)  (peer-get:lf c key fodt-ver)
+  ?^  hit  (pure:m u.hit)
+  =/  v=fodt-view  (fodt-make body)
+  ;<  ~  bind:m  (put-file road [/ %noun] (peer-put:lf c key fodt-ver v))
+  (pure:m v)
 ::  +fodt-of-page: the view of `body` for our page at `pdir` (/page/..),
 ::  from its cache, else made and stored. One shallow peek of the page
 ::  dir reads both the cache and whether the page exists.
@@ -18531,6 +18766,32 @@
   ?.  ?=([%file *] vw)  (pure:m ~)
   =/  c=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.vw))))
   (pure:m ?~(c ~ (titles-rows:ls u.c)))
+::  +ensure-pub-titles: lay /pub/titles from the published pages when it
+::  is absent. Before its loader row, every reload dropped it, and every
+::  title went back to a bare name until its page was saved again.
+++  ensure-pub-titles
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  has=?  bind:m  (peek-exists:fio (rf root /pub %titles))
+  ?:  has  (pure:m ~)
+  ;<  ix=pub-index:lp  bind:m  (read-pub-index (rf root /pub %index))
+  =/  keys=(list [key=path row=pub-row:lp])  ~(tap by ix)
+  =|  rows=(map @t title-row:ls)
+  |-  ^-  form:m
+  ?~  keys
+    ?:  =(~ rows)  (pure:m ~)
+    (put-file (rf root /pub %titles) [/ %noun] (titles-cord:ls rows))
+  =/  or=(unit vrail:lp)  (key-to-rail:lp /pub/vault key.i.keys)
+  ?~  or  $(keys t.keys)
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf root pax.u.or nom.u.or) ~)
+  =/  body=(unit @t)
+    ?.  ?=([%file *] vw)  ~
+    (mole |.(;;(@t (sang-noun:tarball sang.vw))))
+  ?~  body  $(keys t.keys)
+  =/  row=title-row:ls
+    [(unix-s:ls updated.row.i.keys) (title-clean:ls (page-title-of u.body ''))]
+  $(keys t.keys, rows (~(put by rows) (page-name:lp key.i.keys) row))
 ::  +put-pub-title: one page's row in /pub/titles, or none (~)
 ++  put-pub-title
   |=  [root=@ud nam=@t row=(unit title-row:ls)]
@@ -19412,6 +19673,7 @@
     ::  [%temp ~] hist entry. It names the body binding the cull-farm below
     ::  retracts.
     ;<  rev=@ud  bind:m  (pub-grub-rev up pax.u.or nom.u.or)
+    ;<  ~  bind:m  (put-rev-high root (page-name:lp key) rev)
     ::  cull tombs the grub (gain=%.y keeps the body in born history). Drop its
     ::  index row so it's no longer live. No trash row. Pages have no restore.
     ::  The history goes first: the /public peek grant covers this path, and
@@ -19566,6 +19828,21 @@
   ::  there is nothing to do. A changed body is always a new cass, so a
   ::  new spur whose case 1 is this body.
   ?:  =(`rev was)  (pure:m |)
+  ::  a page's revision should climb past every one it was ever published
+  ::  or deleted at (+rev-rises:lp): a lower one names an id gall culled,
+  ::  or one a peer holds for older text. It does not after an unpublish
+  ::  and a publish again (the vault grub is made anew, at rev 1), so this
+  ::  records the fault for the owner. Refusing would leave the page
+  ::  unpublished; the fix (an offset per name) changes what peers read
+  ::  and is proposed, not made, here.
+  ;<  hw=rev-high:lp  bind:m  (read-rev-high root)
+  ;<  ~  bind:m
+    ?:  (rev-rises:lp hw (page-name:lp key) rev)  (pure:n ~)
+    =/  top=@ud  (~(gut by hw) (page-name:lp key) 0)
+    %:  fault  'pub-rev-fell'  1
+      "lattice: a publish of {(spud key)} at rev {<rev>} is not above rev {<top>}"
+      ~
+    ==
   ::  a page published before has its vault dirs: only a first publish
   ::  makes them, a peek a segment
   ;<  ~  bind:m
@@ -19607,6 +19884,7 @@
   ;<  salt=@  bind:m  pub-salt
   ;<  ~  bind:m  (grow-pub-page salt key body rev mode.pb)
   ;<  ~  bind:m  (put-pub-revs root salt key `rev revs)
+  ;<  ~  bind:m  (put-rev-high root (page-name:lp key) rev)
   ;<  ~  bind:m
     %^  put-pub-title  root  (page-name:lp key)
     `[(unix-s:ls now) (title-clean:ls (page-title-of body ''))]
@@ -19854,10 +20132,16 @@
 ::  written. An un-upgraded peer keens the new id, rejects a non-gmi mark
 ::  and reads by slow peek, which is the behavior it had before.
 ::
-::  ponytail: the stamp is written LAST, so a crash before it re-runs the
-::  whole pass under a third salt; that cull names second-salt spurs and
-::  any first-salt spur not yet culled stays bound, the same hand-cull gap
-::  +ensure-pub-ids documents.
+::  RESUMABLE. Before the new salt is written, the old one and the list
+::  it named go into /salt-retire. A crash anywhere after that finds the
+::  record at the next start: the salt already switched is kept (one is
+::  minted only while the salt is still the old one), every page is grown
+::  again under it, and the old spurs the record names are culled. The
+::  old list stays valid until the new one is written, since nothing is
+::  culled before it, so no crash leaves a listed id unbound, and none
+::  leaves an old-salt spur bound for good. The culls are soft: a spur a
+::  crashed run already culled is culled again harmlessly. The stamp and
+::  the record's removal come last.
 ::
 ++  migrate-pub-marks
   |=  root=@ud
@@ -19867,22 +20151,68 @@
   ;<  done=@ud  bind:m  (read-pub-seq sr)
   ?:  (gte done marks-version)  (pure:m ~)
   ;<  ix=pub-index:lp  bind:m  (read-pub-index (rf root /pub %index))
-  ;<  old=@  bind:m  pub-salt
+  ;<  cur=@  bind:m  pub-salt
+  =/  rr=road:tarball  (rf root / %'salt-retire')
+  ;<  pend=(unit [old=@ revs=(map @t [rev=@ud id=@uv])])  bind:m  (read-salt-retire rr)
   ::  no salt means no ids yet: nothing is grown to correct
-  ?:  =(0 old)  (pure:m ~)
-  ;<  eny=@uvJ  bind:m  get-entropy:io
-  =/  new=@  (end [3 32] eny)
-  ;<  ~  bind:m  (put-file (rf root / %salt) [/ %ud] `@ud`new)
+  ?:  &(=(0 cur) ?=(~ pend))  (pure:m ~)
+  ;<  was=(map @t json)  bind:m  (read-pub-revs root)
+  =/  rec=[old=@ revs=(map @t [rev=@ud id=@uv])]
+    ?^  pend  u.pend
+    [cur (json-revs:lp [%o was])]
+  ;<  ~  bind:m
+    ?^  pend  (pure:m ~)
+    (put-file rr [/ %noun] `(unit [@ (map @t [rev=@ud id=@uv])])``rec)
+  =/  sw  (salt-switch:lp (bind pend head) cur)
+  ;<  new=@  bind:m
+    =/  n  (fiber:fiber:nexus ,@)
+    ?.  mint.sw  (pure:n cur)
+    ;<  eny=@uvJ  bind:n  get-entropy:io
+    =/  new=@  (end [3 32] eny)
+    ;<  ~  bind:n  (put-file (rf root / %salt) [/ %ud] `@ud`new)
+    (pure:n new)
   ;<  [* revs=(map @t [rev=@ud id=@uv])]  bind:m
     (pub-regrow-loop new ~(tap in ~(key by ix)) 0 ~)
   ;<  ~  bind:m  (put-file (rf root /pub %revs) [/ %json] (revs-json:lp revs))
-  ::  each old spur was bound by the save or regrow that named this rev, and
-  ::  is culled exactly once here (+cull-farm:io must not re-cull a spur)
-  =/  culls=(list path)  (salt-spurs:lp old revs)
+  ::  each old spur, by the list the old salt named, and by the pages
+  ::  grown now in case that list was short
+  =/  culls=(list path)  (salt-spurs:lp old.rec (~(uni by revs) revs.rec))
   |-
-  ?~  culls  (put-file sr [/ %ud] marks-version)
-  ;<  ~  bind:m  (cull-farm:io i.culls)
+  ?~  culls
+    ;<  ~  bind:m  (put-file sr [/ %ud] marks-version)
+    (put-file rr [/ %noun] `(unit [@ (map @t [rev=@ud id=@uv])])`~)
+  ;<  *  bind:m
+    (poke-soft:io &+&+[/sys/scry %'main.sig'] [[/ %scry-cull] `path`i.culls])
   $(culls t.culls)
+::  +read-rev-high / +put-rev-high: /rev-high, each page name's highest
+::  revision ever published or deleted (+rev-high:lp). Outside /pub, so
+::  no peer reads it.
+++  read-rev-high
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,rev-high:lp)
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:fio (rf root / %'rev-high') ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  (pure:m (fall (mole |.(;;(rev-high:lp (sang-noun:tarball sang.vw)))) ~))
+++  put-rev-high
+  |=  [root=@ud nam=@t rev=@ud]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  hw=rev-high:lp  bind:m  (read-rev-high root)
+  =/  new=rev-high:lp  (rev-high-put:lp hw nam rev)
+  ?:  =(new hw)  (pure:m ~)
+  (put-file (rf root / %'rev-high') [/ %noun] new)
+::  +read-salt-retire: /salt-retire, the salt a migration is retiring and
+::  the list it named, ~ when none is under way
+++  read-salt-retire
+  |=  rr=road:tarball
+  =/  m  (fiber:fiber:nexus ,(unit [old=@ revs=(map @t [rev=@ud id=@uv])]))
+  ^-  form:m
+  ;<  vw=view:nexus  bind:m  (peek:fio rr ~)
+  ?.  ?=([%file *] vw)  (pure:m ~)
+  %-  pure:m
+  %-  fall  :_  ~
+  (mole |.(;;((unit [@ (map @t [rev=@ud id=@uv])]) (sang-noun:tarball sang.vw))))
 ++  pub-regrow-loop
   |=  [salt=@ keys=(list path) cnt=@ud revs=(map @t [rev=@ud id=@uv])]
   =/  m  (fiber:fiber:nexus ,[@ud (map @t [rev=@ud id=@uv])])

@@ -257,6 +257,30 @@
   |=  [salt=@ nam=@t rev=@ud]
   ^-  @uv
   (end [3 16] (shax (jam [salt nam rev])))
+::  +rev-high: the highest revision each page name was ever published or
+::  deleted at, kept outside /pub. A page's id is +page-id of its name
+::  and revision, and gall parks a culled spur's case as a high-water,
+::  so a page deleted and published again must come back at a higher
+::  revision, or it would name an id already culled (unreadable) or one
+::  a peer already holds for the old text. +rev-rises is the check made
+::  before a publish binds `rev`; +rev-high-put records one.
++$  rev-high  (map @t @ud)
+++  rev-rises
+  |=  [hw=rev-high nam=@t rev=@ud]
+  ^-  ?
+  (gth rev (~(gut by hw) nam 0))
+++  rev-high-put
+  |=  [hw=rev-high nam=@t rev=@ud]
+  ^-  rev-high
+  (~(put by hw) nam (max rev (~(gut by hw) nam 0)))
+::  +salt-switch: a salt migration's old salt, and whether it must mint
+::  a new one. `pend` is the old salt a crashed run recorded: the salt
+::  now in place is its new one unless it still equals the old.
+++  salt-switch
+  |=  [pend=(unit @) cur=@]
+  ^-  [old=@ mint=?]
+  ?~  pend  [cur &]
+  [u.pend =(cur u.pend)]
 ::  +salt-spurs: the scry binding each revision-list row names under
 ::  `salt`, /pub/page/<name>/<id>. A salt rotation culls these under the
 ::  OLD salt once every page is grown under the new one. A name that is

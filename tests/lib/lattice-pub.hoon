@@ -259,4 +259,25 @@
   =/  t=@da  ~2026.1.1
   =/  old=pub-old:lp  (malt ~[['/a' [t (add t ~s1) 2]]])
   (expect-eq !>(`pub-pending:lp`(malt ~[['/a' `pub-wait:lp`[(add t ~s1) 2 *@da & *@da]]])) !>((pub-from-old:lp old)))
+::  +rev-rises / +rev-high-put: a page's revision must climb past every
+::  revision it was ever published or deleted at, a delete included
+++  test-rev-high
+  =/  hw=rev-high:lp  (rev-high-put:lp ~ '/a' 5)
+  =.  hw  (rev-high-put:lp hw '/a' 3)
+  ;:  weld
+    (expect-eq !>(5) !>((~(got by hw) '/a')))
+    (expect-eq !>(|) !>((rev-rises:lp hw '/a' 5)))
+    (expect-eq !>(|) !>((rev-rises:lp hw '/a' 4)))
+    (expect-eq !>(&) !>((rev-rises:lp hw '/a' 6)))
+    (expect-eq !>(&) !>((rev-rises:lp hw '/b' 1)))
+  ==
+::  +salt-switch: a resumed migration keeps the salt it already wrote
+++  test-salt-switch
+  ;:  weld
+    (expect-eq !>([5 &]) !>((salt-switch:lp ~ 5)))
+    ::  crashed before the new salt landed: mint one
+    (expect-eq !>([5 &]) !>((salt-switch:lp `5 5)))
+    ::  crashed after: keep it, retire the recorded one
+    (expect-eq !>([5 |]) !>((salt-switch:lp `5 9)))
+  ==
 --

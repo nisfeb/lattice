@@ -241,7 +241,7 @@ const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs'];
 const TWO_SHIP = ['ui-links.mjs', 'ui-shares-live.mjs', 'ui-follow-live.mjs'];
 const allShip = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
-  'job-check.py', 'big-page-check.py', 'dirshare-check.py', 'fs-old-beacon-check.sh', 'hoon-suites',
+  'job-check.py', 'big-page-check.py', 'dirshare-check.py', 'storage-check.py', 'fs-old-beacon-check.sh', 'hoon-suites',
 ];
 const shipSuites = allShip.filter((n) => !ONLY || ONLY.includes(n));
 const TWOS = [['two-ship-links.sh', 'bash'], ['two-ship-save.sh', 'bash'], ['two-ship-comments.sh', 'bash'],
@@ -281,6 +281,7 @@ const allLocal = [
   ['bill-check', 'python3', [S + '/bill-check.py', 'code']],
   ['depth-check', 'python3', [S + '/depth-check.py', 'code/nex/lattice/app.hoon']],
   ['quiet-check', 'python3', [S + '/quiet-check.py', 'code']],
+  ['onload-check', 'python3', [S + '/onload-check.py', 'code/nex/lattice/app.hoon']],
   ['weir-check', 'bash', ['-c', `${fiberio()} && python3 ${S}/weir-check.py code/nex/lattice/app.hoon --io ${LOGS}/fiberio.hoon`]],
   ['desktop-commands', 'node', [S + '/desktop-commands.mjs']],
   ['kind-parity', 'node', [S + '/kind-parity.mjs']],
