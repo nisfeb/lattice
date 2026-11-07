@@ -439,12 +439,36 @@ pub fn raw_html(body: &[u8], open: bool) -> Vec<u8> {
             done.extend_from_slice(&out[last..s - 7]);
             done.extend_from_slice(b"/read?url=urb://~");
             done.extend_from_slice(&out[s..at]);
-            last = at + mark.len();
+            // the rest of the link, up to the attribute's closing quote (or,
+            // unquoted, its end), goes into the query encoded, so that a
+            // `?`, `&` or `#` in it stays part of the address
+            let quote = s.checked_sub(8).map(|k| out[k]).filter(|q| matches!(q, b'"' | b'\''));
+            let rest = &out[at + mark.len()..];
+            let n = rest
+                .iter()
+                .position(|&b| quote.map_or(b.is_ascii_whitespace() || b == b'>', |q| b == q))
+                .unwrap_or(rest.len());
+            done.extend_from_slice(path_enc(&rest[..n]).as_bytes());
+            last = at + mark.len() + n;
         }
-        i = at + mark.len();
+        i = (at + mark.len()).max(last);
     }
     done.extend_from_slice(&out[last..]);
     with_base(&done, if open { "" } else { OUTSIDE })
+}
+
+/// A link's path for a query value: percent-encoded but for unreserved
+/// characters and `/`.
+fn path_enc(path: &[u8]) -> String {
+    let mut out = String::with_capacity(path.len());
+    for &b in path {
+        if b.is_ascii_alphanumeric() || b"-._~/".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
@@ -982,12 +1006,27 @@ mod tests {
         let out = String::from_utf8(out).unwrap();
         assert_eq!(
             out,
-            "<!DOCTYPE html><base target=\"_top\"><a href=\"/read?url=urb://~nec/x?y\">a</a> \
+            "<!DOCTYPE html><base target=\"_top\"><a href=\"/read?url=urb://~nec/x%3Fy\">a</a> \
              <img src='/read?url=urb://~bus'> urb://~zod plain"
         );
         // a publisher who writes the gateway's form by hand gets no rewrite
         let out = String::from_utf8(raw_html(b"<a href=\"http://nec.urb.localhost:1/x\">", true)).unwrap();
         assert_eq!(out, "<base target=\"_top\"><a href=\"http://nec.urb.localhost:1/x\">");
+    }
+
+    #[test]
+    fn raw_html_encodes_the_path_it_puts_in_the_query() {
+        let out = String::from_utf8(raw_html(
+            b"<a href=\"urb://~nec/a b/c'd?fresh=1&sort=date#top%20x\">a</a>\
+              <a href='urb://~nec/e\"f'>b</a><a href=urb://~nec/g?h>c</a>",
+            true,
+        ))
+        .unwrap();
+        assert_eq!(
+            out,
+            "<base target=\"_top\"><a href=\"/read?url=urb://~nec/a%20b/c%27d%3Ffresh%3D1%26sort%3Ddate%23top%2520x\">a</a>\
+             <a href='/read?url=urb://~nec/e%22f'>b</a><a href=/read?url=urb://~nec/g%3Fh>c</a>"
+        );
     }
 
     #[test]
