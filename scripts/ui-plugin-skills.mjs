@@ -22,7 +22,7 @@ const owner = (method, p, body) => fetch(B + p, {
 const minted = [];
 async function mint(skills) {
   const scope = { memory: 'none', pages: { all: 'none' }, web: { off: null }, sensitive: false, skills };
-  const r = await owner('POST', 'key-mint', JSON.stringify({ name: `ui-skills-${skills}`, by: 'ui-plugin-skills', scope }));
+  const r = await owner('POST', 'key-mint', JSON.stringify({ name: `ui-skills-${skills}`, by: `ui-plugin-skills-${skills}`, scope }));
   const j = await r.json().catch(() => ({}));
   if (!j.token) { console.error(`key-mint (skills ${skills}) failed: ${r.status} ${JSON.stringify(j)}`); process.exit(1); }
   minted.push(j.key.id);

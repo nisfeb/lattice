@@ -16,6 +16,7 @@
     ${sbtn('id="ktrash" data-action="ktrash" aria-pressed="false"', 'trash', 'Trash')}
   </div>
   <div id="ktrashlist" class="ktrash" hidden></div>
+  <div id="kcore" class="ktrash" hidden></div>
   <!-- the tag chips outgrew the pane top (one row per dozen tags), so they
        fold under a heading like history does. Native details: the fold,
        the keyboard and the marker come free. -->
@@ -59,6 +60,50 @@
     knowHave = true;
     renderKnowChips();
     renderKnowTree();
+    coreNote();
+  }
+
+  // Agent keys could once tag a memory core, which every session loads as
+  // a rule. Those left are listed here until the owner keeps or untags
+  // each; dismissing hides the list until a new one shows up.
+  const coreEl = $('kcore');
+  async function coreNote() {
+    let ks = [];
+    try { const r = await fetch(api + '/know-core-agents'); if (r.ok) ks = (await r.json()).map((k) => k.replace(/^\//, '')); } catch {}
+    let seen = [];
+    try { seen = JSON.parse(localStorage.knowCoreSeen || '[]'); } catch {}
+    seen = new Set(Array.isArray(seen) ? seen : []);
+    coreEl.hidden = !ks.some((k) => !seen.has(k));
+    if (coreEl.hidden) return;
+    const head = kmuted('These core rules were added by agent keys. Every session loads core as rules: keep each one, or untag it.');
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.textContent = 'dismiss';
+    x.onclick = () => { localStorage.knowCoreSeen = JSON.stringify(ks); coreEl.hidden = true; };
+    coreEl.replaceChildren(head, x);
+    for (const key of ks) {
+      const row = document.createElement('div');
+      row.className = 'ktr';
+      const n = document.createElement('a');
+      n.className = 'ktn';
+      n.textContent = key;
+      n.href = '/apps/lattice/app?view=know&key=' + encodeURIComponent(key);
+      tabLink(n, 'know', key);
+      const act = (label, url) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = label;
+        b.onclick = async () => {
+          b.disabled = true;
+          const r = await mutate(api + url + encodeURIComponent(key));
+          if (!r.ok) { b.disabled = false; st(label + ' failed' + await errText(r), false); return; }
+          loadKnow();
+        };
+        return b;
+      };
+      row.append(n, act('keep', '/know-core-keep?key='), act('untag', '/know-untag?tag=core&key='));
+      coreEl.append(row);
+    }
   }
 
   function renderKnowChips() {

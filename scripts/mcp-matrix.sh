@@ -116,7 +116,7 @@ echo "==> plugin skill_index / skill_read / skill_save (as agent keys)"
 SK="mcpskill-$$"
 mintk() {  # mintk <skills scope>  -> "<id> <token>"
   curl -s -m 30 -H "$CK" -X POST "$B/key-mint" -H 'content-type: application/json' --data-binary \
-    "{\"name\":\"mcp-skills-$1\",\"by\":\"mcp-matrix\",\"scope\":{\"memory\":\"none\",\"pages\":{\"all\":\"none\"},\"web\":{\"off\":null},\"sensitive\":false,\"skills\":\"$1\"}}" \
+    "{\"name\":\"mcp-skills-$1\",\"by\":\"mcp-matrix-$1\",\"scope\":{\"memory\":\"none\",\"pages\":{\"all\":\"none\"},\"web\":{\"off\":null},\"sensitive\":false,\"skills\":\"$1\"}}" \
   | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j["key"]["id"], j["token"])'
 }
 read -r WID WTOK <<<"$(mintk write)"; read -r RID RTOK <<<"$(mintk read)"; read -r NID NTOK <<<"$(mintk none)"

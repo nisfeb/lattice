@@ -24,6 +24,8 @@
 ::  a new skill starts with SKILL.md. %drop removes one file.
 +$  skill-action
   $%  [%save name=@t path=@t body=@t when=@da]
+  ::  %save of a new skill only: refused when the name is taken by then
+      [%make name=@t path=@t body=@t when=@da]
       [%drop name=@t path=@t]
       [%del name=@t]
       [%restore name=@t]
