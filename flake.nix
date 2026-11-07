@@ -33,9 +33,9 @@
         # links it in beside the vendor folder (preBuild, below).
         urb-fetch-src = pkgs.fetchgit {
           url = "https://github.com/nisfeb/urb-fetch.git";
-          rev = "96f84f39cc00c5b0b2bc063a3154efb53082cc57";
+          rev = "9fe4e6e904b77b0e51c5627392d3bf421ed90f4b";
           fetchSubmodules = true;
-          hash = "sha256-O048hN1mR0/zyFjYMDDXmKe9LbeRXIjTxuZMB0QlWAY=";
+          hash = "sha256-B2hAVLu0pSD4ZGVmU+pmNFkrrg4Zi66wTi4GIesuNaQ=";
         };
 
         # The two C sources mesa-sys compiles into the urb engine, as
