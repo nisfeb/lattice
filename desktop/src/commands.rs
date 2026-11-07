@@ -839,6 +839,10 @@ pub async fn export_reader_identity(app: AppHandle, passphrase: String) -> Resul
             let id = e.export_identity()?;
             let f = crate::cometid::seal(&id, &passphrase)?;
             crate::cometid::mark_exported(e.dir())?;
+            if matches!(e.status(), crate::engine::Status::Ready { .. }) {
+                crate::render::set_exported_running(e.exported_at());
+            }
+            dlog(&format!("reader: identity exported at {}", crate::cometid::now()));
             Ok::<_, String>(f)
         })
         .await

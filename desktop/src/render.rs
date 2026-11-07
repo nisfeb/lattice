@@ -491,6 +491,31 @@ pub(crate) fn main_of(doc: &[u8]) -> &[u8] {
     }
 }
 
+/// When the running reader identity was exported (unix seconds), or 0. Set
+/// by the engine when the identity comes up (engine.rs), read by chrome.
+static EXPORTED_RUNNING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The identity now running was exported at `at` (None: it was not, or
+/// nothing runs).
+pub fn set_exported_running(at: Option<u64>) {
+    EXPORTED_RUNNING.store(at.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The banner over every reader page while an exported identity keeps
+/// running here: two computers running one identity lose each other's
+/// comments and posts, silently.
+fn exported_banner() -> String {
+    let at = EXPORTED_RUNNING.load(std::sync::atomic::Ordering::Relaxed);
+    if at == 0 {
+        return String::new();
+    }
+    format!(
+        "<div class=\"exported\" role=\"alert\" data-exported=\"{at}\">You exported this anonymous identity, and it is still \
+         running on this computer. If you use it on another computer too, the two lose each other's comments and posts. \
+         Use it on one computer only.</div>"
+    )
+}
+
 /// The reader's document around `main`.
 pub(crate) fn chrome(title: &str, url: &str, mode: Option<Mode>, main: &str, refresh: bool) -> String {
     let strip = mode.map_or(String::new(), |m| {
@@ -516,8 +541,9 @@ pub(crate) fn chrome(title: &str, url: &str, mode: Option<Mode>, main: &str, ref
 <a class=\"home\" href=\"/\">Home</a></nav>\
 <form class=\"addr\" action=\"/read\" method=\"get\"><input name=\"url\" value=\"{url}\" aria-label=\"Address\" \
 placeholder=\"urb://~ship/page\" spellcheck=\"false\" autocomplete=\"off\"><button type=\"submit\">Open</button></form>\
-<a class=\"connect\" href=\"/connect\">Connect a node</a></header>{strip}<main class=\"page\">{main}</main></body></html>",
+<a class=\"connect\" href=\"/connect\">Connect a node</a></header>{banner}{strip}<main class=\"page\">{main}</main></body></html>",
         refresh = if refresh { "<meta http-equiv=\"refresh\" content=\"1\">" } else { "" },
+        banner = exported_banner(),
         title = esc(title),
         url = esc(url),
     )
@@ -864,6 +890,18 @@ fn replies_box(replies: &[crate::notify::Unseen]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_exported_identity_still_running_gets_a_banner() {
+        // One test owns the global, so the two states are checked in order.
+        set_exported_running(Some(1_762_300_000));
+        let on = chrome("t", "urb://~zod/x", None, "<p>x</p>", false);
+        set_exported_running(None);
+        let off = chrome("t", "urb://~zod/x", None, "<p>x</p>", false);
+        assert!(on.contains("class=\"exported\" role=\"alert\""), "{on}");
+        assert!(on.contains("one computer only"));
+        assert!(!off.contains("class=\"exported\""), "{off}");
+    }
 
     const PAGE: &str = "urb://~zod/a/b";
     /// a published page (`/a/` is a single-letter mount, which takes none)

@@ -899,6 +899,9 @@ impl Engine {
             let mut g = self.inner.lock().unwrap();
             let Some(run) = g.run.take() else { return true };
             g.status = Status::Off;
+            if self.fake.is_none() {
+                crate::render::set_exported_running(None);
+            }
             if run.jobs.send(Job::Close(tx)).is_err() {
                 return true;
             }
@@ -1152,6 +1155,10 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         let mut g = inner.lock().unwrap();
         if !(g.discard && dir.join(UNCLAIMED).exists()) {
             g.status = Status::Ready { our };
+            // an exported identity still running here gets the reader's banner
+            if fake.is_none() {
+                crate::render::set_exported_running(crate::cometid::exported_at(dir));
+            }
         } else {
             drop(g);
             let _ = host.close();
