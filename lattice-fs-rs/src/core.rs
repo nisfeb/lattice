@@ -847,6 +847,13 @@ fn err(e: i32) -> Errno {
     Errno::from_i32(e)
 }
 
+/// A name from the kernel as a page name segment. Names are UTF-8: one that
+/// is not is refused (EILSEQ), never turned into U+FFFD, which would make
+/// two different names the same page.
+fn fs_name(name: &OsStr) -> Result<String, i32> {
+    name.to_str().map(str::to_string).ok_or(libc::EILSEQ)
+}
+
 fn join(parent: &str, name: &str) -> String {
     if parent == "/" {
         format!("/{}", name)
@@ -1119,7 +1126,10 @@ fn build_vt(nodes: &[Node], ext_for: impl Fn(&str) -> &'static str) -> HashMap<S
 impl Filesystem for GrubberyFs {
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
         self.ensure_fresh();
-        let name = name.to_string_lossy().to_string();
+        let name = match fs_name(name) {
+            Ok(n) => n,
+            Err(e) => return reply.error(err(e)),
+        };
         let mut s = self.st.lock().unwrap();
         let Some(parent_path) = path_of(&s, parent.0) else {
             reply.error(err(libc::ENOENT));
@@ -1497,7 +1507,10 @@ impl Filesystem for GrubberyFs {
         reply: ReplyCreate,
     ) {
         self.ensure_fresh();
-        let name = name.to_string_lossy().to_string();
+        let name = match fs_name(name) {
+            Ok(n) => n,
+            Err(e) => return reply.error(err(e)),
+        };
         let mut s = self.st.lock().unwrap();
         let Some(parent_path) = path_of(&s, parent.0) else {
             reply.error(err(libc::ENOENT));
@@ -1580,7 +1593,10 @@ impl Filesystem for GrubberyFs {
         _umask: u32,
         reply: ReplyEntry,
     ) {
-        let name = name.to_string_lossy().to_string();
+        let name = match fs_name(name) {
+            Ok(n) => n,
+            Err(e) => return reply.error(err(e)),
+        };
         let Some(parent_path) = path_of(&self.st.lock().unwrap(), parent.0) else {
             reply.error(err(libc::ENOENT));
             return;
@@ -1602,7 +1618,10 @@ impl Filesystem for GrubberyFs {
     }
 
     fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        let name = name.to_string_lossy().to_string();
+        let name = match fs_name(name) {
+            Ok(n) => n,
+            Err(e) => return reply.error(err(e)),
+        };
         let (path, rel) = {
             let mut s = self.st.lock().unwrap();
             let Some(parent_path) = path_of(&s, parent.0) else {
@@ -1637,7 +1656,10 @@ impl Filesystem for GrubberyFs {
     }
 
     fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
-        let name = name.to_string_lossy().to_string();
+        let name = match fs_name(name) {
+            Ok(n) => n,
+            Err(e) => return reply.error(err(e)),
+        };
         let path = {
             let s = self.st.lock().unwrap();
             let Some(parent_path) = path_of(&s, parent.0) else {
@@ -1681,8 +1703,14 @@ impl Filesystem for GrubberyFs {
         _flags: RenameFlags,
         reply: ReplyEmpty,
     ) {
-        let name = name.to_string_lossy().to_string();
-        let newname = newname.to_string_lossy().to_string();
+        let name = match fs_name(name) {
+            Ok(n) => n,
+            Err(e) => return reply.error(err(e)),
+        };
+        let newname = match fs_name(newname) {
+            Ok(n) => n,
+            Err(e) => return reply.error(err(e)),
+        };
         let src_scratch = is_scratch(&name, |ext| self.proj.kind_for_ext(ext));
         let dst_scratch = is_scratch(&newname, |ext| self.proj.kind_for_ext(ext));
         // same rule as create: a rename may not land a file in RAM under a
@@ -3078,6 +3106,13 @@ mod tests {
             s.pending_trunc.contains_key(&other),
             "another file's pending truncate is not this write's business"
         );
+    }
+
+    #[test]
+    fn a_name_that_is_not_utf8_is_refused() {
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(fs_name(OsStr::from_bytes(b"caf\xe9.md")), Err(libc::EILSEQ));
+        assert_eq!(fs_name(OsStr::new("café.md")), Ok("café.md".to_string()));
     }
 
     #[test]

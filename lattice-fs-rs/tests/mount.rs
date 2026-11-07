@@ -505,3 +505,54 @@ fn a_hostile_page_name_never_surfaces_as_a_readable_file() {
         Err(_) => panic!("the mount stopped answering"),
     }
 }
+
+/// Mount `ship`, run `body` on a worker behind `secs` of deadline, unmount.
+fn with_mount(tag: &str, ship: &Arc<Ship>, secs: u64, body: impl FnOnce(&Path) + Send + 'static) {
+    let mnt = std::env::temp_dir().join(format!("lattice-fs-{tag}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&mnt);
+    fs::create_dir_all(&mnt).unwrap();
+    let session = match lattice_fs::spawn(ship.clone() as Arc<dyn Projection>, mnt.to_str().unwrap())
+    {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("skipped: no usable FUSE here ({e})");
+            let _ = fs::remove_dir_all(&mnt);
+            return;
+        }
+    };
+    let (tx, rx) = mpsc::channel();
+    let dir = mnt.clone();
+    std::thread::spawn(move || {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&dir)));
+        let _ = tx.send(r);
+    });
+    let outcome = rx.recv_timeout(Duration::from_secs(secs));
+    drop(session);
+    let _ = fs::remove_dir_all(&mnt);
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(p)) => std::panic::resume_unwind(p),
+        Err(_) => panic!("the mount stopped answering"),
+    }
+}
+
+/// A name that is not UTF-8 is refused, never mangled into U+FFFD and made
+/// a page.
+#[test]
+fn a_name_that_is_not_utf8_never_becomes_a_page() {
+    use std::os::unix::ffi::OsStrExt;
+    let ship = Ship::with(&[("ok", "md", "fine\n")], &[]);
+    let s = ship.clone();
+    with_mount("names", &ship, 10, move |dir| {
+        let bad = dir.join(std::ffi::OsStr::from_bytes(b"caf\xe9.md"));
+        let e = fs::File::create(&bad).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::EILSEQ), "{e}");
+        let e = fs::create_dir(dir.join(std::ffi::OsStr::from_bytes(b"d\xff"))).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::EILSEQ), "{e}");
+        let e = fs::rename(dir.join("ok.md"), &bad).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::EILSEQ), "{e}");
+        assert_eq!(s.pages.lock().unwrap().keys().cloned().collect::<Vec<_>>(), vec!["ok".to_string()]);
+        assert!(s.dirs.lock().unwrap().is_empty());
+        assert_eq!(read_to_string(&dir.join("ok.md")), "fine\n");
+    });
+}
