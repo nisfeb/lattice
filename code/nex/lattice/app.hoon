@@ -18610,21 +18610,52 @@
     %-  silt
     :-  [%& %& (at ~) %'dir-index']
     (murn all |=([p=path page=?] ?:(page ~ `[%& %& (at p) %'dir-index'])))
+  =/  gname=@t  (crip (slag 1 (scow %p shp)))
+  ::  a page the ship was granted by hand, at this mode or wider, keeps
+  ::  that grant as its own (+own-held), so unsharing the folder later
+  ::  leaves it, as a page shared after the folder keeps it (%grant-own)
+  ;<  wr=weir:nexus  bind:m
+    (ug-read-weir (snoc ug-base (crip (weld (trip gname) ".grp"))))
+  =/  own=(list path)
+    ?.  ?=([%ball *] dv)  ~
+    (own-held ball.dv wr mode at)
   ::  the ship hears of the folder, unless it held it already
   ::  (+tell-holds), so its shared with me lists the folder as one entry
   ;<  h0=holds:ls  bind:m  holds-now
   ;<  ok=?  bind:m
-    %:  ug-merge  (crip (slag 1 (scow %p shp)))
+    %:  ug-merge  gname
       (~(gas in *(set @p)) ~[shp])
       (~(uni in codes) idx)
       ?.(=('edit' mode) ~ codes)
     ==
   ?.  ok  (ug-refused eyre-id)
-  ;<  ~  bind:m  (poke-eval [%folder-grant pax (crip (slag 1 (scow %p shp))) mode])
+  ;<  ~  bind:m  (poke-eval [%folder-grant pax gname mode])
+  ;<  ~  bind:m
+    |-  ^-  form:m
+    ?~  own  (pure:m ~)
+    ;<  ~  bind:m  (poke-eval [%grant-own (weld pax i.own)])
+    $(own t.own)
   ;<  h1=holds:ls  bind:m  holds-now
   ;<  ~  bind:m  (tell-holds h0 h1)
   %+  send-json  eyre-id
   (pairs:enjs:format ~[['ok' b+&] ['notified' b+|] ['folder' b+&]])
+::  +own-held: the pages under a folder (`bl` its ball, `at` a page's
+::  absolute dir) that a group's weir `wr` grants by hand: the page's code
+::  road held at `mode` or wider, and no folder's grant noted on it
+::  (`grant-via`). A page a folder granted, or one held only for read in a
+::  folder shared for edit, is not its own.
+++  own-held
+  |=  [bl=ball:tarball wr=weir:nexus mode=@t at=$-(path path)]
+  ^-  (list path)
+  %+  murn  (collect-tree bl ~)
+  |=  [p=path page=?]
+  ^-  (unit path)
+  ?.  page  ~
+  ?:  (~(has by (ball-fils bl p)) %'grant-via')  ~
+  =/  r=road:tarball  [%& %& (at p) %code]
+  ?.  (~(has in peek.wr) r)  ~
+  ?:  &(=('edit' mode) !(~(has in make.wr) r))  ~
+  `p
 ::  +fils-grants: a folder's ship grants (`share-grants`), group to mode
 ++  fils-grants
   |=  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
