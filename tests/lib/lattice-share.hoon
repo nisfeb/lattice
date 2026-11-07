@@ -365,6 +365,55 @@
     (expect-eq !>(1) !>(~(wyt by got)))
     (expect-eq !>(`title-row:ls`[12 'Bee']) !>((~(got by got) '/b')))
   ==
+::  a peer's titles: each title cleaned and capped, and a cord past the
+::  1 MB guard is not parsed at all
+++  test-peer-titles
+  =/  long=@t  (crip (reap 400 'x'))
+  =/  c=@t  (crip :(weld "/a\0912\09one\09two\0a/b\0913\09" (trip long)))
+  =/  got=(map @t title-row:ls)  (peer-titles:ls c)
+  =/  big=@t  (crip (reap +(peer-titles-max:ls) 'y'))
+  ;:  weld
+    (expect-eq !>(`title-row:ls`[12 'one two']) !>((~(got by got) '/a')))
+    (expect-eq !>(title-cap:ls) !>((met 3 title:(~(got by got) '/b'))))
+    (expect-eq !>(~) !>((peer-titles:ls (cat 3 '/c\0914\09T\0a' big))))
+  ==
+::  the reader's policy for a peer's page loads nothing from another
+::  host, and the outside toggle opens https images alone
+++  test-peer-csp
+  =/  shut=tape  (trip (peer-csp:ls |))
+  =/  open=tape  (trip (peer-csp:ls &))
+  =/  has  |=([n=tape h=tape] ?=(^ (find n h)))
+  ;:  weld
+    (expect-eq !>(&) !>((has "img-src 'self' data:;" shut)))
+    (expect-eq !>(|) !>((has "https:" shut)))
+    (expect-eq !>(|) !>((has "*" shut)))
+    (expect-eq !>(&) !>((has "connect-src 'self';" shut)))
+    (expect-eq !>(&) !>((has "img-src 'self' data: https:;" open)))
+    (expect-eq !>(&) !>((has "font-src 'self' data:;" open)))
+  ==
+::  the policy goes first in the head and the foot before </body>; a
+::  document of another shape is left alone
+++  test-peer-doc
+  =/  d=@t  '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>t</title></head><body>B</body></html>'
+  =/  got=@t  (peer-doc:ls 'img-src x' '<p>F</p>' d)
+  ;:  weld
+    %+  expect-eq
+      !>('<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="img-src x"><title>t</title></head><body>B<p>F</p></body></html>')
+      !>(got)
+    (expect-eq !>('<p>x</p>') !>((peer-doc:ls 'c' 'f' '<p>x</p>')))
+  ==
+::  the outside toggle is per page: the cookie names the page by hash
+++  test-outside-on
+  =/  a=@t  'urb://~zod/pub/a'
+  =/  k=tape  (outside-key:ls a)
+  =/  ck=@t  (crip :(weld "x=1; latout=" (outside-key:ls 'urb://~zod/pub/b') "." k "; y=2"))
+  ;:  weld
+    (expect-eq !>(&) !>((outside-on:ls ck a)))
+    (expect-eq !>(|) !>((outside-on:ls ck 'urb://~zod/pub/c')))
+    (expect-eq !>(|) !>((outside-on:ls '' a)))
+    (expect-eq !>(|) !>((outside-on:ls (crip (weld "xlatout=" k)) a)))
+    (expect-eq !>(16) !>((lent k)))
+  ==
 ::  the label falls back to the name, and a folder is its name
 ++  test-row-label
   =/  rows=(map @t title-row:ls)

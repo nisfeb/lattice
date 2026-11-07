@@ -2338,6 +2338,16 @@
       ::  on every edit). Remote pages stay static (can't keep a peer's grub).
       ;<  sb=path  bind:m  self-base
       =/  rk=tape  ?:(=(ship.u.ref our) (keep-url sb "beacon/rev") "")
+      ::  a peer's page goes out under +peer-csp, with the toggle to load
+      ::  outside content on this page (the `latout` cookie)
+      =/  out=?
+        ?:  =(ship.u.ref our)  |
+        %+  outside-on:ls
+          (fall (get-header:http 'cookie' header-list.request.req) '')
+        u.raw
+      =/  pc=(unit [csp=@t foot=@t])
+        ?:  =(ship.u.ref our)  ~
+        `[(peer-csp:ls out) (outside-foot u.raw out)]
       ::  Respond FIRST, then record the visit. A history write is a poke to the
       ::  serialised writer. Doing it before the response would put a write on
       ::  the critical path of every page READ, which is exactly what the perf
@@ -2421,10 +2431,10 @@
                 |(?!(=(ship.u.ref our)) eg ?!(?=(%html vm)))
                 rk  rv  (trip ttl)
               ==
-            ?:  =("" rk)  (send-view eyre-id htm)
+            ?:  =("" rk)  (send-reader eyre-id pc htm)
             (send-view-long eyre-id htm)
           ?:  =("" rk)
-            (send-view eyre-id (render-page-titled canon rk "" (trip ttl) (weld (render-gmi body) cbox)))
+            (send-reader eyre-id pc (render-page-titled canon rk "" (trip ttl) (weld (render-gmi body) cbox)))
           (send-view-long eyre-id (render-page-titled canon rk rv (trip ttl) (weld (render-gmi body) cbox)))
         ::  a %html page's published copy is its markup: frame it, NEVER inline
         ::  it (inlining a peer's markup is stored XSS). The resolved mode already
@@ -2441,16 +2451,16 @@
               |(?!(=(ship.u.ref our)) eg)
               rk  rv  (trip ttl)
             ==
-          ?:  =("" rk)  (send-view eyre-id htm)
+          ?:  =("" rk)  (send-reader eyre-id pc htm)
           (send-view-long eyre-id htm)
         ::  md / text / js / css / noun: +preview-inner escapes or safe-renders
         ::  each one (raw HTML inside a peer's markdown is escaped by +render-md,
         ::  and text/js/css become an escaped <pre>), so the fragment is safe to
         ::  inline in our own chrome, with the comment box, like a gemtext page.
         =/  inner=tape
-          (weld ?^(fv (trip html.u.fv) (preview-inner mode body)) cbox)
+          (weld ?^(fv (trip html.u.fv) (preview-inner-in mode body out)) cbox)
         ?:  =("" rk)
-          (send-view eyre-id (render-page-titled canon rk "" (trip ttl) inner))
+          (send-reader eyre-id pc (render-page-titled canon rk "" (trip ttl) inner))
         (send-view-long eyre-id (render-page-titled canon rk rv (trip ttl) inner))
       ::  the background self-refetch and SSE-forced refreshes re-run this
       ::  handler; they are machinery, not reading, and they mark themselves
@@ -8290,7 +8300,10 @@
       =/  hits=@ud  ?~(prior 1 +(hits.u.prior))
       ::  keep the FIRST title we saw if the new one is empty. A share-sheet or
       ::  bare-url visit should not blank out a title recorded earlier.
-      =/  ttl=@t  ?:(=('' title.act) ?~(prior url.act title.u.prior) title.act)
+      ::  the title is the page's, so a peer's: one bounded line
+      =/  ttl=@t
+        %-  title-clean:ls
+        ?:(=('' title.act) ?~(prior url.act title.u.prior) title.act)
       =/  kept=history:lh  (skip live |=(v=visit:lh =(url.v url.act)))
       ::  cast before scag: scag on a lest (non-empty list) mull-grows, the
       ::  same trap +apply-bookmark documents.
@@ -14227,8 +14240,15 @@
 ++  preview-inner
   |=  [ptype=@tas body=@t]
   ^-  tape
-  ?+  ptype  (render-md:gfm (crip (wikilinkify:gfm (trip body) "/apps/lattice/app?name=")))
-    %md    (render-md:gfm (crip (wikilinkify:gfm (trip body) "/apps/lattice/app?name=")))
+  (preview-inner-in ptype body |)
+::  +preview-inner-in: +preview-inner, with markdown's remote images
+::  drawn when `outside` (+peer-csp), and as links to them when not
+++  preview-inner-in
+  |=  [ptype=@tas body=@t outside=?]
+  ^-  tape
+  =/  md  |=(t=@t (~(render-md gfm outside) (crip (wikilinkify:gfm (trip t) "/apps/lattice/app?name="))))
+  ?+  ptype  (md body)
+    %md    (md body)
     %gmi   (render-gmi body)
     %html  (trip body)
     %text  :(weld "<pre>" (esc (trip body)) "</pre>")
@@ -15884,7 +15904,8 @@
     %html  (trip p.cr)
     %gmi   (render-gmi p.cr)
     %md    =/  wl=@t  (crip (wikilinkify:gfm (trip p.cr) base))
-           (render-md:gfm wl)
+           ::  our own page: its remote images are ours to show
+           (~(render-md gfm &) wl)
     %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip p.cr)) "</code></pre>")
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")
     %fodt  (fodt-html:lf p.cr)
@@ -16299,6 +16320,42 @@
 ++  send-view-long
   |=  [eyre-id=@ta htm=@t]
   (send-typed eyre-id 'text/html' view-long-cache htm)
+::  +send-reader: +send-view, or for a peer's page (`pc`) the document
+::  under its +peer-csp, in a header and in the head (+peer-doc), with
+::  the outside toggle at its foot
+++  send-reader
+  |=  [eyre-id=@ta pc=(unit [csp=@t foot=@t]) htm=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?~  pc  (send-view eyre-id htm)
+  %+  send-simple:srv  eyre-id
+  :-  :-  200
+      :~  ['content-security-policy' csp.u.pc]
+          ['cross-origin-opener-policy' 'same-origin']
+          ['content-type' 'text/html']
+          ['cache-control' view-cache]
+          ['x-content-type-options' 'nosniff']
+      ==
+  `(as-octs:mimes:html (peer-doc:ls csp.u.pc foot.u.pc htm))
+::  +outside-foot: the toggle under a peer's page that loads outside
+::  content (remote https images) on this page alone, or stops. It keeps
+::  the page's +outside-key in the `latout` cookie, which only the
+::  chrome's script writes (a peer's page runs no script in our origin),
+::  and reloads past the page cache.
+++  outside-foot
+  |=  [url=@t on=?]
+  ^-  @t
+  %-  crip
+  ;:  weld
+    "<p class=\"latout\" style=\"max-width:46rem;margin:.5rem auto;padding:0 16px;font-size:.85em\">"
+    "<button type=\"button\" id=\"latout\" data-k=\""  (outside-key:ls url)
+    "\" data-on=\""  ?:(on "1" "0")
+    "\" style=\"font:inherit;cursor:pointer;background:none;border:1px solid #8886;border-radius:6px;color:inherit;padding:.2em .8em\">"
+    ?:(on "Stop loading outside content" "Load outside content for this page")
+    "</button></p>"
+    %-  trip
+    '<script>(function(){var b=document.getElementById("latout");if(!b)return;b.onclick=function(){var k=b.getAttribute("data-k"),m=document.cookie.match(/(?:^|; )latout=([^;]*)/),l=(m?m[1].split("."):[]).filter(function(x){return x&&x!==k});if(b.getAttribute("data-on")!=="1")l.push(k);l=l.slice(-40);document.cookie="latout="+l.join(".")+"; path=/apps/lattice; SameSite=Strict";var s=location.search.replace(/&u=[^&]*/g,"");location.replace(location.pathname+s+"&u=o"+Date.now())}})();</script>'
+  ==
 ::  ── PWA (installable app) ──────────────────────────────────────────────────
 ::  Content-Type is an explicit header cord here (not mark-derived), so a
 ::  manifest and a service worker are served with correct MIME by hand. All PWA
@@ -18704,7 +18761,7 @@
     (peek-remote-wait-in [%& %& (weld u.base /pub) %titles] shp ~s8)
   ?.  ?=([~ %file *] ms)  (pure:m ~)
   =/  c=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.u.ms))))
-  (pure:m ?~(c ~ (titles-rows:ls u.c)))
+  (pure:m ?~(c ~ (peer-titles:ls u.c)))
 ::  +peer-dir-index: the dir-index of a folder on `shp` (+write-dir-index),
 ::  ~ when its weir does not let us read it or it has none
 ++  peer-dir-index
@@ -18718,7 +18775,7 @@
   ?.  ?=([~ %file *] ms)  (pure:m ~)
   =/  c=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.u.ms))))
   ?~  c  (pure:m ~)
-  (pure:m `(titles-rows:ls u.c))
+  (pure:m `(peer-titles:ls u.c))
 ::  +write-dir-index: a granted folder's index, for the ships and groups it
 ::  is shared with: in the folder and each folder under it, a `dir-index`
 ::  grub with the +titles-cord:ls lines of every page in it. It sits in the

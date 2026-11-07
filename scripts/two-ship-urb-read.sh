@@ -57,6 +57,10 @@ is "A makes a clearweb page"   200 "$(code -H "$AK" -X POST "$A/page-save?name=$
 is "  ...on the clearweb"      200 "$(code -H "$AK" -X POST "$A/page-share?name=$P/cw&mode=clearweb")"
 is "A makes an html page"      200 "$(code -H "$AK" -X POST "$A/page-save?name=$P/h&type=html&new=1" --data-binary '<h1>Html by A</h1><script>evil()</script><p>a &amp; b</p>')"
 is "  ...and publishes it"     200 "$(code -H "$AK" -X POST "$A/page-share?name=$P/h&mode=shared")"
+is "A makes a page with an outside image" 200 "$(code -H "$AK" -X POST "$A/page-save?name=$P/img&type=md&new=1" --data-binary '# Img by A
+
+![px](https://example.com/px.png) and ![rel](//example.com/r.png)')"
+is "  ...and publishes it"     200 "$(code -H "$AK" -X POST "$A/page-share?name=$P/img&mode=shared")"
 is "A makes a private page"    200 "$(code -H "$AK" -X POST "$A/page-save?name=$P/priv&type=md&new=1" --data-binary '# Private for B')"
 is "  ...shares it with B"     true "$(A_ -X POST "$A/share-file?name=$P/priv&ship=$BSHIP&mode=read" | jq -r .ok)"
 is "A makes an unshared page"  200 "$(code -H "$AK" -X POST "$A/page-save?name=$P/hid&type=md&new=1" --data-binary '# Not for B')"
@@ -107,6 +111,31 @@ has "web_read still reads"          "Published by A" "$(mcp web_read "{\"url\":\
 r=$(read_ "urb://$BSHIP/$P/mine")
 has "g. B's own private page"       "Mine, private" "$r"
 hasnt "  ...not quoted"             "<quoted" "$r"
+
+echo "==> B's reader loads nothing from another host on A's page"
+IU="$B?url=urb://$ASHIP/$P/img"
+hd=$(B_ -D - -o /dev/null "$IU" | tr -d '\r')
+pg=$(B_ "$IU")
+has "the page renders"              "Img by A" "$pg"
+has "a CSP header"                  "content-security-policy: default-src 'self';" "$hd"
+has "  ...no remote images"         "img-src 'self' data:;" "$hd"
+hasnt "  ...nor any https source"   "https:" "$(grep -i '^content-security-policy' <<<"$hd")"
+has "  ...and in the head, for the page cache" '<meta http-equiv="Content-Security-Policy" content="default-src' "$pg"
+hasnt "no remote <img>"             '<img src="https://example.com' "$pg"
+has "  ...a link to it instead"     '<a href="https://example.com/px.png"' "$pg"
+hasnt "no protocol-relative source" '//example.com/r.png' "$pg"
+has "the outside toggle"            'id="latout"' "$pg"
+OK_=$(grep -o 'data-k="[0-9a-f]*"' <<<"$pg" | head -1 | cut -d'"' -f2)
+OH="Cookie: $(cat "$B_COOKIE"); latout=0000000000000000.$OK_"
+hd=$(curl -s -m 60 -H "$OH" -D - -o /dev/null "$IU" | tr -d '\r')
+pg=$(curl -s -m 60 -H "$OH" "$IU")
+has "toggled on: https images allowed" "img-src 'self' data: https:;" "$hd"
+has "  ...the remote <img> drawn"   '<img src="https://example.com/px.png"' "$pg"
+has "  ...and the toggle turns it off" "Stop loading outside content" "$pg"
+hd=$(curl -s -m 60 -H "$OH" -D - -o /dev/null "$B?url=urb://$ASHIP/$P/pub" | tr -d '\r')
+hasnt "  ...another page stays shut"   "https:" "$(grep -i '^content-security-policy' <<<"$hd")"
+hd=$(B_ -D - -o /dev/null "$B?url=urb://$BSHIP/$P/mine" | tr -d '\r')
+hasnt "B's own page has no peer CSP" "content-security-policy" "$(tr 'A-Z' 'a-z' <<<"$hd")"
 
 echo "==> errors say why"
 has "a page not shared with B"      "not found" "$(read_ "urb://$ASHIP/$P/hid")"

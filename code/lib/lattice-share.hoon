@@ -540,6 +540,89 @@
   ?:  |(?=(~ r) =('' title.u.r))  (trip name)
   (trip title.u.r)
 ::
+::  ==  the reader of a peer's page  ==
+::
+::  +peer-titles-max: the most of a peer's /pub/titles or dir-index the
+::  reader will parse. A real one is a line a page, far below this.
+++  peer-titles-max  ^~((mul 1.024 1.024))
+::  +peer-titles: a peer's titles cord as rows, none past
+::  +peer-titles-max, and each title through +title-clean, since the
+::  peer wrote it and +titles-rows keeps whatever follows the 2nd tab
+++  peer-titles
+  |=  c=@t
+  ^-  (map @t title-row)
+  ?:  (gth (met 3 c) peer-titles-max)  ~
+  %-  ~(run by (titles-rows c))
+  |=(r=title-row r(title (title-clean title.r)))
+::  +peer-csp: the policy the reader serves a peer's page under. Nothing
+::  loads from another host: no image, style, font, fetch or frame. The
+::  chrome's own scripts and styles are inline, so those take
+::  'unsafe-inline' (a peer's markup is escaped or framed sandboxed, and
+::  this is the backstop). `outside` lets images load over https, for a
+::  page the owner chose to load outside content on.
+++  peer-csp
+  |=  outside=?
+  ^-  @t
+  %-  crip
+  ;:  weld
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    ?:(outside " https:" "")
+    "; font-src 'self' data:; connect-src 'self'; media-src 'self' data:; "
+    "object-src 'none'; base-uri 'self'"
+  ==
+::  +peer-doc: a reader document with `csp` in a <meta> at the top of its
+::  head, and `foot` before its </body>. The meta keeps the policy when
+::  the page cache (+page-cache-script) serves the copy without our
+::  headers. A document not in the chrome's shape comes back unchanged.
+++  peer-doc
+  |=  [csp=@t foot=@t htm=@t]
+  ^-  @t
+  =/  hed=@t  '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+  =/  tal=@t  '</body></html>'
+  =/  n=@ud  (met 3 hed)
+  =/  e=@ud  (met 3 tal)
+  =/  len=@ud  (met 3 htm)
+  ?.  (gte len (add n e))  htm
+  ?.  =(hed (end [3 n] htm))  htm
+  ?.  =(tal (rsh [3 (sub len e)] htm))  htm
+  =/  mid=@t  (cut 3 [n (sub len (add n e))] htm)
+  %-  crip
+  ;:  weld
+    (trip hed)
+    "<meta http-equiv=\"Content-Security-Policy\" content=\""
+    (trip csp)  "\">"
+    (trip mid)  (trip foot)  (trip tal)
+  ==
+::  +outside-key: a page's name in the `latout` cookie, the reader's list
+::  of pages it loads outside content on. A hash, so the cookie holds no
+::  address and needs no escaping.
+++  outside-key
+  |=  url=@t
+  ^-  tape
+  ((x-co:co 16) (end [3 8] (shax url)))
+::  +outside-on: does the Cookie header `cookie` turn outside content on
+::  for the page at `url`?
+++  outside-on
+  |=  [cookie=@t url=@t]
+  ^-  ?
+  =/  k=tape  (outside-key url)
+  %+  lien  (split-on ';' (trip cookie))
+  |=  i=tape
+  =/  v=tape  |-(?~(i i ?:(=(' ' i.i) $(i t.i) i)))
+  ?.  =("latout=" (scag 7 v))  |
+  (lien (split-on '.' (slag 7 v)) |=(x=tape =(x k)))
+::  +split-on: `t` cut at each `c`
+++  split-on
+  |=  [c=@tD t=tape]
+  ^-  (list tape)
+  =|  cur=tape
+  =|  out=(list tape)
+  |-  ^-  (list tape)
+  ?~  t  (flop [(flop cur) out])
+  ?:  =(c i.t)  $(t t.t, out [(flop cur) out], cur ~)
+  $(t t.t, cur [i.t cur])
+::
 ::  ==  folder grants to ships  ==
 ::
 ::  A folder shared with a ship keeps the grant in its `share-grants`
