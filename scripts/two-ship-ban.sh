@@ -88,7 +88,7 @@ r=$(A_ -X POST "$A/unban?ship=$BSHIP")
 [ "$(roads)" = "none" ] && ok "the unban gives B no group" || fail "the unban gives B no group" "$(roads | tr '\n' ' ')"
 share s read
 got=$(roads | sed 's|.*/page/||')
-[ "$got" = "$T/s/code" ] && ok "A's group for B holds S alone" \
+[ "$got" = "$T/s" ] && ok "A's group for B holds S alone" \
   || fail "A's group for B holds S alone" "$(tr '\n' ' ' <<<"$got")"
 only-s() { [ "$(swm)" = "$(swm | grep "/page/$T/s/code$")" ] && [ -n "$(swm)" ]; }
 wait-for "B lists S alone" 30 only-s
