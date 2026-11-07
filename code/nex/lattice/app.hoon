@@ -3161,7 +3161,8 @@
     ::  this rule left in place, or a folder rule made again, would hand
     ::  back every old grant on the next share (+drop-ban-groups).
     ;<  dropped=(unit @ud)  bind:m
-      ?.  (~(has in bans) u.who)  (pure:m `0)
+      =/  n  (fiber:fiber:nexus ,(unit @ud))
+      ?.  (~(has in bans) u.who)  (pure:n `0)
       (drop-ban-groups (silt ~[u.who]))
     ?~  dropped  (ug-refused eyre-id)
     ;<  ~  bind:m
@@ -13144,9 +13145,10 @@
   ?^  e  (pure:m ~)
   =/  fs=(list path)  (folders-granted sb peek.old)
   ;<  ~  bind:m
-    |-  ^-  form:m
-    ?~  fs  (pure:m ~)
-    ;<  ~  bind:m  (poke-eval [%folder-ungrant i.fs i.gs])
+    =/  n  (fiber:fiber:nexus ,~)
+    |-  ^-  form:n
+    ?~  fs  (pure:n ~)
+    ;<  ~  bind:n  (poke-eval [%folder-ungrant i.fs i.gs])
     $(fs t.fs)
   $(gs t.gs, hit +(hit))
 ::  +ban-road: where the banlist lives.
