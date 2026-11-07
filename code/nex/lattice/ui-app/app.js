@@ -6270,6 +6270,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     exitRev();
     src.readOnly = linkRO(name);
     paintLock();         // and read-only while another window edits it
+    paintCas();
     resetPanels();
     showShare(d.share || 'private');
     cmtShow(name, d.comments);
@@ -6474,6 +6475,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     let w = { gone: true };
     const sentSeq = offSeq();
     casHold.delete(name);       // a save on purpose tries again
+    paintCas();
     try {
       if (!(jobWait && !creating && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -6547,7 +6549,35 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
 
   const casQ = (name, rev) => (linkOf(name) ? '' : '&by=' + winId + (rev ? '&base=' + rev + '&cas=1' : ''));
-  const casHold = new Set();
+  const casHold = new Map();
+  const casBar = document.createElement('div');
+  casBar.id = 'casbar';
+  casBar.className = 'lnkcf';
+  casBar.hidden = true;
+  casBar.setAttribute('role', 'alert');
+  casBar.innerHTML = '<span>This page changed elsewhere. Your text here is not saved on it.</span> '
+    + '<button type="button" id="castheirs">Show theirs</button> '
+    + '<button type="button" id="casmine">Save mine over theirs</button>';
+  function paintCas() {
+    const d = $('docarea');
+    if (d && !casBar.isConnected) d.before(casBar);
+    casBar.hidden = !(current && mode !== 'know' && casHold.has(current));
+  }
+  casBar.querySelector('#castheirs').onclick = async () => {
+    const name = current;
+    casHold.delete(name);
+    dirty = false;
+    paintCas();
+    await openPage(name);
+  };
+  casBar.querySelector('#casmine').onclick = () => {
+    const name = current;
+    if (!casHold.has(name)) return;
+    curRev = casHold.get(name);
+    casHold.delete(name);
+    paintCas();
+    save();
+  };
   const shipText = new Map();
   function merge3(b, o, t) {
     if (o === b || t === o) return t;
@@ -6586,18 +6616,17 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         if (j && j.rev) res = { rev: j.rev, body: mb, how: 'saved, merged with a change made elsewhere' };
       }
     }
+    let alt = null;
     if (th && !res) {
-      const alt = await keepAside({ name, kind, body: sent }, keptName('mine', name));
-      if (alt) {
-        addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge();
-        res = { rev: th.rev, body: th.body, how: name + ' changed elsewhere: theirs is shown, and your text is kept at ' + alt };
-      }
+      alt = await keepAside({ name, kind, body: sent }, keptName('mine', name));
+      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
     }
     if (!res) {
-      casHold.add(name);
-      st('NOT saved: ' + name + ' changed elsewhere, and your text could not be kept aside. '
-        + 'It is still here: copy it, then reload', false);
+      casHold.set(name, th ? th.rev : 0);
+      st(name + ' changed elsewhere, so your text was not saved over it. '
+        + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
       if (here()) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
+      paintCas();
       return;
     }
     patchLocal(name, null, res.body, res.rev);
@@ -10675,7 +10704,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent); return; }
     if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent); return; }
-    if (mode !== 'know' && d.rev) { curRev = d.rev; shipText.set(wasCurrent, d.body); }
+    if (mode !== 'know' && d.rev && d.rev >= curRev) { curRev = d.rev; shipText.set(wasCurrent, d.body); }
     if (d.body === src.value) return;
     if (mode !== 'know') pageCache.delete(wasCurrent);
     const top = src.scrollTop;

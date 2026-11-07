@@ -283,6 +283,7 @@
     // restore comes through here too.
     src.readOnly = linkRO(name);
     paintLock();         // and read-only while another window edits it
+    paintCas();
     resetPanels();
     showShare(d.share || 'private');
     cmtShow(name, d.comments);
@@ -649,6 +650,7 @@
     //  after the queued ones: it joins the queue, which keeps the newest
     const sentSeq = offSeq();
     casHold.delete(name);       // a save on purpose tries again
+    paintCas();
     try {
       if (!(jobWait && !creating && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -750,9 +752,37 @@
   // (409 "stale") when the page moved past it. Not for a link, which claims
   // its host's rev already (linkBase). Every save names this window (?by=).
   const casQ = (name, rev) => (linkOf(name) ? '' : '&by=' + winId + (rev ? '&base=' + rev + '&cas=1' : ''));
-  // pages refused as stale whose text could not be kept aside: autosave
-  // stands down for them until a save on purpose
-  const casHold = new Set();
+  // pages refused as stale, to the rev the ship was at: autosave stands
+  // down for them until the bar's choice or a save on purpose
+  const casHold = new Map();
+  const casBar = document.createElement('div');
+  casBar.id = 'casbar';
+  casBar.className = 'lnkcf';
+  casBar.hidden = true;
+  casBar.setAttribute('role', 'alert');
+  casBar.innerHTML = '<span>This page changed elsewhere. Your text here is not saved on it.</span> '
+    + '<button type="button" id="castheirs">Show theirs</button> '
+    + '<button type="button" id="casmine">Save mine over theirs</button>';
+  function paintCas() {
+    const d = $('docarea');
+    if (d && !casBar.isConnected) d.before(casBar);
+    casBar.hidden = !(current && mode !== 'know' && casHold.has(current));
+  }
+  casBar.querySelector('#castheirs').onclick = async () => {
+    const name = current;
+    casHold.delete(name);
+    dirty = false;
+    paintCas();
+    await openPage(name);
+  };
+  casBar.querySelector('#casmine').onclick = () => {
+    const name = current;
+    if (!casHold.has(name)) return;
+    curRev = casHold.get(name);
+    casHold.delete(name);
+    paintCas();
+    save();
+  };
   // the text the ship held at the rev the editor read, per page (patchLocal
   // and applyPage): the merge base when the ship moved on, without asking
   // for an old revision
@@ -801,18 +831,20 @@
         if (j && j.rev) res = { rev: j.rev, body: mb, how: 'saved, merged with a change made elsewhere' };
       }
     }
+    //  a real conflict: our text is kept as a page of its own, and stays
+    //  in the editor too (unsaved edits are never replaced), with autosave
+    //  standing down and a bar offering theirs or ours over theirs
+    let alt = null;
     if (th && !res) {
-      const alt = await keepAside({ name, kind, body: sent }, keptName('mine', name));
-      if (alt) {
-        addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge();
-        res = { rev: th.rev, body: th.body, how: name + ' changed elsewhere: theirs is shown, and your text is kept at ' + alt };
-      }
+      alt = await keepAside({ name, kind, body: sent }, keptName('mine', name));
+      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
     }
     if (!res) {
-      casHold.add(name);
-      st('NOT saved: ' + name + ' changed elsewhere, and your text could not be kept aside. '
-        + 'It is still here: copy it, then reload', false);
+      casHold.set(name, th ? th.rev : 0);
+      st(name + ' changed elsewhere, so your text was not saved over it. '
+        + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
       if (here()) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
+      paintCas();
       return;
     }
     patchLocal(name, null, res.body, res.rev);

@@ -69,7 +69,8 @@
     // that landed the same text still moved the revision, and a stale curRev
     // makes the next save carry a stale base, manufacturing a false
     // conflict (and a conflicts/ page) out of nothing
-    if (mode !== 'know' && d.rev) { curRev = d.rev; shipText.set(wasCurrent, d.body); }
+    //  never back: a read sent before our own save landed answers older
+    if (mode !== 'know' && d.rev && d.rev >= curRev) { curRev = d.rev; shipText.set(wasCurrent, d.body); }
     if (d.body === src.value) return;
     // the ship's copy moved under us. This page's cached render is stale
     if (mode !== 'know') pageCache.delete(wasCurrent);

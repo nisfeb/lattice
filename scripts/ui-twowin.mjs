@@ -163,8 +163,11 @@ try {
   const shipB = (await shipSource(p1, 'tw/b')).body;
   check('the ship keeps theirs, not written over',
     shipB.includes('line ONE theirs again') && !shipB.includes('line ONE mine again'), JSON.stringify(shipB));
+  check('the editor keeps the unsaved text', (await srcVal(p1)).includes('line ONE mine again'));
+  check('and a bar says it changed elsewhere', await p1.evaluate(() => !document.getElementById('casbar').hidden));
+  await p1.evaluate(() => document.getElementById('castheirs').click());
   const showsTheirs = await waitFor(async () => (await srcVal(p1)).includes('line ONE theirs again'), 30000);
-  check('and the editor now shows theirs', !!showsTheirs, JSON.stringify(await srcVal(p1)));
+  check('"Show theirs" shows theirs', !!showsTheirs, JSON.stringify(await srcVal(p1)));
 
   // -- 3. one queue, two windows: B's save leaves A's record alone ---------
   //  Batch replays are HELD (not aborted) on both windows while the record
