@@ -90,6 +90,22 @@ try {
   check('B sees "1 new" within 30s, no reload', got, JSON.stringify({ badge: await badge(p), f: await follows() }));
   console.log(`  (count appeared after ${((Date.now() - t0) / 1000).toFixed(1)} s)`);
 
+  // shared with me lists the folder once (%dir), with the follow's count,
+  // and no page of it on its own; unfolded, it lists the pages
+  const SROW = `#treelist .fld.swdir[title="${ASHIP} /${DIR}/"]`;
+  const srow = await until(p, (s) => {
+    const r = document.querySelectorAll(s);
+    const b = r.length === 1 && r[0].querySelector('.folnew');
+    return !!b && b.textContent === '1 new';
+  }, SROW, 15000);
+  check('shared with me lists the folder once, with "1 new"', srow, JSON.stringify(await p.evaluate(() =>
+    [...document.querySelectorAll('#treelist .swdir, #treelist a.pg.swm')].map((a) => a.title))));
+  check('and no page of it on its own', !(await p.$(`#treelist a.pg.swm[title$="/page/${DIR}/first/code"]`)));
+  const pg0 = await p.evaluate(() => document.querySelectorAll('#treelist a.folpg').length);
+  await p.click(SROW + ' .fln');
+  check('the folder entry unfolds to its 2 pages', await until(p, (n) =>
+    document.querySelectorAll('#treelist a.folpg').length === n + 2, pg0, 10000));
+
   // opening the new page clears it
   const seen = await post(B_, 'folder-seen?' + FQ + '&key=' + q('/' + DIR + '/second'));
   const f1 = await follows();

@@ -7,10 +7,17 @@
   //
   // A notice names the page's code grub, <their base>/page/<name>/code. The
   // base is wherever lattice is installed there, so only the tail is read.
+  // A folder shared whole is one entry naming its index grub,
+  // <their base>/page/<folder>/dir-index, and reads as <folder>/.
+  const swmDir = (p) => /\/page\/.+\/dir-index$/.test(p);
+  const swmRel = (p) => '/' + /\/page\/(.+)\/dir-index$/.exec(p)[1];
   const sharedName = (p) => {
+    if (swmDir(p)) return swmRel(p).slice(1) + '/';
     const m = /\/page\/(.+)\/code$/.exec(p);
     return m ? m[1] : p.replace(/^\/+/, '');
   };
+  // the reader on urb://<host><rel>, a folder's index with a trailing /
+  const swmRead = (host, rel) => api + '?url=' + encodeURIComponent('urb://' + host + rel);
   //  bg as in loadPerms: only boot uses it
   async function loadShared(bg = false) {
     let r = null;
@@ -32,6 +39,8 @@
     swmTimer = setTimeout(loadShared, 300);
     let j = null;
     try { j = JSON.parse(data); } catch {}
+    // a folder told again ('touch': a page made in it) reads its pages anew
+    if (j && j.host && j.path) swmPages.delete(j.host + ' ' + j.path);
     if (j && j.op === 'add' && j.host && j.path) shareToast(j);
   };
   // the stream dropped (a hidden tab, a sleeping laptop): a window that
@@ -52,19 +61,29 @@
     const t = toastEl = document.createElement('a');
     t.className = 'swtoast';
     t.setAttribute('role', 'status');
-    t.href = '/apps/lattice/app?grub=' + encodeURIComponent(j.path) +
-      '&ship=' + encodeURIComponent(j.host);
+    t.href = swmDir(j.path) ? swmRead(j.host, swmRel(j.path) + '/')
+      : '/apps/lattice/app?grub=' + encodeURIComponent(j.path) + '&ship=' + encodeURIComponent(j.host);
     t.textContent = j.host + ' shared ' + sharedName(j.path) + ' with you';
     t.title = 'open it';
     document.body.appendChild(t);
     setTimeout(() => t.remove(), 8000);
   }
+  // the x at a row's end (the follow list's too, 69x-follow.js)
+  function rmX(title, fn) {
+    const x = document.createElement('span');
+    x.className = 'swrm';
+    x.textContent = '×';
+    x.title = title;
+    x.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(); };
+    return x;
+  }
   //  Take an entry off the list, after a confirm. Nothing is deleted:
   //  the page is theirs, and their grant stays as it is. The ×, the tree's
   //  menu and its Delete key (34-treemenu.js) all come here.
   async function removeShared(it) {
+    const kind = swmDir(it.path) ? 'folder' : 'page';
     const what = 'remove ' + it.host + '/' + sharedName(it.path) + ' from shared with me?\n'
-      + 'Nothing is deleted: the page is ' + it.host + "'s, and their grant to you stays. "
+      + 'Nothing is deleted: the ' + kind + ' is ' + it.host + "'s, and their grant to you stays. "
       + 'It comes back here if they share it again.';
     if (!(await askDanger(what, 'remove'))) return false;
     const r = await busyFetch(api + '/shared-with-me-del?host=' + encodeURIComponent(it.host) +
@@ -77,6 +96,74 @@
   // keys for the collapsed list: a leading space is in no page name, so a
   // page can never share a fold with this folder
   const SWM = ' shared';
+  // The list holds up to 2000 entries (+cap in lib/lattice-share), so a
+  // ship's folder draws them a page of rows at a time, with a row for the
+  // rest. The same goes for a shared folder's pages.
+  const SWM_ROWS = 200;
+  const swmShown = new Map();          // fold key -> rows drawn
+  const moreRow = (key, left, depth) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'swmore';
+    b.style.marginLeft = (depth * 14) + 'px';
+    b.textContent = left + ' more\u2026';
+    b.onclick = () => { swmShown.set(key, (swmShown.get(key) || SWM_ROWS) + SWM_ROWS); renderTree(); };
+    treeList.appendChild(b);
+  };
+  // a shared folder's pages, read on its first opening (/folder-pages)
+  // and kept until a notice for it lands: host+' '+path -> rows, or
+  // 'wait' while the read is out, or null when the folder would not read
+  const swmPages = new Map();
+  async function loadSwmPages(it) {
+    const k = it.host + ' ' + it.path;
+    swmPages.set(k, 'wait');
+    let rows = null;
+    try {
+      const r = await fetch(api + '/folder-pages?host=' + encodeURIComponent(it.host) +
+        '&path=' + encodeURIComponent(swmRel(it.path)));
+      if (r.ok) rows = await r.json();
+    } catch {}
+    if (swmPages.get(k) === 'wait') swmPages.set(k, rows);
+    renderTree();
+  }
+  // A folder entry: a folder row that opens its index (#397) and unfolds
+  // to its pages. A followed folder (69x-follow.js) shows its pages as the
+  // follow last read them, with its "N new"; any other reads them now.
+  function renderSwmDir(it, host, coll) {
+    const key = SWM + '/' + host + '/' + it.path;
+    const okey = key + ' +';           // folded unless opened
+    const shut = !coll.includes(okey);
+    const rel = swmRel(it.path);
+    const row = folderRow(sharedName(it.path), 2, shut,
+      () => { paneColl.flip(okey); renderTree(); }, undefined, key);
+    row.classList.add('swdir');
+    row.title = host + ' ' + rel + '/';
+    const f = folds.find((x) => x.host === host && x.path === rel);
+    if (f && f.ok && f.new) row.append(foldBadge(f.new + ' new'));
+    const md = document.createElement('span');
+    md.className = 'swmode';
+    md.textContent = it.mode;
+    const ix = foldIx(host, rel);
+    const x = rmX('remove from this list (their grant is untouched)', () => removeShared(it));
+    row.append(md, ix, x);
+    rowMore(row, sharedName(it.path) + ' from ' + host);
+    treeList.appendChild(row);
+    if (shut) return;
+    let pages = f && f.ok ? f.pages : swmPages.get(host + ' ' + it.path);
+    if (pages === undefined && !(f && f.ok)) { loadSwmPages(it); pages = 'wait'; }
+    if (!Array.isArray(pages)) {
+      const n = document.createElement('div');
+      n.className = 'swnote';
+      n.style.marginLeft = '42px';
+      n.textContent = pages === 'wait' ? 'reading\u2026' : 'it does not read (unshared, or ' + host + ' is away)';
+      treeList.appendChild(n);
+      return;
+    }
+    const lim = swmShown.get(okey) || SWM_ROWS;
+    for (const p of pages.slice(0, lim))
+      foldPage(host, rel, p, 3, okey, () => (f && f.ok ? openFoldPage(f, p) : browseIn(swmRead(host, p.key))));
+    if (pages.length > lim) moreRow(okey, pages.length - lim, 3);
+  }
   // appended by renderTree, after the pages
   function renderShared(coll) {
     const fold = (key, label, depth) => {
@@ -89,9 +176,13 @@
     if (!fold(SWM, 'shared with me', 0)) return;
     for (const host of [...new Set(sharedWithMe.map((s) => s.host))].sort()) {
       if (!fold(SWM + '/' + host, host, 1)) continue;
+      const hk = SWM + '/' + host;
       const mine = sharedWithMe.filter((s) => s.host === host)
         .sort((a, b) => sharedName(a.path).localeCompare(sharedName(b.path)));
+      const lim = swmShown.get(hk) || SWM_ROWS;
+      if (mine.length > lim) mine.length = lim;
       for (const it of mine) {
+        if (swmDir(it.path)) { renderSwmDir(it, host, coll); continue; }
         const a = document.createElement('a');
         a.className = 'pg swm';
         a.href = '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
@@ -104,14 +195,7 @@
         const md = document.createElement('span');
         md.className = 'swmode';
         md.textContent = it.mode;
-        const x = document.createElement('span');
-        x.className = 'swrm';
-        x.textContent = '×';
-        x.title = 'remove from this list (their grant is untouched)';
-        x.onclick = (e) => {
-          e.preventDefault(); e.stopPropagation();
-          removeShared(it);
-        };
+        const x = rmX('remove from this list (their grant is untouched)', () => removeShared(it));
         a.append(nm, md, x);
         rowMore(a, sharedName(it.path) + ' from ' + host);   // its Remove from list (34-treemenu.js)
         a.draggable = true;
@@ -140,6 +224,8 @@
         w.append(a, mv);
         treeList.appendChild(w);
       }
+      const all = sharedWithMe.filter((s) => s.host === host).length;
+      if (all > lim) moreRow(hk, all - lim, 2);
     }
   }
 

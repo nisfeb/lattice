@@ -56,9 +56,13 @@
       ::  leaves the folder's `share-grants`, so pages added later stay
       ::  private (+unshare-folder takes back what it granted)
       [%folder-ungrant pax=path gname=@t]
-      ::  the page at pax was shared with a ship by hand: its grant is its
-      ::  own, and no folder takes it back on a move
-      [%grant-own pax=path]
+      ::  the share notices a grant or a revoke owes (+tell-holds): each
+      ::  ship told of each page it now reads (`add`) or reads no more
+      [%share-tell add=(list [who=@p pax=path mode=@t]) del=(list [who=@p pax=path])]
+      ::  the page at pax is granted to group `gname` by hand for `mode`
+      ::  ('' none): noted in its `own-grants`, so a folder unshared or
+      ::  a move out leaves it that grant (+ungrant)
+      [%grant-own pax=path gname=@t mode=@t]
       ::  re-grow every published page and the index (+pub-regrow), in
       ::  the writer so no save interleaves with its revision list
       [%pub-regrow ~]

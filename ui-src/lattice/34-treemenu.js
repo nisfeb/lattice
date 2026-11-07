@@ -84,7 +84,7 @@
       item('del', 'Delete', () => treeDelete(row));
     } else {
       item('link', 'Copy link', () => copyLink(swmUrb(t.it)));
-      item('in', 'Move into my pages', () => askMoveIn(t.it));
+      if (!swmDir(t.it.path)) item('in', 'Move into my pages', () => askMoveIn(t.it));
       item('del', 'Remove from list', () => treeDelete(row));
     }
     m.onkeydown = (e) => {

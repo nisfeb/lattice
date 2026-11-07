@@ -421,30 +421,72 @@
 ++  test-ungrant
   =/  g=(map path (map @t @t))
     (~(put by grants-fg) /f/sub (~(gas by *(map @t @t)) ~[['bus' 'read']]))
-  =/  pages=(list [rel=path vias=(list path)])
-    :~  [/f/a ~[/f]]
-        [/f/own ~]
-        [/f/sub/b ~[/f/sub /f]]
+  =/  pages=(list [rel=path vias=(list path) own=(map @t @t)])
+    :~  [/f/a ~[/f] ~]
+        [/f/own ~ ~]
+        [/f/sub/b ~[/f/sub /f] ~]
     ==
-  %+  expect-eq  !>([~[/f/a /f/sub/b] ~[/f /f/sub]])
+  %+  expect-eq  !>([~[[/f/a ''] [/f/sub/b '']] ~[/f /f/sub]])
   !>((ungrant:ls g 'nec' /f pages ~[/f /f/sub]))
-::  what another folder still sharing with the group covers stays
+::  what another folder still sharing with the group gives stays, at
+::  that folder's mode
 ++  test-ungrant-covered
-  =/  pages=(list [rel=path vias=(list path)])
-    :~  [/f/a ~[/f]]
-        [/f/sub/b ~[/f/sub /f]]
+  =/  pages=(list [rel=path vias=(list path) own=(map @t @t)])
+    :~  [/f/a ~[/f] ~]
+        [/f/sub/b ~[/f/sub /f] ~]
     ==
   ;:  weld
     ::  /f/sub shares with nec too: its page and index stay
-    %+  expect-eq  !>([~[/f/a] ~[/f]])
+    %+  expect-eq  !>([~[[/f/a '']] ~[/f]])
     !>((ungrant:ls grants-fg 'nec' /f pages ~[/f /f/sub]))
-    ::  a folder above sharing with nec covers all of it
+    ::  a folder above sharing with nec for read leaves /f/a read
     =/  up  (~(put by grants-fg) / (~(gas by *(map @t @t)) ~[['nec' 'read']]))
-    %+  expect-eq  !>([`(list path)`~ `(list path)`~])
+    %+  expect-eq  !>([~[[/f/a 'read']] `(list path)`~])
     !>((ungrant:ls up 'nec' /f pages ~[/f /f/sub]))
     ::  a group the folder never shared with takes nothing
-    %+  expect-eq  !>([~[/f/a /f/sub/b] ~[/f /f/sub]])
+    %+  expect-eq  !>([~[[/f/a ''] [/f/sub/b '']] ~[/f /f/sub]])
     !>((ungrant:ls grants-fg 'zod' /f pages ~[/f /f/sub]))
+  ==
+::  a page's own grant stays at its own mode: read under an edit folder
+::  share is left read, edit under a read share is left alone, and
+::  another group's own grant does not count
+++  test-ungrant-own
+  =/  ed=(map path (map @t @t))
+    (~(gas by *(map path (map @t @t))) ~[[/f (~(gas by *(map @t @t)) ~[['nec' 'edit']])]])
+  =/  rd  (~(gas by *(map @t @t)) ~[['nec' 'read']])
+  =/  pages=(list [rel=path vias=(list path) own=(map @t @t)])
+    :~  [/f/a ~[/f] rd]
+        [/f/b ~[/f] (~(gas by *(map @t @t)) ~[['nec' 'edit']])]
+        [/f/c ~[/f] (~(gas by *(map @t @t)) ~[['bus' 'edit']])]
+    ==
+  ;:  weld
+    %+  expect-eq  !>([~[[/f/a 'read'] [/f/c '']] ~[/f]])
+    !>((ungrant:ls ed 'nec' /f pages ~[/f]))
+    %+  expect-eq  !>([~[[/f/a 'read'] [/f/c '']] ~[/f]])
+    !>((ungrant:ls grants-fg 'nec' /f pages ~[/f]))
+  ==
+::  a page's own grant as a folder starts to share it
+++  test-own-infer
+  ;:  weld
+    ::  held by hand, no folder: its own, at its mode
+    (expect-eq !>('read') !>((own-infer:ls '' 'read' '')))
+    (expect-eq !>('edit') !>((own-infer:ls '' 'edit' '')))
+    ::  held at what a folder gives: not known to be its own
+    (expect-eq !>('') !>((own-infer:ls '' 'read' 'read')))
+    ::  held wider than the folders give: the rest was by hand
+    (expect-eq !>('edit') !>((own-infer:ls '' 'edit' 'read')))
+    ::  noted own stays, never wider than now held
+    (expect-eq !>('read') !>((own-infer:ls 'read' 'edit' 'edit')))
+    (expect-eq !>('read') !>((own-infer:ls 'edit' 'read' 'read')))
+    ::  a stale note on a group no longer granting it goes
+    (expect-eq !>('') !>((own-infer:ls 'edit' '' '')))
+  ==
+++  test-mode-max
+  ;:  weld
+    (expect-eq !>('edit') !>((mode-max:ls 'read' 'edit')))
+    (expect-eq !>('read') !>((mode-max:ls '' 'read')))
+    (expect-eq !>('') !>((mode-max:ls '' '')))
+    (expect-eq !>('read') !>((mode-min:ls 'read' 'edit')))
   ==
 ::
 ::  ==  followed folders  ==
@@ -511,6 +553,63 @@
     ::  a page named b/page/f/a is not under /f
     (expect-eq !>(~) !>((fold-hit:ls fs nec /apps/lattice/page/b/page/f/a/code)))
   ==
+::  a folder's notice reaches the follows at, above and below it, and no
+::  folder beside it
+++  test-fold-hit-dir
+  =/  fs=(list fold:ls)
+    (fold-add:ls (fold-add:ls (fold-add:ls ~ nec /f `fold-rows ~2026.1.1) nec /f/s ~ ~2026.1.1) nec /fx ~ ~2026.1.1)
+  =/  hit  |=(p=path (sort (turn (fold-hit:ls fs nec p) |=(f=fold:ls rel.f)) aor))
+  ;:  weld
+    (expect-eq !>((sort `(list path)`~[/f /f/s] aor)) !>((hit /apps/lattice/page/f/dir-index)))
+    (expect-eq !>(`(list path)`~[/f /f/s]) !>((hit /apps/lattice/page/f/s/dir-index)))
+    (expect-eq !>(`(list path)`~[/f]) !>((hit /apps/lattice/page/f/t/dir-index)))
+    (expect-eq !>(`(list path)`~) !>((hit /apps/lattice/page/g/dir-index)))
+  ==
+::  +holds-trim: a folder held whole is one hold. The pages and folders
+::  under it go, unless the page's mode is wider than the folder's. A page
+::  shared on its own and in the folder shows once, as the folder.
+++  test-holds-folder
+  =/  gs=(list [who=(set @p) peek=(set path) make=(set path) dirs=(map path @t)])
+    :~  :^  (silt ~[zod bus])  (silt `(list path)`~[/f/a/code /f/b/code /f/s/c/code /g/code])
+          (silt ~[/f/b/code])
+        (malt `(list [path @t])`~[[/f/dir-index 'read'] [/f/s/dir-index 'read']])
+        [(silt ~[bus]) (silt ~[/f/a/code]) ~ (malt ~[[/f/dir-index 'edit']])]
+    ==
+  =/  h=holds:ls  (holds-of:ls gs)
+  ;:  weld
+    ::  the folder, the page it may edit in it, and the page outside it
+    %+  expect-eq
+      !>((malt `(list [path @t])`~[[/f/dir-index 'read'] [/f/b/code 'edit'] [/g/code 'read']]))
+      !>((~(got by h) zod))
+    ::  edit on the folder covers the edit page too
+    %+  expect-eq
+      !>((malt `(list [path @t])`~[[/f/dir-index 'edit'] [/g/code 'read']]))
+      !>((~(got by h) bus))
+    ::  shared whole after page by page: one add for the folder, a del
+    ::  for each page it now covers
+    %+  expect-eq
+      !>([`(list [@p path @t])`~[[zod /f/dir-index 'read']] (sort `(list [@p path])`~[[zod /f/a/code] [zod /f/s/c/code]] aor)])
+      !>  %+  holds-diff:ls
+            (holds-of:ls ~[[(silt ~[zod]) (silt `(list path)`~[/f/a/code /f/s/c/code]) ~ ~]])
+          (holds-of:ls ~[[(silt ~[zod]) (silt `(list path)`~[/f/a/code /f/s/c/code]) ~ (malt ~[[/f/dir-index 'read']])]])
+  ==
+::  +dir-cover: a folder notice falls in its own entry or one above it,
+::  from that host only, and never in a page's entry
+++  test-dir-cover
+  =/  cur=shared:ls
+    :~  [zod /apps/l/page/f/dir-index 'read' ~2026.1.1]
+        [bus /apps/l/page/g/dir-index 'read' ~2026.1.1]
+        [zod /apps/l/page/h/code 'read' ~2026.1.1]
+    ==
+  ;:  weld
+    (expect-eq !>(`(snag 0 cur)) !>((dir-cover:ls cur zod /apps/l/page/f/dir-index)))
+    (expect-eq !>(`(snag 0 cur)) !>((dir-cover:ls cur zod /apps/l/page/f/s/dir-index)))
+    (expect-eq !>(~) !>((dir-cover:ls cur zod /apps/l/page/fx/dir-index)))
+    (expect-eq !>(~) !>((dir-cover:ls cur zod /apps/l/page/g/dir-index)))
+    (expect-eq !>(~) !>((dir-cover:ls cur zod /apps/l/page/h/s/dir-index)))
+    (expect-eq !>(&) !>((dir-key:ls /apps/l/page/f/dir-index)))
+    (expect-eq !>(|) !>((dir-key:ls /apps/l/page/dir-index/code)))
+  ==
 ::  +move-resumes: a fresh note for the same move resumes it. A stale one,
 ::  or one for another move, does not, so the move gets the clobber checks.
 ++  test-move-resumes
@@ -535,5 +634,44 @@
     (expect-eq !>(`(list path)`~[/f/s]) !>((index-ups:ls /f/s (silt `(list path)`~[/f/s /g]))))
     (expect-eq !>(`(list path)`~) !>((index-ups:ls /f/s (silt `(list path)`~[/g]))))
     (expect-eq !>(`(list path)`~[/]) !>((index-ups:ls / (silt ~[`path`/]))))
+  ==
+::  +holds-of: who reads which page, across every group. A ship in two
+::  groups reads the union, and edit wins over read.
+::
+++  test-holds-of
+  =/  gs=(list [who=(set @p) peek=(set path) make=(set path) dirs=(map path @t)])
+    :~  [(silt ~[zod bus]) (silt ~[/a/code /b/code]) (silt ~[/b/code]) ~]
+        [(silt ~[zod]) (silt ~[/b/code /c/code]) ~ ~]
+        [(silt ~[nec]) ~ ~ ~]
+    ==
+  =/  h=holds:ls  (holds-of:ls gs)
+  ;:  weld
+    %+  expect-eq
+      !>((malt ~[[/a/code 'read'] [/b/code 'edit'] [/c/code 'read']]))
+      !>((~(got by h) zod))
+    %+  expect-eq
+      !>((malt ~[[/a/code 'read'] [/b/code 'edit']]))
+      !>((~(got by h) bus))
+    ::  a ship in a group with no pages holds nothing
+    (expect-eq !>(|) !>((~(has by h) nec)))
+  ==
+::  +holds-diff: only the change is told. A page a ship held already is no
+::  add (the duplicate notice this exists to avoid), a new mode is one, a
+::  page held through another group after a revoke is no del.
+::
+++  test-holds-diff
+  =/  old=holds:ls
+    (malt ~[[zod (malt ~[[/a/code 'read'] [/b/code 'read']])] [bus (malt ~[[/a/code 'read']])]])
+  =/  new=holds:ls
+    (malt ~[[zod (malt ~[[/a/code 'read'] [/b/code 'edit'] [/c/code 'read']])] [nec (malt ~[[/a/code 'read']])]])
+  =/  d  (holds-diff:ls old new)
+  ;:  weld
+    %+  expect-eq
+      !>  %+  sort  ~[[zod /b/code 'edit'] [zod /c/code 'read'] [nec /a/code 'read']]
+          |=([a=[@p path @t] b=[@p path @t]] (aor a b))
+      !>(add.d)
+    (expect-eq !>(~[[bus /a/code]]) !>(del.d))
+    ::  no change, nothing told
+    (expect-eq !>([~ ~]) !>((holds-diff:ls new new)))
   ==
 --

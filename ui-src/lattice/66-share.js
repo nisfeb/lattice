@@ -294,7 +294,8 @@
     }
     const j = await r.json();
     $('shres').textContent = shp + ' can now ' + mode + ' ' + page +
-      (j.notified ? ' — notified.' : ' — could not notify (offline?); the grant holds.');
+      (j.notified ? ' — notified.' : j.folder ? ', and they are told of the folder.'
+        : ' — could not notify (offline?); the grant holds.');
     loadPerms();          // the peers panel shows the auto-group
   };
   $('shread').onclick = () => shareWith('read');

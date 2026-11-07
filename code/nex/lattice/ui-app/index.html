@@ -418,6 +418,12 @@ select, option { color-scheme: inherit; }
 .tree .folix { flex: none; margin-left: auto; color: var(--muted); padding: 0 4px; text-decoration: none; }
 .tree .folrm { margin-left: 0; }
 .tree a.folpg.new .swn { font-weight: 600; }
+/*  a folder shared whole in shared with me (69-shared.js), the rows past
+    the first page of a long list, and a folder that would not read */
+.tree .fld.swdir { display: flex; align-items: center; gap: 6px; }
+.tree .fld.swdir .swrm { margin-left: 0; }
+.tree .swmore { display: block; border: 0; background: none; color: var(--muted); padding: 2px 6px; cursor: pointer; font: inherit; font-size: .85em; }
+.tree .swnote { color: var(--muted); font-size: .85em; padding: 2px 6px; }
 /*  Move into my pages, ahead of the x. A link row shows the badge on a
     line of its own under the name, so a phone's narrow drawer keeps it. */
 .tree .swrow { display: flex; align-items: center; gap: 2px; }
