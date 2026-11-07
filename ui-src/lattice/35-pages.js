@@ -641,7 +641,7 @@
     };
     if (!fixed && editLocked()) { saving = false; st(LOCK_NOTE, false); return failed(); }
     if (tooBig(sent)) { saving = false; st(TOO_BIG, false); return failed(); }
-    const base = creating ? 0 : curRev;
+    const base = creating ? 0 : baseFor(name, curRev);
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1&by=' + winId : casQ(name, base)) + dnameQ(rnc)
       + (creating ? '' : linkBase(name));
@@ -654,6 +654,7 @@
     try {
       if (!(jobWait && !creating && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+      await takeRev(name, w);
     } finally { saving = false; }
     const r = w.r;
     if (await linkSaveFail(name, w)) return failed();
@@ -751,7 +752,21 @@
   // casQ: a live save's claim, the rev the editor read, refused by the ship
   // (409 "stale") when the page moved past it. Not for a link, which claims
   // its host's rev already (linkBase). Every save names this window (?by=).
-  const casQ = (name, rev) => (linkOf(name) ? '' : '&by=' + winId + (rev ? '&base=' + rev + '&cas=1' : ''));
+  //  The base is the newest rev this window knows for the page: a save's
+  //  answer is recorded (pageRevs) before the next save may start, so a save
+  //  sent right behind our own never claims the rev from before it.
+  const pageRevs = new Map();
+  const knowRev = (name, rev) => { if (rev && rev > (pageRevs.get(name) || 0)) pageRevs.set(name, rev); };
+  const baseFor = (name, rev) => Math.max(rev || 0, pageRevs.get(name) || 0);
+  const casQ = (name, rev) => {
+    const b = baseFor(name, rev);
+    return linkOf(name) ? '' : '&by=' + winId + (b ? '&base=' + b + '&cas=1' : '');
+  };
+  //  a page-save's answer, read while the save still holds the writer slot
+  const takeRev = async (name, w) => {
+    if (!w || !w.r || !w.r.ok) return;
+    try { const j = await w.r.clone().json(); knowRev(name, j && j.rev); } catch {}
+  };
   // pages refused as stale, to the rev the ship was at: autosave stands
   // down for them until the bar's choice or a save on purpose
   const casHold = new Map();
@@ -812,7 +827,7 @@
   async function settleStale(name, kind, sent, base, here) {
     const th = await bodyRead(name);
     let res = null;
-    if (th && th.body === (sent || '\n')) res = { rev: th.rev, body: sent, how: 'saved' };
+    if (th && th.body === (sent || '\n')) { knowRev(name, th.rev); res = { rev: th.rev, body: sent, how: 'saved' }; }
     if (th && !res && base) {
       let mb = null;
       let bt = shipText.get(name);
@@ -828,7 +843,7 @@
           + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }).catch(() => null);
         let j = null;
         if (r && r.ok) { try { j = await r.json(); } catch {} }
-        if (j && j.rev) res = { rev: j.rev, body: mb, how: 'saved, merged with a change made elsewhere' };
+        if (j && j.rev) { knowRev(name, j.rev); res = { rev: j.rev, body: mb, how: 'saved, merged with a change made elsewhere' }; }
       }
     }
     //  a real conflict: our text is kept as a page of its own, and stays
@@ -923,6 +938,7 @@
     try {
       if (!(jobWait && !know && !linkOf(target)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+      if (!know) await takeRev(target, w);
     } finally { saving = false; }
     const r = w.r;
     if (!know && await linkSaveFail(target, w)) { flushPending(); return; }
@@ -943,7 +959,7 @@
     }
     if (!know && r.status === 409) {
       const why = await errText(r);
-      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, trev, here);
+      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, baseFor(target, trev), here);
       else st('autosave failed' + why, false);
       flushPending();
       return;
@@ -1012,6 +1028,7 @@
     try {
       if (!(jobWait && !know && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+      if (!know) await takeRev(name, w);
     } finally { saving = false; }
     const landed = (rev) => {
       tabLanded(t.kind, name, sent, rev);
@@ -1031,7 +1048,7 @@
     if (!know && w.r.status === 409) {
       const why = await errText(w.r);
       if (/^: stale/.test(why)) {
-        await settleStale(name, kind, sent, s.rev,
+        await settleStale(name, kind, sent, baseFor(name, s.rev),
           () => t === activeTab && current === name && mode !== 'know' && !grubPath);
       } else st('autosave of ' + name + ' failed' + why, false);
       flushPending();

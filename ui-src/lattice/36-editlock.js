@@ -62,10 +62,18 @@
     navigator.locks.request('lat-edit:' + name, { ifAvailable: true }, (l) => {
       if (lockName !== name || ac.signal.aborted) return null;
       if (l) return hold(name);
-      lockBusy = true;
-      paintLock();
-      navigator.locks.request('lat-edit:' + name, { signal: ac.signal },
-        () => (lockName === name ? hold(name, true) : null)).catch(() => {});
+      //  a document of this same window being navigated away from still
+      //  holds it for a moment: only a holder that keeps it past a grace
+      //  makes the page read-only here
+      const grace = setTimeout(() => {
+        if (lockName !== name || lockHeld || ac.signal.aborted) return;
+        lockBusy = true;
+        paintLock();
+      }, 2000);
+      navigator.locks.request('lat-edit:' + name, { signal: ac.signal }, () => {
+        clearTimeout(grace);
+        return lockName === name ? hold(name, lockBusy) : null;
+      }).catch(() => clearTimeout(grace));
       return null;
     }).catch(() => {});
   }

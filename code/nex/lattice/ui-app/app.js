@@ -6468,7 +6468,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     };
     if (!fixed && editLocked()) { saving = false; st(LOCK_NOTE, false); return failed(); }
     if (tooBig(sent)) { saving = false; st(TOO_BIG, false); return failed(); }
-    const base = creating ? 0 : curRev;
+    const base = creating ? 0 : baseFor(name, curRev);
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
       '&type=' + kind + (creating ? '&new=1&by=' + winId : casQ(name, base)) + dnameQ(rnc)
       + (creating ? '' : linkBase(name));
@@ -6479,6 +6479,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     try {
       if (!(jobWait && !creating && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+      await takeRev(name, w);
     } finally { saving = false; }
     const r = w.r;
     if (await linkSaveFail(name, w)) return failed();
@@ -6548,7 +6549,17 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (offCount) replayQueue(true);     // back online: drain the backlog
   }
 
-  const casQ = (name, rev) => (linkOf(name) ? '' : '&by=' + winId + (rev ? '&base=' + rev + '&cas=1' : ''));
+  const pageRevs = new Map();
+  const knowRev = (name, rev) => { if (rev && rev > (pageRevs.get(name) || 0)) pageRevs.set(name, rev); };
+  const baseFor = (name, rev) => Math.max(rev || 0, pageRevs.get(name) || 0);
+  const casQ = (name, rev) => {
+    const b = baseFor(name, rev);
+    return linkOf(name) ? '' : '&by=' + winId + (b ? '&base=' + b + '&cas=1' : '');
+  };
+  const takeRev = async (name, w) => {
+    if (!w || !w.r || !w.r.ok) return;
+    try { const j = await w.r.clone().json(); knowRev(name, j && j.rev); } catch {}
+  };
   const casHold = new Map();
   const casBar = document.createElement('div');
   casBar.id = 'casbar';
@@ -6597,7 +6608,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   async function settleStale(name, kind, sent, base, here) {
     const th = await bodyRead(name);
     let res = null;
-    if (th && th.body === (sent || '\n')) res = { rev: th.rev, body: sent, how: 'saved' };
+    if (th && th.body === (sent || '\n')) { knowRev(name, th.rev); res = { rev: th.rev, body: sent, how: 'saved' }; }
     if (th && !res && base) {
       let mb = null;
       let bt = shipText.get(name);
@@ -6613,7 +6624,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }).catch(() => null);
         let j = null;
         if (r && r.ok) { try { j = await r.json(); } catch {} }
-        if (j && j.rev) res = { rev: j.rev, body: mb, how: 'saved, merged with a change made elsewhere' };
+        if (j && j.rev) { knowRev(name, j.rev); res = { rev: j.rev, body: mb, how: 'saved, merged with a change made elsewhere' }; }
       }
     }
     let alt = null;
@@ -6678,6 +6689,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     try {
       if (!(jobWait && !know && !linkOf(target)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+      if (!know) await takeRev(target, w);
     } finally { saving = false; }
     const r = w.r;
     if (!know && await linkSaveFail(target, w)) { flushPending(); return; }
@@ -6694,7 +6706,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     if (!know && r.status === 409) {
       const why = await errText(r);
-      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, trev, here);
+      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, baseFor(target, trev), here);
       else st('autosave failed' + why, false);
       flushPending();
       return;
@@ -6742,6 +6754,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     try {
       if (!(jobWait && !know && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+      if (!know) await takeRev(name, w);
     } finally { saving = false; }
     const landed = (rev) => {
       tabLanded(t.kind, name, sent, rev);
@@ -6760,7 +6773,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!know && w.r.status === 409) {
       const why = await errText(w.r);
       if (/^: stale/.test(why)) {
-        await settleStale(name, kind, sent, s.rev,
+        await settleStale(name, kind, sent, baseFor(name, s.rev),
           () => t === activeTab && current === name && mode !== 'know' && !grubPath);
       } else st('autosave of ' + name + ' failed' + why, false);
       flushPending();
@@ -6900,10 +6913,15 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     navigator.locks.request('lat-edit:' + name, { ifAvailable: true }, (l) => {
       if (lockName !== name || ac.signal.aborted) return null;
       if (l) return hold(name);
-      lockBusy = true;
-      paintLock();
-      navigator.locks.request('lat-edit:' + name, { signal: ac.signal },
-        () => (lockName === name ? hold(name, true) : null)).catch(() => {});
+      const grace = setTimeout(() => {
+        if (lockName !== name || lockHeld || ac.signal.aborted) return;
+        lockBusy = true;
+        paintLock();
+      }, 2000);
+      navigator.locks.request('lat-edit:' + name, { signal: ac.signal }, () => {
+        clearTimeout(grace);
+        return lockName === name ? hold(name, lockBusy) : null;
+      }).catch(() => clearTimeout(grace));
       return null;
     }).catch(() => {});
   }
@@ -9731,6 +9749,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (nd) { if (j && typeof j.rev === 'number') nd.rev = j.rev; else delete nd.rev; }
     pageCache.delete(oldName);
     pageCache.delete(newName);
+    pageRevs.delete(oldName);
+    pageRevs.delete(newName);
+    if (j && j.rev) knowRev(newName, j.rev);
     if (j && j.rev && mode !== 'know' && !grubPath && current === newName) curRev = j.rev;
     snapTree();
     renderTree();
@@ -9757,6 +9778,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       const moved = remapMoved(oldPath, newPath, rn);
       for (const n of nodes) if (inside(n.path) || n.path === newPath || n.path.startsWith(newPath + '/')) delete n.rev;
       for (const k of [...pageCache.keys()]) if (inside(k) || k.startsWith(newPath + '/')) pageCache.delete(k);
+      for (const k of [...pageRevs.keys()]) if (inside(k) || k.startsWith(newPath + '/')) pageRevs.delete(k);
       snapTree();
       renderTree();
       st('moved ' + oldPath + ' \u2192 ' + newPath +

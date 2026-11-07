@@ -64,6 +64,9 @@
     if (nd) { if (j && typeof j.rev === 'number') nd.rev = j.rev; else delete nd.rev; }
     pageCache.delete(oldName);
     pageCache.delete(newName);
+    pageRevs.delete(oldName);
+    pageRevs.delete(newName);
+    if (j && j.rev) knowRev(newName, j.rev);
     if (j && j.rev && mode !== 'know' && !grubPath && current === newName) curRev = j.rev;
     snapTree();
     renderTree();
@@ -97,6 +100,7 @@
       //  the source's would make a save claim it
       for (const n of nodes) if (inside(n.path) || n.path === newPath || n.path.startsWith(newPath + '/')) delete n.rev;
       for (const k of [...pageCache.keys()]) if (inside(k) || k.startsWith(newPath + '/')) pageCache.delete(k);
+      for (const k of [...pageRevs.keys()]) if (inside(k) || k.startsWith(newPath + '/')) pageRevs.delete(k);
       snapTree();
       renderTree();
       st('moved ' + oldPath + ' \u2192 ' + newPath +
