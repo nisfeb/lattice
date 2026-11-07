@@ -3180,6 +3180,22 @@
       [%'GET' %folder-follows]
     ;<  fs=(list fold:ls)  bind:m  read-folds
     (send-json eyre-id a+(turn fs fold-json))
+  ::  folder-pages: a peer's folder read now (+read-fold), its pages by
+  ::  key, for a folder entry in shared with me. Nothing is kept.
+      [%'GET' %folder-pages]
+    =/  fa  (fold-args args)
+    ?:  ?=(%| -.fa)  (send-err eyre-id 400 p.fa)
+    ;<  rows=(unit (map @t title-row:ls))  bind:m  (read-fold p.fa)
+    ?~  rows  (send-err eyre-id 404 'the folder does not read')
+    %+  send-json  eyre-id
+    :-  %a
+    %+  turn  (sort ~(tap by u.rows) |=([a=[k=@t *] b=[k=@t *]] (aor k.a k.b)))
+    |=  [k=@t r=title-row:ls]
+    %-  pairs:enjs:format
+    :~  ['key' s+k]
+        ['title' s+title.r]
+        ['when' (numb:enjs:format when.r)]
+    ==
       [%'POST' %folder-follow]
     (handle-folder eyre-id args our %add)
       [%'POST' %folder-unfollow]
@@ -7641,7 +7657,9 @@
     ;<  known=(map @t json)  bind:m  read-peers
     =/  l=(list [who=@p na=action:ls])
       %+  weld
-        (turn add.act |=([w=@p p=path md=@t] [w `action:ls`[%add p md]]))
+        %+  turn  add.act
+        |=  [w=@p p=path md=@t]
+        [w `action:ls`?:((dir-key:ls p) [%dir p md] [%add p md])]
       (turn del.act |=([w=@p p=path] [w `action:ls`[%del our p]]))
     =|  done=@ud
     |-  ^-  form:m
@@ -12128,6 +12146,28 @@
       %^  put-file  (rf root / %shared)  [/lattice %shared]
       (put-entry:ls cur [u.src pax.u.na mode.u.na now])
     ;<  *  bind:m  (fold-stale root u.src pax.u.na now)
+    (bump-shares root 'add' u.src pax.u.na now)
+  ::
+      %dir
+    ::  a folder shared whole: one entry, its pax the folder's dir-index.
+    ::  Checked as %add is. Told again of a folder it lists already (a
+    ::  page made in it, +grant-new), or of one under a folder it lists,
+    ::  nothing is written: the follows under it read again, and open
+    ::  tabs hear a 'touch', which moves no row and shows no notice.
+    ?~  src  (pure:m ~)
+    ?:  (is-banned:ls bans u.src)  (pure:m ~)
+    ?.  ?=([%apps *] pax.u.na)  (pure:m ~)
+    ?.  (dir-key:ls pax.u.na)  (pure:m ~)
+    ?.  |(=('read' mode.u.na) =('edit' mode.u.na))  (pure:m ~)
+    =/  hit=(unit entry:ls)  (dir-cover:ls cur u.src pax.u.na)
+    ;<  *  bind:m  (fold-stale root u.src pax.u.na now)
+    ?:  ?&  ?=(^ hit)
+            |(!=(pax.u.hit pax.u.na) =(mode.u.hit mode.u.na))
+        ==
+      (bump-shares root 'touch' u.src pax.u.hit now)
+    ;<  ~  bind:m
+      %^  put-file  (rf root / %shared)  [/lattice %shared]
+      (put-entry:ls cur [u.src pax.u.na mode.u.na now])
     (bump-shares root 'add' u.src pax.u.na now)
   ::
       %del
@@ -18550,9 +18590,9 @@
 ::  and the folder's index and each subfolder's (+write-dir-index), read
 ::  only. The folder notes the grant (%folder-grant), so a page made or
 ::  moved in later is granted too (+grant-new), and one moved out loses it
-::  (+revoke-folder-grants). The ship hears of each page by its own share
-::  notice, sent by the writer (+tell-holds), so `notified` is |: nothing
-::  waits on an ack here.
+::  (+revoke-folder-grants). The ship hears of the folder by one share
+::  notice (%dir), sent by the writer (+tell-holds), so `notified` is |:
+::  nothing waits on an ack here.
 ++  share-folder-with
   |=  [eyre-id=@ta shp=@p mode=@t pax=path]
   =/  m  (fiber:fiber:nexus ,~)
@@ -18570,8 +18610,8 @@
     %-  silt
     :-  [%& %& (at ~) %'dir-index']
     (murn all |=([p=path page=?] ?:(page ~ `[%& %& (at p) %'dir-index'])))
-  ::  the ship hears of each page it did not read already (+tell-holds),
-  ::  so its shared with me lists the folder's pages
+  ::  the ship hears of the folder, unless it held it already
+  ::  (+tell-holds), so its shared with me lists the folder as one entry
   ;<  h0=holds:ls  bind:m  holds-now
   ;<  ok=?  bind:m
     %:  ug-merge  (crip (slag 1 (scow %p shp)))
@@ -18640,8 +18680,11 @@
   ;<  sb=path  bind:m  self-base
   =/  code=road:tarball  [%& %& :(weld sb /page rel) %code]
   =/  dir=path  (snip `path`rel)
+  =|  top=(map @t [d=path md=@t])
   |-  ^-  form:m
   ;<  gs=(map @t @t)  bind:m  (read-share-grants dir)
+  ::  each group's highest sharing folder, as the walk goes up
+  =.  top  (~(gas by top) (turn ~(tap by gs) |=([g=@t md=@t] [g dir md])))
   ;<  ~  bind:m
     ?:  =(~ gs)  (pure:m ~)
     ;<  ~  bind:m  (add-grant-via rel dir)
@@ -18652,9 +18695,6 @@
       %:  ug-merge  g.i.l  ~  (silt ~[code])
         ?.(=('edit' md.i.l) ~ (silt ~[code]))
       ==
-    ::  and its ships hear of it, so their shared with me lists it live
-    ;<  ~  bind:m
-      (notice-group g.i.l [%add (snoc :(weld sb /page rel) %code) md.i.l])
     $(l t.l)
   ?^  dir  $(dir (snip `path`dir))
   ::  the indexes that list it: only those on its own path change
@@ -18670,9 +18710,19 @@
     $(ups t.ups, ixs ?.(ix ixs (~(put in ixs) i.ups)))
   =/  todo=(list path)  (index-ups:ls dir ixs)
   |-  ^-  form:m
-  ?~  todo  (pure:m ~)
-  ;<  ~  bind:m  (write-dir-index-in root i.todo |)
-  $(todo t.todo)
+  ?^  todo
+    ;<  ~  bind:m  (write-dir-index-in root i.todo |)
+    $(todo t.todo)
+  ::  its ships list the folder whole (%dir), so the page needs no notice
+  ::  of its own. Once the indexes list it, they are told the highest
+  ::  folder that shares with them again, which writes nothing there and
+  ::  reads their follows of it again, so the page shows live.
+  =/  l=(list [g=@t d=path md=@t])  ~(tap by top)
+  |-  ^-  form:m
+  ?~  l  (pure:m ~)
+  ;<  ~  bind:m
+    (notice-group g.i.l [%dir (snoc :(weld sb /page d.i.l) %'dir-index') md.i.l])
+  $(l t.l)
 ::  +revoke-folder-grants: the pages under `pax` (`bl` its ball) are going:
 ::  each grant a folder made them (`grant-via`) comes out of its groups.
 ::  A grant a page was given by hand has no grant-via, and stays.
@@ -18813,8 +18863,10 @@
     [%poke [/lattice %share-notice] act]
   %+  poke:io  &+&+[/sys/gall %'main.sig']
   [[/ %gall-poke] [[who %grubbery] grubbery-load+req]]
-::  +holds-now: which ship reads which of our pages (+holds:ls), from
-::  every group (+all-groups), as a page road or a folder road over it.
+::  +holds-now: which ship reads which of our pages and folders
+::  (+holds:ls), from every group (+all-groups), as a page road, a folder
+::  road or a folder's index road. A folder held whole is one hold, and
+::  the pages under it are not told one by one (+holds-trim:ls).
 ::  Read before and after a grant or a revoke, so +tell-holds tells just
 ::  the difference. Soft, as +move-grants: an install that refused the
 ::  usergroup road holds nothing here, and tells nothing.
@@ -18828,10 +18880,12 @@
   =/  pre=path  (weld sb /page)
   =/  n=@ud  (lent pre)
   =/  ours  |=(p=path =(pre (scag n p)))
-  =/  gs=(list [who=(set @p) w=weir:nexus])
+  =/  gs=(list [g=@t who=(set @p) w=weir:nexus])
     %+  murn  (all-groups / ball.u.vw)
     |=  [rel=path gb=ball:tarball]
-    ^-  (unit [(set @p) weir:nexus])
+    ^-  (unit [@t (set @p) weir:nexus])
+    =/  nm=tape  ?~(rel "" (trip (rear rel)))
+    =/  g=@t  (crip (scag (sub (max 4 (lent nm)) 4) nm))
     =/  fils  ?~(fil.gb ~ contents.u.fil.gb)
     =/  ws  (~(get by fils) %'who.ships')
     =/  hw  (~(get by fils) %'how.weir')
@@ -18840,14 +18894,14 @@
     =/  who  (mole |.(;;((set @p) (sang-noun:tarball sang.u.ws))))
     =/  w  (mole |.(;;(weir:nexus (sang-noun:tarball sang.u.hw))))
     ?.  &(?=([~ ^] who) ?=(^ w))  ~
-    `[u.who u.w]
+    `[g u.who u.w]
   ::  each folder road's pages, read once however many groups name it
   =/  dirs=(list path)
     %~  tap  in
     %-  ~(gas in *(set path))
     %-  zing
     %+  turn  gs
-    |=  [* w=weir:nexus]
+    |=  [* * w=weir:nexus]
     %+  murn  ~(tap in (~(uni in peek.w) make.w))
     |=(r=road:tarball ?.(&(?=([%& %| *] r) (ours p.p.r)) ~ `p.p.r))
   =|  under=(map path (list path))
@@ -18859,6 +18913,45 @@
       %+  murn  (collect-tree ball.dv ~)
       |=([p=path page=?] ?.(page ~ `:(weld i.dirs p /code)))
     $(dirs t.dirs, under (~(put by under) i.dirs ps))
+  ::  a folder's index road is a folder shared with a ship whole
+  ::  (+share-folder-with). Its share-grants say the mode, read once each.
+  =/  idx
+    |=  r=road:tarball
+    ^-  (unit path)
+    ?.  ?=([%& %& *] r)  ~
+    ?.  &(=(%'dir-index' name.p.p.r) (ours path.p.p.r) (gth (lent path.p.p.r) n))  ~
+    `path.p.p.r
+  =/  ixs=(list path)
+    %~  tap  in
+    %-  ~(gas in *(set path))
+    (zing (turn gs |=([* * w=weir:nexus] (murn ~(tap in peek.w) idx))))
+  =|  sg=(map path (map @t @t))
+  |-  ^-  form:m
+  ?^  ixs
+    ;<  g=(map @t @t)  bind:m  (read-share-grants (slag n i.ixs))
+    $(ixs t.ixs, sg (~(put by sg) i.ixs g))
+  ::  the folders a group holds whole (+holds-of), by their dir-index: a
+  ::  folder's dir road (a group panel grant, +page-roads), edit when it
+  ::  is a make road too, and a folder's index road, at its share-grants
+  ::  mode. Not our whole /page: that is no one folder.
+  =/  whole
+    |=  [g=@t w=weir:nexus]
+    ^-  (map path @t)
+    %-  ~(gas by *(map path @t))
+    %+  weld
+      %+  murn  ~(tap in (~(uni in peek.w) make.w))
+      |=  r=road:tarball
+      ^-  (unit [path @t])
+      ?.  ?=([%& %| *] r)  ~
+      ?.  &((ours p.p.r) (gth (lent p.p.r) n))  ~
+      `[(snoc p.p.r %'dir-index') ?:((~(has in make.w) r) 'edit' 'read')]
+    %+  murn  ~(tap in peek.w)
+    |=  r=road:tarball
+    ^-  (unit [path @t])
+    =/  d=(unit path)  (idx r)
+    ?~  d  ~
+    =/  md=@t  (~(gut by (~(gut by sg) u.d ~)) g 'read')
+    `[(snoc u.d %'dir-index') ?:(=('edit' md) 'edit' 'read')]
   =/  pages
     |=  rs=(set road:tarball)
     ^-  (set path)
@@ -18873,7 +18966,8 @@
     ==
   %-  pure:m
   %-  holds-of:ls
-  (turn gs |=([who=(set @p) w=weir:nexus] [who (pages peek.w) (pages make.w)]))
+  %+  turn  gs
+  |=([g=@t who=(set @p) w=weir:nexus] [who (pages peek.w) (pages make.w) (whole g w)])
 ::  +tell-holds: each ship told what it gained (%add) and lost (%del)
 ::  between two +holds-now. The writer sends them (%share-tell), so the
 ::  request that changed the grants answers at once, however many.

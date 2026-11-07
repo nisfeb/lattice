@@ -511,6 +511,63 @@
     ::  a page named b/page/f/a is not under /f
     (expect-eq !>(~) !>((fold-hit:ls fs nec /apps/lattice/page/b/page/f/a/code)))
   ==
+::  a folder's notice reaches the follows at, above and below it, and no
+::  folder beside it
+++  test-fold-hit-dir
+  =/  fs=(list fold:ls)
+    (fold-add:ls (fold-add:ls (fold-add:ls ~ nec /f `fold-rows ~2026.1.1) nec /f/s ~ ~2026.1.1) nec /fx ~ ~2026.1.1)
+  =/  hit  |=(p=path (sort (turn (fold-hit:ls fs nec p) |=(f=fold:ls rel.f)) aor))
+  ;:  weld
+    (expect-eq !>((sort `(list path)`~[/f /f/s] aor)) !>((hit /apps/lattice/page/f/dir-index)))
+    (expect-eq !>(`(list path)`~[/f /f/s]) !>((hit /apps/lattice/page/f/s/dir-index)))
+    (expect-eq !>(`(list path)`~[/f]) !>((hit /apps/lattice/page/f/t/dir-index)))
+    (expect-eq !>(`(list path)`~) !>((hit /apps/lattice/page/g/dir-index)))
+  ==
+::  +holds-trim: a folder held whole is one hold. The pages and folders
+::  under it go, unless the page's mode is wider than the folder's. A page
+::  shared on its own and in the folder shows once, as the folder.
+++  test-holds-folder
+  =/  gs=(list [who=(set @p) peek=(set path) make=(set path) dirs=(map path @t)])
+    :~  :^  (silt ~[zod bus])  (silt `(list path)`~[/f/a/code /f/b/code /f/s/c/code /g/code])
+          (silt ~[/f/b/code])
+        (malt `(list [path @t])`~[[/f/dir-index 'read'] [/f/s/dir-index 'read']])
+        [(silt ~[bus]) (silt ~[/f/a/code]) ~ (malt ~[[/f/dir-index 'edit']])]
+    ==
+  =/  h=holds:ls  (holds-of:ls gs)
+  ;:  weld
+    ::  the folder, the page it may edit in it, and the page outside it
+    %+  expect-eq
+      !>((malt `(list [path @t])`~[[/f/dir-index 'read'] [/f/b/code 'edit'] [/g/code 'read']]))
+      !>((~(got by h) zod))
+    ::  edit on the folder covers the edit page too
+    %+  expect-eq
+      !>((malt `(list [path @t])`~[[/f/dir-index 'edit'] [/g/code 'read']]))
+      !>((~(got by h) bus))
+    ::  shared whole after page by page: one add for the folder, a del
+    ::  for each page it now covers
+    %+  expect-eq
+      !>([`(list [@p path @t])`~[[zod /f/dir-index 'read']] (sort `(list [@p path])`~[[zod /f/a/code] [zod /f/s/c/code]] aor)])
+      !>  %+  holds-diff:ls
+            (holds-of:ls ~[[(silt ~[zod]) (silt `(list path)`~[/f/a/code /f/s/c/code]) ~ ~]])
+          (holds-of:ls ~[[(silt ~[zod]) (silt `(list path)`~[/f/a/code /f/s/c/code]) ~ (malt ~[[/f/dir-index 'read']])]])
+  ==
+::  +dir-cover: a folder notice falls in its own entry or one above it,
+::  from that host only, and never in a page's entry
+++  test-dir-cover
+  =/  cur=shared:ls
+    :~  [zod /apps/l/page/f/dir-index 'read' ~2026.1.1]
+        [bus /apps/l/page/g/dir-index 'read' ~2026.1.1]
+        [zod /apps/l/page/h/code 'read' ~2026.1.1]
+    ==
+  ;:  weld
+    (expect-eq !>(`(snag 0 cur)) !>((dir-cover:ls cur zod /apps/l/page/f/dir-index)))
+    (expect-eq !>(`(snag 0 cur)) !>((dir-cover:ls cur zod /apps/l/page/f/s/dir-index)))
+    (expect-eq !>(~) !>((dir-cover:ls cur zod /apps/l/page/fx/dir-index)))
+    (expect-eq !>(~) !>((dir-cover:ls cur zod /apps/l/page/g/dir-index)))
+    (expect-eq !>(~) !>((dir-cover:ls cur zod /apps/l/page/h/s/dir-index)))
+    (expect-eq !>(&) !>((dir-key:ls /apps/l/page/f/dir-index)))
+    (expect-eq !>(|) !>((dir-key:ls /apps/l/page/dir-index/code)))
+  ==
 ::  +move-resumes: a fresh note for the same move resumes it. A stale one,
 ::  or one for another move, does not, so the move gets the clobber checks.
 ++  test-move-resumes
@@ -540,10 +597,10 @@
 ::  groups reads the union, and edit wins over read.
 ::
 ++  test-holds-of
-  =/  gs=(list [who=(set @p) peek=(set path) make=(set path)])
-    :~  [(silt ~[zod bus]) (silt ~[/a/code /b/code]) (silt ~[/b/code])]
-        [(silt ~[zod]) (silt ~[/b/code /c/code]) ~]
-        [(silt ~[nec]) ~ ~]
+  =/  gs=(list [who=(set @p) peek=(set path) make=(set path) dirs=(map path @t)])
+    :~  [(silt ~[zod bus]) (silt ~[/a/code /b/code]) (silt ~[/b/code]) ~]
+        [(silt ~[zod]) (silt ~[/b/code /c/code]) ~ ~]
+        [(silt ~[nec]) ~ ~ ~]
     ==
   =/  h=holds:ls  (holds-of:ls gs)
   ;:  weld
