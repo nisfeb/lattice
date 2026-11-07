@@ -11,8 +11,9 @@
   // is corrected within a second by the renderer that actually defines the
   // page. It only has to be fast and safe.
   //
-  // SAFE MATTERS MORE THAN COMPLETE. The preview iframe is not sandboxed, so
-  // its srcdoc runs on the app's own origin. Pages are not all hand-written
+  // SAFE MATTERS MORE THAN COMPLETE. The preview iframe is sandboxed now,
+  // but this render also feeds the outline and the PDF export, and a
+  // sandbox is a second wall, not the first. Pages are not all hand-written
   // either: the clipper archives arbitrary web pages. So every character of
   // document text is escaped and NO raw HTML is passed through. A note that
   // contains a <script> tag renders as the text of a script tag here. The
@@ -42,6 +43,23 @@
     const s = mdUnesc(u).trim();
     return /^(https?:\/\/|urb:\/\/|mailto:|#|\/)/i.test(s) ? mdEsc(s) : '';
   };
+  // An image from another host (http(s) or //host) shows that host your
+  // IP address, so it is drawn only on a page whose outside content you let
+  // load (the reader's "Load outside content for this page"): mdOutside,
+  // set by the preview for the page it paints. Otherwise it is a
+  // placeholder, and mdBlocked tells the preview to offer the button.
+  let mdOutside = false, mdBlocked = false;
+  const OUTSIDE = 'latOutside';
+  const outsideOn = (name) => {
+    try { return !!name && JSON.parse(localStorage[OUTSIDE] || '[]').includes(name); } catch { return false; }
+  };
+  const outsideAllow = (name) => {
+    try {
+      const l = JSON.parse(localStorage[OUTSIDE] || '[]').filter((n) => n !== name);
+      localStorage[OUTSIDE] = JSON.stringify([name, ...l].slice(0, 500));
+    } catch {}
+  };
+  const remoteUrl = (u) => /^(https?:)?\/\//i.test(mdUnesc(u).trim());
 
   // Code-span placeholders. The token must be UNFORGEABLE by document text:
   // a page that can write the token literally could otherwise smuggle content
@@ -69,6 +87,10 @@
     const tags = [];
     const tag = (html) => { tags.push(html); return '&TG' + (tags.length - 1) + ';'; };
     s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (m, alt, u) => {
+      if (remoteUrl(u) && !mdOutside) {
+        mdBlocked = true;
+        return tag('<span class="ximg">[image from another site' + (alt ? ': ' + alt : '') + ']</span>');
+      }
       const h = mdHref(u);
       return h ? tag('<img alt="' + alt + '" src="' + h + '">') : m;
     });
@@ -184,7 +206,7 @@
         let body = li[4];
         const task = body.match(/^\[([ xX])\]\s+(.*)$/);
         if (task) {
-          body = '<input type="checkbox"' + (tasks ? ' data-line="' + (base + i) + '"' : ' disabled')
+          body = '<input type="checkbox"' + (tasks ? ' data-line="' + (base + i) + '" data-h="' + lineHash(ln) + '"' : ' disabled')
             + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(task[2]);
         } else body = mdInline(body);
         out.push('<li>' + body + '</li>');
@@ -211,6 +233,18 @@
     return out.join('\n');
   }
 
+  //  a task line's content hash, as painted and as found again at click
+  //  time (taskFlip, 60-preview.js): the line with its quote marks and a
+  //  CR taken off, through FNV-1a. A box drawn from text that has changed
+  //  since (an edit, a refresh from the ship) no longer matches its line.
+  const lineHash = (ln) => {
+    let t = String(ln).replace(/\r$/, '');
+    while (/^\s*>\s?/.test(t)) t = t.replace(/^\s*>\s?/, '');
+    let h = 0x811c9dc5;
+    for (let k = 0; k < t.length; k++) h = Math.imul(h ^ t.charCodeAt(k), 16777619) >>> 0;
+    return h.toString(36);
+  };
+  const lineAt = (text, n) => String(text).split('\n')[n];
   //  a box click's edit: the offset of the char in the brackets on `line`,
   //  or null if that line is no task in the clicked-from state (stale)
   const TASK_RE = /^((?:[ \t]*>[ \t]?)*[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])\](?=\s)/;
@@ -252,7 +286,7 @@
         const raw = sp < 0 ? rest : rest.slice(0, sp);
         const desc = mdEsc((sp < 0 ? rest : rest.slice(sp + 1)).replace(/^\s+/, ''));
         if (raw.startsWith('urb://'))
-          out.push('<p><a href="/apps/lattice?url=' + mdEsc(raw) + '">' + desc + '</a></p>');
+          out.push('<p><a href="/apps/lattice?url=' + mdEsc(encodeURIComponent(raw)) + '">' + desc + '</a></p>');
         else if (/^https?:\/\//.test(raw))
           out.push('<p><a href="' + mdEsc(raw) + '" target="_blank" rel="noopener noreferrer">' + desc + '</a></p>');
         else out.push('<p>' + desc + '</p>');

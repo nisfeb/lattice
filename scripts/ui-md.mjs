@@ -15,7 +15,8 @@
 
 import { makeCheck, read, cut } from './lib/check.mjs';
 
-const mdToHtml = new Function(`${read('ui-src/lattice/59-md.js')}\nreturn mdToHtml;`)();
+const { mdToHtml, setOutside } = new Function(`${read('ui-src/lattice/59-md.js')}
+return { mdToHtml, setOutside: (v) => { mdOutside = v; } };`)();
 // the right pane's Outgoing and Outline (76-outline.js) read a document
 // through this renderer, so they are lifted to run beside it
 const { outLinks, outline } = new Function(read('ui-src/lattice/59-md.js') + '\n'
@@ -24,6 +25,7 @@ const { outLinks, outline } = new Function(read('ui-src/lattice/59-md.js') + '\n
   + '\nreturn { outLinks, outline };')();
 
 const check = makeCheck();
+const require59gmi = new Function(`${read('ui-src/lattice/59-md.js')}\nreturn gmiToHtml;`)();
 const has = (name, input, needle) => {
   const got = mdToHtml(input);
   check(name, got.includes(needle), `want containing ${JSON.stringify(needle)} got ${JSON.stringify(got)}`);
@@ -58,7 +60,7 @@ const attrNames = (html) => [...html.matchAll(/<[a-z]+([^>]*)>/gi)].flatMap(([, 
   [...a.matchAll(/[\s/]*([^\s/>=]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*))?/g)].map((m) => m[1].toLowerCase()));
 const tame = (name, input) => {
   const got = mdToHtml(input);
-  const bad = attrNames(got).filter((n) => !['alt', 'src', 'href', 'type', 'checked', 'disabled', 'data-line', 'class'].includes(n));
+  const bad = attrNames(got).filter((n) => !['alt', 'src', 'href', 'type', 'checked', 'disabled', 'data-line', 'data-h', 'class'].includes(n));
   check(name, !bad.length, `stray attributes ${JSON.stringify(bad)} in ${JSON.stringify(got)}`);
 };
 // a link's text started inside the image's alt and took its quotes, so the
@@ -67,8 +69,16 @@ tame('a link inside an image cannot set attributes',
   "![a[b](http://y) c](http://x/src/onerror=location='javascript:alert\\x28document.domain\\x29'//)");
 tame('a wikilink inside a url cannot set attributes', '[t](http://x/[[a" onmouseover="b]])');
 tame('emphasis inside a url stays out of the href', '[t](http://x/_a_/b) and ![i](http://x/*b*/c)');
-has('a linked image still renders', '[![alt](https://e.com/i.png)](https://e.com)',
+// an image from another host learns the reader's IP address: drawn only on
+// a page whose outside content was let load (mdOutside), else a placeholder
+hasnt('an outside image is not drawn by default', '![a](https://e.com/i.png)', '<img');
+hasnt('nor one from a //host address', '![a](//e.com/i.png)', '<img');
+has('it is a placeholder instead', '![a](https://e.com/i.png)', '[image from another site: a]');
+has('an image of the ship\'s own still renders', '![a](/apps/lattice/f/x.png)', '<img alt="a" src="/apps/lattice/f/x.png">');
+setOutside(true);
+has('a linked image still renders, outside content let load', '[![alt](https://e.com/i.png)](https://e.com)',
   '<a href="https://e.com"><img alt="alt" src="https://e.com/i.png"></a>');
+setOutside(false);
 has('emphasis in link text still renders', '[a **b**](https://e.com)', '<a href="https://e.com">a <strong>b</strong></a>');
 
 console.log('\nblocks');
@@ -124,6 +134,8 @@ eqj('an app link names its page', outLinks('[x](/apps/lattice/app?name=n%2Fm)', 
 eqj('images and unsafe schemes are not links',
   outLinks('![i](https://e.com/i.png) [j](javascript:alert(1))', 'md'), []);
 eqj('links inside a fence are ignored', outLinks('```\n[[nope]]\n```\n[[yes]]', 'md'), ['yes']);
+// the urb:// target is encoded into the reader's query (gmiToHtml)
+check('a gemtext urb:// target is encoded', require59gmi('=> urb://~zod/a?b=1&c=2 x').includes('url=urb%3A%2F%2F~zod%2Fa%3Fb%3D1%26amp;c%3D2') || require59gmi('=> urb://~zod/a?b=1&c=2 x').includes('url=urb%3A%2F%2F~zod%2Fa%3Fb%3D1%26c%3D2'));
 eqj('gemtext links', outLinks('=> urb://~zod/x one\n=> https://e.com two\n=> bad:x three', 'gmi'),
   ['urb://~zod/x', 'https://e.com']);
 eqj('markdown headings with their lines', outline('# One\n## Two\ntext\n###### Six', 'md'),
@@ -143,7 +155,7 @@ console.log('task boxes: a click flips the one marker on its own source line');
 // taskToggle(text, line, on) is the edit a click on it makes. Together: click
 // box k, apply the edit, and exactly that one character changes.
 const taskToggle = new Function(`${read('ui-src/lattice/59-md.js')}\nreturn taskToggle;`)();
-const boxes = (t) => [...mdToHtml(t, true).matchAll(/<input type="checkbox" data-line="(\d+)"( checked)?>/g)]
+const boxes = (t) => [...mdToHtml(t, true).matchAll(/<input type="checkbox" data-line="(\d+)"(?: data-h="[0-9a-z]+")?( checked)?>/g)]
   .map((m) => ({ line: +m[1], on: !!m[2] }));
 const click = (t, k) => {
   const b = boxes(t)[k];
