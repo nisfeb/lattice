@@ -92,6 +92,7 @@ fn fsx_finds_no_read_write_truncate_mismatch() {
     let ship = Arc::new(Ship::default());
     ship.pages.lock().unwrap().insert("torture".into(), ("md".into(), Vec::new()));
 
+    common::private_recovery();
     let session = match lattice_fs::spawn(ship.clone() as Arc<dyn Projection>, mnt.to_str().unwrap())
     {
         Ok(s) => s,

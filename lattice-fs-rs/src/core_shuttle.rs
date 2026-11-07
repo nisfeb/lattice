@@ -171,6 +171,7 @@ fn dirty_handle(rel: &str, body: &[u8]) -> Handle {
         scratch: false,
         writable: true,
         flushed: false,
+        base: None,
     }
 }
 
@@ -362,6 +363,8 @@ fn a_failing_dump_still_clears_refresh_pending() {
                 swapped: fs.swapped.clone(),
                 uid: fs.uid,
                 gid: fs.gid,
+                recovery: fs.recovery.clone(),
+                retry_wait: fs.retry_wait,
             });
 
             fs.st.lock().unwrap().vt_ts = None;
@@ -475,6 +478,8 @@ fn a_read_parked_on_a_refresh_is_always_woken_and_never_served_stale() {
                     swapped: warm.swapped.clone(),
                     uid: warm.uid,
                     gid: warm.gid,
+                    recovery: warm.recovery.clone(),
+                    retry_wait: warm.retry_wait,
                 });
                 invalidate(&mut fs.st.lock().unwrap()); // what the watch thread does
 

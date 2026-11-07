@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // std in every build that ships. Only a `--cfg shuttle` lib test swaps these
@@ -46,6 +47,12 @@ const MAX_FILE: u64 = 64 * 1024 * 1024;
 // either transport). Waiting is what turns a `grep -r` over a refreshing tree
 // into one round trip instead of one per file on the only FUSE thread.
 const DUMP_WAIT: Duration = Duration::from_secs(10);
+// A RELEASE whose save fails for a reason that may pass (the ship down or
+// busy) tries this many times in all, waiting RELEASE_WAIT, then twice
+// that, between tries. RELEASE is the last chance to save the buffer, and
+// a body still unsaved after that goes to the recovery dir, never away.
+const RELEASE_TRIES: u32 = 3;
+const RELEASE_WAIT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Copy, PartialEq)]
 enum VKind {
@@ -76,6 +83,11 @@ struct Handle {
     // handle whose fd has most likely been closed with its async RELEASE still
     // to come, and it must not take a handle-less truncate either.
     flushed: bool,
+    // The revision of the body this handle's buffer was read from, and
+    // after each save the revision that save made. The save claims it, so
+    // a page that moved on since is never silently written over. None when
+    // nothing says which revision it is (a lazy read, a new file).
+    base: Option<u64>,
 }
 
 struct State {
@@ -116,7 +128,11 @@ struct State {
     stale: HashSet<String>,
     handles: HashMap<u64, Handle>,        // fh -> handle
     next_fh: u64,
-    pending_trunc: HashMap<u64, u64>, // ino -> size (handle-less truncate deferred to open)
+    // rel -> the rev of a cached body that did not come from a dump: the
+    // rev the ship answered for the mount's own save, or the one a lazy
+    // read was served at. Cleared with that body. Only a claim for the
+    // next writer: unlike body_rev, it never decides what a swap keeps.
+    claim_rev: HashMap<String, u64>,
     scratch: HashMap<String, Vec<u8>>, // vpath -> bytes for ephemeral editor temp files
     // vpath -> (when, alive). The ship acks a save before a BRAND-NEW page is
     // visible to page-dump, so a snapshot taken in that window lacks it (and,
@@ -135,6 +151,23 @@ pub struct GrubberyFs {
     swapped: Arc<Condvar>,
     uid: u32,
     gid: u32,
+    // where a buffer the ship would not take goes on RELEASE (see recover)
+    recovery: PathBuf,
+    // the first wait between RELEASE tries (RELEASE_WAIT; tests use zero)
+    retry_wait: Duration,
+}
+
+/// The default recovery dir: $LATTICE_FS_RECOVERY, else
+/// $XDG_DATA_HOME/lattice-fs/recovery, else ~/.local/share/lattice-fs/recovery.
+pub fn default_recovery_dir() -> PathBuf {
+    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    if let Some(d) = env("LATTICE_FS_RECOVERY") {
+        return d;
+    }
+    let data = env("XDG_DATA_HOME")
+        .or_else(|| env("HOME").map(|h| h.join(".local/share")))
+        .unwrap_or_else(std::env::temp_dir);
+    data.join("lattice-fs").join("recovery")
 }
 
 impl GrubberyFs {
@@ -161,7 +194,7 @@ impl GrubberyFs {
             stale: HashSet::new(),
             handles: HashMap::new(),
             next_fh: 1,
-            pending_trunc: HashMap::new(),
+            claim_rev: HashMap::new(),
             scratch: HashMap::new(),
             recent: HashMap::new(),
         }));
@@ -218,7 +251,16 @@ impl GrubberyFs {
             swapped: Arc::new(Condvar::new()),
             uid: unsafe { libc::getuid() },
             gid: unsafe { libc::getgid() },
+            recovery: default_recovery_dir(),
+            retry_wait: RELEASE_WAIT,
         }
+    }
+
+    /// Put buffers the ship would not take somewhere other than
+    /// default_recovery_dir().
+    pub fn with_recovery_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.recovery = dir.into();
+        self
     }
 
     /// Freshness on the FUSE path WITHOUT blocking it. Cold start (nothing warm
@@ -347,13 +389,20 @@ impl GrubberyFs {
     /// confirm the cached one) and asking for it separately only queues one
     /// more round trip behind it. Only what the dump didn't bring is fetched.
     fn body(&self, rel: &str) -> Result<Vec<u8>, PErr> {
+        self.body_at(rel).map(|(b, _)| b)
+    }
+
+    /// body(), with the revision of the bytes served when the cache knows
+    /// it (read under the same lock as the bytes, so the two always agree).
+    fn body_at(&self, rel: &str) -> Result<(Vec<u8>, Option<u64>), PErr> {
         {
             let deadline = Instant::now() + DUMP_WAIT;
             let mut s = self.st.lock().unwrap();
             loop {
                 if !s.stale.contains(rel) {
                     if let Some(b) = s.read_cache.get(rel) {
-                        return Ok(b.clone());
+                        let rev = s.body_rev.get(rel).or_else(|| s.claim_rev.get(rel)).copied();
+                        return Ok((b.clone(), rev));
                     }
                 }
                 let left = deadline.saturating_duration_since(Instant::now());
@@ -363,7 +412,7 @@ impl GrubberyFs {
                 s = self.swapped.wait_timeout(s, left).unwrap().0;
             }
         }
-        let data = self.proj.read(rel)?;
+        let (data, rev) = self.proj.read_at(rel)?;
         let mut s = self.st.lock().unwrap();
         // what just came off the wire supersedes a stale copy, unless a swap
         // already settled that copy while we were out
@@ -377,8 +426,138 @@ impl GrubberyFs {
             && s.read_cache_bytes + rel.len() + data.len() <= READ_CACHE_MAX
         {
             s.cache_put(rel, data.clone());
+            if let Some(r) = rev {
+                s.claim_rev.insert(rel.to_string(), r);
+            }
         }
-        Ok(data)
+        Ok((data, rev))
+    }
+
+    /// SETATTR's size: truncate (or extend) ino to `sz`.
+    fn truncate(&self, ino: u64, sz: u64, fh: Option<u64>) -> Result<(), i32> {
+        if sz > MAX_FILE {
+            return Err(libc::EFBIG);
+        }
+        let mut s = self.st.lock().unwrap();
+        let path = path_of(&s, ino).ok_or(libc::ENOENT)?;
+        let scratch = is_scratch(leaf_of(&path), |ext| self.proj.kind_for_ext(ext));
+        // 1) explicit fh -> truncate that buffer, if it was opened for
+        //    writing. A read-only handle never takes a truncate: its RELEASE
+        //    would save it.
+        let mut target = fh.filter(|f| s.handles.get(f).is_some_and(|h| h.writable));
+        // 2) an open WRITABLE handle for this file's rel: the kernel's
+        //    SETATTR for O_TRUNC never carries the fh, and an editor may
+        //    truncate by path. Never a read-only handle: RELEASE is async,
+        //    so a reader that already closed can still be in the table,
+        //    and its buffer made empty and dirty would be committed over
+        //    the save that follows. The same goes for a writer already
+        //    flushed by its close(2). The newest writer is the O_TRUNC opener.
+        //
+        //    A scratch file is matched by its own vpath, the rel its
+        //    handles carry. rel_kind_of strips `foo.md~` to the page `foo`,
+        //    so asking it here made truncating a backup empty the page
+        //    open beside it, and the page's close then saved the emptiness.
+        if target.is_none() {
+            let rel = if scratch { path.clone() } else { self.rel_kind_of(&s, &path).0 };
+            target = s
+                .handles
+                .iter()
+                .filter(|(_, h)| h.scratch == scratch && h.rel == rel && h.writable && !h.flushed)
+                .map(|(&fh, _)| fh)
+                .max();
+        }
+        if let Some(h) = target.and_then(|f| s.handles.get_mut(&f)) {
+            h.buf.resize(sz as usize, 0);
+            h.dirty = true;
+            h.gen += 1;
+            return Ok(());
+        }
+        // 3) no writer: truncate(2) on a path. A scratch file's bytes are
+        //    the scratch map itself. A page's truncated body goes to the
+        //    ship now, so truncate(2) returns only once it has landed (or
+        //    with the ship's refusal). It used to wait for the next open of
+        //    the file, any open, so a backup tool reading the file days
+        //    later was what saved it empty, over whatever was there by then.
+        if scratch {
+            if let Some(b) = s.scratch.get_mut(&path) {
+                b.resize(sz as usize, 0);
+            }
+            return Ok(());
+        }
+        match s.vt.get(&path) {
+            Some(VEntry { kind: VKind::File, node: Some(n) }) if n.readonly => {
+                return Err(libc::EACCES)
+            }
+            Some(VEntry { kind: VKind::File, .. }) => {}
+            Some(_) => return Err(libc::EISDIR),
+            None => return Err(libc::ENOENT),
+        }
+        let (rel, kind) = self.rel_kind_of(&s, &path);
+        drop(s);
+        let (mut buf, base) = self.body_at(&rel).map_err(|e| e.errno)?;
+        if buf.len() as u64 == sz {
+            return Ok(());
+        }
+        buf.resize(sz as usize, 0);
+        self.save(&rel, &kind, &buf, false, base).map(|_| ()).map_err(|e| e.errno)
+    }
+
+    /// OPEN: a handle on ino, its buffer the page's current body.
+    fn open_fh(&self, ino: u64, writable: bool) -> Result<u64, i32> {
+        // scratch file: serve its bytes from the in-memory map, never the ship.
+        {
+            let mut s = self.st.lock().unwrap();
+            let path = path_of(&s, ino).ok_or(libc::ENOENT)?;
+            if is_scratch(leaf_of(&path), |ext| self.proj.kind_for_ext(ext)) {
+                let buf = s.scratch.get(&path).cloned().unwrap_or_default();
+                let fh = s.next_fh;
+                s.next_fh += 1;
+                s.handles.insert(
+                    fh,
+                    Handle {
+                        rel: path,
+                        kind: String::new(),
+                        buf,
+                        dirty: false,
+                        gen: 0,
+                        new: false,
+                        scratch: true,
+                        writable,
+                        flushed: false,
+                        base: None,
+                    },
+                );
+                return Ok(fh);
+            }
+        }
+        let (rel, kind) = {
+            let s = self.st.lock().unwrap();
+            let path = path_of(&s, ino).ok_or(libc::ENOENT)?;
+            match s.vt.get(&path) {
+                Some(VEntry { kind: VKind::File, .. }) => {}
+                Some(_) => return Err(libc::EISDIR),
+                None => return Err(libc::ENOENT),
+            }
+            self.rel_kind_of(&s, &path)
+        };
+        let (buf, base) = self.body_at(&rel).map_err(|e| e.errno)?;
+        let mut s = self.st.lock().unwrap();
+        let fh = s.next_fh;
+        s.next_fh += 1;
+        let h = Handle {
+            rel,
+            kind,
+            buf,
+            dirty: false,
+            gen: 0,
+            new: false,
+            scratch: false,
+            writable,
+            flushed: false,
+            base,
+        };
+        s.handles.insert(fh, h);
+        Ok(fh)
     }
 
     /// FS vpath -> (projection rel, kind). Strips the extension; maps a
@@ -467,11 +646,20 @@ impl GrubberyFs {
     }
 
     /// Commit an fh's buffer through the projection (one POST), then invalidate.
+    ///
+    /// The save claims the revision the buffer was read from. A store that
+    /// refuses it as a conflict (EEXIST: a link whose owner moved on, or a
+    /// create onto a name that now exists) gets the buffer as a sibling
+    /// conflict copy instead, and the handle is clean once that copy is
+    /// saved. The writer is still told EEXIST: the page itself is not what
+    /// it wrote.
     fn commit(&self, fh: u64) -> Result<(), PErr> {
-        let (rel, kind, buf, new, scratch, gen) = {
+        let (rel, kind, buf, new, scratch, gen, base) = {
             let s = self.st.lock().unwrap();
             match s.handles.get(&fh) {
-                Some(h) if h.dirty => (h.rel.clone(), h.kind.clone(), h.buf.clone(), h.new, h.scratch, h.gen),
+                Some(h) if h.dirty => {
+                    (h.rel.clone(), h.kind.clone(), h.buf.clone(), h.new, h.scratch, h.gen, h.base)
+                }
                 _ => return Ok(()),
             }
         };
@@ -491,16 +679,127 @@ impl GrubberyFs {
             }
             return Ok(());
         }
-        self.proj
-            .write(&rel, &kind, &buf, new)
+        match self.save(&rel, &kind, &buf, new, base) {
+            Ok(rev) => {
+                let mut s = self.st.lock().unwrap();
+                if let Some(h) = s.handles.get_mut(&fh) {
+                    h.dirty = h.gen != gen;
+                    h.new = false;
+                    h.base = rev;
+                }
+                Ok(())
+            }
+            Err(e) if e.errno == libc::EEXIST => {
+                let copy = conflict_name(&rel);
+                if self.proj.write_based(&copy, &kind, &buf, true, None).is_ok() {
+                    eprintln!(
+                        "lattice-fs: the ship refused the save of {rel} as a conflict ({}). \
+                         Your text is kept as the page {copy}",
+                        e.msg
+                    );
+                    let mut s = self.st.lock().unwrap();
+                    if let Some(h) = s.handles.get_mut(&fh) {
+                        h.dirty = h.gen != gen;
+                    }
+                    s.vt_ts = None;
+                    s.write_gen += 1;
+                }
+                Err(e)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// One save of a page through the projection, claiming `base`, and its
+    /// bytes republished as the page's content. Answers the rev it made.
+    fn save(
+        &self,
+        rel: &str,
+        kind: &str,
+        buf: &[u8],
+        create: bool,
+        base: Option<u64>,
+    ) -> Result<Option<u64>, PErr> {
+        let rev = self
+            .proj
+            .write_based(rel, kind, buf, create, base)
             .map_err(|e| self.moved_away(e))?;
         let mut s = self.st.lock().unwrap();
-        if let Some(h) = s.handles.get_mut(&fh) {
-            h.dirty = h.gen != gen;
-            h.new = false;
+        publish(&mut s, rel, buf);
+        if let Some(r) = rev {
+            s.claim_rev.insert(rel.to_string(), r);
         }
-        publish(&mut s, &rel, &buf);
-        Ok(())
+        Ok(rev)
+    }
+
+    /// RELEASE: the last chance to save fh's buffer. A failure that may
+    /// pass (the ship down or busy) is tried again with a short backoff.
+    /// A buffer still unsaved after that is written to the recovery dir and
+    /// logged, never dropped with the handle.
+    fn release_fh(&self, fh: u64) -> Result<(), PErr> {
+        let mut r = self.commit(fh);
+        let mut wait = self.retry_wait;
+        for _ in 1..RELEASE_TRIES {
+            match &r {
+                Err(e) if transient(e.errno) && self.dirty(fh) => {
+                    thread::sleep(wait);
+                    wait *= 2;
+                    r = self.commit(fh);
+                }
+                _ => break,
+            }
+        }
+        let h = self.st.lock().unwrap().handles.remove(&fh);
+        if let (Err(e), Some(h)) = (&r, h) {
+            if h.dirty {
+                self.recover(&h, e);
+            }
+        }
+        r
+    }
+
+    fn dirty(&self, fh: u64) -> bool {
+        self.st.lock().unwrap().handles.get(&fh).is_some_and(|h| h.dirty)
+    }
+
+    /// A buffer the ship would not take, written to the recovery dir as
+    /// `<rel with / as %2F>.<unix ms>-<n>.<ext>`, owner-only, and logged.
+    fn recover(&self, h: &Handle, why: &PErr) {
+        let leaf = format!(
+            "{}.{}.{}",
+            h.rel.trim_start_matches('/').replace('%', "%25").replace('/', "%2F"),
+            unique_stamp(),
+            if h.scratch { "scratch" } else { self.proj.ext_for_kind(&h.kind) }
+        );
+        let path = self.recovery.join(leaf);
+        let r = (|| -> std::io::Result<()> {
+            use std::io::Write;
+            use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&self.recovery)?;
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&path)?;
+            f.write_all(&h.buf)?;
+            f.sync_all()
+        })();
+        match r {
+            Ok(()) => eprintln!(
+                "lattice-fs: could not save {} ({}). Your text is kept at {}",
+                h.rel,
+                why.msg,
+                path.display()
+            ),
+            Err(io) => eprintln!(
+                "lattice-fs: could not save {} ({}), and could not keep it at {} ({io}). \
+                 {} bytes are lost",
+                h.rel,
+                why.msg,
+                path.display(),
+                h.buf.len()
+            ),
+        }
     }
 
     /// A write the ship refused because its page moved (the projection
@@ -613,33 +912,6 @@ fn publish(s: &mut State, rel: &str, buf: &[u8]) {
     }
     s.vt_ts = None;
     s.write_gen += 1;
-    // A completed write supersedes any DEFERRED TRUNCATE for this file.
-    //
-    // setattr with no open handle parks the truncate in pending_trunc for the
-    // next open() to apply. Nothing else ever clears it and it has no lifetime,
-    // so a leftover entry makes the next open of that file an EMPTY buffer
-    // marked DIRTY, and commit() then writes that emptiness to the ship. The
-    // next open is not necessarily a writer: reading the file is enough to
-    // destroy it.
-    //
-    // CI caught the visible half of this once, as a read-back after a write
-    // returning "" instead of the bytes just written. Bytes landing is proof
-    // the truncate is spent, so this is where it gets dropped.
-    let spent: Vec<u64> = s
-        .to_path
-        .iter()
-        .filter(|(_, p)| {
-            s.vt
-                .get(*p)
-                .and_then(|e| e.node.as_ref())
-                .map(|n| n.rel == rel)
-                .unwrap_or(false)
-        })
-        .map(|(i, _)| *i)
-        .collect();
-    for i in spent {
-        s.pending_trunc.remove(&i);
-    }
     s.cache_put(rel, buf.to_vec());
 }
 
@@ -682,12 +954,14 @@ impl State {
         cache_put(&mut self.read_cache, &mut self.read_cache_bytes, rel, bytes);
         self.stale.remove(rel);
         self.body_rev.remove(rel);
+        self.claim_rev.remove(rel);
     }
 
     /// Take a body back out, keeping read_cache_bytes exact.
     fn cache_take(&mut self, rel: &str) -> Option<Vec<u8>> {
         self.stale.remove(rel);
         self.body_rev.remove(rel);
+        self.claim_rev.remove(rel);
         cache_take(&mut self.read_cache, &mut self.read_cache_bytes, rel)
     }
 
@@ -845,6 +1119,30 @@ fn parent_of(vpath: &str) -> &str {
 
 fn err(e: i32) -> Errno {
     Errno::from_i32(e)
+}
+
+/// A save failure that may pass by itself: the ship unreachable or slow
+/// (EIO, ETIMEDOUT, EAGAIN), or a folder move under way (EBUSY). A refusal
+/// (EEXIST, ENOENT, EACCES, EINVAL...) answers the same on every try.
+fn transient(errno: i32) -> bool {
+    matches!(errno, libc::EIO | libc::ETIMEDOUT | libc::EAGAIN | libc::EBUSY)
+}
+
+/// The sibling page a conflicting save is kept as: `<rel>.conflict-<stamp>`.
+fn conflict_name(rel: &str) -> String {
+    format!("{rel}.conflict-{}", unique_stamp())
+}
+
+/// `<unix ms>-<n>`, with n counting up for the life of the process, so two
+/// copies kept in the same millisecond never share a name.
+fn unique_stamp() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{}-{n}", now_millis())
+}
+
+fn now_millis() -> u128 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
 }
 
 /// A name from the kernel as a page name segment. Names are UTF-8: one that
@@ -1183,75 +1481,21 @@ impl Filesystem for GrubberyFs {
         reply: ReplyAttr,
     ) {
         self.ensure_fresh();
+        if let Some(sz) = size {
+            if let Err(e) = self.truncate(ino.0, sz, fh.map(|f| f.0)) {
+                reply.error(err(e));
+                return;
+            }
+        }
         let mut s = self.st.lock().unwrap();
         let Some(path) = path_of(&s, ino.0) else {
             reply.error(err(libc::ENOENT));
             return;
         };
-        let scratch = is_scratch(leaf_of(&path), |ext| self.proj.kind_for_ext(ext));
-        if let Some(sz) = size {
-            if sz > MAX_FILE {
-                reply.error(err(libc::EFBIG));
-                return;
-            }
-            // 1) explicit fh -> truncate that buffer
-            let mut done = false;
-            if let Some(fhv) = fh {
-                if let Some(h) = s.handles.get_mut(&fhv.0) {
-                    h.buf.resize(sz as usize, 0);
-                    h.dirty = true;
-                    h.gen += 1;
-                    done = true;
-                }
-            }
-            // 2) an open WRITABLE handle for this file's rel: the kernel's
-            //    SETATTR for O_TRUNC never carries the fh, and an editor may
-            //    truncate by path. Never a read-only handle: RELEASE is async,
-            //    so a reader that already closed can still be in the table,
-            //    and its buffer made empty and dirty would be committed over
-            //    the save that follows. The same goes for a writer already
-            //    flushed by its close(2). The newest writer is the O_TRUNC opener.
-            //
-            //    A scratch file is matched by its own vpath, the rel its
-            //    handles carry. rel_kind_of strips `foo.md~` to the page `foo`,
-            //    so asking it here made truncating a backup empty the page
-            //    open beside it, and the page's close then saved the emptiness.
-            if !done {
-                let rel = if scratch { path.clone() } else { self.rel_kind_of(&s, &path).0 };
-                let target = s
-                    .handles
-                    .iter()
-                    .filter(|(_, h)| {
-                        h.scratch == scratch && h.rel == rel && h.writable && !h.flushed
-                    })
-                    .map(|(&fh, _)| fh)
-                    .max();
-                if let Some(hfh) = target {
-                    let h = s.handles.get_mut(&hfh).unwrap();
-                    h.buf.resize(sz as usize, 0);
-                    h.dirty = true;
-                    h.gen += 1;
-                    done = true;
-                }
-            }
-            // 3) handle-less -> defer to the next open() (the `>`/O_TRUNC path).
-            //    A scratch file's bytes are the scratch map itself, and its
-            //    open never reads pending_trunc, so truncate it there and now.
-            if !done {
-                if scratch {
-                    if let Some(b) = s.scratch.get_mut(&path) {
-                        b.resize(sz as usize, 0);
-                    }
-                } else {
-                    s.pending_trunc.insert(ino.0, sz);
-                }
-            }
-        }
         // The same answer getattr gives, scratch files included (they are not
         // in the vtree, so a vtree lookup here failed every chmod or utimensat
         // on one with ENOENT), with the file TTL of zero rather than a second
-        // of a size the next write may change. A parked truncate has no
-        // buffer yet to report its size, so the size asked for is the answer.
+        // of a size the next write may change.
         match self.attr_for(&mut s, &path, Some(ino.0)) {
             Ok((mut attr, ttl)) => {
                 drop(s);
@@ -1339,80 +1583,10 @@ impl Filesystem for GrubberyFs {
     fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         self.ensure_fresh();
         let writable = flags.acc_mode() != OpenAccMode::O_RDONLY;
-        // scratch file: serve its bytes from the in-memory map, never the ship.
-        {
-            let mut s = self.st.lock().unwrap();
-            let Some(path) = path_of(&s, ino.0) else {
-                reply.error(err(libc::ENOENT));
-                return;
-            };
-            if is_scratch(leaf_of(&path), |ext| self.proj.kind_for_ext(ext)) {
-                let buf = s.scratch.get(&path).cloned().unwrap_or_default();
-                let fh = s.next_fh;
-                s.next_fh += 1;
-                s.handles.insert(
-                    fh,
-                    Handle {
-                        rel: path,
-                        kind: String::new(),
-                        buf,
-                        dirty: false,
-                        gen: 0,
-                        new: false,
-                        scratch: true,
-                        writable,
-                        flushed: false,
-                    },
-                );
-                drop(s);
-                reply.opened(FileHandle(fh), FopenFlags::empty());
-                return;
-            }
+        match self.open_fh(ino.0, writable) {
+            Ok(fh) => reply.opened(FileHandle(fh), FopenFlags::empty()),
+            Err(e) => reply.error(err(e)),
         }
-        let (rel, kind, pending) = {
-            let s = self.st.lock().unwrap();
-            let Some(path) = path_of(&s, ino.0) else {
-                reply.error(err(libc::ENOENT));
-                return;
-            };
-            match s.vt.get(&path) {
-                Some(VEntry { kind: VKind::File, .. }) => {}
-                Some(_) => {
-                    reply.error(err(libc::EISDIR));
-                    return;
-                }
-                None => {
-                    reply.error(err(libc::ENOENT));
-                    return;
-                }
-            }
-            let (rel, kind) = self.rel_kind_of(&s, &path);
-            let pending = s.pending_trunc.get(&ino.0).copied();
-            (rel, kind, pending)
-        };
-        let mut buf = if pending == Some(0) {
-            Vec::new()
-        } else {
-            match self.body(&rel) {
-                Ok(b) => b,
-                Err(e) => {
-                    reply.error(err(e.errno));
-                    return;
-                }
-            }
-        };
-        let mut dirty = false;
-        if let Some(sz) = pending {
-            buf.resize(sz as usize, 0);
-            dirty = true;
-        }
-        let mut s = self.st.lock().unwrap();
-        s.pending_trunc.remove(&ino.0);
-        let fh = s.next_fh;
-        s.next_fh += 1;
-        s.handles.insert(fh, Handle { rel, kind, buf, dirty, gen: 0, new: false, scratch: false, writable, flushed: false });
-        drop(s);
-        reply.opened(FileHandle(fh), FopenFlags::empty());
     }
 
     fn read(
@@ -1488,9 +1662,7 @@ impl Filesystem for GrubberyFs {
         _flush: bool,
         reply: ReplyEmpty,
     ) {
-        let r = self.commit(fh.0);
-        self.st.lock().unwrap().handles.remove(&fh.0);
-        match r {
+        match self.release_fh(fh.0) {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(err(e.errno)),
         }
@@ -1541,6 +1713,7 @@ impl Filesystem for GrubberyFs {
                     scratch: true,
                     writable: true,
                     flushed: false,
+                    base: None,
                 },
             );
             drop(s);
@@ -1564,6 +1737,7 @@ impl Filesystem for GrubberyFs {
                 scratch: false,
                 writable: true,
                 flushed: false,
+                base: None,
             },
         );
         s.recent.insert(path.clone(), (Instant::now(), true));
@@ -2074,6 +2248,12 @@ mod tests {
         probes: AtomicUsize,
         hold_probe: AtomicBool, // stall change_token() mid-flight
         fail_write: AtomicBool, // write() refuses, as an unreachable ship would
+        fail_next: AtomicUsize, // the next N writes refuse (EIO), then they land
+        writes_tried: AtomicUsize, // every write() call, landed or refused
+        // a save whose base is not the page's rev is refused (EEXIST), as a
+        // link's host refuses it. No base is no claim, and always lands.
+        strict_base: AtomicBool,
+        bases: Mutex<Vec<Option<u64>>>, // the base each write claimed
         moved_write: AtomicBool, // write() refuses: the page moved (ENOENT)
         // runs once inside the next write(), while commit holds no lock. That
         // is where a second FUSE thread could land a write.
@@ -2125,6 +2305,10 @@ mod tests {
                 .cloned()
                 .ok_or_else(|| PErr::new(libc::ENOENT, "fake: no such rel"))
         }
+        fn read_at(&self, rel: &str) -> Result<(Vec<u8>, Option<u64>), PErr> {
+            let rev = self.nodes.lock().unwrap().iter().find(|n| n.rel == rel).and_then(|n| n.rev);
+            Ok((self.read(rel)?, rev))
+        }
         fn dump(&self) -> Result<crate::projection::Dump, PErr> {
             // Snapshot FIRST, then stall. A dump held up on the wire carries
             // the state the ship held when it answered, not the state it holds
@@ -2175,6 +2359,28 @@ mod tests {
             Ok(String::new())
         }
         fn write(&self, rel: &str, kind: &str, data: &[u8], create: bool) -> Result<(), PErr> {
+            self.write_based(rel, kind, data, create, None).map(|_| ())
+        }
+        fn write_based(
+            &self,
+            rel: &str,
+            kind: &str,
+            data: &[u8],
+            create: bool,
+            base: Option<u64>,
+        ) -> Result<Option<u64>, PErr> {
+            self.writes_tried.fetch_add(1, Ordering::SeqCst);
+            self.bases.lock().unwrap().push(base);
+            if self.fail_next.load(Ordering::SeqCst) > 0 {
+                self.fail_next.fetch_sub(1, Ordering::SeqCst);
+                return Err(PErr::new(libc::EIO, "fake: ship down"));
+            }
+            if self.strict_base.load(Ordering::SeqCst) {
+                let rev = self.nodes.lock().unwrap().iter().find(|n| n.rel == rel).and_then(|n| n.rev);
+                if base.is_some() && base != rev {
+                    return Err(PErr::new(libc::EEXIST, "fake: stale base"));
+                }
+            }
             if self.fail_write.load(Ordering::SeqCst) {
                 return Err(PErr::new(libc::EIO, "fake: write refused"));
             }
@@ -2195,17 +2401,21 @@ mod tests {
             // accident. One lock at a time, in dump()'s order, so the two can
             // never deadlock against each other.
             let mut nodes = self.nodes.lock().unwrap();
-            match nodes.iter_mut().find(|n| n.rel == rel) {
+            let rev = match nodes.iter_mut().find(|n| n.rel == rel) {
                 Some(n) => {
                     n.size = data.len() as u64;
                     n.rev = n.rev.map(|r| r + 1);
+                    n.rev
                 }
-                None => nodes.push(page(rel, kind, data.len() as u64)),
-            }
+                None => {
+                    nodes.push(page(rel, kind, data.len() as u64));
+                    Some(1)
+                }
+            };
             drop(nodes);
             self.bodies.lock().unwrap().insert(rel.to_string(), data.to_vec());
             self.changed.lock().unwrap().insert(rel.to_string());
-            Ok(())
+            Ok(rev)
         }
         fn mkdir(&self, rel: &str) -> Result<(), PErr> {
             self.log.lock().unwrap().push(format!("mkdir {rel}"));
@@ -2267,7 +2477,7 @@ mod tests {
             stale: HashSet::new(),
             handles: HashMap::new(),
             next_fh: 1,
-            pending_trunc: HashMap::new(),
+            claim_rev: HashMap::new(),
             scratch: HashMap::new(),
             recent: HashMap::new(),
         }
@@ -2319,6 +2529,7 @@ mod tests {
             scratch,
             writable: true,
             flushed: false,
+            base: None,
         }
     }
 
@@ -3044,68 +3255,218 @@ mod tests {
         assert_eq!(open_size(&s, "c"), None, "no open handle: fall back to the vtree size");
     }
 
-    #[test]
-    fn a_completed_write_spends_a_deferred_truncate() {
-        // The failure this prevents, in order:
-        //
-        //   setattr(size=0) with no open handle parks the truncate in
-        //   pending_trunc for the next open() to apply. Nothing else clears it
-        //   and it has no lifetime. A leftover entry makes the next open of
-        //   that file an EMPTY buffer marked DIRTY, and commit() writes that
-        //   emptiness to the ship. The next open need not be a writer, so
-        //   READING the file is enough to destroy it.
-        //
-        // CI saw the visible half once: a read-back after a write returning ""
-        // rather than the bytes just written.
-        let mut s = bare_state();
-        let ino = ino_for(&mut s, "/hello.md");
-        s.vt.insert(
-            "/hello.md".into(),
-            VEntry { kind: VKind::File, node: Some(page("hello", "md", 8)) },
-        );
-        //  a handle-less truncate parks itself
-        s.pending_trunc.insert(ino, 0);
+    // ---------- truncate, release and the writer's base ----------
 
-        //  and then bytes actually land for that page
-        publish(&mut s, "hello", b"# rewritten\n");
+    fn ino_of(fs: &GrubberyFs, path: &str) -> u64 {
+        ino_for(&mut fs.st.lock().unwrap(), path)
+    }
 
-        assert!(
-            !s.pending_trunc.contains_key(&ino),
-            "a completed write must spend the deferred truncate, or the next \
-             open serves an empty dirty buffer and commits it over the page"
-        );
-        assert_eq!(
-            s.read_cache.get("hello").map(|v| v.as_slice()),
-            Some(&b"# rewritten\n"[..]),
-            "and the new bytes are what a reader gets"
-        );
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "lattice-fs-recovery-{tag}-{}-{}",
+            std::process::id(),
+            unique_stamp()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    fn quick(fs: GrubberyFs, dir: &std::path::Path) -> GrubberyFs {
+        let mut fs = fs.with_recovery_dir(dir);
+        fs.retry_wait = Duration::ZERO;
+        fs
+    }
+
+    fn kept(dir: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+        let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+        let mut v: Vec<(String, Vec<u8>)> = rd
+            .map(|e| e.unwrap())
+            .map(|e| (e.file_name().into_string().unwrap(), std::fs::read(e.path()).unwrap()))
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn write_through(fs: &GrubberyFs, fh: u64, data: &[u8]) {
+        let mut s = fs.st.lock().unwrap();
+        let h = s.handles.get_mut(&fh).unwrap();
+        h.buf.clear();
+        write_buf(h, 0, data).unwrap();
+    }
+
+    fn ship_body(f: &Fake, rel: &str) -> Vec<u8> {
+        f.bodies.lock().unwrap()[rel].clone()
     }
 
     #[test]
-    fn a_truncate_parked_for_another_file_is_left_alone() {
-        //  publishing one page must not cancel a pending truncate on a different
-        //  one: that would silently drop a truncate the user did ask for
-        let mut s = bare_state();
-        let mine = ino_for(&mut s, "/hello.md");
-        let other = ino_for(&mut s, "/notes.md");
-        s.vt.insert(
-            "/hello.md".into(),
-            VEntry { kind: VKind::File, node: Some(page("hello", "md", 8)) },
-        );
-        s.vt.insert(
-            "/notes.md".into(),
-            VEntry { kind: VKind::File, node: Some(page("notes", "md", 4)) },
-        );
-        s.pending_trunc.insert(mine, 0);
-        s.pending_trunc.insert(other, 0);
+    fn a_path_truncate_lands_at_once_and_no_later_open_saves_it() {
+        // truncate(2) with no writer open. It used to wait for the next open
+        // of the file, ANY open, to apply it and mark that handle dirty. So
+        // a backup tool reading the file a day later saved it empty, over
+        // whatever the page held by then.
+        let f = Fake::new(vec![page("note", "md", 5)], &[("note", "hello")]);
+        let fs = warm_fs(f.clone());
+        let ino = ino_of(&fs, "/note.md");
+        for i in 0..500 {
+            let fh = fs.open_fh(ino, true).unwrap();
+            write_through(&fs, fh, format!("version {i}").as_bytes());
+            fs.release_fh(fh).unwrap();
+            // a reader open across the truncate, as a viewer would be
+            let reader = fs.open_fh(ino, false).unwrap();
 
-        publish(&mut s, "hello", b"new\n");
+            fs.truncate(ino, 0, None).unwrap();
+            assert_eq!(ship_body(&f, "note"), b"", "round {i}: the truncate never reached the ship");
+            assert_eq!(fs.body("note").unwrap(), b"", "round {i}: a reader still sees the old bytes");
 
-        assert!(!s.pending_trunc.contains_key(&mine));
-        assert!(
-            s.pending_trunc.contains_key(&other),
-            "another file's pending truncate is not this write's business"
-        );
+            // the page moves on elsewhere. Nothing this mount opens to READ
+            // may write over it, and the reader's close least of all.
+            f.edit("note", &format!("remote {i}"));
+            fs.release_fh(reader).unwrap();
+            let late = fs.open_fh(ino, false).unwrap();
+            fs.release_fh(late).unwrap();
+            assert_eq!(
+                ship_body(&f, "note"),
+                format!("remote {i}").as_bytes(),
+                "round {i}: a read-only open saved a truncate over a later edit"
+            );
+            // the next round reads what the ship holds now
+            invalidate(&mut fs.st.lock().unwrap());
+        }
+    }
+
+    #[test]
+    fn a_truncate_goes_to_a_live_writer_never_a_reader() {
+        // the O_TRUNC case: the kernel's SETATTR carries no fh, and the
+        // writer that just opened takes it. Nothing reaches the ship until
+        // that writer saves.
+        let f = Fake::new(vec![page("note", "md", 5)], &[("note", "hello")]);
+        let fs = warm_fs(f.clone());
+        let ino = ino_of(&fs, "/note.md");
+        for i in 0..500 {
+            let reader = fs.open_fh(ino, false).unwrap();
+            let w = fs.open_fh(ino, true).unwrap();
+            let writes = f.log().len();
+            fs.truncate(ino, 0, None).unwrap();
+            // and an explicit fh on the reader is no way round it
+            fs.truncate(ino, 0, Some(reader)).unwrap();
+            assert_eq!(f.log().len(), writes, "round {i}: a truncate with a writer open was saved");
+            {
+                let s = fs.st.lock().unwrap();
+                assert!(!s.handles[&reader].dirty, "round {i}: the reader took the truncate");
+                assert!(s.handles[&w].dirty && s.handles[&w].buf.is_empty());
+            }
+            {
+                let mut s = fs.st.lock().unwrap();
+                write_buf(s.handles.get_mut(&w).unwrap(), 0, format!("after {i}").as_bytes()).unwrap();
+            }
+            fs.release_fh(w).unwrap();
+            fs.release_fh(reader).unwrap();
+            assert_eq!(ship_body(&f, "note"), format!("after {i}").as_bytes());
+        }
+    }
+
+    #[test]
+    fn release_keeps_a_buffer_the_ship_would_not_take() {
+        let dir = scratch_dir("release");
+        let f = Fake::new(vec![page("d/note", "md", 3)], &[("d/note", "old")]);
+        let fs = quick(warm_fs(f.clone()), &dir);
+        let ino = ino_of(&fs, "/d/note.md");
+
+        // the ship down for good: tried RELEASE_TRIES times, then kept
+        f.fail_write.store(true, Ordering::SeqCst);
+        for i in 0..500 {
+            let fh = fs.open_fh(ino, true).unwrap();
+            write_through(&fs, fh, format!("precious {i}").as_bytes());
+            let tried = f.writes_tried.load(Ordering::SeqCst);
+            assert_eq!(fs.release_fh(fh).unwrap_err().errno, libc::EIO);
+            assert_eq!(f.writes_tried.load(Ordering::SeqCst) - tried, 3, "tried once and again twice");
+            assert!(fs.st.lock().unwrap().handles.is_empty());
+        }
+        let k = kept(&dir);
+        assert_eq!(k.len(), 500, "a buffer was dropped with its handle");
+        for (name, _) in &k {
+            assert!(name.starts_with("d%2Fnote.") && name.ends_with(".md"), "{name}");
+        }
+        let mut bodies: Vec<String> = k.iter().map(|(_, b)| String::from_utf8(b.clone()).unwrap()).collect();
+        bodies.sort();
+        let mut want: Vec<String> = (0..500).map(|i| format!("precious {i}")).collect();
+        want.sort();
+        assert_eq!(bodies, want);
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(dir.join(&k[0].0)).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "a kept page is readable by others");
+        f.fail_write.store(false, Ordering::SeqCst);
+
+        // a blip: the retry lands it, and nothing is kept
+        f.fail_next.store(2, Ordering::SeqCst);
+        let fh = fs.open_fh(ino, true).unwrap();
+        write_through(&fs, fh, b"landed");
+        fs.release_fh(fh).unwrap();
+        assert_eq!(ship_body(&f, "d/note"), b"landed");
+        assert_eq!(kept(&dir).len(), 500);
+
+        // a refusal is not retried, and is kept too
+        f.moved_write.store(true, Ordering::SeqCst);
+        let fh = fs.open_fh(ino, true).unwrap();
+        write_through(&fs, fh, b"moved");
+        let tried = f.writes_tried.load(Ordering::SeqCst);
+        assert_eq!(fs.release_fh(fh).unwrap_err().errno, libc::ENOENT);
+        assert_eq!(f.writes_tried.load(Ordering::SeqCst) - tried, 1);
+        assert_eq!(kept(&dir).len(), 501);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_writer_claims_the_rev_it_opened_and_a_conflict_is_kept_aside() {
+        let dir = scratch_dir("conflict");
+        let f = Fake::new(vec![page("note", "md", 3)], &[("note", "old")]);
+        f.strict_base.store(true, Ordering::SeqCst);
+        let fs = quick(warm_fs(f.clone()), &dir);
+        let ino = ino_of(&fs, "/note.md");
+
+        // saves claim the rev each one makes: no false conflict on the
+        // second save of a handle, nor for the next handle opened
+        let fh = fs.open_fh(ino, true).unwrap();
+        write_through(&fs, fh, b"a");
+        fs.commit(fh).unwrap();
+        write_through(&fs, fh, b"b");
+        fs.release_fh(fh).unwrap();
+        let fh = fs.open_fh(ino, true).unwrap();
+        write_through(&fs, fh, b"c");
+        fs.release_fh(fh).unwrap();
+        assert_eq!(ship_body(&f, "note"), b"c");
+        assert_eq!(*f.bases.lock().unwrap(), vec![Some(1), Some(2), Some(3)]);
+
+        // the page moves on while a writer holds it: the writer's text is
+        // kept beside it and the newer page is left alone
+        for i in 0..500 {
+            let fh = fs.open_fh(ino, true).unwrap();
+            f.edit("note", &format!("theirs {i}"));
+            write_through(&fs, fh, format!("mine {i}").as_bytes());
+            assert_eq!(fs.release_fh(fh).unwrap_err().errno, libc::EEXIST);
+            assert_eq!(ship_body(&f, "note"), format!("theirs {i}").as_bytes(), "round {i}: overwritten");
+            invalidate(&mut fs.st.lock().unwrap());
+        }
+        let copies: Vec<Vec<u8>> = f
+            .bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| k.starts_with("note.conflict-"))
+            .map(|(_, v)| v.clone())
+            .collect();
+        assert_eq!(copies.len(), 500, "a conflict copy was lost or shared a name");
+        assert!(copies.contains(&b"mine 499".to_vec()));
+        assert!(kept(&dir).is_empty(), "a copy the ship took also went to the recovery dir");
+
+        // the ship refusing the copy too: the recovery dir has it
+        let fh = fs.open_fh(ino, true).unwrap();
+        f.edit("note", "theirs again");
+        write_through(&fs, fh, b"mine, last");
+        f.fail_write.store(true, Ordering::SeqCst);
+        assert!(fs.release_fh(fh).is_err());
+        assert_eq!(kept(&dir).iter().map(|(_, b)| b.clone()).collect::<Vec<_>>(), vec![b"mine, last".to_vec()]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

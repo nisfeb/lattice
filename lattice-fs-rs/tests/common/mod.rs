@@ -9,6 +9,16 @@ use std::sync::{Arc, Mutex};
 
 use lattice_fs::projection::{Dump, Node, PErr, Projection};
 
+/// Point the recovery dir (where a buffer the ship refused at RELEASE is
+/// kept) at a temp dir for this test process, never the user's own. Call
+/// before mounting.
+pub fn private_recovery() -> std::path::PathBuf {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let d = std::env::temp_dir().join(format!("lattice-fs-test-recovery-{}", std::process::id()));
+    ONCE.call_once(|| std::env::set_var("LATTICE_FS_RECOVERY", &d));
+    d
+}
+
 /// The ship, in memory. Records every mutation so the test can assert what
 /// actually reached it, not merely what the mount reported.
 #[derive(Default)]
