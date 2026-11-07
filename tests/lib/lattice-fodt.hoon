@@ -501,4 +501,26 @@
   '<?xml version="1.0" encoding="UTF-8"?>\0a<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" office:version="1.4" office:mimetype="application/vnd.oasis.opendocument.text">\0a <office:body>\0a  <office:text>\0a   <script xmlns="http://www.w3.org/1999/xhtml">window.__PWNED=1</script>\0a   <text:p>Text, then an inline script: <html:script xmlns:html="http://www.w3.org/1999/xhtml">window.__PWNED=1</html:script> and text.</text:p>\0a   <iframe xmlns="http://www.w3.org/1999/xhtml" src="https://evil.example/frame.html"></iframe>\0a   <text:p>An element with a handler: <html:img xmlns:html="http://www.w3.org/1999/xhtml" src="x" onerror="window.__PWNED=1"/></text:p>\0a   <text:p onclick="window.__PWNED=1" style="background:url(https://evil.example/p.png)">A paragraph with an onclick and a style attribute.</text:p>\0a   <text:p>Escaped markup in text: &lt;script&gt;window.__PWNED=1&lt;/script&gt; &lt;img src=x onerror=window.__PWNED=1&gt;</text:p>\0a   <svg:svg xmlns:svg="http://www.w3.org/2000/svg"><svg:script>window.__PWNED=1</svg:script></svg:svg>\0a  </office:text>\0a </office:body>\0a</office:document>\0a'
 ++  f-style-injection
   '<?xml version="1.0" encoding="UTF-8"?>\0a<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" office:version="1.4" office:mimetype="application/vnd.oasis.opendocument.text">\0a <office:font-face-decls>\0a  <style:font-face style:name="Evil" svg:font-family="&apos;x&apos;;}&lt;/style&gt;&lt;script&gt;window.__PWNED=1&lt;/script&gt;" style:font-family-generic="roman"/>\0a </office:font-face-decls>\0a <office:styles>\0a  <style:style style:name="Evil_20_Para" style:display-name="Evil &lt;/style&gt;&lt;script&gt;window.__PWNED=1&lt;/script&gt;" style:family="paragraph">\0a   <style:paragraph-properties fo:background-color="#fff;background:url(https://evil.example/bg.png)" fo:margin-left="1cm;behavior:url(x.htc)"/>\0a   <style:text-properties style:font-name="Evil" fo:color="red;background-image:url(&apos;https://evil.example/c.png&apos;)" fo:font-family="x}&lt;/style&gt;&lt;img src=x onerror=window.__PWNED=1&gt;" fo:font-size="12pt;width:expression(window.__PWNED=1)"/>\0a  </style:style>\0a </office:styles>\0a <office:automatic-styles>\0a  <style:style style:name="T1" style:family="text">\0a   <style:text-properties fo:color="url(javascript:window.__PWNED=1)" fo:letter-spacing="1px&lt;/style&gt;"/>\0a  </style:style>\0a </office:automatic-styles>\0a <office:body>\0a  <office:text>\0a   <text:p text:style-name="Evil_20_Para">A paragraph whose style values carry url( and a closing style tag.</text:p>\0a   <text:p text:style-name="Evil_20_Para"><text:span text:style-name="T1">A span with a hostile colour.</text:span></text:p>\0a   <text:p text:style-name="&lt;/style&gt;&lt;script&gt;window.__PWNED=1&lt;/script&gt;">A style name that is markup.</text:p>\0a  </office:text>\0a </office:body>\0a</office:document>\0a'
+::  +peer-get / +peer-put: a peer's render is kept by its body's key
+::  and the renderer's version, newest first, at most +peer-cap of them
+++  test-peer-cache
+  =/  v=peer-view:fo  ['<p>a</p>' 'a' `'A']
+  =/  w=peer-view:fo  ['<p>b</p>' 'b' ~]
+  =/  c=peer-cache:fo  (peer-put:fo ~ 1 7 v)
+  =.  c  (peer-put:fo c 2 7 w)
+  =/  full=peer-cache:fo
+    =/  i=@ud  10
+    |-  ?:  =(i 20)  c
+    $(i +(i), c (peer-put:fo c i 7 w))
+  ;:  weld
+    (expect-eq !>(`v) !>((peer-get:fo c 1 7)))
+    (expect-eq !>(~) !>((peer-get:fo c 1 8)))
+    (expect-eq !>(~) !>((peer-get:fo c 3 7)))
+    ::  the same key again replaces, never doubles
+    (expect-eq !>(2) !>((lent (peer-put:fo c 1 7 w))))
+    (expect-eq !>(`w) !>((peer-get:fo (peer-put:fo c 1 7 w) 1 7)))
+    ::  bounded, oldest out first
+    (expect-eq !>(peer-cap:fo) !>((lent full)))
+    (expect-eq !>(~) !>((peer-get:fo full 1 7)))
+  ==
 --

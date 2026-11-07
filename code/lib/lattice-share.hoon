@@ -479,15 +479,57 @@
 ::  pages in its `dir-index` grub, which only they may read.
 +$  title-row  [when=@ud title=@t]
 ::  +title-clean: a title fit for one field of a line: no tab or line
-::  break, at most +title-cap bytes
+::  break, at most +title-cap bytes, cut where a character starts
 ++  title-cap  ^-(@ud 300)
 ++  title-clean
   |=  t=@t
   ^-  @t
   =/  c=tape
-    %+  turn  (trip (end [3 title-cap] t))
+    %+  turn  (trip (utf8-cut title-cap t))
     |=(c=@tD ?:(|(=(c '\09') =(c '\0a') =(c '\0d')) ' ' c))
   (crip c)
+::  +utf8-cut: `t` cut to at most `n` bytes, never inside a character. A
+::  cut at a byte whose top bits are 10 (a continuation byte) backs up to
+::  the byte that starts its character, so the cord stays valid UTF-8.
+++  utf8-cut
+  |=  [n=@ud t=@t]
+  ^-  @t
+  ?:  (lte (met 3 t) n)  t
+  =/  k=@ud  n
+  |-
+  ?:  =(0 k)  ''
+  ?.  =(2 (rsh [0 6] (cut 3 [k 1] t)))  (end [3 k] t)
+  $(k (dec k))
+::  +page-title: a page's display title, its first heading line without
+::  its #s and the blanks after them, cut to +title-cap; `fallback` when
+::  there is none. Gemtext and markdown both open a heading with '#'.
+++  page-title
+  |=  [body=@t fallback=@t]
+  ^-  @t
+  =/  lines=(list @t)  (to-wain:format body)
+  |-  ^-  @t
+  ?~  lines  fallback
+  ?.  =('#' (end [3 1] i.lines))  $(lines t.lines)
+  =/  t=tape  (trip (utf8-cut (add 64 title-cap) i.lines))
+  =/  txt=tape
+    |-  ^-  tape
+    ?~  t  ~
+    ?:  |(=('#' i.t) =(' ' i.t))  $(t t.t)
+    t
+  ?~(txt fallback (utf8-cut title-cap (crip `tape`txt)))
+::  +beacon-next: the value a change beacon is bumped to. Strictly above
+::  the last, so two bumps in one event (which share one `now`) still
+::  differ and a keep-SSE news event fires for each.
+++  beacon-next
+  |=  [last=@ud now=@ud]
+  ^-  @ud
+  (max now +(last))
+::  +corrupt-name: the name a grub that would not read is kept aside
+::  under (in /corrupt), `<label>-corrupt-<time>`
+++  corrupt-name
+  |=  [label=@ta now=@da]
+  ^-  @ta
+  (crip "{(trip label)}-corrupt-{(slag 1 (scow %da now))}")
 ::  +titles-cord: the rows as the grub holds them, by key
 ++  titles-cord
   |=  rows=(map @t title-row)

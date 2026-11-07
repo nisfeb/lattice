@@ -257,6 +257,48 @@
   |=  [salt=@ nam=@t rev=@ud]
   ^-  @uv
   (end [3 16] (shax (jam [salt nam rev])))
+::  +rev-high: per page name, the highest revision it was ever published
+::  or deleted at, and the offset its publishes add to the vault grub's
+::  cass. Kept outside /pub. A page's id is +page-id of its name and
+::  revision, and gall parks a culled spur's case as a high-water. An
+::  unpublish culls the vault grub, so a publish again makes it anew at
+::  cass 1: without the offset it would name an id already culled
+::  (unreadable) or one a peer holds for the old text. +rev-off gives a
+::  publish its offset, +rev-rises checks the revision it comes to, and
+::  +rev-high-put / +rev-off-put record them.
++$  rev-high  (map @t [high=@ud off=@ud])
+::  +rev-off: the offset for a publish whose vault grub had cass `prev`
+::  before it. A grub made anew (prev 0) starts above the high-water, so
+::  its first revision is high+1; a later save keeps the offset that one
+::  set.
+++  rev-off
+  |=  [hw=rev-high nam=@t prev=@ud]
+  ^-  @ud
+  =/  r  (~(get by hw) nam)
+  ?~  r  0
+  ?:(=(0 prev) high.u.r off.u.r)
+++  rev-off-put
+  |=  [hw=rev-high nam=@t off=@ud]
+  ^-  rev-high
+  =/  r  (~(gut by hw) nam [high=0 off=0])
+  (~(put by hw) nam r(off off))
+++  rev-rises
+  |=  [hw=rev-high nam=@t rev=@ud]
+  ^-  ?
+  (gth rev high:(~(gut by hw) nam [high=0 off=0]))
+++  rev-high-put
+  |=  [hw=rev-high nam=@t rev=@ud]
+  ^-  rev-high
+  =/  r  (~(gut by hw) nam [high=0 off=0])
+  (~(put by hw) nam r(high (max rev high.r)))
+::  +salt-switch: a salt migration's old salt, and whether it must mint
+::  a new one. `pend` is the old salt a crashed run recorded: the salt
+::  now in place is its new one unless it still equals the old.
+++  salt-switch
+  |=  [pend=(unit @) cur=@]
+  ^-  [old=@ mint=?]
+  ?~  pend  [cur &]
+  [u.pend =(cur u.pend)]
 ::  +salt-spurs: the scry binding each revision-list row names under
 ::  `salt`, /pub/page/<name>/<id>. A salt rotation culls these under the
 ::  OLD salt once every page is grown under the new one. A name that is

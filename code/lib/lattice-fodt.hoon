@@ -461,6 +461,26 @@
   ^-  (unit @t)
   =/  r  (mule |.((title-of (doc-of f))))
   ?:(?=(%& -.r) p.r ~)
+::  +peer-cache: the last few peers' fodt pages rendered, newest first,
+::  each keyed by the shax of the body it was made from and the
+::  renderer's version. A peer's revision is its text, so a key is a
+::  revision: the same revision viewed again is a read, and a new one
+::  can never get an old render. At most +peer-cap entries of at most
+::  +max-size bodies each, so no peer can make this ship hold more.
++$  peer-view  [html=@t text=@t title=(unit @t)]
++$  peer-cache  (list [key=@ ver=@ud view=peer-view])
+++  peer-cap  ^-(@ud 4)
+++  peer-get
+  |=  [c=peer-cache key=@ ver=@ud]
+  ^-  (unit peer-view)
+  ?~  c  ~
+  ?:  &(=(key key.i.c) =(ver ver.i.c))  `view.i.c
+  $(c t.c)
+++  peer-put
+  |=  [c=peer-cache key=@ ver=@ud v=peer-view]
+  ^-  peer-cache
+  %+  scag  peer-cap
+  `peer-cache`[[key ver v] (skip c |=([k=@ * *] =(k key)))]
 ::
 ::  +fodt-all: the HTML, the text and the title from ONE parse, for the
 ::  ship's render cache. Each is what +fodt-html, +fodt-text and
