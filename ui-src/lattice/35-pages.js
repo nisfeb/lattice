@@ -481,7 +481,7 @@
   //  Any other kind's render is the ship's: drop it and let it re-render.
   //  Only a save that can change the kind passes one.
   const patchLocal = (name, kind, sent, rev) => {
-    shipText.set(name, sent);
+    shipText.set(name, sent || '\n');    // an empty save is stored as one newline
     const c = pageCache.get(name);
     const k = kind || (c && c.kind);
     if (c && rev && ['md', 'gmi', 'html', 'text', 'tex'].includes(k)) {
@@ -678,6 +678,7 @@
         current = name;
         tabFollow();         // a new page's tab is named now (21-tabs.js)
         curKind = kind;
+        if (creating) curRev = 0;
         pname.readOnly = true;
         if (src.value === sent) dirty = false;
         else if (!savePending) savePending = true;
@@ -728,7 +729,9 @@
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
       else if (!savePending) savePending = true;   // flushPending below saves it
-      if (vr && vr.rev) curRev = vr.rev;
+      //  a create's first rev can be 0, and curRev until now was the page
+      //  shown before this new one: never a claim to carry over
+      if (vr && typeof vr.rev === 'number' && (vr.rev || creating)) curRev = vr.rev;
       if (linkCf.delete(name)) paintLinkCf(name);   // a retried link save landed
       if (vr && vr.conflicted) {
         st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
@@ -779,7 +782,7 @@
   async function settleStale(name, kind, sent, base, here) {
     const th = await bodyRead(name);
     let res = null;
-    if (th && th.body === sent) res = { rev: th.rev, body: sent, how: 'saved' };
+    if (th && th.body === (sent || '\n')) res = { rev: th.rev, body: sent, how: 'saved' };
     if (th && !res && base) {
       let mb = null;
       let bt = shipText.get(name);

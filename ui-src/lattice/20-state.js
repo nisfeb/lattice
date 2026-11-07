@@ -118,6 +118,7 @@
   // active document tab learns what it now shows (tabFollow, 21-tabs.js).
   function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
     current = name;
+    if (name === null) curRev = 0;   // a new buffer claims no page's rev
     pname.value = shown === undefined ? (name || '') : shown;
     pname.readOnly = readOnly;
     if (kind && [...pkind.options].some((o) => o.value === kind)) pkind.value = kind;

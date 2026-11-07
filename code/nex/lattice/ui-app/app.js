@@ -1410,6 +1410,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
   function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
     current = name;
+    if (name === null) curRev = 0;   // a new buffer claims no page's rev
     pname.value = shown === undefined ? (name || '') : shown;
     pname.readOnly = readOnly;
     if (kind && [...pkind.options].some((o) => o.value === kind)) pkind.value = kind;
@@ -6375,7 +6376,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     { create: !!create || keep });
   };
   const patchLocal = (name, kind, sent, rev) => {
-    shipText.set(name, sent);
+    shipText.set(name, sent || '\n');    // an empty save is stored as one newline
     const c = pageCache.get(name);
     const k = kind || (c && c.kind);
     if (c && rev && ['md', 'gmi', 'html', 'text', 'tex'].includes(k)) {
@@ -6493,6 +6494,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         current = name;
         tabFollow();         // a new page's tab is named now (21-tabs.js)
         curKind = kind;
+        if (creating) curRev = 0;
         pname.readOnly = true;
         if (src.value === sent) dirty = false;
         else if (!savePending) savePending = true;
@@ -6530,7 +6532,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
       else if (!savePending) savePending = true;   // flushPending below saves it
-      if (vr && vr.rev) curRev = vr.rev;
+      if (vr && typeof vr.rev === 'number' && (vr.rev || creating)) curRev = vr.rev;
       if (linkCf.delete(name)) paintLinkCf(name);   // a retried link save landed
       if (vr && vr.conflicted) {
         st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
@@ -6565,7 +6567,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   async function settleStale(name, kind, sent, base, here) {
     const th = await bodyRead(name);
     let res = null;
-    if (th && th.body === sent) res = { rev: th.rev, body: sent, how: 'saved' };
+    if (th && th.body === (sent || '\n')) res = { rev: th.rev, body: sent, how: 'saved' };
     if (th && !res && base) {
       let mb = null;
       let bt = shipText.get(name);
