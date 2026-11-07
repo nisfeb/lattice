@@ -109,6 +109,7 @@ try {
 
   // ── 2. remote images wait for "Load outside content" ──────────────────────
   await open('qi/img', 'outside.invalid');
+  await p.evaluate(() => window.latSetRead(true));
   //  the ship's render may be what is painted; an input repaints locally
   await p.waitForFunction(() => /Content-Security-Policy/.test(document.getElementById('prev').getAttribute('srcdoc') || ''),
     { timeout: 30000 });

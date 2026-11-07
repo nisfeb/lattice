@@ -1317,8 +1317,8 @@
   ::  again (finding its own text there if it did land).
   ;<  ph=[rev=@ud src=(unit @t)]  bind:m
     ?:  =(src.pc `src)  (pure:(fiber:fiber:nexus ,[rev=@ud src=(unit @t)]) pc)
-    (save-landed (pax-of u.name) prev)
-  =/  mine=?  &(=(src.ph `src) |((gth rev.ph prev) =(src.pc `src)))
+    (save-landed (pax-of u.name) prev src)
+  =/  mine=?  =(src.ph `src)
   ?:  &(cas !mine)
     (send-err eyre-id 409 (crip "stale: the page is at rev {(num-tape:pg rev.ph)}"))
   ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
@@ -1330,18 +1330,20 @@
       ['conflicted' b+conflicted]
       ['kept' s+kept]
   ==
-::  +save-landed: the page's head once a write past `prev` shows there.
-::  The writer answers the poke at its first wait, which can be before
-::  the write is down, so the head is read again, 50 ms apart, for up to
-::  a second. A head still at `prev` then is a write the writer refused.
+::  +save-landed: the page's head once it holds `src`, or a rev past
+::  `prev`. The writer answers the poke at its first wait, which can be
+::  before the write is down, so the head is read again, 50 ms apart, for
+::  up to a second. A head without `src` then is a write the writer
+::  refused, or one already written over. (A new page's first rev can be
+::  0, which is not past a missing page's 0: hence the body test.)
 ++  save-landed
-  |=  [rel=path prev=@ud]
+  |=  [rel=path prev=@ud src=@t]
   =/  m  (fiber:fiber:nexus ,[rev=@ud src=(unit @t)])
   ^-  form:m
   =/  n=@ud  0
   |-  ^-  form:m
   ;<  ph=[rev=@ud src=(unit @t)]  bind:m  (page-head rel)
-  ?:  |((gth rev.ph prev) (gte n 20))  (pure:m ph)
+  ?:  |(=(src.ph `src) (gth rev.ph prev) (gte n 20))  (pure:m ph)
   ;<  ~  bind:m  (sleep:io (div ~s1 20))
   $(n +(n))
 ::  +save-wid: the owner's save's writer id, from ?by= (a window's session

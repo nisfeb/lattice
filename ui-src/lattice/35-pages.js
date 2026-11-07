@@ -266,6 +266,7 @@
       url: '/apps/lattice/app?name=' + encodeURIComponent(name) });
     curKind = d.kind;
     curRev = d.rev || 0;
+    shipText.set(name, d.body);
     refreshTexButton();
     src.value = d.body;
     dirty = false;
@@ -480,6 +481,7 @@
   //  Any other kind's render is the ship's: drop it and let it re-render.
   //  Only a save that can change the kind passes one.
   const patchLocal = (name, kind, sent, rev) => {
+    shipText.set(name, sent);
     const c = pageCache.get(name);
     const k = kind || (c && c.kind);
     if (c && rev && ['md', 'gmi', 'html', 'text', 'tex'].includes(k)) {
@@ -748,6 +750,10 @@
   // pages refused as stale whose text could not be kept aside: autosave
   // stands down for them until a save on purpose
   const casHold = new Set();
+  // the text the ship held at the rev the editor read, per page (patchLocal
+  // and applyPage): the merge base when the ship moved on, without asking
+  // for an old revision
+  const shipText = new Map();
   // a three-way merge of two edits of `b` that touch different stretches
   // of it (with text between them), else null
   function merge3(b, o, t) {
@@ -776,10 +782,14 @@
     if (th && th.body === sent) res = { rev: th.rev, body: sent, how: 'saved' };
     if (th && !res && base) {
       let mb = null;
-      try {
-        const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base);
-        if (r.ok) mb = merge3((await r.json()).body, sent, th.body);
-      } catch {}
+      let bt = shipText.get(name);
+      if (typeof bt !== 'string') {
+        try {
+          const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base);
+          if (r.ok) bt = (await r.json()).body;
+        } catch {}
+      }
+      if (typeof bt === 'string') mb = merge3(bt, sent, th.body);
       if (typeof mb === 'string') {
         const r = await fetch(api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
           + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }).catch(() => null);

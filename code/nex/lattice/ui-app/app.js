@@ -6258,6 +6258,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       url: '/apps/lattice/app?name=' + encodeURIComponent(name) });
     curKind = d.kind;
     curRev = d.rev || 0;
+    shipText.set(name, d.body);
     refreshTexButton();
     src.value = d.body;
     dirty = false;
@@ -6374,6 +6375,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     { create: !!create || keep });
   };
   const patchLocal = (name, kind, sent, rev) => {
+    shipText.set(name, sent);
     const c = pageCache.get(name);
     const k = kind || (c && c.kind);
     if (c && rev && ['md', 'gmi', 'html', 'text', 'tex'].includes(k)) {
@@ -6544,6 +6546,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   const casQ = (name, rev) => (linkOf(name) ? '' : '&by=' + winId + (rev ? '&base=' + rev + '&cas=1' : ''));
   const casHold = new Set();
+  const shipText = new Map();
   function merge3(b, o, t) {
     if (o === b || t === o) return t;
     if (t === b) return o;
@@ -6565,10 +6568,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (th && th.body === sent) res = { rev: th.rev, body: sent, how: 'saved' };
     if (th && !res && base) {
       let mb = null;
-      try {
-        const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base);
-        if (r.ok) mb = merge3((await r.json()).body, sent, th.body);
-      } catch {}
+      let bt = shipText.get(name);
+      if (typeof bt !== 'string') {
+        try {
+          const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base);
+          if (r.ok) bt = (await r.json()).body;
+        } catch {}
+      }
+      if (typeof bt === 'string') mb = merge3(bt, sent, th.body);
       if (typeof mb === 'string') {
         const r = await fetch(api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
           + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }).catch(() => null);
@@ -10666,7 +10673,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent); return; }
     if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent); return; }
-    if (mode !== 'know' && d.rev) curRev = d.rev;
+    if (mode !== 'know' && d.rev) { curRev = d.rev; shipText.set(wasCurrent, d.body); }
     if (d.body === src.value) return;
     if (mode !== 'know') pageCache.delete(wasCurrent);
     const top = src.scrollTop;
