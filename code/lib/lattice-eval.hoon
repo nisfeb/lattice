@@ -56,6 +56,9 @@
       ::  leaves the folder's `share-grants`, so pages added later stay
       ::  private (+unshare-folder takes back what it granted)
       [%folder-ungrant pax=path gname=@t]
+      ::  the share notices a grant or a revoke owes (+tell-holds): each
+      ::  ship told of each page it now reads (`add`) or reads no more
+      [%share-tell add=(list [who=@p pax=path mode=@t]) del=(list [who=@p pax=path])]
       ::  the page at pax was shared with a ship by hand: its grant is its
       ::  own, and no folder takes it back on a move
       [%grant-own pax=path]

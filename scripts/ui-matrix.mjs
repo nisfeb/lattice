@@ -542,9 +542,12 @@ try {
 
   step = 'folder select';
   // ── 4. folder select targets the right pane ──────────────────────────────
-  const row = await page.evaluateHandle((n) =>
-    [...document.querySelectorAll('#treelist .fld')].find((f) => f.textContent.includes(n.split('/')[0])), RUN);
-  await row.asElement().click();
+  //  found and clicked in one step: the tree redraws on its own (the
+  //  template page deleted above, the folder just made), and a handle
+  //  taken first could be a row that redraw had already replaced
+  //  ("Node is detached from document")
+  await page.evaluate((n) =>
+    [...document.querySelectorAll('#treelist .fld')].find((f) => f.textContent.includes(n.split('/')[0])).click(), RUN);
   await wait(() => document.getElementById('del').textContent === 'delete folder');
   check('folder select: pane shows folder controls',
     await page.evaluate(() => document.getElementById('pname').value).then?.() ??

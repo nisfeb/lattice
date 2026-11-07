@@ -12,7 +12,6 @@
   // detail is {host, path, new}.
   const FOL = ' following';
   const foldName = (f) => f.host + f.path;
-  const foldLeaf = (f, p) => p.key.slice(f.path.length + 1);
   const foldUrl = (host, path) => 'urb://' + host + path;
   async function loadFolds(bg = false) {
     let r = null;
@@ -85,44 +84,47 @@
         b.title = f.host + ' no longer shares this folder with you, or cannot be reached';
         row.append(b);
       } else if (f.new) row.append(foldBadge(f.new + ' new'));
-      const ix = document.createElement('a');
-      ix.className = 'folix';
-      ix.href = api + '?url=' + encodeURIComponent(foldUrl(f.host, f.path) + '/');
-      ix.textContent = '↗';
-      ix.title = 'open the folder\'s index';
-      ix.onclick = (e) => {
-        e.stopPropagation();
-        if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
-        e.preventDefault();
-        browseIn(ix.href);
-      };
-      const x = document.createElement('span');
-      x.className = 'swrm folrm';
-      x.textContent = '×';
-      x.title = 'unfollow';
-      x.onclick = (e) => { e.stopPropagation(); unfollowFold(f); };
-      row.append(ix, x);
+      const x = rmX('unfollow', () => unfollowFold(f));
+      x.classList.add('folrm');
+      row.append(foldIx(f.host, f.path), x);
       treeList.appendChild(row);
       if (coll.includes(key)) continue;
-      for (const p of f.pages) {
-        const a = document.createElement('a');
-        a.className = 'pg swm folpg' + (p.new ? ' new' : '');
-        a.href = api + '?url=' + encodeURIComponent(foldUrl(f.host, p.key));
-        a.title = f.host + p.key + (p.new ? ' (new)' : '');
-        const nm = document.createElement('span');
-        nm.className = 'swn';
-        nm.textContent = p.title || foldLeaf(f, p);
-        a.append(nm);
-        a.onclick = (e) => {
-          if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
-          e.preventDefault();
-          openFoldPage(f, p);
-        };
-        treeItem(a, 2, key + '/' + p.key);
-        a.style.marginLeft = '28px';
-        treeList.appendChild(a);
-      }
+      for (const p of f.pages) foldPage(f.host, f.path, p, 2, key, () => openFoldPage(f, p));
     }
+  }
+  // the way to a folder's index, beside its row
+  function foldIx(host, rel) {
+    const ix = document.createElement('a');
+    ix.className = 'folix';
+    ix.href = api + '?url=' + encodeURIComponent(foldUrl(host, rel) + '/');
+    ix.textContent = '↗';
+    ix.title = 'open the folder\'s index';
+    ix.onclick = (e) => {
+      e.stopPropagation();
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+      e.preventDefault();
+      browseIn(ix.href);
+    };
+    return ix;
+  }
+  // one page of a folder `rel` on `host`, by its title, bold while new
+  function foldPage(host, rel, p, depth, key, open) {
+    const a = document.createElement('a');
+    a.className = 'pg swm folpg' + (p.new ? ' new' : '');
+    a.href = api + '?url=' + encodeURIComponent(foldUrl(host, p.key));
+    a.title = host + p.key + (p.new ? ' (new)' : '');
+    const nm = document.createElement('span');
+    nm.className = 'swn';
+    nm.textContent = p.title || p.key.slice(rel.length + 1);
+    a.append(nm);
+    a.onclick = (e) => {
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+      e.preventDefault();
+      open();
+    };
+    treeItem(a, depth, key + '/' + p.key);
+    a.style.marginLeft = (depth * 14) + 'px';
+    treeList.appendChild(a);
   }
   function foldBadge(t) {
     const b = document.createElement('span');

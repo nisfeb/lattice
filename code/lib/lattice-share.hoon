@@ -16,8 +16,16 @@
 ::  is the owner's own curation and is refused from foreign ships. %put is
 ::  the owner's own too: a link moved back to shared with me, which names
 ::  the host itself, so from any other ship it is dropped.
+::
+::  %dir is a folder shared whole: one entry for the folder, not one per
+::  page. Its pax names the folder's index grub, <base>/page/<rel>/dir-index
+::  (+dir-key), which is what the receiver reads to list the pages. Its
+::  %del is the plain %del with that pax. A lattice older than %dir fails
+::  the soft cast and drops it, so it lists nothing for a folder until it
+::  updates (a page shared on its own still reaches it as %add).
 +$  action
   $%  [%add pax=path mode=@t]          ::  mode: 'read' | 'edit'
+      [%dir pax=path mode=@t]          ::  a folder, by its dir-index
       [%del host=@p pax=path]
       [%put host=@p pax=path mode=@t]
   ==
@@ -25,7 +33,32 @@
 +$  shared  (list entry)               ::  newest first
 ::  +cap: list bound. Anyone may poke the inbox, so without a cap a hostile
 ::  ship grows the grub without limit. With one they can at worst churn it.
-++  cap  ^-(@ud 200)
+::  A folder is one entry however many pages it holds, so the cap counts
+::  shares, not pages. Over the cap the oldest entries go first (the list
+::  is newest first, and +put-entry keeps its head). At the cap the list
+::  is about 2000 short nouns on the ship and some 260 KB of JSON from
+::  /shared-with-me.
+++  cap  ^-(@ud 2.000)
+::  +dir-key: is this entry path a folder's (its dir-index), not a page's
+++  dir-key
+  |=  p=path
+  ^-  ?
+  &(?=(^ p) =(%'dir-index' (rear p)))
+::  +dir-cover: the folder entry from `host` that the folder notice `pax`
+::  falls in: its own entry, or one for a folder above it
+++  dir-cover
+  |=  [cur=shared host=@p pax=path]
+  ^-  (unit entry)
+  =/  own=path  (snip pax)
+  |-  ^-  (unit entry)
+  ?~  cur  ~
+  =/  d=path  (snip pax.i.cur)
+  ?:  ?&  =(host host.i.cur)
+          (dir-key pax.i.cur)
+          =(d (scag (lent d) own))
+      ==
+    `i.cur
+  $(cur t.cur)
 ::  +put-entry: dedupe on [host pax] (a re-share updates mode and timestamp,
 ::  it does not duplicate), prepend, cap.
 ++  put-entry
@@ -590,19 +623,25 @@
 ::  +fold-hit: the follows a share notice's page path falls under:
 ::  <base>/page/<rel...>/code, under a followed `rel` on that host. The
 ::  page dir is the first /page/ in the path; a later one is part of rel.
+::  A folder's notice (<base>/page/<rel...>/dir-index) hits the follows
+::  at, above and below the folder.
 ++  fold-hit
   |=  [fs=(list fold) host=@p pax=path]
   ^-  (list fold)
-  =/  t=tape  (trip (spat pax))
+  =/  dir=?  (dir-key pax)
+  =/  t=tape  (trip (spat ?:(dir (snip pax) pax)))
   =/  at=(unit @ud)  (find "/page/" t)
   ?~  at  ~
-  =/  sub=tape  (slag u.at t)
+  =/  sub=tape  (weld (slag u.at t) ?:(dir "/" ""))
   %+  skim  fs
   |=  f=fold
   ?.  =(host host.f)  |
   ?~  rel.f  |
   =/  pre=tape  :(weld "/page" (trip (spat rel.f)) "/")
-  =(pre (scag (lent pre) sub))
+  ?|  =(pre (scag (lent pre) sub))
+      ::  a folder notice (+dir-key) also reaches the follows below it
+      &(dir =(sub (scag (lent sub) pre)))
+  ==
 ::  +move-resumes: is a move from `pf` to `pt` asked at `now` the one the
 ::  /move-job note `job` says a reload left part way? Only then may it
 ::  finish without the destination checks a fresh move gets: its
@@ -633,4 +672,85 @@
   =.  on  |(on (~(has in ixs) i.ups))
   ?.  on  $(ups t.ups)
   [i.ups $(ups t.ups)]
+::
+::  ==  who holds which page  ==
+::
+::  A share notice goes to the ships a grant reaches and a revoke leaves.
+::  Grants are unioned across every group a ship is in, so "reaches" is
+::  read from all of them, before and after a change, and only the
+::  difference is told: a ship that held a page already hears nothing.
+::
+::  +$  holds: per ship, each page code path it reads and its mode, and
+::  each folder it reads whole by its dir-index path (+dir-key)
++$  holds  (map @p (map path @t))
+::  +holds-of: the groups' ships, each with its page code paths: those it
+::  reads (peek) and those it writes (make), and the folders it holds
+::  (`dirs`, dir-index path to mode). Edit wins across groups. Then
+::  +holds-trim, so a folder held whole stands for what is under it.
+++  holds-of
+  |=  gs=(list [who=(set @p) peek=(set path) make=(set path) dirs=(map path @t)])
+  ^-  holds
+  =|  acc=holds
+  |-  ^-  holds
+  ?~  gs  (~(run by acc) holds-trim)
+  =/  ss=(list @p)  ~(tap in who.i.gs)
+  =/  ps=(list [p=path md=@t])
+    %+  weld  ~(tap by dirs.i.gs)
+    %+  turn  ~(tap in peek.i.gs)
+    |=(p=path [p ?:((~(has in make.i.gs) p) 'edit' 'read')])
+  |-  ^-  holds
+  ?~  ss  ^$(gs t.gs)
+  =/  cur=(map path @t)  (~(gut by acc) i.ss ~)
+  =/  l=(list [p=path md=@t])  ps
+  |-  ^-  holds
+  ?~  l
+    ?~  cur  ^$(ss t.ss)
+    ^$(ss t.ss, acc (~(put by acc) i.ss cur))
+  ?:  =(`'edit' (~(get by cur) p.i.l))  $(l t.l)
+  $(l t.l, cur (~(put by cur) p.i.l md.i.l))
+::  +holds-trim: one ship's holds as its shared with me shows them. A
+::  folder held whole is one entry, so a page under it, or a folder below
+::  it, is dropped when the folder's mode is as wide: a page shared on its
+::  own and in a shared folder shows once, as the folder. A page it may
+::  edit in a folder it only reads keeps its own entry.
+++  holds-trim
+  |=  ps=(map path @t)
+  ^-  (map path @t)
+  =/  dirs=(list [d=path md=@t])
+    %+  murn  ~(tap by ps)
+    |=([p=path md=@t] ?.((dir-key p) ~ `[(snip p) md]))
+  ?~  dirs  ps
+  %-  ~(gas by *(map path @t))
+  %+  skip  ~(tap by ps)
+  |=  [p=path md=@t]
+  =/  own=path  ?:((dir-key p) (snip p) p)
+  %+  lien  `(list [d=path md=@t])`dirs
+  |=  [d=path dm=@t]
+  ?&  (gth (lent own) (lent d))
+      =(d (scag (lent d) own))
+      |(=('edit' dm) =('read' md))
+  ==
+::  +holds-diff: what to tell. Each page a ship reads now and did not, or
+::  reads with a new mode, is an add; each it read and reads no more, a
+::  del. Sorted, so the order is the same on every run.
+++  holds-diff
+  |=  [old=holds new=holds]
+  ^-  [add=(list [who=@p pax=path mode=@t]) del=(list [who=@p pax=path])]
+  =/  add=(list [who=@p pax=path mode=@t])
+    %-  zing
+    %+  turn  ~(tap by new)
+    |=  [s=@p ps=(map path @t)]
+    =/  was=(map path @t)  (~(gut by old) s ~)
+    %+  murn  ~(tap by ps)
+    |=  [p=path md=@t]
+    ?:(=(`md (~(get by was) p)) ~ `[s p md])
+  =/  del=(list [who=@p pax=path])
+    %-  zing
+    %+  turn  ~(tap by old)
+    |=  [s=@p ps=(map path @t)]
+    =/  now=(map path @t)  (~(gut by new) s ~)
+    %+  murn  ~(tap in ~(key by ps))
+    |=(p=path ?:((~(has by now) p) ~ `[s p]))
+  :-  (sort add |=([a=[@p path @t] b=[@p path @t]] (aor a b)))
+  (sort del |=([a=[@p path] b=[@p path]] (aor a b)))
 --
