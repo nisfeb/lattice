@@ -72,8 +72,8 @@ try {
   check('  ...and loads as a rule', r.t.includes(`## /${K}/old\nold rule`), r.t.slice(-600));
 
   //  the owner's change lands between a key's plan and its write: hold
-  //  the writer with big owner batches, queue the owner's change, then
-  //  the key's save, which plans on the old state. The writer refuses
+  //  the writer with big owner batches, queue the key's save, then the
+  //  owner's change, while the key's save plans on the old state. The writer refuses
   //  it, and the key must hear so, never ok. The writer's message (not
   //  the route's) shows the race was forced; it is tried a few times.
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -81,14 +81,17 @@ try {
     items: Array.from({ length: 50 }, (_, i) => ({ key: `${K}/hold/${b}-${i}-${Math.random().toString(36).slice(2)}`, body: `holding the writer ${b} ${i} ${Math.random()}`, force_new: true })),
   }))));
   async function raceSave(name, setup, change, save, writerSays) {
-    for (let t = 0; t < 4; t++) {
+    for (let t = 0; t < 5; t++) {
       const target = await setup(t);
+      //  a key's request first charges its bytes through the writer, then
+      //  plans: so the change goes in behind that charge, and the key
+      //  plans before the change lands
       const held = hold();
       await sleep(150);
+      const sv = save(target);
+      await sleep(100 + 100 * t);
       const ch = change(target);
-      await sleep(150);
-      const r = await save(target);
-      await Promise.all([held, ch]);
+      const [r] = await Promise.all([sv, held, ch]);
       if (r.status === 200) { check(`${name}: the key is not told ok`, false, r.t); return; }
       if ((r.j.error || '').includes(writerSays)) {
         check(`${name}: the key hears the writer's refusal`, r.status === 403, `${r.status} ${r.t}`);
@@ -106,7 +109,7 @@ try {
     async (t) => { const k = `${K}/race-sen-${t}`; await owner('POST', `know-save?key=${k}&source=user&force_new=1`, `race sensitive ${t}`); return k; },
     (k) => owner('POST', `know-save?key=${k}&sensitive=1`, `race sensitive, now secret`),
     (k) => call(T, 'POST', `know-save?key=${k}`, 'the key rewrites it'),
-    'not available to this agent key');
+    'the entry is not available to this agent key');
   await raceSave('skill tagged core mid-save',
     async (t) => { const n = `${SK}-race-${t}`; await call(T, 'POST', `skill-save?name=${n}`, md(n)); return n; },
     (n) => owner('POST', `skill-tag?name=${n}&tag=core`),
@@ -139,7 +142,7 @@ try {
   check.eq('a create over an existing skill is refused', (await owner('POST', `skill-save?name=${NEW}&new=1`, md(NEW))).status, 409);
 } finally {
   for (const k of ['mine', 'old']) await owner('POST', `know-delete?key=${K}/${k}`).catch(() => {});
-  for (const n of [SK, SK + '-new', ...[0, 1, 2, 3].map((t) => `${SK}-race-${t}`)]) await owner('POST', `skill-delete?name=${n}`).catch(() => {});
+  for (const n of [SK, SK + '-new', ...[0, 1, 2, 3, 4].map((t) => `${SK}-race-${t}`)]) await owner('POST', `skill-delete?name=${n}`).catch(() => {});
   for (const id of minted) await owner('POST', `key-revoke?id=${id}`).catch(() => {});
 }
 check.done();
