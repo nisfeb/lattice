@@ -231,12 +231,10 @@ impl Follows {
         Follows { hook: Some(Box::new(hook)), ..Follows::open(dir) }
     }
 
-    /// In the order followed. A missing or unreadable file is none.
+    /// In the order followed. A missing file is none, and one that will
+    /// not parse is moved aside first (store::read_json).
     pub fn list(&self) -> Vec<Follow> {
-        std::fs::read(&self.file)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        crate::store::read_json(&self.file)
     }
 
     pub fn get(&self, ship: &str, folder: &str) -> Option<Follow> {
@@ -314,9 +312,11 @@ impl Follows {
 
     fn change(&self, f: impl FnOnce(&mut Vec<Follow>)) -> Result<(), String> {
         let _g = self.lock.lock().unwrap();
-        let mut all = self.list();
-        f(&mut all);
-        self.write(&all)
+        crate::store::locked(&self.file, || {
+            let mut all = self.list();
+            f(&mut all);
+            self.write(&all)
+        })?
     }
 
     /// Whole or not at all, and private: write_private's temp file beside
@@ -441,6 +441,7 @@ mod tests {
         assert_eq!(fs.list().iter().map(|f| f.ship.as_str()).collect::<Vec<_>>(), ["~nec"]);
         std::fs::write(d.join("follows.json"), b"{not json").unwrap();
         assert!(fs.list().is_empty());
+        assert_eq!(crate::testutil::corrupt_copies(&d, "follows.json"), [b"{not json".to_vec()], "moved aside, not erased");
         std::fs::remove_dir_all(d).unwrap();
     }
 

@@ -899,6 +899,9 @@ impl Engine {
             let mut g = self.inner.lock().unwrap();
             let Some(run) = g.run.take() else { return true };
             g.status = Status::Off;
+            if self.fake.is_none() {
+                crate::render::set_exported_running(None);
+            }
             if run.jobs.send(Job::Close(tx)).is_err() {
                 return true;
             }
@@ -1085,6 +1088,18 @@ fn log_line(l: &str) {
     crate::commands::dlog(&format!("engine: {l}"));
 }
 
+/// The folder of ships' points (urb-fetch's FileKeys) inside the state
+/// folder `dir`, shared by every identity that runs from it: a point is
+/// public, and a comet made after another one then finds the publishers'
+/// points on disk instead of asking the roller. Not for a fake ship, whose
+/// network is the fleet's.
+fn key_cache(dir: &Path, fake: Option<&str>) -> Option<std::rc::Rc<dyn urb_engine::keys::KeyStore>> {
+    fake.is_none().then(|| std::rc::Rc::new(urb_engine::host::keys::FileKeys::new(dir.join(KEYS))) as _)
+}
+
+/// key_cache's folder in the state folder
+const KEYS: &str = "keys";
+
 /// The host's thread: find or mine the identity, open it, then take jobs
 /// and turn the host until closed.
 fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: Receiver<Job>) {
@@ -1126,6 +1141,9 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
     }
     step("Joining the Urbit network");
     let mut host = Host::new(io, random);
+    if let Some(keys) = key_cache(dir, fake) {
+        host.set_keys(keys);
+    }
     let our = match host.open(fake.is_some()) {
         Ok(o) => o,
         Err(f) => return fail(f.message),
@@ -1137,6 +1155,10 @@ fn host_thread(dir: &Path, fake: Option<&str>, inner: &Arc<Mutex<Inner>>, jobs: 
         let mut g = inner.lock().unwrap();
         if !(g.discard && dir.join(UNCLAIMED).exists()) {
             g.status = Status::Ready { our };
+            // an exported identity still running here gets the reader's banner
+            if fake.is_none() {
+                crate::render::set_exported_running(crate::cometid::exported_at(dir));
+            }
         } else {
             drop(g);
             let _ = host.close();
@@ -1476,13 +1498,15 @@ pub fn thread_page(key: &str) -> Option<String> {
     (segs.iter().all(ok)).then(|| format!("/{}", segs.join("/")))
 }
 
-/// The most of a public comment list the reader takes.
+/// The most of a public comment list, or of any other `/pub` list, the
+/// reader takes. A list over it is taken as empty.
 pub const THREAD_MAX: usize = 1024 * 1024;
 
 /// A page's public comment list, `{"v":1,"comments":[{"id", "author",
-/// "when", "body"}]}`, oldest first. A comment without an author or a body
-/// is skipped, other fields are ignored, and a list over THREAD_MAX or not
-/// that shape is empty.
+/// "when", "body"}]}`, oldest first. A comment without a body, or whose
+/// author is not a @p, is skipped (a publisher must not pass a comment off
+/// as the reader's own), other fields are ignored, and a list over
+/// THREAD_MAX or not that shape is empty.
 pub fn thread_list(cord: &str) -> Vec<PubComment> {
     if cord.len() > THREAD_MAX {
         return Vec::new();
@@ -1494,7 +1518,7 @@ pub fn thread_list(cord: &str) -> Vec<PubComment> {
             let text = |k: &str| c.get(k).and_then(|x| x.as_str()).map(String::from);
             Some(PubComment {
                 id: text("id").unwrap_or_default(),
-                author: text("author")?,
+                author: text("author").filter(|a| crate::urb::is_patp(a))?,
                 when: c.get("when").and_then(|w| w.as_i64().or_else(|| w.as_f64().map(|f| f as i64))).unwrap_or(0),
                 body: text("body")?,
             })
@@ -1520,6 +1544,9 @@ fn cord_of(r: Result<Reply, Failure>) -> Result<Option<String>, String> {
 
 /// `/pub/comments`'s cord: one published page's name a line
 pub fn open_names(cord: &str) -> Vec<String> {
+    if cord.len() > THREAD_MAX {
+        return Vec::new();
+    }
     cord.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
 }
 
@@ -1529,6 +1556,9 @@ pub fn open_names(cord: &str) -> Vec<String> {
 /// is not that (no key, a time that is not a number, a tab too many or too
 /// few) is skipped.
 pub fn page_titles(cord: &str) -> Vec<PageTitle> {
+    if cord.len() > THREAD_MAX {
+        return Vec::new();
+    }
     cord.lines()
         .filter_map(|l| {
             let l = l.strip_suffix('\r').unwrap_or(l);
@@ -1547,6 +1577,9 @@ pub fn page_titles(cord: &str) -> Vec<PageTitle> {
 /// `<until>` the unix second the page's comet cap lasts to. A line that is
 /// not that is skipped; a mode not known is open.
 pub fn comet_policies(cord: &str) -> Vec<(String, Comets)> {
+    if cord.len() > THREAD_MAX {
+        return Vec::new();
+    }
     cord.lines()
         .filter_map(|l| {
             let t: Vec<&str> = l.split_whitespace().collect();
@@ -1749,6 +1782,33 @@ mod tests {
         let big = format!("{{\"comments\":[{{\"author\":\"~zod\",\"body\":\"{}\"}}]}}", "x".repeat(THREAD_MAX));
         assert!(thread_list(&big).is_empty(), "over the cap is empty");
         assert_eq!(open_names("/blog/post\n\n /notes/a \n"), ["/blog/post", "/notes/a"]);
+    }
+
+    #[test]
+    fn a_comment_whose_author_is_not_a_ship_is_dropped() {
+        let got = thread_list(
+            r#"{"comments":[
+              {"author":"~dozzod-doznec-sampel-palnet","body":"mine, faked"},
+              {"author":"~sampel-palnet","body":"real"},
+              {"author":"~dozzod-doznec-sampel-palnet ","body":"padded"},
+              {"author":"~DOZZOD-doznec-sampel-palnet","body":"upper"},
+              {"author":"sampel-palnet","body":"no sig"},
+              {"author":"~notaship","body":"not a name"},
+              {"author":"","body":"empty"}]}"#,
+        );
+        let who: Vec<&str> = got.iter().map(|c| c.author.as_str()).collect();
+        assert_eq!(who, ["~dozzod-doznec-sampel-palnet", "~sampel-palnet"]);
+    }
+
+    #[test]
+    fn every_pub_list_over_the_cap_is_empty() {
+        let fill = |line: &str| line.repeat(THREAD_MAX / line.len() + 1);
+        assert!(open_names(&fill("/a\n")).is_empty(), "open_names");
+        assert!(page_titles(&fill("/a\t1\tA\n")).is_empty(), "page_titles");
+        assert!(comet_policies(&fill("/a held\n")).is_empty(), "comet_policies");
+        // at the cap, still read
+        let at = "/a\n".repeat(THREAD_MAX / 3);
+        assert_eq!(open_names(&at).len(), THREAD_MAX / 3);
     }
 
     #[test]
@@ -2225,5 +2285,73 @@ mod tests {
         assert!(second.claimed() && second.exported_at().is_none());
         eprintln!("B is {our_a}, read {} ({} bytes)", p.key, p.body.len());
         second.close();
+    }
+
+    #[test]
+    fn a_real_identity_keeps_ships_points_in_the_state_folder() {
+        // Without this the engine started with no key cache, and every
+        // comet's first read of a publisher waited on the roller.
+        let d = std::env::temp_dir().join(format!("engine-keys-{}", std::process::id()));
+        assert!(key_cache(&d, None).is_some(), "a real identity gets the cache");
+        assert!(key_cache(&d, Some("~zod")).is_none(), "a fake ship is the fleet's");
+        let src = include_str!("engine.rs");
+        let wired = src.find(&["if let Some(keys) = key_cache(dir, fake) {\n", "        host.set_keys(keys);"].concat());
+        let opened = src.find(&["let our = match host.open(", "fake.is_some()) {"].concat());
+        assert!(matches!((wired, opened), (Some(w), Some(o)) if w < o), "set_keys must come before open");
+    }
+
+    /// The second comet in one state folder, live, reads only: a comet
+    /// reads urb://~nisfeb/start, is set aside as an import sets it aside,
+    /// and a new comet mined in the same folder reads it again. With the
+    /// key cache its first read skips the roller. A third comet in a fresh
+    /// folder, with no cache, is the control. Never writes to a ship.
+    #[test]
+    #[ignore = "live: LATTICE_LIVE_KEYS=1"]
+    fn a_second_comet_reads_from_the_key_cache_live() {
+        if std::env::var("LATTICE_LIVE_KEYS").as_deref() != Ok("1") {
+            eprintln!("skipped: LATTICE_LIVE_KEYS=1 is not set");
+            return;
+        }
+        const START: &str = "urb://~nisfeb/start";
+        let base = std::env::temp_dir().join(format!("engine-keys-live-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let ready = |e: &Engine| {
+            e.start();
+            let t = Instant::now();
+            while !matches!(e.status(), Status::Ready { .. }) {
+                assert!(t.elapsed() < Duration::from_secs(300), "never ready: {:?}", e.status());
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        };
+        let first_read = |e: &Engine, label: &str| {
+            ready(e);
+            let t = Instant::now();
+            e.read(START, Duration::from_secs(120), true).expect("reads the start page");
+            let took = t.elapsed();
+            eprintln!("{label}: first read {took:?} as {}", e.identity().unwrap_or_default());
+            took
+        };
+        let shared = base.join("shared");
+        let a = Engine::with(shared.clone(), None);
+        first_read(&a, "comet 1");
+        assert!(a.close());
+        assert!(std::fs::read_dir(shared.join(KEYS)).map(|d| d.count() > 0).unwrap_or(false), "points were kept");
+        // set aside as an import does, keeping the cache
+        let aside = shared.join("aside");
+        std::fs::create_dir_all(&aside).unwrap();
+        for e in std::fs::read_dir(&shared).unwrap().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n == "comet.key" || n.contains(".db") || n == UNCLAIMED {
+                std::fs::rename(e.path(), aside.join(&n)).unwrap();
+            }
+        }
+        let b = Engine::with(shared.clone(), None);
+        let warm = first_read(&b, "comet 2, same folder");
+        b.close();
+        let c = Engine::with(base.join("fresh"), None);
+        let cold = first_read(&c, "comet 3, fresh folder");
+        c.close();
+        eprintln!("second comet {warm:?}, control {cold:?}");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

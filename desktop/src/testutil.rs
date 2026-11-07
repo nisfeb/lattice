@@ -151,3 +151,14 @@ fn reason(status: u16) -> &'static str {
         _ => "Status",
     }
 }
+
+/// The bodies of every `<name>.corrupt-*` copy store::read_json moved
+/// aside in `dir`, oldest name first.
+pub fn corrupt_copies(dir: &std::path::Path, name: &str) -> Vec<Vec<u8>> {
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default();
+    paths.retain(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&format!("{name}.corrupt-"))));
+    paths.sort();
+    paths.iter().filter_map(|p| std::fs::read(p).ok()).collect()
+}

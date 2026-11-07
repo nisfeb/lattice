@@ -163,18 +163,37 @@ fn sealed(html: &str) -> String {
 /// Load the document into a hidden window, print it to `path` and close
 /// the window again.
 fn print_to(app: &AppHandle, html: &str, path: &Path, page: Page) -> Result<(), String> {
-    use tauri::Manager as _;
-    // the old file goes first: the dialog already asked about replacing
-    // it, and a file left from before must not read as this export (macOS
-    // waits for the file to appear)
-    match std::fs::remove_file(path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("could not replace {}: {e}", path.display())),
+    let seq = SEQ.fetch_add(1, Ordering::SeqCst);
+    replace_with(path, seq, |part| print_part(app, html, part, page, seq))
+}
+
+/// The file the print writes before it replaces `path`: beside it, so the
+/// rename stays on one filesystem, and new, so a file left from before
+/// cannot read as this export (macOS waits for the file to appear).
+fn part_path(path: &Path, seq: usize) -> PathBuf {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    path.with_file_name(format!(".{name}.{}-{seq}.part.pdf", std::process::id()))
+}
+
+/// Run `print` into a new file beside `path`, and only when it succeeds
+/// rename that over `path`. A failed or abandoned print leaves the file
+/// the user chose to replace exactly as it was.
+fn replace_with(path: &Path, seq: usize, print: impl FnOnce(&Path) -> Result<(), String>) -> Result<(), String> {
+    let part = part_path(path, seq);
+    let _ = std::fs::remove_file(&part);
+    let r = print(&part).and_then(|()| {
+        std::fs::rename(&part, path).map_err(|e| format!("could not replace {}: {e}", path.display()))
+    });
+    if r.is_err() {
+        std::fs::remove_file(&part).ok();
     }
+    r
+}
+
+fn print_part(app: &AppHandle, html: &str, path: &Path, page: Page, seq: usize) -> Result<(), String> {
+    use tauri::Manager as _;
     // a file of its own, not a data: URL, which tauri refuses without a
     // feature for it. Private, and gone again once printed.
-    let seq = SEQ.fetch_add(1, Ordering::SeqCst);
     let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
     let doc = dir.join(format!("pdf-{}-{seq}.html", std::process::id()));
@@ -551,6 +570,28 @@ mod tests {
         assert!(other.is_empty(), "sealed loads: {other:?}");
         assert!(text.contains("own text"), "the page itself still prints: {text}");
         assert!(!text.contains(&mark), "and no local file: {text}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_failed_export_leaves_the_file_it_was_replacing() {
+        let dir = std::env::temp_dir().join(format!("lattice-pdf-replace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("old.pdf");
+        std::fs::write(&p, b"the old export").unwrap();
+        let r = replace_with(&p, 1, |part| {
+            assert_ne!(part, p.as_path(), "the print must not write over the old file");
+            assert_eq!(std::fs::read(&p).unwrap(), b"the old export", "still there while printing");
+            std::fs::write(part, b"half").unwrap();
+            Err("the PDF took too long to print".into())
+        });
+        assert!(r.is_err());
+        assert_eq!(std::fs::read(&p).unwrap(), b"the old export");
+        assert!(!part_path(&p, 1).exists(), "the half-written part is gone");
+        // and a print that works replaces it whole
+        replace_with(&p, 2, |part| std::fs::write(part, b"the new export").map_err(|e| e.to_string())).unwrap();
+        assert_eq!(std::fs::read(&p).unwrap(), b"the new export");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no part left beside it");
         std::fs::remove_dir_all(&dir).ok();
     }
 

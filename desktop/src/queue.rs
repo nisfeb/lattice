@@ -126,11 +126,28 @@ pub fn resolve_key(cfg: &config::Config) -> (String, bool) {
 /// connected identity changes, the key resets and the next queue op freezes
 /// a fresh one; the old directory stays on disk, orphaned rather than
 /// misdelivered.
-pub fn key_after_connect(cfg: &config::Config, new_ship: &str) -> String {
-    if !cfg.ship.is_empty() && cfg.ship != new_ship {
-        String::new()
+///
+/// A legacy config froze its key before `ship` was recorded, so `cfg.ship`
+/// is empty and only the key says whose queue it is. An @p key names its
+/// ship. A URL key belongs to whoever the cookie stored for that URL was
+/// for before this connect replaced it (`key_ship`, read by the caller).
+/// When neither names the new ship, the key resets: an unknown owner is
+/// treated as a different ship, so its queue is orphaned on disk rather
+/// than replayed into this one.
+pub fn key_after_connect(cfg: &config::Config, new_ship: &str, key_ship: Option<&str>) -> String {
+    let owner = if !cfg.ship.is_empty() {
+        Some(cfg.ship.as_str())
+    } else if cfg.queue_key.is_empty() {
+        return String::new();
+    } else if cfg.queue_key.starts_with('~') {
+        Some(cfg.queue_key.as_str())
     } else {
+        key_ship
+    };
+    if owner == Some(new_ship) {
         cfg.queue_key.clone()
+    } else {
+        String::new()
     }
 }
 
@@ -268,17 +285,16 @@ pub fn del_sent_at(dir: &Path, name: &str, sent: &Value) -> Result<(), String> {
     }
 }
 
+/// A missing log is empty. One that will not parse is moved aside and
+/// logged first (store::read_json), so the next push cannot erase it.
 pub fn read_ops_at(path: &Path) -> Vec<Op> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<Vec<Op>>(&s).ok())
-        .unwrap_or_default()
+    crate::store::read_json(path)
 }
 
-/// ponytail: the op log is one file rewritten whole. Ops are user-driven and
-/// rare (a delete, a rename), so the cost is nothing and the ordering is free.
-/// Two windows queueing ops in the same instant could lose one; per-op files
-/// with a sequence allocator is the upgrade if that ever stops being theory.
+/// The op log is one file rewritten whole. Ops are user-driven and rare (a
+/// delete, a rename), so the cost is nothing and the ordering is free. Each
+/// rewrite holds the log's file lock (store::locked), so two windows, or two
+/// copies of the app, queueing ops in the same instant cannot lose one.
 ///
 /// The client deletes an op by its seq once the op landed, so a seq must
 /// never be issued twice. Taking max + 1 of the log alone reissued 1 once the
@@ -286,6 +302,10 @@ pub fn read_ops_at(path: &Path) -> Vec<Op> {
 /// deleted the new one. The last seq issued is kept beside the log
 /// (`ops.json.seq`), as IndexedDB's autoIncrement keeps its own.
 pub fn push_op_at(path: &Path, rest: Value) -> Result<u64, String> {
+    crate::store::locked(path, || push_op_locked(path, rest))?
+}
+
+fn push_op_locked(path: &Path, rest: Value) -> Result<u64, String> {
     let mut ops = read_ops_at(path);
     let hw = path.with_extension("json.seq");
     let last = std::fs::read_to_string(&hw).ok().and_then(|s| s.trim().parse::<u64>().ok());
@@ -298,10 +318,12 @@ pub fn push_op_at(path: &Path, rest: Value) -> Result<u64, String> {
 }
 
 pub fn del_op_at(path: &Path, seq: u64) -> Result<(), String> {
-    let mut ops = read_ops_at(path);
-    ops.retain(|o| o.seq != seq);
-    let body = serde_json::to_vec(&ops).map_err(|e| e.to_string())?;
-    write_atomic(path, &body)
+    crate::store::locked(path, || {
+        let mut ops = read_ops_at(path);
+        ops.retain(|o| o.seq != seq);
+        let body = serde_json::to_vec(&ops).map_err(|e| e.to_string())?;
+        write_atomic(path, &body)
+    })?
 }
 
 //  ── the webview's view of all that ───────────────────────────────────────
@@ -577,6 +599,46 @@ mod tests {
     }
 
     #[test]
+    fn an_op_log_that_will_not_parse_is_moved_aside_not_erased() {
+        let d = tmp("badops");
+        let p = d.join("ops.json");
+        std::fs::write(&p, b"[{\"seq\":1,").unwrap();
+        assert!(read_ops_at(&p).is_empty());
+        push_op_at(&p, json!({"op": "delete", "name": "a"})).unwrap();
+        assert_eq!(crate::testutil::corrupt_copies(&d, "ops.json"), [b"[{\"seq\":1,".to_vec()]);
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn ops_pushed_at_once_from_two_writers_are_all_kept() {
+        // Each push opens its own lock handle, as a second copy of the app
+        // would, so this is the cross-process lock, not a shared Mutex.
+        let d = tmp("raceops");
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("ops.json");
+        let ts: Vec<_> = (0..4)
+            .map(|t| {
+                let p = p.clone();
+                std::thread::spawn(move || {
+                    for i in 0..25 {
+                        push_op_at(&p, json!({"op": "delete", "name": format!("{t}-{i}")})).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for t in ts {
+            t.join().unwrap();
+        }
+        let ops = read_ops_at(&p);
+        assert_eq!(ops.len(), 100, "an op was lost");
+        let mut seqs: Vec<u64> = ops.iter().map(|o| o.seq).collect();
+        seqs.sort();
+        seqs.dedup();
+        assert_eq!(seqs.len(), 100, "a seq was issued twice");
+        std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
     fn a_ship_switch_resets_the_frozen_key() {
         // the frozen key keeps ONE ship's directory stable; reconnecting to a
         // DIFFERENT ship must not inherit it, or ship A's edits replay into B
@@ -585,14 +647,28 @@ mod tests {
             queue_key: "~shipa".into(),
             ..Default::default()
         };
-        assert_eq!(key_after_connect(&cfg, "~shipa"), "~shipa");
-        assert_eq!(key_after_connect(&cfg, "~shipb"), "");
+        assert_eq!(key_after_connect(&cfg, "~shipa", None), "~shipa");
+        assert_eq!(key_after_connect(&cfg, "~shipb", None), "");
         // same URL repointed at a new ship: the recorded @p still catches it
         cfg.queue_key = "http://beast:8080".into();
-        assert_eq!(key_after_connect(&cfg, "~shipb"), "");
-        // first-ever connect (no ship recorded yet): whatever froze, stays
-        cfg.ship = String::new();
-        assert_eq!(key_after_connect(&cfg, "~shipb"), "http://beast:8080");
+        assert_eq!(key_after_connect(&cfg, "~shipb", None), "");
+    }
+
+    #[test]
+    fn a_legacy_config_resets_its_key_for_a_different_ship() {
+        // A legacy config has a frozen key but no recorded ship. It used to
+        // keep the key for any ship, so ship A's queued edits replayed into B.
+        let mut cfg = config::Config { queue_key: "~shipa".into(), ..Default::default() };
+        assert_eq!(key_after_connect(&cfg, "~shipa", None), "~shipa", "an @p key names its ship");
+        assert_eq!(key_after_connect(&cfg, "~shipb", None), "");
+        // a URL key: the old cookie for that URL says whose it was
+        cfg.queue_key = "http://beast:8080".into();
+        assert_eq!(key_after_connect(&cfg, "~shipa", Some("~shipa")), "http://beast:8080");
+        assert_eq!(key_after_connect(&cfg, "~shipb", Some("~shipa")), "");
+        // and with no way to tell, orphaned rather than misdelivered
+        assert_eq!(key_after_connect(&cfg, "~shipb", None), "");
+        // nothing frozen yet: nothing to keep
+        assert_eq!(key_after_connect(&config::Config::default(), "~shipb", None), "");
     }
 
     /// A relaunch, end to end, with nothing mocked but the passage of time.

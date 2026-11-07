@@ -75,11 +75,10 @@ pub struct MountSpec {
     pub ship: String,
 }
 
+/// A missing config is the default. One that will not parse is moved aside
+/// and logged first (store::read_json), so the next save cannot erase it.
 pub fn load_at(p: &Path) -> Config {
-    std::fs::read_to_string(p)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+    crate::store::read_json(p)
 }
 
 /// Via a temp file and a rename. A plain write truncates config.json first,
@@ -136,10 +135,13 @@ pub fn try_update_at<T>(
     f: impl FnOnce(&mut Config) -> Result<T, String>,
 ) -> Result<T, String> {
     let _guard = lock().lock().unwrap();
-    let mut cfg = load_at(p);
-    let out = f(&mut cfg)?;
-    save_at(p, &cfg)?;
-    Ok(out)
+    // and across processes: a second copy of the app on the same config
+    crate::store::locked(p, || {
+        let mut cfg = load_at(p);
+        let out = f(&mut cfg)?;
+        save_at(p, &cfg)?;
+        Ok(out)
+    })?
 }
 
 /// Load, let `f` mutate in place, save unconditionally, all under the one
@@ -226,6 +228,22 @@ mod tests {
         std::fs::remove_file(&old).ok();
     }
 
+    #[test]
+    fn a_config_that_will_not_parse_is_moved_aside_before_the_next_save() {
+        let d = tmp("corrupt");
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join("config.json");
+        std::fs::write(&p, b"{\"url\": \"http://kept:8080\", oops").unwrap();
+        update_at(&p, |c| c.url = "http://new:8080".into()).unwrap();
+        assert_eq!(load_at(&p).url, "http://new:8080");
+        assert_eq!(
+            crate::testutil::corrupt_copies(&d, "config.json"),
+            [b"{\"url\": \"http://kept:8080\", oops".to_vec()],
+            "the unreadable config must survive the save that follows it"
+        );
+        std::fs::remove_dir_all(&d).ok();
+    }
+
     use proptest::prelude::*;
 
     fn tmp(tag: &str) -> std::path::PathBuf {
@@ -246,10 +264,12 @@ mod tests {
         // panic the app at startup
         #[test]
         fn load_is_total_on_arbitrary_bytes(bytes in proptest::collection::vec(any::<u8>(), 0..256)) {
-            let p = tmp("junk");
+            let d = tmp("junk");
+            std::fs::create_dir_all(&d).unwrap();
+            let p = d.join("config.json");
             std::fs::write(&p, &bytes).unwrap();
             let _ = load_at(&p);
-            std::fs::remove_file(&p).ok();
+            std::fs::remove_dir_all(&d).ok();
         }
 
         // save -> load is the identity for any field content (quotes,
