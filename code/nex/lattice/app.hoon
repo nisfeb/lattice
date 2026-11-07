@@ -1315,8 +1315,10 @@
   ::  the answer as before, except for a ?cas=1 save, which the writer
   ::  may have refused: that answers stale, and the editor reads the page
   ::  again (finding its own text there if it did land).
-  ;<  ph=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of u.name))
-  =/  mine=?  &(=(src.ph `src) (gth rev.ph prev))
+  ;<  ph=[rev=@ud src=(unit @t)]  bind:m
+    ?:  =(src.pc `src)  (pure:(fiber:fiber:nexus ,[rev=@ud src=(unit @t)]) pc)
+    (save-landed (pax-of u.name) prev)
+  =/  mine=?  &(=(src.ph `src) |((gth rev.ph prev) =(src.pc `src)))
   ?:  &(cas !mine)
     (send-err eyre-id 409 (crip "stale: the page is at rev {(num-tape:pg rev.ph)}"))
   ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
@@ -1328,6 +1330,20 @@
       ['conflicted' b+conflicted]
       ['kept' s+kept]
   ==
+::  +save-landed: the page's head once a write past `prev` shows there.
+::  The writer answers the poke at its first wait, which can be before
+::  the write is down, so the head is read again, 50 ms apart, for up to
+::  a second. A head still at `prev` then is a write the writer refused.
+++  save-landed
+  |=  [rel=path prev=@ud]
+  =/  m  (fiber:fiber:nexus ,[rev=@ud src=(unit @t)])
+  ^-  form:m
+  =/  n=@ud  0
+  |-  ^-  form:m
+  ;<  ph=[rev=@ud src=(unit @t)]  bind:m  (page-head rel)
+  ?:  |((gth rev.ph prev) (gte n 20))  (pure:m ph)
+  ;<  ~  bind:m  (sleep:io (div ~s1 20))
+  $(n +(n))
 ::  +save-wid: the owner's save's writer id, from ?by= (a window's session
 ::  id, a-z 0-9 and -, at most 24), else 'owner'. +key-wid: a key's.
 ++  save-wid

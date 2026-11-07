@@ -24,6 +24,7 @@ const VIEW = { viewport: { width: 1400, height: 900 } };
 
 const browser = await launchBrowser();
 const p1 = await openPage(browser, env, VIEW);
+p1.on('dialog', (d) => d.accept().catch(() => {}));
 let p2 = null, pB = null;
 
 //  ship reads and writes, made from inside any open page (same cookie)
@@ -102,6 +103,8 @@ try {
     JSON.stringify(await lockState(p1)));
 
   p2 = await openPage(browser, env, VIEW);
+
+  p2.on('dialog', (d) => d.accept().catch(() => {}));
   await p2.goto(url('tw/a'), { waitUntil: 'domcontentloaded', timeout: 60000 });
   await shows(p2, 'tw/a');
   const ro2 = await waitFor(async () => { const s = await lockState(p2); return s.bar && s.ro && s; }, 30000);
@@ -175,6 +178,7 @@ try {
   };
   await p1.setRequestInterception(true); p1.on('request', gate);
   pB = await openPage(browser, env, VIEW);
+  pB.on('dialog', (d) => d.accept().catch(() => {}));
   await pB.setRequestInterception(true); pB.on('request', gate);
   await pB.goto(url('tw/c'), { waitUntil: 'domcontentloaded', timeout: 60000 });
   await shows(pB, 'tw/c');

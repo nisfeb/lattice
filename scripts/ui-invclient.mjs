@@ -40,6 +40,8 @@ await seed(env, [['qi/tasks', TASKS], ['qi/img', '# I\n\n![pic](https://outside.
 
 const b = await launchBrowser();
 const p = await openPage(b, env, { viewport: { width: 1400, height: 900 } });
+//  a navigation over unsaved text asks first (beforeunload)
+p.on('dialog', (d) => d.accept().catch(() => {}));
 //  the replay's answers, by rule: [test, response] pairs
 let rules = [];
 let shipDown = false;
@@ -103,6 +105,7 @@ try {
   await p.waitForFunction(() => document.getElementById('src').value.includes('- [x] two'), { timeout: 10000 })
     .catch(() => {});
   check('a box whose line is as drawn still ticks', (await srcVal()).includes('- [x] two'));
+  for (let i = 0; i < 30 && !((await shipBody('qi/tasks')) || '').includes('- [x] two'); i++) await sleep(1000);
 
   // ── 2. remote images wait for "Load outside content" ──────────────────────
   await open('qi/img', 'outside.invalid');

@@ -738,8 +738,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     setDegraded(false);
     if (conflicts.length) {
-      st('synced, with ' + conflicts.length + ' version(s) kept as pages of their own: '
-        + conflicts.join(', '), false);
+      st('synced — ' + conflicts.length + ' conflict(s): your offline version won; '
+        + 'the other is saved at ' + conflicts.join(', '), false);
     } else st('offline edits synced');
     if (knows.length && knowLive()) loadKnow();
     loadTree();

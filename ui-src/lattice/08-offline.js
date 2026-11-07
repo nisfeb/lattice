@@ -968,8 +968,8 @@
     }
     setDegraded(false);
     if (conflicts.length) {
-      st('synced, with ' + conflicts.length + ' version(s) kept as pages of their own: '
-        + conflicts.join(', '), false);
+      st('synced — ' + conflicts.length + ' conflict(s): your offline version won; '
+        + 'the other is saved at ' + conflicts.join(', '), false);
     } else st('offline edits synced');
     // reconcile ONLY after the drain. refreshAll on reconnect would repaint
     // queued pages from the server dump before their edits landed (gap 4)
