@@ -6234,7 +6234,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (d.link) { linkSeen(name, true); linkStale.delete(name); linkCf.delete(name); }
     if (painted && src.value !== shown) {
       if (current === name && typeof d.comments === 'boolean') cmtShow(name, d.comments);
-      if (current === name && d.body === shown && d.rev && mode !== 'know') curRev = d.rev;
+      if (current === name && d.body === shown && d.rev && mode !== 'know') { curRev = d.rev; shipText.set(name, d.body); }
       return true;
     }
     if (!d.link) pageCache.set(name, d);
@@ -6258,8 +6258,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     setOpen(name, { readOnly: true, kind: d.kind,
       url: '/apps/lattice/app?name=' + encodeURIComponent(name) });
     curKind = d.kind;
-    curRev = d.rev || 0;
-    shipText.set(name, d.body);
+    curRev = quiet ? 0 : d.rev || 0;
+    if (quiet) shipText.delete(name); else shipText.set(name, d.body);
     refreshTexButton();
     src.value = d.body;
     dirty = false;

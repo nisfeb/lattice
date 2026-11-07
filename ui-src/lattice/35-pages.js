@@ -234,7 +234,7 @@
       //  what was painted is the ship's text, at this rev: the typing
       //  since was made on it, so this is the rev its save claims (a paint
       //  from a moved page's tree row carried the source's rev)
-      if (current === name && d.body === shown && d.rev && mode !== 'know') curRev = d.rev;
+      if (current === name && d.body === shown && d.rev && mode !== 'know') { curRev = d.rev; shipText.set(name, d.body); }
       return true;
     }
     // Cache and snapshot BELOW the guards, not above. A stale or superseded
@@ -265,8 +265,11 @@
     setOpen(name, { readOnly: true, kind: d.kind,
       url: '/apps/lattice/app?name=' + encodeURIComponent(name) });
     curKind = d.kind;
-    curRev = d.rev || 0;
-    shipText.set(name, d.body);
+    //  a quiet paint comes from a cache or a tab's snapshot, whose rev may
+    //  be older than its text: no claim is made from it. The read that
+    //  follows (or the next save's answer) sets the rev saves claim.
+    curRev = quiet ? 0 : d.rev || 0;
+    if (quiet) shipText.delete(name); else shipText.set(name, d.body);
     refreshTexButton();
     src.value = d.body;
     dirty = false;
