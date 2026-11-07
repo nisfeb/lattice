@@ -5281,8 +5281,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return n && n.link && n.link.host ? n.link : null;
   }
   function linkFrom(lk) {
-    const m = /\/page\/(.+)\/code$/.exec(lk.path || '');
-    return lk.host + '/' + (m ? m[1] : String(lk.path || '').replace(/^\/+/, ''));
+    const m = /\/page\/(.+)\/(code|dir-index)$/.exec(lk.path || '');
+    return lk.host + '/' + (m ? m[1] + (m[2] === 'code' ? '' : '/') : String(lk.path || '').replace(/^\/+/, ''));
   }
   function daLocal(da) {
     const m = /^~(\d+)\.(\d+)\.(\d+)\.\.(\d+)\.(\d+)\.(\d+)/.exec(da || '');
@@ -5836,7 +5836,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       item('del', 'Delete', () => treeDelete(row));
     } else {
       item('link', 'Copy link', () => copyLink(swmUrb(t.it)));
-      item('in', 'Move into my pages', () => askMoveIn(t.it));
+      if (!swmDir(t.it.path)) item('in', 'Move into my pages', () => askMoveIn(t.it));
       item('del', 'Remove from list', () => treeDelete(row));
     }
     m.onkeydown = (e) => {
@@ -7766,7 +7766,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     const j = await r.json();
     $('shres').textContent = shp + ' can now ' + mode + ' ' + page +
-      (j.notified ? ' — notified.' : j.folder ? ', and each page is sent to them.'
+      (j.notified ? ' — notified.' : j.folder ? ', and they are told of the folder.'
         : ' — could not notify (offline?); the grant holds.');
     loadPerms();          // the peers panel shows the auto-group
   };
@@ -7928,10 +7928,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   });
 
 // ── src/69-shared.js ──────────────────────────────────────────────────────
+  const swmDir = (p) => /\/page\/.+\/dir-index$/.test(p);
+  const swmRel = (p) => '/' + /\/page\/(.+)\/dir-index$/.exec(p)[1];
   const sharedName = (p) => {
+    if (swmDir(p)) return swmRel(p).slice(1) + '/';
     const m = /\/page\/(.+)\/code$/.exec(p);
     return m ? m[1] : p.replace(/^\/+/, '');
   };
+  const swmRead = (host, rel) => api + '?url=' + encodeURIComponent('urb://' + host + rel);
   async function loadShared(bg = false) {
     let r = null;
     try { r = await (bg ? bgFetch : fetch)(api + '/shared-with-me'); } catch {}
@@ -7947,6 +7951,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     swmTimer = setTimeout(loadShared, 300);
     let j = null;
     try { j = JSON.parse(data); } catch {}
+    if (j && j.host && j.path) swmPages.delete(j.host + ' ' + j.path);
     if (j && j.op === 'add' && j.host && j.path) shareToast(j);
   };
   let swmFly = null;
@@ -7962,16 +7967,17 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const t = toastEl = document.createElement('a');
     t.className = 'swtoast';
     t.setAttribute('role', 'status');
-    t.href = '/apps/lattice/app?grub=' + encodeURIComponent(j.path) +
-      '&ship=' + encodeURIComponent(j.host);
+    t.href = swmDir(j.path) ? swmRead(j.host, swmRel(j.path) + '/')
+      : '/apps/lattice/app?grub=' + encodeURIComponent(j.path) + '&ship=' + encodeURIComponent(j.host);
     t.textContent = j.host + ' shared ' + sharedName(j.path) + ' with you';
     t.title = 'open it';
     document.body.appendChild(t);
     setTimeout(() => t.remove(), 8000);
   }
   async function removeShared(it) {
+    const kind = swmDir(it.path) ? 'folder' : 'page';
     const what = 'remove ' + it.host + '/' + sharedName(it.path) + ' from shared with me?\n'
-      + 'Nothing is deleted: the page is ' + it.host + "'s, and their grant to you stays. "
+      + 'Nothing is deleted: the ' + kind + ' is ' + it.host + "'s, and their grant to you stays. "
       + 'It comes back here if they share it again.';
     if (!(await askDanger(what, 'remove'))) return false;
     const r = await busyFetch(api + '/shared-with-me-del?host=' + encodeURIComponent(it.host) +
@@ -7982,6 +7988,65 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return true;
   }
   const SWM = ' shared';
+  const SWM_ROWS = 200;
+  const swmShown = new Map();          // fold key -> rows drawn
+  const moreRow = (key, left, depth) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'swmore';
+    b.style.marginLeft = (depth * 14) + 'px';
+    b.textContent = left + ' more\u2026';
+    b.onclick = () => { swmShown.set(key, (swmShown.get(key) || SWM_ROWS) + SWM_ROWS); renderTree(); };
+    treeList.appendChild(b);
+  };
+  const swmPages = new Map();
+  async function loadSwmPages(it) {
+    const k = it.host + ' ' + it.path;
+    swmPages.set(k, 'wait');
+    let rows = null;
+    try {
+      const r = await fetch(api + '/folder-pages?host=' + encodeURIComponent(it.host) +
+        '&path=' + encodeURIComponent(swmRel(it.path)));
+      if (r.ok) rows = await r.json();
+    } catch {}
+    if (swmPages.get(k) === 'wait') swmPages.set(k, rows);
+    renderTree();
+  }
+  function renderSwmDir(it, host, coll) {
+    const key = SWM + '/' + host + '/' + it.path;
+    const okey = key + ' +';           // folded unless opened
+    const shut = !coll.includes(okey);
+    const rel = swmRel(it.path);
+    const row = folderRow(sharedName(it.path), 2, shut,
+      () => { paneColl.flip(okey); renderTree(); }, undefined, key);
+    row.classList.add('swdir');
+    row.title = host + ' ' + rel + '/';
+    const f = folds.find((x) => x.host === host && x.path === rel);
+    if (f && f.ok && f.new) row.append(foldBadge(f.new + ' new'));
+    const md = document.createElement('span');
+    md.className = 'swmode';
+    md.textContent = it.mode;
+    const ix = foldIx(host, rel);
+    const x = rmX('remove from this list (their grant is untouched)', () => removeShared(it));
+    row.append(md, ix, x);
+    rowMore(row, sharedName(it.path) + ' from ' + host);
+    treeList.appendChild(row);
+    if (shut) return;
+    let pages = f && f.ok ? f.pages : swmPages.get(host + ' ' + it.path);
+    if (pages === undefined && !(f && f.ok)) { loadSwmPages(it); pages = 'wait'; }
+    if (!Array.isArray(pages)) {
+      const n = document.createElement('div');
+      n.className = 'swnote';
+      n.style.marginLeft = '42px';
+      n.textContent = pages === 'wait' ? 'reading\u2026' : 'it does not read (unshared, or ' + host + ' is away)';
+      treeList.appendChild(n);
+      return;
+    }
+    const lim = swmShown.get(okey) || SWM_ROWS;
+    for (const p of pages.slice(0, lim))
+      foldPage(host, rel, p, 3, okey, () => (f && f.ok ? openFoldPage(f, p) : browseIn(swmRead(host, p.key))));
+    if (pages.length > lim) moreRow(okey, pages.length - lim, 3);
+  }
   function renderShared(coll) {
     const fold = (key, label, depth) => {
       const row = folderRow(label, depth, coll.includes(key),
@@ -7993,9 +8058,13 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!fold(SWM, 'shared with me', 0)) return;
     for (const host of [...new Set(sharedWithMe.map((s) => s.host))].sort()) {
       if (!fold(SWM + '/' + host, host, 1)) continue;
+      const hk = SWM + '/' + host;
       const mine = sharedWithMe.filter((s) => s.host === host)
         .sort((a, b) => sharedName(a.path).localeCompare(sharedName(b.path)));
+      const lim = swmShown.get(hk) || SWM_ROWS;
+      if (mine.length > lim) mine.length = lim;
       for (const it of mine) {
+        if (swmDir(it.path)) { renderSwmDir(it, host, coll); continue; }
         const a = document.createElement('a');
         a.className = 'pg swm';
         a.href = '/apps/lattice/app?grub=' + encodeURIComponent(it.path) +
@@ -8007,14 +8076,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         const md = document.createElement('span');
         md.className = 'swmode';
         md.textContent = it.mode;
-        const x = document.createElement('span');
-        x.className = 'swrm';
-        x.textContent = '×';
-        x.title = 'remove from this list (their grant is untouched)';
-        x.onclick = (e) => {
-          e.preventDefault(); e.stopPropagation();
-          removeShared(it);
-        };
+        const x = rmX('remove from this list (their grant is untouched)', () => removeShared(it));
         a.append(nm, md, x);
         rowMore(a, sharedName(it.path) + ' from ' + host);   // its Remove from list (34-treemenu.js)
         a.draggable = true;
@@ -8039,6 +8101,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         w.append(a, mv);
         treeList.appendChild(w);
       }
+      const all = sharedWithMe.filter((s) => s.host === host).length;
+      if (all > lim) moreRow(hk, all - lim, 2);
     }
   }
 
@@ -8119,7 +8183,6 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 // ── src/69x-follow.js ─────────────────────────────────────────────────────
   const FOL = ' following';
   const foldName = (f) => f.host + f.path;
-  const foldLeaf = (f, p) => p.key.slice(f.path.length + 1);
   const foldUrl = (host, path) => 'urb://' + host + path;
   async function loadFolds(bg = false) {
     let r = null;
@@ -8187,44 +8250,53 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         b.title = f.host + ' no longer shares this folder with you, or cannot be reached';
         row.append(b);
       } else if (f.new) row.append(foldBadge(f.new + ' new'));
-      const ix = document.createElement('a');
-      ix.className = 'folix';
-      ix.href = api + '?url=' + encodeURIComponent(foldUrl(f.host, f.path) + '/');
-      ix.textContent = '↗';
-      ix.title = 'open the folder\'s index';
-      ix.onclick = (e) => {
-        e.stopPropagation();
-        if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
-        e.preventDefault();
-        browseIn(ix.href);
-      };
-      const x = document.createElement('span');
-      x.className = 'swrm folrm';
-      x.textContent = '×';
-      x.title = 'unfollow';
-      x.onclick = (e) => { e.stopPropagation(); unfollowFold(f); };
-      row.append(ix, x);
+      const x = rmX('unfollow', () => unfollowFold(f));
+      x.classList.add('folrm');
+      row.append(foldIx(f.host, f.path), x);
       treeList.appendChild(row);
       if (coll.includes(key)) continue;
-      for (const p of f.pages) {
-        const a = document.createElement('a');
-        a.className = 'pg swm folpg' + (p.new ? ' new' : '');
-        a.href = api + '?url=' + encodeURIComponent(foldUrl(f.host, p.key));
-        a.title = f.host + p.key + (p.new ? ' (new)' : '');
-        const nm = document.createElement('span');
-        nm.className = 'swn';
-        nm.textContent = p.title || foldLeaf(f, p);
-        a.append(nm);
-        a.onclick = (e) => {
-          if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
-          e.preventDefault();
-          openFoldPage(f, p);
-        };
-        treeItem(a, 2, key + '/' + p.key);
-        a.style.marginLeft = '28px';
-        treeList.appendChild(a);
-      }
+      for (const p of f.pages) foldPage(f.host, f.path, p, 2, key, () => openFoldPage(f, p));
     }
+  }
+  function foldIx(host, rel) {
+    const ix = document.createElement('a');
+    ix.className = 'folix';
+    ix.href = api + '?url=' + encodeURIComponent(foldUrl(host, rel) + '/');
+    ix.textContent = '↗';
+    ix.title = 'open the folder\'s index';
+    ix.onclick = (e) => {
+      e.stopPropagation();
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+      e.preventDefault();
+      browseIn(ix.href);
+    };
+    return ix;
+  }
+  function rmX(title, fn) {
+    const x = document.createElement('span');
+    x.className = 'swrm';
+    x.textContent = '×';
+    x.title = title;
+    x.onclick = (e) => { e.preventDefault(); e.stopPropagation(); fn(); };
+    return x;
+  }
+  function foldPage(host, rel, p, depth, key, open) {
+    const a = document.createElement('a');
+    a.className = 'pg swm folpg' + (p.new ? ' new' : '');
+    a.href = api + '?url=' + encodeURIComponent(foldUrl(host, p.key));
+    a.title = host + p.key + (p.new ? ' (new)' : '');
+    const nm = document.createElement('span');
+    nm.className = 'swn';
+    nm.textContent = p.title || p.key.slice(rel.length + 1);
+    a.append(nm);
+    a.onclick = (e) => {
+      if (e.ctrlKey || e.metaKey || e.shiftKey || e.button) return;
+      e.preventDefault();
+      open();
+    };
+    treeItem(a, depth, key + '/' + p.key);
+    a.style.marginLeft = (depth * 14) + 'px';
+    treeList.appendChild(a);
   }
   function foldBadge(t) {
     const b = document.createElement('span');

@@ -180,10 +180,11 @@
   }
   // where a link points, as ~host/<their page>. The path names the page's
   // code grub under wherever lattice is installed there, so only the tail
-  // is read (the same rule as sharedName, 69-shared.js).
+  // is read (the same rule as sharedName, 69-shared.js). A folder shared
+  // whole names its index, and its address ends in a slash.
   function linkFrom(lk) {
-    const m = /\/page\/(.+)\/code$/.exec(lk.path || '');
-    return lk.host + '/' + (m ? m[1] : String(lk.path || '').replace(/^\/+/, ''));
+    const m = /\/page\/(.+)\/(code|dir-index)$/.exec(lk.path || '');
+    return lk.host + '/' + (m ? m[1] + (m[2] === 'code' ? '' : '/') : String(lk.path || '').replace(/^\/+/, ''));
   }
   // @da (ship UTC) in the viewer's own zone, as the history list shows it
   function daLocal(da) {

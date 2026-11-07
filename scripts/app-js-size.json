@@ -1,5 +1,5 @@
 {
-  "bytes": 449110,
+  "bytes": 454020,
   "grow": 4096,
-  "why": "hunt-2026-11-06-ui: main after 120 was 736,780 bytes. build-ui.mjs now leaves the sources' whole-line // comments out of the served app.js (287 KB of it); they stay in ui-src, and ui-app-comments.mjs proves the minified program is unchanged. The hunt's fixes and merges (59-md.js link and image tokens, the vim chord and read-only guards, the share and shared-with-me races, keepAside, cwBadge, stWork) net about +500 bytes of code. Before: release 119: main after 117 was 726,303 bytes, and the preview task box, the vim block cursor and hlSplice added about 10 KB."
+  "why": "fix-share-notice-race: a folder shared whole is one shared-with-me entry that unfolds to its pages (69-shared.js renderSwmDir, /folder-pages), and a list of up to 2000 entries draws 200 rows at a time. About +3.4 KB over main, after folding the follow list's index link, x and page row into helpers both lists share. hunt-2026-11-06-ui: main after 120 was 736,780 bytes. build-ui.mjs now leaves the sources' whole-line // comments out of the served app.js (287 KB of it); they stay in ui-src, and ui-app-comments.mjs proves the minified program is unchanged. The hunt's fixes and merges (59-md.js link and image tokens, the vim chord and read-only guards, the share and shared-with-me races, keepAside, cwBadge, stWork) net about +500 bytes of code. Before: release 119: main after 117 was 726,303 bytes, and the preview task box, the vim block cursor and hlSplice added about 10 KB."
 }

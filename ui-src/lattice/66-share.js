@@ -294,7 +294,7 @@
     }
     const j = await r.json();
     $('shres').textContent = shp + ' can now ' + mode + ' ' + page +
-      (j.notified ? ' — notified.' : j.folder ? ', and each page is sent to them.'
+      (j.notified ? ' — notified.' : j.folder ? ', and they are told of the folder.'
         : ' — could not notify (offline?); the grant holds.');
     loadPerms();          // the peers panel shows the auto-group
   };
