@@ -65,6 +65,10 @@
       // against 25 for the local paint.
       const local = ['md', 'gmi', 'html', 'text'].includes(hit.kind);
       applyPage(name, local ? { ...hit, html: undefined } : hit, local);
+      //  this window's own cache: its rev is the one its text was read or
+      //  saved at, so saves may claim it
+      curRev = hit.rev || 0;
+      shipText.set(name, hit.body);
       snapPage(name, hit);
       return true;
     }
@@ -109,6 +113,9 @@
     // report, so painting must not also fire refreshPreview/checkErrors.
     if (painted) {
       applyPage(name, node, true);
+      //  the tree dump's copy may be older than the ship's: saves wait for
+      //  the read below before they claim a rev (freshPending)
+      freshPending.set(name, { body: node.body, at: Date.now() });
       // snapshot NOW, not only after the render fetch below. The snapshot is
       // what a bare launch (the PWA) resumes from, and a session that ends
       // during the fetch would otherwise remember nothing. The fetch's
@@ -155,6 +162,8 @@
           srcRead(name).catch(() => {});
           painted = true;
           applyPage(name, b, true);
+          curRev = b.rev || 0;           // a fresh read: its rev may be claimed
+          shipText.set(name, b.body);
           snapPage(name, b);
           bodyShown(b.kind || node.kind);
         }
@@ -231,10 +240,8 @@
     // this answer whatever was typed meanwhile, or it stays unknown.
     if (painted && src.value !== shown) {
       if (current === name && typeof d.comments === 'boolean') cmtShow(name, d.comments);
-      //  what was painted is the ship's text, at this rev: the typing
-      //  since was made on it, so this is the rev its save claims (a paint
-      //  from a moved page's tree row carried the source's rev)
-      if (current === name && d.body === shown && d.rev && mode !== 'know') { curRev = d.rev; shipText.set(name, d.body); }
+      //  typed on the paint: the fresh answer settles it (reconcileFresh)
+      reconcileFresh(name, shown, d);
       return true;
     }
     // Cache and snapshot BELOW the guards, not above. A stale or superseded
@@ -269,7 +276,7 @@
     //  be older than its text: no claim is made from it. The read that
     //  follows (or the next save's answer) sets the rev saves claim.
     curRev = quiet ? 0 : d.rev || 0;
-    if (quiet) shipText.delete(name); else shipText.set(name, d.body);
+    if (quiet) shipText.delete(name); else { shipText.set(name, d.body); freshPending.delete(name); }
     refreshTexButton();
     src.value = d.body;
     dirty = false;
@@ -486,6 +493,12 @@
   //  Only a save that can change the kind passes one.
   const patchLocal = (name, kind, sent, rev) => {
     shipText.set(name, sent || '\n');    // an empty save is stored as one newline
+    //  and the boot snapshot, when it names this page: left at an older
+    //  rev, the next launch painted old text and claimed its rev
+    try {
+      const sp = JSON.parse(localStorage.appPage || 'null');
+      if (sp && sp.name === name && rev) snapPage(name, { ...sp, body: sent, rev, html: undefined });
+    } catch {}
     const c = pageCache.get(name);
     const k = kind || (c && c.kind);
     if (c && rev && ['md', 'gmi', 'html', 'text', 'tex'].includes(k)) {
@@ -805,6 +818,43 @@
   // and applyPage): the merge base when the ship moved on, without asking
   // for an old revision
   const shipText = new Map();
+  // pages painted from a copy that may be older than the ship's (the tree
+  // dump, the boot snapshot, a tab's snapshot), to what was painted, until
+  // the fresh read lands. Autosave waits for it (up to 15 s); the rev to
+  // claim only ever comes from a fresh answer.
+  const freshPending = new Map();
+  // The fresh answer `d` for `name`, painted as `painted`. Its rev is now
+  // the one to claim. Text typed on the paint meanwhile is an edit of
+  // `painted`: a change made elsewhere since merges into it if it can, or
+  // else the typed text is kept as a conflicts/ page, held in the editor.
+  function reconcileFresh(name, painted, d) {
+    freshPending.delete(name);
+    if (!d || typeof d.body !== 'string' || typeof painted !== 'string') return;
+    if (current !== name || mode === 'know' || grubPath) return;
+    curRev = d.rev || 0;
+    shipText.set(name, d.body);
+    if (d.body === painted) return;
+    if (src.value === painted) {
+      if (!dirty) { src.value = d.body; render(); refreshPreview(); }
+      return;
+    }
+    const mb = merge3(painted, src.value, d.body);
+    if (typeof mb === 'string') {
+      src.value = mb;
+      dirty = true;
+      render();
+      st('merged with a change made elsewhere');
+      return;
+    }
+    const kind = curKind || pkind.value, mine = src.value;
+    casHold.set(name, d.rev || 0);
+    paintCas();
+    keepAside({ name, kind, body: mine }, keptName('mine', name)).then((alt) => {
+      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
+      st(name + ' changed elsewhere, so your text was not saved over it. '
+        + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
+    });
+  }
   // a three-way merge of two edits of `b` that touch different stretches
   // of it (with text between them), else null
   function merge3(b, o, t) {
@@ -901,6 +951,11 @@
     // a move in flight may be carrying this page away: the save goes to
     // its new name once the move has renamed the editor (75-move.js)
     if (moving) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 1000); return; }
+    // painted from an older copy and not yet read fresh: wait for that read
+    // (it may find a change made elsewhere), then save on its rev
+    const fp = mode !== 'know' && freshPending.get(current);
+    if (fp && Date.now() - fp.at < 15000) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 500); return; }
+    if (fp) freshPending.delete(current);
     // a link whose save was refused as stale: no more writes until the
     // user picks one of the bar's ways out, or saves on purpose (Ctrl+S)
     if (mode !== 'know' && linkCf.has(current) && linkOf(current)) {

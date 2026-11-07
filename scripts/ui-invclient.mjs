@@ -219,6 +219,33 @@ try {
   const dst = await shipBody('qi/dst');
   check('the replay lands with the new links', /src edited/.test(dst || '')
     && /\[\[qi\/dst\]\] and \[\[qi\/dst\|me\]\]/.test(dst || '') && !/\[\[qi\/src/.test(dst || ''), dst);
+
+  // ── 6. a paint from an old cached rev, then an edit at once ──────────────
+  //  The boot snapshot holds the page's text at rev 1; the ship has the
+  //  same text at rev 3. A save claiming rev 1 was refused as stale and
+  //  kept aside (ui-matrix's false stales). The rev to claim comes only
+  //  from a fresh answer, so the edit lands with no 409 and no copy.
+  rules = [];
+  const STALE = 'qi/stale';
+  await shipFetch('page-save?type=md&new=1&name=' + encodeURIComponent(STALE), { method: 'POST', body: 'same text' });
+  await shipFetch('page-save?type=md&name=' + encodeURIComponent(STALE), { method: 'POST', body: 'other text' });
+  await shipFetch('page-save?type=md&name=' + encodeURIComponent(STALE), { method: 'POST', body: 'same text' });
+  let refused = 0;
+  p.on('response', (r) => { if (/page-save\?name=qi%2Fstale/.test(r.url()) && r.status() === 409) refused++; });
+  await p.evaluate((n) => {
+    localStorage.appPage = JSON.stringify({ name: n, body: 'same text', kind: 'md', share: 'private', rev: 1 });
+  }, STALE);
+  await p.goto(env.app + '?name=' + encodeURIComponent(STALE), { waitUntil: 'domcontentloaded', timeout: 90000 });
+  await p.waitForFunction(() => document.getElementById('src').value === 'same text', { timeout: 60000 });
+  await p.evaluate(() => {
+    const s = document.getElementById('src');
+    s.value = 'same text, edited at once'; s.dispatchEvent(new Event('input'));
+  });
+  let landed = false;
+  for (let i = 0; i < 40 && !landed; i++) { await sleep(1000); landed = await shipBody(STALE) === 'same text, edited at once'; }
+  check('an edit made on a paint from an old cached rev lands', landed, await shipBody(STALE));
+  check('with no stale refusal', refused === 0, 'refused=' + refused);
+  check('and no conflicts/ copy', !(await treeNames()).some((n) => n.startsWith('conflicts/mine-qi-stale')));
 } catch (e) {
   check('the suite threw: ' + String(e.message).slice(0, 160), false);
 } finally {

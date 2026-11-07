@@ -1677,6 +1677,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         const n = nodes.find((x) => x.page && x.path === t.key);
         applyPage(t.key, { body: s.body, kind: s.kind || s.pkind, rev: s.rev,
           share: (n && n.share) || 'private' }, true);
+        if (!s.hist) { curRev = s.rev || 0; if (!s.dirty) shipText.set(t.key, s.body); }
         if (!CONTENT()) refreshPreview();
       },
       park: parkDoc,
@@ -6144,6 +6145,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (hit) {
       const local = ['md', 'gmi', 'html', 'text'].includes(hit.kind);
       applyPage(name, local ? { ...hit, html: undefined } : hit, local);
+      curRev = hit.rev || 0;
+      shipText.set(name, hit.body);
       snapPage(name, hit);
       return true;
     }
@@ -6173,6 +6176,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   async function openReadRun(name, my, node, painted, bodyShown) {
     if (painted) {
       applyPage(name, node, true);
+      freshPending.set(name, { body: node.body, at: Date.now() });
       snapPage(name, node);
     }
     let fromUrl = null;
@@ -6186,6 +6190,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           srcRead(name).catch(() => {});
           painted = true;
           applyPage(name, b, true);
+          curRev = b.rev || 0;           // a fresh read: its rev may be claimed
+          shipText.set(name, b.body);
           snapPage(name, b);
           bodyShown(b.kind || node.kind);
         }
@@ -6234,7 +6240,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (d.link) { linkSeen(name, true); linkStale.delete(name); linkCf.delete(name); }
     if (painted && src.value !== shown) {
       if (current === name && typeof d.comments === 'boolean') cmtShow(name, d.comments);
-      if (current === name && d.body === shown && d.rev && mode !== 'know') { curRev = d.rev; shipText.set(name, d.body); }
+      reconcileFresh(name, shown, d);
       return true;
     }
     if (!d.link) pageCache.set(name, d);
@@ -6259,7 +6265,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       url: '/apps/lattice/app?name=' + encodeURIComponent(name) });
     curKind = d.kind;
     curRev = quiet ? 0 : d.rev || 0;
-    if (quiet) shipText.delete(name); else shipText.set(name, d.body);
+    if (quiet) shipText.delete(name); else { shipText.set(name, d.body); freshPending.delete(name); }
     refreshTexButton();
     src.value = d.body;
     dirty = false;
@@ -6378,6 +6384,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   };
   const patchLocal = (name, kind, sent, rev) => {
     shipText.set(name, sent || '\n');    // an empty save is stored as one newline
+    try {
+      const sp = JSON.parse(localStorage.appPage || 'null');
+      if (sp && sp.name === name && rev) snapPage(name, { ...sp, body: sent, rev, html: undefined });
+    } catch {}
     const c = pageCache.get(name);
     const k = kind || (c && c.kind);
     if (c && rev && ['md', 'gmi', 'html', 'text', 'tex'].includes(k)) {
@@ -6590,6 +6600,35 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     save();
   };
   const shipText = new Map();
+  const freshPending = new Map();
+  function reconcileFresh(name, painted, d) {
+    freshPending.delete(name);
+    if (!d || typeof d.body !== 'string' || typeof painted !== 'string') return;
+    if (current !== name || mode === 'know' || grubPath) return;
+    curRev = d.rev || 0;
+    shipText.set(name, d.body);
+    if (d.body === painted) return;
+    if (src.value === painted) {
+      if (!dirty) { src.value = d.body; render(); refreshPreview(); }
+      return;
+    }
+    const mb = merge3(painted, src.value, d.body);
+    if (typeof mb === 'string') {
+      src.value = mb;
+      dirty = true;
+      render();
+      st('merged with a change made elsewhere');
+      return;
+    }
+    const kind = curKind || pkind.value, mine = src.value;
+    casHold.set(name, d.rev || 0);
+    paintCas();
+    keepAside({ name, kind, body: mine }, keptName('mine', name)).then((alt) => {
+      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
+      st(name + ' changed elsewhere, so your text was not saved over it. '
+        + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
+    });
+  }
   function merge3(b, o, t) {
     if (o === b || t === o) return t;
     if (t === b) return o;
@@ -6665,6 +6704,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     writerSync();
     if (!current || curFolder || !dirty || viewingRev !== null) return;
     if (moving) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 1000); return; }
+    const fp = mode !== 'know' && freshPending.get(current);
+    if (fp && Date.now() - fp.at < 15000) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 500); return; }
+    if (fp) freshPending.delete(current);
     if (mode !== 'know' && linkCf.has(current) && linkOf(current)) {
       st('not saved: ' + linkOf(current).host + ' changed this page since you opened it', false);
       return;
@@ -10730,7 +10772,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent); return; }
     if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent); return; }
-    if (mode !== 'know' && d.rev && d.rev >= curRev) { curRev = d.rev; shipText.set(wasCurrent, d.body); }
+    if (mode !== 'know' && d.rev && d.rev >= curRev) {
+      curRev = d.rev; shipText.set(wasCurrent, d.body); freshPending.delete(wasCurrent);
+    }
     if (d.body === src.value) return;
     if (mode !== 'know') pageCache.delete(wasCurrent);
     const top = src.scrollTop;
@@ -11547,7 +11591,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     try { p = JSON.parse(localStorage.appPage || 'null'); } catch {}
     if (!p || !p.name) return false;
     if (name ? p.name !== name : !fresh) return false;
-    applyPage(p.name, p);
+    applyPage(p.name, p, true);
+    freshPending.set(p.name, { body: p.body, at: Date.now() });
+    bodyRead(p.name).then((d) => reconcileFresh(p.name, p.body, d));
     setFolderCtx(p.name);
     return true;
   }
