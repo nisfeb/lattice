@@ -12,7 +12,8 @@
 #      own folds into it; a page made in it later adds no entry
 #   3. B added to a group that already holds 2 pages gets both
 #   4. each revoke (a page out of the group, B out of the group, the folder
-#      unshared) takes its entry off B's shared with me
+#      unshared) takes its entry off B's shared with me, and a page shared
+#      on its own before the folder is listed as a page again
 #
 # Fake fleet ships only, never a real one. Cleans up after itself.
 #
@@ -169,12 +170,11 @@ r=$(save "$GX" "$(jq -nc --arg a "$SB/page/$T/h1" --arg b "$SB/page/$T/h2" '{shi
 grep -q '"ok"' <<<"$r" || fail "B out of $GX" "$r"
 wait-out "B out of the group: h1 and h2 leave B" "$T/h1" "$T/h2"
 A_ -o /dev/null -X POST "$A/unshare-file?name=$T/f&ship=$BSHIP"
-# p1 does not come back as a page: the folder's grant noted itself on
-# p1 too (grant-via), so the unshare takes p1's grant back, a rule older
-# than this suite (the PR notes it)
 for _ in $(seq 1 60); do [ "$(fentries)" = 0 ] && break; sleep 1; done
 [ "$(fentries)" = 0 ] && ok "folder unshared: its entry leaves B" || fail "folder unshared: its entry leaves B"
 wait-in "folder unshared: g1 stays on B" "$T/g1"
+# p1 was shared on its own before the folder, so it keeps its share
+wait-in "folder unshared: p1, shared on its own, is a page on B again" "$T/f/p1"
 
 [ "$fails" -eq 0 ] && echo "two-ship-group-share: all passed" || echo "two-ship-group-share: $fails failed"
 [ "$fails" -eq 0 ]
