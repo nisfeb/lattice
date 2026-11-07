@@ -482,22 +482,55 @@
   %-  ~(gas in *(set @t))
   %-  zing
   (turn vias |=(v=path ~(tap in ~(key by (~(gut by grants) v ~)))))
-::  +ungrant: what goes when the folder at `pax` stops being shared with
-::  group `g`: each page under it whose grant it made (`vias`, its
-::  grant-via, names pax), and each folder index it listed (`dirs`, pax
-::  and its subfolders), less what another folder still sharing with `g`
-::  covers (`grants`, folder to group to mode, pax's own included). A
-::  page granted by hand has no grant-via, and keeps its grant.
+::  +mode-rank: how wide a grant mode is: none 0, read 1, edit 2
+++  mode-rank
+  |=  md=@t
+  ^-  @ud
+  ?:  =('edit' md)  2
+  ?:(=('read' md) 1 0)
+::  +mode-max: the wider of two grant modes, '' for none
+++  mode-max
+  |=  [a=@t b=@t]
+  ^-  @t
+  ?:((gte (mode-rank a) (mode-rank b)) a b)
+::  +mode-min: the narrower of two grant modes
+++  mode-min
+  |=  [a=@t b=@t]
+  ^-  @t
+  ?:((lte (mode-rank a) (mode-rank b)) a b)
+::  +own-infer: a page's own grant in a group (`own-grants`), as a folder
+::  starts to share it: `own` as noted, never wider than the group now
+::  grants it (`held`, so a group made again keeps no stale note), and
+::  what it holds wider than its folders give it (`via`) was given by
+::  hand, as before own grants were noted
+++  own-infer
+  |=  [own=@t held=@t via=@t]
+  ^-  @t
+  %+  mode-max  (mode-min own held)
+  ?:((gth (mode-rank held) (mode-rank via)) held '')
+::  +ungrant: what changes when the folder at `pax` stops being shared
+::  with group `g`. Each page under it whose grant it made (`vias`, its
+::  grant-via, names pax) is left with what it has from elsewhere: its
+::  own grant in `g` (`own`, group to mode) and what another folder
+::  still sharing with `g` gives it (`grants`, folder to group to mode,
+::  pax's own included), the wider. Listed with that mode ('' none,
+::  'read'), unless it is edit and nothing changes. Each folder index it
+::  listed (`dirs`, pax and its subfolders) goes, less what another
+::  folder sharing with `g` covers.
 ++  ungrant
   |=  $:  grants=(map path (map @t @t))  g=@t  pax=path
-          pages=(list [rel=path vias=(list path)])  dirs=(list path)
+          pages=(list [rel=path vias=(list path) own=(map @t @t)])
+          dirs=(list path)
       ==
-  ^-  [pages=(list path) dirs=(list path)]
+  ^-  [pages=(list [rel=path md=@t]) dirs=(list path)]
+  =/  rest=(map path (map @t @t))
+    ?~  h=(~(get by grants) pax)  grants
+    (~(put by grants) pax (~(del by u.h) g))
   =/  others=(list path)
-    %+  murn  ~(tap by grants)
+    %+  murn  ~(tap by rest)
     |=  [f=path gs=(map @t @t)]
     ^-  (unit path)
-    ?:  |(=(f pax) !(~(has by gs) g))  ~
+    ?.  (~(has by gs) g)  ~
     `f
   =/  covered
     |=  p=path
@@ -505,10 +538,14 @@
     (lien others |=(f=path =(f (scag (lent f) p))))
   :_  (skip dirs covered)
   %+  murn  pages
-  |=  [rel=path vias=(list path)]
-  ^-  (unit path)
-  ?:  |(?=(~ (find ~[pax] vias)) (covered rel))  ~
-  `rel
+  |=  [rel=path vias=(list path) own=(map @t @t)]
+  ^-  (unit [path @t])
+  ?~  (find ~[pax] vias)  ~
+  =/  md=@t
+    %+  mode-max  (~(gut by own) g '')
+    (~(gut by (grants-above rest rel)) g '')
+  ?:  =('edit' md)  ~
+  `[rel md]
 ::
 ::  ==  followed folders  ==
 ::

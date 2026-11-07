@@ -421,30 +421,72 @@
 ++  test-ungrant
   =/  g=(map path (map @t @t))
     (~(put by grants-fg) /f/sub (~(gas by *(map @t @t)) ~[['bus' 'read']]))
-  =/  pages=(list [rel=path vias=(list path)])
-    :~  [/f/a ~[/f]]
-        [/f/own ~]
-        [/f/sub/b ~[/f/sub /f]]
+  =/  pages=(list [rel=path vias=(list path) own=(map @t @t)])
+    :~  [/f/a ~[/f] ~]
+        [/f/own ~ ~]
+        [/f/sub/b ~[/f/sub /f] ~]
     ==
-  %+  expect-eq  !>([~[/f/a /f/sub/b] ~[/f /f/sub]])
+  %+  expect-eq  !>([~[[/f/a ''] [/f/sub/b '']] ~[/f /f/sub]])
   !>((ungrant:ls g 'nec' /f pages ~[/f /f/sub]))
-::  what another folder still sharing with the group covers stays
+::  what another folder still sharing with the group gives stays, at
+::  that folder's mode
 ++  test-ungrant-covered
-  =/  pages=(list [rel=path vias=(list path)])
-    :~  [/f/a ~[/f]]
-        [/f/sub/b ~[/f/sub /f]]
+  =/  pages=(list [rel=path vias=(list path) own=(map @t @t)])
+    :~  [/f/a ~[/f] ~]
+        [/f/sub/b ~[/f/sub /f] ~]
     ==
   ;:  weld
     ::  /f/sub shares with nec too: its page and index stay
-    %+  expect-eq  !>([~[/f/a] ~[/f]])
+    %+  expect-eq  !>([~[[/f/a '']] ~[/f]])
     !>((ungrant:ls grants-fg 'nec' /f pages ~[/f /f/sub]))
-    ::  a folder above sharing with nec covers all of it
+    ::  a folder above sharing with nec for read leaves /f/a read
     =/  up  (~(put by grants-fg) / (~(gas by *(map @t @t)) ~[['nec' 'read']]))
-    %+  expect-eq  !>([`(list path)`~ `(list path)`~])
+    %+  expect-eq  !>([~[[/f/a 'read']] `(list path)`~])
     !>((ungrant:ls up 'nec' /f pages ~[/f /f/sub]))
     ::  a group the folder never shared with takes nothing
-    %+  expect-eq  !>([~[/f/a /f/sub/b] ~[/f /f/sub]])
+    %+  expect-eq  !>([~[[/f/a ''] [/f/sub/b '']] ~[/f /f/sub]])
     !>((ungrant:ls grants-fg 'zod' /f pages ~[/f /f/sub]))
+  ==
+::  a page's own grant stays at its own mode: read under an edit folder
+::  share is left read, edit under a read share is left alone, and
+::  another group's own grant does not count
+++  test-ungrant-own
+  =/  ed=(map path (map @t @t))
+    (~(gas by *(map path (map @t @t))) ~[[/f (~(gas by *(map @t @t)) ~[['nec' 'edit']])]])
+  =/  rd  (~(gas by *(map @t @t)) ~[['nec' 'read']])
+  =/  pages=(list [rel=path vias=(list path) own=(map @t @t)])
+    :~  [/f/a ~[/f] rd]
+        [/f/b ~[/f] (~(gas by *(map @t @t)) ~[['nec' 'edit']])]
+        [/f/c ~[/f] (~(gas by *(map @t @t)) ~[['bus' 'edit']])]
+    ==
+  ;:  weld
+    %+  expect-eq  !>([~[[/f/a 'read'] [/f/c '']] ~[/f]])
+    !>((ungrant:ls ed 'nec' /f pages ~[/f]))
+    %+  expect-eq  !>([~[[/f/a 'read'] [/f/c '']] ~[/f]])
+    !>((ungrant:ls grants-fg 'nec' /f pages ~[/f]))
+  ==
+::  a page's own grant as a folder starts to share it
+++  test-own-infer
+  ;:  weld
+    ::  held by hand, no folder: its own, at its mode
+    (expect-eq !>('read') !>((own-infer:ls '' 'read' '')))
+    (expect-eq !>('edit') !>((own-infer:ls '' 'edit' '')))
+    ::  held at what a folder gives: not known to be its own
+    (expect-eq !>('') !>((own-infer:ls '' 'read' 'read')))
+    ::  held wider than the folders give: the rest was by hand
+    (expect-eq !>('edit') !>((own-infer:ls '' 'edit' 'read')))
+    ::  noted own stays, never wider than now held
+    (expect-eq !>('read') !>((own-infer:ls 'read' 'edit' 'edit')))
+    (expect-eq !>('read') !>((own-infer:ls 'edit' 'read' 'read')))
+    ::  a stale note on a group no longer granting it goes
+    (expect-eq !>('') !>((own-infer:ls 'edit' '' '')))
+  ==
+++  test-mode-max
+  ;:  weld
+    (expect-eq !>('edit') !>((mode-max:ls 'read' 'edit')))
+    (expect-eq !>('read') !>((mode-max:ls '' 'read')))
+    (expect-eq !>('') !>((mode-max:ls '' '')))
+    (expect-eq !>('read') !>((mode-min:ls 'read' 'edit')))
   ==
 ::
 ::  ==  followed folders  ==
