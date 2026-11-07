@@ -46,6 +46,12 @@ pub async fn connect(
         "Connect",
     )?;
     dlog(&format!("connect: logging in at {url}"));
+    // whose queue a legacy URL key is: the cookie stored for that URL before
+    // this connect replaces it (queue::key_after_connect)
+    let key_ship = {
+        let old = config::load(&app);
+        crate::session::cookie_for(&old.queue_key).and_then(|c| crate::session::ship_of(&c))
+    };
     let cookie = crate::session::login(&url, &code)?;
     let ship = crate::session::ship_of(&cookie).ok_or("login: no urbauth cookie")?;
     let at = crate::session::store(&url, &cookie)?;
@@ -54,7 +60,7 @@ pub async fn connect(
     config::update(&app, move |cfg| {
         //  a ship SWITCH must not inherit the previous ship's queue directory —
         //  its queued edits would replay into the new ship
-        cfg.queue_key = crate::queue::key_after_connect(cfg, &ship_for_cfg);
+        cfg.queue_key = crate::queue::key_after_connect(cfg, &ship_for_cfg, key_ship.as_deref());
         cfg.url = url;
         //  remember the @p: the offline queue prefers it as its directory key, and
         //  it has to be known BEFORE the ship stops answering, which is exactly

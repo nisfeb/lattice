@@ -126,11 +126,28 @@ pub fn resolve_key(cfg: &config::Config) -> (String, bool) {
 /// connected identity changes, the key resets and the next queue op freezes
 /// a fresh one; the old directory stays on disk, orphaned rather than
 /// misdelivered.
-pub fn key_after_connect(cfg: &config::Config, new_ship: &str) -> String {
-    if !cfg.ship.is_empty() && cfg.ship != new_ship {
-        String::new()
+///
+/// A legacy config froze its key before `ship` was recorded, so `cfg.ship`
+/// is empty and only the key says whose queue it is. An @p key names its
+/// ship. A URL key belongs to whoever the cookie stored for that URL was
+/// for before this connect replaced it (`key_ship`, read by the caller).
+/// When neither names the new ship, the key resets: an unknown owner is
+/// treated as a different ship, so its queue is orphaned on disk rather
+/// than replayed into this one.
+pub fn key_after_connect(cfg: &config::Config, new_ship: &str, key_ship: Option<&str>) -> String {
+    let owner = if !cfg.ship.is_empty() {
+        Some(cfg.ship.as_str())
+    } else if cfg.queue_key.is_empty() {
+        return String::new();
+    } else if cfg.queue_key.starts_with('~') {
+        Some(cfg.queue_key.as_str())
     } else {
+        key_ship
+    };
+    if owner == Some(new_ship) {
         cfg.queue_key.clone()
+    } else {
+        String::new()
     }
 }
 
@@ -630,14 +647,28 @@ mod tests {
             queue_key: "~shipa".into(),
             ..Default::default()
         };
-        assert_eq!(key_after_connect(&cfg, "~shipa"), "~shipa");
-        assert_eq!(key_after_connect(&cfg, "~shipb"), "");
+        assert_eq!(key_after_connect(&cfg, "~shipa", None), "~shipa");
+        assert_eq!(key_after_connect(&cfg, "~shipb", None), "");
         // same URL repointed at a new ship: the recorded @p still catches it
         cfg.queue_key = "http://beast:8080".into();
-        assert_eq!(key_after_connect(&cfg, "~shipb"), "");
-        // first-ever connect (no ship recorded yet): whatever froze, stays
-        cfg.ship = String::new();
-        assert_eq!(key_after_connect(&cfg, "~shipb"), "http://beast:8080");
+        assert_eq!(key_after_connect(&cfg, "~shipb", None), "");
+    }
+
+    #[test]
+    fn a_legacy_config_resets_its_key_for_a_different_ship() {
+        // A legacy config has a frozen key but no recorded ship. It used to
+        // keep the key for any ship, so ship A's queued edits replayed into B.
+        let mut cfg = config::Config { queue_key: "~shipa".into(), ..Default::default() };
+        assert_eq!(key_after_connect(&cfg, "~shipa", None), "~shipa", "an @p key names its ship");
+        assert_eq!(key_after_connect(&cfg, "~shipb", None), "");
+        // a URL key: the old cookie for that URL says whose it was
+        cfg.queue_key = "http://beast:8080".into();
+        assert_eq!(key_after_connect(&cfg, "~shipa", Some("~shipa")), "http://beast:8080");
+        assert_eq!(key_after_connect(&cfg, "~shipb", Some("~shipa")), "");
+        // and with no way to tell, orphaned rather than misdelivered
+        assert_eq!(key_after_connect(&cfg, "~shipb", None), "");
+        // nothing frozen yet: nothing to keep
+        assert_eq!(key_after_connect(&config::Config::default(), "~shipb", None), "");
     }
 
     /// A relaunch, end to end, with nothing mocked but the passage of time.
