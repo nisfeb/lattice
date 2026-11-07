@@ -124,6 +124,7 @@
     if (url) history.replaceState(null, '', url);
     pname.dispatchEvent(new Event('input'));
     tabFollow();
+    editLock(mode !== 'know' && !grubPath ? name : null);   // 36-editlock.js
   }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select

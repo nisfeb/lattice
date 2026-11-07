@@ -231,6 +231,10 @@
     // this answer whatever was typed meanwhile, or it stays unknown.
     if (painted && src.value !== shown) {
       if (current === name && typeof d.comments === 'boolean') cmtShow(name, d.comments);
+      //  what was painted is the ship's text, at this rev: the typing
+      //  since was made on it, so this is the rev its save claims (a paint
+      //  from a moved page's tree row carried the source's rev)
+      if (current === name && d.body === shown && d.rev && mode !== 'know') curRev = d.rev;
       return true;
     }
     // Cache and snapshot BELOW the guards, not above. A stale or superseded
@@ -277,6 +281,7 @@
     // from its last-known copy, stays locked (30-tree.js linkRO). The tab
     // restore comes through here too.
     src.readOnly = linkRO(name);
+    paintLock();         // and read-only while another window edits it
     resetPanels();
     showShare(d.share || 'private');
     cmtShow(name, d.comments);
@@ -596,11 +601,12 @@
     // in and the typed text is lost (same guard autosave has always had).
     const sent = fixed ? fixed.body : src.value;
     const kind = fixed ? fixed.kind : kindOverride || curKind || pkind.value;
-    // NO base on live saves, deliberately: base is the OFFLINE queue's tool,
-    // where the divergence window is real. Online, any dirty-blocked refresh
-    // or panel-driven save can leave curRev one step behind, and every stale
-    // base manufactures a false conflict page out of nothing (ui-matrix
-    // caught exactly that). Online editing stays last-writer-wins.
+    // A live save claims the rev the editor read and asks to be refused
+    // when the page moved past it (casQ): two windows, or the mount or an
+    // agent, can no longer write over each other unseen. A claim that is
+    // only behind (a refresh that found the same text) settles in
+    // staleSave without a copy: same text is a landing, and an edit apart
+    // from the other merges.
     const rn = realName(name);
     if (!rn) {
       saving = false;
@@ -630,12 +636,17 @@
       }
       flushPending();
     };
+    if (!fixed && editLocked()) { saving = false; st(LOCK_NOTE, false); return failed(); }
+    if (tooBig(sent)) { saving = false; st(TOO_BIG, false); return failed(); }
+    const base = creating ? 0 : curRev;
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
-      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc) + (creating ? '' : linkBase(name));
+      '&type=' + kind + (creating ? '&new=1&by=' + winId : casQ(name, base)) + dnameQ(rnc)
+      + (creating ? '' : linkBase(name));
     let w = { gone: true };
     //  behind a folder job a save would only wait out its timeout and land
     //  after the queued ones: it joins the queue, which keeps the newest
-    const sentAt = Date.now();
+    const sentSeq = offSeq();
+    casHold.delete(name);       // a save on purpose tries again
     try {
       if (!(jobWait && !creating && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -679,6 +690,12 @@
       //  the ship refuses a save into a folder being moved, or onto a page
       //  that moved away, and says where it went
       const why = await errText(r);
+      if (!creating && /^: stale/.test(why)) {
+        await settleStale(name, kind, sent, base,
+          () => !fixed && pageHere() && current === name);
+        flushPending();
+        return;
+      }
       st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
       return failed();
     }
@@ -692,7 +709,7 @@
     // CREATE changes the tree, and it confirms a row newFile left pulsing.
     if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent, vr && vr.rev);
-    await dropQueued(name, sentAt);
+    await dropQueued(name, sentSeq);
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
     // name field, dirty or the URL here would brand the new page as this save.
@@ -721,6 +738,81 @@
     }
     flushPending();
     if (offCount) replayQueue(true);     // back online: drain the backlog
+  }
+
+  // ── two writers on one page ─────────────────────────────────────────────
+  // casQ: a live save's claim, the rev the editor read, refused by the ship
+  // (409 "stale") when the page moved past it. Not for a link, which claims
+  // its host's rev already (linkBase). Every save names this window (?by=).
+  const casQ = (name, rev) => (linkOf(name) ? '' : '&by=' + winId + (rev ? '&base=' + rev + '&cas=1' : ''));
+  // pages refused as stale whose text could not be kept aside: autosave
+  // stands down for them until a save on purpose
+  const casHold = new Set();
+  // a three-way merge of two edits of `b` that touch different stretches
+  // of it (with text between them), else null
+  function merge3(b, o, t) {
+    if (o === b || t === o) return t;
+    if (t === b) return o;
+    const span = (x) => {
+      const n = Math.min(b.length, x.length);
+      let p = 0, q = 0;
+      while (p < n && b[p] === x[p]) p++;
+      while (q < n - p && b[b.length - 1 - q] === x[x.length - 1 - q]) q++;
+      return { p, e: b.length - q, txt: x.slice(p, x.length - q) };
+    };
+    let [a, c] = [span(o), span(t)];
+    if (c.p < a.p) [a, c] = [c, a];
+    if (a.e >= c.p) return null;
+    return b.slice(0, a.p) + a.txt + b.slice(a.e, c.p) + c.txt + b.slice(c.e);
+  }
+  // The page moved past `base` while this window wrote `sent`. Read it
+  // again: our text already there is a landing (a save of ours the answer
+  // of which was lost); an edit apart from theirs merges and is saved on
+  // their rev; anything else keeps our text as a page of its own under
+  // conflicts/ and shows theirs. `here`: the editor still shows it.
+  async function settleStale(name, kind, sent, base, here) {
+    const th = await bodyRead(name);
+    let res = null;
+    if (th && th.body === sent) res = { rev: th.rev, body: sent, how: 'saved' };
+    if (th && !res && base) {
+      let mb = null;
+      try {
+        const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base);
+        if (r.ok) mb = merge3((await r.json()).body, sent, th.body);
+      } catch {}
+      if (typeof mb === 'string') {
+        const r = await fetch(api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
+          + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }).catch(() => null);
+        let j = null;
+        if (r && r.ok) { try { j = await r.json(); } catch {} }
+        if (j && j.rev) res = { rev: j.rev, body: mb, how: 'saved, merged with a change made elsewhere' };
+      }
+    }
+    if (th && !res) {
+      const alt = await keepAside({ name, kind, body: sent }, keptName('mine', name));
+      if (alt) {
+        addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge();
+        res = { rev: th.rev, body: th.body, how: name + ' changed elsewhere: theirs is shown, and your text is kept at ' + alt };
+      }
+    }
+    if (!res) {
+      casHold.add(name);
+      st('NOT saved: ' + name + ' changed elsewhere, and your text could not be kept aside. '
+        + 'It is still here: copy it, then reload', false);
+      if (here()) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
+      return;
+    }
+    patchLocal(name, null, res.body, res.rev);
+    for (const t of allTabs())
+      if (t.kind === 'page' && t.key === name && t.snap && t.snap.body === sent)
+        Object.assign(t.snap, { body: res.body, rev: res.rev, dirty: false });
+    if (here() && src.value === sent) {
+      if (res.body !== sent) { src.value = res.body; render(); refreshPreview(); }
+      curRev = res.rev;
+      dirty = false;
+      cerr.textContent = 'saved'; cerr.className = 'ok';
+    }
+    st(res.how, res.how === 'saved');
   }
 
   let autoTimer = null;
@@ -757,6 +849,10 @@
     // (flushNoAsk and guardDirty, 20-state.js, which ask instead). Only
     // Ctrl+S, the save button and :w write.
     if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
+    // open for editing in another window, or refused as stale with no copy
+    // kept: no writes until that is settled
+    if (mode !== 'know' && (editLocked() || casHold.has(current))) return;
+    if (tooBig(src.value)) { st(TOO_BIG, false); return; }
     // never overlap saves. The pier serializes, so a second in-flight save is
     // 3.7s of stale-body work queued behind the first, delaying every preview
     // behind it. Coalesce to one trailing save instead.
@@ -776,9 +872,9 @@
     const url = know
       ? api + '/know-save?key=' + encodeURIComponent(target)
       : api + '/page-save?name=' + encodeURIComponent(target) +
-        '&type=' + tkind + linkBase(target);
+        '&type=' + tkind + linkBase(target) + casQ(target, trev);
     let w = { gone: true };
-    const sentAt = Date.now();
+    const sentSeq = offSeq();
     try {
       if (!(jobWait && !know && !linkOf(target)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -800,12 +896,19 @@
       flushPending();
       return;
     }
+    if (!know && r.status === 409) {
+      const why = await errText(r);
+      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, trev, here);
+      else st('autosave failed' + why, false);
+      flushPending();
+      return;
+    }
     if (!r.ok) { st('autosave failed' + await errText(r), false); flushPending(); return; }
     let vr = null;
     if (!know) { try { vr = await r.json(); } catch {} }
     //  patch the saved doc's local cache regardless of focus. No kind: an
     //  autosave writes the page's existing kind, it never sets one.
-    if (!know) { patchLocal(target, null, sent, vr && vr.rev); await dropQueued(target, sentAt); }
+    if (!know) { patchLocal(target, null, sent, vr && vr.rev); await dropQueued(target, sentSeq); }
     if (!here()) tabLanded(tk, target, sent, vr && vr.rev);
     // live-editor state only if the editor is still on the doc we autosaved
     if (here()) {
@@ -853,13 +956,14 @@
     const name = t.key;
     const sent = s.body;
     const kind = s.kind || s.pkind;
+    if (!know && (casHold.has(name) || tooBig(sent))) return;
     const url = know ? api + '/know-save?key=' + encodeURIComponent(name)
       : api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
-        + (linkOf(name) && s.rev ? '&base=' + s.rev : '');
+        + (linkOf(name) && s.rev ? '&base=' + s.rev : '') + casQ(name, s.rev);
     let w = { gone: true };
     //  behind a folder job a page's save queues instead of going out, as
     //  the live editor's does (jobWait, 08-offline.js)
-    const sentAt = Date.now();
+    const sentSeq = offSeq();
     try {
       if (!(jobWait && !know && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
@@ -879,6 +983,15 @@
       flushPending();
       return;
     }
+    if (!know && w.r.status === 409) {
+      const why = await errText(w.r);
+      if (/^: stale/.test(why)) {
+        await settleStale(name, kind, sent, s.rev,
+          () => t === activeTab && current === name && mode !== 'know' && !grubPath);
+      } else st('autosave of ' + name + ' failed' + why, false);
+      flushPending();
+      return;
+    }
     if (!w.r.ok) {
       st('autosave of ' + name + ' failed' + await errText(w.r), false);
       flushPending();
@@ -889,7 +1002,7 @@
     if (!know) {
       try { vr = await w.r.json(); } catch {}
       patchLocal(name, null, sent, vr && vr.rev);
-      await dropQueued(name, sentAt);
+      await dropQueued(name, sentSeq);
     }
     else knowGen++;
     landed(vr && vr.rev);
