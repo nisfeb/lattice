@@ -9,11 +9,25 @@
 // ours to write.
 //
 // Ownership: every directory this writes holds a .lattice-skill.json
-// marker naming the files it wrote. A directory without one is the user's
-// own skill and is never touched, even when a ship skill has its name. A
-// marked directory whose skill is gone from the ship (deleted, superseded,
-// or now sensitive) has its files removed, and the directory too once it
-// is empty. Sensitive skills are never written to disk.
+// marker naming the ship (its @p, from GET /~/host), the directory, and
+// the files it wrote with the sha256 of each. A directory without one is
+// the user's own skill and is never touched, even when a ship skill has
+// its name. A marked directory whose skill is gone from the ship (deleted,
+// superseded, now sensitive, or written by an agent key) has its files
+// removed, and the directory too once it is empty. Sensitive skills are
+// never written to disk.
+//
+// Inside a directory it owns, the mirror writes and deletes only the files
+// its marker lists, and only while each still has the hash it wrote. A
+// file the user changed is left as it is and reported (out.kept), and is
+// the user's from then on. A file the marker does not list is never
+// touched. A marker from before hashes (v2 and older) has its files
+// overwritten as before, once, and then carries their hashes.
+//
+// Only the owner's skills are mirrored: those whose permissions the ship
+// says the owner set, or whose SKILL.md has no source: agent. A skill an
+// agent key wrote stays on the ship, for skill_read, which quotes it
+// (out.agent names them).
 //
 // Permissions: Claude Code acts on some SKILL.md front matter, such as
 // allowed-tools (tools run with no prompt, Bash among them), hooks and
@@ -25,11 +39,16 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import http from 'node:http';
+import https from 'node:https';
+import { agentWrote } from '../quote.mjs';
 
 export const MARKER = '.lattice-skill.json';
 // the marker's version: a copy written by an older mirror is rewritten
-// once, so a grant it kept is stripped
-const MARK_V = 2;
+// once, so a grant it kept is stripped (v3: keyed by @p, with hashes,
+// and an agent key's skill taken out)
+const MARK_V = 3;
 
 // front matter an agent key may write (code/lib/lattice-skills.hoon,
 // +agent-keys). Keep the two lists the same.
@@ -79,13 +98,71 @@ const NAME = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){0,63}$/;
 const SEG = /^[A-Za-z0-9._-]+$/;
 const EXT = /\.(md|txt|json|ya?ml)$/i;
 
+// names Windows keeps for devices, with or without an extension
+const RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
 export function nameOk(n) { return typeof n === 'string' && n.length <= 64 && NAME.test(n); }
 export function pathOk(p) {
   if (typeof p !== 'string' || !p || p.length > 200 || !EXT.test(p)) return false;
-  return p.split('/').every((s) => SEG.test(s) && s !== '.' && s !== '..');
+  return p.split('/').every((s) => SEG.test(s) && s !== '.' && s !== '..' && !RESERVED.test(s) && !/[. ]$/.test(s));
 }
 
-function readMarker(dir) {
+// The paths of one skill that would land on the same file, or under the
+// same directory spelled two ways, on a disk that ignores case. All of
+// them are refused, since which would win is up to the disk.
+export function caseClashes(paths) {
+  const seen = new Map();
+  const bad = new Set();
+  for (const p of paths) {
+    const segs = p.split('/');
+    for (let i = 1; i <= segs.length; i++) {
+      const pre = segs.slice(0, i).join('/');
+      const k = pre.toLowerCase();
+      if (!seen.has(k)) seen.set(k, { spell: pre, by: [p] });
+      else {
+        const e = seen.get(k);
+        if (e.spell !== pre || i === segs.length) { bad.add(p); e.by.forEach((x) => bad.add(x)); }
+        e.by.push(p);
+      }
+    }
+  }
+  return bad;
+}
+
+const sha = (text) => crypto.createHash('sha256').update(text).digest('hex');
+function diskHash(dir, rel) {
+  const f = inside(dir, rel);
+  try { return f && fs.lstatSync(f).isFile() ? sha(fs.readFileSync(f)) : null; } catch { return null; }
+}
+
+// A marker is this mirror's for dir name when it names that directory and
+// this ship: its @p, or the ship URL an older mirror keyed it by.
+export function ownMark(mark, name, ship, url) {
+  if (!mark || mark.name !== name || !ship) return false;
+  if (mark.ship === ship) return true;
+  return !!url && typeof mark.ship === 'string' && /^https?:/.test(mark.ship) && mark.ship.replace(/\/+$/, '') === url.replace(/\/+$/, '');
+}
+
+// The ship's @p from GET <ship URL>/~/host, outside lattice, so with no
+// key. null when it does not answer one.
+export function shipName(shipUrl, timeout = 20000) {
+  return new Promise((resolve) => {
+    let url;
+    try { url = new URL(shipUrl.replace(/\/+$/, '') + '/~/host'); } catch { return resolve(null); }
+    const req = (url.protocol === 'https:' ? https : http).get(url, { timeout }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => {
+        const t = Buffer.concat(chunks).toString('utf8').trim();
+        resolve(res.statusCode === 200 && /^~[a-z-]{3,56}$/.test(t) ? t : null);
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('no answer in time')));
+    req.on('error', () => resolve(null));
+  });
+}
+
+export function readMarker(dir) {
   try {
     const st = fs.lstatSync(path.join(dir, MARKER));
     if (!st.isFile()) return null;
@@ -121,12 +198,25 @@ function writeInside(dir, rel, text) {
   return true;
 }
 
-function removeOwned(dir, mark) {
-  for (const rel of [...(mark.files || []), MARKER]) {
-    if (rel !== MARKER && !pathOk(rel)) continue;
-    const f = inside(dir, rel);
-    try { if (f && !fs.lstatSync(f).isDirectory()) fs.rmSync(f); } catch {}
+// One file the marker lists, deleted only while it holds what the mirror
+// wrote. false when the user changed it, so it stays.
+function removeFile(dir, rel, mark) {
+  if (!pathOk(rel)) return true;
+  const want = mark.hashes && mark.hashes[rel];
+  const have = diskHash(dir, rel);
+  if (have === null) return true;
+  if (want && have !== want) return false;
+  const f = inside(dir, rel);
+  try { if (f) fs.rmSync(f); } catch {}
+  return true;
+}
+
+function removeOwned(dir, mark, kept, name) {
+  for (const rel of mark.files || []) {
+    if (!removeFile(dir, rel, mark)) kept.push(`${name}/${rel}`);
   }
+  const m = inside(dir, MARKER);
+  try { if (m && !fs.lstatSync(m).isDirectory()) fs.rmSync(m); } catch {}
   pruneEmpty(dir);
 }
 
@@ -154,9 +244,12 @@ export function inertShell(text) {
   return { text: out, n };
 }
 
-// get(route, args) answers the route's text or throws with .status.
-// Returns what changed, for a one-line note.
-export async function syncSkills({ get, root, ship }) {
+// get(route, args) answers the route's text or throws with .status. ship
+// is the ship's @p; url is the ship URL, for markers an older mirror keyed
+// by it, which are taken over and rewritten with the @p. Returns what
+// changed, for a one-line note.
+export async function syncSkills({ get, root, ship, url = '' }) {
+  if (typeof ship !== 'string' || !/^~[a-z-]+$/.test(ship)) throw new Error('syncSkills: no ship @p');
   const index = JSON.parse(await get('skills', {})).skills || [];
   const want = new Map();
   for (const s of index) {
@@ -164,7 +257,7 @@ export async function syncSkills({ get, root, ship }) {
     want.set(s.name, s);
   }
   fs.mkdirSync(root, { recursive: true });
-  const out = { added: [], updated: [], removed: [], skipped: [], stripped: [], held: [], shell: [] };
+  const out = { added: [], updated: [], removed: [], skipped: [], stripped: [], held: [], shell: [], agent: [], kept: [], refused: [] };
   // ours that the ship no longer has
   for (const ent of fs.readdirSync(root, { withFileTypes: true })) {
     if (!ent.isDirectory()) continue;
@@ -172,8 +265,8 @@ export async function syncSkills({ get, root, ship }) {
     const mark = readMarker(dir);
     // a marker naming another directory was copied there with the files:
     // the user's fork of a mirrored skill, not ours to remove
-    if (!mark || mark.ship !== ship || mark.name !== ent.name) continue;
-    if (!want.has(ent.name)) { removeOwned(dir, mark); out.removed.push(ent.name); }
+    if (!ownMark(mark, ent.name, ship, url)) continue;
+    if (!want.has(ent.name)) { removeOwned(dir, mark, out.kept, ent.name); out.removed.push(ent.name); }
   }
   for (const [name, s] of want) {
     const dir = path.join(root, name);
@@ -182,25 +275,33 @@ export async function syncSkills({ get, root, ship }) {
       const st = fs.lstatSync(dir);
       mark = st.isDirectory() && !st.isSymbolicLink() ? readMarker(dir) : null;
       // the user's own skill, or another ship's: leave it be
-      if (!mark || mark.ship !== ship || mark.name !== name) { out.skipped.push(name); continue; }
-      if (mark.updated === s.updated && mark.v === MARK_V) continue;
+      if (!ownMark(mark, name, ship, url)) { out.skipped.push(name); continue; }
+      if (mark.updated === s.updated && mark.v === MARK_V && mark.ship === ship) continue;
     }
     const full = JSON.parse(await get('skill', { name }));
     let body = full.body;
+    // an agent key's skill: not on disk, where it would act as the owner's
+    if (!full.owner_permissions && agentWrote(body)) {
+      out.agent.push(name);
+      if (mark) { removeOwned(dir, mark, out.kept, name); out.removed.push(name); }
+      continue;
+    }
     if (!full.owner_permissions) {
       const st = stripGrants(body);
       if (!st) {
         out.held.push(name);
-        if (mark) removeOwned(dir, mark);
+        if (mark) removeOwned(dir, mark, out.kept, name);
         continue;
       }
       if (st.dropped.length) out.stripped.push(`${name} (${st.dropped.join(', ')})`);
       body = st.text;
     }
+    const paths = ['SKILL.md', ...(full.files || []).map((f) => f.path).filter(pathOk)];
+    const clash = caseClashes(paths);
     const files = [['SKILL.md', body]];
-    for (const f of full.files || []) {
-      if (!pathOk(f.path)) continue;
-      files.push([f.path, JSON.parse(await get('skill-file', { name, path: f.path })).body]);
+    for (const p of paths.slice(1)) {
+      if (clash.has(p)) { out.refused.push(`${name}/${p}`); continue; }
+      files.push([p, JSON.parse(await get('skill-file', { name, path: p })).body]);
     }
     if (!full.owner_permissions) {
       let n = 0;
@@ -208,20 +309,29 @@ export async function syncSkills({ get, root, ship }) {
       if (n) out.shell.push(`${name} (${n})`);
     }
     fs.mkdirSync(dir, { recursive: true });
-    const wrote = files.filter(([rel, text]) => writeInside(dir, rel, text));
+    const listed = new Set(mark ? mark.files || [] : []);
+    const hashes = {};
+    for (const [rel, text] of files) {
+      const have = diskHash(dir, rel);
+      // on disk and not ours: the user's, never overwritten
+      if (have !== null && !listed.has(rel)) { out.kept.push(`${name}/${rel}`); continue; }
+      // ours, but changed since: the user's now
+      const was = mark && mark.hashes && mark.hashes[rel];
+      if (have !== null && was && have !== was) { out.kept.push(`${name}/${rel}`); continue; }
+      if (writeInside(dir, rel, text)) hashes[rel] = sha(text);
+    }
     // files an earlier version had and this one does not
     if (mark) {
       const now = new Set(files.map(([p]) => p));
       for (const rel of mark.files || []) {
-        if (now.has(rel) || !pathOk(rel)) continue;
-        const f = inside(dir, rel);
-        if (f) try { fs.rmSync(f); } catch {}
+        if (now.has(rel)) continue;
+        if (!removeFile(dir, rel, mark)) out.kept.push(`${name}/${rel}`);
       }
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         if (e.isDirectory()) pruneEmpty(path.join(dir, e.name));
       }
     }
-    writeInside(dir, MARKER, JSON.stringify({ v: MARK_V, ship, name, updated: full.updated, files: wrote.map(([p]) => p) }, null, 1) + '\n');
+    writeInside(dir, MARKER, JSON.stringify({ v: MARK_V, ship, name, updated: full.updated, files: Object.keys(hashes), hashes }, null, 1) + '\n');
     (mark ? out.updated : out.added).push(name);
   }
   return out;

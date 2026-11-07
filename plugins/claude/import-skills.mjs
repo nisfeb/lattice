@@ -10,15 +10,19 @@
 // txt, json and yaml files. Anything else (scripts, binaries) is left out
 // and listed, since a skill on the ship is text only. A skill the ship
 // already has is listed as a duplicate to merge by hand, never
-// overwritten. Directories the plugin's own mirror wrote
-// (.lattice-skill.json) came from the ship and are skipped.
+// overwritten: the save asks for a new skill only (new=1), so a skill made
+// on the ship meanwhile is refused (409), not replaced. Directories the
+// plugin's own mirror wrote for this ship (a .lattice-skill.json naming
+// the directory and the ship's @p, from GET /~/host) came from the ship
+// and are skipped. A marker naming another directory or another ship was
+// copied with a fork, and the fork is the user's to import.
 //
 // Without --yes it only says what it would do. The key needs skills
 // write, and every skill it saves is signed with the key's name.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { MARKER, nameOk, pathOk, claudeHome } from './hooks/skills-sync.mjs';
+import { nameOk, pathOk, claudeHome, readMarker, ownMark, MARKER } from './hooks/skills-sync.mjs';
 import { urlProblem } from './url-rule.mjs';
 
 const args = process.argv.slice(2);
@@ -89,19 +93,36 @@ function prepare(text, fallback) {
   return { name, body: `---\n${lines.join('\n')}\n---\n${text.slice(m[0].length)}` };
 }
 
+// The ship's @p, outside lattice, so with no key. Without it a marked
+// directory cannot be told from a fork, so every marked one is skipped.
+async function host() {
+  try {
+    const r = await fetch(process.env.LATTICE_URL.replace(/\/+$/, '') + '/~/host', { redirect: 'manual' });
+    const t = (await r.text()).trim();
+    return r.status === 200 && /^~[a-z-]{3,56}$/.test(t) ? t : null;
+  } catch { return null; }
+}
+const ship = await host();
+if (!ship) console.log('the ship did not say its name (GET /~/host): every directory with a mirror marker is skipped');
+const mirrored = (dir, d) => {
+  if (!fs.existsSync(path.join(dir, MARKER))) return false;
+  return !ship || ownMark(readMarker(dir), d, ship, process.env.LATTICE_URL);
+};
+
 const roots = dirs.length ? dirs : [path.join(claudeHome(), 'skills'), ...pluginSkillDirs()];
 let saved = 0;
 const seen = new Map();
 for (const root of roots) {
   for (const d of safeList(root)) {
     const dir = path.join(root, d);
-    if (fs.existsSync(path.join(dir, MARKER))) continue;
+    if (mirrored(dir, d)) continue;
     if (!fs.existsSync(path.join(dir, 'SKILL.md'))) continue;
     const p = prepare(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), d);
     if (p.problem) { console.log(`skip ${dir}: ${p.problem}`); continue; }
     if (seen.has(p.name)) { console.log(`duplicate ${p.name}: ${dir} and ${seen.get(p.name)}; merge by hand`); continue; }
     seen.set(p.name, dir);
-    const files = walk(dir).filter((f) => f !== 'SKILL.md');
+    // a fork's copied marker is the mirror's bookkeeping, not the skill's
+    const files = walk(dir).filter((f) => f !== 'SKILL.md' && f !== MARKER);
     const keep = files.filter(pathOk);
     const left = files.filter((f) => !pathOk(f));
     const have = await call('GET', 'skill', { name: p.name });
@@ -109,7 +130,9 @@ for (const root of roots) {
     if (have.status === 403 || have.status === 401) { console.error(`the key was refused (${have.status}): it needs skills write`); process.exit(1); }
     console.log(`${yes ? 'import' : 'would import'} ${p.name} from ${dir}${keep.length ? ` with ${keep.join(', ')}` : ''}${left.length ? `; leaving out ${left.join(', ')}` : ''}`);
     if (!yes) continue;
-    const r = await call('POST', 'skill-save', { name: p.name }, p.body);
+    // new=1: create only. An older ship ignores it, so the GET above stays.
+    const r = await call('POST', 'skill-save', { name: p.name, new: 1 }, p.body);
+    if (r.status === 409) { console.log(`  duplicate ${p.name}: the ship has one now; merge ${dir} by hand`); continue; }
     if (r.status !== 200) { console.log(`  refused: ${r.status} ${r.text}`); continue; }
     for (const f of keep) {
       const fr = await call('POST', 'skill-save', { name: p.name, path: f }, fs.readFileSync(path.join(dir, f), 'utf8'));
