@@ -201,6 +201,28 @@
   ?:  =(~ bans)  ships
   %-  ~(gas in *(set @p))
   (skip ~(tap in ships) |=(s=@p (is-banned bans s)))
+::  +ban-groups: the auto-groups a ban takes away whole. +share-file and a
+::  folder share name a ship's group after it (`<ship>.grp`, no sig), and a
+::  later share merges into that group. A ban that only took the ship out
+::  left the group's roads, so after an unban one share put every old
+::  grant back, untold. So the group of each ship the bans cover
+::  (+is-banned) goes, unless a member the bans do not cover is left in
+::  it (the owner added one by hand, and it still needs the roads). Given
+::  each top-level group's dir name and members, the group names to drop.
+++  ban-groups
+  |=  [bans=banned gs=(list [nom=@ta who=(set @p)])]
+  ^-  (list @t)
+  %+  murn  gs
+  |=  [nom=@ta who=(set @p)]
+  ^-  (unit @t)
+  ?.  (grp-name nom)  ~
+  =/  t=tape  (trip nom)
+  =/  g=tape  (scag (sub (lent t) 4) t)
+  =/  shp=(unit @p)  (slaw %p (crip ['~' g]))
+  ?~  shp  ~
+  ?.  (is-banned bans u.shp)  ~
+  ?.  =(~ (ban-drop bans who))  ~
+  `(crip g)
 ::
 ::  ==  comet guard  ==
 ::

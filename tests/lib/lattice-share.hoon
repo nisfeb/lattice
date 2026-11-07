@@ -804,6 +804,36 @@
     !>((ban-drop:ls (~(gas in *(set @p)) ~[all-comets:ls]) ships))
     (expect-eq !>(ships) !>((ban-drop:ls ~ ships)))
   ==
+::  a ban takes the banned family's own groups away whole, roads and all,
+::  so an unban and one share give back that share alone; a named group,
+::  and a ship's group someone unbanned is still in, stay
+++  test-ban-groups
+  =/  pl=@p  ~sampel-palnet
+  =/  moon=@p  (cat 5 pl 7)
+  =/  moon-g=@ta  (crip (weld (slag 1 (scow %p moon)) ".grp"))
+  =/  comet=@p  (cat 7 (bex 64) 1)
+  =/  comet-g=@ta  (crip (weld (slag 1 (scow %p comet)) ".grp"))
+  =/  one  |=(s=@p (~(gas in *(set @p)) ~[s]))
+  =/  gs=(list [@ta (set @p)])
+    :~  ['sampel-palnet.grp' (one pl)]
+        ['sampel-palnet.grp' ~]
+        [moon-g (one moon)]
+        [comet-g (one comet)]
+        ['friends.grp' (one pl)]
+        ['bus.grp' (one ~bus)]
+        ['nec.grp' (~(gas in *(set @p)) ~[pl ~nec])]
+        ['sampel-palnet' (one pl)]
+    ==
+  ;:  weld
+    %+  expect-eq  !>(`(list @t)`~['sampel-palnet' 'sampel-palnet' (crip (slag 1 (scow %p moon)))])
+    !>((ban-groups:ls (one pl) gs))
+    %+  expect-eq  !>(`(list @t)`~[(crip (slag 1 (scow %p comet)))])
+    !>((ban-groups:ls (one all-comets:ls) gs))
+    %+  expect-eq  !>(`(list @t)`~)
+    !>((ban-groups:ls ~ gs))
+    %+  expect-eq  !>(`(list @t)`~)
+    !>((ban-groups:ls (one ~nec) gs))
+  ==
 ::  item 4: a group write drops whoever is banned at write time, so a
 ::  share that read the old members cannot write a stripped ship back
 ++  test-ban-drop-race

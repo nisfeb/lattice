@@ -3156,7 +3156,14 @@
     ?~  who  (send-err eyre-id 400 'bad ship')
     ;<  bans=banned:ls  bind:m  read-banned
     ::  unban restores nothing. The grants were revoked, and re-granting is a
-    ::  deliberate act, not a side effect of lifting a ban.
+    ::  deliberate act, not a side effect of lifting a ban. The ship's own
+    ::  groups go again first, while it is still banned: one a ban before
+    ::  this rule left in place, or a folder rule made again, would hand
+    ::  back every old grant on the next share (+drop-ban-groups).
+    ;<  dropped=(unit @ud)  bind:m
+      ?.  (~(has in bans) u.who)  (pure:m `0)
+      (drop-ban-groups (silt ~[u.who]))
+    ?~  dropped  (ug-refused eyre-id)
     ;<  ~  bind:m
       (over:io (ban-road up) [[/lattice %banned] (~(del in bans) u.who)])
     (send-ok eyre-id)
@@ -13042,8 +13049,9 @@
 ::  returning how many groups changed. This is what makes a ban a revocation
 ::  rather than a note. Grants are unioned across the groups a ship belongs to,
 ::  so membership IS access, and leaving it in place would leave it reachable.
-::  The grant ROADS are untouched. They belong to the group, not the ship, and
-::  other members still need them. ~ = refused, partway through.
+::  A shared group's ROADS stay: they belong to the group, and other members
+::  still need them. The family's own groups go whole (+drop-ban-groups).
+::  ~ = refused, partway through.
 ::  +apply-comment-notice: a comment poked by ANOTHER ship.
 ::
 ::  Everything that decides whether it lands is read here, never from the
@@ -13087,9 +13095,13 @@
   =|  hit=@ud
   |-  ^-  form:m
   ?~  gs
+    ::  and the family's own groups go whole, roads and all, so an unban
+    ::  and one share give back that share alone (+ban-groups:ls)
+    ;<  dropped=(unit @ud)  bind:m  (drop-ban-groups (silt ~[who]))
+    ?~  dropped  (pure:m ~)
     ;<  h1=holds:ls  bind:m  holds-now
     ;<  ~  bind:m  (tell-holds h0 h1)
-    (pure:m `hit)
+    (pure:m `(add hit u.dropped))
   =/  gdir=path  (weld ug-base i.gs)
   ;<  wv=view:nexus  bind:m  (peek:fio [%& %& gdir %'who.ships'] ~)
   =/  ships=(set @p)
@@ -13101,6 +13113,41 @@
   ;<  ok=?  bind:m
     (ug-over [%& %& gdir %'who.ships'] [[/ %ships] left])
   ?.  ok  (pure:m ~)
+  $(gs t.gs, hit +(hit))
+::  +drop-ban-groups: every top-level group +ban-groups:ls picks for
+::  `bans` goes, as /share-group-del takes one: the group, and the rule of
+::  each folder shared with it, or a page added to one would make the
+::  group again (+grant-new). How many went; ~ = refused, partway.
+++  drop-ban-groups
+  |=  bans=banned:ls
+  =/  m  (fiber:fiber:nexus ,(unit @ud))
+  ^-  form:m
+  ;<  dn=view:nexus  bind:m  (peek:fio [%& %| ug-base] ~)
+  ?.  ?=([%ball *] dn)  (pure:m `0)
+  =/  gs=(list @t)
+    %+  ban-groups:ls  bans
+    %+  turn  ~(tap by dir.ball.dn)
+    |=  [nom=@ta gb=ball:tarball]
+    ^-  [@ta (set @p)]
+    =/  fils  ?~(fil.gb ~ contents.u.fil.gb)
+    =/  ws  (~(get by fils) %'who.ships')
+    :-  nom
+    ?~  ws  ~
+    (fall (mole |.(;;((set @p) (sang-noun:tarball sang.u.ws)))) ~)
+  ;<  sb=path  bind:m  self-base
+  =|  hit=@ud
+  |-  ^-  form:m
+  ?~  gs  (pure:m `hit)
+  =/  gdir=path  (snoc ug-base (crip (weld (trip i.gs) ".grp")))
+  ;<  old=weir:nexus  bind:m  (ug-read-weir gdir)
+  ;<  e=(unit tang)  bind:m  (cull-soft:io [%& %| gdir])
+  ?^  e  (pure:m ~)
+  =/  fs=(list path)  (folders-granted sb peek.old)
+  ;<  ~  bind:m
+    |-  ^-  form:m
+    ?~  fs  (pure:m ~)
+    ;<  ~  bind:m  (poke-eval [%folder-ungrant i.fs i.gs])
+    $(fs t.fs)
   $(gs t.gs, hit +(hit))
 ::  +ban-road: where the banlist lives.
 ++  ban-road  |=(up=@ud ^-(road:tarball (rf up / %banned)))
