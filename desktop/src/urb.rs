@@ -142,6 +142,68 @@ pub fn parse(raw: &str) -> Option<String> {
     Some(raw.to_string())
 }
 
+/// One spelling for each urb:// address, so the places the reader keys by
+/// address (history, the outside-content choice, pending comments and
+/// reply marks) see one page as one page: the scheme and ship lowercased,
+/// the ship with exactly one `~`, percent-escapes of unreserved characters
+/// decoded and the rest in uppercase hex, empty segments (a doubled or
+/// trailing `/`) dropped, and a leading `/n/` dropped where the address
+/// reads the same without it. A query or fragment is kept as it is, and
+/// anything that is not an urb:// address comes back only trimmed.
+#[cfg(feature = "urb-engine")]
+pub fn canon(raw: &str) -> String {
+    let t = raw.trim();
+    let Some(rest) = t.get(..6).filter(|p| p.eq_ignore_ascii_case("urb://")).map(|_| &t[6..]) else {
+        return t.to_string();
+    };
+    let (addr, tail) = rest.split_at(rest.find(['?', '#']).unwrap_or(rest.len()));
+    let (ship, path) = addr.split_once('/').unwrap_or((addr, ""));
+    let ship = ship.trim_start_matches('~').to_ascii_lowercase();
+    if ship.is_empty() {
+        return t.to_string();
+    }
+    let path = unescape_unreserved(path);
+    let mut segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    // `/n/` is the default mount, unless what follows would read as a
+    // mount of its own (one letter) or a forum board
+    if segs.len() > 1 && segs[0] == "n" && segs[1].len() > 1 && segs[1] != "forum" {
+        segs.remove(0);
+    }
+    let mut out = format!("urb://~{ship}");
+    for s in segs {
+        out.push('/');
+        out.push_str(s);
+    }
+    out.push_str(tail);
+    out
+}
+
+/// `%XX` decoded where it names an unreserved character, uppercased where
+/// it does not; a `%` not followed by two hex digits is left alone.
+#[cfg(feature = "urb-engine")]
+fn unescape_unreserved(path: &str) -> String {
+    let b = path.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+        if let (b'%', Some(h), Some(l)) = (b[i], b.get(i + 1).and_then(|&c| hex(c)), b.get(i + 2).and_then(|&c| hex(c))) {
+            let v = h * 16 + l;
+            if v.is_ascii_alphanumeric() || b"-._~".contains(&v) {
+                out.push(v);
+            } else {
+                out.extend_from_slice(format!("%{v:02X}").as_bytes());
+            }
+            i += 3;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    // only ASCII was put in for ASCII taken out, so the text stays UTF-8
+    String::from_utf8(out).unwrap_or_else(|_| path.to_string())
+}
+
 /// Keep the links that pass parse(), oldest dropped past INBOX_MAX. Answers
 /// how many were kept.
 fn enqueue<'a>(inbox: &mut Vec<String>, links: impl IntoIterator<Item = &'a str>) -> usize {
@@ -281,6 +343,34 @@ pub fn instance_id(identifier: &str, xdg_config: Option<&OsStr>, home: Option<&O
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "urb-engine")]
+    #[test]
+    fn one_address_has_one_spelling() {
+        use super::canon;
+        for (raw, want) in [
+            ("urb://~zod/a/b", "urb://~zod/a/b"),
+            (" URB://~ZOD/a/b ", "urb://~zod/a/b"),
+            ("urb://zod/a/b", "urb://~zod/a/b"),
+            ("urb://~~zod/a/b", "urb://~zod/a/b"),
+            ("urb://~zod//a///b/", "urb://~zod/a/b"),
+            ("urb://~zod/", "urb://~zod"),
+            ("urb://~zod/docs/", "urb://~zod/docs"),
+            ("urb://~zod/%61%2d%7E/%2f%3f%e2%82%ac", "urb://~zod/a-~/%2F%3F%E2%82%AC"),
+            ("urb://~zod/a%2", "urb://~zod/a%2"),
+            ("urb://~zod/n/hello", "urb://~zod/hello"),
+            ("urb://~zod/n/x", "urb://~zod/n/x"),
+            ("urb://~zod/n/forum/b", "urb://~zod/n/forum/b"),
+            ("urb://~zod/n", "urb://~zod/n"),
+            ("urb://~zod/a//b?x=1//2#f", "urb://~zod/a/b?x=1//2#f"),
+            ("https://example.com//x", "https://example.com//x"),
+            ("urb://", "urb://"),
+            ("ürb://x", "ürb://x"),
+        ] {
+            assert_eq!(canon(raw), want, "{raw}");
+            assert_eq!(canon(want), want, "idempotent: {want}");
+        }
+    }
+
     #[test]
     fn with_no_ship_a_link_opens_in_the_reader() {
         use super::{route, Route};
