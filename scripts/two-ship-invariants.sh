@@ -17,7 +17,8 @@
 #
 # Env:    A_URL, A_COOKIE, B_URL, B_COOKIE as two-ship-links.sh takes
 #         them; A_SOCK (A's pier is found from it), VERE, and B_SET (the
-#         fleet set of B, for item 7; skipped without it).
+#         fleet set of B, for item 7; skipped without it), B_PIER (for
+#         item 6, to seed entries from another host).
 # Prints one ok/FAIL line per check, exits non-zero on any FAIL.
 set -uo pipefail
 
@@ -45,7 +46,7 @@ cleanup() {
   A_ -o /dev/null -X POST "$A/unban?ship=comets"
   A_ -o /dev/null -X POST "$A/share-group-del?name=$BG"
   A_ -o /dev/null -X POST "$A/share-group-del?name=inv-fam"
-  for n in f/p f/s f/n f/h f r/p r m/p m; do
+  for n in f/p f/s f/n f/h f r/p r m/p m x/p x; do
     A_ -o /dev/null -X POST "$A/page-del?name=$T/$n"
   done
   A_ -o /dev/null -X POST "$A/page-del?name=$T"
@@ -153,49 +154,94 @@ A_ -o /dev/null -X POST "$A/unban?ship=$BSHIP"
 
 # --- 6. B's per-host cap and path bound -----------------------------------
 APIER=${A_SOCK%/.urb/*}
+BPIER=${B_PIER:-}
 if [ -n "${A_SOCK:-}" ] && [ -d "$APIER" ] && [ -n "${VERE:-}" ]; then
   base="/apps/'shell.shell'/desks/'lattice.desk'/desk/data/'lattice.lattice_app'"
-  # 520 notices from A, each a fresh page path, poked straight at B's inbox
-  hoon="=/  m  (strand ,vase)
+  # a khan thread on pier $1 pokes $2's share inbox with the notices for
+  # i in [$3, $4): each a fresh page path, and i = 999 the too long one
+  pokes() {
+    local hoon="=/  m  (strand ,vase)
 ;<  =bowl  bind:m  get-bowl
-=/  i=@ud  0
+=/  i=@ud  $3
 |-  ^-  form:m
-?:  =(i 521)  (pure:m !>(%sent))
-=/  pax=path  ?:(=(i 520) (weld /apps/x (reap 70 %a)) /apps/inv-cap/(scot %ud i)/code)
+?:  =(i $4)  (pure:m !>(%sent))
+=/  pax=path  ?:(=(i 999) (weld /apps/x (reap 70 %a)) /apps/inv-cap/(scot %ud i)/code)
 =/  req  [[/share-notice %& $base %'shares.sig'] [%poke [/lattice %share-notice] [%add pax 'read']]]
-;<  ~  bind:m  (poke [$BSHIP %grubbery] %grubbery-load !>(req))
+;<  ~  bind:m  (poke [$2 %grubbery] %grubbery-load !>(req))
 \$(i +(i))"
-  # shellcheck disable=SC1090
-  (source "$F" && khan "$VERE" "$APIER" "$hoon") >/dev/null 2>&1
-  n=0
-  for _ in $(seq 1 60); do
-    n=$(B_ "$B/shared-with-me" | jq --arg h "$ASHIP" '[.[] | select(.host==$h)] | length')
-    [ "${n:-0}" -ge 500 ] && break; sleep 1
+    # shellcheck disable=SC1090
+    (source "$F" && khan "$VERE" "$1" "$hoon")
+  }
+  count() { B_ "$B/shared-with-me" | jq --arg h "$1" '[.[] | select(.host==$h)] | length'; }
+  # three entries from another host (B itself), which A's flood must not evict
+  OTHER=""
+  if [ -n "$BPIER" ] && [ -d "$BPIER" ]; then
+    pokes "$BPIER" "$BSHIP" 0 3 >/dev/null 2>&1
+    for _ in $(seq 1 30); do [ "$(count "$BSHIP")" = 3 ] && break; sleep 1; done
+    OTHER=$(count "$BSHIP")
+  fi
+  # 520 notices from A, sent in batches of 40, each batch acked before the
+  # next, so the inbox is never asked for more than it can take at once
+  t0=$SECONDS
+  for s in $(seq 0 40 480); do
+    e=$((s+40)); [ $e -gt 520 ] && e=520
+    pokes "$APIER" "$BSHIP" "$s" "$e" >/dev/null 2>&1
+    echo "      6: sent $e of 520 in $((SECONDS-t0)) s, B lists $(count "$ASHIP")"
   done
-  [ "${n:-0}" -eq 500 ] && ok "6: one host holds at most 500 entries" ||
-    fail "6: one host holds at most 500 entries" "B lists $n from A"
+  pokes "$APIER" "$BSHIP" 999 1000 >/dev/null 2>&1
+  n=0
+  for _ in $(seq 1 120); do
+    n=$(count "$ASHIP"); [ "${n:-0}" -ge 500 ] && break; sleep 1
+  done
+  sleep 5; n=$(count "$ASHIP")
+  [ "${n:-0}" -eq 500 ] && ok "6: one host holds exactly 500 entries" ||
+    fail "6: one host holds exactly 500 entries" "B lists $n from A"
   B_ "$B/shared-with-me" | jq -e --arg h "$ASHIP" \
     '[.[] | select(.host==$h and (.path|startswith("/apps/x/")))] | length == 0' >/dev/null &&
     ok "6: a notice with a too long path is dropped" || fail "6: a notice with a too long path is dropped"
-  B_ "$B/shared-with-me" | jq -r --arg h "$ASHIP" '.[] | select(.host==$h) | .path' |
-  while read -r pa; do
-    B_ -o /dev/null -X POST -G --data-urlencode "host=$ASHIP" --data-urlencode "path=$pa" "$B/shared-with-me-del"
+  if [ "$OTHER" = 3 ]; then
+    [ "$(count "$BSHIP")" = 3 ] && ok "6: another host's entries stay" ||
+      fail "6: another host's entries stay" "B lists $(count "$BSHIP") of 3"
+  else
+    fail "6: another host's entries were seeded" "B listed ${OTHER:-none} of 3 (B_PIER ${BPIER:-unset})"
+  fi
+  for h in "$ASHIP" "$BSHIP"; do
+    B_ "$B/shared-with-me" | jq -r --arg h "$h" '.[] | select(.host==$h) | .path' |
+    while read -r pa; do
+      B_ -o /dev/null -X POST -G --data-urlencode "host=$h" --data-urlencode "path=$pa" "$B/shared-with-me-del"
+    done
   done
 else
   fail "6: A's pier and VERE are known (A_SOCK, VERE)"
 fi
 
 # --- 7. a revoke while B is down ------------------------------------------
+# x/p is shared only by hand, in a folder never shared, so its revoke owes
+# B a %del of its own: sent while B is down, it must reach B once B is up
+# (+del-send's retries, +del-waits:ls: 20 s for the ack, then 30 s, 2 m)
 if [ -n "${B_SET:-}" ]; then
-  share f/p read >/dev/null
-  wait-for "7: page shared, listed on B" 60 listed f/p/code
+  mkpage x/p "Direct page"
+  share x/p read >/dev/null
+  wait-for "7: page shared only directly, listed on B" 60 listed x/p/code
   "$F" down "$B_SET" >/dev/null 2>&1
-  A_ -o /dev/null -X POST "$A/unshare-file?name=$T/f/p&ship=$BSHIP"
-  A_ -o /dev/null -X POST "$A/unshare-file?name=$T/f&ship=$BSHIP"
-  sleep 25
+  A_ -o /dev/null -X POST "$A/unshare-file?name=$T/x/p&ship=$BSHIP"
+  is-mode x/p none "7: the revoke takes B's grant at once"
+  sleep 30
   "$F" up "$B_SET" >/dev/null 2>&1
-  for _ in $(seq 1 60); do curl -s -m 5 -o /dev/null "${B_URL%/}/~/host" && break; sleep 1; done
-  wait-for "7: B, back up, hears the revoke" 180 unlisted f/p/code
+  for _ in $(seq 1 120); do curl -s -m 5 -o /dev/null "${B_URL%/}/~/host" && break; sleep 1; done
+  t0=$SECONDS
+  wait-for "7: B, back up, hears the revoke" 200 unlisted x/p/code
+  echo "      7: B dropped it $((SECONDS-t0)) s after it was up"
+  # a page also held through a shared folder keeps B's read when its own
+  # share is revoked, and B's folder entry stays
+  share f read >/dev/null
+  wait-for "7: folder shared again, listed on B" 60 listed f/dir-index
+  share f/p read >/dev/null
+  sleep 2
+  A_ -o /dev/null -X POST "$A/unshare-file?name=$T/f/p&ship=$BSHIP"
+  sleep 10
+  is-mode f/p read "7: a page held through its folder stays readable"
+  listed f/dir-index && ok "7: B still lists the folder" || fail "7: B still lists the folder"
 else
   echo "skip  7: no B_SET"
 fi
