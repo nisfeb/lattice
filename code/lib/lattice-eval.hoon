@@ -24,6 +24,12 @@
       ::  +make, for a copy of a page a peer may have written (a move, a
       ::  conflict copy). The copy keeps the original's peer-written mark.
       [%make-marked pax=path src=@t]
+      ::  +make, by one writer (a window's session id, a key, the mount),
+      ::  tagged on the revision so the history prune coalesces only one
+      ::  writer's run (+coalesce-victim). base: not 0, the rev the writer
+      ::  edited from, checked again here in the writer, so a save that
+      ::  raced another past the route's check is not written over it.
+      [%make-by pax=path src=@t by=@t base=@ud]
       ::  N pages in ONE writer transaction. An upload used to be one HTTP
       ::  request (and one poke) per file, and every request pays the pier's
       ::  ~0.5s floor serially. A 20-file drop was ~20 round-trips of pure

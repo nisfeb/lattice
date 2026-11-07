@@ -900,13 +900,18 @@
 ::  head across a pause is the end of a session, so it stays, even when
 ::  it came soon after the one before it.
 ::
+::
+::  w: each revision's writer (+rev-by). prev goes only when the head is
+::  the same writer's: a revision one window or writer made and another
+::  then wrote over is the only copy of that writer's text, and is kept.
 ++  coalesce-victim
-  |=  [live=(list [n=@ud d=@da]) window=@dr]
+  |=  [live=(list [n=@ud d=@da w=@t]) window=@dr]
   ^-  (unit @ud)
   ?.  ?=([* * * *] live)  ~
   =/  top  i.live
   =/  prev  i.t.live
   =/  anchor  i.t.t.live
+  ?.  =(w.top w.prev)  ~
   ::  a clock step backwards reads as no gap, rather than crashing sub
   =/  gap  |=([a=@da b=@da] ?:((lth a b) `@dr`0 (sub a b)))
   ?.  (lth (gap d.prev d.anchor) window)  ~
@@ -920,6 +925,20 @@
   |=  d=@da
   ^-  @t
   (cat 3 'at:' (scot %da d))
+::  +by-tag / +rev-by: who wrote a revision (+make-by in the writer), ''
+::  for one written without a writer id
+++  by-tag
+  |=  w=@t
+  ^-  @t
+  (cat 3 'by:' w)
+++  rev-by
+  |=  tags=(set @t)
+  ^-  @t
+  =/  ts=(list @t)  ~(tap in tags)
+  |-  ^-  @t
+  ?~  ts  ''
+  ?:  =('by:' (end [3 3] i.ts))  (rsh [3 3] i.ts)
+  $(ts t.ts)
 ++  rev-at
   |=  [d=@da tags=(set @t)]
   ^-  @da

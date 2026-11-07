@@ -215,6 +215,26 @@
   |-  ^-  tape
   ?:  =(0 n)  out
   $(n (div n 10), out [(add '0' (mod n 10)) out])
+::  +conflict-name: conflicts/<name>-rev<N>, where a conflict's losing
+::  body is kept (the ship's +conflict-name). The name is flattened to one
+::  segment, and the flattening is injective: '/' becomes '-', and the
+::  characters that would make that ambiguous are escaped, '-' as '~d' and
+::  '~' as '~~'. So a/b and a-b no longer share a copy. The rev is plain
+::  digits, never +scow's dotted 1.234.
+++  conflict-name
+  |=  [nam=@t prev=@ud]
+  ^-  @t
+  =/  t=tape  (trip nam)
+  =|  out=tape
+  |-  ^-  @t
+  ?~  t
+    (crip :(weld "conflicts/" (flop out) "-rev" (num-tape prev)))
+  =/  e=tape
+    ?:  =('/' i.t)  (trip '-')
+    ?:  =('-' i.t)  (trip '~d')
+    ?:  =('~' i.t)  (trip '~~')
+    ~[i.t]
+  $(t t.t, out (weld (flop e) out))
 ::
 ++  tape-num
   |=  t=tape
