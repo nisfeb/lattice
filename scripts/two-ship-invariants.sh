@@ -165,10 +165,11 @@ if [ -n "${A_SOCK:-}" ] && [ -d "$APIER" ] && [ -n "${VERE:-}" ]; then
 =/  i=@ud  $3
 |-  ^-  form:m
 ?:  =(i $4)  (pure:m !>(%sent))
-=/  pax=path  ?:(=(i 999) (weld /apps/x (reap 70 %a)) /apps/inv-cap/(scot %ud i)/code)
+=/  pax=path  ?:(=(i 999) (weld \`path\`/apps/x \`path\`(reap 70 ~.a)) /apps/inv-cap/(scot %ud i)/code)
 =/  req  [[/share-notice %& $base %'shares.sig'] [%poke [/lattice %share-notice] [%add pax 'read']]]
 ;<  ~  bind:m  (poke [$2 %grubbery] %grubbery-load !>(req))
 \$(i +(i))"
+    hoon=${hoon//$'\n'/  }    # khan takes the thread on one line
     # shellcheck disable=SC1090
     (source "$F" && khan "$VERE" "$1" "$hoon")
   }
@@ -233,7 +234,12 @@ if [ -n "${B_SET:-}" ]; then
   wait-for "7: B, back up, hears the revoke" 200 unlisted x/p/code
   echo "      7: B dropped it $((SECONDS-t0)) s after it was up"
   # a page also held through a shared folder keeps B's read when its own
-  # share is revoked, and B's folder entry stays
+  # share is revoked, and B's folder entry stays. B's group kept f's roads
+  # through the ban (a ban strips members, not roads), so item 4's share
+  # gave f back untold, and item 6's cleanup removed B's entry for it: an
+  # unshare first makes the share below one B is told of.
+  A_ -o /dev/null -X POST "$A/unshare-file?name=$T/f&ship=$BSHIP"
+  sleep 2
   share f read >/dev/null
   wait-for "7: folder shared again, listed on B" 60 listed f/dir-index
   share f/p read >/dev/null
