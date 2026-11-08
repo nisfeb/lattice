@@ -1447,6 +1447,16 @@ try {
   check('clobber: text typed during the upgrade fetch survives it',
     await page.evaluate(() => document.getElementById('src').value.includes('clobmark')),
     await page.evaluate(() => document.getElementById('src').value.slice(0, 60)));
+  //  and it reaches the ship. The page is deleted below, and a delete
+  //  landing before the editor's save (which waits for the upgrade's
+  //  answer, seconds on a loaded lane) is a real delete elsewhere: the
+  //  save claiming its rev is refused, and the editor holds the text
+  //  unsaved, so the next step's New asks about it.
+  check('clobber: and the typed text is saved over the ship\'s copy',
+    await waitFor(() => page.evaluate(async (n) => {
+      const r = await fetch('/apps/lattice/page-source?name=' + encodeURIComponent(n));
+      return r.ok && (await r.json()).body.includes('clobmark');
+    }, CL), 30000));
 
   page.off('request', holdUpgrade);
   await page.setRequestInterception(false);

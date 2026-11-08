@@ -158,6 +158,9 @@
         const n = nodes.find((x) => x.page && x.path === t.key);
         applyPage(t.key, { body: s.body, kind: s.kind || s.pkind, rev: s.rev,
           share: (n && n.share) || 'private' }, true);
+        //  a tab's rev is the editor's from when it was parked, which only
+        //  ever comes from a fresh answer, so its saves may claim it
+        if (!s.hist) { curRev = s.rev || 0; if (!s.dirty) shipText.set(t.key, s.body); }
         // a quiet applyPage paints a content kind only. A computed page
         // kept whatever the pane showed before it came back: a grub's "no
         // preview", painted while the grub's state was still live (fuzz

@@ -19,9 +19,9 @@
     for (const m of html.matchAll(/<a href="([^"]*)"/g)) {
       let t = mdUnesc(m[1]);
       const pg = /^\/apps\/lattice\/app\?name=([^&#]*)$/.exec(t);
-      const urb = /^\/apps\/lattice\?url=(urb:\/\/.*)$/.exec(t);
+      const urb = /^\/apps\/lattice\?url=(urb(?::|%3A).*)$/i.exec(t);
       if (pg) { try { t = decodeURIComponent(pg[1]); } catch { continue; } }
-      else if (urb) t = urb[1];
+      else if (urb) { try { t = decodeURIComponent(urb[1]); } catch { continue; } }
       else if (t.startsWith('#')) continue;      // an anchor in the page itself
       if (t && !out.includes(t)) out.push(t);
     }
