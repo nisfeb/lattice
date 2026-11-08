@@ -8,8 +8,11 @@
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::transport::{TErr, Transport, MAX_BODY};
 
@@ -314,6 +317,16 @@ pub struct LickTransport {
     sock_path: String,
     our: String,
     conn: Mutex<Option<UnixStream>>,
+    //  A second handle on the live socket, kept only so quiesce() can shut the
+    //  socket down from OUTSIDE the conn mutex. A blocked in-flight read holds
+    //  conn; shutting the shared socket through this clone unblocks it, which
+    //  is what keeps a wedged op from holding exit open past the bound.
+    shut: Mutex<Option<UnixStream>>,
+    //  Set by quiesce(): once up, call() issues no new request and opens no new
+    //  socket, so the reply already in flight is the LAST thing the ship writes
+    //  to us. We read it to completion, then half-close, instead of vanishing
+    //  mid-write and driving the ship's bail handler into a stack overflow.
+    quiescing: AtomicBool,
 }
 
 impl LickTransport {
@@ -324,11 +337,20 @@ impl LickTransport {
             sock_path: sock_path.to_string(),
             our: our.to_string(),
             conn: Mutex::new(None),
+            shut: Mutex::new(None),
+            quiescing: AtomicBool::new(false),
         }
     }
 
     /// One request/response round-trip. Reconnects once on a dropped socket.
     fn call(&self, req: &Noun, retry: bool) -> Result<Noun, TErr> {
+        //  Winding down: open no new socket and send no new request. The reply
+        //  to whatever is already in flight is the last write we take from the
+        //  ship; a fresh request here would be exactly the mid-write we are
+        //  trying to avoid.
+        if self.quiescing.load(Ordering::SeqCst) {
+            return Err(TErr::new(0, "lick: transport is shutting down"));
+        }
         let mut guard = self.conn.lock().unwrap();
         if guard.is_none() {
             let s = UnixStream::connect(&self.sock_path)
@@ -344,6 +366,8 @@ impl LickTransport {
             let d = Some(std::time::Duration::from_secs(120));
             let _ = s.set_read_timeout(d);
             let _ = s.set_write_timeout(d);
+            //  Keep a side handle for quiesce() to shut down out-of-band.
+            *self.shut.lock().unwrap() = s.try_clone().ok();
             *guard = Some(s);
         }
         let sock = guard.as_mut().unwrap();
@@ -355,6 +379,7 @@ impl LickTransport {
             Ok(reply) => Ok(reply),
             Err(_) if retry => {
                 *guard = None; // drop + reconnect once
+                *self.shut.lock().unwrap() = None;
                 drop(guard);
                 self.call(req, false)
             }
@@ -362,8 +387,44 @@ impl LickTransport {
                 // a failed read can leave half a frame on the wire. Start the
                 // next call on a fresh socket.
                 *guard = None;
+                *self.shut.lock().unwrap() = None;
                 Err(e)
             }
+        }
+    }
+
+    /// Stop issuing requests, let any reply in flight be read to completion
+    /// within `bound`, then shut the socket down cleanly. See the trait's
+    /// `quiesce` for why this matters (it keeps the ship from segfaulting on
+    /// the broken pipe a bare drop would leave behind).
+    fn quiesce_inner(&self, bound: Duration) {
+        //  No new request opens a socket or writes from here on.
+        self.quiescing.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + bound;
+        loop {
+            //  The conn lock is held for exactly as long as a call() is in
+            //  flight. Getting it means no reply is mid-read: either none was
+            //  running, or the last one finished and its reply was read whole.
+            if let Ok(mut g) = self.conn.try_lock() {
+                if let Some(s) = g.take() {
+                    //  Orderly: the ship sees EOF, not a write into a dead
+                    //  pipe. Both directions, since nothing more will be read.
+                    let _ = s.shutdown(Shutdown::Both);
+                }
+                *self.shut.lock().unwrap() = None;
+                return;
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        //  A call is still in flight at the bound: a wedged read holding conn.
+        //  Shut the shared socket through the side handle so that read returns
+        //  and the owning call drops the stream. This is what stops a stuck
+        //  FUSE op from holding exit open past the bound.
+        if let Some(s) = self.shut.lock().unwrap().take() {
+            let _ = s.shutdown(Shutdown::Both);
         }
     }
 
@@ -405,6 +466,9 @@ impl Transport for LickTransport {
     }
     fn ship(&self) -> Result<String, TErr> {
         Ok(self.our.clone())
+    }
+    fn quiesce(&self, bound: Duration) {
+        self.quiesce_inner(bound);
     }
     // watch: a future enhancement. The nexus can lick-spit change frames on a
     // second port. For now freshness rides the core's TTL poll (no-op default),
@@ -621,6 +685,110 @@ mod tests {
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert_eq!(count(), 2, "one try plus exactly one retry");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quiesce_lets_an_in_flight_reply_finish_then_half_closes() {
+        // This is the crash mitigation. A reply already in flight MUST be read
+        // to completion and the socket shut down cleanly, so the ship sees an
+        // orderly EOF instead of a write into a dead pipe (which re-enters its
+        // %lick error handler until the stack overflows and it segfaults).
+        use std::sync::atomic::AtomicBool;
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("lattice-fs-q1-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fs");
+        let l = std::os::unix::net::UnixListener::bind(&path).unwrap();
+
+        let saw_clean_eof = Arc::new(AtomicBool::new(false));
+        let srv_eof = saw_clean_eof.clone();
+        std::thread::spawn(move || {
+            if let Some(Ok(mut s)) = l.incoming().next() {
+                s.set_read_timeout(Some(Duration::from_secs(5))).ok();
+                if recv_frame(&mut s).is_ok() {
+                    // hold the reply back so quiesce overlaps the client's read
+                    std::thread::sleep(Duration::from_millis(300));
+                    let _ = send_frame(&mut s, "res", &cell(num(200), cord("the body")));
+                    // the client must read that reply, then half-close: our
+                    // next read is a clean EOF (0 bytes), never a reset we were
+                    // mid-write into.
+                    let mut buf = [0u8; 1];
+                    if let Ok(0) = s.read(&mut buf) {
+                        srv_eof.store(true, Ordering::SeqCst);
+                    }
+                }
+            }
+        });
+
+        let t = Arc::new(LickTransport::new(path.to_str().unwrap(), "~zod"));
+        let t2 = t.clone();
+        let caller = std::thread::spawn(move || {
+            t2.get_bytes("/apps/lattice/beacon-rev", &[]).unwrap()
+        });
+        // let the call connect, send, and enter the blocking read
+        std::thread::sleep(Duration::from_millis(100));
+        // quiesce overlaps the in-flight read; it must wait for it, not yank
+        // the socket out from under it
+        t.quiesce(Duration::from_secs(2));
+
+        let body = caller.join().unwrap();
+        assert_eq!(body, b"the body", "the in-flight reply must be read to completion");
+        for _ in 0..100 {
+            if saw_clean_eof.load(Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            saw_clean_eof.load(Ordering::SeqCst),
+            "quiesce must shut the socket down cleanly, not reset it mid-write"
+        );
+        // after quiesce, a new request is refused fast and opens no socket
+        let e = t.get_bytes("/x", &[]).unwrap_err();
+        assert!(e.msg.contains("shutting down"), "{}", e.msg);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quiesce_returns_within_bound_when_a_call_is_wedged() {
+        // A stuck in-flight op must not hold exit open. The server reads the
+        // request and never replies; the call is blocked in recv_frame holding
+        // the conn mutex. quiesce cannot take that mutex, so it shuts the
+        // socket from its side handle, which both unblocks the stuck read and
+        // lets quiesce return well within its bound.
+        use std::sync::Arc;
+        let dir = std::env::temp_dir().join(format!("lattice-fs-q2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("fs");
+        let l = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        std::thread::spawn(move || {
+            if let Some(Ok(mut s)) = l.incoming().next() {
+                s.set_read_timeout(Some(Duration::from_secs(10))).ok();
+                let _ = recv_frame(&mut s); // read the request, then never reply
+                std::thread::sleep(Duration::from_secs(10));
+            }
+        });
+
+        let t = Arc::new(LickTransport::new(path.to_str().unwrap(), "~zod"));
+        let t2 = t.clone();
+        let caller = std::thread::spawn(move || {
+            let _ = t2.get_bytes("/x", &[]); // blocks in the read until quiesce
+        });
+        std::thread::sleep(Duration::from_millis(100)); // let the call enter the read
+
+        let start = Instant::now();
+        t.quiesce(Duration::from_secs(1));
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "quiesce must not hang past its bound on a wedged call: {elapsed:?}"
+        );
+        // the side-handle shutdown unblocked the stuck read, so the caller
+        // returns rather than sitting on the socket's 120s read timeout
+        caller.join().unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
