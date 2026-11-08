@@ -1317,7 +1317,11 @@
   ::  is already on top, or the read is from before the write), prev+1 is
   ::  the answer as before. One read, no waiting: the write shows only
   ::  once the writer's event ends, and polling for it cost every save
-  ::  about two seconds under load.
+  ::  about two seconds under load. A page that was missing has no prev
+  ::  to count from: a new page's first rev can be 0 or 1, and a page
+  ::  made again after a delete goes on from its old revisions. Its rev
+  ::  unseen is answered 0, which claims nothing (a save's base 0 is no
+  ::  claim), so the editor's next save is not refused as stale.
   ;<  ph=[rev=@ud src=(unit @t)]  bind:m
     ?:  =(src.pc `src)  (pure:(fiber:fiber:nexus ,[rev=@ud src=(unit @t)]) pc)
     (page-head (pax-of u.name))
@@ -1326,7 +1330,7 @@
   %+  send-json  eyre-id
   %-  pairs:enjs:format
   :~  ['ok' b+&]
-      ['rev' (numb:enjs:format ?:(mine rev.ph +(prev)))]
+      ['rev' (numb:enjs:format ?:(mine rev.ph ?~(src.pc 0 +(prev))))]
       ['prev-rev' (numb:enjs:format prev)]
       ['conflicted' b+conflicted]
       ['kept' s+kept]

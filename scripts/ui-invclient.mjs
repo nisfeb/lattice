@@ -12,6 +12,9 @@
 //     and no longer holds up the rest; the bar offers to clear it.
 //  5. A queued edit rebased onto an offline rename gets the rename's link
 //     rewrite, so the replay does not put the old links back.
+//  6. An edit on a paint from an old cached rev lands with no 409.
+//  7. A create answers no rev it did not see, so a new page's first saves
+//     are not refused as stale.
 //
 //  WRITES to the ship (namespace qi/ and conflicts/): dev harness only.
 //  Env: LATTICE_URL, LATTICE_COOKIE, CHROME
@@ -246,6 +249,54 @@ try {
   check('an edit made on a paint from an old cached rev lands', landed, await shipBody(STALE));
   check('with no stale refusal', refused === 0, 'refused=' + refused);
   check('and no conflicts/ copy', !(await treeNames()).some((n) => n.startsWith('conflicts/mine-qi-stale')));
+
+  // ── 7. a create's answer claims no rev it did not see ────────────────────
+  //  page-save reads the head once after its write, which usually comes
+  //  before the write shows. For a page that was missing it answered
+  //  prev+1, 1, but a new page's first rev is 0, and a page made again
+  //  after a delete can go on from its old revisions. The editor claimed
+  //  that guess, and its first save on the new page was refused as stale
+  //  and kept aside (ui-matrix "new page", ui-tabsafe F1).
+  const RC = 'qi/recreated';
+  for (const body of ['one', 'two', 'three'])
+    await shipFetch('page-save?type=md&name=' + encodeURIComponent(RC), { method: 'POST', body });
+  await shipFetch('page-del?name=' + encodeURIComponent(RC), { method: 'POST' });
+  const made = await (await shipFetch('page-save?type=md&new=1&name=' + encodeURIComponent(RC),
+    { method: 'POST', body: 'again' })).json();
+  let head = null;
+  for (let i = 0; i < 20 && !(head && head.body === 'again'); i++) {
+    await sleep(250);
+    head = await (await shipFetch('page-source?name=' + encodeURIComponent(RC))).json();
+  }
+  check('a page made again answers its real rev or none', made.rev === 0 || made.rev === head.rev,
+    JSON.stringify({ answered: made.rev, head: head && head.rev }));
+  //  and the editor: + file, then a save at once and another behind it
+  const NEWP = 'qi/fresh-' + Date.now();
+  let refusedNew = 0;
+  p.on('response', (r) => { if (r.url().includes(encodeURIComponent(NEWP)) && r.status() === 409) refusedNew++; });
+  await p.goto(env.app, { waitUntil: 'domcontentloaded', timeout: 90000 });
+  await p.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0, { timeout: 90000 });
+  await p.evaluate(() => document.getElementById('newfile').click());
+  await p.waitForFunction(() => !document.getElementById('dlg').hidden, { timeout: 10000 });
+  await p.evaluate((n) => {
+    document.getElementById('dlginput').value = n;
+    document.getElementById('dlgkind').value = 'md';
+    document.getElementById('dlgok').click();
+  }, NEWP);
+  for (const t of ['# first', '# first\n\nsecond']) {
+    await p.waitForFunction((n) => document.getElementById('pname').value === n, { timeout: 30000 }, NEWP);
+    await p.evaluate((v) => {
+      const s = document.getElementById('src');
+      s.value = v; s.dispatchEvent(new Event('input'));
+      document.getElementById('save').click();
+    }, t);
+    await sleep(300);
+  }
+  let newBody = null;
+  for (let i = 0; i < 40 && newBody !== '# first\n\nsecond'; i++) { await sleep(1000); newBody = await shipBody(NEWP); }
+  check('a new page\'s saves right after its create land', newBody === '# first\n\nsecond', JSON.stringify(newBody));
+  check('with no stale refusal', refusedNew === 0, 'refused=' + refusedNew);
+  check('and no conflicts/ copy', !(await treeNames()).some((n) => n.startsWith('conflicts/mine-qi-fresh')));
 } catch (e) {
   check('the suite threw: ' + String(e.message).slice(0, 160), false);
 } finally {
