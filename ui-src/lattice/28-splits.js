@@ -500,7 +500,7 @@
     g.gmemo = memo;
     const path = g.ghead.querySelector('.tpath');
     const name = !t ? '' : doc ? ((s && s.shown) || t.key || k.label(t)) : k.label(t);
-    path.textContent = name || 'no page open';
+    fitName(path, name || 'no page open');
     path.classList.toggle('muted', !name);
     path.title = name;
     g.ghead.querySelector('[data-go="tback"]').disabled = !t || !t.back.length;

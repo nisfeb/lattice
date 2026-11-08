@@ -341,6 +341,46 @@
     if (near.some((q) => label(q) === me)) return p;
     return me;
   };
+  // fitName: a page name too wide for its box loses folders from the
+  // front, "…/spotlights/transcript", and never its last segment, which is
+  // what tells pages apart (a phone cut them all to "projects/urb…"). A
+  // grub's "~ship: " stays too. The box keeps the whole name in
+  // data-full, and a ResizeObserver fits it again whenever its size
+  // changes, so a drawer or sheet that opens, or a rotated phone, is
+  // fitted. The fitting runs in a frame of its own, never in the
+  // observer's callback, so changing the text cannot loop the observer.
+  // A last segment wider than the box on its own falls back to the CSS
+  // ellipsis.
+  const fitQ = new Set();
+  let fitRaf = 0;
+  const fitKick = () => { if (!fitRaf) fitRaf = requestAnimationFrame(fitRun); };
+  const fitRo = new ResizeObserver((es) => { for (const e of es) fitQ.add(e.target); fitKick(); });
+  function fitRun() {
+    fitRaf = 0;
+    const els = [];
+    for (const el of fitQ) {
+      if (!el.isConnected) fitRo.unobserve(el);
+      else { el.textContent = el.dataset.full; els.push(el); }
+    }
+    fitQ.clear();
+    // every write first, then one layout for all the reads
+    for (const el of els.filter((e) => e.clientWidth && e.scrollWidth > e.clientWidth)) {
+      const full = el.dataset.full;
+      const head = (/^~[\w-]+: /.exec(full) || [''])[0];
+      const segs = full.slice(head.length).split('/');
+      for (let i = 1; i < segs.length; i++) {
+        el.textContent = head + '…/' + segs.slice(i).join('/');
+        if (el.scrollWidth <= el.clientWidth) break;
+      }
+    }
+  }
+  const fitName = (el, full) => {
+    el.dataset.full = full;
+    el.textContent = full;
+    fitRo.observe(el);
+    fitQ.add(el);
+    fitKick();
+  };
   const st = (msg, ok = true) => {
     spinner.classList.remove('on');          // any plain status ends the spin
     status.textContent = msg;

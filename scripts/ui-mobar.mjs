@@ -22,9 +22,15 @@ const B = RUN + '/beta';
 //  truncate rather than widen the drawer (the + stays in reach)
 const LONGDIR = RUN + '-with-a-folder-name-far-wider-than-any-phone-screen';
 const LONG = LONGDIR + '/a-page-name-that-is-also-far-wider-than-any-phone-screen';
-await seed(env, [[A, '# alpha'], [B, '# beta'], [LONG, '# long']]);
+//  a real page name's shape: the folders are long and alike, and only the
+//  last segment tells it from its neighbours
+const LEAF = 'transcript_20261105_edited';
+const NAMED = RUN + '/projects/urbit/workspace/uf-marcomm/spotlights/ricsul-bilwyt/' + LEAF;
+await seed(env, [[A, '# alpha'], [B, '# beta'], [LONG, '# long'], [NAMED, '# named']]);
 const check = makeCheck();
 const browser = await launchBrowser();
+await browser.defaultBrowserContext().overridePermissions(env.base,
+  ['clipboard-read', 'clipboard-write', 'clipboard-sanitized-write']);
 
 const boot = async (width, height) => {
   const p = await openPage(browser, env,
@@ -184,7 +190,8 @@ try {
   // the tab header and the tab strip at 390px
   check('the tab header is on screen', await reach(m, '#tpath'));
   check('the path names the open page', await m.evaluate((n) =>
-    document.getElementById('tpath').textContent.includes(n), opened));
+    document.getElementById('tpath').dataset.full === n
+    && document.getElementById('tpath').textContent.endsWith(n.split('/').pop()), opened));
   check('the tab strip is on screen', await reach(m, '#doctabs .dtab.on'));
 
   // ...but an open that lands late leaves alone a drawer opened since. The
@@ -420,6 +427,63 @@ try {
   const gap = await m.evaluate(() => document.getElementById('statusbar').getBoundingClientRect().top
     - document.getElementById('src').getBoundingClientRect().bottom);
   check('and the text runs down to the status bar', Math.abs(gap) <= 1, String(gap));
+
+  // ── a long page name on a phone ────────────────────────────────────────────
+  // The top bar is cut from the front (fitName, 10-shell.js), so the last
+  // segment stays whole, and a tap on it shows the whole name.
+  await m.evaluate((n) => window.latTabs.openIn('page', n, { newTab: true }), NAMED);
+  await until(m, (n) => document.getElementById('pname').value === n, NAMED);
+  await sleep(300);
+  const bar = await m.evaluate(() => {
+    const p = document.getElementById('tpath');
+    return { text: p.textContent, full: p.dataset.full, sw: p.scrollWidth, cw: p.clientWidth };
+  });
+  check('phone: the top bar keeps the last segment whole',
+    bar.text.endsWith('/' + LEAF) && bar.sw <= bar.cw, JSON.stringify(bar));
+  check('and cuts the folders from the front', bar.text.startsWith('\u2026/')
+    && NAMED.endsWith(bar.text.slice(1)) && bar.full === NAMED, JSON.stringify(bar));
+  // a box that grows gets the folders back (the ResizeObserver refits)
+  await m.setViewport({ width: 600, height: 844, isMobile: true, hasTouch: true });
+  await sleep(300);
+  const wide = await m.evaluate(() => document.getElementById('tpath').textContent);
+  await m.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+  await sleep(300);
+  check('a wider phone shows more of the folders', wide.length > bar.text.length
+    && wide.endsWith('/' + LEAF), JSON.stringify({ wide, narrow: bar.text }));
+  await tap(m, '#tpath');
+  const sheet = await m.evaluate(() => {
+    const s = document.getElementById('nsheet');
+    if (!s) return null;
+    const f = s.querySelector('.nsfull');
+    const r = s.getBoundingClientRect();
+    return { name: f.textContent, left: r.left, right: r.right, lines: f.getClientRects().length
+      && Math.round(f.getBoundingClientRect().height), sel: getComputedStyle(f).userSelect,
+    buttons: [...s.querySelectorAll('button')].map((b) => b.dataset.ns),
+    dlg: !document.getElementById('dlg').hidden };
+  });
+  check('phone: a tap on the name shows the whole name', !!sheet && sheet.name === NAMED,
+    JSON.stringify(sheet));
+  check('wrapped inside the screen and selectable', !!sheet && sheet.left >= 0 && sheet.right <= 390
+    && sheet.sel !== 'none', JSON.stringify(sheet));
+  check('with Copy and Rename, and no move dialog yet', !!sheet && !sheet.dlg
+    && sheet.buttons.join() === 'copy,rename', JSON.stringify(sheet));
+  await m.evaluate(() => navigator.clipboard.writeText('-')).catch(() => {});
+  await tap(m, '#nsheet [data-ns="copy"]');
+  const said = await until(m, (n) => (document.getElementById('status').textContent || '')
+    .includes('name copied: ' + n), NAMED);
+  const clip = await m.evaluate(() => navigator.clipboard.readText()).catch((e) => 'ERR ' + e);
+  check('Copy puts the name on the clipboard and says so', said && clip === NAMED, clip);
+  check('and the sheet goes', await m.evaluate(() => !document.getElementById('nsheet')));
+  await tap(m, '#tpath');
+  await tap(m, '#nsheet [data-ns="rename"]');
+  const mv = await m.evaluate(() => ({ open: !document.getElementById('dlg').hidden,
+    v: document.getElementById('dlginput').value }));
+  check('Rename is the move dialog, prefilled with the name', mv.open && mv.v === NAMED,
+    JSON.stringify(mv));
+  await m.evaluate(() => document.getElementById('dlgcancel').click());
+  await tap(m, '#tpath');
+  await tapAt(m, 200, 600);
+  check('a tap elsewhere shuts the sheet', await m.evaluate(() => !document.getElementById('nsheet')));
   await m.close();
 
   // ── desktop web: untouched ─────────────────────────────────────────────────
@@ -449,6 +513,16 @@ try {
     const T = window.latTabs;
     for (const t of T.list()) if (t.kind === 'grub') await T.closeTab(t.id);
   });
+  await d.evaluate((n) => window.latTabs.openIn('page', n, { newTab: true }), NAMED);
+  await until(d, (n) => document.getElementById('pname').value === n, NAMED);
+  await sleep(300);
+  check('desktop: the path still ends in the page\'s own name', await d.evaluate((l) =>
+    document.getElementById('tpath').textContent.endsWith('/' + l), LEAF));
+  await d.click('#tpath');
+  await until(d, () => !document.getElementById('dlg').hidden);
+  check('desktop: a click on the path is still move / rename, no sheet', await d.evaluate(() =>
+    !document.getElementById('dlg').hidden && !document.getElementById('nsheet')));
+  await d.evaluate(() => document.getElementById('dlgcancel').click());
   await d.close();
 } catch (e) {
   check('suite crashed: ' + e.message, false);
