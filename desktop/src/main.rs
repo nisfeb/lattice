@@ -53,12 +53,18 @@ fn remount(handle: &tauri::AppHandle, cfg: &config::Config) {
     for spec in &cfg.mounts {
         mounts::heal_mountpoint(&spec.mountpoint);
         match mounts::projection_for(handle, &spec.root, &spec.sock, &spec.ship)
-            .and_then(|p| lattice_fs::spawn(p, &spec.mountpoint).map_err(|e| e.to_string()))
-        {
-            Ok(s) => {
+            .and_then(|p| {
+                lattice_fs::spawn(p.clone(), &spec.mountpoint)
+                    .map(|s| (p, s))
+                    .map_err(|e| e.to_string())
+            }) {
+            Ok((proj, session)) => {
                 let map = handle.state::<mounts::MountMap>();
                 let mut m = map.0.lock().unwrap();
-                m.insert(spec.mountpoint.clone(), (spec.root.clone(), s));
+                m.insert(
+                    spec.mountpoint.clone(),
+                    mounts::Mount { root: spec.root.clone(), proj, session },
+                );
             }
             Err(e) => eprintln!("remount {} failed: {e}", spec.mountpoint),
         }
@@ -424,9 +430,12 @@ fn main() {
                 }
             }
             if let tauri::RunEvent::Exit = event {
-                // drop every BackgroundSession -> clean unmounts before the
-                // process dies (drops of managed state are not otherwise run).
-                app.state::<mounts::MountMap>().0.lock().unwrap().clear();
+                // Quiesce every lick socket, THEN drop every BackgroundSession
+                // for a clean unmount before the process dies (drops of managed
+                // state are not otherwise run). Quiescing first is what keeps a
+                // mid-flight reply from becoming the broken pipe that crashes
+                // the ship on an update-restart. Bounded so exit cannot hang.
+                mounts::quiesce_and_clear(app.state::<mounts::MountMap>().inner());
                 // libmesa's last save, if the engine ever ran. An
                 // unclaimed reader identity is kept for the next launch
                 #[cfg(feature = "urb-engine")]

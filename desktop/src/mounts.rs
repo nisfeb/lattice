@@ -2,15 +2,66 @@
 //! Dropping the session unmounts, so removing from the map IS the unmount.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use lattice_fs::projection_http;
+use lattice_fs::Projection;
 use tauri::{AppHandle, State};
 
 use crate::config::{self, MountSpec};
 
-/// mountpoint -> (root, live session)
-pub struct MountMap(pub Mutex<HashMap<String, (String, fuser::BackgroundSession)>>);
+/// How long a lick socket is given to drain a reply in flight and half-close
+/// before the mount is torn down. A bare drop of that socket while the ship is
+/// mid-write drives vere's %lick error handler into a stack overflow and the
+/// ship segfaults (seen on update-restart), so every teardown path quiesces
+/// first. Bounded so a wedged in-flight op can never hold exit open.
+pub const QUIESCE_BOUND: Duration = Duration::from_secs(2);
+
+/// One live mount: how it is rooted, the projection whose transport must be
+/// wound down before the session is dropped, and the session itself (dropping
+/// it unmounts).
+pub struct Mount {
+    pub root: String,
+    pub proj: Arc<dyn Projection>,
+    pub session: fuser::BackgroundSession,
+}
+
+impl Mount {
+    /// Wind the transport down, then unmount. Quiesce BEFORE the drop: once the
+    /// session is gone the socket is closed with no chance to drain, which is
+    /// the crash this avoids.
+    fn teardown(self) {
+        self.proj.quiesce(QUIESCE_BOUND);
+        drop(self.session);
+    }
+}
+
+/// mountpoint -> live mount
+pub struct MountMap(pub Mutex<HashMap<String, Mount>>);
+
+/// Quiesce every lick socket and unmount every session, without letting a
+/// wedged FUSE mount hold the whole exit open. The map is drained under its
+/// lock, then the teardown runs on a side thread the caller waits on only up
+/// to a hard bound; past that the process exits regardless (its sockets are
+/// already quiesced, which is the part that protects the ship).
+pub fn quiesce_and_clear(map: &MountMap) {
+    let mounts: Vec<Mount> = map.0.lock().unwrap().drain().map(|(_, m)| m).collect();
+    if mounts.is_empty() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for m in mounts {
+            m.teardown();
+        }
+        let _ = tx.send(());
+    });
+    //  Each quiesce is itself bounded; this caps the total across all mounts
+    //  plus the unmounts, so exit proceeds even if one of them hangs.
+    let total = QUIESCE_BOUND + Duration::from_secs(2);
+    let _ = rx.recv_timeout(total);
+}
 
 /// Mountpoints with a mount in flight.
 ///
@@ -176,7 +227,9 @@ pub async fn add_mount(
     };
     let proj = projection_for(&app, &root, &sock, &ship)?;
     heal_mountpoint(&mountpoint);
-    let session = lattice_fs::spawn(proj, &mountpoint).map_err(|e| e.to_string())?;
+    // the projection is kept alongside the session so teardown can quiesce its
+    // transport before the unmount (see Mount::teardown)
+    let session = lattice_fs::spawn(proj.clone(), &mountpoint).map_err(|e| e.to_string())?;
     {
         let mut m = map.0.lock().unwrap();
         // remove_mount could have run while this mount was coming up, so the
@@ -186,7 +239,7 @@ pub async fn add_mount(
             drop(session); // dropping the session IS the unmount
             return Err(format!("{mountpoint} is already mounted"));
         }
-        m.insert(mountpoint.clone(), (root.clone(), session));
+        m.insert(mountpoint.clone(), Mount { root: root.clone(), proj, session });
     }
     // persist for auto-remount on launch
     config::update(&app, move |cfg| {
@@ -202,10 +255,13 @@ pub fn remove_mount(
     map: State<MountMap>,
     mountpoint: String,
 ) -> Result<(), String> {
-    let removed = map.0.lock().unwrap().remove(&mountpoint); // drop = unmount
-    if removed.is_none() {
+    let removed = map.0.lock().unwrap().remove(&mountpoint);
+    let Some(mount) = removed else {
         return Err(format!("{mountpoint} is not mounted"));
-    }
+    };
+    // quiesce the lick socket before the unmount, same as on exit: a bare drop
+    // mid-write can crash the ship
+    mount.teardown();
     config::update(&app, move |cfg| {
         cfg.mounts.retain(|s| s.mountpoint != mountpoint);
     })
@@ -221,11 +277,11 @@ pub fn list_mounts(app: AppHandle, map: State<MountMap>) -> Vec<MountSpec> {
         .lock()
         .unwrap()
         .iter()
-        .map(|(mp, (root, _))| {
+        .map(|(mp, mount)| {
             let saved = cfg.mounts.iter().find(|s| &s.mountpoint == mp);
             MountSpec {
                 mountpoint: mp.clone(),
-                root: root.clone(),
+                root: mount.root.clone(),
                 sock: saved.map(|s| s.sock.clone()).unwrap_or_default(),
                 ship: saved.map(|s| s.ship.clone()).unwrap_or_default(),
             }
