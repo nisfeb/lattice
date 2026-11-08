@@ -25,8 +25,8 @@
     sbtn('id="tfwd" data-action="tfwd"', 'right', 'Forward', 'Alt+Right') +
     '<button type="button" id="tpath" class="tpath" data-action="tpath"></button>' +
     '<div id="tread" class="tread" role="group" aria-label="Edit or Read">' +
-      '<button type="button" data-r="0" data-action="edit">' + ico('pen') + 'Edit</button>' +
-      '<button type="button" data-r="1" data-action="read">' + ico('eye') + 'Read</button>' +
+      '<button type="button" data-r="0" data-action="edit">' + ico('pen') + '<span>Edit</span></button>' +
+      '<button type="button" data-r="1" data-action="read">' + ico('eye') + '<span>Read</span></button>' +
     '</div>' +
     sbtn('id="save"', 'save', 'Save', 'Ctrl+S') +
     sbtn('id="tmenu" data-action="tmenu" aria-haspopup="menu"', 'dots', 'Page menu') +
@@ -39,12 +39,21 @@
 </span>`;
   $('docarea').before(tabHead);
   pname = $('pname'); pkind = $('pkind');
-  for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
+  // a phone shows the two as icons only, for the path's room
+  for (const b of $('tread').children) {
+    b.title = 'Edit / Read (Ctrl+E)';
+    b.setAttribute('aria-label', b.textContent);
+  }
   $('tback').onclick = () => tabBack();
   $('tfwd').onclick = () => tabFwd();
   // the move / rename flow of the controls pane, unchanged. A tab that is
-  // not a document shows only its title there.
-  $('tpath').onclick = () => { if (docFront()) $('mv').click(); };
+  // not a document shows only its title there. On a phone the path is
+  // cut from the front to fit (fitName), so a tap shows the whole name
+  // first, with Copy and Rename (the same flow) under it.
+  $('tpath').onclick = () => {
+    if (!docFront()) return;
+    if (isMobile()) nameSheet(); else $('mv').click();
+  };
   clickAction('tback', 'Back', 'Tab header', 'Alt+Left');
   clickAction('tfwd', 'Forward', 'Tab header', 'Alt+Right');
   clickAction('tpath', 'Move or rename', 'Tab header');
@@ -92,7 +101,7 @@
     const v = tool ? TAB_KINDS[activeTab.kind].label(activeTab) : (pname.value || '').trim();
     const p = $('tpath');
     p.disabled = tool;
-    p.textContent = v || 'no page open';
+    fitName(p, v || 'no page open');
     p.classList.toggle('muted', !v);
     p.title = v && !tool ? v + ' · ' + (pkind.value || '') : '';
   }
@@ -111,6 +120,7 @@
     // Save's one showing, on a phone (the 820px block): a grub in front
     $('ws').classList.toggle('grubfront', !!activeTab && activeTab.kind === 'grub');
     if (pmenuEl && pmenuTab !== activeTab) pmenuClose();
+    if (nsheet && nsheetTab !== activeTab) nsheetClose();
     for (const [id, st_] of [['tback', 'back'], ['tfwd', 'fwd']]) {
       const off = !activeTab || !activeTab[st_].length;
       const b = $(id);
@@ -122,6 +132,46 @@
     toolSync();
     paintLink();      // the Page tab's link section follows the tab in front
   }
+
+  // the name sheet: the open page's whole name, wrapped and selectable
+  let nsheet = null;
+  let nsheetTab = null;   // the tab it was opened for
+  const nsheetClose = () => { if (nsheet) { nsheet.remove(); nsheet = null; } };
+  function nameSheet() {
+    if (nsheet) { nsheetClose(); return; }
+    const name = (pname.value || '').trim();
+    const m = document.createElement('div');
+    m.id = 'nsheet';
+    m.className = 'dtmenu nsheet';
+    m.setAttribute('role', 'dialog');
+    m.setAttribute('aria-label', 'Page name');
+    const full = document.createElement('div');
+    full.className = 'nsfull';
+    full.textContent = name || 'not named yet';
+    m.append(full);
+    const btn = (id, label, run) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.ns = id;
+      b.textContent = label;
+      b.onclick = () => { nsheetClose(); run(); };
+      m.append(b);
+    };
+    if (name) btn('copy', 'Copy name', async () => {
+      const ok = await copyText(name);
+      st(ok ? 'name copied: ' + name : 'could not copy ' + name, ok);
+    });
+    if (current || curFolder) btn('rename', 'Move or rename', () => $('mv').click());
+    const r = $('tpath').getBoundingClientRect();
+    m.style.top = r.bottom + 4 + 'px';
+    document.body.append(m);
+    nsheet = m;
+    nsheetTab = activeTab;
+  }
+  addEventListener('mousedown', (e) => {
+    if (nsheet && !nsheet.contains(e.target) && !$('tpath').contains(e.target)) nsheetClose();
+  }, true);
+  addEventListener('keydown', (e) => { if (nsheet && e.key === 'Escape') nsheetClose(); });
 
   // ── the page menu ────────────────────────────────────────────────────────
   // Each item calls the handler that already exists. An item that does not

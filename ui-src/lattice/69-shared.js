@@ -191,7 +191,7 @@
         // the name gives way to the tag and the ×, never the other way round
         const nm = document.createElement('span');
         nm.className = 'swn';
-        nm.textContent = sharedName(it.path);
+        fitName(nm, sharedName(it.path));
         const md = document.createElement('span');
         md.className = 'swmode';
         md.textContent = it.mode;

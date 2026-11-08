@@ -90,7 +90,7 @@
         b.setAttribute('role', 'menuitem');
         b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
           + '<span></span>';
-        b.lastChild.textContent = name;
+        fitName(b.lastChild, name);
         b.onclick = () => { sheet.hidden = true; switchTab(t.id); };
         const x = tip(document.createElement('button'), 'Close ' + name);
         x.type = 'button';

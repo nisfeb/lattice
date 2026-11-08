@@ -233,6 +233,10 @@ select, option { color-scheme: inherit; }
 .tpath.muted { color: var(--muted); font-style: italic; }
 .tpath:disabled { cursor: default; background: none; }
 .tpath:focus-visible, .tread button:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
+/* the phone's name sheet (23-tabhead.js): the whole path under the bar */
+.nsheet { left: 8px; right: 8px; }
+.nsfull { padding: 8px 10px; font: .9rem ui-monospace, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
 .tread { display: inline-flex; flex: none; margin: 0 4px; border: 1px solid var(--border);
   border-radius: 6px; overflow: hidden; }
 .tread button { display: inline-flex; align-items: center; gap: 5px; padding: 3px 10px;
@@ -674,6 +678,11 @@ lat-writer > iframe { border: 0; width: 100%; height: 90%; }
   .fhrow { padding: 10px 8px; font-size: 15px; }
   /* the suggestions take the screen's width, under the top row */
   .fhlist { position: fixed; left: 8px; right: 8px; top: calc(env(safe-area-inset-top) + 41px); }
+  /* the path gets the top bar's room (23-tabhead.js): Edit and Read are
+     icons, and the path is in the body face, which is narrower */
+  #tread button span { display: none; }
+  #tread button { padding: 3px 9px; }
+  #tpath { margin: 0 2px; padding: 4px 6px; font: .9rem var(--font, system-ui, sans-serif); }
   /* Save, the one way to save a grub without a keyboard (23-tabhead.js) */
   .ws.grubfront #save { display: inline-flex; }
   /* the unread count the ribbon's inbox carries, on the left drawer's

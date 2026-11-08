@@ -765,7 +765,7 @@
       b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
         + '<span class="dtn"></span>'
         + '<span class="dtdot" aria-hidden="true"></span>';
-      b.querySelector('.dtn').textContent = name;
+      fitName(b.querySelector('.dtn'), name);
       b.onclick = () => switchTab(t.id);
       const x = tip(document.createElement('button'), 'Close ' + name);
       x.type = 'button';

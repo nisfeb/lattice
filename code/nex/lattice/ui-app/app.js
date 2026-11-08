@@ -951,6 +951,35 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (near.some((q) => label(q) === me)) return p;
     return me;
   };
+  const fitQ = new Set();
+  let fitRaf = 0;
+  const fitKick = () => { if (!fitRaf) fitRaf = requestAnimationFrame(fitRun); };
+  const fitRo = new ResizeObserver((es) => { for (const e of es) fitQ.add(e.target); fitKick(); });
+  function fitRun() {
+    fitRaf = 0;
+    const els = [];
+    for (const el of fitQ) {
+      if (!el.isConnected) fitRo.unobserve(el);
+      else { el.textContent = el.dataset.full; els.push(el); }
+    }
+    fitQ.clear();
+    for (const el of els.filter((e) => e.clientWidth && e.scrollWidth > e.clientWidth)) {
+      const full = el.dataset.full;
+      const head = (/^~[\w-]+: /.exec(full) || [''])[0];
+      const segs = full.slice(head.length).split('/');
+      for (let i = 1; i < segs.length; i++) {
+        el.textContent = head + '…/' + segs.slice(i).join('/');
+        if (el.scrollWidth <= el.clientWidth) break;
+      }
+    }
+  }
+  const fitName = (el, full) => {
+    el.dataset.full = full;
+    el.textContent = full;
+    fitRo.observe(el);
+    fitQ.add(el);
+    fitKick();
+  };
   const st = (msg, ok = true) => {
     spinner.classList.remove('on');          // any plain status ends the spin
     status.textContent = msg;
@@ -2155,7 +2184,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
         + '<span class="dtn"></span>'
         + '<span class="dtdot" aria-hidden="true"></span>';
-      b.querySelector('.dtn').textContent = name;
+      fitName(b.querySelector('.dtn'), name);
       b.onclick = () => switchTab(t.id);
       const x = tip(document.createElement('button'), 'Close ' + name);
       x.type = 'button';
@@ -2425,8 +2454,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     sbtn('id="tfwd" data-action="tfwd"', 'right', 'Forward', 'Alt+Right') +
     '<button type="button" id="tpath" class="tpath" data-action="tpath"></button>' +
     '<div id="tread" class="tread" role="group" aria-label="Edit or Read">' +
-      '<button type="button" data-r="0" data-action="edit">' + ico('pen') + 'Edit</button>' +
-      '<button type="button" data-r="1" data-action="read">' + ico('eye') + 'Read</button>' +
+      '<button type="button" data-r="0" data-action="edit">' + ico('pen') + '<span>Edit</span></button>' +
+      '<button type="button" data-r="1" data-action="read">' + ico('eye') + '<span>Read</span></button>' +
     '</div>' +
     sbtn('id="save"', 'save', 'Save', 'Ctrl+S') +
     sbtn('id="tmenu" data-action="tmenu" aria-haspopup="menu"', 'dots', 'Page menu') +
@@ -2439,10 +2468,16 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 </span>`;
   $('docarea').before(tabHead);
   pname = $('pname'); pkind = $('pkind');
-  for (const b of $('tread').children) b.title = 'Edit / Read (Ctrl+E)';
+  for (const b of $('tread').children) {
+    b.title = 'Edit / Read (Ctrl+E)';
+    b.setAttribute('aria-label', b.textContent);
+  }
   $('tback').onclick = () => tabBack();
   $('tfwd').onclick = () => tabFwd();
-  $('tpath').onclick = () => { if (docFront()) $('mv').click(); };
+  $('tpath').onclick = () => {
+    if (!docFront()) return;
+    if (isMobile()) nameSheet(); else $('mv').click();
+  };
   clickAction('tback', 'Back', 'Tab header', 'Alt+Left');
   clickAction('tfwd', 'Forward', 'Tab header', 'Alt+Right');
   clickAction('tpath', 'Move or rename', 'Tab header');
@@ -2485,7 +2520,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const v = tool ? TAB_KINDS[activeTab.kind].label(activeTab) : (pname.value || '').trim();
     const p = $('tpath');
     p.disabled = tool;
-    p.textContent = v || 'no page open';
+    fitName(p, v || 'no page open');
     p.classList.toggle('muted', !v);
     p.title = v && !tool ? v + ' · ' + (pkind.value || '') : '';
   }
@@ -2498,6 +2533,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     $('tmenu').hidden = tool;
     $('ws').classList.toggle('grubfront', !!activeTab && activeTab.kind === 'grub');
     if (pmenuEl && pmenuTab !== activeTab) pmenuClose();
+    if (nsheet && nsheetTab !== activeTab) nsheetClose();
     for (const [id, st_] of [['tback', 'back'], ['tfwd', 'fwd']]) {
       const off = !activeTab || !activeTab[st_].length;
       const b = $(id);
@@ -2509,6 +2545,45 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     toolSync();
     paintLink();      // the Page tab's link section follows the tab in front
   }
+
+  let nsheet = null;
+  let nsheetTab = null;   // the tab it was opened for
+  const nsheetClose = () => { if (nsheet) { nsheet.remove(); nsheet = null; } };
+  function nameSheet() {
+    if (nsheet) { nsheetClose(); return; }
+    const name = (pname.value || '').trim();
+    const m = document.createElement('div');
+    m.id = 'nsheet';
+    m.className = 'dtmenu nsheet';
+    m.setAttribute('role', 'dialog');
+    m.setAttribute('aria-label', 'Page name');
+    const full = document.createElement('div');
+    full.className = 'nsfull';
+    full.textContent = name || 'not named yet';
+    m.append(full);
+    const btn = (id, label, run) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.dataset.ns = id;
+      b.textContent = label;
+      b.onclick = () => { nsheetClose(); run(); };
+      m.append(b);
+    };
+    if (name) btn('copy', 'Copy name', async () => {
+      const ok = await copyText(name);
+      st(ok ? 'name copied: ' + name : 'could not copy ' + name, ok);
+    });
+    if (current || curFolder) btn('rename', 'Move or rename', () => $('mv').click());
+    const r = $('tpath').getBoundingClientRect();
+    m.style.top = r.bottom + 4 + 'px';
+    document.body.append(m);
+    nsheet = m;
+    nsheetTab = activeTab;
+  }
+  addEventListener('mousedown', (e) => {
+    if (nsheet && !nsheet.contains(e.target) && !$('tpath').contains(e.target)) nsheetClose();
+  }, true);
+  addEventListener('keydown', (e) => { if (nsheet && e.key === 'Escape') nsheetClose(); });
 
   let pmenuEl = null;
   let pmenuTab = null;   // the tab the open menu was made for
@@ -4757,7 +4832,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     g.gmemo = memo;
     const path = g.ghead.querySelector('.tpath');
     const name = !t ? '' : doc ? ((s && s.shown) || t.key || k.label(t)) : k.label(t);
-    path.textContent = name || 'no page open';
+    fitName(path, name || 'no page open');
     path.classList.toggle('muted', !name);
     path.title = name;
     g.ghead.querySelector('[data-go="tback"]').disabled = !t || !t.back.length;
@@ -8583,7 +8658,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         a.title = host + ' ' + it.path;
         const nm = document.createElement('span');
         nm.className = 'swn';
-        nm.textContent = sharedName(it.path);
+        fitName(nm, sharedName(it.path));
         const md = document.createElement('span');
         md.className = 'swmode';
         md.textContent = it.mode;
@@ -11498,7 +11573,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         b.setAttribute('role', 'menuitem');
         b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
           + '<span></span>';
-        b.lastChild.textContent = name;
+        fitName(b.lastChild, name);
         b.onclick = () => { sheet.hidden = true; switchTab(t.id); };
         const x = tip(document.createElement('button'), 'Close ' + name);
         x.type = 'button';

@@ -47,6 +47,8 @@ function boot(items, coll = []) {
     // the move in and out (Task 5 of shared page links): its palette home
     // and its registration, stubbed
     action: () => {}, rowMore: () => {},
+    // the fit to width (10-shell.js) needs layout; here the whole name
+    fitName: (el, t) => { el.textContent = t; },
     tip: (b, name) => { b.title = name; b.setAttribute('aria-label', name); return b; },
     document: { createElement: (t) => new El(t), createTextNode: (t) => ({ textContent: t }), addEventListener() {}, hidden: false },
     // the refocus refetch (69-shared.js) listens on the window
@@ -133,6 +135,7 @@ const items = [
     treeList: new El('div'), sharedWithMe: [], mode: 'pages', api: '/apps/lattice',
     localStorage: { appColl: '[]' }, renderTree() {}, guardDirty: async () => true,
     history: { replaceState() {} }, openIn() {}, ico: () => '', action() {}, rowMore() {},
+    fitName: (el, t) => { el.textContent = t; },
     tip: (b) => b, bgFetch: slow, fetch: slow, Date,
     document: { createElement: (t) => new El(t), createTextNode: (t) => ({ textContent: t }),
       addEventListener: (t, f) => on.push(f), hidden: false },
