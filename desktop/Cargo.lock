@@ -2125,7 +2125,7 @@ dependencies = [
 [[package]]
 name = "mesa-sys"
 version = "0.0.1"
-source = "git+https://github.com/nisfeb/urb-fetch.git?rev=9fe4e6e904b77b0e51c5627392d3bf421ed90f4b#9fe4e6e904b77b0e51c5627392d3bf421ed90f4b"
+source = "git+https://github.com/nisfeb/urb-fetch.git?rev=3f584bf3567dd8c8e80365197994b6330cb95338#3f584bf3567dd8c8e80365197994b6330cb95338"
 dependencies = [
  "bindgen",
  "cc",
@@ -4575,7 +4575,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 [[package]]
 name = "urb"
 version = "0.0.1"
-source = "git+https://github.com/nisfeb/urb-fetch.git?rev=9fe4e6e904b77b0e51c5627392d3bf421ed90f4b#9fe4e6e904b77b0e51c5627392d3bf421ed90f4b"
+source = "git+https://github.com/nisfeb/urb-fetch.git?rev=3f584bf3567dd8c8e80365197994b6330cb95338#3f584bf3567dd8c8e80365197994b6330cb95338"
 dependencies = [
  "mesa-sys",
  "ureq",
@@ -4584,7 +4584,7 @@ dependencies = [
 [[package]]
 name = "urb-gateway"
 version = "0.0.1"
-source = "git+https://github.com/nisfeb/urb-fetch.git?rev=9fe4e6e904b77b0e51c5627392d3bf421ed90f4b#9fe4e6e904b77b0e51c5627392d3bf421ed90f4b"
+source = "git+https://github.com/nisfeb/urb-fetch.git?rev=3f584bf3567dd8c8e80365197994b6330cb95338#3f584bf3567dd8c8e80365197994b6330cb95338"
 dependencies = [
  "urb",
  "urb-render",
@@ -4594,7 +4594,7 @@ dependencies = [
 [[package]]
 name = "urb-render"
 version = "0.0.1"
-source = "git+https://github.com/nisfeb/urb-fetch.git?rev=9fe4e6e904b77b0e51c5627392d3bf421ed90f4b#9fe4e6e904b77b0e51c5627392d3bf421ed90f4b"
+source = "git+https://github.com/nisfeb/urb-fetch.git?rev=3f584bf3567dd8c8e80365197994b6330cb95338#3f584bf3567dd8c8e80365197994b6330cb95338"
 
 [[package]]
 name = "ureq"
