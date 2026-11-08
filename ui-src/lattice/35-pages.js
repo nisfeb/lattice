@@ -492,7 +492,12 @@
   //  Any other kind's render is the ship's: drop it and let it re-render.
   //  Only a save that can change the kind passes one.
   const patchLocal = (name, kind, sent, rev) => {
-    shipText.set(name, sent || '\n');    // an empty save is stored as one newline
+    //  an empty save is stored as one newline, and every copy here holds
+    //  what the ship holds: a paint of '' then read fresh as '\n' looked
+    //  like a change made elsewhere (reconcileFresh), and typing on a new
+    //  page was kept aside as a conflict
+    sent = sent || '\n';
+    shipText.set(name, sent);
     //  and the boot snapshot, when it names this page: left at an older
     //  rev, the next launch painted old text and claimed its rev
     try {
@@ -833,7 +838,7 @@
     if (current !== name || mode === 'know' || grubPath) return;
     curRev = d.rev || 0;
     shipText.set(name, d.body);
-    if (d.body === painted) return;
+    if (d.body === (painted || '\n')) return;   // an empty paint is the ship's one newline
     if (src.value === painted) {
       if (!dirty) { src.value = d.body; render(); refreshPreview(); }
       return;
@@ -879,6 +884,11 @@
   // conflicts/ and shows theirs. `here`: the editor still shows it.
   async function settleStale(name, kind, sent, base, here) {
     const th = await bodyRead(name);
+    //  the ship's head now outranks any rev this window had for the page:
+    //  a save answer's rev can be a guess, and a claim past the head (a
+    //  page deleted elsewhere is at 0) is refused for ever, retries and
+    //  "Save mine over theirs" included
+    pageRevs.delete(name);
     let res = null;
     if (th && th.body === (sent || '\n')) { knowRev(name, th.rev); res = { rev: th.rev, body: sent, how: 'saved' }; }
     if (th && !res && base) {
@@ -896,7 +906,12 @@
           + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }).catch(() => null);
         let j = null;
         if (r && r.ok) { try { j = await r.json(); } catch {} }
-        if (j && j.rev) { knowRev(name, j.rev); res = { rev: j.rev, body: mb, how: 'saved, merged with a change made elsewhere' }; }
+        //  the ship still holding what this window last knew is no change
+        //  made elsewhere: the claim was only behind
+        if (j && j.rev) {
+          knowRev(name, j.rev);
+          res = { rev: j.rev, body: mb, how: bt === th.body ? 'saved' : 'saved, merged with a change made elsewhere' };
+        }
       }
     }
     //  a real conflict: our text is kept as a page of its own, and stays

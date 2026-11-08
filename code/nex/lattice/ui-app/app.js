@@ -6383,7 +6383,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     { create: !!create || keep });
   };
   const patchLocal = (name, kind, sent, rev) => {
-    shipText.set(name, sent || '\n');    // an empty save is stored as one newline
+    sent = sent || '\n';
+    shipText.set(name, sent);
     try {
       const sp = JSON.parse(localStorage.appPage || 'null');
       if (sp && sp.name === name && rev) snapPage(name, { ...sp, body: sent, rev, html: undefined });
@@ -6607,7 +6608,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (current !== name || mode === 'know' || grubPath) return;
     curRev = d.rev || 0;
     shipText.set(name, d.body);
-    if (d.body === painted) return;
+    if (d.body === (painted || '\n')) return;   // an empty paint is the ship's one newline
     if (src.value === painted) {
       if (!dirty) { src.value = d.body; render(); refreshPreview(); }
       return;
@@ -6646,6 +6647,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
   async function settleStale(name, kind, sent, base, here) {
     const th = await bodyRead(name);
+    pageRevs.delete(name);
     let res = null;
     if (th && th.body === (sent || '\n')) { knowRev(name, th.rev); res = { rev: th.rev, body: sent, how: 'saved' }; }
     if (th && !res && base) {
@@ -6663,7 +6665,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }).catch(() => null);
         let j = null;
         if (r && r.ok) { try { j = await r.json(); } catch {} }
-        if (j && j.rev) { knowRev(name, j.rev); res = { rev: j.rev, body: mb, how: 'saved, merged with a change made elsewhere' }; }
+        if (j && j.rev) {
+          knowRev(name, j.rev);
+          res = { rev: j.rev, body: mb, how: bt === th.body ? 'saved' : 'saved, merged with a change made elsewhere' };
+        }
       }
     }
     let alt = null;
