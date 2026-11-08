@@ -10620,6 +10620,17 @@
   =/  wfil=(map @ta cass:clay)  ?~(fil.wav ~ file.u.fil.wav)
   =/  c=(unit cass:clay)  (~(get by wfil) %gmi)
   =/  r=@ud  ?~(c 0 ud.u.c)
+  ::  an unpublish drops the vault grub's history before its cull, so its
+  ::  wave comes without the grub. Drop the page from the cached list then,
+  ::  since the publisher still answers its old id with the old text: a
+  ::  read before the next publish's wave lands takes the slow peek, which
+  ::  finds nothing or the new body, never the old. Not a fresh fetch: the
+  ::  wave beats the publisher's own list write, so the list read now
+  ::  still names the page. And forget the cass, so any next one is news.
+  =/  nam=@t  (spat (page-rel rel))
+  ?:  &(?=(~ c) ?=(^ lrev))
+    ;<  ~  bind:m  (drop-peer-page pub nam)
+    (pure:m ~)
   ::  a new cass, not only a higher one, and by its date too: a page
   ::  unpublished and published again has its vault grub made anew at
   ::  cass 1, most often the very number this watcher holds from the
@@ -10628,7 +10639,6 @@
   ?.  (wave-news:lp c lrev)  (pure:m lrev)
   ::  the wave names a revision, the publisher's list names its id: read
   ::  the list fresh, since the cached one predates the wave
-  =/  nam=@t  (spat (page-rel rel))
   =/  try=@ud  0
   |-
   ;<  revs=(map @t [rev=@ud id=@uv])  bind:m  (fresh-peer-revs pub)
@@ -14264,6 +14274,22 @@
   ;<  all=(map @t json)  bind:m  read-peer-revs
   ;<  *  bind:m
     (over-as-soft:io peer-revs-road [[/ %json] [%o (~(del by all) (scot %p shp))]] [/ %json])
+  (pure:m ~)
+::  +drop-peer-page: forget one page in a peer's cached revision list,
+::  and keep the rest of the row and its time
+++  drop-peer-page
+  |=  [shp=@p nam=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  all=(map @t json)  bind:m  read-peer-revs
+  =/  hit=(unit json)  (~(get by all) (scot %p shp))
+  ?.  ?=([~ %o *] hit)  (pure:m ~)
+  =/  revs=(unit json)  (~(get by p.u.hit) 'revs')
+  ?.  ?=([~ %o *] revs)  (pure:m ~)
+  ?.  (~(has by p.u.revs) nam)  (pure:m ~)
+  =/  row=json  [%o (~(put by p.u.hit) 'revs' [%o (~(del by p.u.revs) nam)])]
+  ;<  *  bind:m
+    (over-as-soft:io peer-revs-road [[/ %json] [%o (~(put by all) (scot %p shp) row)]] [/ %json])
   (pure:m ~)
 ::  +peek-page-at: one published page off a peer, at a known base. ~ no
 ::  answer; [~ ~] answered and nothing (usable) there; [~ ~ page] the page.
