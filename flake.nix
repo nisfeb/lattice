@@ -35,7 +35,7 @@
           url = "https://github.com/nisfeb/urb-fetch.git";
           rev = "3f584bf3567dd8c8e80365197994b6330cb95338";
           fetchSubmodules = true;
-          hash = pkgs.lib.fakeHash;
+          hash = "sha256-f4hp9K9BIPfxvAXBqCDCSnnxrW2YTnD3a98r/elruTw=";
         };
 
         # The two C sources mesa-sys compiles into the urb engine, as
