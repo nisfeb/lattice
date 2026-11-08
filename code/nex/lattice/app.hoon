@@ -711,8 +711,8 @@
         ::  publisher's next edit, and a rebooted reader catches up on whatever
         ::  it missed while down.
         ;<  bond=wave:nexus  bind:m  (keep:io /page road ~)
-        ::  lrev: the last vault rev this fiber acted on (0 = nothing yet).
-        ;<  lrev=@ud  bind:m  (sub-apply-wave ship.ps rel bond 0)
+        ::  lrev: the last vault cass this fiber acted on (~ = nothing yet).
+        ;<  lrev=(unit cass:clay)  bind:m  (sub-apply-wave ship.ps rel bond ~)
         |-
         ::  take-sub-wave-drain, not take-news. A timed-out keen's late
         ::  %keen-response poke and a stray %veto still arrive at this
@@ -723,7 +723,7 @@
         ?-  -.nw
             %wake  $
             %page
-          ;<  nl=@ud  bind:m  (sub-apply-wave ship.ps rel wave.nw lrev)
+          ;<  nl=(unit cass:clay)  bind:m  (sub-apply-wave ship.ps rel wave.nw lrev)
           $(lrev nl)
         ==
       ::  /page/<name>/code: the page evaluator (docs/platform.md step 2). The
@@ -10598,32 +10598,34 @@
 ::  (initial bond or edit) carries the kept gmi grub's cass, the revision
 ::  the publisher last saved. Its binding's id is in the publisher's
 ::  revision list, so the list is read fresh and the id keened. A delete is
-::  the page leaving that list: grubbery's born is a high-water mark, so a
-::  deleted grub never drops out of the wave's file map (it reads the cass
-::  the vault cull appended), and the list is what tells the two apart. The
-::  kiln/clay shape: notify over the flow, bulk over the namespace.
+::  the page leaving that list, which the wave alone cannot tell: the
+::  unpublish drops the vault grub's history before its cull, so the grub
+::  may drop out of the wave or not, and a publish again makes it anew at
+::  cass 1 (+wave-news:lp). The kiln/clay shape: notify over the flow,
+::  bulk over the namespace.
 ::
-::  Returns the new lrev. A keen MISS (timeout, unbound spur, unknown mark)
+::  Returns the new lrev, the cass it acted on. A keen MISS (timeout, unbound spur, unknown mark)
 ::  retries ONCE after a short drain-sleep, then gives up WITHOUT advancing
 ::  lrev. The next wave (or a resubscribe) then retries the fetch instead of
 ::  skipping the rev as a duplicate forever. Bounded at one extra attempt
 ::  per wave, no polling. Against a non-mirroring publisher every wave
-::  misses (this reader is mesa-only by design). r=0 means the grub has never
-::  existed in the peer's pub vault (a sub armed before the first share).
-::  Nothing to do until a wave with a real cass arrives.
+::  misses (this reader is mesa-only by design). A wave without the grub
+::  (a sub armed before the first share, or the page unpublished) has
+::  nothing to read: nothing to do until a wave with a real cass arrives.
 ::
 ++  sub-apply-wave
-  |=  [pub=@p rel=path wav=wave:nexus lrev=@ud]
-  =/  m  (fiber:fiber:nexus ,@ud)
+  |=  [pub=@p rel=path wav=wave:nexus lrev=(unit cass:clay)]
+  =/  m  (fiber:fiber:nexus ,(unit cass:clay))
   ^-  form:m
   =/  wfil=(map @ta cass:clay)  ?~(fil.wav ~ file.u.fil.wav)
   =/  c=(unit cass:clay)  (~(get by wfil) %gmi)
   =/  r=@ud  ?~(c 0 ud.u.c)
-  ?:  =(0 r)  (pure:m lrev)
-  ::  a new cass, not only a higher one: a page unpublished and published
-  ::  again has its vault grub made anew, at cass 1, below the lrev the
-  ::  delete left. Its listed rev still climbs (+rev-off:lp).
-  ?:  =(r lrev)  (pure:m lrev)
+  ::  a new cass, not only a higher one, and by its date too: a page
+  ::  unpublished and published again has its vault grub made anew at
+  ::  cass 1, most often the very number this watcher holds from the
+  ::  first publish (+wave-news:lp). Its listed rev still climbs
+  ::  (+rev-off:lp).
+  ?.  (wave-news:lp c lrev)  (pure:m lrev)
   ::  the wave names a revision, the publisher's list names its id: read
   ::  the list fresh, since the cached one predates the wave
   =/  nam=@t  (spat (page-rel rel))
@@ -10631,10 +10633,10 @@
   |-
   ;<  revs=(map @t [rev=@ud id=@uv])  bind:m  (fresh-peer-revs pub)
   =/  ent=(unit [rev=@ud id=@uv])  (~(get by revs) nam)
-  ::  DELETE: a list that answered without the page. lrev advances to r,
+  ::  DELETE: a list that answered without the page. lrev advances to c,
   ::  and a later publish again (any other cass) still registers. An empty list
   ::  is no answer (unreachable reads the same), so it retries instead.
-  ?:  &(?=(~ ent) !=(~ revs))  (pure:m r)
+  ?:  &(?=(~ ent) !=(~ revs))  (pure:m c)
   ;<  kp=(unit [p=@tas q=@t])  bind:m
     ?:  |(?=(~ ent) (lth rev.u.ent r))
       (pure:(fiber:fiber:nexus ,(unit [p=@tas q=@t])) ~)
@@ -10647,7 +10649,7 @@
     $(try +(try))
   ::  SAVE/EDIT: the fetch above is what proves the wave carried a real body,
   ::  so lrev may advance past it.
-  (pure:m r)
+  (pure:m c)
 ::  +conflict-name: where a conflict's LOSING body is preserved as a real
 ::  page. NOT left to revision history. The firm keep coalesces rapid
 ::  revisions (three quick writes kept revs [3,1] and pruned 2 in testing),

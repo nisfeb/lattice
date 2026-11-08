@@ -299,6 +299,20 @@
     (expect-eq !>(5) !>(r3))
     (expect-eq !>(&) !>((rev-rises:lp hw nam r3)))
   ==
+::  +wave-news: publish at cass 1, unpublish (the vault grub's history
+::  goes), publish again: the grub is made anew at cass 1 again, later.
+::  The watcher that acted on the first must act on the second.
+++  test-wave-news-republish
+  =/  first=cass:clay  [1 ~2026.11.7..12.00.00]
+  =/  again=cass:clay  [1 ~2026.11.7..12.00.30]
+  ;:  weld
+    (expect-eq !>(&) !>((wave-news:lp `first ~)))
+    (expect-eq !>(|) !>((wave-news:lp `first `first)))
+    (expect-eq !>(&) !>((wave-news:lp `again `first)))
+    (expect-eq !>(&) !>((wave-news:lp `[3 ~2026.11.7..12.01.00] `again)))
+    (expect-eq !>(|) !>((wave-news:lp ~ `first)))
+    (expect-eq !>(|) !>((wave-news:lp `[0 ~2026.11.7..12.00.00] ~)))
+  ==
 ::  +salt-switch: a resumed migration keeps the salt it already wrote
 ++  test-salt-switch
   ;:  weld

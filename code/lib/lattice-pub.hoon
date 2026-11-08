@@ -291,6 +291,18 @@
   ^-  rev-high
   =/  r  (~(gut by hw) nam [high=0 off=0])
   (~(put by hw) nam r(high (max rev high.r)))
+::  +wave-news: does a subscribed page's wave carry a vault cass the
+::  watcher has not acted on (`last`, ~ for none)? The whole cass, not
+::  its number: an unpublish drops the vault grub's history, so a
+::  publish again makes it anew at cass 1, the number the watcher
+::  likely holds from the first publish. Only its date tells the two
+::  apart. A wave without the grub, or at cass 0, has nothing to read.
+++  wave-news
+  |=  [c=(unit cass:clay) last=(unit cass:clay)]
+  ^-  ?
+  ?~  c  |
+  ?:  =(0 ud.u.c)  |
+  !=(c last)
 ::  +salt-switch: a salt migration's old salt, and whether it must mint
 ::  a new one. `pend` is the old salt a crashed run recorded: the salt
 ::  now in place is its new one unless it still equals the old.
