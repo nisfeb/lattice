@@ -60,6 +60,59 @@
   =?  merged  &(?=(^ notes) =(~ (notes-of nl)))
     (weld merged [*tape notes])
   (crip (join-lines merged))
+::  +journal-fold: the page the pass writes for day `day` when `old` is
+::  already at its name. The pass's own page starts with its title line
+::  (# <head>, <day>, as +journal-body makes it): that one is remade by
+::  +journal-merge. Any other page is the owner's, and none of its text
+::  is replaced: the brief goes under a `## <head>, <day>` heading as a
+::  quote block, appended when the page has no such heading, and only
+::  that quote block is rewritten when it has one (ticks carried by
+::  +journal-merge). The quote block ends at its first line without a
+::  leading >, so whatever the owner wrote after it stays.
+++  journal-fold
+  |=  [head=tape day=@t old=@t text=@t]
+  ^-  @t
+  =/  title=tape  :(weld "# " head ", " (trip day))
+  =/  ol=(list tape)  (turn (lines-of (trip old)) un-cr)
+  ?:  &(?=(^ ol) =(title (rtrim i.ol)))
+    (journal-merge old (journal-body head day text))
+  =/  qs=(list tape)
+    %+  turn  (turn (lines-of (brief-link-rewrite (trip text))) un-cr)
+    |=(l=tape ?~(l ">" (weld "> " l)))
+  (journal-into ol (weld "#" title) qs)
+::  +journal-into: owner's lines `ol` with the quoted brief `qs` under
+::  heading `hd` (see +journal-fold).
+++  journal-into
+  |=  [ol=(list tape) hd=tape qs=(list tape)]
+  ^-  @t
+  =/  at=(unit @ud)  (find ~[hd] (turn ol rtrim))
+  ?~  at
+    =/  own=(list tape)  (flop (drop-blank (flop ol)))
+    =/  blk=(list tape)  [hd *tape qs]
+    (crip (join-lines ?~(own blk (weld own [*tape blk]))))
+  =/  body=(list tape)  (drop-blank (slag +(u.at) ol))
+  =/  n=@ud  (quote-run body)
+  =/  was=@t  (crip (join-lines (scag n body)))
+  =/  now=(list tape)
+    (lines-of (trip (journal-merge was (crip (join-lines qs)))))
+  %-  crip
+  %-  join-lines
+  ;:(weld (scag u.at ol) [hd *tape now] (slag n body))
+::  +quote-run: how many leading lines of `ls` start with >.
+++  quote-run
+  |=  ls=(list tape)
+  ^-  @ud
+  ?~  ls  0
+  ?.  ?=([%'>' *] i.ls)  0
+  +($(ls t.ls))
+::  +drop-blank: `ls` without its leading blank lines.
+++  drop-blank
+  |=  ls=(list tape)
+  ^-  (list tape)
+  ?~  ls  ~
+  ?.  =(~ (trim-sp i.ls))  ls
+  $(ls t.ls)
+++  rtrim  |=(l=tape ^-(tape (flop (trim-sp (flop l)))))
 ::  +lines-of: split on newlines; "" is one empty line.
 ++  lines-of
   |=  t=tape

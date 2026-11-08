@@ -15,7 +15,7 @@
 //    the ribbon, top to bottom, and its tool tabs: Access & groups and the
 //      inbox render in a tab (the inbox carries the unread badge), Settings
 //      frames the settings page without its reader bar, the brief opens
-//      the journal pass's dashed page, else a dotted note, else a new page, and leaving for the desktop's manager page
+//      the journal pass's dashed page, else a dotted note, else a new page at the dashed name, and leaving for the desktop's manager page
 //      asks about unsaved work first
 //    the command palette: Ctrl+P and the ribbon open it, actions match
 //      first with their home, pages after them open with Enter (Ctrl+Enter
@@ -794,7 +794,7 @@ try {
   //  time that is already the next day in UTC west of Greenwich, so a name
   //  built from toISOString would miss. The pass's dashed name wins, the
   //  dotted forms are the fallbacks, and with none a new page is offered
-  //  under the unpadded dotted name.
+  //  under the dashed name, zero-padded for the local day.
   const BD = 'journal/2030-01-05', BU = 'journal/2030.1.5', BP = 'journal/2030.01.05';
   const fixClock = () => page.evaluate(() => {
     const R = window.__realDate || Date;
@@ -822,13 +822,13 @@ try {
   };
   if (!briefPre[BD] && !briefPre[BU] && !briefPre[BP]) {
     await briefClick();
-    const fresh = await until(() => {
+    const fresh = await until((want) => {
       const s = window.latTabs.state();
       const t = s.tabs[s.active];
-      return t && t.kind === 'page' && !t.key && document.getElementById('pname').value === 'journal/2030.1.5';
-    });
+      return t && t.kind === 'page' && !t.key && document.getElementById('pname').value === want;
+    }, BD);
     await unfixClock();
-    check('brief with no page offers a new one', fresh, JSON.stringify({ front: await front() }));
+    check('brief with no page offers a new dashed one', fresh, JSON.stringify({ front: await front() }));
   }
   if (!briefPre[BU]) await seed(env, [[BU, '# my own note\n']]);
   await boot();

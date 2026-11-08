@@ -11743,14 +11743,17 @@
     ==
   ?.  move  $(days t.days)
   =/  pax=path  ~[%journal name]
-  =/  fresh=@t  (journal-body:lo head `@t`i.days text.u.rec)
-  ::  a page already there (the last mirror, ticked or noted since, or a
-  ::  note the owner started at this name) keeps its ticks and its
-  ::  `## Notes` section through the rewrite (+journal-merge:lo). Without
-  ::  it a remade brief undid every box not yet taken by orrery's round.
+  ::  a page already there is folded in, never overwritten (+journal-
+  ::  fold:lo). The last mirror (it starts with the pass's title line)
+  ::  keeps its ticks and its `## Notes` section through the rewrite.
+  ::  A note the owner made at this name (the brief button starts new
+  ::  ones at journal/YYYY-MM-DD) keeps all its text, and the brief goes
+  ::  into a quoted section under a `## Brief, <day>` heading in it.
   ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head pax)
   =/  was=(unit [builder=@tas body=@t])  ?~(src.pc ~ (unwrap-content u.src.pc))
-  =/  body=@t  ?~(was fresh (journal-merge:lo body.u.was fresh))
+  =/  body=@t
+    ?~  was  (journal-body:lo head `@t`i.days text.u.rec)
+    (journal-fold:lo head `@t`i.days body.u.was text.u.rec)
   ::  marked first: between a make and a later mark, a key without
   ::  clearance could read the new brief
   ;<  ~  bind:m  (poke-eval [%page-sensitive pax &])

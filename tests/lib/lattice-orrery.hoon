@@ -73,6 +73,30 @@
 ++  test-merge-other-edits-replaced
   %+  expect-eq  !>('# Brief\0a\0afresh text')
   !>((journal-merge:lo '# Brief\0a\0amy edit' '# Brief\0a\0afresh text'))
+::  journal-fold: the pass never overwrites a page the owner made
+++  test-fold-own-page-merged
+  %+  expect-eq  !>('# Brief, 2026-11-08\0a\0a- [x] a [T1]')
+  !>((journal-fold:lo "Brief" '2026-11-08' '# Brief, 2026-11-08\0a\0a- [x] a [T1]' '- [ ] a [T1]'))
+++  test-fold-owner-page-kept
+  %+  expect-eq
+    !>('# My day\0a\0amet Sam\0a\0a## Brief, 2026-11-08\0a\0a> see [[situation/x]]\0a>\0a> - [ ] a [T1]')
+  !>((journal-fold:lo "Brief" '2026-11-08' '# My day\0a\0amet Sam\0a\0a' 'see [situation/x]\0a\0a- [ ] a [T1]'))
+::  two steps: the owner's page, the pass, the owner ticks and writes on,
+::  then orrery remakes the brief and the pass runs again
+++  test-fold-owner-page-twice
+  =/  one=@t  (journal-fold:lo "Brief" '2026-11-08' 'mine' '- [ ] a [T1]\0a- [ ] b [T2]')
+  =/  edited=@t
+    '\0d\0amine\0a\0a## Brief, 2026-11-08\0a\0a> - [x] a [T1]\0a> - [ ] b [T2]\0a\0aafter it'
+  ;:  weld
+    %+  expect-eq  !>('mine\0a\0a## Brief, 2026-11-08\0a\0a> - [ ] a [T1]\0a> - [ ] b [T2]')
+    !>(one)
+    %+  expect-eq
+      !>('\0amine\0a\0a## Brief, 2026-11-08\0a\0a> - [x] a [T1]\0a> - [ ] c [T3]\0a\0aafter it')
+    !>((journal-fold:lo "Brief" '2026-11-08' edited '- [ ] a [T1]\0a- [ ] c [T3]'))
+  ==
+++  test-fold-empty-owner-page
+  %+  expect-eq  !>('## Review, 2026-11-08\0a\0a> week')
+  !>((journal-fold:lo "Review" '2026-11-08' '' 'week'))
 ++  test-task-at
   ;:  weld
     (expect-eq !>(`3) !>((task-at:lo "- [ ] a")))

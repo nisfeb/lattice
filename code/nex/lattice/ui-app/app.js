@@ -2961,7 +2961,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const hasPage = (k) => nodes.some((n) => n.page && n.path === k);
   function briefKey(d) {
     const forms = briefForms(d);
-    return forms.find(hasPage) || forms[1];
+    return forms.find(hasPage) || forms[0];
   }
   async function openBrief(ev) {
     const d = new Date();
