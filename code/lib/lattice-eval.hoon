@@ -31,6 +31,12 @@
       [%make-many pages=(list [pax=path src=@t])]
       [%cmd pax=path txt=@t bud=@ud]    ::  send a command (bud = poke budget)
       [%del pax=path]                   ::  delete a page
+      ::  a move's last step: the source `from` goes, as %del, once every
+      ::  page under it whose code is not the one the move copied (`seen`,
+      ::  the sham of each page's code by its path under `from`) is copied
+      ::  again to `to`. In the writer, so no save into the source can land
+      ::  between that check and the delete, however long the move took.
+      [%del-from from=path to=path seen=(map path @uv)]
       ::  a move's state, copied from the pages and folders at or under
       ::  `from` to the same places under `to`: before the pages are made
       ::  there, each one's evaluator data and its comment, comet and form
@@ -111,6 +117,22 @@
       ::  dir. Through the writer like every page-tree write, so it lands
       ::  in order with a move's mkdirs and bumps the change beacon.
       [%link-put pax=path =link:ll]
+      ::  a NEW link at pax (/link-make, a move's copy): as %link-put, but
+      ::  refused in the writer when a page, a folder or a link is already
+      ::  there, so two makes, or a make and a page save, racing for one
+      ::  name never leave a page and a link at it. %link-put itself only
+      ::  rewrites a link still there.
+      [%link-new pax=path =link:ll]
+      ::  rebuild one page's public comment thread (+put-pub-thread), or
+      ::  every page's: in the writer, the one writer of /pub/threads, so
+      ::  the comment inbox and the owner's routes never race its rows
+      [%pub-thread page=path]
+      [%pub-threads ~]
+      ::  the orrery journal mirror's page `name` (/journal/<name>) for
+      ::  orrery's record at `at`, whose brief is `fresh`. In the writer,
+      ::  so its read of the page and its write are one step no save can
+      ::  land between (+journal-put)
+      [%journal-put name=@ta at=@t fresh=@t]
       ::  a live read of the link at /page/<pax> naming `rpax` on `host`:
       ::  `got` its [kind body rev], ~ when it failed. Applied in the writer
       ::  only while that same link is still there, so a read that finishes

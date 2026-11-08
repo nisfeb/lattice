@@ -73,7 +73,14 @@ pub struct Identity {
     pub wal: Vec<u8>,
     /// unix seconds
     pub exported: u64,
+    /// `my-posts.json`, the comet's own posts and comments (notify.rs), so
+    /// they follow it to the new computer. Empty when there is none, and
+    /// in files from builds that did not carry it.
+    pub my_posts: Vec<u8>,
 }
+
+/// The comet's own posts and comments, beside its keyfile (notify.rs).
+pub const MY_POSTS: &str = "my-posts.json";
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Meta {
@@ -82,6 +89,10 @@ struct Meta {
     db_len: u64,
     wal_len: u64,
     exported: u64,
+    /// my-posts.json as text. Older builds ignore the field and older
+    /// files lack it, so the format version stays 1.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    my_posts: String,
 }
 
 /// Why a file did not open, in words for the user.
@@ -146,6 +157,7 @@ fn seal_with(id: &Identity, pass: &str, iterations: u32) -> Result<Vec<u8>, Stri
         db_len: id.db.len() as u64,
         wal_len: id.wal.len() as u64,
         exported: id.exported,
+        my_posts: String::from_utf8_lossy(&id.my_posts).into_owned(),
     })
     .map_err(|e| e.to_string())?;
     let mut body = Vec::with_capacity(4 + meta.len() + id.db.len() + id.wal.len() + 16);
@@ -202,6 +214,7 @@ pub fn open(file: &[u8], pass: &str) -> Result<Identity, OpenError> {
         db: rest[..db_len].to_vec(),
         wal: rest[db_len..].to_vec(),
         exported: meta.exported,
+        my_posts: meta.my_posts.into_bytes(),
     })
 }
 
@@ -233,13 +246,25 @@ pub fn read_dir(dir: &Path, ship_of: impl Fn(&str) -> Option<String>) -> Result<
     };
     let db = read(".db", true)?;
     let wal = read(".db-wal", false)?;
-    Ok(Identity { ship, keyfile: text, db, wal, exported: now() })
+    let mine = dir.join(MY_POSTS);
+    let my_posts = match std::fs::read(&mine) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(format!("{}: {e}", mine.display())),
+    };
+    Ok(Identity { ship, keyfile: text, db, wal, exported: now(), my_posts })
 }
 
 /// Make `id` the identity in `dir` (the engine closed). Whatever identity
 /// was there is moved, never deleted, into `replaced-<ms>/`, which is
-/// returned when there was one. The reading history stays.
+/// returned when there was one. Its my-posts.json goes with it, and the new
+/// comet gets the one its file carried. The reading history stays.
 pub fn install(dir: &Path, id: &Identity) -> Result<Option<PathBuf>, String> {
+    // my-posts.json is written by the reader's threads under this lock
+    crate::store::locked(&dir.join(MY_POSTS), || install_locked(dir, id))?
+}
+
+fn install_locked(dir: &Path, id: &Identity) -> Result<Option<PathBuf>, String> {
     use std::os::unix::fs::DirBuilderExt;
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -266,6 +291,9 @@ pub fn install(dir: &Path, id: &Identity) -> Result<Option<PathBuf>, String> {
         Some(a)
     };
     let b = base(&id.ship);
+    if !id.my_posts.is_empty() {
+        crate::session::write_private(&dir.join(MY_POSTS), &id.my_posts)?;
+    }
     // the store first and the keyfile last: a crash part way leaves no
     // keyfile, so the next start mines a new comet rather than open this
     // one on half a store
@@ -283,6 +311,7 @@ fn is_identity_file(n: &str) -> bool {
     n == "comet.key"
         || n == "unclaimed"
         || n == EXPORTED
+        || n == MY_POSTS
         || [".db", ".db-wal", ".db-shm", ".db-journal", ".db.lock", ".db.port"].iter().any(|x| n.ends_with(x))
 }
 
@@ -316,6 +345,7 @@ mod tests {
             db: (0..5000u32).map(|i| (i * 7) as u8).collect(),
             wal: b"wal bytes".to_vec(),
             exported: 1_762_300_000,
+            my_posts: b"[]".to_vec(),
         }
     }
 
@@ -451,6 +481,38 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(b.join("comet.key")).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn my_posts_follow_the_comet_and_the_old_ones_stay_with_the_old_comet() {
+        let a = tmpdir("cometid-mine-a");
+        let b = tmpdir("cometid-mine-b");
+        let i = id();
+        install(&a, &i).unwrap();
+        std::fs::write(a.join(MY_POSTS), b"[{\"new\":1}]").unwrap();
+        let file = seal_with(&read_dir(&a, ship_of).unwrap(), "correct horse", T).unwrap();
+        // b runs an older comet that has posts of its own
+        for (n, body) in [("comet.key", "0wold\n"), ("sampel-palnet.db", "old"), (MY_POSTS, "[{\"old\":1}]")] {
+            std::fs::write(b.join(n), body).unwrap();
+        }
+        let aside = install(&b, &open(&file, "correct horse").unwrap()).unwrap().expect("set aside");
+        assert_eq!(std::fs::read(b.join(MY_POSTS)).unwrap(), b"[{\"new\":1}]", "the imported comet's posts came with it");
+        assert_eq!(std::fs::read(aside.join(MY_POSTS)).unwrap(), b"[{\"old\":1}]", "the old comet keeps its own");
+    }
+
+    #[test]
+    fn a_file_without_my_posts_still_opens_and_installs_none() {
+        // what an older build wrote: no my_posts in the meta
+        let a = tmpdir("cometid-old-file");
+        std::fs::write(a.join(MY_POSTS), b"[{\"old\":1}]").unwrap();
+        std::fs::write(a.join("comet.key"), "0wold\n").unwrap();
+        let mut i = id();
+        i.my_posts.clear();
+        let opened = open(&seal_with(&i, "correct horse", T).unwrap(), "correct horse").unwrap();
+        assert!(opened.my_posts.is_empty());
+        let aside = install(&a, &opened).unwrap().unwrap();
+        assert!(!a.join(MY_POSTS).exists(), "the old comet's posts are not shown as the new one's");
+        assert!(aside.join(MY_POSTS).exists());
     }
 
     #[test]

@@ -7,6 +7,20 @@
   |=  s=scope
   ^-  key-row
   ['abc123' 'laptop' 'claude-laptop' s 'salt' (hash-token 'salt' 'sekrit') ~2026.1.1 ~ ~]
+::  a mint is refused at the cap, or when a live key writes as its by
+++  test-mint-refusal
+  =/  r=key-row  (row *scope)
+  =/  ks=keys  (malt ~[[id.r r]])
+  =/  full=keys
+    %-  malt
+    %+  turn  (gulf 1 max-keys)
+    |=(n=@ud [(crip (a-co:co n)) r(id (crip (a-co:co n)), by (crip (a-co:co n)))])
+  ;:  weld
+    (expect-eq !>(`(unit @t)`~) !>((mint-refusal ks 'someone-else')))
+    (expect !>(?=(^ (mint-refusal ks 'claude-laptop'))))
+    (expect !>(?=(^ (mint-refusal full 'fresh'))))
+    (expect-eq !>(`(unit @t)`~) !>((mint-refusal ~ 'claude-laptop')))
+  ==
 ++  test-parse-bearer
   ;:  weld
     (expect-eq !>(`(unit [@t @t])``['abc' 'x.y']) !>((parse-bearer 'Bearer abc.x.y')))

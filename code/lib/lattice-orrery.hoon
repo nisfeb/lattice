@@ -27,39 +27,97 @@
   ^-  @t
   %-  crip
   :(weld "# " head ", " (trip day) "\0a\0a" (brief-link-rewrite (trip text)))
-::  +journal-merge: the re-mirrored page `new` keeps what the owner did to
-::  the page `old`. A task line ticked in `old` that carries a [T<n>] tag
-::  is ticked in `new` when `new` has the very same line unticked (same
-::  tag, text and indent: a remade brief may give a tag to another task).
-::  Lines from a `## Notes` heading to the end of `old` are carried after
-::  `new` when `new` has no such heading. Other edits to the brief's own
-::  lines are replaced by orrery's text. CRLF on either side is read as LF.
-++  journal-merge
-  |=  [old=@t new=@t]
+::  +journal-fold: the new brief `new` folded into the owner's page `own`,
+::  for a journal page the owner edited since the mirror last wrote it.
+::  All of the owner's text stays. Only lines carrying a [T<n>] tag move:
+::  an owner line whose tag is in `new` takes the brief's line, keeping
+::  the owner's tick when the task reads the same, and a tag `new` has
+::  that the page lacks goes in before the page's Notes heading (any
+::  level, any case), or at its end. Untagged lines of the brief are not
+::  added: they would repeat the brief already on the page. CRLF on
+::  either side is read as LF.
+++  journal-fold
+  |=  [own=@t new=@t]
   ^-  @t
-  =/  ol=(list tape)  (turn (lines-of (trip old)) un-cr)
+  =/  ol=(list tape)  (turn (lines-of (trip own)) un-cr)
   =/  nl=(list tape)  (turn (lines-of (trip new)) un-cr)
-  =/  ticked=(set tape)
-    %-  silt
-    %+  murn  ol
-    |=  l=tape
-    ^-  (unit tape)
-    =/  at=(unit @ud)  (task-at l)
-    ?~  at  ~
-    ?:  |(=(' ' (snag u.at l)) !(has-tag l))  ~
-    `(snap l u.at ' ')
-  =/  merged=(list tape)
-    %+  turn  nl
+  =/  tagged=(list [tag=tape l=tape])
+    (murn nl |=(l=tape (bind (tag-of l) |=(t=tape [t l]))))
+  =/  by-tag=(map tape tape)
+    %-  ~(gas by *(map tape tape))
+    (flop tagged)
+  =/  had=(set tape)  (silt (murn ol tag-of))
+  =/  out=(list tape)
+    %+  turn  ol
     |=  l=tape
     ^-  tape
-    =/  at=(unit @ud)  (task-at l)
-    ?~  at  l
-    ?.  &(=(' ' (snag u.at l)) (~(has in ticked) l))  l
-    (snap l u.at 'x')
-  =/  notes=(list tape)  (notes-of ol)
-  =?  merged  &(?=(^ notes) =(~ (notes-of nl)))
-    (weld merged [*tape notes])
-  (crip (join-lines merged))
+    =/  tg=(unit tape)  (tag-of l)
+    ?~  tg  l
+    =/  nw=(unit tape)  (~(get by by-tag) u.tg)
+    ?~  nw  l
+    (keep-tick l u.nw)
+  =/  more=(list tape)
+    %+  murn  tagged
+    |=([t=tape l=tape] ?:((~(has in had) t) ~ `l))
+  =/  more=(list tape)
+    ::  one line per tag, the first the brief gives
+    =|  seen=(set tape)
+    |-  ^-  (list tape)
+    ?~  more  ~
+    =/  t=(unit tape)  (tag-of i.more)
+    ?:  &(?=(^ t) (~(has in seen) u.t))  $(more t.more)
+    [i.more $(more t.more, seen ?~(t seen (~(put in seen) u.t)))]
+  ?~  more  (crip (join-lines out))
+  =/  at=(unit @ud)  (notes-at out)
+  ?~  at  (crip (join-lines (weld out more)))
+  (crip (join-lines :(weld (scag u.at out) more (slag u.at out))))
+::  +keep-tick: the brief's line `nw` for the owner's `ol`, ticked when
+::  the owner ticked the very same task (same tag, text and indent)
+++  keep-tick
+  |=  [ol=tape nw=tape]
+  ^-  tape
+  =/  at=(unit @ud)  (task-at ol)
+  ?~  at  nw
+  ?:  =(' ' (snag u.at ol))  nw
+  =/  bt=(unit @ud)  (task-at nw)
+  ?~  bt  nw
+  ?.  =((snap ol u.at ' ') (snap nw u.bt ' '))  nw
+  (snap nw u.bt 'x')
+::  +tag-of: the first [T<n>] tag on a line, as "T<n>"
+++  tag-of
+  |=  l=tape
+  ^-  (unit tape)
+  ?~  l  ~
+  ?.  ?=([%'[' %'T' *] l)  $(l t.l)
+  =/  r=tape  t.t.l
+  =|  d=tape
+  |-  ^-  (unit tape)
+  ?~  r  ~
+  ?:  (is-dig i.r)  $(r t.r, d [i.r d])
+  ?:  &(?=(^ d) =(']' i.r))  `['T' (flop d)]
+  ^$(l t.l)
+::  +notes-head: is the line a Notes heading: one to six #, blanks, then
+::  "notes" in any case, trailing blanks allowed
+++  notes-head
+  |=  l=tape
+  ^-  ?
+  =/  t=tape  (trim-sp l)
+  =/  h=@ud  0
+  |-  ^-  ?
+  ?:  &(?=(^ t) =('#' i.t))  $(t t.t, h +(h))
+  ?.  &((gte h 1) (lte h 6))  |
+  ?~  t  |
+  ?.  (is-sp i.t)  |
+  =("notes" (cass (flop (trim-sp (flop (trim-sp t))))))
+::  +notes-at: the index of the first Notes heading, ~ when there is none
+++  notes-at
+  |=  ls=(list tape)
+  ^-  (unit @ud)
+  =/  i=@ud  0
+  |-  ^-  (unit @ud)
+  ?~  ls  ~
+  ?:  (notes-head i.ls)  `i
+  $(ls t.ls, i +(i))
 ::  +lines-of: split on newlines; "" is one empty line.
 ++  lines-of
   |=  t=tape
@@ -81,13 +139,6 @@
   ^-  tape
   ?:  &(?=(^ l) =('\0d' (rear l)))  (snip `tape`l)
   l
-::  +notes-of: the lines from the first `## Notes` heading on, or ~.
-++  notes-of
-  |=  ls=(list tape)
-  ^-  (list tape)
-  ?~  ls  ~
-  ?:  =("## Notes" (flop (trim-sp (flop i.ls))))  ls
-  $(ls t.ls)
 ++  trim-sp
   |=  t=tape
   ^-  tape

@@ -55,3 +55,4 @@ blockquote { margin-left: 0; padding-left: 1rem; border-left: 3px solid var(--li
 .home-page .replies { margin: 0 0 1.25rem; }
 .home-page .replies h2 { font-size: 1rem; margin: 0 0 .4rem; }
 .home-page .replies ul { margin: 0; padding-left: 1.1rem; }
+.exported { margin: .5rem 1rem; padding: .5rem .75rem; border-radius: 6px; border: 1px solid #c0392b; }

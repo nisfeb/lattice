@@ -1,6 +1,6 @@
 [package]
 name = "lattice-desktop"
-version = "1.0.29"
+version = "1.0.30"
 edition = "2021"
 #  Never goes to crates.io: the desktop app ships as bundles and lattice-fs
 #  is consumed by path. Saying so keeps `cargo publish` from being a slip, and
@@ -46,13 +46,15 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 #  filled by scripts/mesa-deps.sh). The lock pins prettyplease to 0.2.37:
 #  bindgen 0.73 takes syn 2 or 3 and prettyplease 0.2 or 0.3, and a fresh
 #  resolve pairs syn 2 with prettyplease 0.3 (syn 3), which does not compile.
-#  The pin is urb-fetch main at the merge of PR #20 (fast keys: a shared on-disk
-#  cache of ships' points serves an engine's first lookup, never one after the
-#  roller answers), on top of PR #19 (fast first scry), PR #18 (fast first
-#  contact) and PR #17 (Core::expire_revs for reloads).
-urb-engine = { package = "urb", git = "https://github.com/nisfeb/urb-fetch.git", rev = "96f84f39cc00c5b0b2bc063a3154efb53082cc57", features = ["native"], optional = true }
-urb-render = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "96f84f39cc00c5b0b2bc063a3154efb53082cc57", optional = true }
-urb-gateway = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "96f84f39cc00c5b0b2bc063a3154efb53082cc57", optional = true }
+#  The pin is urb-fetch main at the merge of PR #22 (a key cache never
+#  takes an older point: life and rift compared in FileKeys::put and
+#  settle_point). That sits on the merge of PR #20 (fast keys: a shared on-disk cache of ships' points
+#  serves an engine's first lookup, never one after the roller answers), on
+#  top of PR #19 (fast first scry), PR #18 (fast first contact) and PR #17
+#  (Core::expire_revs for reloads).
+urb-engine = { package = "urb", git = "https://github.com/nisfeb/urb-fetch.git", rev = "3f584bf3567dd8c8e80365197994b6330cb95338", features = ["native"], optional = true }
+urb-render = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "3f584bf3567dd8c8e80365197994b6330cb95338", optional = true }
+urb-gateway = { git = "https://github.com/nisfeb/urb-fetch.git", rev = "3f584bf3567dd8c8e80365197994b6330cb95338", optional = true }
 
 #  Export PDF prints through the platform's own webview (src/pdf.rs). All
 #  four are already in the tree through tauri and wry, at these versions.

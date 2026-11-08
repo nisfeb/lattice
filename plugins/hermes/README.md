@@ -12,7 +12,7 @@ Nothing is extracted from conversations automatically. Saving is the agent's del
 
 1. In lattice, open Settings, then Agent keys. Make a key that writes as, say, `hermes`, with the scope you want. Copy the key. It is shown once.
 2. Copy this directory to `~/.hermes/plugins/lattice/` (or `$HERMES_HOME/plugins/lattice/` for another profile).
-3. Run `hermes memory setup`, choose `lattice`, and give it your ship's URL and the key. The key goes to `~/.hermes/.env` as `LATTICE_TOKEN`; the URL goes to `~/.hermes/lattice.json`.
+3. Run `hermes memory setup`, choose `lattice`, and give it your ship's URL and the key. The key goes to `~/.hermes/.env` as `LATTICE_TOKEN`; the URL goes to `~/.hermes/lattice.json`. If a `LATTICE_URL` secret is set too and names another address, `lattice.json` wins and the system prompt says they differ.
 4. Check `memory.provider: lattice` is set in `~/.hermes/config.yaml`.
 
 To keep one memory instead of two, turn Hermes' built-in memory off in `~/.hermes/config.yaml` with `memory.memory_enabled: false` and `memory.user_profile_enabled: false`. The lattice provider is unaffected. Move anything durable from `~/.hermes/memories/` into lattice first. Coming from a setup that reached lattice with your login cookie? See [Migrating](../../docs/agent-knowledge.md#migrating-from-the-cookie-and-mcp-setup).
@@ -21,7 +21,7 @@ Optional, in `~/.hermes/lattice.json`: `"recall_strength": 50` sets how strong a
 
 ## What a key can do
 
-A key reaches only what its scope names. Publishing, sharing, deleting, settings and the keys themselves stay yours. Everything a key saves is signed with its name and `source: agent`. A key writes pages only within the paths its write scope grants (a granted path may be published); it cannot publish, share, move or delete. The `skills` part of a key's scope is `none` (the default), `read` (`lattice_skill_index` and `lattice_skill_read`) or `write` (`lattice_skill_save` too). Sensitive skills show only to a key cleared for sensitive material that asks for them (`lattice_skill_index` with `sensitive: true`). Pages from other ships and clipped web pages come back labelled as quoted material, not instructions. See [docs/agent-knowledge.md](../../docs/agent-knowledge.md#agent-keys).
+A key reaches only what its scope names. Publishing, sharing, deleting, settings and the keys themselves stay yours. Everything a key saves is signed with its name and `source: agent`. A key writes pages only within the paths its write scope grants (a granted path may be published); it cannot publish, share, move or delete. The `skills` part of a key's scope is `none` (the default), `read` (`lattice_skill_index` and `lattice_skill_read`) or `write` (`lattice_skill_save` too). Sensitive skills show only to a key cleared for sensitive material that asks for them (`lattice_skill_index` with `sensitive: true`). Pages from other ships, clipped web pages, and memories, core rules and skills an agent key wrote come back labelled as quoted material, not instructions. See [docs/agent-knowledge.md](../../docs/agent-knowledge.md#agent-keys).
 
 ## Skills
 

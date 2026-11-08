@@ -61,14 +61,14 @@ impl History {
         self.add_at(url, title, now_ms())
     }
 
+    /// Kept under the address's one spelling (urb::canon), so another
+    /// spelling of a page already listed moves it rather than adding it.
     fn add_at(&self, url: &str, title: &str, at: u64) -> Result<(), String> {
+        let url = crate::urb::canon(url);
         let _g = self.guard();
         let mut all = self.list();
-        all.retain(|e| e.url != url);
-        all.insert(
-            0,
-            Entry { url: url.to_string(), title: title.chars().take(TITLE_MAX).collect(), at },
-        );
+        all.retain(|e| crate::urb::canon(&e.url) != url);
+        all.insert(0, Entry { url, title: title.chars().take(TITLE_MAX).collect(), at });
         all.truncate(MAX);
         self.write(&all)
     }
@@ -139,6 +139,18 @@ mod tests {
         let l = h.list();
         assert_eq!(l.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(), ["urb://~zod/a", "urb://~zod/b"]);
         assert_eq!((l[0].title.as_str(), l[0].at), ("A again", 3));
+        std::fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn another_spelling_of_a_page_is_the_same_entry() {
+        let (d, h) = fresh("canon");
+        h.add_at("urb://~zod/docs/", "Docs", 1).unwrap();
+        h.add_at("URB://~zod//docs", "Docs", 2).unwrap();
+        h.add_at("urb://~zod/%64ocs", "Docs", 3).unwrap();
+        let l = h.list();
+        assert_eq!(l.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(), ["urb://~zod/docs"]);
+        assert_eq!(l[0].at, 3);
         std::fs::remove_dir_all(d).unwrap();
     }
 

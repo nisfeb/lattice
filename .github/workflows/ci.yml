@@ -344,6 +344,7 @@ jobs:
           node --check plugins/claude/server.mjs
           node --check plugins/claude/hooks/lattice-hook.mjs
           node --check plugins/claude/url-rule.mjs
+          node --check plugins/claude/quote.mjs
           node --check plugins/claude/hooks/skills-sync.mjs
           node --check plugins/claude/import-skills.mjs
           python3 -m py_compile plugins/hermes/__init__.py
@@ -374,7 +375,7 @@ jobs:
       # code/ (a guest install resolves nothing outside it), and bill.json
       # names only nexuses that exist. code-closure caught the rise-later
       # port's missing timer marks, which ~wex's trusted install hid.
-      - name: desk closure, bill and fiber depths
+      - name: desk closure, bill, fiber depths and loader rows
         run: |
           python3 scripts/code-closure.py code
           python3 scripts/bill-check.py code
@@ -384,6 +385,11 @@ jobs:
           #  a healthy ship prints nothing: every print goes through +say
           #  at a level (docs/logging.md)
           python3 scripts/quiet-check.py code
+          #  every grub the app writes has a covering on-load row: the
+          #  loader drops anything uncovered on every reload
+          python3 scripts/onload-check.py code/nex/lattice/app.hoon
+          #  clean-targets deletes only targets of merged, idle worktrees
+          bash scripts/clean-targets-check.sh
       #  every system road the app reaches is declared in weir.json, in the
       #  category it is reached in. On a desk install an undeclared road is
       #  a veto that parks the fiber; sharing with ships shipped that way.

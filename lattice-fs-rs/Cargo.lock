@@ -344,6 +344,7 @@ name = "lattice-fs"
 version = "0.1.0"
 dependencies = [
  "fuser",
+ "icu_normalizer",
  "libc",
  "proptest",
  "serde_json",

@@ -259,4 +259,67 @@
   =/  t=@da  ~2026.1.1
   =/  old=pub-old:lp  (malt ~[['/a' [t (add t ~s1) 2]]])
   (expect-eq !>(`pub-pending:lp`(malt ~[['/a' `pub-wait:lp`[(add t ~s1) 2 *@da & *@da]]])) !>((pub-from-old:lp old)))
+::  +rev-rises / +rev-high-put: a page's revision must climb past every
+::  revision it was ever published or deleted at, a delete included
+++  test-rev-high
+  =/  hw=rev-high:lp  (rev-high-put:lp ~ '/a' 5)
+  =.  hw  (rev-high-put:lp hw '/a' 3)
+  ;:  weld
+    (expect-eq !>(5) !>(high:(~(got by hw) '/a')))
+    (expect-eq !>(|) !>((rev-rises:lp hw '/a' 5)))
+    (expect-eq !>(|) !>((rev-rises:lp hw '/a' 4)))
+    (expect-eq !>(&) !>((rev-rises:lp hw '/a' 6)))
+    (expect-eq !>(&) !>((rev-rises:lp hw '/b' 1)))
+  ==
+::  +rev-off: publish (vault cass 1, 2, 3), unpublish at 3, publish
+::  again: the vault grub is made anew at cass 1, and the revision it is
+::  published at climbs above 3, and goes on climbing
+++  test-rev-off-republish
+  =/  nam=@t  '/a'
+  =|  hw=rev-high:lp
+  ::  first publish and two edits: no offset
+  =/  o1=@ud  (rev-off:lp hw nam 0)
+  =.  hw  (rev-high-put:lp (rev-off-put:lp hw nam o1) nam (add 1 o1))
+  =.  hw  (rev-high-put:lp hw nam (add 2 (rev-off:lp hw nam 1)))
+  =.  hw  (rev-high-put:lp hw nam (add 3 (rev-off:lp hw nam 2)))
+  ::  unpublish: the delete records the revision it culled
+  =.  hw  (rev-high-put:lp hw nam 3)
+  ::  publish again: the vault grub's prior cass is 0
+  =/  o2=@ud  (rev-off:lp hw nam 0)
+  =/  r2=@ud  (add 1 o2)
+  =.  hw  (rev-off-put:lp hw nam o2)
+  =/  rises=?  (rev-rises:lp hw nam r2)
+  =.  hw  (rev-high-put:lp hw nam r2)
+  ::  and an edit after it
+  =/  r3=@ud  (add 2 (rev-off:lp hw nam 1))
+  ;:  weld
+    (expect-eq !>(0) !>(o1))
+    (expect-eq !>(4) !>(r2))
+    (expect-eq !>(&) !>(rises))
+    (expect-eq !>(5) !>(r3))
+    (expect-eq !>(&) !>((rev-rises:lp hw nam r3)))
+  ==
+::  +wave-news: publish at cass 1, unpublish (the vault grub's history
+::  goes), publish again: the grub is made anew at cass 1 again, later.
+::  The watcher that acted on the first must act on the second.
+++  test-wave-news-republish
+  =/  first=cass:clay  [1 ~2026.11.7..12.00.00]
+  =/  again=cass:clay  [1 ~2026.11.7..12.00.30]
+  ;:  weld
+    (expect-eq !>(&) !>((wave-news:lp `first ~)))
+    (expect-eq !>(|) !>((wave-news:lp `first `first)))
+    (expect-eq !>(&) !>((wave-news:lp `again `first)))
+    (expect-eq !>(&) !>((wave-news:lp `[3 ~2026.11.7..12.01.00] `again)))
+    (expect-eq !>(|) !>((wave-news:lp ~ `first)))
+    (expect-eq !>(|) !>((wave-news:lp `[0 ~2026.11.7..12.00.00] ~)))
+  ==
+::  +salt-switch: a resumed migration keeps the salt it already wrote
+++  test-salt-switch
+  ;:  weld
+    (expect-eq !>([5 &]) !>((salt-switch:lp ~ 5)))
+    ::  crashed before the new salt landed: mint one
+    (expect-eq !>([5 &]) !>((salt-switch:lp `5 5)))
+    ::  crashed after: keep it, retire the recorded one
+    (expect-eq !>([5 |]) !>((salt-switch:lp `5 9)))
+  ==
 --

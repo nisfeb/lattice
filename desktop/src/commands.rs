@@ -46,6 +46,12 @@ pub async fn connect(
         "Connect",
     )?;
     dlog(&format!("connect: logging in at {url}"));
+    // whose queue a legacy URL key is: the cookie stored for that URL before
+    // this connect replaces it (queue::key_after_connect)
+    let key_ship = {
+        let old = config::load(&app);
+        crate::session::cookie_for(&old.queue_key).and_then(|c| crate::session::ship_of(&c))
+    };
     let cookie = crate::session::login(&url, &code)?;
     let ship = crate::session::ship_of(&cookie).ok_or("login: no urbauth cookie")?;
     let at = crate::session::store(&url, &cookie)?;
@@ -54,7 +60,7 @@ pub async fn connect(
     config::update(&app, move |cfg| {
         //  a ship SWITCH must not inherit the previous ship's queue directory —
         //  its queued edits would replay into the new ship
-        cfg.queue_key = crate::queue::key_after_connect(cfg, &ship_for_cfg);
+        cfg.queue_key = crate::queue::key_after_connect(cfg, &ship_for_cfg, key_ship.as_deref());
         cfg.url = url;
         //  remember the @p: the offline queue prefers it as its directory key, and
         //  it has to be known BEFORE the ship stops answering, which is exactly
@@ -611,8 +617,25 @@ fn nav_decision(
     // and some webkits run every frame through this policy hook).
     // Never route these to the system opener. That popups "Could not
     // read file about:src:doc."
-    if matches!(u.scheme(), "about" | "blob" | "data") {
+    if u.scheme() == "about" {
         return Nav::Allow;
+    }
+    // data: and blob: are not left to the webview's own refusal of a
+    // frame's top-level navigation, since this hook cannot tell a frame's
+    // load from the window's. Nothing of ours opens a data: url, so none
+    // goes. A blob: url carries the origin that made it: one made by our
+    // own pages (the ship UI's downloads) goes, and one made by a
+    // publisher's sandboxed frame (`blob:null/...`) or any other origin
+    // does not.
+    if u.scheme() == "data" {
+        return Nav::Block;
+    }
+    if u.scheme() == "blob" {
+        let ours = tauri::Url::parse(u.path()).is_ok_and(|inner| {
+            !matches!(inner.scheme(), "about" | "blob" | "data")
+                && nav_decision(&inner, bridge, reader, String::new) == Nav::Allow
+        });
+        return if ours { Nav::Allow } else { Nav::Block };
     }
     let bridge = bridge();
     if u.host_str() == Some("127.0.0.1") && u.port() == bridge {
@@ -833,6 +856,10 @@ pub async fn export_reader_identity(app: AppHandle, passphrase: String) -> Resul
             let id = e.export_identity()?;
             let f = crate::cometid::seal(&id, &passphrase)?;
             crate::cometid::mark_exported(e.dir())?;
+            if matches!(e.status(), crate::engine::Status::Ready { .. }) {
+                crate::render::set_exported_running(e.exported_at());
+            }
+            dlog(&format!("reader: identity exported at {}", crate::cometid::now()));
             Ok::<_, String>(f)
         })
         .await
@@ -1409,6 +1436,28 @@ mod nav_tests {
         assert_eq!(decide("https://example.com/", Some(26500), SHIP), Nav::External);
         assert_eq!(decide("tauri://localhost/manager.html", None, ""), Nav::Allow);
         assert_eq!(decide("about:srcdoc", None, ""), Nav::Allow);
+    }
+
+    #[test]
+    fn data_and_blob_go_only_when_our_own_pages_made_them() {
+        assert_eq!(decide("data:text/html,<script>x</script>", Some(26500), SHIP), Nav::Block);
+        assert_eq!(decide("data:text/plain,hi", None, ""), Nav::Block);
+        // the ship UI's download, the reader's and the shell's own
+        assert_eq!(decide("blob:http://127.0.0.1:26500/2f0c", Some(26500), SHIP), Nav::Allow);
+        assert_eq!(decide("blob:http://127.0.0.1:26520/2f0c", None, ""), Nav::Allow);
+        assert_eq!(decide("blob:tauri://localhost/2f0c", None, ""), Nav::Allow);
+        // a sandboxed frame's, another host's, another port's, the ship's
+        // real origin, and nested ones
+        for bad in [
+            "blob:null/2f0c",
+            "blob:https://example.com/2f0c",
+            "blob:http://127.0.0.1:26599/2f0c",
+            "blob:https://sampel-palnet.arvo.network/2f0c",
+            "blob:blob:http://127.0.0.1:26500/2f0c",
+            "blob:data:text/html,x",
+        ] {
+            assert_eq!(decide(bad, Some(26500), SHIP), Nav::Block, "{bad}");
+        }
     }
 }
 

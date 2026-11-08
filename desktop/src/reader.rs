@@ -114,6 +114,19 @@ const OPEN_FAIL_TTL: Duration = Duration::from_secs(20);
 /// How long the list may hold up a page (it is read after the page, on
 /// the flow the read opened, so it is quick when it comes at all).
 const OPEN_BUDGET: Duration = Duration::from_secs(6);
+/// The most a `/read` may take, the page and everything asked for beside
+/// it (whether it takes comments, its comment list, titles) together.
+const PAGE_TOTAL: Duration = Duration::from_secs(READ_TOTAL.as_secs() + OPEN_BUDGET.as_secs());
+
+/// What is left of OPEN_BUDGET before `until`.
+fn left(until: Instant) -> Duration {
+    until.saturating_duration_since(Instant::now()).min(OPEN_BUDGET)
+}
+
+/// A side list's deadline when nothing else bounds it.
+fn soon() -> Instant {
+    Instant::now() + OPEN_BUDGET
+}
 /// each forum host's boards that take comet posts (`Ctx::forum_open`)
 type Forums = HashMap<String, (Instant, Option<Vec<String>>)>;
 /// each publisher's list (`Ctx::open`), and when it was asked for
@@ -209,12 +222,12 @@ impl Ctx {
 
     /// The pages of `ship` with a public comment list, kept as
     /// `comments_open`'s list is. `None` when the publisher does not say.
-    fn threads(&self, ship: &str) -> Option<Vec<String>> {
+    fn threads(&self, ship: &str, until: Instant) -> Option<Vec<String>> {
         let kept = self.threads.lock().unwrap().get(ship).cloned();
         match kept {
             Some((at, l)) if at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
             _ => {
-                let l = self.reads.threads(ship, OPEN_BUDGET);
+                let l = self.reads.threads(ship, left(until));
                 self.threads.lock().unwrap().insert(ship.to_string(), (Instant::now(), l.clone()));
                 l
             }
@@ -226,10 +239,12 @@ impl Ctx {
     /// The list is asked for when `/pub/threads` names the page, or when a
     /// comment of the reader's waits on it (the index may be stale), and
     /// then afresh, not kept, until the list holds it. A publisher without
-    /// these lists gives nothing.
-    fn comments(&self, url: &str, ship: &str, key: &str) -> (Vec<PubComment>, Vec<String>) {
+    /// these lists gives nothing. Kept by the address's one spelling
+    /// (urb::canon), and asked for only until `until`.
+    fn comments(&self, url: &str, ship: &str, key: &str, until: Instant) -> (Vec<PubComment>, Vec<String>) {
+        let url = &crate::urb::canon(url);
         let waiting = self.pending.lock().unwrap().get(url).is_some_and(|p| !p.is_empty());
-        let listed = waiting || self.threads(ship).is_some_and(|l| l.iter().any(|n| same_page(n, key)));
+        let listed = waiting || self.threads(ship, until).is_some_and(|l| l.iter().any(|n| same_page(n, key)));
         if !listed {
             return (Vec::new(), Vec::new());
         }
@@ -237,7 +252,7 @@ impl Ctx {
         let list = match kept {
             Some((at, l)) if !waiting && at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
             _ => {
-                let l = self.reads.thread(ship, key, OPEN_BUDGET);
+                let l = self.reads.thread(ship, key, left(until));
                 self.lists.lock().unwrap().insert(url.to_string(), (Instant::now(), l.clone()));
                 l
             }
@@ -257,7 +272,7 @@ impl Ctx {
     /// until the page's list holds it.
     fn sent(&self, url: &str, who: String, body: &str) {
         let mut g = self.pending.lock().unwrap();
-        let mine = g.entry(url.to_string()).or_default();
+        let mine = g.entry(crate::urb::canon(url)).or_default();
         mine.push((who, body.to_string()));
         if mine.len() > PENDING_MAX {
             mine.remove(0);
@@ -298,12 +313,12 @@ impl Ctx {
     /// Does the page `key` of `ship` take comments, and how does it take a
     /// comet's? From the lists kept for `ship`, or asked for now when they
     /// are stale or `fresh`. A page `/pub/comets` does not name is open.
-    fn open(&self, ship: &str, key: &str, fresh: bool) -> (Open, Comets) {
+    fn open(&self, ship: &str, key: &str, fresh: bool, until: Instant) -> (Open, Comets) {
         let kept = self.opens.lock().unwrap().get(ship).cloned();
         let list = match kept {
             Some((at, l)) if !fresh && at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
             _ => {
-                let l = self.reads.comments_open(ship, OPEN_BUDGET);
+                let l = self.reads.comments_open(ship, left(until));
                 self.opens.lock().unwrap().insert(ship.to_string(), (Instant::now(), l.clone()));
                 l
             }
@@ -324,12 +339,12 @@ impl Ctx {
     /// The published pages of `ship` with their times and titles, from
     /// the list kept for `ship`, or asked for now when that is stale.
     /// `None` when the publisher does not say (an older lattice).
-    fn titles(&self, ship: &str) -> Option<Vec<PageTitle>> {
+    fn titles(&self, ship: &str, until: Instant) -> Option<Vec<PageTitle>> {
         let kept = self.titles.lock().unwrap().get(ship).cloned();
         match kept {
             Some((at, l)) if at.elapsed() < if l.is_some() { OPEN_TTL } else { OPEN_FAIL_TTL } => l,
             _ => {
-                let l = self.reads.titles(ship, OPEN_BUDGET);
+                let l = self.reads.titles(ship, left(until));
                 self.titles.lock().unwrap().insert(ship.to_string(), (Instant::now(), l.clone()));
                 l
             }
@@ -606,13 +621,14 @@ fn reader_path(to: &str) -> bool {
 }
 
 /// The urb:// address a `/read` was given: as typed, or a bare
-/// `~ship/path`, trimmed.
+/// `~ship/path`, trimmed, in its one spelling (urb::canon), which is what
+/// the reader keys its history, pending comments and reply marks by.
 fn address(given: &str) -> String {
     let g = given.trim();
     if g.starts_with('~') {
-        format!("urb://{g}")
+        crate::urb::canon(&format!("urb://{g}"))
     } else {
-        g.to_string()
+        crate::urb::canon(g)
     }
 }
 
@@ -654,7 +670,7 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
             if req.dest.as_deref() == Some("document") && trusted(req, port) {
                 return redirect(302, &render::read_href(url));
             }
-            let open = ctx.outside.lock().unwrap().contains(url);
+            let open = ctx.outside.lock().unwrap().contains(&crate::urb::canon(url));
             match ctx.raw(url, key) {
                 Some(body) => Resp {
                     status: 200,
@@ -694,15 +710,15 @@ fn handle(ctx: &Ctx, req: &Req) -> Resp {
             if !req.origin.as_deref().is_some_and(|o| reader_origin(o, port)) {
                 return plain(403);
             }
-            let url = req.arg("url").unwrap_or("");
+            let url = crate::urb::canon(req.arg("url").unwrap_or(""));
             if url.is_empty() {
                 return plain(400);
             }
-            ctx.outside.lock().unwrap().insert(url.to_string());
+            ctx.outside.lock().unwrap().insert(url.clone());
             if form_field(&req.body, "back", 16) == "home" {
                 return redirect(303, "/");
             }
-            redirect(303, &render::read_href(url))
+            redirect(303, &render::read_href(&url))
         }
         ("/history/clear", false) if req.method == "POST" => {
             if !req.origin.as_deref().is_some_and(|o| reader_origin(o, port)) {
@@ -775,7 +791,7 @@ fn follow(ctx: &Ctx, req: &Req) -> Resp {
     let done = if form_field(&req.body, "do", 16) == "unfollow" {
         ctx.follows.unfollow(&u.ship, &folder)
     } else {
-        let titles = ctx.titles(&u.ship);
+        let titles = ctx.titles(&u.ship, soon());
         let found =
             follows::found(&folder, titles.as_deref(), || ctx.reads.dir_index(&u.ship, &folder, follows::BUDGET));
         ctx.follows.follow(&u.ship, &folder, &found)
@@ -905,7 +921,7 @@ fn comment(ctx: &Ctx, req: &Req) -> Resp {
             // one the page takes now
             Ok(p) => {
                 key.clone_from(&p.key);
-                match ctx.open(&ship, &p.key, true) {
+                match ctx.open(&ship, &p.key, true, soon()) {
                     (Open::No, _) => Note::Closed { body },
                     (_, c) if c.mode == CometMode::Off => Note::CometsOff { body },
                     (_, c) if full_mins(&c).is_some() => Note::Full { mins: full_mins(&c).unwrap_or(1), body },
@@ -913,7 +929,7 @@ fn comment(ctx: &Ctx, req: &Req) -> Resp {
                         // the publisher turns a comet over the cap away without
                         // a word, and says so in /pub/comets: ask again before
                         // calling it posted
-                        Ok(()) => match full_mins(&ctx.open(&ship, &p.key, true).1) {
+                        Ok(()) => match full_mins(&ctx.open(&ship, &p.key, true, soon()).1) {
                             Some(mins) => Note::Full { mins, body },
                             None if c.mode == CometMode::Held => Note::Held,
                             None if open == Open::Yes => Note::Posted,
@@ -961,7 +977,7 @@ fn answered(ctx: &Ctx, url: &str) -> Resp {
         Some(p) => ctx.forum_open(&p.host, &p.board, true).is_some(),
         None => match render::commentable(url) {
             Some(ship) => {
-                ctx.open(&ship, "", true);
+                ctx.open(&ship, "", true, soon());
                 let said = !ctx.checking(&ship);
                 if said {
                     ctx.retry_threads(&ship);
@@ -1070,6 +1086,7 @@ fn read(ctx: &Ctx, given: &str, fresh: Fresh, by_date: bool) -> Resp {
         return shown(status, s);
     }
     let start = Instant::now();
+    let until = start + PAGE_TOTAL;
     let mut tries = 0;
     let got = loop {
         tries += 1;
@@ -1084,10 +1101,10 @@ fn read(ctx: &Ctx, given: &str, fresh: Fresh, by_date: bool) -> Resp {
         }
     };
     match got {
-        Ok(p) => page(ctx, &url, &p),
+        Ok(p) => page(ctx, &url, &p, until),
         Err(e) => {
             if matches!(e, ReadError::NotPublished(_)) {
-                if let Some(r) = folder(ctx, &url, by_date) {
+                if let Some(r) = folder(ctx, &url, by_date, until) {
                     return r;
                 }
             }
@@ -1103,8 +1120,8 @@ fn read(ctx: &Ctx, given: &str, fresh: Fresh, by_date: bool) -> Resp {
 /// page with its time and title from `/pub/titles` where the publisher has
 /// that (`Ctx::titles`, asked only once the folder has something in it).
 /// `None` when it names nothing there, or the address is not a published
-/// page's.
-fn folder(ctx: &Ctx, url: &str, by_date: bool) -> Option<Resp> {
+/// page's. What is asked for beside the list is asked only until `until`.
+fn folder(ctx: &Ctx, url: &str, by_date: bool, until: Instant) -> Option<Resp> {
     let u = urb_engine::url::de_urb(url).ok()?;
     if !matches!(u.mount, urb_engine::url::Mount::N) || u.rel.last().is_none_or(|l| l == "index") {
         return None;
@@ -1122,12 +1139,14 @@ fn folder(ctx: &Ctx, url: &str, by_date: bool) -> Option<Resp> {
     if render::dir_rows(&listed(&[]), &u.rel, false).is_empty() {
         return None;
     }
-    let titles = ctx.titles(&u.ship);
+    let titles = ctx.titles(&u.ship, until);
     let rows = render::dir_rows(&listed(titles.as_deref().unwrap_or_default()), &u.rel, by_date);
     // a followed folder is checked as it is opened, from the same list
     let key = follows::folder_key(&u.rel);
     let follow = ctx.follows.get(&u.ship, &key).and_then(|_| {
-        let found = follows::found(&key, titles.as_deref(), || ctx.reads.dir_index(&u.ship, &key, follows::BUDGET));
+        let found = follows::found(&key, titles.as_deref(), || {
+            ctx.reads.dir_index(&u.ship, &key, until.saturating_duration_since(Instant::now()).min(follows::BUDGET))
+        });
         if let Err(e) = ctx.follows.found(&u.ship, &key, &found) {
             crate::commands::dlog(&format!("reader: {e}"));
         }
@@ -1144,15 +1163,22 @@ fn render_words(words: &[u8]) -> String {
     String::from_utf8_lossy(&urb_render::gateway::html_escape(words)).into_owned()
 }
 
-fn page(ctx: &Ctx, url: &str, p: &NativePage) -> Resp {
+/// A page read, rendered. Whether it takes comments and its comment list
+/// are asked for at the same time, and only until `until`, so a slow
+/// publisher holds the page up no longer than that.
+fn page(ctx: &Ctx, url: &str, p: &NativePage, until: Instant) -> Resp {
     let html = urb_render::gateway::render_as(&p.mark, p.body.as_bytes()) == "html";
     let key = if html { ctx.keep_raw(url, p.body.as_bytes()) } else { String::new() };
     let our = ctx.reads.our();
     let note = ctx.take_note(url);
-    let (open, comets) =
-        render::commentable(url).map_or((Open::Unknown, Comets::default()), |ship| ctx.open(&ship, &p.key, false));
-    let (comments, pending) =
-        render::commentable(url).map_or_else(Default::default, |ship| ctx.comments(url, &ship, &p.key));
+    let ((open, comets), (comments, pending)) = match render::commentable(url) {
+        None => ((Open::Unknown, Comets::default()), Default::default()),
+        Some(ship) => std::thread::scope(|s| {
+            let listed = s.spawn(|| ctx.comments(url, &ship, &p.key, until));
+            let open = ctx.open(&ship, &p.key, false, until);
+            (open, listed.join().unwrap_or_default())
+        }),
+    };
     let checking = render::commentable(url).is_some_and(|ship| ctx.checking(&ship));
     let title = ctx.history.list().into_iter().find(|e| e.url == url).map(|e| e.title).unwrap_or_default();
     let new_after = crate::notify::visit_page(ctx, url, &title, &comments);
@@ -2261,7 +2287,7 @@ mod tests {
             assert!(sub < one, "folders first");
             assert!(out.contains("&amp;sort=date"), "the toggle");
         }
-        assert_eq!(c.history.list()[0].url, "urb://~zod/docs/");
+        assert_eq!(c.history.list()[0].url, "urb://~zod/docs");
         let (st, out) = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2Fdocs%2F&sort=date", &cookie()));
         assert_eq!(st, 200);
         assert!(out.contains("Oldest first."));
@@ -2602,6 +2628,70 @@ mod tests {
             assert!(out.contains("<h1>lattice</h1>"));
         }
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    /// A publisher whose comment list never answers, and whose comment
+    /// policy answers only once its comment index has been asked for: a
+    /// reader that asks one after the other waits on both.
+    struct Slow {
+        asked: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl Reads for Slow {
+        fn read(&self, _: &str, _: Duration, _: bool) -> Result<NativePage, ReadError> {
+            Ok(page_of("# Hi", "gmi"))
+        }
+        fn our(&self) -> Option<String> {
+            Some("~doznec-sampel-palnet".into())
+        }
+        fn comments_open(&self, _: &str, budget: Duration) -> Option<Opened> {
+            let (m, cv) = &*self.asked;
+            let (g, _) = cv.wait_timeout_while(m.lock().unwrap(), budget, |asked| !*asked).unwrap();
+            g.then(|| Opened { names: vec!["/k".into()], comets: Some(Vec::new()) })
+        }
+        fn threads(&self, _: &str, budget: Duration) -> Option<Vec<String>> {
+            let (m, cv) = &*self.asked;
+            *m.lock().unwrap() = true;
+            cv.notify_all();
+            std::thread::sleep(budget);
+            None
+        }
+    }
+
+    #[test]
+    fn a_slow_publisher_holds_a_page_up_no_longer_than_its_deadline() {
+        let dir = std::env::temp_dir().join(format!("reader-slow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let slow = Slow { asked: Arc::default() };
+        let c = Ctx::new(Box::new(slow), History::open(&dir), PORT);
+        let start = Instant::now();
+        let r = page(&c, "urb://~zod/hello", &page_of("# Hi", "gmi"), start + Duration::from_secs(2));
+        let took = start.elapsed();
+        let out = String::from_utf8(r.body).unwrap();
+        // asked side by side: the policy answered while the index waited
+        assert!(out.contains(">Post to ~zod</button>"), "{out}");
+        assert!(took < Duration::from_secs(4), "took {took:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn another_spelling_of_a_page_keeps_its_choices() {
+        let (c, _) = ctx("spelling", |u| match u {
+            "urb://~zod/site" => Ok(page_of("<img src=\"https://evil.example/x.png\">", "html")),
+            u => Err(ReadError::NotPublished(u.into())),
+        });
+        let mine = format!("{}Origin: http://127.0.0.1:{PORT}\r\n", own());
+        assert_eq!(ask(&c, &post_outside("URB://~zod//site/", &mine, "")).0, 303);
+        assert_eq!(frame_policy(&c, "/read?url=urb://~zod/site"), render::SANDBOX);
+        assert_eq!(frame_policy(&c, "/read?url=urb://~zod/%73ite"), render::SANDBOX);
+        assert_eq!(c.history.list().len(), 1, "{:?}", c.history.list());
+        assert_eq!(c.history.list()[0].url, "urb://~zod/site");
+        // a comment sent on one spelling is pending on the others
+        let (c, pubs) = listing("spelling-pending", false);
+        *pubs.list.lock().unwrap() = Some(Vec::new());
+        assert_eq!(ask(&c, &post_comment("urb://~zod/hello/", &ours(), "body=mine")).0, 303);
+        let out = ask(&c, &get("/read?url=urb%3A%2F%2F~zod%2F%2Fhello", &cookie())).1;
+        assert!(out.contains("class=\"c pending\""), "{out}");
     }
 
     #[test]

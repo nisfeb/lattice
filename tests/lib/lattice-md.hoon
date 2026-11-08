@@ -46,7 +46,32 @@
 ++  test-link       (yes (has "<a href=\"http://x\"" (r '[t](http://x)')))
 ++  test-link-title  (yes (has "title=\"T\"" (r '[t](http://x "T")')))
 ++  test-link-ref   (yes (has "<a href=\"http://z\"" (r '[t][k]\0a\0a[k]: http://z')))
-++  test-image      (yes (has "<img src=\"http://x\"" (r '![a](http://x)')))
+++  test-image      (yes (has "<img src=\"/x.png\"" (r '![a](/x.png)')))
+::  a remote image is a link to it by default, an <img> only `outside`
+++  test-image-remote-shut
+  =/  o=tape  (r '![a](http://x)')
+  ;:  weld
+    (yes ?!((has "<img" o)))
+    (yes (has "<a href=\"http://x\"" o))
+    (yes ?!((has "<img" (r '![a](HTTPS://x)'))))
+    (yes ?!((has "<img" (r '![a][k]\0a\0a[k]: https://z'))))
+  ==
+++  test-image-remote-outside
+  (yes (has "<img src=\"http://x\"" (~(render-md md &) '![a](http://x)')))
+::  a protocol-relative url is another host: neither a link nor an image
+++  test-safe-protocol-relative
+  ;:  weld
+    (yes ?!((safe-url:md "//evil.example/p.png")))
+    (yes ?!((safe-url:md "/\\evil.example")))
+    (yes ?!((safe-url:md "\\\\evil.example")))
+    (yes ?!((safe-url:md "/\09/evil.example")))
+    (yes ?!((safe-url:md " //evil.example")))
+    (yes ?!((has "evil" (r '![a](//evil.example/p.png)'))))
+    (yes ?!((has "href" (r '[a](//evil.example/)'))))
+    (yes (safe-url:md "/apps/lattice"))
+    (yes (safe-url:md "a/b"))
+    (yes (safe-url:md "#x"))
+  ==
 ++  test-autolink   (yes (has "<a href=\"http://x\"" (r '<http://x>')))
 ::  escapes + safety
 ++  test-escape     (yes ?!((has "<em>" (r '\\*x\\*'))))

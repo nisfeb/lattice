@@ -28,6 +28,7 @@ mod proxy;
 mod queue;
 mod session;
 mod stack;
+mod store;
 mod update;
 mod urb;
 #[cfg(test)]
@@ -302,6 +303,27 @@ fn main() {
             #[cfg(target_os = "macos")]
             build_menu(app)?;
             let handle = app.handle().clone();
+            // One copy per data dir. The single-instance plugin is keyed on
+            // the config dir, so a copy started with its own config dir still
+            // shares this one: follows, my posts and the queue. It says so and
+            // exits before it opens any of them (store.rs).
+            let data = handle.path().app_data_dir()?;
+            match store::lock_dir(&data) {
+                Ok(held) => {
+                    app.manage(held);
+                }
+                Err(msg) => {
+                    eprintln!("lattice: {msg}");
+                    commands::dlog(&format!("startup: {msg}; exiting"));
+                    let h = handle.clone();
+                    std::thread::spawn(move || {
+                        use tauri_plugin_dialog::DialogExt;
+                        h.dialog().message(format!("{msg}.\n\nClose it first, then start lattice again.")).title("lattice is already running").blocking_show();
+                        h.exit(1);
+                    });
+                    return Ok(());
+                }
+            }
             // the urb engine (engine.rs)
             #[cfg(feature = "urb-engine")]
             app.manage(engine::Engine::new(handle.path().app_data_dir()?.join("urb")));

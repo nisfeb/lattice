@@ -157,18 +157,20 @@ impl MyPosts {
         MyPosts { file: dir.join("my-posts.json"), lock: Mutex::new(()) }
     }
 
-    /// Newest first. A missing or unreadable file is an empty list.
+    /// Newest first. A missing file is an empty list, and one that will
+    /// not parse is moved aside first (store::read_json).
     pub fn list(&self) -> Vec<Mine> {
-        std::fs::read(&self.file)
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default()
+        crate::store::read_json(&self.file)
     }
 
     /// Record something the reader just wrote. Writing again where it
     /// already wrote moves that entry to the top, keeping what it has seen.
     pub fn record(&self, m: Mine) -> Result<(), String> {
         let _g = self.lock.lock().unwrap();
+        crate::store::locked(&self.file, || self.record_locked(m))?
+    }
+
+    fn record_locked(&self, m: Mine) -> Result<(), String> {
         let mut all = self.list();
         let same = |e: &Mine| e.url == m.url && (e.title == m.title || !(e.unresolved() || m.unresolved()));
         let kept = all.iter().position(same).map(|i| all.remove(i));
@@ -185,13 +187,15 @@ impl MyPosts {
     /// Change the list in place, and write it when `f` says it changed.
     pub fn update(&self, f: impl FnOnce(&mut Vec<Mine>) -> bool) -> Result<(), String> {
         let _g = self.lock.lock().unwrap();
-        let mut all = self.list();
-        if f(&mut all) {
-            all.truncate(MAX);
-            self.write(&all)
-        } else {
-            Ok(())
-        }
+        crate::store::locked(&self.file, || {
+            let mut all = self.list();
+            if f(&mut all) {
+                all.truncate(MAX);
+                self.write(&all)
+            } else {
+                Ok(())
+            }
+        })?
     }
 
     /// Whole or not at all, and private: write_private's temp file beside
@@ -599,6 +603,7 @@ mod tests {
         assert!(post.unresolved());
         std::fs::write(d.join("my-posts.json"), b"{nope").unwrap();
         assert!(m.list().is_empty());
+        assert_eq!(crate::testutil::corrupt_copies(&d, "my-posts.json"), [b"{nope".to_vec()], "moved aside, not erased");
         std::fs::remove_dir_all(d).unwrap();
     }
 

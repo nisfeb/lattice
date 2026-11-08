@@ -53,6 +53,7 @@ fn a_real_mount_behaves_like_a_filesystem() {
     let _ = fs::remove_dir_all(&mnt);
     fs::create_dir_all(&mnt).unwrap();
 
+    common::private_recovery();
     let session = match lattice_fs::spawn(ship.clone() as Arc<dyn Projection>, mnt.to_str().unwrap())
     {
         Ok(s) => s,
@@ -72,7 +73,7 @@ fn a_real_mount_behaves_like_a_filesystem() {
     std::thread::spawn(move || {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             exercise(&dir, &s);
-            a_parked_truncate_is_applied_by_the_next_open(&dir, &s);
+            a_path_truncate_lands_at_once(&dir, &s);
             a_reader_never_absorbs_a_truncate(&dir, &s);
             a_backup_truncate_never_reaches_its_page(&dir, &s);
         }));
@@ -90,28 +91,16 @@ fn a_real_mount_behaves_like_a_filesystem() {
     }
 }
 
-/// A handle-less truncate, and what a later READ is allowed to do about it.
+/// A handle-less truncate lands on the ship at once.
 ///
-/// truncate(2) on a path takes the deferred branch: there is no open handle to
-/// resize, so the request parks and the next open() applies it. That makes the
-/// applying open look alarming from the inside. It serves an EMPTY buffer and
-/// marks the handle dirty, so closing it writes emptiness through to the ship,
-/// and the open that does this can be a read-only one.
-///
-/// It is correct anyway, and this test exists to stop it being "fixed". The
-/// user asked for the file to be empty. A reader seeing the old bytes after a
-/// successful truncate would be the bug. Making a read-only open ignore the
-/// parked truncate looks like a safety improvement and is really a way to make
-/// truncate(2) silently do nothing.
-///
-/// What is NOT settled here, and is a real if narrow defect: the store is not
-/// updated until that next open happens. truncate(2) returns 0 with the old
-/// bytes still on the ship, so stat says 0 while another client still sees the
-/// page, and nothing at all opening the file before a remount loses the
-/// truncate. Persisting eagerly instead would add an empty revision before
-/// every ordinary save on any kernel whose O_TRUNC lands in this branch, which
-/// is a worse problem than the one it fixes, so it is left alone on purpose.
-fn a_parked_truncate_is_applied_by_the_next_open(mnt: &Path, ship: &Ship) {
+/// truncate(2) on a path with no writer open has no buffer to resize, so the
+/// truncated body is saved there and then, and truncate(2) returns once it
+/// has landed. It used to be parked for the next open of the file, any open,
+/// which marked that handle dirty: a backup tool or viewer reading the file
+/// days later was what saved it empty, over whatever the page held by then.
+/// O_TRUNC is not this case. The kernel opens first, so its SETATTR finds
+/// the writer that just opened and only that writer's save reaches the ship.
+fn a_path_truncate_lands_at_once(mnt: &Path, ship: &Ship) {
     use std::ffi::CString;
     //  whatever the earlier steps left in it: this is about the truncate, not
     //  about that content
@@ -119,8 +108,9 @@ fn a_parked_truncate_is_applied_by_the_next_open(mnt: &Path, ship: &Ship) {
 
     let c = CString::new(mnt.join("demo/child.gmi").to_str().unwrap()).unwrap();
     assert_eq!(unsafe { libc::truncate(c.as_ptr(), 0) }, 0, "truncate(2) must succeed");
+    assert_eq!(ship.body("demo/child").unwrap(), b"", "the truncate is on the ship before any open");
 
-    // the read applies it, and agrees with what the ship then holds
+    // and the next reader agrees with what the ship holds
     assert_eq!(
         read_to_string(&mnt.join("demo/child.gmi")),
         "",
@@ -129,7 +119,7 @@ fn a_parked_truncate_is_applied_by_the_next_open(mnt: &Path, ship: &Ship) {
     assert_eq!(
         ship.body("demo/child").unwrap(),
         b"",
-        "and the store must not still hold the old bytes once something has opened it"
+        "and the store must not still hold the old bytes"
     );
 
     // stable, not a one-shot that resurrects the body on the second read
@@ -155,10 +145,11 @@ fn a_reader_never_absorbs_a_truncate(mnt: &Path, ship: &Ship) {
     let p = mnt.join("demo/demo.md");
     fs::write(&p, "reader sees this\n").unwrap();
 
-    // truncate(2) with only a reader open parks, and the next open applies it
+    // truncate(2) with only a reader open goes to the ship, not the reader
     let reader = fs::File::open(&p).unwrap();
     let c = CString::new(p.to_str().unwrap()).unwrap();
     assert_eq!(unsafe { libc::truncate(c.as_ptr(), 0) }, 0);
+    assert_eq!(ship.body("demo").unwrap(), b"", "truncate(2) beside a reader must land at once");
     assert_eq!(read_to_string(&p), "", "truncate(2) beside an open reader must still apply");
     drop(reader);
     assert_eq!(ship.body("demo").unwrap(), b"", "and closing the reader must not undo it");
@@ -173,6 +164,7 @@ fn a_reader_never_absorbs_a_truncate(mnt: &Path, ship: &Ship) {
         assert!(dup >= 0);
         assert_eq!(unsafe { libc::close(dup) }, 0);
         assert_eq!(unsafe { libc::truncate(c.as_ptr(), 0) }, 0);
+        assert_eq!(ship.body("demo").unwrap(), b"", "a flushed writer must not swallow the truncate");
         assert_eq!(read_to_string(&p), "", "a flushed writer must not swallow the truncate");
         drop(w);
         assert_eq!(ship.body("demo").unwrap(), b"");
@@ -470,6 +462,7 @@ fn a_hostile_page_name_never_surfaces_as_a_readable_file() {
     let mnt = std::env::temp_dir().join(format!("lattice-fs-esc-{}", std::process::id()));
     let _ = fs::remove_dir_all(&mnt);
     fs::create_dir_all(&mnt).unwrap();
+    common::private_recovery();
     let session =
         match lattice_fs::spawn(ship.clone() as Arc<dyn Projection>, mnt.to_str().unwrap()) {
             Ok(s) => s,
@@ -504,4 +497,107 @@ fn a_hostile_page_name_never_surfaces_as_a_readable_file() {
         Ok(Err(p)) => std::panic::resume_unwind(p),
         Err(_) => panic!("the mount stopped answering"),
     }
+}
+
+/// Mount `ship`, run `body` on a worker behind `secs` of deadline, unmount.
+fn with_mount(tag: &str, ship: &Arc<Ship>, secs: u64, body: impl FnOnce(&Path) + Send + 'static) {
+    let mnt = std::env::temp_dir().join(format!("lattice-fs-{tag}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&mnt);
+    fs::create_dir_all(&mnt).unwrap();
+    common::private_recovery();
+    let session = match lattice_fs::spawn(ship.clone() as Arc<dyn Projection>, mnt.to_str().unwrap())
+    {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("skipped: no usable FUSE here ({e})");
+            let _ = fs::remove_dir_all(&mnt);
+            return;
+        }
+    };
+    let (tx, rx) = mpsc::channel();
+    let dir = mnt.clone();
+    std::thread::spawn(move || {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| body(&dir)));
+        let _ = tx.send(r);
+    });
+    let outcome = rx.recv_timeout(Duration::from_secs(secs));
+    drop(session);
+    let _ = fs::remove_dir_all(&mnt);
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(p)) => std::panic::resume_unwind(p),
+        Err(_) => panic!("the mount stopped answering"),
+    }
+}
+
+/// truncate(2), then the page moves on elsewhere, then something opens the
+/// file to read it: the read must never save the truncate over the newer
+/// page. Looped, because the old failure hung on which handle a lookup met
+/// first and on when RELEASE arrived.
+#[test]
+fn a_later_reader_never_saves_a_truncate() {
+    let ship = Ship::with(&[("note", "md", "hello\n")], &[]);
+    let s = ship.clone();
+    with_mount("trunc-loop", &ship, 120, move |dir| {
+        use std::ffi::CString;
+        let p = dir.join("note.md");
+        let c = CString::new(p.to_str().unwrap()).unwrap();
+        for i in 0..500 {
+            fs::write(&p, format!("version {i}\n")).unwrap();
+            let reader = fs::File::open(&p).unwrap();
+            assert_eq!(unsafe { libc::truncate(c.as_ptr(), 0) }, 0, "round {i}");
+            assert_eq!(s.body("note").unwrap(), b"", "round {i}: truncate(2) never reached the ship");
+            // the page moves on elsewhere
+            s.pages
+                .lock()
+                .unwrap()
+                .insert("note".into(), ("md".into(), format!("remote {i}\n").into_bytes()));
+            drop(reader);
+            let mut buf = String::new();
+            fs::File::open(&p).unwrap().read_to_string(&mut buf).unwrap();
+            assert_eq!(
+                s.body("note").unwrap(),
+                format!("remote {i}\n").as_bytes(),
+                "round {i}: a read-only open saved the truncate over a later edit"
+            );
+        }
+    });
+}
+
+/// A name that is not UTF-8 is refused, never mangled into U+FFFD and made
+/// a page.
+#[test]
+fn a_name_that_is_not_utf8_never_becomes_a_page() {
+    use std::os::unix::ffi::OsStrExt;
+    let ship = Ship::with(&[("ok", "md", "fine\n")], &[]);
+    let s = ship.clone();
+    with_mount("names", &ship, 10, move |dir| {
+        let bad = dir.join(std::ffi::OsStr::from_bytes(b"caf\xe9.md"));
+        let e = fs::File::create(&bad).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::EILSEQ), "{e}");
+        let e = fs::create_dir(dir.join(std::ffi::OsStr::from_bytes(b"d\xff"))).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::EILSEQ), "{e}");
+        let e = fs::rename(dir.join("ok.md"), &bad).unwrap_err();
+        assert_eq!(e.raw_os_error(), Some(libc::EILSEQ), "{e}");
+        assert_eq!(s.pages.lock().unwrap().keys().cloned().collect::<Vec<_>>(), vec!["ok".to_string()]);
+        assert!(s.dirs.lock().unwrap().is_empty());
+        assert_eq!(read_to_string(&dir.join("ok.md")), "fine\n");
+    });
+}
+
+/// A name typed decomposed (e + U+0301, as macOS spells it) is the same file
+/// as the composed one, not a second page that looks identical.
+#[test]
+fn a_decomposed_name_finds_the_composed_page() {
+    let ship = Ship::with(&[("ok", "md", "fine\n")], &[]);
+    let s = ship.clone();
+    with_mount("nfc", &ship, 10, move |dir| {
+        fs::write(dir.join("cafe\u{301}.txt"), "one\n").unwrap();
+        assert_eq!(read_to_string(&dir.join("caf\u{e9}.txt")), "one\n");
+        fs::write(dir.join("caf\u{e9}.txt"), "two\n").unwrap();
+        assert_eq!(read_to_string(&dir.join("cafe\u{301}.txt")), "two\n");
+        let mut pages: Vec<String> = s.pages.lock().unwrap().keys().cloned().collect();
+        pages.sort();
+        assert_eq!(pages, vec!["caf\u{e9}".to_string(), "ok".to_string()]);
+    });
 }

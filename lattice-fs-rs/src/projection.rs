@@ -59,6 +59,12 @@ pub trait Projection: Send + Sync {
     fn list(&self) -> Result<Vec<Node>, PErr>;
     fn read(&self, rel: &str) -> Result<Vec<u8>, PErr>;
 
+    /// read(), with the revision of the body, as a Node's `rev` spells it,
+    /// when the store says (a writer claims it as its base). Default: None.
+    fn read_at(&self, rel: &str) -> Result<(Vec<u8>, Option<u64>), PErr> {
+        Ok((self.read(rel)?, None))
+    }
+
     /// Bulk warm: the whole tree AND every page body in one round-trip. The core
     /// calls this to fill the read cache so grep/cat run from RAM. lattice serves
     /// it from a single page-dump peek, falling back to list()+read() on an old
@@ -89,6 +95,23 @@ pub trait Projection: Send + Sync {
 
     fn errors(&self, rel: &str) -> Result<String, PErr>;
     fn write(&self, rel: &str, kind: &str, data: &[u8], create: bool) -> Result<(), PErr>;
+
+    /// write(), claiming `base`: the revision the writer's bytes were read
+    /// at, as a Node's `rev` spells it. A store that checks it refuses a
+    /// save over a page that moved on since (EEXIST) or keeps the other
+    /// copy aside, instead of the last writer silently winning. The answer
+    /// is the revision the save made, when the store says. The default is
+    /// a store with no revisions: it ignores the claim and answers None.
+    fn write_based(
+        &self,
+        rel: &str,
+        kind: &str,
+        data: &[u8],
+        create: bool,
+        _base: Option<u64>,
+    ) -> Result<Option<u64>, PErr> {
+        self.write(rel, kind, data, create).map(|()| None)
+    }
     fn mkdir(&self, rel: &str) -> Result<(), PErr>;
     fn delete(&self, rel: &str) -> Result<(), PErr>;
     fn mv(&self, src: &str, dst: &str) -> Result<(), PErr>;
