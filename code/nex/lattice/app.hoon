@@ -1303,7 +1303,7 @@
     (poke-eval ?:(pw [%make-marked (pax-of kept) u.old] [%make (pax-of kept) u.old]))
   ;<  ~  bind:m
     ::  base 0: the writer does not check again. A refusal there could not
-    ::  be told from a write still on its way (+save-landed), and a save
+    ::  be told from a write still on its way, and a save
     ::  answered ok but not written is the one outcome never allowed.
     (poke-eval [%make-by (pax-of u.name) src wid 0])
   ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
@@ -1315,10 +1315,12 @@
   ::  first then claimed the other's rev as its base. The page holding
   ::  this save's body is this save's rev. When it does not (a later save
   ::  is already on top, or the read is from before the write), prev+1 is
-  ::  the answer as before.
+  ::  the answer as before. One read, no waiting: the write shows only
+  ::  once the writer's event ends, and polling for it cost every save
+  ::  about two seconds under load.
   ;<  ph=[rev=@ud src=(unit @t)]  bind:m
     ?:  =(src.pc `src)  (pure:(fiber:fiber:nexus ,[rev=@ud src=(unit @t)]) pc)
-    (save-landed (pax-of u.name) prev src)
+    (page-head (pax-of u.name))
   =/  mine=?  =(src.ph `src)
   ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
   %+  send-json  eyre-id
@@ -1329,22 +1331,6 @@
       ['conflicted' b+conflicted]
       ['kept' s+kept]
   ==
-::  +save-landed: the page's head once it holds `src`, or a rev past
-::  `prev`. The writer answers the poke at its first wait, which can be
-::  before the write is down, so the head is read again, 50 ms apart, for
-::  up to five seconds. A head without `src` then is a write the writer
-::  refused, or one already written over. (A new page's first rev can be
-::  0, which is not past a missing page's 0: hence the body test.)
-++  save-landed
-  |=  [rel=path prev=@ud src=@t]
-  =/  m  (fiber:fiber:nexus ,[rev=@ud src=(unit @t)])
-  ^-  form:m
-  =/  n=@ud  0
-  |-  ^-  form:m
-  ;<  ph=[rev=@ud src=(unit @t)]  bind:m  (page-head rel)
-  ?:  |(=(src.ph `src) (gth rev.ph prev) (gte n 100))  (pure:m ph)
-  ;<  ~  bind:m  (sleep:io (div ~s1 20))
-  $(n +(n))
 ::  +save-wid: the owner's save's writer id, from ?by= (a window's session
 ::  id, a-z 0-9 and -, at most 24), else 'owner'. +key-wid: a key's.
 ++  save-wid
