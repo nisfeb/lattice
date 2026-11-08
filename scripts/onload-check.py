@@ -66,6 +66,8 @@ HELPERS = {
     'pub-pending-road': '/pub-pending',
     'pub-trying-road': '/pub-trying',
     'legacy-mark-road': '/legacy/state',
+    # a page's writer record, a file beside its code grub
+    'writers-road': '/page/*',
 }
 
 WRITES = re.compile(

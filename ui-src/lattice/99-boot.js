@@ -20,7 +20,11 @@
     // empty editor. "opens where I left off" is what an installed app means.
     // A name that does not match the snapshot still defers to the network.
     if (name ? p.name !== name : !fresh) return false;
-    applyPage(p.name, p);
+    applyPage(p.name, p, true);
+    //  a snapshot, maybe older than the ship: no rev claim until the fresh
+    //  read lands, and text typed meanwhile is settled against it
+    freshPending.set(p.name, { body: p.body, at: Date.now() });
+    bodyRead(p.name).then((d) => reconcileFresh(p.name, p.body, d));
     // openPage sets the upload-target folder. The snapshot path must too,
     // or uploads land at the root until the next explicit open
     setFolderCtx(p.name);

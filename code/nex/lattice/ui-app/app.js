@@ -62,6 +62,18 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
 // ── src/08-offline.js ─────────────────────────────────────────────────────
   let degraded = false;      // a save failed like the ship was unreachable
+  const winId = Math.random().toString(36).slice(2, 10);
+  let offSeqN = 0;
+  const offSeq = () => ++offSeqN;
+  const qStamp = () => { const n = offSeq(); return { id: winId + '-' + n, win: winId, seq: n }; };
+  const SAVE_MAX = 25 * 1024 * 1024;
+  const bodyBytes = (b) => {
+    const t = String(b || '');
+    return t.length * 3 < SAVE_MAX ? t.length : new TextEncoder().encode(t).length;
+  };
+  const tooBig = (b) => bodyBytes(b) > SAVE_MAX;
+  const TOO_BIG = 'NOT saved: this page is over the 25 MB one save can send. Split it into '
+    + 'smaller pages, or copy the text somewhere safe.';
   let offCount = 0;          // queued page edits, drives the status text
   let offbadge = null;       // assigned by <lat-statusbar> (13-frame.js)
   let jobWait = false;
@@ -160,7 +172,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     bustPages(name);
     await offRecount();
   };
-  const sameRec = (a, b) => a.queuedAt === b.queuedAt && a.body === b.body;
+  const sameRec = (a, b) => (a.id || b.id ? a.id === b.id : a.queuedAt === b.queuedAt && a.body === b.body);
   let offKept = false;
   const offDone = async (q) => {
     if (!qrust()) await idbDelSent(q);
@@ -313,10 +325,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     st('a folder ' + d.job + ' of ' + (d.path || 'your pages') + ' stopped part way and was '
       + 'dropped: some of its pages may still be published. Run it again.', false);
   }, 15000);
-  async function dropQueued(name, at) {
+  async function dropQueued(name, seq) {
     let q = null;
     try { q = await offGet(name); } catch {}
-    if (q && !q.isNew && q.queuedAt <= at) await offDel(name);
+    if (q && !q.isNew && q.win === winId && q.seq < seq) await offDone(q);
   }
 
   let probeTimer = null;
@@ -343,8 +355,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   async function enqueueSave(name, kind, body, isNew, rn, rev = curRev) {
     let prev = null;
     try { prev = await offGet(name); } catch {}
+    if (tooBig(body)) { st(TOO_BIG, false); return false; }
     const queued = await offPut({ name, kind, body, baseRev: jobWait || replaying ? 0 : rev || 0,
-      isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(),
+      isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(), ...qStamp(),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
     const job = saveStalled();
@@ -360,14 +373,42 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return job ? 'job' : true;
   }
   const under = (name, p) => name === p || name.startsWith(p + '/');
+  function rwRoot(hay, from, to) {
+    let out = '', bef = null;
+    for (;;) {
+      const i = hay.indexOf(from);
+      if (i < 0) return out + hay;
+      const pre = hay.slice(0, i), aft = hay.slice(i + from.length);
+      const bnd = !aft || aft[0] <= ' ' || '/)([]",'.includes(aft[0]);
+      const pc = pre ? pre[pre.length - 1] : bef;
+      const seg = pre + (bnd && (pc === null || pc <= ' ' || '([",'.includes(pc)) ? to : from);
+      out += seg;
+      if (seg) bef = seg[seg.length - 1];
+      hay = aft;
+    }
+  }
+  function rwWiki(hay, from, to) {
+    const ndl = '[[' + from;
+    let out = '';
+    for (;;) {
+      const i = hay.indexOf(ndl);
+      if (i < 0) return out + hay;
+      const nx = hay[i + ndl.length];
+      out += hay.slice(0, i) + (nx === undefined || ']/|'.includes(nx) ? '[[' + to : ndl);
+      hay = hay.slice(i + ndl.length);
+    }
+  }
+  const moveBody = (b, from, to) => (from ? rwWiki(rwRoot(b, '/' + from, '/' + to), from, to) : b);
   async function enqueueOp(rec) {
+    const stamp = qStamp();
     if (rec.op !== 'mkdir') {
       for (const q of await offAll()) {
         if (q.kind === 'know') continue;
         if (rec.op === 'del' && under(q.name, rec.name)) await offDel(q.name);
         if (rec.op === 'move' && under(q.name, rec.from)) {
           await offDel(q.name);
-          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 0 });
+          await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 0,
+            body: moveBody(q.body || '', rec.from, rec.to), via: stamp.id, from: q.name });
         }
       }
       for (const k of [...pageCache.keys()])
@@ -378,14 +419,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           localStorage.removeItem('appPage');
       } catch {}
     }
-    await opPut({ ...rec, queuedAt: Date.now() });
+    await opPut({ ...rec, queuedAt: Date.now(), ...stamp });
     setDegraded(true);
     st(({ del: 'deleted', mkdir: 'folder created' }[rec.op] || 'moved')
       + ' offline — ' + offCount + ' waiting to sync');
   }
 
   async function enqueueKnow(key, body) {
-    const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now() });
+    const queued = await offPut({ name: 'know:' + key, kind: 'know', body, queuedAt: Date.now(), ...qStamp() });
     const job = saveStalled();
     if (!queued) {
       st(NOT_SAVED, false);
@@ -408,12 +449,132 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     srcFlight.clear();    // replayed writes: no open read from before is shared
     sensForget();         // and a replayed move or delete culls flags
     offKept = false;
-    try { await drainQueue(proven); } finally { replaying = false; }
+    const drain = () => drainQueue(proven);
+    try {
+      if (navigator.locks) await navigator.locks.request('lat-drain', { ifAvailable: true }, (l) => (l ? drain() : null));
+      else await drain();
+    } finally { replaying = false; }
     if (offKept && !degraded) setTimeout(() => replayQueue(true), 0);
   }
 
 
-  async function drainOps(ops) {
+  const cfEnc = (n) => n.replace(/~/g, '~~').replace(/-/g, '~d').replace(/\//g, '-');
+  const keptName = (tag, name) => {
+    const d = new Date(), p = (n) => String(n).padStart(2, '0');
+    return 'conflicts/' + tag + '-' + cfEnc(name) + '-' + d.getFullYear() + p(d.getMonth() + 1)
+      + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+  };
+  const keepAside = async (q, base) => {
+    for (let i = 1; i < 30; i++) {
+      const alt = base + (i > 1 ? '-' + i : '');
+      let r = null;
+      try {
+        r = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) + '&type='
+          + (q.kind === 'know' ? 'md' : q.kind) + '&new=1', { method: 'POST', body: q.body || '\n' }, 20000);
+      } catch {}
+      if (r && r.ok) return alt;
+      if (shipGone(r)) return false;
+      if (r.status !== 409) return null;
+    }
+    return null;
+  };
+  const RECOVER = 'recover:';
+  const recoverPut = async (q, why) => {
+    const s = await idbStore('kv', 'readwrite');
+    if (!s) return false;
+    try {
+      return await offOk(s.put({ k: RECOVER + (q.id || q.name + '@' + q.queuedAt),
+        v: { name: q.name, kind: q.kind, body: q.body || '', why, at: Date.now() } }));
+    } catch { return false; }
+  };
+  const recoverAll = async () => {
+    const s = await idbStore('kv', 'readonly');
+    const all = (s && await offReq(s.getAll())) || [];
+    return all.filter((r) => typeof r.k === 'string' && r.k.startsWith(RECOVER));
+  };
+  async function keepSafe(q, why, tag, conflicts) {
+    if (why !== 413 && !tooBig(q.body)) {
+      const alt = await keepAside(q, keptName('offline-' + tag, q.name));
+      if (alt === false) return false;
+      if (alt) {
+        conflicts.push(alt);
+        st('offline ' + tag + ' refused (' + why + '): ' + q.name + ', your version is kept at ' + alt, false);
+        return true;
+      }
+    }
+    if (!await recoverPut(q, why)) return false;
+    st('offline ' + tag + ' of ' + q.name + ' could not be sent (' + (why === 413 ? 'too large' : why)
+      + '). It is kept on this device, in the bar above the editor', false);
+    stuckRender();
+    return true;
+  }
+  const stuckTries = new Map();     // record id -> 5xx answers this session
+  const stuckRec = new Map();       // record id -> the record, once stuck
+  const recId = (q) => (q.op && q._k !== undefined ? 'op' + q._k : q.id || q.name + '@' + q.queuedAt);
+  const isStuck = (q) => stuckRec.has(recId(q));
+  function failTry(q) {
+    const k = recId(q), n = (stuckTries.get(k) || 0) + 1;
+    stuckTries.set(k, n);
+    if (n < 3) return false;
+    stuckRec.set(k, q);
+    stuckRender();
+    return true;
+  }
+  const stuckBar = document.createElement('div');
+  stuckBar.className = 'lnkcf';
+  stuckBar.id = 'qstuck';
+  stuckBar.hidden = true;
+  stuckBar.setAttribute('role', 'alert');
+  const stuckRow = (text, btns) => {
+    const row = document.createElement('div');
+    row.textContent = text;
+    for (const [label, fn] of btns) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.onclick = fn;
+      row.append(' ', b);
+    }
+    stuckBar.append(row);
+  };
+  async function stuckRender() {
+    const d = $('docarea');
+    if (d && !stuckBar.isConnected) d.before(stuckBar);
+    const recs = await recoverAll();
+    stuckBar.textContent = '';
+    for (const [k, q] of stuckRec) {
+      stuckRow('stuck in the queue: ' + (q.op ? q.op + ' ' + (q.name || q.from) : 'save of ' + q.name), [
+        ['Retry', () => { stuckRec.delete(k); stuckTries.delete(k); stuckRender(); replayQueue(true); }],
+        ['Clear', async () => {
+          if (!q.op && !await recoverPut(q, 'cleared')) { st('could not keep a copy, so nothing was cleared', false); return; }
+          if (q.op) await opDel(q._k); else await offDone(q);
+          stuckRec.delete(k);
+          stuckRender();
+        }]]);
+    }
+    for (const r of recs) {
+      stuckRow('kept on this device, not on the ship: ' + r.v.name + ' (' + r.v.why + ')', [
+        ['Download', () => {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(new Blob([r.v.body], { type: 'text/plain' }));
+          a.download = r.v.name.replace(/[/:]/g, '-') + '.' + (r.v.kind === 'know' ? 'md' : r.v.kind || 'txt');
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        }],
+        ['Discard', async () => {
+          if (!(await askDanger('Discard the kept copy of ' + r.v.name + '? It is not on the ship.', 'discard'))) return;
+          const s = await idbStore('kv', 'readwrite');
+          if (s) await offReq(s.delete(r.k));
+          stuckRender();
+        }]]);
+    }
+    stuckBar.hidden = !stuckBar.childNodes.length;
+  }
+  setTimeout(stuckRender, 0);
+  const verdict = (q, r) => (r && r.ok ? 'ok' : replayDrop(r) ? 'refused'
+    : r && !shipGone(r) && r.status >= 500 && failTry(q) ? 'skip' : 'stop');
+
+  async function drainOps(ops, saves, conflicts) {
     for (const o of ops) {
       if (o.op !== 'del' && o.op !== 'move' && o.op !== 'mkdir') { await opDel(o._k); continue; }
       const u = o.op === 'del'
@@ -424,10 +585,16 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
             '&to=' + encodeURIComponent(o.to);
       let r = null;
       try { r = await tfetch(u, { method: 'POST' }, 30000); } catch {}
-      if (!(r && r.ok) && !replayDrop(r)) return false;
-      if (!(r && r.ok)) {
-        st('offline ' + o.op + ' no longer applies: ' +
-          (o.name || o.from) + ' (skipped)', false);
+      const v = verdict(o, r);
+      if (v === 'skip') continue;
+      if (v === 'stop') return false;
+      if (v === 'refused') {
+        st('offline ' + o.op + ' no longer applies: ' + (o.name || o.from) + ' (skipped)', false);
+        for (const q of saves) {
+          if (!o.id || q.via !== o.id) continue;
+          if (!await keepSafe({ ...q, name: q.from || q.name }, r.status, 'edit', conflicts)) return false;
+          await offDone(q);
+        }
       } else {
         bustPages(o.name || o.from);
         if (o.to) bustPages(o.to);
@@ -440,14 +607,18 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   async function drainCreates(creates, conflicts) {
     for (const q of creates) {
       let one = null;
-      try {
-        one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
-          '&type=' + q.kind + '&new=1' + dnameQ(q),
-          { method: 'POST', body: q.body || '\n' }, 20000);
-      } catch {}
-      if (one && one.ok) { await offDone(q); continue; }
-      if (!replayDrop(one)) return false;
-      if (one && one.status === 409) {
+      if (tooBig(q.body)) one = { status: 413 };
+      else {
+        try {
+          one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
+            '&type=' + q.kind + '&new=1' + dnameQ(q),
+            { method: 'POST', body: q.body || '\n' }, 20000);
+        } catch {}
+      }
+      const v = verdict(q, one);
+      if (v === 'skip') continue;
+      if (v === 'stop') return false;
+      if (v === 'refused' && one.status === 409) {
         try {
           const sr = await tfetch(api + '/page-source?name=' +
             encodeURIComponent(q.name), {}, 20000);
@@ -456,38 +627,35 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
             continue;
           }
         } catch {}
-        const alt = 'conflicts/offline-create-' + q.name.replace(/\//g, '-');
-        if (!await keepAside(q, alt)) return false;
-        conflicts.push(alt);
-        await offDone(q);
-        st('offline create collided: ' + q.name + ' exists on the ship — your ' +
-          'version is kept at ' + alt, false);
-        continue;
       }
-      st('dropped an unsyncable offline create: ' + q.name, false);
+      if (v === 'refused' && !await keepSafe(q, one.status, 'create', conflicts)) return false;
       await offDone(q);
     }
     return true;
   }
 
-  const keepAside = async (q, alt) => {
-    try {
-      const r = await tfetch(api + '/page-save?name=' + encodeURIComponent(alt) +
-        '&type=' + q.kind, { method: 'POST', body: q.body || '\n' }, 20000);
-      return !!(r && r.ok);
-    } catch { return false; }
-  };
+  const BATCH_MAX = 4 * 1024 * 1024;
   async function drainEdits(edits, conflicts) {
-    for (let i = 0; i < edits.length; i += 50) {
-      const part = edits.slice(i, i + 50);
+    const parts = [];
+    let cur = [], bytes = 0;
+    for (const q of edits) {
+      const b = bodyBytes(q.body);
+      if (cur.length && (cur.length >= 50 || bytes + b > BATCH_MAX)) { parts.push(cur); cur = []; bytes = 0; }
+      cur.push(q);
+      bytes += b;
+    }
+    if (cur.length) parts.push(cur);
+    for (const part of parts) {
       let r = null;
-      try {
-        r = await tfetch(api + '/page-save-batch?report=1', {
-          method: 'POST',
-          body: JSON.stringify(part.map((q) =>
-            ({ name: q.name, type: q.kind, body: q.body || '\n', base: q.baseRev || 0 }))),
-        }, 120000);
-      } catch {}
+      if (part.length > 1 || !tooBig(part[0].body)) {
+        try {
+          r = await tfetch(api + '/page-save-batch?report=1', {
+            method: 'POST',
+            body: JSON.stringify(part.map((q) =>
+              ({ name: q.name, type: q.kind, body: q.body || '\n', base: q.baseRev || 0 }))),
+          }, 120000);
+        } catch {}
+      } else r = { status: 413 };
       if (r && r.ok) {
         try {
           for (const it of ((await r.json()).items || []))
@@ -496,70 +664,73 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         for (const q of part) await offDone(q);
         continue;
       }
-      if (r && !shipGone(r) && (r.status >= 500 || replayDrop(r))) {
-        for (const q of part) {
-          let one = null;
+      if (!(r && !shipGone(r) && (r.status >= 500 || replayDrop(r)))) return false;
+      for (const q of part) {
+        let one = null;
+        if (tooBig(q.body)) one = { status: 413 };
+        else {
           try {
             one = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) +
-              '&type=' + q.kind + '&base=' + (q.baseRev || 0),
+              '&type=' + q.kind + '&base=' + (q.baseRev || 0) + '&by=' + (q.win || winId),
               { method: 'POST', body: q.body || '\n' }, 20000);
           } catch {}
-          if (one && one.ok) {
-            try {
-              const j = await one.json();
-              if (j.conflicted) conflicts.push(j.kept || q.name);
-            } catch {}
-            await offDone(q);
-            continue;
-          }
-          if (!replayDrop(one)) return false;
-          if (one && one.status === 409) {
-            const alt = 'conflicts/offline-edit-' + q.name.replace(/\//g, '-');
-            if (!await keepAside(q, alt)) return false;
-            conflicts.push(alt);
-            await offDone(q);
-            st('offline edit refused: ' + q.name + ', your version is kept at ' + alt, false);
-            continue;
-          }
-          st('dropped an unsyncable offline edit: ' + q.name, false);
-          await offDone(q);
         }
-        continue;
+        const v = verdict(q, one);
+        if (v === 'skip') continue;
+        if (v === 'stop') return false;
+        if (v === 'ok') {
+          try {
+            const j = await one.json();
+            if (j.conflicted) conflicts.push(j.kept || q.name);
+          } catch {}
+        } else if (!await keepSafe(q, one.status, 'edit', conflicts)) return false;
+        await offDone(q);
       }
-      return false;
     }
     return true;
   }
 
-  async function drainKnows(knows) {
+  async function drainKnows(knows, conflicts) {
     for (const q of knows) {
       let one = null;
-      try {
-        one = await tfetch(api + '/know-save?key=' + encodeURIComponent(q.name.slice(5)),
-          { method: 'POST', body: q.body || '\n' }, 20000);
-      } catch {}
-      if (one && one.ok) { await offDone(q); continue; }
-      if (!replayDrop(one)) return false;
-      st('dropped an unsyncable offline edit: ' + q.name, false);
+      if (tooBig(q.body)) one = { status: 413 };
+      else {
+        try {
+          one = await tfetch(api + '/know-save?key=' + encodeURIComponent(q.name.slice(5)),
+            { method: 'POST', body: q.body || '\n' }, 20000);
+        } catch {}
+      }
+      const v = verdict(q, one);
+      if (v === 'skip') continue;
+      if (v === 'stop') return false;
+      if (v === 'refused' && !await keepSafe(q, one.status, 'memory', conflicts)) return false;
       await offDone(q);
     }
     return true;
   }
 
   async function drainQueue(proven) {
-    const whole = await offAll();
-    const ops = await opAll();
-    if (!whole.length && !ops.length) return;
+    const ops = (await opAll()).filter((o) => !isStuck(o));
+    const first = (await offAll()).filter((q) => !isStuck(q));
+    if (!first.length && !ops.length) return;
     if (proven && degraded) { degraded = false; renderOffline(); }
-    const all = whole.filter((q) => q.kind !== 'know');
-    const knows = whole.filter((q) => q.kind === 'know');
-    const total = whole.length + ops.length;
+    const total = first.length + ops.length;
     stWork('syncing ' + total + ' offline edit' + (total === 1 ? '' : 's') + '…');
     const conflicts = [];
-    const landed = await drainOps(ops)
-      && await drainCreates(all.filter((q) => q.isNew), conflicts)
-      && await drainEdits(all.filter((q) => !q.isNew), conflicts)
-      && await drainKnows(knows);
+    let knows = [];
+    const saves = async () => {
+      const wait = new Set((await opAll()).map((o) => o.id).filter(Boolean));
+      return (await offAll()).filter((q) => !isStuck(q) && !(q.via && wait.has(q.via)));
+    };
+    const landed = await drainOps(ops, first, conflicts)
+      && await (async () => {
+        const whole = await saves();
+        const all = whole.filter((q) => q.kind !== 'know');
+        knows = whole.filter((q) => q.kind === 'know');
+        return await drainCreates(all.filter((q) => q.isNew), conflicts)
+          && await drainEdits(all.filter((q) => !q.isNew), conflicts)
+          && await drainKnows(knows, conflicts);
+      })();
     if (!landed) {
       setDegraded(true);
       st(offCount + ' offline edit' + (offCount === 1 ? '' : 's') + ' still waiting', false);
@@ -1239,12 +1410,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
   function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
     current = name;
+    if (name === null) curRev = 0;   // a new buffer claims no page's rev
     pname.value = shown === undefined ? (name || '') : shown;
     pname.readOnly = readOnly;
     if (kind && [...pkind.options].some((o) => o.value === kind)) pkind.value = kind;
     if (url) history.replaceState(null, '', url);
     pname.dispatchEvent(new Event('input'));
     tabFollow();
+    editLock(mode !== 'know' && !grubPath ? name : null);   // 36-editlock.js
   }
   let viewingRev = null;   // non-null: a read-only historical revision is shown
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
@@ -1504,6 +1677,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         const n = nodes.find((x) => x.page && x.path === t.key);
         applyPage(t.key, { body: s.body, kind: s.kind || s.pkind, rev: s.rev,
           share: (n && n.share) || 'private' }, true);
+        if (!s.hist) { curRev = s.rev || 0; if (!s.dirty) shipText.set(t.key, s.body); }
         if (!CONTENT()) refreshPreview();
       },
       park: parkDoc,
@@ -2961,7 +3135,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const hasPage = (k) => nodes.some((n) => n.page && n.path === k);
   function briefKey(d) {
     const forms = briefForms(d);
-    return forms.find(hasPage) || forms[1];
+    return forms.find(hasPage) || forms[0];
   }
   async function openBrief(ev) {
     const d = new Date();
@@ -5971,6 +6145,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (hit) {
       const local = ['md', 'gmi', 'html', 'text'].includes(hit.kind);
       applyPage(name, local ? { ...hit, html: undefined } : hit, local);
+      curRev = hit.rev || 0;
+      shipText.set(name, hit.body);
       snapPage(name, hit);
       return true;
     }
@@ -6000,6 +6176,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   async function openReadRun(name, my, node, painted, bodyShown) {
     if (painted) {
       applyPage(name, node, true);
+      freshPending.set(name, { body: node.body, at: Date.now() });
       snapPage(name, node);
     }
     let fromUrl = null;
@@ -6013,6 +6190,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           srcRead(name).catch(() => {});
           painted = true;
           applyPage(name, b, true);
+          curRev = b.rev || 0;           // a fresh read: its rev may be claimed
+          shipText.set(name, b.body);
           snapPage(name, b);
           bodyShown(b.kind || node.kind);
         }
@@ -6061,6 +6240,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (d.link) { linkSeen(name, true); linkStale.delete(name); linkCf.delete(name); }
     if (painted && src.value !== shown) {
       if (current === name && typeof d.comments === 'boolean') cmtShow(name, d.comments);
+      reconcileFresh(name, shown, d);
       return true;
     }
     if (!d.link) pageCache.set(name, d);
@@ -6084,7 +6264,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     setOpen(name, { readOnly: true, kind: d.kind,
       url: '/apps/lattice/app?name=' + encodeURIComponent(name) });
     curKind = d.kind;
-    curRev = d.rev || 0;
+    curRev = quiet ? 0 : d.rev || 0;
+    if (quiet) shipText.delete(name); else { shipText.set(name, d.body); freshPending.delete(name); }
     refreshTexButton();
     src.value = d.body;
     dirty = false;
@@ -6094,6 +6275,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     st(d.kind + ' · rev ' + d.rev);
     exitRev();
     src.readOnly = linkRO(name);
+    paintLock();         // and read-only while another window edits it
+    paintCas();
     resetPanels();
     showShare(d.share || 'private');
     cmtShow(name, d.comments);
@@ -6200,6 +6383,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     { create: !!create || keep });
   };
   const patchLocal = (name, kind, sent, rev) => {
+    sent = sent || '\n';
+    shipText.set(name, sent);
+    try {
+      const sp = JSON.parse(localStorage.appPage || 'null');
+      if (sp && sp.name === name && rev) snapPage(name, { ...sp, body: sent, rev, html: undefined });
+    } catch {}
     const c = pageCache.get(name);
     const k = kind || (c && c.kind);
     if (c && rev && ['md', 'gmi', 'html', 'text', 'tex'].includes(k)) {
@@ -6288,13 +6477,20 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }
       flushPending();
     };
+    if (!fixed && editLocked()) { saving = false; st(LOCK_NOTE, false); return failed(); }
+    if (tooBig(sent)) { saving = false; st(TOO_BIG, false); return failed(); }
+    const base = creating ? 0 : baseFor(name, curRev);
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
-      '&type=' + kind + (creating ? '&new=1' : '') + dnameQ(rnc) + (creating ? '' : linkBase(name));
+      '&type=' + kind + (creating ? '&new=1&by=' + winId : casQ(name, base)) + dnameQ(rnc)
+      + (creating ? '' : linkBase(name));
     let w = { gone: true };
-    const sentAt = Date.now();
+    const sentSeq = offSeq();
+    casHold.delete(name);       // a save on purpose tries again
+    paintCas();
     try {
       if (!(jobWait && !creating && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+      await takeRev(name, w);
     } finally { saving = false; }
     const r = w.r;
     if (await linkSaveFail(name, w)) return failed();
@@ -6312,6 +6508,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         current = name;
         tabFollow();         // a new page's tab is named now (21-tabs.js)
         curKind = kind;
+        if (creating) curRev = 0;
         pname.readOnly = true;
         if (src.value === sent) dirty = false;
         else if (!savePending) savePending = true;
@@ -6324,6 +6521,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     if (r && r.status === 409) {
       const why = await errText(r);
+      if (!creating && /^: stale/.test(why)) {
+        await settleStale(name, kind, sent, base,
+          () => !fixed && pageHere() && current === name);
+        flushPending();
+        return;
+      }
       st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
       return failed();
     }
@@ -6332,7 +6535,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     try { vr = await r.json(); } catch {}
     if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent, vr && vr.rev);
-    await dropQueued(name, sentAt);
+    await dropQueued(name, sentSeq);
     const stillHere = fixed ? tabAdopt(fixed, name)
       : pageHere() && (current === name || createdHere(creating, name));
     if (!stillHere) tabLanded('page', name, sent, vr && vr.rev);
@@ -6343,7 +6546,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       pname.readOnly = true;
       if (src.value === sent) dirty = false;
       else if (!savePending) savePending = true;   // flushPending below saves it
-      if (vr && vr.rev) curRev = vr.rev;
+      if (vr && typeof vr.rev === 'number' && (vr.rev || creating)) curRev = vr.rev;
       if (linkCf.delete(name)) paintLinkCf(name);   // a retried link save landed
       if (vr && vr.conflicted) {
         st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
@@ -6355,6 +6558,143 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     flushPending();
     if (offCount) replayQueue(true);     // back online: drain the backlog
+  }
+
+  const pageRevs = new Map();
+  const knowRev = (name, rev) => { if (rev && rev > (pageRevs.get(name) || 0)) pageRevs.set(name, rev); };
+  const baseFor = (name, rev) => Math.max(rev || 0, pageRevs.get(name) || 0);
+  const casQ = (name, rev) => {
+    const b = baseFor(name, rev);
+    return linkOf(name) ? '' : '&by=' + winId + (b ? '&base=' + b + '&cas=1' : '');
+  };
+  const takeRev = async (name, w) => {
+    if (!w || !w.r || !w.r.ok) return;
+    try { const j = await w.r.clone().json(); knowRev(name, j && j.rev); } catch {}
+  };
+  const casHold = new Map();
+  const casBar = document.createElement('div');
+  casBar.id = 'casbar';
+  casBar.className = 'lnkcf';
+  casBar.hidden = true;
+  casBar.setAttribute('role', 'alert');
+  casBar.innerHTML = '<span>This page changed elsewhere. Your text here is not saved on it.</span> '
+    + '<button type="button" id="castheirs">Show theirs</button> '
+    + '<button type="button" id="casmine">Save mine over theirs</button>';
+  function paintCas() {
+    const d = $('docarea');
+    if (d && !casBar.isConnected) d.before(casBar);
+    casBar.hidden = !(current && mode !== 'know' && casHold.has(current));
+  }
+  casBar.querySelector('#castheirs').onclick = async () => {
+    const name = current;
+    casHold.delete(name);
+    dirty = false;
+    paintCas();
+    await openPage(name);
+  };
+  casBar.querySelector('#casmine').onclick = () => {
+    const name = current;
+    if (!casHold.has(name)) return;
+    curRev = casHold.get(name);
+    casHold.delete(name);
+    paintCas();
+    save();
+  };
+  const shipText = new Map();
+  const freshPending = new Map();
+  function reconcileFresh(name, painted, d) {
+    freshPending.delete(name);
+    if (!d || typeof d.body !== 'string' || typeof painted !== 'string') return;
+    if (current !== name || mode === 'know' || grubPath) return;
+    curRev = d.rev || 0;
+    shipText.set(name, d.body);
+    if (d.body === (painted || '\n')) return;   // an empty paint is the ship's one newline
+    if (src.value === painted) {
+      if (!dirty) { src.value = d.body; render(); refreshPreview(); }
+      return;
+    }
+    const mb = merge3(painted, src.value, d.body);
+    if (typeof mb === 'string') {
+      src.value = mb;
+      dirty = true;
+      render();
+      st('merged with a change made elsewhere');
+      return;
+    }
+    const kind = curKind || pkind.value, mine = src.value;
+    casHold.set(name, d.rev || 0);
+    paintCas();
+    keepAside({ name, kind, body: mine }, keptName('mine', name)).then((alt) => {
+      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
+      st(name + ' changed elsewhere, so your text was not saved over it. '
+        + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
+    });
+  }
+  function merge3(b, o, t) {
+    if (o === b || t === o) return t;
+    if (t === b) return o;
+    const span = (x) => {
+      const n = Math.min(b.length, x.length);
+      let p = 0, q = 0;
+      while (p < n && b[p] === x[p]) p++;
+      while (q < n - p && b[b.length - 1 - q] === x[x.length - 1 - q]) q++;
+      return { p, e: b.length - q, txt: x.slice(p, x.length - q) };
+    };
+    let [a, c] = [span(o), span(t)];
+    if (c.p < a.p) [a, c] = [c, a];
+    if (a.e >= c.p) return null;
+    return b.slice(0, a.p) + a.txt + b.slice(a.e, c.p) + c.txt + b.slice(c.e);
+  }
+  async function settleStale(name, kind, sent, base, here) {
+    const th = await bodyRead(name);
+    pageRevs.delete(name);
+    let res = null;
+    if (th && th.body === (sent || '\n')) { knowRev(name, th.rev); res = { rev: th.rev, body: sent, how: 'saved' }; }
+    if (th && !res && base) {
+      let mb = null;
+      let bt = shipText.get(name);
+      if (typeof bt !== 'string') {
+        try {
+          const r = await fetch(api + '/page-source-at?name=' + encodeURIComponent(name) + '&rev=' + base);
+          if (r.ok) bt = (await r.json()).body;
+        } catch {}
+      }
+      if (typeof bt === 'string') mb = merge3(bt, sent, th.body);
+      if (typeof mb === 'string') {
+        const r = await fetch(api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
+          + casQ(name, th.rev), { method: 'POST', body: mb || '\n' }).catch(() => null);
+        let j = null;
+        if (r && r.ok) { try { j = await r.json(); } catch {} }
+        if (j && j.rev) {
+          knowRev(name, j.rev);
+          res = { rev: j.rev, body: mb, how: bt === th.body ? 'saved' : 'saved, merged with a change made elsewhere' };
+        }
+      }
+    }
+    let alt = null;
+    if (th && !res) {
+      alt = await keepAside({ name, kind, body: sent }, keptName('mine', name));
+      if (alt) { addTreeNode(alt, kind, false); snapTree(); renderTree(); renderConfBadge(); }
+    }
+    if (!res) {
+      casHold.set(name, th ? th.rev : 0);
+      st(name + ' changed elsewhere, so your text was not saved over it. '
+        + (alt ? 'A copy is kept at ' + alt : 'Copy your text somewhere safe'), false);
+      if (here()) { cerr.textContent = 'NOT saved'; cerr.className = 'err'; }
+      paintCas();
+      return;
+    }
+    patchLocal(name, null, res.body, res.rev);
+    for (const t of allTabs())
+      if (t.kind === 'page' && t.key === name && t.snap && t.snap.body === sent)
+        Object.assign(t.snap, { body: res.body, rev: res.rev, dirty: false });
+    if (here() && src.value === sent) {
+      if (res.body !== sent) { src.value = res.body; render(); refreshPreview(); }
+      curRev = res.rev;
+      dirty = false;
+      cerr.textContent = 'saved'; cerr.className = 'ok';
+    }
+    st(res.how, res.how === 'saved');
   }
 
   let autoTimer = null;
@@ -6369,11 +6709,16 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     writerSync();
     if (!current || curFolder || !dirty || viewingRev !== null) return;
     if (moving) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 1000); return; }
+    const fp = mode !== 'know' && freshPending.get(current);
+    if (fp && Date.now() - fp.at < 15000) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 500); return; }
+    if (fp) freshPending.delete(current);
     if (mode !== 'know' && linkCf.has(current) && linkOf(current)) {
       st('not saved: ' + linkOf(current).host + ' changed this page since you opened it', false);
       return;
     }
     if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
+    if (mode !== 'know' && (editLocked() || casHold.has(current))) return;
+    if (tooBig(src.value)) { st(TOO_BIG, false); return; }
     if (saving) { if (!savePending) savePending = true; return; }
     saving = true;
     const target = current;
@@ -6385,12 +6730,13 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const url = know
       ? api + '/know-save?key=' + encodeURIComponent(target)
       : api + '/page-save?name=' + encodeURIComponent(target) +
-        '&type=' + tkind + linkBase(target);
+        '&type=' + tkind + linkBase(target) + casQ(target, trev);
     let w = { gone: true };
-    const sentAt = Date.now();
+    const sentSeq = offSeq();
     try {
       if (!(jobWait && !know && !linkOf(target)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+      if (!know) await takeRev(target, w);
     } finally { saving = false; }
     const r = w.r;
     if (!know && await linkSaveFail(target, w)) { flushPending(); return; }
@@ -6405,10 +6751,17 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       flushPending();
       return;
     }
+    if (!know && r.status === 409) {
+      const why = await errText(r);
+      if (/^: stale/.test(why)) await settleStale(target, tkind, sent, baseFor(target, trev), here);
+      else st('autosave failed' + why, false);
+      flushPending();
+      return;
+    }
     if (!r.ok) { st('autosave failed' + await errText(r), false); flushPending(); return; }
     let vr = null;
     if (!know) { try { vr = await r.json(); } catch {} }
-    if (!know) { patchLocal(target, null, sent, vr && vr.rev); await dropQueued(target, sentAt); }
+    if (!know) { patchLocal(target, null, sent, vr && vr.rev); await dropQueued(target, sentSeq); }
     if (!here()) tabLanded(tk, target, sent, vr && vr.rev);
     if (here()) {
       if (src.value === sent) dirty = false;   // typed during the request? stay dirty
@@ -6439,14 +6792,16 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const name = t.key;
     const sent = s.body;
     const kind = s.kind || s.pkind;
+    if (!know && (casHold.has(name) || tooBig(sent))) return;
     const url = know ? api + '/know-save?key=' + encodeURIComponent(name)
       : api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind
-        + (linkOf(name) && s.rev ? '&base=' + s.rev : '');
+        + (linkOf(name) && s.rev ? '&base=' + s.rev : '') + casQ(name, s.rev);
     let w = { gone: true };
-    const sentAt = Date.now();
+    const sentSeq = offSeq();
     try {
       if (!(jobWait && !know && !linkOf(name)))
         w = await shipWrite(url, { method: 'POST', body: sent || '\n' }, { save: true });
+      if (!know) await takeRev(name, w);
     } finally { saving = false; }
     const landed = (rev) => {
       tabLanded(t.kind, name, sent, rev);
@@ -6462,6 +6817,15 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       flushPending();
       return;
     }
+    if (!know && w.r.status === 409) {
+      const why = await errText(w.r);
+      if (/^: stale/.test(why)) {
+        await settleStale(name, kind, sent, baseFor(name, s.rev),
+          () => t === activeTab && current === name && mode !== 'know' && !grubPath);
+      } else st('autosave of ' + name + ' failed' + why, false);
+      flushPending();
+      return;
+    }
     if (!w.r.ok) {
       st('autosave of ' + name + ' failed' + await errText(w.r), false);
       flushPending();
@@ -6471,7 +6835,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!know) {
       try { vr = await w.r.json(); } catch {}
       patchLocal(name, null, sent, vr && vr.rev);
-      await dropQueued(name, sentAt);
+      await dropQueued(name, sentSeq);
     }
     else knowGen++;
     landed(vr && vr.rev);
@@ -6545,6 +6909,82 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
   $('lnkcfre').onclick = linkReload;
   $('lnkcfkeep').onclick = linkKeepMine;
+
+// ── src/36-editlock.js ────────────────────────────────────────────────────
+  const lockCh = typeof BroadcastChannel === 'function' ? new BroadcastChannel('lat-edit') : null;
+  let lockName = null;     // the page this window holds, or waits for
+  let lockHeld = false;
+  let lockFree = null;     // lets go of the held lock
+  let lockWait = null;     // stops the wait for it
+  let lockBusy = false;    // known to be held by another window
+  const editLocked = () => !!navigator.locks && lockBusy && !!lockName && current === lockName
+    && !lockHeld && mode !== 'know' && !grubPath;
+  const LOCK_NOTE = 'This page is open for editing in another window, so it is read-only here.';
+  const lockBar = document.createElement('div');
+  lockBar.id = 'lockbar';
+  lockBar.className = 'lnkcf';
+  lockBar.hidden = true;
+  lockBar.setAttribute('role', 'status');
+  lockBar.innerHTML = '<span></span> <button type="button" id="locktake">Edit here instead</button>';
+  lockBar.firstChild.textContent = LOCK_NOTE;
+  function paintLock() {
+    const d = $('docarea');
+    if (d && !lockBar.isConnected) d.before(lockBar);
+    const ro = editLocked();
+    lockBar.hidden = !ro;
+    if (ro) src.readOnly = true;
+    else if (lockName && current === lockName && viewingRev === null) src.readOnly = linkRO(current);
+  }
+  function letGo() {
+    if (lockWait) { lockWait.abort(); lockWait = null; }
+    if (lockFree) { lockFree(); lockFree = null; }
+    lockHeld = false;
+    lockBusy = false;
+  }
+  function hold(name, late) {
+    lockHeld = true;
+    lockBusy = false;
+    paintLock();
+    if (late && current === name && mode !== 'know' && !grubPath) openPage(name);
+    return new Promise((res) => { lockFree = res; });
+  }
+  function editLock(name) {
+    if (!navigator.locks) return;
+    if (name === lockName) return paintLock();
+    letGo();
+    lockName = name;
+    paintLock();
+    if (!name) return;
+    const ac = new AbortController();
+    lockWait = ac;
+    navigator.locks.request('lat-edit:' + name, { ifAvailable: true }, (l) => {
+      if (lockName !== name || ac.signal.aborted) return null;
+      if (l) return hold(name);
+      const grace = setTimeout(() => {
+        if (lockName !== name || lockHeld || ac.signal.aborted) return;
+        lockBusy = true;
+        paintLock();
+      }, 2000);
+      navigator.locks.request('lat-edit:' + name, { signal: ac.signal }, () => {
+        clearTimeout(grace);
+        return lockName === name ? hold(name, lockBusy) : null;
+      }).catch(() => clearTimeout(grace));
+      return null;
+    }).catch(() => {});
+  }
+  lockBar.querySelector('button').onclick = () => lockCh && lockName && lockCh.postMessage({ give: lockName });
+  if (lockCh) lockCh.onmessage = async (e) => {
+    const m = e.data || {};
+    if (!m.give || !lockHeld || m.give !== lockName) return;
+    const name = lockName;
+    await flushNoAsk();
+    await savesSettled();
+    if (lockName !== name || !lockHeld) return;
+    letGo();
+    lockName = null;
+    editLock(name);
+    st(name + ' is being edited in another window now, so it is read-only here', false);
+  };
 
 // ── src/40-grub.js ────────────────────────────────────────────────────────
   let grubPath = null;
@@ -6946,6 +7386,18 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const s = mdUnesc(u).trim();
     return /^(https?:\/\/|urb:\/\/|mailto:|#|\/)/i.test(s) ? mdEsc(s) : '';
   };
+  let mdOutside = false, mdBlocked = false;
+  const OUTSIDE = 'latOutside';
+  const outsideOn = (name) => {
+    try { return !!name && JSON.parse(localStorage[OUTSIDE] || '[]').includes(name); } catch { return false; }
+  };
+  const outsideAllow = (name) => {
+    try {
+      const l = JSON.parse(localStorage[OUTSIDE] || '[]').filter((n) => n !== name);
+      localStorage[OUTSIDE] = JSON.stringify([name, ...l].slice(0, 500));
+    } catch {}
+  };
+  const remoteUrl = (u) => /^(https?:)?\/\//i.test(mdUnesc(u).trim());
 
   const CD_RE = /&CD(\d+);/g;
   const mdInline = (t) => {
@@ -6958,6 +7410,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const tags = [];
     const tag = (html) => { tags.push(html); return '&TG' + (tags.length - 1) + ';'; };
     s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (m, alt, u) => {
+      if (remoteUrl(u) && !mdOutside) {
+        mdBlocked = true;
+        return tag('<span class="ximg">[image from another site' + (alt ? ': ' + alt : '') + ']</span>');
+      }
       const h = mdHref(u);
       return h ? tag('<img alt="' + alt + '" src="' + h + '">') : m;
     });
@@ -7058,7 +7514,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         let body = li[4];
         const task = body.match(/^\[([ xX])\]\s+(.*)$/);
         if (task) {
-          body = '<input type="checkbox"' + (tasks ? ' data-line="' + (base + i) + '"' : ' disabled')
+          body = '<input type="checkbox"' + (tasks ? ' data-line="' + (base + i) + '" data-h="' + lineHash(ln) + '"' : ' disabled')
             + (task[1] === ' ' ? '' : ' checked') + '> ' + mdInline(task[2]);
         } else body = mdInline(body);
         out.push('<li>' + body + '</li>');
@@ -7084,6 +7540,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return out.join('\n');
   }
 
+  const lineHash = (ln) => {
+    let t = String(ln).replace(/\r$/, '');
+    while (/^\s*>\s?/.test(t)) t = t.replace(/^\s*>\s?/, '');
+    let h = 0x811c9dc5;
+    for (let k = 0; k < t.length; k++) h = Math.imul(h ^ t.charCodeAt(k), 16777619) >>> 0;
+    return h.toString(36);
+  };
+  const lineAt = (text, n) => String(text).split('\n')[n];
   const TASK_RE = /^((?:[ \t]*>[ \t]?)*[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[)([ xX])\](?=\s)/;
   const TASK_ANY = new RegExp(TASK_RE.source, 'm');
   const hasTask = (text) => typeof text === 'string' && TASK_ANY.test(text);
@@ -7117,7 +7581,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         const raw = sp < 0 ? rest : rest.slice(0, sp);
         const desc = mdEsc((sp < 0 ? rest : rest.slice(sp + 1)).replace(/^\s+/, ''));
         if (raw.startsWith('urb://'))
-          out.push('<p><a href="/apps/lattice?url=' + mdEsc(raw) + '">' + desc + '</a></p>');
+          out.push('<p><a href="/apps/lattice?url=' + mdEsc(encodeURIComponent(raw)) + '">' + desc + '</a></p>');
         else if (/^https?:\/\//.test(raw))
           out.push('<p><a href="' + mdEsc(raw) + '" target="_blank" rel="noopener noreferrer">' + desc + '</a></p>');
         else out.push('<p>' + desc + '</p>');
@@ -7171,9 +7635,34 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const previewScrollbars = () => '<style>html:root{color-scheme:'
     + (document.documentElement.style.colorScheme || 'light dark') + '}html::-webkit-scrollbar{display:none}</style>';
   let fitSeq = 0;
+  const outsideGuard = () => {
+    if (!['md', 'gmi', 'text'].includes(kindNow()) || outsideOn(current)) return '';
+    const o = location.origin;
+    return '<meta http-equiv="Content-Security-Policy" content="img-src data: blob: ' + o
+      + ';media-src data: blob: ' + o + '">'
+      + '<script>addEventListener("securitypolicyviolation",function(){parent.postMessage({latOutside:1},"*")})</script>';
+  };
+  const outBar = document.createElement('div');
+  outBar.id = 'outbar';
+  outBar.className = 'lnkcf';
+  outBar.hidden = true;
+  outBar.innerHTML = '<span>This page has images from other sites. They were not loaded, '
+    + 'because loading them would show those sites your IP address.</span> '
+    + '<button type="button" id="outload">Load outside content for this page</button>';
+  const outShow = (on) => {
+    const w = document.querySelector('.prevwrap');
+    if (w && outBar.parentNode !== w.parentNode) w.before(outBar);
+    outBar.hidden = !on || outsideOn(current);
+  };
+  outBar.querySelector('button').onclick = () => {
+    if (!current) return;
+    outsideAllow(current);
+    outShow(false);
+    refreshPreview();
+  };
   const previewFit = () => {
     if (prev) prev.style.minHeight = '';
-    return previewScrollbars()
+    return outsideGuard() + previewScrollbars()
       + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)})})()</script>';
   };
   const withPreviewScrollbars = (html, ours) => {
@@ -7192,14 +7681,22 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       if (pkind.value === 'html') { prevDoc(withPreviewScrollbars(src.value)); return; }
       if (kindNow() === 'fodt') { writerSync(); prevDoc(withPreviewScrollbars(LatWriter.show(src.value))); return; }
       const tasks = taskLive();
+      mdBlocked = false;
+      mdOutside = outsideOn(current);
       prevDoc(localShell(previewFit()) + localHtml(kindNow(), src.value, tasks) + (tasks ? TASK_JS : ''));
+      outShow(mdBlocked);
     } catch {}
   };
   const taskLive = () => kindNow() === 'md' && !src.readOnly && viewingRev === null && !curFolder;
   const TASK_JS = '<script>addEventListener("click",function(e){var t=e.target;'
-    + 'if(t&&t.matches&&t.matches("input[data-line]"))parent.postMessage({latTask:+t.dataset.line,on:t.checked},"*")})</script>';
-  function taskFlip(line, on) {
+    + 'if(t&&t.matches&&t.matches("input[data-line]"))parent.postMessage({latTask:+t.dataset.line,on:t.checked,h:t.dataset.h},"*")})</script>';
+  function taskFlip(line, on, h) {
     if (!taskLive()) return paintLocal();
+    const now = lineAt(src.value, line);
+    if (typeof h !== 'string' || now === undefined || lineHash(now) !== h) {
+      st('that list changed since it was drawn, so nothing was ticked', false);
+      return paintLocal();
+    }
     const r = taskToggle(src.value, line, on);
     if (!r) return paintLocal();
     const wrap = src.closest('.edwrap'), hid = !!wrap && !src.offsetParent;
@@ -7224,7 +7721,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   window.addEventListener('message', (e) => {
     if (!prev || e.source !== prev.contentWindow) return;
     const m = e.data;
-    if (m && Number.isInteger(m.latTask) && m.latTask >= 0) taskFlip(m.latTask, !!m.on);
+    if (m && m.latOutside) outShow(true);
+    if (m && Number.isInteger(m.latTask) && m.latTask >= 0) taskFlip(m.latTask, !!m.on, m.h);
   });
   const localShell = (fit) => '<!doctype html><meta charset="utf-8"><base target="_top">'
         + '<style>:root{color-scheme:light dark}'
@@ -7255,6 +7753,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     else if (!current) prevBlank();
   });
   async function refreshPreview() {
+    outShow(false);
     if (document.hidden) return;
     if (previewHidden()) return;
     if (CONTENT()) {
@@ -9294,7 +9793,17 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   async function movePage(oldName, newName, rn) {
     const r = await moveReq(oldName, newName, rn);
     if (!r.ok) { st('move failed' + await errText(r), false); return false; }
+    let j = null;
+    if (!r.offline) { try { j = await r.clone().json(); } catch {} }
     remapMoved(oldName, newName, rn);
+    const nd = nodes.find((n) => n.page && n.path === newName);
+    if (nd) { if (j && typeof j.rev === 'number') nd.rev = j.rev; else delete nd.rev; }
+    pageCache.delete(oldName);
+    pageCache.delete(newName);
+    pageRevs.delete(oldName);
+    pageRevs.delete(newName);
+    if (j && j.rev) knowRev(newName, j.rev);
+    if (j && j.rev && mode !== 'know' && !grubPath && current === newName) curRev = j.rev;
     snapTree();
     renderTree();
     return r;
@@ -9318,6 +9827,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       const inside = (p) => !!p && (p === oldPath || p.startsWith(oldPath + '/'));
       const wasOpen = mode !== 'know' && !grubPath && inside(current);
       const moved = remapMoved(oldPath, newPath, rn);
+      for (const n of nodes) if (inside(n.path) || n.path === newPath || n.path.startsWith(newPath + '/')) delete n.rev;
+      for (const k of [...pageCache.keys()]) if (inside(k) || k.startsWith(newPath + '/')) pageCache.delete(k);
+      for (const k of [...pageRevs.keys()]) if (inside(k) || k.startsWith(newPath + '/')) pageRevs.delete(k);
       snapTree();
       renderTree();
       st('moved ' + oldPath + ' \u2192 ' + newPath +
@@ -9337,9 +9849,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     for (const m of html.matchAll(/<a href="([^"]*)"/g)) {
       let t = mdUnesc(m[1]);
       const pg = /^\/apps\/lattice\/app\?name=([^&#]*)$/.exec(t);
-      const urb = /^\/apps\/lattice\?url=(urb:\/\/.*)$/.exec(t);
+      const urb = /^\/apps\/lattice\?url=(urb(?::|%3A).*)$/i.exec(t);
       if (pg) { try { t = decodeURIComponent(pg[1]); } catch { continue; } }
-      else if (urb) t = urb[1];
+      else if (urb) { try { t = decodeURIComponent(urb[1]); } catch { continue; } }
       else if (t.startsWith('#')) continue;      // an anchor in the page itself
       if (t && !out.includes(t)) out.push(t);
     }
@@ -10269,7 +10781,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     if (d.link && linkStale.has(wasCurrent)) { openPage(wasCurrent); return; }
     if (mode !== 'know' && d.kind && d.kind !== curKind) { openPage(wasCurrent); return; }
-    if (mode !== 'know' && d.rev) curRev = d.rev;
+    if (mode !== 'know' && d.rev && d.rev >= curRev) {
+      curRev = d.rev; shipText.set(wasCurrent, d.body); freshPending.delete(wasCurrent);
+    }
     if (d.body === src.value) return;
     if (mode !== 'know') pageCache.delete(wasCurrent);
     const top = src.scrollTop;
@@ -11128,7 +11642,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     try { p = JSON.parse(localStorage.appPage || 'null'); } catch {}
     if (!p || !p.name) return false;
     if (name ? p.name !== name : !fresh) return false;
-    applyPage(p.name, p);
+    applyPage(p.name, p, true);
+    freshPending.set(p.name, { body: p.body, at: Date.now() });
+    bodyRead(p.name).then((d) => reconcileFresh(p.name, p.body, d));
     setFolderCtx(p.name);
     return true;
   }

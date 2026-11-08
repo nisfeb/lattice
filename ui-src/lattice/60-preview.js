@@ -145,9 +145,39 @@
   // srcdoc write goes through this, and the first measurement must be taken
   // with the frame at pane height, not at the previous document's.
   let fitSeq = 0;
+  // A content page's preview loads nothing from another host (an image
+  // there learns your IP address) until "Load outside content" is pressed
+  // for that page: the local paint draws a placeholder (59-md.js), and
+  // this policy holds the ship's render to the same. A refusal is said to
+  // the editor, which shows the button. html pages are their own author's.
+  const outsideGuard = () => {
+    if (!['md', 'gmi', 'text'].includes(kindNow()) || outsideOn(current)) return '';
+    const o = location.origin;
+    return '<meta http-equiv="Content-Security-Policy" content="img-src data: blob: ' + o
+      + ';media-src data: blob: ' + o + '">'
+      + '<script>addEventListener("securitypolicyviolation",function(){parent.postMessage({latOutside:1},"*")})</script>';
+  };
+  const outBar = document.createElement('div');
+  outBar.id = 'outbar';
+  outBar.className = 'lnkcf';
+  outBar.hidden = true;
+  outBar.innerHTML = '<span>This page has images from other sites. They were not loaded, '
+    + 'because loading them would show those sites your IP address.</span> '
+    + '<button type="button" id="outload">Load outside content for this page</button>';
+  const outShow = (on) => {
+    const w = document.querySelector('.prevwrap');
+    if (w && outBar.parentNode !== w.parentNode) w.before(outBar);
+    outBar.hidden = !on || outsideOn(current);
+  };
+  outBar.querySelector('button').onclick = () => {
+    if (!current) return;
+    outsideAllow(current);
+    outShow(false);
+    refreshPreview();
+  };
   const previewFit = () => {
     if (prev) prev.style.minHeight = '';
-    return previewScrollbars()
+    return outsideGuard() + previewScrollbars()
       + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)})})()</script>';
   };
   // `ours`: the document is lattice's own render (the ship's reader css), so
@@ -191,7 +221,10 @@
       // authenticated route the opaque origin has no cookies for; escaping
       // to the top page is what the sandbox token above actually permits.
       const tasks = taskLive();
+      mdBlocked = false;
+      mdOutside = outsideOn(current);
       prevDoc(localShell(previewFit()) + localHtml(kindNow(), src.value, tasks) + (tasks ? TASK_JS : ''));
+      outShow(mdBlocked);
     } catch {}
   };
   // ── task boxes: a click in the preview edits the source ──────────────────
@@ -200,12 +233,20 @@
   const taskLive = () => kindNow() === 'md' && !src.readOnly && viewingRev === null && !curFolder;
   // the frame's origin is opaque: it can only say which line
   const TASK_JS = '<script>addEventListener("click",function(e){var t=e.target;'
-    + 'if(t&&t.matches&&t.matches("input[data-line]"))parent.postMessage({latTask:+t.dataset.line,on:t.checked},"*")})</script>';
+    + 'if(t&&t.matches&&t.matches("input[data-line]"))parent.postMessage({latTask:+t.dataset.line,on:t.checked,h:t.dataset.h},"*")})</script>';
   // execCommand keeps native undo and fires the input event (dirty,
   // autosave, repaint). In Read the textarea is display:none, so it is shown
   // off screen for this one task. Selection and scroll go back as they were.
-  function taskFlip(line, on) {
+  //  `h`: the painted line's hash (lineHash, 59-md.js). The line must
+  //  still hold what was drawn, or the box ticked is another line's, so a
+  //  mismatch repaints and refuses.
+  function taskFlip(line, on, h) {
     if (!taskLive()) return paintLocal();
+    const now = lineAt(src.value, line);
+    if (typeof h !== 'string' || now === undefined || lineHash(now) !== h) {
+      st('that list changed since it was drawn, so nothing was ticked', false);
+      return paintLocal();
+    }
     const r = taskToggle(src.value, line, on);
     if (!r) return paintLocal();
     const wrap = src.closest('.edwrap'), hid = !!wrap && !src.offsetParent;
@@ -230,7 +271,8 @@
   window.addEventListener('message', (e) => {
     if (!prev || e.source !== prev.contentWindow) return;
     const m = e.data;
-    if (m && Number.isInteger(m.latTask) && m.latTask >= 0) taskFlip(m.latTask, !!m.on);
+    if (m && m.latOutside) outShow(true);
+    if (m && Number.isInteger(m.latTask) && m.latTask >= 0) taskFlip(m.latTask, !!m.on, m.h);
   });
   // the bare document a content kind's local render goes into. `fit` is
   // the height reporter, which only the live preview has.
@@ -277,6 +319,7 @@
     else if (!current) prevBlank();
   });
   async function refreshPreview() {
+    outShow(false);
     // a hidden pane renders to nobody, but the POST still costs ~2s of pier
     // time and delays the autosave queued behind it (worst on mobile, where
     // the code tab hides the preview entirely).

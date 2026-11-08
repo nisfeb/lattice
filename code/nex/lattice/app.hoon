@@ -1274,8 +1274,18 @@
 ::  from, and a write against a moved-on page is reported as conflicted with
 ::  the replaced body kept, rather than refused or silently overwritten.
 ::
+::
+::  ?cas=1 with ?base=: refuse instead. A save whose base is not the
+::  page's rev is a 409 that begins "stale", and nothing is written. The
+::  editor's live saves send it, so two windows on one page cannot write
+::  over each other, and the window refused keeps its text aside itself.
+::  The check sits one fiber bind before the write, so two saves racing
+::  through it at once can both land; each is still a kept revision.
+::  `wid`: who writes, tagged on the revision (+make-by): the window's
+::  ?by= session id, or the key's name.
+::
 ++  handle-page-save
-  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t)]
+  |=  [eyre-id=@ta req=inbound-request:eyre args=(map @t @t) wid=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -1333,11 +1343,20 @@
   ::  landed save: same body, moved rev. Flagging that manufactured a bogus
   ::  conflicts/ page holding a copy of the very body being saved. A missing
   ::  page is the same shape: nothing to preserve, nothing to conflict with.
-  =/  conflicted=?  &(stale ?=(^ old) !=(u.old src))
+  =/  cas=?  (~(has by args) 'cas')
+  ?:  &(cas stale !=(src.pc `src))
+    (send-err eyre-id 409 (crip "stale: the page is at rev {(num-tape:pg prev)}"))
+  =/  conflicted=?  &(!cas stale ?=(^ old) !=(u.old src))
   =/  kept=@t  ?.(conflicted '' (conflict-name u.name prev))
+  ::  a kept copy already there is never written over: it holds this
+  ::  rev's body from before, or what the owner made of it since
+  ;<  kx=?  bind:m
+    ?.  conflicted  (pure:(fiber:fiber:nexus ,?) |)
+    (peek-exists:fio (rf up (weld /page (pax-of kept)) %code))
   ;<  ~  bind:m
     =/  n  (fiber:fiber:nexus ,~)
     ?.  conflicted  (pure:n ~)
+    ?:  kx  (pure:n ~)
     ?~  old  (pure:n ~)
     ::  the losing body may be a peer's: the copy keeps the mark. And a
     ::  sensitive page's copy is marked sensitive before its body lands,
@@ -1346,25 +1365,54 @@
     ;<  ps=?  bind:n  (page-sensitive (pax-of u.name))
     ;<  ~  bind:n  ?.(ps (pure:n ~) (poke-eval [%page-sensitive (pax-of kept) &]))
     (poke-eval ?:(pw [%make-marked (pax-of kept) u.old] [%make (pax-of kept) u.old]))
-  ;<  ~  bind:m  (poke-eval [%make (pax-of u.name) src])
+  ;<  ~  bind:m
+    ::  base 0: the writer does not check again. A refusal there could not
+    ::  be told from a write still on its way, and a save
+    ::  answered ok but not written is the one outcome never allowed.
+    (poke-eval [%make-by (pax-of u.name) src wid 0])
   ::  ?dname= / ?dnames=: display names (see +dname-acts-of), sent by the
   ::  client only when the typed name was not a valid path and the path is
   ::  its slug. Absent on every ordinary save, so autosave never touches them.
   ;<  ~  bind:m  (poke-dnames args (pax-of u.name))
-  ::  the new rev is prev+1, COMPUTED not re-peeked. A peek in this same
-  ::  fiber does not observe the write yet (effects flush on yield), so a
-  ::  post-write peek returned the stale rev, and a client carrying that
-  ::  as its base would flag a false conflict on every second save. %make
-  ::  commits the code grub exactly once, so +1 is exact.
+  ::  the new rev is read after the write: two saves that both read prev
+  ::  before either landed answered the same prev+1, and the one written
+  ::  first then claimed the other's rev as its base. The page holding
+  ::  this save's body is this save's rev. When it does not (a later save
+  ::  is already on top, or the read is from before the write), prev+1 is
+  ::  the answer as before. One read, no waiting: the write shows only
+  ::  once the writer's event ends, and polling for it cost every save
+  ::  about two seconds under load. A page that was missing has no prev
+  ::  to count from: a new page's first rev can be 0 or 1, and a page
+  ::  made again after a delete goes on from its old revisions. Its rev
+  ::  unseen is answered 0, which claims nothing (a save's base 0 is no
+  ::  claim), so the editor's next save is not refused as stale.
+  ;<  ph=[rev=@ud src=(unit @t)]  bind:m
+    ?:  =(src.pc `src)  (pure:(fiber:fiber:nexus ,[rev=@ud src=(unit @t)]) pc)
+    (page-head (pax-of u.name))
+  =/  mine=?  =(src.ph `src)
   ::  additive over the old {"ok":true}. Nothing keyed on the exact shape
   %+  send-json  eyre-id
   %-  pairs:enjs:format
   :~  ['ok' b+&]
-      ['rev' (numb:enjs:format +(prev))]
+      ['rev' (numb:enjs:format ?:(mine rev.ph ?~(src.pc 0 +(prev))))]
       ['prev-rev' (numb:enjs:format prev)]
       ['conflicted' b+conflicted]
       ['kept' s+kept]
   ==
+::  +save-wid: the owner's save's writer id, from ?by= (a window's session
+::  id, a-z 0-9 and -, at most 24), else 'owner'. +key-wid: a key's.
+++  save-wid
+  |=  args=(map @t @t)
+  ^-  @t
+  =/  w=@t  (~(gut by args) 'by' '')
+  =/  ok=?
+    ?&  !=('' w)
+        (lte (met 3 w) 24)
+        %+  levy  (trip w)
+        |=(c=@tD |(&((gte c 'a') (lte c 'z')) &((gte c '0') (lte c '9')) =('-' c)))
+    ==
+  ?.(ok 'owner' (cat 3 'win-' w))
+++  key-wid  |=(k=key-row:ky ^-(@t (cat 3 'key-' id.k)))
 ::  +link-save-respond: POST /page-save onto a link (+link-write), with
 ::  page-save's answer. ?base= is the owner's rev the writer read (absent
 ::  or 0: the cached rev, +link-write), and a write against a page that
@@ -3457,7 +3505,7 @@
   ::
       [%'POST' %page-save]
     ::  owner path: no key, no scope check needed.
-    ?~  key  (handle-page-save eyre-id req args)
+    ?~  key  (handle-page-save eyre-id req args (save-wid args))
     ::  a key writes content that renders escaped. Hoon (also an absent or
     ::  unknown type) would run with lattice's own authority, and html or js
     ::  would run in the owner's browser (+page-type-ok:ky).
@@ -3502,12 +3550,12 @@
         ::  tainted key's write must not land where it is carried off
         ;<  ok=?  bind:m  (taint-dest-at (pax-of u.name))
         ?.  ok  (send-err eyre-id 403 tainted-shared-msg)
-        (handle-page-save eyre-id req args)
+        (handle-page-save eyre-id req args (key-wid u.key))
       ;<  exists=?  bind:m  (peek-exists:fio (rv up (weld /page (pax-of u.name))))
       ?:  exists  (send-err eyre-id 403 tainted-msg)
       ;<  ~  bind:m  (poke-eval [%page-sensitive (pax-of u.name) &])
-      (handle-page-save eyre-id req args)
-    (handle-page-save eyre-id req args)
+      (handle-page-save eyre-id req args (key-wid u.key))
+    (handle-page-save eyre-id req args (key-wid u.key))
   ::  page-search: the wiki ranked the way memory is (+rank:lk: key words
   ::  count double), each hit labelled with where it lives. q= words, k= how
   ::  many (10). The omnibar's term index is rebuilt by hand and unranked.
@@ -3705,7 +3753,11 @@
     ::  clears the one the move carried over, because the typed name was
     ::  valid as it stands; dnames names the folders the move made)
     ;<  ~  bind:m  (poke-dnames args (pax-of u.to))
-    (send-json eyre-id (pairs:enjs:format ~[['moved' (numb:enjs:format p.r)]]))
+    ::  and the moved page's rev where it landed (0 for a folder): an
+    ::  editor showing it saves from that rev now, not the source's
+    ;<  ph=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of u.to))
+    %+  send-json  eyre-id
+    (pairs:enjs:format ~[['moved' (numb:enjs:format p.r)] ['rev' (numb:enjs:format rev.ph)]])
       ::  the commons query bridge (docs/obelisk-mirror.md section 6): raw
       ::  urQL in the body, the desk's result as JSON out. Owner-gated by
       ::  the dispatch gate above like every other route. The round-trip
@@ -7796,6 +7848,22 @@
     ::  after the save has answered
     ?:  old  (pure:m ~)
     (grant-new root pax.act)
+      %make-by
+    ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head pax.act)
+    ?:  ?&(!=(0 base.act) !=(base.act rev.pc) !=(`src.act src.pc))
+      %-  (say 1 ~[leaf+"lattice: a stale save of {(spud pax.act)} was not written"])
+      (pure:m ~)
+    ;<  old=?  bind:m  (peek-exists:fio (rf up (weld /page pax.act) %code))
+    ;<  ~  bind:m  (write-page root pax.act src.act &)
+    ;<  ~  bind:m
+      ?:  =('' who.act)  (pure:m ~)
+      (note-writer up pax.act +(rev.pc) who.act)
+    ;<  pen=(unit [pub-pending:lp pub-trying:lp])  bind:m
+      (pub-mark root now pax.act src.act)
+    ;<  ~  bind:m  (yield-event root now pen pax.act /writer/yield)
+    ;<  ~  bind:m  (prune-page pax.act)
+    ?:  old  (pure:m ~)
+    (grant-new root pax.act)
       %make-marked
     ;<  old=?  bind:m  (peek-exists:fio (rf up (weld /page pax.act) %code))
     ;<  ~  bind:m  (write-page root pax.act src.act |)
@@ -8880,7 +8948,7 @@
   ^-  form:m
   ?.  =([/lattice %eval-action] p.sage)  (pure:m |)
   =/  act=eval-action:le  !<(eval-action:le q.sage)
-  ?.  ?=(?(%make %make-marked) -.act)  (pure:m |)
+  ?.  ?=(?(%make %make-marked %make-by) -.act)  (pure:m |)
   ;<  pen=pub-pending:lp  bind:m  (read-pub-pending root)
   =/  w=(unit pub-wait:lp)  (~(get by pen) (spat pax.act))
   (pure:m &(?=(^ w) |(dirty.u.w (gte sent.u.w now))))
@@ -9144,6 +9212,36 @@
 ::
 ++  prune-hist
   |=  [road=road:tarball keep=@ud window=@dr]
+  (prune-hist-by road keep window ~)
+::  +writers-road / +read-writers / +note-writer: who wrote each of a
+::  page's revisions (+make-by), a map of rev to writer id beside its
+::  code grub. Not a tag on the revision: tagging makes a revision of its
+::  own, which moved the rev a save had just answered. The last 64 kept.
+++  writers-road
+  |=  [up=@ud pax=path]
+  ^-  road:tarball
+  (rf up (weld /page pax) %writers)
+++  read-writers
+  |=  [up=@ud pax=path]
+  =/  m  (fiber:fiber:nexus ,(map @ud @t))
+  ^-  form:m
+  ;<  v=view:nexus  bind:m  (peek:fio (writers-road up pax) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  (pure:m (fall (mole |.(;;((map @ud @t) (sang-noun:tarball sang.v)))) ~))
+++  note-writer
+  |=  [up=@ud pax=path rev=@ud who=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  old=(map @ud @t)  bind:m  (read-writers up pax)
+  =/  new=(map @ud @t)  (~(put by old) rev who)
+  =/  ks=(list @ud)  (sort ~(tap in ~(key by new)) gth)
+  =?  new  (gth (lent ks) 64)
+    (malt (turn (scag 64 ks) |=(k=@ud [k (~(got by new) k)])))
+  (put-file (writers-road up pax) [/ %noun] new)
+::  +prune-hist-by: +prune-hist, with each revision's writer (`wr`, rev to
+::  writer id) for the coalesce: one writer's run only
+++  prune-hist-by
+  |=  [road=road:tarball keep=@ud window=@dr wr=(map @ud @t)]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  bo=(each (list [=cass:clay tags=(set @t) tomb=?]) tang)  bind:m  (born:fio road)
@@ -9183,7 +9281,9 @@
   =/  victim=(unit cass:clay)
     ?.  ?=([* * * *] live)  ~
     =/  vn=(unit @ud)
-      (coalesce-victim:lk (turn live |=(c=cass:clay [ud.c (~(gut by at) ud.c da.c)])) window)
+      %+  coalesce-victim:lk
+        (turn live |=(c=cass:clay [ud.c (~(gut by at) ud.c da.c) (~(gut by wr) ud.c '')]))
+      window
     ?~(vn ~ `i.t.live)
   ;<  ~  bind:m
     ?~  victim  (pure:m ~)
@@ -9261,7 +9361,8 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  (prune-hist (rf up (weld /page pax) %code) history-keep history-window)
+  ;<  wr=(map @ud @t)  bind:m  (read-writers up pax)
+  (prune-hist-by (rf up (weld /page pax) %code) history-keep history-window wr)
 ::  +rewrite-root: replace the path-prefix `from` with `to` in code, only where
 ::  `from` ends at a path boundary (/ ) space " ] , or end), so a short root
 ::  can't clobber a longer path that merely starts with it.
@@ -10669,16 +10770,7 @@
 ++  conflict-name
   |=  [nam=@t prev=@ud]
   ^-  @t
-  %-  crip
-  ;:  weld
-    "conflicts/"
-    %+  turn  (trip nam)
-    |=(c=@tD ?:(=('/' c) '-' c))
-    "-rev"
-    ::  plain digits, NOT +scow. %ud renders "1.234" with dot separators,
-    ::  and autosave rev numbers pass 1000 within a few sessions
-    (num-tape:pg prev)
-  ==
+  (conflict-name:pg nam prev)
 ::  +page-head: one page's code grub as [revision source], from ONE file
 ::  peek: [0 ~] when absent, and src ~ when the source does not read. A
 ::  dir peek for the revision alone read the whole page dir (data, err,

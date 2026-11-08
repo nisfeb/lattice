@@ -8,6 +8,18 @@
 ::
 /+  *test, pg=lattice-pg
 |%
+::  +conflict-name: one segment under conflicts/, injective over names
+++  test-conflict-name
+  ;:  weld
+    (expect-eq !>('conflicts/a-b-rev3') !>((conflict-name:pg 'a/b' 3)))
+    (expect-eq !>('conflicts/a~db-rev3') !>((conflict-name:pg 'a-b' 3)))
+    (expect-eq !>('conflicts/x~~y-rev1234') !>((conflict-name:pg 'x~y' 1.234)))
+    ::  the pairs a dash-for-slash flattening sent to one name
+    %+  expect-eq  !>(|)
+    !>(=((conflict-name:pg 'a/-b' 1) (conflict-name:pg 'a-/b' 1)))
+    %+  expect-eq  !>(|)
+    !>(=((conflict-name:pg 'a/~db' 1) (conflict-name:pg 'a-b' 1)))
+  ==
 ++  test-deg-micro
   ;:  weld
     (expect-eq !>(`(unit @sd)`[~ (sun:si 51.500.700)]) !>((deg-micro:pg "51.5007")))

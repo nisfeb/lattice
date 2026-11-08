@@ -54,7 +54,20 @@
   async function movePage(oldName, newName, rn) {
     const r = await moveReq(oldName, newName, rn);
     if (!r.ok) { st('move failed' + await errText(r), false); return false; }
+    let j = null;
+    if (!r.offline) { try { j = await r.clone().json(); } catch {} }
     remapMoved(oldName, newName, rn);
+    //  the page's rev where it landed (an older ship does not say): the
+    //  tree row and an editor showing it carried the source's, and a save
+    //  claiming that was refused as stale
+    const nd = nodes.find((n) => n.page && n.path === newName);
+    if (nd) { if (j && typeof j.rev === 'number') nd.rev = j.rev; else delete nd.rev; }
+    pageCache.delete(oldName);
+    pageCache.delete(newName);
+    pageRevs.delete(oldName);
+    pageRevs.delete(newName);
+    if (j && j.rev) knowRev(newName, j.rev);
+    if (j && j.rev && mode !== 'know' && !grubPath && current === newName) curRev = j.rev;
     snapTree();
     renderTree();
     //  the response, not a bare true: the caller's message must say when the
@@ -83,6 +96,11 @@
       //  read before the remap renames the open page in place
       const wasOpen = mode !== 'know' && !grubPath && inside(current);
       const moved = remapMoved(oldPath, newPath, rn);
+      //  their revs where they landed are not known here: a row that kept
+      //  the source's would make a save claim it
+      for (const n of nodes) if (inside(n.path) || n.path === newPath || n.path.startsWith(newPath + '/')) delete n.rev;
+      for (const k of [...pageCache.keys()]) if (inside(k) || k.startsWith(newPath + '/')) pageCache.delete(k);
+      for (const k of [...pageRevs.keys()]) if (inside(k) || k.startsWith(newPath + '/')) pageRevs.delete(k);
       snapTree();
       renderTree();
       st('moved ' + oldPath + ' \u2192 ' + newPath +
