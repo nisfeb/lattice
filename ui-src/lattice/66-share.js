@@ -388,6 +388,19 @@
       host.textContent = 'open a page to grant access.';
       return;
     }
+    if (!permsLoaded && permsErr) {
+      host.className = 'muted';
+      host.textContent = 'could not load groups (' + permsErr + '). ';
+      const b = document.createElement('button');
+      b.textContent = 'retry';
+      b.onclick = () => {
+        permsErr = null;
+        renderGroupAccess();          // back to "loading" while it runs
+        loadPerms();
+      };
+      host.appendChild(b);
+      return;
+    }
     if (!permsLoaded) {
       host.className = 'muted';
       host.textContent = 'loading groups…';
