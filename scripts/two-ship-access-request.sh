@@ -66,8 +66,11 @@ aitem() { A_ "$A/notify" | jq -c --arg k "$1" --arg w "$2" '[.items[] | select(.
 bcount() { B_ "$B/notify" | jq --arg k "$1" --arg w "$2" '[.items[] | select(.kind==$k and .where==$w)] | length'; }
 acount() { A_ "$A/notify" | jq --arg k "$1" --arg w "$2" '[.items[] | select(.kind==$k and .where==$w)] | length'; }
 pending() { A_ "$A/access-requests" | jq -c --arg s "$BSHIP" --arg p "$1" '[.pending[] | select(.ship==$s and .path==$p)]'; }
-askb() { B_ -o /dev/null -w '%{http_code}' -X POST -G --data-urlencode "host=$ASHIP" --data-urlencode "path=$1" \
-  "$B/access-request" --data-binary "$2"; }
+enc() { jq -rn --arg v "$1" '$v|@uri'; }
+# askb <path> <note>: B asks A for edit; the note is the body, so the
+# query is built by hand (curl -G would move the body into it)
+askb() { B_ -o /dev/null -w '%{http_code}' -X POST \
+  "$B/access-request?host=$(enc "$ASHIP")&path=$(enc "$1")" --data-binary "$2"; }
 # mode <name>: what A's group for B grants the page: edit, read or none
 mode() { A_ "$A/share-groups" | jq -r --arg g "$BG" --arg t "/page/$T/$1" '
   [.[] | select(.name==$g)][0] // {peek: [], make: []} |
@@ -111,8 +114,8 @@ is "no quiet mode line beside it" 0 "$(bcount reshare "$P")"
 is "B's shared with me lists P for edit" edit "$(B_ "$B/shared-with-me" | jq -r --arg p "$P" '.[] | select(.path==$p) | .mode')"
 is "B's sent list is empty" 0 "$(B_ "$B/access-requests" | jq --arg p "$P" '[.sent[] | select(.path==$p)] | length')"
 rev=$(B_ -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=$P" "$B/browse-file" | jq -r '.rev // empty')
-out=$(B_ -X POST -G --data-urlencode "ship=$ASHIP" --data-urlencode "path=$P" ${rev:+--data-urlencode "base=$rev"} \
-  "$B/remote-save" --data-binary "# p, edited by $BSHIP")
+out=$(B_ -X POST "$B/remote-save?ship=$(enc "$ASHIP")&path=$(enc "$P")${rev:+&base=$rev}" \
+  --data-binary "# p, edited by $BSHIP")
 is "B's save of P lands" landed "$(jq -r '.outcome // (if .ok then "landed" else . end)' <<<"$out" 2>/dev/null || echo "$out")"
 saved() { A_ "$A/page-source?name=$T/p" | jq -r .body | grep -q "edited by $BSHIP"; }
 if until_ 30 saved; then ok "A's page has B's edit"; else fail "A's page has B's edit" "$(A_ "$A/page-source?name=$T/p" | head -c 200)"; fi
