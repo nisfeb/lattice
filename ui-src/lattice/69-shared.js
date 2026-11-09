@@ -41,7 +41,9 @@
     try { j = JSON.parse(data); } catch {}
     // a folder told again ('touch': a page made in it) reads its pages anew
     if (j && j.host && j.path) swmPages.delete(j.host + ' ' + j.path);
-    if (j && j.op === 'add' && j.host && j.path) shareToast(j);
+    // 'add' is a page or folder new to this list; a new mode is 'mode',
+    // and one told again 'touch' (+share-op), so neither toasts twice
+    if (j && j.op === 'add' && j.host && j.path) { shareToast(j); shareNotify(j); }
   };
   // the stream dropped (a hidden tab, a sleeping laptop): a window that
   // comes back refetches, at most once a minute. Un-hiding fires focus and

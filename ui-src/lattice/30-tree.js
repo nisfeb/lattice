@@ -153,6 +153,9 @@
     // own #knowlist), so a memory tab in front is no reason to leave Files
     // stale behind the Knowledge tab
     renderTree();
+    // a link's grant may have moved (an edit request approved): the lock
+    // follows it with no reload (36-editlock.js)
+    if (current && linkOf(current)) paintLock();
     return true;
   }
 

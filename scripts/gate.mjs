@@ -248,7 +248,7 @@ const TWOS = [['two-ship-links.sh', 'bash'], ['two-ship-save.sh', 'bash'], ['two
   ['two-ship-notify.sh', 'bash'], ['ui-links.mjs', 'node'], ['ui-shares-live.mjs', 'node'], ['ui-follow-live.mjs', 'node'],
   ['two-ship-dirshare.py', 'python3'], ['two-ship-urb-read.sh', 'bash'], ['two-ship-forum.sh', 'bash'], ['two-ship-share-race.sh', 'bash'], ['two-ship-group-share.sh', 'bash'],
   ['two-ship-hand-share.sh', 'bash'], ['two-ship-invariants.sh', 'bash'], ['two-ship-republish.sh', 'bash'],
-  ['two-ship-ban.sh', 'bash']];
+  ['two-ship-ban.sh', 'bash'], ['two-ship-access-request.sh', 'bash']];
 //  A lane is a ~1.2 GB pier copy and a serf with a 2 GB loom that runs
 //  near 3 GB: no more lanes than suites, pinned performance cores (4), or
 //  about a third of the free memory in GB.

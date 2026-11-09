@@ -230,6 +230,7 @@
     if (doc && current) { has.add('download'); has.add('del'); }
     if (doc && current && PDF_KINDS.includes(mode === 'know' ? 'md' : pkind.value)) has.add('pdf');
     if (page && linkOf(current)) has.add('linkback');
+    if (askHere()) has.add('askedit');
     // a folder view: Delete is #del's folder branch, its own confirm and all
     if (!grubPath && curFolder !== null) has.add('del');
     if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex')) has.add('tex');
@@ -294,6 +295,8 @@
       window.open(api + '/page-source?name=' + encodeURIComponent(current), '_blank', 'noopener')));
     if (has.has('linkback'))
       item('linkback', 'Move back to shared with me', done(() => linkBack(current)));
+    if (has.has('askedit'))
+      item('askedit', 'Request edit access', done(() => { const a = askHere(); if (a) askEdit(a.host, a.path); }));
     if (has.has('del')) item('del', 'Delete', done(() => $('del').click()));
     const r = $('tmenu').getBoundingClientRect();
     m.style.top = r.bottom + 4 + 'px';
@@ -310,7 +313,7 @@
   // only in the desktop app.
   for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'], ['source', 'Source view'],
     ['link', 'Copy link'], ['dup', 'Duplicate page'], ['download', 'Download'], ['pdf', 'Export PDF'], ['tex', 'Convert to HTML'],
-    ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['del', 'Delete']]) {
+    ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['askedit', 'Request edit access'], ['del', 'Delete']]) {
     if (id === 'tex' && !window.__TAURI__) continue;
     action({ id: 'pm-' + id, name, home: 'Page menu',
       when: () => docFront() && pmenuHas().has(id),
