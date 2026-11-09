@@ -13,6 +13,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+#  a system notification when a ship shares a page or folder with this
+#  one (commands::notify_share). Added without a `cargo update`, so the
+#  rest of the lock stays as it was.
+tauri-plugin-notification = "2"
 #  already in the tree transitively, so naming it directly costs no build.
 #  The vault archive crosses the IPC encoded, and hand-rolling a codec on a
 #  path whose whole job is that the bytes arrive intact is not a saving.

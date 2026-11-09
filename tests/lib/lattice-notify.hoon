@@ -242,4 +242,19 @@
   %+  expect-eq
     !>(`(list [@ta item:ln])`~[[%x1 c1(where 'd')] [%x2 c2(where 'd/c')]])
   !>(got)
+::  a mode change or a revoke lists, read from the start; a new share
+::  and an ask count as unread
+++  test-quiet-kinds-read
+  =/  s=seen:ln  [%1 ~2020.1.1 ~]
+  =/  at=@da  ~2026.11.8
+  =/  mk  |=(k=kind:ln (make:ln k at ~nec ~nec '/apps/x/page/a/code' 0 'a' 'b'))
+  ;:  weld
+    (expect-eq !>(&) !>((is-read:ln s 'x' (mk %reshare))))
+    (expect-eq !>(&) !>((is-read:ln s 'x' (mk %unshare))))
+    (expect-eq !>(|) !>((is-read:ln s 'x' (mk %share))))
+    (expect-eq !>(|) !>((is-read:ln s 'x' (mk %ask))))
+    (expect-eq !>(|) !>((is-read:ln s 'x' (mk %asked))))
+    %+  expect-eq  !>(1)
+    !>((unread:ln s ~[['a' (mk %share)] ['b' (mk %reshare)] ['c' (mk %unshare)]]))
+  ==
 --

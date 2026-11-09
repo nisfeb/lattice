@@ -299,6 +299,7 @@ fn main() {
         )
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(mounts::MountMap(Mutex::new(HashMap::new())))
         .manage(proxy::Bridge(Mutex::new(None)))
@@ -387,6 +388,7 @@ fn main() {
             commands::set_theme,
             commands::pick_upload,
             commands::open_external_url,
+            commands::notify_share,
             commands::save_vault,
             commands::pick_vault,
             commands::backup_schedules,

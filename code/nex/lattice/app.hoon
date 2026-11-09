@@ -220,6 +220,10 @@
         ::  crash on it, killing the writer fiber and hanging every publish.
         ::  The counter is one bare atom and /mar/ud.hoon already is that mark.
             [%fall %& [/pub %meta] [[/ %ud] 0]]
+        ::  /pub/access: this lattice takes edit access requests at
+        ::  /access.sig. An asker peeks it to tell an older host, which
+        ::  drops the poke, from one that filed it.
+            [%fall %& [/pub %access] [[/ %ud] 1]]
         ::  /pub/revs: each page's current rev and id, the list peers read
         ::  (+set-pub-rev). /pub/reconciled: the one-shot marker of
         ::  +pub-reconcile. Both are %stay, not %fall: each is read by its
@@ -436,6 +440,16 @@
         ::  from the transport.
             [%fall %& [/ %shared] [[/lattice %shared] *shared:ls]]
             [%fall %& [/ %'shares.sig'] [[/ %sig] ~]]
+        ::  /access.sig: the edit access inbox (+apply-access-notice). Any
+        ::  ship may ask for edit on a page or folder it reads, as any ship
+        ::  may notify /shares.sig, and a host tells an asker it declined
+        ::  here. /public carries a poke road for it (+send-public-how).
+        ::  /access-reqs is the host's pending asks and recent denies,
+        ::  /access-sent the asks this ship has out (/lib/lattice-share),
+        ::  both written by that fiber alone.
+            [%fall %& [/ %'access.sig'] [[/ %sig] ~]]
+            [%fall %& [/ %'access-reqs'] [[/ %noun] `asks:ls`[%1 ~ ~]]]
+            [%fall %& [/ %'access-sent'] [[/ %noun] `sent:ls`[%1 ~]]]
         ::  /comments.sig: the cross-ship COMMENT inbox. Same shape as
         ::  shares.sig and the same reasoning: /public carries a poke road for
         ::  it (laid by +send-public-how) so any ship running lattice may append,
@@ -630,6 +644,16 @@
         ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
         ;<  now=@da  bind:m  bowl-now
         ;<  ~  bind:m  (apply-share-notice root from sage now)
+        $
+      ::  /access.sig: edit access requests, and a host's answer to ours
+      ::  (+apply-access-notice). The same take-poke loop as /shares.sig.
+          [~ %'access.sig']
+        ;<  ~  bind:m  (rise-later prod "lattice /access.sig" "")
+        =/  root=@ud  (lent path.rail)
+        |-
+        ;<  [=from:fiber:nexus =sage:tarball]  bind:m  take-poke-from:io
+        ;<  now=@da  bind:m  bowl-now
+        ;<  ~  bind:m  (apply-access-notice root from sage now)
         $
       ::  /comments.sig: the cross-ship comment inbox. Foreign ships poke a
       ::  comment-action; we take the author from the TRANSPORT, never from the
@@ -3254,40 +3278,10 @@
     ?.  pe  (send-err eyre-id 404 'no such page')
     ;<  isp=?  bind:m  (peek-exists:fio (rf up pdir %code))
     ?.  isp  (share-folder-with eyre-id u.shp mode (pax-of u.name))
-    ::  absolute, the road the ACL pane shows and the peer's weir matches
-    ::  (see +handle-share-group-save). The page's code grub only, which is
-    ::  all the peer opens. A grant on the dir also handed the peer the
-    ::  page's owner-only grubs (share, show, forms, the render cache) and
-    ::  every page nested under it (security audit run-1, +page-roads).
-    ;<  sb=path  bind:m  self-base
-    =/  croad=road:tarball  [%& %& (weld sb pdir) %code]
-    =/  gname=@t  (crip (slag 1 (scow %p u.shp)))
-    ;<  ok=?  bind:m
-      %-  ug-merge
-      :^    gname
-          (~(gas in *(set @p)) ~[u.shp])
-        (~(gas in *(set road:tarball)) ~[croad])
-      ?.  =('edit' mode)  ~
-      (~(gas in *(set road:tarball)) ~[croad])
-    ?.  ok  (ug-refused eyre-id)
-    ::  noted as the page's own grant, at the widest it was shared, so a
-    ::  folder's unshare or a move out leaves it (+ungrant:ls)
-    ;<  own=(map @t @t)  bind:m  (read-own-grants (pax-of u.name))
-    ;<  ~  bind:m
-      (poke-eval [%grant-own (pax-of u.name) gname (mode-max:ls mode (~(gut by own) gname ''))])
-    ::  what the peer should OPEN: the page's code grub, not the dir. By its
-    ::  absolute path: they peek it on our ship, and +apply-share-notice
-    ::  drops a path not under /apps (every notice did, from the move to
-    ::  relative roads until this).
-    =/  npax=path  (weld sb (snoc pdir %code))
-    ;<  base=(unit path)  bind:m  (peer-base-cached u.shp)
-    ;<  told=?  bind:m
-      %^  remote-load-poke-wait  u.shp
-        :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
-        [%poke [/lattice %share-notice] `action:ls`[%add npax mode]]
-      ~s5
+    ;<  told=(unit ?)  bind:m  (share-page-with u.shp mode (pax-of u.name))
+    ?~  told  (ug-refused eyre-id)
     %+  send-json  eyre-id
-    (pairs:enjs:format ~[['ok' b+&] ['notified' b+told]])
+    (pairs:enjs:format ~[['ok' b+&] ['notified' b+u.told]])
   ::  unshare-file: /share-file undone. A folder stops being shared with
   ::  the ship (+unshare-folder): its rule goes, with every grant it made,
   ::  so a page added later stays private. A page loses the ship's grant.
@@ -3347,6 +3341,93 @@
     ;<  ~  bind:m
       %+  poke:io  (rf up / %'shares.sig')
       [[/lattice %share-notice] `action:ls`[%del u.hp p.pp]]
+    (send-ok eyre-id)
+  ::  edit access requests (+apply-access-notice): the asks waiting on
+  ::  us, and the asks we have out
+      [%'GET' %access-requests]
+    ;<  st=asks:ls  bind:m  (read-asks up)
+    ;<  se=sent:ls  bind:m  (read-sent up)
+    =/  row
+      |=  [k=@t r=ask-req:ls]
+      %-  pairs:enjs:format
+      :~  [k s+(scot %p who.r)]
+          ['path' s+(spat pax.r)]
+          ['name' s+(share-name:ls pax.r)]
+          ['note' s+note.r]
+          ['when' (numb:enjs:format (rise-da-ms when.r))]
+      ==
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['pending' a+(turn pend.st (cury row 'ship'))]
+        ['sent' a+(turn out.se (cury row 'host'))]
+    ==
+  ::  ask a host for edit on a page or folder it shares with us read-only.
+  ::  The note is the body. The poke must be acked, and the host must
+  ::  say it takes asks (/pub/access): an older lattice acks and drops
+  ::  it, and the asker hears 409 too-old. Only then is the ask noted.
+      [%'POST' %access-request]
+    =/  shp=(unit @p)  (biff (~(get by args) 'host') (cury slaw %p))
+    ?~  shp  (send-err eyre-id 400 'bad host')
+    ?:  =(u.shp our)  (send-err eyre-id 400 'that is you')
+    =/  pt=(unit @t)  (~(get by args) 'path')
+    ?~  pt  (send-err eyre-id 400 'missing path')
+    =/  pp=(unit path)  (rush u.pt stap)
+    ?~  pp  (send-err eyre-id 400 'bad path')
+    ?.  (pax-ok:ls u.pp)  (send-err eyre-id 400 'bad path')
+    =/  note=@t  (ask-note:ls (req-body req))
+    ;<  base=(unit path)  bind:m  (peer-base-cached u.shp)
+    =/  hb=path  (fall base desk-base:lu)
+    ;<  told=?  bind:m
+      %^  remote-load-poke-wait  u.shp
+        :-  [/access-ask %& hb %'access.sig']
+        [%poke [/lattice %access-ask] `ask:ls`[%ask u.pp note]]
+      ~s5
+    ?.  told  (send-err eyre-id 504 'the host did not answer')
+    ;<  ms=(unit view:nexus)  bind:m
+      (peek-remote-wait-in [%& %& (weld hb /pub) %access] u.shp ~s5)
+    ?.  ?=([~ %file *] ms)  (send-err eyre-id 409 'too-old')
+    ;<  ~  bind:m
+      %+  poke:io  (rf up / %'access.sig')
+      [[/lattice %access-ask] `ask:ls`[%sent u.shp u.pp note]]
+    (send-ok eyre-id)
+  ::  approve or deny an ask. Approve grants edit by hand to that ship
+  ::  alone, as /share-file does for a page and a folder share for a
+  ::  folder, so a group's grants keep their modes and the usual notice
+  ::  goes out; deny cools the path for it a day and tells it.
+      [%'POST' %access-answer]
+    =/  shp=(unit @p)  (biff (~(get by args) 'ship') (cury slaw %p))
+    ?~  shp  (send-err eyre-id 400 'bad ship')
+    =/  pt=@t  (~(gut by args) 'path' '')
+    =/  pp=(unit path)  (rush pt stap)
+    ?~  pp  (send-err eyre-id 400 'bad path')
+    =/  do=@t  (~(gut by args) 'do' '')
+    ?.  ?=(?(%approve %deny) do)  (send-err eyre-id 400 'do: approve or deny')
+    ;<  st=asks:ls  bind:m  (read-asks up)
+    ?~  (ask-get:ls st u.shp u.pp)  (send-err eyre-id 404 'no such request')
+    =/  tell
+      |=  ok=?
+      %+  poke:io  (rf up / %'access.sig')
+      [[/lattice %access-ask] `ask:ls`[%answer u.shp u.pp ok]]
+    ?:  ?=(%deny do)
+      ;<  ~  bind:m  (tell |)
+      (send-ok eyre-id)
+    ;<  bans=banned:ls  bind:m  read-banned
+    ?:  (is-banned:ls bans u.shp)
+      (send-err eyre-id 403 'that ship is banned, unban it first')
+    ;<  sb=path  bind:m  self-base
+    =/  rl=(unit [rel=path dir=?])  (ask-rel:ls sb u.pp)
+    ?~  rl  (send-err eyre-id 400 'not one of ours')
+    =/  pdir=path  (weld /page rel.u.rl)
+    ;<  ex=?  bind:m
+      %-  peek-exists:fio
+      ?:(dir.u.rl (rv up pdir) (rf up pdir %code))
+    ?.  ex  (send-err eyre-id 404 'no such page')
+    ;<  ok=?  bind:m
+      ?:  dir.u.rl  (share-folder-grant u.shp 'edit' rel.u.rl)
+      ;<  t=(unit ?)  bind:(fiber:fiber:nexus ,?)  (share-page-with u.shp 'edit' rel.u.rl)
+      (pure:(fiber:fiber:nexus ,?) ?=(^ t))
+    ?.  ok  (ug-refused eyre-id)
+    ;<  ~  bind:m  (tell &)
     (send-ok eyre-id)
   ::  followed folders (+read-folds): the list, follow, unfollow, read
   ::  again (one, or every one with no host), and a page seen
@@ -12816,15 +12897,20 @@
     ::  with me, which would give it two homes
     ;<  hits=(list [rel=path l=link:ll])  bind:m  (links-to u.src pax.u.na)
     ?^  hits
+      ::  the inbox hears of a mode change, as for a listed entry
+      =/  was=(unit @t)  ?:(?=(%local -.l.i.hits) ~ `mode.l.i.hits)
+      ;<  ~  bind:m  (share-item root u.src pax.u.na mode.u.na was now)
       %-  put-links
       %+  turn  `(list [rel=path l=link:ll])`hits
       |=  [rel=path l=link:ll]
       [rel ?:(?=(%local -.l) l l(mode mode.u.na))]
+    =/  was=(unit @t)  (entry-mode cur u.src pax.u.na)
     ;<  ~  bind:m
       %^  put-file  (rf root / %shared)  [/lattice %shared]
       (put-entry:ls cur [u.src pax.u.na mode.u.na now])
     ;<  *  bind:m  (fold-stale root u.src pax.u.na now)
-    (bump-shares root 'add' u.src pax.u.na now)
+    ;<  ~  bind:m  (share-item root u.src pax.u.na mode.u.na was now)
+    (bump-shares root (share-op was mode.u.na) u.src pax.u.na now)
   ::
       %dir
     ::  a folder shared whole: one entry, its pax the folder's dir-index.
@@ -12843,10 +12929,12 @@
     ::  entry of its own (+dir-touch:ls), not a touch
     ?:  &(?=(^ hit) (dir-touch:ls hit pax.u.na mode.u.na))
       (bump-shares root 'touch' u.src pax.u.hit now)
+    =/  was=(unit @t)  (entry-mode cur u.src pax.u.na)
     ;<  ~  bind:m
       %^  put-file  (rf root / %shared)  [/lattice %shared]
       (put-entry:ls cur [u.src pax.u.na mode.u.na now])
-    (bump-shares root 'add' u.src pax.u.na now)
+    ;<  ~  bind:m  (share-item root u.src pax.u.na mode.u.na was now)
+    (bump-shares root (share-op was mode.u.na) u.src pax.u.na now)
   ::
       %del
     ::  from the host itself: the host revoked its grant (+tell-holds).
@@ -12863,7 +12951,15 @@
         %+  turn  hits
         |=([rel=path l=link:ll] [rel (fail:ll l now)])
       ;<  hit=?  bind:m  (fold-stale root u.src pax.u.na now)
+      ::  the inbox hears of a revoke once: a resent %del (+del-send)
+      ::  finds nothing listed any more
+      =/  had=?
+        ?|  ?=(^ (entry-mode cur u.src pax.u.na))
+            (lien hits |=([* l=link:ll] &(?=(%ship -.l) ok.seen.l)))
+        ==
+      ;<  ~  bind:m  ?.(had (pure:m ~) (unshare-item u.src pax.u.na now))
       ?.  (lien cur |=(e=entry:ls &(=(host.e u.src) =(pax.e pax.u.na))))
+        ?:  had  (bump-beacon %rev now)
         ?.(hit (pure:m ~) (bump-beacon %rev now))
       ;<  ~  bind:m
         %^  put-file  (rf root / %shared)  [/lattice %shared]
@@ -12883,6 +12979,205 @@
       (put-entry:ls cur [host.u.na pax.u.na mode.u.na now])
     (bump-shares root 'put' host.u.na pax.u.na now)
   ==
+::  +entry-mode: the mode shared with me lists `host`'s `pax` at, if any
+++  entry-mode
+  |=  [cur=shared:ls host=@p pax=path]
+  ^-  (unit @t)
+  =/  l=(list entry:ls)  (skim cur |=(e=entry:ls &(=(host.e host) =(pax.e pax))))
+  ?~(l ~ `mode.i.l)
+::  +share-op: the share beacon's op for a notice at `mode` on an entry
+::  that was listed at `was`: 'add' for a new one, 'mode' for a new mode,
+::  'touch' for nothing new. Clients toast and notify on 'add' alone, so
+::  a re-share or a folder's page tells the user nothing twice.
+++  share-op
+  |=  [was=(unit @t) mode=@t]
+  ^-  @t
+  ?~  was  'add'
+  ?:(=(u.was mode) 'touch' 'mode')
+::  +share-item: the inbox line a share notice files (lib/lattice-notify):
+::  %share for a page or folder new to us, %reshare (quiet) for a new
+::  mode, nothing for the same mode. A notice at edit for a path we asked
+::  edit on is the host's yes: /access.sig files that instead (%took).
+++  share-item
+  |=  [root=@ud host=@p pax=path mode=@t was=(unit @t) now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  =(was `mode)  (pure:m ~)
+  ;<  se=sent:ls  bind:m  (read-sent root)
+  ?:  &(=('edit' mode) (sent-has:ls se host pax))
+    %+  poke:io  (rf root / %'access.sig')
+    [[/lattice %access-ask] `ask:ls`[%took host pax]]
+  =/  nm=@t  (share-name:ls pax)
+  =/  hs=@t  (scot %p host)
+  %+  notify-add  now
+  ?~  was
+    %-  make:ln
+    :*  %share  now  host  host  (spat pax)  0  nm
+        (rap 3 ~[hs ' shared ' nm ' with you (' mode ')'])
+    ==
+  %-  make:ln
+  :*  %reshare  now  host  host  (spat pax)  0  nm
+      (rap 3 ~[hs ' changed ' nm ' to ' mode])
+  ==
+::  +unshare-item: the quiet inbox line for a host's revoke
+++  unshare-item
+  |=  [host=@p pax=path now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  nm=@t  (share-name:ls pax)
+  %+  notify-add  now
+  %-  make:ln
+  :*  %unshare  now  host  host  (spat pax)  0  nm
+      (rap 3 ~[(scot %p host) ' stopped sharing ' nm])
+  ==
+::  +read-asks, +read-sent: /access-reqs and /access-sent, empty when
+::  absent or unreadable
+++  read-asks
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,asks:ls)
+  ^-  form:m
+  ;<  v=view:nexus  bind:m  (peek:fio (rf root / %'access-reqs') ~)
+  ?.  ?=([%file *] v)  (pure:m [%1 ~ ~])
+  (pure:m (fall (mole |.(;;(asks:ls (sang-noun:tarball sang.v)))) [%1 ~ ~]))
+++  read-sent
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,sent:ls)
+  ^-  form:m
+  ;<  v=view:nexus  bind:m  (peek:fio (rf root / %'access-sent') ~)
+  ?.  ?=([%file *] v)  (pure:m [%1 ~])
+  (pure:m (fall (mole |.(;;(sent:ls (sang-noun:tarball sang.v)))) [%1 ~]))
+::  +access-send: one /access.sig poke to another ship, fire-and-forget,
+::  as +share-notice-send
+++  access-send
+  |=  [who=@p act=ask:ls]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  known=(map @t json)  bind:m  read-peers
+  =/  req=load:remo:nexus
+    :-  [/access-ask %& (known-base:lu known who) %'access.sig']
+    [%poke [/lattice %access-ask] act]
+  %+  poke:io  &+&+[/sys/gall %'main.sig']
+  [[/ %gall-poke] [[who %grubbery] grubbery-load+req]]
+::  +apply-access-notice: one /access.sig poke (+ask:ls). Defensive as
+::  +apply-share-notice: the payload is soft-cast, the sender is the
+::  transport's, and a foreign ship may send %ask and %nay alone.
+::
+::  An %ask is dropped, silently, from a banned ship, for a path not one
+::  of ours, from a ship that does not hold it read-only now, inside a
+::  deny's cooldown, or past a cap (+ask-file:ls). The cheap checks run
+::  before +holds-now, which reads every group. A second ask for the same
+::  path replaces the first and files no second inbox line.
+::
+++  apply-access-notice
+  |=  [root=@ud =from:fiber:nexus =sage:tarball now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  =([/lattice %access-ask] p.sage)  (pure:m ~)
+  =/  src=(unit @p)  (get-poke-src:io from)
+  =/  na=(unit ask:ls)  (mole |.(;;(ask:ls q.q.sage)))
+  ?~  na  (pure:m ~)
+  ?-    -.u.na
+      %ask
+    ?~  src  (pure:m ~)
+    (access-ask root u.src pax.u.na note.u.na now)
+  ::
+      %nay
+    ::  a host declined an ask of ours. One we never sent is dropped.
+    ?~  src  (pure:m ~)
+    ;<  bans=banned:ls  bind:m  read-banned
+    ?:  (is-banned:ls bans u.src)  (pure:m ~)
+    ;<  se=sent:ls  bind:m  (read-sent root)
+    ?.  (sent-has:ls se u.src pax.u.na)  (pure:m ~)
+    ;<  ~  bind:m
+      (put-file (rf root / %'access-sent') [/ %noun] (sent-del:ls se u.src pax.u.na))
+    =/  nm=@t  (share-name:ls pax.u.na)
+    ;<  ~  bind:m
+      %+  notify-add  now
+      %-  make:ln
+      :*  %asked  now  u.src  u.src  (spat pax.u.na)  0  'no'
+          (rap 3 ~[(scot %p u.src) ' declined your request for edit access to ' nm])
+      ==
+    (bump-beacon %rev now)
+  ::
+      %sent
+    ?^  src  (pure:m ~)
+    ;<  se=sent:ls  bind:m  (read-sent root)
+    %^  put-file  (rf root / %'access-sent')  [/ %noun]
+    (sent-put:ls se [host.u.na pax.u.na note.u.na now])
+  ::
+      %took
+    ::  the host granted the edit we asked for (+share-item)
+    ?^  src  (pure:m ~)
+    ;<  se=sent:ls  bind:m  (read-sent root)
+    ?.  (sent-has:ls se host.u.na pax.u.na)  (pure:m ~)
+    ;<  ~  bind:m
+      (put-file (rf root / %'access-sent') [/ %noun] (sent-del:ls se host.u.na pax.u.na))
+    =/  nm=@t  (share-name:ls pax.u.na)
+    ;<  ~  bind:m
+      %+  notify-add  now
+      %-  make:ln
+      :*  %asked  now  host.u.na  host.u.na  (spat pax.u.na)  0  'yes'
+          (rap 3 ~[(scot %p host.u.na) ' gave you edit access to ' nm])
+      ==
+    (bump-beacon %rev now)
+  ::
+      %answer
+    ?^  src  (pure:m ~)
+    (access-answer root who.u.na pax.u.na ok.u.na now)
+  ==
+::  +access-ask: an ask from `src` (+apply-access-notice)
+++  access-ask
+  |=  [root=@ud src=@p pax=path note=@t now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  bans=banned:ls  bind:m  read-banned
+  ?:  (is-banned:ls bans src)  (pure:m ~)
+  ?.  (pax-ok:ls pax)  (pure:m ~)
+  ;<  sb=path  bind:m  self-base
+  ?~  (ask-rel:ls sb pax)  (pure:m ~)
+  ;<  st=asks:ls  bind:m  (read-asks root)
+  =/  fil  (ask-file:ls st src pax note now)
+  ?:  ?=(?(%cool %full) -.fil)
+    %-  (say 2 ~[leaf+"lattice: access ask from {<src>} dropped, {(trip -.fil)}"])
+    (pure:m ~)
+  ;<  h=holds:ls  bind:m  holds-now
+  ?.  =(`'read' (hold-mode:ls (~(gut by h) src ~) pax))  (pure:m ~)
+  ;<  ~  bind:m  (put-file (rf root / %'access-reqs') [/ %noun] +.fil)
+  ?:  ?=(%dup -.fil)
+    ;<  ~  bind:m  (notify-stamp now)
+    (bump-beacon %rev now)
+  ;<  our=@p  bind:m  bowl-our
+  ;<  ~  bind:m
+    %+  notify-add  now
+    %-  make:ln
+    :*  %ask  now  src  our  (spat pax)  0  (share-name:ls pax)
+        (ask-note:ls note)
+    ==
+  (bump-beacon %rev now)
+::  +access-answer: our UI decided an ask (/access-answer). An approve has
+::  granted already; a deny cools the path for the ship and tells it.
+::  Either way its inbox line is read: it is answered.
+++  access-answer
+  |=  [root=@ud who=@p pax=path ok=? now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  st=asks:ls  bind:m  (read-asks root)
+  ?~  (ask-get:ls st who pax)  (pure:m ~)
+  =/  nst=asks:ls
+    ?:  ok  (ask-drop:ls st who pax)
+    (ask-deny:ls st who pax now)
+  ;<  ~  bind:m  (put-file (rf root / %'access-reqs') [/ %noun] nst)
+  ;<  ~  bind:m  ?:(ok (pure:m ~) (access-send who [%nay pax]))
+  ;<  items=(list [id=@ta i=item:ln])  bind:m  notify-items
+  =/  ids=(list @ta)
+    %+  murn  items
+    |=  [id=@ta i=item:ln]
+    ^-  (unit @ta)
+    ?.  &(?=(%ask kind.i) =(who.i who) =(where.i (spat pax)))  ~
+    `id
+  ;<  ~  bind:m  ?~(ids (pure:m ~) (poke-eval [%notify-read ids]))
+  ;<  ~  bind:m  (notify-stamp now)
+  (bump-beacon %rev now)
 ::  +bump-shares: tell open clients that shared with me changed, on
 ::  /beacon/shares (the keep they hold streams all of /beacon). The payload
 ::  is who, which page and what happened, nothing more. The stamp makes
@@ -17826,6 +18121,13 @@
     "<p><span id=\"pubst\" class=\"muted\"></span> <button type=\"button\" id=\"pubreset\" class=\"btn\" hidden>Ask before making a page public</button></p>"
     %-  trip
     '<script>(function(){var b=document.getElementById("pubreset"),s=document.getElementById("pubst");function rd(){var on=false;try{on=localStorage.getItem("latPubOk")!==null}catch(x){}b.hidden=!on;s.textContent=on?"Making a page public does not ask first in this browser.":"Making a page public asks first."}b.onclick=function(){try{localStorage.removeItem("latPubOk")}catch(x){}rd()};addEventListener("storage",function(ev){if(!ev.key||ev.key==="latPubOk")rd()});rd()})();</script>'
+    ::  notifications: a new share pops a browser notification only once
+    ::  this is ticked, and ticking it is what asks the browser. Nothing
+    ::  asks on load. The desktop app notifies natively (73r-access.js).
+    "<h2 id=\"notify\">Notifications</h2>"
+    "<p><label for=\"ntfy\"><input type=\"checkbox\" id=\"ntfy\"> Notify me in this browser when a ship shares something with me</label> <span id=\"ntfyst\" class=\"muted\"></span></p>"
+    %-  trip
+    '<script>(function(){var e=document.getElementById("ntfy"),s=document.getElementById("ntfyst"),T=null;try{T=window.top.__TAURI__}catch(x){}function rd(){var on=false,N=window.Notification;try{on=localStorage.getItem("latNotify")==="1"}catch(x){}e.checked=on&&!!N&&N.permission==="granted";if(T){e.disabled=true;s.textContent="The desktop app shows a system notification for each new share."}else if(!N){e.disabled=true;s.textContent="This browser has no notifications."}else s.textContent=N.permission==="denied"?"Notifications are blocked for this site in the browser settings.":""}e.onchange=function(){var N=window.Notification;if(!e.checked||!N){try{localStorage.setItem("latNotify","0")}catch(x){}rd();return}N.requestPermission().then(function(p){try{localStorage.setItem("latNotify",p==="granted"?"1":"0")}catch(x){}rd()})};addEventListener("storage",function(ev){if(!ev.key||ev.key==="latNotify")rd()});rd()})();</script>'
     "</section>"
     "<section class=\"st-panel\" id=\"keys\">"
     ::  agent keys (/lib/lattice-keys). The token comes back once, from
@@ -18826,6 +19128,7 @@
     :~  `road:tarball`(rf up / %'shares.sig')
         `road:tarball`(rf up / %'comments.sig')
         `road:tarball`(rf up / %'forum.sig')
+        `road:tarball`(rf up / %'access.sig')
     ==
   ::  the share modes are in the deep peek's ball already, so one peek
   ::  covers every page, where a read-share per page was a dart each
@@ -19442,6 +19745,17 @@
   |=  [eyre-id=@ta shp=@p mode=@t pax=path]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
+  ;<  ok=?  bind:m  (share-folder-grant shp mode pax)
+  ?.  ok  (ug-refused eyre-id)
+  %+  send-json  eyre-id
+  (pairs:enjs:format ~[['ok' b+&] ['notified' b+|] ['folder' b+&]])
+::  +share-folder-grant: +share-folder-with's grant and notice, | when
+::  lattice may not write usergroups. An approved edit ask on a folder
+::  (/access-answer) grants through here too.
+++  share-folder-grant
+  |=  [shp=@p mode=@t pax=path]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
   ;<  sb=path  bind:m  self-base
   ;<  ~  bind:m  (poke-eval [%dir-index pax])
@@ -19479,17 +19793,59 @@
       (~(uni in codes) idx)
       ?.(=('edit' mode) ~ codes)
     ==
-  ?.  ok  (ug-refused eyre-id)
+  ?.  ok  (pure:m |)
   ;<  ~  bind:m  (poke-eval [%folder-grant pax gname mode])
   ;<  ~  bind:m
-    |-  ^-  form:m
-    ?~  own  (pure:m ~)
-    ;<  ~  bind:m  (poke-eval [%grant-own (weld pax p.i.own) gname md.i.own])
+    =/  n  (fiber:fiber:nexus ,~)
+    |-  ^-  form:n
+    ?~  own  (pure:n ~)
+    ;<  ~  bind:n  (poke-eval [%grant-own (weld pax p.i.own) gname md.i.own])
     $(own t.own)
   ;<  h1=holds:ls  bind:m  holds-now
   ;<  ~  bind:m  (tell-holds h0 h1)
-  %+  send-json  eyre-id
-  (pairs:enjs:format ~[['ok' b+&] ['notified' b+|] ['folder' b+&]])
+  (pure:m &)
+::  +share-page-with: /share-file's grant on a page and its notice. ~
+::  when lattice may not write usergroups, else whether the ship acked
+::  the notice. An approved edit ask on a page (/access-answer) grants
+::  through here too, so a group's grants keep their modes.
+++  share-page-with
+  |=  [shp=@p mode=@t pax=path]
+  =/  m  (fiber:fiber:nexus ,(unit ?))
+  ^-  form:m
+  =/  pdir=path  (weld /page pax)
+  ::  absolute, the road the ACL pane shows and the peer's weir matches
+  ::  (see +handle-share-group-save). The page's code grub only, which is
+  ::  all the peer opens. A grant on the dir also handed the peer the
+  ::  page's owner-only grubs (share, show, forms, the render cache) and
+  ::  every page nested under it (security audit run-1, +page-roads).
+  ;<  sb=path  bind:m  self-base
+  =/  croad=road:tarball  [%& %& (weld sb pdir) %code]
+  =/  gname=@t  (crip (slag 1 (scow %p shp)))
+  ;<  ok=?  bind:m
+    %-  ug-merge
+    :^    gname
+        (~(gas in *(set @p)) ~[shp])
+      (~(gas in *(set road:tarball)) ~[croad])
+    ?.  =('edit' mode)  ~
+    (~(gas in *(set road:tarball)) ~[croad])
+  ?.  ok  (pure:m ~)
+  ::  noted as the page's own grant, at the widest it was shared, so a
+  ::  folder's unshare or a move out leaves it (+ungrant:ls)
+  ;<  own=(map @t @t)  bind:m  (read-own-grants pax)
+  ;<  ~  bind:m
+    (poke-eval [%grant-own pax gname (mode-max:ls mode (~(gut by own) gname ''))])
+  ::  what the peer should OPEN: the page's code grub, not the dir. By its
+  ::  absolute path: they peek it on our ship, and +apply-share-notice
+  ::  drops a path not under /apps (every notice did, from the move to
+  ::  relative roads until this).
+  =/  npax=path  (weld sb (snoc pdir %code))
+  ;<  base=(unit path)  bind:m  (peer-base-cached shp)
+  ;<  told=?  bind:m
+    %^  remote-load-poke-wait  shp
+      :-  [/share-notice %& (fall base desk-base:lu) %'shares.sig']
+      [%poke [/lattice %share-notice] `action:ls`[%add npax mode]]
+    ~s5
+  (pure:m `told)
 ::  +own-held: the pages under a folder (`bl` its ball, `at` a page's
 ::  absolute dir) whose own grant in group `g` (`wr` its weir) changes as
 ::  the folder starts to share them (+own-infer:ls), with the new mode

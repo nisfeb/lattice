@@ -232,6 +232,8 @@
   // host, or a thread on another ship's board read through this ship
   const actLabel = (a) => {
     if (a.kind === 'comment') return 'comment on ' + a.where;
+    // a share, its answer, or an ask (73r-access.js)
+    if (SHARE_KINDS.has(a.kind) || a.kind === 'ask') return shareLabel(a);
     const t = a.title ? ': ' + a.title : '';
     if (a.kind === 'remote') return 'reply on ' + a.host + '/' + a.where + t;
     if (a.kind === 'reply') return 'reply on ' + a.where + t;
@@ -241,6 +243,7 @@
     return a.where;
   };
   const actOpen = (a, e) => {
+    if (SHARE_KINDS.has(a.kind) || a.kind === 'ask') return shareOpen(a, e);
     if (a.kind === 'folder') return browseIn(api + '?url=' + encodeURIComponent('urb://' + a.host + a.where + '/'));
     if (a.kind === 'comment') return openIn('page', a.where, { ev: e });
     const tail = encodeURIComponent(a.where) + '/' + a.post;
@@ -256,7 +259,9 @@
 
   async function loadActivity() {
     try {
-      const r = await busyFetch(api + '/notify');
+      // the asks waiting on us too, so an ask's card offers approve and
+      // deny only while it waits
+      const [r] = await Promise.all([busyFetch(api + '/notify'), loadAsks()]);
       if (!r.ok) { st('activity failed' + await errText(r), false); return; }
       acts = (await r.json()).items || [];
     } catch { st('activity failed', false); return; }
@@ -264,8 +269,8 @@
     host.textContent = '';
     host.className = '';
     if (!acts.length) {
-      ibEmpty(host, 'No activity yet. Comments from other ships on your pages, and '
-        + 'replies to your forum posts and comments, show here.');
+      ibEmpty(host, 'No activity yet. Comments from other ships on your pages, '
+        + 'replies to your forum posts and comments, shares and edit requests show here.');
       return;
     }
     const grid = document.createElement('div');
@@ -283,6 +288,8 @@
       card.classList.toggle('unread', !a.read);
       const mk = a.read ? null : ibButton(card, 'mark read', read);
       ibButton(card, 'open', async () => { read(); await actOpen(a); });
+      const w = a.kind === 'ask' && askOf(a.who, a.where);
+      if (w) askButtons(card, w, async () => { await loadActivity(); ibShow(ibTab); });
       grid.appendChild(card);
     }
     host.appendChild(grid);

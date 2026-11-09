@@ -1071,4 +1071,160 @@
     |=(p=path ?:((~(has by now) p) ~ `[s p]))
   :-  (sort add |=([a=[@p path @t] b=[@p path @t]] (aor a b)))
   (sort del |=([a=[@p path] b=[@p path]] (aor a b)))
+::
+::  ==  edit access requests  ==
+::
+::  A ship that reads a page or folder of ours may ask for edit. The ask
+::  arrives at /access.sig (any ship may poke it, as /shares.sig), so it
+::  is bounded the way the shares inbox is: one pending ask per ship and
+::  path, a cap per ship family and in all, and a cooldown after a deny.
+::  The sender is the transport's, never the payload's.
+::
+::  +$  ask: what /access.sig takes. %ask and %nay come from other ships;
+::  %sent, %took and %answer from this ship alone. `pax` is the path the
+::  share notice named: <base>/page/<rel>/code, or <base>/page/<rel>/
+::  dir-index for a folder. A lattice older than this has no /access.sig
+::  road and drops the poke, which the asker learns from /pub/access.
++$  ask
+  $%  [%ask pax=path note=@t]            ::  asker to host
+      [%nay pax=path]                    ::  host to asker: declined
+      [%sent host=@p pax=path note=@t]   ::  own: an ask went out
+      [%took host=@p pax=path]           ::  own: the host granted edit
+      [%answer who=@p pax=path ok=?]     ::  own: we decided an ask
+  ==
++$  ask-req  [who=@p pax=path note=@t when=@da]
++$  ask-nay  [who=@p pax=path when=@da]
+::  +$  asks: the host's pending asks, newest first, and recent denies
++$  asks     [%1 pend=(list ask-req) nays=(list ask-nay)]
+::  +$  sent: the asks this ship has out, newest first
++$  sent     [%1 out=(list ask-req)]
+::  +ask-cool: how long a denied ship waits to ask for the path again
+++  ask-cool      ^-(@dr ~d1)
+::  +ask-ship-cap: pending asks one ship family may have here
+++  ask-ship-cap  ^-(@ud 10)
+::  +ask-cap: pending asks in all, and denies kept
+++  ask-cap       ^-(@ud 500)
+::  +ask-note-cap: bytes of an ask's note kept
+++  ask-note-cap  ^-(@ud 280)
+::  +ask-note: a note clipped to +ask-note-cap
+++  ask-note
+  |=  t=@t
+  ^-  @t
+  ?:  (lte (met 3 t) ask-note-cap)  t
+  (end [3 ask-note-cap] t)
+::  +ask-live: the denies still cooling at `now`
+++  ask-live
+  |=  [nays=(list ask-nay) now=@da]
+  ^-  (list ask-nay)
+  (skim nays |=(n=ask-nay (lth now (add when.n ask-cool))))
+::  +ask-file: take an ask from `who` for `pax`. %new files it, %dup
+::  replaces the pending one (newer note, one entry), %cool is a path
+::  denied to it within +ask-cool, %full is past a cap. Only %new and
+::  %dup change the list.
+++  ask-file
+  |=  [st=asks who=@p pax=path note=@t now=@da]
+  ^-  [?(%new %dup %cool %full) asks]
+  =/  nays=(list ask-nay)  (ask-live nays.st now)
+  =.  st  st(nays nays)
+  ?:  (lien nays |=(n=ask-nay &(=(who who.n) =(pax pax.n))))
+    [%cool st]
+  =/  new=ask-req  [who pax (ask-note note) now]
+  =/  dup  |=(r=ask-req &(=(who who.r) =(pax pax.r)))
+  ?:  (lien pend.st dup)
+    [%dup st(pend [new (skip pend.st dup)])]
+  =/  fam=@  (quota-family who)
+  ?:  (gte (lent (skim pend.st |=(r=ask-req =(fam (quota-family who.r))))) ask-ship-cap)
+    [%full st]
+  ?:  (gte (lent pend.st) ask-cap)  [%full st]
+  [%new st(pend [new pend.st])]
+::  +ask-get: the pending ask from `who` for `pax`
+++  ask-get
+  |=  [st=asks who=@p pax=path]
+  ^-  (unit ask-req)
+  =/  l=(list ask-req)  (skim pend.st |=(r=ask-req &(=(who who.r) =(pax pax.r))))
+  ?~(l ~ `i.l)
+::  +ask-drop: the ask from `who` for `pax` gone (approved)
+++  ask-drop
+  |=  [st=asks who=@p pax=path]
+  ^-  asks
+  st(pend (skip pend.st |=(r=ask-req &(=(who who.r) =(pax pax.r)))))
+::  +ask-deny: the ask gone, and a deny noted for +ask-cool
+++  ask-deny
+  |=  [st=asks who=@p pax=path now=@da]
+  ^-  asks
+  =/  st  (ask-drop st who pax)
+  =/  nays=(list ask-nay)
+    %+  skip  (ask-live nays.st now)
+    |=(n=ask-nay &(=(who who.n) =(pax pax.n)))
+  st(nays (scag ask-cap `(list ask-nay)`[[who pax now] nays]))
+::  +ask-rel: the page or folder `pax` names under our base `sb`, and
+::  whether it is a folder: <sb>/page/<rel>/code or <sb>/page/<rel>/
+::  dir-index, rel never empty
+++  ask-rel
+  |=  [sb=path pax=path]
+  ^-  (unit [rel=path dir=?])
+  =/  pre=path  (weld sb /page)
+  =/  n=@ud  (lent pre)
+  ?.  =(pre (scag n pax))  ~
+  =/  tail=path  (slag n pax)
+  ?~  tail  ~
+  =/  end=@ta  (rear tail)
+  =/  rel=path  (snip `path`tail)
+  ?~  rel  ~
+  ?.  (levy `path`rel |=(s=@ta &(!=(%$ s) ((sane %ta) s))))  ~
+  ?:  =(%code end)  `[rel |]
+  ?:  =(%'dir-index' end)  `[rel &]
+  ~
+::  +hold-mode: the widest mode a ship's holds (`ps`, one ship's map from
+::  +holds) give it on `pax`: the path itself, or a folder it holds whole
+::  at or above it. ~ when it holds nothing there.
+++  hold-mode
+  |=  [ps=(map path @t) pax=path]
+  ^-  (unit @t)
+  =/  own=path  (snip pax)
+  =/  hits=(list @t)
+    %+  murn  ~(tap by ps)
+    |=  [p=path md=@t]
+    ^-  (unit @t)
+    ?:  =(p pax)  `md
+    ?.  (dir-key p)  ~
+    =/  d=path  (snip p)
+    ?.  =(d (scag (lent d) own))  ~
+    ::  a folder covers what is under it, and itself only by its own key
+    ?.  (lth (lent d) (lent own))  ~
+    `md
+  ?~  hits  ~
+  ?:  (lien `(list @t)`hits |=(m=@t =('edit' m)))  `'edit'
+  `'read'
+::  +sent-put: an ask out, one per host and path, newest first, capped
+++  sent-put
+  |=  [st=sent r=ask-req]
+  ^-  sent
+  =/  r  r(note (ask-note note.r))
+  =/  rest=(list ask-req)
+    (skip out.st |=(o=ask-req &(=(who.o who.r) =(pax.o pax.r))))
+  [%1 (scag ask-cap `(list ask-req)`[r rest])]
+::  +sent-has: is an ask to `host` for `pax` out
+++  sent-has
+  |=  [st=sent host=@p pax=path]
+  ^-  ?
+  (lien out.st |=(o=ask-req &(=(who.o host) =(pax.o pax))))
+::  +sent-del: the ask to `host` for `pax` answered
+++  sent-del
+  |=  [st=sent host=@p pax=path]
+  ^-  sent
+  [%1 (skip out.st |=(o=ask-req &(=(who.o host) =(pax.o pax))))]
+::  +share-name: how a notice path reads to a person: a page by its rel,
+::  a folder by its rel and a slash, anything else as it is
+++  share-name
+  |=  pax=path
+  ^-  @t
+  =/  i=(unit @ud)  (find /page pax)
+  ?~  i  (spat pax)
+  =/  tail=path  (slag +(u.i) pax)
+  ?~  tail  (spat pax)
+  =/  rel=tape  (slag 1 (spud (snip `path`tail)))
+  ?:  =(%'dir-index' (rear tail))  (crip (weld rel "/"))
+  ?:  =(%code (rear tail))  (crip rel)
+  (spat pax)
 --

@@ -24,6 +24,12 @@
     <button id="aclreload" class="ico" title="reload from ship">&#8635;</button>
   </div>
   <div class="aclbody">
+    <section class="aclreq" id="aclreq" data-action="requests" aria-labelledby="aclreqh">
+      <h4 id="aclreqh">requests <span id="aclreqn" class="muted"></span></h4>
+      <p class="aclnote">Ships that read a page or folder of yours and ask to edit it.
+      Approve shares it with that ship for edit. Its other grants stay as they are.</p>
+      <div id="reqlist" class="aclgrid"></div>
+    </section>
     <div class="row">
       <input id="aclnew" placeholder="new group name (e.g. friends)" autocomplete="off">
       <button id="aclnewbtn">create group</button>
@@ -66,6 +72,7 @@
     if (!permsLoaded) loadPerms(); else renderAcl();
     loadBans();
     renderPublished();
+    loadAsks().then(renderAsks);
   };
 
   // ── published pages: every address worth handing out ─────────────────────

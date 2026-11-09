@@ -913,4 +913,121 @@
     (expect-eq !>(|) !>((ban-full:ls full `@p`257)))
     (expect-eq !>(|) !>((ban-full:ls (~(del in full) `@p`257) ~sampel-palnet)))
   ==
+::
+::  ==  edit access requests  ==
+::
+++  asb  /apps/x
+++  apg  /apps/x/page/notes/a/code
+++  t0  ~2026.11.8
+::  a first ask is filed; the same ship and path again is one entry,
+::  with the newer note
+++  test-ask-file-new-and-dup
+  =/  st=asks:ls  [%1 ~ ~]
+  =^  a  st  (ask-file:ls st nec apg 'please' t0)
+  =^  b  st  (ask-file:ls st nec apg 'again' (add t0 ~s1))
+  ;:  weld
+    (expect-eq !>(%new) !>(a))
+    (expect-eq !>(%dup) !>(b))
+    (expect-eq !>(1) !>((lent pend.st)))
+    (expect-eq !>('again') !>(note:(snag 0 pend.st)))
+  ==
+::  a deny cools the path for that ship a day, and only that ship
+++  test-ask-deny-cooldown
+  =/  st=asks:ls  [%1 ~ ~]
+  =^  r0  st  (ask-file:ls st nec apg '' t0)
+  =.  st  (ask-deny:ls st nec apg t0)
+  =/  soon  (ask-file:ls st nec apg '' (add t0 ~h1))
+  =/  late  (ask-file:ls st nec apg '' (add t0 ~d2))
+  =/  other  (ask-file:ls st bus apg '' (add t0 ~h1))
+  ;:  weld
+    (expect-eq !>(0) !>((lent pend.st)))
+    (expect-eq !>(1) !>((lent nays.st)))
+    (expect-eq !>(%cool) !>(-.soon))
+    (expect-eq !>(%new) !>(-.late))
+    ::  and the cooled deny is pruned once it has run out
+    (expect-eq !>(0) !>((lent nays.+.late)))
+    (expect-eq !>(%new) !>(-.other))
+  ==
+::  one ship may have +ask-ship-cap pending, its moons with it
+++  test-ask-ship-cap
+  =/  st=asks:ls  [%1 ~ ~]
+  =/  i=@ud  0
+  |-
+  ?:  (lth i ask-ship-cap:ls)
+    =/  r  (ask-file:ls st ~sampel-palnet /apps/x/page/(scot %ud i)/code '' t0)
+    $(i +(i), st +.r)
+  =/  moon=@p  (cat 5 ~sampel-palnet 1)
+  ;:  weld
+    (expect-eq !>(ask-ship-cap:ls) !>((lent pend.st)))
+    (expect-eq !>(%full) !>(-:(ask-file:ls st ~sampel-palnet /apps/x/page/z/code '' t0)))
+    (expect-eq !>(%full) !>(-:(ask-file:ls st moon /apps/x/page/z/code '' t0)))
+    (expect-eq !>(%new) !>(-:(ask-file:ls st nec /apps/x/page/z/code '' t0)))
+    ::  a duplicate still collapses at the cap
+    (expect-eq !>(%dup) !>(-:(ask-file:ls st ~sampel-palnet /apps/x/page/'0'/code '' t0)))
+  ==
+::  an approve takes the ask away and cools nothing
+++  test-ask-drop
+  =/  st=asks:ls  [%1 ~ ~]
+  =^  r0  st  (ask-file:ls st nec apg '' t0)
+  =.  st  (ask-drop:ls st nec apg)
+  ;:  weld
+    (expect-eq !>(~) !>(pend.st))
+    (expect-eq !>(~) !>((ask-get:ls st nec apg)))
+    (expect-eq !>(%new) !>(-:(ask-file:ls st nec apg '' t0)))
+  ==
+::  a long note is clipped
+++  test-ask-note-clip
+  =/  long=@t  (crip (reap 400 'a'))
+  =/  st=asks:ls  [%1 ~ ~]
+  =^  r0  st  (ask-file:ls st nec apg long t0)
+  (expect-eq !>(ask-note-cap:ls) !>((met 3 note:(snag 0 pend.st))))
+::  +ask-rel: a page or a folder under our base, nothing else
+++  test-ask-rel
+  ;:  weld
+    (expect-eq !>(`[/notes/a |]) !>((ask-rel:ls asb apg)))
+    (expect-eq !>(`[/notes &]) !>((ask-rel:ls asb /apps/x/page/notes/'dir-index')))
+    (expect-eq !>(~) !>((ask-rel:ls asb /apps/y/page/notes/code)))
+    (expect-eq !>(~) !>((ask-rel:ls asb /apps/x/page/code)))
+    (expect-eq !>(~) !>((ask-rel:ls asb /apps/x/page/notes/share)))
+    (expect-eq !>(~) !>((ask-rel:ls asb /apps/x/pub/notes/code)))
+  ==
+::  +hold-mode: the page itself, or a folder held whole above it
+++  test-hold-mode
+  =/  ps=(map path @t)
+    %-  ~(gas by *(map path @t))
+    :~  [apg 'read']
+        [/apps/x/page/docs/'dir-index' 'read']
+        [/apps/x/page/docs/w/code 'edit']
+        [/apps/x/page/team/'dir-index' 'edit']
+    ==
+  ;:  weld
+    (expect-eq !>(`'read') !>((hold-mode:ls ps apg)))
+    (expect-eq !>(`'read') !>((hold-mode:ls ps /apps/x/page/docs/p/code)))
+    (expect-eq !>(`'read') !>((hold-mode:ls ps /apps/x/page/docs/'dir-index')))
+    (expect-eq !>(`'read') !>((hold-mode:ls ps /apps/x/page/docs/sub/'dir-index')))
+    (expect-eq !>(`'edit') !>((hold-mode:ls ps /apps/x/page/docs/w/code)))
+    (expect-eq !>(`'edit') !>((hold-mode:ls ps /apps/x/page/team/p/code)))
+    (expect-eq !>(~) !>((hold-mode:ls ps /apps/x/page/notes/b/code)))
+    (expect-eq !>(~) !>((hold-mode:ls ps /apps/x/page/docsx/p/code)))
+    (expect-eq !>(~) !>((hold-mode:ls ~ apg)))
+  ==
+::  the asker's list: one per host and path, answered by host and path
+++  test-sent
+  =/  st=sent:ls  [%1 ~]
+  =.  st  (sent-put:ls st [nec apg 'one' t0])
+  =.  st  (sent-put:ls st [nec apg 'two' t0])
+  =.  st  (sent-put:ls st [bus apg 'b' t0])
+  ;:  weld
+    (expect-eq !>(2) !>((lent out.st)))
+    (expect-eq !>(&) !>((sent-has:ls st nec apg)))
+    (expect-eq !>(|) !>((sent-has:ls (sent-del:ls st nec apg) nec apg)))
+    (expect-eq !>(&) !>((sent-has:ls (sent-del:ls st nec apg) bus apg)))
+  ==
+::  +share-name: a page by its rel, a folder with a slash
+++  test-share-name
+  ;:  weld
+    (expect-eq !>('notes/a') !>((share-name:ls apg)))
+    (expect-eq !>('notes/') !>((share-name:ls /apps/x/page/notes/'dir-index')))
+    (expect-eq !>('/apps/x/odd') !>((share-name:ls /apps/x/odd)))
+  ==
 --
