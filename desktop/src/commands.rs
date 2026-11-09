@@ -412,6 +412,30 @@ pub fn open_external_url(url: String) -> Result<(), String> {
     open_external(&url)
 }
 
+/// How long a share notification's title and body may be, in characters.
+const NOTE_TITLE_MAX: usize = 120;
+const NOTE_BODY_MAX: usize = 200;
+
+/// A notification's text as the page passed it, without control
+/// characters and cut to `max` characters.
+pub(crate) fn note_text(s: &str, max: usize) -> String {
+    s.chars().filter(|c| !c.is_control()).take(max).collect()
+}
+
+/// A system notification for a new share (ui-src/lattice/73r-access.js:
+/// "~host shared <name> with you"). The page passes its title and body,
+/// both clipped here, and nothing else: no icon, sound, action or path.
+#[tauri::command]
+pub fn notify_share(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    use tauri_plugin_notification::NotificationExt;
+    app.notification()
+        .builder()
+        .title(note_text(&title, NOTE_TITLE_MAX))
+        .body(note_text(&body, NOTE_BODY_MAX))
+        .show()
+        .map_err(|e| e.to_string())
+}
+
 /// Extensions a page can be uploaded from. Mirrors EXT_KIND in
 /// ui-src/lattice/30-tree.js, and scripts/kind-parity.mjs checks the two agree.
 /// The page's own list is cut down to these, so a page cannot widen the pick
@@ -1526,6 +1550,15 @@ mod manager_section_tests {
 
 #[cfg(test)]
 mod tests {
+    //  a share notification's text: control characters gone, cut by
+    //  characters (never inside one), whatever the page passed
+    #[test]
+    fn note_text_is_clean_and_bounded() {
+        assert_eq!(super::note_text("~nec shared a/b\nwith you", 120), "~nec shared a/bwith you");
+        assert_eq!(super::note_text(&"é".repeat(500), 120).chars().count(), 120);
+        assert_eq!(super::note_text("short", 120), "short");
+        assert_eq!(super::note_text("\u{7}\u{1b}[31m", 10), "[31m");
+    }
     //  The ship-served client gets native commands only at the bridge
     //  origin. Any-host patterns granted them to every page the workspace
     //  window could reach (security audit run-1). A pattern that stopped
