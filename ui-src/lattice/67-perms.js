@@ -14,6 +14,10 @@
   // list is deferred off boot's critical path. Without this flag the panel
   // asserts you have no groups for the second or two before the answer lands.
   let permsLoaded = false;
+  // the last load failed, as its status text, or null. Without it a failed
+  // load left the group list saying "loading groups…" for good: nothing
+  // retried, and the only report was a status line the next one overwrote.
+  let permsErr = null;
   // latBase(), once known: a grant on one of our pages is a road under it
   let selfBase = null;
   //  bg: boot's deferred call yields to user activity (bgFetch). Panel
@@ -27,11 +31,14 @@
       r = g;
     } catch {}
     if (!r || !r.ok || !selfBase) {
-      st('could not load groups (' + (r ? r.status : 'network') + ')', false);
+      permsErr = r && r.ok ? 'no install path' : (r ? String(r.status) : 'network');
+      st('could not load groups (' + permsErr + ')', false);
+      renderGroupAccess();
       return;
     }
     permGroups = await r.json();
     permsLoaded = true;
+    permsErr = null;
     // every surface that renders groups repaints from this one load
     renderAcl();
     renderGroupAccess();

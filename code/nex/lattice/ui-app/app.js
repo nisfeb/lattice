@@ -8414,6 +8414,19 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       host.textContent = 'open a page to grant access.';
       return;
     }
+    if (!permsLoaded && permsErr) {
+      host.className = 'muted';
+      host.textContent = 'could not load groups (' + permsErr + '). ';
+      const b = document.createElement('button');
+      b.textContent = 'retry';
+      b.onclick = () => {
+        permsErr = null;
+        renderGroupAccess();          // back to "loading" while it runs
+        loadPerms();
+      };
+      host.appendChild(b);
+      return;
+    }
     if (!permsLoaded) {
       host.className = 'muted';
       host.textContent = 'loading groups…';
@@ -8470,6 +8483,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 // ── src/67-perms.js ───────────────────────────────────────────────────────
   let permGroups = [];
   let permsLoaded = false;
+  let permsErr = null;
   let selfBase = null;
   async function loadPerms(bg = false) {
     const get = bg ? bgFetch : fetch;
@@ -8480,11 +8494,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       r = g;
     } catch {}
     if (!r || !r.ok || !selfBase) {
-      st('could not load groups (' + (r ? r.status : 'network') + ')', false);
+      permsErr = r && r.ok ? 'no install path' : (r ? String(r.status) : 'network');
+      st('could not load groups (' + permsErr + ')', false);
+      renderGroupAccess();
       return;
     }
     permGroups = await r.json();
     permsLoaded = true;
+    permsErr = null;
     renderAcl();
     renderGroupAccess();
   }
