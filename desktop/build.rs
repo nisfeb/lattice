@@ -63,6 +63,9 @@ fn main() {
             "convert_tex",
             // Export PDF from the ship page's menus (src/pdf.rs)
             "export_pdf",
+            // a system notification for a new share, from the ship page
+            // (commands::notify_share)
+            "notify_share",
             // the page reports its colour scheme so the GTK menubar and
             // native scrollbars follow it (both windows: manager + ship page)
             "set_theme",

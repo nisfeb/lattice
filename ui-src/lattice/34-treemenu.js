@@ -85,6 +85,7 @@
     } else {
       item('link', 'Copy link', () => copyLink(swmUrb(t.it)));
       if (!swmDir(t.it.path)) item('in', 'Move into my pages', () => askMoveIn(t.it));
+      if (t.it.mode === 'read') item('ask', 'Request edit access', () => askEdit(t.it.host, t.it.path));
       item('del', 'Remove from list', () => treeDelete(row));
     }
     m.onkeydown = (e) => {

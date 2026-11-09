@@ -2632,6 +2632,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (doc && current) { has.add('download'); has.add('del'); }
     if (doc && current && PDF_KINDS.includes(mode === 'know' ? 'md' : pkind.value)) has.add('pdf');
     if (page && linkOf(current)) has.add('linkback');
+    if (askHere()) has.add('askedit');
     if (!grubPath && curFolder !== null) has.add('del');
     if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex')) has.add('tex');
     if (fodtHere()) { has.add('source'); if (wr && wr.macros) has.add('macros'); }
@@ -2694,6 +2695,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       window.open(api + '/page-source?name=' + encodeURIComponent(current), '_blank', 'noopener')));
     if (has.has('linkback'))
       item('linkback', 'Move back to shared with me', done(() => linkBack(current)));
+    if (has.has('askedit'))
+      item('askedit', 'Request edit access', done(() => { const a = askHere(); if (a) askEdit(a.host, a.path); }));
     if (has.has('del')) item('del', 'Delete', done(() => $('del').click()));
     const r = $('tmenu').getBoundingClientRect();
     m.style.top = r.bottom + 4 + 'px';
@@ -2706,7 +2709,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   $('tmenu').onclick = pageMenu;
   for (const [id, name] of [['kind', 'Change page kind'], ['wrap', 'Line wrap'], ['source', 'Source view'],
     ['link', 'Copy link'], ['dup', 'Duplicate page'], ['download', 'Download'], ['pdf', 'Export PDF'], ['tex', 'Convert to HTML'],
-    ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['del', 'Delete']]) {
+    ['raw', 'Open raw'], ['linkback', 'Move back to shared with me'], ['askedit', 'Request edit access'], ['del', 'Delete']]) {
     if (id === 'tex' && !window.__TAURI__) continue;
     action({ id: 'pm-' + id, name, home: 'Page menu',
       when: () => docFront() && pmenuHas().has(id),
@@ -5512,6 +5515,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     snapTree();
     renderTree();
+    if (current && linkOf(current)) paintLock();
     return true;
   }
 
@@ -6086,6 +6090,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     } else {
       item('link', 'Copy link', () => copyLink(swmUrb(t.it)));
       if (!swmDir(t.it.path)) item('in', 'Move into my pages', () => askMoveIn(t.it));
+      if (t.it.mode === 'read') item('ask', 'Request edit access', () => askEdit(t.it.host, t.it.path));
       item('del', 'Remove from list', () => treeDelete(row));
     }
     m.onkeydown = (e) => {
@@ -8530,7 +8535,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     let j = null;
     try { j = JSON.parse(data); } catch {}
     if (j && j.host && j.path) swmPages.delete(j.host + ' ' + j.path);
-    if (j && j.op === 'add' && j.host && j.path) shareToast(j);
+    if (j && j.op === 'add' && j.host && j.path) { shareToast(j); shareNotify(j); }
   };
   let swmFly = null;
   const sharesRefocused = () => {
@@ -9193,6 +9198,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     <button id="aclreload" class="ico" title="reload from ship">&#8635;</button>
   </div>
   <div class="aclbody">
+    <section class="aclreq" id="aclreq" data-action="requests" aria-labelledby="aclreqh">
+      <h4 id="aclreqh">requests <span id="aclreqn" class="muted"></span></h4>
+      <p class="aclnote">Ships that read a page or folder of yours and ask to edit it.
+      Approve shares it with that ship for edit. Its other grants stay as they are.</p>
+      <div id="reqlist" class="aclgrid"></div>
+    </section>
     <div class="row">
       <input id="aclnew" placeholder="new group name (e.g. friends)" autocomplete="off">
       <button id="aclnewbtn">create group</button>
@@ -9228,6 +9239,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!permsLoaded) loadPerms(); else renderAcl();
     loadBans();
     renderPublished();
+    loadAsks().then(renderAsks);
   };
 
   function renderPublished() {
@@ -9728,6 +9740,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   const actLabel = (a) => {
     if (a.kind === 'comment') return 'comment on ' + a.where;
+    if (SHARE_KINDS.has(a.kind) || a.kind === 'ask') return shareLabel(a);
     const t = a.title ? ': ' + a.title : '';
     if (a.kind === 'remote') return 'reply on ' + a.host + '/' + a.where + t;
     if (a.kind === 'reply') return 'reply on ' + a.where + t;
@@ -9735,6 +9748,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return a.where;
   };
   const actOpen = (a, e) => {
+    if (SHARE_KINDS.has(a.kind) || a.kind === 'ask') return shareOpen(a, e);
     if (a.kind === 'folder') return browseIn(api + '?url=' + encodeURIComponent('urb://' + a.host + a.where + '/'));
     if (a.kind === 'comment') return openIn('page', a.where, { ev: e });
     const tail = encodeURIComponent(a.where) + '/' + a.post;
@@ -9750,7 +9764,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   async function loadActivity() {
     try {
-      const r = await busyFetch(api + '/notify');
+      const [r] = await Promise.all([busyFetch(api + '/notify'), loadAsks()]);
       if (!r.ok) { st('activity failed' + await errText(r), false); return; }
       acts = (await r.json()).items || [];
     } catch { st('activity failed', false); return; }
@@ -9758,8 +9772,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     host.textContent = '';
     host.className = '';
     if (!acts.length) {
-      ibEmpty(host, 'No activity yet. Comments from other ships on your pages, and '
-        + 'replies to your forum posts and comments, show here.');
+      ibEmpty(host, 'No activity yet. Comments from other ships on your pages, '
+        + 'replies to your forum posts and comments, shares and edit requests show here.');
       return;
     }
     const grid = document.createElement('div');
@@ -9777,6 +9791,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       card.classList.toggle('unread', !a.read);
       const mk = a.read ? null : ibButton(card, 'mark read', read);
       ibButton(card, 'open', async () => { read(); await actOpen(a); });
+      const w = a.kind === 'ask' && askOf(a.who, a.where);
+      if (w) askButtons(card, w, async () => { await loadActivity(); ibShow(ibTab); });
       grid.appendChild(card);
     }
     host.appendChild(grid);
@@ -9819,6 +9835,155 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     });
   };
   $('cmreload').onclick = cmLoad;
+
+// ── src/73r-access.js ─────────────────────────────────────────────────────
+  const ASK_MAX = 280;                 // bytes of a note a host keeps
+  const SHARE_KINDS = new Set(['share', 'reshare', 'unshare', 'asked']);
+  let askPend = [];
+  let askSent = [];
+  async function loadAsks() {
+    try {
+      const r = await bgFetch(api + '/access-requests');
+      if (!r.ok) return false;
+      const d = await r.json();
+      askPend = d.pending || [];
+      askSent = d.sent || [];
+      return true;
+    } catch { return false; }
+  }
+  function clipNote(s) {
+    const enc = new TextEncoder();
+    if (enc.encode(s).length <= ASK_MAX) return s;
+    let out = '';
+    for (const ch of s) {
+      if (enc.encode(out + ch).length > ASK_MAX) break;
+      out += ch;
+    }
+    return out;
+  }
+
+  function askable(host, path) {
+    if (!host || !path) return false;
+    const mine = sharedWithMe.filter((s) => s.host === host);
+    const own = mine.find((s) => s.path === path);
+    if (own) return own.mode === 'read';
+    const at = path.replace(/\/(code|dir-index)$/, '');
+    let mode = null;
+    for (const s of mine) {
+      if (!swmDir(s.path)) continue;
+      const d = s.path.replace(/\/dir-index$/, '');
+      if (at.startsWith(d + '/')) mode = mode === 'edit' ? mode : s.mode;
+    }
+    return mode === 'read';
+  }
+  const askedAlready = (host, path) => askSent.some((a) => a.host === host && a.path === path);
+  function askHere() {
+    if (grubPath && grubShip && /\/page\/.+\/code$/.test(grubPath))
+      return askable(grubShip, grubPath) ? { host: grubShip, path: grubPath } : null;
+    if (grubPath || curFolder !== null || mode === 'know' || !current) return null;
+    const lk = linkOf(current);
+    return lk && lk.mode === 'read' ? { host: lk.host, path: lk.path } : null;
+  }
+  async function askEdit(host, path) {
+    const name = sharedName(path);
+    const again = askedAlready(host, path) ? ' You asked already; asking again replaces that request.' : '';
+    const raw = await ask('Ask ' + host + ' for edit access to ' + name + '? A short note is optional.' + again, '', 'ask');
+    if (raw === null) return false;
+    st('asking ' + host + '…');
+    const note = clipNote(raw.trim());
+    const r = await mutate(api + '/access-request?host=' + encodeURIComponent(host)
+      + '&path=' + encodeURIComponent(path), { method: 'POST', body: note });
+    if (r && r.ok) {
+      askSent = [{ host, path, name, note, when: Date.now() },
+        ...askSent.filter((a) => !(a.host === host && a.path === path))];
+      st('asked ' + host + ' for edit access to ' + name);
+      return true;
+    }
+    let err = '';
+    try { err = (await r.json()).error || ''; } catch {}
+    st(err === 'too-old' ? "this host's lattice is too old to take requests"
+      : r && r.status === 504 ? host + ' did not answer, so nothing was asked'
+      : 'asking failed' + (err ? ': ' + err : r ? ' ' + r.status : ''), false);
+    return false;
+  }
+
+  async function answerAsk(a, ok) {
+    const r = await mutate(api + '/access-answer?ship=' + encodeURIComponent(a.ship)
+      + '&path=' + encodeURIComponent(a.path) + '&do=' + (ok ? 'approve' : 'deny'));
+    if (!r || !r.ok) { st((ok ? 'approve' : 'deny') + ' failed' + await errText(r), false); return false; }
+    askPend = askPend.filter((x) => !(x.ship === a.ship && x.path === a.path));
+    st(ok ? a.ship + ' may now edit ' + a.name : 'declined ' + a.ship + "'s request for " + a.name);
+    renderAsks();
+    refreshInboxBadge(true);
+    return true;
+  }
+  const askOf = (ship, path) => askPend.find((x) => x.ship === ship && x.path === path) || null;
+  function askButtons(card, a, after) {
+    for (const [label, ok] of [['approve', true], ['deny', false]]) {
+      ibButton(card, label, async () => { if ((await answerAsk(a, ok)) && after) await after(); });
+    }
+  }
+  function renderAsks() {
+    const host = $('reqlist');
+    if (!host) return;
+    host.textContent = '';
+    const sum = $('aclreqn');
+    if (sum) sum.textContent = askPend.length ? String(askPend.length) : '';
+    if (!askPend.length) {
+      const p = document.createElement('p');
+      p.className = 'aclnote';
+      p.textContent = 'No requests waiting.';
+      host.appendChild(p);
+      return;
+    }
+    for (const a of askPend) {
+      const card = ibCard(a.ship, a.name, (e) => openOwn(a.path, e), a.note || '(no note)', a.when);
+      askButtons(card, a);
+      host.appendChild(card);
+    }
+  }
+  function openOwn(path, e) {
+    const m = /\/page\/(.+)\/(code|dir-index)$/.exec(path);
+    if (!m) return null;
+    return m[2] === 'code' ? openIn('page', m[1], { ev: e }) : pickFolder(m[1]);
+  }
+
+  const shareLabel = (a) => (a.kind === 'ask' ? 'asks to edit ' + a.title : sharedName(a.where));
+  function shareOpen(a, e) {
+    if (a.kind === 'ask') return toolOpen('access');
+    if (a.kind === 'unshare') return null;
+    if (swmDir(a.where)) return browseIn(swmRead(a.host, swmRel(a.where) + '/'));
+    return openIn('grub', a.where, { ev: e, ship: a.host });
+  }
+
+  const NOTE_SEEN = 'latNoteSeen';
+  function noteOnce(key) {
+    let seen = [];
+    try { seen = JSON.parse(localStorage.getItem(NOTE_SEEN) || '[]'); } catch {}
+    if (!Array.isArray(seen)) seen = [];
+    if (seen.includes(key)) return false;
+    seen.push(key);
+    try { localStorage.setItem(NOTE_SEEN, JSON.stringify(seen.slice(-50))); } catch {}
+    return true;
+  }
+  function shareNotify(j) {
+    const title = j.host + ' shared ' + sharedName(j.path) + ' with you';
+    const body = swmDir(j.path) ? 'A folder, in shared with me' : 'A page, in shared with me';
+    const key = j.host + ' ' + j.path + ' ' + (j.t || '');
+    const desk = window.__TAURI__ && window.__TAURI__.core;
+    if (desk) {
+      if (noteOnce(key)) desk.invoke('notify_share', { title, body }).catch(() => {});
+      return;
+    }
+    let on = false;
+    try { on = localStorage.getItem('latNotify') === '1'; } catch {}
+    const N = window.Notification;
+    if (!on || !N || N.permission !== 'granted' || !noteOnce(key)) return;
+    try {
+      const n = new N(title, { body, tag: key });
+      n.onclick = () => { window.focus(); shareOpen({ kind: 'share', host: j.host, where: j.path }); };
+    } catch {}
+  }
 
 // ── src/74-orrery.js ──────────────────────────────────────────────────────
   function orreryShow() {

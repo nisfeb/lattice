@@ -19,7 +19,16 @@
 ::    %folder   a folder we follow on another ship has new pages
 ::              (+folder-item): one item per folder, filed again as the
 ::              count grows, `post` the count and `where` the folder
-+$  kind  ?(%comment %reply %remote %folder)
+::    %share    a ship shared a page or folder with us: `where` the path
+::              its notice named, `title` how it reads, `body` the line
+::    %reshare  a ship changed the mode of one it shared (quiet)
+::    %unshare  a ship stopped sharing one (quiet)
+::    %ask      a ship asks us for edit access: `where` the path, `body`
+::              its note
+::    %asked    a host answered our ask: `title` 'yes' or 'no'
++$  kind  ?(%comment %reply %remote %folder %share %reshare %unshare %ask %asked)
+::  +quiet: the kinds that list in Activity but never count as unread
+++  quiet  |=(k=kind ?=(?(%reshare %unshare) k))
 ::  +$  item: one activity item. `host` is the ship it happened on (us for
 ::  our own pages and boards), `where` a page path or a board name, `post`
 ::  the forum post id (0 for a page), `title` the post title when known.
@@ -65,7 +74,7 @@
 ++  is-read
   |=  [s=seen id=@ta i=item]
   ^-  ?
-  |((lte when.i mark.s) (~(has in ids.s) id))
+  |((quiet kind.i) (lte when.i mark.s) (~(has in ids.s) id))
 ::  +unread: how many of `items` are unread
 ++  unread
   |=  [s=seen items=(list [id=@ta i=item])]

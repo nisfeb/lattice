@@ -63,6 +63,24 @@ pub trait Transport: Send + Sync {
     /// the 5s clock while a live stream is standing guard — see WatchEvent.
     fn watch(&self, _on_event: &(dyn Fn(WatchEvent) + Send + Sync)) {}
 
+    /// Wind a persistent connection down before the process exits or the mount
+    /// is torn down. Stop issuing new requests, wait up to `bound` for any
+    /// reply already in flight to be read to completion, then shut the
+    /// connection down cleanly before it is dropped.
+    ///
+    /// The default is a no-op: a transport whose connections are per-request
+    /// and short-lived (Eyre over HTTP) has nothing to wind down. The lick
+    /// transport holds ONE long-lived socket to the ship's %lick port, and
+    /// dropping it while the ship is mid-write makes vere re-enter its own
+    /// error handler on the broken pipe until its stack overflows and the
+    /// ship segfaults. Reading the pending reply and half-closing first turns
+    /// that abrupt disconnect into an orderly EOF the ship ignores.
+    ///
+    /// Bounded on purpose: a wedged in-flight read must not hold exit open.
+    /// At the bound the socket is shut from a side handle so the stuck read
+    /// returns and teardown proceeds.
+    fn quiesce(&self, _bound: std::time::Duration) {}
+
     /// Provided: GET and parse JSON.
     fn get_json(&self, path: &str, query: &[(&str, &str)]) -> Result<Value, TErr> {
         let b = self.get_bytes(path, query)?;

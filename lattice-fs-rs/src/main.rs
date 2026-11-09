@@ -18,10 +18,8 @@ use std::sync::Arc;
 use lattice_fs::eyre::EyreTransport;
 use lattice_fs::projection::Projection;
 use lattice_fs::transport::Transport;
-use lattice_fs::vfs::GrubberyFs;
 use lattice_fs::{
-    cookie_path_for, eyre::check_ship_url, mount_config, projection_http, projection_lick,
-    resolve_root, Root,
+    cookie_path_for, eyre::check_ship_url, projection_http, projection_lick, resolve_root, Root,
 };
 
 /// LATTICE_URL, held to the ship URL rule before anything is sent to it.
@@ -66,12 +64,64 @@ fn cmd_errors(name: &str, root: &str) -> Result<(), String> {
 }
 
 fn cmd_mount(mnt: &str, root: &str) -> Result<(), String> {
+    //  Block SIGINT/SIGTERM before any mount thread is spawned, so they
+    //  inherit the block and the signal is ours to wait for. Without this a
+    //  Ctrl-C (or a service stop) would drop the lick socket mid-write, which
+    //  drives vere's %lick error handler into a stack overflow and segfaults
+    //  the ship. We wait for the signal, quiesce the socket, then unmount.
+    block_term_signals();
     let proj = make_projection(root)?;
     let ship = proj.ship();
     std::fs::create_dir_all(mnt).ok();
-    let config = mount_config();
     println!("mounting lattice ({ship}) at {mnt} — Ctrl-C to unmount");
-    fuser::mount(GrubberyFs::new(proj), mnt, &config).map_err(|e| e.to_string())
+    let session = lattice_fs::spawn(proj.clone(), mnt).map_err(|e| e.to_string())?;
+
+    wait_for_term_signal();
+    eprintln!("\nunmounting {mnt} …");
+    //  drain any reply in flight and half-close the lick socket cleanly
+    proj.quiesce(QUIESCE_BOUND);
+    //  then unmount, bounded: a wedged FUSE op must not hang the exit. The
+    //  quiesce above already shut the socket, which is what protects the ship;
+    //  if the unmount itself stalls we return and let the process exit.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = session.umount_and_join();
+        let _ = tx.send(());
+    });
+    if rx.recv_timeout(QUIESCE_BOUND + std::time::Duration::from_secs(2)).is_err() {
+        eprintln!("unmount did not finish in time; exiting anyway");
+    }
+    Ok(())
+}
+
+/// How long the lick socket gets to drain and half-close on shutdown. Matches
+/// the desktop shell's bound; see Transport::quiesce for why it exists.
+const QUIESCE_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Block SIGINT and SIGTERM in the calling thread so that threads spawned
+/// afterwards inherit the block and the signal can be waited for with
+/// `wait_for_term_signal` instead of killing the process outright.
+fn block_term_signals() {
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
+    }
+}
+
+/// Block until SIGINT or SIGTERM is delivered. Pairs with
+/// `block_term_signals`, which must have run first.
+fn wait_for_term_signal() {
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGINT);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        let mut sig: libc::c_int = 0;
+        libc::sigwait(&set, &mut sig);
+    }
 }
 
 /// Read a +code from the tty without echo. Returns None if LATTICE_CODE is set

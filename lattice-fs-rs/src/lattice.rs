@@ -359,6 +359,9 @@ impl Projection for LatticeProjection {
     fn watch(&self, on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync)) {
         self.t.watch(on_event);
     }
+    fn quiesce(&self, bound: std::time::Duration) {
+        self.t.quiesce(bound);
+    }
 }
 
 /// A save the ship refused because the page moved: a folder move is

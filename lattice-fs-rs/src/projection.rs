@@ -122,6 +122,13 @@ pub trait Projection: Send + Sync {
     /// `Changed` — see WatchEvent in transport.rs.
     fn watch(&self, on_event: &(dyn Fn(crate::transport::WatchEvent) + Send + Sync));
 
+    /// Wind the underlying transport down before the mount is dropped or the
+    /// process exits. Forwards to Transport::quiesce; the default is a no-op,
+    /// which is correct for any transport with nothing long-lived to close.
+    /// The lick transport uses it to avoid crashing the ship on a bare socket
+    /// drop (see Transport::quiesce).
+    fn quiesce(&self, _bound: std::time::Duration) {}
+
     // kind<->ext policy. Shared for lattice; another app overrides.
     // The browser holds the same table as KIND_EXT/EXT_KIND in
     // ui-app/src/30-tree.js (and a twin in ui-app/vault.js). No build step
