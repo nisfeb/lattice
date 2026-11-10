@@ -46,6 +46,8 @@ const uv = (bytes) => {
 const tag = (f) => (existsSync(join(ui, f))
   ? uv(createHash('sha256').update(readFileSync(join(ui, f))).digest().subarray(0, 16)) : '');
 const writerH = tag('writer.js');
+// sheet.js, the grid editor for fods pages (build-sheet.mjs), the same way
+const sheetH = tag('sheet.js');
 // pdf.js, the Export PDF layout (78-pdf.js), is hand-written in ui-app/
 // and loaded the same way
 const pdfH = tag('pdf.js');
@@ -56,6 +58,7 @@ writeFileSync(join(ui, 'app.js'),
   '/* BUILT FILE — do not edit. Source: ui-src/lattice/, build: scripts/build-ui.mjs */\n'
   + '(function () {\n\'use strict\';\n'
   + `// the served writer.js's hash (build-ui.mjs, 26-writer.js)\nconst WRITER_H = '${writerH}';\n`
+  + `// and sheet.js's, the grid editor for fods pages\nconst SHEET_H = '${sheetH}';\n`
   + `// and pdf.js's (78-pdf.js)\nconst PDF_H = '${pdfH}';\n`
   + `// and skills.js's (95s-skills.js)\nconst SKILLS_H = '${skillsH}';\n\n`
   + body + '})();\n');

@@ -94,6 +94,7 @@ console.log(
 //  Each is named here and checked absent below.
 const BYTES_ONLY = {
   odt: 'zipped ODF: 70-upload.js hands it to writer.js as an ArrayBuffer',
+  ods: 'zipped ODF: a spreadsheet, for sheet.js to import the same way',
 };
 const kmapKeys = new Set([...Object.keys(extKind), ...Object.keys(kmap)]);
 const kmapDrift = [...kmapKeys].filter((e) => !(e in BYTES_ONLY) && kmap[e] !== extKind[e]);
@@ -111,6 +112,7 @@ const ACCEPTED_EXCEPTIONS = {
   htm: 'browser-only inbound alias for html; the mount never writes a .htm file',
   text: "legacy inbound-only alias predating the .txt convention, read by vault.js's own restore, never written by the mount",
   odt: 'upload-only, read as bytes (BYTES_ONLY): the mount keeps a .odt as scratch (kind_for_ext answers hoon), so it never reaches the ship as text',
+  ods: 'upload-only, read as bytes (BYTES_ONLY), as odt is: the mount keeps a .ods as scratch',
   hoon: 'kind_for_ext has no literal "hoon" arm because hoon IS the match\'s own wildcard fallback (every unclaimed extension already becomes hoon). Correct, just invisible to a regex over literal arms',
 };
 

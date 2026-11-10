@@ -119,7 +119,7 @@
   const kindExt = (k) => (k === 'text' ? 'txt' : k === 'index' ? 'md' : (k || 'md'));
   const KMAP = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
     text: 'text', js: 'js', css: 'css', hoon: 'hoon', tex: 'tex', latex: 'tex',
-    fodt: 'fodt' };
+    fodt: 'fodt', fods: 'fods' };
 
   const daToUnix = (s) => {
     const m = /^~(\d+)\.(\d+)\.(\d+)\.\.(\d+)\.(\d+)\.(\d+)/.exec(String(s || ''));

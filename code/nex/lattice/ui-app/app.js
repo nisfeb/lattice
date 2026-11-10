@@ -3,6 +3,8 @@
 'use strict';
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
 const WRITER_H = '0v6.mjanj.2h7ln.vmbk0.4rmug.2npm0';
+// and sheet.js's, the grid editor for fods pages
+const SHEET_H = '0v4.d7p2g.c958c.iocvo.imtfh.8tkap';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
@@ -2445,7 +2447,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
 // ── src/23-tabhead.js ─────────────────────────────────────────────────────
 
-  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'hoon'];
+  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'hoon'];
   const tabHead = document.createElement('div');
   tabHead.id = 'tabhead';
   tabHead.className = 'tabhead';
@@ -5438,10 +5440,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
 // ── src/30-tree.js ────────────────────────────────────────────────────────
   const KIND_EXT = { md: 'md', gmi: 'gmi', html: 'html', text: 'txt', js: 'js',
-                     css: 'css', hoon: 'hoon', index: 'md', tex: 'tex', fodt: 'fodt' };
+                     css: 'css', hoon: 'hoon', index: 'md', tex: 'tex', fodt: 'fodt',
+                     fods: 'fods' };
   const EXT_KIND = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
                      text: 'text', js: 'js', css: 'css', hoon: 'hoon', tex: 'tex',
-                     latex: 'tex', fodt: 'fodt', odt: 'fodt' };
+                     latex: 'tex', fodt: 'fodt', odt: 'fodt', fods: 'fods', ods: 'fods' };
   const kindExt = (k) => KIND_EXT[k] || 'hoon';
   const extKind = (e) => EXT_KIND[String(e || '').toLowerCase()] || null;
 
