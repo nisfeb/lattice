@@ -666,6 +666,27 @@
         const h = $('fuse-hint');
         h.textContent = s.hint || 'mounting is unavailable here'; h.hidden = false;
         document.querySelector('#add-mount button').disabled = true;
+        // macOS: fetch macFUSE's own installer for them. The app has to
+        // restart afterwards, since libfuse binds only at launch.
+        if (s.fuse_installable) {
+          h.textContent = 'Mounting needs macFUSE, which is not installed. ';
+          const b = document.createElement('button');
+          b.textContent = 'Install macFUSE';
+          b.onclick = async () => {
+            b.disabled = true;
+            b.textContent = 'downloading…';
+            try {
+              await invoke('install_macfuse');
+              h.textContent = 'Follow the macFUSE installer, then quit and reopen lattice.';
+            } catch (e) {
+              h.textContent = String(e) + ' ';
+              b.disabled = false;
+              b.textContent = 'Install macFUSE';
+              h.appendChild(b);
+            }
+          };
+          h.appendChild(b);
+        }
       }
     }, () => {
       // A desktop older than these tabs on the ship page grants none of
