@@ -188,4 +188,12 @@
     (expect-eq !>(`(unit *)``f) !>(dat.r))
     (expect-eq !>(`view-mode:pg`%fodt) !>(show.r))
   ==
+::  +fods: a spreadsheet's page does the same
+++  test-fods-result
+  =/  f=@t  '<office:document a=\'1\'>\0a\09<table:table table:name="x &amp; y"/>'
+  =/  r=result:pg  (fods:pg f)
+  ;:  weld
+    (expect-eq !>(`(unit *)``f) !>(dat.r))
+    (expect-eq !>(`view-mode:pg`%fods) !>(show.r))
+  ==
 --
