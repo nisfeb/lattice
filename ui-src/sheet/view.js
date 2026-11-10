@@ -367,8 +367,19 @@ export function mount(host, opts = {}) {
   //  run an edit as one undo step, then show it
   function edit(fn) {
     if (locked()) return false;
+    const steps = book.history.length;
+    const before = book.text();
     book.mark();
-    const r = fn();
+    let r;
+    //  an edit that throws part way is taken back whole: the book goes
+    //  back to the text it had, and the undo step made for it is dropped
+    try { r = fn(); } catch (e) {
+      if (book.history.length > steps) book.history.pop();
+      book.load(before);
+      ctl.say('That change could not be made, so nothing was changed.');
+      refresh();
+      return false;
+    }
     if (r && r.error) {
       //  nothing was changed: drop the undo mark made for it
       if (book.history.length && book.history[book.history.length - 1] === book.text()) book.history.pop();
@@ -581,7 +592,11 @@ export function mount(host, opts = {}) {
     const h = hit(e);
     if (h && (h[0] !== fr || h[1] !== fc)) { fr = h[0]; fc = h[1]; paint(true); bars(); }
   });
-  addEventListener('pointerup', () => { drag = null; });
+  //  on the window, since a drag can end outside the grid. Taken off again
+  //  in destroy: left on, every mount kept its book and its undo history
+  //  alive for the life of the page.
+  const dragEnd = () => { drag = null; };
+  addEventListener('pointerup', dragEnd);
 
   scroll.addEventListener('contextmenu', (e) => {
     const col = e.target.dataset && e.target.dataset.col, row = e.target.dataset && e.target.dataset.row;
@@ -813,6 +828,7 @@ export function mount(host, opts = {}) {
   ctl.destroy = () => {
     clearTimeout(syncTimer);
     if (ro) ro.disconnect();
+    removeEventListener('pointerup', dragEnd);
     if (openMenu) openMenu.remove();
     host.replaceChildren();
   };

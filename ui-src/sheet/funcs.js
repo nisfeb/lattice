@@ -296,8 +296,9 @@ export const FUNCS = {
   SUM: (a) => stat(a, ksum),
   PRODUCT: (a) => stat(a, (ns) => ns.reduce((x, y) => x * y, ns.length ? 1 : 0)),
   AVERAGE: (a) => stat(a, (ns) => (ns.length ? ksum(ns) / ns.length : E.div0)),
-  MIN: (a) => stat(a, (ns) => (ns.length ? Math.min(...ns) : 0)),
-  MAX: (a) => stat(a, (ns) => (ns.length ? Math.max(...ns) : 0)),
+  //  a loop, not Math.min(...ns): a spread of a long range overflows the stack
+  MIN: (a) => stat(a, (ns) => ns.reduce((m, n) => (n < m ? n : m), ns.length ? ns[0] : 0)),
+  MAX: (a) => stat(a, (ns) => ns.reduce((m, n) => (n > m ? n : m), ns.length ? ns[0] : 0)),
   COUNT: (a) => {
     let n = 0;
     for (const x of a) {

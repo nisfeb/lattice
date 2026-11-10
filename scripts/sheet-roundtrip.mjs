@@ -72,6 +72,19 @@ const CASES = {
     ['office:annotation', 'draw:rect', 'table:data-pilot-table', 'ooo:source-code']],
   'l-merged': ['04-merged', (b) => { b.enter(0, 1, 1, '100'); b.enter(0, 0, 0, 'new title'); must(b.shift(0, 'r', 5, 2)); b.enter(0, 5, 0, 'between'); }],
   'm-i18n': ['09-i18n', (b) => { b.enter(0, 0, 1, 'naïve café ☃ 日本語 🎉'); b.enter(0, 8, 0, '=LEN(B1)&" "&UPPER(A1)'); b.enter(0, 2, 1, 'x < y && "z"'); }],
+  //  formatting on top of formatting made in the same session, and a
+  //  number format kept under it
+  'o-stacked': ['02-formulas', (b) => {
+    b.format(0, 1, 0, 1, 1, { bold: true }); b.format(0, 1, 0, 1, 1, { italic: true }); b.format(0, 1, 0, 1, 0, { align: 'center' });
+    //  (in cells no formula reads: Calc shows a formula over a percent as
+    //  a percent, which lattice does not do, and that is not this case)
+    b.enter(0, 40, 0, '50%'); b.format(0, 40, 0, 40, 0, { bold: true }); b.enter(0, 41, 0, '$12.50'); b.format(0, 41, 0, 41, 0, { underline: true });
+  }, ['fo:font-style="italic"', 'fo:font-weight="bold"']],
+  //  a file from a producer that does not use LibreOffice's calcext
+  //  namespace: lattice must not write the prefix into it
+  'p-no-calcext': ['01-values', (b) => { b.enter(0, 1, 1, 'changed'); b.enter(0, 2, 1, '43'); b.enter(0, 17, 1, '=B3*2'); b.enter(0, 18, 1, '=1/0'); }, null,
+    (t) => t.replace(/ xmlns:calcext="[^"]*"/, '').replace(/ calcext:[a-z-]+="[^"]*"/g, '')],
+  'q-whole-rows': ['02-formulas', (b) => { b.enter(0, 40, 0, '=SUM(2:5)'); b.enter(0, 41, 0, '=COUNT(A:A)+MAX(B:B)'); }],
   'n-values': ['01-values', (b) => { b.enter(0, 9, 1, '40'); b.enter(0, 10, 1, '99.5'); b.enter(0, 11, 1, '2027-02-28'); b.enter(0, 12, 1, '07:05:09'); b.enter(0, 7, 1, '0.005'); b.enter(0, 13, 1, 'false'); }],
 };
 for (const n of readdirSync(dir).filter((f) => f.endsWith('.fods')).sort()) CASES['z-untouched-' + n.slice(0, -5)] = [n.slice(0, -5), null];
@@ -86,9 +99,9 @@ if (!soffice) {
 const only = (() => { const i = process.argv.indexOf('--only'); return i > 0 ? new Set(process.argv[i + 1].split(',')) : null; })();
 const tmp = mkdtempSync(join(tmpdir(), 'latsheet-'));
 const built = {};
-for (const [name, [src, edit]] of Object.entries(CASES)) {
+for (const [name, [src, edit, , prep]] of Object.entries(CASES)) {
   if (only && !only.has(name)) continue;
-  const b = new Book(corpus(src));
+  const b = new Book(prep ? prep(corpus(src)) : corpus(src));
   try { if (edit) edit(b); } catch (e) { check.bad(`${name}: the edit applies`, e.message); continue; }
   const text = b.text();
   if (!edit) check(`${name}: untouched is byte-identical`, text === corpus(src));

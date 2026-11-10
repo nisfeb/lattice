@@ -111,6 +111,7 @@ export class Styles {
     this.fmt = new Map();       // data style name -> function | null
     this.look = new Map();      // cell style name -> resolved look
     this.byKey = new Map();     // canonical key -> automatic cell style name
+    this.made = new Map();      // name -> { parent, data, props, raw } of a style made this session
     this.defaultCell = null;
     for (const box of [doc.styles, doc.auto]) {
       if (!box) continue;
@@ -230,13 +231,18 @@ export class Styles {
     if (Object.keys(change).every((k) => (k === 'data' ? (now.data || null) === (change.data || null) : (now[k] || false) === (change[k] || false)))) return base;
     const el = this.cell.get(base);
     const auto = el && this.doc.auto && this.doc.auto.kids.includes(el);
+    //  a style lattice made earlier in this session is not in the source
+    //  yet: what it holds is in `made`. Without this the second change to
+    //  a cell started again from Default and dropped the first.
+    const mine = this.made.get(base);
     //  a named style is the parent of the new one. An automatic style is
     //  copied, with its own parent.
-    const parent = auto ? (attr(el, 'style:parent-style-name') || 'Default') : (el ? base : 'Default');
-    let data = auto ? attr(el, 'style:data-style-name') : undefined;
+    const parent = mine ? mine.parent : auto ? (attr(el, 'style:parent-style-name') || 'Default') : (el ? base : 'Default');
+    let data = mine ? mine.data : auto ? attr(el, 'style:data-style-name') : undefined;
     const props = { 'style:text-properties': [], 'style:paragraph-properties': [], 'style:table-cell-properties': [] };
-    const raw = [];
-    if (auto) {
+    const raw = mine ? [...mine.raw] : [];
+    if (mine) for (const b of CELL_PROPS) props[b] = mine.props[b].map(([a, v]) => [a, v]);
+    else if (auto) {
       for (const k of el.kids) {
         if (!k.name) continue;
         if (CELL_PROPS.includes(k.name) && !k.kids.some((x) => x.name)) props[k.name].push(...k.attrs.map(([a, v]) => [a, v]));
@@ -282,7 +288,7 @@ export class Styles {
       + (data ? ` style:data-style-name="${escAttr(data)}"` : '') + (body ? `>${body}</style:style>` : '/>');
     this.doc.newAuto.push(xml);
     this.byKey.set(key, name);
-    this.pending = (this.pending || new Map()).set(name, { parent, data, props });
+    this.made.set(name, { parent, data, props, raw });
     //  the look of a style not yet in the source: the base's, changed
     const look = { ...this.lookOf(base) };
     for (const k of ['bold', 'italic', 'underline', 'align']) if (k in change) { if (change[k]) look[k] = change[k]; else delete look[k]; }

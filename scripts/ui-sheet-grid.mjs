@@ -285,6 +285,49 @@ console.log('==> read-only');
   await h.page.close();
 }
 
+console.log('==> mounting and unmounting');
+{
+  const g = await open(corpus('02-formulas'));
+  const left = await g.page.evaluate((t) => {
+    //  count what a mount leaves on the window once it is destroyed
+    let n = 0;
+    const add = window.addEventListener, del = window.removeEventListener;
+    window.addEventListener = function (...a) { n++; return add.apply(this, a); };
+    window.removeEventListener = function (...a) { n--; return del.apply(this, a); };
+    for (let i = 0; i < 5; i++) {
+      const c = window.LatSheet.mount(document.getElementById('h'), { text: t, cur: () => t, onText: () => {}, onChange: () => {} });
+      c.destroy();
+    }
+    window.addEventListener = add;
+    window.removeEventListener = del;
+    return n;
+  }, corpus('02-formulas'));
+  check.eq('a destroyed grid leaves no listener on the window', left, 0);
+  await g.page.close();
+}
+{
+  //  an edit that throws part way is taken back whole
+  const g = await open(corpus('02-formulas'));
+  await g.click(1, 0);
+  const r = await g.page.evaluate(() => {
+    const b = window.ctl.book;
+    const before = b.text();
+    const real = b.engine.recalc;
+    b.engine.recalc = () => { throw new Error('boom'); };
+    return { before, real: !!real };
+  });
+  await g.page.keyboard.type('77');
+  await g.press('Enter');
+  const after = await g.page.evaluate(() => window.ctl.book.text());
+  check('an edit that fails inside leaves the spreadsheet as it was', after === r.before && (await g.cell(0, 1, 0)).v === 2);
+  check('and says so', /could not be made/.test(await g.note()));
+  await g.click(2, 0);
+  await g.page.keyboard.type('5');
+  await g.press('Enter');
+  check.eq('the next edit works', (await g.cell(0, 2, 0)).v, 5);
+  await g.page.close();
+}
+
 console.log('==> render and export');
 {
   const g = await open(corpus('09-i18n'));

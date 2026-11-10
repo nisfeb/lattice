@@ -21,7 +21,7 @@ import { readFileSync, readdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { makeCheck } from './lib/check.mjs';
-import { parseFods, serializeFods, cellAt, extent, rowCount } from '../ui-src/sheet/model.js';
+import { parseFods, serializeFods, cellAt, extent, rowCount, serialDate } from '../ui-src/sheet/model.js';
 import { Engine, cellValue } from '../ui-src/sheet/engine.js';
 import { Err, Unsupported, general } from '../ui-src/sheet/funcs.js';
 import { toUser, toOf, moveFormula, moveAddrs, offsetFormula, parseAddrs, colName, colIndex } from '../ui-src/sheet/formula.js';
@@ -303,6 +303,115 @@ console.log('==> edits');
   const b2 = new Book(b.text());
   check('and reads back the same', b2.look(0, 0, 1).bold && b2.look(0, 0, 1).italic && b2.cell(0, 2, 0).text === '$1.00' && !b2.look(0, 0, 0).bold);
 }
+
+console.log('==> the review of release 130');
+{
+  //  1. the walk budget is per formula, not per session
+  const blank = readFileSync(join(here, '..', 'ui-src', 'sheet', 'blank.fods'), 'utf8');
+  const b = new Book(blank);
+  for (let r = 0; r < 1000; r++) b.enter(0, r, 0, String(r));
+  b.enter(0, 0, 1, '=SUM(A1:A1000)');
+  for (let i = 0; i < 5600; i++) b.enter(0, 0, 0, String(i % 7));
+  b.enter(0, 0, 0, '1000');
+  check.eq('a sum still follows its range after 5,600 edits in one session', b.cell(0, 0, 1).v, 499500 + 1000);
+  check('and is not marked stale', !b.stale(0, 0, 1));
+}
+{
+  //  2. a second formatting change builds on the first
+  const b = new Book(corpus('02-formulas'));
+  b.format(0, 1, 0, 1, 0, { bold: true });
+  b.format(0, 1, 0, 1, 0, { italic: true });
+  b.format(0, 1, 0, 1, 0, { align: 'center' });
+  b.enter(0, 2, 0, '50%');
+  b.format(0, 2, 0, 2, 0, { bold: true });
+  const again = new Book(b.text());
+  const l = again.look(0, 1, 0);
+  check('bold, then italic, then centred, is all three after a save', l.bold && l.italic && l.align === 'center', JSON.stringify(l));
+  check.eq('a percent made bold is still a percent after a save', again.cell(0, 2, 0).text + ' ' + !!again.look(0, 2, 0).bold + ' ' + again.styles.dataKind(again.look(0, 2, 0).data), '50.00% true percent');
+  b.format(0, 1, 0, 1, 0, { bold: false });
+  const off = new Book(b.text()).look(0, 1, 0);
+  check('taking bold off keeps the italic and the centring', !off.bold && off.italic && off.align === 'center', JSON.stringify(off));
+}
+{
+  //  3. a range across two sheets, in a file and typed
+  //  (a function, since "$'" in a replacement string means something to replace)
+  const text = corpus('05-sheets').replace('of:=SUM([$Data.A2:.A4])', () => "of:=SUM([$Data.A2:$&apos;My Sheet&apos;.A4])");
+  let b = null, threw = '';
+  try { b = new Book(text); } catch (e) { threw = e.message; }
+  check('a file with a range across sheets opens', !!b && !b.error, threw || (b && b.error));
+  b.enter(0, 1, 0, '10');
+  check('its formula keeps the value LibreOffice cached, marked', b.cell(1, 0, 1).v === 6 && b.stale(1, 0, 1), JSON.stringify(b.cell(1, 0, 1).v));
+  let r = null;
+  try { r = b.enter(0, 5, 0, "=SUM(Data.A2:'My Sheet'.A4)"); } catch (e) { threw = e.message; }
+  check('typing one does not throw', !!r && !threw, threw);
+  check('and is kept for LibreOffice to compute', b.cell(0, 5, 0).f === "of:=SUM([Data.A2:'My Sheet'.A4])" && b.stale(0, 5, 0), b.cell(0, 5, 0).f);
+}
+{
+  //  4. a reference lattice does not read is not a dead reference
+  const ext = "of:=['file:///other.ods'#$Sheet1.A1]+[.A2]";
+  const text = corpus('02-formulas').replace('table:formula="of:=[.A2]+[.B2]"', () => `table:formula="${ext.replace(/'/g, '&apos;')}"`);
+  const b = new Book(text);
+  check.eq('another file\'s cell is read as written', b.cell(0, 1, 3).f, ext);
+  b.enter(0, 1, 0, '20');
+  check.eq('editing what it reads keeps the cached value, not #REF!', b.cell(0, 1, 3).text + ' ' + b.cell(0, 1, 3).err + ' ' + b.stale(0, 1, 3), '5 false true');
+  check('the saved formula is untouched', b.text().includes(ext.replace(/'/g, '&apos;')));
+  check.eq('the bar shows it as stored', b.input(0, 1, 3), "=['file:///other.ods'#$Sheet1.A1]+A2");
+  check('rows cannot be moved under it, and it says why', /cannot read/.test(b.shift(0, 'r', 5, 1).error || ''));
+  check('nor is it turned to #REF! by the refusal', !b.text().includes('#REF!'));
+  const c = new Book(corpus('05-sheets'));
+  c.enter(1, 3, 0, '=SUM(Data.A:A)');
+  check.eq('a whole column on another sheet is stored, computed and shown', c.cell(1, 3, 0).f + ' ' + c.cell(1, 3, 0).v + ' ' + c.input(1, 3, 0), 'of:=SUM([Data.A:.A]) 6 =SUM(Data.A:A)');
+  check.eq('and the stored spelling with $ reads back', toOf(toUser('of:=SUM([$Data.A:.A])')), 'of:=SUM([$Data.A:.A])');
+  c.shift(0, 'c', 0, 1);
+  check.eq('and moves with its columns', c.cell(1, 3, 0).f, 'of:=SUM([Data.B:.B])');
+}
+{
+  //  5. no calcext namespace, no calcext attribute
+  const bare = corpus('01-values').replace(/ xmlns:calcext="[^"]*"/, '').replace(/ calcext:[a-z-]+="[^"]*"/g, '');
+  const b = new Book(bare);
+  check('a file with no calcext namespace opens', !b.error && !bare.includes('calcext'), b.error);
+  b.enter(0, 1, 1, 'changed');
+  b.enter(0, 2, 1, '=1/0');
+  check('an edit writes no calcext attribute into it', !b.text().includes('calcext'));
+  check.eq('and the cells are written without it', new Book(b.text()).cell(0, 1, 1).text + ' ' + new Book(b.text()).cell(0, 2, 1).text, 'changed #DIV/0!');
+}
+//  6. whole rows can be typed
+check.eq('toOf: whole rows', toOf('=SUM(2:5)+SUM($3:$3)'), 'of:=SUM([.2:.5])+SUM([.$3:.$3])');
+check.eq('toOf: a number before a comparison is still a number', toOf('=2<5'), 'of:=2<5');
+check.eq('toOf: and what toUser shows types back', toOf(toUser('of:=SUM([.2:.5])')), 'of:=SUM([.2:.5])');
+{
+  //  7. a rule on another sheet is not moved by this sheet's rows
+  const cf = '<calcext:conditional-formats><calcext:conditional-format calcext:target-range-address="&apos;My Sheet&apos;.B1:&apos;My Sheet&apos;.B2">'
+    + '<calcext:condition calcext:apply-style-name="Default" calcext:value="formula-is([.A5]&gt;1)" calcext:base-cell-address="&apos;My Sheet&apos;.B1"/></calcext:conditional-format></calcext:conditional-formats>';
+  const named = '<table:named-expressions><table:named-expression table:name="Twice" table:base-cell-address="$&apos;My Sheet&apos;.$A$1" table:expression="[.A5]*2"/>'
+    + '<table:named-range table:name="Col" table:base-cell-address="$Data.$A$1" table:cell-range-address="$Data.$A$2:.$A$4"/></table:named-expressions>';
+  const src = corpus('05-sheets');
+  const i = src.indexOf('</table:table>', src.indexOf('table:name="My Sheet"'));
+  const text = (src.slice(0, i) + cf + src.slice(i)).replace('<table:named-expressions/>', () => named);
+  check('the fixture carries the rule and the names', text.includes('formula-is([.A5]') && text.includes('table:name="Twice"'));
+  const a = new Book(text);
+  check('insert a row on the first sheet', a.shift(0, 'r', 1, 1).ok);
+  check('the other sheet\'s rule still tests its own A5', a.text().includes('calcext:value="formula-is([.A5]&gt;1)"'));
+  check('and the name based on the other sheet still reads its A5', a.text().includes('table:expression="[.A5]*2"'));
+  check('while the range on the first sheet moved', a.text().includes('table:cell-range-address="$Data.$A$3:.$A$5"'));
+  const z = new Book(text);
+  check('insert a row on the second sheet', z.shift(1, 'r', 1, 1).ok);
+  check('its own rule and its name move', z.text().includes('calcext:value="formula-is([.A6]&gt;1)"') && z.text().includes('table:expression="[.A6]*2"'));
+  check('and the first sheet\'s range does not', z.text().includes('table:cell-range-address="$Data.$A$2:.$A$4"'));
+}
+{
+  //  8. MIN and MAX over a long run
+  const head = '<?xml version="1.0"?>\n<office:document xmlns:office="o" xmlns:table="t" xmlns:text="x" office:mimetype="application/vnd.oasis.opendocument.spreadsheet"><office:body><office:spreadsheet><table:table table:name="B">';
+  const tail = '</table:table></office:spreadsheet></office:body></office:document>';
+  const b = new Book(head + '<table:table-row table:number-rows-repeated="200000"><table:table-cell office:value-type="float" office:value="3"><text:p>3</text:p></table:table-cell></table:table-row>' + tail);
+  let r = null, threw = '';
+  try { r = b.enter(0, 0, 1, '=MAX(A1:A200000)+MIN(A1:A200000)'); } catch (e) { threw = e.message; }
+  check.eq('MAX and MIN over 200,000 cells', threw || b.cell(0, 0, 1).v, 6);
+  void r;
+}
+//  10. a time just short of midnight
+check.eq('serialDate carries into the next day', [serialDate(46023.999999, 25569 - 25569), serialDate(1.5, 0), serialDate(2, 0), serialDate(0.9999999, 0)].join(' '), [serialDate(46024, 0), '1970-01-02T12:00:00', '1970-01-03', '1970-01-02'].join(' '));
+check('and never writes hour 24', !/T24/.test(serialDate(46023.999999, 0)));
 
 console.log('==> hostile input');
 {

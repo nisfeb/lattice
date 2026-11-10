@@ -74,10 +74,13 @@ export function timeSerial(dur) {
 }
 const p2 = (n) => String(n).padStart(2, '0');
 export function serialDate(n, nullDate) {
-  const whole = Math.floor(n + 1e-9);
+  //  in whole seconds first, so a time half a second short of midnight
+  //  is the next day's 00:00:00 and never T24:00:00
+  const total = Math.round(n * 86400);
+  const whole = Math.floor(total / 86400);
+  const secs = total - whole * 86400;
   const d = new Date((whole + nullDate) * 86400000);
   let iso = `${String(d.getUTCFullYear()).padStart(4, '0')}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())}`;
-  const secs = Math.round((n - whole) * 86400);
   if (secs > 0) iso += `T${p2(Math.floor(secs / 3600))}:${p2(Math.floor(secs / 60) % 60)}:${p2(secs % 60)}`;
   return iso;
 }
@@ -186,6 +189,7 @@ export function parseFods(text, limits) {
     text, root: x.root, docEl, ss, nullDate,
     auto: find(docEl, 'office:automatic-styles'), styles: find(docEl, 'office:styles'),
     sheets: [], newAuto: [], tracked: !!find(ss, 'table:tracked-changes'),
+    calcext: docEl.attrs.some(([k]) => k === 'xmlns:calcext'),
   };
   for (const k of ss.kids) if (k.name === 'table:table') doc.sheets.push(parseTable(text, k, nullDate));
   if (!doc.sheets.length) return { error: 'a spreadsheet with no sheets' };
@@ -400,7 +404,9 @@ function cellXml(doc, cell, ind) {
       if (cell.vt === 'currency' && cell.cur) put('office:currency', cell.cur);
       put('office:value', numAttr(cell.v));
     }
-    put('calcext:value-type', cell.err ? 'error' : cell.vt);
+    //  LibreOffice's own attribute, only where the document declares its
+    //  namespace: an undeclared prefix is not XML a reader has to accept
+    if (doc.calcext) put('calcext:value-type', cell.err ? 'error' : cell.vt);
   }
   for (const [k, raw] of cell.attrs) {
     if (!VALUE_ATTRS.has(k) && k !== 'table:content-validation-name') a += ` ${k}="${raw}"`;

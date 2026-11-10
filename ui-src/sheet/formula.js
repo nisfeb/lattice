@@ -109,11 +109,13 @@ function printEnd(e, mode, first) {
 export function printRef(ref, mode) {
   //  a reference to deleted cells is the bare error, as LibreOffice saves it
   if (ref.bad) return '#REF!';
+  //  one lattice could not read is written back exactly as it came
+  if (ref.unknown) return ref.raw;
   if (ref.full) {
-    const d = mode === 'of' ? '.' : '';
     const end = (e) => (ref.full === 'c' ? (e.cAbs ? '$' : '') + colName(e.c) : (e.rAbs ? '$' : '') + (e.r + 1));
-    const t = d + end(ref.a) + ':' + d + end(ref.b);
-    return mode === 'of' ? '[' + t + ']' : t;
+    const sh = ref.a.sheet !== null ? (ref.a.sheetAbs ? '$' : '') + quoteSheet(ref.a.sheet) : '';
+    if (mode === 'of') return '[' + sh + '.' + end(ref.a) + ':.' + end(ref.b) + ']';
+    return (sh ? sh + '.' : '') + end(ref.a) + ':' + end(ref.b);
   }
   const body = printEnd(ref.a, mode, true) + (ref.b ? ':' + printEnd(ref.b, mode, false) : '');
   return mode === 'of' ? '[' + body + ']' : body;
@@ -153,7 +155,7 @@ export function tokenize(text, mode) {
       const close = text.indexOf(']', i);
       if (close < 0) bad('a reference that is not closed');
       const a = readEnd(text, i + 1, 'of');
-      let ref = fullRef(text.slice(i + 1, close), 'of') || { bad: true };
+      let ref = fullRef(text.slice(i + 1, close), 'of');
       if (a) {
         if (a.end === close) ref = { a: strip(a), b: null };
         else if (text[a.end] === ':') {
@@ -161,9 +163,23 @@ export function tokenize(text, mode) {
           if (b && b.end === close) ref = { a: strip(a), b: strip(b) };
         }
       }
+      //  what is left is either a reference to deleted cells, which is
+      //  the error it says it is, or one lattice does not read (another
+      //  file's cells, a range across sheets written some other way). The
+      //  second is not an error: it is kept as written and never guessed at.
+      if (!ref) {
+        const inner = text.slice(i + 1, close);
+        ref = inner.includes('#REF!') ? { bad: true } : { unknown: true, raw: text.slice(i, close + 1) };
+      }
       i = close + 1;
       out.push({ t: 'ref', ref, s, e: i });
       continue;
+    }
+    if (mode === 'user') {
+      //  whole columns or rows: A:A, $B:$D, 2:5, Sheet2.A:A. Before the
+      //  number, or 2:5 reads as the number 2 and a stray colon.
+      const fr = userFull(text, i);
+      if (fr) { i = fr.end; out.push({ t: 'ref', ref: fr.ref, s, e: i }); continue; }
     }
     if ((ch >= '0' && ch <= '9') || (ch === '.' && text[i + 1] >= '0' && text[i + 1] <= '9')) {
       const m = /^(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?/.exec(text.slice(i));
@@ -179,10 +195,6 @@ export function tokenize(text, mode) {
       continue;
     }
     if (mode === 'user') {
-      //  whole columns or rows: A:A, $B:$D, 2:5
-      const fm = /^(\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}|\$?\d{1,7}:\$?\d{1,7})(?![A-Za-z0-9_.(])/.exec(text.slice(i, i + 20));
-      const fr = fm && fullRef(fm[1], 'user');
-      if (fr) { i += fm[1].length; out.push({ t: 'ref', ref: fr, s, e: i }); continue; }
       //  a reference, unless it is a function name (LOG10 followed by "(")
       const a = readEnd(text, i, 'user');
       if (a && !/[A-Za-z0-9_.(]/.test(text[a.end] || '')) {
@@ -224,29 +236,52 @@ const strip = (e) => ({ sheet: e.sheet, sheetAbs: e.sheetAbs, c: e.c, cAbs: e.cA
 //  a whole-column or whole-row reference: [.A:.C] or [.2:.5] as stored,
 //  A:C or 2:5 as typed. It is a range with `full` set ('c' or 'r'), so
 //  everything that reads ranges reads it, and it prints as it came.
+//  It may name a sheet: [$Data.A:.A] as stored, Data.A:A as typed.
 function fullRef(body, mode) {
+  let sheet = null, sheetAbs = false, rest = body;
+  if (mode === 'of' ? body[0] !== '.' : true) {
+    const sh = readSheet(body, 0);
+    const sep = sh ? body[sh.end] : '';
+    if (sh && (sep === '.' || (mode === 'user' && sep === '!'))) {
+      sheet = sh.name;
+      sheetAbs = sh.abs;
+      rest = body.slice(mode === 'of' ? sh.end : sh.end + 1);
+    } else if (mode === 'of') return null;
+  }
   const dot = mode === 'of' ? '\\.' : '';
-  let m = new RegExp(`^${dot}(\\$?)([A-Za-z]{1,3}):${dot}(\\$?)([A-Za-z]{1,3})$`).exec(body);
+  let m = new RegExp(`^${dot}(\\$?)([A-Za-z]{1,3}):${dot}(\\$?)([A-Za-z]{1,3})$`).exec(rest);
   if (m) {
     const c1 = colIndex(m[2]), c2 = colIndex(m[4]);
     if (c1 >= 16384 || c2 >= 16384) return null;
     return {
       full: 'c',
-      a: { sheet: null, sheetAbs: false, c: c1, cAbs: !!m[1], r: 0, rAbs: false },
+      a: { sheet, sheetAbs, c: c1, cAbs: !!m[1], r: 0, rAbs: false },
       b: { sheet: null, sheetAbs: false, c: c2, cAbs: !!m[3], r: 1048575, rAbs: false },
     };
   }
-  m = new RegExp(`^${dot}(\\$?)(\\d{1,7}):${dot}(\\$?)(\\d{1,7})$`).exec(body);
+  m = new RegExp(`^${dot}(\\$?)(\\d{1,7}):${dot}(\\$?)(\\d{1,7})$`).exec(rest);
   if (m) {
     const r1 = +m[2] - 1, r2 = +m[4] - 1;
     if (r1 < 0 || r2 < 0 || r1 >= 1048576 || r2 >= 1048576) return null;
     return {
       full: 'r',
-      a: { sheet: null, sheetAbs: false, c: 0, cAbs: false, r: r1, rAbs: !!m[1] },
+      a: { sheet, sheetAbs, c: 0, cAbs: false, r: r1, rAbs: !!m[1] },
       b: { sheet: null, sheetAbs: false, c: 16383, cAbs: false, r: r2, rAbs: !!m[3] },
     };
   }
   return null;
+}
+//  a typed whole-column or whole-row reference starting at text[i], as
+//  { ref, end }, or null
+function userFull(text, i) {
+  let j = i;
+  const sh = readSheet(text, i);
+  if (sh && (text[sh.end] === '.' || text[sh.end] === '!')) j = sh.end + 1;
+  const m = /^(\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}|\$?\d{1,7}:\$?\d{1,7})(?![A-Za-z0-9_.(:])/.exec(text.slice(j, j + 20));
+  if (!m) return null;
+  const end = j + m[1].length;
+  const ref = fullRef(text.slice(i, end), 'user');
+  return ref ? { ref, end } : null;
 }
 
 // ── the tree ─────────────────────────────────────────────────────────────
@@ -438,6 +473,8 @@ export function moveFormula(stored, home, op) {
   const head = stored.slice(0, stored.length - body.length);
   let toks;
   try { toks = tokenize(body, 'of'); } catch { return null; }
+  //  a reference lattice cannot read cannot be moved, so nothing is
+  if (toks.some((k) => k.t === 'ref' && k.ref.unknown)) return null;
   let out = '';
   let pos = 0;
   let changed = false;
@@ -459,6 +496,7 @@ export function renameInFormula(stored, from, to) {
   const head = stored.slice(0, stored.length - body.length);
   let toks;
   try { toks = tokenize(body, 'of'); } catch { return null; }
+  if (toks.some((k) => k.t === 'ref' && k.ref.unknown)) return null;
   let out = '';
   let pos = 0;
   let changed = false;
@@ -504,13 +542,14 @@ export function parseAddrs(s) {
 const printAddr = (ref) => printEnd(ref.a, 'of') + (ref.b ? ':' + printEnd(ref.b, 'of') : '');
 //  +moveAddrs: an address list after the edit, or null when it cannot be
 //  read. An address whose cells were all deleted is dropped from a list.
-export function moveAddrs(s, op) {
+//  `home` is the sheet an address with no sheet of its own is on.
+export function moveAddrs(s, op, home0 = op.sheet) {
   const refs = parseAddrs(s);
   if (!refs) return null;
   const out = [];
   let changed = false;
   for (const ref of refs) {
-    const home = ref.a.sheet ?? op.sheet;
+    const home = ref.a.sheet ?? home0;
     const moved = moveRef(ref, home, op);
     if (moved !== ref) changed = true;
     if (!moved.bad) out.push(printAddr(moved));
@@ -527,6 +566,7 @@ export function offsetFormula(stored, dr, dc) {
   const head = stored.slice(0, stored.length - body.length);
   let toks;
   try { toks = tokenize(body, 'of'); } catch { return null; }
+  if (toks.some((k) => k.t === 'ref' && k.ref.unknown)) return null;
   const shift = (e, full) => {
     const r = e.rAbs || full === 'c' ? e.r : e.r + dr;
     const c = e.cAbs || full === 'r' ? e.c : e.c + dc;
