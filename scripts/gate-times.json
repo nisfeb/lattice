@@ -32,5 +32,6 @@
   "ui-swfrag.mjs": 12,
   "ui-treedelete.mjs": 75,
   "dirshare-check.py": 90,
-  "ui-plugin-skills.mjs": 20
+  "ui-plugin-skills.mjs": 20,
+  "ui-sheet.mjs": 110
 }
