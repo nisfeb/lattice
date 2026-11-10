@@ -466,3 +466,8 @@ jobs:
       # for the shipless reader's loopback, so it needs no ship either.
       - name: browser unit test - reader loading line (no ship)
         run: CHROME="$(command -v google-chrome)" node scripts/ui-reader-loading.mjs
+      # ui-sheet-grid loads the built sheet.js into a blank page and drives
+      # the spreadsheet grid with the mouse and the keyboard, so it needs no
+      # ship either.
+      - name: browser unit test - spreadsheet grid (no ship)
+        run: CHROME="$(command -v google-chrome)" node scripts/ui-sheet-grid.mjs

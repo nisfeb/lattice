@@ -361,7 +361,7 @@ export function mount(host, opts = {}) {
   function changed() {
     dirty = true;
     clearTimeout(syncTimer);
-    if (opts.onText) syncTimer = setTimeout(ctl.sync, 300);
+    if (opts.onText) syncTimer = setTimeout(flush, 300);
     if (opts.onChange) opts.onChange();
   }
   //  run an edit as one undo step, then show it
@@ -403,7 +403,7 @@ export function mount(host, opts = {}) {
     const lines = ed.value.split('\n').length;
     if (lines > 1) ed.style.height = (lines * 20 + 6) + 'px';
   }
-  function closeEd(commit, dr = 0, dc = 0) {
+  function closeEd(commit, dr = 0, dc = 0, quiet = false) {
     if (!editing) return true;
     const val = editFrom === 'bar' ? fxIn.value : ed.value;
     editing = false;
@@ -413,7 +413,7 @@ export function mount(host, opts = {}) {
     if (commit && val !== book.input(cur, ar, ac)) ok = edit(() => book.enter(cur, ar, ac, val));
     if (ok && (dr || dc)) select(ar + dr, ac + dc);
     else { bars(); paint(true); }
-    focusGrid();
+    if (!quiet) focusGrid();
     return ok;
   }
   const touch = () => matchMedia('(pointer: coarse)').matches;
@@ -512,10 +512,17 @@ export function mount(host, opts = {}) {
   }
 
   // ── the pointer ────────────────────────────────────────────────────────
-  let drag = null;
+  let drag = null, lastDown = null;
+  //  the cell under a pointer event, from where it is and not from what
+  //  it hit: a press repaints the cells, so by the release (and so for a
+  //  click or a double click) the element pressed is gone
   const hit = (e) => {
-    const t = e.target.closest && e.target.closest('[data-r]');
-    return t && layer.contains(t) ? [+t.dataset.r, +t.dataset.c] : null;
+    const box0 = scroll.getBoundingClientRect();
+    const x = e.clientX - box0.left, y = e.clientY - box0.top;
+    if (x < HDR_W || y < HDR_H || x > scroll.clientWidth || y > scroll.clientHeight) return null;
+    const px = x + scroll.scrollLeft - HDR_W, py = y + scroll.scrollTop - HDR_H;
+    if (px >= colX[nCols] || py >= rowY[nRows]) return null;
+    return [seek(rowY, nRows, py), seek(colX, nCols, px)];
   };
   scroll.addEventListener('pointerdown', (e) => {
     if (e.button > 0 && e.button !== 2) return;
@@ -546,6 +553,7 @@ export function mount(host, opts = {}) {
       focusGrid();
       return;
     }
+    if (e.target === ed && editing) return;      // a click inside the open editor
     const h = hit(e);
     if (!h) return;
     if (editing && !closeEd(true)) return;
@@ -554,7 +562,14 @@ export function mount(host, opts = {}) {
       if (h[0] < r1 || h[0] > r2 || h[1] < c1 || h[1] > c2) select(h[0], h[1]);
       return;
     }
+    //  a second press on the same cell soon after the first is a double
+    //  click. The browser's own dblclick never comes: the press repaints
+    //  the cells, and a click whose pressed element is gone is not sent.
+    const now = Date.now();
+    const twice = lastDown && now - lastDown.t < 450 && lastDown.r === h[0] && lastDown.c === h[1] && !e.shiftKey;
+    lastDown = twice ? null : { t: now, r: h[0], c: h[1] };
     select(h[0], h[1], e.shiftKey);
+    if (twice) { e.preventDefault(); openEd(); return; }
     if (e.pointerType !== 'touch') {
       drag = true;
       e.preventDefault();
@@ -567,7 +582,7 @@ export function mount(host, opts = {}) {
     if (h && (h[0] !== fr || h[1] !== fc)) { fr = h[0]; fc = h[1]; paint(true); bars(); }
   });
   addEventListener('pointerup', () => { drag = null; });
-  scroll.addEventListener('dblclick', (e) => { if (hit(e)) openEd(); });
+
   scroll.addEventListener('contextmenu', (e) => {
     const col = e.target.dataset && e.target.dataset.col, row = e.target.dataset && e.target.dataset.row;
     if (col !== undefined) { e.preventDefault(); menu(e, 'c', +col); } else if (row !== undefined) { e.preventDefault(); menu(e, 'r', +row); } else if (hit(e)) { e.preventDefault(); menu(e, 'cell'); }
@@ -773,18 +788,26 @@ export function mount(host, opts = {}) {
   ctl.book = book;
   ctl.text = () => book.text();
   ctl.base = () => base;
-  ctl.sync = () => {
+  //  the model's text into the shell's buffer. The timer calls this 300 ms
+  //  after a change, and it leaves an open cell editor alone: what is
+  //  being typed is not in the model yet.
+  function flush() {
     clearTimeout(syncTimer);
-    if (editing) closeEd(true);
     if (!dirty || (opts.cur && opts.cur() !== base)) return true;
     dirty = false;
     const t = book.text();
     if (t !== base && opts.onText) opts.onText(base = t);
     return true;
+  }
+  //  the shell calls this before a save, a tab switch or a park: what is
+  //  being typed is committed first, so it is not lost
+  ctl.sync = () => {
+    if (editing) closeEd(true, 0, 0, true);
+    return flush();
   };
   ctl.setEditable = (on) => { wanted = !!on; if (!wanted && editing) closeEd(false); drawTabs(); bars(); };
   ctl.focus = () => focusGrid();
-  ctl.select = (s, r, c) => { show(s); select(r, c); };
+  ctl.select = (s, r, c) => { if (s !== cur) show(s); select(r, c); };
   //  the outline's nth entry is the nth sheet
   ctl.heading = (i) => show(i);
   ctl.destroy = () => {
