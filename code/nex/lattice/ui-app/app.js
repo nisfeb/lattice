@@ -7695,7 +7695,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         if (!m || typeof m.latPrev !== 'number' || !(m.latPrev > 0)) return;
         if (m.seq !== fitCur) { fitCur = m.seq; fitH = 0; fitOff = false; }
         if (fitOff) return;
-        if (!fitH) { fitH = m.latPrev; prev.style.minHeight = fitH + 'px'; return; }
+        if (!fitH) { fitH = m.latPrev; prev.style.minHeight = fitH + 'px'; scrollRelease(); return; }
         if (m.latPrev > fitH + 2) { fitOff = true; prev.style.minHeight = ''; }
       });
       prevBlank();
@@ -7715,6 +7715,20 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const previewScrollbars = () => '<style>html:root{color-scheme:'
     + (document.documentElement.style.colorScheme || 'light dark') + '}html::-webkit-scrollbar{display:none}</style>';
   let fitSeq = 0;
+  let fitPage = null, holdT = 0;
+  const holdEl = document.createElement('div');
+  holdEl.style.cssText = 'position:absolute;top:0;left:0;width:1px;visibility:hidden;pointer-events:none';
+  const scrollRelease = () => { clearTimeout(holdT); holdEl.remove(); };
+  const scrollHold = () => {
+    const w = prev.parentNode, same = fitPage === current;
+    fitPage = current;
+    if (!w || !same || !w.scrollTop) return scrollRelease();
+    if (getComputedStyle(w).position === 'static') w.style.position = 'relative';
+    holdEl.style.height = w.scrollHeight + 'px';
+    if (holdEl.parentNode !== w) w.append(holdEl);
+    clearTimeout(holdT);
+    holdT = setTimeout(scrollRelease, 3000);
+  };
   const outsideGuard = () => {
     if (!['md', 'gmi', 'text'].includes(kindNow()) || outsideOn(current)) return '';
     const o = location.origin;
@@ -7741,7 +7755,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     refreshPreview();
   };
   const previewFit = () => {
-    if (prev) prev.style.minHeight = '';
+    if (prev) { scrollHold(); prev.style.minHeight = ''; }
     return outsideGuard() + previewScrollbars()
       + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)})})()</script>';
   };

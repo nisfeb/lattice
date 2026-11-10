@@ -31,7 +31,13 @@ const JNAME = 'journal/' + today.getFullYear() + '-' + p2(today.getMonth() + 1) 
 const JBODY = '# Brief, ' + JNAME.slice(8) + '\n\nGood morning. Two things today.\n\n## To do\n\n'
   + '- [ ] Call Sam about [[situation/roof]] [T1]\n- [ ] Pay the invoice [T2]\n- To do: water the plants\n';
 const JWANT = JBODY.replace('- [ ] Pay the invoice [T2]', '- [x] Pay the invoice [T2]');
-await seed(env, [[NAME, BODY], [JNAME, JBODY]]);
+//  a page long enough to scroll, its last box far below the fold
+const LNAME = 'taskbox-long-' + (process.pid % 100000);
+const LBODY = '# Long\n\n' + Array.from({ length: 80 }, (_, i) => 'Filler paragraph ' + i + '.\n').join('\n')
+  + '\n- [ ] Way down\n';
+const LLINE = LBODY.split('\n').findIndex((l) => l.includes('Way down'));
+const LWANT = LBODY.replace('- [ ] Way down', '- [x] Way down');
+await seed(env, [[NAME, BODY], [JNAME, JBODY], [LNAME, LBODY]]);
 await fetch(env.base + '/apps/lattice/page-sensitive?on=1&name=' + encodeURIComponent(JNAME),
   { method: 'POST', headers: { Cookie: env.cookie } });
 
@@ -111,10 +117,28 @@ try {
   await (await frame()).click('input[data-line="7"]').catch(() => {});
   const junsaved = await waitFor(async () => (await shipBody(JNAME)) === JBODY, 30000, 500);
   check('and unticking it saves [ ] back', !!junsaved, JSON.stringify(await shipBody(JNAME)));
+
+  //  sneagan, 2026-11-10: ticking a box while scrolled down jumped Read
+  //  back to the top. The repaint must leave the pane where it was.
+  await p.evaluate((n) => window.latTabs.openIn('page', n), LNAME);
+  await p.waitForFunction((t) => document.getElementById('src').value === t, { timeout: 60000 }, LBODY);
+  await p.waitForFunction((l) => (document.getElementById('prev').getAttribute('srcdoc') || '')
+    .includes('data-line="' + l + '"'), { timeout: 20000 }, LLINE);
+  await new Promise((r) => setTimeout(r, 1500));
+  const wrapTop = () => p.evaluate(() => document.querySelector('.prevwrap').scrollTop);
+  await p.evaluate(() => { const w = document.querySelector('.prevwrap'); w.scrollTop = w.scrollHeight; });
+  const downAt = await wrapTop();
+  check('the long page scrolls', downAt > 300, String(downAt));
+  await (await frame()).click('input[data-line="' + LLINE + '"]').catch(() => {});
+  const lsaved = await waitFor(async () => (await shipBody(LNAME)) === LWANT, 30000, 500);
+  check('the far box ticks', !!lsaved, JSON.stringify(await shipBody(LNAME)));
+  await new Promise((r) => setTimeout(r, 1500));
+  const after = await wrapTop();
+  check('and the pane stays scrolled where it was', Math.abs(after - downAt) < 40, downAt + ' -> ' + after);
 } catch (e) {
   check('suite crashed: ' + e.message, false);
 } finally {
-  for (const n of [NAME, JNAME]) {
+  for (const n of [NAME, JNAME, LNAME]) {
     await fetch(env.base + '/apps/lattice/page-del?name=' + encodeURIComponent(n),
       { method: 'POST', headers: { Cookie: env.cookie } }).catch(() => {});
   }
