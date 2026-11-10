@@ -10,7 +10,7 @@ import {
 } from './model.js';
 import { Engine } from './engine.js';
 import { Styles, fixed } from './styles.js';
-import { toOf, toUser, FormulaError, moveFormula, moveAddrs, offsetFormula, hasBadRef, bodyOf, quoteSheet, renameInFormula } from './formula.js';
+import { toOf, toUser, FormulaError, moveFormula, moveAddrs, offsetFormula, hasBadRef, bodyOf, quoteSheet, renameInFormula, parseAddrs } from './formula.js';
 import { general } from './funcs.js';
 import { attr, escAttr } from '../writer/xml.js';
 
@@ -77,10 +77,17 @@ export class Book {
   load(text) {
     const doc = parseFods(text);
     if (doc.error) { this.error = doc.error; return false; }
+    //  a file that parses and still trips the styles or the engine is one
+    //  lattice cannot open: say so, as for any other, and never throw
+    let styles, engine;
+    try {
+      styles = new Styles(doc);
+      engine = new Engine(doc, (s, r, c, v, vt) => this.styles.text(this.styleAt(s, r, c), v, vt));
+    } catch { this.error = 'it could not be read'; return false; }
     this.error = null;
     this.doc = doc;
-    this.styles = new Styles(doc);
-    this.engine = new Engine(doc, (s, r, c, v, vt) => this.styles.text(this.styleAt(s, r, c), v, vt));
+    this.styles = styles;
+    this.engine = engine;
     this.base = text;
     this.touched = false;
     return true;
@@ -358,9 +365,21 @@ export class Book {
     }
     const edits = [];
     const text = doc.text;
-    const fix = (el) => {
+    //  `home` is the sheet a reference with no sheet of its own means: the
+    //  table the element is in, else the sheet its base cell address
+    //  names. With neither, such a reference is on no sheet lattice can
+    //  name, and is left alone.
+    const NOWHERE = '\u0000';
+    const fix = (el, inTable) => {
       for (const k of el.kids) {
         if (!k.name) continue;
+        const table = k.name === 'table:table' ? (attr(k, 'table:name') ?? NOWHERE) : inTable;
+        let home = table;
+        if (home === null) {
+          const base = attr(k, 'table:base-cell-address') || attr(k, 'calcext:base-cell-address') || '';
+          const at1 = parseAddrs(base);
+          home = at1 && at1.length && at1[0].a.sheet !== null ? at1[0].a.sheet : NOWHERE;
+        }
         const known = MOVES[k.name];
         const list = known ? [...known] : [];
         if (k.attrs.some(([a]) => a === 'table:end-cell-address')) list.push(['table:end-cell-address', 'addr']);
@@ -369,11 +388,11 @@ export class Book {
           if (!raw) continue;
           const val = attr(k, a);
           let next;
-          if (kind === 'addr') next = moveAddrs(val, op);
+          if (kind === 'addr') next = moveAddrs(val, op, home);
           else if (!val.includes('[')) next = val;
           else {
             const head = bodyOf(val) === null ? 'of:=' : '';
-            const moved = moveFormula(head + val, sheet.name, op);
+            const moved = moveFormula(head + val, home, op);
             next = moved === null ? null : moved.slice(head.length);
           }
           if (next === null || next === val) continue;
@@ -383,10 +402,10 @@ export class Book {
           const vs = k.start + at0 + a.length + 3;
           edits.push([vs, vs + raw[1].length, escAttr(next)]);
         }
-        if (k.name !== 'table:table-row') fix(k);
+        if (k.name !== 'table:table-row') fix(k, table);
       }
     };
-    fix(doc.docEl.kids.find((k) => k.name === 'office:body'));
+    fix(doc.docEl.kids.find((k) => k.name === 'office:body'), null);
     doc.attrEdits = (doc.attrEdits || []).concat(edits);
 
     // 2. the rows or columns themselves

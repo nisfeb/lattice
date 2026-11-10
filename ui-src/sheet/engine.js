@@ -113,16 +113,22 @@ export class Engine {
   //  the rectangles a formula reads: [s, r1, c1, r2, c2]
   depsOf(ast, home, seen = new Set()) {
     const out = [];
+    //  a reference this engine does not read (across sheets, another
+    //  file) gives no rectangle. The formula is never recomputed anyway:
+    //  evaluating it says Unsupported and it keeps its cached value.
+    //  `wild` then says it may read anything, so any edit has it looked
+    //  at again and marked as not recomputed.
+    const rect = (ref, h) => { try { return this.range(ref, h); } catch (x) { if (x instanceof Unsupported) { out.wild = true; return null; } throw x; } };
     const walk = (n) => {
       if (!n) return;
       switch (n.t) {
-        case 'ref': { const rg = this.range(n.ref, home); if (rg instanceof Range) out.push([rg.s, rg.r1, rg.c1, rg.r2, rg.c2]); break; }
+        case 'ref': { const rg = rect(n.ref, home); if (rg instanceof Range) out.push([rg.s, rg.r1, rg.c1, rg.r2, rg.c2]); break; }
         case 'name': {
           const nm = this.names.get(n.name.toLowerCase());
           if (!nm || seen.has(n.name.toLowerCase())) break;
           seen.add(n.name.toLowerCase());
-          if (nm.ref) { const rg = this.range(nm.ref, nm.home); if (rg instanceof Range) out.push([rg.s, rg.r1, rg.c1, rg.r2, rg.c2]); }
-          else if (nm.ast) out.push(...this.depsOf(nm.ast, nm.home, seen));
+          if (nm.ref) { const rg = rect(nm.ref, nm.home); if (rg instanceof Range) out.push([rg.s, rg.r1, rg.c1, rg.r2, rg.c2]); }
+          else if (nm.ast) { const sub = this.depsOf(nm.ast, nm.home, seen); if (sub.wild) out.wild = true; out.push(...sub); }
           break;
         }
         case 'paren': case 'un': case 'pct': walk(n.x); break;
@@ -136,6 +142,7 @@ export class Engine {
   }
 
   range(ref, home) {
+    if (ref.unknown) throw new Unsupported('a reference lattice cannot read');
     if (ref.bad) return E.ref;
     const s1 = ref.a.sheet === null ? home : this.sheetIndex(ref.a.sheet);
     if (s1 < 0) return E.ref;
@@ -294,11 +301,16 @@ export class Engine {
   compute(e) {
     const k = key(e.s, e.r, e.c);
     if (this.busy.has(k)) return E.cycle;
+    //  the walk budget is one outermost formula's, with whatever it pulls
+    //  in. It starts again here: +evaluate cannot do it, since by then
+    //  this cell is already in `busy`.
+    if (!this.busy.size) this.steps = 0;
     this.busy.add(k);
     let v;
     let ok = true;
     try { v = this.evaluate(e.f, e.s, e.r, e.c); } catch (x) {
-      if (!(x instanceof Unsupported)) throw x;
+      //  too deep a chain of formulas is left to LibreOffice as well
+      if (!(x instanceof Unsupported) && !(x instanceof RangeError)) { this.busy.delete(k); throw x; }
       ok = false;
     }
     this.busy.delete(k);
@@ -357,8 +369,9 @@ export class Engine {
       for (const e of this.formulas) {
         const k = key(e.s, e.r, e.c);
         if (hit.has(k)) continue;
-        let reads = false;
+        let reads = !!e.deps.wild;
         for (const [ds, r1, c1, r2, c2] of e.deps) {
+          if (reads) break;
           for (const [s, r, c] of front) {
             if (s === ds && r >= r1 && r <= r2 && c >= c1 && c <= c2) { reads = true; break; }
           }
