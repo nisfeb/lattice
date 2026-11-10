@@ -397,7 +397,7 @@
       name = rn.name;
       newRn = rn;
       pkind.value = kind;
-      if (kind === 'fodt' && !(await writerBlank())) return;
+      if (isRich(kind) && !(await writerBlank(kind))) return;
       //  blankPage above left nothing open; this names the buffer, and
       //  setOpen's event repaints the labels
       setOpen(null, { shown: name });

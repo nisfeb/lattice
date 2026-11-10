@@ -22,14 +22,16 @@
     const skippedNames = [];
     for (const { file, rel } of items) {
       const dot = rel.lastIndexOf('.');
-      const kind = dot > 0 ? extKind(rel.slice(dot + 1)) : null;
+      //  a .csv comes in as a spreadsheet page (sheet.js reads it)
+      const csv = dot > 0 && /^csv$/i.test(rel.slice(dot + 1));
+      const kind = csv ? 'fods' : dot > 0 ? extKind(rel.slice(dot + 1)) : null;
       if (!kind) { skippedNames.push(rel); continue; }
       const stem = rel.slice(0, dot);
       const parts = stem.split('/').map(slugSeg).filter(Boolean);
       if (folderCtx) parts.unshift(...folderCtx.split('/'));
       const name = parts.join('/');
       if (!name) { skippedNames.push(rel); continue; }
-      list.push({ file, name, kind, odt: /\.odt$/i.test(rel) });
+      list.push({ file, name, kind, odt: /\.(odt|ods)$/i.test(rel), csv });
     }
     if (!list.length) {
       upShow();
@@ -65,8 +67,11 @@
       const payload = [];
       try {
         for (const it of part) {
-          // an .odt goes through writer.js
-          const c = it.odt ? await (await writerReady()).importOdt(await it.file.arrayBuffer()) : { text: await it.file.text() };
+          // an .odt goes through writer.js, an .ods or a .csv through sheet.js
+          let c;
+          if (it.odt) { const L = await writerReady(it.kind); c = await (L.importOds || L.importOdt)(await it.file.arrayBuffer()); }
+          else if (it.csv) c = (await writerReady('fods')).importCsv(await it.file.text());
+          else c = { text: await it.file.text() };
           if (c.error || c.note) upErr.textContent += it.name + ': ' + (c.error || c.note) + '\n';
           if (c.error) { fails++; continue; }
           payload.push({ name: it.name, type: it.kind, body: c.text || '\n' });

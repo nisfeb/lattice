@@ -19,7 +19,9 @@ const { mdToHtml, setOutside } = new Function(`${read('ui-src/lattice/59-md.js')
 return { mdToHtml, setOutside: (v) => { mdOutside = v; } };`)();
 // the right pane's Outgoing and Outline (76-outline.js) read a document
 // through this renderer, so they are lifted to run beside it
-const { outLinks, outline } = new Function(read('ui-src/lattice/59-md.js') + '\n'
+//  (isRich is 26-writer.js's: no page here is a Writer document or a
+//  spreadsheet)
+const { outLinks, outline } = new Function('const isRich = () => false;\n' + read('ui-src/lattice/59-md.js') + '\n'
   + cut('ui-src/lattice/76-outline.js', /function outLinks\([\s\S]*?\n {2}\}/, 'outLinks') + '\n'
   + cut('ui-src/lattice/76-outline.js', /function outline\([\s\S]*?\n {2}\}/, 'outline')
   + '\nreturn { outLinks, outline };')();

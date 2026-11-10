@@ -14,7 +14,7 @@
       s.onerror = fail;
       document.head.append(s);
     })));
-  const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'js', 'css', 'hoon'];
+  const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'fods', 'js', 'css', 'hoon'];
   // what pdf.js lays out: `html` is a fragment, or a whole document when
   // `doc` is set (an html page, a Writer document)
   async function pdfBody(kind, body) {
@@ -22,8 +22,8 @@
     if (kind === 'gmi') return { html: gmiToHtml(body) };
     if (kind === 'text') return { html: '<pre class="text">' + mdEsc(body) + '</pre>' };
     if (kind === 'html') return { html: body, doc: true };
-    if (kind === 'fodt') {
-      const W = await writerReady();
+    if (isRich(kind)) {
+      const W = await writerReady(kind);
       const h = W.render(body, true);
       if (!h) throw new Error('this document cannot be shown');
       return { html: h, doc: true, writer: true };

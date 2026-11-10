@@ -2,7 +2,9 @@
 (function () {
 'use strict';
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
-const WRITER_H = '0v6.mjanj.2h7ln.vmbk0.4rmug.2npm0';
+const WRITER_H = '0v3.4g8bu.gitpg.4hui5.6i6ib.91c19';
+// and sheet.js's, the spreadsheet editor (26-writer.js)
+const SHEET_H = '0v4.ogjdk.mvi0d.0ugvu.n6fec.odatm';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
@@ -2635,7 +2637,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (askHere()) has.add('askedit');
     if (!grubPath && curFolder !== null) has.add('del');
     if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex')) has.add('tex');
-    if (fodtHere()) { has.add('source'); if (wr && wr.macros) has.add('macros'); }
+    if (richHere()) { has.add('source'); if (wr && wr.macros) has.add('macros'); }
     return has;
   }
   function pageMenu() {
@@ -3394,7 +3396,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const render = () => {
     if (rpHook) rpHook();
     writerFollow();
-    if (fodtHere() && !writerSourceOn()) { hl.textContent = ''; return; }
+    if (richHere() && !writerSourceOn()) { hl.textContent = ''; return; }
     const lang = LMAP[pkind.value];
     const g = lang && (!window.Prism || Prism.languages[lang]);
     if (!g || typeof Worker === 'undefined') { hl.innerHTML = esc(src.value) + '\n'; hlPainted(); return; }
@@ -3444,9 +3446,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
   });
   pkind.addEventListener('change', () => {
-    if (!kindSwitchOk(pkind.value)) { pkind.value = curKind || (pkind.value === 'fodt' ? 'md' : 'fodt'); return; }
+    if (!kindSwitchOk(pkind.value)) { pkind.value = kindBack(); return; }
     curKind = pkind.value;
-    if (curKind === 'fodt' && !src.value.trim()) writerBlank(); else render();
+    if (isRich(curKind) && !src.value.trim()) writerBlank(curKind); else render();
     if (current) edited();
     refreshTexButton();
   });
@@ -3614,29 +3616,40 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     applies: (id) => { const a = ACTIONS.find((x) => x.id === id); return !!a && (!a.when || !!a.when()); } };
 
 // ── src/26-writer.js ──────────────────────────────────────────────────────
-  let wrLoad = null, wr = null, wrHost = null, wrSeq = 0, wrQ = false;
+  const RICH = {
+    fodt: { lib: 'LatWriter', js: 'writer.js', h: WRITER_H, tag: 'lat-writer', ed: 'Writer editor', a: 'a Writer document' },
+    fods: { lib: 'LatSheet', js: 'sheet.js', h: SHEET_H, tag: 'lat-sheet', ed: 'spreadsheet editor', a: 'a spreadsheet' },
+  };
+  const isRich = (k) => Object.prototype.hasOwnProperty.call(RICH, k);
+  const richLib = (k) => (isRich(k) && window[RICH[k].lib]) || null;
+  const richOf = (t) => (!/^(<\?xml[^>]*>\s*)?<office:document[\s/>]/.test(t) ? ''
+    : /office:mimetype="application\/vnd\.oasis\.opendocument\.spreadsheet/.test(t.slice(0, 8192)) || /<office:spreadsheet[\s>]/.test(t) ? 'fods' : 'fodt');
+  let wr = null, wrSeq = 0, wrQ = false;
+  const wrLoad = {}, wrHosts = {};
   let wrDoc = 0, wrFor = null;
   const writerNewDoc = () => { wrDoc++; };
   const wrSrc = new Map();     // page -> why it shows as XML
   const wrKey = () => current || '';
-  const fodtHere = () => mode !== 'know' && !grubPath && curFolder === null && pkind.value === 'fodt';
-  const writerSourceOn = () => fodtHere() && wrSrc.has(wrKey());
-  const writerReady = () => (window.LatWriter ? Promise.resolve(window.LatWriter)
-    : wrLoad || (wrLoad = new Promise((ok, no) => {
+  const richHere = () => (mode !== 'know' && !grubPath && curFolder === null && isRich(pkind.value) ? pkind.value : '');
+  const writerSourceOn = () => !!richHere() && wrSrc.has(wrKey());
+  const writerReady = (k = 'fodt') => (richLib(k) ? Promise.resolve(richLib(k))
+    : wrLoad[k] || (wrLoad[k] = new Promise((ok, no) => {
       const s = document.createElement('script');
-      const fail = () => { wrLoad = null; s.remove(); no(); };
-      s.src = '/apps/lattice/app/writer.js?h=' + WRITER_H;
-      s.onload = () => (window.LatWriter ? ok(window.LatWriter) : fail());
+      const fail = () => { wrLoad[k] = null; s.remove(); no(); };
+      s.src = '/apps/lattice/app/' + RICH[k].js + '?h=' + RICH[k].h;
+      s.onload = () => (richLib(k) ? ok(richLib(k)) : fail());
       s.onerror = fail;
       document.head.append(s);
     })));
-  const wrX = (f, b) => window.LatWriter ? LatWriter.extract[f](b) : (writerReady().then(() => rpSoon(), () => {}), []);
+  const wrX = (f, b, k = 'fodt') => (richLib(k) ? richLib(k).extract[f](b) : (writerReady(k).then(() => rpSoon(), () => {}), []));
   const wrNote = document.createElement('div');
   wrNote.className = 'lnkcf';
   wrNote.hidden = true;
   $('docarea').before(wrNote);
-  function wrBox(msg) {
-    if (!wrHost) wrHost = document.createElement('lat-writer');
+  function wrBox(k, msg) {
+    const wrHost = wrHosts[k] || (wrHosts[k] = document.createElement(RICH[k].tag));
+    for (const o of Object.keys(wrHosts)) if (o !== k) wrHosts[o].hidden = true;
+    wrHost.hidden = false;
     if (wrHost.parentNode !== src.parentNode) src.parentNode.append(wrHost);
     if (msg) {
       wrHost.replaceChildren($('wrload').content.cloneNode(true));
@@ -3647,7 +3660,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return wrHost;
   }
   function wrShow(on) {
-    if (wrHost) wrHost.hidden = !on;
+    if (!on) for (const o of Object.keys(wrHosts)) wrHosts[o].hidden = true;
     src.style.visibility = hl.style.visibility = on ? 'hidden' : '';
   }
   function writerFollow() {
@@ -3658,20 +3671,21 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const why = writerSourceOn() && wrSrc.get(wrKey());
     wrNote.hidden = !why;
     wrNote.textContent = why;
-    if (!fodtHere() || writerSourceOn()) return writerOff();
+    const k = richHere();
+    if (!k || writerSourceOn()) return writerOff();
     const body = src.value, ed = !src.readOnly && viewingRev === null;
     wrShow(true);
-    const doc = { tab: activeTab, n: wrDoc };
-    if (wr && wrFor && wrFor.tab === doc.tab && wrFor.n === doc.n && wr.base() === body) return wr.setEditable(ed);
+    const doc = { tab: activeTab, n: wrDoc, k };
+    if (wr && wrFor && wrFor.tab === doc.tab && wrFor.n === doc.n && wrFor.k === k && wr.base() === body) { wrBox(k); return wr.setEditable(ed); }
     writerDrop();
-    if (!window.LatWriter) wrBox('Loading the Writer editor…');
+    if (!richLib(k)) wrBox(k, 'Loading the ' + RICH[k].ed + '…');
     const my = wrSeq;
-    writerReady().then((LW) => {
-      if (my !== wrSeq || src.value !== body || !fodtHere() || writerSourceOn()) return;
-      const c = LW.mount(wrBox(), { text: body, editable: ed, name: current, cur: () => src.value, onChange: writerChanged,
+    writerReady(k).then((LW) => {
+      if (my !== wrSeq || src.value !== body || richHere() !== k || writerSourceOn()) return;
+      const c = LW.mount(wrBox(k), { text: body, editable: ed, name: current, cur: () => src.value, onChange: writerChanged,
         onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => st('not saved: ' + e, false) });
       if (c.error) { wrSrc.set(wrKey(), c.error); writerApply(); } else { wr = c; wrFor = doc; }
-    }, () => { if (my === wrSeq) wrBox('The Writer editor did not load. Source in the page menu shows the XML.'); });
+    }, () => { if (my === wrSeq) wrBox(k, 'The ' + RICH[k].ed + ' did not load. Source in the page menu shows the XML.'); });
   }
   function writerChanged() {
     dirty = everTyped = true;
@@ -3686,7 +3700,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   function writerOff() {
     writerSync();
     writerDrop();
-    if (wrHost) wrHost.replaceChildren();
+    for (const o of Object.keys(wrHosts)) wrHosts[o].replaceChildren();
     wrShow(false);
   }
   function writerSource(on) {
@@ -3696,13 +3710,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
   function kindSwitchOk(to) {
     const t = src.value.trim();
-    const from = current ? curKind : !t ? to : /^(<\?xml[^>]*>\s*)?<office:document[\s/>]/.test(t) ? 'fodt' : 'text';
-    if ((from === 'fodt') === (to === 'fodt')) return true;
-    st(from === 'fodt' ? 'a Writer document cannot change kind' : 'a page with text cannot become a Writer document', false);
+    const from = current ? curKind : !t ? to : richOf(t) || 'text';
+    if (from === to || (!isRich(from) && !isRich(to))) return true;
+    st(isRich(from) ? RICH[from].a + ' cannot change kind' : 'a page with text cannot become ' + RICH[to].a, false);
     return false;
   }
-  async function writerBlank() {
-    try { src.value = (await writerReady()).blank; } catch { st('the Writer editor did not load', false); return false; }
+  const kindBack = () => curKind || richOf(src.value.trim()) || 'md';
+  async function writerBlank(k = 'fodt') {
+    try { src.value = (await writerReady(k)).blank; } catch { st('the ' + RICH[k].ed + ' did not load', false); return false; }
     wrSrc.delete(wrKey());
     render();
     return true;
@@ -3721,7 +3736,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   /* ---- persisted on/off flag (same pattern as edNT / edNC) ---- */
   var LS = "edVim";
-  function vimOn(){ return localStorage.getItem(LS) === "1" && pkind.value !== "fodt"; }   // default OFF
+  function vimOn(){ return localStorage.getItem(LS) === "1" && !isRich(pkind.value); }   // default OFF
 
   /* ---- mode indicator element (created once, lives by the status bar) ---- */
   var ind = document.createElement("span");
@@ -4858,10 +4873,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     g.ghl.innerHTML = t.ghost && t.ghost.body === ta.value ? t.ghost.hl : ghostHl(ta.value, kind);
     ta.scrollTop = s ? s.scroll : 0;
     g.ghl.scrollTop = ta.scrollTop;
-    const fodt = kind === 'fodt';
+    const fodt = isRich(kind);
     g.gdoc.classList.toggle('gread', !!t.read || fodt);
     if (fodt) {
-      const d = ghostDoc(kind, ta.value) || (writerReady().then(gPaintAll, () => {}), '');
+      const d = ghostDoc(kind, ta.value) || (writerReady(kind).then(gPaintAll, () => {}), '');
       if (g.gprev.getAttribute('srcdoc') !== d) { g.gprev.removeAttribute('src'); navDoc(g.gprev, d); }
     } else if (t.read) {
       const kept = t.ghost && t.ghost.body === ta.value ? t.ghost : null;
@@ -6413,7 +6428,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       name = rn.name;
       newRn = rn;
       pkind.value = kind;
-      if (kind === 'fodt' && !(await writerBlank())) return;
+      if (isRich(kind) && !(await writerBlank(kind))) return;
       setOpen(null, { shown: name });
       const already = nodes.some((n) => n.page && n.path === name);
       if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
@@ -7424,7 +7439,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
 
   function acScan() {
-    if (src.readOnly || mode === 'know' || pkind.value === 'fodt') return acClose();
+    if (src.readOnly || mode === 'know' || isRich(pkind.value)) return acClose();
     const upto = src.value.slice(0, src.selectionStart);
     const line = upto.slice(upto.lastIndexOf('\n') + 1);
     const i = line.lastIndexOf('[[');
@@ -7703,7 +7718,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   });
   const kindNow = () => (mode === 'know' ? 'md' : pkind.value);
   const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex'].includes(kindNow())
-    || (kindNow() === 'fodt' && !!window.LatWriter);
+    || !!richLib(kindNow());
 
   const localHtml = (kind, body, tasks) => {
     if (kind === 'md') return mdToHtml(body, tasks);
@@ -7759,7 +7774,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (previewHidden()) return;
     try {
       if (pkind.value === 'html') { prevDoc(withPreviewScrollbars(src.value)); return; }
-      if (kindNow() === 'fodt') { writerSync(); prevDoc(withPreviewScrollbars(LatWriter.show(src.value))); return; }
+      if (isRich(kindNow())) { writerSync(); prevDoc(withPreviewScrollbars(richLib(kindNow()).show(src.value))); return; }
       const tasks = taskLive();
       mdBlocked = false;
       mdOutside = outsideOn(current);
@@ -7814,7 +7829,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
         + '</style>' + fit;
   const ghostDoc = (kind, body) => {
-    if (kind === 'fodt') return window.LatWriter ? previewScrollbars() + LatWriter.show(body) : null;
+    if (isRich(kind)) return richLib(kind) ? previewScrollbars() + richLib(kind).show(body) : null;
     if (!['md', 'gmi', 'html', 'text'].includes(kind)) return null;
     try {
       return kind === 'html' ? previewScrollbars() + body : localShell('') + localHtml(kind, body);
@@ -8924,14 +8939,15 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const skippedNames = [];
     for (const { file, rel } of items) {
       const dot = rel.lastIndexOf('.');
-      const kind = dot > 0 ? extKind(rel.slice(dot + 1)) : null;
+      const csv = dot > 0 && /^csv$/i.test(rel.slice(dot + 1));
+      const kind = csv ? 'fods' : dot > 0 ? extKind(rel.slice(dot + 1)) : null;
       if (!kind) { skippedNames.push(rel); continue; }
       const stem = rel.slice(0, dot);
       const parts = stem.split('/').map(slugSeg).filter(Boolean);
       if (folderCtx) parts.unshift(...folderCtx.split('/'));
       const name = parts.join('/');
       if (!name) { skippedNames.push(rel); continue; }
-      list.push({ file, name, kind, odt: /\.odt$/i.test(rel) });
+      list.push({ file, name, kind, odt: /\.(odt|ods)$/i.test(rel), csv });
     }
     if (!list.length) {
       upShow();
@@ -8954,7 +8970,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       const payload = [];
       try {
         for (const it of part) {
-          const c = it.odt ? await (await writerReady()).importOdt(await it.file.arrayBuffer()) : { text: await it.file.text() };
+          let c;
+          if (it.odt) { const L = await writerReady(it.kind); c = await (L.importOds || L.importOdt)(await it.file.arrayBuffer()); }
+          else if (it.csv) c = (await writerReady('fods')).importCsv(await it.file.text());
+          else c = { text: await it.file.text() };
           if (c.error || c.note) upErr.textContent += it.name + ': ' + (c.error || c.note) + '\n';
           if (c.error) { fails++; continue; }
           payload.push({ name: it.name, type: it.kind, body: c.text || '\n' });
@@ -10100,7 +10119,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 // ── src/76-outline.js ─────────────────────────────────────────────────────
 
   function outLinks(body, kind) {
-    if (kind === 'fodt') return wrX('out', body);
+    if (isRich(kind)) return wrX('out', body, kind);
     const html = kind === 'md' ? mdToHtml(body) : kind === 'gmi' ? gmiToHtml(body) : '';
     const out = [];
     for (const m of html.matchAll(/<a href="([^"]*)"/g)) {
@@ -10117,7 +10136,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   function outline(body, kind) {
     const out = [];
-    if (kind === 'fodt') return wrX('outline', body);
+    if (isRich(kind)) return wrX('outline', body, kind);
     if (kind !== 'md' && kind !== 'gmi') return out;
     const lines = String(body == null ? '' : body).split('\n');
     let fence = null;
@@ -10544,14 +10563,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       s.onerror = fail;
       document.head.append(s);
     })));
-  const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'js', 'css', 'hoon'];
+  const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'fods', 'js', 'css', 'hoon'];
   async function pdfBody(kind, body) {
     if (kind === 'md') return { html: mdToHtml(body) };
     if (kind === 'gmi') return { html: gmiToHtml(body) };
     if (kind === 'text') return { html: '<pre class="text">' + mdEsc(body) + '</pre>' };
     if (kind === 'html') return { html: body, doc: true };
-    if (kind === 'fodt') {
-      const W = await writerReady();
+    if (isRich(kind)) {
+      const W = await writerReady(kind);
       const h = W.render(body, true);
       if (!h) throw new Error('this document cannot be shown');
       return { html: h, doc: true, writer: true };
@@ -10658,9 +10677,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   const qTx = new Map();
   const searchText = (k, b, p) => {
-    if (k !== 'fodt') return b;
+    if (!isRich(k)) return b;
     let m = qTx.get(p);
-    if (!m || m[0] !== b) qTx.set(p, m = [b, window.LatWriter ? LatWriter.extract.text(b) : (b.split('<office:body>')[1] || '')
+    if (!m || m[0] !== b) qTx.set(p, m = [b, richLib(k) ? richLib(k).extract.text(b) : (b.split('<office:body>')[1] || '')
       .replace(/<\/text:[ph]>|<text:(s|tab|line-break)\b[^>]*>/g, ' ').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&')]);
     return m[1];
   };

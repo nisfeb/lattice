@@ -15,6 +15,7 @@
 import { Book } from './book.js';
 import { colName, toUser } from './formula.js';
 import { rowCount, MAX_ROWS, MAX_COLS } from './model.js';
+import { exportOds, exportCsv } from './ods.js';
 
 const HDR_W = 46, HDR_H = 24, COL_W = 85, ROW_H = 22;
 const BIG = 2 * 1024 * 1024;
@@ -717,6 +718,20 @@ export function mount(host, opts = {}) {
   btn('+ col', 'Insert a column to the right', () => { const [, , , c2] = box(); shift('c', c2 + 1, 1); });
   btn('− row', 'Delete the selected rows', () => { const [r1, r2] = box(); shift('r', r1, -(r2 - r1 + 1)); });
   btn('− col', 'Delete the selected columns', () => { const [, , c1, c2] = box(); shift('c', c1, -(c2 - c1 + 1)); });
+  sep();
+  //  the spreadsheet out as a file: .ods for LibreOffice, .csv of this sheet
+  const save = (blob, ext) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = String(opts.name || 'spreadsheet').split('/').pop() + ext;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+  };
+  btn('.ods', 'Download as an .ods file', () => { const e = exportOds(book.text()); if (e.error) ctl.say(e.error); else save(e.blob, '.ods'); }, { always: '1' });
+  btn('.csv', 'Download this sheet as a .csv file', () => {
+    const e = exportCsv(book.text(), cur);
+    if (e.error) ctl.say(e.error); else save(new Blob([e.text], { type: 'text/csv' }), '.csv');
+  }, { always: '1' });
 
   // ── sheets ─────────────────────────────────────────────────────────────
   function drawTabs() {
@@ -770,6 +785,8 @@ export function mount(host, opts = {}) {
   ctl.setEditable = (on) => { wanted = !!on; if (!wanted && editing) closeEd(false); drawTabs(); bars(); };
   ctl.focus = () => focusGrid();
   ctl.select = (s, r, c) => { show(s); select(r, c); };
+  //  the outline's nth entry is the nth sheet
+  ctl.heading = (i) => show(i);
   ctl.destroy = () => {
     clearTimeout(syncTimer);
     if (ro) ro.disconnect();
