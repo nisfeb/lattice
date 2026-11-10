@@ -56,10 +56,21 @@ async function open(text, { editable = true, viewport = { width: 1100, height: 7
     return window.ctl.error || '';
   }, text, editable);
   if (r) throw new Error(r);
+  //  the middle of a cell, read in one step and asked again if the grid
+  //  was repainting: a handle taken first can be gone by the time its box
+  //  is read
   const at = async (r1, c1) => {
-    const h = await page.$(`.ls-c[data-r="${r1}"][data-c="${c1}"]`);
-    const b = await h.boundingBox();
-    return [b.x + b.width / 2, b.y + b.height / 2];
+    for (let i = 0; i < 40; i++) {
+      const b = await page.evaluate((r, c) => {
+        const e = document.querySelector(`.ls-c[data-r="${r}"][data-c="${c}"]`);
+        if (!e) return null;
+        const q = e.getBoundingClientRect();
+        return [q.x + q.width / 2, q.y + q.height / 2];
+      }, r1, c1);
+      if (b) return b;
+      await sleep(50);
+    }
+    throw new Error(`cell ${r1},${c1} is not on screen`);
   };
   const api = {
     page,

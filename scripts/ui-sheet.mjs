@@ -71,10 +71,20 @@ async function open(name) {
   await wait((n) => document.getElementById('pname').value === n, name);
 }
 const shown = (r, c) => page.$eval(`lat-sheet:not([hidden]) .ls-c[data-r="${r}"][data-c="${c}"]`, (e) => e.textContent).catch(() => null);
+//  (the cell's place is read in one step, and again if the grid was
+//  repainting: a handle taken first can be gone before its box is read)
 async function clickCell(r, c) {
-  const h = await page.$(`lat-sheet:not([hidden]) .ls-c[data-r="${r}"][data-c="${c}"]`);
-  const b = await h.boundingBox();
-  await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+  for (let i = 0; i < 40; i++) {
+    const b = await page.evaluate((rr, cc) => {
+      const e = document.querySelector(`lat-sheet:not([hidden]) .ls-c[data-r="${rr}"][data-c="${cc}"]`);
+      if (!e) return null;
+      const q = e.getBoundingClientRect();
+      return [q.x + q.width / 2, q.y + q.height / 2];
+    }, r, c);
+    if (b) return page.mouse.click(b[0], b[1]);
+    await sleep(50);
+  }
+  throw new Error(`cell ${r},${c} is not on screen`);
 }
 async function type(r, c, text) {
   await clickCell(r, c);
