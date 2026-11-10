@@ -525,12 +525,12 @@
     g.ghl.innerHTML = t.ghost && t.ghost.body === ta.value ? t.ghost.hl : ghostHl(ta.value, kind);
     ta.scrollTop = s ? s.scroll : 0;
     g.ghl.scrollTop = ta.scrollTop;
-    // a Writer page parks as the page, never its XML
-    const fodt = kind === 'fodt';
+    // a Writer page or a spreadsheet parks as the page, never its XML
+    const fodt = isRich(kind);
     g.gdoc.classList.toggle('gread', !!t.read || fodt);
     if (fodt) {
       // before writer.js: blank, and painted again once it is here
-      const d = ghostDoc(kind, ta.value) || (writerReady().then(gPaintAll, () => {}), '');
+      const d = ghostDoc(kind, ta.value) || (writerReady(kind).then(gPaintAll, () => {}), '');
       if (g.gprev.getAttribute('srcdoc') !== d) { g.gprev.removeAttribute('src'); navDoc(g.gprev, d); }
     } else if (t.read) {
       const kept = t.ghost && t.ghost.body === ta.value ? t.ghost : null;

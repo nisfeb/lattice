@@ -13,7 +13,7 @@
   // link there: fences, images, unsafe schemes and escaping all come out the
   // same. A page link comes back as its page name, a urb:// link as itself.
   function outLinks(body, kind) {
-    if (kind === 'fodt') return wrX('out', body);
+    if (isRich(kind)) return wrX('out', body, kind);
     const html = kind === 'md' ? mdToHtml(body) : kind === 'gmi' ? gmiToHtml(body) : '';
     const out = [];
     for (const m of html.matchAll(/<a href="([^"]*)"/g)) {
@@ -33,7 +33,7 @@
   // `line` counts from 1.
   function outline(body, kind) {
     const out = [];
-    if (kind === 'fodt') return wrX('outline', body);
+    if (isRich(kind)) return wrX('outline', body, kind);
     if (kind !== 'md' && kind !== 'gmi') return out;
     const lines = String(body == null ? '' : body).split('\n');
     let fence = null;

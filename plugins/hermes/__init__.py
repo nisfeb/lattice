@@ -348,7 +348,7 @@ def _urb_text(j: Dict[str, Any], offset: int) -> str:
         return f"{j['url']} is a binary file: type {j.get('type')}, mark {j.get('mark')}, {j.get('size')} bytes. Its bytes are not shown."
     mode = j.get("mode") or j.get("mark") or "text"
     raw = str(j.get("body") or "")
-    body = _html_text(raw) if mode in ("html", "fodt") else raw
+    body = _html_text(raw) if mode in ("html", "fodt", "fods") else raw
     notes = [str(mode), f"{j.get('size', len(raw))} bytes"]
     if j.get("shared"):
         notes.append("shared with this ship, not published")

@@ -474,6 +474,15 @@ is  "scoped text save onto fodt refused" 403 "$(BC -X POST "$B/page-save?name=$P
 is  "scoped batch md onto fodt refused" 403 "$(BC -X POST "$B/page-save-batch" -H 'content-type: application/json' --data-binary "[{\"name\":\"$P/out/s1\",\"type\":\"md\",\"body\":\"ok\"},{\"name\":\"$P/out/doc\",\"type\":\"md\",\"body\":\"x\"}]")"
 is  "  the fodt page keeps its kind" fodt "$(field page-tree "$P/out/doc" kind)"
 is  "  and its body" True "$(G "$B/page-source?name=$P/out/doc" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("body","").encode()==open(sys.argv[1],"rb").read())' "$WF")"
+# a spreadsheet is owner-only the same way
+is  "scoped write fods refused" 403 "$(BC -X POST "$B/page-save?name=$P/out/sh&type=fods" --data-binary '<office:document/>')"
+is  "scoped batch fods refused" 403 "$(BC -X POST "$B/page-save-batch" -H 'content-type: application/json' --data-binary "[{\"name\":\"$P/out/sh\",\"type\":\"fods\",\"body\":\"x\"}]")"
+WS="$(dirname "${BASH_SOURCE[0]}")/../tests/sheet/ship/01-budget.fods"
+is  "owner seeds a fods page in scope" 200 "$(sc -X POST "$B/page-save?name=$P/out/sheet&type=fods&new=1" --data-binary @"$WS")"
+is  "scoped md save onto fods refused" 403 "$(BC -X POST "$B/page-save?name=$P/out/sheet&type=md" --data-binary '# over')"
+has "  and the refusal names a spreadsheet" 'spreadsheet' "$(BG -X POST "$B/page-save?name=$P/out/sheet&type=md" --data-binary '# over')"
+is  "scoped batch md onto fods refused" 403 "$(BC -X POST "$B/page-save-batch" -H 'content-type: application/json' --data-binary "[{\"name\":\"$P/out/s1\",\"type\":\"md\",\"body\":\"ok\"},{\"name\":\"$P/out/sheet\",\"type\":\"md\",\"body\":\"x\"}]")"
+is  "  the fods page keeps its kind" fods "$(field page-tree "$P/out/sheet" kind)"
 is  "scoped md save beside it still lands" 200 "$(BC -X POST "$B/page-save?name=$P/out/s1&type=md" --data-binary 'still fine')"
 
 echo "==> sensitive pages"
@@ -565,6 +574,42 @@ has   "clearweb view shows the text escaped" '&lt;script&gt;alert(1)' "$r"
 hasnt "clearweb view runs no script from the body" '<script>alert' "$r"
 sc -X POST "$B/page-share?name=$P/fodt/esc&mode=private" >/dev/null
 rm -f "$FX"
+
+echo "==> fods: a spreadsheet is a content page"
+SHEETS="$(dirname "${BASH_SOURCE[0]}")/../tests/sheet/ship"
+sc -X POST "$B/page-save?name=$P/fods/budget&type=fods&new=1" --data-binary @"$SHEETS/01-budget.fods" >/dev/null
+is "fods reads back byte-identical" "fods True" "$(same_body "$P/fods/budget" "$SHEETS/01-budget.fods")"
+is "tree reports kind fods"  fods "$(field page-tree "$P/fods/budget" kind)"
+is "dump reports kind fods"  fods "$(field page-dump "$P/fods/budget" kind)"
+r=$(G "$B/page-source?name=$P/fods/budget&render=1" | python3 -c 'import json,sys;print(json.load(sys.stdin)["html"])')
+has   "render=1 shows a sheet as a table"        '<h3>Stock</h3><table><tbody><tr><td colspan="4">Fruit &amp; veg &lt;2026&gt;</td></tr>' "$r"
+has   "render=1 shows a formula's cached result" '<td style="text-align:right">8.5</td>' "$r"
+hasnt "render=1 shows no formula"                'of:=' "$r"
+hasnt "render=1 shows no hidden sheet"           'hidden words' "$r"
+r=$(G -X POST "$B/page-preview?type=fods" --data-binary @"$SHEETS/02-hostile.fods")
+has   "page-preview escapes the cell text"       '&lt;script&gt;alert(document.cookie)' "$r"
+has   "page-preview escapes the sheet name"      '<h3>&lt;img src=x onerror=alert(1)&gt;</h3>' "$r"
+hasnt "page-preview runs no script from a cell"  '<script>alert' "$r"
+hasnt "page-preview makes no element of a name"  '<img' "$r"
+has   "page-preview caps a million rows"         '1048076 more rows not shown, 16334 more columns not shown' "$r"
+is    "  in a small answer" yes "$([ "${#r}" -lt 400000 ] && echo yes || echo "${#r} bytes")"
+has   "page-preview refuses a Writer document as a sheet" 'fods-note' \
+  "$(G -X POST "$B/page-preview?type=fods" --data-binary @"$CORPUS/01-paragraphs.fodt")"
+has   "page-preview refuses an entity declaration" 'fods-note' \
+  "$(G -X POST "$B/page-preview?type=fods" --data-binary '<!DOCTYPE d [<!ENTITY e "x">]><office:document><office:body><office:spreadsheet/></office:body></office:document>')"
+is "/f/ serves the flat ODS type" 'application/vnd.oasis.opendocument.spreadsheet-flat-xml' \
+  "$(curl -s -o /dev/null -w '%{content_type}' -H "$CK" "$B/f/$P/fods/budget")"
+# search reads the cells' words, never the markup
+has   "page-search finds a cell's word"   "\"$P/fods/budget\"" "$(G "$B/page-search?q=apple")"
+hasnt "page-search does not find markup"  "\"$P/fods/budget\"" "$(G "$B/page-search?q=calcext")"
+# the clearweb view renders it, and the published copy is that HTML
+sc -X POST "$B/page-share?name=$P/fods/budget&mode=clearweb" >/dev/null
+sleep 2
+r=$(G "$B/c/$P/fods/budget")
+has   "clearweb view shows the table"           '<td>apple</td>' "$r"
+hasnt "clearweb view shows no office: tags"     'office:' "$r"
+hasnt "clearweb view shows no hidden sheet"     'hidden words' "$r"
+sc -X POST "$B/page-share?name=$P/fods/budget&mode=private" >/dev/null
 
 echo "==> recursive folder delete"
 is "page-del on folder" 200 "$(sc -X POST "$B/page-del?name=$P")"

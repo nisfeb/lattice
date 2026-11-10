@@ -59,6 +59,8 @@
 /<  tjs  ui-app/theme.js
 /<  ojs  ui-app/orrery.js
 /<  wjs  ui-app/writer.js
+::  the grid editor for fods pages, loaded when one opens
+/<  shj  ui-app/sheet.js
 /<  sjs  ui-app/settings.js
 /<  pdj  ui-app/pdf.js
 ::  the Skills view, loaded when it opens (ui-src/lattice/95s-skills.js)
@@ -88,6 +90,8 @@
 /<  fre  /lib/lattice-forum-render.hoon
 ::  flat ODT: the safe HTML, the search text and the title of a fodt page
 /<  lf   /lib/lattice-fodt.hoon
+::  flat ODS: the same three of a fods page (a spreadsheet)
+/<  lfs  /lib/lattice-fods.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -168,6 +172,8 @@
         ::  writer.js: the Writer editor for fodt pages, loaded only when
         ::  one opens (ui-src/lattice/26-writer.js), never at boot
             [%over %& [/app %'writer.js'] [[/ %mime] wjs]]
+        ::  sheet.js: the grid editor for fods pages, loaded the same way
+            [%over %& [/app %'sheet.js'] [[/ %mime] shj]]
         ::  settings.js: the Settings page's tabs and look, shared with the
         ::  desktop manager page. Loaded by that page alone, never at boot.
             [%over %& [/app %'settings.js'] [[/ %mime] sjs]]
@@ -1078,17 +1084,17 @@
       `[403 'outside this key\'s scope']
     ~
   ?^  key-sync  (send-err eyre-id code.u.key-sync msg.u.key-sync)
-  ::  a key may not save over a fodt page (+fodt-at)
-  ;<  onto-fodt=?  bind:m
-    =/  n  (fiber:fiber:nexus ,?)
-    ?~  key  (pure:n |)
+  ::  a key may not save over a fodt or fods page (+fodt-at)
+  ;<  onto-fodt=(unit rich)  bind:m
+    =/  n  (fiber:fiber:nexus ,(unit rich))
+    ?~  key  (pure:n ~)
     =/  todo=(list [nam=@t typ=@t bod=@t bas=@ud])  items
     |-  ^-  form:n
-    ?~  todo  (pure:n |)
-    ;<  wf=?  bind:n  (fodt-at (pax-of nam.i.todo))
-    ?:  wf  (pure:n &)
+    ?~  todo  (pure:n ~)
+    ;<  wf=(unit rich)  bind:n  (fodt-at (pax-of nam.i.todo))
+    ?^  wf  (pure:n wf)
     $(todo t.todo)
-  ?:  onto-fodt  (send-err eyre-id 403 fodt-key-msg)
+  ?^  onto-fodt  (send-err eyre-id 403 (fodt-key-msg u.onto-fodt))
   ::  sensitive + taint check (fiber-based). Returns an early refusal, plus the
   ::  paths of a tainted key's NEW pages, which are marked sensitive before the
   ::  write (the batch mirror of the single page-save taint alignment).
@@ -2513,7 +2519,7 @@
       ::  a %fodt mark never comes from a lattice (its pages publish as
       ::  %html), but a peer may send one: render it once, here, for the
       ::  body and the title, uncached (it is not our page)
-      =/  fv=(unit fodt-view)  ?.(?=(%fodt mode) ~ `(fodt-make body))
+      =/  fv=(unit fodt-view)  ?.(?=(rich mode) ~ `(fodt-make mode body))
       ::  the tab/history title: a real `#` heading, else the raw address.
       ::  Computed once here, shared with the history-log write below. A
       ::  fodt page's is its dc:title or first heading: ours is published
@@ -3600,8 +3606,8 @@
     ::  the key's write grant is explicit consent from the owner.
     ?.  (may-path:ky u.key %local (pax-of u.name) %write)
       (send-err eyre-id 403 'outside this key\'s scope')
-    ;<  wf=?  bind:m  (fodt-at (pax-of u.name))
-    ?:  wf  (send-err eyre-id 403 fodt-key-msg)
+    ;<  wf=(unit rich)  bind:m  (fodt-at (pax-of u.name))
+    ?^  wf  (send-err eyre-id 403 (fodt-key-msg u.wf))
     ;<  ps=?  bind:m  (page-sensitive (pax-of u.name))
     ::  sensitive gate: an uncleared key cannot write to a sensitive page.
     ?:  &(ps !sensitive.scope.u.key)
@@ -9006,8 +9012,8 @@
   =/  nen=pub-pending:lp
     =/  pru  (pub-prune:lp pen now pub-gap)
     =/  row=pub-wait:lp  (pub-note:lp (~(get by pen) k) now pub-quiet)
-    ::  a fodt page's publish renders it: it waits for a pause
-    =?  row  =(`%fodt (content-builder src))  (pub-hold:lp row now pub-slow-cap)
+    ::  a fodt or fods page's publish renders it: it waits for a pause
+    =?  row  ?=(^ (rich-of (content-builder src)))  (pub-hold:lp row now pub-slow-cap)
     (~(put by pru) k row)
   ;<  ~  bind:m  (put-file (pub-pending-road root) [/ %noun] nen)
   =/  due=?  (lte (pub-when (~(got by nen) k)) now)
@@ -10145,7 +10151,7 @@
   (pure:m (fall (mole |.(;;(view-mode:pg (sang-noun:tarball sang.sn)))) %text))
 ::  +mode-mark: the mark a published page of this view-mode carries. The
 ::  single place the view-mode to mark mapping lives; identity on the tags
-::  except %fodt.
+::  except %fodt and %fods.
 ::
 ++  mode-mark
   |=  m=view-mode:pg
@@ -10153,8 +10159,9 @@
   ::  a fodt page publishes its rendered HTML (+pub-save-page, spec
   ::  Decisions 4), so its vault copy is HTML and goes out as %html. No
   ::  %fodt mark crosses the wire, and a peer on an older lattice reads
-  ::  the page through its existing %html branch.
-  ?:  ?=(%fodt m)  %html
+  ::  the page through its existing %html branch. A fods page, a
+  ::  spreadsheet, is published the same way.
+  ?:  ?=(rich m)  %html
   m
 ::  +publish-mode: +published-mode for a publish. A fodt page's show
 ::  grub is written by its first run, and a move or a share can publish
@@ -10170,7 +10177,8 @@
   ?.  ?=(%gmi md)  (pure:m md)
   ;<  hd=[rev=@ud src=(unit @t)]  bind:m  (page-head rel)
   ?~  src.hd  (pure:m md)
-  (pure:m ?:(=(`%fodt (content-builder u.src.hd)) %fodt md))
+  =/  rk=(unit rich)  (rich-of (content-builder u.src.hd))
+  (pure:m ?~(rk md u.rk))
 ::  +published-mode: the view-mode a page publishes as. Reads the show grub
 ::  directly (not via +read-show-mode, which answers %text for both an absent
 ::  grub and an explicit %text, so the two could not be told apart). An absent
@@ -10865,19 +10873,26 @@
   ;<  cv=view:nexus  bind:m  (peek:fio (rf up (weld /page rel) %code) ~)
   ?.  ?=([%file *] cv)  (pure:m [0 ~])
   (pure:m [ud.cass.cv (mole |.(;;(@t (sang-noun:tarball sang.cv))))])
-::  +fodt-at: is the page at rel a Writer (fodt) page? A key may not
-::  save fodt (+page-type-ok:ky), so any keyed save onto one would change
-::  its kind; the keyed save paths refuse it (owner decision 2026-11-02).
+::  +fodt-at: is the page at rel a Writer (fodt) page or a spreadsheet
+::  (fods), and which? A key may not save either (+page-type-ok:ky), so
+::  any keyed save onto one would change its kind; the keyed save paths
+::  refuse it (owner decision 2026-11-02).
 ::
 ++  fodt-at
   |=  rel=path
-  =/  m  (fiber:fiber:nexus ,?)
+  =/  m  (fiber:fiber:nexus ,(unit rich))
   ^-  form:m
   ;<  hd=[rev=@ud src=(unit @t)]  bind:m  (page-head rel)
-  ?~  src.hd  (pure:m |)
-  (pure:m =(`%fodt (content-builder u.src.hd)))
+  ?~  src.hd  (pure:m ~)
+  (pure:m (rich-of (content-builder u.src.hd)))
 ::
-++  fodt-key-msg  'that page is a Writer document: a key cannot change its kind'
+++  fodt-key-msg
+  |=  k=rich
+  ^-  @t
+  ?-  k
+    %fodt  'that page is a Writer document: a key cannot change its kind'
+    %fods  'that page is a spreadsheet: a key cannot change its kind'
+  ==
 ::  +pub-path: a relative publish path ("notes/intro") -> content-map key
 ::  (/pub/notes/intro/gmi). Ported from /lib/lattice.
 ::
@@ -11104,14 +11119,14 @@
   =/  m  (fiber:fiber:nexus ,(list [rel=path body=@t shr=share-mode:le]))
   ^-  form:m
   =/  rows=(list index-row)  (index-walk b ~)
-  =/  new=(list [rel=path body=@t v=fodt-view])
+  =/  new=(list [rel=path k=rich body=@t v=fodt-view])
     (murn rows |=(r=index-row ?~(new.r ~ `[rel.r u.new.r])))
   |-  ^-  form:m
   ?~  new  (pure:m (turn rows |=(r=index-row [rel.r body.r shr.r])))
-  ;<  ~  bind:m  (fodt-store (weld /page rel.i.new) body.i.new v.i.new)
+  ;<  ~  bind:m  (fodt-store k.i.new (weld /page rel.i.new) body.i.new v.i.new)
   $(new t.new)
 +$  index-row
-  [rel=path body=@t shr=share-mode:le new=(unit [body=@t v=fodt-view])]
+  [rel=path body=@t shr=share-mode:le new=(unit [k=rich body=@t v=fodt-view])]
 ::  +index-walk: +search-walk's rows, with each fodt render it made and
 ::  did not find in a cache (`new`) for the caller to store
 ++  index-walk
@@ -11130,11 +11145,12 @@
   =/  shr=share-mode:le  (fils-share fils)
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content src)
   =/  body=@t  ?~(un src body.u.un)
-  ?.  &(?=(^ un) =(%fodt builder.u.un))  [[rel body shr ~] kids]
-  =/  hit=(unit fodt-view)  (fodt-hit (fodt-cached fils) body)
+  =/  rk=(unit rich)  ?~(un ~ (rich-of `builder.u.un))
+  ?~  rk  [[rel body shr ~] kids]
+  =/  hit=(unit fodt-view)  (fodt-hit u.rk (fodt-cached fils) body)
   ?^  hit  [[rel text.u.hit shr ~] kids]
-  =/  v=fodt-view  (fodt-make body)
-  [[rel text.v shr `[body v]] kids]
+  =/  v=fodt-view  (fodt-make u.rk body)
+  [[rel text.v shr `[u.rk body v]] kids]
 ::  +scope-of: a page's share preset -> the label a search result carries.
 ::  %shared is reported as %urbit, not "public": those pages ARE reachable by
 ::  any ship that knows the address but invisible to a browser, and collapsing
@@ -11542,8 +11558,9 @@
   ;<  html-row=(list [@t json])  bind:m
     =/  n  (fiber:fiber:nexus ,(list [@t json]))
     ?.  &(render |((~(has in content-builders) kind) =(%index kind)))  (pure:n ~)
-    ?.  =(%fodt kind)  (pure:n ~[['html' s+(render-bare (preview-inner kind body))]])
-    ;<  v=fodt-view  bind:n  (fodt-of-page pdir body)
+    =/  rk=(unit rich)  (rich-of `kind)
+    ?~  rk  (pure:n ~[['html' s+(render-bare (preview-inner kind body))]])
+    ;<  v=fodt-view  bind:n  (fodt-of-page u.rk pdir body)
     (pure:n ~[['html' s+(render-bare (trip html.v))]])
   %-  pure:m
   :-  %&
@@ -11938,6 +11955,7 @@
     ?:  =(%'theme.js' nam)    `'application/javascript'
     ?:  =(%'orrery.js' nam)   `'application/javascript'
     ?:  =(%'writer.js' nam)   `'application/javascript'
+    ?:  =(%'sheet.js' nam)    `'application/javascript'
     ?:  =(%'settings.js' nam)  `'application/javascript'
     ?:  =(%'pdf.js' nam)      `'application/javascript'
     ?:  =(%'skills.js' nam)   `'application/javascript'
@@ -11947,9 +11965,12 @@
   ?.  ?=([%file *] pv)  (send-err eyre-id 404 'not found')
   =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
   ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
-  ::  writer.js?h=H and pdf.js?h=H too: app.js names the H it was built with
+  ::  writer.js?h=H, sheet.js?h=H and pdf.js?h=H too: app.js names the H
+  ::  it was built with
   =/  cc=@t
-    ?.  ?&  |(=(%'app.js' nam) =(%'writer.js' nam) =(%'pdf.js' nam) =(%'skills.js' nam))
+    ?.  ?&  ?|  =(%'app.js' nam)  =(%'writer.js' nam)  =(%'sheet.js' nam)
+                =(%'pdf.js' nam)  =(%'skills.js' nam)
+            ==
             =(`(js-tag q.p.res) (~(get by args) 'h'))
         ==
       'no-cache'
@@ -14414,7 +14435,7 @@
     ;<  mode=view-mode:pg  bind:m  (published-mode rel)
     ::  except a fodt page, whose vault copy is its rendered HTML, the
     ::  same body and mark a peer reads (+pub-save-page, +mode-mark)
-    =?  mode  ?=(%fodt mode)  %html
+    =?  mode  ?=(rich mode)  %html
     (pure:m `[ud.cass.seen mode !<(@t (need-vase:tarball sang.seen))])
   ;<  ent=(unit [rev=@ud id=@uv])  bind:m  (peer-page-id shp (spat rel))
   ?~  ent  (peek-peer-page shp rel)
@@ -14982,14 +15003,14 @@
   ::  shows the note instead).
   ;<  fv=(unit fodt-view)  bind:m
     =/  n  (fiber:fiber:nexus ,(unit fodt-view))
-    ?.  ?=(%fodt vmode)  (pure:n ~)
+    ?.  ?=(rich vmode)  (pure:n ~)
     =/  txt=(unit @t)  ?~(cd ~ (mole |.(;;(@t (sang-noun:tarball u.cd)))))
     ?~  txt  (pure:n ~)
     ?.  local
       ?:  (gth (met 3 u.txt) (bex 20))  (pure:n ~)
-      ;<  v=fodt-view  bind:n  (fodt-peer u.txt)
+      ;<  v=fodt-view  bind:n  (fodt-peer vmode u.txt)
       (pure:n `v)
-    ;<  v=fodt-view  bind:n  (fodt-of-page (weld /page rel) u.txt)
+    ;<  v=fodt-view  bind:n  (fodt-of-page vmode (weld /page rel) u.txt)
     (pure:n `v)
   =/  shown
     |=  [d=sang:tarball base=tape]
@@ -15097,6 +15118,7 @@
     %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip body)) "</code></pre>")
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip body)) "</code></pre>")
     %fodt  (fodt-html:lf body)
+    %fods  (fods-html:lfs body)
     %index  "<div style=\"color:#8a8a8a;text-align:center;padding:2rem\"><p><b>Folder index</b></p><p>Lists the pages in this page's folder automatically, once you name it (e.g. blog/index) and save. Live as pages come and go.</p></div>"
   ==
 ::  ── the fodt render cache ─────────────────────────────────────────
@@ -15125,20 +15147,46 @@
 ::  peer's saves overwrite its one entry as ours do. No peer can make
 ::  this ship hold more than one entry per page it owns.
 ::
+::  A fods page, a spreadsheet, is kept the same way, in the same grub
+::  and the same peer cache: /lib/lattice-fods reads it with the same
+::  scanner, at the same cost. An entry's version names its renderer
+::  (+rich-ver), so a page whose kind changed over the same text never
+::  gets the other kind's render.
+::
+::  +rich: the page kinds rendered through this cache
++$  rich  ?(%fodt %fods)
+::  +rich-of: a builder that is one of them
+++  rich-of
+  |=  b=(unit @tas)
+  ^-  (unit rich)
+  ?~  b  ~
+  ?:  ?=(rich u.b)  `u.b
+  ~
 ::  +fodt-ver: bump it when /lib/lattice-fodt's output changes
 ++  fodt-ver  ^-(@ud 1)
+::  +fods-ver: bump it when /lib/lattice-fods's output changes
+++  fods-ver  ^-(@ud 1)
+::  +rich-ver: the version an entry of this kind carries. A fods one is
+::  offset, so the two renderers' versions never meet.
+++  rich-ver
+  |=  k=rich
+  ^-  @ud
+  ?-  k
+    %fodt  fodt-ver
+    %fods  (add (bex 16) fods-ver)
+  ==
 +$  fodt-view  [html=@t text=@t title=(unit @t)]
 +$  fodt-entry  [%fodt-cache ver=@ud key=@ view=fodt-view]
 ::  +fodt-hit: the view in a page's cache grub, when it was made from
 ::  `body` by this renderer
 ++  fodt-hit
-  |=  [cache=(unit sang:tarball) body=@t]
+  |=  [k=rich cache=(unit sang:tarball) body=@t]
   ^-  (unit fodt-view)
   ?~  cache  ~
   =/  e=(unit fodt-entry)
     (mole |.(;;(fodt-entry (sang-noun:tarball u.cache))))
   ?~  e  ~
-  ?.  &(=(fodt-ver ver.u.e) =((shax body) key.u.e))  ~
+  ?.  &(=((rich-ver k) ver.u.e) =((shax body) key.u.e))  ~
   `view.u.e
 ::  +fodt-cached: the cache grub among a page dir's files
 ++  fodt-cached
@@ -15147,9 +15195,13 @@
   (bind (~(get by fils) %'fodt.cache') |=([=sang:tarball *] sang))
 ::  +fodt-make: render a body, uncached
 ++  fodt-make
-  |=  body=@t
+  |=  [k=rich body=@t]
   ^-  fodt-view
-  =/  a  (fodt-all:lf body)
+  =/  a=[html=tape text=@t title=(unit @t)]
+    ?-  k
+      %fodt  (fodt-all:lf body)
+      %fods  (fods-all:lfs body)
+    ==
   [(crip html.a) text.a title.a]
 ::  +fodt-peer: the view of a PEER's fodt body, from /fodt-peers (the
 ::  last +peer-cap:lf renders, keyed by the body's shax, which is its
@@ -15158,7 +15210,7 @@
 ::  peer makes this ship hold more than +peer-cap:lf renders of bodies
 ::  under the 1 MB peer cap.
 ++  fodt-peer
-  |=  body=@t
+  |=  [k=rich body=@t]
   =/  m  (fiber:fiber:nexus ,fodt-view)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -15168,16 +15220,16 @@
     ?.  ?=([%file *] vw)  ~
     (fall (mole |.(;;(peer-cache:lf (sang-noun:tarball sang.vw)))) ~)
   =/  key=@  (shax body)
-  =/  hit=(unit peer-view:lf)  (peer-get:lf c key fodt-ver)
+  =/  hit=(unit peer-view:lf)  (peer-get:lf c key (rich-ver k))
   ?^  hit  (pure:m u.hit)
-  =/  v=fodt-view  (fodt-make body)
-  ;<  ~  bind:m  (put-file road [/ %noun] (peer-put:lf c key fodt-ver v))
+  =/  v=fodt-view  (fodt-make k body)
+  ;<  ~  bind:m  (put-file road [/ %noun] (peer-put:lf c key (rich-ver k) v))
   (pure:m v)
 ::  +fodt-of-page: the view of `body` for our page at `pdir` (/page/..),
 ::  from its cache, else made and stored. One shallow peek of the page
 ::  dir reads both the cache and whether the page exists.
 ++  fodt-of-page
-  |=  [pdir=path body=@t]
+  |=  [k=rich pdir=path body=@t]
   =/  m  (fiber:fiber:nexus ,fodt-view)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -15185,21 +15237,21 @@
   =/  fils=(map @ta [=sang:tarball gain=? bang=(unit tang)])
     ?.  ?=([%ball *] pv)  ~
     ?~(fil.ball.pv ~ contents.u.fil.ball.pv)
-  =/  hit=(unit fodt-view)  (fodt-hit (fodt-cached fils) body)
+  =/  hit=(unit fodt-view)  (fodt-hit k (fodt-cached fils) body)
   ?^  hit  (pure:m u.hit)
-  =/  v=fodt-view  (fodt-make body)
+  =/  v=fodt-view  (fodt-make k body)
   ?.  (~(has by fils) %code)  (pure:m v)
-  ;<  ~  bind:m  (fodt-store pdir body v)
+  ;<  ~  bind:m  (fodt-store k pdir body v)
   (pure:m v)
 ::  +fodt-store: write a page's cache entry
 ++  fodt-store
-  |=  [pdir=path body=@t v=fodt-view]
+  |=  [k=rich pdir=path body=@t v=fodt-view]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?:  (gth (met 3 body) max-size:lf)  (pure:m ~)
   ;<  up=@ud  bind:m  nexus-up
   %^  put-file  (rf up pdir %'fodt.cache')  [/ %noun]
-  `fodt-entry`[%fodt-cache fodt-ver (shax body) v]
+  `fodt-entry`[%fodt-cache (rich-ver k) (shax body) v]
 ::  +own-fodt-title: the title of our own fodt page at `rel`, ~ when it
 ::  is not one. Its published copy is HTML, so the reader asks here.
 ::  The publish filled the cache, so this is a read.
@@ -15210,19 +15262,21 @@
   =/  rel=path  (page-rel rel)
   ;<  hd=[rev=@ud src=(unit @t)]  bind:m  (page-head rel)
   ?~  src.hd  (pure:m ~)
-  ?.  =(`%fodt (content-builder u.src.hd))  (pure:m ~)
+  =/  rk=(unit rich)  (rich-of (content-builder u.src.hd))
+  ?~  rk  (pure:m ~)
   =/  un=(unit [builder=@tas body=@t])  (unwrap-content u.src.hd)
   ?~  un  (pure:m ~)
-  ;<  v=fodt-view  bind:m  (fodt-of-page (weld /page rel) body.u.un)
+  ;<  v=fodt-view  bind:m  (fodt-of-page u.rk (weld /page rel) body.u.un)
   (pure:m title.v)
 ::  +fodt-rendered: whether an html body starts as /lib/lattice-fodt's
-::  output does (+html-pres:lf). A test on the first bytes: a
+::  output does (+html-pres:lf), or /lib/lattice-fods's. A test on the
+::  first bytes: a
 ::  hand-written html page that happens to start the same way costs one
 ::  read in +own-fodt-title, which then answers ~.
 ++  fodt-rendered
   |=  body=@t
   ^-  ?
-  %+  lien  html-pres:lf
+  %+  lien  (weld html-pres:lf html-pres:lfs)
   |=(pre=@t =(pre (end [3 (met 3 pre)] body)))
 ::  +shown-of: +render-shown, but a fodt page of ours (at `pdir`) comes
 ::  from its render cache
@@ -15230,10 +15284,10 @@
   |=  [pdir=(unit path) =sang:tarball mode=view-mode:pg base=tape]
   =/  m  (fiber:fiber:nexus ,tape)
   ^-  form:m
-  ?.  &(?=(%fodt mode) ?=(^ pdir))  (pure:m (render-shown sang mode base))
+  ?.  &(?=(rich mode) ?=(^ pdir))  (pure:m (render-shown sang mode base))
   =/  cr=(each @t tang)  (mule |.(;;(@t (sang-noun:tarball sang))))
   ?:  ?=(%| -.cr)  (pure:m (render-shown sang mode base))
-  ;<  v=fodt-view  bind:m  (fodt-of-page u.pdir p.cr)
+  ;<  v=fodt-view  bind:m  (fodt-of-page mode u.pdir p.cr)
   (pure:m (trip html.v))
 ::  +render-bare: a minimal HTML doc (shared reader CSS, no address-bar chrome),
 ::  for the editor preview iframe, which supplies its own layout.
@@ -16711,8 +16765,8 @@
   =/  m  (fiber:fiber:nexus ,tape)
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
-  ::  a fodt page has its own cache, of the HTML, text and title
-  ?:  ?=(%fodt vmode)  (shown-of `pdir sang vmode base)
+  ::  a fodt or fods page has its own cache, of the HTML, text and title
+  ?:  ?=(rich vmode)  (shown-of `pdir sang vmode base)
   ?.  ?=(?(%md %gmi) vmode)  (pure:m (render-shown sang vmode base))
   =/  road=road:tarball  (rf up pdir %'render.json')
   =/  want=@t  (scot %ud rev)
@@ -16773,6 +16827,7 @@
     %js    :(weld "<pre><code class=\"language-javascript\">" (esc (trip p.cr)) "</code></pre>")
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")
     %fodt  (fodt-html:lf p.cr)
+    %fods  (fods-html:lfs p.cr)
     %noun  (page-data-html sang)
   ==
 ::  +explore-crumbs: breadcrumb nav, absolute hrefs from the ship root down,
@@ -17384,6 +17439,7 @@
 ::  cache, so a Writer page opened once is editable offline. Precaching it
 ::  would put it on every install for users who never open one. Its V
 ::  covers it (+shell-ver), so a deploy that changes it drops the copy.
+::  sheet.js, the grid editor for fods pages, is kept the same way.
 ::
 ::  Non-SHELL requests are NOT intercepted at all (no respondWith): some
 ::  webkitgtk builds drop cookies on SW-mediated fetch, so a blanket
@@ -17404,7 +17460,7 @@
 ::  +shell-ver: the worker's cache key, V without its lattice- prefix
 ++  shell-ver
   ^-  @t
-  (scot %ux (mug [uih uij vjs tjs ojs wjs sjs skj icon pjs manifest-json icon-192-b64 icon-512-b64]))
+  (scot %ux (mug [uih uij vjs tjs ojs wjs shj sjs skj icon pjs manifest-json icon-192-b64 icon-512-b64]))
 ::  PV versions the RENDERED reader documents (their inline css + scripts).
 ::  V only covers shell assets, so a deploy that restyled the reader left
 ::  every cached page serving the old markup indefinitely: content revs
@@ -17475,7 +17531,7 @@
       ver
       '";var PV="'
       pv
-      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];var LAZY=["/apps/lattice/app/writer.js","/apps/lattice/app/settings.js","/apps/lattice/app/skills.js"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(LAZY.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok)c.put(u.pathname,r.clone());return r})})}).catch(function(){return fetch(q)}));return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];var LAZY=["/apps/lattice/app/writer.js","/apps/lattice/app/sheet.js","/apps/lattice/app/settings.js","/apps/lattice/app/skills.js"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(LAZY.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok)c.put(u.pathname,r.clone());return r})})}).catch(function(){return fetch(q)}));return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
@@ -17801,7 +17857,7 @@
 ++  edit-lock-msg
   ^-  tang
   :~  leaf+"this page was shared for editing, so it runs content only:"
-      leaf+"md, gmi, html, text, js, css, tex, fodt or a folder index."
+      leaf+"md, gmi, html, text, js, css, tex, fodt, fods or a folder index."
       leaf+"To run hoon here, stop sharing it for edit, then save it yourself."
   ==
 ::  +unwrap-content: page source -> [builder body] if it matches the content
@@ -17868,7 +17924,7 @@
 ::  +content-builders: the pg constructors an editor file wraps its body in.
 ::  md/gmi/html render to a view; text/js/css are shown as code + served raw.
 ::
-++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css %tex %fodt])
+++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css %tex %fodt %fods])
 ::  +name-pax: a ?name= value (slash-separated, e.g. notes/todo) -> a validated
 ::  page path under /page, or ~. Each segment must be a non-empty @ta knot.
 ::
@@ -17912,6 +17968,7 @@
     %md    'text/markdown; charset=utf-8'
     %gmi   'text/gemini; charset=utf-8'
     %fodt  'application/vnd.oasis.opendocument.text-flat-xml'
+    %fods  'application/vnd.oasis.opendocument.spreadsheet-flat-xml'
   ==
 ::  +read-tree: every node under /page (sorted) as [path page=?]. page=%.y is a
 ::  programmable page (a dir with a /code grub), page=%.n a plain folder (incl.
@@ -19402,7 +19459,7 @@
     ?~  left  nen
     =/  k=@t  (spat rel.i.left)
     =/  row=pub-wait:lp  (pub-note:lp (~(get by nen) k) now pub-quiet)
-    =?  row  =(`%fodt (content-builder src.i.left))  (pub-hold:lp row now pub-slow-cap)
+    =?  row  ?=(^ (rich-of (content-builder src.i.left)))  (pub-hold:lp row now pub-slow-cap)
     $(left t.left, nen (~(put by nen) k row))
   ;<  ~  bind:m  (put-file (pub-pending-road root) [/ %noun] nen)
   (pub-arm-with nen now)
@@ -20975,8 +21032,8 @@
     ;<  md=view-mode:pg  bind:q
       ?^  vm  (pure:(fiber:fiber:nexus ,view-mode:pg) u.vm)
       (publish-mode inner)
-    ?.  ?=(%fodt md)  (pure:q [md body])
-    ;<  v=fodt-view  bind:q  (fodt-of-page (weld /page inner) body)
+    ?.  ?=(rich md)  (pure:q [md body])
+    ;<  v=fodt-view  bind:q  (fodt-of-page md (weld /page inner) body)
     (pure:q [%html html.v])
   =.  body  body.pb
   ;<  vv=view:nexus  bind:m  (peek-shallow:fio (rv up pax.u.or) ~)

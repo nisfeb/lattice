@@ -16,7 +16,7 @@
   // hides the editor.
 
   // the page kinds: the hidden picker's options and the page menu's Kind list
-  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'hoon'];
+  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'hoon'];
   const tabHead = document.createElement('div');
   tabHead.id = 'tabhead';
   tabHead.className = 'tabhead';
@@ -234,7 +234,7 @@
     // a folder view: Delete is #del's folder branch, its own confirm and all
     if (!grubPath && curFolder !== null) has.add('del');
     if (page && window.__TAURI__ && (curKind === 'tex' || pkind.value === 'tex')) has.add('tex');
-    if (fodtHere()) { has.add('source'); if (wr && wr.macros) has.add('macros'); }
+    if (richHere()) { has.add('source'); if (wr && wr.macros) has.add('macros'); }
     return has;
   }
   function pageMenu() {

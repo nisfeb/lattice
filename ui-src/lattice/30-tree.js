@@ -15,12 +15,14 @@
   // `htm` and `text` are INBOUND-ONLY aliases: archives written before the
   // extension was conventionalised named those files `.text`, and a restore
   // has to keep reading archives this app already handed out. `odt` is
-  // upload-only, read as bytes by writer.js (70-upload.js).
+  // upload-only, read as bytes by writer.js (70-upload.js), and `ods` is
+  // the same for a spreadsheet.
   const KIND_EXT = { md: 'md', gmi: 'gmi', html: 'html', text: 'txt', js: 'js',
-                     css: 'css', hoon: 'hoon', index: 'md', tex: 'tex', fodt: 'fodt' };
+                     css: 'css', hoon: 'hoon', index: 'md', tex: 'tex', fodt: 'fodt',
+                     fods: 'fods' };
   const EXT_KIND = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
                      text: 'text', js: 'js', css: 'css', hoon: 'hoon', tex: 'tex',
-                     latex: 'tex', fodt: 'fodt', odt: 'fodt' };
+                     latex: 'tex', fodt: 'fodt', odt: 'fodt', fods: 'fods', ods: 'fods' };
   //  an unknown kind shows as hoon, the kind that holds arbitrary source
   const kindExt = (k) => KIND_EXT[k] || 'hoon';
   //  an unknown extension is null, never guessed: the caller skips that file

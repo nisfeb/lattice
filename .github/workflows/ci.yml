@@ -257,7 +257,7 @@ jobs:
       - name: LibreOffice Writer (no GUI)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui
+          sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui libreoffice-calc-nogui
           soffice --version
       - name: canon.py is stable across two LibreOffice re-saves
         run: python3 scripts/writer-corpus/canon.py --self-test
@@ -271,6 +271,14 @@ jobs:
         env:
           WRITER_REQUIRE_SOFFICE: "1"
         run: node scripts/writer-odt.mjs
+      # The spreadsheet round trip: lattice's core edits each corpus file,
+      # LibreOffice Calc opens the result and saves it, and every cell
+      # (value, formula, shown text) must agree. LibreOffice recalculates
+      # on load, so its save is its own answer.
+      - name: spreadsheet round trip
+        env:
+          SHEET_REQUIRE_SOFFICE: "1"
+        run: node scripts/sheet-roundtrip.mjs
 
   # Every .hoon file in code/ compiles on a fake ~zod with grubbery, as a
   # ship builds it: dev-deploy.py sends code/ and hoon-build-wait.py asks
@@ -360,6 +368,18 @@ jobs:
           git diff --exit-code code/nex/lattice/ui-app/writer.js ui-src/writer/vendor/LICENSES
           node --check code/nex/lattice/ui-app/writer.js
           node scripts/writer-licences.mjs
+      # sheet.js is the spreadsheet editor (ui-src/sheet/): the grid, the
+      # flat ODS core and the formula engine. Rebuilt and diffed like
+      # writer.js. build-sheet.mjs fails over its budget (200 KB raw, 70 KB
+      # gzipped). sheet-unit.mjs is its core in pure node: every corpus
+      # and oracle formula against the result LibreOffice cached, byte-
+      # identical no-op round trips, edits, moved references, hostile files.
+      - name: sheet.js builds, is current and in budget, and its core passes
+        run: |
+          node scripts/build-sheet.mjs
+          git diff --exit-code code/nex/lattice/ui-app/sheet.js ui-src/sheet/vendor/LICENSES
+          node --check code/nex/lattice/ui-app/sheet.js
+          node scripts/sheet-unit.mjs
       # the writer core (tokenizer, model, styles, minimal-diff serializer),
       # pure node: no-op round trips, minimal diffs, style reuse, pairs,
       # hostile files and the 13-large time budget
@@ -371,7 +391,7 @@ jobs:
         run: |
           for f in scripts/*.mjs scripts/lib/*.mjs; do node --check "$f"; done
           for f in scripts/*.sh scripts/lib/*.sh; do bash -n "$f"; done
-          for f in scripts/writer-corpus/*.py; do python3 -m py_compile "$f"; done
+          for f in scripts/writer-corpus/*.py scripts/sheet-corpus/*.py; do python3 -m py_compile "$f"; done
       # the agent plugins (plugins/): they parse, their manifests are JSON,
       # the Hermes plugin passes its fake-ship check (hermes-plugin-check.py),
       # and the Claude plugin's MCP server answers tools/list
@@ -446,3 +466,8 @@ jobs:
       # for the shipless reader's loopback, so it needs no ship either.
       - name: browser unit test - reader loading line (no ship)
         run: CHROME="$(command -v google-chrome)" node scripts/ui-reader-loading.mjs
+      # ui-sheet-grid loads the built sheet.js into a blank page and drives
+      # the spreadsheet grid with the mouse and the keyboard, so it needs no
+      # ship either.
+      - name: browser unit test - spreadsheet grid (no ship)
+        run: CHROME="$(command -v google-chrome)" node scripts/ui-sheet-grid.mjs

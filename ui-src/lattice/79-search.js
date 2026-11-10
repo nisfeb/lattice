@@ -100,12 +100,12 @@
     return (from ? '…' : '') + body.slice(from, to).replace(/\s+/g, ' ') + (to < body.length ? '…' : '');
   };
 
-  // a Writer page is searched as its words, not its XML
+  // a Writer page or a spreadsheet is searched as its words, not its XML
   const qTx = new Map();
   const searchText = (k, b, p) => {
-    if (k !== 'fodt') return b;
+    if (!isRich(k)) return b;
     let m = qTx.get(p);
-    if (!m || m[0] !== b) qTx.set(p, m = [b, window.LatWriter ? LatWriter.extract.text(b) : (b.split('<office:body>')[1] || '')
+    if (!m || m[0] !== b) qTx.set(p, m = [b, richLib(k) ? richLib(k).extract.text(b) : (b.split('<office:body>')[1] || '')
       .replace(/<\/text:[ph]>|<text:(s|tab|line-break)\b[^>]*>/g, ' ').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&')]);
     return m[1];
   };

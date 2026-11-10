@@ -237,7 +237,7 @@ async function live(url, cookie, stamp, secs = 900) {
 //  --- the suites ---
 const browser = (f) => /puppeteer|lib\/harness\.mjs/.test(readFileSync(S + '/' + f, 'utf8'));
 const uis = readdirSync(S).filter((f) => /^ui-.*\.mjs$/.test(f)).sort();
-const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs'];
+const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs', 'ui-sheet-grid.mjs'];
 const TWO_SHIP = ['ui-links.mjs', 'ui-shares-live.mjs', 'ui-follow-live.mjs'];
 const allShip = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
@@ -276,6 +276,7 @@ function fiberio() {
 const allLocal = [
   ...uis.filter((f) => !browser(f)).map((f) => [f, 'node', [S + '/' + f]]),
   ['ui-manager.mjs', 'node', [S + '/ui-manager.mjs']],
+  ['ui-sheet-grid.mjs', 'node', [S + '/ui-sheet-grid.mjs']],
   ['ui-reader-loading.mjs', 'node', [S + '/ui-reader-loading.mjs']],
   ['offline-tests', 'bash', [S + '/offline-tests.sh']],
   ['code-closure', 'python3', [S + '/code-closure.py', 'code']],
@@ -294,6 +295,9 @@ const allLocal = [
   ['writer-built', 'bash', ['-c', 'node scripts/build-writer.mjs && git diff --exit-code code/nex/lattice/ui-app/writer.js ui-src/writer/vendor/LICENSES && node --check code/nex/lattice/ui-app/writer.js']],
   ['writer-licences', 'node', [S + '/writer-licences.mjs']],
   ['writer-roundtrip', 'node', [S + '/writer-roundtrip.mjs']],
+  ['sheet-built', 'bash', ['-c', 'node scripts/build-sheet.mjs && git diff --exit-code code/nex/lattice/ui-app/sheet.js ui-src/sheet/vendor/LICENSES && node --check code/nex/lattice/ui-app/sheet.js']],
+  ['sheet-unit', 'node', [S + '/sheet-unit.mjs']],
+  ['sheet-roundtrip', 'node', [S + '/sheet-roundtrip.mjs']],
 ];
 //  a misspelt --only name would otherwise run nothing and pass
 for (const n of ONLY || []) {
