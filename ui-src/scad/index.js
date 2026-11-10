@@ -4,8 +4,12 @@
 //  in here: the ship serves it, when the owner installed it.
 import { makeRunner } from './runner.js';
 import { scanIncludes, resolveRef, collect } from './includes.js';
+import { parseStl } from './stl.js';
+import { makeViewer } from './viewer.js';
 
 window.LatScad = {
   //  the worker driver and the include resolver
   makeRunner, scanIncludes, resolveRef, collect,
+  //  the STL reader and the WebGL viewer
+  parseStl, makeViewer,
 };

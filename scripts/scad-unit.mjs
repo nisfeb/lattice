@@ -15,6 +15,7 @@ import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { makeCheck } from './lib/check.mjs';
 import { scanIncludes, resolveRef, collect } from '../ui-src/scad/includes.js';
+import { parseStl, MAX_TRIS } from '../ui-src/scad/stl.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FX = join(here, '..', 'tests', 'scad', 'customizer');
@@ -53,6 +54,28 @@ console.log('includes: resolved as lattice pages, inside lattice');
   check.eq('hostile paths are noted, never read', esc.files.length + ':' + esc.notes.length, '1:2');
   const thrown = await collect('t', 'include <a.scad>', async () => { throw new Error('down'); });
   check.eq('a read that fails is a missing page', thrown.files.length, 1);
+}
+
+console.log('\nSTL: OpenSCAD\'s binary STL');
+{
+  const stl = (tris) => {
+    const b = new ArrayBuffer(84 + tris.length * 50), dv = new DataView(b);
+    dv.setUint32(80, tris.length, true);
+    tris.forEach((t, i) => t.forEach((v, k) => dv.setFloat32(84 + i * 50 + 12 + k * 4, v, true)));
+    return new Uint8Array(b);
+  };
+  const m = parseStl(stl([[0, 0, 0, 10, 0, 0, 0, 20, 0], [0, 0, 5, 10, 0, 5, 0, 20, 5]]));
+  check.eq('two triangles', m.tris, 2);
+  check.eq('the box', JSON.stringify([m.min, m.max]), JSON.stringify([[0, 0, 0], [10, 20, 5]]));
+  check.eq('a face normal from its corners', [...m.nor.slice(0, 3)].join(), '0,0,1');
+  check('a short file is an error', !!parseStl(new Uint8Array(10)).error);
+  const lie = stl([[0, 0, 0, 1, 0, 0, 0, 1, 0]]);
+  new DataView(lie.buffer).setUint32(80, 1000, true);
+  check('a count past the bytes is an error', !!parseStl(lie).error);
+  const bomb = new Uint8Array(84);
+  new DataView(bomb.buffer).setUint32(80, MAX_TRIS + 1, true);
+  check('more triangles than the cap is refused before any is read', /more than the viewer draws/.test(parseStl(bomb).error || ''));
+  check.eq('an empty part', parseStl(stl([])).tris, 0);
 }
 
 check.done();
