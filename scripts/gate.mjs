@@ -298,6 +298,8 @@ const allLocal = [
   ['sheet-built', 'bash', ['-c', 'node scripts/build-sheet.mjs && git diff --exit-code code/nex/lattice/ui-app/sheet.js ui-src/sheet/vendor/LICENSES && node --check code/nex/lattice/ui-app/sheet.js']],
   ['sheet-unit', 'node', [S + '/sheet-unit.mjs']],
   ['sheet-roundtrip', 'node', [S + '/sheet-roundtrip.mjs']],
+  ['scad-built', 'bash', ['-c', 'node scripts/build-scad.mjs && git diff --exit-code code/nex/lattice/ui-app/scad.js && node --check code/nex/lattice/ui-app/scad.js && node scripts/build-scad.mjs --check-pin']],
+  ['scad-unit', 'node', [S + '/scad-unit.mjs']],
 ];
 //  a misspelt --only name would otherwise run nothing and pass
 for (const n of ONLY || []) {

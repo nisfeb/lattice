@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-//  build-scad.mjs: the OpenSCAD runtime's pin.
+//  build-scad.mjs: the OpenSCAD runtime's pin, and scad.js.
 //
 //  scad pages render in the browser with OpenSCAD compiled to WebAssembly.
 //  That runtime is optional and is never part of the desk: the owner
@@ -36,7 +36,21 @@
 //    openscad.js           unmodified
 //    openscad-COPYING.txt  OpenSCAD's COPYING, unmodified
 //
+//  scad.js
+//
+//  With no flag, this builds ui-src/scad/ into the served
+//  code/nex/lattice/ui-app/scad.js: the viewer, the customizer, the include
+//  resolver and the worker driver, as build-sheet.mjs builds sheet.js. One
+//  minified IIFE, no source map, nothing global but window.LatScad. It
+//  bundles no package: every line is lattice's own, and the build fails if
+//  esbuild pulls in anything from node_modules, so no third-party licence
+//  rides in it. CI rebuilds and diffs it. It fails over its budget: 60 KB
+//  raw, 20 KB gzipped. app.js loads it only when a scad page shows with
+//  the runtime installed.
+//
 //  Usage:
+//    node scripts/build-scad.mjs [--quiet]
+//        build scad.js
 //    node scripts/build-scad.mjs --check-pin
 //        app.hoon's +scad-files and +scad-ver match PIN below. CI runs it.
 //    node scripts/build-scad.mjs --release DIR
@@ -53,6 +67,7 @@ import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { gzipSync } from 'zlib';
+import { build } from 'esbuild';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -145,5 +160,31 @@ if (process.argv.includes('--verify')) {
   process.exit(bad ? 1 : 0);
 }
 
-console.error('usage: build-scad.mjs --check-pin | --release DIR | --verify [URL]');
-process.exit(2);
+//  ── scad.js ──
+export const BUDGET = { raw: 60 * 1024, gzip: 20 * 1024 };
+const OUT = join(root, 'code', 'nex', 'lattice', 'ui-app', 'scad.js');
+const r = await build({
+  entryPoints: [join(root, 'ui-src', 'scad', 'index.js')],
+  absWorkingDir: root,
+  bundle: true,
+  format: 'iife',
+  target: 'es2020',
+  minify: true,
+  legalComments: 'none',
+  //  ASCII, so the bundle reads the same whatever charset it is served or
+  //  loaded with
+  charset: 'ascii',
+  //  ui-src/scad/blank.scad, the new-page template, inlined as a string
+  loader: { '.scad': 'text' },
+  metafile: true,
+  write: false,
+  logLevel: 'warning',
+});
+const pulled = Object.keys(r.metafile.inputs).filter((p) => /node_modules/.test(p));
+if (pulled.length) die('scad.js must bundle no package, but pulled in ' + pulled.join(', '));
+const js = '/* BUILT FILE, do not edit. Source: ui-src/scad/, build: scripts/build-scad.mjs */\n' + r.outputFiles[0].text;
+writeFileSync(OUT, js);
+const raw = Buffer.byteLength(js), gz = gzipSync(js, { level: 9 }).length;
+const kb = (n) => (n / 1024).toFixed(1) + ' KB';
+if (!process.argv.includes('--quiet')) console.log(`built scad.js: ${kb(raw)} raw, ${kb(gz)} gzipped (budget ${kb(BUDGET.raw)} / ${kb(BUDGET.gzip)})`);
+if (raw > BUDGET.raw || gz > BUDGET.gzip) die(`scad.js is over budget: ${kb(raw)} raw, ${kb(gz)} gzipped`);

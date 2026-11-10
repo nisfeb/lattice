@@ -380,12 +380,19 @@ jobs:
           git diff --exit-code code/nex/lattice/ui-app/sheet.js ui-src/sheet/vendor/LICENSES
           node --check code/nex/lattice/ui-app/sheet.js
           node scripts/sheet-unit.mjs
-      # The OpenSCAD runtime is optional and never in the desk: the owner
-      # installs it, and the ship checks each file against the SHA-256 in
-      # app.hoon (+scad-files). build-scad.mjs records where the pin came
-      # from, and --check-pin holds the two to each other.
-      - name: the OpenSCAD runtime pin matches its record
-        run: node scripts/build-scad.mjs --check-pin
+      # scad.js is the 3D pane of scad pages (ui-src/scad/): the viewer, the
+      # customizer, the include resolver and the worker driver, all
+      # lattice's own. Rebuilt and diffed like sheet.js, over its budget it
+      # fails (60 KB raw, 20 KB gzipped). --check-pin holds app.hoon's
+      # OpenSCAD runtime pin to build-scad.mjs's record. scad-unit.mjs
+      # checks the include caps.
+      - name: scad.js builds, is current and in budget, and the pin matches
+        run: |
+          node scripts/build-scad.mjs
+          git diff --exit-code code/nex/lattice/ui-app/scad.js
+          node --check code/nex/lattice/ui-app/scad.js
+          node scripts/build-scad.mjs --check-pin
+          node scripts/scad-unit.mjs
       # the writer core (tokenizer, model, styles, minimal-diff serializer),
       # pure node: no-op round trips, minimal diffs, style reuse, pairs,
       # hostile files and the 13-large time budget
