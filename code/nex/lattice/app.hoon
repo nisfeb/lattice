@@ -92,6 +92,9 @@
 /<  lf   /lib/lattice-fodt.hoon
 ::  flat ODS: the same three of a fods page (a spreadsheet)
 /<  lfs  /lib/lattice-fods.hoon
+::  GeoJSON: the check on save, the safe SVG and table, the search text
+::  and the title of a geojson page (a map)
+/<  lgj  /lib/lattice-geojson.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -1073,13 +1076,23 @@
   ?:  (gth (lent items) 200)  (send-err eyre-id 400 'batch too large (max 200)')
   ?.  (levy items |=([nam=@t *] (valid-name nam)))
     (send-err eyre-id 400 'bad page name in batch')
+  ::  a map page is checked as a single save checks it (+save-src)
+  =/  bad-map=(unit @t)
+    =/  todo  items
+    |-  ^-  (unit @t)
+    ?~  todo  ~
+    ?.  =('geojson' typ.i.todo)  $(todo t.todo)
+    =/  why=(unit @t)  (gj-check:lgj bod.i.todo)
+    ?~  why  $(todo t.todo)
+    `(rap 3 ~[nam.i.todo ': ' u.why])
+  ?^  bad-map  (send-err eyre-id 400 u.bad-map)
   ::  keyed requests: check taint, type allowlist, path scope, and sensitive
   ::  per item. gate returns ~ if ok, or [err-code err-msg] to refuse early.
   ::  The synchronous checks run first; the sensitive check is fiber-based.
   =/  key-sync=(unit [code=@ud msg=@t])
     ?~  key  ~
     ?.  (levy items |=([* typ=@t *] (page-type-ok:ky typ)))
-      `[403 'a key saves md, gmi, text, tex, css or index pages only']
+      `[403 'a key saves md, gmi, text, tex, css, geojson or index pages only']
     ?.  (levy items |=([nam=@t *] (may-path:ky u.key %local (pax-of nam) %write)))
       `[403 'outside this key\'s scope']
     ~
@@ -1092,7 +1105,7 @@
     |-  ^-  form:n
     ?~  todo  (pure:n ~)
     ;<  wf=(unit rich)  bind:n  (fodt-at (pax-of nam.i.todo))
-    ?^  wf  (pure:n wf)
+    ?:  &(?=(^ wf) !=(`@t`u.wf typ.i.todo))  (pure:n wf)
     $(todo t.todo)
   ?^  onto-fodt  (send-err eyre-id 403 (fodt-key-msg u.onto-fodt))
   ::  sensitive + taint check (fiber-based). Returns an early refusal, plus the
@@ -1296,6 +1309,10 @@
   ?.  (valid-name name)  [%| 400 'bad name']
   =/  is-index=?  =(%index ptype)
   ?:  &(?!(is-index) =('' raw))  [%| 400 'missing body']
+  ::  a map page must be a FeatureCollection within /lib/lattice-geojson's
+  ::  caps, so no save leaves a body that cannot be drawn
+  =/  bad-map=(unit @t)  ?.(=(%geojson ptype) ~ (gj-check:lgj raw))
+  ?^  bad-map  [%| 400 u.bad-map]
   :-  %&
   ?:  is-index  (make-folder-index (pax-of name))
   ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
@@ -1878,6 +1895,8 @@
   ?.  ?=(%ship -.l)  ~
   =/  html-row=(list [@t json])
     ?.  &(render (~(has in content-builders) kind.l))  ~
+    ::  map.js draws a map page itself
+    ?:  =(%geojson kind.l)  ~
     ~[['html' s+(render-bare (preview-inner kind.l body))]]
   %-  pairs:enjs:format
   %+  weld
@@ -3597,7 +3616,7 @@
     ::  unknown type) would run with lattice's own authority, and html or js
     ::  would run in the owner's browser (+page-type-ok:ky).
     ?.  (page-type-ok:ky (~(gut by args) 'type' 'hoon'))
-      (send-err eyre-id 403 'a key saves md, gmi, text, tex, css or index pages only')
+      (send-err eyre-id 403 'a key saves md, gmi, text, tex, css, geojson or index pages only')
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
@@ -3607,7 +3626,8 @@
     ?.  (may-path:ky u.key %local (pax-of u.name) %write)
       (send-err eyre-id 403 'outside this key\'s scope')
     ;<  wf=(unit rich)  bind:m  (fodt-at (pax-of u.name))
-    ?^  wf  (send-err eyre-id 403 (fodt-key-msg u.wf))
+    ?:  &(?=(^ wf) !=(`@t`u.wf (~(gut by args) 'type' 'hoon')))
+      (send-err eyre-id 403 (fodt-key-msg u.wf))
     ;<  ps=?  bind:m  (page-sensitive (pax-of u.name))
     ::  sensitive gate: an uncleared key cannot write to a sensitive page.
     ?:  &(ps !sensitive.scope.u.key)
@@ -3624,7 +3644,7 @@
         (send-err eyre-id 403 'outside this key\'s scope')
       ?:  (tainted:ky u.key rnow)  (send-err eyre-id 403 tainted-msg)
       ?.  (page-type-ok:ky kind.l)
-        (send-err eyre-id 403 'a key saves md, gmi, text, tex, css or index pages only')
+        (send-err eyre-id 403 'a key saves md, gmi, text, tex, css, geojson or index pages only')
       (link-save-respond eyre-id (pax-of u.name) l args (req-body req))
     ::  cross-surface taint, aligned with the memory surface: a tainted key
     ::  (read sensitive content in the last 12h, so necessarily cleared) may
@@ -10873,10 +10893,12 @@
   ;<  cv=view:nexus  bind:m  (peek:fio (rf up (weld /page rel) %code) ~)
   ?.  ?=([%file *] cv)  (pure:m [0 ~])
   (pure:m [ud.cass.cv (mole |.(;;(@t (sang-noun:tarball sang.cv))))])
-::  +fodt-at: is the page at rel a Writer (fodt) page or a spreadsheet
-::  (fods), and which? A key may not save either (+page-type-ok:ky), so
-::  any keyed save onto one would change its kind; the keyed save paths
-::  refuse it (owner decision 2026-11-02).
+::  +fodt-at: is the page at rel a Writer (fodt) page, a spreadsheet
+::  (fods) or a map (geojson), and which? A key may not save the first
+::  two (+page-type-ok:ky), so any keyed save onto one would change its
+::  kind; the keyed save paths refuse it (owner decision 2026-11-02). A
+::  key may save a map, but only as a map: the same paths refuse a keyed
+::  save of any other type onto one.
 ::
 ++  fodt-at
   |=  rel=path
@@ -10892,6 +10914,7 @@
   ?-  k
     %fodt  'that page is a Writer document: a key cannot change its kind'
     %fods  'that page is a spreadsheet: a key cannot change its kind'
+    %geojson  'that page is a map: a key cannot change its kind'
   ==
 ::  +pub-path: a relative publish path ("notes/intro") -> content-map key
 ::  (/pub/notes/intro/gmi). Ported from /lib/lattice.
@@ -11558,6 +11581,10 @@
   ;<  html-row=(list [@t json])  bind:m
     =/  n  (fiber:fiber:nexus ,(list [@t json]))
     ?.  &(render |((~(has in content-builders) kind) =(%index kind)))  (pure:n ~)
+    ::  a map page opens in map.js, which draws it, so the editor's open
+    ::  costs no render and no cache write. The reader, the x and
+    ::  clearweb views, publishing and search still use the cached render.
+    ?:  =(%geojson kind)  (pure:n ~)
     =/  rk=(unit rich)  (rich-of `kind)
     ?~  rk  (pure:n ~[['html' s+(render-bare (preview-inner kind body))]])
     ;<  v=fodt-view  bind:n  (fodt-of-page u.rk pdir body)
@@ -15119,6 +15146,7 @@
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip body)) "</code></pre>")
     %fodt  (fodt-html:lf body)
     %fods  (fods-html:lfs body)
+    %geojson  (gj-html:lgj body)
     %index  "<div style=\"color:#8a8a8a;text-align:center;padding:2rem\"><p><b>Folder index</b></p><p>Lists the pages in this page's folder automatically, once you name it (e.g. blog/index) and save. Live as pages come and go.</p></div>"
   ==
 ::  ── the fodt render cache ─────────────────────────────────────────
@@ -15154,7 +15182,7 @@
 ::  gets the other kind's render.
 ::
 ::  +rich: the page kinds rendered through this cache
-+$  rich  ?(%fodt %fods)
++$  rich  ?(%fodt %fods %geojson)
 ::  +rich-of: a builder that is one of them
 ++  rich-of
   |=  b=(unit @tas)
@@ -15166,6 +15194,8 @@
 ++  fodt-ver  ^-(@ud 1)
 ::  +fods-ver: bump it when /lib/lattice-fods's output changes
 ++  fods-ver  ^-(@ud 1)
+::  +gj-ver: bump it when /lib/lattice-geojson's output changes
+++  gj-ver  ^-(@ud 1)
 ::  +rich-ver: the version an entry of this kind carries. A fods one is
 ::  offset, so the two renderers' versions never meet.
 ++  rich-ver
@@ -15174,6 +15204,7 @@
   ?-  k
     %fodt  fodt-ver
     %fods  (add (bex 16) fods-ver)
+    %geojson  (add (bex 17) gj-ver)
   ==
 +$  fodt-view  [html=@t text=@t title=(unit @t)]
 +$  fodt-entry  [%fodt-cache ver=@ud key=@ view=fodt-view]
@@ -15201,6 +15232,7 @@
     ?-  k
       %fodt  (fodt-all:lf body)
       %fods  (fods-all:lfs body)
+      %geojson  (gj-all:lgj body)
     ==
   [(crip html.a) text.a title.a]
 ::  +fodt-peer: the view of a PEER's fodt body, from /fodt-peers (the
@@ -16828,6 +16860,7 @@
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")
     %fodt  (fodt-html:lf p.cr)
     %fods  (fods-html:lfs p.cr)
+    %geojson  (gj-html:lgj p.cr)
     %noun  (page-data-html sang)
   ==
 ::  +explore-crumbs: breadcrumb nav, absolute hrefs from the ship root down,
@@ -17857,7 +17890,7 @@
 ++  edit-lock-msg
   ^-  tang
   :~  leaf+"this page was shared for editing, so it runs content only:"
-      leaf+"md, gmi, html, text, js, css, tex, fodt, fods or a folder index."
+      leaf+"md, gmi, html, text, js, css, tex, fodt, fods, geojson or a folder index."
       leaf+"To run hoon here, stop sharing it for edit, then save it yourself."
   ==
 ::  +unwrap-content: page source -> [builder body] if it matches the content
@@ -17924,7 +17957,7 @@
 ::  +content-builders: the pg constructors an editor file wraps its body in.
 ::  md/gmi/html render to a view; text/js/css are shown as code + served raw.
 ::
-++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css %tex %fodt %fods])
+++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css %tex %fodt %fods %geojson])
 ::  +name-pax: a ?name= value (slash-separated, e.g. notes/todo) -> a validated
 ::  page path under /page, or ~. Each segment must be a non-empty @ta knot.
 ::
@@ -17969,6 +18002,7 @@
     %gmi   'text/gemini; charset=utf-8'
     %fodt  'application/vnd.oasis.opendocument.text-flat-xml'
     %fods  'application/vnd.oasis.opendocument.spreadsheet-flat-xml'
+    %geojson  'application/geo+json'
   ==
 ::  +read-tree: every node under /page (sorted) as [path page=?]. page=%.y is a
 ::  programmable page (a dir with a /code grub), page=%.n a plain folder (incl.

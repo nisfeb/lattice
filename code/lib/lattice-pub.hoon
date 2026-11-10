@@ -43,7 +43,7 @@
 ::    sent:  when it last published (0: not since it was marked)
 ::    dirty: a save is not published yet. A clean row only remembers
 ::           `sent` for the throttle, and goes a `gap` after it.
-::    hold:  0, or for a page slow to publish (a fodt or fods page, whose publish
+::    hold:  0, or for a page slow to publish (a fodt, fods or geojson page, whose publish
 ::           renders it), the latest its dirty row waits to (+pub-due)
 ::
 +$  pub-wait     [last=@da tries=@ud sent=@da dirty=? hold=@da]
@@ -162,7 +162,7 @@
   |=  b=@tas
   ^-  (unit @tas)
   ?:  =(%tex b)  `%text
-  ?:  ?=(?(%text %html %gmi %md %js %css %fodt %fods) b)  `b
+  ?:  ?=(?(%text %html %gmi %md %js %css %fodt %fods %geojson) b)  `b
   ~
 ::  +pub-arm-at: when the one publish timer goes off, ~ when no row is
 ::  dirty. A row already due arms the epoch, so its publish goes before

@@ -250,6 +250,7 @@
   ;:  weld
     (expect-eq !>(`(unit @tas)``%fodt) !>((builder-mode:lp %fodt)))
     (expect-eq !>(`(unit @tas)``%fods) !>((builder-mode:lp %fods)))
+    (expect-eq !>(`(unit @tas)``%geojson) !>((builder-mode:lp %geojson)))
     (expect-eq !>(`(unit @tas)``%text) !>((builder-mode:lp %tex)))
     (expect-eq !>(`(unit @tas)``%md) !>((builder-mode:lp %md)))
     (expect-eq !>(`(unit @tas)``%css) !>((builder-mode:lp %css)))
