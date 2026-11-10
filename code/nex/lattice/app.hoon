@@ -1079,7 +1079,7 @@
   =/  key-sync=(unit [code=@ud msg=@t])
     ?~  key  ~
     ?.  (levy items |=([* typ=@t *] (page-type-ok:ky typ)))
-      `[403 'a key saves md, gmi, text, tex, css or index pages only']
+      `[403 'a key saves md, gmi, text, tex, css, scad or index pages only']
     ?.  (levy items |=([nam=@t *] (may-path:ky u.key %local (pax-of nam) %write)))
       `[403 'outside this key\'s scope']
     ~
@@ -3597,7 +3597,7 @@
     ::  unknown type) would run with lattice's own authority, and html or js
     ::  would run in the owner's browser (+page-type-ok:ky).
     ?.  (page-type-ok:ky (~(gut by args) 'type' 'hoon'))
-      (send-err eyre-id 403 'a key saves md, gmi, text, tex, css or index pages only')
+      (send-err eyre-id 403 'a key saves md, gmi, text, tex, css, scad or index pages only')
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
@@ -3624,7 +3624,7 @@
         (send-err eyre-id 403 'outside this key\'s scope')
       ?:  (tainted:ky u.key rnow)  (send-err eyre-id 403 tainted-msg)
       ?.  (page-type-ok:ky kind.l)
-        (send-err eyre-id 403 'a key saves md, gmi, text, tex, css or index pages only')
+        (send-err eyre-id 403 'a key saves md, gmi, text, tex, css, scad or index pages only')
       (link-save-respond eyre-id (pax-of u.name) l args (req-body req))
     ::  cross-surface taint, aligned with the memory surface: a tainted key
     ::  (read sensitive content in the last 12h, so necessarily cleared) may
@@ -15119,7 +15119,21 @@
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip body)) "</code></pre>")
     %fodt  (fodt-html:lf body)
     %fods  (fods-html:lfs body)
+    %scad  (scad-html body)
     %index  "<div style=\"color:#8a8a8a;text-align:center;padding:2rem\"><p><b>Folder index</b></p><p>Lists the pages in this page's folder automatically, once you name it (e.g. blog/index) and save. Live as pages come and go.</p></div>"
+  ==
+::  +scad-html: an OpenSCAD page as the ship shows it. The ship never runs
+::  OpenSCAD, so this is the source, escaped, under a note. The editor
+::  draws the part in 3D when the owner has installed the runtime, and the
+::  reader's prism highlights the source by its language class.
+::
+++  scad-html
+  |=  body=@t
+  ^-  tape
+  ;:  weld
+    "<p class=\"scad-note muted\">An OpenSCAD model. Open it in the lattice "
+    "editor, with the OpenSCAD runtime installed, to see it in 3D.</p>"
+    "<pre><code class=\"language-openscad\">"  (esc (trip body))  "</code></pre>"
   ==
 ::  ── the fodt render cache ─────────────────────────────────────────
 ::  /lib/lattice-fodt takes 4.7 to 6.1 s to render a 1.5 MB document
@@ -16828,6 +16842,7 @@
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")
     %fodt  (fodt-html:lf p.cr)
     %fods  (fods-html:lfs p.cr)
+    %scad  (scad-html p.cr)
     %noun  (page-data-html sang)
   ==
 ::  +explore-crumbs: breadcrumb nav, absolute hrefs from the ship root down,
@@ -17857,7 +17872,7 @@
 ++  edit-lock-msg
   ^-  tang
   :~  leaf+"this page was shared for editing, so it runs content only:"
-      leaf+"md, gmi, html, text, js, css, tex, fodt, fods or a folder index."
+      leaf+"md, gmi, html, text, js, css, tex, fodt, fods, scad or a folder index."
       leaf+"To run hoon here, stop sharing it for edit, then save it yourself."
   ==
 ::  +unwrap-content: page source -> [builder body] if it matches the content
@@ -17924,7 +17939,7 @@
 ::  +content-builders: the pg constructors an editor file wraps its body in.
 ::  md/gmi/html render to a view; text/js/css are shown as code + served raw.
 ::
-++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css %tex %fodt %fods])
+++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css %tex %fodt %fods %scad])
 ::  +name-pax: a ?name= value (slash-separated, e.g. notes/todo) -> a validated
 ::  page path under /page, or ~. Each segment must be a non-empty @ta knot.
 ::
@@ -17969,6 +17984,9 @@
     %gmi   'text/gemini; charset=utf-8'
     %fodt  'application/vnd.oasis.opendocument.text-flat-xml'
     %fods  'application/vnd.oasis.opendocument.spreadsheet-flat-xml'
+    ::  OpenSCAD source has no registered type. Plain text shows in a
+    ::  browser tab instead of downloading.
+    %scad  'text/plain; charset=utf-8'
   ==
 ::  +read-tree: every node under /page (sorted) as [path page=?]. page=%.y is a
 ::  programmable page (a dir with a /code grub), page=%.n a plain folder (incl.

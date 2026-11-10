@@ -196,4 +196,12 @@
     (expect-eq !>(`(unit *)``f) !>(dat.r))
     (expect-eq !>(`view-mode:pg`%fods) !>(show.r))
   ==
+::  +scad: an OpenSCAD page keeps its source as data and shows as %scad
+++  test-scad-result
+  =/  s=@t  'w = 30; // [10:100]\0acube([w, 20, 10]);\0a<script>'
+  =/  r=result:pg  (scad:pg s)
+  ;:  weld
+    (expect-eq !>(`(unit *)``s) !>(dat.r))
+    (expect-eq !>(`view-mode:pg`%scad) !>(show.r))
+  ==
 --
