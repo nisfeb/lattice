@@ -41,7 +41,7 @@ pub struct Node {
     pub rel: String,     // projection key, no leading slash, no extension ("" = root)
     pub is_dir: bool,    // a plain folder (no editable source)
     pub is_page: bool,   // has editable source; MAY also parent children
-    pub kind: String,    // md|gmi|html|text|js|css|tex|fodt|fods|hoon|index  ("" for a pure dir)
+    pub kind: String,    // md|gmi|html|text|js|css|tex|fodt|fods|scad|hoon|index  ("" for a pure dir)
     pub size: u64,       // byte length of the editable body
     pub mtime: i64,      // unix seconds
     pub readonly: bool,  // generated %index pages
@@ -147,6 +147,7 @@ pub trait Projection: Send + Sync {
             "tex" => "tex",
             "fodt" => "fodt",
             "fods" => "fods",
+            "scad" => "scad",
             "index" => "md",
             _ => "hoon",
         }
@@ -165,6 +166,7 @@ pub trait Projection: Send + Sync {
             "tex" => "tex",
             "fodt" => "fodt",
             "fods" => "fods",
+            "scad" => "scad",
             // .latex is inbound-only, matching the browser's EXT_KIND alias
             "latex" => "tex",
             _ => "hoon",
@@ -228,6 +230,8 @@ mod tests {
             ("fodt", "fodt"),
             // a spreadsheet mounts as name.fods, the file Calc opens
             ("fods", "fods"),
+            // an OpenSCAD model mounts as name.scad, the file OpenSCAD opens
+            ("scad", "scad"),
         ] {
             assert_eq!(p.ext_for_kind(kind), ext, "kind {kind}");
             assert_eq!(p.kind_for_ext(ext), kind, "ext {ext}");

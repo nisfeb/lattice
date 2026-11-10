@@ -2447,7 +2447,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
 // ── src/23-tabhead.js ─────────────────────────────────────────────────────
 
-  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'hoon'];
+  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'scad', 'hoon'];
   const tabHead = document.createElement('div');
   tabHead.id = 'tabhead';
   tabHead.className = 'tabhead';
@@ -5454,10 +5454,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 // ── src/30-tree.js ────────────────────────────────────────────────────────
   const KIND_EXT = { md: 'md', gmi: 'gmi', html: 'html', text: 'txt', js: 'js',
                      css: 'css', hoon: 'hoon', index: 'md', tex: 'tex', fodt: 'fodt',
-                     fods: 'fods' };
+                     fods: 'fods', scad: 'scad' };
   const EXT_KIND = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
                      text: 'text', js: 'js', css: 'css', hoon: 'hoon', tex: 'tex',
-                     latex: 'tex', fodt: 'fodt', odt: 'fodt', fods: 'fods', ods: 'fods' };
+                     latex: 'tex', fodt: 'fodt', odt: 'fodt', fods: 'fods', ods: 'fods',
+                     scad: 'scad' };
   const kindExt = (k) => KIND_EXT[k] || 'hoon';
   const extKind = (e) => EXT_KIND[String(e || '').toLowerCase()] || null;
 
