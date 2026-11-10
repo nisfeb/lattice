@@ -2123,6 +2123,34 @@ mod tests {
         }
     }
 
+    #[test]
+    fn spreadsheet_mounts_as_fods_and_calc_lock_and_temp_are_scratch() {
+        // a fods page is the file LibreOffice Calc opens: it mounts under
+        // its own extension and a write to it is a page write. Calc's lock
+        // file and its save temp never reach the ship, as for Writer.
+        let nodes = vec![Node {
+            rel: "budget".into(),
+            is_dir: false,
+            is_page: true,
+            kind: "fods".into(),
+            size: 0,
+            mtime: 0,
+            readonly: false,
+            rev: None,
+        }];
+        let vt = build_vt(&nodes, |k| Fake::default().ext_for_kind(k));
+        assert!(vt.contains_key("/budget.fods"), "a fods page mounts as name.fods");
+        assert_eq!(t_kind("fods"), "fods", "and saves as its own kind");
+        assert!(!is_scratch("budget.fods", t_kind), "a spreadsheet is a page");
+        assert!(!is_scratch("Budget.FODS", t_kind), "in any case");
+        for tmp in [".~lock.budget.fods#", "lu12345abcd.tmp"] {
+            assert!(is_scratch(tmp, t_kind), "{tmp} should be scratch");
+            assert!(is_editor_temp(tmp), "{tmp} should be an editor temp");
+        }
+        // a zipped .ods is not text: it stays scratch, as a .odt does
+        assert!(is_scratch("budget.ods", t_kind), "a .ods never reaches the ship as text");
+    }
+
     // ---------- property tests ----------
 
     use super::{build_vt, join, leaf_of};
