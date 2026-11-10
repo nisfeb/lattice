@@ -76,7 +76,7 @@
         if (!m || typeof m.latPrev !== 'number' || !(m.latPrev > 0)) return;
         if (m.seq !== fitCur) { fitCur = m.seq; fitH = 0; fitOff = false; }
         if (fitOff) return;
-        if (!fitH) { fitH = m.latPrev; prev.style.minHeight = fitH + 'px'; return; }
+        if (!fitH) { fitH = m.latPrev; prev.style.minHeight = fitH + 'px'; scrollRelease(); return; }
         if (m.latPrev > fitH + 2) { fitOff = true; prev.style.minHeight = ''; }
       });
       // blank it NOW, not when the first page opens. An iframe with no srcdoc
@@ -146,6 +146,27 @@
   // srcdoc write goes through this, and the first measurement must be taken
   // with the frame at pane height, not at the previous document's.
   let fitSeq = 0;
+  //  Clearing min-height shrinks the frame to pane height, and the wrap
+  //  clamps its scroll to the top. A repaint of the page already shown (a
+  //  task box ticked in Read, a save's echo) jumped the reader back up to
+  //  the first line. So while the new document loads, a spacer keeps the
+  //  wrap as tall as it was, and the first height report lets it go. A
+  //  different page still opens at the top. The timer frees a document
+  //  that never reports.
+  let fitPage = null, holdT = 0;
+  const holdEl = document.createElement('div');
+  holdEl.style.cssText = 'position:absolute;top:0;left:0;width:1px;visibility:hidden;pointer-events:none';
+  const scrollRelease = () => { clearTimeout(holdT); holdEl.remove(); };
+  const scrollHold = () => {
+    const w = prev.parentNode, same = fitPage === current;
+    fitPage = current;
+    if (!w || !same || !w.scrollTop) return scrollRelease();
+    if (getComputedStyle(w).position === 'static') w.style.position = 'relative';
+    holdEl.style.height = w.scrollHeight + 'px';
+    if (holdEl.parentNode !== w) w.append(holdEl);
+    clearTimeout(holdT);
+    holdT = setTimeout(scrollRelease, 3000);
+  };
   // A content page's preview loads nothing from another host (an image
   // there learns your IP address) until "Load outside content" is pressed
   // for that page: the local paint draws a placeholder (59-md.js), and
@@ -177,7 +198,7 @@
     refreshPreview();
   };
   const previewFit = () => {
-    if (prev) prev.style.minHeight = '';
+    if (prev) { scrollHold(); prev.style.minHeight = ''; }
     return outsideGuard() + previewScrollbars()
       + '<script>(function(){var S=' + (++fitSeq) + ';function s(){var d=document.documentElement,b=document.body;parent.postMessage({latPrev:Math.max(d.scrollHeight,b?b.scrollHeight:0),seq:S},"*")}addEventListener("load",function(){s();if(document.body)new ResizeObserver(s).observe(document.body)})})()</script>';
   };
