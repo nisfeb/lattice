@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # geojson-views.sh: a map page in every view a markdown page has, its
-# check on save and an agent key's writes.
+# check on save, an agent key's writes, and the tile route's refusals.
 # Makes mapviews/trip on a FAKE ship and checks the save refusals, the
 # editor's open (page-source?render=1, which carries no render: map.js
 # draws the page), the /x view, the clearweb view (/c), the urb://
@@ -103,11 +103,13 @@ c=""
 for _ in $(seq 1 30); do c=$(get "$A/c/mapviews/trip"); grep -qF Matterhornhut <<<"$c" && break; sleep 1; done
 has   "/c shows the map" 'class="geojson-map"' "$c"
 hasnt "/c shows no GeoJSON" '"FeatureCollection"' "$c"
+hasnt "/c fetches no tile" "/tile/" "$c"
 vault() { get -G "$A/fetch" --data-urlencode "url=urb://$SHIP/mapviews/trip" | jq -r .body; }
 v=""
 for _ in $(seq 1 30); do v=$(vault); grep -qF Matterhornhut <<<"$v" && break; sleep 1; done
 has   "the vault copy is the render" 'class="geojson"' "$v"
 hasnt "the vault copy holds no GeoJSON" '"FeatureCollection"' "$v"
+hasnt "the vault copy names no tile" "api.mapbox.com" "$v"
 r=$(get -G "$A" --data-urlencode "url=urb://$SHIP/mapviews/trip")
 has   "reader shows the map" "Matterhornhut" "$r"
 has   "reader frames it (the %html branch)" "<iframe" "$r"
@@ -147,6 +149,20 @@ is "a key saves a map in a batch" 200 "$(kcode -X POST -H 'content-type: applica
   --data-binary "$(jq -n --rawfile b "$T/edit.geojson" '[{name:"mapviews/agent",type:"geojson",body:$b}]')")"
 is "a key cannot change a map in a batch" 403 "$(kcode -X POST -H 'content-type: application/json' "$A/page-save-batch" \
   --data-binary '[{"name":"mapviews/agent","type":"text","body":"x"}]')"
+is "a key may not fetch tiles" 403 "$(kcode "$A/tile/streets/1/0/0")"
+is "a key may not read the tile status" 403 "$(kcode "$A/tile-status")"
+is "a key may not set the token" 403 "$(kcode -X POST "$A/map-token" --data-binary 'pk.abc')"
+
+# ── the tile route refuses what is not a tile ────────────────────────
+is "no cookie, no tile" 403 "$(curl -s -m 60 -o /dev/null -w '%{http_code}' "$A/tile/streets/1/0/0")"
+for p in streets/1/2/0 streets/1/0/2 streets/18/0/0 nope/1/0/0 streets/a/0/0 streets/1/0 streets/1/0/0/0 \
+         streets/-1/0/0 streets/1/0/0.png "streets/1/0/%2e%2e" streets/99999999/0/0; do
+  is "tile $p is no tile" 404 "$(code "$A/tile/$p")"
+done
+st=$(get "$A/tile-status")
+is "the status names the styles" '["streets","outdoors","satellite","dark"]' "$(jq -c .styles <<<"$st")"
+is "the status says the zoom ceiling" 17 "$(jq .max <<<"$st")"
+is "a token that is not one is refused" 400 "$(code -X POST "$A/map-token" --data-binary 'pk.a b"c')"
 
 echo "geojson-views: $fails failed"
 exit $((fails > 0))

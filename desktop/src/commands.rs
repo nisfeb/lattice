@@ -95,7 +95,7 @@ pub fn go_home(app: AppHandle, settings: Option<String>) -> Result<(), String> {
 
 /// The tabs of the ship page's Settings (+settings-html in app.hoon) the
 /// manager page may name on its way back.
-const SETTINGS_TABS: &[&str] = &["appearance", "editing", "keys", "data", "clipping", "advanced"];
+const SETTINGS_TABS: &[&str] = &["appearance", "editing", "keys", "data", "clipping", "maps", "advanced"];
 
 /// The Settings tab go_home lands on: none, or one of SETTINGS_TABS.
 /// Anything else is refused rather than passed into the page URL.
