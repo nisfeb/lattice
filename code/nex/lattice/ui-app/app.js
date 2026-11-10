@@ -5,6 +5,8 @@
 const WRITER_H = '0v3.4g8bu.gitpg.4hui5.6i6ib.91c19';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
 const SHEET_H = '0v3.v145b.hha4j.kjuag.dcc4c.ld732';
+// and map.js's, the map view (26-writer.js)
+const MAP_H = '0vu7kl1.b00f4.pkevr.rrif6.0epgq';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
@@ -2447,7 +2449,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
 // ── src/23-tabhead.js ─────────────────────────────────────────────────────
 
-  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'hoon'];
+  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'geojson', 'hoon'];
   const tabHead = document.createElement('div');
   tabHead.id = 'tabhead';
   tabHead.className = 'tabhead';
@@ -3619,10 +3621,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const RICH = {
     fodt: { lib: 'LatWriter', js: 'writer.js', h: WRITER_H, tag: 'lat-writer', ed: 'Writer editor', a: 'a Writer document' },
     fods: { lib: 'LatSheet', js: 'sheet.js', h: SHEET_H, tag: 'lat-sheet', ed: 'spreadsheet editor', a: 'a spreadsheet' },
+    geojson: { lib: 'LatMap', js: 'map.js', h: MAP_H, tag: 'lat-map', ed: 'map view', a: 'a map' },
   };
   const isRich = (k) => Object.prototype.hasOwnProperty.call(RICH, k);
   const richLib = (k) => (isRich(k) && window[RICH[k].lib]) || null;
-  const richOf = (t) => (!/^(<\?xml[^>]*>\s*)?<office:document[\s/>]/.test(t) ? ''
+  const richOf = (t) => (/^\{/.test(t) && /"type"\s*:\s*"FeatureCollection"/.test(t.slice(0, 65536)) ? 'geojson'
+    : !/^(<\?xml[^>]*>\s*)?<office:document[\s/>]/.test(t) ? ''
     : /office:mimetype="application\/vnd\.oasis\.opendocument\.spreadsheet/.test(t.slice(0, 8192)) || /<office:spreadsheet[\s>]/.test(t) ? 'fods' : 'fodt');
   let wr = null, wrSeq = 0, wrQ = false;
   const wrLoad = {}, wrHosts = {};
@@ -3663,6 +3667,44 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!on) for (const o of Object.keys(wrHosts)) wrHosts[o].hidden = true;
     src.style.visibility = hl.style.visibility = on ? 'hidden' : '';
   }
+  function srcExec(fn) {
+    const had = document.activeElement, vis = src.style.visibility;
+    src.style.visibility = '';
+    let ok = false;
+    try { src.focus({ preventScroll: true }); ok = document.activeElement === src && fn(); } catch {}
+    src.style.visibility = vis;
+    src.blur();
+    if (had && had !== src && had.focus) try { had.focus({ preventScroll: true }); } catch {}
+    return ok;
+  }
+  function mapWrite(t) {
+    const old = src.value;
+    if (t === old) return;
+    const n = Math.min(old.length, t.length);
+    let a = 0, b = 0;
+    while (a < n && old.charCodeAt(a) === t.charCodeAt(a)) a++;
+    while (b < n - a && old.charCodeAt(old.length - 1 - b) === t.charCodeAt(t.length - 1 - b)) b++;
+    const ins = t.slice(a, t.length - b);
+    const ok = srcExec(() => {
+      src.setSelectionRange(a, old.length - b);
+      return document.execCommand(ins ? 'insertText' : 'delete', false, ins);
+    });
+    if (!ok || src.value !== t) { src.value = t; edited(); }
+  }
+  const mapUndo = (redo) => srcExec(() => document.execCommand(redo ? 'redo' : 'undo'));
+  let tileSt = null;
+  const tileLast = () => { try { return JSON.parse(localStorage.latTiles || 'null'); } catch { return null; } };
+  const tileStatus = () => tileSt || (tileSt = fetch(api + '/tile-status').then((r) => (r.ok ? r.json() : null))
+    .then((j) => {
+      const t = j ? { token: !!j.token, max: +j.max || 17, styles: j.styles, url: '/apps/lattice/tile/{s}/{z}/{x}/{y}' } : null;
+      try { localStorage.latTiles = JSON.stringify(t); } catch {}
+      return t;
+    })
+    .catch(() => { tileSt = null; return tileLast(); }));
+  const mapLayer = async (name) => {
+    const d = await bodyRead(String(name));
+    return d && d.kind === 'geojson' ? d.body : null;
+  };
   function writerFollow() {
     if (!wrQ) { wrQ = true; queueMicrotask(writerApply); }
   }
@@ -3677,13 +3719,21 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     wrShow(true);
     const doc = { tab: activeTab, n: wrDoc, k };
     if (wr && wrFor && wrFor.tab === doc.tab && wrFor.n === doc.n && wrFor.k === k && wr.base() === body) { wrBox(k); return wr.setEditable(ed); }
+    if (wr && wrFor && wrFor.tab === doc.tab && wrFor.n === doc.n && wrFor.k === k && wr.update && wr.update(body) !== false) {
+      wrBox(k);
+      return wr.setEditable(ed);
+    }
     writerDrop();
     if (!richLib(k)) wrBox(k, 'Loading the ' + RICH[k].ed + '…');
     const my = wrSeq;
-    writerReady(k).then((LW) => {
+    Promise.all([writerReady(k), k === 'geojson' ? tileStatus() : null]).then(([LW, tiles]) => {
       if (my !== wrSeq || src.value !== body || richHere() !== k || writerSourceOn()) return;
-      const c = LW.mount(wrBox(k), { text: body, editable: ed, name: current, cur: () => src.value, onChange: writerChanged,
-        onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => st('not saved: ' + e, false) });
+      const opts = { text: body, editable: ed, name: current, cur: () => src.value, onChange: writerChanged,
+        onText: (t) => { src.value = t; edited(); }, onRefuse: (e) => st('not saved: ' + e, false) };
+      if (k === 'geojson') Object.assign(opts, { onText: mapWrite, undo: () => mapUndo(false), redo: () => mapUndo(true),
+        tiles, layer: mapLayer, md: (t) => mdToHtml(String(t)), openSettings: () => latOpenSettings('maps'),
+        openPage: (n) => openPage(String(n)) });
+      const c = LW.mount(wrBox(k), opts);
       if (c.error) { wrSrc.set(wrKey(), c.error); writerApply(); } else { wr = c; wrFor = doc; }
     }, () => { if (my === wrSeq) wrBox(k, 'The ' + RICH[k].ed + ' did not load. Source in the page menu shows the XML.'); });
   }
@@ -5454,10 +5504,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 // ── src/30-tree.js ────────────────────────────────────────────────────────
   const KIND_EXT = { md: 'md', gmi: 'gmi', html: 'html', text: 'txt', js: 'js',
                      css: 'css', hoon: 'hoon', index: 'md', tex: 'tex', fodt: 'fodt',
-                     fods: 'fods' };
+                     fods: 'fods', geojson: 'geojson' };
   const EXT_KIND = { md: 'md', gmi: 'gmi', html: 'html', htm: 'html', txt: 'text',
                      text: 'text', js: 'js', css: 'css', hoon: 'hoon', tex: 'tex',
-                     latex: 'tex', fodt: 'fodt', odt: 'fodt', fods: 'fods', ods: 'fods' };
+                     latex: 'tex', fodt: 'fodt', odt: 'fodt', fods: 'fods', ods: 'fods',
+                     geojson: 'geojson' };
   const kindExt = (k) => KIND_EXT[k] || 'hoon';
   const extKind = (e) => EXT_KIND[String(e || '').toLowerCase()] || null;
 
@@ -10578,7 +10629,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       s.onerror = fail;
       document.head.append(s);
     })));
-  const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'fods', 'js', 'css', 'hoon'];
+  const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'fods', 'geojson', 'js', 'css', 'hoon'];
   async function pdfBody(kind, body) {
     if (kind === 'md') return { html: mdToHtml(body) };
     if (kind === 'gmi') return { html: gmiToHtml(body) };
