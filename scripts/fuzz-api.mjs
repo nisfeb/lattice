@@ -12,6 +12,8 @@
 //          LATTICE_COOKIE  cookie file (required)
 //          FODT_N          fodt bodies the mutator makes (default 60, 12
 //                          with --quick), FODT_SEED its seed (default 1)
+//          FODS_N          fods bodies the mutator makes (default 40, 8
+//                          with --quick), FODS_SEED its seed (default 1)
 //
 //  Cost: the pier serialises requests, and the render-heavy routes (the
 //  reader, /marks, the explorer) dominate. Measured ~3s/request against the
@@ -943,6 +945,90 @@ async function cleanup(before) {
   await settle();
 }
 
+//  fods: spreadsheets. The files of tests/sheet/ship, then FODS_N mutants
+//  of them from a seeded generator, with repeat bombs among the snippets.
+//  Each is saved as a fods page and read back rendered, previewed and
+//  searched. Beyond the universal assertions: a save under the 2 MB cap is
+//  a 200, the render is the sheets or the refusal note and never raw XML,
+//  no planted marker comes back as live markup, and no render is larger
+//  than the renderer's output cap allows (2 MB of rows and the page around
+//  them).
+async function famFods() {
+  console.log('==> fods: hostile and mutated spreadsheets');
+  const { readdirSync } = await import('node:fs');
+  const { dirname, join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'tests', 'sheet', 'ship');
+  const seeds = readdirSync(dir).filter((f) => f.endsWith('.fods')).map((f) => [f, readFileSync(join(dir, f), 'utf8')]);
+  let st = Number(process.env.FODS_SEED || 1) >>> 0 || 1;
+  const rnd = (n) => { st ^= st << 13; st >>>= 0; st ^= st >>> 17; st ^= st << 5; st >>>= 0; return st % n; };
+  const bomb = '<table:table-row table:number-rows-repeated="1048576"><table:table-cell table:number-columns-repeated="16384"><text:p>FUZZCELL</text:p></table:table-cell></table:table-row>';
+  const SNIPS = [
+    '<!DOCTYPE x [<!ENTITY a "aaaa">]>', '<!ENTITY b SYSTEM "file:///etc/passwd">', '&a;', '&#0;', '&#xD800;',
+    '<![CDATA[<script>FUZZMARK</script>]]>', '<script>FUZZMARK</script>', '</table:table-row>', '</table:table>',
+    '</office:spreadsheet>', bomb, '<table:table table:name="&lt;script&gt;FUZZMARK&lt;/script&gt;">' + bomb + '</table:table>',
+    ('<table:table table:name="s">' + bomb + '</table:table>').repeat(40),
+    '<table:table-cell table:number-columns-spanned="999999999" table:number-rows-spanned="999999999"><text:p>m</text:p></table:table-cell>',
+    '<table:table-cell table:number-columns-repeated="99999999999999999999999999"><text:p onclick="FUZZMARK">r</text:p></table:table-cell>',
+    '<table:table-cell table:formula="of:=WEBSERVICE(&quot;http://FUZZMARK/&quot;)"><text:p>f</text:p></table:table-cell>',
+    '<table:table-cell office:value-type="float&quot; onmouseover=&quot;FUZZMARK"><text:p>1</text:p></table:table-cell>',
+    '<table:covered-table-cell table:number-columns-repeated="16384"/>',
+    '<table:table-cell><text:p><text:a xlink:href="javascript:FUZZMARK">j</text:a></text:p></table:table-cell>',
+    '<table:table-cell><text:p>' + '<text:span>'.repeat(300) + 'deep' + '</text:span>'.repeat(300) + '</text:p></table:table-cell>',
+    '<table:table-cell><text:p>' + 'w'.repeat(70000) + '</text:p></table:table-cell>', '<', '>', '&', '"', '\u0000', '‮',
+  ];
+  const mutate = (t) => {
+    let out = t;
+    for (let k = 1 + rnd(3); k > 0; k--) {
+      const i = rnd(out.length);
+      switch (rnd(5)) {
+        case 0: case 1: out = out.slice(0, i) + SNIPS[rnd(SNIPS.length)] + out.slice(i); break;
+        case 2: out = out.slice(0, i); break;                                     // truncate
+        case 3: { const j = i + rnd(400); out = out.slice(0, i) + out.slice(j); break; }  // cut
+        default: out = out.replace(/<\/table:table-cell>/, '</table:table-row>'); // mismatched close
+      }
+    }
+    return out;
+  };
+  const n = Number(process.env.FODS_N || (QUICK ? 8 : 40));
+  const bodies = [...seeds];
+  for (let k = 0; k < n; k++) { const [f, t] = seeds[rnd(seeds.length)]; bodies.push([`mut${k}<${f}`, mutate(t)]); }
+  const live = /<script>FUZZMARK|<[a-z]+[^>]*\son[a-z]+="FUZZMARK|href="javascript|<!DOCTYPE x|<!ENTITY/;
+  const CAP = 3 * 1024 * 1024;
+  let k = 0;
+  for (const [label, body] of bodies) {
+    const name = `${P}/fods/b${k++}`;
+    const save = await probe('fods', 'POST', `/page-save?${q({ name, type: 'fods' })}`, { body });
+    const repro = `${label}: curl -X POST "${B}/page-save?name=${name}&type=fods" --data-binary @<body>`;
+    if (Buffer.byteLength(body) <= 2 * 1024 * 1024 && save.status !== 200) {
+      finding(SEV.HIGH, 'fods', 'a fods body under the cap was not saved', repro, `${save.status} ${trunc(save.text, 120)}`,
+        'a spreadsheet page is text: any body saves, the renderer refuses what it cannot read', '+page-save');
+      continue;
+    }
+    const src = await probe('fods', 'GET', `/page-source?${q({ name, render: '1' })}`);
+    let html = '';
+    try { html = JSON.parse(src.text).html || ''; } catch { /* probe reports it */ }
+    const frag = html.replace(/<script>[^]*?<\/script>/g, (m) => (/FUZZMARK/.test(m) ? m : ''));
+    if (src.status === 200 && !/class="fods"|fods-note/.test(html))
+      finding(SEV.HIGH, 'fods', 'render=1 is neither the sheets nor the note', repro, trunc(html, 160),
+        'every fods body renders as its sheets or the refusal note', '+fods-all');
+    if (live.test(frag) || /office:document|<table:|<text:/.test(frag))
+      finding(SEV.CRIT, 'fods', 'render=1 carries live markup or raw XML', repro, trunc(frag.match(live) || frag.match(/office:document|<table:|<text:/), 160),
+        'the renderer writes fixed tags only, and escapes every text', '+fods-html');
+    if (html.length > CAP)
+      finding(SEV.HIGH, 'fods', 'render=1 is larger than the output cap', repro, `${html.length} bytes`,
+        'repeats are clamped: at most 2 MB of rows', '+sheet-html');
+    const pv = await probe('fods', 'POST', '/page-preview?type=fods', { body });
+    const pfrag = pv.text.replace(/<script>[^]*?<\/script>/g, (m) => (/FUZZMARK/.test(m) ? m : ''));
+    if (live.test(pfrag))
+      finding(SEV.CRIT, 'fods', 'page-preview carries live markup', repro, trunc(pfrag.match(live), 160), '', '+preview-inner');
+    if (pv.text.length > CAP)
+      finding(SEV.HIGH, 'fods', 'page-preview is larger than the output cap', repro, `${pv.text.length} bytes`, '', '+sheet-html');
+  }
+  await probe('fods', 'GET', `/page-search?${q({ q: 'FUZZCELL' })}`);
+  return canary('fods');
+}
+
 // ── main ─────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -958,7 +1044,7 @@ async function main() {
   await ourShip();
 
   const all = { famPageSave, famBatch, famStructure, famReads, famSharing,
-    famBanlist, famKnow, famBookmarks, famReader, famCmdForms, famMethods, famFodt };
+    famBanlist, famKnow, famBookmarks, famReader, famCmdForms, famMethods, famFodt, famFods };
   const oi = process.argv.indexOf('--only');
   const only = oi > 0 ? process.argv[oi + 1].split(',').map((x) => 'fam' + x[0].toUpperCase() + x.slice(1)) : null;
   const families = Object.entries(all).filter(([k]) => !only || only.includes(k)).map(([, f]) => f);
