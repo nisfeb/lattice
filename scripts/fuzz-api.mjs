@@ -14,6 +14,8 @@
 //                          with --quick), FODT_SEED its seed (default 1)
 //          FODS_N          fods bodies the mutator makes (default 40, 8
 //                          with --quick), FODS_SEED its seed (default 1)
+//          SCAD_N          scad bodies the mutator makes (default 30, 6
+//                          with --quick), SCAD_SEED its seed (default 1)
 //
 //  Cost: the pier serialises requests, and the render-heavy routes (the
 //  reader, /marks, the explorer) dominate. Measured ~3s/request against the
@@ -1029,6 +1031,78 @@ async function famFods() {
   return canary('fods');
 }
 
+//  scad: OpenSCAD models. The ship never runs one, so the risk is only in
+//  how it shows the source. The files of tests/scad/ship and
+//  tests/scad/hostile, then SCAD_N mutants of them from a seeded generator.
+//  Each is saved as a scad page and read back rendered, previewed and
+//  searched. Beyond the universal assertions: a save under the 2 MB cap is
+//  a 200, the render is the escaped source under its note, no planted
+//  marker comes back as live markup, and the render is no larger than the
+//  escaped source and the note.
+async function famScad() {
+  console.log('==> scad: hostile and mutated OpenSCAD models');
+  const { readdirSync } = await import('node:fs');
+  const { dirname, join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const base = join(dirname(fileURLToPath(import.meta.url)), '..', 'tests', 'scad');
+  const seeds = ['ship', 'hostile'].flatMap((d) => readdirSync(join(base, d)).filter((f) => f.endsWith('.scad'))
+    .map((f) => [d + '/' + f, readFileSync(join(base, d, f), 'utf8')]));
+  let st = Number(process.env.SCAD_SEED || 1) >>> 0 || 1;
+  const rnd = (n) => { st ^= st << 13; st >>>= 0; st ^= st >>> 17; st ^= st << 5; st >>>= 0; return st % n; };
+  const SNIPS = [
+    '</code></pre><script>FUZZMARK</script>', '<img src=x onerror="FUZZMARK">', '<a href="javascript:FUZZMARK">j</a>',
+    '"', '\\', "'", '`', '/*', '*/', '//', '<', '>', '&', '&lt;', '\u0000', '\u202e', '\ud800',
+    'include <' + '../'.repeat(50) + 'etc/passwd>', 'use <http://FUZZMARK/x.scad>', '$fn = 1e9;',
+    '{'.repeat(2000), '['.repeat(2000), 'x'.repeat(70000), '\n'.repeat(20000),
+  ];
+  const mutate = (t) => {
+    let out = t;
+    for (let k = 1 + rnd(3); k > 0; k--) {
+      const i = rnd(out.length + 1);
+      switch (rnd(4)) {
+        case 0: case 1: out = out.slice(0, i) + SNIPS[rnd(SNIPS.length)] + out.slice(i); break;
+        case 2: out = out.slice(0, i); break;
+        default: { const j = i + rnd(200); out = out.slice(0, i) + out.slice(j); }
+      }
+    }
+    return out;
+  };
+  const n = Number(process.env.SCAD_N || (QUICK ? 6 : 30));
+  const bodies = [...seeds];
+  for (let k = 0; k < n; k++) { const [f, t] = seeds[rnd(seeds.length)]; bodies.push([`mut${k}<${f}`, mutate(t)]); }
+  const live = /<script>FUZZMARK|<script>alert|<img src=x|onerror="FUZZMARK|href="javascript/;
+  let k = 0;
+  for (const [label, body] of bodies) {
+    const name = `${P}/scad/b${k++}`;
+    const save = await probe('scad', 'POST', `/page-save?${q({ name, type: 'scad' })}`, { body });
+    const repro = `${label}: curl -X POST "${B}/page-save?name=${name}&type=scad" --data-binary @<body>`;
+    if (Buffer.byteLength(body) <= 2 * 1024 * 1024 && save.status !== 200) {
+      finding(SEV.HIGH, 'scad', 'a scad body under the cap was not saved', repro, `${save.status} ${trunc(save.text, 120)}`,
+        'a scad page is text: any body saves', '+page-save');
+      continue;
+    }
+    const src = await probe('scad', 'GET', `/page-source?${q({ name, render: '1' })}`);
+    let html = '';
+    try { html = JSON.parse(src.text).html || ''; } catch { /* probe reports it */ }
+    const frag = html.replace(/<script>[^]*?<\/script>/g, (m) => (/FUZZMARK|alert/.test(m) ? m : ''));
+    if (src.status === 200 && !/class="language-openscad"/.test(html))
+      finding(SEV.HIGH, 'scad', 'render=1 is not the escaped source', repro, trunc(html, 160),
+        'every scad body renders as its source in a code block', '+scad-html');
+    if (live.test(frag))
+      finding(SEV.CRIT, 'scad', 'render=1 carries live markup', repro, trunc(frag.match(live), 160),
+        'the source is escaped, whole', '+scad-html');
+    if (html.length > body.length * 6 + 64 * 1024)
+      finding(SEV.HIGH, 'scad', 'render=1 is far larger than its source', repro, `${html.length} bytes for ${body.length}`,
+        'escaping at most multiplies a byte by six', '+scad-html');
+    const pv = await probe('scad', 'POST', '/page-preview?type=scad', { body });
+    const pfrag = pv.text.replace(/<script>[^]*?<\/script>/g, (m) => (/FUZZMARK|alert/.test(m) ? m : ''));
+    if (live.test(pfrag))
+      finding(SEV.CRIT, 'scad', 'page-preview carries live markup', repro, trunc(pfrag.match(live), 160), '', '+preview-inner');
+  }
+  await probe('scad', 'GET', `/page-search?${q({ q: 'FUZZMARK' })}`);
+  return canary('scad');
+}
+
 // ── main ─────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -1044,7 +1118,7 @@ async function main() {
   await ourShip();
 
   const all = { famPageSave, famBatch, famStructure, famReads, famSharing,
-    famBanlist, famKnow, famBookmarks, famReader, famCmdForms, famMethods, famFodt, famFods };
+    famBanlist, famKnow, famBookmarks, famReader, famCmdForms, famMethods, famFodt, famFods, famScad };
   const oi = process.argv.indexOf('--only');
   const only = oi > 0 ? process.argv[oi + 1].split(',').map((x) => 'fam' + x[0].toUpperCase() + x.slice(1)) : null;
   const families = Object.entries(all).filter(([k]) => !only || only.includes(k)).map(([, f]) => f);

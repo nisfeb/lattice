@@ -203,6 +203,27 @@ s = await settled(page, 150);
 check('a part past the triangle cap is refused before WebGL', /more than the viewer draws/.test(s), s);
 await page.close();
 
+console.log('\nthe hostile corpus (tests/scad/hostile): every model answers');
+{
+  const { readdirSync } = await import('fs');
+  const dir = join(root, 'tests', 'scad', 'hostile');
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.scad')).sort()) {
+    const text = readFileSync(join(dir, f), 'utf8');
+    const limit = /triangles/.test(f) ? 120000 : 10000;
+    const before = hits.length;
+    page = await open(text, { timeout: limit, pages: { 'parts/05-include-self': text } });
+    const t = Date.now();
+    s = await settled(page, limit / 1000 + 30);
+    const said = /rendered in|error|stopped|more than the viewer draws|no part/.test(s);
+    check(`${f}: answers (${s.slice(0, 60)}) in ${((Date.now() - t) / 1000).toFixed(1)} s`, said && Date.now() - t < limit + 20000);
+    const extra = hits.slice(before).filter((h) => !['/', '/favicon.ico', '/scad.js', '/rt/openscad.js', '/rt/openscad.wasm'].includes(h));
+    check(`${f}: fetches nothing but the runtime`, !extra.length, extra.join(' '));
+    const shown = await page.evaluate(() => document.querySelector('.lscad').innerHTML);
+    check(`${f}: no markup of the model's own reaches the pane`, !/<script|<img|<b>/.test(shown));
+    await page.close();
+  }
+}
+
 console.log('\nreference models (render time, first render after load)');
 const REF = {
   bracket: 'difference() {\n union() { cube([60, 10, 4]); cube([4, 10, 40]); translate([4, 0, 4]) rotate([-90, 0, 0]) linear_extrude(10) polygon([[0, 0], [16, 0], [0, 16]]); }\n for (x = [15, 45]) translate([x, 5, -1]) cylinder(d = 5, h = 6, $fn = 48);\n for (z = [15, 32]) translate([-1, 5, z]) rotate([0, 90, 0]) cylinder(d = 5, h = 6, $fn = 48);\n}\n',
