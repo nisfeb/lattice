@@ -697,7 +697,9 @@ try {
     const after = await shipBody(P.off);
     check('H: back online, the queued save lands', after && after.body.includes('The first paragraph OFFLINE'), after && after.rev);
     check('H: as a fodt page still', after && after.kind === 'fodt');
-    const keptName = 'conflicts/' + P.off.replace(/\//g, '-') + '-rev' + cj.rev;
+    //  +conflict-name joins the path with hyphens, so a hyphen already in
+    //  the name (this run's folder has one) is written ~d
+    const keptName = 'conflicts/' + P.off.replace(/-/g, '~d').replace(/\//g, '-') + '-rev' + cj.rev;
     const kept = await shipBody(keptName);
     check('H: with its base rev, so the edit it replaced is kept as a conflict copy', !!kept && kept.body.includes('CONCURRENT'), keptName);
     check('H: and the copy is itself a fodt page', kept && kept.kind === 'fodt', kept && kept.kind);
