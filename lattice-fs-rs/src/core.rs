@@ -2151,6 +2151,29 @@ mod tests {
         assert!(is_scratch("budget.ods", t_kind), "a .ods never reaches the ship as text");
     }
 
+    #[test]
+    fn map_mounts_as_geojson_for_gis_tools() {
+        // a geojson page is the file QGIS opens: it mounts under its own
+        // extension and a write to it is a page write of the same kind.
+        let nodes = vec![Node {
+            rel: "trips/alps".into(),
+            is_dir: false,
+            is_page: true,
+            kind: "geojson".into(),
+            size: 0,
+            mtime: 0,
+            readonly: false,
+            rev: None,
+        }];
+        let vt = build_vt(&nodes, |k| Fake::default().ext_for_kind(k));
+        assert!(vt.contains_key("/trips/alps.geojson"), "a geojson page mounts as name.geojson");
+        assert_eq!(t_kind("geojson"), "geojson", "and saves as its own kind");
+        assert!(!is_scratch("alps.geojson", t_kind), "a map is a page");
+        assert!(!is_scratch("Alps.GeoJSON", t_kind), "in any case");
+        // a plain .json is not a map: it stays hoon, as before
+        assert_eq!(t_kind("json"), "hoon");
+    }
+
     // ---------- property tests ----------
 
     use super::{build_vt, join, leaf_of};
