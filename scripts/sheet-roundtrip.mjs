@@ -131,7 +131,16 @@ for (const name of names) {
     }
   });
   check(`${name}: all ${cells} cells agree with LibreOffice`, off === 0, `${off} differ: ${first.join(' | ')}`);
-  for (const k of keep || []) check(`${name}: ${k} is still in the file`, lo.includes(k));
+  for (const k of keep || []) {
+    //  what this LibreOffice drops from the untouched corpus file is its
+    //  own loss, not lattice's (24.2 drops a 26.8 cell comment)
+    const plain = join(out, 'z-untouched-' + CASES[name][0] + '.fods');
+    if (!lo.includes(k) && existsSync(plain) && !readFileSync(plain, 'utf8').includes(k)) {
+      console.log(`  skip - ${name}: ${k}: this LibreOffice drops it from the untouched file too`);
+      continue;
+    }
+    check(`${name}: ${k} is still in the file`, lo.includes(k));
+  }
   if (!edit) continue;
 }
 
