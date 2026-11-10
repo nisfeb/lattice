@@ -78,4 +78,20 @@ for (const name of seen.keys()) check(`vendor/LICENSES carries ${name}'s notice`
 const app = readFileSync(join(root, 'code', 'nex', 'lattice', 'ui-app', 'app.js'), 'utf8');
 check('app.js does not contain prosemirror', !/prosemirror/i.test(app));
 
+//  sheet.js, the spreadsheet editor, bundles one package: tiny-inflate,
+//  through the Writer core's zip packer. Its notice file is checked the
+//  same way (build-sheet.mjs writes it).
+const sf = join(root, 'ui-src', 'sheet', 'vendor', 'LICENSES');
+const sheet = existsSync(sf)
+  ? [...readFileSync(sf, 'utf8').matchAll(/^((?:@[^@\s/]+\/)?[^@\s]+)@(\S+) \(([^)]+)\)$/gm)]
+  : [];
+check.eq('sheet vendor/LICENSES lists exactly tiny-inflate', sheet.map((m) => m[1]).join(' '), 'tiny-inflate');
+for (const [, name, version, lic] of sheet) {
+  const p = seen.get(name);
+  check(`sheet vendor/LICENSES ${name}@${version} is the installed version`, p && p.version === version, p ? `installed ${p.version}` : 'not installed');
+  check(`sheet vendor/LICENSES ${name} licence ${lic} is allowed`, ALLOWED.has(lic));
+}
+const sheetJs = readFileSync(join(root, 'code', 'nex', 'lattice', 'ui-app', 'sheet.js'), 'utf8');
+check('sheet.js does not contain prosemirror', !/prosemirror/i.test(sheetJs));
+
 check.done();
