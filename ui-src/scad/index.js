@@ -3,19 +3,20 @@
 //  window.LatScad. The runtime itself (openscad.js and openscad.wasm) is not
 //  in here: the ship serves it, when the owner installed it.
 import { mount } from './view.js';
-import { makeRunner } from './runner.js';
+import { shell } from './shell.js';
+import { parseParams, rewriteLine, fmtValue, defineArg } from './customizer.js';
 import { scanIncludes, resolveRef, collect } from './includes.js';
 import { parseStl } from './stl.js';
-import { makeViewer } from './viewer.js';
-import { parseParams, rewriteLine, fmtValue, defineArg } from './customizer.js';
+//  a new scad page: a box with three customizer variables, the same text
+//  as tests/scad/customizer/box.scad
+import blank from './blank.scad';
 
 window.LatScad = {
-  //  the 3D pane: viewer, customizer, console and export, over the runner
   mount,
-  //  the worker driver and the include resolver
-  makeRunner, scanIncludes, resolveRef, collect,
-  //  the STL reader and the WebGL viewer
-  parseStl, makeViewer,
-  //  the customizer
+  //  the scad page's place in the editor (26-scad.js hands it the shell)
+  shell,
+  blank,
+  //  the pure parts, for the suites
   parseParams, rewriteLine, fmtValue, defineArg,
+  scanIncludes, resolveRef, collect, parseStl,
 };

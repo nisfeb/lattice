@@ -95,7 +95,7 @@
   const kindNow = () => (mode === 'know' ? 'md' : pkind.value);
   //  a rich kind paints locally once its editor's asset is here, else the
   //  ship renders it
-  const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex'].includes(kindNow())
+  const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex', 'scad'].includes(kindNow())
     || !!richLib(kindNow());
 
   // Paint locally NOW, and let the ship's answer replace it when it arrives.
@@ -116,6 +116,8 @@
     if (kind === 'md') return mdToHtml(body, tasks);
     if (kind === 'gmi') return gmiToHtml(body);
     if (kind === 'text') return '<pre>' + mdEsc(body) + '</pre>';
+    //  scad without the runtime: its source, as the ship shows it
+    if (kind === 'scad') return '<pre><code class="language-openscad">' + mdEsc(body) + '</code></pre>';
     //  pandoc is a subprocess, so it cannot answer inside this synchronous
     //  call. It returns whatever the last conversion produced and schedules
     //  another, which repaints when it lands. Same contract as a cache.
@@ -218,6 +220,8 @@
   const paintLocal = () => {
     if (!CONTENT() || document.hidden) return;
     if (previewHidden()) return;
+    //  the 3D pane covers the frame (26-scad.js)
+    if (scadOn()) return;
     try {
       // html pages own their whole document, chrome and all. The content kinds
       // get the same bare shell the markdown preview always used.
@@ -314,7 +318,7 @@
   // text, no fit, or null for a kind only the ship renders
   const ghostDoc = (kind, body) => {
     if (isRich(kind)) return richLib(kind) ? previewScrollbars() + richLib(kind).show(body) : null;
-    if (!['md', 'gmi', 'html', 'text'].includes(kind)) return null;
+    if (!['md', 'gmi', 'html', 'text', 'scad'].includes(kind)) return null;
     try {
       return kind === 'html' ? previewScrollbars() + body : localShell('') + localHtml(kind, body);
     } catch { return null; }

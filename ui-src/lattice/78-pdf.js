@@ -14,7 +14,7 @@
       s.onerror = fail;
       document.head.append(s);
     })));
-  const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'fods', 'js', 'css', 'hoon'];
+  const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'fods', 'scad', 'js', 'css', 'hoon'];
   // what pdf.js lays out: `html` is a fragment, or a whole document when
   // `doc` is set (an html page, a Writer document)
   async function pdfBody(kind, body) {

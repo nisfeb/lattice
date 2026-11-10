@@ -126,7 +126,10 @@ nsenter -t $(cat ~/fleet/run/<id>.pid) -U -n --preserve-credentials \
 LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> \
   SCAD_GOOD=http://127.0.0.1:18777/good/ SCAD_BAD=http://127.0.0.1:18777/bad/ SCAD_LOG=~/scad/serve.log \
   scripts/scad-runtime.sh                                 # no runtime until asked, a bad hash refused, uninstall frees it
+SCAD_SRC=http://127.0.0.1:18777/good/ LATTICE_URL=... LATTICE_COOKIE=... node scripts/ui-scad.mjs
 ```
+
+`ui-scad.mjs` without `SCAD_SRC` runs only the sections that need no runtime (lazy loading and create), which is what the gate does. `ui-scad-view.mjs` needs no ship: it serves scad.js and the runtime itself, from `SCAD_RUNTIME` (a directory with the raw `openscad.js` and `openscad.wasm`) or, unset, from the pinned upstream zip. `scad-unit.mjs` checks the customizer against `tests/scad/customizer/*.json`, which is OpenSCAD's own reading of each fixture, made by `scripts/scad-corpus/expect.mjs`.
 
 ## Deploying a change to ~mec
 

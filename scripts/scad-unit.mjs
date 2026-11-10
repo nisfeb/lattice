@@ -49,6 +49,14 @@ for (const f of readdirSync(FX).filter((n) => n.endsWith('.scad')).sort()) {
   }
 }
 
+{
+  //  the new page's template is the box fixture, so OpenSCAD's own reading
+  //  of it above covers the template too
+  const blank = readFileSync(join(here, '..', 'ui-src', 'scad', 'blank.scad'), 'utf8');
+  check.eq('the new page template is tests/scad/customizer/box.scad', blank, readFileSync(join(FX, 'box.scad'), 'utf8'));
+  check.eq('  with three customizer variables', parseParams(blank).length, 3);
+}
+
 console.log('\ncustomizer: a change rewrites only the value');
 {
   const src = 'width = 30; // [10:100]\nlabel = "a \\"b\\""; // [8]\nflag=true;\nv = [1, 2, 3];\nwall = 2; // [0.8:0.2:6]\n';

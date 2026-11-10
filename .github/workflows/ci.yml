@@ -386,7 +386,7 @@ jobs:
       # fails (60 KB raw, 20 KB gzipped). --check-pin holds app.hoon's
       # OpenSCAD runtime pin to build-scad.mjs's record. scad-unit.mjs
       # checks the customizer against OpenSCAD's own reading of each
-      # fixture, and the include caps.
+      # fixture, and the include caps. The grammar is prism's openscad.
       - name: scad.js builds, is current and in budget, and the pin matches
         run: |
           node scripts/build-scad.mjs
@@ -394,6 +394,7 @@ jobs:
           node --check code/nex/lattice/ui-app/scad.js
           node scripts/build-scad.mjs --check-pin
           node scripts/scad-unit.mjs
+          node scripts/ui-openscad-grammar.mjs
       # the writer core (tokenizer, model, styles, minimal-diff serializer),
       # pure node: no-op round trips, minimal diffs, style reuse, pairs,
       # hostile files and the 13-large time budget

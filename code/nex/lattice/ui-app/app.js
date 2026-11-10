@@ -5,6 +5,8 @@
 const WRITER_H = '0v3.4g8bu.gitpg.4hui5.6i6ib.91c19';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
 const SHEET_H = '0v3.v145b.hha4j.kjuag.dcc4c.ld732';
+// and scad.js's, the 3D pane of scad pages (26-scad.js)
+const SCAD_H = '0v4.9nq1o.gn7m3.ump5l.f9kc4.lhijk';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
@@ -800,6 +802,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     link: ['0 0 24 24', 'M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5', 'stroke'],
     md: ['4 4 24 24', 'M20.7 6.7v9.9h3.8c-2.9 3-5.8 5.9-8.7 8.8-2.7-2.8-5.6-5.8-8.4-8.7h3.5V6.6c1.3.9 4.4 3.1 5 3.1.6 0 3.6-2.2 4.8-3z'],
     tex: ['4 4 24 24', 'M7.9 17.5H6.5v1.3h4.4v-1.3H9.6V11h.4c1.2 0 1.4.1 1.6 1h1.2l-.2-2.3H4.8l-.3 3.6h1.2v-.5c.2-1.7.3-1.8 1.8-1.8h.4v6.5zM15.8 21.1h-1.7v-2.8h.6c.7 0 .7 0 .7.9v.5h1.2v-4.1h-1.2v.5c0 .9 0 .9-.7.9h-.6v-2.4h1.6c1.5 0 1.6.4 1.7 1.8h1.2l-.3-3.2h-7v1.3h1v6.4h-1v1.3h7.1l.4-2.6h-1.3c0 1.1-.4 1.5-1.7 1.5zM21.7 17.6h-.5l1.5-2.2 1.5 2.2h-.3v1.1h3.6v-1.2H27c-.6 0-.6 0-.7-.2l-2.4-3.5 1.6-2.3c.2-.2.4-.6 1.1-.6h.5V9.6H24v1.2h.5l-.1.1-1.2 1.7-1.3-1.6h.3V9.6h-3.6V11h.5c.6 0 .6 0 .7.2l2.1 3.1-1.8 2.7-.3.3c-.2.2-.5.3-.8.3h-.5v1.2h3.2v-1.2z'],
+    scad: ['0 0 24 24', 'M12 3l8 4.5v9L12 21l-8-4.5v-9zM12 12l8-4.5M12 12v9M12 12L4 7.5', 'stroke'],
     html: ['4 4 24 24', 'M8 15l6-5.6V12l-4.5 4 4.5 4v2.6L8 17v-2zm16 2.1l-6 5.6V20l4.6-4-4.6-4V9.3l6 5.6v2.2z'],
     css: ['4 4 24 24', 'M10.3 23.3l.8-4H8.6v-2.1h3l.5-2.5H9.5v-2.1h3.1l.8-3.9h2.8l-.8 3.9h2.8l.8-3.9h2.8l-.8 3.9h2.5v2.1h-2.9l-.6 2.5h2.6v2.1h-3l-.8 4H16l.8-4H14l-.8 4h-2.9zm6.9-6.1l.5-2.5h-2.8l-.5 2.5h2.8z'],
     js: ['4 4 24 24', 'M11.4 10h2.7v7.6c0 3.4-1.6 4.6-4.3 4.6-.6 0-1.5-.1-2-.3l.3-2.2c.4.2.9.3 1.4.3 1.1 0 1.9-.5 1.9-2.4V10zm5.1 9.2c.7.4 1.9.8 3 .8 1.3 0 1.9-.5 1.9-1.3s-.6-1.2-2-1.7c-2-.7-3.3-1.8-3.3-3.6 0-2.1 1.7-3.6 4.6-3.6 1.4 0 2.4.3 3.1.6l-.6 2.2c-.5-.2-1.3-.6-2.5-.6s-1.8.5-1.8 1.2c0 .8.7 1.1 2.2 1.7 2.1.8 3.1 1.9 3.1 3.6 0 2-1.6 3.7-4.9 3.7-1.4 0-2.7-.4-3.4-.7l.6-2.3z'],
@@ -2498,6 +2501,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       b.setAttribute('aria-pressed', p ? 'true' : 'false');
     }
     if (on && was) showPreview();
+    scadFollow();
     if (window.latVimSetInd) window.latVimSetInd();
   }
   function setRead(on) {
@@ -3333,7 +3337,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 // ── src/25-editor.js ──────────────────────────────────────────────────────
   let src, hl;   // assigned when <lat-editor> upgrades (below, synchronously)
   const LMAP = { md: 'markdown', gmi: 'gemtext', html: 'markup',
-                 js: 'javascript', css: 'css', hoon: 'hoon', tex: 'latex' };
+                 js: 'javascript', css: 'css', hoon: 'hoon', tex: 'latex', scad: 'openscad' };
   const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
   const HL_PLAIN = 50, HL_DEADLINE = 1500, HL_STARTUP = 10000;
   let hlWorker = null, hlFresh = false, hlCur = null, hlNext = null, hlPlain = 0, hlKill = 0;
@@ -3396,6 +3400,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const render = () => {
     if (rpHook) rpHook();
     writerFollow();
+    scadFollow();
     if (richHere() && !writerSourceOn()) { hl.textContent = ''; return; }
     const lang = LMAP[pkind.value];
     const g = lang && (!window.Prism || Prism.languages[lang]);
@@ -3448,7 +3453,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   pkind.addEventListener('change', () => {
     if (!kindSwitchOk(pkind.value)) { pkind.value = kindBack(); return; }
     curKind = pkind.value;
-    if (isRich(curKind) && !src.value.trim()) writerBlank(curKind); else render();
+    if (isRich(curKind) && !src.value.trim()) writerBlank(curKind);
+    else if (curKind === 'scad' && !src.value.trim()) scadBlank();
+    else render();
     if (current) edited();
     refreshTexButton();
   });
@@ -3614,6 +3621,63 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   window.latPalette = { ids: () => ACTIONS.map((a) => a.id), only: PALETTE_ONLY,
     applies: (id) => { const a = ACTIONS.find((x) => x.id === id); return !!a && (!a.when || !!a.when()); } };
+
+// ── src/26-scad.js ────────────────────────────────────────────────────────
+
+  let scadG = null, scadQ = false, scadLoad = null, scadLive = false;
+  const scadHere = () => mode !== 'know' && !grubPath && curFolder === null && pkind.value === 'scad';
+  const scadOn = () => scadLive && scadHere();
+  const scadReady = () => (window.LatScad ? Promise.resolve(window.LatScad)
+    : scadLoad || (scadLoad = new Promise((ok, no) => {
+      const s = document.createElement('script');
+      const fail = () => { scadLoad = null; s.remove(); no(); };
+      s.src = '/apps/lattice/app/scad.js?h=' + SCAD_H;
+      s.onload = () => (window.LatScad ? ok(window.LatScad) : fail());
+      s.onerror = fail;
+      document.head.append(s);
+    })));
+  async function scadBlank() {
+    let L;
+    try { L = await scadReady(); } catch { st('the OpenSCAD template did not load', false); return false; }
+    if (!src.value.trim()) { src.value = L.blank; render(); }
+    return true;
+  }
+  function scadFollow() {
+    if (!scadQ && (scadG || scadHere())) { scadQ = true; queueMicrotask(scadApply); }
+  }
+  async function scadApply() {
+    scadQ = false;
+    if (!scadHere()) { if (scadG) scadG.off(); return; }
+    let L;
+    try { L = await scadReady(); } catch { st('the OpenSCAD pane did not load', false); return; }
+    if (!scadG) {
+      scadG = L.shell({
+        api, $, st, stWork, errText, isMobile, pageCache, edited,
+        here: scadHere,
+        src: () => src,
+        current: () => current,
+        name: () => current || (pname.value || '').trim() || 'untitled',
+        editable: () => !src.readOnly && viewingRev === null && !!current,
+        live: () => scadLive,
+        setLive: (on) => { scadLive = !!on; },
+        refresh: () => refreshPreview(),
+        toEdit: () => { if (activeTab && activeTab.read) setRead(false); },
+        savePage: async (name, kind, body) => {
+          const known = nodes.some((n) => n.page && n.path === name);
+          const url = api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind;
+          let r = await mutate(url + (known ? '' : '&new=1'), { method: 'POST', body });
+          if (!known && r && r.status === 409) r = await mutate(url, { method: 'POST', body });
+          if (r && r.ok) {
+            if (!known) { addTreeNode(name, kind); snapTree(); renderTree(); }
+            bustPages(name);
+          }
+          return r;
+        },
+      });
+    }
+    scadG.follow();
+  }
+  addEventListener('lattheme', () => { if (scadG) scadG.retheme(); });
 
 // ── src/26-writer.js ──────────────────────────────────────────────────────
   const RICH = {
@@ -6431,6 +6495,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       newRn = rn;
       pkind.value = kind;
       if (isRich(kind) && !(await writerBlank(kind))) return;
+      if (kind === 'scad' && !src.value.trim() && !(await scadBlank())) return;
       setOpen(null, { shown: name });
       const already = nodes.some((n) => n.page && n.path === name);
       if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
@@ -7719,13 +7784,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
   });
   const kindNow = () => (mode === 'know' ? 'md' : pkind.value);
-  const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex'].includes(kindNow())
+  const CONTENT = () => ['md', 'gmi', 'html', 'text', 'tex', 'scad'].includes(kindNow())
     || !!richLib(kindNow());
 
   const localHtml = (kind, body, tasks) => {
     if (kind === 'md') return mdToHtml(body, tasks);
     if (kind === 'gmi') return gmiToHtml(body);
     if (kind === 'text') return '<pre>' + mdEsc(body) + '</pre>';
+    if (kind === 'scad') return '<pre><code class="language-openscad">' + mdEsc(body) + '</code></pre>';
     if (kind === 'tex') return texPreviewHtml(body);
     return body;   // html: the document is already its own rendering
   };
@@ -7788,6 +7854,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const paintLocal = () => {
     if (!CONTENT() || document.hidden) return;
     if (previewHidden()) return;
+    if (scadOn()) return;
     try {
       if (pkind.value === 'html') { prevDoc(withPreviewScrollbars(src.value)); return; }
       if (isRich(kindNow())) { writerSync(); prevDoc(withPreviewScrollbars(richLib(kindNow()).show(src.value))); return; }
@@ -7846,7 +7913,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         + '</style>' + fit;
   const ghostDoc = (kind, body) => {
     if (isRich(kind)) return richLib(kind) ? previewScrollbars() + richLib(kind).show(body) : null;
-    if (!['md', 'gmi', 'html', 'text'].includes(kind)) return null;
+    if (!['md', 'gmi', 'html', 'text', 'scad'].includes(kind)) return null;
     try {
       return kind === 'html' ? previewScrollbars() + body : localShell('') + localHtml(kind, body);
     } catch { return null; }
@@ -10579,7 +10646,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       s.onerror = fail;
       document.head.append(s);
     })));
-  const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'fods', 'js', 'css', 'hoon'];
+  const PDF_KINDS = ['md', 'gmi', 'html', 'text', 'tex', 'fodt', 'fods', 'scad', 'js', 'css', 'hoon'];
   async function pdfBody(kind, body) {
     if (kind === 'md') return { html: mdToHtml(body) };
     if (kind === 'gmi') return { html: gmiToHtml(body) };

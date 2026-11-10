@@ -74,6 +74,8 @@
       b.setAttribute('aria-pressed', p ? 'true' : 'false');
     }
     if (on && was) showPreview();
+    // a scad page's 3D pane shows in Read, and beside the editor in Edit
+    scadFollow();
     // the vim indicator reads PREVIEW in Read
     if (window.latVimSetInd) window.latVimSetInd();
   }
