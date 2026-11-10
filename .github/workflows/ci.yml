@@ -204,14 +204,18 @@ jobs:
           "$bin" > run.log 2>&1 &
           pid=$!
           sleep 8
+          # dyld refusing a library ends the process at once, so still
+          # running after 8 seconds means it got past the load
+          alive=no
+          kill -0 "$pid" 2>/dev/null && alive=yes
           kill "$pid" 2>/dev/null || true
           wait "$pid" 2>/dev/null || true
-          cat run.log | head -40
-          if grep -qiE "library not loaded|dyld" run.log; then
-            echo "::error::dyld refused to start the app without libfuse"
+          head -40 run.log
+          if [ "$alive" != yes ] || grep -qiE "library not loaded|dyld" run.log; then
+            echo "::error::the app did not start without libfuse"
             exit 1
           fi
-          echo "the app started without libfuse"
+          echo "the app started without libfuse and was still running after 8s"
 
   nix:
     name: nix — flake build

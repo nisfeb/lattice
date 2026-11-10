@@ -119,6 +119,8 @@ pub fn fuse_check() -> (bool, String) {
 pub struct Status {
     pub fuse_available: bool,
     pub hint: String,
+    /// install_macfuse can fix a missing fuse here (macOS only)
+    pub fuse_installable: bool,
     /// the theme the ship page last reported (set_theme), for the manager
     /// page to wear. Empty: lattice's default light or dark.
     pub theme: std::collections::BTreeMap<String, String>,
@@ -127,7 +129,108 @@ pub struct Status {
 #[tauri::command]
 pub fn status(app: AppHandle) -> Status {
     let (fuse_available, hint) = fuse_check();
-    Status { fuse_available, hint, theme: config::load(&app).theme }
+    let fuse_installable = cfg!(target_os = "macos") && !fuse_available;
+    Status { fuse_available, hint, fuse_installable, theme: config::load(&app).theme }
+}
+
+/// macFUSE's own release, pinned by version and sha256 (the digest GitHub
+/// publishes for the asset). Bumping macFUSE means changing both together.
+/// We do not bundle macFUSE: its license limits redistribution, and only
+/// Apple's Installer, with the user's password, may put it in place anyway.
+#[cfg(target_os = "macos")]
+const MACFUSE_VERSION: &str = "5.5.0";
+#[cfg(target_os = "macos")]
+const MACFUSE_DMG: &str =
+    "https://github.com/macfuse/macfuse/releases/download/macfuse-5.5.0/macfuse-5.5.0.dmg";
+#[cfg(target_os = "macos")]
+const MACFUSE_SHA256: &str = "92c21ef2db4199bcf5bddc8e6efb57b23ecb9715f74ab38cba2c77ab226d3830";
+
+/// Download macFUSE, check it against the pinned digest, and open its
+/// installer. The installer asks for the user's password and walks them
+/// through allowing the file system extension. The app must restart after:
+/// libfuse is weak-linked (build.rs), and dyld binds a weak library only at
+/// launch.
+#[tauri::command]
+pub async fn install_macfuse(app: AppHandle, webview: tauri::Webview) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, webview);
+        Err("macFUSE is for macOS".into())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        crate::commands::ship_page_asks(
+            &app,
+            &webview,
+            "Install macFUSE",
+            format!(
+                "Download macFUSE {MACFUSE_VERSION} from its GitHub release and open its installer? \
+                 The installer asks for your password. Restart lattice when it is done."
+            ),
+            "Download",
+        )?;
+        tauri::async_runtime::spawn_blocking(fetch_and_open_macfuse)
+            .await
+            .map_err(|e| e.to_string())?
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn fetch_and_open_macfuse() -> Result<(), String> {
+    use std::io::Read;
+    use std::process::Command;
+    let resp = ureq::get(MACFUSE_DMG)
+        .timeout(Duration::from_secs(600))
+        .call()
+        .map_err(|e| format!("could not download macFUSE: {e}"))?;
+    let mut dmg = Vec::with_capacity(24 << 20);
+    // the real file is ~23 MB. A cap keeps a broken server from filling memory
+    resp.into_reader()
+        .take(128 << 20)
+        .read_to_end(&mut dmg)
+        .map_err(|e| format!("could not download macFUSE: {e}"))?;
+    if hex(ring::digest::digest(&ring::digest::SHA256, &dmg).as_ref()) != MACFUSE_SHA256 {
+        return Err(format!(
+            "the download is not macFUSE {MACFUSE_VERSION} (checksum mismatch), so nothing was opened"
+        ));
+    }
+    let dir = std::env::temp_dir().join("lattice-macfuse");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let file = dir.join(format!("macfuse-{MACFUSE_VERSION}.dmg"));
+    std::fs::write(&file, &dmg).map_err(|e| e.to_string())?;
+    let vol = dir.join("volume");
+    // a volume left mounted by an earlier try would make attach fail
+    let _ = Command::new("/usr/bin/hdiutil").arg("detach").arg(&vol).arg("-force").output();
+    std::fs::create_dir_all(&vol).map_err(|e| e.to_string())?;
+    let out = Command::new("/usr/bin/hdiutil")
+        .args(["attach", "-nobrowse", "-readonly", "-mountpoint"])
+        .arg(&vol)
+        .arg(&file)
+        .output()
+        .map_err(|e| format!("could not open the macFUSE disk image: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "could not open the macFUSE disk image: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let pkg = vol.join("macFUSE.pkg");
+    // the package is where macFUSE has always put it. If a release moves it,
+    // show the volume rather than fail: the user can still double-click it.
+    let target = if pkg.exists() { pkg } else { vol };
+    let st = Command::new("/usr/bin/open")
+        .arg(&target)
+        .status()
+        .map_err(|e| format!("could not open the macFUSE installer: {e}"))?;
+    if !st.success() {
+        return Err("could not open the macFUSE installer".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// Build the projection for a mount. A `sock` selects lick, a ship on this

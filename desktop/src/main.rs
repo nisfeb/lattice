@@ -418,6 +418,7 @@ fn main() {
             queue::queue_op_put,
             queue::queue_op_del,
             mounts::status,
+            mounts::install_macfuse,
             mounts::add_mount,
             mounts::remove_mount,
             mounts::list_mounts,

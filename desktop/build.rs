@@ -28,6 +28,7 @@ fn main() {
             "pick_upload",
             "open_external_url",
             "status",
+            "install_macfuse",
             "add_mount",
             "remove_mount",
             "list_mounts",

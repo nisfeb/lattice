@@ -46,6 +46,7 @@
     "allow-take-urb-links",
     "allow-export-pdf",
     "allow-status",
+    "allow-install-macfuse",
     "allow-connection-status",
     "allow-connect",
     "allow-reader-status",
