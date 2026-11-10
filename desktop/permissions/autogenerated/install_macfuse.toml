@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-install-macfuse"
+description = "Enables the install_macfuse command without any pre-configured scope."
+commands.allow = ["install_macfuse"]
+
+[[permission]]
+identifier = "deny-install-macfuse"
+description = "Denies the install_macfuse command without any pre-configured scope."
+commands.deny = ["install_macfuse"]

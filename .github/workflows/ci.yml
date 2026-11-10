@@ -180,6 +180,42 @@ jobs:
           cargo build --locked --release --target ${{ matrix.target }}
           echo "built in $(( $(date +%s) - start ))s"
           ls -l target/${{ matrix.target }}/release/lattice-desktop
+      # A plain link to macFUSE's libfuse made the app refuse to start on any
+      # Mac without macFUSE ("lattice cannot be opened because of a
+      # problem"). build.rs links it weak. Check the load command, then start
+      # the app with the dylib moved away and look for dyld refusing it.
+      - name: the app starts without macFUSE (macos)
+        if: runner.os == 'macOS'
+        working-directory: desktop
+        run: |
+          bin="$PWD/target/${{ matrix.target }}/release/lattice-desktop"
+          if ! otool -l "$bin" | grep -A2 LC_LOAD_WEAK_DYLIB | grep -q libfuse.2.dylib; then
+            echo "::error::libfuse is not weak-linked:"
+            otool -L "$bin" | grep -i fuse
+            exit 1
+          fi
+          echo "libfuse is a weak load command"
+          # the Intel cross cannot be relied on to run here (Rosetta), and
+          # the load command is the same either way
+          [ "${{ matrix.target }}" = aarch64-apple-darwin ] || exit 0
+          lib=/usr/local/lib/libfuse.2.dylib
+          sudo mv "$lib" "$lib.away"
+          trap 'sudo mv "$lib.away" "$lib"' EXIT
+          "$bin" > run.log 2>&1 &
+          pid=$!
+          sleep 8
+          # dyld refusing a library ends the process at once, so still
+          # running after 8 seconds means it got past the load
+          alive=no
+          kill -0 "$pid" 2>/dev/null && alive=yes
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          head -40 run.log
+          if [ "$alive" != yes ] || grep -qiE "library not loaded|dyld" run.log; then
+            echo "::error::the app did not start without libfuse"
+            exit 1
+          fi
+          echo "the app started without libfuse and was still running after 8s"
 
   nix:
     name: nix — flake build

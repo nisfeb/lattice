@@ -13,6 +13,7 @@
     "allow-go-home",
     "allow-pick-upload",
     "allow-status",
+    "allow-install-macfuse",
     "allow-add-mount",
     "allow-remove-mount",
     "allow-list-mounts",

@@ -50,6 +50,16 @@ use tauri::Manager;
 /// slowest one. With a wedged mount that was forever, so the window came up
 /// blank: the UI was not broken, it was waiting.
 fn remount(handle: &tauri::AppHandle, cfg: &config::Config) {
+    // saved mounts stay saved. Without fuse (macFUSE removed, say) they come
+    // back on the first launch that has it. On macOS libfuse is weak-linked,
+    // so mounting without it would crash the app, not fail.
+    let (fuse_ok, hint) = mounts::fuse_check();
+    if !fuse_ok {
+        if !cfg.mounts.is_empty() {
+            eprintln!("remount skipped: {hint}");
+        }
+        return;
+    }
     for spec in &cfg.mounts {
         mounts::heal_mountpoint(&spec.mountpoint);
         match mounts::projection_for(handle, &spec.root, &spec.sock, &spec.ship)
@@ -408,6 +418,7 @@ fn main() {
             queue::queue_op_put,
             queue::queue_op_del,
             mounts::status,
+            mounts::install_macfuse,
             mounts::add_mount,
             mounts::remove_mount,
             mounts::list_mounts,
