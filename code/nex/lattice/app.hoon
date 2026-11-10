@@ -483,6 +483,14 @@
         ::  state. Uncovered, every reload dropped them, which compiled a
         ::  revoked grantee's hoon and let banned ships back in.
             [%fall %| /lock empty-dir:loader]
+        ::  /scad: the OpenSCAD runtime, when the owner installed it
+        ::  (+scad-install-run), and /scad/state.json what is there. %fall
+        ::  over the whole dir, so a reload keeps it. An install that never
+        ::  opted in has an empty dir here and nothing else.
+            [%fall %| /scad empty-dir:loader]
+        ::  /scad-job/install: the one install fiber while it runs. Its
+        ::  grub is gone when it ends, so its presence means busy.
+            [%fall %| /scad-job empty-dir:loader]
         ::  /link-reads: one short-lived fiber per background read of a link
         ::  (+link-read-later), gone when its read is done
             [%fall %| /link-reads empty-dir:loader]
@@ -962,6 +970,13 @@
         ?~  lk  (pure:m ~)
         ;<  *  bind:m  (link-read pax l.u.lk)
         (pure:m ~)
+      ::  /scad-job/install: fetch the OpenSCAD runtime, check it and keep
+      ::  it (+scad-install-run). A restart (prod) ends it: the owner asks
+      ::  again, and nothing half-written is kept.
+          [[%scad-job ~] %install]
+        ;<  ~  bind:m  take-kick
+        ?^  prod  (pure:m ~)
+        scad-install-run
       ::  /link-writes/<id>: a lick save through a link (+link-write-apart).
       ::  The remote peeks and pokes run here, never in the lick port's own
       ::  fiber: one that times out leaves its late answer to a fiber that
@@ -2353,6 +2368,9 @@
   ::  the reader. Owner-only like every non-clearweb route (gated above).
   ?:  &(?=([%know *] suffix) =(%'GET' method.request.req))
     (serve-know eyre-id t.suffix args)
+  ::  /scad/<file>: the OpenSCAD runtime the owner installed (+serve-scad)
+  ?:  &(?=([%scad @ ~] suffix) =(%'GET' method.request.req))
+    (serve-scad eyre-id i.t.suffix args)
   ::  /app[/asset]: the lattice-hosted UI (grub-served; see ui-app/).
   ?:  &(?=([%app *] suffix) =(%'GET' method.request.req))
     (serve-ui eyre-id t.suffix args)
@@ -4814,6 +4832,25 @@
     ;<  ~  bind:m
       (gall-poke-fire %hood [%kiln-install [%obelisk ~dister-nomryg-nilref %obelisk]])
     (send-ok eyre-id)
+      ::  the OpenSCAD runtime (+scad-status): installed or not, the pin,
+      ::  and whether an install is running. Settings and scad pages ask.
+      [%'GET' %scad-status]
+    ;<  js=json  bind:m  scad-status
+    (send-json eyre-id js)
+      ::  start the install in its own fiber and answer at once. The fetch
+      ::  and the check take seconds and must not hold a request. A second
+      ::  ask while one runs is refused softly by the make.
+      [%'POST' %scad-install]
+    ;<  *  bind:m
+      %+  make-soft:io  (rf up /scad-job %install)
+      |+[[[/ %noun] `*`~] ~]
+    (send-ok eyre-id)
+      ::  drop the runtime. Its grubs go, so the loom they held is freed.
+      [%'POST' %scad-uninstall]
+    ;<  busy=?  bind:m  (peek-exists:fio (rf up /scad-job %install))
+    ?:  busy  (send-err eyre-id 409 'an install is running')
+    ;<  ~  bind:m  scad-drop
+    (send-ok eyre-id)
       [%'POST' %mirror-config]
     =/  en=(unit @t)  (~(get by args) 'enabled')
     ?~  en  (send-err eyre-id 400 'enabled=true|false required')
@@ -5978,6 +6015,228 @@
     (pure:m [%| (crip (weld "the site answered " s))])
   ?~  full-file.res  (pure:m [%| 'the site sent an empty page'])
   (pure:m [%& q.data.u.full-file.res])
+::  ── the OpenSCAD runtime (optional, docs: specs/2026-11-10-openscad-pages) ──
+::
+::  scad pages render in the browser, with OpenSCAD compiled to WebAssembly.
+::  The ship never runs it. The runtime is about 11 MB, so the desk does not
+::  carry it: the owner installs it from Settings or from a scad page, and
+::  this fetches it once, in a fiber of its own (/scad-job/install), checks
+::  every file against the SHA-256 pinned below, and keeps each in a grub
+::  under /scad. A file that fails is refused and nothing is written.
+::  Uninstall deletes the grubs. A lattice that pins a newer runtime does
+::  not fetch it: the next scad page open offers the update.
+::
+::  The pin, its source and its licence are recorded in scripts/build-scad.mjs,
+::  which checks these constants match it. Keep the two in step.
+::
+::  +scad-url: where the release files are, ending in a slash.
+::
+::    OWNER: FILL THIS IN. It is meant to be a release of nisfeb/lattice
+::    with the three files of +scad-files attached, as made by
+::    `node scripts/build-scad.mjs --release DIR`, for example
+::    'https://github.com/nisfeb/lattice/releases/download/openscad-2026.11.10/'.
+::    Empty, an install answers that this build names no address.
+::
+::  Tests point the ship elsewhere with a grub, /scad/source.json
+::  {"url": "..."}, which no lattice route writes. That address may be a
+::  local one, which +fetchable:lcl refuses for every other fetch.
+::
+++  scad-url  ^-(@t '')
+++  scad-ver  ^-(@t '2026.11.10')
+::  +scad-files: what an install fetches. Each is [served-as file sha256
+::  bytes type encoding]. The wasm is kept gzipped, as the release carries
+::  it, and served with content-encoding: gzip, so it costs 3.3 MB of loom
+::  and of download, not 11 MB. The browser unzips it.
+++  scad-files
+  ^-  (list [nam=@ta fil=@ta sha=@t len=@ud typ=@t enc=(unit @t)])
+  :~  :*  %'openscad.wasm'  %'openscad.wasm.gz'
+          '5df29a9d74be3b2bf0a4dc8def386d4d12257264eeb1260683f44d07f111a772'
+          3.336.685  'application/wasm'  `'gzip'
+      ==
+      :*  %'openscad.js'  %'openscad.js'
+          '2f0cd6a960f91aec62a4c358d44ba957c134f1ef13cffb4ca9eddaaa8e4b1a0b'
+          99.853  'application/javascript'  ~
+      ==
+      :*  %'COPYING'  %'openscad-COPYING.txt'
+          '1805a29c3bccbc0428ce0048a1dfdeb9b1867677410e99c89c3c30932ae8c7d5'
+          18.382  'text/plain; charset=utf-8'  ~
+      ==
+  ==
+::  +scad-mite: the mime grub's type for a file's content type
+++  scad-mite
+  |=  t=@t
+  ^-  mite
+  ?:  =('application/wasm' t)  /application/wasm
+  ?:  =('application/javascript' t)  /application/javascript
+  /text/plain
+::  +scad-hex: a file's SHA-256 as the usual lowercase hex
+++  scad-hex
+  |=  o=octs
+  ^-  @t
+  (en:base16:mimes:html [32 (rev 3 32 (shay p.o q.o))])
+::  +scad-source: the base address to fetch from, and whether a local host
+::  is allowed (the test override only), or ~ when there is none. Takes
+::  the depth: the install fiber and a request both read it.
+++  scad-source
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(unit [url=@t any=?]))
+  ^-  form:m
+  ;<  sv=view:nexus  bind:m  (peek:fio (rf up /scad %'source.json') ~)
+  =/  ov=(unit @t)
+    ?.  ?=([%file *] sv)  ~
+    =/  j=(unit json)  (mole |.(!<(json (need-vase:tarball sang.sv))))
+    ?~  j  ~
+    ?.  ?=([%o *] u.j)  ~
+    =/  u=(unit json)  (~(get by p.u.j) 'url')
+    ?.  ?=([~ %s @] u)  ~
+    ?:(=('' p.u.u) ~ `p.u.u)
+  ?^  ov  (pure:m `[u.ov &])
+  ?:  =('' scad-url)  (pure:m ~)
+  (pure:m `[scad-url |])
+::  +fetch-octs: GET a url's bytes, following redirects (a GitHub release
+::  file redirects to its storage host). Like +fetch-url, every failure is
+::  a reason, never a crash, and every hop is checked unless `any`.
+++  fetch-octs
+  |=  [url=@t any=?]
+  =/  m  (fiber:fiber:nexus ,(each octs @t))
+  ^-  form:m
+  =|  hops=@ud
+  =/  cur=@t  url
+  |-  ^-  form:m
+  ?:  (gth hops fetch-hops)  (pure:m [%| 'too many redirects'])
+  ?.  |(any (fetchable:lcl cur))  (pure:m [%| local-refused])
+  ;<  ~  bind:m  (send-request:io [%'GET' cur ~[['User-Agent' 'lattice'] ['Accept' '*/*']] ~])
+  ;<  res=client-response:iris  bind:m  take-client-response:io
+  ?.  ?=(%finished -.res)  (pure:m [%| 'the download did not complete'])
+  =/  status=@ud  status-code.response-header.res
+  ?:  ?|  =(status 301)  =(status 302)  =(status 303)
+          =(status 307)  =(status 308)
+      ==
+    =/  loc=(unit @t)  (~(get by (malt headers.response-header.res)) 'location')
+    ?~  loc  (pure:m [%| 'a redirect without an address'])
+    ?.  (http-url u.loc)  (pure:m [%| 'a redirect to a relative address'])
+    $(cur u.loc, hops +(hops))
+  ?.  =(200 status)
+    (pure:m [%| (crip (weld "the download answered " (a-co:co status)))])
+  ?~  full-file.res  (pure:m [%| 'the download was empty'])
+  (pure:m [%& data.u.full-file.res])
+::  +scad-state: /scad/state.json, or ~. Takes the depth, as +scad-source.
+++  scad-state
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(unit json))
+  ^-  form:m
+  ;<  sv=view:nexus  bind:m  (peek:fio (rf up /scad %'state.json') ~)
+  ?.  ?=([%file *] sv)  (pure:m ~)
+  (pure:m (mole |.(!<(json (need-vase:tarball sang.sv)))))
+::  +scad-put-state: write state.json, keeping what `j` does not replace
+++  scad-put-state
+  |=  [up=@ud kv=(list [@t json])]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  old=(unit json)  bind:m  (scad-state up)
+  =/  base=(map @t json)  ?.(?=([~ %o *] old) ~ p.u.old)
+  =/  new=(map @t json)
+    |-  ^-  (map @t json)
+    ?~  kv  base
+    $(kv t.kv, base (~(put by base) -.i.kv +.i.kv))
+  (put-file (rf up /scad %'state.json') [/ %json] `json`[%o new])
+::  +scad-install-run: fetch every file, check each, then write them all.
+::  Nothing is written until every file has passed, so a bad file leaves
+::  the runtime that was there, or none.
+++  scad-install-run
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  src=(unit [url=@t any=?])  bind:m  (scad-source up)
+  ?~  src
+    (scad-put-state up ~[['error' s+'this build of lattice names no address to install the runtime from']])
+  =/  fs  scad-files
+  =|  got=(list [fil=@ta o=octs])
+  |-  ^-  form:m
+  ?^  fs
+    ;<  r=(each octs @t)  bind:m  (fetch-octs (cat 3 url.u.src fil.i.fs) any.u.src)
+    ?:  ?=(%| -.r)
+      (scad-put-state up ~[['error' s+(rap 3 ~[fil.i.fs ': ' p.r])]])
+    ?.  =(len.i.fs p.p.r)
+      (scad-put-state up ~[['error' s+(rap 3 ~[fil.i.fs ': not the pinned size, refused'])]])
+    ?.  =(sha.i.fs (scad-hex p.r))
+      (scad-put-state up ~[['error' s+(rap 3 ~[fil.i.fs ': not the pinned file (SHA-256 differs), refused'])]])
+    $(fs t.fs, got [[fil.i.fs p.r] got])
+  =/  ws  scad-files
+  |-  ^-  form:m
+  ?^  ws
+    =/  o=(unit octs)
+      |-  ^-  (unit octs)
+      ?~  got  ~
+      ?:(=(fil.i.got fil.i.ws) `o.i.got $(got t.got))
+    ?~  o  $(ws t.ws)
+    ;<  ~  bind:m
+      (put-file (rf up /scad fil.i.ws) [/ %mime] `mime`[(scad-mite typ.i.ws) u.o])
+    $(ws t.ws)
+  ;<  now=@da  bind:m  bowl-now
+  %+  scad-put-state  up
+  :~  ['have' s+scad-ver]
+      ['error' ~]
+      ['at' s+(scot %da now)]
+      :-  'files'
+      %-  pairs:enjs:format
+      (turn scad-files |=(f=[nam=@ta fil=@ta sha=@t *] [nam.f s+sha.f]))
+  ==
+::  +scad-drop: uninstall. The grubs go, and state.json says so.
+++  scad-drop
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  ws  scad-files
+  |-  ^-  form:m
+  ?^  ws
+    ;<  *  bind:m  (cull-soft:io (rf up /scad fil.i.ws))
+    $(ws t.ws)
+  (scad-put-state up ~[['have' ~] ['files' ~] ['error' ~]])
+::  +scad-status: what Settings and a scad page need to know
+++  scad-status
+  =/  m  (fiber:fiber:nexus ,json)
+  ^-  form:m
+  ;<  st=(unit json)  bind:m  (scad-state up)
+  ;<  busy=?  bind:m  (peek-exists:fio (rf up /scad-job %install))
+  ;<  src=(unit [url=@t any=?])  bind:m  (scad-source up)
+  =/  get  |=(k=@t ?.(?=([~ %o *] st) ~ (~(gut by p.u.st) k ~)))
+  =/  size=@ud  (roll scad-files |=([f=[@ta @ta @t len=@ud *] a=@ud] (add a len.f)))
+  %-  pure:m
+  %-  pairs:enjs:format
+  :~  ['pin' s+scad-ver]
+      ['size' (numb:enjs:format size)]
+      ['have' (get 'have')]
+      ['files' (get 'files')]
+      ['error' (get 'error')]
+      ['busy' b+busy]
+      ['source' b+?=(^ src)]
+  ==
+::  +serve-scad: one installed runtime file. Immutable for a year when ?h=
+::  is the SHA-256 the install checked, so a browser fetches it once.
+++  serve-scad
+  |=  [eyre-id=@ta nam=@ta args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  f  (skim scad-files |=(r=[n=@ta *] =(n.r nam)))
+  ?~  f  (send-err eyre-id 404 'not found')
+  =/  f  i.f
+  ;<  pv=view:nexus  bind:m  (peek:fio (rf up /scad fil.f) ~)
+  ?.  ?=([%file *] pv)  (send-err eyre-id 404 'the OpenSCAD runtime is not installed')
+  =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
+  ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
+  ;<  st=(unit json)  bind:m  (scad-state up)
+  =/  have=(unit json)
+    ?.  ?=([~ %o *] st)  ~
+    =/  fj=(unit json)  (~(get by p.u.st) 'files')
+    ?.  ?=([~ %o *] fj)  ~
+    (~(get by p.u.fj) nam)
+  =/  h=(unit @t)  (~(get by args) 'h')
+  =/  cc=@t
+    ?:  &(?=(^ h) ?=([~ %s @] have) =(u.h p.u.have))
+      'private, max-age=31536000, immutable'
+    'no-cache'
+  =/  heds=(list [@t @t])  ~[['content-type' typ.f] ['cache-control' cc]]
+  =?  heds  ?=(^ enc.f)  [['content-encoding' u.enc.f] heds]
+  (send-simple:srv eyre-id [[200 heds] `q.p.res])
 ::  +clip-page: fetch a url, convert it, file it under clips/, and render the
 ::  confirmation. Shared by /clip (bookmarklet) and /share (PWA share target).
 ::  The two differ only in how the url reaches us.
@@ -17456,6 +17715,11 @@
 ::  covers it (+shell-ver), so a deploy that changes it drops the copy.
 ::  sheet.js, the grid editor for fods pages, is kept the same way.
 ::
+::  The OpenSCAD runtime (/scad/<file>?h=H, +serve-scad) has a cache of its
+::  own, lattice-scad, keyed by the whole URL. A deploy does not drop it, so
+::  a lattice release costs no new 3.4 MB download. A new H replaces the
+::  old copy of that file, and Settings clears it on uninstall.
+::
 ::  Non-SHELL requests are NOT intercepted at all (no respondWith): some
 ::  webkitgtk builds drop cookies on SW-mediated fetch, so a blanket
 ::  passthrough turned every API call cookieless in the desktop webview
@@ -17546,7 +17810,7 @@
       ver
       '";var PV="'
       pv
-      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];var LAZY=["/apps/lattice/app/writer.js","/apps/lattice/app/sheet.js","/apps/lattice/app/settings.js","/apps/lattice/app/skills.js"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(LAZY.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok)c.put(u.pathname,r.clone());return r})})}).catch(function(){return fetch(q)}));return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];var LAZY=["/apps/lattice/app/writer.js","/apps/lattice/app/sheet.js","/apps/lattice/app/settings.js","/apps/lattice/app/skills.js"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"&&k!=="lattice-scad"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(u.pathname.indexOf("/apps/lattice/scad/")===0&&u.searchParams.has("h")){e.respondWith(caches.open("lattice-scad").then(function(c){return c.match(q.url).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok&&im(r)){c.keys().then(function(ks){ks.forEach(function(k){if(new URL(k.url).pathname===u.pathname&&k.url!==q.url)c.delete(k)})});c.put(q.url,r.clone())}return r})})}).catch(function(){return fetch(q)}));return}if(LAZY.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok)c.put(u.pathname,r.clone());return r})})}).catch(function(){return fetch(q)}));return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
@@ -18256,6 +18520,15 @@
     "<p><button type=\"button\" id=\"sreidx\" class=\"btn\">Reindex my content</button> <span id=\"srst\" class=\"muted\"></span></p>"
     %-  trip
     '<script>(function(){var b=document.getElementById("sreidx");var s=document.getElementById("srst");b.onclick=function(){b.disabled=true;s.textContent="reindexing...";fetch("/apps/lattice/search-reindex",{method:"POST"}).then(function(r){return r.ok?"done - your pages and notes are searchable.":r.json().then(function(j){return "failed: "+(j.error||r.status)},function(){return "failed ("+r.status+")"})}).then(function(t){s.textContent=t;b.disabled=false}).catch(function(){s.textContent="failed (network error)";b.disabled=false})}})();</script>'
+    ::  OpenSCAD pages: the optional runtime (+scad-install-run). Status
+    ::  from /scad-status, polled while an install runs. A scad page offers
+    ::  the same buttons (ui-src/lattice/26-scad.js).
+    "<h2 id=\"openscad\">OpenSCAD pages</h2>"
+    "<p class=\"muted\">scad pages draw their part in 3D with OpenSCAD, compiled to WebAssembly and run in your browser. Your ship keeps the runtime and never runs it. It is optional: until you install it, a scad page shows its source.</p>"
+    "<p><span id=\"scst\" class=\"muted\">checking&hellip;</span></p>"
+    "<p><button type=\"button\" id=\"scinst\" class=\"btn\" hidden>Install</button> <button type=\"button\" id=\"scdrop\" class=\"btn\" hidden>Uninstall</button> <a id=\"sclic\" href=\"/apps/lattice/scad/COPYING\" hidden>licence (GPL-2.0)</a> <a id=\"scsrc\" href=\"https://github.com/openscad/openscad\" rel=\"noopener\" target=\"_blank\" hidden>source</a></p>"
+    %-  trip
+    '<script>(function(){var st=document.getElementById("scst"),bi=document.getElementById("scinst"),bd=document.getElementById("scdrop"),li=document.getElementById("sclic"),so=document.getElementById("scsrc"),T=0;function mb(n){return Math.round(n/1e5)/10+" MB"}function show(d){var on=!!d.have;bi.hidden=d.busy||(on&&d.have===d.pin);bd.hidden=!on||d.busy;li.hidden=so.hidden=!on;bi.textContent=on?"Update to "+d.pin+" ("+mb(d.size)+")":"Install ("+mb(d.size)+")";st.textContent=d.busy?"installing, this takes a little while...":on?("OpenSCAD "+d.have+" is installed."+(d.have!==d.pin?" This lattice offers "+d.pin+".":"")):!d.source?"This build of lattice names no address to install from.":(d.error?"Not installed: "+d.error:"Not installed.");if(!d.source&&!on)bi.hidden=true;clearTimeout(T);if(d.busy)T=setTimeout(load,2000)}function load(){fetch("/apps/lattice/scad-status").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="status unavailable"})}function post(u){bi.disabled=bd.disabled=true;fetch(u,{method:"POST"}).then(function(r){return r.json()}).then(function(j){bi.disabled=bd.disabled=false;if(j.error)st.textContent=j.error;setTimeout(load,300)}).catch(function(){bi.disabled=bd.disabled=false;st.textContent="request failed, retry."})}bi.onclick=function(){post("/apps/lattice/scad-install")};bd.onclick=function(){try{caches.delete("lattice-scad")}catch(x){}post("/apps/lattice/scad-uninstall")};load()})();</script>'
     "<h2>Commons mirror</h2>"
     "<p class=\"muted\">Mirrors your pages, notes, tags, follows and browsing history into the %obelisk database, where you (and your agents) can query across apps with urQL. Turning it off deletes that copy. Optional: without %obelisk everything else works unchanged.</p>"
     "<p><span id=\"obst\" class=\"muted\">checking&hellip;</span></p>"

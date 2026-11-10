@@ -380,6 +380,12 @@ jobs:
           git diff --exit-code code/nex/lattice/ui-app/sheet.js ui-src/sheet/vendor/LICENSES
           node --check code/nex/lattice/ui-app/sheet.js
           node scripts/sheet-unit.mjs
+      # The OpenSCAD runtime is optional and never in the desk: the owner
+      # installs it, and the ship checks each file against the SHA-256 in
+      # app.hoon (+scad-files). build-scad.mjs records where the pin came
+      # from, and --check-pin holds the two to each other.
+      - name: the OpenSCAD runtime pin matches its record
+        run: node scripts/build-scad.mjs --check-pin
       # the writer core (tokenizer, model, styles, minimal-diff serializer),
       # pure node: no-op round trips, minimal diffs, style reuse, pairs,
       # hostile files and the 13-large time budget
