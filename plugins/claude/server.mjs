@@ -122,7 +122,7 @@ function urbText(j, offset) {
     default: {
       const mode = j.mode || j.mark || 'text';
       const raw = String(j.body ?? '');
-      const body = /^(html|fodt)$/.test(mode) ? htmlText(raw) : raw;
+      const body = /^(html|fodt|fods)$/.test(mode) ? htmlText(raw) : raw;
       const notes = [mode, `${j.size ?? raw.length} bytes`];
       if (j.shared) notes.push('shared with this ship, not published');
       if (j.own && j.share) notes.push(`the owner's page, ${j.share}`);
