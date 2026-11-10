@@ -85,11 +85,19 @@ impl Drop for Reservation {
     }
 }
 
+/// where macFUSE's installer puts libfuse, the path the app links (weak)
+#[cfg(target_os = "macos")]
+const MACFUSE_LIB: &str = "/usr/local/lib/libfuse.2.dylib";
+
 /// macOS needs macFUSE installed. Linux needs fusermount3 on PATH.
 pub fn fuse_check() -> (bool, String) {
     #[cfg(target_os = "macos")]
     {
-        let ok = std::path::Path::new("/Library/Filesystems/macfuse.fs").exists();
+        // the dylib too: the app links it weak (build.rs), so a mount with
+        // it missing would call through a null symbol rather than fail to
+        // start. Both are what macFUSE's installer puts down.
+        let ok = std::path::Path::new("/Library/Filesystems/macfuse.fs").exists()
+            && std::path::Path::new(MACFUSE_LIB).exists();
         let hint = if ok { String::new() } else {
             "macFUSE not found — install it from https://macfuse.github.io".into()
         };
@@ -194,6 +202,13 @@ pub async fn add_mount(
     let sock = sock.unwrap_or_default();
     let ship = ship.unwrap_or_default();
     validate_mountpoint(&mountpoint)?;
+    // before the confirm dialog: there is no point asking to mount what
+    // cannot be mounted, and on macOS libfuse is weak-linked, so going on
+    // without it would crash rather than fail
+    let (fuse_ok, hint) = fuse_check();
+    if !fuse_ok {
+        return Err(hint);
+    }
     let from = if sock.is_empty() {
         "your ship's pages".to_string()
     } else {

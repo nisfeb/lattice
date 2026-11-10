@@ -1,4 +1,15 @@
 fn main() {
+    // macOS: link macFUSE's libfuse WEAK. fuser links it as a plain -lfuse,
+    // and a plain link makes dyld refuse to start the app at all when
+    // macFUSE is not installed. The user saw only "lattice cannot be opened
+    // because of a problem", never the app's own "macFUSE not found" hint.
+    // Weak, the app starts without it. Only mounting needs libfuse, and every
+    // mount is gated on mounts::fuse_check, which looks for the dylib itself.
+    // CI (ci.yml) checks the load command is weak and that the binary starts
+    // with the dylib moved away.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg=-Wl,-weak-lfuse");
+    }
     // Opting ANY command into the app manifest gates them ALL. An unlisted
     // command is denied everywhere ("connect not allowed"). So every command
     // is listed, local windows get all of them via capabilities/local.json,
