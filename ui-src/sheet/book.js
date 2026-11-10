@@ -39,6 +39,8 @@ export function readTyped(text, nullDate) {
   return { vt: 'string', v: text, kind: null };
 }
 
+//  the functions whose result is a date or a time of day
+const DATE_FNS = { DATE: 'date', TODAY: 'date', EDATE: 'date', EOMONTH: 'date', NOW: 'date', TIME: 'time' };
 const KIND_VT = { percent: 'percentage', currency: 'currency', date: 'date', time: 'time' };
 
 // ── what a structural edit must rewrite, and what stops it ───────────────
@@ -196,6 +198,20 @@ export class Book {
     setCell(sheet, r, c, { vt: null, v: null, f, text: '', cur: was.cur });
     const e = this.engine.setFormula(s, r, c, f);
     const changed = this.engine.recalc([[s, r, c]], [e]);
+    //  a formula that makes a date or a time, in a cell with no number
+    //  format of its own, gets one: =DATE(2026,11,10) shows as a date and
+    //  not as the day number 46336, as it does in Calc
+    const now = cellAt(sheet, r, c);
+    let top = this.engine.ast(f);
+    while (top && top.t === 'paren') top = top.x;
+    const kind = top && top.t === 'call' ? DATE_FNS[top.name] : null;
+    const st = this.styleAt(s, r, c);
+    if (kind && now.vt === 'float' && !this.styles.lookOf(st).data) {
+      const st2 = this.styles.restyle(st, { data: this.styles.dataStyle(kind) });
+      const own = setStyle(sheet, r, c, st2);
+      own.vt = KIND_VT[kind];
+      own.text = this.styles.text(st2, own.v, own.vt);
+    }
     return { changed: [[s, r, c], ...changed] };
   }
 

@@ -48,6 +48,7 @@ const CASES = {
     b.enter(0, 46, 0, '=SUM(A2:A10)&" total"'); b.enter(0, 47, 0, "'007"); b.enter(0, 48, 2, '  two  spaces ');
     b.enter(0, 49, 0, '=IF(AND(A2>1,B2<10),"yes","no")'); b.enter(0, 50, 0, '=A2>B2'); b.enter(0, 51, 0, 'line one\nline two');
     b.enter(0, 52, 0, '=VLOOKUP(10,A2:B18,2,0)&"|"&ROUND(AVERAGE(B2:B18),3)'); b.enter(0, 53, 0, '<b>&amp;"quoted"</b>');
+    b.enter(0, 54, 0, '=DATE(2026,11,10)'); b.enter(0, 55, 0, '=TIME(13,30,0)'); b.enter(0, 56, 0, '=EOMONTH(A55,1)');
   }],
   'b-insert-rows': ['02-formulas', (b) => { must(b.shift(0, 'r', 3, 2)); b.enter(0, 3, 0, '1000'); b.enter(0, 4, 1, '=A4/8'); }],
   'c-delete-row': ['02-formulas', (b) => { must(b.shift(0, 'r', 4, -1)); }],

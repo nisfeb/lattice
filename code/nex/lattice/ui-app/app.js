@@ -4,7 +4,7 @@
 // the served writer.js's hash (build-ui.mjs, 26-writer.js)
 const WRITER_H = '0v3.4g8bu.gitpg.4hui5.6i6ib.91c19';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
-const SHEET_H = '0v7.s4nhd.iafem.om2s3.8qhjf.98hmb';
+const SHEET_H = '0v1.tb31b.m9mth.0h2gu.opu0b.sv0sd';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
