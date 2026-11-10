@@ -1,0 +1,297 @@
+{
+ "parameters": [
+  {
+   "caption": "lattice's own fixture: every widget form OpenSCAD's customizer reads",
+   "group": "Parameters",
+   "initial": 4,
+   "name": "plain",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 5,
+   "name": "step",
+   "step": 0.5,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 7,
+   "name": "spaced",
+   "step": 2,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 20,
+   "max": 100,
+   "min": 10,
+   "name": "slider",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 15,
+   "max": 50,
+   "min": 0,
+   "name": "stepped",
+   "step": 5,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 3,
+   "max": 12,
+   "min": 0,
+   "name": "maxonly",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 2,
+   "name": "broken",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 6,
+   "name": "notlist",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 1,
+   "name": "twice",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 9,
+   "name": "empty",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 20,
+   "name": "labelled",
+   "options": [
+    {
+     "name": "Small",
+     "value": 10
+    },
+    {
+     "name": "Medium",
+     "value": 20
+    },
+    {
+     "name": "Large",
+     "value": 30
+    }
+   ],
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 2,
+   "name": "numlist",
+   "options": [
+    {
+     "name": "0",
+     "value": 0
+    },
+    {
+     "name": "1",
+     "value": 1
+    },
+    {
+     "name": "2",
+     "value": 2
+    },
+    {
+     "name": "3",
+     "value": 3
+    }
+   ],
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 10,
+   "name": "missing",
+   "options": [
+    {
+     "name": "10",
+     "value": 10
+    },
+    {
+     "name": "0",
+     "value": 0
+    },
+    {
+     "name": "1",
+     "value": 1
+    },
+    {
+     "name": "2",
+     "value": 2
+    }
+   ],
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": "hello",
+   "name": "word",
+   "type": "string"
+  },
+  {
+   "group": "Parameters",
+   "initial": "abc",
+   "maxLength": 8,
+   "name": "maxlen",
+   "type": "string"
+  },
+  {
+   "group": "Parameters",
+   "initial": "bar",
+   "name": "choice",
+   "options": [
+    {
+     "name": "foo",
+     "value": "foo"
+    },
+    {
+     "name": "bar",
+     "value": "bar"
+    },
+    {
+     "name": "baz",
+     "value": "baz"
+    }
+   ],
+   "type": "string"
+  },
+  {
+   "group": "Parameters",
+   "initial": "M",
+   "name": "pick",
+   "options": [
+    {
+     "name": "Small",
+     "value": "S"
+    },
+    {
+     "name": "Medium",
+     "value": "M"
+    },
+    {
+     "name": "Large",
+     "value": "L"
+    }
+   ],
+   "type": "string"
+  },
+  {
+   "group": "Parameters",
+   "initial": true,
+   "name": "flag",
+   "type": "boolean"
+  },
+  {
+   "group": "Parameters",
+   "initial": [
+    12,
+    34
+   ],
+   "max": 100,
+   "min": 1,
+   "name": "vec2",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": [
+    1,
+    2,
+    3,
+    4
+   ],
+   "name": "vec4",
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": -12.5,
+   "name": "neg",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 1000,
+   "name": "sci",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": 1,
+   "name": "a1",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Parameters",
+   "initial": "two",
+   "name": "b1",
+   "type": "string"
+  },
+  {
+   "caption": "how round the corners are",
+   "group": "Shape",
+   "initial": 2,
+   "max": 10,
+   "min": 0,
+   "name": "round",
+   "step": 0.5,
+   "type": "number"
+  },
+  {
+   "group": "Shape",
+   "initial": 3,
+   "name": "described",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Shape",
+   "initial": 4,
+   "name": "notdescribed",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Global",
+   "initial": 1,
+   "max": 1,
+   "min": 0,
+   "name": "everywhere",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Last",
+   "initial": "x",
+   "name": "last",
+   "type": "string"
+  }
+ ]
+}

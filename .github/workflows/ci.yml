@@ -385,7 +385,8 @@ jobs:
       # lattice's own. Rebuilt and diffed like sheet.js, over its budget it
       # fails (60 KB raw, 20 KB gzipped). --check-pin holds app.hoon's
       # OpenSCAD runtime pin to build-scad.mjs's record. scad-unit.mjs
-      # checks the include caps.
+      # checks the customizer against OpenSCAD's own reading of each
+      # fixture, and the include caps.
       - name: scad.js builds, is current and in budget, and the pin matches
         run: |
           node scripts/build-scad.mjs

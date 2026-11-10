@@ -14,6 +14,7 @@ import { readFileSync, readdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { makeCheck } from './lib/check.mjs';
+import { parseParams, rewriteLine, fmtValue, defineArg, parseLiteral } from '../ui-src/scad/customizer.js';
 import { scanIncludes, resolveRef, collect } from '../ui-src/scad/includes.js';
 import { parseStl, MAX_TRIS } from '../ui-src/scad/stl.js';
 
@@ -21,7 +22,67 @@ const here = dirname(fileURLToPath(import.meta.url));
 const FX = join(here, '..', 'tests', 'scad', 'customizer');
 const check = makeCheck();
 
-console.log('includes: resolved as lattice pages, inside lattice');
+console.log('customizer: lattice reads what OpenSCAD reads');
+for (const f of readdirSync(FX).filter((n) => n.endsWith('.scad')).sort()) {
+  const src = readFileSync(join(FX, f), 'utf8');
+  const want = JSON.parse(readFileSync(join(FX, f.replace(/\.scad$/, '.json')), 'utf8')).parameters;
+  const got = parseParams(src);
+  check.eq(`${f}: the same parameters, in order`, got.map((p) => p.name).join(' '), want.map((p) => p.name).join(' '));
+  for (const w of want) {
+    const g = got.find((p) => p.name === w.name);
+    if (!g) continue;
+    const mine = {
+      group: g.group, initial: g.value, type: g.type,
+      caption: g.description || undefined, min: g.min, max: g.max, step: g.step,
+      options: g.options && g.options.map((x) => ({ name: x.name, value: x.value })),
+      maxLength: g.maxLength,
+    };
+    const theirs = {
+      group: w.group, initial: w.initial, type: w.type,
+      caption: w.caption === undefined ? undefined : w.caption.trim() || undefined,
+      min: w.min, max: w.max, step: w.step,
+      options: w.options && w.options.map((x) => ({ name: x.name, value: x.value })),
+      maxLength: w.maxLength,
+    };
+    const bad = Object.keys(theirs).filter((k) => JSON.stringify(mine[k]) !== JSON.stringify(theirs[k]));
+    check(`${f}: ${w.name}`, !bad.length, bad.map((k) => `${k}: lattice ${JSON.stringify(mine[k])}, OpenSCAD ${JSON.stringify(theirs[k])}`).join('; '));
+  }
+}
+
+console.log('\ncustomizer: a change rewrites only the value');
+{
+  const src = 'width = 30; // [10:100]\nlabel = "a \\"b\\""; // [8]\nflag=true;\nv = [1, 2, 3];\nwall = 2; // [0.8:0.2:6]\n';
+  const ps = parseParams(src);
+  const L = src.split('\n');
+  const p = (n) => ps.find((q) => q.name === n);
+  check.eq('a number', rewriteLine(L[0], p('width'), 45), 'width = 45; // [10:100]');
+  check.eq('a string keeps its quotes and escapes', rewriteLine(L[1], p('label'), 'say "hi" \\ there'), 'label = "say \\"hi\\" \\\\ there"; // [8]');
+  check.eq('the string read back is the value', parseLiteral(rewriteLine(L[1], p('label'), 'say "hi" \\ there').slice(8, -8)), 'say "hi" \\ there');
+  check.eq('a boolean, with no spaces to keep', rewriteLine(L[2], p('flag'), false), 'flag=false;');
+  check.eq('a vector', rewriteLine(L[3], p('v'), [4, 5.5, 6]), 'v = [4, 5.5, 6];');
+  check.eq('a decimal step writes no float noise', rewriteLine(L[4], p('wall'), 0.8 + 0.2 * 7), 'wall = 2.2; // [0.8:0.2:6]');
+  check.eq('a line that changed is not written', rewriteLine('width = 31; // [10:100]', p('width'), 45), null);
+  check.eq('a -D argument', defineArg(p('width'), 45), 'width=45');
+  check.eq('a -D string argument', defineArg(p('label'), 'x"y'), 'label="x\\"y"');
+  check.eq('fmtValue of a big integer', fmtValue(123456789), '123456789');
+  check.eq('fmtValue of a float with no step', fmtValue(0.1 + 0.2), '0.3');
+  check.eq('fmtValue of NaN writes a number', fmtValue(NaN), '0');
+  const mixed = parseParams('a = 1; b = 2; // [0:10]\n');
+  check.eq('two on a line are two parameters', mixed.map((q) => q.name).join(','), 'a,b');
+  check.eq('  and the second rewrites only itself', rewriteLine('a = 1; b = 2; // [0:10]', mixed[1], 7), 'a = 1; b = 7; // [0:10]');
+  check.eq('a parameter in a block comment is none', parseParams('/*\nx = 1;\n*/\ny = 2;\n').map((q) => q.name).join(), 'y');
+  check.eq('a brace in a string does not end the top level', parseParams('s = "{";\nt = 3;\n').map((q) => q.name).join(), 's,t');
+  check.eq('nothing after the first function', parseParams('a = 1;\nfunction f(x) = x;\nb = 2;\n').map((q) => q.name).join(), 'a');
+  check.eq('a name set twice is read at its last line', parseParams('a = 1;\na = 2;\n')[0].line, 1);
+  check.eq('CRLF lines', parseParams('a = 1; // [0:9]\r\nb = 2;\r\n').map((q) => `${q.name}:${q.max}`).join(), 'a:9,b:undefined');
+  //  a hostile source: long, unbalanced, odd bytes. It must answer, fast.
+  const t0 = Date.now();
+  const huge = 'x = 1; // [' + '['.repeat(200000) + '\n' + '/*'.repeat(50000) + '\n' + '"'.repeat(100001) + '\n';
+  parseParams(huge);
+  check('a hostile 450 KB source parses in under a second', Date.now() - t0 < 1000, `${Date.now() - t0} ms`);
+}
+
+console.log('\nincludes: resolved as lattice pages, inside lattice');
 {
   const inc = scanIncludes('include <lib/screws.scad>\nuse <gear>;\n// include <commented.scad>\nx = "include <instring>";\n/* use <blocked> */\n  include<tight.scad>\n');
   check.eq('include and use are found, comments and strings are not', inc.map((i) => `${i.kind}:${i.ref}@${i.line}`).join(' '), 'include:lib/screws.scad@1 use:gear@2 include:tight.scad@6');
