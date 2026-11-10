@@ -485,3 +485,12 @@ jobs:
       # ship either.
       - name: browser unit test - spreadsheet grid (no ship)
         run: CHROME="$(command -v google-chrome)" node scripts/ui-sheet-grid.mjs
+      # ui-scad-view loads the built scad.js and the pinned OpenSCAD runtime
+      # (fetched from files.openscad.org and checked against its pin) into a
+      # page on localhost, and renders, customizes and exports through it,
+      # hostile models included. No ship. The released runtime, once
+      # app.hoon names its address, is checked by build-scad.mjs --verify.
+      - name: browser unit test - scad 3D pane (no ship)
+        run: |
+          CHROME="$(command -v google-chrome)" node scripts/ui-scad-view.mjs
+          node scripts/build-scad.mjs --verify
