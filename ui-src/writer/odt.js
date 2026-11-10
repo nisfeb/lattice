@@ -18,6 +18,10 @@ import tinf from 'tiny-inflate';
 import { parseXml, elements, child, attr, escAttr, LIMITS } from './xml.js';
 
 const MIME = 'application/vnd.oasis.opendocument.text';
+//  the two package kinds lattice reads and writes. A spreadsheet (.ods)
+//  is the same package with another mimetype (ui-src/sheet/ods.js).
+const ODT = { mime: MIME, ext: '.odt', name: 'a Writer document', flat: 'flat ODT', doc: 'document' };
+export const ODS = { mime: 'application/vnd.oasis.opendocument.spreadsheet', ext: '.ods', name: 'a spreadsheet', flat: 'flat ODS', doc: 'spreadsheet' };
 //  what one entry may inflate to; a zip bomb stops here
 export const ENTRY_MAX = 16 * 1024 * 1024;
 
@@ -137,7 +141,8 @@ async function basic(ents, used, take) {
 }
 
 //  importOdt(ArrayBuffer) -> { text, note } | { error }
-export async function importOdt(buf) {
+export const importOdt = (buf) => importPackage(buf, ODT);
+export async function importPackage(buf, kind) {
   try {
     const u8 = new Uint8Array(buf);
     const ents = entries(u8);
@@ -149,7 +154,7 @@ export async function importOdt(buf) {
       return b;
     };
     const mt = ents.get('mimetype');
-    if (!mt || new TextDecoder().decode(await take(mt)).trim() !== MIME) throw new Error('it is not a Writer document');
+    if (!mt || new TextDecoder().decode(await take(mt)).trim() !== kind.mime) throw new Error('it is not ' + kind.name);
     const parts = {};
     for (const [file, root] of Object.entries(ROOTS)) {
       const e = ents.get(file);
@@ -169,7 +174,7 @@ export async function importOdt(buf) {
     let head = '<?xml version="1.0" encoding="UTF-8"?>\n\n<office:document';
     for (const [k, v] of ns) head += ' ' + k + '="' + v + '"';
     if (ver != null) head += ' office:version="' + ver + '"';
-    head += ' office:mimetype="' + MIME + '">\n ';
+    head += ' office:mimetype="' + kind.mime + '">\n ';
     //  styles.xml's automatic names content.xml also uses get a new name
     let sAuto = s ? s.get('office:automatic-styles') : '', sMaster = s ? s.get('office:master-styles') : '';
     if (s) {
@@ -228,7 +233,7 @@ export async function importOdt(buf) {
     if (other.length) note += (note ? ', and ' : 'left out ') + other.slice(0, 4).join(', ') + (other.length > 4 ? ', ...' : '');
     return { text, note };
   } catch (e) {
-    return { error: 'This .odt cannot be imported: ' + (e && e.message ? e.message : 'it could not be read') + '.' };
+    return { error: 'This ' + kind.ext + ' cannot be imported: ' + (e && e.message ? e.message : 'it could not be read') + '.' };
   }
 }
 
@@ -241,7 +246,7 @@ const CRC = (() => {
 const crc32 = (b) => { let c = 0xffffffff; for (let i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 255] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
 
 //  a zip of STORED entries, in the order given
-export function zipStored(files) {
+export function zipStored(files, mime = MIME) {
   const enc = new TextEncoder();
   const now = new Date();
   const time = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
@@ -269,14 +274,15 @@ export function zipStored(files) {
   e.setUint32(0, 0x06054b50, true);
   e.setUint16(8, files.length, true); e.setUint16(10, files.length, true);
   e.setUint32(12, csize, true); e.setUint32(16, off, true);
-  return new Blob([...locals, ...cents, new Uint8Array(e.buffer)], { type: MIME });
+  return new Blob([...locals, ...cents, new Uint8Array(e.buffer)], { type: mime });
 }
 
 //  exportOdt(fodt text) -> { blob } | { error }
-export function exportOdt(text) {
+export const exportOdt = (text) => exportPackage(text, ODT);
+export function exportPackage(text, kind) {
   const x = parseXml(String(text ?? ''));
   const doc = !x.error && elements(x.root).find((k) => k.name === 'office:document');
-  if (!doc) return { error: 'This document cannot be exported: ' + (x.error || 'it is not flat ODT') + '.' };
+  if (!doc) return { error: 'This ' + kind.doc + ' cannot be exported: ' + (x.error || 'it is not ' + kind.flat) + '.' };
   const get = (n) => { const k = child(doc, n); return k ? linksOut(text.slice(k.start, k.end)) : ''; };
   const ver = attr(doc, 'office:version') || '1.3';
   let at = '';
@@ -295,17 +301,17 @@ export function exportOdt(text) {
   const part = (root, names) => '<?xml version="1.0" encoding="UTF-8"?>\n<' + root + at + '>'
     + names.map((n) => (n === 'office:automatic-styles' ? (root === 'office:document-styles' ? sAuto : cAuto) : get(n))).join('') + '</' + root + '>';
   const manifest = '<?xml version="1.0" encoding="UTF-8"?>\n<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="' + ver + '">'
-    + '<manifest:file-entry manifest:full-path="/" manifest:version="' + ver + '" manifest:media-type="' + MIME + '"/>'
+    + '<manifest:file-entry manifest:full-path="/" manifest:version="' + ver + '" manifest:media-type="' + kind.mime + '"/>'
     + ['content.xml', 'styles.xml', 'meta.xml', 'settings.xml'].map((f) => '<manifest:file-entry manifest:full-path="' + f + '" manifest:media-type="text/xml"/>').join('')
     + '</manifest:manifest>';
   return {
     blob: zipStored([
-      ['mimetype', MIME],
+      ['mimetype', kind.mime],
       ['content.xml', part('office:document-content', ['office:scripts', 'office:font-face-decls', 'office:automatic-styles', 'office:body'])],
       ['styles.xml', part('office:document-styles', ['office:font-face-decls', 'office:styles', 'office:automatic-styles', 'office:master-styles'])],
       ['meta.xml', part('office:document-meta', ['office:meta'])],
       ['settings.xml', part('office:document-settings', ['office:settings'])],
       ['META-INF/manifest.xml', manifest],
-    ]),
+    ], kind.mime),
   };
 }
