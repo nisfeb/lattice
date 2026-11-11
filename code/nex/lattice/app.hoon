@@ -6034,19 +6034,18 @@
 ::  The pin, its source and its licence are recorded in scripts/build-scad.mjs,
 ::  which checks these constants match it. Keep the two in step.
 ::
-::  +scad-url: where the release files are, ending in a slash.
-::
-::    OWNER: FILL THIS IN. It is meant to be a release of nisfeb/lattice
-::    with the three files of +scad-files attached, as made by
-::    `node scripts/build-scad.mjs --release DIR`, for example
-::    'https://github.com/nisfeb/lattice/releases/download/openscad-2026.11.10/'.
-::    Empty, an install answers that this build names no address.
+::  +scad-url: where the release files are, ending in a slash. A release
+::  of nisfeb/lattice, tag openscad-2026.11.10, with the three files of
+::  +scad-files attached, as made by `node scripts/build-scad.mjs
+::  --release DIR`. It is not marked latest: the desktop's updater reads
+::  the latest release. Empty, an install answers that this build names
+::  no address.
 ::
 ::  Tests point the ship elsewhere with a grub, /scad/source.json
 ::  {"url": "..."}, which no lattice route writes. That address may be a
 ::  local one, which +fetchable:lcl refuses for every other fetch.
 ::
-++  scad-url  ^-(@t '')
+++  scad-url  ^-(@t 'https://github.com/nisfeb/lattice/releases/download/openscad-2026.11.10/')
 ++  scad-ver  ^-(@t '2026.11.10')
 ::  +scad-files: what an install fetches. Each is [served-as file sha256
 ::  bytes type encoding]. The wasm is kept gzipped, as the release carries
