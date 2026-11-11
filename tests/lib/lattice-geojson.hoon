@@ -252,4 +252,53 @@
     (expect-eq !>([& 25.000]) !>((fix:gj '-2.5E-3')))
     (expect-eq !>([| 0]) !>((fix:gj '0')))
   ==
+::  a position may carry a height and a measure, and no more
+++  test-check-position-length
+  =/  mk
+    |=  c=@t
+    (rap 3 ~['{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[' c ']},"properties":{}}]}'])
+  ;:  weld
+    (ok (mk '1,2'))
+    (ok (mk '1,2,3'))
+    (ok (mk '1,2,3,4'))
+    (bad (mk '1,2,3,4,5'))
+  ==
+::  every hex digit is a hex digit, at both ends of each range
+++  test-html-colour-digits
+  =/  mk
+    |=  c=@t
+    (gj-html:gj (fc ~[(rap 3 ~['{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{"color":"' c '"}}'])]))
+  ;:  weld
+    (yes (has "fill=\"#09f\"" (mk '#09f')))
+    (yes (has "fill=\"#0AF\"" (mk '#0AF')))
+    (yes (has "fill=\"#2563eb\"" (mk '#0g0')))
+    (yes (has "fill=\"#2563eb\"" (mk '#0G0')))
+    ::  one byte past each end of each range
+    (yes (has "fill=\"#2563eb\"" (mk '#!!!')))
+    (yes (has "fill=\"#2563eb\"" (mk '#:::')))
+    (yes (has "fill=\"#2563eb\"" (mk '#@@@')))
+    (yes (has "fill=\"#2563eb\"" (mk '#ZZZ')))
+    (yes (has "fill=\"#2563eb\"" (mk '#[[[')))
+    (yes (has "fill=\"#2563eb\"" (mk '#zzz')))
+  ==
+::  exactly the draw cap is drawn whole, and exactly the list cap lists
+::  every feature with no note
+++  test-html-cap-edges
+  =/  ps=@t  (rap 3 (join ',' (reap 5.000 '[1.5,2.5]')))
+  =/  f=@t  (rap 3 ~['{"type":"Feature","geometry":{"type":"LineString","coordinates":[' ps ']},"properties":{}}'])
+  =/  h=tape  (gj-html:gj (fc ~[f]))
+  =/  l=tape  (gj-html:gj (fc (reap 2.000 (pt 'p' '1' '2'))))
+  ;:  weld
+    (expect-eq !>(5.001) !>((hits "," h)))
+    (no (has "Showing the first" l))
+  ==
+::  the caps are inclusive: exactly at each one passes that check
+++  test-cap-edges
+  =/  f=@t  '{"type":"Feature","geometry":null,"properties":null}'
+  ::  exactly 4 MB is not over the size cap (and is no JSON either)
+  =/  four=@t  (lsh [3 (dec (bex 22))] '{')
+  ;:  weld
+    (ok (fc (reap 20.000 f)))
+    (expect-eq !>(`(unit @t)``'that map is not valid JSON') !>((gj-check:gj four)))
+  ==
 --
