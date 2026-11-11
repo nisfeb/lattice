@@ -75,6 +75,23 @@ is "~bus ended" False "$(py "$j" "[p for p in j['passes'] if p['ship']=='~bus'][
 is "~bus is out" '~nec' "$(group)"
 is "a bad holder" 400 "$(P "$B/pass-refund?board=$BD&holder=nobody")"
 
+echo "==> the mod page's Passes forms"
+pg=$(G "$B/forum/$BD/mod")
+has "the Passes section" '<h4>Passes</h4>' "$pg"
+has "the numbers" 'Active: 1.' "$pg"
+has "a refund button for a live pass" 'value="refund"' "$pg"
+hasnt "a public board has none" '<h4>Passes</h4>' "$(G "$B/forum/$PB/mod")"
+is "a sats offer with no mint is refused" 400 "$(P "$B/forum/$BD/mod/passes" --data 'sats=500&days=7&mode=read&open=on' --data-urlencode 'mint=')"
+is "so the offer stands" 1000 "$(py "$(passes)" "j['offer']['sats']")"
+is "save one with a mint" 303 "$(P "$B/forum/$BD/mod/passes" --data 'sats=2100&days=7&mode=read&open=on' --data-urlencode 'mint=http://localhost:9')"
+is "the form's offer" '2100 7 read True' "$(py "$(passes)" "' '.join(str(j['offer'][k]) for k in ('sats','days','mode','open'))")"
+is "give by form" 303 "$(P "$B/forum/$BD/mod/pass-gift" --data 'ship=~wet&days=2&mode=post')"
+is "~wet holds one" post "$(py "$(passes)" "[p for p in j['passes'] if p['ship']=='~wet'][0]['mode']")"
+is "refund by form" 303 "$(P "$B/forum/$BD/mod/pass-refund" --data 'holder=~wet')"
+is "~wet ended" False "$(py "$(passes)" "[p for p in j['passes'] if p['ship']=='~wet'][0]['live']")"
+is "stop selling" 303 "$(P "$B/forum/$BD/mod/passes-off")"
+is "no offer now" None "$(py "$(passes)" "j['offer']")"
+
 echo "==> deleting the board takes its passes"
 is "delete the board" 303 "$(P "$B/forum/$BD/mod/delete")"
 is "delete the public one" 303 "$(P "$B/forum/$PB/mod/delete")"

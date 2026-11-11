@@ -8773,6 +8773,171 @@
     ~s15
   ?.  told  (send-err eyre-id 504 'the host did not answer')
   (send-ok eyre-id)
+::  +passes-section: the Passes part of a private board's mod page: the
+::  numbers, the offer, a gift, every pass with a refund, and the wallet.
+::  A public board sells nothing, so it shows none
+++  passes-section
+  |=  [nom=@ta brd=board:ft now=@da]
+  =/  m  (fiber:fiber:nexus ,manx)
+  ^-  form:m
+  ?:  public.info.brd  (pure:m ;span;)
+  =/  key=@ta  (scope-key:lpa [%board nom])
+  ;<  o=(unit offer:lpa)  bind:m  (read-pass-offer key)
+  ;<  h=held:lpa  bind:m  (read-pass-held key)
+  ;<  s=(list sale:lpa)  bind:m  (read-pass-sales key)
+  ;<  w=(map @t (list proof:lpa))  bind:m  (read-wallet key)
+  =/  n=numbers:lpa  (summary:lpa h s now)
+  =/  base=tape  "/apps/lattice/forum/{(trip nom)}/mod"
+  =/  ps=(list pass:lpa)
+    (sort ~(val by h) |=([a=pass:lpa b=pass:lpa] (gth until.a until.b)))
+  =/  money
+    |=  t=totals:lpa
+    ^-  tape
+    =/  c=@ud  (~(gut by t) %usd 0)
+    "{(a-co:co (~(gut by t) %sat 0))} sats, ${(a-co:co (div c 100))}.{((d-co:co 2) (mod c 100))}"
+  %-  pure:m
+  ;div
+    ;h4: Passes
+    ;p.me: A pass lets a ship or a reader with no ship read this board, or a ship post on it, for a time. Ships pay in ecash or over Lightning through the mint you name. Your earnings stay in this board's wallet until you take them.
+    ;p: Active: {(a-co:co active.n)}. This month: {(money month.n)}. Last 30 days: {(money days.n)}. Lapsed in 30 days: {(a-co:co lapses.n)}.
+    ;form(method "post", action "{base}/passes")
+      ;div
+        ;label: price in sats
+        ;br;
+        ;input(type "number", name "sats", min "0", value ?~(o "1000" (a-co:co sats.u.o)));
+      ==
+      ;div
+        ;label: Cashu mint that takes the sats
+        ;br;
+        ;input(type "url", name "mint", placeholder "https://mint.example", value ?~(o "" ?~(mint.u.o "" (trip u.mint.u.o))));
+      ==
+      ;div
+        ;label: days a pass lasts
+        ;br;
+        ;input(type "number", name "days", min "1", value ?~(o "30" (a-co:co (max 1 (div period.u.o ~d1)))));
+      ==
+      ;div
+        ;label: a pass may
+        ;br;
+        ;select(name "mode")
+          ;option(value "read"): read
+          ;+  ?:  &(?=(^ o) =(%post mode.u.o))
+                ;option(value "post", selected ""): read and post
+              ;option(value "post"): read and post
+        ==
+      ==
+      ;div
+        ;label
+          ;+  ?:  |(?=(~ o) open.u.o)
+                ;input(type "checkbox", name "open", checked "");
+              ;input(type "checkbox", name "open");
+          ;span: on sale
+        ==
+      ==
+      ;input.btn(type "submit", value ?~(o "sell passes" "save the offer"));
+    ==
+    ;+  ?~  o  ;span;
+        ;form(method "post", action "{base}/passes-off")
+          ;input.btn(type "submit", value "stop selling (passes held keep until they end)");
+        ==
+    ;h4: Give a pass
+    ;form(method "post", action "{base}/pass-gift")
+      ;input(type "text", name "ship", required "", placeholder "~sampel-palnet");
+      ;input(type "number", name "days", min "1", value "30");
+      ;select(name "mode")
+        ;option(value "read"): read
+        ;option(value "post"): read and post
+      ==
+      ;input.btn(type "submit", value "give");
+    ==
+    ;+  ?~  ps  ;p.me: Nobody holds a pass yet.
+        ;table.mod
+          ;thead
+            ;tr
+              ;th: Holder
+              ;th: May
+              ;th: Until
+              ;th: Paid by
+              ;th;
+            ==
+          ==
+          ;tbody
+            ;*  %+  turn  ps
+                |=  p=pass:lpa
+                =/  ht=tape
+                  ?-(-.holder.p %ship (scow %p who.holder.p), %web (trip (scot %uv key.holder.p)))
+                ;tr
+                  ;td: {(holder-text holder.p)}
+                  ;td: {(trip mode.p)}
+                  ;td: {(pass-day until.p)}{?:((gth until.p now) "" " (ended)")}
+                  ;td: {(trip via.p)}
+                  ;td
+                    ;+  ?.  (gth until.p now)  ;span;
+                        ;form(method "post", action "{base}/pass-refund", style "display:inline", onsubmit "return confirm('End this pass now? Send the money back yourself.')")
+                          ;input(type "hidden", name "holder", value ht);
+                          ;input.btn(type "submit", value "refund");
+                        ==
+                  ==
+                ==
+          ==
+        ==
+    ;h4: Wallet
+    ;+  ?:  =(~ w)  ;p.me: The wallet is empty.
+        ;div
+          ;*  %+  turn  ~(tap by w)
+              |=  [mt=@t qs=(list proof:lpa)]
+              ;div
+                ;p: {(a-co:co (roll (turn qs |=(c=proof:lpa amount.c)) add))} sats from {(trip mt)}. Copy this token into a Cashu wallet, then clear it here.
+                ;textarea(readonly "", rows "3", style "width:100%"): {(trip (wallet-token mt qs))}
+                ;form(method "post", action "{base}/pass-wallet-take", onsubmit "return confirm('Is the token in your wallet? Clearing it here cannot be undone.')")
+                  ;input(type "hidden", name "mint", value (trip mt));
+                  ;input.btn(type "submit", value "clear: it is in my wallet");
+                ==
+              ==
+        ==
+    ;hr;
+  ==
+::  +pass-form-act: a Passes form on the mod page, as a pass action;
+::  ~ for a form that does not parse
+++  pass-form-act
+  |=  [nom=@tas tl=path grab=$-(@t (unit @t))]
+  ^-  (unit pass-act:lpa)
+  =/  key=@ta  (scope-key:lpa [%board nom])
+  =/  days=(unit @ud)  (biff (grab 'days') |=(t=@t (rush t dem)))
+  ?+  tl  ~
+      [%mod %passes ~]
+    ?~  days  ~
+    =/  sats=@ud  (fall (biff (grab 'sats') |=(t=@t (rush t dem))) 0)
+    =/  o=offer:lpa
+      :*  sats  0  (mul u.days ~d1)
+          ?:(=(`'post' (grab 'mode')) %post %read)
+          (grab 'mint')
+          ?=(^ (grab 'open'))
+      ==
+    ?.  (sane-offer:lpa o)  ~
+    `[%offer key `o]
+  ::
+      [%mod %passes-off ~]  `[%offer key ~]
+  ::
+      [%mod %pass-gift ~]
+    =/  shp=(unit @p)  (biff (grab 'ship') (cury slaw %p))
+    ?:  |(?=(~ shp) ?=(~ days))  ~
+    ?.  &((gte u.days 1) (lte u.days 3.660))  ~
+    =/  md=mode:lpa  ?:(=(`'post' (grab 'mode')) %post %read)
+    `[%grant key [%ship u.shp] md (mul u.days ~d1) 0 %sat %gift '']
+  ::
+      [%mod %pass-refund ~]
+    =/  ht=(unit @t)  (grab 'holder')
+    ?~  ht  ~
+    ?^  s=(slaw %p u.ht)  `[%refund key [%ship u.s]]
+    ?^  v=(slaw %uv u.ht)  `[%refund key [%web u.v]]
+    ~
+  ::
+      [%mod %pass-wallet-take ~]
+    =/  mt=(unit @t)  (grab 'mint')
+    ?~  mt  ~
+    `[%wallet-take key u.mt]
+  ==
 ::  +apply-forum-notice: a forum action poked by ANOTHER ship over /forum.sig.
 ::  The inbox fiber does the minimum: read the author from the TRANSPORT (never
 ::  the payload), ignore a sourceless (local) poke, and hand the action to the
@@ -17618,7 +17783,8 @@
     (send-html eyre-id (forum-doc (render-submit:fre c nom) "" theme-link %.y nn))
   ?:  =('mod' i.t.pax)
     ;<  off=(set @ta)  bind:m  read-forum-comets-off
-    (send-html eyre-id (forum-doc (render-mod:fre c brd !(~(has in off) nom)) "" theme-link %.y nn))
+    ;<  ps=manx  bind:m  (passes-section nom brd now)
+    (send-html eyre-id (forum-doc (render-mod:fre c brd !(~(has in off) nom) ps) "" theme-link %.y nn))
   =/  pid=(unit @ud)  ((slat %ud) i.t.pax)
   ?:  |(?=(~ pid) !(~(has by posts.brd) u.pid))
     (send-err eyre-id 404 'not found')
@@ -17732,6 +17898,11 @@
   =/  brd=board:ft  u.bo
   =/  tl=path  t.pax
   ::  the comet switch is not a board action: it flips the owner's set
+  ::  the Passes forms are pass actions, not board actions
+  =/  pa=(unit pass-act:lpa)  (pass-form-act nom tl grab)
+  ?^  pa
+    ;<  ~  bind:m  (poke-eval [%pass u.pa])
+    (send-see-other eyre-id "{base}/mod")
   ?:  =([%mod %comets ~] tl)
     ;<  off=(set @ta)  bind:m  read-forum-comets-off
     ;<  ~  bind:m  (poke-eval [%forum-comets nom (~(has in off) nom)])
