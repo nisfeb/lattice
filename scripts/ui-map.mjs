@@ -15,7 +15,8 @@
 //       a test build, see TESTING.md), the map's tiles come through the
 //       ship and the worker keeps them in lattice-tiles. Seeing the same
 //       area again fetches no tile at all. The ship strips the server's
-//       headers and answers private for 30 days
+//       headers and answers private for 30 days. Past 120 fetches a
+//       minute the worker answers 429 without asking the ship
 //    E  Source shows the JSON, and the kind picker refuses a switch
 //    F  the new-page dialog makes an empty map
 //    H  a map opened once opens offline, with the tiles it had
@@ -231,6 +232,13 @@ try {
       await page.evaluate(() => [...document.querySelectorAll('lat-map:not([hidden]) button')].find((b) => /refresh/i.test(b.title + b.textContent)).click());
       await sleep(2500);
       if (STUB) check('D: "Refresh this area" fetches the tiles in view again', stubHits() > h1, String(stubHits() - h1));
+      step = 'D limit';
+      //  the worker sends at most 120 tile fetches a minute to the ship and
+      //  answers the rest 429 itself
+      const codes = await page.evaluate(async () => Promise.all(Array.from({ length: 140 }, (_, i) =>
+        fetch('/apps/lattice/tile/streets/12/' + (1000 + i) + '/' + (Date.now() % 4000)).then((r) => r.status, () => 0))));
+      const n429 = codes.filter((c) => c === 429).length;
+      check('D: past 120 tile fetches a minute the worker answers 429', n429 >= 20 && codes.length - n429 <= 120, `${n429} of ${codes.length}`);
     }
   }
 

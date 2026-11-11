@@ -6,9 +6,13 @@ Measures, against a lattice whose tile route reaches a stub tile server
 
   1. the ship time of one tile request: N tiles one after another, each
      a fresh z/x/y, timed end to end, less the stub's own answer time;
-  2. other requests' latency during a burst: /page-tree timed alone, then
-     again while tile requests run in parallel threads;
-  3. the limit: past +tile-per-min fetches a minute the route says 429.
+  2. a trivial request (/beacon-rev) the same way, for the request path
+     every route pays;
+  3. other requests' latency during a burst: /page-tree timed alone, then
+     again while four threads stream tile requests.
+
+The per-minute limit is the service worker's, so a script that talks to
+the ship directly is never refused one.
 
 It reads nothing from Mapbox. Usage:
 
@@ -59,6 +63,7 @@ st, _, _, _ = get('/tile-status')
 print('tile-status', st)
 
 # baseline for other requests
+print('trivial request:', ms([get('/beacon-rev')[1] for _ in range(N)]))
 base = [get('/page-tree')[1] for _ in range(10)]
 print('page-tree alone:', ms(base))
 
@@ -77,7 +82,6 @@ print('tile, one at a time (round trip, stub answers at once):', ms(one))
 print('  headers:', {k: v for k, v in h.items() if k.lower() in ('content-type', 'cache-control')})
 
 # other requests during a burst of tiles
-time.sleep(61)  # a fresh minute for the limiter
 stop = threading.Event()
 codes = []
 
@@ -99,6 +103,6 @@ stop.set()
 for t in ths:
     t.join()
 print('page-tree during a burst of 4 parallel tile streams:', ms(during))
-print('  burst answers: %d x 200, %d x 429, %d other' % (
-    codes.count(200), codes.count(429), len([c for c in codes if c not in (200, 429)])))
+print('  burst answers: %d x 200, %d other' % (
+    codes.count(200), len([c for c in codes if c != 200])))
 post('/map-token', b'')

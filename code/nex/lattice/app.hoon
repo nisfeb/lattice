@@ -482,10 +482,6 @@
         ::  /forum-sweep.sig: the forum prune timer. Behn-woken on a six-hour
         ::  grid; deletes through the one writer (+forum-sweep).
             [%fall %& [/ %'forum-sweep.sig'] [[/ %sig] ~]]
-        ::  /tile.sig: the map tile limiter (+tile-gate). It counts the
-        ::  tile fetches of the last minute in its own loop, so a tile
-        ::  request writes no grub.
-            [%fall %& [/ %'tile.sig'] [[/ %sig] ~]]
         ::  /fs.sig: a lick (unix-socket) port exposing the filesystem ops to a
         ::  local FUSE client (lattice-fs), the native-transport twin of the
         ::  HTTP page-tree/page-source/page-save routes.
@@ -699,10 +695,6 @@
           [~ %'forum-sweep.sig']
         ;<  ~  bind:m  (rise-later prod "lattice /forum-sweep.sig" "")
         forum-sweep-loop
-      ::  /tile.sig: the map tile limiter (see +tile-gate).
-          [~ %'tile.sig']
-        ;<  ~  bind:m  (rise-later prod "lattice /tile.sig" "")
-        (tile-gate *@da 0)
       ::  /ui/main.sig: bind the HTTP endpoint and dispatch each request into a
       ::  per-request fiber under /ui/requests (same pattern as counter).
           [[%ui ~] %'main.sig']
@@ -6044,8 +6036,7 @@
 ::  GET /tile/<style>/<z>/<x>/<y> passes one Mapbox raster tile through,
 ::  for the owner's map pages. The ship stores no tile: measured on a
 ::  fake ship, a grub write costs about 590 ms and slows every other
-::  request about tenfold, and a pass-through fetch about 20 ms. So a
-::  tile request writes nothing. The client keeps tiles for 30 days
+::  request about tenfold. So a tile request writes nothing. The client keeps tiles for 30 days
 ::  (the most Mapbox's terms allow) in its service worker's
 ::  lattice-tiles cache, and the response says the same.
 ::
@@ -6059,16 +6050,18 @@
 ::  is in no answer, page, render or log line, and the response carries
 ::  none of Mapbox's headers.
 ::
-::  A LIMIT. /tile.sig (+tile-gate) allows +tile-per-min fetches a
-::  minute and answers the rest 429, which Leaflet retries later. It
-::  keeps its count in its own loop, so asking costs a poke, as reading
-::  the clock does, and no write.
+::  THE PATH IS SHORT. Every event a request makes is ship time, so a
+::  tile does one peek (the token) and one iris request, and nothing
+::  else. Measured on a fleet clone, a deadline timer cost about 210 ms
+::  a tile, a limiter process about 40 ms and a clock read about 10 ms,
+::  so none of them is here. Iris and eyre bound a fetch that hangs. The
+::  per-minute limit is the service worker's (+sw-js), which answers
+::  429 past it without asking the ship.
 ::
 ::  +tile-base: Mapbox's styles API. A test build may point it at a stub
 ::  server: it is a constant, never read from a request.
 ++  tile-base  'https://api.mapbox.com/styles/v1/'
 ++  tile-max-z  ^-(@ud 17)
-++  tile-per-min  ^-(@ud 120)
 ::  +tile-styles: the styles a map may ask for, and their Mapbox ids
 ++  tile-styles
   ^-  (list [@t @t])
@@ -6124,18 +6117,14 @@
   ?~  at  (send-err eyre-id 404 'no such tile')
   ;<  tok=(unit @t)  bind:m  (map-token up)
   ?~  tok  (send-err eyre-id 503 'no Mapbox token is set')
-  ;<  now=@da  bind:m  bowl-now
-  ;<  ok=?  bind:m  (tile-ask up now)
-  ?.  ok  (send-err eyre-id 429 'too many tiles this minute')
   =/  url=@t
     %+  rap  3
     :~  tile-base  sid.u.at  '/tiles/512/'
         (crip (a-co:co z.u.at))  '/'  (crip (a-co:co x.u.at))  '/'
         (crip (a-co:co y.u.at))  '?access_token='  u.tok
     ==
-  ;<  got=(unit client-response:iris)  bind:m  (tile-fetch url (add now ~s20))
-  ?~  got  (send-err eyre-id 504 'the tile server did not answer')
-  =*  res  u.got
+  ;<  ~  bind:m  (send-request:io [%'GET' url ~[['User-Agent' 'lattice-maps']] ~])
+  ;<  res=client-response:iris  bind:m  take-client-response:io
   ?.  ?=(%finished -.res)  (send-err eyre-id 502 'the tile fetch did not complete')
   =/  status=@ud  status-code.response-header.res
   ?:  =(404 status)  (send-err eyre-id 404 'no such tile')
@@ -6151,85 +6140,6 @@
       ['cache-control' 'private, max-age=2592000']
       ['x-content-type-options' 'nosniff']
   ==
-::  +tile-ask: may this request fetch a tile at `now`? One poke to
-::  /tile.sig and its answer, as +bowl-now reads the clock.
-++  tile-ask
-  |=  [up=@ud now=@da]
-  =/  m  (fiber:fiber:nexus ,?)
-  ^-  form:m
-  ;<  ~  bind:m
-    %:  send-dart:io  %node  /tile/ask  (rf up / %'tile.sig')
-      %poke  [[/ %noun] [%tile-ask now]]
-    ==
-  ;<  r=*  bind:m  ((take-bowl:io *) [/ %noun])
-  (pure:m =([%tile-ok &] r))
-::  +tile-fetch: GET a tile over iris, ~ when it has not answered by
-::  `at`. +deadline with a fixed wire and the clock the request already
-::  read: each event is ship time, and a request fiber is sequential, so
-::  it needs neither a nonce (an entropy read) nor a second clock read.
-++  tile-fetch
-  |=  [url=@t at=@da]
-  =/  m  (fiber:fiber:nexus ,(unit client-response:iris))
-  =/  mr  (fiber:fiber:nexus ,client-response:iris)
-  =/  =wire  /tile/deadline
-  =/  run=form:mr
-    ;<  ~  bind:mr  (send-request:io [%'GET' url ~[['User-Agent' 'lattice-maps']] ~])
-    take-client-response:io
-  ;<  ~  bind:m  (set-timer:io wire at)
-  |=  input:fiber:nexus
-  ^-  output:m
-  ?:  ?&  ?=([~ %poke * *] in)
-          =([/ %timer-wake] p.sage.u.in)
-          =(wire !<(^wire q.sage.u.in))
-      ==
-    [~ q.state %done ~]
-  =/  c-res=output:mr  (run +<)
-  ?:  ?=(%cont -.next.c-res)
-    [darts.c-res state.c-res %cont ..$(run self.next.c-res)]
-  ?:  ?=(%done -.next.c-res)
-    =/  fin=form:m
-      ;<  ~  bind:m  (cancel-timer:io wire)
-      (pure:m `value.next.c-res)
-    [darts.c-res state.c-res %cont fin]
-  ?:  ?=(%fail -.next.c-res)
-    =/  fin=form:m
-      ;<  ~  bind:m  (cancel-timer:io wire)
-      (pure:m ~)
-    [darts.c-res state.c-res %cont fin]
-  :+  darts.c-res  state.c-res
-  ?-  -.next.c-res
-    %wait  [%wait ~]
-    %skip  [%skip ~]
-  ==
-::  +tile-gate: the limiter's loop. `start` is when the counted minute
-::  began, `n` how many fetches it allowed in it. An ask past the limit
-::  is answered no. Its own acks come back to it and are dropped.
-++  tile-gate
-  |=  [start=@da n=@ud]
-  =/  m  (fiber:fiber:nexus ,~)
-  ^-  form:m
-  ;<  got=(unit [=from:fiber:nexus now=@da])  bind:m
-    |=  input:fiber:nexus
-    :+  ~  q.state
-    ?+  in  [%skip ~]
-      ~  [%wait ~]
-      [~ %pack *]  [%done ~]
-        [~ %poke * *]
-      =/  a  (mole |.(;;([%tile-ask @da] q.q.sage.u.in)))
-      ?~  a  [%done ~]
-      [%done `[from.u.in +.u.a]]
-    ==
-  ?~  got  (tile-gate start n)
-  =/  now=@da  now.u.got
-  =?  n  (gte now (add start ~m1))  0
-  =?  start  =(0 n)  now
-  =/  ok=?  (lth n tile-per-min)
-  ;<  ~  bind:m
-    %:  send-dart:io  %node  /tile/ok
-      [%| p.from.u.got [%& q.from.u.got]]
-      %poke  [[/ %noun] [%tile-ok ok]]
-    ==
-  (tile-gate start ?:(ok +(n) n))
 ::  +clip-page: fetch a url, convert it, file it under clips/, and render the
 ::  confirmation. Shared by /clip (bookmarklet) and /share (PWA share target).
 ::  The two differ only in how the url reaches us.
@@ -17718,7 +17628,9 @@
 ::  is put back at the end at most once a day (x-lat-use), so the order
 ::  of the cache is about the order of use. Two misses for one tile
 ::  share one fetch. A request with ?r= skips the cache and replaces the
-::  entry ("Refresh this area").
+::  entry ("Refresh this area"). The worker sends at most 120 tile
+::  fetches to the ship a minute and answers the rest 429 itself, so a
+::  fast pan or a runaway map cannot fan out into the ship or Mapbox.
 ::
 ::  Non-SHELL requests are NOT intercepted at all (no respondWith): some
 ::  webkitgtk builds drop cookies on SW-mediated fetch, so a blanket
@@ -17810,7 +17722,7 @@
       ver
       '";var PV="'
       pv
-      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];var LAZY=["/apps/lattice/app/writer.js","/apps/lattice/app/sheet.js","/apps/lattice/app/map.js","/apps/lattice/app/settings.js","/apps/lattice/app/skills.js"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"&&k!=="lattice-tiles"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});var TC="lattice-tiles",TAGE=2592e6,TF={},TCAP=2000,TCAT=0,TN=0;function tcap(){if(Date.now()-TCAT<36e5)return Promise.resolve(TCAP);TCAT=Date.now();var st=self.navigator&&navigator.storage;if(!st||!st.estimate)return Promise.resolve(TCAP);return st.estimate().then(function(e){var f=Math.floor(((e.quota||0)-(e.usage||0))/4/40960);TCAP=Math.max(100,Math.min(2000,f));return TCAP}).catch(function(){return TCAP})}function tevict(c){if(++TN%25)return;tcap().then(function(n){return c.keys().then(function(ks){var d=ks.length-n;return Promise.all(ks.slice(0,Math.max(0,d)).map(function(k){return c.delete(k)}))})}).catch(function(){})}function tstamp(r,at,use){return r.blob().then(function(b){return new Response(b,{status:200,headers:{"content-type":r.headers.get("content-type")||"image/png","cache-control":"private, max-age=2592000","x-lat-at":String(at),"x-lat-use":String(use)}})})}function tnet(c,q,k,fresh){if(TF[k]&&!fresh)return TF[k].then(function(r){return r.clone()});var p=fetch(q.url,{credentials:"same-origin",cache:fresh?"reload":"default"}).then(function(r){if(!r.ok)return r;var t=Date.now();return tstamp(r,t,t).then(function(s){return c.put(k,s.clone()).then(function(){tevict(c);return s},function(){return s})})});TF[k]=p;var done=function(){if(TF[k]===p)delete TF[k]};p.then(done,done);return p.then(function(r){return r.clone()})}function tile(e,q,u){var k=u.origin+u.pathname,fresh=u.searchParams.has("r");e.respondWith(caches.open(TC).then(function(c){return(fresh?Promise.resolve(null):c.match(k)).then(function(hit){var now=Date.now(),at=hit?+hit.headers.get("x-lat-at")||0:0;if(hit&&now-at<TAGE){var use=+hit.headers.get("x-lat-use")||0;if(now-use>864e5){var h2=hit.clone();e.waitUntil(c.delete(k).then(function(){return tstamp(h2,at,now)}).then(function(s){return c.put(k,s)}).catch(function(){}))}return hit}if(hit)e.waitUntil(c.delete(k));return tnet(c,q,k,fresh).catch(function(){return new Response("offline",{status:503})})})}).catch(function(){return fetch(q)}))}self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(u.pathname.indexOf("/apps/lattice/tile/")===0){tile(e,q,u);return}if(LAZY.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok)c.put(u.pathname,r.clone());return r})})}).catch(function(){return fetch(q)}));return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];var LAZY=["/apps/lattice/app/writer.js","/apps/lattice/app/sheet.js","/apps/lattice/app/map.js","/apps/lattice/app/settings.js","/apps/lattice/app/skills.js"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"&&k!=="lattice-tiles"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});var TC="lattice-tiles",TAGE=2592e6,TF={},TCAP=2000,TCAT=0,TN=0,TW=[],TLIM=120;function tcap(){if(Date.now()-TCAT<36e5)return Promise.resolve(TCAP);TCAT=Date.now();var st=self.navigator&&navigator.storage;if(!st||!st.estimate)return Promise.resolve(TCAP);return st.estimate().then(function(e){var f=Math.floor(((e.quota||0)-(e.usage||0))/4/40960);TCAP=Math.max(100,Math.min(2000,f));return TCAP}).catch(function(){return TCAP})}function tevict(c){if(++TN%25)return;tcap().then(function(n){return c.keys().then(function(ks){var d=ks.length-n;return Promise.all(ks.slice(0,Math.max(0,d)).map(function(k){return c.delete(k)}))})}).catch(function(){})}function tstamp(r,at,use){return r.blob().then(function(b){return new Response(b,{status:200,headers:{"content-type":r.headers.get("content-type")||"image/png","cache-control":"private, max-age=2592000","x-lat-at":String(at),"x-lat-use":String(use)}})})}function tnet(c,q,k,fresh){if(TF[k]&&!fresh)return TF[k].then(function(r){return r.clone()});var now=Date.now();while(TW.length&&now-TW[0]>6e4)TW.shift();if(TW.length>=TLIM)return Promise.resolve(new Response("too many tiles this minute",{status:429}));TW.push(now);var p=fetch(q.url,{credentials:"same-origin",cache:fresh?"reload":"default"}).then(function(r){if(!r.ok)return r;var t=Date.now();return tstamp(r,t,t).then(function(s){return c.put(k,s.clone()).then(function(){tevict(c);return s},function(){return s})})});TF[k]=p;var done=function(){if(TF[k]===p)delete TF[k]};p.then(done,done);return p.then(function(r){return r.clone()})}function tile(e,q,u){var k=u.origin+u.pathname,fresh=u.searchParams.has("r");e.respondWith(caches.open(TC).then(function(c){return(fresh?Promise.resolve(null):c.match(k)).then(function(hit){var now=Date.now(),at=hit?+hit.headers.get("x-lat-at")||0:0;if(hit&&now-at<TAGE){var use=+hit.headers.get("x-lat-use")||0;if(now-use>864e5){var h2=hit.clone();e.waitUntil(c.delete(k).then(function(){return tstamp(h2,at,now)}).then(function(s){return c.put(k,s)}).catch(function(){}))}return hit}if(hit)e.waitUntil(c.delete(k));return tnet(c,q,k,fresh).catch(function(){return new Response("offline",{status:503})})})}).catch(function(){return fetch(q)}))}self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(u.pathname.indexOf("/apps/lattice/tile/")===0){tile(e,q,u);return}if(LAZY.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok)c.put(u.pathname,r.clone());return r})})}).catch(function(){return fetch(q)}));return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
