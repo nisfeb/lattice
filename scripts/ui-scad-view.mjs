@@ -20,6 +20,8 @@
 //          SCAD_RUNTIME, a directory holding openscad.js and openscad.wasm,
 //          the raw files. Unset, the suite downloads the pinned upstream zip
 //          (build-scad.mjs PIN), checks it, and unpacks it (needs unzip).
+//          SCAD_FONTS, a directory holding the three Liberation .ttf files.
+//          Unset, the suite downloads the pinned liberation-fonts tarball.
 //  Usage:  node scripts/ui-scad-view.mjs
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
@@ -45,7 +47,20 @@ if (!rt) {
   execFileSync('unzip', ['-q', join(tmp, 'w.zip'), '-d', tmp]);
   rt = tmp;
 }
+const FONTS = ['LiberationSans-Regular.ttf', 'LiberationSans-Bold.ttf', 'LiberationMono-Regular.ttf'];
+let fd = process.env.SCAD_FONTS;
+if (!fd) {
+  const { PIN } = await import('./lib/scad-pin.mjs');
+  if (!tmp) tmp = mkdtempSync(join(tmpdir(), 'scad-rt-'));
+  const tgz = Buffer.from(await (await fetch(PIN.fonts.url)).arrayBuffer());
+  if (createHash('sha256').update(tgz).digest('hex') !== PIN.fonts.sha256) { console.error('the fonts tarball is not the pinned one'); process.exit(2); }
+  writeFileSync(join(tmp, 'f.tgz'), tgz);
+  execFileSync('tar', ['-xzf', join(tmp, 'f.tgz'), '-C', tmp]);
+  fd = join(tmp, PIN.fonts.dir);
+}
+const ALLOWED = ['/', '/favicon.ico', '/scad.js', '/rt/openscad.js', '/rt/openscad.wasm', ...FONTS.map((n) => '/rt/' + n)];
 const files = {
+  ...Object.fromEntries(FONTS.map((n) => ['/rt/' + n, [readFileSync(join(fd, n)), 'font/ttf']])),
   '/scad.js': [readFileSync(join(root, 'code', 'nex', 'lattice', 'ui-app', 'scad.js')), 'application/javascript'],
   '/rt/openscad.js': [readFileSync(join(rt, 'openscad.js')), 'application/javascript'],
   '/rt/openscad.wasm': [readFileSync(join(rt, 'openscad.wasm')), 'application/wasm'],
@@ -70,12 +85,12 @@ const TEMPLATE = readFileSync(join(root, 'tests', 'scad', 'customizer', 'box.sca
 const browser = await launchBrowser({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--ignore-gpu-blocklist'] });
 const errors = [];
 
-async function open(text, { editable = true, pages = {}, timeout } = {}) {
+async function open(text, { editable = true, pages = {}, timeout, fonts = true } = {}) {
   const page = await browser.newPage();
   await page.setViewport({ width: 1000, height: 760 });
   page.on('pageerror', (e) => errors.push(String(e)));
   await page.goto(base + '/');
-  await page.evaluate((t, ed, pg, to) => {
+  await page.evaluate((t, ed, pg, to, fonts) => {
     window.buf = t;
     window.edits = [];
     window.jumps = [];
@@ -83,7 +98,7 @@ async function open(text, { editable = true, pages = {}, timeout } = {}) {
     HTMLAnchorElement.prototype.click = function () { window.downloads.push({ name: this.download, href: this.href }); };
     window.ctl = window.LatScad.mount(document.getElementById('h'), {
       text: t, name: 'parts/box', editable: ed, timeout: to,
-      runtime: { wasm: '/rt/openscad.wasm', js: '/rt/openscad.js' },
+      runtime: { wasm: '/rt/openscad.wasm', js: '/rt/openscad.js', fonts },
       readPage: async (n) => (n in pg ? pg[n] : null),
       onEdit: (line, nt, old) => {
         const L = window.buf.split('\n');
@@ -95,7 +110,7 @@ async function open(text, { editable = true, pages = {}, timeout } = {}) {
       onJump: (l) => window.jumps.push(l),
       onSnapshot: (png) => { window.snap = png; },
     });
-  }, text, editable, pages, timeout);
+  }, text, editable, pages, timeout, fonts ? FONTS.map((n) => [n, '/rt/' + n]) : []);
   return page;
 }
 //  wait for a render to settle: the status says rendered (or an error)
@@ -136,7 +151,7 @@ await sleep(300);
 check('a decimal step writes a clean value', (await page.evaluate(() => window.edits[1] && window.edits[1][1])) === 'wall = 3.4; // [0.8:0.2:6]');
 await settled(page);
 check('the runtime was fetched once for all of it', wasmHits() === 1, `${wasmHits()} fetches`);
-check('nothing but the page, scad.js and the runtime was fetched', hits.every((h) => ['/', '/favicon.ico', '/scad.js', '/rt/openscad.js', '/rt/openscad.wasm'].includes(h)), hits.join(' '));
+check('nothing but the page, scad.js and the runtime was fetched', hits.every((h) => ALLOWED.includes(h)), hits.join(' '));
 
 console.log('\nexport');
 await page.evaluate(() => document.querySelectorAll('.lscad-bar button')[2].click());
@@ -216,13 +231,30 @@ console.log('\nthe hostile corpus (tests/scad/hostile): every model answers');
     s = await settled(page, limit / 1000 + 30);
     const said = /rendered in|error|stopped|more than the viewer draws|no part/.test(s);
     check(`${f}: answers (${s.slice(0, 60)}) in ${((Date.now() - t) / 1000).toFixed(1)} s`, said && Date.now() - t < limit + 20000);
-    const extra = hits.slice(before).filter((h) => !['/', '/favicon.ico', '/scad.js', '/rt/openscad.js', '/rt/openscad.wasm'].includes(h));
+    const extra = hits.slice(before).filter((h) => !ALLOWED.includes(h));
     check(`${f}: fetches nothing but the runtime`, !extra.length, extra.join(' '));
     const shown = await page.evaluate(() => document.querySelector('.lscad').innerHTML);
     check(`${f}: no markup of the model's own reaches the pane`, !/<script|<img|<b>/.test(shown));
     await page.close();
   }
 }
+
+console.log('\ntext(), with the Liberation fonts');
+const fontsFrom = hits.length;
+page = await open('linear_extrude(2) text("Hi", size = 10);\n');
+s = await settled(page);
+check('text("Hi") draws a part', /rendered in/.test(s) && /triangles/.test(await dims(page)), s + ' ' + await dims(page));
+check('  in the default font, Liberation Sans', !/Can't get font/.test(await con(page)), await con(page));
+await page.evaluate(() => window.ctl.update('linear_extrude(2) text("Mono", font = "Liberation Mono:style=Regular");\ntranslate([0, 15]) linear_extrude(2) text("Bold", font = "Liberation Sans:style=Bold");\n'));
+await sleep(500);
+s = await settled(page);
+check('Liberation Mono and Sans Bold draw too', /rendered in/.test(s) && !/Can't get font|not found/i.test(await con(page)), s);
+check('  and each font was fetched once for both renders', FONTS.every((n) => hits.slice(fontsFrom).filter((h) => h === '/rt/' + n).length === 1), JSON.stringify(FONTS.map((n) => hits.slice(fontsFrom).filter((h) => h === '/rt/' + n).length)));
+await page.close();
+page = await open('linear_extrude(2) text("Hi", size = 10);\n', { fonts: false });
+s = await settled(page);
+check('without the fonts (an older install) text() says so, and the pane answers', /no part|error/.test(s) && /font/i.test(await con(page)), s);
+await page.close();
 
 console.log('\nreference models (render time, first render after load)');
 const REF = {

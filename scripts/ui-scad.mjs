@@ -38,7 +38,7 @@ const on = (id) => !process.env.ONLY || process.env.ONLY.split(',').includes(id)
 const SRC = process.env.SCAD_SRC || '';
 const INST = '/grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app';
 
-const P = { md: RUN + '/notes', box: RUN + '/box', lib: RUN + '/lib/plate', uses: RUN + '/uses', made: RUN + '/made' };
+const P = { sign: RUN + '/sign', md: RUN + '/notes', box: RUN + '/box', lib: RUN + '/lib/plate', uses: RUN + '/uses', made: RUN + '/made' };
 const api = (path, init = {}) => fetch(env.base + '/apps/lattice/' + path,
   { ...init, headers: { Cookie: env.cookie, Origin: env.base, ...(init.headers || {}) } });
 const put = (name, body, type = 'scad') => api('page-save?type=' + type + '&new=1&name=' + encodeURIComponent(name), { method: 'POST', body });
@@ -197,6 +197,10 @@ try {
     await open(P.uses);
     await wait(() => /^30 × 30 × 2 mm/.test((document.querySelector('.scadhost .lscad-dims') || {}).textContent || ''));
     check('E: an include reads a page in the folder', true);
+    await put(RUN + '/sign', 'linear_extrude(2) text("Hi", size = 10);\n');
+    await open(RUN + '/sign');
+    await wait(() => /triangles/.test((document.querySelector('.scadhost .lscad-dims') || {}).textContent || ''));
+    check('E: text() draws, with the fonts the install brought', true);
 
     // ---------------------------------------------------------- G: tabs
     step = 'G tabs';

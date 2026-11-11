@@ -5,7 +5,7 @@
 #   SCAD_GOOD=http://127.0.0.1:N/good/ SCAD_BAD=http://127.0.0.1:N/bad/ \
 #     scripts/scad-runtime.sh
 #
-# SCAD_GOOD serves the three release files (build-scad.mjs --release DIR).
+# SCAD_GOOD serves the release files (build-scad.mjs --release DIR).
 # SCAD_BAD serves the same names with one byte of the wasm changed. Both
 # must be reachable FROM THE SHIP: a fleet clone is network-isolated, so run
 # the server inside its namespace (TESTING.md, "The OpenSCAD runtime").
@@ -20,6 +20,7 @@ set -uo pipefail
 : "${SCAD_GOOD:?set SCAD_GOOD}" "${SCAD_BAD:?set SCAD_BAD}"
 B="${LATTICE_URL%/}/apps/lattice"
 CK="Cookie: $(cat "$LATTICE_COOKIE")"
+PINF="$(cd "$(dirname "$0")" && pwd)/lib/scad-pin.mjs"
 INST=/grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app
 pass=0; fail=0
 is()   { if [ "$2" = "$3" ]; then pass=$((pass+1)); echo "  ok   $1"; else fail=$((fail+1)); echo "  FAIL $1: want [$2] got [$3]"; fi; }
@@ -86,6 +87,18 @@ has "  immutable under its hash"  'immutable' "${hd,,}"
 is  "  the bytes are the pinned file" "$h" "$(sha256sum < "${TMPDIR:-/tmp}/scad-wasm.$$" | cut -d' ' -f1)"
 rm -f "${TMPDIR:-/tmp}/scad-wasm.$$"
 has "  and no-cache without it"   'no-cache' "$(curl -s -m 60 -D - -o /dev/null -H "$CK" "$B/scad/openscad.wasm" | tr A-Z a-z)"
+FONTS="LiberationSans-Regular.ttf LiberationSans-Bold.ttf LiberationMono-Regular.ttf"
+for f in $FONTS; do
+  fh=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["files"].get(sys.argv[2],""))' "$s" "$f")
+  hd=$(curl -s -m 60 -D - -o /dev/null -H "$CK" "$B/scad/$f?h=$fh" | tr A-Z a-z)
+  has "$f is font/ttf"            'content-type: font/ttf' "$hd"
+  has "  gzipped"                 'content-encoding: gzip' "$hd"
+  has "  immutable under its hash" 'immutable' "$hd"
+  is  "  and unzips to the pinned font" \
+    "$(node --input-type=module -e "import { PIN } from '$PINF'; console.log(PIN.fonts.raw[process.argv[1]].sha256)" "$f")" \
+    "$(curl -s -m 60 --compressed -H "$CK" "$B/scad/$f?h=$fh" | sha256sum | cut -d' ' -f1)"
+done
+has "the fonts' licence is served" 'SIL OPEN FONT LICENSE' "$(G "$B/scad/fonts-LICENSE")"
 is  "the glue is served"          200 "$(code "$B/scad/openscad.js")"
 has "the licence is served"       'GNU GENERAL PUBLIC LICENSE' "$(G "$B/scad/COPYING")"
 has "a second install while one runs is answered" '"ok"' "$(post "$B/scad-install"; post "$B/scad-install")"
@@ -98,6 +111,8 @@ is  "nothing installed"           null "$(field have <<<"$s")"
 is  "the wasm is gone"            404  "$(code "$B/scad/openscad.wasm")"
 is  "the glue is gone"            404  "$(code "$B/scad/openscad.js")"
 is  "the licence is gone"         404  "$(code "$B/scad/COPYING")"
+for f in $FONTS; do is "$f is gone" 404 "$(code "$B/scad/$f")"; done
+is  "the fonts' licence is gone"  404  "$(code "$B/scad/fonts-LICENSE")"
 
 echo "==> an agent key may not install"
 is  "a bearer without a key is refused" 401 "$(curl -s -m 30 -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer nope' -X POST "$B/scad-install")"

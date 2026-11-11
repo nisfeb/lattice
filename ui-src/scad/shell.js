@@ -16,6 +16,9 @@
 
 import { mount } from './view.js';
 
+//  the fonts the install brings, by the name the ship serves and the worker
+//  keeps them under
+const FONTS = ['LiberationSans-Regular.ttf', 'LiberationSans-Bold.ttf', 'LiberationMono-Regular.ttf'];
 const mb = (n) => (Math.round(n / 1e5) / 10) + ' MB';
 
 export function shell(h) {
@@ -126,6 +129,7 @@ export function shell(h) {
       runtime: {
         wasm: h.api + '/scad/openscad.wasm?h=' + f['openscad.wasm'],
         js: h.api + '/scad/openscad.js?h=' + f['openscad.js'],
+        fonts: FONTS.filter((n) => f[n]).map((n) => [n, h.api + '/scad/' + n + '?h=' + f[n]]),
       },
       readPage,
       onEdit: edit,

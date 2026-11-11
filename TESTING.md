@@ -115,7 +115,7 @@ The gate and the suites share one machine with every other session, so:
 
 ## The OpenSCAD runtime
 
-scad pages render with OpenSCAD compiled to WebAssembly, which the owner installs on the ship from Settings or a scad page (app.hoon, `+scad-install-run`). The ship fetches the three files of `+scad-files` from `+scad-url`, checks each against its pinned SHA-256 and keeps them under `/scad`. `scripts/build-scad.mjs` records the pin and where it came from, and `node scripts/build-scad.mjs --release DIR` makes the release files.
+scad pages render with OpenSCAD compiled to WebAssembly, which the owner installs on the ship from Settings or a scad page (app.hoon, `+scad-install-run`). The ship fetches the files of `+scad-files` (the OpenSCAD runtime, its licence, and three Liberation fonts with theirs, about 4 MB) from `+scad-url`, checks each against its pinned SHA-256 and keeps them under `/scad`. `scripts/build-scad.mjs` records the pin and where it came from, and `node scripts/build-scad.mjs --release DIR` makes the release files.
 
 A test points the ship elsewhere with the grub `/scad/source.json` (`{"url": "..."}`), written through grubbery's own file API, never a lattice route. A clone is network-isolated, so serve the files from inside its namespace:
 

@@ -6035,7 +6035,7 @@
 ::  which checks these constants match it. Keep the two in step.
 ::
 ::  +scad-url: where the release files are, ending in a slash. A release
-::  of nisfeb/lattice, tag openscad-2026.11.10, with the three files of
+::  of nisfeb/lattice, tag openscad-2026.11.10, with the files of
 ::  +scad-files attached, as made by `node scripts/build-scad.mjs
 ::  --release DIR`. It is not marked latest: the desktop's updater reads
 ::  the latest release. Empty, an install answers that this build names
@@ -6050,7 +6050,10 @@
 ::  +scad-files: what an install fetches. Each is [served-as file sha256
 ::  bytes type encoding]. The wasm is kept gzipped, as the release carries
 ::  it, and served with content-encoding: gzip, so it costs 3.3 MB of loom
-::  and of download, not 11 MB. The browser unzips it.
+::  and of download, not 11 MB. The browser unzips it. The three Liberation
+::  fonts, from liberation-fonts 2.1.5 under the SIL OFL 1.1, are kept the
+::  same way (0.6 MB), so OpenSCAD's text() draws, in Liberation Sans by
+::  default as on the desktop. Their licence is served beside them.
 ++  scad-files
   ^-  (list [nam=@ta fil=@ta sha=@t len=@ud typ=@t enc=(unit @t)])
   :~  :*  %'openscad.wasm'  %'openscad.wasm.gz'
@@ -6065,6 +6068,22 @@
           '1805a29c3bccbc0428ce0048a1dfdeb9b1867677410e99c89c3c30932ae8c7d5'
           18.382  'text/plain; charset=utf-8'  ~
       ==
+      :*  %'LiberationSans-Regular.ttf'  %'LiberationSans-Regular.ttf.gz'
+          '25facb56b288d2a328350d954d1a9ce80e36967ca631f0938f207a1d6bebd406'
+          211.540  'font/ttf'  `'gzip'
+      ==
+      :*  %'LiberationSans-Bold.ttf'  %'LiberationSans-Bold.ttf.gz'
+          '46c6c8ee14971ea13375ef357513b10ccad1486468030931076eb767014bda96'
+          213.078  'font/ttf'  `'gzip'
+      ==
+      :*  %'LiberationMono-Regular.ttf'  %'LiberationMono-Regular.ttf.gz'
+          '504c2a932ee2a26e3a3719ea2cddebf9e9eeff9bca2873662d5f890f9fa80f0e'
+          179.704  'font/ttf'  `'gzip'
+      ==
+      :*  %'fonts-LICENSE'  %'liberation-fonts-LICENSE.txt'
+          '93fed46019c38bbe566b479d22148e2e8a1e85ada614accb0211c37b2c61c19b'
+          4.414  'text/plain; charset=utf-8'  ~
+      ==
   ==
 ::  +scad-mite: the mime grub's type for a file's content type
 ++  scad-mite
@@ -6072,6 +6091,7 @@
   ^-  mite
   ?:  =('application/wasm' t)  /application/wasm
   ?:  =('application/javascript' t)  /application/javascript
+  ?:  =('font/ttf' t)  /font/ttf
   /text/plain
 ::  +scad-hex: a file's SHA-256 as the usual lowercase hex
 ++  scad-hex
@@ -17723,7 +17743,7 @@
 ::
 ::  The OpenSCAD runtime (/scad/<file>?h=H, +serve-scad) has a cache of its
 ::  own, lattice-scad, keyed by the whole URL. A deploy does not drop it, so
-::  a lattice release costs no new 3.4 MB download. A new H replaces the
+::  a lattice release costs no new 4 MB download. A new H replaces the
 ::  old copy of that file, and Settings clears it on uninstall.
 ::
 ::  Non-SHELL requests are NOT intercepted at all (no respondWith): some
@@ -18532,9 +18552,9 @@
     "<h2 id=\"openscad\">OpenSCAD pages</h2>"
     "<p class=\"muted\">scad pages draw their part in 3D with OpenSCAD, compiled to WebAssembly and run in your browser. Your ship keeps the runtime and never runs it. It is optional: until you install it, a scad page shows its source.</p>"
     "<p><span id=\"scst\" class=\"muted\">checking&hellip;</span></p>"
-    "<p><button type=\"button\" id=\"scinst\" class=\"btn\" hidden>Install</button> <button type=\"button\" id=\"scdrop\" class=\"btn\" hidden>Uninstall</button> <a id=\"sclic\" href=\"/apps/lattice/scad/COPYING\" hidden>licence (GPL-2.0)</a> <a id=\"scsrc\" href=\"https://github.com/openscad/openscad\" rel=\"noopener\" target=\"_blank\" hidden>source</a></p>"
+    "<p><button type=\"button\" id=\"scinst\" class=\"btn\" hidden>Install</button> <button type=\"button\" id=\"scdrop\" class=\"btn\" hidden>Uninstall</button> <a id=\"sclic\" href=\"/apps/lattice/scad/COPYING\" hidden>licence (GPL-2.0)</a> <a id=\"scflic\" href=\"/apps/lattice/scad/fonts-LICENSE\" hidden>font licence (OFL-1.1)</a> <a id=\"scsrc\" href=\"https://github.com/openscad/openscad\" rel=\"noopener\" target=\"_blank\" hidden>source</a></p>"
     %-  trip
-    '<script>(function(){var st=document.getElementById("scst"),bi=document.getElementById("scinst"),bd=document.getElementById("scdrop"),li=document.getElementById("sclic"),so=document.getElementById("scsrc"),T=0;function mb(n){return Math.round(n/1e5)/10+" MB"}function show(d){var on=!!d.have;bi.hidden=d.busy||(on&&d.have===d.pin);bd.hidden=!on||d.busy;li.hidden=so.hidden=!on;bi.textContent=on?"Update to "+d.pin+" ("+mb(d.size)+")":"Install ("+mb(d.size)+")";st.textContent=d.busy?"installing, this takes a little while...":on?("OpenSCAD "+d.have+" is installed."+(d.have!==d.pin?" This lattice offers "+d.pin+".":"")):!d.source?"This build of lattice names no address to install from.":(d.error?"Not installed: "+d.error:"Not installed.");if(!d.source&&!on)bi.hidden=true;clearTimeout(T);if(d.busy)T=setTimeout(load,2000)}function load(){fetch("/apps/lattice/scad-status").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="status unavailable"})}function post(u){bi.disabled=bd.disabled=true;fetch(u,{method:"POST"}).then(function(r){return r.json()}).then(function(j){bi.disabled=bd.disabled=false;if(j.error)st.textContent=j.error;setTimeout(load,300)}).catch(function(){bi.disabled=bd.disabled=false;st.textContent="request failed, retry."})}bi.onclick=function(){post("/apps/lattice/scad-install")};bd.onclick=function(){try{caches.delete("lattice-scad")}catch(x){}post("/apps/lattice/scad-uninstall")};load()})();</script>'
+    '<script>(function(){var st=document.getElementById("scst"),bi=document.getElementById("scinst"),bd=document.getElementById("scdrop"),li=document.getElementById("sclic"),so=document.getElementById("scsrc"),fl=document.getElementById("scflic"),T=0;function mb(n){return Math.round(n/1e5)/10+" MB"}function show(d){var on=!!d.have;bi.hidden=d.busy||(on&&d.have===d.pin);bd.hidden=!on||d.busy;li.hidden=so.hidden=fl.hidden=!on;bi.textContent=on?"Update to "+d.pin+" ("+mb(d.size)+")":"Install ("+mb(d.size)+")";st.textContent=d.busy?"installing, this takes a little while...":on?("OpenSCAD "+d.have+" is installed."+(d.have!==d.pin?" This lattice offers "+d.pin+".":"")):!d.source?"This build of lattice names no address to install from.":(d.error?"Not installed: "+d.error:"Not installed.");if(!d.source&&!on)bi.hidden=true;clearTimeout(T);if(d.busy)T=setTimeout(load,2000)}function load(){fetch("/apps/lattice/scad-status").then(function(r){return r.json()}).then(show).catch(function(){st.textContent="status unavailable"})}function post(u){bi.disabled=bd.disabled=true;fetch(u,{method:"POST"}).then(function(r){return r.json()}).then(function(j){bi.disabled=bd.disabled=false;if(j.error)st.textContent=j.error;setTimeout(load,300)}).catch(function(){bi.disabled=bd.disabled=false;st.textContent="request failed, retry."})}bi.onclick=function(){post("/apps/lattice/scad-install")};bd.onclick=function(){try{caches.delete("lattice-scad")}catch(x){}post("/apps/lattice/scad-uninstall")};load()})();</script>'
     "<h2>Commons mirror</h2>"
     "<p class=\"muted\">Mirrors your pages, notes, tags, follows and browsing history into the %obelisk database, where you (and your agents) can query across apps with urQL. Turning it off deletes that copy. Optional: without %obelisk everything else works unchanged.</p>"
     "<p><span id=\"obst\" class=\"muted\">checking&hellip;</span></p>"

@@ -6,7 +6,7 @@ const WRITER_H = '0v3.4g8bu.gitpg.4hui5.6i6ib.91c19';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
 const SHEET_H = '0v3.v145b.hha4j.kjuag.dcc4c.ld732';
 // and scad.js's, the 3D pane of scad pages (26-scad.js)
-const SCAD_H = '0v4.9nq1o.gn7m3.ump5l.f9kc4.lhijk';
+const SCAD_H = '0v4.rhthr.381oe.snr6n.15psm.1krto';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)

@@ -3,7 +3,7 @@
 //
 //  scad pages render in the browser with OpenSCAD compiled to WebAssembly.
 //  That runtime is optional and is never part of the desk: the owner
-//  installs it, and the ship fetches the three files below once, checks
+//  installs it, and the ship fetches the files below once, checks
 //  each against its SHA-256 and keeps them (app.hoon, +scad-install-run).
 //  This file is the record of what is pinned and where it came from.
 //
@@ -26,6 +26,12 @@
 //             The text is OpenSCAD's COPYING at that commit, shipped as the
 //             third file and served at /apps/lattice/scad/COPYING.
 //    source   https://github.com/openscad/openscad
+//    fonts    LiberationSans-Regular, LiberationSans-Bold and LiberationMono-Regular
+//             from liberation-fonts 2.1.5 (PIN.fonts: the tarball its GitHub
+//             release notes link, sha256 7191c669...25d0), under the SIL OFL
+//             1.1. Without them text() draws nothing: the web build carries
+//             no fonts. The worker puts them in /fonts with a fonts.conf,
+//             and Liberation Sans is OpenSCAD's default font.
 //
 //  The release files, as the ship fetches them from +scad-url in app.hoon:
 //
@@ -35,6 +41,13 @@
 //                          browser unzips it (content-encoding: gzip).
 //    openscad.js           unmodified
 //    openscad-COPYING.txt  OpenSCAD's COPYING, unmodified
+//    LiberationSans-Regular.ttf.gz, LiberationSans-Bold.ttf.gz and
+//    LiberationMono-Regular.ttf.gz
+//                          the fonts text() draws with, gzipped the same way
+//                          (0.6 MB), from the liberation-fonts 2.1.5 tarball
+//                          (PIN.fonts), unmodified inside
+//    liberation-fonts-LICENSE.txt
+//                          their licence, the SIL OFL 1.1, from the tarball
 //
 //  scad.js
 //
@@ -56,9 +69,9 @@
 //    node scripts/build-scad.mjs --release DIR
 //        download the upstream zip, check it, and write the three release
 //        files to DIR, each checked against PIN. Upload those to the
-//        release +scad-url names. Needs `unzip`.
+//        release +scad-url names. Needs `unzip` and `tar`.
 //    node scripts/build-scad.mjs --verify [URL]
-//        fetch the three files from URL (default: +scad-url) and check
+//        fetch the release files from URL (default: +scad-url) and check
 //        them. Skips when no URL is set.
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
@@ -132,11 +145,23 @@ if (process.argv.includes('--release')) {
     for (const [n, b] of [['openscad.wasm', wasm], ['openscad.js', js]]) {
       if (sha(b) !== PIN.raw[n].sha256) die(n + ' in the zip is not the pinned file');
     }
+    //  the fonts: the pinned liberation-fonts tarball, each file checked
+    const tgz = await get(PIN.fonts.url);
+    if (sha(tgz) !== PIN.fonts.sha256 || tgz.length !== PIN.fonts.size) die('the liberation-fonts tarball is not the pinned one');
+    writeFileSync(join(tmp, 'f.tgz'), tgz);
+    execFileSync('tar', ['-xzf', join(tmp, 'f.tgz'), '-C', tmp]);
+    const font = (n) => {
+      const b = readFileSync(join(tmp, PIN.fonts.dir, n));
+      if (sha(b) !== PIN.fonts.raw[n].sha256) die(n + ' in the tarball is not the pinned file');
+      return b;
+    };
     const files = {
       'openscad.wasm.gz': gzipSync(wasm, { level: 9 }),
       'openscad.js': js,
       'openscad-COPYING.txt': await get(PIN.copying.url),
+      'liberation-fonts-LICENSE.txt': font('LICENSE'),
     };
+    for (const n of Object.keys(PIN.fonts.raw)) if (n.endsWith('.ttf')) files[n + '.gz'] = gzipSync(font(n), { level: 9 });
     for (const f of PIN.files) {
       const b = files[f.file];
       if (sha(b) !== f.sha256 || b.length !== f.size) die(`${f.file} is ${sha(b)} (${b.length} bytes), not the pin. A different zlib can gzip differently: pin the new hash in both places.`);
