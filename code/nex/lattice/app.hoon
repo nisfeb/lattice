@@ -8227,6 +8227,9 @@
   ?.  open.u.o  (pure:m `'passes there are not on sale now')
   ?~  mint.u.o  (pure:m `'passes there are sold by card only')
   ;<  live=(list [id=@ta p=pay:lpa])  bind:m  read-pays
+  ::  ponytail: one cap for all, so fifty unpaid web invoices hold every
+  ::  slot until they run out (an hour). A per-address limit, as forum
+  ::  posting has, if that is ever used to keep buyers out
   ?:  (gte (lent live) pays-max:lpa)
     (pure:m `'too many payments are under way here; try again soon')
   ?:  (gte (lent (skim live |=([* p=pay:lpa] =(holder holder.p)))) pays-each:lpa)
@@ -9178,7 +9181,12 @@
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  sid=(unit @t)  (webhook-sid:lst (end [3 200.000] body))
-  ;<  ~  bind:m  ?~(sid (pure:m ~) (card-check u.sid))
+  ::  only a session we are waiting on costs a call to Stripe, so the
+  ::  open route cannot be used to make this ship spend its key's limits
+  ;<  cs=(list [tok=@ta c=card:lpa])  bind:m  read-cards
+  ?.  &(?=(^ sid) (lien cs |=([* c=card:lpa] =(sid.c u.sid))))
+    (send-ok eyre-id)
+  ;<  ~  bind:m  (card-check u.sid)
   (send-ok eyre-id)
 ::  +settle-card: in the writer. The record goes first, so a session is
 ::  settled once, then the pass and its page
