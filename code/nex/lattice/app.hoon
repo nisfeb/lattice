@@ -282,7 +282,11 @@
             [%fall %| /forum/members empty-dir:loader]
             [%fall %| /forum/notes empty-dir:loader]
         ::  /passes: paid passes (+apply-pass). Out of /page and /pub, and
-        ::  in no agent key's routes. /pub/passes/<key> holds an offer alone
+        ::  in no agent key's routes. /pub/passes/<key> holds an offer alone.
+        ::  /passes/next (the sweep's wakes) and /passes/secrets (the rail
+        ::  settings and keys) are files: covered, so a reload keeps them
+            [%fall %& [/passes %next] [[/ %noun] [%1 *next:lpa]]]
+            [%fall %& [/passes %secrets] [[/ %noun] [%2 *(map @t @t)]]]
             [%fall %| /passes/offers empty-dir:loader]
             [%fall %| /passes/held empty-dir:loader]
             [%fall %| /passes/sales empty-dir:loader]
