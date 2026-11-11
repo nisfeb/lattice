@@ -10,7 +10,7 @@
 +$  mode    ?(%read %post)
 +$  holder  $%([%ship who=@p] [%web key=@uv])
 +$  cur     ?(%sat %usd)                       ::  %usd counts cents
-+$  via     ?(%ecash %lightning %card %gift)
++$  via     ?(%ecash %lightning %card %bitcoin %gift)
 ::  an offer takes ecash and Lightning at `mint` when sats is set, and
 ::  card when cents is set
 +$  offer
@@ -42,7 +42,7 @@
 ::  +$  mint-keys: a mint's keysets, and the one it signs sats under
 +$  mint-keys  [ks=(list [id=@t unit=@t active=? fee=@ud]) kid=@t keys=(map @ud @t)]
 ::  +$  how: ecash in hand (a cashuA token), or a Lightning invoice asked for
-+$  how    $%([%ecash token=@t] [%lightning ~])
++$  how    $%([%ecash token=@t] [%lightning ~] [%card ~] [%bitcoin ~])
 ::  +$  pay: one payment under way, in its grub /passes/pay/<id>, with
 ::  the offer's price, period and mode as they were when it was asked.
 ::  A web buyer polls with `tok`, and its pass is held by `code`'s key
@@ -69,9 +69,23 @@
   ==
 ::  +$  done: how a web payment ended, kept a day for its page to read
 +$  done  [at=@da tok=@uv ok=? why=@t code=@uv until=@da]
-::  +$  card: a card payment under way at Stripe, by its poll token, in
-::  /passes/card/<tok>, until Stripe says it is paid or an hour passes
-+$  card  [key=@ta code=@uv cents=@ud period=@dr =mode at=@da sid=@t]
+::  +$  rail: where a pass is paid for in dollars: a Stripe Checkout
+::  session (card) or a BTCPay invoice (bitcoin)
++$  rail  ?(%stripe %btcpay)
+::  +$  card: a payment waiting on a rail, by its token, in
+::  /passes/rail/<tok>: whose pass, its code for a web holder, the
+::  offer as it was, and the rail's id for the session
++$  card
+  $:  key=@ta
+      =holder
+      code=@uv
+      cents=@ud
+      period=@dr
+      =mode
+      at=@da
+      =rail
+      id=@t
+  ==
 ::  how many payments may be under way: from one holder, and in all
 ++  pays-each  3
 ++  pays-max  50
@@ -89,8 +103,9 @@
       [%settle id=@ta]
       ::  the seller took the ecash from one mint out of a wallet
       [%wallet-take key=@ta mint=@t]
-      ::  Stripe says a card session is paid (+card in /passes/card/<tok>)
-      [%card-paid tok=@ta total=@ud sid=@t]
+      ::  a rail says its session is paid, in cents, or it ended unpaid
+      [%rail-paid tok=@ta total=@ud id=@t]
+      [%rail-dead tok=@ta why=@t]
   ==
 ::
 ::  the sales log keeps this many, newest first
