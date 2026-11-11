@@ -48,10 +48,10 @@
   ==
 ::
 ++  test-extend
-  =/  new  (extend:lp hld [%ship ~wet] off t0 1.000 %sat %ecash 'r1')
-  =/  early  (extend:lp hld nec off t0 1.000 %sat %lightning 'r2')
-  =/  late   (extend:lp hld web off t0 500 %usd %card 'cs_1')
-  =/  comet  (extend:lp hld [%ship `@p`(bex 100)] off t0 1.000 %sat %ecash '')
+  =/  new  (extend:lp hld [%ship ~wet] %post ~d30 t0 1.000 %sat %ecash 'r1')
+  =/  early  (extend:lp hld nec %post ~d30 t0 1.000 %sat %lightning 'r2')
+  =/  late   (extend:lp hld web %read ~d30 t0 500 %usd %card 'cs_1')
+  =/  comet  (extend:lp hld [%ship `@p`(bex 100)] %post ~d30 t0 1.000 %sat %ecash '')
   ;:  weld
     (expect-eq !>([(add t0 ~d30) t0 %post]) !>([until.new since.new mode.new]))
     ::  renewing early runs from the old end, and keeps since
@@ -158,6 +158,14 @@
     (expect-eq !>(%l-nec) !>((scope-key:lp [%lodging ~nec])))
     (expect-eq !>(&) !>(=('f-0v' (end [3 4] (scope-key:lp [%folder /a/b])))))
     (expect-eq !>(|) !>(=((scope-key:lp [%folder /a/b]) (scope-key:lp [%folder /a/c]))))
+  ==
+::
+++  test-key-board
+  ;:  weld
+    (expect-eq !>(`%main) !>((key-board:lp %b-main)))
+    (expect-eq !>(~) !>((key-board:lp %b-)))
+    (expect-eq !>(~) !>((key-board:lp %l-nec)))
+    (expect-eq !>(~) !>((key-board:lp 'b-Bad')))
   ==
 ::
 ++  test-cookie

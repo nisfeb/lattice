@@ -88,6 +88,7 @@
 ::  (/forum.sig) runs the rate limit, which +act leaves to the caller.
 /<  fr   /lib/lattice-forum-rules.hoon
 /<  fre  /lib/lattice-forum-render.hoon
+/<  lpa  /lib/lattice-pass.hoon
 ::  flat ODT: the safe HTML, the search text and the title of a fodt page
 /<  lf   /lib/lattice-fodt.hoon
 ::  flat ODS: the same three of a fods page (a spreadsheet)
@@ -277,6 +278,12 @@
             [%fall %| /forum/boards empty-dir:loader]
             [%fall %| /forum/members empty-dir:loader]
             [%fall %| /forum/notes empty-dir:loader]
+        ::  /passes: paid passes (+apply-pass). Out of /page and /pub, and
+        ::  in no agent key's routes. /pub/passes/<key> holds an offer alone
+            [%fall %| /passes/offers empty-dir:loader]
+            [%fall %| /passes/held empty-dir:loader]
+            [%fall %| /passes/sales empty-dir:loader]
+            [%fall %| /pub/passes empty-dir:loader]
             [%fall %& [/forum %seen] [[/ %noun] [%1 ~]]]
             [%fall %& [/forum %limits] [[/ %noun] [%1 ~]]]
         ::  /forum/comets-off: the boards whose owner turned comet posts
@@ -590,6 +597,8 @@
         ;<  ~  bind:m  (move-resume-arm root)
         ::  publishes a reload cut short, or that were still waiting
         ;<  ~  bind:m  (pub-arm root)
+        ::  the pass timer (+pass-arm), lost with the last event loop
+        ;<  ~  bind:m  pass-arm-start
         |-
         ;<  =sage:tarball  bind:m  take-poke:io
         ::  a timer: the background publisher's (+pub-tick) or the rest of
@@ -598,6 +607,10 @@
         ::  +pub-tick bumps the beacon itself, once a copy is out.
         ?:  =([/ %timer-wake] p.sage)
           =/  wak=(unit path)  (mole |.(!<(path q.sage)))
+          ?:  ?=([~ %pass-due *] wak)
+            ;<  now=@da  bind:m  bowl-now
+            ;<  *  bind:m  (fiber-try (pass-sweep now))
+            $
           ?.  ?=([~ ?(%pub-due %pub-tail) *] wak)  $
           ;<  now=@da  bind:m  bowl-now
           ;<  ~  bind:m
@@ -3505,6 +3518,15 @@
     (handle-forum-invite eyre-id args our up %.y)
       [%'POST' %forum-revoke]
     (handle-forum-invite eyre-id args our up %.n)
+  ::  ── passes: the seller's routes (+handle-passes) ──
+      [%'GET' %passes]
+    (handle-passes eyre-id args req %list)
+      [%'POST' %pass-offer]
+    (handle-passes eyre-id args req %offer)
+      [%'POST' %pass-gift]
+    (handle-passes eyre-id args req %gift)
+      [%'POST' %pass-refund]
+    (handle-passes eyre-id args req %refund)
   ::  ── follows (the ship-level follow list) ──
       [%'GET' %follows]
     ;<  fs=follows:lp  bind:m  read-follows
@@ -7325,6 +7347,11 @@
 ::
 ++  apply-forum-core
   |=  [now=@da src=@p act=action:ft]
+  (apply-forum-core-as now src act |)
+::  +apply-forum-core-as: the same, `boost` when src posts on a pass and
+::  holds no role, so +act:fa takes it as a poster
+++  apply-forum-core-as
+  |=  [now=@da src=@p act=action:ft boost=?]
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
   ;<  up=@ud  bind:m  nexus-up
@@ -7359,7 +7386,10 @@
     (pure:m ~)
   =/  lod=(each board:ft @t)  (load:fb u.gs)
   ?:  ?=(%| -.lod)  (pure:m `(crip "forum: board unreadable: {(trip p.lod)}"))
-  =/  res=(each [brd=board:ft puts=(list grub:fb)] @t)  (act:fa p.lod src now act)
+  =/  brd=board:ft
+    ?.  boost  p.lod
+    p.lod(roles (~(put by roles.p.lod) src %poster))
+  =/  res=(each [brd=board:ft puts=(list grub:fb)] @t)  (act:fa brd src now act)
   ?:  ?=(%| -.res)  (pure:m `(crip "forum: refused: {(trip p.res)}"))
   ;<  ~  bind:m  (forum-put up bdir puts.p.res (gone:fb p.lod brd.p.res))
   ;<  ~  bind:m  (bump-beacon %forum now)
@@ -7520,25 +7550,32 @@
     (pure:m `(crip "forum: {<-.act>} is owner-only"))
   ?~  obrd  (pure:m `(crip "forum: no such board: {(trip name)}"))
   ::  a PRIVATE board takes content only from its roster (/forum/members).
+  ::  A live pass lets a ship in as well: a %post pass to post (as a
+  ::  poster, unless the owner gave it a role), a %read pass to read only.
   ;<  mem=(set @p)  bind:m  (read-forum-members name)
-  ?:  &(!public.info.u.obrd !(~(has in mem) src))
+  ;<  ph=held:lpa  bind:m  (read-pass-held (scope-key:lpa [%board name]))
+  =/  post-pass=?  (live:lpa ph [%ship src] now %post)
+  ?:  &(!public.info.u.obrd !(~(has in mem) src) !post-pass)
+    ?:  (live:lpa ph [%ship src] now %read)
+      (pure:m `'forum: your pass to this board is read-only')
     (pure:m `'forum: this board is private; you are not a member')
+  =/  boost=?  &(post-pass !(~(has by roles.u.obrd) src))
   ::  role and caps for a post or a comment (votes need neither, as in +act).
   =/  need=(unit @t)
     ?+  -.act  ~
         %new-post
-      ?.  (can-post:fr src u.obrd)  `'forum: your role on this board cannot post'
+      ?.  |(boost (can-post:fr src u.obrd))  `'forum: your role on this board cannot post'
       ?.  (sane-post:fr title.act url.act body.act)
         `'forum: a post needs a title (300 bytes), a url (2,048) and a body (40,000)'
       ~
     ::
         %new-comment
-      ?.  (can-post:fr src u.obrd)  `'forum: your role on this board cannot comment'
+      ?.  |(boost (can-post:fr src u.obrd))  `'forum: your role on this board cannot comment'
       ?.  (sane-comment:fr body.act)  `'forum: a comment holds 1 to 10,000 bytes'
       ~
     ==
   ?^  need  (pure:m need)
-  (apply-forum-core now src act)
+  (apply-forum-core-as now src act boost)
 ::  +forum-boards: the names of every board on this ship.
 ::
 ++  forum-boards
@@ -7717,6 +7754,380 @@
     ~s5
   %+  send-json  eyre-id
   (pairs:enjs:format ~[['ok' b+&] ['notified' b+told]])
+::  ==  passes (docs/superpowers/specs/2026-11-11-passes-design.md)
+::
+::  A pass is a holder's right to read, or read and post in, one scope
+::  until a time. Everything sits under /passes at the nexus root, out
+::  of the page tree, out of /pub and out of every agent key's routes:
+::  /passes/offers/<key> what a scope sells for, /passes/held/<key> the
+::  passes, /passes/sales/<key> the sales log, and /passes/next the
+::  last sweep and each scope's next wake. /pub/passes/<key> publishes
+::  the offer alone, so a ship that cannot read a board can see what a
+::  pass costs. Only the writer writes them (+apply-pass).
+::
+::  Reads of a board over Ames are the weir's: the board's read group
+::  holds the roster and every live ship pass (+pass-group). Posts check
+::  the pass itself (+forum-remote-apply), so they close the second it
+::  lapses. A behn wake on /pass-due sweeps the lapses (+pass-sweep).
+::
+++  pass-noun
+  |=  [dir=path key=@ta]
+  =/  m  (fiber:fiber:nexus ,(unit *))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up dir key) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  (pure:m `(sang-noun:tarball sang.v))
+++  read-pass-held
+  |=  key=@ta
+  =/  m  (fiber:fiber:nexus ,held:lpa)
+  ^-  form:m
+  ;<  n=(unit *)  bind:m  (pass-noun /passes/held key)
+  (pure:m ?~(n ~ (fall (mole |.(+:;;([%1 held:lpa] u.n))) ~)))
+++  read-pass-offer
+  |=  key=@ta
+  =/  m  (fiber:fiber:nexus ,(unit offer:lpa))
+  ^-  form:m
+  ;<  n=(unit *)  bind:m  (pass-noun /passes/offers key)
+  (pure:m ?~(n ~ (mole |.(+:;;([%1 offer:lpa] u.n)))))
+++  read-pass-sales
+  |=  key=@ta
+  =/  m  (fiber:fiber:nexus ,(list sale:lpa))
+  ^-  form:m
+  ;<  n=(unit *)  bind:m  (pass-noun /passes/sales key)
+  (pure:m ?~(n ~ (fall (mole |.(+:;;([%1 (list sale:lpa)] u.n))) ~)))
+++  read-pass-next
+  =/  m  (fiber:fiber:nexus ,next:lpa)
+  ^-  form:m
+  ;<  n=(unit *)  bind:m  (pass-noun /passes %next)
+  (pure:m ?~(n *next:lpa (fall (mole |.(+:;;([%1 next:lpa] u.n))) *next:lpa)))
+++  pass-put
+  |=  [dir=path key=@ta noun=*]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  ~  bind:m  (ensure-dirs up / dir)
+  (put-file (rf up dir key) [/ %noun] noun)
+::  +apply-pass: the writer's pass actions. A grant is a sale settled or
+::  a gift; it lands only on a scope with an offer, and only on a board
+::  that is still there and private. Every change keeps the read group
+::  and the wake right.
+::
+++  apply-pass
+  |=  [now=@da act=pass-act:lpa]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ?-  -.act
+      %sweep  (pass-sweep now)
+  ::
+      %offer
+    ?~  o.act
+      ;<  *  bind:m  (cull-soft:io (rf up /passes/offers key.act))
+      ;<  *  bind:m  (cull-soft:io (rf up /pub/passes key.act))
+      (pure:m ~)
+    ?.  (sane-offer:lpa u.o.act)  (pure:m ~)
+    ;<  ok=?  bind:m  (pass-scope-ok key.act)
+    ?.  ok  (pure:m ~)
+    ;<  ~  bind:m  (pass-put /passes/offers key.act [%1 u.o.act])
+    ;<  ~  bind:m  (ensure-dirs up / /pub/passes)
+    (put-file (rf up /pub/passes key.act) [/ %noun] [%1 u.o.act])
+  ::
+      %grant
+    ;<  ok=?  bind:m  (pass-scope-ok key.act)
+    ?.  ok  (pure:m ~)
+    ;<  h=held:lpa  bind:m  (read-pass-held key.act)
+    =/  p=pass:lpa
+      %:  extend:lpa  h  holder.act  mode.act  period.act  now
+        paid.act  cur.act  via.act  ref.act
+      ==
+    =.  h  (~(put by h) holder.act p)
+    ;<  ~  bind:m  (pass-put /passes/held key.act [%1 h])
+    ;<  s=(list sale:lpa)  bind:m  (read-pass-sales key.act)
+    =/  new=sale:lpa  [now holder.act paid.act cur.act via.act |]
+    ;<  ~  bind:m  (pass-put /passes/sales key.act [%1 (log-sale:lpa s new)])
+    ;<  ~  bind:m  (pass-group key.act h now)
+    ;<  ~  bind:m  (pass-rearm key.act h now)
+    ;<  ~  bind:m
+      ?.  ?=(%ship -.holder.act)  (pure:m ~)
+      %^  pass-tell  who.holder.act  key.act
+      (crip "{(pass-name key.act)}: you hold a pass until {(pass-day until.p)}")
+    ?:  ?=(%gift via.act)  (pure:m ~)
+    (pass-notify now key.act (crip "{(holder-text holder.act)} bought a pass to {(pass-name key.act)}"))
+  ::
+      %refund
+    ;<  h=held:lpa  bind:m  (read-pass-held key.act)
+    =/  p  (~(get by h) holder.act)
+    ?~  p  (pure:m ~)
+    =.  h  (refund:lpa h holder.act now)
+    ;<  ~  bind:m  (pass-put /passes/held key.act [%1 h])
+    ;<  s=(list sale:lpa)  bind:m  (read-pass-sales key.act)
+    =/  back=sale:lpa  [now holder.act paid.u.p cur.u.p via.u.p &]
+    ;<  ~  bind:m  (pass-put /passes/sales key.act [%1 (log-sale:lpa s back)])
+    ;<  ~  bind:m  (pass-group key.act h now)
+    (pass-rearm key.act h now)
+  ==
+::  +pass-scope-ok: a scope a pass can be had on: for now a board we
+::  host that is private (a public board needs none)
+++  pass-scope-ok
+  |=  key=@ta
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  nom=(unit @tas)  (key-board:lpa key)
+  ?~  nom  (pure:m |)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs up /forum/boards/[u.nom])
+  ?~  gs  (pure:m |)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?:  ?=(%| -.lod)  (pure:m |)
+  (pure:m !public.info.p.lod)
+::  +pass-group: a board's read group holds its roster and every ship
+::  with a live pass. The roads are the board's, as an invite lays them,
+::  and +ug-put drops any ship banned. Soft: a refused group write
+::  leaves reads as they were, and posts still check the pass
+++  pass-group
+  |=  [key=@ta h=held:lpa now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  nom=(unit @tas)  (key-board:lpa key)
+  ?~  nom  (pure:m ~)
+  ;<  hand=(set @p)  bind:m  (read-forum-members u.nom)
+  =/  want=(set @p)  (group-ships:lpa hand h now)
+  ;<  sb=path  bind:m  self-base
+  =/  bpath=path  (weld sb /forum/boards/[u.nom])
+  =/  roads=(set road:tarball)
+    (~(gas in *(set road:tarball)) ~[[%& %| (snoc bpath %pub)] [%& %| (snoc bpath %content)]])
+  =/  gname=@t  (forum-group-name u.nom)
+  ;<  ok=?  bind:m  (ug-merge gname ~ roads ~)
+  ?.  ok  (pure:m ~)
+  =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
+  ;<  wr=weir:nexus  bind:m  (ug-read-weir gdir)
+  ;<  *  bind:m  (ug-put gdir want wr)
+  (pure:m ~)
+::  +pass-rearm: a scope's next wake, and the one timer at the soonest
+++  pass-rearm
+  |=  [key=@ta h=held:lpa now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  nx=next:lpa  bind:m  read-pass-next
+  =/  w=(unit @da)  (next-wake:lpa h now)
+  =/  wakes  ?~(w (~(del by wakes.nx) key) (~(put by wakes.nx) key u.w))
+  ;<  ~  bind:m  (pass-put /passes %next [%1 last.nx wakes])
+  (pass-arm wakes)
+::  +pass-arm: set the pass timer for the soonest wake. The wire is
+::  stable, so each arm replaces the last, as +pub-arm-with's does
+++  pass-arm
+  |=  wakes=(map @ta @da)
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  at=(unit @da)
+    (roll ~(val by wakes) |=([t=@da b=(unit @da)] (soonest:lpa `t b)))
+  ?~  at  (pure:m ~)
+  ;<  *  bind:m  (soft-behn /pass-arm [[/ %timer-set] `[wire @da]`[/pass-due u.at]])
+  (pure:m ~)
+::  +pass-arm-start: at writer start, the timer again
+++  pass-arm-start
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  nx=next:lpa  bind:m  read-pass-next
+  (pass-arm wakes.nx)
+::  +pass-sweep: every scope whose wake has come: lapsed ships leave the
+::  read group and hear so, ships three days from the end are reminded,
+::  passes lapsed past keeping are pruned, and the wake moves on. The
+::  window is (last, now], so a late wake catches up and nothing is told
+::  twice
+++  pass-sweep
+  |=  now=@da
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  nx=next:lpa  bind:m  read-pass-next
+  =/  keys=(list @ta)
+    (murn ~(tap by wakes.nx) |=([k=@ta t=@da] ?:((lte t now) `k ~)))
+  =/  wakes  wakes.nx
+  |-  ^-  form:m
+  ?~  keys
+    ;<  ~  bind:m  (pass-put /passes %next [%1 now wakes])
+    (pass-arm wakes)
+  =*  key  i.keys
+  ;<  h=held:lpa  bind:m  (read-pass-held key)
+  =/  d  (due:lpa h last.nx now)
+  ;<  ~  bind:m  ?~(lapsed.d (pure:m ~) (pass-group key h now))
+  ;<  ~  bind:m
+    =/  ls=(list holder:lpa)  lapsed.d
+    |-  ^-  form:m
+    ?~  ls  (pure:m ~)
+    ?.  ?=(%ship -.i.ls)  $(ls t.ls)
+    ;<  ~  bind:m  (pass-tell who.i.ls key (crip "{(pass-name key)}: your pass ended"))
+    $(ls t.ls)
+  ;<  ~  bind:m
+    =/  es=(list @p)  ending.d
+    |-  ^-  form:m
+    ?~  es  (pure:m ~)
+    =/  p  (~(get by h) [%ship i.es])
+    =/  until=@da  ?~(p now until.u.p)
+    ;<  ~  bind:m  (pass-tell i.es key (crip "{(pass-name key)}: your pass ends on {(pass-day until)}"))
+    $(es t.es)
+  ;<  ~  bind:m
+    ?~  lapsed.d  (pure:m ~)
+    %^  pass-notify  now  key
+    (crip "{(a-co:co (lent lapsed.d))} pass(es) to {(pass-name key)} lapsed")
+  =/  pruned  (prune:lpa h now)
+  ;<  ~  bind:m  ?:(=(pruned h) (pure:m ~) (pass-put /passes/held key [%1 pruned]))
+  =/  w=(unit @da)  (next-wake:lpa pruned now)
+  $(keys t.keys, wakes ?~(w (~(del by wakes) key) (~(put by wakes) key u.w)))
+::  +pass-tell: a line to a ship about its pass, on the forum note road
+::  (+forum-note-send), fire-and-forget. Only a board has one
+++  pass-tell
+  |=  [who=@p key=@ta what=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (forum-note-send who (fall (key-board:lpa key) %passes) what)
+::  +pass-notify: a sale or a lapse in the seller's inbox
+++  pass-notify
+  |=  [now=@da key=@ta what=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  our=@p  bind:m  bowl-our
+  =/  nom=@t  (fall (key-board:lpa key) key)
+  (notify-add now (make:ln %pass now our our nom 0 what ''))
+++  pass-name
+  |=  key=@ta
+  ^-  tape
+  =/  b  (key-board:lpa key)
+  ?~(b (trip key) (trip u.b))
+++  pass-day
+  |=  t=@da
+  ^-  tape
+  (scow %da (sub t (mod t ~d1)))
+++  holder-text
+  |=  h=holder:lpa
+  ^-  tape
+  ?-  -.h
+    %ship  (scow %p who.h)
+    %web   (weld "web reader " (scag 6 (slag 2 (scow %uv key.h))))
+  ==
+::  +pass-json: one pass for the seller
+++  pass-json
+  |=  p=pass:lpa
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['holder' s+(crip (holder-text holder.p))]
+      ['ship' ?.(?=(%ship -.holder.p) ~ s+(scot %p who.holder.p))]
+      ['web' ?.(?=(%web -.holder.p) ~ s+(scot %uv key.holder.p))]
+      ['mode' s+mode.p]
+      ['until' (sect:enjs:format until.p)]
+      ['since' (sect:enjs:format since.p)]
+      ['paid' (numb:enjs:format paid.p)]
+      ['cur' s+cur.p]
+      ['via' s+via.p]
+  ==
+++  totals-json
+  |=  t=totals:lpa
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['sat' (numb:enjs:format (~(gut by t) %sat 0))]
+      ['usd' (numb:enjs:format (~(gut by t) %usd 0))]
+  ==
+++  offer-json
+  |=  o=offer:lpa
+  ^-  json
+  %-  pairs:enjs:format
+  :~  ['sats' (numb:enjs:format sats.o)]
+      ['cents' (numb:enjs:format cents.o)]
+      ['days' (numb:enjs:format (div period.o ~d1))]
+      ['minutes' (numb:enjs:format (div period.o ~m1))]
+      ['mode' s+mode.o]
+      ['mint' ?~(mint.o ~ s+u.mint.o)]
+      ['open' b+open.o]
+  ==
+::  +handle-passes: the seller's routes, owner only.
+::    GET  /passes?board=           the offer, the numbers, every pass
+::    POST /pass-offer?board=       body {sats, cents, minutes, mode, mint,
+::                                  open}, or empty to take the offer down
+::    POST /pass-gift?board=&ship=&minutes=&mode=   a pass for nothing
+::    POST /pass-refund?board=&holder=              ship or web key
+++  handle-passes
+  |=  [eyre-id=@ta args=(map @t @t) req=inbound-request:eyre what=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  bd=(unit @t)  (~(get by args) 'board')
+  ?~  bd  (send-err eyre-id 400 'missing board')
+  ?.  &(!=('' u.bd) ((sane %tas) u.bd))  (send-err eyre-id 400 'bad board')
+  =/  key=@ta  (scope-key:lpa [%board u.bd])
+  ;<  now=@da  bind:m  bowl-now
+  ?:  =(%list what)
+    ;<  o=(unit offer:lpa)  bind:m  (read-pass-offer key)
+    ;<  h=held:lpa  bind:m  (read-pass-held key)
+    ;<  s=(list sale:lpa)  bind:m  (read-pass-sales key)
+    =/  n=numbers:lpa  (summary:lpa h s now)
+    =/  ps=(list pass:lpa)  (sort ~(val by h) |=([a=pass:lpa b=pass:lpa] (lth until.a until.b)))
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['offer' ?~(o ~ (offer-json u.o))]
+        ['active' (numb:enjs:format active.n)]
+        ['lapses' (numb:enjs:format lapses.n)]
+        ['month' (totals-json month.n)]
+        ['days30' (totals-json days.n)]
+        :-  'passes'
+        :-  %a
+        %+  turn  ps
+        |=  p=pass:lpa
+        =/  j  (pass-json p)
+        ?>  ?=(%o -.j)
+        o+(~(put by p.j) 'live' b+(gth until.p now))
+    ==
+  ;<  ok=?  bind:m  (pass-scope-ok key)
+  ?.  ok  (send-err eyre-id 400 'passes are sold on a private board of ours')
+  ?:  =(%offer what)
+    =/  body=@t  (req-body req)
+    ?:  =('' body)
+      ;<  ~  bind:m  (poke-eval [%pass %offer key ~])
+      (send-ok eyre-id)
+    =/  jon=(unit json)  (de:json:html body)
+    ?~  jon  (send-err eyre-id 400 'bad json')
+    =/  o=(unit offer:lpa)  (offer-of u.jon)
+    ?~  o  (send-err eyre-id 400 'an offer needs a period of a minute to ten years, a price, and a mint for sats')
+    ;<  ~  bind:m  (poke-eval [%pass %offer key o])
+    (send-ok eyre-id)
+  ?:  =(%gift what)
+    =/  shp=(unit @p)  (biff (~(get by args) 'ship') (cury slaw %p))
+    ?~  shp  (send-err eyre-id 400 'bad ship')
+    =/  mins=(unit @ud)  (biff (~(get by args) 'minutes') |=(t=@t (rush t dem)))
+    ?~  mins  (send-err eyre-id 400 'bad minutes')
+    ?.  &((gte u.mins 1) (lte u.mins 5.270.400))  (send-err eyre-id 400 'a gift lasts a minute to ten years')
+    =/  md=mode:lpa  ?:(=(`'read' (~(get by args) 'mode')) %read %post)
+    ;<  ~  bind:m
+      (poke-eval [%pass %grant key [%ship u.shp] md (mul u.mins ~m1) 0 %sat %gift ''])
+    (send-ok eyre-id)
+  ?>  =(%refund what)
+  =/  ht=(unit @t)  (~(get by args) 'holder')
+  ?~  ht  (send-err eyre-id 400 'missing holder')
+  =/  hol=(unit holder:lpa)
+    ?^  s=(slaw %p u.ht)  `[%ship u.s]
+    ?^  w=(slaw %uv u.ht)  `[%web u.w]
+    ~
+  ?~  hol  (send-err eyre-id 400 'bad holder')
+  ;<  ~  bind:m  (poke-eval [%pass %refund key u.hol])
+  (send-ok eyre-id)
+::  +offer-of: an offer from the seller's form, ~ unless it is sane
+++  offer-of
+  |=  jon=json
+  ^-  (unit offer:lpa)
+  =,  dejs-soft:format
+  =/  f
+    %-  ot
+    :~  sats+ni  cents+ni  minutes+ni  mode+so  mint+so  open+bo
+    ==
+  =/  r  (f jon)
+  ?~  r  ~
+  =/  [sats=@ud cents=@ud mins=@ud md=@t mt=@t open=?]  u.r
+  =/  o=offer:lpa
+    :*  sats  cents  (mul mins ~m1)
+        ?:(=('read' md) %read %post)
+        ?:(=('' mt) ~ `mt)
+        open
+    ==
+  ?.((sane-offer:lpa o) ~ `o)
 ::  +apply-forum-notice: a forum action poked by ANOTHER ship over /forum.sig.
 ::  The inbox fiber does the minimum: read the author from the TRANSPORT (never
 ::  the payload), ignore a sourceless (local) poke, and hand the action to the
@@ -7884,6 +8295,12 @@
       ?.  ?=(?(%create-board %delete-board) -.act.act)  (pure:m ~)
       =/  nom=@ta  ?:(?=(%create-board -.act.act) name.act.act +.act.act)
       ;<  *  bind:m  (cull-soft:io (rf root /forum/members nom))
+      ::  and no passes: a deleted board's end, its sales log and
+      ::  wallet stay (+apply-pass)
+      =/  pk=@ta  (scope-key:lpa [%board nom])
+      ;<  *  bind:m  (cull-soft:io (rf root /passes/held pk))
+      ;<  *  bind:m  (cull-soft:io (rf root /passes/offers pk))
+      ;<  *  bind:m  (cull-soft:io (rf root /pub/passes pk))
       ;<  *  bind:m
         %-  cull-soft:io
         [%& %| (snoc ug-base (crip (weld (trip (forum-group-name nom)) ".grp")))]
@@ -7910,6 +8327,7 @@
     ;<  ~  bind:m  (aside-seen up)
     (put-file (rf up /notify %seen) [/ %noun] new)
       %forum-cull  (cull-forum-of up now who.act)
+      %pass  (apply-pass now act.act)
       %forum-notes-clear
     ;<  v=view:nexus  bind:m  (peek:fio (rv up /forum/notes) ~)
     ?.  ?=([%ball *] v)  (pure:m ~)

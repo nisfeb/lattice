@@ -33,6 +33,16 @@
   ==
 +$  sale   [at=@da =holder paid=@ud =cur =via refund=?]
 +$  held   (map holder pass)
+::  +$  next: the last sweep, and each scope's next wake
++$  next   [last=@da wakes=(map @ta @da)]
+::  +$  pass-act: what the writer does with passes. A grant is a sale
+::  settled or the seller's gift
++$  pass-act
+  $%  [%offer key=@ta o=(unit offer)]
+      [%grant key=@ta =holder =mode period=@dr paid=@ud =cur =via ref=@t]
+      [%refund key=@ta =holder]
+      [%sweep ~]
+  ==
 ::
 ::  the sales log keeps this many, newest first
 ++  sales-max  1.000
@@ -52,6 +62,17 @@
     %folder   (cat 3 'f-' (scot %uv (sham pax.s)))
     %lodging  (cat 3 'l-' (rsh [3 1] (scot %p who.s)))
   ==
+::
+::  +key-board: the board a scope key names, if it names one
+::
+++  key-board
+  |=  key=@ta
+  ^-  (unit @tas)
+  ?.  =('b-' (end [3 2] key))  ~
+  =/  n=@t  (rsh [3 2] key)
+  ?.  ((sane %tas) n)  ~
+  ?:  =('' n)  ~
+  `n
 ::
 ::  +live: does holder h hold a pass good for `want` now. One map lookup
 ::
@@ -78,19 +99,18 @@
   ?.  (gth until.p now)  ~
   `who.holder.p
 ::
-::  +extend: a purchase of `o` by `who`. A renewal runs from the old end
-::  if that is still ahead, so paying early loses nothing. A comet's
-::  pass is read-only, as comets cannot post on private boards
+::  +extend: a purchase by `who` of `period` at mode `md`, the offer's
+::  when it was paid for. A renewal runs from the old end if that is
+::  still ahead, so paying early loses nothing. A comet's pass is
+::  read-only, as comets cannot post on private boards
 ::
 ++  extend
-  |=  [h=held who=holder o=offer now=@da paid=@ud =cur =via ref=@t]
+  |=  [h=held who=holder md=mode period=@dr now=@da paid=@ud =cur =via ref=@t]
   ^-  pass
   =/  old  (~(get by h) who)
   =/  from=@da  ?~(old now (max now until.u.old))
-  =/  md=mode
-    ?:  &(?=(%ship -.who) (gth (met 3 who.who) 8))  %read
-    mode.o
-  [who md (add from period.o) ?~(old now since.u.old) paid cur via ref]
+  =?  md  &(?=(%ship -.who) (gth (met 3 who.who) 8))  %read
+  [who md (add from period) ?~(old now since.u.old) paid cur via ref]
 ::
 ::  +refund: the pass ends now. The money goes back by hand
 ::
