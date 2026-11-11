@@ -8,7 +8,7 @@ As built, against what is below: a web pass is read-only; the mod page sets peri
 
 ## Goal
 
-A host earns when people stay. A reader buys a pass: the right to read, or read and post in, one board, folder or lodging for a period. The access check asks whether the reader holds a valid pass, and a pass that runs out closes access without the owner doing anything. A ship pays in ecash or over Lightning. A reader with no ship pays the same way or by card.
+A host earns when people stay. A reader buys a pass: the right to read, or read and post in, one board, folder or lodging for a period. The access check asks whether the reader holds a valid pass, and a pass that runs out closes access without the owner doing anything. A ship pays in ecash or over Lightning. A reader with no ship pays the same way. Either may also pay a dollar price by card through Stripe or in bitcoin through BTCPay.
 
 ## Licence
 
@@ -43,8 +43,8 @@ All pass state lives at the nexus root under `/passes`, outside `/page` (so outs
 +$  mode    ?(%read %post)
 +$  holder  $%([%ship who=@p] [%web key=@uv])     ::  key: hash of the bearer code
 +$  cur     ?(%sat %usd)                          ::  %usd counts cents
-+$  via     ?(%ecash %lightning %card %gift)
-+$  offer                                         ::  sats at mint, cents by card
++$  via     ?(%ecash %lightning %card %bitcoin %gift)
++$  offer                                         ::  sats at mint; cents by card or bitcoin
   $:  sats=@ud  cents=@ud  period=@dr  =mode  mint=(unit @t)  open=?  ==
 +$  pass
   $:  =holder  =mode  until=@da  since=@da  paid=@ud  =cur  =via  ref=@t  ==
@@ -105,7 +105,7 @@ The buyer uses their own lattice. A board page that a ship cannot read but that 
 
 ```
 buyer page ──POST /pass-buy?host=&board=──▶ buyer lattice ──poke /forum.sig, mark %pass-buy, [board how]──▶ host
-                                                              how = [%ecash token] | [%lightning ~]
+                                                              how = [%ecash token] | [%lightning ~] | [%card ~] | [%bitcoin ~]
 host: /passes/pay/<id> fiber ──iris──▶ mint  (/v1/swap, or /v1/mint/quote/bolt11 then /v1/mint/bolt11)
 host ──forum note "pay this Lightning invoice: lnbc…"──▶ buyer   (Lightning only; paid from any wallet)
 host ──forum note "you hold a pass until …" or "your payment failed: …"──▶ buyer
@@ -114,7 +114,6 @@ host ──forum note "you hold a pass until …" or "your payment failed: …"�
 1. **Ecash.** The buyer pastes a `cashuA` token from any wallet (cashuB, which is CBOR, is not read yet). The host refuses a token from a mint other than the offer's (`+mint-same`), a short one (net of the input fee below the price), and a fourth payment under way from one payer. It writes the step before each mint call, swaps the proofs for its own blinded outputs, unblinds the signatures, and keeps the new proofs in the wallet. A lost answer is recovered by NUT-09 restore on the same outputs. The swap succeeding is the payment.
 2. **Lightning.** The host asks the offer's mint for a bolt11 quote, sends the invoice to the buyer, and polls the quote every 5 seconds for 5 minutes, then every minute until it is paid or expires. Paid, it mints its outputs and keeps the proofs. The host never runs a Lightning node: the mint does.
 3. **Settle** (the writer, once per payment id): wallet first, then the pass. A renewal extends from `max(now, until)`, so paying early loses nothing. The pass goes in `/passes/held`, the sale in `/passes/sales`, the ship into `who.ships`, a `%pass` item into the inbox, and a note of the pass's end back to the buyer.
-
 4. **Card or bitcoin**, for a ship: the buy poke asks for a rail (`how` is `[%card ~]` or `[%bitcoin ~]`). The writer makes a grub `/passes/open/<tok>` whose fiber (`+rail-for-ship`) makes the session, so the writer never waits on a rail, and sends the ship the link as a note. The ship pays on the rail's page and the session settles as above, to a pass held by the ship. This needs the seller's public url in the settings, since a poke has no request to read it from.
 
 Authorship of every buy poke comes from the Ames transport, as for forum posts. A comet may buy (it is a ship) but its pass is `%read` only, the same rule as comets on boards.
@@ -129,7 +128,7 @@ A private board with an offer serves a public buy page at `/apps/lattice/forum/<
 
 On settle the host makes a bearer code (128 random bits, written as a `@uv`), keeps `[%web (sham %lattice-pass code)]` as the holder, and sets the cookie `lattice-pass-<scope-key>=<code>` (HttpOnly, Secure, SameSite=Lax, Path=/apps/lattice/). Its Max-Age is the pass's time left plus the 90 days a lapsed pass is kept, so the page can say the pass ended and paying again with the cookie renews the same code. The page shows the code to keep for reading on another browser; a form post of it to `/apps/lattice/pass/use?board=` sets the cookie there. A web pass is `%read`: posting needs a ship.
 
-Anonymous routes are capped: 50 payments under way in all, 50 card sessions an hour, and a token of at most 64 KB. One cap covers everyone, so unpaid web invoices can hold it for their hour. A per-address limit, as forum posting has, is the upgrade if that is abused.
+Anonymous routes are capped: 50 ecash or Lightning payments under way in all, 50 card or bitcoin sessions open, and a token of at most 64 KB. One cap covers everyone, so unpaid web invoices can hold it for their hour. A per-address limit, as forum posting has, is the upgrade if that is abused.
 
 ## Privacy
 
@@ -147,7 +146,7 @@ Blind tokens would let a ship buy without the seller learning which ship bought,
 - **Expiry**: at `until`. Posting and web reads close at once, and ship reads close at the sweeper's wake.
 - **Reminder**: three days before a ship's pass lapses, the sweep sends the holder a note saying when it ends. It lands in their forum notes.
 - **Renewal**: buying again extends from `max(now, until)`. There is no automatic renewal: ecash cannot be pulled, and Stripe subscriptions are left out.
-- **Refund**: the seller presses Refund on a pass. The pass ends now and a refund line goes in the sales log, which the income subtracts. Money goes back by hand: for ecash or Lightning the seller withdraws from the wallet and sends it, and for card they refund in the Stripe dashboard. This is register's model. Lattice never calls the refund API.
+- **Refund**: the seller presses Refund on a pass. The pass ends now and a refund line goes in the sales log, which the income subtracts. Money goes back by hand: for ecash or Lightning the seller withdraws from the wallet and sends it, for card they refund in the Stripe dashboard, and for bitcoin in BTCPay. This is register's model. Lattice never calls the refund API.
 - **Gift**: the seller grants a pass with no payment (`via %gift`, paid 0), for comps and testing.
 - **What a lapsed reader sees**: a ship gets a note that its pass ended, and the board's page shows the host's offer and the buy forms instead of "unreachable or denied". A web reader whose cookie names a lapsed pass gets the buy page with "Your pass ended on" its date: the cookie outlasts the pass by the 90 days a lapsed pass is kept, and paying again with it renews the same code.
 - **Offer changes**: a new price or period applies to the next purchase. Closing an offer keeps every pass until it lapses. Deleting a board ends its passes and keeps its sales log and wallet.
@@ -160,7 +159,7 @@ Blind tokens would let a ship buy without the seller learning which ship bought,
 - **Income**: for this calendar month, and for the last 30 days, by unit (sats and USD separately, never converted), net of refunds.
 - **Lapses**: passes that lapsed in the period and were not renewed, which is churn.
 - **Wallet**: the ecash balance by mint, each as a cashuA token to copy into a Cashu wallet, cleared from the wallet only when the seller says it is in theirs. Withdrawal by melt to Lightning (furum's `%melt` step) is not ported yet.
-- **Offer**: price in sats and the mint, card price in cents, days, read or post, on sale.
+- **Offer**: price in sats and the mint, a dollar price in cents for card and bitcoin, days, read or post, on sale.
 - **Gift and refund**: give a ship a pass; end any live pass now.
 - **Card and bitcoin**: the Stripe key, the BTCPay url, store, api key and webhook secret, and this ship's public url, in one form. A key is never shown again: an empty field keeps it, and a box forgets each rail.
 
@@ -179,7 +178,7 @@ Blind tokens would let a ship buy without the seller learning which ship bought,
 | Blind signatures, hash-to-curve, DLEQ | `lib/blind`, `lib/bdhke`, `lib/curve` | reuse furum's `lib/cashu.hoon`, which carries the same maths and the swap, mint, melt and restore requests |
 | A pass that starts at purchase and lasts a period | global calendar windows only | the ledger and `+live` |
 | A synchronous validity check | none (poke and wait; no scry) | `+live` over one grub |
-| Taking payment | none, by design | the pay fiber, ecash and Lightning through any mint, card through Stripe |
+| Taking payment | none, by design | the pay fiber, ecash and Lightning through any mint; card through Stripe and bitcoin through BTCPay |
 | Prices, products, periods | none | `offer` |
 | Renewal, refund | none | settle extends, refund ends |
 | Anonymous holders | NUT-22 auth tokens over HTTP | web bearer codes, stored hashed |
@@ -194,16 +193,16 @@ A later version could issue a web pass as a tessera NUT-22 token, so a reader ke
 
 ## Phases
 
-1. `lib/lattice-pass.hoon` (types, `+live`, `+group-ships`, `+extend`, `+due`, `+next-wake`, `+prune`, `+summary`, `+web-key`, `+cookie-code`, `+cashu-a`), `lib/lattice-cashu.hoon` (furum's `cashu.hoon`) and `lib/lattice-stripe.hoon` (register's Stripe libs), with suites in `tests/lib/`.
+1. `lib/lattice-pass.hoon` (types, `+live`, `+group-ships`, `+extend`, `+due`, `+next-wake`, `+prune`, `+summary`, `+web-key`, `+cookie-code`, `+cashu-a`), `lib/lattice-cashu.hoon` (furum's `cashu.hoon`) and `lib/lattice-stripe.hoon` (register's Stripe libs) and `lib/lattice-btcpay.hoon` (armillary's), with suites in `tests/lib/`.
 2. Paid boards for ships: offers, the ledger, the post gate, group upkeep, the sweeper, ecash and Lightning purchase, the seller routes, inbox kinds, notes to the buyer.
-3. The open web: the buy page, web ecash and Lightning, Stripe, bearer codes and the cookie.
+3. The open web, and the dollar rails: the buy page, web ecash and Lightning, Stripe and BTCPay for the web and for ships, bearer codes and the cookie.
 4. Folders.
 5. Lodgings, once they exist.
 
 ## Testing
 
 - Hoon suites for the four libs, run offline (`scripts/offline-tests.sh lattice-pass lattice-cashu lattice-stripe lattice-btcpay`).
-- `scripts/pass-matrix.sh`, one ship: offers and their refusals, gifts, the read group, a one-minute pass lapsing with no owner action, renewal, refund, the mod page forms, the card routes with a fake key, and a deleted board taking its passes.
+- `scripts/pass-matrix.sh`, one ship: offers and their refusals, gifts, the read group, a one-minute pass lapsing with no owner action, renewal, refund, the mod page forms, the rail settings and the card routes with a fake key, and a deleted board taking its passes.
 - `scripts/pass-pay.sh`, one ship and a local nutshell test mint with its FakeWallet: a web reader pays by Lightning and reads on the cookie, uses the code on a second browser, renews with ecash, has a spent, a bad and a short token refused; the seller's numbers and wallet match and the wallet's token redeems at the mint; the pass lapses and the board is a buy page again.
 - `scripts/pass-rails.sh`, one ship and `scripts/fake-rails.py`: a web reader pays by card and in bitcoin, each settled by the rail's webhook and once only; a BTCPay webhook with a bad signature is refused; an expired invoice fails the payment; the seller's dollars and the via of each pass match.
 - Not yet run: a ship buying from another ship (two ships), and the real Stripe and BTCPay (the owner's test keys).
