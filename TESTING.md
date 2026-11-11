@@ -73,7 +73,7 @@ LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec.cookie scripts/api-mat
 $F reset lattice-dev compiled
 ```
 
-Passes (docs/superpowers/specs/2026-11-11-passes-design.md) have two suites, on one ship. `scripts/pass-matrix.sh` (about three minutes) works the seller's routes and forms, gifts, the read group, a lapse, refunds and the card routes with no real Stripe key. `scripts/pass-pay.sh` (about four minutes) pays for a pass on the open web against a local nutshell test mint, never a real one, set up as `../furum/docs/hoon-testing.md` says (port 3338); point `CASHU_VENV` at its virtualenv. A card payment through Stripe needs the owner's test key and is not in either suite.
+Passes (docs/superpowers/specs/2026-11-11-passes-design.md) have three suites, on one ship. `scripts/pass-matrix.sh` (about three minutes) works the seller's routes and forms, gifts, the read group, a lapse, refunds and the card routes with no real Stripe key. `scripts/pass-pay.sh` (about four minutes) pays for a pass on the open web against a local nutshell test mint, never a real one, set up as `../furum/docs/hoon-testing.md` says (port 3338); point `CASHU_VENV` at its virtualenv. `scripts/pass-rails.sh` (about a minute) pays by card and in bitcoin against `scripts/fake-rails.py`, which stands in for Stripe and BTCPay. The real services need the owner's test keys and are not in any suite.
 
 ## Release gate
 
