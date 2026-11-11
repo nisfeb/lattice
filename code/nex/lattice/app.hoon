@@ -8751,8 +8751,8 @@
       ['token' s+(wallet-token mt ps)]
   ==
 ::  +handle-pass-buy: POST /pass-buy?host=&board= (owner): buy a pass to
-::  another ship's board as this ship. The body is a cashuA token, or
-::  empty for a Lightning invoice. The host answers on the forum note
+::  another ship's board as this ship. The form holds a cashuA token, or
+::  ln for a Lightning invoice. The host answers on the forum note
 ::  road: an invoice to pay, the pass, or why not
 ++  handle-pass-buy
   |=  [eyre-id=@ta args=(map @t @t) body=@t our=@p]
@@ -8763,8 +8763,12 @@
   ?:  =(u.host our)  (send-err eyre-id 400 'that is you')
   =/  bd=(unit @t)  (~(get by args) 'board')
   ?.  &(?=(^ bd) !=('' u.bd) ((sane %tas) u.bd))  (send-err eyre-id 400 'bad board')
-  ?:  (gth (met 3 body) 65.536)  (send-err eyre-id 400 'that token is too big')
-  =/  how=how:lpa  ?:(=('' body) [%lightning ~] [%ecash body])
+  ?:  (gth (met 3 body) 70.000)  (send-err eyre-id 400 'that token is too big')
+  =/  form=(map @t @t)
+    (malt args:(parse-url:http-utils (crip (weld "/?" (trip body)))))
+  =/  how=how:lpa
+    ?:  (~(has by form) 'ln')  [%lightning ~]
+    [%ecash (fall (~(get by form) 'token') '')]
   ;<  base=(unit path)  bind:m  (peer-base-cached u.host)
   ;<  told=?  bind:m
     %^  remote-load-poke-wait  u.host
@@ -8772,7 +8776,7 @@
       [%poke [/lattice %pass-buy] `[@tas how:lpa]`[`@tas`u.bd how]]
     ~s15
   ?.  told  (send-err eyre-id 504 'the host did not answer')
-  (send-ok eyre-id)
+  (send-see-other eyre-id "/apps/lattice/forum-notes")
 ::  +passes-section: the Passes part of a private board's mod page: the
 ::  numbers, the offer, a gift, every pass with a refund, and the wallet.
 ::  A public board sells nothing, so it shows none
@@ -8937,6 +8941,41 @@
     =/  mt=(unit @t)  (grab 'mint')
     ?~  mt  ~
     `[%wallet-take key u.mt]
+  ==
+::  +read-offer-remote: what another ship sells passes to its board for,
+::  from its /pub/passes; ~ when it sells none or does not answer
+++  read-offer-remote
+  |=  [shp=@p board=@ta]
+  =/  m  (fiber:fiber:nexus ,(unit offer:lpa))
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  (peer-base shp)
+  ?~  base  (pure:m ~)
+  ;<  ms=(unit view:nexus)  bind:m
+    (peek-remote-wait [%& %& (weld u.base /pub/passes) (scope-key:lpa [%board board])] shp)
+  ?~  ms  (pure:m ~)
+  ?.  ?=([%file *] u.ms)  (pure:m ~)
+  (pure:m (mole |.(+:;;([%1 offer:lpa] (sang-noun:tarball sang.u.ms)))))
+::  +serve-pass-remote-buy: another ship's board this ship may not read.
+::  When the host sells passes to it, the page offers one; else as before
+++  serve-pass-remote-buy
+  |=  [eyre-id=@ta host=@p board=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  o=(unit offer:lpa)  bind:m  (read-offer-remote host board)
+  ?.  &(?=(^ o) open.u.o ?=(^ mint.u.o))
+    (send-err eyre-id 504 'unreachable or denied')
+  =/  act=tape  "/apps/lattice/pass-buy?host={(scow %p host)}&board={(trip board)}"
+  %+  send-html  eyre-id
+  %+  pass-page  "Buy a pass"
+  ;:  weld
+    "<h1>{(scow %p host)}/{(esc (trip board))}</h1>"
+    "<p>You may not read this board yet. A pass: {(esc (pass-price u.o(cents 0)))}.</p>"
+    "<h2>Pay with ecash</h2><form method=\"post\" action=\"{act}\">"
+    "<p>Paste a cashuA token from "  (esc (trip u.mint.u.o))  "</p>"
+    "<textarea name=\"token\" rows=\"4\" required></textarea><button>Pay</button></form>"
+    "<h2>Pay over Lightning</h2><form method=\"post\" action=\"{act}\">"
+    "<input type=\"hidden\" name=\"ln\" value=\"1\"><button>Ask for an invoice</button></form>"
+    "<p>The host answers in your <a href=\"/apps/lattice/forum-notes\">forum notes</a>: an invoice to pay, your pass, or why not.</p>"
   ==
 ::  +apply-forum-notice: a forum action poked by ANOTHER ship over /forum.sig.
 ::  The inbox fiber does the minimum: read the author from the TRANSPORT (never
@@ -17678,7 +17717,7 @@
   ;<  our=@p  bind:m  bowl-our
   ;<  now=@da  bind:m  bowl-now
   ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs-remote u.host board)
-  ?~  gs  (send-err eyre-id 504 'unreachable or denied')
+  ?~  gs  (serve-pass-remote-buy eyre-id u.host board)
   =/  lod=(each board:ft @t)  (load:fb u.gs)
   ?:  ?=(%| -.lod)  (send-err eyre-id 504 'unreachable or denied')
   =/  brd=board:ft  p.lod
