@@ -63,7 +63,7 @@ All pass state lives at the nexus root under `/passes`, outside `/page` (so outs
 | `/passes/card/<tok>` | `[%1 card]`, a Stripe session waiting | an hour each, 50 in all |
 | `/passes/secrets` | `[%1 @t]`, the Stripe key | one |
 
-`<scope-key>` is `b-<board>` for a board, the folder's `@uv` hash for a folder (so a deep path is not a deep grub tree), and `l-<ship>` for a lodging.
+`<scope-key>` is `b-<board>` for a board, `f-` and the hex of the folder path's hash for a folder (so a deep path is not a deep grub tree), and `l-<ship>` for a lodging.
 
 Secrets: the wallet proofs and the Stripe key are payment secrets. They sit only in `/passes/wallet/*` and `/passes/secrets`. Neither is in the page tree, under `/pub`, or in a route an agent key may call. The Stripe key is written straight from the owner's request to its grub, never through a writer poke, and no route sends it back: `GET /pass-stripe` says only whether one is set and whether Stripe takes it as test or live. The wallet leaves only as a cashuA token on the owner's mod page. A bearer code is stored only as its hash.
 
