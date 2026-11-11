@@ -101,14 +101,15 @@
 ++  remind  ~d3
 ::
 ::  +scope-key: the grub name a scope's records sit under. A folder is
-::  its path's hash, so a deep folder is not a deep grub tree
+::  its path's hash, in hex (a dot would read as a mark), so a deep
+::  folder is not a deep grub tree
 ::
 ++  scope-key
   |=  s=scope
   ^-  @ta
   ?-  -.s
     %board    (cat 3 'b-' name.s)
-    %folder   (cat 3 'f-' (scot %uv (sham pax.s)))
+    %folder   (cat 3 'f-' (crip ((x-co:co 32) (end [3 16] (sham pax.s)))))
     %lodging  (cat 3 'l-' (rsh [3 1] (scot %p who.s)))
   ==
 ::

@@ -156,7 +156,9 @@
   ;:  weld
     (expect-eq !>(%b-main) !>((scope-key:lp [%board %main])))
     (expect-eq !>(%l-nec) !>((scope-key:lp [%lodging ~nec])))
-    (expect-eq !>(&) !>(=('f-0v' (end [3 4] (scope-key:lp [%folder /a/b])))))
+    (expect-eq !>(&) !>(=('f-' (end [3 2] (scope-key:lp [%folder /a/b])))))
+    (expect-eq !>(34) !>((met 3 (scope-key:lp [%folder /a/b]))))
+    (expect-eq !>(~) !>((find "." (trip (scope-key:lp [%folder /a/b])))))
     (expect-eq !>(|) !>(=((scope-key:lp [%folder /a/b]) (scope-key:lp [%folder /a/c]))))
   ==
 ::
