@@ -17,7 +17,12 @@ if (navigator.serviceWorker) {
   navigator.serviceWorker.register('/apps/lattice/sw.js', {scope: '/apps/lattice/'})
     .then(function(){ return navigator.serviceWorker.ready; })
     .then(function(){
-      if (navigator.serviceWorker.controller) fetch('/apps/lattice/owner?via=sw-controlled-fetch');
+      if (navigator.serviceWorker.controller) {
+        fetch('/apps/lattice/owner?via=sw-controlled-fetch');
+        // a map tile, as the client's worker fetches one: with no Mapbox
+        // token on this computer the bridge relays it to the ship
+        var t=document.createElement('img'); t.src='/apps/lattice/tile/streets/0/0/0?via=sw-tile'; document.body.appendChild(t);
+      }
       else if (!sessionStorage.reloaded) { sessionStorage.reloaded = 1; location.reload(); }
     }, function(e){ fetch('/apps/lattice/owner?via=sw-register-failed'); });
 } else fetch('/apps/lattice/owner?via=no-sw-support');

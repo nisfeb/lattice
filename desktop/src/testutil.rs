@@ -46,6 +46,11 @@ pub struct Stub {
 impl Stub {
     /// Answer every request with `reply(request) -> (status, body)`.
     pub fn new(reply: impl Fn(&Seen) -> (u16, String) + Send + Sync + 'static) -> Stub {
+        Stub::typed("text/plain", reply)
+    }
+
+    /// The same, answering with this Content-Type (a tile server's image/png).
+    pub fn typed(ctype: &'static str, reply: impl Fn(&Seen) -> (u16, String) + Send + Sync + 'static) -> Stub {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let seen: Arc<Mutex<Vec<Seen>>> = Arc::new(Mutex::new(Vec::new()));
@@ -70,7 +75,7 @@ impl Stub {
                     };
                     let _ = write!(
                         c,
-                        "HTTP/1.1 {status} {}\r\n{loc}Content-Type: text/plain\r\n\
+                        "HTTP/1.1 {status} {}\r\n{loc}Content-Type: {ctype}\r\n\
                          Content-Length: {}\r\nConnection: close\r\n\r\n",
                         reason(status),
                         body.len()

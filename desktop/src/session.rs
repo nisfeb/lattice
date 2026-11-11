@@ -48,6 +48,12 @@ fn cookie_dir() -> PathBuf {
     p.parent().map(|d| d.join("desktop")).unwrap_or_else(|| PathBuf::from("desktop"))
 }
 
+/// The directory this app keeps its secrets in (0700): the session
+/// cookies, and the Mapbox token (tiles.rs).
+pub fn secret_dir() -> PathBuf {
+    cookie_dir()
+}
+
 /// Where the cookie for `url` lives. None for a URL the rule refuses, so a
 /// config written before the rule existed cannot carry a cookie over plain
 /// http to a public host either.

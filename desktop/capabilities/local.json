@@ -26,6 +26,8 @@
     "allow-open-reader",
     "allow-reader-status",
     "allow-clear-reader-history",
+    "allow-map-token-status",
+    "allow-set-map-token",
     "allow-export-reader-identity",
     "allow-import-reader-identity"
   ]
