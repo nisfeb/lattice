@@ -90,6 +90,7 @@
 /<  fre  /lib/lattice-forum-render.hoon
 /<  lpa  /lib/lattice-pass.hoon
 /<  lca  /lib/lattice-cashu.hoon
+/<  lst  /lib/lattice-stripe.hoon
 ::  flat ODT: the safe HTML, the search text and the title of a fodt page
 /<  lf   /lib/lattice-fodt.hoon
 ::  flat ODS: the same three of a fods page (a spreadsheet)
@@ -290,6 +291,9 @@
             [%fall %| /passes/pay empty-dir:loader]
             [%fall %| /passes/wallet empty-dir:loader]
             [%fall %| /passes/done empty-dir:loader]
+        ::  /passes/card/<tok> a card payment waiting at Stripe, /passes/
+        ::  secrets the seller's Stripe key
+            [%fall %| /passes/card empty-dir:loader]
             [%fall %| /pub/passes empty-dir:loader]
             [%fall %& [/forum %seen] [[/ %noun] [%1 ~]]]
             [%fall %& [/forum %limits] [[/ %noun] [%1 ~]]]
@@ -2261,6 +2265,14 @@
   ::  pass to a private board, its page, and using a code. Anonymous: a
   ::  payment is all they start, capped (+start-pay), and a code is only
   ::  ever checked against the hashes kept
+  ?:  &(?=([%pass %card ~] suffix) =(%'POST' method.request.req))
+    (serve-pass-card eyre-id args req)
+  ?:  &(?=([%pass %return ~] suffix) =(%'GET' method.request.req))
+    (serve-pass-return eyre-id args)
+  ::  Stripe's webhook: it only names a session, which is then fetched from
+  ::  Stripe itself (+card-check), so nothing in the body is believed
+  ?:  &(?=([%hooks %stripe ~] suffix) =(%'POST' method.request.req))
+    (serve-stripe-hook eyre-id (req-body req))
   ?:  &(?=([%pass @ ~] suffix) =(%'POST' method.request.req))
     (serve-pass-web eyre-id i.t.suffix args (req-body req) (~(gut by (malt header-list.request.req)) 'cookie' ''))
   ?:  &(?=([%pass %state ~] suffix) =(%'GET' method.request.req))
@@ -3554,6 +3566,10 @@
     (handle-pass-wallet eyre-id args &)
       [%'POST' %pass-buy]
     (handle-pass-buy eyre-id args (req-body req) our)
+      [%'GET' %pass-stripe]
+    (handle-pass-stripe eyre-id | '')
+      [%'POST' %pass-stripe]
+    (handle-pass-stripe eyre-id & (req-body req))
   ::  ── follows (the ship-level follow list) ──
       [%'GET' %follows]
     ;<  fs=follows:lp  bind:m  read-follows
@@ -7892,6 +7908,8 @@
   ::
       %settle  (settle-pay now id.act)
   ::
+      %card-paid  (settle-card now tok.act total.act sid.act)
+  ::
       %wallet-take
     ;<  w=(map @t (list proof:lpa))  bind:m  (read-wallet key.act)
     (pass-put /passes/wallet key.act [%1 (~(del by w) mint.act)])
@@ -8621,6 +8639,11 @@
       "<h2>Pay over Lightning</h2><form method=\"post\" action=\"{act}/buy{q}\">"
       "<input type=\"hidden\" name=\"ln\" value=\"1\"><button>Get an invoice</button></form>"
     ==
+    ?:  =(0 cents.u.o)  ""
+    ;:  weld
+      "<h2>Pay by card</h2><form method=\"post\" action=\"{act}/card{q}\">"
+      "<button>Pay ${(a-co:co (div cents.u.o 100))}.{((d-co:co 2) (mod cents.u.o 100))} by card</button></form>"
+    ==
     "<h2>Have a pass code?</h2><form method=\"post\" action=\"{act}/use{q}\">"
     "<input name=\"code\" required><button>Use it here</button></form>"
   ==
@@ -8790,6 +8813,8 @@
   ;<  h=held:lpa  bind:m  (read-pass-held key)
   ;<  s=(list sale:lpa)  bind:m  (read-pass-sales key)
   ;<  w=(map @t (list proof:lpa))  bind:m  (read-wallet key)
+  ;<  sk=@t  bind:m  read-stripe-key
+  =/  stripe=?  !=('' sk)
   =/  n=numbers:lpa  (summary:lpa h s now)
   =/  base=tape  "/apps/lattice/forum/{(trip nom)}/mod"
   =/  ps=(list pass:lpa)
@@ -8814,6 +8839,11 @@
         ;label: Cashu mint that takes the sats
         ;br;
         ;input(type "url", name "mint", placeholder "https://mint.example", value ?~(o "" ?~(mint.u.o "" (trip u.mint.u.o))));
+      ==
+      ;div
+        ;label: card price in US cents (0 takes no cards; needs a Stripe key below)
+        ;br;
+        ;input(type "number", name "cents", min "0", value ?~(o "0" (a-co:co cents.u.o)));
       ==
       ;div
         ;label: days a pass lasts
@@ -8844,6 +8874,11 @@
         ;form(method "post", action "{base}/passes-off")
           ;input.btn(type "submit", value "stop selling (passes held keep until they end)");
         ==
+    ;p.me: {?:(stripe "A Stripe key is set, so card payments work. It is the same for every board." "No Stripe key is set, so passes take no cards.")}
+    ;form(method "post", action "{base}/pass-stripe")
+      ;input(type "password", name "key", placeholder "sk_live_… or sk_test_…, empty to remove", autocomplete "off");
+      ;input.btn(type "submit", value "set the Stripe key");
+    ==
     ;h4: Give a pass
     ;form(method "post", action "{base}/pass-gift")
       ;input(type "text", name "ship", required "", placeholder "~sampel-palnet");
@@ -8912,8 +8947,9 @@
       [%mod %passes ~]
     ?~  days  ~
     =/  sats=@ud  (fall (biff (grab 'sats') |=(t=@t (rush t dem))) 0)
+    =/  cents=@ud  (fall (biff (grab 'cents') |=(t=@t (rush t dem))) 0)
     =/  o=offer:lpa
-      :*  sats  0  (mul u.days ~d1)
+      :*  sats  cents  (mul u.days ~d1)
           ?:(=(`'post' (grab 'mode')) %post %read)
           (grab 'mint')
           ?=(^ (grab 'open'))
@@ -8976,6 +9012,217 @@
     "<h2>Pay over Lightning</h2><form method=\"post\" action=\"{act}\">"
     "<input type=\"hidden\" name=\"ln\" value=\"1\"><button>Ask for an invoice</button></form>"
     "<p>The host answers in your <a href=\"/apps/lattice/forum-notes\">forum notes</a>: an invoice to pay, your pass, or why not.</p>"
+  ==
+::  ==  card payments, through Stripe (register's pattern, lib/lattice-stripe)
+::
+::  A reader with no ship pays by card on a Stripe Checkout page. The
+::  session is made for the offer's price in cents; its record waits in
+::  /passes/card/<tok>. Both the page Stripe sends the buyer back to and
+::  Stripe's webhook settle it the same way: they fetch the session from
+::  Stripe with the seller's key and believe only its id, that it is
+::  paid, its total and our token in its metadata. So neither the query
+::  string nor the webhook body is trusted, and the webhook needs no
+::  signing secret. The writer settles once: the record goes as the pass
+::  is made. The key lives in /passes/secrets and is never sent back.
+::
+++  read-stripe-key
+  =/  m  (fiber:fiber:nexus ,@t)
+  ^-  form:m
+  ;<  n=(unit *)  bind:m  (pass-noun /passes %secrets)
+  (pure:m ?~(n '' (fall (mole |.(+:;;([%1 @t] u.n))) '')))
+++  read-card
+  |=  tok=@ta
+  =/  m  (fiber:fiber:nexus ,(unit card:lpa))
+  ^-  form:m
+  ;<  n=(unit *)  bind:m  (pass-noun /passes/card tok)
+  (pure:m ?~(n ~ (biff (mole |.(;;([%1 card:lpa] u.n))) |=(c=[%1 card:lpa] `+.c))))
+::  +read-cards: the card sessions waiting, by token
+++  read-cards
+  =/  m  (fiber:fiber:nexus ,(list [tok=@ta c=card:lpa]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  cv=view:nexus  bind:m  (peek:fio (rv up /passes/card) ~)
+  ?.  ?=([%ball *] cv)  (pure:m ~)
+  ?~  fil.ball.cv  (pure:m ~)
+  %-  pure:m
+  %+  murn  ~(tap by contents.u.fil.ball.cv)
+  |=  [tok=@ta =sang:tarball *]
+  ^-  (unit [tok=@ta c=card:lpa])
+  =/  g  (mole |.(;;([%1 card:lpa] (sang-noun:tarball sang))))
+  ?~(g ~ `[tok +.u.g])
+::  +stripe-call: one request to Stripe with the seller's key: its status
+::  and body, or ~ when it did not answer in thirty seconds
+++  stripe-call
+  |=  [key=@t meth=method:http url=@t body=(unit @t)]
+  =/  m  (fiber:fiber:nexus ,(unit [code=@ud body=@t]))
+  ^-  form:m
+  =/  req=request:http
+    [meth url (headers:lst key) ?~(body ~ `(as-octs:mimes:html u.body))]
+  ;<  ok=?  bind:m
+    (soft-poke /stripe &+&+[/sys/iris %'main.iris-state'] [[/ %iris-request] req])
+  ?.  ok  (pure:m ~)
+  %-  (deadline ,[code=@ud body=@t])
+  :-  ~s30
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %poke * *]
+    ?.  =([/ %http-response] p.sage.u.in)  [%skip ~]
+    =/  r  (mole |.(!<(client-response:iris q.sage.u.in)))
+    ?.  ?=([~ %finished *] r)  [%wait ~]
+    :+  %done  status-code.response-header.u.r
+    ?~(full-file.u.r '' q.data.u.full-file.u.r)
+  ==
+::  +site-url: where this ship answers, from the request, for the urls
+::  Stripe sends the buyer back to. Plain http only on a local host
+++  site-url
+  |=  req=inbound-request:eyre
+  ^-  tape
+  =/  hed  (malt header-list.request.req)
+  =/  host=tape  (trip (~(gut by hed) 'host' 'localhost'))
+  =/  local=?
+    ?|  =("localhost" (scag 9 host))
+        =("127." (scag 4 host))
+    ==
+  "{?:(local "http" "https")}://{host}"
+::  +serve-pass-card: POST /pass/card?board=, anonymous. A Checkout
+::  session for the offer's card price, and the buyer sent to it
+++  serve-pass-card
+  |=  [eyre-id=@ta args=(map @t @t) req=inbound-request:eyre]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  bd=(unit @t)  (~(get by args) 'board')
+  ?.  &(?=(^ bd) !=('' u.bd) ((sane %tas) u.bd))  (send-err eyre-id 400 'bad board')
+  =/  key=@ta  (scope-key:lpa [%board u.bd])
+  ;<  ok=?  bind:m  (pass-scope-ok key)
+  ?.  ok  (send-err eyre-id 404 'not found')
+  ;<  o=(unit offer:lpa)  bind:m  (read-pass-offer key)
+  ?.  &(?=(^ o) open.u.o (gth cents.u.o 0))  (send-err eyre-id 404 'not found')
+  ;<  sk=@t  bind:m  read-stripe-key
+  ?:  =('' sk)  (send-err eyre-id 503 'this board takes no cards just now')
+  ;<  now=@da  bind:m  bowl-now
+  ;<  cs=(list [tok=@ta c=card:lpa])  bind:m  read-cards
+  ::  sessions last an hour; older records are let go here
+  ;<  up=@ud  bind:m  nexus-up
+  =/  live=(list [tok=@ta c=card:lpa])
+    (skim cs |=([* c=card:lpa] (gth (add at.c ~h1) now)))
+  ;<  ~  bind:m
+    =/  old=(list [tok=@ta c=card:lpa])
+      (skip cs |=([* c=card:lpa] (gth (add at.c ~h1) now)))
+    |-  ^-  form:m
+    ?~  old  (pure:m ~)
+    ;<  *  bind:m  (cull-soft:io (rf up /passes/card tok.i.old))
+    $(old t.old)
+  ?:  (gte (lent live) pays-max:lpa)
+    (send-err eyre-id 429 'too many card payments are under way; try again soon')
+  ;<  eny=@uvJ  bind:m  get-entropy:io
+  =/  tk=@uv  (end [3 16] eny)
+  =/  tok=@ta  (crip ((x-co:co 32) tk))
+  =/  ck=@t  (~(gut by (malt header-list.request.req)) 'cookie' '')
+  =/  code=@uv  (fall (cookie-code:lpa ck key) (end [3 16] (shax eny)))
+  =/  site=tape  (site-url req)
+  =/  back=tape  "{site}/apps/lattice/pass/return?board={(trip u.bd)}&t={(trip tok)}&sid=\{CHECKOUT_SESSION_ID}"
+  =/  no=tape  "{site}/apps/lattice/forum/{(trip u.bd)}"
+  =/  body=@t
+    %-  form-body:lst
+    %:  checkout-body:lst  tok  ''
+      ~[[(crip "A pass to {(trip u.bd)}") cents.u.o]]
+      (crip back)  (crip no)
+      (div (sub (add now ~h1) ~1970.1.1) ~s1)
+    ==
+  ;<  r=(unit [code=@ud body=@t])  bind:m
+    (stripe-call sk %'POST' (cat 3 api:lst '/checkout/sessions') `body)
+  =/  ses  ?~(r ~ (read-session:lst body.u.r))
+  ?.  &(?=(^ ses) !=('' url.u.ses))
+    (send-err eyre-id 502 'the card processor did not take the payment')
+  ;<  ~  bind:m
+    %^  pass-put  /passes/card  tok
+    [%1 `card:lpa`[key code cents.u.o period.u.o %read now id.u.ses]]
+  (send-see-other eyre-id (trip url.u.ses))
+::  +card-check: ask Stripe about a session and, paid, settle it
+::  through the writer. Both the return page and the webhook end here
+++  card-check
+  |=  sid=@t
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?.  =('cs_' (end [3 3] sid))  (pure:m ~)
+  ?.  (lte (met 3 sid) 255)  (pure:m ~)
+  ;<  sk=@t  bind:m  read-stripe-key
+  ?:  =('' sk)  (pure:m ~)
+  ;<  r=(unit [code=@ud body=@t])  bind:m
+    (stripe-call sk %'GET' (rap 3 ~[api:lst '/checkout/sessions/' (url-encode:lst sid)]) ~)
+  =/  ses  ?~(r ~ (read-session:lst body.u.r))
+  ?~  ses  (pure:m ~)
+  ?.  &(paid.u.ses =(sid id.u.ses))  (pure:m ~)
+  (poke-eval [%pass %card-paid rid.u.ses total.u.ses sid])
+::  +serve-pass-return: GET /pass/return?board=&t=&sid=, where Stripe
+::  sends the buyer. Settled, it shows the same page as any payment
+++  serve-pass-return
+  |=  [eyre-id=@ta args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  bd=(unit @t)  (~(get by args) 'board')
+  ?.  &(?=(^ bd) !=('' u.bd) ((sane %tas) u.bd))  (send-err eyre-id 400 'bad board')
+  =/  tok=@t  (~(gut by args) 't' '')
+  ?.  &(=(32 (met 3 tok)) ((sane %ta) tok))  (send-err eyre-id 400 'bad token')
+  ;<  c=(unit card:lpa)  bind:m  (read-card tok)
+  ;<  ~  bind:m
+    ?~  c  (pure:m ~)
+    (card-check (~(gut by args) 'sid' ''))
+  =/  tk=@uv  (fall (rush tok hex) 0v0)
+  (send-see-other eyre-id "/apps/lattice/pass/state?board={(trip u.bd)}&t={(trip (scot %uv tk))}")
+::  +serve-stripe-hook: POST /hooks/stripe, anonymous, always 200
+++  serve-stripe-hook
+  |=  [eyre-id=@ta body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  sid=(unit @t)  (webhook-sid:lst (end [3 200.000] body))
+  ;<  ~  bind:m  ?~(sid (pure:m ~) (card-check u.sid))
+  (send-ok eyre-id)
+::  +settle-card: in the writer. The record goes first, so a session is
+::  settled once, then the pass and its page
+++  settle-card
+  |=  [now=@da tok=@ta total=@ud sid=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  c=(unit card:lpa)  bind:m  (read-card tok)
+  ?~  c  (pure:m ~)
+  ?.  =(sid sid.u.c)  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  *  bind:m  (cull-soft:io (rf up /passes/card tok))
+  =/  who=holder:lpa  (web-key:lpa code.u.c)
+  ;<  ~  bind:m
+    (apply-pass now [%grant key.u.c who mode.u.c period.u.c total %usd %card sid])
+  ;<  h=held:lpa  bind:m  (read-pass-held key.u.c)
+  =/  tk=@uv  (fall (rush tok hex) 0v0)
+  =/  ps  (~(get by h) who)
+  ?~  ps  (pass-done now tk | 'the pass could not be made; ask the seller' 0v0 *@da)
+  (pass-done now tk & '' code.u.c until.u.ps)
+::  +handle-pass-stripe: the seller's Stripe key, owner only. GET says
+::  whether one is set and whether Stripe takes it as test or live; POST
+::  sets it (empty clears it). The key itself is never sent back
+++  handle-pass-stripe
+  |=  [eyre-id=@ta set=? body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ?:  set
+    =/  k=@t  (end [3 255] body)
+    ?.  |(=('' k) =('sk_' (end [3 3] k)) =('rk_' (end [3 3] k)))
+      (send-err eyre-id 400 'a Stripe secret key begins sk_ or rk_')
+    ::  straight to its grub, never through a poke a log could keep
+    ;<  ~  bind:m  (pass-put /passes %secrets [%1 k])
+    (send-ok eyre-id)
+  ;<  sk=@t  bind:m  read-stripe-key
+  ?:  =('' sk)
+    (send-json eyre-id (pairs:enjs:format ~[['set' b+|]]))
+  ;<  r=(unit [code=@ud body=@t])  bind:m
+    (stripe-call sk %'GET' (cat 3 api:lst '/balance') ~)
+  =/  live=(unit ?)  ?~(r ~ ?.(=(200 code.u.r) ~ (read-livemode:lst body.u.r)))
+  %+  send-json  eyre-id
+  %-  pairs:enjs:format
+  :~  ['set' b+&]
+      ['mode' s+?~(live 'refused' ?:(u.live 'live' 'test'))]
   ==
 ::  +apply-forum-notice: a forum action poked by ANOTHER ship over /forum.sig.
 ::  The inbox fiber does the minimum: read the author from the TRANSPORT (never
@@ -17937,6 +18184,13 @@
   =/  brd=board:ft  u.bo
   =/  tl=path  t.pax
   ::  the comet switch is not a board action: it flips the owner's set
+  ::  the seller's Stripe key: straight to its grub (+handle-pass-stripe)
+  ?:  =([%mod %pass-stripe ~] tl)
+    =/  k=@t  (end [3 255] (fall (grab 'key') ''))
+    ?.  |(=('' k) =('sk_' (end [3 3] k)) =('rk_' (end [3 3] k)))
+      (send-err eyre-id 400 'a Stripe secret key begins sk_ or rk_')
+    ;<  ~  bind:m  (pass-put /passes %secrets [%1 k])
+    (send-see-other eyre-id "{base}/mod")
   ::  the Passes forms are pass actions, not board actions
   =/  pa=(unit pass-act:lpa)  (pass-form-act nom tl grab)
   ?^  pa

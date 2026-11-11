@@ -92,6 +92,23 @@ is "~wet ended" False "$(py "$(passes)" "[p for p in j['passes'] if p['ship']=='
 is "stop selling" 303 "$(P "$B/forum/$BD/mod/passes-off")"
 is "no offer now" None "$(py "$(passes)" "j['offer']")"
 
+echo "==> cards, with no real Stripe key (a live card payment needs the owner's test key)"
+is "a card offer" 200 "$(P "$B/pass-offer?board=$BD" --data '{"sats":0,"cents":350,"minutes":60,"mode":"read","mint":"","open":true}')"
+pg=$(curl -s "$URL/apps/lattice/forum/$BD")
+has "the buy page offers a card" 'Pay $3.50 by card' "$pg"
+hasnt "and no ecash" 'Pay with ecash' "$pg"
+is "no key, no card session" 503 "$(code -X POST "$URL/apps/lattice/pass/card?board=$BD")"
+is "the key must look like one" 400 "$(P "$B/pass-stripe" --data 'pk_test_nope')"
+is "set a fake test key" 200 "$(P "$B/pass-stripe" --data 'sk_test_passmatrixfake')"
+j=$(G "$B/pass-stripe")
+is "a key is set" True "$(py "$j" "j['set']")"
+hasnt "the key never comes back" 'passmatrixfake' "$j$(G "$B/passes?board=$BD")$(G "$B/forum/$BD/mod")"
+is "Stripe refuses a fake key" 502 "$(code -X POST "$URL/apps/lattice/pass/card?board=$BD")"
+is "a webhook with nothing in it" 200 "$(code -X POST "$URL/apps/lattice/hooks/stripe" --data '{"type":"checkout.session.completed","data":{"object":{"id":"cs_nope"}}}')"
+is "a return with a bad token" 400 "$(code "$URL/apps/lattice/pass/return?board=$BD&t=x&sid=cs_x")"
+is "clear the key" 200 "$(P "$B/pass-stripe" --data '')"
+is "no key now" False "$(py "$(G "$B/pass-stripe")" "j['set']")"
+
 echo "==> deleting the board takes its passes"
 is "delete the board" 303 "$(P "$B/forum/$BD/mod/delete")"
 is "delete the public one" 303 "$(P "$B/forum/$PB/mod/delete")"

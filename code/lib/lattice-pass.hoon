@@ -69,6 +69,9 @@
   ==
 ::  +$  done: how a web payment ended, kept a day for its page to read
 +$  done  [at=@da tok=@uv ok=? why=@t code=@uv until=@da]
+::  +$  card: a card payment under way at Stripe, by its poll token, in
+::  /passes/card/<tok>, until Stripe says it is paid or an hour passes
++$  card  [key=@ta code=@uv cents=@ud period=@dr =mode at=@da sid=@t]
 ::  how many payments may be under way: from one holder, and in all
 ++  pays-each  3
 ++  pays-max  50
@@ -86,6 +89,8 @@
       [%settle id=@ta]
       ::  the seller took the ecash from one mint out of a wallet
       [%wallet-take key=@ta mint=@t]
+      ::  Stripe says a card session is paid (+card in /passes/card/<tok>)
+      [%card-paid tok=@ta total=@ud sid=@t]
   ==
 ::
 ::  the sales log keeps this many, newest first
