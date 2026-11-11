@@ -89,6 +89,7 @@
 /<  fr   /lib/lattice-forum-rules.hoon
 /<  fre  /lib/lattice-forum-render.hoon
 /<  lpa  /lib/lattice-pass.hoon
+/<  lca  /lib/lattice-cashu.hoon
 ::  flat ODT: the safe HTML, the search text and the title of a fodt page
 /<  lf   /lib/lattice-fodt.hoon
 ::  flat ODS: the same three of a fods page (a spreadsheet)
@@ -283,6 +284,12 @@
             [%fall %| /passes/offers empty-dir:loader]
             [%fall %| /passes/held empty-dir:loader]
             [%fall %| /passes/sales empty-dir:loader]
+        ::  /passes/pay/<id> a payment and its fiber (+run-pay), /passes/
+        ::  wallet/<key> the seller's ecash, /passes/done/<tok> how a web
+        ::  payment ended
+            [%fall %| /passes/pay empty-dir:loader]
+            [%fall %| /passes/wallet empty-dir:loader]
+            [%fall %| /passes/done empty-dir:loader]
             [%fall %| /pub/passes empty-dir:loader]
             [%fall %& [/forum %seen] [[/ %noun] [%1 ~]]]
             [%fall %& [/forum %limits] [[/ %noun] [%1 ~]]]
@@ -967,6 +974,12 @@
       ::  lattice-fs read that answered from the link's cache. The grub holds
       ::  the link's path. The fiber ends with the read, and grubbery deletes
       ::  its grub; a restart (prod) just ends it, the next read starts another.
+      ::  /passes/pay/<id>: one payment for a pass (+run-pay). After a
+      ::  restart it carries on from the step its grub holds; settled, the
+      ::  writer culls the grub, which ends it
+          [[%passes %pay ~] @]
+        ;<  ~  bind:m  take-kick
+        (run-pay name.rail)
           [[%link-reads ~] @]
         ;<  ~  bind:m  take-kick
         ?^  prod  (pure:m ~)
@@ -2243,7 +2256,15 @@
   ?:  &(?=([%forum *] suffix) =(%'GET' method.request.req) authenticated.req)
     (serve-forum-owner eyre-id t.suffix args)
   ?:  &(?=([%forum ^] suffix) =(%'GET' method.request.req))
-    (serve-forum-public eyre-id t.suffix args)
+    (serve-forum-public eyre-id t.suffix args (~(gut by (malt header-list.request.req)) 'cookie' ''))
+  ::  passes on the open web (+serve-pass-web, +serve-pass-state): buying a
+  ::  pass to a private board, its page, and using a code. Anonymous: a
+  ::  payment is all they start, capped (+start-pay), and a code is only
+  ::  ever checked against the hashes kept
+  ?:  &(?=([%pass @ ~] suffix) =(%'POST' method.request.req))
+    (serve-pass-web eyre-id i.t.suffix args (req-body req) (~(gut by (malt header-list.request.req)) 'cookie' ''))
+  ?:  &(?=([%pass %state ~] suffix) =(%'GET' method.request.req))
+    (serve-pass-state eyre-id args)
   ::  public form submissions: POST /f/<page>. The ONLY unauthenticated WRITE,
   ::  and it is opt-in twice over. The page must be %clearweb AND carry a
   ::  /forms-on flag (owner-set). The body becomes one command to that page,
@@ -3527,6 +3548,12 @@
     (handle-passes eyre-id args req %gift)
       [%'POST' %pass-refund]
     (handle-passes eyre-id args req %refund)
+      [%'GET' %pass-wallet]
+    (handle-pass-wallet eyre-id args |)
+      [%'POST' %pass-wallet-take]
+    (handle-pass-wallet eyre-id args &)
+      [%'POST' %pass-buy]
+    (handle-pass-buy eyre-id args (req-body req) our)
   ::  ── follows (the ship-level follow list) ──
       [%'GET' %follows]
     ;<  fs=follows:lp  bind:m  read-follows
@@ -7855,6 +7882,20 @@
     ?:  ?=(%gift via.act)  (pure:m ~)
     (pass-notify now key.act (crip "{(holder-text holder.act)} bought a pass to {(pass-name key.act)}"))
   ::
+      %buy
+    ;<  bans=banned:ls  bind:m  read-banned
+    ?:  &(?=(%ship -.holder.act) (is-banned:ls bans who.holder.act))  (pure:m ~)
+    ;<  why=(unit @t)  bind:m  (start-pay key.act holder.act how.act tok.act code.act)
+    ?~  why  (pure:m ~)
+    ?:  ?=(%ship -.holder.act)  (pass-tell who.holder.act key.act u.why)
+    (pass-done now tok.act | u.why 0v0 *@da)
+  ::
+      %settle  (settle-pay now id.act)
+  ::
+      %wallet-take
+    ;<  w=(map @t (list proof:lpa))  bind:m  (read-wallet key.act)
+    (pass-put /passes/wallet key.act [%1 (~(del by w) mint.act)])
+  ::
       %refund
     ;<  h=held:lpa  bind:m  (read-pass-held key.act)
     =/  p  (~(get by h) holder.act)
@@ -8128,6 +8169,610 @@
         open
     ==
   ?.((sane-offer:lpa o) ~ `o)
+::  ==  paying for a pass (ported from furum's payments; lib/lattice-cashu)
+::
+::  One grub per payment, /passes/pay/<id>, and its fiber (+run-pay). The
+::  grub holds the step the payment is on, written before the request it
+::  leads to, so a restart carries on from where it stood, and what a
+::  mint signed already is restored (NUT-09) before anything is asked
+::  again. The writer starts a payment (+start-pay) and settles it
+::  (+settle-pay): the proofs into the scope's wallet, the pass, word to
+::  the buyer. Settling culls the grub, which ends its fiber. The wallet,
+::  /passes/wallet/<key>, is the seller's takings: payment secrets, so
+::  under /passes with the rest and nowhere else.
+::
+++  read-pays
+  =/  m  (fiber:fiber:nexus ,(list [id=@ta p=pay:lpa]))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  cv=view:nexus  bind:m  (peek:fio (rv up /passes/pay) ~)
+  ?.  ?=([%ball *] cv)  (pure:m ~)
+  ?~  fil.ball.cv  (pure:m ~)
+  %-  pure:m
+  %+  murn  ~(tap by contents.u.fil.ball.cv)
+  |=  [id=@ta =sang:tarball *]
+  ^-  (unit [id=@ta p=pay:lpa])
+  =/  g  (mole |.(;;([%1 pay:lpa] (sang-noun:tarball sang))))
+  ?~(g ~ `[id +.u.g])
+::  +start-pay: in the writer. Only for an open offer that takes sats;
+::  three under way per holder and fifty in all; ecash only as a cashuA
+::  token of the offer's mint, worth the price. ~ when it started, or why
+::  not
+++  start-pay
+  |=  [key=@ta =holder:lpa =how:lpa tok=@uv code=@uv]
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  ok=?  bind:m  (pass-scope-ok key)
+  ?.  ok  (pure:m `'no passes are sold there')
+  ;<  o=(unit offer:lpa)  bind:m  (read-pass-offer key)
+  ?~  o  (pure:m `'no passes are sold there')
+  ?.  open.u.o  (pure:m `'passes there are not on sale now')
+  ?~  mint.u.o  (pure:m `'passes there are sold by card only')
+  ;<  live=(list [id=@ta p=pay:lpa])  bind:m  read-pays
+  ?:  (gte (lent live) pays-max:lpa)
+    (pure:m `'too many payments are under way here; try again soon')
+  ?:  (gte (lent (skim live |=([* p=pay:lpa] =(holder holder.p)))) pays-each:lpa)
+    (pure:m `'three payments are already under way; wait for one to finish')
+  =/  step=(each pay-step:lpa @t)
+    ?:  ?=(%lightning -.how)  &+[%quote ~]
+    =/  t  (cashu-a:lpa token.how)
+    ?~  t  |+'that is not a cashuA token'
+    ?.  (mint-same:lpa mint.u.t u.mint.u.o)  |+'that token is from another mint'
+    =/  s  (inputs-sum:lca proofs.u.t)
+    ?~  s  |+'that token holds no proofs a mint would take'
+    ?:  (lth total.u.s sats.u.o)  |+'the token is worth less than the price'
+    &+[%swap proofs.u.t]
+  ?:  ?=(%| -.step)  (pure:m `p.step)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  eny=@uvJ  bind:m  get-entropy:io
+  =/  id=@ta  (crip ((x-co:co 16) (end [3 8] eny)))
+  =/  =via:lpa  ?:(?=(%lightning -.how) %lightning %ecash)
+  =/  p=pay:lpa
+    [holder key u.mint.u.o sats.u.o period.u.o mode.u.o via tok code p.step]
+  ;<  ~  bind:m  (ensure-dirs up / /passes/pay)
+  ;<  ~  bind:m  (put-file (rf up /passes/pay id) [/ %noun] [%1 p])
+  (pure:m ~)
+::  +settle-pay: in the writer, a payment its fiber is done with. The
+::  wallet first, then the grub goes, so it is settled once; then the
+::  pass, and word to the buyer
+++  settle-pay
+  |=  [now=@da id=@ta]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  n=(unit *)  bind:m  (pass-noun /passes/pay id)
+  =/  g  ?~(n ~ (mole |.(;;([%1 pay:lpa] u.n))))
+  ?~  g  (pure:m ~)
+  =/  p=pay:lpa  +.u.g
+  ?.  ?=(?(%done %failed) -.step.p)  (pure:m ~)
+  ;<  ~  bind:m
+    ?.  ?=(%done -.step.p)  (pure:m ~)
+    (wallet-add key.p mint.p got.step.p)
+  ;<  *  bind:m  (cull-soft:io (rf up /passes/pay id))
+  ?:  ?=(%failed -.step.p)
+    ?:  ?=(%ship -.holder.p)
+      (pass-tell who.holder.p key.p (crip "your payment failed: {(trip why.step.p)}"))
+    (pass-done now tok.p | why.step.p 0v0 *@da)
+  =/  got=@ud  (roll (turn got.step.p |=(c=proof:lpa amount.c)) add)
+  ;<  ~  bind:m
+    %+  apply-pass  now
+    [%grant key.p holder.p mode.p period.p got %sat via.p id]
+  ?.  ?=(%web -.holder.p)  (pure:m ~)
+  ;<  h=held:lpa  bind:m  (read-pass-held key.p)
+  =/  ps  (~(get by h) holder.p)
+  ?~  ps  (pass-done now tok.p | 'the pass could not be made; ask the seller' 0v0 *@da)
+  (pass-done now tok.p & '' code.p until.u.ps)
+::  +pass-done: how a web payment ended, by its poll token, kept a day.
+::  Older ones go as each is written
+++  pass-done
+  |=  [now=@da tok=@uv ok=? why=@t code=@uv until=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  cv=view:nexus  bind:m  (peek:fio (rv up /passes/done) ~)
+  =/  old=(list @ta)
+    ?.  ?=([%ball *] cv)  ~
+    ?~  fil.ball.cv  ~
+    %+  murn  ~(tap by contents.u.fil.ball.cv)
+    |=  [id=@ta =sang:tarball *]
+    =/  d  (mole |.(;;([%1 done:lpa] (sang-noun:tarball sang))))
+    ?~  d  `id
+    ?:((lth (add at.u.d ~d1) now) `id ~)
+  ;<  ~  bind:m
+    |-  ^-  form:m
+    ?~  old  (pure:m ~)
+    ;<  *  bind:m  (cull-soft:io (rf up /passes/done i.old))
+    $(old t.old)
+  (pass-put /passes/done (crip ((x-co:co 32) tok)) [%1 `done:lpa`[now tok ok why code until]])
+++  read-pass-done
+  |=  tok=@uv
+  =/  m  (fiber:fiber:nexus ,(unit done:lpa))
+  ^-  form:m
+  ;<  n=(unit *)  bind:m  (pass-noun /passes/done (crip ((x-co:co 32) tok)))
+  (pure:m ?~(n ~ (biff (mole |.(;;([%1 done:lpa] u.n))) |=(d=[%1 done:lpa] `+.d))))
+::  +read-wallet / +wallet-add: a scope's ecash, by mint. Proofs go in by
+::  secret, so a payment settled twice adds nothing
+++  read-wallet
+  |=  key=@ta
+  =/  m  (fiber:fiber:nexus ,(map @t (list proof:lpa)))
+  ^-  form:m
+  ;<  n=(unit *)  bind:m  (pass-noun /passes/wallet key)
+  (pure:m ?~(n ~ (fall (mole |.(+:;;([%1 (map @t (list proof:lpa))] u.n))) ~)))
+++  wallet-add
+  |=  [key=@ta mint=@t ps=(list proof:lpa)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  w=(map @t (list proof:lpa))  bind:m  (read-wallet key)
+  =/  old=(list proof:lpa)  (~(gut by w) mint ~)
+  =/  have=(set @t)  (silt (turn old |=(c=proof:lpa secret.c)))
+  =/  new=(list proof:lpa)
+    (weld old (skip ps |=(c=proof:lpa (~(has in have) secret.c))))
+  (pass-put /passes/wallet key [%1 (~(put by w) mint new)])
+::  +wallet-token: a mint's proofs as a cashuA token any wallet takes
+++  wallet-token
+  |=  [mint=@t ps=(list proof:lpa)]
+  ^-  @t
+  =/  jon=json
+    %-  pairs:enjs:format
+    :~  :-  'token'
+        :-  %a
+        :~  %-  pairs:enjs:format
+            :~  ['mint' s+mint]
+                :-  'proofs'
+                :-  %a
+                %+  turn  ps
+                |=  c=proof:lpa
+                %-  pairs:enjs:format
+                :~  ['amount' (numb:enjs:format amount.c)]
+                    ['id' s+id.c]
+                    ['secret' s+secret.c]
+                    ['C' s+c.c]
+                ==
+            ==
+        ==
+        ['unit' s+'sat']
+    ==
+  =/  b=tape  (trip (en:base64:mimes:html (as-octs:mimes:html (en:json:html jon))))
+  %-  crip
+  %+  weld  "cashuA"
+  %+  murn  b
+  |=  c=@tD
+  ?:  =('=' c)  ~
+  `?:(=('+' c) '-' ?:(=('/' c) '_' c))
+::  ==  the payment fiber
+::
+++  run-pay
+  |=  id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  n=*  bind:m  (get-state-as:io ,*)
+  =/  g  (mole |.(;;([%1 pay:lpa] n)))
+  ?~  g  (pure:m ~)
+  (pay-step id +.u.g 0)
+::  +pay-go: on to the next step, kept first
+++  pay-go
+  |=  [id=@ta p=pay:lpa]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  ~  bind:m  (replace:io [%1 p])
+  (pay-step id p 0)
+::  +pay-retry: a mint that didn't answer is asked again after fifteen
+::  seconds, then twice as long each time, up to ten minutes. Before
+::  anything is out it gives up after a hundred tries; with an invoice
+::  out or outputs out for signing, after about a week
+++  pay-retry
+  |=  [id=@ta p=pay:lpa tries=@ud]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  most=@ud  ?:(?=(?(%invoice %swapping %minting) -.step.p) 1.000 100)
+  ?:  (gte tries most)
+    (pay-go id p(step [%failed 'the mint did not answer']))
+  ;<  ~  bind:m  (sleep:io (min ~m10 (mul ~s15 (bex (min tries 6)))))
+  (pay-step id p +(tries))
+::  +pay-step: what a payment does from the step it is on
+++  pay-step
+  |=  [id=@ta p=pay:lpa tries=@ud]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =*  s  step.p
+  ?-    -.s
+      ?(%done %failed)  (pay-settle id)
+  ::  ecash in hand: our outputs for all of it less the mint's fee
+      %swap
+    ;<  k=(unit mint-keys:lpa)  bind:m  (read-mint-keys mint.p)
+    ?~  k  (pay-retry id p tries)
+    =/  i  (inputs-sum:lca inputs.s)
+    ?~  i  (pay-go id p(step [%failed 'that is not a cashu token']))
+    =/  fee=@ud  (input-fee:lca ks.u.k ids.u.i)
+    ?:  (lth (sub total.u.i (min fee total.u.i)) price.p)
+      (pay-go id p(step [%failed 'the token less the mint fee is worth less than the price']))
+    ;<  eny=@uvJ  bind:m  get-entropy:io
+    =/  outs  (new-outs:lca (split-amount:lca (sub total.u.i fee)) kid.u.k eny)
+    (pay-go id p(step [%swapping inputs.s keys.u.k outs]))
+  ::
+      %swapping
+    %:  pay-sign  id  p  tries  keys.s  outs.s  "/v1/swap"
+      (build-swap-request:lca inputs.s (out-reqs:lca outs.s))
+    ==
+  ::  an invoice asked for: the mint's quote, whose invoice the buyer pays
+      %quote
+    ;<  a=(unit [code=@ud jon=json])  bind:m
+      %:  mint-call  mint.p  "/v1/mint/quote/bolt11"
+        `(build-mint-quote-request:lca price.p 'sat')
+        |=(j=json (is-new-quote:lca j ~))
+      ==
+    ?~  a  (pay-retry id p tries)
+    =/  q  (parse-mint-quote:lca jon.u.a)
+    ?~  q  (pay-go id p(step [%failed (mint-why jon.u.a)]))
+    ;<  now=@da  bind:m  bowl-now
+    =/  exp=@da
+      ?:(=(0 expiry.u.q) (add now ~h1) (from-unix:chrono:userlib expiry.u.q))
+    =/  np=pay:lpa  p(step [%invoice quote.u.q request.u.q exp])
+    ;<  ~  bind:m  (replace:io [%1 np])
+    ;<  ~  bind:m
+      ?.  ?=(%ship -.holder.p)  (pure:m ~)
+      %^  pass-tell  who.holder.p  key.p
+      (crip "pay this Lightning invoice for your pass: {(trip request.u.q)}")
+    (pay-step id np 0)
+  ::  the invoice with the buyer, and the mint asked every five seconds
+  ::  for five minutes, then every minute, until it is paid or runs out
+      %invoice
+    =|  n=@ud
+    |-  ^-  form:m
+    ;<  a=(unit [code=@ud jon=json])  bind:m
+      %:  mint-call  mint.p  "/v1/mint/quote/bolt11/{(trip quote.s)}"  ~
+        |=(j=json (is-quote:lca j quote.s))
+      ==
+    =/  q  ?~(a ~ (parse-mint-quote:lca jon.u.a))
+    ?:  ?=([~ * * %'PAID' *] q)
+      ;<  k=(unit mint-keys:lpa)  bind:m  (read-mint-keys mint.p)
+      ?~  k  (pay-retry id p tries)
+      ;<  eny=@uvJ  bind:m  get-entropy:io
+      =/  outs  (new-outs:lca (split-amount:lca price.p) kid.u.k eny)
+      (pay-go id p(step [%minting quote.s keys.u.k outs]))
+    ?:  ?=([~ * * %'ISSUED' *] q)
+      (pay-go id p(step [%failed 'the mint issued it already']))
+    ;<  now=@da  bind:m  bowl-now
+    ?:  (gth now expiry.s)  (pay-go id p(step [%failed 'the invoice ran out unpaid']))
+    ;<  ~  bind:m  (sleep:io ?:((lth n 60) ~s5 ~m1))
+    $(n +(n))
+  ::
+      %minting
+    %:  pay-sign  id  p  tries  keys.s  outs.s  "/v1/mint/bolt11"
+      (build-mint-request:lca quote.s (out-reqs:lca outs.s))
+    ==
+  ==
+::  +pay-sign: our outputs for the mint to sign, by a swap or a mint.
+::  What it signed before a restart is restored rather than asked for
+::  twice; refused, what it signed is still ours, and only nothing is a
+::  failure
+++  pay-sign
+  |=  [id=@ta p=pay:lpa tries=@ud keys=(map @ud @t) outs=(list out:lpa) url=tape body=json]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  r=(unit (list proof:lpa))  bind:m  (mint-restore mint.p outs keys)
+  ?~  r  (pay-retry id p tries)
+  ?^  u.r  (pay-go id p(step [%done u.r]))
+  ;<  a=(unit [code=@ud jon=json])  bind:m
+    (mint-call mint.p url `body |=(j=json (is-sigs:lca j (lent outs))))
+  ?~  a  (pay-retry id p tries)
+  =/  got=(list proof:lpa)
+    (outs-proofs:lca outs (parse-swap-response:lca jon.u.a) keys)
+  ?:  &(=(200 code.u.a) =((lent got) (lent outs)))
+    (pay-go id p(step [%done got]))
+  ;<  r=(unit (list proof:lpa))  bind:m  (mint-restore mint.p outs keys)
+  ?~  r  (pay-retry id p tries)
+  ?^  u.r  (pay-go id p(step [%done u.r]))
+  (pay-go id p(step [%failed (mint-why jon.u.a)]))
+::  +pay-settle: a finished payment handed to the writer, which culls its
+::  grub and so ends this fiber. Refused (the writer waits after a
+::  crash), it is handed over again in a minute
+++  pay-settle
+  |=  id=@ta
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  *  bind:m
+    (poke-soft:io (rf up / %'main.sig') [[/lattice %eval-action] `eval-action:le`[%pass %settle id]])
+  ;<  ~  bind:m  (sleep:io ~m1)
+  (pay-settle id)
+::  ==  talking to a mint
+::
+::  +read-mint-keys: a mint's keysets, and the one it signs new sat
+::  outputs under, with its keys
+++  read-mint-keys
+  |=  mint=@t
+  =/  m  (fiber:fiber:nexus ,(unit mint-keys:lpa))
+  ^-  form:m
+  ;<  a=(unit [code=@ud jon=json])  bind:m  (mint-call mint "/v1/keysets" ~ is-keysets:lca)
+  =/  ks=(list keyset:lca)  ?~(a ~ (parse-keysets:lca jon.u.a))
+  =/  act  (active-sat:lca ks)
+  ?~  act  (pure:m ~)
+  ;<  b=(unit [code=@ud jon=json])  bind:m
+    (mint-call mint "/v1/keys/{(trip id.u.act)}" ~ |=(j=json (is-keys:lca j id.u.act)))
+  ?~  b  (pure:m ~)
+  =/  keys  (parse-keys:lca jon.u.b)
+  ?~  keys  (pure:m ~)
+  (pure:m `[ks id.u.act u.keys])
+::  +mint-restore: the proofs a mint's record of our outputs makes
+::  (NUT-09): ~ when it didn't answer, none when it signed none of them
+++  mint-restore
+  |=  [mint=@t outs=(list out:lpa) keys=(map @ud @t)]
+  =/  m  (fiber:fiber:nexus ,(unit (list proof:lpa)))
+  ^-  form:m
+  ;<  a=(unit [code=@ud jon=json])  bind:m
+    %:  mint-call  mint  "/v1/restore"
+      `(build-restore-request:lca (out-reqs:lca outs))
+      |=(j=json (is-restore:lca j outs))
+    ==
+  ?~  a  (pure:m ~)
+  (pure:m `(restored-proofs:lca outs (fall (parse-restore:lca jon.u.a) ~) keys))
+::  +mint-why: what a mint said of a refusal
+++  mint-why
+  |=  jon=json
+  ^-  @t
+  =/  d  ?.(?=([%o *] jon) ~ (~(get by p.jon) 'detail'))
+  ?.  ?=([~ %s *] d)  'the mint refused it'
+  (crip (scag 200 (trip p.u.d)))
+::  +mint-call: one request to a mint: its status and json (null when the
+::  body isn't json), or ~ when it didn't answer in a minute or iris is
+::  not ours. The mint is the seller's own choice, so no address check.
+::  Answers come by fiber, so an answer to an earlier request may come
+::  first: a success is taken only when it names what we asked (want)
+++  mint-call
+  |=  [mint=@t pax=tape body=(unit json) want=$-(json ?)]
+  =/  m  (fiber:fiber:nexus ,(unit [code=@ud jon=json]))
+  ^-  form:m
+  =/  url=@t  (crip (weld (clean-mint-url:lca mint) pax))
+  =/  req=request:http
+    ?~  body  [%'GET' url ~ ~]
+    [%'POST' url ~[['content-type' 'application/json']] `(as-octs:mimes:html (en:json:html u.body))]
+  ;<  ok=?  bind:m
+    (soft-poke /mint &+&+[/sys/iris %'main.iris-state'] [[/ %iris-request] req])
+  ?.  ok  (pure:m ~)
+  ((deadline ,[code=@ud jon=json]) ~m1 (take-mint want))
+++  take-mint
+  |=  want=$-(json ?)
+  =/  m  (fiber:fiber:nexus ,[code=@ud jon=json])
+  ^-  form:m
+  |=  input:fiber:nexus
+  :+  ~  q.state
+  ?+  in  [%skip ~]
+      ~  [%wait ~]
+      [~ %poke * *]
+    ?.  =([/ %http-response] p.sage.u.in)  [%skip ~]
+    =/  r  (mole |.(!<(client-response:iris q.sage.u.in)))
+    ?.  ?=([~ %finished *] r)  [%wait ~]
+    =/  code=@ud  status-code.response-header.u.r
+    =/  jon=json  ?~(full-file.u.r ~ (fall (de:json:html q.data.u.full-file.u.r) ~))
+    ?:  &((gte code 200) (lth code 300) !(want jon))  [%wait ~]
+    [%done code jon]
+  ==
+::  ==  passes on the open web
+::
+::  A reader with no ship buys a web pass: a bearer code, kept by the
+::  host only as its hash (+web-key:lpa) and carried in a cookie for the
+::  board (+cookie-name:lpa). These pages need no script: a form to pay,
+::  a page that reloads itself until the payment ends, and a form to use
+::  a code on another browser.
+::
+::  +web-pass-live: does this request's cookie hold a live pass to key
+++  web-pass-live
+  |=  [key=@ta ck=@t now=@da]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  =/  c=(unit @uv)  (cookie-code:lpa ck key)
+  ?~  c  (pure:m |)
+  ;<  h=held:lpa  bind:m  (read-pass-held key)
+  (pure:m (live:lpa h (web-key:lpa u.c) now %read))
+::  +pass-page: a plain page for the web buyer
+++  pass-page
+  |=  [title=tape body=tape]
+  ^-  @t
+  %-  crip
+  ;:  weld
+    "<!doctype html><html><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+    "<title>"  (esc title)  "</title>"
+    "<style>body\{font:16px/1.5 system-ui,sans-serif;max-width:36rem;margin:2rem auto;padding:0 1rem}"
+    "textarea,input\{width:100%;box-sizing:border-box;font:inherit}"
+    "code,.code\{word-break:break-all;font-family:ui-monospace,monospace}"
+    "button\{font:inherit;padding:.3rem .9rem;margin:.4rem 0}</style>"
+    "</head><body>"  body  "</body></html>"
+  ==
+++  pass-price
+  |=  o=offer:lpa
+  ^-  tape
+  =/  per=tape
+    ?:  (gte period.o ~d1)  "{(a-co:co (div period.o ~d1))} days"
+    ?:  (gte period.o ~h1)  "{(a-co:co (div period.o ~h1))} hours"
+    "{(a-co:co (div period.o ~m1))} minutes"
+  =/  how=(list tape)
+    %+  weld  ?:(=(0 sats.o) ~ ~["{(a-co:co sats.o)} sats"])
+    ?:(=(0 cents.o) ~ ~["${(a-co:co (div cents.o 100))}.{((d-co:co 2) (mod cents.o 100))} by card"])
+  "{per} for {(zing (join " or " how))}"
+::  +serve-pass-buy: a private board's buy page, for an open offer. 404
+::  as before for a board that sells nothing
+++  serve-pass-buy
+  |=  [eyre-id=@ta nom=@ta brd=board:ft ck=@t now=@da]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  key=@ta  (scope-key:lpa [%board nom])
+  ;<  o=(unit offer:lpa)  bind:m  (read-pass-offer key)
+  ?.  &(?=(^ o) open.u.o)  (send-err eyre-id 404 'not found')
+  =/  act=tape  "/apps/lattice/pass"
+  =/  q=tape  "?board={(trip nom)}"
+  ;<  h=held:lpa  bind:m  (read-pass-held key)
+  =/  c  (cookie-code:lpa ck key)
+  =/  old  ?~(c ~ (~(get by h) (web-key:lpa u.c)))
+  %+  send-html  eyre-id
+  %+  pass-page  (trip title.info.brd)
+  ;:  weld
+    "<h1>"  (esc (trip title.info.brd))  "</h1>"
+    "<p>"  (esc (trip description.info.brd))  "</p>"
+    ?~  old  ""
+    "<p><b>Your pass ended on {(pass-day until.u.old)}.</b></p>"
+    "<p>A pass to read this board: {(esc (pass-price u.o))}.</p>"
+    ?:  =(0 sats.u.o)  ""
+    ;:  weld
+      "<h2>Pay with ecash</h2><form method=\"post\" action=\"{act}/buy{q}\">"
+      "<p>Paste a cashuA token from "  (esc (trip (need mint.u.o)))  "</p>"
+      "<textarea name=\"token\" rows=\"4\" required></textarea><button>Pay</button></form>"
+      "<h2>Pay over Lightning</h2><form method=\"post\" action=\"{act}/buy{q}\">"
+      "<input type=\"hidden\" name=\"ln\" value=\"1\"><button>Get an invoice</button></form>"
+    ==
+    "<h2>Have a pass code?</h2><form method=\"post\" action=\"{act}/use{q}\">"
+    "<input name=\"code\" required><button>Use it here</button></form>"
+  ==
+::  +serve-pass-web: the web buyer's POSTs. buy starts a payment and
+::  sends the buyer to its page; use sets the cookie for a live code
+++  serve-pass-web
+  |=  [eyre-id=@ta what=@ta args=(map @t @t) body=@t ck=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  bd=(unit @t)  (~(get by args) 'board')
+  ?.  &(?=(^ bd) !=('' u.bd) ((sane %tas) u.bd))  (send-err eyre-id 400 'bad board')
+  =/  key=@ta  (scope-key:lpa [%board u.bd])
+  =/  form=(map @t @t)
+    (malt args:(parse-url:http-utils (crip (weld "/?" (trip (end [3 70.000] body))))))
+  ;<  now=@da  bind:m  bowl-now
+  =/  back=tape  "/apps/lattice/forum/{(trip u.bd)}"
+  ?:  =(%use what)
+    =/  c=(unit @uv)  (biff (~(get by form) 'code') (cury slaw %uv))
+    ;<  h=held:lpa  bind:m  (read-pass-held key)
+    =/  p  ?~(c ~ (~(get by h) (web-key:lpa u.c)))
+    ?.  &(?=(^ c) ?=(^ p) (gth until.u.p now))
+      %+  send-html  eyre-id
+      (pass-page "No pass" "<p>That code holds no live pass to this board.</p><p><a href=\"{back}\">Back</a></p>")
+    (send-pass-cookie eyre-id key u.c (sub until.u.p now) back)
+  ?.  =(%buy what)  (send-err eyre-id 404 'not found')
+  =/  how=how:lpa
+    ?:  (~(has by form) 'ln')  [%lightning ~]
+    [%ecash (fall (~(get by form) 'token') '')]
+  ;<  eny=@uvJ  bind:m  get-entropy:io
+  =/  tok=@uv  (end [3 16] eny)
+  ::  a browser that holds a code for this board renews it: the pass is
+  ::  the code's, so paying again extends it
+  =/  code=@uv  (fall (cookie-code:lpa ck key) (end [3 16] (shax eny)))
+  ;<  ~  bind:m  (poke-eval [%pass %buy key (web-key:lpa code) how tok code])
+  (send-see-other eyre-id "/apps/lattice/pass/state?board={(trip u.bd)}&t={(trip (scot %uv tok))}")
+::  +serve-pass-state: a web payment's page, by its poll token. It
+::  reloads itself while the payment runs; paid, it shows the code once
+::  more and sets the cookie
+++  serve-pass-state
+  |=  [eyre-id=@ta args=(map @t @t)]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  bd=(unit @t)  (~(get by args) 'board')
+  ?.  &(?=(^ bd) !=('' u.bd) ((sane %tas) u.bd))  (send-err eyre-id 400 'bad board')
+  =/  tok=(unit @uv)  (biff (~(get by args) 't') (cury slaw %uv))
+  ?~  tok  (send-err eyre-id 400 'bad token')
+  =/  key=@ta  (scope-key:lpa [%board u.bd])
+  =/  back=tape  "/apps/lattice/forum/{(trip u.bd)}"
+  ;<  now=@da  bind:m  bowl-now
+  ;<  d=(unit done:lpa)  bind:m  (read-pass-done u.tok)
+  ?^  d
+    ?.  ok.u.d
+      %+  send-html  eyre-id
+      (pass-page "Payment failed" "<h1>Payment failed</h1><p>{(esc (trip why.u.d))}</p><p><a href=\"{back}\">Back</a></p>")
+    =/  ct=tape  (trip (scot %uv code.u.d))
+    %:  send-pass-page-cookie  eyre-id  key  code.u.d  (sub until.u.d (min now until.u.d))
+      %+  pass-page  "Paid"
+      ;:  weld
+        "<h1>Paid</h1><p>You can read this board until {(pass-day until.u.d)}.</p>"
+        "<p>Keep this code to read on another browser:</p><p class=\"code\">{ct}</p>"
+        "<p><a href=\"{back}\">Read the board</a></p>"
+      ==
+    ==
+  ;<  ps=(list [id=@ta p=pay:lpa])  bind:m  read-pays
+  =/  mine  (skim ps |=([* p=pay:lpa] &(=(tok.p u.tok) !=(0 tok.p))))
+  ?~  mine
+    %+  send-html  eyre-id
+    (pass-page "Payment" "<p>No such payment, or it is still starting. <a href=\"\">Reload</a></p><meta http-equiv=\"refresh\" content=\"3\">")
+  =/  s  step.p.i.mine
+  %+  send-html  eyre-id
+  %+  pass-page  "Payment"
+  ?.  ?=(%invoice -.s)
+    "<p>Working on your payment…</p><meta http-equiv=\"refresh\" content=\"3\">"
+  ;:  weld
+    "<h1>Pay this invoice</h1><p class=\"code\">"  (esc (trip bolt11.s))  "</p>"
+    "<p><a href=\"lightning:"  (esc (trip bolt11.s))  "\">Open in a wallet</a>. This page moves on when it is paid.</p>"
+    "<meta http-equiv=\"refresh\" content=\"5\">"
+  ==
+::  +pass-cookie: the Set-Cookie for a web pass. It outlasts the pass as
+::  long as the host keeps a lapsed one, so the page can say it ended and
+::  paying again renews the same code
+++  pass-cookie
+  |=  [key=@ta code=@uv left=@dr]
+  ^-  @t
+  %-  crip
+  ;:  weld
+    (trip (cookie-name:lpa key))  "="  (trip (scot %uv code))
+    "; Path=/apps/lattice/; Max-Age="  (a-co:co (div (add left keep-lapsed:lpa) ~s1))
+    "; HttpOnly; Secure; SameSite=Lax"
+  ==
+++  send-pass-cookie
+  |=  [eyre-id=@ta key=@ta code=@uv left=@dr to=tape]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  [[303 ~[['location' (crip to)] ['set-cookie' (pass-cookie key code left)]]] ~]
+++  send-pass-page-cookie
+  |=  [eyre-id=@ta key=@ta code=@uv left=@dr htm=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  %+  send-simple:srv  eyre-id
+  :-  [200 ~[['content-type' 'text/html'] ['set-cookie' (pass-cookie key code left)]]]
+  `(as-octs:mimes:html htm)
+::  +handle-pass-wallet: the seller's ecash, owner only.
+::    GET  /pass-wallet?board=        each mint's balance and its cashuA token
+::    POST /pass-wallet-take?board=&mint=   drop a mint's proofs, once the
+::                                    seller has its token in a wallet
+++  handle-pass-wallet
+  |=  [eyre-id=@ta args=(map @t @t) take=?]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  bd=(unit @t)  (~(get by args) 'board')
+  ?.  &(?=(^ bd) !=('' u.bd) ((sane %tas) u.bd))  (send-err eyre-id 400 'bad board')
+  =/  key=@ta  (scope-key:lpa [%board u.bd])
+  ?:  take
+    =/  mt=(unit @t)  (~(get by args) 'mint')
+    ?~  mt  (send-err eyre-id 400 'missing mint')
+    ;<  ~  bind:m  (poke-eval [%pass %wallet-take key u.mt])
+    (send-ok eyre-id)
+  ;<  w=(map @t (list proof:lpa))  bind:m  (read-wallet key)
+  %+  send-json  eyre-id
+  :-  %a
+  %+  turn  ~(tap by w)
+  |=  [mt=@t ps=(list proof:lpa)]
+  %-  pairs:enjs:format
+  :~  ['mint' s+mt]
+      ['sats' (numb:enjs:format (roll (turn ps |=(c=proof:lpa amount.c)) add))]
+      ['token' s+(wallet-token mt ps)]
+  ==
+::  +handle-pass-buy: POST /pass-buy?host=&board= (owner): buy a pass to
+::  another ship's board as this ship. The body is a cashuA token, or
+::  empty for a Lightning invoice. The host answers on the forum note
+::  road: an invoice to pay, the pass, or why not
+++  handle-pass-buy
+  |=  [eyre-id=@ta args=(map @t @t) body=@t our=@p]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  host=(unit @p)  (biff (~(get by args) 'host') (cury slaw %p))
+  ?~  host  (send-err eyre-id 400 'bad host')
+  ?:  =(u.host our)  (send-err eyre-id 400 'that is you')
+  =/  bd=(unit @t)  (~(get by args) 'board')
+  ?.  &(?=(^ bd) !=('' u.bd) ((sane %tas) u.bd))  (send-err eyre-id 400 'bad board')
+  ?:  (gth (met 3 body) 65.536)  (send-err eyre-id 400 'that token is too big')
+  =/  how=how:lpa  ?:(=('' body) [%lightning ~] [%ecash body])
+  ;<  base=(unit path)  bind:m  (peer-base-cached u.host)
+  ;<  told=?  bind:m
+    %^  remote-load-poke-wait  u.host
+      :-  [/pass-buy %& (fall base desk-base:lu) %'forum.sig']
+      [%poke [/lattice %pass-buy] `[@tas how:lpa]`[`@tas`u.bd how]]
+    ~s15
+  ?.  told  (send-err eyre-id 504 'the host did not answer')
+  (send-ok eyre-id)
 ::  +apply-forum-notice: a forum action poked by ANOTHER ship over /forum.sig.
 ::  The inbox fiber does the minimum: read the author from the TRANSPORT (never
 ::  the payload), ignore a sourceless (local) poke, and hand the action to the
@@ -8150,6 +8795,13 @@
     (poke-eval [%forum-note-store u.src q.q.sage])
   ::  otherwise the one shape we accept is a forum action. Gate on the blot
   ::  before parsing so a stray poke of another mark is ignored not misread.
+  ::  a ship asking for a pass to one of our boards (+handle-pass-buy
+  ::  there): the writer starts the payment, and answers on the note road
+  ?:  =([/lattice %pass-buy] p.sage)
+    =/  pb=(unit [b=@tas h=how:lpa])  (mole |.(;;([@tas how:lpa] q.q.sage)))
+    ?~  pb  (pure:m ~)
+    ?.  &(!=('' b.u.pb) ((sane %tas) b.u.pb))  (pure:m ~)
+    (poke-eval [%pass %buy (scope-key:lpa [%board b.u.pb]) [%ship u.src] h.u.pb 0v0 0v0])
   ?.  =([/lattice %forum-action] p.sage)  (pure:m ~)
   ::  clam under mule. A payload that is not an action (bad shape, oversize,
   ::  anything) is dropped silently here; a well-formed action goes to the
@@ -16379,7 +17031,7 @@
 ::  /page/forum/<board> is linked in the head, as on a clearweb page.
 ::
 ++  serve-forum-public
-  |=  [eyre-id=@ta pax=path args=(map @t @t)]
+  |=  [eyre-id=@ta pax=path args=(map @t @t) ck=@t]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   ?~  pax  (send-err eyre-id 404 'not found')
@@ -16394,7 +17046,13 @@
   =/  lod=(each board:ft @t)  (load:fb u.gs)
   ?:  ?=(%| -.lod)  (send-err eyre-id 404 'not found')
   =/  brd=board:ft  p.lod
-  ?.  public.info.brd  (send-err eyre-id 404 'not found')
+  ::  a private board reads here only on a live web pass in the cookie;
+  ::  else its buy page, or 404 when it sells none (+serve-pass-buy)
+  ;<  now=@da  bind:m  bowl-now
+  ;<  in=?  bind:m
+    ?:  public.info.brd  (pure:(fiber:fiber:nexus ,?) &)
+    (web-pass-live (scope-key:lpa [%board nom]) ck now)
+  ?.  in  (serve-pass-buy eyre-id nom brd ck now)
   =/  pid=(unit @ud)
     ?~(t.pax ~ ((slat %ud) i.t.pax))
   ?:  &(?=(^ t.pax) |(?=(~ pid) !(~(has by posts.brd) u.pid)))

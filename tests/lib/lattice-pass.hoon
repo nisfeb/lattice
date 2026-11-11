@@ -168,6 +168,27 @@
     (expect-eq !>(~) !>((key-board:lp 'b-Bad')))
   ==
 ::
+++  test-cashu-a
+  ::  {"token":[{"mint":"http://m","proofs":[{"amount":1}]}]}, base64url
+  ::  with its padding cut, as wallets write it
+  =/  good=@t  'cashuAeyJ0b2tlbiI6W3sibWludCI6Imh0dHA6Ly9tIiwicHJvb2ZzIjpbeyJhbW91bnQiOjF9XX1dfQ'
+  =/  got  (cashu-a:lp good)
+  ;:  weld
+    (expect-eq !>(`'http://m') !>(?~(got ~ `mint.u.got)))
+    (expect-eq !>(1) !>(?~(got 0 ?.(?=(%a -.proofs.u.got) 0 (lent p.proofs.u.got)))))
+    (expect-eq !>(~) !>((cashu-a:lp 'cashuBo2F0')))
+    (expect-eq !>(~) !>((cashu-a:lp 'cashuA!!!')))
+    (expect-eq !>(~) !>((cashu-a:lp 'hello')))
+    ::  two mints in one token
+    (expect-eq !>(~) !>((cashu-a:lp 'cashuAeyJ0b2tlbiI6W3sibWludCI6ImEiLCJwcm9vZnMiOltdfSx7Im1pbnQiOiJiIiwicHJvb2ZzIjpbXX1dfQ')))
+  ==
+::
+++  test-mint-same
+  ;:  weld
+    (expect-eq !>(&) !>((mint-same:lp 'http://Mint.example/' 'http://mint.example')))
+    (expect-eq !>(|) !>((mint-same:lp 'http://mint.example' 'http://mint.other')))
+  ==
+::
 ++  test-cookie
   =/  key  %b-main
   ;:  weld

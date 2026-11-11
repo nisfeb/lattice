@@ -35,6 +35,44 @@
 +$  held   (map holder pass)
 ::  +$  next: the last sweep, and each scope's next wake
 +$  next   [last=@da wakes=(map @ta @da)]
+::  payments: the shapes lib/lattice-cashu uses, so a pay grub reads
+::  without it
++$  proof  [amount=@ud id=@t secret=@t c=@t]
++$  out    [amount=@ud id=@t secret=@t r=@ b=@t]
+::  +$  mint-keys: a mint's keysets, and the one it signs sats under
++$  mint-keys  [ks=(list [id=@t unit=@t active=? fee=@ud]) kid=@t keys=(map @ud @t)]
+::  +$  how: ecash in hand (a cashuA token), or a Lightning invoice asked for
++$  how    $%([%ecash token=@t] [%lightning ~])
+::  +$  pay: one payment under way, in its grub /passes/pay/<id>, with
+::  the offer's price, period and mode as they were when it was asked.
+::  A web buyer polls with `tok`, and its pass is held by `code`'s key
++$  pay
+  $:  =holder
+      key=@ta
+      mint=@t
+      price=@ud
+      period=@dr
+      =mode
+      =via
+      tok=@uv
+      code=@uv
+      step=pay-step
+  ==
++$  pay-step
+  $%  [%swap inputs=json]
+      [%swapping inputs=json keys=(map @ud @t) outs=(list out)]
+      [%quote ~]
+      [%invoice quote=@t bolt11=@t expiry=@da]
+      [%minting quote=@t keys=(map @ud @t) outs=(list out)]
+      [%done got=(list proof)]
+      [%failed why=@t]
+  ==
+::  +$  done: how a web payment ended, kept a day for its page to read
++$  done  [at=@da tok=@uv ok=? why=@t code=@uv until=@da]
+::  how many payments may be under way: from one holder, and in all
+++  pays-each  3
+++  pays-max  50
+::
 ::  +$  pass-act: what the writer does with passes. A grant is a sale
 ::  settled or the seller's gift
 +$  pass-act
@@ -42,6 +80,12 @@
       [%grant key=@ta =holder =mode period=@dr paid=@ud =cur =via ref=@t]
       [%refund key=@ta =holder]
       [%sweep ~]
+      ::  a payment asked for: by a ship (tok and code 0) or the web
+      [%buy key=@ta =holder =how tok=@uv code=@uv]
+      ::  a payment's fiber is done with it
+      [%settle id=@ta]
+      ::  the seller took the ecash from one mint out of a wallet
+      [%wallet-take key=@ta mint=@t]
   ==
 ::
 ::  the sales log keeps this many, newest first
@@ -244,6 +288,49 @@
   |=  code=@uv
   ^-  holder
   [%web (sham %lattice-pass code)]
+::
+::  +cashu-a: a cashuA token's mint and its proofs, as json a swap sends;
+::  ~ for any other token, a token of several mints, or a big one.
+::  cashuA is base64url of {"token":[{"mint", "proofs"}], ...}
+::
+++  cashu-a
+  |=  tok=@t
+  ^-  (unit [mint=@t proofs=json])
+  ?.  (lte (met 3 tok) 65.536)  ~
+  =/  t=tape  (trip tok)
+  ?.  =("cashuA" (scag 6 t))  ~
+  =/  b=tape
+    %+  turn  (slag 6 t)
+    |=(c=@tD ?:(=('-' c) '+' ?:(=('_' c) '/' c)))
+  =.  b  (weld b (reap (mod (sub 4 (mod (lent b) 4)) 4) '='))
+  =/  raw  (de:base64:mimes:html (crip b))
+  ?~  raw  ~
+  =/  jon  (de:json:html q.u.raw)
+  ?.  ?=([~ %o *] jon)  ~
+  =/  ts  (~(get by p.u.jon) 'token')
+  ?.  ?=([~ %a ^ ~] ts)  ~
+  =/  e  i.p.u.ts
+  ?.  ?=(%o -.e)  ~
+  =/  mt  (~(get by p.e) 'mint')
+  =/  ps  (~(get by p.e) 'proofs')
+  ?.  &(?=([~ %s *] mt) ?=([~ %a *] ps))  ~
+  `[p.u.mt u.ps]
+::
+::  +mint-same: two mint urls, alike but for case, a scheme's slashes
+::  and a trailing slash
+::
+++  mint-same
+  |=  [a=@t b=@t]
+  ^-  ?
+  =/  norm
+    |=  u=@t
+    ^-  tape
+    =/  t=tape  (flop (cass (trip u)))
+    |-  ^-  tape
+    ?~  t  ~
+    ?:  =('/' i.t)  $(t t.t)
+    (flop t)
+  =((norm a) (norm b))
 ::
 ::  +cookie-name: the cookie a web pass for a scope rides in
 ::
