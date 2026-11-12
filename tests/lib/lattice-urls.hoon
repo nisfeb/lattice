@@ -196,7 +196,7 @@
   =/  dirs=(list path)  (sub-drop-dirs:lu rel)
   ;:  weld
     %+  expect-eq
-      !>  `(list path)`~[(weld desk-base:lu /pub/vault/notes/intro) (weld app-base:lu /pub/vault/notes/intro)]
+      !>  `(list path)`~[(weld desk-base:lu /pub/vault/notes/intro) (weld desk-base-old:lu /pub/vault/notes/intro) (weld app-base:lu /pub/vault/notes/intro)]
       !>  dirs
     %-  expect
     !>  (levy peer-bases:lu |=(b=path ?=(^ (find ~[(sub-keep-dir:lu b rel)] dirs))))

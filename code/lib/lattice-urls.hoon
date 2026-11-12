@@ -49,10 +49,14 @@
 ::  every install from the ~ricsul-bilwyt release on. +app-base is the
 ::  ball-compiled instance that preceded it. A peer is at one or the other,
 ::  and +peer-bases lists them most-likely first for whoever has to ask.
+::  +desk-base-old is the shell's spelling before it moved to /apps/shell,
+::  still where a peer on an older kernel keeps the desk.
 ::
 ++  desk-base
+  `path`/apps/shell/desks/'lattice.desk'/desk/data/'lattice.lattice_app'
+++  desk-base-old
   `path`/apps/'shell.shell'/desks/'lattice.desk'/desk/data/'lattice.lattice_app'
-++  peer-bases  ^-((list path) ~[desk-base app-base])
+++  peer-bases  ^-((list path) ~[desk-base desk-base-old app-base])
 ::  +known-base: where the peers record (peers.json, a ship to its base)
 ::  last found a peer, else desk-base. The one writer's sends use it, so a
 ::  peer that never answers costs no wait there.
