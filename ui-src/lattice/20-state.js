@@ -400,8 +400,9 @@
   }
 
   // where this install lives in the tree: /apps/lattice.lattice_app for the
-  // ball-era instance, under /apps/shell.shell/desks/ for a desk install.
-  // Grubbery's own endpoints (the beacon keep) and grant roads on our pages
+  // ball-era instance, under /apps/shell/desks/ for a desk install (under
+  // /apps/shell.shell/desks/ on an older kernel). Grubbery's own endpoints
+  // (the beacon keep) and grant roads on our pages
   // spell it out. Asked of /streams once and remembered. forgetBase() when a
   // keep under it fails, so a moved install is found again.
   let basePr = null;
