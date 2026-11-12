@@ -237,7 +237,9 @@ s = await settled(page);
 check('runaway recursion ends with a message', /error|no part/i.test(s) || /recursion/i.test(await con(page)), s);
 await page.close();
 
-page = await open('function f(n, a = 0) = n == 0 ? a : f(n - 1, a + 1);\necho(f(50000000));\ncube(1);\n', { timeout: 4000 });
+//  a one second limit: on a quick machine OpenSCAD gives this model up
+//  itself after about three, and the limit has to be the first to end it
+page = await open('function f(n, a = 0) = n == 0 ? a : f(n - 1, a + 1);\necho(f(50000000));\ncube(1);\n', { timeout: 1000 });
 const t0 = Date.now();
 s = await settled(page, 30);
 check('a model that runs past the time limit is stopped', /stopped/.test(s) && Date.now() - t0 < 15000, `${s} after ${Date.now() - t0} ms`);
