@@ -63,6 +63,12 @@
     (expect-eq !>([500 %usd]) !>([paid.late cur.late]))
     ::  a comet reads only
     (expect-eq !>(%read) !>(mode.comet))
+    ::  renewing a live post pass with a read period keeps posting
+    (expect-eq !>(%post) !>(mode:(extend:lp hld nec %read ~d30 t0 0 %sat %gift '')))
+    ::  a live read pass takes a post period's mode
+    (expect-eq !>(%post) !>(mode:(extend:lp hld bus %post ~d30 t0 0 %sat %gift '')))
+    ::  and a lapsed post pass takes the new mode
+    (expect-eq !>(%read) !>(mode:(extend:lp hld nec %read ~d30 (add t0 ~d11) 0 %sat %gift '')))
   ==
 ::
 ++  test-refund

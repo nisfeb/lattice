@@ -92,6 +92,15 @@ is "five dollars this month" 500 "$(py "$j" "j['month']['usd']")"
 is "one by card, one in bitcoin" 'bitcoin card' "$(py "$j" "' '.join(sorted(p['via'] for p in j['passes']))")"
 has "the mod page shows both rails on" 'Bitcoin: on' "$(G "$B/forum/$BD/mod")"
 
+echo "==> the cap holds when many ask at once"
+n0=$(py "$(curl -s "$F/stub/state")" "len(j['sessions'])")
+pids=""
+for i in $(seq 1 70); do curl -s -m 240 -o /dev/null -X POST "$A/pass/card?board=$BD" & pids="$pids $!"; done
+wait $pids   # not a bare wait: the fake is a job of this shell too
+n1=$(py "$(curl -s "$F/stub/state")" "len(j['sessions'])")
+made=$((n1 - n0))
+[ "$made" -ge 1 ] && [ "$made" -le 50 ] && ok "70 asks made $made sessions, 50 at most" || bad "the cap" "70 asks made $made sessions"
+
 is "turn the rails off" 200 "$(P "$B/pass-settings" --data '{"stripe":"","stripe-url":"","btcpay-url":"","btcpay-store":"","btcpay-key":"","btcpay-hook":""}')"
 is "delete the board" 303 "$(P "$B/forum/$BD/mod/delete")"
 finish

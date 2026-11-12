@@ -103,7 +103,9 @@ is "one mint in the wallet" 1 "$(py "$w" "len(j)")"
 is "the wallet holds the income" "$inc" "$(py "$w" "j[0]['sats']")"
 WT=$(py "$w" "j[0]['token']")
 has "the seller can redeem it at the mint" 'Received' "$(cashu receive "$WT")"
-is "take it out of the wallet" 200 "$(P "$B/pass-wallet-take?board=$BD&mint=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$MINT")")"
+MQ=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$MINT")
+is "a clear with a stale sum is refused" 409 "$(P "$B/pass-wallet-take?board=$BD&mint=$MQ&sum=0v1")"
+is "take it out of the wallet" 200 "$(P "$B/pass-wallet-take?board=$BD&mint=$MQ&sum=$(py "$w" "j[0]['sum']")")"
 is "the wallet is empty" 0 "$(py "$(G "$B/pass-wallet?board=$BD")" "len(j)")"
 
 echo "==> the pass lapses (about two minutes after it was bought)"

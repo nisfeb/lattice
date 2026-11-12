@@ -659,6 +659,12 @@
                   =(%notify-read (head !<(eval-action:le q.sage)))
               ==
             (pure:m ~)
+          ::  nor for passes: an offer, a sale or a lapse changes no page,
+          ::  and anyone may start a payment
+          ?:  ?&  =([/lattice %eval-action] p.sage)
+                  =(%pass (head !<(eval-action:le q.sage)))
+              ==
+            (pure:m ~)
           ?:  =([/lattice %fold-action] p.sage)  (pure:m ~)
           ::  nor for skills: no page or memory changed
           ?:  =([/lattice %skill-action] p.sage)  (pure:m ~)
@@ -7613,7 +7619,10 @@
   ::  A live pass lets a ship in as well: a %post pass to post (as a
   ::  poster, unless the owner gave it a role), a %read pass to read only.
   ;<  mem=(set @p)  bind:m  (read-forum-members name)
-  ;<  ph=held:lpa  bind:m  (read-pass-held (scope-key:lpa [%board name]))
+  ::  Passes count only on a private board, so a public one reads none.
+  ;<  ph=held:lpa  bind:m
+    ?:  public.info.u.obrd  (pure:(fiber:fiber:nexus ,held:lpa) ~)
+    (read-pass-held (scope-key:lpa [%board name]))
   =/  post-pass=?  (live:lpa ph [%ship src] now %post)
   ?:  &(!public.info.u.obrd !(~(has in mem) src) !post-pass)
     ?:  (live:lpa ph [%ship src] now %read)
@@ -7790,8 +7799,13 @@
     =/  ships=(set @p)
       ?.  ?=([%file *] wv)  ~
       (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
+    ::  a ship that holds a live pass keeps its read: only the hand
+    ::  invite goes, and the pass's own lapse takes it out (+pass-group)
+    ;<  ph=held:lpa  bind:m  (read-pass-held (scope-key:lpa [%board nom]))
+    ;<  now=@da  bind:m  bowl-now
     ;<  ok=?  bind:m
-      ?.  (~(has in ships) u.shp)  (pure:(fiber:fiber:nexus ,?) %.y)
+      ?:  |(!(~(has in ships) u.shp) (live:lpa ph [%ship u.shp] now %read))
+        (pure:(fiber:fiber:nexus ,?) %.y)
       (ug-over [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) u.shp)])
     ?.  ok  (ug-refused eyre-id)
     ;<  ~  bind:m  (write-forum-members nom (~(del in cur) u.shp))
@@ -7918,12 +7932,30 @@
       %buy
     ;<  bans=banned:ls  bind:m  read-banned
     ?:  &(?=(%ship -.holder.act) (is-banned:ls bans who.holder.act))  (pure:m ~)
-    ::  card or bitcoin, for a ship: its session is made off the writer
+    ::  a ship's asks share its rate limit on the board with its posts
+    ::  (+rate-ok:fr), so a stream of them makes no stream of payments,
+    ::  sessions or notes. Too soon, it is dropped unanswered
+    ;<  slow=?  bind:m
+      =/  n  (fiber:fiber:nexus ,?)
+      ?.  ?=(%ship -.holder.act)  (pure:n |)
+      =/  bn=@tas  (fall (key-board:lpa key.act) %passes)
+      ;<  lim=limits:fr  bind:n  read-forum-limits
+      =/  e  (~(get by lim) [who.holder.act bn])
+      ?:  &(?=(^ e) (lth (sub now last.u.e) cooldown.u.e))  (pure:n &)
+      ;<  ~  bind:n  (write-forum-limits (rate-update:fr who.holder.act bn now lim))
+      (pure:n |)
+    ?:  slow  (pure:m ~)
+    ::  card or bitcoin, for a ship: its session is made off the writer,
+    ::  once its record is reserved here
     ?:  ?=(?(%card %bitcoin) -.how.act)
       ?.  ?=(%ship -.holder.act)  (pure:m ~)
       ;<  eny=@uvJ  bind:m  get-entropy:io
-      %^  pass-put  /passes/open  (crip ((x-co:co 32) (end [3 16] eny)))
-      [%1 key.act who.holder.act `rail:lpa`?:(?=(%card -.how.act) %stripe %btcpay)]
+      =/  rt=@ta  (crip ((x-co:co 32) (end [3 16] eny)))
+      =/  rl=rail:lpa  ?:(?=(%card -.how.act) %stripe %btcpay)
+      ;<  ok=?  bind:m  (rail-reserve now rt key.act holder.act 0v0 rl)
+      ?.  ok
+        (pass-tell who.holder.act key.act 'no pass: that is not sold there, or too many payments are under way')
+      (pass-put /passes/open rt [%1 key.act who.holder.act rl])
     ;<  why=(unit @t)  bind:m  (start-pay key.act holder.act how.act tok.act code.act)
     ?~  why  (pure:m ~)
     ?:  ?=(%ship -.holder.act)  (pass-tell who.holder.act key.act u.why)
@@ -7931,17 +7963,26 @@
   ::
       %settle  (settle-pay now id.act)
   ::
+      %rail-reserve
+    ;<  *  bind:m  (rail-reserve now tok.act key.act holder.act code.act rail.act)
+    (pure:m ~)
+  ::
       %rail-paid  (settle-rail now tok.act total.act id.act & '')
       %rail-dead  (settle-rail now tok.act 0 '' | why.act)
   ::
       %wallet-take
+    ::  only the proofs the seller was shown: a sale since then changed
+    ::  the sum, and its proofs stay
     ;<  w=(map @t (list proof:lpa))  bind:m  (read-wallet key.act)
+    ?.  =(sum.act (wallet-sum (~(gut by w) mint.act ~)))  (pure:m ~)
     (pass-put /passes/wallet key.act [%1 (~(del by w) mint.act)])
   ::
       %refund
     ;<  h=held:lpa  bind:m  (read-pass-held key.act)
     =/  p  (~(get by h) holder.act)
     ?~  p  (pure:m ~)
+    ::  only a live pass: a second press would take the money off twice
+    ?.  (gth until.u.p now)  (pure:m ~)
     =.  h  (refund:lpa h holder.act now)
     ;<  ~  bind:m  (pass-put /passes/held key.act [%1 h])
     ;<  s=(list sale:lpa)  bind:m  (read-pass-sales key.act)
@@ -8244,8 +8285,9 @@
   |=  [key=@ta =holder:lpa =how:lpa tok=@uv code=@uv]
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
-  ;<  ok=?  bind:m  (pass-scope-ok key)
-  ?.  ok  (pure:m `'no passes are sold there')
+  ::  an offer stands only on a private board of ours (it goes when the
+  ::  board does, or turns public), so the board is not loaded here: the
+  ::  writer does no more for a stranger's ask than read three grubs
   ;<  o=(unit offer:lpa)  bind:m  (read-pass-offer key)
   ?~  o  (pure:m `'no passes are sold there')
   ?.  open.u.o  (pure:m `'passes there are not on sale now')
@@ -8300,14 +8342,31 @@
       (pass-tell who.holder.p key.p (crip "your payment failed: {(trip why.step.p)}"))
     (pass-done now tok.p | why.step.p 0v0 *@da)
   =/  got=@ud  (roll (turn got.step.p |=(c=proof:lpa amount.c)) add)
+  ;<  un=(unit @da)  bind:m
+    (grant-paid now key.p holder.p mode.p period.p got %sat via.p id)
+  ?:  ?=(%ship -.holder.p)
+    ?^  un  (pure:m ~)
+    (pass-tell who.holder.p key.p no-pass)
+  ?~  un  (pass-done now tok.p | no-pass 0v0 *@da)
+  (pass-done now tok.p & '' code.p u.un)
+::  +grant-paid: a pass that was paid for, made, and its new end; ~ when
+::  none was made (the board went, or turned public, while the payment
+::  ran). The money is in by then, so the seller is told to send it back
+++  grant-paid
+  |=  [now=@da key=@ta =holder:lpa =mode:lpa period=@dr paid=@ud =cur:lpa =via:lpa ref=@t]
+  =/  m  (fiber:fiber:nexus ,(unit @da))
+  ^-  form:m
+  ;<  h0=held:lpa  bind:m  (read-pass-held key)
+  ;<  ~  bind:m  (apply-pass now [%grant key holder mode period paid cur via ref])
+  ;<  h1=held:lpa  bind:m  (read-pass-held key)
+  =/  old  (~(get by h0) holder)
+  =/  new  (~(get by h1) holder)
+  ?:  &(?=(^ new) !=(old new))  (pure:m `until.u.new)
   ;<  ~  bind:m
-    %+  apply-pass  now
-    [%grant key.p holder.p mode.p period.p got %sat via.p id]
-  ?.  ?=(%web -.holder.p)  (pure:m ~)
-  ;<  h=held:lpa  bind:m  (read-pass-held key.p)
-  =/  ps  (~(get by h) holder.p)
-  ?~  ps  (pass-done now tok.p | 'the pass could not be made; ask the seller' 0v0 *@da)
-  (pass-done now tok.p & '' code.p until.u.ps)
+    %^  pass-notify  now  key
+    (crip "{(holder-text holder)} paid for a pass to {(pass-name key)} but none could be made: send the money back")
+  (pure:m ~)
+++  no-pass  'you paid, but the pass could not be made; ask the seller for your money back'
 ::  +pass-done: how a web payment ended, by its poll token, kept a day.
 ::  Older ones go as each is written
 ++  pass-done
@@ -8354,6 +8413,12 @@
   =/  new=(list proof:lpa)
     (weld old (skip ps |=(c=proof:lpa (~(has in have) secret.c))))
   (pass-put /passes/wallet key [%1 (~(put by w) mint new)])
+::  +wallet-sum: what names the proofs a seller was shown, so a clear
+::  takes those and no others
+++  wallet-sum
+  |=  ps=(list proof:lpa)
+  ^-  @uv
+  (sham ps)
 ::  +wallet-token: a mint's proofs as a cashuA token any wallet takes
 ++  wallet-token
   |=  [mint=@t ps=(list proof:lpa)]
@@ -8479,7 +8544,13 @@
     ?:  ?=([~ * * %'ISSUED' *] q)
       (pay-go id p(step [%failed 'the mint issued it already']))
     ;<  now=@da  bind:m  bowl-now
-    ?:  (gth now expiry.s)  (pay-go id p(step [%failed 'the invoice ran out unpaid']))
+    ::  run out only on the mint's word that it is unpaid: a mint that
+    ::  does not answer may hold a paid invoice, so it is asked for three
+    ::  days more before the payment is given up
+    ?:  &(?=(^ q) (gth now expiry.s))
+      (pay-go id p(step [%failed 'the invoice ran out unpaid']))
+    ?:  (gth now (add expiry.s ~d3))
+      (pay-go id p(step [%failed 'the mint stopped answering; if you paid, ask the seller']))
     ;<  ~  bind:m  (sleep:io ?:((lth n 60) ~s5 ~m1))
     $(n +(n))
   ::
@@ -8707,6 +8778,14 @@
   =/  how=how:lpa
     ?:  (~(has by form) 'ln')  [%lightning ~]
     [%ecash (fall (~(get by form) 'token') '')]
+  ::  what can be refused is refused here, so a stranger's ask reaches
+  ::  the writer only when it could start a payment
+  ;<  o=(unit offer:lpa)  bind:m  (read-pass-offer key)
+  ?.  &(?=(^ o) open.u.o ?=(^ mint.u.o))  (send-err eyre-id 404 'not found')
+  ;<  live=(list [id=@ta p=pay:lpa])  bind:m  read-pays
+  ?:  (gte (lent live) pays-max:lpa)
+    %+  send-html  eyre-id
+    (pass-page "Busy" "<p>Too many payments are under way here. Try again soon.</p><p><a href=\"{back}\">Back</a></p>")
   ;<  eny=@uvJ  bind:m  get-entropy:io
   =/  tok=@uv  (end [3 16] eny)
   ::  a browser that holds a code for this board renews it: the pass is
@@ -8798,7 +8877,7 @@
   `(as-octs:mimes:html htm)
 ::  +handle-pass-wallet: the seller's ecash, owner only.
 ::    GET  /pass-wallet?board=        each mint's balance and its cashuA token
-::    POST /pass-wallet-take?board=&mint=   drop a mint's proofs, once the
+::    POST /pass-wallet-take?board=&mint=&sum=   drop a mint's proofs, once the
 ::                                    seller has its token in a wallet
 ++  handle-pass-wallet
   |=  [eyre-id=@ta args=(map @t @t) take=?]
@@ -8810,7 +8889,12 @@
   ?:  take
     =/  mt=(unit @t)  (~(get by args) 'mint')
     ?~  mt  (send-err eyre-id 400 'missing mint')
-    ;<  ~  bind:m  (poke-eval [%pass %wallet-take key u.mt])
+    =/  sum=(unit @uv)  (biff (~(get by args) 'sum') (cury slaw %uv))
+    ?~  sum  (send-err eyre-id 400 'missing sum: the one GET /pass-wallet gave with the token')
+    ;<  w=(map @t (list proof:lpa))  bind:m  (read-wallet key)
+    ?.  =(u.sum (wallet-sum (~(gut by w) u.mt ~)))
+      (send-err eyre-id 409 'the wallet changed since that token was shown; read it again')
+    ;<  ~  bind:m  (poke-eval [%pass %wallet-take key u.mt u.sum])
     (send-ok eyre-id)
   ;<  w=(map @t (list proof:lpa))  bind:m  (read-wallet key)
   %+  send-json  eyre-id
@@ -8821,6 +8905,7 @@
   :~  ['mint' s+mt]
       ['sats' (numb:enjs:format (roll (turn ps |=(c=proof:lpa amount.c)) add))]
       ['token' s+(wallet-token mt ps)]
+      ['sum' s+(scot %uv (wallet-sum ps))]
   ==
 ::  +handle-pass-buy: POST /pass-buy?host=&board= (owner): buy a pass to
 ::  another ship's board as this ship. The form holds a cashuA token, or
@@ -9023,6 +9108,7 @@
                 ;textarea(readonly "", rows "3", style "width:100%"): {(trip (wallet-token mt qs))}
                 ;form(method "post", action "{base}/pass-wallet-take", onsubmit "return confirm('Is the token in your wallet? Clearing it here cannot be undone.')")
                   ;input(type "hidden", name "mint", value (trip mt));
+                  ;input(type "hidden", name "sum", value (scow %uv (wallet-sum qs)));
                   ;input.btn(type "submit", value "clear: it is in my wallet");
                 ==
               ==
@@ -9068,8 +9154,9 @@
   ::
       [%mod %pass-wallet-take ~]
     =/  mt=(unit @t)  (grab 'mint')
-    ?~  mt  ~
-    `[%wallet-take key u.mt]
+    =/  sum=(unit @uv)  (biff (grab 'sum') (cury slaw %uv))
+    ?:  |(?=(~ mt) ?=(~ sum))  ~
+    `[%wallet-take key u.mt u.sum]
   ==
 ::  +read-offer-remote: what another ship sells passes to its board for,
 ::  from its /pub/passes; ~ when it sells none or does not answer
@@ -9220,32 +9307,38 @@
 ::  record kept, and the link the buyer pays on, or why not. site is
 ::  this ship's public url. Old records (sessions last an hour) go here
 ++  rail-open
-  |=  [key=@ta who=holder:lpa code=@uv =rail:lpa site=tape]
+  |=  [key=@ta who=holder:lpa code=@uv =rail:lpa site=tape pre=(unit @ta)]
   =/  m  (fiber:fiber:nexus ,(each @t @t))
   ^-  form:m
   =/  nom=(unit @tas)  (key-board:lpa key)
   ?~  nom  (pure:m |+'no passes are sold there')
-  ;<  ok=?  bind:m  (pass-scope-ok key)
-  ?.  ok  (pure:m |+'no passes are sold there')
+  ;<  now=@da  bind:m  bowl-now
+  ::  at the cap, refused here: the writer hears nothing of it
+  ;<  cs=(list [tok=@ta c=card:lpa])  bind:m  read-rails
+  ?:  ?&  ?=(~ pre)
+          (gte (lent (skim cs |=([* c=card:lpa] (gth (add at.c ~h2) now)))) pays-max:lpa)
+      ==
+    (pure:m |+'too many payments are under way here; try again soon')
   ;<  o=(unit offer:lpa)  bind:m  (read-pass-offer key)
   ?.  &(?=(^ o) open.u.o (gth cents.u.o 0))  (pure:m |+'passes there are not sold for dollars')
   ;<  s=(map @t @t)  bind:m  read-secrets
   ?:  &(?=(%stripe rail) !(takes-card s))  (pure:m |+'this board takes no cards')
   ?:  &(?=(%btcpay rail) !(takes-bitcoin s))  (pure:m |+'this board takes no bitcoin by BTCPay')
-  ;<  now=@da  bind:m  bowl-now
   ;<  up=@ud  bind:m  nexus-up
-  ;<  cs=(list [tok=@ta c=card:lpa])  bind:m  read-rails
-  ;<  ~  bind:m
-    =/  n  (fiber:fiber:nexus ,~)
-    =/  old  (skip cs |=([* c=card:lpa] (gth (add at.c ~h2) now)))
-    |-  ^-  form:n
-    ?~  old  (pure:n ~)
-    ;<  *  bind:n  (cull-soft:io (rf up /passes/rail tok.i.old))
-    $(old t.old)
-  ?:  (gte (lent (skim cs |=([* c=card:lpa] (gth (add at.c ~h2) now)))) pays-max:lpa)
-    (pure:m |+'too many payments are under way here; try again soon')
-  ;<  eny=@uvJ  bind:m  get-entropy:io
-  =/  tok=@ta  (crip ((x-co:co 32) (end [3 16] eny)))
+  ::  the record is reserved in the writer, which alone counts the caps
+  ::  (+rail-reserve), before the rail is asked for anything
+  ;<  tok=@ta  bind:m
+    =/  n  (fiber:fiber:nexus ,@ta)
+    ?^  pre  (pure:n u.pre)
+    ;<  eny=@uvJ  bind:n  get-entropy:io
+    =/  t=@ta  (crip ((x-co:co 32) (end [3 16] eny)))
+    ;<  ~  bind:n  (poke-eval [%pass %rail-reserve t key who code rail])
+    ::  the poke is answered when the writer first waits, which can be
+    ::  before the record is in: wait until it is done with it
+    ;<  ~  bind:n  writer-drain
+    (pure:n t)
+  ;<  rc=(unit card:lpa)  bind:m  (read-rail tok)
+  ?~  rc  (pure:m |+'too many payments are under way here; try again soon')
   =/  back=tape  "{site}/apps/lattice/pass/return?board={(trip u.nom)}&t={(trip tok)}"
   =/  no=tape  "{site}/apps/lattice/forum/{(trip u.nom)}"
   ;<  got=(unit [id=@t url=@t])  bind:m
@@ -9255,7 +9348,7 @@
       =/  body=@t
         %-  form-body:lst
         %:  checkout-body:lst  tok  ''
-          ~[[(crip "A pass to {(trip u.nom)}") cents.u.o]]
+          ~[[(crip "A pass to {(trip u.nom)}") cents.u.rc]]
           (crip back)  (crip no)
           (div (sub (add now ~h1) ~1970.1.1) ~s1)
         ==
@@ -9272,18 +9365,54 @@
         %-  rail-http
         %:  invoice-request:lbp  (secret s 'btcpay-url')  (secret s 'btcpay-store')
           (secret s 'btcpay-key')  (crip (holder-text who))  tok
-          (mul cents.u.o 10.000)  (crip back)
+          (mul cents.u.rc 10.000)  (crip back)
         ==
       =/  inv  ?~(r ~ (read-invoice:lbp body.u.r))
       %-  pure:n
       ?.  &(?=(^ inv) !=('' link.u.inv))  ~
       `[id.u.inv link.u.inv]
     ==
-  ?~  got  (pure:m |+?:(?=(%stripe rail) 'the card processor did not take the payment' 'BTCPay did not make an invoice'))
+  ?~  got
+    ;<  *  bind:m  (cull-soft:io (rf up /passes/rail tok))
+    (pure:m |+?:(?=(%stripe rail) 'the card processor did not take the payment' 'BTCPay did not make an invoice'))
+  ;<  ~  bind:m  (pass-put /passes/rail tok [%1 u.rc(id id.u.got)])
+  (pure:m &+url.u.got)
+::  +rail-reserve: in the writer, a record for a session about to be
+::  made, its id blank until the rail gives one: & when it was kept. The
+::  writer is the one place the caps are counted, so they hold however
+::  many ask at once: fifty sessions in two hours, three to a holder. A
+::  card record is dropped after three hours (a session lasts one); a
+::  bitcoin one after twenty-six, since a payment on chain may wait a
+::  day for its confirmation before BTCPay settles or voids it.
+::  ponytail: at the cap that is some 650 small grubs at worst
+++  rail-reserve
+  |=  [now=@da tok=@ta key=@ta who=holder:lpa code=@uv =rail:lpa]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ?.  &(=(32 (met 3 tok)) ((sane %ta) tok))  (pure:m |)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  cs=(list [tok=@ta c=card:lpa])  bind:m  read-rails
+  =/  keep
+    |=  c=card:lpa
+    (gth (add at.c ?:(?=(%stripe rail.c) ~h3 ~h26)) now)
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    =/  old  (skip cs |=([* c=card:lpa] (keep c)))
+    |-  ^-  form:n
+    ?~  old  (pure:n ~)
+    ;<  *  bind:n  (cull-soft:io (rf up /passes/rail tok.i.old))
+    $(old t.old)
+  =/  live  (skim cs |=([* c=card:lpa] (gth (add at.c ~h2) now)))
+  ?:  (gte (lent live) pays-max:lpa)  (pure:m |)
+  ?:  (gte (lent (skim live |=([* c=card:lpa] =(who holder.c)))) pays-each:lpa)
+    (pure:m |)
+  ?:  (lien cs |=([t=@ta *] =(t tok)))  (pure:m |)
+  ;<  o=(unit offer:lpa)  bind:m  (read-pass-offer key)
+  ?.  &(?=(^ o) open.u.o (gth cents.u.o 0))  (pure:m |)
   ;<  ~  bind:m
     %^  pass-put  /passes/rail  tok
-    [%1 `card:lpa`[key who code cents.u.o period.u.o mode.u.o now rail id.u.got]]
-  (pure:m &+url.u.got)
+    [%1 `card:lpa`[key who code cents.u.o period.u.o mode.u.o now rail '']]
+  (pure:m &)
 ::  +serve-pass-rail: POST /pass/card or /pass/bitcoin ?board=, anonymous.
 ::  A web pass, read only, paid on the rail's page
 ++  serve-pass-rail
@@ -9296,7 +9425,7 @@
   ;<  eny=@uvJ  bind:m  get-entropy:io
   =/  ck=@t  (~(gut by (malt header-list.request.req)) 'cookie' '')
   =/  code=@uv  (fall (cookie-code:lpa ck key) (end [3 16] (shax eny)))
-  ;<  r=(each @t @t)  bind:m  (rail-open key (web-key:lpa code) code rail (site-url req))
+  ;<  r=(each @t @t)  bind:m  (rail-open key (web-key:lpa code) code rail (site-url req) ~)
   ?:  ?=(%| -.r)  (send-err eyre-id 502 p.r)
   (send-see-other eyre-id (trip p.r))
 ::  +rail-check: ask a session's rail about it and, paid, settle it
@@ -9308,6 +9437,7 @@
   ^-  form:m
   ;<  c=(unit card:lpa)  bind:m  (read-rail tok)
   ?~  c  (pure:m ~)
+  ?:  =('' id.u.c)  (pure:m ~)
   ;<  s=(map @t @t)  bind:m  read-secrets
   ?-    rail.u.c
       %stripe
@@ -9394,12 +9524,13 @@
       (pass-tell who.holder.u.c key.u.c (crip "your payment failed: {(trip why)}"))
     (pass-done now tk | why 0v0 *@da)
   =/  =via:lpa  ?:(?=(%stripe rail.u.c) %card %bitcoin)
+  ;<  un=(unit @da)  bind:m
+    (grant-paid now key.u.c holder.u.c mode.u.c period.u.c total %usd via id)
+  ?^  un  (pass-done now tk & '' code.u.c u.un)
   ;<  ~  bind:m
-    (apply-pass now [%grant key.u.c holder.u.c mode.u.c period.u.c total %usd via id])
-  ;<  h=held:lpa  bind:m  (read-pass-held key.u.c)
-  =/  ps  (~(get by h) holder.u.c)
-  ?~  ps  (pass-done now tk | 'the pass could not be made; ask the seller' 0v0 *@da)
-  (pass-done now tk & '' code.u.c until.u.ps)
+    ?.  ?=(%ship -.holder.u.c)  (pure:m ~)
+    (pass-tell who.holder.u.c key.u.c no-pass)
+  (pass-done now tk | no-pass 0v0 *@da)
 ::  +rail-for-ship: the fiber of /passes/open/<tok>: a ship asked for a
 ::  card or bitcoin session. It is made, the link goes to the ship on
 ::  the note road, and the grub culls itself
@@ -9415,7 +9546,7 @@
   =/  site=@t  (secret s 'site')
   ;<  r=(each @t @t)  bind:m
     ?:  =('' site)  (pure:(fiber:fiber:nexus ,(each @t @t)) |+'this host takes no cards or bitcoin from ships yet')
-    (rail-open key [%ship who] 0v0 rail (clean-mint-url:lca site))
+    (rail-open key [%ship who] 0v0 rail (clean-mint-url:lca site) `tok)
   ;<  ~  bind:m
     %^  pass-tell  who  key
     ?:  ?=(%| -.r)  (crip "no pass: {(trip p.r)}")
@@ -9653,6 +9784,15 @@
       (pure:m ~)
     ::  and so does the list of boards that take comet posts
     ;<  ~  bind:m  (put-forum-comets root)
+    ::  a board made public sells no passes: its offer goes, so nobody
+    ::  pays for a pass that could not be made. Passes held stay on the
+    ::  record and count for nothing while it is public
+    ;<  ~  bind:m
+      ?.  &(?=(%set-public -.act.act) public.act.act)  (pure:m ~)
+      =/  pk=@ta  (scope-key:lpa [%board name.act.act])
+      ;<  *  bind:m  (cull-soft:io (rf root /passes/offers pk))
+      ;<  *  bind:m  (cull-soft:io (rf root /pub/passes pk))
+      (pure:m ~)
     ::  a board made or deleted starts with no members: drop the old roster
     ::  and member group so a re-created name does not inherit them. Soft.
     ;<  ~  bind:m

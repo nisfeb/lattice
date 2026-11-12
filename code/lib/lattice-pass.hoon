@@ -102,8 +102,11 @@
       ::  a payment's fiber is done with it
       [%settle id=@ta]
       ::  the seller took the ecash from one mint out of a wallet
-      [%wallet-take key=@ta mint=@t]
+      [%wallet-take key=@ta mint=@t sum=@uv]
       ::  a rail says its session is paid, in cents, or it ended unpaid
+      ::  a session on a rail is about to be made: keep its record, if
+      ::  the caps allow
+      [%rail-reserve tok=@ta key=@ta =holder code=@uv =rail]
       [%rail-paid tok=@ta total=@ud id=@t]
       [%rail-dead tok=@ta why=@t]
   ==
@@ -166,14 +169,18 @@
 ::
 ::  +extend: a purchase by `who` of `period` at mode `md`, the offer's
 ::  when it was paid for. A renewal runs from the old end if that is
-::  still ahead, so paying early loses nothing. A comet's pass is
-::  read-only, as comets cannot post on private boards
+::  still ahead, so paying early loses nothing. Renewing a live post
+::  pass never takes posting away from time already paid for, whatever
+::  the new purchase's mode; a lapsed pass takes the new mode. A
+::  comet's pass is read-only, as comets cannot post on private boards.
+::  paid, via and ref are the last purchase's
 ::
 ++  extend
   |=  [h=held who=holder md=mode period=@dr now=@da paid=@ud =cur =via ref=@t]
   ^-  pass
   =/  old  (~(get by h) who)
   =/  from=@da  ?~(old now (max now until.u.old))
+  =?  md  &(?=(^ old) (gth until.u.old now) =(%post mode.u.old))  %post
   =?  md  &(?=(%ship -.who) (gth (met 3 who.who) 8))  %read
   [who md (add from period) ?~(old now since.u.old) paid cur via ref]
 ::

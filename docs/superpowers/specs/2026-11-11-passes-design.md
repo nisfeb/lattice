@@ -60,7 +60,7 @@ All pass state lives at the nexus root under `/passes`, outside `/page` (so outs
 | `/passes/wallet/<scope-key>` | `[%1 (map mint (list cashu-proof))]` | the seller's takings, ecash |
 | `/passes/pay/<id>` | `[%1 pay]` and its fiber | at most 3 per payer and 50 in all |
 | `/passes/done/<tok>` | `[%1 done]`, how a web payment ended | a day each |
-| `/passes/rail/<tok>` | `[%1 card]`, a Stripe session or BTCPay invoice waiting | two hours each, 50 in all |
+| `/passes/rail/<tok>` | `[%1 card]`, a Stripe session or BTCPay invoice waiting | a card record three hours, a bitcoin one 26 (an on-chain payment may wait a day to confirm); 50 new in two hours |
 | `/passes/open/<tok>` | `[%1 key ship rail]` and its fiber, a ship's ask for a session | gone once the session is made |
 | `/passes/secrets` | `[%2 (map @t @t)]`: stripe, stripe-url, btcpay-url, btcpay-store, btcpay-key, btcpay-hook, site | one |
 
@@ -128,7 +128,7 @@ A private board with an offer serves a public buy page at `/apps/lattice/forum/<
 
 On settle the host makes a bearer code (128 random bits, written as a `@uv`), keeps `[%web (sham %lattice-pass code)]` as the holder, and sets the cookie `lattice-pass-<scope-key>=<code>` (HttpOnly, Secure, SameSite=Lax, Path=/apps/lattice/). Its Max-Age is the pass's time left plus the 90 days a lapsed pass is kept, so the page can say the pass ended and paying again with the cookie renews the same code. The page shows the code to keep for reading on another browser; a form post of it to `/apps/lattice/pass/use?board=` sets the cookie there. A web pass is `%read`: posting needs a ship.
 
-Anonymous routes are capped: 50 ecash or Lightning payments under way in all, 50 card or bitcoin sessions open, and a token of at most 64 KB. One cap covers everyone, so unpaid web invoices can hold it for their hour. A per-address limit, as forum posting has, is the upgrade if that is abused.
+Anonymous routes are capped: 50 ecash or Lightning payments under way in all, 50 card or bitcoin sessions in two hours and three to a holder, and a token of at most 64 KB. The writer alone counts the caps (`+rail-reserve` keeps a session's record before the rail is asked), so they hold however many ask at once, and a request at the cap is refused before it reaches the writer. A ship's asks share its rate limit on the board with its posts. One cap covers everyone, so unpaid web invoices can hold it for their hour. A per-address limit is the upgrade if that is abused.
 
 ## Privacy
 
@@ -145,11 +145,11 @@ Blind tokens would let a ship buy without the seller learning which ship bought,
 
 - **Expiry**: at `until`. Posting and web reads close at once, and ship reads close at the sweeper's wake.
 - **Reminder**: three days before a ship's pass lapses, the sweep sends the holder a note saying when it ends. It lands in their forum notes.
-- **Renewal**: buying again extends from `max(now, until)`. There is no automatic renewal: ecash cannot be pulled, and Stripe subscriptions are left out.
-- **Refund**: the seller presses Refund on a pass. The pass ends now and a refund line goes in the sales log, which the income subtracts. Money goes back by hand: for ecash or Lightning the seller withdraws from the wallet and sends it, for card they refund in the Stripe dashboard, and for bitcoin in BTCPay. This is register's model. Lattice never calls the refund API.
+- **Renewal**: buying again extends from `max(now, until)`. Renewing a live post pass keeps posting whatever the new purchase's mode, so time already paid for is never downgraded; a lapsed pass takes the new mode. There is no automatic renewal: ecash cannot be pulled, and Stripe subscriptions are left out.
+- **Refund**: the seller presses Refund on a live pass (a lapsed or refunded one is left alone, so a second press takes nothing more off the income). The pass ends now and a refund line goes in the sales log, which the income subtracts. Money goes back by hand: for ecash or Lightning the seller withdraws from the wallet and sends it, for card they refund in the Stripe dashboard, and for bitcoin in BTCPay. This is register's model. Lattice never calls the refund API.
 - **Gift**: the seller grants a pass with no payment (`via %gift`, paid 0), for comps and testing.
 - **What a lapsed reader sees**: a ship gets a note that its pass ended, and the board's page shows the host's offer and the buy forms instead of "unreachable or denied". A web reader whose cookie names a lapsed pass gets the buy page with "Your pass ended on" its date: the cookie outlasts the pass by the 90 days a lapsed pass is kept, and paying again with it renews the same code.
-- **Offer changes**: a new price or period applies to the next purchase. Closing an offer keeps every pass until it lapses. Deleting a board ends its passes and keeps its sales log and wallet.
+- **Offer changes**: a new price or period applies to the next purchase. Closing an offer keeps every pass until it lapses. Deleting a board ends its passes and keeps its sales log and wallet. Making a board public takes its offer down. A payment that lands after either is kept, the buyer is told no pass could be made, and the seller's inbox says to send the money back.
 
 ## The seller's view
 
@@ -158,7 +158,7 @@ Blind tokens would let a ship buy without the seller learning which ship bought,
 - **Active**: count, and a list of holder, mode, until and via, soonest lapse first.
 - **Income**: for this calendar month, and for the last 30 days, by unit (sats and USD separately, never converted), net of refunds.
 - **Lapses**: passes that lapsed in the period and were not renewed, which is churn.
-- **Wallet**: the ecash balance by mint, each as a cashuA token to copy into a Cashu wallet, cleared from the wallet only when the seller says it is in theirs. Withdrawal by melt to Lightning (furum's `%melt` step) is not ported yet.
+- **Wallet**: the ecash balance by mint, each as a cashuA token to copy into a Cashu wallet, cleared from the wallet only when the seller says it is in theirs, and only if no sale came in since the token was shown (the clear names the proofs by their hash). Withdrawal by melt to Lightning (furum's `%melt` step) is not ported yet.
 - **Offer**: price in sats and the mint, a dollar price in cents for card and bitcoin, days, read or post, on sale.
 - **Gift and refund**: give a ship a pass; end any live pass now.
 - **Card and bitcoin**: the Stripe key, the BTCPay url, store, api key and webhook secret, and this ship's public url, in one form. A key is never shown again: an empty field keeps it, and a box forgets each rail.

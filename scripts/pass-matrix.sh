@@ -73,6 +73,11 @@ is "refund ~bus" 200 "$(P "$B/pass-refund?board=$BD&holder=~bus")"
 j=$(passes)
 is "~bus ended" False "$(py "$j" "[p for p in j['passes'] if p['ship']=='~bus'][0]['live']")"
 is "~bus is out" '~nec' "$(group)"
+is "refund ~bus again" 200 "$(P "$B/pass-refund?board=$BD&holder=~bus")"
+is "a pass is refunded once" 1 "$(py "$(passes)" "len([p for p in j['passes'] if p['ship']=='~bus'])")"
+is "invite ~nec by hand" 200 "$(P "$B/forum-invite?board=$BD&ship=~nec")"
+is "revoke the hand invite" 200 "$(P "$B/forum-revoke?board=$BD&ship=~nec")"
+is "~nec still reads on its pass" '~nec' "$(group)"
 is "a bad holder" 400 "$(P "$B/pass-refund?board=$BD&holder=nobody")"
 
 echo "==> the mod page's Passes forms"
