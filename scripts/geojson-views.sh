@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # geojson-views.sh: a map page in every view a markdown page has, its
-# check on save, an agent key's writes, and the tile route's refusals.
+# check on save, an agent key's writes, and the tile route's refusals
+# and its bound.
 # Makes mapviews/trip on a FAKE ship and checks the save refusals, the
 # editor's open (page-source?render=1, which carries no render: map.js
 # draws the page), the /x view, the clearweb view (/c), the urb://
 # reader, page-search, the published vault copy and a new revision.
-# Deletes its pages and its key at the end.
+# Deletes its pages and its key at the end. The last check fills the
+# ship's minute of tiles, and the suite waits that minute out, so the
+# ship is left as it was found.
 #
 # Usage:  LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/grp-probe/cookie \
 #           scripts/geojson-views.sh
@@ -49,14 +52,14 @@ coll "Hostile" "$(feat '<script>PWNED()</script>' 1 2)" \
   >"$T/hostile.geojson"
 
 cleanup() {
-  for p in mapviews/trip mapviews/hostile mapviews/bad mapviews/agent mapviews/note mapviews; do
+  for p in mapviews/trip mapviews/hostile mapviews/bad mapviews/agent mapviews/note mapviews/large mapviews; do
     code -X POST "$A/page-del?name=$p" >/dev/null
   done
   [ -n "$KEYID" ] && code -X POST "$A/key-revoke?id=$KEYID" >/dev/null
   rm -rf "$T"
 }
 trap cleanup EXIT
-for p in mapviews/trip mapviews/hostile mapviews/bad mapviews/agent mapviews/note; do code -X POST "$A/page-del?name=$p" >/dev/null; done
+for p in mapviews/trip mapviews/hostile mapviews/bad mapviews/agent mapviews/note mapviews/large; do code -X POST "$A/page-del?name=$p" >/dev/null; done
 
 save() { code -X POST "$A/page-save?name=$1&type=$2&new=1" --data-binary "@$3"; }
 said() { curl -s -m 120 -H "$CK" -H "$OR" -X POST "$A/page-save?name=$1&type=geojson" --data-binary "$2" | jq -r .error; }
@@ -113,6 +116,7 @@ hasnt "the vault copy names no tile" "api.mapbox.com" "$v"
 r=$(get -G "$A" --data-urlencode "url=urb://$SHIP/mapviews/trip")
 has   "reader shows the map" "Matterhornhut" "$r"
 has   "reader frames it (the %html branch)" "<iframe" "$r"
+has   "reader title is the map's title, not its address" "<title>Alpine trip" "$r"
 
 # ── a new revision never serves the old render ───────────────────────
 sed 's/Matterhornhut/Solvayhut/' "$T/trip.geojson" >"$T/edit.geojson"
@@ -136,6 +140,15 @@ hasnt "no img element" "<img" "$f"
 hasnt "no handler from a name" ' onload="' "$f"
 hasnt "a hostile colour is not used" 'PWNED()</script>"' "$f"
 
+# ── a map over the Writer cap is cached as any other ─────────────────
+# 3 MB: more than a Writer document may be (2 MB), less than a map (4 MB)
+python3 -c 'print("{\"type\":\"FeatureCollection\",\"lattice\":{\"title\":\"Large\"},\"features\":[\n{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[1,2]},\"properties\":{\"name\":\"Bigpoint\",\"note\":\"" + "x" * 3000000 + "\"}}\n]}")' >"$T/large.geojson"
+is "make a 3 MB map" 200 "$(save mapviews/large geojson "$T/large.geojson")"
+x=$(get "$A/x/$SHIP$INST/page/mapviews/large/?embed=1")
+has   "/x shows the 3 MB map" "<td>Bigpoint</td>" "$x"
+ci=$(get "$URL/grubbery/ball$INST/page/mapviews/large?info=1")
+has   "its render is cached beside the page" '"name":"fodt.cache"' "$ci"
+
 # ── agent keys may write maps, and only as maps ──────────────────────
 mint=$(curl -s -m 60 -H "$CK" -H "$OR" -H 'content-type: application/json' -X POST "$A/key-mint" \
   --data-binary '{"name":"geojson-views","by":"agent","scope":{"memory":"none","pages":{"all":"write"},"web":{"off":null},"sensitive":false,"skills":"none"}}')
@@ -154,6 +167,8 @@ is "a key may not read the tile status" 403 "$(kcode "$A/tile-status")"
 is "a key may not set the token" 403 "$(kcode -X POST "$A/map-token" --data-binary 'pk.abc')"
 
 # ── the tile route refuses what is not a tile ────────────────────────
+# a suite run just before may have filled the ship's minute of tiles
+for _ in $(seq 1 16); do [ "$(code "$A/tile/streets/1/0/0")" = 429 ] || break; sleep 5; done
 is "no cookie, no tile" 403 "$(curl -s -m 60 -o /dev/null -w '%{http_code}' "$A/tile/streets/1/0/0")"
 for p in streets/1/2/0 streets/1/0/2 streets/18/0/0 nope/1/0/0 streets/a/0/0 streets/1/0 streets/1/0/0/0 \
          streets/-1/0/0 streets/1/0/0.png "streets/1/0/%2e%2e" streets/99999999/0/0; do
@@ -163,6 +178,22 @@ st=$(get "$A/tile-status")
 is "the status names the styles" '["streets","outdoors","satellite","dark"]' "$(jq -c .styles <<<"$st")"
 is "the status says the zoom ceiling" 17 "$(jq .max <<<"$st")"
 is "a token that is not one is refused" 400 "$(code -X POST "$A/map-token" --data-binary 'pk.a b"c')"
+
+# ── the ship's own bound on tiles ────────────────────────────────────
+# These requests come through no service worker, so only the ship counts
+# them: 120 a minute, and 429 past that. No token is set, so a tile
+# under the limit is a 503 and nothing is fetched.
+is "no token is set" false "$(jq .token <<<"$(get "$A/tile-status")")"
+codes=$(for i in $(seq 1 130); do code "$A/tile/streets/12/$i/7"; echo; done)
+n429=$(grep -c '^429$' <<<"$codes"); n503=$(grep -c '^503$' <<<"$codes")
+if [ "$n429" -ge 10 ] && [ "$n503" -ge 1 ] && [ "$n503" -le 120 ] && [ $((n429 + n503)) = 130 ]; then
+  ok "past 120 tiles a minute the ship answers 429 ($n503 let through, $n429 refused)"
+else fail "past 120 tiles a minute the ship answers 429" "$n503 let through, $n429 refused: $(sort <<<"$codes" | uniq -c | tr -s ' \n' ' ')"; fi
+has "and says why" "too many tiles this minute" "$(get "$A/tile/streets/12/999/7")"
+is "another route is still answered" 200 "$(code "$A/tile-status")"
+c=429
+for _ in $(seq 1 16); do c=$(code "$A/tile/streets/12/1000/7"); [ "$c" = 429 ] || break; sleep 5; done
+is "a minute later a tile is let through again" 503 "$c"
 
 echo "geojson-views: $fails failed"
 exit $((fails > 0))

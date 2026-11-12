@@ -11,8 +11,9 @@ Measures, against a lattice whose tile route reaches a stub tile server
   3. other requests' latency during a burst: /page-tree timed alone, then
      again while four threads stream tile requests.
 
-The per-minute limit is the service worker's, so a script that talks to
-the ship directly is never refused one.
+The ship lets 120 tiles a minute through and answers the rest 429, as
+the service worker does. A run that asks for more than that in a minute
+is timing refusals: keep N small, or run the parts a minute apart.
 
 It reads nothing from Mapbox. Usage:
 

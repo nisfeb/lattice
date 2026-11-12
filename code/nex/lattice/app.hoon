@@ -696,11 +696,12 @@
         ;<  ~  bind:m  (rise-later prod "lattice /forum-sweep.sig" "")
         forum-sweep-loop
       ::  /ui/main.sig: bind the HTTP endpoint and dispatch each request into a
-      ::  per-request fiber under /ui/requests (same pattern as counter).
+      ::  per-request fiber under /ui/requests (same pattern as counter),
+      ::  behind the tile route's bound (+http-serve).
           [[%ui ~] %'main.sig']
         ;<  ~  bind:m  (rise-later prod "lattice /ui/main.sig" "")
         ;<  ~  bind:m  (bind-http-self:io [~ /apps/lattice])
-        (http-dispatch:io %lattice)
+        http-serve
       ::  /ui/requests/*: one ephemeral fiber per in-flight HTTP request.
           [[%ui %requests ~] @]
         ?^  prod
@@ -6054,9 +6055,15 @@
 ::  tile does one peek (the token) and one iris request, and nothing
 ::  else. Measured on a fleet clone, a deadline timer cost about 210 ms
 ::  a tile, a limiter process about 40 ms and a clock read about 10 ms,
-::  so none of them is here. Iris and eyre bound a fetch that hangs. The
-::  per-minute limit is the service worker's (+sw-js), which answers
-::  429 past it without asking the ship.
+::  so none of them is here. Iris and eyre bound a fetch that hangs.
+::
+::  THE LIMIT is +tile-lim tiles a minute, kept twice. The service
+::  worker (+sw-js) answers 429 past it without asking the ship. A
+::  request that does not come through a worker meets the same bound
+::  here, in /ui/main.sig (+http-serve), which every request passes on
+::  its way to a fiber of its own. The count is that fiber's memory, so
+::  a tile under the limit costs no event and no write, and a refused
+::  one costs no request fiber, no peek and no fetch.
 ::
 ::  +tile-base: Mapbox's styles API. A test build may point it at a stub
 ::  server: it is a constant, never read from a request.
@@ -6070,6 +6077,78 @@
       ['satellite' 'mapbox/satellite-streets-v12']
       ['dark' 'mapbox/dark-v11']
   ==
+::  +tile-lim: the most tiles a minute the ship fetches (+http-serve)
+++  tile-lim  ^-(@ud 120)
+::  +http-serve: grubbery's dispatcher (+http-dispatch:io), with the
+::  owner's tile requests counted before it (+tile-gate). The window
+::  starts full, so the first tile reads the clock.
+++  http-serve
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (tile-gate (http-dispatch:io %lattice) *@da tile-lim)
+::  +tile-gate: `inner`, the dispatcher, with the tile bound before it.
+::  `t0` is the start of the window and `n` the tiles let through in it.
+::
+::  Every input goes to the dispatcher as it came, and what the
+::  dispatcher does next gets this gate before it again. A tile under the
+::  limit is counted on its way. At the limit the gate takes the tile
+::  itself and reads the clock. A window over a minute old makes way for
+::  a new one, and the dispatcher is handed the tile. Else the tile is
+::  answered 429 from here, and no fiber is made for it.
+::
+::  Nothing here can fail, as a failure would take every route down:
+::  the clock and the answer are soft. With no clock a tile goes through.
+++  tile-gate
+  =/  m  (fiber:fiber:nexus ,~)
+  |=  [inner=form:m t0=@da n=@ud]
+  ^-  form:m
+  |=  =input:fiber:nexus
+  ^-  output:m
+  =/  out=output:m  (inner input)
+  =/  id=(unit @ta)  (tile-ask in.input)
+  ::  not a tile, or one the dispatcher is not ready for and leaves
+  ::  queued: it comes here again, and is counted then
+  ?:  |(?=(~ id) ?=(%skip -.next.out))  (tile-on out t0 n)
+  ?:  (lth n tile-lim)  (tile-on out t0 +(n))
+  :+  ~  q.state.input
+  :-  %cont
+  ;<  now=(unit @da)  bind:m  soft-now
+  ?:  |(?=(~ now) (gte u.now (add t0 ~m1)))
+    ::  this step has no input of its own: it gives the dispatcher,
+    ::  which is where it was, the tile kept from above
+    |=  i=input:fiber:nexus
+    (tile-on (inner i(in in.input)) (fall now t0) ?~(now n 1))
+  ;<  *  bind:m
+    %^  soft-poke  /tile/full  server-road:io
+    :-  [/ %eyre-action]
+    ^-  eyre-action:nexus
+    :^  %send  u.id  %simple
+    :-  [429 ['content-type' 'application/json']~]
+    `(as-octs:mimes:html (en:json:html (pairs:enjs:format ~[['error' s+'too many tiles this minute']])))
+  (tile-gate inner t0 n)
+::  +tile-on: the dispatcher's answer, with +tile-gate before whatever
+::  it does next
+++  tile-on
+  =/  m  (fiber:fiber:nexus ,~)
+  |=  [out=output:m t0=@da n=@ud]
+  ^-  output:m
+  ?.  ?=(%cont -.next.out)  out
+  [darts.out state.out %cont (tile-gate self.next.out t0 n)]
+::  +tile-ask: the eyre id of the poke that opens a tile request of the
+::  owner's, ~ for any other input. An unauthenticated one is not
+::  counted: it is refused before any work (+handle-request).
+++  tile-ask
+  |=  in=(unit intake:fiber:nexus)
+  ^-  (unit @ta)
+  ?.  ?=([~ %poke * *] in)  ~
+  ?.  =(%handle-http-request name.p.sage.u.in)  ~
+  ?.  =(*from:fiber:nexus from.u.in)  ~
+  =/  r  (mole |.(!<([eyre-id=@ta @p req=inbound-request:eyre] q.sage.u.in)))
+  ?~  r  ~
+  ?.  authenticated.req.u.r  ~
+  ?.  =(%'GET' method.request.req.u.r)  ~
+  ?.  =('/apps/lattice/tile/' (end [3 19] url.request.req.u.r))  ~
+  `eyre-id.u.r
 ::  +token-ok: a token's shape: up to 512 bytes of letters, digits and . _ -
 ++  token-ok
   |=  t=@t
@@ -15309,9 +15388,11 @@
 ::
 ::  BOUND. One entry per page, overwritten in place: it lives in the
 ::  page's own dir, so a delete takes it and a move carries it. It is
-::  written only for a page with a code grub and a body of at most 2 MB
-::  (+max-size:lf), so it is at most one such render, about 4.5 times
-::  the source. A body that is not our own page's is never stored: a
+::  written only for a page with a code grub and a body no larger than
+::  its kind renders (+rich-max: 2 MB, or 4 MB for a map), so it is at
+::  most one such render. A Writer document's is about 4.5 times the
+::  source, and a map's is capped by what it draws. A body that is not
+::  our own page's is never stored: a
 ::  peer's published page arrives rendered, under %html, and a link's
 ::  body or a peer's page in the /x view is rendered and dropped. A page
 ::  shared with a peer for edit is still one of our pages, and the
@@ -15348,6 +15429,15 @@
     %fodt  fodt-ver
     %fods  (add (bex 16) fods-ver)
     %geojson  (add (bex 17) gj-ver)
+  ==
+::  +rich-max: the largest body of this kind that is rendered, in bytes
+++  rich-max
+  |=  k=rich
+  ^-  @ud
+  ?-  k
+    %fodt  max-size:lf
+    %fods  max-size:lfs
+    %geojson  max-size:lgj
   ==
 +$  fodt-view  [html=@t text=@t title=(unit @t)]
 +$  fodt-entry  [%fodt-cache ver=@ud key=@ view=fodt-view]
@@ -15423,7 +15513,7 @@
   |=  [k=rich pdir=path body=@t v=fodt-view]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ?:  (gth (met 3 body) max-size:lf)  (pure:m ~)
+  ?:  (gth (met 3 body) (rich-max k))  (pure:m ~)
   ;<  up=@ud  bind:m  nexus-up
   %^  put-file  (rf up pdir %'fodt.cache')  [/ %noun]
   `fodt-entry`[%fodt-cache (rich-ver k) (shax body) v]
@@ -15444,14 +15534,14 @@
   ;<  v=fodt-view  bind:m  (fodt-of-page u.rk (weld /page rel) body.u.un)
   (pure:m title.v)
 ::  +fodt-rendered: whether an html body starts as /lib/lattice-fodt's
-::  output does (+html-pres:lf), or /lib/lattice-fods's. A test on the
-::  first bytes: a
+::  output does (+html-pres:lf), or /lib/lattice-fods's, or
+::  /lib/lattice-geojson's. A test on the first bytes: a
 ::  hand-written html page that happens to start the same way costs one
 ::  read in +own-fodt-title, which then answers ~.
 ++  fodt-rendered
   |=  body=@t
   ^-  ?
-  %+  lien  (weld html-pres:lf html-pres:lfs)
+  %+  lien  :(weld html-pres:lf html-pres:lfs html-pres:lgj)
   |=(pre=@t =(pre (end [3 (met 3 pre)] body)))
 ::  +shown-of: +render-shown, but a fodt page of ours (at `pdir`) comes
 ::  from its render cache
