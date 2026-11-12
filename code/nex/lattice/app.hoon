@@ -693,7 +693,7 @@
           [[%ui ~] %'main.sig']
         ;<  ~  bind:m  (rise-later prod "lattice /ui/main.sig" "")
         ;<  ~  bind:m  (bind-http-self:io [~ /apps/lattice])
-        (http-dispatch:io %lattice)
+        http-dispatch:io
       ::  /ui/requests/*: one ephemeral fiber per in-flight HTTP request.
           [[%ui %requests ~] @]
         ?^  prod
@@ -22308,7 +22308,10 @@
         [~ %veto *]  [%fail (veto-error:io dart.u.in)]
         [~ %born * *]
       ?.  =(wire wire.u.in)  [%skip ~]
-      [%done res.u.in]
+      ::  the kernel's history has no tombs: a dropped version is absent,
+      ::  so every version it lists is live
+      ?:  ?=(%| -.res.u.in)  [%done res.u.in]
+      [%done %& (turn p.res.u.in |=([c=cass:clay t=(set @t)] [c t %.n]))]
     ==
   ++  lose
     |=  [=road:tarball =lose:nexus]
