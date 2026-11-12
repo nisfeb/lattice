@@ -260,6 +260,9 @@
         ::  /pub/comments is: a reader takes its absence for "no comet
         ::  posts", the answer an older lattice gives.
             [%stay %& [/pub %forum-comets]]
+        ::  /maps/token: the Mapbox token (POST /map-token). %stay: absent
+        ::  reads as no token (+map-token). Uncovered, a reload dropped it.
+            [%stay %& [/maps %token]]
         ::  /pub/thread/<page>/list: a published page's public comments
         ::  (+put-pub-thread), and /pub/threads the pages that have one.
         ::  Rebuilt at every writer start from /comments, so a reload loses
