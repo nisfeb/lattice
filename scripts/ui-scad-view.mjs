@@ -14,6 +14,13 @@
 //      a model that runs forever is stopped at the time limit
 //      a part past the triangle cap is refused before it reaches WebGL
 //      STL, 3MF and PNG export
+//      a part of absurd or infinite size leaves the page live
+//      another page in the same pane starts clean: no part, view or -D of
+//      the last one
+//      text put back while a render runs stops that render
+//      a change to an included page is drawn and exported
+//      a WebGL context that is lost and restored draws again
+//      a pane mounted again fetches nothing, a new runtime address does
 //      the time a few reference models take (printed, not checked)
 //
 //  Env:    CHROME (as the other browser suites)
@@ -30,7 +37,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { launchBrowser, makeCheck, sleep } from './lib/harness.mjs';
+import { launchBrowser, makeCheck, sleep, waitFor } from './lib/harness.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
@@ -96,10 +103,14 @@ async function open(text, { editable = true, pages = {}, timeout, fonts = true }
     window.jumps = [];
     window.downloads = [];
     HTMLAnchorElement.prototype.click = function () { window.downloads.push({ name: this.download, href: this.href }); };
-    window.ctl = window.LatScad.mount(document.getElementById('h'), {
+    window.pages = pg;
+    window.fails = 0;
+    //  kept, so a section can mount the pane again as the shell does
+    window.opts = {
       text: t, name: 'parts/box', editable: ed, timeout: to,
       runtime: { wasm: '/rt/openscad.wasm', js: '/rt/openscad.js', fonts },
-      readPage: async (n) => (n in pg ? pg[n] : null),
+      readPage: async (n) => (n in window.pages ? window.pages[n] : null),
+      onFail: () => { window.fails++; },
       onEdit: (line, nt, old) => {
         const L = window.buf.split('\n');
         if (L[line] !== old) return false;
@@ -109,7 +120,8 @@ async function open(text, { editable = true, pages = {}, timeout, fonts = true }
       },
       onJump: (l) => window.jumps.push(l),
       onSnapshot: (png) => { window.snap = png; },
-    });
+    };
+    window.ctl = window.LatScad.mount(document.getElementById('h'), window.opts);
   }, text, editable, pages, timeout, fonts ? FONTS.map((n) => [n, '/rt/' + n]) : []);
   return page;
 }
@@ -124,6 +136,24 @@ async function settled(page, secs = 90) {
 }
 const dims = (page) => page.$eval('.lscad-dims', (e) => e.textContent);
 const con = (page) => page.$eval('.lscad-con pre', (e) => e.textContent);
+//  the colour in the middle of the view, from the PNG Save view takes. The
+//  part is yellow and the plate behind it grey.
+const middle = (page) => page.evaluate(async () => {
+  document.querySelectorAll('.lscad-bar button')[5].click();
+  const im = new Image();
+  im.src = window.snap;
+  await im.decode();
+  const c = document.createElement('canvas');
+  c.width = im.width; c.height = im.height;
+  const x = c.getContext('2d');
+  x.drawImage(im, 0, 0);
+  return [...x.getImageData(im.width >> 1, im.height >> 1, 1, 1).data].slice(0, 3);
+});
+const isPart = (c) => c[0] - c[2] > 60;
+//  a page whose main thread is stuck answers nothing: give up on it
+const quick = (p, ms) => Promise.race([p, sleep(ms).then(() => 'hung')]);
+//  a model that takes a few seconds (4 here), then draws a 14 mm rod
+const SLOW = 'for (i = [0:40]) translate([i * 0.3, 0, 0]) sphere(1, $fn = 48);\n';
 
 console.log('the template');
 let page = await open(TEMPLATE);
@@ -216,6 +246,104 @@ await page.close();
 page = await open('sphere(10, $fn = 1500);\n', { timeout: 120000 });
 s = await settled(page, 150);
 check('a part past the triangle cap is refused before WebGL', /more than the viewer draws/.test(s), s);
+await page.close();
+
+console.log('\na part of absurd size');
+for (const [what, text] of [['a part a billion km wide', 'cube(1e12);\n'], ['a part at the edge of a float', 'cube(3e38);\n'], ['a part past what a float holds', 'cube(1e39);\n']]) {
+  page = await open(text);
+  s = await quick(settled(page, 30).catch(() => 'crashed'), 40000);
+  const alive = await quick(page.evaluate(() => 1).catch(() => 0), 5000);
+  check(`${what} answers, and the page stays live`, /rendered in|error|no part|no size/.test(s) && alive === 1, s);
+  page.close().catch(() => {});
+}
+
+console.log('\nanother page in the same pane');
+page = await open(TEMPLATE);
+await settled(page);
+await page.evaluate(() => { const f = document.querySelector('#lscad-width'); f.value = 100; f.dispatchEvent(new Event('input')); });
+await sleep(200);
+await settled(page);
+await page.evaluate(() => window.ctl.update('width = 20; // [10:200]\ntranslate([1000, 0, 0]) cube([width, 5, 5]);\n', { name: 'parts/other' }));
+await sleep(500);
+s = await settled(page);
+check('a slider value does not follow to another page', /^20 × 5 × 5 mm/.test(await dims(page)), s + ' ' + await dims(page));
+check('  and the view is fitted to the new part', isPart(await middle(page)), (await middle(page)).join());
+await page.evaluate(() => window.ctl.update('sphere(;\n', { name: 'parts/broken' }));
+await sleep(500);
+s = await settled(page);
+check('a page that fails keeps no part of the last one', /error/.test(s) && (await dims(page)) === ''
+  && (await page.evaluate(() => window.ctl.mesh())) === null && !isPart(await middle(page)), s + ' ' + await dims(page));
+await page.close();
+
+console.log('\ntext put back while a render runs');
+page = await open('cube(1);\n');
+await settled(page);
+await page.evaluate((t) => window.ctl.update(t), SLOW);
+await sleep(900);
+check('the slow render is under way', (await page.$eval('.lscad-busy', (e) => e.textContent)) !== '');
+await page.evaluate(() => window.ctl.update('cube(1);\n'));
+await sleep(700);
+check('putting the text back stops it', (await page.$eval('.lscad-busy', (e) => e.textContent)) === '');
+await waitFor(async () => /^14 × 2 × 2 mm/.test(await dims(page)), 12000, 200);
+check('  and its part never replaces the one the text says', /^1 × 1 × 1 mm/.test(await dims(page)), await dims(page));
+await page.close();
+
+console.log('\nan included page changes');
+const USES = 'include <lib/plate.scad>\nplate(30);\n';
+page = await open(USES, { pages: { 'parts/lib/plate': 'module plate(w) { cube([w, w, 2]); }\n' } });
+await settled(page);
+await page.evaluate((t) => { window.pages['parts/lib/plate'] = 'module plate(w) { cube([w + 10, w + 10, 2]); }\n'; window.ctl.update(t); }, USES);
+await waitFor(async () => /^40 × 40 × 2 mm/.test(await dims(page)), 15000, 200);
+check('a change to an included page is drawn, the main text the same', /^40 × 40 × 2 mm/.test(await dims(page)), await dims(page));
+await settled(page);
+await page.evaluate(() => {
+  window.pages['parts/lib/plate'] = 'module plate(w) { cube([w, w, 2]); translate([0, 0, 5]) cube(1); }\n';
+  document.querySelectorAll('.lscad-bar button')[2].click();
+});
+await waitFor(() => page.evaluate(() => window.downloads.length === 1), 15000, 200);
+const tris = await page.evaluate(async () => (window.downloads[0]
+  ? new DataView(await (await fetch(window.downloads[0].href)).arrayBuffer()).getUint32(80, true) : -1));
+check('  and an STL export is of the page as it is now', tris === 24, `${tris} triangles`);
+await page.close();
+
+console.log('\nthe WebGL context is lost and comes back');
+page = await open('cube(10);\n');
+await settled(page);
+check('the part is in the middle of the view', isPart(await middle(page)), (await middle(page)).join());
+const back = await quick(page.evaluate(async () => {
+  const c = document.querySelector('.lscad-main canvas');
+  const x = c.getContext('webgl').getExtension('WEBGL_lose_context');
+  const on = (n) => new Promise((ok) => c.addEventListener(n, ok, { once: true }));
+  let p = on('webglcontextlost');
+  x.loseContext();
+  await p;
+  //  a restore is allowed only once the lost event is over
+  await new Promise((ok) => setTimeout(ok, 100));
+  p = on('webglcontextrestored');
+  x.restoreContext();
+  await p;
+  await new Promise((ok) => requestAnimationFrame(() => requestAnimationFrame(ok)));
+  return 'back';
+}), 10000);
+check('a restored context draws the part again', back === 'back' && isPart(await middle(page)), back + ' ' + (await middle(page)).join());
+
+console.log('\nthe pane mounted again');
+const remount = (rt) => page.evaluate((r) => {
+  window.ctl.destroy();
+  window.ctl = window.LatScad.mount(document.getElementById('h'), { ...window.opts, runtime: { ...window.opts.runtime, ...r } });
+}, rt);
+let from = hits.length;
+await remount({});
+s = await settled(page);
+check('a pane mounted again renders', /rendered in/.test(s), s);
+check('  and fetches nothing: the runtime is kept for the session', hits.length === from, hits.slice(from).join(' '));
+await remount({ wasm: '/rt/openscad.wasm?h=next' });
+s = await settled(page);
+check('a runtime at a new address is fetched, not the kept one', /rendered in/.test(s) && hits.slice(from).filter((h) => h === '/rt/openscad.wasm').length === 1, hits.slice(from).join(' '));
+check('no runtime has failed to load so far', (await page.evaluate(() => window.fails)) === 0);
+await remount({ wasm: '/rt/gone.wasm' });
+s = await settled(page);
+check('a runtime that does not load is told to the shell', (await page.evaluate(() => window.fails)) === 1, s);
 await page.close();
 
 console.log('\nthe hostile corpus (tests/scad/hostile): every model answers');
