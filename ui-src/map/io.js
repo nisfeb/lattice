@@ -4,7 +4,7 @@
 //  DOMParser an import of XML needs, which the caller hands in.
 
 import { gpx, kml } from '@tmcw/togeojson';
-import { parse, simplifyFeature, props, esc, MAX_FEATURES, MAX_TEXT, depthOf, MAX_DEPTH } from './core.js';
+import { parse, check, simplifyFeature, props, esc, MAX_TEXT, depthOf, MAX_DEPTH } from './core.js';
 
 //  the kind of a file, by its name: 'geojson', 'gpx', 'kml' or ''
 export function fileKind(name) {
@@ -36,14 +36,16 @@ export function importText(kind, text, DP) {
     //  togeojson writes empty geometries as null and extra styling members
     fc = { type: 'FeatureCollection', features: (fc.features || []).filter((f) => f && f.geometry) };
   } else return { error: 'lattice reads .geojson, .json, .gpx and .kml files' };
+  //  check what came in the way a page is checked, before anything walks
+  //  it. The positions are counted after the long lines are simplified.
+  const why = check({ type: 'FeatureCollection', features: fc.features }, Infinity);
+  if (why) return { error: why.replace('the page', 'the file') };
   let before = 0, after = 0;
-  const feats = (fc.features || []).map((f) => {
+  const feats = fc.features.map((f) => {
     const [g, b, a] = simplifyFeature(f);
     before += b; after += a;
     return g;
   });
-  if (feats.length > MAX_FEATURES) return { error: `the file has more than ${MAX_FEATURES} features` };
-  //  check what came in the way a page is checked
   const r = parse(JSON.stringify({ type: 'FeatureCollection', features: feats }));
   if (r.error) return { error: r.error };
   const features = r.doc.features.map((f) => keepProps(f, kind));

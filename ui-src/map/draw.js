@@ -11,6 +11,7 @@ import { props } from './core.js';
 
 const TOL = 10;          // px: how near a click must be to hit a shape
 const HANDLE_TOL = 12;   // px: to grab a vertex
+const DRAG_MIN = 5;      // px: a press that moves less is a tap, not a drag
 const MAX_HANDLES = 1000;
 
 const wrapLon = (x) => ((((x + 180) % 360) + 360) % 360) - 180;
@@ -206,14 +207,16 @@ export function attachDraw(x) {
     e.stopPropagation();
     map.dragging.disable();
     try { mapEl.setPointerCapture(e.pointerId); } catch { /* fine without */ }
-    drag = { i, vh, start: map.containerPointToLatLng(p), orig: copyGeom(f.geometry), moved: false, id: e.pointerId, raf: 0 };
+    drag = { i, vh, at: p, start: map.containerPointToLatLng(p), orig: copyGeom(f.geometry), moved: false, id: e.pointerId, raf: 0 };
   }, true);
   mapEl.addEventListener('pointermove', (e) => {
     if (!drag || e.pointerId !== drag.id) return;
     e.preventDefault();
     e.stopPropagation();
     const r = mapEl.getBoundingClientRect();
-    const at = map.containerPointToLatLng(L.point(e.clientX - r.left, e.clientY - r.top));
+    const p = L.point(e.clientX - r.left, e.clientY - r.top);
+    if (!drag.moved && p.distanceTo(drag.at) < DRAG_MIN) return;
+    const at = map.containerPointToLatLng(p);
     const f = x.doc().features[drag.i];
     const g = copyGeom(drag.orig);
     if (drag.vh) setAt(g, drag.vh.path, pos(at));
@@ -231,10 +234,11 @@ export function attachDraw(x) {
     map.dragging.enable();
     if (!d.moved) return;
     justDragged = true;
-    if (e.type === 'pointercancel') {
+    //  a cancelled drag, or one the write refused, goes back where it was
+    if (e.type === 'pointercancel' || !x.write(() => {})) {
       const f = x.doc().features[d.i];
       x.doc().features[d.i] = { ...f, geometry: d.orig };
-    } else x.write(() => {});
+    }
     x.drawOne(d.i);
     paintHandles();
   };

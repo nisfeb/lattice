@@ -10,11 +10,13 @@
 //  its own layout until lattice next edits it. Unknown members and
 //  properties are kept.
 
-export const BIG = 2 * 1024 * 1024;        // over this, the map is read-only
+//  The caps are the ship's (+max-size, +max-feats, +max-pos and +max-depth
+//  in /lib/lattice-geojson), so what opens here is what the ship saves.
+export const BIG = 4 * 1024 * 1024;        // bytes: over this, the map is read-only
 export const MAX_TEXT = 16 * 1024 * 1024;  // over this, it is not parsed at all
 export const MAX_FEATURES = 20000;
-export const MAX_POSITIONS = 200000;
-export const MAX_DEPTH = 12;               // brackets deep, members included
+export const MAX_POSITIONS = 500000;
+export const MAX_DEPTH = 64;               // brackets deep, members included
 export const STYLES = ['streets', 'outdoors', 'satellite', 'dark'];
 export const MAX_LAYERS = 20;
 //  icon names a feature may carry, each with the glyph lattice shows for it
@@ -46,6 +48,9 @@ export function depthOf(t) {
   }
   return max;
 }
+//  whether a text is over BIG as the ship counts it, in UTF-8 bytes. The
+//  bytes are counted only when the length alone does not say.
+const over = (t) => t.length > BIG || (t.length * 3 > BIG && new TextEncoder().encode(t).length > BIG);
 
 //  ── checking ──────────────────────────────────────────────────────────
 
@@ -55,12 +60,11 @@ const no = (m) => { throw new Refusal(m); };
 function position(p, n) {
   if (!Array.isArray(p) || p.length < 2 || p.length > 4) no('a position is not [lon, lat]');
   for (const v of p) if (!fin(v)) no('a coordinate is not a number');
-  if (p[0] < -180 || p[0] > 180 || p[1] < -90 || p[1] > 90) no('a coordinate is outside the world');
-  if (++n.pos > MAX_POSITIONS) no(`more than ${MAX_POSITIONS} positions`);
+  if (++n.pos > n.max) no(`more than ${n.max} positions`);
 }
 function positions(a, n, min) {
   if (!Array.isArray(a)) no('coordinates are not a list');
-  if (a.length > MAX_POSITIONS) no(`more than ${MAX_POSITIONS} positions`);
+  if (a.length > n.max) no(`more than ${n.max} positions`);
   if (a.length < min) no('a line or ring has too few positions');
   for (const p of a) position(p, n);
 }
@@ -94,6 +98,26 @@ function geometry(g, n, inner) {
   }
 }
 
+//  check(j, maxPos) -> why a parsed body is not a map page's, or ''. A
+//  feature with no geometry member has none, as on the ship.
+export function check(j, maxPos = MAX_POSITIONS) {
+  try {
+    if (!isObj(j) || j.type !== 'FeatureCollection') no('the page is not a GeoJSON FeatureCollection');
+    if (!Array.isArray(j.features)) no('the collection has no features list');
+    if (j.features.length > MAX_FEATURES) no(`more than ${MAX_FEATURES} features`);
+    const n = { pos: 0, max: maxPos };
+    for (const f of j.features) {
+      if (!isObj(f) || f.type !== 'Feature') no('a feature is not a Feature');
+      geometry(f.geometry ?? null, n, false);
+      if (own(f, 'properties') && f.properties !== null && !isObj(f.properties)) no('a feature\'s properties are not an object');
+    }
+    if (own(j, 'lattice') && !isObj(j.lattice)) no('the lattice member is not an object');
+  } catch (e) {
+    return e instanceof Refusal ? e.message : 'the page cannot be read as a map';
+  }
+  return '';
+}
+
 //  parse(text) -> { doc } | { error }
 //    doc: { lattice, features, extra, big }
 //      lattice   the view member, as written (an object)
@@ -107,25 +131,11 @@ export function parse(text) {
   if (depthOf(t) > MAX_DEPTH) return { error: 'the JSON is nested too deeply' };
   let j;
   try { j = JSON.parse(t); } catch (e) { return { error: 'the page is not valid JSON' }; }
-  try {
-    if (!isObj(j) || j.type !== 'FeatureCollection') no('the page is not a GeoJSON FeatureCollection');
-    if (!Array.isArray(j.features)) no('the collection has no features list');
-    if (j.features.length > MAX_FEATURES) no(`more than ${MAX_FEATURES} features`);
-    const n = { pos: 0 };
-    for (const f of j.features) {
-      if (!isObj(f) || f.type !== 'Feature') no('a feature is not a Feature');
-      if (!own(f, 'geometry')) no('a feature has no geometry');
-      geometry(f.geometry, n, false);
-      if (own(f, 'properties') && f.properties !== null && !isObj(f.properties)) no('a feature\'s properties are not an object');
-    }
-    if (own(j, 'lattice') && !isObj(j.lattice)) no('the lattice member is not an object');
-  } catch (e) {
-    if (e instanceof Refusal) return { error: e.message };
-    return { error: 'the page cannot be read as a map' };
-  }
+  const why = check(j);
+  if (why) return { error: why };
   const extra = [];
   for (const k of Object.keys(j)) if (k !== 'type' && k !== 'lattice' && k !== 'features') extra.push([k, j[k]]);
-  return { doc: { lattice: own(j, 'lattice') ? j.lattice : {}, features: j.features, extra, big: t.length > BIG } };
+  return { doc: { lattice: own(j, 'lattice') ? j.lattice : {}, features: j.features, extra, big: over(t) } };
 }
 
 //  ── writing ───────────────────────────────────────────────────────────

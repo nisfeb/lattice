@@ -13,10 +13,15 @@
 //      a point, a line, an area and a ring each write the body
 //      a dragged point is a one-line diff, a dragged vertex moves
 //      the detail panel edits properties and keeps the others
+//      a press that does not move is a tap: nothing moves or saves
 //      Delete removes, Ctrl+Z asks the shell to undo, update() redraws
+//      a map mounted over the last one's host leaves none of its handlers
 //      GPX (5,000 points, simplified), KML and dropped files import
+//      a bad file does not sink a good one, and no edit passes the caps
 //      GeoJSON and GPX export
-//      hostile names and notes are text, never markup
+//      hostile names and notes are text, never markup, and a note's
+//      markdown loads nothing and links nowhere on this origin
+//      a tile answered 429 is asked for again
 //      layers are drawn and a missing one is said
 //      the time filter, refresh, the base map switch, a phone screen
 //
@@ -48,26 +53,33 @@ const TILES = { token: true, max: 17, styles: ['streets', 'outdoors', 'satellite
 
 const browser = await launchBrowser();
 const errors = [];
-async function open(text, { editable = true, viewport = { width: 1100, height: 700 }, touch = false, tiles = TILES, layers = {} } = {}) {
+//  mdHtml: what opts.md returns, in place of the escaper. busy: the tile
+//  route answers 429 the first time each tile is asked for.
+async function open(text, { editable = true, viewport = { width: 1100, height: 700 }, touch = false, tiles = TILES, layers = {}, mdHtml = null, busy = false } = {}) {
   const page = await browser.newPage();
   await page.setViewport({ ...viewport, hasTouch: touch, isMobile: touch });
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error' && !/favicon|Failed to load resource|insecure connection/.test(m.text())) errors.push(m.text()); });
-  const reqs = [];
+  const reqs = [], same = [], asked = new Set();
   await page.setRequestInterception(true);
   page.on('request', (r) => {
     const u = r.url();
     if (u === ORIGIN + '/') return r.respond({ status: 200, contentType: 'text/html', body: PAGE });
-    if (u.startsWith(ORIGIN + '/apps/lattice/tile/')) { reqs.push(u.slice(ORIGIN.length)); return r.respond({ status: 200, contentType: 'image/png', body: PNG }); }
-    if (u.startsWith(ORIGIN)) return r.respond({ status: 404, body: '' });
+    if (u.startsWith(ORIGIN + '/apps/lattice/tile/')) {
+      reqs.push(u.slice(ORIGIN.length));
+      if (busy && !asked.has(u)) { asked.add(u); return r.respond({ status: 429, body: 'too many tiles this minute' }); }
+      return r.respond({ status: 200, contentType: 'image/png', body: PNG });
+    }
+    if (u.startsWith(ORIGIN)) { same.push(u.slice(ORIGIN.length)); return r.respond({ status: 404, body: '' }); }
     if (u.startsWith('blob:') || u.startsWith('data:')) return r.continue();
     reqs.push('OUTSIDE ' + u);
     return r.abort();
   });
   await page.goto(ORIGIN + '/');
   await page.addScriptTag({ content: js });
-  const r = await page.evaluate((t, ed, tl, ly) => {
+  const r = await page.evaluate((t, ed, tl, ly, mh) => {
     window.buf = t;
+    window.opened = [];
     window.changes = 0;
     window.undos = 0;
     window.redos = 0;
@@ -80,17 +92,18 @@ async function open(text, { editable = true, viewport = { width: 1100, height: 7
       onChange: () => { window.changes++; },
       undo: () => { window.undos++; }, redo: () => { window.redos++; },
       openSettings: () => { window.settings++; },
-      md: (s) => s.replace(/[&<>"']/g, (c) => '&#' + c.charCodeAt(0) + ';'),
+      openPage: (n) => { window.opened.push(n); },
+      md: (s) => (mh === null ? s.replace(/[&<>"']/g, (c) => '&#' + c.charCodeAt(0) + ';') : mh),
       layer: async (n) => (Object.prototype.hasOwnProperty.call(ly, n) ? ly[n] : null),
     });
     window.mountMs = performance.now() - t0;
     window.t0 = t0;
     return window.ctl.error || '';
-  }, text, editable, tiles, layers);
+  }, text, editable, tiles, layers, mdHtml);
   if (r) throw new Error(r);
   await page.waitForFunction(() => document.getElementById('h').dataset.painted !== undefined, { timeout: 5000 });
   const api = {
-    page, reqs,
+    page, reqs, same,
     //  the screen point of [lon, lat]
     at: (lon, lat) => page.evaluate((a, b) => {
       const m = window.ctl._t.map;
@@ -190,9 +203,12 @@ console.log('==> no token, and a big page');
   check.eq('no tile is asked for', m.reqs.length, 0);
   check('the grid is still drawn', await m.page.$$eval('.lm-grid canvas', (e) => e.length > 0));
   await m.close();
-  const big = await open(body([pt(1, 1, { note: 'x'.repeat(2.1 * 1024 * 1024) })]));
-  check('a body over 2 MB is shown without tools', await big.page.$eval('.lm-tools', (e) => e.hidden) && (await big.note()).includes('large'));
+  const big = await open(body([pt(1, 1, { note: 'x'.repeat(4.1 * 1024 * 1024) })]));
+  check('a body over 4 MB, more than the ship saves, is shown without tools', await big.page.$eval('.lm-tools', (e) => e.hidden) && (await big.note()).includes('large'));
   await big.close();
+  const mid = await open(body([pt(1, 1, { note: 'x'.repeat(3 * 1024 * 1024) })]));
+  check('a body of 3 MB, which the ship saves, has the tools', await mid.page.$eval('.lm-tools', (e) => !e.hidden) && !(await mid.note()).includes('large'));
+  await mid.close();
   const bad = await browser.newPage();
   await bad.goto('about:blank');
   await bad.addScriptTag({ content: js });
@@ -260,6 +276,21 @@ console.log('==> drawing');
   const moved = (await m.doc()).features[0].geometry.coordinates;
   check('the point moved', moved[0] > -71 && moved[1] < 42, JSON.stringify(moved));
 
+  //  a press on the selected point that barely moves is a tap
+  {
+    const [mx, my] = await m.at(...moved);
+    const b0 = await m.page.evaluate(() => [window.buf, window.texts.length]);
+    await m.page.mouse.move(mx, my);
+    await m.page.mouse.down();
+    await m.page.mouse.move(mx + 2, my + 1); await sleep(16);
+    await m.page.mouse.move(mx + 3, my + 2); await sleep(16);
+    await m.page.mouse.up();
+    await sleep(60);
+    const b1 = await m.page.evaluate(() => [window.buf, window.texts.length]);
+    check('a press that moves 3 px moves nothing and saves nothing', b1[0] === b0[0] && b1[1] === b0[1], `${b0[1]} -> ${b1[1]} writes`);
+    check('and leaves the feature selected, its detail open', await m.sel() === 0 && await m.page.$eval('.lm-detail', (e) => !e.hidden));
+  }
+
   //  a vertex of the line
   await m.click(-71.05, 41.97);
   check.eq('a click on a line selects it', await m.sel(), 2);
@@ -314,6 +345,49 @@ console.log('==> drawing');
   await m.close();
 }
 
+console.log('==> a second map over the same host');
+{
+  //  the shell mounts every map over one element. Map A is opened, then
+  //  destroyed, and map B mounted where it was.
+  const m = await open(body([pt(-71, 42, { name: 'a1' }), pt(-70.9, 42, { name: 'a2' })], { center: [-71, 42], zoom: 10 }));
+  await m.click(-71, 42);
+  check.eq('A: a feature is selected', await m.sel(), 0);
+  await m.page.evaluate((t) => {
+    window.ctlA = window.ctl;
+    window.aTexts = window.texts;
+    window.ctlA.destroy();
+    window.buf = t; window.texts = []; window.undos = 0;
+    window.ctl = window.LatMap.mount(document.getElementById('h'), {
+      text: t, editable: true, name: 'trips/b', cur: () => window.buf, tiles: null,
+      onText: (x) => { window.buf = x; window.texts.push(x); }, undo: () => { window.undos++; },
+    });
+  }, body([pt(-71, 42, { name: 'b1' }), pt(-70.9, 42, { name: 'b2' }), pt(-70.8, 42, { name: 'b3' })], { center: [-71, 42], zoom: 10 }));
+  await sleep(100);
+  const aBefore = await m.page.evaluate(() => window.aTexts.length);
+  await m.page.focus('.lm-map');
+  await m.page.keyboard.down('Control'); await m.page.keyboard.press('z'); await m.page.keyboard.up('Control');
+  check.eq('B: Ctrl+Z asks for one undo, not one a mount', await m.page.evaluate(() => window.undos), 1);
+  await m.click(-70.8, 42);
+  check.eq('B: its third feature is selected', await m.sel(), 2);
+  await m.page.focus('.lm-map');
+  await m.page.keyboard.press('Delete');
+  await sleep(50);
+  check.eq('B: Delete removes B\'s feature, and only that', (await m.doc()).features.map((f) => f.properties.name).join(), 'b1,b2');
+  check.eq('B: the body was written once', await m.page.evaluate(() => window.texts.length), 1);
+  check.eq('A wrote nothing after it was destroyed', await m.page.evaluate(() => window.aTexts.length), aBefore);
+  await m.page.evaluate(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([JSON.stringify({ type: 'Feature', geometry: { type: 'Point', coordinates: [-70.7, 42] }, properties: { name: 'dropped' } })], 'one.geojson'));
+    document.getElementById('h').dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+  });
+  await waitFor(async () => (await m.doc()).features.length >= 3, 2000);
+  await sleep(200);
+  check.eq('B: a dropped file imports once', (await m.doc()).features.map((f) => f.properties.name).join(), 'b1,b2,dropped');
+  check('a destroyed map\'s write is refused', await m.page.evaluate(() => window.ctlA.importFiles([new File(['{"type":"Feature","geometry":null}'], 'x.geojson')])) === false
+    && await m.page.evaluate(() => window.aTexts.length) === aBefore);
+  await m.close();
+}
+
 console.log('==> files');
 {
   const m = await open(body([]));
@@ -347,9 +421,33 @@ console.log('==> files');
   const out = await m.page.evaluate(async () => Promise.all(window.blobs.map((b) => b.text())));
   check('GeoJSON export is the page body', out[0] === await m.page.evaluate(() => window.buf));
   check('GPX export is GPX with the waypoints and the track', out[1] && out[1].startsWith('<?xml') && (out[1].match(/<wpt /g) || []).length === 2 && out[1].includes('<trk><name>Long walk</name>'));
+  //  one bad file in a drop does not sink the others
+  const n0 = (await m.doc()).features.length;
+  const good = JSON.stringify(pt(-71.3, 42.4, { name: 'good' }));
+  const r2 = await m.page.evaluate((g) => window.ctl.importFiles([
+    new File(['{"type":"FeatureCollection","features":[null]}'], 'null.geojson'),
+    new File(['{"type":"LineString"}'], 'bare.json'),
+    { name: 'gone.geojson', text: () => Promise.reject(new Error('gone')) },
+    new File([g], 'good.geojson'),
+  ]).catch((e) => 'threw ' + e), good);
+  d = await m.doc();
+  check('bad files beside a good one: the good one imports', r2 === true && d.features.length === n0 + 1 && d.features[n0].properties.name === 'good', String(r2));
+  const said = await m.note();
+  check('and each bad one is said', said.includes('null.geojson: ') && said.includes('bare.json: ') && said.includes('gone.geojson: the file cannot be read') && said.includes('good.geojson: 1 features'), said);
   await m.page.evaluate(() => window.ctl.setEditable(false));
   check('a read-only map imports nothing', !(await m.page.evaluate((t) => window.ctl.importFiles([new File([t], 'h.kml')]), kml)));
   await m.close();
+
+  //  no edit writes a body the ship, or the next open, would refuse
+  const full = await open(body([pt(1, 1, { name: 'full', note: 'x'.repeat(3.9 * 1024 * 1024) })], { center: [1, 1], zoom: 9 }));
+  const fat = JSON.stringify(pt(1.01, 1.01, { name: 'fat', note: 'y'.repeat(200 * 1024) }));
+  const r3 = await full.page.evaluate((t) => window.ctl.importFiles([new File([t], 'fat.geojson')]), fat);
+  check('an import that would pass 4 MB is refused and said', r3 === false && (await full.note()).includes('over 4 MB'), String(r3) + ' ' + await full.note());
+  check('and writes nothing', await full.page.evaluate(() => window.texts.length === 0 && window.ctl._t.doc().features.length === 1 && window.LatMap.core.parse(window.ctl.base()).doc.big === false));
+  await full.tool('Point');
+  await full.click(1.02, 1.02);
+  check('a small edit on the same map still writes', (await full.doc()).features.length === 2);
+  await full.close();
 }
 
 console.log('==> hostile text');
@@ -364,6 +462,58 @@ console.log('==> hostile text');
   check('nothing was fetched from outside', !m.reqs.some((u) => u.startsWith('OUTSIDE')), m.reqs.join(' '));
   const shown = await m.page.evaluate((t) => window.LatMap.show(t), body([evil]));
   check('show() escapes everything', !shown.includes('<img') && !shown.includes('<script') && shown.includes('&lt;img'));
+  await m.close();
+
+  //  a note's markdown, as the shell's renderer (59-md.js) writes it for
+  //  ![x](/apps/lattice/clip?url=..), a remote image it was told to load,
+  //  links, and markup no renderer should send. The map is in the app's
+  //  own document, with the owner's cookie.
+  const md = '<p>see <strong>this</strong> <img alt="x" src="/apps/lattice/clip?url=https://evil.example/"> '
+    + '<img alt="pixel" src="https://evil.example/t.png"> <a href="/apps/lattice/clip?url=https://evil.example/">clip</a> '
+    + '<a href="/apps/lattice/page-del?name=notes">del</a> <a href="javascript:window.pwned=6">js</a> '
+    + '<a href="https://example.com/ok">out</a> <a href="/apps/lattice/app?name=notes%2Ftrip">trip</a></p>'
+    + '<ul><li><input type="checkbox" checked> <code>done</code></li></ul>'
+    + '<iframe src="/apps/lattice/page-del?name=x"></iframe><script>window.pwned=7</script>'
+    + '<form action="/apps/lattice/map-token" method="post"><button>go</button></form>'
+    + '<p style="background:url(/apps/lattice/clip?url=https://evil.example/css)" onclick="window.pwned=8">styled</p>';
+  const n = await open(body([pt(10, 10, { name: 'n', note: 'a note' })]), { editable: false, mdHtml: md });
+  await n.click(10, 10);
+  await sleep(300);
+  const got = await n.page.evaluate(() => {
+    const d = document.querySelector('.lm-detail .lm-md');
+    return {
+      bad: d.querySelectorAll('img, iframe, script, form, button, input, [style], [onclick], [src]').length,
+      text: d.textContent,
+      strong: !!d.querySelector('p strong') && !!d.querySelector('ul li code'),
+      links: [...d.querySelectorAll('a')].map((a) => [a.textContent, a.getAttribute('href'), a.target, a.rel]),
+      pwned: window.pwned,
+    };
+  });
+  check('a note keeps its plain formatting', got.strong && got.text.includes('see this') && got.text.includes('styled'), JSON.stringify(got));
+  check('a note has no image, frame, script, form or attribute from its markdown', got.bad === 0 && got.pwned === undefined, JSON.stringify(got));
+  check('an image is its alt text', got.text.includes(' x ') && got.text.includes('pixel'), got.text);
+  check('only a page and an http(s) address stay links', JSON.stringify(got.links) === JSON.stringify([['out', 'https://example.com/ok', '_blank', 'noopener noreferrer'], ['trip', '#', '', '']]), JSON.stringify(got.links));
+  check('a link to a route on this origin is its text', got.text.includes('clip') && got.text.includes('del') && got.text.includes('js'), got.text);
+  await n.page.evaluate(() => [...document.querySelectorAll('.lm-detail .lm-md a')].find((a) => a.textContent === 'trip').click());
+  check.eq('a page link opens the page through the shell', await n.page.evaluate(() => window.opened.join()), 'notes/trip');
+  check('a note fetches nothing, on this origin or outside it', n.same.length === 0 && !n.reqs.some((u) => u.startsWith('OUTSIDE')), n.same.concat(n.reqs.filter((u) => u.startsWith('OUTSIDE'))).join(' '));
+  await n.close();
+}
+
+console.log('==> a tile refused for a minute');
+{
+  //  the worker and the ship answer 429 past the limit of tiles a minute.
+  //  Here every tile is refused the first time it is asked for.
+  const m = await open(body([pt(-71, 42)], { center: [-71, 42], zoom: 10 }), { busy: true });
+  await waitFor(() => m.reqs.length > 0, 3000);
+  await sleep(300);
+  const first = new Set(m.reqs);
+  check('every tile was refused once', first.size > 0 && first.size === m.reqs.length && await m.page.$$eval('.leaflet-tile-pane img.leaflet-tile-loaded', (e) => e.length) === 0, `${first.size} tiles, ${m.reqs.length} requests`);
+  const filled = await waitFor(() => m.page.evaluate(() => {
+    const t = [...document.querySelectorAll('.leaflet-tile-pane img.leaflet-tile')];
+    return t.length > 0 && t.every((i) => i.classList.contains('leaflet-tile-loaded') && i.naturalWidth > 0);
+  }), 6000, 200);
+  check('a refused tile is asked for again and fills its hole', !!filled && [...first].every((u) => m.reqs.filter((x) => x === u).length === 2), `${m.reqs.length} requests for ${first.size} tiles`);
   await m.close();
 }
 

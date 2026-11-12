@@ -6,6 +6,7 @@
 //                 a moved point as a one-line diff, rounding.
 //    2. Refusals. Everything that is not a FeatureCollection lattice can
 //                 draw, and the caps, refused fast and before allocation.
+//                 The caps are the ship's (/lib/lattice-geojson).
 //    3. Reads.    The properties lattice shows, checked: colour, icon,
 //                 radius, time, source links, the view member, the title,
 //                 search text and the outline.
@@ -22,7 +23,7 @@ import { fileURLToPath } from 'url';
 import { makeCheck } from './lib/check.mjs';
 import {
   parse, serialize, props, view, title, text, outline, render, renderBody, dp, simplify,
-  sourceLink, depthOf, BLANK, BIG, MAX_FEATURES, MAX_POSITIONS, RENDER_MAX,
+  sourceLink, depthOf, BLANK, BIG, MAX_FEATURES, MAX_POSITIONS, MAX_DEPTH, RENDER_MAX,
 } from '../ui-src/map/core.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -83,22 +84,29 @@ console.log('2. refusals');
   refuses('an array', '[]', /FeatureCollection/);
   refuses('no features list', '{"type":"FeatureCollection"}', /features/);
   refuses('a feature that is not a Feature', fc([{ type: 'Point', coordinates: [1, 2] }]), /not a Feature/);
-  refuses('a feature with no geometry member', fc([{ type: 'Feature', properties: {} }]), /no geometry/);
   refuses('an unknown geometry type', fc([{ type: 'Feature', geometry: { type: 'Circle', coordinates: [1, 2] } }]), /unknown geometry/);
   refuses('a string coordinate', fc([{ type: 'Feature', geometry: { type: 'Point', coordinates: ['1', 2] } }]), /number/);
-  refuses('a longitude off the world', fc([pt(181, 0)]), /outside/);
-  refuses('a latitude off the world', fc([pt(0, -91)]), /outside/);
   refuses('a one-position line', fc([{ type: 'Feature', geometry: { type: 'LineString', coordinates: [[1, 2]] } }]), /too few/);
   refuses('a three-position ring', fc([{ type: 'Feature', geometry: { type: 'Polygon', coordinates: [[[0, 0], [1, 0], [0, 0]]] } }]), /too few/);
   refuses('a collection in a collection', fc([{ type: 'Feature', geometry: { type: 'GeometryCollection', geometries: [{ type: 'GeometryCollection', geometries: [] }] } }]), /inside another/);
   refuses('properties that are a list', fc([{ type: 'Feature', geometry: null, properties: [1] }]), /properties/);
   refuses('a lattice member that is a list', fc([], { lattice: [] }), /lattice member/);
   check('a null geometry is allowed', !parse(fc([{ type: 'Feature', geometry: null, properties: null }])).error);
+  //  what the ship saves, the editor opens: its check (+gj-check) asks
+  //  for no geometry member and no range, and these are its caps
+  check('a feature with no geometry member has none, as on the ship', !parse(fc([{ type: 'Feature', properties: {} }])).error);
+  check('a position off the world opens, as the ship saves it', !parse(fc([pt(181, 0), pt(0, -91)])).error);
+  check.eq('the caps are the ship\'s', [BIG, MAX_FEATURES, MAX_POSITIONS, MAX_DEPTH].join(), [4 * 1024 * 1024, 20000, 500000, 64].join());
+  const nested = (d) => fc([pt(1, 2, { deep: JSON.parse('['.repeat(d - 4) + ']'.repeat(d - 4)) })]);
+  check('64 brackets deep opens', depthOf(nested(64)) === 64 && !parse(nested(64)).error, parse(nested(64)).error);
+  refuses('65 brackets deep is refused', nested(65), /nested/);
+  const line = (n) => fc([{ type: 'Feature', geometry: { type: 'LineString', coordinates: Array.from({ length: n }, (_, i) => [i % 180, 0]) } }]);
+  check('200,001 positions open', !parse(line(200001)).error, parse(line(200001)).error);
   const tooMany = '{"type":"FeatureCollection","features":[' + Array(MAX_FEATURES + 1).fill('{"type":"Feature","geometry":null}').join(',') + ']}';
   refuses('more features than the cap', tooMany, /more than/);
   const longLine = fc([{ type: 'Feature', geometry: { type: 'LineString', coordinates: Array.from({ length: MAX_POSITIONS + 1 }, (_, i) => [i % 180, 0]) } }]);
   refuses('more positions than the cap', longLine, /positions/);
-  const spread = fc(Array.from({ length: 30 }, () => ({ type: 'Feature', geometry: { type: 'MultiPoint', coordinates: Array.from({ length: 7000 }, () => [1, 1]) } })));
+  const spread = fc(Array.from({ length: 80 }, () => ({ type: 'Feature', geometry: { type: 'MultiPoint', coordinates: Array.from({ length: 7000 }, () => [1, 1]) } })));
   refuses('positions counted across features', spread, /positions/);
   const deep = '{"type":"FeatureCollection","features":[' + '['.repeat(1000000) + ']'.repeat(1000000) + ']}';
   let r;
@@ -107,7 +115,10 @@ console.log('2. refusals');
   check('brackets inside strings do not count as depth', depthOf('{"a":"[[[[[[[[[[[[[[[[[[[[[[["}') === 1);
   const big = fc([pt(1, 2, { note: 'x'.repeat(BIG) })]);
   const bp = parse(big);
-  check('a body over 2 MB opens, read-only', !bp.error && bp.doc.big === true);
+  check('a body over 4 MB opens, read-only', !bp.error && bp.doc.big === true);
+  check('a body of 3 MB is not big', parse(fc([pt(1, 2, { note: 'x'.repeat(3 * 1024 * 1024) })])).doc.big === false);
+  //  the ship counts bytes: 1.5 million three-byte characters are 4.5 MB
+  check('the size is counted in bytes, as the ship counts it', parse(fc([pt(1, 2, { note: '\u20ac'.repeat(1500000) })])).doc.big === true);
   check('a small body is not big', parse(BLANK).doc.big === false);
 }
 
@@ -201,7 +212,19 @@ console.log('7. files');
   check('a bare geometry file imports', g.features && g.features.length === 1);
   check('a file that is not GeoJSON is refused', !!io.importText('geojson', '{"a":1}').error);
   check('a broken file is refused', !!io.importText('geojson', '{').error);
-  check('an out-of-world file is refused', !!io.importText('geojson', JSON.stringify(pt(500, 0))).error);
+  //  a malformed file is refused with a reason, never thrown
+  const imp = (t) => { try { return io.importText('geojson', t); } catch (e) { return { threw: String(e) }; } };
+  for (const [what, t] of [
+    ['a null feature', '{"type":"FeatureCollection","features":[null]}'],
+    ['features that are no list', '{"type":"FeatureCollection","features":{}}'],
+    ['no features member', '{"type":"FeatureCollection"}'],
+    ['a bare geometry with no coordinates', '{"type":"LineString"}'],
+    ['a line whose coordinates are no list', '{"type":"Feature","geometry":{"type":"LineString","coordinates":5}}'],
+    ['a long line of positions that are not', JSON.stringify({ type: 'LineString', coordinates: Array(600).fill(null) })],
+  ]) { const r = imp(t); check('a file with ' + what + ' is refused, not thrown', !!r.error && !r.threw, r.threw || r.error || 'imported'); }
+  check('a file\'s lattice member is not read', io.importText('geojson', '{"type":"FeatureCollection","lattice":[],"features":[]}').features.length === 0);
+  const far = io.importText('geojson', fc([{ type: 'Feature', geometry: { type: 'LineString', coordinates: Array.from({ length: MAX_POSITIONS + 1000 }, (_, i) => [(i % 3600) / 10, Math.sin(i / 40)]) }, properties: {} }]));
+  check('a line over the position cap imports once it is simplified', !far.error && far.after < 10000, far.error || `${far.before} -> ${far.after}`);
   check('GPX without a DOMParser is refused, not thrown', !!io.importText('gpx', '<gpx/>', null).error);
   check('an unknown extension is refused', !!io.importText('', 'x').error);
   const long = io.importText('geojson', fc([{ type: 'Feature', geometry: { type: 'LineString', coordinates: Array.from({ length: 3000 }, (_, i) => [i / 1000, Math.sin(i / 40) / 10]) }, properties: {} }]));

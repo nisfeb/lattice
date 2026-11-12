@@ -137,6 +137,8 @@ const Grid = L.GridLayer.extend({
 });
 
 const ll = (p) => [p[1], p[0]];
+//  how long after each failure a tile is asked for again, in ms
+const RETRY = [2e3, 8e3, 30e3, 60e3];
 const AGES = [['all', 0], ['1 hour', 36e5], ['6 hours', 216e5], ['1 day', 864e5], ['3 days', 2592e5], ['1 week', 6048e5], ['30 days', 2592e6], ['1 year', 31536e6]];
 
 //  opts: text, editable, name, cur(), onChange(), onText(text), onRefuse(msg),
@@ -274,7 +276,18 @@ export function mount(host, opts = {}) {
     tiles = L.tileLayer(tileUrl(style), {
       tileSize: 512, zoomOffset: -1, minZoom: 1, minNativeZoom: 1, maxNativeZoom: max + 1, maxZoom: max + 3,
       zIndex: 1, attribution: '© Mapbox © OpenStreetMap', updateWhenIdle: true, keepBuffer: 1,
-    }).addTo(map);
+    });
+    //  Leaflet asks for a tile once, so one that failed would stay a hole.
+    //  Past the limit of tiles a minute the worker and the ship answer
+    //  429, and a minute later the same tile is there to be had. A failed
+    //  tile still on the map is asked for again, a few times, further apart.
+    tiles.on('tileerror', (e) => {
+      const t = e.tile, n = t.lmTry || 0;
+      if (n >= RETRY.length) return;
+      t.lmTry = n + 1;
+      setTimeout(() => { if (!dead && tiles && t.isConnected) t.src = tiles.getTileUrl(e.coords); }, RETRY[n]);
+    });
+    tiles.addTo(map);
     map.setMaxZoom(max + 3);
   }
   function setStyle(s) {
@@ -340,12 +353,22 @@ export function mount(host, opts = {}) {
     doc.lattice = l;
   }
   //  change the doc, then write the whole body at once. Returns false when
-  //  the map is read-only.
+  //  the map is read-only, or when the change would make a body the next
+  //  open or the ship refuses (the caps, core.js): the change is then
+  //  undone and said. A map that was destroyed writes nothing.
   function write(fn) {
+    if (dead) return false;
     if (locked()) { if (opts.onRefuse && doc.big) opts.onRefuse('the map is too large to edit here'); return false; }
+    const was = [doc.features.slice(), doc.lattice];
     fn();
     const t = serialize(doc);
     if (t === base) return true;
+    const r = parse(t);
+    if (r.error || r.doc.big) {
+      [doc.features, doc.lattice] = was;
+      ctl.say('That change was not made: ' + (r.error || 'the map would be over 4 MB') + '.');
+      return false;
+    }
     base = t;
     if (opts.onChange) opts.onChange();
     if (opts.onText) opts.onText(t);
@@ -426,9 +449,40 @@ export function mount(host, opts = {}) {
   }
   sIn.oninput = () => { query = sIn.value; paintList(); };
 
+  //  A note's markdown. opts.md is the shell's renderer, whose HTML was
+  //  made for the sandboxed preview frame: it may hold an image, or a link
+  //  to a route on this origin. This is the app's own document, where
+  //  either would be fetched with the owner's cookie. So the HTML is
+  //  parsed in a document that loads and runs nothing, and only plain
+  //  formatting is copied out of it, with no attribute. An image is its
+  //  alt text. A link stays one when it goes to a page or to an http(s)
+  //  address, and is its text otherwise.
+  const MD_TAGS = new Set(['P', 'BR', 'HR', 'STRONG', 'EM', 'DEL', 'CODE', 'PRE', 'BLOCKQUOTE', 'UL', 'OL', 'LI',
+    'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'TABLE', 'THEAD', 'TBODY', 'TR', 'TH', 'TD']);
+  function noteLink(href) {
+    const h = String(href || '');
+    const m = /^\/apps\/lattice\/app\?name=([^&#]*)$/.exec(h);
+    if (!m) return /^https?:\/\//i.test(h) ? sourceLink(h) : null;
+    try { return sourceLink(decodeURIComponent(m[1])); } catch { return null; }
+  }
+  function mdCopy(from, to) {
+    for (const n of from.childNodes) {
+      if (n.nodeType === 3) { to.append(n.data); continue; }
+      if (n.nodeType !== 1) continue;
+      const tag = n.tagName;
+      if (tag === 'IMG') { to.append(n.getAttribute('alt') || ''); continue; }
+      if (tag === 'INPUT') { to.append(n.hasAttribute('checked') ? '☑' : '☐'); continue; }
+      const src = tag === 'A' ? noteLink(n.getAttribute('href')) : null;
+      const e = src ? linkEl(src) : MD_TAGS.has(tag) ? el(tag.toLowerCase()) : null;
+      if (e) to.append(e);
+      mdCopy(n, e || to);
+    }
+  }
   function md(t) {
     const d = el('div', 'lm-md');
-    if (opts.md) { try { d.innerHTML = opts.md(t); return d; } catch { /* plain below */ } }
+    if (opts.md && typeof DOMParser !== 'undefined') {
+      try { mdCopy(new DOMParser().parseFromString(String(opts.md(t)), 'text/html').body, d); return d; } catch { d.replaceChildren(); }
+    }
     d.textContent = t;
     d.style.whiteSpace = 'pre-wrap';
     return d;
@@ -525,15 +579,19 @@ export function mount(host, opts = {}) {
     detail.replaceChildren(...parts);
   }
   function kv(k, v) { const d = el('div', 'lm-kv'); d.append(el('b', '', k + ': '), String(v)); return d; }
-  function sourceEl(src) {
-    const d = el('div', 'lm-kv');
-    d.append(el('b', '', 'source: '));
-    const a = el('a', '', src.url || src.page);
+  //  a link to what sourceLink (core.js) made of an address: an http(s)
+  //  URL in a new tab, or a page through the shell
+  function linkEl(src, text) {
+    const a = el('a', '', text);
     if (src.url) { a.href = src.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; } else {
       a.href = '#';
       a.onclick = (e) => { e.preventDefault(); if (opts.openPage) opts.openPage(src.page); };
     }
-    d.append(a);
+    return a;
+  }
+  function sourceEl(src) {
+    const d = el('div', 'lm-kv');
+    d.append(el('b', '', 'source: '), linkEl(src, src.url || src.page));
     return d;
   }
   function setProp(k, v) {
@@ -618,6 +676,9 @@ export function mount(host, opts = {}) {
   });
 
   // ── keys, drops, size ──────────────────────────────────────────────────
+  //  the host outlives this mount (the shell mounts every map over the
+  //  same element), so its listeners go when the map does
+  const off = new AbortController();
   host.addEventListener('keydown', (e) => {
     const t = e.target;
     const inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT');
@@ -630,15 +691,15 @@ export function mount(host, opts = {}) {
     }
     if (inField) return;
     draw.key(e);
-  });
+  }, { signal: off.signal });
   const stop = (e) => { e.preventDefault(); e.stopPropagation(); };
-  host.addEventListener('dragover', (e) => { if (e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files')) stop(e); });
+  host.addEventListener('dragover', (e) => { if (e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files')) stop(e); }, { signal: off.signal });
   host.addEventListener('drop', async (e) => {
     const files = e.dataTransfer && e.dataTransfer.files ? [...e.dataTransfer.files] : [];
     if (!files.length) return;
     stop(e);
     await ctl.importFiles(files);
-  });
+  }, { signal: off.signal });
   //  import files (dropped, or handed in by the shell or a test)
   ctl.importFiles = async (files) => {
     if (locked()) { ctl.say('This map is read-only here, so nothing was imported.'); return false; }
@@ -647,7 +708,9 @@ export function mount(host, opts = {}) {
     for (const file of files) {
       const k = fileKind(file.name);
       if (!k) { said.push(file.name + ': lattice reads .geojson, .json, .gpx and .kml'); continue; }
-      const r = importText(k, await file.text(), typeof DOMParser !== 'undefined' ? DOMParser : null);
+      //  a file that cannot be read is said, and the others still import
+      let r;
+      try { r = importText(k, await file.text(), typeof DOMParser !== 'undefined' ? DOMParser : null); } catch { r = { error: 'the file cannot be read' }; }
       if (r.error) { said.push(file.name + ': ' + r.error); continue; }
       added.push(...r.features);
       said.push(file.name + ': ' + r.features.length + ' features' + (r.before ? `, tracks simplified from ${r.before} to ${r.after} points` : ''));
@@ -655,7 +718,7 @@ export function mount(host, opts = {}) {
     if (added.length) {
       if (doc.features.length + added.length > 20000) { ctl.say('That would make more than 20000 features, so nothing was imported.'); return false; }
       const from = doc.features.length;
-      write(() => { doc.features = doc.features.concat(added); });
+      if (!write(() => { doc.features = doc.features.concat(added); })) return false;
       drawAll(); paintLegend(); paintList(); paintTime();
       const b = bounds(doc.features.slice(from));
       if (b) map.fitBounds([[b[1], b[0]], [b[3], b[2]]], { padding: [30, 30], maxZoom: 16 });
@@ -717,6 +780,7 @@ export function mount(host, opts = {}) {
   ctl.sync = () => true;
   ctl.destroy = () => {
     dead = true;
+    off.abort();
     if (ro) ro.disconnect();
     draw.cancel();
     map.remove();
