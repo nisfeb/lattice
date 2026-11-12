@@ -55,20 +55,29 @@ export function makeViewer(canvas, { onChange } = {}) {
   const gl = canvas.getContext('webgl', { antialias: true, preserveDrawingBuffer: false })
     || canvas.getContext('experimental-webgl');
   if (!gl) return null;
-  const P = program(gl, VS, FS), L = program(gl, LVS, LFS);
-  const buf = { p: gl.createBuffer(), n: gl.createBuffer(), g: gl.createBuffer() };
+  let P, L, buf;
   let mesh = null, count = 0, gridCount = 0, axisAt = 0, smooth = false, smoothNor = null;
   //  the camera: spherical about a target
   const cam = { th: -Math.PI / 4, ph: Math.PI / 3.2, r: 100, t: [0, 0, 0] };
   let dark = false, raf = 0, lost = false;
 
+  //  a lost context takes the programs and buffers with it. When it comes
+  //  back they are made again, from the mesh this still holds.
   canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); lost = true; });
+  canvas.addEventListener('webglcontextrestored', () => { lost = false; build(); draw(); });
+
+  //  a mesh with bounds to fit and to lay a plate under. parseStl refuses
+  //  one without, and this does not rely on it.
+  const sized = (m) => !!m && m.min.concat(m.max).every(Number.isFinite);
 
   function grid(m) {
     //  a plate a bit past the part, in 10 mm squares, with 1 mm lines when
-    //  the part is small
+    //  the part is small. The squares grow tenfold with the part, so the
+    //  plate is never more than some fifty lines each way, whatever the
+    //  part's size.
+    if (!sized(m)) m = null;
     const span = Math.max(m ? Math.max(m.max[0] - m.min[0], m.max[1] - m.min[1]) : 50, 10);
-    const step = span < 30 ? 1 : span < 300 ? 10 : 100;
+    const step = span < 30 ? 1 : 10 ** Math.floor(Math.log10(span / 3));
     const half = Math.ceil((span * 0.75 + step) / step) * step;
     const cx = m ? Math.round((m.min[0] + m.max[0]) / 2 / step) * step : 0;
     const cy = m ? Math.round((m.min[1] + m.max[1]) / 2 / step) * step : 0;
@@ -81,10 +90,22 @@ export function makeViewer(canvas, { onChange } = {}) {
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.STATIC_DRAW);
     gridCount = v.length / 3;
   }
-  grid(null);
+  function build() {
+    P = program(gl, VS, FS); L = program(gl, LVS, LFS);
+    buf = { p: gl.createBuffer(), n: gl.createBuffer(), g: gl.createBuffer() };
+    if (mesh) load(); else grid(null);
+  }
+  //  the mesh, its normals and its plate, into the buffers
+  function load() {
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf.p);
+    gl.bufferData(gl.ARRAY_BUFFER, mesh.pos, gl.STATIC_DRAW);
+    upNormals();
+    grid(mesh);
+  }
+  build();
 
   function fit() {
-    if (!mesh || !mesh.tris) { cam.t = [0, 0, 0]; cam.r = 100; return draw(); }
+    if (!sized(mesh) || !mesh.tris) { cam.t = [0, 0, 0]; cam.r = 100; return draw(); }
     const c = [0, 1, 2].map((a) => (mesh.min[a] + mesh.max[a]) / 2);
     const rad = Math.hypot(mesh.max[0] - mesh.min[0], mesh.max[1] - mesh.min[1], mesh.max[2] - mesh.min[2]) / 2 || 10;
     cam.t = c;
@@ -96,10 +117,7 @@ export function makeViewer(canvas, { onChange } = {}) {
     const first = !mesh;
     mesh = m; smoothNor = null;
     count = m.tris * 3;
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf.p);
-    gl.bufferData(gl.ARRAY_BUFFER, m.pos, gl.STATIC_DRAW);
-    upNormals();
-    grid(m);
+    load();
     if (first || !keepView) fit(); else draw();
   }
   function upNormals() {

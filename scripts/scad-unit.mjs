@@ -145,6 +145,8 @@ console.log('\nSTL: OpenSCAD\'s binary STL');
   new DataView(bomb.buffer).setUint32(80, MAX_TRIS + 1, true);
   check('more triangles than the cap is refused before any is read', /more than the viewer draws/.test(parseStl(bomb).error || ''));
   check.eq('an empty part', parseStl(stl([])).tris, 0);
+  check('a corner that is not a finite number is refused', /no size/.test(parseStl(stl([[0, 0, 0, Infinity, 0, 0, 0, 1, 0]])).error || '')
+    && /no size/.test(parseStl(stl([[0, 0, 0, NaN, 0, 0, 0, 1, 0]])).error || ''));
 }
 
 check.done();

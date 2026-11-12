@@ -21,11 +21,13 @@ export function parseStl(buf) {
   const pos = new Float32Array(n * 9);
   const nor = new Float32Array(n * 9);
   const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+  let wild = false;
   for (let t = 0; t < n; t++) {
     const o = 84 + t * 50 + 12;
     for (let k = 0; k < 9; k++) {
       const v = dv.getFloat32(o + k * 4, true);
       pos[t * 9 + k] = v;
+      if (!Number.isFinite(v)) wild = true;
       const a = k % 3;
       if (v < min[a]) min[a] = v;
       if (v > max[a]) max[a] = v;
@@ -38,6 +40,8 @@ export function parseStl(buf) {
     nx /= l; ny /= l; nz /= l;
     for (let k = 0; k < 3; k++) { nor[b + k * 3] = nx; nor[b + k * 3 + 1] = ny; nor[b + k * 3 + 2] = nz; }
   }
+  //  cube(1e39) overflows a float32: a part with no bounds is not drawn
+  if (wild) return { error: 'the part has no size the viewer can draw: a corner is not a finite number' };
   if (!n) return { tris: 0, pos, nor, min: [0, 0, 0], max: [0, 0, 0] };
   return { tris: n, pos, nor, min, max };
 }
