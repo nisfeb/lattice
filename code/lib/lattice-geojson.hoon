@@ -354,8 +354,8 @@
 ++  e7  10.000.000
 ::  +fix: a JSON number's text as a signed count of 10^-7 units: the
 ::  sign, the whole part, and up to seven places. The parts are read by
-::  +slaw, which is jetted, and found with +find, which is too. A number
-::  with an exponent goes through @rd instead.
+::  +digs, and found with +find, which is jetted. A number with an
+::  exponent goes through @rd instead.
 ++  fix
   |=  t=@ta
   ^-  [neg=? v=@ud]
@@ -367,9 +367,16 @@
   =/  w=@t  ?~(d t (end [3 u.d] t))
   =/  f=@t  ?~(d '' (end [3 7] (rsh [3 +(u.d)] t)))
   =/  fn=@ud  (met 3 f)
-  =/  wv=@ud  ?:(=('' w) 0 (fall (slaw %ui (cat 3 '0i' w)) 0))
-  =/  fv=@ud  ?:(=('' f) 0 (fall (slaw %ui (cat 3 '0i' f)) 0))
-  [neg (add (mul e7 wv) (mul fv (pow 10 (sub 7 fn))))]
+  [neg (add (mul e7 (digs w)) (mul (digs f) (pow 10 (sub 7 fn))))]
+::  +digs: a run of digits as a number, 0 when it is anything else. It is
+::  read by +slaw, which is jetted, and which refuses a zero in front. So
+::  the digits are read with a 1 before them, and that 1 taken off again:
+::  '0513' is 10.513 less 10.000.
+++  digs
+  |=  d=@t
+  ^-  @ud
+  =/  one=@ud  (pow 10 (met 3 d))
+  (sub (fall (slaw %ui (cat 3 '0i1' d)) one) one)
 ::  +fix-exp: +fix for a number written with an exponent
 ++  fix-exp
   |=  t=@ta

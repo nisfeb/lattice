@@ -251,6 +251,14 @@
     (expect-eq !>([| 100.000.000]) !>((fix:gj '1e1')))
     (expect-eq !>([& 25.000]) !>((fix:gj '-2.5E-3')))
     (expect-eq !>([| 0]) !>((fix:gj '0')))
+    ::  zeros that lead the places, or the whole part, are digits too
+    (expect-eq !>([| 20.513.000]) !>((fix:gj '2.0513')))
+    (expect-eq !>([| 480.000.001]) !>((fix:gj '48.0000001')))
+    (expect-eq !>([& 500.000]) !>((fix:gj '-0.05')))
+    (expect-eq !>([| 70.000.000]) !>((fix:gj '007')))
+    (expect-eq !>([| 30.000.000]) !>((fix:gj '3.')))
+    (expect-eq !>([| 5.000.000]) !>((fix:gj '.5')))
+    (expect-eq !>([| 0]) !>((fix:gj 'x.y')))
   ==
 ::  a position may carry a height and a measure, and no more
 ++  test-check-position-length
