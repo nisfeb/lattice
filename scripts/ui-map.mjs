@@ -17,6 +17,10 @@
 //       area again fetches no tile at all. The ship strips the server's
 //       headers and answers private for 30 days. Past 120 fetches a
 //       minute the worker answers 429 without asking the ship
+//    T  whether tiles can be had: a tile-status that fails leaves the
+//       last answer in place and is asked again, the desktop's own token
+//       counts as the ship's does, and a token saved in Settings reaches
+//       a map that is already open
 //    E  Source shows the JSON, and the kind picker refuses a switch
 //    F  the new-page dialog makes an empty map
 //    H  a map opened once opens offline, with the tiles it had
@@ -239,6 +243,90 @@ try {
         fetch('/apps/lattice/tile/streets/12/' + (1000 + i) + '/' + (Date.now() % 4000)).then((r) => r.status, () => 0))));
       const n429 = codes.filter((c) => c === 429).length;
       check('D: past 120 tile fetches a minute the worker answers 429', n429 >= 20 && codes.length - n429 <= 120, `${n429} of ${codes.length}`);
+    }
+  }
+
+  // ------------------------------------------------------------ T: tile status
+  if (on('T')) {
+    const noBase = () => page.evaluate(() => [...document.querySelectorAll('lat-map:not([hidden]) .lm-note')].some((n) => n.textContent.includes('No base map yet')));
+    const go = async (name) => {
+      await page.goto(APP + '?name=' + encodeURIComponent(name), { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await mounted();
+    };
+    step = 'T failed status';
+    //  the last answer this browser had says a token is set, and the
+    //  ship then fails to answer
+    const last = JSON.stringify({ token: true, max: 17, styles: ['streets'], url: '/apps/lattice/tile/{s}/{z}/{x}/{y}' });
+    const down = await page.evaluateOnNewDocument((l) => {
+      if (window !== window.top) return;
+      try { localStorage.latTiles = l; } catch {}
+      window.realFetch = window.fetch;
+      window.fetch = (u, ...a) => (/\/tile-status$/.test(String(u)) ? Promise.resolve(new Response('{"error":"down"}', { status: 503 })) : window.realFetch(u, ...a));
+    }, last);
+    tileReqs = [];
+    await go(P.small);
+    await sleep(1500);
+    check('T: a tile-status that fails does not replace the last answer', await page.evaluate(() => localStorage.latTiles) === last, await page.evaluate(() => localStorage.latTiles));
+    check('T: and the map draws with that answer', tileReqs.length > 0 && !(await noBase()), String(tileReqs.length));
+    await page.removeScriptToEvaluateOnNewDocument(down.identifier);
+    await page.evaluate(() => { window.fetch = window.realFetch; });
+    await open(P.md);
+    await wait(() => document.getElementById('src').value.includes('plain markdown'));
+    await open(P.big);
+    await mounted();
+    const asked = await waitFor(() => page.evaluate(() => { const t = JSON.parse(localStorage.latTiles || 'null'); return t && t.styles.length === 4 ? t : null; }), 5000, 100);
+    check('T: the failed answer was not kept: the next map asks again', !!asked && asked.token === !!STUB, JSON.stringify(asked));
+
+    step = 'T desktop token';
+    //  the desktop app: the ship has no token, this computer does, and
+    //  its bridge answers the tile route. Only the command is stubbed.
+    await api('map-token', { method: 'POST', body: '' });
+    const desk = await page.evaluateOnNewDocument(() => {
+      if (window !== window.top) return;
+      window.deskTok = false;
+      window.__TAURI__ = { core: { invoke: (c) => (c === 'map_token_status' ? Promise.resolve(window.deskTok) : Promise.reject(new Error('not allowed'))) } };
+    });
+    tileReqs = [];
+    await go(P.small);
+    await sleep(1000);
+    check('T: no token on the ship or this computer: no base map', tileReqs.length === 0 && await noBase(), String(tileReqs.length));
+    //  the token is saved in Settings, a frame of this window: it touches
+    //  latTilesAt (ui-manager.mjs), and the open map hears it
+    await page.evaluate(async () => {
+      window.deskTok = true;
+      const f = document.createElement('iframe');
+      f.src = '/apps/lattice/no-such-asset';
+      document.body.append(f);
+      await new Promise((r) => { f.onload = r; });
+      f.contentWindow.localStorage.latTilesAt = Date.now();
+      f.remove();
+    });
+    const drew = await waitFor(() => tileReqs.length > 0, 8000, 100);
+    check('T: a token saved on this computer reaches the open map, which draws its tiles', !!drew && !(await noBase()), String(tileReqs.length));
+    check('T: the answer kept says tiles can be had', await page.evaluate(() => JSON.parse(localStorage.latTiles).token === true));
+    await page.removeScriptToEvaluateOnNewDocument(desk.identifier);
+
+    if (STUB) {
+      step = 'T settings';
+      //  the ship's own token, saved in the Settings tab while a map is open
+      tileReqs = [];
+      await go(P.small);
+      await sleep(1000);
+      check('T: no token: no base map', tileReqs.length === 0 && await noBase());
+      await page.click('lat-map:not([hidden]) .lm-note a');
+      const frame = await waitFor(async () => {
+        const f = page.frames().find((x) => /\/apps\/lattice\/settings/.test(x.url()));
+        return f && await f.$('#mapsave') ? f : null;
+      }, 20000, 250);
+      check('T: the note opens Settings', !!frame);
+      if (frame) {
+        await frame.evaluate(() => { document.getElementById('maptok').value = 'pk.ui-map-test'; document.getElementById('mapsave').click(); });
+        await waitFor(() => frame.evaluate(() => /A token is set/.test(document.getElementById('mapst').textContent)), 20000, 250);
+        await open(P.small);
+        await mounted();
+        const got = await waitFor(() => tileReqs.length > 0, 10000, 100);
+        check('T: back on the map, it draws its tiles with no reload', !!got && !(await noBase()), String(tileReqs.length));
+      }
     }
   }
 

@@ -231,6 +231,15 @@ check('#backups opens the backups tab', JSON.stringify(t3.shown) === '["backups"
   JSON.stringify(t3));
 await atBk.close();
 
+//  saving this computer's Mapbox token touches latTilesAt, which tells an
+//  open editor to ask again whether tiles can be had (26-writer.js)
+const tok = await load({ connected: true, ship: '~x', url: 'https://s.example.com' }, { hash: '#tiles' });
+await tok.evaluate(() => { localStorage.removeItem('latTilesAt'); document.getElementById('tok-in').value = 'pk.test'; document.getElementById('tok-save').click(); });
+await new Promise((r) => setTimeout(r, 200));
+const tk = await tok.evaluate(() => ({ at: localStorage.latTilesAt, set: (window.__ARGS__.filter(([n]) => n === 'set_map_token').pop() || [])[1] }));
+check('saving the Mapbox token here sets it and touches latTilesAt', !!tk.set && tk.set.token === 'pk.test' && Number(tk.at) > 0, JSON.stringify(tk));
+await tok.close();
+
 //  a malformed hash names nothing: the first tab still shows
 const badHash = await load({ connected: true, ship: '~x', url: 'https://s.example.com' }, { hash: '#%E0%A4%A' });
 const t4 = await tabsOf(badHash);

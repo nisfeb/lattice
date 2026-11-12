@@ -669,6 +669,8 @@
     const putTok = async (t) => {
       say('tok-status', '');
       try { await invoke('set_map_token', { token: t }); $('tok-in').value = ''; } catch (e) { say('tok-status', String(e)); }
+      // an open editor then asks again whether tiles can be had (26-writer.js)
+      try { localStorage.latTilesAt = Date.now(); } catch {}
       refreshTok();
     };
     $('tok-save').onclick = () => { const t = $('tok-in').value.trim(); if (t) putTok(t); };

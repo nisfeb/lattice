@@ -3694,13 +3694,24 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const mapUndo = (redo) => srcExec(() => document.execCommand(redo ? 'redo' : 'undo'));
   let tileSt = null;
   const tileLast = () => { try { return JSON.parse(localStorage.latTiles || 'null'); } catch { return null; } };
-  const tileStatus = () => tileSt || (tileSt = fetch(api + '/tile-status').then((r) => (r.ok ? r.json() : null))
-    .then((j) => {
-      const t = j ? { token: !!j.token, max: +j.max || 17, styles: j.styles, url: '/apps/lattice/tile/{s}/{z}/{x}/{y}' } : null;
-      try { localStorage.latTiles = JSON.stringify(t); } catch {}
-      return t;
-    })
-    .catch(() => { tileSt = null; return tileLast(); }));
+  const tileDesk = () => {
+    const d = window.__TAURI__ && window.__TAURI__.core;
+    return d ? d.invoke('map_token_status').then((on) => !!on, () => false) : false;
+  };
+  const tileStatus = () => tileSt || (tileSt = Promise.all([
+    fetch(api + '/tile-status').then((r) => (r.ok ? r.json() : Promise.reject(new Error('tile-status ' + r.status)))),
+    tileDesk(),
+  ]).then(([j, desk]) => {
+    const t = { token: !!j.token || desk, max: +j.max || 17, styles: j.styles, url: '/apps/lattice/tile/{s}/{z}/{x}/{y}' };
+    try { localStorage.latTiles = JSON.stringify(t); } catch {}
+    return t;
+  }).catch(() => { tileSt = null; return tileLast(); }));
+  addEventListener('storage', (e) => {
+    if (e.key !== 'latTilesAt') return;
+    tileSt = null;
+    if (wrFor && wrFor.k === 'geojson') wrFor = null;
+    if (!$('docarea').hidden) writerFollow();
+  });
   const mapLayer = async (name) => {
     const d = await bodyRead(String(name));
     return d && d.kind === 'geojson' ? d.body : null;

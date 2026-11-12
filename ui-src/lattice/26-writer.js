@@ -94,19 +94,39 @@
     if (!ok || src.value !== t) { src.value = t; edited(); }
   }
   const mapUndo = (redo) => srcExec(() => document.execCommand(redo ? 'redo' : 'undo'));
-  // whether a Mapbox token is set, and the tile route's limits, asked once
-  // a session. Offline it is the last answer this browser had, so a map
-  // shows the tiles its worker kept. With none it is null, and the map
-  // draws its grid alone.
+  // whether map tiles can be had, and the tile route's limits. The ship
+  // says whether it holds a Mapbox token. In the desktop app this
+  // computer may hold one of its own, and its bridge then answers the
+  // tile route itself (desktop/src/tiles.rs), so either token will do.
+  // Asked once, and again after a token is saved in Settings (below). An
+  // ask that failed is not kept and writes nothing: the map gets the last
+  // answer this browser had, so offline it shows the tiles its worker
+  // kept. With none it is null, and the map draws its grid alone.
   let tileSt = null;
   const tileLast = () => { try { return JSON.parse(localStorage.latTiles || 'null'); } catch { return null; } };
-  const tileStatus = () => tileSt || (tileSt = fetch(api + '/tile-status').then((r) => (r.ok ? r.json() : null))
-    .then((j) => {
-      const t = j ? { token: !!j.token, max: +j.max || 17, styles: j.styles, url: '/apps/lattice/tile/{s}/{z}/{x}/{y}' } : null;
-      try { localStorage.latTiles = JSON.stringify(t); } catch {}
-      return t;
-    })
-    .catch(() => { tileSt = null; return tileLast(); }));
+  const tileDesk = () => {
+    const d = window.__TAURI__ && window.__TAURI__.core;
+    return d ? d.invoke('map_token_status').then((on) => !!on, () => false) : false;
+  };
+  const tileStatus = () => tileSt || (tileSt = Promise.all([
+    fetch(api + '/tile-status').then((r) => (r.ok ? r.json() : Promise.reject(new Error('tile-status ' + r.status)))),
+    tileDesk(),
+  ]).then(([j, desk]) => {
+    const t = { token: !!j.token || desk, max: +j.max || 17, styles: j.styles, url: '/apps/lattice/tile/{s}/{z}/{x}/{y}' };
+    try { localStorage.latTiles = JSON.stringify(t); } catch {}
+    return t;
+  }).catch(() => { tileSt = null; return tileLast(); }));
+  // Settings touches latTilesAt when a token is saved or removed, the
+  // ship's or this computer's. It is a frame of this window or another
+  // window, so the change arrives here as a storage event. The answer is
+  // dropped, and a map is mounted again with the new one: now when it is
+  // in front, else when its tab next is.
+  addEventListener('storage', (e) => {
+    if (e.key !== 'latTilesAt') return;
+    tileSt = null;
+    if (wrFor && wrFor.k === 'geojson') wrFor = null;
+    if (!$('docarea').hidden) writerFollow();
+  });
   // another map page, read-only, for a map's layers
   const mapLayer = async (name) => {
     const d = await bodyRead(String(name));
