@@ -52,11 +52,12 @@
         setLive: (on) => { scadLive = !!on; },
         refresh: () => refreshPreview(),
         toEdit: () => { if (activeTab && activeTab.read) setRead(false); },
-        savePage: async (name, kind, body) => {
+        //  fresh: the page is not there yet. The ship refuses (409) to
+        //  make one over a page that is, and that is not retried.
+        savePage: async (name, kind, body, fresh) => {
           const known = nodes.some((n) => n.page && n.path === name);
           const url = api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind;
-          let r = await mutate(url + (known ? '' : '&new=1'), { method: 'POST', body });
-          if (!known && r && r.status === 409) r = await mutate(url, { method: 'POST', body });
+          const r = await mutate(url + (fresh ? '&new=1' : ''), { method: 'POST', body });
           if (r && r.ok) {
             if (!known) { addTreeNode(name, kind); snapTree(); renderTree(); }
             bustPages(name);

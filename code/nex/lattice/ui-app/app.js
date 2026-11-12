@@ -6,7 +6,7 @@ const WRITER_H = '0v3.4g8bu.gitpg.4hui5.6i6ib.91c19';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
 const SHEET_H = '0v3.v145b.hha4j.kjuag.dcc4c.ld732';
 // and scad.js's, the 3D pane of scad pages (26-scad.js)
-const SCAD_H = '0v4.rhthr.381oe.snr6n.15psm.1krto';
+const SCAD_H = '0v7.7a35l.sv8qr.bhse3.1rvso.nm17c';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
@@ -3662,11 +3662,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         setLive: (on) => { scadLive = !!on; },
         refresh: () => refreshPreview(),
         toEdit: () => { if (activeTab && activeTab.read) setRead(false); },
-        savePage: async (name, kind, body) => {
+        savePage: async (name, kind, body, fresh) => {
           const known = nodes.some((n) => n.page && n.path === name);
           const url = api + '/page-save?name=' + encodeURIComponent(name) + '&type=' + kind;
-          let r = await mutate(url + (known ? '' : '&new=1'), { method: 'POST', body });
-          if (!known && r && r.status === 409) r = await mutate(url, { method: 'POST', body });
+          const r = await mutate(url + (fresh ? '&new=1' : ''), { method: 'POST', body });
           if (r && r.ok) {
             if (!known) { addTreeNode(name, kind); snapTree(); renderTree(); }
             bustPages(name);

@@ -4,8 +4,9 @@
 //  follow() on every change. This file does the rest, so the editor
 //  bundle every boot loads carries none of it:
 //
-//    - the runtime's status, from /scad-status, once a session, and from
-//      the last answer when offline
+//    - the runtime's status, from /scad-status, asked again when a scad
+//      page opens and while an install runs, and from the last answer
+//      when offline
 //    - the bar above the document: the install offer, the update offer,
 //      an install that is running
 //    - mounting the 3D pane (view.js) in the preview area, and the edits
@@ -23,10 +24,16 @@ const mb = (n) => (Math.round(n / 1e5) / 10) + ' MB';
 
 export function shell(h) {
   let st = null, stP = null, ctl = null, seq = 0, noUpdate = false;
+  //  the page the status was last asked for, the files the pane was
+  //  mounted with, and whether something waits for an install to end
+  let page = null, mounted = '', waiting = false;
   const store = () => { try { return JSON.parse(localStorage.latScadSt || 'null'); } catch { return null; } };
+  //  an install that is running is never the answer to keep: it ends.
+  //  An answer on its way is everybody's, so a caller content with the
+  //  kept one does not run ahead of a fresh one with what is stale.
   function status(fresh) {
-    if (st && !fresh) return Promise.resolve(st);
-    if (stP && !fresh) return stP;
+    if (stP) return stP;
+    if (st && !st.busy && !fresh) return Promise.resolve(st);
     stP = fetch(h.api + '/scad-status').then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
       .then((j) => { st = j; try { localStorage.latScadSt = JSON.stringify(j); } catch {} return j; })
       .catch(() => (st = store()))
@@ -63,26 +70,34 @@ export function shell(h) {
       return;
     }
     if (s.have !== s.pin && s.source && !noUpdate) {
-      say('OpenSCAD ' + s.pin + ' is available. You have ' + s.have + '.');
+      say((s.error ? 'The last update failed: ' + s.error + '. ' : '')
+        + 'OpenSCAD ' + s.pin + ' is available. You have ' + s.have + '.');
       button('Update (' + mb(s.size) + ')', install);
       button('Not now', () => { noUpdate = true; bar.hidden = true; });
       bar.hidden = false;
     }
   }
-  //  the ship fetches and checks the runtime in a fiber of its own; this
-  //  asks for it, then waits for the fiber to end
-  async function install() {
-    paintBar({ busy: true });
-    let r = null;
-    try { r = await fetch(h.api + '/scad-install', { method: 'POST' }); } catch {}
-    if (!r || !r.ok) { h.st('the install request failed' + await h.errText(r), false); st = null; follow(); return; }
+  //  wait for the install fiber to end, asking every little while
+  async function settle() {
+    waiting = true;
     for (let i = 0; i < 120; i++) {
       await new Promise((ok) => setTimeout(ok, 1500));
       const s = await status(true);
       if (s && !s.busy) break;
     }
-    if (live()) h.st('the OpenSCAD runtime is installed');
-    else if (st && st.error) h.st('the install failed: ' + st.error, false);
+    waiting = false;
+  }
+  //  the ship fetches and checks the runtime in a fiber of its own; this
+  //  asks for it, then waits for the fiber to end. An update that fails
+  //  leaves the old runtime live, so only the offered version is a success.
+  async function install() {
+    paintBar({ busy: true });
+    let r = null;
+    try { r = await fetch(h.api + '/scad-install', { method: 'POST' }); } catch {}
+    if (!r || !r.ok) { h.st('the install request failed' + await h.errText(r), false); st = null; follow(); return; }
+    await settle();
+    if (st && st.error) h.st('the install failed: ' + st.error, false);
+    else if (live() && st.have === st.pin) h.st('the OpenSCAD runtime is installed');
     h.refresh();
     follow();
   }
@@ -94,14 +109,21 @@ export function shell(h) {
     if (wrap) wrap.classList.remove('scadon');
     bar.hidden = true;
     h.setLive(false);
+    page = null;
     if (ctl) { ctl.destroy(); ctl = null; }
   }
   async function follow() {
     if (!h.here()) return off();
     const my = ++seq;
-    const s = await status();
+    //  a page that just opened asks again: the runtime may have come or
+    //  gone since (Settings, another window)
+    const name = h.current() || '', turn = name !== page;
+    page = name;
+    const s = await status(turn);
     if (my !== seq || !h.here()) return;
     paintBar(s);
+    //  an install somebody else started: follow again when it ends
+    if (s && s.busy && !waiting) settle().then(follow);
     const da = h.$('docarea'), wrap = da.querySelector('.prevwrap');
     const was = h.live();
     h.setLive(live());
@@ -121,8 +143,11 @@ export function shell(h) {
     if (!wrap.offsetParent) return;
     const src = h.src();
     const opts = { name: h.name(), editable: h.editable() };
+    //  a pane mounted with another runtime (an update since) is made again
+    const f = st.files, sig = JSON.stringify(f);
+    if (ctl && sig !== mounted) { ctl.destroy(); ctl = null; }
     if (ctl) { ctl.update(src.value, opts); return; }
-    const f = st.files;
+    mounted = sig;
     ctl = mount(host, {
       ...opts,
       text: src.value,
@@ -135,6 +160,8 @@ export function shell(h) {
       onEdit: edit,
       onJump: jump,
       onSnapshot: snap,
+      //  the runtime did not load: ask the ship whether it is still there
+      onFail: () => { status(true).then(follow); },
       askFirst: h.isMobile() && localStorage.latScadOk !== '1'
         ? 'Drawing this part downloads the OpenSCAD runtime from your ship, ' + mb(st.size) + ', once.' : '',
       onAsked: () => { try { localStorage.latScadOk = '1'; } catch {} },
@@ -204,16 +231,31 @@ export function shell(h) {
   }
   //  Save view: a PNG of the 3D view, as an html page beside the model
   //  (name-view), for a thumbnail or a forum post. One save, when asked.
+  //  It replaces only a view it saved before, known by its first line. A
+  //  page of that name that is anything else is the owner's, and is kept.
   async function snap(png) {
     const cur = h.current();
     if (!cur || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(png)) return;
     const out = cur + '-view';
     const leaf = cur.split('/').pop().replace(/[<>&"]/g, '');
-    const body = '<!-- a view of ' + leaf + '.scad, saved from its 3D pane. Saving the view again replaces it. -->\n'
+    const mark = '<!-- a view of ' + leaf + '.scad, saved from its 3D pane.';
+    const body = mark + ' Saving the view again replaces it. -->\n'
       + '<img alt="' + leaf + '" src="' + png + '" style="max-width:100%">\n';
     h.stWork('saving the view…');
-    const r = await h.savePage(out, 'html', body);
+    let was = null;
+    try { was = await fetch(h.api + '/page-source?name=' + encodeURIComponent(out)); } catch {}
+    if (!was || (!was.ok && was.status !== 404)) { h.st('could not save ' + out + await h.errText(was), false); return; }
+    if (was.ok) {
+      const d = await was.json().catch(() => null);
+      if (!d || d.kind !== 'html' || typeof d.body !== 'string' || !d.body.startsWith(mark)) {
+        h.st(out + ' is a page of your own, not a saved view. Rename it to save a view here.', false);
+        return;
+      }
+    }
+    const r = await h.savePage(out, 'html', body, !was.ok);
     if (!r || !r.ok) { h.st('could not save ' + out + await h.errText(r), false); return; }
+    //  the editor's copy of the page is the view before this one
+    h.pageCache.delete(out);
     h.st('saved the view as ' + out);
   }
 
