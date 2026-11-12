@@ -693,7 +693,7 @@
           [[%ui ~] %'main.sig']
         ;<  ~  bind:m  (rise-later prod "lattice /ui/main.sig" "")
         ;<  ~  bind:m  (bind-http-self:io [~ /apps/lattice])
-        (http-dispatch:io %lattice)
+        http-dispatch:io
       ::  /ui/requests/*: one ephemeral fiber per in-flight HTTP request.
           [[%ui %requests ~] @]
         ?^  prod
