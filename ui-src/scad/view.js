@@ -62,6 +62,7 @@ function download(name, data, type) {
 
 //  opts: { runtime: { wasm, js }, text, name, editable, readPage(name),
 //    onEdit(line, newText, oldText) -> bool, onJump(line), onSnapshot(png),
+//    onFail() (the runtime did not load),
 //    askFirst: text or '' (ask before the first download, on a phone) }
 export function mount(host, opts) {
   if (!styled) { styled = true; const s = document.createElement('style'); s.textContent = STYLE; document.head.append(s); }
@@ -114,8 +115,8 @@ export function mount(host, opts) {
   else { msg.hidden = false; msg.textContent = 'This browser cannot draw 3D (no WebGL). Export still works.'; }
 
   const runner = makeRunner(o.runtime);
-  let text = o.text || '', ps = [], defs = new Map(), job = null, timer = 0, busyT = 0, seq = 0;
-  let lastKey = null, lastStl = null, asked = !o.askFirst, dead = false, pending = false, jobAt = 0;
+  let text = o.text || '', ps = [], defs = new Map(), job = null, timer = 0, busyT = 0, seq = 0, ask = 0;
+  let lastKey = null, lastStl = null, jobKey = null, asked = !o.askFirst, dead = false, pending = false, jobAt = 0;
   const setSt = (t, bad) => { st.textContent = t; st.className = 'lscad-st' + (bad ? ' err' : ''); st.title = t; };
 
   //  ── console ──
@@ -214,16 +215,34 @@ export function mount(host, opts) {
   }
 
   //  ── rendering ──
-  function key() { return text + '\0' + JSON.stringify([...defs]); }
+  //  what a render is made from: every file OpenSCAD reads, the page and
+  //  the pages it includes (collect), and the -D values. A change to an
+  //  included page is a new key, as a change to the page is.
+  function key(inc) { return JSON.stringify([inc.files, [...defs]]); }
+  const gather = () => collect(o.name || 'untitled', text, o.readPage || (async () => null));
   function schedule(ms) {
     clearTimeout(timer);
     timer = setTimeout(render, ms);
   }
+  //  end the render under way, if any: nobody wants its part
+  function stop() {
+    seq++;
+    if (job) job.cancel();
+    job = null; jobKey = null; pending = false;
+    clearTimeout(busyT); busy.textContent = '';
+  }
   async function render() {
     if (dead) return;
     if (!asked) { askNow(); return; }
-    const k = key();
-    if (k === lastKey && lastStl) return;
+    const mine = ++ask;
+    const inc = await gather();
+    if (mine !== ask || dead) return;
+    const k = key(inc);
+    //  the part on screen is the one wanted. A render under way is for
+    //  text that was since taken back (an undo): stop it, or its part
+    //  would replace this one.
+    if (k === lastKey && lastStl) { stop(); return; }
+    if (job && k === jobKey) return;
     //  a render under way finishes first when it is young, so a slider
     //  being dragged keeps drawing. One that has run a while is stopped:
     //  its text is stale and the new one may be quicker.
@@ -231,20 +250,20 @@ export function mount(host, opts) {
     if (job) job.cancel();
     pending = false;
     jobAt = performance.now();
+    jobKey = k;
     const my = ++seq;
     clearTimeout(busyT);
     busyT = setTimeout(() => { busy.textContent = 'rendering…'; }, 150);
-    const inc = await collect(o.name || 'untitled', text, o.readPage || (async () => null));
-    if (my !== seq) return;
     const args = [mainFile(), '-o', '/out.stl', '--export-format', 'binstl'];
     for (const [n, x] of defs) { const p = ps.find((q) => q.name === n); if (p) args.push('-D', defineArg(p, x)); }
     job = runner.run({ files: inc.files, args, out: '/out.stl', timeout: o.timeout });
     const r = await job.promise;
     if (my !== seq || r.cancelled) return;
-    job = null;
+    job = null; jobKey = null;
     if (pending) { pending = false; schedule(0); }
     clearTimeout(busyT); busy.textContent = '';
     const errs = showLog(r.log, inc.notes);
+    if (r.unloaded && o.onFail) o.onFail();
     if (r.timeout) { setSt(`stopped: the render ran past ${Math.round((o.timeout || 60000) / 1000)} s`, true); return; }
     if (r.rc !== 0 || !r.data) {
       setSt(errs ? 'OpenSCAD reported an error, see the console' : 'no part: the model made nothing to draw', true);
@@ -270,9 +289,9 @@ export function mount(host, opts) {
   }
 
   async function exportAs(fmt) {
-    if (fmt === 'stl' && lastStl && lastKey === key()) { download(leaf(o.name) + '.stl', lastStl, 'model/stl'); return; }
+    const inc = await gather();
+    if (fmt === 'stl' && lastStl && lastKey === key(inc)) { download(leaf(o.name) + '.stl', lastStl, 'model/stl'); return; }
     setSt('making the ' + fmt.toUpperCase() + '…');
-    const inc = await collect(o.name || 'untitled', text, o.readPage || (async () => null));
     const out = '/out.' + fmt;
     const args = [mainFile(), '-o', out, '--export-format', fmt === 'stl' ? 'binstl' : '3mf'];
     for (const [n, x] of defs) { const p = ps.find((q) => q.name === n); if (p) args.push('-D', defineArg(p, x)); }
@@ -284,12 +303,26 @@ export function mount(host, opts) {
   }
 
   function update(t, more = {}) {
+    const moved = more.name !== undefined && more.name !== o.name;
     Object.assign(o, more);
     if (more.name !== undefined || more.editable !== undefined) {
       if (bSnap) bSnap.disabled = !o.editable;
     }
-    if (t === text && !more.force) return;
-    const was = text;
+    //  another page in this pane starts as a new pane would: nothing of
+    //  the last page's part, view, -D values or console is left to pass
+    //  for its own
+    if (moved) {
+      stop();
+      defs.clear();
+      lastKey = lastStl = null;
+      if (vw) vw.clear();
+      dims.textContent = '';
+      setSt('');
+      showLog([], []);
+    }
+    //  the same text may still read an included page that has changed
+    if (t === text && !more.force && !moved) { if (lastKey) schedule(350); return; }
+    const was = moved ? '' : text;
     text = t;
     ps = parseParams(text);
     //  a -D whose value the source now holds is done with; a parameter
