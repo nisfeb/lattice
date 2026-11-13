@@ -75,7 +75,7 @@ bookmarks, keys on the canonical form, so aliasing never splits state.
 - **One layout on every tier.** The codec speaks `+app-base`
   (`/apps/lattice.lattice_app`), so a url's text is the same whether a ship
   runs the old app-tier instance or the stock desk
-  (`+desk-base`, `/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app`).
+  (`+desk-base`, `/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app`).
   The app maps at its edges with `+fold-base` / `+unfold-base`: the address
   bar unfolds `de-urb`'s path to our own `+self-base` (from `/sys/link`), or,
   for a peer, to whichever layout `+peer-base` finds answering there (asked,
