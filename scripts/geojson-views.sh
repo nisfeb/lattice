@@ -30,7 +30,7 @@ get()  { curl -s -m 120 -H "$CK" "$@"; }
 code() { curl -s -m 120 -o /dev/null -w '%{http_code}' -H "$CK" -H "$OR" "$@"; }
 SHIP=$(curl -s -m 30 -H "$CK" "$URL/~/host")
 [ -n "$SHIP" ] || { echo "FAIL  the ship answers /~/host"; exit 1; }
-INST=/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app
+INST=/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app
 T="${TMPDIR:-/tmp}/geojson-views-$$"; mkdir -p "$T"
 KEYID=""
 
