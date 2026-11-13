@@ -12,7 +12,7 @@ test here first.
 | HTTP | http://localhost:8120 (loopback ames in `~/fleet/piers/mec/.http.ports`) |
 | dojo | `tmux attach -t fleet`, window `mec` |
 | grubbery | the dev platform's pin (hoon-development `platform/grubbery.ref`) |
-| lattice | a dev desk at `/apps/shell.shell/desks/lattice.desk`, the same path as on ricsul, following `/lattice-dev/code` in the ball |
+| lattice | a dev desk at `/apps/shell/desks/lattice.desk`, the same path as on ricsul, following `/lattice-dev/code` in the ball |
 | test desk | `%lattice-test`, mounted, set up for the kit |
 
 Below, `F=~/software/personal/hoon-development/fleet/fleet` and
@@ -138,8 +138,8 @@ desk.
 ```sh
 $U lattice-dev our
 $U lattice-dev kids /lattice-dev/code                 # files in a ball dir
-$U lattice-dev file /apps/shell.shell/desks/lattice.desk/version.json
-$U lattice-dev tree /apps/shell.shell/desks/lattice.desk/desk/data
+$U lattice-dev file /apps/shell/desks/lattice.desk/version.json
+$U lattice-dev tree /apps/shell/desks/lattice.desk/desk/data
 ```
 
 `u` guards its subcommands. A raw `.^` in an expression that misses kills

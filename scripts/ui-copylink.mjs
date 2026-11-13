@@ -28,7 +28,7 @@ await seed(env, [[P('priv'), '# priv\n'], [P('open'), '# open\n'], [P('mine'), '
 // The list is the client's to read, so the suite answers it: nothing on
 // this ship has to be another ship's.
 const SWM_HOST = '~zod';
-const SWM_PATH = '/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/notes/plan/code';
+const SWM_PATH = '/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/notes/plan/code';
 const SWM_KEY = ' shared/' + SWM_HOST + '/' + SWM_PATH;
 
 const browser = await launchBrowser();

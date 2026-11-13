@@ -40,7 +40,7 @@ follows, so change this file and tell orrery in the same change.**
 ## What orrery reads
 
 R is the lattice instance in the ball. On a desk install that is
-`/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app`, and the
+`/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app`, and the
 instance also claims the alias name `lattice`. For a page P:
 
 | grub | mark | noun |
@@ -106,4 +106,4 @@ Three features use them:
   few attrs, open actions). A non-body path (`journal/2026.10.19`) gets a 404
   and shows nothing.
 
-Weir: lattice asks peek on `/apps/shell.shell/desks/orrery.desk/`.
+Weir: lattice asks peek on `/apps/shell/desks/orrery.desk/`.

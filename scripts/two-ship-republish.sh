@@ -17,7 +17,7 @@ set -uo pipefail
 : "${A_URL:?A_URL}" "${A_COOKIE:?A_COOKIE}" "${B_URL:?B_URL}" "${B_COOKIE:?B_COOKIE}"
 A="${A_URL%/}/apps/lattice"; B="${B_URL%/}/apps/lattice"
 AK="Cookie: $(cat "$A_COOKIE")"; BK="Cookie: $(cat "$B_COOKIE")"
-DATA=/grubbery/api/file/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app
+DATA=/grubbery/api/file/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app
 fails=0
 
 ok()   { echo "ok    $1"; }

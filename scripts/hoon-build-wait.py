@@ -12,7 +12,7 @@ Exits 0 on a clean build, 1 on a failed one, 2 on a timeout.
 """
 import argparse, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 
-DESK = '/grubbery/ball/apps/shell.shell/desks/lattice.desk'
+DESK = '/grubbery/ball/apps/shell/desks/lattice.desk'
 INST = DESK + '/desk/data/lattice.lattice_app'
 
 

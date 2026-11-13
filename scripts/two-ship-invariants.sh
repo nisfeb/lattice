@@ -156,7 +156,7 @@ A_ -o /dev/null -X POST "$A/unban?ship=$BSHIP"
 APIER=${A_SOCK%/.urb/*}
 BPIER=${B_PIER:-}
 if [ -n "${A_SOCK:-}" ] && [ -d "$APIER" ] && [ -n "${VERE:-}" ]; then
-  base="/apps/'shell.shell'/desks/'lattice.desk'/desk/data/'lattice.lattice_app'"
+  base="/apps/shell/desks/'lattice.desk'/desk/data/'lattice.lattice_app'"
   # a khan thread on pier $1 pokes $2's share inbox with the notices for
   # i in [$3, $4): each a fresh page path, and i = 999 the too long one
   pokes() {

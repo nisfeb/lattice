@@ -182,7 +182,7 @@ function setLine(name) {
   return { set: name, ship, port: Number(port), url: 'http://localhost:' + port,
     pier: p ? p[1].replace(/^~/, HOME) : HOME + '/fleet/piers/' + ship };
 }
-const INST = '/grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app';
+const INST = '/grubbery/ball/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app';
 async function get(url, cookie, ms = 30000) {
   try {
     const r = await fetch(url, { headers: cookie ? { Cookie: cookie } : {}, signal: AbortSignal.timeout(ms) });
@@ -211,7 +211,7 @@ async function cookieFor(pier, url, name) {
 //  compiled (bang null), and the route answers fast three times running.
 async function live(url, cookie, stamp, secs = 900) {
   if (stamp) await until('the desk to pull ' + stamp, secs, async () => {
-    const r = await get(url + '/grubbery/ball/apps/shell.shell/desks/lattice.desk/version.json?raw=1', cookie);
+    const r = await get(url + '/grubbery/ball/apps/shell/desks/lattice.desk/version.json?raw=1', cookie);
     return r.text.includes(stamp);
   }, 2000);
   await until('bang null', secs, async () => {

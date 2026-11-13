@@ -88,7 +88,7 @@
 
 **Interfaces:**
 - Produces:
-  - A new `peek` line in `+weir-json`: road `/apps/shell.shell/desks/orrery.desk/`, `why` = one sentence (no em-dash) that it reads orrery's brief, review, and world digest so agents and journal pages stay current.
+  - A new `peek` line in `+weir-json`: road `/apps/shell/desks/orrery.desk/`, `why` = one sentence (no em-dash) that it reads orrery's brief, review, and world digest so agents and journal pages stay current.
   - `++orrery-base` fiber producing `(unit path)`: `peek-soft:io [%& %& /sys/link/%orrery %'dest.lanes'] ~`, clam as `(list lane:tarball)` or `(set lane:tarball)`, first `%|` lane's path; `~` when absent. Mirror of orrery's `+find-base`.
   - `++orrery-world` fiber producing `(unit json)`: read `<base>/world.json`, `~` on any failure.
   - `++orrery-days` fiber `|=(dir=@tas ...)` producing `(list @ta)`: the day grubs under `<base>/briefs` or `<base>/reviews`, `~` on failure.

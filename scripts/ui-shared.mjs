@@ -34,7 +34,7 @@ El.prototype.append = function (...k) {
 };
 El.prototype.appendChild = function (k) { this.kids.push(k); };
 
-const D = '/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app';
+const D = '/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app';
 function boot(items, coll = []) {
   const treeList = new El('div'), opened = [];
   const localStorage = { appColl: JSON.stringify(coll) };
