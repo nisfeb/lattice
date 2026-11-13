@@ -2,7 +2,10 @@
 # Passes integration matrix (docs/superpowers/specs/2026-11-11-passes-design.md):
 # the seller's routes, the read group a pass keeps, a lapse with no owner
 # action, a refund, and a board's delete taking its passes. One ship is
-# enough: gifts stand in for payment, and the groups show the read gate.
+# enough: gifts stand in for payment, and the read group lattice states in
+# its groups.json shows the read gate. The shell makes that a usergroup only
+# once the owner grants lattice the /lattice/ key on Permits, so the matrix
+# reads what lattice states, not the usergroup.
 # Takes about two minutes, most of it waiting for a one-minute pass to end.
 #
 # Usage:  scripts/pass-matrix.sh
@@ -21,10 +24,11 @@ P()   { code -H "$CK" -X POST "$@"; }
 # py <json> <expr>: one value out of a json answer, j is the json
 py()  { printf '%s' "$1" | python3 -c "import json,sys; j=json.load(sys.stdin); print($2)"; }
 passes() { G "$B/passes?board=$BD"; }
-group()  { G "$B/share-groups" | python3 -c "
+INST=/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app
+group()  { G "$URL/grubbery/api/file$INST/groups.json" | python3 -c "
 import json,sys
-gs=[g for g in json.load(sys.stdin) if g['name'] in ('forum-$BD','/forum-$BD')]
-print(' '.join(sorted(gs[0]['ships'])) if gs else '<none>')"; }
+g=json.load(sys.stdin).get('/lattice/',{}).get('pass-b-$BD')
+print(' '.join(sorted(g['members'])) if g else '<none>')"; }
 
 echo "==> a private board and a public one"
 is "make the board" 303 "$(P "$B/forum/_new" --data "name=$BD&title=Passes")"
@@ -122,5 +126,6 @@ is "delete the public one" 303 "$(P "$B/forum/$PB/mod/delete")"
 j=$(passes)
 is "no passes" 0 "$(py "$j" "len(j['passes'])")"
 is "no offer" None "$(py "$j" "j['offer']")"
+is "and no read group" '<none>' "$(group)"
 
 finish

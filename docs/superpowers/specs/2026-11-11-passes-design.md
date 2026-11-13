@@ -26,10 +26,10 @@ Lattice is under PolyForm Noncommercial 1.0.0, which forbids commercial use, so 
 
 | part | today | with passes |
 | --- | --- | --- |
-| Read gate, ships | grubbery weir: usergroup `/sys/ames/usergroups/forum-<b>.grp`, `who.ships`. A non-member's peek of `/forum/boards/<b>/{pub,content}` returns nothing | `who.ships` = hand invites plus live pass holders, recomputed when a pass starts or lapses |
+| Read gate, ships | grubbery weir: usergroup `/sys/ames/usergroups/forum-<b>.grp`, `who.ships`, the hand invites. A non-member's peek of `/forum/boards/<b>/{pub,content}` returns nothing | a second group, `/lattice/pass-<key>`, of the live pass holders. lattice states it in its own `groups.json` under the prefix key `/lattice/` and the shell makes it (see Read groups below), recomputed when a pass starts or lapses |
 | Post gate, ships | `+forum-remote-apply`: private board needs `src` in `/forum/members/<b>` (app.hoon, the roster check) | member = in the roster, or holding a live `%post` pass. The pass check reads `until` directly, so it is exact even before the lapse sweep runs |
 | Read gate, web | `serve-forum-public` 404s a private board | a private board with an offer serves its buy page, or the board to a request whose pass cookie hashes to a live web pass |
-| Folders | per-ship groups `<ship>.grp` and folder `share-grants` | phase 4: a pass adds the folder road to a pass group `pass-<key>.grp` |
+| Folders | per-ship groups `<ship>.grp` and folder `share-grants` | phase 4: a pass adds the folder road to its pass group `/lattice/pass-<key>` |
 | Inbox | `+notify-add`, kinds `?(%comment ... %asked)` | a new kind `%pass` for the seller: a sale, or passes that lapsed |
 | Notes to a remote ship | `+forum-note-send` to the peer's `/forum.sig` | the buyer's answers (an invoice to pay, the pass, why not) and lapse and reminder lines, as note text |
 | Timers | `soft-behn` writer timers, sweep loops | one writer timer on wire `/pass-due`, set for the earliest wake, as `+pub-arm` does |
@@ -83,7 +83,7 @@ One pure arm in `lib/lattice-pass.hoon`, run on every post and every web read of
   ==
 ```
 
-That is one grub peek (`/passes/held/<key>`) and one map lookup. A ship's read over Ames costs nothing extra: grubbery's weir already decides it from `who.ships`, which the pass code keeps equal to `hand ∪ {ships with a live pass}`:
+That is one grub peek (`/passes/held/<key>`) and one map lookup. A ship's read over Ames costs nothing extra: grubbery's weir already decides it from the groups' `who.ships`. The board's own group holds the hand invites and its pass group the ships with a live pass, so a ship reads when it is in either. `+group-ships` with `hand` empty gives the pass group:
 
 ```
 ++  group-ships
@@ -91,13 +91,21 @@ That is one grub peek (`/passes/held/<key>`) and one map lookup. A ship's read o
   ^-  (set @p)
 ```
 
-The owner and mods always pass. A banned ship never does: `+is-banned:ls` runs before the check and the ban culls its group membership as today.
+The owner and mods always pass. A banned ship never does: `+is-banned:ls` runs before the check, the ban culls its board group membership as today, and the ban route has the writer state the pass groups again without it (`[%pass %regroup ~]`) before it strips the groups.
+
+### Read groups
+
+The shell owns usergroups. On every change it rewrites each group's `who.ships` and `how.weir` from what apps state in the `groups.json` at their roots, and drops a group nobody states, so a ship written straight into a group is taken out again. lattice therefore states its pass groups there (`+pass-groups`): under the prefix key `/lattice/`, one entry per board with a live ship pass, `pass-<key>`, holding `members` (the live ship holders, the banned left out) and `peek` (`/forum/boards/<b>/pub/` and `/forum/boards/<b>/content/`, relative to lattice's root). The shell makes it `/sys/ames/usergroups/lattice/pass-<key>.grp`.
+
+- The `/lattice/` entry is rebuilt whole from `/passes/held` on every grant, refund, sweep, offer, board made or deleted, ban, and writer start. Other keys (`/public`, from `+send-public-how`) are kept, and an unchanged file is not written.
+- The owner grants the `/lattice/` key on Permits once; every pass group under it follows from then on with no further asks. Until it is granted the shell makes none of them, so pass holders post and read on the web but cannot read the board over Ames.
+- The key first appears with the board's first offer or pass, so lattice's ask reopens while the owner is setting passes up, not at an upgrade for owners who sell nothing. Once there it stays, even with no entries: a key that came and went would reopen the ask each time.
 
 ### Lapse without the owner
 
 - Posting and web reads check `until` against `now` themselves, so a lapse closes them at the second it happens.
-- Ship reads close when the ship leaves `who.ships`. The writer keeps one behn timer on wire `/pass-due` for the soonest wake in `/passes/next`, and sets it again at every start. On the wake it sweeps (`+pass-sweep`): for each scope whose wake has come it recomputes `group-ships` and writes the group through `+ug-put`, files a `%pass` inbox item, tells each lapsed ship, reminds ships three days out, prunes, and rewrites `/passes/next`. A behn timer fires on time, so the gap is one event.
-- A hand invite outlives its pass: `hand` comes from the roster `/forum/members/<b>`, which passes never write.
+- Ship reads close when the ship leaves `who.ships`. The writer keeps one behn timer on wire `/pass-due` for the soonest wake in `/passes/next`, and sets it again at every start. On the wake it sweeps (`+pass-sweep`): for each scope whose wake has come it files a `%pass` inbox item, tells each lapsed ship, reminds ships three days out, prunes, rewrites `/passes/next`, and states the pass groups again (`+pass-groups`), so the lapsed are out. A behn timer fires on time, so the gap is one event.
+- A hand invite outlives its pass: it is the board's own group and roster `/forum/members/<b>`, which passes never write.
 
 ## Buying on Urbit (a ship)
 
@@ -188,7 +196,7 @@ A later version could issue a web pass as a tessera NUT-22 token, so a reader ke
 
 ## Folders and lodgings (after boards)
 
-- **Folders**: a pass on a folder adds the folder's dir road to a group `pass-<scope-key>.grp` whose `who.ships` is kept as for boards. A web pass reads the folder's pages through `/c/<page>` when the cookie is live, as a clearweb read scoped to that folder. Everything else (ledger, payment, lifecycle, seller view) is shared.
+- **Folders**: a pass on a folder adds the folder's dir road to its group `/lattice/pass-<scope-key>`, whose members are kept as for boards. A web pass reads the folder's pages through `/c/<page>` when the cookie is live, as a clearweb read scoped to that folder. Everything else (ledger, payment, lifecycle, seller view) is shared.
 - **Lodgings**: when lodgers exist, a lodging's quota and sign-in can require a live pass on scope `[%lodging who]`. The ledger and payment are the same. The hook is one `+live` call at sign-in and at the start of each write.
 
 ## Phases

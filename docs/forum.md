@@ -24,7 +24,7 @@ Lattice hosts forums. A forum is a multi-author, threaded website, and lattice a
 
 ## Passes (paid access)
 
-A private board can sell passes: the right to read it, or a ship's right to read and post on it, for a period. The owner sets the offer on the board's mod page (a price in sats at a Cashu mint, a dollar price in cents for card and bitcoin, the period, read or post), sets up Stripe and BTCPay there, and sees the numbers, every pass, and the board's wallet there. A pass ends on its own: posts and web reads check it, and a timer takes lapsed ships out of the board's read group.
+A private board can sell passes: the right to read it, or a ship's right to read and post on it, for a period. The owner sets the offer on the board's mod page (a price in sats at a Cashu mint, a dollar price in cents for card and bitcoin, the period, read or post), sets up Stripe and BTCPay there, and sees the numbers, every pass, and the board's wallet there. A pass ends on its own: posts and web reads check it, and a timer takes lapsed ships out of the board's pass group. The pass groups are stated in lattice's own groups.json under `/lattice/`, which the owner grants once on Permits (the spec's Read groups).
 
 - A ship that may not read a board sees the host's offer and pays in ecash or asks for a Lightning invoice. The host answers in its forum notes.
 - A reader with no ship pays on the board's page in ecash, over Lightning, by card (Stripe Checkout) or in bitcoin (BTCPay Server), and reads on a cookie. The host keeps only the hash of the cookie's code.

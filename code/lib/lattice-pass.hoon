@@ -97,6 +97,8 @@
       [%grant key=@ta =holder =mode period=@dr paid=@ud =cur =via ref=@t]
       [%refund key=@ta =holder]
       [%sweep ~]
+      ::  the read groups stated again, as a ban takes a ship out
+      [%regroup ~]
       ::  a payment asked for: by a ship (tok and code 0) or the web
       [%buy key=@ta =holder =how tok=@uv code=@uv]
       ::  a payment's fiber is done with it

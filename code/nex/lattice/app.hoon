@@ -592,6 +592,9 @@
         ::  self-healing on every writer start. know/ needs nothing. Foreign
         ::  access is deny-by-default.
         ;<  ~  bind:m  (send-public-how root)
+        ::  and the pass holders' read groups, the same way (+pass-groups)
+        ;<  pg-now=@da  bind:m  bowl-now
+        ;<  ~  bind:m  (pass-groups pg-now)
         ::  page grants made before they were file roads (+narrow-page-grants)
         ;<  ~  bind:m  narrow-page-grants
         ::  folder grants a crash left with no note (+fix-folder-grants)
@@ -3286,6 +3289,10 @@
     ::  the grants still in place. So strip the groups (after the banned-flag
     ::  write above, also durable), THEN cull what the ship wrote, its moons'
     ::  too: a ban that freed no slots left the page full (security audit run-1).
+    ::  The pass read groups are the shell's, made from our groups.json, so
+    ::  the strip leaves them be and the writer states them again, the ship
+    ::  left out (+pass-groups).
+    ;<  ~  bind:m  (poke-eval [%pass %regroup ~])
     ;<  n=(unit @ud)  bind:m  (strip-ship-from-groups u.who)
     ;<  *  bind:m  (cull-comments-of u.who)
     ;<  ~  bind:m  (poke-eval [%pub-threads ~])
@@ -7802,13 +7809,8 @@
     =/  ships=(set @p)
       ?.  ?=([%file *] wv)  ~
       (fall (mole |.(;;((set @p) (sang-noun:tarball sang.wv)))) ~)
-    ::  a ship that holds a live pass keeps its read: only the hand
-    ::  invite goes, and the pass's own lapse takes it out (+pass-group)
-    ;<  ph=held:lpa  bind:m  (read-pass-held (scope-key:lpa [%board nom]))
-    ;<  now=@da  bind:m  bowl-now
     ;<  ok=?  bind:m
-      ?:  |(!(~(has in ships) u.shp) (live:lpa ph [%ship u.shp] now %read))
-        (pure:(fiber:fiber:nexus ,?) %.y)
+      ?.  (~(has in ships) u.shp)  (pure:(fiber:fiber:nexus ,?) %.y)
       (ug-over [%& %& gdir %'who.ships'] [[/ %ships] (~(del in ships) u.shp)])
     ?.  ok  (ug-refused eyre-id)
     ;<  ~  bind:m  (write-forum-members nom (~(del in cur) u.shp))
@@ -7842,8 +7844,9 @@
 ::  the offer alone, so a ship that cannot read a board can see what a
 ::  pass costs. Only the writer writes them (+apply-pass).
 ::
-::  Reads of a board over Ames are the weir's: the board's read group
-::  holds the roster and every live ship pass (+pass-group). Posts check
+::  Reads of a board over Ames are the weir's: a group of the ships
+::  with a live pass, as our groups.json states it (+pass-groups), next
+::  to the board's own group of hand invites. Posts check
 ::  the pass itself (+forum-remote-apply), so they close the second it
 ::  lapses. A behn wake on /pass-due sweeps the lapses (+pass-sweep).
 ::
@@ -7897,6 +7900,7 @@
   ;<  up=@ud  bind:m  nexus-up
   ?-  -.act
       %sweep  (pass-sweep now)
+      %regroup  (pass-groups now)
   ::
       %offer
     ?~  o.act
@@ -7908,7 +7912,10 @@
     ?.  ok  (pure:m ~)
     ;<  ~  bind:m  (pass-put /passes/offers key.act [%1 u.o.act])
     ;<  ~  bind:m  (ensure-dirs up / /pub/passes)
-    (put-file (rf up /pub/passes key.act) [/ %noun] [%1 u.o.act])
+    ;<  ~  bind:m  (put-file (rf up /pub/passes key.act) [/ %noun] [%1 u.o.act])
+    ::  the first offer puts the /lattice/ key in our groups.json, so
+    ::  the owner is asked for it now, before anyone has paid
+    (pass-groups now)
   ::
       %grant
     ;<  ok=?  bind:m  (pass-scope-ok key.act)
@@ -7923,7 +7930,7 @@
     ;<  s=(list sale:lpa)  bind:m  (read-pass-sales key.act)
     =/  new=sale:lpa  [now holder.act paid.act cur.act via.act |]
     ;<  ~  bind:m  (pass-put /passes/sales key.act [%1 (log-sale:lpa s new)])
-    ;<  ~  bind:m  (pass-group key.act h now)
+    ;<  ~  bind:m  (pass-groups now)
     ;<  ~  bind:m  (pass-rearm key.act h now)
     ;<  ~  bind:m
       ?.  ?=(%ship -.holder.act)  (pure:m ~)
@@ -7991,7 +7998,7 @@
     ;<  s=(list sale:lpa)  bind:m  (read-pass-sales key.act)
     =/  back=sale:lpa  [now holder.act paid.u.p cur.u.p via.u.p &]
     ;<  ~  bind:m  (pass-put /passes/sales key.act [%1 (log-sale:lpa s back)])
-    ;<  ~  bind:m  (pass-group key.act h now)
+    ;<  ~  bind:m  (pass-groups now)
     (pass-rearm key.act h now)
   ==
 ::  +pass-scope-ok: a scope a pass can be had on: for now a board we
@@ -8008,29 +8015,61 @@
   =/  lod=(each board:ft @t)  (load:fb u.gs)
   ?:  ?=(%| -.lod)  (pure:m |)
   (pure:m !public.info.p.lod)
-::  +pass-group: a board's read group holds its roster and every ship
-::  with a live pass. The roads are the board's, as an invite lays them,
-::  and +ug-put drops any ship banned. Soft: a refused group write
-::  leaves reads as they were, and posts still check the pass
-++  pass-group
-  |=  [key=@ta h=held:lpa now=@da]
+::  +pass-groups: the read groups passes give, stated in our own
+::  groups.json for the shell to make. The shell rewrites every
+::  usergroup from what the apps state, so a ship written straight into
+::  one is taken out again: this file is the only way a pass's read
+::  lasts. Under the prefix key /lattice/, each board with a live ship
+::  pass has a group, pass-<key>: those ships, the banned left out,
+::  reading the board's pub and content dirs (roads relative to our
+::  root, as +send-public-how writes them). Hand invites stay in the
+::  board's own group (+handle-forum-invite); a ship in both reads
+::  through either.
+::
+::  Built whole from /passes/held every time, other keys kept, and an
+::  unchanged file is not written. The owner grants /lattice/ once on
+::  Permits, and the shell makes none of these groups before that. So
+::  the key comes with the first offer or pass, while passes are being
+::  set up, and then stays, even empty: a key that came and went would
+::  reopen lattice's ask on Permits each time.
+++  pass-groups
+  |=  now=@da
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  =/  nom=(unit @tas)  (key-board:lpa key)
-  ?~  nom  (pure:m ~)
-  ;<  hand=(set @p)  bind:m  (read-forum-members u.nom)
-  =/  want=(set @p)  (group-ships:lpa hand h now)
-  ;<  sb=path  bind:m  self-base
-  =/  bpath=path  (weld sb /forum/boards/[u.nom])
-  =/  roads=(set road:tarball)
-    (~(gas in *(set road:tarball)) ~[[%& %| (snoc bpath %pub)] [%& %| (snoc bpath %content)]])
-  =/  gname=@t  (forum-group-name u.nom)
-  ;<  ok=?  bind:m  (ug-merge gname ~ roads ~)
-  ?.  ok  (pure:m ~)
-  =/  gdir=path  (snoc ug-base (crip (weld (trip gname) ".grp")))
-  ;<  wr=weir:nexus  bind:m  (ug-read-weir gdir)
-  ;<  *  bind:m  (ug-put gdir want wr)
-  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  bans=banned:ls  bind:m  read-banned
+  ;<  noms=(list @ta)  bind:m  forum-boards
+  =/  arr  |=(ts=(list @t) `json`a+(turn (sort ts aor) |=(t=@t s+t)))
+  =|  ents=(map @t json)
+  =/  sold=?  |
+  |-  ^-  form:m
+  ?^  noms
+    =/  key=@ta  (scope-key:lpa [%board i.noms])
+    ;<  o=(unit offer:lpa)  bind:m  (read-pass-offer key)
+    ;<  h=held:lpa  bind:m  (read-pass-held key)
+    =.  sold  |(sold ?=(^ o) !=(~ h))
+    =/  who=(set @p)  (ban-drop:ls bans (group-ships:lpa ~ h now))
+    ?:  =(~ who)  $(noms t.noms)
+    =/  bd=tape  (spud /forum/boards/[i.noms])
+    =/  ent=json
+      %-  pairs:enjs:format
+      :~  ['members' (arr (turn ~(tap in who) |=(p=@p (scot %p p))))]
+          ['peek' (arr ~[(crip "{bd}/pub/") (crip "{bd}/content/")])]
+      ==
+    $(noms t.noms, ents (~(put by ents) (cat 3 'pass-' key) ent))
+  =/  gfile=road:tarball  (rf up / %'groups.json')
+  ;<  cur=json  bind:m  (json-at gfile)
+  =/  obj=(map @t json)  (rise-omap cur)
+  =/  had=(unit json)  (~(get by obj) '/lattice/')
+  ?:  =(had `[%o ents])  (fault-clear ~['pass-groups'])
+  ?:  &(?=(~ had) !sold)  (pure:m ~)
+  ::  SOFT, as +send-public-how: a veto would roll back the pass itself
+  ;<  how=(unit tang)  bind:m
+    %^  over-as-soft:io  gfile
+      [[/ %json] [%o (~(put by obj) '/lattice/' [%o ents])]]
+    [/ %json]
+  ?~  how  (fault-clear ~['pass-groups'])
+  (fault 'pass-groups' 0 "lattice: pass holders cannot read: groups.json was not written" ~)
 ::  +pass-rearm: a scope's next wake, and the one timer at the soonest
 ++  pass-rearm
   |=  [key=@ta h=held:lpa now=@da]
@@ -8074,11 +8113,12 @@
   |-  ^-  form:m
   ?~  keys
     ;<  ~  bind:m  (pass-put /passes %next [%1 now wakes])
+    ::  the lapsed leave the read groups (unchanged groups write nothing)
+    ;<  ~  bind:m  (pass-groups now)
     (pass-arm wakes)
   =*  key  i.keys
   ;<  h=held:lpa  bind:m  (read-pass-held key)
   =/  d  (due:lpa h last.nx now)
-  ;<  ~  bind:m  ?~(lapsed.d (pure:m ~) (pass-group key h now))
   ;<  ~  bind:m
     =/  ls=(list holder:lpa)  lapsed.d
     |-  ^-  form:m
@@ -9812,7 +9852,9 @@
         %-  cull-soft:io
         [%& %| (snoc ug-base (crip (weld (trip (forum-group-name nom)) ".grp")))]
       (pure:m ~)
-    (send-public-how root)
+    ;<  ~  bind:m  (send-public-how root)
+    ::  a deleted board's pass group goes with its passes
+    (pass-groups now)
       %forum-note-store
     ::  store a refusal note a host sent back about one of our cross-ship
     ::  posts. Routed here from the /forum.sig inbox so /main.sig is the sole
@@ -15432,8 +15474,11 @@
   =.  bans  (~(put in bans) who)
   ;<  h0=holds:ls  bind:m  holds-now
   ::  nested groups too (+all-groups): a ban that missed one left the ship
-  ::  its grants there
-  =/  gs=(list path)  (sort (turn (all-groups / ball.dn) head) aor)
+  ::  its grants there. Not /lattice/: the shell makes those from our
+  ::  groups.json and undoes a write to them (+pass-groups)
+  =/  gs=(list path)
+    %+  skip  (sort (turn (all-groups / ball.dn) head) aor)
+    |=(p=path ?=([%lattice *] p))
   =|  hit=@ud
   |-  ^-  form:m
   ?~  gs
