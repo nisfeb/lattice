@@ -1,7 +1,7 @@
   // ── editor pane: <lat-editor> + highlighting (Prism overlay) ─────────────
   let src, hl;   // assigned when <lat-editor> upgrades (below, synchronously)
   const LMAP = { md: 'markdown', gmi: 'gemtext', html: 'markup',
-                 js: 'javascript', css: 'css', hoon: 'hoon', tex: 'latex' };
+                 js: 'javascript', css: 'css', hoon: 'hoon', tex: 'latex', scad: 'openscad' };
   const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
   // Prism runs in a worker (prism.js installs a message handler there).
   // Some grammars scan to the end of the input from every start position
@@ -99,6 +99,7 @@
   const render = () => {
     if (rpHook) rpHook();
     writerFollow();
+    scadFollow();
     if (richHere() && !writerSourceOn()) { hl.textContent = ''; return; }
     const lang = LMAP[pkind.value];
     // the worker loads its own prism. This window's copy comes after boot
@@ -173,7 +174,10 @@
     curKind = pkind.value;
     //  an empty new page made a Writer page or a spreadsheet starts as
     //  the blank document
-    if (isRich(curKind) && !src.value.trim()) writerBlank(curKind); else render();
+    if (isRich(curKind) && !src.value.trim()) writerBlank(curKind);
+    //  an empty page made a scad page starts as the box template
+    else if (curKind === 'scad' && !src.value.trim()) scadBlank();
+    else render();
     //  the kind rides every save as a query param, so switching it on an open
     //  page must dirty the editor or navigating away silently reverts the
     //  choice. A page with no name yet gets its kind from the first save.

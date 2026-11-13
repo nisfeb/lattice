@@ -132,6 +132,7 @@
 ++  test-page-type-ok
   ;:  weld
     (expect-eq !>(&) !>((page-type-ok 'md')))
+    (expect-eq !>(&) !>((page-type-ok 'scad')))
     (expect-eq !>(&) !>((page-type-ok 'gmi')))
     (expect-eq !>(&) !>((page-type-ok 'text')))
     (expect-eq !>(&) !>((page-type-ok 'tex')))

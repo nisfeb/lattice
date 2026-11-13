@@ -1,0 +1,89 @@
+{
+ "parameters": [
+  {
+   "caption": "The resolution of the curves. Higher values give smoother curves but may increase the model render time.",
+   "group": "properties of Sign",
+   "initial": 10,
+   "name": "resolution",
+   "options": [
+    {
+     "name": "10",
+     "value": 10
+    },
+    {
+     "name": "20",
+     "value": 20
+    },
+    {
+     "name": "30",
+     "value": 30
+    },
+    {
+     "name": "50",
+     "value": 50
+    },
+    {
+     "name": "100",
+     "value": 100
+    }
+   ],
+   "type": "number"
+  },
+  {
+   "caption": "The horizontal radius of the outer ellipse of the sign.",
+   "group": "properties of Sign",
+   "initial": 80,
+   "max": 200,
+   "min": 60,
+   "name": "radius",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "caption": "Total height of the sign",
+   "group": "properties of Sign",
+   "initial": 2,
+   "max": 10,
+   "min": 1,
+   "name": "height",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "caption": "Message to be write ",
+   "group": "Content To be written",
+   "initial": "Welcome to...",
+   "name": "Message",
+   "options": [
+    {
+     "name": "Welcome to...",
+     "value": "Welcome to..."
+    },
+    {
+     "name": "Happy Birthday!",
+     "value": "Happy Birthday!"
+    },
+    {
+     "name": "Happy Anniversary",
+     "value": "Happy Anniversary"
+    },
+    {
+     "name": "Congratulations",
+     "value": "Congratulations"
+    },
+    {
+     "name": "Thank You",
+     "value": "Thank You"
+    }
+   ],
+   "type": "string"
+  },
+  {
+   "caption": "Name of Person, company etc.",
+   "group": "Content To be written",
+   "initial": "Parametric Designs",
+   "name": "To",
+   "type": "string"
+  }
+ ]
+}

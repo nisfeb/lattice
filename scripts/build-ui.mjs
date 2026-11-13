@@ -48,6 +48,8 @@ const tag = (f) => (existsSync(join(ui, f))
 const writerH = tag('writer.js');
 // sheet.js, the spreadsheet editor (ui-src/sheet/, build-sheet.mjs), the same
 const sheetH = tag('sheet.js');
+// scad.js, the 3D pane of scad pages (ui-src/scad/, build-scad.mjs), the same
+const scadH = tag('scad.js');
 // pdf.js, the Export PDF layout (78-pdf.js), is hand-written in ui-app/
 // and loaded the same way
 const pdfH = tag('pdf.js');
@@ -59,6 +61,7 @@ writeFileSync(join(ui, 'app.js'),
   + '(function () {\n\'use strict\';\n'
   + `// the served writer.js's hash (build-ui.mjs, 26-writer.js)\nconst WRITER_H = '${writerH}';\n`
   + `// and sheet.js's, the spreadsheet editor (26-writer.js)\nconst SHEET_H = '${sheetH}';\n`
+  + `// and scad.js's, the 3D pane of scad pages (26-scad.js)\nconst SCAD_H = '${scadH}';\n`
   + `// and pdf.js's (78-pdf.js)\nconst PDF_H = '${pdfH}';\n`
   + `// and skills.js's (95s-skills.js)\nconst SKILLS_H = '${skillsH}';\n\n`
   + body + '})();\n');

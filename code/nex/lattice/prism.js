@@ -82,3 +82,26 @@ Prism.languages.latex = {
 //  .tex is the extension, latex is the language. Both reach the same grammar,
 //  the way gmi does for gemtext.
 Prism.languages.tex = Prism.languages.latex;
+//  OpenSCAD, for scad pages: hand-written like latex above. Comments and
+//  strings first, so nothing inside one is read as code. An include's path
+//  is one token, as OpenSCAD's lexer reads it.
+Prism.languages.openscad = {
+  'comment': [
+    { pattern: /\/\*[\s\S]*?\*\//, greedy: true },
+    { pattern: /\/\/.*/, greedy: true }
+  ],
+  'string': { pattern: /"(?:\\[\s\S]|[^"\\\r\n])*"/, greedy: true },
+  'include': {
+    pattern: /\b(?:include|use)\s*<[^>\r\n]*>/,
+    inside: { 'keyword': /^(?:include|use)/, 'url': /<[^>]*>/ }
+  },
+  'keyword': /\b(?:module|function|if|else|for|intersection_for|let|each|assert|echo)\b/,
+  'boolean': /\b(?:true|false|undef)\b/,
+  'builtin': /\b(?:cube|sphere|cylinder|polyhedron|square|circle|polygon|text|import|surface|projection|linear_extrude|rotate_extrude|union|difference|intersection|hull|minkowski|offset|translate|rotate|scale|resize|mirror|multmatrix|color|render|children|abs|sign|sin|cos|tan|asin|acos|atan|atan2|floor|round|ceil|ln|log|pow|sqrt|exp|len|min|max|norm|cross|concat|lookup|str|chr|ord|search|rands|is_undef|is_bool|is_num|is_string|is_list|is_function|version|version_num|parent_module)\b/,
+  'variable': /\$\w+/,
+  'number': /(?:\b\d+(?:\.\d*)?|\B\.\d+)(?:[eE][+-]?\d+)?\b/,
+  'function': /\b[A-Za-z_]\w*(?=\s*\()/,
+  'operator': /[<>!=]=?|&&|\|\||[-+*\/%^?:#]/,
+  'punctuation': /[{}[\];(),.]/
+};
+Prism.languages.scad = Prism.languages.openscad;

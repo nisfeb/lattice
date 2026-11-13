@@ -16,7 +16,7 @@
   // hides the editor.
 
   // the page kinds: the hidden picker's options and the page menu's Kind list
-  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'hoon'];
+  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'scad', 'hoon'];
   const tabHead = document.createElement('div');
   tabHead.id = 'tabhead';
   tabHead.className = 'tabhead';
@@ -74,6 +74,8 @@
       b.setAttribute('aria-pressed', p ? 'true' : 'false');
     }
     if (on && was) showPreview();
+    // a scad page's 3D pane shows in Read, and beside the editor in Edit
+    scadFollow();
     // the vim indicator reads PREVIEW in Read
     if (window.latVimSetInd) window.latVimSetInd();
   }

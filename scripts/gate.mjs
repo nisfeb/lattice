@@ -237,7 +237,7 @@ async function live(url, cookie, stamp, secs = 900) {
 //  --- the suites ---
 const browser = (f) => /puppeteer|lib\/harness\.mjs/.test(readFileSync(S + '/' + f, 'utf8'));
 const uis = readdirSync(S).filter((f) => /^ui-.*\.mjs$/.test(f)).sort();
-const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs', 'ui-sheet-grid.mjs'];
+const SHIPFREE_BROWSER = ['ui-manager.mjs', 'ui-reader-loading.mjs', 'ui-sheet-grid.mjs', 'ui-scad-view.mjs'];
 const TWO_SHIP = ['ui-links.mjs', 'ui-shares-live.mjs', 'ui-follow-live.mjs'];
 const allShip = [
   ...uis.filter((f) => browser(f) && !SHIPFREE_BROWSER.includes(f) && !TWO_SHIP.includes(f)),
@@ -277,6 +277,7 @@ const allLocal = [
   ...uis.filter((f) => !browser(f)).map((f) => [f, 'node', [S + '/' + f]]),
   ['ui-manager.mjs', 'node', [S + '/ui-manager.mjs']],
   ['ui-sheet-grid.mjs', 'node', [S + '/ui-sheet-grid.mjs']],
+  ['ui-scad-view.mjs', 'node', [S + '/ui-scad-view.mjs']],
   ['ui-reader-loading.mjs', 'node', [S + '/ui-reader-loading.mjs']],
   ['offline-tests', 'bash', [S + '/offline-tests.sh']],
   ['code-closure', 'python3', [S + '/code-closure.py', 'code']],
@@ -298,6 +299,8 @@ const allLocal = [
   ['sheet-built', 'bash', ['-c', 'node scripts/build-sheet.mjs && git diff --exit-code code/nex/lattice/ui-app/sheet.js ui-src/sheet/vendor/LICENSES && node --check code/nex/lattice/ui-app/sheet.js']],
   ['sheet-unit', 'node', [S + '/sheet-unit.mjs']],
   ['sheet-roundtrip', 'node', [S + '/sheet-roundtrip.mjs']],
+  ['scad-built', 'bash', ['-c', 'node scripts/build-scad.mjs && git diff --exit-code code/nex/lattice/ui-app/scad.js && node --check code/nex/lattice/ui-app/scad.js && node scripts/build-scad.mjs --check-pin']],
+  ['scad-unit', 'node', [S + '/scad-unit.mjs']],
 ];
 //  a misspelt --only name would otherwise run nothing and pass
 for (const n of ONLY || []) {

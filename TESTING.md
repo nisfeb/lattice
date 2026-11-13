@@ -113,6 +113,24 @@ The gate and the suites share one machine with every other session, so:
 - the gate and the Xvfb suites refuse to start with under 10 GB free on `/` or 2 GB on `/tmp`;
 - `scripts/clean-targets.sh` lists the Rust `target/` dirs of worktrees whose HEAD is merged into origin/main, and `--yes` deletes them.
 
+## The OpenSCAD runtime
+
+scad pages render with OpenSCAD compiled to WebAssembly, which the owner installs on the ship from Settings or a scad page (app.hoon, `+scad-install-run`). The ship fetches the files of `+scad-files` (the OpenSCAD runtime, its licence, and three Liberation fonts with theirs, about 4 MB) from `+scad-url`, checks each against its pinned SHA-256 and keeps them under `/scad`. `scripts/build-scad.mjs` records the pin and where it came from, and `node scripts/build-scad.mjs --release DIR` makes the release files.
+
+A test points the ship elsewhere with the grub `/scad/source.json` (`{"url": "..."}`), written through grubbery's own file API, never a lattice route. A clone is network-isolated, so serve the files from inside its namespace:
+
+```sh
+node scripts/build-scad.mjs --release ~/scad/good        # and a copy with one byte changed in ~/scad/bad
+nsenter -t $(cat ~/fleet/run/<id>.pid) -U -n --preserve-credentials \
+  python3 -I -m http.server 18777 --bind 127.0.0.1 --directory ~/scad > ~/scad/serve.log 2>&1 &
+LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> \
+  SCAD_GOOD=http://127.0.0.1:18777/good/ SCAD_BAD=http://127.0.0.1:18777/bad/ SCAD_LOG=~/scad/serve.log \
+  scripts/scad-runtime.sh                                 # no runtime until asked, a bad hash refused, uninstall frees it
+SCAD_SRC=http://127.0.0.1:18777/good/ LATTICE_URL=... LATTICE_COOKIE=... node scripts/ui-scad.mjs
+```
+
+`ui-scad.mjs` without `SCAD_SRC` runs only the sections that need no runtime (lazy loading and create), which is what the gate does. `ui-scad-view.mjs` needs no ship: it serves scad.js and the runtime itself, from `SCAD_RUNTIME` (a directory with the raw `openscad.js` and `openscad.wasm`) or, unset, from the pinned upstream zip. `scad-unit.mjs` checks the customizer against `tests/scad/customizer/*.json`, which is OpenSCAD's own reading of each fixture, made by `scripts/scad-corpus/expect.mjs`.
+
 ## Deploying a change to ~mec
 
 ```sh
