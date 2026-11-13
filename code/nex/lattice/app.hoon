@@ -202,6 +202,10 @@
             ::  moves.json: where moved pages went (+record-move). Declared,
             ::  so it outlives a reload.
             [%fall %& [/ %'moves.json'] [[/ %json] `json`[%o ~]]]
+            ::  groups.json: the /public roads +send-public-how names for the
+            ::  shell. %stay: a load that dropped it would close /public
+            ::  until the writer next starts.
+            [%stay %& [/ %'groups.json']]
             [%fall %& [/ %'main.sig'] [[/ %sig] ~]]
         ::  /legacy: the retired-agent marker lives here (see +legacy-mark-road)
             [%fall %| /legacy empty-dir:loader]
@@ -730,7 +734,7 @@
           [[%ui ~] %'main.sig']
         ;<  ~  bind:m  (rise-later prod "lattice /ui/main.sig" "")
         ;<  ~  bind:m  (bind-http-self:io [~ /apps/lattice])
-        (http-dispatch:io %lattice)
+        http-dispatch:io
       ::  /ui/requests/*: one ephemeral fiber per in-flight HTTP request.
           [[%ui %requests ~] @]
         ?^  prod
@@ -5922,10 +5926,9 @@
         ::  weir-check.py is what found them - neither road appears in this
         ::  file, because both live inside the io arm.
         ::
-        ::  The registry is +send-public-how on the writer's rise, through
-        ::  reg-register-at:io and reg-how:io. Auspex had the identical
-        ::  omission and it cost a day: the veto rolls back whatever the
-        ::  fiber wrote before it, so the symptom lands somewhere else.
+        ::  Nothing reaches the registry since version 133: +send-public-how
+        ::  names its roads in our own groups.json instead. The line stays
+        ::  so an install's approved ask does not change and prompt again.
           %+  line  '/sys/ames/registry'
           'publish the pages you mark public so other ships can read them. Refuse this and everything local still works; your published pages just stay on this ship'
         ::  lick is the filesystem socket behind fs.sig - the mount that
@@ -5992,7 +5995,7 @@
         ::  and weekly reviews, the same ambient same-ship read orrery
         ::  already makes of lattice. Automatic: there is no prompt, and
         ::  with orrery absent the readers fold to empty and nothing breaks.
-          %+  line  '/apps/shell.shell/desks/orrery.desk/'
+          %+  line  '/apps/shell/desks/orrery.desk/'
           'read orrery on this ship, its daily brief, weekly review and world digest, so your agents and journal pages stay current. Refuse it and lattice is unaffected; you just lose the orrery mirror'
       ==
     ::  sharing with ships IS writing usergroups: who.ships and how.weir,
@@ -14147,10 +14150,6 @@
   (pure:m up)
 ::  +rf, +rv: a file road and a directory road, `up` steps from here.
 ::
-::  +writer-rail: the writer's own rail, nexus-relative - declared by the
-::  /main.sig row in +on-load. The usergroup registry wants a RAIL, and a
-::  sandboxed app has no absolute one to hand it.
-++  writer-rail  ^-(rail:tarball [/ %'main.sig'])
 ++  rf  |=([up=@ud p=path n=@ta] ^-(road:tarball [%| up [%& p n]]))
 ++  rv  |=([up=@ud p=path] ^-(road:tarball [%| up [%| p]]))
 ::
@@ -21103,69 +21102,59 @@
   ;<  ok=?  bind:m  (exists-soft gdir)
   ?.  ok
     (fault 'public-group' 0 "lattice: published pages stay on this ship: there is no /public usergroup" ~)
-  ::  THE SANCTIONED PATH. Group weirs belong to grubbery's usergroup
-  ::  machinery: a grant lands through the registry's %how action, which
-  ::  validates the roads against the sender's registered prefix, merges
-  ::  them server-side (other apps' roads survive untouched), and
-  ::  recomputes every peer ship's effective weir. A direct put-file to
-  ::  how.weir does none of that on the current core. Measured on the dev
-  ::  pier: the file write was issued every boot, drew no veto, changed
-  ::  nothing, and every cross-ship /pub keep came back denied.
+  ::  The roads go in our own groups.json, relative to our root, and the
+  ::  shell derives the /public group from it once the owner grants that
+  ::  key. That is develop's way; our dist kernel's reg-how compat wrote
+  ::  the same file, so one source runs on both (version 133). A road is
+  ::  text there: a file '/shares.sig', a directory '/pub/'.
   ::
-  ::  %how replaces this prefix's roads in the group wholesale, so the act
-  ::  carries lattice's COMPLETE public road set every time: the /pub dir
-  ::  (world-readable published pages), every shared or clearweb page's
-  ::  data road, and the share/comment inbox pokes. Callers run in the
-  ::  writer fiber, whose rail the registration names; the register is
-  ::  idempotent. Deep walk, so nested shared pages are granted too.
-  ::  SOFT. Both registry pokes below are, and the reason is the shape that
-  ::  cost this migration its longest hunts: a veto is a crashed event, so
-  ::  it rolls back everything this fiber already wrote. The hard versions
-  ::  took +apply-share's mode write and auspex's /caps write down with
-  ::  them, and the symptom surfaced somewhere with no visible connection
-  ::  to the road that was refused.
+  ::  The /public entry is replaced whole, so it carries lattice's
+  ::  COMPLETE public road set every time: the /pub dir (world-readable
+  ::  published pages), every shared or clearweb page's data road, a
+  ::  public board's dirs and the share/comment inbox pokes. Other keys in
+  ::  the file are kept. Deep walk, so nested shared pages are granted too.
+  ::  An unchanged entry is not written: the shell derives the groups again
+  ::  on every write, and this runs on every writer start.
   ::
-  ::  weir.json promises "refuse this and everything local still works".
-  ::  These two lines are what make that true rather than aspirational -
-  ::  the same job +exists-soft does for the usergroup READ just above.
-  ;<  reg=(unit tang)  bind:m  (reg-register-at-soft:io writer-rail)
-  ?^  reg
-    (fault 'registry-road' 0 "lattice: published pages stay on this ship: the registry road is refused" ~)
-  =/  pubdir=road:tarball  (rv root /pub)
-  =/  pokes=(set road:tarball)
-    %-  silt
-    :~  `road:tarball`(rf up / %'shares.sig')
-        `road:tarball`(rf up / %'comments.sig')
-        `road:tarball`(rf up / %'forum.sig')
-        `road:tarball`(rf up / %'access.sig')
-    ==
   ::  the share modes are in the deep peek's ball already, so one peek
   ::  covers every page, where a read-share per page was a dart each
   ;<  sn=view:nexus  bind:m  (peek:fio (rv root /page) ~)
-  =/  peeks=(set road:tarball)
+  =/  peeks=(list @t)
     ?.  ?=([%ball *] sn)  ~
-    %-  silt
-    (turn (shared-rels ball.sn ~) |=(r=path (rf up (weld /page r) %data)))
+    (turn (shared-rels ball.sn ~) |=(r=path (crip (spud (snoc (weld /page r) %data)))))
   ::  a PUBLIC board's pub (card, roles, conf) and content (posts, threads,
   ::  votes, pins, sidebar) dirs, so its grubs read over peer scry. A private
   ::  board is never listed, and one made private or deleted drops out here
-  ::  because %how replaces the whole set.
+  ::  because the entry is replaced whole.
   ;<  fv=view:nexus  bind:m  (peek:fio (rv root /forum/boards) ~)
   =/  brds=(list @ta)  ?.(?=([%ball *] fv) ~ (public-boards ball.fv))
-  =/  bpeeks=(set road:tarball)
-    %-  ~(gas in *(set road:tarball))
+  =/  bpeeks=(list @t)
     %-  zing
     %+  turn  brds
     |=  nom=@ta
-    ^-  (list road:tarball)
-    :~  (rv root /forum/boards/[nom]/pub)
-        (rv root /forum/boards/[nom]/content)
+    ^-  (list @t)
+    :~  (crip (weld (spud /forum/boards/[nom]/pub) "/"))
+        (crip (weld (spud /forum/boards/[nom]/content) "/"))
     ==
+  ::  sorted, so an unchanged set compares equal to what the file holds
+  =/  arr  |=(ts=(list @t) `json`a+(turn (sort ts aor) |=(t=@t s+t)))
+  =/  ent=json
+    %-  pairs:enjs:format
+    :~  ['make' a+~]
+        ['poke' (arr ~['/shares.sig' '/comments.sig' '/forum.sig' '/access.sig'])]
+        ['peek' (arr ['/pub/' (weld peeks bpeeks)])]
+    ==
+  =/  gfile=road:tarball  (rf up / %'groups.json')
+  ;<  cur=json  bind:m  (json-at gfile)
+  =/  obj=(map @t json)  (rise-omap cur)
+  ?:  =(`ent (~(get by obj) '/public'))
+    (fault-clear ~['public-group' 'registry-road' 'public-grant'])
+  ::  SOFT, because a veto is a crashed event that rolls back everything
+  ::  this fiber already wrote
   ;<  how=(unit tang)  bind:m
-    %+  reg-how-soft:io  /public
-    [make=~ poke=pokes peek=(~(uni in (~(put in peeks) pubdir)) bpeeks)]
+    (over-as-soft:io gfile [[/ %json] [%o (~(put by obj) '/public' ent)]] [/ %json])
   ?~  how  (fault-clear ~['public-group' 'registry-road' 'public-grant'])
-  (fault 'public-grant' 0 "lattice: published pages stay on this ship: the registry refused the public grant" ~)
+  (fault 'public-grant' 0 "lattice: published pages stay on this ship: groups.json was not written" ~)
 ::  +public-boards: the names of the boards under a /forum/boards ball whose
 ::  card says public. An unreadable card is not public. Pure.
 ::
@@ -24260,7 +24249,10 @@
         [~ %veto *]  [%fail (veto-error:io dart.u.in)]
         [~ %born * *]
       ?.  =(wire wire.u.in)  [%skip ~]
-      [%done res.u.in]
+      ::  the kernel's history has no tombs: a dropped version is absent,
+      ::  so every version it lists is live
+      ?:  ?=(%| -.res.u.in)  [%done res.u.in]
+      [%done %& (turn p.res.u.in |=([c=cass:clay t=(set @t)] [c t %.n]))]
     ==
   ++  lose
     |=  [=road:tarball =lose:nexus]
