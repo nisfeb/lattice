@@ -182,7 +182,8 @@
   const DESK_NAV = '<div class="st-gh">This computer</div>'
     + '<a class="st-tab" href="#connection">Connection</a>'
     + '<a class="st-tab" href="#files">Files</a>'
-    + '<a class="st-tab" href="#backups">Scheduled backups</a>';
+    + '<a class="st-tab" href="#backups">Scheduled backups</a>'
+    + '<a class="st-tab" href="#tiles">Map tiles</a>';
   const DESK = ''
     + '<section class="st-panel" id="connection">'
     + '<h2 id="ship-h">Ship</h2>'
@@ -240,7 +241,13 @@
     + '<option value="720">every 30 days</option><option value="1">every hour</option></select>'
     + '<input id="bk-keep" type="number" min="0" max="999" value="7" style="width:6rem" title="how many to keep, 0 keeps every one"></div>'
     + '<div class="row"><input id="bk-dir" placeholder="folder on this machine" required><button type="button" id="bk-pick">Choose…</button></div>'
-    + '<div class="row"><button>Add schedule</button><span id="backup-status" class="err"></span></div></form></section>';
+    + '<div class="row"><button>Add schedule</button><span id="backup-status" class="err"></span></div></form></section>'
+    + '<section class="st-panel" id="tiles"><h2>Map tiles</h2>'
+    + '<p class="muted lede">With a Mapbox token here, this app fetches map tiles from Mapbox itself, so your ship does no tile work for it. Without one, tiles come through your ship as in a browser. The token stays on this computer and is never shown again.</p>'
+    + '<p id="tok-state" class="muted">checking…</p>'
+    + '<div class="row"><input id="tok-in" type="password" placeholder="Mapbox token" autocomplete="off" spellcheck="false">'
+    + '<button type="button" id="tok-save">Save</button><button type="button" id="tok-clear">Remove</button>'
+    + '<span id="tok-status" class="err"></span></div></section>';
 
   function desk(o) {
     const nav = document.querySelector('.st-nav');
@@ -653,8 +660,25 @@
       $('bk-label').value = '';
     };
 
+    // ── map tiles: this computer's Mapbox token, write only ──
+    async function refreshTok() {
+      let on;
+      try { on = await invoke('map_token_status'); } catch { say('tok-state', 'unavailable in this version of the app'); return; }
+      say('tok-state', on ? 'A token is set on this computer.' : 'No token is set on this computer.');
+    }
+    const putTok = async (t) => {
+      say('tok-status', '');
+      try { await invoke('set_map_token', { token: t }); $('tok-in').value = ''; } catch (e) { say('tok-status', String(e)); }
+      // an open editor then asks again whether tiles can be had (26-writer.js)
+      try { localStorage.latTilesAt = Date.now(); } catch {}
+      refreshTok();
+    };
+    $('tok-save').onclick = () => { const t = $('tok-in').value.trim(); if (t) putTok(t); };
+    $('tok-clear').onclick = () => putTok('');
+
     refreshConn();
     refreshReader();
+    refreshTok();
     if (o.listen) refreshStack();
     refreshLocal();
     refreshMounts();
@@ -692,7 +716,7 @@
       // A desktop older than these tabs on the ship page grants none of
       // their commands. There the tabs go to its manager page as before.
       if (!o.older) return;
-      for (const id of ['connection', 'files', 'backups']) $(id).remove();
+      for (const id of ['connection', 'files', 'backups', 'tiles']) $(id).remove();
       g.innerHTML = DESK_NAV.replace(/href="#([a-z]+)"/g, 'href="#" data-go="$1"');
       window.stGo = o.older;
       const p = panels()[0];

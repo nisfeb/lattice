@@ -278,7 +278,7 @@ impl Projection for LatticeProjection {
     ) -> Result<Option<u64>, PErr> {
         let ptype = match kind {
             "index" => "index",
-            "md" | "gmi" | "html" | "text" | "js" | "css" | "tex" | "fodt" | "fods" => kind,
+            "md" | "gmi" | "html" | "text" | "js" | "css" | "tex" | "fodt" | "fods" | "geojson" => kind,
             _ => "hoon",
         };
         let name = self.full(rel);
@@ -810,7 +810,7 @@ mod tests {
     fn write_maps_kind_to_page_type_and_seeds_only_a_new_empty_body() {
         // the `type` decides the mark the page is stored under. A wrong one
         // stores markdown as hoon (or worse, clobbers a generated %index).
-        let (rec, p) = lp("", (0..8).map(|_| ok("{}")).collect());
+        let (rec, p) = lp("", (0..9).map(|_| ok("{}")).collect());
         p.write("n", "md", b"hi", false).unwrap();
         p.write("n", "index", b"", true).unwrap();
         p.write("n", "md", b"", true).unwrap();
@@ -819,6 +819,7 @@ mod tests {
         p.write("n", "tex", b"\\x", false).unwrap();
         p.write("n", "fodt", b"<o/>", false).unwrap();
         p.write("n", "fods", b"<s/>", false).unwrap();
+        p.write("n", "geojson", b"{}", false).unwrap();
         assert_eq!(
             rec.log(),
             vec![
@@ -837,6 +838,8 @@ mod tests {
                 r#"POST /apps/lattice/page-save?name=n&type=fodt "<o/>""#,
                 // and so is a spreadsheet
                 r#"POST /apps/lattice/page-save?name=n&type=fods "<s/>""#,
+                // and so is a map
+                r#"POST /apps/lattice/page-save?name=n&type=geojson "{}""#,
             ]
         );
     }

@@ -14,8 +14,9 @@
 ::    %gmi   gemtext rendered to HTML  %noun  opaque value, shown escaped
 ::    %fodt  a flat ODT (LibreOffice Writer) document, rendered by the nexus
 ::    %fods  a flat ODS (LibreOffice Calc) spreadsheet, rendered by the nexus
+::    %geojson  a GeoJSON FeatureCollection (a map), rendered by the nexus
 ::
-+$  view-mode  ?(%text %html %gmi %md %js %css %fodt %fods %noun)
++$  view-mode  ?(%text %html %gmi %md %js %css %fodt %fods %geojson %noun)
 ::  +$  result: what a page gate produces.
 ::
 +$  result
@@ -44,6 +45,10 @@
 ::  its cells' cached text as tables (escaped, never raw, no formula run),
 ::  the browser edits it in the grid view.
 ++  fods  |=(f=@t `result`[`f ~ %fods ~ ~])   ::  data is flat ODS
+::  A map: a GeoJSON FeatureCollection. The nexus renders it as an SVG
+::  and a table (escaped, never raw, no tiles), the browser edits it in
+::  the map view.
+++  geojson  |=(f=@t `result`[`f ~ %geojson ~ ~])  ::  data is GeoJSON
 ++  raw   |=(n=* `result`[`n ~ %noun ~ ~])    ::  data is an opaque noun
 ++  same  ^-(result [~ ~ %text ~ ~])          ::  no change to data
 ::  modifiers. Chain onto a result:
