@@ -22,9 +22,20 @@ Lattice hosts forums. A forum is a multi-author, threaded website, and lattice a
 - Roles, delete post or comment (author or mod), pin, sidebar, edit board info, set public or private, and auto-prune (below a board's min-score past an age, on a six-hour sweep).
 - The owner's banlist culls a banned ship's forum posts and comments across every board, and the ban's inbox drop refuses that ship's future posts.
 
+## Passes (paid access)
+
+A private board can sell passes: the right to read it, or a ship's right to read and post on it, for a period. The owner sets the offer on the board's mod page (a price in sats at a Cashu mint, a dollar price in cents for card and bitcoin, the period, read or post), sets up Stripe and BTCPay there, and sees the numbers, every pass, and the board's wallet there. A pass ends on its own: posts and web reads check it, and a timer takes lapsed ships out of the board's pass group. The pass groups are stated in lattice's own groups.json under `/lattice/`, which the owner grants once on Permits (the spec's Read groups).
+
+- A ship that may not read a board sees the host's offer and pays in ecash or asks for a Lightning invoice. The host answers in its forum notes.
+- A reader with no ship pays on the board's page in ecash, over Lightning, by card (Stripe Checkout) or in bitcoin (BTCPay Server), and reads on a cookie. The host keeps only the hash of the cookie's code.
+- A ship may also pay by card or in bitcoin: the host sends it a link to pay on, which needs the host's public url in the board's settings.
+- The seller's ecash stays in the board's wallet and comes out as a cashuA token.
+
+The design is `docs/superpowers/specs/2026-11-11-passes-design.md`.
+
 ## Not in this version
 
-Paid boards, a cross-ship board directory, push notifications, and feed syndication (the HN and S2 feeds keep coming from the external cron). None of furum's data is migrated.
+A cross-ship board directory, push notifications, and feed syndication (the HN and S2 feeds keep coming from the external cron). None of furum's data is migrated.
 
 ## Retiring furum (owner cutover, run after this ships and is verified)
 

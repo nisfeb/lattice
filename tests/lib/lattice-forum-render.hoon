@@ -136,8 +136,8 @@
   ==
 ++  test-submit-and-mod
   =/  s=tape  (to-html body:(render-submit:rn c %main))
-  =/  m=tape  (to-html body:(render-mod:rn c (mk-board ~ ~) &))
-  =/  off=tape  (to-html body:(render-mod:rn c (mk-board ~ ~) |))
+  =/  m=tape  (to-html body:(render-mod:rn c (mk-board ~ ~) & ;span;))
+  =/  off=tape  (to-html body:(render-mod:rn c (mk-board ~ ~) | ;span;))
   ;:  weld
     (expect-eq !>(&) !>((has m "/b/main/mod/comets")))
     (expect-eq !>(&) !>((has m "turn comet posts off")))

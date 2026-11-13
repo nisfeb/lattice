@@ -657,12 +657,13 @@
       ==
   ==
 ::
-::  +render-mod: the moderation page. The host also sees the board-level
+::  +render-mod: the moderation page. `passes` is the host's Passes section,
+::  which the app builds from its pass records. The host also sees the board-level
 ::  settings (info, public, comet posting, prune, delete). `comets` is
 ::  whether the board takes posts and replies from comets.
 ::
 ++  render-mod
-  |=  [c=ctx brd=board comets=?]
+  |=  [c=ctx brd=board comets=? passes=manx]
   ^-  [title=@t body=manx]
   =/  info=board-info  info.brd
   =/  is-host=?  =(who.c host.info)
@@ -811,6 +812,7 @@
       ;p.me: Default role: {(trip (role-to-text default-role.info))}
       info-section
       pub-section
+      passes
       comet-section
       sidebar-section
       prune-section

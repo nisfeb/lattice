@@ -44,6 +44,11 @@ PARAMS = {
     # the page evaluator's fiber: its rail is the page's, under /page
     'on-file:path.rail': '/page/*',
     'forum-put:bdir': '/forum/boards/*',
+    # +pass-put: every caller names a /passes dir, or /passes for the two
+    # root files (lib/lattice-pass, +apply-pass)
+    'pass-put:dir': ['/passes/offers/*', '/passes/held/*', '/passes/sales/*',
+                     '/passes/wallet/*', '/passes/done/*', '/passes/rail/*',
+                     '/passes/open/*', '/passes/next', '/passes/secrets'],
     'write-eval-seen:pdir': '/page/*',
     'pub-save-page:pax.u.or': '/pub/vault/*',
     'eval-run:pdir': '/page/*',

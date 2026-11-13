@@ -12,7 +12,7 @@ test here first.
 | HTTP | http://localhost:8120 (loopback ames in `~/fleet/piers/mec/.http.ports`) |
 | dojo | `tmux attach -t fleet`, window `mec` |
 | grubbery | the dev platform's pin (hoon-development `platform/grubbery.ref`) |
-| lattice | a dev desk at `/apps/shell.shell/desks/lattice.desk`, the same path as on ricsul, following `/lattice-dev/code` in the ball |
+| lattice | a dev desk at `/apps/shell/desks/lattice.desk`, the same path as on ricsul, following `/lattice-dev/code` in the ball |
 | test desk | `%lattice-test`, mounted, set up for the kit |
 
 Below, `F=~/software/personal/hoon-development/fleet/fleet` and
@@ -72,6 +72,8 @@ awk -F'\t' '$6 ~ /^urbauth-/ {print $6"="$7}' /tmp/mec.jar > /tmp/mec.cookie
 LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec.cookie scripts/api-matrix.sh
 $F reset lattice-dev compiled
 ```
+
+Passes (docs/superpowers/specs/2026-11-11-passes-design.md) have three suites, on one ship. `scripts/pass-matrix.sh` (about three minutes) works the seller's routes and forms, gifts, the read group, a lapse, refunds and the card routes with no real Stripe key. `scripts/pass-pay.sh` (about four minutes) pays for a pass on the open web against a local nutshell test mint, never a real one, set up as `../furum/docs/hoon-testing.md` says (port 3338); point `CASHU_VENV` at its virtualenv. `scripts/pass-rails.sh` (about a minute) pays by card and in bitcoin against `scripts/fake-rails.py`, which stands in for Stripe and BTCPay. The real services need the owner's test keys and are not in any suite.
 
 ## Release gate
 
@@ -136,8 +138,8 @@ desk.
 ```sh
 $U lattice-dev our
 $U lattice-dev kids /lattice-dev/code                 # files in a ball dir
-$U lattice-dev file /apps/shell.shell/desks/lattice.desk/version.json
-$U lattice-dev tree /apps/shell.shell/desks/lattice.desk/desk/data
+$U lattice-dev file /apps/shell/desks/lattice.desk/version.json
+$U lattice-dev tree /apps/shell/desks/lattice.desk/desk/data
 ```
 
 `u` guards its subcommands. A raw `.^` in an expression that misses kills

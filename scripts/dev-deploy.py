@@ -9,7 +9,7 @@ Mirrors code/ into the ball at /lattice-dev/code through the explorer
 version.json with a dev version, which makes the desk pull. With --add it
 first makes the desk: POST /apps/grubbery/desks/add {name: lattice, code:
 /lattice-dev/code}, so lattice lands at the same path as on ricsul,
-/apps/shell.shell/desks/lattice.desk. Files are written only when they
+/apps/shell/desks/lattice.desk. Files are written only when they
 differ, so a redeploy sends only what changed. --approve then grants the
 instance its own weir.json (approve-weir with it as `granted`; without
 `granted` the grant is empty and lattice stops serving) and reloads its
@@ -213,7 +213,7 @@ def main():
             sys.exit(1)
 
     if a.approve:
-        app = '/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app'
+        app = '/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app'
         for _ in range(180):  # a first install makes the instance once the desk builds
             st, weir = ship.req('/grubbery/api/file' + app + '/weir.json')
             if st == 200 and weir.strip():

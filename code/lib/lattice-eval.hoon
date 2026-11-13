@@ -16,6 +16,7 @@
 ::
 /<  ft  /lib/lattice-forum-types.hoon
 /<  ll  /lib/lattice-link.hoon
+/<  lpa  /lib/lattice-pass.hoon
 |%
 ::  +$  eval-action: page writes poked at the writer fiber (main.sig).
 ::
@@ -111,6 +112,9 @@
       ::  a ban's cleanup: every post, comment and vote of `who` and its
       ::  moons (every comet for +all-comets:ls) off every board we host
       [%forum-cull who=@p]
+      ::  a pass: an offer, a sale or gift, a refund, or the lapse sweep
+      ::  (/lib/lattice-pass, +apply-pass)
+      [%pass act=pass-act:lpa]
       ::  the owner clears every stored refusal note (frees the 100-note cap).
       [%forum-notes-clear ~]
       ::  the owner read activity items (lib/lattice-notify): these ids, or

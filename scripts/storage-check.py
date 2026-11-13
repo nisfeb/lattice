@@ -17,8 +17,8 @@ any failure. Never point it at a real ship.
 """
 import json, sys, time, urllib.error, urllib.request
 
-INST = '/grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app'
-DATA = '/grubbery/api/file/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app'
+INST = '/grubbery/ball/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app'
+DATA = '/grubbery/api/file/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app'
 
 
 def main():

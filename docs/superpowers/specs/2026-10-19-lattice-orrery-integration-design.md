@@ -55,7 +55,7 @@ Build order: prereq, then (3) journal, (1) world, (2) body block, (4) rules. Fix
 
 ### Prereq: the orrery read road and reader
 
-- Declare one peek road in `+weir-json` (`app.hoon`): road `/apps/shell.shell/desks/orrery.desk/`, `why` text explaining it reads orrery's daily brief, review, and world digest so agents and journal pages stay current. This mirrors orrery's own line `/apps/shell.shell/desks/lattice.desk/`. Ambient, so a refusal is not expected; the owner's automatic grant covers it.
+- Declare one peek road in `+weir-json` (`app.hoon`): road `/apps/shell/desks/orrery.desk/`, `why` text explaining it reads orrery's daily brief, review, and world digest so agents and journal pages stay current. This mirrors orrery's own line `/apps/shell/desks/lattice.desk/`. Ambient, so a refusal is not expected; the owner's automatic grant covers it.
 - Add an `orrery-base` resolver: `peek-soft:io [%& %& /sys/link/%orrery %'dest.lanes'] ~`, clam as `(list lane:tarball)` or `(set lane:tarball)`, take the first `%|` lane's path. Returns `(unit path)`, `~` when orrery is not installed. Mirror of orrery's `+find-base`.
 - Add small readers over the base: `read-json` of `<base>/world.json`, a dir list of `<base>/briefs` and `<base>/reviews`, and `read-json` of a given `<base>/briefs/<day>`. All through `peek-soft`, all fail soft to `~`/empty.
 

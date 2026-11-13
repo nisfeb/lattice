@@ -133,7 +133,7 @@ def main():
     worst.append(('delete', st, w))
 
     if a.resume:
-        inst = (a.url.rstrip('/') + '/grubbery/ball/apps/shell.shell/desks/'
+        inst = (a.url.rstrip('/') + '/grubbery/ball/apps/shell/desks/'
                 'lattice.desk/desk/data/lattice.lattice_app')
 
         def shares():

@@ -29,7 +29,7 @@ get()  { curl -s -m 120 -H "$CK" "$@"; }
 code() { curl -s -m 120 -o /dev/null -w '%{http_code}' -H "$CK" "$@"; }
 SHIP=$(curl -s -m 30 -H "$CK" "$URL/~/host")
 [ -n "$SHIP" ] || { echo "FAIL  the ship answers /~/host"; exit 1; }
-INST=/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app
+INST=/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app
 T="${TMPDIR:-/tmp}/fods-views-$$"; mkdir -p "$T"
 # two hostile spreadsheets: markup in a sheet name and in cells, and a
 # link, a formula and an external reference that must not come through

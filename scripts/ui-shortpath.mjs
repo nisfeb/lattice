@@ -21,7 +21,7 @@ const { eq, done } = makeCheck();
 const B = '/apps/lattice.lattice_app/';
 
 console.log('shortening');
-const D = '/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app/';
+const D = '/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/';
 eq('a desk install drops its longer base too', shortPath(`${D}page/notes`, [`${D}page/notes`]), 'notes');
 eq('and keeps it out of the ambiguous fallback',
   shortPath(`${D}page/foo`, [`${D}page/foo`, `${D}foo`]), 'page/foo');

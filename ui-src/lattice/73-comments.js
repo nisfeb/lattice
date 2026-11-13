@@ -240,12 +240,15 @@
     // a followed folder's new pages: the ship words it, "N new pages in
     // <folder> from ~ship", one item per folder
     if (a.kind === 'folder') return a.title || a.where;
+    // a pass bought, or passes lapsed, on one of our boards
+    if (a.kind === 'pass') return a.title || a.where;
     return a.where;
   };
   const actOpen = (a, e) => {
     if (SHARE_KINDS.has(a.kind) || a.kind === 'ask') return shareOpen(a, e);
     if (a.kind === 'folder') return browseIn(api + '?url=' + encodeURIComponent('urb://' + a.host + a.where + '/'));
     if (a.kind === 'comment') return openIn('page', a.where, { ev: e });
+    if (a.kind === 'pass') return browseIn('/apps/lattice/forum/' + encodeURIComponent(a.where));
     const tail = encodeURIComponent(a.where) + '/' + a.post;
     return browseIn(a.kind === 'remote'
       ? '/apps/lattice/forum-remote/' + a.host + '/' + tail

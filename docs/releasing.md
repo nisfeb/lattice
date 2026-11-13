@@ -26,11 +26,11 @@ ricsul's forge repo         /apps/forge.git_forge/repos/lattice.git_repo/data/tr
   |  ricsul's lattice.desk watches that tree's code/version.json
   |  and pulls when it DIFFERS from its own root version.json
   v
-ricsul's desk               /apps/shell.shell/desks/lattice.desk/desk/code
+ricsul's desk               /apps/shell/desks/lattice.desk/desk/code
   |
   |  ricsul REPUBLISHES the version file; subscribers watch that
   v
-every subscriber's desk     source.json -> ~ricsul-bilwyt/apps/shell.shell/desks/lattice.desk/desk/code
+every subscriber's desk     source.json -> ~ricsul-bilwyt/apps/shell/desks/lattice.desk/desk/code
 ```
 
 **The single thing that makes anything update is `code/version.json` changing.**
@@ -73,7 +73,7 @@ ricsul over ames instead; see §2.)
 Every subscriber's lattice desk has a `source.json` naming ricsul:
 
 ```json
-{"code":"~ricsul-bilwyt/apps/shell.shell/desks/lattice.desk/desk/code"}
+{"code":"~ricsul-bilwyt/apps/shell/desks/lattice.desk/desk/code"}
 ```
 
 The desk nexus keeps a subscription on the source's `code/version.json`
@@ -128,13 +128,13 @@ Check all four, in this order. Each separates a different failure.
 GET /grubbery/ball/apps/forge.git_forge/repos/lattice.git_repo/data/tree/code/version.json?raw=1
 
 # 2. did ricsul's desk mirror it?
-GET /grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/code/version.json?raw=1
-GET /grubbery/ball/apps/shell.shell/desks/lattice.desk/version.json?raw=1
+GET /grubbery/ball/apps/shell/desks/lattice.desk/desk/code/version.json?raw=1
+GET /grubbery/ball/apps/shell/desks/lattice.desk/version.json?raw=1
 # on grubbery develop's kernel a ?raw=1 read answers 307 to
 # /grubbery/api/file/<path>: follow redirects (curl -L) or the body is empty
 
 # 3. did the instance rebuild, or is it BANGed?
-GET /grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app?info=1
+GET /grubbery/ball/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app?info=1
 #    bang: null  = healthy.  bang: "no built nexus %lattice--app ..." = dead.
 
 # 4. does the route answer?
@@ -175,7 +175,7 @@ that never built has no recorded refs for a changed-refs walk to follow.
 It came back only when the instance was reloaded explicitly:
 
 ```sh
-POST /grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app
+POST /grubbery/ball/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app
      action=reload-nexus
 ```
 
@@ -195,7 +195,7 @@ which a subscriber does not do by itself; since 2026-09-15 it also runs from
 `sync-release`, so an arriving release repairs it. Check the neck with:
 
 ```sh
-GET /grubbery/ball/apps/shell.shell/desks/lattice.desk/desk?info=1
+GET /grubbery/ball/apps/shell/desks/lattice.desk/desk?info=1
 #    "code" child should have  neck: "/code"
 ```
 
@@ -235,7 +235,7 @@ Two notes on the kernel side, both learned the hard way:
 **immediately**, with no commit, which is the fast loop:
 
 ```sh
-POST /grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/code/nex/lattice/app.hoon
+POST /grubbery/ball/apps/shell/desks/lattice.desk/desk/code/nex/lattice/app.hoon
      action=write-text  content=<the file>
 ```
 

@@ -26,7 +26,9 @@
 ::    %ask      a ship asks us for edit access: `where` the path, `body`
 ::              its note
 ::    %asked    a host answered our ask: `title` 'yes' or 'no'
-+$  kind  ?(%comment %reply %remote %folder %share %reshare %unshare %ask %asked)
+::    %pass     a pass to one of our boards was bought, or some lapsed:
+::              `where` the board, `title` the line
++$  kind  ?(%comment %reply %remote %folder %share %reshare %unshare %ask %asked %pass)
 ::  +quiet: the kinds that list in Activity but never count as unread
 ++  quiet  |=(k=kind ?=(?(%reshare %unshare) k))
 ::  +$  item: one activity item. `host` is the ship it happened on (us for

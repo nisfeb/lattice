@@ -37,7 +37,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const HDIR = join(here, '..', 'tests', 'writer', 'corpus', 'hostile');
 const check = makeCheck();
 const ORIGIN = new URL(env.base).origin;
-const INST = '/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app';
+const INST = '/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app';
 
 //  The crafted document: what the corpus files leave out. Every payload
 //  sets window.__PWNED or names evil.example, so either shows up if it lands.
