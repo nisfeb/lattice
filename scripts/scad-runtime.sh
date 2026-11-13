@@ -21,7 +21,7 @@ set -uo pipefail
 B="${LATTICE_URL%/}/apps/lattice"
 CK="Cookie: $(cat "$LATTICE_COOKIE")"
 PINF="$(cd "$(dirname "$0")" && pwd)/lib/scad-pin.mjs"
-INST=/grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app
+INST=/grubbery/ball/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app
 pass=0; fail=0
 is()   { if [ "$2" = "$3" ]; then pass=$((pass+1)); echo "  ok   $1"; else fail=$((fail+1)); echo "  FAIL $1: want [$2] got [$3]"; fi; }
 has()  { case "$3" in *"$2"*) pass=$((pass+1)); echo "  ok   $1";; *) fail=$((fail+1)); echo "  FAIL $1: [$2] not in [${3:0:300}]";; esac; }

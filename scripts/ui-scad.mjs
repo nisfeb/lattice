@@ -43,7 +43,7 @@ const TEMPLATE = readFileSync(join(here, '..', 'tests', 'scad', 'customizer', 'b
 const check = makeCheck();
 const on = (id) => !process.env.ONLY || process.env.ONLY.split(',').includes(id);
 const SRC = process.env.SCAD_SRC || '';
-const INST = '/grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app';
+const INST = '/grubbery/ball/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app';
 
 const P = { sign: RUN + '/sign', md: RUN + '/notes', box: RUN + '/box', view: RUN + '/box-view', lib: RUN + '/lib/plate', uses: RUN + '/uses', made: RUN + '/made' };
 const api = (path, init = {}) => fetch(env.base + '/apps/lattice/' + path,
