@@ -10,6 +10,8 @@
   |=  [id=@ud title=@t]
   ^-  post:ft
   [id ~zod title ~ ~ ~2026.1.1 ~ ~ 0]
+++  pst  (mk-post 1 'hi')
+++  cor  `post-core:fb`[1 ~zod 'hi' ~ ~ ~2026.1.1]
 ++  brd
   ^-  board:ft
   =/  ids=(list @ud)  ~[1 100 101 150]
@@ -57,4 +59,33 @@
     (expect-eq !>(`(list path)`~) !>((gone:fb b b)))
     (expect-eq !>(`(list path)`~[/content/posts/b1]) !>((gone:fb b gutted)))
   ==
+::  a board written before tags loads, with no marker
+++  test-load-no-tags
+  =/  r  (load:fb ~[[/pub/card [%1 info]] [/content/posts/b0 [%1 (my ~[[1 cor]])]]])
+  ?>  ?=(%& -.r)
+  (expect-eq !>(*(unit (map post-id:ft (set tag:ft)))) !>(tags.p.r))
+::  the marker alone: an empty tags grub
+++  test-load-empty-tags
+  =/  r  (load:fb ~[[/pub/card [%1 info]] [/content/tags [%1 ~]]])
+  ?>  ?=(%& -.r)
+  (expect-eq !>(`(unit (map post-id:ft (set tag:ft)))`[~ ~]) !>(tags.p.r))
+::  tags round-trip through +grubs and +load
+++  test-tags-round-trip
+  =/  b=board:ft  brd
+  =.  b  b(posts (my ~[[1 pst]]), tags `(my ~[[1 (sy ~[%bug %idea])]]))
+  =/  r  (load:fb ~(tap by (grubs:fb b)))
+  ?>  ?=(%& -.r)
+  (expect-eq !>(tags.b) !>(tags.p.r))
+::  no marker in memory, no grub written
+++  test-grubs-no-marker
+  (expect-eq !>(|) !>((~(has by (grubs:fb brd)) /content/tags)))
+::  tags for a post that is gone are not written back
+++  test-grubs-drop-stale
+  =/  b=board:ft  brd
+  =.  b  b(tags `(my ~[[9 (sy ~[%bug])]]))
+  (expect-eq !>([%1 ~]) !>((~(got by (grubs:fb b)) /content/tags)))
+::  a tags grub of the wrong shape names itself, as the other grubs do
+++  test-load-bad-tags
+  =/  r  (load:fb ~[[/pub/card [%1 info]] [/content/tags 'junk']])
+  (expect-eq !>(`(each board:ft @t)`|+'unreadable: /content/tags') !>(r))
 --
