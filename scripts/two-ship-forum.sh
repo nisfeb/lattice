@@ -10,11 +10,11 @@
 # edits its tags by form and by /forum-post-remote op=tag; B's tags form
 # on A's thread is refused and A's tags stay; B's forum-remote board
 # filters by tag. Then A's tags marker is deleted through the grubbery
-# file API, standing in for an older host: B's thread page drops its
-# tag inputs, op=tag and a tagged op=post answer 409, and a post from B
-# (by form, with tags it then drops, and by JSON) still lands. A remote
-# board has no submit page of its own (the form POSTs to the host), so
-# the "does not take tags yet" line is checked on A's own submit page.
+# file API, standing in for an older host: B's submit and thread pages
+# drop their tag inputs and the submit page says the host does not take
+# tags yet, op=tag and a tagged op=post answer 409 and change nothing,
+# and a post from B (by form, with tags it then drops, and by JSON)
+# still lands.
 # Fake ships only, never a real one. Cleans up after itself.
 #
 # Env:    A_URL, A_COOKIE, B_URL, B_COOKIE as two-ship-links.sh takes them.
@@ -92,20 +92,34 @@ atags() { at "$1" | jq -c '.post.tags'; }
 # the thread ids B's forum-remote page lists, in page order
 rids()  { B_ "$R$1" | grep -oE "/forum-remote/$ASHIP/$BT/[0-9]+\"" | sed -E 's|.*/([0-9]+)"|\1|' | awk '!s[$0]++' | tr '\n' ' ' | sed 's/ $//'; }
 # B is no mod, so A's rate gate holds it to one action per cooldown,
-# which doubles unless four cooldowns pass. 45 s between B's actions on
-# $BT keeps it at its 10 s base, so a refusal is never one for speed.
+# which doubles unless four cooldowns (40 s at its 10 s base) pass
+# between the host taking them. A busy host takes a poke late, so send
+# times say little: pace waits 45 s from when B's last action was SEEN
+# to land (seen marks it), so the cooldown stays at its base and a
+# refusal is never one for speed.
 lastb=-100
+seen()  { lastb=$SECONDS; }
 pace()  { local w=$((lastb + 45 - SECONDS)); if [ "$w" -gt 0 ]; then sleep "$w"; fi; lastb=$SECONDS; }
 title_is() { [ "$(at "$1" | jq -r '.post.title')" = "$2" ]; }
+# B's forum-remote submit page, when it loaded (its form posts back to it)
+RP="/apps/lattice/forum-remote/$ASHIP/$BT"
+bsub()  { local p; p=$(B_ "$R/submit"); grep -qF "action=\"$RP/submit\"" <<<"$p" && printf '%s' "$p"; }
+# B's refusal notes page, when it loaded
+bnotes() { local p; p=$(B_ "$B/forum-notes"); grep -qF 'Refused posts' <<<"$p" && printf '%s' "$p"; }
 tags_are() { [ "$(atags "$1")" = "$2" ]; }
 is "A makes $BT" 303 "$(code -H "$AK" -X POST "$A/forum/_new" --data "name=$BT&title=Tags+$BT&role=poster")"
 is "A posts a tagged thread" 303 "$(code -H "$AK" -X POST "$A/forum/$BT/submit" --data "title=Host+thread&t1=host")"
 sleep 2
 
+SUB=$(bsub)
+has "B's submit page for A's board loads" 'name="title"' "$SUB"
+has "it offers tag inputs" 'name="t1"' "$SUB"
+hasnt "it does not say the host takes no tags" 'does not take tags yet' "$SUB"
+
 pace
 is "B posts a tagged thread by its forum-remote form" 303 "$(code -H "$BK" -X POST "$R/submit" \
   --data-urlencode 'title=From B' --data-urlencode 'body=b' --data-urlencode 't1=Remote Tag' --data-urlencode 't2=idea')"
-if until_ 90 title_is 2 'From B'; then ok "B's thread lands"; else fail "B's thread lands" "$(at 2 | head -c 300)"; fi
+if until_ 90 title_is 2 'From B'; then seen; ok "B's thread lands"; else fail "B's thread lands" "$(at 2 | head -c 300)"; fi
 is "it lands with its tags, in one action" '["idea","remote-tag"]' "$(atags 2)"
 is "its author is B" "$BSHIP" "$(at 2 | jq -r '.post.author')"
 bsees() { B_ "$R/2" | grep -q 'From B'; }
@@ -117,17 +131,19 @@ hasnt "B's page of A's thread offers no tag inputs" 'name="t1"' "$PG"
 
 pace
 is "B's tags form answers 303" 303 "$(code -H "$BK" -X POST "$R/2/tags" --data 't1=edited')"
-if until_ 90 tags_are 2 '["edited"]'; then ok "B edits its tags by form"; else fail "B edits its tags by form" "$(atags 2)"; fi
+if until_ 90 tags_are 2 '["edited"]'; then seen; ok "B edits its tags by form"; else fail "B edits its tags by form" "$(atags 2)"; fi
 
+is "B's refusal notes are cleared" 303 "$(code -H "$BK" -X POST "$B/forum-notes/clear")"
+has "B has no refusal notes" 'No refusals.' "$(bnotes)"
 pace
 is "B's tags form on A's thread answers 303" 303 "$(code -H "$BK" -X POST "$R/1/tags" --data 't1=hijack')"
+refused() { bnotes | grep -q 'only its author or a moderator may tag a post'; }
+if until_ 90 refused; then seen; ok "B is told it may not tag A's thread"; else fail "B is told it may not tag A's thread"; fi
+is "A's thread keeps its tags" '["host"]' "$(atags 1)"
 
 pace
 is "op=tag is sent" true "$(B_ -X POST "$J" --data 'op=tag&post=2&tags=json-tag,Idea' | jq -r '.ok and .sent')"
-if until_ 90 tags_are 2 '["idea","json-tag"]'; then ok "B edits its tags by op=tag"; else fail "B edits its tags by op=tag" "$(atags 2)"; fi
-refused() { B_ "$B/forum-notes" | grep -q 'only its author or a moderator may tag a post'; }
-if until_ 60 refused; then ok "B is told it may not tag A's thread"; else fail "B is told it may not tag A's thread"; fi
-is "A's thread keeps its tags" '["host"]' "$(atags 1)"
+if until_ 90 tags_are 2 '["idea","json-tag"]'; then seen; ok "B edits its tags by op=tag"; else fail "B edits its tags by op=tag" "$(atags 2)"; fi
 
 has_rids() { [ "$(rids "$1")" = "$2" ]; }
 if until_ 60 has_rids '?tags=host' 1; then ok "B's forum-remote page filters by host"; else fail "B's forum-remote page filters by host" "[$(rids '?tags=host')]"; fi
@@ -136,7 +152,7 @@ is "B's forum-remote page lists none for nosuch" '' "$(rids '?tags=nosuch')"
 
 pace
 is "a tagged op=post is sent" true "$(B_ -X POST "$J" --data 'op=post&title=JSON+post&tags=JSON+Post' | jq -r '.ok and .sent')"
-if until_ 90 title_is 3 'JSON post'; then ok "the tagged op=post lands"; else fail "the tagged op=post lands" "$(at 3 | head -c 300)"; fi
+if until_ 90 title_is 3 'JSON post'; then seen; ok "the tagged op=post lands"; else fail "the tagged op=post lands" "$(at 3 | head -c 300)"; fi
 is "with its tags" '["json-post"]' "$(atags 3)"
 is "op=tag to a board B cannot read answers 504" 504 "$(code -H "$BK" -X POST "$B/forum-post-remote?host=$ASHIP&board=nosuch$RANDOM" --data 'op=tag&post=1&tags=x')"
 
@@ -152,22 +168,37 @@ is "A's $BT has the marker" 200 "$(code -H "$AK" "$CONTENT/tags?info=1")"
 is "the marker is deleted" 303 "$(code -H "$AK" -X POST "$CONTENT" --data 'action=delete-grub&filename=tags')"
 is "the marker is gone" 404 "$(code -H "$AK" "$CONTENT/tags?info=1")"
 has "A's submit page says its host does not take tags yet" 'does not take tags yet' "$(A_ "$A/forum/$BT/submit")"
-noinputs() { ! B_ "$R/2" | grep -q 'name="t1"'; }
+# tags as A shows them now the marker (which holds them) is gone
+T2=$(atags 2)
+is "B's refusal notes are cleared again" 303 "$(code -H "$BK" -X POST "$B/forum-notes/clear")"
+has "B has no refusal notes" 'No refusals.' "$(bnotes)"
+nosubinputs() { local p; p=$(bsub) && ! grep -q 'name="t1"' <<<"$p"; }
+if until_ 60 nosubinputs; then ok "B's submit page drops the tag inputs"; else fail "B's submit page drops the tag inputs"; fi
+SUB=$(bsub)
+has "B's submit page loads" 'name="title"' "$SUB"
+hasnt "it has no tag inputs" 'name="t1"' "$SUB"
+has "it says the host does not take tags yet" 'host does not take tags yet.' "$SUB"
+noinputs() { local p; p=$(B_ "$R/2"); grep -q 'From B' <<<"$p" && ! grep -q 'name="t1"' <<<"$p"; }
 if until_ 60 noinputs; then ok "B's page of its thread drops the tag inputs"; else fail "B's page of its thread drops the tag inputs"; fi
 OP=$(curl -s -m 60 -w '\n%{http_code}' -H "$BK" -X POST "$J" --data 'op=tag&post=2&tags=late')
 is "op=tag answers 409" 409 "$(tail -1 <<<"$OP")"
 has "saying the host does not take tags yet" "this board's host does not take tags yet" "$OP"
 is "a tagged op=post answers 409" 409 "$(code -H "$BK" -X POST "$J" --data 'op=post&title=Late&tags=late')"
-is "nothing tagged reached A: still no marker" 404 "$(code -H "$AK" "$CONTENT/tags?info=1")"
 
 pace
 is "B's form post with tags answers 303" 303 "$(code -H "$BK" -X POST "$R/submit" --data-urlencode 'title=Plain by form' --data-urlencode 't1=dropped')"
-if until_ 90 title_is 4 'Plain by form'; then ok "it lands"; else fail "it lands" "$(at 4 | head -c 300)"; fi
+if until_ 90 title_is 4 'Plain by form'; then seen; ok "it lands"; else fail "it lands" "$(at 4 | head -c 300)"; fi
 is "without its tags" '[]' "$(atags 4)"
 
 pace
 is "a plain op=post is sent" true "$(B_ -X POST "$J" --data 'op=post&title=Plain+by+JSON' | jq -r '.ok and .sent')"
 if until_ 90 title_is 5 'Plain by JSON'; then ok "a plain post from B still lands"; else fail "a plain post from B still lands" "$(at 5 | head -c 300)"; fi
+# B's actions reach A in order, so with posts 4 and 5 in, anything the
+# 409s had sent would have landed before them
+is "the refused op=tag changed nothing" "$T2" "$(atags 2)"
+is "the refused op=post made no thread" 0 "$(A_ "$A/urb-read?url=urb%3A%2F%2F$ASHIP%2Fforum%2F$BT" | jq '[.posts[] | select(.title == "Late")] | length')"
+is "A holds threads 1 to 5 only" '1 2 3 4 5' "$(A_ "$A/urb-read?url=urb%3A%2F%2F$ASHIP%2Fforum%2F$BT" | jq -r '[.posts[].id] | sort | map(tostring) | join(" ")')"
+has "B gained no refusal note" 'No refusals.' "$(bnotes)"
 is "B's plain posts left A without a marker" 404 "$(code -H "$AK" "$CONTENT/tags?info=1")"
 
 echo "$fails failure(s)"
