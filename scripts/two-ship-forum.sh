@@ -183,8 +183,9 @@ hasnt "it has no tag inputs" 'name="t1"' "$SUB"
 has "it says the host does not take tags yet" 'host does not take tags yet.' "$SUB"
 noinputs() { local p; p=$(B_ "$R/2"); grep -q 'From B' <<<"$p" && ! grep -q 'name="t1"' <<<"$p"; }
 if until_ 60 noinputs; then ok "B's page of its thread drops the tag inputs"; else fail "B's page of its thread drops the tag inputs"; fi
-is "B's tags form goes back to its thread unsent" "${B_URL%/}$RP/2" \
-  "$(curl -s -m 60 -o /dev/null -w '%{redirect_url}' -H "$BK" -X POST "$R/2/tags" --data 't1=late')"
+# the 303 carries a cache-busting ?u=, so the query is cut off
+LOC=$(curl -s -m 60 -o /dev/null -w '%{redirect_url}' -H "$BK" -X POST "$R/2/tags" --data 't1=late')
+is "B's tags form goes back to its thread unsent" "${B_URL%/}$RP/2" "${LOC%%\?*}"
 OP=$(curl -s -m 60 -w '\n%{http_code}' -H "$BK" -X POST "$J" --data 'op=tag&post=2&tags=late')
 is "op=tag answers 409" 409 "$(tail -1 <<<"$OP")"
 has "saying the host does not take tags yet" "this board's host does not take tags yet" "$OP"
