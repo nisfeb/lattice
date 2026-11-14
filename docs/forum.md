@@ -17,6 +17,14 @@ Lattice hosts forums. A forum is a multi-author, threaded website, and lattice a
 - A **private** board is readable and postable only by invited members. The owner invites a ship (`POST /forum-invite?board=&ship=`), which grants that ship a read capability and adds it to the board's member roster, and the invitee gets a notice in their shared-with-me inbox. A non-member cannot read (the grant is the only door) and cannot post (the inbox refuses them with a note).
 - A member on another ship posts by poking the host's public `/forum.sig` inbox. Authorship is taken from the Ames transport, never from the message, so a post cannot be forged. The host runs the board's role, size, and rate-limit rules and bans, and sends a note back when it refuses.
 
+## Tags
+
+- A thread carries up to five tags. A tag is lowercase letters, digits and dashes, starting with a letter, at most 24 characters. What is typed is folded to that: `Bug Report` becomes `bug-report`.
+- Whoever posts a thread may tag it as they post. After that, its author or a board mod edits its tags from the thread page. A comet never tags.
+- A board page filters by tags (`?tags=bug,idea` shows threads carrying every one) and lists the board's most used tags to pick from, with a search for the rest. The `active` sort ranks threads by their latest comment.
+- The forum's JSON (`urb_read` of a board or thread) gives each post its `tags` and its `active` time.
+- A board takes tags when its host has the tags grub, which every board gets when its host runs this version. A peer reads that grub before it sends a tag action, so a board whose host runs an older lattice shows no tag fields, and a tag action to it is refused (`/forum-post-remote` answers 409) without being sent.
+
 ## Moderation
 
 - Roles, delete post or comment (author or mod), pin, sidebar, edit board info, set public or private, and auto-prune (below a board's min-score past an age, on a six-hour sweep).
