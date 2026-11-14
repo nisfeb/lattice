@@ -154,15 +154,29 @@
     (expect-eq !>(`(my ~[[1 (sy ~[%ok])]])) !>(tags:(ok b1 ~nec [%set-tags %main 1 ;;((set @tas) (sy ~[%ok 'Bad One']))])))
     (expect-eq !>(5) !>(~(wyt in (~(got by (need tags:(ok b1 ~nec [%set-tags %main 1 (sy ~[%a %b %c %d %e %f])]))) 1))))
     ::  the write is the tags grub
+    ::  a tag bad past its first letter is dropped
+    =/  bad=(set @tas)  ;;((set @tas) (sy ~[%ok 'a<b>&x=1, Z']))
+    (expect-eq !>(`(my ~[[1 (sy ~[%ok])]])) !>(tags:(ok b1 ~nec [%set-tags %main 1 bad])))
+    ::  the write is the tags grub
     =/  r  (act:fa b1 ~nec now [%set-tags %main 1 (sy ~[%bug])])
     ?>  ?=(%& -.r)
     (expect-eq !>(&) !>((lien puts.p.r |=(g=grub:fb =(pax.g /content/tags)))))
   ==
 ++  test-new-post-tagged
   =/  b1=board:ft  (ok brd ~nec [%new-post-tagged %main 'hi' ~ `'body' (sy ~[%bug])])
+  =/  r  (act:fa brd ~nec now [%new-post-tagged %main 'hi' ~ `'body' (sy ~[%bug])])
+  ?>  ?=(%& -.r)
+  =/  none=(unit (map post-id:ft (set tag:ft)))  `~
+  =/  bad=(set @tas)  ;;((set @tas) (sy ~['a<b>&x=1, Z']))
   ;:  weld
     (expect-eq !>(`[1 ~nec 'hi' ~ `'body' now ~ ~ 0]) !>((~(get by posts.b1) 1)))
     (expect-eq !>(`(my ~[[1 (sy ~[%bug])]])) !>(tags.b1))
+    ::  one action writes the post's bucket and the tags grub
+    (expect-eq !>(&) !>((lien puts.p.r |=(g=grub:fb =(pax.g /content/posts/b0)))))
+    (expect-eq !>(&) !>((lien puts.p.r |=(g=grub:fb =(pax.g /content/tags)))))
+    ::  all its tags invalid: it lands, with the empty marker
+    (expect-eq !>(none) !>(tags:(ok brd ~nec [%new-post-tagged %main 'hi' ~ ~ bad])))
+    (expect-eq !>(&) !>((~(has by posts:(ok brd ~nec [%new-post-tagged %main 'hi' ~ ~ bad])) 1)))
     ::  the same refusals as a plain post
     (expect-eq !>(|) !>((good (act:fa brd ~marzod now [%new-post-tagged %main 'hi' ~ ~ ~]))))
     (expect-eq !>(|) !>((good (act:fa brd ~nec now [%new-post-tagged %main '' ~ ~ ~]))))

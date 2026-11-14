@@ -119,7 +119,23 @@
     (expect-eq !>(~) !>((norm-tag:fr '!!!')))
     (expect-eq !>(~) !>((norm-tag:fr '')))
     (expect-eq !>(24) !>((met 3 (need (norm-tag:fr 'abcdefghijklmnopqrstuvwxyz-abc')))))
-    (expect-eq !>(&) !>((valid-tag:fr (need (norm-tag:fr 'abcdefghijklmnopqrstuvw-xyz')))))
+    ::  cut to 24, then the trailing dash goes
+    (expect-eq !>(`%abcdefghijklmnopqrstuvw) !>((norm-tag:fr 'abcdefghijklmnopqrstuvw-xyz')))
+  ==
+::  every character is checked: each bad one follows a valid first letter
+++  test-valid-tag
+  ;:  weld
+    (expect-eq !>(|) !>((valid-tag:fr 'aB')))
+    (expect-eq !>(|) !>((valid-tag:fr 'a b')))
+    (expect-eq !>(|) !>((valid-tag:fr 'a,b')))
+    (expect-eq !>(|) !>((valid-tag:fr 'a<b')))
+    (expect-eq !>(|) !>((valid-tag:fr 'a&b')))
+    (expect-eq !>(|) !>((valid-tag:fr (crip (reap 25 'a')))))
+    (expect-eq !>(|) !>((valid-tag:fr '')))
+    (expect-eq !>(|) !>((valid-tag:fr '9x')))
+    (expect-eq !>(&) !>((valid-tag:fr 'a')))
+    (expect-eq !>(&) !>((valid-tag:fr 'a-1')))
+    (expect-eq !>(&) !>((valid-tag:fr (crip (reap 24 'a')))))
   ==
 ++  test-norm-tags
   ;:  weld
@@ -130,7 +146,8 @@
 ++  test-clean-tags
   ;:  weld
     (expect-eq !>((sy ~[%ok])) !>((clean-tags:fr ;;((set @) (sy ~[%ok 'Bad Tag' '' '9x'])))))
-    (expect-eq !>(5) !>(~(wyt in (clean-tags:fr (sy ~[%a %b %c %d %e %f %g])))))
+    (expect-eq !>((sy ~[%a %b %c %d %e])) !>((clean-tags:fr (sy ~[%g %f %e %d %c %b %a]))))
+    (expect-eq !>((sy ~[%ok])) !>((clean-tags:fr ;;((set @) (sy ~[%ok 'a,b' 'x y'])))))
   ==
 ++  test-can-tag
   ;:  weld

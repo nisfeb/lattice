@@ -44,7 +44,7 @@
   ?~  cs  |
   ?&  (lte (lent cs) 24)
       &((gte i.cs 'a') (lte i.cs 'z'))
-      (levy (rip 3 t) |=(c=@ |((gte c 'a') (lte c 'z') &((gte c '0') (lte c '9')) =(c '-'))))
+      (levy (rip 3 t) |=(c=@ |(&((gte c 'a') (lte c 'z')) &((gte c '0') (lte c '9')) =(c '-'))))
   ==
 ::
 ::  +norm-tag: user text to a tag, or ~ when nothing usable is left
@@ -62,12 +62,14 @@
     ?:  ?~(out & =('-' i.out))  $(cs t.cs)
     $(cs t.cs, out `(list @)`['-' out])
   =.  out  (flop out)
-  =.  out  (scag 24 (skip-digits out))
+  =.  out  (scag 24 (from-letter out))
   =.  out  (flop (trim-dashes (flop out)))
   ?~  out  ~
   `;;(tag (rap 3 (turn out |=(c=@ `@t`c))))
 ::
-++  skip-digits
+::  +from-letter: drop every character before the first letter
+::
+++  from-letter
   |=  cs=(list @)
   ^-  (list @)
   ?~  cs  ~
