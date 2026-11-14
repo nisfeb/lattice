@@ -15,7 +15,7 @@
   =/  ids=(list @ud)  ~[1 100 101 150]
   =/  posts=(map post-id:ft post:ft)
     (~(gas by *(map post-id:ft post:ft)) (turn ids |=(i=@ud [i (mk-post i 'hi')])))
-  [info ~ 151 posts ~ ~ ~ '' ~]
+  [info ~ 151 posts ~ ~ ~ '' ~ ~]
 ++  test-bucket-of
   ;:  weld
     (expect-eq !>(0) !>((bucket-of:fb 1)))

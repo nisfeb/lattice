@@ -4,7 +4,7 @@
 |%
 ++  brd
   ^-  board:ft
-  [[%main 'Main' 'a board' ~zod ~2026.1.1 %reader |] (my ~[[~nec %poster] [~wet %mod]]) 1 ~ ~ ~ ~ '' ~]
+  [[%main 'Main' 'a board' ~zod ~2026.1.1 %reader |] (my ~[[~nec %poster] [~wet %mod]]) 1 ~ ~ ~ ~ '' ~ ~]
 ++  now  ~2026.6.1
 ::  the board after, or a crash if refused
 ++  ok

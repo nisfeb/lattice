@@ -7351,7 +7351,7 @@
           default-role.act
           %.y
       ==
-    =/  brd=board:ft  [info ~ 1 ~ ~ ~ ~ '' ~]
+    =/  brd=board:ft  [info ~ 1 ~ ~ ~ ~ '' ~ ~]
     ;<  ~  bind:m  (forum-put up bdir ~(tap by (grubs:fb brd)) ~)
     ;<  ~  bind:m  (bump-beacon %forum now)
     (pure:m ~)

@@ -8,7 +8,7 @@
   [%main 'Main' 'a board' ~zod ~2026.1.1 %reader &]
 ++  brd
   ^-  board:ft
-  [info (my ~[[~nec %poster] [~wet %mod]]) 1 ~ ~ ~ ~ '' ~]
+  [info (my ~[[~nec %poster] [~wet %mod]]) 1 ~ ~ ~ ~ '' ~ ~]
 ++  mk-post
   |=  [id=@ud ups=@ud age=@dr]
   ^-  post:ft
@@ -109,5 +109,34 @@
     (expect-eq !>(`'forum: this board is private') !>((comet-refusal:fr np priv |)))
     (expect-eq !>(`'forum: this board is private') !>((comet-refusal:fr nc priv |)))
     (expect-eq !>(`'forum: this board takes no posts from comets') !>((comet-refusal:fr np brd &)))
+  ==
+++  test-norm-tag
+  ;:  weld
+    (expect-eq !>(`%bug-report) !>((norm-tag:fr 'Bug Report')))
+    (expect-eq !>(`%bug-report) !>((norm-tag:fr '  bug__report!! ')))
+    (expect-eq !>(`%v2) !>((norm-tag:fr '2-v2')))
+    (expect-eq !>(~) !>((norm-tag:fr '\e6\97\a5\e6\9c\ac\e8\aa\9e')))
+    (expect-eq !>(~) !>((norm-tag:fr '!!!')))
+    (expect-eq !>(~) !>((norm-tag:fr '')))
+    (expect-eq !>(24) !>((met 3 (need (norm-tag:fr 'abcdefghijklmnopqrstuvwxyz-abc')))))
+    (expect-eq !>(&) !>((valid-tag:fr (need (norm-tag:fr 'abcdefghijklmnopqrstuvw-xyz')))))
+  ==
+++  test-norm-tags
+  ;:  weld
+    (expect-eq !>((sy ~[%a %b])) !>((norm-tags:fr ~['a' 'A' '' 'b' '!!'])))
+    (expect-eq !>(5) !>(~(wyt in (norm-tags:fr ~['a' 'b' 'c' 'd' 'e' 'f']))))
+    (expect-eq !>(|) !>((~(has in (norm-tags:fr ~['a' 'b' 'c' 'd' 'e' 'f'])) %f)))
+  ==
+++  test-clean-tags
+  ;:  weld
+    (expect-eq !>((sy ~[%ok])) !>((clean-tags:fr ;;((set @) (sy ~[%ok 'Bad Tag' '' '9x'])))))
+    (expect-eq !>(5) !>(~(wyt in (clean-tags:fr (sy ~[%a %b %c %d %e %f %g])))))
+  ==
+++  test-can-tag
+  ;:  weld
+    (expect-eq !>(&) !>((can-tag:fr ~nec ~nec brd)))   ::  the author
+    (expect-eq !>(&) !>((can-tag:fr ~wet ~nec brd)))   ::  a mod
+    (expect-eq !>(&) !>((can-tag:fr ~zod ~nec brd)))   ::  the host
+    (expect-eq !>(|) !>((can-tag:fr ~bus ~nec brd)))   ::  anyone else
   ==
 --

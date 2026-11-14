@@ -18,7 +18,7 @@
       ?~  cmts  ~
       %+  ~(put by *(map post-id:ft (map comment-id:ft comment:ft)))  1
       (~(gas by *(map comment-id:ft comment:ft)) (turn cmts |=(m=comment:ft [id.m m])))
-      ~  ~  ''  ~
+      ~  ~  ''  ~  ~
   ==
 ::  post-NNN, zero padded, so no title is a substring of another
 ::
