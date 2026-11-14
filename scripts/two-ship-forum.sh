@@ -11,10 +11,10 @@
 # on A's thread is refused and A's tags stay; B's forum-remote board
 # filters by tag. Then A's tags marker is deleted through the grubbery
 # file API, standing in for an older host: B's submit and thread pages
-# drop their tag inputs and the submit page says the host does not take
-# tags yet, op=tag and a tagged op=post answer 409 and change nothing,
-# and a post from B (by form, with tags it then drops, and by JSON)
-# still lands.
+# drop their tag inputs, B's tags form goes back to its thread unsent,
+# the submit page says the host does not take tags yet, op=tag and a
+# tagged op=post answer 409 and change nothing, and a post from B (by
+# form, with tags it then drops, and by JSON) still lands.
 # Fake ships only, never a real one. Cleans up after itself.
 #
 # Env:    A_URL, A_COOKIE, B_URL, B_COOKIE as two-ship-links.sh takes them.
@@ -90,7 +90,8 @@ B_()    { curl -s -m 60 -H "$BK" "$@"; }
 at()    { A_ "$A/urb-read?url=urb%3A%2F%2F$ASHIP%2Fforum%2F$BT%2F$1"; }
 atags() { at "$1" | jq -c '.post.tags'; }
 # the thread ids B's forum-remote page lists, in page order
-rids()  { B_ "$R$1" | grep -oE "/forum-remote/$ASHIP/$BT/[0-9]+\"" | sed -E 's|.*/([0-9]+)"|\1|' | awk '!s[$0]++' | tr '\n' ' ' | sed 's/ $//'; }
+rids()  { B_ "$R$1" | ids; }
+ids()   { grep -oE "/forum-remote/$ASHIP/$BT/[0-9]+\"" | sed -E 's|.*/([0-9]+)"|\1|' | awk '!s[$0]++' | tr '\n' ' ' | sed 's/ $//'; }
 # B is no mod, so A's rate gate holds it to one action per cooldown,
 # which doubles unless four cooldowns (40 s at its 10 s base) pass
 # between the host taking them. A busy host takes a poke late, so send
@@ -148,7 +149,9 @@ if until_ 90 tags_are 2 '["idea","json-tag"]'; then seen; ok "B edits its tags b
 has_rids() { [ "$(rids "$1")" = "$2" ]; }
 if until_ 60 has_rids '?tags=host' 1; then ok "B's forum-remote page filters by host"; else fail "B's forum-remote page filters by host" "[$(rids '?tags=host')]"; fi
 is "B's forum-remote page filters by json-tag" 2 "$(rids '?tags=json-tag')"
-is "B's forum-remote page lists none for nosuch" '' "$(rids '?tags=nosuch')"
+NS=$(B_ "$R?tags=nosuch")
+has "B's forum-remote page loads for nosuch" "Tags $BT" "$NS"
+is "B's forum-remote page lists none for nosuch" '' "$(ids <<<"$NS")"
 
 pace
 is "a tagged op=post is sent" true "$(B_ -X POST "$J" --data 'op=post&title=JSON+post&tags=JSON+Post' | jq -r '.ok and .sent')"
@@ -180,6 +183,8 @@ hasnt "it has no tag inputs" 'name="t1"' "$SUB"
 has "it says the host does not take tags yet" 'host does not take tags yet.' "$SUB"
 noinputs() { local p; p=$(B_ "$R/2"); grep -q 'From B' <<<"$p" && ! grep -q 'name="t1"' <<<"$p"; }
 if until_ 60 noinputs; then ok "B's page of its thread drops the tag inputs"; else fail "B's page of its thread drops the tag inputs"; fi
+is "B's tags form goes back to its thread unsent" "${B_URL%/}$RP/2" \
+  "$(curl -s -m 60 -o /dev/null -w '%{redirect_url}' -H "$BK" -X POST "$R/2/tags" --data 't1=late')"
 OP=$(curl -s -m 60 -w '\n%{http_code}' -H "$BK" -X POST "$J" --data 'op=tag&post=2&tags=late')
 is "op=tag answers 409" 409 "$(tail -1 <<<"$OP")"
 has "saying the host does not take tags yet" "this board's host does not take tags yet" "$OP"

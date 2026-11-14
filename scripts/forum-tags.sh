@@ -41,7 +41,7 @@ BRD="ft$RANDOM"; UB="fu$RANDOM"
 cleanup() {
   code -X POST "$F/$BRD/mod/delete" >/dev/null
   [ -n "${OLD_CODE:-}" ] && code -X POST "$F/$UB/mod/delete" >/dev/null
-  [ -n "${JAR:-}" ] && rm -f "$JAR"
+  [ -n "${JAR:-}" ] && rm -f "$JAR" "$JAR.log"
 }
 trap cleanup EXIT
 
@@ -97,6 +97,9 @@ is "?tags=bug-report lists both" '2 1' "$(get "$F/$BRD?sort=new&tags=bug-report"
 NO=$(get "$F/$BRD?tags=nosuch")
 is "?tags=nosuch lists none" '' "$(ids "$BRD" <<<"$NO")"
 has "?tags=nosuch offers clear" '>clear</a>' "$NO"
+PG=$(get "$F/$BRD")
+has "the unfiltered board loads" "Tags $BRD" "$PG"
+hasnt "the unfiltered board offers no clear" '>clear</a>' "$PG"
 
 echo "==> the active sort"
 is "a comment on thread 1" 303 "$(code -X POST "$F/$BRD/1/comment" --data 'body=fresh')"
@@ -143,10 +146,12 @@ if [ -n "${OLD_CODE:-}" ]; then
   [ -n "$DESK" ] || { fail "the lattice desk is found in the ball"; echo "$fails failure(s)"; exit 1; }
   ok "the lattice desk is at $DESK"
   MARK="$URL/grubbery/ball$DESK/desk/data/lattice.lattice_app/forum/boards/$UB/content/tags?info=1"
-  # dev-deploy.py takes a curl jar: make one from the cookie
+  # dev-deploy.py takes a curl jar: make one from the cookie, for the
+  # host in LATTICE_URL
   JAR=$(mktemp); chmod 600 "$JAR"
   IFS='=' read -r cn cv <"$LATTICE_COOKIE"
-  printf 'localhost\tFALSE\t/\tFALSE\t0\t%s\t%s\n' "$cn" "$cv" >"$JAR"
+  host=${URL#*://}; host=${host%%/*}; host=${host%%:*}
+  printf '%s\tFALSE\t/\tFALSE\t0\t%s\t%s\n' "$host" "$cn" "$cv" >"$JAR"
   # the deploy serves when thread 2's JSON has (new) or lacks (old) active
   active() { [ "$(json "$BRD" 2 | jq -r '.post | has("active")' 2>/dev/null)" = "$1" ]; }
   deploy() { # code dir, want active
@@ -166,7 +171,6 @@ if [ -n "${OLD_CODE:-}" ]; then
       is "the old post takes a tag" '["legacy"]' "$(tags "$UB" 1)"
     fi
   fi
-  rm -f "$JAR.log"
 fi
 
 echo "$fails failure(s)"
