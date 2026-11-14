@@ -587,8 +587,9 @@
         ::  flag may have moved under an older lattice
         ;<  ~  bind:m  (put-forum-comets root)
         ::  the tags marker on boards made before tags (+forum-tag-markers).
-        ::  A failure here is dropped: the start must go on.
-        ;<  *  bind:m  (fiber-try (forum-tag-markers root))
+        ::  A failure here is printed, and the start goes on.
+        ;<  err=(unit tang)  bind:m  (fiber-try (forum-tag-markers root))
+        %-  (say 2 ?~(err ~ [leaf+"lattice: the forum tags marker sweep failed" u.err]))
         ::  pages published before per-format marks were grown as gmi
         ;<  ~  bind:m  (migrate-pub-marks root)
         ::  a whole-tree action a reload cut short (+job-set)
@@ -7534,8 +7535,9 @@
   $(noms t.noms, open ?:(pub [i.noms open] open))
 ::  +forum-tag-markers: the empty tags grub on each board that has none,
 ::  so a board made before tags takes them. The grub is the marker a peer
-::  reads to know this host takes tag actions. A board that does not
-::  load is skipped. Run by the writer at its start.
+::  reads to know this host takes tag actions. A board that has the grub
+::  is not loaded. A board that does not load is skipped. Run by the
+::  writer at its start.
 ::
 ++  forum-tag-markers
   |=  root=@ud
@@ -7546,8 +7548,10 @@
   ?~  noms  (pure:m ~)
   =/  bdir=path  /forum/boards/[i.noms]
   ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs root bdir)
-  =/  lod=(each board:ft @t)  ?~(gs |+'' (load:fb u.gs))
-  ?.  &(?=(%& -.lod) ?=(~ tags.p.lod))  $(noms t.noms)
+  ?~  gs  $(noms t.noms)
+  ?:  (lien u.gs |=(g=grub:fb =(pax.g /content/tags)))  $(noms t.noms)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?.  ?=(%& -.lod)  $(noms t.noms)
   ;<  ~  bind:m  (forum-put root bdir ~[[/content/tags [%1 ~]]] ~)
   $(noms t.noms)
 ::  +forum-remote-apply: the per-action gates for a REMOTE forum action -- bad
@@ -16799,16 +16803,18 @@
     "/apps/lattice/forum-remote/{(scow %p u.host)}/{(trip nom)}"
   =/  tl=path  t.t.pax
   ::  a form with tags reads the host's board first: a host without the
-  ::  tags marker would drop the action. A tags form to it goes unsent,
-  ::  and a new post goes without its tags.
-  =/  tag-form=?  ?=([@ %tags ~] tl)
+  ::  tags marker would drop the action. A tags form to it goes back to
+  ::  its thread unsent, as on the owner's board, and a new post goes
+  ::  without its tags.
+  =/  tid=(unit @ud)  ?.(?=([@ %tags ~] tl) ~ ((slat %ud) i.tl))
   ;<  takes=?  bind:m
     =/  n  (fiber:fiber:nexus ,?)
-    ?.  |(tag-form &(?=([%submit ~] tl) !=(~ (forum-form-tags grab))))
+    ?.  |(?=(^ tid) &(?=([%submit ~] tl) !=(~ (forum-form-tags grab))))
       (pure:n |)
     ;<  bo=(unit board:ft)  bind:n  (urb-forum-board | u.host nom)
     (pure:n &(?=(^ bo) ?=(^ tags.u.bo)))
-  ?:  &(tag-form !takes)  (send-see-other eyre-id base)
+  ?:  &(?=(^ tid) !takes)
+    (send-see-other eyre-id "{base}/{(a-co:co u.tid)}")
   ::  ~ act = bad fields; act is ~ with a to = a refused suffix (no send)
   =/  res=(unit [act=(unit action:ft) to=tape])
     ?+  tl

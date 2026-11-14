@@ -58,21 +58,16 @@
     (done brd(sidebar sidebar.action))
   ::
       %new-post
-    ?.  (can-post:fr who brd)  |+'your role on this board cannot post'
-    ?.  (sane-post:fr title.action url.action body.action)
-      |+'a post needs a title (300 bytes at most), a url of 2,048 and a body of 40,000'
-    =/  id=post-id  next-post-id.brd
-    %-  done
-    %=  brd
-      next-post-id  +(id)
-      posts  (~(put by posts.brd) id [id who title.action url.action body.action now ~ ~ 0])
-    ==
+    =/  r  (add-post brd who now title.action url.action body.action)
+    ?:  ?=(%| -.r)  |+p.r
+    (done p.r)
   ::
       %new-post-tagged
-    ::  a plain post, then its tags
-    =/  r  $(action [%new-post name.action title.action url.action body.action])
-    ?:  ?=(%| -.r)  r
-    (done (put-tags brd.p.r (dec next-post-id.brd.p.r) tags.action))
+    ::  a plain post, then its tags, in one write
+    =/  r  (add-post brd who now title.action url.action body.action)
+    ?:  ?=(%| -.r)  |+p.r
+    ::  the id +add-post just issued
+    (done (put-tags p.r (dec next-post-id.p.r) tags.action))
   ::
       %set-tags
     ?~  p=(~(get by posts.brd) id.action)  |+'post not found'
@@ -121,6 +116,20 @@
       %upvote       (done (vote brd target.action who %up))
       %downvote     (done (vote brd target.action who %down))
       %remove-vote  (done (vote brd target.action who %remove))
+  ==
+::  +add-post: the board with a new post, or why it was refused
+::
+++  add-post
+  |=  [brd=board who=@p now=@da title=@t url=(unit @t) body=(unit @t)]
+  ^-  (each board @t)
+  ?.  (can-post:fr who brd)  |+'your role on this board cannot post'
+  ?.  (sane-post:fr title url body)
+    |+'a post needs a title (300 bytes at most), a url of 2,048 and a body of 40,000'
+  =/  id=post-id  next-post-id.brd
+  :-  %&
+  %=  brd
+    next-post-id  +(id)
+    posts  (~(put by posts.brd) id [id who title url body now ~ ~ 0])
   ==
 ::  +put-tags: a post's tags set, cleaned. The empty set clears them and
 ::  keeps the board's tags grub.
