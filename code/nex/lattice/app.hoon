@@ -16447,7 +16447,7 @@
       ['type' s+?~(mm mk (crip (pax-str p.u.mm)))]
       ['size' (numb:enjs:format ?~(mm ?@(nn (met 3 nn) 0) p.q.u.mm))]
   ==
-::  +serve-forum-remote: GET /apps/lattice/forum-remote/<host>/<board>[/<post>]
+::  +serve-forum-remote: GET /apps/lattice/forum-remote/<host>/<board>[/<post>|/submit]
 ::  (owner-gated; see the route at the /x explorer). Render a peer's PUBLIC
 ::  board or thread through the same renderer as the local view, with the
 ::  action forms ENABLED (authed=%.y, who=our): a viewer who is a mod or
@@ -16479,8 +16479,9 @@
   =/  board=@ta  i.t.pax
   ?.  ((sane %tas) board)  (send-err eyre-id 404 'not found')
   ?.  ?=(?(~ [@ ~]) t.t.pax)  (send-err eyre-id 404 'not found')
-  =/  pid=(unit @ud)  ?~(t.t.pax ~ ((slat %ud) i.t.t.pax))
-  ?:  &(?=(^ t.t.pax) ?=(~ pid))  (send-err eyre-id 404 'not found')
+  =/  sub=?  =(/submit t.t.pax)
+  =/  pid=(unit @ud)  ?:(sub ~ ?~(t.t.pax ~ ((slat %ud) i.t.t.pax)))
+  ?:  &(?=(^ t.t.pax) ?=(~ pid) !sub)  (send-err eyre-id 404 'not found')
   ;<  our=@p  bind:m  bowl-our
   ;<  now=@da  bind:m  bowl-now
   ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs-remote u.host board)
@@ -16502,6 +16503,7 @@
         ""
     ==
   =/  page=[title=@t body=manx]
+    ?:  sub  (render-submit:fre c brd)
     ?~  pid  (render-board:fre c brd (parse-view:fre args))
     (render-thread:fre c brd u.pid)
   (send-html eyre-id (forum-doc page "" "" %.y nn))
