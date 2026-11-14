@@ -293,12 +293,14 @@
     %active  (sort-active brd posts)
   ==
 ::
-::  +tags-of: a thread's tags, in aor order
+::  +tags-of: a thread's tags, in aor order, five at most however many
+::  a remote host's grub holds
 ::
 ++  tags-of
   |=  [brd=board id=post-id]
   ^-  (list tag)
   ?~  tags.brd  ~
+  %+  scag  max-tags:fr
   (sort (skim ~(tap in (~(gut by u.tags.brd) id ~)) valid-tag:fr) aor)
 ::
 ::  +tag-counts: the tags on the board's threads, most used first
@@ -338,16 +340,23 @@
   "sort={(trip mode)}&tags={(tags-arg tags)}"
 ::
 ::  +parse-view: the board page's view from the request's query args.
-::  A tag in the filter that is not a valid tag is dropped.
+::  A tag in the filter that is not a valid tag is dropped. The filter
+::  keeps the first five valid tags in the address. A thread holds five
+::  at most, so a longer filter could only list nothing.
 ::
 ++  parse-view
   |=  args=(map @t @t)
   ^-  view
   =/  parts=(list tape)
     (fall (rush (~(gut by args) 'tags' '') (more com (star ;~(less com next)))) ~)
+  =/  ts=(set tag)
+    %+  roll  (murn parts |=(t=tape ?.((valid-tag:fr (crip t)) ~ `;;(tag (crip t)))))
+    |=  [t=tag acc=(set tag)]
+    ?:  =(max-tags:fr ~(wyt in acc))  acc
+    (~(put in acc) t)
   :*  (parse-sort args)
       (parse-page args)
-      (silt (murn parts |=(t=tape ?.((valid-tag:fr (crip t)) ~ `;;(tag (crip t))))))
+      ts
       (crip (scag 24 (trip (~(gut by args) 'tq' ''))))
   ==
 ::
@@ -510,7 +519,7 @@
   &(authed.c ?=(^ tags.brd) !(is-comet:fr who.c))
 ::
 ::  +tag-inputs: one input per tag a thread may carry, filled from have,
-::  each suggesting the board's tags, most used first
+::  each suggesting the board's 200 most used tags, most used first
 ::
 ++  tag-inputs
   |=  [brd=board have=(list tag)]
@@ -521,7 +530,7 @@
         =/  v=tape  ?:((lte i (lent have)) (trip (snag (dec i) have)) "")
         ;input(type "text", name "t{(a-co:co i)}", list "tags", maxlength "40", value v);
     ;datalist#tags
-      ;*  %+  turn  (tag-counts brd)
+      ;*  %+  turn  (scag 200 (tag-counts brd))
           |=  [=tag n=@ud]
           ;option(value (trip tag));
     ==

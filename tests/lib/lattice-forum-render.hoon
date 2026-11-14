@@ -48,6 +48,14 @@
   |=  [m=sort-mode:rn pg=@ud ts=(list @tas)]
   ^-  view:rn
   [m pg (silt ts) '']
+::  +count: how many times ned occurs in hay
+::
+++  count
+  |=  [hay=tape ned=tape]
+  ^-  @ud
+  =/  i  (find ned hay)
+  ?~  i  0
+  +($(hay (slag +(u.i) hay)))
 ::  +hrefs: every href value on a page
 ::
 ++  hrefs
@@ -192,6 +200,19 @@
     (expect-eq !>(2) !>(page.v))
     (expect-eq !>((sy ~[%nosuch %bug])) !>(tags.v))
   ==
+::  a filter keeps its first five valid distinct tags, in address order:
+::  a thread holds five at most, so a longer filter could only be empty
+::
+++  test-parse-view-cap
+  =/  ts=(list tape)  (turn (gulf 0 49) |=(i=@ud "t{(a-co:co i)}"))
+  =/  arg=@t  (crip (zing (join "," `(list tape)`["a<b" "t0" ts])))
+  =/  v  (parse-view:fre (my ~[['tags' arg]]))
+  (expect-eq !>((sy ~[%t0 %t1 %t2 %t3 %t4])) !>(tags.v))
+::  every character of a filter tag is checked, not only the first
+::
+++  test-parse-view-checks-tags
+  =/  v  (parse-view:fre (my ~[['tags' 'a<b,ok,a&b,aB']]))
+  (expect-eq !>((sy ~[%ok])) !>(tags.v))
 ++  test-parse-view-tq
   =/  v  (parse-view:fre (my ~[['tq' 'abcdefghijklmnopqrstuvwxyz0123']]))
   ;:  weld
@@ -218,6 +239,24 @@
   ;:  weld
     (expect-eq !>(~[%bug %idea]) !>((tags-of:fre b 1)))
     (expect-eq !>(`(list @tas)`~) !>((tags-of:fre b 3)))
+  ==
+::  a thread shows five tags at most, whatever its grub holds
+::
+++  test-tags-of-cap
+  =/  brd=board:ft  b
+  =/  many=(set @tas)  (silt (turn (gulf 1 1.000) |=(i=@ud `@tas`(crip "t{(a-co:co i)}"))))
+  =.  tags.brd  `(my ~[[1 many]])
+  (expect-eq !>(5) !>((lent (tags-of:fre brd 1))))
+::  the datalist offers the 200 most used tags
+::
+++  test-datalist-cap
+  =/  brd=board:ft  b
+  =/  many=(list @tas)  (turn (gulf 1 250) |=(i=@ud `@tas`(crip "t{(a-co:co i)}")))
+  =.  tags.brd  `(my ~[[1 (~(put in (silt many)) %zz)] [2 (sy ~[%zz])]])
+  =/  h=tape  (to-html body:(render-submit:rn c brd))
+  ;:  weld
+    (expect-eq !>(200) !>((count h "<option")))
+    (expect-eq !>(&) !>((has h "<option value=\"zz\"")))
   ==
 ++  test-filter-one-and-two
   =/  one=tape  (board-page c b3 (vw %hot 1 ~[%bug]))
@@ -285,11 +324,14 @@
   ==
 ::  query text never becomes markup
 ::
+::  tq is free text, kept as typed, so it proves the page escapes it
+::
 ++  test-query-escaped
   =/  plain=tape  (board-page c b (parse-view:fre ~))
-  =/  evil=tape
-    (board-page c b (parse-view:fre (my ~[['tags' '<b>'] ['tq' '"><b>']])))
+  =/  v  (parse-view:fre (my ~[['tq' '"><b>']]))
+  =/  evil=tape  (board-page c b v)
   ;:  weld
+    (expect-eq !>('"><b>') !>(tq.v))
     (expect-eq !>(|) !>((has plain "<b>")))
     (expect-eq !>(|) !>((has evil "<b>")))
     (expect-eq !>(&) !>((has evil "value=\"&quot;&gt;&lt;b&gt;\"")))
