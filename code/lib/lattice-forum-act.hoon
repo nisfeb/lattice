@@ -68,6 +68,18 @@
       posts  (~(put by posts.brd) id [id who title.action url.action body.action now ~ ~ 0])
     ==
   ::
+      %new-post-tagged
+    ::  a plain post, then its tags
+    =/  r  $(action [%new-post name.action title.action url.action body.action])
+    ?:  ?=(%| -.r)  r
+    (done (put-tags brd.p.r (dec next-post-id.brd.p.r) tags.action))
+  ::
+      %set-tags
+    ?~  p=(~(get by posts.brd) id.action)  |+'post not found'
+    ?.  (can-tag:fr who author.u.p brd)
+      |+'only its author or a moderator may tag a post'
+    (done (put-tags brd id.action tags.action))
+  ::
       %delete-post
     ?~  p=(~(get by posts.brd) id.action)  |+'post not found'
     ?.  (can-delete:fr who author.u.p brd)
@@ -110,6 +122,15 @@
       %downvote     (done (vote brd target.action who %down))
       %remove-vote  (done (vote brd target.action who %remove))
   ==
+::  +put-tags: a post's tags set, cleaned. The empty set clears them and
+::  keeps the board's tags grub.
+::
+++  put-tags
+  |=  [brd=board id=post-id ts=(set tag)]
+  ^-  board
+  =/  all=(map post-id (set tag))  (fall tags.brd ~)
+  =/  ts=(set tag)  (clean-tags:fr ts)
+  brd(tags `?~(ts (~(del by all) id) (~(put by all) id ts)))
 ::  +drop-posts: posts gone, with their threads
 ::
 ++  drop-posts
@@ -122,6 +143,7 @@
     comments          (~(del by comments.b) id)
     next-comment-ids  (~(del by next-comment-ids.b) id)
     pinned            (~(del in pinned.b) id)
+    tags              ?~(tags.b ~ `(~(del by u.tags.b) id))
   ==
 ::  +cull: a board without what `mine` wrote: its posts (with their
 ::  threads) and comments gone, and its votes off what stays. A ban runs

@@ -137,4 +137,42 @@
     ?>  ?=(%& -.back)
     (expect-eq !>(out) !>(p.back))
   ==
+++  test-set-tags
+  =/  b1=board:ft  (ok brd ~nec [%new-post %main 'hi' ~ ~])
+  =/  b2=board:ft  (ok b1 ~nec [%set-tags %main 1 (sy ~[%bug %idea])])
+  =/  none=(unit (map post-id:ft (set tag:ft)))  `~
+  ;:  weld
+    (expect-eq !>(`(my ~[[1 (sy ~[%bug %idea])]])) !>(tags.b2))
+    ::  a mod and the host may, a bystander may not
+    (expect-eq !>(&) !>((good (act:fa b1 ~wet now [%set-tags %main 1 (sy ~[%bug])]))))
+    (expect-eq !>(&) !>((good (act:fa b1 ~zod now [%set-tags %main 1 (sy ~[%bug])]))))
+    (expect-eq !>(|) !>((good (act:fa b1 ~bus now [%set-tags %main 1 (sy ~[%bug])]))))
+    (expect-eq !>(|) !>((good (act:fa b1 ~nec now [%set-tags %main 7 (sy ~[%bug])]))))
+    ::  the empty set clears, and keeps the marker
+    (expect-eq !>(none) !>(tags:(ok b2 ~nec [%set-tags %main 1 ~])))
+    ::  invalid tags are dropped, valid ones kept, five at most
+    (expect-eq !>(`(my ~[[1 (sy ~[%ok])]])) !>(tags:(ok b1 ~nec [%set-tags %main 1 ;;((set @tas) (sy ~[%ok 'Bad One']))])))
+    (expect-eq !>(5) !>(~(wyt in (~(got by (need tags:(ok b1 ~nec [%set-tags %main 1 (sy ~[%a %b %c %d %e %f])]))) 1))))
+    ::  the write is the tags grub
+    =/  r  (act:fa b1 ~nec now [%set-tags %main 1 (sy ~[%bug])])
+    ?>  ?=(%& -.r)
+    (expect-eq !>(&) !>((lien puts.p.r |=(g=grub:fb =(pax.g /content/tags)))))
+  ==
+++  test-new-post-tagged
+  =/  b1=board:ft  (ok brd ~nec [%new-post-tagged %main 'hi' ~ `'body' (sy ~[%bug])])
+  ;:  weld
+    (expect-eq !>(`[1 ~nec 'hi' ~ `'body' now ~ ~ 0]) !>((~(get by posts.b1) 1)))
+    (expect-eq !>(`(my ~[[1 (sy ~[%bug])]])) !>(tags.b1))
+    ::  the same refusals as a plain post
+    (expect-eq !>(|) !>((good (act:fa brd ~marzod now [%new-post-tagged %main 'hi' ~ ~ ~]))))
+    (expect-eq !>(|) !>((good (act:fa brd ~nec now [%new-post-tagged %main '' ~ ~ ~]))))
+  ==
+++  test-drop-drops-tags
+  =/  b1=board:ft  (ok brd ~nec [%new-post-tagged %main 'hi' ~ ~ (sy ~[%bug])])
+  =/  none=(unit (map post-id:ft (set tag:ft)))  `~
+  ;:  weld
+    (expect-eq !>(none) !>(tags:(ok b1 ~nec [%delete-post %main 1])))
+    (expect-eq !>(none) !>(tags:(drop-posts:fa b1 ~[1])))
+    (expect-eq !>(none) !>(tags:(cull:fa b1 |=(p=@p =(p ~nec)))))
+  ==
 --
