@@ -16722,6 +16722,11 @@
     ;<  off=(set @ta)  bind:m  read-forum-comets-off
     ;<  ~  bind:m  (poke-eval [%forum-comets nom (~(has in off) nom)])
     (send-see-other eyre-id "{base}/mod")
+  ::  a tags form on a board without the tags marker goes back to its
+  ::  thread unsent, as on a peer's board
+  =/  tid=(unit @ud)  ?.(?=([@ %tags ~] tl) ~ ((slat %ud) i.tl))
+  ?:  &(?=(^ tid) ?=(~ tags.brd))
+    (send-see-other eyre-id "{base}/{(a-co:co u.tid)}")
   =/  res=(unit [act=action:ft to=tape])
     ?+  tl  (forum-form-act nom base tl grab ?=(^ tags.brd))
         [%sidebar ~]
