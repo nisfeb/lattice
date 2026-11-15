@@ -182,13 +182,30 @@ function setLine(name) {
   return { set: name, ship, port: Number(port), url: 'http://localhost:' + port,
     pier: p ? p[1].replace(/^~/, HOME) : HOME + '/fleet/piers/' + ship };
 }
-const INST = '/grubbery/ball/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app';
 async function get(url, cookie, ms = 30000) {
   try {
     const r = await fetch(url, { headers: cookie ? { Cookie: cookie } : {}, signal: AbortSignal.timeout(ms) });
     return { status: r.status, text: await r.text() };
   } catch (e) { return { status: 0, text: String(e) }; }
 }
+//  The lattice desk in the ball, per ship: under /apps/shell, or
+//  /apps/shell.shell on an older kernel. /apps says which; asked once.
+const DESKS = new Map();
+async function deskOf(url, cookie) {
+  if (!DESKS.has(url)) {
+    //  just after a boot the shell is not bound yet: wait for it to answer
+    let r;
+    await until('the shell on ' + url + ' to answer', 300, async () =>
+      (r = await get(url + '/grubbery/ball/apps?list=1', cookie)).status === 200, 2000);
+    let names = [];
+    try { names = JSON.parse(r.text).children.map((c) => c.name); } catch { /* reported below */ }
+    const shell = ['shell', 'shell.shell'].find((n) => names.includes(n));
+    if (!shell) throw new Error(`no shell under /apps on ${url}: it answered ${r.text.slice(0, 300)}`);
+    DESKS.set(url, `/grubbery/ball/apps/${shell}/desks/lattice.desk`);
+  }
+  return DESKS.get(url);
+}
+const instOf = async (url, cookie) => (await deskOf(url, cookie)) + '/desk/data/lattice.lattice_app';
 async function until(what, secs, fn, every = 1000) {
   const end = Date.now() + secs * 1000;
   for (;;) {
@@ -211,11 +228,11 @@ async function cookieFor(pier, url, name) {
 //  compiled (bang null), and the route answers fast three times running.
 async function live(url, cookie, stamp, secs = 900) {
   if (stamp) await until('the desk to pull ' + stamp, secs, async () => {
-    const r = await get(url + '/grubbery/ball/apps/shell.shell/desks/lattice.desk/version.json?raw=1', cookie);
+    const r = await get(url + (await deskOf(url, cookie)) + '/version.json?raw=1', cookie);
     return r.text.includes(stamp);
   }, 2000);
   await until('bang null', secs, async () => {
-    const r = await get(url + INST + '?info=1', cookie);
+    const r = await get(url + (await instOf(url, cookie)) + '?info=1', cookie);
     if (r.status !== 200) return false;
     let j; try { j = JSON.parse(r.text); } catch { return false; }
     if (j.bang) say('bang: ' + JSON.stringify(j.bang).slice(0, 200));
@@ -379,7 +396,7 @@ async function hotPatch(lane, files, cookie) {
     const body = readFileSync(ROOT + '/code/' + f, 'utf8');
     const ext = f.split('.').pop();
     const mite = { js: 'application/javascript', html: 'text/html' }[ext] || 'text/plain';
-    const r = await fetch(lane.url + INST + '/app/' + encodeURIComponent(f.split('/').pop()), {
+    const r = await fetch(lane.url + (await instOf(lane.url, cookie)) + '/app/' + encodeURIComponent(f.split('/').pop()), {
       method: 'POST', headers: { Cookie: cookie, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ action: 'write-text', content: body, mite }), redirect: 'manual',
       signal: AbortSignal.timeout(120000) }).catch((e) => ({ status: 0, statusText: String(e) }));
@@ -420,7 +437,7 @@ async function baseShip() {
   b.cookie = await phase('cookie', cookieFor(b.pier, b.url, 'base'));
   let stamp = '';
   if (!flag('--no-deploy')) {
-    const fresh = (await get(b.url + INST + '?info=1', b.cookie.header)).status !== 200;
+    const fresh = (await get(b.url + (await instOf(b.url, b.cookie.header)) + '?info=1', b.cookie.header)).status !== 200;
     r = await phase('deploy', run('python3', [S + '/dev-deploy.py', b.url, b.cookie.jar, ...(fresh ? ['--add'] : []), '--approve',
       '--manifest', b.pier + '/' + MANIFEST], { log: `${LOGS}/deploy.log`, timeout: 1800 }));
     if (r.code) throw new Error('dev-deploy failed, see ' + LOGS + '/deploy.log');

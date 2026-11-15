@@ -32,7 +32,12 @@ secs() { curl -s -m 120 -o /dev/null -w '%{time_total}' -H "$CK" "$@"; }
 SHIP=$(curl -s -m 30 -H "$CK" "$URL/~/host")
 [ -n "$SHIP" ] || { echo "FAIL  the ship answers /~/host"; exit 1; }
 # the instance's tree path, for /x and the ball API
-INST=/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app
+# the shell is /apps/shell, or /apps/shell.shell on an older kernel
+SH_LS=$(curl -sf -m 30 -H "$CK" "$URL/grubbery/ball/apps?list=1") || { echo "FAIL  list /apps on $URL did not answer"; exit 1; }
+if grep -q '"name":"shell"' <<<"$SH_LS"; then SH=shell
+elif grep -q '"name":"shell.shell"' <<<"$SH_LS"; then SH=shell.shell
+else echo "FAIL  no shell under /apps on $URL: ${SH_LS:0:300}"; exit 1; fi
+INST=/apps/$SH/desks/lattice.desk/desk/data/lattice.lattice_app
 
 cleanup() {
   for p in w7test/doc w7test/big w7test/md w7test/h-script-iframe w7test/h-bad-links \
