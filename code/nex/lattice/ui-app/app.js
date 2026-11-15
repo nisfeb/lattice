@@ -3547,10 +3547,26 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const el = actionHome(a.id);
     return !!el && !el.disabled && !el.closest('[hidden]:not([data-pane])');
   };
-  const ranked = (q, items, name) => items
+  let palUse = {};       // latActUse as the box opened
+  const palUseGet = () => {
+    let v = null;
+    try { v = JSON.parse(localStorage.latActUse || '{}'); } catch {}
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  };
+  const palTime = (a) => +palUse[a.id] || 0;
+  let palRunning = false;  // a palette run's own click on a home is not a second run
+  function palNote(id) {
+    if (palRunning || !ACTIONS.some((a) => a.id === id)) return;
+    try { localStorage.latActUse = JSON.stringify({ ...palUseGet(), [id]: Date.now() }); } catch {}
+  }
+  document.addEventListener('click', (e) => {
+    const h = e.target.closest && e.target.closest('[data-action]');
+    if (h) palNote(h.dataset.action);
+  }, true);
+  const ranked = (q, items, name, tie = () => 0) => items
     .map((x, i) => ({ x, i, s: palScore(q, name(x)) }))
     .filter((r) => r.s !== null)
-    .sort((a, b) => a.s - b.s || a.i - b.i)
+    .sort((a, b) => a.s - b.s || tie(b.x) - tie(a.x) || a.i - b.i)
     .map((r) => r.x);
 
   const palDocs = () => nodes.filter((n) => n.page).map((n) => ({ kind: 'page', key: n.path }))
@@ -3575,7 +3591,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       if (made) palRows.push({ kind: 'create', key: made });
     } else {
       const acts = ACTIONS.filter(palUsable);
-      palRows = (q ? ranked(q, acts, (a) => a.name) : acts).map((a) => ({ kind: 'action', a }));
+      palRows = (q ? ranked(q, acts, (a) => a.name, palTime)
+        : acts.sort((a, b) => palTime(b) - palTime(a))).map((a) => ({ kind: 'action', a }));
       if (q) palRows = palRows.concat(ranked(q, palDocs(), (d) => d.key).slice(0, 50));
     }
     palSel = 0;
@@ -3644,6 +3661,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     palIn.placeholder = PAL_MODES[mode].ph;
     pal.hidden = false;
     palIn.value = '';
+    palUse = palUseGet();
     palPaint();
     palIn.focus();
     if (mode === 'cmd') palKnow();
@@ -3659,7 +3677,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!r) return;
     if (r.kind === 'create') { palCreate(); return; }
     palClose();
-    if (r.kind === 'action') { r.a.run(ev); return; }
+    if (r.kind === 'action') {
+      palNote(r.a.id);
+      palRunning = true;
+      try { r.a.run(ev); } finally { palRunning = false; }
+      return;
+    }
     openIn(r.kind, r.key, { ev });
     drawersClose();
   }

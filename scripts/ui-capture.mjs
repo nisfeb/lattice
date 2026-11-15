@@ -15,7 +15,12 @@
 //     first with nothing typed, ranked as the palette ranks with a query,
 //     and a last row that creates the typed name when no page has it.
 //
-//  ONLY=A (or B) runs just that section after the setup.
+//  C: Palette by recent use. With nothing typed the command palette lists
+//     the actions run last first, then the rest as registered, read once
+//     as it opens. With a query a tie goes to the more recent. Junk in the
+//     key changes nothing.
+//
+//  ONLY=A (or B, C) runs just that section after the setup.
 //
 //  Usage: LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> \
 //           node scripts/ui-capture.mjs
@@ -653,34 +658,36 @@ try {
       JSON.stringify({ shown: allDlg, meant: dlgMeant }));
   }
 
+  //  the palette's box and the chords, for B and C
+  const chord = async (key, mods) => {
+    for (const m of mods) await page.keyboard.down(m);
+    await page.keyboard.press(key);
+    for (const m of [...mods].reverse()) await page.keyboard.up(m);
+    await sleep(250);
+  };
+  //  the palette's box as the user sees it
+  const pal = () => page.evaluate(() => {
+    const p = document.getElementById('palette'), i = document.getElementById('palin');
+    return { open: !p.hidden, ph: i.placeholder, focus: document.activeElement === i,
+      rows: [...document.querySelectorAll('#pallist .palrow')].map((r) => ({ kind: r.dataset.kind,
+        key: r.dataset.key || '', name: r.querySelector('.palname').textContent,
+        home: r.querySelector('.palhome').textContent,
+        keys: (r.querySelector('.palkeys') || {}).textContent || '' })) };
+  });
+  const palUp = () => waitFor(async () => { const x = await pal(); return x.open && x.focus ? x : null; }, 5000, 100);
+  const palEsc = async () => { if ((await pal()).open) await page.keyboard.press('Escape'); await sleep(200); };
+
+  const palType = async (t) => { await page.keyboard.type(t); await sleep(300); return pal(); };
+  //  a page opened from outside the picker, shown and settled
+  const openWait = async (n) => {
+    await page.evaluate((x) => window.latTabs.openIn('page', x), n);
+    return waitFor(async () => { const f = await front(); return f.key === n && f.name === n && f.readOnly; }, 20000, 200);
+  };
+
   if (on('B')) {
     const QA = RUN + '/qa', QB = RUN + '/qb', QC = RUN + '/qc', QD = RUN + '/qd';
     const QE = RUN + '/qe', QE2 = RUN + '/qe2';
-    const chord = async (key, mods) => {
-      for (const m of mods) await page.keyboard.down(m);
-      await page.keyboard.press(key);
-      for (const m of [...mods].reverse()) await page.keyboard.up(m);
-      await sleep(250);
-    };
-    //  the palette's box as the user sees it
-    const pal = () => page.evaluate(() => {
-      const p = document.getElementById('palette'), i = document.getElementById('palin');
-      return { open: !p.hidden, ph: i.placeholder, focus: document.activeElement === i,
-        rows: [...document.querySelectorAll('#pallist .palrow')].map((r) => ({ kind: r.dataset.kind,
-          key: r.dataset.key || '', name: r.querySelector('.palname').textContent,
-          home: r.querySelector('.palhome').textContent,
-          keys: (r.querySelector('.palkeys') || {}).textContent || '' })) };
-    });
-    const palUp = () => waitFor(async () => { const x = await pal(); return x.open && x.focus ? x : null; }, 5000, 100);
-    const palEsc = async () => { if ((await pal()).open) await page.keyboard.press('Escape'); await sleep(200); };
     const ctrlO = async () => { await chord('KeyO', ['Control']); return palUp(); };
-    const palType = async (t) => { await page.keyboard.type(t); await sleep(300); return pal(); };
-    //  a page opened from outside the picker, shown and settled
-    const openWait = async (n) => {
-      await page.evaluate((x) => window.latTabs.openIn('page', x), n);
-      return waitFor(async () => { const f = await front(); return f.key === n && f.name === n && f.readOnly; }, 20000, 200);
-    };
-
     step = 'B setup';
     for (const n of [QA, QB, QC, QD, QE])
       await api('page-save?type=md&new=1&name=' + encodeURIComponent(n), { method: 'POST', body: 'body of ' + n });
@@ -939,6 +946,128 @@ try {
     check('B: no native dialog at any point', natives === 0, 'natives=' + natives);
     const allDlg = await dlgSum();
     check('B: the editor\'s dialog opened only where the suite opened it', allDlg === dlgMeant,
+      JSON.stringify({ shown: allDlg, meant: dlgMeant }));
+  }
+  if (on('C')) {
+    const useSet = (v) => page.evaluate((x) => { localStorage.latActUse = x; }, typeof v === 'string' ? v : JSON.stringify(v));
+    const names = (s) => s.rows.map((r) => r.name);
+    const cmdUp = async () => { await chord('KeyK', ['Control']); return palUp(); };
+    const dlgCancel = async () => { await sleep(300); if (await dlgOpen()) await page.evaluate(() => document.getElementById('dlgcancel').click()); await sleep(200); };
+    //  run a row of the open palette by typing its name; the box is shut after
+    const runByName = async (n) => {
+      await cmdUp();
+      await page.keyboard.type(n);
+      await sleep(300);
+      await page.keyboard.press('Enter');
+      await sleep(300);
+    };
+
+    step = 'C setup';
+    await page.evaluate(() => { localStorage.removeItem('latActUse'); });
+    await boot();
+    await openWait(SEEDP);
+
+    // ── C1. the order follows the last run ──
+    step = 'C1 order';
+    let s = await cmdUp();
+    const base = names(s);
+    check('C: with nothing run the palette lists the actions as registered',
+      base.length > 5 && base[0] !== 'Move or rename', JSON.stringify(base.slice(0, 3)));
+    await palEsc();
+    //  the write is localStorage.latActUse = JSON.stringify({id: ms, ...}),
+    //  which no Storage method sees; count the stringify of such an object
+    await page.evaluate(() => {
+      window.__lw = 0;
+      const o = JSON.stringify;
+      JSON.stringify = function (v, ...r) {
+        if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length
+          && Object.values(v).every((x) => typeof x === 'number')) window.__lw++;
+        return o.call(this, v, ...r);
+      };
+    });
+    await runByName('Move or rename');
+    dlgMeant++;
+    check('C: one run from the palette writes the use once',
+      (await page.evaluate(() => window.__lw)) === 1, String(await page.evaluate(() => window.__lw)));
+    await dlgCancel();
+    s = await cmdUp();
+    check('C: after running Move or rename it is listed first', names(s)[0] === 'Move or rename', JSON.stringify(names(s).slice(0, 3)));
+    check('C: the never-run actions keep their place after it',
+      JSON.stringify(names(s).slice(1)) === JSON.stringify(base.filter((n) => n !== 'Move or rename')));
+    await page.keyboard.press('Enter');
+    await sleep(300);
+    dlgMeant++;
+    check('C: Enter on the first row runs it', await dlgOpen());
+    await dlgCancel();
+
+    // ── C2. a second action goes first, the first second; a home click counts ──
+    step = 'C2 second';
+    await runByName('Show Files');
+    s = await cmdUp();
+    check('C: a second run goes first and the first one second',
+      names(s)[0] === 'Show Files' && names(s)[1] === 'Move or rename', JSON.stringify(names(s).slice(0, 3)));
+    await palEsc();
+    await page.evaluate(() => { window.__lw = 0; });
+    await page.evaluate(() => document.querySelector('[data-action="ctlt"]').click());
+    await sleep(200);
+    check('C: a click on the home writes the use once',
+      (await page.evaluate(() => window.__lw)) === 1, String(await page.evaluate(() => window.__lw)));
+    s = await cmdUp();
+    check('C: a run from its home goes first too', names(s)[0] === 'Toggle right pane', JSON.stringify(names(s).slice(0, 3)));
+    await palEsc();
+    await page.evaluate(() => document.querySelector('[data-action="ctlt"]').click());
+    await sleep(200);
+
+    // ── C3. the order holds while the box is open ──
+    step = 'C3 frozen';
+    await useSet({ tpath: 1 });
+    s = await cmdUp();
+    const frozen = names(s);
+    await useSet({ ctlt: Date.now() + 10, treet: Date.now() + 9 });
+    await page.keyboard.type('zz');
+    await page.keyboard.press('Backspace');
+    await page.keyboard.press('Backspace');
+    await sleep(300);
+    check('C: rewriting the key while the box is open moves nothing', JSON.stringify(names(await pal())) === JSON.stringify(frozen),
+      JSON.stringify(names(await pal()).slice(0, 3)));
+    await palEsc();
+
+    // ── C4. a query ranks by match, a tie goes to the more recent ──
+    step = 'C4 query';
+    const now = Date.now();
+    await useSet({ treet: now - 5, ctlt: now });
+    await cmdUp();
+    s = await palType('toggle');
+    check('C: a tie goes to the more recent run', names(s)[0] === 'Toggle right pane' && names(s)[1] === 'Toggle left pane',
+      JSON.stringify(names(s).slice(0, 3)));
+    await palEsc();
+    await useSet({ treet: now, ctlt: now - 5 });
+    await cmdUp();
+    s = await palType('toggle');
+    check('C: and the other way round', names(s)[0] === 'Toggle left pane' && names(s)[1] === 'Toggle right pane',
+      JSON.stringify(names(s).slice(0, 3)));
+    await palEsc();
+    await useSet({ tpath: now + 100 });
+    await cmdUp();
+    s = await palType('left');
+    check('C: a better match beats a more recent run', names(s)[0] === 'Toggle left pane' && !!names(s).includes('Move or rename') === false,
+      JSON.stringify(names(s).slice(0, 3)));
+    await palEsc();
+
+    // ── C5. junk in the key falls back to registration order ──
+    step = 'C5 junk';
+    for (const junk of ['{nope', '[1,2]', '"x"', 'null', '{"tpath":"soon","treet":{}}']) {
+      await useSet(junk);
+      s = await cmdUp();
+      check('C: junk ' + junk + ' lists the registration order', JSON.stringify(names(s)) === JSON.stringify(base),
+        JSON.stringify(names(s).slice(0, 3)));
+      await palEsc();
+    }
+
+    step = 'C end';
+    check('C: no native dialog at any point', natives === 0, 'natives=' + natives);
+    const allDlg = await dlgSum();
+    check('C: the editor\'s dialog opened only where the suite opened it', allDlg === dlgMeant,
       JSON.stringify({ shown: allDlg, meant: dlgMeant }));
   }
 } catch (e) {

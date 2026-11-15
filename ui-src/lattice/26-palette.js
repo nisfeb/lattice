@@ -17,6 +17,12 @@
   // With nothing typed it lists the documents opened last on this device
   // (recentsGet, 21-tabs.js). With a query it ranks as the palette does,
   // and ends on a Create row when no page has exactly the typed name.
+  //
+  // With nothing typed the command palette lists the actions run last
+  // first (localStorage.latActUse, action id to the time it ran), then the
+  // rest as registered. The order is read once, as the box opens. With a
+  // query the score decides and recent use only breaks a tie. A run is
+  // noted here, or at its home: a click on any data-action element.
   const PALETTE_ONLY = ['explorer'];
   const pal = document.createElement('div');
   pal.id = 'palette';
@@ -67,10 +73,26 @@
     const el = actionHome(a.id);
     return !!el && !el.disabled && !el.closest('[hidden]:not([data-pane])');
   };
-  const ranked = (q, items, name) => items
+  let palUse = {};       // latActUse as the box opened
+  const palUseGet = () => {
+    let v = null;
+    try { v = JSON.parse(localStorage.latActUse || '{}'); } catch {}
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  };
+  const palTime = (a) => +palUse[a.id] || 0;
+  let palRunning = false;  // a palette run's own click on a home is not a second run
+  function palNote(id) {
+    if (palRunning || !ACTIONS.some((a) => a.id === id)) return;
+    try { localStorage.latActUse = JSON.stringify({ ...palUseGet(), [id]: Date.now() }); } catch {}
+  }
+  document.addEventListener('click', (e) => {
+    const h = e.target.closest && e.target.closest('[data-action]');
+    if (h) palNote(h.dataset.action);
+  }, true);
+  const ranked = (q, items, name, tie = () => 0) => items
     .map((x, i) => ({ x, i, s: palScore(q, name(x)) }))
     .filter((r) => r.s !== null)
-    .sort((a, b) => a.s - b.s || a.i - b.i)
+    .sort((a, b) => a.s - b.s || tie(b.x) - tie(a.x) || a.i - b.i)
     .map((r) => r.x);
 
   const palDocs = () => nodes.filter((n) => n.page).map((n) => ({ kind: 'page', key: n.path }))
@@ -99,7 +121,8 @@
       if (made) palRows.push({ kind: 'create', key: made });
     } else {
       const acts = ACTIONS.filter(palUsable);
-      palRows = (q ? ranked(q, acts, (a) => a.name) : acts).map((a) => ({ kind: 'action', a }));
+      palRows = (q ? ranked(q, acts, (a) => a.name, palTime)
+        : acts.sort((a, b) => palTime(b) - palTime(a))).map((a) => ({ kind: 'action', a }));
       if (q) palRows = palRows.concat(ranked(q, palDocs(), (d) => d.key).slice(0, 50));
     }
     palSel = 0;
@@ -172,6 +195,7 @@
     palIn.placeholder = PAL_MODES[mode].ph;
     pal.hidden = false;
     palIn.value = '';
+    palUse = palUseGet();
     palPaint();
     palIn.focus();
     if (mode === 'cmd') palKnow();
@@ -189,7 +213,12 @@
     if (!r) return;
     if (r.kind === 'create') { palCreate(); return; }
     palClose();
-    if (r.kind === 'action') { r.a.run(ev); return; }
+    if (r.kind === 'action') {
+      palNote(r.a.id);
+      palRunning = true;
+      try { r.a.run(ev); } finally { palRunning = false; }
+      return;
+    }
     openIn(r.kind, r.key, { ev });
     drawersClose();
   }
