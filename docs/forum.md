@@ -20,7 +20,7 @@ Lattice hosts forums. A forum is a multi-author, threaded website, and lattice a
 ## Tags
 
 - A thread carries up to five tags. A tag is lowercase letters, digits and dashes. It starts with a letter and has at most 24 characters.
-- What is typed is folded to that, without a message. Letters are lowercased. A run of other characters becomes one dash. Leading digits and dashes go, as does a trailing dash. `Bug Report` becomes `bug-report`, and `c++` becomes `c`. A tag with nothing usable left is dropped, and so is a sixth.
+- The tag form accepts only lowercase letters, digits and dashes, and says so before posting. Text that arrives another way, such as the JSON route, is still cleaned: `Bug Report` becomes `bug-report`, `c++` becomes `c`, and a tag with nothing usable left, or a sixth, is dropped.
 - Whoever posts a thread may tag it as they post. After that, its author or a board mod edits its tags from the thread page. A comet never tags.
 - A board page filters by tags. `?tags=bug,idea` shows the threads carrying every one. The filter keeps the first five valid tags in the address. The page lists the board's most used tags to pick from, with a search for the rest. The `active` sort ranks threads by their latest comment.
 - The forum's JSON (`urb_read` of a board or thread) gives each post its `tags` and its `active` time.

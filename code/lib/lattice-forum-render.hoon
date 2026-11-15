@@ -518,6 +518,12 @@
   ^-  ?
   &(authed.c ?=(^ tags.brd) !(is-comet:fr who.c))
 ::
+::  +tag-pattern: the browser's check for a tag input. It must match
+::  +valid-tag in lattice-forum-rules. Accepted: a, bug-report, a 24
+::  character tag. Refused: Bug, "a b", 9x, a 25 character tag.
+::
+++  tag-pattern  "[a-z][a-z0-9-]\{0,23}"
+::
 ::  +tag-inputs: one input per tag a thread may carry, filled from have,
 ::  each suggesting the board's 200 most used tags, most used first
 ::
@@ -525,10 +531,21 @@
   |=  [brd=board have=(list tag)]
   ^-  manx
   ;div.tag-inputs
+    ;p.me: Tags: lowercase letters, digits and dashes, like bug-report. Up to five.
     ;*  %+  turn  (gulf 1 max-tags:fr)
         |=  i=@ud
         =/  v=tape  ?:((lte i (lent have)) (trip (snag (dec i) have)) "")
-        ;input(type "text", name "t{(a-co:co i)}", list "tags", maxlength "40", value v);
+        ;input
+          =type  "text"
+          =name  "t{(a-co:co i)}"
+          =list  "tags"
+          =pattern  tag-pattern
+          =maxlength  "24"
+          =title  "lowercase letters, digits and dashes, starting with a letter, 24 at most"
+          =autocapitalize  "none"
+          =autocorrect  "off"
+          =spellcheck  "false"
+          =value  v;
     ;datalist#tags
       ;*  %+  turn  (scag 200 (tag-counts brd))
           |=  [=tag n=@ud]

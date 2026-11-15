@@ -73,6 +73,7 @@ echo "==> $SHIP: board $BRD"
 is "board made" 303 "$(code -X POST "$F/_new" --data "name=$BRD&title=Tags+$BRD&role=poster")"
 SUB=$(get "$F/$BRD/submit")
 has "the submit page has the first tag input" 'name="t1"' "$SUB"
+has "the tag input takes only a tag as stored" 'pattern="[a-z][a-z0-9-]{0,23}" maxlength="24"' "$SUB"
 has "the submit page has a datalist" '<datalist' "$SUB"
 
 echo "==> a tagged thread"
