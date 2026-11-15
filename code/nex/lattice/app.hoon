@@ -586,6 +586,10 @@
         ::  the boards that take comet posts, every start: a board's public
         ::  flag may have moved under an older lattice
         ;<  ~  bind:m  (put-forum-comets root)
+        ::  the tags marker on boards made before tags (+forum-tag-markers).
+        ::  A failure here is printed, and the start goes on.
+        ;<  err=(unit tang)  bind:m  (fiber-try (forum-tag-markers root))
+        %-  (say 2 ?~(err ~ [leaf+"lattice: the forum tags marker sweep failed" u.err]))
         ::  pages published before per-format marks were grown as gmi
         ;<  ~  bind:m  (migrate-pub-marks root)
         ::  a whole-tree action a reload cut short (+job-set)
@@ -4296,9 +4300,13 @@
   ::  lands (its banlist, roles, caps, rate) and stamps us as the author from
   ::  the transport, so nothing we send can claim to be someone else.
   ::
-  ::  op=post|comment|upvote|downvote|unvote. `sent` reports only that the
+  ::  op=post|comment|tag|upvote|downvote|unvote. `sent` reports only that the
   ::  poke was ACCEPTED for delivery; a refusal comes back asynchronously as a
   ::  note on our /forum.sig (stored under /forum/notes), not in this response.
+  ::  `tags` is comma separated: a post's tags, or for op=tag the thread's
+  ::  new set (empty clears it). A tag action goes only to a host whose board
+  ::  has the tags marker; an older host would drop it unread, so it is
+  ::  a 409 here and nothing is sent.
       [%'POST' %forum-post-remote]
     =/  hs=(unit @t)  (~(get by args) 'host')
     ?~  hs  (send-err eyre-id 400 'missing host')
@@ -4317,10 +4325,20 @@
       =/  v=@t  (~(gut by fargs) k (~(gut by args) k ''))
       ?:(=('' v) ~ `v)
     =/  op=@t  (fall (grab 'op') 'post')
+    =/  tags=(set tag:ft)
+      %-  norm-tags:fr
+      %+  turn
+        (fall (rush (fall (grab 'tags') '') (more com (star ;~(less com next)))) ~)
+      crip
     =/  act=(unit action:ft)
       ?:  =('post' op)
         ?~  title=(grab 'title')  ~
-        `[%new-post name u.title (grab 'url') (grab 'body')]
+        ?~  tags  `[%new-post name u.title (grab 'url') (grab 'body')]
+        `[%new-post-tagged name u.title (grab 'url') (grab 'body') tags]
+      ?:  =('tag' op)
+        ?~  pid=(grab 'post')  ~
+        ?~  id=(slaw %ud u.pid)  ~
+        `[%set-tags name u.id tags]
       ?:  =('comment' op)
         ?~  pid=(grab 'post')  ~
         ?~  id=(slaw %ud u.pid)  ~
@@ -4339,6 +4357,13 @@
       ?:  =('downvote' op)  `[%downvote name u.tgt]
       `[%remove-vote name u.tgt]
     ?~  act  (send-err eyre-id 400 'bad or missing forum action fields')
+    ;<  no=(unit [@ud @t])  bind:m
+      =/  n  (fiber:fiber:nexus ,(unit [@ud @t]))
+      ?.  ?=(?(%new-post-tagged %set-tags) -.u.act)  (pure:n ~)
+      ;<  bo=(unit board:ft)  bind:n  (urb-forum-board | u.shp name)
+      ?~  bo  (pure:n `[504 'unreachable or denied'])
+      (pure:n ?^(tags.u.bo ~ `[409 'this board\'s host does not take tags yet']))
+    ?^  no  (send-err eyre-id u.no)
     ;<  base=(unit path)  bind:m  (peer-base-cached u.shp)
     ;<  sent=?  bind:m
       %^  remote-load-poke-wait  u.shp
@@ -7351,7 +7376,7 @@
           default-role.act
           %.y
       ==
-    =/  brd=board:ft  [info ~ 1 ~ ~ ~ ~ '' ~]
+    =/  brd=board:ft  [info ~ 1 ~ ~ ~ ~ '' ~ `~]
     ;<  ~  bind:m  (forum-put up bdir ~(tap by (grubs:fb brd)) ~)
     ;<  ~  bind:m  (bump-beacon %forum now)
     (pure:m ~)
@@ -7508,6 +7533,27 @@
     =/  lod=(each board:ft @t)  (load:fb u.gs)
     &(?=(%& -.lod) public.info.p.lod)
   $(noms t.noms, open ?:(pub [i.noms open] open))
+::  +forum-tag-markers: the empty tags grub on each board that has none,
+::  so a board made before tags takes them. The grub is the marker a peer
+::  reads to know this host takes tag actions. A board that has the grub
+::  is not loaded. A board that does not load is skipped. Run by the
+::  writer at its start.
+::
+++  forum-tag-markers
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  noms=(list @ta)  bind:m  forum-boards
+  |-  ^-  form:m
+  ?~  noms  (pure:m ~)
+  =/  bdir=path  /forum/boards/[i.noms]
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs root bdir)
+  ?~  gs  $(noms t.noms)
+  ?:  (lien u.gs |=(g=grub:fb =(pax.g /content/tags)))  $(noms t.noms)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?.  ?=(%& -.lod)  $(noms t.noms)
+  ;<  ~  bind:m  (forum-put root bdir ~[[/content/tags [%1 ~]]] ~)
+  $(noms t.noms)
 ::  +forum-remote-apply: the per-action gates for a REMOTE forum action -- bad
 ::  board name, owner-only, board-exists, private-board membership, then role
 ::  and caps so the refusal names itself -- then +apply-forum-core. +act:fa
@@ -7527,17 +7573,21 @@
   ?:  &(!public.info.u.obrd !(~(has in mem) src))
     (pure:m `'forum: this board is private; you are not a member')
   ::  role and caps for a post or a comment (votes need neither, as in +act).
+  ::  A tagged post meets a post's; +act refuses a bad %set-tags itself.
+  =/  pla=action:ft
+    ?.  ?=(%new-post-tagged -.act)  act
+    [%new-post name.act title.act url.act body.act]
   =/  need=(unit @t)
-    ?+  -.act  ~
+    ?+  -.pla  ~
         %new-post
       ?.  (can-post:fr src u.obrd)  `'forum: your role on this board cannot post'
-      ?.  (sane-post:fr title.act url.act body.act)
+      ?.  (sane-post:fr title.pla url.pla body.pla)
         `'forum: a post needs a title (300 bytes), a url (2,048) and a body (40,000)'
       ~
     ::
         %new-comment
       ?.  (can-post:fr src u.obrd)  `'forum: your role on this board cannot comment'
-      ?.  (sane-comment:fr body.act)  `'forum: a comment holds 1 to 10,000 bytes'
+      ?.  (sane-comment:fr body.pla)  `'forum: a comment holds 1 to 10,000 bytes'
       ~
     ==
   ?^  need  (pure:m need)
@@ -15993,7 +16043,7 @@
         ""
     ==
   =/  page=[title=@t body=manx]
-    ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
+    ?~  pid  (render-board:fre c brd (parse-view:fre args))
     (render-thread:fre c brd u.pid)
   (send-html eyre-id (forum-doc page "" theme-link %.n 0))
 ::  +serve-urb-read: GET /urb-read?url=urb://...[&list=1], what the reader
@@ -16334,6 +16384,8 @@
         ['down' (numb:enjs:format ~(wyt in down-votes.p))]
         ['comments' (numb:enjs:format comment-count.p)]
         ['pinned' b+(~(has in pinned.brd) id.p)]
+        ['tags' a+(turn (tags-of:fre brd id.p) |=(t=tag:ft s+t))]
+        ['active' s+(scot %da (last-active:fre brd p))]
     ==
   =/  top=(list [@t json])
     :~  ['board' s+name.info.brd]
@@ -16399,7 +16451,7 @@
       ['type' s+?~(mm mk (crip (pax-str p.u.mm)))]
       ['size' (numb:enjs:format ?~(mm ?@(nn (met 3 nn) 0) p.q.u.mm))]
   ==
-::  +serve-forum-remote: GET /apps/lattice/forum-remote/<host>/<board>[/<post>]
+::  +serve-forum-remote: GET /apps/lattice/forum-remote/<host>/<board>[/<post>|/submit]
 ::  (owner-gated; see the route at the /x explorer). Render a peer's PUBLIC
 ::  board or thread through the same renderer as the local view, with the
 ::  action forms ENABLED (authed=%.y, who=our): a viewer who is a mod or
@@ -16431,8 +16483,9 @@
   =/  board=@ta  i.t.pax
   ?.  ((sane %tas) board)  (send-err eyre-id 404 'not found')
   ?.  ?=(?(~ [@ ~]) t.t.pax)  (send-err eyre-id 404 'not found')
-  =/  pid=(unit @ud)  ?~(t.t.pax ~ ((slat %ud) i.t.t.pax))
-  ?:  &(?=(^ t.t.pax) ?=(~ pid))  (send-err eyre-id 404 'not found')
+  =/  sub=?  =(/submit t.t.pax)
+  =/  pid=(unit @ud)  ?:(sub ~ ?~(t.t.pax ~ ((slat %ud) i.t.t.pax)))
+  ?:  &(?=(^ t.t.pax) ?=(~ pid) !sub)  (send-err eyre-id 404 'not found')
   ;<  our=@p  bind:m  bowl-our
   ;<  now=@da  bind:m  bowl-now
   ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs-remote u.host board)
@@ -16454,7 +16507,8 @@
         ""
     ==
   =/  page=[title=@t body=manx]
-    ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
+    ?:  sub  (render-submit:fre c brd)
+    ?~  pid  (render-board:fre c brd (parse-view:fre args))
     (render-thread:fre c brd u.pid)
   (send-html eyre-id (forum-doc page "" "" %.y nn))
 ::  +forum-load-board: a board by name, or ~ if missing or unreadable.
@@ -16536,9 +16590,9 @@
   ?~  t.pax
     %-  send-html
     :-  eyre-id
-    (forum-doc (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args)) "" theme-link %.y nn)
+    (forum-doc (render-board:fre c brd (parse-view:fre args)) "" theme-link %.y nn)
   ?:  =('submit' i.t.pax)
-    (send-html eyre-id (forum-doc (render-submit:fre c nom) "" theme-link %.y nn))
+    (send-html eyre-id (forum-doc (render-submit:fre c brd) "" theme-link %.y nn))
   ?:  =('mod' i.t.pax)
     ;<  off=(set @ta)  bind:m  read-forum-comets-off
     (send-html eyre-id (forum-doc (render-mod:fre c brd !(~(has in off) nom)) "" theme-link %.y nn))
@@ -16563,13 +16617,21 @@
     (stag %post ;~(pfix (jest 'post-') dim:ag))
     ;~(plug (cold %comment (jest 'comment-')) dim:ag ;~(pfix hep dim:ag))
   ==
+::  +forum-form-tags: the tags a form posts, fields t1 to t5
+::
+++  forum-form-tags
+  |=  grab=$-(@t (unit @t))
+  ^-  (set tag:ft)
+  (norm-tags:fr (murn `(list @t)`~['t1' 't2' 't3' 't4' 't5'] grab))
 ::  +forum-form-act: the content forms both forum routes take, on board
 ::  `nom` whose views hang off `base`: a vote, a new post, and a post's
-::  comment, pin, delete and delete-comment. The action and the view to
+::  comment, tags, pin, delete and delete-comment. `takes`: the board has
+::  the tags marker, so its host takes tag actions; without it a new post
+::  drops its tags and a tags form is refused. The action and the view to
 ::  303 to, or ~ for a suffix or fields it doesn't take.
 ::
 ++  forum-form-act
-  |=  [nom=@tas base=tape tl=path grab=$-(@t (unit @t))]
+  |=  [nom=@tas base=tape tl=path grab=$-(@t (unit @t)) takes=?]
   ^-  (unit [act=action:ft to=tape])
   ?+  tl  ~
       [%vote ~]
@@ -16584,6 +16646,9 @@
       [%submit ~]
     =/  ti=(unit @t)  (grab 'title')
     ?~  ti  ~
+    =/  ts=(set tag:ft)  (forum-form-tags grab)
+    ?:  &(takes !=(~ ts))
+      `[[%new-post-tagged nom u.ti (grab 'url') (grab 'body') ts] base]
     `[[%new-post nom u.ti (grab 'url') (grab 'body')] base]
   ::
       [@ @ ~]
@@ -16596,6 +16661,10 @@
       ?~  bd  ~
       =/  par=(unit comment-id:ft)  (biff (grab 'parent') (slat %ud))
       `[[%new-comment nom u.pid par u.bd] thread]
+    ::
+        %tags
+      ?.  takes  ~
+      `[[%set-tags nom u.pid (forum-form-tags grab)] thread]
     ::
         %pin
       `[[%pin-post nom u.pid =(`'true' (grab 'pinned'))] base]
@@ -16617,7 +16686,7 @@
 ::
 ::    /_new                       create a board
 ::    /<b>/vote /submit /sidebar  upvote, new post, set sidebar
-::    /<b>/<id>/comment|pin|delete|delete-comment
+::    /<b>/<id>/comment|tags|pin|delete|delete-comment
 ::    /<b>/mod/role|remove-role|edit-info|public|prune|delete
 ::
 ++  serve-forum-post
@@ -16659,8 +16728,13 @@
     ;<  off=(set @ta)  bind:m  read-forum-comets-off
     ;<  ~  bind:m  (poke-eval [%forum-comets nom (~(has in off) nom)])
     (send-see-other eyre-id "{base}/mod")
+  ::  a tags form on a board without the tags marker goes back to its
+  ::  thread unsent, as on a peer's board
+  =/  tid=(unit @ud)  ?.(?=([@ %tags ~] tl) ~ ((slat %ud) i.tl))
+  ?:  &(?=(^ tid) ?=(~ tags.brd))
+    (send-see-other eyre-id "{base}/{(a-co:co u.tid)}")
   =/  res=(unit [act=action:ft to=tape])
-    ?+  tl  (forum-form-act nom base tl grab)
+    ?+  tl  (forum-form-act nom base tl grab ?=(^ tags.brd))
         [%sidebar ~]
       `[[%set-sidebar nom (fall (grab 'sidebar') '')] "{base}/mod"]
     ::
@@ -16728,10 +16802,23 @@
   =/  base=tape
     "/apps/lattice/forum-remote/{(scow %p u.host)}/{(trip nom)}"
   =/  tl=path  t.t.pax
+  ::  a form with tags reads the host's board first: a host without the
+  ::  tags marker would drop the action. A tags form to it goes back to
+  ::  its thread unsent, as on the owner's board, and a new post goes
+  ::  without its tags.
+  =/  tid=(unit @ud)  ?.(?=([@ %tags ~] tl) ~ ((slat %ud) i.tl))
+  ;<  takes=?  bind:m
+    =/  n  (fiber:fiber:nexus ,?)
+    ?.  |(?=(^ tid) &(?=([%submit ~] tl) !=(~ (forum-form-tags grab))))
+      (pure:n |)
+    ;<  bo=(unit board:ft)  bind:n  (urb-forum-board | u.host nom)
+    (pure:n &(?=(^ bo) ?=(^ tags.u.bo)))
+  ?:  &(?=(^ tid) !takes)
+    (send-see-other eyre-id "{base}/{(a-co:co u.tid)}")
   ::  ~ act = bad fields; act is ~ with a to = a refused suffix (no send)
   =/  res=(unit [act=(unit action:ft) to=tape])
     ?+  tl
-      ?~  r=(forum-form-act nom base tl grab)  ~
+      ?~  r=(forum-form-act nom base tl grab takes)  ~
       `[`act.u.r to.u.r]
         [%sidebar ~]
       `[`[%set-sidebar nom (fall (grab 'sidebar') '')] base]

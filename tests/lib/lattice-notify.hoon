@@ -160,6 +160,7 @@
       ~
       ''
       ~
+      ~
   ==
 ++  test-reply-to-post
   %+  expect-eq  !>((sy ~[our]))

@@ -25,7 +25,11 @@
 ::    theme:  href of the theme stylesheet, or "" for none
 ::
 +$  ctx  [who=@p authed=? now=@da base=tape theme=tape]
-+$  sort-mode  ?(%hot %new %top)
++$  sort-mode  ?(%hot %new %top %active)
+::  +view: what the board page shows, from the query args. tags: the
+::  filter, threads must carry every one. tq: the filter's tag search.
+::
++$  view  [mode=sort-mode page=@ud tags=(set tag) tq=@t]
 ::
 ++  per-page  30
 ::
@@ -76,6 +80,14 @@
   .board-sidebar h4 { margin: 0 0 8px 0; font-size: 14px; color: var(--muted,#8a8a8a); text-transform: uppercase; }
   .mobile-sidebar { display: none; margin-bottom: 12px; font-size: 14px; }
   .faint { color: var(--muted,#8a8a8a); }
+  .tag { font-size: 12px; padding: 0 6px; margin-right: 4px; text-decoration: none;
+         color: var(--link,#1a6ed8); border: 1px solid var(--border,#8886); border-radius: 8px; }
+  .tag.on { background: var(--accent,#1a6ed8); color: var(--on-accent,#fff);
+            border-color: var(--accent,#1a6ed8); }
+  .filter, .filter-on { font-size: 14px; margin-bottom: 10px; }
+  .filter summary { cursor: pointer; color: var(--link,#1a6ed8); }
+  .filter .tag { display: inline-block; margin: 2px 4px 2px 0; }
+  .ct .tag-inputs input[type=text] { width: 8em; margin: 0 4px 4px 0; }
   @media (max-width: 768px) {
     .ct { padding: 8px; }
     .board-layout { flex-direction: column; }
@@ -249,13 +261,103 @@
   ?:  =(va vb)  (gth created.a created.b)
   (gth va vb)
 ::
+::  +last-active: the newest comment's time, or the post's when it has
+::  none
+::
+++  last-active
+  |=  [brd=board p=post]
+  ^-  @da
+  =/  cms=(list comment)  ~(val by (~(gut by comments.brd) id.p ~))
+  `@da`(roll `(list @da)`[created.p (turn cms |=(cm=comment created.cm))] max)
+::
+::  +sort-active: by last activity, each post keyed once, newer post
+::  first at a tie
+::
+++  sort-active
+  |=  [brd=board posts=(list post)]
+  ^-  (list post)
+  %+  turn
+    %+  sort  (turn posts |=(p=post [(last-active brd p) p]))
+    |=  [a=[at=@da p=post] b=[at=@da p=post]]
+    ?.  =(at.a at.b)  (gth at.a at.b)
+    (gth created.p.a created.p.b)
+  |=([* p=post] p)
+::
 ++  sort-by
-  |=  [mode=sort-mode now=@da posts=(list post)]
+  |=  [mode=sort-mode now=@da brd=board posts=(list post)]
   ^-  (list post)
   ?-  mode
-    %hot  (sort-hot now posts)
-    %new  (sort-new posts)
-    %top  (sort-top posts)
+    %hot     (sort-hot now posts)
+    %new     (sort-new posts)
+    %top     (sort-top posts)
+    %active  (sort-active brd posts)
+  ==
+::
+::  +tags-of: a thread's tags, in aor order, five at most however many
+::  a remote host's grub holds
+::
+++  tags-of
+  |=  [brd=board id=post-id]
+  ^-  (list tag)
+  ?~  tags.brd  ~
+  %+  scag  max-tags:fr
+  (sort (skim ~(tap in (~(gut by u.tags.brd) id ~)) valid-tag:fr) aor)
+::
+::  +tag-counts: the tags on the board's threads, most used first
+::
+++  tag-counts
+  |=  brd=board
+  ^-  (list [=tag n=@ud])
+  ?~  tags.brd  ~
+  =/  counts=(map tag @ud)
+    %-  ~(rep by u.tags.brd)
+    |=  [[id=post-id ts=(set tag)] acc=(map tag @ud)]
+    ?.  (~(has by posts.brd) id)  acc
+    =/  l=(list tag)  (skim ~(tap in ts) valid-tag:fr)
+    |-
+    ?~  l  acc
+    $(l t.l, acc (~(put by acc) i.l +((~(gut by acc) i.l 0))))
+  %+  sort  ~(tap by counts)
+  |=  [a=[=tag n=@ud] b=[=tag n=@ud]]
+  ?.  =(n.a n.b)  (gth n.a n.b)
+  (aor tag.a tag.b)
+::
+::  +tags-arg: tags as the query arg's value, "bug,idea"
+::
+++  tags-arg
+  |=  tags=(set tag)
+  ^-  tape
+  %+  roll  (sort ~(tap in tags) aor)
+  |=  [t=tag acc=tape]
+  ?~(acc (trip t) "{acc},{(trip t)}")
+::
+::  +view-query: the query string for a sort and a filter
+::
+++  view-query
+  |=  [mode=sort-mode tags=(set tag)]
+  ^-  tape
+  ?:  =(~ tags)  "sort={(trip mode)}"
+  "sort={(trip mode)}&tags={(tags-arg tags)}"
+::
+::  +parse-view: the board page's view from the request's query args.
+::  A tag in the filter that is not a valid tag is dropped. The filter
+::  keeps the first five valid tags in the address. A thread holds five
+::  at most, so a longer filter could only list nothing.
+::
+++  parse-view
+  |=  args=(map @t @t)
+  ^-  view
+  =/  parts=(list tape)
+    (fall (rush (~(gut by args) 'tags' '') (more com (star ;~(less com next)))) ~)
+  =/  ts=(set tag)
+    %+  roll  (murn parts |=(t=tape ?.((valid-tag:fr (crip t)) ~ `;;(tag (crip t)))))
+    |=  [t=tag acc=(set tag)]
+    ?:  =(max-tags:fr ~(wyt in acc))  acc
+    (~(put in acc) t)
+  :*  (parse-sort args)
+      (parse-page args)
+      ts
+      (crip (scag 24 (trip (~(gut by args) 'tq' ''))))
   ==
 ::
 ::  +parse-sort / +parse-page: from the request's query args
@@ -264,9 +366,10 @@
   |=  args=(map @t @t)
   ^-  sort-mode
   ?+  (~(gut by args) 'sort' 'hot')  %hot
-    %'hot'  %hot
-    %'new'  %new
-    %'top'  %top
+    %'hot'     %hot
+    %'new'     %new
+    %'top'     %top
+    %'active'  %active
   ==
 ::
 ++  parse-page
@@ -395,21 +498,84 @@
     ;a(href (safe-href u.url.post), target "_blank", rel "noopener noreferrer"): {(trip title.post)}
   ;a(href post-href): {(trip title.post)}
 ::
+::  +tag-links: a thread's tags, each a link to that tag's filter
+::
+++  tag-links
+  |=  [c=ctx ts=(list tag)]
+  ^-  manx
+  ?~  ts  ;span;
+  ;span
+    ;*  %+  turn  `(list tag)`ts
+        |=  t=tag
+        ;a.tag(href "{base.c}?{(view-query %hot (sy ~[t]))}"): {(trip t)}
+  ==
+::
+::  +may-tag: is the viewer offered tag inputs on this board. A comet
+::  never tags; a host with no tags grub takes no tags.
+::
+++  may-tag
+  |=  [c=ctx brd=board]
+  ^-  ?
+  &(authed.c ?=(^ tags.brd) !(is-comet:fr who.c))
+::
+::  +tag-pattern: the browser's check for a tag input. It must match
+::  +valid-tag in lattice-forum-rules. Accepted: a, bug-report, a 24
+::  character tag. Refused: Bug, "a b", 9x, a 25 character tag.
+::
+++  tag-pattern  "[a-z][a-z0-9-]\{0,23}"
+::
+::  +tag-inputs: one input per tag a thread may carry, filled from have,
+::  each suggesting the board's 200 most used tags, most used first
+::
+++  tag-inputs
+  |=  [brd=board have=(list tag)]
+  ^-  manx
+  ;div.tag-inputs
+    ;p.me: Tags: lowercase letters, digits and dashes, like bug-report. Up to five.
+    ;*  %+  turn  (gulf 1 max-tags:fr)
+        |=  i=@ud
+        =/  v=tape  ?:((lte i (lent have)) (trip (snag (dec i) have)) "")
+        ;input
+          =type  "text"
+          =name  "t{(a-co:co i)}"
+          =list  "tags"
+          =pattern  tag-pattern
+          =maxlength  "24"
+          =title  "lowercase letters, digits and dashes, starting with a letter, 24 at most"
+          =autocapitalize  "none"
+          =autocorrect  "off"
+          =spellcheck  "false"
+          =value  v;
+    ;datalist#tags
+      ;*  %+  turn  (scag 200 (tag-counts brd))
+          |=  [=tag n=@ud]
+          ;option(value (trip tag));
+    ==
+  ==
+::
 ::  +render-list: a board's posts, pinned first on page 1, then the rest
 ::  ranked by mode, 30 to a page, with the pager. Rank numbers continue
-::  across pages.
+::  across pages. Only threads carrying every tag in the filter show,
+::  pinned ones included.
 ::
 ++  render-list
-  |=  [c=ctx brd=board mode=sort-mode page=@ud]
+  |=  [c=ctx brd=board v=view]
   ^-  manx
-  =/  posts=(list post)  ~(val by posts.brd)
+  =/  mode=sort-mode  mode.v
+  =/  page=@ud  page.v
+  =/  posts=(list post)
+    %+  skim  ~(val by posts.brd)
+    |=  p=post
+    ?:  =(~ tags.v)  &
+    =/  have=(set tag)  (silt (tags-of brd id.p))
+    (levy ~(tap in tags.v) |=(t=tag (~(has in have) t)))
   =/  is-mod=?  (is-mod:fr who.c brd)
   =/  pinned-posts=(list post)
     (sort-new (skim posts |=(p=post (~(has in pinned.brd) id.p))))
   =/  unpinned=(list post)
     (skim posts |=(p=post !(~(has in pinned.brd) id.p)))
   =/  [total=@ud paged=(list post)]
-    (paginate page (sort-by mode now.c unpinned))
+    (paginate page (sort-by mode now.c brd unpinned))
   =/  pinned-rows=marl
     ?.  &(!=(~ pinned-posts) =(page 1))  ~
     %+  turn  pinned-posts
@@ -424,6 +590,8 @@
         ==
         ;div.me
           ;a(href post-href): {(commafy comment-count.post)} comments
+          ;+  ;/(" ")
+          ;+  (tag-links c (tags-of brd id.post))
           ;+  ?.  &(authed.c is-mod)  ;span;
               ;form(method "post", action "{post-href}/pin", style "display:inline")
                 ;input(type "hidden", name "pinned", value "false");
@@ -436,7 +604,8 @@
   =/  post-rows=marl
     ?~  paged
       ?.  ?=(~ pinned-posts)  ~
-      :~  ;p.me: No posts yet.
+      :~  ?:  =(~ tags.v)  ;p.me: No posts yet.
+          ;p.me: No posts carry these tags.
       ==
     %+  turn  (rank-list-offset paged (mul (dec page) per-page))
     |=  [idx=@ud =post]
@@ -456,6 +625,8 @@
         ;div.me
           ;+  ;/("{(commafy (points-of up-votes.post down-votes.post))} points by {(scow %p author.post)} {(time-ago now.c created.post)} | ")
           ;a(href post-href): {(commafy comment-count.post)} comments
+          ;+  ;/(" ")
+          ;+  (tag-links c (tags-of brd id.post))
           ;+  ?.  &(authed.c |(=(who.c author.post) is-mod))  ;span;
               ;form(method "post", action "{post-href}/delete", style "display:inline")
                 ;+  ;/(" | ")
@@ -471,21 +642,61 @@
       ==
     ==
   ;div.board-main
-    ;*  (weld pinned-rows (weld post-rows ~[(render-pagination "{base.c}?sort={(trip mode)}&" page total)]))
+    ;*  (weld pinned-rows (weld post-rows ~[(render-pagination "{base.c}?{(view-query mode tags.v)}&" page total)]))
   ==
 ::
 ::  +render-board: the board page: header, sort bar, the list, sidebar
 ::
 ++  render-board
-  |=  [c=ctx brd=board mode=sort-mode page=@ud]
+  |=  [c=ctx brd=board v=view]
   ^-  [title=@t body=manx]
   =/  info=board-info  info.brd
   =/  can-mod=?  |(=(who.c host.info) (is-mod:fr who.c brd))
   =/  sort-link
     |=  [m=sort-mode label=tape]
     ^-  manx
-    ?:  =(mode m)  ;strong: {label}
-    ;a(href "{base.c}?sort={(trip m)}"): {label}
+    ?:  =(mode.v m)  ;strong: {label}
+    ;a(href "{base.c}?{(view-query m tags.v)}"): {label}
+  ::  the filter: the 30 most used tags, or with tq every tag holding it.
+  ::  A tag in the filter is marked and its link drops it.
+  ::
+  =/  shown=(list [=tag n=@ud])
+    ?:  =('' tq.v)  (scag 30 (tag-counts brd))
+    =/  q=tape  (cass (trip tq.v))
+    (skim (tag-counts brd) |=([t=tag n=@ud] ?=(^ (find q (trip t)))))
+  =/  filter-kids=marl
+    :~  ;summary: Filter
+        ;div
+          ;*  %+  turn  shown
+              |=  [t=tag n=@ud]
+              ?:  (~(has in tags.v) t)
+                ;a.tag.on(href "{base.c}?{(view-query mode.v (~(del in tags.v) t))}"): {(trip t)} ({(a-co:co n)})
+              ;a.tag(href "{base.c}?{(view-query mode.v (~(put in tags.v) t))}"): {(trip t)} ({(a-co:co n)})
+        ==
+        ;form(method "get", action base.c)
+          ;input(type "text", name "tq", value (trip tq.v), maxlength "24", placeholder "find a tag");
+          ;input(type "hidden", name "sort", value (trip mode.v));
+          ;input(type "hidden", name "tags", value (tags-arg tags.v));
+          ;button(type "submit"): find
+        ==
+    ==
+  =/  filter=manx
+    ?~  tags.brd  ;span;
+    ?:  |(!=(~ tags.v) !=('' tq.v))
+      [[%details ~[[%class "filter"] [%open "open"]]] filter-kids]
+    [[%details ~[[%class "filter"]]] filter-kids]
+  =/  filter-on=manx
+    ?:  =(~ tags.v)  ;span;
+    ;div.filter-on
+      ;span: tags:{" "}
+      ;*  %+  turn  (sort ~(tap in `(set tag)`tags.v) aor)
+          |=  t=tag
+          ;span.tag.on
+            ;+  ;/("{(trip t)} ")
+            ;a(href "{base.c}?{(view-query mode.v (~(del in tags.v) t))}", title "remove"): ✕
+          ==
+      ;a(href "{base.c}?{(view-query mode.v ~)}"): clear
+    ==
   =/  header=manx
     ;div
       ;h3: {(trip title.info)}
@@ -506,7 +717,11 @@
         ;+  (sort-link %new "new")
         ;+  ;/(" | ")
         ;+  (sort-link %top "top")
+        ;+  ;/(" | ")
+        ;+  (sort-link %active "active")
       ==
+      ;+  filter
+      ;+  filter-on
     ==
   =/  has-side=?  !=('' sidebar.brd)
   =/  side-node=manx
@@ -523,7 +738,7 @@
     ==
   =/  body=manx
     ;div.board-layout
-      ;+  (render-list c brd mode page)
+      ;+  (render-list c brd v)
       ;+  side-node
     ==
   %^  page-shell  c  (crip "forum - {(trip title.info)}")
@@ -577,6 +792,17 @@
               ;button.va(type "submit"): {?:(is-pinned "unpin" "pin")}
             ==
       ==
+      ;div.me
+        ;+  (tag-links c (tags-of brd id.post))
+      ==
+      ;+  ?.  &((may-tag c brd) (can-tag:fr who.c author.post brd))  ;span;
+          ;details
+            ;summary.me: edit tags
+            ;form(method "post", action "{post-path}/tags")
+              ;+  (tag-inputs brd (tags-of brd id.post))
+              ;input.btn(type "submit", value "save tags");
+            ==
+          ==
       ;+  ?~  body.post  ;span;
           (linkify-div "post-body" (trip u.body.post))
     ==
@@ -629,8 +855,17 @@
 ::  +render-submit: the new-post form
 ::
 ++  render-submit
-  |=  [c=ctx name=board-name]
+  |=  [c=ctx brd=board]
   ^-  [title=@t body=manx]
+  =/  name=board-name  name.info.brd
+  =/  tag-row=manx
+    ?.  &(authed.c !(is-comet:fr who.c))  ;span;
+    ?~  tags.brd  ;p.me: This board's host does not take tags yet.
+    ;div
+      ;label: tags (optional, up to five)
+      ;br;
+      ;+  (tag-inputs brd ~)
+    ==
   %^  page-shell  c  'forum - submit'
   :_  `[base.c (trip name)]
   :~  ;h3: Submit to {(trip name)}
@@ -652,6 +887,8 @@
           ;br;
           ;textarea(name "body");
         ==
+        ;br;
+        ;+  tag-row
         ;br;
         ;input.btn(type "submit", value "submit");
       ==
