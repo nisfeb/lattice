@@ -59,7 +59,11 @@ def main():
         if time.time() > end:
             out_of_time('the shell to answer')
         time.sleep(2)
-    shell = 'shell' if any(c['name'] == 'shell' for c in j['children']) else 'shell.shell'
+    names = {c.get('name') for c in j.get('children', [])} if isinstance(j, dict) else set()
+    shell = next((n for n in ('shell', 'shell.shell') if n in names), None)
+    if shell is None:
+        print(f'hoon-build: no shell under /apps: the listing was {json.dumps(j)[:300]}', flush=True)
+        sys.exit(1)
     desk = f'/grubbery/ball/apps/{shell}/desks/lattice.desk'
     inst = desk + '/desk/data/lattice.lattice_app'
 

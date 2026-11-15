@@ -30,7 +30,10 @@ code() { curl -s -m 120 -o /dev/null -w '%{http_code}' -H "$CK" "$@"; }
 SHIP=$(curl -s -m 30 -H "$CK" "$URL/~/host")
 [ -n "$SHIP" ] || { echo "FAIL  the ship answers /~/host"; exit 1; }
 # the shell is /apps/shell, or /apps/shell.shell on an older kernel
-SH=$(get "$URL/grubbery/ball/apps?list=1" | grep -q '"name":"shell"' && echo shell || echo shell.shell)
+SH_LS=$(curl -sf -m 30 -H "$CK" "$URL/grubbery/ball/apps?list=1") || { echo "FAIL  list /apps on $URL did not answer"; exit 1; }
+if grep -q '"name":"shell"' <<<"$SH_LS"; then SH=shell
+elif grep -q '"name":"shell.shell"' <<<"$SH_LS"; then SH=shell.shell
+else echo "FAIL  no shell under /apps on $URL: ${SH_LS:0:300}"; exit 1; fi
 INST=/apps/$SH/desks/lattice.desk/desk/data/lattice.lattice_app
 T="${TMPDIR:-/tmp}/fods-views-$$"; mkdir -p "$T"
 # two hostile spreadsheets: markup in a sheet name and in cells, and a

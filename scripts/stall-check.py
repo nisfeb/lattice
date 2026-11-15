@@ -137,7 +137,10 @@ def main():
         r = urllib.request.Request(a.url.rstrip('/') + '/grubbery/ball/apps?list=1', headers={'Cookie': ck})
         with urllib.request.urlopen(r, timeout=120) as resp:
             names = {c['name'] for c in json.loads(resp.read())['children']}
-        inst = (a.url.rstrip('/') + '/grubbery/ball/apps/' + ('shell' if 'shell' in names else 'shell.shell')
+        shell = next((n for n in ('shell', 'shell.shell') if n in names), None)
+        if shell is None:
+            sys.exit(f'stall-check: no shell under /apps: it lists {sorted(names)}')
+        inst = (a.url.rstrip('/') + '/grubbery/ball/apps/' + shell
                 + '/desks/lattice.desk/desk/data/lattice.lattice_app')
 
         def shares():

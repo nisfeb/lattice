@@ -38,8 +38,11 @@ const HDIR = join(here, '..', 'tests', 'writer', 'corpus', 'hostile');
 const check = makeCheck();
 const ORIGIN = new URL(env.base).origin;
 //  the shell is /apps/shell, or /apps/shell.shell on an older kernel
-const APPS = await (await fetch(env.base + '/grubbery/ball/apps?list=1', { headers: { Cookie: env.cookie } })).json();
-const SHELL = APPS.children.some((c) => c.name === 'shell') ? 'shell' : 'shell.shell';
+const APPS = await (await fetch(env.base + '/grubbery/ball/apps?list=1', { headers: { Cookie: env.cookie } })).text();
+let appNames = [];
+try { appNames = JSON.parse(APPS).children.map((c) => c.name); } catch { /* reported below */ }
+const SHELL = ['shell', 'shell.shell'].find((n) => appNames.includes(n));
+if (!SHELL) { console.error('FAIL  no shell under /apps: ' + APPS.slice(0, 300)); process.exit(1); }
 const INST = `/apps/${SHELL}/desks/lattice.desk/desk/data/lattice.lattice_app`;
 
 //  The crafted document: what the corpus files leave out. Every payload

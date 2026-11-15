@@ -193,9 +193,14 @@ async function get(url, cookie, ms = 30000) {
 const DESKS = new Map();
 async function deskOf(url, cookie) {
   if (!DESKS.has(url)) {
-    const r = await get(url + '/grubbery/ball/apps?list=1', cookie);
-    if (r.status !== 200) return '/grubbery/ball/apps/shell/desks/lattice.desk';  // not up yet: ask again next time
-    const shell = JSON.parse(r.text).children.some((c) => c.name === 'shell') ? 'shell' : 'shell.shell';
+    //  just after a boot the shell is not bound yet: wait for it to answer
+    let r;
+    await until('the shell on ' + url + ' to answer', 300, async () =>
+      (r = await get(url + '/grubbery/ball/apps?list=1', cookie)).status === 200, 2000);
+    let names = [];
+    try { names = JSON.parse(r.text).children.map((c) => c.name); } catch { /* reported below */ }
+    const shell = ['shell', 'shell.shell'].find((n) => names.includes(n));
+    if (!shell) throw new Error(`no shell under /apps on ${url}: it answered ${r.text.slice(0, 300)}`);
     DESKS.set(url, `/grubbery/ball/apps/${shell}/desks/lattice.desk`);
   }
   return DESKS.get(url);

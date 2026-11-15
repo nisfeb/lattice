@@ -420,8 +420,12 @@ section_exposure() {
 # behind (its save fiber ended inside the minute it waits) has no reader
 section_sweep() {
   echo "==> sweep (/link-done on $ASHIP, across a reload of lattice)"
-  local sh; sh=$(A_ "${A_URL%/}/grubbery/ball/apps?list=1" | grep -q '"name":"shell"' && echo shell || echo shell.shell)
-  local inst="${A_URL%/}/grubbery/ball${A_INST:-/apps/$sh/desks/lattice.desk/desk/data/lattice.lattice_app}"
+  local SH SH_LS
+  SH_LS=$(A_ -f "${A_URL%/}/grubbery/ball/apps?list=1") || { echo "FAIL  list /apps on $A_URL did not answer"; exit 1; }
+  if grep -q '"name":"shell"' <<<"$SH_LS"; then SH=shell
+  elif grep -q '"name":"shell.shell"' <<<"$SH_LS"; then SH=shell.shell
+  else echo "FAIL  no shell under /apps on $A_URL: ${SH_LS:0:300}"; exit 1; fi
+  local inst="${A_URL%/}/grubbery/ball${A_INST:-/apps/$SH/desks/lattice.desk/desk/data/lattice.lattice_app}"
   done_ls() { A_ "$inst/link-done?list=1" | jq -c '[.children[].name]'; }
   A_ -o /dev/null -X POST --data 'action=create-file&filename=orphan&blot=/noun' "$inst/link-done"
   is "an orphan answer sits in /link-done" '["orphan"]' "$(done_ls)"
