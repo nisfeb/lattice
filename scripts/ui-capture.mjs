@@ -41,8 +41,15 @@ await page.evaluateOnNewDocument(() => {
   }).observe(document, { subtree: true, attributes: true, attributeFilter: ['hidden'] });
 });
 
+//  The date in an Inbox name is the device's: a zone whose date differs
+//  from UTC's at this hour, so a name dated by UTC is caught
+const utcHour = new Date().getUTCHours();
+await page.emulateTimezone(utcHour >= 10 ? 'Pacific/Kiritimati' : 'Pacific/Pago_Pago');
+const utcToday = new Date().toISOString().slice(0, 10);
+
 //  the outage, as ui-offline.mjs makes it: the save and probe routes abort
 let shipDown = false;
+let holdSave = 0;          // ms each page-save is held before it goes
 const saves = [];          // every page-save the editor sent: {name, type, isNew}
 await page.setRequestInterception(true);
 page.on('request', (r) => {
@@ -52,6 +59,10 @@ page.on('request', (r) => {
     saves.push({ name: q.get('name'), type: q.get('type'), isNew: q.get('new') === '1' });
   }
   const down = shipDown && /page-save|legacy-status|page-cmd|know-save/.test(u);
+  if (!down && holdSave && /\/page-save\?/.test(u)) {
+    setTimeout(() => r.continue().catch(() => {}), holdSave);
+    return;
+  }
   (down ? r.abort() : r.continue()).catch(() => {});
 });
 
@@ -82,6 +93,7 @@ const qCount = () => page.evaluate(() => new Promise((res) => {
 }));
 
 const boot = async () => {
+  await leaving();
   await page.goto(env.app, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await page.waitForFunction(
     () => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0
@@ -100,6 +112,13 @@ const front = () => page.evaluate(() => {
 });
 const dlgOpen = () => page.evaluate(() => !document.getElementById('dlg').hidden);
 const shows = () => page.evaluate(() => window.__dlgShows);
+//  The editor's dialogs over the whole run: the counter starts again on
+//  every load, so it is added up before each one. dlgMeant counts the
+//  dialogs the suite opens on purpose (a folder's +, Move or rename), and
+//  the end check says nothing else opened one.
+let dlgBase = 0, dlgMeant = 0;
+const dlgSum = async () => dlgBase + ((await shows().catch(() => 0)) || 0);
+const leaving = async () => { dlgBase = await dlgSum(); };
 //  a dialog left over from a step that failed must not hold up the next
 const unstick = async () => {
   if (await dlgOpen()) await page.evaluate(() => document.getElementById('dlgcancel').click());
@@ -141,7 +160,6 @@ const capturedAs = async (text, before) => waitFor(async () => {
 
 let step = 'setup';
 let baseline = [];
-let journal = null;
 try {
   await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
   await page.evaluate(async () => {
@@ -185,7 +203,9 @@ try {
     const secs = (Date.now() - t0) / 1000;
     check('A: typed text is saved under inbox/<date>-NNNN', !!name1 && INBOX.test(name1), String(name1));
     check('A: within the autosave delay (2 s and the round trip)', !!name1 && secs < 8, secs.toFixed(1) + ' s');
-    check('A: the name carries today\'s local date', !!name1 && name1.slice(6, 16) === await today(), name1);
+    const local = await today();
+    check('A: the name carries the device\'s local date, not UTC\'s', !!name1 && name1.slice(6, 16) === local
+      && local !== utcToday, JSON.stringify({ name1, local, utcToday }));
     check('A: the ship holds the text', !!name1 && (await shipBody(name1)) === T1);
     check('A: the save was a create, as markdown', saves.slice(n0).some((x) => x.name === name1 && x.isNew && x.type === 'md'),
       JSON.stringify(saves.slice(n0)));
@@ -234,6 +254,24 @@ try {
     check('A: both pages hold their own text',
       !!name3 && !!name4 && (await shipBody(name3)) === T3 && (await shipBody(name4)) === T4);
 
+    //  five clashes in a row: the save fails, and the next one still draws
+    //  (the name in the field is a drawn one, not typed)
+    step = 'A4 five clashes';
+    await page.evaluate((x) => { window.__rq = [x, x, x, x, x]; }, a);
+    await plus();
+    await sleep(500);
+    n0 = saves.length;
+    const T4b = 'five clashes ' + RUN;
+    await setText(T4b);
+    const five = await waitFor(() => page.evaluate(() => window.__rq.length === 0
+      && /already exists/.test(document.getElementById('status').textContent)), 20000, 300);
+    check('A: five taken draws in a row fail the save, as any save fails',
+      !!five && saves.slice(n0).filter((x) => x.name === name3).length === 5, JSON.stringify(saves.slice(n0)));
+    await setText(T4b + '!');
+    const name4b = await landed(15000);
+    check('A: the next save draws again and lands', !!name4b && INBOX.test(name4b) && name4b !== name3
+      && (await shipBody(name4b)) === T4b + '!', String(name4b));
+
     // ── A5. an empty page writes nothing ──
     step = 'A5 empty';
     await plus();
@@ -275,7 +313,30 @@ try {
     const c6 = await capturedAs(T6, before);
     check('A: text typed then + again at once is captured', !!c6, String(c6));
 
+    step = 'A6 group switch';
+    before = await inboxOnShip();
+    await page.evaluate(() => { window.latSplits.split('r'); });
+    await waitFor(() => page.evaluate(() => window.latTabs.groups().length >= 2), 5000);
+    await page.evaluate(() => {
+      const gs = document.querySelectorAll('.tgroup');
+      gs[gs.length - 1].querySelector('[data-sb="new"]').click();
+    });
+    await sleep(800);
+    const gtab = (await front()).id;
+    const T6b = 'left by a group switch ' + RUN;
+    await setText(T6b);
+    await page.evaluate(() => { window.latTabs.focus(0); });
+    const c6b = await capturedAs(T6b, before);
+    check('A: text typed in a split then the other group focused at once is captured', !!c6b, String(c6b));
+    check('A: and the tab in the group left is named for it', !!c6b && await page.evaluate((id, k) =>
+      window.latTabs.groups().some((g) => g.tabs.some((t) => t.id === id && t.key === k)), gtab, c6b),
+      JSON.stringify(await page.evaluate(() => window.latTabs.groups())));
+    await page.evaluate(() => { localStorage.removeItem('appTabs'); });
+    await boot();
+
     step = 'A6 close';
+    await plus();
+    await sleep(500);
     before = await inboxOnShip();
     s0 = await shows();
     const nat1 = natives;
@@ -299,6 +360,7 @@ try {
     check('A: an offline capture is queued', !!q1, 'q=' + await qCount());
     check('A: and named in the Inbox', INBOX.test(f.key || '') && f.key === f.name, JSON.stringify(f));
     const name8 = f.key;
+    await leaving();
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 90000 });
     await page.waitForFunction(() => !!window.latTabs, { timeout: 90000 });
     await sleep(2000);
@@ -308,6 +370,31 @@ try {
     const q0 = await waitFor(async () => (await qCount()) === 0, 30000, 500);
     check('A: it lands when the routes answer again', !!q0 && (await shipBody(name8)) === T8,
       JSON.stringify({ q: await qCount(), body: await shipBody(name8) }));
+
+    //  an offline capture whose drawn name someone else takes before the
+    //  ship is back lands under another Inbox name, and theirs is left be
+    step = 'A7 offline clash';
+    before = await inboxOnShip();
+    const cf0 = await treePages('conflicts/');
+    shipDown = true;
+    await plus();
+    await sleep(500);
+    const T8b = 'offline, name taken ' + RUN;
+    await setText(T8b);
+    await waitFor(async () => (await qCount()) === 1, 15000);
+    const taken = (await front()).key;
+    const THEIRS = 'someone else made this ' + RUN;
+    await api('page-save?type=md&new=1&name=' + encodeURIComponent(taken), { method: 'POST', body: THEIRS });
+    shipDown = false;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(async () => (await qCount()) === 0, 30000, 500);
+    const c8b = await capturedAs(T8b, [...before, taken]);
+    check('A: a replayed capture whose name was taken lands under another Inbox name', !!c8b && c8b !== taken,
+      JSON.stringify({ taken, c8b }));
+    check('A: the page that took the name is untouched', (await shipBody(taken)) === THEIRS);
+    check('A: the tab follows the new name', !!c8b && (await front()).key === c8b, JSON.stringify(await front()));
+    const cf1 = (await treePages('conflicts/')).filter((n) => !cf0.includes(n));
+    check('A: and no conflicts/ copy is made of it', !cf1.length, JSON.stringify(cf1));
     await boot();
 
     // ── A8. the toolbar's New page and a split group's + ──
@@ -353,6 +440,7 @@ try {
       if (a) a.click();
       return !!a;
     }, RUN);
+    dlgMeant++;
     check('A: the folder has its +', await addf());
     const up = await waitFor(dlgOpen, 5000, 100);
     const seedv = await page.evaluate(() => document.getElementById('dlginput').value);
@@ -377,6 +465,7 @@ try {
       JSON.stringify(saves.slice(n0)));
 
     step = 'A9 typed';
+    dlgMeant++;
     await addf();
     await waitFor(dlgOpen, 5000, 100);
     await page.evaluate(() => document.getElementById('dlginput').focus());
@@ -393,6 +482,7 @@ try {
     step = 'A9 escape';
     const fe = await front();
     n0 = saves.length;
+    dlgMeant++;
     await addf();
     await waitFor(dlgOpen, 5000, 100);
     await page.keyboard.press('Escape');
@@ -402,11 +492,31 @@ try {
       && fe2.key === fe.key && fe2.ntabs === fe.ntabs, JSON.stringify([fe, fe2]));
 
     step = 'A9 tree menu';
+    dlgMeant++;
     await page.evaluate((r) => window.latTreeMenu.open('f:' + r), RUN);
     await page.evaluate(() => document.querySelector('.treemenu [data-mi="new"]').click());
     const tm = await waitFor(dlgOpen, 5000, 100);
     check('A: the tree menu\'s New page here still shows the dialog', !!tm);
     await unstick();
+
+    step = 'A9 blank sheet';
+    n0 = saves.length;
+    dlgMeant++;
+    await addf();
+    await waitFor(dlgOpen, 5000, 100);
+    await page.evaluate(() => {
+      const k = document.getElementById('dlgkind');
+      k.value = 'fods'; k.dispatchEvent(new Event('change'));
+      document.getElementById('dlginput').focus();
+    });
+    await page.keyboard.press('Enter');
+    const sheetUp = await waitFor(async () => (await front()).kind === 'fods'
+      && (await page.evaluate(() => document.getElementById('src').value.length > 0)), 20000);
+    await sleep(1500);
+    await page.keyboard.down('Control'); await page.keyboard.press('s'); await page.keyboard.up('Control');
+    await sleep(3000);
+    check('A: an untouched blank spreadsheet with no name writes nothing, Ctrl+S included',
+      !!sheetUp && saves.length === n0, JSON.stringify(saves.slice(n0)));
 
     // ── A10. Move or rename ──
     step = 'A10 move captured';
@@ -415,6 +525,7 @@ try {
     const T12 = 'to be moved ' + RUN;
     await setText(T12);
     const name12 = await landed();
+    dlgMeant++;
     await page.evaluate(() => document.getElementById('tpath').click());
     await waitFor(dlgOpen, 5000, 100);
     const moved = RUN + '/moved';
@@ -422,7 +533,8 @@ try {
       document.getElementById('dlginput').value = n;
       document.getElementById('dlgok').click();
     }, moved);
-    const mv = await waitFor(async () => (await shipBody(moved)) === T12, 15000, 500);
+    const mv = await waitFor(async () => (await shipBody(moved)) === T12
+      && !(await inboxOnShip()).includes(name12) && (await front()).key === moved, 40000, 500);
     check('A: Move or rename moves a captured page', !!mv && !(await inboxOnShip()).includes(name12),
       JSON.stringify({ name12, moved: await shipBody(moved) }));
     check('A: and the editor follows it', (await front()).key === moved, JSON.stringify(await front()));
@@ -433,6 +545,7 @@ try {
     await sleep(500);
     const T13 = 'named before its save ' + RUN;
     await setText(T13);
+    dlgMeant++;
     await page.evaluate(() => document.getElementById('tpath').click());
     const nup = await waitFor(dlgOpen, 3000, 100);
     check('A: Move or rename on a page not saved yet asks its name', !!nup);
@@ -447,6 +560,34 @@ try {
     const stray = [];
     for (const n of await inboxOnShip()) if (!before.includes(n) && (await shipBody(n)) === T13) stray.push(n);
     check('A: and not in the Inbox', stray.length === 0, JSON.stringify(stray));
+
+    //  named while its capture is on the wire: one page, under the name
+    step = 'A10 name in flight';
+    before = await inboxOnShip();
+    await plus();
+    await sleep(500);
+    holdSave = 4000;
+    n0 = saves.length;
+    const T13b = 'named while saving ' + RUN;
+    await setText(T13b);
+    const sent = await waitFor(() => saves.length > n0, 6000, 100);
+    const flying = saves.length > n0 ? saves[saves.length - 1].name : null;
+    dlgMeant++;
+    await page.evaluate(() => document.getElementById('tpath').click());
+    await waitFor(dlgOpen, 3000, 100);
+    const named2 = RUN + '/named-in-flight';
+    await page.evaluate((n) => {
+      document.getElementById('dlginput').value = n;
+      document.getElementById('dlgok').click();
+    }, named2);
+    const nm2 = await waitFor(async () => (await treePages(RUN + '/')).includes(named2)
+      && (await shipBody(named2)) === T13b, 20000, 500);
+    holdSave = 0;
+    await sleep(2000);
+    const inbox2 = (await inboxOnShip()).filter((n) => !before.includes(n));
+    check('A: naming a page while its capture is on the wire leaves one page, under the name',
+      !!sent && INBOX.test(flying || '') && !!nm2 && !inbox2.length && (await front()).key === named2,
+      JSON.stringify({ flying, nm2, inbox2, f: await front() }));
 
     // ── A11. autosave off: nothing until Ctrl+S, which captures ──
     step = 'A11 autosave off';
@@ -464,24 +605,43 @@ try {
       String(name14));
     await page.evaluate(() => { localStorage.removeItem('latAutosave'); });
 
-    // ── A12. a journal day from the brief button ──
+    // ── A12. a page started with its name (startNamed), and the brief ──
+    step = 'A12 named start';
+    const day = RUN + '/journal-day';
+    await plus();
+    await sleep(500);
+    await page.evaluate((n) => window.latStartNamed(n), day);
+    n0 = saves.length;
+    await sleep(3000);
+    check('A: a page started with its name writes nothing until it has text', saves.length === n0
+      && (await front()).name === day, JSON.stringify(saves.slice(n0)));
+    const T15 = 'named day line ' + RUN;
+    await typeIn(T15);
+    const ds = await waitFor(async () => (await shipBody(day)) === T15
+      && (await treePages(RUN + '/')).includes(day), 12000, 500);
+    check('A: and is saved under that name once it has text', !!ds);
+
     step = 'A12 journal';
     const jn = 'journal/' + await today();
-    if ((await treePages('journal/')).includes(jn)) {
-      check('A: (skipped) today\'s journal already exists on this ship', true);
+    //  page-del leaves a page the ship still answers for, and refuses to
+    //  make again (409), so a day made and deleted is never free again
+    if ((await treePages('journal/')).includes(jn) || await shipPage(jn)) {
+      console.log('  note - today\'s journal exists, or existed, on this ship: the brief button check did not run');
     } else {
       await page.evaluate(() => document.getElementById('rb-brief').click());
       const jup = await waitFor(async () => (await front()).name === jn, 10000);
       check('A: the brief button starts today\'s journal, named', !!jup, JSON.stringify(await front()));
-      const T15 = 'journal line ' + RUN;
-      await typeIn(T15);
-      journal = jn;
-      const js = await waitFor(async () => (await shipBody(jn)) === T15, 12000, 500);
+      const T16 = 'journal line ' + RUN;
+      await typeIn(T16);
+      const js = await waitFor(async () => (await shipBody(jn)) === T16, 30000, 500);
       check('A: the journal day is saved once it has text', !!js);
     }
 
     step = 'A end';
     check('A: no native dialog at any point', natives === 0, 'natives=' + natives);
+    const allDlg = await dlgSum();
+    check('A: the editor\'s dialog opened only where the suite opened it', allDlg === dlgMeant,
+      JSON.stringify({ shown: allDlg, meant: dlgMeant }));
   }
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 160), false);
@@ -491,7 +651,8 @@ try {
     for (const n of await inboxOnShip())
       if (!baseline.includes(n)) await api('page-del?name=' + encodeURIComponent(n), { method: 'POST' });
     await api('page-del?name=' + encodeURIComponent(RUN), { method: 'POST' });
-    if (journal) await api('page-del?name=' + encodeURIComponent(journal), { method: 'POST' });
+    //  a journal day the brief check made is left: deleted, the ship would
+    //  refuse to make it again, and ui-shell.mjs makes and opens it too
   } catch {}
   await browser.close();
 }
