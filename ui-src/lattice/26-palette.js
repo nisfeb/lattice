@@ -22,7 +22,7 @@
   // first (localStorage.latActUse, action id to the time it ran), then the
   // rest as registered. The order is read once, as the box opens. With a
   // query the score decides and recent use only breaks a tie. A run is
-  // noted here, or at its home: a click on any data-action element.
+  // noted here, or at its home: a click on a control that carries data-action.
   const PALETTE_ONLY = ['explorer'];
   const pal = document.createElement('div');
   pal.id = 'palette';
@@ -79,15 +79,17 @@
     try { v = JSON.parse(localStorage.latActUse || '{}'); } catch {}
     return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
   };
-  const palTime = (a) => +palUse[a.id] || 0;
+  const palTime = (a) => (palUse[a.id] > 0 && typeof palUse[a.id] === 'number' ? palUse[a.id] : 0);
   let palRunning = false;  // a palette run's own click on a home is not a second run
   function palNote(id) {
     if (palRunning || !ACTIONS.some((a) => a.id === id)) return;
     try { localStorage.latActUse = JSON.stringify({ ...palUseGet(), [id]: Date.now() }); } catch {}
   }
   document.addEventListener('click', (e) => {
-    const h = e.target.closest && e.target.closest('[data-action]');
-    if (h) palNote(h.dataset.action);
+    // only a control that is itself a home; a container home (a section)
+    // is not run by a click on something inside it
+    const h = e.target.closest && e.target.closest('button, a, input, [role=tab]');
+    if (h && h.dataset.action) palNote(h.dataset.action);
   }, true);
   const ranked = (q, items, name, tie = () => 0) => items
     .map((x, i) => ({ x, i, s: palScore(q, name(x)) }))

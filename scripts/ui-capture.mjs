@@ -1047,16 +1047,43 @@ try {
     check('C: and the other way round', names(s)[0] === 'Toggle left pane' && names(s)[1] === 'Toggle right pane',
       JSON.stringify(names(s).slice(0, 3)));
     await palEsc();
-    await useSet({ tpath: now + 100 });
+    //  both match 'pane'; the left one scores better (it starts earlier)
+    await useSet({ ctlt: now + 100 });
     await cmdUp();
-    s = await palType('left');
-    check('C: a better match beats a more recent run', names(s)[0] === 'Toggle left pane' && !!names(s).includes('Move or rename') === false,
-      JSON.stringify(names(s).slice(0, 3)));
+    s = await palType('pane');
+    check('C: a better match beats a more recent run',
+      names(s)[0] === 'Toggle left pane' && names(s)[1] === 'Toggle right pane', JSON.stringify(names(s).slice(0, 3)));
     await palEsc();
+
+    // ── C4b. only a control's own click is a run ──
+    step = 'C4b homes';
+    await useSet({});
+    await page.evaluate(() => {
+      const c = document.createElement('section');
+      c.id = 'xcont';
+      c.dataset.action = 'tpath';
+      c.innerHTML = '<button type="button" id="xcb">x</button><span id="xcs">t</span>';
+      document.body.append(c);
+      document.getElementById('xcb').click();
+      document.getElementById('xcs').click();
+      c.click();
+    });
+    await sleep(200);
+    check('C: a click inside a container home records nothing',
+      (await page.evaluate(() => localStorage.latActUse)) === '{}', await page.evaluate(() => localStorage.latActUse));
+    await page.evaluate(() => document.getElementById('xcont').remove());
+    await page.evaluate(() => { window.__lw = 0; });
+    await page.evaluate(() => document.querySelector('[data-action="ctlt"] svg, [data-action="ctlt"]').dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    await sleep(200);
+    check('C: a click on a control home, even on its icon, records once',
+      (await page.evaluate(() => window.__lw)) === 1 && Object.keys(JSON.parse(await page.evaluate(() => localStorage.latActUse))).join() === 'ctlt',
+      String(await page.evaluate(() => window.__lw)));
+    await page.evaluate(() => document.querySelector('[data-action="ctlt"]').click());
+    await sleep(200);
 
     // ── C5. junk in the key falls back to registration order ──
     step = 'C5 junk';
-    for (const junk of ['{nope', '[1,2]', '"x"', 'null', '{"tpath":"soon","treet":{}}']) {
+    for (const junk of ['{nope', '[1,2]', '"x"', 'null', '{"tpath":"soon","treet":{}}', '{"treet":-5}', '{"treet":true}', '{"treet":-5,"ctlt":true}']) {
       await useSet(junk);
       s = await cmdUp();
       check('C: junk ' + junk + ' lists the registration order', JSON.stringify(names(s)) === JSON.stringify(base),

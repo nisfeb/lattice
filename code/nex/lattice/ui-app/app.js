@@ -3553,15 +3553,15 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     try { v = JSON.parse(localStorage.latActUse || '{}'); } catch {}
     return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
   };
-  const palTime = (a) => +palUse[a.id] || 0;
+  const palTime = (a) => (palUse[a.id] > 0 && typeof palUse[a.id] === 'number' ? palUse[a.id] : 0);
   let palRunning = false;  // a palette run's own click on a home is not a second run
   function palNote(id) {
     if (palRunning || !ACTIONS.some((a) => a.id === id)) return;
     try { localStorage.latActUse = JSON.stringify({ ...palUseGet(), [id]: Date.now() }); } catch {}
   }
   document.addEventListener('click', (e) => {
-    const h = e.target.closest && e.target.closest('[data-action]');
-    if (h) palNote(h.dataset.action);
+    const h = e.target.closest && e.target.closest('button, a, input, [role=tab]');
+    if (h && h.dataset.action) palNote(h.dataset.action);
   }, true);
   const ranked = (q, items, name, tie = () => 0) => items
     .map((x, i) => ({ x, i, s: palScore(q, name(x)) }))
