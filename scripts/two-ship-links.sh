@@ -16,8 +16,9 @@
 #         A_SOCK    A's lick socket, for the lattice-fs read (default
 #                   ~/fleet/piers/mec/.urb/dev/grubbery/lattice/fs)
 #         A_INST    A's lattice instance in the ball (default
-#                   /apps/shell.shell/desks/lattice.desk/desk/data/
-#                   lattice.lattice_app), for the sweep section
+#                   <shell>/desks/lattice.desk/desk/data/lattice.lattice_app,
+#                   <shell> being /apps/shell, or /apps/shell.shell on an
+#                   older kernel), for the sweep section
 #
 # The set used so far (Task 2): A = ~mec on 8120, cookie /tmp/mec-cookie.txt;
 # B = ~mun, fleet set `grubbery`, on 8135, cookie /tmp/mun-cookie.txt. B got
@@ -419,7 +420,8 @@ section_exposure() {
 # behind (its save fiber ended inside the minute it waits) has no reader
 section_sweep() {
   echo "==> sweep (/link-done on $ASHIP, across a reload of lattice)"
-  local inst="${A_URL%/}/grubbery/ball${A_INST:-/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app}"
+  local sh; sh=$(A_ "${A_URL%/}/grubbery/ball/apps?list=1" | grep -q '"name":"shell"' && echo shell || echo shell.shell)
+  local inst="${A_URL%/}/grubbery/ball${A_INST:-/apps/$sh/desks/lattice.desk/desk/data/lattice.lattice_app}"
   done_ls() { A_ "$inst/link-done?list=1" | jq -c '[.children[].name]'; }
   A_ -o /dev/null -X POST --data 'action=create-file&filename=orphan&blot=/noun' "$inst/link-done"
   is "an orphan answer sits in /link-done" '["orphan"]' "$(done_ls)"
