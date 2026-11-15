@@ -1,7 +1,7 @@
 ::  Unit tests for /lib/lattice-forum-render: the ranked, paginated list,
 ::  the nested thread, escaping of post bodies, and thread tags.
 ::
-/+  *test, ft=lattice-forum-types, rn=lattice-forum-render
+/+  *test, ft=lattice-forum-types, rn=lattice-forum-render, fr=lattice-forum-rules
 =*  fre  rn
 |%
 ++  now  ~2026.6.1
@@ -348,6 +348,28 @@
     (expect-eq !>(|) !>((has new "name=\"t6\"")))
     (expect-eq !>(&) !>((has new "<datalist")))
     (expect-eq !>(|) !>((has new "host does not take tags yet.")))
+    (expect-eq !>(&) !>((has new pat-attrs)))
+    (expect-eq !>(1) !>((count new hint)))
+  ==
+::  the t1 input as the browser validates it, as rendered
+::
+++  pat-attrs
+  ^-  tape
+  "pattern=\"[a-z][a-z0-9-]\{0,23}\" maxlength=\"24\" title=\"lowercase letters, digits and dashes, starting with a letter, 24 at most\" autocapitalize=\"none\" autocorrect=\"off\" spellcheck=\"false\""
+++  hint
+  ^-  tape
+  "Tags: lowercase letters, digits and dashes, like bug-report. Up to five."
+::  the pattern is meant to accept and refuse what valid-tag does
+::
+++  test-pattern-matches-valid-tag
+  ;:  weld
+    (expect-eq !>(&) !>((valid-tag:fr 'a')))
+    (expect-eq !>(&) !>((valid-tag:fr 'bug-report')))
+    (expect-eq !>(&) !>((valid-tag:fr 'abcdefghijklmnopqrstuvwx')))
+    (expect-eq !>(|) !>((valid-tag:fr 'Bug')))
+    (expect-eq !>(|) !>((valid-tag:fr 'a b')))
+    (expect-eq !>(|) !>((valid-tag:fr '9x')))
+    (expect-eq !>(|) !>((valid-tag:fr 'abcdefghijklmnopqrstuvwxy')))
   ==
 ::  a comet, or a viewer who may not act, sees no tag inputs
 ::
@@ -370,8 +392,9 @@
   ;:  weld
     (expect-eq !>(&) !>((has author "action=\"/b/main/1/tags\"")))
     ::  filled with the thread's tags, in aor order
-    (expect-eq !>(&) !>((has author "name=\"t1\" list=\"tags\" maxlength=\"40\" value=\"bug\"")))
-    (expect-eq !>(&) !>((has author "name=\"t2\" list=\"tags\" maxlength=\"40\" value=\"idea\"")))
+    (expect-eq !>(&) !>((has author "name=\"t1\" list=\"tags\" {pat-attrs} value=\"bug\"")))
+    (expect-eq !>(&) !>((has author "name=\"t2\" list=\"tags\" {pat-attrs} value=\"idea\"")))
+    (expect-eq !>(1) !>((count author hint)))
     (expect-eq !>(&) !>((has (as ~zod) "action=\"/b/main/1/tags\"")))
     (expect-eq !>(|) !>((has (as ~nec) "action=\"/b/main/1/tags\"")))
     (expect-eq !>(|) !>((has (to-html body:(render-thread:rn c brd(tags ~) 1)) "/1/tags\"")))
