@@ -35,6 +35,16 @@
     return out.sort((a, b) => b.sc - a.sc).slice(0, 8).map((x) => x.path);
   }
 
+  // a typed YYYY-MM-DD the calendar has: that day's journal page, under
+  // the older dotted name when the day is kept there (briefKey, 24-tools.js)
+  const acDay = (q) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(q);
+    if (!m) return null;
+    const d = new Date(+m[1], m[2] - 1, +m[3]);
+    return d.getFullYear() === +m[1] && d.getMonth() === m[2] - 1 && d.getDate() === +m[3]
+      ? briefKey(d) : null;
+  };
+
   // caret position, measured through a mirror that shares the textarea's
   // geometry, correct on wrapped lines, where a column calculation is not.
   let acAnchor = null;   // {start, left, top, lh} - raw mirror offsets at ac.start
@@ -82,6 +92,11 @@
       const dir = document.createElement('span');
       dir.className = 'dir'; dir.textContent = dirOf(path) || '/';
       row.append(nm, dir);
+      if (path === ac.ghost) {
+        const nw = document.createElement('span');
+        nw.className = 'new muted'; nw.textContent = 'not written yet';
+        row.append(nw);
+      }
       row.onmousedown = (e) => { e.preventDefault(); acAccept(i); };
       acEl.appendChild(row);
     });
@@ -103,9 +118,13 @@
     const q = line.slice(i + 2);
     if (q.includes(']]') || q.includes('[')) return acClose();
     if (!/^[a-z0-9/._~-]*$/i.test(q)) return acClose();
-    const items = acRank(q);
+    let items = acRank(q);
+    // a whole date lists its journal day first, written or not
+    const day = acDay(q);
+    if (day && day !== current) items = [day, ...items.filter((p) => p !== day)].slice(0, 8);
     if (!items.length) return acClose();
-    ac = { open: true, start: src.selectionStart - q.length, items, sel: 0 };
+    ac = { open: true, start: src.selectionStart - q.length, items, sel: 0,
+      ghost: day && !hasPage(day) ? day : null };
     acRender();
   }
 

@@ -1668,12 +1668,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     t.kind === d.kind && t.key === d.key && (t.ship || null) === (d.ship || null);
   const retarget = (t, d) => {
     Object.assign(t, d);
+    t.start = null;
     t.ghost = null;
     t.gbody = undefined;
     t.gkind = undefined;
     t.gfetch = false;
   };
-  const tabEnc = (t) => JSON.stringify([t.kind, t.key, t.ship || null]);
+  const tabKey = (t) => t.key || t.start || '';
+  const tabEnc = (t) => JSON.stringify([t.kind, tabKey(t), t.ship || null]);
   const tabDec = (s) => { const [kind, key, ship] = JSON.parse(s); return { kind, key, ship }; };
 
   const liveDoc = () => {
@@ -1708,9 +1710,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const TAB_KINDS = {
     page: {
       icon: (t) => (linkOf(t.key) ? 'link' : 'doc'),
-      label: (t) => !t.key ? 'new page' : linkOf(t.key) ? t.key : t.key.split('/').pop(),
+      label: (t) => { const k = tabKey(t); return !k ? 'new page' : linkOf(k) ? k : k.split('/').pop(); },
       open: async (t) => {
-        if (t.key) return openPage(t.key);
+        if (tabKey(t)) return openPage(tabKey(t));
         exitRev();
         newFile('', false);
         return true;
@@ -1795,7 +1797,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   };
 
 
-  const tabRec = ({ kind, key, ship, pinned, read }) => ({ kind, key, ship, pinned, read });
+  const tabRec = (t) => ({ kind: t.kind, key: tabKey(t), ship: t.ship, pinned: t.pinned, read: t.read });
   const tabsSave = () => {
     try {
       localStorage.appTabs = JSON.stringify({
@@ -1867,6 +1869,13 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     src.scrollTop = s.scroll;
     sync();
   };
+  function tabStart(name) {
+    const t = activeTab;
+    if (t && t.kind === 'page' && t.key === name) { t.key = ''; t.start = name; }
+    startNamed(name);
+    history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+    tabsChanged();
+  }
   function tabBlank(t) {
     tabNav++;
     try {
@@ -2000,7 +2009,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       if (!(await guardDirty())) return;
       dirty = false;
       const t = activeTab;
-      if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
+      if (tabKey(t)) { t.back.push(tabEnc(t)); t.fwd = []; }
       retarget(t, want);
       t.snap = null;
       tabsChanged();
@@ -2061,7 +2070,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const d = tabDec(t[from].pop());
     const twin = d.key && allTabs().find((x) => x !== t && sameDoc(x, d));
     if (twin) { tabsChanged(); return tabTo(twin); }
-    if (t.key) t[to].push(tabEnc(t));
+    if (tabKey(t)) t[to].push(tabEnc(t));
     retarget(t, d);
     t.snap = null;
     tabsChanged();
@@ -2230,7 +2239,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       b.dataset.kind = t.kind;
       b.dataset.key = t.key;
       if (t.kind === 'tool' && frameSlow(t.key)) b.classList.add('lload');
-      b.title = (t.ship ? t.ship + ' ' : '') + (t.key || name);
+      b.title = (t.ship ? t.ship + ' ' : '') + (tabKey(t) || name);
       b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
         + '<span class="dtn"></span>'
         + '<span class="dtdot" aria-hidden="true"></span>';
@@ -5638,6 +5647,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }
     }
     if (!lastRev && typeof d.since === 'string') noteRev(d.since);
+    const first = !nodes.length;
     nodes = d.nodes;
     treeShares = typeof d.since === 'string';
     treeSince = treeShares ? d.since : '';
@@ -5648,6 +5658,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     snapTree();
     renderTree();
+    if (first) ghostPaint();
     if (current && linkOf(current)) paintLock();
     return true;
   }
@@ -6414,10 +6425,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     const unwind = () => { if (fromUrl && my === openSeq) history.replaceState(null, '', fromUrl); };
     const shown = src.value;
-    let d = null, gen = -1;
+    let d = null, gen = -1, net = true;
     try {
       gen = sensGen;
       const r = await srcRead(name);
+      net = false;
       if (r.status === 504 && linkOf(name)) {
         linkSeen(name, false);
         let j = null;
@@ -6436,12 +6448,17 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }
       if (!r.ok) {
         if (painted) return true;
+        if (r.status === 404 && my === openSeq && ghostable(name)) { tabStart(name); return true; }
         st('open failed' + await errText(r), false); unwind();
         return my === openSeq ? false : undefined;
       }
       d = await r.json();
     } catch {
       if (painted) return true;
+      if (net && my === openSeq && nodes.length && !nodes.some((n) => n.path === name) && ghostable(name)) {
+        tabStart(name);
+        return true;
+      }
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
     }
@@ -6496,7 +6513,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     showShare(d.share || 'private');
     cmtShow(name, d.comments);
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
-    if (typeof d.html === 'string' && d.kind !== 'tex' && !(taskLive() && hasTask(d.body))) {
+    if (typeof d.html === 'string' && d.kind !== 'tex' && !(taskLive() && hasTask(d.body))
+      && !(d.kind === 'md' && mdHasGhost(d.body))) {
       prev.removeAttribute('src'); prevDoc(withPreviewScrollbars(d.html, true));
     }
     else if (!quiet) refreshPreview();
@@ -6545,6 +6563,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     src.focus();
   }
+  const ghostable = (name) => validName(name) && !linkOf(name) && !knowEntry(name)
+    && !nodes.some((n) => !n.page && n.path === name);
   function startNamed(name) {
     blankPage('');
     setFolderCtx(name);
@@ -7579,6 +7599,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return out.sort((a, b) => b.sc - a.sc).slice(0, 8).map((x) => x.path);
   }
 
+  const acDay = (q) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(q);
+    if (!m) return null;
+    const d = new Date(+m[1], m[2] - 1, +m[3]);
+    return d.getFullYear() === +m[1] && d.getMonth() === m[2] - 1 && d.getDate() === +m[3]
+      ? briefKey(d) : null;
+  };
+
   let acAnchor = null;   // {start, left, top, lh} - raw mirror offsets at ac.start
   const acCtx = document.createElement('canvas').getContext('2d');
   function acMeasureAnchor(pos) {
@@ -7621,6 +7649,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       const dir = document.createElement('span');
       dir.className = 'dir'; dir.textContent = dirOf(path) || '/';
       row.append(nm, dir);
+      if (path === ac.ghost) {
+        const nw = document.createElement('span');
+        nw.className = 'new muted'; nw.textContent = 'not written yet';
+        row.append(nw);
+      }
       row.onmousedown = (e) => { e.preventDefault(); acAccept(i); };
       acEl.appendChild(row);
     });
@@ -7640,9 +7673,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const q = line.slice(i + 2);
     if (q.includes(']]') || q.includes('[')) return acClose();
     if (!/^[a-z0-9/._~-]*$/i.test(q)) return acClose();
-    const items = acRank(q);
+    let items = acRank(q);
+    const day = acDay(q);
+    if (day && day !== current) items = [day, ...items.filter((p) => p !== day)].slice(0, 8);
     if (!items.length) return acClose();
-    ac = { open: true, start: src.selectionStart - q.length, items, sel: 0 };
+    ac = { open: true, start: src.selectionStart - q.length, items, sel: 0,
+      ghost: day && !hasPage(day) ? day : null };
     acRender();
   }
 
@@ -7687,6 +7723,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   };
   const remoteUrl = (u) => /^(https?:)?\/\//i.test(mdUnesc(u).trim());
 
+  const mdGhost = (t) => nodes.length > 0 && !grubPath && !linkOf(current)
+    && ghostable(t) && !nodes.some((n) => n.path === t);
+  const mdHasGhost = (body) => nodes.length > 0 && String(body).includes('[[')
+    && mdToHtml(body).includes(' class="ghost"');
+
   const CD_RE = /&CD(\d+);/g;
   const mdInline = (t) => {
     let s = mdEsc(t);
@@ -7709,10 +7750,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       const h = mdHref(u);
       return h ? tag('<a href="' + h + '">') + txt + '</a>' : m;
     });
-    s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-      (_, tgt, label) => tag('<a href="'
-        + mdHref('/apps/lattice/app?name=' + encodeURIComponent(mdUnesc(tgt).trim())) + '">')
-        + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>');
+    s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, tgt, label) => {
+      const t = mdUnesc(tgt).trim();
+      return tag('<a href="' + mdHref('/apps/lattice/app?name=' + encodeURIComponent(t)) + '"'
+        + (mdGhost(t) ? ' class="ghost" title="' + mdEsc(t + ' does not exist yet') + '"' : '') + '>')
+        + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>';
+    });
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
     s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');
@@ -8034,7 +8077,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         + 'pre::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
         + 'img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
+        + 'a.ghost{opacity:.55}'
         + '</style>' + fit;
+  const ghostPaint = () => { if (CONTENT() && kindNow() === 'md' && mdHasGhost(src.value)) paintLocal(); };
   const ghostDoc = (kind, body) => {
     if (isRich(kind)) return richLib(kind) ? previewScrollbars() + richLib(kind).show(body) : null;
     if (!['md', 'gmi', 'html', 'text'].includes(kind)) return null;
@@ -12164,6 +12209,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     nodes = t;
     renderTree();
     markCurrent();
+    ghostPaint();
   }
   const loadPanels = () => {
     loadPerms(true); loadShared(true);

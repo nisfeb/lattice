@@ -20,7 +20,15 @@
 //     as it opens. With a query a tie goes to the more recent. Junk in the
 //     key changes nothing.
 //
-//  ONLY=A (or B, C) runs just that section after the setup.
+//  D: Ghost links. [[YYYY-MM-DD offers that journal day first, written or
+//     not. A wikilink to a page not written yet is dimmed in the preview,
+//     and opening it, by the preview, an Outgoing row or the address,
+//     starts that page under its name with nothing written. A name the
+//     ship refuses, a 403 and a link whose host is down keep the locked
+//     tab. A deleted page still opens as it does today: this kernel keeps
+//     serving it, and refuses to make it again.
+//
+//  ONLY=A (or B, C, D) runs just that section after the setup.
 //
 //  Usage: LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> \
 //           node scripts/ui-capture.mjs
@@ -42,7 +50,8 @@ const page = await openPage(browser, env, {
 });
 //  a native dialog is never part of the editor; count any, and never stay
 let natives = 0;
-page.on('dialog', (d) => { natives++; d.accept().catch(() => {}); });
+const nativeSeen = [];
+page.on('dialog', (d) => { natives++; nativeSeen.push(step + ': ' + d.type()); d.accept().catch(() => {}); });
 //  every time the editor's own dialog is shown, from the first paint on
 await page.evaluateOnNewDocument(() => {
   window.__dlgShows = 0;
@@ -60,6 +69,9 @@ const utcToday = new Date().toISOString().slice(0, 10);
 //  the outage, as ui-offline.mjs makes it: the save and probe routes abort
 let shipDown = false;
 let holdSave = 0;          // ms each page-save is held before it goes
+const fake = new Map();    // D: a page-source name -> 'abort' or {status, body}
+let fakeLink = null;       // D: a tree row for another ship's page, put in every dump
+let holdDump = null;       // D: page-dump requests held while this is an array
 const saves = [];          // every page-save the editor sent: {name, type, isNew}
 const reqs = [];           // every url the page asked for
 await page.setRequestInterception(true);
@@ -69,6 +81,21 @@ page.on('request', (r) => {
   if (/\/page-save\?/.test(u)) {
     const q = new URL(u).searchParams;
     saves.push({ name: q.get('name'), type: q.get('type'), isNew: q.get('new') === '1' });
+  }
+  const fk = /\/page-source\?/.test(u) && fake.get(new URL(u).searchParams.get('name'));
+  if (fk) {
+    (fk === 'abort' ? r.abort('internetdisconnected') : r.respond({ status: fk.status,
+      contentType: 'application/json', body: JSON.stringify(fk.body) })).catch(() => {});
+    return;
+  }
+  if (/\/page-dump/.test(u) && holdDump) { holdDump.push(r); return; }
+  if (/\/page-dump/.test(u) && fakeLink) {
+    const row = fakeLink;
+    fetch(u, { headers: { Cookie: env.cookie } }).then((x) => x.json()).then((d) => {
+      d.nodes = [...(d.nodes || []).filter((n) => n.path !== row.path), row];
+      return r.respond({ status: 200, contentType: 'application/json', body: JSON.stringify(d) });
+    }).catch(() => r.continue().catch(() => {}));
+    return;
   }
   const down = shipDown && /page-save|legacy-status|page-cmd|know-save/.test(u);
   if (!down && holdSave && /\/page-save\?/.test(u)) {
@@ -179,6 +206,7 @@ const addf = () => page.evaluate((r) => {
 
 let step = 'setup';
 let baseline = [];
+const journalMade = [], memMade = [];
 try {
   await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
   await page.evaluate(async () => {
@@ -1097,6 +1125,365 @@ try {
     check('C: the editor\'s dialog opened only where the suite opened it', allDlg === dlgMeant,
       JSON.stringify({ shown: allDlg, meant: dlgMeant }));
   }
+  if (on('D')) {
+    //  Names no run has ever used on this ship. A deleted page keeps
+    //  answering page-source here and cannot be made again, so a missing
+    //  page is always a name never made, and nothing is deleted and made
+    //  again. The journal days are in a far year of this run's own: the
+    //  first year from a per-run start where none of its days answers.
+    const G = RUN + '/ghosts';               // the page holding the links
+    const ROW = RUN + '/not-yet';            // started from an Outgoing row, left empty
+    const OFF = RUN + '/offline-start';      // started with the ship unreachable
+    const FORB = RUN + '/forbidden';         // the ship answers 403
+    const LNK = RUN + '/their-page';         // another ship's page, its host down
+    const DEL = RUN + '/deleted';            // made, then deleted
+    const BAD = 'a&b c/é';                   // a name the ship refuses (400 bad name)
+    const MEMK = RUN + '-mem';               // a memory
+    let Y = 3000 + (Math.floor(Date.now() / 1000) + process.pid) % 6000;
+    const days = (y) => ({ JD: y + '-12-10', JX: y + '-12-11', JDOT: y + '-01-05', JOLD: y + '.1.5' });
+    for (;;) {
+      const d = days(Y);
+      const taken = await Promise.all(['journal/' + d.JD, 'journal/' + d.JX, 'journal/' + d.JOLD,
+        'journal/' + d.JDOT].map(async (n) => (await api('page-source?name=' + encodeURIComponent(n))).status !== 404));
+      if (!taken.some(Boolean)) break;
+      Y++;
+    }
+    const { JD, JX, JDOT, JOLD } = days(Y);
+    const jd = 'journal/' + JD, jx = 'journal/' + JX, jold = 'journal/' + JOLD;
+    console.log('  note - D uses the journal days ' + [jd, jx, jold].join(', '));
+    journalMade.push(jd, jx, jold);
+    memMade.push(MEMK);
+    const savesOf = (n) => saves.filter((s) => s.name === n);
+    //  the links in the preview as drawn, read off the frame's document
+    const prevLinks = () => page.evaluate(() => {
+      const html = document.getElementById('prev').srcdoc || '';
+      const d = new DOMParser().parseFromString(html, 'text/html');
+      return { css: /\.ghost\s*\{/.test(html), links: [...d.querySelectorAll('a')].map((a) => ({
+        href: a.getAttribute('href'), text: a.textContent, cls: a.className, title: a.title,
+        first: a.outerHTML.startsWith('<a href="') })) };
+    });
+    //  the ship's render writes the name unencoded, the editor's encoded
+    const hrefName = (h) => {
+      const m = /^\/apps\/lattice\/app\?name=(.*)$/.exec(h || '');
+      try { return m ? decodeURIComponent(m[1]) : null; } catch { return null; }
+    };
+    const linkTo = (ls, n) => ls.links.find((l) => hrefName(l.href) === n);
+    const acRows = () => page.evaluate(() => document.getElementById('ac').hidden ? []
+      : [...document.querySelectorAll('#ac .row')].map((r) => ({ nm: r.querySelector('.nm').textContent,
+        dir: r.querySelector('.dir').textContent, note: (r.querySelector('.new') || {}).textContent || '' })));
+    const rtab = (id) => page.evaluate((i) => document.querySelector('#rtabs [data-pt=' + i + ']').click(), id);
+    const tabName = () => page.evaluate(() => {
+      const b = document.querySelector('#doctabs .dtab.on .dtn');
+      return b ? b.textContent : null;
+    });
+    //  a page started under `n`: its name, editable, empty, markdown, the
+    //  address naming it and the tab titled with it
+    const started = (n, ms = 30000) => waitFor(async () => {
+      const f = await front();
+      return f.name === n && !f.readOnly && f.src === '' && f.kind === 'md'
+        && f.url === '?name=' + encodeURIComponent(n) && (await tabName()) === n.split('/').pop() ? f : null;
+    }, ms, 250);
+    //  the tab in front is the locked blank of a failed open
+    const locked = (key) => waitFor(async () => {
+      const f = await front();
+      return f.key === key && f.readOnly && f.src === '' ? f : null;
+    }, 30000, 250);
+    const bootAt = async (q) => {
+      await leaving();
+      await page.goto(env.app + q, { waitUntil: 'domcontentloaded', timeout: 90000 });
+      await page.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0
+        && !!window.latTabs, { timeout: 90000 });
+    };
+    //  a click on the preview's link to `n`: a full navigation, as the
+    //  sandboxed frame makes it
+    const prevClick = async (n) => {
+      const fr = await (await page.$('#prev')).contentFrame();
+      let a = null;
+      for (const h of await fr.$$('a'))
+        if (hrefName(await h.evaluate((e) => e.getAttribute('href'))) === n) { a = h; break; }
+      if (!a) return false;
+      await leaving();
+      await Promise.all([page.waitForNavigation({ timeout: 30000 }), a.click()]);
+      await page.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0
+        && !!window.latTabs, { timeout: 90000 });
+      return true;
+    };
+    //  the linking page in Read, where the preview is painted
+    const readG = async () => {
+      await openWait(G);
+      await page.evaluate(() => window.latSetRead(true));
+      await sleep(600);
+    };
+    const outRow = async (n) => {
+      await rtab('out');
+      return waitFor(() => page.evaluate((x) => {
+        const a = [...document.querySelectorAll('[data-pane=out] .olrow')].find((r) => r.textContent.trim() === x);
+        if (a) a.click();
+        return !!a;
+      }, n), 10000, 200);
+    };
+
+    step = 'D setup';
+    for (const [n, b] of [[jx, 'a day written'], [jold, 'an old dotted day'], [G, 'ghosts\n'], [DEL, 'deleted body']])
+      await api('page-save?type=md&new=1&name=' + encodeURIComponent(n), { method: 'POST', body: b });
+    await api('page-del?name=' + encodeURIComponent(DEL), { method: 'POST' });
+    await api('know-save?key=' + encodeURIComponent(MEMK), { method: 'POST', body: 'a memory' });
+    await boot();
+    await openWait(G);
+    await page.evaluate(() => window.latSetRead(false));
+
+    // ── D1. [[YYYY-MM-DD offers that journal day first ──
+    step = 'D1 autocomplete';
+    const at = async (q) => {
+      await page.evaluate(() => { const s = document.getElementById('src'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); });
+      await page.keyboard.type('\n[[' + q);
+      await sleep(400);
+      return acRows();
+    };
+    let rows = await at(JD);
+    check('D: [[' + JD + ' lists journal/' + JD + ' first, not written yet',
+      rows.length > 0 && rows.length <= 8 && rows[0].nm === JD && rows[0].dir === 'journal' && rows[0].note === 'not written yet',
+      JSON.stringify(rows.slice(0, 3)));
+    await page.keyboard.press('Tab');
+    await sleep(200);
+    check('D: Tab inserts the full path', (await front()).src.endsWith('[[' + jd + ']]'), JSON.stringify((await front()).src.slice(-40)));
+    rows = await at(Y + '-13-45');
+    check('D: a date the calendar has not got offers no journal day',
+      !rows.some((r) => r.dir === 'journal' || r.note), JSON.stringify(rows.slice(0, 3)));
+    await page.keyboard.press('Escape');
+    rows = await at(Y + '-02-30');
+    check('D: nor does 30 February', !rows.some((r) => r.dir === 'journal' || r.note), JSON.stringify(rows.slice(0, 3)));
+    await page.keyboard.press('Escape');
+    rows = await at(JX);
+    check('D: a day that exists is listed first without the note',
+      rows.length > 0 && rows[0].nm === JX && rows[0].dir === 'journal' && !rows[0].note
+      && rows.filter((r) => r.nm === JX).length === 1, JSON.stringify(rows.slice(0, 3)));
+    await page.keyboard.press('Escape');
+    rows = await at(JDOT);
+    check('D: a day kept under the old dotted name offers that page',
+      rows.length > 0 && rows[0].nm === JOLD && rows[0].dir === 'journal' && !rows[0].note
+      && !rows.some((r) => r.nm === JDOT), JSON.stringify(rows.slice(0, 3)));
+    await page.keyboard.press('Escape');
+
+    // ── D2. dimmed in the preview, and only there ──
+    step = 'D2 preview';
+    const BODY = ['# ghosts', '[[' + jd + ']]', '[[' + ROW + ']]', '[[' + SEEDP + ']]', '[[' + MEMK + ']]',
+      '[[/' + MEMK + ']]', '[[' + RUN + ']]', '[[' + RUN + '/]]', '[[urb://~zod/x]]', '[[/apps/lattice/forum]]',
+      '[[' + BAD + ']]', '[[' + jd + '|the day]]', ''].join('\n');
+    await setText(BODY);
+    const gsaved = await waitFor(async () => (await shipBody(G)) === BODY, 15000, 500);
+    check('D: the page with the links is saved', !!gsaved);
+    //  painted fresh from the ship, as a reload paints it
+    await page.evaluate(() => window.latSetRead(true));
+    await boot();
+    await openWait(G);
+    let ls = await waitFor(async () => { const x = await prevLinks(); return linkTo(x, jd) ? x : null; }, 15000, 250);
+    const gl = ls && linkTo(ls, jd);
+    check('D: the link to the missing day shows the day, dimmed, with its title',
+      !!gl && gl.text === JD && gl.cls === 'ghost' && gl.title === jd + ' does not exist yet' && gl.first,
+      JSON.stringify(gl));
+    check('D: a labelled link to it is dimmed too', !!ls && ls.links.some((l) => l.text === 'the day' && l.cls === 'ghost'),
+      JSON.stringify(ls && ls.links.filter((l) => l.text === 'the day')));
+    check('D: the preview styles .ghost', !!ls && ls.css);
+    await rtab('out');
+    const outHas = await waitFor(() => page.evaluate((n) => [...document.querySelectorAll('[data-pane=out] .olrow')]
+      .some((r) => r.textContent.trim() === n), jd), 10000, 200);
+    check('D: the Outgoing links panel still lists it', !!outHas);
+    //  the memory list, so the client knows MEMK is a memory
+    await page.evaluate(() => document.querySelector('#ltabs [data-pt=know]').click());
+    await sleep(2000);
+    await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
+    await sleep(500);
+    //  a repaint asks the ship nothing
+    const r0 = reqs.length;
+    await setText(BODY + ' ');
+    await sleep(800);
+    const asked = reqs.slice(r0).filter((u) => /page-tree|page-dump|page-source|know-list|page-exists/.test(u));
+    check('D: a repaint asks the ship nothing', asked.length === 0, JSON.stringify(asked));
+    ls = await prevLinks();
+    check('D: and still dims the missing day', linkTo(ls, jd)?.cls === 'ghost', JSON.stringify(linkTo(ls, jd)));
+    const plain = [SEEDP, MEMK, '/' + MEMK, RUN, RUN + '/', 'urb://~zod/x', '/apps/lattice/forum', BAD]
+      .map((n) => [n, linkTo(ls, n)]);
+    check('D: a page, a memory, a folder, an urb:// and an absolute path are not dimmed, nor a refused name',
+      plain.every(([, l]) => l && !l.cls && l.first), JSON.stringify(plain.filter(([, l]) => !l || l.cls)));
+    await setText(BODY);
+    await waitFor(async () => (await shipBody(G)) === BODY && await page.evaluate(() =>
+      !window.latTabs.groups().some((g) => g.tabs.some((t) => t.dirty))), 15000, 500);
+
+    // ── D3. no tree yet, nothing dimmed; the tree comes, the ghosts do ──
+    step = 'D3 before the tree';
+    await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
+    await page.evaluate(() => new Promise((res) => {
+      const rq = indexedDB.open('lattice-offline');
+      rq.onsuccess = () => {
+        const db = rq.result;
+        try {
+          const tx = db.transaction([...db.objectStoreNames], 'readwrite');
+          for (const s of db.objectStoreNames) if (s !== 'saves') tx.objectStore(s).clear();
+          tx.oncomplete = () => res(); tx.onerror = () => res();
+        } catch { res(); }
+      };
+      rq.onerror = () => res();
+    }));
+    holdDump = [];
+    await leaving();
+    await page.goto(env.app + '?name=' + encodeURIComponent(G), { waitUntil: 'domcontentloaded', timeout: 90000 });
+    const early = await waitFor(async () => {
+      const x = await prevLinks().catch(() => null);
+      return x && linkTo(x, jd) ? x : null;
+    }, 15000, 200);
+    check('D: painted before the tree, nothing is dimmed', !!early && early.links.every((l) => !l.cls),
+      JSON.stringify(early && early.links.filter((l) => l.cls)));
+    const held = holdDump;
+    holdDump = null;
+    for (const r of held) r.continue().catch(() => {});
+    const late = await waitFor(async () => {
+      const x = await prevLinks().catch(() => null);
+      return x && linkTo(x, jd) && linkTo(x, jd).cls === 'ghost' ? x : null;
+    }, 30000, 250);
+    check('D: and once it lands the missing day is dimmed', !!late, 'held ' + held.length);
+    await page.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0
+      && !!window.latTabs, { timeout: 90000 });
+    await sleep(1000);
+
+    // ── D4. every road to a missing page starts it, writing nothing ──
+    step = 'D4 preview click';
+    let n0 = saves.length;
+    await readG();
+    const clicked = await prevClick(jd);
+    let f = clicked && await started(jd);
+    check('D: a click in the preview starts the missing day, named and empty', !!f,
+      JSON.stringify({ clicked, f: await front(), tab: await tabName() }));
+    step = 'D4 outgoing row';
+    await openWait(G);
+    await outRow(jd);
+    f = await started(jd);
+    check('D: so does its Outgoing links row', !!f, JSON.stringify({ f: await front(), tab: await tabName() }));
+    step = 'D4 address';
+    await bootAt('?name=' + encodeURIComponent(jd));
+    f = await started(jd);
+    check('D: and so does ?name=' + jd, !!f, JSON.stringify({ f: await front(), tab: await tabName() }));
+    await sleep(3000);
+    check('D: none of them wrote anything', savesOf(jd).length === 0 && !(await treePages('journal/')).includes(jd),
+      JSON.stringify(saves.slice(n0)));
+    await leaving();
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => !!window.latTabs, { timeout: 90000 });
+    f = await started(jd);
+    check('D: a reload lands on the same started page', !!f, JSON.stringify(await front()));
+
+    // ── D5. a name the ship refuses keeps the locked tab, by every road ──
+    step = 'D5 refused name';
+    n0 = saves.length;
+    await readG();
+    const bclick = await prevClick(BAD);
+    await sleep(4000);
+    f = await front();
+    check('D: a click on a refused name opens its tab and starts nothing',
+      bclick && f.key === BAD && !(f.name === BAD && !f.readOnly), JSON.stringify(f));
+    await openWait(G);
+    await outRow(BAD);
+    f = await locked(BAD);
+    check('D: its Outgoing row opens the locked tab, under exactly that name', !!f, JSON.stringify(await front()));
+    await bootAt('?name=' + encodeURIComponent(BAD));
+    await sleep(4000);
+    f = await front();
+    check('D: ?name= of it starts nothing', f.key === BAD && !(f.name === BAD && !f.readOnly), JSON.stringify(f));
+    check('D: and nothing was written for it', saves.slice(n0).length === 0, JSON.stringify(saves.slice(n0)));
+
+    // ── D6. a 403, a link whose host is down, and a deleted page ──
+    step = 'D6 refusals';
+    await boot();
+    fake.set(FORB, { status: 403, body: { error: 'forbidden' } });
+    await page.evaluate((n) => window.latTabs.openIn('page', n), FORB);
+    f = await locked(FORB);
+    check('D: a page the ship refuses with 403 shows the locked tab', !!f, JSON.stringify(await front()));
+    fakeLink = { path: LNK, page: true, kind: 'md', rev: 0, size: 0, share: 'private', link: { host: '~sampel-palnet' } };
+    fake.set(LNK, { status: 504, body: { error: '~sampel-palnet is unreachable' } });
+    await boot();
+    await page.evaluate((n) => window.latTabs.openIn('page', n), LNK);
+    f = await locked(LNK);
+    check('D: a link whose host is down shows the locked tab', !!f, JSON.stringify(await front()));
+    fakeLink = null;
+    fake.delete(LNK);
+    fake.delete(FORB);
+    await boot();
+    await page.evaluate((n) => window.latTabs.openIn('page', n), DEL);
+    f = await waitFor(async () => { const x = await front(); return x.key === DEL && x.src === 'deleted body' ? x : null; }, 30000, 250);
+    check('D: a deleted page, which this ship still serves, opens as it does today', !!f, JSON.stringify(await front()));
+
+    // ── D7. offline, a name the loaded tree lacks starts ──
+    step = 'D7 offline';
+    fake.set(OFF, 'abort');
+    await page.evaluate((n) => window.latTabs.openIn('page', n), OFF);
+    f = await waitFor(async () => { const x = await front(); return x.name === OFF && !x.readOnly && x.src === '' ? x : null; }, 30000, 250);
+    check('D: offline, a page the tree does not hold starts', !!f, JSON.stringify(await front()));
+    fake.delete(OFF);
+
+    // ── D8. left empty, a started page leaves nothing ──
+    step = 'D8 empty';
+    n0 = saves.length;
+    await openWait(G);
+    await outRow(ROW);
+    f = await started(ROW);
+    check('D: an Outgoing row to a page not written starts it', !!f, JSON.stringify({ f: await front(), tab: await tabName() }));
+    await page.evaluate(async () => {
+      const s = window.latTabs.state();
+      await window.latTabs.closeTab(s.tabs[s.active].id);
+    });
+    await sleep(4000);
+    check('D: closed empty, it wrote nothing', savesOf(ROW).length === 0 && !(await treePages(RUN + '/')).includes(ROW),
+      JSON.stringify(saves.slice(n0)));
+    check('D: and the offline start wrote nothing', savesOf(OFF).length === 0);
+
+    // ── D9. typed in, it is made under that name, and stops being a ghost ──
+    step = 'D9 write';
+    await bootAt('?name=' + encodeURIComponent(jd));
+    await started(jd);
+    const TJ = 'a day written from a link ' + RUN;
+    await typeIn(TJ);
+    const made = await waitFor(async () => (await shipBody(jd)) === TJ && (await treePages('journal/')).includes(jd), 20000, 500);
+    check('D: typing saves it under exactly that name, as a create', !!made && savesOf(jd)[0]?.isNew === true,
+      JSON.stringify(savesOf(jd)));
+    const own = await waitFor(async () => { const x = await front(); return x.key === jd && x.name === jd ? x : null; }, 10000, 250);
+    check('D: and its tab is the page now', !!own, JSON.stringify(await front()));
+    await readG();
+    ls = await waitFor(async () => { const x = await prevLinks(); return linkTo(x, jd) ? x : null; }, 15000, 250);
+    check('D: the link is not dimmed on the next paint', !!ls && !linkTo(ls, jd).cls, JSON.stringify(ls && linkTo(ls, jd)));
+    await openWait(jd);
+    await rtab('back');
+    const bl = await waitFor(() => page.evaluate(() => {
+      const l = [...document.querySelectorAll('#linklist a')].map((a) => a.textContent);
+      return l.length ? l : null;
+    }), 30000, 500);
+    check('D: the new page\'s Backlinks lists the linking page', !!bl && bl.includes(G), JSON.stringify(bl));
+
+    // ── D10. the PDF export carries no ghost styling ──
+    step = 'D10 pdf';
+    await openWait(G);
+    await page.evaluate(() => { const x = document.querySelector('iframe[data-lat-pdf]'); if (x) x.remove(); });
+    await page.click('#tmenu');
+    await page.waitForSelector('.tmenu [data-mi="pdf"]', { visible: true, timeout: 5000 });
+    await page.click('.tmenu [data-mi="pdf"]');
+    const pdf = await waitFor(() => page.evaluate((args) => {
+      const x = document.querySelector('iframe[data-lat-pdf]');
+      const d = x && x.contentDocument;
+      if (!d || d.readyState !== 'complete') return null;
+      const [ghostHref, plainHref] = args;
+      const g = d.querySelector('a[href*="' + ghostHref + '"]'), p = d.querySelector('a[href*="' + plainHref + '"]');
+      if (!g || !p) return null;
+      const cs = (e) => { const c = getComputedStyle(e); return [c.color, c.opacity, c.fontStyle, c.textDecorationLine].join(' '); };
+      return { css: /\.ghost\s*\{/.test(x.srcdoc), ghost: cs(g), plain: cs(p), cls: g.className };
+    }, [encodeURIComponent(ROW), encodeURIComponent(SEEDP)]), 60000, 500);
+    check('D: the PDF export draws a missing page\'s link as any other', !!pdf && !pdf.css && pdf.ghost === pdf.plain,
+      JSON.stringify(pdf));
+
+    step = 'D end';
+    check('D: no native dialog at any point', natives === 0, JSON.stringify(nativeSeen));
+    const allDlg = await dlgSum();
+    check('D: the editor\'s dialog opened only where the suite opened it', allDlg === dlgMeant,
+      JSON.stringify({ shown: allDlg, meant: dlgMeant }));
+  }
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 160), false);
 } finally {
@@ -1105,6 +1492,9 @@ try {
     for (const n of await inboxOnShip())
       if (!baseline.includes(n)) await api('page-del?name=' + encodeURIComponent(n), { method: 'POST' });
     await api('page-del?name=' + encodeURIComponent(RUN), { method: 'POST' });
+    //  D's far-future days are its own and never made again
+    for (const n of journalMade) await api('page-del?name=' + encodeURIComponent(n), { method: 'POST' });
+    for (const k of memMade) await api('know-delete?key=' + encodeURIComponent(k), { method: 'POST' });
     //  a journal day the brief check made is left: deleted, the ship would
     //  refuse to make it again, and ui-shell.mjs makes and opens it too
   } catch {}

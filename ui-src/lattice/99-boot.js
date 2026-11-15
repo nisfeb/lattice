@@ -45,6 +45,7 @@
     nodes = t;
     renderTree();
     markCurrent();
+    ghostPaint();
   }
   // the control-panel lists (sharing groups, shared-with-me) are never needed
   // to read or edit anything, so they load AFTER the editor is usable. Issued

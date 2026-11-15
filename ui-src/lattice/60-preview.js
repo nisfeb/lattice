@@ -309,7 +309,10 @@
         + 'pre::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
         + 'img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
+        + 'a.ghost{opacity:.55}'
         + '</style>' + fit;
+  // the tree has just come: a link to a page not written yet dims now
+  const ghostPaint = () => { if (CONTENT() && kindNow() === 'md' && mdHasGhost(src.value)) paintLocal(); };
   // a parked group's Read (28-splits.js): the same local render of its
   // text, no fit, or null for a kind only the ship renders
   const ghostDoc = (kind, body) => {

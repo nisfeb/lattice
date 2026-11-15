@@ -61,6 +61,15 @@
   };
   const remoteUrl = (u) => /^(https?:)?\/\//i.test(mdUnesc(u).trim());
 
+  // A wikilink to a page this ship has not got, as opening it would find:
+  // a name a page could be started under (ghostable, 35-pages.js) that no
+  // tree row has. Only once the tree has loaded, and only in a document of
+  // this ship: a link's or a grub's wikilinks name pages elsewhere.
+  const mdGhost = (t) => nodes.length > 0 && !grubPath && !linkOf(current)
+    && ghostable(t) && !nodes.some((n) => n.path === t);
+  const mdHasGhost = (body) => nodes.length > 0 && String(body).includes('[[')
+    && mdToHtml(body).includes(' class="ghost"');
+
   // Code-span placeholders. The token must be UNFORGEABLE by document text:
   // a page that can write the token literally could otherwise smuggle content
   // past the escaper. The trick is that the token contains '&', which mdEsc
@@ -104,10 +113,14 @@
     //  a bare [[a/b/c]] shows just the last segment ("c"), the filename people
     //  expect, not the whole path. An explicit [[a/b/c|label]] still wins. The
     //  href/target is unchanged, so navigation and backlinks are unaffected.
-    s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-      (_, tgt, label) => tag('<a href="'
-        + mdHref('/apps/lattice/app?name=' + encodeURIComponent(mdUnesc(tgt).trim())) + '">')
-        + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>');
+    //  A page not written yet is marked after the href, which outLinks
+    //  (76-outline.js) reads first.
+    s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, tgt, label) => {
+      const t = mdUnesc(tgt).trim();
+      return tag('<a href="' + mdHref('/apps/lattice/app?name=' + encodeURIComponent(t)) + '"'
+        + (mdGhost(t) ? ' class="ghost" title="' + mdEsc(t + ' does not exist yet') + '"' : '') + '>')
+        + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>';
+    });
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
     s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');

@@ -53,12 +53,15 @@
   // last one while parked (28-splits.js) goes with it
   const retarget = (t, d) => {
     Object.assign(t, d);
+    t.start = null;
     t.ghost = null;
     t.gbody = undefined;
     t.gkind = undefined;
     t.gfetch = false;
   };
-  const tabEnc = (t) => JSON.stringify([t.kind, t.key, t.ship || null]);
+  //  a page started from its name (tabStart) has no key yet, only `start`
+  const tabKey = (t) => t.key || t.start || '';
+  const tabEnc = (t) => JSON.stringify([t.kind, tabKey(t), t.ship || null]);
   const tabDec = (s) => { const [kind, key, ship] = JSON.parse(s); return { kind, key, ship }; };
 
   // what the live editor shows, as a tab would name it: the one editor kind
@@ -135,9 +138,9 @@
       // a link (30-tree.js) is titled with its whole local path: its name
       // alone would read as a page of my own
       icon: (t) => (linkOf(t.key) ? 'link' : 'doc'),
-      label: (t) => !t.key ? 'new page' : linkOf(t.key) ? t.key : t.key.split('/').pop(),
+      label: (t) => { const k = tabKey(t); return !k ? 'new page' : linkOf(k) ? k : k.split('/').pop(); },
       open: async (t) => {
-        if (t.key) return openPage(t.key);
+        if (tabKey(t)) return openPage(tabKey(t));
         exitRev();
         newFile('', false);
         return true;
@@ -235,7 +238,7 @@
   // Every group's tabs and front tab, the group in front, and the split
   // tree with its sizes (28-splits.js). `tabs` and `active` also name the
   // group in front on their own, the shape this had before splits.
-  const tabRec = ({ kind, key, ship, pinned, read }) => ({ kind, key, ship, pinned, read });
+  const tabRec = (t) => ({ kind: t.kind, key: tabKey(t), ship: t.ship, pinned: t.pinned, read: t.read });
   const tabsSave = () => {
     try {
       localStorage.appTabs = JSON.stringify({
@@ -329,6 +332,18 @@
     src.scrollTop = s.scroll;
     sync();
   };
+  //  A page not written yet, opened by its name (a ghost link, the address,
+  //  a restored tab). The tab naming it starts it (startNamed), writing
+  //  nothing, and keeps the name as `start`: the strip shows it, the
+  //  address carries it, and a reload or Back starts it again. Its first
+  //  save makes the page, which the tab then follows (tabFollow).
+  function tabStart(name) {
+    const t = activeTab;
+    if (t && t.kind === 'page' && t.key === name) { t.key = ''; t.start = name; }
+    startNamed(name);
+    history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+    tabsChanged();
+  }
   function tabBlank(t) {
     tabNav++;
     try {
@@ -494,7 +509,7 @@
       // flushed, or the user said discard: either way nothing here is owed
       dirty = false;
       const t = activeTab;
-      if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
+      if (tabKey(t)) { t.back.push(tabEnc(t)); t.fwd = []; }
       retarget(t, want);
       t.snap = null;
       tabsChanged();
@@ -568,7 +583,7 @@
     const d = tabDec(t[from].pop());
     const twin = d.key && allTabs().find((x) => x !== t && sameDoc(x, d));
     if (twin) { tabsChanged(); return tabTo(twin); }
-    if (t.key) t[to].push(tabEnc(t));
+    if (tabKey(t)) t[to].push(tabEnc(t));
     retarget(t, d);
     t.snap = null;
     tabsChanged();
@@ -800,7 +815,7 @@
       b.dataset.kind = t.kind;
       b.dataset.key = t.key;
       if (t.kind === 'tool' && frameSlow(t.key)) b.classList.add('lload');
-      b.title = (t.ship ? t.ship + ' ' : '') + (t.key || name);
+      b.title = (t.ship ? t.ship + ' ' : '') + (tabKey(t) || name);
       b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
         + '<span class="dtn"></span>'
         + '<span class="dtdot" aria-hidden="true"></span>';

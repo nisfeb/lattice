@@ -139,6 +139,7 @@
     // matched, and every first session refetched the whole dump once the
     // stream registered.
     if (!lastRev && typeof d.since === 'string') noteRev(d.since);
+    const first = !nodes.length;
     nodes = d.nodes;
     treeShares = typeof d.since === 'string';
     treeSince = treeShares ? d.since : '';
@@ -157,6 +158,7 @@
     // own #knowlist), so a memory tab in front is no reason to leave Files
     // stale behind the Knowledge tab
     renderTree();
+    if (first) ghostPaint();
     // a link's grant may have moved (an edit request approved): the lock
     // follows it with no reload (36-editlock.js)
     if (current && linkOf(current)) paintLock();

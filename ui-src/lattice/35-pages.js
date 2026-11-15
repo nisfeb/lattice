@@ -173,10 +173,11 @@
     //  open has run meanwhile (that one owns the address now, so leave it).
     const unwind = () => { if (fromUrl && my === openSeq) history.replaceState(null, '', fromUrl); };
     const shown = src.value;
-    let d = null, gen = -1;
+    let d = null, gen = -1, net = true;
     try {
       gen = sensGen;
       const r = await srcRead(name);
+      net = false;
       // a link whose host did not answer: its badge from now, and the last
       // copy read, which the ship sends its owner along with the failure.
       // Shown locked (linkStale): a save from it would claim a rev the host
@@ -199,12 +200,19 @@
       }
       if (!r.ok) {
         if (painted) return true;
+        //  not written yet: a page of this ship the ship has no page for
+        if (r.status === 404 && my === openSeq && ghostable(name)) { tabStart(name); return true; }
         st('open failed' + await errText(r), false); unwind();
         return my === openSeq ? false : undefined;
       }
       d = await r.json();
     } catch {
       if (painted) return true;
+      //  ...and offline, a name the loaded tree does not hold
+      if (net && my === openSeq && nodes.length && !nodes.some((n) => n.path === name) && ghostable(name)) {
+        tabStart(name);
+        return true;
+      }
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
     }
@@ -312,7 +320,10 @@
     //  ship renders its boxes disabled, and this answer lands after the
     //  local paint, so a page opened in Read (the daily journal from its
     //  button) showed dead boxes. The local paint carries their lines.
-    if (typeof d.html === 'string' && d.kind !== 'tex' && !(taskLive() && hasTask(d.body))) {
+    //  ...and an md page with a link to a page not written yet: the ship's
+    //  render does not dim it (mdGhost, 59-md.js)
+    if (typeof d.html === 'string' && d.kind !== 'tex' && !(taskLive() && hasTask(d.body))
+      && !(d.kind === 'md' && mdHasGhost(d.body))) {
       prev.removeAttribute('src'); prevDoc(withPreviewScrollbars(d.html, true));
     }
     else if (!quiet) refreshPreview();
@@ -382,6 +393,11 @@
     }
     src.focus();
   }
+  //  a name a page can be started under when the ship has none (tabStart):
+  //  one it takes as it is, so the page made is exactly the linked name,
+  //  and no folder, link or known memory
+  const ghostable = (name) => validName(name) && !linkOf(name) && !knowEntry(name)
+    && !nodes.some((n) => !n.page && n.path === name);
   //  startNamed: a blank page with its name already set and nothing
   //  written, as a missing journal day starts. Its first save makes it.
   function startNamed(name) {
