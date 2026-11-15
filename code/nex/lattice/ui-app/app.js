@@ -808,6 +808,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     more: ['0 0 24 24', 'M5 12h.01M12 12h.01M19 12h.01', 'stroke'],
     menu: ['0 0 24 24', 'M4 6h16M4 12h16M4 18h16', 'stroke'],
     plus: ['0 0 24 24', 'M12 5v14M5 12h14', 'stroke'],
+    qopen: ['0 0 24 24', 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4M14 3l5 5v3M14 3v5h5M13 16a3 3 0 1 0 6 0a3 3 0 1 0-6 0M18.2 18.2L21 21', 'stroke'],
     save: ['0 0 24 24', 'M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 3v5h7V3M7 21v-7h10v7', 'stroke'],
     pin: ['0 0 24 24', 'M9 3h6l-1 6 3 4H7l3-4zM12 13v8', 'stroke'],
     tabs: ['0 0 24 24', 'M8 8h12v12H8zM4 16V4h12', 'stroke'],
@@ -1266,6 +1267,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     dlgIn.setSelectionRange(dlgIn.value.length, dlgIn.value.length);
     return p;
   };
+  const NO_NAME = 'that name has nothing to go by — use at least one letter or digit.';
   const askNameKind = async (msg, value, okLabel, kind, fixed, optional) => {
     dlgKind.textContent = '';
     const src = $('pkind');
@@ -1290,7 +1292,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       if (!name) return optional ? { name, kind: picked } : null;
       if (realName(name)) return { name, kind: picked };
       seed = name;
-      note = 'that name has nothing to go by — use at least one letter or digit. ';
+      note = NO_NAME + ' ';
     }
   };
   const askName = async (msg, value, okLabel) => {
@@ -1303,7 +1305,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       if (!name) return null;
       if (realName(name)) return name;
       seed = name;
-      note = 'that name has nothing to go by — use at least one letter or digit. ';
+      note = NO_NAME + ' ';
     }
   };
   const askConfirm = (msg, okLabel) => {
@@ -1841,6 +1843,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         tabCaret(s);
       } finally { tabNav--; }
       paintTabs();
+      tabSeen(t);
       if (quick && !s.dirty) refreshOpen();
       return Promise.resolve(true);
     }
@@ -1854,6 +1857,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       if (ok === false && !k.shows(t)) tabBlank(t);
       else if (!k.shows(t)) tabFollow();   // something else opened over it
       else if (s && !dirty) tabCaret(s);
+      if (ok !== false && k.shows(t)) tabSeen(t);
       paintTabs();
       return ok;
     }, (e) => { settle(); throw e; });
@@ -2082,7 +2086,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const t = activeTab;
     if (!TAB_KINDS[t.kind].live) return;
     if (tabLoading === t) {
-      if (TAB_KINDS[t.kind].shows(t)) tabLoading = null;
+      if (TAB_KINDS[t.kind].shows(t)) { tabLoading = null; tabSeen(t); }
       return;
     }
     const d = liveDoc();
@@ -2093,6 +2097,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const twin = d.key && allTabs().find((x) => x !== t && sameDoc(x, d) && !(x.snap && x.snap.dirty));
     if (twin) gDropTab(twin);
     tabsChanged();
+    tabSeen(t);              // opened in place: a new page's create, a link
   }
   function tabAdopt(own, name) {
     const trim = (v) => v.trim().replace(/^\/+|\/+$/g, '');
@@ -2113,7 +2118,31 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       else if (t.key.startsWith(from + '/')) t.key = to + t.key.slice(from.length);
     }
     tabsChanged();
+    recentsPut(recentsGet().map((r) => (r.kind !== kind ? r
+      : r.key === from ? { kind, key: to }
+      : r.key.startsWith(from + '/') ? { kind, key: to + r.key.slice(from.length) } : r)));
   }
+
+  function recentsGet() {
+    let v = null;
+    try { v = JSON.parse(localStorage.latRecents || '[]'); } catch {}
+    return Array.isArray(v) ? v.filter((r) => r && (r.kind === 'page' || r.kind === 'know')
+      && typeof r.key === 'string' && r.key) : [];
+  }
+  function recentsPut(list) {
+    const out = [];
+    for (const r of list)
+      if (out.length < 30 && !out.some((x) => x.kind === r.kind && x.key === r.key)) out.push(r);
+    try { localStorage.latRecents = JSON.stringify(out); } catch {}
+  }
+  function noteRecent(kind, key) {
+    if ((kind === 'page' || kind === 'know') && key) recentsPut([{ kind, key }, ...recentsGet()]);
+  }
+  function recentsDrop(kind, path) {
+    recentsPut(recentsGet().filter((r) => r.kind !== kind
+      || (r.key !== path && !(kind === 'page' && r.key.startsWith(path + '/')))));
+  }
+  function tabSeen(t) { if (!t.ship) noteRecent(t.kind, t.key); }
   function tabLanded(kind, name, sent, rev, ship = null) {
     for (const t of allTabs()) {
       if (t.kind !== kind || t.key !== name || (t.ship || null) !== ship || !t.snap) continue;
@@ -3031,7 +3060,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     d.addEventListener('keydown', (e) => {
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
-      const ours = (mod && !e.altKey && !e.shiftKey && (k === 'k' || k === 'p' || k === ','))
+      const ours = (mod && !e.altKey && !e.shiftKey && (k === 'k' || k === 'p' || k === 'o' || k === ','))
         || (mod && e.shiftKey && !e.altKey && (k === 'f' || e.code === 'KeyL'));
       if (!ours) return;
       const up = new KeyboardEvent('keydown', { key: e.key, code: e.code, ctrlKey: e.ctrlKey,
@@ -3492,6 +3521,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   let palRows = [];      // what is on screen: {kind, a?, key?}
   let palSel = 0;
   let palFrom = null;    // focus to hand back on close
+  let palMode = 'cmd';   // 'cmd', or 'open' for quick open
+  const PAL_MODES = {
+    cmd: { label: 'Command palette', ph: 'run an action or open a page' },
+    open: { label: 'Open a page', ph: 'open a page' },
+  };
 
   function palScore(q, s) {
     const t = s.toLowerCase();
@@ -3519,14 +3553,30 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     .sort((a, b) => a.s - b.s || a.i - b.i)
     .map((r) => r.x);
 
+  const palDocs = () => nodes.filter((n) => n.page).map((n) => ({ kind: 'page', key: n.path }))
+    .concat(knowKeys.map((k) => ({ kind: 'know', key: k.key.replace(/^\//, '') })));
+  function palRecent() {
+    const docs = palDocs();
+    const f = activeTab && !activeTab.ship ? activeTab : {};
+    return recentsGet().filter((r) => !(r.kind === f.kind && r.key === f.key)
+      && ((r.kind === 'page' ? !nodes.length : !knowHave)
+        || docs.some((d) => d.kind === r.kind && d.key === r.key))).slice(0, 10);
+  }
+  function palNew() {
+    const tp = typedPage(palIn.value);
+    return tp && !nodes.some((n) => n.page && n.path === tp.rn.name) ? tp.rn.name : null;
+  }
+
   function palPaint() {
     const q = palIn.value.trim().toLowerCase();
-    const acts = ACTIONS.filter(palUsable);
-    palRows = (q ? ranked(q, acts, (a) => a.name) : acts).map((a) => ({ kind: 'action', a }));
-    if (q) {
-      const docs = nodes.filter((n) => n.page).map((n) => ({ kind: 'page', key: n.path }))
-        .concat(knowKeys.map((k) => ({ kind: 'know', key: k.key.replace(/^\//, '') })));
-      palRows = palRows.concat(ranked(q, docs, (d) => d.key).slice(0, 50));
+    if (palMode === 'open') {
+      palRows = q ? ranked(q, palDocs(), (d) => d.key).slice(0, 50) : palRecent();
+      const made = q && palNew();
+      if (made) palRows.push({ kind: 'create', key: made });
+    } else {
+      const acts = ACTIONS.filter(palUsable);
+      palRows = (q ? ranked(q, acts, (a) => a.name) : acts).map((a) => ({ kind: 'action', a }));
+      if (q) palRows = palRows.concat(ranked(q, palDocs(), (d) => d.key).slice(0, 50));
     }
     palSel = 0;
     palList.textContent = '';
@@ -3545,8 +3595,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         home.textContent = r.a.home;
       } else {
         row.dataset.key = r.key;
-        name.textContent = r.key;
-        home.textContent = r.kind === 'page' ? 'Page' : 'Memory';
+        name.textContent = r.kind === 'create' ? 'Create ' + r.key : r.key;
+        home.textContent = { page: 'Page', know: 'Memory', create: 'New page' }[r.kind];
       }
       row.append(name, home);
       if (r.kind === 'action' && r.a.keys) {
@@ -3579,14 +3629,24 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     else palIn.removeAttribute('aria-activedescendant');
   }
 
-  function palShow() {
-    if (!pal.hidden) { palIn.select(); return; }
-    palFrom = document.activeElement;
+  let palKnowing = false;
+  function palKnow() {
+    if (knowHave || palKnowing) return;
+    palKnowing = true;
+    loadKnow().then(() => { palKnowing = false; if (!pal.hidden) palPaint(); });
+  }
+  function palShow(mode = 'cmd') {
+    if (!pal.hidden && mode === palMode) { palIn.select(); return; }
+    if (pal.hidden) palFrom = document.activeElement;
+    palMode = mode;
+    pal.setAttribute('aria-label', PAL_MODES[mode].label);
+    palIn.setAttribute('aria-label', PAL_MODES[mode].label);
+    palIn.placeholder = PAL_MODES[mode].ph;
     pal.hidden = false;
     palIn.value = '';
     palPaint();
     palIn.focus();
-    if (!knowHave) loadKnow().then(() => { if (!pal.hidden) palPaint(); });
+    if (mode === 'cmd') palKnow();
   }
   function palClose() {
     if (pal.hidden) return;
@@ -3597,14 +3657,26 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   function palRun(i, ev) {
     const r = palRows[i];
     if (!r) return;
+    if (r.kind === 'create') { palCreate(); return; }
     palClose();
     if (r.kind === 'action') { r.a.run(ev); return; }
     openIn(r.kind, r.key, { ev });
     drawersClose();
   }
-  paletteOpen = palShow;   // the ribbon's button (24-tools.js)
+  function palCreate() {
+    const typed = palIn.value.trim();
+    if (!typed) return;
+    if (!typedPage(typed)) { st(NO_NAME, false); return; }
+    palClose();
+    createNamed(typed);
+    drawersClose();
+  }
+  paletteOpen = () => palShow();   // the ribbon's button (24-tools.js)
 
-  palIn.oninput = palPaint;
+  palIn.oninput = () => {
+    palPaint();
+    if (palMode === 'open' && palIn.value.trim()) palKnow();
+  };
   palIn.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
@@ -3613,7 +3685,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       palMark();
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      palRun(palSel, e);
+      if (palMode === 'open' && e.shiftKey) palCreate();
+      else palRun(palSel, e);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
@@ -3625,11 +3698,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
     const k = e.key.toLowerCase();
-    if (k !== 'k' && k !== 'p') return;
+    if (k !== 'k' && k !== 'p' && k !== 'o') return;
     e.preventDefault();
     if (k === 'p' && localStorage.edVim === '1' && document.activeElement === src) return;
     if (!$('dlg').hidden) return;
-    palShow();
+    palShow(k === 'o' ? 'open' : 'cmd');
   }, true);
 
   window.latPalette = { ids: () => ACTIONS.map((a) => a.id), only: PALETTE_ONLY,
@@ -5489,6 +5562,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       this.innerHTML = `
 <aside class="tree" id="tree">
   <div class="ptool" role="toolbar" aria-label="Files">
+    ${sbtn('id="qopen" data-action="qopen"', 'qopen', 'Open a page', 'Ctrl+O')}
     <div class="newbtns">
       ${sbtn('id="newfile" data-action="newfile"', 'plus', 'New page')}
       ${sbtn('id="newfolder" data-action="newfolder"', 'fplus', 'New folder')}
@@ -5829,6 +5903,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     ['newtmpl', 'New from template'], ['upfiles', 'Upload files'], ['updir', 'Upload a folder'],
     ['tsort', 'Flip sort order'], ['tcoll', 'Collapse all folders']])
     clickAction(id, name, 'Files toolbar');
+  $('qopen').onclick = () => palShow('open');
+  clickAction('qopen', 'Open a page', 'Files', 'Ctrl+O');
 
   function renderTree() {
     const coll = paneColl.get();
@@ -6463,15 +6539,22 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       return createPage(picked.name, picked.kind);
     })();
   }
-  async function createPage(name, kind = 'md') {
-    if (!(await docTab())) return;
-    blankPage(name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : '');
+  function typedPage(typed, kind = 'md') {
+    let name = String(typed || '').trim().replace(/^\/+|\/+$/g, '');
     const dot = name.lastIndexOf('.');
-    const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
-    if (typed) { kind = typed; name = name.slice(0, dot); }
+    const ext = dot > 0 ? extKind(name.slice(dot + 1)) : null;
+    if (ext) { kind = ext; name = name.slice(0, dot); }
     const rn = realName(name);
-    if (!rn) return;
-    name = rn.name;
+    return rn && { rn, kind };
+  }
+  async function createPage(typed, kind = 'md') {
+    const tp = typedPage(typed, kind);
+    if (!tp) return;
+    if (!(await docTab())) return;
+    const { rn } = tp;
+    const name = rn.name;
+    kind = tp.kind;
+    blankPage(name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : '');
     newRn = rn;
     pkind.value = kind;
     if (isRich(kind) && !(await writerBlank(kind))) return;
@@ -6485,7 +6568,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     src.focus();
   }
-  window.latCreate = async (name, kind) => { if (await guardDirty()) return createPage(name, kind); };
+  async function createNamed(name, kind) { if (await guardDirty()) return createPage(name, kind); }
+  window.latCreate = createNamed;
   window.latStartNamed = startNamed;
 
   async function newFolder() {
@@ -8217,6 +8301,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     } finally { end(); }
     if (!r.ok) { st('delete failed' + await errText(r), false); return false; }
     dropTreeNodes(path);
+    recentsDrop('page', path);
     snapTree();
     renderTree();
     st(r.offline ? 'deleted ' + path + ' offline' : 'deleted ' + path);
@@ -11662,6 +11747,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     st('memory deleted (restorable via know-restore)');
     knowGen++;
     knowKeys = knowKeys.filter((x) => x.key.replace(/^\//, '') !== doomed);
+    recentsDrop('know', doomed);
     renderKnowChips();
     renderKnowTree();
   }

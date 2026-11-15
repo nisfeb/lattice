@@ -416,11 +416,11 @@
       i.addEventListener('load', inner);
     }
     // a key pressed in the frame never reaches this window, so the shell's
-    // own chords (the palette, Search, Files) are handed up to it
+    // own chords (the palette, quick open, Search, Files) are handed up to it
     d.addEventListener('keydown', (e) => {
       const mod = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
-      const ours = (mod && !e.altKey && !e.shiftKey && (k === 'k' || k === 'p' || k === ','))
+      const ours = (mod && !e.altKey && !e.shiftKey && (k === 'k' || k === 'p' || k === 'o' || k === ','))
         || (mod && e.shiftKey && !e.altKey && (k === 'f' || e.code === 'KeyL'));
       if (!ours) return;
       const up = new KeyboardEvent('keydown', { key: e.key, code: e.code, ctrlKey: e.ctrlKey,

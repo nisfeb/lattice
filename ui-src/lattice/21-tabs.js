@@ -302,6 +302,7 @@
         tabCaret(s);
       } finally { tabNav--; }
       paintTabs();
+      tabSeen(t);
       if (quick && !s.dirty) refreshOpen();
       return Promise.resolve(true);
     }
@@ -317,6 +318,8 @@
       if (ok === false && !k.shows(t)) tabBlank(t);
       else if (!k.shows(t)) tabFollow();   // something else opened over it
       else if (s && !dirty) tabCaret(s);
+      // opened and in front: a recent for quick open. One that failed is not
+      if (ok !== false && k.shows(t)) tabSeen(t);
       paintTabs();
       return ok;
     }, (e) => { settle(); throw e; });
@@ -601,7 +604,9 @@
     // a tab that is not an editor document (no live()) keeps its identity
     if (!TAB_KINDS[t.kind].live) return;
     if (tabLoading === t) {
-      if (TAB_KINDS[t.kind].shows(t)) tabLoading = null;
+      // the open painted, before its fetch is done: the user sees it now,
+      // and may be gone to another page before that fetch lands
+      if (TAB_KINDS[t.kind].shows(t)) { tabLoading = null; tabSeen(t); }
       return;
     }
     const d = liveDoc();
@@ -614,6 +619,7 @@
     const twin = d.key && allTabs().find((x) => x !== t && sameDoc(x, d) && !(x.snap && x.snap.dirty));
     if (twin) gDropTab(twin);
     tabsChanged();
+    tabSeen(t);              // opened in place: a new page's create, a link
   }
   // a create that ran from the queue after its tab was left (save(),
   // 35-pages.js). `own.tab` is the tab it was queued from, and only that
@@ -644,7 +650,41 @@
       else if (t.key.startsWith(from + '/')) t.key = to + t.key.slice(from.length);
     }
     tabsChanged();
+    recentsPut(recentsGet().map((r) => (r.kind !== kind ? r
+      : r.key === from ? { kind, key: to }
+      : r.key.startsWith(from + '/') ? { kind, key: to + r.key.slice(from.length) } : r)));
   }
+
+  // ── recents ──────────────────────────────────────────────────────────
+  // The documents opened on this device, newest first, for quick open
+  // (26-palette.js). localStorage.latRecents, [{kind, key}], kind page or
+  // know, 30 at most, one entry per document. Per device, never synced.
+  // A rename follows (tabsRemap above), a delete drops (recentsDrop), and
+  // the picker checks each against the tree as it paints, so a page gone
+  // on another device is not offered either.
+  function recentsGet() {
+    let v = null;
+    try { v = JSON.parse(localStorage.latRecents || '[]'); } catch {}
+    return Array.isArray(v) ? v.filter((r) => r && (r.kind === 'page' || r.kind === 'know')
+      && typeof r.key === 'string' && r.key) : [];
+  }
+  function recentsPut(list) {
+    const out = [];
+    for (const r of list)
+      if (out.length < 30 && !out.some((x) => x.kind === r.kind && x.key === r.key)) out.push(r);
+    try { localStorage.latRecents = JSON.stringify(out); } catch {}
+  }
+  // a document came to the front (tabSeen). A tab on another ship's page
+  // has no place here: the picker lists this ship's pages.
+  function noteRecent(kind, key) {
+    if ((kind === 'page' || kind === 'know') && key) recentsPut([{ kind, key }, ...recentsGet()]);
+  }
+  // a page's delete takes the pages under it too, a memory's only itself
+  function recentsDrop(kind, path) {
+    recentsPut(recentsGet().filter((r) => r.kind !== kind
+      || (r.key !== path && !(kind === 'page' && r.key.startsWith(path + '/')))));
+  }
+  function tabSeen(t) { if (!t.ship) noteRecent(t.kind, t.key); }
   // a save of `name` that landed after its tab was parked (35-pages.js,
   // 95-know.js): the snap holding exactly what was sent is clean now, and
   // a page's snap takes the new revision, which a link's next save claims

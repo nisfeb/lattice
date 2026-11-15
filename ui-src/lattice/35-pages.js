@@ -412,25 +412,34 @@
       return createPage(picked.name, picked.kind);
     })();
   }
+  //  typedPage: the page a typed name makes, {rn, kind}, or null when it
+  //  has nothing to go by. The outer slashes go. A typed extension still
+  //  wins, because typing notes/todo.md and being given a page called
+  //  "todo.md" would be absurd. The table is EXT_KIND in 30-tree.js, the
+  //  same one the uploader files by. Quick open's Create row asks it too.
+  function typedPage(typed, kind = 'md') {
+    let name = String(typed || '').trim().replace(/^\/+|\/+$/g, '');
+    const dot = name.lastIndexOf('.');
+    const ext = dot > 0 ? extKind(name.slice(dot + 1)) : null;
+    if (ext) { kind = ext; name = name.slice(0, dot); }
+    const rn = realName(name);
+    return rn && { rn, kind };
+  }
   //  createPage: a page with a name the user gave, written at once. Quick
   //  open's Create row (26-palette.js) makes its page here too.
-  async function createPage(name, kind = 'md') {
+  async function createPage(typed, kind = 'md') {
+    const tp = typedPage(typed, kind);
+    if (!tp) return;
     //  reset the editor only once the create is confirmed, so a cancel
     //  leaves the open page exactly as it was. Under a tool tab the page
     //  gets a document tab of its own first (docTab, 21-tabs.js).
     if (!(await docTab())) return;
-    blankPage(name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : '');
-    //  a typed extension still wins, because typing notes/todo.md and being
-    //  given a page called "todo.md" would be absurd. The table is EXT_KIND
-    //  in 30-tree.js, the same one the uploader files by.
-    const dot = name.lastIndexOf('.');
-    const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
-    if (typed) { kind = typed; name = name.slice(0, dot); }
     //  the field is seeded with the REAL path; the typed leaf, when it was
     //  not a valid path, rides to save() as the display name
-    const rn = realName(name);
-    if (!rn) return;
-    name = rn.name;
+    const { rn } = tp;
+    const name = rn.name;
+    kind = tp.kind;
+    blankPage(name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : '');
     newRn = rn;
     pkind.value = kind;
     if (isRich(kind) && !(await writerBlank(kind))) return;
@@ -459,9 +468,13 @@
     }
     src.focus();
   }
+  //  createNamed: createPage after guardDirty, for a road that has not
+  //  asked already (quick open's Create, 26-palette.js). Unsaved text in
+  //  front is saved first, or asked about, never dropped.
+  async function createNamed(name, kind) { if (await guardDirty()) return createPage(name, kind); }
   //  for the browser suites, which cannot reach this scope: a named page
-  //  made at once, after guardDirty, as the folder dialog makes it
-  window.latCreate = async (name, kind) => { if (await guardDirty()) return createPage(name, kind); };
+  //  made at once, as the folder dialog makes it
+  window.latCreate = createNamed;
   window.latStartNamed = startNamed;
 
   async function newFolder() {

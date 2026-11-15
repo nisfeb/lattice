@@ -10,7 +10,12 @@
 //     Move or rename names a page not saved yet. Autosave off waits for
 //     Ctrl+S. A journal day from the brief button is saved once written.
 //
-//  ONLY=A runs just that section after the setup.
+//  B: Quick open. Ctrl/Cmd+O, or the Files toolbar's Open, opens the
+//     palette's box in open mode: pages and memories only, the recent ones
+//     first with nothing typed, ranked as the palette ranks with a query,
+//     and a last row that creates the typed name when no page has it.
+//
+//  ONLY=A (or B) runs just that section after the setup.
 //
 //  Usage: LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> \
 //           node scripts/ui-capture.mjs
@@ -51,9 +56,11 @@ const utcToday = new Date().toISOString().slice(0, 10);
 let shipDown = false;
 let holdSave = 0;          // ms each page-save is held before it goes
 const saves = [];          // every page-save the editor sent: {name, type, isNew}
+const reqs = [];           // every url the page asked for
 await page.setRequestInterception(true);
 page.on('request', (r) => {
   const u = r.url();
+  reqs.push(u);
   if (/\/page-save\?/.test(u)) {
     const q = new URL(u).searchParams;
     saves.push({ name: q.get('name'), type: q.get('type'), isNew: q.get('new') === '1' });
@@ -157,6 +164,13 @@ const capturedAs = async (text, before) => waitFor(async () => {
   }
   return null;
 }, 12000, 500);
+
+//  the + on the run's own folder in the tree, which opens the dialog
+const addf = () => page.evaluate((r) => {
+  const a = [...document.querySelectorAll('#treelist a.addf')].find((x) => x.title === 'new file in ' + r);
+  if (a) a.click();
+  return !!a;
+}, RUN);
 
 let step = 'setup';
 let baseline = [];
@@ -435,11 +449,6 @@ try {
 
     // ── A9. a folder's + keeps its dialog; an untouched name captures ──
     step = 'A9 folder';
-    const addf = () => page.evaluate((r) => {
-      const a = [...document.querySelectorAll('#treelist a.addf')].find((x) => x.title === 'new file in ' + r);
-      if (a) a.click();
-      return !!a;
-    }, RUN);
     dlgMeant++;
     check('A: the folder has its +', await addf());
     const up = await waitFor(dlgOpen, 5000, 100);
@@ -641,6 +650,295 @@ try {
     check('A: no native dialog at any point', natives === 0, 'natives=' + natives);
     const allDlg = await dlgSum();
     check('A: the editor\'s dialog opened only where the suite opened it', allDlg === dlgMeant,
+      JSON.stringify({ shown: allDlg, meant: dlgMeant }));
+  }
+
+  if (on('B')) {
+    const QA = RUN + '/qa', QB = RUN + '/qb', QC = RUN + '/qc', QD = RUN + '/qd';
+    const QE = RUN + '/qe', QE2 = RUN + '/qe2';
+    const chord = async (key, mods) => {
+      for (const m of mods) await page.keyboard.down(m);
+      await page.keyboard.press(key);
+      for (const m of [...mods].reverse()) await page.keyboard.up(m);
+      await sleep(250);
+    };
+    //  the palette's box as the user sees it
+    const pal = () => page.evaluate(() => {
+      const p = document.getElementById('palette'), i = document.getElementById('palin');
+      return { open: !p.hidden, ph: i.placeholder, focus: document.activeElement === i,
+        rows: [...document.querySelectorAll('#pallist .palrow')].map((r) => ({ kind: r.dataset.kind,
+          key: r.dataset.key || '', name: r.querySelector('.palname').textContent,
+          home: r.querySelector('.palhome').textContent,
+          keys: (r.querySelector('.palkeys') || {}).textContent || '' })) };
+    });
+    const palUp = () => waitFor(async () => { const x = await pal(); return x.open && x.focus ? x : null; }, 5000, 100);
+    const palEsc = async () => { if ((await pal()).open) await page.keyboard.press('Escape'); await sleep(200); };
+    const ctrlO = async () => { await chord('KeyO', ['Control']); return palUp(); };
+    const palType = async (t) => { await page.keyboard.type(t); await sleep(300); return pal(); };
+    //  a page opened from outside the picker, shown and settled
+    const openWait = async (n) => {
+      await page.evaluate((x) => window.latTabs.openIn('page', x), n);
+      return waitFor(async () => { const f = await front(); return f.key === n && f.name === n && f.readOnly; }, 20000, 200);
+    };
+
+    step = 'B setup';
+    for (const n of [QA, QB, QC, QD, QE])
+      await api('page-save?type=md&new=1&name=' + encodeURIComponent(n), { method: 'POST', body: 'body of ' + n });
+    await boot();
+
+    // ── B1. Ctrl+O opens the palette's box in open mode, asking nothing ──
+    step = 'B1 open mode';
+    await page.evaluate(() => document.getElementById('src').focus());
+    const r0 = reqs.length;
+    let s = await ctrlO();
+    await sleep(1000);
+    const asked = reqs.slice(r0).filter((u) => /\/apps\/lattice\/(know-|page-)/.test(u));
+    check('B: Ctrl+O opens the palette\'s box', !!s);
+    s = await pal();
+    check('B: in open mode: the placeholder says open a page', s.ph === 'open a page', s.ph);
+    check('B: and it lists no actions', s.rows.every((r) => r.kind === 'page' || r.kind === 'know'),
+      JSON.stringify(s.rows.slice(0, 4)));
+    check('B: opening it asks the ship nothing', asked.length === 0, JSON.stringify(asked));
+    await palEsc();
+    check('B: Escape closes it and hands the focus back', await page.evaluate(() =>
+      document.getElementById('palette').hidden && document.activeElement.id === 'src'));
+    //  recents in localStorage that are junk, or not there at all
+    let junkOk = true;
+    for (const v of ['{junk', '[1,null,{"kind":"x","key":2},{"kind":"page"}]', '"a"']) {
+      await page.evaluate((x) => { localStorage.latRecents = x; }, v);
+      s = await ctrlO();
+      if (!s || !s.rows.every((r) => r.kind === 'page' || r.kind === 'know')) junkOk = false;
+      await palEsc();
+    }
+    await page.evaluate(() => localStorage.removeItem('latRecents'));
+    check('B: junk in the recents is read as no recents', junkOk);
+
+    // ── B2. recents: newest first, front left out, deleted gone, renamed followed ──
+    step = 'B2 recents';
+    await openWait(QD);
+    check('B: a page to rename is open', !!(await openWait(QE)));
+    dlgMeant++;
+    await page.evaluate(() => document.getElementById('tpath').click());
+    await waitFor(dlgOpen, 5000, 100);
+    await page.evaluate((n) => {
+      document.getElementById('dlginput').value = n;
+      document.getElementById('dlgok').click();
+    }, QE2);
+    const ren = await waitFor(async () => (await front()).key === QE2
+      && (await treePages(RUN + '/')).includes(QE2), 40000, 500);
+    check('B: it is renamed', !!ren, JSON.stringify(await front()));
+    for (const n of [QA, QB, QC]) await openWait(n);
+    //  deleted from elsewhere, as another device would
+    await api('page-del?name=' + encodeURIComponent(QD), { method: 'POST' });
+    await boot();
+    await waitFor(async () => (await front()).key === QC, 20000, 200);
+    s = await ctrlO();
+    const keys = s ? s.rows.map((r) => r.key) : [];
+    check('B: with nothing typed: the recent pages, newest first, without the one in front',
+      keys[0] === QB && keys[1] === QA && !keys.includes(QC), JSON.stringify(keys));
+    check('B: ten at most, and no Create row', keys.length <= 10 && s.rows.every((r) => r.kind !== 'create'));
+    check('B: a page deleted since is not listed', !keys.includes(QD), JSON.stringify(keys));
+    check('B: a renamed page is listed under its new name', keys.includes(QE2) && !keys.includes(QE),
+      JSON.stringify(keys));
+    await palEsc();
+
+    // ── B3. typing filters; Enter opens in place, Ctrl+Enter in a new tab ──
+    step = 'B3 filter';
+    const f0 = await front();
+    await ctrlO();
+    s = await palType(QB);
+    check('B: typing filters: the typed page is the top row, and no action is listed',
+      !!s.rows[0] && s.rows[0].key === QB && s.rows.every((r) => r.kind !== 'action'),
+      JSON.stringify(s.rows.slice(0, 3)));
+    await page.keyboard.press('Enter');
+    const inPlace = await waitFor(async () => {
+      const f = await front();
+      return f.key === QB && f.name === QB && f.readOnly ? f : null;
+    }, 20000, 200);
+    check('B: Enter opens it in the front tab', !!inPlace && inPlace.ntabs === f0.ntabs && !(await pal()).open,
+      JSON.stringify([f0.ntabs, inPlace]));
+    await ctrlO();
+    await palType(QA);
+    await chord('Enter', ['Control']);
+    const newTab = await waitFor(async () => {
+      const f = await front();
+      return f.key === QA && f.name === QA && f.readOnly ? f : null;
+    }, 20000, 200);
+    check('B: Ctrl+Enter opens it in a new tab', !!newTab && newTab.ntabs === f0.ntabs + 1,
+      JSON.stringify(newTab || await front()));
+
+    // ── B4. the Create row ──
+    step = 'B4 create row';
+    await ctrlO();
+    s = await palType(RUN + '/q');
+    const last = s.rows[s.rows.length - 1] || {};
+    check('B: a Create row is last when no page has the typed name',
+      s.rows.length > 1 && last.kind === 'create' && /^Create /.test(last.name)
+        && s.rows.slice(0, -1).every((r) => r.kind === 'page' || r.kind === 'know'), JSON.stringify(s.rows));
+    s = await palType('a');
+    check('B: and absent when a page has exactly that name',
+      s.rows.length > 0 && s.rows.every((r) => r.kind !== 'create'), JSON.stringify(s.rows));
+    await palEsc();
+
+    // ── B5. Enter on no match, and Shift+Enter, create the typed page ──
+    step = 'B5 create';
+    const TU = 'unsaved line ' + RUN + ' ';
+    await typeIn(TU);
+    const inbox0 = await inboxOnShip();
+    const b0 = saves.length;
+    const MADE = RUN + '/made-by-enter';
+    await ctrlO();
+    s = await palType(MADE);
+    check('B: with no match, the Create row is the only row', s.rows.length === 1 && s.rows[0].kind === 'create',
+      JSON.stringify(s.rows));
+    await page.keyboard.press('Enter');
+    const made = await waitFor(async () => (await treePages(RUN + '/')).includes(MADE)
+      && (await front()).key === MADE, 40000, 500);
+    check('B: Enter on it creates the typed page, at the typed path', !!made, JSON.stringify(await front()));
+    check('B: as markdown', saves.slice(b0).some((x) => x.name === MADE && x.isNew && x.type === 'md'),
+      JSON.stringify(saves.slice(b0)));
+    check('B: the text left unsaved in the page in front is kept', ((await shipBody(QA)) || '').includes(TU.trim()),
+      String(await shipBody(QA)));
+    const SHIFT = RUN + '/q';
+    await ctrlO();
+    s = await palType(SHIFT);
+    const matches = s.rows.filter((r) => r.kind === 'page').length;
+    await chord('Enter', ['Shift']);
+    const sh = await waitFor(async () => (await treePages(RUN + '/')).includes(SHIFT)
+      && (await front()).key === SHIFT, 40000, 500);
+    check('B: Shift+Enter with matches creates the typed page', matches > 1 && !!sh
+      && saves.slice(b0).some((x) => x.name === SHIFT && x.isNew && x.type === 'md'),
+      JSON.stringify({ matches, f: await front() }));
+    check('B: neither went to the Inbox', (await inboxOnShip()).filter((n) => !inbox0.includes(n)).length === 0);
+
+    // ── B6. names: the picker makes what the new-page dialog makes ──
+    step = 'B6 names';
+    //  the page made under `pre`, its create's type, and the status line
+    const outcome = async (pre, k0) => {
+      const ps = await waitFor(async () => { const x = await treePages(pre); return x.length ? x : null; }, 40000, 500);
+      if (ps) await waitFor(async () => (await front()).key === ps[0], 10000, 200);
+      await sleep(600);
+      return { pages: ps || [], types: saves.slice(k0).filter((x) => x.isNew && x.name.startsWith(pre)).map((x) => x.type),
+        st: await page.evaluate(() => document.getElementById('status').textContent) };
+    };
+    for (const [tag, typed] of [['x', 'x/'], ['ext', 'notes/a.md'], ['shape', 'My Page']]) {
+      const D = RUN + '/dlg-' + tag + '/', P = RUN + '/pick-' + tag + '/';
+      let k0 = saves.length;
+      dlgMeant++;
+      await addf();
+      await waitFor(dlgOpen, 5000, 100);
+      await page.evaluate((v) => {
+        const k = document.getElementById('dlgkind');
+        k.value = 'md'; k.dispatchEvent(new Event('change'));
+        const i = document.getElementById('dlginput');
+        i.value = v; i.focus();
+      }, D + typed);
+      await page.keyboard.press('Enter');
+      const viaD = await outcome(D, k0);
+      k0 = saves.length;
+      await ctrlO();
+      await palType(P + typed);
+      await page.keyboard.press('Enter');
+      const viaP = await outcome(P, k0);
+      const same = (o) => JSON.stringify(o).split(D).join(P);
+      check('B: "' + typed + '" makes the page and says what the dialog does',
+        viaP.pages.length === 1 && viaP.pages.every((n) => n.startsWith(P) && !n.endsWith('/') && !n.includes('//'))
+          && viaP.types.length === 1 && viaP.types[0] === 'md' && same(viaD) === JSON.stringify(viaP),
+        JSON.stringify({ viaD, viaP }));
+    }
+    //  three spaces name nothing: the picker offers no Create row and
+    //  Shift+Enter writes nothing, as the dialog's empty name writes nothing
+    let k1 = saves.length;
+    const fs0 = await front();
+    await ctrlO();
+    s = await palType('   ');
+    const noCreate = s.rows.every((r) => r.kind !== 'create');
+    await chord('Enter', ['Shift']);
+    await sleep(2500);
+    const fs1 = await front();
+    check('B: three spaces offer no Create row, and Shift+Enter makes nothing',
+      noCreate && !saves.slice(k1).some((x) => x.isNew) && fs1.key === fs0.key,
+      JSON.stringify({ rows: s.rows.length, saves: saves.slice(k1), fs0: fs0.key, fs1: fs1.key }));
+    await palEsc();
+    k1 = saves.length;
+    dlgMeant++;
+    await addf();
+    await waitFor(dlgOpen, 5000, 100);
+    await page.evaluate(() => {
+      const i = document.getElementById('dlginput');
+      i.value = '   '; i.focus();
+    });
+    await page.keyboard.press('Enter');
+    await sleep(2500);
+    check('B: and the dialog given three spaces makes no page either', !saves.slice(k1).some((x) => x.isNew),
+      JSON.stringify(saves.slice(k1)));
+
+    // ── B7. Ctrl+O from a tool tab, and with vim on in the editor ──
+    step = 'B7 tool tab';
+    await openWait(QB);
+    await page.evaluate(() => document.getElementById('rb-settings').click());
+    const SET = '#toolhost iframe[data-tool="frame:/apps/lattice/settings"]';
+    const fr = await waitFor(() => page.evaluate((q) => {
+      const f = document.querySelector(q);
+      return f?.contentDocument?.readyState === 'complete' && !!f.contentDocument.body;
+    }, SET), 30000, 300);
+    await sleep(2000);
+    await page.evaluate((q) => {
+      const f = document.querySelector(q);
+      f.focus(); f.contentWindow.focus(); f.contentDocument.body.focus();
+    }, SET);
+    s = await ctrlO();
+    check('B: Ctrl+O works with a tool tab in front', !!fr && !!s && s.ph === 'open a page',
+      JSON.stringify({ fr, s: s && s.ph }));
+    await palEsc();
+    await page.evaluate(async () => {
+      for (const t of window.latTabs.state().tabs.filter((x) => x.kind === 'tool')) await window.latTabs.closeTab(t.id);
+    });
+    step = 'B7 vim';
+    await openWait(QB);
+    await page.evaluate(() => { localStorage.edVim = '1'; window.dispatchEvent(new StorageEvent('storage', { key: 'edVim' })); });
+    await sleep(300);
+    await page.focus('#src');
+    s = await ctrlO();
+    check('B: Ctrl+O works with vim on while the editor has focus', !!s && s.ph === 'open a page');
+    await palEsc();
+    await page.evaluate(() => { localStorage.removeItem('edVim'); window.dispatchEvent(new StorageEvent('storage', { key: 'edVim' })); });
+
+    // ── B8. the Open button, and the palette's index ──
+    step = 'B8 button';
+    const btn = await page.evaluate(() => {
+      const b = document.getElementById('qopen');
+      return b && { title: b.title, aria: b.getAttribute('aria-label'), action: b.dataset.action,
+        next: b.nextElementSibling && b.nextElementSibling.firstElementChild
+          && b.nextElementSibling.firstElementChild.id };
+    });
+    check('B: the Files toolbar has an Open button beside New page, its tooltip its accessible name',
+      !!btn && btn.title === btn.aria && btn.action === 'qopen' && /^Open a page/.test(btn.title)
+        && btn.next === 'newfile', JSON.stringify(btn));
+    await page.evaluate(() => document.getElementById('qopen').click());
+    s = await palUp();
+    check('B: the Open button opens the box in open mode', !!s && s.ph === 'open a page');
+    await palEsc();
+    await chord('KeyK', ['Control']);
+    s = await palUp();
+    check('B: Ctrl+K still opens the command palette, actions only with nothing typed',
+      !!s && s.ph === 'run an action or open a page' && s.rows.length > 0 && s.rows.every((r) => r.kind === 'action'),
+      JSON.stringify(s && s.ph));
+    s = await palType('Open a page');
+    const row = s.rows.find((r) => r.kind === 'action' && r.name === 'Open a page');
+    check('B: the palette lists Open a page, homed in Files, with its keys',
+      !!row && row.home === 'Files' && row.keys === 'Ctrl+O', JSON.stringify(row || s.rows.slice(0, 3)));
+    if (row && s.rows[0] === row) {
+      await page.keyboard.press('Enter');
+      s = await palUp();
+      check('B: running it from the palette opens open mode', !!s && s.ph === 'open a page');
+    }
+    await palEsc();
+
+    step = 'B end';
+    check('B: no native dialog at any point', natives === 0, 'natives=' + natives);
+    const allDlg = await dlgSum();
+    check('B: the editor\'s dialog opened only where the suite opened it', allDlg === dlgMeant,
       JSON.stringify({ shown: allDlg, meant: dlgMeant }));
   }
 } catch (e) {

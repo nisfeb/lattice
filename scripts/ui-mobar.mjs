@@ -154,7 +154,7 @@ try {
   await closeAll(m);
 
   // every placement-map home reachable: on screen as is, or after one drawer
-  const HOMES = ['#newfile', '[data-pt=know]', '[data-pt=marks]', '#tmenu', '#tread',
+  const HOMES = ['#newfile', '#qopen', '[data-pt=know]', '[data-pt=marks]', '#tmenu', '#tread',
     '[data-pt=page]', '[data-pt=hist]', '#rb-settings', '#rb-access', '#rb-inbox'];
   for (const sel of HOMES) {
     let how = null;

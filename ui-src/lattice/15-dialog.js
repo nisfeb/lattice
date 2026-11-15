@@ -34,6 +34,9 @@
     dlgIn.setSelectionRange(dlgIn.value.length, dlgIn.value.length);
     return p;
   };
+  //  what a name that slugs to nothing is told (realName, 10-shell.js), here
+  //  and in quick open's Create (26-palette.js)
+  const NO_NAME = 'that name has nothing to go by — use at least one letter or digit.';
   //  askNameKind: a name AND the kind to save it as, in one dialog.
   //
   //  The kind used to be reachable only from the bar, which the desktop shell
@@ -69,7 +72,7 @@
       if (!name) return optional ? { name, kind: picked } : null;
       if (realName(name)) return { name, kind: picked };
       seed = name;
-      note = 'that name has nothing to go by — use at least one letter or digit. ';
+      note = NO_NAME + ' ';
     }
   };
   // askName: ask() for a path-like name, re-prompting until the server would
@@ -89,7 +92,7 @@
       if (!name) return null;
       if (realName(name)) return name;
       seed = name;
-      note = 'that name has nothing to go by — use at least one letter or digit. ';
+      note = NO_NAME + ' ';
     }
   };
   // askConfirm: yes/no dialog → boolean
