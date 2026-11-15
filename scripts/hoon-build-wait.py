@@ -8,12 +8,10 @@ to hold the deploy's version stamp, then asks ?info=1 of every .hoon file
 of <code-dir> in the desk until each reports a build status. Any status
 but vase fails, as does a non-null bang on the lattice instance once
 everything built. Each failure is printed with grubbery's error detail.
-Exits 0 on a clean build, 1 on a failed one, 2 on a timeout.
+Exits 0 on a clean build, 1 on a failed one, 2 on a timeout. The desk is
+under /apps/shell, or /apps/shell.shell on an older kernel: /apps says.
 """
 import argparse, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
-
-DESK = '/grubbery/ball/apps/shell.shell/desks/lattice.desk'
-INST = DESK + '/desk/data/lattice.lattice_app'
 
 
 def cookie(jar):
@@ -35,8 +33,8 @@ def get(base, ck, path, timeout=120):
         return 0, str(e)
 
 
-def info(base, ck, path):
-    st, body = get(base, ck, path + '?info=1')
+def info(base, ck, path, q='?info=1'):
+    st, body = get(base, ck, path + q)
     if st != 200:
         return None
     try:
@@ -57,7 +55,15 @@ def main():
         print(f'hoon-build: gave up after {a.wait} s waiting for {what}', flush=True)
         sys.exit(2)
 
-    while a.stamp not in get(base, ck, DESK + '/version.json?raw=1')[1]:
+    while (j := info(base, ck, '/grubbery/ball/apps', '?list=1')) is None:
+        if time.time() > end:
+            out_of_time('the shell to answer')
+        time.sleep(2)
+    shell = 'shell' if any(c['name'] == 'shell' for c in j['children']) else 'shell.shell'
+    desk = f'/grubbery/ball/apps/{shell}/desks/lattice.desk'
+    inst = desk + '/desk/data/lattice.lattice_app'
+
+    while a.stamp not in get(base, ck, desk + '/version.json?raw=1')[1]:
         if time.time() > end:
             out_of_time(f'the desk to pull {a.stamp}')
         time.sleep(2)
@@ -71,7 +77,7 @@ def main():
         for rel in files:
             if rel in status:
                 continue
-            j = info(base, ck, DESK + '/desk/code/' + rel)
+            j = info(base, ck, desk + '/desk/code/' + rel)
             b = (j or {}).get('build') or {}
             if b.get('status'):
                 status[rel] = (b['status'], b.get('detail') or '')
@@ -87,7 +93,7 @@ def main():
     bang = None
     if not bad:
         while True:
-            j = info(base, ck, INST)
+            j = info(base, ck, inst)
             if j is not None:
                 bang = j.get('bang')
                 if bang is None:
@@ -108,7 +114,7 @@ def main():
         print(f'--- code/{f}: {s} ---\n{detail.rstrip()}')
     if bang:
         print(f'\n::error file=code/nex/lattice/app.hoon::the lattice instance has a bang')
-        print(f'--- bang on {INST} ---\n{bang.rstrip()}')
+        print(f'--- bang on {inst} ---\n{bang.rstrip()}')
     if bad or bang:
         sys.exit(1)
     print(f'hoon-build: every .hoon file under code/ built, bang null ({time.time() - t0:.0f} s)')

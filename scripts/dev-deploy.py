@@ -9,11 +9,20 @@ Mirrors code/ into the ball at /lattice-dev/code through the explorer
 version.json with a dev version, which makes the desk pull. With --add it
 first makes the desk: POST /apps/grubbery/desks/add {name: lattice, code:
 /lattice-dev/code}, so lattice lands at the same path as on ricsul,
-/apps/shell.shell/desks/lattice.desk. Files are written only when they
-differ, so a redeploy sends only what changed. --approve then grants the
-instance its own weir.json (approve-weir with it as `granted`; without
-`granted` the grant is empty and lattice stops serving) and reloads its
-permits, which a release that adds a road needs.
+<shell>/desks/lattice.desk. A lattice desk that follows another source
+(a current kernel boots one following ~ricsul-bilwyt, which a fake ship
+cannot reach) is removed first with /desks/delete, which also keeps boot
+from making it again. Files are written only when they differ, so a
+redeploy sends only what changed. --approve then grants the instance its
+own weir.json (approve-weir with it as `granted`; without `granted` the
+grant is empty and lattice stops serving) and the usergroups its
+groups.json names, and reloads its permits, which a release that adds a
+road needs.
+
+The shell is at /apps/shell on a current kernel and at /apps/shell.shell
+on an older one. The first request asks /apps which it is, and waits
+until the shell answers at all: a ship that has just booted redirects
+/grubbery/ball to landscape for a while.
 
 Telling what differs costs a GET per file (about 0.5 s each, a minute for
 code/). --manifest FILE skips that: it holds the sha256 of every file as
@@ -88,8 +97,24 @@ class Ship:
         if st not in ok:
             sys.exit(f'dev-deploy: {data.get("action")} {path}: {st} {body[:400].decode(errors="replace")}')
 
+    def shell(self):
+        """the shell's path: /apps/shell, or /apps/shell.shell on an old kernel"""
+        if not hasattr(self, '_shell'):
+            for _ in range(150):
+                st, body = self.req(self.ball('/apps') + '?list=1')
+                if st == 200:
+                    break
+                time.sleep(2)
+            else:
+                sys.exit(f'dev-deploy: the shell does not answer: list /apps: {st} {body[:200]!r}')
+            names = {c['name'] for c in json.loads(body)['children']}
+            self._shell = '/apps/shell' if 'shell' in names else '/apps/shell.shell'
+        return self._shell
+
     def text(self, f):
-        st, body = self.req('/grubbery/api/file' + f)
+        # an old kernel reads files at /api/file, a current one at /api/peek
+        api = '/grubbery/api/file' if self.shell().endswith('.shell') else '/grubbery/api/peek'
+        st, body = self.req(api + f)
         return body.decode(errors='replace') if st == 200 else None
 
 
@@ -156,6 +181,7 @@ def main():
     ship = Ship(a.base, a.jar)
     if not re.match(r'https?://(localhost|127\.0\.0\.1)(:\d+)?$', ship.base):
         sys.exit('dev-deploy: refusing a non-local ship; this is for fake fleet ships only')
+    desk = ship.shell() + '/desks/lattice.desk'
 
     man = load_manifest(a.manifest)
     if man and shipped_stamp(ship) != man.get('stamp'):
@@ -206,22 +232,42 @@ def main():
         os.replace(tmp, a.manifest)
 
     if a.add:
-        st, body = ship.req('/apps/grubbery/desks/add',
-                            json.dumps({'name': 'lattice', 'code': ROOT}), 'application/json')
-        print(f'dev-deploy: desks/add: {st} {body.decode(errors="replace")}')
-        if st not in (200, 409):
-            sys.exit(1)
+        try:
+            src = json.loads(ship.text(desk + '/source.json') or 'null')
+        except ValueError:
+            src = None
+        if isinstance(src, dict) and src.get('code') == ROOT:
+            print(f'dev-deploy: {desk} already follows {ROOT}')
+        else:
+            if src is not None:  # it follows something else: this ship cannot pull our code into it
+                st, body = ship.req('/apps/grubbery/desks/delete',
+                                    json.dumps({'app': 'lattice.desk'}), 'application/json')
+                print(f'dev-deploy: desks/delete (it followed {src}): {st} {body.decode(errors="replace")}')
+                if st != 200:
+                    sys.exit(1)
+            st, body = ship.req('/apps/grubbery/desks/add',
+                                json.dumps({'name': 'lattice', 'code': ROOT}), 'application/json')
+            print(f'dev-deploy: desks/add: {st} {body.decode(errors="replace")}')
+            if st != 200:
+                sys.exit(1)
 
     if a.approve:
-        app = '/apps/shell.shell/desks/lattice.desk/desk/data/lattice.lattice_app'
+        app = desk + '/desk/data/lattice.lattice_app'
         for _ in range(180):  # a first install makes the instance once the desk builds
-            st, weir = ship.req('/grubbery/api/file' + app + '/weir.json')
-            if st == 200 and weir.strip():
+            weir = ship.text(app + '/weir.json')
+            if weir and weir.strip():
                 break
             time.sleep(5)
         else:
             sys.exit(f'dev-deploy: no {app}/weir.json yet; run --approve again later')
-        grant = {'action': 'approve-weir', 'app': app, 'picks': {}, 'granted': json.loads(weir)}
+        granted = json.loads(weir)
+        try:  # the usergroups lattice reads within (/public), which other ships read through
+            groups = json.loads(ship.text(app + '/groups.json') or 'null')
+        except ValueError:
+            groups = None
+        if isinstance(groups, dict):
+            granted['groups'] = sorted(groups)
+        grant = {'action': 'approve-weir', 'app': app, 'picks': {}, 'granted': granted}
         for path, body in (('/apps/grubbery/permits', grant), ('/apps/grubbery/permits/reload', {'app': app})):
             st, out = ship.req(path, json.dumps(body), 'application/json')
             print(f'dev-deploy: {path}: {st}')

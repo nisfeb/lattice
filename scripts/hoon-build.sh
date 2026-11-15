@@ -83,7 +83,9 @@ base() {
   say "installing grubbery"
   poke %kiln-install '[%grubbery our.bowl %grubbery]'
   local t=$SECONDS
-  until [[ $(curl -s -o /dev/null -w '%{http_code}' -m 10 "$url/grubbery/ball" || true) =~ ^(200|30[0-9]|401|403)$ ]]; do
+  # the shell refuses a stranger (403); until it binds, eyre sends
+  # /grubbery/ball to landscape (307), which is not grubbery serving
+  until [[ $(curl -s -o /dev/null -w '%{http_code}' -m 10 "$url/grubbery/ball" || true) =~ ^(200|401|403)$ ]]; do
     ((SECONDS - t < 1800)) || die "grubbery did not start serving"
     sleep 5
   done
@@ -100,7 +102,7 @@ check() {
   [[ -f $dir/deployed ]] && add=
   python3 "$here/dev-deploy.py" "$url" "$logs/jar" $add >"$logs/deploy.log" 2>&1 ||
     { cat "$logs/deploy.log" >&2; die "dev-deploy failed"; }
-  tail -2 "$logs/deploy.log" >&2
+  grep "^dev-deploy:" "$logs/deploy.log" >&2 || true
   touch "$dir/deployed"
   stamp=$(grep -oE 'version.json = \S+' "$logs/deploy.log" | awk '{print $3}')
   python3 "$here/hoon-build-wait.py" "$url" "$logs/jar" "$stamp" "$here/../code" --wait "${WAIT:-900}"
@@ -108,7 +110,7 @@ check() {
 
 case $cmd in
   base) base ;;
-  check) rc=0; check || rc=$?; stop; exit $rc ;;
+  check) trap stop EXIT; check ;;  # die exits: stop the ship on every way out
   stop) stop ;;
   *) die "unknown command $cmd" ;;
 esac
