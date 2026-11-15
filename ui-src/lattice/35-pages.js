@@ -462,6 +462,7 @@
   //  for the browser suites, which cannot reach this scope: a named page
   //  made at once, after guardDirty, as the folder dialog makes it
   window.latCreate = async (name, kind) => { if (await guardDirty()) return createPage(name, kind); };
+  window.latStartNamed = startNamed;
 
   async function newFolder() {
     // a server-side rejection (colliding with an existing page, say) used to
@@ -606,6 +607,10 @@
   //  the editor holds a page: a group brought to the front during a save
   //  (28-splits.js) can hold a memory or a grub of the same name
   const pageHere = () => mode !== 'know' && !grubPath;
+  //  the Inbox names this editor drew for pages not made yet. A save of
+  //  one is a capture still, which draws again on a 409, until it lands or
+  //  the user names the page (nameFirst, 77-history.js)
+  const drawnNames = new Set();
   //  a drawn Inbox name refused: the unnamed tab `tabId`, showing `from`,
   //  shows `to` instead, in front or parked, so tabAdopt still knows it
   const reshow = (tabId, from, to) => {
@@ -639,15 +644,21 @@
     //  Inbox, shown in the field from here on so the create below treats it
     //  as any named create. With no text there is nothing to keep, and
     //  nothing is written.
+    //  A Writer page or a spreadsheet nobody touched holds only the blank
+    //  document, which is nothing to keep either.
     if (!name) {
       if (fixed || current !== null) { st('name required', false); return; }
-      if (!src.value.trim()) { dirty = false; st('new page, just write'); return; }
+      if (!src.value.trim() || (isRich(kindOverride || curKind || pkind.value) && !everTyped)) {
+        dirty = false; st('new page, just write'); return;
+      }
       name = inboxName();
-      drawn++;
+      drawnNames.add(name);
       setOpen(null, { shown: name });
     }
     if (fixed) drawn = fixed.drawn || 0;
     const creating = !!fixed || current === null;
+    //  a name this editor drew stays drawn, not typed, until it lands
+    if (creating && !drawn && drawnNames.has(name)) drawn = 1;
     // carry kindOverride into the re-arm: a bare `true` here forgot which
     // kind THIS call wanted, and the trailing run picked whatever the
     // picker happened to show by the time it fired
@@ -752,7 +763,7 @@
       // Clearing dirty there would tell the editor the work is safe and let
       // the next navigation drop it, so the bookkeeping stays untouched and
       // the page keeps behaving as unsaved. enqueueSave has already said so.
-      const queued = await enqueueSave(name, kind, sent, creating, rnc);
+      const queued = await enqueueSave(name, kind, sent, creating, rnc, undefined, creating && !!drawn);
       if (!queued) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return failed();
@@ -765,6 +776,7 @@
       if (!stillHere) tabLanded('page', name, sent);
       if (stillHere) {
         current = name;
+        drawnNames.delete(name);
         tabFollow();         // a new page's tab is named now (21-tabs.js)
         curKind = kind;
         if (creating) curRev = 0;
@@ -791,6 +803,7 @@
       //  an Inbox name someone already has: draw another, a few times
       if (creating && drawn && drawn < 5 && !/ moved to /.test(why)) {
         const next = inboxName();
+        drawnNames.add(next);
         if (fixed && reshow(fixed.tab, name, next))
           return save(kindOverride, { ...fixed, name: next, drawn: drawn + 1 });
         if (!fixed && createdHere(creating, name)) {
@@ -823,6 +836,7 @@
     if (!stillHere) tabLanded('page', name, sent, vr && vr.rev);
     if (stillHere) {
       current = name;
+      drawnNames.delete(name);
       tabFollow();           // a new page's tab is named now (21-tabs.js)
       curKind = kind;
       pname.readOnly = true;

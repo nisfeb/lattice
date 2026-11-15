@@ -227,14 +227,17 @@
   // Move or rename on a page not saved yet: the name its first save will
   // use, a name the user gave, so the page does not go to the Inbox. Its
   // autosave waits while the question is open. A save already on the wire
-  // can land meanwhile under an Inbox name, and that page is moved.
+  // is let land first: under an Inbox name it is then moved, never made a
+  // second time under the typed one.
   async function nameFirst() {
     const t = activeTab;
     clearTimeout(autoTimer);
     const typed = await askName('page name (e.g. notes/todo)', pname.value.trim(), 'name');
+    if (typed) await savesSettled(false);
     if (typed && activeTab === t && pageHere()) {
       const rn = realName(typed);
       if (current === null) {
+        drawnNames.delete(pname.value.trim());
         newRn = rn;
         setOpen(null, { shown: rn.name });
         st('named ' + rn.name);

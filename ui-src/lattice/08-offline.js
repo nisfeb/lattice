@@ -434,8 +434,10 @@
   // UI reporting success. If the queue cannot take it, say so and say it in
   // the words that matter, because there is nowhere else the edit now lives.
   //  `rev`: the revision the edit was made on, when it is not the open
-  //  page's (a parked tab's, saveParked in 35-pages.js)
-  async function enqueueSave(name, kind, body, isNew, rn, rev = curRev) {
+  //  page's (a parked tab's, saveParked in 35-pages.js). `drawn`: a
+  //  create under an Inbox name the editor drew, not one the user typed,
+  //  which the replay may draw again (drainCreates)
+  async function enqueueSave(name, kind, body, isNew, rn, rev = curRev, drawn = false) {
     // the queue coalesces by name, and the 2s autosave calls this WITHOUT
     // the create flag — overwriting a queued create as a plain edit would
     // route the replay around the 409 create protection and let an offline
@@ -450,6 +452,7 @@
     if (tooBig(body)) { st(TOO_BIG, false); return false; }
     const queued = await offPut({ name, kind, body, baseRev: jobWait || replaying ? 0 : rev || 0,
       isNew: !!isNew || !!(prev && prev.isNew), queuedAt: Date.now(), ...qStamp(),
+      drawn: !!drawn || !!(prev && prev.drawn),
       dname: (rn && rn.dname) || (prev && prev.dname) || '',
       dnames: (rn && rn.dnames) || (prev && prev.dnames) || '' });
     const job = saveStalled();
@@ -527,8 +530,9 @@
           //  the body gets the move's link rewrite, and names the move it
           //  rides on (`via`): it waits for that move, and is kept aside
           //  rather than written at the new name if the move is refused
+          //  a page the user moved has a name the user gave: not drawn
           await offPut({ ...q, name: rec.to + q.name.slice(rec.from.length), baseRev: 0,
-            body: moveBody(q.body || '', rec.from, rec.to), via: stamp.id, from: q.name });
+            body: moveBody(q.body || '', rec.from, rec.to), via: stamp.id, from: q.name, drawn: false });
         }
       }
       for (const k of [...pageCache.keys()])
@@ -803,7 +807,11 @@
   // silently overwritten. A create must keep its 409-on-exists protection,
   // or an offline "new page" could clobber a page someone else made online.
   async function drainCreates(creates, conflicts) {
-    for (const q of creates) {
+    for (const q of creates) if (!(await drainCreate(q, conflicts))) return false;
+    return true;
+  }
+  async function drainCreate(q, conflicts) {
+    for (;;) {
       let one = null;
       if (tooBig(q.body)) one = { status: 413 };
       else {
@@ -814,7 +822,7 @@
         } catch {}
       }
       const v = verdict(q, one);
-      if (v === 'skip') continue;
+      if (v === 'skip') return true;
       if (v === 'stop') return false;
       // 409: the name is taken on the ship. The 409 may be OUR OWN earlier
       // attempt: tfetch's abort stops the wait, not the write, so a
@@ -827,14 +835,35 @@
             encodeURIComponent(q.name), {}, 20000);
           if (sr && sr.ok && ((await sr.json()).body || '') === (q.body || '\n')) {
             await offDone(q);
-            continue;
+            return true;
           }
         } catch {}
+        //  an Inbox name the editor drew, taken by someone else meanwhile:
+        //  the capture moves to another, five tries in all, as a live save
+        //  does (35-pages.js). The record is kept under the new name first.
+        if (q.drawn && (q.redrawn || 0) < 4) {
+          const nq = { ...q, name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
+          if (!(await offPut(nq))) return false;
+          await offDone(q);
+          redrawFollow(q.name, nq.name);
+          q = nq;
+          continue;
+        }
       }
       if (v === 'refused' && !await keepSafe(q, one.status, 'create', conflicts)) return false;
       await offDone(q);
+      return true;
     }
-    return true;
+  }
+  //  a queued capture renamed by the replay: the tree, its tab, the editor
+  //  and the boot snapshot name it where it now goes (remapMoved, 75-move.js)
+  function redrawFollow(from, to) {
+    let snap = null;
+    try { snap = JSON.parse(localStorage.appPage || 'null'); } catch {}
+    remapMoved(from, to);
+    snapTree();
+    renderTree();
+    if (snap && snap.name === from) snapPage(to, snap);
   }
 
   // Drain through page-save-batch, in parts of at most 50 records and

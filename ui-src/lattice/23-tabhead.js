@@ -162,7 +162,7 @@
       st(ok ? 'name copied: ' + name : 'could not copy ' + name, ok);
     });
     //  a page not saved yet gets its name here (77-history.js)
-    if (current || curFolder || (mode !== 'know' && !grubPath))
+    if (current || curFolder || (docFront() && mode !== 'know' && !grubPath))
       btn('rename', 'Move or rename', () => $('mv').click());
     const r = $('tpath').getBoundingClientRect();
     m.style.top = r.bottom + 4 + 'px';
