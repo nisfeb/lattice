@@ -25,16 +25,10 @@ const wait = async (fn, arg, tries = 40) => {
   return false;
 };
 
-// + file asks for the name and kind and writes the page at once
+// a named page written at once, as the folder dialog makes it (createPage,
+// 35-pages.js): the toolbar's New page asks no name any more
 const create = async (name) => {
-  await page.evaluate(() => document.getElementById('newfile').click());
-  await page.waitForFunction(() => !document.getElementById('dlg').hidden, { timeout: 30000 });
-  await page.evaluate((n) => {
-    document.getElementById('dlginput').value = n;
-    document.getElementById('dlgkind').value = 'md';
-    document.getElementById('dlgok').click();
-  }, name);
-  await page.waitForFunction(() => document.getElementById('dlg').hidden, { timeout: 30000 });
+  await page.evaluate((n) => { window.latCreate(n, 'md'); }, name);
 };
 
 // a page typed with capitals and a space

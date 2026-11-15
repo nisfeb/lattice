@@ -373,6 +373,9 @@
     const mine = k.shows(t);
     if (dirty && !mine) return false;
     if (saving && !t.key) return false;
+    // a page never saved, with text: its first save names it, and only
+    // the live editor can make that save (parkDoc's flush)
+    if (dirty && mine && !t.key && t.kind === 'page') return false;
     if (mine) { t.snap = snapNow(); gGhostKeep(t); }
     dirty = false;
     clearTimeout(autoTimer);
@@ -575,13 +578,9 @@
     const i = tabs.indexOf(activeTab);
     switchTab(tabs[(i + dir + tabs.length) % tabs.length].id);
   };
-  // a new tab with a new page in it: the strip's +. Then newFile again, the
-  // way the + file button calls it, so the page gets named (the name field,
-  // or the create dialog where that field is hidden, 96-deskmenu.js)
-  const tabNew = async () => {
-    await openIn('page', '', { newTab: true });
-    if (activeTab && activeTab.kind === 'page' && !activeTab.key) newFile('');
-  };
+  // a new tab with a new page in it: the strip's + and a group's +. No
+  // question: the page is named at its first save (newBlank, 35-pages.js)
+  const tabNew = () => newBlank({ newTab: true });
   // a tool tab in front hides the editor. Anything about to paint the
   // editor (a new page, a folder) first gets a document tab of its own,
   // as the strip's + gives one, so it never lands unseen under the tool.

@@ -697,7 +697,7 @@
     if (found) return openIn('page', key, { ev });
     await openIn('page', '', { ev });
     if (activeTab && activeTab.kind === 'page' && !activeTab.key && current === null)
-      setOpen(null, { shown: key });
+      startNamed(key);
   }
 
   // ── leaving the editor ───────────────────────────────────────────────────

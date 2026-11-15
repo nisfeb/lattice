@@ -332,6 +332,8 @@
   // open, the field (where shown) is editable, and `into` is the folder an
   // upload or a save lands in. A page is never written in memory mode: the
   // autosave there goes to /know-save, so a memory in front leaves it first.
+  // A new page is markdown, whatever kind was open before: save() takes
+  // the picker's kind for a page that has none yet.
   function blankPage(into) {
     if (mode === 'know') setMode('pages');
     openNext();          // an open still in flight must not land over this
@@ -339,6 +341,7 @@
     folderCtx = into || '';
     curFolder = null;
     curKind = null;
+    pkind.value = 'md';
     refreshTexButton();
     exitGrub();
     exitRev();
@@ -349,18 +352,49 @@
     everTyped = false;   // a new file is a fresh editor state, like applyPage
     render();
     renderTree();
-    st('new page — name it, write, save');
+    st('new page, just write');
     prevBlank();
     showShare('private');
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
   }
 
-  // ── new page: one name and kind dialog for web, desktop and phone ────────
-  //  Everything user-initiated routes through newFile: the toolbar
-  //  (newFile('')), the desktop File menu (which clicks it), the green + on
-  //  every tree folder (newFile(path)), the strip's + and the phone bar's
-  //  label. The name field left the screen with the old bar, so the dialog
-  //  is the one way a page gets its name, and its kind.
+  // ── new page ─────────────────────────────────────────────────────────────
+  //  A new page asks nothing. It has no name until its first save, which
+  //  draws one in the Inbox (inboxName, save()). An empty one is never
+  //  written. A name the user types always wins.
+  const inboxName = (d = new Date()) => {
+    const p = (n, w = 2) => String(n).padStart(w, '0');
+    return 'inbox/' + d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+      + '-' + p(Math.floor(Math.random() * 10000), 4);
+  };
+  //  newBlank: the strip's + and a group's + (newTab, a tab of its own),
+  //  the Files toolbar, the phone bar and the desktop's Ctrl+N (the front
+  //  document, after guardDirty). The cursor goes to the body. `kind` is
+  //  the folder dialog's pick when its name was left empty (newFile).
+  async function newBlank({ newTab = false, kind = 'md' } = {}) {
+    if (newTab) await openIn('page', '', { newTab: true });
+    else if (!(await docTab()) || !(await guardDirty())) return;
+    else blankPage('');
+    if (!activeTab || activeTab.kind !== 'page' || activeTab.key || current !== null) return;
+    if (kind !== 'md') {
+      pkind.value = kind;
+      if (isRich(kind) && !(await writerBlank(kind))) return;
+    }
+    src.focus();
+  }
+  //  startNamed: a blank page with its name already set and nothing
+  //  written, as a missing journal day starts. Its first save makes it.
+  function startNamed(name) {
+    blankPage('');
+    setFolderCtx(name);
+    setOpen(null, { shown: name });
+  }
+
+  //  newFile: the + on a tree folder and the tree menu's New page here.
+  //  Choosing a folder is a decision already, so these keep the one name
+  //  and kind dialog, seeded with the folder. Its name is optional: left
+  //  empty, or as the untouched folder, the page is a capture of the kind
+  //  picked there, and lands in the Inbox when it has text.
   //
   //  focusName false is boot and the tab model landing on an empty page.
   //  That must not be interrupted by a dialog, and they are the callers that
@@ -368,62 +402,66 @@
   function newFile(into, focusName = true) {
     if (!focusName) return blankPage(into);
     (async () => {
-      //  a folder's + pre-fills that folder; the toolbar keeps offering the
-      //  open page's path (never a memory's key: that names no page). Read
-      //  it BEFORE the reset below, which clears the field it comes from.
-      //  A tool tab in front hides the editor, so its name field is no seed.
-      const seed = into ? into.replace(/\/+$/, '') + '/'
-        : mode === 'know' || !docFront() ? '' : (pname.value || '');
+      //  a folder's + pre-fills that folder. The toolbar's New page has no
+      //  dialog any more (newBlank), so an empty `into` seeds nothing.
+      const seed = into ? into.replace(/\/+$/, '') + '/' : '';
       const picked = await askNameKind('page name (e.g. notes/todo)', seed,
-        'create', pkind.value);
+        'create', pkind.value, false, true);
       if (!picked) return;
-      //  reset the editor only once the create is confirmed, so a cancel
-      //  leaves the open page exactly as it was. Under a tool tab the page
-      //  gets a document tab of its own first (docTab, 21-tabs.js).
-      if (!(await docTab())) return;
-      blankPage(into);
-      let name = picked.name;
-      let kind = picked.kind;
-      //  a typed extension still wins, because typing notes/todo.md and being
-      //  given a page called "todo.md" would be absurd. The table is EXT_KIND
-      //  in 30-tree.js, the same one the uploader files by.
-      const dot = name.lastIndexOf('.');
-      const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
-      if (typed) { kind = typed; name = name.slice(0, dot); }
-      //  the field is seeded with the REAL path; the typed leaf, when it was
-      //  not a valid path, rides to save() as the display name
-      const rn = realName(name);
-      if (!rn) return;
-      name = rn.name;
-      newRn = rn;
-      pkind.value = kind;
-      if (isRich(kind) && !(await writerBlank(kind))) return;
-      //  blankPage above left nothing open; this names the buffer, and
-      //  setOpen's event repaints the labels
-      setOpen(null, { shown: name });
-      //  Show it in the tree NOW, pulsing, before the ship has agreed. The
-      //  write is a pier round trip and the tree sitting unchanged through it
-      //  reads as nothing having happened. The pulse is the honest part: it
-      //  says recorded, not yet confirmed. Cleared on success, and the row is
-      //  dropped on failure so a page that does not exist is never left there.
-      const already = nodes.some((n) => n.page && n.path === name);
-      if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
-      //  the button says create, so write the page here. Naming the buffer
-      //  and leaving it unwritten read as a create that did nothing. save()
-      //  owns the whole create: 409, the offline queue, the tree patch and
-      //  the url, so this must not reimplement any of it.
-      //  queued behind another save, the create has not happened yet: the
-      //  row keeps pulsing, and save() settles it when the create runs
-      const queued = (await save()) === 'queued';
-      if (!already && !queued) {
-        //  save() sets `current` on any outcome it considers a success,
-        //  including a queued offline write, which IS a success here.
-        if (current === name) setTreePending(name, false);
-        else { dropTreeNodes(name); snapTree(); renderTree(); }
-      }
-      src.focus();
+      if (!picked.name || picked.name + '/' === seed) return newBlank({ kind: picked.kind });
+      return createPage(picked.name, picked.kind);
     })();
   }
+  //  createPage: a page with a name the user gave, written at once. Quick
+  //  open's Create row (26-palette.js) makes its page here too.
+  async function createPage(name, kind = 'md') {
+    //  reset the editor only once the create is confirmed, so a cancel
+    //  leaves the open page exactly as it was. Under a tool tab the page
+    //  gets a document tab of its own first (docTab, 21-tabs.js).
+    if (!(await docTab())) return;
+    blankPage(name.includes('/') ? name.slice(0, name.lastIndexOf('/')) : '');
+    //  a typed extension still wins, because typing notes/todo.md and being
+    //  given a page called "todo.md" would be absurd. The table is EXT_KIND
+    //  in 30-tree.js, the same one the uploader files by.
+    const dot = name.lastIndexOf('.');
+    const typed = dot > 0 ? extKind(name.slice(dot + 1)) : null;
+    if (typed) { kind = typed; name = name.slice(0, dot); }
+    //  the field is seeded with the REAL path; the typed leaf, when it was
+    //  not a valid path, rides to save() as the display name
+    const rn = realName(name);
+    if (!rn) return;
+    name = rn.name;
+    newRn = rn;
+    pkind.value = kind;
+    if (isRich(kind) && !(await writerBlank(kind))) return;
+    //  blankPage above left nothing open; this names the buffer, and
+    //  setOpen's event repaints the labels
+    setOpen(null, { shown: name });
+    //  Show it in the tree NOW, pulsing, before the ship has agreed. The
+    //  write is a pier round trip and the tree sitting unchanged through it
+    //  reads as nothing having happened. The pulse is the honest part: it
+    //  says recorded, not yet confirmed. Cleared on success, and the row is
+    //  dropped on failure so a page that does not exist is never left there.
+    const already = nodes.some((n) => n.page && n.path === name);
+    if (!already) { addTreeNode(name, kind, true); applyDnames(rn); snapTree(); renderTree(); }
+    //  the button says create, so write the page here. Naming the buffer
+    //  and leaving it unwritten read as a create that did nothing. save()
+    //  owns the whole create: 409, the offline queue, the tree patch and
+    //  the url, so this must not reimplement any of it.
+    //  queued behind another save, the create has not happened yet: the
+    //  row keeps pulsing, and save() settles it when the create runs
+    const queued = (await save()) === 'queued';
+    if (!already && !queued) {
+      //  save() sets `current` on any outcome it considers a success,
+      //  including a queued offline write, which IS a success here.
+      if (current === name) setTreePending(name, false);
+      else { dropTreeNodes(name); snapTree(); renderTree(); }
+    }
+    src.focus();
+  }
+  //  for the browser suites, which cannot reach this scope: a named page
+  //  made at once, after guardDirty, as the folder dialog makes it
+  window.latCreate = async (name, kind) => { if (await guardDirty()) return createPage(name, kind); };
 
   async function newFolder() {
     // a server-side rejection (colliding with an existing page, say) used to
@@ -568,6 +606,18 @@
   //  the editor holds a page: a group brought to the front during a save
   //  (28-splits.js) can hold a memory or a grub of the same name
   const pageHere = () => mode !== 'know' && !grubPath;
+  //  a drawn Inbox name refused: the unnamed tab `tabId`, showing `from`,
+  //  shows `to` instead, in front or parked, so tabAdopt still knows it
+  const reshow = (tabId, from, to) => {
+    const t = allTabs().find((x) => x.id === tabId);
+    if (!t || t.kind !== 'page' || t.key) return false;
+    if (t === activeTab) {
+      if (!pageHere() || current !== null || pname.value.trim() !== from) return false;
+      setOpen(null, { shown: to });
+    } else if (t.snap && (t.snap.shown || '').trim() === from) t.snap.shown = to;
+    else return false;
+    return true;
+  };
   //  the page `name` (as typed) is on the ship, or queued for it, and not
   //  a create's pulsing row still waiting for its answer
   const madePage = (name) => {
@@ -576,12 +626,27 @@
   };
   //  `fixed`: a queued create whose page the editor no longer shows (see
   //  below). It names what to write, and the editor is left alone.
-  async function save(kindOverride, fixed) {
+  //  `drawn`: how many Inbox names this create has drawn so far (below).
+  async function save(kindOverride, fixed, drawn = 0) {
     if (!fixed) writerSync();     // a Writer page's text into src.value
     if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
     if (!fixed && viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
-    let name = fixed ? fixed.name : pname.value.trim().replace(/^\/+|\/+$/g, '');
-    if (!name) { st('name required', false); return; }
+    //  a field holding only a folder (a new page started in one) names
+    //  no page yet
+    const typed = pname.value.trim();
+    let name = fixed ? fixed.name : /\/$/.test(typed) ? '' : typed.replace(/^\/+|\/+$/g, '');
+    //  a page with no name is a capture: its first save draws one in the
+    //  Inbox, shown in the field from here on so the create below treats it
+    //  as any named create. With no text there is nothing to keep, and
+    //  nothing is written.
+    if (!name) {
+      if (fixed || current !== null) { st('name required', false); return; }
+      if (!src.value.trim()) { dirty = false; st('new page, just write'); return; }
+      name = inboxName();
+      drawn++;
+      setOpen(null, { shown: name });
+    }
+    if (fixed) drawn = fixed.drawn || 0;
     const creating = !!fixed || current === null;
     // carry kindOverride into the re-arm: a bare `true` here forgot which
     // kind THIS call wanted, and the trailing run picked whatever the
@@ -602,7 +667,7 @@
       const doc = current, shown = pname.value;
       const own = fixed || (creating ? { name, body: src.value,
         kind: kindOverride || curKind || pkind.value, rn: newRn,
-        existed: madePage(name), tab: activeTab && activeTab.id } : null);
+        existed: madePage(name), tab: activeTab && activeTab.id, drawn } : null);
       if (creating && !fixed) newRn = null;
       queueSave(() => {
         if (own && !own.existed && madePage(own.name)) {
@@ -613,7 +678,7 @@
         }
         const here = !fixed && mode !== 'know' && !grubPath && current === doc
           && (doc !== null || pname.value === shown);
-        if (here) { if (own) newRn = own.rn; return save(kindOverride); }
+        if (here) { if (own) newRn = own.rn; return save(kindOverride, undefined, drawn); }
         if (own) return save(kindOverride, own);
       }, creating);
       return 'queued';
@@ -722,6 +787,16 @@
           () => !fixed && pageHere() && current === name);
         flushPending();
         return;
+      }
+      //  an Inbox name someone already has: draw another, a few times
+      if (creating && drawn && drawn < 5 && !/ moved to /.test(why)) {
+        const next = inboxName();
+        if (fixed && reshow(fixed.tab, name, next))
+          return save(kindOverride, { ...fixed, name: next, drawn: drawn + 1 });
+        if (!fixed && createdHere(creating, name)) {
+          setOpen(null, { shown: next });
+          return save(kindOverride, undefined, drawn + 1);
+        }
       }
       st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
       return failed();
@@ -962,10 +1037,18 @@
     // moment you stop typing you can see the edit is not yet on the ship.
     if (grubPath) { if (dirty) st('unsaved, Ctrl+S to save'); return; }
     writerSync();
-    if (!current || curFolder || !dirty || viewingRev !== null) return;
+    if (curFolder || !dirty || viewingRev !== null) return;
+    if (!current && mode === 'know') return;
     // a move in flight may be carrying this page away: the save goes to
     // its new name once the move has renamed the editor (75-move.js)
     if (moving) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 1000); return; }
+    // a page never saved, named or not: its first save is a create, which
+    // save() owns (an empty one writes nothing, a nameless one goes to the
+    // Inbox). With autosave off it waits for Ctrl+S like any page.
+    if (!current) {
+      if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
+      return save();
+    }
     // painted from an older copy and not yet read fresh: wait for that read
     // (it may find a change made elsewhere), then save on its rev
     const fp = mode !== 'know' && freshPending.get(current);
@@ -1064,6 +1147,8 @@
   // its flush: its tab's unsaved text goes into the tab's snap, and this
   // writes it from there, on autosave's terms. Pages and memories only,
   // with a name, autosave on, and never a link autosave stands down for.
+  // A page never saved has no tab key, and never parks here: gRelease
+  // sends it the slow way, whose flush (parkDoc) makes it with save().
   // It takes its turn behind any save in flight (one write at a time) and
   // gives up once the tab is not parked any more, since then the live
   // editor's own autosave owns the text. What lands marks the snap clean

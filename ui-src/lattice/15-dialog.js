@@ -43,8 +43,9 @@
   //  Options are cloned from the hidden kind picker (#pkind, 23-tabhead.js)
   //  rather than restated, so a kind added there (tex was) appears here with
   //  no second edit. `fixed` shows the kind without letting it change: a new
-  //  memory is always md.
-  const askNameKind = async (msg, value, okLabel, kind, fixed) => {
+  //  memory is always md. `optional`: an empty name is an answer, the
+  //  name '' (a new page in a folder, 35-pages.js), and only a cancel is null.
+  const askNameKind = async (msg, value, okLabel, kind, fixed, optional) => {
     dlgKind.textContent = '';
     const src = $('pkind');
     if (src) for (const o of src.options) dlgKind.appendChild(o.cloneNode(true));
@@ -65,7 +66,7 @@
       dlgKind.hidden = true;
       if (raw === null) return null;
       const name = raw.trim().replace(/^\/+|\/+$/g, '');
-      if (!name) return null;
+      if (!name) return optional ? { name, kind: picked } : null;
       if (realName(name)) return { name, kind: picked };
       seed = name;
       note = 'that name has nothing to go by — use at least one letter or digit. ';

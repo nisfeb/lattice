@@ -43,6 +43,18 @@ const page = await openPage(browser, env, {
   onPageError: (e) => check('page threw: ' + e.message.slice(0, 90), false),
 });
 page.on('dialog', (d) => d.accept().catch(() => {}));
+//  the strip is rebuilt whole on every repaint, and a create landing
+//  between page.click's query and its press detaches the tab (as in
+//  ui-tabs.mjs). The press never happened, so it is safe to send again.
+const rawClick = page.click.bind(page);
+page.click = async (sel, opts) => {
+  for (let i = 0; ; i++) {
+    try { return await rawClick(sel, opts); } catch (e) {
+      if (i >= 4 || !/detached/i.test(e.message)) throw e;
+      await sleep(150);
+    }
+  }
+};
 
 //  rule(req): a number holds the request that many ms, 'fail' answers 500
 //  after `failAfter` ms, anything else lets it through. seen collects urls.
@@ -123,11 +135,13 @@ const pickFolder = (path) => page.evaluate((p) => {
   if (r) r.click();
   return !!r;
 }, path);
+//  a named page made at once, as the folder dialog makes it (createPage,
+//  35-pages.js): the toolbar's New page asks no name any more. Back once
+//  the editor shows the name, which is when its create has been sent (or
+//  queued), as the dialog's close used to say
 const newPage = async (name) => {
-  await page.evaluate(() => document.getElementById('newfile').click());
-  if (!(await dlgUp())) return false;
-  await dlgAnswer(name, 'md');
-  return until(() => document.getElementById('dlg').hidden, null, 8000);
+  await page.evaluate((n) => { window.latCreate(n, 'md'); }, name);
+  return until((n) => document.getElementById('pname').value === n, name, 8000);
 };
 
 let grub = null;
@@ -273,6 +287,8 @@ try {
     await page.evaluate(() => document.getElementById('rb-settings').click());
     await until(() => { const s = window.latTabs.state(); return s.tabs[s.active].kind === 'tool'; });
     const before = (await state()).tabs.length;
+    await page.evaluate(() => document.getElementById('newfile').click());
+    await until(() => { const s = window.latTabs.state(); return s.tabs[s.active].kind === 'page'; });
     await newPage(N4);
     let n4 = null;
     for (let i = 0; i < 40 && n4 === null; i++) { await sleep(500); n4 = await pageBody(N4); }
@@ -438,9 +454,8 @@ try {
     await waitOn('page', Q);
     const F1G = RUN + '/f1-g', F1H = RUN + '/f1-h';
     cleanup.push(F1G, F1H);
+    //  the strip's + asks nothing (ui-capture.mjs): a blank tab
     await page.evaluate(() => document.getElementById('tabnew').click());
-    await dlgUp();
-    await page.evaluate(() => document.getElementById('dlgcancel').click());
     await until(() => { const s = window.latTabs.state(); return s.tabs[s.active].kind === 'page'
       && !s.tabs[s.active].key; });
     const t2 = (await front()).id;
@@ -451,9 +466,8 @@ try {
     }, F1G);
     rule = (r) => (/\/page-save\?/.test(r.url()) && r.url().includes(encodeURIComponent(F1H)) ? 4000 : null);
     await page.evaluate(() => document.getElementById('tabnew').click());
-    await dlgUp();
-    await dlgAnswer(F1H, 'md');
-    await until(() => document.getElementById('dlg').hidden, null, 8000);
+    await until((id) => { const s = window.latTabs.state(); return s.tabs[s.active].id !== id; }, t2);
+    await newPage(F1H);
     await newPage(F1G);
     const t1 = (await front()).id;
     await page.click(tabSel('page', Q));
