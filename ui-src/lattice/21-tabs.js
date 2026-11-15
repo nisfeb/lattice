@@ -149,7 +149,8 @@
         exitRev();
         if (!t.key) {
           newFile('', false);
-          setOpen(null, { shown: s.shown });
+          setOpen(null, { shown: s.shown,
+            url: t.start ? '/apps/lattice/app?name=' + encodeURIComponent(t.start) : undefined });
           if (s.pkind) pkind.value = s.pkind;
           src.value = s.body;
           render();
@@ -333,15 +334,31 @@
     sync();
   };
   //  A page not written yet, opened by its name (a ghost link, the address,
-  //  a restored tab). The tab naming it starts it (startNamed), writing
-  //  nothing, and keeps the name as `start`: the strip shows it, the
-  //  address carries it, and a reload or Back starts it again. Its first
-  //  save makes the page, which the tab then follows (tabFollow).
-  function tabStart(name) {
+  //  a restored tab). The page tab in front naming it starts it
+  //  (startNamed), writing nothing, and keeps the name as `start`: the
+  //  strip shows it, the address carries it, and a reload or Back starts
+  //  it again. Its first save makes the page, which the tab then follows
+  //  (tabFollow). An open from anywhere else (a move, a sync) starts
+  //  nothing: false, and it fails as before.
+  const tabPend = (name) => {
     const t = activeTab;
-    if (t && t.kind === 'page' && t.key === name) { t.key = ''; t.start = name; }
+    if (!t || t.kind !== 'page' || tabKey(t) !== name) return false;
+    t.key = '';
+    t.start = name;
+    return true;
+  };
+  function tabStart(name) {
+    if (!tabPend(name)) return false;
     startNamed(name);
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+    tabsChanged();
+    return true;
+  }
+  //  the page in front was refused its create (save(), 35-pages.js): it is
+  //  a page not made yet under that name again, its text kept in the editor
+  function tabUnclaim(name) {
+    tabPend(name);
+    setOpen(null, { shown: name });
     tabsChanged();
   }
   function tabBlank(t) {
@@ -495,7 +512,9 @@
   function openIn(kind, key, { ev, ship, newTab } = {}) {
     return tabSerial(async () => {
       const want = { kind, key, ship: ship || null };
-      const hit = key ? allTabs().find((t) => sameDoc(t, want)) : null;
+      //  a page started under this name is its tab already (tabStart)
+      const hit = key ? allTabs().find((t) => sameDoc(t, want)
+        || (kind === 'page' && !ship && !t.key && t.start === key)) : null;
       if (hit) return tabTo(hit);
       const fresh = newTab || (ev && (ev.ctrlKey || ev.metaKey || ev.button === 1))
         || !activeTab || activeTab.pinned;

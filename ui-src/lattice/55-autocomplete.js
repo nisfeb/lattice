@@ -124,7 +124,7 @@
     if (day && day !== current) items = [day, ...items.filter((p) => p !== day)].slice(0, 8);
     if (!items.length) return acClose();
     ac = { open: true, start: src.selectionStart - q.length, items, sel: 0,
-      ghost: day && !hasPage(day) ? day : null };
+      ghost: day && nodes.length && !hasPage(day) ? day : null };
     acRender();
   }
 

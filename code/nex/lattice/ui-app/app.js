@@ -176,7 +176,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   };
   const sameRec = (a, b) => (a.id || b.id ? a.id === b.id : a.queuedAt === b.queuedAt && a.body === b.body);
   let offKept = false;
-  const offDone = async (q) => {
+  const createsOwed = new Set();
+  const offDone = async (q, landed = true) => {
     if (!qrust()) await idbDelSent(q);
     else {
       try { await qcall('queue_del', { name: q.name, sent: { queuedAt: q.queuedAt, body: q.body } }); }
@@ -185,10 +186,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     let v = null;
     try { v = await offGet(q.name); } catch {}
     const kept = !!v && !sameRec(v, q);
-    if (kept && v.isNew) await offPut({ ...v, isNew: false, baseRev: 0 });
+    if (kept && v.isNew && landed) await offPut({ ...v, isNew: false, baseRev: 0 });
     if (kept) offKept = true;
     bustPages(q.name);
     await offRecount();
+    return kept ? v : null;
   };
   const opAll = async () => {
     if (!qrust()) return idbOpAll();
@@ -327,10 +329,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     st('a folder ' + d.job + ' of ' + (d.path || 'your pages') + ' stopped part way and was '
       + 'dropped: some of its pages may still be published. Run it again.', false);
   }, 15000);
-  async function dropQueued(name, seq) {
+  async function dropQueued(name, seq, created) {
     let q = null;
     try { q = await offGet(name); } catch {}
-    if (q && !q.isNew && q.win === winId && q.seq < seq) await offDone(q);
+    if (q && (!q.isNew || created) && q.win === winId && q.seq < seq) await offDone(q);
   }
 
   let probeTimer = null;
@@ -368,6 +370,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       st(NOT_SAVED, false);
       return false;
     }
+    if (isNew || (prev && prev.isNew)) createsOwed.add(name);
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
@@ -550,7 +553,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         ['Retry', () => { stuckRec.delete(k); stuckTries.delete(k); stuckRender(); replayQueue(true); }],
         ['Clear', async () => {
           if (!q.op && !await recoverPut(q, 'cleared')) { st('could not keep a copy, so nothing was cleared', false); return; }
-          if (q.op) await opDel(q._k); else await offDone(q);
+          if (q.op) await opDel(q._k); else await offDone(q, false);
           stuckRec.delete(k);
           stuckRender();
         }]]);
@@ -596,7 +599,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         for (const q of saves) {
           if (!o.id || q.via !== o.id) continue;
           if (!await keepSafe({ ...q, name: q.from || q.name }, r.status, 'edit', conflicts)) return false;
-          await offDone(q);
+          await offDone(q, false);
         }
       } else {
         bustPages(o.name || o.from);
@@ -630,21 +633,29 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           const sr = await tfetch(api + '/page-source?name=' +
             encodeURIComponent(q.name), {}, 20000);
           if (sr && sr.ok && ((await sr.json()).body || '') === (q.body || '\n')) {
+            createsOwed.delete(q.name);
             await offDone(q);
             return true;
           }
         } catch {}
         if (q.drawn && (q.redrawn || 0) < 4) {
-          const nq = { ...q, name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
+          let nq = { ...q, name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
           if (!(await offPut(nq))) return false;
-          await offDone(q);
+          createsOwed.add(nq.name);
+          const nv = await offDone(q, false);
+          if (nv) {
+            nq = { ...nq, body: nv.body, kind: nv.kind, ...qStamp() };
+            if (!(await offPut(nq))) return false;
+            await offDone(nv, false);
+          }
           redrawFollow(q.name, nq.name);
           q = nq;
           continue;
         }
       }
       if (v === 'refused' && !await keepSafe(q, one.status, 'create', conflicts)) return false;
-      await offDone(q);
+      if (v === 'refused') createsOwed.add(q.name); else createsOwed.delete(q.name);
+      await offDone(q, v !== 'refused');
       return true;
     }
   }
@@ -946,8 +957,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const navDoc = (f, html) => { f.srcdoc = html; navBusy(f); };
   const navUrl = (f, url) => { f.removeAttribute('srcdoc'); f.src = url; navBusy(f); };
   const prevBusy = () => navBusy(prev);
-  const prevDoc = (html) => navDoc(prev, html);
-  const prevUrl = (url) => navUrl(prev, url);
+  let shipDoc = null;
+  const prevDoc = (html) => { shipDoc = null; navDoc(prev, html); };
+  const prevUrl = (url) => { shipDoc = null; navUrl(prev, url); };
   const prevBlank = () => {
     prev.removeAttribute('src');
     prev.style.minHeight = '';
@@ -1721,7 +1733,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         exitRev();
         if (!t.key) {
           newFile('', false);
-          setOpen(null, { shown: s.shown });
+          setOpen(null, { shown: s.shown,
+            url: t.start ? '/apps/lattice/app?name=' + encodeURIComponent(t.start) : undefined });
           if (s.pkind) pkind.value = s.pkind;
           src.value = s.body;
           render();
@@ -1869,11 +1882,23 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     src.scrollTop = s.scroll;
     sync();
   };
-  function tabStart(name) {
+  const tabPend = (name) => {
     const t = activeTab;
-    if (t && t.kind === 'page' && t.key === name) { t.key = ''; t.start = name; }
+    if (!t || t.kind !== 'page' || tabKey(t) !== name) return false;
+    t.key = '';
+    t.start = name;
+    return true;
+  };
+  function tabStart(name) {
+    if (!tabPend(name)) return false;
     startNamed(name);
     history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+    tabsChanged();
+    return true;
+  }
+  function tabUnclaim(name) {
+    tabPend(name);
+    setOpen(null, { shown: name });
     tabsChanged();
   }
   function tabBlank(t) {
@@ -1996,7 +2021,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   function openIn(kind, key, { ev, ship, newTab } = {}) {
     return tabSerial(async () => {
       const want = { kind, key, ship: ship || null };
-      const hit = key ? allTabs().find((t) => sameDoc(t, want)) : null;
+      const hit = key ? allTabs().find((t) => sameDoc(t, want)
+        || (kind === 'page' && !ship && !t.key && t.start === key)) : null;
       if (hit) return tabTo(hit);
       const fresh = newTab || (ev && (ev.ctrlKey || ev.metaKey || ev.button === 1))
         || !activeTab || activeTab.pinned;
@@ -6448,17 +6474,16 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }
       if (!r.ok) {
         if (painted) return true;
-        if (r.status === 404 && my === openSeq && ghostable(name)) { tabStart(name); return true; }
+        if (r.status === 404 && my === openSeq && await startable(name) && my === openSeq && tabStart(name))
+          return true;
         st('open failed' + await errText(r), false); unwind();
         return my === openSeq ? false : undefined;
       }
       d = await r.json();
     } catch {
       if (painted) return true;
-      if (net && my === openSeq && nodes.length && !nodes.some((n) => n.path === name) && ghostable(name)) {
-        tabStart(name);
-        return true;
-      }
+      if (net && my === openSeq && nodes.length && !nodes.some((n) => n.path === name)
+        && await startable(name) && my === openSeq && tabStart(name)) return true;
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
     }
@@ -6513,10 +6538,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     showShare(d.share || 'private');
     cmtShow(name, d.comments);
     cerr.textContent = '\u00a0'; cerr.className = 'ok';
-    if (typeof d.html === 'string' && d.kind !== 'tex' && !(taskLive() && hasTask(d.body))
-      && !(d.kind === 'md' && mdHasGhost(d.body))) {
-      prev.removeAttribute('src'); prevDoc(withPreviewScrollbars(d.html, true));
-    }
+    if (typeof d.html === 'string' && d.kind !== 'tex' && !(taskLive() && hasTask(d.body))) shipPaint(d);
     else if (!quiet) refreshPreview();
     else paintLocal();
     if (!CONTENT() && !quiet) checkErrors();
@@ -6563,8 +6585,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     src.focus();
   }
-  const ghostable = (name) => validName(name) && !linkOf(name) && !knowEntry(name)
-    && !nodes.some((n) => !n.page && n.path === name);
+  const startable = async (name) => {
+    if (!validName(name) || linkOf(name) || nodes.some((n) => !n.page && n.path === name)) return false;
+    if (!knowHave) await loadKnow();
+    return knowHave && !knowEntry(name);
+  };
   function startNamed(name) {
     blankPage('');
     setFolderCtx(name);
@@ -6707,6 +6732,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const rn = realName(name);
     return !!rn && nodes.some((n) => n.page && n.path === rn.name && !n.pending);
   };
+  const owed = async (name) => {
+    if (createsOwed.has(name)) return true;
+    try { return !!((await offGet(name)) || {}).isNew; } catch { return false; }
+  };
   async function save(kindOverride, fixed, drawn = 0) {
     if (!fixed) writerSync();     // a Writer page's text into src.value
     if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
@@ -6723,7 +6752,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       setOpen(null, { shown: name });
     }
     if (fixed) drawn = fixed.drawn || 0;
-    const creating = !!fixed || current === null;
+    let creating = !!fixed || current === null;
     if (creating && !drawn && drawnNames.has(name)) drawn = 1;
     if (saving) {
       const doc = current, shown = pname.value;
@@ -6747,6 +6776,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     saving = true;
     st('saving…');
+    if (!creating && current === name) creating = await owed(name);
     const sent = fixed ? fixed.body : src.value;
     const kind = fixed ? fixed.kind : kindOverride || curKind || pkind.value;
     const rn = realName(name);
@@ -6819,6 +6849,19 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         flushPending();
         return;
       }
+      if (creating && !fixed && current === name) {
+        if (!(await owed(name))) return save(kindOverride);
+        const q = await offGet(name).catch(() => null);
+        const drew = !!(q && q.drawn);
+        if (!(await enqueueSave(name, kind, sent, true, rnc, 0, drew))) return failed();
+        if (src.value === sent) dirty = false;
+        if (!drew) tabUnclaim(name);
+        replayQueue(true);
+        st(drew ? 'that name was taken, so this capture moves to another' :
+          'that page already exists: your text is kept under conflicts/', false);
+        flushPending();
+        return;
+      }
       if (creating && drawn && drawn < 5 && !/ moved to /.test(why)) {
         const next = inboxName();
         drawnNames.add(next);
@@ -6837,7 +6880,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     try { vr = await r.json(); } catch {}
     if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent, vr && vr.rev);
-    await dropQueued(name, sentSeq);
+    if (creating) createsOwed.delete(name);
+    await dropQueued(name, sentSeq, creating);
     const stillHere = fixed ? tabAdopt(fixed, name)
       : pageHere() && (current === name || createdHere(creating, name));
     if (!stillHere) tabLanded('page', name, sent, vr && vr.rev);
@@ -7025,6 +7069,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       return;
     }
     if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
+    if (mode !== 'know' && await owed(current)) return save();
     if (mode !== 'know' && (editLocked() || casHold.has(current))) return;
     if (tooBig(src.value)) { st(TOO_BIG, false); return; }
     if (saving) { if (!savePending) savePending = true; return; }
@@ -7096,6 +7141,12 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     await savesSettled(false);
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
     if (t.snap !== s || !s.dirty || !allTabs().includes(t)) return;
+    if (!know && await owed(t.key)) {
+      if (!(await enqueueSave(t.key, s.kind || s.pkind, s.body, true, null, 0))) return;
+      tabLanded('page', t.key, s.body);
+      replayQueue(true);
+      return;
+    }
     saving = true;
     const name = t.key;
     const sent = s.body;
@@ -7678,7 +7729,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (day && day !== current) items = [day, ...items.filter((p) => p !== day)].slice(0, 8);
     if (!items.length) return acClose();
     ac = { open: true, start: src.selectionStart - q.length, items, sel: 0,
-      ghost: day && !hasPage(day) ? day : null };
+      ghost: day && nodes.length && !hasPage(day) ? day : null };
     acRender();
   }
 
@@ -7723,10 +7774,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   };
   const remoteUrl = (u) => /^(https?:)?\/\//i.test(mdUnesc(u).trim());
 
-  const mdGhost = (t) => nodes.length > 0 && !grubPath && !linkOf(current)
-    && ghostable(t) && !nodes.some((n) => n.path === t);
-  const mdHasGhost = (body) => nodes.length > 0 && String(body).includes('[[')
-    && mdToHtml(body).includes(' class="ghost"');
+  let mdGhosts = null;
 
   const CD_RE = /&CD(\d+);/g;
   const mdInline = (t) => {
@@ -7753,7 +7801,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, tgt, label) => {
       const t = mdUnesc(tgt).trim();
       return tag('<a href="' + mdHref('/apps/lattice/app?name=' + encodeURIComponent(t)) + '"'
-        + (mdGhost(t) ? ' class="ghost" title="' + mdEsc(t + ' does not exist yet') + '"' : '') + '>')
+        + (mdGhosts && mdGhosts(t) ? ' class="ghost" title="' + mdEsc(t + ' does not exist yet') + '"' : '') + '>')
         + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>';
     });
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
@@ -8028,9 +8076,45 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       const tasks = taskLive();
       mdBlocked = false;
       mdOutside = outsideOn(current);
+      mdGhosts = ghostTest();
       prevDoc(localShell(previewFit()) + localHtml(kindNow(), src.value, tasks) + (tasks ? TASK_JS : ''));
       outShow(mdBlocked);
-    } catch {}
+    } catch {} finally { mdGhosts = null; }
+  };
+  let gtKey = [], gtFn = null;
+  const ghostTest = () => {
+    if (!nodes.length || grubPath || linkOf(current)) return null;
+    const k = [nodes, nodes.length, treeGen, knowKeys];
+    if (!gtFn || k.some((v, i) => v !== gtKey[i])) {
+      const all = new Set(nodes.map((n) => n.path));
+      const mem = new Set(knowKeys.map((x) => x.key.replace(/^\//, '')));
+      gtFn = (t) => validName(t) && !all.has(t) && !mem.has(t);
+      gtKey = k;
+    }
+    return gtFn;
+  };
+  const GHOST_CSS = 'a.ghost{opacity:.55}';
+  const markGhosts = (html) => {
+    const test = html.includes('/apps/lattice/app?name=') && ghostTest();
+    if (!test) return html;
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    let n = 0;
+    for (const a of doc.querySelectorAll('a[href^="/apps/lattice/app?name="]')) {
+      const m = /\?name=([^&#]*)$/.exec(a.getAttribute('href'));
+      let t = null;
+      try { t = decodeURIComponent(m[1]).trim(); } catch {}
+      if (t && test(t)) { a.classList.add('ghost'); a.title = t + ' does not exist yet'; n++; }
+    }
+    if (!n) return html;
+    const s = doc.createElement('style');
+    s.textContent = GHOST_CSS;
+    doc.head.append(s);
+    return '<!doctype html>' + doc.documentElement.outerHTML;
+  };
+  const shipPaint = (d) => {
+    prev.removeAttribute('src');
+    prevDoc(withPreviewScrollbars(d.kind === 'md' ? markGhosts(d.html) : d.html, true));
+    if (d.kind === 'md') shipDoc = d.html;
   };
   const taskLive = () => kindNow() === 'md' && !src.readOnly && viewingRev === null && !curFolder;
   const TASK_JS = '<script>addEventListener("click",function(e){var t=e.target;'
@@ -8077,9 +8161,13 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         + 'pre::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
         + 'img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
-        + 'a.ghost{opacity:.55}'
+        + GHOST_CSS
         + '</style>' + fit;
-  const ghostPaint = () => { if (CONTENT() && kindNow() === 'md' && mdHasGhost(src.value)) paintLocal(); };
+  const ghostPaint = () => {
+    const h = shipDoc;
+    if (h) { shipPaint({ kind: 'md', html: h }); return; }
+    if (CONTENT() && kindNow() === 'md') paintLocal();
+  };
   const ghostDoc = (kind, body) => {
     if (isRich(kind)) return richLib(kind) ? previewScrollbars() + richLib(kind).show(body) : null;
     if (!['md', 'gmi', 'html', 'text'].includes(kind)) return null;

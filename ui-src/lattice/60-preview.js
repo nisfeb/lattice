@@ -245,9 +245,55 @@
       const tasks = taskLive();
       mdBlocked = false;
       mdOutside = outsideOn(current);
+      mdGhosts = ghostTest();
       prevDoc(localShell(previewFit()) + localHtml(kindNow(), src.value, tasks) + (tasks ? TASK_JS : ''));
       outShow(mdBlocked);
-    } catch {}
+    } catch {} finally { mdGhosts = null; }
+  };
+  // ── links to pages not written yet ──────────────────────────────────────
+  // A wikilink is dimmed when it names a page this ship could have and has
+  // not: a valid name no tree row has (a page, a folder or a link) and no
+  // known memory. Only once the tree has loaded, and only in a document of
+  // this ship: a link's or a grub's wikilinks name pages elsewhere. The
+  // memory list loads lazily, so a memory's key is dimmed until it has.
+  // The sets are made once per tree, not per link.
+  let gtKey = [], gtFn = null;
+  const ghostTest = () => {
+    if (!nodes.length || grubPath || linkOf(current)) return null;
+    const k = [nodes, nodes.length, treeGen, knowKeys];
+    if (!gtFn || k.some((v, i) => v !== gtKey[i])) {
+      const all = new Set(nodes.map((n) => n.path));
+      const mem = new Set(knowKeys.map((x) => x.key.replace(/^\//, '')));
+      gtFn = (t) => validName(t) && !all.has(t) && !mem.has(t);
+      gtKey = k;
+    }
+    return gtFn;
+  };
+  const GHOST_CSS = 'a.ghost{opacity:.55}';
+  // the ship's render of an md page, its links to pages not written yet
+  // marked as the local paint marks them
+  const markGhosts = (html) => {
+    const test = html.includes('/apps/lattice/app?name=') && ghostTest();
+    if (!test) return html;
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    let n = 0;
+    for (const a of doc.querySelectorAll('a[href^="/apps/lattice/app?name="]')) {
+      const m = /\?name=([^&#]*)$/.exec(a.getAttribute('href'));
+      let t = null;
+      try { t = decodeURIComponent(m[1]).trim(); } catch {}
+      if (t && test(t)) { a.classList.add('ghost'); a.title = t + ' does not exist yet'; n++; }
+    }
+    if (!n) return html;
+    const s = doc.createElement('style');
+    s.textContent = GHOST_CSS;
+    doc.head.append(s);
+    return '<!doctype html>' + doc.documentElement.outerHTML;
+  };
+  //  the ship's render of `d` into the frame, kept for ghostPaint
+  const shipPaint = (d) => {
+    prev.removeAttribute('src');
+    prevDoc(withPreviewScrollbars(d.kind === 'md' ? markGhosts(d.html) : d.html, true));
+    if (d.kind === 'md') shipDoc = d.html;
   };
   // ── task boxes: a click in the preview edits the source ──────────────────
   // only an md page this viewer may write (not linkRO, a foreign grub, a
@@ -309,10 +355,15 @@
         + 'pre::-webkit-scrollbar-thumb{background:#8886;border-radius:5px;border:2px solid transparent;background-clip:padding-box}'
         + 'img{max-width:100%}pre{overflow-x:auto}'
         + 'table{border-collapse:collapse}td,th{border:1px solid #8886;padding:.3em .5em}'
-        + 'a.ghost{opacity:.55}'
+        + GHOST_CSS
         + '</style>' + fit;
-  // the tree has just come: a link to a page not written yet dims now
-  const ghostPaint = () => { if (CONTENT() && kindNow() === 'md' && mdHasGhost(src.value)) paintLocal(); };
+  // the tree has just come: a link to a page not written yet dims now, in
+  // the ship's render when that is on show, else in the local paint
+  const ghostPaint = () => {
+    const h = shipDoc;
+    if (h) { shipPaint({ kind: 'md', html: h }); return; }
+    if (CONTENT() && kindNow() === 'md') paintLocal();
+  };
   // a parked group's Read (28-splits.js): the same local render of its
   // text, no fit, or null for a kind only the ship renders
   const ghostDoc = (kind, body) => {

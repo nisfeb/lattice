@@ -201,7 +201,8 @@
       if (!r.ok) {
         if (painted) return true;
         //  not written yet: a page of this ship the ship has no page for
-        if (r.status === 404 && my === openSeq && ghostable(name)) { tabStart(name); return true; }
+        if (r.status === 404 && my === openSeq && await startable(name) && my === openSeq && tabStart(name))
+          return true;
         st('open failed' + await errText(r), false); unwind();
         return my === openSeq ? false : undefined;
       }
@@ -209,10 +210,8 @@
     } catch {
       if (painted) return true;
       //  ...and offline, a name the loaded tree does not hold
-      if (net && my === openSeq && nodes.length && !nodes.some((n) => n.path === name) && ghostable(name)) {
-        tabStart(name);
-        return true;
-      }
+      if (net && my === openSeq && nodes.length && !nodes.some((n) => n.path === name)
+        && await startable(name) && my === openSeq && tabStart(name)) return true;
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
     }
@@ -320,12 +319,8 @@
     //  ship renders its boxes disabled, and this answer lands after the
     //  local paint, so a page opened in Read (the daily journal from its
     //  button) showed dead boxes. The local paint carries their lines.
-    //  ...and an md page with a link to a page not written yet: the ship's
-    //  render does not dim it (mdGhost, 59-md.js)
-    if (typeof d.html === 'string' && d.kind !== 'tex' && !(taskLive() && hasTask(d.body))
-      && !(d.kind === 'md' && mdHasGhost(d.body))) {
-      prev.removeAttribute('src'); prevDoc(withPreviewScrollbars(d.html, true));
-    }
+    //  A link to a page not written yet is marked in it (shipPaint).
+    if (typeof d.html === 'string' && d.kind !== 'tex' && !(taskLive() && hasTask(d.body))) shipPaint(d);
     else if (!quiet) refreshPreview();
     // A quiet open is the COMMON one: the tree dump already carried the body,
     // so the editor painted instantly and the render=1 fetch is an upgrade.
@@ -395,9 +390,14 @@
   }
   //  a name a page can be started under when the ship has none (tabStart):
   //  one it takes as it is, so the page made is exactly the linked name,
-  //  and no folder, link or known memory
-  const ghostable = (name) => validName(name) && !linkOf(name) && !knowEntry(name)
-    && !nodes.some((n) => !n.page && n.path === name);
+  //  no folder or link, and never a memory's key. The memory list is read
+  //  first when it has not been (a request at the click, none at start),
+  //  and unread, as offline, nothing is started.
+  const startable = async (name) => {
+    if (!validName(name) || linkOf(name) || nodes.some((n) => !n.page && n.path === name)) return false;
+    if (!knowHave) await loadKnow();
+    return knowHave && !knowEntry(name);
+  };
   //  startNamed: a blank page with its name already set and nothing
   //  written, as a missing journal day starts. Its first save makes it.
   function startNamed(name) {
@@ -658,6 +658,10 @@
     const rn = realName(name);
     return !!rn && nodes.some((n) => n.page && n.path === rn.name && !n.pending);
   };
+  const owed = async (name) => {
+    if (createsOwed.has(name)) return true;
+    try { return !!((await offGet(name)) || {}).isNew; } catch { return false; }
+  };
   //  `fixed`: a queued create whose page the editor no longer shows (see
   //  below). It names what to write, and the editor is left alone.
   //  `drawn`: how many Inbox names this create has drawn so far (below).
@@ -685,7 +689,7 @@
       setOpen(null, { shown: name });
     }
     if (fixed) drawn = fixed.drawn || 0;
-    const creating = !!fixed || current === null;
+    let creating = !!fixed || current === null;
     //  a name this editor drew stays drawn, not typed, until it lands
     if (creating && !drawn && drawnNames.has(name)) drawn = 1;
     // carry kindOverride into the re-arm: a bare `true` here forgot which
@@ -725,6 +729,10 @@
     }
     saving = true;
     st('saving…');
+    //  A page whose create went to the queue is a create until one lands
+    //  (createsOwed, 08-offline.js). As an edit with no base it would write
+    //  over a page made under its name meanwhile.
+    if (!creating && current === name) creating = await owed(name);
     // capture the exact body being sent: keystrokes landing during the round-trip
     // must NOT be marked clean, or the next refresh swaps the stale server copy
     // in and the typed text is lost (same guard autosave has always had).
@@ -829,6 +837,24 @@
         flushPending();
         return;
       }
+      //  A create owed from the queue, refused: the name was taken while
+      //  the page waited. Its newest text goes where the queued create's
+      //  goes (a conflicts/ copy, or another Inbox name for a drawn one),
+      //  and the editor no longer takes the ship's page for this one. If
+      //  the queue's own create landed meanwhile, the page is ours.
+      if (creating && !fixed && current === name) {
+        if (!(await owed(name))) return save(kindOverride);
+        const q = await offGet(name).catch(() => null);
+        const drew = !!(q && q.drawn);
+        if (!(await enqueueSave(name, kind, sent, true, rnc, 0, drew))) return failed();
+        if (src.value === sent) dirty = false;
+        if (!drew) tabUnclaim(name);
+        replayQueue(true);
+        st(drew ? 'that name was taken, so this capture moves to another' :
+          'that page already exists: your text is kept under conflicts/', false);
+        flushPending();
+        return;
+      }
       //  an Inbox name someone already has: draw another, a few times
       if (creating && drawn && drawn < 5 && !/ moved to /.test(why)) {
         const next = inboxName();
@@ -853,7 +879,8 @@
     // CREATE changes the tree, and it confirms a row newFile left pulsing.
     if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent, vr && vr.rev);
-    await dropQueued(name, sentSeq);
+    if (creating) createsOwed.delete(name);
+    await dropQueued(name, sentSeq, creating);
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
     // name field, dirty or the URL here would brand the new page as this save.
@@ -1108,6 +1135,8 @@
     // (flushNoAsk and guardDirty, 20-state.js, which ask instead). Only
     // Ctrl+S, the save button and :w write.
     if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
+    //  a page whose create is owed from the queue saves as a create
+    if (mode !== 'know' && await owed(current)) return save();
     // open for editing in another window, or refused as stale with no copy
     // kept: no writes until that is settled
     if (mode !== 'know' && (editLocked() || casHold.has(current))) return;
@@ -1214,6 +1243,14 @@
     await savesSettled(false);
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
     if (t.snap !== s || !s.dirty || !allTabs().includes(t)) return;
+    //  a page whose create is owed goes to the queue as a create, which
+    //  lands it or keeps it aside (createsOwed, 08-offline.js)
+    if (!know && await owed(t.key)) {
+      if (!(await enqueueSave(t.key, s.kind || s.pkind, s.body, true, null, 0))) return;
+      tabLanded('page', t.key, s.body);
+      replayQueue(true);
+      return;
+    }
     saving = true;
     const name = t.key;
     const sent = s.body;

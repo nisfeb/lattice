@@ -61,14 +61,10 @@
   };
   const remoteUrl = (u) => /^(https?:)?\/\//i.test(mdUnesc(u).trim());
 
-  // A wikilink to a page this ship has not got, as opening it would find:
-  // a name a page could be started under (ghostable, 35-pages.js) that no
-  // tree row has. Only once the tree has loaded, and only in a document of
-  // this ship: a link's or a grub's wikilinks name pages elsewhere.
-  const mdGhost = (t) => nodes.length > 0 && !grubPath && !linkOf(current)
-    && ghostable(t) && !nodes.some((n) => n.path === t);
-  const mdHasGhost = (body) => nodes.length > 0 && String(body).includes('[[')
-    && mdToHtml(body).includes(' class="ghost"');
+  // The test for a wikilink to a page not written yet (ghostTest,
+  // 60-preview.js). Only the live preview sets it, around its own paint:
+  // the PDF, the Skills pane and a parked split's Read mark nothing.
+  let mdGhosts = null;
 
   // Code-span placeholders. The token must be UNFORGEABLE by document text:
   // a page that can write the token literally could otherwise smuggle content
@@ -118,7 +114,7 @@
     s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, tgt, label) => {
       const t = mdUnesc(tgt).trim();
       return tag('<a href="' + mdHref('/apps/lattice/app?name=' + encodeURIComponent(t)) + '"'
-        + (mdGhost(t) ? ' class="ghost" title="' + mdEsc(t + ' does not exist yet') + '"' : '') + '>')
+        + (mdGhosts && mdGhosts(t) ? ' class="ghost" title="' + mdEsc(t + ' does not exist yet') + '"' : '') + '>')
         + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>';
     });
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');

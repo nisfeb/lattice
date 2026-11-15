@@ -15,16 +15,21 @@
 
 import { makeCheck, read, cut } from './lib/check.mjs';
 
-// A wikilink to a page not written yet is marked (mdGhost), which reads the
-// editor's page tree and its name rules. Those are lifted with it, and the
-// tree starts empty: nothing is marked until a test sets one.
-const MD = `let nodes = [], grubPath = null, current = null;
-const linkOf = () => null, knowEntry = (k) => (k === 'a-memory' ? {} : null);
+// A wikilink to a page not written yet is marked only while the live
+// preview sets its test (mdGhosts, made by ghostTest in 60-preview.js from
+// the page tree, the memory list and the name rules). Those are lifted
+// with it. Nothing is marked until a test sets a tree and the preview's
+// test, which is how the PDF and the Skills pane render: unset.
+const MD = `let nodes = [], grubPath = null, current = null, treeGen = 0;
+let knowKeys = [{ key: '/a-memory' }];
+const linkOf = () => null;
 ${cut('ui-src/lattice/10-shell.js', /const validName = [\s\S]*?\);\n/, 'validName')}
-${cut('ui-src/lattice/35-pages.js', /const ghostable = [\s\S]*?;\n/, 'ghostable')}
+${cut('ui-src/lattice/60-preview.js', /let gtKey = [\s\S]*?\n {2}\};\n/, 'ghostTest')}
 ${read('ui-src/lattice/59-md.js')}`;
+//  preview: true is the live preview's paint, false any other render
+const SET = 'setTree: (v, preview = true) => { nodes = v; mdGhosts = preview ? ghostTest() : null; }';
 const { mdToHtml, setOutside, setTree } = new Function(`${MD}
-return { mdToHtml, setOutside: (v) => { mdOutside = v; }, setTree: (v) => { nodes = v; } };`)();
+return { mdToHtml, setOutside: (v) => { mdOutside = v; }, ${SET} };`)();
 // the right pane's Outgoing and Outline (76-outline.js) read a document
 // through this renderer, so they are lifted to run beside it
 //  (isRich is 26-writer.js's: no page here is a Writer document or a
@@ -32,7 +37,7 @@ return { mdToHtml, setOutside: (v) => { mdOutside = v; }, setTree: (v) => { node
 const { outLinks, outline, setOutTree } = new Function('const isRich = () => false;\n' + MD + '\n'
   + cut('ui-src/lattice/76-outline.js', /function outLinks\([\s\S]*?\n {2}\}/, 'outLinks') + '\n'
   + cut('ui-src/lattice/76-outline.js', /function outline\([\s\S]*?\n {2}\}/, 'outline')
-  + '\nreturn { outLinks, outline, setOutTree: (v) => { nodes = v; } };')();
+  + '\nreturn { outLinks, outline, setOutTree: ' + SET.slice(9) + ' };')();
 
 const check = makeCheck();
 const require59gmi = new Function(`${MD}\nreturn gmiToHtml;`)();
@@ -126,9 +131,13 @@ has('a bare number is not mistaken for a code span', 'chapter 1 begins', 'chapte
 hasnt('and really is not', 'chapter 1 begins', '<code>');
 has('emphasis inside a heading', '## a **b**', '<strong>b</strong>');
 
-console.log('\na wikilink to a page not written yet (mdGhost)');
+console.log('\na wikilink to a page not written yet (mdGhosts)');
+setTree([]);
 hasnt('with no tree loaded nothing is marked', '[[nope/x]]', 'ghost');
 const TREE = [{ path: 'here', page: true }, { path: 'dir', page: false }, { path: 'dir/in', page: true }];
+setTree(TREE, false);
+for (const w of ['ghost', 'does not exist yet'])
+  hasnt('outside the live preview (the PDF, Skills) no ' + w, '[[nope/x]] [[nope/y|y]]', w);
 setTree(TREE);
 has('a missing page is marked after its href, with a title',
   '[[nope/x]]', '<a href="/apps/lattice/app?name=nope%2Fx" class="ghost" title="nope/x does not exist yet">x</a>');

@@ -178,7 +178,16 @@
   //  drain runs again for it.
   const sameRec = (a, b) => (a.id || b.id ? a.id === b.id : a.queuedAt === b.queuedAt && a.body === b.body);
   let offKept = false;
-  const offDone = async (q) => {
+  //  The names whose create went to the queue and has not landed: a save
+  //  of one is a create (new=1) until it has, or it would write over a
+  //  page made under that name meanwhile (save(), 35-pages.js). A refused
+  //  create stays here. The queue's own isNew record says the same across
+  //  a reload.
+  const createsOwed = new Set();
+  //  `landed`: q was written. A refused create (kept aside) leaves a newer
+  //  record behind it a create, to be refused and kept aside in turn.
+  //  -> that newer record, or null
+  const offDone = async (q, landed = true) => {
     if (!qrust()) await idbDelSent(q);
     else {
       try { await qcall('queue_del', { name: q.name, sent: { queuedAt: q.queuedAt, body: q.body } }); }
@@ -188,10 +197,11 @@
     try { v = await offGet(q.name); } catch {}
     const kept = !!v && !sameRec(v, q);
     //  the create it rode on has landed, so the newer text is a plain edit
-    if (kept && v.isNew) await offPut({ ...v, isNew: false, baseRev: 0 });
+    if (kept && v.isNew && landed) await offPut({ ...v, isNew: false, baseRev: 0 });
     if (kept) offKept = true;
     bustPages(q.name);
     await offRecount();
+    return kept ? v : null;
   };
   const opAll = async () => {
     if (!qrust()) return idbOpAll();
@@ -398,10 +408,11 @@
   //  Only a record THIS window queued, from before the save (its sequence
   //  number below `seq`), and only that exact record: another window's
   //  queued edit is that window's text, which this save never saw.
-  async function dropQueued(name, seq) {
+  //  A create that landed takes its own queued create with it.
+  async function dropQueued(name, seq, created) {
     let q = null;
     try { q = await offGet(name); } catch {}
-    if (q && !q.isNew && q.win === winId && q.seq < seq) await offDone(q);
+    if (q && (!q.isNew || created) && q.win === winId && q.seq < seq) await offDone(q);
   }
 
   let probeTimer = null;
@@ -460,6 +471,7 @@
       st(NOT_SAVED, false);
       return false;
     }
+    if (isNew || (prev && prev.isNew)) createsOwed.add(name);
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
@@ -727,7 +739,7 @@
         //  the queue's copy, never the only one
         ['Clear', async () => {
           if (!q.op && !await recoverPut(q, 'cleared')) { st('could not keep a copy, so nothing was cleared', false); return; }
-          if (q.op) await opDel(q._k); else await offDone(q);
+          if (q.op) await opDel(q._k); else await offDone(q, false);
           stuckRec.delete(k);
           stuckRender();
         }]]);
@@ -791,7 +803,7 @@
         for (const q of saves) {
           if (!o.id || q.via !== o.id) continue;
           if (!await keepSafe({ ...q, name: q.from || q.name }, r.status, 'edit', conflicts)) return false;
-          await offDone(q);
+          await offDone(q, false);
         }
       } else {
         bustPages(o.name || o.from);
@@ -834,6 +846,7 @@
           const sr = await tfetch(api + '/page-source?name=' +
             encodeURIComponent(q.name), {}, 20000);
           if (sr && sr.ok && ((await sr.json()).body || '') === (q.body || '\n')) {
+            createsOwed.delete(q.name);
             await offDone(q);
             return true;
           }
@@ -841,17 +854,26 @@
         //  an Inbox name the editor drew, taken by someone else meanwhile:
         //  the capture moves to another, five tries in all, as a live save
         //  does (35-pages.js). The record is kept under the new name first.
+        //  A newer record of the old name, queued while this one flew,
+        //  goes with it: the old name is someone else's page.
         if (q.drawn && (q.redrawn || 0) < 4) {
-          const nq = { ...q, name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
+          let nq = { ...q, name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
           if (!(await offPut(nq))) return false;
-          await offDone(q);
+          createsOwed.add(nq.name);
+          const nv = await offDone(q, false);
+          if (nv) {
+            nq = { ...nq, body: nv.body, kind: nv.kind, ...qStamp() };
+            if (!(await offPut(nq))) return false;
+            await offDone(nv, false);
+          }
           redrawFollow(q.name, nq.name);
           q = nq;
           continue;
         }
       }
       if (v === 'refused' && !await keepSafe(q, one.status, 'create', conflicts)) return false;
-      await offDone(q);
+      if (v === 'refused') createsOwed.add(q.name); else createsOwed.delete(q.name);
+      await offDone(q, v !== 'refused');
       return true;
     }
   }
