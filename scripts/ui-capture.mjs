@@ -1683,8 +1683,8 @@ try {
       const r = await api('page-dump');
       const j = r.ok ? await r.json() : {};
       const nd = (j.nodes || []).find((x) => x.page && x.path === DRAFTN);
-      return nd && (await shipBody(DRAFTN)) === (await front()).src ? nd : null;
-    }, 30000, 500);
+      return nd && nd.dname === 'Draft Two' && (await shipBody(DRAFTN)) === (await front()).src ? nd : null;
+    }, 45000, 1000);
     check('D: a dialog create made offline lands live with its display name', !!dn && dn.dname === 'Draft Two',
       JSON.stringify(dn && { ...dn, body: undefined }));
 
