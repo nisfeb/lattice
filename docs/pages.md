@@ -265,7 +265,7 @@ Move or rename a captured page to give it a real name. On a page not yet saved, 
 
 A page started with its name, such as a journal day from the brief button or a page started from a link, is saved under that name once it has text. While the ship is unreachable it is not saved yet, and the status line says so. It is saved when the ship answers again. Ctrl/Cmd-S, or leaving the page, keeps it in the offline queue instead, like any other save made offline.
 
-When the editor is hidden, for example when you switch apps or lock a phone, what you typed is saved at once instead of after the usual pause.
+When the editor is hidden, for example when you switch apps or lock a phone, the usual autosave runs at once instead of after its pause. It saves what autosave would have saved. A named new page is still not saved while the ship is unreachable, and nothing is saved while autosave is turned off.
 
 The **+** on a folder in the tree, and the tree menu's **New page here**, still ask for a name and a kind. Enter on an empty name, or on the untouched folder name, captures to the Inbox as the kind you chose. A typed name lands where it says. Escape cancels.
 
