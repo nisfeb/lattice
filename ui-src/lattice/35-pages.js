@@ -641,6 +641,20 @@
   //  one is a capture still, which draws again on a 409, until it lands or
   //  the user names the page (nameFirst, 77-history.js)
   const drawnNames = new Set();
+  //  the creates this window queued offline (save() below). The queue
+  //  itself is read only asynchronously, and a draw must not wait.
+  const queuedNames = new Set();
+  //  An Inbox name for a capture. A name this device already knows (a
+  //  page in the tree, a name drawn and not landed, a create queued here)
+  //  is drawn again, up to five times, and then taken as it is: the ship
+  //  refuses it online (409, drawn again below), and offline nothing else
+  //  would tell, so the queue would write over that page's local copy.
+  const drawName = () => {
+    let name = inboxName();
+    for (let i = 1; i < 5 && (drawnNames.has(name) || queuedNames.has(name)
+      || nodes.some((n) => n.path === name)); i++) name = inboxName();
+    return name;
+  };
   //  a drawn Inbox name refused: the unnamed tab `tabId`, showing `from`,
   //  shows `to` instead, in front or parked, so tabAdopt still knows it
   const reshow = (tabId, from, to) => {
@@ -685,7 +699,7 @@
       if (!src.value.trim() || (isRich(kindOverride || curKind || pkind.value) && !everTyped)) {
         dirty = false; st('new page, just write'); return;
       }
-      name = inboxName();
+      name = drawName();
       drawnNames.add(name);
       setOpen(null, { shown: name });
     }
@@ -815,7 +829,10 @@
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return failed();
       }
-      if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
+      if (creating) {
+        queuedNames.add(name);
+        addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree();
+      }
       // same stillHere guard as the online path: only touch live editor state
       // if the editor has not moved to another document during the round-trip.
       const stillHere = fixed ? tabAdopt(fixed, name)
@@ -849,7 +866,7 @@
       }
       //  an Inbox name someone already has: draw another, a few times
       if (creating && drawn && drawn < 5 && !/ moved to /.test(why)) {
-        const next = inboxName();
+        const next = drawName();
         drawnNames.add(next);
         if (fixed && reshow(fixed.tab, name, next))
           return save(kindOverride, { ...fixed, name: next, drawn: drawn + 1 });

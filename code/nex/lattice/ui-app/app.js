@@ -6702,6 +6702,13 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const createdHere = (creating, name) => creating && current === null && pname.value === name;
   const pageHere = () => mode !== 'know' && !grubPath;
   const drawnNames = new Set();
+  const queuedNames = new Set();
+  const drawName = () => {
+    let name = inboxName();
+    for (let i = 1; i < 5 && (drawnNames.has(name) || queuedNames.has(name)
+      || nodes.some((n) => n.path === name)); i++) name = inboxName();
+    return name;
+  };
   const reshow = (tabId, from, to) => {
     const t = allTabs().find((x) => x.id === tabId);
     if (!t || t.kind !== 'page' || t.key) return false;
@@ -6728,7 +6735,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       if (!src.value.trim() || (isRich(kindOverride || curKind || pkind.value) && !everTyped)) {
         dirty = false; st('new page, just write'); return;
       }
-      name = inboxName();
+      name = drawName();
       drawnNames.add(name);
       setOpen(null, { shown: name });
     }
@@ -6809,7 +6816,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return failed();
       }
-      if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
+      if (creating) {
+        queuedNames.add(name);
+        addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree();
+      }
       const stillHere = fixed ? tabAdopt(fixed, name)
         : pageHere() && (current === name || createdHere(creating, name));
       if (!stillHere) tabLanded('page', name, sent);
@@ -6838,7 +6848,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         return;
       }
       if (creating && drawn && drawn < 5 && !/ moved to /.test(why)) {
-        const next = inboxName();
+        const next = drawName();
         drawnNames.add(next);
         if (fixed && reshow(fixed.tab, name, next))
           return save(kindOverride, { ...fixed, name: next, drawn: drawn + 1 });
