@@ -1,5 +1,7 @@
 # Quick Capture, Quick Open and Ghost Links Implementation Plan
 
+As built: see the "As built (2026-11-15)" section at the end of the design document.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A new page saves itself to an Inbox with no questions, Ctrl/Cmd+O opens recent pages, the palette lists recently run commands first, and a link to a page that does not exist yet starts that page.

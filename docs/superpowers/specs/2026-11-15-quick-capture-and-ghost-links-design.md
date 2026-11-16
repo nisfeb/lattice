@@ -157,3 +157,11 @@ Added after a reviewer read this against the code on 2026-11-15, also mine and n
 ## Success
 
 A user clicks +, or presses Cmd+P and Enter, and types a thought. It is saved in the Inbox without a single question. Later they press Cmd+O, see it at the top, open it, press Cmd+P and Enter, and move it. In another note they type `[[2026-12-10`, accept the suggestion, and weeks later that day's journal shows the note in its Backlinks.
+
+## As built (2026-11-15)
+
+Where the build differs from the text above. Everything else stands as written, including no new keyboard chord for a new page and the other calls added in review.
+
+- A link to a missing page starts that page only when the ship answers 404, so only online. Offline it is not started and fails to open as it did before. The design's "or the device is offline and the name is absent from a loaded tree" was dropped. A page created offline can overwrite a page of the same name made elsewhere once the ship is back, because the ship does not check an edit against a page's first revision and does not report who wrote a page. That hole is on main and needs a ship change. Starting ghost pages offline would have made it easy to hit.
+- A link whose target is a memory may show dimmed until the memory list has loaded. It is never started as a page.
+- The ghost marking is applied to the ship's rendered document as well as to the editor's own render, so a page with a ghost link keeps footnotes, reference links and setext headings.
