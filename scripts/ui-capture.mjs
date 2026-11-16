@@ -28,12 +28,20 @@
 //     tab. A deleted page still opens as it does today: this kernel keeps
 //     serving it, and refuses to make it again.
 //
-//  ONLY=A (or B, C, D) runs just that section after the setup.
+//  E: When a page is written. A page hidden at once is saved without the
+//     debounce. A page deleted elsewhere is not written again until a
+//     save on purpose, and a same-tab reopen of a page that vanished
+//     starts nothing. A page started with its name is made by autosave
+//     only when the ship answers. An offline draw skips Inbox names this
+//     device knows. A display name stays with the page it was given to.
+//
+//  ONLY=A (or B, C, D, E) runs just that section after the setup.
 //
 //  Usage: LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> \
 //           node scripts/ui-capture.mjs
 //  Env:   LATTICE_URL, LATTICE_COOKIE, CHROME (as ui-offline.mjs). A
-//         throwaway ship only: it writes and deletes inbox/ pages.
+//         throwaway ship only: it writes pages, and at the end deletes the
+//         Inbox pages it saw made and its own folder.
 import { shipEnv, launchBrowser, openPage, makeCheck, sleep, waitFor } from './lib/harness.mjs';
 
 const env = shipEnv();
@@ -71,16 +79,29 @@ let shipDown = false;
 let holdSave = 0;          // ms each page-save is held before it goes
 const fake = new Map();    // D: a page-source name -> 'abort' or {status, body}
 let fakeLink = null;       // D: a tree row for another ship's page, put in every dump
-let holdDump = null;       // D: page-dump requests held while this is an array
-const saves = [];          // every page-save the editor sent: {name, type, isNew}
+let holdDump = null;       // A, D: page-dump requests held while this is an array
+const hideRows = new Set(); // E: paths left out of every dump
+//  every page-save the editor sent: its page, type, whether it was a
+//  create, its display name and when it went
+const saves = [];
 const reqs = [];           // every url the page asked for
+//  the pages this run saw made: a create the ship took, or one the suite
+//  made itself. The cleanup deletes the Inbox pages among them, no others.
+const made = new Set();
+page.on('response', (r) => {
+  const u = r.url();
+  if (!/\/page-save\?/.test(u) || r.status() !== 200) return;
+  const q = new URL(u).searchParams;
+  if (q.get('new') === '1') made.add(q.get('name'));
+});
 await page.setRequestInterception(true);
 page.on('request', (r) => {
   const u = r.url();
   reqs.push(u);
   if (/\/page-save\?/.test(u)) {
     const q = new URL(u).searchParams;
-    saves.push({ name: q.get('name'), type: q.get('type'), isNew: q.get('new') === '1', base: +(q.get('base') || 0) });
+    saves.push({ name: q.get('name'), type: q.get('type'), isNew: q.get('new') === '1',
+      dn: q.get('dname') || '', at: Date.now() });
   }
   const fk = /\/page-source\?/.test(u) && fake.get(new URL(u).searchParams.get('name'));
   if (fk) {
@@ -89,10 +110,11 @@ page.on('request', (r) => {
     return;
   }
   if (/\/page-dump/.test(u) && holdDump) { holdDump.push(r); return; }
-  if (/\/page-dump/.test(u) && fakeLink) {
+  if (/\/page-dump/.test(u) && (fakeLink || hideRows.size)) {
     const row = fakeLink;
     fetch(u, { headers: { Cookie: env.cookie } }).then((x) => x.json()).then((d) => {
-      d.nodes = [...(d.nodes || []).filter((n) => n.path !== row.path), row];
+      d.nodes = (d.nodes || []).filter((n) => !hideRows.has(n.path) && (!row || n.path !== row.path));
+      if (row) d.nodes.push(row);
       return r.respond({ status: 200, contentType: 'application/json', body: JSON.stringify(d) });
     }).catch(() => r.continue().catch(() => {}));
     return;
@@ -107,6 +129,12 @@ page.on('request', (r) => {
 
 const api = (p, init = {}) => fetch(env.base + '/apps/lattice/' + p,
   { ...init, headers: { Cookie: env.cookie, ...(init.headers || {}) } });
+//  a page made by the suite itself, through the ship's API
+const apiMake = async (n, body, type = 'md') => {
+  const r = await api('page-save?type=' + type + '&new=1&name=' + encodeURIComponent(n), { method: 'POST', body });
+  if (r.ok) made.add(n);
+  return r;
+};
 const shipPage = async (n) => {
   const r = await api('page-source?name=' + encodeURIComponent(n));
   return r.ok ? r.json() : null;
@@ -176,8 +204,11 @@ const plus = () => page.evaluate(() => {
     || document.querySelector('[data-sb="new"]');
   g.click();
 });
-//  the front page's name once its first save landed: in the field, locked
-const landed = (ms = 9000) => waitFor(async () => {
+//  the front page's name once its first save landed: in the field, locked.
+//  A create behind another can take a busy ship over 10 s (A9), so this
+//  waits as long as the other creates do. How soon a save is SENT is
+//  checked on its own (A2).
+const landed = (ms = 40000) => waitFor(async () => {
   const f = await front();
   return f.readOnly && f.key && f.key === f.name ? f.key : null;
 }, ms, 200);
@@ -205,7 +236,6 @@ const addf = () => page.evaluate((r) => {
 }, RUN);
 
 let step = 'setup';
-let baseline = [];
 const journalMade = [], memMade = [];
 try {
   await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
@@ -220,7 +250,6 @@ try {
   await api('page-save?type=fods&new=1&name=' + encodeURIComponent(SHEET), { method: 'POST',
     body: '<?xml version="1.0" encoding="UTF-8"?>\n<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"'
       + ' office:mimetype="application/vnd.oasis.opendocument.spreadsheet"><office:body><office:spreadsheet/></office:body></office:document>' });
-  baseline = await inboxOnShip();
   await boot();
 
   if (on('A')) {
@@ -240,16 +269,21 @@ try {
     check('A: the new page is markdown after a spreadsheet', f.kind === 'md', f.kind);
     check('A: the status line asks for nothing',
       /just write/.test(await page.evaluate(() => document.getElementById('status').textContent)));
+    const ph = await page.evaluate(() => document.getElementById('src').placeholder);
+    check('A: the empty editor does not ask for a name either', !/name/.test(ph), ph);
 
     // ── A2. text typed is saved in the Inbox within the autosave delay ──
     step = 'A2 typed';
     const T1 = 'capture one ' + RUN;
-    const t0 = Date.now();
     await typeIn(T1);
+    const t0 = Date.now();
     const name1 = await landed();
-    const secs = (Date.now() - t0) / 1000;
     check('A: typed text is saved under inbox/<date>-NNNN', !!name1 && INBOX.test(name1), String(name1));
-    check('A: within the autosave delay (2 s and the round trip)', !!name1 && secs < 8, secs.toFixed(1) + ' s');
+    //  when the save went, not when the ship answered: a busy ship's round
+    //  trip is not the editor's to keep short
+    const sent1 = saves.slice(n0).find((x) => x.name === name1 && x.isNew);
+    check('A: sent within the autosave delay (2 s after the last key)', !!sent1 && sent1.at - t0 < 4000,
+      sent1 ? ((sent1.at - t0) / 1000).toFixed(1) + ' s' : 'not sent');
     const local = await today();
     check('A: the name carries the device\'s local date, not UTC\'s', !!name1 && name1.slice(6, 16) === local
       && local !== utcToday, JSON.stringify({ name1, local, utcToday }));
@@ -274,50 +308,79 @@ try {
     check('A: and holds its own text', !!name2 && (await shipBody(name2)) === T2);
 
     // ── A4. a drawn name that is taken draws again ──
+    //  Math.random answers the queue __rq first. NN(k) is the draw that
+    //  gives the four digits nn + k.
     step = 'A4 clash';
     const nn = 1000 + (process.pid % 8000);
-    const a = (nn + 0.5) / 10000, b = (nn + 1 + 0.5) / 10000;
+    const NN = (k) => (nn + k + 0.5) / 10000;
+    const dig = (k) => String(nn + k).padStart(4, '0');
     await page.evaluate((x) => {
       const orig = Math.random;
       window.__rq = [x];
       Math.random = () => (window.__rq.length ? window.__rq.shift() : orig());
-    }, a);
+    }, NN(0));
     await plus();
     await sleep(500);
     const T3 = 'clash first ' + RUN;
     await setText(T3);
     const name3 = await landed();
-    check('A: a stubbed draw names the page', !!name3 && name3.endsWith('-' + nn), String(name3));
-    await page.evaluate((x, y) => { window.__rq = [x, y]; }, a, b);
+    check('A: a stubbed draw names the page', !!name3 && name3.endsWith('-' + dig(0)), String(name3));
+    //  a name this device knows (the page just made) is drawn again before
+    //  anything is sent
+    step = 'A4 known';
+    await page.evaluate((x, y) => { window.__rq = [x, y]; }, NN(0), NN(1));
     await plus();
     await sleep(500);
     const T4 = 'clash second ' + RUN;
     n0 = saves.length;
     await setText(T4);
-    const name4 = await landed(15000);
-    check('A: the same draw again still lands, under a new name',
-      !!name4 && name4 !== name3 && name4.endsWith('-' + (nn + 1)), JSON.stringify([name3, name4]));
-    check('A: the taken name was tried first', saves.slice(n0).some((x) => x.name === name3 && x.isNew));
+    const name4 = await landed();
+    check('A: a draw equal to a page this device knows is drawn again, before any request',
+      !!name4 && name4.endsWith('-' + dig(1)) && !saves.slice(n0).some((x) => x.name === name3),
+      JSON.stringify({ name3, name4, saves: saves.slice(n0) }));
     check('A: both pages hold their own text',
       !!name3 && !!name4 && (await shipBody(name3)) === T3 && (await shipBody(name4)) === T4);
+
+    //  names the ship has and this device does not know yet (the tree's
+    //  reads are held): the ship's 409 draws again
+    step = 'A4 ship clash';
+    holdDump = [];
+    const pre = name3 ? name3.slice(0, -4) : 'inbox/x-';
+    const THEIRS4 = 'made elsewhere ' + RUN;
+    for (let k = 2; k <= 7; k++) await apiMake(pre + dig(k), THEIRS4);
+    await page.evaluate((x, y) => { window.__rq = [x, y]; }, NN(2), NN(8));
+    await plus();
+    await sleep(500);
+    const T4c = 'clash on the ship ' + RUN;
+    n0 = saves.length;
+    await setText(T4c);
+    const name4c = await landed();
+    check('A: a draw the ship already has is drawn again on its 409, and lands',
+      !!name4c && name4c.endsWith('-' + dig(8)) && saves.slice(n0).some((x) => x.name === pre + dig(2) && x.isNew)
+      && (await shipBody(name4c)) === T4c, JSON.stringify({ name4c, saves: saves.slice(n0) }));
+    check('A: and the page that had the name keeps its text', (await shipBody(pre + dig(2))) === THEIRS4);
 
     //  five clashes in a row: the save fails, and the next one still draws
     //  (the name in the field is a drawn one, not typed)
     step = 'A4 five clashes';
-    await page.evaluate((x) => { window.__rq = [x, x, x, x, x]; }, a);
+    await page.evaluate((xs) => { window.__rq = xs; }, [3, 4, 5, 6, 7].map(NN));
     await plus();
     await sleep(500);
     n0 = saves.length;
     const T4b = 'five clashes ' + RUN;
     await setText(T4b);
     const five = await waitFor(() => page.evaluate(() => window.__rq.length === 0
-      && /already exists/.test(document.getElementById('status').textContent)), 20000, 300);
+      && /already exists/.test(document.getElementById('status').textContent)), 40000, 300);
+    const tried = saves.slice(n0).map((x) => x.name);
     check('A: five taken draws in a row fail the save, as any save fails',
-      !!five && saves.slice(n0).filter((x) => x.name === name3).length === 5, JSON.stringify(saves.slice(n0)));
+      !!five && JSON.stringify(tried) === JSON.stringify([3, 4, 5, 6, 7].map((k) => pre + dig(k))), JSON.stringify(tried));
     await setText(T4b + '!');
-    const name4b = await landed(15000);
-    check('A: the next save draws again and lands', !!name4b && INBOX.test(name4b) && name4b !== name3
+    const name4b = await landed();
+    check('A: the next save draws again and lands', !!name4b && INBOX.test(name4b) && name4b !== pre + dig(7)
       && (await shipBody(name4b)) === T4b + '!', String(name4b));
+    const heldA = holdDump;
+    holdDump = null;
+    for (const r of heldA) r.continue().catch(() => {});
 
     // ── A5. an empty page writes nothing ──
     step = 'A5 empty';
@@ -431,7 +494,7 @@ try {
     await waitFor(async () => (await qCount()) === 1, 15000);
     const taken = (await front()).key;
     const THEIRS = 'someone else made this ' + RUN;
-    await api('page-save?type=md&new=1&name=' + encodeURIComponent(taken), { method: 'POST', body: THEIRS });
+    await apiMake(taken, THEIRS);
     shipDown = false;
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await waitFor(async () => (await qCount()) === 0, 30000, 500);
@@ -747,6 +810,15 @@ try {
     }
     await page.evaluate(() => localStorage.removeItem('latRecents'));
     check('B: junk in the recents is read as no recents', junkOk);
+    //  nothing to list says why: no recents yet, or nothing matching
+    const noneSays = () => page.evaluate(() => (document.querySelector('#pallist .palnone') || {}).textContent || '');
+    s = await ctrlO();
+    const noRecent = s && !s.rows.length && await noneSays();
+    s = await palType('%%%');
+    const noMatch = s && !s.rows.length && await noneSays();
+    check('B: with no recent pages yet the picker says so, and a query matching nothing says that',
+      noRecent === 'no recent pages' && noMatch === 'nothing matches', JSON.stringify({ noRecent, noMatch }));
+    await palEsc();
 
     // ── B2. recents: newest first, front left out, deleted gone, renamed followed ──
     step = 'B2 recents';
@@ -845,6 +917,18 @@ try {
       && saves.slice(b0).some((x) => x.name === SHIFT && x.isNew && x.type === 'md'),
       JSON.stringify({ matches, f: await front() }));
     check('B: neither went to the Inbox', (await inboxOnShip()).filter((n) => !inbox0.includes(n)).length === 0);
+    //  Shift+Enter on a name a page already has opens that page
+    const b1 = saves.length;
+    await ctrlO();
+    await palType(QB);
+    await chord('Enter', ['Shift']);
+    const opened = await waitFor(async () => { const x = await front(); return x.key === QB && x.name === QB && x.readOnly ? x : null; }, 20000, 200);
+    await sleep(1500);
+    const qb = await front();
+    check('B: Shift+Enter on a name a page has opens that page, writing nothing',
+      !!opened && qb.src === await shipBody(QB) && !saves.slice(b1).some((x) => x.isNew)
+      && !/already exists/.test(await page.evaluate(() => document.getElementById('status').textContent)),
+      JSON.stringify({ qb, saves: saves.slice(b1) }));
 
     // ── B6. names: the picker makes what the new-page dialog makes ──
     step = 'B6 names';
@@ -963,7 +1047,11 @@ try {
     const row = s.rows.find((r) => r.kind === 'action' && r.name === 'Open a page');
     check('B: the palette lists Open a page, homed in Files, with its keys',
       !!row && row.home === 'Files' && row.keys === 'Ctrl+O', JSON.stringify(row || s.rows.slice(0, 3)));
-    if (row && s.rows[0] === row) {
+    //  run as the user would: the arrow keys down to the row, then Enter
+    const at = row ? s.rows.indexOf(row) : -1;
+    if (at < 0) console.log('  note - the palette did not list Open a page: running it from there was not checked');
+    else {
+      for (let i = 0; i < at; i++) await page.keyboard.press('ArrowDown');
       await page.keyboard.press('Enter');
       s = await palUp();
       check('B: running it from the palette opens open mode', !!s && s.ph === 'open a page');
@@ -1360,25 +1448,47 @@ try {
 
     // ── D3. no tree yet, nothing dimmed; the tree comes, the ghosts do ──
     step = 'D3 before the tree';
-    await openWait(FN);      // the boot snapshot is this page, with the ship's render
-    await sleep(2000);
-    await leaving();
-    await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
-    await page.evaluate(() => new Promise((res) => {
-      const rq = indexedDB.open('lattice-offline');
-      rq.onsuccess = () => {
-        const db = rq.result;
-        try {
-          const tx = db.transaction([...db.objectStoreNames], 'readwrite');
-          for (const s of db.objectStoreNames) if (s !== 'saves') tx.objectStore(s).clear();
-          tx.oncomplete = () => res(); tx.onerror = () => res();
-        } catch { res(); }
-      };
-      rq.onerror = () => res();
-    }));
-    holdDump = [];
-    await leaving();
-    await page.goto(env.app + '?name=' + encodeURIComponent(FN), { waitUntil: 'domcontentloaded', timeout: 90000 });
+    //  a load of `n` in Read with no tree kept and the tree's reads held,
+    //  its boot snapshot holding the ship's render
+    const bootHeld = async (n) => {
+      await openWait(n);
+      await page.evaluate(() => window.latSetRead(true));
+      await sleep(2000);
+      await leaving();
+      await page.goto(env.app + '/no-such-asset', { timeout: 30000 });
+      await page.evaluate(() => new Promise((res) => {
+        const rq = indexedDB.open('lattice-offline');
+        rq.onsuccess = () => {
+          const db = rq.result;
+          try {
+            const tx = db.transaction([...db.objectStoreNames], 'readwrite');
+            for (const s of db.objectStoreNames) if (s !== 'saves') tx.objectStore(s).clear();
+            tx.oncomplete = () => res(); tx.onerror = () => res();
+          } catch { res(); }
+        };
+        rq.onerror = () => res();
+      }));
+      holdDump = [];
+      await leaving();
+      await page.goto(env.app + '?name=' + encodeURIComponent(n), { waitUntil: 'domcontentloaded', timeout: 90000 });
+    };
+    //  the held tree reads go, and the tree lands
+    const unhold = async () => {
+      const h = holdDump;
+      holdDump = null;
+      for (const r of h) r.continue().catch(() => {});
+      await page.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0
+        && !!window.latTabs, { timeout: 90000 });
+      return h.length;
+    };
+    //  writes to the preview frame from now on
+    const frameCount = () => page.evaluate(() => {
+      window.__fw = 0;
+      new MutationObserver((ms) => { window.__fw += ms.length; })
+        .observe(document.getElementById('prev'), { attributes: true, attributeFilter: ['srcdoc', 'src'] });
+    });
+    const frameWrites = () => page.evaluate(() => window.__fw);
+    await bootHeld(FN);
     const early = await waitFor(async () => {
       const x = await prevLinks().catch(() => null);
       return x && linkTo(x, FNG) ? x : null;
@@ -1398,6 +1508,35 @@ try {
     await page.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0
       && !!window.latTabs, { timeout: 90000 });
     await sleep(1000);
+
+    //  nothing to mark: the tree's landing leaves the frame alone
+    step = 'D3b nothing marked';
+    await bootHeld(SEEDP);
+    const seedUp = await waitFor(async () => /seed/.test(await prevHtml()), 15000, 200);
+    await sleep(3000);
+    await frameCount();
+    await unhold();
+    await sleep(2500);
+    let fw = await frameWrites();
+    check('D: the tree landing writes the preview again only when it marks something', !!seedUp && fw === 0,
+      JSON.stringify({ seedUp, fw }));
+    //  the ship's render kept for marking belongs to its own tab: with the
+    //  preview hidden it is not painted under another page
+    step = 'D3c hidden';
+    await bootHeld(FN);
+    await waitFor(async () => linkTo(await prevLinks().catch(() => ({ links: [] })), FNG), 15000, 200);
+    await page.evaluate(() => window.latSetRead(false));
+    fake.set(SEEDP, { status: 200, body: { body: '# seed', kind: 'md', rev: 1, share: 'private' } });
+    await page.evaluate((n) => window.latTabs.openIn('page', n), SEEDP);
+    const seedIn = await waitFor(async () => (await front()).key === SEEDP, 15000, 200);
+    await sleep(1500);
+    await frameCount();
+    await unhold();
+    await sleep(2500);
+    fw = await frameWrites();
+    check('D: with the preview hidden, the tree landing paints no other page\'s render under the one in front',
+      !!seedIn && fw === 0, JSON.stringify({ seedIn, fw }));
+    fake.delete(SEEDP);
 
     // ── D4. every road to a missing page starts it, writing nothing ──
     step = 'D4 preview click';
@@ -1451,6 +1590,14 @@ try {
     await page.evaluate((n) => window.latTabs.openIn('page', n), FORB);
     f = await locked(FORB);
     check('D: a page the ship refuses with 403 shows the locked tab', !!f, JSON.stringify(await front()));
+    //  the locked tab shows a name and no page: nothing to move or rename
+    const sh0 = await shows();
+    await page.evaluate(() => document.getElementById('tpath').click());
+    await sleep(1000);
+    const mvAsked = await dlgOpen();
+    await unstick();
+    check('D: Move or rename is not offered on it', !mvAsked && (await shows()) === sh0
+      && (await front()).key === FORB, JSON.stringify(await front()));
     fakeLink = { path: LNK, page: true, kind: 'md', rev: 0, size: 0, share: 'private', link: { host: '~sampel-palnet' } };
     fake.set(LNK, { status: 504, body: { error: '~sampel-palnet is unreachable' } });
     await boot();
@@ -1522,6 +1669,33 @@ try {
     check('D: closed empty, it wrote nothing', savesOf(ROW).length === 0 && !(await treePages(RUN + '/')).includes(ROW),
       JSON.stringify(saves.slice(n0)));
 
+    //  named before its first save: the strip, the address and the saved
+    //  tabs follow the new name at once
+    step = 'D8b rename started';
+    const STR = RUN + '/started-then-named', STR2 = RUN + '/named-at-last';
+    await page.evaluate((n) => window.latTabs.openIn('page', n), STR);
+    f = await started(STR);
+    dlgMeant++;
+    await page.evaluate(() => document.getElementById('tpath').click());
+    await waitFor(dlgOpen, 5000, 100);
+    await page.evaluate((n) => {
+      document.getElementById('dlginput').value = n;
+      document.getElementById('dlgok').click();
+    }, STR2);
+    const fol = await waitFor(async () => {
+      const x = await front();
+      const kept = await page.evaluate(() => localStorage.appTabs || '');
+      return x.name === STR2 && x.url === '?name=' + encodeURIComponent(STR2)
+        && (await tabName()) === 'named-at-last' && kept.includes(STR2) && !kept.includes(STR) ? x : null;
+    }, 5000, 200);
+    check('D: a started page named before its first save takes the new name in its tab, the address and the saved tabs',
+      !!f && !!fol, JSON.stringify({ f: await front(), tab: await tabName() }));
+    await page.evaluate(async () => {
+      const s = window.latTabs.state();
+      await window.latTabs.closeTab(s.tabs[s.active].id);
+    });
+    await sleep(1500);
+
     // ── D9. typed in, it is made under that name, and stops being a ghost ──
     step = 'D9 write';
     await bootAt('?name=' + encodeURIComponent(jd));
@@ -1572,13 +1746,253 @@ try {
     check('D: the editor\'s dialog opened only where the suite opened it', allDlg === dlgMeant,
       JSON.stringify({ shown: allDlg, meant: dlgMeant }));
   }
+  if (on('E')) {
+    //  the page hidden, as a phone locked or another app in front makes it,
+    //  and shown again (which also reads the tree and the page again)
+    const hide = (h) => page.evaluate((x) => {
+      if (x) {
+        Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+      } else { delete document.hidden; delete document.visibilityState; }
+      document.dispatchEvent(new Event('visibilitychange'));
+    }, h);
+    const status = () => page.evaluate(() => document.getElementById('status').textContent);
+    const ctrlS = async () => {
+      await page.focus('#src');
+      await page.keyboard.down('Control'); await page.keyboard.press('s'); await page.keyboard.up('Control');
+    };
+    //  whether the offline queue holds a record for `n`
+    const qHas = (n) => page.evaluate((x) => new Promise((res) => {
+      const rq = indexedDB.open('lattice-offline');
+      rq.onsuccess = () => {
+        try {
+          const g = rq.result.transaction('saves', 'readonly').objectStore('saves').get(x);
+          g.onsuccess = () => res(!!g.result); g.onerror = () => res(false);
+        } catch { res(false); }
+      };
+      rq.onerror = () => res(false);
+    }), n);
+    const nameIt = async (n) => {
+      dlgMeant++;
+      await page.evaluate(() => document.getElementById('tpath').click());
+      await waitFor(dlgOpen, 5000, 100);
+      await page.evaluate((x) => {
+        document.getElementById('dlginput').value = x;
+        document.getElementById('dlgok').click();
+      }, n);
+    };
+    let f, n0;
+
+    // ── E1. hidden at once: the save goes without the debounce ──
+    step = 'E1 hidden';
+    await boot();
+    await plus();
+    await sleep(500);
+    n0 = saves.length;
+    const TH = 'hidden at once ' + RUN;
+    await setText(TH);
+    const tH = Date.now();
+    await hide(true);
+    const sentH = await waitFor(async () => saves.slice(n0).find((x) => x.isNew && INBOX.test(x.name)) || null, 5000, 50);
+    await hide(false);
+    check('E: text typed and the page hidden at once is saved without waiting out the debounce',
+      !!sentH && sentH.at - tH < 1500, sentH ? (sentH.at - tH) + ' ms' : 'not sent');
+    const nameH = await landed();
+    check('E: and it lands in the Inbox', !!nameH && INBOX.test(nameH) && (await shipBody(nameH)) === TH, String(nameH));
+    await page.evaluate(() => { localStorage.latAutosave = '0'; });
+    await plus();
+    await sleep(500);
+    n0 = saves.length;
+    const TO = 'hidden, autosave off ' + RUN;
+    await setText(TO);
+    await hide(true);
+    await sleep(3000);
+    await hide(false);
+    check('E: with autosave off, hiding the page sends nothing', saves.length === n0, JSON.stringify(saves.slice(n0)));
+    await ctrlS();
+    const nameO = await landed();
+    check('E: and Ctrl+S still captures it', !!nameO && (await shipBody(nameO)) === TO, String(nameO));
+    await page.evaluate(() => { localStorage.removeItem('latAutosave'); });
+
+    // ── E2. deleted elsewhere: nothing written until a save on purpose ──
+    step = 'E2 deleted elsewhere';
+    const GONE = RUN + '/gone-elsewhere', GONE2 = RUN + '/gone-named-anew';
+    await apiMake(GONE, 'was here');
+    await boot();
+    await openWait(GONE);
+    //  this kernel keeps answering for a deleted page, so the tree without
+    //  it and the 404 the live refresh would see are the suite's
+    hideRows.add(GONE);
+    fake.set(GONE, { status: 404, body: { error: 'no such page' } });
+    await hide(true);
+    await hide(false);
+    const marked = await waitFor(async () => /deleted elsewhere/.test(await status()), 20000, 200);
+    check('E: the page in front answering 404 is taken as deleted elsewhere', !!marked, await status());
+    n0 = saves.length;
+    await typeIn(' and more');
+    await sleep(4000);
+    f = await front();
+    check('E: typing on it sends no page-save, past the autosave delay', !!marked && saves.length === n0,
+      JSON.stringify(saves.slice(n0)));
+    check('E: and its text stays in the editor', f.src.includes('was here') && f.src.includes('and more'), JSON.stringify(f));
+    await ctrlS();
+    const re = await waitFor(async () => saves.slice(n0).find((x) => x.name === GONE) || null, 10000, 200);
+    check('E: Ctrl+S then sends it, as a create', !!re && re.isNew, JSON.stringify(saves.slice(n0)));
+    fake.delete(GONE);
+    hideRows.delete(GONE);
+    //  a new name is another page: autosave makes it
+    await nameIt(GONE2);
+    const re2 = await waitFor(async () => (await shipBody(GONE2)) || null, 30000, 500);
+    check('E: named anew, it is saved under the new name', !!re2 && re2.includes('and more'), String(re2));
+
+    // ── E3. a same-tab reopen of a page that vanished starts nothing ──
+    step = 'E3 reopen';
+    const VAN = RUN + '/vanishing';
+    await apiMake(VAN, 'first');
+    await api('page-save?type=md&name=' + encodeURIComponent(VAN), { method: 'POST', body: 'second' });
+    await boot();
+    await openWait(VAN);
+    await page.evaluate(() => document.querySelector('#rtabs [data-pt=hist]').click());
+    const chip = await waitFor(() => page.evaluate(() => {
+      const a = document.querySelector('#histlist a');
+      if (a) a.click();
+      return !!a;
+    }), 20000, 300);
+    const inRev = await waitFor(() => page.evaluate(() => !document.getElementById('histview').hidden), 15000, 200);
+    //  the tree is read again without the page, and the ship says 404
+    hideRows.add(VAN);
+    fake.set(VAN, { status: 404, body: { error: 'no such page' } });
+    const d0 = reqs.filter((u) => /\/page-dump/.test(u)).length;
+    await apiMake(RUN + '/bump', 'a change, so the tree is read again');
+    const reread = await waitFor(() => reqs.filter((u) => /\/page-dump/.test(u)).length > d0, 20000, 200);
+    await sleep(2500);
+    n0 = saves.length;
+    await page.evaluate(() => document.getElementById('hback').click());
+    await sleep(4000);
+    f = await front();
+    check('E: History\'s back to latest on a page that vanished starts no page in its place',
+      !!chip && !!inRev && !!reread && !(f.name === VAN && !f.readOnly && f.src === '') && saves.length === n0,
+      JSON.stringify({ chip, inRev, reread, f, saves: saves.slice(n0) }));
+    hideRows.delete(VAN);
+    fake.delete(VAN);
+
+    // ── E4. a page started with its name, offline: kept here, not queued ──
+    //  startNamed is what the brief button calls for a journal day not
+    //  written yet (today's real day is never touched)
+    step = 'E4 named offline';
+    const DAY = RUN + '/offline-day', DAY2 = RUN + '/offline-day-2';
+    await boot();
+    await plus();
+    await sleep(500);
+    await page.evaluate((n) => window.latStartNamed(n), DAY);
+    const st0 = await waitFor(async () => (await front()).name === DAY, 5000, 100);
+    const qc0 = await qCount();
+    shipDown = true;
+    n0 = saves.length;
+    const TD = 'a day typed offline ' + RUN;
+    await typeIn(TD);
+    await sleep(9000);       // the debounce, a write that fails, and a retry
+    f = await front();
+    const stD = await status();
+    check('E: offline, typing on a page started with its name queues no create', !!st0 && (await qCount()) === qc0,
+      JSON.stringify({ q: await qCount(), qc0, saves: saves.slice(n0) }));
+    check('E: its text stays in the editor, under its name, not saved', f.src === TD && f.name === DAY
+      && !f.readOnly && !f.key, JSON.stringify(f));
+    check('E: the status says it is not saved because the ship is unreachable', /not saved/.test(stD) && /unreachable/.test(stD), stD);
+    check('E: and autosave tries again', saves.slice(n0).filter((x) => x.name === DAY).length >= 2,
+      JSON.stringify(saves.slice(n0)));
+    shipDown = false;
+    const madeD = await waitFor(async () => (await shipBody(DAY)) === TD && (await front()).key === DAY, 30000, 500);
+    const lastD = saves.filter((x) => x.name === DAY).pop();
+    check('E: once the routes answer, autosave makes it, as a checked create',
+      !!madeD && !!lastD && lastD.isNew && (await qCount()) === qc0, JSON.stringify({ lastD, f: await front() }));
+
+    step = 'E4 Ctrl+S offline';
+    await plus();
+    await sleep(500);
+    await page.evaluate((n) => window.latStartNamed(n), DAY2);
+    await waitFor(async () => (await front()).name === DAY2, 5000, 100);
+    shipDown = true;
+    const TD2 = 'saved on purpose offline ' + RUN;
+    await typeIn(TD2);
+    await ctrlS();
+    const q2 = await waitFor(async () => (await qCount()) === qc0 + 1, 15000, 200);
+    f = await front();
+    check('E: offline, Ctrl+S on such a page queues it, as it always has', !!q2 && f.key === DAY2 && f.readOnly,
+      JSON.stringify({ q: await qCount(), f }));
+    shipDown = false;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    const l2 = await waitFor(async () => (await qCount()) === qc0 && (await shipBody(DAY2)) === TD2, 30000, 500);
+    check('E: and it lands once the routes answer', !!l2, JSON.stringify({ q: await qCount(), body: await shipBody(DAY2) }));
+
+    // ── E5. offline, a draw skips an Inbox name this device knows ──
+    step = 'E5 offline draw';
+    if (!nameH) console.log('  note - E1 made no capture: the offline draw was not checked');
+    else {
+      const dH = +nameH.slice(-4);
+      await page.evaluate((x, y) => {
+        const orig = Math.random;
+        window.__rq = [x, y];
+        Math.random = () => (window.__rq.length ? window.__rq.shift() : orig());
+      }, (dH + 0.5) / 10000, ((dH + 5000) % 10000 + 0.5) / 10000);
+      const qc1 = await qCount();
+      shipDown = true;
+      await plus();
+      await sleep(500);
+      const TX = 'drawn offline ' + RUN;
+      await setText(TX);
+      const qx = await waitFor(async () => (await qCount()) === qc1 + 1, 15000, 200);
+      f = await front();
+      const xName = f.key;
+      check('E: offline, a draw equal to an Inbox page this device knows is drawn again',
+        !!qx && INBOX.test(xName || '') && xName !== nameH, JSON.stringify({ nameH, f }));
+      check('E: and nothing is queued under the known name, so its local copy is untouched', !(await qHas(nameH)));
+      shipDown = false;
+      await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      const xl = await waitFor(async () => (await qCount()) === qc1 && (await shipBody(xName)) === TX, 30000, 500);
+      check('E: once back, the capture lands under its own name, and the known page keeps its text',
+        !!xl && (await shipBody(nameH)) === TH, JSON.stringify({ x: await shipBody(xName), h: await shipBody(nameH) }));
+    }
+
+    // ── E6. a display name stays with the page it was given to ──
+    step = 'E6 display name';
+    const NL = RUN + '/named-later';
+    await plus();
+    await sleep(500);
+    const namedTab = (await front()).id;
+    await nameIt(RUN + '/Named Later');
+    const nl = await waitFor(async () => (await front()).name === NL, 5000, 100);
+    await plus();
+    await sleep(500);
+    n0 = saves.length;
+    const TC = 'another capture ' + RUN;
+    await setText(TC);
+    const nc = await landed();
+    const cs = saves.slice(n0).filter((x) => x.name === nc && x.isNew);
+    check('E: a capture saved in another tab takes no display name from a page named and not written',
+      !!nl && !!nc && cs.length > 0 && cs.every((x) => !x.dn), JSON.stringify(cs));
+    await page.evaluate((id) => window.latTabs.switchTab(id), namedTab);
+    await waitFor(async () => (await front()).name === NL, 10000, 200);
+    const TN = 'the named page ' + RUN;
+    await typeIn(TN);
+    const nlm = await waitFor(async () => (await shipBody(NL)) === TN, 30000, 500);
+    const ns = saves.find((x) => x.name === NL && x.isNew);
+    check('E: and the page named keeps it for its own first save', !!nlm && !!ns && ns.dn === 'Named Later',
+      JSON.stringify(ns));
+
+    step = 'E end';
+    check('E: no native dialog at any point', natives === 0, JSON.stringify(nativeSeen));
+    const allDlg = await dlgSum();
+    check('E: the editor\'s dialog opened only where the suite opened it', allDlg === dlgMeant,
+      JSON.stringify({ shown: allDlg, meant: dlgMeant }));
+  }
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 160), false);
 } finally {
   try {
     shipDown = false;
     for (const n of await inboxOnShip())
-      if (!baseline.includes(n)) await api('page-del?name=' + encodeURIComponent(n), { method: 'POST' });
+      if (made.has(n)) await api('page-del?name=' + encodeURIComponent(n), { method: 'POST' });
     await api('page-del?name=' + encodeURIComponent(RUN), { method: 'POST' });
     //  D's far-future days are its own and never made again
     for (const n of journalMade) await api('page-del?name=' + encodeURIComponent(n), { method: 'POST' });
