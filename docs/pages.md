@@ -263,13 +263,17 @@ The **+** in the tab strip, the **+** of each split group, the file tree's **New
 
 Move or rename a captured page to give it a real name. On a page not yet saved, it sets the name the first save will use. With autosave off in Settings, the first Ctrl/Cmd-S saves the page.
 
+A page started with its name, such as a journal day from the brief button or a page started from a link, is saved under that name once it has text. While the ship is unreachable it is not saved yet, and the status line says so. It is saved when the ship answers again. Ctrl/Cmd-S, or leaving the page, keeps it in the offline queue instead, like any other save made offline.
+
+When the editor is hidden, for example when you switch apps or lock a phone, what you typed is saved at once instead of after the usual pause.
+
 The **+** on a folder in the tree, and the tree menu's **New page here**, still ask for a name and a kind. Enter on an empty name, or on the untouched folder name, captures to the Inbox as the kind you chose. A typed name lands where it says. Escape cancels.
 
 ### Opening a page
 
 **Ctrl/Cmd-O**, or the **Open a page** button beside New page, opens a picker for pages and memories. With nothing typed it lists the last 10 opened on this device, newest first, without the one in front. Typing filters the list. Enter opens the highlighted row. Ctrl/Cmd-Enter opens it in a new tab.
 
-When no page has exactly the typed name, the last row is **Create**. Enter on it, or Shift-Enter anywhere in the picker, creates that page at the typed path. It is markdown unless you type an extension, which decides the kind.
+When no page has exactly the typed name, the last row is **Create**. Enter on it, or Shift-Enter anywhere in the picker, creates that page at the typed path. It is markdown unless you type an extension, which decides the kind. When a page already has the typed name, Shift-Enter opens it.
 
 ### The command palette
 
