@@ -17,6 +17,17 @@ Lattice hosts forums. A forum is a multi-author, threaded website, and lattice a
 - A **private** board is readable and postable only by invited members. The owner invites a ship (`POST /forum-invite?board=&ship=`), which grants that ship a read capability and adds it to the board's member roster, and the invitee gets a notice in their shared-with-me inbox. A non-member cannot read (the grant is the only door) and cannot post (the inbox refuses them with a note).
 - A member on another ship posts by poking the host's public `/forum.sig` inbox. Authorship is taken from the Ames transport, never from the message, so a post cannot be forged. The host runs the board's role, size, and rate-limit rules and bans, and sends a note back when it refuses.
 
+## Tags
+
+- A thread carries up to five tags. A tag is lowercase letters, digits and dashes. It starts with a letter and has at most 24 characters.
+- The tag form accepts only lowercase letters, digits and dashes, and says so before posting. Text that arrives another way, such as the JSON route, is still cleaned: `Bug Report` becomes `bug-report`, `c++` becomes `c`, and a tag with nothing usable left, or a sixth, is dropped.
+- Whoever posts a thread may tag it as they post. After that, its author or a board mod edits its tags from the thread page. A comet never tags.
+- A board page filters by tags. `?tags=bug,idea` shows the threads carrying every one. The filter keeps the first five valid tags in the address. The page lists the board's most used tags to pick from, with a search for the rest. The `active` sort ranks threads by their latest comment.
+- The forum's JSON (`urb_read` of a board or thread) gives each post its `tags` and its `active` time.
+- A board takes tags when its host has the tags grub. Every board gets that grub when its host runs this version. A peer reads it before it sends a tag action. On a board whose host runs an older lattice, the peer's pages show no tag fields, and no tag action is sent.
+- On a peer's board, the owner posts from the remote submit page, `/apps/lattice/forum-remote/<host>/<board>/submit`. It has the tag inputs when the host takes tags. When it does not, the page says so, and a post goes without its tags.
+- `POST /forum-post-remote?host=<ship>&board=<board>` takes tags in two ways. `op=post` with `tags=bug,idea` sends a tagged post. `op=tag` with `post=<id>` and `tags=...` sets that thread's tags, and an empty `tags` clears them. `tags` is comma separated and cleaned as above. An `op=post` whose tags all clean away is a plain post. Before a tag action is sent, the peer reads the host's board. If the host does not take tags, the route answers 409 and sends nothing. If the board cannot be read, it answers 504.
+
 ## Moderation
 
 - Roles, delete post or comment (author or mod), pin, sidebar, edit board info, set public or private, and auto-prune (below a board's min-score past an age, on a six-hour sweep).

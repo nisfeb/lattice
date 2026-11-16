@@ -34,5 +34,7 @@
   "dirshare-check.py": 90,
   "ui-plugin-skills.mjs": 20,
   "ui-sheet.mjs": 110,
+  "ui-map.mjs": 150,
+  "ui-capture.mjs": 200,
   "ui-scad.mjs": 60
 }

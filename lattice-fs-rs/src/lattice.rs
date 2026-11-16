@@ -278,7 +278,7 @@ impl Projection for LatticeProjection {
     ) -> Result<Option<u64>, PErr> {
         let ptype = match kind {
             "index" => "index",
-            "md" | "gmi" | "html" | "text" | "js" | "css" | "tex" | "fodt" | "fods" | "scad" => kind,
+            "md" | "gmi" | "html" | "text" | "js" | "css" | "tex" | "fodt" | "fods" | "geojson" | "scad" => kind,
             _ => "hoon",
         };
         let name = self.full(rel);
@@ -819,6 +819,7 @@ mod tests {
         p.write("n", "tex", b"\\x", false).unwrap();
         p.write("n", "fodt", b"<o/>", false).unwrap();
         p.write("n", "fods", b"<s/>", false).unwrap();
+        p.write("n", "geojson", b"{}", false).unwrap();
         p.write("n", "scad", b"cube(1);", false).unwrap();
         assert_eq!(
             rec.log(),
@@ -838,6 +839,8 @@ mod tests {
                 r#"POST /apps/lattice/page-save?name=n&type=fodt "<o/>""#,
                 // and so is a spreadsheet
                 r#"POST /apps/lattice/page-save?name=n&type=fods "<s/>""#,
+                // and so is a map
+                r#"POST /apps/lattice/page-save?name=n&type=geojson "{}""#,
                 // and an OpenSCAD model, which agents may write too
                 r#"POST /apps/lattice/page-save?name=n&type=scad "cube(1);""#,
             ]

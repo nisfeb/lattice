@@ -196,6 +196,14 @@
     (expect-eq !>(`(unit *)``f) !>(dat.r))
     (expect-eq !>(`view-mode:pg`%fods) !>(show.r))
   ==
+::  +geojson: a map's page keeps its body and shows as a map
+++  test-geojson-result
+  =/  f=@t  '{"type":"FeatureCollection","features":[\0a]}\0a'
+  =/  r=result:pg  (geojson:pg f)
+  ;:  weld
+    (expect-eq !>(`(unit *)``f) !>(dat.r))
+    (expect-eq !>(`view-mode:pg`%geojson) !>(show.r))
+  ==
 ::  +scad: an OpenSCAD page keeps its source as data and shows as %scad
 ++  test-scad-result
   =/  s=@t  'w = 30; // [10:100]\0acube([w, 20, 10]);\0a<script>'

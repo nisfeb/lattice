@@ -244,12 +244,13 @@
     =/  c=pub-pending:lp  (malt ~[['/a' `pub-wait:lp`[t 0 t | *@da]]])
     (expect-eq !>(c) !>((pub-restart:lp c `'/a')))
   ==
-::  +builder-mode: tex renders as text, fodt, fods and scad as themselves; an unknown
-::  builder has none
+::  +builder-mode: tex renders as text, fodt, fods, geojson and scad as
+::  themselves; an unknown builder has none
 ++  test-builder-mode
   ;:  weld
     (expect-eq !>(`(unit @tas)``%fodt) !>((builder-mode:lp %fodt)))
     (expect-eq !>(`(unit @tas)``%fods) !>((builder-mode:lp %fods)))
+    (expect-eq !>(`(unit @tas)``%geojson) !>((builder-mode:lp %geojson)))
     (expect-eq !>(`(unit @tas)``%scad) !>((builder-mode:lp %scad)))
     (expect-eq !>(`(unit @tas)``%text) !>((builder-mode:lp %tex)))
     (expect-eq !>(`(unit @tas)``%md) !>((builder-mode:lp %md)))

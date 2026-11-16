@@ -57,9 +57,10 @@
     }
   }
   $('newtmpl').onclick = newFromTemplate;
-  // newFile paints over the editor, so whatever is unsaved there goes
-  // through guardDirty first, like any other way off a document
-  $('newfile').onclick = async () => { if (await guardDirty()) newFile(''); };
+  // a new page in place of the front document, with no question. It paints
+  // over the editor, so newBlank puts what is unsaved there through
+  // guardDirty first, like any other way off a document
+  $('newfile').onclick = () => newBlank();
   $('newfolder').onclick = newFolder;
   window.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === 's') {

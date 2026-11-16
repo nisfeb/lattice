@@ -47,6 +47,8 @@
     more: ['0 0 24 24', 'M5 12h.01M12 12h.01M19 12h.01', 'stroke'],
     menu: ['0 0 24 24', 'M4 6h16M4 12h16M4 18h16', 'stroke'],
     plus: ['0 0 24 24', 'M12 5v14M5 12h14', 'stroke'],
+    // quick open (26-palette.js): a page with a lens over its corner
+    qopen: ['0 0 24 24', 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4M14 3l5 5v3M14 3v5h5M13 16a3 3 0 1 0 6 0a3 3 0 1 0-6 0M18.2 18.2L21 21', 'stroke'],
     save: ['0 0 24 24', 'M5 3h11l5 5v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM8 3v5h7V3M7 21v-7h10v7', 'stroke'],
     pin: ['0 0 24 24', 'M9 3h6l-1 6 3 4H7l3-4zM12 13v8', 'stroke'],
     tabs: ['0 0 24 24', 'M8 8h12v12H8zM4 16V4h12', 'stroke'],
@@ -292,8 +294,13 @@
   const navDoc = (f, html) => { f.srcdoc = html; navBusy(f); };
   const navUrl = (f, url) => { f.removeAttribute('srcdoc'); f.src = url; navBusy(f); };
   const prevBusy = () => navBusy(prev);
-  const prevDoc = (html) => navDoc(prev, html);
-  const prevUrl = (url) => navUrl(prev, url);
+  //  the ship's render of an md page on show (applyPage), which ghostPaint
+  //  marks again once the tree lands, and what of it the frame shows
+  //  (prevShown: that render as marked, or the local paint's body). Any
+  //  other write to the frame ends both.
+  let shipDoc = null, prevShown = null;
+  const prevDoc = (html) => { shipDoc = null; prevShown = null; navDoc(prev, html); };
+  const prevUrl = (url) => { shipDoc = null; prevShown = null; navUrl(prev, url); };
   const prevBlank = () => {
     prev.removeAttribute('src');
     prev.style.minHeight = '';

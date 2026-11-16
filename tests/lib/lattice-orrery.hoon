@@ -1,6 +1,6 @@
 ::  Unit tests for /lib/lattice-orrery (pure orrery read-side helpers).
 ::
-/+  *test, lo=lattice-orrery
+/+  *test, lo=lattice-orrery, gj=lattice-geojson
 |%
 ++  test-rewrite-id
   %+  expect-eq  !>("[[situation/x]]")
@@ -107,5 +107,63 @@
     (expect-eq !>(&) !>((has-tag:lo "a [T12]")))
     (expect-eq !>(|) !>((has-tag:lo "a [T]")))
     (expect-eq !>(|) !>((has-tag:lo "a [Tx]")))
+  ==
+::  map-body: orrery's map.json as the orrery/map page body
+++  map-head
+  '{"type":"FeatureCollection","lattice":{"title":"Orrery","layers":["orrery/map-notes"]},"features":['
+++  map-f1
+  (need (de:json:html '{"type":"Feature","geometry":{"type":"Point","coordinates":[-73.98,40.75]},"properties":{"name":"Home","kind":"place","orrery":"place/home"}}'))
+++  map-f2
+  (need (de:json:html '{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[-73.99,40.74],[-73.97,40.74],[-73.97,40.76],[-73.99,40.74]]]},"properties":{"name":"Home","kind":"area","orrery":"place/home"}}'))
+++  map-doc
+  |=  fs=(list json)
+  ^-  json
+  (pairs:enjs:format ~[['type' s+'FeatureCollection'] ['features' a+fs]])
+++  test-map-body-two
+  %+  expect-eq
+    !>  ^-  (unit @t)
+    :-  ~
+    %-  crip
+    ;:  weld
+      (trip map-head)  "\0a"
+      (trip (en:json:html map-f1))  ",\0a"
+      (trip (en:json:html map-f2))  "\0a]}\0a"
+    ==
+  !>((map-body:lo (map-doc ~[map-f1 map-f2])))
+++  test-map-body-none
+  %+  expect-eq
+    !>  ^-  (unit @t)
+    `'{"type":"FeatureCollection","lattice":{"title":"Orrery","layers":["orrery/map-notes"]},"features":[\0a]}\0a'
+  !>((map-body:lo (map-doc ~)))
+++  test-map-body-refuses
+  ;:  weld
+    (expect-eq !>(~) !>((map-body:lo s+'x')))
+    (expect-eq !>(~) !>((map-body:lo a+~)))
+    (expect-eq !>(~) !>((map-body:lo (pairs:enjs:format ~[['type' s+'FeatureCollection']]))))
+    %+  expect-eq  !>(~)
+    !>((map-body:lo (pairs:enjs:format ~[['type' s+'FeatureCollection'] ['features' s+'no']])))
+    %+  expect-eq  !>(~)
+    !>((map-body:lo (pairs:enjs:format ~[['type' s+'Feature'] ['features' a+~]])))
+  ==
+::  what the mirror writes is a map page lattice will save
+++  test-map-body-checks
+  ;:  weld
+    (expect-eq !>(~) !>((gj-check:gj (need (map-body:lo (map-doc ~[map-f1 map-f2]))))))
+    (expect-eq !>(~) !>((gj-check:gj (need (map-body:lo (map-doc ~))))))
+    (expect-eq !>(~) !>((gj-check:gj notes-body:lo)))
+  ==
+++  test-notes-body
+  %+  expect-eq
+    !>('{"type":"FeatureCollection","lattice":{"title":"Orrery notes","layers":["orrery/map"]},"features":[\0a]}\0a')
+  !>(notes-body:lo)
+++  test-travel-token
+  ;:  weld
+    (expect-eq !>(`'pk.abc') !>((travel-token:lo (pairs:enjs:format ~[['enabled' b+&] ['token' s+'pk.abc']]))))
+    ::  orrery with travel off still holds its token
+    (expect-eq !>(`'pk.abc') !>((travel-token:lo (pairs:enjs:format ~[['enabled' b+|] ['token' s+'pk.abc']]))))
+    (expect-eq !>(~) !>((travel-token:lo (pairs:enjs:format ~[['token' s+'']]))))
+    (expect-eq !>(~) !>((travel-token:lo (pairs:enjs:format ~[['enabled' b+&]]))))
+    (expect-eq !>(~) !>((travel-token:lo (pairs:enjs:format ~[['token' n+'1']]))))
+    (expect-eq !>(~) !>((travel-token:lo s+'pk.abc')))
   ==
 --

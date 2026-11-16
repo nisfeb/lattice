@@ -61,6 +61,8 @@
 /<  wjs  ui-app/writer.js
 ::  the grid editor for fods pages, loaded when one opens
 /<  shj  ui-app/sheet.js
+::  the map view for geojson pages, loaded when one opens
+/<  mpj  ui-app/map.js
 ::  the 3D pane of scad pages, loaded when one opens with the OpenSCAD
 ::  runtime installed. The runtime itself is never in the desk (+scad-url).
 /<  scj  ui-app/scad.js
@@ -95,6 +97,9 @@
 /<  lf   /lib/lattice-fodt.hoon
 ::  flat ODS: the same three of a fods page (a spreadsheet)
 /<  lfs  /lib/lattice-fods.hoon
+::  GeoJSON: the check on save, the safe SVG and table, the search text
+::  and the title of a geojson page (a map)
+/<  lgj  /lib/lattice-geojson.hoon
 =<  ^-  nexus:nexus
     |%
     ++  on-load
@@ -177,6 +182,8 @@
             [%over %& [/app %'writer.js'] [[/ %mime] wjs]]
         ::  sheet.js: the grid editor for fods pages, loaded the same way
             [%over %& [/app %'sheet.js'] [[/ %mime] shj]]
+        ::  map.js: the map view for geojson pages, loaded the same way
+            [%over %& [/app %'map.js'] [[/ %mime] mpj]]
         ::  scad.js: the 3D pane for scad pages, loaded the same way
             [%over %& [/app %'scad.js'] [[/ %mime] scj]]
         ::  settings.js: the Settings page's tabs and look, shared with the
@@ -262,6 +269,9 @@
         ::  /pub/comments is: a reader takes its absence for "no comet
         ::  posts", the answer an older lattice gives.
             [%stay %& [/pub %forum-comets]]
+        ::  /maps/token: the Mapbox token (POST /map-token). %stay: absent
+        ::  reads as no token (+map-token). Uncovered, a reload dropped it.
+            [%stay %& [/maps %token]]
         ::  /pub/thread/<page>/list: a published page's public comments
         ::  (+put-pub-thread), and /pub/threads the pages that have one.
         ::  Rebuilt at every writer start from /comments, so a reload loses
@@ -599,6 +609,10 @@
         ::  the boards that take comet posts, every start: a board's public
         ::  flag may have moved under an older lattice
         ;<  ~  bind:m  (put-forum-comets root)
+        ::  the tags marker on boards made before tags (+forum-tag-markers).
+        ::  A failure here is printed, and the start goes on.
+        ;<  err=(unit tang)  bind:m  (fiber-try (forum-tag-markers root))
+        %-  (say 2 ?~(err ~ [leaf+"lattice: the forum tags marker sweep failed" u.err]))
         ::  pages published before per-format marks were grown as gmi
         ;<  ~  bind:m  (migrate-pub-marks root)
         ::  a whole-tree action a reload cut short (+job-set)
@@ -706,11 +720,12 @@
         ;<  ~  bind:m  (rise-later prod "lattice /forum-sweep.sig" "")
         forum-sweep-loop
       ::  /ui/main.sig: bind the HTTP endpoint and dispatch each request into a
-      ::  per-request fiber under /ui/requests (same pattern as counter).
+      ::  per-request fiber under /ui/requests (same pattern as counter),
+      ::  behind the tile route's bound (+http-serve).
           [[%ui ~] %'main.sig']
         ;<  ~  bind:m  (rise-later prod "lattice /ui/main.sig" "")
         ;<  ~  bind:m  (bind-http-self:io [~ /apps/lattice])
-        http-dispatch:io
+        http-serve
       ::  /ui/requests/*: one ephemeral fiber per in-flight HTTP request.
           [[%ui %requests ~] @]
         ?^  prod
@@ -1097,13 +1112,23 @@
   ?:  (gth (lent items) 200)  (send-err eyre-id 400 'batch too large (max 200)')
   ?.  (levy items |=([nam=@t *] (valid-name nam)))
     (send-err eyre-id 400 'bad page name in batch')
+  ::  a map page is checked as a single save checks it (+save-src)
+  =/  bad-map=(unit @t)
+    =/  todo  items
+    |-  ^-  (unit @t)
+    ?~  todo  ~
+    ?.  =('geojson' typ.i.todo)  $(todo t.todo)
+    =/  why=(unit @t)  (gj-check:lgj bod.i.todo)
+    ?~  why  $(todo t.todo)
+    `(rap 3 ~[nam.i.todo ': ' u.why])
+  ?^  bad-map  (send-err eyre-id 400 u.bad-map)
   ::  keyed requests: check taint, type allowlist, path scope, and sensitive
   ::  per item. gate returns ~ if ok, or [err-code err-msg] to refuse early.
   ::  The synchronous checks run first; the sensitive check is fiber-based.
   =/  key-sync=(unit [code=@ud msg=@t])
     ?~  key  ~
     ?.  (levy items |=([* typ=@t *] (page-type-ok:ky typ)))
-      `[403 'a key saves md, gmi, text, tex, css, scad or index pages only']
+      `[403 'a key saves md, gmi, text, tex, css, geojson, scad or index pages only']
     ?.  (levy items |=([nam=@t *] (may-path:ky u.key %local (pax-of nam) %write)))
       `[403 'outside this key\'s scope']
     ~
@@ -1116,7 +1141,7 @@
     |-  ^-  form:n
     ?~  todo  (pure:n ~)
     ;<  wf=(unit rich)  bind:n  (fodt-at (pax-of nam.i.todo))
-    ?^  wf  (pure:n wf)
+    ?:  &(?=(^ wf) !=(`@t`u.wf typ.i.todo))  (pure:n wf)
     $(todo t.todo)
   ?^  onto-fodt  (send-err eyre-id 403 (fodt-key-msg u.onto-fodt))
   ::  sensitive + taint check (fiber-based). Returns an early refusal, plus the
@@ -1320,6 +1345,10 @@
   ?.  (valid-name name)  [%| 400 'bad name']
   =/  is-index=?  =(%index ptype)
   ?:  &(?!(is-index) =('' raw))  [%| 400 'missing body']
+  ::  a map page must be a FeatureCollection within /lib/lattice-geojson's
+  ::  caps, so no save leaves a body that cannot be drawn
+  =/  bad-map=(unit @t)  ?.(=(%geojson ptype) ~ (gj-check:lgj raw))
+  ?^  bad-map  [%| 400 u.bad-map]
   :-  %&
   ?:  is-index  (make-folder-index (pax-of name))
   ?:((~(has in content-builders) ptype) (wrap-content ptype raw) raw)
@@ -1902,6 +1931,8 @@
   ?.  ?=(%ship -.l)  ~
   =/  html-row=(list [@t json])
     ?.  &(render (~(has in content-builders) kind.l))  ~
+    ::  map.js draws a map page itself
+    ?:  =(%geojson kind.l)  ~
     ~[['html' s+(render-bare (preview-inner kind.l body))]]
   %-  pairs:enjs:format
   %+  weld
@@ -1980,6 +2011,11 @@
   =/  pp=(each path tang)  (mule |.((stab u.pt)))
   ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
   ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
+  ::  the editor may hold the host's path as a share recorded it, from
+  ::  before the host's lattice moved. /browse-file found where it lives
+  ::  now when it opened the page (+peer-moved), so write there
+  ;<  known=(map @t json)  bind:m  read-peers
+  =.  p.pp  (fall (moved-path:lu (known-base:lu known u.shp) p.pp) p.pp)
   ::  a tainted key (one that read sensitive content in the last 12h) cannot
   ::  write to a foreign destination: we cannot verify a remote page's
   ::  sensitivity, so it counts as a non-sensitive destination, like a local
@@ -2296,6 +2332,13 @@
           ==
       ==
     (send-err eyre-id 403 'cross-site request refused')
+  ::  map tiles: GET /tile/<style>/<z>/<x>/<y>, the owner's cookie only.
+  ::  No agent key and no peer: a tile spends the owner's Mapbox quota and
+  ::  says where they are looking. Answered before the key lookup, so a
+  ::  tile costs no scry it does not need (+serve-tile).
+  ?:  &(?=([%tile *] suffix) =(%'GET' method.request.req))
+    ?.  authenticated.req  (send-err eyre-id 403 'forbidden')
+    (serve-tile up eyre-id t.suffix)
   ::  owner gate. Eyre stamps a request authenticated to our web login with
   ::  src=our, so `authenticated` (already in hand, synchronous) IS the src==our
   ::  check. Reading `our` via a /sys/bowl round trip (bowl-our) just to compare
@@ -3194,6 +3237,17 @@
       ;<  sn=view:nexus  bind:m  (peek:fio file-road ~)
       (browse-file-respond eyre-id sn)
     ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
+    ?^  ms  (browse-file-respond eyre-id u.ms)
+    ::  no answer there. A share keeps the host's path as it was that day,
+    ::  and the host's lattice moves when its kernel moves the shell: ask
+    ::  where it lives now and read the same file there (+peer-moved)
+    ;<  np=(unit path)  bind:m  (peer-moved u.shp p.pp)
+    ?~  np  (send-err eyre-id 504 'unreachable or denied')
+    ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] u.np %read))
+      (send-err eyre-id 504 'unreachable or denied')
+    =/  k=@ud  (dec (lent u.np))
+    ;<  ms=(unit view:nexus)  bind:m
+      (peek-remote-wait [%& %& (scag k u.np) (snag k u.np)] u.shp)
     ?~  ms  (send-err eyre-id 504 'unreachable or denied')
     (browse-file-respond eyre-id u.ms)
   ::  remote-save: overwrite a file on ANOTHER ship. The editor's save button
@@ -3624,7 +3678,7 @@
     ::  unknown type) would run with lattice's own authority, and html or js
     ::  would run in the owner's browser (+page-type-ok:ky).
     ?.  (page-type-ok:ky (~(gut by args) 'type' 'hoon'))
-      (send-err eyre-id 403 'a key saves md, gmi, text, tex, css, scad or index pages only')
+      (send-err eyre-id 403 'a key saves md, gmi, text, tex, css, geojson, scad or index pages only')
     =/  name=(unit @t)  (~(get by args) 'name')
     ?~  name  (send-err eyre-id 400 'missing name')
     ?.  (valid-name u.name)  (send-err eyre-id 400 'bad name')
@@ -3634,7 +3688,8 @@
     ?.  (may-path:ky u.key %local (pax-of u.name) %write)
       (send-err eyre-id 403 'outside this key\'s scope')
     ;<  wf=(unit rich)  bind:m  (fodt-at (pax-of u.name))
-    ?^  wf  (send-err eyre-id 403 (fodt-key-msg u.wf))
+    ?:  &(?=(^ wf) !=(`@t`u.wf (~(gut by args) 'type' 'hoon')))
+      (send-err eyre-id 403 (fodt-key-msg u.wf))
     ;<  ps=?  bind:m  (page-sensitive (pax-of u.name))
     ::  sensitive gate: an uncleared key cannot write to a sensitive page.
     ?:  &(ps !sensitive.scope.u.key)
@@ -3651,7 +3706,7 @@
         (send-err eyre-id 403 'outside this key\'s scope')
       ?:  (tainted:ky u.key rnow)  (send-err eyre-id 403 tainted-msg)
       ?.  (page-type-ok:ky kind.l)
-        (send-err eyre-id 403 'a key saves md, gmi, text, tex, css, scad or index pages only')
+        (send-err eyre-id 403 'a key saves md, gmi, text, tex, css, geojson, scad or index pages only')
       (link-save-respond eyre-id (pax-of u.name) l args (req-body req))
     ::  cross-surface taint, aligned with the memory surface: a tainted key
     ::  (read sensitive content in the last 12h, so necessarily cleared) may
@@ -4319,9 +4374,13 @@
   ::  lands (its banlist, roles, caps, rate) and stamps us as the author from
   ::  the transport, so nothing we send can claim to be someone else.
   ::
-  ::  op=post|comment|upvote|downvote|unvote. `sent` reports only that the
+  ::  op=post|comment|tag|upvote|downvote|unvote. `sent` reports only that the
   ::  poke was ACCEPTED for delivery; a refusal comes back asynchronously as a
   ::  note on our /forum.sig (stored under /forum/notes), not in this response.
+  ::  `tags` is comma separated: a post's tags, or for op=tag the thread's
+  ::  new set (empty clears it). A tag action goes only to a host whose board
+  ::  has the tags marker; an older host would drop it unread, so it is
+  ::  a 409 here and nothing is sent.
       [%'POST' %forum-post-remote]
     =/  hs=(unit @t)  (~(get by args) 'host')
     ?~  hs  (send-err eyre-id 400 'missing host')
@@ -4340,10 +4399,20 @@
       =/  v=@t  (~(gut by fargs) k (~(gut by args) k ''))
       ?:(=('' v) ~ `v)
     =/  op=@t  (fall (grab 'op') 'post')
+    =/  tags=(set tag:ft)
+      %-  norm-tags:fr
+      %+  turn
+        (fall (rush (fall (grab 'tags') '') (more com (star ;~(less com next)))) ~)
+      crip
     =/  act=(unit action:ft)
       ?:  =('post' op)
         ?~  title=(grab 'title')  ~
-        `[%new-post name u.title (grab 'url') (grab 'body')]
+        ?~  tags  `[%new-post name u.title (grab 'url') (grab 'body')]
+        `[%new-post-tagged name u.title (grab 'url') (grab 'body') tags]
+      ?:  =('tag' op)
+        ?~  pid=(grab 'post')  ~
+        ?~  id=(slaw %ud u.pid)  ~
+        `[%set-tags name u.id tags]
       ?:  =('comment' op)
         ?~  pid=(grab 'post')  ~
         ?~  id=(slaw %ud u.pid)  ~
@@ -4362,6 +4431,13 @@
       ?:  =('downvote' op)  `[%downvote name u.tgt]
       `[%remove-vote name u.tgt]
     ?~  act  (send-err eyre-id 400 'bad or missing forum action fields')
+    ;<  no=(unit [@ud @t])  bind:m
+      =/  n  (fiber:fiber:nexus ,(unit [@ud @t]))
+      ?.  ?=(?(%new-post-tagged %set-tags) -.u.act)  (pure:n ~)
+      ;<  bo=(unit board:ft)  bind:n  (urb-forum-board | u.shp name)
+      ?~  bo  (pure:n `[504 'unreachable or denied'])
+      (pure:n ?^(tags.u.bo ~ `[409 'this board\'s host does not take tags yet']))
+    ?^  no  (send-err eyre-id u.no)
     ;<  base=(unit path)  bind:m  (peer-base-cached u.shp)
     ;<  sent=?  bind:m
       %^  remote-load-poke-wait  u.shp
@@ -4823,6 +4899,31 @@
     (send-ok eyre-id)
       [%'GET' %settings]
     (send-view eyre-id (render-page-titled "" "" "" "settings" settings-html))
+  ::  maps: whether a Mapbox token is set, and the tile route's limits.
+  ::  The token itself is never in any answer (+map-token).
+      [%'GET' %'tile-status']
+    ?^  key  (send-err eyre-id 403 'outside this key\'s scope')
+    ;<  own=(unit @t)  bind:m  (own-map-token up)
+    ;<  tok=(unit @t)  bind:m  (map-token up)
+    %+  send-json  eyre-id
+    %-  pairs:enjs:format
+    :~  ['token' b+?=(^ tok)]
+        ::  the token in use is orrery's, none being set here
+        ['orrery' b+&(?=(~ own) ?=(^ tok))]
+        ['max' (numb:enjs:format tile-max-z)]
+        ['styles' a+(turn tile-styles |=([n=@t *] s+n))]
+    ==
+  ::  set or clear the Mapbox token: the body is the token, empty clears
+  ::  it. Write only: nothing reads it back out.
+      [%'POST' %'map-token']
+    ?^  key  (send-err eyre-id 403 'outside this key\'s scope')
+    =/  t=@t  (req-body req)
+    ?:  =('' t)
+      ;<  *  bind:m  (cull-soft:io (rf up /maps %token))
+      (send-ok eyre-id)
+    ?.  (token-ok t)  (send-err eyre-id 400 'that does not look like a Mapbox token')
+    ;<  ~  bind:m  (put-file (rf up /maps %token) [/ %noun] t)
+    (send-ok eyre-id)
       ::  commons mirror status for the settings page: is the %obelisk
       ::  desk's agent running, and is the mirror enabled.
       [%'GET' %obelisk-status]
@@ -6023,6 +6124,223 @@
     (pure:m [%| (crip (weld "the site answered " s))])
   ?~  full-file.res  (pure:m [%| 'the site sent an empty page'])
   (pure:m [%& q.data.u.full-file.res])
+::  ── map tiles ─────────────────────────────────────────────────────
+::
+::  GET /tile/<style>/<z>/<x>/<y> passes one Mapbox raster tile through,
+::  for the owner's map pages. The ship stores no tile: measured on a
+::  fake ship, a grub write costs about 590 ms and slows every other
+::  request about tenfold. So a tile request writes nothing. The client keeps tiles for 30 days
+::  (the most Mapbox's terms allow) in its service worker's
+::  lattice-tiles cache, and the response says the same.
+::
+::  NO ARBITRARY FETCH. The style is a name from +tile-styles, mapped
+::  here to a Mapbox style id, and z, x and y are numbers checked against
+::  each other (x and y below 2^z, z at most +tile-max-z). The URL is
+::  built from +tile-base and those alone, so a request cannot make the
+::  ship fetch anything else, and +fetchable is not needed.
+::
+::  THE TOKEN is read from /maps/token, written by POST /map-token. It
+::  is in no answer, page, render or log line, and the response carries
+::  none of Mapbox's headers.
+::
+::  THE PATH IS SHORT. Every event a request makes is ship time, so a
+::  tile does one peek (the token) and one iris request, and nothing
+::  else. Measured on a fleet clone, a deadline timer cost about 210 ms
+::  a tile, a limiter process about 40 ms and a clock read about 10 ms,
+::  so none of them is here. Iris and eyre bound a fetch that hangs.
+::
+::  THE LIMIT is +tile-lim tiles a minute, kept twice. The service
+::  worker (+sw-js) answers 429 past it without asking the ship. A
+::  request that does not come through a worker meets the same bound
+::  here, in /ui/main.sig (+http-serve), which every request passes on
+::  its way to a fiber of its own. The count is that fiber's memory, so
+::  a tile under the limit costs no event and no write, and a refused
+::  one costs no request fiber, no peek and no fetch.
+::
+::  +tile-base: Mapbox's styles API. A test build may point it at a stub
+::  server: it is a constant, never read from a request.
+++  tile-base  'https://api.mapbox.com/styles/v1/'
+++  tile-max-z  ^-(@ud 17)
+::  +tile-styles: the styles a map may ask for, and their Mapbox ids
+++  tile-styles
+  ^-  (list [@t @t])
+  :~  ['streets' 'mapbox/streets-v12']
+      ['outdoors' 'mapbox/outdoors-v12']
+      ['satellite' 'mapbox/satellite-streets-v12']
+      ['dark' 'mapbox/dark-v11']
+  ==
+::  +tile-lim: the most tiles a minute the ship fetches (+http-serve)
+++  tile-lim  ^-(@ud 120)
+::  +http-serve: grubbery's dispatcher (+http-dispatch:io), with the
+::  owner's tile requests counted before it (+tile-gate). The window
+::  starts full, so the first tile reads the clock.
+++  http-serve
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  (tile-gate http-dispatch:io *@da tile-lim)
+::  +tile-gate: `inner`, the dispatcher, with the tile bound before it.
+::  `t0` is the start of the window and `n` the tiles let through in it.
+::
+::  Every input goes to the dispatcher as it came, and what the
+::  dispatcher does next gets this gate before it again. A tile under the
+::  limit is counted on its way. At the limit the gate takes the tile
+::  itself and reads the clock. A window over a minute old makes way for
+::  a new one, and the dispatcher is handed the tile. Else the tile is
+::  answered 429 from here, and no fiber is made for it.
+::
+::  The clock is read only at the limit, so a window is found stale only
+::  when it is full. A count left from an earlier minute still stands
+::  until then, and a burst that crosses that point passes up to twice
+::  the limit before the first 429, as at any fixed window's edge.
+::
+::  Nothing here can fail, as a failure would take every route down:
+::  the clock and the answer are soft. With no clock a tile goes through.
+++  tile-gate
+  =/  m  (fiber:fiber:nexus ,~)
+  |=  [inner=form:m t0=@da n=@ud]
+  ^-  form:m
+  |=  =input:fiber:nexus
+  ^-  output:m
+  =/  out=output:m  (inner input)
+  =/  id=(unit @ta)  (tile-ask in.input)
+  ::  not a tile, or one the dispatcher is not ready for and leaves
+  ::  queued: it comes here again, and is counted then
+  ?:  |(?=(~ id) ?=(%skip -.next.out))  (tile-on out t0 n)
+  ?:  (lth n tile-lim)  (tile-on out t0 +(n))
+  :+  ~  q.state.input
+  :-  %cont
+  ;<  now=(unit @da)  bind:m  soft-now
+  ?:  |(?=(~ now) (gte u.now (add t0 ~m1)))
+    ::  this step has no input of its own: it gives the dispatcher,
+    ::  which is where it was, the tile kept from above
+    |=  i=input:fiber:nexus
+    (tile-on (inner i(in in.input)) (fall now t0) ?~(now n 1))
+  ;<  *  bind:m
+    %^  soft-poke  /tile/full  server-road:io
+    :-  [/ %eyre-action]
+    ^-  eyre-action:nexus
+    :^  %send  u.id  %simple
+    :-  [429 ['content-type' 'application/json']~]
+    `(as-octs:mimes:html (en:json:html (pairs:enjs:format ~[['error' s+'too many tiles this minute']])))
+  (tile-gate inner t0 n)
+::  +tile-on: the dispatcher's answer, with +tile-gate before whatever
+::  it does next
+++  tile-on
+  =/  m  (fiber:fiber:nexus ,~)
+  |=  [out=output:m t0=@da n=@ud]
+  ^-  output:m
+  ?.  ?=(%cont -.next.out)  out
+  [darts.out state.out %cont (tile-gate self.next.out t0 n)]
+::  +tile-ask: the eyre id of the poke that opens a tile request of the
+::  owner's, ~ for any other input. An unauthenticated one is not
+::  counted: it is refused before any work (+handle-request).
+++  tile-ask
+  |=  in=(unit intake:fiber:nexus)
+  ^-  (unit @ta)
+  ?.  ?=([~ %poke * *] in)  ~
+  ?.  =(%handle-http-request name.p.sage.u.in)  ~
+  ?.  =(*from:fiber:nexus from.u.in)  ~
+  =/  r  (mole |.(!<([eyre-id=@ta @p req=inbound-request:eyre] q.sage.u.in)))
+  ?~  r  ~
+  ?.  authenticated.req.u.r  ~
+  ?.  =(%'GET' method.request.req.u.r)  ~
+  ?.  =('/apps/lattice/tile/' (end [3 19] url.request.req.u.r))  ~
+  `eyre-id.u.r
+::  +token-ok: a token's shape: up to 512 bytes of letters, digits and . _ -
+++  token-ok
+  |=  t=@t
+  ^-  ?
+  ?:  (gth (met 3 t) 512)  |
+  %+  levy  (trip t)
+  |=  c=@tD
+  ?|  &((gte c 'a') (lte c 'z'))  &((gte c 'A') (lte c 'Z'))
+      &((gte c '0') (lte c '9'))  =('.' c)  =('_' c)  =('-' c)
+  ==
+::  +map-token: the Mapbox token tiles are fetched with, ~ when there is
+::  none: lattice's own (+own-map-token), else the one orrery holds
+::  (+orrery-map-token), so an owner who gave orrery a token need not
+::  give it twice. The fallback costs a tile two more peeks.
+++  map-token
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  own=(unit @t)  bind:m  (own-map-token up)
+  ?^  own  (pure:m own)
+  orrery-map-token
+::  +orrery-map-token: the Mapbox token in orrery's travel.json, ~ when
+::  orrery is absent, holds none, or holds one that is not a token's
+::  shape (+token-ok). Read under the peek lattice already has on
+::  orrery's desk, and never answered to anyone, as lattice's own is not.
+++  orrery-map-token
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& u.base %'travel.json'] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  =/  doc=(unit json)  (mole |.(!<(json (need-vase:tarball sang.u.vw))))
+  =/  t=(unit @t)  ?~(doc ~ (travel-token:lo u.doc))
+  (pure:m ?:(&(?=(^ t) (token-ok u.t)) t ~))
+::  +own-map-token: lattice's own Mapbox token, ~ when none is set
+++  own-map-token
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up /maps %token) ~)
+  ?.  ?=([%file *] v)  (pure:m ~)
+  =/  t=(unit @t)  (mole |.(;;(@t (sang-noun:tarball sang.v))))
+  ?~  t  (pure:m ~)
+  ?:  =('' u.t)  (pure:m ~)
+  (pure:m t)
+::  +tile-at: [style-id z x y] for a tile path, ~ when it names no tile
+++  tile-at
+  |=  pax=path
+  ^-  (unit [sid=@t z=@ud x=@ud y=@ud])
+  ?.  ?=([@ @ @ @ ~] pax)  ~
+  =/  sid=(unit @t)  (~(get by (malt tile-styles)) i.pax)
+  ?~  sid  ~
+  =/  num  |=(t=@ta ?:((gth (met 3 t) 7) ~ (rush t dem)))
+  =/  z  (num i.t.pax)
+  =/  x  (num i.t.t.pax)
+  =/  y  (num i.t.t.t.pax)
+  ?~  z  ~
+  ?~  x  ~
+  ?~  y  ~
+  ?:  (gth u.z tile-max-z)  ~
+  ?.  &((lth u.x (bex u.z)) (lth u.y (bex u.z)))  ~
+  `[u.sid u.z u.x u.y]
+::  +serve-tile: one tile, passed through and never stored
+++  serve-tile
+  |=  [up=@ud eyre-id=@ta pax=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  at  (tile-at pax)
+  ?~  at  (send-err eyre-id 404 'no such tile')
+  ;<  tok=(unit @t)  bind:m  (map-token up)
+  ?~  tok  (send-err eyre-id 503 'no Mapbox token is set')
+  =/  url=@t
+    %+  rap  3
+    :~  tile-base  sid.u.at  '/tiles/512/'
+        (crip (a-co:co z.u.at))  '/'  (crip (a-co:co x.u.at))  '/'
+        (crip (a-co:co y.u.at))  '?access_token='  u.tok
+    ==
+  ;<  ~  bind:m  (send-request:io [%'GET' url ~[['User-Agent' 'lattice-maps']] ~])
+  ;<  res=client-response:iris  bind:m  take-client-response:io
+  ?.  ?=(%finished -.res)  (send-err eyre-id 502 'the tile fetch did not complete')
+  =/  status=@ud  status-code.response-header.res
+  ?:  =(404 status)  (send-err eyre-id 404 'no such tile')
+  ?:  |(=(401 status) =(403 status))  (send-err eyre-id 502 'Mapbox refused the token')
+  ?.  =(200 status)  (send-err eyre-id 502 'the tile server failed')
+  ?~  full-file.res  (send-err eyre-id 502 'the tile server sent nothing')
+  =/  ct=@t  type.u.full-file.res
+  ?.  =('image/' (end [3 6] ct))  (send-err eyre-id 502 'the tile server sent no image')
+  %+  send-simple:srv  eyre-id
+  :_  `data.u.full-file.res
+  :-  200
+  :~  ['content-type' ?:(=('image/jpeg' (end [3 10] ct)) 'image/jpeg' ?:(=('image/webp' (end [3 10] ct)) 'image/webp' 'image/png'))]
+      ['cache-control' 'private, max-age=2592000']
+      ['x-content-type-options' 'nosniff']
+  ==
 ::  ── the OpenSCAD runtime (optional, docs: specs/2026-11-10-openscad-pages) ──
 ::
 ::  scad pages render in the browser, with OpenSCAD compiled to WebAssembly.
@@ -7634,7 +7952,7 @@
           default-role.act
           %.y
       ==
-    =/  brd=board:ft  [info ~ 1 ~ ~ ~ ~ '' ~]
+    =/  brd=board:ft  [info ~ 1 ~ ~ ~ ~ '' ~ `~]
     ;<  ~  bind:m  (forum-put up bdir ~(tap by (grubs:fb brd)) ~)
     ;<  ~  bind:m  (bump-beacon %forum now)
     (pure:m ~)
@@ -7791,6 +8109,27 @@
     =/  lod=(each board:ft @t)  (load:fb u.gs)
     &(?=(%& -.lod) public.info.p.lod)
   $(noms t.noms, open ?:(pub [i.noms open] open))
+::  +forum-tag-markers: the empty tags grub on each board that has none,
+::  so a board made before tags takes them. The grub is the marker a peer
+::  reads to know this host takes tag actions. A board that has the grub
+::  is not loaded. A board that does not load is skipped. Run by the
+::  writer at its start.
+::
+++  forum-tag-markers
+  |=  root=@ud
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  noms=(list @ta)  bind:m  forum-boards
+  |-  ^-  form:m
+  ?~  noms  (pure:m ~)
+  =/  bdir=path  /forum/boards/[i.noms]
+  ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs root bdir)
+  ?~  gs  $(noms t.noms)
+  ?:  (lien u.gs |=(g=grub:fb =(pax.g /content/tags)))  $(noms t.noms)
+  =/  lod=(each board:ft @t)  (load:fb u.gs)
+  ?.  ?=(%& -.lod)  $(noms t.noms)
+  ;<  ~  bind:m  (forum-put root bdir ~[[/content/tags [%1 ~]]] ~)
+  $(noms t.noms)
 ::  +forum-remote-apply: the per-action gates for a REMOTE forum action -- bad
 ::  board name, owner-only, board-exists, private-board membership, then role
 ::  and caps so the refusal names itself -- then +apply-forum-core. +act:fa
@@ -7810,17 +8149,21 @@
   ?:  &(!public.info.u.obrd !(~(has in mem) src))
     (pure:m `'forum: this board is private; you are not a member')
   ::  role and caps for a post or a comment (votes need neither, as in +act).
+  ::  A tagged post meets a post's; +act refuses a bad %set-tags itself.
+  =/  pla=action:ft
+    ?.  ?=(%new-post-tagged -.act)  act
+    [%new-post name.act title.act url.act body.act]
   =/  need=(unit @t)
-    ?+  -.act  ~
+    ?+  -.pla  ~
         %new-post
       ?.  (can-post:fr src u.obrd)  `'forum: your role on this board cannot post'
-      ?.  (sane-post:fr title.act url.act body.act)
+      ?.  (sane-post:fr title.pla url.pla body.pla)
         `'forum: a post needs a title (300 bytes), a url (2,048) and a body (40,000)'
       ~
     ::
         %new-comment
       ?.  (can-post:fr src u.obrd)  `'forum: your role on this board cannot comment'
-      ?.  (sane-comment:fr body.act)  `'forum: a comment holds 1 to 10,000 bytes'
+      ?.  (sane-comment:fr body.pla)  `'forum: a comment holds 1 to 10,000 bytes'
       ~
     ==
   ?^  need  (pure:m need)
@@ -8532,6 +8875,7 @@
     ;<  ~  bind:m  (ensure-dirs up /links pax.act)
     (put-file (link-road up pax.act) [/lattice %link] link.act)
       %journal-put  (journal-put root now +.act)
+      %map-put  (map-put root now body.act)
       %del-from
     ;<  ~  bind:m  (del-from root now +.act)
     (apply-eval root now [%del from.act])
@@ -11159,10 +11503,12 @@
   ;<  cv=view:nexus  bind:m  (peek:fio (rf up (weld /page rel) %code) ~)
   ?.  ?=([%file *] cv)  (pure:m [0 ~])
   (pure:m [ud.cass.cv (mole |.(;;(@t (sang-noun:tarball sang.cv))))])
-::  +fodt-at: is the page at rel a Writer (fodt) page or a spreadsheet
-::  (fods), and which? A key may not save either (+page-type-ok:ky), so
-::  any keyed save onto one would change its kind; the keyed save paths
-::  refuse it (owner decision 2026-11-02).
+::  +fodt-at: is the page at rel a Writer (fodt) page, a spreadsheet
+::  (fods) or a map (geojson), and which? A key may not save the first
+::  two (+page-type-ok:ky), so any keyed save onto one would change its
+::  kind; the keyed save paths refuse it (owner decision 2026-11-02). A
+::  key may save a map, but only as a map: the same paths refuse a keyed
+::  save of any other type onto one.
 ::
 ++  fodt-at
   |=  rel=path
@@ -11178,6 +11524,7 @@
   ?-  k
     %fodt  'that page is a Writer document: a key cannot change its kind'
     %fods  'that page is a spreadsheet: a key cannot change its kind'
+    %geojson  'that page is a map: a key cannot change its kind'
   ==
 ::  +pub-path: a relative publish path ("notes/intro") -> content-map key
 ::  (/pub/notes/intro/gmi). Ported from /lib/lattice.
@@ -11844,6 +12191,10 @@
   ;<  html-row=(list [@t json])  bind:m
     =/  n  (fiber:fiber:nexus ,(list [@t json]))
     ?.  &(render |((~(has in content-builders) kind) =(%index kind)))  (pure:n ~)
+    ::  a map page opens in map.js, which draws it, so the editor's open
+    ::  costs no render and no cache write. The reader, the x and
+    ::  clearweb views, publishing and search still use the cached render.
+    ?:  =(%geojson kind)  (pure:n ~)
     =/  rk=(unit rich)  (rich-of `kind)
     ?~  rk  (pure:n ~[['html' s+(render-bare (preview-inner kind body))]])
     ;<  v=fodt-view  bind:n  (fodt-of-page u.rk pdir body)
@@ -12242,6 +12593,7 @@
     ?:  =(%'orrery.js' nam)   `'application/javascript'
     ?:  =(%'writer.js' nam)   `'application/javascript'
     ?:  =(%'sheet.js' nam)    `'application/javascript'
+    ?:  =(%'map.js' nam)      `'application/javascript'
     ?:  =(%'scad.js' nam)     `'application/javascript'
     ?:  =(%'settings.js' nam)  `'application/javascript'
     ?:  =(%'pdf.js' nam)      `'application/javascript'
@@ -12252,11 +12604,11 @@
   ?.  ?=([%file *] pv)  (send-err eyre-id 404 'not found')
   =/  res=(each mime tang)  (mule |.(!<(mime (need-vase:tarball sang.pv))))
   ?:  ?=(%| -.res)  (send-err eyre-id 500 'bad asset')
-  ::  writer.js?h=H, sheet.js?h=H and pdf.js?h=H too: app.js names the H
-  ::  it was built with
+  ::  writer.js?h=H, sheet.js?h=H, map.js?h=H and pdf.js?h=H too: app.js
+  ::  names the H it was built with
   =/  cc=@t
     ?.  ?&  ?|  =(%'app.js' nam)  =(%'writer.js' nam)  =(%'sheet.js' nam)
-                =(%'pdf.js' nam)  =(%'skills.js' nam)  =(%'scad.js' nam)
+                =(%'map.js' nam)  =(%'pdf.js' nam)  =(%'skills.js' nam)  =(%'scad.js' nam)
             ==
             =(`(js-tag q.p.res) (~(get by args) 'h'))
         ==
@@ -12671,6 +13023,47 @@
     (apply-eval root now [%make pax (wrap-content %md u.body)])
   =/  hash=(unit @uv)  ?~(body last `(sham u.body))
   (write-journal-synced (~(put by synced) `@t`name [at hash]))
+::  +orrery-map-pass: mirror orrery's map document (<base>/map.json) into
+::  the private page orrery/map. A no-op when orrery or its map.json is
+::  absent. A document that is not a FeatureCollection, or a body over the
+::  map caps (+gj-check:lgj), writes nothing and keeps the last page.
+::
+++  orrery-map-pass
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& u.base %'map.json'] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  =/  doc=(unit json)  (mole |.(!<(json (need-vase:tarball sang.u.vw))))
+  =/  body=(unit @t)  ?~(doc ~ (map-body:lo u.doc))
+  ?~  body  (pure:m ~)
+  ?^  (gj-check:lgj u.body)  (pure:m ~)
+  (poke-eval [%map-put u.body])
+::  +map-put: %map-put, in the writer. orrery/map is written only when it
+::  is missing or its body differs, so an unchanged map adds no revision
+::  and a hand edit is put back. orrery/map-notes, the page the owner
+::  draws on, is made only when missing and never rewritten. Each page is
+::  marked sensitive before it is written, as a journal page is.
+::
+++  map-put
+  |=  [root=@ud now=@da body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  pax=path  /orrery/map
+  ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head pax)
+  =/  was=(unit [builder=@tas body=@t])  ?~(src.pc ~ (unwrap-content u.src.pc))
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    ?:  =(`[%geojson body] was)  (pure:n ~)
+    ;<  ~  bind:n  (apply-eval root now [%page-sensitive pax &])
+    (apply-eval root now [%make pax (wrap-content %geojson body)])
+  =/  nax=path  /orrery/map-notes
+  ;<  nc=[rev=@ud src=(unit @t)]  bind:m  (page-head nax)
+  ?^  src.nc  (pure:m ~)
+  ?.  =(0 rev.nc)  (pure:m ~)
+  ;<  ~  bind:m  (apply-eval root now [%page-sensitive nax &])
+  (apply-eval root now [%make nax (wrap-content %geojson notes-body:lo)])
 ::  +orrery-rec: pull the `at` and `text` strings out of one orrery day
 ::  record. ~ when the json is not an object or either field is missing or
 ::  not a string.
@@ -12764,6 +13157,19 @@
       [[/ %json] [%o (~(put by known) (scot %p shp) s+(spat u.pb))]]
     [/ %json]
   (pure:m pb)
+::  +peer-moved: where a path under a peer's lattice reads now, for one
+::  that got no answer: the peer is asked afresh which layout it runs
+::  (+peer-base-remember, which also corrects /peers.json). ~ when the
+::  path is not lattice's, the peer does not answer, or it is where the
+::  path already points.
+++  peer-moved
+  |=  [shp=@p p=path]
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  ?.  (lien peer-bases:lu |=(b=path ?=(^ (strip-prefix:lu b p))))  (pure:m ~)
+  ;<  pb=(unit path)  bind:m  (peer-base-remember shp)
+  ?~  pb  (pure:m ~)
+  (pure:m (moved-path:lu u.pb p))
 ::  +peek-remote-wait: peek a remote road, but give up after remote-timeout. ~ on
 ::  timeout or veto. `seen otherwise. This is peek-remote (nonce + %peek dart +
 ::  take-peek) with a concurrent timer, resolving on whichever lands first.
@@ -15402,6 +15808,7 @@
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip body)) "</code></pre>")
     %fodt  (fodt-html:lf body)
     %fods  (fods-html:lfs body)
+    %geojson  (gj-html:lgj body)
     %scad  (scad-html body)
     %index  "<div style=\"color:#8a8a8a;text-align:center;padding:2rem\"><p><b>Folder index</b></p><p>Lists the pages in this page's folder automatically, once you name it (e.g. blog/index) and save. Live as pages come and go.</p></div>"
   ==
@@ -15435,9 +15842,11 @@
 ::
 ::  BOUND. One entry per page, overwritten in place: it lives in the
 ::  page's own dir, so a delete takes it and a move carries it. It is
-::  written only for a page with a code grub and a body of at most 2 MB
-::  (+max-size:lf), so it is at most one such render, about 4.5 times
-::  the source. A body that is not our own page's is never stored: a
+::  written only for a page with a code grub and a body no larger than
+::  its kind renders (+rich-max: 2 MB, or 4 MB for a map), so it is at
+::  most one such render. A Writer document's is about 4.5 times the
+::  source, and a map's is capped by what it draws. A body that is not
+::  our own page's is never stored: a
 ::  peer's published page arrives rendered, under %html, and a link's
 ::  body or a peer's page in the /x view is rendered and dropped. A page
 ::  shared with a peer for edit is still one of our pages, and the
@@ -15451,7 +15860,7 @@
 ::  gets the other kind's render.
 ::
 ::  +rich: the page kinds rendered through this cache
-+$  rich  ?(%fodt %fods)
++$  rich  ?(%fodt %fods %geojson)
 ::  +rich-of: a builder that is one of them
 ++  rich-of
   |=  b=(unit @tas)
@@ -15463,6 +15872,8 @@
 ++  fodt-ver  ^-(@ud 1)
 ::  +fods-ver: bump it when /lib/lattice-fods's output changes
 ++  fods-ver  ^-(@ud 1)
+::  +gj-ver: bump it when /lib/lattice-geojson's output changes
+++  gj-ver  ^-(@ud 1)
 ::  +rich-ver: the version an entry of this kind carries. A fods one is
 ::  offset, so the two renderers' versions never meet.
 ++  rich-ver
@@ -15471,6 +15882,16 @@
   ?-  k
     %fodt  fodt-ver
     %fods  (add (bex 16) fods-ver)
+    %geojson  (add (bex 17) gj-ver)
+  ==
+::  +rich-max: the largest body of this kind that is rendered, in bytes
+++  rich-max
+  |=  k=rich
+  ^-  @ud
+  ?-  k
+    %fodt  max-size:lf
+    %fods  max-size:lfs
+    %geojson  max-size:lgj
   ==
 +$  fodt-view  [html=@t text=@t title=(unit @t)]
 +$  fodt-entry  [%fodt-cache ver=@ud key=@ view=fodt-view]
@@ -15498,6 +15919,7 @@
     ?-  k
       %fodt  (fodt-all:lf body)
       %fods  (fods-all:lfs body)
+      %geojson  (gj-all:lgj body)
     ==
   [(crip html.a) text.a title.a]
 ::  +fodt-peer: the view of a PEER's fodt body, from /fodt-peers (the
@@ -15545,7 +15967,7 @@
   |=  [k=rich pdir=path body=@t v=fodt-view]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ?:  (gth (met 3 body) max-size:lf)  (pure:m ~)
+  ?:  (gth (met 3 body) (rich-max k))  (pure:m ~)
   ;<  up=@ud  bind:m  nexus-up
   %^  put-file  (rf up pdir %'fodt.cache')  [/ %noun]
   `fodt-entry`[%fodt-cache (rich-ver k) (shax body) v]
@@ -15566,14 +15988,14 @@
   ;<  v=fodt-view  bind:m  (fodt-of-page u.rk (weld /page rel) body.u.un)
   (pure:m title.v)
 ::  +fodt-rendered: whether an html body starts as /lib/lattice-fodt's
-::  output does (+html-pres:lf), or /lib/lattice-fods's. A test on the
-::  first bytes: a
+::  output does (+html-pres:lf), or /lib/lattice-fods's, or
+::  /lib/lattice-geojson's. A test on the first bytes: a
 ::  hand-written html page that happens to start the same way costs one
 ::  read in +own-fodt-title, which then answers ~.
 ++  fodt-rendered
   |=  body=@t
   ^-  ?
-  %+  lien  (weld html-pres:lf html-pres:lfs)
+  %+  lien  :(weld html-pres:lf html-pres:lfs html-pres:lgj)
   |=(pre=@t =(pre (end [3 (met 3 pre)] body)))
 ::  +shown-of: +render-shown, but a fodt page of ours (at `pdir`) comes
 ::  from its render cache
@@ -16291,7 +16713,7 @@
         ""
     ==
   =/  page=[title=@t body=manx]
-    ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
+    ?~  pid  (render-board:fre c brd (parse-view:fre args))
     (render-thread:fre c brd u.pid)
   (send-html eyre-id (forum-doc page "" theme-link %.n 0))
 ::  +serve-urb-read: GET /urb-read?url=urb://...[&list=1], what the reader
@@ -16632,6 +17054,8 @@
         ['down' (numb:enjs:format ~(wyt in down-votes.p))]
         ['comments' (numb:enjs:format comment-count.p)]
         ['pinned' b+(~(has in pinned.brd) id.p)]
+        ['tags' a+(turn (tags-of:fre brd id.p) |=(t=tag:ft s+t))]
+        ['active' s+(scot %da (last-active:fre brd p))]
     ==
   =/  top=(list [@t json])
     :~  ['board' s+name.info.brd]
@@ -16697,7 +17121,7 @@
       ['type' s+?~(mm mk (crip (pax-str p.u.mm)))]
       ['size' (numb:enjs:format ?~(mm ?@(nn (met 3 nn) 0) p.q.u.mm))]
   ==
-::  +serve-forum-remote: GET /apps/lattice/forum-remote/<host>/<board>[/<post>]
+::  +serve-forum-remote: GET /apps/lattice/forum-remote/<host>/<board>[/<post>|/submit]
 ::  (owner-gated; see the route at the /x explorer). Render a peer's PUBLIC
 ::  board or thread through the same renderer as the local view, with the
 ::  action forms ENABLED (authed=%.y, who=our): a viewer who is a mod or
@@ -16729,8 +17153,9 @@
   =/  board=@ta  i.t.pax
   ?.  ((sane %tas) board)  (send-err eyre-id 404 'not found')
   ?.  ?=(?(~ [@ ~]) t.t.pax)  (send-err eyre-id 404 'not found')
-  =/  pid=(unit @ud)  ?~(t.t.pax ~ ((slat %ud) i.t.t.pax))
-  ?:  &(?=(^ t.t.pax) ?=(~ pid))  (send-err eyre-id 404 'not found')
+  =/  sub=?  =(/submit t.t.pax)
+  =/  pid=(unit @ud)  ?:(sub ~ ?~(t.t.pax ~ ((slat %ud) i.t.t.pax)))
+  ?:  &(?=(^ t.t.pax) ?=(~ pid) !sub)  (send-err eyre-id 404 'not found')
   ;<  our=@p  bind:m  bowl-our
   ;<  now=@da  bind:m  bowl-now
   ;<  gs=(unit (list grub:fb))  bind:m  (forum-read-grubs-remote u.host board)
@@ -16752,7 +17177,8 @@
         ""
     ==
   =/  page=[title=@t body=manx]
-    ?~  pid  (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args))
+    ?:  sub  (render-submit:fre c brd)
+    ?~  pid  (render-board:fre c brd (parse-view:fre args))
     (render-thread:fre c brd u.pid)
   (send-html eyre-id (forum-doc page "" "" %.y nn))
 ::  +forum-load-board: a board by name, or ~ if missing or unreadable.
@@ -16834,9 +17260,9 @@
   ?~  t.pax
     %-  send-html
     :-  eyre-id
-    (forum-doc (render-board:fre c brd (parse-sort:fre args) (parse-page:fre args)) "" theme-link %.y nn)
+    (forum-doc (render-board:fre c brd (parse-view:fre args)) "" theme-link %.y nn)
   ?:  =('submit' i.t.pax)
-    (send-html eyre-id (forum-doc (render-submit:fre c nom) "" theme-link %.y nn))
+    (send-html eyre-id (forum-doc (render-submit:fre c brd) "" theme-link %.y nn))
   ?:  =('mod' i.t.pax)
     ;<  off=(set @ta)  bind:m  read-forum-comets-off
     (send-html eyre-id (forum-doc (render-mod:fre c brd !(~(has in off) nom)) "" theme-link %.y nn))
@@ -16861,13 +17287,21 @@
     (stag %post ;~(pfix (jest 'post-') dim:ag))
     ;~(plug (cold %comment (jest 'comment-')) dim:ag ;~(pfix hep dim:ag))
   ==
+::  +forum-form-tags: the tags a form posts, fields t1 to t5
+::
+++  forum-form-tags
+  |=  grab=$-(@t (unit @t))
+  ^-  (set tag:ft)
+  (norm-tags:fr (murn `(list @t)`~['t1' 't2' 't3' 't4' 't5'] grab))
 ::  +forum-form-act: the content forms both forum routes take, on board
 ::  `nom` whose views hang off `base`: a vote, a new post, and a post's
-::  comment, pin, delete and delete-comment. The action and the view to
+::  comment, tags, pin, delete and delete-comment. `takes`: the board has
+::  the tags marker, so its host takes tag actions; without it a new post
+::  drops its tags and a tags form is refused. The action and the view to
 ::  303 to, or ~ for a suffix or fields it doesn't take.
 ::
 ++  forum-form-act
-  |=  [nom=@tas base=tape tl=path grab=$-(@t (unit @t))]
+  |=  [nom=@tas base=tape tl=path grab=$-(@t (unit @t)) takes=?]
   ^-  (unit [act=action:ft to=tape])
   ?+  tl  ~
       [%vote ~]
@@ -16882,6 +17316,9 @@
       [%submit ~]
     =/  ti=(unit @t)  (grab 'title')
     ?~  ti  ~
+    =/  ts=(set tag:ft)  (forum-form-tags grab)
+    ?:  &(takes !=(~ ts))
+      `[[%new-post-tagged nom u.ti (grab 'url') (grab 'body') ts] base]
     `[[%new-post nom u.ti (grab 'url') (grab 'body')] base]
   ::
       [@ @ ~]
@@ -16894,6 +17331,10 @@
       ?~  bd  ~
       =/  par=(unit comment-id:ft)  (biff (grab 'parent') (slat %ud))
       `[[%new-comment nom u.pid par u.bd] thread]
+    ::
+        %tags
+      ?.  takes  ~
+      `[[%set-tags nom u.pid (forum-form-tags grab)] thread]
     ::
         %pin
       `[[%pin-post nom u.pid =(`'true' (grab 'pinned'))] base]
@@ -16915,7 +17356,7 @@
 ::
 ::    /_new                       create a board
 ::    /<b>/vote /submit /sidebar  upvote, new post, set sidebar
-::    /<b>/<id>/comment|pin|delete|delete-comment
+::    /<b>/<id>/comment|tags|pin|delete|delete-comment
 ::    /<b>/mod/role|remove-role|edit-info|public|prune|delete
 ::
 ++  serve-forum-post
@@ -16957,8 +17398,13 @@
     ;<  off=(set @ta)  bind:m  read-forum-comets-off
     ;<  ~  bind:m  (poke-eval [%forum-comets nom (~(has in off) nom)])
     (send-see-other eyre-id "{base}/mod")
+  ::  a tags form on a board without the tags marker goes back to its
+  ::  thread unsent, as on a peer's board
+  =/  tid=(unit @ud)  ?.(?=([@ %tags ~] tl) ~ ((slat %ud) i.tl))
+  ?:  &(?=(^ tid) ?=(~ tags.brd))
+    (send-see-other eyre-id "{base}/{(a-co:co u.tid)}")
   =/  res=(unit [act=action:ft to=tape])
-    ?+  tl  (forum-form-act nom base tl grab)
+    ?+  tl  (forum-form-act nom base tl grab ?=(^ tags.brd))
         [%sidebar ~]
       `[[%set-sidebar nom (fall (grab 'sidebar') '')] "{base}/mod"]
     ::
@@ -17026,10 +17472,23 @@
   =/  base=tape
     "/apps/lattice/forum-remote/{(scow %p u.host)}/{(trip nom)}"
   =/  tl=path  t.t.pax
+  ::  a form with tags reads the host's board first: a host without the
+  ::  tags marker would drop the action. A tags form to it goes back to
+  ::  its thread unsent, as on the owner's board, and a new post goes
+  ::  without its tags.
+  =/  tid=(unit @ud)  ?.(?=([@ %tags ~] tl) ~ ((slat %ud) i.tl))
+  ;<  takes=?  bind:m
+    =/  n  (fiber:fiber:nexus ,?)
+    ?.  |(?=(^ tid) &(?=([%submit ~] tl) !=(~ (forum-form-tags grab))))
+      (pure:n |)
+    ;<  bo=(unit board:ft)  bind:n  (urb-forum-board | u.host nom)
+    (pure:n &(?=(^ bo) ?=(^ tags.u.bo)))
+  ?:  &(?=(^ tid) !takes)
+    (send-see-other eyre-id "{base}/{(a-co:co u.tid)}")
   ::  ~ act = bad fields; act is ~ with a to = a refused suffix (no send)
   =/  res=(unit [act=(unit action:ft) to=tape])
     ?+  tl
-      ?~  r=(forum-form-act nom base tl grab)  ~
+      ?~  r=(forum-form-act nom base tl grab takes)  ~
       `[`act.u.r to.u.r]
         [%sidebar ~]
       `[`[%set-sidebar nom (fall (grab 'sidebar') '')] base]
@@ -17125,6 +17584,7 @@
     %css   :(weld "<pre><code class=\"language-css\">" (esc (trip p.cr)) "</code></pre>")
     %fodt  (fodt-html:lf p.cr)
     %fods  (fods-html:lfs p.cr)
+    %geojson  (gj-html:lgj p.cr)
     %scad  (scad-html p.cr)
     %noun  (page-data-html sang)
   ==
@@ -17737,8 +18197,23 @@
 ::  cache, so a Writer page opened once is editable offline. Precaching it
 ::  would put it on every install for users who never open one. Its V
 ::  covers it (+shell-ver), so a deploy that changes it drops the copy.
-::  sheet.js, the grid editor for fods pages, and scad.js, the 3D pane of
-::  scad pages, are kept the same way.
+::  sheet.js, the grid editor for fods pages, is kept the same way, and
+::  so is map.js, the map view for geojson pages, and scad.js, the 3D
+::  pane of scad pages.
+::
+::  MAP TILES (/apps/lattice/tile/..) go through the worker into a cache
+::  of their own, lattice-tiles, which no deploy drops. Each entry holds
+::  its fetch time (x-lat-at) and is served for 30 days, the most
+::  Mapbox's terms allow, offline too, then dropped and fetched again.
+::  The ship stores none (+serve-tile). Past a count cap the oldest go:
+::  2,000 tiles (about 80 MB), or a quarter of the free quota when that
+::  is less, read from navigator.storage.estimate() once an hour. A hit
+::  is put back at the end at most once a day (x-lat-use), so the order
+::  of the cache is about the order of use. Two misses for one tile
+::  share one fetch. A request with ?r= skips the cache and replaces the
+::  entry ("Refresh this area"). The worker sends at most 120 tile
+::  fetches to the ship a minute and answers the rest 429 itself, so a
+::  fast pan or a runaway map cannot fan out into the ship or Mapbox.
 ::
 ::  The OpenSCAD runtime (/scad/<file>?h=H, +serve-scad) has a cache of its
 ::  own, lattice-scad, keyed by the whole URL. A deploy does not drop it, so
@@ -17767,7 +18242,7 @@
 ::  +shell-ver: the worker's cache key, V without its lattice- prefix
 ++  shell-ver
   ^-  @t
-  (scot %ux (mug [uih uij vjs tjs ojs wjs shj scj sjs skj icon pjs manifest-json icon-192-b64 icon-512-b64]))
+  (scot %ux (mug [uih uij vjs tjs ojs wjs shj mpj scj sjs skj icon pjs manifest-json icon-192-b64 icon-512-b64]))
 ::  PV versions the RENDERED reader documents (their inline css + scripts).
 ::  V only covers shell assets, so a deploy that restyled the reader left
 ::  every cached page serving the old markup indefinitely: content revs
@@ -17838,7 +18313,7 @@
       ver
       '";var PV="'
       pv
-      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];var LAZY=["/apps/lattice/app/writer.js","/apps/lattice/app/sheet.js","/apps/lattice/app/scad.js","/apps/lattice/app/settings.js","/apps/lattice/app/skills.js"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"&&k!=="lattice-scad"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(LAZY.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok)c.put(u.pathname,r.clone());return r})})}).catch(function(){return fetch(q)}));return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
+      '";var HJ={};var JH="/__jh";var UP=0;function im(r){return /immutable/.test(r.headers.get("cache-control")||"")}function up(e){if(UP)return;UP=1;var p=new Promise(function(r){setTimeout(r,2500)}).then(function(){return fetch("/apps/lattice/sw.js",{cache:"reload"})}).then(function(){return self.registration.update()}).catch(function(){}).then(function(){UP=0});try{e.waitUntil(p)}catch(x){}}var SHELL=["/apps/lattice/app","/apps/lattice/app/app.js","/apps/lattice/app/vault.js","/apps/lattice/app/theme.js","/apps/lattice/app/orrery.js","/apps/lattice/prism.js","/apps/lattice/icon.svg","/apps/lattice/manifest.webmanifest","/apps/lattice/icon-192.png","/apps/lattice/icon-512.png"];var LAZY=["/apps/lattice/app/writer.js","/apps/lattice/app/sheet.js","/apps/lattice/app/map.js","/apps/lattice/app/scad.js","/apps/lattice/app/settings.js","/apps/lattice/app/skills.js"];self.addEventListener("install",function(e){var A="/apps/lattice/app",J="/apps/lattice/app/app.js";e.waitUntil(caches.open(V).then(function(c){return fetch(A).then(function(r){var h=r.ok?r.headers.get("x-lattice-js"):null;return Promise.all([r.ok?c.put(A,r):null,fetch(J+(h?"?h="+h:"?v="+V+"-"+Date.now())).then(function(j){if(j.ok)return c.delete(JH).then(function(){return c.put(J,j)}).then(function(){if(h&&im(j))return c.put(JH,new Response(h))})})])}).catch(function(){}).then(function(){return SHELL.filter(function(u){return u!==A&&u!==J}).reduce(function(p,u){return p.then(function(){return c.add(u).catch(function(){})})},Promise.resolve())})}).catch(function(){}));self.skipWaiting()});self.addEventListener("activate",function(e){e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==V&&k!=="lattice-pages"&&k!=="lattice-fonts"&&k!=="lattice-tiles"&&k!=="lattice-scad"}).map(function(k){return caches.delete(k)}))}).then(function(){return caches.open("lattice-pages")}).then(function(c){return c.match("/__pv").then(function(r){return r?r.text():""})}).then(function(t){if(t===PV)return;return caches.delete("lattice-pages").then(function(){return caches.open("lattice-pages")}).then(function(c2){return c2.put("/__pv",new Response(PV))})}).then(function(){return self.clients.claim()}))});var TC="lattice-tiles",TAGE=2592e6,TF={},TCAP=2000,TCAT=0,TN=0,TW=[],TLIM=120;function tcap(){if(Date.now()-TCAT<36e5)return Promise.resolve(TCAP);TCAT=Date.now();var st=self.navigator&&navigator.storage;if(!st||!st.estimate)return Promise.resolve(TCAP);return st.estimate().then(function(e){var f=Math.floor(((e.quota||0)-(e.usage||0))/4/40960);TCAP=Math.max(100,Math.min(2000,f));return TCAP}).catch(function(){return TCAP})}function tevict(c){if(++TN%25)return;tcap().then(function(n){return c.keys().then(function(ks){var d=ks.length-n;return Promise.all(ks.slice(0,Math.max(0,d)).map(function(k){return c.delete(k)}))})}).catch(function(){})}function tstamp(r,at,use){return r.blob().then(function(b){return new Response(b,{status:200,headers:{"content-type":r.headers.get("content-type")||"image/png","cache-control":"private, max-age=2592000","x-lat-at":String(at),"x-lat-use":String(use)}})})}function tnet(c,q,k,fresh){if(TF[k]&&!fresh)return TF[k].then(function(r){return r.clone()});var now=Date.now();while(TW.length&&now-TW[0]>6e4)TW.shift();if(TW.length>=TLIM)return Promise.resolve(new Response("too many tiles this minute",{status:429}));TW.push(now);var p=fetch(q.url,{credentials:"same-origin",cache:fresh?"reload":"default"}).then(function(r){if(!r.ok)return r;var t=Date.now();return tstamp(r,t,t).then(function(s){return c.put(k,s.clone()).then(function(){tevict(c);return s},function(){return s})})});TF[k]=p;var done=function(){if(TF[k]===p)delete TF[k]};p.then(done,done);return p.then(function(r){return r.clone()})}function tile(e,q,u){var k=u.origin+u.pathname,fresh=u.searchParams.has("r");e.respondWith(caches.open(TC).then(function(c){return(fresh?Promise.resolve(null):c.match(k)).then(function(hit){var now=Date.now(),at=hit?+hit.headers.get("x-lat-at")||0:0;if(hit&&now-at<TAGE){var use=+hit.headers.get("x-lat-use")||0;if(now-use>864e5){var h2=hit.clone();e.waitUntil(c.delete(k).then(function(){return tstamp(h2,at,now)}).then(function(s){return c.put(k,s)}).catch(function(){}))}return hit}if(hit)e.waitUntil(c.delete(k));return tnet(c,q,k,fresh).catch(function(){return new Response("offline",{status:503})})})}).catch(function(){return fetch(q)}))}self.addEventListener("fetch",function(e){var q=e.request;var u=new URL(q.url);if(q.method!=="GET"||u.origin!==self.location.origin||u.pathname.indexOf("/apps/lattice")!==0){return}if(u.pathname.indexOf("/apps/lattice/tile/")===0){tile(e,q,u);return}if(LAZY.indexOf(u.pathname)>=0){e.respondWith(caches.open(V).then(function(c){return c.match(u.pathname).then(function(hit){return hit||fetch(q).then(function(r){if(r&&r.ok)c.put(u.pathname,r.clone());return r})})}).catch(function(){return fetch(q)}));return}if(SHELL.indexOf(u.pathname)>=0){var nf=(u.pathname==="/apps/lattice/app"||u.pathname==="/apps/lattice/app/app.js");e.respondWith(caches.open(V).then(function(c){if(nf){var js=(u.pathname==="/apps/lattice/app/app.js");var h=js&&e.clientId?HJ[e.clientId]:null;if(js&&e.clientId)delete HJ[e.clientId];var nu=js?(u.origin+u.pathname+(h?"?h="+h:"?v="+V+"-"+Date.now())):q;var net=function(){return fetch(nu).then(function(r){if(!js&&r&&r.ok&&e.resultingClientId){if(Object.keys(HJ).length>32)HJ={};HJ[e.resultingClientId]=r.headers.get("x-lattice-js")}if(!js&&r&&r.ok){var sv=r.headers.get("x-lattice-sw");if(sv&&sv!==V+" "+PV)up(e)}if(r&&r.ok){if(js){var rc=r.clone();c.delete(JH).then(function(){return c.put(u.pathname,rc)}).then(function(){if(h&&im(r))return c.put(JH,new Response(h))}).catch(function(){})}else c.put(u.pathname,r.clone());return r}if(r&&(r.status===401||r.status===403)){return caches.delete("lattice-pages").then(function(){return r})}return c.match(u.pathname).then(function(hit){return hit||r})}).catch(function(){return c.match(u.pathname).then(function(hit){return hit||new Response("offline",{status:503})})})};if(!js||!h)return net();return c.match(JH).then(function(t){return t?t.text():""}).then(function(t){if(t!==h)return net();return c.match(u.pathname).then(function(hit){return hit||net()})},net)}return c.match(u.pathname).then(function(hit){var rv=function(){return fetch(q).then(function(r){if(r&&r.ok){c.put(u.pathname,r.clone())}return r})};if(!hit){return rv().catch(function(){return new Response("offline",{status:503})})}return hit})}).catch(function(){return fetch(q)}));return}if(q.mode==="navigate"&&(q.cache==="default"||q.cache==="force-cache")&&!u.searchParams.has("u")&&u.pathname!=="/apps/lattice/clip"&&u.pathname!=="/apps/lattice/share"){var ru=new URL(q.url),rs=ru.search.replace(/^[?]/,"").replace(/&$/,"");ru.search=(rs?rs+"&":"")+"u=sw"+Date.now();ru=ru.href;e.respondWith(caches.open("lattice-pages").then(function(c){return c.match(q.url)}).then(function(hit){return hit||Response.redirect(ru,303)}).catch(function(){return Response.redirect(ru,303)}));return}});self.addEventListener("message",function(e){if(e.data==="skipWaiting")self.skipWaiting()});'
   ==
 ++  icon-192-b64
   ^-  @t
@@ -18164,7 +18639,7 @@
 ++  edit-lock-msg
   ^-  tang
   :~  leaf+"this page was shared for editing, so it runs content only:"
-      leaf+"md, gmi, html, text, js, css, tex, fodt, fods, scad or a folder index."
+      leaf+"md, gmi, html, text, js, css, tex, fodt, fods, geojson, scad or a folder index."
       leaf+"To run hoon here, stop sharing it for edit, then save it yourself."
   ==
 ::  +unwrap-content: page source -> [builder body] if it matches the content
@@ -18231,7 +18706,7 @@
 ::  +content-builders: the pg constructors an editor file wraps its body in.
 ::  md/gmi/html render to a view; text/js/css are shown as code + served raw.
 ::
-++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css %tex %fodt %fods %scad])
+++  content-builders  `(set @tas)`(sy ~[%md %gmi %html %text %js %css %tex %fodt %fods %geojson %scad])
 ::  +name-pax: a ?name= value (slash-separated, e.g. notes/todo) -> a validated
 ::  page path under /page, or ~. Each segment must be a non-empty @ta knot.
 ::
@@ -18276,6 +18751,7 @@
     %gmi   'text/gemini; charset=utf-8'
     %fodt  'application/vnd.oasis.opendocument.text-flat-xml'
     %fods  'application/vnd.oasis.opendocument.spreadsheet-flat-xml'
+    %geojson  'application/geo+json'
     ::  OpenSCAD source has no registered type. Plain text shows in a
     ::  browser tab instead of downloading.
     %scad  'text/plain; charset=utf-8'
@@ -18445,6 +18921,7 @@
     "<a class=\"st-tab\" href=\"#keys\">Agent keys</a>"
     "<a class=\"st-tab\" href=\"#data\">Data and backup</a>"
     "<a class=\"st-tab\" href=\"#clipping\">Clipping</a>"
+    "<a class=\"st-tab\" href=\"#maps\">Maps</a>"
     "<a class=\"st-tab\" href=\"#advanced\">Advanced</a>"
     "</div>"
     "</nav><div class=\"st-body\">"
@@ -18594,6 +19071,16 @@
     ::  reverse proxy). location.origin is the only thing that knows.
     %-  trip
     '<script>(function(){var a=document.getElementById("clipbm");a.href="javascript:(function(){location.href=\'"+location.origin+"/apps/lattice/clip?url=\'+encodeURIComponent(location.href)})()";a.onclick=function(e){e.preventDefault()}})();</script>'
+    "</section>"
+    ::  maps: the Mapbox token, write only. The page says whether one is
+    ::  set and never shows it (+map-token).
+    "<section class=\"st-panel\" id=\"maps\">"
+    "<h2>Map tiles</h2>"
+    "<p class=\"muted\">Map pages draw their features on Mapbox's base maps. Your ship fetches each tile with your own Mapbox token and passes it on without keeping it, so Mapbox sees your ship and not your browser. Each browser keeps the tiles it has seen for up to 30 days. With no token here, the one set in orrery is used. With neither, maps draw on a plain grid.</p>"
+    "<p id=\"mapst\" class=\"muted\">Checking&hellip;</p>"
+    "<p class=\"bkrow\"><label for=\"maptok\">Mapbox token </label><input id=\"maptok\" type=\"password\" autocomplete=\"off\" spellcheck=\"false\" size=\"40\" style=\"font:inherit;color:inherit;background:transparent;border:1px solid #8886;border-radius:6px;padding:5px 8px\"> <button type=\"button\" id=\"mapsave\" class=\"btn\">Save</button> <button type=\"button\" id=\"mapclear\" class=\"btn\">Remove</button></p>"
+    %-  trip
+    '<script>(function(){var s=document.getElementById("mapst"),i=document.getElementById("maptok");function load(){fetch("/apps/lattice/tile-status").then(function(r){return r.json()}).then(function(j){s.textContent=j.token?(j.orrery?"Using the Mapbox token set in orrery. A token saved here is used instead.":"A token is set. It is never shown again."):"No token is set."}).catch(function(){s.textContent="Could not read the map settings."})}function put(t){fetch("/apps/lattice/map-token",{method:"POST",headers:{"content-type":"text/plain"},body:t}).then(function(r){if(!r.ok)return r.json().then(function(j){throw new Error(j.error||r.status)});i.value="";try{localStorage.latTilesAt=Date.now()}catch(e){}load()}).catch(function(e){s.textContent="Not saved: "+e.message})}document.getElementById("mapsave").onclick=function(){var t=i.value.trim();if(t)put(t)};document.getElementById("mapclear").onclick=function(){put("")};load()})();</script>'
     "</section>"
     "<section class=\"st-panel\" id=\"advanced\">"
     ::  advanced: the explorer, a power tool, so it has no ribbon button.
@@ -23678,6 +24165,7 @@
   ::  independent of obelisk's state. A no-op (one soft peek) when orrery is
   ::  absent, so a ship without it pays almost nothing.
   ;<  ~  bind:m  orrery-journal-pass
+  ;<  ~  bind:m  orrery-map-pass
   ;<  ~  bind:m  mirror-purge
   ;<  on=?  bind:m  mirror-enabled
   ?.  on

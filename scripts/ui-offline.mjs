@@ -64,7 +64,12 @@ try {
   await page.evaluate(async (a, b) => {
     const put = (n, body) => fetch('/apps/lattice/page-save?name=' + encodeURIComponent(n) +
       '&type=md&new=1', { method: 'POST', body });
-    await put(a, '# alpha v1'); await put(b, '# beta v1');
+    await put(a, '# alpha v1'); await put(b, '# beta v0');
+    //  A page's first revision is 0 on this kernel, and a base of 0 claims
+    //  nothing (the ship cannot check it), so the conflict on replay below
+    //  needs beta past it: edited once, at rev 1, before the editor reads it.
+    await fetch('/apps/lattice/page-save?name=' + encodeURIComponent(b) + '&type=md',
+      { method: 'POST', body: '# beta v1' });
   }, A, B);
   await sleep(6000);
   await page.goto(APP + '?name=' + encodeURIComponent(A), { waitUntil: 'domcontentloaded', timeout: 60000 });

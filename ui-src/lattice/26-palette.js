@@ -11,6 +11,18 @@
   // on demand is checked while its when() says it applies. PALETTE_ONLY
   // names the exceptions: an action whose home is in a framed page, outside
   // this document. The one is Explorer, at Settings > Advanced (24-tools.js).
+  //
+  // Quick open (Ctrl/Cmd+O, the Files toolbar's Open) is the same box in
+  // its second mode, 'open': pages and memories only, never an action.
+  // With nothing typed it lists the documents opened last on this device
+  // (recentsGet, 21-tabs.js). With a query it ranks as the palette does,
+  // and ends on a Create row when no page has exactly the typed name.
+  //
+  // With nothing typed the command palette lists the actions run last
+  // first (localStorage.latActUse, action id to the time it ran), then the
+  // rest as registered. The order is read once, as the box opens. With a
+  // query the score decides and recent use only breaks a tie. A run is
+  // noted here, or at its home: a click on a control that carries data-action.
   const PALETTE_ONLY = ['explorer'];
   const pal = document.createElement('div');
   pal.id = 'palette';
@@ -29,6 +41,11 @@
   let palRows = [];      // what is on screen: {kind, a?, key?}
   let palSel = 0;
   let palFrom = null;    // focus to hand back on close
+  let palMode = 'cmd';   // 'cmd', or 'open' for quick open
+  const PAL_MODES = {
+    cmd: { label: 'Command palette', ph: 'run an action or open a page' },
+    open: { label: 'Open a page', ph: 'open a page' },
+  };
 
   // Subsequence match, case-insensitive. Lower is better: the query as a
   // word start, then anywhere as one run, then spread out (tighter first).
@@ -56,20 +73,59 @@
     const el = actionHome(a.id);
     return !!el && !el.disabled && !el.closest('[hidden]:not([data-pane])');
   };
-  const ranked = (q, items, name) => items
+  let palUse = {};       // latActUse as the box opened
+  const palUseGet = () => {
+    let v = null;
+    try { v = JSON.parse(localStorage.latActUse || '{}'); } catch {}
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  };
+  const palTime = (a) => (palUse[a.id] > 0 && typeof palUse[a.id] === 'number' ? palUse[a.id] : 0);
+  let palRunning = false;  // a palette run's own click on a home is not a second run
+  function palNote(id) {
+    if (palRunning || !ACTIONS.some((a) => a.id === id)) return;
+    try { localStorage.latActUse = JSON.stringify({ ...palUseGet(), [id]: Date.now() }); } catch {}
+  }
+  document.addEventListener('click', (e) => {
+    // only a control that is itself a home; a container home (a section)
+    // is not run by a click on something inside it
+    const h = e.target.closest && e.target.closest('button, a, input, [role=tab]');
+    if (h && h.dataset.action) palNote(h.dataset.action);
+  }, true);
+  const ranked = (q, items, name, tie = () => 0) => items
     .map((x, i) => ({ x, i, s: palScore(q, name(x)) }))
     .filter((r) => r.s !== null)
-    .sort((a, b) => a.s - b.s || a.i - b.i)
+    .sort((a, b) => a.s - b.s || tie(b.x) - tie(a.x) || a.i - b.i)
     .map((r) => r.x);
+
+  const palDocs = () => nodes.filter((n) => n.page).map((n) => ({ kind: 'page', key: n.path }))
+    .concat(knowKeys.map((k) => ({ kind: 'know', key: k.key.replace(/^\//, '') })));
+  // the 10 newest recents still there, without the document in front. A
+  // tree or memory list not loaded yet cannot say a document is gone.
+  function palRecent() {
+    const docs = palDocs();
+    const f = activeTab && !activeTab.ship ? activeTab : {};
+    return recentsGet().filter((r) => !(r.kind === f.kind && r.key === f.key)
+      && ((r.kind === 'page' ? !nodes.length : !knowHave)
+        || docs.some((d) => d.kind === r.kind && d.key === r.key))).slice(0, 10);
+  }
+  // the Create row's page: the typed name, when it names something and
+  // no page has exactly that name (typedPage, 35-pages.js)
+  function palNew() {
+    const tp = typedPage(palIn.value);
+    return tp && !nodes.some((n) => n.page && n.path === tp.rn.name) ? tp.rn.name : null;
+  }
 
   function palPaint() {
     const q = palIn.value.trim().toLowerCase();
-    const acts = ACTIONS.filter(palUsable);
-    palRows = (q ? ranked(q, acts, (a) => a.name) : acts).map((a) => ({ kind: 'action', a }));
-    if (q) {
-      const docs = nodes.filter((n) => n.page).map((n) => ({ kind: 'page', key: n.path }))
-        .concat(knowKeys.map((k) => ({ kind: 'know', key: k.key.replace(/^\//, '') })));
-      palRows = palRows.concat(ranked(q, docs, (d) => d.key).slice(0, 50));
+    if (palMode === 'open') {
+      palRows = q ? ranked(q, palDocs(), (d) => d.key).slice(0, 50) : palRecent();
+      const made = q && palNew();
+      if (made) palRows.push({ kind: 'create', key: made });
+    } else {
+      const acts = ACTIONS.filter(palUsable);
+      palRows = (q ? ranked(q, acts, (a) => a.name, palTime)
+        : acts.sort((a, b) => palTime(b) - palTime(a))).map((a) => ({ kind: 'action', a }));
+      if (q) palRows = palRows.concat(ranked(q, palDocs(), (d) => d.key).slice(0, 50));
     }
     palSel = 0;
     palList.textContent = '';
@@ -88,8 +144,8 @@
         home.textContent = r.a.home;
       } else {
         row.dataset.key = r.key;
-        name.textContent = r.key;
-        home.textContent = r.kind === 'page' ? 'Page' : 'Memory';
+        name.textContent = r.kind === 'create' ? 'Create ' + r.key : r.key;
+        home.textContent = { page: 'Page', know: 'Memory', create: 'New page' }[r.kind];
       }
       row.append(name, home);
       if (r.kind === 'action' && r.a.keys) {
@@ -106,7 +162,7 @@
     if (!palRows.length) {
       const none = document.createElement('div');
       none.className = 'muted palnone';
-      none.textContent = 'nothing matches';
+      none.textContent = palMode === 'open' && !q ? 'no recent pages' : 'nothing matches';
       palList.append(none);
     }
     palMark();
@@ -123,16 +179,28 @@
     else palIn.removeAttribute('aria-activedescendant');
   }
 
-  function palShow() {
-    if (!pal.hidden) { palIn.select(); return; }
-    palFrom = document.activeElement;
+  // the memory list loads when its tab is first shown (95-know.js), and
+  // the palette lists memories too. Quick open asks for it only once a
+  // query is typed, so opening it sends nothing to the ship.
+  let palKnowing = false;
+  function palKnow() {
+    if (knowHave || palKnowing) return;
+    palKnowing = true;
+    loadKnow().then(() => { palKnowing = false; if (!pal.hidden) palPaint(); });
+  }
+  function palShow(mode = 'cmd') {
+    if (!pal.hidden && mode === palMode) { palIn.select(); return; }
+    if (pal.hidden) palFrom = document.activeElement;
+    palMode = mode;
+    pal.setAttribute('aria-label', PAL_MODES[mode].label);
+    palIn.setAttribute('aria-label', PAL_MODES[mode].label);
+    palIn.placeholder = PAL_MODES[mode].ph;
     pal.hidden = false;
     palIn.value = '';
+    palUse = palUseGet();
     palPaint();
     palIn.focus();
-    // the memory list loads when its tab is first shown (95-know.js), and
-    // the palette lists memories too
-    if (!knowHave) loadKnow().then(() => { if (!pal.hidden) palPaint(); });
+    if (mode === 'cmd') palKnow();
   }
   function palClose() {
     if (pal.hidden) return;
@@ -145,14 +213,38 @@
   function palRun(i, ev) {
     const r = palRows[i];
     if (!r) return;
+    if (r.kind === 'create') { palCreate(); return; }
     palClose();
-    if (r.kind === 'action') { r.a.run(ev); return; }
+    if (r.kind === 'action') {
+      palNote(r.a.id);
+      palRunning = true;
+      try { r.a.run(ev); } finally { palRunning = false; }
+      return;
+    }
     openIn(r.kind, r.key, { ev });
     drawersClose();
   }
-  paletteOpen = palShow;   // the ribbon's button (24-tools.js)
+  // quick open's Create: the typed name, through the road a named page
+  // takes (createNamed, 35-pages.js), so unsaved text in front is saved
+  // or asked about first. Never a page with no name, never the Inbox.
+  // A name a page already has opens that page (Shift+Enter on it).
+  function palCreate(ev) {
+    const typed = palIn.value.trim();
+    if (!typed) return;
+    const tp = typedPage(typed);
+    if (!tp) { st(NO_NAME, false); return; }
+    const made = palNew();
+    palClose();
+    if (made) createNamed(typed);
+    else openIn('page', tp.rn.name, { ev });
+    drawersClose();
+  }
+  paletteOpen = () => palShow();   // the ribbon's button (24-tools.js)
 
-  palIn.oninput = palPaint;
+  palIn.oninput = () => {
+    palPaint();
+    if (palMode === 'open' && palIn.value.trim()) palKnow();
+  };
   palIn.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
@@ -161,7 +253,8 @@
       palMark();
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      palRun(palSel, e);
+      if (palMode === 'open' && e.shiftKey) palCreate(e);
+      else palRun(palSel, e);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
@@ -174,17 +267,18 @@
   // Ctrl/Cmd+K, and Ctrl/Cmd+P as its alias, which never reaches the print
   // dialog. K is the app's own chord in vim too (27-vim.js hands it back),
   // so it opens the palette from anywhere. Vim keeps P while the editor has
-  // focus, the rule Ctrl+E follows (23-tabhead.js). An open dialog is left
-  // to finish first. Capture phase on window, ahead of vim's handler on
-  // the textarea.
+  // focus, the rule Ctrl+E follows (23-tabhead.js). Ctrl/Cmd+O, quick open,
+  // goes where K goes: vim binds no O chord. An open dialog is left to
+  // finish first. Capture phase on window, ahead of vim's handler on the
+  // textarea.
   addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
     const k = e.key.toLowerCase();
-    if (k !== 'k' && k !== 'p') return;
+    if (k !== 'k' && k !== 'p' && k !== 'o') return;
     e.preventDefault();
     if (k === 'p' && localStorage.edVim === '1' && document.activeElement === src) return;
     if (!$('dlg').hidden) return;
-    palShow();
+    palShow(k === 'o' ? 'open' : 'cmd');
   }, true);
 
   // for the browser suites, which cannot reach this scope

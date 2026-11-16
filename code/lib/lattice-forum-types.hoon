@@ -6,6 +6,7 @@
 ::  identity types
 ::
 +$  board-name    @tas
++$  tag           @tas
 +$  post-id       @ud
 +$  comment-id    @ud
 +$  role          ?(%mod %poster %reader)
@@ -74,6 +75,8 @@
       pinned=(set post-id)
       sidebar=@t
       prune=(unit prune-config)
+      ::  ~ when this board's host has no tags grub
+      tags=(unit (map post-id (set tag)))
   ==
 ::
 ::  the board card, as stored: a version tag and the board's info
@@ -92,6 +95,8 @@
       ::  content
       [%new-post name=board-name title=@t url=(unit @t) body=(unit @t)]
       [%edit-post name=board-name id=post-id title=@t body=(unit @t)]
+      [%set-tags name=board-name id=post-id tags=(set tag)]
+      [%new-post-tagged name=board-name title=@t url=(unit @t) body=(unit @t) tags=(set tag)]
       [%delete-post name=board-name id=post-id]
       ::  comments
       [%new-comment name=board-name post=post-id parent=(unit comment-id) body=@t]

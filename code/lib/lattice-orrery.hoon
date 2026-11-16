@@ -187,6 +187,39 @@
       ==
     &
   $(l t.l)
+::  +map-body: orrery's map document (<base>/map.json) as the page body
+::  of orrery/map, a FeatureCollection whose view lists orrery/map-notes
+::  as a layer, one feature to a line. ~ when the document is not an
+::  object of type FeatureCollection with a features array. The features
+::  are copied as they are: the caller runs +gj-check on the body.
+++  map-body
+  |=  j=json
+  ^-  (unit @t)
+  ?.  ?=([%o *] j)  ~
+  ?.  =(`s+'FeatureCollection' (~(get by p.j) 'type'))  ~
+  =/  fs  (~(get by p.j) 'features')
+  ?.  ?=([~ %a *] fs)  ~
+  :-  ~
+  %+  rap  3
+  :~  '{"type":"FeatureCollection","lattice":{"title":"Orrery","layers":["orrery/map-notes"]},"features":[\0a'
+      (rap 3 (join ',\0a' (turn p.u.fs en:json:html)))
+      ?~(p.u.fs '' '\0a')
+      ']}\0a'
+  ==
+::  +travel-token: the Mapbox token in orrery's travel settings
+::  (<base>/travel.json, its `token` string), ~ when there is none
+++  travel-token
+  |=  j=json
+  ^-  (unit @t)
+  ?.  ?=([%o *] j)  ~
+  =/  t=(unit json)  (~(get by p.j) 'token')
+  ?.  ?=([~ %s *] t)  ~
+  ?:(=('' p.u.t) ~ `p.u.t)
+::  +notes-body: the empty orrery/map-notes page, with orrery/map as its
+::  layer, the page the owner draws on beside the mirrored map
+++  notes-body
+  ^-  @t
+  '{"type":"FeatureCollection","lattice":{"title":"Orrery notes","layers":["orrery/map"]},"features":[\0a]}\0a'
 ::  +fresh-world: is orrery's at (YYYY-MM-DDTHH:MM:SSZ) within win of now.
 ::  Malformed is stale. A time after now (clock skew) is fresh.
 ++  fresh-world

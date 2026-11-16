@@ -28,6 +28,7 @@ mod proxy;
 mod queue;
 mod session;
 mod stack;
+mod tiles;
 mod store;
 mod update;
 mod urb;
@@ -429,6 +430,8 @@ fn main() {
             commands::open_reader,
             commands::reader_status,
             commands::clear_reader_history,
+            commands::map_token_status,
+            commands::set_map_token,
             commands::export_reader_identity,
             commands::import_reader_identity,
         ])

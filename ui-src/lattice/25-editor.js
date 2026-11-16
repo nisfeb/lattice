@@ -155,7 +155,7 @@
   <div id="acmirror" aria-hidden="true"></div>
   <div id="ac" class="ac" hidden role="listbox" aria-label="page suggestions"></div>
   <pre id="hl" class="ehl" aria-hidden="true"></pre>
-  <textarea id="src" class="esrc" spellcheck="false" placeholder="open a page from the tree, or name a new one and start typing"></textarea>
+  <textarea id="src" class="esrc" spellcheck="false" placeholder="open a page from the tree, or just start typing"></textarea>
 </div>`;
       src = $('src'); hl = $('hl');
       src.addEventListener('input', () => {

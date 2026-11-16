@@ -16,7 +16,7 @@
   // hides the editor.
 
   // the page kinds: the hidden picker's options and the page menu's Kind list
-  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'scad', 'hoon'];
+  const KINDS = ['md', 'gmi', 'html', 'text', 'js', 'css', 'tex', 'fodt', 'fods', 'geojson', 'scad', 'hoon'];
   const tabHead = document.createElement('div');
   tabHead.id = 'tabhead';
   tabHead.className = 'tabhead';
@@ -163,7 +163,9 @@
       const ok = await copyText(name);
       st(ok ? 'name copied: ' + name : 'could not copy ' + name, ok);
     });
-    if (current || curFolder) btn('rename', 'Move or rename', () => $('mv').click());
+    //  a page not saved yet gets its name here (77-history.js)
+    if (current || curFolder || nameable())
+      btn('rename', 'Move or rename', () => $('mv').click());
     const r = $('tpath').getBoundingClientRect();
     m.style.top = r.bottom + 4 + 'px';
     document.body.append(m);

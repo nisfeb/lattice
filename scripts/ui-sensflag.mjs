@@ -69,8 +69,9 @@ const markSensitive = async (n) => {
   return until(async () => (await shipSens(n)) === true && (await box()).on && !(await box()).off);
 };
 const create = async (n) => {
-  await page.evaluate(() => document.getElementById('newfile').click());
-  await dlg(n);
+  //  a named page made at once (createPage, 35-pages.js): the toolbar's
+  //  New page asks no name any more
+  await page.evaluate((x) => { window.latCreate(x, 'md'); }, n);
   await shows(n);
 };
 //  the box for the page in front, once the ship's answer can have landed:

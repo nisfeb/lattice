@@ -156,7 +156,12 @@ A_ -o /dev/null -X POST "$A/unban?ship=$BSHIP"
 APIER=${A_SOCK%/.urb/*}
 BPIER=${B_PIER:-}
 if [ -n "${A_SOCK:-}" ] && [ -d "$APIER" ] && [ -n "${VERE:-}" ]; then
-  base="/apps/'shell.shell'/desks/'lattice.desk'/desk/data/'lattice.lattice_app'"
+  # B's shell: /apps/shell, or /apps/shell.shell on an older kernel
+  BSH_LS=$(B_ -f "${B_URL%/}/grubbery/ball/apps?list=1") || { echo "FAIL  list /apps on $B_URL did not answer"; exit 1; }
+  if grep -q '"name":"shell"' <<<"$BSH_LS"; then BSH=shell
+  elif grep -q '"name":"shell.shell"' <<<"$BSH_LS"; then BSH=shell.shell
+  else echo "FAIL  no shell under /apps on $B_URL: ${BSH_LS:0:300}"; exit 1; fi
+  base="/apps/'$BSH'/desks/'lattice.desk'/desk/data/'lattice.lattice_app'"
   # a khan thread on pier $1 pokes $2's share inbox with the notices for
   # i in [$3, $4): each a fresh page path, and i = 999 the too long one
   pokes() {

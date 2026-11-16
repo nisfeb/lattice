@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-map-token"
+description = "Enables the set_map_token command without any pre-configured scope."
+commands.allow = ["set_map_token"]
+
+[[permission]]
+identifier = "deny-set-map-token"
+description = "Denies the set_map_token command without any pre-configured scope."
+commands.deny = ["set_map_token"]
