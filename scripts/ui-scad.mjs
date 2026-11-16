@@ -148,8 +148,12 @@ try {
   // ------------------------------------------------------------ F: create
   if (on('F')) {
     step = 'F create';
-    await page.evaluate(() => document.getElementById('newfile').click());
-    await wait(() => !!document.getElementById('dlginput'));
+    //  the folder's + keeps the name and kind dialog; the toolbar's New
+    //  page asks nothing any more (ui-capture.mjs)
+    await wait((r) => [...document.querySelectorAll('#treelist a.addf')].some((a) => a.title === 'new file in ' + r), RUN);
+    await page.evaluate((r) => [...document.querySelectorAll('#treelist a.addf')]
+      .find((a) => a.title === 'new file in ' + r).click(), RUN);
+    await wait(() => !document.getElementById('dlg').hidden);
     check('F: the new-page dialog offers scad', await page.evaluate(() => [...document.getElementById('dlgkind').options].some((o) => o.value === 'scad')));
     await page.evaluate((n) => {
       const i = document.getElementById('dlginput');
