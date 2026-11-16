@@ -156,4 +156,14 @@
   %+  expect-eq
     !>('{"type":"FeatureCollection","lattice":{"title":"Orrery notes","layers":["orrery/map"]},"features":[\0a]}\0a')
   !>(notes-body:lo)
+++  test-travel-token
+  ;:  weld
+    (expect-eq !>(`'pk.abc') !>((travel-token:lo (pairs:enjs:format ~[['enabled' b+&] ['token' s+'pk.abc']]))))
+    ::  orrery with travel off still holds its token
+    (expect-eq !>(`'pk.abc') !>((travel-token:lo (pairs:enjs:format ~[['enabled' b+|] ['token' s+'pk.abc']]))))
+    (expect-eq !>(~) !>((travel-token:lo (pairs:enjs:format ~[['token' s+'']]))))
+    (expect-eq !>(~) !>((travel-token:lo (pairs:enjs:format ~[['enabled' b+&]]))))
+    (expect-eq !>(~) !>((travel-token:lo (pairs:enjs:format ~[['token' n+'1']]))))
+    (expect-eq !>(~) !>((travel-token:lo s+'pk.abc')))
+  ==
 --

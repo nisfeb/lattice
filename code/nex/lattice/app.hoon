@@ -4880,10 +4880,13 @@
   ::  The token itself is never in any answer (+map-token).
       [%'GET' %'tile-status']
     ?^  key  (send-err eyre-id 403 'outside this key\'s scope')
+    ;<  own=(unit @t)  bind:m  (own-map-token up)
     ;<  tok=(unit @t)  bind:m  (map-token up)
     %+  send-json  eyre-id
     %-  pairs:enjs:format
     :~  ['token' b+?=(^ tok)]
+        ::  the token in use is orrery's, none being set here
+        ['orrery' b+&(?=(~ own) ?=(^ tok))]
         ['max' (numb:enjs:format tile-max-z)]
         ['styles' a+(turn tile-styles |=([n=@t *] s+n))]
     ==
@@ -6211,8 +6214,33 @@
   ?|  &((gte c 'a') (lte c 'z'))  &((gte c 'A') (lte c 'Z'))
       &((gte c '0') (lte c '9'))  =('.' c)  =('_' c)  =('-' c)
   ==
-::  +map-token: the Mapbox token, ~ when none is set
+::  +map-token: the Mapbox token tiles are fetched with, ~ when there is
+::  none: lattice's own (+own-map-token), else the one orrery holds
+::  (+orrery-map-token), so an owner who gave orrery a token need not
+::  give it twice. The fallback costs a tile two more peeks.
 ++  map-token
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  own=(unit @t)  bind:m  (own-map-token up)
+  ?^  own  (pure:m own)
+  orrery-map-token
+::  +orrery-map-token: the Mapbox token in orrery's travel.json, ~ when
+::  orrery is absent, holds none, or holds one that is not a token's
+::  shape (+token-ok). Read under the peek lattice already has on
+::  orrery's desk, and never answered to anyone, as lattice's own is not.
+++  orrery-map-token
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& u.base %'travel.json'] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  =/  doc=(unit json)  (mole |.(!<(json (need-vase:tarball sang.u.vw))))
+  =/  t=(unit @t)  ?~(doc ~ (travel-token:lo u.doc))
+  (pure:m ?:(&(?=(^ t) (token-ok u.t)) t ~))
+::  +own-map-token: lattice's own Mapbox token, ~ when none is set
+++  own-map-token
   |=  up=@ud
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
@@ -18728,11 +18756,11 @@
     ::  set and never shows it (+map-token).
     "<section class=\"st-panel\" id=\"maps\">"
     "<h2>Map tiles</h2>"
-    "<p class=\"muted\">Map pages draw their features on Mapbox's base maps. Your ship fetches each tile with your own Mapbox token and passes it on without keeping it, so Mapbox sees your ship and not your browser. Each browser keeps the tiles it has seen for up to 30 days. Without a token, maps draw on a plain grid.</p>"
+    "<p class=\"muted\">Map pages draw their features on Mapbox's base maps. Your ship fetches each tile with your own Mapbox token and passes it on without keeping it, so Mapbox sees your ship and not your browser. Each browser keeps the tiles it has seen for up to 30 days. With no token here, the one set in orrery is used. With neither, maps draw on a plain grid.</p>"
     "<p id=\"mapst\" class=\"muted\">Checking&hellip;</p>"
     "<p class=\"bkrow\"><label for=\"maptok\">Mapbox token </label><input id=\"maptok\" type=\"password\" autocomplete=\"off\" spellcheck=\"false\" size=\"40\" style=\"font:inherit;color:inherit;background:transparent;border:1px solid #8886;border-radius:6px;padding:5px 8px\"> <button type=\"button\" id=\"mapsave\" class=\"btn\">Save</button> <button type=\"button\" id=\"mapclear\" class=\"btn\">Remove</button></p>"
     %-  trip
-    '<script>(function(){var s=document.getElementById("mapst"),i=document.getElementById("maptok");function load(){fetch("/apps/lattice/tile-status").then(function(r){return r.json()}).then(function(j){s.textContent=j.token?"A token is set. It is never shown again.":"No token is set."}).catch(function(){s.textContent="Could not read the map settings."})}function put(t){fetch("/apps/lattice/map-token",{method:"POST",headers:{"content-type":"text/plain"},body:t}).then(function(r){if(!r.ok)return r.json().then(function(j){throw new Error(j.error||r.status)});i.value="";try{localStorage.latTilesAt=Date.now()}catch(e){}load()}).catch(function(e){s.textContent="Not saved: "+e.message})}document.getElementById("mapsave").onclick=function(){var t=i.value.trim();if(t)put(t)};document.getElementById("mapclear").onclick=function(){put("")};load()})();</script>'
+    '<script>(function(){var s=document.getElementById("mapst"),i=document.getElementById("maptok");function load(){fetch("/apps/lattice/tile-status").then(function(r){return r.json()}).then(function(j){s.textContent=j.token?(j.orrery?"Using the Mapbox token set in orrery. A token saved here is used instead.":"A token is set. It is never shown again."):"No token is set."}).catch(function(){s.textContent="Could not read the map settings."})}function put(t){fetch("/apps/lattice/map-token",{method:"POST",headers:{"content-type":"text/plain"},body:t}).then(function(r){if(!r.ok)return r.json().then(function(j){throw new Error(j.error||r.status)});i.value="";try{localStorage.latTilesAt=Date.now()}catch(e){}load()}).catch(function(e){s.textContent="Not saved: "+e.message})}document.getElementById("mapsave").onclick=function(){var t=i.value.trim();if(t)put(t)};document.getElementById("mapclear").onclick=function(){put("")};load()})();</script>'
     "</section>"
     "<section class=\"st-panel\" id=\"advanced\">"
     ::  advanced: the explorer, a power tool, so it has no ribbon button.

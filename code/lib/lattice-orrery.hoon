@@ -206,6 +206,15 @@
       ?~(p.u.fs '' '\0a')
       ']}\0a'
   ==
+::  +travel-token: the Mapbox token in orrery's travel settings
+::  (<base>/travel.json, its `token` string), ~ when there is none
+++  travel-token
+  |=  j=json
+  ^-  (unit @t)
+  ?.  ?=([%o *] j)  ~
+  =/  t=(unit json)  (~(get by p.j) 'token')
+  ?.  ?=([~ %s *] t)  ~
+  ?:(=('' p.u.t) ~ `p.u.t)
 ::  +notes-body: the empty orrery/map-notes page, with orrery/map as its
 ::  layer, the page the owner draws on beside the mirrored map
 ++  notes-body
