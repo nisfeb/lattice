@@ -80,7 +80,7 @@ page.on('request', (r) => {
   reqs.push(u);
   if (/\/page-save\?/.test(u)) {
     const q = new URL(u).searchParams;
-    saves.push({ name: q.get('name'), type: q.get('type'), isNew: q.get('new') === '1' });
+    saves.push({ name: q.get('name'), type: q.get('type'), isNew: q.get('new') === '1', base: +(q.get('base') || 0) });
   }
   const fk = /\/page-source\?/.test(u) && fake.get(new URL(u).searchParams.get('name'));
   if (fk) {
@@ -1170,6 +1170,15 @@ try {
     const ROW = RUN + '/not-yet';            // started from an Outgoing row, left empty
     const OFF = RUN + '/offline-start';      // started with the ship unreachable
     const NAMED = RUN + '/offline-named';    // made by name with the ship unreachable
+    const OFFS = RUN + '/offline-ctrls', OFFP = RUN + '/offline-parked';
+    const ALONE = RUN + '/offline-alone', ALONER = RUN + '/offline-reload';
+    const XW = RUN + '/two-windows';         // window B creates it offline, A edits it
+    const DRAFT = RUN + '/Draft Two', DRAFTN = RUN + '/draft-two';
+    const chordD = async (key, mods) => {
+      for (const m of mods) await page.keyboard.down(m);
+      await page.keyboard.press(key);
+      for (const m of [...mods].reverse()) await page.keyboard.up(m);
+    };
     const FORB = RUN + '/forbidden';         // the ship answers 403
     const LNK = RUN + '/their-page';         // another ship's page, its host down
     const DEL = RUN + '/deleted';            // made, then deleted
@@ -1266,25 +1275,21 @@ try {
     };
     const readG = async () => { await openWait(G); await readLocal(); };
     const status = () => page.evaluate(() => document.getElementById('status').textContent);
-    const knowTab = async () => {
-      await page.evaluate(() => document.querySelector('#ltabs [data-pt=know]').click());
-      await sleep(2000);
-      await page.evaluate(() => document.querySelector('#ltabs [data-pt=files]').click());
-      await sleep(500);
-    };
     //  The ship's answers cut off, the tree held, while a page `name` is
     //  made on the ship behind the editor's back (another device). `open`
     //  starts the editor's own page of that name, which gets text offline
     //  and more once the ship is back, while its queued create is still
     //  owed. The ship's page must stay theirs, and the text be kept aside.
-    const clash = async (what, name, open) => {
+    const clash = async (what, name, open, after = async () => {}) => {
       const cf0 = await treePages('conflicts/');
       const n0 = saves.length;
       shipDown = true;
       holdDump = [];
       fake.set(name, 'abort');
       const THEIRS = 'made elsewhere ' + RUN;
-      await api('page-save?type=md&new=1&name=' + encodeURIComponent(name), { method: 'POST', body: THEIRS });
+      //  made, and edited once, so it has a rev a checked edit can claim
+      await api('page-save?type=md&new=1&name=' + encodeURIComponent(name), { method: 'POST', body: THEIRS + ' draft' });
+      await api('page-save?type=md&name=' + encodeURIComponent(name), { method: 'POST', body: THEIRS });
       const f0 = await open();
       check('D: ' + what + ': started offline', !!f0, JSON.stringify(await front()));
       await typeIn('typed offline ');
@@ -1297,6 +1302,7 @@ try {
       for (const r of held) r.continue().catch(() => {});
       //  more text as the ship comes back, so a live save races the queue
       await typeIn('and online');
+      await after();
       const TT = 'typed offline and online';
       const said = new Set();
       const kept = await waitFor(async () => {
@@ -1316,6 +1322,65 @@ try {
         (await treePages('conflicts/')).filter((x) => !cf0.includes(x))));
       check('D: ' + what + ': and the editor says so', [...said].some((x) => /conflicts\/|already exists/.test(x)),
         JSON.stringify([...said]));
+      return THEIRS;
+    };
+    //  No other writer: a page made offline, typed in as the ship comes
+    //  back and after (a reload between, with `reload`). One page, with
+    //  the last text, nothing under conflicts/, the tab on it, and the
+    //  next edit an ordinary checked one.
+    const alone = async (what, name, reload) => {
+      const cf0 = await treePages('conflicts/');
+      const n0 = saves.length;
+      shipDown = true;
+      fake.set(name, 'abort');
+      await page.evaluate((n) => window.latTabs.openIn('page', n, { newTab: true }), name);
+      check('D: ' + what + ': started offline', !!(await started(name)), JSON.stringify(await front()));
+      await typeIn('typed offline');
+      check('D: ' + what + ': its create is queued', !!(await waitFor(async () => (await qCount()) === 1, 15000, 300)));
+      if (reload) {
+        await leaving();
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 90000 });
+        await page.waitForFunction(() => !!window.latTabs, { timeout: 90000 });
+        const back = await waitFor(async () => { const x = await front(); return x.name === name && x.src === 'typed offline' ? x : null; }, 30000, 300);
+        check('D: ' + what + ': the reload shows it again', !!back, JSON.stringify(await front()));
+        await sleep(1500);
+      }
+      shipDown = false;
+      fake.delete(name);
+      const nb = saves.length;
+      //  the first save goes at once (Ctrl+S) and the queue drains beside
+      //  it (focus), so the live create and the queued one race
+      for (const t of [' a', ' b', ' c']) {
+        await page.evaluate(() => { const s = document.getElementById('src'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); });
+        await page.keyboard.type(t);
+        if (t === ' a') {
+          await chordD('KeyS', ['Control']);
+          await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        }
+        await sleep(2600);
+      }
+      const fin = (await front()).src;
+      const ok = await waitFor(async () => (await shipBody(name)) === fin && (await qCount()) === 0, 40000, 500);
+      await sleep(3000);
+      const cf = (await treePages('conflicts/')).filter((x) => !cf0.includes(x));
+      check('D: ' + what + ': one page, with the last text', !!ok && (await shipBody(name)) === fin
+        && (await treePages(RUN + '/')).filter((x) => x === name).length === 1, JSON.stringify({ fin, ship: await shipBody(name) }));
+      check('D: ' + what + ': nothing under conflicts/', !cf.length, JSON.stringify(cf));
+      const f1 = await front();
+      check('D: ' + what + ': the tab is on that page', f1.key === name && f1.name === name, JSON.stringify(f1));
+      const n1 = saves.length;
+      await page.evaluate(() => { const s = document.getElementById('src'); s.focus(); s.setSelectionRange(s.value.length, s.value.length); });
+      await page.keyboard.type(' d');
+      const landedEdit = await waitFor(async () => (await shipBody(name)) === fin + ' d', 20000, 500);
+      const after1 = saves.slice(n1).filter((x) => x.name === name);
+      check('D: ' + what + ': the next edit is an ordinary checked one', !!landedEdit && after1.length > 0
+        && after1.every((x) => !x.isNew && x.base > 0), JSON.stringify(after1));
+      //  (a page is made at rev 0 here, and a base of 0 is one the ship
+      //  cannot check, so the saves between its create and its first edit
+      //  carry none: the first save once the ship is back is a create)
+      const back1 = saves.slice(nb).filter((x) => x.name === name)[0];
+      check('D: ' + what + ': the first save once the ship is back is a create', !!back1 && back1.isNew,
+        JSON.stringify(saves.slice(n0).filter((x) => x.name === name)));
     };
     const outRow = async (n) => {
       await rtab('out');
@@ -1555,13 +1620,46 @@ try {
 
     // ── D7. offline over a stale tree: a page made elsewhere stays theirs ──
     step = 'D7 offline';
-    await boot();
-    await knowTab();         // an offline start must know the name is no memory
+    await boot();            // the memory list unread: offline, the page still starts
     await openWait(G);
-    await clash('a page started offline', OFF, async () => {
-      await page.evaluate((n) => window.latTabs.openIn('page', n, { newTab: true }), OFF);
-      return started(OFF);
-    });
+    const startOff = (n) => async () => {
+      await page.evaluate((x) => window.latTabs.openIn('page', x, { newTab: true }), n);
+      return started(n);
+    };
+    const theirsOff = await clash('a page started offline', OFF, startOff(OFF));
+    //  the real page, opened and edited after its clash: a checked edit
+    //  on it, and nothing more kept aside
+    step = 'D7 the real page';
+    const cfR = await treePages('conflicts/');
+    const nR = saves.length;
+    await page.evaluate((n) => window.latTabs.openIn('page', n, { newTab: true }), OFF);
+    await waitFor(async () => { const x = await front(); return x.key === OFF && x.src === theirsOff ? x : null; }, 20000, 250);
+    await setText(theirsOff + ' edited');
+    const realOk = await waitFor(async () => (await shipBody(OFF)) === theirsOff + ' edited', 20000, 500);
+    await sleep(3000);
+    const realSaves = saves.slice(nR).filter((x) => x.name === OFF);
+    check('D: after a clash, the real page opened and edited takes a checked edit', !!realOk && realSaves.length > 0
+      && realSaves.every((x) => !x.isNew && x.base > 0), JSON.stringify(realSaves));
+    check('D: and nothing more goes to conflicts/', !(await treePages('conflicts/')).filter((x) => !cfR.includes(x)).length);
+    step = 'D7 ctrl+s';
+    await boot();
+    await clash('a page started offline, saved by Ctrl+S', OFFS, startOff(OFFS),
+      () => chordD('KeyS', ['Control']));
+    step = 'D7 parked';
+    await boot();
+    await page.evaluate(() => window.latSplits.split('r'));
+    await sleep(1500);
+    await page.evaluate(() => window.latTabs.focus(0));
+    await sleep(800);
+    await clash('a page started offline, parked as the ship returns', OFFP, startOff(OFFP),
+      () => page.evaluate(() => window.latTabs.focus(1)));
+    await page.evaluate(() => window.latTabs.focus(0));
+    step = 'D7 alone';
+    await boot();
+    await alone('a page made offline, no one else writing', ALONE, false);
+    step = 'D7 alone reload';
+    await boot();
+    await alone('a page made offline, reloaded before the ship returns', ALONER, true);
     step = 'D7 dialog create';
     await boot();
     await clash('a named create made offline', NAMED, async () => {
@@ -1570,6 +1668,91 @@ try {
       await page.evaluate((n) => window.latCreate(n, 'md'), NAMED);
       return waitFor(async () => { const x = await front(); return x.name === NAMED ? x : null; }, 15000, 250);
     });
+
+    // ── D7b. a dialog create made offline, with a display name, lands live ──
+    step = 'D7 display name';
+    await boot();
+    shipDown = true;
+    await page.evaluate(() => window.latTabs.openIn('page', '', { newTab: true }));
+    await sleep(500);
+    await page.evaluate((n) => window.latCreate(n, 'md'), DRAFT);
+    await waitFor(async () => (await qCount()) === 1, 15000, 300);
+    shipDown = false;
+    await typeIn('a draft ');
+    const dn = await waitFor(async () => {
+      const r = await api('page-dump');
+      const j = r.ok ? await r.json() : {};
+      const nd = (j.nodes || []).find((x) => x.page && x.path === DRAFTN);
+      return nd && (await shipBody(DRAFTN)) === (await front()).src ? nd : null;
+    }, 30000, 500);
+    check('D: a dialog create made offline lands live with its display name', !!dn && dn.dname === 'Draft Two',
+      JSON.stringify(dn && { ...dn, body: undefined }));
+
+    // ── D7c. two windows: B creates a name offline that A has open ──
+    step = 'D7 two windows';
+    await boot();
+    const XT = 'theirs in two windows ' + RUN;
+    const cfW = await treePages('conflicts/');
+    const pb = await openPage(browser, env, { viewport: { width: 1200, height: 800 } });
+    let bDown = false, bHold = null;
+    const bSaves = [];
+    await pb.setRequestInterception(true);
+    pb.on('dialog', (d) => { natives++; nativeSeen.push('window B: ' + d.type()); d.accept().catch(() => {}); });
+    pb.on('request', (r) => {
+      const u = r.url();
+      if (/\/page-save\?/.test(u)) {
+        const q = new URL(u).searchParams;
+        bSaves.push({ name: q.get('name'), isNew: q.get('new') === '1', base: +(q.get('base') || 0) });
+      }
+      if (/\/page-dump/.test(u) && bHold) { bHold.push(r); return; }
+      const down = bDown && (/page-save|legacy-status|page-cmd/.test(u)
+        || (/\/page-source\?/.test(u) && new URL(u).searchParams.get('name') === XW));
+      (down ? r.abort('internetdisconnected') : r.continue()).catch(() => {});
+    });
+    await pb.goto(env.app, { waitUntil: 'domcontentloaded', timeout: 90000 });
+    await pb.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0
+      && !!window.latTabs, { timeout: 90000 });
+    await sleep(1500);
+    bDown = true;
+    bHold = [];
+    await api('page-save?type=md&new=1&name=' + encodeURIComponent(XW), { method: 'POST', body: XT + ' draft' });
+    await api('page-save?type=md&name=' + encodeURIComponent(XW), { method: 'POST', body: XT });
+    //  A has the page open, read from the ship, before B queues anything
+    await page.bringToFront();
+    await page.evaluate((n) => window.latTabs.openIn('page', n, { newTab: true }), XW);
+    const aOpen = await waitFor(async () => { const x = await front(); return x.key === XW && x.src === XT ? x : null; }, 20000, 250);
+    await sleep(2000);
+    await pb.bringToFront();
+    await pb.evaluate((n) => window.latTabs.openIn('page', n, { newTab: true }), XW);
+    const bStarted = await waitFor(() => pb.evaluate((n) => document.getElementById('pname').value === n
+      && !document.getElementById('pname').readOnly, XW), 30000, 300);
+    await pb.evaluate(() => document.getElementById('src').focus());
+    await pb.keyboard.type('from window B offline');
+    const bq = await waitFor(async () => (await qCount()) === 1, 15000, 300);
+    check('D: window B, offline, starts the name and queues its create', !!bStarted && !!bq);
+    const nW = saves.length;
+    await page.bringToFront();
+    check('D: window A had the page open from the ship', !!aOpen);
+    await setText(XT + ' and A');
+    const aOk = await waitFor(async () => (await shipBody(XW)) === XT + ' and A', 20000, 500);
+    const aSaves = saves.slice(nW).filter((x) => x.name === XW);
+    check('D: window A\'s edit of the page it has open lands as a checked edit', !!aOk && aSaves.length > 0
+      && aSaves.every((x) => !x.isNew && x.base > 0), JSON.stringify({ aSaves, ship: await shipBody(XW) }));
+    bDown = false;
+    for (const r of bHold) r.continue().catch(() => {});
+    bHold = null;
+    await pb.evaluate(() => window.dispatchEvent(new Event('focus')));
+    const bKept = await waitFor(async () => {
+      for (const n of (await treePages('conflicts/')).filter((x) => !cfW.includes(x)))
+        if ((await shipBody(n)) === 'from window B offline') return n;
+      return null;
+    }, 60000, 1000);
+    await waitFor(async () => (await qCount()) === 0, 30000, 500);
+    check('D: window B\'s queued text is kept under conflicts/ as it drains', !!bKept);
+    check('D: and the page keeps A\'s edit', (await shipBody(XW)) === XT + ' and A', JSON.stringify(await shipBody(XW)));
+    check('D: neither window sent it unchecked', [...aSaves, ...bSaves.filter((x) => x.name === XW)]
+      .every((x) => x.isNew || x.base > 0), JSON.stringify({ aSaves, bSaves }));
+    await pb.close();
 
     // ── D8. left empty, a started page leaves nothing ──
     step = 'D8 empty';
