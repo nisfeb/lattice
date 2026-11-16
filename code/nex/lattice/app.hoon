@@ -6127,6 +6127,11 @@
 ::  a new one, and the dispatcher is handed the tile. Else the tile is
 ::  answered 429 from here, and no fiber is made for it.
 ::
+::  The clock is read only at the limit, so a window is found stale only
+::  when it is full. A count left from an earlier minute still stands
+::  until then, and a burst that crosses that point passes up to twice
+::  the limit before the first 429, as at any fixed window's edge.
+::
 ::  Nothing here can fail, as a failure would take every route down:
 ::  the clock and the answer are soft. With no clock a tile goes through.
 ++  tile-gate

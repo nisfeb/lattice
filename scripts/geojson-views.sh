@@ -182,11 +182,13 @@ is "a token that is not one is refused" 400 "$(code -X POST "$A/map-token" --dat
 # ── the ship's own bound on tiles ────────────────────────────────────
 # These requests come through no service worker, so only the ship counts
 # them: 120 a minute, and 429 past that. No token is set, so a tile
-# under the limit is a 503 and nothing is fetched.
+# under the limit is a 503 and nothing is fetched. The ship reads the
+# clock only when its count is full, so a count left by an earlier
+# minute lets up to 240 through before the first 429. 250 are sent.
 is "no token is set" false "$(jq .token <<<"$(get "$A/tile-status")")"
-codes=$(for i in $(seq 1 130); do code "$A/tile/streets/12/$i/7"; echo; done)
+codes=$(for i in $(seq 1 250); do code "$A/tile/streets/12/$i/7"; echo; done)
 n429=$(grep -c '^429$' <<<"$codes"); n503=$(grep -c '^503$' <<<"$codes")
-if [ "$n429" -ge 10 ] && [ "$n503" -ge 1 ] && [ "$n503" -le 120 ] && [ $((n429 + n503)) = 130 ]; then
+if [ "$n429" -ge 10 ] && [ "$n503" -ge 1 ] && [ "$n503" -le 240 ] && [ $((n429 + n503)) = 250 ]; then
   ok "past 120 tiles a minute the ship answers 429 ($n503 let through, $n429 refused)"
 else fail "past 120 tiles a minute the ship answers 429" "$n503 let through, $n429 refused: $(sort <<<"$codes" | uniq -c | tr -s ' \n' ' ')"; fi
 has "and says why" "too many tiles this minute" "$(get "$A/tile/streets/12/999/7")"
