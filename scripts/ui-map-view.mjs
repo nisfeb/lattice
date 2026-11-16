@@ -529,6 +529,16 @@ console.log('==> layers');
   check.eq('a layer\'s features are never the page\'s', (await m.list()).join(), 'top');
   await m.close();
 }
+{
+  //  a page with nothing of its own: the view goes to its layer, not the world
+  const other = body([pt(-71, 42, { name: 'under' }), pt(-71.1, 42.1)]);
+  const m = await open(body([], { layers: ['maps/other'] }), { layers: { 'maps/other': other } });
+  await waitFor(async () => (await m.page.$eval('.lm-legend', (e) => e.textContent)).includes('Layer: maps/other (2)'), 2000);
+  await sleep(400);
+  const scale = await m.page.$eval('.leaflet-proxy', (e) => Number((e.style.transform.match(/scale\(([^)]+)\)/) || [])[1]));
+  check('an empty map opens on its layer', scale > 100, String(scale));
+  await m.close();
+}
 
 console.log('==> phone');
 {
