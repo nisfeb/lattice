@@ -1102,6 +1102,17 @@
   //  how soon autosave tries again, and what the status says meanwhile
   const AUTO_RETRY = 5000;
   const UNREACHED_NOTE = 'not saved yet: the ship is unreachable. It saves when the ship answers';
+  //  A page hidden (a phone locked, another app in front) or let go may
+  //  never run the debounce: what waits on it is written now, through
+  //  autosave and every rule it has.
+  const flushHidden = (e) => {
+    if (e.type === 'visibilitychange' && !document.hidden) return;
+    if (!dirty) return;
+    clearTimeout(autoTimer);
+    autosave();
+  };
+  document.addEventListener('visibilitychange', flushHidden);
+  window.addEventListener('pagehide', flushHidden);
   // turned back on in Settings (another document) while text waits unsaved:
   // it goes out on the usual debounce, as if just typed
   window.addEventListener('storage', (e) => {

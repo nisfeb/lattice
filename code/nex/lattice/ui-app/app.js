@@ -7032,6 +7032,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const autosaveOn = () => { try { return localStorage.latAutosave !== '0'; } catch { return true; } };
   const AUTO_RETRY = 5000;
   const UNREACHED_NOTE = 'not saved yet: the ship is unreachable. It saves when the ship answers';
+  const flushHidden = (e) => {
+    if (e.type === 'visibilitychange' && !document.hidden) return;
+    if (!dirty) return;
+    clearTimeout(autoTimer);
+    autosave();
+  };
+  document.addEventListener('visibilitychange', flushHidden);
+  window.addEventListener('pagehide', flushHidden);
   window.addEventListener('storage', (e) => {
     if (e.key !== 'latAutosave' || !autosaveOn() || !dirty) return;
     clearTimeout(autoTimer);
