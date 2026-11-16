@@ -88,6 +88,7 @@ What it reads (orrery version 117), all `[/ %json]`:
 | `R_orr/briefs/<day>` | a day's brief: `{day, at, sent, tags, text, today[], said, map, notes}` |
 | `R_orr/reviews/<day>` | a Sunday review: `{day, at, sent, text, line, notes}` |
 | `R_orr/map.json` | orrery's map: a GeoJSON FeatureCollection of its places, areas and located open situations (orrery version 151) |
+| `R_orr/travel.json` | orrery's travel settings. Lattice reads only `token`, the Mapbox token, and only when it has none of its own |
 
 Four features use them:
 
@@ -101,6 +102,7 @@ Four features use them:
   hand edit survives. `[situation/x]` in the text becomes `[[situation/x]]`.
   The last-synced `at` per page lives in `journal-synced.json`, reviews keyed
   `week-<day>` so a shared Sunday never collides with its brief.
+- **Orrery's Mapbox token.** `+map-token` uses lattice's own token (`/maps/token`, set in Settings) when one is set, and otherwise the `token` in orrery's `travel.json` (`+orrery-map-token`), when it has a token's shape. So an owner who gave orrery a token gets base maps with no second step. The token is never answered to anyone. `GET /tile-status` says `orrery: true` when the token in use is orrery's, and Settings says so.
 - **The orrery map.** A pass on the same mirror-loop reads `map.json` and writes it as the private map page `orrery/map`, with `orrery/map-notes` as its layer. The body is built by `+map-body` in `lib/lattice-orrery` and must pass `+gj-check`, else nothing is written and the last page stays. The page is rewritten only when its body differs, so an unchanged map adds no revision and a hand edit is put back on the next pass. The editor opens it read-only. `orrery/map-notes` is made, empty and with `orrery/map` as its layer, only when it is missing. It is never rewritten: the owner draws there. Both pages are marked sensitive before they are written. With no orrery or no `map.json`, the pass writes nothing.
 - **Body facts.** On a reader page whose path is a two-segment orrery body id
   (`person/sarah`), `ui-app/orrery.js` fetches
