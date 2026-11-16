@@ -1991,6 +1991,11 @@
   =/  pp=(each path tang)  (mule |.((stab u.pt)))
   ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
   ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
+  ::  the editor may hold the host's path as a share recorded it, from
+  ::  before the host's lattice moved. /browse-file found where it lives
+  ::  now when it opened the page (+peer-moved), so write there
+  ;<  known=(map @t json)  bind:m  read-peers
+  =.  p.pp  (fall (moved-path:lu (known-base:lu known u.shp) p.pp) p.pp)
   ::  a tainted key (one that read sensitive content in the last 12h) cannot
   ::  write to a foreign destination: we cannot verify a remote page's
   ::  sensitivity, so it counts as a non-sensitive destination, like a local
@@ -3209,6 +3214,17 @@
       ;<  sn=view:nexus  bind:m  (peek:fio file-road ~)
       (browse-file-respond eyre-id sn)
     ;<  ms=(unit view:nexus)  bind:m  (peek-remote-wait file-road u.shp)
+    ?^  ms  (browse-file-respond eyre-id u.ms)
+    ::  no answer there. A share keeps the host's path as it was that day,
+    ::  and the host's lattice moves when its kernel moves the shell: ask
+    ::  where it lives now and read the same file there (+peer-moved)
+    ;<  np=(unit path)  bind:m  (peer-moved u.shp p.pp)
+    ?~  np  (send-err eyre-id 504 'unreachable or denied')
+    ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] u.np %read))
+      (send-err eyre-id 504 'unreachable or denied')
+    =/  k=@ud  (dec (lent u.np))
+    ;<  ms=(unit view:nexus)  bind:m
+      (peek-remote-wait [%& %& (scag k u.np) (snag k u.np)] u.shp)
     ?~  ms  (send-err eyre-id 504 'unreachable or denied')
     (browse-file-respond eyre-id u.ms)
   ::  remote-save: overwrite a file on ANOTHER ship. The editor's save button
@@ -12829,6 +12845,19 @@
       [[/ %json] [%o (~(put by known) (scot %p shp) s+(spat u.pb))]]
     [/ %json]
   (pure:m pb)
+::  +peer-moved: where a path under a peer's lattice reads now, for one
+::  that got no answer: the peer is asked afresh which layout it runs
+::  (+peer-base-remember, which also corrects /peers.json). ~ when the
+::  path is not lattice's, the peer does not answer, or it is where the
+::  path already points.
+++  peer-moved
+  |=  [shp=@p p=path]
+  =/  m  (fiber:fiber:nexus ,(unit path))
+  ^-  form:m
+  ?.  (lien peer-bases:lu |=(b=path ?=(^ (strip-prefix:lu b p))))  (pure:m ~)
+  ;<  pb=(unit path)  bind:m  (peer-base-remember shp)
+  ?~  pb  (pure:m ~)
+  (pure:m (moved-path:lu u.pb p))
 ::  +peek-remote-wait: peek a remote road, but give up after remote-timeout. ~ on
 ::  timeout or veto. `seen otherwise. This is peek-remote (nonce + %peek dart +
 ::  take-peek) with a concurrent timer, resolving on whichever lands first.

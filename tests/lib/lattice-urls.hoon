@@ -252,4 +252,19 @@
     (expect-eq !>(desk-base:lu) !>((known-base:lu k ~bud)))
     (expect-eq !>(desk-base:lu) !>((known-base:lu k ~wes)))
   ==
+++  test-moved-path
+  =/  old=path  (weld desk-base-old:lu /page/temp/notes/code)
+  =/  new=path  (weld desk-base:lu /page/temp/notes/code)
+  ;:  weld
+    ::  a path under the shell's old spelling reads under the new one
+    (expect-eq !>(`new) !>((moved-path:lu desk-base:lu old)))
+    ::  and back, for a peer still on the older kernel
+    (expect-eq !>(`old) !>((moved-path:lu desk-base-old:lu new)))
+    ::  the ball instance's layout moves too
+    (expect-eq !>(`new) !>((moved-path:lu desk-base:lu (weld app-base:lu /page/temp/notes/code))))
+    ::  already there: nothing to try
+    (expect-eq !>(~) !>((moved-path:lu desk-base:lu new)))
+    ::  not lattice's at all: left alone
+    (expect-eq !>(~) !>((moved-path:lu desk-base:lu /apps/other/thing)))
+  ==
 --
