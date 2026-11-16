@@ -529,6 +529,16 @@ console.log('==> layers');
   check.eq('a layer\'s features are never the page\'s', (await m.list()).join(), 'top');
   await m.close();
 }
+{
+  //  a page with nothing of its own: the view goes to its layer, not the world
+  const other = body([pt(-71, 42, { name: 'under' }), pt(-71.1, 42.1)]);
+  const m = await open(body([], { layers: ['maps/other'] }), { layers: { 'maps/other': other } });
+  await waitFor(async () => (await m.page.$eval('.lm-legend', (e) => e.textContent)).includes('Layer: maps/other (2)'), 2000);
+  await sleep(400);
+  const scale = await m.page.$eval('.leaflet-proxy', (e) => Number((e.style.transform.match(/scale\(([^)]+)\)/) || [])[1]));
+  check('an empty map opens on its layer', scale > 100, String(scale));
+  await m.close();
+}
 
 console.log('==> phone');
 {
@@ -542,6 +552,18 @@ console.log('==> phone');
   await m.page.touchscreen.tap(x, y);
   await sleep(100);
   check('a tap with the point tool adds a point', (await m.doc()).features.length === 2);
+  await m.close();
+}
+
+console.log('==> zoomed all the way out');
+{
+  //  an empty map opens on the world. One step out, a grid tile spans 180
+  //  degrees, wider than every step: it once fell to the narrowest and froze
+  const m = await open(body([]));
+  m.page.evaluate(() => document.querySelector('.leaflet-control-zoom-out').click()).catch(() => {});
+  await sleep(1500);
+  const live = await Promise.race([m.page.evaluate(() => document.querySelectorAll('.leaflet-tile').length > 0), sleep(8000).then(() => null)]);
+  check('the grid still draws at the lowest zoom', live === true, String(live));
   await m.close();
 }
 

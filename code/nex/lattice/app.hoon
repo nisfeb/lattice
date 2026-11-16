@@ -8548,6 +8548,7 @@
     ;<  ~  bind:m  (ensure-dirs up /links pax.act)
     (put-file (link-road up pax.act) [/lattice %link] link.act)
       %journal-put  (journal-put root now +.act)
+      %map-put  (map-put root now body.act)
       %del-from
     ;<  ~  bind:m  (del-from root now +.act)
     (apply-eval root now [%del from.act])
@@ -12694,6 +12695,47 @@
     (apply-eval root now [%make pax (wrap-content %md u.body)])
   =/  hash=(unit @uv)  ?~(body last `(sham u.body))
   (write-journal-synced (~(put by synced) `@t`name [at hash]))
+::  +orrery-map-pass: mirror orrery's map document (<base>/map.json) into
+::  the private page orrery/map. A no-op when orrery or its map.json is
+::  absent. A document that is not a FeatureCollection, or a body over the
+::  map caps (+gj-check:lgj), writes nothing and keeps the last page.
+::
+++  orrery-map-pass
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& u.base %'map.json'] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  =/  doc=(unit json)  (mole |.(!<(json (need-vase:tarball sang.u.vw))))
+  =/  body=(unit @t)  ?~(doc ~ (map-body:lo u.doc))
+  ?~  body  (pure:m ~)
+  ?^  (gj-check:lgj u.body)  (pure:m ~)
+  (poke-eval [%map-put u.body])
+::  +map-put: %map-put, in the writer. orrery/map is written only when it
+::  is missing or its body differs, so an unchanged map adds no revision
+::  and a hand edit is put back. orrery/map-notes, the page the owner
+::  draws on, is made only when missing and never rewritten. Each page is
+::  marked sensitive before it is written, as a journal page is.
+::
+++  map-put
+  |=  [root=@ud now=@da body=@t]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  =/  pax=path  /orrery/map
+  ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head pax)
+  =/  was=(unit [builder=@tas body=@t])  ?~(src.pc ~ (unwrap-content u.src.pc))
+  ;<  ~  bind:m
+    =/  n  (fiber:fiber:nexus ,~)
+    ?:  =(`[%geojson body] was)  (pure:n ~)
+    ;<  ~  bind:n  (apply-eval root now [%page-sensitive pax &])
+    (apply-eval root now [%make pax (wrap-content %geojson body)])
+  =/  nax=path  /orrery/map-notes
+  ;<  nc=[rev=@ud src=(unit @t)]  bind:m  (page-head nax)
+  ?^  src.nc  (pure:m ~)
+  ?.  =(0 rev.nc)  (pure:m ~)
+  ;<  ~  bind:m  (apply-eval root now [%page-sensitive nax &])
+  (apply-eval root now [%make nax (wrap-content %geojson notes-body:lo)])
 ::  +orrery-rec: pull the `at` and `text` strings out of one orrery day
 ::  record. ~ when the json is not an object or either field is missing or
 ::  not a string.
@@ -23746,6 +23788,7 @@
   ::  independent of obelisk's state. A no-op (one soft peek) when orrery is
   ::  absent, so a ship without it pays almost nothing.
   ;<  ~  bind:m  orrery-journal-pass
+  ;<  ~  bind:m  orrery-map-pass
   ;<  ~  bind:m  mirror-purge
   ;<  on=?  bind:m  mirror-enabled
   ?.  on

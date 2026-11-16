@@ -6,7 +6,7 @@ const WRITER_H = '0v3.4g8bu.gitpg.4hui5.6i6ib.91c19';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
 const SHEET_H = '0v3.v145b.hha4j.kjuag.dcc4c.ld732';
 // and map.js's, the map view (26-writer.js)
-const MAP_H = '0v2.alm6u.kcavr.a73jl.tcgbu.bgun1';
+const MAP_H = '0v4.2mv4v.u272r.vgdi7.q6c1h.j658e';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
@@ -3868,7 +3868,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     wrNote.textContent = why;
     const k = richHere();
     if (!k || writerSourceOn()) return writerOff();
-    const body = src.value, ed = !src.readOnly && viewingRev === null;
+    const body = src.value, ed = !src.readOnly && viewingRev === null && !(k === 'geojson' && current === 'orrery/map');
     wrShow(true);
     const doc = { tab: activeTab, n: wrDoc, k };
     if (wr && wrFor && wrFor.tab === doc.tab && wrFor.n === doc.n && wrFor.k === k && wr.base() === body) { wrBox(k); return wr.setEditable(ed); }

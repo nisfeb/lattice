@@ -24,6 +24,9 @@
 //    E  Source shows the JSON, and the kind picker refuses a switch
 //    F  the new-page dialog makes an empty map
 //    H  a map opened once opens offline, with the tiles it had
+//    O  orrery/map, orrery's mirror, opens with drawing refused. This one
+//       page uses its real name: it is made only when the ship has no
+//       orrery folder, and then deleted with the folder at the end
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           [STUB_LOG=path] node scripts/ui-map.mjs
@@ -46,6 +49,8 @@ const on = (id) => !process.env.ONLY || process.env.ONLY.split(',').includes(id)
 const STUB = process.env.STUB_LOG || '';
 const stubHits = () => (STUB && existsSync(STUB) ? readFileSync(STUB, 'utf8').split('\n').filter(Boolean).length : 0);
 
+const ORR = 'orrery/map';
+let ownOrrery = false;
 const P = { md: RUN + '/notes', small: RUN + '/small', big: RUN + '/big', calc: RUN + '/calc', made: RUN + '/made', off: RUN + '/off' };
 const api = (path, init = {}) => fetch(env.base + '/apps/lattice/' + path,
   { ...init, headers: { Cookie: env.cookie, Origin: env.base, ...(init.headers || {}) } });
@@ -389,6 +394,30 @@ try {
       !!made && made.body === '{"type":"FeatureCollection","lattice":{},"features":[\n]}\n', JSON.stringify(made && made.body));
   }
 
+  // ------------------------------------------------------------ O: orrery/map
+  if (on('O')) {
+    step = 'O orrery map';
+    const dump = await (await api('page-dump', { cache: 'no-store' })).json();
+    ownOrrery = !(dump.nodes || []).some((x) => x.path === 'orrery' || x.path.startsWith('orrery/'));
+    if (ownOrrery) {
+      //  without new=1: a deleted name answers 409 to a create on this kernel
+      const r = await api('page-save?type=geojson&name=' + encodeURIComponent(ORR),
+        { method: 'POST', body: coll([feat(1, 7.65, 45.97)], { title: 'Orrery', layers: ['orrery/map-notes'] }) });
+      if (!r.ok) throw new Error('seed ' + ORR + ': ' + r.status);
+    }
+    await open(ORR);
+    await mounted();
+    const before = await srcVal();
+    const shown = await page.evaluate(() => [...document.querySelectorAll('lat-map:not([hidden]) [data-tool="point"]')].some((b) => b.offsetParent !== null));
+    check('O: orrery/map shows no drawing tools', !shown);
+    const box = await page.$eval('lat-map:not([hidden]) .lm-map', (e) => { const r = e.getBoundingClientRect(); return [r.x + r.width / 2 + 40, r.y + r.height / 2 + 30]; });
+    //  the hidden point tool, clicked anyway, then a click on the map
+    await page.evaluate(() => document.querySelector('lat-map:not([hidden]) [data-tool="point"]').click());
+    await page.mouse.click(box[0], box[1]);
+    await sleep(800);
+    check('O: and a point drawn on it anyway adds nothing', (await srcVal()) === before);
+  }
+
   // ------------------------------------------------------------ H: offline
   if (on('H')) {
     step = 'H offline';
@@ -418,6 +447,7 @@ try {
   await api('map-token', { method: 'POST', body: '' }).catch(() => {});
   for (const n of Object.values(P)) await api('page-del?name=' + encodeURIComponent(n), { method: 'POST' }).catch(() => {});
   await api('page-del?name=' + encodeURIComponent(RUN), { method: 'POST' }).catch(() => {});
+  if (ownOrrery) for (const n of [ORR, 'orrery']) await api('page-del?name=' + encodeURIComponent(n), { method: 'POST' }).catch(() => {});
   await browser.close().catch(() => {});
 }
 check.done();

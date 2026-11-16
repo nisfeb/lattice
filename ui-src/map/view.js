@@ -116,7 +116,9 @@ const Grid = L.GridLayer.extend({
     const se = map.unproject(coords.add([1, 1]).scaleBy(sz), coords.z);
     const span = Math.max(se.lng - nw.lng, 1e-9);
     const STEPS = [30, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0.0002, 0.0001];
-    const step = STEPS.find((s) => span / s <= 4) || STEPS[STEPS.length - 1];
+    //  a tile wider than every step allows takes the widest: the narrowest
+    //  there drew millions of lines and froze the page at the lowest zoom
+    const step = STEPS.find((s) => span / s <= 4) || STEPS[0];
     g.strokeStyle = 'rgba(120,120,120,0.35)';
     g.fillStyle = 'rgba(110,110,110,0.75)';
     g.font = '10px system-ui,sans-serif';
@@ -633,10 +635,12 @@ export function mount(host, opts = {}) {
 
   // ── layers: other map pages underneath, dimmed, never written ──────────
   let layerSeq = 0;
+  let layerFeats = [];                        // what an empty page fits its view to
   async function loadLayers() {
     const my = ++layerSeq;
     under.clearLayers();
     layerNotes.length = 0;
+    layerFeats = [];
     const names = viewOf().layers;
     if (!names.length || !opts.layer) { paintLegend(); return; }
     for (const nm of names) {
@@ -647,16 +651,19 @@ export function mount(host, opts = {}) {
       if (!r || r.error) { layerNotes.push('Layer ' + nm + ' could not be read.'); continue; }
       //  a layer's own layers are not followed, so there is no cycle
       for (const f of r.doc.features) for (const l of layersOf(f.geometry, props(f), false, underRenderer, true)) under.addLayer(l);
+      layerFeats.push(...r.doc.features);
       layerNotes.push('Layer: ' + nm + ' (' + r.doc.features.length + ')');
     }
     paintLegend();
+    //  a page with nothing of its own opens on its layers, not on the world
+    if (my === 1 && !doc.features.length && !viewOf().center && layerFeats.length) fitAll(false);
   }
 
   // ── fitting the view ───────────────────────────────────────────────────
   function fitAll(force) {
     const v = viewOf();
     if (!force && v.center) { map.setView(ll(v.center), v.zoom ?? 10); return; }
-    const b = bounds(doc.features);
+    const b = bounds(doc.features.length ? doc.features : layerFeats);
     if (!b) { map.setView([20, 0], 2); return; }
     if (b[0] === b[2] && b[1] === b[3]) map.setView(ll([b[0], b[1]]), 13);
     else map.fitBounds([[b[1], b[0]], [b[3], b[2]]], { padding: [30, 30], maxZoom: 16, animate: !!force });

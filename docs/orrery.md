@@ -87,8 +87,9 @@ What it reads (orrery version 117), all `[/ %json]`:
 | `R_orr/world.json` | the world digest: `{at, day, time, zone, away, today[], late[], situations[], proposed, text}` |
 | `R_orr/briefs/<day>` | a day's brief: `{day, at, sent, tags, text, today[], said, map, notes}` |
 | `R_orr/reviews/<day>` | a Sunday review: `{day, at, sent, text, line, notes}` |
+| `R_orr/map.json` | orrery's map: a GeoJSON FeatureCollection of its places, areas and located open situations (orrery version 151) |
 
-Three features use them:
+Four features use them:
 
 - **World at session start.** `+index-text` leads the session index with a `## World, from orrery` block carrying `world.json`'s `text`, when the digest is fresh (its `at` within a day). The owner session always gets it. An agent key gets it only when the key is cleared for sensitive content and asks with `world=1` (the `memory_index` tool's `world` option), and getting it taints the key for 12 hours like any sensitive read, because the digest carries the owner's private day (calendar, open situations). The session hooks do not ask, so an agent's session starts without it. An `at` older than a day, no digest, or no orrery all yield no block.
 - **Journal pages.** A pass on the mirror-loop (every wake, and on boot)
@@ -100,10 +101,11 @@ Three features use them:
   hand edit survives. `[situation/x]` in the text becomes `[[situation/x]]`.
   The last-synced `at` per page lives in `journal-synced.json`, reviews keyed
   `week-<day>` so a shared Sunday never collides with its brief.
+- **The orrery map.** A pass on the same mirror-loop reads `map.json` and writes it as the private map page `orrery/map`, with `orrery/map-notes` as its layer. The body is built by `+map-body` in `lib/lattice-orrery` and must pass `+gj-check`, else nothing is written and the last page stays. The page is rewritten only when its body differs, so an unchanged map adds no revision and a hand edit is put back on the next pass. The editor opens it read-only. `orrery/map-notes` is made, empty and with `orrery/map` as its layer, only when it is missing. It is never rewritten: the owner draws there. Both pages are marked sensitive before they are written. With no orrery or no `map.json`, the pass writes nothing.
 - **Body facts.** On a reader page whose path is a two-segment orrery body id
   (`person/sarah`), `ui-app/orrery.js` fetches
   `GET /apps/orrery/api/body/<kind>/<slug>` and shows a compact block (name, a
   few attrs, open actions). A non-body path (`journal/2026.10.19`) gets a 404
   and shows nothing.
 
-Weir: lattice asks peek on `/apps/shell.shell/desks/orrery.desk/`.
+Weir: lattice asks peek on `/apps/shell/desks/orrery.desk/`.
