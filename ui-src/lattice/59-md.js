@@ -61,6 +61,11 @@
   };
   const remoteUrl = (u) => /^(https?:)?\/\//i.test(mdUnesc(u).trim());
 
+  // The test for a wikilink to a page not written yet (ghostTest,
+  // 60-preview.js). Only the live preview sets it, around its own paint:
+  // the PDF, the Skills pane and a parked split's Read mark nothing.
+  let mdGhosts = null;
+
   // Code-span placeholders. The token must be UNFORGEABLE by document text:
   // a page that can write the token literally could otherwise smuggle content
   // past the escaper. The trick is that the token contains '&', which mdEsc
@@ -104,10 +109,14 @@
     //  a bare [[a/b/c]] shows just the last segment ("c"), the filename people
     //  expect, not the whole path. An explicit [[a/b/c|label]] still wins. The
     //  href/target is unchanged, so navigation and backlinks are unaffected.
-    s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-      (_, tgt, label) => tag('<a href="'
-        + mdHref('/apps/lattice/app?name=' + encodeURIComponent(mdUnesc(tgt).trim())) + '">')
-        + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>');
+    //  A page not written yet is marked after the href, which outLinks
+    //  (76-outline.js) reads first.
+    s = s.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, tgt, label) => {
+      const t = mdUnesc(tgt).trim();
+      return tag('<a href="' + mdHref('/apps/lattice/app?name=' + encodeURIComponent(t)) + '"'
+        + (mdGhosts && mdGhosts(t) ? ' class="ghost" title="' + mdEsc(t + ' does not exist yet') + '"' : '') + '>')
+        + (label || tgt.trim().replace(/\/+$/, '').split('/').pop() || tgt) + '</a>';
+    });
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/(^|\W)_([^_]+)_(?=\W|$)/g, '$1<em>$2</em>');
     s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>');

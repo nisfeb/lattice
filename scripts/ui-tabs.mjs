@@ -252,11 +252,12 @@ try {
   const made = await waitOn('page', '');
   s = await state();
   check('+ opens a new page tab', made && s.tabs.length === 2, JSON.stringify(s));
-  //  ...and asks for its name, in the one create dialog every shell uses
-  const named = await page.waitForFunction(() => !document.getElementById('dlg').hidden,
-    { timeout: 5000 }).then(() => true, () => false);
-  check('+ asks for the new page\'s name', named);
-  await page.evaluate(() => document.getElementById('dlgcancel')?.click());
+  //  ...and asks nothing: the cursor is in the body, and the page is
+  //  named at its first save (ui-capture.mjs)
+  await sleep(800);
+  const blank = await page.evaluate(() => document.getElementById('dlg').hidden
+    && document.activeElement === document.getElementById('src'));
+  check('+ asks nothing and puts the cursor in the page', blank);
   await page.keyboard.down('Control');
   await page.keyboard.press('w');
   await page.keyboard.up('Control');

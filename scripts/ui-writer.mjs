@@ -300,8 +300,11 @@ try {
   // ------------------------------------------------------------ C: create and the toolbar
   if (on('C')) {
     step = 'C create';
-    await page.evaluate(() => document.getElementById('newfile').click());
-    await wait(() => !!document.getElementById('dlginput'));
+    //  the folder's + keeps the name and kind dialog; the toolbar's New
+    //  page asks nothing any more (ui-capture.mjs)
+    await page.evaluate((r) => [...document.querySelectorAll('#treelist a.addf')]
+      .find((a) => a.title === 'new file in ' + r).click(), RUN);
+    await wait(() => !document.getElementById('dlg').hidden);
     await page.evaluate((n) => {
       const i = document.getElementById('dlginput');
       i.value = n; i.dispatchEvent(new Event('input'));

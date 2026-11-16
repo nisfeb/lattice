@@ -270,19 +270,14 @@ try {
   }
   check('a page made again answers its real rev or none', made.rev === 0 || made.rev === head.rev,
     JSON.stringify({ answered: made.rev, head: head && head.rev }));
-  //  and the editor: + file, then a save at once and another behind it
+  //  and the editor: a named page made at once (createPage), then a save
+  //  at once and another behind it
   const NEWP = 'qi/fresh-' + Date.now();
   let refusedNew = 0;
   p.on('response', (r) => { if (r.url().includes(encodeURIComponent(NEWP)) && r.status() === 409) refusedNew++; });
   await p.goto(env.app, { waitUntil: 'domcontentloaded', timeout: 90000 });
   await p.waitForFunction(() => document.querySelectorAll('#treelist a.pg, #treelist .fld').length > 0, { timeout: 90000 });
-  await p.evaluate(() => document.getElementById('newfile').click());
-  await p.waitForFunction(() => !document.getElementById('dlg').hidden, { timeout: 10000 });
-  await p.evaluate((n) => {
-    document.getElementById('dlginput').value = n;
-    document.getElementById('dlgkind').value = 'md';
-    document.getElementById('dlgok').click();
-  }, NEWP);
+  await p.evaluate((n) => { window.latCreate(n, 'md'); }, NEWP);
   for (const t of ['# first', '# first\n\nsecond']) {
     await p.waitForFunction((n) => document.getElementById('pname').value === n, { timeout: 30000 }, NEWP);
     await p.evaluate((v) => {

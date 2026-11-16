@@ -10,12 +10,14 @@
   |=  [id=@ud title=@t]
   ^-  post:ft
   [id ~zod title ~ ~ ~2026.1.1 ~ ~ 0]
+++  pst  (mk-post 1 'hi')
+++  cor  `post-core:fb`[1 ~zod 'hi' ~ ~ ~2026.1.1]
 ++  brd
   ^-  board:ft
   =/  ids=(list @ud)  ~[1 100 101 150]
   =/  posts=(map post-id:ft post:ft)
     (~(gas by *(map post-id:ft post:ft)) (turn ids |=(i=@ud [i (mk-post i 'hi')])))
-  [info ~ 151 posts ~ ~ ~ '' ~]
+  [info ~ 151 posts ~ ~ ~ '' ~ ~]
 ++  test-bucket-of
   ;:  weld
     (expect-eq !>(0) !>((bucket-of:fb 1)))
@@ -57,4 +59,55 @@
     (expect-eq !>(`(list path)`~) !>((gone:fb b b)))
     (expect-eq !>(`(list path)`~[/content/posts/b1]) !>((gone:fb b gutted)))
   ==
+::  a board written before tags loads, with no marker
+++  test-load-no-tags
+  =/  r  (load:fb ~[[/pub/card [%1 info]] [/content/posts/b0 [%1 (my ~[[1 cor]])]]])
+  ?>  ?=(%& -.r)
+  (expect-eq !>(*(unit (map post-id:ft (set tag:ft)))) !>(tags.p.r))
+::  the marker alone: an empty tags grub
+++  test-load-empty-tags
+  =/  r  (load:fb ~[[/pub/card [%1 info]] [/content/tags [%1 ~]]])
+  ?>  ?=(%& -.r)
+  (expect-eq !>(`(unit (map post-id:ft (set tag:ft)))`[~ ~]) !>(tags.p.r))
+::  tags round-trip through +grubs and +load
+++  test-tags-round-trip
+  =/  b=board:ft  brd
+  =.  b  b(posts (my ~[[1 pst]]), tags `(my ~[[1 (sy ~[%bug %idea])]]))
+  =/  r  (load:fb ~(tap by (grubs:fb b)))
+  ?>  ?=(%& -.r)
+  (expect-eq !>(tags.b) !>(tags.p.r))
+::  no marker in memory, no grub written
+++  test-grubs-no-marker
+  (expect-eq !>(|) !>((~(has by (grubs:fb brd)) /content/tags)))
+::  tags for a post that is gone are not written back
+++  test-grubs-drop-stale
+  =/  b=board:ft  brd
+  =.  b  b(tags `(my ~[[9 (sy ~[%bug])]]))
+  (expect-eq !>([%1 ~]) !>((~(got by (grubs:fb b)) /content/tags)))
+::  +changed and +gone across tag transitions: the marker's arrival and a
+::  post's removal write the tags grub, no change leaves it, and no write
+::  deletes it
+++  test-changed-tags
+  =/  bare=board:ft  brd
+  =/  tagged=board:ft  bare(tags `(my ~[[1 (sy ~[%bug])] [150 (sy ~[%idea])]]))
+  =/  less=board:ft  tagged(posts (~(del by posts.tagged) 1), tags `(my ~[[150 (sy ~[%idea])]]))
+  =/  names  |=(gs=(list grub:fb) (turn gs |=(g=grub:fb pax.g)))
+  =/  pairs=(list [board:ft board:ft])  ~[[bare tagged] [tagged less] [tagged tagged]]
+  ;:  weld
+    ::  null to set
+    (expect-eq !>(&) !>(?=(^ (find ~[/content/tags] (names (changed:fb bare tagged))))))
+    (expect-eq !>(`(list path)`~) !>((gone:fb bare tagged)))
+    ::  set to set, a post removed
+    (expect-eq !>(&) !>(?=(^ (find ~[/content/tags] (names (changed:fb tagged less))))))
+    ::  unchanged
+    (expect-eq !>(`(list path)`~) !>((names (changed:fb tagged tagged))))
+    (expect-eq !>(`(list path)`~) !>((gone:fb tagged tagged)))
+    ::  +gone never names the tags grub
+    %+  expect-eq  !>(|)
+    !>((lien pairs |=([o=board:ft n=board:ft] ?=(^ (find ~[/content/tags] (gone:fb o n))))))
+  ==
+::  a tags grub of the wrong shape names itself, as the other grubs do
+++  test-load-bad-tags
+  =/  r  (load:fb ~[[/pub/card [%1 info]] [/content/tags 'junk']])
+  (expect-eq !>(`(each board:ft @t)`|+'unreadable: /content/tags') !>(r))
 --

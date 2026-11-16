@@ -28,6 +28,81 @@
   ^-  ?
   ?|(=(who author) (is-mod who brd))
 ::
+++  can-tag
+  |=  [who=@p author=@p brd=board]
+  ^-  ?
+  (can-delete who author brd)
+::
+::  tags: [a-z][a-z0-9-]*, 1 to 24 characters, at most 5 per thread
+::
+++  max-tags  5
+::
+++  valid-tag
+  |=  t=@
+  ^-  ?
+  =/  cs=(list @)  (rip 3 t)
+  ?~  cs  |
+  ?&  (lte (lent cs) 24)
+      &((gte i.cs 'a') (lte i.cs 'z'))
+      (levy (rip 3 t) |=(c=@ |(&((gte c 'a') (lte c 'z')) &((gte c '0') (lte c '9')) =(c '-'))))
+  ==
+::
+::  +norm-tag: user text to a tag, or ~ when nothing usable is left
+::
+++  norm-tag
+  |=  t=@t
+  ^-  (unit tag)
+  =/  cs=(list @)  (rip 3 (crip (cass (trip t))))
+  =/  out=(list @)  ~
+  |-  ^-  (unit tag)
+  ?^  cs
+    =/  c=@  i.cs
+    ?:  |(&((gte c 'a') (lte c 'z')) &((gte c '0') (lte c '9')))
+      $(cs t.cs, out `(list @)`[c out])
+    ?:  ?~(out & =('-' i.out))  $(cs t.cs)
+    $(cs t.cs, out `(list @)`['-' out])
+  =.  out  (flop out)
+  =.  out  (scag 24 (from-letter out))
+  =.  out  (flop (trim-dashes (flop out)))
+  ?~  out  ~
+  `;;(tag (rap 3 (turn out |=(c=@ `@t`c))))
+::
+::  +from-letter: drop every character before the first letter
+::
+++  from-letter
+  |=  cs=(list @)
+  ^-  (list @)
+  ?~  cs  ~
+  ?:  &((gte i.cs 'a') (lte i.cs 'z'))  cs
+  $(cs t.cs)
+::
+++  trim-dashes
+  |=  cs=(list @)
+  ^-  (list @)
+  ?~  cs  ~
+  ?:  =(i.cs '-')  $(cs t.cs)
+  cs
+::
+++  norm-tags
+  |=  ts=(list @t)
+  ^-  (set tag)
+  =/  out=(list tag)  ~
+  |-  ^-  (set tag)
+  ?~  ts  (silt out)
+  ?:  =(max-tags (lent out))  (silt out)
+  =/  n=(unit tag)  (norm-tag i.ts)
+  ?~  n  $(ts t.ts)
+  ?:  (~(has in (silt out)) u.n)  $(ts t.ts)
+  $(ts t.ts, out [u.n out])
+::
+++  clean-tags
+  |=  ts=(set @)
+  ^-  (set tag)
+  %-  silt
+  %+  scag  max-tags
+  %+  sort  (skim ~(tap in ts) valid-tag)
+  aor
+::
 ::  +sane-text: non-empty and at most max bytes
 ::
 ++  sane-text

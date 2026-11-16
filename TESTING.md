@@ -12,7 +12,7 @@ test here first.
 | HTTP | http://localhost:8120 (loopback ames in `~/fleet/piers/mec/.http.ports`) |
 | dojo | `tmux attach -t fleet`, window `mec` |
 | grubbery | the dev platform's pin (hoon-development `platform/grubbery.ref`) |
-| lattice | a dev desk at `/apps/shell.shell/desks/lattice.desk`, the same path as on ricsul, following `/lattice-dev/code` in the ball |
+| lattice | a dev desk at `/apps/shell/desks/lattice.desk` (`/apps/shell.shell/...` on a kernel older than the November 2026 shell move), the same path as on ricsul, following `/lattice-dev/code` in the ball |
 | test desk | `%lattice-test`, mounted, set up for the kit |
 
 Below, `F=~/software/personal/hoon-development/fleet/fleet` and

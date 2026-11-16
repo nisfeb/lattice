@@ -120,9 +120,8 @@
       mbar.append(b);
       return b;
     };
-    // the Files toolbar's new page does the same: newFile paints over the
-    // editor, so what is unsaved there goes through guardDirty first
-    mitem('mb-new', 'plus', 'New page', async () => { if (await guardDirty()) newFile(''); });
+    // the Files toolbar's new page, with no question (newBlank)
+    mitem('mb-new', 'plus', 'New page', () => newBlank());
     mitem('mb-search', 'search', 'Search', () => qOpen());
     mitem('mb-brief', 'cal', "Today's brief", (ev) => openBrief(ev));
     const tabsw = mitem('mtabsw', 'tabs', 'Open tabs', () => {

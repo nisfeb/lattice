@@ -8,7 +8,7 @@
   [%main 'Main' 'a board' ~zod ~2026.1.1 %poster &]
 ++  test-board-mold
   =/  b=board:ft
-    [info ~ 1 ~ ~ ~ ~ '' ~]
+    [info ~ 1 ~ ~ ~ ~ '' ~ ~]
   ;:  weld
     (expect-eq !>(%main) !>(name.info.b))
     (expect-eq !>(`card:ft`[%1 info]) !>(`card:ft`[%1 info.b]))

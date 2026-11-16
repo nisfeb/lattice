@@ -1,6 +1,11 @@
   // ── state ────────────────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
+  // the page the unsaved buffer in front was, deleted elsewhere (90-sync.js):
+  // autosave stands down until a save on purpose (35-pages.js). setOpen
+  // ends it, since any other document, or a new name, is not that page.
+  let deletedHere = null;
+  const DELETED_NOTE = 'this page was deleted elsewhere — save to recreate it';
   let mode = 'pages';      // 'know' while a memory is in front (95-know.js)
   // read by the service-worker registration script, which lives in its own
   // inline <script> and cannot see this scope. It reloads the page when a new
@@ -118,6 +123,7 @@
   // active document tab learns what it now shows (tabFollow, 21-tabs.js).
   function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
     current = name;
+    deletedHere = null;              // another document, or this one renamed
     if (name === null) curRev = 0;   // a new buffer claims no page's rev
     pname.value = shown === undefined ? (name || '') : shown;
     pname.readOnly = readOnly;

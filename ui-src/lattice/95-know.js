@@ -339,6 +339,7 @@
     st('memory deleted (restorable via know-restore)');
     knowGen++;
     knowKeys = knowKeys.filter((x) => x.key.replace(/^\//, '') !== doomed);
+    recentsDrop('know', doomed);
     renderKnowChips();
     renderKnowTree();
   }

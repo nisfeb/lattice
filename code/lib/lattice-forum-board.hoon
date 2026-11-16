@@ -60,6 +60,7 @@
       cores=(map post-id post-core)
       threads=(map post-id thread)
       votes=(map vote-target tally)
+      tags=(unit (map post-id (set tag)))
   ==
 ::  what the buckets hold: a post without its votes or comment count, a
 ::  thread's comments without their votes, a tally of a post or comment
@@ -117,6 +118,10 @@
       [%content %votes @ ~]
     ?~  v=(mole |.(;;([%1 (map vote-target tally)] val)))  bad
     $(gs t.gs, votes.acc (~(uni by votes.acc) +.u.v))
+  ::
+      [%content %tags ~]
+    ?~  v=(mole |.(;;([%1 (map post-id (set tag))] val)))  bad
+    $(gs t.gs, tags.acc `+.u.v)
   ==
 ::
 ++  assemble
@@ -148,10 +153,13 @@
     pinned            pins.acc
     sidebar           side.acc
     prune             prune.conf.acc
+    tags              tags.acc
   ==
 ::
 ::  +grubs: a board as the grubs that hold it. A bucket with nothing in it
-::  is left out; so is a post's thread before its first comment.
+::  is left out; so is a post's thread before its first comment. The tags
+::  grub is written only when the board has the marker, and only for posts
+::  it still has.
 ::
 ++  grubs
   |=  brd=board
@@ -184,6 +192,13 @@
     :^  acc  (bucket-pax %votes pid)  [%comment pid cid]
     `tally`[up-votes.c down-votes.c]
   =/  out=(map path *)  (~(run by acc) |=(m=(map * *) [%1 m]))
+  =?  out  ?=(^ tags.brd)
+    ::  ponytail: one grub for a board's tags; bucket like posts if a board passes ~10,000 tagged threads
+    %+  ~(put by out)  /content/tags
+    :-  %1
+    %-  malt
+    %+  skim  ~(tap by u.tags.brd)
+    |=([id=post-id *] (~(has by posts.brd) id))
   %-  ~(gas by out)
   ^-  (list [path *])
   :~  [/pub/card `card`[%1 info.brd]]
