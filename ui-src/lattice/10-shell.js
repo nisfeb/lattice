@@ -293,10 +293,12 @@
   const navUrl = (f, url) => { f.removeAttribute('srcdoc'); f.src = url; navBusy(f); };
   const prevBusy = () => navBusy(prev);
   //  the ship's render of an md page on show (applyPage), which ghostPaint
-  //  marks again once the tree lands. Any other write to the frame ends it.
-  let shipDoc = null;
-  const prevDoc = (html) => { shipDoc = null; navDoc(prev, html); };
-  const prevUrl = (url) => { shipDoc = null; navUrl(prev, url); };
+  //  marks again once the tree lands, and what of it the frame shows
+  //  (prevShown: that render as marked, or the local paint's body). Any
+  //  other write to the frame ends both.
+  let shipDoc = null, prevShown = null;
+  const prevDoc = (html) => { shipDoc = null; prevShown = null; navDoc(prev, html); };
+  const prevUrl = (url) => { shipDoc = null; prevShown = null; navUrl(prev, url); };
   const prevBlank = () => {
     prev.removeAttribute('src');
     prev.style.minHeight = '';

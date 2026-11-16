@@ -275,6 +275,7 @@
   };
   function applyPage(name, d, quiet) {
     if (name !== current) writerNewDoc();
+    shipDoc = null;      // the ship's render on show was another document's
     curFolder = null;
     setCtlLabels();
     setOpen(name, { readOnly: true, kind: d.kind,
@@ -490,9 +491,12 @@
   //  front is saved first, or asked about, never dropped.
   async function createNamed(name, kind) { if (await guardDirty()) return createPage(name, kind); }
   //  for the browser suites, which cannot reach this scope: a named page
-  //  made at once, as the folder dialog makes it
+  //  made at once, as the folder dialog makes it, and one started as the
+  //  brief button starts a journal day, after the same guard
   window.latCreate = createNamed;
-  window.latStartNamed = startNamed;
+  window.latStartNamed = async (name) => {
+    if ((await docTab()) && (await guardDirty())) startNamed(name);
+  };
 
   async function newFolder() {
     // a server-side rejection (colliding with an existing page, say) used to
@@ -627,6 +631,13 @@
   // the realName() split the create dialog (newFile) made before seeding
   // #pname with the real path; save() consumes it on create
   let newRn = null;
+  //  newRn for a create of `name` (as typed), or null. It belongs to the
+  //  page it was made for: one left by a page named and never written
+  //  (nameFirst, 77-history.js) is no other page's display name.
+  const rnOf = (name) => {
+    const rn = realName(name);
+    return newRn && rn && newRn.name === rn.name ? newRn : null;
+  };
   // a create that lands with nothing else opened meanwhile: nothing is
   // named yet and the name field still names this page. Not the body:
   // text typed during the round trip changes it, which left the page
@@ -725,9 +736,9 @@
     if (saving) {
       const doc = current, shown = pname.value;
       const own = fixed || (creating ? { name, body: src.value,
-        kind: kindOverride || curKind || pkind.value, rn: newRn,
+        kind: kindOverride || curKind || pkind.value, rn: rnOf(name),
         existed: madePage(name), tab: activeTab && activeTab.id, drawn } : null);
-      if (creating && !fixed) newRn = null;
+      if (creating && !fixed && own.rn) newRn = null;
       queueSave(() => {
         if (own && !own.existed && madePage(own.name)) {
           const rn = realName(own.name);
@@ -737,7 +748,7 @@
         }
         const here = !fixed && mode !== 'know' && !grubPath && current === doc
           && (doc !== null || pname.value === shown);
-        if (here) { if (own) newRn = own.rn; return save(kindOverride, undefined, drawn, auto); }
+        if (here) { if (own && own.rn) newRn = own.rn; return save(kindOverride, undefined, drawn, auto); }
         if (own) return save(kindOverride, own);
       }, creating);
       return 'queued';
@@ -765,8 +776,8 @@
     // the typed text as display names (the tree shows those, the name
     // field shows the real path). newRn is the create dialog's copy of
     // the same split, made before it seeded the field with the slug.
-    const rnc = !creating ? null : rn.dnames ? rn : fixed ? fixed.rn : newRn;
-    if (!fixed) newRn = null;
+    const rnc = !creating ? null : rn.dnames ? rn : fixed ? fixed.rn : rnOf(name);
+    if (!fixed && rnc && rnc === newRn) newRn = null;
     const dname = rnc ? rnc.dname : '';
     //  the field shows the slug from here on; nothing else about what is
     //  open changes, so `current` and the lock are passed through as they are

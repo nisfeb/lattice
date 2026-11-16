@@ -289,6 +289,7 @@
     const gen = ++tabShown;
     src.readOnly = false;   // a blank or a binary grub left it locked
     openNext();             // an open still loading for the tab left behind may not land
+    shipDoc = null;         // the ship's render kept for ghostPaint was the last tab's
     const quick = snapOk && !!s && !s.hist && !!t.key && (t.kind === 'page' || t.kind === 'know');
     // a new page or memory already named (its create may still be queued,
     // and runs here once the name is back in the field) comes back named

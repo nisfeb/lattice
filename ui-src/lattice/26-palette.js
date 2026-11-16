@@ -162,7 +162,7 @@
     if (!palRows.length) {
       const none = document.createElement('div');
       none.className = 'muted palnone';
-      none.textContent = 'nothing matches';
+      none.textContent = palMode === 'open' && !q ? 'no recent pages' : 'nothing matches';
       palList.append(none);
     }
     palMark();
@@ -227,12 +227,16 @@
   // quick open's Create: the typed name, through the road a named page
   // takes (createNamed, 35-pages.js), so unsaved text in front is saved
   // or asked about first. Never a page with no name, never the Inbox.
-  function palCreate() {
+  // A name a page already has opens that page (Shift+Enter on it).
+  function palCreate(ev) {
     const typed = palIn.value.trim();
     if (!typed) return;
-    if (!typedPage(typed)) { st(NO_NAME, false); return; }
+    const tp = typedPage(typed);
+    if (!tp) { st(NO_NAME, false); return; }
+    const made = palNew();
     palClose();
-    createNamed(typed);
+    if (made) createNamed(typed);
+    else openIn('page', tp.rn.name, { ev });
     drawersClose();
   }
   paletteOpen = () => palShow();   // the ribbon's button (24-tools.js)
@@ -249,7 +253,7 @@
       palMark();
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (palMode === 'open' && e.shiftKey) palCreate();
+      if (palMode === 'open' && e.shiftKey) palCreate(e);
       else palRun(palSel, e);
     } else if (e.key === 'Escape') {
       e.preventDefault();

@@ -243,12 +243,19 @@
       // authenticated route the opaque origin has no cookies for; escaping
       // to the top page is what the sandbox token above actually permits.
       const tasks = taskLive();
-      mdBlocked = false;
-      mdOutside = outsideOn(current);
-      mdGhosts = ghostTest();
-      prevDoc(localShell(previewFit()) + localHtml(kindNow(), src.value, tasks) + (tasks ? TASK_JS : ''));
+      const body = localBody(tasks);
+      prevDoc(localShell(previewFit()) + body + (tasks ? TASK_JS : ''));
+      prevShown = body;
       outShow(mdBlocked);
-    } catch {} finally { mdGhosts = null; }
+    } catch {}
+  };
+  //  the local render of the text in front, a link to a page not written
+  //  yet marked in it once the tree has come (mdGhosts)
+  const localBody = (tasks) => {
+    mdBlocked = false;
+    mdOutside = outsideOn(current);
+    mdGhosts = ghostTest();
+    try { return localHtml(kindNow(), src.value, tasks); } finally { mdGhosts = null; }
   };
   // ── links to pages not written yet ──────────────────────────────────────
   // A wikilink is dimmed when it names a page this ship could have and has
@@ -296,7 +303,7 @@
     if (d.kind === 'md') { try { h = markGhosts(h); } catch {} }
     prev.removeAttribute('src');
     prevDoc(withPreviewScrollbars(h, true));
-    if (d.kind === 'md') shipDoc = d.html;
+    if (d.kind === 'md') { shipDoc = d.html; prevShown = h; }
   };
   // ── task boxes: a click in the preview edits the source ──────────────────
   // only an md page this viewer may write (not linkRO, a foreign grub, a
@@ -361,11 +368,20 @@
         + GHOST_CSS
         + '</style>' + fit;
   // the tree has just come: a link to a page not written yet dims now, in
-  // the ship's render when that is on show, else in the local paint
+  // the ship's render when that is on show, else in the local paint. The
+  // frame is written again only when the marks change what it shows, and
+  // not at all while nobody sees it (Read paints it on the way back).
   const ghostPaint = () => {
-    const h = shipDoc;
-    if (h) { shipPaint({ kind: 'md', html: h }); return; }
-    if (CONTENT() && kindNow() === 'md') paintLocal();
+    if (previewHidden() || document.hidden) return;
+    let h = null;
+    if (shipDoc) {
+      try { h = markGhosts(shipDoc); } catch { h = shipDoc; }
+      if (h !== prevShown) shipPaint({ kind: 'md', html: shipDoc });
+      return;
+    }
+    if (!CONTENT() || kindNow() !== 'md') return;
+    try { h = localBody(taskLive()); } catch { return; }
+    if (h !== prevShown) paintLocal();
   };
   // a parked group's Read (28-splits.js): the same local render of its
   // text, no fit, or null for a kind only the ship renders
