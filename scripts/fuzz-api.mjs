@@ -14,6 +14,8 @@
 //                          with --quick), FODT_SEED its seed (default 1)
 //          FODS_N          fods bodies the mutator makes (default 40, 8
 //                          with --quick), FODS_SEED its seed (default 1)
+//          GEOJSON_N       geojson mutants (default 40, 8 with --quick),
+//                          GEOJSON_SEED its seed (default 1)
 //
 //  Cost: the pier serialises requests, and the render-heavy routes (the
 //  reader, /marks, the explorer) dominate. Measured ~3s/request against the
@@ -1029,6 +1031,93 @@ async function famFods() {
   return canary('fods');
 }
 
+//  geojson: map pages. Hostile collections (markup in names, kinds,
+//  colours and times, prototype keys, deep nesting, huge arrays, numbers
+//  GeoJSON may write) and seeded mutants of a good one, saved as geojson
+//  pages and previewed. A save is a 200 or a 400 with a reason, never a
+//  crash. A preview is the map or the note, with no live markup, and
+//  stays under the output cap. Then the tile route with paths that are
+//  not tiles: each must be a 404 or a 403, and none may reach out.
+async function famGeojson() {
+  console.log('==> geojson: hostile and mutated maps, and the tile route');
+  const F = (props, geom = '{"type":"Point","coordinates":[1,2]}') => `{"type":"Feature","geometry":${geom},"properties":${props}}`;
+  const C = (...fs) => '{"type":"FeatureCollection","lattice":{},"features":[\n' + fs.join(',\n') + '\n]}\n';
+  const deep = (n) => '['.repeat(n) + ']'.repeat(n);
+  const pts = (n) => Array.from({ length: n }, (_, i) => `[${i % 360 - 180},${i % 180 - 90}]`).join(',');
+  const good = C(F('{"name":"a","kind":"place","time":"2026-11-10T00:00:00Z","color":"#abc"}'),
+    F('{"name":"r"}', '{"type":"LineString","coordinates":[[0,0],[1,1],[2,0]]}'),
+    F('{"name":"z"}', '{"type":"Polygon","coordinates":[[[0,0],[1,0],[1,1],[0,0]]]}'));
+  const hostile = [
+    ['markup', C(F('{"name":"<script>FUZZMARK</script>","kind":"<img src=x onerror=FUZZMARK>","time":"\\"><svg onload=FUZZMARK>"}'))],
+    ['colour', C(F('{"color":"#fff\\" onmouseover=\\"FUZZMARK","name":"c"}'))],
+    ['proto', C(F('{"__proto__":{"name":"FUZZMARK"},"constructor":{"prototype":1},"name":"p"}'))],
+    ['icon-url', C(F('{"icon":"javascript:FUZZMARK","source":"javascript:FUZZMARK","name":"i"}'))],
+    ['deep', `{"type":"FeatureCollection","features":[],"x":${deep(70000)}}`],
+    ['deep-mixed', `{"type":"FeatureCollection","features":[],"x":${'[{"a":'.repeat(5000)}1${'}]'.repeat(5000)}}`],
+    ['many-points', C(F('{}', `{"type":"MultiPoint","coordinates":[${pts(200000)}]}`))],
+    ['many-features', C(...Array.from({ length: 21000 }, () => F('null', 'null')))],
+    ['numbers', C(F('{}', '{"type":"Point","coordinates":[1e308,-1E-308]}'), F('{}', '{"type":"Point","coordinates":[-0.0000000001,99999999999999999999]}'))],
+    ['not-fc', '{"type":"Feature","geometry":null,"properties":{}}'],
+    ['nested-gc', C(F('{}', '{"type":"GeometryCollection","geometries":[{"type":"GeometryCollection","geometries":[]}]}'))],
+    ['bad-json', '{"type":"FeatureCollection","features":[}'],
+    ['nul', C(F('{"name":"a\\u0000b"}'))],
+    ['bidi', C(F('{"name":"‮FUZZ"}'))],
+  ];
+  let st = Number(process.env.GEOJSON_SEED || 1) >>> 0 || 1;
+  const rnd = (n) => { st ^= st << 13; st >>>= 0; st ^= st >>> 17; st ^= st << 5; st >>>= 0; return st % n; };
+  const SNIPS = ['<script>FUZZMARK</script>', '"', '\\', '[', ']', '{', '}', ',', ':', 'null', '1e999', '"name":"<b onclick=FUZZMARK>"', '\u0000', deep(200)];
+  const mutate = (t) => {
+    let out = t;
+    for (let k = 1 + rnd(3); k > 0; k--) {
+      const i = rnd(out.length);
+      if (rnd(3)) out = out.slice(0, i) + SNIPS[rnd(SNIPS.length)] + out.slice(i);
+      else out = out.slice(0, i) + out.slice(i + rnd(40));
+    }
+    return out;
+  };
+  const n = Number(process.env.GEOJSON_N || (QUICK ? 8 : 40));
+  const bodies = [['good', good], ...hostile];
+  for (let k = 0; k < n; k++) bodies.push([`mut${k}`, mutate(good)]);
+  const live = /<script>FUZZMARK|<[a-z]+[^>]*\son[a-z]+=["']?FUZZMARK|javascript:FUZZMARK"/;
+  const CAP = 3 * 1024 * 1024;
+  let k = 0;
+  for (const [label, body] of bodies) {
+    const name = `${P}/geojson/b${k++}`;
+    const t0 = Date.now();
+    const save = await probe('geojson', 'POST', `/page-save?${q({ name, type: 'geojson' })}`, { body });
+    const ms = Date.now() - t0;
+    const repro = `${label}: curl -X POST "${B}/page-save?name=${name}&type=geojson" --data-binary @<body>`;
+    if (save.status !== 200 && save.status !== 400)
+      finding(SEV.HIGH, 'geojson', 'a geojson save was neither saved nor refused with a reason', repro, `${save.status} ${trunc(save.text, 120)}`,
+        'a map body is checked on save: a 200, or a 400 that says why', '+gj-check');
+    if (ms > 15000)
+      finding(SEV.MED, 'geojson', 'a geojson save took over 15 s', repro, `${ms} ms`, 'the check is capped before it parses', '+gj-check');
+    if (label === 'good' && save.status !== 200)
+      finding(SEV.HIGH, 'geojson', 'a good map was refused', repro, trunc(save.text, 120), '', '+gj-check');
+    const pv = await probe('geojson', 'POST', '/page-preview?type=geojson', { body });
+    const frag = pv.text.replace(/<script>[^]*?<\/script>/g, (m) => (/FUZZMARK/.test(m) ? m : ''));
+    if (pv.status === 200 && !/class="geojson"|geojson-note/.test(pv.text))
+      finding(SEV.HIGH, 'geojson', 'page-preview is neither the map nor the note', repro, trunc(pv.text, 160), '', '+gj-html');
+    if (live.test(frag))
+      finding(SEV.CRIT, 'geojson', 'page-preview carries live markup', repro, trunc(frag.match(live), 160),
+        'the renderer writes fixed tags only, escapes every text, and uses a colour only when it is hex', '+gj-html');
+    if (pv.text.length > CAP)
+      finding(SEV.HIGH, 'geojson', 'page-preview is larger than the output cap', repro, `${pv.text.length} bytes`, '', '+html-of');
+  }
+  //  the tile route: a style from a fixed set and three numbers, checked
+  //  against each other, or nothing is fetched
+  const NOT = ['streets/1/2/0', 'streets/18/0/0', 'streets/0/0/0/0', 'x/1/0/0', '../1/0/0', 'streets/%2e%2e/0/0',
+    'streets/1/0/0?u=http://evil.example/', 'http:%2f%2fevil.example/1/0/0', 'streets/1/-0/0', 'streets/1/0x1/0',
+    'streets/17/131072/0', 'streets/' + '9'.repeat(40) + '/0/0', 'Streets/1/0/0', 'streets/1/0/0/'.repeat(30)];
+  for (const t of NOT) {
+    const r = await probe('geojson', 'GET', '/tile/' + t);
+    if (![403, 404].includes(r.status) && !(t.endsWith('?u=http://evil.example/') && [503, 429, 200].includes(r.status)))
+      finding(SEV.HIGH, 'geojson', 'a path that names no tile was not refused', `curl "${B}/tile/${t}"`, `${r.status}`,
+        'the tile route takes a fixed style and range-checked numbers only', '+tile-at');
+  }
+  return canary('geojson');
+}
+
 // ── main ─────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -1044,7 +1133,7 @@ async function main() {
   await ourShip();
 
   const all = { famPageSave, famBatch, famStructure, famReads, famSharing,
-    famBanlist, famKnow, famBookmarks, famReader, famCmdForms, famMethods, famFodt, famFods };
+    famBanlist, famKnow, famBookmarks, famReader, famCmdForms, famMethods, famFodt, famFods, famGeojson };
   const oi = process.argv.indexOf('--only');
   const only = oi > 0 ? process.argv[oi + 1].split(',').map((x) => 'fam' + x[0].toUpperCase() + x.slice(1)) : null;
   const families = Object.entries(all).filter(([k]) => !only || only.includes(k)).map(([, f]) => f);

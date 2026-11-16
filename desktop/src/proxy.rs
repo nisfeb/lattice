@@ -375,6 +375,9 @@ struct Incoming {
     body: Vec<u8>,
     /// relay with the owner's session (false: a sandboxed frame's request)
     session: bool,
+    /// the webview's own same-origin request, token cookie or not: the
+    /// bridge may answer a map tile for it (tiles.rs)
+    own: bool,
 }
 
 /// What to do with one request off the wire.
@@ -472,6 +475,13 @@ fn read_request(reader: &mut impl BufRead, port: u16) -> std::io::Result<Request
     if trust == Trust::Refuse {
         return Ok(Request::Refuse("403 Forbidden"));
     }
+    // a map tile spends this computer's Mapbox token, so only the webview's
+    // own page may have one: never a sandboxed frame let in on our Referer.
+    // The token cookie is not asked for, since WebKitGTK may send a service
+    // worker's fetch without cookies, and a tile carries no session.
+    let own = header("origin").is_none_or(|o| o.strip_prefix("http://").is_some_and(|a| is_bridge(a, port)))
+        && header("sec-fetch-site")
+            .is_none_or(|s| s.eq_ignore_ascii_case("same-origin") || s.eq_ignore_ascii_case("none"));
     if let Some(q) = target.strip_prefix(BOOT_PATH).and_then(|r| r.strip_prefix('?')) {
         let arg = |name: &str| {
             q.split('&').find_map(|kv| kv.strip_prefix(name).and_then(|v| v.strip_prefix('=')))
@@ -496,7 +506,7 @@ fn read_request(reader: &mut impl BufRead, port: u16) -> std::io::Result<Request
             return Ok(Request::Drop); // truncated body: same as a failed read_exact
         }
     }
-    Ok(Request::Relay(Incoming { method, target, headers, body, session: trust == Trust::Session }))
+    Ok(Request::Relay(Incoming { method, target, headers, body, session: trust == Trust::Session, own }))
 }
 
 /// Answer `status` with no ship involved, then close. The client may still
@@ -563,6 +573,15 @@ fn serve(client: TcpStream, ship: &str, port: u16) -> std::io::Result<()> {
             );
         }
     };
+    // a map tile, with a Mapbox token on this computer: answered here, from
+    // Mapbox, and the ship never sees it. Without a token it goes to the
+    // ship's own tile route as any request does.
+    if req.method == "GET" && req.own && crate::tiles::is_tile(&req.target) {
+        if let Some(t) = crate::tiles::token() {
+            let mut c = client;
+            return crate::tiles::serve(&mut c, &req.target, &t);
+        }
+    }
     crate::commands::dlog(&format!("bridge: {} {}", req.method, req.target));
 
     let mut out = agent().request(&req.method, &format!("{ship}{}", req.target));
@@ -668,6 +687,91 @@ mod tests {
         let mut out = String::new();
         c.read_to_string(&mut out).unwrap();
         out.rsplit("\r\n\r\n").next().unwrap_or_default().to_string()
+    }
+
+    /// The tile tests share tiles.rs's test base and token file, so they
+    /// take turns.
+    static TILE_LOCK: Mutex<()> = Mutex::new(());
+
+    /// A stub Mapbox and a stub ship, with `token` (or none) on this
+    /// computer, and one request through the bridge.
+    fn tile_through(req: &str, token: Option<&str>) -> (String, Vec<crate::testutil::Seen>, Vec<crate::testutil::Seen>) {
+        let _turn = TILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mapbox = Stub::typed("image/png", |_| (200, "PNGBYTES".to_string()));
+        let ship = Stub::new(|_| (200, "from the ship".to_string()));
+        let dir = std::env::temp_dir().join(format!("lattice-tiles-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let file = dir.join("mapbox-token");
+        crate::tiles::set_token_file(Some(file.clone()));
+        crate::tiles::set_base(Some(format!("{}/", mapbox.base)));
+        crate::tiles::set_token(token.unwrap_or("")).unwrap();
+        let back = String::from_utf8_lossy(&through_bridge(req.as_bytes(), &ship.base)).into_owned();
+        crate::tiles::set_token("").unwrap();
+        crate::tiles::set_base(None);
+        crate::tiles::set_token_file(None);
+        let _ = std::fs::remove_dir_all(&dir);
+        (back, mapbox.requests(), ship.requests())
+    }
+    fn tile_get(path: &str, extra: &str) -> String {
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\n{extra}\r\n")
+    }
+
+    #[test]
+    fn with_a_token_the_bridge_answers_a_tile_and_the_ship_never_sees_it() {
+        let (back, mapbox, ship) = tile_through(&tile_get("/apps/lattice/tile/streets/3/1/2?r=7", "Sec-Fetch-Site: same-origin\r\n"), Some("pk.test-token"));
+        assert!(ship.is_empty(), "no tile request may reach the ship: {:?}", ship.iter().map(|s| &s.target).collect::<Vec<_>>());
+        assert_eq!(mapbox.len(), 1, "one fetch from Mapbox");
+        assert_eq!(mapbox[0].target, "/mapbox/streets-v12/tiles/512/3/1/2?access_token=pk.test-token");
+        assert!(back.starts_with("HTTP/1.1 200"), "{back}");
+        assert!(back.contains("Cache-Control: private, max-age=2592000"), "the worker keeps it 30 days");
+        assert!(back.contains("Content-Type: image/png"));
+        assert!(back.ends_with("PNGBYTES"));
+        assert!(!back.contains("pk.test-token"), "the token never reaches the webview");
+    }
+
+    #[test]
+    fn a_tile_from_a_service_worker_without_the_token_cookie_is_still_answered() {
+        // WebKitGTK may send a worker's fetch with no cookies: a tile needs none
+        let (back, mapbox, ship) = tile_through(&tile_get("/apps/lattice/tile/dark/0/0/0", ""), Some("pk.t"));
+        assert!(back.starts_with("HTTP/1.1 200") && mapbox.len() == 1 && ship.is_empty(), "{back}");
+    }
+
+    #[test]
+    fn a_path_that_names_no_tile_is_refused_and_fetches_nothing() {
+        for p in ["/apps/lattice/tile/streets/1/2/0", "/apps/lattice/tile/streets/18/0/0",
+                  "/apps/lattice/tile/nope/1/0/0", "/apps/lattice/tile/streets/1/0/0/0",
+                  "/apps/lattice/tile/streets/x/0/0"] {
+            let (back, mapbox, ship) = tile_through(&tile_get(p, ""), Some("pk.t"));
+            assert!(back.starts_with("HTTP/1.1 404"), "{p}: {back}");
+            assert!(mapbox.is_empty() && ship.is_empty(), "{p} reached a server");
+        }
+    }
+
+    #[test]
+    fn without_a_token_a_tile_goes_to_the_ship_as_before() {
+        let (back, mapbox, ship) = tile_through(&tile_get("/apps/lattice/tile/streets/3/1/2", ""), None);
+        assert!(mapbox.is_empty(), "no token, no Mapbox");
+        assert_eq!(ship.len(), 1);
+        assert_eq!(ship[0].target, "/apps/lattice/tile/streets/3/1/2");
+        assert!(back.ends_with("from the ship"));
+    }
+
+    #[test]
+    fn a_sandboxed_frame_cannot_spend_this_computers_token() {
+        // let in on our Referer, a sandboxed frame's request is relayed to the
+        // ship with no session, which refuses it. It never gets a tile here.
+        let req = tile_get("/apps/lattice/tile/streets/3/1/2",
+            &format!("Sec-Fetch-Site: cross-site\r\nOrigin: null\r\nReferer: http://127.0.0.1:{PORT_BASE}/apps/lattice/app\r\n"));
+        let (_, mapbox, ship) = tile_through(&req, Some("pk.t"));
+        assert!(mapbox.is_empty(), "a sandboxed frame must not reach Mapbox");
+        assert_eq!(ship.len(), 1);
+        assert!(ship[0].header("cookie").is_none(), "and goes to the ship without a session");
+    }
+
+    #[test]
+    fn a_tile_post_is_not_a_tile() {
+        let req = format!("POST /apps/lattice/tile/streets/3/1/2 HTTP/1.1\r\nHost: 127.0.0.1:{PORT_BASE}\r\nContent-Length: 0\r\n\r\n");
+        let (_, mapbox, ship) = tile_through(&req, Some("pk.t"));
+        assert!(mapbox.is_empty() && ship.len() == 1);
     }
 
     #[test]

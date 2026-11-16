@@ -380,6 +380,17 @@ jobs:
           git diff --exit-code code/nex/lattice/ui-app/sheet.js ui-src/sheet/vendor/LICENSES
           node --check code/nex/lattice/ui-app/sheet.js
           node scripts/sheet-unit.mjs
+      # map.js is the map editor for geojson pages (ui-src/map/): Leaflet,
+      # lattice's own drawing tools and the page core. Rebuilt and diffed
+      # like sheet.js. build-map.mjs fails over its budget (240 KB raw, 72
+      # KB gzipped). map-unit.mjs is its core in pure node: the layout,
+      # the refusals and caps, hostile bodies, tracks, the render, files.
+      - name: map.js builds, is current and in budget, and its core passes
+        run: |
+          node scripts/build-map.mjs
+          git diff --exit-code code/nex/lattice/ui-app/map.js ui-src/map/vendor/LICENSES
+          node --check code/nex/lattice/ui-app/map.js
+          node scripts/map-unit.mjs
       # the writer core (tokenizer, model, styles, minimal-diff serializer),
       # pure node: no-op round trips, minimal diffs, style reuse, pairs,
       # hostile files and the 13-large time budget
@@ -471,3 +482,8 @@ jobs:
       # ship either.
       - name: browser unit test - spreadsheet grid (no ship)
         run: CHROME="$(command -v google-chrome)" node scripts/ui-sheet-grid.mjs
+      # ui-map-view loads the built map.js into a page on a stub origin
+      # that also answers the tile route, and draws, drags and imports on
+      # the map with the mouse, so it needs no ship either.
+      - name: browser unit test - map editor (no ship)
+        run: CHROME="$(command -v google-chrome)" node scripts/ui-map-view.mjs

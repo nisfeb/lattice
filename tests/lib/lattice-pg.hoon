@@ -196,4 +196,12 @@
     (expect-eq !>(`(unit *)``f) !>(dat.r))
     (expect-eq !>(`view-mode:pg`%fods) !>(show.r))
   ==
+::  +geojson: a map's page keeps its body and shows as a map
+++  test-geojson-result
+  =/  f=@t  '{"type":"FeatureCollection","features":[\0a]}\0a'
+  =/  r=result:pg  (geojson:pg f)
+  ;:  weld
+    (expect-eq !>(`(unit *)``f) !>(dat.r))
+    (expect-eq !>(`view-mode:pg`%geojson) !>(show.r))
+  ==
 --

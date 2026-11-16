@@ -66,6 +66,7 @@ is "the workspace page's own fetch carries the session" yes "$(session page)"
 is "the SSE stream carries the session" yes "$(session sse)"
 is "an image (through the service worker) carries the session" yes "$(session sw-img)"
 is "a fetch made by the service worker carries the session" yes "$(session sw-page)"
+is "a map tile through the worker, relayed with no Mapbox token here, carries the session" yes "$(session sw-tile)"
 is "a sandboxed frame's image does not" no "$(session sandboxed-img)"
 is "another local process does not" no "$(session other-local-process)"
 finish

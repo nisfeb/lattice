@@ -89,6 +89,10 @@ fn main() {
             "open_reader",
             "reader_status",
             "clear_reader_history",
+            // this computer's Mapbox token for map tiles (tiles.rs): whether
+            // one is set, and setting it, asked in a native dialog
+            "map_token_status",
+            "set_map_token",
             // moving the anonymous identity between computers (cometid.rs):
             // each opens a native file dialog and acts only on what the
             // user picks there, and import asks a native confirmation

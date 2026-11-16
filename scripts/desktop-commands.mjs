@@ -136,7 +136,7 @@ const body = (name) => {
   const j = rustSrc.indexOf('\n}\n', i);
   return rustSrc.slice(i, j);
 };
-const asked = ['connect', 'add_mount', 'set_backup_schedules', 'clear_reader_history'];
+const asked = ['connect', 'add_mount', 'set_backup_schedules', 'clear_reader_history', 'set_map_token'];
 const unasked = asked.filter((c) => !remote.has(kebab(c)) || !body(c).includes('ship_page_asks('));
 check('every change the ship page may make is asked in a native dialog first', unasked.length === 0,
   JSON.stringify(unasked));

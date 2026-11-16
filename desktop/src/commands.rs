@@ -95,7 +95,7 @@ pub fn go_home(app: AppHandle, settings: Option<String>) -> Result<(), String> {
 
 /// The tabs of the ship page's Settings (+settings-html in app.hoon) the
 /// manager page may name on its way back.
-const SETTINGS_TABS: &[&str] = &["appearance", "editing", "keys", "data", "clipping", "advanced"];
+const SETTINGS_TABS: &[&str] = &["appearance", "editing", "keys", "data", "clipping", "maps", "advanced"];
 
 /// The Settings tab go_home lands on: none, or one of SETTINGS_TABS.
 /// Anything else is refused rather than passed into the page URL.
@@ -112,7 +112,7 @@ fn settings_tab(tab: Option<&str>) -> Result<Option<&'static str>, String> {
 
 /// The sections of the manager page the ship page may ask for by name:
 /// its tabs, which the ship page's Settings lists under "This computer".
-const MANAGER_SECTIONS: &[&str] = &["connection", "files", "backups"];
+const MANAGER_SECTIONS: &[&str] = &["connection", "files", "backups", "tiles"];
 
 /// The section open_manager lands on: none, or one of MANAGER_SECTIONS.
 /// Anything else is refused rather than passed into the page URL.
@@ -440,7 +440,7 @@ pub fn notify_share(app: AppHandle, title: String, body: String) -> Result<(), S
 /// ui-src/lattice/30-tree.js, and scripts/kind-parity.mjs checks the two agree.
 /// The page's own list is cut down to these, so a page cannot widen the pick
 /// to files that are not pages (a key file, a .env).
-const PAGE_EXTS: &[&str] = &["md", "gmi", "html", "htm", "txt", "text", "js", "css", "hoon", "tex", "latex", "fodt", "fods"];
+const PAGE_EXTS: &[&str] = &["md", "gmi", "html", "htm", "txt", "text", "js", "css", "hoon", "tex", "latex", "fodt", "fods", "geojson"];
 
 /// How much one pick may read and hand the page. A folder pick reads every
 /// matching file under it, so picking a home directory must not pull the
@@ -822,6 +822,32 @@ pub fn reader_status(app: AppHandle) -> Result<ReaderStatus, String> {
         let _ = app;
         Err("this build has no shipless reader".into())
     }
+}
+
+/// Whether this computer holds a Mapbox token for map tiles (tiles.rs).
+/// Only whether: the token itself is never handed to any page.
+#[tauri::command]
+pub fn map_token_status() -> bool {
+    crate::tiles::token().is_some()
+}
+
+/// Set this computer's Mapbox token, or remove it with an empty one. The
+/// bridge then answers map tiles from Mapbox itself. Asked in a native
+/// dialog when the ship page calls it, so a page cannot swap in a token
+/// of its own unseen. Async, for the dialog's wait.
+#[tauri::command]
+pub async fn set_map_token(app: AppHandle, webview: tauri::Webview, token: String) -> Result<(), String> {
+    let t = token.trim().to_string();
+    if !t.is_empty() && !crate::tiles::token_ok(&t) {
+        return Err("that does not look like a Mapbox token".into());
+    }
+    let (text, ok) = if t.is_empty() {
+        ("Remove this computer's Mapbox token? Map tiles then come through your ship.", "Remove")
+    } else {
+        ("Save this Mapbox token on this computer? Map pages here will fetch their tiles from Mapbox with it, directly.", "Save")
+    };
+    ship_page_asks(&app, &webview, "Map tiles", text.into(), ok)?;
+    crate::tiles::set_token(&t)
 }
 
 /// Empty the shipless reader's local history (the Connection tab's button).
