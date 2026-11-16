@@ -810,7 +810,7 @@ mod tests {
     fn write_maps_kind_to_page_type_and_seeds_only_a_new_empty_body() {
         // the `type` decides the mark the page is stored under. A wrong one
         // stores markdown as hoon (or worse, clobbers a generated %index).
-        let (rec, p) = lp("", (0..9).map(|_| ok("{}")).collect());
+        let (rec, p) = lp("", (0..10).map(|_| ok("{}")).collect());
         p.write("n", "md", b"hi", false).unwrap();
         p.write("n", "index", b"", true).unwrap();
         p.write("n", "md", b"", true).unwrap();
