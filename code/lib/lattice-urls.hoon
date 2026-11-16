@@ -66,6 +66,21 @@
   =/  hit=(unit json)  (~(get by known) (scot %p shp))
   =/  pb=(unit path)  ?.(?=([~ %s *] hit) ~ (rush p.u.hit stap))
   (fall pb desk-base)
+::  +moved-path: `p` as it reads under `to`, for a path under one of the
+::  layouts a peer may run lattice at (+peer-bases). A share records the
+::  host's path as it was that day, and the host's lattice moves when its
+::  kernel moves the shell. ~ when `p` is under no layout, or is under
+::  `to` already.
+++  moved-path
+  |=  [to=path p=path]
+  ^-  (unit path)
+  =/  bs=(list path)  peer-bases
+  |-
+  ?~  bs  ~
+  =/  r=(unit path)  (strip-prefix i.bs p)
+  ?~  r  $(bs t.bs)
+  =/  np=path  (weld to u.r)
+  ?:(=(np p) ~ `np)
 ::  +sub-keep-dir: the directory of a peer's published page that a /sub
 ::  keeps, its file being %gmi there. The peer runs lattice at base, and
 ::  rel is the page's spur (+page-rel).
