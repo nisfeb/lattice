@@ -545,6 +545,18 @@ console.log('==> phone');
   await m.close();
 }
 
+console.log('==> zoomed all the way out');
+{
+  //  an empty map opens on the world. One step out, a grid tile spans 180
+  //  degrees, wider than every step: it once fell to the narrowest and froze
+  const m = await open(body([]));
+  m.page.evaluate(() => document.querySelector('.leaflet-control-zoom-out').click()).catch(() => {});
+  await sleep(1500);
+  const live = await Promise.race([m.page.evaluate(() => document.querySelectorAll('.leaflet-tile').length > 0), sleep(8000).then(() => null)]);
+  check('the grid still draws at the lowest zoom', live === true, String(live));
+  await m.close();
+}
+
 check('no page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
 await browser.close();
 check.done();
