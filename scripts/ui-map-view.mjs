@@ -133,6 +133,8 @@ console.log('==> read mode');
   check.eq('a click selects the feature', await m.sel(), 0);
   check('its detail shows, with no inputs', await m.page.$eval('.lm-detail', (e) => !e.hidden && e.textContent.includes('Harbour') && !e.querySelector('input,textarea')));
   check('a source URL is a safe link', await m.page.$eval('.lm-detail a', (a) => a.href === 'https://example.com/x' && a.rel === 'noopener noreferrer' && a.target === '_blank'));
+  check('the click opens a popup at the feature, with what it is', await m.page.$eval('.leaflet-popup.lm-pop', (e) => e.textContent.includes('Harbour') && e.textContent.includes('place') && e.textContent.includes('a note')).catch(() => false));
+  check('a place with no icon of its own lists with the pin', await m.page.$eval('.lm-list button .lm-g', (e) => e.textContent === '⌖'));
   await m.page.click('.lm-list button:nth-child(2)');
   check.eq('a list row selects and flies to its feature', await m.sel(), 1);
   await sleep(400);
@@ -553,6 +555,32 @@ console.log('==> phone');
   await sleep(100);
   check('a tap with the point tool adds a point', (await m.doc()).features.length === 2);
   await m.close();
+}
+
+console.log('==> a feature orrery made, and a click on a layer');
+{
+  const orr = body([pt(-71, 42, { name: 'Home', kind: 'place', orrery: 'place/home' }), pt(-70.9, 42.1, { name: 'Odd', kind: 'place', orrery: 'javascript:alert(1)' })]);
+  const m = await open(orr, { editable: false });
+  await m.click(-71, 42);
+  check('its popup links to the body in orrery', await m.page.$eval('.leaflet-popup.lm-pop a', (a) => a.getAttribute('href') === '/apps/orrery#body/place/home' && a.target === '_blank' && a.rel === 'noopener' && a.textContent === 'Open in orrery').catch(() => false));
+  check('and so does the detail pane', await m.page.$eval('.lm-detail', (e) => [...e.querySelectorAll('a')].some((a) => a.getAttribute('href') === '/apps/orrery#body/place/home')));
+  await m.page.evaluate(() => window.ctl._t.map.closePopup());
+  await m.click(-70.9, 42.1);
+  await sleep(350);
+  check('a value that is no body id is no link', await m.page.$eval('.leaflet-popup.lm-pop', (e) => e.textContent.includes('Odd') && !e.querySelector('.leaflet-popup-content a')).catch(() => false),
+    await m.page.evaluate(() => 'sel ' + window.ctl._t.sel() + ' popups ' + [...document.querySelectorAll('.leaflet-popup')].map((e) => e.textContent.slice(0, 60)).join(' | ')));
+  await m.close();
+  //  an editable page over that map as its layer: the layer's point answers a click
+  const n = await open(body([pt(-70.8, 42.3, { name: 'mine' }), pt(-71.2, 41.8, { name: 'far' })], { layers: ['orrery/map'] }), { layers: { 'orrery/map': orr } });
+  await waitFor(async () => (await n.page.$eval('.lm-legend', (e) => e.textContent)).includes('Layer: orrery/map (2)'), 2000);
+  await n.click(-71, 42);
+  check('a click on a layer feature opens its popup', await n.page.$eval('.leaflet-popup.lm-pop', (e) => e.textContent.includes('Home') && !!e.querySelector('a[href="/apps/orrery#body/place/home"]')).catch(() => false));
+  check.eq('and selects nothing of the page', await n.sel(), -1);
+  await n.click(-70.8, 42.3);
+  check.eq('the page own feature still selects', await n.sel(), 0);
+  await sleep(350);
+  check('with no popup in the way of editing', await n.page.$('.leaflet-popup.lm-pop').then((e) => !e));
+  await n.close();
 }
 
 console.log('==> zoomed all the way out');

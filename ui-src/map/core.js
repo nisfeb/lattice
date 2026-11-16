@@ -25,6 +25,15 @@ export const ICONS = Object.freeze({
   alert: '⚠', person: '☺', car: '▣', boat: '⛵', plane: '✈', fire: '♨',
   water: '≈', tent: '△', cross: '✚', question: '?',
 });
+//  the icon a feature shows when it names none: by its kind, for the kinds
+//  orrery's map and a report use. Any other kind stays a plain dot.
+const KIND_ICON = Object.freeze({ place: 'pin', situation: 'flag', person: 'person', home: 'home', report: 'alert' });
+export const iconOf = (p) => p.icon || (Object.prototype.hasOwnProperty.call(KIND_ICON, p.kind) ? KIND_ICON[p.kind] : '');
+//  a feature of orrery's map names its body (`orrery`: kind/name): where
+//  that body's page is, ~ for anything that is not a body id
+export function orreryLink(v) {
+  return typeof v === 'string' && v.length <= 200 && /^[a-z][a-z0-9-]*\/[A-Za-z0-9~._-]+$/.test(v) ? '/apps/orrery#body/' + v : null;
+}
 export const BLANK = '{"type":"FeatureCollection","lattice":{},"features":[\n]}\n';
 
 const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);

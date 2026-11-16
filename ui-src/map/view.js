@@ -19,12 +19,17 @@ import leafletCss from 'leaflet/dist/leaflet.css';
 import { forward as toMgrs } from 'mgrs';
 import {
   parse, serialize, props, view as readView, sourceLink, bounds, firstPos, fmtPos,
-  colorOf, kindColor, ICONS, STYLES,
+  colorOf, kindColor, ICONS, iconOf, orreryLink, STYLES,
 } from './core.js';
 import { attachDraw } from './draw.js';
 import { fileKind, importText, exportGpx } from './io.js';
 
 const BASE_CSS = `
+.lm-pop .leaflet-popup-content{margin:9px 12px;min-width:150px;max-width:260px;font:13px/1.35 system-ui,sans-serif}
+.lm-pop .lm-dn{font-weight:600;font-size:14px;margin:0 0 3px;word-break:break-word}
+.lm-pop .lm-kv{font-size:12px;word-break:break-word}
+.lm-pop .lm-md{font-size:12.5px;margin-top:4px;max-height:120px;overflow:auto;word-break:break-word}
+.lm-pop a{color:#1a6fb0}
 lat-map{display:flex;flex-direction:column;min-height:0;height:100%;overflow:hidden;font-size:13px;position:relative}
 .lm-bar{display:flex;flex-wrap:wrap;gap:2px;align-items:center;padding:4px 6px;border-bottom:1px solid var(--border,#8884);flex:none}
 .lm-bar button,.lm-bar select{font:inherit;font-size:13px;min-width:28px;height:28px;padding:0 8px;border:1px solid transparent;border-radius:4px;background:none;color:inherit;cursor:pointer}
@@ -138,6 +143,26 @@ const Grid = L.GridLayer.extend({
   },
 });
 
+//  a point with its icon: the circle the canvas draws, then the glyph on
+//  it. Still one canvas shape, so thousands cost what plain dots do.
+const IconMarker = L.CircleMarker.extend({
+  _updatePath() {
+    this._renderer._updateCircle(this);
+    const g = this.options.glyph;
+    const ctx = this._renderer._ctx;
+    if (!g || !ctx || this._empty()) return;
+    const p = this._point;
+    ctx.save();
+    ctx.globalAlpha = this.options.fillOpacity < 0.9 ? 0.75 : 1;
+    ctx.fillStyle = '#fff';
+    ctx.font = '700 ' + Math.round(this._radius * 1.45) + 'px system-ui,"Segoe UI Symbol","Apple Symbols","Noto Sans Symbols 2","DejaVu Sans",sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(g, p.x, p.y + 0.5);
+    ctx.restore();
+  },
+});
+
 const ll = (p) => [p[1], p[0]];
 //  how long after each failure a tile is asked for again, in ms
 const RETRY = [2e3, 8e3, 30e3, 60e3];
@@ -237,7 +262,11 @@ export function mount(host, opts = {}) {
     switch (g.type) {
       case 'Point':
         if (p.radius) out.push(L.circle(ll(g.coordinates), { ...o, radius: p.radius, fillOpacity: dim ? 0.05 : 0.12 }));
-        out.push(L.circleMarker(ll(g.coordinates), { ...o, radius: selOn ? 8 : 6, color: selOn ? '#111' : '#fff', weight: selOn ? 3 : 1.5, fillColor: col, fillOpacity: dim ? 0.5 : 0.95 }));
+        {
+          const ic = iconOf(p);
+          const big = ic && ic !== 'dot';
+          out.push(new IconMarker(ll(g.coordinates), { ...o, glyph: big ? ICONS[ic] : '', radius: (big ? 10 : 6) + (selOn ? 2 : 0), color: selOn ? '#111' : '#fff', weight: selOn ? 3 : 1.5, fillColor: col, fillOpacity: dim ? 0.5 : 0.95 }));
+        }
         break;
       case 'MultiPoint': for (const c of g.coordinates) out.push(...layersOf({ type: 'Point', coordinates: c }, p, selOn, rend, dim)); break;
       case 'LineString': out.push(L.polyline(g.coordinates.map(ll), o)); break;
@@ -383,6 +412,7 @@ export function mount(host, opts = {}) {
     sel = i >= 0 && i < doc.features.length ? i : -1;
     if (was >= 0 && was < doc.features.length) drawOne(was);
     if (sel >= 0) drawOne(sel);
+    if (sel >= 0 && locked()) popAt(doc.features[sel], label(doc.features[sel], sel)); else map.closePopup(pop);
     if (fly && sel >= 0) {
       const b = bounds([doc.features[sel]]);
       if (b) {
@@ -413,7 +443,7 @@ export function mount(host, opts = {}) {
       const b = el('button', i === sel ? 'on' : '');
       b.type = 'button';
       b.setAttribute('role', 'listitem');
-      const g = el('span', 'lm-g', p.icon ? ICONS[p.icon] : '●');
+      const g = el('span', 'lm-g', iconOf(p) ? ICONS[iconOf(p)] : '●');
       g.style.color = colorOf(p);
       b.append(g, el('span', 'lm-n', nm));
       b.onclick = () => select(i, true);
@@ -490,6 +520,8 @@ export function mount(host, opts = {}) {
     return d;
   }
   const KNOWN = ['name', 'note', 'time', 'source', 'kind', 'color', 'icon', 'radius'];
+  //  orrery's body id shows as its link, not as a loose property
+  const shownOther = (raw, k) => !KNOWN.includes(k) && !(k === 'orrery' && orreryLink(raw[k]));
   function paintDetail() {
     if (sel < 0) { detail.hidden = true; detail.replaceChildren(); return; }
     detail.hidden = false;
@@ -501,14 +533,7 @@ export function mount(host, opts = {}) {
     const where = el('div', 'lm-kv');
     where.append(el('b', '', (g ? g.type : 'No shape') + ' '), fmtPos(firstPos(g)) + (g && g.type === 'Point' ? '  ' + mgrsOf(g.coordinates) : ''));
     if (locked()) {
-      parts.push(el('div', 'lm-dn', label(f, sel)));
-      if (p.kind) parts.push(kv('kind', p.kind));
-      if (p.time) parts.push(kv('time', p.time));
-      if (p.radius) parts.push(kv('radius', p.radius + ' m'));
-      parts.push(where);
-      const src = sourceLink(p.source);
-      if (src) parts.push(sourceEl(src));
-      if (p.note) parts.push(md(p.note));
+      parts.push(...summary(f, label(f, sel), where));
     } else {
       const field = (lab, input) => { const l = el('label', '', lab); parts.push(l, input); return input; };
       const inp = (k, type = 'text') => { const i = el('input'); i.type = type; i.value = typeof raw[k] === 'string' || typeof raw[k] === 'number' ? String(raw[k]) : ''; i.dataset.k = k; i.setAttribute('aria-label', k); return i; };
@@ -557,6 +582,8 @@ export function mount(host, opts = {}) {
       sr.onchange = () => setProp('source', sr.value.trim() || undefined);
       const src = sourceLink(p.source);
       if (src) parts.push(sourceEl(src));
+      const orr = orreryEl(raw);
+      if (orr) parts.push(orr);
       const nt = el('textarea');
       nt.rows = 4;
       nt.value = typeof raw.note === 'string' ? raw.note : '';
@@ -569,7 +596,7 @@ export function mount(host, opts = {}) {
       del.className = 'lm-del';
       parts.push(el('div', 'lm-row'), del);
     }
-    const others = Object.keys(raw).filter((k) => !KNOWN.includes(k));
+    const others = Object.keys(raw).filter((k) => shownOther(raw, k));
     if (others.length) {
       parts.push(el('label', '', 'Other properties'));
       for (const k of others.slice(0, 100)) {
@@ -581,6 +608,45 @@ export function mount(host, opts = {}) {
     detail.replaceChildren(...parts);
   }
   function kv(k, v) { const d = el('div', 'lm-kv'); d.append(el('b', '', k + ': '), String(v)); return d; }
+  //  what a feature is, to read: its name, kind, time, where, its links
+  //  and its note. The detail pane of a locked map and the popup show it.
+  function summary(f, name, where) {
+    const p = props(f);
+    const out = [el('div', 'lm-dn', name)];
+    if (p.kind) out.push(kv('kind', p.kind));
+    if (p.time) out.push(kv('time', p.time));
+    if (p.radius) out.push(kv('radius', p.radius + ' m'));
+    if (where) out.push(where);
+    const src = sourceLink(p.source);
+    if (src) out.push(sourceEl(src));
+    const orr = orreryEl(f.properties);
+    if (orr) out.push(orr);
+    if (p.note) out.push(md(p.note));
+    return out;
+  }
+  //  a feature orrery made names its body: a link to that body's page
+  function orreryEl(raw) {
+    const href = orreryLink(raw && typeof raw === 'object' ? raw.orrery : null);
+    if (!href) return null;
+    const d = el('div', 'lm-kv');
+    const a = el('a', '', 'Open in orrery');
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    d.append(a);
+    return d;
+  }
+  //  the popup at a feature: on a click in a map that is read, where the
+  //  detail pane may be out of sight, and on a layer's feature anywhere
+  const pop = L.popup({ className: 'lm-pop', maxWidth: 280, autoPanPadding: [20, 20] });
+  function popAt(f, name) {
+    const at = firstPos(f && f.geometry);
+    if (!f || !at) { map.closePopup(pop); return; }
+    const box = el('div');
+    box.append(...summary(f, name, null));
+    pop.setLatLng(ll(at)).setContent(box).openOn(map);
+  }
+  const peek = (f) => (f ? popAt(f, props(f).name || props(f).kind || 'Feature') : map.closePopup(pop));
   //  a link to what sourceLink (core.js) made of an address: an http(s)
   //  URL in a new tab, or a page through the shell
   function linkEl(src, text) {
@@ -677,6 +743,8 @@ export function mount(host, opts = {}) {
     locked,
     visible,
     select,
+    peek,
+    layerFeats: () => layerFeats,
     write,
     drawOne,
     redrawAll: () => { drawAll(); paintLegend(); paintList(); paintDetail(); paintTime(); },
