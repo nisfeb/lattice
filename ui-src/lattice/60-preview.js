@@ -289,10 +289,13 @@
     doc.head.append(s);
     return '<!doctype html>' + doc.documentElement.outerHTML;
   };
-  //  the ship's render of `d` into the frame, kept for ghostPaint
+  //  the ship's render of `d` into the frame, kept for ghostPaint. Marking
+  //  that fails leaves the render as the ship sent it.
   const shipPaint = (d) => {
+    let h = d.html;
+    if (d.kind === 'md') { try { h = markGhosts(h); } catch {} }
     prev.removeAttribute('src');
-    prevDoc(withPreviewScrollbars(d.kind === 'md' ? markGhosts(d.html) : d.html, true));
+    prevDoc(withPreviewScrollbars(h, true));
     if (d.kind === 'md') shipDoc = d.html;
   };
   // ── task boxes: a click in the preview edits the source ──────────────────

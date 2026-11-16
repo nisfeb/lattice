@@ -21,8 +21,6 @@
     // A name that does not match the snapshot still defers to the network.
     if (name ? p.name !== name : !fresh) return false;
     applyPage(p.name, p, true);
-    //  a page whose create is still queued: the ship has not confirmed it
-    offGet(p.name).then((q) => { if (q && q.isNew && current === p.name) curShip = false; }, () => {});
     //  a snapshot, maybe older than the ship: no rev claim until the fresh
     //  read lands, and text typed meanwhile is settled against it
     freshPending.set(p.name, { body: p.body, at: Date.now() });

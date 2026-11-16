@@ -131,10 +131,6 @@
   let curKind = null;      // the OPEN page's server kind; 'index' has no select
                            // option, so pkind.value would silently convert it
   let curRev = 0;          // the open page's server revision (offline baseRev)
-  let curShip = true;      // the ship has confirmed the open page (a read of it,
-                           // or a save of it that landed). False for a page
-                           // made or started offline: save() sends it as a
-                           // create until it is (35-pages.js `confirm`)
   let curFolder = null;    // selected folder path. Right-pane ops target it
   let folderCtx = '';      // folder uploads land in (last into / open page's dir)
   let nodes = [];          // last page-tree

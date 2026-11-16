@@ -5,10 +5,11 @@
 // what a page IS, and its answer replaces this one a moment later. So the bar
 // here is not "matches the server" but:
 //
-//   1. SAFE. The preview iframe is not sandboxed, so its srcdoc runs on the
-//      app's own origin, and pages are not all hand-written (the clipper
-//      archives arbitrary web pages). Nothing in a document may become live
-//      markup or a live scheme. Most of these tests are about that.
+//   1. SAFE. The preview frame is sandboxed, but this render also feeds the
+//      outline, the PDF export and the Skills pane, and a sandbox is a
+//      second wall, not the first. Pages are not all hand-written (the
+//      clipper archives arbitrary web pages). Nothing in a document may
+//      become live markup or a live scheme. Most of these tests are about that.
 //   2. Close enough that the correction, when it lands, is not a visible jump.
 //
 // Usage:  node scripts/ui-md.mjs

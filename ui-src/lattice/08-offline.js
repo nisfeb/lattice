@@ -178,24 +178,6 @@
   //  drain runs again for it.
   const sameRec = (a, b) => (a.id || b.id ? a.id === b.id : a.queuedAt === b.queuedAt && a.body === b.body);
   let offKept = false;
-  //  Bodies this window has seen land, by page, the sequence number of
-  //  the newest of those saves, and when this window created the page (0
-  //  if it did not): how a 409 on a create is told to be about a page this
-  //  window made (confirmClash, drainCreate). A stale entry only ever
-  //  matches a body this window wrote, so it may outlive its use.
-  const landedMine = new Map();
-  const noteLanded = (name, body, seq = 0, made = false) => {
-    const e = landedMine.get(name) || { bodies: [], seq: 0, created: 0 };
-    const b = body || '\n';
-    e.bodies = [b, ...e.bodies.filter((x) => x !== b)].slice(0, 8);
-    e.seq = Math.max(e.seq, seq);
-    if (made && !e.created) e.created = Date.now();
-    landedMine.set(name, e);
-  };
-  const landedHas = (name, body) => !!(landedMine.get(name) || { bodies: [] }).bodies.includes(body);
-  //  A newer record kept behind q stays what it is: a create stays a
-  //  create, and its 409 is settled by drainCreate, never sent unchecked.
-  //  -> that newer record, or null
   const offDone = async (q) => {
     if (!qrust()) await idbDelSent(q);
     else {
@@ -205,10 +187,11 @@
     let v = null;
     try { v = await offGet(q.name); } catch {}
     const kept = !!v && !sameRec(v, q);
+    //  the create it rode on has landed, so the newer text is a plain edit
+    if (kept && v.isNew) await offPut({ ...v, isNew: false, baseRev: 0 });
     if (kept) offKept = true;
     bustPages(q.name);
     await offRecount();
-    return kept ? v : null;
   };
   const opAll = async () => {
     if (!qrust()) return idbOpAll();
@@ -415,11 +398,10 @@
   //  Only a record THIS window queued, from before the save (its sequence
   //  number below `seq`), and only that exact record: another window's
   //  queued edit is that window's text, which this save never saw.
-  //  A create that landed takes its own queued create with it.
-  async function dropQueued(name, seq, created) {
+  async function dropQueued(name, seq) {
     let q = null;
     try { q = await offGet(name); } catch {}
-    if (q && (!q.isNew || created) && q.win === winId && q.seq < seq) await offDone(q);
+    if (q && !q.isNew && q.win === winId && q.seq < seq) await offDone(q);
   }
 
   let probeTimer = null;
@@ -851,60 +833,24 @@
         try {
           const sr = await tfetch(api + '/page-source?name=' +
             encodeURIComponent(q.name), {}, 20000);
-          const th = sr && sr.ok ? await sr.json() : null;
-          const tb = th ? th.body || '' : null;
-          if (tb === (q.body || '\n')) {
+          if (sr && sr.ok && ((await sr.json()).body || '') === (q.body || '\n')) {
             await offDone(q);
             return true;
-          }
-          //  a page this window saved: a record older than the save that
-          //  made it (this window's, or one from before this window, as
-          //  across a reload) is done, and a newer one of this window's
-          //  goes as an edit on its rev. Any other window's record meets a
-          //  page that is not its own, and is kept aside below.
-          const mine = th && landedMine.get(q.name);
-          if (mine && mine.bodies.includes(tb)) {
-            const older = q.win === winId ? q.seq < mine.seq : !!mine.created && q.queuedAt <= mine.created;
-            if (older) { await offDone(q); return true; }
-          }
-          if (mine && mine.bodies.includes(tb) && q.win === winId) {
-            let e = null;
-            try {
-              e = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) + '&type=' + q.kind
-                + '&base=' + (th.rev || 0) + '&by=' + winId, { method: 'POST', body: q.body || '\n' }, 20000);
-            } catch {}
-            const ev = verdict(q, e);
-            if (ev === 'stop') return false;
-            if (ev === 'ok') { noteLanded(q.name, q.body, q.win === winId ? q.seq : 0); await offDone(q); return true; }
-            if (ev === 'skip') return true;
           }
         } catch {}
         //  an Inbox name the editor drew, taken by someone else meanwhile:
         //  the capture moves to another, five tries in all, as a live save
         //  does (35-pages.js). The record is kept under the new name first.
-        //  A newer record of the old name, queued while this one flew,
-        //  goes with it: the old name is someone else's page.
         if (q.drawn && (q.redrawn || 0) < 4) {
-          let nq = { ...q, name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
+          const nq = { ...q, name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
           if (!(await offPut(nq))) return false;
-          const nv = await offDone(q);
-          if (nv) {
-            nq = { ...nq, body: nv.body, kind: nv.kind, ...qStamp() };
-            if (!(await offPut(nq))) return false;
-            await offDone(nv);
-          }
+          await offDone(q);
           redrawFollow(q.name, nq.name);
           q = nq;
           continue;
         }
       }
       if (v === 'refused' && !await keepSafe(q, one.status, 'create', conflicts)) return false;
-      if (v === 'ok') {
-        //  ours now: its rev is known, and the editor on it saves checked edits
-        noteLanded(q.name, q.body, q.win === winId ? q.seq : 0, true);
-        try { knowRev(q.name, (await one.clone().json()).rev); } catch {}
-        if (current === q.name && pageHere()) curShip = true;
-      }
       await offDone(q);
       return true;
     }
