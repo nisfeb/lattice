@@ -52,6 +52,7 @@
     if (q) {
       const d = { body: q.body, kind: q.kind, rev: q.baseRev || 0, share: 'private' };
       applyPage(name, d, true);
+      curShip = !q.isNew;        // a queued create: the ship has not confirmed it
       snapPage(name, d);
       return true;
     }
@@ -211,7 +212,7 @@
       if (painted) return true;
       //  ...and offline, a name the loaded tree does not hold
       if (net && my === openSeq && nodes.length && !nodes.some((n) => n.path === name)
-        && await startable(name) && my === openSeq && tabStart(name)) return true;
+        && await startable(name, true) && my === openSeq && tabStart(name)) return true;
       st('open failed', false); unwind();
       return my === openSeq ? false : undefined;
     }
@@ -274,6 +275,7 @@
   };
   function applyPage(name, d, quiet) {
     if (name !== current) writerNewDoc();
+    curShip = true;
     curFolder = null;
     setCtlLabels();
     setOpen(name, { readOnly: true, kind: d.kind,
@@ -390,13 +392,14 @@
   }
   //  a name a page can be started under when the ship has none (tabStart):
   //  one it takes as it is, so the page made is exactly the linked name,
-  //  no folder or link, and never a memory's key. The memory list is read
-  //  first when it has not been (a request at the click, none at start),
-  //  and unread, as offline, nothing is started.
-  const startable = async (name) => {
+  //  no folder or link, and never a memory's key. Online the memory list
+  //  is read first when it has not been (a request at the click, none at
+  //  start). Offline a list never read cannot say, and pages and memories
+  //  are separate stores, so the page starts; a list read is honoured.
+  const startable = async (name, offline) => {
     if (!validName(name) || linkOf(name) || nodes.some((n) => !n.page && n.path === name)) return false;
-    if (!knowHave) await loadKnow();
-    return knowHave && !knowEntry(name);
+    if (!knowHave && !offline) await loadKnow();
+    return knowHave ? !knowEntry(name) : offline;
   };
   //  startNamed: a blank page with its name already set and nothing
   //  written, as a missing journal day starts. Its first save makes it.
@@ -658,10 +661,47 @@
     const rn = realName(name);
     return !!rn && nodes.some((n) => n.page && n.path === rn.name && !n.pending);
   };
-  const owed = async (name) => {
-    if (createsOwed.has(name)) return true;
-    try { return !!((await offGet(name)) || {}).isNew; } catch { return false; }
-  };
+  //  A create of a page this editor never had from the ship (save()'s
+  //  `confirm`) was refused: the name is taken. Settled here, once, by
+  //  reading the page. It is ours when it holds a body this window saw
+  //  land, or the queued create's own body: its rev is taken and the text
+  //  goes again as a checked edit. Anyone else's keeps it, and the text
+  //  is kept aside under conflicts/ (a drawn Inbox name draws another),
+  //  and the editor gives that name back.
+  async function confirmClash(kindOverride, name, kind, sent, q, failed) {
+    const th = await bodyRead(name);
+    if (!th) { st('save failed: ' + name + ' could not be read', false); return failed(); }
+    const mine = q && q.isNew && q.win === winId;
+    const recLanded = q && q.isNew && th.body === (q.body || '\n');
+    if (recLanded || landedHas(name, th.body)) {
+      //  the queued create's text is there, or this editor's newer text
+      //  goes now: the record is done
+      if (recLanded || mine) await offDone(q);
+      knowRev(name, th.rev);
+      if (current !== name) return flushPending();
+      curShip = true;
+      curRev = th.rev || 0;
+      return save(kindOverride);
+    }
+    if (q && q.drawn && current === name) {
+      if (mine) await offDone(q);
+      const next = inboxName();
+      drawnNames.add(next);
+      if (current === name) tabUnclaim(name, next);
+      return save(kindOverride, undefined, 1);
+    }
+    const alt = await keepAside({ name, kind, body: sent }, keptName('mine', name));
+    if (alt === false) {
+      if (!(await enqueueSave(name, kind, sent, true, q))) return failed();
+      if (src.value === sent) dirty = false;
+      return flushPending();
+    }
+    if (!alt) { st('that page already exists: your text could not be kept aside, it is only here', false); return failed(); }
+    addTreeNode(alt, kind, false); snapTree(); renderTree();
+    if (current === name) { if (src.value === sent) dirty = false; tabUnclaim(name); }
+    st('that page already exists: your text is kept at ' + alt, false);
+    flushPending();
+  }
   //  `fixed`: a queued create whose page the editor no longer shows (see
   //  below). It names what to write, and the editor is left alone.
   //  `drawn`: how many Inbox names this create has drawn so far (below).
@@ -689,7 +729,7 @@
       setOpen(null, { shown: name });
     }
     if (fixed) drawn = fixed.drawn || 0;
-    let creating = !!fixed || current === null;
+    const creating = !!fixed || current === null;
     //  a name this editor drew stays drawn, not typed, until it lands
     if (creating && !drawn && drawnNames.has(name)) drawn = 1;
     // carry kindOverride into the re-arm: a bare `true` here forgot which
@@ -729,10 +769,12 @@
     }
     saving = true;
     st('saving…');
-    //  A page whose create went to the queue is a create until one lands
-    //  (createsOwed, 08-offline.js). As an edit with no base it would write
-    //  over a page made under its name meanwhile.
-    if (!creating && current === name) creating = await owed(name);
+    //  A page whose revision this editor has never had from the ship (made
+    //  or started offline) is sent as a create, never as a write with no
+    //  base, which the ship takes as unchecked: it would write over a page
+    //  made under that name meanwhile. Its 409 is settled below, once.
+    const confirm = !creating && !curShip && pageHere() && !linkOf(name);
+    const qrec = confirm ? await offGet(name).catch(() => null) : null;
     // capture the exact body being sent: keystrokes landing during the round-trip
     // must NOT be marked clean, or the next refresh swaps the stale server copy
     // in and the typed text is lost (same guard autosave has always had).
@@ -754,7 +796,10 @@
     // the typed text as display names (the tree shows those, the name
     // field shows the real path). newRn is the create dialog's copy of
     // the same split, made before it seeded the field with the slug.
-    const rnc = !creating ? null : rn.dnames ? rn : fixed ? fixed.rn : newRn;
+    //  ...and a page made offline keeps the display names its queued
+    //  create carried
+    const rnc = confirm ? (qrec && (qrec.dname || qrec.dnames) ? qrec : null)
+      : !creating ? null : rn.dnames ? rn : fixed ? fixed.rn : newRn;
     if (!fixed) newRn = null;
     const dname = rnc ? rnc.dname : '';
     //  the field shows the slug from here on; nothing else about what is
@@ -775,10 +820,11 @@
     };
     if (!fixed && editLocked()) { saving = false; st(LOCK_NOTE, false); return failed(); }
     if (tooBig(sent)) { saving = false; st(TOO_BIG, false); return failed(); }
-    const base = creating ? 0 : baseFor(name, curRev);
+    const made = creating || confirm;
+    const base = made ? 0 : baseFor(name, curRev);
     const url = api + '/page-save?name=' + encodeURIComponent(name) +
-      '&type=' + kind + (creating ? '&new=1&by=' + winId : casQ(name, base)) + dnameQ(rnc)
-      + (creating ? '' : linkBase(name));
+      '&type=' + kind + (made ? '&new=1&by=' + winId : casQ(name, base)) + dnameQ(rnc)
+      + (made ? '' : linkBase(name));
     let w = { gone: true };
     //  behind a folder job a save would only wait out its timeout and land
     //  after the queued ones: it joins the queue, which keeps the newest
@@ -800,7 +846,7 @@
       // Clearing dirty there would tell the editor the work is safe and let
       // the next navigation drop it, so the bookkeeping stays untouched and
       // the page keeps behaving as unsaved. enqueueSave has already said so.
-      const queued = await enqueueSave(name, kind, sent, creating, rnc, undefined, creating && !!drawn);
+      const queued = await enqueueSave(name, kind, sent, made, rnc, undefined, creating && !!drawn);
       if (!queued) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         return failed();
@@ -817,6 +863,7 @@
         tabFollow();         // a new page's tab is named now (21-tabs.js)
         curKind = kind;
         if (creating) curRev = 0;
+        if (made) curShip = false;
         pname.readOnly = true;
         if (src.value === sent) dirty = false;
         else if (!savePending) savePending = true;
@@ -831,27 +878,10 @@
       //  the ship refuses a save into a folder being moved, or onto a page
       //  that moved away, and says where it went
       const why = await errText(r);
+      if (confirm && !/ moved to /.test(why)) return confirmClash(kindOverride, name, kind, sent, qrec, failed);
       if (!creating && /^: stale/.test(why)) {
         await settleStale(name, kind, sent, base,
           () => !fixed && pageHere() && current === name);
-        flushPending();
-        return;
-      }
-      //  A create owed from the queue, refused: the name was taken while
-      //  the page waited. Its newest text goes where the queued create's
-      //  goes (a conflicts/ copy, or another Inbox name for a drawn one),
-      //  and the editor no longer takes the ship's page for this one. If
-      //  the queue's own create landed meanwhile, the page is ours.
-      if (creating && !fixed && current === name) {
-        if (!(await owed(name))) return save(kindOverride);
-        const q = await offGet(name).catch(() => null);
-        const drew = !!(q && q.drawn);
-        if (!(await enqueueSave(name, kind, sent, true, rnc, 0, drew))) return failed();
-        if (src.value === sent) dirty = false;
-        if (!drew) tabUnclaim(name);
-        replayQueue(true);
-        st(drew ? 'that name was taken, so this capture moves to another' :
-          'that page already exists: your text is kept under conflicts/', false);
         flushPending();
         return;
       }
@@ -877,10 +907,10 @@
     // saved-document bookkeeping, applied whether or not the editor still
     // shows it, so a New clicked mid-save keeps both documents. Only a
     // CREATE changes the tree, and it confirms a row newFile left pulsing.
-    if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
+    if (made) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
     patchLocal(name, kind, sent, vr && vr.rev);
-    if (creating) createsOwed.delete(name);
-    await dropQueued(name, sentSeq, creating);
+    noteLanded(name, sent, sentSeq, made);
+    await dropQueued(name, sentSeq, made);
     // live-editor state ONLY if the editor still shows the saved document.
     // A New or open during the round-trip moved it; rewriting current, the
     // name field, dirty or the URL here would brand the new page as this save.
@@ -900,7 +930,8 @@
       else if (!savePending) savePending = true;   // flushPending below saves it
       //  a create's first rev can be 0, and curRev until now was the page
       //  shown before this new one: never a claim to carry over
-      if (vr && typeof vr.rev === 'number' && (vr.rev || creating)) curRev = vr.rev;
+      if (vr && typeof vr.rev === 'number' && (vr.rev || made)) curRev = vr.rev;
+      curShip = true;
       if (linkCf.delete(name)) paintLinkCf(name);   // a retried link save landed
       if (vr && vr.conflicted) {
         st('saved — replaced an edit from elsewhere; it is kept at ' + vr.kept, false);
@@ -1076,6 +1107,7 @@
       return;
     }
     patchLocal(name, null, res.body, res.rev);
+    noteLanded(name, res.body);
     for (const t of allTabs())
       if (t.kind === 'page' && t.key === name && t.snap && t.snap.body === sent)
         Object.assign(t.snap, { body: res.body, rev: res.rev, dirty: false });
@@ -1135,8 +1167,8 @@
     // (flushNoAsk and guardDirty, 20-state.js, which ask instead). Only
     // Ctrl+S, the save button and :w write.
     if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
-    //  a page whose create is owed from the queue saves as a create
-    if (mode !== 'know' && await owed(current)) return save();
+    //  a page the ship has not confirmed saves through save(), as a create
+    if (mode !== 'know' && !curShip && !grubPath) return save();
     // open for editing in another window, or refused as stale with no copy
     // kept: no writes until that is settled
     if (mode !== 'know' && (editLocked() || casHold.has(current))) return;
@@ -1197,7 +1229,7 @@
     if (!know) { try { vr = await r.json(); } catch {} }
     //  patch the saved doc's local cache regardless of focus. No kind: an
     //  autosave writes the page's existing kind, it never sets one.
-    if (!know) { patchLocal(target, null, sent, vr && vr.rev); await dropQueued(target, sentSeq); }
+    if (!know) { patchLocal(target, null, sent, vr && vr.rev); noteLanded(target, sent, sentSeq); await dropQueued(target, sentSeq); }
     if (!here()) tabLanded(tk, target, sent, vr && vr.rev);
     // live-editor state only if the editor is still on the doc we autosaved
     if (here()) {
@@ -1243,9 +1275,9 @@
     await savesSettled(false);
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
     if (t.snap !== s || !s.dirty || !allTabs().includes(t)) return;
-    //  a page whose create is owed goes to the queue as a create, which
-    //  lands it or keeps it aside (createsOwed, 08-offline.js)
-    if (!know && await owed(t.key)) {
+    //  a page the ship has not confirmed goes to the queue as a create,
+    //  whose replay lands it, finds it ours or keeps it aside (drainCreate)
+    if (!know && s.ship === false) {
       if (!(await enqueueSave(t.key, s.kind || s.pkind, s.body, true, null, 0))) return;
       tabLanded('page', t.key, s.body);
       replayQueue(true);
@@ -1302,6 +1334,7 @@
     if (!know) {
       try { vr = await w.r.json(); } catch {}
       patchLocal(name, null, sent, vr && vr.rev);
+      noteLanded(name, sent, sentSeq);
       await dropQueued(name, sentSeq);
     }
     else knowGen++;

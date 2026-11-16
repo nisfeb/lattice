@@ -101,7 +101,7 @@
   const snapNow = () => (writerSync(), {
     body: src.value, dirty, everTyped,
     sel: [src.selectionStart, src.selectionEnd], scroll: src.scrollTop,
-    kind: curKind, pkind: pkind.value, rev: curRev, shown: pname.value,
+    kind: curKind, pkind: pkind.value, rev: curRev, shown: pname.value, ship: curShip,
     hist: viewingRev !== null,
   });
   async function parkDoc(t) {
@@ -165,6 +165,7 @@
         //  a tab's rev is the editor's from when it was parked, which only
         //  ever comes from a fresh answer, so its saves may claim it
         if (!s.hist) { curRev = s.rev || 0; if (!s.dirty) shipText.set(t.key, s.body); }
+        curShip = s.ship !== false;
         // a quiet applyPage paints a content kind only. A computed page
         // kept whatever the pane showed before it came back: a grub's "no
         // preview", painted while the grub's state was still live (fuzz
@@ -354,11 +355,12 @@
     tabsChanged();
     return true;
   }
-  //  the page in front was refused its create (save(), 35-pages.js): it is
-  //  a page not made yet under that name again, its text kept in the editor
-  function tabUnclaim(name) {
-    tabPend(name);
-    setOpen(null, { shown: name });
+  //  the page in front was refused its create (confirmClash, 35-pages.js):
+  //  the name is someone else's page, so the tab lets go of it, and the
+  //  text stays in the editor as a page not made yet, shown as `as`
+  function tabUnclaim(name, as = name) {
+    if (tabPend(name)) activeTab.start = null;
+    setOpen(null, { shown: as });
     tabsChanged();
   }
   function tabBlank(t) {

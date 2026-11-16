@@ -178,16 +178,25 @@
   //  drain runs again for it.
   const sameRec = (a, b) => (a.id || b.id ? a.id === b.id : a.queuedAt === b.queuedAt && a.body === b.body);
   let offKept = false;
-  //  The names whose create went to the queue and has not landed: a save
-  //  of one is a create (new=1) until it has, or it would write over a
-  //  page made under that name meanwhile (save(), 35-pages.js). A refused
-  //  create stays here. The queue's own isNew record says the same across
-  //  a reload.
-  const createsOwed = new Set();
-  //  `landed`: q was written. A refused create (kept aside) leaves a newer
-  //  record behind it a create, to be refused and kept aside in turn.
+  //  Bodies this window has seen land, by page, the sequence number of
+  //  the newest of those saves, and when this window created the page (0
+  //  if it did not): how a 409 on a create is told to be about a page this
+  //  window made (confirmClash, drainCreate). A stale entry only ever
+  //  matches a body this window wrote, so it may outlive its use.
+  const landedMine = new Map();
+  const noteLanded = (name, body, seq = 0, made = false) => {
+    const e = landedMine.get(name) || { bodies: [], seq: 0, created: 0 };
+    const b = body || '\n';
+    e.bodies = [b, ...e.bodies.filter((x) => x !== b)].slice(0, 8);
+    e.seq = Math.max(e.seq, seq);
+    if (made && !e.created) e.created = Date.now();
+    landedMine.set(name, e);
+  };
+  const landedHas = (name, body) => !!(landedMine.get(name) || { bodies: [] }).bodies.includes(body);
+  //  A newer record kept behind q stays what it is: a create stays a
+  //  create, and its 409 is settled by drainCreate, never sent unchecked.
   //  -> that newer record, or null
-  const offDone = async (q, landed = true) => {
+  const offDone = async (q) => {
     if (!qrust()) await idbDelSent(q);
     else {
       try { await qcall('queue_del', { name: q.name, sent: { queuedAt: q.queuedAt, body: q.body } }); }
@@ -196,8 +205,6 @@
     let v = null;
     try { v = await offGet(q.name); } catch {}
     const kept = !!v && !sameRec(v, q);
-    //  the create it rode on has landed, so the newer text is a plain edit
-    if (kept && v.isNew && landed) await offPut({ ...v, isNew: false, baseRev: 0 });
     if (kept) offKept = true;
     bustPages(q.name);
     await offRecount();
@@ -471,7 +478,6 @@
       st(NOT_SAVED, false);
       return false;
     }
-    if (isNew || (prev && prev.isNew)) createsOwed.add(name);
     pageCache.delete(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd) { nd.body = body; nd.kind = kind; persistTree(); }
@@ -739,7 +745,7 @@
         //  the queue's copy, never the only one
         ['Clear', async () => {
           if (!q.op && !await recoverPut(q, 'cleared')) { st('could not keep a copy, so nothing was cleared', false); return; }
-          if (q.op) await opDel(q._k); else await offDone(q, false);
+          if (q.op) await opDel(q._k); else await offDone(q);
           stuckRec.delete(k);
           stuckRender();
         }]]);
@@ -803,7 +809,7 @@
         for (const q of saves) {
           if (!o.id || q.via !== o.id) continue;
           if (!await keepSafe({ ...q, name: q.from || q.name }, r.status, 'edit', conflicts)) return false;
-          await offDone(q, false);
+          await offDone(q);
         }
       } else {
         bustPages(o.name || o.from);
@@ -845,10 +851,32 @@
         try {
           const sr = await tfetch(api + '/page-source?name=' +
             encodeURIComponent(q.name), {}, 20000);
-          if (sr && sr.ok && ((await sr.json()).body || '') === (q.body || '\n')) {
-            createsOwed.delete(q.name);
+          const th = sr && sr.ok ? await sr.json() : null;
+          const tb = th ? th.body || '' : null;
+          if (tb === (q.body || '\n')) {
             await offDone(q);
             return true;
+          }
+          //  a page this window saved: a record older than the save that
+          //  made it (this window's, or one from before this window, as
+          //  across a reload) is done, and a newer one of this window's
+          //  goes as an edit on its rev. Any other window's record meets a
+          //  page that is not its own, and is kept aside below.
+          const mine = th && landedMine.get(q.name);
+          if (mine && mine.bodies.includes(tb)) {
+            const older = q.win === winId ? q.seq < mine.seq : !!mine.created && q.queuedAt <= mine.created;
+            if (older) { await offDone(q); return true; }
+          }
+          if (mine && mine.bodies.includes(tb) && q.win === winId) {
+            let e = null;
+            try {
+              e = await tfetch(api + '/page-save?name=' + encodeURIComponent(q.name) + '&type=' + q.kind
+                + '&base=' + (th.rev || 0) + '&by=' + winId, { method: 'POST', body: q.body || '\n' }, 20000);
+            } catch {}
+            const ev = verdict(q, e);
+            if (ev === 'stop') return false;
+            if (ev === 'ok') { noteLanded(q.name, q.body, q.win === winId ? q.seq : 0); await offDone(q); return true; }
+            if (ev === 'skip') return true;
           }
         } catch {}
         //  an Inbox name the editor drew, taken by someone else meanwhile:
@@ -859,12 +887,11 @@
         if (q.drawn && (q.redrawn || 0) < 4) {
           let nq = { ...q, name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
           if (!(await offPut(nq))) return false;
-          createsOwed.add(nq.name);
-          const nv = await offDone(q, false);
+          const nv = await offDone(q);
           if (nv) {
             nq = { ...nq, body: nv.body, kind: nv.kind, ...qStamp() };
             if (!(await offPut(nq))) return false;
-            await offDone(nv, false);
+            await offDone(nv);
           }
           redrawFollow(q.name, nq.name);
           q = nq;
@@ -872,8 +899,13 @@
         }
       }
       if (v === 'refused' && !await keepSafe(q, one.status, 'create', conflicts)) return false;
-      if (v === 'refused') createsOwed.add(q.name); else createsOwed.delete(q.name);
-      await offDone(q, v !== 'refused');
+      if (v === 'ok') {
+        //  ours now: its rev is known, and the editor on it saves checked edits
+        noteLanded(q.name, q.body, q.win === winId ? q.seq : 0, true);
+        try { knowRev(q.name, (await one.clone().json()).rev); } catch {}
+        if (current === q.name && pageHere()) curShip = true;
+      }
+      await offDone(q);
       return true;
     }
   }
