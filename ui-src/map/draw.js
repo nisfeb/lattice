@@ -133,6 +133,15 @@ export function attachDraw(x) {
     }
     return best;
   }
+  //  the same test over a layer's features, which are never selected
+  function hitIn(fs, p) {
+    let best = -1, bd = TOL;
+    for (let i = fs.length - 1; i >= 0; i--) {
+      const d = distOf(fs[i].geometry, p, props(fs[i]).radius);
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+  }
 
   // ── handles of the selected shape ──────────────────────────────────────
   function handlePaths(g) {
@@ -248,7 +257,13 @@ export function attachDraw(x) {
   // ── clicks: select, or draw ────────────────────────────────────────────
   map.on('click', (e) => {
     if (justDragged) { justDragged = false; return; }
-    if (tool === 'select' || !editable || x.locked()) { x.select(hit(e.containerPoint)); return; }
+    if (tool === 'select' || !editable || x.locked()) {
+      const h = hit(e.containerPoint);
+      x.select(h);
+      //  nothing of the page's there: a layer's feature shows what it is
+      if (h < 0) { const fs = x.layerFeats(); x.peek(fs[hitIn(fs, e.containerPoint)] || null); }
+      return;
+    }
     const c = pos(e.latlng);
     if (tool === 'point') { add({ type: 'Point', coordinates: c }, {}); return; }
     if (tool === 'ring') {
