@@ -3868,7 +3868,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     wrNote.textContent = why;
     const k = richHere();
     if (!k || writerSourceOn()) return writerOff();
-    const body = src.value, ed = !src.readOnly && viewingRev === null;
+    const body = src.value, ed = !src.readOnly && viewingRev === null && !(k === 'geojson' && current === 'orrery/map');
     wrShow(true);
     const doc = { tab: activeTab, n: wrDoc, k };
     if (wr && wrFor && wrFor.tab === doc.tab && wrFor.n === doc.n && wrFor.k === k && wr.base() === body) { wrBox(k); return wr.setEditable(ed); }

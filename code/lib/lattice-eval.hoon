@@ -139,6 +139,10 @@
       ::  so its read of the page and its write are one step no save can
       ::  land between (+journal-put)
       [%journal-put name=@ta at=@t fresh=@t]
+      ::  the orrery map mirror's body for orrery/map (+map-body:lo, already
+      ::  through +gj-check). In the writer, so the read of each page and its
+      ::  write are one step (+map-put)
+      [%map-put body=@t]
       ::  a live read of the link at /page/<pax> naming `rpax` on `host`:
       ::  `got` its [kind body rev], ~ when it failed. Applied in the writer
       ::  only while that same link is still there, so a read that finishes
