@@ -289,6 +289,7 @@
     } finally { end(); }
     if (!r.ok) { st('delete failed' + await errText(r), false); return false; }
     dropTreeNodes(path);
+    recentsDrop('page', path);
     snapTree();
     renderTree();
     st(r.offline ? 'deleted ' + path + ' offline' : 'deleted ' + path);

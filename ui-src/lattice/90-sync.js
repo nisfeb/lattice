@@ -34,11 +34,15 @@
       // deleted key a restore), so an autosave recreating one there is by
       // design, not this bug. A page has no such route. Keep the buffer,
       // never destroy what was typed, but stop autosave from writing it
-      // back over the delete: it guards on `!current`, so clear that and
-      // reopen the name field the way a brand-new page gets one.
+      // back over the delete. Clearing `current` alone no longer does
+      // that, since autosave makes a page never saved (a capture), so the
+      // buffer is marked (deletedHere, 20-state.js): autosave and a parked
+      // tab's save stand down for it until a save on purpose. The name
+      // field reopens the way a brand-new page gets one.
       if (mode !== 'know') {
         const doomed = current;
         current = null;
+        deletedHere = doomed;
         pname.readOnly = false;
         // the tree row and the page cache still remember this page from
         // before the delete. Left alone, the still-highlighted row (or a
@@ -50,7 +54,7 @@
         snapTree();
         renderTree();
         resetPanels();
-        st('this page was deleted elsewhere — save to recreate it', false);
+        st(DELETED_NOTE, false);
       }
       return;
     }

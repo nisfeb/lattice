@@ -154,7 +154,7 @@ try {
   await closeAll(m);
 
   // every placement-map home reachable: on screen as is, or after one drawer
-  const HOMES = ['#newfile', '[data-pt=know]', '[data-pt=marks]', '#tmenu', '#tread',
+  const HOMES = ['#newfile', '#qopen', '[data-pt=know]', '[data-pt=marks]', '#tmenu', '#tread',
     '[data-pt=page]', '[data-pt=hist]', '#rb-settings', '#rb-access', '#rb-inbox'];
   for (const sel of HOMES) {
     let how = null;
@@ -321,11 +321,15 @@ try {
       const b = document.getElementById(i);
       return !!b && !!b.dataset.action && b.getAttribute('aria-label') === b.title;
     })));
+  //  a new page asks nothing: a blank page, unnamed, the cursor in it
   await tap(m, '#mb-new');
-  let newOpen = false;
-  try { await m.waitForFunction(() => !document.getElementById('dlg').hidden, { timeout: 5000 }); newOpen = true; } catch {}
-  check('bottom bar new page opens the new-page prompt', newOpen);
-  await m.evaluate(() => document.getElementById('dlgcancel').click());
+  let blank = false;
+  try {
+    await m.waitForFunction(() => document.activeElement === document.getElementById('src')
+      && document.getElementById('pname').value === '', { timeout: 5000 });
+    blank = await m.evaluate(() => document.getElementById('dlg').hidden);
+  } catch {}
+  check('bottom bar new page starts a blank page with no prompt', blank);
 
   // Read paints the preview on a phone. The pane is display:none until it is
   // shown, and Chromium never paints a sandboxed frame that loaded while

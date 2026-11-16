@@ -33,7 +33,8 @@
   // 70-upload). Those files run after this component upgrades, so their
   // $-lookups find the rendered elements. The create and upload buttons sit
   // in their own .newbtns group because the desktop File menu takes them
-  // over and hides that group (96-deskmenu.js); sort and collapse stay.
+  // over and hides that group (96-deskmenu.js); sort and collapse stay, and
+  // so does Open, just ahead of the group, beside New page.
   let treeList;
   // pages other ships shared with us (/shared-with-me), drawn as a folder
   // after the pages. Filled by 69-shared.js.
@@ -46,6 +47,7 @@
       this.innerHTML = `
 <aside class="tree" id="tree">
   <div class="ptool" role="toolbar" aria-label="Files">
+    ${sbtn('id="qopen" data-action="qopen"', 'qopen', 'Open a page', 'Ctrl+O')}
     <div class="newbtns">
       ${sbtn('id="newfile" data-action="newfile"', 'plus', 'New page')}
       ${sbtn('id="newfolder" data-action="newfolder"', 'fplus', 'New folder')}
@@ -137,6 +139,7 @@
     // matched, and every first session refetched the whole dump once the
     // stream registered.
     if (!lastRev && typeof d.since === 'string') noteRev(d.since);
+    const first = !nodes.length;
     nodes = d.nodes;
     treeShares = typeof d.since === 'string';
     treeSince = treeShares ? d.since : '';
@@ -155,6 +158,7 @@
     // own #knowlist), so a memory tab in front is no reason to leave Files
     // stale behind the Knowledge tab
     renderTree();
+    if (first) ghostPaint();
     // a link's grant may have moved (an edit request approved): the lock
     // follows it with no reload (36-editlock.js)
     if (current && linkOf(current)) paintLock();
@@ -528,6 +532,9 @@
     ['newtmpl', 'New from template'], ['upfiles', 'Upload files'], ['updir', 'Upload a folder'],
     ['tsort', 'Flip sort order'], ['tcoll', 'Collapse all folders']])
     clickAction(id, name, 'Files toolbar');
+  // quick open: the palette's box over pages and memories (26-palette.js)
+  $('qopen').onclick = () => palShow('open');
+  clickAction('qopen', 'Open a page', 'Files', 'Ctrl+O');
 
   function renderTree() {
     const coll = paneColl.get();

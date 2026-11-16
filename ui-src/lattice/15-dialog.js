@@ -34,6 +34,9 @@
     dlgIn.setSelectionRange(dlgIn.value.length, dlgIn.value.length);
     return p;
   };
+  //  what a name that slugs to nothing is told (realName, 10-shell.js), here
+  //  and in quick open's Create (26-palette.js)
+  const NO_NAME = 'that name has nothing to go by — use at least one letter or digit.';
   //  askNameKind: a name AND the kind to save it as, in one dialog.
   //
   //  The kind used to be reachable only from the bar, which the desktop shell
@@ -43,8 +46,9 @@
   //  Options are cloned from the hidden kind picker (#pkind, 23-tabhead.js)
   //  rather than restated, so a kind added there (tex was) appears here with
   //  no second edit. `fixed` shows the kind without letting it change: a new
-  //  memory is always md.
-  const askNameKind = async (msg, value, okLabel, kind, fixed) => {
+  //  memory is always md. `optional`: an empty name is an answer, the
+  //  name '' (a new page in a folder, 35-pages.js), and only a cancel is null.
+  const askNameKind = async (msg, value, okLabel, kind, fixed, optional) => {
     dlgKind.textContent = '';
     const src = $('pkind');
     if (src) for (const o of src.options) dlgKind.appendChild(o.cloneNode(true));
@@ -65,10 +69,10 @@
       dlgKind.hidden = true;
       if (raw === null) return null;
       const name = raw.trim().replace(/^\/+|\/+$/g, '');
-      if (!name) return null;
+      if (!name) return optional ? { name, kind: picked } : null;
       if (realName(name)) return { name, kind: picked };
       seed = name;
-      note = 'that name has nothing to go by — use at least one letter or digit. ';
+      note = NO_NAME + ' ';
     }
   };
   // askName: ask() for a path-like name, re-prompting until the server would
@@ -88,7 +92,7 @@
       if (!name) return null;
       if (realName(name)) return name;
       seed = name;
-      note = 'that name has nothing to go by — use at least one letter or digit. ';
+      note = NO_NAME + ' ';
     }
   };
   // askConfirm: yes/no dialog → boolean

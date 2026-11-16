@@ -255,6 +255,32 @@ doubler automatically, with no command needed.
 This lays out the *rendered* views of `clock` and `counter`. Editing either
 re-renders the dashboard live.
 
+## Starting and opening pages in the editor
+
+### Starting a page
+
+The **+** in the tab strip, the **+** of each split group, the file tree's **New page** and the phone bar's new page open a blank markdown page. Nothing is asked. Once the page has text it saves itself as `inbox/YYYY-MM-DD-NNNN`: the device's local date and four random digits. If that name is taken, another number is drawn. An empty page is never saved.
+
+Move or rename a captured page to give it a real name. On a page not yet saved, it sets the name the first save will use. With autosave off in Settings, the first Ctrl/Cmd-S saves the page.
+
+A page started with its name, such as a journal day from the brief button or a page started from a link, is saved under that name once it has text. While the ship is unreachable it is not saved yet, and the status line says so. It is saved when the ship answers again. Ctrl/Cmd-S, or leaving the page, keeps it in the offline queue instead, like any other save made offline.
+
+When the editor is hidden, for example when you switch apps or lock a phone, the usual autosave runs at once instead of after its pause. It saves what autosave would have saved. A named new page is still not saved while the ship is unreachable, and nothing is saved while autosave is turned off.
+
+The **+** on a folder in the tree, and the tree menu's **New page here**, still ask for a name and a kind. Enter on an empty name, or on the untouched folder name, captures to the Inbox as the kind you chose. A typed name lands where it says. Escape cancels.
+
+### Opening a page
+
+**Ctrl/Cmd-O**, or the **Open a page** button beside New page, opens a picker for pages and memories. With nothing typed it lists the last 10 opened on this device, newest first, without the one in front. Typing filters the list. Enter opens the highlighted row. Ctrl/Cmd-Enter opens it in a new tab.
+
+When no page has exactly the typed name, the last row is **Create**. Enter on it, or Shift-Enter anywhere in the picker, creates that page at the typed path. It is markdown unless you type an extension, which decides the kind. When a page already has the typed name, Shift-Enter opens it.
+
+### The command palette
+
+**Ctrl/Cmd-K**, or **Ctrl/Cmd-P**, opens the command palette. With nothing typed it lists the commands you ran most recently first, then the rest. With a query the best match wins, and recent use only breaks ties. A command counts as run when you run it from the palette or click its own button.
+
+The recent pages and the recent commands are kept per device.
+
 ## Public forms: anyone can write to a page
 
 A clearweb page can carry a real `<form>` that anonymous visitors submit.
@@ -290,6 +316,14 @@ page tree the editor already holds, so there is no request and no index.
 
 Names may use `a-z 0-9 - / . _ ~`. Anything else is left as literal text, which
 is also how you write `[[not a link]]` on purpose.
+
+A date after `[[`, such as `[[2026-12-10`, offers that day's journal page, `journal/2026-12-10`, even when it is not written yet. The row says `not written yet`. Tab inserts the full path, and the link still shows as `2026-12-10`.
+
+In the preview, a link to a page that does not exist yet is dimmed, with a tooltip that says so. It stops being dimmed once the page exists. A link to a memory may show dimmed until the memory list has loaded.
+
+Opening such a link while online starts that page: a blank markdown page already named, saved under that name once it has text. A link to a memory is never started as a page. Offline, a link to a missing page does not start a page and fails to open.
+
+When the page is written later, its Backlinks tab lists the pages that linked to it.
 
 `+guestbook` is a ready-made builder for the common case, in the same shape
 as `folder-index`. Your whole page is one call:

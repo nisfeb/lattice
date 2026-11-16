@@ -188,6 +188,7 @@
   $('mv').onclick = async () => {
     if (viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     if (curFolder) { moveFolder(curFolder); return; }
+    if (nameable()) { nameFirst(); return; }
     if (!current) { st('open something first', false); return; }
     if (mode !== 'know') { askMovePage(current); return; }
     let seed = current;
@@ -223,6 +224,40 @@
   //  move or rename a page, open or not: the page menu (#mv) for the open
   //  one, the tree's menu (34-treemenu.js) for any. Only the page in front
   //  reopens, under its new name, and only when it is the one that moved.
+  // Move or rename on a page not saved yet: the name its first save will
+  // use, a name the user gave, so the page does not go to the Inbox. Its
+  // autosave waits while the question is open. A save already on the wire
+  // is let land first: under an Inbox name it is then moved, never made a
+  // second time under the typed one.
+  //  Only a page that can be written: the locked tab of a failed open
+  //  (tabBlank, 21-tabs.js) shows a name and no page, and gets nothing.
+  const nameable = () => !current && mode !== 'know' && !grubPath && docFront() && !pname.readOnly;
+  async function nameFirst() {
+    const t = activeTab;
+    clearTimeout(autoTimer);
+    const typed = await askName('page name (e.g. notes/todo)', pname.value.trim(), 'name');
+    if (typed) await savesSettled(false);
+    if (typed && activeTab === t && pageHere()) {
+      const rn = realName(typed);
+      if (current === null) {
+        drawnNames.delete(pname.value.trim());
+        newRn = rn;
+        setOpen(null, { shown: rn.name });
+        //  a page started from its name (tabStart) is known by it in the
+        //  strip, the address and the saved tabs: they follow at once
+        if (t.start) {
+          t.start = rn.name;
+          history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(rn.name));
+          tabsChanged();
+        }
+        st('named ' + rn.name);
+      } else if (rn.name !== current) {
+        const mv = await movePage(current, rn.name, rn);
+        if (mv) st('moved to ' + rn.name + (mv.offline ? ' offline' : ''));
+      }
+    }
+    if (dirty && activeTab === t) autosave();
+  }
   async function askMovePage(from) {
     let seed = from;
     for (;;) {

@@ -53,12 +53,15 @@
   // last one while parked (28-splits.js) goes with it
   const retarget = (t, d) => {
     Object.assign(t, d);
+    t.start = null;
     t.ghost = null;
     t.gbody = undefined;
     t.gkind = undefined;
     t.gfetch = false;
   };
-  const tabEnc = (t) => JSON.stringify([t.kind, t.key, t.ship || null]);
+  //  a page started from its name (tabStart) has no key yet, only `start`
+  const tabKey = (t) => t.key || t.start || '';
+  const tabEnc = (t) => JSON.stringify([t.kind, tabKey(t), t.ship || null]);
   const tabDec = (s) => { const [kind, key, ship] = JSON.parse(s); return { kind, key, ship }; };
 
   // what the live editor shows, as a tab would name it: the one editor kind
@@ -94,12 +97,13 @@
   // question, and a cancel keeps it and the switch does not happen.
   // Answers false then.
   // what the live editor holds for the tab it shows
-  // (`hist`: an old revision was on show, which is never the page's text)
+  // (`hist`: an old revision was on show, which is never the page's text;
+  // `gone`: the page it was is deleted elsewhere, see saveParked)
   const snapNow = () => (writerSync(), {
     body: src.value, dirty, everTyped,
     sel: [src.selectionStart, src.selectionEnd], scroll: src.scrollTop,
     kind: curKind, pkind: pkind.value, rev: curRev, shown: pname.value,
-    hist: viewingRev !== null,
+    hist: viewingRev !== null, gone: deletedHere,
   });
   async function parkDoc(t) {
     const label = current || pname.value.trim() || 'this';
@@ -135,9 +139,9 @@
       // a link (30-tree.js) is titled with its whole local path: its name
       // alone would read as a page of my own
       icon: (t) => (linkOf(t.key) ? 'link' : 'doc'),
-      label: (t) => !t.key ? 'new page' : linkOf(t.key) ? t.key : t.key.split('/').pop(),
+      label: (t) => { const k = tabKey(t); return !k ? 'new page' : linkOf(k) ? k : k.split('/').pop(); },
       open: async (t) => {
-        if (t.key) return openPage(t.key);
+        if (tabKey(t)) return openPage(tabKey(t), true);
         exitRev();
         newFile('', false);
         return true;
@@ -146,7 +150,8 @@
         exitRev();
         if (!t.key) {
           newFile('', false);
-          setOpen(null, { shown: s.shown });
+          setOpen(null, { shown: s.shown,
+            url: t.start ? '/apps/lattice/app?name=' + encodeURIComponent(t.start) : undefined });
           if (s.pkind) pkind.value = s.pkind;
           src.value = s.body;
           render();
@@ -235,7 +240,7 @@
   // Every group's tabs and front tab, the group in front, and the split
   // tree with its sizes (28-splits.js). `tabs` and `active` also name the
   // group in front on their own, the shape this had before splits.
-  const tabRec = ({ kind, key, ship, pinned, read }) => ({ kind, key, ship, pinned, read });
+  const tabRec = (t) => ({ kind: t.kind, key: tabKey(t), ship: t.ship, pinned: t.pinned, read: t.read });
   const tabsSave = () => {
     try {
       localStorage.appTabs = JSON.stringify({
@@ -284,6 +289,7 @@
     const gen = ++tabShown;
     src.readOnly = false;   // a blank or a binary grub left it locked
     openNext();             // an open still loading for the tab left behind may not land
+    shipDoc = null;         // the ship's render kept for ghostPaint was the last tab's
     const quick = snapOk && !!s && !s.hist && !!t.key && (t.kind === 'page' || t.kind === 'know');
     // a new page or memory already named (its create may still be queued,
     // and runs here once the name is back in the field) comes back named
@@ -302,6 +308,7 @@
         tabCaret(s);
       } finally { tabNav--; }
       paintTabs();
+      tabSeen(t);
       if (quick && !s.dirty) refreshOpen();
       return Promise.resolve(true);
     }
@@ -317,6 +324,8 @@
       if (ok === false && !k.shows(t)) tabBlank(t);
       else if (!k.shows(t)) tabFollow();   // something else opened over it
       else if (s && !dirty) tabCaret(s);
+      // opened and in front: a recent for quick open. One that failed is not
+      if (ok !== false && k.shows(t)) tabSeen(t);
       paintTabs();
       return ok;
     }, (e) => { settle(); throw e; });
@@ -326,6 +335,27 @@
     src.scrollTop = s.scroll;
     sync();
   };
+  //  A page not written yet, opened by its name (a ghost link, the address,
+  //  a restored tab). The page tab in front naming it starts it
+  //  (startNamed), writing nothing, and keeps the name as `start`: the
+  //  strip shows it, the address carries it, and a reload or Back starts
+  //  it again. Its first save makes the page, which the tab then follows
+  //  (tabFollow). An open from anywhere else (a move, a sync) starts
+  //  nothing: false, and it fails as before.
+  const tabPend = (name) => {
+    const t = activeTab;
+    if (!t || t.kind !== 'page' || tabKey(t) !== name) return false;
+    t.key = '';
+    t.start = name;
+    return true;
+  };
+  function tabStart(name) {
+    if (!tabPend(name)) return false;
+    startNamed(name);
+    history.replaceState(null, '', '/apps/lattice/app?name=' + encodeURIComponent(name));
+    tabsChanged();
+    return true;
+  }
   function tabBlank(t) {
     tabNav++;
     try {
@@ -373,6 +403,9 @@
     const mine = k.shows(t);
     if (dirty && !mine) return false;
     if (saving && !t.key) return false;
+    // a page never saved, with text: its first save names it, and only
+    // the live editor can make that save (parkDoc's flush)
+    if (dirty && mine && !t.key && t.kind === 'page') return false;
     if (mine) { t.snap = snapNow(); gGhostKeep(t); }
     dirty = false;
     clearTimeout(autoTimer);
@@ -474,7 +507,9 @@
   function openIn(kind, key, { ev, ship, newTab } = {}) {
     return tabSerial(async () => {
       const want = { kind, key, ship: ship || null };
-      const hit = key ? allTabs().find((t) => sameDoc(t, want)) : null;
+      //  a page started under this name is its tab already (tabStart)
+      const hit = key ? allTabs().find((t) => sameDoc(t, want)
+        || (kind === 'page' && !ship && !t.key && t.start === key)) : null;
       if (hit) return tabTo(hit);
       const fresh = newTab || (ev && (ev.ctrlKey || ev.metaKey || ev.button === 1))
         || !activeTab || activeTab.pinned;
@@ -488,7 +523,7 @@
       // flushed, or the user said discard: either way nothing here is owed
       dirty = false;
       const t = activeTab;
-      if (t.key) { t.back.push(tabEnc(t)); t.fwd = []; }
+      if (tabKey(t)) { t.back.push(tabEnc(t)); t.fwd = []; }
       retarget(t, want);
       t.snap = null;
       tabsChanged();
@@ -562,7 +597,7 @@
     const d = tabDec(t[from].pop());
     const twin = d.key && allTabs().find((x) => x !== t && sameDoc(x, d));
     if (twin) { tabsChanged(); return tabTo(twin); }
-    if (t.key) t[to].push(tabEnc(t));
+    if (tabKey(t)) t[to].push(tabEnc(t));
     retarget(t, d);
     t.snap = null;
     tabsChanged();
@@ -575,13 +610,9 @@
     const i = tabs.indexOf(activeTab);
     switchTab(tabs[(i + dir + tabs.length) % tabs.length].id);
   };
-  // a new tab with a new page in it: the strip's +. Then newFile again, the
-  // way the + file button calls it, so the page gets named (the name field,
-  // or the create dialog where that field is hidden, 96-deskmenu.js)
-  const tabNew = async () => {
-    await openIn('page', '', { newTab: true });
-    if (activeTab && activeTab.kind === 'page' && !activeTab.key) newFile('');
-  };
+  // a new tab with a new page in it: the strip's + and a group's +. No
+  // question: the page is named at its first save (newBlank, 35-pages.js)
+  const tabNew = () => newBlank({ newTab: true });
   // a tool tab in front hides the editor. Anything about to paint the
   // editor (a new page, a folder) first gets a document tab of its own,
   // as the strip's + gives one, so it never lands unseen under the tool.
@@ -602,7 +633,9 @@
     // a tab that is not an editor document (no live()) keeps its identity
     if (!TAB_KINDS[t.kind].live) return;
     if (tabLoading === t) {
-      if (TAB_KINDS[t.kind].shows(t)) tabLoading = null;
+      // the open painted, before its fetch is done: the user sees it now,
+      // and may be gone to another page before that fetch lands
+      if (TAB_KINDS[t.kind].shows(t)) { tabLoading = null; tabSeen(t); }
       return;
     }
     const d = liveDoc();
@@ -615,6 +648,7 @@
     const twin = d.key && allTabs().find((x) => x !== t && sameDoc(x, d) && !(x.snap && x.snap.dirty));
     if (twin) gDropTab(twin);
     tabsChanged();
+    tabSeen(t);              // opened in place: a new page's create, a link
   }
   // a create that ran from the queue after its tab was left (save(),
   // 35-pages.js). `own.tab` is the tab it was queued from, and only that
@@ -645,7 +679,41 @@
       else if (t.key.startsWith(from + '/')) t.key = to + t.key.slice(from.length);
     }
     tabsChanged();
+    recentsPut(recentsGet().map((r) => (r.kind !== kind ? r
+      : r.key === from ? { kind, key: to }
+      : r.key.startsWith(from + '/') ? { kind, key: to + r.key.slice(from.length) } : r)));
   }
+
+  // ── recents ──────────────────────────────────────────────────────────
+  // The documents opened on this device, newest first, for quick open
+  // (26-palette.js). localStorage.latRecents, [{kind, key}], kind page or
+  // know, 30 at most, one entry per document. Per device, never synced.
+  // A rename follows (tabsRemap above), a delete drops (recentsDrop), and
+  // the picker checks each against the tree as it paints, so a page gone
+  // on another device is not offered either.
+  function recentsGet() {
+    let v = null;
+    try { v = JSON.parse(localStorage.latRecents || '[]'); } catch {}
+    return Array.isArray(v) ? v.filter((r) => r && (r.kind === 'page' || r.kind === 'know')
+      && typeof r.key === 'string' && r.key) : [];
+  }
+  function recentsPut(list) {
+    const out = [];
+    for (const r of list)
+      if (out.length < 30 && !out.some((x) => x.kind === r.kind && x.key === r.key)) out.push(r);
+    try { localStorage.latRecents = JSON.stringify(out); } catch {}
+  }
+  // a document came to the front (tabSeen). A tab on another ship's page
+  // has no place here: the picker lists this ship's pages.
+  function noteRecent(kind, key) {
+    if ((kind === 'page' || kind === 'know') && key) recentsPut([{ kind, key }, ...recentsGet()]);
+  }
+  // a page's delete takes the pages under it too, a memory's only itself
+  function recentsDrop(kind, path) {
+    recentsPut(recentsGet().filter((r) => r.kind !== kind
+      || (r.key !== path && !(kind === 'page' && r.key.startsWith(path + '/')))));
+  }
+  function tabSeen(t) { if (!t.ship) noteRecent(t.kind, t.key); }
   // a save of `name` that landed after its tab was parked (35-pages.js,
   // 95-know.js): the snap holding exactly what was sent is clean now, and
   // a page's snap takes the new revision, which a link's next save claims
@@ -761,7 +829,7 @@
       b.dataset.kind = t.kind;
       b.dataset.key = t.key;
       if (t.kind === 'tool' && frameSlow(t.key)) b.classList.add('lload');
-      b.title = (t.ship ? t.ship + ' ' : '') + (t.key || name);
+      b.title = (t.ship ? t.ship + ' ' : '') + (tabKey(t) || name);
       b.innerHTML = ico(t.pinned ? 'pin' : typeof k.icon === 'function' ? k.icon(t) : k.icon)
         + '<span class="dtn"></span>'
         + '<span class="dtdot" aria-hidden="true"></span>';

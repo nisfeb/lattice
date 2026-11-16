@@ -137,10 +137,9 @@ try {
 
   step = 'new page';
   // ── 2. new page: type, save, appears in tree, round-trips ────────────────
-  //  + file asks for the name and kind, and writes the page at once
-  await page.click('#newfile');
-  await page.evaluate(() => { document.getElementById('dlgkind').value = 'md'; });
-  await dialog(RUN + '/hello');
+  //  a named page is written at once (createPage, 35-pages.js). The
+  //  toolbar's New page asks no name any more: ui-capture.mjs covers it
+  await page.evaluate((n) => { window.latCreate(n, 'md'); }, RUN + '/hello');
   await wait((n) => document.getElementById('pname').value === n
     && document.getElementById('pname').readOnly, RUN + '/hello');
   await page.evaluate(() => {
@@ -416,9 +415,7 @@ try {
 
   // empty file: saving with no content must succeed (the UI stands in a
   // newline for the body the backend refuses to take empty).
-  await page.click('#newfile');
-  await page.evaluate(() => { document.getElementById('dlgkind').value = 'md'; });
-  await dialog(RUN + '/empty');
+  await page.evaluate((n) => { window.latCreate(n, 'md'); }, RUN + '/empty');
   await wait((n) => [...document.querySelectorAll('#treelist a.pg')]
     .some((a) => a.textContent === 'empty.md' && a.href.includes(n)), RUN);
   ok('save: empty file saves without manual content');
@@ -1480,11 +1477,10 @@ try {
   check('sandbox: the preview frame is sandboxed, without allow-same-origin',
     sbx.split(/\s+/).includes('allow-scripts') && !sbx.includes('allow-same-origin'), sbx);
 
-  //  a new html page through the create dialog, then Read, where the
-  //  preview renders it (Edit skips it). The end-of-run sweep removes it.
-  await page.click('#newfile');
-  await page.evaluate(() => { document.getElementById('dlgkind').value = 'html'; });
-  await dialog(RUN + '/pwn');
+  //  a new html page, made at once as the folder dialog makes it, then
+  //  Read, where the preview renders it (Edit skips it). The end-of-run
+  //  sweep removes it.
+  await page.evaluate((n) => { window.latCreate(n, 'html'); }, RUN + '/pwn');
   await wait((n) => document.getElementById('pname').value === n
     && document.getElementById('pname').readOnly, RUN + '/pwn');
   await page.evaluate(() => {

@@ -5,29 +5,45 @@
 // what a page IS, and its answer replaces this one a moment later. So the bar
 // here is not "matches the server" but:
 //
-//   1. SAFE. The preview iframe is not sandboxed, so its srcdoc runs on the
-//      app's own origin, and pages are not all hand-written (the clipper
-//      archives arbitrary web pages). Nothing in a document may become live
-//      markup or a live scheme. Most of these tests are about that.
+//   1. SAFE. The preview frame is sandboxed, but this render also feeds the
+//      outline, the PDF export and the Skills pane, and a sandbox is a
+//      second wall, not the first. Pages are not all hand-written (the
+//      clipper archives arbitrary web pages). Nothing in a document may
+//      become live markup or a live scheme. Most of these tests are about that.
 //   2. Close enough that the correction, when it lands, is not a visible jump.
 //
 // Usage:  node scripts/ui-md.mjs
 
 import { makeCheck, read, cut } from './lib/check.mjs';
 
-const { mdToHtml, setOutside } = new Function(`${read('ui-src/lattice/59-md.js')}
-return { mdToHtml, setOutside: (v) => { mdOutside = v; } };`)();
+// A wikilink to a page not written yet is marked only while the live
+// preview sets its test (mdGhosts, made by ghostTest in 60-preview.js from
+// the page tree, the memory list and the name rules). Those are lifted
+// with it. Nothing is marked until a test sets a tree and the preview's
+// test, which is how the PDF and the Skills pane render: unset.
+const MD = `let nodes = [], grubPath = null, current = null, treeGen = 0;
+let knowKeys = [{ key: '/a-memory' }];
+const linkOf = () => null;
+${cut('ui-src/lattice/10-shell.js', /const validName = [\s\S]*?\);\n/, 'validName')}
+${cut('ui-src/lattice/60-preview.js', /let gtKey = [\s\S]*?\n {2}\};\n/, 'ghostTest')}
+${read('ui-src/lattice/59-md.js')}`;
+//  preview: true is the live preview's paint, false any other render
+const SET = 'setTree: (v, preview = true) => { nodes = v; mdGhosts = preview ? ghostTest() : null; }';
+const { mdToHtml, setOutside, setTree } = new Function(`${MD}
+return { mdToHtml, setOutside: (v) => { mdOutside = v; }, ${SET} };`)();
 // the right pane's Outgoing and Outline (76-outline.js) read a document
 // through this renderer, so they are lifted to run beside it
 //  (isRich is 26-writer.js's: no page here is a Writer document or a
 //  spreadsheet)
-const { outLinks, outline } = new Function('const isRich = () => false;\n' + read('ui-src/lattice/59-md.js') + '\n'
+const { outLinks, outline, setOutTree } = new Function('const isRich = () => false;\n' + MD + '\n'
   + cut('ui-src/lattice/76-outline.js', /function outLinks\([\s\S]*?\n {2}\}/, 'outLinks') + '\n'
   + cut('ui-src/lattice/76-outline.js', /function outline\([\s\S]*?\n {2}\}/, 'outline')
-  + '\nreturn { outLinks, outline };')();
+  + '\nreturn { outLinks, outline, setOutTree: ' + SET.slice(9) + ' };')();
 
 const check = makeCheck();
-const require59gmi = new Function(`${read('ui-src/lattice/59-md.js')}\nreturn gmiToHtml;`)();
+const require59gmi = new Function(`${MD}\nreturn gmiToHtml;`)();
+const eqj = (name, got, want) => check(name, JSON.stringify(got) === JSON.stringify(want),
+  `want ${JSON.stringify(want)} got ${JSON.stringify(got)}`);
 const has = (name, input, needle) => {
   const got = mdToHtml(input);
   check(name, got.includes(needle), `want containing ${JSON.stringify(needle)} got ${JSON.stringify(got)}`);
@@ -116,6 +132,28 @@ has('a bare number is not mistaken for a code span', 'chapter 1 begins', 'chapte
 hasnt('and really is not', 'chapter 1 begins', '<code>');
 has('emphasis inside a heading', '## a **b**', '<strong>b</strong>');
 
+console.log('\na wikilink to a page not written yet (mdGhosts)');
+setTree([]);
+hasnt('with no tree loaded nothing is marked', '[[nope/x]]', 'ghost');
+const TREE = [{ path: 'here', page: true }, { path: 'dir', page: false }, { path: 'dir/in', page: true }];
+setTree(TREE, false);
+for (const w of ['ghost', 'does not exist yet'])
+  hasnt('outside the live preview (the PDF, Skills) no ' + w, '[[nope/x]] [[nope/y|y]]', w);
+setTree(TREE);
+has('a missing page is marked after its href, with a title',
+  '[[nope/x]]', '<a href="/apps/lattice/app?name=nope%2Fx" class="ghost" title="nope/x does not exist yet">x</a>');
+has('so is a labelled one', '[[nope/x|see]]', 'class="ghost" title="nope/x does not exist yet">see</a>');
+has('a padded target is the name it opens', '[[ nope/x ]]', 'title="nope/x does not exist yet"');
+for (const [n, t] of [['a page', 'here'], ['a page in a folder', 'dir/in'], ['a folder', 'dir'],
+  ['a folder with its slash', 'dir/'], ['a memory', 'a-memory'], ['an urb:// address', 'urb://~zod/x'],
+  ['an absolute path', '/apps/lattice/forum'], ['a name the ship refuses', 'a&b c/\u00e9'],
+  ['a capital', 'Nope'], ['a trailing slash', 'nope/']])
+  hasnt(n + ' is not marked', '[[' + t + ']]', 'ghost');
+setOutTree(TREE);
+eqj('the outgoing reader still reads a marked link', outLinks('[[nope/x]] [[here]]', 'md'), ['nope/x', 'here']);
+setOutTree([]);
+setTree([]);
+
 console.log('\nthings that must not throw');
 for (const [n, v] of [['empty', ''], ['null', null], ['undefined', undefined],
   ['only a fence', '```'], ['unclosed fence', '```\nx'], ['lone pipe', '|'],
@@ -124,8 +162,6 @@ for (const [n, v] of [['empty', ''], ['null', null], ['undefined', undefined],
 }
 
 console.log('\noutgoing links and outline (76-outline.js)');
-const eqj = (name, got, want) => check(name, JSON.stringify(got) === JSON.stringify(want),
-  `want ${JSON.stringify(want)} got ${JSON.stringify(got)}`);
 eqj('an empty body has no links', outLinks('', 'md'), []);
 eqj('an empty body has no outline', outline('', 'md'), []);
 eqj('an empty gemtext body has neither', [outLinks('', 'gmi'), outline('', 'gmi')], [[], []]);
@@ -156,7 +192,7 @@ console.log('task boxes: a click flips the one marker on its own source line');
 // mdToHtml(text, true) marks each live box with its source line, and
 // taskToggle(text, line, on) is the edit a click on it makes. Together: click
 // box k, apply the edit, and exactly that one character changes.
-const taskToggle = new Function(`${read('ui-src/lattice/59-md.js')}\nreturn taskToggle;`)();
+const taskToggle = new Function(`${MD}\nreturn taskToggle;`)();
 const boxes = (t) => [...mdToHtml(t, true).matchAll(/<input type="checkbox" data-line="(\d+)"(?: data-h="[0-9a-z]+")?( checked)?>/g)]
   .map((m) => ({ line: +m[1], on: !!m[2] }));
 const click = (t, k) => {
