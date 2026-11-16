@@ -1421,6 +1421,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 // ── src/20-state.js ───────────────────────────────────────────────────────
   let current = null;      // name of the open page, null = unsaved new page
   let dirty = false;       // unsaved local edits. Auto-refresh never clobbers them
+  let deletedHere = null;
+  const DELETED_NOTE = 'this page was deleted elsewhere — save to recreate it';
   let mode = 'pages';      // 'know' while a memory is in front (95-know.js)
   window.__latUnsaved = () => dirty === true
     || allTabs().some((t) => t !== activeTab && t.snap && t.snap.dirty)
@@ -1465,6 +1467,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
   function setOpen(name, { shown, readOnly = false, kind, url } = {}) {
     current = name;
+    deletedHere = null;              // another document, or this one renamed
     if (name === null) curRev = 0;   // a new buffer claims no page's rev
     pname.value = shown === undefined ? (name || '') : shown;
     pname.readOnly = readOnly;
@@ -1693,7 +1696,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     body: src.value, dirty, everTyped,
     sel: [src.selectionStart, src.selectionEnd], scroll: src.scrollTop,
     kind: curKind, pkind: pkind.value, rev: curRev, shown: pname.value,
-    hist: viewingRev !== null,
+    hist: viewingRev !== null, gone: deletedHere,
   });
   async function parkDoc(t) {
     const label = current || pname.value.trim() || 'this';
@@ -1713,7 +1716,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       icon: (t) => (linkOf(t.key) ? 'link' : 'doc'),
       label: (t) => { const k = tabKey(t); return !k ? 'new page' : linkOf(k) ? k : k.split('/').pop(); },
       open: async (t) => {
-        if (tabKey(t)) return openPage(tabKey(t));
+        if (tabKey(t)) return openPage(tabKey(t), true);
         exitRev();
         newFile('', false);
         return true;
@@ -6363,7 +6366,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   let openSeq = 0;
   let openDrawers = 0;
   function openNext() { busyEnd('open'); openDrawers = drawerSeq; return ++openSeq; }
-  async function openPage(name) {
+  async function openPage(name, start = false) {
     if (!(await guardDirty())) return false;
     const my = openNext();
     grubPath = null;
@@ -6389,7 +6392,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const node = nodes.find((n) => n.page && n.path === name);
     const painted = !!node && typeof node.body === 'string';
     if (!linkOf(name)) sensWait = name;
-    try { return await openRead(name, my, node, painted); }
+    try { return await openRead(name, my, node, painted, start); }
     finally {
       if (sensWait === name) {
         sensWait = null;
@@ -6397,7 +6400,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }
     }
   }
-  async function openRead(name, my, node, painted) {
+  async function openRead(name, my, node, painted, start) {
     const owed = !painted || !['md', 'gmi', 'html', 'text'].includes(node.kind);
     const end = owed ? busy('open') : null;
     const late = painted ? 0
@@ -6406,10 +6409,10 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       clearTimeout(late);
       if (end && ['md', 'gmi', 'html', 'text'].includes(kind)) end();
     };
-    try { return await openReadRun(name, my, node, painted, bodyShown); }
+    try { return await openReadRun(name, my, node, painted, bodyShown, start); }
     finally { if (end) end(); clearTimeout(late); }
   }
-  async function openReadRun(name, my, node, painted, bodyShown) {
+  async function openReadRun(name, my, node, painted, bodyShown, start) {
     if (painted) {
       applyPage(name, node, true);
       freshPending.set(name, { body: node.body, at: Date.now() });
@@ -6457,7 +6460,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       }
       if (!r.ok) {
         if (painted) return true;
-        if (r.status === 404 && my === openSeq && await startable(name) && my === openSeq && tabStart(name))
+        if (start && r.status === 404 && my === openSeq && await startable(name) && my === openSeq && tabStart(name))
           return true;
         st('open failed' + await errText(r), false); unwind();
         return my === openSeq ? false : undefined;
@@ -6713,12 +6716,13 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const rn = realName(name);
     return !!rn && nodes.some((n) => n.page && n.path === rn.name && !n.pending);
   };
-  async function save(kindOverride, fixed, drawn = 0) {
+  async function save(kindOverride, fixed, drawn = 0, auto = false) {
     if (!fixed) writerSync();     // a Writer page's text into src.value
     if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
     if (!fixed && viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
     const typed = pname.value.trim();
     let name = fixed ? fixed.name : /\/$/.test(typed) ? '' : typed.replace(/^\/+|\/+$/g, '');
+    if (!fixed) deletedHere = null;
     if (!name) {
       if (fixed || current !== null) { st('name required', false); return; }
       if (!src.value.trim() || (isRich(kindOverride || curKind || pkind.value) && !everTyped)) {
@@ -6746,7 +6750,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         }
         const here = !fixed && mode !== 'know' && !grubPath && current === doc
           && (doc !== null || pname.value === shown);
-        if (here) { if (own) newRn = own.rn; return save(kindOverride, undefined, drawn); }
+        if (here) { if (own) newRn = own.rn; return save(kindOverride, undefined, drawn, auto); }
         if (own) return save(kindOverride, own);
       }, creating);
       return 'queued';
@@ -6792,6 +6796,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     const r = w.r;
     if (await linkSaveFail(name, w)) return failed();
     if (w.gone) {
+      if (auto && creating && !drawn && !fixed) {
+        if (rnc) newRn = rnc;
+        st(UNREACHED_NOTE, false);
+        cerr.textContent = 'NOT saved'; cerr.className = 'err';
+        clearTimeout(autoTimer);
+        autoTimer = setTimeout(autosave, AUTO_RETRY);
+        return failed();
+      }
       const queued = await enqueueSave(name, kind, sent, creating, rnc, undefined, creating && !!drawn);
       if (!queued) {
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
@@ -6832,7 +6844,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           return save(kindOverride, { ...fixed, name: next, drawn: drawn + 1 });
         if (!fixed && createdHere(creating, name)) {
           setOpen(null, { shown: next });
-          return save(kindOverride, undefined, drawn + 1);
+          return save(kindOverride, undefined, drawn + 1, auto);
         }
       }
       st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
@@ -7008,6 +7020,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   let autoTimer = null;
   const autosaveOn = () => { try { return localStorage.latAutosave !== '0'; } catch { return true; } };
+  const AUTO_RETRY = 5000;
+  const UNREACHED_NOTE = 'not saved yet: the ship is unreachable. It saves when the ship answers';
   window.addEventListener('storage', (e) => {
     if (e.key !== 'latAutosave' || !autosaveOn() || !dirty) return;
     clearTimeout(autoTimer);
@@ -7020,8 +7034,9 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!current && mode === 'know') return;
     if (moving) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 1000); return; }
     if (!current) {
+      if (deletedHere) { st(DELETED_NOTE, false); return; }
       if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
-      return save();
+      return save(undefined, undefined, 0, true);
     }
     const fp = mode !== 'know' && freshPending.get(current);
     if (fp && Date.now() - fp.at < 15000) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 500); return; }
@@ -7091,7 +7106,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
 
   async function saveParked(t) {
     const s = t.snap;
-    if (!s || !s.dirty || !t.key || !autosaveOn() || moving) return;
+    if (!s || !s.dirty || !t.key || s.gone || !autosaveOn() || moving) return;
     if (t.kind !== 'page' && t.kind !== 'know') return;
     const know = t.kind === 'know';
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
@@ -11363,13 +11378,14 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       if (mode !== 'know') {
         const doomed = current;
         current = null;
+        deletedHere = doomed;
         pname.readOnly = false;
         dropTreeNodes(doomed);
         pageCache.delete(doomed);
         snapTree();
         renderTree();
         resetPanels();
-        st('this page was deleted elsewhere — save to recreate it', false);
+        st(DELETED_NOTE, false);
       }
       return;
     }
@@ -12312,7 +12328,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         }
         if (name) {
           if (painted && current === name) refreshOpen();
-          else openPage(name);
+          else openPage(name, true);
         }
         else if (into && nodes.some((n) => !n.page && n.path === into)) selectFolder(into);
         else if (into) newFile(into, false);

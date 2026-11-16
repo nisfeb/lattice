@@ -97,12 +97,13 @@
   // question, and a cancel keeps it and the switch does not happen.
   // Answers false then.
   // what the live editor holds for the tab it shows
-  // (`hist`: an old revision was on show, which is never the page's text)
+  // (`hist`: an old revision was on show, which is never the page's text;
+  // `gone`: the page it was is deleted elsewhere, see saveParked)
   const snapNow = () => (writerSync(), {
     body: src.value, dirty, everTyped,
     sel: [src.selectionStart, src.selectionEnd], scroll: src.scrollTop,
     kind: curKind, pkind: pkind.value, rev: curRev, shown: pname.value,
-    hist: viewingRev !== null,
+    hist: viewingRev !== null, gone: deletedHere,
   });
   async function parkDoc(t) {
     const label = current || pname.value.trim() || 'this';
@@ -140,7 +141,7 @@
       icon: (t) => (linkOf(t.key) ? 'link' : 'doc'),
       label: (t) => { const k = tabKey(t); return !k ? 'new page' : linkOf(k) ? k : k.split('/').pop(); },
       open: async (t) => {
-        if (tabKey(t)) return openPage(tabKey(t));
+        if (tabKey(t)) return openPage(tabKey(t), true);
         exitRev();
         newFile('', false);
         return true;

@@ -164,7 +164,7 @@
         }
         if (name) {
           if (painted && current === name) refreshOpen();
-          else openPage(name);
+          else openPage(name, true);
         }
         else if (into && nodes.some((n) => !n.page && n.path === into)) selectFolder(into);
         // no focus: boot did not ask for a new file, the user did not either

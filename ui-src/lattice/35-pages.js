@@ -31,7 +31,12 @@
   // loading line (busy, 10-shell.js) is let go with it: a later open, a
   // tab switch and a blank page all supersede it.
   function openNext() { busyEnd('open'); openDrawers = drawerSeq; return ++openSeq; }
-  async function openPage(name) {
+  //  `start`: the open is the user going to a name (a link, an Outgoing
+  //  row, the address, quick open, the tree), so a page not written yet
+  //  is started (tabStart). A same-tab reopen of the page already shown
+  //  (History's back, Show theirs, the edit lock) starts nothing, and a
+  //  page that vanished elsewhere fails to open as it always has.
+  async function openPage(name, start = false) {
     // guardDirty covers a dirty grub, page, or memory in one place (see
     // 20-state.js): it flushes what it can and only asks when the flush
     // still leaves something unsaved.
@@ -79,7 +84,7 @@
     // (66-share.js refreshSensitive). Whatever way the read ends, the
     // checkbox is settled once it has.
     if (!linkOf(name)) sensWait = name;
-    try { return await openRead(name, my, node, painted); }
+    try { return await openRead(name, my, node, painted, start); }
     finally {
       if (sensWait === name) {
         sensWait = null;
@@ -93,7 +98,7 @@
   // content page already shows all of itself, so its upgrade fetch runs
   // unmarked. The status names an unpainted open only once it is slow, so
   // a quick one does not flash the spinner either.
-  async function openRead(name, my, node, painted) {
+  async function openRead(name, my, node, painted, start) {
     const owed = !painted || !['md', 'gmi', 'html', 'text'].includes(node.kind);
     const end = owed ? busy('open') : null;
     const late = painted ? 0
@@ -105,10 +110,10 @@
       clearTimeout(late);
       if (end && ['md', 'gmi', 'html', 'text'].includes(kind)) end();
     };
-    try { return await openReadRun(name, my, node, painted, bodyShown); }
+    try { return await openReadRun(name, my, node, painted, bodyShown, start); }
     finally { if (end) end(); clearTimeout(late); }
   }
-  async function openReadRun(name, my, node, painted, bodyShown) {
+  async function openReadRun(name, my, node, painted, bodyShown, start) {
     // `quiet`: the render=1 request below carries the preview and the error
     // report, so painting must not also fire refreshPreview/checkErrors.
     if (painted) {
@@ -200,7 +205,7 @@
       if (!r.ok) {
         if (painted) return true;
         //  not written yet: a page of this ship the ship has no page for
-        if (r.status === 404 && my === openSeq && await startable(name) && my === openSeq && tabStart(name))
+        if (start && r.status === 404 && my === openSeq && await startable(name) && my === openSeq && tabStart(name))
           return true;
         st('open failed' + await errText(r), false); unwind();
         return my === openSeq ? false : undefined;
@@ -657,7 +662,8 @@
   //  `fixed`: a queued create whose page the editor no longer shows (see
   //  below). It names what to write, and the editor is left alone.
   //  `drawn`: how many Inbox names this create has drawn so far (below).
-  async function save(kindOverride, fixed, drawn = 0) {
+  //  `auto`: autosave asked (the table at autosave() says what that changes).
+  async function save(kindOverride, fixed, drawn = 0, auto = false) {
     if (!fixed) writerSync();     // a Writer page's text into src.value
     if (!fixed && curFolder) { st('folder selected — open a page to edit', false); return; }
     if (!fixed && viewingRev !== null) { st('viewing rev ' + viewingRev + ' — use restore', false); return; }
@@ -665,6 +671,9 @@
     //  no page yet
     const typed = pname.value.trim();
     let name = fixed ? fixed.name : /\/$/.test(typed) ? '' : typed.replace(/^\/+|\/+$/g, '');
+    //  a page deleted elsewhere is made again only by a save on purpose,
+    //  which this is: autosave stands down for it (deletedHere)
+    if (!fixed) deletedHere = null;
     //  a page with no name is a capture: its first save draws one in the
     //  Inbox, shown in the field from here on so the create below treats it
     //  as any named create. With no text there is nothing to keep, and
@@ -714,7 +723,7 @@
         }
         const here = !fixed && mode !== 'know' && !grubPath && current === doc
           && (doc !== null || pname.value === shown);
-        if (here) { if (own) newRn = own.rn; return save(kindOverride, undefined, drawn); }
+        if (here) { if (own) newRn = own.rn; return save(kindOverride, undefined, drawn, auto); }
         if (own) return save(kindOverride, own);
       }, creating);
       return 'queued';
@@ -781,6 +790,19 @@
     const r = w.r;
     if (await linkSaveFail(name, w)) return failed();
     if (w.gone) {
+      //  autosave's create of a page under a name the user gave (a journal
+      //  day, a linked page started, a page named before its first save)
+      //  is not queued: typing alone never queued one. The text stays
+      //  here, unsaved, and autosave tries again until the ship answers.
+      //  A save on purpose, or the flush on leaving the page, queues it.
+      if (auto && creating && !drawn && !fixed) {
+        if (rnc) newRn = rnc;
+        st(UNREACHED_NOTE, false);
+        cerr.textContent = 'NOT saved'; cerr.className = 'err';
+        clearTimeout(autoTimer);
+        autoTimer = setTimeout(autosave, AUTO_RETRY);
+        return failed();
+      }
       // the ship is unreachable. Queue the edit and complete the save's
       // LOCAL bookkeeping exactly as a successful save would, so the editor
       // does not care which kind it got
@@ -833,7 +855,7 @@
           return save(kindOverride, { ...fixed, name: next, drawn: drawn + 1 });
         if (!fixed && createdHere(creating, name)) {
           setOpen(null, { shown: next });
-          return save(kindOverride, undefined, drawn + 1);
+          return save(kindOverride, undefined, drawn + 1, auto);
         }
       }
       st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
@@ -1059,6 +1081,10 @@
 
   let autoTimer = null;
   const autosaveOn = () => { try { return localStorage.latAutosave !== '0'; } catch { return true; } };
+  //  a named page not made yet, with the ship unreachable (save() above):
+  //  how soon autosave tries again, and what the status says meanwhile
+  const AUTO_RETRY = 5000;
+  const UNREACHED_NOTE = 'not saved yet: the ship is unreachable. It saves when the ship answers';
   // turned back on in Settings (another document) while text waits unsaved:
   // it goes out on the usual debounce, as if just typed
   window.addEventListener('storage', (e) => {
@@ -1081,12 +1107,24 @@
     // a move in flight may be carrying this page away: the save goes to
     // its new name once the move has renamed the editor (75-move.js)
     if (moving) { clearTimeout(autoTimer); autoTimer = setTimeout(autosave, 1000); return; }
-    // a page never saved, named or not: its first save is a create, which
-    // save() owns (an empty one writes nothing, a nameless one goes to the
-    // Inbox). With autosave off it waits for Ctrl+S like any page.
+    // A page never saved. Its first save is a create, which save() owns,
+    // so this only decides whether autosave may ask for it now:
+    //   deleted elsewhere (deletedHere)   nothing, until a save on purpose
+    //   autosave off                      nothing, until Ctrl+S
+    //   empty                             nothing (save() writes nothing)
+    //   no name: a capture                save(): an Inbox name drawn, made
+    //                                     online, queued offline (never lost)
+    //   a name the user gave: a journal   save(): made only when the ship
+    //   day, a linked page, a page named  answers. Unreachable, the text
+    //   before its first save             stays here unsaved and this tries
+    //                                     again (AUTO_RETRY); nothing queued
+    // A save on purpose and the flush on leaving (flushNoAsk) call save()
+    // themselves, and queue offline as they always have. A page already
+    // saved goes on below.
     if (!current) {
+      if (deletedHere) { st(DELETED_NOTE, false); return; }
       if (!autosaveOn()) { st('unsaved, Ctrl+S to save'); return; }
-      return save();
+      return save(undefined, undefined, 0, true);
     }
     // painted from an older copy and not yet read fresh: wait for that read
     // (it may find a change made elsewhere), then save on its rev
@@ -1195,7 +1233,8 @@
   // front meanwhile is marked clean live, by the same rule.
   async function saveParked(t) {
     const s = t.snap;
-    if (!s || !s.dirty || !t.key || !autosaveOn() || moving) return;
+    //  a page deleted elsewhere (s.gone) waits for a save on purpose
+    if (!s || !s.dirty || !t.key || s.gone || !autosaveOn() || moving) return;
     if (t.kind !== 'page' && t.kind !== 'know') return;
     const know = t.kind === 'know';
     if (!know && linkCf.has(t.key) && linkOf(t.key)) return;
