@@ -6355,18 +6355,26 @@
 ::  The pin, its source and its licence are recorded in scripts/build-scad.mjs,
 ::  which checks these constants match it. Keep the two in step.
 ::
-::  +scad-url: where the release files are, ending in a slash. A release
-::  of nisfeb/lattice, tag openscad-2026.11.10, with the files of
-::  +scad-files attached, as made by `node scripts/build-scad.mjs
-::  --release DIR`. It is not marked latest: the desktop's updater reads
-::  the latest release. Empty, an install answers that this build names
-::  no address.
+::  +scad-url: where the release files are, ending in a slash: the files
+::  of +scad-files, as made by `node scripts/build-scad.mjs --release
+::  DIR`, at one commit of nisfeb/lattice's branch
+::  openscad-runtime-2026.11.10, read from GitHub's raw host. Empty, an
+::  install answers that this build names no address.
+::
+::  The address must be a plain one, with no redirect to a signed
+::  address. The same files are attached to the release
+::  openscad-2026.11.10, but GitHub answers a release file with a
+::  redirect whose query holds %20 and %2B, and a ship's HTTP client
+::  decodes a query's escapes before it sends, and sends nothing at all
+::  for one that holds %20 or a plus. The install got 400. A commit's
+::  raw address has no redirect and no query, and names its bytes for
+::  good. A new runtime is a new branch and a new pin here.
 ::
 ::  Tests point the ship elsewhere with a grub, /scad/source.json
 ::  {"url": "..."}, which no lattice route writes. That address may be a
 ::  local one, which +fetchable:lcl refuses for every other fetch.
 ::
-++  scad-url  ^-(@t 'https://github.com/nisfeb/lattice/releases/download/openscad-2026.11.10/')
+++  scad-url  ^-(@t 'https://raw.githubusercontent.com/nisfeb/lattice/0692e05231f49ddb1c3904fd8e6722d66361e265/')
 ++  scad-ver  ^-(@t '2026.11.10')
 ::  +scad-files: what an install fetches. Each is [served-as file sha256
 ::  bytes type encoding]. The wasm is kept gzipped, as the release carries

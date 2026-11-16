@@ -68,8 +68,11 @@
 //        app.hoon's +scad-files and +scad-ver match PIN below. CI runs it.
 //    node scripts/build-scad.mjs --release DIR
 //        download the upstream zip, check it, and write the three release
-//        files to DIR, each checked against PIN. Upload those to the
-//        release +scad-url names. Needs `unzip` and `tar`.
+//        files to DIR, each checked against PIN. Commit those, with the
+//        fonts and licences, to a branch of their own and name that
+//        commit's raw address in +scad-url (a release file's address
+//        redirects to a signed one a ship cannot follow). Needs `unzip`
+//        and `tar`.
 //    node scripts/build-scad.mjs --verify [URL]
 //        fetch the release files from URL (default: +scad-url) and check
 //        them. Skips when no URL is set.
