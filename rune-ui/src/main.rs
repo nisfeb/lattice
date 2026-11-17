@@ -246,6 +246,9 @@ struct App {
     /// The tree is to be read once more a moment from now: the ship
     /// answers a batch before it has written all of it.
     resync: bool,
+    /// Find in the page being read: what is typed, and which match is the current one.
+    find: Option<TextEdit>,
+    find_at: usize,
     /// Images in pages: the decoder, the pictures had so far by their
     /// source as written, the sources asked for (so none is asked twice),
     /// what the fetching threads bring back, and the page they are for.
@@ -432,6 +435,8 @@ fn init() -> App {
         tab: 0,
         split: None,
         resync: false,
+        find: None,
+        find_at: 0,
         image_cache: None,
         pics: HashMap::new(),
         pics_asked: std::collections::HashSet::new(),
@@ -1228,9 +1233,95 @@ fn take_pics(s: &mut App) -> bool {
 
 /// A Markdown page as the reader shows it: wiki links, ghost links, and
 /// the pictures had so far.
-fn reader(body: &str, s: &App, k: &Kit) -> El {
+fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
     let pics = s.pics.clone();
-    Markdown::new(md::wikilinks(body, &|n| ghost(s, n))).selectable(true).on_link_tx(follow).images(move |src| pics.get(src).cloned()).build(k)
+    let src = md::wikilinks(body, &|n| ghost(s, n));
+    // what find matches is marked, the current one apart from the rest
+    let marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = match s.find.as_ref().filter(|_| found) {
+        Some(q) => find_in(&src, &q.text).into_iter().enumerate().map(|(i, m)| (m, if i == s.find_at { rune_kit::Highlight::current() } else { rune_kit::Highlight::new() })).collect(),
+        None => Vec::new(),
+    };
+    Markdown::new(src).selectable(true).on_link_tx(follow).images(move |src| pics.get(src).cloned()).highlights(marks).build(k)
+}
+
+/// Where `query` is found in a page's text as it is read: any case,
+/// with or without accents, never inside the Markdown's own marks.
+fn find_in(src: &str, query: &str) -> Vec<Vec<std::ops::Range<usize>>> {
+    rune_kit::markdown::find(src, query.trim(), rune_kit::Case::Folded(rune_kit::search::Fold::default()))
+}
+
+/// How many matches find has in the open page.
+fn find_count(s: &App) -> usize {
+    match (&s.find, s.open.as_ref().filter(|p| p.kind == "md")) {
+        (Some(q), Some(p)) => find_in(&md::wikilinks(&p.body, &|n| ghost(s, n)), &q.text).len(),
+        _ => 0,
+    }
+}
+
+/// Opens find for the page being read. Only a Markdown page has it.
+fn open_find(s: &mut App) {
+    if s.editing || !s.open.as_ref().is_some_and(|p| p.kind == "md") {
+        s.note = "find works in a Markdown page while it is read".into();
+        return;
+    }
+    let mut q = s.find.take().unwrap_or_else(|| TextEdit::new(""));
+    q.focused = true;
+    s.find = Some(q);
+}
+
+/// Moves to the next match, or the one before, round the ends, and brings it into view.
+fn find_step(s: &mut App, by: isize, tx: &mut Tx) {
+    let n = find_count(s);
+    if n == 0 {
+        return;
+    }
+    s.find_at = (s.find_at.min(n - 1) as isize + by).rem_euclid(n as isize) as usize;
+    tx.scroll_into_view(Markdown::highlight_key(s.find_at));
+}
+
+/// The find bar: the field, where the current match stands among them, and the way round.
+fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
+    let n = find_count(s);
+    let says = match (q.text.trim().is_empty(), n) {
+        (true, _) => String::new(),
+        (false, 0) => "no match".to_owned(),
+        (false, n) => format!("{} of {n}", s.find_at.min(n - 1) + 1),
+    };
+    let field = TextInput::new(q)
+        .placeholder("Find in this page")
+        .leading_icon(k.glyph.search)
+        .on_edit(|s: &mut App| s.find.as_mut().expect("find is open"))
+        .on_change(|s: &mut App, tx| {
+            s.find_at = 0;
+            tx.scroll_into_view(Markdown::highlight_key(0));
+        })
+        .on_key(|s: &mut App, ev: &KeyEvent, tx: &mut Tx| match ev.key {
+            Key::Enter => {
+                find_step(s, if ev.mods.shift { -1 } else { 1 }, tx);
+                true
+            }
+            Key::Escape => {
+                s.find = None;
+                true
+            }
+            _ => false,
+        })
+        .build(k)
+        .key("find-field")
+        .w(280.0);
+    row()
+        .key("find-bar")
+        .w_full()
+        .px(16.0)
+        .py(6.0)
+        .gap(8.0)
+        .center_y()
+        .fill(k.c.layer_01)
+        .child(field)
+        .child(text(says).key("find-count").font(k.ty.small).color(k.c.text_muted).grow(1.0))
+        .child(Button::new("Previous").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(n == 0).on_press_tx(|s: &mut App, tx| find_step(s, -1, tx)).build(k).key("find-prev"))
+        .child(Button::new("Next").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(n == 0).on_press_tx(|s: &mut App, tx| find_step(s, 1, tx)).build(k).key("find-next"))
+        .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close find").on_press(|s: &mut App| s.find = None).build(k).key("find-close"))
 }
 
 /// Reads which pages link to the open one when the links pane is showing.
@@ -2498,7 +2589,7 @@ fn split_view(name: &str, s: &App, k: &Kit) -> El {
             keep_split(s);
         }).build(k).key("split-close"));
     let shown = match s.cache.get(name) {
-        Some(p) if p.kind == "md" => reader(&p.body, s, k),
+        Some(p) if p.kind == "md" => reader(&p.body, s, k, false),
         Some(p) => text(p.body.clone()).font(k.ty.mono).color(c.text_base).wrap().selectable(true),
         None => text("This page is not here any more.").font(k.ty.small).color(c.text_muted),
     };
@@ -2694,6 +2785,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("rename", "Rename or move"),
     ("delete", "Delete"),
     ("share", "Share"),
+    ("find", "Find in this page"),
     ("links", "Links"),
     ("comments", "Comments on this page"),
     ("history", "History"),
@@ -2715,6 +2807,7 @@ fn usable(s: &App, id: &str) -> bool {
         "edit" => page && s.remote.as_ref().is_none_or(Shared::editable),
         "delete" => own,
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
+        "find" => page && s.open.as_ref().is_some_and(|p| p.kind == "md"),
         "reload" => s.conn.is_some(),
         "tab-close" => s.tabs.len() > 1,
         "tab-copy" => own && !s.memory,
@@ -2782,6 +2875,7 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "rename" => ask_rename(s),
         "delete" => ask_delete(s),
         "share" => open_share(s),
+        "find" => open_find(s),
         "links" => show_pane(s, false, true),
         "comments" => show_pane(s, true, false),
         "history" => show_pane(s, false, false),
@@ -3919,6 +4013,8 @@ fn body(s: &App, k: &Kit) -> El {
             },
             k,
         ))
+    } else if let Some(q) = s.find.as_ref().filter(|_| !s.editing && !s.access && !s.shared_open && !s.inbox && s.folder.is_none() && s.open.as_ref().is_some_and(|p| p.kind == "md")) {
+        Some(find_bar(q, s, k))
     } else if held_back(s) > 0 && !s.access && !s.shared_open && !s.inbox && s.folder.is_none() {
         let n = held_back(s);
         Some(banner(
@@ -4053,7 +4149,7 @@ fn page_body(s: &App, k: &Kit) -> El {
         return map_view(m, k);
     }
     let shown = if p.kind == "md" {
-        reader(&p.body, s, k)
+        reader(&p.body, s, k, true)
     } else {
         // other kinds draw as their source, coloured, until each has a native view
         let lang = match p.kind.as_str() {
@@ -4212,6 +4308,10 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if shell::is_sidebar_toggle(ev) {
         s.sidebar.toggle();
+        return true;
+    }
+    if ev.is_command('f') && !s.editing {
+        open_find(s);
         return true;
     }
     if ev.is_command('t') && !s.editing {
@@ -4869,6 +4969,36 @@ mod tests {
         // an image's address on the ship: from its root, or beside the page
         assert_eq!(api::fetch_bytes("file:///etc/passwd", None).unwrap_err(), "not a web address");
         assert_eq!(api::fetch_bytes("data:image/png;base64,AA", None).unwrap_err(), "not a web address");
+    }
+
+    #[test]
+    fn find_counts_what_is_read_not_the_markdown_around_it() {
+        let mut s = sample("welcome");
+        let body = "# Café notes\n\nThe **cafe** on [the corner](https://cafe.example/cafe) sells CAFÉ au lait.\n\n```\ncafe = 1\n```\n";
+        s.names.push("find-me".into());
+        s.cache.insert("find-me".into(), Page { name: "find-me".into(), body: body.into(), kind: "md".into(), rev: 1 });
+        open_page(&mut s, "find-me");
+        open_find(&mut s);
+        assert!(s.find.is_some());
+        // any case, with or without the accent, and not the link's address
+        s.find = Some(TextEdit::new("cafe"));
+        assert_eq!(find_count(&s), 4, "the heading, the bold word, the last word, the code. Not the address");
+        // an accent typed is an accent meant
+        s.find = Some(TextEdit::new("café"));
+        assert_eq!(find_count(&s), 2);
+        s.find = Some(TextEdit::new("  "));
+        assert_eq!(find_count(&s), 0);
+        s.find = Some(TextEdit::new("nowhere to be found"));
+        assert_eq!(find_count(&s), 0);
+        // not in the editor, and not in a page that is not Markdown
+        s.find = None;
+        start_edit(&mut s);
+        open_find(&mut s);
+        assert!(s.find.is_none());
+        cancel_edit(&mut s);
+        open_page(&mut s, "budget");
+        open_find(&mut s);
+        assert!(s.find.is_none() && s.note.starts_with("find works"));
     }
 
     #[test]
