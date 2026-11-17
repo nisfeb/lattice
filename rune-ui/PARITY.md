@@ -29,7 +29,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [!] Share groups, a change or a delete seen on the ship: blocked on a test pier with the patched kernel. On the fake ships' kernel only the first group write of a pier's life changes `/share-groups`. Every later one answers ok and does nothing, with or without ships in the group
 - [x] Change a group's ships after it is made, from the Access screen. The screen and the request were run on a fake ship. That the ship's list then changes falls under the blocked line above
 - [x] Bans: list, ban a ship or every comet, unban (`/banlist`, `/ban`, `/unban`), on the Access screen
-- [ ] Folder sharing (`/page-share-dir`)
+- [x] Folder sharing: a folder's own setting (private, over Urbit, on the web) from the folder view, taken by every page in it (`/page-share-dir`), with its address, and a ship let into the whole folder (`/share-file` on a folder)
 - [ ] Shared with me: pages other ships shared, and opening them (`/shared-with-me`, `/browse-file`, `/remote-save`)
 - [ ] Display names for pages and folders (`dname`)
 - [ ] Sensitive flag: show it, set it (`/page-sensitive`)

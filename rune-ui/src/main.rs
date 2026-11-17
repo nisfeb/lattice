@@ -58,8 +58,9 @@ enum Op {
     Created(String),
     Renamed(String, String),
     Deleted(String),
-    /// A page's share mode was set.
+    /// A page's share mode was set, or a folder's.
     Shared(String, String),
+    SharedDir(String, String),
     /// A ship was let in to a page (edit or read, and whether it was told),
     /// or put out again.
     Granted(String, String, bool, bool),
@@ -108,6 +109,8 @@ struct App {
     /// Each page's share mode, as the last dump said, and whether the
     /// share dialog is open.
     shares: HashMap<String, String>,
+    /// Each folder's own share setting.
+    dshares: HashMap<String, String>,
     sharing: bool,
     /// The ship's access list, read when the share dialog opens, and the
     /// ship being typed there.
@@ -230,6 +233,7 @@ fn init() -> App {
         restored: false,
         folder: None,
         shares: HashMap::new(),
+        dshares: HashMap::new(),
         sharing: false,
         groups: Vec::new(),
         groups_req: Latest::default(),
@@ -399,7 +403,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, b) => c.rename(a, b)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) => {}
+                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) => {}
             }
             Ok(op)
         }),
@@ -459,6 +463,21 @@ fn applied(s: &mut App, op: Op) {
             let can = if edit { "edit" } else { "read" };
             s.note = format!("{ship} can now {can} {n}{}", if told { "" } else { ", and was not reached to be told" });
             load_groups(s);
+            return;
+        }
+        Op::SharedDir(n, mode) => {
+            s.note = match mode.as_str() {
+                "clearweb" => format!("every page in {n} can be read by anyone with the link"),
+                "shared" => format!("every page in {n} is shared over Urbit"),
+                _ => format!("{n} shares nothing of its own now"),
+            };
+            if mode == "private" {
+                s.dshares.remove(&n);
+            } else {
+                s.dshares.insert(n, mode);
+            }
+            // which pages took it is the ship's to say
+            load_tree(s);
             return;
         }
         Op::Grouped(say) => {
@@ -1108,6 +1127,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Ok(Dump { nodes, since }) => {
                 s.since = since;
                 s.shares = nodes.iter().filter(|n| n.page && !n.share.is_empty()).map(|n| (n.path.clone(), n.share.clone())).collect();
+                s.dshares = nodes.iter().filter(|n| !n.page && !n.dshare.is_empty()).map(|n| (n.path.clone(), n.dshare.clone())).collect();
                 // bodies the dump carried replace the kept ones, and pages gone from it go
                 let live: std::collections::HashSet<&str> = nodes.iter().filter(|n| n.page).map(|n| n.path.as_str()).collect();
                 s.cache.retain(|name, _| live.contains(name.as_str()));
@@ -1584,12 +1604,23 @@ fn access_view(s: &App, k: &Kit) -> El {
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
-/// Lets the ship typed in the share dialog read or edit the open page.
+/// What the share dialog is about: the open page, or the folder showing
+/// in its place (the flag says which).
+fn share_target(s: &App) -> Option<(String, bool)> {
+    match (&s.open, &s.folder) {
+        (Some(p), _) => Some((p.name.clone(), false)),
+        (None, Some(f)) => Some((f.clone(), true)),
+        _ => None,
+    }
+}
+
+/// Lets the ship typed in the share dialog read or edit the page or folder.
 fn grant(s: &mut App, edit: bool) {
-    let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else {
+    let (Some(c), Some((name, _))) = (s.conn.clone(), share_target(s)) else {
         s.note = "sample pages cannot be shared".into();
         return;
     };
+    let p = Page { name, ..Page::default() };
     let Some(ship) = api::ship_name(&s.grant_to.text) else {
         s.note = "enter a ship's name, like ~sampel-palnet".into();
         return;
@@ -1603,14 +1634,16 @@ fn grant(s: &mut App, edit: bool) {
 
 /// Asks the ship to share the open page in `mode`.
 fn share_as(s: &mut App, mode: &'static str) {
-    let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else {
+    let (Some(c), Some((name, folder))) = (s.conn.clone(), share_target(s)) else {
         s.note = "sample pages cannot be shared".into();
         return;
     };
-    let op = Op::Shared(p.name.clone(), mode.to_owned());
+    let op = if folder { Op::SharedDir(name, mode.to_owned()) } else { Op::Shared(name, mode.to_owned()) };
     s.op_req.request((c, op), |(c, op)| {
-        if let Op::Shared(n, mode) = &op {
-            c.share(n, mode)?;
+        match &op {
+            Op::Shared(n, mode) => c.share(n, mode)?,
+            Op::SharedDir(n, mode) => c.share_dir(n, mode)?,
+            _ => {}
         }
         Ok(op)
     });
@@ -1618,9 +1651,10 @@ fn share_as(s: &mut App, mode: &'static str) {
 
 /// The share dialog: who may read the open page, and where from.
 fn share_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
-    let (true, Some(p)) = (s.sharing, &s.open) else { return };
+    let (true, Some((name, folder))) = (s.sharing, share_target(s)) else { return };
+    let p = &Page { name, ..Page::default() };
     let c = &k.c;
-    let now = s.shares.get(&p.name).map_or("private", String::as_str);
+    let now = if folder { &s.dshares } else { &s.shares }.get(&p.name).map_or("private", String::as_str);
     let choice = |mode: &'static str, title: &str, says: &str| {
         let mut r = row()
             .key(format!("share-{mode}"))
@@ -1641,11 +1675,12 @@ fn share_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
     let mut body = col()
         .w_full()
         .gap(8.0)
-        .child(choice("private", "Private", "Only you, signed in to your ship."))
-        .child(choice("shared", "Over Urbit", "Ships and groups you grant, at a urb:// address."))
-        .child(choice("clearweb", "On the web", "Anyone with the link, with no sign-in."));
+        .child(choice("private", "Private", if folder { "The folder shares nothing of its own. A page in it keeps its own setting." } else { "Only you, signed in to your ship." }))
+        .child(choice("shared", "Over Urbit", if folder { "Every page in it, and pages added later, for the ships and groups you grant." } else { "Ships and groups you grant, at a urb:// address." }))
+        .child(choice("clearweb", "On the web", if folder { "Every page in it, and pages added later, for anyone with the link." } else { "Anyone with the link, with no sign-in." }));
     // the ships let in by name: this works on a private page too
-    let who = api::readers(&s.groups, &p.name);
+    // a folder's readers are not listed: the access list names a folder's pages one by one
+    let who = if folder { Vec::new() } else { api::readers(&s.groups, &p.name) };
     let mut ships = col().key("share-ships").w_full().gap(4.0).child(text("Ships").font(k.ty.small_medium).color(c.text_muted));
     for r in &who {
         let (page, ship) = (p.name.clone(), r.ship.clone());
@@ -1675,7 +1710,7 @@ fn share_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         ships = ships.child(line);
     }
     if who.is_empty() {
-        ships = ships.child(text("No ship is let in by name.").font(k.ty.small).color(c.text_faint));
+        ships = ships.child(text(if folder { "Let a ship into every page in this folder." } else { "No ship is let in by name." }).font(k.ty.small).color(c.text_faint));
     }
     ships = ships.child(
         row()
@@ -1689,7 +1724,7 @@ fn share_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
     body = body.child(Divider::horizontal().build(k)).child(ships);
     // each group, and what it may do with this page
     let groups: Vec<&Group> = s.groups.iter().filter(|g| g.name != "public").collect();
-    if !groups.is_empty() && !s.base.is_empty() {
+    if !groups.is_empty() && !s.base.is_empty() && !folder {
         let mut rows = col().key("share-groups").w_full().gap(4.0).child(text("Groups").font(k.ty.small_medium).color(c.text_muted));
         for g in groups {
             let now = g.level(&s.base, &p.name);
@@ -1718,7 +1753,7 @@ fn share_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         }
         body = body.child(rows);
     }
-    if let Some(addr) = s.conn.as_ref().and_then(|c| c.address(&p.name, now)) {
+    if let Some(addr) = s.conn.as_ref().and_then(|c| if folder { c.dir_address(&p.name, now) } else { c.address(&p.name, now) }) {
         let copy = addr.clone();
         body = body.child(
             row()
@@ -1967,6 +2002,13 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
         );
     }
     let mut acts = row().gap(8.0).center_y().child(Button::new(if s.memory { "New memory here" } else { "New page here" }).on_press(ask_new).build(k).key("folder-new"));
+    if !s.memory {
+        let shared = s.dshares.get(dir).is_some();
+        acts = acts.child(Button::new(if shared { "Shared" } else { "Share" }).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+            s.sharing = true;
+            load_groups(s);
+        }).build(k).key("folder-share"));
+    }
     // a memory is its own key: there is no folder on the ship to move or delete
     if !s.memory {
         let (a, b) = (dir.to_owned(), dir.to_owned());
@@ -2370,6 +2412,19 @@ mod tests {
         s.group_edit = Some(("gone".into(), TextEdit::new("~nec")));
         save_ships(&mut s);
         assert!(s.group_edit.is_none());
+    }
+
+    #[test]
+    fn the_share_dialog_is_about_the_open_page_or_the_folder_showing() {
+        let mut s = sample("welcome");
+        assert_eq!(share_target(&s), Some(("welcome".to_owned(), false)));
+        s.open = None;
+        assert_eq!(share_target(&s), None);
+        s.folder = Some("notes".into());
+        assert_eq!(share_target(&s), Some(("notes".to_owned(), true)));
+        // a page opened from the folder takes over
+        open_page(&mut s, "notes/today");
+        assert_eq!(share_target(&s), Some(("notes/today".to_owned(), false)));
     }
 
     #[test]

@@ -24,6 +24,10 @@ pub struct Node {
     /// private page: the dump names only the shared ones.
     #[serde(default)]
     pub share: String,
+    /// A folder's own share setting, which its pages take: `shared` or
+    /// `clearweb`, empty for none.
+    #[serde(default)]
+    pub dshare: String,
     /// The page's text, when the dump carried it: every page on a first
     /// dump, then only those written since.
     #[serde(default)]
@@ -471,6 +475,17 @@ impl Conn {
         self.call("POST", &q, Some("")).map(drop)
     }
 
+    /// Sets a folder's share setting. Every page in it with none of its own
+    /// takes it, and so do pages made or moved in later. `private` clears it.
+    pub fn share_dir(&self, name: &str, mode: &str) -> Result<(), String> {
+        self.call_in(120, "POST", &format!("page-share-dir?name={}&mode={}", enc(name), enc(mode)), Some("")).map(drop)
+    }
+
+    /// Where a folder shared in `mode` is read from, `None` for a private one.
+    pub fn dir_address(&self, name: &str, mode: &str) -> Option<String> {
+        self.address(name, mode).map(|a| if mode == "clearweb" { format!("{a}/") } else { a })
+    }
+
     /// Where a page shared in `mode` is read from, `None` for a private one.
     pub fn address(&self, name: &str, mode: &str) -> Option<String> {
         match mode {
@@ -722,6 +737,18 @@ mod tests {
         c.group_save(&g.with_level(&base, "rune-probe", Level::Edit)).unwrap();
         c.group_delete(&gname).unwrap();
         assert!(c.group_save(&Group { name: "Bad Name".into(), ..Group::default() }).unwrap_err().starts_with("400"));
+        // a folder's share setting is taken by the pages in it, and cleared again
+        let fdir = format!("rune-shared-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        c.create(&format!("{fdir}/inside")).unwrap();
+        let node = |c: &Conn, path: &str| c.dump("").unwrap().nodes.into_iter().find(|n| n.path == path).unwrap();
+        c.share_dir(&fdir, "clearweb").unwrap();
+        assert_eq!(node(&c, &fdir).dshare, "clearweb", "the folder says its setting");
+        assert_eq!(node(&c, &format!("{fdir}/inside")).share, "clearweb", "and a page in it takes it");
+        let open = ureq::get(&format!("{}inside", c.dir_address(&fdir, "clearweb").unwrap())).call().map(|r| r.status());
+        assert_eq!(open.ok(), Some(200), "the page answers on the web with no session");
+        c.share_dir(&fdir, "private").unwrap();
+        assert_eq!((node(&c, &fdir).dshare, node(&c, &format!("{fdir}/inside")).share), (String::new(), String::new()), "private clears both");
+        assert!(c.share_dir("no-such-folder-here", "shared").unwrap_err().starts_with("404"));
         // a banned ship is listed, cannot be granted anything, and is let back by an unban
         let _ = c.unban("~wes");
         c.ban("~wes").unwrap();
