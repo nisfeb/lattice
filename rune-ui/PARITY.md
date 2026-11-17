@@ -68,7 +68,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Find while editing, in either editor and for a page of any kind: the same bar, each match washed and the current one stronger and selected in the text. It finds in the text as typed, so a link's address counts. There is no replace
 - [x] Find in a sheet and in a page shown as its source, while read. In a sheet the cells that match are in the accent colour and the current one's row is selected and brought into view. In source the matches are washed, but the current one is not scrolled to: the text is one element, and Rune brings elements into view, not places in a text. A map has no find
 - [x] Download a page: its source saved to a file through the system's save dialog, named by its last name and its kind as the web client names it, with what is being typed if it is being edited. From the palette
-- [ ] Duplicate a page, and copy a link to it
+- [x] Duplicate a page under a name asked for, seeded `<name>-copy`, with its kind and its text, and copy a page's `urb://` link or its name. From the palette. The duplicate's save on a ship is the one a capture uses, and was not run again here
 - [ ] Export a page as PDF, as it reads (`ui-src/lattice/78-pdf.js`, `desktop/src/pdf.rs`)
 - [ ] Convert a LaTeX page to HTML with pandoc (`desktop/src/pandoc.rs`)
 

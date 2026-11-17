@@ -54,6 +54,8 @@ enum Prompt {
     Delete(String),
     /// The address for a link on the editor's selection.
     Link(TextEdit),
+    /// A name for a copy of a page: the page as it stood, and the name.
+    Duplicate(Page, TextEdit),
     /// A note to go with an ask for edit on another ship's page.
     Ask(Shared, TextEdit),
 }
@@ -615,6 +617,35 @@ fn confirm(s: &mut App) {
             None => {
                 s.note = format!("asked {} for edit access to {}", sh.host, sh.name());
                 s.asks.sent.push(Ask { ship: sh.host.clone(), path: sh.path.clone(), name: sh.name().to_owned(), note: api::clip_note(note.trim()).to_owned(), when: String::new() });
+            }
+        }
+        return;
+    }
+    if let Prompt::Duplicate(from, t) = &p {
+        let Some(rn) = api::real_name(&t.text) else {
+            s.note = "that name has nothing a path can keep".into();
+            s.prompt = Some(p);
+            return;
+        };
+        if s.names.contains(&rn.name) {
+            s.note = format!("there is a page named {} already", rn.name);
+            s.prompt = Some(p);
+            return;
+        }
+        let copy = Page { name: rn.name.clone(), body: from.body.clone(), kind: from.kind.clone(), rev: 0 };
+        s.dnames.extend(rn.shown());
+        match s.conn.clone() {
+            Some(c) => s.op_req.request((c, copy), |(c, copy)| {
+                // made by its first save, with the kind and the text of the page it copies
+                c.save(&copy, 0)?;
+                Ok(Op::Created(copy.name))
+            }),
+            None => {
+                let name = copy.name.clone();
+                applied(s, Op::Created(name.clone()));
+                s.cache.insert(name.clone(), Page { rev: 1, ..copy });
+                s.open = None;
+                open_page(s, &name);
             }
         }
         return;
@@ -2916,6 +2947,9 @@ const COMMANDS: &[(&str, &str)] = &[
     ("rename", "Rename or move"),
     ("delete", "Delete"),
     ("share", "Share"),
+    ("duplicate", "Duplicate this page"),
+    ("copy-link", "Copy a link to this page"),
+    ("copy-name", "Copy this page's name"),
     ("download", "Download this page as a file"),
     ("find", "Find in this page"),
     ("links", "Links"),
@@ -2938,7 +2972,8 @@ fn usable(s: &App, id: &str) -> bool {
     match id {
         "edit" => page && s.remote.as_ref().is_none_or(Shared::editable),
         "delete" => own,
-        "download" => page,
+        "download" | "copy-name" => page,
+        "duplicate" | "copy-link" => own && !s.memory && !s.editing,
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
         "find" => page && find_where(s) != FindIn::Nothing,
         "reload" => s.conn.is_some(),
@@ -3009,6 +3044,19 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "delete" => ask_delete(s),
         "share" => open_share(s),
         "download" => ask_download(s, tx),
+        "duplicate" => ask_duplicate(s),
+        "copy-link" => {
+            if let Some(link) = page_link(s) {
+                tx.copy(link.clone());
+                s.note = format!("link copied: {link}");
+            }
+        }
+        "copy-name" => {
+            if let Some(name) = s.open.as_ref().map(|p| p.name.clone()) {
+                tx.copy(name.clone());
+                s.note = format!("name copied: {name}");
+            }
+        }
         "find" => open_find(s),
         "links" => show_pane(s, false, true),
         "comments" => show_pane(s, true, false),
@@ -3124,7 +3172,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) => t,
+                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) => t,
                 Prompt::Delete(_) => unreachable!("a delete has no field"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
@@ -3137,6 +3185,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::Rename(_, t) => ("Rename or move", field(t, "folder/name"), "Rename", ButtonVariant::Contrast),
         Prompt::Link(t) => ("Link the selection to", field(t, "https://"), "Link", ButtonVariant::Contrast),
         Prompt::Ask(_, t) => ("Ask for edit access", field(t, "A short note, if you like"), "Ask", ButtonVariant::Contrast),
+        Prompt::Duplicate(_, t) => ("Duplicate this page as", field(t, "folder/name"), "Duplicate", ButtonVariant::Contrast),
         Prompt::Delete(n) => {
             let held = under(&s.names, n).len();
             let (ask, says) = if s.names.contains(n) { ("Delete this page?", n.clone()) } else { ("Delete this folder?", format!("{n} and the {held} pages in it")) };
@@ -3960,6 +4009,23 @@ fn ask_rename(s: &mut App) {
         t.focused = true;
         s.prompt = Some(Prompt::Rename(p.name.clone(), t));
     }
+}
+
+/// Asks for a name for a copy of the page in front: the same kind and
+/// text, with what is being typed if it is being edited.
+fn ask_duplicate(s: &mut App) {
+    let Some(p) = &s.open else { return };
+    let body = if s.editing { edited(s) } else { p.body.clone() };
+    let mut t = TextEdit::new(format!("{}-copy", p.name));
+    t.focused = true;
+    s.prompt = Some(Prompt::Duplicate(Page { body, ..p.clone() }, t));
+}
+
+/// The link to a page of this ship that another ship follows, and its name.
+fn page_link(s: &App) -> Option<String> {
+    let p = s.open.as_ref()?;
+    let ship = s.conn.as_ref().map_or("~sampel-palnet".to_owned(), |c| c.ship().to_owned());
+    Some(format!("urb://{ship}/{}", p.name))
 }
 
 fn ask_delete(s: &mut App) {
@@ -5165,6 +5231,30 @@ mod tests {
         s.find = Some(TextEdit::new("body"));
         assert_eq!(find_count(&s), 2);
         assert_eq!(source_shown("héllo"), "héllo");
+    }
+
+    #[test]
+    fn a_duplicate_has_the_pages_kind_and_text_under_a_name_of_its_own() {
+        let mut s = sample("budget");
+        let (kind, body) = (s.open.as_ref().unwrap().kind.clone(), s.open.as_ref().unwrap().body.clone());
+        ask_duplicate(&mut s);
+        assert!(matches!(&s.prompt, Some(Prompt::Duplicate(_, t)) if t.text == "budget-copy"));
+        // a name in use is refused, and the question stays
+        if let Some(Prompt::Duplicate(_, t)) = &mut s.prompt {
+            *t = TextEdit::new("welcome");
+        }
+        confirm(&mut s);
+        assert!(s.prompt.is_some() && s.note == "there is a page named welcome already");
+        if let Some(Prompt::Duplicate(_, t)) = &mut s.prompt {
+            *t = TextEdit::new("money/Budget 2027");
+        }
+        confirm(&mut s);
+        let name = api::real_name("money/Budget 2027").unwrap().name;
+        let copy = s.open.clone().unwrap();
+        assert_eq!((copy.name.as_str(), copy.kind.as_str(), copy.body == body), (name.as_str(), kind.as_str(), true));
+        assert!(s.prompt.is_none() && s.names.contains(&name));
+        assert_eq!(s.cache["budget"].body, body, "the page copied is as it was");
+        assert_eq!(page_link(&s).as_deref(), Some(format!("urb://~sampel-palnet/{name}").as_str()));
     }
 
     #[test]

@@ -1,0 +1,10 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "budget"},
+  {"t": 2.0, "type": "key", "name": "p", "cmd": true},
+  {"t": 2.5, "type": "type", "text": "duplicate"},
+  {"t": 3.0, "type": "key", "name": "Enter"},
+  {"t": 4.0, "type": "key", "name": "Enter"},
+  {"t": 5.0, "type": "key", "name": "p", "cmd": true},
+  {"t": 5.5, "type": "type", "text": "copy a link"},
+  {"t": 6.0, "type": "key", "name": "Enter"}
+]}
