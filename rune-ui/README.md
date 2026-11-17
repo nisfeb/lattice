@@ -42,7 +42,7 @@ On macOS, Cmd takes the place of Ctrl.
 - Wiki links (`[[name]]`, `[[name|label]]`) and links into the app open the page. A link to a page that does not exist offers to make it. Web links open in the system browser. Back and forward buttons walk the pages visited.
 - History: a pane lists a page's stored revisions. An old one can be read in the page's place and restored, which saves it as the newest and loses nothing.
 - When the page being edited is written somewhere else, a line across the editor says so and offers to save over the other write.
-- Sharing: a page is private, shared over Urbit, or on the web for anyone with the link. The dialog shows the address and copies it. Which ships and groups may read a page shared over Urbit is not set here.
+- Sharing: a page is private, shared over Urbit, or on the web for anyone with the link. The dialog shows the address and copies it. The dialog also lists the ships let in by name and can let one read or edit, or remove it. A grant can take half a minute when the other ship is not reachable. Groups and bans are not here.
 - Memory: the sidebar switches between pages and memories. Memories have the same tree, reader, editors and Ctrl+K search, show their tags and date, and can be made, edited and deleted. They are read once at sign-in and again on Ctrl+R.
 - Ctrl+K also finds pages by their text (three letters or more), showing the line.
 - Map pages (GeoJSON) draw natively: points with their names, lines and areas over a graticule. Drag to pan, wheel to zoom about the pointer, press a point for its note and properties, and Fit returns to the whole map. There are no tiles, and a map is edited as source.
@@ -52,7 +52,7 @@ On macOS, Cmd takes the place of Ctrl.
 
 ## What does not, yet
 
-OpenSCAD and HTML pages have no native view, a spreadsheet cannot be edited as a grid, and a map has no tiles under it, no layers and no drawing tools. In the rich editor a heading keeps its `#`, a table its pipes and a fence its backticks, since Rune's rich text has no heading or table, and paragraphs have no space between them. No grants to ships and groups, folder sharing, forum, memory tags, rename, trash and history, search inside pages, or offline queue.
+OpenSCAD and HTML pages have no native view, a spreadsheet cannot be edited as a grid, and a map has no tiles under it, no layers and no drawing tools. In the rich editor a heading keeps its `#`, a table its pipes and a fence its backticks, since Rune's rich text has no heading or table, and paragraphs have no space between them. No share groups and bans, folder sharing, forum, memory tags, rename, trash and history, search inside pages, or offline queue.
 
 ## Check it without a window
 

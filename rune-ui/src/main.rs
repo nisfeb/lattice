@@ -11,7 +11,7 @@ mod sheet;
 
 use std::collections::HashMap;
 
-use api::{Conn, Dump, Know, Node, Page, Prefs, Rev};
+use api::{Conn, Dump, Group, Know, Node, Page, Prefs, Rev};
 use rune::{AppSpec, Block, LineCap, Phase, Shape, WheelEvent, canvas, Chrome, Cx, El, Key, KeyEvent, Latest, Mark, ScrollSpec, Span, TextEdit, Tx, Waker, col, el, row, text};
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
@@ -60,6 +60,10 @@ enum Op {
     Deleted(String),
     /// A page's share mode was set.
     Shared(String, String),
+    /// A ship was let in to a page (edit or read, and whether it was told),
+    /// or put out again.
+    Granted(String, String, bool, bool),
+    Ungranted(String, String),
 }
 
 struct App {
@@ -103,6 +107,11 @@ struct App {
     /// share dialog is open.
     shares: HashMap<String, String>,
     sharing: bool,
+    /// The ship's access list, read when the share dialog opens, and the
+    /// ship being typed there.
+    groups: Vec<Group>,
+    groups_req: Latest<Result<Vec<Group>, String>>,
+    grant_to: TextEdit,
     /// Showing memories, not pages. The tree, the names and the kept texts
     /// are those of what is showing, and `other` holds the same three for
     /// what is not (+flip swaps them).
@@ -207,6 +216,9 @@ fn init() -> App {
         folder: None,
         shares: HashMap::new(),
         sharing: false,
+        groups: Vec::new(),
+        groups_req: Latest::default(),
+        grant_to: TextEdit::new(""),
         memory: false,
         other: Default::default(),
         know_meta: HashMap::new(),
@@ -326,6 +338,7 @@ fn sign_out(s: &mut App) {
     fresh.op_req = std::mem::take(&mut s.op_req);
     fresh.hist_req = std::mem::take(&mut s.hist_req);
     fresh.know_req = std::mem::take(&mut s.know_req);
+    fresh.groups_req = std::mem::take(&mut s.groups_req);
     fresh.old_req = std::mem::take(&mut s.old_req);
     fresh.sidebar = s.sidebar.clone();
     *s = fresh;
@@ -360,6 +373,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, b) => c.rename(a, b)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
+                Op::Granted(..) | Op::Ungranted(..) => {}
             }
             Ok(op)
         }),
@@ -414,6 +428,18 @@ fn applied(s: &mut App, op: Op) {
             };
             s.shares.insert(n, mode);
         }
+        Op::Granted(n, ship, edit, told) => {
+            // the message names its page: the open one may have changed since
+            let can = if edit { "edit" } else { "read" };
+            s.note = format!("{ship} can now {can} {n}{}", if told { "" } else { ", and was not reached to be told" });
+            load_groups(s);
+            return;
+        }
+        Op::Ungranted(n, ship) => {
+            s.note = format!("{ship} no longer reads {n}");
+            load_groups(s);
+            return;
+        }
         Op::Deleted(n) => {
             for old in under(&s.names, &n) {
                 s.cache.remove(&old);
@@ -445,6 +471,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.login_req.set_waker(waker.clone());
     s.hist_req.set_waker(waker.clone());
     s.know_req.set_waker(waker.clone());
+    s.groups_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
     s.op_req.set_waker(waker);
     load_tree(s);
@@ -1008,6 +1035,13 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         s.next_sync = clock + SYNC_EVERY;
         tx.wake_after(std::time::Duration::from_secs_f64(SYNC_EVERY));
     }
+    if let Some(r) = s.groups_req.take() {
+        changed = true;
+        match r {
+            Ok(g) => s.groups = g,
+            Err(e) => s.note = format!("access list: {e}"),
+        }
+    }
     if let Some(r) = s.know_req.take() {
         changed = true;
         match r {
@@ -1315,6 +1349,29 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
+fn load_groups(s: &mut App) {
+    if let Some(c) = s.conn.clone() {
+        s.groups_req.request(c, |c| c.groups());
+    }
+}
+
+/// Lets the ship typed in the share dialog read or edit the open page.
+fn grant(s: &mut App, edit: bool) {
+    let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else {
+        s.note = "sample pages cannot be shared".into();
+        return;
+    };
+    let Some(ship) = api::ship_name(&s.grant_to.text) else {
+        s.note = "enter a ship's name, like ~sampel-palnet".into();
+        return;
+    };
+    s.grant_to = TextEdit::new("");
+    s.op_req.request((c, p.name.clone(), ship), move |(c, n, ship)| {
+        let told = c.grant(&n, &ship, edit)?;
+        Ok(Op::Granted(n, ship, edit, told))
+    });
+}
+
 /// Asks the ship to share the open page in `mode`.
 fn share_as(s: &mut App, mode: &'static str) {
     let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else {
@@ -1358,6 +1415,49 @@ fn share_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .child(choice("private", "Private", "Only you, signed in to your ship."))
         .child(choice("shared", "Over Urbit", "Ships and groups you grant, at a urb:// address."))
         .child(choice("clearweb", "On the web", "Anyone with the link, with no sign-in."));
+    // the ships let in by name: this works on a private page too
+    let who = api::readers(&s.groups, &p.name);
+    let mut ships = col().key("share-ships").w_full().gap(4.0).child(text("Ships").font(k.ty.small_medium).color(c.text_muted));
+    for r in &who {
+        let (page, ship) = (p.name.clone(), r.ship.clone());
+        let how = match (&r.via, r.edit) {
+            (Some(dir), true) => format!("can edit, through the folder {dir}"),
+            (Some(dir), false) => format!("can read, through the folder {dir}"),
+            (None, true) => "can edit".to_owned(),
+            (None, false) => "can read".to_owned(),
+        };
+        let mut line = row()
+            .key(format!("reader-{}", r.ship))
+            .w_full()
+            .gap(8.0)
+            .center_y()
+            .child(text(r.ship.clone()).font(k.ty.mono).color(c.text_base))
+            .child(text(how).font(k.ty.small).color(c.text_muted).grow(1.0).min_w(0.0).truncate());
+        // a folder's grant is taken back on the folder, not here
+        if r.via.is_none() {
+            line = line.child(Button::new("Remove").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| {
+                let Some(c) = s.conn.clone() else { return };
+                s.op_req.request((c, page.clone(), ship.clone()), |(c, n, ship)| {
+                    c.ungrant(&n, &ship)?;
+                    Ok(Op::Ungranted(n, ship))
+                });
+            }).build(k).key(format!("ungrant-{}", r.ship)));
+        }
+        ships = ships.child(line);
+    }
+    if who.is_empty() {
+        ships = ships.child(text("No ship is let in by name.").font(k.ty.small).color(c.text_faint));
+    }
+    ships = ships.child(
+        row()
+            .w_full()
+            .gap(6.0)
+            .center_y()
+            .child(TextInput::new(&s.grant_to).placeholder("~sampel-palnet").on_edit(|s: &mut App| &mut s.grant_to).on_submit(|s: &mut App, _| grant(s, false)).build(k).grow(1.0).min_w(0.0).key("grant-ship"))
+            .child(Button::new("Can read").control_size(ControlSize::Small).on_press(|s: &mut App| grant(s, false)).build(k).key("grant-read"))
+            .child(Button::new("Can edit").control_size(ControlSize::Small).on_press(|s: &mut App| grant(s, true)).build(k).key("grant-edit")),
+    );
+    body = body.child(Divider::horizontal().build(k)).child(ships);
     if let Some(addr) = s.conn.as_ref().and_then(|c| c.address(&p.name, now)) {
         let copy = addr.clone();
         body = body.child(
@@ -1730,7 +1830,10 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         // a memory has no sharing, history pane or rename here
         if !s.memory {
             let shared = s.open.as_ref().and_then(|p| s.shares.get(&p.name)).is_some_and(|m| m != "private");
-            trailing = trailing.child(Button::new(if shared { "Shared" } else { "Share" }).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| s.sharing = true).build(&k).key("share"));
+            trailing = trailing.child(Button::new(if shared { "Shared" } else { "Share" }).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
+                s.sharing = true;
+                load_groups(s);
+            }).build(&k).key("share"));
         }
         if !s.memory {
             trailing = trailing.child(Button::new("History").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {

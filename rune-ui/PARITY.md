@@ -23,7 +23,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] One-request tree with bodies, sync every 30 s by the `since` token
 - [x] Ctrl+K over names and text
 - [x] Share: private, over Urbit, on the web, address and copy
-- [ ] Share grants: which ships and groups may read a page shared over Urbit (`ui-src/lattice/72-acl.js`, `/share-file`, `/share-groups`)
+- [~] Share grants: the share dialog lists the ships let in by name (from `/share-groups`), grants read or edit (`/share-file`), and removes a grant (`/unshare-file`). Missing: groups (make, edit, delete: `/share-group-save`, `/share-group-del`), and bans (`/banlist`, `/ban`, `/unban`). Not proven end to end: on a fake ship a grant to a ship that is not running takes about 29 s to answer, and only the first grant ever appeared in `/share-groups`. Later grants, an edit grant and a removal answered ok and changed nothing there. That may be the fake ship or a fault on the ship's side. It needs a second running ship to settle
 - [ ] Folder sharing (`/page-share-dir`)
 - [ ] Shared with me: pages other ships shared, and opening them (`/shared-with-me`, `/browse-file`, `/remote-save`)
 - [ ] Display names for pages and folders (`dname`)

@@ -69,6 +69,76 @@ struct Knows {
     items: Vec<Know>,
 }
 
+/// A group of ships and what it may read (`peek`) and write (`make`), as
+/// the ship's access list gives it. The paths are whole paths on the ship.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Group {
+    pub name: String,
+    #[serde(default)]
+    pub ships: Vec<String>,
+    #[serde(default)]
+    pub peek: Vec<String>,
+    #[serde(default)]
+    pub make: Vec<String>,
+}
+
+/// One ship's access to a page: `edit` or `read`, and the folder it comes
+/// through when the grant is a folder's and not the page's own.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reader {
+    pub ship: String,
+    pub edit: bool,
+    pub via: Option<String>,
+}
+
+/// The ships that may read the page `name`, from the access list: each
+/// with the widest access any of its groups gives, sorted by ship.
+pub fn readers(groups: &[Group], name: &str) -> Vec<Reader> {
+    // what a path grants on this page: its own text, or a folder above it
+    let on = |path: &str| -> Option<Option<String>> {
+        let rel = path.split_once("/page/")?.1.trim_end_matches('/');
+        if rel.strip_suffix("/code") == Some(name) {
+            return Some(None);
+        }
+        let dir = rel.strip_suffix("/code").unwrap_or(rel);
+        (!rel.ends_with("/code") && name.strip_prefix(dir).is_some_and(|r| r.starts_with('/'))).then(|| Some(dir.to_owned()))
+    };
+    let mut out: Vec<Reader> = Vec::new();
+    for g in groups {
+        let read = g.peek.iter().find_map(|p| on(p));
+        let edit = g.make.iter().find_map(|p| on(p));
+        let Some(via) = edit.clone().or(read) else { continue };
+        for ship in &g.ships {
+            match out.iter_mut().find(|r| r.ship == *ship) {
+                Some(r) => {
+                    r.edit |= edit.is_some();
+                    // the page's own grant is the one to show
+                    if via.is_none() {
+                        r.via = None;
+                    }
+                }
+                None => out.push(Reader { ship: ship.clone(), edit: edit.is_some(), via: via.clone() }),
+            }
+        }
+    }
+    out.sort_by(|a, b| a.ship.cmp(&b.ship));
+    out
+}
+
+/// A ship's name as typed, with its sig: `nec` and `~nec` are both `~nec`.
+/// `None` for text that cannot be a ship's name.
+pub fn ship_name(typed: &str) -> Option<String> {
+    let t = typed.trim().trim_start_matches('~');
+    let ok = !t.is_empty() && t.len() <= 60 && t.chars().all(|c| c.is_ascii_lowercase() || c == '-');
+    ok.then(|| format!("~{t}"))
+}
+
+#[derive(Deserialize)]
+struct Granted {
+    #[serde(default)]
+    notified: bool,
+}
+
 /// One stored revision of a page.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Rev {
@@ -241,8 +311,13 @@ impl Conn {
     }
 
     fn call(&self, method: &str, path: &str, body: Option<&str>) -> Result<String, String> {
+        self.call_in(30, method, path, body)
+    }
+
+    /// `call` with its own time limit, for the few routes the ship is slow to answer.
+    fn call_in(&self, secs: u64, method: &str, path: &str, body: Option<&str>) -> Result<String, String> {
         let req = ureq::request(method, &format!("{}/apps/lattice/{path}", self.url))
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(secs))
             .set("cookie", &self.cookie)
             // the ship refuses a cross-site write, and reads the origin to tell
             .set("origin", &self.url);
@@ -330,6 +405,25 @@ impl Conn {
         }
     }
 
+    /// The ship's access list: every group with its ships and paths.
+    pub fn groups(&self) -> Result<Vec<Group>, String> {
+        serde_json::from_str(&self.call("GET", "share-groups", None)?).map_err(|e| e.to_string())
+    }
+
+    /// Lets `ship` read (`edit` false) or edit a page or folder. Answers
+    /// whether the ship was told: the grant holds either way.
+    pub fn grant(&self, name: &str, ship: &str, edit: bool) -> Result<bool, String> {
+        let q = format!("share-file?name={}&ship={}&mode={}", enc(name), enc(ship), if edit { "edit" } else { "read" });
+        // the ship tries to tell the other ship before it answers: about 30 s when that ship is not reachable
+        let g: Granted = serde_json::from_str(&self.call_in(120, "POST", &q, Some(""))?).map_err(|e| e.to_string())?;
+        Ok(g.notified)
+    }
+
+    /// Takes back what `grant` gave.
+    pub fn ungrant(&self, name: &str, ship: &str) -> Result<(), String> {
+        self.call_in(120, "POST", &format!("unshare-file?name={}&ship={}", enc(name), enc(ship)), Some("")).map(drop)
+    }
+
     /// Makes a new Markdown page. The ship answers 409 when the name is taken.
     pub fn create(&self, name: &str) -> Result<(), String> {
         let title = name.rsplit('/').next().unwrap_or(name);
@@ -383,6 +477,37 @@ mod tests {
         let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into() }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
+    }
+
+    #[test]
+    fn the_access_list_says_who_reads_a_page_and_how() {
+        let base = "/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/";
+        let g = |name: &str, ships: &[&str], peek: &[&str], make: &[&str]| Group {
+            name: name.into(),
+            ships: ships.iter().map(|s| (*s).to_owned()).collect(),
+            peek: peek.iter().map(|p| format!("{base}{p}")).collect(),
+            make: make.iter().map(|p| format!("{base}{p}")).collect(),
+        };
+        let groups = [
+            g("nec", &["~nec"], &["notes/today/code"], &[]),
+            g("bud", &["~bud"], &["notes/today/code"], &["notes/today/code"]),
+            g("team", &["~nec", "~wes"], &["notes"], &[]),
+            g("other", &["~zod"], &["notes/todayish/code", "note"], &[]),
+            g("public", &[], &[], &[]),
+        ];
+        assert_eq!(
+            readers(&groups, "notes/today"),
+            vec![
+                Reader { ship: "~bud".into(), edit: true, via: None },
+                Reader { ship: "~nec".into(), edit: false, via: None },
+                Reader { ship: "~wes".into(), edit: false, via: Some("notes".into()) },
+            ],
+            "the page's own grant wins over a folder's, and a name that only starts the same grants nothing"
+        );
+        assert!(readers(&groups, "elsewhere").is_empty());
+        assert_eq!((ship_name(" nec "), ship_name("~sampel-palnet"), ship_name("Not A Ship"), ship_name("~")), (Some("~nec".into()), Some("~sampel-palnet".into()), None, None));
+        let parsed: Vec<Group> = serde_json::from_str(r#"[{"name":"nec","ships":["~nec"],"peek":["/x/page/a/code"],"poke":[],"opaque":0,"make":[]}]"#).unwrap();
+        assert_eq!(readers(&parsed, "a"), vec![Reader { ship: "~nec".into(), edit: false, via: None }]);
     }
 
     #[test]
@@ -446,6 +571,16 @@ mod tests {
         c.share("rune-probe", "private").unwrap();
         assert_eq!(mode(&c), "private");
         assert!(c.address("a/b", "shared").unwrap().starts_with("urb://~") && c.address("a", "private").is_none());
+        // a grant to a ship is accepted, and a grant to oneself is refused. Whether
+        // the access list then names the ship is not asserted: on a fake ship
+        // only the first grant ever showed there (see PARITY.md), so it is printed.
+        assert!(c.grant("rune-probe", "~zod", false).unwrap_err().starts_with("400"), "a grant to oneself is refused");
+        if std::env::var("LATTICE_GRANT").is_ok() {
+            let notified = c.grant("rune-probe", "~nec", false).unwrap();
+            assert!(!notified, "a ship that is not there is not told");
+            eprintln!("readers after a grant to ~nec: {:?}", readers(&c.groups().unwrap(), "rune-probe"));
+        }
+        assert!(c.groups().unwrap().iter().any(|g| g.name == "public"), "the access list reads");
         // a memory is written, listed with its text, and deleted. The ship
         // may refuse a key whose deleted memory is still in the trash, so
         // each run uses its own.

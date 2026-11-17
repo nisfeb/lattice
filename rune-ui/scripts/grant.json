@@ -1,0 +1,8 @@
+{"events": [
+  {"t": 2.5, "type": "tap", "key": "dir"},
+  {"t": 3.0, "type": "tap", "key": "in:dir/inner"},
+  {"t": 4.0, "type": "tap", "key": "share"},
+  {"t": 5.5, "type": "tap", "key": "grant-ship"},
+  {"t": 6.0, "type": "type", "text": "wes"},
+  {"t": 7.0, "type": "tap", "key": "grant-read"}
+]}
