@@ -19,9 +19,11 @@
 ::  more than +max-feats features or +max-pos positions, is refused on
 ::  save. The depth is checked by a scan before the parse, since the
 ::  JSON parser's cost grows faster than the depth. A render draws at
-::  most +max-draw positions, every nth when there are more, and lists
-::  the first +max-show features. Every entry point runs under +mule,
-::  so a hostile body gives the note, never a crash.
+::  most +max-draw positions, every nth when there are more, and at
+::  most +max-shapes shapes (a point's circle, a line, a ring), and
+::  says how many it drew when it drew fewer. It lists the first
+::  +max-show features. Every entry point runs under +mule, so a
+::  hostile body gives the note, never a crash.
 ::
 |%
 ++  max-size   ^~((bex 22))
@@ -30,6 +32,7 @@
 ++  max-pos    500.000
 ++  max-draw   5.000
 ++  max-show   2.000
+++  max-shapes  2.000
 ::  a body this small cannot nest deep enough to cost anything
 ++  scan-from  16.384
 ++  note-html  "<p class=\"geojson-note\">page too large or not previewable</p>"
@@ -432,21 +435,24 @@
   =/  fs=(list feat)  (feats j)
   =/  total=@ud  (lent fs)
   =/  npos=@ud  (roll (turn fs feat-size) add)
-  =/  step=@ud  ?:((lte npos max-draw) 1 +((div npos max-draw)))
-  ::  each feature's parts, its positions in fixed point, thinned
-  =/  pts=(list drawn)
-    %+  turn  fs
-    |=  f=feat
-    ^-  drawn
-    :-  f
-    %+  turn  parts.f
-    |=  p=part
-    ^-  [k=?(%pt %ln %pg) xs=(list [x=@ud y=@ud])]
-    [k.p (turn (thin ps.p step) xy)]
+  =/  nparts=@ud  (roll (turn fs |=(f=feat (lent parts.f))) add)
+  =/  shapes=@ud  (roll (turn fs feat-shapes) add)
+  ::  thin keeps both ends of each part, two more at most than every
+  ::  nth: room is left for them
+  =/  room=@ud  (sub max-draw (mul 2 (min nparts max-shapes)))
+  =/  step=@ud  ?:((lte npos max-draw) 1 +((div npos room)))
+  ::  each feature's parts, thinned, in fixed point, to the caps
+  =/  cut=[pts=(list drawn) n=@ud]  (clip fs step)
+  =*  pts  pts.cut
   =/  all=(list [x=@ud y=@ud])  (zing (turn pts drawn-xys))
   %-  cats
   :~  "<div class=\"geojson\">"
       ?:(=(~ all) "" (svg-of pts all total))
+      ?:  (gte n.cut shapes)  ""
+      %-  cats
+      :~  "<p class=\"geojson-note\">Drawing "  (a-co:co n.cut)
+          " of "  (a-co:co shapes)  " shapes.</p>"
+      ==
       (table-of fs)
       ?:  (lte total max-show)  ""
       %-  cats
@@ -461,6 +467,40 @@
   |=  f=feat
   ^-  @ud
   (roll (turn parts.f |=(p=part (lent ps.p))) add)
+::  +feat-shapes: how many shapes a feature draws: a circle for each
+::  point, a path for each line or ring
+++  feat-shapes
+  |=  f=feat
+  ^-  @ud
+  (roll (turn parts.f |=(p=part ?:(?=(%pt k.p) (lent ps.p) 1))) add)
+::  +clip: each feature's parts thinned by `step` and in fixed point,
+::  until +max-shapes shapes or +max-draw positions are drawn, and how
+::  many shapes were. A part that does not fit ends the drawing, but
+::  points are taken as far as they fit.
+++  clip
+  |=  [fs=(list feat) step=@ud]
+  ^-  [pts=(list drawn) n=@ud]
+  =|  out=(list drawn)
+  =|  [n=@ud m=@ud]
+  |-  ^-  [pts=(list drawn) n=@ud]
+  ?~  fs  [(flop out) n]
+  =/  ps=(list part)  parts.i.fs
+  =|  got=(list [k=?(%pt %ln %pg) xs=(list [x=@ud y=@ud])])
+  =/  r=[got=_got n=@ud m=@ud full=?]
+    |-  ^-  [got=_got n=@ud m=@ud full=?]
+    ?~  ps  [got n m |]
+    =/  t=(list json)  (thin ps.i.ps step)
+    =/  l=@ud  (lent t)
+    ?:  ?=(%pt k.i.ps)
+      =/  c=@ud  :(min l (sub max-shapes n) (sub max-draw m))
+      =.  got  ?:(=(0 c) got [[%pt (turn (scag c t) xy)] got])
+      ?:  (lth c l)  [got (add n c) (add m c) &]
+      $(ps t.ps, n (add n c), m (add m c))
+    ?:  |(=(n max-shapes) (gth (add m l) max-draw))  [got n m &]
+    $(ps t.ps, got [[k.i.ps (turn t xy)] got], n +(n), m (add m l))
+  =.  out  [[i.fs (flop got.r)] out]
+  ?:  full.r  [(flop out) n.r]
+  $(fs t.fs, n n.r, m m.r)
 ::  +drawn-xys: every position of a drawn feature
 ++  drawn-xys
   |=  d=drawn

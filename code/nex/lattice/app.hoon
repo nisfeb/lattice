@@ -454,8 +454,9 @@
         ::  /journal-synced.json: the orrery journal mirror's memory, a json
         ::  object mapping day -> the last brief/review `at` already written as
         ::  a /journal page. +orrery-journal-pass reads it to skip days it has
-        ::  mirrored and rewrite only when orrery's record moved forward. Root
-        ::  grub, owner-only, no beacon. %fall so it survives reload.
+        ::  mirrored and rewrite only when orrery's record moved forward. The
+        ::  map mirror keeps its record under the key orrery/map (+map-rec:lo).
+        ::  Root grub, owner-only, no beacon. %fall so it survives reload.
             [%fall %& [/ %'journal-synced.json'] [[/ %json] `json`[%o ~]]]
         ::  /shared: notices other ships sent about files they granted us (see
         ::  /lib/lattice-share: claims, not capabilities). /shares.sig is the
@@ -2911,7 +2912,12 @@
     ?.  &(render ?=(~ key) ?=([%o *] p.r))  (send-json eyre-id p.r)
     ;<  sv=view:nexus  bind:m
       (peek:fio (rf up (weld /page (pax-of u.name)) %sensitive) ~)
-    (send-json eyre-id [%o (~(put by p.p.r) 'sensitive' b+?=([%file *] sv))])
+    =/  o=(map @t json)  (~(put by p.p.r) 'sensitive' b+?=([%file *] sv))
+    ::  orrery/map also says whether orrery keeps it (+orrery-kept), so
+    ::  the map editor opens it read-only only then
+    ?.  =(/orrery/map (pax-of u.name))  (send-json eyre-id [%o o])
+    ;<  kp=(unit @t)  bind:m  (orrery-kept (pax-of u.name))
+    (send-json eyre-id [%o (~(put by o) 'kept' b+?=(^ kp))])
   ::  page-history: every stored revision of a page, newest first. The /page
   ::  code grub's born history is permanent (%firm), and autosave makes it
   ::  dense. Version history for free, no extra storage machinery.
@@ -8890,7 +8896,7 @@
     ;<  ~  bind:m  (ensure-dirs up /links pax.act)
     (put-file (link-road up pax.act) [/lattice %link] link.act)
       %journal-put  (journal-put root now +.act)
-      %map-put  (map-put root now body.act)
+      %map-put  (map-put root now body.act doc.act)
       %del-from
     ;<  ~  bind:m  (del-from root now +.act)
     (apply-eval root now [%del from.act])
@@ -10635,6 +10641,9 @@
   |=  [pax=path gone=?]
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
+  ::  every save route comes here: orrery/map while orrery keeps it
+  ;<  kp=(unit @t)  bind:m  (orrery-kept pax)
+  ?^  kp  (pure:m kp)
   ::  one peek of a small grub for an ordinary save: the clock only
   ::  when there is a move to date
   ;<  job=(unit [from=path to=path at=@da])  bind:m  move-job-at
@@ -12954,6 +12963,18 @@
   ::  the earliest claimant on develop's kernel; an arbitrary one on the
   ::  dist kernel's, where two orreries claiming the name are alike
   (pure:m `i.dirs)
+::  +orrery-kept: why a save of `pax` must not land because orrery keeps
+::  it (+map-kept:lo), ~ when it may. Only orrery/map pays the two peeks.
+::
+++  orrery-kept
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ?.  =(/orrery/map pax)  (pure:m ~)
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ;<  synced=(map @t [at=@t hash=(unit @uv)])  bind:m  read-journal-synced
+  (pure:m (map-kept:lo pax & (~(has by synced) map-key:lo)))
 ::  +orrery-world: orrery's world digest, read whole as the json grub
 ::  <base>/world.json. ~ when orrery is absent or the grub will not decode.
 ::
@@ -13074,8 +13095,14 @@
   (write-journal-synced (~(put by synced) `@t`name [at hash]))
 ::  +orrery-map-pass: mirror orrery's map document (<base>/map.json) into
 ::  the private page orrery/map. A no-op when orrery or its map.json is
-::  absent. A document that is not a FeatureCollection, or a body over the
-::  map caps (+gj-check:lgj), writes nothing and keeps the last page.
+::  absent. When map.json is the version the mirror last wrote from and
+::  the page still holds what it wrote (+map-skip:lo, on the record
+::  +map-put keeps in journal-synced.json), the pass stops there: no
+::  body is built and nothing is checked or poked. A document that is
+::  not a FeatureCollection writes nothing and keeps the last page. A
+::  body over the map caps (+gj-check:lgj) is written as a small map
+::  with no features whose title says why (+map-notice:lo), once, since
+::  its record then lets an unchanged refusal skip too.
 ::
 ++  orrery-map-pass
   =/  m  (fiber:fiber:nexus ,~)
@@ -13084,29 +13111,43 @@
   ?~  base  (pure:m ~)
   ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& u.base %'map.json'] ~)
   ?.  ?=([~ %file *] vw)  (pure:m ~)
+  =/  at=[@ud @da]  [ud.cass.u.vw da.cass.u.vw]
+  ;<  synced=(map @t [at=@t hash=(unit @uv)])  bind:m  read-journal-synced
+  ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head /orrery/map)
+  ?:  (map-skip:lo (~(get by synced) map-key:lo) at src.pc)  (pure:m ~)
   =/  doc=(unit json)  (mole |.(!<(json (need-vase:tarball sang.u.vw))))
   =/  body=(unit @t)  ?~(doc ~ (map-body:lo u.doc))
   ?~  body  (pure:m ~)
-  ?^  (gj-check:lgj u.body)  (pure:m ~)
-  (poke-eval [%map-put u.body])
+  =/  bad=(unit @t)  (gj-check:lgj u.body)
+  (poke-eval [%map-put ?~(bad u.body (map-notice:lo u.bad)) at])
 ::  +map-put: %map-put, in the writer. orrery/map is written only when it
 ::  is missing or its body differs, so an unchanged map adds no revision
-::  and a hand edit is put back. orrery/map-notes, the page the owner
-::  draws on, is made only when missing and never rewritten. Each page is
-::  marked sensitive before it is written, as a journal page is.
+::  and a hand edit is put back. The mirror then records the version of
+::  map.json it wrote from and a hash of the page's source (+map-rec:lo)
+::  in journal-synced.json, which lets the next pass skip. orrery/map-notes,
+::  the page the owner draws on, is made only when missing and never
+::  rewritten. Each page is marked sensitive before it is written, as a
+::  journal page is.
 ::
 ++  map-put
-  |=  [root=@ud now=@da body=@t]
+  |=  [root=@ud now=@da body=@t doc=[@ud @da]]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  pax=path  /orrery/map
   ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head pax)
   =/  was=(unit [builder=@tas body=@t])  ?~(src.pc ~ (unwrap-content u.src.pc))
+  =/  keep=?  =(`[%geojson body] was)
+  =/  src=@t  ?:(&(keep ?=(^ src.pc)) u.src.pc (wrap-content %geojson body))
   ;<  ~  bind:m
     =/  n  (fiber:fiber:nexus ,~)
-    ?:  =(`[%geojson body] was)  (pure:n ~)
+    ?:  keep  (pure:n ~)
     ;<  ~  bind:n  (apply-eval root now [%page-sensitive pax &])
-    (apply-eval root now [%make pax (wrap-content %geojson body)])
+    (apply-eval root now [%make pax src])
+  ;<  synced=(map @t [at=@t hash=(unit @uv)])  bind:m  read-journal-synced
+  =/  rec  (map-rec:lo doc src)
+  ;<  ~  bind:m
+    ?:  =(`rec (~(get by synced) map-key:lo))  (pure:m ~)
+    (write-journal-synced (~(put by synced) map-key:lo rec))
   =/  nax=path  /orrery/map-notes
   ;<  nc=[rev=@ud src=(unit @t)]  bind:m  (page-head nax)
   ?^  src.nc  (pure:m ~)

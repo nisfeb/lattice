@@ -156,6 +156,61 @@
   %+  expect-eq
     !>('{"type":"FeatureCollection","lattice":{"title":"Orrery notes","layers":["orrery/map"]},"features":[\0a]}\0a')
   !>(notes-body:lo)
+::  the map pass skips only when orrery's map.json is the version the
+::  mirror last wrote from and the page is still what it wrote
+++  map-src  'page source'
+++  test-map-skip
+  =/  doc=[@ud @da]  [7 ~2026.11.1]
+  =/  rec  (map-rec:lo doc map-src)
+  ;:  weld
+    (expect-eq !>(&) !>((map-skip:lo `rec doc `map-src)))
+    ::  orrery's map moved on
+    (expect-eq !>(|) !>((map-skip:lo `rec [8 ~2026.11.2] `map-src)))
+    (expect-eq !>(|) !>((map-skip:lo `rec [7 ~2026.11.2] `map-src)))
+    ::  a hand edit, or no page
+    (expect-eq !>(|) !>((map-skip:lo `rec doc `'edited')))
+    (expect-eq !>(|) !>((map-skip:lo `rec doc ~)))
+    ::  no record, or one the journal shape left without a hash
+    (expect-eq !>(|) !>((map-skip:lo ~ doc `map-src)))
+    (expect-eq !>(|) !>((map-skip:lo `[at.rec ~] doc `map-src)))
+    (expect-eq !>(|) !>((map-skip:lo `['' hash.rec] doc `map-src)))
+  ==
+::  the record's key in journal-synced.json: a slash, so no journal
+::  day or week-<day> can take it
+++  test-map-key
+  (expect-eq !>('orrery/map') !>(map-key:lo))
+::  orrery keeps orrery/map while the mirror is live, and no other page
+++  test-map-kept
+  =/  why=(unit @t)  `'orrery keeps this page: draw on orrery/map-notes'
+  ;:  weld
+    (expect-eq !>(why) !>((map-kept:lo /orrery/map & &)))
+    ::  no orrery, or a mirror that never wrote it: an ordinary page
+    (expect-eq !>(~) !>((map-kept:lo /orrery/map | &)))
+    (expect-eq !>(~) !>((map-kept:lo /orrery/map & |)))
+    (expect-eq !>(~) !>((map-kept:lo /orrery/map-notes & &)))
+    (expect-eq !>(~) !>((map-kept:lo /orrery & &)))
+    (expect-eq !>(~) !>((map-kept:lo /orrery/map/x & &)))
+  ==
+::  a map lattice refuses is mirrored as a small map that says why
+++  test-map-notice
+  =/  b=@t  (map-notice:lo 'that map is over 4 MB')
+  ;:  weld
+    (expect-eq !>(~) !>((gj-check:gj b)))
+    %+  expect-eq
+      !>(`(unit @t)``'The map from orrery was too large to mirror: that map is over 4 MB')
+    !>((gj-title:gj b))
+    (expect-eq !>((map-doc ~)) !>((cut-lattice b)))
+    ::  a reason that needs escaping stays one string
+    (expect-eq !>(~) !>((gj-check:gj (map-notice:lo 'a "quoted" \\ reason'))))
+  ==
+::  the body with its lattice member taken out
+++  cut-lattice
+  |=  b=@t
+  ^-  json
+  =/  j=json  (need (de:json:html b))
+  ?>  ?=([%o *] j)
+  ?>  =(`[%a ~[s+'orrery/map-notes']] (biff (~(get by p.j) 'lattice') |=(l=json ?.(?=([%o *] l) ~ (~(get by p.l) 'layers')))))
+  [%o (~(del by p.j) 'lattice')]
 ++  test-travel-token
   ;:  weld
     (expect-eq !>(`'pk.abc') !>((travel-token:lo (pairs:enjs:format ~[['enabled' b+&] ['token' s+'pk.abc']]))))

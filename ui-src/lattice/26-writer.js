@@ -143,8 +143,11 @@
     wrNote.textContent = why;
     const k = richHere();
     if (!k || writerSourceOn()) return writerOff();
-    //  orrery/map is orrery's mirror, rewritten on every change: draw on orrery/map-notes
-    const body = src.value, ed = !src.readOnly && viewingRev === null && !(k === 'geojson' && current === 'orrery/map');
+    //  a map orrery keeps (the ship refuses its saves) opens read-only:
+    //  draw on orrery/map-notes. Only orrery/map can be kept, and until
+    //  the ship has said, it is taken as kept
+    const kept = k === 'geojson' && current === 'orrery/map' && keptKnown.get(current) !== false;
+    const body = src.value, ed = !src.readOnly && viewingRev === null && !kept;
     wrShow(true);
     const doc = { tab: activeTab, n: wrDoc, k };
     if (wr && wrFor && wrFor.tab === doc.tab && wrFor.n === doc.n && wrFor.k === k && wr.base() === body) { wrBox(k); return wr.setEditable(ed); }

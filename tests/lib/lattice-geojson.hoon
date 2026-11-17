@@ -300,6 +300,41 @@
     (expect-eq !>(5.001) !>((hits "," h)))
     (no (has "Showing the first" l))
   ==
+::  many tiny parts: a render draws at most +max-shapes shapes and
+::  +max-draw positions, and says how many shapes it drew
+++  test-html-shape-cap
+  =/  ls=@t  (rap 3 (join ',' (reap 3.000 '[[1,2],[3,4]]')))
+  =/  f=@t  (rap 3 ~['{"type":"Feature","geometry":{"type":"MultiLineString","coordinates":[' ls ']},"properties":{}}'])
+  =/  h=tape  (gj-html:gj (fc ~[f]))
+  =/  svg=tape  (scag (need (find "</svg>" h)) h)
+  ;:  weld
+    (expect-eq !>(max-shapes:gj) !>((hits "<path" h)))
+    (yes (lte (hits "," svg) max-draw:gj))
+    (yes (has "Drawing 2000 of 3000 shapes." h))
+  ==
+::  as many points, each one a shape
+++  test-html-point-cap
+  =/  h=tape  (gj-html:gj (fc (reap 2.500 (pt 'p' '1' '2'))))
+  ;:  weld
+    (expect-eq !>(max-shapes:gj) !>((hits "<circle" h)))
+    (yes (has "Drawing 2000 of 2500 shapes." h))
+  ==
+::  one MultiPoint of many points is cut at the shape cap too
+++  test-html-multipoint-cap
+  =/  ps=@t  (rap 3 (join ',' (reap 4.000 '[1,2]')))
+  =/  f=@t  (rap 3 ~['{"type":"Feature","geometry":{"type":"MultiPoint","coordinates":[' ps ']},"properties":{}}'])
+  =/  h=tape  (gj-html:gj (fc ~[f]))
+  ;:  weld
+    (expect-eq !>(max-shapes:gj) !>((hits "<circle" h)))
+    (yes (has "Drawing 2000 of 4000 shapes." h))
+  ==
+::  a map under the caps draws every shape, with no note
+++  test-html-no-draw-note
+  =/  h=tape  (gj-html:gj (fc (reap 2.000 (pt 'p' '1' '2'))))
+  ;:  weld
+    (expect-eq !>(2.000) !>((hits "<circle" h)))
+    (no (has "Drawing" h))
+  ==
 ::  the caps are inclusive: exactly at each one passes that check
 ++  test-cap-edges
   =/  f=@t  '{"type":"Feature","geometry":null,"properties":null}'
