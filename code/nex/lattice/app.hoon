@@ -12396,9 +12396,9 @@
   ;<  ~  bind:m  (poke-eval [%del i.todo])
   ;<  ~  bind:m  (move-grants i.todo ~)
   $(todo t.todo, done [i.todo done])
-::  +folder-bare: whether `rel` is a folder that holds nothing: no page
-::  of its own, no page or folder under it, no link at or under it, and
-::  no share on it. A display name alone does not keep it.
+::  +folder-bare: whether `rel` is a folder that holds nothing: its own
+::  node holds no more than a display name (+husk-bare:ls), there is no
+::  page or folder under it, and no link at or under it.
 ++  folder-bare
   |=  [up=@ud rel=path]
   =/  m  (fiber:fiber:nexus ,?)
@@ -12406,8 +12406,7 @@
   ;<  sn=view:nexus  bind:m  (peek:fio (rv up (weld /page rel)) ~)
   ?.  ?=([%ball *] sn)  (pure:m |)
   =/  fils  ?~(fil.ball.sn ~ contents.u.fil.ball.sn)
-  ?:  (~(has by fils) %code)  (pure:m |)
-  ?^  (dshare-row fils)  (pure:m |)
+  ?.  (husk-bare:ls ~(tap in ~(key by fils)))  (pure:m |)
   ?^  (tree-walk ball.sn *wave:nexus ~)  (pure:m |)
   ;<  lex=?  bind:m  (peek-exists:fio (rv up (weld /links rel)))
   (pure:m !lex)
