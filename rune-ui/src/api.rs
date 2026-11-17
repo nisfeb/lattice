@@ -489,6 +489,9 @@ struct Inbox {
 struct Rendered {
     #[serde(default)]
     comments: bool,
+    /// Said only of `orrery/map`: whether orrery keeps it.
+    #[serde(default)]
+    kept: Option<bool>,
 }
 
 /// One stored revision of a page.
@@ -940,6 +943,13 @@ impl Conn {
     pub fn comments_on(&self, name: &str) -> Result<bool, String> {
         let r: Rendered = serde_json::from_str(&self.call("GET", &format!("page-source?name={}&render=1", enc(name)), None)?).map_err(|e| e.to_string())?;
         Ok(r.comments)
+    }
+
+    /// Whether orrery keeps a page, so that the ship refuses its saves.
+    /// `None` where the ship does not say, which is every page but `orrery/map`.
+    pub fn kept(&self, name: &str) -> Result<Option<bool>, String> {
+        let r: Rendered = serde_json::from_str(&self.call("GET", &format!("page-source?name={}&render=1", enc(name)), None)?).map_err(|e| e.to_string())?;
+        Ok(r.kept)
     }
 
     /// Turns comments on or off at a page or folder.
@@ -1418,6 +1428,12 @@ mod tests {
         let none = format!("rune-none-{run}");
         let _ = c.template_new("no-such-template", &RealName { name: none.clone(), dname: String::new(), dnames: String::new() });
         assert!(!c.tree().unwrap().iter().any(|n| n.path.starts_with(&none)));
+        // only orrery's map is said to be kept or not, and with no orrery here it is not
+        assert_eq!(c.kept("rune-probe").unwrap(), None);
+        if !c.tree().unwrap().iter().any(|n| n.path == "orrery/map") {
+            c.save(&Page { name: "orrery/map".into(), body: r#"{"type":"FeatureCollection","features":[]}"#.into(), kind: "geojson".into(), rev: 0 }, 0).unwrap();
+        }
+        assert_eq!(c.kept("orrery/map").unwrap(), Some(false));
         // a captured page is made by its first save, with no create before it
         let cap = capture_name(&today(), u64::from(std::process::id()), &|_| false);
         let made = Page { name: cap.clone(), body: "a thought\n".into(), kind: "md".into(), rev: 0 };

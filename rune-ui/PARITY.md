@@ -50,7 +50,9 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Wiki link completion: an unclosed `[[` at the caret offers up to eight pages on a line under the editor, in both editors. Tab completes, the arrows choose, Esc dismisses. A whole date offers that day's journal page first, written or not. The offers sit under the editor, not at the caret
 - [x] Today's journal page: a Today button opens the day's page under any of its three names, or starts it at `journal/YYYY-MM-DD`, named and ready to type in. A link to a page not written yet starts that page the same way, in place of the name dialog
 - [x] New from a template: a dialog lists the ship's templates and takes a name, makes the page or folder of pages (`/template-list`, `/template-new`), and opens the page, the folder's index, or the folder. It is reached from the New page dialog and the palette
-- [ ] Orrery mirror pages shown read-only
+- [x] A map orrery keeps opens read-only: `orrery/map` is not edited while the ship says orrery keeps it, or has not said yet (`kept` on `/page-source?render=1`), and says to draw on `orrery/map-notes`. On a fake ship with no orrery the ship says the map is not kept. The screen was not run there
+- [!] A map orrery keeps, seen read-only on a ship: blocked on a test ship with orrery installed
+- [ ] Send the open page to orrery, from the share dialog (`ui-src/lattice/74-orrery.js`). Needs orrery on the ship
 - [ ] Tabs: more than one page open
 - [ ] Images in pages and uploads (pick, drop, paste)
 - [ ] Find in page

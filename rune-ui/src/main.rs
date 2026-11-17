@@ -116,6 +116,10 @@ struct App {
     /// The open page is a capture not saved yet: it has a name in the
     /// inbox and no page on the ship until its first save.
     capture: bool,
+    /// Whether orrery keeps `orrery/map`, as the ship last said. Until it
+    /// says, the map is taken as kept, as the web client takes it.
+    kept: Option<bool>,
+    kept_req: Latest<Result<Option<bool>, String>>,
     /// Autosave: when the text is next looked at, what it was at the last
     /// look, whether the save on the wire is one of its own (the editor
     /// stays open), whether a Save was pressed while one was on the wire,
@@ -321,6 +325,8 @@ fn init() -> App {
         old_req: Latest::default(),
         stale: false,
         capture: false,
+        kept: None,
+        kept_req: Latest::default(),
         next_auto: 0.0,
         auto_seen: None,
         autosaving: false,
@@ -520,6 +526,7 @@ fn sign_out(s: &mut App) {
     fresh.comments_on_req = std::mem::take(&mut s.comments_on_req);
     fresh.held_req = std::mem::take(&mut s.held_req);
     fresh.notices_req = std::mem::take(&mut s.notices_req);
+    fresh.kept_req = std::mem::take(&mut s.kept_req);
     fresh.templates_req = std::mem::take(&mut s.templates_req);
     fresh.back_req = std::mem::take(&mut s.back_req);
     fresh.asks_req = std::mem::take(&mut s.asks_req);
@@ -765,6 +772,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.comments_on_req.set_waker(waker.clone());
     s.held_req.set_waker(waker.clone());
     s.notices_req.set_waker(waker.clone());
+    s.kept_req.set_waker(waker.clone());
     s.templates_req.set_waker(waker.clone());
     s.back_req.set_waker(waker.clone());
     s.asks_req.set_waker(waker.clone());
@@ -1201,6 +1209,10 @@ fn show_page(s: &mut App, name: &str) {
     s.want = (!s.cache.contains_key(name)).then(|| name.to_owned());
     // a memory's text came with the list: only a page is read again
     if let Some(c) = s.conn.clone().filter(|_| !s.memory) {
+        if name == ORRERY_MAP {
+            s.kept = None;
+            s.kept_req.request(c.clone(), |c| c.kept(ORRERY_MAP));
+        }
         s.page_req.request((c, name.to_owned()), |(c, n)| c.page(&n));
     }
     sync_map(s);
@@ -1288,8 +1300,20 @@ fn editor_key(s: &mut App, ev: &KeyEvent, _: &mut Tx) -> bool {
 
 const KEPT_AS_SOURCE: &str = "this page has Markdown the rich editor would rewrite, so it is edited as source";
 
+/// The one page orrery can keep: its map. The ship refuses saves to a
+/// kept map, so it opens read-only.
+const ORRERY_MAP: &str = "orrery/map";
+
+fn kept_by_orrery(s: &App) -> bool {
+    s.open.as_ref().is_some_and(|p| p.name == ORRERY_MAP && p.kind == "geojson") && !s.memory && s.remote.is_none() && s.kept != Some(false)
+}
+
 fn start_edit(s: &mut App) {
     s.old = None;
+    if kept_by_orrery(s) {
+        s.note = "orrery keeps this map, so it is read-only here. Draw on orrery/map-notes".into();
+        return;
+    }
     let Some(p) = &s.open else { return };
     s.note.clear();
     // rich only when the page comes back from it unchanged (md::exact)
@@ -1662,6 +1686,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
             Err(e) => s.note = format!("templates: {e}"),
         }
+    }
+    if let Some(Ok(k)) = s.kept_req.take() {
+        changed = true;
+        s.kept = k;
     }
     if let Some(r) = s.back_req.take() {
         changed = true;
@@ -4147,6 +4175,31 @@ mod tests {
         make_from_template(&mut s);
         let made = api::real_name("notes/From Template").unwrap().name;
         assert!(s.tmpl.is_none() && s.names.contains(&made));
+    }
+
+    #[test]
+    fn a_map_orrery_keeps_is_not_edited_and_any_other_page_is() {
+        let mut s = sample("welcome");
+        let map = Page { name: ORRERY_MAP.into(), body: "{}".into(), kind: "geojson".into(), rev: 1 };
+        s.names.push(ORRERY_MAP.into());
+        s.cache.insert(ORRERY_MAP.into(), map);
+        open_page(&mut s, ORRERY_MAP);
+        // not yet said either way: taken as kept
+        start_edit(&mut s);
+        assert!(!s.editing && s.note.starts_with("orrery keeps this map"));
+        s.kept = Some(true);
+        start_edit(&mut s);
+        assert!(!s.editing);
+        // the ship says orrery does not keep it: an ordinary page
+        s.kept = Some(false);
+        start_edit(&mut s);
+        assert!(s.editing);
+        cancel_edit(&mut s);
+        // the flag is about that one page only
+        s.kept = Some(true);
+        open_page(&mut s, "welcome");
+        start_edit(&mut s);
+        assert!(s.editing);
     }
 
     #[test]
