@@ -24,9 +24,11 @@
 //    E  Source shows the JSON, and the kind picker refuses a switch
 //    F  the new-page dialog makes an empty map
 //    H  a map opened once opens offline, with the tiles it had
-//    O  orrery/map, orrery's mirror, opens with drawing refused. This one
-//       page uses its real name: it is made only when the ship has no
-//       orrery folder, and then deleted with the folder at the end
+//    O  orrery/map follows the ship's `kept`: while orrery's mirror keeps
+//       it, it opens with drawing refused. On a ship with no orrery it is
+//       an ordinary map, with drawing tools. This one page uses its real
+//       name: it is made only when the ship has no orrery folder, and then
+//       deleted with the folder at the end
 //
 //  Usage: LATTICE_URL=http://localhost:8120 LATTICE_COOKIE=/tmp/mec-cookie.txt \
 //           [STUB_LOG=path] node scripts/ui-map.mjs
@@ -405,17 +407,21 @@ try {
         { method: 'POST', body: coll([feat(1, 7.65, 45.97)], { title: 'Orrery', layers: ['orrery/map-notes'] }) });
       if (!r.ok) throw new Error('seed ' + ORR + ': ' + r.status);
     }
+    const kept = (await (await api('page-source?render=1&name=' + encodeURIComponent(ORR))).json()).kept;
     await open(ORR);
     await mounted();
     const before = await srcVal();
     const shown = await page.evaluate(() => [...document.querySelectorAll('lat-map:not([hidden]) [data-tool="point"]')].some((b) => b.offsetParent !== null));
-    check('O: orrery/map shows no drawing tools', !shown);
-    const box = await page.$eval('lat-map:not([hidden]) .lm-map', (e) => { const r = e.getBoundingClientRect(); return [r.x + r.width / 2 + 40, r.y + r.height / 2 + 30]; });
-    //  the hidden point tool, clicked anyway, then a click on the map
-    await page.evaluate(() => document.querySelector('lat-map:not([hidden]) [data-tool="point"]').click());
-    await page.mouse.click(box[0], box[1]);
-    await sleep(800);
-    check('O: and a point drawn on it anyway adds nothing', (await srcVal()) === before);
+    if (kept === false) check('O: with no orrery, orrery/map is an ordinary map with drawing tools', shown);
+    else {
+      check('O: orrery/map shows no drawing tools', !shown);
+      const box = await page.$eval('lat-map:not([hidden]) .lm-map', (e) => { const r = e.getBoundingClientRect(); return [r.x + r.width / 2 + 40, r.y + r.height / 2 + 30]; });
+      //  the hidden point tool, clicked anyway, then a click on the map
+      await page.evaluate(() => document.querySelector('lat-map:not([hidden]) [data-tool="point"]').click());
+      await page.mouse.click(box[0], box[1]);
+      await sleep(800);
+      check('O: and a point drawn on it anyway adds nothing', (await srcVal()) === before);
+    }
   }
 
   // ------------------------------------------------------------ H: offline

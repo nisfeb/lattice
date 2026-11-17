@@ -242,6 +242,16 @@
   ^-  ?
   ?~  src  |
   =(rec `(map-rec doc u.src))
+::  +map-kept: why a save of `pax` must not land, ~ when it may.
+::  orrery/map is orrery's while its mirror is live: orrery is installed
+::  (`orrery`) and the mirror has written the page (`mirrored`: its
+::  record is in journal-synced.json). Then the mirror would put a save
+::  back within minutes. Without a live mirror it is an ordinary page.
+++  map-kept
+  |=  [pax=path orrery=? mirrored=?]
+  ^-  (unit @t)
+  ?.  &(=(/orrery/map pax) orrery mirrored)  ~
+  `'orrery keeps this page: draw on orrery/map-notes'
 ::  +travel-token: the Mapbox token in orrery's travel settings
 ::  (<base>/travel.json, its `token` string), ~ when there is none
 ++  travel-token

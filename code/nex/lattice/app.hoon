@@ -2912,7 +2912,12 @@
     ?.  &(render ?=(~ key) ?=([%o *] p.r))  (send-json eyre-id p.r)
     ;<  sv=view:nexus  bind:m
       (peek:fio (rf up (weld /page (pax-of u.name)) %sensitive) ~)
-    (send-json eyre-id [%o (~(put by p.p.r) 'sensitive' b+?=([%file *] sv))])
+    =/  o=(map @t json)  (~(put by p.p.r) 'sensitive' b+?=([%file *] sv))
+    ::  orrery/map also says whether orrery keeps it (+orrery-kept), so
+    ::  the map editor opens it read-only only then
+    ?.  =(/orrery/map (pax-of u.name))  (send-json eyre-id [%o o])
+    ;<  kp=(unit @t)  bind:m  (orrery-kept (pax-of u.name))
+    (send-json eyre-id [%o (~(put by o) 'kept' b+?=(^ kp))])
   ::  page-history: every stored revision of a page, newest first. The /page
   ::  code grub's born history is permanent (%firm), and autosave makes it
   ::  dense. Version history for free, no extra storage machinery.
@@ -10636,6 +10641,9 @@
   |=  [pax=path gone=?]
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
+  ::  every save route comes here: orrery/map while orrery keeps it
+  ;<  kp=(unit @t)  bind:m  (orrery-kept pax)
+  ?^  kp  (pure:m kp)
   ::  one peek of a small grub for an ordinary save: the clock only
   ::  when there is a move to date
   ;<  job=(unit [from=path to=path at=@da])  bind:m  move-job-at
@@ -12955,6 +12963,18 @@
   ::  the earliest claimant on develop's kernel; an arbitrary one on the
   ::  dist kernel's, where two orreries claiming the name are alike
   (pure:m `i.dirs)
+::  +orrery-kept: why a save of `pax` must not land because orrery keeps
+::  it (+map-kept:lo), ~ when it may. Only orrery/map pays the two peeks.
+::
+++  orrery-kept
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ?.  =(/orrery/map pax)  (pure:m ~)
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ;<  synced=(map @t [at=@t hash=(unit @uv)])  bind:m  read-journal-synced
+  (pure:m (map-kept:lo pax & (~(has by synced) map-key:lo)))
 ::  +orrery-world: orrery's world digest, read whole as the json grub
 ::  <base>/world.json. ~ when orrery is absent or the grub will not decode.
 ::

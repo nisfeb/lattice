@@ -268,6 +268,9 @@
   // old page's flag. sensGen counts our writes, so a read sent before
   // one never overwrites what the write made true.
   const sensKnown = new Map();
+  // whether orrery keeps a page (the ship's `kept` on the render=1 open
+  // of orrery/map): the map editor follows it (26-writer.js)
+  const keptKnown = new Map();
   let sensWait = null;
   let sensGen = 0;
   //  `url`: the write. A plain save of an existing page keeps the flags,

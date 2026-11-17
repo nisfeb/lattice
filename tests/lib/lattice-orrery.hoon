@@ -179,6 +179,18 @@
 ::  day or week-<day> can take it
 ++  test-map-key
   (expect-eq !>('orrery/map') !>(map-key:lo))
+::  orrery keeps orrery/map while the mirror is live, and no other page
+++  test-map-kept
+  =/  why=(unit @t)  `'orrery keeps this page: draw on orrery/map-notes'
+  ;:  weld
+    (expect-eq !>(why) !>((map-kept:lo /orrery/map & &)))
+    ::  no orrery, or a mirror that never wrote it: an ordinary page
+    (expect-eq !>(~) !>((map-kept:lo /orrery/map | &)))
+    (expect-eq !>(~) !>((map-kept:lo /orrery/map & |)))
+    (expect-eq !>(~) !>((map-kept:lo /orrery/map-notes & &)))
+    (expect-eq !>(~) !>((map-kept:lo /orrery & &)))
+    (expect-eq !>(~) !>((map-kept:lo /orrery/map/x & &)))
+  ==
 ::  a map lattice refuses is mirrored as a small map that says why
 ++  test-map-notice
   =/  b=@t  (map-notice:lo 'that map is over 4 MB')

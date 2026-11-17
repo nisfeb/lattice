@@ -219,6 +219,7 @@
     // the ship's flag as of this read replaces the kept one, unless a
     // write of ours (a toggle, a move, a delete) went out since it was sent
     if (typeof d.sensitive === 'boolean' && sensGen === gen) sensKnown.set(name, d.sensitive);
+    if (typeof d.kept === 'boolean') keptKnown.set(name, d.kept);
     // a later openPage supersedes this one. Anything else still applies
     if (my !== openSeq) {
       // ...but it is still the ship's answer for this page, so a switch
