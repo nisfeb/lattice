@@ -6,9 +6,9 @@ const WRITER_H = '0v3.4g8bu.gitpg.4hui5.6i6ib.91c19';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
 const SHEET_H = '0v3.v145b.hha4j.kjuag.dcc4c.ld732';
 // and map.js's, the map view (26-writer.js)
-const MAP_H = '0v3.ff6q5.52e81.eh4nb.tce7l.n7nfp';
+const MAP_H = '0v4.gefvq.vdk6m.u260a.mdsrr.iaf1a';
 // and scad.js's, the 3D pane of scad pages (26-scad.js)
-const SCAD_H = '0v7.7a35l.sv8qr.bhse3.1rvso.nm17c';
+const SCAD_H = '0v6.42qfh.avede.rme6i.eq8o2.2r55a';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
@@ -908,7 +908,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     try { localStorage.removeItem('appPage'); } catch {}
     try { await kvPut('tree', []); } catch {}
-    try { if ('caches' in window) await caches.delete('lattice-pages'); } catch {}
+    try { if ('caches' in window) { await caches.delete('lattice-pages'); await caches.delete('lattice-tiles'); } } catch {}
     try { indexedDB.deleteDatabase('lattice-lru'); } catch {}
     nodes = []; pageCache.clear(); renderTree();
     st('the session has ended: log in to the ship again', false);
@@ -1544,6 +1544,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   };
   const pageCache = new Map();
   const sensKnown = new Map();
+  const keptKnown = new Map();
   let sensWait = null;
   let sensGen = 0;
   const sensForget = (url) => {
@@ -3806,6 +3807,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         src: () => src,
         current: () => current,
         name: () => current || (pname.value || '').trim() || 'untitled',
+        revOf: (name) => { const n = nodes.find((x) => x.page && x.path === name); return n ? n.rev : null; },
         editable: () => !src.readOnly && viewingRev === null && !!current,
         live: () => scadLive,
         setLive: (on) => { scadLive = !!on; },
@@ -3936,7 +3938,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     wrNote.textContent = why;
     const k = richHere();
     if (!k || writerSourceOn()) return writerOff();
-    const body = src.value, ed = !src.readOnly && viewingRev === null && !(k === 'geojson' && current === 'orrery/map');
+    const kept = k === 'geojson' && current === 'orrery/map' && keptKnown.get(current) !== false;
+    const body = src.value, ed = !src.readOnly && viewingRev === null && !kept;
     wrShow(true);
     const doc = { tab: activeTab, n: wrDoc, k };
     if (wr && wrFor && wrFor.tab === doc.tab && wrFor.n === doc.n && wrFor.k === k && wr.base() === body) { wrBox(k); return wr.setEditable(ed); }
@@ -6606,6 +6609,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       return my === openSeq ? false : undefined;
     }
     if (typeof d.sensitive === 'boolean' && sensGen === gen) sensKnown.set(name, d.sensitive);
+    if (typeof d.kept === 'boolean') keptKnown.set(name, d.kept);
     if (my !== openSeq) {
       const nd = nodes.find((n) => n.page && n.path === name);
       if (!d.link && !pageCache.has(name) && nd && !nd.link && nd.body === d.body
@@ -6811,6 +6815,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (c && rev && ['md', 'gmi', 'html', 'text', 'tex'].includes(k)) {
       pageCache.set(name, { ...c, body: sent, kind: k, rev, html: undefined });
     } else pageCache.delete(name);
+    if (scadG) scadG.forget(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
   };
