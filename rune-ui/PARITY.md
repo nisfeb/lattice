@@ -56,7 +56,8 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Tabs: more than one page open, each with its own way back and forward. A + in the toolbar or Ctrl+T opens one, Ctrl+W or its × closes it, and the strip shows once there are two. A tab holds a page of this ship. Tabs are not kept across runs, and there is no opening a link straight into a new tab
 - [x] Tabs kept across runs: each tab's page and the tab in front are in the preferences and open again, a tab whose page is gone coming back empty. A page opens into a new tab from the switcher (Ctrl-Return, or a middle click on a row) and from the palette
 - [!] A page opened into a new tab from the tree or from a link in a page, by Ctrl or middle click: blocked on Rune. Its kit `Tree` and `Markdown` report a press on a row or link with no modifier and no middle button (`on_select`, `on_link_tx`). `El::on_middle_press` exists but neither component passes it through
-- [ ] Split view: two documents side by side (`ui-src/lattice/28-splits.js`)
+- [x] Split view: Split holds the page in front on the right, read-only, while another is opened or edited on the left. Swap brings it to the front and × closes it. Its links open in front
+- [ ] Split view on par with the web client's: both sides editable, each with tabs of its own, kept across runs. A map or a sheet held beside shows as its source
 - [ ] Images in pages and uploads (pick, drop, paste)
 - [ ] Find in page
 - [ ] Print or export a page (the desktop app's pandoc bridge)

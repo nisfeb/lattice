@@ -237,6 +237,8 @@ struct App {
     /// is there, and its slot here is filled when another comes forward.
     tabs: Vec<Tab>,
     tab: usize,
+    /// The page held beside the one in front, to read while working on another.
+    split: Option<String>,
     /// Pages already read this session, so a second visit draws at once.
     cache: HashMap<String, Page>,
     note: String,
@@ -408,6 +410,7 @@ fn init() -> App {
         trail_at: 0,
         tabs: vec![Tab::default()],
         tab: 0,
+        split: None,
         cache: HashMap::new(),
         note: String::new(),
         names: Vec::new(),
@@ -2215,6 +2218,54 @@ fn template_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
+/// Holds the page in front beside whatever comes next, or lets go of
+/// the one held.
+fn toggle_split(s: &mut App) {
+    s.split = match (&s.split, s.open.as_ref().filter(|_| s.remote.is_none() && !s.capture && !s.memory)) {
+        (None, Some(p)) => Some(p.name.clone()),
+        _ => None,
+    };
+}
+
+/// Brings the page held beside to the front, and holds the one that was there.
+fn swap_split(s: &mut App) {
+    if s.editing {
+        return;
+    }
+    let Some(name) = s.split.take() else { return };
+    s.split = s.open.as_ref().filter(|p| s.remote.is_none() && p.name != name).map(|p| p.name.clone());
+    if s.names.contains(&name) {
+        s.files.select(&name);
+        open_page(s, &name);
+    }
+}
+
+/// The page held beside: read-only, as the reader shows it. A kind with
+/// a view of its own (a map, a sheet) shows as its source here.
+fn split_view(name: &str, s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let title = s.dnames.get(name).cloned().unwrap_or_else(|| name.to_owned());
+    let head = row()
+        .w_full()
+        .gap(6.0)
+        .center_y()
+        .child(text(title).font(k.ty.small_medium).color(c.text_muted).grow(1.0).min_w(0.0).truncate())
+        .child(Button::new("Swap").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Bring this page to the front").disabled(s.editing).on_press(swap_split).build(k).key("split-swap"))
+        .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close the split").on_press(|s: &mut App| s.split = None).build(k).key("split-close"));
+    let shown = match s.cache.get(name) {
+        Some(p) if p.kind == "md" => Markdown::new(md::wikilinks(&p.body, &|n| ghost(s, n))).selectable(true).on_link_tx(follow).build(k),
+        Some(p) => text(p.body.clone()).font(k.ty.mono).color(c.text_base).wrap().selectable(true),
+        None => text("This page is not here any more.").font(k.ty.small).color(c.text_muted),
+    };
+    col()
+        .key("split")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .child(col().w_full().px(16.0).pt(8.0).child(head))
+        .child(col().w_full().grow(1.0).min_h(0.0).child(col().w_full().padding(16.0).child(shown)).scroll(ScrollSpec { stick_bottom: false }))
+}
+
 /// Notes the tabs' pages in the preferences, to open again next run.
 fn keep_tabs(s: &mut App) {
     let front = s.open.as_ref().filter(|_| s.remote.is_none() && !s.capture && !s.memory).map(|p| p.name.clone());
@@ -2391,6 +2442,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("tab", "New tab"),
     ("tab-copy", "Open this page in a new tab"),
     ("tab-close", "Close this tab"),
+    ("split", "Split: hold this page beside, or close the split"),
     ("edit", "Edit"),
     ("rename", "Rename or move"),
     ("delete", "Delete"),
@@ -2419,6 +2471,7 @@ fn usable(s: &App, id: &str) -> bool {
         "reload" => s.conn.is_some(),
         "tab-close" => s.tabs.len() > 1,
         "tab-copy" => own && !s.memory,
+        "split" => s.split.is_some() || (own && !s.memory),
         _ => true,
     }
 }
@@ -2470,6 +2523,7 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
             tx.focus_when_shown(FIELD, false);
         }
         "tab" => new_tab(s),
+        "split" => toggle_split(s),
         "tab-copy" => {
             if let Some(name) = s.open.as_ref().map(|p| p.name.clone()) {
                 open_in_tab(s, &name);
@@ -3820,6 +3874,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         }
         if !s.memory {
             // one side pane, three things in it: pressing the one showing closes it
+            trailing = trailing.child(Button::new(if s.split.is_some() { "Unsplit" } else { "Split" }).variant(ButtonVariant::GhostMuted).help("Hold this page beside the next one you open").on_press(toggle_split).build(&k).key("split-toggle"));
             trailing = trailing.child(Button::new("Links").variant(ButtonVariant::GhostMuted).help("Pages that link here, and pages this links to").on_press(|s: &mut App| show_pane(s, false, true)).build(&k).key("links-toggle"));
             trailing = trailing.child(Button::new("Comments").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| show_pane(s, true, false)).build(&k).key("comments-toggle-pane"));
             trailing = trailing.child(Button::new("History").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| show_pane(s, false, false)).build(&k).key("history-toggle"));
@@ -3852,6 +3907,10 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         // the title sits beside them, not centred: a centred one ran under the buttons in a narrow window
         .child(text(title.to_owned()).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate().pl(6.0));
     let main = if s.tabs.len() > 1 && !s.memory { col().w_full().h_full().min_h(0.0).child(tab_strip(s, &k)).child(col().w_full().grow(1.0).min_h(0.0).child(body(s, &k))) } else { body(s, &k) };
+    let main = match s.split.as_ref().filter(|_| !s.memory) {
+        Some(name) => row().w_full().h_full().min_h(0.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(main)).child(Divider::vertical().build(&k)).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(split_view(name, s, &k))),
+        None => main,
+    };
     let shell = SplitView::new(main)
         .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k))
         .inspector(&s.inspector, |s: &mut App| &mut s.inspector, if s.pane_links { links_view(s, &k) } else if s.pane_comments { comments_view(s, &k) } else { history_view(s, &k) })
@@ -4457,6 +4516,29 @@ mod tests {
         one.prefs.tabs = vec!["budget".into(), "welcome".into()];
         one.prefs.tab = 9;
         assert!(restore_tabs(&mut one) && one.tab == 1);
+    }
+
+    #[test]
+    fn a_page_is_held_beside_another_and_swapped_to_the_front() {
+        let mut s = sample("welcome");
+        toggle_split(&mut s);
+        assert_eq!(s.split.as_deref(), Some("welcome"));
+        open_page(&mut s, "budget");
+        assert_eq!(s.split.as_deref(), Some("welcome"), "it stays while the front changes");
+        swap_split(&mut s);
+        assert_eq!((s.open.as_ref().map(|p| p.name.as_str()), s.split.as_deref()), (Some("welcome"), Some("budget")));
+        // not while editing: the page in front is not left behind
+        start_edit(&mut s);
+        swap_split(&mut s);
+        assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("welcome"));
+        cancel_edit(&mut s);
+        // the same press lets go of it
+        toggle_split(&mut s);
+        assert_eq!(s.split, None);
+        // nothing to hold with no page in front
+        s.open = None;
+        toggle_split(&mut s);
+        assert_eq!(s.split, None);
     }
 
     #[test]
