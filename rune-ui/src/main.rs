@@ -670,8 +670,8 @@ fn map_view(m: &MapView, k: &Kit) -> El {
         })
         .on_wheel(|s: &mut App, e: WheelEvent, _| {
             if let Some(m) = &mut s.map {
-                // ponytail: the wheel's sign is taken as Rune's pinch mapping has it, unchecked on a real wheel
-                m.cam.zoom_at((-e.dy as f64 / 200.0).exp(), e.x, e.y, m.size.0, m.size.1);
+                // wheel up zooms in: a real wheel on Linux reports up as a positive dy (checked by the owner on beast)
+                m.cam.zoom_at((e.dy as f64 / 200.0).exp(), e.x, e.y, m.size.0, m.size.1);
             }
             true
         })
