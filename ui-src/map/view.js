@@ -309,11 +309,15 @@ export function mount(host, opts = {}) {
     //  Past the limit of tiles a minute the worker and the ship answer
     //  429, and a minute later the same tile is there to be had. A failed
     //  tile still on the map is asked for again, a few times, further apart.
+    //  The retry asks for the URL the tile was first given: getTileUrl
+    //  would put the layer's current zoom in it, not the tile's. A tile of
+    //  a level the map has left is not asked for again.
     tiles.on('tileerror', (e) => {
       const t = e.tile, n = t.lmTry || 0;
       if (n >= RETRY.length) return;
       t.lmTry = n + 1;
-      setTimeout(() => { if (!dead && tiles && t.isConnected) t.src = tiles.getTileUrl(e.coords); }, RETRY[n]);
+      const u = t.lmUrl || (t.lmUrl = t.src);
+      setTimeout(() => { if (!dead && tiles && t.isConnected && e.coords.z === tiles._tileZoom) t.src = u; }, RETRY[n]);
     });
     tiles.addTo(map);
     map.setMaxZoom(max + 3);

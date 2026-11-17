@@ -54,19 +54,21 @@ const TILES = { token: true, max: 17, styles: ['streets', 'outdoors', 'satellite
 const browser = await launchBrowser();
 const errors = [];
 //  mdHtml: what opts.md returns, in place of the escaper. busy: the tile
-//  route answers 429 the first time each tile is asked for.
-async function open(text, { editable = true, viewport = { width: 1100, height: 700 }, touch = false, tiles = TILES, layers = {}, mdHtml = null, busy = false } = {}) {
+//  route answers 429 the first time each tile is asked for. hold: a tile
+//  path it is true of is not answered until release().
+async function open(text, { editable = true, viewport = { width: 1100, height: 700 }, touch = false, tiles = TILES, layers = {}, mdHtml = null, busy = false, hold = null } = {}) {
   const page = await browser.newPage();
   await page.setViewport({ ...viewport, hasTouch: touch, isMobile: touch });
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error' && !/favicon|Failed to load resource|insecure connection/.test(m.text())) errors.push(m.text()); });
-  const reqs = [], same = [], asked = new Set();
+  const reqs = [], same = [], asked = new Set(), held = [];
   await page.setRequestInterception(true);
   page.on('request', (r) => {
     const u = r.url();
     if (u === ORIGIN + '/') return r.respond({ status: 200, contentType: 'text/html', body: PAGE });
     if (u.startsWith(ORIGIN + '/apps/lattice/tile/')) {
       reqs.push(u.slice(ORIGIN.length));
+      if (hold && hold(u.slice(ORIGIN.length))) return void held.push(r);
       if (busy && !asked.has(u)) { asked.add(u); return r.respond({ status: 429, body: 'too many tiles this minute' }); }
       return r.respond({ status: 200, contentType: 'image/png', body: PNG });
     }
@@ -104,6 +106,7 @@ async function open(text, { editable = true, viewport = { width: 1100, height: 7
   await page.waitForFunction(() => document.getElementById('h').dataset.painted !== undefined, { timeout: 5000 });
   const api = {
     page, reqs, same,
+    release: () => { for (const r of held.splice(0)) r.respond({ status: 200, contentType: 'image/png', body: PNG }); },
     //  the screen point of [lon, lat]
     at: (lon, lat) => page.evaluate((a, b) => {
       const m = window.ctl._t.map;
@@ -516,6 +519,36 @@ console.log('==> a tile refused for a minute');
     return t.length > 0 && t.every((i) => i.classList.contains('leaflet-tile-loaded') && i.naturalWidth > 0);
   }), 6000, 200);
   check('a refused tile is asked for again and fills its hole', !!filled && [...first].every((u) => m.reqs.filter((x) => x === u).length === 2), `${m.reqs.length} requests for ${first.size} tiles`);
+  await m.close();
+}
+
+console.log('==> a tile refused, then a zoom before its retry');
+{
+  //  A retry asks for the very tile that failed (its own z, x and y), and
+  //  a tile from a level the map has left is not asked for again. The
+  //  new level's tiles are held, so the old level's stay on the map.
+  const m = await open(body([pt(-71, 42)], { center: [-71, 42], zoom: 10 }), { busy: true, hold: (u) => u.split('/').at(-3) === '11' });
+  await waitFor(() => m.reqs.length > 0, 3000);
+  await sleep(300);
+  const first = [...m.reqs];
+  const z0 = first[0].split('/').at(-3);
+  //  every tile Leaflet asks for from here on, as it built the URL
+  await m.page.evaluate(() => {
+    window.issued = [];
+    window.ctl._t.map.eachLayer((l) => { if (l.getTileUrl) l.on('tileloadstart', (e) => window.issued.push(e.tile.src)); });
+    //  animated, as a person zooms: Leaflet keeps the old level on screen
+    window.ctl._t.map.setZoom(12);
+  });
+  const n0 = m.reqs.length;
+  await sleep(3500);
+  const issued = new Set(first.concat((await m.page.evaluate(() => window.issued)).map((u) => u.slice(ORIGIN.length))));
+  const after = m.reqs.slice(n0);
+  const kept = await m.page.$$eval('.leaflet-tile-pane .leaflet-tile-container', (e) => e.filter((c) => c.querySelector('img')).length);
+  check('the old level\'s tiles were refused before the zoom', first.length > 0 && first.every((u) => u.split('/').at(-3) === z0), first.join(' '));
+  check('the old level is still on the map past its retry time', kept === 2, `${kept} levels of tiles shown`);
+  check('every tile asked for is one Leaflet issued, at its own zoom', m.reqs.every((u) => issued.has(u)), m.reqs.filter((u) => !issued.has(u)).join(' '));
+  check('no tile of the level the map left is asked for again', after.length > 0 && !after.some((u) => u.split('/').at(-3) === z0), after.join(' '));
+  m.release();
   await m.close();
 }
 

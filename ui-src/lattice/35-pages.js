@@ -584,6 +584,9 @@
     if (c && rev && ['md', 'gmi', 'html', 'text', 'tex'].includes(k)) {
       pageCache.set(name, { ...c, body: sent, kind: k, rev, html: undefined });
     } else pageCache.delete(name);
+    // the scad pane's copy of this page as an include (scad/shell.js): the
+    // tree's rev moves only with the next dump
+    if (scadG) scadG.forget(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     // not a link's: its text is the host's, read live, and the rev beside
     // a body here would be a base the next save claims falsely

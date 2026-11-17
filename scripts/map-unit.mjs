@@ -244,6 +244,31 @@ console.log('7. files');
   const x = io.exportGpx(doc, 'my <map>');
   check('GPX export has a waypoint, tracks and escaped text', x.includes('<wpt lat="2.25" lon="1.5"><time>2026-01-01T00:00:00Z</time><name>a &lt;b&gt; &amp; &quot;c&quot;</name><desc>n</desc></wpt>')
     && (x.match(/<trk>/g) || []).length === 2 && x.includes('<name>my &lt;map&gt;</name>'), x);
+  //  shapes a page may hold (or an edit may leave) that GPX cannot write
+  //  are skipped, never thrown on
+  const gf = (geometry) => ({ type: 'Feature', geometry, properties: { name: 'h' } });
+  check('a polygon with no ring parses as a page', !parse(fc([gf({ type: 'Polygon', coordinates: [] })])).error);
+  for (const [what, geometry] of [
+    ['a polygon with no ring', { type: 'Polygon', coordinates: [] }],
+    ['a multipolygon holding a polygon with no ring', { type: 'MultiPolygon', coordinates: [[]] }],
+    ['an empty line', { type: 'LineString', coordinates: [] }],
+    ['a multiline of empty lines', { type: 'MultiLineString', coordinates: [[], []] }],
+    ['a point with one coordinate', { type: 'Point', coordinates: [1] }],
+    ['a point with no coordinates', { type: 'Point' }],
+    ['a collection with a null geometry', { type: 'GeometryCollection', geometries: [null] }],
+    ['a collection with no geometries', { type: 'GeometryCollection' }],
+    ['a null geometry', null],
+  ]) {
+    let y, threw = '';
+    try { y = io.exportGpx({ features: [gf(geometry)] }, 'm'); } catch (e) { threw = String(e); }
+    check('GPX export skips ' + what, !threw && !/<wpt|<trk/.test(y), threw || y);
+  }
+  let y, threw = '';
+  try {
+    y = io.exportGpx({ features: [gf({ type: 'Polygon', coordinates: [] }), pt(1, 2),
+      gf({ type: 'MultiPolygon', coordinates: [[], [[[0, 0], [1, 0], [1, 1], [0, 0]]]] })] }, 'm');
+  } catch (e) { threw = String(e); }
+  check('GPX export writes what it can around what it skips', !threw && (y.match(/<wpt /g) || []).length === 1 && (y.match(/<trk>/g) || []).length === 1, threw || y);
 }
 
 check.done();

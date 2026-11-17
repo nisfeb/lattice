@@ -47,6 +47,8 @@
         src: () => src,
         current: () => current,
         name: () => current || (pname.value || '').trim() || 'untitled',
+        //  a page's rev in the tree, null when the tree has no such page
+        revOf: (name) => { const n = nodes.find((x) => x.page && x.path === name); return n ? n.rev : null; },
         editable: () => !src.readOnly && viewingRev === null && !!current,
         live: () => scadLive,
         setLive: (on) => { scadLive = !!on; },

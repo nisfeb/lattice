@@ -74,21 +74,31 @@ export function exportGpx(doc, name = 'map') {
   const n7 = (v) => String(Math.round(v * 1e7) / 1e7);
   let wpt = '', trk = '';
   const meta = (p) => (p.name ? `<name>${x(p.name)}</name>` : '') + (p.note ? `<desc>${x(p.note)}</desc>` : '');
-  const seg = (c) => '<trkseg>' + c.map((q) => `<trkpt lat="${n7(q[1])}" lon="${n7(q[0])}"/>`).join('') + '</trkseg>';
+  //  a shape GPX cannot write (no ring, no position, a short position) is
+  //  skipped. A segment with no position and a track with no segment are
+  //  left out.
+  const pos = (q) => Array.isArray(q) && Number.isFinite(q[0]) && Number.isFinite(q[1]);
+  const list = (a) => (Array.isArray(a) ? a : []);
+  const seg = (c) => {
+    const ps = list(c).filter(pos);
+    return ps.length ? '<trkseg>' + ps.map((q) => `<trkpt lat="${n7(q[1])}" lon="${n7(q[0])}"/>`).join('') + '</trkseg>' : '';
+  };
+  const track = (s, p) => { if (s) trk += `<trk>${meta(p)}${s}</trk>`; };
   const one = (g, p) => {
     if (!g) return;
+    const c = g.coordinates;
     switch (g.type) {
-      case 'Point': wpt += `<wpt lat="${n7(g.coordinates[1])}" lon="${n7(g.coordinates[0])}">${p.time ? `<time>${x(p.time)}</time>` : ''}${meta(p)}</wpt>`; break;
-      case 'MultiPoint': for (const c of g.coordinates) one({ type: 'Point', coordinates: c }, p); break;
-      case 'LineString': trk += `<trk>${meta(p)}${seg(g.coordinates)}</trk>`; break;
-      case 'MultiLineString': trk += `<trk>${meta(p)}${g.coordinates.map(seg).join('')}</trk>`; break;
-      case 'Polygon': trk += `<trk>${meta(p)}${seg(g.coordinates[0])}</trk>`; break;
-      case 'MultiPolygon': for (const c of g.coordinates) one({ type: 'Polygon', coordinates: c }, p); break;
-      case 'GeometryCollection': for (const h of g.geometries) one(h, p); break;
+      case 'Point': if (pos(c)) wpt += `<wpt lat="${n7(c[1])}" lon="${n7(c[0])}">${p.time ? `<time>${x(p.time)}</time>` : ''}${meta(p)}</wpt>`; break;
+      case 'MultiPoint': for (const q of list(c)) one({ type: 'Point', coordinates: q }, p); break;
+      case 'LineString': track(seg(c), p); break;
+      case 'MultiLineString': track(list(c).map(seg).join(''), p); break;
+      case 'Polygon': track(seg(list(c)[0]), p); break;
+      case 'MultiPolygon': for (const q of list(c)) one({ type: 'Polygon', coordinates: q }, p); break;
+      case 'GeometryCollection': for (const h of list(g.geometries)) one(h, p); break;
       default:
     }
   };
-  for (const f of doc.features) one(f.geometry, props(f));
+  for (const f of list(doc.features)) if (f) one(f.geometry, props(f));
   return '<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="lattice" xmlns="http://www.topografix.com/GPX/1/1">'
     + `<metadata><name>${x(name)}</name></metadata>` + wpt + trk + '</gpx>\n';
 }
