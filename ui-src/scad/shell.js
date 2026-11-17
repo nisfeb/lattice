@@ -168,16 +168,28 @@ export function shell(h) {
     });
   }
 
-  //  an include's page text, or null
-  async function readPage(name) {
+  //  an include's page text, or null. The ship's answer (a body, or a
+  //  page that is not there) is kept with the page's rev in the tree when
+  //  it was asked. It is asked again when that rev moves (an edit
+  //  elsewhere, the beacon, a move or a delete), when the page comes into
+  //  the tree, and after forget(name) (a save here). A failed read is not
+  //  kept.
+  const kept = new Map();
+  function readPage(name) {
     const c = h.pageCache.get(name);
-    if (c && typeof c.body === 'string') return c.body;
-    try {
-      const r = await fetch(h.api + '/page-source?name=' + encodeURIComponent(name));
-      if (!r.ok) return null;
-      const d = await r.json();
-      return typeof d.body === 'string' ? d.body : null;
-    } catch { return null; }
+    if (c && typeof c.body === 'string') return Promise.resolve(c.body);
+    const rev = h.revOf(name), k = kept.get(name);
+    if (k && k.rev === rev) return k.p;
+    const p = fetch(h.api + '/page-source?name=' + encodeURIComponent(name))
+      .then(async (r) => {
+        if (r.status === 404) return null;
+        if (!r.ok) throw new Error(r.status);
+        const d = await r.json();
+        return typeof d.body === 'string' ? d.body : null;
+      })
+      .catch(() => { if (kept.get(name)?.p === p) kept.delete(name); return null; });
+    kept.set(name, { rev, p });
+    return p;
   }
   //  replace characters a..b of the editor's text as typing would: native
   //  undo and the input event (dirty, autosave, repaint). taskFlip in
@@ -264,5 +276,7 @@ export function shell(h) {
     off,
     retheme: () => { if (ctl) ctl.retheme(); },
     status: () => st,
+    readPage,
+    forget: (name) => { kept.delete(name); },
   };
 }
