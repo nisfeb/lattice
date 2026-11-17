@@ -47,7 +47,8 @@ pub fn ext_kind(ext: &str) -> Option<&'static str> {
 /// made a name a page can have, under `dir` when there is one.
 pub fn page_name(rel: &str, dir: &str) -> Option<(String, &'static str)> {
     let (stem, ext) = rel.rsplit_once('.')?;
-    let kind = ext_kind(ext)?;
+    // a .csv comes in as a spreadsheet page
+    let kind = if ext.eq_ignore_ascii_case("csv") { "fods" } else { ext_kind(ext)? };
     let under = if dir.is_empty() { stem.to_owned() } else { format!("{}/{stem}", dir.trim_matches('/')) };
     Some((crate::api::real_name(&under)?.name, kind))
 }
@@ -57,7 +58,7 @@ pub fn page_name(rel: &str, dir: &str) -> Option<(String, &'static str)> {
 fn why_not(rel: &str) -> String {
     let ext = rel.rsplit_once('.').map_or("", |p| p.1).to_ascii_lowercase();
     match ext.as_str() {
-        "odt" | "ods" | "csv" => format!("{rel} (needs a converter this client does not have)"),
+        "odt" | "ods" => format!("{rel} (needs a converter this client does not have)"),
         _ => format!("{rel} (not a kind of page)"),
     }
 }
@@ -73,7 +74,12 @@ fn take(plan: &mut Plan, path: &Path, rel: &str, dir: &str) {
         Err(e) => return plan.skipped.push(format!("{rel} ({e})")),
         Ok(_) => {}
     }
+    let csv = rel.rsplit_once('.').is_some_and(|p| p.1.eq_ignore_ascii_case("csv"));
     match std::fs::read_to_string(path) {
+        Ok(text) if csv => match crate::sheet::from_csv(&text) {
+            Ok(body) => plan.items.push(Item { name, kind, body }),
+            Err(e) => plan.skipped.push(format!("{rel} ({e})")),
+        },
         Ok(body) => plan.items.push(Item { name, kind, body: if body.is_empty() { "\n".into() } else { body } }),
         Err(_) => plan.skipped.push(format!("{rel} (not text)")),
     }
@@ -169,10 +175,13 @@ mod tests {
         std::fs::write(top.join(".git/config.md"), "hidden\n").unwrap();
         let plan = read(&top, "inbox");
         let names: Vec<(&str, &str, &str)> = plan.items.iter().map(|i| (i.name.as_str(), i.kind, i.body.as_str())).collect();
-        assert_eq!(names, [("inbox/trip/days/map", "geojson", "{}"), ("inbox/trip/days/one", "text", "\n"), ("inbox/trip/plan", "md", "# plan\n")]);
+        assert_eq!(names[1..], [("inbox/trip/days/map", "geojson", "{}"), ("inbox/trip/days/one", "text", "\n"), ("inbox/trip/plan", "md", "# plan\n")]);
+        // the csv came in as a spreadsheet page
+        assert_eq!((names[0].0, names[0].1), ("inbox/trip/costs", "fods"));
+        assert_eq!(crate::sheet::parse(names[0].2)[0].rows, vec![vec!["a", "b"]]);
         let mut skipped = plan.skipped.clone();
         skipped.sort();
-        assert_eq!(skipped, ["Trip/bad.md (not text)", "Trip/costs.csv (needs a converter this client does not have)", "Trip/photo.png (not a kind of page)"]);
+        assert_eq!(skipped, ["Trip/bad.md (not text)", "Trip/photo.png (not a kind of page)"]);
         // one file, with no folder to go under
         let one = read(&top.join("plan.md"), "");
         assert_eq!(one.items, [Item { name: "plan".into(), kind: "md", body: "# plan\n".into() }]);

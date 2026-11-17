@@ -60,7 +60,8 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] The split kept across runs: the page held beside is in the preferences and is held again next run, if it is still there. Keeping it has a unit test. Holding it again at the start was not run against a ship
 - [x] Upload a file or a folder of files as pages, picked in the system's file dialog (`/page-save-batch`): text kinds by the web client's table of extensions, names by its rule, fifty to a request. What is left out is named with why. It is in the New page dialog and the palette
 - [x] Upload by dropping files or folders anywhere on the window, with a hint while they are held over it. Rune reports file drops on macOS, Windows and X11, and not on Wayland, so it does nothing on a Wayland desktop
-- [ ] Upload of `odt`, `ods` and `csv` files, which the web client converts with LibreOffice's wasm build
+- [x] Upload of a `csv` file as a spreadsheet page: the web client's reading of a CSV and its cap of 20,000 cells, written into its blank sheet. A plain number is a number cell and every other field is text. The web client also reads dates, percents and money as it would typed values, and here those stay text
+- [ ] Upload of `odt` and `ods` files: unpack the zip and fold its parts into one flat document, as `ui-src/writer/odt.js` does. An inflate crate (`flate2`) is already in the build
 - [ ] Images in a page from another site, behind the web client's "Load outside content for this page"
 - [ ] Find in page
 - [ ] Print or export a page (the desktop app's pandoc bridge)
