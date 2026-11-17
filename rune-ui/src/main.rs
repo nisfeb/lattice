@@ -85,6 +85,8 @@ enum Op {
     Sensed(String, bool, bool),
     /// Files were uploaded: the pages made, and the files left out with why.
     Uploaded(Vec<String>, Vec<String>),
+    /// Something was done that changes nothing here: what to say.
+    Said(String),
     /// A template made a page or a folder of pages at this name.
     Templated(String),
     /// An ask was sent or answered: what to say.
@@ -662,7 +664,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) => {}
+                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) => {}
             }
             Ok(op)
         }),
@@ -733,6 +735,10 @@ fn applied(s: &mut App, op: Op) {
                 [one] => Some(one.clone()),
                 many => Some(common_folder(many)).filter(|f| !f.is_empty()),
             };
+        }
+        Op::Said(say) => {
+            s.note = say;
+            return;
         }
         Op::Templated(name) => {
             s.tmpl = None;
@@ -2455,6 +2461,30 @@ fn common_folder(names: &[String]) -> String {
     parts.join("/")
 }
 
+/// Saves the page in front to a file on this machine: its source as it
+/// stands, with what is being typed if it is being edited.
+fn ask_download(s: &mut App, tx: &mut Tx) {
+    let Some(p) = &s.open else { return };
+    let body = if s.editing { edited(s) } else { p.body.clone() };
+    let name = upload::download_name(&p.name, &p.kind, s.memory);
+    let options = rune::FileDialogOptions { title: "Download this page".into(), file_name: Some(name), ..Default::default() };
+    tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => write_file(s, path, body),
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
+/// Writes a file off the window's thread and says how it went.
+fn write_file(s: &mut App, path: std::path::PathBuf, body: String) {
+    s.op_req.request((path, body), |(path, body)| {
+        Ok(Op::Said(match std::fs::write(&path, body) {
+            Ok(()) => format!("saved to {}", path.display()),
+            Err(e) => format!("not saved to {}: {e}", path.display()),
+        }))
+    });
+}
+
 /// Where an upload lands: the folder showing, or the top.
 fn upload_dir(s: &App) -> String {
     match (&s.folder, &s.open) {
@@ -2886,6 +2916,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("rename", "Rename or move"),
     ("delete", "Delete"),
     ("share", "Share"),
+    ("download", "Download this page as a file"),
     ("find", "Find in this page"),
     ("links", "Links"),
     ("comments", "Comments on this page"),
@@ -2907,6 +2938,7 @@ fn usable(s: &App, id: &str) -> bool {
     match id {
         "edit" => page && s.remote.as_ref().is_none_or(Shared::editable),
         "delete" => own,
+        "download" => page,
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
         "find" => page && find_where(s) != FindIn::Nothing,
         "reload" => s.conn.is_some(),
@@ -2976,6 +3008,7 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "rename" => ask_rename(s),
         "delete" => ask_delete(s),
         "share" => open_share(s),
+        "download" => ask_download(s, tx),
         "find" => open_find(s),
         "links" => show_pane(s, false, true),
         "comments" => show_pane(s, true, false),

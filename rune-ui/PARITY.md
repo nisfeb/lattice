@@ -67,7 +67,10 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Find in a Markdown page being read: Ctrl+F opens a bar, every match is marked and the current one ringed, Return and Shift-Return go round them and bring each into view. Any case, with or without accents, in the text as read and not in the Markdown's own marks. The web client leaves this to the browser
 - [x] Find while editing, in either editor and for a page of any kind: the same bar, each match washed and the current one stronger and selected in the text. It finds in the text as typed, so a link's address counts. There is no replace
 - [x] Find in a sheet and in a page shown as its source, while read. In a sheet the cells that match are in the accent colour and the current one's row is selected and brought into view. In source the matches are washed, but the current one is not scrolled to: the text is one element, and Rune brings elements into view, not places in a text. A map has no find
-- [ ] Print or export a page (the desktop app's pandoc bridge)
+- [x] Download a page: its source saved to a file through the system's save dialog, named by its last name and its kind as the web client names it, with what is being typed if it is being edited. From the palette
+- [ ] Duplicate a page, and copy a link to it
+- [ ] Export a page as PDF, as it reads (`ui-src/lattice/78-pdf.js`, `desktop/src/pdf.rs`)
+- [ ] Convert a LaTeX page to HTML with pandoc (`desktop/src/pandoc.rs`)
 
 ## Page kinds
 

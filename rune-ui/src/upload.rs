@@ -136,6 +136,19 @@ pub fn read(path: &Path, dir: &str) -> Plan {
     plan
 }
 
+/// The file name a page is downloaded under: its last name and its
+/// kind as an extension, as the web client names it. A memory is Markdown.
+pub fn download_name(page: &str, kind: &str, memory: bool) -> String {
+    let leaf = page.rsplit('/').next().unwrap_or(page);
+    let ext = match (memory, kind) {
+        (true, _) => "md",
+        (_, "text") => "txt",
+        (_, "") => "md",
+        (_, k) => k,
+    };
+    format!("{leaf}.{ext}")
+}
+
 /// `read` for several picks at once, as a drop brings them.
 pub fn read_all(paths: &[std::path::PathBuf], dir: &str) -> Plan {
     let mut all = Plan::default();
@@ -168,6 +181,11 @@ mod tests {
         assert!(page_name("day.md", "notes/").unwrap().0.starts_with("notes/"));
         assert_eq!(page_name("no-extension", ""), None);
         assert_eq!(page_name("photo.png", ""), None);
+        assert_eq!(download_name("notes/ideas/maps", "md", false), "maps.md");
+        assert_eq!(download_name("readme", "text", false), "readme.txt");
+        assert_eq!(download_name("places", "geojson", false), "places.geojson");
+        assert_eq!(download_name("feedback/short-answers", "md", true), "short-answers.md");
+        assert_eq!(download_name("odd", "", false), "odd.md");
         assert_eq!(page_name("Report.ODT", "").map(|p| p.1), Some("fodt"));
         assert_eq!(page_name("costs.ods", "").map(|p| p.1), Some("fods"));
         assert_eq!(page_name(".md", ""), None, "nothing left for a name");
