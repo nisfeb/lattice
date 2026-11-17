@@ -13150,9 +13150,14 @@
     (write-journal-synced (~(put by synced) map-key:lo rec))
   =/  nax=path  /orrery/map-notes
   ;<  nc=[rev=@ud src=(unit @t)]  bind:m  (page-head nax)
+  ::  a notes page that is there is still made sensitive when it is not:
+  ::  a key may have made it first, and the owner draws private places on it
+  ;<  ns=?  bind:m  (page-sensitive nax)
+  ;<  ~  bind:m
+    ?:  ns  (pure:m ~)
+    (apply-eval root now [%page-sensitive nax &])
   ?^  src.nc  (pure:m ~)
   ?.  =(0 rev.nc)  (pure:m ~)
-  ;<  ~  bind:m  (apply-eval root now [%page-sensitive nax &])
   (apply-eval root now [%make nax (wrap-content %geojson notes-body:lo)])
 ::  +orrery-rec: pull the `at` and `text` strings out of one orrery day
 ::  record. ~ when the json is not an object or either field is missing or

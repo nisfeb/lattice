@@ -208,7 +208,7 @@
     }
     try { localStorage.removeItem('appPage'); } catch {}
     try { await kvPut('tree', []); } catch {}
-    try { if ('caches' in window) await caches.delete('lattice-pages'); } catch {}
+    try { if ('caches' in window) { await caches.delete('lattice-pages'); await caches.delete('lattice-tiles'); } } catch {}
     try { indexedDB.deleteDatabase('lattice-lru'); } catch {}
     nodes = []; pageCache.clear(); renderTree();
     st('the session has ended: log in to the ship again', false);
