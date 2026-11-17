@@ -131,6 +131,11 @@ struct App {
     /// across the ship, whether comments are on for each page asked
     /// about, and the comment being typed.
     pane_comments: bool,
+    /// The side pane shows links: the pages that link to the one named,
+    /// as the ship last said.
+    pane_links: bool,
+    back: Option<(String, Vec<String>)>,
+    back_req: Latest<Result<(String, Vec<String>), String>>,
     comments: Vec<Comment>,
     comments_req: Latest<Result<Vec<Comment>, String>>,
     comments_on: HashMap<String, bool>,
@@ -296,6 +301,9 @@ fn init() -> App {
         dshares: HashMap::new(),
         sharing: false,
         pane_comments: false,
+        pane_links: false,
+        back: None,
+        back_req: Latest::default(),
         comments: Vec::new(),
         comments_req: Latest::default(),
         comments_on: HashMap::new(),
@@ -470,6 +478,7 @@ fn sign_out(s: &mut App) {
     fresh.comments_on_req = std::mem::take(&mut s.comments_on_req);
     fresh.held_req = std::mem::take(&mut s.held_req);
     fresh.notices_req = std::mem::take(&mut s.notices_req);
+    fresh.back_req = std::mem::take(&mut s.back_req);
     fresh.asks_req = std::mem::take(&mut s.asks_req);
     fresh.waiting_req = std::mem::take(&mut s.waiting_req);
     fresh.comets_req = std::mem::take(&mut s.comets_req);
@@ -701,6 +710,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.comments_on_req.set_waker(waker.clone());
     s.held_req.set_waker(waker.clone());
     s.notices_req.set_waker(waker.clone());
+    s.back_req.set_waker(waker.clone());
     s.asks_req.set_waker(waker.clone());
     s.waiting_req.set_waker(waker.clone());
     s.comets_req.set_waker(waker.clone());
@@ -998,9 +1008,91 @@ fn map_view(m: &MapView, k: &Kit) -> El {
     view.child(row().key("map-tools").absolute(12.0, h - 40.0).gap(6.0).center_y().child(zoom("zoom-in", "+", 2.0)).child(zoom("zoom-out", "−", 0.5)).child(zoom("zoom-fit", "Fit", 0.0)).child(count))
 }
 
+/// Whether a wiki link's target is a page not written yet: no page and
+/// no memory has the name.
+fn ghost(s: &App, name: &str) -> bool {
+    !s.names.iter().any(|n| n == name) && !s.other.1.iter().any(|n| n == name)
+}
+
+/// The pages among `cache` whose text links to `name`.
+fn linked_from(cache: &HashMap<String, Page>, name: &str) -> Vec<String> {
+    let mut from: Vec<String> = cache.values().filter(|p| p.kind == "md" && p.name != name && md::links(&p.body).iter().any(|l| l == name)).map(|p| p.name.clone()).collect();
+    from.sort();
+    from
+}
+
+/// Reads which pages link to the open one when the links pane is showing.
+/// The ship's index answers. Sample pages are read here.
+fn load_links(s: &mut App) {
+    let Some(p) = s.open.as_ref().filter(|_| s.inspector.is_open() && s.pane_links && !s.memory && s.remote.is_none()) else { return };
+    match s.conn.clone() {
+        Some(c) => s.back_req.request((c, p.name.clone()), |(c, n)| c.backlinks(&n).map(|b| (n, b))),
+        None => s.back = Some((p.name.clone(), linked_from(&s.cache, &p.name))),
+    }
+}
+
+/// Opens a page by name, or offers to make it when it is not written yet.
+fn go(s: &mut App, name: &str) {
+    if s.names.iter().any(|n| n == name) {
+        open_page(s, name);
+    } else {
+        let mut t = TextEdit::new(name);
+        t.focused = true;
+        s.prompt = Some(Prompt::New(t));
+    }
+}
+
+/// The links pane: the pages that link here, and the pages this one links to.
+fn links_view(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let Some(p) = &s.open else {
+        return col().key("links").w_full().padding(12.0).child(text("Open a page to see its links.").font(k.ty.small).color(c.text_muted).wrap());
+    };
+    let line = |name: &str, key: String, ghost: bool| {
+        let to = name.to_owned();
+        row().w_full().child(Button::new(if ghost { format!("{name}  (not written)") } else { name.to_owned() }).control_size(ControlSize::Small).variant(if ghost { ButtonVariant::GhostFaint } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| go(s, &to)).build(k).key(key))
+    };
+    let mut here = col().key("links-here").w_full().gap(2.0).child(text("Links here").font(k.ty.small_medium).color(c.text_muted));
+    match s.back.as_ref().filter(|(n, _)| *n == p.name) {
+        Some((_, list)) if list.is_empty() => here = here.child(text("Nothing links here yet.").font(k.ty.small).color(c.text_faint)),
+        Some((_, list)) => {
+            for n in list {
+                here = here.child(line(n, format!("back-{n}"), false));
+            }
+        }
+        None => here = here.child(text("Reading the links").font(k.ty.small).color(c.text_faint)),
+    }
+    let mut out = col().key("links-out").w_full().gap(2.0).child(text("Links out").font(k.ty.small_medium).color(c.text_muted));
+    let outs = if p.kind == "md" { md::links(&p.body) } else { Vec::new() };
+    for n in &outs {
+        out = out.child(line(n, format!("out-{n}"), ghost(s, n)));
+    }
+    if outs.is_empty() {
+        out = out.child(text("No links to other pages.").font(k.ty.small).color(c.text_faint));
+    }
+    col().key("links").w_full().h_full().min_h(0.0).padding(12.0).gap(14.0).child(text("Links").font(k.ty.ui_medium).color(c.text_base)).child(here).child(out).scroll(ScrollSpec { stick_bottom: false })
+}
+
+/// Shows one of the side pane's three views, or closes the pane when
+/// that view is the one showing.
+fn show_pane(s: &mut App, comments: bool, links: bool) {
+    if s.inspector.is_open() && s.pane_comments == comments && s.pane_links == links {
+        s.inspector.toggle();
+        return;
+    }
+    if !s.inspector.is_open() {
+        s.inspector.toggle();
+    }
+    (s.pane_comments, s.pane_links) = (comments, links);
+    s.old = None;
+    load_history(s);
+    load_comments(s);
+    load_links(s);
+}
+
 /// Reads the open page's revisions when the history pane is showing.
 fn load_history(s: &mut App) {
-    if s.memory || s.pane_comments {
+    if s.memory || s.pane_comments || s.pane_links {
         return;
     }
     let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else { return };
@@ -1052,6 +1144,7 @@ fn show_page(s: &mut App, name: &str) {
     sync_sheet(s);
     load_history(s);
     load_comments(s);
+    load_links(s);
 }
 
 /// A rich field for `d`, kept to what Markdown can write.
@@ -1306,6 +1399,12 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         match r {
             Ok(list) => s.comments = list,
             Err(e) => s.note = format!("comments: {e}"),
+        }
+    }
+    if let Some(r) = s.back_req.take() {
+        changed = true;
+        if let Ok(b) = r {
+            s.back = Some(b);
         }
     }
     if let Some(r) = s.asks_req.take() {
@@ -1803,7 +1902,7 @@ fn load_comments(s: &mut App) {
         s.notices_req.request(c.clone(), |c| c.notices());
     }
     let Some(p) = &s.open else { return };
-    if s.inspector.is_open() && s.pane_comments && !s.memory && s.remote.is_none() {
+    if s.inspector.is_open() && s.pane_comments && !s.pane_links && !s.memory && s.remote.is_none() {
         s.comments_req.request(c.clone(), |c| c.comments());
         s.comments_on_req.request((c.clone(), p.name.clone()), |(c, n)| c.comments_on(&n).map(|on| (n, on)));
         s.comets_req.request((c, p.name.clone()), |(c, n)| c.comets(&n).map(|m| (n, m)));
@@ -2813,7 +2912,7 @@ fn page_body(s: &App, k: &Kit) -> El {
         return map_view(m, k);
     }
     let shown = if p.kind == "md" {
-        Markdown::new(md::wikilinks(&p.body)).selectable(true).on_link_tx(follow).build(k)
+        Markdown::new(md::wikilinks(&p.body, &|n| ghost(s, n))).selectable(true).on_link_tx(follow).build(k)
     } else {
         // other kinds draw as their source, coloured, until each has a native view
         let lang = match p.kind.as_str() {
@@ -2901,31 +3000,10 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             }).build(&k).key("share"));
         }
         if !s.memory {
-            // one side pane, two things in it: pressing the one showing closes it
-            trailing = trailing.child(Button::new("Comments").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
-                if s.inspector.is_open() && s.pane_comments {
-                    s.inspector.toggle();
-                } else {
-                    if !s.inspector.is_open() {
-                        s.inspector.toggle();
-                    }
-                    s.pane_comments = true;
-                    s.old = None;
-                    load_comments(s);
-                }
-            }).build(&k).key("comments-toggle-pane"));
-            trailing = trailing.child(Button::new("History").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
-                if s.inspector.is_open() && !s.pane_comments {
-                    s.inspector.toggle();
-                } else {
-                    if !s.inspector.is_open() {
-                        s.inspector.toggle();
-                    }
-                    s.pane_comments = false;
-                }
-                s.old = None;
-                load_history(s);
-            }).build(&k).key("history-toggle"));
+            // one side pane, three things in it: pressing the one showing closes it
+            trailing = trailing.child(Button::new("Links").variant(ButtonVariant::GhostMuted).help("Pages that link here, and pages this links to").on_press(|s: &mut App| show_pane(s, false, true)).build(&k).key("links-toggle"));
+            trailing = trailing.child(Button::new("Comments").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| show_pane(s, true, false)).build(&k).key("comments-toggle-pane"));
+            trailing = trailing.child(Button::new("History").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| show_pane(s, false, false)).build(&k).key("history-toggle"));
         }
         trailing = trailing.child(Button::new("Delete").variant(ButtonVariant::GhostMuted).on_press(ask_delete).build(&k).key("delete"));
         if !s.memory {
@@ -2953,7 +3031,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         .child(text(title.to_owned()).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate().pl(6.0));
     let shell = SplitView::new(body(s, &k))
         .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k))
-        .inspector(&s.inspector, |s: &mut App| &mut s.inspector, if s.pane_comments { comments_view(s, &k) } else { history_view(s, &k) })
+        .inspector(&s.inspector, |s: &mut App| &mut s.inspector, if s.pane_links { links_view(s, &k) } else if s.pane_comments { comments_view(s, &k) } else { history_view(s, &k) })
         .toolbar(Toolbar::new().leading(leading).trailing(trailing))
         .titlebar_inset(cx.titlebar_inset())
         .frame_inset(8.0)
@@ -3208,6 +3286,26 @@ mod tests {
         assert!(s.prompt.is_none());
         assert_eq!((s.asks.sent[0].ship.as_str(), s.asks.sent[0].name.as_str(), s.asks.sent[0].note.len()), ("~bus", "plans", 280));
         assert_eq!(s.note, "asked ~bus for edit access to plans");
+    }
+
+    #[test]
+    fn the_links_pane_knows_what_links_here_and_which_links_are_ghosts() {
+        let mut s = sample("notes/today");
+        show_pane(&mut s, false, true);
+        assert_eq!(s.back, Some(("notes/today".to_owned(), vec!["welcome".to_owned()])));
+        assert!(ghost(&s, "not/written") && !ghost(&s, "welcome"));
+        // a memory by that name is not a ghost either
+        let key = s.other.1[0].clone();
+        assert!(!ghost(&s, &key));
+        // a ghost offers to make the page, a real one opens
+        go(&mut s, "not/written");
+        assert!(matches!(&s.prompt, Some(Prompt::New(t)) if t.text == "not/written"));
+        s.prompt = None;
+        go(&mut s, "welcome");
+        assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("welcome"));
+        // the same button closes the pane
+        show_pane(&mut s, false, true);
+        assert!(!s.inspector.is_open());
     }
 
     #[test]

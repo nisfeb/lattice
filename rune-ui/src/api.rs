@@ -428,6 +428,12 @@ pub fn clip_note(s: &str) -> &str {
 }
 
 #[derive(Deserialize)]
+struct Backlinks {
+    #[serde(default)]
+    links: Vec<String>,
+}
+
+#[derive(Deserialize)]
 struct Comets {
     #[serde(default)]
     mode: String,
@@ -964,6 +970,12 @@ impl Conn {
         })
     }
 
+    /// The pages that link to a page, as the ship's index has them.
+    pub fn backlinks(&self, name: &str) -> Result<Vec<String>, String> {
+        let b: Backlinks = serde_json::from_str(&self.call_in(60, "GET", &format!("page-backlinks?name={}", enc(name)), None)?).map_err(|e| e.to_string())?;
+        Ok(b.links.into_iter().filter(|l| l != name).collect())
+    }
+
     /// Removes one comment.
     pub fn comment_delete(&self, page: &str, id: &str) -> Result<(), String> {
         self.call("POST", &format!("comment-del?page={}&id={}", enc(page), enc(id)), Some("")).map(drop)
@@ -1305,6 +1317,22 @@ mod tests {
         assert!(c.comment("rune-probe", "").unwrap_err().starts_with("400"), "an empty comment is refused");
         c.comment_delete("rune-probe", &got.id).unwrap();
         assert!(mine(&c).is_none(), "a removed comment is gone");
+        // a page that links to the probe is among its backlinks, once the ship has read it
+        let from = format!("rune-linker-{base}");
+        c.create(&from).unwrap();
+        let mut linker = c.page(&from).unwrap();
+        linker.body = "see [[rune-probe]]\n".into();
+        c.save(&linker, linker.rev).unwrap();
+        let mut back = Vec::new();
+        for _ in 0..20 {
+            back = c.backlinks("rune-probe").unwrap();
+            if back.contains(&from) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        assert!(back.contains(&from), "{back:?}");
+        assert!(!back.contains(&"rune-probe".to_owned()));
         // asks: none wait on a lone ship, an answer to no ask is refused, and so is asking oneself
         assert_eq!(c.asks().unwrap(), Asks::default());
         assert!(c.ask_answer("~bus", "/a/page/rune-probe/code", true).unwrap_err().starts_with("404"));

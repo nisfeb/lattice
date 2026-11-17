@@ -1,0 +1,5 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "welcome"},
+  {"t": 2.5, "type": "tap", "key": "links-toggle"},
+  {"t": 3.5, "type": "tap", "key": "out-notes/today"}
+]}

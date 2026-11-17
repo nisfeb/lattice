@@ -42,7 +42,8 @@ pub const WIKI: &str = "lattice:";
 /// The page for display: each wiki link, `[[name]]` or `[[name|label]]`,
 /// becomes a Markdown link to `lattice:name`. Fenced code and inline code
 /// are left as they are. Only the reader uses this, never the editor.
-pub fn wikilinks(src: &str) -> String {
+/// A link to a page `ghost` says is not written yet shows in italics.
+pub fn wikilinks(src: &str, ghost: &dyn Fn(&str) -> bool) -> String {
     let mut out = String::with_capacity(src.len());
     let mut fenced = false;
     for line in src.split_inclusive('\n') {
@@ -74,10 +75,28 @@ pub fn wikilinks(src: &str) -> String {
                     continue;
                 }
                 out.push_str(&rest[..a]);
+                let label = if ghost(name) { format!("*{label}*") } else { label.to_owned() };
                 out.push_str(&format!("[{label}]({WIKI}{})", crate::api::enc(name).replace("%2F", "/")));
                 rest = &rest[a + 4 + z..];
             }
             out.push_str(rest);
+        }
+    }
+    out
+}
+
+/// The pages a page links to, each once, in the order they come: wiki
+/// links and Markdown links into this app.
+// ponytail: a Markdown link written inside code counts too. A real parse if that shows.
+pub fn links(src: &str) -> Vec<String> {
+    let shown = wikilinks(src, &|_| false);
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = shown.as_str();
+    while let Some(a) = rest.find("](") {
+        rest = &rest[a + 2..];
+        let Some(z) = rest.find(')') else { break };
+        if let Some(name) = page_of(&rest[..z]).filter(|n| !out.contains(n)) {
+            out.push(name);
         }
     }
     out
@@ -696,6 +715,7 @@ mod tests {
 
     #[test]
     fn wiki_links_become_links_the_reader_can_follow() {
+        let wikilinks = |s: &str| wikilinks(s, &|_| false);
         assert_eq!(wikilinks("see [[notes/today]] and [[My Page|that one]]\n"), "see [notes/today](lattice:notes/today) and [that one](lattice:My%20Page)\n");
         // code is left alone, and so is what is not a link
         let kept = "`[[not]]` and [[ ]] and [[open\n```\n[[in a fence]]\n```\n";
@@ -704,6 +724,14 @@ mod tests {
         assert_eq!(page_of("/apps/lattice/page/notes/today#top").as_deref(), Some("notes/today"));
         assert_eq!(page_of("https://urbit.org"), None);
         assert_eq!(page_of("lattice:"), None);
+    }
+
+    #[test]
+    fn a_pages_links_out_are_listed_once_and_a_ghost_shows_in_italics() {
+        let src = "[[a]] then [[b/c|label]], [[a]] again, [web](https://x.org), [in](/apps/lattice/page/d) and `[[code]]`\n";
+        assert_eq!(links(src), ["a", "b/c", "d"]);
+        assert!(links("no links here").is_empty());
+        assert_eq!(super::wikilinks("[[a]] [[b|B]]", &|n| n == "b"), "[a](lattice:a) [*B*](lattice:b)");
     }
 
     #[test]
