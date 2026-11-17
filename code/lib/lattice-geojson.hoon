@@ -16,8 +16,8 @@
 ::  is a #rgb or #rrggbb hex. A note is searched but not shown.
 ::
 ::  CAPS. A body over +max-size, nested deeper than +max-depth, with
-::  more than +max-feats features or +max-pos positions, is refused on
-::  save. The depth is checked by a scan before the parse, since the
+::  more than +max-feats features or +max-pos positions, or with a
+::  coordinate +num-ok refuses, is refused on save. The depth is checked by a scan before the parse, since the
 ::  JSON parser's cost grows faster than the depth. A render draws at
 ::  most +max-draw positions, every nth when there are more, and lists
 ::  the first +max-show features. Every entry point runs under +mule,
@@ -132,8 +132,32 @@
   =/  g=json  (fall (~(get by p.j) 'geometry') ~)
   ?~  g  &+0
   =/  c=(unit @ud)  (geom-count g &)
-  ?~  c  |+'a feature has a geometry GeoJSON does not define'
-  &+u.c
+  ?^  c  &+u.c
+  ?.  (nums-ok g)  |+'a coordinate in that map is too long or too large'
+  |+'a feature has a geometry GeoJSON does not define'
+::  +nums-ok: whether every number in `j` passes +num-ok. It is read
+::  only to say why a geometry was refused.
+++  nums-ok
+  |=  j=json
+  ^-  ?
+  ?+  j  &
+    [%n *]  (num-ok p.j)
+    [%a *]  (levy p.j nums-ok)
+    [%o *]  (levy ~(val by p.j) nums-ok)
+  ==
+::  +num-ok: whether a number's text is short enough to read, and its
+::  exponent small enough. A coordinate never needs more, and a longer
+::  one would cost the render a bignum or a float parse.
+++  num-ok
+  |=  t=@ta
+  ^-  ?
+  ?:  (gth (met 3 t) 32)  |
+  =/  s=tape  (cass (trip t))
+  =/  e=(unit @ud)  (find "e" s)
+  ?~  e  &
+  =/  x=tape  (slag +(u.e) s)
+  =?  x  ?=([?(%'+' %'-') *] x)  t.x
+  (lte (lent x) 3)
 ::  +geom-count: the positions in a geometry, ~ when it is not one. A
 ::  GeometryCollection holds plain geometries only (`top`).
 ++  geom-count
@@ -167,13 +191,14 @@
   ?:  =('MultiPolygon' p.ty)  (nest c 4 2)
   ~
 ::  +pos-ok: [lon, lat], with a height and a measure at most, all numbers
+::  that pass +num-ok
 ++  pos-ok
   |=  j=json
   ^-  ?
   ?.  ?=([%a *] j)  |
   =/  n  (lent p.j)
   ?.  &((gte n 2) (lte n 4))  |
-  (levy p.j |=(x=json ?=([%n *] x)))
+  (levy p.j |=(x=json ?&(?=([%n *] x) (num-ok p.x))))
 ::  +poss: a list of at least `min` positions, and how many
 ++  poss
   |=  [j=json min=@ud]
@@ -355,10 +380,11 @@
 ::  +fix: a JSON number's text as a signed count of 10^-7 units: the
 ::  sign, the whole part, and up to seven places. The parts are read by
 ::  +digs, and found with +find, which is jetted. A number with an
-::  exponent goes through @rd instead.
+::  exponent goes through @rd instead. A number +num-ok refuses is 0.
 ++  fix
   |=  t=@ta
   ^-  [neg=? v=@ud]
+  ?.  (num-ok t)  [| 0]
   =/  s=tape  (trip t)
   ?:  |(?=(^ (find "e" s)) ?=(^ (find "E" s)))  (fix-exp t)
   =/  neg=?  =('-' (end 3 t))
