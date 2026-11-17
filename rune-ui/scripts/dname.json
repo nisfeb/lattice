@@ -1,0 +1,5 @@
+{"events": [
+  {"t": 2.5, "type": "key", "name": "n", "cmd": true},
+  {"t": 3.0, "type": "type", "text": "Field Notes/Day Three"},
+  {"t": 4.0, "type": "key", "name": "Enter"}
+]}

@@ -36,7 +36,7 @@ On macOS, Cmd takes the place of Ctrl.
 - Editing a page's source, coloured as Markdown, with the rendered page beside it as it is typed.
 - Saving over the rev the text was read at. The ship refuses a stale save with 409, except for a page still at rev 0, where the ship checks nothing (the web client has the same gap).
 - Preferences: a theme button (the system's, dark, light), and the page that was open is opened again at the next launch. Kept in `~/.config/lattice-rune/prefs.json`.
-- New page, rename or move, and delete.
+- New page, rename or move, and delete. A name typed with capitals, spaces or punctuation ("Field Notes/Day One") becomes a path as the web client makes one (`field-notes/day-one`) and the typed name is what the tree and the title show.
 - Folders: picking a folder shows the pages in it, with New page here, Rename or move, and Delete, which takes every page in it after a confirm that says how many.
 - The whole tree arrives with every page's text in one request, so a page opens at once and the switcher can search text with no round trip. Every 30 seconds the tree is read again, and that read carries only what was written since. A page open in the window follows a write made elsewhere unless it is being edited.
 - Wiki links (`[[name]]`, `[[name|label]]`) and links into the app open the page. A link to a page that does not exist offers to make it. Web links open in the system browser. Back and forward buttons walk the pages visited.

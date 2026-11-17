@@ -24,6 +24,10 @@ pub struct Node {
     /// private page: the dump names only the shared ones.
     #[serde(default)]
     pub share: String,
+    /// The name to show in place of the path's last part, when the page
+    /// or folder was named with capitals, spaces or punctuation.
+    #[serde(default)]
+    pub dname: String,
     /// A folder's own share setting, which its pages take: `shared` or
     /// `clearweb`, empty for none.
     #[serde(default)]
@@ -355,6 +359,86 @@ impl Prefs {
     }
 }
 
+/// Whether `name` is a path the ship takes as it is: parts of lowercase
+/// letters, digits and `. _ ~ -`, none empty, `.` or `..`.
+pub fn valid_name(name: &str) -> bool {
+    name.split('/').all(|s| !s.is_empty() && s != "." && s != ".." && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._~-".contains(&b)))
+}
+
+/// What a typed name becomes: the path, and the names to show for the
+/// parts of it that could not be kept as typed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RealName {
+    pub name: String,
+    /// The last part as typed, empty when the path keeps it.
+    pub dname: String,
+    /// Every part as typed, `/`-joined, with an empty entry for a part the
+    /// path keeps. Empty when no part needs one.
+    pub dnames: String,
+}
+
+/// The web client's rule (`realName`): a valid path is used as it is and
+/// gets no display name. Anything else is made lowercase, with each run of
+/// other characters a hyphen, and the typed text is kept to show.
+pub fn real_name(typed: &str) -> Option<RealName> {
+    let t = typed.trim().trim_matches('/');
+    if t.is_empty() {
+        return None;
+    }
+    if valid_name(t) {
+        return Some(RealName { name: t.to_owned(), dname: String::new(), dnames: String::new() });
+    }
+    // as the web client's slugSeg: each run of other characters is one hyphen
+    // (a hyphen typed beside it stays), and hyphens and dots go from the ends
+    let slug = |s: &str| {
+        let (mut out, mut other) = (String::new(), false);
+        for ch in s.to_lowercase().chars() {
+            if ch.is_ascii_lowercase() || ch.is_ascii_digit() || "._~-".contains(ch) {
+                out.push(ch);
+                other = false;
+            } else if !other {
+                out.push('-');
+                other = true;
+            }
+        }
+        out.trim_matches(|c| c == '-' || c == '.').to_owned()
+    };
+    let segs: Vec<&str> = t.split('/').map(str::trim).collect();
+    let slugs: Vec<String> = segs.iter().map(|s| slug(s)).collect();
+    let name = slugs.join("/");
+    if !valid_name(&name) {
+        return None;
+    }
+    let per: Vec<&str> = segs.iter().zip(&slugs).map(|(s, g)| if *s == g { "" } else { *s }).collect();
+    let dnames = if per.iter().any(|p| !p.is_empty()) { per.join("/") } else { String::new() };
+    Some(RealName { name, dname: per.last().copied().unwrap_or("").to_owned(), dnames })
+}
+
+impl RealName {
+    /// The query for the display names, as the web client sends them.
+    fn query(&self) -> String {
+        let mut q = String::new();
+        if !self.dname.is_empty() {
+            q.push_str(&format!("&dname={}", enc(&self.dname)));
+        }
+        if !self.dnames.is_empty() {
+            q.push_str(&format!("&dnames={}", enc(&self.dnames)));
+        }
+        q
+    }
+
+    /// The names to show, by path: one for each part that needs one.
+    pub fn shown(&self) -> Vec<(String, String)> {
+        let parts: Vec<&str> = self.name.split('/').collect();
+        self.dnames
+            .split('/')
+            .enumerate()
+            .filter(|(i, d)| !d.is_empty() && *i < parts.len())
+            .map(|(i, d)| (parts[..=i].join("/"), d.to_owned()))
+            .collect()
+    }
+}
+
 /// A ship address as typed, made into a base URL: a scheme added when
 /// missing (http for localhost, https otherwise) and trailing slashes cut.
 pub fn base_url(typed: &str) -> String {
@@ -622,12 +706,24 @@ impl Conn {
 
     /// Makes a new Markdown page. The ship answers 409 when the name is taken.
     pub fn create(&self, name: &str) -> Result<(), String> {
-        let title = name.rsplit('/').next().unwrap_or(name);
-        self.call("POST", &format!("page-save?name={}&type=md&new=1&by=rune", enc(name)), Some(&format!("# {title}\n"))).map(drop)
+        self.create_as(&RealName { name: name.to_owned(), dname: String::new(), dnames: String::new() })
+    }
+
+    /// Makes a new Markdown page at `rn.name`, shown under the names typed.
+    pub fn create_as(&self, rn: &RealName) -> Result<(), String> {
+        let title = if rn.dname.is_empty() { rn.name.rsplit('/').next().unwrap_or(&rn.name) } else { &rn.dname };
+        self.call("POST", &format!("page-save?name={}&type=md&new=1&by=rune{}", enc(&rn.name), rn.query()), Some(&format!("# {title}\n"))).map(drop)
     }
 
     pub fn rename(&self, from: &str, to: &str) -> Result<(), String> {
-        self.call("POST", &format!("page-move?from={}&to={}&dname=", enc(from), enc(to)), Some("")).map(drop)
+        self.rename_as(from, &RealName { name: to.to_owned(), dname: String::new(), dnames: String::new() })
+    }
+
+    /// Moves a page or folder to `rn.name`, shown under the names typed. A
+    /// plain path clears the name the old one was shown under.
+    pub fn rename_as(&self, from: &str, rn: &RealName) -> Result<(), String> {
+        let q = if rn.dname.is_empty() { format!("&dname={}", rn.query()) } else { rn.query() };
+        self.call("POST", &format!("page-move?from={}&to={}{q}", enc(from), enc(&rn.name)), Some("")).map(drop)
     }
 
     pub fn delete(&self, name: &str) -> Result<(), String> {
@@ -742,6 +838,24 @@ mod tests {
     }
 
     #[test]
+    fn a_typed_name_becomes_a_path_and_the_names_to_show() {
+        let rn = |t: &str| real_name(t).map(|r| (r.name, r.dname, r.dnames));
+        let own = |a: &str, b: &str, c: &str| Some((a.to_owned(), b.to_owned(), c.to_owned()));
+        assert_eq!(rn("notes/today"), own("notes/today", "", ""), "a valid path is used as it is, with no name to show");
+        assert_eq!(rn(" /notes/My Page/ "), own("notes/my-page", "My Page", "/My Page"));
+        assert_eq!(rn("Trips/2026/Barcelona & Back!"), own("trips/2026/barcelona-back", "Barcelona & Back!", "Trips//Barcelona & Back!"));
+        assert_eq!(rn("Crème brûlée"), own("cr-me-br-l-e", "Crème brûlée", "Crème brûlée"));
+        assert_eq!(rn("Folder/plain"), own("folder/plain", "", "Folder/"));
+        assert_eq!(rn("A - B"), own("a---b", "A - B", "A - B"), "as the web client slugs it, hyphen for hyphen");
+        assert_eq!(rn("..Hidden.."), own("hidden", "..Hidden..", "..Hidden.."));
+        assert_eq!((rn(""), rn("///"), rn("!!!"), rn("a//b"), rn("a/../b")), (None, None, None, None, None), "nothing a path can keep");
+        assert!(valid_name("a.b_c~d-1/x") && !valid_name("A") && !valid_name("a/") && !valid_name("a b") && !valid_name("."));
+        let r = real_name("Trips/2026/Barcelona & Back!").unwrap();
+        assert_eq!(r.shown(), vec![("trips".to_owned(), "Trips".to_owned()), ("trips/2026/barcelona-back".to_owned(), "Barcelona & Back!".to_owned())]);
+        assert_eq!(r.query(), "&dname=Barcelona%20%26%20Back%21&dnames=Trips%2F%2FBarcelona%20%26%20Back%21");
+    }
+
+    #[test]
     fn a_ship_date_reads_as_a_date() {
         let r = |u: &str| Rev { rev: 1, updated: u.into() }.when();
         assert_eq!(r("~2026.11.7..9.5.11..b165"), "2026-11-07 09:05");
@@ -825,6 +939,21 @@ mod tests {
         c.group_save(&g.with_level(&base, "rune-probe", Level::Edit)).unwrap();
         c.group_delete(&gname).unwrap();
         assert!(c.group_save(&Group { name: "Bad Name".into(), ..Group::default() }).unwrap_err().starts_with("400"));
+        // a name typed with capitals and spaces is kept to show, for the page and its folder
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let typed = format!("Rune Names {stamp}/My Page");
+        let rn = real_name(&typed).unwrap();
+        c.create_as(&rn).unwrap();
+        let shown = |c: &Conn, path: &str| c.dump("").unwrap().nodes.into_iter().find(|n| n.path == path).map(|n| n.dname);
+        assert_eq!(shown(&c, &rn.name), Some("My Page".into()));
+        assert_eq!(shown(&c, rn.name.split('/').next().unwrap()), Some(format!("Rune Names {stamp}")), "the folder too");
+        // a rename under a new typed name shows that one, and a plain path shows none
+        let to = real_name(&format!("Rune Names {stamp}/Our Page")).unwrap();
+        c.rename_as(&rn.name, &to).unwrap();
+        assert_eq!(shown(&c, &to.name), Some("Our Page".into()));
+        let plain = format!("{}/plain", to.name.split('/').next().unwrap());
+        c.rename(&to.name, &plain).unwrap();
+        assert_eq!(shown(&c, &plain), Some(String::new()));
         // a folder's share setting is taken by the pages in it, and cleared again
         let fdir = format!("rune-shared-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
         c.create(&format!("{fdir}/inside")).unwrap();

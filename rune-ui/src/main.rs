@@ -104,8 +104,13 @@ struct App {
     /// What is kept between runs, and whether the last page was opened again.
     prefs: Prefs,
     restored: bool,
+    /// The page asked for whose text has not come yet: a page just made,
+    /// or one opened before the first tree arrived. Its answer is shown.
+    want: Option<String>,
     /// The folder picked in the tree, shown in place of a page.
     folder: Option<String>,
+    /// The name to show for a page or folder, where it was given one.
+    dnames: HashMap<String, String>,
     /// Each page's share mode, as the last dump said, and whether the
     /// share dialog is open.
     shares: HashMap<String, String>,
@@ -192,6 +197,7 @@ fn sample_nodes() -> Vec<Node> {
 }
 
 fn files_of(nodes: Vec<Node>, keep: &Files) -> Files {
+    let shown: Vec<(String, String)> = nodes.iter().filter(|n| !n.dname.is_empty()).map(|n| (n.path.clone(), n.dname.clone())).collect();
     let pages: Vec<Node> = nodes.into_iter().filter(|n| n.page).collect();
     // a refreshed tree keeps what was open and selected
     let open: Vec<String> = pages
@@ -200,6 +206,13 @@ fn files_of(nodes: Vec<Node>, keep: &Files) -> Files {
         .filter(|d| keep.is_expanded(d))
         .collect();
     let mut m = FileTree::new().build(pages.into_iter().map(|n| (n.path.clone(), n)));
+    // a row shows the name its page or folder was given. A row that stands
+    // for several folders at once (a/b/c) keeps its path.
+    for (path, name) in shown {
+        if let Some(n) = m.get_mut(&path).filter(|n| !n.name.contains('/')) {
+            n.name = name;
+        }
+    }
     for id in open {
         m.set_expanded(&id, true);
     }
@@ -238,7 +251,9 @@ fn init() -> App {
         stale: false,
         prefs: Prefs::load(),
         restored: false,
+        want: None,
         folder: None,
+        dnames: HashMap::new(),
         shares: HashMap::new(),
         dshares: HashMap::new(),
         sharing: false,
@@ -312,6 +327,7 @@ fn flip(s: &mut App) {
     }
     flip_quiet(s);
     s.open = None;
+    s.want = None;
     s.old = None;
     s.trail.clear();
     s.trail_at = 0;
@@ -401,13 +417,32 @@ fn confirm(s: &mut App) {
         s.edit.focused = true;
         return;
     }
-    let clean = |t: &TextEdit| t.text.trim().trim_matches('/').to_owned();
+    // a typed name becomes a path and the names to show (api::real_name)
+    let typed = match &p {
+        Prompt::New(t) | Prompt::Rename(_, t) => Some(t.text.clone()),
+        _ => None,
+    };
+    let rn = match typed.as_deref().map(api::real_name) {
+        Some(None) => {
+            s.note = "that name has nothing a path can keep".into();
+            return;
+        }
+        Some(Some(rn)) => rn,
+        None => api::RealName { name: String::new(), dname: String::new(), dnames: String::new() },
+    };
     let op = match p {
-        Prompt::New(t) if !clean(&t).is_empty() => Op::Created(clean(&t)),
-        Prompt::Rename(from, t) if !clean(&t).is_empty() && clean(&t) != from => Op::Renamed(from, clean(&t)),
+        Prompt::New(_) => Op::Created(rn.name.clone()),
+        Prompt::Rename(from, _) if rn.name != from || !rn.dnames.is_empty() => Op::Renamed(from, rn.name.clone()),
         Prompt::Delete(name) => Op::Deleted(name),
         _ => return,
     };
+    // the names show at once, and the next dump says what the ship kept
+    if !s.memory {
+        if let Op::Renamed(from, _) = &op {
+            s.dnames.remove(from);
+        }
+        s.dnames.extend(rn.shown());
+    }
     let memory = s.memory;
     match s.conn.clone() {
         Some(c) => s.op_req.request((c, op), move |(c, op)| {
@@ -415,8 +450,8 @@ fn confirm(s: &mut App) {
                 Op::Created(n) if memory => c.know_save(&format!("/{n}"), &format!("{}\n", n.rsplit('/').next().unwrap_or(n)))?,
                 Op::Deleted(n) if memory => c.know_delete(&format!("/{n}"))?,
                 Op::Renamed(..) if memory => return Err("a memory is not renamed here".into()),
-                Op::Created(n) => c.create(n)?,
-                Op::Renamed(a, b) => c.rename(a, b)?,
+                Op::Created(_) => c.create_as(&rn)?,
+                Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
                 Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) => {}
@@ -522,7 +557,9 @@ fn applied(s: &mut App, op: Op) {
     } else if s.conn.is_some() {
         load_tree(s);
     } else {
-        let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 1, body: None, ..Node::default() }).collect();
+        let mut nodes: Vec<Node> = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 1, dname: s.dnames.get(p).cloned().unwrap_or_default(), ..Node::default() }).collect();
+        // the folders that were given a name to show
+        nodes.extend(s.dnames.iter().filter(|(p, _)| !s.names.contains(p)).map(|(p, d)| Node { path: p.clone(), dname: d.clone(), ..Node::default() }));
         s.files = files_of(nodes, &s.files);
         s.files.expand_all();
         if let Some(p) = &s.open {
@@ -876,6 +913,8 @@ fn show_page(s: &mut App, name: &str) {
     if let Some(p) = s.cache.get(name) {
         s.open = Some(p.clone());
     }
+    // the page to show when its text arrives, if it is not kept yet
+    s.want = (!s.cache.contains_key(name)).then(|| name.to_owned());
     // a memory's text came with the list: only a page is read again
     if let Some(c) = s.conn.clone().filter(|_| !s.memory) {
         s.page_req.request((c, name.to_owned()), |(c, n)| c.page(&n));
@@ -1171,6 +1210,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Ok(Dump { nodes, since }) => {
                 s.since = since;
                 s.shares = nodes.iter().filter(|n| n.page && !n.share.is_empty()).map(|n| (n.path.clone(), n.share.clone())).collect();
+                s.dnames = nodes.iter().filter(|n| !n.dname.is_empty()).map(|n| (n.path.clone(), n.dname.clone())).collect();
                 s.dshares = nodes.iter().filter(|n| !n.page && !n.dshare.is_empty()).map(|n| (n.path.clone(), n.dshare.clone())).collect();
                 // bodies the dump carried replace the kept ones, and pages gone from it go
                 let live: std::collections::HashSet<&str> = nodes.iter().filter(|n| n.page).map(|n| n.path.as_str()).collect();
@@ -1225,7 +1265,14 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
             Ok(p) => {
                 s.cache.insert(p.name.clone(), p.clone());
-                if !s.editing && s.open.as_ref().is_some_and(|o| o.name == p.name) {
+                // shown when it is the page on screen, or the one waited for
+                let waited = s.want.as_deref() == Some(p.name.as_str());
+                if !s.editing && (waited || s.open.as_ref().is_some_and(|o| o.name == p.name)) && s.remote.is_none() {
+                    if waited {
+                        s.files.expand_to(&p.name);
+                        s.files.select(&p.name);
+                    }
+                    s.want = None;
                     s.open = Some(p);
                 }
             }
@@ -1494,6 +1541,7 @@ fn show_remote(s: &mut App, sh: Shared, p: Page) {
     s.old = None;
     s.stale = false;
     s.note.clear();
+    s.want = None;
     s.remote = Some(sh);
     s.open = Some(p);
     sync_map(s);
@@ -1950,6 +1998,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
                 s.access = false;
                 s.shared_open = false;
                 s.remote = None;
+                s.want = None;
                 s.folder = Some(id.to_owned());
                 s.open = None;
                 s.old = None;
@@ -2270,7 +2319,10 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     if s.conn.is_none() && !s.sample {
         return login_view(s, &k);
     }
-    let title = if s.shared_open { "Shared with me" } else if s.access { "Access" } else { s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref()).unwrap_or("lattice") };
+    let path = s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref());
+    // the name it was given when there is one, with its path beside it
+    let named = path.and_then(|p| s.dnames.get(p).filter(|_| !s.memory && s.remote.is_none()).map(|d| format!("{d}  ({p})")));
+    let title = if s.shared_open { "Shared with me" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
     let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending();
     let mut trailing = row().gap(8.0).center_y();
     if busy {
@@ -2605,6 +2657,39 @@ mod tests {
         // opening a page of this ship leaves the shared one
         open_page(&mut s, "welcome");
         assert!(s.remote.is_none());
+    }
+
+    #[test]
+    fn a_page_named_with_capitals_gets_a_path_and_shows_its_name() {
+        let mut s = sample("welcome");
+        s.prompt = Some(Prompt::New(TextEdit::new("Trips/Barcelona & Back")));
+        confirm(&mut s);
+        let p = s.open.as_ref().expect("the new page opens");
+        assert_eq!(p.name, "trips/barcelona-back");
+        assert_eq!((s.dnames["trips"].as_str(), s.dnames["trips/barcelona-back"].as_str()), ("Trips", "Barcelona & Back"));
+        // the tree's rows carry the names
+        assert_eq!((s.files.get("trips").unwrap().name.as_str(), s.files.get("trips/barcelona-back").unwrap().name.as_str()), ("Trips", "Barcelona & Back"));
+        // a rename to a plain path shows the path again
+        s.prompt = Some(Prompt::Rename("trips/barcelona-back".into(), TextEdit::new("trips/spain")));
+        confirm(&mut s);
+        assert!(!s.dnames.contains_key("trips/barcelona-back") && !s.dnames.contains_key("trips/spain"));
+        assert_eq!(s.files.get("trips/spain").unwrap().name, "spain");
+        // a name with nothing to keep is refused, and says so
+        s.prompt = Some(Prompt::New(TextEdit::new("!!!")));
+        confirm(&mut s);
+        assert_eq!(s.note, "that name has nothing a path can keep");
+    }
+
+    #[test]
+    fn a_page_asked_for_before_its_text_is_kept_is_waited_for() {
+        let mut s = sample("welcome");
+        // as on a ship: the page was just made and its text is not kept yet
+        s.open = None;
+        show_page(&mut s, "fresh/page");
+        assert_eq!((s.open.is_none(), s.want.as_deref()), (true, Some("fresh/page")));
+        // picking something else stops the wait
+        show_page(&mut s, "welcome");
+        assert_eq!((s.want.as_deref(), s.open.as_ref().map(|p| p.name.as_str())), (None, Some("welcome")));
     }
 
     #[test]
