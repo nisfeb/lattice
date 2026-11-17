@@ -514,6 +514,9 @@ struct Inbox {
 struct Rendered {
     #[serde(default)]
     comments: bool,
+    /// The page as the ship renders it, for a kind it renders.
+    #[serde(default)]
+    html: String,
     /// Said only of `orrery/map`: whether orrery keeps it.
     #[serde(default)]
     kept: Option<bool>,
@@ -1009,6 +1012,13 @@ impl Conn {
     pub fn kept(&self, name: &str) -> Result<Option<bool>, String> {
         let r: Rendered = serde_json::from_str(&self.call("GET", &format!("page-source?name={}&render=1", enc(name)), None)?).map_err(|e| e.to_string())?;
         Ok(r.kept)
+    }
+
+    /// The page as the ship renders it to HTML: what its preview shows.
+    /// Empty for a kind the ship does not render.
+    pub fn rendered(&self, name: &str) -> Result<String, String> {
+        let r: Rendered = serde_json::from_str(&self.call_in(60, "GET", &format!("page-source?name={}&render=1", enc(name)), None)?).map_err(|e| e.to_string())?;
+        Ok(r.html)
     }
 
     /// Turns comments on or off at a page or folder.
@@ -1514,6 +1524,9 @@ mod tests {
         let none = format!("rune-none-{run}");
         let _ = c.template_new("no-such-template", &RealName { name: none.clone(), dname: String::new(), dnames: String::new() });
         assert!(!c.tree().unwrap().iter().any(|n| n.path.starts_with(&none)));
+        // the ship renders a Markdown page to HTML, which is what a PDF export prints
+        let html = c.rendered("rune-probe").unwrap();
+        assert!(html.contains("<h1") && html.contains("probe"), "{html}");
         // the ship's own images come back as images, with the session
         let svg = fetch_bytes(&c.image_url("icon.svg"), Some(c.cookie())).unwrap();
         assert!(String::from_utf8_lossy(&svg).contains("<svg"), "the icon is an svg");

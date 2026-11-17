@@ -69,7 +69,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Find in a sheet and in a page shown as its source, while read. In a sheet the cells that match are in the accent colour and the current one's row is selected and brought into view. In source the matches are washed, but the current one is not scrolled to: the text is one element, and Rune brings elements into view, not places in a text. A map has no find
 - [x] Download a page: its source saved to a file through the system's save dialog, named by its last name and its kind as the web client names it, with what is being typed if it is being edited. From the palette
 - [x] Duplicate a page under a name asked for, seeded `<name>-copy`, with its kind and its text, and copy a page's `urb://` link or its name. From the palette. The duplicate's save on a ship is the one a capture uses, and was not run again here
-- [ ] Export a page as PDF, as it reads (`ui-src/lattice/78-pdf.js`, `desktop/src/pdf.rs`)
+- [x] Export a page as PDF: the page as the ship renders it, in one sealed document, printed to the file named in the save dialog by a headless Chromium or Chrome found on the path. Nothing outside the document is loaded and no script runs. Rune neither prints nor writes PDF, so without one of those browsers the export says it cannot. A sheet, a Writer document and a map print as their source, where the web client prints its own view of them. From the palette
 - [ ] Convert a LaTeX page to HTML with pandoc (`desktop/src/pandoc.rs`)
 
 ## Page kinds

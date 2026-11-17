@@ -8,6 +8,7 @@ mod api;
 mod map;
 mod md;
 mod odf;
+mod pdf;
 mod sheet;
 mod upload;
 
@@ -2506,6 +2507,38 @@ fn ask_download(s: &mut App, tx: &mut Tx) {
     });
 }
 
+/// Exports the page in front as a PDF, as the ship renders it. The file
+/// is named in the save dialog, and a headless Chromium or Chrome prints it.
+fn ask_pdf(s: &mut App, tx: &mut Tx) {
+    let (Some(p), Some(c)) = (s.open.clone(), s.conn.clone()) else {
+        s.note = "PDF export prints the page as the ship renders it, so it needs a ship".into();
+        return;
+    };
+    let Some(browser) = pdf::browser() else {
+        s.note = "PDF export needs Chromium or Chrome installed: this app cannot print by itself".into();
+        return;
+    };
+    let leaf = p.name.rsplit('/').next().unwrap_or(&p.name).to_owned();
+    let title = s.dnames.get(&p.name).cloned().unwrap_or_else(|| leaf.clone());
+    let options = rune::FileDialogOptions { title: "Export PDF".into(), file_name: Some(format!("{leaf}.pdf")), ..Default::default() }.filter("PDF", &["pdf"]);
+    tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => {
+            s.note = format!("printing {} to {}", p.name, path.display());
+            s.op_req.request((c, p, browser, title, path), |(c, p, browser, title, path)| {
+                // what the ship's preview shows, or the source for a kind it does not render
+                let html = c.rendered(&p.name).unwrap_or_default();
+                let body = if html.trim().is_empty() { pdf::source(&p.body) } else { html };
+                Ok(Op::Said(match pdf::print(&browser, &pdf::document(&title, &body), &path) {
+                    Ok(()) => format!("exported to {}", path.display()),
+                    Err(e) => format!("not exported: {e}"),
+                }))
+            });
+        }
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
 /// Writes a file off the window's thread and says how it went.
 fn write_file(s: &mut App, path: std::path::PathBuf, body: String) {
     s.op_req.request((path, body), |(path, body)| {
@@ -2951,6 +2984,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("copy-link", "Copy a link to this page"),
     ("copy-name", "Copy this page's name"),
     ("download", "Download this page as a file"),
+    ("pdf", "Export this page as PDF"),
     ("find", "Find in this page"),
     ("links", "Links"),
     ("comments", "Comments on this page"),
@@ -2973,7 +3007,7 @@ fn usable(s: &App, id: &str) -> bool {
         "edit" => page && s.remote.as_ref().is_none_or(Shared::editable),
         "delete" => own,
         "download" | "copy-name" => page,
-        "duplicate" | "copy-link" => own && !s.memory && !s.editing,
+        "duplicate" | "copy-link" | "pdf" => own && !s.memory && !s.editing,
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
         "find" => page && find_where(s) != FindIn::Nothing,
         "reload" => s.conn.is_some(),
@@ -3044,6 +3078,7 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "delete" => ask_delete(s),
         "share" => open_share(s),
         "download" => ask_download(s, tx),
+        "pdf" => ask_pdf(s, tx),
         "duplicate" => ask_duplicate(s),
         "copy-link" => {
             if let Some(link) = page_link(s) {
