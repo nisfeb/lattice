@@ -10,7 +10,7 @@ mod md;
 
 use std::collections::HashMap;
 
-use api::{Conn, Dump, Node, Page};
+use api::{Conn, Dump, Node, Page, Rev};
 use rune::{AppSpec, Block, LineCap, Phase, Shape, WheelEvent, canvas, Chrome, Cx, El, Key, KeyEvent, Latest, Mark, ScrollSpec, Span, TextEdit, Tx, Waker, col, el, row, text};
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
@@ -72,6 +72,15 @@ struct App {
     rich: bool,
     /// The line spacing of the page the rich editor was opened on (md::Seps).
     seps: md::Seps,
+    /// The history pane: the revisions of the page named, and the old
+    /// revision on screen in place of the page while one is being read.
+    inspector: PaneState,
+    revs: Option<(String, Vec<Rev>)>,
+    old: Option<Page>,
+    hist_req: Latest<Result<(String, Vec<Rev>), String>>,
+    old_req: Latest<Result<Page, String>>,
+    /// The page being edited was written elsewhere since it was opened.
+    stale: bool,
     /// The open page as a map, when it is one.
     map: Option<MapView>,
     /// The pages visited, oldest first, and where in them the window is.
@@ -149,6 +158,12 @@ fn init() -> App {
         edit: TextEdit::new(""),
         rich: false,
         seps: md::Seps::default(),
+        inspector: PaneState::new(240.0).range(200.0, 360.0).collapsed(),
+        revs: None,
+        old: None,
+        hist_req: Latest::default(),
+        old_req: Latest::default(),
+        stale: false,
         map: None,
         trail: Vec::new(),
         trail_at: 0,
@@ -199,6 +214,8 @@ fn sign_out(s: &mut App) {
     fresh.save_req = std::mem::take(&mut s.save_req);
     fresh.login_req = std::mem::take(&mut s.login_req);
     fresh.op_req = std::mem::take(&mut s.op_req);
+    fresh.hist_req = std::mem::take(&mut s.hist_req);
+    fresh.old_req = std::mem::take(&mut s.old_req);
     fresh.sidebar = s.sidebar.clone();
     *s = fresh;
 }
@@ -283,6 +300,8 @@ fn setup(s: &mut App, waker: Waker) {
     s.page_req.set_waker(waker.clone());
     s.save_req.set_waker(waker.clone());
     s.login_req.set_waker(waker.clone());
+    s.hist_req.set_waker(waker.clone());
+    s.old_req.set_waker(waker.clone());
     s.op_req.set_waker(waker);
     load_tree(s);
 }
@@ -492,7 +511,39 @@ fn map_view(m: &MapView, k: &Kit) -> El {
     view.child(row().key("map-tools").absolute(12.0, h - 40.0).gap(6.0).center_y().child(zoom("zoom-in", "+", 2.0)).child(zoom("zoom-out", "−", 0.5)).child(zoom("zoom-fit", "Fit", 0.0)).child(count))
 }
 
+/// Reads the open page's revisions when the history pane is showing.
+fn load_history(s: &mut App) {
+    let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else { return };
+    if s.inspector.is_open() {
+        s.hist_req.request((c, p.name.clone()), |(c, n)| c.history(&n).map(|r| (n, r)));
+    }
+}
+
+/// Shows the open page as it was at `rev`, read-only.
+fn view_rev(s: &mut App, rev: u64) {
+    let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else { return };
+    if p.rev == rev {
+        s.old = None;
+        return;
+    }
+    s.old_req.request((c, p.name.clone()), move |(c, n)| c.page_at(&n, rev));
+}
+
+/// Saves the old revision on screen as the page's newest. Nothing is
+/// lost: what it replaces stays in the history.
+fn restore(s: &mut App) {
+    let (Some(c), Some(old), Some(cur)) = (s.conn.clone(), s.old.take(), &s.open) else { return };
+    let base = cur.rev;
+    let p = Page { name: old.name, body: old.body, kind: cur.kind.clone(), rev: base };
+    s.save_req.request((c, p), move |(c, mut p)| {
+        p.rev = c.save(&p, base)?;
+        Ok(p)
+    });
+}
+
 fn show_page(s: &mut App, name: &str) {
+    s.old = None;
+    s.stale = false;
     if let Some(p) = s.cache.get(name) {
         s.open = Some(p.clone());
     }
@@ -500,6 +551,7 @@ fn show_page(s: &mut App, name: &str) {
         s.page_req.request((c, name.to_owned()), |(c, n)| c.page(&n));
     }
     sync_map(s);
+    load_history(s);
 }
 
 /// A rich field for `d`, kept to what Markdown can write.
@@ -538,6 +590,7 @@ fn editor_key(s: &mut App, ev: &KeyEvent, _: &mut Tx) -> bool {
 const KEPT_AS_SOURCE: &str = "this page has Markdown the rich editor would rewrite, so it is edited as source";
 
 fn start_edit(s: &mut App) {
+    s.old = None;
     let Some(p) = &s.open else { return };
     s.note.clear();
     // rich only when the page comes back from it unchanged (md::exact)
@@ -701,8 +754,10 @@ fn landed(s: &mut App, p: Page) {
     s.cache.insert(p.name.clone(), p.clone());
     s.open = Some(p);
     s.editing = false;
+    s.stale = false;
     s.note = "saved".into();
     sync_map(s);
+    load_history(s);
 }
 
 /// How often the tree is read again, to see what other windows wrote. Each
@@ -730,6 +785,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     if let Some(body) = &n.body {
                         s.cache.insert(n.path.clone(), Page { name: n.path.clone(), body: body.clone(), kind: n.kind.clone(), rev: n.rev });
                     }
+                }
+                // a page being edited that was written elsewhere: say so, since its save would be refused
+                if s.editing {
+                    s.stale = s.open.as_ref().is_some_and(|p| s.cache.get(&p.name).is_some_and(|c| c.rev > p.rev));
                 }
                 // the open page follows a write made elsewhere, unless it is being edited
                 if !s.editing {
@@ -783,6 +842,22 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         match r {
             Ok(op) => applied(s, op),
             Err(e) => s.note = format!("not done: {e}"),
+        }
+    }
+    if let Some(r) = s.hist_req.take() {
+        changed = true;
+        match r {
+            Ok(h) => s.revs = Some(h),
+            Err(e) => s.note = format!("history: {e}"),
+        }
+    }
+    if let Some(r) = s.old_req.take() {
+        changed = true;
+        match r {
+            // an answer for a page since left is dropped
+            Ok(p) if s.open.as_ref().is_some_and(|o| o.name == p.name) && !s.editing => s.old = Some(p),
+            Ok(_) => {}
+            Err(e) => s.note = format!("revision: {e}"),
         }
     }
     if let Some(r) = s.save_req.take() {
@@ -1033,9 +1108,107 @@ fn sidebar(s: &App, k: &Kit) -> El {
     side
 }
 
-fn body(s: &App, k: &Kit) -> El {
+/// The history pane: the open page's revisions, newest first.
+fn history_view(s: &App, k: &Kit) -> El {
     let c = &k.c;
-    let Some(p) = &s.open else {
+    let mut list = col().key("revs").w_full().gap(2.0);
+    let name = s.open.as_ref().map(|p| p.name.as_str());
+    match s.revs.as_ref().filter(|(n, _)| Some(n.as_str()) == name) {
+        Some((_, revs)) => {
+            let shown = s.old.as_ref().map_or(s.open.as_ref().map_or(0, |p| p.rev), |o| o.rev);
+            for r in revs {
+                let rev = r.rev;
+                let mut line = row()
+                    .key(format!("rev-{rev}"))
+                    .w_full()
+                    .h(30.0)
+                    .px(8.0)
+                    .gap(8.0)
+                    .center_y()
+                    .radius(k.radius.sm)
+                    .on_press(move |s: &mut App| view_rev(s, rev))
+                    .child(text(r.when()).font(k.ty.small).color(c.text_base).grow(1.0))
+                    .child(text(format!("rev {rev}")).font(k.ty.small).color(c.text_faint));
+                if rev == shown {
+                    line = line.fill(k.selection());
+                }
+                list = list.child(line);
+            }
+        }
+        None => list = list.child(text(if s.conn.is_some() { "Reading the history" } else { "Sample pages keep no history" }).font(k.ty.small).color(c.text_muted)),
+    }
+    col()
+        .key("history")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .padding(12.0)
+        .gap(8.0)
+        .child(text("History").font(k.ty.ui_medium).color(c.text_base))
+        .child(col().w_full().grow(1.0).min_h(0.0).child(list).scroll(ScrollSpec { stick_bottom: false }))
+}
+
+/// A line across the top of the page that says something and offers one way out.
+fn banner(key: &str, say: String, verb: &str, act: fn(&mut App), k: &Kit) -> El {
+    row()
+        .key(key.to_owned())
+        .w_full()
+        .px(16.0)
+        .py(8.0)
+        .gap(12.0)
+        .center_y()
+        .fill(k.c.layer_01)
+        .child(text(say).font(k.ty.small).color(k.c.text_base).wrap().grow(1.0).min_w(0.0))
+        .child(Button::new(verb).control_size(ControlSize::Small).on_press(act).build(k).key(format!("{key}-act")))
+}
+
+fn body(s: &App, k: &Kit) -> El {
+    let inner = page_body(s, k);
+    let top = if let Some(o) = s.old.as_ref().filter(|_| !s.editing) {
+        // an old revision can be read, restored, or left
+        Some(
+            row()
+                .key("old-banner")
+                .w_full()
+                .px(16.0)
+                .py(8.0)
+                .gap(8.0)
+                .center_y()
+                .fill(k.c.layer_01)
+                .child(text(format!("Reading revision {}, not the page as it is now", o.rev)).font(k.ty.small).color(k.c.text_base).grow(1.0))
+                .child(Button::new("Restore this").control_size(ControlSize::Small).variant(ButtonVariant::Contrast).on_press(restore).build(k).key("restore"))
+                .child(Button::new("Back to now").control_size(ControlSize::Small).on_press(|s: &mut App| s.old = None).build(k).key("leave-old")),
+        )
+    } else if s.editing && s.stale {
+        Some(banner(
+            "stale",
+            "This page was changed somewhere else while you were editing. Saving now would be refused.".into(),
+            "Save over theirs",
+            |s| {
+                // the owner's choice: take the newest rev as the base, so the save lands
+                if let Some(newest) = s.open.as_ref().and_then(|p| s.cache.get(&p.name)).map(|c| c.rev) {
+                    if let Some(p) = &mut s.open {
+                        p.rev = newest;
+                    }
+                    s.stale = false;
+                    save(s);
+                }
+            },
+            k,
+        ))
+    } else {
+        None
+    };
+    match top {
+        Some(t) => col().w_full().h_full().min_h(0.0).child(t).child(col().w_full().grow(1.0).min_h(0.0).child(inner)),
+        None => inner,
+    }
+}
+
+fn page_body(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    // an old revision is read in the open page's place
+    let Some(p) = s.old.as_ref().filter(|_| !s.editing).or(s.open.as_ref()) else {
         return col().w_full().h_full().center().child(text("Pick a page").font(k.ty.ui).color(c.text_muted));
     };
     if s.editing && s.rich {
@@ -1069,7 +1242,7 @@ fn body(s: &App, k: &Kit) -> El {
         }
         return panes;
     }
-    if let Some(m) = s.map.as_ref().filter(|m| m.name == p.name) {
+    if let Some(m) = s.map.as_ref().filter(|m| m.name == p.name && m.rev == p.rev) {
         return map_view(m, k);
     }
     let shown = if p.kind == "md" {
@@ -1122,6 +1295,11 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             .child(Button::new("Save").variant(ButtonVariant::Contrast).on_press(save).build(&k).key("save"));
     } else if s.open.is_some() {
         trailing = trailing
+            .child(Button::new("History").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
+                s.inspector.toggle();
+                s.old = None;
+                load_history(s);
+            }).build(&k).key("history-toggle"))
             .child(Button::new("Delete").variant(ButtonVariant::GhostMuted).on_press(ask_delete).build(&k).key("delete"))
             .child(Button::new("Rename").variant(ButtonVariant::GhostMuted).on_press(ask_rename).build(&k).key("rename"))
             .child(Button::new("Edit").variant(ButtonVariant::Ghost).on_press_tx(|s: &mut App, tx| {
@@ -1139,10 +1317,13 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         .gap(2.0)
         .center_y()
         .child(nav("back", "‹", -1, s.trail_at > 0 && !s.editing))
-        .child(nav("forward", "›", 1, s.trail_at + 1 < s.trail.len() && !s.editing));
+        .child(nav("forward", "›", 1, s.trail_at + 1 < s.trail.len() && !s.editing))
+        // the title sits beside them, not centred: a centred one ran under the buttons in a narrow window
+        .child(text(title.to_owned()).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate().pl(6.0));
     let shell = SplitView::new(body(s, &k))
         .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k))
-        .toolbar(Toolbar::new().leading(leading).title(title).trailing(trailing))
+        .inspector(&s.inspector, |s: &mut App| &mut s.inspector, history_view(s, &k))
+        .toolbar(Toolbar::new().leading(leading).trailing(trailing))
         .titlebar_inset(cx.titlebar_inset())
         .frame_inset(8.0)
         .toolbar_in_panel()

@@ -47,6 +47,35 @@ pub struct Dump {
     pub since: String,
 }
 
+/// One stored revision of a page.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct Rev {
+    pub rev: u64,
+    /// When it was written, as the ship writes a date (`~2026.11.17..17.25.11..b165`).
+    #[serde(default)]
+    pub updated: String,
+}
+
+impl Rev {
+    /// The date as people write it: `2026-11-17 17:25`. The ship's own
+    /// text when it is not a date this reads.
+    pub fn when(&self) -> String {
+        let parts: Vec<&str> = self.updated.trim_start_matches('~').split("..").collect();
+        let date: Vec<&str> = parts.first().map_or(Vec::new(), |d| d.split('.').collect());
+        let time: Vec<&str> = parts.get(1).map_or(Vec::new(), |t| t.split('.').collect());
+        match (date.as_slice(), time.as_slice()) {
+            ([y, m, d], [h, min, ..]) => format!("{y}-{m:0>2}-{d:0>2} {h:0>2}:{min:0>2}"),
+            ([y, m, d], _) => format!("{y}-{m:0>2}-{d:0>2}"),
+            _ => self.updated.clone(),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct History {
+    revisions: Vec<Rev>,
+}
+
 #[derive(Deserialize)]
 struct Saved {
     #[serde(default)]
@@ -184,6 +213,21 @@ impl Conn {
         Ok(s.rev)
     }
 
+    /// Every stored revision of a page, newest first.
+    pub fn history(&self, name: &str) -> Result<Vec<Rev>, String> {
+        let h: History = serde_json::from_str(&self.call("GET", &format!("page-history?name={}", enc(name)), None)?).map_err(|e| e.to_string())?;
+        Ok(h.revisions)
+    }
+
+    /// The page as it was at `rev`.
+    pub fn page_at(&self, name: &str, rev: u64) -> Result<Page, String> {
+        let raw = self.call("GET", &format!("page-source-at?name={}&rev={rev}", enc(name)), None)?;
+        let mut p: Page = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        p.name = name.to_owned();
+        p.rev = rev;
+        Ok(p)
+    }
+
     /// Makes a new Markdown page. The ship answers 409 when the name is taken.
     pub fn create(&self, name: &str) -> Result<(), String> {
         let title = name.rsplit('/').next().unwrap_or(name);
@@ -228,6 +272,14 @@ mod tests {
     }
 
     #[test]
+    fn a_ship_date_reads_as_a_date() {
+        let r = |u: &str| Rev { rev: 1, updated: u.into() }.when();
+        assert_eq!(r("~2026.11.7..9.5.11..b165"), "2026-11-07 09:05");
+        assert_eq!(r("~2026.11.17"), "2026-11-17");
+        assert_eq!(r("soon"), "soon");
+    }
+
+    #[test]
     fn a_tree_and_a_page_parse_as_the_ship_writes_them() {
         let t: Dump = serde_json::from_str(r#"{"nodes":[{"path":"a/b","page":true,"kind":"md","rev":3,"size":9,"body":"hi"},{"path":"a","page":false}],"since":"x"}"#).unwrap();
         assert_eq!((t.nodes.len(), t.nodes[0].rev, t.nodes[1].page, t.since.as_str()), (2, 3, false, "x"));
@@ -258,6 +310,12 @@ mod tests {
         // the same text again is no conflict: the ship takes it as already landed
         p.body.push_str("another edit\n");
         assert!(c.save(&p, base).unwrap_err().starts_with("409"), "a stale base is refused");
+        // history lists what was saved, and an old revision reads as it was
+        let revs = c.history("rune-probe").unwrap();
+        assert!(revs.len() >= 2 && revs[0].rev > revs[1].rev, "newest first: {revs:?}");
+        assert!(revs[0].when().starts_with("20"), "a date: {}", revs[0].when());
+        let old = c.page_at("rune-probe", base).unwrap();
+        assert!(old.body != p.body && old.rev == base, "the old text, not the new");
         // create, rename, delete
         // a second dump carries only what was written since the first
         let first = c.dump("").unwrap();
