@@ -22,7 +22,10 @@ const under = async (p) => {
   return t.nodes.map((n) => n.path).filter((x) => x === p || x.startsWith(p + '/')).sort();
 };
 
-await seed(env, [[RUN + '/src/a', '# a\n'], [RUN + '/src/b', '# b\n'], [RUN + '/src/c', '# c\n']]);
+//  a folder three deep with nothing beside it, for the re-homing move
+const HUSK = RUN + 'h';
+await seed(env, [[RUN + '/src/a', '# a\n'], [RUN + '/src/b', '# b\n'], [RUN + '/src/c', '# c\n'],
+  [HUSK + '/that/exists/p1', '# p1\n'], [HUSK + '/that/exists/p2', '# p2\n']]);
 
 const browser = await launchBrowser();
 const errors = [];
@@ -139,11 +142,37 @@ try {
   check('writes into a moving folder leave no old folder behind', !left.length,
     JSON.stringify({ left, seen }));
   check('the moved copy is whole', (await body(RUN + '/dst2/c')) !== null && (await body(RUN + '/dst2/b')) !== null);
+
+  // ── a folder re-homed under a new path leaves no shells above its source ─
+  //  the owner types a new location before the folder's whole path. The
+  //  folders above the source, emptied by the move, once stood beside the
+  //  moved copy like the originals.
+  const rows = () => page.evaluate(() => [...document.querySelectorAll('#treelist [role=treeitem]')].map((r) => r.dataset.tk));
+  await wait((k) => [...document.querySelectorAll('#treelist [role=treeitem]')].some((r) => r.dataset.tk === k), 'f:' + HUSK + '/that/exists');
+  await page.evaluate((k) => {
+    const r = [...document.querySelectorAll('#treelist [role=treeitem]')].find((x) => x.dataset.tk === k);
+    r.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 120, clientY: 120 }));
+  }, 'f:' + HUSK + '/that/exists');
+  await wait(() => !!document.querySelector('.treemenu [data-mi="mv"]'));
+  await page.evaluate(() => document.querySelector('.treemenu [data-mi="mv"]').click());
+  const home = RUN + '/moved/' + HUSK + '/that/exists';
+  await dialog('/' + home);
+  const there = await waitFor(async () => (await body(home + '/p1')) !== null && (await body(home + '/p2')) !== null, 30000, 500);
+  check('the folder lands under the new path, with its pages', there);
+  //  the pages land before the request ends: the shells go at its end,
+  //  and the tree here follows its answer
+  await wait((k) => [...document.querySelectorAll('#treelist [role=treeitem]')].some((r) => r.dataset.tk === k), 'f:' + home);
+  const shipLeft = (await (await api('page-tree')).json()).nodes.map((n) => n.path).filter((x) => x === HUSK || x.startsWith(HUSK + '/'));
+  check('the ship keeps no folder above the old place', shipLeft.length === 0, JSON.stringify(shipLeft));
+  const mine = (await rows()).filter((k) => k.slice(2) === HUSK || k.slice(2).startsWith(HUSK + '/'));
+  check('and the tree shows none, with no reload', mine.length === 0, JSON.stringify(mine));
+  check('the tree shows the moved folder', (await rows()).includes('f:' + home));
 } catch (e) {
   check('suite ran to the end', false, String(e && e.stack || e));
 }
 
 check('no uncaught exceptions in the app', errors.length === 0, errors.join(' | '));
 await api('page-del?name=' + RUN, { method: 'POST' });
+await api('page-del?name=' + HUSK, { method: 'POST' });
 await browser.close();
 check.done();

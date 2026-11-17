@@ -974,6 +974,24 @@
   ?~  job  |
   ?.  &(=(pf from.u.job) =(pt to.u.job))  |
   (lte (sub now (min now at.u.job)) ttl)
+::  +move-husks: the folders a move may have left as empty shells, the
+::  deepest first: every folder above the source, when the destination is
+::  the source's whole path under a new one (a/b/c moved to x/y/a/b/c).
+::  The owner re-homed the path, and a/b and a, emptied by it, read as
+::  the originals still standing beside the copy. ~ for any other move:
+::  a folder emptied by a move elsewhere is the owner's to keep.
+++  move-husks
+  |=  [pf=path pt=path]
+  ^-  (list path)
+  =/  nf=@ud  (lent pf)
+  =/  nt=@ud  (lent pt)
+  ?.  (gth nt nf)  ~
+  ?.  =(pf `path`(slag (sub nt nf) pt))  ~
+  =|  out=(list path)
+  =/  up=path  (snip pf)
+  |-  ^-  (list path)
+  ?~  up  (flop out)
+  $(out [up out], up (snip `path`up))
 ::  +index-ups: the folders whose dir-index a page made in `dir` changes:
 ::  `dir` and each folder above it, from the highest that keeps an index
 ::  (`ixs` holds those) down. A folder's index lists every page under it,

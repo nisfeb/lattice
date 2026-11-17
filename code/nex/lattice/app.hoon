@@ -3922,11 +3922,18 @@
     ::  clears the one the move carried over, because the typed name was
     ::  valid as it stands; dnames names the folders the move made)
     ;<  ~  bind:m  (poke-dnames args (pax-of u.to))
+    ::  the folders above the source that this move emptied, when it put
+    ::  the whole path under a new one, go with it (+prune-husks)
+    ;<  gone=(list path)  bind:m  (prune-husks (pax-of u.from) (pax-of u.to))
     ::  and the moved page's rev where it landed (0 for a folder): an
     ::  editor showing it saves from that rev now, not the source's
     ;<  ph=[rev=@ud src=(unit @t)]  bind:m  (page-head (pax-of u.to))
     %+  send-json  eyre-id
-    (pairs:enjs:format ~[['moved' (numb:enjs:format p.r)] ['rev' (numb:enjs:format rev.ph)]])
+    %-  pairs:enjs:format
+    :~  ['moved' (numb:enjs:format p.r)]
+        ['rev' (numb:enjs:format rev.ph)]
+        ['pruned' a+(turn gone |=(g=path s+(crip (pax-str g))))]
+    ==
       ::  the commons query bridge (docs/obelisk-mirror.md section 6): raw
       ::  urQL in the body, the desk's result as JSON out. Owner-gated by
       ::  the dispatch gate above like every other route. The round-trip
@@ -12361,6 +12368,40 @@
   ;<  n=(unit @ud)  bind:m  (move-run pf pt)
   ?~  n  (pure:m |+[404 'no such page or folder'])
   (pure:m &+u.n)
+::  +prune-husks: after a move that put a whole path under a new one
+::  (+move-husks:ls), delete each folder above the source that it left an
+::  empty shell, from the deepest up, stopping at the first that still
+::  holds something. Answers the ones deleted. Only POST /page-move asks:
+::  a mount's rename (the lick %page-move) keeps what a file system keeps.
+++  prune-husks
+  |=  [pf=path pt=path]
+  =/  m  (fiber:fiber:nexus ,(list path))
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  todo=(list path)  (move-husks:ls pf pt)
+  =|  done=(list path)
+  |-  ^-  form:m
+  ?~  todo  (pure:m (flop done))
+  ;<  bare=?  bind:m  (folder-bare up i.todo)
+  ?.  bare  (pure:m (flop done))
+  ;<  ~  bind:m  (poke-eval [%del i.todo])
+  ;<  ~  bind:m  (move-grants i.todo ~)
+  $(todo t.todo, done [i.todo done])
+::  +folder-bare: whether `rel` is a folder that holds nothing: no page
+::  of its own, no page or folder under it, no link at or under it, and
+::  no share on it. A display name alone does not keep it.
+++  folder-bare
+  |=  [up=@ud rel=path]
+  =/  m  (fiber:fiber:nexus ,?)
+  ^-  form:m
+  ;<  sn=view:nexus  bind:m  (peek:fio (rv up (weld /page rel)) ~)
+  ?.  ?=([%ball *] sn)  (pure:m |)
+  =/  fils  ?~(fil.ball.sn ~ contents.u.fil.ball.sn)
+  ?:  (~(has by fils) %code)  (pure:m |)
+  ?^  (dshare-row fils)  (pure:m |)
+  ?^  (tree-walk ball.sn *wave:nexus ~)  (pure:m |)
+  ;<  lex=?  bind:m  (peek-exists:fio (rv up (weld /links rel)))
+  (pure:m !lex)
 ::  +move-run: +move-pages, noted as the move under way (/move-job) for
 ::  as long as it runs. The note is what lets the same move asked again
 ::  finish it, and what +move-guard refuses saves into its source by.
