@@ -185,17 +185,31 @@ is "a token that is not one is refused" 400 "$(code -X POST "$A/map-token" --dat
 # under the limit is a 503 and nothing is fetched. The ship reads the
 # clock only when its count is full, so a count left by an earlier
 # minute lets up to 240 through before the first 429. 250 are sent.
+# They spell /tile/ four ways, three with %-escapes in either case of
+# hex, so a count of the plain spelling alone never reaches 120.
 is "no token is set" false "$(jq .token <<<"$(get "$A/tile-status")")"
-codes=$(for i in $(seq 1 250); do code "$A/tile/streets/12/$i/7"; echo; done)
+spell=(tile %74ile ti%6ce ti%6Ce)
+codes=$(for i in $(seq 1 250); do code "$A/${spell[$((i % 4))]}/streets/12/$i/7"; echo; done)
 n429=$(grep -c '^429$' <<<"$codes"); n503=$(grep -c '^503$' <<<"$codes")
 if [ "$n429" -ge 10 ] && [ "$n503" -ge 1 ] && [ "$n503" -le 240 ] && [ $((n429 + n503)) = 250 ]; then
   ok "past 120 tiles a minute the ship answers 429 ($n503 let through, $n429 refused)"
 else fail "past 120 tiles a minute the ship answers 429" "$n503 let through, $n429 refused: $(sort <<<"$codes" | uniq -c | tr -s ' \n' ' ')"; fi
 has "and says why" "too many tiles this minute" "$(get "$A/tile/streets/12/999/7")"
 is "another route is still answered" 200 "$(code "$A/tile-status")"
+# a tile another site asks for is refused before the count and before
+# any fetch: a 403 even while the minute is full, never the 429
+xs() { curl -s -m 60 -H "$CK" -H "sec-fetch-site: $1" "$A/$2"; }
+xc() { curl -s -m 60 -o /dev/null -w '%{http_code}' -H "$CK" -H "sec-fetch-site: $1" "$A/$2"; }
+has "a cross-site tile is refused" "cross-site request refused" "$(xs cross-site tile/streets/12/1/7)"
+is "a cross-site tile is refused, spelled %74ile" 403 "$(xc cross-site %74ile/streets/12/1/7)"
+is "a same-site tile is refused" 403 "$(xc same-site tile/streets/12/1/7)"
+is "a same-origin tile is counted" 429 "$(xc same-origin tile/streets/12/1/7)"
 c=429
 for _ in $(seq 1 16); do c=$(code "$A/tile/streets/12/1000/7"); [ "$c" = 429 ] || break; sleep 5; done
 is "a minute later a tile is let through again" 503 "$c"
+is "a same-origin tile goes through" 503 "$(xc same-origin tile/streets/12/1/7)"
+is "a typed tile url goes through" 503 "$(xc none tile/streets/12/1/7)"
+is "a cross-site tile is not fetched" 403 "$(xc cross-site tile/streets/12/1/7)"
 
 echo "geojson-views: $fails failed"
 exit $((fails > 0))

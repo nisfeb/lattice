@@ -996,12 +996,21 @@
         ;<  *  bind:m  (link-read pax l.u.lk)
         (pure:m ~)
       ::  /scad-job/install: fetch the OpenSCAD runtime, check it and keep
-      ::  it (+scad-install-run). A restart (prod) ends it: the owner asks
-      ::  again, and nothing half-written is kept.
+      ::  it (+scad-install-run). The grub is made holding ~ and the run
+      ::  marks it %run before any fetch. So a start that finds %run is a
+      ::  run a crash or a reload cut short: it fetches nothing, says so in
+      ::  /scad/state.json and ends, and the owner asks again. A crash that
+      ::  leaves the grub banged is not busy either (+scad-status).
           [[%scad-job ~] %install]
         ;<  ~  bind:m  take-kick
         ?^  prod  (pure:m ~)
-        scad-install-run
+        ;<  st=vase  bind:m  get-state:io
+        ?:  =(%run q.st)
+          (scad-put-state up ~[['error' s+'the install was cut short by a crash or a reload, install again']])
+        ;<  ~  bind:m  (replace:io %run)
+        ;<  ~  bind:m  scad-install-run
+        ;<  *  bind:m  (soft-behn /scad/rest [[/ %timer-rest] `wire`/scad-deadline])
+        (pure:m ~)
       ::  /link-writes/<id>: a lick save through a link (+link-write-apart).
       ::  The remote peeks and pokes run here, never in the lick port's own
       ::  fiber: one that times out leaves its late answer to a fiber that
@@ -2345,9 +2354,20 @@
   ::  map tiles: GET /tile/<style>/<z>/<x>/<y>, the owner's cookie only.
   ::  No agent key and no peer: a tile spends the owner's Mapbox quota and
   ::  says where they are looking. Answered before the key lookup, so a
-  ::  tile costs no scry it does not need (+serve-tile).
+  ::  tile costs no scry it does not need (+serve-tile). A tile another
+  ::  site asked for (an <img> on any page the owner visits sends the
+  ::  cookie) is refused, as a write is above. Only same-origin and a
+  ::  typed url pass: the editor and its service worker are same-origin,
+  ::  and a same-site sibling has no need of the owner's tiles. A client
+  ::  that sends no such header (curl, an older browser) is not refused.
   ?:  &(?=([%tile *] suffix) =(%'GET' method.request.req))
     ?.  authenticated.req  (send-err eyre-id 403 'forbidden')
+    ?:  %:  cross-site:lu
+          (get-header:http 'sec-fetch-site' header-list.request.req)
+          (get-header:http 'origin' header-list.request.req)
+          (get-header:http 'host' header-list.request.req)
+        ==
+      (send-err eyre-id 403 'cross-site request refused')
     (serve-tile up eyre-id t.suffix)
   ::  owner gate. Eyre stamps a request authenticated to our web login with
   ::  src=our, so `authenticated` (already in hand, synchronous) IS the src==our
@@ -4971,16 +4991,21 @@
     (send-json eyre-id js)
       ::  start the install in its own fiber and answer at once. The fetch
       ::  and the check take seconds and must not hold a request. A second
-      ::  ask while one runs is refused softly by the make.
+      ::  ask while one runs is refused softly by the make. A job a crash
+      ::  banged is deleted first, so the owner can ask again.
       [%'POST' %scad-install]
+    ;<  job=?(%none %live %dead)  bind:m  (scad-job up)
+    ;<  *  bind:m
+      ?.  =(%dead job)  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
+      (cull-soft:io (rf up /scad-job %install))
     ;<  *  bind:m
       %+  make-soft:io  (rf up /scad-job %install)
       |+[[[/ %noun] `*`~] ~]
     (send-ok eyre-id)
       ::  drop the runtime. Its grubs go, so the loom they held is freed.
       [%'POST' %scad-uninstall]
-    ;<  busy=?  bind:m  (peek-exists:fio (rf up /scad-job %install))
-    ?:  busy  (send-err eyre-id 409 'an install is running')
+    ;<  job=?(%none %live %dead)  bind:m  (scad-job up)
+    ?:  =(%live job)  (send-err eyre-id 409 'an install is running')
     ;<  ~  bind:m  scad-drop
     (send-ok eyre-id)
       [%'POST' %mirror-config]
@@ -6254,8 +6279,10 @@
   ?.  ?=(%cont -.next.out)  out
   [darts.out state.out %cont (tile-gate self.next.out t0 n)]
 ::  +tile-ask: the eyre id of the poke that opens a tile request of the
-::  owner's, ~ for any other input. An unauthenticated one is not
-::  counted: it is refused before any work (+handle-request).
+::  owner's, ~ for any other input. An unauthenticated or a cross-site
+::  one is not counted: it is refused before any work (+handle-request).
+::  A tile is found from the parse the router reads, so a url that
+::  spells /tile/ with %-escapes is counted as the router serves it.
 ++  tile-ask
   |=  in=(unit intake:fiber:nexus)
   ^-  (unit @ta)
@@ -6266,7 +6293,15 @@
   ?~  r  ~
   ?.  authenticated.req.u.r  ~
   ?.  =(%'GET' method.request.req.u.r)  ~
-  ?.  =('/apps/lattice/tile/' (end [3 19] url.request.req.u.r))  ~
+  =/  suf  (mole |.((slag 2 site:(parse-url:http-utils url.request.req.u.r))))
+  ?.  ?=([~ %tile *] suf)  ~
+  =*  hs  header-list.request.req.u.r
+  ?:  %:  cross-site:lu
+        (get-header:http 'sec-fetch-site' hs)
+        (get-header:http 'origin' hs)
+        (get-header:http 'host' hs)
+      ==
+    ~
   `eyre-id.u.r
 ::  +token-ok: a token's shape: up to 512 bytes of letters, digits and . _ -
 ++  token-ok
@@ -6449,30 +6484,46 @@
   |=  o=octs
   ^-  @t
   (en:base16:mimes:html [32 (rev 3 32 (shay p.o q.o))])
-::  +scad-source: the base address to fetch from, and whether a local host
-::  is allowed (the test override only), or ~ when there is none. Takes
+::  +scad-ttl: how long an install may take before it gives up. The files
+::  are about 4 MB, so ten minutes is a link of 55 kbit/s, slower than any
+::  a browser could then use the runtime over, and short enough that a
+::  stuck install does not hold Settings for long.
+++  scad-ttl  ^-(@dr ~m10)
+::  +scad-source: the base address to fetch from, whether a local host is
+::  allowed (the test override only), and how long the install may take,
+::  or ~ when there is none. The override may shorten the time with
+::  "secs", so a test of a source that never answers ends soon. Takes
 ::  the depth: the install fiber and a request both read it.
 ++  scad-source
   |=  up=@ud
-  =/  m  (fiber:fiber:nexus ,(unit [url=@t any=?]))
+  =/  m  (fiber:fiber:nexus ,(unit [url=@t any=? ttl=@dr]))
   ^-  form:m
   ;<  sv=view:nexus  bind:m  (peek:fio (rf up /scad %'source.json') ~)
-  =/  ov=(unit @t)
+  =/  ov=(unit [url=@t ttl=@dr])
     ?.  ?=([%file *] sv)  ~
     =/  j=(unit json)  (mole |.(!<(json (need-vase:tarball sang.sv))))
     ?~  j  ~
     ?.  ?=([%o *] u.j)  ~
     =/  u=(unit json)  (~(get by p.u.j) 'url')
     ?.  ?=([~ %s @] u)  ~
-    ?:(=('' p.u.u) ~ `p.u.u)
-  ?^  ov  (pure:m `[u.ov &])
+    ?:  =('' p.u.u)  ~
+    =/  n=(unit json)  (~(get by p.u.j) 'secs')
+    =/  t=(unit @ud)  ?.(?=([~ %n @] n) ~ (rush p.u.n dem))
+    =/  ttl=@dr  ?~(t scad-ttl (min scad-ttl (mul ~s1 (max 1 u.t))))
+    `[p.u.u ttl]
+  ?^  ov  (pure:m `[url.u.ov & ttl.u.ov])
   ?:  =('' scad-url)  (pure:m ~)
-  (pure:m `[scad-url |])
+  (pure:m `[scad-url | scad-ttl])
 ::  +fetch-octs: GET a url's bytes, following redirects (a GitHub release
 ::  file redirects to its storage host). Like +fetch-url, every failure is
-::  a reason, never a crash, and every hop is checked unless `any`.
+::  a reason, never a crash, and every hop is checked unless `any`. The
+::  request is a soft poke, a cancelled or refused one is a reason, and the
+::  wait ends at the /scad-deadline wake the install set. Each request has
+::  a wire of its own (the install's start and the address): iris keys a
+::  request by it, and one an earlier install gave up on, still open on
+::  the same wire, held the next one back until the runtime timed it out.
 ++  fetch-octs
-  |=  [url=@t any=?]
+  |=  [url=@t any=? now=@da]
   =/  m  (fiber:fiber:nexus ,(each octs @t))
   ^-  form:m
   =|  hops=@ud
@@ -6480,8 +6531,28 @@
   |-  ^-  form:m
   ?:  (gth hops fetch-hops)  (pure:m [%| 'too many redirects'])
   ?.  |(any (fetchable:lcl cur))  (pure:m [%| local-refused])
-  ;<  ~  bind:m  (send-request:io [%'GET' cur ~[['User-Agent' 'lattice'] ['Accept' '*/*']] ~])
-  ;<  res=client-response:iris  bind:m  take-client-response:io
+  ;<  sent=?  bind:m
+    %^  soft-poke  /scad/get/(scot %da now)/(scot %uv (sham cur))
+      [%& %& /sys/iris %'main.iris-state']
+    [[/ %iris-request] `request:http`[%'GET' cur ~[['User-Agent' 'lattice'] ['Accept' '*/*']] ~]]
+  ?.  sent  (pure:m [%| 'the ship may not make the download'])
+  ;<  got=(unit client-response:iris)  bind:m
+    =/  mr  (fiber:fiber:nexus ,(unit client-response:iris))
+    ^-  form:mr
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?+  in  [%skip ~]
+        ~  [%wait ~]
+        [~ %poke * *]
+      ?:  =([/ %http-response] p.sage.u.in)
+        =/  r  (mole |.(!<(client-response:iris q.sage.u.in)))
+        [%done ?~(r `[%cancel ~] r)]
+      ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
+      ?.  =(`/scad-deadline (mole |.(!<(path q.sage.u.in))))  [%skip ~]
+      [%done ~]
+    ==
+  ?~  got  (pure:m [%| 'the download took too long, given up'])
+  =/  res=client-response:iris  u.got
   ?.  ?=(%finished -.res)  (pure:m [%| 'the download did not complete'])
   =/  status=@ud  status-code.response-header.res
   ?:  ?|  =(status 301)  =(status 302)  =(status 303)
@@ -6518,17 +6589,25 @@
 ::  +scad-install-run: fetch every file, check each, then write them all.
 ::  Nothing is written until every file has passed, so a bad file leaves
 ::  the runtime that was there, or none.
+::  It never fails on a fetch: each failure is a reason in state.json, and
+::  every fetch gives up at the deadline the start sets (+scad-ttl).
 ++  scad-install-run
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  src=(unit [url=@t any=?])  bind:m  (scad-source up)
+  ;<  src=(unit [url=@t any=? ttl=@dr])  bind:m  (scad-source up)
   ?~  src
     (scad-put-state up ~[['error' s+'this build of lattice names no address to install the runtime from']])
+  ;<  clock=(unit @da)  bind:m  soft-now
+  ?~  clock  (scad-put-state up ~[['error' s+'the install could not read the clock']])
+  =/  now=@da  u.clock
+  ;<  set=?  bind:m
+    (soft-behn /scad/set [[/ %timer-set] `[wire @da]`[/scad-deadline (add now ttl.u.src)]])
+  ?.  set  (scad-put-state up ~[['error' s+'the install could not set its deadline']])
   =/  fs  scad-files
   =|  got=(list [fil=@ta o=octs])
   |-  ^-  form:m
   ?^  fs
-    ;<  r=(each octs @t)  bind:m  (fetch-octs (cat 3 url.u.src fil.i.fs) any.u.src)
+    ;<  r=(each octs @t)  bind:m  (fetch-octs (cat 3 url.u.src fil.i.fs) any.u.src now)
     ?:  ?=(%| -.r)
       (scad-put-state up ~[['error' s+(rap 3 ~[fil.i.fs ': ' p.r])]])
     ?.  =(len.i.fs p.p.r)
@@ -6547,7 +6626,6 @@
     ;<  ~  bind:m
       (put-file (rf up /scad fil.i.ws) [/ %mime] `mime`[(scad-mite typ.i.ws) u.o])
     $(ws t.ws)
-  ;<  now=@da  bind:m  bowl-now
   %+  scad-put-state  up
   :~  ['have' s+scad-ver]
       ['error' ~]
@@ -6566,13 +6644,24 @@
     ;<  *  bind:m  (cull-soft:io (rf up /scad fil.i.ws))
     $(ws t.ws)
   (scad-put-state up ~[['have' ~] ['files' ~] ['error' ~]])
+::  +scad-job: the install job's grub: none, running, or banged by a
+::  crash. A banged one does nothing until it is made again, so it is not
+::  busy. Takes the depth, as +scad-source.
+++  scad-job
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,?(%none %live %dead))
+  ^-  form:m
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up /scad-job %install) ~)
+  ?.  ?=([%file *] v)  (pure:m %none)
+  (pure:m ?~(bang.v %live %dead))
 ::  +scad-status: what Settings and a scad page need to know
 ++  scad-status
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
   ;<  st=(unit json)  bind:m  (scad-state up)
-  ;<  busy=?  bind:m  (peek-exists:fio (rf up /scad-job %install))
-  ;<  src=(unit [url=@t any=?])  bind:m  (scad-source up)
+  ;<  job=?(%none %live %dead)  bind:m  (scad-job up)
+  =/  busy=?  =(%live job)
+  ;<  src=(unit [url=@t any=? ttl=@dr])  bind:m  (scad-source up)
   =/  get  |=(k=@t ?.(?=([~ %o *] st) ~ (~(gut by p.u.st) k ~)))
   =/  size=@ud  (roll scad-files |=([f=[@ta @ta @t len=@ud *] a=@ud] (add a len.f)))
   %-  pure:m
@@ -6581,7 +6670,7 @@
       ['size' (numb:enjs:format size)]
       ['have' (get 'have')]
       ['files' (get 'files')]
-      ['error' (get 'error')]
+      ['error' ?:(=(%dead job) s+'the install stopped on an error, install again' (get 'error'))]
       ['busy' b+busy]
       ['source' b+?=(^ src)]
   ==
@@ -14875,7 +14964,11 @@
     [%done =(~ err.u.in)]
   ==
 ::  +soft-now: the time, or ~ when /sys/bowl.sig refuses (+bowl-now fails
-::  instead). The answer and its ack come in either order.
+::  instead). The answer and its ack come in either order. Only an ack
+::  or a veto on /rise/now is ours: a veto carries the dart it refused,
+::  so its wire. Any other is left for the step it belongs to (the tile
+::  gate offers the dispatcher's queue again after this). Our dart gets
+::  an ack or a veto either way, so the wait always ends.
 ++  soft-now
   =/  m  (fiber:fiber:nexus ,(unit @da))
   ^-  form:m
@@ -14888,8 +14981,12 @@
     :+  ~  q.state
     ?+  in  [%skip ~]
         ~  [%wait ~]
-        [~ %veto *]  [%done ~]
-        [~ %pack * *]  ?^(err.u.in [%done ~] [%done `[%| ~]])
+        [~ %veto %node * * *]
+      ?.  =(/rise/now wire.dart.u.in)  [%skip ~]
+      [%done ~]
+        [~ %pack * *]
+      ?.  =(/rise/now wire.u.in)  [%skip ~]
+      ?^(err.u.in [%done ~] [%done `[%| ~]])
         [~ %poke * *]
       ?.  =([/ %time] p.sage.u.in)  [%skip ~]
       [%done `[%& !<(@da q.sage.u.in)]]
@@ -14913,7 +15010,9 @@
     :+  ~  q.state
     ?+  in  [%skip ~]
         ~  [%wait ~]
-        [~ %pack *]  [%done ~]
+        [~ %pack * *]
+      ?.  =(/rise/now wire.u.in)  [%skip ~]
+      [%done ~]
     ==
   (pure:m `p.u.first)
 ::  +crash-503: a request fiber that crashed answers 503 and ends. It used
