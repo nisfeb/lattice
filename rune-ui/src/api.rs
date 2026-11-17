@@ -1,7 +1,7 @@
 //! The ship's HTTP API, as the web client calls it. Every call blocks, so
 //! each runs on a `rune::Latest` worker and never on the UI thread.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// Where the ship is and the session cookie that opens it.
@@ -111,6 +111,54 @@ fn session_path() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))?;
     Some(base.join("lattice-rune").join("session.json"))
+}
+
+/// What the window remembers between runs, beside the session.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct Prefs {
+    /// `dark`, `light`, or anything else for the system's.
+    #[serde(default)]
+    pub theme: String,
+    /// The page that was open, to open again.
+    #[serde(default)]
+    pub last: String,
+}
+
+impl Prefs {
+    fn path() -> Option<std::path::PathBuf> {
+        Some(session_path()?.with_file_name("prefs.json"))
+    }
+
+    /// The kept preferences, or the defaults when there are none or they do not read.
+    pub fn load() -> Prefs {
+        Prefs::path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    /// Keeps them. A failure is not worth a message: they are a convenience.
+    pub fn save(&self) {
+        if let (Some(p), Ok(t)) = (Prefs::path(), serde_json::to_string(self)) {
+            let _ = p.parent().map(std::fs::create_dir_all);
+            let _ = std::fs::write(p, t);
+        }
+    }
+
+    /// Whether to draw dark, given what the system says.
+    pub fn dark(&self, system: bool) -> bool {
+        match self.theme.as_str() {
+            "dark" => true,
+            "light" => false,
+            _ => system,
+        }
+    }
+
+    /// The next theme in the round: system, dark, light.
+    pub fn next_theme(&self) -> &'static str {
+        match self.theme.as_str() {
+            "dark" => "light",
+            "light" => "system",
+            _ => "dark",
+        }
+    }
 }
 
 /// A ship address as typed, made into a base URL: a scheme added when
@@ -323,6 +371,18 @@ mod tests {
         assert_eq!(base_url("localhost:8080"), "http://localhost:8080");
         assert_eq!(base_url("http://10.0.0.2:8080/"), "http://10.0.0.2:8080");
         assert_eq!(Conn { url: String::new(), cookie: "urbauth-~zod=0v1.abc".into() }.ship(), "~zod");
+    }
+
+    #[test]
+    fn preferences_pick_the_theme_and_survive_text_that_is_not_theirs() {
+        let p = Prefs::default();
+        assert!(p.dark(true) && !p.dark(false), "no choice follows the system");
+        let dark = Prefs { theme: "dark".into(), ..p.clone() };
+        assert!(dark.dark(false));
+        assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into() }).unwrap()).unwrap();
+        assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
+        assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
     }
 
     #[test]

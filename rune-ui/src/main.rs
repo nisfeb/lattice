@@ -11,7 +11,7 @@ mod sheet;
 
 use std::collections::HashMap;
 
-use api::{Conn, Dump, Know, Node, Page, Rev};
+use api::{Conn, Dump, Know, Node, Page, Prefs, Rev};
 use rune::{AppSpec, Block, LineCap, Phase, Shape, WheelEvent, canvas, Chrome, Cx, El, Key, KeyEvent, Latest, Mark, ScrollSpec, Span, TextEdit, Tx, Waker, col, el, row, text};
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
@@ -94,6 +94,9 @@ struct App {
     old_req: Latest<Result<Page, String>>,
     /// The page being edited was written elsewhere since it was opened.
     stale: bool,
+    /// What is kept between runs, and whether the last page was opened again.
+    prefs: Prefs,
+    restored: bool,
     /// The folder picked in the tree, shown in place of a page.
     folder: Option<String>,
     /// Each page's share mode, as the last dump said, and whether the
@@ -199,6 +202,8 @@ fn init() -> App {
         hist_req: Latest::default(),
         old_req: Latest::default(),
         stale: false,
+        prefs: Prefs::load(),
+        restored: false,
         folder: None,
         shares: HashMap::new(),
         sharing: false,
@@ -457,6 +462,11 @@ fn load_tree(s: &mut App) {
 fn open_page(s: &mut App, name: &str) {
     if s.editing {
         return;
+    }
+    // the page to open again next run. Only a ship's: sample pages are not kept
+    if s.conn.is_some() && !s.memory && s.prefs.last != name {
+        s.prefs.last = name.to_owned();
+        s.prefs.save();
     }
     // a new visit drops what was ahead of it, as a browser does
     if s.trail.get(s.trail_at).map(String::as_str) != Some(name) {
@@ -1040,6 +1050,14 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 if first {
                     s.files.expand_all();
                 }
+                // the page that was open last run opens again, once
+                if !s.restored && !away {
+                    s.restored = true;
+                    let last = s.prefs.last.clone();
+                    if s.open.is_none() && s.names.contains(&last) {
+                        open_page(s, &last);
+                    }
+                }
                 // a page just made or moved is shown where it now is
                 if let Some(p) = s.open.as_ref().filter(|_| !away) {
                     s.files.expand_to(&p.name);
@@ -1435,11 +1453,27 @@ fn sidebar(s: &App, k: &Kit) -> El {
     let halves = row().key("halves").w_full().gap(4.0).child(half("half-pages", format!("Pages {pages}"), !s.memory)).child(half("half-memory", format!("Memory {knows}"), s.memory));
     let new = Button::new(if s.memory { "New memory" } else { "New page" }).variant(ButtonVariant::Ghost).on_press(ask_new).build(k).key("new");
     let who = s.conn.as_ref().map_or("sample pages".to_owned(), |c| c.ship().to_owned());
+    let theme = Button::new(match s.prefs.theme.as_str() {
+        "dark" => "Dark",
+        "light" => "Light",
+        _ => "Auto",
+    })
+    .variant(ButtonVariant::GhostMuted)
+    .help("Theme: the system's, dark, or light")
+    .on_press(|s: &mut App| {
+        s.prefs.theme = s.prefs.next_theme().to_owned();
+        if s.conn.is_some() {
+            s.prefs.save();
+        }
+    })
+    .build(k)
+    .key("theme");
     let foot = row()
         .w_full()
         .center_y()
         .justify_between()
-        .child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted))
+        .child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).grow(1.0).min_w(0.0).truncate())
+        .child(theme)
         .child(Button::new(if s.conn.is_some() { "Sign out" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
     let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).child(filter).child(new).child(tree).child(foot);
     if !s.note.is_empty() {
@@ -1670,7 +1704,7 @@ fn page_body(s: &App, k: &Kit) -> El {
 }
 
 fn view(s: &App, cx: &mut Cx<App>) -> El {
-    let k = Kit::neutral(cx.system_dark());
+    let k = Kit::neutral(s.prefs.dark(cx.system_dark()));
     if s.conn.is_none() && !s.sample {
         return login_view(s, &k);
     }
