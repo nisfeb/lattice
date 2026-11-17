@@ -111,6 +111,9 @@ struct App {
     old_req: Latest<Result<Page, String>>,
     /// The page being edited was written elsewhere since it was opened.
     stale: bool,
+    /// The open page is a capture not saved yet: it has a name in the
+    /// inbox and no page on the ship until its first save.
+    capture: bool,
     /// What is kept between runs, and whether the last page was opened again.
     prefs: Prefs,
     restored: bool,
@@ -292,6 +295,7 @@ fn init() -> App {
         hist_req: Latest::default(),
         old_req: Latest::default(),
         stale: false,
+        capture: false,
         prefs: Prefs::load(),
         restored: false,
         want: None,
@@ -679,6 +683,12 @@ fn applied(s: &mut App, op: Op) {
             s.note = "deleted".into();
         }
     }
+    refresh_tree(s);
+}
+
+/// Shows the tree as it now stands: read again from the ship, or built
+/// from the names on sample pages.
+fn refresh_tree(s: &mut App) {
     if s.conn.is_some() && s.memory {
         load_know(s);
     } else if s.conn.is_some() {
@@ -1326,10 +1336,44 @@ fn format_bar(s: &App, k: &Kit) -> El {
         .child(b("codeblock", "Code", blk == Block::Code, |s| s.edit.toggle_block(Block::Code)))
 }
 
+/// Starts a page with no question asked: named in the inbox by the
+/// date, open in the editor, and kept by its first save.
+fn capture(s: &mut App) {
+    if s.editing {
+        return;
+    }
+    if s.memory {
+        flip(s);
+    }
+    let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::from(d.subsec_nanos()));
+    let name = api::capture_name(&api::today(), seed, &|n| s.names.iter().any(|x| x == n));
+    // nothing is asked of the ship: the page is not there until it is saved
+    (s.remote, s.folder, s.old, s.want) = (None, None, None, None);
+    (s.shared_open, s.inbox, s.access, s.stale) = (false, false, false, false);
+    s.open = Some(Page { name, body: String::new(), kind: "md".into(), rev: 0 });
+    s.capture = true;
+    start_edit(s);
+    s.note = "a new page in the inbox, kept when you save".into();
+}
+
+/// Leaves the editor without saving. A capture never saved is dropped.
+fn cancel_edit(s: &mut App) {
+    s.editing = false;
+    if s.capture {
+        s.capture = false;
+        s.open = None;
+        s.note.clear();
+    }
+}
+
 fn save(s: &mut App) {
     let Some(mut p) = s.open.clone() else { return };
     let base = p.rev;
     p.body = edited(s);
+    if s.capture && p.body.trim().is_empty() {
+        s.note = "nothing to keep yet".into();
+        return;
+    }
     let memory = s.memory;
     let remote = s.remote.clone();
     match s.conn.clone() {
@@ -1355,8 +1399,18 @@ fn save(s: &mut App) {
 fn landed(s: &mut App, p: Page) {
     // a page of another ship is not one of this ship's kept texts
     if s.remote.is_none() {
+        // a capture's first save is what makes the page
+        let made = !s.memory && !s.names.contains(&p.name);
+        if made {
+            s.names.push(p.name.clone());
+        }
         s.cache.insert(p.name.clone(), p.clone());
+        if made {
+            s.open = Some(p.clone());
+            refresh_tree(s);
+        }
     }
+    s.capture = false;
     s.open = Some(p);
     s.editing = false;
     s.stale = false;
@@ -2668,7 +2722,11 @@ fn sidebar(s: &App, k: &Kit) -> El {
         }
     }).build(k).key("inbox-open");
     let halves = row().key("halves").w_full().gap(4.0).child(half("half-pages", format!("Pages {pages}"), !s.memory)).child(half("half-memory", format!("Memory {knows}"), s.memory));
-    let new = Button::new(if s.memory { "New memory" } else { "New page" }).variant(ButtonVariant::Ghost).on_press(ask_new).build(k).key("new");
+    let new = Button::new(if s.memory { "New memory" } else { "New page" }).variant(ButtonVariant::Ghost).help("Asks for a name and a place").on_press(ask_new).build(k).key("new");
+    let new = row().w_full().gap(4.0).child(Button::new("Capture").variant(ButtonVariant::Ghost).help("A new page in the inbox, with nothing asked").on_press_tx(|s: &mut App, tx| {
+        capture(s);
+        tx.focus_when_shown(FIELD, false);
+    }).build(k).key("capture")).child(new);
     let who = s.conn.as_ref().map_or("sample pages".to_owned(), |c| c.ship().to_owned());
     let theme = Button::new(match s.prefs.theme.as_str() {
         "dark" => "Dark",
@@ -2969,7 +3027,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             trailing = trailing.child(Button::new(if s.preview { "Hide preview" } else { "Preview" }).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| s.preview ^= true).build(&k).key("preview-toggle"));
         }
         trailing = trailing
-            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.editing = false).build(&k).key("cancel"))
+            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(cancel_edit).build(&k).key("cancel"))
             .child(Button::new("Save").variant(ButtonVariant::Contrast).on_press(save).build(&k).key("save"));
     } else if let Some(sh) = s.remote.as_ref().filter(|_| s.open.is_some() && !s.access && !s.shared_open && !s.inbox) {
         // another ship's page: read, and edited when that ship lets this one
@@ -3306,6 +3364,36 @@ mod tests {
         // the same button closes the pane
         show_pane(&mut s, false, true);
         assert!(!s.inspector.is_open());
+    }
+
+    #[test]
+    fn a_capture_is_kept_by_its_first_save_and_dropped_when_empty_or_cancelled() {
+        let mut s = sample("welcome");
+        let pages = s.names.len();
+        capture(&mut s);
+        let name = s.open.as_ref().unwrap().name.clone();
+        assert!(name.starts_with("inbox/20") && s.editing && s.capture && !s.names.contains(&name));
+        // nothing typed: nothing is saved, and cancel leaves no page behind
+        save(&mut s);
+        assert!(s.editing && s.note == "nothing to keep yet" && s.names.len() == pages);
+        cancel_edit(&mut s);
+        assert!(s.open.is_none() && !s.capture && !s.editing && !s.cache.contains_key(&name));
+        // typed and saved: it is a page like any other
+        capture(&mut s);
+        let name = s.open.as_ref().unwrap().name.clone();
+        s.edit = TextEdit::new("an idea\n");
+        s.rich = false;
+        save(&mut s);
+        assert!(!s.capture && !s.editing && s.names.contains(&name));
+        assert_eq!(s.cache[&name].body, "an idea\n");
+        // a later edit cancelled keeps the page
+        start_edit(&mut s);
+        cancel_edit(&mut s);
+        assert_eq!(s.open.as_ref().map(|p| p.name.clone()), Some(name));
+        // from the memory half it lands among the pages
+        flip(&mut s);
+        capture(&mut s);
+        assert!(!s.memory && s.capture);
     }
 
     #[test]

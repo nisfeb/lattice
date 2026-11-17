@@ -418,6 +418,31 @@ pub struct Asks {
     pub sent: Vec<Ask>,
 }
 
+/// A captured page's name: `inbox/YYYY-MM-DD-NNNN`, the date and four
+/// digits drawn from `seed`, drawn again while `taken` says the name is used.
+pub fn capture_name(date: &str, mut seed: u64, taken: &dyn Fn(&str) -> bool) -> String {
+    loop {
+        let name = format!("inbox/{date}-{:04}", seed % 10_000);
+        if !taken(&name) {
+            return name;
+        }
+        // any step that walks all ten thousand
+        seed = seed.wrapping_add(7919);
+    }
+}
+
+/// The local date, `YYYY-MM-DD`.
+// ponytail: asks the system's `date`, since std has no time zones. UTC when that fails.
+pub fn today() -> String {
+    let local = std::process::Command::new("date").arg("+%Y-%m-%d").output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).map(|s| s.trim().to_owned());
+    local.filter(|d| d.len() == 10).unwrap_or_else(|| {
+        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        let da = da_of_ms(ms);
+        let ymd: Vec<&str> = da.trim_start_matches('~').split("..").next().unwrap_or("").split('.').collect();
+        format!("{}-{:0>2}-{:0>2}", ymd[0], ymd.get(1).unwrap_or(&"1"), ymd.get(2).unwrap_or(&"1"))
+    })
+}
+
 /// A note cut to whole characters within the 280 bytes a host keeps.
 pub fn clip_note(s: &str) -> &str {
     let mut end = s.len().min(280);
@@ -1229,6 +1254,16 @@ mod tests {
         assert_eq!(clip_note(&odd).len(), 279, "never half a character");
     }
 
+    #[test]
+    fn a_captured_page_is_named_by_the_date_and_four_digits_not_in_use() {
+        assert_eq!(capture_name("2026-11-17", 42, &|_| false), "inbox/2026-11-17-0042");
+        assert_eq!(capture_name("2026-11-17", 123_456, &|_| false), "inbox/2026-11-17-3456");
+        // a name in use is passed over
+        assert_eq!(capture_name("2026-11-17", 42, &|n| n.ends_with("-0042")), "inbox/2026-11-17-7961");
+        let d = today();
+        assert!(d.len() == 10 && d.as_bytes()[4] == b'-' && d.as_bytes()[7] == b'-' && d.starts_with("20"), "{d}");
+    }
+
     /// Against a real ship: `LATTICE_URL=.. LATTICE_COOKIE=.. cargo test -- --ignored`.
     /// It needs a page named `rune-probe` to exist.
     #[test]
@@ -1317,6 +1352,12 @@ mod tests {
         assert!(c.comment("rune-probe", "").unwrap_err().starts_with("400"), "an empty comment is refused");
         c.comment_delete("rune-probe", &got.id).unwrap();
         assert!(mine(&c).is_none(), "a removed comment is gone");
+        // a captured page is made by its first save, with no create before it
+        let cap = capture_name(&today(), u64::from(std::process::id()), &|_| false);
+        let made = Page { name: cap.clone(), body: "a thought\n".into(), kind: "md".into(), rev: 0 };
+        c.save(&made, 0).unwrap();
+        assert_eq!(c.page(&cap).unwrap().body, "a thought\n");
+        assert!(c.tree().unwrap().iter().any(|n| n.page && n.path == cap));
         // a page that links to the probe is among its backlinks, once the ship has read it
         let from = format!("rune-linker-{base}");
         c.create(&from).unwrap();

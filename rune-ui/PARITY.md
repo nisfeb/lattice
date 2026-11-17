@@ -43,7 +43,11 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Asks to edit: a page shared read-only has Ask to edit with an optional note (`/access-request`), and the Access screen lists the asks waiting here with Approve and Deny (`/access-requests`, `/access-answer`). The routes answer on a fake ship (no asks, an answer to none refused, asking oneself refused). Both screens run on sample data
 - [!] Asks to edit, one sent to a host and one answered: blocked on a second running ship
 - [x] Backlinks and ghost links: a Links pane lists the pages that link here (`/page-backlinks`) and the pages this one links to. A link to a page not written yet shows in italics in the reader and as not written in the pane, and offers to make it
-- [ ] Quick capture
+- [x] Quick capture: a Capture button starts a page with nothing asked, named `inbox/YYYY-MM-DD-NNNN` by the web client's rule, and its first save makes it. An empty one is never saved and Cancel drops it. It is kept by Save, not by itself: this client has no autosave
+- [ ] Autosave, and the setting that turns it off
+- [ ] Recent documents first in the switcher (the web client's Ctrl+O picker), with a Create row for a name that matches nothing
+- [ ] Command palette ordered by recent use
+- [ ] Wiki link autocomplete after `[[`, with a date offering that day's journal page
 - [ ] Templates and the journal (daily pages, orrery mirror pages read-only)
 - [ ] Tabs: more than one page open
 - [ ] Images in pages and uploads (pick, drop, paste)
