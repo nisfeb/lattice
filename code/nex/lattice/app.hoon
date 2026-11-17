@@ -8900,6 +8900,7 @@
     (put-file (link-road up pax.act) [/lattice %link] link.act)
       %journal-put  (journal-put root now +.act)
       %map-put  (map-put root now body.act)
+      %prune-husks  (prune-husks-in root now +.act)
       %del-from
     ;<  ~  bind:m  (del-from root now +.act)
     (apply-eval root now [%del from.act])
@@ -12382,20 +12383,39 @@
 ::  empty shell, from the deepest up, stopping at the first that still
 ::  holds something. Answers the ones deleted. Only POST /page-move asks:
 ::  a mount's rename (the lick %page-move) keeps what a file system keeps.
+::  The check and the delete are one writer step (%prune-husks), so no
+::  save into the source lands between them. The writer is drained
+::  before the folders are read again to tell which went.
 ++  prune-husks
   |=  [pf=path pt=path]
   =/  m  (fiber:fiber:nexus ,(list path))
   ^-  form:m
-  ;<  up=@ud  bind:m  nexus-up
   =/  todo=(list path)  (move-husks:ls pf pt)
+  ?:  =(~ todo)  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  ~  bind:m  (poke-eval [%prune-husks pf pt])
+  ;<  ~  bind:m  writer-drain
   =|  done=(list path)
   |-  ^-  form:m
   ?~  todo  (pure:m (flop done))
-  ;<  bare=?  bind:m  (folder-bare up i.todo)
-  ?.  bare  (pure:m (flop done))
-  ;<  ~  bind:m  (poke-eval [%del i.todo])
+  ;<  ex=?  bind:m  (peek-exists:fio (rv up (weld /page i.todo)))
+  ?:  ex  (pure:m (flop done))
   ;<  ~  bind:m  (move-grants i.todo ~)
   $(todo t.todo, done [i.todo done])
+::  +prune-husks-in: %prune-husks, in the writer: +prune-husks's check
+::  and delete of each folder, as one step
+++  prune-husks-in
+  |=  [root=@ud now=@da pf=path pt=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  todo=(list path)  (move-husks:ls pf pt)
+  |-  ^-  form:m
+  ?~  todo  (pure:m ~)
+  ;<  bare=?  bind:m  (folder-bare up i.todo)
+  ?.  bare  (pure:m ~)
+  ;<  ~  bind:m  (apply-eval root now [%del i.todo])
+  $(todo t.todo)
 ::  +folder-bare: whether `rel` is a folder that holds nothing: its own
 ::  node holds no more than a display name (+husk-bare:ls), there is no
 ::  page or folder under it, and no link at or under it.
