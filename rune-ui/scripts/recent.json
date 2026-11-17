@@ -1,0 +1,6 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "budget"},
+  {"t": 2.0, "type": "tap", "key": "notes/today"},
+  {"t": 2.5, "type": "tap", "key": "places"},
+  {"t": 3.0, "type": "key", "name": "o", "cmd": true}
+]}

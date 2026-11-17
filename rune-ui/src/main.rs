@@ -762,9 +762,12 @@ fn open_page(s: &mut App, name: &str) {
         return;
     }
     // the page to open again next run. Only a ship's: sample pages are not kept
-    if s.conn.is_some() && !s.memory && s.prefs.last != name {
+    if !s.memory && s.prefs.recent.first().map(String::as_str) != Some(name) {
         s.prefs.last = name.to_owned();
-        s.prefs.save();
+        s.prefs.opened(name);
+        if s.conn.is_some() {
+            s.prefs.save();
+        }
     }
     // a new visit drops what was ahead of it, as a browser does
     if s.trail.get(s.trail_at).map(String::as_str) != Some(name) {
@@ -1779,8 +1782,13 @@ fn matches<'a>(names: &'a [String], query: &str) -> Vec<&'a str> {
 /// The switcher's rows: pages whose name answers the query, then pages
 /// whose text holds it, each with the line it was found on.
 fn found(s: &App, query: &str) -> Vec<(String, Option<String>)> {
-    let mut rows: Vec<(String, Option<String>)> = matches(&s.names, query).into_iter().take(8).map(|n| (n.to_owned(), None)).collect();
     let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        // nothing typed: the pages opened last, newest first, without the one in front
+        let open = s.open.as_ref().map(|p| p.name.as_str());
+        return s.prefs.recent.iter().filter(|n| Some(n.as_str()) != open && s.names.contains(n)).map(|n| (n.clone(), None)).collect();
+    }
+    let mut rows: Vec<(String, Option<String>)> = matches(&s.names, query).into_iter().take(8).map(|n| (n.to_owned(), None)).collect();
     if q.chars().count() >= 3 {
         let mut names: Vec<&String> = s.cache.keys().collect();
         names.sort();
@@ -1801,6 +1809,20 @@ fn found(s: &App, query: &str) -> Vec<(String, Option<String>)> {
     rows
 }
 
+/// The page the switcher offers to make: what is typed, as a path, when
+/// no page has exactly that name.
+fn creatable(s: &App, query: &str) -> Option<String> {
+    let rn = api::real_name(query.trim())?;
+    (!s.names.contains(&rn.name)).then_some(rn.name)
+}
+
+/// Makes the page typed into the switcher, as New page would.
+fn jump_create(s: &mut App) {
+    let Some(q) = s.jump.take() else { return };
+    s.prompt = Some(Prompt::New(TextEdit::new(q.text.trim())));
+    confirm(s);
+}
+
 fn jump_to(s: &mut App, name: &str, tx: &mut Tx) {
     s.jump = None;
     s.files.reveal(name, tx);
@@ -1811,16 +1833,21 @@ fn switcher(s: &App, k: &Kit, layer: &mut Vec<El>) {
     let Some(q) = &s.jump else { return };
     let hits = found(s, &q.text);
     let field = TextInput::new(q)
-        .placeholder("Jump to a page, or search their text")
+        .placeholder("Jump to a page, search their text, or name a new one")
         .leading_icon(k.glyph.search)
         .on_edit(|s: &mut App| s.jump.as_mut().expect("the switcher is open"))
         .on_change(|s: &mut App, _| s.jump_at = 0)
         .on_key(|s: &mut App, ev: &KeyEvent, tx: &mut Tx| {
             let Some(q) = &s.jump else { return false };
             let hits = found(s, &q.text);
+            // the Create row is one more row, after the pages found
+            let make = creatable(s, &q.text).is_some();
+            let last = (hits.len() + usize::from(make)).saturating_sub(1);
             match ev.key {
-                Key::Down => s.jump_at = (s.jump_at + 1).min(hits.len().saturating_sub(1)),
+                Key::Down => s.jump_at = (s.jump_at + 1).min(last),
                 Key::Up => s.jump_at = s.jump_at.saturating_sub(1),
+                // Shift-Return makes the typed name whatever was found
+                Key::Enter if make && (ev.mods.shift || s.jump_at >= hits.len()) => jump_create(s),
                 Key::Enter => {
                     if let Some(name) = hits.get(s.jump_at).map(|n| n.0.clone()) {
                         jump_to(s, &name, tx);
@@ -1855,8 +1882,16 @@ fn switcher(s: &App, k: &Kit, layer: &mut Vec<El>) {
         }
         rows = rows.child(r);
     }
-    if hits.is_empty() {
-        rows = rows.child(text("No page matches").font(k.ty.ui).color(k.c.text_muted));
+    let make = creatable(s, &q.text);
+    if let Some(name) = &make {
+        let mut r = row().key("jump-create").w_full().h(30.0).px(10.0).gap(8.0).center_y().radius(k.radius.sm).on_press(jump_create).child(text(format!("Create {name}")).font(k.ty.ui).color(k.c.text_base)).child(text("Shift-Return").font(k.ty.small).color(k.c.text_faint));
+        if s.jump_at >= hits.len() {
+            r = r.fill(k.selection());
+        }
+        rows = rows.child(r);
+    }
+    if hits.is_empty() && make.is_none() {
+        rows = rows.child(text(if q.text.trim().is_empty() { "Pages you open will list here" } else { "No page matches" }).font(k.ty.ui).color(k.c.text_muted));
     }
     Dialog::new("jump", "Jump to a page")
         .open(true)
@@ -3204,7 +3239,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         s.sidebar.toggle();
         return true;
     }
-    if ev.is_command('k') && !s.editing {
+    if (ev.is_command('k') || ev.is_command('o')) && !s.editing {
         let mut q = TextEdit::new("");
         q.focused = true;
         s.jump = Some(q);
@@ -3524,6 +3559,33 @@ mod tests {
         s.stale = true;
         s.edit = TextEdit::new("mine\n");
         assert!(!autosave_tick(&mut s, 28.0) && !autosave_tick(&mut s, 30.0));
+    }
+
+    #[test]
+    fn the_switcher_lists_recent_pages_first_and_offers_to_make_a_new_name() {
+        let mut s = sample("welcome");
+        s.prefs.recent.clear();
+        for n in ["notes/today", "budget", "welcome", "notes/today", "places"] {
+            open_page(&mut s, n);
+        }
+        // newest first, each once, without the one in front, and none that is gone
+        s.prefs.recent.push("deleted/long-ago".into());
+        let names: Vec<String> = found(&s, "  ").into_iter().map(|r| r.0).collect();
+        assert_eq!(names, ["notes/today", "welcome", "budget"]);
+        for i in 0..20 {
+            s.prefs.opened(&format!("p{i}"));
+        }
+        assert_eq!(s.prefs.recent.len(), 10);
+        // a name no page has can be made, an exact one cannot, and a typed name becomes a path
+        assert_eq!(creatable(&s, "budget"), None);
+        assert_eq!(creatable(&s, "budge").as_deref(), Some("budge"));
+        assert_eq!(creatable(&s, " Plans/Next Week ").as_deref(), api::real_name("Plans/Next Week").map(|r| r.name).as_deref());
+        assert_eq!(creatable(&s, "   "), None);
+        let pages = s.names.len();
+        s.jump = Some(TextEdit::new("plans/next"));
+        jump_create(&mut s);
+        assert!(s.jump.is_none() && s.names.len() == pages + 1);
+        assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("plans/next"));
     }
 
     #[test]

@@ -45,7 +45,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Backlinks and ghost links: a Links pane lists the pages that link here (`/page-backlinks`) and the pages this one links to. A link to a page not written yet shows in italics in the reader and as not written in the pane, and offers to make it
 - [x] Quick capture: a Capture button starts a page with nothing asked, named `inbox/YYYY-MM-DD-NNNN` by the web client's rule, and its first save makes it. An empty one is never saved and Cancel drops it.
 - [x] Autosave: text that changed and then rested about two seconds is saved with the editor left open, for pages, memories and captures. A switch in the editor's toolbar turns it off and is kept. A page as it was read is never written, a refusal makes it wait for Save, and another ship's page saves only on purpose
-- [ ] Recent documents first in the switcher (the web client's Ctrl+O picker), with a Create row for a name that matches nothing
+- [x] Recent pages in the switcher: Ctrl+O or Ctrl+K with nothing typed lists the last ten pages opened on this device, newest first, without the one in front. A typed name no page has gets a Create row last, and Shift-Return makes it straight away. Memories are not among the recents
 - [ ] Command palette ordered by recent use
 - [ ] Wiki link autocomplete after `[[`, with a date offering that day's journal page
 - [ ] Templates and the journal (daily pages, orrery mirror pages read-only)
