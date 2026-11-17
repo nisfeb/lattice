@@ -701,6 +701,20 @@
     (expect-eq !>(&) !>((dir-key:ls /apps/l/page/f/dir-index)))
     (expect-eq !>(|) !>((dir-key:ls /apps/l/page/dir-index/code)))
   ==
+::  +move-husks: only a move of a whole path under a new one names the
+::  folders above its source, deepest first
+++  test-move-husks
+  ;:  weld
+    (expect-eq !>(`(list path)`~[/a/b /a]) !>((move-husks:ls /a/b/c /x/y/a/b/c)))
+    (expect-eq !>(`(list path)`~[/a]) !>((move-husks:ls /a/b /x/a/b)))
+    ::  a top folder has nothing above it
+    (expect-eq !>(`(list path)`~) !>((move-husks:ls /a /x/a)))
+    ::  a rename, a move elsewhere, a move up: the owner keeps the folders
+    (expect-eq !>(`(list path)`~) !>((move-husks:ls /a/b/c /a/b/d)))
+    (expect-eq !>(`(list path)`~) !>((move-husks:ls /a/b/c /x/y/c)))
+    (expect-eq !>(`(list path)`~) !>((move-husks:ls /x/a/b /a/b)))
+    (expect-eq !>(`(list path)`~) !>((move-husks:ls /a/b /x/a/bb)))
+  ==
 ::  +move-resumes: a fresh note for the same move resumes it. A stale one,
 ::  or one for another move, does not, so the move gets the clobber checks.
 ++  test-move-resumes

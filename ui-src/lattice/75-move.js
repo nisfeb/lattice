@@ -12,6 +12,15 @@
   //  first, and no autosave or parked save writes the old name while the
   //  move runs (`moving`, 35-pages.js). One landing in the folder being
   //  moved was deleted with it, or made the old folder again.
+  //  a move that put a whole path under a new one empties the folders
+  //  above its source, and the ship removes them and says which (`pruned`
+  //  in /page-move's answer): they leave the tree here too, or they stand
+  //  beside the moved copy like originals until the next reload
+  const dropPruned = (j) => {
+    const gone = j && Array.isArray(j.pruned) ? j.pruned : [];
+    if (!gone.length) return;
+    for (let i = nodes.length - 1; i >= 0; i--) if (!nodes[i].page && gone.includes(nodes[i].path)) nodes.splice(i, 1);
+  };
   const moveReq = async (from, to, rn) => {
     //  held first: the save the flush makes queues an autosave behind it,
     //  and that one would go out beside the move, under the old name
@@ -57,6 +66,7 @@
     let j = null;
     if (!r.offline) { try { j = await r.clone().json(); } catch {} }
     remapMoved(oldName, newName, rn);
+    dropPruned(j);
     //  the page's rev where it landed (an older ship does not say): the
     //  tree row and an editor showing it carried the source's, and a save
     //  claiming that was refused as stale
@@ -92,6 +102,7 @@
         seed = typed;
         continue;
       }
+      dropPruned(r.ok ? await r.clone().json().catch(() => null) : null);
       const inside = (p) => !!p && (p === oldPath || p.startsWith(oldPath + '/'));
       //  read before the remap renames the open page in place
       const wasOpen = mode !== 'know' && !grubPath && inside(current);

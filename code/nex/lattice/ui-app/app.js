@@ -10521,6 +10521,11 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   }
 
 // ── src/75-move.js ────────────────────────────────────────────────────────
+  const dropPruned = (j) => {
+    const gone = j && Array.isArray(j.pruned) ? j.pruned : [];
+    if (!gone.length) return;
+    for (let i = nodes.length - 1; i >= 0; i--) if (!nodes[i].page && gone.includes(nodes[i].path)) nodes.splice(i, 1);
+  };
   const moveReq = async (from, to, rn) => {
     moving++;
     const end = busy();      // the line from the click, the flush included
@@ -10555,6 +10560,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     let j = null;
     if (!r.offline) { try { j = await r.clone().json(); } catch {} }
     remapMoved(oldName, newName, rn);
+    dropPruned(j);
     const nd = nodes.find((n) => n.page && n.path === newName);
     if (nd) { if (j && typeof j.rev === 'number') nd.rev = j.rev; else delete nd.rev; }
     pageCache.delete(oldName);
@@ -10583,6 +10589,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         seed = typed;
         continue;
       }
+      dropPruned(r.ok ? await r.clone().json().catch(() => null) : null);
       const inside = (p) => !!p && (p === oldPath || p.startsWith(oldPath + '/'));
       const wasOpen = mode !== 'know' && !grubPath && inside(current);
       const moved = remapMoved(oldPath, newPath, rn);
