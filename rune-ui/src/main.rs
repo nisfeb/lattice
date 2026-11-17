@@ -152,6 +152,8 @@ struct App {
     shared: Vec<Shared>,
     shared_req: Latest<Result<Vec<Shared>, String>>,
     shared_open: bool,
+    /// The comments of every page show in place of a page.
+    inbox: bool,
     remote: Option<Shared>,
     remote_req: Latest<Result<(Shared, Page), String>>,
     /// The banned ships, and the one being typed to ban.
@@ -294,6 +296,7 @@ fn init() -> App {
         shared: Vec::new(),
         shared_req: Latest::default(),
         shared_open: false,
+        inbox: false,
         remote: None,
         remote_req: Latest::default(),
         bans: Vec::new(),
@@ -955,6 +958,7 @@ fn restore(s: &mut App) {
 fn show_page(s: &mut App, name: &str) {
     s.remote = None;
     s.shared_open = false;
+    s.inbox = false;
     s.access = false;
     s.folder = None;
     s.old = None;
@@ -1609,6 +1613,7 @@ fn open_remote(s: &mut App, sh: Shared) {
 fn show_remote(s: &mut App, sh: Shared, p: Page) {
     s.access = false;
     s.shared_open = false;
+    s.inbox = false;
     s.folder = None;
     s.old = None;
     s.stale = false;
@@ -1677,7 +1682,11 @@ fn shared_view(s: &App, k: &Kit) -> El {
 /// Reads the comments, and whether they are on for the open page, when
 /// the comments pane is showing.
 fn load_comments(s: &mut App) {
-    let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else { return };
+    let Some(c) = s.conn.clone() else { return };
+    if s.inbox {
+        s.comments_req.request(c.clone(), |c| c.comments());
+    }
+    let Some(p) = &s.open else { return };
     if s.inspector.is_open() && s.pane_comments && !s.memory && s.remote.is_none() {
         s.comments_req.request(c.clone(), |c| c.comments());
         s.comments_on_req.request((c, p.name.clone()), |(c, n)| c.comments_on(&n).map(|on| (n, on)));
@@ -1701,6 +1710,68 @@ fn post_comment(s: &mut App) {
         std::thread::sleep(std::time::Duration::from_millis(1500));
         Ok(Op::Commented(format!("comment posted on {page}")))
     });
+}
+
+/// One comment: who, when, what, and Remove. In the inbox it also names
+/// its page, which opens when pressed.
+fn comment_card(m: &Comment, k: &Kit, link: bool) -> El {
+    let c = &k.c;
+    let (page, id, to) = (m.page.clone(), m.id.clone(), m.page.clone());
+    let when = Rev { rev: 0, updated: m.when.clone() }.when();
+    let mut card = col().key(format!("comment-{}", m.id)).w_full().padding(8.0).gap(4.0).radius(k.radius.sm).fill(c.layer_01).child(
+        row()
+            .w_full()
+            .gap(6.0)
+            .center_y()
+            .child(text(m.author.clone()).font(k.ty.small_medium).color(c.text_base))
+            .child(text(when).font(k.ty.small).color(c.text_faint).grow(1.0))
+            .child(Button::new("Remove").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(move |s: &mut App| {
+                let Some(c) = s.conn.clone() else { return };
+                s.op_req.request((c, page.clone(), id.clone()), |(c, page, id)| {
+                    c.comment_delete(&page, &id)?;
+                    Ok(Op::Commented(format!("removed a comment from {page}")))
+                });
+            }).build(k).key(format!("comment-del-{}", m.id))),
+    );
+    if link {
+        card = card.child(row().child(Button::new(m.page.clone()).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| open_comment_page(s, &to)).build(k).key(format!("comment-page-{}", m.id))));
+    }
+    card.child(text(m.body.clone()).font(k.ty.ui).color(c.text_base).wrap().selectable(true))
+}
+
+/// Opens the page a comment in the inbox is on, from either half.
+fn open_comment_page(s: &mut App, name: &str) {
+    if s.memory {
+        flip(s);
+    }
+    if s.names.iter().any(|n| n == name) {
+        open_page(s, name);
+    } else {
+        s.note = format!("{name} is no longer a page");
+    }
+}
+
+/// Every page's comments, newest first, as the ship gives them.
+fn inbox_view(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let mut list = col().key("inbox-list").w_full().gap(8.0);
+    for m in &s.comments {
+        list = list.child(comment_card(m, k, true));
+    }
+    if s.comments.is_empty() {
+        list = list.child(text(if s.comments_req.is_pending() { "Reading the comments" } else { "No comments. They are off until switched on for a page, in its Comments pane." }).font(k.ty.small).color(c.text_muted).wrap());
+    }
+    let head = col()
+        .gap(4.0)
+        .child(text("Comments").font(k.ty.body_medium).color(c.text_base))
+        .child(text("What other ships and web readers wrote on your pages, newest first. The ship gives the newest 200.").font(k.ty.small).color(c.text_muted).wrap());
+    col()
+        .key("inbox")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(list)))
+        .scroll(ScrollSpec { stick_bottom: false })
 }
 
 /// The comments pane: whether comments are on, the page's comments
@@ -1729,33 +1800,7 @@ fn comments_view(s: &App, k: &Kit) -> El {
     let mine: Vec<&Comment> = s.comments.iter().filter(|m| m.page == p.name).collect();
     let mut list = col().key("comment-list").w_full().gap(8.0);
     for m in &mine {
-        let (page, id) = (m.page.clone(), m.id.clone());
-        let when = Rev { rev: 0, updated: m.when.clone() }.when();
-        list = list.child(
-            col()
-                .key(format!("comment-{}", m.id))
-                .w_full()
-                .padding(8.0)
-                .gap(4.0)
-                .radius(k.radius.sm)
-                .fill(c.layer_01)
-                .child(
-                    row()
-                        .w_full()
-                        .gap(6.0)
-                        .center_y()
-                        .child(text(m.author.clone()).font(k.ty.small_medium).color(c.text_base))
-                        .child(text(when).font(k.ty.small).color(c.text_faint).grow(1.0))
-                        .child(Button::new("Remove").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(move |s: &mut App| {
-                            let Some(c) = s.conn.clone() else { return };
-                            s.op_req.request((c, page.clone(), id.clone()), |(c, page, id)| {
-                                c.comment_delete(&page, &id)?;
-                                Ok(Op::Commented(format!("removed a comment from {page}")))
-                            });
-                        }).build(k).key(format!("comment-del-{}", m.id))),
-                )
-                .child(text(m.body.clone()).font(k.ty.ui).color(c.text_base).wrap().selectable(true)),
-        );
+        list = list.child(comment_card(m, k, false));
     }
     if mine.is_empty() {
         list = list.child(text(if s.comments_req.is_pending() { "Reading the comments" } else { "No comments on this page." }).font(k.ty.small).color(c.text_muted));
@@ -2213,6 +2258,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
                 // a folder shows what it holds, and can be renamed, moved or deleted there
                 s.access = false;
                 s.shared_open = false;
+                s.inbox = false;
                 s.remote = None;
                 s.want = None;
                 s.folder = Some(id.to_owned());
@@ -2254,9 +2300,18 @@ fn sidebar(s: &App, k: &Kit) -> El {
         if !s.editing {
             s.shared_open = true;
             s.access = false;
+            s.inbox = false;
             load_shared(s);
         }
     }).build(k).key("shared-open");
+    let inbox = Button::new("Comments").control_size(ControlSize::Small).variant(if s.inbox { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("Comments on every page").on_press(|s: &mut App| {
+        if !s.editing {
+            s.inbox = true;
+            s.access = false;
+            s.shared_open = false;
+            load_comments(s);
+        }
+    }).build(k).key("inbox-open");
     let halves = row().key("halves").w_full().gap(4.0).child(half("half-pages", format!("Pages {pages}"), !s.memory)).child(half("half-memory", format!("Memory {knows}"), s.memory));
     let new = Button::new(if s.memory { "New memory" } else { "New page" }).variant(ButtonVariant::Ghost).on_press(ask_new).build(k).key("new");
     let who = s.conn.as_ref().map_or("sample pages".to_owned(), |c| c.ship().to_owned());
@@ -2278,6 +2333,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
     let access = Button::new("Access").variant(ButtonVariant::GhostMuted).help("Groups of ships and what they read").on_press(|s: &mut App| {
         if !s.editing {
             s.access = true;
+            s.inbox = false;
             load_groups(s);
         }
     }).build(k).key("access-open");
@@ -2289,7 +2345,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .child(access)
         .child(theme)
         .child(Button::new(if s.conn.is_some() { "Sign out" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
-    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).child(filter).child(new).child(tree).child(with_me).child(foot);
+    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).child(filter).child(new).child(tree).child(row().gap(4.0).child(with_me).child(inbox)).child(foot);
     if !s.note.is_empty() {
         side = side.child(text(s.note.clone()).key("note").font(k.ty.small).color(k.c.text_muted).wrap());
     }
@@ -2452,6 +2508,9 @@ fn page_body(s: &App, k: &Kit) -> El {
     if s.shared_open && !s.editing {
         return shared_view(s, k);
     }
+    if s.inbox && !s.editing {
+        return inbox_view(s, k);
+    }
     if let Some(dir) = s.folder.as_ref().filter(|_| s.open.is_none()) {
         return folder_view(dir, s, k);
     }
@@ -2539,7 +2598,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let path = s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref());
     // the name it was given when there is one, with its path beside it
     let named = path.and_then(|p| s.dnames.get(p).filter(|_| !s.memory && s.remote.is_none()).map(|d| format!("{d}  ({p})")));
-    let title = if s.shared_open { "Shared with me" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
+    let title = if s.inbox { "Comments" } else if s.shared_open { "Shared with me" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
     let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending();
     let mut trailing = row().gap(8.0).center_y();
     if busy {
@@ -2557,7 +2616,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         trailing = trailing
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.editing = false).build(&k).key("cancel"))
             .child(Button::new("Save").variant(ButtonVariant::Contrast).on_press(save).build(&k).key("save"));
-    } else if let Some(sh) = s.remote.as_ref().filter(|_| s.open.is_some() && !s.access && !s.shared_open) {
+    } else if let Some(sh) = s.remote.as_ref().filter(|_| s.open.is_some() && !s.access && !s.shared_open && !s.inbox) {
         // another ship's page: read, and edited when that ship lets this one
         trailing = trailing.child(text(format!("from {}", sh.host)).font(k.ty.small).color(k.c.text_muted));
         if sh.editable() {
@@ -2566,7 +2625,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
                 tx.focus_when_shown(FIELD, false);
             }).build(&k).key("edit"));
         }
-    } else if s.open.is_some() && !s.access && !s.shared_open {
+    } else if s.open.is_some() && !s.access && !s.shared_open && !s.inbox {
         // a memory has no sharing, history pane or rename here
         if !s.memory {
             let shared = s.open.as_ref().and_then(|p| s.shares.get(&p.name)).is_some_and(|m| m != "private");
@@ -2873,6 +2932,20 @@ mod tests {
         // a page opened from the folder takes over
         open_page(&mut s, "notes/today");
         assert_eq!(share_target(&s), Some(("notes/today".to_owned(), false)));
+    }
+
+    #[test]
+    fn a_comment_in_the_inbox_opens_its_page_from_either_half() {
+        let mut s = sample("welcome");
+        s.inbox = true;
+        flip(&mut s);
+        open_comment_page(&mut s, "welcome");
+        assert_eq!((s.open.as_ref().map(|p| p.name.as_str()), s.inbox, s.memory), (Some("welcome"), false, false));
+        // a comment on a page since deleted says so and opens nothing else
+        s.inbox = true;
+        open_comment_page(&mut s, "gone");
+        assert_eq!((s.open.as_ref().map(|p| p.name.as_str()), s.inbox), (Some("welcome"), true));
+        assert_eq!(s.note, "gone is no longer a page");
     }
 
     #[test]

@@ -35,7 +35,9 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Display names for pages and folders: a name typed with capitals, spaces or punctuation becomes a path by the web client's own rule and is kept to show (`dname`, `dnames` on `/page-save` and `/page-move`), in the tree and the title
 - [x] Sensitive flag: a switch in the share dialog shows a page's or folder's own mark and sets it (`/page-sensitive`), and says when the page is still shared by its own setting. A page that is sensitive only through its folder is not shown as such
 - [x] Comments on a page: a side pane lists the page's comments, posts one, removes one, and switches comments on or off (`/comments-inbox`, `/comment`, `/comment-del`, `/page-comments`). The list comes from the ship's newest 200 across all pages
-- [ ] Comments inbox across pages with an unread mark (`/comments-latest`)
+- [x] Comments inbox: a Comments screen lists every page's comments newest first, opens the page one is on, and removes one (`/comments-inbox`, `/comment-del`). The web client has no unread mark for comments either
+- [ ] Inbox, held comments: comments from comets waiting for the owner's yes (`/held-comments`, `/comet-pending`)
+- [ ] Inbox, activity: notices with read marks and a count (`/notify`, `/notify-read`, `/notify-count`)
 - [ ] Backlinks and ghost links (pages that link here, links to pages not made)
 - [ ] Quick capture
 - [ ] Templates and the journal (daily pages, orrery mirror pages read-only)

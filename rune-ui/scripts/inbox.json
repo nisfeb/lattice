@@ -1,0 +1,4 @@
+{"events": [
+  {"t": 3.0, "type": "tap", "key": "half-memory"},
+  {"t": 4.0, "type": "tap", "key": "inbox-open"}
+]}
