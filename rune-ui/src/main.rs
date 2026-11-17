@@ -10,6 +10,7 @@ mod md;
 mod odf;
 mod pdf;
 mod sheet;
+mod tex;
 mod upload;
 
 use std::collections::HashMap;
@@ -88,6 +89,9 @@ enum Op {
     Sensed(String, bool, bool),
     /// Files were uploaded: the pages made, and the files left out with why.
     Uploaded(Vec<String>, Vec<String>),
+    /// A page was written beside the one in front: its name, its text when
+    /// there is no ship to read it from, and what to say.
+    Wrote(String, Option<Page>, String),
     /// Something was done that changes nothing here: what to say.
     Said(String),
     /// A template made a page or a folder of pages at this name.
@@ -696,7 +700,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) => {}
+                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) => {}
             }
             Ok(op)
         }),
@@ -771,6 +775,18 @@ fn applied(s: &mut App, op: Op) {
         Op::Said(say) => {
             s.note = say;
             return;
+        }
+        Op::Wrote(name, page, say) => {
+            s.note = say;
+            // sample pages: kept here. A ship's: shown when the tree has it
+            if let Some(p) = page {
+                if !s.names.contains(&name) {
+                    s.names.push(name.clone());
+                }
+                s.cache.insert(name.clone(), p);
+            }
+            s.land = Some(name);
+            s.resync = true;
         }
         Op::Templated(name) => {
             s.tmpl = None;
@@ -859,6 +875,10 @@ fn refresh_tree(s: &mut App) {
         s.files.expand_all();
         if let Some(p) = &s.open {
             s.files.select(&p.name);
+        }
+        // sample pages have no tree to wait for: what was just made is shown now
+        if let Some(name) = s.land.take() {
+            land_on(s, &name);
         }
     }
 }
@@ -2539,6 +2559,38 @@ fn ask_pdf(s: &mut App, tx: &mut Tx) {
     });
 }
 
+/// Converts the LaTeX page in front to an html page beside it, with the
+/// pandoc on this machine. The output is cleaned before it is kept, and
+/// writes over the last conversion.
+fn convert_tex(s: &mut App) {
+    let Some(p) = s.open.clone().filter(|p| p.kind == "tex") else {
+        s.note = "only a LaTeX page converts".into();
+        return;
+    };
+    let src = if s.editing { edited(s) } else { p.body.clone() };
+    let conn = s.conn.clone();
+    s.note = "converting with pandoc".into();
+    s.op_req.request((conn, p.name, src), |(conn, name, src)| {
+        let Some(exe) = tex::locate() else {
+            return Ok(Op::Said("converting LaTeX needs pandoc, which is not installed on this machine. It is at pandoc.org".into()));
+        };
+        let html = match tex::convert(&exe, &src) {
+            Ok(h) => h,
+            Err(e) => return Ok(Op::Said(format!("pandoc: {}", e.chars().take(160).collect::<String>()))),
+        };
+        let out = Page { name: tex::out_name(&name), body: tex::page(&name, &html), kind: "html".into(), rev: 1 };
+        let say = format!("wrote {}", out.name);
+        match conn {
+            Some(c) => {
+                // a base of 0 makes it or writes over it: a conversion replaces the last one
+                c.save(&out, 0)?;
+                Ok(Op::Wrote(out.name, None, say))
+            }
+            None => Ok(Op::Wrote(out.name.clone(), Some(out), say)),
+        }
+    });
+}
+
 /// Writes a file off the window's thread and says how it went.
 fn write_file(s: &mut App, path: std::path::PathBuf, body: String) {
     s.op_req.request((path, body), |(path, body)| {
@@ -2985,6 +3037,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("copy-name", "Copy this page's name"),
     ("download", "Download this page as a file"),
     ("pdf", "Export this page as PDF"),
+    ("tex", "Convert this LaTeX page to HTML"),
     ("find", "Find in this page"),
     ("links", "Links"),
     ("comments", "Comments on this page"),
@@ -3008,6 +3061,7 @@ fn usable(s: &App, id: &str) -> bool {
         "delete" => own,
         "download" | "copy-name" => page,
         "duplicate" | "copy-link" | "pdf" => own && !s.memory && !s.editing,
+        "tex" => own && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "tex"),
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
         "find" => page && find_where(s) != FindIn::Nothing,
         "reload" => s.conn.is_some(),
@@ -3079,6 +3133,7 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "share" => open_share(s),
         "download" => ask_download(s, tx),
         "pdf" => ask_pdf(s, tx),
+        "tex" => convert_tex(s),
         "duplicate" => ask_duplicate(s),
         "copy-link" => {
             if let Some(link) = page_link(s) {
@@ -5290,6 +5345,30 @@ mod tests {
         assert!(s.prompt.is_none() && s.names.contains(&name));
         assert_eq!(s.cache["budget"].body, body, "the page copied is as it was");
         assert_eq!(page_link(&s).as_deref(), Some(format!("urb://~sampel-palnet/{name}").as_str()));
+    }
+
+    #[test]
+    fn a_conversion_lands_as_an_html_page_beside_its_source() {
+        let mut s = sample("welcome");
+        // only offered for a LaTeX page
+        assert!(!usable(&s, "tex"));
+        convert_tex(&mut s);
+        assert_eq!(s.note, "only a LaTeX page converts");
+        s.names.push("paper".into());
+        s.cache.insert("paper".into(), Page { name: "paper".into(), body: "\\section{A}\n".into(), kind: "tex".into(), rev: 1 });
+        open_page(&mut s, "paper");
+        assert!(usable(&s, "tex"));
+        // what the worker hands back: kept, said, and waiting to be shown
+        let out = Page { name: tex::out_name("paper"), body: tex::page("paper", "<h1>A</h1>"), kind: "html".into(), rev: 1 };
+        applied(&mut s, Op::Wrote(out.name.clone(), Some(out), "wrote paper-web".into()));
+        assert!(s.names.contains(&"paper-web".to_owned()));
+        assert_eq!((s.cache["paper-web"].kind.as_str(), s.note.as_str()), ("html", "wrote paper-web"));
+        assert!(s.cache["paper-web"].body.starts_with("<!-- generated from paper.tex by pandoc."));
+        // a second conversion writes over the first and adds no second name
+        let again = Page { name: "paper-web".into(), body: tex::page("paper", "<h1>B</h1>"), kind: "html".into(), rev: 1 };
+        applied(&mut s, Op::Wrote("paper-web".into(), Some(again), "wrote paper-web".into()));
+        assert_eq!(s.names.iter().filter(|n| *n == "paper-web").count(), 1);
+        assert!(s.cache["paper-web"].body.ends_with("<h1>B</h1>"));
     }
 
     #[test]

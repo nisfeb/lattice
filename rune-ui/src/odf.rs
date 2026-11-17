@@ -102,7 +102,7 @@ struct El {
 }
 
 /// The end of the tag that starts at `at`, past any `>` inside a quoted value.
-fn tag_end(src: &str, at: usize) -> Option<usize> {
+pub(crate) fn tag_end(src: &str, at: usize) -> Option<usize> {
     let mut quote = None;
     for (i, ch) in src[at..].char_indices() {
         match (quote, ch) {
@@ -170,7 +170,7 @@ fn elements(src: &str, from: usize, to: usize) -> Result<Vec<El>, String> {
 }
 
 /// A tag's attributes: each name, and where its value sits in the tag.
-fn attrs(tag: &str) -> Vec<(&str, std::ops::Range<usize>)> {
+pub(crate) fn attrs(tag: &str) -> Vec<(&str, std::ops::Range<usize>)> {
     let mut out = Vec::new();
     let b = tag.as_bytes();
     let mut i = tag.find(|c: char| c.is_whitespace()).unwrap_or(tag.len());

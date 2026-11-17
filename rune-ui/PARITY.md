@@ -70,7 +70,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Download a page: its source saved to a file through the system's save dialog, named by its last name and its kind as the web client names it, with what is being typed if it is being edited. From the palette
 - [x] Duplicate a page under a name asked for, seeded `<name>-copy`, with its kind and its text, and copy a page's `urb://` link or its name. From the palette. The duplicate's save on a ship is the one a capture uses, and was not run again here
 - [x] Export a page as PDF: the page as the ship renders it, in one sealed document, printed to the file named in the save dialog by a headless Chromium or Chrome found on the path. Nothing outside the document is loaded and no script runs. Rune neither prints nor writes PDF, so without one of those browsers the export says it cannot. A sheet, a Writer document and a map print as their source, where the web client prints its own view of them. From the palette
-- [ ] Convert a LaTeX page to HTML with pandoc (`desktop/src/pandoc.rs`)
+- [x] Convert a LaTeX page to HTML with the pandoc on this machine: written beside it as `<name>-web`, an html page, over the last conversion. pandoc runs sandboxed with ten seconds at most, and its output is cleaned as the web client cleans it before it is kept. With no pandoc it says where to get one. Run on sample pages, not against a ship: the page is written by the save a capture uses
 
 ## Page kinds
 
