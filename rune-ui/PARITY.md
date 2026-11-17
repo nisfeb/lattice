@@ -40,7 +40,8 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [!] Held comments, a real one approved or rejected on a ship: blocked on a comet to write one. The fake ships here are all ~zod
 - [x] Inbox activity: notices of comments, replies, shares and asks, each marked read alone or all at once, opened where this client has a screen, and counted with held comments on the Inbox button (`/notify`, `/notify-read`, `/notify-count`). The routes were run on a fake ship, which has no notices. The list runs on sample notices
 - [!] Inbox activity, a real notice read and opened: blocked on a second running ship to cause one
-- [ ] Asks to edit: approve or deny from the notice and the Access screen (`/access-requests`)
+- [x] Asks to edit: a page shared read-only has Ask to edit with an optional note (`/access-request`), and the Access screen lists the asks waiting here with Approve and Deny (`/access-requests`, `/access-answer`). The routes answer on a fake ship (no asks, an answer to none refused, asking oneself refused). Both screens run on sample data
+- [!] Asks to edit, one sent to a host and one answered: blocked on a second running ship
 - [ ] Backlinks and ghost links (pages that link here, links to pages not made)
 - [ ] Quick capture
 - [ ] Templates and the journal (daily pages, orrery mirror pages read-only)

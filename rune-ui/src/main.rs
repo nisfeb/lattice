@@ -11,7 +11,7 @@ mod sheet;
 
 use std::collections::HashMap;
 
-use api::{Comment, Conn, Notice, Opens, Waiting, Dump, Group, Know, Level, Node, Page, Prefs, Rev, Shared};
+use api::{Ask, Asks, Comment, Conn, Notice, Opens, Waiting, Dump, Group, Know, Level, Node, Page, Prefs, Rev, Shared};
 use rune::{AppSpec, Block, LineCap, Phase, Shape, WheelEvent, canvas, Chrome, Cx, El, Key, KeyEvent, Latest, Mark, ScrollSpec, Span, TextEdit, Tx, Waker, col, el, row, text};
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
@@ -52,6 +52,8 @@ enum Prompt {
     Delete(String),
     /// The address for a link on the editor's selection.
     Link(TextEdit),
+    /// A note to go with an ask for edit on another ship's page.
+    Ask(Shared, TextEdit),
 }
 
 /// A change to the tree that landed on the ship.
@@ -65,6 +67,8 @@ enum Op {
     /// A page or folder was marked sensitive or unmarked, and whether its
     /// own share still stands.
     Sensed(String, bool, bool),
+    /// An ask was sent or answered: what to say.
+    Asked(String),
     /// Something about comments changed on the ship: what to say.
     Commented(String),
     /// A ship was let in to a page (edit or read, and whether it was told),
@@ -135,6 +139,9 @@ struct App {
     /// Comet comments waiting for a yes, and what each page asked about
     /// does with comets' comments (`open`, `held`, `off`).
     /// The activity notices, and how much waits (for the button's count).
+    /// Asks for edit: the ones waiting on this ship and the ones it sent.
+    asks: Asks,
+    asks_req: Latest<Result<Asks, String>>,
     notices: Vec<Notice>,
     notices_req: Latest<Result<Vec<Notice>, String>>,
     waiting: Waiting,
@@ -294,6 +301,8 @@ fn init() -> App {
         comments_on: HashMap::new(),
         comments_on_req: Latest::default(),
         comment: TextEdit::new(""),
+        asks: Asks::default(),
+        asks_req: Latest::default(),
         notices: Vec::new(),
         notices_req: Latest::default(),
         waiting: Waiting::default(),
@@ -357,12 +366,15 @@ fn browse_sample(s: &mut App) {
         s.note = "sample pages, kept only while the window is open".into();
         // a page another ship shared, to open from the list
         s.shared = vec![Shared { host: "~sampel-palnet".into(), path: "/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/plans/trip/code".into(), mode: "edit".into(), when: "~2026.11.16..18.5.0".into() }];
+        // and one shared read-only, whose host can be asked for more
+        s.shared.push(Shared { host: "~sampel-palnet".into(), path: "/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/plans/budget/code".into(), mode: "read".into(), when: "~2026.11.16..8.0.0".into() });
         s.held = vec![Comment { page: "welcome".into(), id: "0v1.sample".into(), author: "~doznec-salfun-naptul-habrys--todlux-mosmep-linsub-binzod".into(), when: "~2026.11.17..9.30.0".into(), body: "Held until you say yes.".into() }];
         s.notices = vec![
             Notice { id: "0v1.note".into(), kind: "comment".into(), when: "~2026.11.17..9.31.0".into(), who: "~sampel-palnet".into(), host: "~zod".into(), place: "notes/today".into(), body: "A good day by the sound of it.".into(), ..Notice::default() },
             Notice { id: "0v2.note".into(), kind: "reply".into(), when: "~2026.11.16..18.0.0".into(), who: "~sampel-palnet".into(), host: "~zod".into(), place: "tech".into(), title: "Rune".into(), read: true, ..Notice::default() },
         ];
         s.waiting = Waiting { held: 1, unread: 1 };
+        s.asks.pending = vec![Ask { ship: "~sampel-palnet".into(), path: "/x/page/notes/today/code".into(), name: "notes/today".into(), note: "I have a few fixes.".into(), when: "~2026.11.17..9.40.0".into() }];
         // and two memories, in the other half
         let knows = [("feedback/short-answers", "Keep answers short.\n\n**Why:** long ones are not read.\n"), ("project/lattice/rune", "An experimental native client, drawn with Rune.\n")];
         s.other.1 = knows.iter().map(|(k, _)| (*k).to_owned()).collect();
@@ -458,6 +470,7 @@ fn sign_out(s: &mut App) {
     fresh.comments_on_req = std::mem::take(&mut s.comments_on_req);
     fresh.held_req = std::mem::take(&mut s.held_req);
     fresh.notices_req = std::mem::take(&mut s.notices_req);
+    fresh.asks_req = std::mem::take(&mut s.asks_req);
     fresh.waiting_req = std::mem::take(&mut s.waiting_req);
     fresh.comets_req = std::mem::take(&mut s.comets_req);
     fresh.shared_req = std::mem::take(&mut s.shared_req);
@@ -470,6 +483,23 @@ fn sign_out(s: &mut App) {
 /// Asks the ship for the change the open prompt names.
 fn confirm(s: &mut App) {
     let Some(p) = s.prompt.take() else { return };
+    if let Prompt::Ask(sh, t) = &p {
+        let (sh, note) = (sh.clone(), t.text.clone());
+        match s.conn.clone() {
+            Some(c) => {
+                s.note = format!("asking {}", sh.host);
+                s.op_req.request((c, sh, note), |(c, sh, note)| {
+                    c.ask_edit(&sh.host, &sh.path, &note)?;
+                    Ok(Op::Asked(format!("asked {} for edit access to {}", sh.host, sh.name())))
+                });
+            }
+            None => {
+                s.note = format!("asked {} for edit access to {}", sh.host, sh.name());
+                s.asks.sent.push(Ask { ship: sh.host.clone(), path: sh.path.clone(), name: sh.name().to_owned(), note: api::clip_note(note.trim()).to_owned(), when: String::new() });
+            }
+        }
+        return;
+    }
     if let Prompt::Link(t) = &p {
         let url = t.text.trim();
         if !url.is_empty() && !url.contains(char::is_whitespace) {
@@ -515,7 +545,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) => {}
+                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) => {}
             }
             Ok(op)
         }),
@@ -575,6 +605,16 @@ fn applied(s: &mut App, op: Op) {
             let can = if edit { "edit" } else { "read" };
             s.note = format!("{ship} can now {can} {n}{}", if told { "" } else { ", and was not reached to be told" });
             load_groups(s);
+            return;
+        }
+        Op::Asked(say) => {
+            s.note = say;
+            if let Some(c) = s.conn.clone() {
+                s.asks_req.request(c, |c| c.asks());
+            }
+            if s.access {
+                load_groups(s);
+            }
             return;
         }
         Op::Commented(say) => {
@@ -661,6 +701,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.comments_on_req.set_waker(waker.clone());
     s.held_req.set_waker(waker.clone());
     s.notices_req.set_waker(waker.clone());
+    s.asks_req.set_waker(waker.clone());
     s.waiting_req.set_waker(waker.clone());
     s.comets_req.set_waker(waker.clone());
     s.shared_req.set_waker(waker.clone());
@@ -1267,6 +1308,13 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Err(e) => s.note = format!("comments: {e}"),
         }
     }
+    if let Some(r) = s.asks_req.take() {
+        changed = true;
+        match r {
+            Ok(a) => s.asks = a,
+            Err(e) => s.note = format!("requests: {e}"),
+        }
+    }
     if let Some(r) = s.notices_req.take() {
         changed = true;
         match r {
@@ -1617,7 +1665,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) => t,
+                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) => t,
                 Prompt::Delete(_) => unreachable!("a delete has no field"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
@@ -1629,6 +1677,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::New(t) => ("New page", field(t, "folder/name"), "Create", ButtonVariant::Contrast),
         Prompt::Rename(_, t) => ("Rename or move", field(t, "folder/name"), "Rename", ButtonVariant::Contrast),
         Prompt::Link(t) => ("Link the selection to", field(t, "https://"), "Link", ButtonVariant::Contrast),
+        Prompt::Ask(_, t) => ("Ask for edit access", field(t, "A short note, if you like"), "Ask", ButtonVariant::Contrast),
         Prompt::Delete(n) => {
             let held = under(&s.names, n).len();
             let (ask, says) = if s.names.contains(n) { ("Delete this page?", n.clone()) } else { ("Delete this folder?", format!("{n} and the {held} pages in it")) };
@@ -2032,6 +2081,7 @@ fn load_groups(s: &mut App) {
         s.groups_req.request(c.clone(), |c| c.groups());
         // a ban takes ships out of groups, so the two are read together
         s.bans_req.request(c.clone(), |c| c.bans());
+        s.asks_req.request(c.clone(), |c| c.asks());
         if s.base.is_empty() {
             s.base_req.request(c, |c| c.base());
         }
@@ -2201,6 +2251,33 @@ fn access_view(s: &App, k: &Kit) -> El {
             .child(TextInput::new(&s.ban_who).label("Ship to ban").placeholder("~sampel-palnet, or comets").on_edit(|s: &mut App| &mut s.ban_who).on_submit(|s: &mut App, _| ban(s)).build(k).grow(1.0).min_w(0.0).key("ban-who"))
             .child(Button::new("Ban").control_size(ControlSize::Small).variant(ButtonVariant::Danger).on_press(ban).build(k).key("ban-go")),
     );
+    // asks for edit that wait for an answer, when there are any
+    let mut asks = col().key("asks").w_full().gap(6.0);
+    if !s.asks.pending.is_empty() {
+        asks = asks.child(text(format!("Requests to edit: {}", s.asks.pending.len())).font(k.ty.ui_medium).color(c.text_base));
+    }
+    for (i, a) in s.asks.pending.iter().enumerate() {
+        let when = Rev { rev: 0, updated: a.when.clone() }.when();
+        let mut top = row().w_full().gap(6.0).center_y().child(text(a.ship.clone()).font(k.ty.small_medium).color(c.text_base)).child(text(format!("asks to edit {}", a.name)).font(k.ty.small).color(c.text_muted).grow(1.0).min_w(0.0).truncate()).child(text(when).font(k.ty.small).color(c.text_faint));
+        for approve in [true, false] {
+            let ask = a.clone();
+            top = top.child(Button::new(if approve { "Approve" } else { "Deny" }).control_size(ControlSize::Small).variant(if approve { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted }).on_press(move |s: &mut App| {
+                let a = ask.clone();
+                let say = if approve { format!("{} may now edit {}", a.ship, a.name) } else { format!("declined {}'s request for {}", a.ship, a.name) };
+                match s.conn.clone() {
+                    Some(c) => s.op_req.request((c, a), move |(c, a)| {
+                        c.ask_answer(&a.ship, &a.path, approve)?;
+                        Ok(Op::Asked(say))
+                    }),
+                    None => {
+                        s.asks.pending.retain(|x| *x != a);
+                        s.note = say;
+                    }
+                }
+            }).build(k).key(format!("ask-{}-{i}", if approve { "approve" } else { "deny" })));
+        }
+        asks = asks.child(col().key(format!("ask-{i}")).w_full().padding(8.0).gap(4.0).radius(k.radius.sm).fill(c.layer_01).child(top).child(text(if a.note.is_empty() { "(no note)".to_owned() } else { a.note.clone() }).font(k.ty.ui).color(c.text_base).wrap()));
+    }
     let head = col()
         .gap(4.0)
         .child(text("Access").font(k.ty.body_medium).color(c.text_base))
@@ -2210,7 +2287,7 @@ fn access_view(s: &App, k: &Kit) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(list).child(Divider::horizontal().build(k)).child(form).child(Divider::horizontal().build(k)).child(banned)))
+        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(asks).child(list).child(Divider::horizontal().build(k)).child(form).child(Divider::horizontal().build(k)).child(banned)))
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
@@ -2798,6 +2875,15 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     } else if let Some(sh) = s.remote.as_ref().filter(|_| s.open.is_some() && !s.access && !s.shared_open && !s.inbox) {
         // another ship's page: read, and edited when that ship lets this one
         trailing = trailing.child(text(format!("from {}", sh.host)).font(k.ty.small).color(k.c.text_muted));
+        if !sh.editable() {
+            // read only: the host can be asked for more
+            let (to, asked) = (sh.clone(), s.asks.sent.iter().any(|a| a.ship == sh.host && a.path == sh.path));
+            trailing = trailing.child(Button::new(if asked { "Ask again" } else { "Ask to edit" }).variant(ButtonVariant::Ghost).help(if asked { "You asked already. Asking again replaces that request" } else { "Ask its ship to let you edit it" }).on_press(move |s: &mut App| {
+                let mut t = TextEdit::new("");
+                t.focused = true;
+                s.prompt = Some(Prompt::Ask(to.clone(), t));
+            }).build(&k).key("ask-edit"));
+        }
         if sh.editable() {
             trailing = trailing.child(Button::new("Edit").variant(ButtonVariant::Ghost).on_press_tx(|s: &mut App, tx| {
                 start_edit(s);
@@ -3111,6 +3197,17 @@ mod tests {
         // a page opened from the folder takes over
         open_page(&mut s, "notes/today");
         assert_eq!(share_target(&s), Some(("notes/today".to_owned(), false)));
+    }
+
+    #[test]
+    fn an_ask_for_edit_is_noted_as_sent_with_its_note_cut() {
+        let mut s = sample("welcome");
+        let sh = Shared { host: "~bus".into(), path: "/x/page/plans/code".into(), mode: "read".into(), when: String::new() };
+        s.prompt = Some(Prompt::Ask(sh, TextEdit::new(format!("  {}  ", "n".repeat(300)))));
+        confirm(&mut s);
+        assert!(s.prompt.is_none());
+        assert_eq!((s.asks.sent[0].ship.as_str(), s.asks.sent[0].name.as_str(), s.asks.sent[0].note.len()), ("~bus", "plans", 280));
+        assert_eq!(s.note, "asked ~bus for edit access to plans");
     }
 
     #[test]

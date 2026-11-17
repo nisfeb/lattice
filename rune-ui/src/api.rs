@@ -395,6 +395,38 @@ pub struct Waiting {
     pub unread: u32,
 }
 
+/// An ask for edit on a page or folder: one waiting on this ship
+/// (`ship` asked), or one this ship sent (`host` was asked).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Ask {
+    #[serde(default, alias = "host")]
+    pub ship: String,
+    pub path: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default, deserialize_with = "when_text")]
+    pub when: String,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq)]
+pub struct Asks {
+    #[serde(default)]
+    pub pending: Vec<Ask>,
+    #[serde(default)]
+    pub sent: Vec<Ask>,
+}
+
+/// A note cut to whole characters within the 280 bytes a host keeps.
+pub fn clip_note(s: &str) -> &str {
+    let mut end = s.len().min(280);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 #[derive(Deserialize)]
 struct Comets {
     #[serde(default)]
@@ -909,6 +941,29 @@ impl Conn {
         serde_json::from_str(&self.call("GET", "notify-count", None)?).map_err(|e| e.to_string())
     }
 
+    /// The asks for edit waiting here, and the ones this ship sent.
+    pub fn asks(&self) -> Result<Asks, String> {
+        serde_json::from_str(&self.call("GET", "access-requests", None)?).map_err(|e| e.to_string())
+    }
+
+    /// Approves an ask (that ship may then edit) or denies it.
+    pub fn ask_answer(&self, ship: &str, path: &str, approve: bool) -> Result<(), String> {
+        self.call("POST", &format!("access-answer?ship={}&path={}&do={}", enc(ship), enc(path), if approve { "approve" } else { "deny" }), Some("")).map(drop)
+    }
+
+    /// Asks a host for edit on what it shares read-only, with a note.
+    pub fn ask_edit(&self, host: &str, path: &str, note: &str) -> Result<(), String> {
+        self.call("POST", &format!("access-request?host={}&path={}", enc(host), enc(path)), Some(clip_note(note.trim()))).map(drop).map_err(|e| {
+            if e.contains("too-old") {
+                "this host's lattice is too old to take requests".into()
+            } else if e.starts_with("504") {
+                format!("{host} did not answer, so nothing was asked")
+            } else {
+                e
+            }
+        })
+    }
+
     /// Removes one comment.
     pub fn comment_delete(&self, page: &str, id: &str) -> Result<(), String> {
         self.call("POST", &format!("comment-del?page={}&id={}", enc(page), enc(id)), Some("")).map(drop)
@@ -1147,6 +1202,21 @@ mod tests {
         assert_eq!((w.held, w.unread), (1, 2));
     }
 
+    #[test]
+    fn asks_read_from_both_sides_and_a_note_is_cut_on_a_character() {
+        let a: Asks = serde_json::from_str(
+            r#"{"pending":[{"ship":"~bus","path":"/a/page/plans/code","name":"plans","note":"may I?","when":1794947795000}],
+                "sent":[{"host":"~nec","path":"/b/page/notes/dir-index","name":"notes","note":"","when":1}]}"#,
+        )
+        .unwrap();
+        assert_eq!((a.pending[0].ship.as_str(), a.pending[0].name.as_str(), a.sent[0].ship.as_str()), ("~bus", "plans", "~nec"));
+        assert_eq!(clip_note("short"), "short");
+        let long = "é".repeat(200);
+        assert_eq!(clip_note(&long).len(), 280);
+        let odd = format!("a{long}");
+        assert_eq!(clip_note(&odd).len(), 279, "never half a character");
+    }
+
     /// Against a real ship: `LATTICE_URL=.. LATTICE_COOKIE=.. cargo test -- --ignored`.
     /// It needs a page named `rune-probe` to exist.
     #[test]
@@ -1235,6 +1305,10 @@ mod tests {
         assert!(c.comment("rune-probe", "").unwrap_err().starts_with("400"), "an empty comment is refused");
         c.comment_delete("rune-probe", &got.id).unwrap();
         assert!(mine(&c).is_none(), "a removed comment is gone");
+        // asks: none wait on a lone ship, an answer to no ask is refused, and so is asking oneself
+        assert_eq!(c.asks().unwrap(), Asks::default());
+        assert!(c.ask_answer("~bus", "/a/page/rune-probe/code", true).unwrap_err().starts_with("404"));
+        assert!(c.ask_edit(c.ship(), "/a/page/rune-probe/code", "please").unwrap_err().starts_with("400"));
         // the inbox's notices and counts answer, and marking all read leaves none unread
         let before = c.notices().unwrap();
         c.notice_read(None).unwrap();
