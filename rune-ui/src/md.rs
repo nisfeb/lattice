@@ -85,6 +85,24 @@ pub fn wikilinks(src: &str, ghost: &dyn Fn(&str) -> bool) -> String {
     out
 }
 
+/// What is typed of a wiki link at the caret: where it starts and its
+/// text, when the caret sits in an unclosed `[[` on its own line and
+/// what follows is the start of a page's name.
+pub fn link_query(text: &str, caret: usize) -> Option<(usize, &str)> {
+    let upto = text.get(..caret)?;
+    let line = &upto[upto.rfind('\n').map_or(0, |i| i + 1)..];
+    let q = &line[line.rfind("[[")? + 2..];
+    let ok = q.chars().all(|c| c.is_ascii_alphanumeric() || "/._~-".contains(c));
+    ok.then_some((caret - q.len(), q))
+}
+
+/// The journal page for a whole date, `YYYY-MM-DD`.
+pub fn journal_day(q: &str) -> Option<String> {
+    let b = q.as_bytes();
+    let date = b.len() == 10 && b.iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() });
+    date.then(|| format!("journal/{q}"))
+}
+
 /// The pages a page links to, each once, in the order they come: wiki
 /// links and Markdown links into this app.
 // ponytail: a Markdown link written inside code counts too. A real parse if that shows.
@@ -724,6 +742,28 @@ mod tests {
         assert_eq!(page_of("/apps/lattice/page/notes/today#top").as_deref(), Some("notes/today"));
         assert_eq!(page_of("https://urbit.org"), None);
         assert_eq!(page_of("lattice:"), None);
+    }
+
+    #[test]
+    fn a_wiki_link_being_typed_is_found_at_the_caret() {
+        let t = "one [[a]] two\nsee [[notes/to";
+        assert_eq!(link_query(t, t.len()), Some((t.len() - 8, "notes/to")));
+        assert_eq!(link_query("[[", 2), Some((2, "")));
+        // closed, on another line, not a name, or no link at all
+        assert_eq!(link_query("[[a]] b", 7), None);
+        assert_eq!(link_query("[[a\nb", 5), None);
+        assert_eq!(link_query("[[a b", 5), None);
+        assert_eq!(link_query("[[a|label", 9), None);
+        assert_eq!(link_query("plain", 5), None);
+        // the caret mid-text sees only what is before it
+        assert_eq!(link_query("[[abc]]", 4), Some((2, "ab")));
+        assert_eq!(journal_day("2026-11-17").as_deref(), Some("journal/2026-11-17"));
+        assert_eq!(journal_day("2026-11-1"), None);
+        assert_eq!(journal_day("2026/11/17"), None);
+        // a wiki link typed in the rich editor is written as it was typed
+        let src = "see [[notes/today]] and [[2026-11-17]]\n";
+        let d = exact(src).expect("a page with wiki links opens rich");
+        assert_eq!(emit(&d.text, &d.marks, &d.blocks, &d.soft), src);
     }
 
     #[test]

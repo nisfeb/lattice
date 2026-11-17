@@ -222,6 +222,10 @@ struct App {
     jump_at: usize,
     /// The command palette, when open: what is typed and the row chosen.
     palette: Option<TextEdit>,
+    /// Wiki link completion in the editor: the row chosen, and where the
+    /// link being typed starts when its offers were dismissed.
+    ac_at: usize,
+    ac_off: Option<usize>,
     palette_at: usize,
     tree_req: Latest<Result<Dump, String>>,
     /// The last dump's token, and when the next one is due (app clock).
@@ -374,6 +378,8 @@ fn init() -> App {
         jump: None,
         jump_at: 0,
         palette: None,
+        ac_at: 0,
+        ac_off: None,
         palette_at: 0,
         tree_req: Latest::default(),
         since: String::new(),
@@ -1203,8 +1209,51 @@ const FIELD: &str = "page-field";
 /// paragraph submits, and only Shift-Return breaks the line. A page is a
 /// document, so Return starts a new line there. Lists, quotes and code keep
 /// Rune's own Return, which continues or leaves them.
+/// The pages offered for the wiki link being typed at the caret, and
+/// where what is typed of it starts. A whole date offers that day's
+/// journal page first, written or not.
+fn link_offers(s: &App) -> Option<(usize, Vec<String>)> {
+    if !s.editing || s.memory || s.edit.anchor != s.edit.focus {
+        return None;
+    }
+    let (start, q) = md::link_query(&s.edit.text, s.edit.focus)?;
+    if s.ac_off == Some(start) {
+        return None;
+    }
+    let mut offers: Vec<String> = md::journal_day(q).into_iter().collect();
+    offers.extend(matches(&s.names, q).into_iter().map(str::to_owned).filter(|n| !offers.contains(n)).take(8 - offers.len()).collect::<Vec<_>>());
+    (!offers.is_empty()).then_some((start, offers))
+}
+
+/// Puts an offered page in place of what was typed, and closes the link.
+fn accept_link(s: &mut App, start: usize, name: &str) {
+    let caret = s.edit.focus;
+    let closed = s.edit.text[caret..].starts_with("]]");
+    s.edit.set_selection(start, caret);
+    s.edit.insert(&if closed { name.to_owned() } else { format!("{name}]]") });
+    s.ac_at = 0;
+}
+
 fn editor_key(s: &mut App, ev: &KeyEvent, _: &mut Tx) -> bool {
     let plain = ev.mods == rune::Mods::default();
+    if let Some((start, offers)) = link_offers(s).filter(|_| plain) {
+        let at = s.ac_at.min(offers.len() - 1);
+        match ev.key {
+            Key::Tab => {
+                accept_link(s, start, &offers[at]);
+                return true;
+            }
+            Key::Down | Key::Up => {
+                s.ac_at = if ev.key == Key::Down { (at + 1) % offers.len() } else { (at + offers.len() - 1) % offers.len() };
+                return true;
+            }
+            Key::Escape => {
+                s.ac_off = Some(start);
+                return true;
+            }
+            _ => {}
+        }
+    }
     if ev.key == Key::Enter && plain && s.edit.current_block() == Block::Paragraph {
         s.edit.insert("\n");
         return true;
@@ -2084,6 +2133,24 @@ fn palette_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .on_close(|s: &mut App| s.palette = None)
         .child(col().w_full().gap(8.0).child(field).child(col().w_full().max_h(420.0).child(rows).scroll(ScrollSpec { stick_bottom: false })))
         .build(k, layer);
+}
+
+/// The line under the editor: the pages offered for a wiki link being
+/// typed. It is always there, so nothing moves when offers come and go.
+fn offers_bar(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let mut bar = row().key("link-offers").w_full().h(28.0).gap(4.0).center_y();
+    let Some((start, offers)) = link_offers(s) else { return bar };
+    let at = s.ac_at.min(offers.len() - 1);
+    for (i, name) in offers.iter().enumerate() {
+        let pick = name.clone();
+        let label = if ghost(s, name) { format!("{name}  (not written)") } else { name.clone() };
+        bar = bar.child(Button::new(label).control_size(ControlSize::Small).variant(if i == at { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press_tx(move |s: &mut App, tx| {
+            accept_link(s, start, &pick);
+            tx.focus_when_shown(FIELD, false);
+        }).build(k).key(format!("offer-{i}")));
+    }
+    bar.child(text("Tab to complete, arrows to choose, Esc to dismiss").font(k.ty.small).color(c.text_faint).grow(1.0).min_w(0.0).truncate())
 }
 
 fn login_view(s: &App, k: &Kit) -> El {
@@ -3227,13 +3294,13 @@ fn page_body(s: &App, k: &Kit) -> El {
             .h_full()
             .min_h(0.0)
             .items_center()
-            .child(col().w_full().max_w(820.0).h_full().min_h(0.0).padding(16.0).gap(8.0).child(format_bar(s, k)).child(Divider::horizontal().build(k)).child(field));
+            .child(col().w_full().max_w(820.0).h_full().min_h(0.0).padding(16.0).gap(8.0).child(format_bar(s, k)).child(Divider::horizontal().build(k)).child(field).child(offers_bar(s, k)));
     }
     if s.editing {
         // the source, coloured as Markdown: colour only, so nothing moves as it is typed
         let marks = SyntaxTheme::from_kit(k).spans(&syntax::highlight(Some("markdown"), &s.edit.text), 0);
         let source = TextArea::new(&s.edit).label("Page source").decorations(marks).on_edit(|s: &mut App| &mut s.edit).on_key(editor_key).build(k).key(FIELD).w_full().h_full().min_h(0.0);
-        let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).h_full().min_h(0.0).child(source));
+        let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
         if s.preview && p.kind == "md" {
             let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(s.edit.text.clone()).build(k));
             panes = panes.child(col().key("preview").grow(1.0).h_full().min_h(0.0).child(shown).scroll(ScrollSpec { stick_bottom: false }));
@@ -3775,6 +3842,41 @@ mod tests {
         names.sort();
         names.dedup();
         assert_eq!(names.len(), COMMANDS.len());
+    }
+
+    #[test]
+    fn a_wiki_link_being_typed_offers_pages_and_tab_completes_it() {
+        let mut s = sample("welcome");
+        start_edit(&mut s);
+        s.rich = false;
+        s.edit = TextEdit::new("see [[tod");
+        s.edit.set_caret(9);
+        let (start, offers) = link_offers(&s).unwrap();
+        assert_eq!((start, offers[0].as_str()), (6, "notes/today"));
+        accept_link(&mut s, start, "notes/today");
+        assert_eq!((s.edit.text.as_str(), s.edit.focus), ("see [[notes/today]]", 19));
+        assert!(link_offers(&s).is_none(), "a closed link offers nothing");
+        // a link that is closed already keeps its one pair of brackets
+        s.edit = TextEdit::new("[[bud]] x");
+        s.edit.set_caret(5);
+        let (start, _) = link_offers(&s).unwrap();
+        accept_link(&mut s, start, "budget");
+        assert_eq!(s.edit.text, "[[budget]] x");
+        // a whole date offers that day's journal page first, written or not
+        s.edit = TextEdit::new("[[2031-01-02");
+        s.edit.set_caret(12);
+        let (_, offers) = link_offers(&s).unwrap();
+        assert_eq!(offers[0], "journal/2031-01-02");
+        assert!(ghost(&s, &offers[0]));
+        // dismissed, it stays away for that link and comes back for the next
+        s.ac_off = Some(2);
+        assert!(link_offers(&s).is_none());
+        s.edit = TextEdit::new("[[2031-01-02]] and [[bud");
+        s.edit.set_caret(24);
+        assert!(link_offers(&s).is_some());
+        // nothing is offered outside the editor
+        s.editing = false;
+        assert!(link_offers(&s).is_none());
     }
 
     #[test]
