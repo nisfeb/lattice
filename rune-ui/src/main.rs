@@ -11,7 +11,7 @@ mod sheet;
 
 use std::collections::HashMap;
 
-use api::{Conn, Dump, Node, Page, Rev};
+use api::{Conn, Dump, Know, Node, Page, Rev};
 use rune::{AppSpec, Block, LineCap, Phase, Shape, WheelEvent, canvas, Chrome, Cx, El, Key, KeyEvent, Latest, Mark, ScrollSpec, Span, TextEdit, Tx, Waker, col, el, row, text};
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
@@ -92,6 +92,14 @@ struct App {
     old_req: Latest<Result<Page, String>>,
     /// The page being edited was written elsewhere since it was opened.
     stale: bool,
+    /// Showing memories, not pages. The tree, the names and the kept texts
+    /// are those of what is showing, and `other` holds the same three for
+    /// what is not (+flip swaps them).
+    memory: bool,
+    other: (Files, Vec<String>, HashMap<String, Page>),
+    /// Each memory's tags and date, by its name in the tree.
+    know_meta: HashMap<String, (Vec<String>, String)>,
+    know_req: Latest<Result<Vec<Know>, String>>,
     /// The open page as a spreadsheet, when it is one.
     sheet: Option<SheetView>,
     /// The open page as a map, when it is one.
@@ -183,6 +191,10 @@ fn init() -> App {
         hist_req: Latest::default(),
         old_req: Latest::default(),
         stale: false,
+        memory: false,
+        other: Default::default(),
+        know_meta: HashMap::new(),
+        know_req: Latest::default(),
         sheet: None,
         map: None,
         trail: Vec::new(),
@@ -212,6 +224,67 @@ fn browse_sample(s: &mut App) {
         s.files = files_of(sample_nodes(), &Files::default());
         s.files.expand_all();
         s.note = "sample pages, kept only while the window is open".into();
+        // and two memories, in the other half
+        let knows = [("feedback/short-answers", "Keep answers short.\n\n**Why:** long ones are not read.\n"), ("project/lattice/rune", "An experimental native client, drawn with Rune.\n")];
+        s.other.1 = knows.iter().map(|(k, _)| (*k).to_owned()).collect();
+        s.other.2 = knows.iter().map(|(k, b)| ((*k).to_owned(), Page { name: (*k).into(), body: (*b).into(), kind: "md".into(), rev: 0 })).collect();
+        s.other.0 = files_of(s.other.1.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 0, body: None }).collect(), &Files::default());
+        s.other.0.expand_all();
+        s.know_meta.insert("feedback/short-answers".into(), (vec!["style".into()], "~2026.11.17..9.30.0".into()));
+    }
+}
+
+/// Switches between pages and memories. Nothing is open after it, and the
+/// trail of visits starts again: a name means one thing in each half.
+fn flip(s: &mut App) {
+    if s.editing {
+        return;
+    }
+    flip_quiet(s);
+    s.open = None;
+    s.old = None;
+    s.trail.clear();
+    s.trail_at = 0;
+    s.query = TextEdit::new("");
+    s.files.clear_filter();
+    s.inspector = s.inspector.clone().collapsed();
+    sync_map(s);
+    sync_sheet(s);
+}
+
+/// The swap alone, for work on the half that is not showing.
+fn flip_quiet(s: &mut App) {
+    std::mem::swap(&mut s.files, &mut s.other.0);
+    std::mem::swap(&mut s.names, &mut s.other.1);
+    std::mem::swap(&mut s.cache, &mut s.other.2);
+    s.memory = !s.memory;
+}
+
+fn load_know(s: &mut App) {
+    if let Some(c) = s.conn.clone() {
+        s.know_req.request(c, |c| c.know_all());
+    }
+}
+
+/// The memories just read, as the half that shows them.
+fn take_knows(s: &mut App, knows: Vec<Know>) {
+    let was = s.memory;
+    if !was {
+        flip_quiet(s);
+    }
+    let name = |k: &Know| k.key.trim_start_matches('/').to_owned();
+    s.names = knows.iter().map(name).collect();
+    s.know_meta = knows.iter().map(|k| (name(k), (k.tags.clone(), k.updated.clone()))).collect();
+    s.cache = knows.iter().map(|k| (name(k), Page { name: name(k), body: k.body.clone(), kind: "md".into(), rev: 0 })).collect();
+    let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 0, body: None }).collect();
+    s.files = files_of(nodes, &s.files);
+    if !was {
+        flip_quiet(s);
+    } else if !s.editing {
+        // the open memory follows what was read
+        if let Some(fresh) = s.open.as_ref().and_then(|p| s.cache.get(&p.name)) {
+            s.open = Some(fresh.clone());
+        }
     }
 }
 
@@ -235,6 +308,7 @@ fn sign_out(s: &mut App) {
     fresh.login_req = std::mem::take(&mut s.login_req);
     fresh.op_req = std::mem::take(&mut s.op_req);
     fresh.hist_req = std::mem::take(&mut s.hist_req);
+    fresh.know_req = std::mem::take(&mut s.know_req);
     fresh.old_req = std::mem::take(&mut s.old_req);
     fresh.sidebar = s.sidebar.clone();
     *s = fresh;
@@ -258,9 +332,13 @@ fn confirm(s: &mut App) {
         Prompt::Delete(name) => Op::Deleted(name),
         _ => return,
     };
+    let memory = s.memory;
     match s.conn.clone() {
-        Some(c) => s.op_req.request((c, op), |(c, op)| {
+        Some(c) => s.op_req.request((c, op), move |(c, op)| {
             match &op {
+                Op::Created(n) if memory => c.know_save(&format!("/{n}"), &format!("{}\n", n.rsplit('/').next().unwrap_or(n)))?,
+                Op::Deleted(n) if memory => c.know_delete(&format!("/{n}"))?,
+                Op::Renamed(..) if memory => return Err("a memory is not renamed here".into()),
                 Op::Created(n) => c.create(n)?,
                 Op::Renamed(a, b) => c.rename(a, b)?,
                 Op::Deleted(n) => c.delete(n)?,
@@ -275,7 +353,7 @@ fn confirm(s: &mut App) {
 fn applied(s: &mut App, op: Op) {
     match op {
         Op::Created(n) => {
-            if s.conn.is_none() {
+            if s.conn.is_none() || s.memory {
                 let title = n.rsplit('/').next().unwrap_or(&n).to_owned();
                 s.cache.insert(n.clone(), Page { name: n.clone(), body: format!("# {title}\n"), kind: "md".into(), rev: 1 });
             }
@@ -303,7 +381,9 @@ fn applied(s: &mut App, op: Op) {
             s.note = "deleted".into();
         }
     }
-    if s.conn.is_some() {
+    if s.conn.is_some() && s.memory {
+        load_know(s);
+    } else if s.conn.is_some() {
         load_tree(s);
     } else {
         let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 1, body: None }).collect();
@@ -321,9 +401,11 @@ fn setup(s: &mut App, waker: Waker) {
     s.save_req.set_waker(waker.clone());
     s.login_req.set_waker(waker.clone());
     s.hist_req.set_waker(waker.clone());
+    s.know_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
     s.op_req.set_waker(waker);
     load_tree(s);
+    load_know(s);
 }
 
 fn load_tree(s: &mut App) {
@@ -606,6 +688,9 @@ fn map_view(m: &MapView, k: &Kit) -> El {
 
 /// Reads the open page's revisions when the history pane is showing.
 fn load_history(s: &mut App) {
+    if s.memory {
+        return;
+    }
     let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else { return };
     if s.inspector.is_open() {
         s.hist_req.request((c, p.name.clone()), |(c, n)| c.history(&n).map(|r| (n, r)));
@@ -640,7 +725,8 @@ fn show_page(s: &mut App, name: &str) {
     if let Some(p) = s.cache.get(name) {
         s.open = Some(p.clone());
     }
-    if let Some(c) = s.conn.clone() {
+    // a memory's text came with the list: only a page is read again
+    if let Some(c) = s.conn.clone().filter(|_| !s.memory) {
         s.page_req.request((c, name.to_owned()), |(c, n)| c.page(&n));
     }
     sync_map(s);
@@ -831,9 +917,14 @@ fn save(s: &mut App) {
     let Some(mut p) = s.open.clone() else { return };
     let base = p.rev;
     p.body = edited(s);
+    let memory = s.memory;
     match s.conn.clone() {
         Some(c) => s.save_req.request((c, p), move |(c, mut p)| {
-            p.rev = c.save(&p, base)?;
+            if memory {
+                c.know_save(&format!("/{}", p.name), &p.body)?;
+            } else {
+                p.rev = c.save(&p, base)?;
+            }
             Ok(p)
         }),
         // sample pages: kept for the session, each save a new rev as on a ship
@@ -868,8 +959,20 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         s.next_sync = clock + SYNC_EVERY;
         tx.wake_after(std::time::Duration::from_secs_f64(SYNC_EVERY));
     }
+    if let Some(r) = s.know_req.take() {
+        changed = true;
+        match r {
+            Ok(knows) => take_knows(s, knows),
+            Err(e) => s.note = format!("memory: {e}"),
+        }
+    }
     if let Some(r) = s.tree_req.take() {
         changed = true;
+        // the dump is the pages': while memories show, it lands on the other half
+        let away = s.memory;
+        if away {
+            flip_quiet(s);
+        }
         match r {
             Ok(Dump { nodes, since }) => {
                 s.since = since;
@@ -882,11 +985,11 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     }
                 }
                 // a page being edited that was written elsewhere: say so, since its save would be refused
-                if s.editing {
+                if s.editing && !away {
                     s.stale = s.open.as_ref().is_some_and(|p| s.cache.get(&p.name).is_some_and(|c| c.rev > p.rev));
                 }
                 // the open page follows a write made elsewhere, unless it is being edited
-                if !s.editing {
+                if !s.editing && !away {
                     if let Some(fresh) = s.open.as_ref().and_then(|p| s.cache.get(&p.name)).filter(|c| s.open.as_ref().is_some_and(|p| c.rev > p.rev)) {
                         s.open = Some(fresh.clone());
                     }
@@ -898,20 +1001,27 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     s.files.expand_all();
                 }
                 // a page just made or moved is shown where it now is
-                if let Some(p) = &s.open {
+                if let Some(p) = s.open.as_ref().filter(|_| !away) {
                     s.files.expand_to(&p.name);
                     s.files.select(&p.name);
                 }
             }
             Err(e) => s.note = format!("tree: {e}"),
         }
+        if away {
+            flip_quiet(s);
+        }
     }
     if let Some(r) = s.page_req.take() {
         changed = true;
         match r {
+            // an answer that lands after a switch to memories is the pages'
+            Ok(p) if s.memory => {
+                s.other.2.insert(p.name.clone(), p);
+            }
             Ok(p) => {
                 s.cache.insert(p.name.clone(), p.clone());
-                if !s.editing {
+                if !s.editing && s.open.as_ref().is_some_and(|o| o.name == p.name) {
                     s.open = Some(p);
                 }
             }
@@ -928,6 +1038,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 s.code = TextEdit::new("");
                 s.conn = Some(c);
                 load_tree(s);
+                load_know(s);
             }
             Err(e) => s.login_err = e,
         }
@@ -1179,7 +1290,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .grow(1.0)
         .min_h(0.0);
     let filter = TextInput::new(&s.query)
-        .placeholder("Filter pages")
+        .placeholder(if s.memory { "Filter memories" } else { "Filter pages" })
         .leading_icon(k.glyph.search)
         .clear_button()
         .on_edit(|s: &mut App| &mut s.query)
@@ -1189,7 +1300,22 @@ fn sidebar(s: &App, k: &Kit) -> El {
         })
         .build(k)
         .w_full();
-    let new = Button::new("New page").variant(ButtonVariant::Ghost).on_press(ask_new).build(k).key("new");
+    let half = |key: &str, label: String, on: bool| {
+        Button::new(label)
+            .control_size(ControlSize::Small)
+            .variant(if on { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+            .on_press(move |s: &mut App| {
+                // the half that is showing does nothing when pressed
+                if !on {
+                    flip(s);
+                }
+            })
+            .build(k)
+            .key(key.to_owned())
+    };
+    let (pages, knows) = if s.memory { (s.other.1.len(), s.names.len()) } else { (s.names.len(), s.other.1.len()) };
+    let halves = row().key("halves").w_full().gap(4.0).child(half("half-pages", format!("Pages {pages}"), !s.memory)).child(half("half-memory", format!("Memory {knows}"), s.memory));
+    let new = Button::new(if s.memory { "New memory" } else { "New page" }).variant(ButtonVariant::Ghost).on_press(ask_new).build(k).key("new");
     let who = s.conn.as_ref().map_or("sample pages".to_owned(), |c| c.ship().to_owned());
     let foot = row()
         .w_full()
@@ -1197,7 +1323,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .justify_between()
         .child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted))
         .child(Button::new(if s.conn.is_some() { "Sign out" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
-    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(filter).child(new).child(tree).child(foot);
+    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).child(filter).child(new).child(tree).child(foot);
     if !s.note.is_empty() {
         side = side.child(text(s.note.clone()).key("note").font(k.ty.small).color(k.c.text_muted).wrap());
     }
@@ -1360,12 +1486,21 @@ fn page_body(s: &App, k: &Kit) -> El {
         let spans = SyntaxTheme::from_kit(k).spans(&syntax::highlight(lang, shown), 0);
         rune::rich(shown.to_owned(), spans).font(k.ty.mono).color(c.text_base).wrap().selectable(true)
     };
+    let mut page = col().w_full().max_w(760.0).padding(28.0).gap(12.0);
+    if let Some((tags, updated)) = s.know_meta.get(&p.name).filter(|_| s.memory) {
+        let when = Rev { rev: 0, updated: updated.clone() }.when();
+        let mut meta = row().key("know-meta").gap(6.0).center_y().child(text(when).font(k.ty.small).color(c.text_faint));
+        for t in tags {
+            meta = meta.child(row().px(6.0).py(1.0).radius(k.radius.sm).fill(c.layer_01).child(text(t.clone()).font(k.ty.small).color(c.text_muted)));
+        }
+        page = page.child(meta);
+    }
     col()
         .key("reader")
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(col().key(format!("page:{}", p.name)).w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).child(shown)))
+        .child(col().key(format!("page:{}", p.name)).w_full().items_center().child(page.child(shown)))
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
@@ -1393,14 +1528,19 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.editing = false).build(&k).key("cancel"))
             .child(Button::new("Save").variant(ButtonVariant::Contrast).on_press(save).build(&k).key("save"));
     } else if s.open.is_some() {
-        trailing = trailing
-            .child(Button::new("History").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
+        // a memory has no history pane or rename here
+        if !s.memory {
+            trailing = trailing.child(Button::new("History").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
                 s.inspector.toggle();
                 s.old = None;
                 load_history(s);
-            }).build(&k).key("history-toggle"))
-            .child(Button::new("Delete").variant(ButtonVariant::GhostMuted).on_press(ask_delete).build(&k).key("delete"))
-            .child(Button::new("Rename").variant(ButtonVariant::GhostMuted).on_press(ask_rename).build(&k).key("rename"))
+            }).build(&k).key("history-toggle"));
+        }
+        trailing = trailing.child(Button::new("Delete").variant(ButtonVariant::GhostMuted).on_press(ask_delete).build(&k).key("delete"));
+        if !s.memory {
+            trailing = trailing.child(Button::new("Rename").variant(ButtonVariant::GhostMuted).on_press(ask_rename).build(&k).key("rename"));
+        }
+        trailing = trailing
             .child(Button::new("Edit").variant(ButtonVariant::Ghost).on_press_tx(|s: &mut App, tx| {
                 start_edit(s);
                 tx.focus_when_shown(FIELD, false);
@@ -1464,6 +1604,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     if ev.is_command('r') {
+        load_know(s);
         load_tree(s);
         return true;
     }
@@ -1480,6 +1621,10 @@ fn main() {
         scenes: &[("login", |s| s.login_err = "that access code was refused".into()), ("reading", |s| {
             browse_sample(s);
             open_page(s, "welcome");
+        }), ("memory", |s| {
+            browse_sample(s);
+            flip(s);
+            open_page(s, "feedback/short-answers");
         }), ("sheet", |s| {
             browse_sample(s);
             open_page(s, "budget");
@@ -1574,6 +1719,35 @@ mod tests {
         assert_eq!((v.at, v.sheets[0].rows[1][0].as_str()), (1, "Servers"));
         open_page(&mut s, "welcome");
         assert!(s.sheet.is_none());
+    }
+
+    #[test]
+    fn memories_are_a_second_half_with_their_own_tree_and_texts() {
+        let mut s = sample("welcome");
+        let pages = s.names.len();
+        flip(&mut s);
+        assert!(s.memory && s.open.is_none() && s.trail.is_empty());
+        assert_eq!(s.names, ["feedback/short-answers", "project/lattice/rune"]);
+        open_page(&mut s, "feedback/short-answers");
+        assert!(s.open.as_ref().unwrap().body.starts_with("Keep answers short."));
+        // an edit there is kept there, and the switcher searches memories
+        start_edit(&mut s);
+        s.edit = TextEdit::new("Keep answers very short.\n");
+        s.rich = false;
+        save(&mut s);
+        assert_eq!(s.cache["feedback/short-answers"].body, "Keep answers very short.\n");
+        assert_eq!(found(&s, "native client")[0].0, "project/lattice/rune");
+        // a list read from the ship while pages show lands on the memory half
+        flip(&mut s);
+        assert_eq!((s.memory, s.names.len()), (false, pages));
+        take_knows(&mut s, vec![Know { key: "/a/b".into(), body: "fact".into(), tags: vec!["t".into()], updated: String::new() }]);
+        assert_eq!((s.names.len(), s.other.1.clone(), s.other.2["a/b"].body.as_str()), (pages, vec!["a/b".to_owned()], "fact"));
+        assert!(s.cache.contains_key("welcome") && !s.cache.contains_key("a/b"), "and not among the pages");
+        // editing holds the switch
+        open_page(&mut s, "welcome");
+        start_edit(&mut s);
+        flip(&mut s);
+        assert!(!s.memory);
     }
 
     #[test]

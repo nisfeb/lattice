@@ -47,6 +47,24 @@ pub struct Dump {
     pub since: String,
 }
 
+/// One memory: a fact kept under a path-like key.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Know {
+    /// Starts with a slash: `/project/lattice/status`.
+    pub key: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub updated: String,
+}
+
+#[derive(Deserialize)]
+struct Knows {
+    items: Vec<Know>,
+}
+
 /// One stored revision of a page.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Rev {
@@ -228,6 +246,22 @@ impl Conn {
         Ok(p)
     }
 
+    /// Every memory with its text, in one request.
+    pub fn know_all(&self) -> Result<Vec<Know>, String> {
+        let k: Knows = serde_json::from_str(&self.call("GET", "know-all", None)?).map_err(|e| e.to_string())?;
+        Ok(k.items)
+    }
+
+    /// Writes a memory, new or not. `key` starts with a slash.
+    pub fn know_save(&self, key: &str, body: &str) -> Result<(), String> {
+        // the ship refuses an empty body
+        self.call("POST", &format!("know-save?key={}", enc(key)), Some(if body.is_empty() { "\n" } else { body })).map(drop)
+    }
+
+    pub fn know_delete(&self, key: &str) -> Result<(), String> {
+        self.call("POST", &format!("know-delete?key={}", enc(key)), Some("")).map(drop)
+    }
+
     /// Makes a new Markdown page. The ship answers 409 when the name is taken.
     pub fn create(&self, name: &str) -> Result<(), String> {
         let title = name.rsplit('/').next().unwrap_or(name);
@@ -314,8 +348,18 @@ mod tests {
         let revs = c.history("rune-probe").unwrap();
         assert!(revs.len() >= 2 && revs[0].rev > revs[1].rev, "newest first: {revs:?}");
         assert!(revs[0].when().starts_with("20"), "a date: {}", revs[0].when());
-        let old = c.page_at("rune-probe", base).unwrap();
-        assert!(old.body != p.body && old.rev == base, "the old text, not the new");
+        // not every number is a stored revision: read one the list names
+        let old = c.page_at("rune-probe", revs[1].rev).unwrap();
+        assert!(old.body != p.body && old.rev == revs[1].rev, "the old text, not the new");
+        assert!(c.page_at("rune-probe", 999_999).is_err(), "a revision that is not there is an error, not a page");
+        // a memory is written, listed with its text, and deleted
+        let _ = c.know_delete("/rune/probe");
+        c.know_save("/rune/probe", "a fact\n").unwrap();
+        let all = c.know_all().unwrap();
+        let got = all.iter().find(|k| k.key == "/rune/probe").expect("the memory is listed");
+        assert_eq!(got.body.trim(), "a fact");
+        c.know_delete("/rune/probe").unwrap();
+        assert!(!c.know_all().unwrap().iter().any(|k| k.key == "/rune/probe"), "and gone after a delete");
         // create, rename, delete
         // a second dump carries only what was written since the first
         let first = c.dump("").unwrap();
