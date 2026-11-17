@@ -1,0 +1,540 @@
+//! Markdown to Rune's rich text model and back, for the rich editor.
+//!
+//! The model has inline marks (bold, italic, strike, code, link) and one
+//! block per line (paragraph, bullet, numbered, quote, code). Markdown has
+//! more than that, so what the model cannot hold stays as the text the page
+//! wrote: a heading keeps its `#`, a table its pipes, a fence its backticks.
+//!
+//! The rule that keeps pages safe is [`exact`]: a page opens in the rich
+//! editor only when parsing it and writing it back gives the same text.
+//! Anything else opens as source, so the rich editor never rewrites a page
+//! the owner did not edit.
+
+use rune::{Block, Mark, MarkRange};
+
+#[derive(Debug, Default, PartialEq)]
+pub struct Doc {
+    pub text: String,
+    pub marks: Vec<MarkRange>,
+    /// One per `\n`-separated line of `text`.
+    pub blocks: Vec<Block>,
+    /// Lines that continue the one above (a line break inside a paragraph).
+    pub soft: Vec<u32>,
+}
+
+/// The page as a rich document, when the rich editor can hold it without
+/// changing it. A missing final newline is the one difference allowed.
+pub fn exact(src: &str) -> Option<Doc> {
+    // a text field may not keep a carriage return as it is
+    if src.contains('\r') {
+        return None;
+    }
+    let d = parse(src);
+    let out = emit(&d.text, &d.marks, &d.blocks, &d.soft);
+    (out == src || out.strip_suffix('\n') == Some(src)).then_some(d)
+}
+
+fn is_list(b: Block) -> bool {
+    matches!(b, Block::Bullet(_) | Block::Numbered(_))
+}
+
+/// Whether list line `b` sits right under list line `a`: a nested line
+/// always does, a top one only under its own kind of list.
+fn same_list(a: Block, b: Block) -> bool {
+    !matches!(b, Block::Bullet(0) | Block::Numbered(0)) || std::mem::discriminant(&a) == std::mem::discriminant(&b)
+}
+
+fn fence(line: &str) -> bool {
+    line.starts_with("```")
+}
+
+/// A line's block and the text after its marker, `None` for plain text.
+fn classify(line: &str) -> Option<(Block, &str)> {
+    let indent = line.len() - line.trim_start_matches(' ').len();
+    let rest = &line[indent..];
+    if let Some(t) = rest.strip_prefix("- ") {
+        return (indent % 2 == 0 && indent / 2 <= 3 && !t.is_empty()).then_some((Block::Bullet((indent / 2) as u8), t));
+    }
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits > 0 {
+        if let Some(t) = rest[digits..].strip_prefix(". ") {
+            return (indent % 3 == 0 && indent / 3 <= 3 && !t.is_empty()).then_some((Block::Numbered((indent / 3) as u8), t));
+        }
+    }
+    if indent == 0 {
+        if let Some(t) = line.strip_prefix("> ") {
+            return Some((Block::Quote, t));
+        }
+    }
+    None
+}
+
+pub fn parse(src: &str) -> Doc {
+    let mut d = Doc::default();
+    let mut lines: Vec<&str> = src.split('\n').collect();
+    if lines.last() == Some(&"") {
+        lines.pop();
+    }
+    let (mut gap, mut fenced, mut first) = (true, false, true);
+    let mut push = |d: &mut Doc, block: Block, soft: bool, text: &str, first: &mut bool| {
+        if !*first {
+            d.text.push('\n');
+        }
+        *first = false;
+        if soft {
+            d.soft.push(d.blocks.len() as u32);
+        }
+        d.blocks.push(block);
+        if block == Block::Code {
+            d.text.push_str(text);
+        } else {
+            inline(text, &mut d.text, &mut d.marks);
+        }
+    };
+    for line in lines {
+        if fenced {
+            push(&mut d, Block::Code, false, line, &mut first);
+            fenced = !fence(line);
+            gap = false;
+        } else if fence(line) {
+            push(&mut d, Block::Code, false, line, &mut first);
+            fenced = true;
+            gap = false;
+        } else if line.is_empty() {
+            gap = true;
+        } else {
+            match (classify(line), d.blocks.last().copied()) {
+                (Some((b, t)), _) => push(&mut d, b, false, t, &mut first),
+                // a line right under another continues it
+                (None, Some(prev)) if !gap && prev != Block::Code => push(&mut d, prev, true, line, &mut first),
+                (None, _) => push(&mut d, Block::Paragraph, false, line, &mut first),
+            }
+            gap = false;
+        }
+    }
+    d
+}
+
+fn mark(marks: &mut Vec<MarkRange>, start: usize, end: usize, mark: Mark) {
+    if end > start {
+        marks.push(MarkRange { start, end, mark });
+    }
+}
+
+fn edge_ok(inner: &str) -> bool {
+    !inner.is_empty() && !inner.starts_with(char::is_whitespace) && !inner.ends_with(char::is_whitespace)
+}
+
+/// Where a `**` run closes in `s`, the text after the opening one. A closing
+/// run of three with an italic still open inside belongs one star later.
+fn close_double(s: &str, d: &str) -> Option<usize> {
+    let j = s.find(d)?;
+    if d == "**" && s[j..].starts_with("***") && s[..j].matches('*').count() % 2 == 1 {
+        return Some(j + 1);
+    }
+    Some(j)
+}
+
+/// Where a single `*` closes in `s`, the text after the opening one: the
+/// first star that is not part of a `**` pair.
+fn close_single(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    let mut j = 0;
+    while j < b.len() {
+        if b[j] == b'*' {
+            if b.get(j + 1) == Some(&b'*') {
+                j += 2;
+                continue;
+            }
+            return Some(j);
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Appends `s` to `out` without its inline markers, recording each as a mark.
+fn inline(s: &str, out: &mut String, marks: &mut Vec<MarkRange>) {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let rest = &s[i..];
+        match b[i] {
+            b'\\' if b.get(i + 1).is_some_and(u8::is_ascii_punctuation) => {
+                out.push_str(&s[i..i + 2]);
+                i += 2;
+            }
+            b'`' => {
+                let run = rest.len() - rest.trim_start_matches('`').len();
+                let close = (run == 1).then(|| rest[1..].find('`')).flatten().filter(|&j| j > 0);
+                match close {
+                    Some(j) => {
+                        let at = out.len();
+                        out.push_str(&rest[1..1 + j]);
+                        mark(marks, at, out.len(), Mark::Code);
+                        i += j + 2;
+                    }
+                    None => {
+                        out.push_str(&rest[..run]);
+                        i += run;
+                    }
+                }
+            }
+            b'*' | b'~' if rest.starts_with("**") || rest.starts_with("~~") => {
+                let d = &rest[..2];
+                match close_double(&rest[2..], d).filter(|&j| edge_ok(&rest[2..2 + j])) {
+                    Some(j) => {
+                        let at = out.len();
+                        inline(&rest[2..2 + j], out, marks);
+                        mark(marks, at, out.len(), if d == "**" { Mark::Bold } else { Mark::Strike });
+                        i += j + 4;
+                    }
+                    None => {
+                        out.push_str(d);
+                        i += 2;
+                    }
+                }
+            }
+            b'*' => match close_single(&rest[1..]).filter(|&j| edge_ok(&rest[1..1 + j])) {
+                Some(j) => {
+                    let at = out.len();
+                    inline(&rest[1..1 + j], out, marks);
+                    mark(marks, at, out.len(), Mark::Italic);
+                    i += j + 2;
+                }
+                None => {
+                    out.push('*');
+                    i += 1;
+                }
+            },
+            b'[' if i == 0 || b[i - 1] != b'!' => {
+                let link = rest.find("](").and_then(|j| {
+                    let k = rest[j + 2..].find(')')?;
+                    let (label, url) = (&rest[1..j], &rest[j + 2..j + 2 + k]);
+                    let ok = !label.is_empty() && !label.contains('[') && !url.is_empty() && !url.contains(char::is_whitespace) && !url.contains('(');
+                    ok.then_some((label, url, j + 3 + k))
+                });
+                match link {
+                    Some((label, url, len)) => {
+                        let at = out.len();
+                        inline(label, out, marks);
+                        mark(marks, at, out.len(), Mark::Link(url.to_owned()));
+                        i += len;
+                    }
+                    None => {
+                        out.push('[');
+                        i += 1;
+                    }
+                }
+            }
+            _ => {
+                let n = rest.chars().next().map_or(1, char::len_utf8);
+                out.push_str(&rest[..n]);
+                i += n;
+            }
+        }
+    }
+}
+
+/// A mark's place in the nesting, outermost first. `None` for marks Markdown
+/// has no way to write.
+fn rank(m: &Mark) -> Option<u8> {
+    match m {
+        Mark::Link(_) => Some(0),
+        Mark::Bold => Some(1),
+        Mark::Italic => Some(2),
+        Mark::Strike => Some(3),
+        Mark::Code => Some(4),
+        _ => None,
+    }
+}
+
+fn open(m: &Mark) -> &str {
+    match m {
+        Mark::Link(_) => "[",
+        Mark::Bold => "**",
+        Mark::Italic => "*",
+        Mark::Strike => "~~",
+        _ => "`",
+    }
+}
+
+fn close(m: &Mark, out: &mut String) {
+    match m {
+        Mark::Link(url) => {
+            out.push_str("](");
+            out.push_str(url);
+            out.push(')');
+        }
+        m => out.push_str(open(m)),
+    }
+}
+
+/// Writes one line's text with its marks as Markdown. `at` is where the line
+/// starts in the document, which is what the marks' offsets count from.
+fn emit_inline(line: &str, at: usize, marks: &[MarkRange], out: &mut String) {
+    // the marks on this line, outermost first, each once
+    let mut kinds: Vec<&Mark> = Vec::new();
+    for m in marks.iter().filter(|m| m.start < at + line.len() && m.end > at && rank(&m.mark).is_some()) {
+        if !kinds.contains(&&m.mark) {
+            kinds.push(&m.mark);
+        }
+    }
+    if kinds.is_empty() {
+        out.push_str(line);
+        return;
+    }
+    kinds.sort_by_key(|m| rank(m));
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    // which marks each character carries
+    let mut on: Vec<Vec<bool>> = kinds
+        .iter()
+        .map(|k| chars.iter().map(|&(i, _)| marks.iter().any(|m| &m.mark == *k && m.start <= at + i && at + i < m.end)).collect())
+        .collect();
+    let code = kinds.iter().position(|k| **k == Mark::Code);
+    for k in 0..kinds.len() {
+        if Some(k) == code {
+            continue;
+        }
+        let mut i = 0;
+        while i < chars.len() {
+            // one stretch of code: another mark covers all of it or none
+            if let Some(c) = code.filter(|&c| on[c][i]) {
+                let mut j = i;
+                while j < chars.len() && on[c][j] {
+                    j += 1;
+                }
+                if !(i..j).all(|x| on[k][x]) {
+                    (i..j).for_each(|x| on[k][x] = false);
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        // a marker beside a space is not a marker in Markdown: pull each
+        // stretch in to its first and last character that is not one
+        let mut i = 0;
+        while i < chars.len() {
+            if !on[k][i] {
+                i += 1;
+                continue;
+            }
+            let mut j = i;
+            while j < chars.len() && on[k][j] {
+                j += 1;
+            }
+            let (mut a, mut z) = (i, j);
+            while a < z && chars[a].1.is_whitespace() {
+                on[k][a] = false;
+                a += 1;
+            }
+            while z > a && chars[z - 1].1.is_whitespace() {
+                on[k][z - 1] = false;
+                z -= 1;
+            }
+            i = j;
+        }
+    }
+    let mut stack: Vec<usize> = Vec::new();
+    for x in 0..=chars.len() {
+        let want: Vec<usize> = (0..kinds.len()).filter(|&k| x < chars.len() && on[k][x]).collect();
+        if let Some(cut) = stack.iter().position(|k| !want.contains(k)) {
+            for k in stack.drain(cut..).rev().collect::<Vec<_>>() {
+                close(kinds[k], out);
+            }
+        }
+        for k in want {
+            if !stack.contains(&k) {
+                out.push_str(open(kinds[k]));
+                stack.push(k);
+            }
+        }
+        if let Some(&(_, ch)) = chars.get(x) {
+            out.push(ch);
+        }
+    }
+}
+
+/// The document as Markdown, ending in a newline when it has any text.
+pub fn emit(text: &str, marks: &[MarkRange], blocks: &[Block], soft: &[u32]) -> String {
+    let mut out = String::new();
+    let mut at = 0;
+    let mut counts = [0u32; 4];
+    // the block above, and whether a code line above left a fence open or
+    // was a fence the editor has to write itself
+    let mut prev: Option<Block> = None;
+    let (mut fenced, mut made, mut closed) = (false, false, false);
+    for (n, line) in text.split('\n').enumerate() {
+        let block = blocks.get(n).copied().unwrap_or_default();
+        let is_soft = n > 0 && soft.contains(&(n as u32)) && block != Block::Code;
+        // a paragraph the editor left empty is not written
+        if block == Block::Paragraph && line.is_empty() {
+            at += line.len() + 1;
+            continue;
+        }
+        if made && block != Block::Code {
+            out.push_str("\n```");
+            (made, closed) = (false, true);
+        }
+        if let Some(p) = prev {
+            let tight = is_soft || (!closed && ((p == Block::Code && block == Block::Code) || (is_list(p) && is_list(block) && same_list(p, block)) || (p == Block::Quote && block == Block::Quote)));
+            out.push_str(if tight { "\n" } else { "\n\n" });
+        }
+        closed = false;
+        if !is_list(block) {
+            counts = [0; 4];
+        }
+        match block {
+            Block::Code => {
+                if fenced {
+                    fenced = !fence(line);
+                    closed = !fenced;
+                } else if fence(line) {
+                    fenced = true;
+                } else if !made {
+                    out.push_str("```\n");
+                    made = true;
+                }
+                out.push_str(line);
+            }
+            _ => {
+                if !is_soft {
+                    match block {
+                        Block::Bullet(l) => {
+                            let l = (l as usize).min(3);
+                            counts[l + 1..].fill(0);
+                            out.push_str(&"  ".repeat(l));
+                            out.push_str("- ");
+                        }
+                        Block::Numbered(l) => {
+                            let l = (l as usize).min(3);
+                            counts[l] += 1;
+                            counts[l + 1..].fill(0);
+                            out.push_str(&"   ".repeat(l));
+                            out.push_str(&format!("{}. ", counts[l]));
+                        }
+                        Block::Quote => out.push_str("> "),
+                        _ => {}
+                    }
+                }
+                emit_inline(line, at, marks, &mut out);
+            }
+        }
+        prev = Some(block);
+        at += line.len() + 1;
+    }
+    if made {
+        out.push_str("\n```");
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn m(start: usize, end: usize, mark: Mark) -> MarkRange {
+        MarkRange { start, end, mark }
+    }
+
+    #[test]
+    fn inline_markers_become_marks_and_leave_the_text() {
+        let d = parse("a **bold** and *it* and ~~gone~~ and `code` and [site](https://x.y/z)\n");
+        assert_eq!(d.text, "a bold and it and gone and code and site");
+        assert_eq!(
+            d.marks,
+            vec![m(2, 6, Mark::Bold), m(11, 13, Mark::Italic), m(18, 22, Mark::Strike), m(27, 31, Mark::Code), m(36, 40, Mark::Link("https://x.y/z".into()))]
+        );
+    }
+
+    #[test]
+    fn blocks_follow_their_markers_and_a_line_below_continues() {
+        let d = parse("# Title\n\ntext\nmore\n\n- one\n  - two\n1. first\n2. second\n\n> said\n\n```rust\nlet a = *b;\n```\n");
+        assert_eq!(d.text, "# Title\ntext\nmore\none\ntwo\nfirst\nsecond\nsaid\n```rust\nlet a = *b;\n```");
+        use Block::*;
+        assert_eq!(d.blocks, vec![Paragraph, Paragraph, Paragraph, Bullet(0), Bullet(1), Numbered(0), Numbered(0), Quote, Code, Code, Code]);
+        assert_eq!(d.soft, vec![2]);
+        assert!(d.marks.is_empty(), "nothing inside a fence is a mark");
+    }
+
+    #[test]
+    fn pages_the_model_holds_come_back_byte_for_byte() {
+        for src in [
+            "# Title\n\nA **bold** move, *really*, with `code` and a [link](https://a.b).\n",
+            "- one\n- two\n  - nested **deep**\n- three\n\n1. first\n2. second\n",
+            "> quoted\n> again\n\nafter\n",
+            "```rust\nfn main() {\n\n    let x = \"**not bold**\";\n}\n```\n\ntext\n\n```\nsecond\n```\n",
+            "| a | b |\n| --- | --- |\n| **1** | 2 |\n",
+            "line one\nline two\n\n---\n\n![pic](a.png) and snake_case_name and 2 * 3 * 4\n",
+            "***both*** and **a *b*** and *a **b*** and **a***b*\n",
+            "- [ ] task\n- [x] done\n",
+            // not a list the model knows: kept as the text it is
+            "* star bullets\n* here\n",
+            "no final newline",
+            "",
+        ] {
+            assert!(exact(src).is_some(), "not exact: {src:?} became {:?}", {
+                let d = parse(src);
+                emit(&d.text, &d.marks, &d.blocks, &d.soft)
+            });
+        }
+    }
+
+    #[test]
+    fn pages_it_would_change_are_refused() {
+        for src in ["- loose\n\n- list\n", "a\n\n\nb\n", "1. one\n1. one again\n", "text\n- list right under\n", "\r\nwindows\r\n", "\nleading blank\n"] {
+            assert!(exact(src).is_none(), "should be refused: {src:?}");
+        }
+    }
+
+    #[test]
+    fn nested_marks_parse_as_they_were_written() {
+        let d = parse("***both*** **a *b*** *a **b***");
+        assert_eq!(d.text, "both a b a b");
+        assert_eq!(
+            d.marks,
+            vec![m(0, 4, Mark::Italic), m(0, 4, Mark::Bold), m(7, 8, Mark::Italic), m(5, 8, Mark::Bold), m(11, 12, Mark::Bold), m(9, 12, Mark::Italic)]
+        );
+    }
+
+    #[test]
+    fn edited_marks_are_written_as_valid_markdown() {
+        use Block::Paragraph as P;
+        // a mark that ends in a space closes before it
+        assert_eq!(emit("make this bold now", &[m(5, 15, Mark::Bold)], &[P], &[]), "make **this bold** now\n");
+        // marks that cross are closed and opened again, never interleaved
+        assert_eq!(emit("abcdef", &[m(0, 4, Mark::Bold), m(2, 6, Mark::Italic)], &[P], &[]), "**ab*cd****ef*\n");
+        assert_eq!(parse("**ab*cd****ef*").marks, vec![m(2, 4, Mark::Italic), m(0, 4, Mark::Bold), m(4, 6, Mark::Italic)]);
+        // a mark that cuts into code is dropped from the code
+        assert_eq!(emit("see code here", &[m(4, 8, Mark::Code), m(0, 6, Mark::Bold)], &[P], &[]), "**see** `code` here\n");
+        // and one that covers it wraps it
+        assert_eq!(emit("see code", &[m(4, 8, Mark::Code), m(0, 8, Mark::Bold)], &[P], &[]), "**see `code`**\n");
+        // underline has no Markdown, a mark over only spaces is nothing
+        assert_eq!(emit("a   b", &[m(0, 5, Mark::Underline), m(1, 4, Mark::Bold)], &[P], &[]), "a   b\n");
+        assert_eq!(emit("go there", &[m(3, 8, Mark::Link("u".into())), m(3, 8, Mark::Bold)], &[P], &[]), "go [**there**](u)\n");
+    }
+
+    #[test]
+    fn edited_blocks_are_written_as_valid_markdown() {
+        use Block::*;
+        // a code block made in the editor gets its fence, lists count, empty paragraphs go
+        assert_eq!(emit("intro\n\nlet a;\nlet b;\nend", &[], &[Paragraph, Paragraph, Code, Code, Paragraph], &[]), "intro\n\n```\nlet a;\nlet b;\n```\n\nend\n");
+        assert_eq!(emit("a\nb\nc\nd", &[], &[Numbered(0), Numbered(1), Numbered(1), Numbered(0)], &[]), "1. a\n   1. b\n   2. c\n2. d\n");
+        assert_eq!(emit("one\nmore\ntwo", &[], &[Bullet(0), Bullet(0), Bullet(0)], &[1]), "- one\nmore\n- two\n");
+        assert_eq!(emit("code", &[], &[Code], &[]), "```\ncode\n```\n");
+    }
+
+    #[test]
+    fn what_the_editor_writes_reads_back_the_same() {
+        use Block::*;
+        let out = emit("see this and that\nitem", &[m(4, 8, Mark::Bold), m(4, 8, Mark::Italic), m(13, 17, Mark::Strike)], &[Paragraph, Bullet(0)], &[]);
+        assert_eq!(out, "see ***this*** and ~~that~~\n\n- item\n");
+        let d = exact(&out).expect("its own output is exact");
+        assert_eq!(d.text, "see this and that\nitem");
+        assert_eq!(d.blocks, vec![Paragraph, Bullet(0)]);
+    }
+}

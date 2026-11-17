@@ -29,6 +29,8 @@ On macOS, Cmd takes the place of Ctrl.
 - Signing in with the access code, and staying signed in.
 - The page tree, virtualised, with a filter.
 - Markdown pages rendered natively: tables, syntax-coloured code, mermaid diagrams, selectable text.
+- A rich text editor for Markdown pages: bold, italic, strike, inline code, links, headings, bullet and numbered lists, quotes and code blocks, from a formatting bar or Ctrl+B and Ctrl+I. It writes Markdown back.
+- A page opens rich only when turning it into rich text and back gives the same text, byte for byte (`md::exact`). Any other page opens as source, so the rich editor never rewrites what was not edited. "Source" and "Rich text" switch between the two while editing.
 - Editing a page's source, coloured as Markdown, with the rendered page beside it as it is typed.
 - Saving over the rev the text was read at. The ship refuses a stale save with 409, except for a page still at rev 0, where the ship checks nothing (the web client has the same gap).
 - New page, rename or move, and delete.
@@ -37,7 +39,7 @@ On macOS, Cmd takes the place of Ctrl.
 
 ## What does not, yet
 
-Other page kinds (maps, spreadsheets, OpenSCAD, HTML) show as their source. No rich (WYSIWYG) editing, folders as their own things, history, sharing, forum, memory, search inside pages, live updates from other windows, or offline queue.
+Other page kinds (maps, spreadsheets, OpenSCAD, HTML) show as their source. In the rich editor a heading keeps its `#`, a table its pipes and a fence its backticks, since Rune's rich text has no heading or table, and paragraphs have no space between them. No folders as their own things, history, sharing, forum, memory, search inside pages, live updates from other windows, or offline queue.
 
 ## Check it without a window
 

@@ -1,0 +1,10 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 1.2, "type": "tap", "key": "notes/today"},
+  {"t": 2.0, "type": "tap", "key": "edit"},
+  {"t": 2.6, "type": "key", "name": "Enter"},
+  {"t": 3.0, "type": "tap", "key": "fmt-bold"},
+  {"t": 3.4, "type": "type", "text": "typed bold"},
+  {"t": 4.4, "type": "tap", "key": "fmt-bullet"},
+  {"t": 5.0, "type": "tap", "key": "save"}
+]}
