@@ -245,6 +245,8 @@ struct App {
     /// The tree is to be read once more a moment from now: the ship
     /// answers a batch before it has written all of it.
     resync: bool,
+    /// Files from another app are being held over the window.
+    dropping: bool,
     /// Pages already read this session, so a second visit draws at once.
     cache: HashMap<String, Page>,
     note: String,
@@ -418,6 +420,7 @@ fn init() -> App {
         tab: 0,
         split: None,
         resync: false,
+        dropping: false,
         cache: HashMap::new(),
         note: String::new(),
         names: Vec::new(),
@@ -2176,7 +2179,7 @@ fn ask_upload(s: &mut App, folder: bool, tx: &mut Tx) {
     }
     let options = rune::FileDialogOptions { title: if folder { "Upload a folder" } else { "Upload a file" }.into(), ..Default::default() };
     let answer = |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
-        Ok(Some(path)) => upload(s, path),
+        Ok(Some(path)) => upload(s, vec![path]),
         Ok(None) => {}
         Err(e) => s.note = format!("no file dialog could open: {e}"),
     };
@@ -2188,12 +2191,22 @@ fn ask_upload(s: &mut App, folder: bool, tx: &mut Tx) {
 }
 
 /// Reads the picked file or folder and saves its pages, off the window's thread.
-fn upload(s: &mut App, path: std::path::PathBuf) {
+fn upload(s: &mut App, paths: Vec<std::path::PathBuf>) {
+    if s.editing || paths.is_empty() {
+        return;
+    }
+    if s.memory {
+        flip(s);
+    }
     let dir = upload_dir(s);
-    s.note = format!("reading {}", path.display());
+    s.dropping = false;
+    s.note = match paths.as_slice() {
+        [one] => format!("reading {}", one.display()),
+        many => format!("reading {} files", many.len()),
+    };
     match s.conn.clone() {
-        Some(c) => s.op_req.request((c, path, dir), |(c, path, dir)| {
-            let plan = upload::read(&path, &dir);
+        Some(c) => s.op_req.request((c, paths, dir), |(c, paths, dir)| {
+            let plan = upload::read_all(&paths, &dir);
             let made: Vec<String> = plan.items.iter().map(|i| i.name.clone()).collect();
             let items: Vec<(String, &str, String)> = plan.items.into_iter().map(|i| (i.name, i.kind, i.body)).collect();
             // fifty to a request, as the web client sends them: each is all or nothing
@@ -2204,7 +2217,7 @@ fn upload(s: &mut App, path: std::path::PathBuf) {
         }),
         // sample pages: kept for the session
         None => {
-            let plan = upload::read(&path, &dir);
+            let plan = upload::read_all(&paths, &dir);
             let made: Vec<String> = plan.items.iter().map(|i| i.name.clone()).collect();
             for i in plan.items {
                 if !s.names.contains(&i.name) {
@@ -4058,7 +4071,12 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         .toolbar_in_panel()
         .reduced_motion(cx.is_reduced_motion())
         .build(&k);
-    rune_kit::root(shell, layer)
+    if s.dropping && !s.editing {
+        // said in the middle of the window, over whatever is there
+        layer.push(col().key("drop-hint").absolute(0.0, 0.0).w_full().h_full().center().child(text("Drop to upload as pages").font(k.ty.body_medium).color(k.c.text_base).padding(16.0).radius(k.radius.md).fill(k.c.layer_01)));
+    }
+    // files dropped anywhere on the window are uploaded, as on the web
+    rune_kit::root(shell, layer).on_drop_files(|s: &mut App, files, _| upload(s, files.to_vec())).on_drop_hover(|s: &mut App, over, _| s.dropping = over)
 }
 
 fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
@@ -4689,17 +4707,23 @@ mod tests {
         std::fs::write(root.join("Trip/days/one.md"), "one\n").unwrap();
         std::fs::write(root.join("Trip/photo.png"), [1u8, 2, 3]).unwrap();
         let mut s = sample("welcome");
-        upload(&mut s, root.join("Trip"));
+        upload(&mut s, vec![root.join("Trip")]);
         assert!(s.names.contains(&"trip/plan".to_owned()) && s.cache["trip/days/one"].body == "one\n");
         assert_eq!(s.note, "uploaded 2 pages. Left out 1: Trip/photo.png (not a kind of page)");
         assert_eq!((s.open.is_none(), s.folder.as_deref()), (true, Some("trip")), "the folder they share is shown");
         // one file, into the folder showing: it is opened
-        upload(&mut s, root.join("Trip/plan.md"));
+        upload(&mut s, vec![root.join("Trip/plan.md")]);
         assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("trip/plan"));
         assert_eq!(s.note, "uploaded 1 page");
         // nothing usable
-        upload(&mut s, root.join("Trip/photo.png"));
+        upload(&mut s, vec![root.join("Trip/photo.png")]);
         assert!(s.note.starts_with("nothing was uploaded. Left out 1"));
+        // nothing while a page is being edited: the editor is not left
+        start_edit(&mut s);
+        let pages = s.names.len();
+        upload(&mut s, vec![root.join("Trip")]);
+        assert!(s.editing && s.names.len() == pages);
+        cancel_edit(&mut s);
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(common_folder(&["a/b/c".into(), "a/b/d/e".into(), "a/x".into()]), "a");
         assert_eq!(common_folder(&["a".into(), "b".into()]), "");

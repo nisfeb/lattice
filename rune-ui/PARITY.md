@@ -59,7 +59,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Split view: Split holds the page in front on the right, read-only, while another is opened or edited on the left. Swap brings it to the front and × closes it. Its links open in front
 - [x] The split kept across runs: the page held beside is in the preferences and is held again next run, if it is still there. Keeping it has a unit test. Holding it again at the start was not run against a ship
 - [x] Upload a file or a folder of files as pages, picked in the system's file dialog (`/page-save-batch`): text kinds by the web client's table of extensions, names by its rule, fifty to a request. What is left out is named with why. It is in the New page dialog and the palette
-- [ ] Upload by dropping files on the window
+- [x] Upload by dropping files or folders anywhere on the window, with a hint while they are held over it. Rune reports file drops on macOS, Windows and X11, and not on Wayland, so it does nothing on a Wayland desktop
 - [ ] Upload of `odt`, `ods` and `csv` files, which the web client converts with LibreOffice's wasm build
 - [ ] Images in a page from another site, behind the web client's "Load outside content for this page"
 - [ ] Find in page

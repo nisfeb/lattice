@@ -118,6 +118,24 @@ pub fn read(path: &Path, dir: &str) -> Plan {
     plan
 }
 
+/// `read` for several picks at once, as a drop brings them.
+pub fn read_all(paths: &[std::path::PathBuf], dir: &str) -> Plan {
+    let mut all = Plan::default();
+    for p in paths {
+        let Plan { items, skipped } = read(p, dir);
+        // two files that come to one name: the first is the page, the second is said
+        for i in items {
+            if all.items.iter().any(|x| x.name == i.name) {
+                all.skipped.push(format!("{} (a second file for that page)", i.name));
+            } else {
+                all.items.push(i);
+            }
+        }
+        all.skipped.extend(skipped);
+    }
+    all
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +176,11 @@ mod tests {
         // one file, with no folder to go under
         let one = read(&top.join("plan.md"), "");
         assert_eq!(one.items, [Item { name: "plan".into(), kind: "md", body: "# plan\n".into() }]);
+        // several at once, and two that come to the same page
+        let many = read_all(&[top.join("plan.md"), top.join("days"), top.join("plan.md")], "");
+        let names: Vec<&str> = many.items.iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, ["plan", "days/map", "days/one"]);
+        assert_eq!(many.skipped, ["plan (a second file for that page)"]);
         // a path that is not there says so and makes nothing
         let none = read(&top.join("gone.md"), "");
         assert!(none.items.is_empty() && none.skipped.len() == 1);
