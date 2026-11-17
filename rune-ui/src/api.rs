@@ -275,6 +275,31 @@ struct Flag {
     shared: bool,
 }
 
+/// One comment on a page.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Comment {
+    pub page: String,
+    pub id: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub when: String,
+    #[serde(default)]
+    pub body: String,
+}
+
+#[derive(Deserialize)]
+struct Inbox {
+    #[serde(default)]
+    items: Vec<Comment>,
+}
+
+#[derive(Deserialize)]
+struct Rendered {
+    #[serde(default)]
+    comments: bool,
+}
+
 /// One stored revision of a page.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Rev {
@@ -698,6 +723,46 @@ impl Conn {
         Ok(f.shared)
     }
 
+    /// The newest comments across every page (the ship gives 200 at most).
+    pub fn comments(&self) -> Result<Vec<Comment>, String> {
+        let i: Inbox = serde_json::from_str(&self.call_in(60, "GET", "comments-inbox", None)?).map_err(|e| e.to_string())?;
+        Ok(i.items)
+    }
+
+    /// Whether comments are on for a page, by the nearest setting at or above it.
+    pub fn comments_on(&self, name: &str) -> Result<bool, String> {
+        let r: Rendered = serde_json::from_str(&self.call("GET", &format!("page-source?name={}&render=1", enc(name)), None)?).map_err(|e| e.to_string())?;
+        Ok(r.comments)
+    }
+
+    /// Turns comments on or off at a page or folder.
+    pub fn set_comments(&self, name: &str, on: bool) -> Result<(), String> {
+        self.call("POST", &format!("page-comments?name={}&on={}", enc(name), if on { 1 } else { 0 }), Some("")).map(drop)
+    }
+
+    /// Posts the owner's comment on a page. The ship answers a form post
+    /// with a redirect to the reader, which is not followed: that it
+    /// answered so is the success.
+    pub fn comment(&self, page: &str, body: &str) -> Result<(), String> {
+        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
+        let res = agent
+            .post(&format!("{}/apps/lattice/comment?page={}", self.url, enc(page)))
+            .set("cookie", &self.cookie)
+            .set("origin", &self.url)
+            .set("content-type", "application/x-www-form-urlencoded")
+            .send_string(&format!("body={}", enc(body)));
+        match res {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Removes one comment.
+    pub fn comment_delete(&self, page: &str, id: &str) -> Result<(), String> {
+        self.call("POST", &format!("comment-del?page={}&id={}", enc(page), enc(id)), Some("")).map(drop)
+    }
+
     /// The ships that are banned, in the ship's order.
     pub fn bans(&self) -> Result<Vec<String>, String> {
         serde_json::from_str(&self.call("GET", "banlist", None)?).map_err(|e| e.to_string())
@@ -963,6 +1028,29 @@ mod tests {
         c.group_save(&g.with_level(&base, "rune-probe", Level::Edit)).unwrap();
         c.group_delete(&gname).unwrap();
         assert!(c.group_save(&Group { name: "Bad Name".into(), ..Group::default() }).unwrap_err().starts_with("400"));
+        // a comment is posted on a page, listed, and removed. Off by default, and refused empty
+        assert!(!c.comments_on("rune-probe").unwrap());
+        c.set_comments("rune-probe", true).unwrap();
+        assert!(c.comments_on("rune-probe").unwrap());
+        let said = format!("a comment at {base}");
+        c.comment("rune-probe", &said).unwrap();
+        let mine = |c: &Conn| c.comments().unwrap().into_iter().find(|m| m.page == "rune-probe" && m.body == said);
+        // the write is its own step behind the answer
+        let mut got = None;
+        for _ in 0..20 {
+            got = mine(&c);
+            if got.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let got = got.expect("the comment is in the inbox");
+        assert!(got.author.starts_with('~') && !got.id.is_empty());
+        assert!(c.comment("rune-probe", "").unwrap_err().starts_with("400"), "an empty comment is refused");
+        c.comment_delete("rune-probe", &got.id).unwrap();
+        assert!(mine(&c).is_none(), "a removed comment is gone");
+        c.set_comments("rune-probe", false).unwrap();
+        assert!(!c.comments_on("rune-probe").unwrap());
         // the sensitive mark is set, read back and cleared, and says when the page is still shared
         assert!(!c.sensitive("rune-probe").unwrap());
         assert!(!c.set_sensitive("rune-probe", true).unwrap(), "a private page is not still shared");

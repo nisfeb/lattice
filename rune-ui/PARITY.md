@@ -34,7 +34,8 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [!] Shared with me, read and saved between two real ships: blocked on a second running ship. Every fake ship here is the same ~zod
 - [x] Display names for pages and folders: a name typed with capitals, spaces or punctuation becomes a path by the web client's own rule and is kept to show (`dname`, `dnames` on `/page-save` and `/page-move`), in the tree and the title
 - [x] Sensitive flag: a switch in the share dialog shows a page's or folder's own mark and sets it (`/page-sensitive`), and says when the page is still shared by its own setting. A page that is sensitive only through its folder is not shown as such
-- [ ] Comments on a page (`ui-src/lattice/` comments code, `/comments`)
+- [x] Comments on a page: a side pane lists the page's comments, posts one, removes one, and switches comments on or off (`/comments-inbox`, `/comment`, `/comment-del`, `/page-comments`). The list comes from the ship's newest 200 across all pages
+- [ ] Comments inbox across pages with an unread mark (`/comments-latest`)
 - [ ] Backlinks and ghost links (pages that link here, links to pages not made)
 - [ ] Quick capture
 - [ ] Templates and the journal (daily pages, orrery mirror pages read-only)

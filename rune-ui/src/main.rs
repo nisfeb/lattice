@@ -11,7 +11,7 @@ mod sheet;
 
 use std::collections::HashMap;
 
-use api::{Conn, Dump, Group, Know, Level, Node, Page, Prefs, Rev, Shared};
+use api::{Comment, Conn, Dump, Group, Know, Level, Node, Page, Prefs, Rev, Shared};
 use rune::{AppSpec, Block, LineCap, Phase, Shape, WheelEvent, canvas, Chrome, Cx, El, Key, KeyEvent, Latest, Mark, ScrollSpec, Span, TextEdit, Tx, Waker, col, el, row, text};
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
@@ -65,6 +65,8 @@ enum Op {
     /// A page or folder was marked sensitive or unmarked, and whether its
     /// own share still stands.
     Sensed(String, bool, bool),
+    /// Something about comments changed on the ship: what to say.
+    Commented(String),
     /// A ship was let in to a page (edit or read, and whether it was told),
     /// or put out again.
     Granted(String, String, bool, bool),
@@ -121,6 +123,15 @@ struct App {
     /// Each folder's own share setting.
     dshares: HashMap<String, String>,
     sharing: bool,
+    /// The side pane shows comments, not history. The newest comments
+    /// across the ship, whether comments are on for each page asked
+    /// about, and the comment being typed.
+    pane_comments: bool,
+    comments: Vec<Comment>,
+    comments_req: Latest<Result<Vec<Comment>, String>>,
+    comments_on: HashMap<String, bool>,
+    comments_on_req: Latest<Result<(String, bool), String>>,
+    comment: TextEdit,
     /// The sensitive mark of each page and folder asked about so far.
     sens: HashMap<String, bool>,
     sens_req: Latest<Result<(String, bool), String>>,
@@ -264,6 +275,12 @@ fn init() -> App {
         shares: HashMap::new(),
         dshares: HashMap::new(),
         sharing: false,
+        pane_comments: false,
+        comments: Vec::new(),
+        comments_req: Latest::default(),
+        comments_on: HashMap::new(),
+        comments_on_req: Latest::default(),
+        comment: TextEdit::new(""),
         sens: HashMap::new(),
         sens_req: Latest::default(),
         groups: Vec::new(),
@@ -409,6 +426,8 @@ fn sign_out(s: &mut App) {
     fresh.base_req = std::mem::take(&mut s.base_req);
     fresh.bans_req = std::mem::take(&mut s.bans_req);
     fresh.sens_req = std::mem::take(&mut s.sens_req);
+    fresh.comments_req = std::mem::take(&mut s.comments_req);
+    fresh.comments_on_req = std::mem::take(&mut s.comments_on_req);
     fresh.shared_req = std::mem::take(&mut s.shared_req);
     fresh.remote_req = std::mem::take(&mut s.remote_req);
     fresh.old_req = std::mem::take(&mut s.old_req);
@@ -464,7 +483,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) => {}
+                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) => {}
             }
             Ok(op)
         }),
@@ -524,6 +543,11 @@ fn applied(s: &mut App, op: Op) {
             let can = if edit { "edit" } else { "read" };
             s.note = format!("{ship} can now {can} {n}{}", if told { "" } else { ", and was not reached to be told" });
             load_groups(s);
+            return;
+        }
+        Op::Commented(say) => {
+            s.note = say;
+            load_comments(s);
             return;
         }
         Op::Sensed(n, on, shared) => {
@@ -601,6 +625,8 @@ fn setup(s: &mut App, waker: Waker) {
     s.base_req.set_waker(waker.clone());
     s.bans_req.set_waker(waker.clone());
     s.sens_req.set_waker(waker.clone());
+    s.comments_req.set_waker(waker.clone());
+    s.comments_on_req.set_waker(waker.clone());
     s.shared_req.set_waker(waker.clone());
     s.remote_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
@@ -895,7 +921,7 @@ fn map_view(m: &MapView, k: &Kit) -> El {
 
 /// Reads the open page's revisions when the history pane is showing.
 fn load_history(s: &mut App) {
-    if s.memory {
+    if s.memory || s.pane_comments {
         return;
     }
     let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else { return };
@@ -945,6 +971,7 @@ fn show_page(s: &mut App, name: &str) {
     sync_map(s);
     sync_sheet(s);
     load_history(s);
+    load_comments(s);
 }
 
 /// A rich field for `d`, kept to what Markdown can write.
@@ -1192,6 +1219,19 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Ok((sh, p)) if !s.editing => show_remote(s, sh, p),
             Ok(_) => {}
             Err(e) => s.note = format!("could not read it: {e}"),
+        }
+    }
+    if let Some(r) = s.comments_req.take() {
+        changed = true;
+        match r {
+            Ok(list) => s.comments = list,
+            Err(e) => s.note = format!("comments: {e}"),
+        }
+    }
+    if let Some(r) = s.comments_on_req.take() {
+        changed = true;
+        if let Ok((n, on)) = r {
+            s.comments_on.insert(n, on);
         }
     }
     if let Some(r) = s.sens_req.take() {
@@ -1632,6 +1672,114 @@ fn shared_view(s: &App, k: &Kit) -> El {
         .min_h(0.0)
         .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(list)))
         .scroll(ScrollSpec { stick_bottom: false })
+}
+
+/// Reads the comments, and whether they are on for the open page, when
+/// the comments pane is showing.
+fn load_comments(s: &mut App) {
+    let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else { return };
+    if s.inspector.is_open() && s.pane_comments && !s.memory && s.remote.is_none() {
+        s.comments_req.request(c.clone(), |c| c.comments());
+        s.comments_on_req.request((c, p.name.clone()), |(c, n)| c.comments_on(&n).map(|on| (n, on)));
+    }
+}
+
+/// Posts the comment typed in the pane on the open page.
+fn post_comment(s: &mut App) {
+    let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else {
+        s.note = "sample pages take no comments".into();
+        return;
+    };
+    let body = s.comment.text.trim().to_owned();
+    if body.is_empty() {
+        return;
+    }
+    s.comment = TextEdit::new("");
+    s.op_req.request((c, p.name.clone(), body), |(c, page, body)| {
+        c.comment(&page, &body)?;
+        // the ship writes it in a step of its own behind the answer
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        Ok(Op::Commented(format!("comment posted on {page}")))
+    });
+}
+
+/// The comments pane: whether comments are on, the page's comments
+/// newest first, and a field for the owner's own.
+fn comments_view(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let Some(p) = &s.open else {
+        return col().key("comments").w_full().padding(12.0).child(text("Open a page to see its comments.").font(k.ty.small).color(c.text_muted).wrap());
+    };
+    let on = s.comments_on.get(&p.name).copied();
+    let name = p.name.clone();
+    let toggle = row()
+        .key("comments-switch")
+        .w_full()
+        .gap(8.0)
+        .center_y()
+        .child(Switch::new(on.unwrap_or(false)).label("Comments on").on_toggle(move |s: &mut App| {
+            let Some(c) = s.conn.clone() else { return };
+            let now = s.comments_on.get(&name).copied().unwrap_or(false);
+            s.comments_on.insert(name.clone(), !now);
+            s.op_req.request((c, name.clone()), move |(c, n)| {
+                c.set_comments(&n, !now)?;
+                Ok(Op::Commented(format!("comments are {} for {n}", if now { "off" } else { "on" })))
+            });
+        }).build(k).key("comments-toggle"));
+    let mine: Vec<&Comment> = s.comments.iter().filter(|m| m.page == p.name).collect();
+    let mut list = col().key("comment-list").w_full().gap(8.0);
+    for m in &mine {
+        let (page, id) = (m.page.clone(), m.id.clone());
+        let when = Rev { rev: 0, updated: m.when.clone() }.when();
+        list = list.child(
+            col()
+                .key(format!("comment-{}", m.id))
+                .w_full()
+                .padding(8.0)
+                .gap(4.0)
+                .radius(k.radius.sm)
+                .fill(c.layer_01)
+                .child(
+                    row()
+                        .w_full()
+                        .gap(6.0)
+                        .center_y()
+                        .child(text(m.author.clone()).font(k.ty.small_medium).color(c.text_base))
+                        .child(text(when).font(k.ty.small).color(c.text_faint).grow(1.0))
+                        .child(Button::new("Remove").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(move |s: &mut App| {
+                            let Some(c) = s.conn.clone() else { return };
+                            s.op_req.request((c, page.clone(), id.clone()), |(c, page, id)| {
+                                c.comment_delete(&page, &id)?;
+                                Ok(Op::Commented(format!("removed a comment from {page}")))
+                            });
+                        }).build(k).key(format!("comment-del-{}", m.id))),
+                )
+                .child(text(m.body.clone()).font(k.ty.ui).color(c.text_base).wrap().selectable(true)),
+        );
+    }
+    if mine.is_empty() {
+        list = list.child(text(if s.comments_req.is_pending() { "Reading the comments" } else { "No comments on this page." }).font(k.ty.small).color(c.text_muted));
+    }
+    let off = on == Some(false);
+    let mut write = col().key("comment-write").w_full().gap(6.0);
+    if off {
+        write = write.child(text("Comments are off for this page.").font(k.ty.small).color(c.text_muted).wrap());
+    } else {
+        write = write
+            .child(TextArea::new(&s.comment).label("Your comment").placeholder("Say something").rows(3).on_edit(|s: &mut App| &mut s.comment).build(k).w_full().key("comment-field"))
+            .child(row().child(Button::new("Post").control_size(ControlSize::Small).variant(ButtonVariant::Contrast).on_press(post_comment).build(k).key("comment-post")));
+    }
+    col()
+        .key("comments")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .padding(12.0)
+        .gap(10.0)
+        .child(text("Comments").font(k.ty.ui_medium).color(c.text_base))
+        .child(toggle)
+        .child(col().w_full().grow(1.0).min_h(0.0).child(list).scroll(ScrollSpec { stick_bottom: false }))
+        .child(write)
 }
 
 /// Asks whether what the share dialog is about is marked sensitive.
@@ -2429,8 +2577,28 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             }).build(&k).key("share"));
         }
         if !s.memory {
+            // one side pane, two things in it: pressing the one showing closes it
+            trailing = trailing.child(Button::new("Comments").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
+                if s.inspector.is_open() && s.pane_comments {
+                    s.inspector.toggle();
+                } else {
+                    if !s.inspector.is_open() {
+                        s.inspector.toggle();
+                    }
+                    s.pane_comments = true;
+                    s.old = None;
+                    load_comments(s);
+                }
+            }).build(&k).key("comments-toggle-pane"));
             trailing = trailing.child(Button::new("History").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
-                s.inspector.toggle();
+                if s.inspector.is_open() && !s.pane_comments {
+                    s.inspector.toggle();
+                } else {
+                    if !s.inspector.is_open() {
+                        s.inspector.toggle();
+                    }
+                    s.pane_comments = false;
+                }
                 s.old = None;
                 load_history(s);
             }).build(&k).key("history-toggle"));
@@ -2461,7 +2629,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         .child(text(title.to_owned()).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate().pl(6.0));
     let shell = SplitView::new(body(s, &k))
         .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k))
-        .inspector(&s.inspector, |s: &mut App| &mut s.inspector, history_view(s, &k))
+        .inspector(&s.inspector, |s: &mut App| &mut s.inspector, if s.pane_comments { comments_view(s, &k) } else { history_view(s, &k) })
         .toolbar(Toolbar::new().leading(leading).trailing(trailing))
         .titlebar_inset(cx.titlebar_inset())
         .frame_inset(8.0)
