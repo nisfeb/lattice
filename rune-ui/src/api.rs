@@ -315,6 +315,86 @@ pub fn da_of_ms(ms: i64) -> String {
     format!("~{y}.{m}.{d}..{}.{}.{}", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
+/// One activity notice: a comment from another ship, a reply on a
+/// forum, a share or its end, an ask to edit, a followed folder's news.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Notice {
+    pub id: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default, deserialize_with = "when_text")]
+    pub when: String,
+    #[serde(default)]
+    pub who: String,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default, rename = "where")]
+    pub place: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub body: String,
+    #[serde(default)]
+    pub read: bool,
+}
+
+/// What pressing Open on a notice shows here.
+#[derive(Debug, PartialEq)]
+pub enum Opens {
+    /// A page of this ship.
+    Page(String),
+    /// A page another ship shared: its host and whole path.
+    Shared(Shared),
+    /// The Access screen, where an ask is answered.
+    Access,
+    /// Somewhere this client has no screen for yet (a forum, a folder).
+    Nothing,
+}
+
+impl Notice {
+    /// The line that says what it is about, in the web client's words.
+    pub fn label(&self) -> String {
+        let title = if self.title.is_empty() { String::new() } else { format!(": {}", self.title) };
+        let shared = || Shared { host: self.host.clone(), path: self.place.clone(), ..Shared::default() }.name().to_owned();
+        match self.kind.as_str() {
+            "comment" => format!("comment on {}", self.place),
+            "ask" => format!("asks to edit {}", self.title),
+            "share" => format!("shared {}", shared()),
+            "reshare" => format!("changed the share of {}", shared()),
+            "unshare" => format!("stopped sharing {}", shared()),
+            "asked" => format!("answered your ask on {}", shared()),
+            "remote" => format!("reply on {}/{}{title}", self.host, self.place),
+            "reply" => format!("reply on {}{title}", self.place),
+            "folder" if !self.title.is_empty() => self.title.clone(),
+            _ => self.place.clone(),
+        }
+    }
+
+    pub fn opens(&self) -> Opens {
+        match self.kind.as_str() {
+            "comment" => Opens::Page(self.place.clone()),
+            "ask" => Opens::Access,
+            "share" | "reshare" | "asked" if !self.place.ends_with('/') => Opens::Shared(Shared { host: self.host.clone(), path: self.place.clone(), mode: "read".into(), when: String::new() }),
+            _ => Opens::Nothing,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct Notices {
+    #[serde(default)]
+    items: Vec<Notice>,
+}
+
+/// The inbox's counts: held comet comments and unread notices.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+pub struct Waiting {
+    #[serde(default)]
+    pub held: u32,
+    #[serde(default)]
+    pub unread: u32,
+}
+
 #[derive(Deserialize)]
 struct Comets {
     #[serde(default)]
@@ -812,6 +892,23 @@ impl Conn {
         self.call("POST", &format!("page-comets?name={}&mode={}", enc(name), enc(mode)), Some("")).map(drop)
     }
 
+    /// The activity notices, newest first, each with whether it is read.
+    pub fn notices(&self) -> Result<Vec<Notice>, String> {
+        let n: Notices = serde_json::from_str(&self.call_in(60, "GET", "notify", None)?).map_err(|e| e.to_string())?;
+        Ok(n.items)
+    }
+
+    /// Marks one notice read, or all of them with no id.
+    pub fn notice_read(&self, id: Option<&str>) -> Result<(), String> {
+        let q = id.map_or("all=1".to_owned(), |i| format!("id={}", enc(i)));
+        self.call("POST", &format!("notify-read?{q}"), Some("")).map(drop)
+    }
+
+    /// How much waits in the inbox. Two directory reads on the ship, no bodies.
+    pub fn waiting(&self) -> Result<Waiting, String> {
+        serde_json::from_str(&self.call("GET", "notify-count", None)?).map_err(|e| e.to_string())
+    }
+
     /// Removes one comment.
     pub fn comment_delete(&self, page: &str, id: &str) -> Result<(), String> {
         self.call("POST", &format!("comment-del?page={}&id={}", enc(page), enc(id)), Some("")).map(drop)
@@ -1026,6 +1123,30 @@ mod tests {
         assert_eq!(inbox.items[0].when, "~2026.11.17..20.36.35..0722");
     }
 
+    #[test]
+    fn a_notice_says_what_it_is_about_and_where_it_opens() {
+        let n: Notices = serde_json::from_str(
+            r#"{"unread":2,"items":[
+            {"id":"0v1","kind":"comment","when":1794947795000,"who":"~bus","host":"~zod","where":"notes/today","post":0,"title":"","body":"nice","read":false},
+            {"id":"0v2","kind":"share","when":1,"who":"~bus","host":"~bus","where":"/apps/x/data/lattice.lattice_app/page/plans/trip/code","post":0,"title":"","body":"","read":true},
+            {"id":"0v3","kind":"ask","when":1,"who":"~bus","host":"~zod","where":"/x/page/plans","post":0,"title":"plans","body":"please","read":false},
+            {"id":"0v4","kind":"remote","when":1,"who":"~bus","host":"~bus","where":"tech","post":7,"title":"Rune","body":"","read":false},
+            {"id":"0v5","kind":"unshare","when":1,"who":"~bus","host":"~bus","where":"/x/page/plans/trip/code","post":0,"title":"","body":"","read":false},
+            {"id":"0v6","kind":"folder","when":1,"who":"~bus","host":"~bus","where":"/notes","post":0,"title":"2 new pages in notes from ~bus","body":"","read":false},
+            {"id":"0v7","kind":"new-kind","where":"somewhere"}]}"#,
+        )
+        .unwrap();
+        let labels: Vec<String> = n.items.iter().map(Notice::label).collect();
+        assert_eq!(labels, ["comment on notes/today", "shared plans/trip", "asks to edit plans", "reply on ~bus/tech: Rune", "stopped sharing plans/trip", "2 new pages in notes from ~bus", "somewhere"]);
+        assert_eq!(n.items[0].opens(), Opens::Page("notes/today".into()));
+        assert!(matches!(n.items[1].opens(), Opens::Shared(s) if s.host == "~bus" && s.name() == "plans/trip"));
+        assert_eq!(n.items[2].opens(), Opens::Access);
+        assert!(n.items[3..].iter().all(|i| i.opens() == Opens::Nothing));
+        assert_eq!(Rev { rev: 0, updated: n.items[0].when.clone() }.when(), "2026-11-17 20:36");
+        let w: Waiting = serde_json::from_str(r#"{"held":1,"unread":2}"#).unwrap();
+        assert_eq!((w.held, w.unread), (1, 2));
+    }
+
     /// Against a real ship: `LATTICE_URL=.. LATTICE_COOKIE=.. cargo test -- --ignored`.
     /// It needs a page named `rune-probe` to exist.
     #[test]
@@ -1114,6 +1235,12 @@ mod tests {
         assert!(c.comment("rune-probe", "").unwrap_err().starts_with("400"), "an empty comment is refused");
         c.comment_delete("rune-probe", &got.id).unwrap();
         assert!(mine(&c).is_none(), "a removed comment is gone");
+        // the inbox's notices and counts answer, and marking all read leaves none unread
+        let before = c.notices().unwrap();
+        c.notice_read(None).unwrap();
+        assert!(c.notice_read(Some("not an id")).is_err());
+        assert_eq!(c.waiting().unwrap().unread, 0);
+        assert!(c.notices().unwrap().iter().all(|n| n.read), "{before:?}");
         // comets' comments: open until set, held when set, and nothing held with no comet about
         assert_eq!(c.comets("rune-probe").unwrap(), "open");
         c.set_comets("rune-probe", "held").unwrap();

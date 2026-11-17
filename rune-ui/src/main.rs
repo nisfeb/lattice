@@ -11,7 +11,7 @@ mod sheet;
 
 use std::collections::HashMap;
 
-use api::{Comment, Conn, Dump, Group, Know, Level, Node, Page, Prefs, Rev, Shared};
+use api::{Comment, Conn, Notice, Opens, Waiting, Dump, Group, Know, Level, Node, Page, Prefs, Rev, Shared};
 use rune::{AppSpec, Block, LineCap, Phase, Shape, WheelEvent, canvas, Chrome, Cx, El, Key, KeyEvent, Latest, Mark, ScrollSpec, Span, TextEdit, Tx, Waker, col, el, row, text};
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
@@ -134,6 +134,11 @@ struct App {
     comment: TextEdit,
     /// Comet comments waiting for a yes, and what each page asked about
     /// does with comets' comments (`open`, `held`, `off`).
+    /// The activity notices, and how much waits (for the button's count).
+    notices: Vec<Notice>,
+    notices_req: Latest<Result<Vec<Notice>, String>>,
+    waiting: Waiting,
+    waiting_req: Latest<Result<Waiting, String>>,
     held: Vec<Comment>,
     held_req: Latest<Result<Vec<Comment>, String>>,
     comets: HashMap<String, String>,
@@ -289,6 +294,10 @@ fn init() -> App {
         comments_on: HashMap::new(),
         comments_on_req: Latest::default(),
         comment: TextEdit::new(""),
+        notices: Vec::new(),
+        notices_req: Latest::default(),
+        waiting: Waiting::default(),
+        waiting_req: Latest::default(),
         held: Vec::new(),
         held_req: Latest::default(),
         comets: HashMap::new(),
@@ -349,6 +358,11 @@ fn browse_sample(s: &mut App) {
         // a page another ship shared, to open from the list
         s.shared = vec![Shared { host: "~sampel-palnet".into(), path: "/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/plans/trip/code".into(), mode: "edit".into(), when: "~2026.11.16..18.5.0".into() }];
         s.held = vec![Comment { page: "welcome".into(), id: "0v1.sample".into(), author: "~doznec-salfun-naptul-habrys--todlux-mosmep-linsub-binzod".into(), when: "~2026.11.17..9.30.0".into(), body: "Held until you say yes.".into() }];
+        s.notices = vec![
+            Notice { id: "0v1.note".into(), kind: "comment".into(), when: "~2026.11.17..9.31.0".into(), who: "~sampel-palnet".into(), host: "~zod".into(), place: "notes/today".into(), body: "A good day by the sound of it.".into(), ..Notice::default() },
+            Notice { id: "0v2.note".into(), kind: "reply".into(), when: "~2026.11.16..18.0.0".into(), who: "~sampel-palnet".into(), host: "~zod".into(), place: "tech".into(), title: "Rune".into(), read: true, ..Notice::default() },
+        ];
+        s.waiting = Waiting { held: 1, unread: 1 };
         // and two memories, in the other half
         let knows = [("feedback/short-answers", "Keep answers short.\n\n**Why:** long ones are not read.\n"), ("project/lattice/rune", "An experimental native client, drawn with Rune.\n")];
         s.other.1 = knows.iter().map(|(k, _)| (*k).to_owned()).collect();
@@ -443,6 +457,8 @@ fn sign_out(s: &mut App) {
     fresh.comments_req = std::mem::take(&mut s.comments_req);
     fresh.comments_on_req = std::mem::take(&mut s.comments_on_req);
     fresh.held_req = std::mem::take(&mut s.held_req);
+    fresh.notices_req = std::mem::take(&mut s.notices_req);
+    fresh.waiting_req = std::mem::take(&mut s.waiting_req);
     fresh.comets_req = std::mem::take(&mut s.comets_req);
     fresh.shared_req = std::mem::take(&mut s.shared_req);
     fresh.remote_req = std::mem::take(&mut s.remote_req);
@@ -644,6 +660,8 @@ fn setup(s: &mut App, waker: Waker) {
     s.comments_req.set_waker(waker.clone());
     s.comments_on_req.set_waker(waker.clone());
     s.held_req.set_waker(waker.clone());
+    s.notices_req.set_waker(waker.clone());
+    s.waiting_req.set_waker(waker.clone());
     s.comets_req.set_waker(waker.clone());
     s.shared_req.set_waker(waker.clone());
     s.remote_req.set_waker(waker.clone());
@@ -656,7 +674,9 @@ fn setup(s: &mut App, waker: Waker) {
 
 fn load_tree(s: &mut App) {
     if let Some(c) = s.conn.clone() {
-        s.tree_req.request((c, s.since.clone()), |(c, since)| c.dump(&since));
+        s.tree_req.request((c.clone(), s.since.clone()), |(c, since)| c.dump(&since));
+        // the inbox's count rides along with every sync: it is cheap on the ship
+        s.waiting_req.request(c, |c| c.waiting());
     }
 }
 
@@ -1247,10 +1267,27 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Err(e) => s.note = format!("comments: {e}"),
         }
     }
+    if let Some(r) = s.notices_req.take() {
+        changed = true;
+        match r {
+            Ok(list) => {
+                s.waiting.unread = list.iter().filter(|n| !n.read).count() as u32;
+                s.notices = list;
+            }
+            Err(e) => s.note = format!("activity: {e}"),
+        }
+    }
+    if let Some(Ok(w)) = s.waiting_req.take() {
+        changed = true;
+        s.waiting = w;
+    }
     if let Some(r) = s.held_req.take() {
         changed = true;
         match r {
-            Ok(list) => s.held = list,
+            Ok(list) => {
+                s.waiting.held = list.len() as u32;
+                s.held = list;
+            }
             Err(e) => s.note = format!("held comments: {e}"),
         }
     }
@@ -1714,6 +1751,7 @@ fn load_comments(s: &mut App) {
     if s.inbox {
         s.comments_req.request(c.clone(), |c| c.comments());
         s.held_req.request(c.clone(), |c| c.held());
+        s.notices_req.request(c.clone(), |c| c.notices());
     }
     let Some(p) = &s.open else { return };
     if s.inspector.is_open() && s.pane_comments && !s.memory && s.remote.is_none() {
@@ -1793,6 +1831,78 @@ fn open_comment_page(s: &mut App, name: &str) {
     }
 }
 
+/// Marks one notice read, or all with no id. On sample pages, in place.
+fn mark_read(s: &mut App, id: Option<String>) {
+    match s.conn.clone() {
+        Some(c) => s.op_req.request((c, id), |(c, id)| {
+            c.notice_read(id.as_deref())?;
+            Ok(Op::Commented(if id.is_some() { "marked read".into() } else { "all activity marked read".into() }))
+        }),
+        None => {
+            for n in s.notices.iter_mut().filter(|n| id.as_ref().is_none_or(|i| *i == n.id)) {
+                n.read = true;
+            }
+            s.waiting.unread = s.notices.iter().filter(|n| !n.read).count() as u32;
+        }
+    }
+}
+
+/// Opens what a notice is about, and marks it read.
+fn open_notice(s: &mut App, n: &Notice) {
+    match n.opens() {
+        Opens::Page(p) => open_comment_page(s, &p),
+        Opens::Shared(sh) => open_remote(s, sh),
+        Opens::Access => {
+            s.access = true;
+            s.inbox = false;
+            load_groups(s);
+        }
+        Opens::Nothing => return,
+    }
+    if !n.read {
+        mark_read(s, Some(n.id.clone()));
+    }
+}
+
+/// The activity notices: who, what about, when, and the start of what was said.
+fn activity_view(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let unread = s.notices.iter().filter(|n| !n.read).count();
+    let mut head = row().w_full().center_y().gap(8.0).child(text(if unread > 0 { format!("Activity, {unread} unread") } else { "Activity".to_owned() }).font(k.ty.ui_medium).color(c.text_base).grow(1.0));
+    if unread > 0 {
+        head = head.child(Button::new("Mark all read").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| mark_read(s, None)).build(k).key("notice-read-all"));
+    }
+    let mut list = col().key("notice-list").w_full().gap(8.0).child(head);
+    for n in &s.notices {
+        let when = Rev { rev: 0, updated: n.when.clone() }.when();
+        let mut top = row()
+            .w_full()
+            .gap(6.0)
+            .center_y()
+            .child(text(if n.read { "" } else { "new" }).font(k.ty.small_medium).color(c.text_accent))
+            .child(text(n.who.clone()).font(k.ty.small_medium).color(c.text_base))
+            .child(text(n.label()).font(k.ty.small).color(c.text_muted).grow(1.0).min_w(0.0).truncate())
+            .child(text(when).font(k.ty.small).color(c.text_faint));
+        if !n.read {
+            let id = n.id.clone();
+            top = top.child(Button::new("Mark read").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(move |s: &mut App| mark_read(s, Some(id.clone()))).build(k).key(format!("notice-read-{}", n.id)));
+        }
+        if n.opens() != Opens::Nothing {
+            let to = n.clone();
+            top = top.child(Button::new("Open").control_size(ControlSize::Small).on_press(move |s: &mut App| open_notice(s, &to)).build(k).key(format!("notice-open-{}", n.id)));
+        }
+        let mut card = col().key(format!("notice-{}", n.id)).w_full().padding(8.0).gap(4.0).radius(k.radius.sm).fill(c.layer_01).child(top);
+        if !n.body.is_empty() {
+            card = card.child(text(n.body.clone()).font(k.ty.ui).color(c.text_base).wrap().selectable(true));
+        }
+        list = list.child(card);
+    }
+    if s.notices.is_empty() {
+        list = list.child(text(if s.notices_req.is_pending() { "Reading the activity" } else { "No activity yet. Comments from other ships, forum replies, shares and asks to edit show here." }).font(k.ty.small).color(c.text_muted).wrap());
+    }
+    list
+}
+
 /// Every page's comments, newest first, as the ship gives them.
 fn inbox_view(s: &App, k: &Kit) -> El {
     let c = &k.c;
@@ -1813,14 +1923,15 @@ fn inbox_view(s: &App, k: &Kit) -> El {
     }
     let head = col()
         .gap(4.0)
-        .child(text("Comments").font(k.ty.body_medium).color(c.text_base))
-        .child(text("What other ships and web readers wrote on your pages, newest first. The ship gives the newest 200.").font(k.ty.small).color(c.text_muted).wrap());
+        .child(text("Inbox").font(k.ty.body_medium).color(c.text_base))
+        .child(text("What waits for your yes, what happened, and every comment on your pages, newest first. The ship gives the newest 200 comments.").font(k.ty.small).color(c.text_muted).wrap());
+    let list = col().w_full().gap(8.0).child(text("Comments").font(k.ty.ui_medium).color(c.text_base)).child(list);
     col()
         .key("inbox")
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(waiting).child(list)))
+        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(waiting).child(activity_view(s, k)).child(list)))
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
@@ -2372,7 +2483,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
             load_shared(s);
         }
     }).build(k).key("shared-open");
-    let inbox = Button::new("Comments").control_size(ControlSize::Small).variant(if s.inbox { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("Comments on every page").on_press(|s: &mut App| {
+    let inbox = Button::new(match s.waiting.held + s.waiting.unread { 0 => "Inbox".to_owned(), n => format!("Inbox {n}") }).control_size(ControlSize::Small).variant(if s.inbox { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("Held comments, activity, and comments on every page").on_press(|s: &mut App| {
         if !s.editing {
             s.inbox = true;
             s.access = false;
@@ -2666,7 +2777,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let path = s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref());
     // the name it was given when there is one, with its path beside it
     let named = path.and_then(|p| s.dnames.get(p).filter(|_| !s.memory && s.remote.is_none()).map(|d| format!("{d}  ({p})")));
-    let title = if s.inbox { "Comments" } else if s.shared_open { "Shared with me" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
+    let title = if s.inbox { "Inbox" } else if s.shared_open { "Shared with me" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
     let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending();
     let mut trailing = row().gap(8.0).center_y();
     if busy {
@@ -3000,6 +3111,25 @@ mod tests {
         // a page opened from the folder takes over
         open_page(&mut s, "notes/today");
         assert_eq!(share_target(&s), Some(("notes/today".to_owned(), false)));
+    }
+
+    #[test]
+    fn opening_a_notice_shows_what_it_is_about_and_marks_it_read() {
+        let mut s = sample("welcome");
+        s.inbox = true;
+        let n = s.notices[0].clone();
+        assert_eq!((n.read, s.waiting.unread), (false, 1));
+        open_notice(&mut s, &n);
+        assert_eq!((s.open.as_ref().map(|p| p.name.as_str()), s.inbox), (Some("notes/today"), false));
+        assert_eq!((s.notices[0].read, s.waiting.unread), (true, 0));
+        // a notice with nowhere to open here is left as it was
+        let mut forum = s.notices[1].clone();
+        forum.read = false;
+        s.notices[1].read = false;
+        open_notice(&mut s, &forum);
+        assert!(!s.notices[1].read);
+        mark_read(&mut s, None);
+        assert!(s.notices.iter().all(|n| n.read));
     }
 
     #[test]

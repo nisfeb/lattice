@@ -38,7 +38,9 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Comments inbox: a Comments screen lists every page's comments newest first, opens the page one is on, and removes one (`/comments-inbox`, `/comment-del`). The web client has no unread mark for comments either
 - [x] Held comments: a page's Comments pane sets what comets' comments do (open, held, off, `/page-comets`), and the Comments screen lists what is held with Approve and Reject (`/held-comments`, `/comet-pending`). The setting was run on a fake ship. The list and its buttons run on a sample held comment
 - [!] Held comments, a real one approved or rejected on a ship: blocked on a comet to write one. The fake ships here are all ~zod
-- [ ] Inbox, activity: notices with read marks and a count (`/notify`, `/notify-read`, `/notify-count`)
+- [x] Inbox activity: notices of comments, replies, shares and asks, each marked read alone or all at once, opened where this client has a screen, and counted with held comments on the Inbox button (`/notify`, `/notify-read`, `/notify-count`). The routes were run on a fake ship, which has no notices. The list runs on sample notices
+- [!] Inbox activity, a real notice read and opened: blocked on a second running ship to cause one
+- [ ] Asks to edit: approve or deny from the notice and the Access screen (`/access-requests`)
 - [ ] Backlinks and ghost links (pages that link here, links to pages not made)
 - [ ] Quick capture
 - [ ] Templates and the journal (daily pages, orrery mirror pages read-only)

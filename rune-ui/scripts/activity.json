@@ -1,0 +1,4 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "inbox-open"},
+  {"t": 3.0, "type": "tap", "key": "notice-open-0v1.note"}
+]}
