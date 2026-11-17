@@ -12,6 +12,7 @@ rune-kit = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # the same client the desktop app's bridge uses
+flate2 = "1"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
 # Cargo does not inherit a dependency's patches: these are Rune's own, at the same rev.

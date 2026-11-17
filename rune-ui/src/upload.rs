@@ -47,20 +47,18 @@ pub fn ext_kind(ext: &str) -> Option<&'static str> {
 /// made a name a page can have, under `dir` when there is one.
 pub fn page_name(rel: &str, dir: &str) -> Option<(String, &'static str)> {
     let (stem, ext) = rel.rsplit_once('.')?;
-    // a .csv comes in as a spreadsheet page
-    let kind = if ext.eq_ignore_ascii_case("csv") { "fods" } else { ext_kind(ext)? };
+    // a .csv and an .ods come in as a spreadsheet page, an .odt as a document
+    let kind = match ext.to_ascii_lowercase().as_str() {
+        "csv" | "ods" => "fods",
+        "odt" => "fodt",
+        e => ext_kind(e)?,
+    };
     let under = if dir.is_empty() { stem.to_owned() } else { format!("{}/{stem}", dir.trim_matches('/')) };
     Some((crate::api::real_name(&under)?.name, kind))
 }
 
-/// Why a file with this extension is left out, for the ones the web
-/// client takes through a converter this client does not have.
 fn why_not(rel: &str) -> String {
-    let ext = rel.rsplit_once('.').map_or("", |p| p.1).to_ascii_lowercase();
-    match ext.as_str() {
-        "odt" | "ods" => format!("{rel} (needs a converter this client does not have)"),
-        _ => format!("{rel} (not a kind of page)"),
-    }
+    format!("{rel} (not a kind of page)")
 }
 
 /// Reads one file into the plan. A file too large, or not text, is left out.
@@ -74,7 +72,21 @@ fn take(plan: &mut Plan, path: &Path, rel: &str, dir: &str) {
         Err(e) => return plan.skipped.push(format!("{rel} ({e})")),
         Ok(_) => {}
     }
-    let csv = rel.rsplit_once('.').is_some_and(|p| p.1.eq_ignore_ascii_case("csv"));
+    let ext = rel.rsplit_once('.').map_or("", |p| p.1).to_ascii_lowercase();
+    // a package is unpacked into the one flat document a page holds
+    if ext == "odt" || ext == "ods" {
+        match std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| crate::odf::import(&b, &ext)) {
+            Ok(flat) => {
+                if !flat.note.is_empty() {
+                    plan.skipped.push(format!("{rel} came in, but {}", flat.note));
+                }
+                plan.items.push(Item { name, kind, body: flat.text });
+            }
+            Err(e) => plan.skipped.push(format!("{rel} ({e})")),
+        }
+        return;
+    }
+    let csv = ext == "csv";
     match std::fs::read_to_string(path) {
         Ok(text) if csv => match crate::sheet::from_csv(&text) {
             Ok(body) => plan.items.push(Item { name, kind, body }),
@@ -156,6 +168,8 @@ mod tests {
         assert!(page_name("day.md", "notes/").unwrap().0.starts_with("notes/"));
         assert_eq!(page_name("no-extension", ""), None);
         assert_eq!(page_name("photo.png", ""), None);
+        assert_eq!(page_name("Report.ODT", "").map(|p| p.1), Some("fodt"));
+        assert_eq!(page_name("costs.ods", "").map(|p| p.1), Some("fods"));
         assert_eq!(page_name(".md", ""), None, "nothing left for a name");
     }
 
@@ -182,6 +196,11 @@ mod tests {
         let mut skipped = plan.skipped.clone();
         skipped.sort();
         assert_eq!(skipped, ["Trip/bad.md (not text)", "Trip/photo.png (not a kind of page)"]);
+        // a file called .odt that is no package says why and makes nothing
+        std::fs::write(top.join("fake.odt"), "not a zip").unwrap();
+        let fake = read(&top.join("fake.odt"), "");
+        assert!(fake.items.is_empty());
+        assert_eq!(fake.skipped, ["fake.odt (this is not a zip file)"]);
         // one file, with no folder to go under
         let one = read(&top.join("plan.md"), "");
         assert_eq!(one.items, [Item { name: "plan".into(), kind: "md", body: "# plan\n".into() }]);

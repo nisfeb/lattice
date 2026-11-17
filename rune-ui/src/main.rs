@@ -7,6 +7,7 @@
 mod api;
 mod map;
 mod md;
+mod odf;
 mod sheet;
 mod upload;
 
@@ -2186,7 +2187,7 @@ fn ask_upload(s: &mut App, folder: bool, tx: &mut Tx) {
     if folder {
         tx.open_folder(options, answer);
     } else {
-        tx.open_file(options.filter("Pages", &["md", "gmi", "html", "htm", "txt", "text", "js", "css", "hoon", "tex", "latex", "fodt", "fods", "geojson", "scad", "csv"]), answer);
+        tx.open_file(options.filter("Pages", &["md", "gmi", "html", "htm", "txt", "text", "js", "css", "hoon", "tex", "latex", "fodt", "fods", "geojson", "scad", "csv", "odt", "ods"]), answer);
     }
 }
 

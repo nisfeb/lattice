@@ -1443,6 +1443,7 @@ dependencies = [
 name = "lattice-rune"
 version = "0.0.1"
 dependencies = [
+ "flate2",
  "rune",
  "rune-kit",
  "serde",
