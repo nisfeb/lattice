@@ -35,7 +35,16 @@
 //     only when the ship answers. An offline draw skips Inbox names this
 //     device knows. A display name stays with the page it was given to.
 //
-//  ONLY=A (or B, C, D, E) runs just that section after the setup.
+//  F: A named page's create that lands while the browser sees a timeout.
+//     The retry finds the page holding what this editor sent, takes it as
+//     its own and saves the text typed since. A page there holding other
+//     text is refused as before, and never written over.
+//
+//  G: An offline capture replayed under a name another device took is
+//     drawn again. A newer edit of it queued during the replay goes with
+//     it to the new name, and the other device's page is left as it is.
+//
+//  ONLY=A (or B, C, D, E, F, G) runs just that section after the setup.
 //
 //  Usage: LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> \
 //           node scripts/ui-capture.mjs
@@ -81,6 +90,9 @@ const fake = new Map();    // D: a page-source name -> 'abort' or {status, body}
 let fakeLink = null;       // D: a tree row for another ship's page, put in every dump
 let holdDump = null;       // A, D: page-dump requests held while this is an array
 const hideRows = new Set(); // E: paths left out of every dump
+const landCut = new Set();  // F: names whose next create lands, and the browser sees it fail
+let holdNew = null;         // G: {name, reqs}, creates of `name` held while set
+let cutEdit = null;         // G: a name whose plain saves fail unsent
 //  every page-save the editor sent: its page, type, whether it was a
 //  create, its display name and when it went
 const saves = [];
@@ -119,6 +131,17 @@ page.on('request', (r) => {
     }).catch(() => r.continue().catch(() => {}));
     return;
   }
+  //  F, G: a create that reaches the ship and is cut on the way back, a
+  //  create held until the suite lets it go, an edit cut before it is sent
+  const sq = /\/page-save\?/.test(u) && new URL(u).searchParams;
+  if (sq && sq.get('new') === '1' && landCut.delete(sq.get('name'))) {
+    fetch(u, { method: 'POST', headers: { Cookie: env.cookie }, body: r.postData() })
+      .then((x) => { if (x.ok) made.add(sq.get('name')); })
+      .finally(() => r.abort('timedout').catch(() => {}));
+    return;
+  }
+  if (sq && sq.get('new') === '1' && holdNew && holdNew.name === sq.get('name')) { holdNew.reqs.push(r); return; }
+  if (sq && sq.get('new') !== '1' && cutEdit === sq.get('name')) { r.abort('timedout').catch(() => {}); return; }
   const down = shipDown && /page-save|legacy-status|page-cmd|know-save/.test(u);
   if (!down && holdSave && /\/page-save\?/.test(u)) {
     setTimeout(() => r.continue().catch(() => {}), holdSave);
@@ -1985,6 +2008,104 @@ try {
     const allDlg = await dlgSum();
     check('E: the editor\'s dialog opened only where the suite opened it', allDlg === dlgMeant,
       JSON.stringify({ shown: allDlg, meant: dlgMeant }));
+  }
+
+  const status = () => page.evaluate(() => document.getElementById('status').textContent);
+  if (on('F')) {
+    // ── F1. a named page's create lands, and the browser sees a timeout ──
+    step = 'F1 create cut';
+    const FN = RUN + '/cut-create';
+    const cf0 = await treePages('conflicts/');
+    await boot();
+    await plus();
+    await sleep(500);
+    await page.evaluate((n) => window.latStartNamed(n), FN);
+    const sF = await waitFor(async () => (await front()).name === FN, 5000, 100);
+    landCut.add(FN);
+    const T1 = 'first words ' + RUN;
+    await typeIn(T1);
+    const cut = await waitFor(async () => !landCut.has(FN) && (await shipBody(FN)) === T1, 20000, 200);
+    const T2 = ' and more typed after';
+    await typeIn(T2);
+    const both = await waitFor(async () => (await shipBody(FN)) === T1 + T2
+      && (await front()).key === FN, 40000, 500);
+    let f = await front();
+    check('F: a named page whose create landed unseen takes the text typed after it',
+      !!sF && !!cut && !!both, JSON.stringify({ body: await shipBody(FN), f, st: await status() }));
+    check('F: and it is the page in front, under its name', f.key === FN && f.readOnly, JSON.stringify(f));
+    const cf1 = (await treePages('conflicts/')).filter((n) => !cf0.includes(n));
+    check('F: and no conflicts/ copy is made of it', !cf1.length, JSON.stringify(cf1));
+
+    // ── F2. the same, when the page there is not ours: never written over ──
+    step = 'F2 create cut, page theirs';
+    const FO = RUN + '/cut-theirs';
+    await plus();
+    await sleep(500);
+    await page.evaluate((n) => window.latStartNamed(n), FO);
+    await waitFor(async () => (await front()).name === FO, 5000, 100);
+    const n0 = saves.length;
+    shipDown = true;
+    await typeIn('mine ' + RUN);
+    await waitFor(() => saves.slice(n0).some((x) => x.name === FO && x.isNew) || null, 10000, 100);
+    await sleep(500);
+    const THEIRS = 'made elsewhere ' + RUN;
+    await apiMake(FO, THEIRS);
+    shipDown = false;
+    const refused = await waitFor(async () => /already exists/.test(await status()) || null, 20000, 200);
+    f = await front();
+    check('F: a page under that name holding other text is left as it is',
+      !!refused && (await shipBody(FO)) === THEIRS && !f.key && !f.readOnly,
+      JSON.stringify({ body: await shipBody(FO), f, st: await status() }));
+  }
+
+  if (on('G')) {
+    // ── G1. an offline capture redrawn, with a newer edit queued behind ──
+    step = 'G1 redraw with a newer edit';
+    const qBody = (n) => page.evaluate((x) => new Promise((res) => {
+      const rq = indexedDB.open('lattice-offline');
+      rq.onsuccess = () => {
+        try {
+          const g = rq.result.transaction('saves', 'readonly').objectStore('saves').get(x);
+          g.onsuccess = () => res(g.result ? g.result.body : null); g.onerror = () => res(null);
+        } catch { res(null); }
+      };
+      rq.onerror = () => res(null);
+    }), n);
+    await boot();
+    const before = await inboxOnShip();
+    const qc = await qCount();
+    shipDown = true;
+    await plus();
+    await sleep(500);
+    const G1 = 'offline capture, name taken ' + RUN;
+    await setText(G1);
+    await waitFor(async () => (await qCount()) === qc + 1, 15000);
+    const taken = (await front()).key;
+    const THEIRS = 'another device made this ' + RUN;
+    await apiMake(taken, THEIRS);
+    //  the replay's create waits while a live save of the same text is
+    //  cut and queued behind it, then goes and is refused
+    holdNew = { name: taken, reqs: [] };
+    shipDown = false;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    const held = await waitFor(() => holdNew.reqs.length > 0 || null, 30000, 200);
+    cutEdit = taken;
+    await typeIn(' typed while it replayed');
+    const newer = await waitFor(async () => /typed while it replayed/.test(await qBody(taken) || '') || null, 15000, 200);
+    const want = await qBody(taken);
+    const rq = holdNew.reqs;
+    holdNew = null;
+    for (const r of rq) r.continue().catch(() => {});
+    await waitFor(async () => (await qCount()) === qc, 40000, 500);
+    await sleep(4000);
+    await waitFor(async () => (await qCount()) === qc, 20000, 500);
+    cutEdit = null;
+    check('G: a replayed capture whose name was taken, with a newer edit queued, leaves that page as it is',
+      !!held && !!newer && (await shipBody(taken)) === THEIRS,
+      JSON.stringify({ held: !!held, newer: !!newer, theirs: await shipBody(taken) }));
+    const cG = await capturedAs(want, [...before, taken]);
+    check('G: and the newer text lands under the new name', !!cG, JSON.stringify({ want, cG }));
+    check('G: and the tab follows it', !!cG && (await front()).key === cG, JSON.stringify(await front()));
   }
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 160), false);

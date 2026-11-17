@@ -140,6 +140,9 @@
   // cached views it could have changed — any entry naming the page, plus
   // home, whose listings change under every write.
   const bustPages = (name) => {
+    // every write that lands, a replayed offline one and a move included,
+    // also drops the scad pane's copy of the page as an include
+    try { if (scadG) scadG.forget(String(name || '').replace(/^\/+/, '')); } catch {}
     if (!('caches' in window)) return;
     // ball paths arrive with a leading slash (spud); the needle below adds
     // its own, and '//' matches no URL — normalize or the bust is a no-op
@@ -208,7 +211,7 @@
     }
     try { localStorage.removeItem('appPage'); } catch {}
     try { await kvPut('tree', []); } catch {}
-    try { if ('caches' in window) await caches.delete('lattice-pages'); } catch {}
+    try { if ('caches' in window) { await caches.delete('lattice-pages'); await caches.delete('lattice-tiles'); } } catch {}
     try { indexedDB.deleteDatabase('lattice-lru'); } catch {}
     nodes = []; pageCache.clear(); renderTree();
     st('the session has ended: log in to the ship again', false);

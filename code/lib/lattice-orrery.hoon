@@ -206,6 +206,52 @@
       ?~(p.u.fs '' '\0a')
       ']}\0a'
   ==
+::  +map-notice: the orrery/map page when orrery's map is one lattice
+::  refuses (`why`, the reason +gj-check gives): no features, and a title
+::  that says so, so the refusal shows without a large page
+++  map-notice
+  |=  why=@t
+  ^-  @t
+  %+  rap  3
+  :~  '{"type":"FeatureCollection","lattice":'
+      %-  en:json:html
+      %-  pairs:enjs:format
+      :~  ['title' s+(rap 3 ~['The map from orrery was too large to mirror: ' why])]
+          ['layers' a+~[s+'orrery/map-notes']]
+      ==
+      ',"features":[\0a]}\0a'
+  ==
+::  +map-key: the map mirror's key in journal-synced.json. Its slash keeps
+::  it apart from every journal day and week-<day>.
+++  map-key  'orrery/map'
+::  +map-rec: the map mirror's record once it wrote orrery/map: the
+::  version [ud da] of orrery's map.json it wrote from, and a hash of the
+::  page's source as it left it. The journal record's shape, [at hash].
+++  map-rec
+  |=  [doc=[@ud @da] src=@t]
+  ^-  [at=@t hash=(unit @uv)]
+  [(scot %uv (sham doc)) `(sham src)]
+::  +map-skip: may the map pass stop after one peek? Only when the
+::  record (`rec`) names this version of map.json (`doc`) and the page
+::  source (`src`, ~ when there is no page) is still what the mirror
+::  left. So an unchanged map costs no body and no check, and a hand
+::  edit is still put back. No record, or a malformed one, is a full
+::  pass.
+++  map-skip
+  |=  [rec=(unit [at=@t hash=(unit @uv)]) doc=[@ud @da] src=(unit @t)]
+  ^-  ?
+  ?~  src  |
+  =(rec `(map-rec doc u.src))
+::  +map-kept: why a save of `pax` must not land, ~ when it may.
+::  orrery/map is orrery's while its mirror is live: orrery is installed
+::  (`orrery`) and the mirror has written the page (`mirrored`: its
+::  record is in journal-synced.json). Then the mirror would put a save
+::  back within minutes. Without a live mirror it is an ordinary page.
+++  map-kept
+  |=  [pax=path orrery=? mirrored=?]
+  ^-  (unit @t)
+  ?.  &(=(/orrery/map pax) orrery mirrored)  ~
+  `'orrery keeps this page: draw on orrery/map-notes'
 ::  +travel-token: the Mapbox token in orrery's travel settings
 ::  (<base>/travel.json, its `token` string), ~ when there is none
 ++  travel-token

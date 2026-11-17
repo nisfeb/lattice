@@ -454,8 +454,9 @@
         ::  /journal-synced.json: the orrery journal mirror's memory, a json
         ::  object mapping day -> the last brief/review `at` already written as
         ::  a /journal page. +orrery-journal-pass reads it to skip days it has
-        ::  mirrored and rewrite only when orrery's record moved forward. Root
-        ::  grub, owner-only, no beacon. %fall so it survives reload.
+        ::  mirrored and rewrite only when orrery's record moved forward. The
+        ::  map mirror keeps its record under the key orrery/map (+map-rec:lo).
+        ::  Root grub, owner-only, no beacon. %fall so it survives reload.
             [%fall %& [/ %'journal-synced.json'] [[/ %json] `json`[%o ~]]]
         ::  /shared: notices other ships sent about files they granted us (see
         ::  /lib/lattice-share: claims, not capabilities). /shares.sig is the
@@ -995,12 +996,21 @@
         ;<  *  bind:m  (link-read pax l.u.lk)
         (pure:m ~)
       ::  /scad-job/install: fetch the OpenSCAD runtime, check it and keep
-      ::  it (+scad-install-run). A restart (prod) ends it: the owner asks
-      ::  again, and nothing half-written is kept.
+      ::  it (+scad-install-run). The grub is made holding ~ and the run
+      ::  marks it %run before any fetch. So a start that finds %run is a
+      ::  run a crash or a reload cut short: it fetches nothing, says so in
+      ::  /scad/state.json and ends, and the owner asks again. A crash that
+      ::  leaves the grub banged is not busy either (+scad-status).
           [[%scad-job ~] %install]
         ;<  ~  bind:m  take-kick
         ?^  prod  (pure:m ~)
-        scad-install-run
+        ;<  st=vase  bind:m  get-state:io
+        ?:  =(%run q.st)
+          (scad-put-state up ~[['error' s+'the install was cut short by a crash or a reload, install again']])
+        ;<  ~  bind:m  (replace:io %run)
+        ;<  ~  bind:m  scad-install-run
+        ;<  *  bind:m  (soft-behn /scad/rest [[/ %timer-rest] `wire`/scad-deadline])
+        (pure:m ~)
       ::  /link-writes/<id>: a lick save through a link (+link-write-apart).
       ::  The remote peeks and pokes run here, never in the lick port's own
       ::  fiber: one that times out leaves its late answer to a fiber that
@@ -2011,11 +2021,6 @@
   =/  pp=(each path tang)  (mule |.((stab u.pt)))
   ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
   ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
-  ::  the editor may hold the host's path as a share recorded it, from
-  ::  before the host's lattice moved. /browse-file found where it lives
-  ::  now when it opened the page (+peer-moved), so write there
-  ;<  known=(map @t json)  bind:m  read-peers
-  =.  p.pp  (fall (moved-path:lu (known-base:lu known u.shp) p.pp) p.pp)
   ::  a tainted key (one that read sensitive content in the last 12h) cannot
   ::  write to a foreign destination: we cannot verify a remote page's
   ::  sensitivity, so it counts as a non-sensitive destination, like a local
@@ -2028,6 +2033,20 @@
   =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
   ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
     (remote-write u.shp p.pp (req-body req) base ~s10)
+  ?.  ?&  ?=(%| -.r)
+          (save-moved:lu code.p.r =((unacked-msg u.shp) msg.p.r) p.pp)
+      ==
+    (remote-save-respond eyre-id r)
+  ::  nothing reached the host. The editor may hold the host's path as a
+  ::  share recorded it, from before the host's lattice moved: ask where
+  ::  it lives now (+peer-moved) and write the same file there, once, as
+  ::  /browse-file reads it. A key must hold that path too.
+  ;<  np=(unit path)  bind:m  (peer-moved u.shp p.pp)
+  ?~  np  (remote-save-respond eyre-id r)
+  ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] u.np %write))
+    (remote-save-respond eyre-id r)
+  ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
+    (remote-write u.shp u.np (req-body req) base ~s10)
   (remote-save-respond eyre-id r)
 ::  +remote-save-respond: /remote-save's answer, naming the outcome the
 ::  write really had, so the editor never reads a host's silence as its
@@ -2335,9 +2354,20 @@
   ::  map tiles: GET /tile/<style>/<z>/<x>/<y>, the owner's cookie only.
   ::  No agent key and no peer: a tile spends the owner's Mapbox quota and
   ::  says where they are looking. Answered before the key lookup, so a
-  ::  tile costs no scry it does not need (+serve-tile).
+  ::  tile costs no scry it does not need (+serve-tile). A tile another
+  ::  site asked for (an <img> on any page the owner visits sends the
+  ::  cookie) is refused, as a write is above. Only same-origin and a
+  ::  typed url pass: the editor and its service worker are same-origin,
+  ::  and a same-site sibling has no need of the owner's tiles. A client
+  ::  that sends no such header (curl, an older browser) is not refused.
   ?:  &(?=([%tile *] suffix) =(%'GET' method.request.req))
     ?.  authenticated.req  (send-err eyre-id 403 'forbidden')
+    ?:  %:  cross-site:lu
+          (get-header:http 'sec-fetch-site' header-list.request.req)
+          (get-header:http 'origin' header-list.request.req)
+          (get-header:http 'host' header-list.request.req)
+        ==
+      (send-err eyre-id 403 'cross-site request refused')
     (serve-tile up eyre-id t.suffix)
   ::  owner gate. Eyre stamps a request authenticated to our web login with
   ::  src=our, so `authenticated` (already in hand, synchronous) IS the src==our
@@ -2911,7 +2941,12 @@
     ?.  &(render ?=(~ key) ?=([%o *] p.r))  (send-json eyre-id p.r)
     ;<  sv=view:nexus  bind:m
       (peek:fio (rf up (weld /page (pax-of u.name)) %sensitive) ~)
-    (send-json eyre-id [%o (~(put by p.p.r) 'sensitive' b+?=([%file *] sv))])
+    =/  o=(map @t json)  (~(put by p.p.r) 'sensitive' b+?=([%file *] sv))
+    ::  orrery/map also says whether orrery keeps it (+orrery-kept), so
+    ::  the map editor opens it read-only only then
+    ?.  =(/orrery/map (pax-of u.name))  (send-json eyre-id [%o o])
+    ;<  kp=(unit @t)  bind:m  (orrery-kept (pax-of u.name))
+    (send-json eyre-id [%o (~(put by o) 'kept' b+?=(^ kp))])
   ::  page-history: every stored revision of a page, newest first. The /page
   ::  code grub's born history is permanent (%firm), and autosave makes it
   ::  dense. Version history for free, no extra storage machinery.
@@ -4956,16 +4991,21 @@
     (send-json eyre-id js)
       ::  start the install in its own fiber and answer at once. The fetch
       ::  and the check take seconds and must not hold a request. A second
-      ::  ask while one runs is refused softly by the make.
+      ::  ask while one runs is refused softly by the make. A job a crash
+      ::  banged is deleted first, so the owner can ask again.
       [%'POST' %scad-install]
+    ;<  job=?(%none %live %dead)  bind:m  (scad-job up)
+    ;<  *  bind:m
+      ?.  =(%dead job)  (pure:(fiber:fiber:nexus ,(unit tang)) ~)
+      (cull-soft:io (rf up /scad-job %install))
     ;<  *  bind:m
       %+  make-soft:io  (rf up /scad-job %install)
       |+[[[/ %noun] `*`~] ~]
     (send-ok eyre-id)
       ::  drop the runtime. Its grubs go, so the loom they held is freed.
       [%'POST' %scad-uninstall]
-    ;<  busy=?  bind:m  (peek-exists:fio (rf up /scad-job %install))
-    ?:  busy  (send-err eyre-id 409 'an install is running')
+    ;<  job=?(%none %live %dead)  bind:m  (scad-job up)
+    ?:  =(%live job)  (send-err eyre-id 409 'an install is running')
     ;<  ~  bind:m  scad-drop
     (send-ok eyre-id)
       [%'POST' %mirror-config]
@@ -6239,8 +6279,10 @@
   ?.  ?=(%cont -.next.out)  out
   [darts.out state.out %cont (tile-gate self.next.out t0 n)]
 ::  +tile-ask: the eyre id of the poke that opens a tile request of the
-::  owner's, ~ for any other input. An unauthenticated one is not
-::  counted: it is refused before any work (+handle-request).
+::  owner's, ~ for any other input. An unauthenticated or a cross-site
+::  one is not counted: it is refused before any work (+handle-request).
+::  A tile is found from the parse the router reads, so a url that
+::  spells /tile/ with %-escapes is counted as the router serves it.
 ++  tile-ask
   |=  in=(unit intake:fiber:nexus)
   ^-  (unit @ta)
@@ -6251,7 +6293,15 @@
   ?~  r  ~
   ?.  authenticated.req.u.r  ~
   ?.  =(%'GET' method.request.req.u.r)  ~
-  ?.  =('/apps/lattice/tile/' (end [3 19] url.request.req.u.r))  ~
+  =/  suf  (mole |.((slag 2 site:(parse-url:http-utils url.request.req.u.r))))
+  ?.  ?=([~ %tile *] suf)  ~
+  =*  hs  header-list.request.req.u.r
+  ?:  %:  cross-site:lu
+        (get-header:http 'sec-fetch-site' hs)
+        (get-header:http 'origin' hs)
+        (get-header:http 'host' hs)
+      ==
+    ~
   `eyre-id.u.r
 ::  +token-ok: a token's shape: up to 512 bytes of letters, digits and . _ -
 ++  token-ok
@@ -6434,30 +6484,46 @@
   |=  o=octs
   ^-  @t
   (en:base16:mimes:html [32 (rev 3 32 (shay p.o q.o))])
-::  +scad-source: the base address to fetch from, and whether a local host
-::  is allowed (the test override only), or ~ when there is none. Takes
+::  +scad-ttl: how long an install may take before it gives up. The files
+::  are about 4 MB, so ten minutes is a link of 55 kbit/s, slower than any
+::  a browser could then use the runtime over, and short enough that a
+::  stuck install does not hold Settings for long.
+++  scad-ttl  ^-(@dr ~m10)
+::  +scad-source: the base address to fetch from, whether a local host is
+::  allowed (the test override only), and how long the install may take,
+::  or ~ when there is none. The override may shorten the time with
+::  "secs", so a test of a source that never answers ends soon. Takes
 ::  the depth: the install fiber and a request both read it.
 ++  scad-source
   |=  up=@ud
-  =/  m  (fiber:fiber:nexus ,(unit [url=@t any=?]))
+  =/  m  (fiber:fiber:nexus ,(unit [url=@t any=? ttl=@dr]))
   ^-  form:m
   ;<  sv=view:nexus  bind:m  (peek:fio (rf up /scad %'source.json') ~)
-  =/  ov=(unit @t)
+  =/  ov=(unit [url=@t ttl=@dr])
     ?.  ?=([%file *] sv)  ~
     =/  j=(unit json)  (mole |.(!<(json (need-vase:tarball sang.sv))))
     ?~  j  ~
     ?.  ?=([%o *] u.j)  ~
     =/  u=(unit json)  (~(get by p.u.j) 'url')
     ?.  ?=([~ %s @] u)  ~
-    ?:(=('' p.u.u) ~ `p.u.u)
-  ?^  ov  (pure:m `[u.ov &])
+    ?:  =('' p.u.u)  ~
+    =/  n=(unit json)  (~(get by p.u.j) 'secs')
+    =/  t=(unit @ud)  ?.(?=([~ %n @] n) ~ (rush p.u.n dem))
+    =/  ttl=@dr  ?~(t scad-ttl (min scad-ttl (mul ~s1 (max 1 u.t))))
+    `[p.u.u ttl]
+  ?^  ov  (pure:m `[url.u.ov & ttl.u.ov])
   ?:  =('' scad-url)  (pure:m ~)
-  (pure:m `[scad-url |])
+  (pure:m `[scad-url | scad-ttl])
 ::  +fetch-octs: GET a url's bytes, following redirects (a GitHub release
 ::  file redirects to its storage host). Like +fetch-url, every failure is
-::  a reason, never a crash, and every hop is checked unless `any`.
+::  a reason, never a crash, and every hop is checked unless `any`. The
+::  request is a soft poke, a cancelled or refused one is a reason, and the
+::  wait ends at the /scad-deadline wake the install set. Each request has
+::  a wire of its own (the install's start and the address): iris keys a
+::  request by it, and one an earlier install gave up on, still open on
+::  the same wire, held the next one back until the runtime timed it out.
 ++  fetch-octs
-  |=  [url=@t any=?]
+  |=  [url=@t any=? now=@da]
   =/  m  (fiber:fiber:nexus ,(each octs @t))
   ^-  form:m
   =|  hops=@ud
@@ -6465,8 +6531,28 @@
   |-  ^-  form:m
   ?:  (gth hops fetch-hops)  (pure:m [%| 'too many redirects'])
   ?.  |(any (fetchable:lcl cur))  (pure:m [%| local-refused])
-  ;<  ~  bind:m  (send-request:io [%'GET' cur ~[['User-Agent' 'lattice'] ['Accept' '*/*']] ~])
-  ;<  res=client-response:iris  bind:m  take-client-response:io
+  ;<  sent=?  bind:m
+    %^  soft-poke  /scad/get/(scot %da now)/(scot %uv (sham cur))
+      [%& %& /sys/iris %'main.iris-state']
+    [[/ %iris-request] `request:http`[%'GET' cur ~[['User-Agent' 'lattice'] ['Accept' '*/*']] ~]]
+  ?.  sent  (pure:m [%| 'the ship may not make the download'])
+  ;<  got=(unit client-response:iris)  bind:m
+    =/  mr  (fiber:fiber:nexus ,(unit client-response:iris))
+    ^-  form:mr
+    |=  input:fiber:nexus
+    :+  ~  q.state
+    ?+  in  [%skip ~]
+        ~  [%wait ~]
+        [~ %poke * *]
+      ?:  =([/ %http-response] p.sage.u.in)
+        =/  r  (mole |.(!<(client-response:iris q.sage.u.in)))
+        [%done ?~(r `[%cancel ~] r)]
+      ?.  =([/ %timer-wake] p.sage.u.in)  [%skip ~]
+      ?.  =(`/scad-deadline (mole |.(!<(path q.sage.u.in))))  [%skip ~]
+      [%done ~]
+    ==
+  ?~  got  (pure:m [%| 'the download took too long, given up'])
+  =/  res=client-response:iris  u.got
   ?.  ?=(%finished -.res)  (pure:m [%| 'the download did not complete'])
   =/  status=@ud  status-code.response-header.res
   ?:  ?|  =(status 301)  =(status 302)  =(status 303)
@@ -6503,17 +6589,25 @@
 ::  +scad-install-run: fetch every file, check each, then write them all.
 ::  Nothing is written until every file has passed, so a bad file leaves
 ::  the runtime that was there, or none.
+::  It never fails on a fetch: each failure is a reason in state.json, and
+::  every fetch gives up at the deadline the start sets (+scad-ttl).
 ++  scad-install-run
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
-  ;<  src=(unit [url=@t any=?])  bind:m  (scad-source up)
+  ;<  src=(unit [url=@t any=? ttl=@dr])  bind:m  (scad-source up)
   ?~  src
     (scad-put-state up ~[['error' s+'this build of lattice names no address to install the runtime from']])
+  ;<  clock=(unit @da)  bind:m  soft-now
+  ?~  clock  (scad-put-state up ~[['error' s+'the install could not read the clock']])
+  =/  now=@da  u.clock
+  ;<  set=?  bind:m
+    (soft-behn /scad/set [[/ %timer-set] `[wire @da]`[/scad-deadline (add now ttl.u.src)]])
+  ?.  set  (scad-put-state up ~[['error' s+'the install could not set its deadline']])
   =/  fs  scad-files
   =|  got=(list [fil=@ta o=octs])
   |-  ^-  form:m
   ?^  fs
-    ;<  r=(each octs @t)  bind:m  (fetch-octs (cat 3 url.u.src fil.i.fs) any.u.src)
+    ;<  r=(each octs @t)  bind:m  (fetch-octs (cat 3 url.u.src fil.i.fs) any.u.src now)
     ?:  ?=(%| -.r)
       (scad-put-state up ~[['error' s+(rap 3 ~[fil.i.fs ': ' p.r])]])
     ?.  =(len.i.fs p.p.r)
@@ -6532,7 +6626,6 @@
     ;<  ~  bind:m
       (put-file (rf up /scad fil.i.ws) [/ %mime] `mime`[(scad-mite typ.i.ws) u.o])
     $(ws t.ws)
-  ;<  now=@da  bind:m  bowl-now
   %+  scad-put-state  up
   :~  ['have' s+scad-ver]
       ['error' ~]
@@ -6551,13 +6644,24 @@
     ;<  *  bind:m  (cull-soft:io (rf up /scad fil.i.ws))
     $(ws t.ws)
   (scad-put-state up ~[['have' ~] ['files' ~] ['error' ~]])
+::  +scad-job: the install job's grub: none, running, or banged by a
+::  crash. A banged one does nothing until it is made again, so it is not
+::  busy. Takes the depth, as +scad-source.
+++  scad-job
+  |=  up=@ud
+  =/  m  (fiber:fiber:nexus ,?(%none %live %dead))
+  ^-  form:m
+  ;<  v=view:nexus  bind:m  (peek:fio (rf up /scad-job %install) ~)
+  ?.  ?=([%file *] v)  (pure:m %none)
+  (pure:m ?~(bang.v %live %dead))
 ::  +scad-status: what Settings and a scad page need to know
 ++  scad-status
   =/  m  (fiber:fiber:nexus ,json)
   ^-  form:m
   ;<  st=(unit json)  bind:m  (scad-state up)
-  ;<  busy=?  bind:m  (peek-exists:fio (rf up /scad-job %install))
-  ;<  src=(unit [url=@t any=?])  bind:m  (scad-source up)
+  ;<  job=?(%none %live %dead)  bind:m  (scad-job up)
+  =/  busy=?  =(%live job)
+  ;<  src=(unit [url=@t any=? ttl=@dr])  bind:m  (scad-source up)
   =/  get  |=(k=@t ?.(?=([~ %o *] st) ~ (~(gut by p.u.st) k ~)))
   =/  size=@ud  (roll scad-files |=([f=[@ta @ta @t len=@ud *] a=@ud] (add a len.f)))
   %-  pure:m
@@ -6566,7 +6670,7 @@
       ['size' (numb:enjs:format size)]
       ['have' (get 'have')]
       ['files' (get 'files')]
-      ['error' (get 'error')]
+      ['error' ?:(=(%dead job) s+'the install stopped on an error, install again' (get 'error'))]
       ['busy' b+busy]
       ['source' b+?=(^ src)]
   ==
@@ -8890,7 +8994,8 @@
     ;<  ~  bind:m  (ensure-dirs up /links pax.act)
     (put-file (link-road up pax.act) [/lattice %link] link.act)
       %journal-put  (journal-put root now +.act)
-      %map-put  (map-put root now body.act)
+      %map-put  (map-put root now body.act doc.act)
+      %prune-husks  (prune-husks-in root now +.act)
       %del-from
     ;<  ~  bind:m  (del-from root now +.act)
     (apply-eval root now [%del from.act])
@@ -10635,6 +10740,9 @@
   |=  [pax=path gone=?]
   =/  m  (fiber:fiber:nexus ,(unit @t))
   ^-  form:m
+  ::  every save route comes here: orrery/map while orrery keeps it
+  ;<  kp=(unit @t)  bind:m  (orrery-kept pax)
+  ?^  kp  (pure:m kp)
   ::  one peek of a small grub for an ordinary save: the clock only
   ::  when there is a move to date
   ;<  job=(unit [from=path to=path at=@da])  bind:m  move-job-at
@@ -12373,23 +12481,42 @@
 ::  empty shell, from the deepest up, stopping at the first that still
 ::  holds something. Answers the ones deleted. Only POST /page-move asks:
 ::  a mount's rename (the lick %page-move) keeps what a file system keeps.
+::  The check and the delete are one writer step (%prune-husks), so no
+::  save into the source lands between them. The writer is drained
+::  before the folders are read again to tell which went.
 ++  prune-husks
   |=  [pf=path pt=path]
   =/  m  (fiber:fiber:nexus ,(list path))
   ^-  form:m
-  ;<  up=@ud  bind:m  nexus-up
   =/  todo=(list path)  (move-husks:ls pf pt)
+  ?:  =(~ todo)  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  ~  bind:m  (poke-eval [%prune-husks pf pt])
+  ;<  ~  bind:m  writer-drain
   =|  done=(list path)
   |-  ^-  form:m
   ?~  todo  (pure:m (flop done))
-  ;<  bare=?  bind:m  (folder-bare up i.todo)
-  ?.  bare  (pure:m (flop done))
-  ;<  ~  bind:m  (poke-eval [%del i.todo])
+  ;<  ex=?  bind:m  (peek-exists:fio (rv up (weld /page i.todo)))
+  ?:  ex  (pure:m (flop done))
   ;<  ~  bind:m  (move-grants i.todo ~)
   $(todo t.todo, done [i.todo done])
-::  +folder-bare: whether `rel` is a folder that holds nothing: no page
-::  of its own, no page or folder under it, no link at or under it, and
-::  no share on it. A display name alone does not keep it.
+::  +prune-husks-in: %prune-husks, in the writer: +prune-husks's check
+::  and delete of each folder, as one step
+++  prune-husks-in
+  |=  [root=@ud now=@da pf=path pt=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  todo=(list path)  (move-husks:ls pf pt)
+  |-  ^-  form:m
+  ?~  todo  (pure:m ~)
+  ;<  bare=?  bind:m  (folder-bare up i.todo)
+  ?.  bare  (pure:m ~)
+  ;<  ~  bind:m  (apply-eval root now [%del i.todo])
+  $(todo t.todo)
+::  +folder-bare: whether `rel` is a folder that holds nothing: its own
+::  node holds no more than a display name (+husk-bare:ls), there is no
+::  page or folder under it, and no link at or under it.
 ++  folder-bare
   |=  [up=@ud rel=path]
   =/  m  (fiber:fiber:nexus ,?)
@@ -12397,8 +12524,7 @@
   ;<  sn=view:nexus  bind:m  (peek:fio (rv up (weld /page rel)) ~)
   ?.  ?=([%ball *] sn)  (pure:m |)
   =/  fils  ?~(fil.ball.sn ~ contents.u.fil.ball.sn)
-  ?:  (~(has by fils) %code)  (pure:m |)
-  ?^  (dshare-row fils)  (pure:m |)
+  ?.  (husk-bare:ls ~(tap in ~(key by fils)))  (pure:m |)
   ?^  (tree-walk ball.sn *wave:nexus ~)  (pure:m |)
   ;<  lex=?  bind:m  (peek-exists:fio (rv up (weld /links rel)))
   (pure:m !lex)
@@ -12954,6 +13080,22 @@
   ::  the earliest claimant on develop's kernel; an arbitrary one on the
   ::  dist kernel's, where two orreries claiming the name are alike
   (pure:m `i.dirs)
+::  +orrery-kept: why a save of `pax` must not land because orrery keeps
+::  it (+map-kept:lo), ~ when it may. Only orrery/map pays the two peeks.
+::
+++  orrery-kept
+  |=  pax=path
+  =/  m  (fiber:fiber:nexus ,(unit @t))
+  ^-  form:m
+  ?.  =(/orrery/map pax)  (pure:m ~)
+  ;<  base=(unit path)  bind:m  orrery-base
+  ?~  base  (pure:m ~)
+  ::  and orrery still keeps a map: without one nothing would put a save
+  ::  back, and the page would refuse saves for good
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& u.base %'map.json'] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
+  ;<  synced=(map @t [at=@t hash=(unit @uv)])  bind:m  read-journal-synced
+  (pure:m (map-kept:lo pax & (~(has by synced) map-key:lo)))
 ::  +orrery-world: orrery's world digest, read whole as the json grub
 ::  <base>/world.json. ~ when orrery is absent or the grub will not decode.
 ::
@@ -13074,8 +13216,14 @@
   (write-journal-synced (~(put by synced) `@t`name [at hash]))
 ::  +orrery-map-pass: mirror orrery's map document (<base>/map.json) into
 ::  the private page orrery/map. A no-op when orrery or its map.json is
-::  absent. A document that is not a FeatureCollection, or a body over the
-::  map caps (+gj-check:lgj), writes nothing and keeps the last page.
+::  absent. When map.json is the version the mirror last wrote from and
+::  the page still holds what it wrote (+map-skip:lo, on the record
+::  +map-put keeps in journal-synced.json), the pass stops there: no
+::  body is built and nothing is checked or poked. A document that is
+::  not a FeatureCollection writes nothing and keeps the last page. A
+::  body over the map caps (+gj-check:lgj) is written as a small map
+::  with no features whose title says why (+map-notice:lo), once, since
+::  its record then lets an unchanged refusal skip too.
 ::
 ++  orrery-map-pass
   =/  m  (fiber:fiber:nexus ,~)
@@ -13084,31 +13232,52 @@
   ?~  base  (pure:m ~)
   ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& u.base %'map.json'] ~)
   ?.  ?=([~ %file *] vw)  (pure:m ~)
+  =/  at=[@ud @da]  [ud.cass.u.vw da.cass.u.vw]
+  ;<  synced=(map @t [at=@t hash=(unit @uv)])  bind:m  read-journal-synced
+  ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head /orrery/map)
+  ?:  (map-skip:lo (~(get by synced) map-key:lo) at src.pc)  (pure:m ~)
   =/  doc=(unit json)  (mole |.(!<(json (need-vase:tarball sang.u.vw))))
   =/  body=(unit @t)  ?~(doc ~ (map-body:lo u.doc))
   ?~  body  (pure:m ~)
-  ?^  (gj-check:lgj u.body)  (pure:m ~)
-  (poke-eval [%map-put u.body])
+  =/  bad=(unit @t)  (gj-check:lgj u.body)
+  (poke-eval [%map-put ?~(bad u.body (map-notice:lo u.bad)) at])
 ::  +map-put: %map-put, in the writer. orrery/map is written only when it
 ::  is missing or its body differs, so an unchanged map adds no revision
-::  and a hand edit is put back. orrery/map-notes, the page the owner
-::  draws on, is made only when missing and never rewritten. Each page is
-::  marked sensitive before it is written, as a journal page is.
+::  and a hand edit is put back. The mirror then records the version of
+::  map.json it wrote from and a hash of the page's source (+map-rec:lo)
+::  in journal-synced.json, which lets the next pass skip. orrery/map-notes,
+::  the page the owner draws on, is made only when missing and never
+::  rewritten. Each page is marked sensitive before it is written, as a
+::  journal page is.
 ::
 ++  map-put
-  |=  [root=@ud now=@da body=@t]
+  |=  [root=@ud now=@da body=@t doc=[@ud @da]]
   =/  m  (fiber:fiber:nexus ,~)
   ^-  form:m
   =/  pax=path  /orrery/map
   ;<  pc=[rev=@ud src=(unit @t)]  bind:m  (page-head pax)
   =/  was=(unit [builder=@tas body=@t])  ?~(src.pc ~ (unwrap-content u.src.pc))
+  =/  keep=?  =(`[%geojson body] was)
+  =/  src=@t  ?:(&(keep ?=(^ src.pc)) u.src.pc (wrap-content %geojson body))
   ;<  ~  bind:m
     =/  n  (fiber:fiber:nexus ,~)
-    ?:  =(`[%geojson body] was)  (pure:n ~)
+    ?:  keep  (pure:n ~)
     ;<  ~  bind:n  (apply-eval root now [%page-sensitive pax &])
-    (apply-eval root now [%make pax (wrap-content %geojson body)])
+    (apply-eval root now [%make pax src])
+  ;<  synced=(map @t [at=@t hash=(unit @uv)])  bind:m  read-journal-synced
+  =/  rec  (map-rec:lo doc src)
+  ;<  ~  bind:m
+    ?:  =(`rec (~(get by synced) map-key:lo))  (pure:m ~)
+    (write-journal-synced (~(put by synced) map-key:lo rec))
   =/  nax=path  /orrery/map-notes
   ;<  nc=[rev=@ud src=(unit @t)]  bind:m  (page-head nax)
+  ::  a notes page that was there before the mirror's first write is made
+  ::  sensitive once: a key may have made it first, and the owner draws
+  ::  private places on it. After that the flag is the owner's to change.
+  ;<  ns=?  bind:m  (page-sensitive nax)
+  ;<  ~  bind:m
+    ?:  |(ns ?=(~ src.nc) (~(has by synced) map-key:lo))  (pure:m ~)
+    (apply-eval root now [%page-sensitive nax &])
   ?^  src.nc  (pure:m ~)
   ?.  =(0 rev.nc)  (pure:m ~)
   ;<  ~  bind:m  (apply-eval root now [%page-sensitive nax &])
@@ -14795,13 +14964,19 @@
   :+  ~  q.state
   ?+  in  [%skip ~]
       ~  [%wait ~]
-      [~ %veto *]  [%done |]
+      [~ %veto %node * * *]
+    ?.  =(wire wire.dart.u.in)  [%skip ~]
+    [%done |]
       [~ %pack * *]
     ?.  =(wire wire.u.in)  [%skip ~]
     [%done =(~ err.u.in)]
   ==
 ::  +soft-now: the time, or ~ when /sys/bowl.sig refuses (+bowl-now fails
-::  instead). The answer and its ack come in either order.
+::  instead). The answer and its ack come in either order. Only an ack
+::  or a veto on /rise/now is ours: a veto carries the dart it refused,
+::  so its wire. Any other is left for the step it belongs to (the tile
+::  gate offers the dispatcher's queue again after this). Our dart gets
+::  an ack or a veto either way, so the wait always ends.
 ++  soft-now
   =/  m  (fiber:fiber:nexus ,(unit @da))
   ^-  form:m
@@ -14814,8 +14989,12 @@
     :+  ~  q.state
     ?+  in  [%skip ~]
         ~  [%wait ~]
-        [~ %veto *]  [%done ~]
-        [~ %pack * *]  ?^(err.u.in [%done ~] [%done `[%| ~]])
+        [~ %veto %node * * *]
+      ?.  =(/rise/now wire.dart.u.in)  [%skip ~]
+      [%done ~]
+        [~ %pack * *]
+      ?.  =(/rise/now wire.u.in)  [%skip ~]
+      ?^(err.u.in [%done ~] [%done `[%| ~]])
         [~ %poke * *]
       ?.  =([/ %time] p.sage.u.in)  [%skip ~]
       [%done `[%& !<(@da q.sage.u.in)]]
@@ -14839,7 +15018,9 @@
     :+  ~  q.state
     ?+  in  [%skip ~]
         ~  [%wait ~]
-        [~ %pack *]  [%done ~]
+        [~ %pack * *]
+      ?.  =(/rise/now wire.u.in)  [%skip ~]
+      [%done ~]
     ==
   (pure:m `p.u.first)
 ::  +crash-503: a request fiber that crashed answers 503 and ends. It used

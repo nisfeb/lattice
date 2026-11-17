@@ -19,6 +19,7 @@
 //      the last one
 //      text put back while a render runs stops that render
 //      a change to an included page is drawn and exported
+//      the shell reads an include once a session until it changes
 //      a WebGL context that is lost and restored draws again
 //      a pane mounted again fetches nothing, a new runtime address does
 //      the time a few reference models take (printed, not checked)
@@ -77,9 +78,20 @@ const files = {
     + '<body><div id="h"></div><script src="/scad.js"></script></body></html>'), 'text/html'],
 };
 const hits = [];
+//  the pages /api/page-source answers, for the shell's own reader, and
+//  the names it was asked for
+const ship = {}, asks = [];
 const server = createServer((q, r) => {
   const p = q.url.split('?')[0];
   hits.push(p);
+  if (p === '/api/page-source') {
+    const n = new URL(q.url, base).searchParams.get('name');
+    asks.push(n);
+    if (!(n in ship)) { r.writeHead(404); r.end(); return; }
+    r.writeHead(200, { 'content-type': 'application/json' });
+    r.end(JSON.stringify({ body: ship[n], kind: 'scad', rev: 1 }));
+    return;
+  }
   const f = files[p];
   if (!f) { r.writeHead(404); r.end(); return; }
   r.writeHead(200, { 'content-type': f[1] });
@@ -306,6 +318,59 @@ await waitFor(() => page.evaluate(() => window.downloads.length === 1), 15000, 2
 const tris = await page.evaluate(async () => (window.downloads[0]
   ? new DataView(await (await fetch(window.downloads[0].href)).arrayBuffer()).getUint32(80, true) : -1));
 check('  and an STL export is of the page as it is now', tris === 24, `${tris} triangles`);
+await page.close();
+
+console.log('\nan include costs one read a session while it does not change');
+//  The shell's own reader (shell.js), over /api/page-source here. revOf
+//  stands in for the tree's revs (26-scad.js), which the beacon keeps
+//  fresh. What calls forget() on a save here (35-pages.js patchLocal)
+//  needs the editor and a ship, and is not run.
+Object.assign(ship, {
+  'parts/lib/a': 'module a() { cube([10, 10, 2]); }\n',
+  'parts/lib/b': 'module b() { translate([0, 0, 2]) cube([10, 10, 3]); }\n',
+});
+const INC = 'include <lib/a.scad>\ninclude <lib/b.scad>\ninclude <lib/none.scad>\na(); b();\n';
+page = await open('cube(1);\n');
+await settled(page);
+await page.evaluate(() => {
+  const da = document.createElement('div');
+  da.id = 'docarea';
+  document.body.append(da);
+  window.revs = { 'parts/lib/a': 1, 'parts/lib/b': 1 };
+  window.g = window.LatScad.shell({
+    api: '/api', $: (id) => document.getElementById(id), pageCache: new Map(),
+    revOf: (n) => (n in window.revs ? window.revs[n] : null),
+  });
+  window.ctl.destroy();
+  window.ctl = window.LatScad.mount(document.getElementById('h'), { ...window.opts, readPage: window.g.readPage });
+});
+const askd = (n) => asks.filter((x) => x === n).length;
+const N = 4;
+for (let i = 0; i < N; i++) {
+  await page.evaluate((t) => window.ctl.update(t), INC + '// ' + i + '\n');
+  await sleep(500);
+  s = await settled(page);
+}
+check(`${N} renders of a page with two includes read each once`, askd('parts/lib/a') === 1 && askd('parts/lib/b') === 1 && /^10 × 10 × 5 mm/.test(await dims(page)), `${asks.join(' ')} | ${await dims(page)}`);
+check('  and a missing include is not asked for again', askd('parts/lib/none') === 1, asks.join(' '));
+//  a page edited elsewhere: the tree's rev moves
+ship['parts/lib/a'] = 'module a() { cube([20, 20, 2]); }\n';
+await page.evaluate((t) => { window.revs['parts/lib/a'] = 2; window.ctl.update(t); }, INC + '// a\n');
+await sleep(500);
+s = await settled(page);
+check('a page whose rev moved is read again, and drawn as it is now', askd('parts/lib/a') === 2 && askd('parts/lib/b') === 1 && /^20 × 20 × 5 mm/.test(await dims(page)), `${asks.join(' ')} | ${await dims(page)}`);
+//  a page saved here: forget()
+ship['parts/lib/b'] = 'module b() { translate([0, 0, 2]) cube([10, 10, 8]); }\n';
+await page.evaluate((t) => { window.g.forget('parts/lib/b'); window.ctl.update(t); }, INC + '// b\n');
+await sleep(500);
+s = await settled(page);
+check('a page forgotten is read again, and drawn as it is now', askd('parts/lib/b') === 2 && askd('parts/lib/a') === 2 && /^20 × 20 × 10 mm/.test(await dims(page)), `${asks.join(' ')} | ${await dims(page)}`);
+//  the missing page is made: it comes into the tree
+ship['parts/lib/none'] = 'translate([0, 0, 10]) cube([1, 1, 5]);\n';
+await page.evaluate((t) => { window.revs['parts/lib/none'] = 1; window.ctl.update(t); }, INC + '// none\n');
+await sleep(500);
+s = await settled(page);
+check('a page made after a miss is found', askd('parts/lib/none') === 2 && /^20 × 20 × 15 mm/.test(await dims(page)), `${asks.join(' ')} | ${await dims(page)}`);
 await page.close();
 
 console.log('\nthe WebGL context is lost and comes back');

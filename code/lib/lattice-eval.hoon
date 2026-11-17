@@ -140,9 +140,15 @@
       ::  land between (+journal-put)
       [%journal-put name=@ta at=@t fresh=@t]
       ::  the orrery map mirror's body for orrery/map (+map-body:lo, already
-      ::  through +gj-check). In the writer, so the read of each page and its
-      ::  write are one step (+map-put)
-      [%map-put body=@t]
+      ::  through +gj-check), made from the version `doc` of orrery's
+      ::  map.json. In the writer, so the read of each page and its write
+      ::  are one step (+map-put)
+      [%map-put body=@t doc=[@ud @da]]
+      ::  after a move of `from` to `to`, its whole path under a new one,
+      ::  the folders above `from` it left empty go (+move-husks): each is
+      ::  checked and deleted in one writer step, so no save into it lands
+      ::  between them (+prune-husks)
+      [%prune-husks from=path to=path]
       ::  a live read of the link at /page/<pax> naming `rpax` on `host`:
       ::  `got` its [kind body rev], ~ when it failed. Applied in the writer
       ::  only while that same link is still there, so a read that finishes

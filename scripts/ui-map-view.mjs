@@ -54,19 +54,21 @@ const TILES = { token: true, max: 17, styles: ['streets', 'outdoors', 'satellite
 const browser = await launchBrowser();
 const errors = [];
 //  mdHtml: what opts.md returns, in place of the escaper. busy: the tile
-//  route answers 429 the first time each tile is asked for.
-async function open(text, { editable = true, viewport = { width: 1100, height: 700 }, touch = false, tiles = TILES, layers = {}, mdHtml = null, busy = false } = {}) {
+//  route answers 429 the first time each tile is asked for. hold: a tile
+//  path it is true of is not answered until release().
+async function open(text, { editable = true, viewport = { width: 1100, height: 700 }, touch = false, tiles = TILES, layers = {}, mdHtml = null, busy = false, hold = null } = {}) {
   const page = await browser.newPage();
   await page.setViewport({ ...viewport, hasTouch: touch, isMobile: touch });
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('console', (m) => { if (m.type() === 'error' && !/favicon|Failed to load resource|insecure connection/.test(m.text())) errors.push(m.text()); });
-  const reqs = [], same = [], asked = new Set();
+  const reqs = [], same = [], asked = new Set(), held = [];
   await page.setRequestInterception(true);
   page.on('request', (r) => {
     const u = r.url();
     if (u === ORIGIN + '/') return r.respond({ status: 200, contentType: 'text/html', body: PAGE });
     if (u.startsWith(ORIGIN + '/apps/lattice/tile/')) {
       reqs.push(u.slice(ORIGIN.length));
+      if (hold && hold(u.slice(ORIGIN.length))) return void held.push(r);
       if (busy && !asked.has(u)) { asked.add(u); return r.respond({ status: 429, body: 'too many tiles this minute' }); }
       return r.respond({ status: 200, contentType: 'image/png', body: PNG });
     }
@@ -104,6 +106,7 @@ async function open(text, { editable = true, viewport = { width: 1100, height: 7
   await page.waitForFunction(() => document.getElementById('h').dataset.painted !== undefined, { timeout: 5000 });
   const api = {
     page, reqs, same,
+    release: () => { for (const r of held.splice(0)) r.respond({ status: 200, contentType: 'image/png', body: PNG }); },
     //  the screen point of [lon, lat]
     at: (lon, lat) => page.evaluate((a, b) => {
       const m = window.ctl._t.map;
@@ -519,6 +522,36 @@ console.log('==> a tile refused for a minute');
   await m.close();
 }
 
+console.log('==> a tile refused, then a zoom before its retry');
+{
+  //  A retry asks for the very tile that failed (its own z, x and y), and
+  //  a tile from a level the map has left is not asked for again. The
+  //  new level's tiles are held, so the old level's stay on the map.
+  const m = await open(body([pt(-71, 42)], { center: [-71, 42], zoom: 10 }), { busy: true, hold: (u) => u.split('/').at(-3) === '11' });
+  await waitFor(() => m.reqs.length > 0, 3000);
+  await sleep(300);
+  const first = [...m.reqs];
+  const z0 = first[0].split('/').at(-3);
+  //  every tile Leaflet asks for from here on, as it built the URL
+  await m.page.evaluate(() => {
+    window.issued = [];
+    window.ctl._t.map.eachLayer((l) => { if (l.getTileUrl) l.on('tileloadstart', (e) => window.issued.push(e.tile.src)); });
+    //  animated, as a person zooms: Leaflet keeps the old level on screen
+    window.ctl._t.map.setZoom(12);
+  });
+  const n0 = m.reqs.length;
+  await sleep(3500);
+  const issued = new Set(first.concat((await m.page.evaluate(() => window.issued)).map((u) => u.slice(ORIGIN.length))));
+  const after = m.reqs.slice(n0);
+  const kept = await m.page.$$eval('.leaflet-tile-pane .leaflet-tile-container', (e) => e.filter((c) => c.querySelector('img')).length);
+  check('the old level\'s tiles were refused before the zoom', first.length > 0 && first.every((u) => u.split('/').at(-3) === z0), first.join(' '));
+  check('the old level is still on the map past its retry time', kept === 2, `${kept} levels of tiles shown`);
+  check('every tile asked for is one Leaflet issued, at its own zoom', m.reqs.every((u) => issued.has(u)), m.reqs.filter((u) => !issued.has(u)).join(' '));
+  check('no tile of the level the map left is asked for again', after.length > 0 && !after.some((u) => u.split('/').at(-3) === z0), after.join(' '));
+  m.release();
+  await m.close();
+}
+
 console.log('==> layers');
 {
   const other = body([pt(-71, 42, { name: 'under' }), pt(-71.1, 42.1)], { layers: ['self'] });
@@ -592,6 +625,37 @@ console.log('==> zoomed all the way out');
   await sleep(1500);
   const live = await Promise.race([m.page.evaluate(() => document.querySelectorAll('.leaflet-tile').length > 0), sleep(8000).then(() => null)]);
   check('the grid still draws at the lowest zoom', live === true, String(live));
+  await m.close();
+}
+
+console.log('==> the grid, with no base map');
+{
+  //  the frame a map has with no token: lines must fall in the tiles at
+  //  the zoom a person works at, not only when the whole world shows
+  const inked = (pg) => pg.evaluate(() => [...document.querySelectorAll('.lm-grid canvas')].filter((c) => {
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    for (let i = 3; i < d.length; i += 4) if (d[i]) return true;
+    return false;
+  }).length);
+  const m = await open(body([pt(-71, 42, { name: 'a' }), pt(-70.99, 42.01, { name: 'b' })]), { tiles: null });
+  await sleep(600);
+  const n = await inked(m.page);
+  check('grid lines are drawn at a working zoom', n > 0, n + ' tiles with a line');
+  await m.close();
+}
+
+console.log('==> a field keeps the cursor when the shell says editable again');
+{
+  //  the shell calls setEditable on every render of the editor, and a
+  //  write from the detail pane makes one: the pane must not be rebuilt
+  //  under the field the owner moved to
+  const m = await open(body([pt(-71, 42, { name: 'a' })]));
+  await m.click(-71, 42);
+  await m.page.evaluate(() => { const i = document.querySelector('.lm-detail textarea'); i.focus(); window.__held = i; });
+  await m.page.evaluate(() => window.ctl.setEditable(true));
+  check('the focused field is still the one on the page', await m.page.evaluate(() => window.__held.isConnected && document.activeElement === window.__held));
+  await m.page.evaluate(() => window.ctl.setEditable(false));
+  check('a real change to read mode does repaint the pane', await m.page.evaluate(() => !document.querySelector('.lm-detail textarea')));
   await m.close();
 }
 

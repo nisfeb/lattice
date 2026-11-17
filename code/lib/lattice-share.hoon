@@ -992,6 +992,15 @@
   |-  ^-  (list path)
   ?~  up  (flop out)
   $(out [up out], up (snip `path`up))
+::  +husk-bare: whether a folder's own node, by the names of the grubs in
+::  it, lets it go as a move's empty shell (+move-husks). An allow-list:
+::  a display name (%name) is all it may hold. Anything else keeps the
+::  folder: a page, a share or a ship grant, a sensitive mark, a comment
+::  or form setting, an index, and any grub added later.
+++  husk-bare
+  |=  nams=(list @ta)
+  ^-  ?
+  (levy nams |=(n=@ta =(%name n)))
 ::  +index-ups: the folders whose dir-index a page made in `dir` changes:
 ::  `dir` and each folder above it, from the highest that keeps an index
 ::  (`ixs` holds those) down. A folder's index lists every page under it,

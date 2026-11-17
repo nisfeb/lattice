@@ -81,6 +81,18 @@
   ?~  r  $(bs t.bs)
   =/  np=path  (weld to u.r)
   ?:(=(np p) ~ `np)
+::  +save-moved: whether a /remote-save write that failed with `code` is
+::  tried once more where the peer's lattice lives now (+moved-path). Only
+::  a write that reached no one, a 504 with nothing sent (`sent` |), at a
+::  path under one of +peer-bases. Any answer from the host is final, and
+::  a write sent but not acked may still land where it went.
+++  save-moved
+  |=  [code=@ud sent=? p=path]
+  ^-  ?
+  ?&  =(504 code)
+      !sent
+      (lien peer-bases |=(b=path ?=(^ (strip-prefix b p))))
+  ==
 ::  +sub-keep-dir: the directory of a peer's published page that a /sub
 ::  keeps, its file being %gmi there. The peer runs lattice at base, and
 ::  rel is the page's spur (+page-rel).

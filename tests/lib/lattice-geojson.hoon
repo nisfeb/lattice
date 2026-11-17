@@ -271,6 +271,44 @@
     (ok (mk '1,2,3,4'))
     (bad (mk '1,2,3,4,5'))
   ==
+::  a coordinate's text is short, and its exponent small: a long one
+::  would cost the render a bignum or a float parse it cannot finish
+++  test-check-number-bombs
+  =/  mk
+    |=  c=@t
+    (rap 3 ~['{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[' c ']},"properties":{}}]}'])
+  =/  why  `(unit @t)``'a coordinate in that map is too long or too large'
+  =/  long=@t  (rap 3 ~['1' (rap 3 (reap 100.000 '0')) ',2'])
+  ;:  weld
+    (expect-eq !>(why) !>((gj-check:gj (mk long))))
+    (expect-eq !>(why) !>((gj-check:gj (mk '1e999999999999,2'))))
+    (expect-eq !>(why) !>((gj-check:gj (mk '1,-2E+9999'))))
+    (expect-eq !>(why) !>((gj-check:gj (mk '1,2,3,0.0000000000000000000000000000001'))))
+    (expect-eq !>(why) !>((gj-check:gj (fc ~[(rap 3 ~['{"type":"Feature","geometry":{"type":"LineString","coordinates":[[1,2],[' long ']]},"properties":{}}'])]))))
+    (expect-eq !>(note-html:gj) !>((gj-html:gj (mk long))))
+    (ok (mk '1e2,-7.398e1'))
+    (ok (mk '4.075E+1,2'))
+    (ok (mk '-73.985712312345678,40.748432112345678'))
+    (ok (mk '1e-99,2E+099'))
+    ::  32 bytes pass, 33 do not
+    (ok (mk '1.000000000000000000000000000000,2'))
+    (bad (mk '1.0000000000000000000000000000000,2'))
+  ==
+::  the render reads what the check lets through, and is total on what
+::  it does not
+++  test-fix-bounded
+  =/  h=tape  (gj-html:gj (fc ~[(pt 'a' '-7.398e1' '4.075E+1') (pt 'b' '-73.985712312345678' '40.748432112345678') (pt 'c' '1e2' '0')]))
+  ;:  weld
+    (expect-eq !>([| 1.000.000.000]) !>((fix:gj '1e2')))
+    (expect-eq !>([& 739.800.000]) !>((fix:gj '-7.398e1')))
+    (expect-eq !>([| 407.500.000]) !>((fix:gj '4.075E+1')))
+    (expect-eq !>([& 739.857.123]) !>((fix:gj '-73.985712312345678')))
+    (expect-eq !>([| 0]) !>((fix:gj (rap 3 ~['1' (rap 3 (reap 100.000 '0'))]))))
+    (expect-eq !>([| 0]) !>((fix:gj '1e999999999999')))
+    (yes (has "<td>4.075E+1, -7.398e1</td>" h))
+    (yes (has "<td>40.748432112, -73.98571231</td>" h))
+    (expect-eq !>(3) !>((hits "<circle" h)))
+  ==
 ::  every hex digit is a hex digit, at both ends of each range
 ++  test-html-colour-digits
   =/  mk
@@ -299,6 +337,41 @@
   ;:  weld
     (expect-eq !>(5.001) !>((hits "," h)))
     (no (has "Showing the first" l))
+  ==
+::  many tiny parts: a render draws at most +max-shapes shapes and
+::  +max-draw positions, and says how many shapes it drew
+++  test-html-shape-cap
+  =/  ls=@t  (rap 3 (join ',' (reap 3.000 '[[1,2],[3,4]]')))
+  =/  f=@t  (rap 3 ~['{"type":"Feature","geometry":{"type":"MultiLineString","coordinates":[' ls ']},"properties":{}}'])
+  =/  h=tape  (gj-html:gj (fc ~[f]))
+  =/  svg=tape  (scag (need (find "</svg>" h)) h)
+  ;:  weld
+    (expect-eq !>(max-shapes:gj) !>((hits "<path" h)))
+    (yes (lte (hits "," svg) max-draw:gj))
+    (yes (has "Drawing 2000 of 3000 shapes." h))
+  ==
+::  as many points, each one a shape
+++  test-html-point-cap
+  =/  h=tape  (gj-html:gj (fc (reap 2.500 (pt 'p' '1' '2'))))
+  ;:  weld
+    (expect-eq !>(max-shapes:gj) !>((hits "<circle" h)))
+    (yes (has "Drawing 2000 of 2500 shapes." h))
+  ==
+::  one MultiPoint of many points is cut at the shape cap too
+++  test-html-multipoint-cap
+  =/  ps=@t  (rap 3 (join ',' (reap 4.000 '[1,2]')))
+  =/  f=@t  (rap 3 ~['{"type":"Feature","geometry":{"type":"MultiPoint","coordinates":[' ps ']},"properties":{}}'])
+  =/  h=tape  (gj-html:gj (fc ~[f]))
+  ;:  weld
+    (expect-eq !>(max-shapes:gj) !>((hits "<circle" h)))
+    (yes (has "Drawing 2000 of 4000 shapes." h))
+  ==
+::  a map under the caps draws every shape, with no note
+++  test-html-no-draw-note
+  =/  h=tape  (gj-html:gj (fc (reap 2.000 (pt 'p' '1' '2'))))
+  ;:  weld
+    (expect-eq !>(2.000) !>((hits "<circle" h)))
+    (no (has "Drawing" h))
   ==
 ::  the caps are inclusive: exactly at each one passes that check
 ++  test-cap-edges

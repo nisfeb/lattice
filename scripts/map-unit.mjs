@@ -23,7 +23,7 @@ import { fileURLToPath } from 'url';
 import { makeCheck } from './lib/check.mjs';
 import {
   parse, serialize, props, view, title, text, outline, render, renderBody, dp, simplify,
-  sourceLink, iconOf, orreryLink, depthOf, BLANK, BIG, MAX_FEATURES, MAX_POSITIONS, MAX_DEPTH, RENDER_MAX,
+  sourceLink, iconOf, orreryLink, gridStep, depthOf, BLANK, BIG, MAX_FEATURES, MAX_POSITIONS, MAX_DEPTH, RENDER_MAX,
 } from '../ui-src/map/core.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -128,6 +128,10 @@ console.log('3. reads');
   check('the read properties', p.name === 'N' && p.note === 'n' && p.ms === Date.parse('2026-11-10T12:00:00Z') && p.kind === 'report' && p.color === '#A0b' && p.icon === 'star' && p.radius === 250, JSON.stringify(p));
   const bad = props(pt(1, 2, { name: 5, color: 'red; background:url(x)', icon: 'https://evil/x.png', radius: -3, time: 'yesterday', kind: 'k'.repeat(100) }));
   check('a bad colour, icon, radius and time are dropped', bad.name === '' && bad.color === '' && bad.icon === '' && bad.radius === 0 && bad.ms === null && bad.time === '' && bad.kind.length === 40, JSON.stringify(bad));
+  //  the grid's step: the finest that puts at most four lines in a tile,
+  //  and the widest when even that puts in more
+  check('the grid step follows the zoom', gridStep(180) === 30 && gridStep(90) === 30 && gridStep(22.5) === 10 && gridStep(1.40625) === 0.5 && gridStep(0.087890625) === 0.05 && gridStep(0.0054931640625) === 0.002 && gridStep(1e-7) === 0.0001,
+    [180, 90, 22.5, 1.40625, 0.087890625, 0.0054931640625, 1e-7].map((x) => gridStep(x)).join(' '));
   check('an icon by kind when the feature names none', iconOf(props(pt(1, 2, { kind: 'place' }))) === 'pin' && iconOf(props(pt(1, 2, { kind: 'situation' }))) === 'flag' && iconOf(props(pt(1, 2, { kind: 'place', icon: 'star' }))) === 'star' && iconOf(props(pt(1, 2, { kind: 'toString' }))) === '' && iconOf(props(pt(1, 2, {}))) === '');
   check('an orrery body id is a link, and nothing else is', orreryLink('place/home') === '/apps/orrery#body/place/home' && orreryLink('situation/2026-10-18-trip') === '/apps/orrery#body/situation/2026-10-18-trip' && orreryLink('javascript:alert(1)') === null && orreryLink('place/a b') === null && orreryLink('//evil.example/x') === null && orreryLink('place/../x') === null && orreryLink(5) === null);
   check('props of a feature with null properties', props({ type: 'Feature', geometry: null, properties: null }).name === '');
@@ -240,6 +244,31 @@ console.log('7. files');
   const x = io.exportGpx(doc, 'my <map>');
   check('GPX export has a waypoint, tracks and escaped text', x.includes('<wpt lat="2.25" lon="1.5"><time>2026-01-01T00:00:00Z</time><name>a &lt;b&gt; &amp; &quot;c&quot;</name><desc>n</desc></wpt>')
     && (x.match(/<trk>/g) || []).length === 2 && x.includes('<name>my &lt;map&gt;</name>'), x);
+  //  shapes a page may hold (or an edit may leave) that GPX cannot write
+  //  are skipped, never thrown on
+  const gf = (geometry) => ({ type: 'Feature', geometry, properties: { name: 'h' } });
+  check('a polygon with no ring parses as a page', !parse(fc([gf({ type: 'Polygon', coordinates: [] })])).error);
+  for (const [what, geometry] of [
+    ['a polygon with no ring', { type: 'Polygon', coordinates: [] }],
+    ['a multipolygon holding a polygon with no ring', { type: 'MultiPolygon', coordinates: [[]] }],
+    ['an empty line', { type: 'LineString', coordinates: [] }],
+    ['a multiline of empty lines', { type: 'MultiLineString', coordinates: [[], []] }],
+    ['a point with one coordinate', { type: 'Point', coordinates: [1] }],
+    ['a point with no coordinates', { type: 'Point' }],
+    ['a collection with a null geometry', { type: 'GeometryCollection', geometries: [null] }],
+    ['a collection with no geometries', { type: 'GeometryCollection' }],
+    ['a null geometry', null],
+  ]) {
+    let y, threw = '';
+    try { y = io.exportGpx({ features: [gf(geometry)] }, 'm'); } catch (e) { threw = String(e); }
+    check('GPX export skips ' + what, !threw && !/<wpt|<trk/.test(y), threw || y);
+  }
+  let y, threw = '';
+  try {
+    y = io.exportGpx({ features: [gf({ type: 'Polygon', coordinates: [] }), pt(1, 2),
+      gf({ type: 'MultiPolygon', coordinates: [[], [[[0, 0], [1, 0], [1, 1], [0, 0]]]] })] }, 'm');
+  } catch (e) { threw = String(e); }
+  check('GPX export writes what it can around what it skips', !threw && (y.match(/<wpt /g) || []).length === 1 && (y.match(/<trk>/g) || []).length === 1, threw || y);
 }
 
 check.done();

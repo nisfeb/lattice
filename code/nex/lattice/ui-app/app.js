@@ -6,9 +6,9 @@ const WRITER_H = '0v3.4g8bu.gitpg.4hui5.6i6ib.91c19';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
 const SHEET_H = '0v3.v145b.hha4j.kjuag.dcc4c.ld732';
 // and map.js's, the map view (26-writer.js)
-const MAP_H = '0v8m04v.jhns4.4mgfe.13tsc.r2sbd';
+const MAP_H = '0v4.gefvq.vdk6m.u260a.mdsrr.iaf1a';
 // and scad.js's, the 3D pane of scad pages (26-scad.js)
-const SCAD_H = '0v7.7a35l.sv8qr.bhse3.1rvso.nm17c';
+const SCAD_H = '0v1.34a0s.qp4ih.24c5l.t4asl.8br0p';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
@@ -639,8 +639,13 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           }
         } catch {}
         if (q.drawn && (q.redrawn || 0) < 4) {
-          const nq = { ...q, name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
+          let v = null;
+          try { v = await offGet(q.name); } catch {}
+          const nv = !!v && !sameRec(v, q);
+          const nq = { ...q, ...(nv && { body: v.body, kind: v.kind }),
+            name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
           if (!(await offPut(nq))) return false;
+          if (nv) await offDone(v);
           await offDone(q);
           redrawFollow(q.name, nq.name);
           q = nq;
@@ -861,6 +866,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return p;
   };
   const bustPages = (name) => {
+    try { if (scadG) scadG.forget(String(name || '').replace(/^\/+/, '')); } catch {}
     if (!('caches' in window)) return;
     name = String(name || '').replace(/^\/+/, '') || null;
     caches.open('lattice-pages').then(async (c) => {
@@ -903,7 +909,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     try { localStorage.removeItem('appPage'); } catch {}
     try { await kvPut('tree', []); } catch {}
-    try { if ('caches' in window) await caches.delete('lattice-pages'); } catch {}
+    try { if ('caches' in window) { await caches.delete('lattice-pages'); await caches.delete('lattice-tiles'); } } catch {}
     try { indexedDB.deleteDatabase('lattice-lru'); } catch {}
     nodes = []; pageCache.clear(); renderTree();
     st('the session has ended: log in to the ship again', false);
@@ -1539,6 +1545,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   };
   const pageCache = new Map();
   const sensKnown = new Map();
+  const keptKnown = new Map();
   let sensWait = null;
   let sensGen = 0;
   const sensForget = (url) => {
@@ -3801,6 +3808,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
         src: () => src,
         current: () => current,
         name: () => current || (pname.value || '').trim() || 'untitled',
+        revOf: (name) => { const n = nodes.find((x) => x.page && x.path === name); return n ? n.rev : null; },
         editable: () => !src.readOnly && viewingRev === null && !!current,
         live: () => scadLive,
         setLive: (on) => { scadLive = !!on; },
@@ -3931,7 +3939,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     wrNote.textContent = why;
     const k = richHere();
     if (!k || writerSourceOn()) return writerOff();
-    const body = src.value, ed = !src.readOnly && viewingRev === null && !(k === 'geojson' && current === 'orrery/map');
+    const kept = k === 'geojson' && current === 'orrery/map' && keptKnown.get(current) !== false;
+    const body = src.value, ed = !src.readOnly && viewingRev === null && !kept;
     wrShow(true);
     const doc = { tab: activeTab, n: wrDoc, k };
     if (wr && wrFor && wrFor.tab === doc.tab && wrFor.n === doc.n && wrFor.k === k && wr.base() === body) { wrBox(k); return wr.setEditable(ed); }
@@ -5791,6 +5800,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!lastRev && typeof d.since === 'string') noteRev(d.since);
     const first = !nodes.length;
     nodes = d.nodes;
+    if (scadG) scadG.forget();
     treeShares = typeof d.since === 'string';
     treeSince = treeShares ? d.since : '';
     treeAt = at;
@@ -6601,6 +6611,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       return my === openSeq ? false : undefined;
     }
     if (typeof d.sensitive === 'boolean' && sensGen === gen) sensKnown.set(name, d.sensitive);
+    if (typeof d.kept === 'boolean') keptKnown.set(name, d.kept);
     if (my !== openSeq) {
       const nd = nodes.find((n) => n.page && n.path === name);
       if (!d.link && !pageCache.has(name) && nd && !nd.link && nd.body === d.body
@@ -6806,6 +6817,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (c && rev && ['md', 'gmi', 'html', 'text', 'tex'].includes(k)) {
       pageCache.set(name, { ...c, body: sent, kind: k, rev, html: undefined });
     } else pageCache.delete(name);
+    if (scadG) scadG.forget(name);
     const nd = nodes.find((n) => n.page && n.path === name);
     if (nd && !nd.link) { nd.body = sent; if (kind) nd.kind = kind; persistTree(); }
   };
@@ -6841,6 +6853,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const pageHere = () => mode !== 'know' && !grubPath;
   const drawnNames = new Set();
   const queuedNames = new Set();
+  const triedCreates = new Map();
   const drawName = () => {
     let name = inboxName();
     for (let i = 1; i < 5 && (drawnNames.has(name) || queuedNames.has(name)
@@ -6902,7 +6915,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     saving = true;
     st('saving…');
-    const sent = fixed ? fixed.body : src.value;
+    let sent = fixed ? fixed.body : src.value;
     const kind = fixed ? fixed.kind : kindOverride || curKind || pkind.value;
     const rn = realName(name);
     if (!rn) {
@@ -6943,6 +6956,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (w.gone) {
       if (auto && creating && !drawn && !fixed) {
         if (rnc) newRn = rnc;
+        if (!triedCreates.has(name)) triedCreates.set(name, new Set());
+        triedCreates.get(name).add(sent || '\n');
         st(UNREACHED_NOTE, false);
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         clearTimeout(autoTimer);
@@ -6977,6 +6992,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       flushPending();
       return;
     }
+    let mine = null;
     if (r && r.status === 409) {
       const why = await errText(r);
       if (!creating && /^: stale/.test(why)) {
@@ -6995,13 +7011,23 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           return save(kindOverride, undefined, drawn + 1, auto);
         }
       }
-      st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
-      return failed();
+      if (creating && !fixed && !drawn && triedCreates.has(name) && !/ moved to /.test(why)) {
+        try {
+          const sr = await tfetch(api + '/page-source?name=' + encodeURIComponent(name), {}, 20000);
+          const d = sr && sr.ok ? await sr.json() : null;
+          if (d && triedCreates.get(name).has(d.body)) mine = d;
+        } catch {}
+      }
+      if (!mine) {
+        st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
+        return failed();
+      }
+      sent = mine.body;
     }
-    if (!r.ok) { st('save failed' + await errText(r), false); return failed(); }
-    let vr = null;
-    try { vr = await r.json(); } catch {}
-    if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
+    if (!mine && !r.ok) { st('save failed' + await errText(r), false); return failed(); }
+    let vr = mine && { rev: mine.rev };
+    if (!mine) try { vr = await r.json(); } catch {}
+    if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); triedCreates.delete(name); }
     patchLocal(name, kind, sent, vr && vr.rev);
     await dropQueued(name, sentSeq);
     const stillHere = fixed ? tabAdopt(fixed, name)

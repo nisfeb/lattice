@@ -19,7 +19,7 @@ import leafletCss from 'leaflet/dist/leaflet.css';
 import { forward as toMgrs } from 'mgrs';
 import {
   parse, serialize, props, view as readView, sourceLink, bounds, firstPos, fmtPos,
-  colorOf, kindColor, ICONS, iconOf, orreryLink, STYLES,
+  colorOf, kindColor, ICONS, iconOf, orreryLink, gridStep, STYLES,
 } from './core.js';
 import { attachDraw } from './draw.js';
 import { fileKind, importText, exportGpx } from './io.js';
@@ -120,10 +120,7 @@ const Grid = L.GridLayer.extend({
     const nw = map.unproject(coords.scaleBy(sz), coords.z);
     const se = map.unproject(coords.add([1, 1]).scaleBy(sz), coords.z);
     const span = Math.max(se.lng - nw.lng, 1e-9);
-    const STEPS = [30, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001, 0.0005, 0.0002, 0.0001];
-    //  a tile wider than every step allows takes the widest: the narrowest
-    //  there drew millions of lines and froze the page at the lowest zoom
-    const step = STEPS.find((s) => span / s <= 4) || STEPS[0];
+    const step = gridStep(span);
     g.strokeStyle = 'rgba(120,120,120,0.35)';
     g.fillStyle = 'rgba(110,110,110,0.75)';
     g.font = '10px system-ui,sans-serif';
@@ -312,11 +309,15 @@ export function mount(host, opts = {}) {
     //  Past the limit of tiles a minute the worker and the ship answer
     //  429, and a minute later the same tile is there to be had. A failed
     //  tile still on the map is asked for again, a few times, further apart.
+    //  The retry asks for the URL the tile was first given: getTileUrl
+    //  would put the layer's current zoom in it, not the tile's. A tile of
+    //  a level the map has left is not asked for again.
     tiles.on('tileerror', (e) => {
       const t = e.tile, n = t.lmTry || 0;
       if (n >= RETRY.length) return;
       t.lmTry = n + 1;
-      setTimeout(() => { if (!dead && tiles && t.isConnected) t.src = tiles.getTileUrl(e.coords); }, RETRY[n]);
+      const u = t.lmUrl || (t.lmUrl = t.src);
+      setTimeout(() => { if (!dead && tiles && t.isConnected && e.coords.z === tiles._tileZoom) t.src = u; }, RETRY[n]);
     });
     tiles.addTo(map);
     map.setMaxZoom(max + 3);
@@ -847,10 +848,14 @@ export function mount(host, opts = {}) {
     if (JSON.stringify(v.layers) !== oldLayers) loadLayers();
     return true;
   };
+  //  the shell says this on every render of the editor, a write from the
+  //  detail pane among them: the pane is rebuilt only when the lock
+  //  really changed, or it would go from under the field in use
   ctl.setEditable = (on) => {
+    const was = locked();
     wanted = on !== false;
     draw.setEditable(!locked());
-    paintDetail();
+    if (locked() !== was) paintDetail();
   };
   ctl.sync = () => true;
   ctl.destroy = () => {
