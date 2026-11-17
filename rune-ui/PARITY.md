@@ -66,7 +66,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] An image on the ship itself, by a path: fetched with the session, from the ship only, with no question asked. A path from the root is used as it is and any other is taken from `/apps/lattice/`, where the web client's page resolves it. Run on a fake ship with the two images it serves, an SVG and a PNG
 - [x] Find in a Markdown page being read: Ctrl+F opens a bar, every match is marked and the current one ringed, Return and Shift-Return go round them and bring each into view. Any case, with or without accents, in the text as read and not in the Markdown's own marks. The web client leaves this to the browser
 - [x] Find while editing, in either editor and for a page of any kind: the same bar, each match washed and the current one stronger and selected in the text. It finds in the text as typed, so a link's address counts. There is no replace
-- [ ] Find in a page of another kind while it is only read (source, a sheet, a map's names)
+- [x] Find in a sheet and in a page shown as its source, while read. In a sheet the cells that match are in the accent colour and the current one's row is selected and brought into view. In source the matches are washed, but the current one is not scrolled to: the text is one element, and Rune brings elements into view, not places in a text. A map has no find
 - [ ] Print or export a page (the desktop app's pandoc bridge)
 
 ## Page kinds

@@ -980,15 +980,20 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
     for i in 0..cols {
         table = table.column(TableColumn::new(sheet::column_name(i), sheet::column_name(i)).width(120.0).min(48.0).max(600.0));
     }
+    // found once a frame, not once a cell
+    let hits: std::collections::HashSet<(usize, usize)> = sheet_matches(s).into_iter().collect();
+    let accent = c.text_accent;
     let grid = table
-        .cell(|s: &App, i, col| {
+        .cell(move |s: &App, i, col| {
             let Some(v) = &s.sheet else { return Cell::text("") };
             if col == "#" {
                 return Cell::text((i + 1).to_string()).muted().mono();
             }
             // a column's letters back to its place
             let at = col.bytes().fold(0usize, |n, b| n * 26 + (b - b'A') as usize + 1) - 1;
-            Cell::text(v.sheets[v.at].rows.get(i).and_then(|r| r.get(at)).map_or("", String::as_str))
+            let cell = Cell::text(v.sheets[v.at].rows.get(i).and_then(|r| r.get(at)).map_or("", String::as_str));
+            // a cell find matches is in the accent colour, and the current one's row is the selected one
+            if hits.contains(&(i, at)) { cell.color(accent) } else { cell }
         })
         .zebra(true)
         .build(s, k)
@@ -1264,21 +1269,77 @@ fn find_spans(s: &App, k: &Kit) -> Vec<Span> {
     edit_matches(s).into_iter().enumerate().map(|(i, r)| Span::new(r.start, r.end).bg(k.c.text_accent.alpha(if i == s.find_at { 0.55 } else { 0.22 }), 1.0)).collect()
 }
 
+/// What find looks through: the text being edited, a Markdown page as
+/// read, a sheet's cells, or a page's source. A map has nothing to find in.
+#[derive(Debug, PartialEq)]
+enum FindIn {
+    Editor,
+    Reader,
+    Sheet,
+    Source,
+    Nothing,
+}
+
+fn find_where(s: &App) -> FindIn {
+    let Some(p) = &s.open else { return FindIn::Nothing };
+    if s.editing {
+        FindIn::Editor
+    } else if p.kind == "md" {
+        FindIn::Reader
+    } else if s.sheet.as_ref().is_some_and(|v| v.name == p.name && v.rev == p.rev) {
+        FindIn::Sheet
+    } else if s.map.as_ref().is_some_and(|m| m.name == p.name && m.rev == p.rev) {
+        FindIn::Nothing
+    } else {
+        FindIn::Source
+    }
+}
+
+/// The cells of the sheet showing that hold find's query, by row then column.
+fn sheet_matches(s: &App) -> Vec<(usize, usize)> {
+    let (Some(q), Some(v)) = (s.find.as_ref().map(|q| q.text.trim()).filter(|q| !q.is_empty()), &s.sheet) else { return Vec::new() };
+    let fold = rune_kit::search::Fold::default();
+    let mut out = Vec::new();
+    for (r, row) in v.sheets[v.at].rows.iter().enumerate() {
+        for (c, cell) in row.iter().enumerate().take(SHEET_COLS) {
+            if fold.contains(cell, q) {
+                out.push((r, c));
+            }
+        }
+    }
+    out
+}
+
+/// The part of a page's source that is drawn: its start, since a
+/// spreadsheet's XML can run to megabytes.
+fn source_shown(body: &str) -> &str {
+    let cut = (0..=body.len().min(200_000)).rev().find(|&i| body.is_char_boundary(i)).unwrap_or(0);
+    &body[..cut]
+}
+
+/// Where find's query is in the source that is drawn.
+fn source_matches(s: &App) -> Vec<std::ops::Range<usize>> {
+    match (&s.find, &s.open) {
+        (Some(q), Some(p)) => rune_kit::search::Fold::default().find(source_shown(&p.body), q.text.trim()),
+        _ => Vec::new(),
+    }
+}
+
 /// How many matches find has in the open page.
 fn find_count(s: &App) -> usize {
-    if s.editing {
-        return edit_matches(s).len();
-    }
-    match (&s.find, s.open.as_ref().filter(|p| p.kind == "md")) {
-        (Some(q), Some(p)) => find_in(&md::wikilinks(&p.body, &|n| ghost(s, n)), &q.text).len(),
+    match (find_where(s), &s.find, &s.open) {
+        (FindIn::Editor, ..) => edit_matches(s).len(),
+        (FindIn::Reader, Some(q), Some(p)) => find_in(&md::wikilinks(&p.body, &|n| ghost(s, n)), &q.text).len(),
+        (FindIn::Sheet, ..) => sheet_matches(s).len(),
+        (FindIn::Source, ..) => source_matches(s).len(),
         _ => 0,
     }
 }
 
 /// Opens find for the page being read. Only a Markdown page has it.
 fn open_find(s: &mut App) {
-    if !s.editing && !s.open.as_ref().is_some_and(|p| p.kind == "md") {
-        s.note = "find works in a Markdown page, and in any page while it is edited".into();
+    if find_where(s) == FindIn::Nothing {
+        s.note = "there is nothing here to find in".into();
         return;
     }
     s.find_at = 0;
@@ -1294,14 +1355,25 @@ fn find_step(s: &mut App, by: isize, tx: &mut Tx) {
         return;
     }
     s.find_at = (s.find_at.min(n - 1) as isize + by).rem_euclid(n as isize) as usize;
-    if s.editing {
+    match find_where(s) {
         // the match is selected, which is what the field keeps in view
-        if let Some(r) = edit_matches(s).get(s.find_at).cloned() {
-            s.edit.set_selection(r.start, r.end);
+        FindIn::Editor => {
+            if let Some(r) = edit_matches(s).get(s.find_at).cloned() {
+                s.edit.set_selection(r.start, r.end);
+            }
         }
-        return;
+        FindIn::Reader => tx.scroll_into_view(Markdown::highlight_key(s.find_at)),
+        // the row of the cell is selected and brought into view
+        FindIn::Sheet => {
+            if let (Some(&(row, _)), Some(v)) = (sheet_matches(s).get(s.find_at), &mut s.sheet) {
+                v.table.select(row.to_string());
+                v.table.reveal(row.to_string(), tx);
+            }
+        }
+        // ponytail: a source page's match is marked but not scrolled to. The text is one element,
+        // and Rune brings elements into view, not places in a text
+        FindIn::Source | FindIn::Nothing => {}
     }
-    tx.scroll_into_view(Markdown::highlight_key(s.find_at));
 }
 
 /// The find bar: the field, where the current match stands among them, and the way round.
@@ -2836,7 +2908,7 @@ fn usable(s: &App, id: &str) -> bool {
         "edit" => page && s.remote.as_ref().is_none_or(Shared::editable),
         "delete" => own,
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
-        "find" => page && (s.editing || s.open.as_ref().is_some_and(|p| p.kind == "md")),
+        "find" => page && find_where(s) != FindIn::Nothing,
         "reload" => s.conn.is_some(),
         "tab-close" => s.tabs.len() > 1,
         "tab-copy" => own && !s.memory,
@@ -4042,7 +4114,7 @@ fn body(s: &App, k: &Kit) -> El {
             },
             k,
         ))
-    } else if let Some(q) = s.find.as_ref().filter(|_| !s.access && !s.shared_open && !s.inbox && s.folder.is_none() && (s.editing || s.open.as_ref().is_some_and(|p| p.kind == "md"))) {
+    } else if let Some(q) = s.find.as_ref().filter(|_| !s.access && !s.shared_open && !s.inbox && s.folder.is_none() && find_where(s) != FindIn::Nothing) {
         Some(find_bar(q, s, k))
     } else if held_back(s) > 0 && !s.access && !s.shared_open && !s.inbox && s.folder.is_none() {
         let n = held_back(s);
@@ -4192,10 +4264,11 @@ fn page_body(s: &App, k: &Kit) -> El {
             "hoon" | "scad" | "tex" | "gmi" | "text" => None,
             other => Some(other),
         };
-        // a spreadsheet's XML can run to megabytes: draw the start of it
-        let cut = (0..=p.body.len().min(200_000)).rev().find(|&i| p.body.is_char_boundary(i)).unwrap_or(0);
-        let shown = &p.body[..cut];
-        let spans = SyntaxTheme::from_kit(k).spans(&syntax::highlight(lang, shown), 0);
+        let shown = source_shown(&p.body);
+        let mut spans = SyntaxTheme::from_kit(k).spans(&syntax::highlight(lang, shown), 0);
+        if s.find.is_some() && !s.memory {
+            spans.extend(source_matches(s).into_iter().enumerate().map(|(i, r)| Span::new(r.start, r.end).bg(k.c.text_accent.alpha(if i == s.find_at { 0.55 } else { 0.22 }), 1.0)));
+        }
         rune::rich(shown.to_owned(), spans).font(k.ty.mono).color(c.text_base).wrap().selectable(true)
     };
     let mut page = col().w_full().max_w(760.0).padding(28.0).gap(12.0);
@@ -5035,16 +5108,30 @@ mod tests {
         assert_eq!(found.len(), 6, "the address counts here: it is in the text");
         assert_eq!(&body[found[0].clone()], "Café");
         assert_eq!(find_count(&s), 6);
-        // not while a page that is not Markdown is only read
+        // a sheet: the cells that hold it, by row then column, whatever the case
         cancel_edit(&mut s);
         s.find = None;
         open_page(&mut s, "budget");
+        assert_eq!(find_where(&s), FindIn::Sheet);
         open_find(&mut s);
-        assert!(s.find.is_none() && s.note.starts_with("find works"));
-        // but it is while that page is edited
-        start_edit(&mut s);
+        s.find = Some(TextEdit::new("HOSTING"));
+        assert_eq!(sheet_matches(&s), [(1, 0)]);
+        s.find = Some(TextEdit::new("0"));
+        assert!(find_count(&s) > 2);
+        // a map has nothing to find in
+        s.find = None;
+        open_page(&mut s, "places");
+        assert_eq!(find_where(&s), FindIn::Nothing);
         open_find(&mut s);
-        assert!(s.find.is_some());
+        assert!(s.find.is_none() && s.note == "there is nothing here to find in");
+        // a page shown as its source: found in what is drawn
+        s.names.push("style".into());
+        s.cache.insert("style".into(), Page { name: "style".into(), body: "body { color: red }\n.Body { color: blue }\n".into(), kind: "css".into(), rev: 1 });
+        open_page(&mut s, "style");
+        assert_eq!(find_where(&s), FindIn::Source);
+        s.find = Some(TextEdit::new("body"));
+        assert_eq!(find_count(&s), 2);
+        assert_eq!(source_shown("héllo"), "héllo");
     }
 
     #[test]
