@@ -1,0 +1,4 @@
+{"events": [
+  {"t": 1.5, "drop_files": {"paths": ["/tmp/lr-pic/up/gallery.md"], "at": [700, 400]}},
+  {"t": 3.5, "type": "tap", "key": "outside-act"}
+]}

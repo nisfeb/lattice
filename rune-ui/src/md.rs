@@ -85,6 +85,41 @@ pub fn wikilinks(src: &str, ghost: &dyn Fn(&str) -> bool) -> String {
     out
 }
 
+/// The sources of a page's images, `![alt](src)`, each once, in order.
+/// Fenced code is passed over.
+pub fn images(src: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut fenced = false;
+    for line in src.lines() {
+        if fence(line) {
+            fenced = !fenced;
+        }
+        if fenced {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(a) = rest.find("![") {
+            rest = &rest[a + 2..];
+            let Some(z) = rest.find("](") else { break };
+            let after = &rest[z + 2..];
+            let end = after.find(|c: char| c == ')' || c.is_whitespace()).unwrap_or(after.len());
+            let url = &after[..end];
+            if !url.is_empty() && !rest[..z].contains(']') && !out.iter().any(|u| u == url) {
+                out.push(url.to_owned());
+            }
+            rest = after;
+        }
+    }
+    out
+}
+
+/// Whether an image's source is on another site: `http://`, `https://`
+/// or `//host`. Showing one tells that site the reader's address.
+pub fn remote(url: &str) -> bool {
+    let u = url.trim().to_ascii_lowercase();
+    u.starts_with("http://") || u.starts_with("https://") || u.starts_with("//")
+}
+
 /// What is typed of a wiki link at the caret: where it starts and its
 /// text, when the caret sits in an unclosed `[[` on its own line and
 /// what follows is the start of a page's name.
@@ -742,6 +777,15 @@ mod tests {
         assert_eq!(page_of("/apps/lattice/page/notes/today#top").as_deref(), Some("notes/today"));
         assert_eq!(page_of("https://urbit.org"), None);
         assert_eq!(page_of("lattice:"), None);
+    }
+
+    #[test]
+    fn a_pages_images_are_listed_and_the_ones_from_other_sites_told_apart() {
+        let src = "![a](https://x.org/a.png) and ![b](/apps/lattice/f/b.png \"title\")\n![a again](https://x.org/a.png)\n```\n![in code](http://no.org/c.png)\n```\n![rel](pics/d.jpg) ![]() ![open](\n";
+        assert_eq!(images(src), ["https://x.org/a.png", "/apps/lattice/f/b.png", "pics/d.jpg"]);
+        assert!(images("no images, only a [link](https://x.org)").is_empty());
+        assert!(remote("https://x.org/a.png") && remote("HTTP://x.org") && remote("//cdn.x.org/a.png"));
+        assert!(!remote("/apps/lattice/f/b.png") && !remote("pics/d.jpg") && !remote("data:image/png;base64,AAAA"));
     }
 
     #[test]

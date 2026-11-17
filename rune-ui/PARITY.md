@@ -62,7 +62,8 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Upload by dropping files or folders anywhere on the window, with a hint while they are held over it. Rune reports file drops on macOS, Windows and X11, and not on Wayland, so it does nothing on a Wayland desktop
 - [x] Upload of a `csv` file as a spreadsheet page: the web client's reading of a CSV and its cap of 20,000 cells, written into its blank sheet. A plain number is a number cell and every other field is text. The web client also reads dates, percents and money as it would typed values, and here those stay text
 - [x] Upload of `odt` and `ods` files: the package is unpacked and folded into the one flat document a `fodt` or `fods` page holds, as `ui-src/writer/odt.js` does it. Pictures, embedded objects and macros stay behind, and the note counts them. The web client puts a package's Basic macros into the document, and here they are left out
-- [ ] Images in a page from another site, behind the web client's "Load outside content for this page"
+- [x] Images in a Markdown page. One from another site is not fetched until the page is let to load outside content, with a banner that says why, and the yes is kept for that page. Until then it shows as its alt text. PNG, JPEG, GIF, WebP, BMP and SVG, 8 MB and twenty images a page at most
+- [ ] An image on the ship itself, by a path: built (fetched with the session, from the ship only) but not run, since no page here has one and pages are text
 - [ ] Find in page
 - [ ] Print or export a page (the desktop app's pandoc bridge)
 

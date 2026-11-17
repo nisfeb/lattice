@@ -246,6 +246,17 @@ struct App {
     /// The tree is to be read once more a moment from now: the ship
     /// answers a batch before it has written all of it.
     resync: bool,
+    /// Images in pages: the decoder, the pictures had so far by their
+    /// source as written, the sources asked for (so none is asked twice),
+    /// what the fetching threads bring back, and the page they are for.
+    image_cache: Option<std::rc::Rc<rune::ImageCache>>,
+    pics: HashMap<String, rune::Image>,
+    pics_asked: std::collections::HashSet<String>,
+    pics_in: std::sync::Arc<std::sync::Mutex<Vec<(String, Result<Vec<u8>, String>)>>>,
+    pics_for: Option<(String, u64)>,
+    /// How many of the pictures had were decoded at the last look.
+    pics_ready: usize,
+    waker: Option<Waker>,
     /// Files from another app are being held over the window.
     dropping: bool,
     /// Pages already read this session, so a second visit draws at once.
@@ -421,6 +432,13 @@ fn init() -> App {
         tab: 0,
         split: None,
         resync: false,
+        image_cache: None,
+        pics: HashMap::new(),
+        pics_asked: std::collections::HashSet::new(),
+        pics_in: Default::default(),
+        pics_for: None,
+        pics_ready: 0,
+        waker: None,
         dropping: false,
         cache: HashMap::new(),
         note: String::new(),
@@ -803,6 +821,8 @@ fn refresh_tree(s: &mut App) {
 }
 
 fn setup(s: &mut App, waker: Waker) {
+    s.image_cache = Some(std::rc::Rc::new(rune::ImageCache::new(waker.clone())));
+    s.waker = Some(waker.clone());
     s.tree_req.set_waker(waker.clone());
     s.page_req.set_waker(waker.clone());
     s.save_req.set_waker(waker.clone());
@@ -1135,6 +1155,84 @@ fn linked_from(cache: &HashMap<String, Page>, name: &str) -> Vec<String> {
     from
 }
 
+/// Whether the open page may load what it has from other sites.
+fn outside_ok(s: &App) -> bool {
+    s.open.as_ref().is_some_and(|p| s.prefs.outside.contains(&p.name))
+}
+
+/// The open page's images from other sites that are held back.
+fn held_back(s: &App) -> usize {
+    match s.open.as_ref().filter(|p| p.kind == "md" && !s.memory && !s.editing) {
+        Some(p) if !outside_ok(s) => md::images(&p.body).iter().filter(|u| md::remote(u)).count(),
+        _ => 0,
+    }
+}
+
+/// Fetches the open page's images, each on a thread of its own, twenty
+/// at most. One from another site is fetched only when the page has been
+/// let to load outside content, since that site then learns the reader's
+/// address. One on the ship is fetched with the session, and nowhere else is.
+fn sync_pics(s: &mut App) {
+    let Some(p) = s.open.as_ref().filter(|p| p.kind == "md" && !s.memory) else { return };
+    let now = (p.name.clone(), p.rev);
+    let ok = outside_ok(s);
+    if s.pics_for.as_ref() == Some(&now) && !ok {
+        return;
+    }
+    s.pics_for = Some(now);
+    let Some(waker) = s.waker.clone() else { return };
+    for src in md::images(&p.body).into_iter().take(20) {
+        let (url, cookie) = if md::remote(&src) {
+            if !ok {
+                continue;
+            }
+            (if src.starts_with("//") { format!("https:{src}") } else { src.clone() }, None)
+        } else {
+            match (&s.conn, &s.remote) {
+                (Some(c), None) => (c.image_url(&src, &p.name), Some(c.cookie().to_owned())),
+                _ => continue,
+            }
+        };
+        if !s.pics_asked.insert(src.clone()) {
+            continue;
+        }
+        let (back, waker) = (s.pics_in.clone(), waker.clone());
+        std::thread::spawn(move || {
+            let got = api::fetch_bytes(&url, cookie.as_deref());
+            if let Ok(mut list) = back.lock() {
+                list.push((src, got));
+            }
+            waker();
+        });
+    }
+}
+
+/// Takes in what the fetching threads brought back. `true` when something came.
+fn take_pics(s: &mut App) -> bool {
+    let got: Vec<_> = s.pics_in.lock().map(|mut l| std::mem::take(&mut *l)).unwrap_or_default();
+    let mut any = !got.is_empty();
+    // a picture's decode ends on another thread and wakes the app: it is drawn at the next look
+    let ready = s.pics.values().filter(|i| i.is_ready()).count();
+    any |= std::mem::replace(&mut s.pics_ready, ready) != ready;
+    for (src, res) in got {
+        match (res, &s.image_cache) {
+            (Ok(bytes), Some(cache)) => {
+                s.pics.insert(src, cache.load(bytes));
+            }
+            (Err(e), _) => s.note = format!("an image did not load: {e}"),
+            _ => {}
+        }
+    }
+    any
+}
+
+/// A Markdown page as the reader shows it: wiki links, ghost links, and
+/// the pictures had so far.
+fn reader(body: &str, s: &App, k: &Kit) -> El {
+    let pics = s.pics.clone();
+    Markdown::new(md::wikilinks(body, &|n| ghost(s, n))).selectable(true).on_link_tx(follow).images(move |src| pics.get(src).cloned()).build(k)
+}
+
 /// Reads which pages link to the open one when the links pane is showing.
 /// The ship's index answers. Sample pages are read here.
 fn load_links(s: &mut App) {
@@ -1266,6 +1364,7 @@ fn show_page(s: &mut App, name: &str) {
     load_history(s);
     load_comments(s);
     load_links(s);
+    sync_pics(s);
 }
 
 /// A rich field for `d`, kept to what Markdown can write.
@@ -1970,9 +2069,11 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
         }
     }
+    changed |= take_pics(s);
     if changed {
         sync_map(s);
         sync_sheet(s);
+        sync_pics(s);
     }
     changed
 }
@@ -2397,7 +2498,7 @@ fn split_view(name: &str, s: &App, k: &Kit) -> El {
             keep_split(s);
         }).build(k).key("split-close"));
     let shown = match s.cache.get(name) {
-        Some(p) if p.kind == "md" => Markdown::new(md::wikilinks(&p.body, &|n| ghost(s, n))).selectable(true).on_link_tx(follow).build(k),
+        Some(p) if p.kind == "md" => reader(&p.body, s, k),
         Some(p) => text(p.body.clone()).font(k.ty.mono).color(c.text_base).wrap().selectable(true),
         None => text("This page is not here any more.").font(k.ty.small).color(c.text_muted),
     };
@@ -3818,6 +3919,23 @@ fn body(s: &App, k: &Kit) -> El {
             },
             k,
         ))
+    } else if held_back(s) > 0 && !s.access && !s.shared_open && !s.inbox && s.folder.is_none() {
+        let n = held_back(s);
+        Some(banner(
+            "outside",
+            format!("{} from another site {} not loaded. Loading {} tells that site your address.", if n == 1 { "An image".to_owned() } else { format!("{n} images") }, if n == 1 { "is" } else { "are" }, if n == 1 { "it" } else { "them" }),
+            "Load outside content for this page",
+            |s| {
+                if let Some(name) = s.open.as_ref().map(|p| p.name.clone()) {
+                    s.prefs.allow_outside(&name);
+                    if s.conn.is_some() {
+                        s.prefs.save();
+                    }
+                    sync_pics(s);
+                }
+            },
+            k,
+        ))
     } else {
         None
     };
@@ -3935,7 +4053,7 @@ fn page_body(s: &App, k: &Kit) -> El {
         return map_view(m, k);
     }
     let shown = if p.kind == "md" {
-        Markdown::new(md::wikilinks(&p.body, &|n| ghost(s, n))).selectable(true).on_link_tx(follow).build(k)
+        reader(&p.body, s, k)
     } else {
         // other kinds draw as their source, coloured, until each has a native view
         let lang = match p.kind.as_str() {
@@ -4729,6 +4847,28 @@ mod tests {
         assert_eq!(common_folder(&["a/b/c".into(), "a/b/d/e".into(), "a/x".into()]), "a");
         assert_eq!(common_folder(&["a".into(), "b".into()]), "");
         assert_eq!(upload_note(3, &(0..6).map(|i| format!("f{i}")).collect::<Vec<_>>()), "uploaded 3 pages. Left out 6: f0, f1, f2, f3, and 2 more");
+    }
+
+    #[test]
+    fn images_from_other_sites_wait_for_the_pages_own_yes() {
+        let mut s = sample("welcome");
+        let body = "![cat](https://x.invalid/cat.png) ![dog](//y.invalid/dog.png) ![here](/apps/lattice/f/a.png)\n";
+        s.names.push("pics".into());
+        s.cache.insert("pics".into(), Page { name: "pics".into(), body: body.into(), kind: "md".into(), rev: 1 });
+        open_page(&mut s, "pics");
+        // two are from other sites: held back, counted, and nothing was asked of anyone
+        assert_eq!(held_back(&s), 2);
+        assert!(s.pics_asked.is_empty(), "no waker and no yes: nothing is fetched");
+        // the yes is the page's own, and is kept
+        s.prefs.allow_outside("pics");
+        assert_eq!(held_back(&s), 0);
+        open_page(&mut s, "welcome");
+        assert_eq!(held_back(&s), 0, "a page with no images holds none back");
+        s.prefs.allow_outside("welcome");
+        assert_eq!(s.prefs.outside, ["welcome", "pics"]);
+        // an image's address on the ship: from its root, or beside the page
+        assert_eq!(api::fetch_bytes("file:///etc/passwd", None).unwrap_err(), "not a web address");
+        assert_eq!(api::fetch_bytes("data:image/png;base64,AA", None).unwrap_err(), "not a web address");
     }
 
     #[test]

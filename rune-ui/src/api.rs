@@ -418,6 +418,31 @@ pub struct Asks {
     pub sent: Vec<Ask>,
 }
 
+/// The most an image may weigh, fetched.
+const IMAGE_MAX: u64 = 8 * 1024 * 1024;
+
+/// The bytes at a URL, for an image: `http` and `https` only, 8 MB at
+/// most, twenty seconds at most. The cookie goes only where it is given.
+pub fn fetch_bytes(url: &str, cookie: Option<&str>) -> Result<Vec<u8>, String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("not a web address".into());
+    }
+    let mut req = ureq::get(url).timeout(Duration::from_secs(20));
+    if let Some(c) = cookie {
+        req = req.set("cookie", c);
+    }
+    let res = req.call().map_err(|e| match e {
+        ureq::Error::Status(code, _) => format!("{code}"),
+        e => e.to_string(),
+    })?;
+    let mut out = Vec::new();
+    std::io::Read::read_to_end(&mut std::io::Read::take(res.into_reader(), IMAGE_MAX + 1), &mut out).map_err(|e| e.to_string())?;
+    if out.len() as u64 > IMAGE_MAX {
+        return Err("larger than 8 MB".into());
+    }
+    Ok(out)
+}
+
 /// A captured page's name: `inbox/YYYY-MM-DD-NNNN`, the date and four
 /// digits drawn from `seed`, drawn again while `taken` says the name is used.
 pub fn capture_name(date: &str, mut seed: u64, taken: &dyn Fn(&str) -> bool) -> String {
@@ -562,6 +587,9 @@ pub struct Prefs {
     /// The page held beside in the split, or empty.
     #[serde(default)]
     pub split: String,
+    /// The pages whose images from other sites may load, newest first.
+    #[serde(default)]
+    pub outside: Vec<String>,
     /// Autosave is on unless this says otherwise.
     #[serde(default)]
     pub no_autosave: bool,
@@ -592,6 +620,13 @@ impl Prefs {
             "light" => false,
             _ => system,
         }
+    }
+
+    /// Lets a page load what it has from other sites, from now on.
+    pub fn allow_outside(&mut self, name: &str) {
+        self.outside.retain(|n| n != name);
+        self.outside.insert(0, name.to_owned());
+        self.outside.truncate(500);
     }
 
     /// Notes a page as the one opened last.
@@ -942,6 +977,20 @@ impl Conn {
         Ok(f.shared)
     }
 
+    /// The address an image on this ship is fetched at, and the cookie to
+    /// send with it: a path from the ship's root, or one beside the page.
+    pub fn image_url(&self, src: &str, page: &str) -> String {
+        if src.starts_with('/') {
+            return format!("{}{src}", self.url);
+        }
+        let dir = page.rsplit_once('/').map_or("", |p| p.0);
+        format!("{}/apps/lattice/page/{}{}{src}", self.url, dir, if dir.is_empty() { "" } else { "/" })
+    }
+
+    pub fn cookie(&self) -> &str {
+        &self.cookie
+    }
+
     /// The newest comments across every page (the ship gives 200 at most).
     pub fn comments(&self) -> Result<Vec<Comment>, String> {
         let i: Inbox = serde_json::from_str(&self.call_in(60, "GET", "comments-inbox", None)?).map_err(|e| e.to_string())?;
@@ -1167,7 +1216,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into() }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()] }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
     }
