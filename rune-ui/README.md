@@ -36,6 +36,7 @@ On macOS, Cmd takes the place of Ctrl.
 - Editing a page's source, coloured as Markdown, with the rendered page beside it as it is typed.
 - Saving over the rev the text was read at. The ship refuses a stale save with 409, except for a page still at rev 0, where the ship checks nothing (the web client has the same gap).
 - New page, rename or move, and delete.
+- Folders: picking a folder shows the pages in it, with New page here, Rename or move, and Delete, which takes every page in it after a confirm that says how many.
 - The whole tree arrives with every page's text in one request, so a page opens at once and the switcher can search text with no round trip. Every 30 seconds the tree is read again, and that read carries only what was written since. A page open in the window follows a write made elsewhere unless it is being edited.
 - Wiki links (`[[name]]`, `[[name|label]]`) and links into the app open the page. A link to a page that does not exist offers to make it. Web links open in the system browser. Back and forward buttons walk the pages visited.
 - History: a pane lists a page's stored revisions. An old one can be read in the page's place and restored, which saves it as the newest and loses nothing.
@@ -50,7 +51,7 @@ On macOS, Cmd takes the place of Ctrl.
 
 ## What does not, yet
 
-OpenSCAD and HTML pages have no native view, a spreadsheet cannot be edited as a grid, and a map has no tiles under it, no layers and no drawing tools. In the rich editor a heading keeps its `#`, a table its pipes and a fence its backticks, since Rune's rich text has no heading or table, and paragraphs have no space between them. No folders as their own things, grants to ships and groups, folder sharing, forum, memory tags, rename, trash and history, search inside pages, or offline queue.
+OpenSCAD and HTML pages have no native view, a spreadsheet cannot be edited as a grid, and a map has no tiles under it, no layers and no drawing tools. In the rich editor a heading keeps its `#`, a table its pipes and a fence its backticks, since Rune's rich text has no heading or table, and paragraphs have no space between them. No grants to ships and groups, folder sharing, forum, memory tags, rename, trash and history, search inside pages, or offline queue.
 
 ## Check it without a window
 

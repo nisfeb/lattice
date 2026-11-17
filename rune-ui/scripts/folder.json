@@ -1,0 +1,7 @@
+{"events": [
+  {"t": 0.4, "type": "tap", "key": "sample"},
+  {"t": 1.0, "type": "tap", "key": "notes"},
+  {"t": 2.0, "type": "tap", "key": "folder-rename"},
+  {"t": 2.6, "type": "type", "text": "-old"},
+  {"t": 3.2, "type": "key", "name": "Enter"}
+]}

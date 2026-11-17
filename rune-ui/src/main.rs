@@ -94,6 +94,8 @@ struct App {
     old_req: Latest<Result<Page, String>>,
     /// The page being edited was written elsewhere since it was opened.
     stale: bool,
+    /// The folder picked in the tree, shown in place of a page.
+    folder: Option<String>,
     /// Each page's share mode, as the last dump said, and whether the
     /// share dialog is open.
     shares: HashMap<String, String>,
@@ -197,6 +199,7 @@ fn init() -> App {
         hist_req: Latest::default(),
         old_req: Latest::default(),
         stale: false,
+        folder: None,
         shares: HashMap::new(),
         sharing: false,
         memory: false,
@@ -253,6 +256,7 @@ fn flip(s: &mut App) {
     s.old = None;
     s.trail.clear();
     s.trail_at = 0;
+    s.folder = None;
     s.query = TextEdit::new("");
     s.files.clear_filter();
     s.inspector = s.inspector.clone().collapsed();
@@ -358,6 +362,11 @@ fn confirm(s: &mut App) {
     }
 }
 
+/// The names at `path` or under it: a page's own, or a folder's pages.
+fn under(names: &[String], path: &str) -> Vec<String> {
+    names.iter().filter(|n| n.as_str() == path || n.strip_prefix(path).is_some_and(|r| r.starts_with('/'))).cloned().collect()
+}
+
 /// A change landed: follow it here, then read the tree again.
 fn applied(s: &mut App, op: Op) {
     match op {
@@ -373,14 +382,23 @@ fn applied(s: &mut App, op: Op) {
             s.note = "created".into();
         }
         Op::Renamed(a, b) => {
-            if let Some(mut p) = s.cache.remove(&a) {
-                p.name = b.clone();
-                s.cache.insert(b.clone(), p);
+            // a page, or a folder and every page under it
+            let was_folder = !s.names.contains(&a);
+            for old in under(&s.names, &a) {
+                let new = format!("{b}{}", &old[a.len()..]);
+                if let Some(mut p) = s.cache.remove(&old) {
+                    p.name = new.clone();
+                    s.cache.insert(new.clone(), p);
+                }
+                s.names.retain(|x| *x != old);
+                s.names.push(new);
             }
-            s.names.retain(|x| *x != a);
-            s.names.push(b.clone());
             s.open = None;
-            open_page(s, &b);
+            if was_folder {
+                s.folder = Some(b);
+            } else {
+                open_page(s, &b);
+            }
             s.note = "renamed".into();
         }
         Op::Shared(n, mode) => {
@@ -392,9 +410,12 @@ fn applied(s: &mut App, op: Op) {
             s.shares.insert(n, mode);
         }
         Op::Deleted(n) => {
-            s.cache.remove(&n);
-            s.names.retain(|x| *x != n);
+            for old in under(&s.names, &n) {
+                s.cache.remove(&old);
+                s.names.retain(|x| *x != old);
+            }
             s.open = None;
+            s.folder = None;
             s.note = "deleted".into();
         }
     }
@@ -737,6 +758,7 @@ fn restore(s: &mut App) {
 }
 
 fn show_page(s: &mut App, name: &str) {
+    s.folder = None;
     s.old = None;
     s.stale = false;
     if let Some(p) = s.cache.get(name) {
@@ -1254,7 +1276,11 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::New(t) => ("New page", field(t, "folder/name"), "Create", ButtonVariant::Contrast),
         Prompt::Rename(_, t) => ("Rename or move", field(t, "folder/name"), "Rename", ButtonVariant::Contrast),
         Prompt::Link(t) => ("Link the selection to", field(t, "https://"), "Link", ButtonVariant::Contrast),
-        Prompt::Delete(n) => ("Delete this page?", text(n.clone()).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
+        Prompt::Delete(n) => {
+            let held = under(&s.names, n).len();
+            let (ask, says) = if s.names.contains(n) { ("Delete this page?", n.clone()) } else { ("Delete this folder?", format!("{n} and the {held} pages in it")) };
+            (ask, text(says).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger)
+        }
     };
     let buttons = row()
         .w_full()
@@ -1336,8 +1362,11 @@ fn share_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
 }
 
 fn ask_new(s: &mut App) {
-    // a new page starts beside the open one
-    let dir = s.open.as_ref().and_then(|p| p.name.rsplit_once('/')).map_or(String::new(), |(d, _)| format!("{d}/"));
+    // a new page starts in the folder showing, or beside the open page
+    let dir = match (&s.folder, &s.open) {
+        (Some(f), None) => format!("{f}/"),
+        (_, p) => p.as_ref().and_then(|p| p.name.rsplit_once('/')).map_or(String::new(), |(d, _)| format!("{d}/")),
+    };
     let mut t = TextEdit::new(dir);
     t.focused = true;
     s.prompt = Some(Prompt::New(t));
@@ -1366,6 +1395,13 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .on_select(|s: &mut App, id, _| {
             if s.files.get(id).is_some_and(|n| !n.dir) {
                 open_page(s, id);
+            } else if !s.editing {
+                // a folder shows what it holds, and can be renamed, moved or deleted there
+                s.folder = Some(id.to_owned());
+                s.open = None;
+                s.old = None;
+                sync_map(s);
+                sync_sheet(s);
             }
         })
         .build(s, k)
@@ -1509,7 +1545,54 @@ fn body(s: &App, k: &Kit) -> El {
     }
 }
 
+/// A folder in place of a page: what it holds, and what can be done to it.
+fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let pages = under(&s.names, dir);
+    let mut list = col().key("folder-pages").w_full().gap(2.0);
+    for name in pages.iter().take(500) {
+        let pick = name.clone();
+        list = list.child(
+            row()
+                .key(format!("in:{name}"))
+                .w_full()
+                .h(30.0)
+                .px(8.0)
+                .center_y()
+                .radius(k.radius.sm)
+                .on_press_tx(move |s: &mut App, tx| jump_to(s, &pick, tx))
+                .child(text(name[dir.len() + 1..].to_owned()).font(k.ty.ui).color(c.text_base).truncate()),
+        );
+    }
+    let mut acts = row().gap(8.0).center_y().child(Button::new(if s.memory { "New memory here" } else { "New page here" }).on_press(ask_new).build(k).key("folder-new"));
+    // a memory is its own key: there is no folder on the ship to move or delete
+    if !s.memory {
+        let (a, b) = (dir.to_owned(), dir.to_owned());
+        acts = acts
+            .child(Button::new("Rename or move").variant(ButtonVariant::Ghost).on_press(move |s: &mut App| {
+                let mut t = TextEdit::new(a.clone());
+                t.focused = true;
+                s.prompt = Some(Prompt::Rename(a.clone(), t));
+            }).build(k).key("folder-rename"))
+            .child(Button::new("Delete").variant(ButtonVariant::Ghost).on_press(move |s: &mut App| s.prompt = Some(Prompt::Delete(b.clone()))).build(k).key("folder-delete"));
+    }
+    let head = col()
+        .gap(4.0)
+        .child(text(dir.to_owned()).font(k.ty.body_medium).color(c.text_base))
+        .child(text(format!("{} {}", pages.len(), if s.memory { "memories" } else { "pages" })).font(k.ty.small).color(c.text_muted));
+    col()
+        .key("folder")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(acts).child(list)))
+        .scroll(ScrollSpec { stick_bottom: false })
+}
+
 fn page_body(s: &App, k: &Kit) -> El {
+    if let Some(dir) = s.folder.as_ref().filter(|_| s.open.is_none()) {
+        return folder_view(dir, s, k);
+    }
     let c = &k.c;
     // an old revision is read in the open page's place
     let Some(p) = s.old.as_ref().filter(|_| !s.editing).or(s.open.as_ref()) else {
@@ -1591,7 +1674,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     if s.conn.is_none() && !s.sample {
         return login_view(s, &k);
     }
-    let title = s.open.as_ref().map_or("lattice", |p| p.name.as_str());
+    let title = s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref()).unwrap_or("lattice");
     let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending();
     let mut trailing = row().gap(8.0).center_y();
     if busy {
@@ -1835,6 +1918,31 @@ mod tests {
         start_edit(&mut s);
         flip(&mut s);
         assert!(!s.memory);
+    }
+
+    #[test]
+    fn a_folder_is_renamed_and_deleted_with_every_page_in_it() {
+        let mut s = sample("welcome");
+        assert_eq!(under(&s.names, "notes"), ["notes/today", "notes/ideas/maps"]);
+        assert!(under(&s.names, "note").is_empty(), "a name that only starts the same is not under it");
+        // rename the folder: its pages move with their texts, and the folder stays picked
+        s.open = None;
+        s.folder = Some("notes".into());
+        let mut t = TextEdit::new("archive/notes");
+        t.focused = true;
+        s.prompt = Some(Prompt::Rename("notes".into(), t));
+        confirm(&mut s);
+        assert_eq!(s.folder.as_deref(), Some("archive/notes"));
+        assert!(s.cache["archive/notes/today"].body.starts_with("# Today") && !s.cache.contains_key("notes/today"));
+        assert_eq!(under(&s.names, "archive/notes").len(), 2);
+        // a new page from the folder starts inside it
+        ask_new(&mut s);
+        assert!(matches!(&s.prompt, Some(Prompt::New(t)) if t.text == "archive/notes/"));
+        // delete it: both pages go, the others stay
+        s.prompt = Some(Prompt::Delete("archive/notes".into()));
+        confirm(&mut s);
+        assert!(under(&s.names, "archive").is_empty() && s.folder.is_none());
+        assert!(s.names.contains(&"welcome".to_owned()) && s.cache.contains_key("welcome"));
     }
 
     #[test]

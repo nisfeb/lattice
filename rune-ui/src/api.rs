@@ -416,6 +416,14 @@ mod tests {
         assert!(has(&c, &moved) && !has(&c, &made), "a rename moves it");
         c.delete(&moved).unwrap();
         assert!(!has(&c, &moved), "a delete removes it");
+        // a folder moves and goes with every page in it, by the same two calls
+        let (dir, to) = (format!("rune-dir-{stamp}"), format!("rune-kept-{stamp}/dir"));
+        c.create(&format!("{dir}/one")).unwrap();
+        c.create(&format!("{dir}/deep/two")).unwrap();
+        c.rename(&dir, &to).unwrap();
+        assert!(has(&c, &format!("{to}/one")) && has(&c, &format!("{to}/deep/two")) && !has(&c, &format!("{dir}/one")), "a folder rename moves its pages");
+        c.delete(&to).unwrap();
+        assert!(!has(&c, &format!("{to}/one")) && !has(&c, &format!("{to}/deep/two")), "a folder delete removes them");
     }
 
     /// `LATTICE_URL=.. LATTICE_CODE=.. cargo test -- --ignored login`
