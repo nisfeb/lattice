@@ -28,7 +28,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Share groups: an Access screen lists groups, makes one and deletes one, and the share dialog sets a group to none, read or edit on the page (`/share-group-save`, `/share-group-del`, `/streams` for the base path). The first group write on a fresh fake ship lands and reads back, and the screens show it
 - [!] Share groups, a change or a delete seen on the ship: blocked on a test pier with the patched kernel. On the fake ships' kernel only the first group write of a pier's life changes `/share-groups`. Every later one answers ok and does nothing, with or without ships in the group
 - [x] Change a group's ships after it is made, from the Access screen. The screen and the request were run on a fake ship. That the ship's list then changes falls under the blocked line above
-- [ ] Bans: list, ban, unban (`/banlist`, `/ban`, `/unban`)
+- [x] Bans: list, ban a ship or every comet, unban (`/banlist`, `/ban`, `/unban`), on the Access screen
 - [ ] Folder sharing (`/page-share-dir`)
 - [ ] Shared with me: pages other ships shared, and opening them (`/shared-with-me`, `/browse-file`, `/remote-save`)
 - [ ] Display names for pages and folders (`dname`)

@@ -139,6 +139,13 @@ pub fn ship_list(typed: &str) -> Result<Vec<String>, String> {
     typed.split(|c: char| c.is_whitespace() || c == ',').filter(|t| !t.is_empty()).map(|t| ship_name(t).ok_or_else(|| format!("{t} is not a ship's name"))).collect()
 }
 
+/// What to ban, as typed: a ship's name with its sig, or `comets` for every
+/// comet at once. `None` for anything else.
+pub fn ban_target(typed: &str) -> Option<String> {
+    let t = typed.trim();
+    if t == "comets" { Some(t.to_owned()) } else { ship_name(t) }
+}
+
 /// A group's name as the ship takes it: lowercase letters, digits and
 /// hyphens, starting with a letter.
 pub fn group_name_ok(name: &str) -> bool {
@@ -495,6 +502,22 @@ impl Conn {
         self.call_in(120, "POST", &format!("share-group-del?name={}", enc(name)), Some("")).map(drop)
     }
 
+    /// The ships that are banned, in the ship's order.
+    pub fn bans(&self) -> Result<Vec<String>, String> {
+        serde_json::from_str(&self.call("GET", "banlist", None)?).map_err(|e| e.to_string())
+    }
+
+    /// Bans a ship (or `comets`): it is taken out of every group it is in
+    /// and cannot be granted anything until it is unbanned.
+    pub fn ban(&self, who: &str) -> Result<(), String> {
+        self.call_in(120, "POST", &format!("ban?ship={}", enc(who)), Some("")).map(drop)
+    }
+
+    /// Lifts a ban. It gives back nothing the ban took.
+    pub fn unban(&self, who: &str) -> Result<(), String> {
+        self.call_in(120, "POST", &format!("unban?ship={}", enc(who)), Some("")).map(drop)
+    }
+
     /// Lets `ship` read (`edit` false) or edit a page or folder. Answers
     /// whether the ship was told: the grant holds either way.
     pub fn grant(&self, name: &str, ship: &str, edit: bool) -> Result<bool, String> {
@@ -611,6 +634,7 @@ mod tests {
         assert!(edit.with_ships("").unwrap().ships.is_empty() && edit.with_ships("Nope").is_err());
         assert_eq!(ship_list("nec Bad").unwrap_err(), "Bad is not a ship's name");
         assert!(ship_list("").unwrap().is_empty());
+        assert_eq!((ban_target(" comets "), ban_target("wes"), ban_target("Comets"), ban_target("")), (Some("comets".into()), Some("~wes".into()), None, None));
         assert!(group_name_ok("team-2") && !group_name_ok("Team") && !group_name_ok("2team") && !group_name_ok("") && !group_name_ok("a b"));
     }
 
@@ -698,6 +722,14 @@ mod tests {
         c.group_save(&g.with_level(&base, "rune-probe", Level::Edit)).unwrap();
         c.group_delete(&gname).unwrap();
         assert!(c.group_save(&Group { name: "Bad Name".into(), ..Group::default() }).unwrap_err().starts_with("400"));
+        // a banned ship is listed, cannot be granted anything, and is let back by an unban
+        let _ = c.unban("~wes");
+        c.ban("~wes").unwrap();
+        assert!(c.bans().unwrap().contains(&"~wes".to_owned()), "a banned ship is in the list");
+        assert!(c.grant("rune-probe", "~wes", false).unwrap_err().starts_with("403"), "and is refused a grant");
+        assert!(c.ban("~zod").unwrap_err().starts_with("400"), "one cannot ban oneself");
+        c.unban("~wes").unwrap();
+        assert!(!c.bans().unwrap().contains(&"~wes".to_owned()), "an unban takes it off the list");
         // a grant to a ship is accepted, and a grant to oneself is refused. Whether
         // the access list then names the ship is not asserted: on a fake ship
         // only the first grant ever showed there (see PARITY.md), so it is printed.

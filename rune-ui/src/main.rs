@@ -121,6 +121,10 @@ struct App {
     access: bool,
     group_name: TextEdit,
     group_ships: TextEdit,
+    /// The banned ships, and the one being typed to ban.
+    bans: Vec<String>,
+    bans_req: Latest<Result<Vec<String>, String>>,
+    ban_who: TextEdit,
     /// The group whose ships are being changed, and the ships as typed.
     group_edit: Option<(String, TextEdit)>,
     /// Showing memories, not pages. The tree, the names and the kept texts
@@ -235,6 +239,9 @@ fn init() -> App {
         access: false,
         group_name: TextEdit::new(""),
         group_ships: TextEdit::new(""),
+        bans: Vec::new(),
+        bans_req: Latest::default(),
+        ban_who: TextEdit::new(""),
         group_edit: None,
         memory: false,
         other: Default::default(),
@@ -357,6 +364,7 @@ fn sign_out(s: &mut App) {
     fresh.know_req = std::mem::take(&mut s.know_req);
     fresh.groups_req = std::mem::take(&mut s.groups_req);
     fresh.base_req = std::mem::take(&mut s.base_req);
+    fresh.bans_req = std::mem::take(&mut s.bans_req);
     fresh.old_req = std::mem::take(&mut s.old_req);
     fresh.sidebar = s.sidebar.clone();
     *s = fresh;
@@ -496,6 +504,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.know_req.set_waker(waker.clone());
     s.groups_req.set_waker(waker.clone());
     s.base_req.set_waker(waker.clone());
+    s.bans_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
     s.op_req.set_waker(waker);
     load_tree(s);
@@ -1060,6 +1069,13 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         s.next_sync = clock + SYNC_EVERY;
         tx.wake_after(std::time::Duration::from_secs_f64(SYNC_EVERY));
     }
+    if let Some(r) = s.bans_req.take() {
+        changed = true;
+        match r {
+            Ok(b) => s.bans = b,
+            Err(e) => s.note = format!("bans: {e}"),
+        }
+    }
     if let Some(r) = s.base_req.take() {
         changed = true;
         match r {
@@ -1384,6 +1400,8 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
 fn load_groups(s: &mut App) {
     if let Some(c) = s.conn.clone() {
         s.groups_req.request(c.clone(), |c| c.groups());
+        // a ban takes ships out of groups, so the two are read together
+        s.bans_req.request(c.clone(), |c| c.bans());
         if s.base.is_empty() {
             s.base_req.request(c, |c| c.base());
         }
@@ -1410,6 +1428,20 @@ fn save_ships(s: &mut App) {
             s.group_edit = Some((name, typed));
         }
     }
+}
+
+/// Bans the ship typed on the access screen.
+fn ban(s: &mut App) {
+    let Some(who) = api::ban_target(&s.ban_who.text) else {
+        s.note = "enter a ship's name, or comets for every comet".into();
+        return;
+    };
+    let Some(c) = s.conn.clone() else { return };
+    s.ban_who = TextEdit::new("");
+    s.op_req.request((c, who), |(c, who)| {
+        c.ban(&who)?;
+        Ok(Op::Grouped(format!("banned {who}: it is out of every group and cannot be granted anything")))
+    });
 }
 
 /// Makes the group typed on the access screen.
@@ -1509,6 +1541,36 @@ fn access_view(s: &App, k: &Kit) -> El {
         .child(TextInput::new(&s.group_name).label("Group name").placeholder("team").on_edit(|s: &mut App| &mut s.group_name).build(k).w_full().key("group-name"))
         .child(TextInput::new(&s.group_ships).label("Ships").placeholder("~sampel-palnet ~zod").on_edit(|s: &mut App| &mut s.group_ships).on_submit(|s: &mut App, _| new_group(s)).build(k).w_full().key("group-ships"))
         .child(row().child(Button::new("Make group").variant(ButtonVariant::Contrast).on_press(new_group).build(k).key("group-make")));
+    let mut banned = col().key("bans").w_full().gap(6.0).child(text("Banned ships").font(k.ty.ui_medium).color(c.text_base));
+    for who in &s.bans {
+        let w = who.clone();
+        banned = banned.child(
+            row()
+                .key(format!("ban-{who}"))
+                .w_full()
+                .gap(8.0)
+                .center_y()
+                .child(text(who.clone()).font(k.ty.mono).color(c.text_base).grow(1.0).min_w(0.0).truncate())
+                .child(Button::new("Unban").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| {
+                    let Some(c) = s.conn.clone() else { return };
+                    s.op_req.request((c, w.clone()), |(c, who)| {
+                        c.unban(&who)?;
+                        Ok(Op::Grouped(format!("unbanned {who}: nothing it had is given back")))
+                    });
+                }).build(k).key(format!("unban-{who}"))),
+        );
+    }
+    if s.bans.is_empty() {
+        banned = banned.child(text("No ship is banned.").font(k.ty.small).color(c.text_muted));
+    }
+    banned = banned.child(
+        row()
+            .w_full()
+            .gap(6.0)
+            .center_y()
+            .child(TextInput::new(&s.ban_who).label("Ship to ban").placeholder("~sampel-palnet, or comets").on_edit(|s: &mut App| &mut s.ban_who).on_submit(|s: &mut App, _| ban(s)).build(k).grow(1.0).min_w(0.0).key("ban-who"))
+            .child(Button::new("Ban").control_size(ControlSize::Small).variant(ButtonVariant::Danger).on_press(ban).build(k).key("ban-go")),
+    );
     let head = col()
         .gap(4.0)
         .child(text("Access").font(k.ty.body_medium).color(c.text_base))
@@ -1518,7 +1580,7 @@ fn access_view(s: &App, k: &Kit) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(list).child(Divider::horizontal().build(k)).child(form)))
+        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(list).child(Divider::horizontal().build(k)).child(form).child(Divider::horizontal().build(k)).child(banned)))
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
