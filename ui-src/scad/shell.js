@@ -277,6 +277,7 @@ export function shell(h) {
     retheme: () => { if (ctl) ctl.retheme(); },
     status: () => st,
     readPage,
-    forget: (name) => { kept.delete(name); },
+    //  no name: every include (a tree dump may hold a new page at an old rev)
+    forget: (name) => { if (name === undefined) kept.clear(); else kept.delete(name); },
   };
 }

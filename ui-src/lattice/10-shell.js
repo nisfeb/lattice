@@ -140,6 +140,9 @@
   // cached views it could have changed — any entry naming the page, plus
   // home, whose listings change under every write.
   const bustPages = (name) => {
+    // every write that lands, a replayed offline one and a move included,
+    // also drops the scad pane's copy of the page as an include
+    try { if (scadG) scadG.forget(String(name || '').replace(/^\/+/, '')); } catch {}
     if (!('caches' in window)) return;
     // ball paths arrive with a leading slash (spud); the needle below adds
     // its own, and '//' matches no URL — normalize or the bust is a no-op

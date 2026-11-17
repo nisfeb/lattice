@@ -142,6 +142,8 @@
     if (!lastRev && typeof d.since === 'string') noteRev(d.since);
     const first = !nodes.length;
     nodes = d.nodes;
+    // a page deleted and made again elsewhere comes back at an old rev
+    if (scadG) scadG.forget();
     treeShares = typeof d.since === 'string';
     treeSince = treeShares ? d.since : '';
     treeAt = at;
