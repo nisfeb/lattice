@@ -282,10 +282,43 @@ pub struct Comment {
     pub id: String,
     #[serde(default)]
     pub author: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "when_text")]
     pub when: String,
     #[serde(default)]
     pub body: String,
+}
+
+/// A date the ship gives as its own text or, for held comments, as
+/// milliseconds since 1970. Both come out as the ship's text.
+fn when_text<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(match serde_json::Value::deserialize(d)? {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Number(n) => da_of_ms(n.as_f64().unwrap_or(0.0) as i64),
+        _ => String::new(),
+    })
+}
+
+/// Milliseconds since 1970 as the ship writes a date: `~2026.11.17..20.36.35`.
+pub fn da_of_ms(ms: i64) -> String {
+    let secs = ms.div_euclid(1000);
+    let (days, rem) = (secs.div_euclid(86400), secs.rem_euclid(86400));
+    // days to a civil date (Howard Hinnant's algorithm)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("~{y}.{m}.{d}..{}.{}.{}", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+#[derive(Deserialize)]
+struct Comets {
+    #[serde(default)]
+    mode: String,
 }
 
 #[derive(Deserialize)]
@@ -758,6 +791,27 @@ impl Conn {
         }
     }
 
+    /// Comet comments held for the owner's yes, across every page, newest first.
+    pub fn held(&self) -> Result<Vec<Comment>, String> {
+        let i: Inbox = serde_json::from_str(&self.call_in(60, "GET", "held-comments", None)?).map_err(|e| e.to_string())?;
+        Ok(i.items)
+    }
+
+    /// Approves or rejects one held comment.
+    pub fn held_answer(&self, page: &str, id: &str, approve: bool) -> Result<(), String> {
+        self.call("POST", &format!("comet-pending?page={}&id={}&do={}", enc(page), enc(id), if approve { "approve" } else { "reject" }), Some("")).map(drop)
+    }
+
+    /// What a page does with comets' comments: `open`, `held` or `off`.
+    pub fn comets(&self, name: &str) -> Result<String, String> {
+        let c: Comets = serde_json::from_str(&self.call("GET", &format!("page-comets?name={}", enc(name)), None)?).map_err(|e| e.to_string())?;
+        Ok(if c.mode.is_empty() { "open".into() } else { c.mode })
+    }
+
+    pub fn set_comets(&self, name: &str, mode: &str) -> Result<(), String> {
+        self.call("POST", &format!("page-comets?name={}&mode={}", enc(name), enc(mode)), Some("")).map(drop)
+    }
+
     /// Removes one comment.
     pub fn comment_delete(&self, page: &str, id: &str) -> Result<(), String> {
         self.call("POST", &format!("comment-del?page={}&id={}", enc(page), enc(id)), Some("")).map(drop)
@@ -961,6 +1015,17 @@ mod tests {
         assert_eq!((p.body.as_str(), p.rev), ("hi", 2));
     }
 
+    #[test]
+    fn a_held_comments_date_in_milliseconds_reads_as_the_ships_text() {
+        assert_eq!(da_of_ms(0), "~1970.1.1..0.0.0");
+        assert_eq!(da_of_ms(1_794_947_795_000), "~2026.11.17..20.36.35");
+        assert_eq!(da_of_ms(951_782_400_000), "~2000.2.29..0.0.0");
+        let held: Inbox = serde_json::from_str(r#"{"items":[{"page":"a/b","id":"0v1","author":"~zod","when":1794947795000,"body":"hi"}]}"#).unwrap();
+        assert_eq!(Rev { rev: 0, updated: held.items[0].when.clone() }.when(), "2026-11-17 20:36");
+        let inbox: Inbox = serde_json::from_str(r#"{"items":[{"page":"a","id":"0v1","when":"~2026.11.17..20.36.35..0722"}]}"#).unwrap();
+        assert_eq!(inbox.items[0].when, "~2026.11.17..20.36.35..0722");
+    }
+
     /// Against a real ship: `LATTICE_URL=.. LATTICE_COOKIE=.. cargo test -- --ignored`.
     /// It needs a page named `rune-probe` to exist.
     #[test]
@@ -1049,6 +1114,16 @@ mod tests {
         assert!(c.comment("rune-probe", "").unwrap_err().starts_with("400"), "an empty comment is refused");
         c.comment_delete("rune-probe", &got.id).unwrap();
         assert!(mine(&c).is_none(), "a removed comment is gone");
+        // comets' comments: open until set, held when set, and nothing held with no comet about
+        assert_eq!(c.comets("rune-probe").unwrap(), "open");
+        c.set_comets("rune-probe", "held").unwrap();
+        assert_eq!(c.comets("rune-probe").unwrap(), "held");
+        assert!(c.set_comets("rune-probe", "sometimes").is_err());
+        assert!(c.held().unwrap().is_empty());
+        // answering a comment that is not there comes back, whatever it says
+        let _ = c.held_answer("rune-probe", "0v1.nosuch", true);
+        assert!(c.held_answer("rune-probe", "0v1.nosuch", true).is_ok() == c.held_answer("rune-probe", "0v1.nosuch", false).is_ok());
+        c.set_comets("rune-probe", "open").unwrap();
         c.set_comments("rune-probe", false).unwrap();
         assert!(!c.comments_on("rune-probe").unwrap());
         // the sensitive mark is set, read back and cleared, and says when the page is still shared

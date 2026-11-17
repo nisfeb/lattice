@@ -1,0 +1,6 @@
+{"events": [
+  {"t": 2.5, "type": "tap", "key": "rune-probe"},
+  {"t": 3.5, "type": "tap", "key": "comments-toggle-pane"},
+  {"t": 7.0, "type": "tap", "key": "comments-toggle"},
+  {"t": 10.0, "type": "tap", "key": "comets-held"}
+]}

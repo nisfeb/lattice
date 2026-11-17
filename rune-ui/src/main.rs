@@ -132,6 +132,12 @@ struct App {
     comments_on: HashMap<String, bool>,
     comments_on_req: Latest<Result<(String, bool), String>>,
     comment: TextEdit,
+    /// Comet comments waiting for a yes, and what each page asked about
+    /// does with comets' comments (`open`, `held`, `off`).
+    held: Vec<Comment>,
+    held_req: Latest<Result<Vec<Comment>, String>>,
+    comets: HashMap<String, String>,
+    comets_req: Latest<Result<(String, String), String>>,
     /// The sensitive mark of each page and folder asked about so far.
     sens: HashMap<String, bool>,
     sens_req: Latest<Result<(String, bool), String>>,
@@ -283,6 +289,10 @@ fn init() -> App {
         comments_on: HashMap::new(),
         comments_on_req: Latest::default(),
         comment: TextEdit::new(""),
+        held: Vec::new(),
+        held_req: Latest::default(),
+        comets: HashMap::new(),
+        comets_req: Latest::default(),
         sens: HashMap::new(),
         sens_req: Latest::default(),
         groups: Vec::new(),
@@ -338,6 +348,7 @@ fn browse_sample(s: &mut App) {
         s.note = "sample pages, kept only while the window is open".into();
         // a page another ship shared, to open from the list
         s.shared = vec![Shared { host: "~sampel-palnet".into(), path: "/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/plans/trip/code".into(), mode: "edit".into(), when: "~2026.11.16..18.5.0".into() }];
+        s.held = vec![Comment { page: "welcome".into(), id: "0v1.sample".into(), author: "~doznec-salfun-naptul-habrys--todlux-mosmep-linsub-binzod".into(), when: "~2026.11.17..9.30.0".into(), body: "Held until you say yes.".into() }];
         // and two memories, in the other half
         let knows = [("feedback/short-answers", "Keep answers short.\n\n**Why:** long ones are not read.\n"), ("project/lattice/rune", "An experimental native client, drawn with Rune.\n")];
         s.other.1 = knows.iter().map(|(k, _)| (*k).to_owned()).collect();
@@ -431,6 +442,8 @@ fn sign_out(s: &mut App) {
     fresh.sens_req = std::mem::take(&mut s.sens_req);
     fresh.comments_req = std::mem::take(&mut s.comments_req);
     fresh.comments_on_req = std::mem::take(&mut s.comments_on_req);
+    fresh.held_req = std::mem::take(&mut s.held_req);
+    fresh.comets_req = std::mem::take(&mut s.comets_req);
     fresh.shared_req = std::mem::take(&mut s.shared_req);
     fresh.remote_req = std::mem::take(&mut s.remote_req);
     fresh.old_req = std::mem::take(&mut s.old_req);
@@ -630,6 +643,8 @@ fn setup(s: &mut App, waker: Waker) {
     s.sens_req.set_waker(waker.clone());
     s.comments_req.set_waker(waker.clone());
     s.comments_on_req.set_waker(waker.clone());
+    s.held_req.set_waker(waker.clone());
+    s.comets_req.set_waker(waker.clone());
     s.shared_req.set_waker(waker.clone());
     s.remote_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
@@ -1232,6 +1247,19 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Err(e) => s.note = format!("comments: {e}"),
         }
     }
+    if let Some(r) = s.held_req.take() {
+        changed = true;
+        match r {
+            Ok(list) => s.held = list,
+            Err(e) => s.note = format!("held comments: {e}"),
+        }
+    }
+    if let Some(r) = s.comets_req.take() {
+        changed = true;
+        if let Ok((n, m)) = r {
+            s.comets.insert(n, m);
+        }
+    }
     if let Some(r) = s.comments_on_req.take() {
         changed = true;
         if let Ok((n, on)) = r {
@@ -1685,11 +1713,13 @@ fn load_comments(s: &mut App) {
     let Some(c) = s.conn.clone() else { return };
     if s.inbox {
         s.comments_req.request(c.clone(), |c| c.comments());
+        s.held_req.request(c.clone(), |c| c.held());
     }
     let Some(p) = &s.open else { return };
     if s.inspector.is_open() && s.pane_comments && !s.memory && s.remote.is_none() {
         s.comments_req.request(c.clone(), |c| c.comments());
-        s.comments_on_req.request((c, p.name.clone()), |(c, n)| c.comments_on(&n).map(|on| (n, on)));
+        s.comments_on_req.request((c.clone(), p.name.clone()), |(c, n)| c.comments_on(&n).map(|on| (n, on)));
+        s.comets_req.request((c, p.name.clone()), |(c, n)| c.comets(&n).map(|m| (n, m)));
     }
 }
 
@@ -1714,25 +1744,37 @@ fn post_comment(s: &mut App) {
 
 /// One comment: who, when, what, and Remove. In the inbox it also names
 /// its page, which opens when pressed.
-fn comment_card(m: &Comment, k: &Kit, link: bool) -> El {
+fn comment_card(m: &Comment, k: &Kit, link: bool, held: bool) -> El {
     let c = &k.c;
     let (page, id, to) = (m.page.clone(), m.id.clone(), m.page.clone());
     let when = Rev { rev: 0, updated: m.when.clone() }.when();
-    let mut card = col().key(format!("comment-{}", m.id)).w_full().padding(8.0).gap(4.0).radius(k.radius.sm).fill(c.layer_01).child(
-        row()
-            .w_full()
-            .gap(6.0)
-            .center_y()
-            .child(text(m.author.clone()).font(k.ty.small_medium).color(c.text_base))
-            .child(text(when).font(k.ty.small).color(c.text_faint).grow(1.0))
+    let mut top = row().w_full().gap(6.0).center_y().child(text(m.author.clone()).font(k.ty.small_medium).color(c.text_base)).child(text(when).font(k.ty.small).color(c.text_faint).grow(1.0));
+    if held {
+        // a held comment is answered, not removed
+        for approve in [true, false] {
+            let (page, id) = (page.clone(), id.clone());
+            let word = if approve { "approve" } else { "reject" };
+            top = top.child(Button::new(if approve { "Approve" } else { "Reject" }).control_size(ControlSize::Small).variant(if approve { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted }).on_press(move |s: &mut App| {
+                match s.conn.clone() {
+                    Some(c) => s.op_req.request((c, page.clone(), id.clone()), move |(c, page, id)| {
+                        c.held_answer(&page, &id, approve)?;
+                        Ok(Op::Commented(format!("comment {}", if approve { "approved" } else { "rejected" })))
+                    }),
+                    None => s.held.retain(|h| h.id != id),
+                }
+            }).build(k).key(format!("held-{word}-{}", m.id)));
+        }
+    }
+    let mut card = col().key(format!("{}-{}", if held { "held" } else { "comment" }, m.id)).w_full().padding(8.0).gap(4.0).radius(k.radius.sm).fill(c.layer_01).child(if held { top } else {
+        top
             .child(Button::new("Remove").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(move |s: &mut App| {
                 let Some(c) = s.conn.clone() else { return };
                 s.op_req.request((c, page.clone(), id.clone()), |(c, page, id)| {
                     c.comment_delete(&page, &id)?;
                     Ok(Op::Commented(format!("removed a comment from {page}")))
                 });
-            }).build(k).key(format!("comment-del-{}", m.id))),
-    );
+            }).build(k).key(format!("comment-del-{}", m.id)))
+    });
     if link {
         card = card.child(row().child(Button::new(m.page.clone()).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| open_comment_page(s, &to)).build(k).key(format!("comment-page-{}", m.id))));
     }
@@ -1756,10 +1798,18 @@ fn inbox_view(s: &App, k: &Kit) -> El {
     let c = &k.c;
     let mut list = col().key("inbox-list").w_full().gap(8.0);
     for m in &s.comments {
-        list = list.child(comment_card(m, k, true));
+        list = list.child(comment_card(m, k, true, false));
     }
     if s.comments.is_empty() {
         list = list.child(text(if s.comments_req.is_pending() { "Reading the comments" } else { "No comments. They are off until switched on for a page, in its Comments pane." }).font(k.ty.small).color(c.text_muted).wrap());
+    }
+    // what waits for an answer comes first, and only when something does
+    let mut waiting = col().key("held-list").w_full().gap(8.0);
+    if !s.held.is_empty() {
+        waiting = waiting.child(text(format!("Held for your yes: {}", s.held.len())).font(k.ty.ui_medium).color(c.text_base));
+        for m in &s.held {
+            waiting = waiting.child(comment_card(m, k, true, true));
+        }
     }
     let head = col()
         .gap(4.0)
@@ -1770,7 +1820,7 @@ fn inbox_view(s: &App, k: &Kit) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(list)))
+        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(waiting).child(list)))
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
@@ -1797,10 +1847,27 @@ fn comments_view(s: &App, k: &Kit) -> El {
                 Ok(Op::Commented(format!("comments are {} for {n}", if now { "off" } else { "on" })))
             });
         }).build(k).key("comments-toggle"));
+    // comets cost nothing to make, so each page says what their comments do
+    let mut comets = row().key("comets").w_full().gap(4.0).center_y();
+    if on == Some(true) {
+        let now = s.comets.get(&p.name).cloned().unwrap_or_default();
+        comets = comets.child(text("Comets").font(k.ty.small).color(c.text_muted));
+        for (mode, label) in [("open", "Open"), ("held", "Held"), ("off", "Off")] {
+            let name = p.name.clone();
+            comets = comets.child(Button::new(label).control_size(ControlSize::Small).variant(if now == mode { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
+                let Some(c) = s.conn.clone() else { return };
+                s.comets.insert(name.clone(), mode.to_owned());
+                s.op_req.request((c, name.clone()), move |(c, n)| {
+                    c.set_comets(&n, mode)?;
+                    Ok(Op::Commented(format!("comets' comments are {mode} for {n}")))
+                });
+            }).build(k).key(format!("comets-{mode}")));
+        }
+    }
     let mine: Vec<&Comment> = s.comments.iter().filter(|m| m.page == p.name).collect();
     let mut list = col().key("comment-list").w_full().gap(8.0);
     for m in &mine {
-        list = list.child(comment_card(m, k, false));
+        list = list.child(comment_card(m, k, false, false));
     }
     if mine.is_empty() {
         list = list.child(text(if s.comments_req.is_pending() { "Reading the comments" } else { "No comments on this page." }).font(k.ty.small).color(c.text_muted));
@@ -1823,6 +1890,7 @@ fn comments_view(s: &App, k: &Kit) -> El {
         .gap(10.0)
         .child(text("Comments").font(k.ty.ui_medium).color(c.text_base))
         .child(toggle)
+        .child(comets)
         .child(col().w_full().grow(1.0).min_h(0.0).child(list).scroll(ScrollSpec { stick_bottom: false }))
         .child(write)
 }

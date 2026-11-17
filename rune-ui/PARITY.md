@@ -36,7 +36,8 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Sensitive flag: a switch in the share dialog shows a page's or folder's own mark and sets it (`/page-sensitive`), and says when the page is still shared by its own setting. A page that is sensitive only through its folder is not shown as such
 - [x] Comments on a page: a side pane lists the page's comments, posts one, removes one, and switches comments on or off (`/comments-inbox`, `/comment`, `/comment-del`, `/page-comments`). The list comes from the ship's newest 200 across all pages
 - [x] Comments inbox: a Comments screen lists every page's comments newest first, opens the page one is on, and removes one (`/comments-inbox`, `/comment-del`). The web client has no unread mark for comments either
-- [ ] Inbox, held comments: comments from comets waiting for the owner's yes (`/held-comments`, `/comet-pending`)
+- [x] Held comments: a page's Comments pane sets what comets' comments do (open, held, off, `/page-comets`), and the Comments screen lists what is held with Approve and Reject (`/held-comments`, `/comet-pending`). The setting was run on a fake ship. The list and its buttons run on a sample held comment
+- [!] Held comments, a real one approved or rejected on a ship: blocked on a comet to write one. The fake ships here are all ~zod
 - [ ] Inbox, activity: notices with read marks and a count (`/notify`, `/notify-read`, `/notify-count`)
 - [ ] Backlinks and ghost links (pages that link here, links to pages not made)
 - [ ] Quick capture
