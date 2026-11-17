@@ -1,0 +1,6 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "rune-probe"},
+  {"t": 4.0, "type": "tap", "key": "edit"},
+  {"t": 4.5, "type": "type", "text": "typed in the native client "},
+  {"t": 5.0, "type": "key", "name": "s", "cmd": true}
+]}
