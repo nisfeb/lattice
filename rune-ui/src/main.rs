@@ -11,12 +11,38 @@ use std::collections::HashMap;
 use api::{Conn, Node, Page};
 use rune::{AppSpec, Chrome, Cx, El, Key, KeyEvent, Latest, ScrollSpec, TextEdit, Tx, Waker, col, row, text};
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
+use rune_kit::syntax::{self, SyntaxTheme};
 use rune_kit::{Button, ButtonVariant, Dialog, FileNode, FileTree, Kit, Markdown, Spinner, TextArea, TextInput, Tree, TreeItem, TreeModel};
 
 type Files = TreeModel<FileNode<Node>>;
 
+/// A question the window is asking: a name for a new page, a new name for
+/// the open one, or whether to delete it.
+enum Prompt {
+    New(TextEdit),
+    Rename(String, TextEdit),
+    Delete(String),
+}
+
+/// A change to the tree that landed on the ship.
+enum Op {
+    Created(String),
+    Renamed(String, String),
+    Deleted(String),
+}
+
 struct App {
     conn: Option<Conn>,
+    /// Browsing the built-in pages with no ship.
+    sample: bool,
+    url: TextEdit,
+    code: TextEdit,
+    login_err: String,
+    login_req: Latest<Result<Conn, String>>,
+    prompt: Option<Prompt>,
+    op_req: Latest<Result<Op, String>>,
+    /// The rendered page beside the source while editing.
+    preview: bool,
     sidebar: PaneState,
     files: Files,
     query: TextEdit,
@@ -67,8 +93,18 @@ fn files_of(nodes: Vec<Node>, keep: &Files) -> Files {
 }
 
 fn init() -> App {
-    let conn = Conn::from_env();
-    let mut s = App {
+    let conn = Conn::load();
+    let mut url = TextEdit::new("");
+    url.focused = true;
+    App {
+        sample: false,
+        url,
+        code: TextEdit::new(""),
+        login_err: String::new(),
+        login_req: Latest::default(),
+        prompt: None,
+        op_req: Latest::default(),
+        preview: true,
         sidebar: PaneState::new(264.0).range(160.0, 520.0),
         files: Files::default(),
         query: TextEdit::new(""),
@@ -84,21 +120,114 @@ fn init() -> App {
         page_req: Latest::default(),
         save_req: Latest::default(),
         conn,
-    };
-    if s.conn.is_none() {
+    }
+}
+
+/// Opens the built-in pages, with no ship.
+fn browse_sample(s: &mut App) {
+    {
+        s.sample = true;
         s.cache = SAMPLE.iter().map(|(p, b)| ((*p).to_owned(), Page { name: (*p).into(), body: (*b).into(), kind: "md".into(), rev: 1 })).collect();
         s.names = SAMPLE.iter().map(|(p, _)| (*p).to_owned()).collect();
         s.files = files_of(sample_nodes(), &Files::default());
         s.files.expand_all();
-        s.note = "sample pages: set LATTICE_URL and LATTICE_COOKIE to open a ship".into();
+        s.note = "sample pages, kept only while the window is open".into();
     }
-    s
+}
+
+fn sign_in(s: &mut App) {
+    if s.url.text.trim().is_empty() || s.code.text.trim().is_empty() {
+        s.login_err = "enter the ship's address and its access code".into();
+        return;
+    }
+    s.login_err.clear();
+    s.login_req.request((s.url.text.clone(), s.code.text.clone()), |(u, c)| Conn::login(&u, &c));
+}
+
+fn sign_out(s: &mut App) {
+    Conn::forget();
+    let mut fresh = init();
+    fresh.conn = None;
+    // the wakers were set once, on the requests this window keeps
+    fresh.tree_req = std::mem::take(&mut s.tree_req);
+    fresh.page_req = std::mem::take(&mut s.page_req);
+    fresh.save_req = std::mem::take(&mut s.save_req);
+    fresh.login_req = std::mem::take(&mut s.login_req);
+    fresh.op_req = std::mem::take(&mut s.op_req);
+    fresh.sidebar = s.sidebar.clone();
+    *s = fresh;
+}
+
+/// Asks the ship for the change the open prompt names.
+fn confirm(s: &mut App) {
+    let Some(p) = s.prompt.take() else { return };
+    let clean = |t: &TextEdit| t.text.trim().trim_matches('/').to_owned();
+    let op = match p {
+        Prompt::New(t) if !clean(&t).is_empty() => Op::Created(clean(&t)),
+        Prompt::Rename(from, t) if !clean(&t).is_empty() && clean(&t) != from => Op::Renamed(from, clean(&t)),
+        Prompt::Delete(name) => Op::Deleted(name),
+        _ => return,
+    };
+    match s.conn.clone() {
+        Some(c) => s.op_req.request((c, op), |(c, op)| {
+            match &op {
+                Op::Created(n) => c.create(n)?,
+                Op::Renamed(a, b) => c.rename(a, b)?,
+                Op::Deleted(n) => c.delete(n)?,
+            }
+            Ok(op)
+        }),
+        None => applied(s, op),
+    }
+}
+
+/// A change landed: follow it here, then read the tree again.
+fn applied(s: &mut App, op: Op) {
+    match op {
+        Op::Created(n) => {
+            if s.conn.is_none() {
+                let title = n.rsplit('/').next().unwrap_or(&n).to_owned();
+                s.cache.insert(n.clone(), Page { name: n.clone(), body: format!("# {title}\n"), kind: "md".into(), rev: 1 });
+            }
+            s.names.push(n.clone());
+            s.files.select(&n);
+            s.open = None;
+            open_page(s, &n);
+            s.note = "created".into();
+        }
+        Op::Renamed(a, b) => {
+            if let Some(mut p) = s.cache.remove(&a) {
+                p.name = b.clone();
+                s.cache.insert(b.clone(), p);
+            }
+            s.names.retain(|x| *x != a);
+            s.names.push(b.clone());
+            s.open = None;
+            open_page(s, &b);
+            s.note = "renamed".into();
+        }
+        Op::Deleted(n) => {
+            s.cache.remove(&n);
+            s.names.retain(|x| *x != n);
+            s.open = None;
+            s.note = "deleted".into();
+        }
+    }
+    if s.conn.is_some() {
+        load_tree(s);
+    } else {
+        let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 1 }).collect();
+        s.files = files_of(nodes, &s.files);
+        s.files.expand_all();
+    }
 }
 
 fn setup(s: &mut App, waker: Waker) {
     s.tree_req.set_waker(waker.clone());
     s.page_req.set_waker(waker.clone());
-    s.save_req.set_waker(waker);
+    s.save_req.set_waker(waker.clone());
+    s.login_req.set_waker(waker.clone());
+    s.op_req.set_waker(waker);
     load_tree(s);
 }
 
@@ -164,6 +293,11 @@ fn poll(s: &mut App, _: f64, _: &mut Tx) -> bool {
                 if first {
                     s.files.expand_all();
                 }
+                // a page just made or moved is shown where it now is
+                if let Some(p) = &s.open {
+                    s.files.expand_to(&p.name);
+                    s.files.select(&p.name);
+                }
             }
             Err(e) => s.note = format!("tree: {e}"),
         }
@@ -178,6 +312,27 @@ fn poll(s: &mut App, _: f64, _: &mut Tx) -> bool {
                 }
             }
             Err(e) => s.note = format!("page: {e}"),
+        }
+    }
+    if let Some(r) = s.login_req.take() {
+        changed = true;
+        match r {
+            Ok(c) => {
+                if let Err(e) = c.remember() {
+                    s.note = format!("signed in, but the session was not kept: {e}");
+                }
+                s.code = TextEdit::new("");
+                s.conn = Some(c);
+                load_tree(s);
+            }
+            Err(e) => s.login_err = e,
+        }
+    }
+    if let Some(r) = s.op_req.take() {
+        changed = true;
+        match r {
+            Ok(op) => applied(s, op),
+            Err(e) => s.note = format!("not done: {e}"),
         }
     }
     if let Some(r) = s.save_req.take() {
@@ -272,6 +427,90 @@ fn switcher(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
+fn login_view(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let busy = s.login_req.is_pending();
+    let mut card = col()
+        .key("login")
+        .w(380.0)
+        .padding(28.0)
+        .gap(14.0)
+        .radius(k.radius.lg)
+        .fill(c.layer_01)
+        .border(1.0, c.border_weak)
+        .child(text("lattice").font(k.ty.body_medium).color(c.text_base))
+        .child(text("Sign in to your ship").font(k.ty.small).color(c.text_muted))
+        .child(TextInput::new(&s.url).label("Ship address").placeholder("ship.example.com").on_edit(|s: &mut App| &mut s.url).on_submit(|s: &mut App, _| sign_in(s)).build(k).w_full().key("url"))
+        .child(TextInput::new(&s.code).label("Access code").placeholder("+code").secure().on_edit(|s: &mut App| &mut s.code).on_submit(|s: &mut App, _| sign_in(s)).build(k).w_full().key("code"));
+    if !s.login_err.is_empty() {
+        card = card.child(text(s.login_err.clone()).key("login-error").font(k.ty.small).color(c.danger.icon).wrap());
+    }
+    let mut go = row().gap(8.0).center_y().child(Button::new("Sign in").variant(ButtonVariant::Contrast).disabled(busy).on_press(sign_in).build(k).key("sign-in"));
+    if busy {
+        go = go.child(Spinner::new().build(k));
+    }
+    card = card
+        .child(go)
+        .child(Button::new("Browse sample pages").variant(ButtonVariant::Ghost).on_press(browse_sample).build(k).key("sample"));
+    col().w_full().h_full().center().fill(c.bg_base).child(card)
+}
+
+fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
+    let Some(p) = &s.prompt else { return };
+    let field = |t: &TextEdit, hint: &str| {
+        TextInput::new(t)
+            .placeholder(hint)
+            .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
+                Prompt::New(t) | Prompt::Rename(_, t) => t,
+                Prompt::Delete(_) => unreachable!("a delete has no field"),
+            })
+            .on_submit(|s: &mut App, _| confirm(s))
+            .build(k)
+            .w_full()
+            .key("prompt-field")
+    };
+    let (title, body, verb, variant) = match p {
+        Prompt::New(t) => ("New page", field(t, "folder/name"), "Create", ButtonVariant::Contrast),
+        Prompt::Rename(_, t) => ("Rename or move", field(t, "folder/name"), "Rename", ButtonVariant::Contrast),
+        Prompt::Delete(n) => ("Delete this page?", text(n.clone()).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
+    };
+    let buttons = row()
+        .w_full()
+        .gap(8.0)
+        .justify_end()
+        .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.prompt = None).build(k).key("prompt-cancel"))
+        .child(Button::new(verb).variant(variant).on_press(confirm).build(k).key("prompt-ok"));
+    Dialog::new("prompt", title)
+        .open(true)
+        .width(440.0)
+        .fit()
+        .on_close(|s: &mut App| s.prompt = None)
+        .child(col().w_full().gap(14.0).child(body).child(buttons))
+        .build(k, layer);
+}
+
+fn ask_new(s: &mut App) {
+    // a new page starts beside the open one
+    let dir = s.open.as_ref().and_then(|p| p.name.rsplit_once('/')).map_or(String::new(), |(d, _)| format!("{d}/"));
+    let mut t = TextEdit::new(dir);
+    t.focused = true;
+    s.prompt = Some(Prompt::New(t));
+}
+
+fn ask_rename(s: &mut App) {
+    if let Some(p) = &s.open {
+        let mut t = TextEdit::new(p.name.clone());
+        t.focused = true;
+        s.prompt = Some(Prompt::Rename(p.name.clone(), t));
+    }
+}
+
+fn ask_delete(s: &mut App) {
+    if let Some(p) = &s.open {
+        s.prompt = Some(Prompt::Delete(p.name.clone()));
+    }
+}
+
 fn sidebar(s: &App, k: &Kit) -> El {
     let q = s.query.text.trim().to_lowercase();
     let tree = Tree::new(|s: &App| &s.files, |s: &mut App| &mut s.files, |n: &FileNode<Node>| n.name.as_str())
@@ -297,7 +536,15 @@ fn sidebar(s: &App, k: &Kit) -> El {
         })
         .build(k)
         .w_full();
-    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(filter).child(tree);
+    let new = Button::new("New page").variant(ButtonVariant::Ghost).on_press(ask_new).build(k).key("new");
+    let who = s.conn.as_ref().map_or("sample pages".to_owned(), |c| c.ship().to_owned());
+    let foot = row()
+        .w_full()
+        .center_y()
+        .justify_between()
+        .child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted))
+        .child(Button::new(if s.conn.is_some() { "Sign out" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
+    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(filter).child(new).child(tree).child(foot);
     if !s.note.is_empty() {
         side = side.child(text(s.note.clone()).key("note").font(k.ty.small).color(k.c.text_muted).wrap());
     }
@@ -310,9 +557,15 @@ fn body(s: &App, k: &Kit) -> El {
         return col().w_full().h_full().center().child(text("Pick a page").font(k.ty.ui).color(c.text_muted));
     };
     if s.editing {
-        return col().key("editor").w_full().h_full().min_h(0.0).padding(16.0).child(
-            TextArea::new(&s.edit).label("Page source").on_edit(|s: &mut App| &mut s.edit).build(k).w_full().grow(1.0).min_h(0.0),
-        );
+        // the source, coloured as Markdown: colour only, so nothing moves as it is typed
+        let marks = SyntaxTheme::from_kit(k).spans(&syntax::highlight(Some("markdown"), &s.edit.text), 0);
+        let source = TextArea::new(&s.edit).label("Page source").decorations(marks).on_edit(|s: &mut App| &mut s.edit).build(k).w_full().h_full().min_h(0.0);
+        let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).h_full().min_h(0.0).child(source));
+        if s.preview && p.kind == "md" {
+            let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(s.edit.text.clone()).build(k));
+            panes = panes.child(col().key("preview").grow(1.0).h_full().min_h(0.0).child(shown).scroll(ScrollSpec { stick_bottom: false }));
+        }
+        return panes;
     }
     let shown = if p.kind == "md" {
         Markdown::new(p.body.clone()).selectable(true).build(k)
@@ -331,6 +584,9 @@ fn body(s: &App, k: &Kit) -> El {
 
 fn view(s: &App, cx: &mut Cx<App>) -> El {
     let k = Kit::neutral(cx.system_dark());
+    if s.conn.is_none() && !s.sample {
+        return login_view(s, &k);
+    }
     let title = s.open.as_ref().map_or("lattice", |p| p.name.as_str());
     let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending();
     let mut trailing = row().gap(8.0).center_y();
@@ -339,13 +595,18 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     }
     if s.editing {
         trailing = trailing
+            .child(Button::new(if s.preview { "Hide preview" } else { "Preview" }).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| s.preview ^= true).build(&k).key("preview-toggle"))
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.editing = false).build(&k).key("cancel"))
             .child(Button::new("Save").variant(ButtonVariant::Contrast).on_press(save).build(&k).key("save"));
     } else if s.open.is_some() {
-        trailing = trailing.child(Button::new("Edit").variant(ButtonVariant::Ghost).on_press(start_edit).build(&k).key("edit"));
+        trailing = trailing
+            .child(Button::new("Delete").variant(ButtonVariant::GhostMuted).on_press(ask_delete).build(&k).key("delete"))
+            .child(Button::new("Rename").variant(ButtonVariant::GhostMuted).on_press(ask_rename).build(&k).key("rename"))
+            .child(Button::new("Edit").variant(ButtonVariant::Ghost).on_press(start_edit).build(&k).key("edit"));
     }
     let mut layer = Vec::new();
     switcher(s, &k, &mut layer);
+    prompt_view(s, &k, &mut layer);
     let shell = SplitView::new(body(s, &k))
         .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k))
         .toolbar(Toolbar::new().title(title).trailing(trailing))
@@ -358,6 +619,13 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
 }
 
 fn on_key(s: &mut App, ev: &KeyEvent, _: &mut Tx) -> bool {
+    if s.conn.is_none() && !s.sample {
+        return false;
+    }
+    if ev.is_command('n') && !s.editing {
+        ask_new(s);
+        return true;
+    }
     if shell::is_sidebar_toggle(ev) {
         s.sidebar.toggle();
         return true;
@@ -391,12 +659,21 @@ fn main() {
         poll: Some(poll),
         on_key: Some(on_key),
         min_size: Some((640.0, 400.0)),
-        scenes: &[("reading", |s| open_page(s, "welcome")), ("jump", |s| {
+        scenes: &[("login", |s| s.login_err = "that access code was refused".into()), ("reading", |s| {
+            browse_sample(s);
+            open_page(s, "welcome");
+        }), ("rename", |s| {
+            browse_sample(s);
+            open_page(s, "notes/today");
+            ask_rename(s);
+        }), ("jump", |s| {
+            browse_sample(s);
             open_page(s, "welcome");
             let mut q = TextEdit::new("no");
             q.focused = true;
             s.jump = Some(q);
         }), ("editing", |s| {
+            browse_sample(s);
             open_page(s, "welcome");
             start_edit(s);
         })],
