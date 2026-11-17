@@ -267,4 +267,27 @@
     ::  not lattice's at all: left alone
     (expect-eq !>(~) !>((moved-path:lu desk-base:lu /apps/other/thing)))
   ==
+::  +save-moved: only a save that reached no one, at a path under one of
+::  the layouts lattice runs at, is tried again where the peer moved it
+++  test-save-moved
+  =/  old=path  (weld desk-base-old:lu /page/temp/notes/code)
+  =/  new=path  (weld desk-base:lu /page/temp/notes/code)
+  =/  app=path  (weld app-base:lu /page/temp/notes/code)
+  ;:  weld
+    ::  nothing sent and no answer, under any layout
+    (expect-eq !>(&) !>((save-moved:lu 504 | old)))
+    (expect-eq !>(&) !>((save-moved:lu 504 | new)))
+    (expect-eq !>(&) !>((save-moved:lu 504 | app)))
+    ::  sent and not acked: it may still land where it went
+    (expect-eq !>(|) !>((save-moved:lu 504 & old)))
+    ::  any answer from the host is final
+    (expect-eq !>(|) !>((save-moved:lu 409 | old)))
+    (expect-eq !>(|) !>((save-moved:lu 502 | old)))
+    (expect-eq !>(|) !>((save-moved:lu 403 | old)))
+    (expect-eq !>(|) !>((save-moved:lu 404 | old)))
+    (expect-eq !>(|) !>((save-moved:lu 202 | old)))
+    (expect-eq !>(|) !>((save-moved:lu 415 | old)))
+    ::  not lattice's: nowhere else to try
+    (expect-eq !>(|) !>((save-moved:lu 504 | /apps/other/thing)))
+  ==
 --

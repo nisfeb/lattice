@@ -715,6 +715,22 @@
     (expect-eq !>(`(list path)`~) !>((move-husks:ls /x/a/b /a/b)))
     (expect-eq !>(`(list path)`~) !>((move-husks:ls /a/b /x/a/bb)))
   ==
+::  +husk-bare: a folder's own node may hold a display name and nothing
+::  else to go as a move's shell. Anything else keeps it, a grub this
+::  test has never heard of too.
+++  test-husk-bare
+  ;:  weld
+    (expect-eq !>(&) !>((husk-bare:ls ~)))
+    (expect-eq !>(&) !>((husk-bare:ls ~[%name])))
+    (expect-eq !>(|) !>((husk-bare:ls ~[%name %'share-grants'])))
+    (expect-eq !>(|) !>((husk-bare:ls ~[%'share-grants'])))
+    (expect-eq !>(|) !>((husk-bare:ls ~[%'share-dir'])))
+    (expect-eq !>(|) !>((husk-bare:ls ~[%code])))
+    (expect-eq !>(|) !>((husk-bare:ls ~[%sensitive])))
+    (expect-eq !>(|) !>((husk-bare:ls ~[%comments])))
+    (expect-eq !>(|) !>((husk-bare:ls ~[%'dir-index'])))
+    (expect-eq !>(|) !>((husk-bare:ls ~[%'grown-later'])))
+  ==
 ::  +move-resumes: a fresh note for the same move resumes it. A stale one,
 ::  or one for another move, does not, so the move gets the clobber checks.
 ++  test-move-resumes

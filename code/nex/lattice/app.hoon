@@ -2012,11 +2012,6 @@
   =/  pp=(each path tang)  (mule |.((stab u.pt)))
   ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
   ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
-  ::  the editor may hold the host's path as a share recorded it, from
-  ::  before the host's lattice moved. /browse-file found where it lives
-  ::  now when it opened the page (+peer-moved), so write there
-  ;<  known=(map @t json)  bind:m  read-peers
-  =.  p.pp  (fall (moved-path:lu (known-base:lu known u.shp) p.pp) p.pp)
   ::  a tainted key (one that read sensitive content in the last 12h) cannot
   ::  write to a foreign destination: we cannot verify a remote page's
   ::  sensitivity, so it counts as a non-sensitive destination, like a local
@@ -2029,6 +2024,20 @@
   =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
   ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
     (remote-write u.shp p.pp (req-body req) base ~s10)
+  ?.  ?&  ?=(%| -.r)
+          (save-moved:lu code.p.r =((unacked-msg u.shp) msg.p.r) p.pp)
+      ==
+    (remote-save-respond eyre-id r)
+  ::  nothing reached the host. The editor may hold the host's path as a
+  ::  share recorded it, from before the host's lattice moved: ask where
+  ::  it lives now (+peer-moved) and write the same file there, once, as
+  ::  /browse-file reads it. A key must hold that path too.
+  ;<  np=(unit path)  bind:m  (peer-moved u.shp p.pp)
+  ?~  np  (remote-save-respond eyre-id r)
+  ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] u.np %write))
+    (remote-save-respond eyre-id r)
+  ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
+    (remote-write u.shp u.np (req-body req) base ~s10)
   (remote-save-respond eyre-id r)
 ::  +remote-save-respond: /remote-save's answer, naming the outcome the
 ::  write really had, so the editor never reads a host's silence as its
@@ -8897,6 +8906,7 @@
     (put-file (link-road up pax.act) [/lattice %link] link.act)
       %journal-put  (journal-put root now +.act)
       %map-put  (map-put root now body.act doc.act)
+      %prune-husks  (prune-husks-in root now +.act)
       %del-from
     ;<  ~  bind:m  (del-from root now +.act)
     (apply-eval root now [%del from.act])
@@ -12382,23 +12392,42 @@
 ::  empty shell, from the deepest up, stopping at the first that still
 ::  holds something. Answers the ones deleted. Only POST /page-move asks:
 ::  a mount's rename (the lick %page-move) keeps what a file system keeps.
+::  The check and the delete are one writer step (%prune-husks), so no
+::  save into the source lands between them. The writer is drained
+::  before the folders are read again to tell which went.
 ++  prune-husks
   |=  [pf=path pt=path]
   =/  m  (fiber:fiber:nexus ,(list path))
   ^-  form:m
-  ;<  up=@ud  bind:m  nexus-up
   =/  todo=(list path)  (move-husks:ls pf pt)
+  ?:  =(~ todo)  (pure:m ~)
+  ;<  up=@ud  bind:m  nexus-up
+  ;<  ~  bind:m  (poke-eval [%prune-husks pf pt])
+  ;<  ~  bind:m  writer-drain
   =|  done=(list path)
   |-  ^-  form:m
   ?~  todo  (pure:m (flop done))
-  ;<  bare=?  bind:m  (folder-bare up i.todo)
-  ?.  bare  (pure:m (flop done))
-  ;<  ~  bind:m  (poke-eval [%del i.todo])
+  ;<  ex=?  bind:m  (peek-exists:fio (rv up (weld /page i.todo)))
+  ?:  ex  (pure:m (flop done))
   ;<  ~  bind:m  (move-grants i.todo ~)
   $(todo t.todo, done [i.todo done])
-::  +folder-bare: whether `rel` is a folder that holds nothing: no page
-::  of its own, no page or folder under it, no link at or under it, and
-::  no share on it. A display name alone does not keep it.
+::  +prune-husks-in: %prune-husks, in the writer: +prune-husks's check
+::  and delete of each folder, as one step
+++  prune-husks-in
+  |=  [root=@ud now=@da pf=path pt=path]
+  =/  m  (fiber:fiber:nexus ,~)
+  ^-  form:m
+  ;<  up=@ud  bind:m  nexus-up
+  =/  todo=(list path)  (move-husks:ls pf pt)
+  |-  ^-  form:m
+  ?~  todo  (pure:m ~)
+  ;<  bare=?  bind:m  (folder-bare up i.todo)
+  ?.  bare  (pure:m ~)
+  ;<  ~  bind:m  (apply-eval root now [%del i.todo])
+  $(todo t.todo)
+::  +folder-bare: whether `rel` is a folder that holds nothing: its own
+::  node holds no more than a display name (+husk-bare:ls), there is no
+::  page or folder under it, and no link at or under it.
 ++  folder-bare
   |=  [up=@ud rel=path]
   =/  m  (fiber:fiber:nexus ,?)
@@ -12406,8 +12435,7 @@
   ;<  sn=view:nexus  bind:m  (peek:fio (rv up (weld /page rel)) ~)
   ?.  ?=([%ball *] sn)  (pure:m |)
   =/  fils  ?~(fil.ball.sn ~ contents.u.fil.ball.sn)
-  ?:  (~(has by fils) %code)  (pure:m |)
-  ?^  (dshare-row fils)  (pure:m |)
+  ?.  (husk-bare:ls ~(tap in ~(key by fils)))  (pure:m |)
   ?^  (tree-walk ball.sn *wave:nexus ~)  (pure:m |)
   ;<  lex=?  bind:m  (peek-exists:fio (rv up (weld /links rel)))
   (pure:m !lex)
