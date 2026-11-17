@@ -220,6 +220,9 @@ struct App {
     /// The quick switcher: its query while open, and the row the arrows are on.
     jump: Option<TextEdit>,
     jump_at: usize,
+    /// The command palette, when open: what is typed and the row chosen.
+    palette: Option<TextEdit>,
+    palette_at: usize,
     tree_req: Latest<Result<Dump, String>>,
     /// The last dump's token, and when the next one is due (app clock).
     since: String,
@@ -370,6 +373,8 @@ fn init() -> App {
         names: Vec::new(),
         jump: None,
         jump_at: 0,
+        palette: None,
+        palette_at: 0,
         tree_req: Latest::default(),
         since: String::new(),
         next_sync: 0.0,
@@ -1902,6 +1907,185 @@ fn switcher(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
+fn go_shared(s: &mut App) {
+    if !s.editing {
+        s.shared_open = true;
+        s.access = false;
+        s.inbox = false;
+        load_shared(s);
+    }
+}
+
+fn go_inbox(s: &mut App) {
+    if !s.editing {
+        s.inbox = true;
+        s.access = false;
+        s.shared_open = false;
+        load_comments(s);
+    }
+}
+
+fn go_access(s: &mut App) {
+    if !s.editing {
+        s.access = true;
+        s.inbox = false;
+        load_groups(s);
+    }
+}
+
+fn next_theme(s: &mut App) {
+    s.prefs.theme = s.prefs.next_theme().to_owned();
+    if s.conn.is_some() {
+        s.prefs.save();
+    }
+}
+
+fn open_share(s: &mut App) {
+    s.sharing = true;
+    load_groups(s);
+    load_sens(s);
+}
+
+/// The palette's commands: a name to keep and the words shown. Each has
+/// a button on screen too.
+const COMMANDS: &[(&str, &str)] = &[
+    ("new", "New page or memory"),
+    ("capture", "Capture a page to the inbox"),
+    ("open", "Open a page"),
+    ("edit", "Edit"),
+    ("rename", "Rename or move"),
+    ("delete", "Delete"),
+    ("share", "Share"),
+    ("links", "Links"),
+    ("comments", "Comments on this page"),
+    ("history", "History"),
+    ("inbox", "Inbox"),
+    ("shared", "Shared with me"),
+    ("access", "Access"),
+    ("half", "Switch between pages and memory"),
+    ("theme", "Next theme"),
+    ("sidebar", "Show or hide the tree"),
+    ("reload", "Read again from the ship"),
+    ("signout", "Sign out or close"),
+];
+
+/// Whether a command can run now: the ones about a page need one open.
+fn usable(s: &App, id: &str) -> bool {
+    let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox;
+    let own = page && s.remote.is_none();
+    match id {
+        "edit" => page && s.remote.as_ref().is_none_or(Shared::editable),
+        "delete" => own,
+        "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
+        "reload" => s.conn.is_some(),
+        _ => true,
+    }
+}
+
+/// The palette's rows: the commands that can run, the ones run last
+/// first and the rest in their own order. Typing narrows them, best
+/// match first.
+fn commands(s: &App, query: &str) -> Vec<(&'static str, &'static str)> {
+    let used = |id: &str| s.prefs.used.iter().position(|u| u == id).unwrap_or(usize::MAX);
+    let mut rows: Vec<(usize, usize, &'static str, &'static str)> =
+        COMMANDS.iter().filter(|c| usable(s, c.0)).filter_map(|&(id, label)| Some((if query.trim().is_empty() { 0 } else { score(label, query)? }, used(id), id, label))).collect();
+    // a stable sort: commands never run keep the table's order
+    rows.sort_by_key(|r| (r.0, r.1));
+    rows.into_iter().map(|r| (r.2, r.3)).collect()
+}
+
+/// Runs a command and notes it as the one run last.
+fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
+    s.palette = None;
+    if !usable(s, id) {
+        return;
+    }
+    s.prefs.used.retain(|u| u != id);
+    s.prefs.used.insert(0, id.to_owned());
+    if s.conn.is_some() {
+        s.prefs.save();
+    }
+    match id {
+        "new" => ask_new(s),
+        "capture" => {
+            capture(s);
+            tx.focus_when_shown(FIELD, false);
+        }
+        "open" => {
+            let mut q = TextEdit::new("");
+            q.focused = true;
+            s.jump = Some(q);
+            s.jump_at = 0;
+        }
+        "edit" => {
+            start_edit(s);
+            tx.focus_when_shown(FIELD, false);
+        }
+        "rename" => ask_rename(s),
+        "delete" => ask_delete(s),
+        "share" => open_share(s),
+        "links" => show_pane(s, false, true),
+        "comments" => show_pane(s, true, false),
+        "history" => show_pane(s, false, false),
+        "inbox" => go_inbox(s),
+        "shared" => go_shared(s),
+        "access" => go_access(s),
+        "half" => flip(s),
+        "theme" => next_theme(s),
+        "sidebar" => s.sidebar.toggle(),
+        "reload" => {
+            load_know(s);
+            load_tree(s);
+        }
+        "signout" => sign_out(s),
+        _ => {}
+    }
+}
+
+fn palette_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
+    let Some(q) = &s.palette else { return };
+    let hits = commands(s, &q.text);
+    let field = TextInput::new(q)
+        .placeholder("Run a command")
+        .on_edit(|s: &mut App| s.palette.as_mut().expect("the palette is open"))
+        .on_change(|s: &mut App, _| s.palette_at = 0)
+        .on_key(|s: &mut App, ev: &KeyEvent, tx: &mut Tx| {
+            let Some(q) = &s.palette else { return false };
+            let hits = commands(s, &q.text);
+            match ev.key {
+                Key::Down => s.palette_at = (s.palette_at + 1).min(hits.len().saturating_sub(1)),
+                Key::Up => s.palette_at = s.palette_at.saturating_sub(1),
+                Key::Enter => {
+                    if let Some(&(id, _)) = hits.get(s.palette_at) {
+                        run_command(s, id, tx);
+                    }
+                }
+                _ => return false,
+            }
+            true
+        })
+        .build(k)
+        .w_full();
+    let mut rows = col().key("palette-rows").w_full().gap(2.0);
+    for (i, &(id, label)) in hits.iter().enumerate() {
+        let mut r = row().key(format!("cmd:{id}")).w_full().h(30.0).px(10.0).center_y().radius(k.radius.sm).on_press_tx(move |s: &mut App, tx| run_command(s, id, tx)).child(text(label).font(k.ty.ui).color(k.c.text_base));
+        if i == s.palette_at {
+            r = r.fill(k.selection());
+        }
+        rows = rows.child(r);
+    }
+    if hits.is_empty() {
+        rows = rows.child(text("No command matches").font(k.ty.ui).color(k.c.text_muted));
+    }
+    Dialog::new("palette", "Commands")
+        .open(true)
+        .width(460.0)
+        .fit()
+        .on_close(|s: &mut App| s.palette = None)
+        .child(col().w_full().gap(8.0).child(field).child(col().w_full().max_h(420.0).child(rows).scroll(ScrollSpec { stick_bottom: false })))
+        .build(k, layer);
+}
+
 fn login_view(s: &App, k: &Kit) -> El {
     let c = &k.c;
     let busy = s.login_req.is_pending();
@@ -2823,22 +3007,8 @@ fn sidebar(s: &App, k: &Kit) -> El {
             .key(key.to_owned())
     };
     let (pages, knows) = if s.memory { (s.other.1.len(), s.names.len()) } else { (s.names.len(), s.other.1.len()) };
-    let with_me = Button::new(format!("Shared with me {}", s.shared.len())).control_size(ControlSize::Small).variant(if s.shared_open { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(|s: &mut App| {
-        if !s.editing {
-            s.shared_open = true;
-            s.access = false;
-            s.inbox = false;
-            load_shared(s);
-        }
-    }).build(k).key("shared-open");
-    let inbox = Button::new(match s.waiting.held + s.waiting.unread { 0 => "Inbox".to_owned(), n => format!("Inbox {n}") }).control_size(ControlSize::Small).variant(if s.inbox { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("Held comments, activity, and comments on every page").on_press(|s: &mut App| {
-        if !s.editing {
-            s.inbox = true;
-            s.access = false;
-            s.shared_open = false;
-            load_comments(s);
-        }
-    }).build(k).key("inbox-open");
+    let with_me = Button::new(format!("Shared with me {}", s.shared.len())).control_size(ControlSize::Small).variant(if s.shared_open { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(go_shared).build(k).key("shared-open");
+    let inbox = Button::new(match s.waiting.held + s.waiting.unread { 0 => "Inbox".to_owned(), n => format!("Inbox {n}") }).control_size(ControlSize::Small).variant(if s.inbox { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("Held comments, activity, and comments on every page").on_press(go_inbox).build(k).key("inbox-open");
     let halves = row().key("halves").w_full().gap(4.0).child(half("half-pages", format!("Pages {pages}"), !s.memory)).child(half("half-memory", format!("Memory {knows}"), s.memory));
     let new = Button::new(if s.memory { "New memory" } else { "New page" }).variant(ButtonVariant::Ghost).help("Asks for a name and a place").on_press(ask_new).build(k).key("new");
     let new = row().w_full().gap(4.0).child(Button::new("Capture").variant(ButtonVariant::Ghost).help("A new page in the inbox, with nothing asked").on_press_tx(|s: &mut App, tx| {
@@ -2853,21 +3023,10 @@ fn sidebar(s: &App, k: &Kit) -> El {
     })
     .variant(ButtonVariant::GhostMuted)
     .help("Theme: the system's, dark, or light")
-    .on_press(|s: &mut App| {
-        s.prefs.theme = s.prefs.next_theme().to_owned();
-        if s.conn.is_some() {
-            s.prefs.save();
-        }
-    })
+    .on_press(next_theme)
     .build(k)
     .key("theme");
-    let access = Button::new("Access").variant(ButtonVariant::GhostMuted).help("Groups of ships and what they read").on_press(|s: &mut App| {
-        if !s.editing {
-            s.access = true;
-            s.inbox = false;
-            load_groups(s);
-        }
-    }).build(k).key("access-open");
+    let access = Button::new("Access").variant(ButtonVariant::GhostMuted).help("Groups of ships and what they read").on_press(go_access).build(k).key("access-open");
     let foot = row()
         .w_full()
         .center_y()
@@ -3175,11 +3334,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         // a memory has no sharing, history pane or rename here
         if !s.memory {
             let shared = s.open.as_ref().and_then(|p| s.shares.get(&p.name)).is_some_and(|m| m != "private");
-            trailing = trailing.child(Button::new(if shared { "Shared" } else { "Share" }).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
-                s.sharing = true;
-                load_groups(s);
-                load_sens(s);
-            }).build(&k).key("share"));
+            trailing = trailing.child(Button::new(if shared { "Shared" } else { "Share" }).variant(ButtonVariant::GhostMuted).on_press(open_share).build(&k).key("share"));
         }
         if !s.memory {
             // one side pane, three things in it: pressing the one showing closes it
@@ -3199,6 +3354,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     }
     let mut layer = Vec::new();
     switcher(s, &k, &mut layer);
+    palette_view(s, &k, &mut layer);
     prompt_view(s, &k, &mut layer);
     share_view(s, &k, &mut layer);
     let nav = |key: &str, label: &str, by: isize, on: bool| {
@@ -3237,6 +3393,13 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if shell::is_sidebar_toggle(ev) {
         s.sidebar.toggle();
+        return true;
+    }
+    if ev.is_command('p') && !s.editing {
+        let mut q = TextEdit::new("");
+        q.focused = true;
+        s.palette = Some(q);
+        s.palette_at = 0;
         return true;
     }
     if (ev.is_command('k') || ev.is_command('o')) && !s.editing {
@@ -3586,6 +3749,32 @@ mod tests {
         jump_create(&mut s);
         assert!(s.jump.is_none() && s.names.len() == pages + 1);
         assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("plans/next"));
+    }
+
+    #[test]
+    fn the_palette_puts_the_commands_run_last_first_and_hides_what_cannot_run() {
+        let mut s = sample("welcome");
+        s.prefs.used.clear();
+        let ids = |s: &App, q: &str| commands(s, q).into_iter().map(|c| c.0).collect::<Vec<_>>();
+        // nothing run yet: the table's order, without what needs a ship
+        assert_eq!(ids(&s, "")[..3], ["new", "capture", "open"]);
+        assert!(!ids(&s, "").contains(&"reload"));
+        // run two: the last is first, the one before it second, the rest as they were
+        s.prefs.used = vec!["rename".into(), "theme".into()];
+        assert_eq!(ids(&s, "")[..4], ["rename", "theme", "new", "capture"]);
+        // typing narrows, and among equal matches the one run last leads
+        assert_eq!(ids(&s, "rename"), ["rename"]);
+        assert!(ids(&s, "zzzz").is_empty());
+        // with no page in front, the commands about a page are not offered
+        s.open = None;
+        let none = ids(&s, "");
+        assert!(["edit", "rename", "delete", "share", "links", "history"].iter().all(|c| !none.contains(c)), "{none:?}");
+        assert!(none.contains(&"inbox") && none.contains(&"new"));
+        // every command has a name of its own
+        let mut names: Vec<&str> = COMMANDS.iter().map(|c| c.0).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), COMMANDS.len());
     }
 
     #[test]

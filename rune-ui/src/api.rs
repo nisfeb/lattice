@@ -532,6 +532,9 @@ pub struct Prefs {
     /// The pages opened last on this device, newest first, ten at most.
     #[serde(default)]
     pub recent: Vec<String>,
+    /// The palette's commands run on this device, the last one first.
+    #[serde(default)]
+    pub used: Vec<String>,
     /// Autosave is on unless this says otherwise.
     #[serde(default)]
     pub no_autosave: bool,
@@ -1111,7 +1114,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()] }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()] }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
     }
