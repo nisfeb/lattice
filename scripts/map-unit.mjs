@@ -23,7 +23,7 @@ import { fileURLToPath } from 'url';
 import { makeCheck } from './lib/check.mjs';
 import {
   parse, serialize, props, view, title, text, outline, render, renderBody, dp, simplify,
-  sourceLink, iconOf, orreryLink, depthOf, BLANK, BIG, MAX_FEATURES, MAX_POSITIONS, MAX_DEPTH, RENDER_MAX,
+  sourceLink, iconOf, orreryLink, gridStep, depthOf, BLANK, BIG, MAX_FEATURES, MAX_POSITIONS, MAX_DEPTH, RENDER_MAX,
 } from '../ui-src/map/core.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -128,6 +128,10 @@ console.log('3. reads');
   check('the read properties', p.name === 'N' && p.note === 'n' && p.ms === Date.parse('2026-11-10T12:00:00Z') && p.kind === 'report' && p.color === '#A0b' && p.icon === 'star' && p.radius === 250, JSON.stringify(p));
   const bad = props(pt(1, 2, { name: 5, color: 'red; background:url(x)', icon: 'https://evil/x.png', radius: -3, time: 'yesterday', kind: 'k'.repeat(100) }));
   check('a bad colour, icon, radius and time are dropped', bad.name === '' && bad.color === '' && bad.icon === '' && bad.radius === 0 && bad.ms === null && bad.time === '' && bad.kind.length === 40, JSON.stringify(bad));
+  //  the grid's step: the finest that puts at most four lines in a tile,
+  //  and the widest when even that puts in more
+  check('the grid step follows the zoom', gridStep(180) === 30 && gridStep(90) === 30 && gridStep(22.5) === 10 && gridStep(1.40625) === 0.5 && gridStep(0.087890625) === 0.05 && gridStep(0.0054931640625) === 0.002 && gridStep(1e-7) === 0.0001,
+    [180, 90, 22.5, 1.40625, 0.087890625, 0.0054931640625, 1e-7].map((x) => gridStep(x)).join(' '));
   check('an icon by kind when the feature names none', iconOf(props(pt(1, 2, { kind: 'place' }))) === 'pin' && iconOf(props(pt(1, 2, { kind: 'situation' }))) === 'flag' && iconOf(props(pt(1, 2, { kind: 'place', icon: 'star' }))) === 'star' && iconOf(props(pt(1, 2, { kind: 'toString' }))) === '' && iconOf(props(pt(1, 2, {}))) === '');
   check('an orrery body id is a link, and nothing else is', orreryLink('place/home') === '/apps/orrery#body/place/home' && orreryLink('situation/2026-10-18-trip') === '/apps/orrery#body/situation/2026-10-18-trip' && orreryLink('javascript:alert(1)') === null && orreryLink('place/a b') === null && orreryLink('//evil.example/x') === null && orreryLink('place/../x') === null && orreryLink(5) === null);
   check('props of a feature with null properties', props({ type: 'Feature', geometry: null, properties: null }).name === '');

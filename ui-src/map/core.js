@@ -25,6 +25,11 @@ export const ICONS = Object.freeze({
   alert: '⚠', person: '☺', car: '▣', boat: '⛵', plane: '✈', fire: '♨',
   water: '≈', tent: '△', cross: '✚', question: '?',
 });
+//  the grid's line spacing for a tile `span` degrees wide: the finest step
+//  that puts at most four lines in it, so a tile has two or three at any
+//  zoom. A tile wider than the widest step allows takes the widest.
+const GRID_STEPS = [0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 30];
+export const gridStep = (span) => GRID_STEPS.find((s) => span / s <= 4) || GRID_STEPS[GRID_STEPS.length - 1];
 //  the icon a feature shows when it names none: by its kind, for the kinds
 //  orrery's map and a report use. Any other kind stays a plain dot.
 const KIND_ICON = Object.freeze({ place: 'pin', situation: 'flag', person: 'person', home: 'home', report: 'alert' });

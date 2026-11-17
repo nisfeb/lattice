@@ -6,7 +6,7 @@ const WRITER_H = '0v3.4g8bu.gitpg.4hui5.6i6ib.91c19';
 // and sheet.js's, the spreadsheet editor (26-writer.js)
 const SHEET_H = '0v3.v145b.hha4j.kjuag.dcc4c.ld732';
 // and map.js's, the map view (26-writer.js)
-const MAP_H = '0v8m04v.jhns4.4mgfe.13tsc.r2sbd';
+const MAP_H = '0v3.ff6q5.52e81.eh4nb.tce7l.n7nfp';
 // and scad.js's, the 3D pane of scad pages (26-scad.js)
 const SCAD_H = '0v7.7a35l.sv8qr.bhse3.1rvso.nm17c';
 // and pdf.js's (78-pdf.js)

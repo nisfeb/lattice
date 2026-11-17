@@ -595,6 +595,37 @@ console.log('==> zoomed all the way out');
   await m.close();
 }
 
+console.log('==> the grid, with no base map');
+{
+  //  the frame a map has with no token: lines must fall in the tiles at
+  //  the zoom a person works at, not only when the whole world shows
+  const inked = (pg) => pg.evaluate(() => [...document.querySelectorAll('.lm-grid canvas')].filter((c) => {
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    for (let i = 3; i < d.length; i += 4) if (d[i]) return true;
+    return false;
+  }).length);
+  const m = await open(body([pt(-71, 42, { name: 'a' }), pt(-70.99, 42.01, { name: 'b' })]), { tiles: null });
+  await sleep(600);
+  const n = await inked(m.page);
+  check('grid lines are drawn at a working zoom', n > 0, n + ' tiles with a line');
+  await m.close();
+}
+
+console.log('==> a field keeps the cursor when the shell says editable again');
+{
+  //  the shell calls setEditable on every render of the editor, and a
+  //  write from the detail pane makes one: the pane must not be rebuilt
+  //  under the field the owner moved to
+  const m = await open(body([pt(-71, 42, { name: 'a' })]));
+  await m.click(-71, 42);
+  await m.page.evaluate(() => { const i = document.querySelector('.lm-detail textarea'); i.focus(); window.__held = i; });
+  await m.page.evaluate(() => window.ctl.setEditable(true));
+  check('the focused field is still the one on the page', await m.page.evaluate(() => window.__held.isConnected && document.activeElement === window.__held));
+  await m.page.evaluate(() => window.ctl.setEditable(false));
+  check('a real change to read mode does repaint the pane', await m.page.evaluate(() => !document.querySelector('.lm-detail textarea')));
+  await m.close();
+}
+
 check('no page errors', errors.length === 0, errors.slice(0, 5).join(' | '));
 await browser.close();
 check.done();
