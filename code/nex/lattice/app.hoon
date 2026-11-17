@@ -2011,11 +2011,6 @@
   =/  pp=(each path tang)  (mule |.((stab u.pt)))
   ?:  ?=(%| -.pp)  (send-err eyre-id 400 'bad path')
   ?:  =(~ p.pp)  (send-err eyre-id 400 'empty path')
-  ::  the editor may hold the host's path as a share recorded it, from
-  ::  before the host's lattice moved. /browse-file found where it lives
-  ::  now when it opened the page (+peer-moved), so write there
-  ;<  known=(map @t json)  bind:m  read-peers
-  =.  p.pp  (fall (moved-path:lu (known-base:lu known u.shp) p.pp) p.pp)
   ::  a tainted key (one that read sensitive content in the last 12h) cannot
   ::  write to a foreign destination: we cannot verify a remote page's
   ::  sensitivity, so it counts as a non-sensitive destination, like a local
@@ -2028,6 +2023,20 @@
   =/  base=(unit @ud)  (rush (~(gut by args) 'base' '') dim:ag)
   ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
     (remote-write u.shp p.pp (req-body req) base ~s10)
+  ?.  ?&  ?=(%| -.r)
+          (save-moved:lu code.p.r =((unacked-msg u.shp) msg.p.r) p.pp)
+      ==
+    (remote-save-respond eyre-id r)
+  ::  nothing reached the host. The editor may hold the host's path as a
+  ::  share recorded it, from before the host's lattice moved: ask where
+  ::  it lives now (+peer-moved) and write the same file there, once, as
+  ::  /browse-file reads it. A key must hold that path too.
+  ;<  np=(unit path)  bind:m  (peer-moved u.shp p.pp)
+  ?~  np  (remote-save-respond eyre-id r)
+  ?:  &(?=(^ key) !(may-path:ky u.key [%ship u.shp] u.np %write))
+    (remote-save-respond eyre-id r)
+  ;<  r=(each [old=@ud new=@ud] [code=@ud msg=@t])  bind:m
+    (remote-write u.shp u.np (req-body req) base ~s10)
   (remote-save-respond eyre-id r)
 ::  +remote-save-respond: /remote-save's answer, naming the outcome the
 ::  write really had, so the editor never reads a host's silence as its
