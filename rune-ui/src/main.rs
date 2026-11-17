@@ -114,6 +114,15 @@ struct App {
     /// The open page is a capture not saved yet: it has a name in the
     /// inbox and no page on the ship until its first save.
     capture: bool,
+    /// Autosave: when the text is next looked at, what it was at the last
+    /// look, whether the save on the wire is one of its own (the editor
+    /// stays open), whether a Save was pressed while one was on the wire,
+    /// and whether it stands down after a refusal until a Save on purpose.
+    next_auto: f64,
+    auto_seen: Option<String>,
+    autosaving: bool,
+    save_again: bool,
+    auto_held: bool,
     /// What is kept between runs, and whether the last page was opened again.
     prefs: Prefs,
     restored: bool,
@@ -296,6 +305,11 @@ fn init() -> App {
         old_req: Latest::default(),
         stale: false,
         capture: false,
+        next_auto: 0.0,
+        auto_seen: None,
+        autosaving: false,
+        save_again: false,
+        auto_held: false,
         prefs: Prefs::load(),
         restored: false,
         want: None,
@@ -1366,7 +1380,52 @@ fn cancel_edit(s: &mut App) {
     }
 }
 
+/// How long the text must rest before it is saved by itself, as in the
+/// web client.
+const AUTOSAVE_AFTER: f64 = 2.0;
+
+/// Looks at the text being edited every `AUTOSAVE_AFTER` seconds and
+/// saves it when it has changed and then rested for one look. Text that
+/// is as the page was read is never written. `true` when a save started.
+fn autosave_tick(s: &mut App, clock: f64) -> bool {
+    if !s.editing {
+        s.auto_seen = None;
+        return false;
+    }
+    if clock < s.next_auto {
+        return false;
+    }
+    s.next_auto = clock + AUTOSAVE_AFTER;
+    // another ship's page saves on purpose only, and so does a page that changed elsewhere
+    if s.prefs.no_autosave || s.auto_held || s.stale || s.remote.is_some() {
+        return false;
+    }
+    let body = edited(s);
+    let rested = s.auto_seen.as_deref() == Some(body.as_str());
+    let same = s.open.as_ref().is_none_or(|p| p.body == body);
+    let empty = s.capture && body.trim().is_empty();
+    s.auto_seen = Some(body);
+    if !rested || same || empty || s.save_req.is_pending() {
+        return false;
+    }
+    s.autosaving = true;
+    write(s);
+    true
+}
+
+/// Save, pressed. It closes the editor, and autosave may run again.
 fn save(s: &mut App) {
+    s.auto_held = false;
+    // a save of autosave's is on the wire: this one follows it, on its rev
+    if s.autosaving && s.save_req.is_pending() {
+        s.save_again = true;
+        return;
+    }
+    s.autosaving = false;
+    write(s);
+}
+
+fn write(s: &mut App) {
     let Some(mut p) = s.open.clone() else { return };
     let base = p.rev;
     p.body = edited(s);
@@ -1412,9 +1471,19 @@ fn landed(s: &mut App, p: Page) {
     }
     s.capture = false;
     s.open = Some(p);
-    s.editing = false;
     s.stale = false;
     s.note = "saved".into();
+    if std::mem::take(&mut s.save_again) {
+        // Save was pressed meanwhile: what was typed since goes too, and the editor closes
+        s.autosaving = false;
+        write(s);
+        return;
+    }
+    // autosave leaves the editor as it is
+    if std::mem::take(&mut s.autosaving) {
+        return;
+    }
+    s.editing = false;
     sync_map(s);
     sync_sheet(s);
     load_history(s);
@@ -1426,6 +1495,12 @@ const SYNC_EVERY: f64 = 30.0;
 
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
+    if s.editing {
+        if clock >= s.next_auto {
+            tx.wake_after(std::time::Duration::from_secs_f64(AUTOSAVE_AFTER));
+        }
+        changed |= autosave_tick(s, clock);
+    }
     if s.conn.is_some() && clock >= s.next_sync {
         if s.next_sync > 0.0 {
             load_tree(s);
@@ -1664,7 +1739,15 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         match r {
             Ok(p) => landed(s, p),
-            Err(e) => s.note = format!("not saved: {e}"),
+            Err(e) => {
+                s.save_again = false;
+                if std::mem::take(&mut s.autosaving) {
+                    s.auto_held = true;
+                    s.note = format!("not saved: {e}. Autosave waits until you press Save");
+                } else {
+                    s.note = format!("not saved: {e}");
+                }
+            }
         }
     }
     if changed {
@@ -3027,6 +3110,12 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             trailing = trailing.child(Button::new(if s.preview { "Hide preview" } else { "Preview" }).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| s.preview ^= true).build(&k).key("preview-toggle"));
         }
         trailing = trailing
+            .child(Switch::new(!s.prefs.no_autosave).label("Autosave").on_toggle(|s: &mut App| {
+                s.prefs.no_autosave = !s.prefs.no_autosave;
+                if s.conn.is_some() {
+                    s.prefs.save();
+                }
+            }).build(&k).key("autosave"))
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(cancel_edit).build(&k).key("cancel"))
             .child(Button::new("Save").variant(ButtonVariant::Contrast).on_press(save).build(&k).key("save"));
     } else if let Some(sh) = s.remote.as_ref().filter(|_| s.open.is_some() && !s.access && !s.shared_open && !s.inbox) {
@@ -3394,6 +3483,47 @@ mod tests {
         flip(&mut s);
         capture(&mut s);
         assert!(!s.memory && s.capture);
+    }
+
+    #[test]
+    fn autosave_keeps_rested_text_and_never_writes_a_page_as_it_was_read() {
+        let mut s = sample("welcome");
+        let rev = s.open.as_ref().unwrap().rev;
+        start_edit(&mut s);
+        // untouched, however long it rests: nothing is written
+        for t in [0.0, 2.0, 4.0, 6.0] {
+            assert!(!autosave_tick(&mut s, t));
+        }
+        assert_eq!(s.open.as_ref().unwrap().rev, rev);
+        // typed: not at the first look, which may be mid-word, but at the next
+        s.edit = TextEdit::new("# changed\n");
+        s.rich = false;
+        assert!(!autosave_tick(&mut s, 8.0));
+        assert!(!autosave_tick(&mut s, 9.0), "a look comes every two seconds, not sooner");
+        assert!(autosave_tick(&mut s, 10.0));
+        let p = s.open.clone().unwrap();
+        assert_eq!((p.body.as_str(), p.rev, s.editing), ("# changed\n", rev + 1, true), "saved, and still in the editor");
+        assert!(!autosave_tick(&mut s, 12.0), "nothing new, nothing written");
+        // switched off, it waits for Save, which closes the editor
+        s.prefs.no_autosave = true;
+        s.edit = TextEdit::new("# again\n");
+        assert!(!autosave_tick(&mut s, 14.0) && !autosave_tick(&mut s, 16.0));
+        save(&mut s);
+        assert_eq!((s.open.as_ref().unwrap().rev, s.editing), (rev + 2, false));
+        // a capture with no text is never saved, and one with text is made
+        s.prefs.no_autosave = false;
+        capture(&mut s);
+        assert!(!autosave_tick(&mut s, 20.0) && !autosave_tick(&mut s, 22.0));
+        s.edit = TextEdit::new("kept\n");
+        s.rich = false;
+        assert!(!autosave_tick(&mut s, 24.0));
+        assert!(autosave_tick(&mut s, 26.0));
+        let name = s.open.as_ref().unwrap().name.clone();
+        assert!(s.names.contains(&name) && !s.capture && s.editing);
+        // a page that changed elsewhere is left for the person to settle
+        s.stale = true;
+        s.edit = TextEdit::new("mine\n");
+        assert!(!autosave_tick(&mut s, 28.0) && !autosave_tick(&mut s, 30.0));
     }
 
     #[test]

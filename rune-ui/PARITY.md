@@ -43,8 +43,8 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Asks to edit: a page shared read-only has Ask to edit with an optional note (`/access-request`), and the Access screen lists the asks waiting here with Approve and Deny (`/access-requests`, `/access-answer`). The routes answer on a fake ship (no asks, an answer to none refused, asking oneself refused). Both screens run on sample data
 - [!] Asks to edit, one sent to a host and one answered: blocked on a second running ship
 - [x] Backlinks and ghost links: a Links pane lists the pages that link here (`/page-backlinks`) and the pages this one links to. A link to a page not written yet shows in italics in the reader and as not written in the pane, and offers to make it
-- [x] Quick capture: a Capture button starts a page with nothing asked, named `inbox/YYYY-MM-DD-NNNN` by the web client's rule, and its first save makes it. An empty one is never saved and Cancel drops it. It is kept by Save, not by itself: this client has no autosave
-- [ ] Autosave, and the setting that turns it off
+- [x] Quick capture: a Capture button starts a page with nothing asked, named `inbox/YYYY-MM-DD-NNNN` by the web client's rule, and its first save makes it. An empty one is never saved and Cancel drops it.
+- [x] Autosave: text that changed and then rested about two seconds is saved with the editor left open, for pages, memories and captures. A switch in the editor's toolbar turns it off and is kept. A page as it was read is never written, a refusal makes it wait for Save, and another ship's page saves only on purpose
 - [ ] Recent documents first in the switcher (the web client's Ctrl+O picker), with a Create row for a name that matches nothing
 - [ ] Command palette ordered by recent use
 - [ ] Wiki link autocomplete after `[[`, with a date offering that day's journal page
