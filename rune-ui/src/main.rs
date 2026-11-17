@@ -7,6 +7,7 @@
 mod api;
 mod map;
 mod md;
+mod sheet;
 
 use std::collections::HashMap;
 
@@ -14,6 +15,7 @@ use api::{Conn, Dump, Node, Page, Rev};
 use rune::{AppSpec, Block, LineCap, Phase, Shape, WheelEvent, canvas, Chrome, Cx, El, Key, KeyEvent, Latest, Mark, ScrollSpec, Span, TextEdit, Tx, Waker, col, el, row, text};
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
+use rune_kit::{Cell, Table, TableColumn, TableState};
 use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Divider, FileNode, FileTree, Kit, Markdown, Spinner, TextArea, TextInput, Tree, TreeItem, TreeModel};
 
 type Files = TreeModel<FileNode<Node>>;
@@ -30,6 +32,15 @@ struct MapView {
     size: (f32, f32),
     fitted: bool,
     picked: Option<usize>,
+}
+
+/// A spreadsheet page on screen: its sheets, the one showing, and the grid's state.
+struct SheetView {
+    name: String,
+    rev: u64,
+    sheets: Vec<sheet::Sheet>,
+    at: usize,
+    table: TableState,
 }
 
 /// A question the window is asking: a name for a new page, a new name for
@@ -81,6 +92,8 @@ struct App {
     old_req: Latest<Result<Page, String>>,
     /// The page being edited was written elsewhere since it was opened.
     stale: bool,
+    /// The open page as a spreadsheet, when it is one.
+    sheet: Option<SheetView>,
     /// The open page as a map, when it is one.
     map: Option<MapView>,
     /// The pages visited, oldest first, and where in them the window is.
@@ -107,6 +120,12 @@ const SAMPLE: &[(&str, &str)] = &[
     ("notes/today", "# Today\n\nA short note with a [link](https://urbit.org).\n"),
     ("notes/ideas/maps", "# Maps\n\n```mermaid\nflowchart LR\n  orrery --> lattice --> map\n```\n"),
     ("journal/2026-11-17", "# Tuesday\n\nReviewed three rounds of fixes.\n"),
+    ("budget", r#"<?xml version="1.0"?><office:document><office:body><office:spreadsheet><table:table table:name="2026">
+<table:table-row><table:table-cell><text:p>Item</text:p></table:table-cell><table:table-cell><text:p>Monthly</text:p></table:table-cell><table:table-cell><text:p>Yearly</text:p></table:table-cell></table:table-row>
+<table:table-row><table:table-cell><text:p>Hosting</text:p></table:table-cell><table:table-cell><text:p>24.00</text:p></table:table-cell><table:table-cell><text:p>288.00</text:p></table:table-cell></table:table-row>
+<table:table-row><table:table-cell><text:p>Domains</text:p></table:table-cell><table:table-cell><text:p>3.50</text:p></table:table-cell><table:table-cell><text:p>42.00</text:p></table:table-cell></table:table-row>
+<table:table-row><table:table-cell><text:p>Total</text:p></table:table-cell><table:table-cell><text:p>27.50</text:p></table:table-cell><table:table-cell><text:p>330.00</text:p></table:table-cell></table:table-row>
+</table:table><table:table table:name="Notes"><table:table-row><table:table-cell><text:p>Prices checked in November</text:p></table:table-cell></table:table-row></table:table></office:spreadsheet></office:body></office:document>"#),
     ("places", r#"{"type":"FeatureCollection","features":[
 {"type":"Feature","geometry":{"type":"Point","coordinates":[-73.9857,40.7484]},"properties":{"name":"Midtown","note":"A point with a note.","kind":"place"}},
 {"type":"Feature","geometry":{"type":"Point","coordinates":[-73.9442,40.6782]},"properties":{"name":"Brooklyn"}},
@@ -164,6 +183,7 @@ fn init() -> App {
         hist_req: Latest::default(),
         old_req: Latest::default(),
         stale: false,
+        sheet: None,
         map: None,
         trail: Vec::new(),
         trail_at: 0,
@@ -186,7 +206,7 @@ fn browse_sample(s: &mut App) {
     {
         s.sample = true;
         // a sample page that starts as JSON is the map
-        let kind = |b: &str| if b.starts_with('{') { "geojson" } else { "md" };
+        let kind = |b: &str| if b.starts_with('{') { "geojson" } else if b.starts_with("<?xml") { "fods" } else { "md" };
         s.cache = SAMPLE.iter().map(|(p, b)| ((*p).to_owned(), Page { name: (*p).into(), body: (*b).into(), kind: kind(b).into(), rev: 1 })).collect();
         s.names = SAMPLE.iter().map(|(p, _)| (*p).to_owned()).collect();
         s.files = files_of(sample_nodes(), &Files::default());
@@ -379,6 +399,79 @@ fn sync_map(s: &mut App) {
     });
 }
 
+/// Keeps `s.sheet` in step with the open page, as +sync_map does for a map.
+fn sync_sheet(s: &mut App) {
+    let Some(p) = s.open.as_ref().filter(|p| p.kind == "fods") else {
+        s.sheet = None;
+        return;
+    };
+    if s.sheet.as_ref().is_some_and(|v| v.name == p.name && v.rev == p.rev) {
+        return;
+    }
+    let sheets = sheet::parse(&p.body);
+    let old = s.sheet.take().filter(|v| v.name == p.name);
+    s.sheet = (!sheets.is_empty()).then(|| SheetView {
+        name: p.name.clone(),
+        rev: p.rev,
+        at: old.as_ref().map_or(0, |v| v.at).min(sheets.len() - 1),
+        sheets,
+        table: TableState::new(),
+    });
+}
+
+/// The widest a sheet's grid is drawn. More columns are in the page, not on screen.
+const SHEET_COLS: usize = 52;
+
+fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let sh = &v.sheets[v.at];
+    let cols = sh.width().clamp(1, SHEET_COLS);
+    let mut table = Table::new(
+        |s: &App| &s.sheet.as_ref().expect("a sheet is showing").table,
+        |s: &mut App| &mut s.sheet.as_mut().expect("a sheet is showing").table,
+        |s: &App| s.sheet.as_ref().map_or(0, |v| v.sheets[v.at].rows.len()),
+        |_: &App, i| std::borrow::Cow::Owned(i.to_string()),
+    )
+    .name("Sheet")
+    .column(TableColumn::new("#", "").width(48.0).resizable(false));
+    for i in 0..cols {
+        table = table.column(TableColumn::new(sheet::column_name(i), sheet::column_name(i)).width(120.0).min(48.0).max(600.0));
+    }
+    let grid = table
+        .cell(|s: &App, i, col| {
+            let Some(v) = &s.sheet else { return Cell::text("") };
+            if col == "#" {
+                return Cell::text((i + 1).to_string()).muted().mono();
+            }
+            // a column's letters back to its place
+            let at = col.bytes().fold(0usize, |n, b| n * 26 + (b - b'A') as usize + 1) - 1;
+            Cell::text(v.sheets[v.at].rows.get(i).and_then(|r| r.get(at)).map_or("", String::as_str))
+        })
+        .zebra(true)
+        .build(s, k)
+        .grow(1.0)
+        .min_h(0.0);
+    let mut tabs = row().key("sheet-tabs").gap(4.0).center_y();
+    for (i, sh) in v.sheets.iter().enumerate() {
+        tabs = tabs.child(
+            Button::new(if sh.name.is_empty() { format!("Sheet {}", i + 1) } else { sh.name.clone() })
+                .control_size(ControlSize::Small)
+                .variant(if i == v.at { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                .on_press(move |s: &mut App| {
+                    if let Some(v) = &mut s.sheet {
+                        v.at = i;
+                        v.table = TableState::new();
+                    }
+                })
+                .build(k)
+                .key(format!("sheet-{i}")),
+        );
+    }
+    let more = if sh.width() > SHEET_COLS { format!(", the first {SHEET_COLS} of {} columns", sh.width()) } else { String::new() };
+    tabs = tabs.child(text(format!("{} rows{more}", sh.rows.len())).font(k.ty.small).color(c.text_muted).pl(8.0));
+    col().key("sheet").w_full().h_full().min_h(0.0).padding(12.0).gap(8.0).child(grid).child(tabs)
+}
+
 /// The most positions one line or area is drawn with.
 const MAP_LINE: usize = 2000;
 /// The most points drawn as pressable dots, and named.
@@ -551,6 +644,7 @@ fn show_page(s: &mut App, name: &str) {
         s.page_req.request((c, name.to_owned()), |(c, n)| c.page(&n));
     }
     sync_map(s);
+    sync_sheet(s);
     load_history(s);
 }
 
@@ -757,6 +851,7 @@ fn landed(s: &mut App, p: Page) {
     s.stale = false;
     s.note = "saved".into();
     sync_map(s);
+    sync_sheet(s);
     load_history(s);
 }
 
@@ -869,6 +964,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     if changed {
         sync_map(s);
+        sync_sheet(s);
     }
     changed
 }
@@ -1242,6 +1338,9 @@ fn page_body(s: &App, k: &Kit) -> El {
         }
         return panes;
     }
+    if let Some(v) = s.sheet.as_ref().filter(|v| v.name == p.name && v.rev == p.rev) {
+        return sheet_view(v, s, k);
+    }
     if let Some(m) = s.map.as_ref().filter(|m| m.name == p.name && m.rev == p.rev) {
         return map_view(m, k);
     }
@@ -1381,6 +1480,9 @@ fn main() {
         scenes: &[("login", |s| s.login_err = "that access code was refused".into()), ("reading", |s| {
             browse_sample(s);
             open_page(s, "welcome");
+        }), ("sheet", |s| {
+            browse_sample(s);
+            open_page(s, "budget");
         }), ("map", |s| {
             browse_sample(s);
             open_page(s, "places");
@@ -1455,6 +1557,23 @@ mod tests {
         s.cache.get_mut("places").unwrap().body = "{ not json".into();
         open_page(&mut s, "places");
         assert!(s.map.is_none());
+    }
+
+    #[test]
+    fn a_spreadsheet_page_opens_as_a_grid_and_follows_its_text() {
+        let mut s = sample("budget");
+        let v = s.sheet.as_ref().expect("the sample sheet parses");
+        assert_eq!((v.sheets.len(), v.sheets[0].rows.len(), v.sheets[0].width()), (2, 4, 3));
+        s.sheet.as_mut().unwrap().at = 1;
+        // a new revision of the same page keeps the sheet that was showing
+        let p = s.open.as_mut().unwrap();
+        p.body = p.body.replace("Hosting", "Servers");
+        p.rev += 1;
+        sync_sheet(&mut s);
+        let v = s.sheet.as_ref().unwrap();
+        assert_eq!((v.at, v.sheets[0].rows[1][0].as_str()), (1, "Servers"));
+        open_page(&mut s, "welcome");
+        assert!(s.sheet.is_none());
     }
 
     #[test]
