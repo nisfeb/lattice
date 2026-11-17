@@ -156,6 +156,29 @@
   %+  expect-eq
     !>('{"type":"FeatureCollection","lattice":{"title":"Orrery notes","layers":["orrery/map"]},"features":[\0a]}\0a')
   !>(notes-body:lo)
+::  the map pass skips only when orrery's map.json is the version the
+::  mirror last wrote from and the page is still what it wrote
+++  map-src  'page source'
+++  test-map-skip
+  =/  doc=[@ud @da]  [7 ~2026.11.1]
+  =/  rec  (map-rec:lo doc map-src)
+  ;:  weld
+    (expect-eq !>(&) !>((map-skip:lo `rec doc `map-src)))
+    ::  orrery's map moved on
+    (expect-eq !>(|) !>((map-skip:lo `rec [8 ~2026.11.2] `map-src)))
+    (expect-eq !>(|) !>((map-skip:lo `rec [7 ~2026.11.2] `map-src)))
+    ::  a hand edit, or no page
+    (expect-eq !>(|) !>((map-skip:lo `rec doc `'edited')))
+    (expect-eq !>(|) !>((map-skip:lo `rec doc ~)))
+    ::  no record, or one the journal shape left without a hash
+    (expect-eq !>(|) !>((map-skip:lo ~ doc `map-src)))
+    (expect-eq !>(|) !>((map-skip:lo `[at.rec ~] doc `map-src)))
+    (expect-eq !>(|) !>((map-skip:lo `['' hash.rec] doc `map-src)))
+  ==
+::  the record's key in journal-synced.json: a slash, so no journal
+::  day or week-<day> can take it
+++  test-map-key
+  (expect-eq !>('orrery/map') !>(map-key:lo))
 ++  test-travel-token
   ;:  weld
     (expect-eq !>(`'pk.abc') !>((travel-token:lo (pairs:enjs:format ~[['enabled' b+&] ['token' s+'pk.abc']]))))

@@ -206,6 +206,27 @@
       ?~(p.u.fs '' '\0a')
       ']}\0a'
   ==
+::  +map-key: the map mirror's key in journal-synced.json. Its slash keeps
+::  it apart from every journal day and week-<day>.
+++  map-key  'orrery/map'
+::  +map-rec: the map mirror's record once it wrote orrery/map: the
+::  version [ud da] of orrery's map.json it wrote from, and a hash of the
+::  page's source as it left it. The journal record's shape, [at hash].
+++  map-rec
+  |=  [doc=[@ud @da] src=@t]
+  ^-  [at=@t hash=(unit @uv)]
+  [(scot %uv (sham doc)) `(sham src)]
+::  +map-skip: may the map pass stop after one peek? Only when the
+::  record (`rec`) names this version of map.json (`doc`) and the page
+::  source (`src`, ~ when there is no page) is still what the mirror
+::  left. So an unchanged map costs no body and no check, and a hand
+::  edit is still put back. No record, or a malformed one, is a full
+::  pass.
+++  map-skip
+  |=  [rec=(unit [at=@t hash=(unit @uv)]) doc=[@ud @da] src=(unit @t)]
+  ^-  ?
+  ?~  src  |
+  =(rec `(map-rec doc u.src))
 ::  +travel-token: the Mapbox token in orrery's travel settings
 ::  (<base>/travel.json, its `token` string), ~ when there is none
 ++  travel-token
