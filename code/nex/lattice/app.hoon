@@ -13090,6 +13090,10 @@
   ?.  =(/orrery/map pax)  (pure:m ~)
   ;<  base=(unit path)  bind:m  orrery-base
   ?~  base  (pure:m ~)
+  ::  and orrery still keeps a map: without one nothing would put a save
+  ::  back, and the page would refuse saves for good
+  ;<  vw=(unit view:nexus)  bind:m  (peek-soft:io [%& %& u.base %'map.json'] ~)
+  ?.  ?=([~ %file *] vw)  (pure:m ~)
   ;<  synced=(map @t [at=@t hash=(unit @uv)])  bind:m  read-journal-synced
   (pure:m (map-kept:lo pax & (~(has by synced) map-key:lo)))
 ::  +orrery-world: orrery's world digest, read whole as the json grub
@@ -13267,14 +13271,16 @@
     (write-journal-synced (~(put by synced) map-key:lo rec))
   =/  nax=path  /orrery/map-notes
   ;<  nc=[rev=@ud src=(unit @t)]  bind:m  (page-head nax)
-  ::  a notes page that is there is still made sensitive when it is not:
-  ::  a key may have made it first, and the owner draws private places on it
+  ::  a notes page that was there before the mirror's first write is made
+  ::  sensitive once: a key may have made it first, and the owner draws
+  ::  private places on it. After that the flag is the owner's to change.
   ;<  ns=?  bind:m  (page-sensitive nax)
   ;<  ~  bind:m
-    ?:  ns  (pure:m ~)
+    ?:  |(ns ?=(~ src.nc) (~(has by synced) map-key:lo))  (pure:m ~)
     (apply-eval root now [%page-sensitive nax &])
   ?^  src.nc  (pure:m ~)
   ?.  =(0 rev.nc)  (pure:m ~)
+  ;<  ~  bind:m  (apply-eval root now [%page-sensitive nax &])
   (apply-eval root now [%make nax (wrap-content %geojson notes-body:lo)])
 ::  +orrery-rec: pull the `at` and `text` strings out of one orrery day
 ::  record. ~ when the json is not an object or either field is missing or
@@ -14958,7 +14964,9 @@
   :+  ~  q.state
   ?+  in  [%skip ~]
       ~  [%wait ~]
-      [~ %veto *]  [%done |]
+      [~ %veto %node * * *]
+    ?.  =(wire wire.dart.u.in)  [%skip ~]
+    [%done |]
       [~ %pack * *]
     ?.  =(wire wire.u.in)  [%skip ~]
     [%done =(~ err.u.in)]
