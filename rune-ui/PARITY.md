@@ -83,6 +83,17 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [ ] Native menus
 - [ ] Bundles: deb, AppImage, dmg
 
+## Web build (wasm)
+
+Rune's web target draws one canvas through WebGPU (`~/.cache/rune-src/rune/WEB.md`, `examples/web-hello`, `scripts/web-build.sh`).
+
+- [ ] The crate builds for `wasm32-unknown-unknown`: a `cdylib` entry beside the native `main`, and the ship client behind one trait with a browser `fetch` version (ureq does not build for wasm). Needs the wasm32 target and `wasm-bindgen-cli` at the version in Rune's Cargo.lock
+- [ ] Same-origin session: served from the ship, the browser's own login cookie is used, so there is no sign-in screen and no session file
+- [ ] Preferences in the browser's storage in place of the prefs file
+- [ ] Served by a fake ship and checked in headless Chrome: the tree loads, a page opens, an edit saves. Needs a browser with WebGPU
+- [ ] A fallback page for a browser with no WebGPU that says so and links to the existing web client
+- [ ] Deployed to ~ricsul-bilwyt at its own address beside the existing web client, never in place of it. STOP before the first write to ricsul: say what will be written, where, how large it is, and how to remove it, and wait for the owner's go
+
 ## Layout
 
 - [ ] Make the layout like the existing lattice's (the web client's arrangement of tree, tabs, toolbar and panels). The owner asked for this once the features are in, so it comes last.
