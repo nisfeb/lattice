@@ -20,6 +20,10 @@ pub struct Node {
     pub kind: String,
     #[serde(default)]
     pub rev: u64,
+    /// Who may read it: `shared` (over Urbit) or `clearweb`. Empty for a
+    /// private page: the dump names only the shared ones.
+    #[serde(default)]
+    pub share: String,
     /// The page's text, when the dump carried it: every page on a first
     /// dump, then only those written since.
     #[serde(default)]
@@ -262,6 +266,22 @@ impl Conn {
         self.call("POST", &format!("know-delete?key={}", enc(key)), Some("")).map(drop)
     }
 
+    /// Sets who may read a page: `private`, `shared` (ships over Urbit) or
+    /// `clearweb` (anyone with the link).
+    pub fn share(&self, name: &str, mode: &str) -> Result<(), String> {
+        let q = if mode == "private" { format!("page-share-clear?name={}", enc(name)) } else { format!("page-share?name={}&mode={}", enc(name), enc(mode)) };
+        self.call("POST", &q, Some("")).map(drop)
+    }
+
+    /// Where a page shared in `mode` is read from, `None` for a private one.
+    pub fn address(&self, name: &str, mode: &str) -> Option<String> {
+        match mode {
+            "clearweb" => Some(format!("{}/apps/lattice/c/{name}", self.url)),
+            "shared" => Some(format!("urb://{}/{name}", self.ship())),
+            _ => None,
+        }
+    }
+
     /// Makes a new Markdown page. The ship answers 409 when the name is taken.
     pub fn create(&self, name: &str) -> Result<(), String> {
         let title = name.rsplit('/').next().unwrap_or(name);
@@ -352,14 +372,30 @@ mod tests {
         let old = c.page_at("rune-probe", revs[1].rev).unwrap();
         assert!(old.body != p.body && old.rev == revs[1].rev, "the old text, not the new");
         assert!(c.page_at("rune-probe", 999_999).is_err(), "a revision that is not there is an error, not a page");
-        // a memory is written, listed with its text, and deleted
-        let _ = c.know_delete("/rune/probe");
-        c.know_save("/rune/probe", "a fact\n").unwrap();
+        // sharing moves a page between private, Urbit and the web, and the dump says which
+        // a node the dump gives no share is private
+        let mode = |c: &Conn| Some(c.dump("").unwrap().nodes.into_iter().find(|n| n.path == "rune-probe").unwrap().share).filter(|m| !m.is_empty()).unwrap_or("private".into());
+        c.share("rune-probe", "private").unwrap();
+        assert_eq!(mode(&c), "private");
+        c.share("rune-probe", "clearweb").unwrap();
+        assert_eq!(mode(&c), "clearweb");
+        let open = ureq::get(&c.address("rune-probe", "clearweb").unwrap()).call().map(|r| r.status());
+        assert_eq!(open.ok(), Some(200), "the web address answers with no session");
+        c.share("rune-probe", "shared").unwrap();
+        assert_eq!(mode(&c), "shared");
+        c.share("rune-probe", "private").unwrap();
+        assert_eq!(mode(&c), "private");
+        assert!(c.address("a/b", "shared").unwrap().starts_with("urb://~") && c.address("a", "private").is_none());
+        // a memory is written, listed with its text, and deleted. The ship
+        // may refuse a key whose deleted memory is still in the trash, so
+        // each run uses its own.
+        let key = format!("/rune/probe-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        c.know_save(&key, "a fact\n").unwrap();
         let all = c.know_all().unwrap();
-        let got = all.iter().find(|k| k.key == "/rune/probe").expect("the memory is listed");
+        let got = all.iter().find(|k| k.key == key).expect("the memory is listed");
         assert_eq!(got.body.trim(), "a fact");
-        c.know_delete("/rune/probe").unwrap();
-        assert!(!c.know_all().unwrap().iter().any(|k| k.key == "/rune/probe"), "and gone after a delete");
+        c.know_delete(&key).unwrap();
+        assert!(!c.know_all().unwrap().iter().any(|k| k.key == key), "and gone after a delete");
         // create, rename, delete
         // a second dump carries only what was written since the first
         let first = c.dump("").unwrap();
@@ -370,15 +406,16 @@ mod tests {
         let bodies: Vec<&str> = next.nodes.iter().filter(|n| n.body.is_some()).map(|n| n.path.as_str()).collect();
         assert_eq!(bodies, ["rune-probe"], "only the page written since comes with its body");
         let has = |c: &Conn, n: &str| c.tree().unwrap().iter().any(|x| x.page && x.path == n);
-        let _ = c.delete("rune-made");
-        let _ = c.delete("rune-moved/here");
-        c.create("rune-made").unwrap();
-        assert!(has(&c, "rune-made"), "a created page is in the tree");
-        assert!(c.create("rune-made").unwrap_err().starts_with("409"), "a taken name is refused");
-        c.rename("rune-made", "rune-moved/here").unwrap();
-        assert!(has(&c, "rune-moved/here") && !has(&c, "rune-made"), "a rename moves it");
-        c.delete("rune-moved/here").unwrap();
-        assert!(!has(&c, "rune-moved/here"), "a delete removes it");
+        // names of their own each run: on an old kernel a deleted page's name cannot be used again
+        let stamp = key.rsplit('-').next().unwrap().to_owned();
+        let (made, moved) = (format!("rune-made-{stamp}"), format!("rune-moved-{stamp}/here"));
+        c.create(&made).unwrap();
+        assert!(has(&c, &made), "a created page is in the tree");
+        assert!(c.create(&made).unwrap_err().starts_with("409"), "a taken name is refused");
+        c.rename(&made, &moved).unwrap();
+        assert!(has(&c, &moved) && !has(&c, &made), "a rename moves it");
+        c.delete(&moved).unwrap();
+        assert!(!has(&c, &moved), "a delete removes it");
     }
 
     /// `LATTICE_URL=.. LATTICE_CODE=.. cargo test -- --ignored login`

@@ -58,6 +58,8 @@ enum Op {
     Created(String),
     Renamed(String, String),
     Deleted(String),
+    /// A page's share mode was set.
+    Shared(String, String),
 }
 
 struct App {
@@ -92,6 +94,10 @@ struct App {
     old_req: Latest<Result<Page, String>>,
     /// The page being edited was written elsewhere since it was opened.
     stale: bool,
+    /// Each page's share mode, as the last dump said, and whether the
+    /// share dialog is open.
+    shares: HashMap<String, String>,
+    sharing: bool,
     /// Showing memories, not pages. The tree, the names and the kept texts
     /// are those of what is showing, and `other` holds the same three for
     /// what is not (+flip swaps them).
@@ -143,7 +149,7 @@ const SAMPLE: &[(&str, &str)] = &[
 ];
 
 fn sample_nodes() -> Vec<Node> {
-    SAMPLE.iter().map(|(p, _)| Node { path: (*p).into(), page: true, kind: "md".into(), rev: 1, body: None }).collect()
+    SAMPLE.iter().map(|(p, _)| Node { path: (*p).into(), page: true, kind: "md".into(), rev: 1, body: None, ..Node::default() }).collect()
 }
 
 fn files_of(nodes: Vec<Node>, keep: &Files) -> Files {
@@ -191,6 +197,8 @@ fn init() -> App {
         hist_req: Latest::default(),
         old_req: Latest::default(),
         stale: false,
+        shares: HashMap::new(),
+        sharing: false,
         memory: false,
         other: Default::default(),
         know_meta: HashMap::new(),
@@ -228,7 +236,7 @@ fn browse_sample(s: &mut App) {
         let knows = [("feedback/short-answers", "Keep answers short.\n\n**Why:** long ones are not read.\n"), ("project/lattice/rune", "An experimental native client, drawn with Rune.\n")];
         s.other.1 = knows.iter().map(|(k, _)| (*k).to_owned()).collect();
         s.other.2 = knows.iter().map(|(k, b)| ((*k).to_owned(), Page { name: (*k).into(), body: (*b).into(), kind: "md".into(), rev: 0 })).collect();
-        s.other.0 = files_of(s.other.1.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 0, body: None }).collect(), &Files::default());
+        s.other.0 = files_of(s.other.1.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 0, body: None, ..Node::default() }).collect(), &Files::default());
         s.other.0.expand_all();
         s.know_meta.insert("feedback/short-answers".into(), (vec!["style".into()], "~2026.11.17..9.30.0".into()));
     }
@@ -276,7 +284,7 @@ fn take_knows(s: &mut App, knows: Vec<Know>) {
     s.names = knows.iter().map(name).collect();
     s.know_meta = knows.iter().map(|k| (name(k), (k.tags.clone(), k.updated.clone()))).collect();
     s.cache = knows.iter().map(|k| (name(k), Page { name: name(k), body: k.body.clone(), kind: "md".into(), rev: 0 })).collect();
-    let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 0, body: None }).collect();
+    let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 0, body: None, ..Node::default() }).collect();
     s.files = files_of(nodes, &s.files);
     if !was {
         flip_quiet(s);
@@ -342,6 +350,7 @@ fn confirm(s: &mut App) {
                 Op::Created(n) => c.create(n)?,
                 Op::Renamed(a, b) => c.rename(a, b)?,
                 Op::Deleted(n) => c.delete(n)?,
+                Op::Shared(n, mode) => c.share(n, mode)?,
             }
             Ok(op)
         }),
@@ -374,6 +383,14 @@ fn applied(s: &mut App, op: Op) {
             open_page(s, &b);
             s.note = "renamed".into();
         }
+        Op::Shared(n, mode) => {
+            s.note = match mode.as_str() {
+                "clearweb" => "anyone with the link can read it".into(),
+                "shared" => "ships you grant can read it over Urbit".into(),
+                _ => "private again".into(),
+            };
+            s.shares.insert(n, mode);
+        }
         Op::Deleted(n) => {
             s.cache.remove(&n);
             s.names.retain(|x| *x != n);
@@ -386,7 +403,7 @@ fn applied(s: &mut App, op: Op) {
     } else if s.conn.is_some() {
         load_tree(s);
     } else {
-        let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 1, body: None }).collect();
+        let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 1, body: None, ..Node::default() }).collect();
         s.files = files_of(nodes, &s.files);
         s.files.expand_all();
         if let Some(p) = &s.open {
@@ -976,6 +993,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         match r {
             Ok(Dump { nodes, since }) => {
                 s.since = since;
+                s.shares = nodes.iter().filter(|n| n.page && !n.share.is_empty()).map(|n| (n.path.clone(), n.share.clone())).collect();
                 // bodies the dump carried replace the kept ones, and pages gone from it go
                 let live: std::collections::HashSet<&str> = nodes.iter().filter(|n| n.page).map(|n| n.path.as_str()).collect();
                 s.cache.retain(|name, _| live.contains(name.as_str()));
@@ -1253,6 +1271,70 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
+/// Asks the ship to share the open page in `mode`.
+fn share_as(s: &mut App, mode: &'static str) {
+    let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else {
+        s.note = "sample pages cannot be shared".into();
+        return;
+    };
+    let op = Op::Shared(p.name.clone(), mode.to_owned());
+    s.op_req.request((c, op), |(c, op)| {
+        if let Op::Shared(n, mode) = &op {
+            c.share(n, mode)?;
+        }
+        Ok(op)
+    });
+}
+
+/// The share dialog: who may read the open page, and where from.
+fn share_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
+    let (true, Some(p)) = (s.sharing, &s.open) else { return };
+    let c = &k.c;
+    let now = s.shares.get(&p.name).map_or("private", String::as_str);
+    let choice = |mode: &'static str, title: &str, says: &str| {
+        let mut r = row()
+            .key(format!("share-{mode}"))
+            .w_full()
+            .px(12.0)
+            .py(8.0)
+            .gap(10.0)
+            .center_y()
+            .radius(k.radius.md)
+            .border(1.0, if mode == now { c.text_accent } else { c.border_weak })
+            .on_press(move |s: &mut App| share_as(s, mode))
+            .child(col().gap(2.0).grow(1.0).min_w(0.0).child(text(title.to_owned()).font(k.ty.ui_medium).color(c.text_base)).child(text(says.to_owned()).font(k.ty.small).color(c.text_muted).wrap()));
+        if mode == now {
+            r = r.child(text("now").font(k.ty.small_medium).color(c.text_accent));
+        }
+        r
+    };
+    let mut body = col()
+        .w_full()
+        .gap(8.0)
+        .child(choice("private", "Private", "Only you, signed in to your ship."))
+        .child(choice("shared", "Over Urbit", "Ships and groups you grant, at a urb:// address."))
+        .child(choice("clearweb", "On the web", "Anyone with the link, with no sign-in."));
+    if let Some(addr) = s.conn.as_ref().and_then(|c| c.address(&p.name, now)) {
+        let copy = addr.clone();
+        body = body.child(
+            row()
+                .key("share-address")
+                .w_full()
+                .gap(8.0)
+                .center_y()
+                .child(text(addr).font(k.ty.mono).color(c.text_base).truncate().grow(1.0).min_w(0.0).selectable(true))
+                .child(Button::new("Copy").control_size(ControlSize::Small).on_press_tx(move |s: &mut App, tx| {
+                    tx.copy(copy.clone());
+                    s.note = "address copied".into();
+                }).build(k).key("share-copy")),
+        );
+    }
+    if s.op_req.is_pending() {
+        body = body.child(Spinner::new().build(k));
+    }
+    Dialog::new("share", format!("Share {}", p.name)).open(true).width(460.0).fit().on_close(|s: &mut App| s.sharing = false).child(body).build(k, layer);
+}
+
 fn ask_new(s: &mut App) {
     // a new page starts beside the open one
     let dir = s.open.as_ref().and_then(|p| p.name.rsplit_once('/')).map_or(String::new(), |(d, _)| format!("{d}/"));
@@ -1528,7 +1610,11 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.editing = false).build(&k).key("cancel"))
             .child(Button::new("Save").variant(ButtonVariant::Contrast).on_press(save).build(&k).key("save"));
     } else if s.open.is_some() {
-        // a memory has no history pane or rename here
+        // a memory has no sharing, history pane or rename here
+        if !s.memory {
+            let shared = s.open.as_ref().and_then(|p| s.shares.get(&p.name)).is_some_and(|m| m != "private");
+            trailing = trailing.child(Button::new(if shared { "Shared" } else { "Share" }).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| s.sharing = true).build(&k).key("share"));
+        }
         if !s.memory {
             trailing = trailing.child(Button::new("History").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
                 s.inspector.toggle();
@@ -1549,6 +1635,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let mut layer = Vec::new();
     switcher(s, &k, &mut layer);
     prompt_view(s, &k, &mut layer);
+    share_view(s, &k, &mut layer);
     let nav = |key: &str, label: &str, by: isize, on: bool| {
         Button::new(label).variant(ButtonVariant::GhostMuted).disabled(!on).on_press(move |s: &mut App| step(s, by)).build(&k).key(key.to_owned())
     };
