@@ -20,6 +20,8 @@ pub struct Doc {
     pub blocks: Vec<Block>,
     /// Lines that continue the one above (a line break inside a paragraph).
     pub soft: Vec<u32>,
+    /// The spacing the page wrote between its lines.
+    pub seps: Seps,
 }
 
 /// The page as a rich document, when the rich editor can hold it without
@@ -30,7 +32,7 @@ pub fn exact(src: &str) -> Option<Doc> {
         return None;
     }
     let d = parse(src);
-    let out = emit(&d.text, &d.marks, &d.blocks, &d.soft);
+    let out = emit_with(&d.text, &d.marks, &d.blocks, &d.soft, &d.seps);
     (out == src || out.strip_suffix('\n') == Some(src)).then_some(d)
 }
 
@@ -76,7 +78,9 @@ pub fn parse(src: &str) -> Doc {
         lines.pop();
     }
     let (mut gap, mut fenced, mut first) = (true, false, true);
-    let mut push = |d: &mut Doc, block: Block, soft: bool, text: &str, first: &mut bool| {
+    // the line above as written, and the blank lines since it
+    let (mut above, mut blanks): (Option<&str>, u8) = (None, 0);
+    let push = |d: &mut Doc, block: Block, soft: bool, text: &str, first: &mut bool| {
         if !*first {
             d.text.push('\n');
         }
@@ -92,6 +96,14 @@ pub fn parse(src: &str) -> Doc {
         }
     };
     for line in lines {
+        if !fenced && line.is_empty() {
+            blanks = blanks.saturating_add(1);
+        } else {
+            if let Some(a) = above {
+                d.seps.entry((a.to_owned(), line.to_owned())).or_insert(1 + blanks);
+            }
+            (above, blanks) = (Some(line), 0);
+        }
         if fenced {
             push(&mut d, Block::Code, false, line, &mut first);
             fenced = !fence(line);
@@ -356,76 +368,106 @@ fn emit_inline(line: &str, at: usize, marks: &[MarkRange], out: &mut String) {
     }
 }
 
+/// How many newlines the page wrote between two lines, keyed by the two
+/// lines as written. Markdown lets a list sit right under a paragraph or
+/// leaves a blank line between items, and the model has no place for that,
+/// so the page's own choices are kept here and used again for every pair of
+/// lines the owner has not changed. A changed pair gets the usual spacing.
+pub type Seps = std::collections::HashMap<(String, String), u8>;
+
+/// One written line, and what the spacing rule needs to know about it.
+struct Line {
+    s: String,
+    block: Block,
+    soft: bool,
+    /// A code line that closed its fence: what follows is a new block.
+    closes: bool,
+}
+
+/// The usual number of newlines between two lines.
+fn usual(prev: &Line, l: &Line) -> u8 {
+    let (p, b) = (prev.block, l.block);
+    let tight = l.soft || (!prev.closes && ((p == Block::Code && b == Block::Code) || (is_list(p) && is_list(b) && same_list(p, b)) || (p == Block::Quote && b == Block::Quote)));
+    if tight { 1 } else { 2 }
+}
+
 /// The document as Markdown, ending in a newline when it has any text.
 pub fn emit(text: &str, marks: &[MarkRange], blocks: &[Block], soft: &[u32]) -> String {
-    let mut out = String::new();
+    emit_with(text, marks, blocks, soft, &Seps::default())
+}
+
+/// [`emit`], spaced as the page it was read from was (`seps`).
+pub fn emit_with(text: &str, marks: &[MarkRange], blocks: &[Block], soft: &[u32], seps: &Seps) -> String {
+    let mut lines: Vec<Line> = Vec::new();
     let mut at = 0;
     let mut counts = [0u32; 4];
-    // the block above, and whether a code line above left a fence open or
-    // was a fence the editor has to write itself
-    let mut prev: Option<Block> = None;
-    let (mut fenced, mut made, mut closed) = (false, false, false);
+    // whether a fence is open, and whether it is one the editor wrote itself
+    let (mut fenced, mut made) = (false, false);
+    let ticks = |closes| Line { s: "```".into(), block: Block::Code, soft: false, closes };
     for (n, line) in text.split('\n').enumerate() {
         let block = blocks.get(n).copied().unwrap_or_default();
         let is_soft = n > 0 && soft.contains(&(n as u32)) && block != Block::Code;
+        let start = at;
+        at += line.len() + 1;
         // a paragraph the editor left empty is not written
         if block == Block::Paragraph && line.is_empty() {
-            at += line.len() + 1;
             continue;
         }
         if made && block != Block::Code {
-            out.push_str("\n```");
-            (made, closed) = (false, true);
+            lines.push(ticks(true));
+            made = false;
         }
-        if let Some(p) = prev {
-            let tight = is_soft || (!closed && ((p == Block::Code && block == Block::Code) || (is_list(p) && is_list(block) && same_list(p, block)) || (p == Block::Quote && block == Block::Quote)));
-            out.push_str(if tight { "\n" } else { "\n\n" });
-        }
-        closed = false;
         if !is_list(block) {
             counts = [0; 4];
         }
-        match block {
-            Block::Code => {
-                if fenced {
-                    fenced = !fence(line);
-                    closed = !fenced;
-                } else if fence(line) {
-                    fenced = true;
-                } else if !made {
-                    out.push_str("```\n");
-                    made = true;
-                }
-                out.push_str(line);
+        let mut s = String::new();
+        let mut closes = false;
+        if block == Block::Code {
+            if fenced {
+                fenced = !fence(line);
+                closes = !fenced;
+            } else if fence(line) {
+                fenced = true;
+            } else if !made {
+                lines.push(ticks(false));
+                made = true;
             }
-            _ => {
-                if !is_soft {
-                    match block {
-                        Block::Bullet(l) => {
-                            let l = (l as usize).min(3);
-                            counts[l + 1..].fill(0);
-                            out.push_str(&"  ".repeat(l));
-                            out.push_str("- ");
-                        }
-                        Block::Numbered(l) => {
-                            let l = (l as usize).min(3);
-                            counts[l] += 1;
-                            counts[l + 1..].fill(0);
-                            out.push_str(&"   ".repeat(l));
-                            out.push_str(&format!("{}. ", counts[l]));
-                        }
-                        Block::Quote => out.push_str("> "),
-                        _ => {}
+            s.push_str(line);
+        } else {
+            if !is_soft {
+                match block {
+                    Block::Bullet(l) => {
+                        let l = (l as usize).min(3);
+                        counts[l + 1..].fill(0);
+                        s.push_str(&"  ".repeat(l));
+                        s.push_str("- ");
                     }
+                    Block::Numbered(l) => {
+                        let l = (l as usize).min(3);
+                        counts[l] += 1;
+                        counts[l + 1..].fill(0);
+                        s.push_str(&"   ".repeat(l));
+                        s.push_str(&format!("{}. ", counts[l]));
+                    }
+                    Block::Quote => s.push_str("> "),
+                    _ => {}
                 }
-                emit_inline(line, at, marks, &mut out);
             }
+            emit_inline(line, start, marks, &mut s);
         }
-        prev = Some(block);
-        at += line.len() + 1;
+        lines.push(Line { s, block, soft: is_soft, closes });
     }
     if made {
-        out.push_str("\n```");
+        lines.push(ticks(true));
+    }
+    let mut out = String::new();
+    for (i, l) in lines.iter().enumerate() {
+        if i > 0 {
+            let prev = &lines[i - 1];
+            let n = if l.soft { 1 } else { seps.get(&(prev.s.clone(), l.s.clone())).copied().unwrap_or_else(|| usual(prev, l)) };
+            out.push_str(&"\n".repeat(n as usize));
+        }
+        out.push_str(&l.s);
     }
     if !out.is_empty() {
         out.push('\n');
@@ -439,6 +481,41 @@ mod tests {
 
     fn m(start: usize, end: usize, mark: Mark) -> MarkRange {
         MarkRange { start, end, mark }
+    }
+
+    /// How many pages of a real tree the rich editor would open, and why the
+    /// rest are refused: `LATTICE_DUMP=page-dump.json cargo test -- --ignored corpus --nocapture`.
+    #[test]
+    #[ignore]
+    fn corpus() {
+        let raw = std::fs::read_to_string(std::env::var("LATTICE_DUMP").unwrap()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let (mut ok, mut all) = (0, 0);
+        let mut why: std::collections::BTreeMap<&str, u32> = Default::default();
+        for n in v["nodes"].as_array().unwrap() {
+            let (Some("md"), Some(body)) = (n["kind"].as_str(), n["body"].as_str()) else { continue };
+            all += 1;
+            if exact(body).is_some() {
+                ok += 1;
+                continue;
+            }
+            let d = parse(body);
+            let out = emit_with(&d.text, &d.marks, &d.blocks, &d.soft, &d.seps);
+            // the first line that differs says what kind of page this is
+            let (a, b) = body.lines().zip(out.lines()).find(|(a, b)| a != b).unwrap_or(("<length>", ""));
+            let kind = if body.contains('\r') { "carriage returns" }
+                else if a.is_empty() && !b.is_empty() { "blank line the editor would drop" }
+                else if b.is_empty() && !a.is_empty() { "blank line the editor would add" }
+                else if a.trim_start().starts_with(|c: char| c.is_ascii_digit()) { "numbering" }
+                else if a.starts_with(' ') || a.starts_with('\t') { "indentation" }
+                else if a == "<length>" { "trailing lines" }
+                else { "inline" };
+            *why.entry(kind).or_default() += 1;
+            if kind == "inline" && why[kind] <= 6 {
+                eprintln!("inline: {a:?}\n     -> {b:?}");
+            }
+        }
+        eprintln!("{ok} of {all} Markdown pages open rich. Refused: {why:?}");
     }
 
     #[test]
@@ -474,19 +551,24 @@ mod tests {
             "- [ ] task\n- [x] done\n",
             // not a list the model knows: kept as the text it is
             "* star bullets\n* here\n",
+            // spacing the model has no place for is kept beside it
+            "- loose\n\n- list\n",
+            "a\n\n\nb\n",
+            "text:\n- list right under\n- two\nand text right under\n",
+            "> a\n\n> b\n",
             "no final newline",
             "",
         ] {
             assert!(exact(src).is_some(), "not exact: {src:?} became {:?}", {
                 let d = parse(src);
-                emit(&d.text, &d.marks, &d.blocks, &d.soft)
+                emit_with(&d.text, &d.marks, &d.blocks, &d.soft, &d.seps)
             });
         }
     }
 
     #[test]
     fn pages_it_would_change_are_refused() {
-        for src in ["- loose\n\n- list\n", "a\n\n\nb\n", "1. one\n1. one again\n", "text\n- list right under\n", "\r\nwindows\r\n", "\nleading blank\n"] {
+        for src in ["1. one\n1. one again\n", "\r\nwindows\r\n", "\nleading blank\n", "same\nsame\n\nsame\n\n\nsame\n"] {
             assert!(exact(src).is_none(), "should be refused: {src:?}");
         }
     }
@@ -536,5 +618,17 @@ mod tests {
         let d = exact(&out).expect("its own output is exact");
         assert_eq!(d.text, "see this and that\nitem");
         assert_eq!(d.blocks, vec![Paragraph, Bullet(0)]);
+    }
+
+    #[test]
+    fn spacing_is_kept_for_lines_left_alone_and_usual_for_changed_ones() {
+        use Block::*;
+        let src = "intro:\n- one\n\n- two\n";
+        let d = exact(src).unwrap();
+        // the second item is edited: its pair is new, so it gets a list's usual spacing
+        let text = d.text.replace("two", "2");
+        assert_eq!(emit_with(&text, &d.marks, &d.blocks, &d.soft, &d.seps), "intro:\n- one\n- 2\n");
+        // a line added between keeps the spacing above it and below it is usual
+        assert_eq!(emit_with("intro:\none\nnew\ntwo", &[], &[Paragraph, Bullet(0), Bullet(0), Bullet(0)], &[], &d.seps), "intro:\n- one\n- new\n- two\n");
     }
 }

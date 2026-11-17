@@ -11,7 +11,7 @@ pub struct Conn {
     pub cookie: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize)]
 pub struct Node {
     pub path: String,
     #[serde(default)]
@@ -20,6 +20,10 @@ pub struct Node {
     pub kind: String,
     #[serde(default)]
     pub rev: u64,
+    /// The page's text, when the dump carried it: every page on a first
+    /// dump, then only those written since.
+    #[serde(default)]
+    pub body: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -34,9 +38,13 @@ pub struct Page {
     pub rev: u64,
 }
 
-#[derive(Deserialize)]
-struct Tree {
-    nodes: Vec<Node>,
+/// The whole tree with page bodies, in one request (`page-dump`).
+#[derive(Debug, Default, Deserialize)]
+pub struct Dump {
+    pub nodes: Vec<Node>,
+    /// Handed back on the next dump, which then carries only what changed.
+    #[serde(default)]
+    pub since: String,
 }
 
 #[derive(Deserialize)]
@@ -150,9 +158,15 @@ impl Conn {
         }
     }
 
+    /// Every node, with the bodies written since `since` (all of them when
+    /// it is empty). One deep read on the ship, as the web client makes.
+    pub fn dump(&self, since: &str) -> Result<Dump, String> {
+        let q = if since.is_empty() { "page-dump".to_owned() } else { format!("page-dump?since={}", enc(since)) };
+        serde_json::from_str(&self.call("GET", &q, None)?).map_err(|e| e.to_string())
+    }
+
     pub fn tree(&self) -> Result<Vec<Node>, String> {
-        let t: Tree = serde_json::from_str(&self.call("GET", "page-tree", None)?).map_err(|e| e.to_string())?;
-        Ok(t.nodes)
+        Ok(self.dump("")?.nodes)
     }
 
     pub fn page(&self, name: &str) -> Result<Page, String> {
@@ -215,8 +229,9 @@ mod tests {
 
     #[test]
     fn a_tree_and_a_page_parse_as_the_ship_writes_them() {
-        let t: Tree = serde_json::from_str(r#"{"nodes":[{"path":"a/b","page":true,"kind":"md","rev":3,"size":9},{"path":"a","page":false}],"since":"x"}"#).unwrap();
-        assert_eq!((t.nodes.len(), t.nodes[0].rev, t.nodes[1].page), (2, 3, false));
+        let t: Dump = serde_json::from_str(r#"{"nodes":[{"path":"a/b","page":true,"kind":"md","rev":3,"size":9,"body":"hi"},{"path":"a","page":false}],"since":"x"}"#).unwrap();
+        assert_eq!((t.nodes.len(), t.nodes[0].rev, t.nodes[1].page, t.since.as_str()), (2, 3, false, "x"));
+        assert_eq!((t.nodes[0].body.as_deref(), t.nodes[1].body.as_deref()), (Some("hi"), None));
         let p: Page = serde_json::from_str(r#"{"body":"hi","kind":"md","rev":2,"mtime":"~2026"}"#).unwrap();
         assert_eq!((p.body.as_str(), p.rev), ("hi", 2));
     }
@@ -244,6 +259,14 @@ mod tests {
         p.body.push_str("another edit\n");
         assert!(c.save(&p, base).unwrap_err().starts_with("409"), "a stale base is refused");
         // create, rename, delete
+        // a second dump carries only what was written since the first
+        let first = c.dump("").unwrap();
+        assert!(first.nodes.iter().filter(|n| n.page).all(|n| n.body.is_some()) && !first.since.is_empty(), "a first dump has every body");
+        p.body.push_str("once more\n");
+        c.save(&p, rev).unwrap();
+        let next = c.dump(&first.since).unwrap();
+        let bodies: Vec<&str> = next.nodes.iter().filter(|n| n.body.is_some()).map(|n| n.path.as_str()).collect();
+        assert_eq!(bodies, ["rune-probe"], "only the page written since comes with its body");
         let has = |c: &Conn, n: &str| c.tree().unwrap().iter().any(|x| x.page && x.path == n);
         let _ = c.delete("rune-made");
         let _ = c.delete("rune-moved/here");

@@ -9,7 +9,7 @@ mod md;
 
 use std::collections::HashMap;
 
-use api::{Conn, Node, Page};
+use api::{Conn, Dump, Node, Page};
 use rune::{AppSpec, Block, Chrome, Cx, El, Key, KeyEvent, Latest, Mark, ScrollSpec, Span, TextEdit, Tx, Waker, col, el, row, text};
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
@@ -55,6 +55,8 @@ struct App {
     edit: TextEdit,
     /// Editing as rich text, not as Markdown source.
     rich: bool,
+    /// The line spacing of the page the rich editor was opened on (md::Seps).
+    seps: md::Seps,
     /// Pages already read this session, so a second visit draws at once.
     cache: HashMap<String, Page>,
     note: String,
@@ -63,7 +65,10 @@ struct App {
     /// The quick switcher: its query while open, and the row the arrows are on.
     jump: Option<TextEdit>,
     jump_at: usize,
-    tree_req: Latest<Result<Vec<Node>, String>>,
+    tree_req: Latest<Result<Dump, String>>,
+    /// The last dump's token, and when the next one is due (app clock).
+    since: String,
+    next_sync: f64,
     page_req: Latest<Result<Page, String>>,
     save_req: Latest<Result<Page, String>>,
 }
@@ -76,7 +81,7 @@ const SAMPLE: &[(&str, &str)] = &[
 ];
 
 fn sample_nodes() -> Vec<Node> {
-    SAMPLE.iter().map(|(p, _)| Node { path: (*p).into(), page: true, kind: "md".into(), rev: 1 }).collect()
+    SAMPLE.iter().map(|(p, _)| Node { path: (*p).into(), page: true, kind: "md".into(), rev: 1, body: None }).collect()
 }
 
 fn files_of(nodes: Vec<Node>, keep: &Files) -> Files {
@@ -117,12 +122,15 @@ fn init() -> App {
         editing: false,
         edit: TextEdit::new(""),
         rich: false,
+        seps: md::Seps::default(),
         cache: HashMap::new(),
         note: String::new(),
         names: Vec::new(),
         jump: None,
         jump_at: 0,
         tree_req: Latest::default(),
+        since: String::new(),
+        next_sync: 0.0,
         page_req: Latest::default(),
         save_req: Latest::default(),
         conn,
@@ -230,7 +238,7 @@ fn applied(s: &mut App, op: Op) {
     if s.conn.is_some() {
         load_tree(s);
     } else {
-        let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 1 }).collect();
+        let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 1, body: None }).collect();
         s.files = files_of(nodes, &s.files);
         s.files.expand_all();
         if let Some(p) = &s.open {
@@ -250,7 +258,7 @@ fn setup(s: &mut App, waker: Waker) {
 
 fn load_tree(s: &mut App) {
     if let Some(c) = s.conn.clone() {
-        s.tree_req.request(c, |c| c.tree());
+        s.tree_req.request((c, s.since.clone()), |(c, since)| c.dump(&since));
     }
 }
 
@@ -269,7 +277,8 @@ fn open_page(s: &mut App, name: &str) {
 }
 
 /// A rich field for `d`, kept to what Markdown can write.
-fn rich_edit(d: md::Doc) -> TextEdit {
+fn rich_edit(d: md::Doc, seps: &mut md::Seps) -> TextEdit {
+    *seps = d.seps;
     let mut e = TextEdit::from_parts(d.text, d.marks, d.blocks)
         .with_soft_breaks(d.soft)
         .allow_marks([Mark::Bold, Mark::Italic, Mark::Strike, Mark::Code, Mark::Link(String::new())]);
@@ -280,7 +289,7 @@ fn rich_edit(d: md::Doc) -> TextEdit {
 
 /// The Markdown the editor holds, whichever way it is being edited.
 fn edited(s: &App) -> String {
-    if s.rich { md::emit(&s.edit.text, s.edit.marks(), s.edit.blocks(), s.edit.soft_breaks()) } else { s.edit.text.clone() }
+    if s.rich { md::emit_with(&s.edit.text, s.edit.marks(), s.edit.blocks(), s.edit.soft_breaks(), &s.seps) } else { s.edit.text.clone() }
 }
 
 /// The editor field's key. Focus is asked for by it: the page tree keeps the
@@ -308,7 +317,7 @@ fn start_edit(s: &mut App) {
     // rich only when the page comes back from it unchanged (md::exact)
     match (p.kind == "md").then(|| md::exact(&p.body)).flatten() {
         Some(d) => {
-            s.edit = rich_edit(d);
+            s.edit = rich_edit(d, &mut s.seps);
             s.rich = true;
         }
         None => {
@@ -334,7 +343,7 @@ fn flip_mode(s: &mut App) {
     } else {
         match md::exact(&body) {
             Some(d) => {
-                s.edit = rich_edit(d);
+                s.edit = rich_edit(d, &mut s.seps);
                 s.rich = true;
                 s.note.clear();
             }
@@ -466,12 +475,38 @@ fn landed(s: &mut App, p: Page) {
     s.note = "saved".into();
 }
 
-fn poll(s: &mut App, _: f64, _: &mut Tx) -> bool {
+/// How often the tree is read again, to see what other windows wrote. Each
+/// read after the first carries only the bodies written since (`since`).
+const SYNC_EVERY: f64 = 30.0;
+
+fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
+    if s.conn.is_some() && clock >= s.next_sync {
+        if s.next_sync > 0.0 {
+            load_tree(s);
+        }
+        s.next_sync = clock + SYNC_EVERY;
+        tx.wake_after(std::time::Duration::from_secs_f64(SYNC_EVERY));
+    }
     if let Some(r) = s.tree_req.take() {
         changed = true;
         match r {
-            Ok(nodes) => {
+            Ok(Dump { nodes, since }) => {
+                s.since = since;
+                // bodies the dump carried replace the kept ones, and pages gone from it go
+                let live: std::collections::HashSet<&str> = nodes.iter().filter(|n| n.page).map(|n| n.path.as_str()).collect();
+                s.cache.retain(|name, _| live.contains(name.as_str()));
+                for n in nodes.iter().filter(|n| n.page) {
+                    if let Some(body) = &n.body {
+                        s.cache.insert(n.path.clone(), Page { name: n.path.clone(), body: body.clone(), kind: n.kind.clone(), rev: n.rev });
+                    }
+                }
+                // the open page follows a write made elsewhere, unless it is being edited
+                if !s.editing {
+                    if let Some(fresh) = s.open.as_ref().and_then(|p| s.cache.get(&p.name)).filter(|c| s.open.as_ref().is_some_and(|p| c.rev > p.rev)) {
+                        s.open = Some(fresh.clone());
+                    }
+                }
                 let first = s.files.is_empty();
                 s.names = nodes.iter().filter(|n| n.page).map(|n| n.path.clone()).collect();
                 s.files = files_of(nodes, &s.files);
@@ -549,6 +584,31 @@ fn matches<'a>(names: &'a [String], query: &str) -> Vec<&'a str> {
     hits.into_iter().take(10).map(|h| h.1).collect()
 }
 
+/// The switcher's rows: pages whose name answers the query, then pages
+/// whose text holds it, each with the line it was found on.
+fn found(s: &App, query: &str) -> Vec<(String, Option<String>)> {
+    let mut rows: Vec<(String, Option<String>)> = matches(&s.names, query).into_iter().take(8).map(|n| (n.to_owned(), None)).collect();
+    let q = query.trim().to_lowercase();
+    if q.chars().count() >= 3 {
+        let mut names: Vec<&String> = s.cache.keys().collect();
+        names.sort();
+        for name in names {
+            if rows.len() >= 14 {
+                break;
+            }
+            if rows.iter().any(|r| r.0 == *name) {
+                continue;
+            }
+            if let Some(line) = s.cache[name].body.lines().find(|l| l.to_lowercase().contains(&q)) {
+                let line = line.trim();
+                let cut = line.char_indices().nth(90).map_or(line.len(), |(i, _)| i);
+                rows.push((name.clone(), Some(line[..cut].to_owned())));
+            }
+        }
+    }
+    rows
+}
+
 fn jump_to(s: &mut App, name: &str, tx: &mut Tx) {
     s.jump = None;
     s.files.reveal(name, tx);
@@ -557,20 +617,20 @@ fn jump_to(s: &mut App, name: &str, tx: &mut Tx) {
 
 fn switcher(s: &App, k: &Kit, layer: &mut Vec<El>) {
     let Some(q) = &s.jump else { return };
-    let hits = matches(&s.names, &q.text);
+    let hits = found(s, &q.text);
     let field = TextInput::new(q)
-        .placeholder("Jump to a page")
+        .placeholder("Jump to a page, or search their text")
         .leading_icon(k.glyph.search)
         .on_edit(|s: &mut App| s.jump.as_mut().expect("the switcher is open"))
         .on_change(|s: &mut App, _| s.jump_at = 0)
         .on_key(|s: &mut App, ev: &KeyEvent, tx: &mut Tx| {
             let Some(q) = &s.jump else { return false };
-            let hits = matches(&s.names, &q.text);
+            let hits = found(s, &q.text);
             match ev.key {
                 Key::Down => s.jump_at = (s.jump_at + 1).min(hits.len().saturating_sub(1)),
                 Key::Up => s.jump_at = s.jump_at.saturating_sub(1),
                 Key::Enter => {
-                    if let Some(name) = hits.get(s.jump_at).map(|n| (*n).to_owned()) {
+                    if let Some(name) = hits.get(s.jump_at).map(|n| n.0.clone()) {
                         jump_to(s, &name, tx);
                     }
                 }
@@ -581,9 +641,9 @@ fn switcher(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .build(k)
         .w_full();
     let mut rows = col().key("jump-rows").w_full().gap(2.0);
-    for (i, name) in hits.iter().enumerate() {
-        let (dir, leaf) = name.rsplit_once('/').map_or(("", *name), |(d, l)| (d, l));
-        let pick = (*name).to_owned();
+    for (i, (name, line)) in hits.iter().enumerate() {
+        let (dir, leaf) = name.rsplit_once('/').map_or(("", name.as_str()), |(d, l)| (d, l));
+        let pick = name.clone();
         let mut r = row()
             .key(format!("jump:{name}"))
             .w_full()
@@ -595,6 +655,9 @@ fn switcher(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .on_press_tx(move |s: &mut App, tx| jump_to(s, &pick, tx))
             .child(text(leaf.to_owned()).font(k.ty.ui).color(k.c.text_base))
             .child(text(dir.to_owned()).font(k.ty.small).color(k.c.text_faint));
+        if let Some(line) = line {
+            r = r.child(text(line.clone()).font(k.ty.small).color(k.c.text_muted).truncate().grow(1.0).min_w(0.0));
+        }
         if i == s.jump_at {
             r = r.fill(k.selection());
         }
@@ -776,8 +839,18 @@ fn body(s: &App, k: &Kit) -> El {
     let shown = if p.kind == "md" {
         Markdown::new(p.body.clone()).selectable(true).build(k)
     } else {
-        // other kinds draw as their source until each has a native view
-        text(p.body.clone()).font(k.ty.mono).color(c.text_base).wrap().selectable(true)
+        // other kinds draw as their source, coloured, until each has a native view
+        let lang = match p.kind.as_str() {
+            "geojson" => Some("json"),
+            "html" | "fods" | "svg" => Some("html"),
+            "hoon" | "scad" | "tex" | "gmi" | "text" => None,
+            other => Some(other),
+        };
+        // a spreadsheet's XML can run to megabytes: draw the start of it
+        let cut = (0..=p.body.len().min(200_000)).rev().find(|&i| p.body.is_char_boundary(i)).unwrap_or(0);
+        let shown = &p.body[..cut];
+        let spans = SyntaxTheme::from_kit(k).spans(&syntax::highlight(lang, shown), 0);
+        rune::rich(shown.to_owned(), spans).font(k.ty.mono).color(c.text_base).wrap().selectable(true)
     };
     col()
         .key("reader")
@@ -922,6 +995,18 @@ mod tests {
         assert_eq!(score("Welcome", "WEL"), Some(0));
     }
 
+    #[test]
+    fn the_switcher_also_finds_pages_by_their_text() {
+        let s = sample("welcome");
+        // "mermaid" is in no name, and in the text of one page
+        assert_eq!(found(&s, "mermaid"), [("notes/ideas/maps".to_owned(), Some("```mermaid".to_owned()))]);
+        // a name match comes first and is not listed twice
+        let rows = found(&s, "today");
+        assert_eq!(rows[0], ("notes/today".to_owned(), None));
+        assert_eq!(rows.iter().filter(|r| r.0 == "notes/today").count(), 1);
+        assert!(found(&s, "zq").is_empty(), "two letters search names only");
+    }
+
     /// The sample pages with `name` open, and no ship.
     fn sample(name: &str) -> App {
         let mut s = init();
@@ -977,7 +1062,7 @@ mod tests {
     #[test]
     fn a_page_the_rich_editor_would_rewrite_opens_as_source() {
         let mut s = sample("welcome");
-        let odd = "- loose\n\n- list\n\n\nand gaps\n";
+        let odd = "1. one\n1. numbered by hand\n";
         s.open.as_mut().unwrap().body = odd.into();
         start_edit(&mut s);
         assert!(!s.rich);
