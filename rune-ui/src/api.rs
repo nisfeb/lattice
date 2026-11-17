@@ -431,6 +431,15 @@ pub fn capture_name(date: &str, mut seed: u64, taken: &dyn Fn(&str) -> bool) -> 
     }
 }
 
+/// The names a day's journal page may have: the dashed one the ship's
+/// journal pass writes, then two dotted ones older pages were started at.
+pub fn journal_forms(date: &str) -> Vec<String> {
+    let p: Vec<&str> = date.split('-').collect();
+    let [y, m, d] = p.as_slice() else { return vec![format!("journal/{date}")] };
+    let bare = |n: &str| n.trim_start_matches('0').to_owned();
+    vec![format!("journal/{date}"), format!("journal/{y}.{}.{}", bare(m), bare(d)), format!("journal/{y}.{m}.{d}")]
+}
+
 /// The local date, `YYYY-MM-DD`.
 // ponytail: asks the system's `date`, since std has no time zones. UTC when that fails.
 pub fn today() -> String {
@@ -1268,6 +1277,13 @@ mod tests {
         assert_eq!(clip_note(&long).len(), 280);
         let odd = format!("a{long}");
         assert_eq!(clip_note(&odd).len(), 279, "never half a character");
+    }
+
+    #[test]
+    fn a_days_journal_page_is_looked_for_under_three_names() {
+        assert_eq!(journal_forms("2026-03-07"), ["journal/2026-03-07", "journal/2026.3.7", "journal/2026.03.07"]);
+        assert_eq!(journal_forms("2026-11-17")[1], "journal/2026.11.17");
+        assert_eq!(journal_forms("odd"), ["journal/odd"]);
     }
 
     #[test]

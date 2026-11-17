@@ -810,11 +810,12 @@ fn follow(s: &mut App, url: &str, tx: &mut Tx) {
             s.files.reveal(&name, tx);
             open_page(s, &name);
         }
-        Some(name) => {
-            let mut t = TextEdit::new(name);
-            t.focused = true;
-            s.prompt = Some(Prompt::New(t));
+        // a link to a page not written yet starts it, named, ready to type in
+        Some(name) if api::valid_name(&name) => {
+            start_named(s, name);
+            tx.focus_when_shown(FIELD, false);
         }
+        Some(name) => s.note = format!("{name} is not a name a page can have"),
         None => {
             if let Err(e) = tx.open_url(url) {
                 s.note = format!("could not open {url}: {e:?}");
@@ -1073,10 +1074,8 @@ fn load_links(s: &mut App) {
 fn go(s: &mut App, name: &str) {
     if s.names.iter().any(|n| n == name) {
         open_page(s, name);
-    } else {
-        let mut t = TextEdit::new(name);
-        t.focused = true;
-        s.prompt = Some(Prompt::New(t));
+    } else if api::valid_name(name) {
+        start_named(s, name.to_owned());
     }
 }
 
@@ -1088,7 +1087,12 @@ fn links_view(s: &App, k: &Kit) -> El {
     };
     let line = |name: &str, key: String, ghost: bool| {
         let to = name.to_owned();
-        row().w_full().child(Button::new(if ghost { format!("{name}  (not written)") } else { name.to_owned() }).control_size(ControlSize::Small).variant(if ghost { ButtonVariant::GhostFaint } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| go(s, &to)).build(k).key(key))
+        row().w_full().child(Button::new(if ghost { format!("{name}  (not written)") } else { name.to_owned() }).control_size(ControlSize::Small).variant(if ghost { ButtonVariant::GhostFaint } else { ButtonVariant::Ghost }).on_press_tx(move |s: &mut App, tx| {
+            go(s, &to);
+            if s.editing {
+                tx.focus_when_shown(FIELD, false);
+            }
+        }).build(k).key(key))
     };
     let mut here = col().key("links-here").w_full().gap(2.0).child(text("Links here").font(k.ty.small_medium).color(c.text_muted));
     match s.back.as_ref().filter(|(n, _)| *n == p.name) {
@@ -1418,13 +1422,46 @@ fn capture(s: &mut App) {
     }
     let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::from(d.subsec_nanos()));
     let name = api::capture_name(&api::today(), seed, &|n| s.names.iter().any(|x| x == n));
+    start_named(s, name);
+    s.note = "a new page in the inbox, kept when you save".into();
+}
+
+/// Starts a page that is not written yet under a name it already has,
+/// open in the editor. Its first save makes it.
+fn start_named(s: &mut App, name: String) {
+    if s.editing {
+        return;
+    }
+    if s.memory {
+        flip(s);
+    }
     // nothing is asked of the ship: the page is not there until it is saved
     (s.remote, s.folder, s.old, s.want) = (None, None, None, None);
     (s.shared_open, s.inbox, s.access, s.stale) = (false, false, false, false);
+    s.note = format!("{name} is not written yet. It is kept when you save");
     s.open = Some(Page { name, body: String::new(), kind: "md".into(), rev: 0 });
     s.capture = true;
     start_edit(s);
-    s.note = "a new page in the inbox, kept when you save".into();
+}
+
+/// Today's journal page: the one there is, under any of its names, or a
+/// new one started at the name the ship's journal pass uses.
+fn open_today(s: &mut App) {
+    if s.editing {
+        return;
+    }
+    if s.memory {
+        flip(s);
+    }
+    let forms = api::journal_forms(&api::today());
+    match forms.iter().find(|f| s.names.contains(f)) {
+        Some(name) => {
+            let name = name.clone();
+            s.files.select(&name);
+            open_page(s, &name);
+        }
+        None => start_named(s, forms[0].clone()),
+    }
 }
 
 /// Leaves the editor without saving. A capture never saved is dropped.
@@ -2000,6 +2037,7 @@ fn open_share(s: &mut App) {
 const COMMANDS: &[(&str, &str)] = &[
     ("new", "New page or memory"),
     ("capture", "Capture a page to the inbox"),
+    ("today", "Today's journal page"),
     ("open", "Open a page"),
     ("edit", "Edit"),
     ("rename", "Rename or move"),
@@ -2059,6 +2097,12 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "capture" => {
             capture(s);
             tx.focus_when_shown(FIELD, false);
+        }
+        "today" => {
+            open_today(s);
+            if s.editing {
+                tx.focus_when_shown(FIELD, false);
+            }
         }
         "open" => {
             let mut q = TextEdit::new("");
@@ -3081,7 +3125,12 @@ fn sidebar(s: &App, k: &Kit) -> El {
     let new = row().w_full().gap(4.0).child(Button::new("Capture").variant(ButtonVariant::Ghost).help("A new page in the inbox, with nothing asked").on_press_tx(|s: &mut App, tx| {
         capture(s);
         tx.focus_when_shown(FIELD, false);
-    }).build(k).key("capture")).child(new);
+    }).build(k).key("capture")).child(Button::new("Today").variant(ButtonVariant::Ghost).help("Today's journal page").on_press_tx(|s: &mut App, tx| {
+        open_today(s);
+        if s.editing {
+            tx.focus_when_shown(FIELD, false);
+        }
+    }).build(k).key("today")).child(new);
     let who = s.conn.as_ref().map_or("sample pages".to_owned(), |c| c.ship().to_owned());
     let theme = Button::new(match s.prefs.theme.as_str() {
         "dark" => "Dark",
@@ -3711,8 +3760,9 @@ mod tests {
         assert!(!ghost(&s, &key));
         // a ghost offers to make the page, a real one opens
         go(&mut s, "not/written");
-        assert!(matches!(&s.prompt, Some(Prompt::New(t)) if t.text == "not/written"));
-        s.prompt = None;
+        assert!(s.editing && s.capture && s.prompt.is_none());
+        assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("not/written"));
+        cancel_edit(&mut s);
         go(&mut s, "welcome");
         assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("welcome"));
         // the same button closes the pane
@@ -3824,7 +3874,7 @@ mod tests {
         s.prefs.used.clear();
         let ids = |s: &App, q: &str| commands(s, q).into_iter().map(|c| c.0).collect::<Vec<_>>();
         // nothing run yet: the table's order, without what needs a ship
-        assert_eq!(ids(&s, "")[..3], ["new", "capture", "open"]);
+        assert_eq!(ids(&s, "")[..3], ["new", "capture", "today"]);
         assert!(!ids(&s, "").contains(&"reload"));
         // run two: the last is first, the one before it second, the rest as they were
         s.prefs.used = vec!["rename".into(), "theme".into()];
@@ -3877,6 +3927,32 @@ mod tests {
         // nothing is offered outside the editor
         s.editing = false;
         assert!(link_offers(&s).is_none());
+    }
+
+    #[test]
+    fn today_opens_the_days_journal_page_or_starts_it_named() {
+        let mut s = sample("welcome");
+        let forms = api::journal_forms(&api::today());
+        s.names.retain(|n| !forms.contains(n));
+        // not written: started under the dashed name, and made by its save
+        open_today(&mut s);
+        assert_eq!(s.open.as_ref().map(|p| p.name.clone()), Some(forms[0].clone()));
+        assert!(s.editing && s.capture && !s.names.contains(&forms[0]));
+        s.edit = TextEdit::new("today I\n");
+        s.rich = false;
+        save(&mut s);
+        assert!(s.names.contains(&forms[0]) && !s.editing);
+        // written: opened, not started again
+        open_page(&mut s, "welcome");
+        open_today(&mut s);
+        assert!(!s.editing && !s.capture);
+        assert_eq!(s.cache[&forms[0]].body, "today I\n");
+        // an older page under a dotted name is the one opened
+        s.names.retain(|n| *n != forms[0]);
+        s.names.push(forms[2].clone());
+        s.cache.insert(forms[2].clone(), Page { name: forms[2].clone(), body: "old\n".into(), kind: "md".into(), rev: 1 });
+        open_today(&mut s);
+        assert_eq!(s.open.as_ref().map(|p| p.name.clone()), Some(forms[2].clone()));
     }
 
     #[test]

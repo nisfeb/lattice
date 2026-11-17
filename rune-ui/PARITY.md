@@ -48,7 +48,9 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Recent pages in the switcher: Ctrl+O or Ctrl+K with nothing typed lists the last ten pages opened on this device, newest first, without the one in front. A typed name no page has gets a Create row last, and Shift-Return makes it straight away. Memories are not among the recents
 - [x] Command palette: Ctrl+P lists the commands that can run now, the ones run last first, kept per device. Typing narrows them. It holds the eighteen commands this client has, each of which has a button too. The web client's palette is longer, as its features are
 - [x] Wiki link completion: an unclosed `[[` at the caret offers up to eight pages on a line under the editor, in both editors. Tab completes, the arrows choose, Esc dismisses. A whole date offers that day's journal page first, written or not. The offers sit under the editor, not at the caret
-- [ ] Templates and the journal (daily pages, orrery mirror pages read-only)
+- [x] Today's journal page: a Today button opens the day's page under any of its three names, or starts it at `journal/YYYY-MM-DD`, named and ready to type in. A link to a page not written yet starts that page the same way, in place of the name dialog
+- [ ] New pages from a template (`/template-list`, `/template-new`)
+- [ ] Orrery mirror pages shown read-only
 - [ ] Tabs: more than one page open
 - [ ] Images in pages and uploads (pick, drop, paste)
 - [ ] Find in page
