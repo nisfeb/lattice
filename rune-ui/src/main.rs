@@ -219,6 +219,9 @@ fn applied(s: &mut App, op: Op) {
         let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 1 }).collect();
         s.files = files_of(nodes, &s.files);
         s.files.expand_all();
+        if let Some(p) = &s.open {
+            s.files.select(&p.name);
+        }
     }
 }
 
