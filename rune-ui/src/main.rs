@@ -11,7 +11,7 @@ mod sheet;
 
 use std::collections::HashMap;
 
-use api::{Conn, Dump, Group, Know, Level, Node, Page, Prefs, Rev};
+use api::{Conn, Dump, Group, Know, Level, Node, Page, Prefs, Rev, Shared};
 use rune::{AppSpec, Block, LineCap, Phase, Shape, WheelEvent, canvas, Chrome, Cx, El, Key, KeyEvent, Latest, Mark, ScrollSpec, Span, TextEdit, Tx, Waker, col, el, row, text};
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
@@ -124,6 +124,13 @@ struct App {
     access: bool,
     group_name: TextEdit,
     group_ships: TextEdit,
+    /// What other ships shared with this one, the list on screen in place
+    /// of a page, and the shared page that is open (its notice).
+    shared: Vec<Shared>,
+    shared_req: Latest<Result<Vec<Shared>, String>>,
+    shared_open: bool,
+    remote: Option<Shared>,
+    remote_req: Latest<Result<(Shared, Page), String>>,
     /// The banned ships, and the one being typed to ban.
     bans: Vec<String>,
     bans_req: Latest<Result<Vec<String>, String>>,
@@ -243,6 +250,11 @@ fn init() -> App {
         access: false,
         group_name: TextEdit::new(""),
         group_ships: TextEdit::new(""),
+        shared: Vec::new(),
+        shared_req: Latest::default(),
+        shared_open: false,
+        remote: None,
+        remote_req: Latest::default(),
         bans: Vec::new(),
         bans_req: Latest::default(),
         ban_who: TextEdit::new(""),
@@ -280,6 +292,8 @@ fn browse_sample(s: &mut App) {
         s.files = files_of(sample_nodes(), &Files::default());
         s.files.expand_all();
         s.note = "sample pages, kept only while the window is open".into();
+        // a page another ship shared, to open from the list
+        s.shared = vec![Shared { host: "~sampel-palnet".into(), path: "/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/plans/trip/code".into(), mode: "edit".into(), when: "~2026.11.16..18.5.0".into() }];
         // and two memories, in the other half
         let knows = [("feedback/short-answers", "Keep answers short.\n\n**Why:** long ones are not read.\n"), ("project/lattice/rune", "An experimental native client, drawn with Rune.\n")];
         s.other.1 = knows.iter().map(|(k, _)| (*k).to_owned()).collect();
@@ -369,6 +383,8 @@ fn sign_out(s: &mut App) {
     fresh.groups_req = std::mem::take(&mut s.groups_req);
     fresh.base_req = std::mem::take(&mut s.base_req);
     fresh.bans_req = std::mem::take(&mut s.bans_req);
+    fresh.shared_req = std::mem::take(&mut s.shared_req);
+    fresh.remote_req = std::mem::take(&mut s.remote_req);
     fresh.old_req = std::mem::take(&mut s.old_req);
     fresh.sidebar = s.sidebar.clone();
     *s = fresh;
@@ -483,6 +499,7 @@ fn applied(s: &mut App, op: Op) {
         Op::Grouped(say) => {
             s.note = say;
             load_groups(s);
+            load_shared(s);
             return;
         }
         Op::Ungranted(n, ship) => {
@@ -524,10 +541,13 @@ fn setup(s: &mut App, waker: Waker) {
     s.groups_req.set_waker(waker.clone());
     s.base_req.set_waker(waker.clone());
     s.bans_req.set_waker(waker.clone());
+    s.shared_req.set_waker(waker.clone());
+    s.remote_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
     s.op_req.set_waker(waker);
     load_tree(s);
     load_know(s);
+    load_shared(s);
 }
 
 fn load_tree(s: &mut App) {
@@ -847,6 +867,8 @@ fn restore(s: &mut App) {
 }
 
 fn show_page(s: &mut App, name: &str) {
+    s.remote = None;
+    s.shared_open = false;
     s.access = false;
     s.folder = None;
     s.old = None;
@@ -1047,9 +1069,13 @@ fn save(s: &mut App) {
     let base = p.rev;
     p.body = edited(s);
     let memory = s.memory;
+    let remote = s.remote.clone();
     match s.conn.clone() {
         Some(c) => s.save_req.request((c, p), move |(c, mut p)| {
-            if memory {
+            if let Some(sh) = &remote {
+                // an unconfirmed write keeps the rev it was based on
+                p.rev = c.remote_save(sh, &p.body, base)?.unwrap_or(base);
+            } else if memory {
                 c.know_save(&format!("/{}", p.name), &p.body)?;
             } else {
                 p.rev = c.save(&p, base)?;
@@ -1065,7 +1091,10 @@ fn save(s: &mut App) {
 }
 
 fn landed(s: &mut App, p: Page) {
-    s.cache.insert(p.name.clone(), p.clone());
+    // a page of another ship is not one of this ship's kept texts
+    if s.remote.is_none() {
+        s.cache.insert(p.name.clone(), p.clone());
+    }
     s.open = Some(p);
     s.editing = false;
     s.stale = false;
@@ -1087,6 +1116,21 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
         s.next_sync = clock + SYNC_EVERY;
         tx.wake_after(std::time::Duration::from_secs_f64(SYNC_EVERY));
+    }
+    if let Some(r) = s.shared_req.take() {
+        changed = true;
+        match r {
+            Ok(list) => s.shared = list,
+            Err(e) => s.note = format!("shared with me: {e}"),
+        }
+    }
+    if let Some(r) = s.remote_req.take() {
+        changed = true;
+        match r {
+            Ok((sh, p)) if !s.editing => show_remote(s, sh, p),
+            Ok(_) => {}
+            Err(e) => s.note = format!("could not read it: {e}"),
+        }
     }
     if let Some(r) = s.bans_req.take() {
         changed = true;
@@ -1199,6 +1243,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 s.conn = Some(c);
                 load_tree(s);
                 load_know(s);
+                load_shared(s);
             }
             Err(e) => s.login_err = e,
         }
@@ -1415,6 +1460,98 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .on_close(|s: &mut App| s.prompt = None)
         .child(col().w_full().gap(14.0).child(body).child(buttons))
         .build(k, layer);
+}
+
+fn load_shared(s: &mut App) {
+    if let Some(c) = s.conn.clone() {
+        s.shared_req.request(c, |c| c.shared());
+    }
+}
+
+/// Opens a page another ship shared, read from that ship.
+fn open_remote(s: &mut App, sh: Shared) {
+    if s.editing {
+        return;
+    }
+    match s.conn.clone() {
+        Some(c) => {
+            s.note = format!("reading {} from {}", sh.name(), sh.host);
+            s.remote_req.request((c, sh), |(c, sh)| c.browse(&sh).map(|p| (sh, p)));
+        }
+        // sample pages: a page as its host would answer
+        None => {
+            let p = Page { name: format!("{}/{}", sh.host, sh.name()), body: format!("# {}\n\nA page {} shared with you.\n", sh.name(), sh.host), kind: "md".into(), rev: 3 };
+            show_remote(s, sh, p);
+        }
+    }
+}
+
+/// A shared page arrived: it shows in place of a page of this ship.
+fn show_remote(s: &mut App, sh: Shared, p: Page) {
+    s.access = false;
+    s.shared_open = false;
+    s.folder = None;
+    s.old = None;
+    s.stale = false;
+    s.note.clear();
+    s.remote = Some(sh);
+    s.open = Some(p);
+    sync_map(s);
+    sync_sheet(s);
+}
+
+/// The list of what other ships shared with this one.
+fn shared_view(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let mut list = col().key("shared-list").w_full().gap(6.0);
+    for (i, sh) in s.shared.iter().enumerate() {
+        let (open, forget) = (sh.clone(), sh.clone());
+        let when = Rev { rev: 0, updated: sh.when.clone() }.when();
+        list = list.child(
+            row()
+                .key(format!("shared-{i}"))
+                .w_full()
+                .px(12.0)
+                .py(8.0)
+                .gap(10.0)
+                .center_y()
+                .radius(k.radius.md)
+                .border(1.0, c.border_weak)
+                .child(
+                    col()
+                        .gap(2.0)
+                        .grow(1.0)
+                        .min_w(0.0)
+                        .child(text(sh.name().to_owned()).font(k.ty.ui_medium).color(c.text_base).truncate())
+                        .child(text(format!("{} lets you {} it  {when}", sh.host, if sh.editable() { "edit" } else { "read" })).font(k.ty.small).color(c.text_muted).truncate()),
+                )
+                .child(Button::new("Open").control_size(ControlSize::Small).on_press(move |s: &mut App| open_remote(s, open.clone())).build(k).key(format!("shared-open-{i}")))
+                .child(Button::new("Forget").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| {
+                    let sh = forget.clone();
+                    match s.conn.clone() {
+                        Some(c) => s.op_req.request((c, sh), |(c, sh)| {
+                            c.shared_forget(&sh)?;
+                            Ok(Op::Grouped(format!("forgot {} from {}", sh.name(), sh.host)))
+                        }),
+                        None => s.shared.retain(|x| *x != sh),
+                    }
+                }).build(k).key(format!("shared-forget-{i}"))),
+        );
+    }
+    if s.shared.is_empty() {
+        list = list.child(text("No ship has shared a page with you.").font(k.ty.small).color(c.text_muted));
+    }
+    let head = col()
+        .gap(4.0)
+        .child(text("Shared with me").font(k.ty.body_medium).color(c.text_base))
+        .child(text("Pages other ships said they shared. Opening one reads it from that ship, which shows whether it still lets you.").font(k.ty.small).color(c.text_muted).wrap());
+    col()
+        .key("shared")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(list)))
+        .scroll(ScrollSpec { stick_bottom: false })
 }
 
 fn load_groups(s: &mut App) {
@@ -1811,6 +1948,8 @@ fn sidebar(s: &App, k: &Kit) -> El {
             } else if !s.editing {
                 // a folder shows what it holds, and can be renamed, moved or deleted there
                 s.access = false;
+                s.shared_open = false;
+                s.remote = None;
                 s.folder = Some(id.to_owned());
                 s.open = None;
                 s.old = None;
@@ -1846,6 +1985,13 @@ fn sidebar(s: &App, k: &Kit) -> El {
             .key(key.to_owned())
     };
     let (pages, knows) = if s.memory { (s.other.1.len(), s.names.len()) } else { (s.names.len(), s.other.1.len()) };
+    let with_me = Button::new(format!("Shared with me {}", s.shared.len())).control_size(ControlSize::Small).variant(if s.shared_open { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(|s: &mut App| {
+        if !s.editing {
+            s.shared_open = true;
+            s.access = false;
+            load_shared(s);
+        }
+    }).build(k).key("shared-open");
     let halves = row().key("halves").w_full().gap(4.0).child(half("half-pages", format!("Pages {pages}"), !s.memory)).child(half("half-memory", format!("Memory {knows}"), s.memory));
     let new = Button::new(if s.memory { "New memory" } else { "New page" }).variant(ButtonVariant::Ghost).on_press(ask_new).build(k).key("new");
     let who = s.conn.as_ref().map_or("sample pages".to_owned(), |c| c.ship().to_owned());
@@ -1878,7 +2024,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .child(access)
         .child(theme)
         .child(Button::new(if s.conn.is_some() { "Sign out" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
-    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).child(filter).child(new).child(tree).child(foot);
+    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).child(filter).child(new).child(tree).child(with_me).child(foot);
     if !s.note.is_empty() {
         side = side.child(text(s.note.clone()).key("note").font(k.ty.small).color(k.c.text_muted).wrap());
     }
@@ -2037,6 +2183,9 @@ fn page_body(s: &App, k: &Kit) -> El {
     if s.access && !s.editing {
         return access_view(s, k);
     }
+    if s.shared_open && !s.editing {
+        return shared_view(s, k);
+    }
     if let Some(dir) = s.folder.as_ref().filter(|_| s.open.is_none()) {
         return folder_view(dir, s, k);
     }
@@ -2121,7 +2270,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     if s.conn.is_none() && !s.sample {
         return login_view(s, &k);
     }
-    let title = if s.access { "Access" } else { s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref()).unwrap_or("lattice") };
+    let title = if s.shared_open { "Shared with me" } else if s.access { "Access" } else { s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref()).unwrap_or("lattice") };
     let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending();
     let mut trailing = row().gap(8.0).center_y();
     if busy {
@@ -2139,7 +2288,16 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         trailing = trailing
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.editing = false).build(&k).key("cancel"))
             .child(Button::new("Save").variant(ButtonVariant::Contrast).on_press(save).build(&k).key("save"));
-    } else if s.open.is_some() && !s.access {
+    } else if let Some(sh) = s.remote.as_ref().filter(|_| s.open.is_some() && !s.access && !s.shared_open) {
+        // another ship's page: read, and edited when that ship lets this one
+        trailing = trailing.child(text(format!("from {}", sh.host)).font(k.ty.small).color(k.c.text_muted));
+        if sh.editable() {
+            trailing = trailing.child(Button::new("Edit").variant(ButtonVariant::Ghost).on_press_tx(|s: &mut App, tx| {
+                start_edit(s);
+                tx.focus_when_shown(FIELD, false);
+            }).build(&k).key("edit"));
+        }
+    } else if s.open.is_some() && !s.access && !s.shared_open {
         // a memory has no sharing, history pane or rename here
         if !s.memory {
             let shared = s.open.as_ref().and_then(|p| s.shares.get(&p.name)).is_some_and(|m| m != "private");
@@ -2218,7 +2376,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         save(s);
         return true;
     }
-    if ev.is_command('e') && !s.editing {
+    if ev.is_command('e') && !s.editing && s.remote.as_ref().is_none_or(Shared::editable) {
         start_edit(s);
         tx.focus_when_shown(FIELD, false);
         return true;
@@ -2425,6 +2583,28 @@ mod tests {
         // a page opened from the folder takes over
         open_page(&mut s, "notes/today");
         assert_eq!(share_target(&s), Some(("notes/today".to_owned(), false)));
+    }
+
+    #[test]
+    fn a_shared_page_opens_in_place_of_a_page_and_is_not_kept_as_one() {
+        let mut s = sample("welcome");
+        let kept = s.cache.len();
+        let sh = s.shared[0].clone();
+        s.shared_open = true;
+        open_remote(&mut s, sh.clone());
+        let p = s.open.clone().unwrap();
+        assert_eq!((p.name.as_str(), s.remote.as_ref(), s.shared_open), ("~sampel-palnet/plans/trip", Some(&sh), false));
+        // an edit and a save: the text shows, and it is not among this ship's pages
+        start_edit(&mut s);
+        s.edit = TextEdit::new("# trip\n\nchanged\n");
+        s.rich = false;
+        save(&mut s);
+        assert_eq!(s.open.as_ref().unwrap().body, "# trip\n\nchanged\n");
+        assert_eq!(s.cache.len(), kept);
+        assert!(!s.names.iter().any(|n| n.contains("plans/trip")));
+        // opening a page of this ship leaves the shared one
+        open_page(&mut s, "welcome");
+        assert!(s.remote.is_none());
     }
 
     #[test]

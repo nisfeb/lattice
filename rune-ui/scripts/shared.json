@@ -1,0 +1,8 @@
+{"events": [
+  {"t": 0.4, "type": "tap", "key": "sample"},
+  {"t": 1.0, "type": "tap", "key": "shared-open"},
+  {"t": 2.0, "type": "tap", "key": "shared-open-0"},
+  {"t": 3.0, "type": "tap", "key": "edit"},
+  {"t": 3.6, "type": "type", "text": " and my line"},
+  {"t": 4.4, "type": "key", "name": "s", "cmd": true}
+]}

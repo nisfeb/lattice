@@ -30,7 +30,8 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Change a group's ships after it is made, from the Access screen. The screen and the request were run on a fake ship. That the ship's list then changes falls under the blocked line above
 - [x] Bans: list, ban a ship or every comet, unban (`/banlist`, `/ban`, `/unban`), on the Access screen
 - [x] Folder sharing: a folder's own setting (private, over Urbit, on the web) from the folder view, taken by every page in it (`/page-share-dir`), with its address, and a ship let into the whole folder (`/share-file` on a folder)
-- [ ] Shared with me: pages other ships shared, and opening them (`/shared-with-me`, `/browse-file`, `/remote-save`)
+- [x] Shared with me: a list of the pages other ships shared, opening one in place of a page, editing and saving it back when the ship lets this one, and forgetting a notice (`/shared-with-me`, `/browse-file`, `/remote-save`, `/shared-with-me-del`). The screens run on a sample notice. Against a fake ship the list is empty, and reading or saving to a ship that is not there is an error and never a page
+- [!] Shared with me, read and saved between two real ships: blocked on a second running ship. Every fake ship here is the same ~zod
 - [ ] Display names for pages and folders (`dname`)
 - [ ] Sensitive flag: show it, set it (`/page-sensitive`)
 - [ ] Comments on a page (`ui-src/lattice/` comments code, `/comments`)

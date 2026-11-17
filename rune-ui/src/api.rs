@@ -218,6 +218,51 @@ struct Granted {
     notified: bool,
 }
 
+/// A page another ship shared with this one: a notice it sent, not proof.
+/// Opening it is what shows the grant still holds.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Shared {
+    pub host: String,
+    /// The page's whole path on the host.
+    pub path: String,
+    /// `read` or `edit`.
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub when: String,
+}
+
+impl Shared {
+    /// The page's name on its host: the path after `/page/`, without the
+    /// `/code` a page's text sits under. The whole path when it has no such part.
+    pub fn name(&self) -> &str {
+        let rel = self.path.split_once("/page/").map_or(self.path.as_str(), |(_, r)| r);
+        rel.strip_suffix("/code").unwrap_or(rel)
+    }
+
+    pub fn editable(&self) -> bool {
+        self.mode == "edit"
+    }
+}
+
+#[derive(Deserialize)]
+struct Browsed {
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    builder: Option<String>,
+    #[serde(default)]
+    rev: u64,
+}
+
+#[derive(Deserialize)]
+struct RemoteSaved {
+    #[serde(default)]
+    outcome: String,
+    #[serde(default)]
+    rev: u64,
+}
+
 /// One stored revision of a page.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Rev {
@@ -517,6 +562,34 @@ impl Conn {
         self.call_in(120, "POST", &format!("share-group-del?name={}", enc(name)), Some("")).map(drop)
     }
 
+    /// The pages other ships said they shared with this one.
+    pub fn shared(&self) -> Result<Vec<Shared>, String> {
+        serde_json::from_str(&self.call("GET", "shared-with-me", None)?).map_err(|e| e.to_string())
+    }
+
+    /// Drops a notice from the list. It changes nothing on the host.
+    pub fn shared_forget(&self, sh: &Shared) -> Result<(), String> {
+        self.call("POST", &format!("shared-with-me-del?host={}&path={}", enc(&sh.host), enc(&sh.path)), Some("")).map(drop)
+    }
+
+    /// Reads a shared page from its host, through this ship. The page's
+    /// name is `~host/name`, and its kind is the host's, or text when the
+    /// host's file is not a lattice page.
+    pub fn browse(&self, sh: &Shared) -> Result<Page, String> {
+        // the ship waits on the host, and asks it once more where its lattice lives when the first try fails
+        let raw = self.call_in(90, "GET", &format!("browse-file?ship={}&path={}", enc(&sh.host), enc(&sh.path)), None)?;
+        let b: Browsed = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+        Ok(Page { name: format!("{}/{}", sh.host, sh.name()), body: b.body, kind: b.builder.unwrap_or_else(|| "text".into()), rev: b.rev })
+    }
+
+    /// Writes a shared page back to its host over `base`. Answers the new
+    /// rev, or `None` when the host took the write but did not confirm it.
+    pub fn remote_save(&self, sh: &Shared, body: &str, base: u64) -> Result<Option<u64>, String> {
+        let q = format!("remote-save?ship={}&path={}&base={base}", enc(&sh.host), enc(&sh.path));
+        let r: RemoteSaved = serde_json::from_str(&self.call_in(120, "POST", &q, Some(body))?).map_err(|e| e.to_string())?;
+        Ok((r.outcome == "landed").then_some(r.rev))
+    }
+
     /// The ships that are banned, in the ship's order.
     pub fn bans(&self) -> Result<Vec<String>, String> {
         serde_json::from_str(&self.call("GET", "banlist", None)?).map_err(|e| e.to_string())
@@ -654,6 +727,21 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_notice_names_its_page_and_the_answers_parse() {
+        let list: Vec<Shared> = serde_json::from_str(r#"[{"host":"~nec","path":"/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/notes/plan/code","mode":"edit","when":"~2026.11.17..9.0.0"},{"host":"~bud","path":"/apps/other/thing","mode":"read","when":""}]"#).unwrap();
+        assert_eq!((list[0].name(), list[0].editable()), ("notes/plan", true));
+        assert_eq!((list[1].name(), list[1].editable()), ("/apps/other/thing", false), "a path that is not a lattice page is shown whole");
+        let b: Browsed = serde_json::from_str(r#"{"body":"hi","mark":"page","builder":"md","editable":true,"rev":7}"#).unwrap();
+        assert_eq!((b.body.as_str(), b.builder.as_deref(), b.rev), ("hi", Some("md"), 7));
+        let plain: Browsed = serde_json::from_str(r#"{"body":"x","mark":"txt","builder":null,"editable":true,"rev":1}"#).unwrap();
+        assert_eq!(plain.builder, None);
+        let ok: RemoteSaved = serde_json::from_str(r#"{"ok":true,"outcome":"landed","rev":8,"prev-rev":7}"#).unwrap();
+        assert_eq!((ok.outcome.as_str(), ok.rev), ("landed", 8));
+        let unsure: RemoteSaved = serde_json::from_str(r#"{"ok":true,"outcome":"unverified","error":"~nec did not acknowledge"}"#).unwrap();
+        assert_eq!((unsure.outcome.as_str(), unsure.rev), ("unverified", 0));
+    }
+
+    #[test]
     fn a_ship_date_reads_as_a_date() {
         let r = |u: &str| Rev { rev: 1, updated: u.into() }.when();
         assert_eq!(r("~2026.11.7..9.5.11..b165"), "2026-11-07 09:05");
@@ -749,6 +837,11 @@ mod tests {
         c.share_dir(&fdir, "private").unwrap();
         assert_eq!((node(&c, &fdir).dshare, node(&c, &format!("{fdir}/inside")).share), (String::new(), String::new()), "private clears both");
         assert!(c.share_dir("no-such-folder-here", "shared").unwrap_err().starts_with("404"));
+        // nothing is shared with a ship alone, and a ship that is not there is not read
+        assert!(c.shared().unwrap().is_empty());
+        let far = Shared { host: "~nec".into(), path: format!("{}/page/x/code", c.base().unwrap()), mode: "edit".into(), when: String::new() };
+        assert!(c.browse(&far).unwrap_err().starts_with("504"), "an unreachable host is a 504, not a page");
+        assert!(c.remote_save(&far, "text", 0).is_err(), "and a save to it is an error, not a success");
         // a banned ship is listed, cannot be granted anything, and is let back by an unban
         let _ = c.unban("~wes");
         c.ban("~wes").unwrap();
