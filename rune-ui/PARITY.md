@@ -65,7 +65,8 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Images in a Markdown page. One from another site is not fetched until the page is let to load outside content, with a banner that says why, and the yes is kept for that page. Until then it shows as its alt text. PNG, JPEG, GIF, WebP, BMP and SVG, 8 MB and twenty images a page at most
 - [x] An image on the ship itself, by a path: fetched with the session, from the ship only, with no question asked. A path from the root is used as it is and any other is taken from `/apps/lattice/`, where the web client's page resolves it. Run on a fake ship with the two images it serves, an SVG and a PNG
 - [x] Find in a Markdown page being read: Ctrl+F opens a bar, every match is marked and the current one ringed, Return and Shift-Return go round them and bring each into view. Any case, with or without accents, in the text as read and not in the Markdown's own marks. The web client leaves this to the browser
-- [ ] Find while editing, and in pages of other kinds (source, sheets)
+- [x] Find while editing, in either editor and for a page of any kind: the same bar, each match washed and the current one stronger and selected in the text. It finds in the text as typed, so a link's address counts. There is no replace
+- [ ] Find in a page of another kind while it is only read (source, a sheet, a map's names)
 - [ ] Print or export a page (the desktop app's pandoc bridge)
 
 ## Page kinds

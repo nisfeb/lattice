@@ -1250,8 +1250,25 @@ fn find_in(src: &str, query: &str) -> Vec<Vec<std::ops::Range<usize>>> {
     rune_kit::markdown::find(src, query.trim(), rune_kit::Case::Folded(rune_kit::search::Fold::default()))
 }
 
+/// Where find's query is in the text being edited, as it is typed there.
+fn edit_matches(s: &App) -> Vec<std::ops::Range<usize>> {
+    match s.find.as_ref().filter(|_| s.editing) {
+        Some(q) => rune_kit::search::Fold::default().find(&s.edit.text, q.text.trim()),
+        None => Vec::new(),
+    }
+}
+
+/// The editor's marks for what find matches: a wash behind each, and a
+/// stronger one behind the current. Paint only, so nothing moves.
+fn find_spans(s: &App, k: &Kit) -> Vec<Span> {
+    edit_matches(s).into_iter().enumerate().map(|(i, r)| Span::new(r.start, r.end).bg(k.c.text_accent.alpha(if i == s.find_at { 0.55 } else { 0.22 }), 1.0)).collect()
+}
+
 /// How many matches find has in the open page.
 fn find_count(s: &App) -> usize {
+    if s.editing {
+        return edit_matches(s).len();
+    }
     match (&s.find, s.open.as_ref().filter(|p| p.kind == "md")) {
         (Some(q), Some(p)) => find_in(&md::wikilinks(&p.body, &|n| ghost(s, n)), &q.text).len(),
         _ => 0,
@@ -1260,10 +1277,11 @@ fn find_count(s: &App) -> usize {
 
 /// Opens find for the page being read. Only a Markdown page has it.
 fn open_find(s: &mut App) {
-    if s.editing || !s.open.as_ref().is_some_and(|p| p.kind == "md") {
-        s.note = "find works in a Markdown page while it is read".into();
+    if !s.editing && !s.open.as_ref().is_some_and(|p| p.kind == "md") {
+        s.note = "find works in a Markdown page, and in any page while it is edited".into();
         return;
     }
+    s.find_at = 0;
     let mut q = s.find.take().unwrap_or_else(|| TextEdit::new(""));
     q.focused = true;
     s.find = Some(q);
@@ -1276,6 +1294,13 @@ fn find_step(s: &mut App, by: isize, tx: &mut Tx) {
         return;
     }
     s.find_at = (s.find_at.min(n - 1) as isize + by).rem_euclid(n as isize) as usize;
+    if s.editing {
+        // the match is selected, which is what the field keeps in view
+        if let Some(r) = edit_matches(s).get(s.find_at).cloned() {
+            s.edit.set_selection(r.start, r.end);
+        }
+        return;
+    }
     tx.scroll_into_view(Markdown::highlight_key(s.find_at));
 }
 
@@ -1302,6 +1327,10 @@ fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
             }
             Key::Escape => {
                 s.find = None;
+                // back to the text, where the match found is selected
+                if s.editing {
+                    tx.focus_when_shown(FIELD, false);
+                }
                 true
             }
             _ => false,
@@ -2807,7 +2836,7 @@ fn usable(s: &App, id: &str) -> bool {
         "edit" => page && s.remote.as_ref().is_none_or(Shared::editable),
         "delete" => own,
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
-        "find" => page && s.open.as_ref().is_some_and(|p| p.kind == "md"),
+        "find" => page && (s.editing || s.open.as_ref().is_some_and(|p| p.kind == "md")),
         "reload" => s.conn.is_some(),
         "tab-close" => s.tabs.len() > 1,
         "tab-copy" => own && !s.memory,
@@ -4013,7 +4042,7 @@ fn body(s: &App, k: &Kit) -> El {
             },
             k,
         ))
-    } else if let Some(q) = s.find.as_ref().filter(|_| !s.editing && !s.access && !s.shared_open && !s.inbox && s.folder.is_none() && s.open.as_ref().is_some_and(|p| p.kind == "md")) {
+    } else if let Some(q) = s.find.as_ref().filter(|_| !s.access && !s.shared_open && !s.inbox && s.folder.is_none() && (s.editing || s.open.as_ref().is_some_and(|p| p.kind == "md"))) {
         Some(find_bar(q, s, k))
     } else if held_back(s) > 0 && !s.access && !s.shared_open && !s.inbox && s.folder.is_none() {
         let n = held_back(s);
@@ -4115,7 +4144,11 @@ fn page_body(s: &App, k: &Kit) -> El {
         let field = TextArea::new(&s.edit)
             .label("Page")
             .width(None)
-            .decorations(rich_spans(&s.edit, k))
+            .decorations({
+                let mut spans = rich_spans(&s.edit, k);
+                spans.extend(find_spans(s, k));
+                spans
+            })
             .on_edit(|s: &mut App| &mut s.edit)
             .on_key(editor_key)
             .build(k)
@@ -4133,7 +4166,8 @@ fn page_body(s: &App, k: &Kit) -> El {
     }
     if s.editing {
         // the source, coloured as Markdown: colour only, so nothing moves as it is typed
-        let marks = SyntaxTheme::from_kit(k).spans(&syntax::highlight(Some("markdown"), &s.edit.text), 0);
+        let mut marks = SyntaxTheme::from_kit(k).spans(&syntax::highlight(Some("markdown"), &s.edit.text), 0);
+        marks.extend(find_spans(s, k));
         let source = TextArea::new(&s.edit).label("Page source").decorations(marks).on_edit(|s: &mut App| &mut s.edit).on_key(editor_key).build(k).key(FIELD).w_full().h_full().min_h(0.0);
         let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
         if s.preview && p.kind == "md" {
@@ -4310,7 +4344,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         s.sidebar.toggle();
         return true;
     }
-    if ev.is_command('f') && !s.editing {
+    if ev.is_command('f') {
         open_find(s);
         return true;
     }
@@ -4990,15 +5024,27 @@ mod tests {
         assert_eq!(find_count(&s), 0);
         s.find = Some(TextEdit::new("nowhere to be found"));
         assert_eq!(find_count(&s), 0);
-        // not in the editor, and not in a page that is not Markdown
+        // in the editor it finds in the text as typed, and selects the match it stands on
         s.find = None;
         start_edit(&mut s);
+        s.rich = false;
+        s.edit = TextEdit::new(body);
         open_find(&mut s);
-        assert!(s.find.is_none());
+        s.find = Some(TextEdit::new("cafe"));
+        let found = edit_matches(&s);
+        assert_eq!(found.len(), 6, "the address counts here: it is in the text");
+        assert_eq!(&body[found[0].clone()], "Café");
+        assert_eq!(find_count(&s), 6);
+        // not while a page that is not Markdown is only read
         cancel_edit(&mut s);
+        s.find = None;
         open_page(&mut s, "budget");
         open_find(&mut s);
         assert!(s.find.is_none() && s.note.starts_with("find works"));
+        // but it is while that page is edited
+        start_edit(&mut s);
+        open_find(&mut s);
+        assert!(s.find.is_some());
     }
 
     #[test]
