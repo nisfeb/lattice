@@ -1847,6 +1847,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 // the page that was open last run opens again, once
                 if !s.restored && !away {
                     s.restored = true;
+                    // the page held beside last run is held again, if it is still there
+                    if s.names.contains(&s.prefs.split) {
+                        s.split = Some(s.prefs.split.clone());
+                    }
                     let last = s.prefs.last.clone();
                     if s.open.is_none() && !restore_tabs(s) && s.names.contains(&last) {
                         open_page(s, &last);
@@ -2225,6 +2229,18 @@ fn toggle_split(s: &mut App) {
         (None, Some(p)) => Some(p.name.clone()),
         _ => None,
     };
+    keep_split(s);
+}
+
+/// Notes the page held beside in the preferences, to hold again next run.
+fn keep_split(s: &mut App) {
+    let held = s.split.clone().unwrap_or_default();
+    if s.prefs.split != held {
+        s.prefs.split = held;
+        if s.conn.is_some() {
+            s.prefs.save();
+        }
+    }
 }
 
 /// Brings the page held beside to the front, and holds the one that was there.
@@ -2238,6 +2254,7 @@ fn swap_split(s: &mut App) {
         s.files.select(&name);
         open_page(s, &name);
     }
+    keep_split(s);
 }
 
 /// The page held beside: read-only, as the reader shows it. A kind with
@@ -2251,7 +2268,10 @@ fn split_view(name: &str, s: &App, k: &Kit) -> El {
         .center_y()
         .child(text(title).font(k.ty.small_medium).color(c.text_muted).grow(1.0).min_w(0.0).truncate())
         .child(Button::new("Swap").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Bring this page to the front").disabled(s.editing).on_press(swap_split).build(k).key("split-swap"))
-        .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close the split").on_press(|s: &mut App| s.split = None).build(k).key("split-close"));
+        .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close the split").on_press(|s: &mut App| {
+            s.split = None;
+            keep_split(s);
+        }).build(k).key("split-close"));
     let shown = match s.cache.get(name) {
         Some(p) if p.kind == "md" => Markdown::new(md::wikilinks(&p.body, &|n| ghost(s, n))).selectable(true).on_link_tx(follow).build(k),
         Some(p) => text(p.body.clone()).font(k.ty.mono).color(c.text_base).wrap().selectable(true),
@@ -4532,9 +4552,10 @@ mod tests {
         swap_split(&mut s);
         assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("welcome"));
         cancel_edit(&mut s);
+        assert_eq!(s.prefs.split, "budget", "what is held is kept for the next run");
         // the same press lets go of it
         toggle_split(&mut s);
-        assert_eq!(s.split, None);
+        assert_eq!((s.split.clone(), s.prefs.split.as_str()), (None, ""));
         // nothing to hold with no page in front
         s.open = None;
         toggle_split(&mut s);

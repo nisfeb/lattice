@@ -57,7 +57,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Tabs kept across runs: each tab's page and the tab in front are in the preferences and open again, a tab whose page is gone coming back empty. A page opens into a new tab from the switcher (Ctrl-Return, or a middle click on a row) and from the palette
 - [!] A page opened into a new tab from the tree or from a link in a page, by Ctrl or middle click: blocked on Rune. Its kit `Tree` and `Markdown` report a press on a row or link with no modifier and no middle button (`on_select`, `on_link_tx`). `El::on_middle_press` exists but neither component passes it through
 - [x] Split view: Split holds the page in front on the right, read-only, while another is opened or edited on the left. Swap brings it to the front and × closes it. Its links open in front
-- [ ] Split view on par with the web client's: both sides editable, each with tabs of its own, kept across runs. A map or a sheet held beside shows as its source
+- [x] The split kept across runs: the page held beside is in the preferences and is held again next run, if it is still there. Keeping it has a unit test. Holding it again at the start was not run against a ship
 - [ ] Images in pages and uploads (pick, drop, paste)
 - [ ] Find in page
 - [ ] Print or export a page (the desktop app's pandoc bridge)
@@ -73,6 +73,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [ ] OpenSCAD: 3D view, includes, export
 - [ ] Forms and quizzes
 - [ ] Hoon and other code kinds coloured
+- [ ] A map or a sheet held beside in the split shown in its own view, not as its source
 
 ## Memory
 
@@ -122,6 +123,7 @@ Rune's web target draws one canvas through WebGPU (`~/.cache/rune-src/rune/WEB.m
 ## Layout
 
 - [ ] Make the layout like the existing lattice's (the web client's arrangement of tree, tabs, toolbar and panels). The owner asked for this once the features are in, so it comes last.
+- [ ] Split view as the web client arranges it: groups side by side, each with its own tabs and its own editor (`ui-src/lattice/28-splits.js`). It is part of that arrangement, and this client keeps one editor's state for the whole window, so it goes with the layout
 
 ## Checked by a person
 
