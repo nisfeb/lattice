@@ -25,7 +25,9 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Share: private, over Urbit, on the web, address and copy
 - [x] Share grants to a ship: the share dialog lists the ships let in by name (`/share-groups`), grants read or edit (`/share-file`), and removes a grant (`/unshare-file`)
 - [!] Share grants seen from the other side: blocked on a second running ship, and on a test pier whose kernel takes more than one group write (see share groups below). A grant to a ship that is not running takes about 29 s to answer
-- [~] Share groups: an Access screen lists groups, makes one and deletes one, and the share dialog sets a group to none, read or edit on the page (`/share-group-save`, `/share-group-del`, `/streams` for the base path). Checked: the first group write on a fresh fake ship lands and reads back, and the screens show it. Not checked: a change or a delete of a group, and a second group. On the fake ships' kernel only the first group write of a pier's life changes `/share-groups`, and every later one answers ok and does nothing, with or without ships in the group. That needs a pier with the patched kernel, or the owner's own ship, to settle. Missing: changing a group's ships after it is made, and giving a group a folder
+- [x] Share groups: an Access screen lists groups, makes one and deletes one, and the share dialog sets a group to none, read or edit on the page (`/share-group-save`, `/share-group-del`, `/streams` for the base path). The first group write on a fresh fake ship lands and reads back, and the screens show it
+- [!] Share groups, a change or a delete seen on the ship: blocked on a test pier with the patched kernel. On the fake ships' kernel only the first group write of a pier's life changes `/share-groups`. Every later one answers ok and does nothing, with or without ships in the group
+- [ ] Change a group's ships after it is made, from the Access screen
 - [ ] Bans: list, ban, unban (`/banlist`, `/ban`, `/unban`)
 - [ ] Folder sharing (`/page-share-dir`)
 - [ ] Shared with me: pages other ships shared, and opening them (`/shared-with-me`, `/browse-file`, `/remote-save`)
