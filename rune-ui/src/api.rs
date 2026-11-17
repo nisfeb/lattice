@@ -82,6 +82,66 @@ pub struct Group {
     pub make: Vec<String>,
 }
 
+/// What a group may do with one page.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Level {
+    None,
+    Read,
+    Edit,
+}
+
+impl Group {
+    /// The whole path of a page's text under the lattice at `base`.
+    fn road(base: &str, name: &str) -> String {
+        format!("{base}/page/{name}/code")
+    }
+
+    /// What this group may do with the page `name` by the page's own grant.
+    pub fn level(&self, base: &str, name: &str) -> Level {
+        let road = Group::road(base, name);
+        if self.make.contains(&road) {
+            Level::Edit
+        } else if self.peek.contains(&road) {
+            Level::Read
+        } else {
+            Level::None
+        }
+    }
+
+    /// This group with its grant on the page `name` set to `level`. Every
+    /// other path it holds is kept as it is.
+    pub fn with_level(&self, base: &str, name: &str, level: Level) -> Group {
+        let road = Group::road(base, name);
+        let mut g = self.clone();
+        g.peek.retain(|p| *p != road);
+        g.make.retain(|p| *p != road);
+        if level != Level::None {
+            g.peek.push(road.clone());
+        }
+        if level == Level::Edit {
+            g.make.push(road);
+        }
+        g
+    }
+}
+
+/// The ships in a list as typed, between spaces or commas, each with its
+/// sig. `Err` names the first that is not a ship's name.
+pub fn ship_list(typed: &str) -> Result<Vec<String>, String> {
+    typed.split(|c: char| c.is_whitespace() || c == ',').filter(|t| !t.is_empty()).map(|t| ship_name(t).ok_or_else(|| format!("{t} is not a ship's name"))).collect()
+}
+
+/// A group's name as the ship takes it: lowercase letters, digits and
+/// hyphens, starting with a letter.
+pub fn group_name_ok(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_lowercase()) && name.len() <= 40 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+#[derive(Deserialize)]
+struct Streams {
+    base: String,
+}
+
 /// One ship's access to a page: `edit` or `read`, and the folder it comes
 /// through when the grant is a folder's and not the page's own.
 #[derive(Clone, Debug, PartialEq)]
@@ -410,6 +470,23 @@ impl Conn {
         serde_json::from_str(&self.call("GET", "share-groups", None)?).map_err(|e| e.to_string())
     }
 
+    /// Where this lattice lives on the ship: the start of every grant path.
+    pub fn base(&self) -> Result<String, String> {
+        let s: Streams = serde_json::from_str(&self.call("GET", "streams", None)?).map_err(|e| e.to_string())?;
+        Ok(s.base)
+    }
+
+    /// Writes a group: its ships and the paths it may read and write
+    /// replace what it had. The ship keeps anything else the group holds.
+    pub fn group_save(&self, g: &Group) -> Result<(), String> {
+        let body = serde_json::json!({ "ships": g.ships, "peek": g.peek, "make": g.make }).to_string();
+        self.call_in(120, "POST", &format!("share-group-save?name={}", enc(&g.name)), Some(&body)).map(drop)
+    }
+
+    pub fn group_delete(&self, name: &str) -> Result<(), String> {
+        self.call_in(120, "POST", &format!("share-group-del?name={}", enc(name)), Some("")).map(drop)
+    }
+
     /// Lets `ship` read (`edit` false) or edit a page or folder. Answers
     /// whether the ship was told: the grant holds either way.
     pub fn grant(&self, name: &str, ship: &str, edit: bool) -> Result<bool, String> {
@@ -511,6 +588,22 @@ mod tests {
     }
 
     #[test]
+    fn a_groups_grant_on_a_page_is_set_without_touching_its_others() {
+        let base = "/apps/x/lattice";
+        let g = Group { name: "team".into(), ships: vec!["~nec".into()], peek: vec![format!("{base}/page/other/code"), format!("{base}/page/dir")], make: vec![] };
+        assert_eq!(g.level(base, "a/b"), Level::None);
+        let read = g.with_level(base, "a/b", Level::Read);
+        assert_eq!((read.level(base, "a/b"), read.peek.len(), read.make.len()), (Level::Read, 3, 0));
+        let edit = read.with_level(base, "a/b", Level::Edit);
+        assert_eq!((edit.level(base, "a/b"), edit.peek.len(), edit.make.len()), (Level::Edit, 3, 1), "an edit grant reads too, and is not listed twice");
+        assert_eq!(edit.with_level(base, "a/b", Level::None), g, "taking it back leaves the group as it was");
+        assert_eq!(ship_list(" nec, ~bud\n~wes ").unwrap(), ["~nec", "~bud", "~wes"]);
+        assert_eq!(ship_list("nec Bad").unwrap_err(), "Bad is not a ship's name");
+        assert!(ship_list("").unwrap().is_empty());
+        assert!(group_name_ok("team-2") && !group_name_ok("Team") && !group_name_ok("2team") && !group_name_ok("") && !group_name_ok("a b"));
+    }
+
+    #[test]
     fn a_ship_date_reads_as_a_date() {
         let r = |u: &str| Rev { rev: 1, updated: u.into() }.when();
         assert_eq!(r("~2026.11.7..9.5.11..b165"), "2026-11-07 09:05");
@@ -571,6 +664,29 @@ mod tests {
         c.share("rune-probe", "private").unwrap();
         assert_eq!(mode(&c), "private");
         assert!(c.address("a/b", "shared").unwrap().starts_with("urb://~") && c.address("a", "private").is_none());
+        // a group is saved, changed and deleted, each call accepted. On the
+        // fake ships' kernel only the first group write of a pier's life shows
+        // in the access list (PARITY.md), so the list is checked when the
+        // group is there and the rest is the calls answering.
+        let base = c.base().unwrap();
+        assert!(base.starts_with("/apps/") && base.ends_with("lattice_app"), "the lattice's place on the ship: {base}");
+        let gname = format!("rune{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let g = Group { name: gname.clone(), ships: vec!["~nec".into(), "~bud".into()], ..Group::default() }.with_level(&base, "rune-probe", Level::Read);
+        c.group_save(&g).unwrap();
+        match c.groups().unwrap().into_iter().find(|x| x.name == gname) {
+            Some(got) => {
+                // the ship lists ships in its own order
+                let mut ships = got.ships.clone();
+                ships.sort();
+                assert_eq!((ships, got.level(&base, "rune-probe")), (vec!["~bud".to_owned(), "~nec".to_owned()], Level::Read));
+                assert!(readers(&c.groups().unwrap(), "rune-probe").iter().any(|r| r.ship == "~bud" && !r.edit), "its ships read the page");
+                eprintln!("the group landed and read back");
+            }
+            None => eprintln!("the group did not show in the access list: not this pier's first group write"),
+        }
+        c.group_save(&g.with_level(&base, "rune-probe", Level::Edit)).unwrap();
+        c.group_delete(&gname).unwrap();
+        assert!(c.group_save(&Group { name: "Bad Name".into(), ..Group::default() }).unwrap_err().starts_with("400"));
         // a grant to a ship is accepted, and a grant to oneself is refused. Whether
         // the access list then names the ship is not asserted: on a fake ship
         // only the first grant ever showed there (see PARITY.md), so it is printed.

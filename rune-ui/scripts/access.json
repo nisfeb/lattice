@@ -1,0 +1,5 @@
+{"events": [
+  {"t": 2.5, "type": "tap", "key": "access-open"},
+  {"t": 5.0, "type": "tap", "key": "rune-probe"},
+  {"t": 6.0, "type": "tap", "key": "share"}
+]}

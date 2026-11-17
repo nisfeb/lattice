@@ -11,7 +11,7 @@ mod sheet;
 
 use std::collections::HashMap;
 
-use api::{Conn, Dump, Group, Know, Node, Page, Prefs, Rev};
+use api::{Conn, Dump, Group, Know, Level, Node, Page, Prefs, Rev};
 use rune::{AppSpec, Block, LineCap, Phase, Shape, WheelEvent, canvas, Chrome, Cx, El, Key, KeyEvent, Latest, Mark, ScrollSpec, Span, TextEdit, Tx, Waker, col, el, row, text};
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
@@ -64,6 +64,8 @@ enum Op {
     /// or put out again.
     Granted(String, String, bool, bool),
     Ungranted(String, String),
+    /// A group was written or deleted: what to say about it.
+    Grouped(String),
 }
 
 struct App {
@@ -112,6 +114,13 @@ struct App {
     groups: Vec<Group>,
     groups_req: Latest<Result<Vec<Group>, String>>,
     grant_to: TextEdit,
+    /// Where the lattice lives on the ship (the start of grant paths), the
+    /// access screen in place of a page, and the new group being typed.
+    base: String,
+    base_req: Latest<Result<String, String>>,
+    access: bool,
+    group_name: TextEdit,
+    group_ships: TextEdit,
     /// Showing memories, not pages. The tree, the names and the kept texts
     /// are those of what is showing, and `other` holds the same three for
     /// what is not (+flip swaps them).
@@ -219,6 +228,11 @@ fn init() -> App {
         groups: Vec::new(),
         groups_req: Latest::default(),
         grant_to: TextEdit::new(""),
+        base: String::new(),
+        base_req: Latest::default(),
+        access: false,
+        group_name: TextEdit::new(""),
+        group_ships: TextEdit::new(""),
         memory: false,
         other: Default::default(),
         know_meta: HashMap::new(),
@@ -339,6 +353,7 @@ fn sign_out(s: &mut App) {
     fresh.hist_req = std::mem::take(&mut s.hist_req);
     fresh.know_req = std::mem::take(&mut s.know_req);
     fresh.groups_req = std::mem::take(&mut s.groups_req);
+    fresh.base_req = std::mem::take(&mut s.base_req);
     fresh.old_req = std::mem::take(&mut s.old_req);
     fresh.sidebar = s.sidebar.clone();
     *s = fresh;
@@ -373,7 +388,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, b) => c.rename(a, b)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Granted(..) | Op::Ungranted(..) => {}
+                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) => {}
             }
             Ok(op)
         }),
@@ -435,6 +450,11 @@ fn applied(s: &mut App, op: Op) {
             load_groups(s);
             return;
         }
+        Op::Grouped(say) => {
+            s.note = say;
+            load_groups(s);
+            return;
+        }
         Op::Ungranted(n, ship) => {
             s.note = format!("{ship} no longer reads {n}");
             load_groups(s);
@@ -472,6 +492,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.hist_req.set_waker(waker.clone());
     s.know_req.set_waker(waker.clone());
     s.groups_req.set_waker(waker.clone());
+    s.base_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
     s.op_req.set_waker(waker);
     load_tree(s);
@@ -795,6 +816,7 @@ fn restore(s: &mut App) {
 }
 
 fn show_page(s: &mut App, name: &str) {
+    s.access = false;
     s.folder = None;
     s.old = None;
     s.stale = false;
@@ -1034,6 +1056,13 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
         s.next_sync = clock + SYNC_EVERY;
         tx.wake_after(std::time::Duration::from_secs_f64(SYNC_EVERY));
+    }
+    if let Some(r) = s.base_req.take() {
+        changed = true;
+        match r {
+            Ok(b) => s.base = b,
+            Err(e) => s.note = format!("access: {e}"),
+        }
     }
     if let Some(r) = s.groups_req.take() {
         changed = true;
@@ -1351,8 +1380,102 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
 
 fn load_groups(s: &mut App) {
     if let Some(c) = s.conn.clone() {
-        s.groups_req.request(c, |c| c.groups());
+        s.groups_req.request(c.clone(), |c| c.groups());
+        if s.base.is_empty() {
+            s.base_req.request(c, |c| c.base());
+        }
     }
+}
+
+/// Writes `g` to the ship, then says `say`.
+fn save_group(s: &mut App, g: Group, say: String) {
+    let Some(c) = s.conn.clone() else { return };
+    s.op_req.request((c, g), move |(c, g)| {
+        c.group_save(&g)?;
+        Ok(Op::Grouped(say))
+    });
+}
+
+/// Makes the group typed on the access screen.
+fn new_group(s: &mut App) {
+    let name = s.group_name.text.trim().to_owned();
+    if !api::group_name_ok(&name) {
+        s.note = "a group's name is lowercase letters, digits and hyphens".into();
+        return;
+    }
+    if s.groups.iter().any(|g| g.name == name) {
+        s.note = format!("there is a group named {name} already");
+        return;
+    }
+    match api::ship_list(&s.group_ships.text) {
+        Ok(ships) => {
+            s.group_name = TextEdit::new("");
+            s.group_ships = TextEdit::new("");
+            let say = format!("made the group {name}");
+            save_group(s, Group { name, ships, ..Group::default() }, say);
+        }
+        Err(e) => s.note = e,
+    }
+}
+
+/// The access screen: every group, its ships and how many pages it reads,
+/// and a form for a new one. A group's pages are set from a page's share dialog.
+fn access_view(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let mut list = col().key("groups").w_full().gap(6.0);
+    for g in s.groups.iter().filter(|g| g.name != "public") {
+        let name = g.name.clone();
+        let ships = if g.ships.is_empty() { "no ships".to_owned() } else { g.ships.join(" ") };
+        list = list.child(
+            row()
+                .key(format!("group-{}", g.name))
+                .w_full()
+                .px(12.0)
+                .py(8.0)
+                .gap(10.0)
+                .center_y()
+                .radius(k.radius.md)
+                .border(1.0, c.border_weak)
+                .child(
+                    col()
+                        .gap(2.0)
+                        .grow(1.0)
+                        .min_w(0.0)
+                        .child(text(g.name.clone()).font(k.ty.ui_medium).color(c.text_base))
+                        .child(text(ships).font(k.ty.mono).color(c.text_muted).truncate())
+                        .child(text(format!("reads {} paths, edits {}", g.peek.len(), g.make.len())).font(k.ty.small).color(c.text_faint)),
+                )
+                .child(Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| {
+                    let Some(c) = s.conn.clone() else { return };
+                    s.op_req.request((c, name.clone()), |(c, n)| {
+                        c.group_delete(&n)?;
+                        Ok(Op::Grouped(format!("deleted the group {n}")))
+                    });
+                }).build(k).key(format!("group-del-{}", g.name))),
+        );
+    }
+    if s.groups.iter().all(|g| g.name == "public") {
+        list = list.child(text(if s.conn.is_some() { "No groups yet." } else { "Sample pages have no groups." }).font(k.ty.small).color(c.text_muted));
+    }
+    let form = col()
+        .key("group-form")
+        .w_full()
+        .gap(8.0)
+        .child(text("New group").font(k.ty.ui_medium).color(c.text_base))
+        .child(TextInput::new(&s.group_name).label("Group name").placeholder("team").on_edit(|s: &mut App| &mut s.group_name).build(k).w_full().key("group-name"))
+        .child(TextInput::new(&s.group_ships).label("Ships").placeholder("~sampel-palnet ~zod").on_edit(|s: &mut App| &mut s.group_ships).on_submit(|s: &mut App, _| new_group(s)).build(k).w_full().key("group-ships"))
+        .child(row().child(Button::new("Make group").variant(ButtonVariant::Contrast).on_press(new_group).build(k).key("group-make")));
+    let head = col()
+        .gap(4.0)
+        .child(text("Access").font(k.ty.body_medium).color(c.text_base))
+        .child(text("Groups of ships. Give a group a page from the page's Share dialog.").font(k.ty.small).color(c.text_muted).wrap());
+    col()
+        .key("access")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(list).child(Divider::horizontal().build(k)).child(form)))
+        .scroll(ScrollSpec { stick_bottom: false })
 }
 
 /// Lets the ship typed in the share dialog read or edit the open page.
@@ -1458,6 +1581,37 @@ fn share_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .child(Button::new("Can edit").control_size(ControlSize::Small).on_press(|s: &mut App| grant(s, true)).build(k).key("grant-edit")),
     );
     body = body.child(Divider::horizontal().build(k)).child(ships);
+    // each group, and what it may do with this page
+    let groups: Vec<&Group> = s.groups.iter().filter(|g| g.name != "public").collect();
+    if !groups.is_empty() && !s.base.is_empty() {
+        let mut rows = col().key("share-groups").w_full().gap(4.0).child(text("Groups").font(k.ty.small_medium).color(c.text_muted));
+        for g in groups {
+            let now = g.level(&s.base, &p.name);
+            let mut line = row().key(format!("grp-{}", g.name)).w_full().gap(6.0).center_y().child(text(g.name.clone()).font(k.ty.ui).color(c.text_base).grow(1.0).min_w(0.0).truncate());
+            for (label, level) in [("None", Level::None), ("Read", Level::Read), ("Edit", Level::Edit)] {
+                let (g, page) = (g.clone(), p.name.clone());
+                let key = format!("grp-{}-{}", g.name, label.to_lowercase());
+                line = line.child(
+                    Button::new(label)
+                        .control_size(ControlSize::Small)
+                        .variant(if now == level { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                        .on_press(move |s: &mut App| {
+                            let say = match level {
+                                Level::None => format!("{} no longer reads {page}", g.name),
+                                Level::Read => format!("{} can now read {page}", g.name),
+                                Level::Edit => format!("{} can now edit {page}", g.name),
+                            };
+                            let next = g.with_level(&s.base, &page, level);
+                            save_group(s, next, say);
+                        })
+                        .build(k)
+                        .key(key),
+                );
+            }
+            rows = rows.child(line);
+        }
+        body = body.child(rows);
+    }
     if let Some(addr) = s.conn.as_ref().and_then(|c| c.address(&p.name, now)) {
         let copy = addr.clone();
         body = body.child(
@@ -1515,6 +1669,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
                 open_page(s, id);
             } else if !s.editing {
                 // a folder shows what it holds, and can be renamed, moved or deleted there
+                s.access = false;
                 s.folder = Some(id.to_owned());
                 s.open = None;
                 s.old = None;
@@ -1568,11 +1723,18 @@ fn sidebar(s: &App, k: &Kit) -> El {
     })
     .build(k)
     .key("theme");
+    let access = Button::new("Access").variant(ButtonVariant::GhostMuted).help("Groups of ships and what they read").on_press(|s: &mut App| {
+        if !s.editing {
+            s.access = true;
+            load_groups(s);
+        }
+    }).build(k).key("access-open");
     let foot = row()
         .w_full()
         .center_y()
         .justify_between()
         .child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).grow(1.0).min_w(0.0).truncate())
+        .child(access)
         .child(theme)
         .child(Button::new(if s.conn.is_some() { "Sign out" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
     let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).child(filter).child(new).child(tree).child(foot);
@@ -1724,6 +1886,9 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
 }
 
 fn page_body(s: &App, k: &Kit) -> El {
+    if s.access && !s.editing {
+        return access_view(s, k);
+    }
     if let Some(dir) = s.folder.as_ref().filter(|_| s.open.is_none()) {
         return folder_view(dir, s, k);
     }
@@ -1808,7 +1973,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     if s.conn.is_none() && !s.sample {
         return login_view(s, &k);
     }
-    let title = s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref()).unwrap_or("lattice");
+    let title = if s.access { "Access" } else { s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref()).unwrap_or("lattice") };
     let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending();
     let mut trailing = row().gap(8.0).center_y();
     if busy {
@@ -1826,7 +1991,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         trailing = trailing
             .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.editing = false).build(&k).key("cancel"))
             .child(Button::new("Save").variant(ButtonVariant::Contrast).on_press(save).build(&k).key("save"));
-    } else if s.open.is_some() {
+    } else if s.open.is_some() && !s.access {
         // a memory has no sharing, history pane or rename here
         if !s.memory {
             let shared = s.open.as_ref().and_then(|p| s.shares.get(&p.name)).is_some_and(|m| m != "private");
