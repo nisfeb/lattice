@@ -837,6 +837,7 @@ fn open_page(s: &mut App, name: &str) {
         s.trail_at = s.trail.len() - 1;
     }
     show_page(s, name);
+    keep_tabs(s);
 }
 
 /// Steps back (`-1`) or forward (`1`) through the pages visited.
@@ -1844,7 +1845,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 if !s.restored && !away {
                     s.restored = true;
                     let last = s.prefs.last.clone();
-                    if s.open.is_none() && s.names.contains(&last) {
+                    if s.open.is_none() && !restore_tabs(s) && s.names.contains(&last) {
                         open_page(s, &last);
                     }
                 }
@@ -2030,6 +2031,14 @@ fn switcher(s: &App, k: &Kit, layer: &mut Vec<El>) {
             match ev.key {
                 Key::Down => s.jump_at = (s.jump_at + 1).min(last),
                 Key::Up => s.jump_at = s.jump_at.saturating_sub(1),
+                // Ctrl-Return opens the page chosen in a new tab
+                Key::Enter if ev.mods.cmd => {
+                    if let Some(name) = hits.get(s.jump_at).map(|n| n.0.clone()) {
+                        s.jump = None;
+                        s.files.reveal(&name, tx);
+                        open_in_tab(s, &name);
+                    }
+                }
                 // Shift-Return makes the typed name whatever was found
                 Key::Enter if make && (ev.mods.shift || s.jump_at >= hits.len()) => jump_create(s),
                 Key::Enter => {
@@ -2056,6 +2065,14 @@ fn switcher(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .center_y()
             .radius(k.radius.sm)
             .on_press_tx(move |s: &mut App, tx| jump_to(s, &pick, tx))
+            .on_middle_press({
+                let pick = name.clone();
+                move |s: &mut App, tx| {
+                    s.jump = None;
+                    s.files.reveal(&pick, tx);
+                    open_in_tab(s, &pick);
+                }
+            })
             .child(text(leaf.to_owned()).font(k.ty.ui).color(k.c.text_base))
             .child(text(dir.to_owned()).font(k.ty.small).color(k.c.text_faint));
         if let Some(line) = line {
@@ -2198,6 +2215,46 @@ fn template_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
+/// Notes the tabs' pages in the preferences, to open again next run.
+fn keep_tabs(s: &mut App) {
+    let front = s.open.as_ref().filter(|_| s.remote.is_none() && !s.capture && !s.memory).map(|p| p.name.clone());
+    let pages: Vec<String> = (0..s.tabs.len()).map(|i| if i == s.tab { front.clone() } else { s.tabs[i].page().map(str::to_owned) }.unwrap_or_default()).collect();
+    if s.prefs.tabs != pages || s.prefs.tab != s.tab {
+        (s.prefs.tabs, s.prefs.tab) = (pages, s.tab);
+        if s.conn.is_some() {
+            s.prefs.save();
+        }
+    }
+}
+
+/// Opens the tabs kept from the last run, each on its page if the page
+/// is still there. `false` when there was one tab or none, which the
+/// page opened last covers.
+fn restore_tabs(s: &mut App) -> bool {
+    if s.prefs.tabs.len() < 2 {
+        return false;
+    }
+    s.tabs = s.prefs.tabs.iter().map(|n| if s.names.contains(n) { Tab { trail: vec![n.clone()], at: 0 } } else { Tab::default() }).collect();
+    s.tab = s.prefs.tab.min(s.tabs.len() - 1);
+    let Tab { trail, at } = std::mem::take(&mut s.tabs[s.tab]);
+    (s.trail, s.trail_at) = (trail, at);
+    if let Some(name) = s.trail.first().cloned() {
+        s.files.expand_to(&name);
+        s.files.select(&name);
+        show_page(s, &name);
+    }
+    true
+}
+
+/// Opens a page in a new tab, in front.
+fn open_in_tab(s: &mut App, name: &str) {
+    if s.editing {
+        return;
+    }
+    new_tab(s);
+    open_page(s, name);
+}
+
 /// Puts the tab in front away, as it stands.
 fn park_tab(s: &mut App) {
     // a tab on a folder or a screen has no page of its own to come back to
@@ -2230,6 +2287,7 @@ fn switch_tab(s: &mut App, to: usize) {
             s.trail_at = 0;
         }
     }
+    keep_tabs(s);
 }
 
 /// A new, empty tab, in front.
@@ -2255,6 +2313,7 @@ fn close_tab(s: &mut App, i: usize) {
     if s.tab > i {
         s.tab -= 1;
     }
+    keep_tabs(s);
 }
 
 /// What a tab is called: its page's last name, or that it is empty.
@@ -2330,6 +2389,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("today", "Today's journal page"),
     ("open", "Open a page"),
     ("tab", "New tab"),
+    ("tab-copy", "Open this page in a new tab"),
     ("tab-close", "Close this tab"),
     ("edit", "Edit"),
     ("rename", "Rename or move"),
@@ -2358,6 +2418,7 @@ fn usable(s: &App, id: &str) -> bool {
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
         "reload" => s.conn.is_some(),
         "tab-close" => s.tabs.len() > 1,
+        "tab-copy" => own && !s.memory,
         _ => true,
     }
 }
@@ -2409,6 +2470,11 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
             tx.focus_when_shown(FIELD, false);
         }
         "tab" => new_tab(s),
+        "tab-copy" => {
+            if let Some(name) = s.open.as_ref().map(|p| p.name.clone()) {
+                open_in_tab(s, &name);
+            }
+        }
         "tab-close" => close_tab(s, s.tab),
         "rename" => ask_rename(s),
         "delete" => ask_delete(s),
@@ -4361,6 +4427,36 @@ mod tests {
         open_page(&mut s, "budget");
         close_tab(&mut s, 0);
         assert_eq!((s.tabs.len(), s.tab, open(&s).as_deref()), (2, 1, Some("budget")));
+    }
+
+    #[test]
+    fn tabs_are_kept_and_open_again_on_their_pages() {
+        let mut s = sample("welcome");
+        open_in_tab(&mut s, "budget");
+        new_tab(&mut s);
+        open_in_tab(&mut s, "notes/today");
+        switch_tab(&mut s, 1);
+        assert_eq!((s.prefs.tabs.clone(), s.prefs.tab), (vec!["welcome".to_owned(), "budget".into(), String::new(), "notes/today".into()], 1));
+        // the next run: the same tabs, the same one in front, and a page since deleted leaves its tab empty
+        let mut next = sample("welcome");
+        next.open = None;
+        next.trail.clear();
+        next.prefs.tabs = s.prefs.tabs.clone();
+        next.prefs.tab = 1;
+        next.names.retain(|n| n != "notes/today");
+        assert!(restore_tabs(&mut next));
+        assert_eq!((next.tabs.len(), next.tab, next.open.as_ref().map(|p| p.name.as_str())), (4, 1, Some("budget")));
+        assert_eq!((tab_label(&next, 0), tab_label(&next, 2), tab_label(&next, 3)), ("welcome".to_owned(), "New tab".to_owned(), "New tab".to_owned()));
+        switch_tab(&mut next, 0);
+        assert_eq!(next.open.as_ref().map(|p| p.name.as_str()), Some("welcome"));
+        // one tab is not worth restoring: the page opened last covers it
+        let mut one = sample("welcome");
+        one.prefs.tabs = vec!["budget".into()];
+        assert!(!restore_tabs(&mut one));
+        // a front tab kept past the end comes back as the last
+        one.prefs.tabs = vec!["budget".into(), "welcome".into()];
+        one.prefs.tab = 9;
+        assert!(restore_tabs(&mut one) && one.tab == 1);
     }
 
     #[test]

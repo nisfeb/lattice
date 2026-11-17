@@ -54,7 +54,8 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [!] A map orrery keeps, seen read-only on a ship: blocked on a test ship with orrery installed
 - [!] Send the open page to orrery, from the share dialog: blocked on a ship with orrery. The web client mounts orrery's own widget (`LatticeOrrery`, served by orrery's desk), which has no native form to copy and nothing here to test it against
 - [x] Tabs: more than one page open, each with its own way back and forward. A + in the toolbar or Ctrl+T opens one, Ctrl+W or its × closes it, and the strip shows once there are two. A tab holds a page of this ship. Tabs are not kept across runs, and there is no opening a link straight into a new tab
-- [ ] Tabs kept across runs, and a page opened into a new tab from the tree or a link (Ctrl or middle click)
+- [x] Tabs kept across runs: each tab's page and the tab in front are in the preferences and open again, a tab whose page is gone coming back empty. A page opens into a new tab from the switcher (Ctrl-Return, or a middle click on a row) and from the palette
+- [!] A page opened into a new tab from the tree or from a link in a page, by Ctrl or middle click: blocked on Rune. Its kit `Tree` and `Markdown` report a press on a row or link with no modifier and no middle button (`on_select`, `on_link_tx`). `El::on_middle_press` exists but neither component passes it through
 - [ ] Split view: two documents side by side (`ui-src/lattice/28-splits.js`)
 - [ ] Images in pages and uploads (pick, drop, paste)
 - [ ] Find in page
