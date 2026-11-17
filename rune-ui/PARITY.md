@@ -52,8 +52,10 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] New from a template: a dialog lists the ship's templates and takes a name, makes the page or folder of pages (`/template-list`, `/template-new`), and opens the page, the folder's index, or the folder. It is reached from the New page dialog and the palette
 - [x] A map orrery keeps opens read-only: `orrery/map` is not edited while the ship says orrery keeps it, or has not said yet (`kept` on `/page-source?render=1`), and says to draw on `orrery/map-notes`. On a fake ship with no orrery the ship says the map is not kept. The screen was not run there
 - [!] A map orrery keeps, seen read-only on a ship: blocked on a test ship with orrery installed
-- [ ] Send the open page to orrery, from the share dialog (`ui-src/lattice/74-orrery.js`). Needs orrery on the ship
-- [ ] Tabs: more than one page open
+- [!] Send the open page to orrery, from the share dialog: blocked on a ship with orrery. The web client mounts orrery's own widget (`LatticeOrrery`, served by orrery's desk), which has no native form to copy and nothing here to test it against
+- [x] Tabs: more than one page open, each with its own way back and forward. A + in the toolbar or Ctrl+T opens one, Ctrl+W or its × closes it, and the strip shows once there are two. A tab holds a page of this ship. Tabs are not kept across runs, and there is no opening a link straight into a new tab
+- [ ] Tabs kept across runs, and a page opened into a new tab from the tree or a link (Ctrl or middle click)
+- [ ] Split view: two documents side by side (`ui-src/lattice/28-splits.js`)
 - [ ] Images in pages and uploads (pick, drop, paste)
 - [ ] Find in page
 - [ ] Print or export a page (the desktop app's pandoc bridge)

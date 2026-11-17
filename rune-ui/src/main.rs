@@ -56,6 +56,20 @@ enum Prompt {
     Ask(Shared, TextEdit),
 }
 
+/// A tab that is not in front: the pages it went through, and which of
+/// them it shows.
+#[derive(Clone, Default)]
+struct Tab {
+    trail: Vec<String>,
+    at: usize,
+}
+
+impl Tab {
+    fn page(&self) -> Option<&str> {
+        self.trail.get(self.at).map(String::as_str)
+    }
+}
+
 /// A change to the tree that landed on the ship.
 enum Op {
     Created(String),
@@ -218,6 +232,11 @@ struct App {
     /// The pages visited, oldest first, and where in them the window is.
     trail: Vec<String>,
     trail_at: usize,
+    /// The tabs. Each keeps the pages it went through and where it is
+    /// among them. The one in front lives in `trail` and `open` while it
+    /// is there, and its slot here is filled when another comes forward.
+    tabs: Vec<Tab>,
+    tab: usize,
     /// Pages already read this session, so a second visit draws at once.
     cache: HashMap<String, Page>,
     note: String,
@@ -387,6 +406,8 @@ fn init() -> App {
         map: None,
         trail: Vec::new(),
         trail_at: 0,
+        tabs: vec![Tab::default()],
+        tab: 0,
         cache: HashMap::new(),
         note: String::new(),
         names: Vec::new(),
@@ -2177,6 +2198,90 @@ fn template_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
+/// Puts the tab in front away, as it stands.
+fn park_tab(s: &mut App) {
+    // a tab on a folder or a screen has no page of its own to come back to
+    let on_page = s.open.is_some() && s.remote.is_none() && !s.capture;
+    s.tabs[s.tab] = if on_page { Tab { trail: std::mem::take(&mut s.trail), at: s.trail_at } } else { Tab::default() };
+}
+
+/// Brings a tab forward. A page it held that is gone leaves it empty.
+fn switch_tab(s: &mut App, to: usize) {
+    if s.editing || to == s.tab || to >= s.tabs.len() {
+        return;
+    }
+    if s.memory {
+        flip(s);
+    }
+    park_tab(s);
+    s.tab = to;
+    let Tab { trail, at } = std::mem::take(&mut s.tabs[to]);
+    (s.trail, s.trail_at) = (trail, at);
+    (s.open, s.folder, s.remote, s.old, s.want) = (None, None, None, None, None);
+    (s.access, s.shared_open, s.inbox) = (false, false, false);
+    match s.trail.get(s.trail_at).cloned() {
+        Some(name) if s.names.contains(&name) => {
+            s.files.expand_to(&name);
+            s.files.select(&name);
+            show_page(s, &name);
+        }
+        _ => {
+            s.trail.clear();
+            s.trail_at = 0;
+        }
+    }
+}
+
+/// A new, empty tab, in front.
+fn new_tab(s: &mut App) {
+    if s.editing {
+        return;
+    }
+    s.tabs.push(Tab::default());
+    let to = s.tabs.len() - 1;
+    switch_tab(s, to);
+}
+
+/// Closes a tab. The last one stays.
+fn close_tab(s: &mut App, i: usize) {
+    if s.editing || s.tabs.len() < 2 || i >= s.tabs.len() {
+        return;
+    }
+    if i == s.tab {
+        // its neighbour comes forward first
+        switch_tab(s, if i + 1 < s.tabs.len() { i + 1 } else { i - 1 });
+    }
+    s.tabs.remove(i);
+    if s.tab > i {
+        s.tab -= 1;
+    }
+}
+
+/// What a tab is called: its page's last name, or that it is empty.
+fn tab_label(s: &App, i: usize) -> String {
+    let name = if i == s.tab { s.open.as_ref().filter(|_| s.remote.is_none()).map(|p| p.name.as_str()) } else { s.tabs[i].page() };
+    name.map_or("New tab".to_owned(), |n| s.dnames.get(n).cloned().unwrap_or_else(|| n.rsplit('/').next().unwrap_or(n).to_owned()))
+}
+
+/// The tabs, shown once there is more than one.
+fn tab_strip(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let mut strip = row().key("tabs").w_full().gap(2.0).px(8.0).pt(4.0).center_y();
+    for i in 0..s.tabs.len() {
+        let front = i == s.tab;
+        strip = strip.child(
+            row()
+                .key(format!("tab-{i}"))
+                .center_y()
+                .radius(k.radius.sm)
+                .fill(if front { c.layer_01 } else { rune::Color::TRANSPARENT })
+                .child(Button::new(tab_label(s, i)).control_size(ControlSize::Small).variant(if front { ButtonVariant::Ghost } else { ButtonVariant::GhostMuted }).on_press(move |s: &mut App| switch_tab(s, i)).build(k).key(format!("tab-open-{i}")).max_w(180.0))
+                .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close this tab").on_press(move |s: &mut App| close_tab(s, i)).build(k).key(format!("tab-close-{i}"))),
+        );
+    }
+    strip
+}
+
 fn go_shared(s: &mut App) {
     if !s.editing {
         s.shared_open = true;
@@ -2224,6 +2329,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("capture", "Capture a page to the inbox"),
     ("today", "Today's journal page"),
     ("open", "Open a page"),
+    ("tab", "New tab"),
+    ("tab-close", "Close this tab"),
     ("edit", "Edit"),
     ("rename", "Rename or move"),
     ("delete", "Delete"),
@@ -2250,6 +2357,7 @@ fn usable(s: &App, id: &str) -> bool {
         "delete" => own,
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
         "reload" => s.conn.is_some(),
+        "tab-close" => s.tabs.len() > 1,
         _ => true,
     }
 }
@@ -2300,6 +2408,8 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
             start_edit(s);
             tx.focus_when_shown(FIELD, false);
         }
+        "tab" => new_tab(s),
+        "tab-close" => close_tab(s, s.tab),
         "rename" => ask_rename(s),
         "delete" => ask_delete(s),
         "share" => open_share(s),
@@ -3672,9 +3782,11 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         .center_y()
         .child(nav("back", "‹", -1, s.trail_at > 0 && !s.editing))
         .child(nav("forward", "›", 1, s.trail_at + 1 < s.trail.len() && !s.editing))
+        .child(Button::new("+").variant(ButtonVariant::GhostMuted).help("New tab").disabled(s.editing).on_press(new_tab).build(&k).key("tab-new"))
         // the title sits beside them, not centred: a centred one ran under the buttons in a narrow window
         .child(text(title.to_owned()).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate().pl(6.0));
-    let shell = SplitView::new(body(s, &k))
+    let main = if s.tabs.len() > 1 && !s.memory { col().w_full().h_full().min_h(0.0).child(tab_strip(s, &k)).child(col().w_full().grow(1.0).min_h(0.0).child(body(s, &k))) } else { body(s, &k) };
+    let shell = SplitView::new(main)
         .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k))
         .inspector(&s.inspector, |s: &mut App| &mut s.inspector, if s.pane_links { links_view(s, &k) } else if s.pane_comments { comments_view(s, &k) } else { history_view(s, &k) })
         .toolbar(Toolbar::new().leading(leading).trailing(trailing))
@@ -3700,6 +3812,14 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if shell::is_sidebar_toggle(ev) {
         s.sidebar.toggle();
+        return true;
+    }
+    if ev.is_command('t') && !s.editing {
+        new_tab(s);
+        return true;
+    }
+    if ev.is_command('w') && !s.editing && s.tabs.len() > 1 {
+        close_tab(s, s.tab);
         return true;
     }
     if ev.is_command('p') && !s.editing {
@@ -4200,6 +4320,47 @@ mod tests {
         open_page(&mut s, "welcome");
         start_edit(&mut s);
         assert!(s.editing);
+    }
+
+    #[test]
+    fn tabs_each_keep_their_page_and_their_way_back() {
+        let mut s = sample("welcome");
+        open_page(&mut s, "budget");
+        let open = |s: &App| s.open.as_ref().map(|p| p.name.clone());
+        // a new tab is empty and in front, and the first keeps its page
+        new_tab(&mut s);
+        assert_eq!((s.tabs.len(), s.tab, open(&s)), (2, 1, None));
+        assert_eq!((tab_label(&s, 0), tab_label(&s, 1)), ("budget".to_owned(), "New tab".to_owned()));
+        open_page(&mut s, "notes/today");
+        // back in the first: its page, and its own way back
+        switch_tab(&mut s, 0);
+        assert_eq!(open(&s).as_deref(), Some("budget"));
+        step(&mut s, -1);
+        assert_eq!(open(&s).as_deref(), Some("welcome"));
+        switch_tab(&mut s, 1);
+        assert_eq!((open(&s).as_deref(), s.trail.len()), (Some("notes/today"), 1));
+        // no switching, opening or closing while editing
+        start_edit(&mut s);
+        switch_tab(&mut s, 0);
+        new_tab(&mut s);
+        close_tab(&mut s, 1);
+        assert_eq!((s.tab, s.tabs.len()), (1, 2));
+        cancel_edit(&mut s);
+        // a page that is gone leaves its tab empty
+        s.names.retain(|n| n != "welcome");
+        switch_tab(&mut s, 0);
+        assert_eq!((open(&s), tab_label(&s, 0)), (None, "New tab".to_owned()));
+        // closing the one in front brings its neighbour forward, and the last one stays
+        close_tab(&mut s, 0);
+        assert_eq!((s.tabs.len(), s.tab, open(&s).as_deref()), (1, 0, Some("notes/today")));
+        close_tab(&mut s, 0);
+        assert_eq!(s.tabs.len(), 1);
+        // closing one behind keeps the one in front where it is
+        new_tab(&mut s);
+        new_tab(&mut s);
+        open_page(&mut s, "budget");
+        close_tab(&mut s, 0);
+        assert_eq!((s.tabs.len(), s.tab, open(&s).as_deref()), (2, 1, Some("budget")));
     }
 
     #[test]
