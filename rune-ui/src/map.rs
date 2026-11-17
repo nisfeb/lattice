@@ -1,0 +1,249 @@
+//! A map page (GeoJSON) drawn natively: points, lines and areas on a plain
+//! ground with a graticule, panned by a drag and zoomed by the wheel. No
+//! tiles: the shapes are the page's own, in Web Mercator.
+
+use serde_json::Value;
+
+/// A position in the unit square of Web Mercator: x east, y south, 0 to 1.
+pub type P = [f64; 2];
+
+#[derive(Debug, PartialEq)]
+pub enum Geom {
+    Point(P),
+    Line(Vec<P>),
+    /// The outer ring. Holes are not drawn.
+    Area(Vec<P>),
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Feature {
+    pub name: String,
+    pub note: String,
+    /// The properties, in the page's order, as text.
+    pub props: Vec<(String, String)>,
+    pub geoms: Vec<Geom>,
+}
+
+/// Longitude and latitude to the unit square. The latitude is held inside
+/// what Mercator can show.
+pub fn mercator(lon: f64, lat: f64) -> P {
+    let lat = lat.clamp(-85.0511, 85.0511).to_radians();
+    [lon / 360.0 + 0.5, 0.5 - (std::f64::consts::FRAC_PI_4 + lat / 2.0).tan().ln() / std::f64::consts::TAU]
+}
+
+fn pos(v: &Value) -> Option<P> {
+    let a = v.as_array()?;
+    Some(mercator(a.first()?.as_f64()?, a.get(1)?.as_f64()?))
+}
+
+fn ring(v: &Value) -> Vec<P> {
+    v.as_array().map_or(Vec::new(), |a| a.iter().filter_map(pos).collect())
+}
+
+fn geoms(g: &Value, out: &mut Vec<Geom>) {
+    let c = &g["coordinates"];
+    let each = |f: &mut dyn FnMut(&Value)| c.as_array().into_iter().flatten().for_each(f);
+    match g["type"].as_str() {
+        Some("Point") => out.extend(pos(c).map(Geom::Point)),
+        Some("MultiPoint") => each(&mut |p| out.extend(pos(p).map(Geom::Point))),
+        Some("LineString") => out.push(Geom::Line(ring(c))),
+        Some("MultiLineString") => each(&mut |l| out.push(Geom::Line(ring(l)))),
+        Some("Polygon") => out.push(Geom::Area(ring(&c[0]))),
+        Some("MultiPolygon") => each(&mut |p| out.push(Geom::Area(ring(&p[0])))),
+        Some("GeometryCollection") => g["geometries"].as_array().into_iter().flatten().for_each(|x| geoms(x, out)),
+        _ => {}
+    }
+    // a shape with too few positions to draw is no shape
+    out.retain(|g| match g {
+        Geom::Point(_) => true,
+        Geom::Line(l) => l.len() >= 2,
+        Geom::Area(a) => a.len() >= 3,
+    });
+}
+
+/// The features of a GeoJSON page that have something to draw. `None` when
+/// the text is not a FeatureCollection.
+pub fn parse(body: &str) -> Option<Vec<Feature>> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    let feats = v["features"].as_array()?;
+    let text = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    Some(
+        feats
+            .iter()
+            .filter_map(|f| {
+                let mut g = Vec::new();
+                geoms(&f["geometry"], &mut g);
+                let p = &f["properties"];
+                let props = p.as_object().map_or(Vec::new(), |o| o.iter().map(|(k, v)| (k.clone(), text(v))).filter(|(_, v)| !v.is_empty()).collect());
+                (!g.is_empty()).then(|| Feature { name: text(&p["name"]), note: text(&p["note"]), props, geoms: g })
+            })
+            .collect(),
+    )
+}
+
+/// Where the map is looking: the world position at the view's centre, and
+/// how many points one world unit (the whole Earth's width) spans.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Camera {
+    pub at: P,
+    pub scale: f64,
+}
+
+/// One world unit is never smaller than a small window or larger than a
+/// street: about zoom 0 to zoom 20 on a tiled map.
+const SCALE: (f64, f64) = (200.0, 256.0 * 1_048_576.0);
+
+impl Camera {
+    /// The camera that shows every feature inside a `w` by `h` view with a
+    /// margin, or the whole world when there is nothing to show.
+    pub fn fit(feats: &[Feature], w: f32, h: f32) -> Camera {
+        let pts = feats.iter().flat_map(|f| &f.geoms).flat_map(|g| match g {
+            Geom::Point(p) => std::slice::from_ref(p),
+            Geom::Line(l) | Geom::Area(l) => l.as_slice(),
+        });
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for p in pts {
+            for i in 0..2 {
+                lo[i] = lo[i].min(p[i]);
+                hi[i] = hi[i].max(p[i]);
+            }
+        }
+        if lo[0] > hi[0] {
+            return Camera { at: [0.5, 0.5], scale: (w as f64).max(SCALE.0) };
+        }
+        let (w, h) = ((w as f64 - 80.0).max(40.0), (h as f64 - 80.0).max(40.0));
+        // one point alone gets a town's worth of ground around it
+        let span = [(hi[0] - lo[0]).max(1e-5), (hi[1] - lo[1]).max(1e-5)];
+        let scale = (w / span[0]).min(h / span[1]).clamp(SCALE.0, SCALE.1);
+        Camera { at: [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0], scale }
+    }
+
+    /// A world position in the view's own points.
+    pub fn project(&self, p: P, w: f32, h: f32) -> [f32; 2] {
+        [((p[0] - self.at[0]) * self.scale) as f32 + w / 2.0, ((p[1] - self.at[1]) * self.scale) as f32 + h / 2.0]
+    }
+
+    /// The world position under a point of the view.
+    pub fn unproject(&self, x: f32, y: f32, w: f32, h: f32) -> P {
+        [self.at[0] + (x - w / 2.0) as f64 / self.scale, self.at[1] + (y - h / 2.0) as f64 / self.scale]
+    }
+
+    /// Zooms by `factor` keeping the world position under (`x`, `y`) there.
+    pub fn zoom_at(&mut self, factor: f64, x: f32, y: f32, w: f32, h: f32) {
+        let under = self.unproject(x, y, w, h);
+        self.scale = (self.scale * factor).clamp(SCALE.0, SCALE.1);
+        self.at = [under[0] - (x - w / 2.0) as f64 / self.scale, under[1] - (y - h / 2.0) as f64 / self.scale];
+    }
+
+    /// The camera `from` moved by a drag of (`dx`, `dy`) points.
+    pub fn dragged(from: Camera, dx: f32, dy: f32) -> Camera {
+        Camera { at: [from.at[0] - dx as f64 / from.scale, (from.at[1] - dy as f64 / from.scale).clamp(0.0, 1.0)], scale: from.scale }
+    }
+
+    /// The step in degrees between graticule lines, so that a few cross the view.
+    pub fn grid_step(&self, w: f32) -> f64 {
+        let across = w as f64 / self.scale * 360.0;
+        [90.0, 45.0, 30.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.2, 0.1, 0.05, 0.02, 0.01, 0.005, 0.002, 0.001]
+            .into_iter()
+            .find(|s| across / s >= 3.0)
+            .unwrap_or(0.001)
+    }
+}
+
+/// A line thinned to at most `max` positions, its ends kept.
+pub fn thin(line: &[P], max: usize) -> Vec<P> {
+    if line.len() <= max.max(2) {
+        return line.to_vec();
+    }
+    let step = line.len().div_ceil(max.max(2) - 1);
+    let mut out: Vec<P> = line.iter().step_by(step).copied().collect();
+    if out.last() != line.last() {
+        out.extend(line.last());
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAGE: &str = r#"{"type":"FeatureCollection","lattice":{"title":"T"},"features":[
+      {"type":"Feature","geometry":{"type":"Point","coordinates":[-73.98,40.75]},"properties":{"name":"Home","note":"where","kind":"place","n":3}},
+      {"type":"Feature","geometry":{"type":"LineString","coordinates":[[0,0],[10,10]]},"properties":{}},
+      {"type":"Feature","geometry":{"type":"MultiPolygon","coordinates":[[[[0,0],[1,0],[1,1],[0,0]]],[[[5,5],[6,5]]]]},"properties":null},
+      {"type":"Feature","geometry":{"type":"GeometryCollection","geometries":[{"type":"MultiPoint","coordinates":[[1,2],[3,4]]}]},"properties":{"name":"two"}},
+      {"type":"Feature","geometry":null,"properties":{"name":"nowhere"}},
+      {"type":"Feature","geometry":{"type":"Point","coordinates":["x"]},"properties":{}}
+    ]}"#;
+
+    #[test]
+    fn a_page_gives_its_drawable_features() {
+        let f = parse(PAGE).unwrap();
+        assert_eq!(f.len(), 4, "a feature with no shape is left out");
+        assert_eq!((f[0].name.as_str(), f[0].note.as_str()), ("Home", "where"));
+        assert!(f[0].props.contains(&("n".to_owned(), "3".to_owned())));
+        assert!(matches!(f[1].geoms[..], [Geom::Line(ref l)] if l.len() == 2));
+        assert!(matches!(f[2].geoms[..], [Geom::Area(ref a)] if a.len() == 4), "a ring too short to fill is dropped");
+        assert_eq!(f[3].geoms.len(), 2);
+        assert_eq!(parse("not json"), None);
+        assert_eq!(parse(r#"{"type":"Feature"}"#), None);
+    }
+
+    #[test]
+    fn mercator_puts_the_world_in_the_unit_square() {
+        let near = |a: P, b: P| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9;
+        assert!(near(mercator(0.0, 0.0), [0.5, 0.5]));
+        assert!(near(mercator(-180.0, 0.0), [0.0, 0.5]));
+        assert!(mercator(0.0, 60.0)[1] < 0.5, "north is up");
+        assert!(mercator(0.0, 90.0)[1] >= 0.0 && mercator(0.0, -90.0)[1] <= 1.0, "the poles are held in");
+    }
+
+    #[test]
+    fn the_camera_fits_zooms_about_a_point_and_drags() {
+        let f = parse(PAGE).unwrap();
+        let (w, h) = (800.0, 600.0);
+        let cam = Camera::fit(&f, w, h);
+        for g in f.iter().flat_map(|f| &f.geoms) {
+            let pts: &[P] = match g {
+                Geom::Point(p) => std::slice::from_ref(p),
+                Geom::Line(l) | Geom::Area(l) => l,
+            };
+            for p in pts {
+                let [x, y] = cam.project(*p, w, h);
+                assert!((39.0..=761.0).contains(&x) && (39.0..=561.0).contains(&y), "inside the margin: {x},{y}");
+            }
+        }
+        // the world position under the pointer stays under it through a zoom
+        let mut z = cam;
+        let before = z.unproject(200.0, 150.0, w, h);
+        z.zoom_at(2.0, 200.0, 150.0, w, h);
+        let after = z.unproject(200.0, 150.0, w, h);
+        assert!((before[0] - after[0]).abs() < 1e-9 && (before[1] - after[1]).abs() < 1e-9);
+        assert_eq!(z.scale, cam.scale * 2.0);
+        // a drag right moves the ground right: what was at the centre is 50 points over
+        let d = Camera::dragged(cam, 50.0, 0.0);
+        assert!((d.project(cam.at, w, h)[0] - (w / 2.0 + 50.0)).abs() < 1e-3);
+        // nothing to show, or one point: a sane view, not a division by zero
+        assert_eq!(Camera::fit(&[], w, h), Camera { at: [0.5, 0.5], scale: 800.0 });
+        let one = Camera::fit(&f[..1], w, h);
+        assert!(one.scale.is_finite() && one.scale <= SCALE.1);
+        z.zoom_at(1e30, 0.0, 0.0, w, h);
+        assert_eq!(z.scale, SCALE.1, "the zoom stops at a street");
+    }
+
+    #[test]
+    fn the_grid_keeps_a_few_lines_across_and_a_long_line_is_thinned() {
+        let world = Camera { at: [0.5, 0.5], scale: 800.0 };
+        assert_eq!(world.grid_step(800.0), 90.0);
+        let town = Camera { at: [0.5, 0.5], scale: 800.0 * 4096.0 };
+        assert!(town.grid_step(800.0) <= 0.05);
+        let line: Vec<P> = (0..10_000).map(|i| [i as f64, 0.0]).collect();
+        let t = thin(&line, 500);
+        assert!(t.len() <= 501 && t[0] == line[0] && t.last() == line.last());
+        assert_eq!(thin(&line[..3], 500).len(), 3);
+    }
+}

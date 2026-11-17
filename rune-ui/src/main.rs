@@ -5,17 +5,32 @@
 //! headless runs draw: `cargo run -- --snap out.png --scene reading`.
 
 mod api;
+mod map;
 mod md;
 
 use std::collections::HashMap;
 
 use api::{Conn, Dump, Node, Page};
-use rune::{AppSpec, Block, Chrome, Cx, El, Key, KeyEvent, Latest, Mark, ScrollSpec, Span, TextEdit, Tx, Waker, col, el, row, text};
+use rune::{AppSpec, Block, LineCap, Phase, Shape, WheelEvent, canvas, Chrome, Cx, El, Key, KeyEvent, Latest, Mark, ScrollSpec, Span, TextEdit, Tx, Waker, col, el, row, text};
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
 use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Divider, FileNode, FileTree, Kit, Markdown, Spinner, TextArea, TextInput, Tree, TreeItem, TreeModel};
 
 type Files = TreeModel<FileNode<Node>>;
+
+/// A map page on screen: its shapes, where the camera is, and the point picked.
+struct MapView {
+    name: String,
+    rev: u64,
+    feats: Vec<map::Feature>,
+    cam: map::Camera,
+    /// The camera when the drag in progress began.
+    grab: map::Camera,
+    /// The view's size, once laid out. The camera is fitted to it once.
+    size: (f32, f32),
+    fitted: bool,
+    picked: Option<usize>,
+}
 
 /// A question the window is asking: a name for a new page, a new name for
 /// the open one, or whether to delete it.
@@ -57,6 +72,8 @@ struct App {
     rich: bool,
     /// The line spacing of the page the rich editor was opened on (md::Seps).
     seps: md::Seps,
+    /// The open page as a map, when it is one.
+    map: Option<MapView>,
     /// The pages visited, oldest first, and where in them the window is.
     trail: Vec<String>,
     trail_at: usize,
@@ -81,6 +98,12 @@ const SAMPLE: &[(&str, &str)] = &[
     ("notes/today", "# Today\n\nA short note with a [link](https://urbit.org).\n"),
     ("notes/ideas/maps", "# Maps\n\n```mermaid\nflowchart LR\n  orrery --> lattice --> map\n```\n"),
     ("journal/2026-11-17", "# Tuesday\n\nReviewed three rounds of fixes.\n"),
+    ("places", r#"{"type":"FeatureCollection","features":[
+{"type":"Feature","geometry":{"type":"Point","coordinates":[-73.9857,40.7484]},"properties":{"name":"Midtown","note":"A point with a note.","kind":"place"}},
+{"type":"Feature","geometry":{"type":"Point","coordinates":[-73.9442,40.6782]},"properties":{"name":"Brooklyn"}},
+{"type":"Feature","geometry":{"type":"LineString","coordinates":[[-73.9857,40.7484],[-73.97,40.72],[-73.9442,40.6782]]},"properties":{"name":"A walk"}},
+{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[-73.981,40.768],[-73.958,40.8],[-73.949,40.797],[-73.973,40.764],[-73.981,40.768]]]},"properties":{"name":"The park"}}
+]}"#),
 ];
 
 fn sample_nodes() -> Vec<Node> {
@@ -126,6 +149,7 @@ fn init() -> App {
         edit: TextEdit::new(""),
         rich: false,
         seps: md::Seps::default(),
+        map: None,
         trail: Vec::new(),
         trail_at: 0,
         cache: HashMap::new(),
@@ -146,7 +170,9 @@ fn init() -> App {
 fn browse_sample(s: &mut App) {
     {
         s.sample = true;
-        s.cache = SAMPLE.iter().map(|(p, b)| ((*p).to_owned(), Page { name: (*p).into(), body: (*b).into(), kind: "md".into(), rev: 1 })).collect();
+        // a sample page that starts as JSON is the map
+        let kind = |b: &str| if b.starts_with('{') { "geojson" } else { "md" };
+        s.cache = SAMPLE.iter().map(|(p, b)| ((*p).to_owned(), Page { name: (*p).into(), body: (*b).into(), kind: kind(b).into(), rev: 1 })).collect();
         s.names = SAMPLE.iter().map(|(p, _)| (*p).to_owned()).collect();
         s.files = files_of(sample_nodes(), &Files::default());
         s.files.expand_all();
@@ -316,6 +342,156 @@ fn follow(s: &mut App, url: &str, tx: &mut Tx) {
     }
 }
 
+/// Keeps `s.map` in step with the open page: built when a map page opens
+/// or its text moves, dropped for any other page. The camera is kept
+/// across a new revision of the same page.
+fn sync_map(s: &mut App) {
+    let Some(p) = s.open.as_ref().filter(|p| p.kind == "geojson") else {
+        s.map = None;
+        return;
+    };
+    if s.map.as_ref().is_some_and(|m| m.name == p.name && m.rev == p.rev) {
+        return;
+    }
+    let old = s.map.take().filter(|m| m.name == p.name);
+    s.map = map::parse(&p.body).map(|feats| {
+        let cam = old.as_ref().map_or(map::Camera { at: [0.5, 0.5], scale: 800.0 }, |m| m.cam);
+        MapView { name: p.name.clone(), rev: p.rev, feats, cam, grab: cam, size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.is_some_and(|m| m.fitted), picked: None }
+    });
+}
+
+/// The most positions one line or area is drawn with.
+const MAP_LINE: usize = 2000;
+/// The most points drawn as pressable dots, and named.
+const MAP_DOTS: usize = 400;
+
+fn map_view(m: &MapView, k: &Kit) -> El {
+    let c = &k.c;
+    let (w, h) = m.size;
+    let ink = c.text_accent;
+    let to = |p: map::P| m.cam.project(p, w, h);
+    // the graticule: lines of longitude and latitude a few across the view
+    let step = m.cam.grid_step(w);
+    let (a, z) = (m.cam.unproject(0.0, 0.0, w, h), m.cam.unproject(w, h, w, h));
+    let mut shape = Shape::new();
+    let lon0 = ((a[0] - 0.5) * 360.0 / step).floor() as i64;
+    let lon1 = ((z[0] - 0.5) * 360.0 / step).ceil() as i64;
+    for i in lon0..=lon1.min(lon0 + 60) {
+        let x = to(map::mercator(i as f64 * step, 0.0))[0];
+        shape = shape.line([x, 0.0], [x, h], 1.0, LineCap::Butt, c.border_weak);
+    }
+    let mut lat = (-85.0 / step).ceil() * step;
+    let mut drawn = 0;
+    while lat <= 85.0 && drawn < 60 {
+        let y = to(map::mercator(0.0, lat))[1];
+        if (0.0..=h).contains(&y) {
+            shape = shape.line([0.0, y], [w, y], 1.0, LineCap::Butt, c.border_weak);
+            drawn += 1;
+        }
+        lat += step;
+    }
+    let mut dots: Vec<(usize, map::P)> = Vec::new();
+    for (i, f) in m.feats.iter().enumerate() {
+        for g in &f.geoms {
+            match g {
+                map::Geom::Point(p) => dots.push((i, *p)),
+                map::Geom::Line(l) => shape = shape.stroke(map::thin(l, MAP_LINE).into_iter().map(to).collect::<Vec<_>>(), 2.5, ink),
+                map::Geom::Area(l) => {
+                    let ring: Vec<[f32; 2]> = map::thin(l, MAP_LINE).into_iter().map(to).collect();
+                    shape = shape.fill(ring.clone(), ink.alpha(0.18)).stroke(ring, 1.5, ink);
+                }
+            }
+        }
+    }
+    let mut view = el()
+        .key("map")
+        .w_full()
+        .h_full()
+        .fill(c.bg_base)
+        .clip_rounded(0.0)
+        .on_layout(|s: &mut App, r| {
+            if let Some(m) = &mut s.map {
+                m.size = (r[2].max(1.0), r[3].max(1.0));
+                if !m.fitted {
+                    m.cam = map::Camera::fit(&m.feats, m.size.0, m.size.1);
+                    m.fitted = true;
+                }
+            }
+        })
+        .on_drag(|s: &mut App, d, _| {
+            if let Some(m) = &mut s.map {
+                match d.phase {
+                    Phase::Down => m.grab = m.cam,
+                    _ => m.cam = map::Camera::dragged(m.grab, d.dx, d.dy),
+                }
+            }
+        })
+        .on_wheel(|s: &mut App, e: WheelEvent, _| {
+            if let Some(m) = &mut s.map {
+                // ponytail: the wheel's sign is taken as Rune's pinch mapping has it, unchecked on a real wheel
+                m.cam.zoom_at((-e.dy as f64 / 200.0).exp(), e.x, e.y, m.size.0, m.size.1);
+            }
+            true
+        })
+        .child(canvas(shape).key("map-shapes").absolute(0.0, 0.0).size(w, h));
+    // until the first layout the size is a guess: draw the ground alone
+    if !m.fitted {
+        return view;
+    }
+    for (n, (i, p)) in dots.iter().take(MAP_DOTS).enumerate() {
+        let [x, y] = to(*p);
+        if !(-20.0..=w + 20.0).contains(&x) || !(-20.0..=h + 20.0).contains(&y) {
+            continue;
+        }
+        let i = *i;
+        let on = m.picked == Some(i);
+        let r = if on { 8.0 } else { 6.0 };
+        view = view.child(
+            el().key(format!("dot-{n}"))
+                .absolute(x - r, y - r)
+                .size(r * 2.0, r * 2.0)
+                .radius(r)
+                .fill(ink)
+                .border(2.0, c.bg_base)
+                .label(m.feats[i].name.clone())
+                .on_press(move |s: &mut App| {
+                    if let Some(m) = &mut s.map {
+                        m.picked = if m.picked == Some(i) { None } else { Some(i) };
+                    }
+                }),
+        );
+        if !m.feats[i].name.is_empty() {
+            view = view.child(text(m.feats[i].name.clone()).key(format!("name-{n}")).absolute(x + r + 4.0, y - 9.0).font(k.ty.small_medium).color(c.text_base).inert());
+        }
+    }
+    // the picked point's details
+    if let Some(f) = m.picked.and_then(|i| m.feats.get(i)) {
+        let mut card = col().key("map-detail").absolute(12.0, 12.0).w(260.0).padding(12.0).gap(6.0).radius(k.radius.md).fill(c.layer_01).border(1.0, c.border_weak);
+        card = card.child(text(if f.name.is_empty() { "A point".to_owned() } else { f.name.clone() }).font(k.ty.ui_medium).color(c.text_base));
+        if !f.note.is_empty() {
+            card = card.child(text(f.note.clone()).font(k.ty.small).color(c.text_muted).wrap());
+        }
+        for (key, v) in f.props.iter().filter(|(key, _)| key != "name" && key != "note").take(8) {
+            card = card.child(row().gap(6.0).child(text(key.clone()).font(k.ty.small).color(c.text_faint)).child(text(v.clone()).font(k.ty.small).color(c.text_base).truncate().grow(1.0).min_w(0.0)));
+        }
+        view = view.child(card);
+    }
+    let zoom = |key: &str, label: &str, f: f64| {
+        Button::new(label)
+            .control_size(ControlSize::Small)
+            .on_press(move |s: &mut App| {
+                if let Some(m) = &mut s.map {
+                    let (w, h) = m.size;
+                    if f == 0.0 { m.cam = map::Camera::fit(&m.feats, w, h) } else { m.cam.zoom_at(f, w / 2.0, h / 2.0, w, h) }
+                }
+            })
+            .build(k)
+            .key(key.to_owned())
+    };
+    let count = text(format!("{} shapes", m.feats.len())).font(k.ty.small).color(c.text_muted);
+    view.child(row().key("map-tools").absolute(12.0, h - 40.0).gap(6.0).center_y().child(zoom("zoom-in", "+", 2.0)).child(zoom("zoom-out", "−", 0.5)).child(zoom("zoom-fit", "Fit", 0.0)).child(count))
+}
+
 fn show_page(s: &mut App, name: &str) {
     if let Some(p) = s.cache.get(name) {
         s.open = Some(p.clone());
@@ -323,6 +499,7 @@ fn show_page(s: &mut App, name: &str) {
     if let Some(c) = s.conn.clone() {
         s.page_req.request((c, name.to_owned()), |(c, n)| c.page(&n));
     }
+    sync_map(s);
 }
 
 /// A rich field for `d`, kept to what Markdown can write.
@@ -512,8 +689,11 @@ fn save(s: &mut App) {
             p.rev = c.save(&p, base)?;
             Ok(p)
         }),
-        // sample pages: kept for the session
-        None => landed(s, p),
+        // sample pages: kept for the session, each save a new rev as on a ship
+        None => {
+            p.rev += 1;
+            landed(s, p)
+        }
     }
 }
 
@@ -522,6 +702,7 @@ fn landed(s: &mut App, p: Page) {
     s.open = Some(p);
     s.editing = false;
     s.note = "saved".into();
+    sync_map(s);
 }
 
 /// How often the tree is read again, to see what other windows wrote. Each
@@ -610,6 +791,9 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Ok(p) => landed(s, p),
             Err(e) => s.note = format!("not saved: {e}"),
         }
+    }
+    if changed {
+        sync_map(s);
     }
     changed
 }
@@ -885,6 +1069,9 @@ fn body(s: &App, k: &Kit) -> El {
         }
         return panes;
     }
+    if let Some(m) = s.map.as_ref().filter(|m| m.name == p.name) {
+        return map_view(m, k);
+    }
     let shown = if p.kind == "md" {
         Markdown::new(md::wikilinks(&p.body)).selectable(true).on_link_tx(follow).build(k)
     } else {
@@ -1013,6 +1200,12 @@ fn main() {
         scenes: &[("login", |s| s.login_err = "that access code was refused".into()), ("reading", |s| {
             browse_sample(s);
             open_page(s, "welcome");
+        }), ("map", |s| {
+            browse_sample(s);
+            open_page(s, "places");
+            if let Some(m) = &mut s.map {
+                m.picked = Some(0);
+            }
         }), ("rename", |s| {
             browse_sample(s);
             open_page(s, "notes/today");
@@ -1054,6 +1247,33 @@ mod tests {
         assert_eq!(matches(&names, "zz"), Vec::<&str>::new());
         assert_eq!(matches(&names, "").len(), 4);
         assert_eq!(score("Welcome", "WEL"), Some(0));
+    }
+
+    #[test]
+    fn a_map_page_opens_as_a_map_and_keeps_its_camera_across_a_save() {
+        let mut s = sample("places");
+        let m = s.map.as_ref().expect("the sample map parses");
+        assert_eq!((m.feats.len(), m.fitted), (4, false));
+        // the view lays out, the owner zooms, then edits the source and saves
+        let m = s.map.as_mut().unwrap();
+        m.cam = map::Camera::fit(&m.feats, 800.0, 500.0);
+        m.fitted = true;
+        m.cam.zoom_at(2.0, 400.0, 250.0, 800.0, 500.0);
+        let cam = m.cam;
+        start_edit(&mut s);
+        assert!(!s.rich, "a map is edited as source");
+        let body = s.edit.text.replace("Brooklyn", "Kings County");
+        s.edit = TextEdit::new(body);
+        save(&mut s);
+        let m = s.map.as_ref().unwrap();
+        assert_eq!((m.cam, m.fitted), (cam, true), "the camera stays where it was");
+        assert!(m.feats.iter().any(|f| f.name == "Kings County"));
+        // another kind of page has no map, and a broken map shows as source
+        open_page(&mut s, "welcome");
+        assert!(s.map.is_none());
+        s.cache.get_mut("places").unwrap().body = "{ not json".into();
+        open_page(&mut s, "places");
+        assert!(s.map.is_none());
     }
 
     #[test]

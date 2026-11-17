@@ -39,12 +39,13 @@ On macOS, Cmd takes the place of Ctrl.
 - The whole tree arrives with every page's text in one request, so a page opens at once and the switcher can search text with no round trip. Every 30 seconds the tree is read again, and that read carries only what was written since. A page open in the window follows a write made elsewhere unless it is being edited.
 - Wiki links (`[[name]]`, `[[name|label]]`) and links into the app open the page. A link to a page that does not exist offers to make it. Web links open in the system browser. Back and forward buttons walk the pages visited.
 - Ctrl+K also finds pages by their text (three letters or more), showing the line.
-- Pages that are not Markdown (maps, sheets, HTML) show as their source, coloured.
+- Map pages (GeoJSON) draw natively: points with their names, lines and areas over a graticule. Drag to pan, wheel to zoom about the pointer, press a point for its note and properties, and Fit returns to the whole map. There are no tiles, and a map is edited as source.
+- Other pages that are not Markdown (sheets, HTML) show as their source, coloured.
 - Every ship call runs on a worker thread, never on the UI thread.
 
 ## What does not, yet
 
-Maps, spreadsheets, OpenSCAD and HTML pages have no native view. In the rich editor a heading keeps its `#`, a table its pipes and a fence its backticks, since Rune's rich text has no heading or table, and paragraphs have no space between them. No folders as their own things, history, sharing, forum, memory, search inside pages, or offline queue. An edit in progress is not warned when the page changes elsewhere: the save is refused with 409.
+Spreadsheets, OpenSCAD and HTML pages have no native view, and a map has no tiles under it, no layers and no drawing tools. In the rich editor a heading keeps its `#`, a table its pipes and a fence its backticks, since Rune's rich text has no heading or table, and paragraphs have no space between them. No folders as their own things, history, sharing, forum, memory, search inside pages, or offline queue. An edit in progress is not warned when the page changes elsewhere: the save is refused with 409.
 
 ## Check it without a window
 
