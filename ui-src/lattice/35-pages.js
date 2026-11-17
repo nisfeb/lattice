@@ -657,6 +657,9 @@
   //  the creates this window queued offline (save() below). The queue
   //  itself is read only asynchronously, and a draw must not wait.
   const queuedNames = new Set();
+  //  autosave's creates of a named page that got no answer, by name: the
+  //  bodies sent. One may have landed all the same (save() below).
+  const triedCreates = new Map();
   //  An Inbox name for a capture. A name this device already knows (a
   //  page in the tree, a name drawn and not landed, a create queued here)
   //  is drawn again, up to five times, and then taken as it is: the ship
@@ -760,7 +763,7 @@
     // capture the exact body being sent: keystrokes landing during the round-trip
     // must NOT be marked clean, or the next refresh swaps the stale server copy
     // in and the typed text is lost (same guard autosave has always had).
-    const sent = fixed ? fixed.body : src.value;
+    let sent = fixed ? fixed.body : src.value;
     const kind = fixed ? fixed.kind : kindOverride || curKind || pkind.value;
     // A live save claims the rev the editor read and asks to be refused
     // when the page moved past it (casQ): two windows, or the mount or an
@@ -824,6 +827,8 @@
       //  A save on purpose, or the flush on leaving the page, queues it.
       if (auto && creating && !drawn && !fixed) {
         if (rnc) newRn = rnc;
+        if (!triedCreates.has(name)) triedCreates.set(name, new Set());
+        triedCreates.get(name).add(sent || '\n');
         st(UNREACHED_NOTE, false);
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         clearTimeout(autoTimer);
@@ -867,6 +872,7 @@
       flushPending();
       return;
     }
+    let mine = null;
     if (r && r.status === 409) {
       //  the ship refuses a save into a folder being moved, or onto a page
       //  that moved away, and says where it went
@@ -888,18 +894,31 @@
           return save(kindOverride, undefined, drawn + 1, auto);
         }
       }
-      st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
-      return failed();
+      //  autosave's create of this page went out before and got no answer,
+      //  so it may have landed. The page holding a body this editor sent
+      //  is ours: the save goes on as an edit of it. Other text is not.
+      if (creating && !fixed && !drawn && triedCreates.has(name) && !/ moved to /.test(why)) {
+        try {
+          const sr = await tfetch(api + '/page-source?name=' + encodeURIComponent(name), {}, 20000);
+          const d = sr && sr.ok ? await sr.json() : null;
+          if (d && triedCreates.get(name).has(d.body)) mine = d;
+        } catch {}
+      }
+      if (!mine) {
+        st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
+        return failed();
+      }
+      sent = mine.body;
     }
-    if (!r.ok) { st('save failed' + await errText(r), false); return failed(); }
+    if (!mine && !r.ok) { st('save failed' + await errText(r), false); return failed(); }
     // the response carries the new revision and whether this save landed
     // on top of a revision made elsewhere; parse it regardless of focus.
-    let vr = null;
-    try { vr = await r.json(); } catch {}
+    let vr = mine && { rev: mine.rev };
+    if (!mine) try { vr = await r.json(); } catch {}
     // saved-document bookkeeping, applied whether or not the editor still
     // shows it, so a New clicked mid-save keeps both documents. Only a
     // CREATE changes the tree, and it confirms a row newFile left pulsing.
-    if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
+    if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); triedCreates.delete(name); }
     patchLocal(name, kind, sent, vr && vr.rev);
     await dropQueued(name, sentSeq);
     // live-editor state ONLY if the editor still shows the saved document.

@@ -639,8 +639,13 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           }
         } catch {}
         if (q.drawn && (q.redrawn || 0) < 4) {
-          const nq = { ...q, name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
+          let v = null;
+          try { v = await offGet(q.name); } catch {}
+          const nv = !!v && !sameRec(v, q);
+          const nq = { ...q, ...(nv && { body: v.body, kind: v.kind }),
+            name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
           if (!(await offPut(nq))) return false;
+          if (nv) await offDone(v);
           await offDone(q);
           redrawFollow(q.name, nq.name);
           q = nq;
@@ -6841,6 +6846,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
   const pageHere = () => mode !== 'know' && !grubPath;
   const drawnNames = new Set();
   const queuedNames = new Set();
+  const triedCreates = new Map();
   const drawName = () => {
     let name = inboxName();
     for (let i = 1; i < 5 && (drawnNames.has(name) || queuedNames.has(name)
@@ -6902,7 +6908,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     }
     saving = true;
     st('saving…');
-    const sent = fixed ? fixed.body : src.value;
+    let sent = fixed ? fixed.body : src.value;
     const kind = fixed ? fixed.kind : kindOverride || curKind || pkind.value;
     const rn = realName(name);
     if (!rn) {
@@ -6943,6 +6949,8 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (w.gone) {
       if (auto && creating && !drawn && !fixed) {
         if (rnc) newRn = rnc;
+        if (!triedCreates.has(name)) triedCreates.set(name, new Set());
+        triedCreates.get(name).add(sent || '\n');
         st(UNREACHED_NOTE, false);
         cerr.textContent = 'NOT saved'; cerr.className = 'err';
         clearTimeout(autoTimer);
@@ -6977,6 +6985,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
       flushPending();
       return;
     }
+    let mine = null;
     if (r && r.status === 409) {
       const why = await errText(r);
       if (!creating && /^: stale/.test(why)) {
@@ -6995,13 +7004,23 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           return save(kindOverride, undefined, drawn + 1, auto);
         }
       }
-      st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
-      return failed();
+      if (creating && !fixed && !drawn && triedCreates.has(name) && !/ moved to /.test(why)) {
+        try {
+          const sr = await tfetch(api + '/page-source?name=' + encodeURIComponent(name), {}, 20000);
+          const d = sr && sr.ok ? await sr.json() : null;
+          if (d && triedCreates.get(name).has(d.body)) mine = d;
+        } catch {}
+      }
+      if (!mine) {
+        st(/ moved to /.test(why) ? 'not saved' + why : 'that page already exists', false);
+        return failed();
+      }
+      sent = mine.body;
     }
-    if (!r.ok) { st('save failed' + await errText(r), false); return failed(); }
-    let vr = null;
-    try { vr = await r.json(); } catch {}
-    if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); }
+    if (!mine && !r.ok) { st('save failed' + await errText(r), false); return failed(); }
+    let vr = mine && { rev: mine.rev };
+    if (!mine) try { vr = await r.json(); } catch {}
+    if (creating) { addTreeNode(name, kind, false); applyDnames(rnc); snapTree(); renderTree(); triedCreates.delete(name); }
     patchLocal(name, kind, sent, vr && vr.rev);
     await dropQueued(name, sentSeq);
     const stillHere = fixed ? tabAdopt(fixed, name)
