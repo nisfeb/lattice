@@ -841,9 +841,17 @@
         //  an Inbox name the editor drew, taken by someone else meanwhile:
         //  the capture moves to another, five tries in all, as a live save
         //  does (35-pages.js). The record is kept under the new name first.
+        //  A newer edit queued under the old name meanwhile (a live save
+        //  that timed out behind this replay) is this capture's text too.
+        //  It goes with the capture to the new name, never to the old one.
         if (q.drawn && (q.redrawn || 0) < 4) {
-          const nq = { ...q, name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
+          let v = null;
+          try { v = await offGet(q.name); } catch {}
+          const nv = !!v && !sameRec(v, q);
+          const nq = { ...q, ...(nv && { body: v.body, kind: v.kind }),
+            name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
           if (!(await offPut(nq))) return false;
+          if (nv) await offDone(v);
           await offDone(q);
           redrawFollow(q.name, nq.name);
           q = nq;

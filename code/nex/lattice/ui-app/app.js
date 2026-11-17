@@ -639,8 +639,13 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
           }
         } catch {}
         if (q.drawn && (q.redrawn || 0) < 4) {
-          const nq = { ...q, name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
+          let v = null;
+          try { v = await offGet(q.name); } catch {}
+          const nv = !!v && !sameRec(v, q);
+          const nq = { ...q, ...(nv && { body: v.body, kind: v.kind }),
+            name: inboxName(), redrawn: (q.redrawn || 0) + 1 };
           if (!(await offPut(nq))) return false;
+          if (nv) await offDone(v);
           await offDone(q);
           redrawFollow(q.name, nq.name);
           q = nq;

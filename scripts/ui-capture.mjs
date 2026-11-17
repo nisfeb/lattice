@@ -40,7 +40,11 @@
 //     its own and saves the text typed since. A page there holding other
 //     text is refused as before, and never written over.
 //
-//  ONLY=A (or B, C, D, E, F) runs just that section after the setup.
+//  G: An offline capture replayed under a name another device took is
+//     drawn again. A newer edit of it queued during the replay goes with
+//     it to the new name, and the other device's page is left as it is.
+//
+//  ONLY=A (or B, C, D, E, F, G) runs just that section after the setup.
 //
 //  Usage: LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> \
 //           node scripts/ui-capture.mjs
@@ -87,6 +91,8 @@ let fakeLink = null;       // D: a tree row for another ship's page, put in ever
 let holdDump = null;       // A, D: page-dump requests held while this is an array
 const hideRows = new Set(); // E: paths left out of every dump
 const landCut = new Set();  // F: names whose next create lands, and the browser sees it fail
+let holdNew = null;         // G: {name, reqs}, creates of `name` held while set
+let cutEdit = null;         // G: a name whose plain saves fail unsent
 //  every page-save the editor sent: its page, type, whether it was a
 //  create, its display name and when it went
 const saves = [];
@@ -125,7 +131,8 @@ page.on('request', (r) => {
     }).catch(() => r.continue().catch(() => {}));
     return;
   }
-  //  F: a create that reaches the ship and is cut on the way back
+  //  F, G: a create that reaches the ship and is cut on the way back, a
+  //  create held until the suite lets it go, an edit cut before it is sent
   const sq = /\/page-save\?/.test(u) && new URL(u).searchParams;
   if (sq && sq.get('new') === '1' && landCut.delete(sq.get('name'))) {
     fetch(u, { method: 'POST', headers: { Cookie: env.cookie }, body: r.postData() })
@@ -133,6 +140,8 @@ page.on('request', (r) => {
       .finally(() => r.abort('timedout').catch(() => {}));
     return;
   }
+  if (sq && sq.get('new') === '1' && holdNew && holdNew.name === sq.get('name')) { holdNew.reqs.push(r); return; }
+  if (sq && sq.get('new') !== '1' && cutEdit === sq.get('name')) { r.abort('timedout').catch(() => {}); return; }
   const down = shipDown && /page-save|legacy-status|page-cmd|know-save/.test(u);
   if (!down && holdSave && /\/page-save\?/.test(u)) {
     setTimeout(() => r.continue().catch(() => {}), holdSave);
@@ -2047,6 +2056,56 @@ try {
     check('F: a page under that name holding other text is left as it is',
       !!refused && (await shipBody(FO)) === THEIRS && !f.key && !f.readOnly,
       JSON.stringify({ body: await shipBody(FO), f, st: await status() }));
+  }
+
+  if (on('G')) {
+    // ── G1. an offline capture redrawn, with a newer edit queued behind ──
+    step = 'G1 redraw with a newer edit';
+    const qBody = (n) => page.evaluate((x) => new Promise((res) => {
+      const rq = indexedDB.open('lattice-offline');
+      rq.onsuccess = () => {
+        try {
+          const g = rq.result.transaction('saves', 'readonly').objectStore('saves').get(x);
+          g.onsuccess = () => res(g.result ? g.result.body : null); g.onerror = () => res(null);
+        } catch { res(null); }
+      };
+      rq.onerror = () => res(null);
+    }), n);
+    await boot();
+    const before = await inboxOnShip();
+    const qc = await qCount();
+    shipDown = true;
+    await plus();
+    await sleep(500);
+    const G1 = 'offline capture, name taken ' + RUN;
+    await setText(G1);
+    await waitFor(async () => (await qCount()) === qc + 1, 15000);
+    const taken = (await front()).key;
+    const THEIRS = 'another device made this ' + RUN;
+    await apiMake(taken, THEIRS);
+    //  the replay's create waits while a live save of the same text is
+    //  cut and queued behind it, then goes and is refused
+    holdNew = { name: taken, reqs: [] };
+    shipDown = false;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    const held = await waitFor(() => holdNew.reqs.length > 0 || null, 30000, 200);
+    cutEdit = taken;
+    await typeIn(' typed while it replayed');
+    const newer = await waitFor(async () => /typed while it replayed/.test(await qBody(taken) || '') || null, 15000, 200);
+    const want = await qBody(taken);
+    const rq = holdNew.reqs;
+    holdNew = null;
+    for (const r of rq) r.continue().catch(() => {});
+    await waitFor(async () => (await qCount()) === qc, 40000, 500);
+    await sleep(4000);
+    await waitFor(async () => (await qCount()) === qc, 20000, 500);
+    cutEdit = null;
+    check('G: a replayed capture whose name was taken, with a newer edit queued, leaves that page as it is',
+      !!held && !!newer && (await shipBody(taken)) === THEIRS,
+      JSON.stringify({ held: !!held, newer: !!newer, theirs: await shipBody(taken) }));
+    const cG = await capturedAs(want, [...before, taken]);
+    check('G: and the newer text lands under the new name', !!cG, JSON.stringify({ want, cG }));
+    check('G: and the tab follows it', !!cG && (await front()).key === cG, JSON.stringify(await front()));
   }
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 160), false);
