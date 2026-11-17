@@ -312,6 +312,13 @@ select, option { color-scheme: inherit; }
 /* Edit / Read (23-tabhead.js): .ve is the editor only, .vp the preview only.
    Pages and memories alike: a memory previews as markdown (60-preview.js). */
 .ws.ve #docarea .prevwrap, .ws.vp #docarea .edwrap { display: none; }
+/* a scad page with the OpenSCAD runtime (26-scad.js): the 3D pane covers
+   the preview frame, and in Edit it sits beside the editor where there is
+   room for both */
+#docarea .prevwrap.scadon > .prev { display: none; }
+#docarea .prevwrap.scadon { overflow: hidden; }
+.scadhost { height: 100%; }
+@media (min-width: 821px) { .ws.ve #docarea.scadsplit .prevwrap { display: block; } }
 /* list indent/outdent touch pair (45-templates.js): phones have no Tab key,
    so these exist at phone width only, and only while the caret is where
    listTab would act. Desktop has the real keys. */
@@ -510,6 +517,7 @@ lat-writer > iframe, lat-sheet > iframe { border: 0; width: 100%; height: 90%; }
 .ic-tex { color: #8dc149; }
 .ic-html { color: #e37933; }
 .ic-js { color: #cbcb41; }
+.ic-scad { color: #f9d72c; }
 .ic-file { color: #6d8086; }
 
 .edwrap { flex: 1 1 0; min-width: 0; position: relative; overflow: hidden;

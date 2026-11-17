@@ -350,11 +350,13 @@
 ::  that render escaped. Hoon would run with lattice's own authority, and
 ::  html or js would run in the owner's browser. An absent type is hoon.
 ::  A map (geojson) renders escaped and is checked on save, and agents
-::  place reports on maps, so a key may write one.
+::  place reports on maps, so a key may write one. scad is OpenSCAD
+::  source: the ship shows it escaped, and the browser runs it only
+::  inside the OpenSCAD worker, which reaches nothing.
 ++  page-type-ok
   |=  t=@t
   ^-  ?
-  (~(has in (silt `(list @t)`~['md' 'gmi' 'text' 'tex' 'css' 'index' 'geojson'])) t)
+  (~(has in (silt `(list @t)`~['md' 'gmi' 'text' 'tex' 'css' 'index' 'geojson' 'scad'])) t)
 ::  ==  JSON
 ++  de-level
   |=  j=(unit json)

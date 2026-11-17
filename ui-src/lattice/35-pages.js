@@ -387,6 +387,7 @@
     if (kind !== 'md') {
       pkind.value = kind;
       if (isRich(kind) && !(await writerBlank(kind))) return;
+      if (kind === 'scad' && !(await scadBlank())) return;
     }
     src.focus();
   }
@@ -461,6 +462,7 @@
     newRn = rn;
     pkind.value = kind;
     if (isRich(kind) && !(await writerBlank(kind))) return;
+    if (kind === 'scad' && !src.value.trim() && !(await scadBlank())) return;
     //  blankPage above left nothing open; this names the buffer, and
     //  setOpen's event repaints the labels
     setOpen(null, { shown: name });

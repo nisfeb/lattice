@@ -50,6 +50,8 @@ const writerH = tag('writer.js');
 const sheetH = tag('sheet.js');
 // map.js, the map view (ui-src/map/, build-map.mjs), the same
 const mapH = tag('map.js');
+// scad.js, the 3D pane of scad pages (ui-src/scad/, build-scad.mjs), the same
+const scadH = tag('scad.js');
 // pdf.js, the Export PDF layout (78-pdf.js), is hand-written in ui-app/
 // and loaded the same way
 const pdfH = tag('pdf.js');
@@ -62,6 +64,7 @@ writeFileSync(join(ui, 'app.js'),
   + `// the served writer.js's hash (build-ui.mjs, 26-writer.js)\nconst WRITER_H = '${writerH}';\n`
   + `// and sheet.js's, the spreadsheet editor (26-writer.js)\nconst SHEET_H = '${sheetH}';\n`
   + `// and map.js's, the map view (26-writer.js)\nconst MAP_H = '${mapH}';\n`
+  + `// and scad.js's, the 3D pane of scad pages (26-scad.js)\nconst SCAD_H = '${scadH}';\n`
   + `// and pdf.js's (78-pdf.js)\nconst PDF_H = '${pdfH}';\n`
   + `// and skills.js's (95s-skills.js)\nconst SKILLS_H = '${skillsH}';\n\n`
   + body + '})();\n');

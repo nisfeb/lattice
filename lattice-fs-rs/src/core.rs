@@ -2174,6 +2174,27 @@ mod tests {
         assert_eq!(t_kind("json"), "hoon");
     }
 
+    #[test]
+    fn openscad_model_mounts_as_scad() {
+        // a scad page is the file the OpenSCAD app opens: it mounts under
+        // its own extension and a write to it is a page write, not hoon
+        let nodes = vec![Node {
+            rel: "bracket".into(),
+            is_dir: false,
+            is_page: true,
+            kind: "scad".into(),
+            size: 0,
+            mtime: 0,
+            readonly: false,
+            rev: None,
+        }];
+        let vt = build_vt(&nodes, |k| Fake::default().ext_for_kind(k));
+        assert!(vt.contains_key("/bracket.scad"), "a scad page mounts as name.scad");
+        assert_eq!(t_kind("scad"), "scad", "and saves as its own kind");
+        assert!(!is_scratch("bracket.scad", t_kind), "a model is a page");
+        assert!(!is_scratch("Bracket.SCAD", t_kind), "in any case");
+    }
+
     // ---------- property tests ----------
 
     use super::{build_vt, join, leaf_of};
@@ -2195,7 +2216,7 @@ mod tests {
         #[test]
         fn known_extensions_are_never_scratch(
             stem in "[a-zA-Z0-9 ._-]*",
-            ext in proptest::sample::select(vec!["md", "gmi", "html", "txt", "js", "css", "hoon", "tex", "latex"]),
+            ext in proptest::sample::select(vec!["md", "gmi", "html", "txt", "js", "css", "hoon", "tex", "latex", "scad"]),
         ) {
             let name = format!("{stem}.{ext}");
             prop_assert!(!is_scratch(&name, t_kind), "{} is a real page file", name);

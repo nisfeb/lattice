@@ -1,0 +1,109 @@
+{
+ "parameters": [
+  {
+   "caption": "Length of candle stand",
+   "group": "Candle Stand",
+   "initial": 50,
+   "name": "length",
+   "options": [
+    {
+     "name": "large",
+     "value": 70
+    },
+    {
+     "name": "medium",
+     "value": 50
+    },
+    {
+     "name": "small",
+     "value": 30
+    }
+   ],
+   "type": "number"
+  },
+  {
+   "caption": "Radius of ring of stand",
+   "group": "Candle Stand",
+   "initial": 25,
+   "name": "radius",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "caption": "Number of candle holders",
+   "group": "Number of candle holders",
+   "initial": 7,
+   "max": 14,
+   "min": 3,
+   "name": "count",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "caption": "Do you want center Candle",
+   "group": "Number of candle holders",
+   "initial": true,
+   "name": "centerCandle",
+   "type": "boolean"
+  },
+  {
+   "caption": "Length of candle holder",
+   "group": "Candle Holder",
+   "initial": 7,
+   "name": "candleSize",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "caption": "Width of candle holder",
+   "group": "Candle Holder",
+   "initial": 4,
+   "name": "width",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "caption": "Size of hole for candle holder",
+   "group": "Candle Holder",
+   "initial": 3,
+   "name": "holeSize",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Candle Holder",
+   "initial": 4,
+   "name": "CenterCandleWidth",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Properties of support",
+   "initial": 3,
+   "name": "heightOfSupport",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Properties of support",
+   "initial": 3,
+   "name": "widthOfSupport",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Properties of Ring",
+   "initial": 4,
+   "name": "heightOfRing",
+   "step": 1,
+   "type": "number"
+  },
+  {
+   "group": "Properties of Ring",
+   "initial": 23,
+   "name": "widthOfRing",
+   "step": 1,
+   "type": "number"
+  }
+ ]
+}

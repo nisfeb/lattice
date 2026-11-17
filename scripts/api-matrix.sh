@@ -484,6 +484,10 @@ has "  and the refusal names a spreadsheet" 'spreadsheet' "$(BG -X POST "$B/page
 is  "scoped batch md onto fods refused" 403 "$(BC -X POST "$B/page-save-batch" -H 'content-type: application/json' --data-binary "[{\"name\":\"$P/out/s1\",\"type\":\"md\",\"body\":\"ok\"},{\"name\":\"$P/out/sheet\",\"type\":\"md\",\"body\":\"x\"}]")"
 is  "  the fods page keeps its kind" fods "$(field page-tree "$P/out/sheet" kind)"
 is  "scoped md save beside it still lands" 200 "$(BC -X POST "$B/page-save?name=$P/out/s1&type=md" --data-binary 'still fine')"
+# an OpenSCAD model renders escaped, so a key may write one
+is  "scoped write scad granted" 200 "$(BC -X POST "$B/page-save?name=$P/out/part&type=scad" --data-binary 'cube([10, 20, 30]);')"
+is  "  it is a scad page" scad "$(field page-tree "$P/out/part" kind)"
+is  "scoped batch scad granted" 200 "$(BC -X POST "$B/page-save-batch" -H 'content-type: application/json' --data-binary "[{\"name\":\"$P/out/part2\",\"type\":\"scad\",\"body\":\"sphere(5);\"}]")"
 
 echo "==> sensitive pages"
 is "mark sensitive (owner)"          200 "$(sc -X POST "$B/page-sensitive?name=$P/note&on=1")"
@@ -610,6 +614,32 @@ has   "clearweb view shows the table"           '<td>apple</td>' "$r"
 hasnt "clearweb view shows no office: tags"     'office:' "$r"
 hasnt "clearweb view shows no hidden sheet"     'hidden words' "$r"
 sc -X POST "$B/page-share?name=$P/fods/budget&mode=private" >/dev/null
+
+echo "==> scad: an OpenSCAD model is a content page"
+# The ship never runs OpenSCAD: it keeps the source, shows it escaped under
+# a note, serves it as text and indexes its words.
+SX="$(dirname "${BASH_SOURCE[0]}")/../tests/scad/ship/01-hostile.scad"
+is "scad saves" 200 "$(sc -X POST "$B/page-save?name=$P/scad/box&type=scad&new=1" --data-binary @"$SX")"
+is "scad reads back byte-identical" "scad True" "$(same_body "$P/scad/box" "$SX")"
+is "tree reports kind scad"  scad "$(field page-tree "$P/scad/box" kind)"
+is "dump reports kind scad"  scad "$(field page-dump "$P/scad/box" kind)"
+r=$(G "$B/page-source?name=$P/scad/box&render=1" | python3 -c 'import json,sys;print(json.load(sys.stdin)["html"])')
+has   "render=1 shows the source as openscad" '<code class="language-openscad">' "$r"
+has   "render=1 carries the 3D note"          'An OpenSCAD model' "$r"
+has   "render=1 escapes the source"           '&lt;/pre&gt;&lt;script&gt;alert(1)' "$r"
+hasnt "render=1 runs no script from it"       '<script>alert' "$r"
+r=$(G -X POST "$B/page-preview?type=scad" --data-binary @"$SX")
+has   "page-preview escapes it too"           '&lt;script&gt;alert(1)' "$r"
+hasnt "page-preview runs no script"           '<script>alert' "$r"
+is "/f/ serves it as text" 'text/plain; charset=utf-8' \
+  "$(curl -s -o /dev/null -w '%{content_type}' -H "$CK" "$B/f/$P/scad/box")"
+has   "page-search finds a word of the source" "\"$P/scad/box\"" "$(G "$B/page-search?q=lid")"
+sc -X POST "$B/page-share?name=$P/scad/box&mode=clearweb" >/dev/null
+sleep 2
+r=$(G "$B/c/$P/scad/box")
+has   "clearweb view shows the source"         'cube([width, 20, 10])' "$r"
+hasnt "clearweb view runs no script from it"   '<script>alert' "$r"
+sc -X POST "$B/page-share?name=$P/scad/box&mode=private" >/dev/null
 
 echo "==> recursive folder delete"
 is "page-del on folder" 200 "$(sc -X POST "$B/page-del?name=$P")"

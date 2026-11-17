@@ -15,8 +15,9 @@
 ::    %fodt  a flat ODT (LibreOffice Writer) document, rendered by the nexus
 ::    %fods  a flat ODS (LibreOffice Calc) spreadsheet, rendered by the nexus
 ::    %geojson  a GeoJSON FeatureCollection (a map), rendered by the nexus
+::    %scad  OpenSCAD source, shown escaped. The browser renders it in 3D.
 ::
-+$  view-mode  ?(%text %html %gmi %md %js %css %fodt %fods %geojson %noun)
++$  view-mode  ?(%text %html %gmi %md %js %css %fodt %fods %geojson %scad %noun)
 ::  +$  result: what a page gate produces.
 ::
 +$  result
@@ -49,6 +50,9 @@
 ::  and a table (escaped, never raw, no tiles), the browser edits it in
 ::  the map view.
 ++  geojson  |=(f=@t `result`[`f ~ %geojson ~ ~])  ::  data is GeoJSON
+::  OpenSCAD source. The ship never runs OpenSCAD. It shows the source
+::  escaped, and a browser with the runtime installed draws the part.
+++  scad  |=(s=@t `result`[`s ~ %scad ~ ~])   ::  data is OpenSCAD source
 ++  raw   |=(n=* `result`[`n ~ %noun ~ ~])    ::  data is an opaque noun
 ++  same  ^-(result [~ ~ %text ~ ~])          ::  no change to data
 ::  modifiers. Chain onto a result:
