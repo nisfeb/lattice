@@ -36,6 +36,80 @@ pub fn exact(src: &str) -> Option<Doc> {
     (out == src || out.strip_suffix('\n') == Some(src)).then_some(d)
 }
 
+/// The scheme a wiki link is given so the reader can tell it from a web one.
+pub const WIKI: &str = "lattice:";
+
+/// The page for display: each wiki link, `[[name]]` or `[[name|label]]`,
+/// becomes a Markdown link to `lattice:name`. Fenced code and inline code
+/// are left as they are. Only the reader uses this, never the editor.
+pub fn wikilinks(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let mut fenced = false;
+    for line in src.split_inclusive('\n') {
+        if fence(line) {
+            fenced = !fenced;
+        }
+        if fenced || !line.contains("[[") {
+            out.push_str(line);
+            continue;
+        }
+        // every other piece between backticks is code
+        for (i, piece) in line.split('`').enumerate() {
+            if i > 0 {
+                out.push('`');
+            }
+            if i % 2 == 1 {
+                out.push_str(piece);
+                continue;
+            }
+            let mut rest = piece;
+            while let Some(a) = rest.find("[[") {
+                let Some(z) = rest[a + 2..].find("]]") else { break };
+                let inner = &rest[a + 2..a + 2 + z];
+                let (name, label) = inner.split_once('|').unwrap_or((inner, inner));
+                let (name, label) = (name.trim(), label.trim());
+                if name.is_empty() || label.is_empty() || inner.contains('[') {
+                    out.push_str(&rest[..a + 2]);
+                    rest = &rest[a + 2..];
+                    continue;
+                }
+                out.push_str(&rest[..a]);
+                out.push_str(&format!("[{label}]({WIKI}{})", crate::api::enc(name).replace("%2F", "/")));
+                rest = &rest[a + 4 + z..];
+            }
+            out.push_str(rest);
+        }
+    }
+    out
+}
+
+/// The page a link names, when it is one of ours: a wiki link's target, or
+/// a path into this app. `None` for a link to the web.
+pub fn page_of(url: &str) -> Option<String> {
+    let path = url.strip_prefix(WIKI).or_else(|| url.strip_prefix("/apps/lattice/page/"))?;
+    let path = path.split(['#', '?']).next().unwrap_or(path);
+    // undo the percent-encoding a link needs
+    let mut bytes = Vec::with_capacity(path.len());
+    let b = path.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        let hex = (b[i] == b'%').then(|| path.get(i + 1..i + 3)).flatten().and_then(|h| u8::from_str_radix(h, 16).ok());
+        match hex {
+            Some(v) => {
+                bytes.push(v);
+                i += 3;
+            }
+            None => {
+                bytes.push(b[i]);
+                i += 1;
+            }
+        }
+    }
+    let name = String::from_utf8(bytes).ok()?;
+    let name = name.trim_matches('/');
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
 fn is_list(b: Block) -> bool {
     matches!(b, Block::Bullet(_) | Block::Numbered(_))
 }
@@ -618,6 +692,18 @@ mod tests {
         let d = exact(&out).expect("its own output is exact");
         assert_eq!(d.text, "see this and that\nitem");
         assert_eq!(d.blocks, vec![Paragraph, Bullet(0)]);
+    }
+
+    #[test]
+    fn wiki_links_become_links_the_reader_can_follow() {
+        assert_eq!(wikilinks("see [[notes/today]] and [[My Page|that one]]\n"), "see [notes/today](lattice:notes/today) and [that one](lattice:My%20Page)\n");
+        // code is left alone, and so is what is not a link
+        let kept = "`[[not]]` and [[ ]] and [[open\n```\n[[in a fence]]\n```\n";
+        assert_eq!(wikilinks(kept), kept);
+        assert_eq!(page_of("lattice:My%20Page").as_deref(), Some("My Page"));
+        assert_eq!(page_of("/apps/lattice/page/notes/today#top").as_deref(), Some("notes/today"));
+        assert_eq!(page_of("https://urbit.org"), None);
+        assert_eq!(page_of("lattice:"), None);
     }
 
     #[test]

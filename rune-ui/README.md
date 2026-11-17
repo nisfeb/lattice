@@ -16,6 +16,7 @@ It opens on a sign-in screen: the ship's address and its access code (`+code`). 
 | Key | Does |
 | --- | --- |
 | Ctrl+K | jump to a page by name |
+| Alt+Left, Alt+Right | back and forward through the pages visited |
 | Ctrl+N | new page |
 | Ctrl+E | edit the open page |
 | Ctrl+S | save |
@@ -36,6 +37,7 @@ On macOS, Cmd takes the place of Ctrl.
 - Saving over the rev the text was read at. The ship refuses a stale save with 409, except for a page still at rev 0, where the ship checks nothing (the web client has the same gap).
 - New page, rename or move, and delete.
 - The whole tree arrives with every page's text in one request, so a page opens at once and the switcher can search text with no round trip. Every 30 seconds the tree is read again, and that read carries only what was written since. A page open in the window follows a write made elsewhere unless it is being edited.
+- Wiki links (`[[name]]`, `[[name|label]]`) and links into the app open the page. A link to a page that does not exist offers to make it. Web links open in the system browser. Back and forward buttons walk the pages visited.
 - Ctrl+K also finds pages by their text (three letters or more), showing the line.
 - Pages that are not Markdown (maps, sheets, HTML) show as their source, coloured.
 - Every ship call runs on a worker thread, never on the UI thread.

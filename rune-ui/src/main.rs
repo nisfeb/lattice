@@ -57,6 +57,9 @@ struct App {
     rich: bool,
     /// The line spacing of the page the rich editor was opened on (md::Seps).
     seps: md::Seps,
+    /// The pages visited, oldest first, and where in them the window is.
+    trail: Vec<String>,
+    trail_at: usize,
     /// Pages already read this session, so a second visit draws at once.
     cache: HashMap<String, Page>,
     note: String,
@@ -74,7 +77,7 @@ struct App {
 }
 
 const SAMPLE: &[(&str, &str)] = &[
-    ("welcome", "# lattice, natively\n\nThis window is drawn by **Rune**: its own renderer, text and layout, with no webview.\n\n- Pick a page on the left.\n- Press `Edit` to change it.\n- Set `LATTICE_URL` and `LATTICE_COOKIE` to open a ship.\n\n```rust\nfn main() {\n    println!(\"hello, ship\");\n}\n```\n\n| Page kind | Here |\n| --- | --- |\n| Markdown | rendered |\n| Others | as source |\n"),
+    ("welcome", "# lattice, natively\n\nThis window is drawn by **Rune**: its own renderer, text and layout, with no webview.\n\n- Pick a page on the left, or follow [[notes/today]].\n- A link to [[plans/next|a page not made yet]] offers to make it.\n- Press `Edit` to change it.\n- Set `LATTICE_URL` and `LATTICE_COOKIE` to open a ship.\n\n```rust\nfn main() {\n    println!(\"hello, ship\");\n}\n```\n\n| Page kind | Here |\n| --- | --- |\n| Markdown | rendered |\n| Others | as source |\n"),
     ("notes/today", "# Today\n\nA short note with a [link](https://urbit.org).\n"),
     ("notes/ideas/maps", "# Maps\n\n```mermaid\nflowchart LR\n  orrery --> lattice --> map\n```\n"),
     ("journal/2026-11-17", "# Tuesday\n\nReviewed three rounds of fixes.\n"),
@@ -123,6 +126,8 @@ fn init() -> App {
         edit: TextEdit::new(""),
         rich: false,
         seps: md::Seps::default(),
+        trail: Vec::new(),
+        trail_at: 0,
         cache: HashMap::new(),
         note: String::new(),
         names: Vec::new(),
@@ -268,6 +273,50 @@ fn open_page(s: &mut App, name: &str) {
     if s.editing {
         return;
     }
+    // a new visit drops what was ahead of it, as a browser does
+    if s.trail.get(s.trail_at).map(String::as_str) != Some(name) {
+        s.trail.truncate(s.trail_at + 1);
+        s.trail.push(name.to_owned());
+        s.trail_at = s.trail.len() - 1;
+    }
+    show_page(s, name);
+}
+
+/// Steps back (`-1`) or forward (`1`) through the pages visited.
+fn step(s: &mut App, by: isize) {
+    let Some(at) = s.trail_at.checked_add_signed(by).filter(|&i| i < s.trail.len()) else { return };
+    if s.editing {
+        return;
+    }
+    s.trail_at = at;
+    let name = s.trail[at].clone();
+    s.files.expand_to(&name);
+    s.files.select(&name);
+    show_page(s, &name);
+}
+
+/// Follows a link in a page: to a page of this ship, to a prompt that makes
+/// the page when there is none yet, or to the web.
+fn follow(s: &mut App, url: &str, tx: &mut Tx) {
+    match md::page_of(url) {
+        Some(name) if s.names.contains(&name) => {
+            s.files.reveal(&name, tx);
+            open_page(s, &name);
+        }
+        Some(name) => {
+            let mut t = TextEdit::new(name);
+            t.focused = true;
+            s.prompt = Some(Prompt::New(t));
+        }
+        None => {
+            if let Err(e) = tx.open_url(url) {
+                s.note = format!("could not open {url}: {e:?}");
+            }
+        }
+    }
+}
+
+fn show_page(s: &mut App, name: &str) {
     if let Some(p) = s.cache.get(name) {
         s.open = Some(p.clone());
     }
@@ -837,7 +886,7 @@ fn body(s: &App, k: &Kit) -> El {
         return panes;
     }
     let shown = if p.kind == "md" {
-        Markdown::new(p.body.clone()).selectable(true).build(k)
+        Markdown::new(md::wikilinks(&p.body)).selectable(true).on_link_tx(follow).build(k)
     } else {
         // other kinds draw as their source, coloured, until each has a native view
         let lang = match p.kind.as_str() {
@@ -896,9 +945,17 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let mut layer = Vec::new();
     switcher(s, &k, &mut layer);
     prompt_view(s, &k, &mut layer);
+    let nav = |key: &str, label: &str, by: isize, on: bool| {
+        Button::new(label).variant(ButtonVariant::GhostMuted).disabled(!on).on_press(move |s: &mut App| step(s, by)).build(&k).key(key.to_owned())
+    };
+    let leading = row()
+        .gap(2.0)
+        .center_y()
+        .child(nav("back", "‹", -1, s.trail_at > 0 && !s.editing))
+        .child(nav("forward", "›", 1, s.trail_at + 1 < s.trail.len() && !s.editing));
     let shell = SplitView::new(body(s, &k))
         .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k))
-        .toolbar(Toolbar::new().title(title).trailing(trailing))
+        .toolbar(Toolbar::new().leading(leading).title(title).trailing(trailing))
         .titlebar_inset(cx.titlebar_inset())
         .frame_inset(8.0)
         .toolbar_in_panel()
@@ -910,6 +967,10 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
 fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if s.conn.is_none() && !s.sample {
         return false;
+    }
+    if ev.mods.alt && matches!(ev.key, Key::Left | Key::Right) {
+        step(s, if ev.key == Key::Left { -1 } else { 1 });
+        return true;
     }
     if ev.is_command('n') && !s.editing {
         ask_new(s);
@@ -993,6 +1054,25 @@ mod tests {
         assert_eq!(matches(&names, "zz"), Vec::<&str>::new());
         assert_eq!(matches(&names, "").len(), 4);
         assert_eq!(score("Welcome", "WEL"), Some(0));
+    }
+
+    #[test]
+    fn back_and_forward_walk_the_pages_visited() {
+        let mut s = sample("welcome");
+        open_page(&mut s, "notes/today");
+        open_page(&mut s, "notes/ideas/maps");
+        let at = |s: &App| s.open.as_ref().unwrap().name.clone();
+        step(&mut s, -1);
+        assert_eq!(at(&s), "notes/today");
+        step(&mut s, -1);
+        step(&mut s, -1);
+        assert_eq!(at(&s), "welcome", "back stops at the first page");
+        step(&mut s, 1);
+        assert_eq!(at(&s), "notes/today");
+        // a new visit from the middle drops what was ahead
+        open_page(&mut s, "journal/2026-11-17");
+        step(&mut s, 1);
+        assert_eq!((at(&s), s.trail.len()), ("journal/2026-11-17".to_owned(), 3));
     }
 
     #[test]
