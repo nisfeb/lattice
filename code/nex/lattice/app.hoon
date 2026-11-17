@@ -14822,7 +14822,11 @@
     [%done =(~ err.u.in)]
   ==
 ::  +soft-now: the time, or ~ when /sys/bowl.sig refuses (+bowl-now fails
-::  instead). The answer and its ack come in either order.
+::  instead). The answer and its ack come in either order. Only an ack
+::  or a veto on /rise/now is ours: a veto carries the dart it refused,
+::  so its wire. Any other is left for the step it belongs to (the tile
+::  gate offers the dispatcher's queue again after this). Our dart gets
+::  an ack or a veto either way, so the wait always ends.
 ++  soft-now
   =/  m  (fiber:fiber:nexus ,(unit @da))
   ^-  form:m
@@ -14835,8 +14839,12 @@
     :+  ~  q.state
     ?+  in  [%skip ~]
         ~  [%wait ~]
-        [~ %veto *]  [%done ~]
-        [~ %pack * *]  ?^(err.u.in [%done ~] [%done `[%| ~]])
+        [~ %veto %node * * *]
+      ?.  =(/rise/now wire.dart.u.in)  [%skip ~]
+      [%done ~]
+        [~ %pack * *]
+      ?.  =(/rise/now wire.u.in)  [%skip ~]
+      ?^(err.u.in [%done ~] [%done `[%| ~]])
         [~ %poke * *]
       ?.  =([/ %time] p.sage.u.in)  [%skip ~]
       [%done `[%& !<(@da q.sage.u.in)]]
@@ -14860,7 +14868,9 @@
     :+  ~  q.state
     ?+  in  [%skip ~]
         ~  [%wait ~]
-        [~ %pack *]  [%done ~]
+        [~ %pack * *]
+      ?.  =(/rise/now wire.u.in)  [%skip ~]
+      [%done ~]
     ==
   (pure:m `p.u.first)
 ::  +crash-503: a request fiber that crashed answers 503 and ends. It used
