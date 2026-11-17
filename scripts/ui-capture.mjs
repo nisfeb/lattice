@@ -35,7 +35,12 @@
 //     only when the ship answers. An offline draw skips Inbox names this
 //     device knows. A display name stays with the page it was given to.
 //
-//  ONLY=A (or B, C, D, E) runs just that section after the setup.
+//  F: A named page's create that lands while the browser sees a timeout.
+//     The retry finds the page holding what this editor sent, takes it as
+//     its own and saves the text typed since. A page there holding other
+//     text is refused as before, and never written over.
+//
+//  ONLY=A (or B, C, D, E, F) runs just that section after the setup.
 //
 //  Usage: LATTICE_URL=http://localhost:<port> LATTICE_COOKIE=<cookie file> \
 //           node scripts/ui-capture.mjs
@@ -81,6 +86,7 @@ const fake = new Map();    // D: a page-source name -> 'abort' or {status, body}
 let fakeLink = null;       // D: a tree row for another ship's page, put in every dump
 let holdDump = null;       // A, D: page-dump requests held while this is an array
 const hideRows = new Set(); // E: paths left out of every dump
+const landCut = new Set();  // F: names whose next create lands, and the browser sees it fail
 //  every page-save the editor sent: its page, type, whether it was a
 //  create, its display name and when it went
 const saves = [];
@@ -117,6 +123,14 @@ page.on('request', (r) => {
       if (row) d.nodes.push(row);
       return r.respond({ status: 200, contentType: 'application/json', body: JSON.stringify(d) });
     }).catch(() => r.continue().catch(() => {}));
+    return;
+  }
+  //  F: a create that reaches the ship and is cut on the way back
+  const sq = /\/page-save\?/.test(u) && new URL(u).searchParams;
+  if (sq && sq.get('new') === '1' && landCut.delete(sq.get('name'))) {
+    fetch(u, { method: 'POST', headers: { Cookie: env.cookie }, body: r.postData() })
+      .then((x) => { if (x.ok) made.add(sq.get('name')); })
+      .finally(() => r.abort('timedout').catch(() => {}));
     return;
   }
   const down = shipDown && /page-save|legacy-status|page-cmd|know-save/.test(u);
@@ -1985,6 +1999,54 @@ try {
     const allDlg = await dlgSum();
     check('E: the editor\'s dialog opened only where the suite opened it', allDlg === dlgMeant,
       JSON.stringify({ shown: allDlg, meant: dlgMeant }));
+  }
+
+  const status = () => page.evaluate(() => document.getElementById('status').textContent);
+  if (on('F')) {
+    // ── F1. a named page's create lands, and the browser sees a timeout ──
+    step = 'F1 create cut';
+    const FN = RUN + '/cut-create';
+    const cf0 = await treePages('conflicts/');
+    await boot();
+    await plus();
+    await sleep(500);
+    await page.evaluate((n) => window.latStartNamed(n), FN);
+    const sF = await waitFor(async () => (await front()).name === FN, 5000, 100);
+    landCut.add(FN);
+    const T1 = 'first words ' + RUN;
+    await typeIn(T1);
+    const cut = await waitFor(async () => !landCut.has(FN) && (await shipBody(FN)) === T1, 20000, 200);
+    const T2 = ' and more typed after';
+    await typeIn(T2);
+    const both = await waitFor(async () => (await shipBody(FN)) === T1 + T2
+      && (await front()).key === FN, 40000, 500);
+    let f = await front();
+    check('F: a named page whose create landed unseen takes the text typed after it',
+      !!sF && !!cut && !!both, JSON.stringify({ body: await shipBody(FN), f, st: await status() }));
+    check('F: and it is the page in front, under its name', f.key === FN && f.readOnly, JSON.stringify(f));
+    const cf1 = (await treePages('conflicts/')).filter((n) => !cf0.includes(n));
+    check('F: and no conflicts/ copy is made of it', !cf1.length, JSON.stringify(cf1));
+
+    // ── F2. the same, when the page there is not ours: never written over ──
+    step = 'F2 create cut, page theirs';
+    const FO = RUN + '/cut-theirs';
+    await plus();
+    await sleep(500);
+    await page.evaluate((n) => window.latStartNamed(n), FO);
+    await waitFor(async () => (await front()).name === FO, 5000, 100);
+    const n0 = saves.length;
+    shipDown = true;
+    await typeIn('mine ' + RUN);
+    await waitFor(() => saves.slice(n0).some((x) => x.name === FO && x.isNew) || null, 10000, 100);
+    await sleep(500);
+    const THEIRS = 'made elsewhere ' + RUN;
+    await apiMake(FO, THEIRS);
+    shipDown = false;
+    const refused = await waitFor(async () => /already exists/.test(await status()) || null, 20000, 200);
+    f = await front();
+    check('F: a page under that name holding other text is left as it is',
+      !!refused && (await shipBody(FO)) === THEIRS && !f.key && !f.readOnly,
+      JSON.stringify({ body: await shipBody(FO), f, st: await status() }));
   }
 } catch (e) {
   check('step "' + step + '" threw: ' + String(e.message).slice(0, 160), false);
