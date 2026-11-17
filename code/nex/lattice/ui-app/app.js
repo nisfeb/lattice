@@ -8,7 +8,7 @@ const SHEET_H = '0v3.v145b.hha4j.kjuag.dcc4c.ld732';
 // and map.js's, the map view (26-writer.js)
 const MAP_H = '0v4.gefvq.vdk6m.u260a.mdsrr.iaf1a';
 // and scad.js's, the 3D pane of scad pages (26-scad.js)
-const SCAD_H = '0v6.42qfh.avede.rme6i.eq8o2.2r55a';
+const SCAD_H = '0v1.34a0s.qp4ih.24c5l.t4asl.8br0p';
 // and pdf.js's (78-pdf.js)
 const PDF_H = '0v4.0lj6i.p1nsf.a908q.16141.ep8rn';
 // and skills.js's (95s-skills.js)
@@ -866,6 +866,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     return p;
   };
   const bustPages = (name) => {
+    try { if (scadG) scadG.forget(String(name || '').replace(/^\/+/, '')); } catch {}
     if (!('caches' in window)) return;
     name = String(name || '').replace(/^\/+/, '') || null;
     caches.open('lattice-pages').then(async (c) => {
@@ -5799,6 +5800,7 @@ const SKILLS_H = '0v5.8vf2r.878ci.lbe6l.d1949.cp3qp';
     if (!lastRev && typeof d.since === 'string') noteRev(d.since);
     const first = !nodes.length;
     nodes = d.nodes;
+    if (scadG) scadG.forget();
     treeShares = typeof d.since === 'string';
     treeSince = treeShares ? d.since : '';
     treeAt = at;
