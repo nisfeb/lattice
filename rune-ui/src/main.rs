@@ -16,6 +16,7 @@ use rune::{AppSpec, Block, LineCap, Phase, Shape, WheelEvent, canvas, Chrome, Cx
 use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
 use rune_kit::{Cell, Table, TableColumn, TableState};
+use rune_kit::Switch;
 use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Divider, FileNode, FileTree, Kit, Markdown, Spinner, TextArea, TextInput, Tree, TreeItem, TreeModel};
 
 type Files = TreeModel<FileNode<Node>>;
@@ -61,6 +62,9 @@ enum Op {
     /// A page's share mode was set, or a folder's.
     Shared(String, String),
     SharedDir(String, String),
+    /// A page or folder was marked sensitive or unmarked, and whether its
+    /// own share still stands.
+    Sensed(String, bool, bool),
     /// A ship was let in to a page (edit or read, and whether it was told),
     /// or put out again.
     Granted(String, String, bool, bool),
@@ -117,6 +121,9 @@ struct App {
     /// Each folder's own share setting.
     dshares: HashMap<String, String>,
     sharing: bool,
+    /// The sensitive mark of each page and folder asked about so far.
+    sens: HashMap<String, bool>,
+    sens_req: Latest<Result<(String, bool), String>>,
     /// The ship's access list, read when the share dialog opens, and the
     /// ship being typed there.
     groups: Vec<Group>,
@@ -257,6 +264,8 @@ fn init() -> App {
         shares: HashMap::new(),
         dshares: HashMap::new(),
         sharing: false,
+        sens: HashMap::new(),
+        sens_req: Latest::default(),
         groups: Vec::new(),
         groups_req: Latest::default(),
         grant_to: TextEdit::new(""),
@@ -399,6 +408,7 @@ fn sign_out(s: &mut App) {
     fresh.groups_req = std::mem::take(&mut s.groups_req);
     fresh.base_req = std::mem::take(&mut s.base_req);
     fresh.bans_req = std::mem::take(&mut s.bans_req);
+    fresh.sens_req = std::mem::take(&mut s.sens_req);
     fresh.shared_req = std::mem::take(&mut s.shared_req);
     fresh.remote_req = std::mem::take(&mut s.remote_req);
     fresh.old_req = std::mem::take(&mut s.old_req);
@@ -454,7 +464,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) => {}
+                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) => {}
             }
             Ok(op)
         }),
@@ -514,6 +524,18 @@ fn applied(s: &mut App, op: Op) {
             let can = if edit { "edit" } else { "read" };
             s.note = format!("{ship} can now {can} {n}{}", if told { "" } else { ", and was not reached to be told" });
             load_groups(s);
+            return;
+        }
+        Op::Sensed(n, on, shared) => {
+            s.note = match (on, shared) {
+                (true, true) => format!("{n} is sensitive, and its own share still stands: set it private to stop that"),
+                (true, false) => format!("{n} is sensitive: folders and groups no longer share it, and a key needs clearance to read it"),
+                (false, _) => format!("{n} is no longer marked sensitive"),
+            };
+            s.sens.insert(n, on);
+            // what folders and groups share may have changed with it
+            load_groups(s);
+            load_tree(s);
             return;
         }
         Op::SharedDir(n, mode) => {
@@ -578,6 +600,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.groups_req.set_waker(waker.clone());
     s.base_req.set_waker(waker.clone());
     s.bans_req.set_waker(waker.clone());
+    s.sens_req.set_waker(waker.clone());
     s.shared_req.set_waker(waker.clone());
     s.remote_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
@@ -1171,6 +1194,15 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Err(e) => s.note = format!("could not read it: {e}"),
         }
     }
+    if let Some(r) = s.sens_req.take() {
+        changed = true;
+        match r {
+            Ok((n, on)) => {
+                s.sens.insert(n, on);
+            }
+            Err(e) => s.note = format!("sensitive: {e}"),
+        }
+    }
     if let Some(r) = s.bans_req.take() {
         changed = true;
         match r {
@@ -1602,6 +1634,27 @@ fn shared_view(s: &App, k: &Kit) -> El {
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
+/// Asks whether what the share dialog is about is marked sensitive.
+fn load_sens(s: &mut App) {
+    if let (Some(c), Some((name, _))) = (s.conn.clone(), share_target(s)) {
+        s.sens_req.request((c, name), |(c, n)| c.sensitive(&n).map(|on| (n, on)));
+    }
+}
+
+/// Marks what the share dialog is about sensitive, or clears the mark.
+fn flip_sens(s: &mut App) {
+    let Some((name, _)) = share_target(s) else { return };
+    let on = !s.sens.get(&name).copied().unwrap_or(false);
+    match s.conn.clone() {
+        Some(c) => s.op_req.request((c, name), move |(c, n)| {
+            let shared = c.set_sensitive(&n, on)?;
+            Ok(Op::Sensed(n, on, shared))
+        }),
+        // sample pages: kept for the session
+        None => applied(s, Op::Sensed(name, on, false)),
+    }
+}
+
 fn load_groups(s: &mut App) {
     if let Some(c) = s.conn.clone() {
         s.groups_req.request(c.clone(), |c| c.groups());
@@ -1863,6 +1916,21 @@ fn share_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .child(choice("private", "Private", if folder { "The folder shares nothing of its own. A page in it keeps its own setting." } else { "Only you, signed in to your ship." }))
         .child(choice("shared", "Over Urbit", if folder { "Every page in it, and pages added later, for the ships and groups you grant." } else { "Ships and groups you grant, at a urb:// address." }))
         .child(choice("clearweb", "On the web", if folder { "Every page in it, and pages added later, for anyone with the link." } else { "Anyone with the link, with no sign-in." }));
+    // the sensitive mark, known once the ship has answered
+    let marked = s.sens.get(&p.name).copied();
+    body = body.child(
+        row()
+            .key("share-sensitive")
+            .w_full()
+            .gap(10.0)
+            .center_y()
+            .child(Switch::new(marked.unwrap_or(false)).label("Sensitive").on_toggle(flip_sens).build(k).key("sens-toggle"))
+            .child(text(match marked {
+                Some(true) => "Folders and groups do not share it, and an agent key needs clearance to read it.",
+                Some(false) => "Mark it to keep it from agent keys without clearance and from folder and group shares.",
+                None => "Asking the ship.",
+            }).font(k.ty.small).color(c.text_muted).wrap().grow(1.0).min_w(0.0)),
+    );
     // the ships let in by name: this works on a private page too
     // a folder's readers are not listed: the access list names a folder's pages one by one
     let who = if folder { Vec::new() } else { api::readers(&s.groups, &p.name) };
@@ -2202,6 +2270,7 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
         acts = acts.child(Button::new(if shared { "Shared" } else { "Share" }).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
             s.sharing = true;
             load_groups(s);
+            load_sens(s);
         }).build(k).key("folder-share"));
     }
     // a memory is its own key: there is no folder on the ship to move or delete
@@ -2356,6 +2425,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             trailing = trailing.child(Button::new(if shared { "Shared" } else { "Share" }).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
                 s.sharing = true;
                 load_groups(s);
+                load_sens(s);
             }).build(&k).key("share"));
         }
         if !s.memory {
@@ -2690,6 +2760,21 @@ mod tests {
         // picking something else stops the wait
         show_page(&mut s, "welcome");
         assert_eq!((s.want.as_deref(), s.open.as_ref().map(|p| p.name.as_str())), (None, Some("welcome")));
+    }
+
+    #[test]
+    fn the_sensitive_mark_flips_for_what_the_dialog_is_about() {
+        let mut s = sample("welcome");
+        flip_sens(&mut s);
+        assert_eq!(s.sens.get("welcome"), Some(&true));
+        assert!(s.note.starts_with("welcome is sensitive:"));
+        flip_sens(&mut s);
+        assert_eq!((s.sens.get("welcome"), s.note.as_str()), (Some(&false), "welcome is no longer marked sensitive"));
+        // a folder showing is marked by its own name, and the page stays as it was
+        s.open = None;
+        s.folder = Some("notes".into());
+        flip_sens(&mut s);
+        assert_eq!((s.sens.get("notes"), s.sens.get("welcome")), (Some(&true), Some(&false)));
     }
 
     #[test]

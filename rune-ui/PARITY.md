@@ -33,7 +33,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Shared with me: a list of the pages other ships shared, opening one in place of a page, editing and saving it back when the ship lets this one, and forgetting a notice (`/shared-with-me`, `/browse-file`, `/remote-save`, `/shared-with-me-del`). The screens run on a sample notice. Against a fake ship the list is empty, and reading or saving to a ship that is not there is an error and never a page
 - [!] Shared with me, read and saved between two real ships: blocked on a second running ship. Every fake ship here is the same ~zod
 - [x] Display names for pages and folders: a name typed with capitals, spaces or punctuation becomes a path by the web client's own rule and is kept to show (`dname`, `dnames` on `/page-save` and `/page-move`), in the tree and the title
-- [ ] Sensitive flag: show it, set it (`/page-sensitive`)
+- [x] Sensitive flag: a switch in the share dialog shows a page's or folder's own mark and sets it (`/page-sensitive`), and says when the page is still shared by its own setting. A page that is sensitive only through its folder is not shown as such
 - [ ] Comments on a page (`ui-src/lattice/` comments code, `/comments`)
 - [ ] Backlinks and ghost links (pages that link here, links to pages not made)
 - [ ] Quick capture

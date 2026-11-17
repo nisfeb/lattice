@@ -267,6 +267,14 @@ struct RemoteSaved {
     rev: u64,
 }
 
+#[derive(Deserialize)]
+struct Flag {
+    #[serde(default)]
+    on: bool,
+    #[serde(default)]
+    shared: bool,
+}
+
 /// One stored revision of a page.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub struct Rev {
@@ -674,6 +682,22 @@ impl Conn {
         Ok((r.outcome == "landed").then_some(r.rev))
     }
 
+    /// Whether a page or folder is marked sensitive itself. A page under a
+    /// sensitive folder is sensitive too, and this does not say so.
+    pub fn sensitive(&self, name: &str) -> Result<bool, String> {
+        let f: Flag = serde_json::from_str(&self.call("GET", &format!("page-sensitive?name={}", enc(name)), None)?).map_err(|e| e.to_string())?;
+        Ok(f.on)
+    }
+
+    /// Marks a page or folder sensitive, or clears the mark. Marking takes
+    /// back what folders and groups granted. Answers whether the page is
+    /// still shared by its own setting, which the mark leaves alone.
+    pub fn set_sensitive(&self, name: &str, on: bool) -> Result<bool, String> {
+        let q = format!("page-sensitive?name={}&on={}", enc(name), if on { 1 } else { 0 });
+        let f: Flag = serde_json::from_str(&self.call_in(120, "POST", &q, Some(""))?).map_err(|e| e.to_string())?;
+        Ok(f.shared)
+    }
+
     /// The ships that are banned, in the ship's order.
     pub fn bans(&self) -> Result<Vec<String>, String> {
         serde_json::from_str(&self.call("GET", "banlist", None)?).map_err(|e| e.to_string())
@@ -939,6 +963,16 @@ mod tests {
         c.group_save(&g.with_level(&base, "rune-probe", Level::Edit)).unwrap();
         c.group_delete(&gname).unwrap();
         assert!(c.group_save(&Group { name: "Bad Name".into(), ..Group::default() }).unwrap_err().starts_with("400"));
+        // the sensitive mark is set, read back and cleared, and says when the page is still shared
+        assert!(!c.sensitive("rune-probe").unwrap());
+        assert!(!c.set_sensitive("rune-probe", true).unwrap(), "a private page is not still shared");
+        assert!(c.sensitive("rune-probe").unwrap());
+        c.share("rune-probe", "clearweb").unwrap();
+        assert!(c.set_sensitive("rune-probe", true).unwrap(), "its own share stands, and the answer says so");
+        c.share("rune-probe", "private").unwrap();
+        assert!(!c.set_sensitive("rune-probe", false).unwrap());
+        assert!(!c.sensitive("rune-probe").unwrap());
+        assert!(c.sensitive("no/such/page-here").is_ok_and(|on| !on) && c.set_sensitive("no/such/page-here", true).unwrap_err().starts_with("404"));
         // a name typed with capitals and spaces is kept to show, for the page and its folder
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         let typed = format!("Rune Names {stamp}/My Page");

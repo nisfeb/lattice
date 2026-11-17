@@ -1,0 +1,5 @@
+{"events": [
+  {"t": 2.5, "type": "tap", "key": "secret"},
+  {"t": 3.5, "type": "tap", "key": "share"},
+  {"t": 6.0, "type": "tap", "key": "sens-toggle"}
+]}
