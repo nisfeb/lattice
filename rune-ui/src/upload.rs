@@ -1,0 +1,166 @@
+//! Files from this machine turned into pages: which kind an extension
+//! is, the name a path becomes, and reading a file or a folder of them.
+//! The web client's rules (`ui-src/lattice/30-tree.js`, `70-upload.js`).
+
+use std::path::Path;
+
+/// One page to make: its name, its kind and its text.
+#[derive(Debug, PartialEq)]
+pub struct Item {
+    pub name: String,
+    pub kind: &'static str,
+    pub body: String,
+}
+
+/// What a pick came to: the pages to make, and the files left out with why.
+#[derive(Debug, Default, PartialEq)]
+pub struct Plan {
+    pub items: Vec<Item>,
+    pub skipped: Vec<String>,
+}
+
+/// The most files taken from one folder, and the largest file read.
+const MAX_FILES: usize = 2000;
+const MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The page kind a file's extension makes. `None` is a file that is not
+/// uploaded: never guessed.
+pub fn ext_kind(ext: &str) -> Option<&'static str> {
+    Some(match ext.to_ascii_lowercase().as_str() {
+        "md" => "md",
+        "gmi" => "gmi",
+        "html" | "htm" => "html",
+        "txt" | "text" => "text",
+        "js" => "js",
+        "css" => "css",
+        "hoon" => "hoon",
+        "tex" | "latex" => "tex",
+        "fodt" => "fodt",
+        "fods" => "fods",
+        "geojson" => "geojson",
+        "scad" => "scad",
+        _ => return None,
+    })
+}
+
+/// The page a file becomes: its path without the extension, each part
+/// made a name a page can have, under `dir` when there is one.
+pub fn page_name(rel: &str, dir: &str) -> Option<(String, &'static str)> {
+    let (stem, ext) = rel.rsplit_once('.')?;
+    let kind = ext_kind(ext)?;
+    let under = if dir.is_empty() { stem.to_owned() } else { format!("{}/{stem}", dir.trim_matches('/')) };
+    Some((crate::api::real_name(&under)?.name, kind))
+}
+
+/// Why a file with this extension is left out, for the ones the web
+/// client takes through a converter this client does not have.
+fn why_not(rel: &str) -> String {
+    let ext = rel.rsplit_once('.').map_or("", |p| p.1).to_ascii_lowercase();
+    match ext.as_str() {
+        "odt" | "ods" | "csv" => format!("{rel} (needs a converter this client does not have)"),
+        _ => format!("{rel} (not a kind of page)"),
+    }
+}
+
+/// Reads one file into the plan. A file too large, or not text, is left out.
+fn take(plan: &mut Plan, path: &Path, rel: &str, dir: &str) {
+    let Some((name, kind)) = page_name(rel, dir) else {
+        plan.skipped.push(why_not(rel));
+        return;
+    };
+    match std::fs::metadata(path) {
+        Ok(m) if m.len() > MAX_BYTES => return plan.skipped.push(format!("{rel} (larger than 4 MB)")),
+        Err(e) => return plan.skipped.push(format!("{rel} ({e})")),
+        Ok(_) => {}
+    }
+    match std::fs::read_to_string(path) {
+        Ok(body) => plan.items.push(Item { name, kind, body: if body.is_empty() { "\n".into() } else { body } }),
+        Err(_) => plan.skipped.push(format!("{rel} (not text)")),
+    }
+}
+
+/// The pages a picked file or folder makes, under `dir`. A folder keeps
+/// its own name as the first part, as a dropped folder does on the web.
+/// Hidden files and folders are passed over.
+pub fn read(path: &Path, dir: &str) -> Plan {
+    let mut plan = Plan::default();
+    let top = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if !path.is_dir() {
+        take(&mut plan, path, &top, dir);
+        return plan;
+    }
+    let mut stack = vec![(path.to_path_buf(), top)];
+    while let Some((at, rel)) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&at) else { continue };
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for e in entries {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let rel = format!("{rel}/{name}");
+            // a link is not followed: a loop would never end
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push((e.path(), rel)),
+                Ok(t) if t.is_file() => {
+                    if plan.items.len() + plan.skipped.len() >= MAX_FILES {
+                        plan.skipped.push(format!("everything after the first {MAX_FILES} files"));
+                        return plan;
+                    }
+                    take(&mut plan, &e.path(), &rel, dir);
+                }
+                _ => {}
+            }
+        }
+    }
+    plan.items.sort_by(|a, b| a.name.cmp(&b.name));
+    plan
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_files_extension_says_its_kind_and_its_path_its_name() {
+        assert_eq!(ext_kind("MD"), Some("md"));
+        assert_eq!(ext_kind("htm"), Some("html"));
+        assert_eq!(ext_kind("png"), None);
+        assert_eq!(page_name("Trip Notes/Day 1.md", ""), crate::api::real_name("Trip Notes/Day 1").map(|r| (r.name, "md")));
+        assert_eq!(page_name("a.b.txt", "notes").map(|p| p.1), Some("text"));
+        assert!(page_name("day.md", "notes/").unwrap().0.starts_with("notes/"));
+        assert_eq!(page_name("no-extension", ""), None);
+        assert_eq!(page_name("photo.png", ""), None);
+        assert_eq!(page_name(".md", ""), None, "nothing left for a name");
+    }
+
+    #[test]
+    fn a_folder_reads_as_its_text_files_and_says_what_it_left_out() {
+        let root = std::env::temp_dir().join(format!("lattice-rune-upload-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let top = root.join("Trip");
+        std::fs::create_dir_all(top.join("days")).unwrap();
+        std::fs::create_dir_all(top.join(".git")).unwrap();
+        std::fs::write(top.join("plan.md"), "# plan\n").unwrap();
+        std::fs::write(top.join("days/one.txt"), "").unwrap();
+        std::fs::write(top.join("days/map.geojson"), "{}").unwrap();
+        std::fs::write(top.join("photo.png"), [0x89, 0x50, 0xff, 0xfe]).unwrap();
+        std::fs::write(top.join("costs.csv"), "a,b\n").unwrap();
+        std::fs::write(top.join("bad.md"), [0xff, 0xfe, 0x00]).unwrap();
+        std::fs::write(top.join(".git/config.md"), "hidden\n").unwrap();
+        let plan = read(&top, "inbox");
+        let names: Vec<(&str, &str, &str)> = plan.items.iter().map(|i| (i.name.as_str(), i.kind, i.body.as_str())).collect();
+        assert_eq!(names, [("inbox/trip/days/map", "geojson", "{}"), ("inbox/trip/days/one", "text", "\n"), ("inbox/trip/plan", "md", "# plan\n")]);
+        let mut skipped = plan.skipped.clone();
+        skipped.sort();
+        assert_eq!(skipped, ["Trip/bad.md (not text)", "Trip/costs.csv (needs a converter this client does not have)", "Trip/photo.png (not a kind of page)"]);
+        // one file, with no folder to go under
+        let one = read(&top.join("plan.md"), "");
+        assert_eq!(one.items, [Item { name: "plan".into(), kind: "md", body: "# plan\n".into() }]);
+        // a path that is not there says so and makes nothing
+        let none = read(&top.join("gone.md"), "");
+        assert!(none.items.is_empty() && none.skipped.len() == 1);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+}

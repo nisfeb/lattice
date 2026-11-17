@@ -1051,6 +1051,13 @@ impl Conn {
         Ok(b.links.into_iter().filter(|l| l != name).collect())
     }
 
+    /// Saves many pages in one request: name, kind and text for each. All
+    /// of them or none, 200 at most. A page that exists is written over.
+    pub fn save_batch(&self, items: &[(String, &str, String)]) -> Result<(), String> {
+        let body: Vec<serde_json::Value> = items.iter().map(|(name, kind, body)| serde_json::json!({ "name": name, "type": kind, "body": body })).collect();
+        self.call_in(120, "POST", "page-save-batch", Some(&serde_json::Value::Array(body).to_string())).map(drop)
+    }
+
     /// The templates the ship has, by name.
     pub fn templates(&self) -> Result<Vec<String>, String> {
         let t: Templates = serde_json::from_str(&self.call("GET", "template-list", None)?).map_err(|e| e.to_string())?;
@@ -1422,6 +1429,18 @@ mod tests {
         c.comment_delete("rune-probe", &got.id).unwrap();
         assert!(mine(&c).is_none(), "a removed comment is gone");
         let run = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        // a batch makes every page in it, with the folders they need, and an empty one is refused
+        c.save_batch(&[(format!("rune-batch-{run}/a"), "md", "# a\n".into()), (format!("rune-batch-{run}/deep/b"), "text", "b\n".into())]).unwrap();
+        // the ship answers before it has written them all, so the last one is waited for
+        for _ in 0..40 {
+            if c.page(&format!("rune-batch-{run}/deep/b")).is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        assert_eq!(c.page(&format!("rune-batch-{run}/deep/b")).unwrap().body, "b\n");
+        assert_eq!(c.page(&format!("rune-batch-{run}/a")).unwrap().kind, "md");
+        assert!(c.save_batch(&[]).is_err());
         // templates: each one listed makes a page or a folder of pages, and a name in use is refused
         let tmpls = c.templates().unwrap();
         assert!(!tmpls.is_empty(), "the ship has templates");

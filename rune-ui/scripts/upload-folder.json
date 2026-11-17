@@ -1,0 +1,6 @@
+{"events": [
+  {"t": 3.0, "type": "key", "name": "p", "cmd": true},
+  {"t": 3.5, "type": "type", "text": "upload a folder"},
+  {"t": 4.0, "type": "key", "name": "Enter"},
+  {"t": 5.0, "type": "file-dialog", "path": "/tmp/lr-up/Second Trip"}
+]}

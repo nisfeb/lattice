@@ -1,0 +1,5 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "new"},
+  {"t": 2.5, "type": "tap", "key": "prompt-upload"},
+  {"t": 3.5, "type": "file-dialog", "path": "/tmp/lr-up/Trip Notes/plan.md"}
+]}

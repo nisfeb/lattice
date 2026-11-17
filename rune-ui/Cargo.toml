@@ -7,7 +7,7 @@ description = "An experimental native client for lattice, drawn with Rune. Not t
 
 [dependencies]
 # Rune is pre-release: pin one rev of `dev` for it and for every patch below.
-rune = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
+rune = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721", features = ["native-file-dialog"] }
 rune-kit = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721", features = ["markdown", "mermaid"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -8,6 +8,7 @@ mod api;
 mod map;
 mod md;
 mod sheet;
+mod upload;
 
 use std::collections::HashMap;
 
@@ -81,6 +82,8 @@ enum Op {
     /// A page or folder was marked sensitive or unmarked, and whether its
     /// own share still stands.
     Sensed(String, bool, bool),
+    /// Files were uploaded: the pages made, and the files left out with why.
+    Uploaded(Vec<String>, Vec<String>),
     /// A template made a page or a folder of pages at this name.
     Templated(String),
     /// An ask was sent or answered: what to say.
@@ -239,6 +242,9 @@ struct App {
     tab: usize,
     /// The page held beside the one in front, to read while working on another.
     split: Option<String>,
+    /// The tree is to be read once more a moment from now: the ship
+    /// answers a batch before it has written all of it.
+    resync: bool,
     /// Pages already read this session, so a second visit draws at once.
     cache: HashMap<String, Page>,
     note: String,
@@ -411,6 +417,7 @@ fn init() -> App {
         tabs: vec![Tab::default()],
         tab: 0,
         split: None,
+        resync: false,
         cache: HashMap::new(),
         note: String::new(),
         names: Vec::new(),
@@ -628,7 +635,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) => {}
+                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) => {}
             }
             Ok(op)
         }),
@@ -689,6 +696,16 @@ fn applied(s: &mut App, op: Op) {
             s.note = format!("{ship} can now {can} {n}{}", if told { "" } else { ", and was not reached to be told" });
             load_groups(s);
             return;
+        }
+        Op::Uploaded(made, skipped) => {
+            s.note = upload_note(made.len(), &skipped);
+            s.resync = true;
+            // what was made is shown when the tree has it: the one page, or the folder they share
+            s.land = match made.as_slice() {
+                [] => None,
+                [one] => Some(one.clone()),
+                many => Some(common_folder(many)).filter(|f| !f.is_empty()),
+            };
         }
         Op::Templated(name) => {
             s.tmpl = None;
@@ -1665,6 +1682,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
         changed |= autosave_tick(s, clock);
     }
+    if std::mem::take(&mut s.resync) && s.conn.is_some() {
+        s.next_sync = clock + 2.0;
+        tx.wake_after(std::time::Duration::from_secs(2));
+    }
     if s.conn.is_some() && clock >= s.next_sync {
         if s.next_sync > 0.0 {
             load_tree(s);
@@ -2110,6 +2131,95 @@ fn switcher(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
+/// What to say after an upload: how many pages, and the first few files left out.
+fn upload_note(made: usize, skipped: &[String]) -> String {
+    let pages = match made {
+        0 => "nothing was uploaded".to_owned(),
+        1 => "uploaded 1 page".to_owned(),
+        n => format!("uploaded {n} pages"),
+    };
+    if skipped.is_empty() {
+        return pages;
+    }
+    let shown = skipped.iter().take(4).cloned().collect::<Vec<_>>().join(", ");
+    let more = if skipped.len() > 4 { format!(", and {} more", skipped.len() - 4) } else { String::new() };
+    format!("{pages}. Left out {}: {shown}{more}", skipped.len())
+}
+
+/// The folder every one of these pages is under, or nothing.
+fn common_folder(names: &[String]) -> String {
+    let mut parts: Vec<&str> = names[0].split('/').collect();
+    parts.pop();
+    for n in &names[1..] {
+        let other: Vec<&str> = n.split('/').collect();
+        let same = parts.iter().zip(&other[..other.len() - 1]).take_while(|(a, b)| a == b).count();
+        parts.truncate(same);
+    }
+    parts.join("/")
+}
+
+/// Where an upload lands: the folder showing, or the top.
+fn upload_dir(s: &App) -> String {
+    match (&s.folder, &s.open) {
+        (Some(f), None) => f.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Asks for a file or a folder and uploads the text files in it as pages.
+fn ask_upload(s: &mut App, folder: bool, tx: &mut Tx) {
+    if s.editing {
+        return;
+    }
+    if s.memory {
+        flip(s);
+    }
+    let options = rune::FileDialogOptions { title: if folder { "Upload a folder" } else { "Upload a file" }.into(), ..Default::default() };
+    let answer = |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => upload(s, path),
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    };
+    if folder {
+        tx.open_folder(options, answer);
+    } else {
+        tx.open_file(options.filter("Pages", &["md", "gmi", "html", "htm", "txt", "text", "js", "css", "hoon", "tex", "latex", "fodt", "fods", "geojson", "scad"]), answer);
+    }
+}
+
+/// Reads the picked file or folder and saves its pages, off the window's thread.
+fn upload(s: &mut App, path: std::path::PathBuf) {
+    let dir = upload_dir(s);
+    s.note = format!("reading {}", path.display());
+    match s.conn.clone() {
+        Some(c) => s.op_req.request((c, path, dir), |(c, path, dir)| {
+            let plan = upload::read(&path, &dir);
+            let made: Vec<String> = plan.items.iter().map(|i| i.name.clone()).collect();
+            let items: Vec<(String, &str, String)> = plan.items.into_iter().map(|i| (i.name, i.kind, i.body)).collect();
+            // fifty to a request, as the web client sends them: each is all or nothing
+            for part in items.chunks(50) {
+                c.save_batch(part)?;
+            }
+            Ok(Op::Uploaded(made, plan.skipped))
+        }),
+        // sample pages: kept for the session
+        None => {
+            let plan = upload::read(&path, &dir);
+            let made: Vec<String> = plan.items.iter().map(|i| i.name.clone()).collect();
+            for i in plan.items {
+                if !s.names.contains(&i.name) {
+                    s.names.push(i.name.clone());
+                }
+                s.cache.insert(i.name.clone(), Page { name: i.name, body: i.body, kind: i.kind.into(), rev: 1 });
+            }
+            applied(s, Op::Uploaded(made, plan.skipped));
+            if let Some(name) = s.land.take() {
+                land_on(s, &name);
+            }
+        }
+    }
+}
+
 /// Shows what a template made: the page of that name, or the index of
 /// the folder it made, or the folder.
 fn land_on(s: &mut App, name: &str) {
@@ -2456,6 +2566,8 @@ fn open_share(s: &mut App) {
 const COMMANDS: &[(&str, &str)] = &[
     ("new", "New page or memory"),
     ("template", "New from a template"),
+    ("upload", "Upload a file as a page"),
+    ("upload-folder", "Upload a folder of files as pages"),
     ("capture", "Capture a page to the inbox"),
     ("today", "Today's journal page"),
     ("open", "Open a page"),
@@ -2522,6 +2634,8 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
     match id {
         "new" => ask_new(s),
         "template" => ask_template(s),
+        "upload" => ask_upload(s, false, tx),
+        "upload-folder" => ask_upload(s, true, tx),
         "capture" => {
             capture(s);
             tx.focus_when_shown(FIELD, false);
@@ -2688,6 +2802,10 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
     };
     let mut buttons = row().w_full().gap(8.0).justify_end();
     if matches!(p, Prompt::New(_)) && !s.memory {
+        buttons = buttons.child(Button::new("Upload").variant(ButtonVariant::Ghost).help("Make pages from a file on this machine").on_press_tx(|s: &mut App, tx| {
+            s.prompt = None;
+            ask_upload(s, false, tx);
+        }).build(k).key("prompt-upload"));
         buttons = buttons.child(Button::new("From a template").variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
             s.prompt = None;
             ask_template(s);
@@ -4330,7 +4448,7 @@ mod tests {
         s.prefs.used.clear();
         let ids = |s: &App, q: &str| commands(s, q).into_iter().map(|c| c.0).collect::<Vec<_>>();
         // nothing run yet: the table's order, without what needs a ship
-        assert_eq!(ids(&s, "")[..3], ["new", "template", "capture"]);
+        assert_eq!(ids(&s, "")[..3], ["new", "template", "upload"]);
         assert!(!ids(&s, "").contains(&"reload"));
         // run two: the last is first, the one before it second, the rest as they were
         s.prefs.used = vec!["rename".into(), "theme".into()];
@@ -4560,6 +4678,32 @@ mod tests {
         s.open = None;
         toggle_split(&mut s);
         assert_eq!(s.split, None);
+    }
+
+    #[test]
+    fn an_upload_makes_pages_says_what_it_left_out_and_shows_what_it_made() {
+        let root = std::env::temp_dir().join(format!("lattice-rune-up-main-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Trip/days")).unwrap();
+        std::fs::write(root.join("Trip/plan.md"), "# plan\n").unwrap();
+        std::fs::write(root.join("Trip/days/one.md"), "one\n").unwrap();
+        std::fs::write(root.join("Trip/photo.png"), [1u8, 2, 3]).unwrap();
+        let mut s = sample("welcome");
+        upload(&mut s, root.join("Trip"));
+        assert!(s.names.contains(&"trip/plan".to_owned()) && s.cache["trip/days/one"].body == "one\n");
+        assert_eq!(s.note, "uploaded 2 pages. Left out 1: Trip/photo.png (not a kind of page)");
+        assert_eq!((s.open.is_none(), s.folder.as_deref()), (true, Some("trip")), "the folder they share is shown");
+        // one file, into the folder showing: it is opened
+        upload(&mut s, root.join("Trip/plan.md"));
+        assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("trip/plan"));
+        assert_eq!(s.note, "uploaded 1 page");
+        // nothing usable
+        upload(&mut s, root.join("Trip/photo.png"));
+        assert!(s.note.starts_with("nothing was uploaded. Left out 1"));
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(common_folder(&["a/b/c".into(), "a/b/d/e".into(), "a/x".into()]), "a");
+        assert_eq!(common_folder(&["a".into(), "b".into()]), "");
+        assert_eq!(upload_note(3, &(0..6).map(|i| format!("f{i}")).collect::<Vec<_>>()), "uploaded 3 pages. Left out 6: f0, f1, f2, f3, and 2 more");
     }
 
     #[test]
