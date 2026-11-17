@@ -27,7 +27,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [!] Share grants seen from the other side: blocked on a second running ship, and on a test pier whose kernel takes more than one group write (see share groups below). A grant to a ship that is not running takes about 29 s to answer
 - [x] Share groups: an Access screen lists groups, makes one and deletes one, and the share dialog sets a group to none, read or edit on the page (`/share-group-save`, `/share-group-del`, `/streams` for the base path). The first group write on a fresh fake ship lands and reads back, and the screens show it
 - [!] Share groups, a change or a delete seen on the ship: blocked on a test pier with the patched kernel. On the fake ships' kernel only the first group write of a pier's life changes `/share-groups`. Every later one answers ok and does nothing, with or without ships in the group
-- [ ] Change a group's ships after it is made, from the Access screen
+- [x] Change a group's ships after it is made, from the Access screen. The screen and the request were run on a fake ship. That the ship's list then changes falls under the blocked line above
 - [ ] Bans: list, ban, unban (`/banlist`, `/ban`, `/unban`)
 - [ ] Folder sharing (`/page-share-dir`)
 - [ ] Shared with me: pages other ships shared, and opening them (`/shared-with-me`, `/browse-file`, `/remote-save`)

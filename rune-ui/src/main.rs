@@ -121,6 +121,8 @@ struct App {
     access: bool,
     group_name: TextEdit,
     group_ships: TextEdit,
+    /// The group whose ships are being changed, and the ships as typed.
+    group_edit: Option<(String, TextEdit)>,
     /// Showing memories, not pages. The tree, the names and the kept texts
     /// are those of what is showing, and `other` holds the same three for
     /// what is not (+flip swaps them).
@@ -233,6 +235,7 @@ fn init() -> App {
         access: false,
         group_name: TextEdit::new(""),
         group_ships: TextEdit::new(""),
+        group_edit: None,
         memory: false,
         other: Default::default(),
         know_meta: HashMap::new(),
@@ -1396,6 +1399,19 @@ fn save_group(s: &mut App, g: Group, say: String) {
     });
 }
 
+/// Writes the ships typed for the group being changed.
+fn save_ships(s: &mut App) {
+    let Some((name, typed)) = s.group_edit.take() else { return };
+    let Some(g) = s.groups.iter().find(|g| g.name == name) else { return };
+    match g.with_ships(&typed.text) {
+        Ok(next) => save_group(s, next, format!("changed the ships of {name}")),
+        Err(e) => {
+            s.note = e;
+            s.group_edit = Some((name, typed));
+        }
+    }
+}
+
 /// Makes the group typed on the access screen.
 fn new_group(s: &mut App) {
     let name = s.group_name.text.trim().to_owned();
@@ -1426,6 +1442,29 @@ fn access_view(s: &App, k: &Kit) -> El {
     for g in s.groups.iter().filter(|g| g.name != "public") {
         let name = g.name.clone();
         let ships = if g.ships.is_empty() { "no ships".to_owned() } else { g.ships.join(" ") };
+        // the group whose ships are being changed shows a field in place of them
+        if let Some((_, typed)) = s.group_edit.as_ref().filter(|(n, _)| *n == g.name) {
+            list = list.child(
+                col()
+                    .key(format!("group-{}", g.name))
+                    .w_full()
+                    .px(12.0)
+                    .py(8.0)
+                    .gap(8.0)
+                    .radius(k.radius.md)
+                    .border(1.0, c.text_accent)
+                    .child(text(g.name.clone()).font(k.ty.ui_medium).color(c.text_base))
+                    .child(TextInput::new(typed).label("Ships").placeholder("~sampel-palnet ~zod").on_edit(|s: &mut App| &mut s.group_edit.as_mut().expect("a group is being changed").1).on_submit(|s: &mut App, _| save_ships(s)).build(k).w_full().key("group-edit-ships"))
+                    .child(
+                        row()
+                            .gap(8.0)
+                            .child(Button::new("Save ships").control_size(ControlSize::Small).variant(ButtonVariant::Contrast).on_press(save_ships).build(k).key("group-edit-save"))
+                            .child(Button::new("Cancel").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.group_edit = None).build(k).key("group-edit-cancel")),
+                    ),
+            );
+            continue;
+        }
+        let (edit_name, edit_ships) = (g.name.clone(), g.ships.join(" "));
         list = list.child(
             row()
                 .key(format!("group-{}", g.name))
@@ -1445,6 +1484,11 @@ fn access_view(s: &App, k: &Kit) -> El {
                         .child(text(ships).font(k.ty.mono).color(c.text_muted).truncate())
                         .child(text(format!("reads {} paths, edits {}", g.peek.len(), g.make.len())).font(k.ty.small).color(c.text_faint)),
                 )
+                .child(Button::new("Ships").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| {
+                    let mut t = TextEdit::new(edit_ships.clone());
+                    t.focused = true;
+                    s.group_edit = Some((edit_name.clone(), t));
+                }).build(k).key(format!("group-ships-{}", g.name)))
                 .child(Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| {
                     let Some(c) = s.conn.clone() else { return };
                     s.op_req.request((c, name.clone()), |(c, n)| {
@@ -2245,6 +2289,25 @@ mod tests {
         confirm(&mut s);
         assert!(under(&s.names, "archive").is_empty() && s.folder.is_none());
         assert!(s.names.contains(&"welcome".to_owned()) && s.cache.contains_key("welcome"));
+    }
+
+    #[test]
+    fn a_groups_ships_are_changed_only_by_a_list_that_reads() {
+        let mut s = sample("welcome");
+        s.groups = vec![Group { name: "team".into(), ships: vec!["~nec".into()], peek: vec!["/x/page/a/code".into()], make: vec![] }];
+        // a list that does not read keeps the field open and says why
+        s.group_edit = Some(("team".into(), TextEdit::new("~nec Bad")));
+        save_ships(&mut s);
+        assert_eq!(s.note, "Bad is not a ship's name");
+        assert!(matches!(&s.group_edit, Some((n, t)) if n == "team" && t.text == "~nec Bad"));
+        // one that reads closes it (with no ship to write to here, nothing more happens)
+        s.group_edit = Some(("team".into(), TextEdit::new("~nec ~wes")));
+        save_ships(&mut s);
+        assert!(s.group_edit.is_none());
+        // a group that went away meanwhile is not written
+        s.group_edit = Some(("gone".into(), TextEdit::new("~nec")));
+        save_ships(&mut s);
+        assert!(s.group_edit.is_none());
     }
 
     #[test]

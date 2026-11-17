@@ -108,6 +108,14 @@ impl Group {
         }
     }
 
+    /// This group with the ships typed in place of its own. Its paths stay.
+    pub fn with_ships(&self, typed: &str) -> Result<Group, String> {
+        let mut ships = ship_list(typed)?;
+        ships.sort();
+        ships.dedup();
+        Ok(Group { ships, ..self.clone() })
+    }
+
     /// This group with its grant on the page `name` set to `level`. Every
     /// other path it holds is kept as it is.
     pub fn with_level(&self, base: &str, name: &str, level: Level) -> Group {
@@ -598,6 +606,9 @@ mod tests {
         assert_eq!((edit.level(base, "a/b"), edit.peek.len(), edit.make.len()), (Level::Edit, 3, 1), "an edit grant reads too, and is not listed twice");
         assert_eq!(edit.with_level(base, "a/b", Level::None), g, "taking it back leaves the group as it was");
         assert_eq!(ship_list(" nec, ~bud\n~wes ").unwrap(), ["~nec", "~bud", "~wes"]);
+        let swapped = edit.with_ships("wes ~nec wes").unwrap();
+        assert_eq!((swapped.ships.clone(), swapped.peek.len(), swapped.make.len()), (vec!["~nec".to_owned(), "~wes".to_owned()], 3, 1), "new ships, once each, and the same paths");
+        assert!(edit.with_ships("").unwrap().ships.is_empty() && edit.with_ships("Nope").is_err());
         assert_eq!(ship_list("nec Bad").unwrap_err(), "Bad is not a ship's name");
         assert!(ship_list("").unwrap().is_empty());
         assert!(group_name_ok("team-2") && !group_name_ok("Team") && !group_name_ok("2team") && !group_name_ok("") && !group_name_ok("a b"));
