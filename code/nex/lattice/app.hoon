@@ -2335,9 +2335,20 @@
   ::  map tiles: GET /tile/<style>/<z>/<x>/<y>, the owner's cookie only.
   ::  No agent key and no peer: a tile spends the owner's Mapbox quota and
   ::  says where they are looking. Answered before the key lookup, so a
-  ::  tile costs no scry it does not need (+serve-tile).
+  ::  tile costs no scry it does not need (+serve-tile). A tile another
+  ::  site asked for (an <img> on any page the owner visits sends the
+  ::  cookie) is refused, as a write is above. Only same-origin and a
+  ::  typed url pass: the editor and its service worker are same-origin,
+  ::  and a same-site sibling has no need of the owner's tiles. A client
+  ::  that sends no such header (curl, an older browser) is not refused.
   ?:  &(?=([%tile *] suffix) =(%'GET' method.request.req))
     ?.  authenticated.req  (send-err eyre-id 403 'forbidden')
+    ?:  %:  cross-site:lu
+          (get-header:http 'sec-fetch-site' header-list.request.req)
+          (get-header:http 'origin' header-list.request.req)
+          (get-header:http 'host' header-list.request.req)
+        ==
+      (send-err eyre-id 403 'cross-site request refused')
     (serve-tile up eyre-id t.suffix)
   ::  owner gate. Eyre stamps a request authenticated to our web login with
   ::  src=our, so `authenticated` (already in hand, synchronous) IS the src==our
@@ -6239,8 +6250,10 @@
   ?.  ?=(%cont -.next.out)  out
   [darts.out state.out %cont (tile-gate self.next.out t0 n)]
 ::  +tile-ask: the eyre id of the poke that opens a tile request of the
-::  owner's, ~ for any other input. An unauthenticated one is not
-::  counted: it is refused before any work (+handle-request).
+::  owner's, ~ for any other input. An unauthenticated or a cross-site
+::  one is not counted: it is refused before any work (+handle-request).
+::  A tile is found from the parse the router reads, so a url that
+::  spells /tile/ with %-escapes is counted as the router serves it.
 ++  tile-ask
   |=  in=(unit intake:fiber:nexus)
   ^-  (unit @ta)
@@ -6251,7 +6264,15 @@
   ?~  r  ~
   ?.  authenticated.req.u.r  ~
   ?.  =(%'GET' method.request.req.u.r)  ~
-  ?.  =('/apps/lattice/tile/' (end [3 19] url.request.req.u.r))  ~
+  =/  suf  (mole |.((slag 2 site:(parse-url:http-utils url.request.req.u.r))))
+  ?.  ?=([~ %tile *] suf)  ~
+  =*  hs  header-list.request.req.u.r
+  ?:  %:  cross-site:lu
+        (get-header:http 'sec-fetch-site' hs)
+        (get-header:http 'origin' hs)
+        (get-header:http 'host' hs)
+      ==
+    ~
   `eyre-id.u.r
 ::  +token-ok: a token's shape: up to 512 bytes of letters, digits and . _ -
 ++  token-ok
