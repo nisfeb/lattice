@@ -977,14 +977,15 @@ impl Conn {
         Ok(f.shared)
     }
 
-    /// The address an image on this ship is fetched at, and the cookie to
-    /// send with it: a path from the ship's root, or one beside the page.
-    pub fn image_url(&self, src: &str, page: &str) -> String {
+    /// The address an image on this ship is fetched at: a path from the
+    /// ship's root as it is, and any other path from the app's own
+    /// folder, which is where the web client's page resolves it.
+    pub fn image_url(&self, src: &str) -> String {
         if src.starts_with('/') {
-            return format!("{}{src}", self.url);
+            format!("{}{src}", self.url)
+        } else {
+            format!("{}/apps/lattice/{src}", self.url)
         }
-        let dir = page.rsplit_once('/').map_or("", |p| p.0);
-        format!("{}/apps/lattice/page/{}{}{src}", self.url, dir, if dir.is_empty() { "" } else { "/" })
     }
 
     pub fn cookie(&self) -> &str {
@@ -1389,6 +1390,14 @@ mod tests {
         assert!(d.len() == 10 && d.as_bytes()[4] == b'-' && d.as_bytes()[7] == b'-' && d.starts_with("20"), "{d}");
     }
 
+    #[test]
+    fn an_image_on_the_ship_is_asked_for_at_the_ship() {
+        let c = Conn { url: "http://ship.example".into(), cookie: "k=v".into() };
+        assert_eq!(c.image_url("/apps/lattice/icon.svg"), "http://ship.example/apps/lattice/icon.svg");
+        assert_eq!(c.image_url("icon.svg"), "http://ship.example/apps/lattice/icon.svg");
+        assert_eq!(c.image_url("pics/a.png"), "http://ship.example/apps/lattice/pics/a.png");
+    }
+
     /// Against a real ship: `LATTICE_URL=.. LATTICE_COOKIE=.. cargo test -- --ignored`.
     /// It needs a page named `rune-probe` to exist.
     #[test]
@@ -1505,6 +1514,12 @@ mod tests {
         let none = format!("rune-none-{run}");
         let _ = c.template_new("no-such-template", &RealName { name: none.clone(), dname: String::new(), dnames: String::new() });
         assert!(!c.tree().unwrap().iter().any(|n| n.path.starts_with(&none)));
+        // the ship's own images come back as images, with the session
+        let svg = fetch_bytes(&c.image_url("icon.svg"), Some(c.cookie())).unwrap();
+        assert!(String::from_utf8_lossy(&svg).contains("<svg"), "the icon is an svg");
+        let png = fetch_bytes(&c.image_url("/apps/lattice/apple-touch-icon.png"), Some(c.cookie())).unwrap();
+        assert!(png.starts_with(&[0x89, b'P', b'N', b'G']), "the touch icon is a png");
+        assert!(fetch_bytes(&c.image_url("no-such-image.png"), Some(c.cookie())).is_err());
         // only orrery's map is said to be kept or not, and with no orrery here it is not
         assert_eq!(c.kept("rune-probe").unwrap(), None);
         if !c.tree().unwrap().iter().any(|n| n.path == "orrery/map") {

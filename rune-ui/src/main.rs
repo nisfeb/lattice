@@ -1189,7 +1189,7 @@ fn sync_pics(s: &mut App) {
             (if src.starts_with("//") { format!("https:{src}") } else { src.clone() }, None)
         } else {
             match (&s.conn, &s.remote) {
-                (Some(c), None) => (c.image_url(&src, &p.name), Some(c.cookie().to_owned())),
+                (Some(c), None) => (c.image_url(&src), Some(c.cookie().to_owned())),
                 _ => continue,
             }
         };
