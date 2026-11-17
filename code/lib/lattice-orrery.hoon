@@ -206,6 +206,21 @@
       ?~(p.u.fs '' '\0a')
       ']}\0a'
   ==
+::  +map-notice: the orrery/map page when orrery's map is one lattice
+::  refuses (`why`, the reason +gj-check gives): no features, and a title
+::  that says so, so the refusal shows without a large page
+++  map-notice
+  |=  why=@t
+  ^-  @t
+  %+  rap  3
+  :~  '{"type":"FeatureCollection","lattice":'
+      %-  en:json:html
+      %-  pairs:enjs:format
+      :~  ['title' s+(rap 3 ~['The map from orrery was too large to mirror: ' why])]
+          ['layers' a+~[s+'orrery/map-notes']]
+      ==
+      ',"features":[\0a]}\0a'
+  ==
 ::  +map-key: the map mirror's key in journal-synced.json. Its slash keeps
 ::  it apart from every journal day and week-<day>.
 ++  map-key  'orrery/map'

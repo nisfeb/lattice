@@ -13079,8 +13079,10 @@
 ::  the page still holds what it wrote (+map-skip:lo, on the record
 ::  +map-put keeps in journal-synced.json), the pass stops there: no
 ::  body is built and nothing is checked or poked. A document that is
-::  not a FeatureCollection, or a body over the map caps (+gj-check:lgj),
-::  writes nothing and keeps the last page.
+::  not a FeatureCollection writes nothing and keeps the last page. A
+::  body over the map caps (+gj-check:lgj) is written as a small map
+::  with no features whose title says why (+map-notice:lo), once, since
+::  its record then lets an unchanged refusal skip too.
 ::
 ++  orrery-map-pass
   =/  m  (fiber:fiber:nexus ,~)
@@ -13096,8 +13098,8 @@
   =/  doc=(unit json)  (mole |.(!<(json (need-vase:tarball sang.u.vw))))
   =/  body=(unit @t)  ?~(doc ~ (map-body:lo u.doc))
   ?~  body  (pure:m ~)
-  ?^  (gj-check:lgj u.body)  (pure:m ~)
-  (poke-eval [%map-put u.body at])
+  =/  bad=(unit @t)  (gj-check:lgj u.body)
+  (poke-eval [%map-put ?~(bad u.body (map-notice:lo u.bad)) at])
 ::  +map-put: %map-put, in the writer. orrery/map is written only when it
 ::  is missing or its body differs, so an unchanged map adds no revision
 ::  and a hand edit is put back. The mirror then records the version of

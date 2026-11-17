@@ -179,6 +179,26 @@
 ::  day or week-<day> can take it
 ++  test-map-key
   (expect-eq !>('orrery/map') !>(map-key:lo))
+::  a map lattice refuses is mirrored as a small map that says why
+++  test-map-notice
+  =/  b=@t  (map-notice:lo 'that map is over 4 MB')
+  ;:  weld
+    (expect-eq !>(~) !>((gj-check:gj b)))
+    %+  expect-eq
+      !>(`(unit @t)``'The map from orrery was too large to mirror: that map is over 4 MB')
+    !>((gj-title:gj b))
+    (expect-eq !>((map-doc ~)) !>((cut-lattice b)))
+    ::  a reason that needs escaping stays one string
+    (expect-eq !>(~) !>((gj-check:gj (map-notice:lo 'a "quoted" \\ reason'))))
+  ==
+::  the body with its lattice member taken out
+++  cut-lattice
+  |=  b=@t
+  ^-  json
+  =/  j=json  (need (de:json:html b))
+  ?>  ?=([%o *] j)
+  ?>  =(`[%a ~[s+'orrery/map-notes']] (biff (~(get by p.j) 'lattice') |=(l=json ?.(?=([%o *] l) ~ (~(get by p.l) 'layers')))))
+  [%o (~(del by p.j) 'lattice')]
 ++  test-travel-token
   ;:  weld
     (expect-eq !>(`'pk.abc') !>((travel-token:lo (pairs:enjs:format ~[['enabled' b+&] ['token' s+'pk.abc']]))))
