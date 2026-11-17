@@ -462,6 +462,12 @@ pub fn clip_note(s: &str) -> &str {
 }
 
 #[derive(Deserialize)]
+struct Templates {
+    #[serde(default)]
+    templates: Vec<String>,
+}
+
+#[derive(Deserialize)]
 struct Backlinks {
     #[serde(default)]
     links: Vec<String>,
@@ -1026,6 +1032,18 @@ impl Conn {
         Ok(b.links.into_iter().filter(|l| l != name).collect())
     }
 
+    /// The templates the ship has, by name.
+    pub fn templates(&self) -> Result<Vec<String>, String> {
+        let t: Templates = serde_json::from_str(&self.call("GET", "template-list", None)?).map_err(|e| e.to_string())?;
+        Ok(t.templates)
+    }
+
+    /// Makes a page, or a folder of pages, from a template. One save per
+    /// page on the ship, so it is given time.
+    pub fn template_new(&self, template: &str, rn: &RealName) -> Result<(), String> {
+        self.call_in(120, "POST", &format!("template-new?template={}&name={}{}", enc(template), enc(&rn.name), rn.query()), Some("")).map(drop).map_err(|e| if e.starts_with("409") { "a page by that name exists".into() } else { e })
+    }
+
     /// Removes one comment.
     pub fn comment_delete(&self, page: &str, id: &str) -> Result<(), String> {
         self.call("POST", &format!("comment-del?page={}&id={}", enc(page), enc(id)), Some("")).map(drop)
@@ -1384,6 +1402,22 @@ mod tests {
         assert!(c.comment("rune-probe", "").unwrap_err().starts_with("400"), "an empty comment is refused");
         c.comment_delete("rune-probe", &got.id).unwrap();
         assert!(mine(&c).is_none(), "a removed comment is gone");
+        let run = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        // templates: each one listed makes a page or a folder of pages, and a name in use is refused
+        let tmpls = c.templates().unwrap();
+        assert!(!tmpls.is_empty(), "the ship has templates");
+        for t in &tmpls {
+            let name = format!("rune-tmpl-{t}-{run}");
+            c.template_new(t, &RealName { name: name.clone(), dname: String::new(), dnames: String::new() }).unwrap();
+            let tree = c.tree().unwrap();
+            assert!(tree.iter().any(|n| n.path == name || n.path.starts_with(&format!("{name}/"))), "{t} made nothing at {name}");
+        }
+        let taken = RealName { name: "rune-probe".into(), dname: String::new(), dnames: String::new() };
+        assert_eq!(c.template_new(&tmpls[0], &taken).unwrap_err(), "a page by that name exists");
+        // a template that is not there: the ship answers ok and makes nothing, so only listed ones are offered
+        let none = format!("rune-none-{run}");
+        let _ = c.template_new("no-such-template", &RealName { name: none.clone(), dname: String::new(), dnames: String::new() });
+        assert!(!c.tree().unwrap().iter().any(|n| n.path.starts_with(&none)));
         // a captured page is made by its first save, with no create before it
         let cap = capture_name(&today(), u64::from(std::process::id()), &|_| false);
         let made = Page { name: cap.clone(), body: "a thought\n".into(), kind: "md".into(), rev: 0 };
@@ -1391,7 +1425,7 @@ mod tests {
         assert_eq!(c.page(&cap).unwrap().body, "a thought\n");
         assert!(c.tree().unwrap().iter().any(|n| n.page && n.path == cap));
         // a page that links to the probe is among its backlinks, once the ship has read it
-        let from = format!("rune-linker-{base}");
+        let from = format!("rune-linker-{run}");
         c.create(&from).unwrap();
         let mut linker = c.page(&from).unwrap();
         linker.body = "see [[rune-probe]]\n".into();
@@ -1452,6 +1486,13 @@ mod tests {
         assert_eq!(shown(&c, &to.name), Some("Our Page".into()));
         let plain = format!("{}/plain", to.name.split('/').next().unwrap());
         c.rename(&to.name, &plain).unwrap();
+        // the name to show goes in a step of its own behind the move, on a busy ship a moment later
+        for _ in 0..20 {
+            if shown(&c, &plain) == Some(String::new()) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
         assert_eq!(shown(&c, &plain), Some(String::new()));
         // a folder's share setting is taken by the pages in it, and cleared again
         let fdir = format!("rune-shared-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());

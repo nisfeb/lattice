@@ -49,7 +49,7 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 - [x] Command palette: Ctrl+P lists the commands that can run now, the ones run last first, kept per device. Typing narrows them. It holds the eighteen commands this client has, each of which has a button too. The web client's palette is longer, as its features are
 - [x] Wiki link completion: an unclosed `[[` at the caret offers up to eight pages on a line under the editor, in both editors. Tab completes, the arrows choose, Esc dismisses. A whole date offers that day's journal page first, written or not. The offers sit under the editor, not at the caret
 - [x] Today's journal page: a Today button opens the day's page under any of its three names, or starts it at `journal/YYYY-MM-DD`, named and ready to type in. A link to a page not written yet starts that page the same way, in place of the name dialog
-- [ ] New pages from a template (`/template-list`, `/template-new`)
+- [x] New from a template: a dialog lists the ship's templates and takes a name, makes the page or folder of pages (`/template-list`, `/template-new`), and opens the page, the folder's index, or the folder. It is reached from the New page dialog and the palette
 - [ ] Orrery mirror pages shown read-only
 - [ ] Tabs: more than one page open
 - [ ] Images in pages and uploads (pick, drop, paste)

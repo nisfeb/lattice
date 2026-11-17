@@ -67,6 +67,8 @@ enum Op {
     /// A page or folder was marked sensitive or unmarked, and whether its
     /// own share still stands.
     Sensed(String, bool, bool),
+    /// A template made a page or a folder of pages at this name.
+    Templated(String),
     /// An ask was sent or answered: what to say.
     Asked(String),
     /// Something about comments changed on the ship: what to say.
@@ -222,6 +224,13 @@ struct App {
     jump_at: usize,
     /// The command palette, when open: what is typed and the row chosen.
     palette: Option<TextEdit>,
+    /// New from a template: the ship's templates, the dialog when open
+    /// (the one chosen and the name typed), and what to show once the
+    /// tree has what the template made.
+    templates: Vec<String>,
+    templates_req: Latest<Result<Vec<String>, String>>,
+    tmpl: Option<(String, TextEdit)>,
+    land: Option<String>,
     /// Wiki link completion in the editor: the row chosen, and where the
     /// link being typed starts when its offers were dismissed.
     ac_at: usize,
@@ -378,6 +387,10 @@ fn init() -> App {
         jump: None,
         jump_at: 0,
         palette: None,
+        templates: Vec::new(),
+        templates_req: Latest::default(),
+        tmpl: None,
+        land: None,
         ac_at: 0,
         ac_off: None,
         palette_at: 0,
@@ -507,6 +520,7 @@ fn sign_out(s: &mut App) {
     fresh.comments_on_req = std::mem::take(&mut s.comments_on_req);
     fresh.held_req = std::mem::take(&mut s.held_req);
     fresh.notices_req = std::mem::take(&mut s.notices_req);
+    fresh.templates_req = std::mem::take(&mut s.templates_req);
     fresh.back_req = std::mem::take(&mut s.back_req);
     fresh.asks_req = std::mem::take(&mut s.asks_req);
     fresh.waiting_req = std::mem::take(&mut s.waiting_req);
@@ -583,7 +597,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) => {}
+                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) => {}
             }
             Ok(op)
         }),
@@ -644,6 +658,12 @@ fn applied(s: &mut App, op: Op) {
             s.note = format!("{ship} can now {can} {n}{}", if told { "" } else { ", and was not reached to be told" });
             load_groups(s);
             return;
+        }
+        Op::Templated(name) => {
+            s.tmpl = None;
+            s.note = format!("made {name} from a template");
+            // shown when the tree that has it arrives
+            s.land = Some(name);
         }
         Op::Asked(say) => {
             s.note = say;
@@ -745,6 +765,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.comments_on_req.set_waker(waker.clone());
     s.held_req.set_waker(waker.clone());
     s.notices_req.set_waker(waker.clone());
+    s.templates_req.set_waker(waker.clone());
     s.back_req.set_waker(waker.clone());
     s.asks_req.set_waker(waker.clone());
     s.waiting_req.set_waker(waker.clone());
@@ -1624,6 +1645,24 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Err(e) => s.note = format!("comments: {e}"),
         }
     }
+    if let Some(r) = s.templates_req.take() {
+        changed = true;
+        match r {
+            Ok(list) => {
+                // the first one is chosen until another is
+                if let Some((chosen, name)) = s.tmpl.as_mut().filter(|t| t.0.is_empty()) {
+                    *chosen = list.first().cloned().unwrap_or_default();
+                    if name.text.is_empty() || name.text.ends_with('/') {
+                        let seeded = format!("{}{chosen}", name.text);
+                        *name = TextEdit::new(seeded);
+                        name.focused = true;
+                    }
+                }
+                s.templates = list;
+            }
+            Err(e) => s.note = format!("templates: {e}"),
+        }
+    }
     if let Some(r) = s.back_req.take() {
         changed = true;
         if let Ok(b) = r {
@@ -1746,6 +1785,11 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 s.files = files_of(nodes, &s.files);
                 if first {
                     s.files.expand_all();
+                }
+                if !away {
+                    if let Some(name) = s.land.take() {
+                        land_on(s, &name);
+                    }
                 }
                 // the page that was open last run opens again, once
                 if !s.restored && !away {
@@ -1993,6 +2037,118 @@ fn switcher(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
+/// Shows what a template made: the page of that name, or the index of
+/// the folder it made, or the folder.
+fn land_on(s: &mut App, name: &str) {
+    let index = format!("{name}/index");
+    if s.names.iter().any(|n| n == name) {
+        s.files.select(name);
+        open_page(s, name);
+    } else if s.names.contains(&index) {
+        s.files.select(&index);
+        open_page(s, &index);
+    } else if !under(&s.names, name).is_empty() {
+        (s.open, s.remote, s.access, s.shared_open, s.inbox) = (None, None, false, false, false);
+        s.folder = Some(name.to_owned());
+    }
+}
+
+/// Opens the template dialog, with the name seeded by where a new page would go.
+fn ask_template(s: &mut App) {
+    if s.editing {
+        return;
+    }
+    if s.memory {
+        flip(s);
+    }
+    let dir = match (&s.folder, &s.open) {
+        (Some(f), None) => format!("{f}/"),
+        _ => String::new(),
+    };
+    let chosen = s.templates.first().cloned().unwrap_or_default();
+    let mut name = TextEdit::new(format!("{dir}{chosen}"));
+    name.focused = true;
+    s.tmpl = Some((chosen, name));
+    match s.conn.clone() {
+        Some(c) => s.templates_req.request(c, |c| c.templates()),
+        // sample pages: two to choose from, each a single page
+        None if s.templates.is_empty() => {
+            s.templates = vec!["note".into(), "site".into()];
+            s.tmpl = Some(("note".into(), TextEdit::new(format!("{dir}note"))));
+        }
+        None => {}
+    }
+}
+
+/// Makes what the template dialog describes.
+fn make_from_template(s: &mut App) {
+    let Some((chosen, name)) = &s.tmpl else { return };
+    if chosen.is_empty() {
+        s.note = "there is no template to start from".into();
+        return;
+    }
+    let Some(rn) = api::real_name(&name.text) else {
+        s.note = "that name has nothing a path can keep".into();
+        return;
+    };
+    if s.names.contains(&rn.name) {
+        s.note = "a page by that name exists".into();
+        return;
+    }
+    let chosen = chosen.clone();
+    s.dnames.extend(rn.shown());
+    match s.conn.clone() {
+        Some(c) => {
+            s.note = format!("making {} from {chosen}, one save for each page", rn.name);
+            s.op_req.request((c, chosen, rn), |(c, t, rn)| {
+                c.template_new(&t, &rn)?;
+                Ok(Op::Templated(rn.name))
+            });
+        }
+        None => {
+            s.tmpl = None;
+            applied(s, Op::Created(rn.name));
+        }
+    }
+}
+
+fn template_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
+    let Some((chosen, name)) = &s.tmpl else { return };
+    let mut pick = row().key("tmpl-list").w_full().gap(4.0).wrap();
+    for t in &s.templates {
+        let to = t.clone();
+        pick = pick.child(Button::new(t.clone()).control_size(ControlSize::Small).variant(if t == chosen { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
+            if let Some((chosen, name)) = s.tmpl.as_mut() {
+                // a name still as it was seeded follows the template chosen
+                if name.text.rsplit('/').next() == Some(chosen.as_str()) {
+                    let dir = name.text[..name.text.len() - chosen.len()].to_owned();
+                    *name = TextEdit::new(format!("{dir}{to}"));
+                    name.focused = true;
+                }
+                *chosen = to.clone();
+            }
+        }).build(k).key(format!("tmpl-{t}")));
+    }
+    if s.templates.is_empty() {
+        pick = pick.child(text(if s.templates_req.is_pending() { "Reading the templates" } else { "The ship has no templates." }).font(k.ty.small).color(k.c.text_muted));
+    }
+    let field = TextInput::new(name).label("Name").placeholder("folder/name").on_edit(|s: &mut App| &mut s.tmpl.as_mut().expect("the template dialog is open").1).on_submit(|s: &mut App, _| make_from_template(s)).build(k).w_full().key("tmpl-name");
+    let busy = s.op_req.is_pending();
+    let buttons = row()
+        .w_full()
+        .gap(8.0)
+        .justify_end()
+        .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.tmpl = None).build(k).key("tmpl-cancel"))
+        .child(Button::new(if busy { "Making" } else { "Create" }).variant(ButtonVariant::Contrast).disabled(busy || chosen.is_empty()).on_press(make_from_template).build(k).key("tmpl-ok"));
+    Dialog::new("template", "New from a template")
+        .open(true)
+        .width(460.0)
+        .fit()
+        .on_close(|s: &mut App| s.tmpl = None)
+        .child(col().w_full().gap(14.0).child(pick).child(field).child(text("A template can make several pages, with one save for each, so it takes a moment.").font(k.ty.small).color(k.c.text_muted).wrap()).child(buttons))
+        .build(k, layer);
+}
+
 fn go_shared(s: &mut App) {
     if !s.editing {
         s.shared_open = true;
@@ -2036,6 +2192,7 @@ fn open_share(s: &mut App) {
 /// a button on screen too.
 const COMMANDS: &[(&str, &str)] = &[
     ("new", "New page or memory"),
+    ("template", "New from a template"),
     ("capture", "Capture a page to the inbox"),
     ("today", "Today's journal page"),
     ("open", "Open a page"),
@@ -2094,6 +2251,7 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
     }
     match id {
         "new" => ask_new(s),
+        "template" => ask_template(s),
         "capture" => {
             capture(s);
             tx.focus_when_shown(FIELD, false);
@@ -2250,10 +2408,14 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             (ask, text(says).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger)
         }
     };
-    let buttons = row()
-        .w_full()
-        .gap(8.0)
-        .justify_end()
+    let mut buttons = row().w_full().gap(8.0).justify_end();
+    if matches!(p, Prompt::New(_)) && !s.memory {
+        buttons = buttons.child(Button::new("From a template").variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+            s.prompt = None;
+            ask_template(s);
+        }).build(k).key("prompt-template"));
+    }
+    let buttons = buttons
         .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.prompt = None).build(k).key("prompt-cancel"))
         .child(Button::new(verb).variant(variant).on_press(confirm).build(k).key("prompt-ok"));
     Dialog::new("prompt", title)
@@ -3471,6 +3633,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let mut layer = Vec::new();
     switcher(s, &k, &mut layer);
     palette_view(s, &k, &mut layer);
+    template_view(s, &k, &mut layer);
     prompt_view(s, &k, &mut layer);
     share_view(s, &k, &mut layer);
     let nav = |key: &str, label: &str, by: isize, on: bool| {
@@ -3874,11 +4037,11 @@ mod tests {
         s.prefs.used.clear();
         let ids = |s: &App, q: &str| commands(s, q).into_iter().map(|c| c.0).collect::<Vec<_>>();
         // nothing run yet: the table's order, without what needs a ship
-        assert_eq!(ids(&s, "")[..3], ["new", "capture", "today"]);
+        assert_eq!(ids(&s, "")[..3], ["new", "template", "capture"]);
         assert!(!ids(&s, "").contains(&"reload"));
         // run two: the last is first, the one before it second, the rest as they were
         s.prefs.used = vec!["rename".into(), "theme".into()];
-        assert_eq!(ids(&s, "")[..4], ["rename", "theme", "new", "capture"]);
+        assert_eq!(ids(&s, "")[..4], ["rename", "theme", "new", "template"]);
         // typing narrows, and among equal matches the one run last leads
         assert_eq!(ids(&s, "rename"), ["rename"]);
         assert!(ids(&s, "zzzz").is_empty());
@@ -3953,6 +4116,37 @@ mod tests {
         s.cache.insert(forms[2].clone(), Page { name: forms[2].clone(), body: "old\n".into(), kind: "md".into(), rev: 1 });
         open_today(&mut s);
         assert_eq!(s.open.as_ref().map(|p| p.name.clone()), Some(forms[2].clone()));
+    }
+
+    #[test]
+    fn what_a_template_made_is_shown_as_a_page_an_index_or_a_folder() {
+        let mut s = sample("welcome");
+        // a single page
+        land_on(&mut s, "budget");
+        assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("budget"));
+        // a folder with an index opens the index
+        for n in ["site/index", "site/about"] {
+            s.names.push(n.into());
+            s.cache.insert(n.into(), Page { name: n.into(), body: "x\n".into(), kind: "md".into(), rev: 1 });
+        }
+        land_on(&mut s, "site");
+        assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("site/index"));
+        // a folder without one shows the folder
+        land_on(&mut s, "notes");
+        assert_eq!((s.open.is_none(), s.folder.as_deref()), (true, Some("notes")));
+        // nothing made: nothing changes
+        land_on(&mut s, "nowhere");
+        assert_eq!(s.folder.as_deref(), Some("notes"));
+        // the dialog: seeded in the folder showing, a name in use refused, a new one made
+        ask_template(&mut s);
+        assert_eq!(s.tmpl.as_ref().map(|t| (t.0.as_str(), t.1.text.as_str())), Some(("note", "notes/note")));
+        s.tmpl.as_mut().unwrap().1 = TextEdit::new("budget");
+        make_from_template(&mut s);
+        assert!(s.tmpl.is_some() && s.note == "a page by that name exists");
+        s.tmpl.as_mut().unwrap().1 = TextEdit::new("notes/From Template");
+        make_from_template(&mut s);
+        let made = api::real_name("notes/From Template").unwrap().name;
+        assert!(s.tmpl.is_none() && s.names.contains(&made));
     }
 
     #[test]
