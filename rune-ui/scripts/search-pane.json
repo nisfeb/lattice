@@ -1,0 +1,11 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 1.5, "type": "key", "name": "f", "cmd": true, "shift": true},
+  {"t": 2.5, "type": "type", "text": "r"},
+  {"t": 3.5, "type": "type", "text": "une"},
+  {"t": 5.0, "type": "key", "name": "Down"},
+  {"t": 6.0, "type": "key", "name": "Enter"},
+  {"t": 8.0, "type": "tap", "key": "qk:project/lattice/rune"},
+  {"t": 9.5, "type": "tap", "key": "q:welcome"},
+  {"t": 11.5, "type": "tap", "key": "half-pages"}
+]}

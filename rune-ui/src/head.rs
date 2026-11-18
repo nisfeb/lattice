@@ -11,6 +11,7 @@ use rune::Icon;
 
 line!(DOC, "lat-doc", "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5");
 line!(KNOW, "lat-know", "M12 3l8 9-8 9-8-9z");
+line!(SEARCH, "lat-search", "M4 11a7 7 0 1 0 14 0a7 7 0 1 0-14 0M16 16l5 5");
 line!(QOPEN, "lat-qopen", "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4M14 3l5 5v3M14 3v5h5M13 16a3 3 0 1 0 6 0a3 3 0 1 0-6 0M18.2 18.2L21 21");
 line!(PLUS, "lat-plus", "M12 5v14M5 12h14");
 line!(TPL, "lat-tpl", "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM3 9h18M9 9v12");
@@ -20,9 +21,18 @@ line!(PEN, "lat-pen", "M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z");
 line!(SORT, "lat-sort", "M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4");
 line!(FOLD, "lat-fold", "M7 15l5 5 5-5M7 9l5-5 5 5");
 
-/// One of the pane's two tabs.
+/// What a tab shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Half {
+    Files,
+    Knowledge,
+    Search,
+}
+
+/// One of the pane's tabs.
 #[derive(Debug)]
 pub struct Tab {
+    pub what: Half,
     /// The key scripts press it by: the one its word button had.
     pub key: &'static str,
     pub name: &'static str,
@@ -33,12 +43,14 @@ pub struct Tab {
     pub said: String,
 }
 
-/// The tabs: files, then knowledge. `memory` is which half is showing.
-pub fn tabs(memory: bool, pages: usize, knows: usize) -> [Tab; 2] {
+/// The tabs: files, knowledge, then search. `memory` is which half of
+/// the tree is showing, and `searching` that the search is over it.
+pub fn tabs(memory: bool, searching: bool, pages: usize, knows: usize) -> [Tab; 3] {
     let n = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
     [
-        Tab { key: "half-pages", name: "Files", keys: Some("Ctrl+Shift+L"), icon: &DOC, on: !memory, said: format!("Files, {}", n(pages, "page", "pages")) },
-        Tab { key: "half-memory", name: "Knowledge", keys: None, icon: &KNOW, on: memory, said: format!("Knowledge, {}", n(knows, "memory", "memories")) },
+        Tab { what: Half::Files, key: "half-pages", name: "Files", keys: Some("Ctrl+Shift+L"), icon: &DOC, on: !memory && !searching, said: format!("Files, {}", n(pages, "page", "pages")) },
+        Tab { what: Half::Knowledge, key: "half-memory", name: "Knowledge", keys: None, icon: &KNOW, on: memory && !searching, said: format!("Knowledge, {}", n(knows, "memory", "memories")) },
+        Tab { what: Half::Search, key: "half-search", name: "Search", keys: Some("Ctrl+Shift+F"), icon: &SEARCH, on: searching, said: "Search".to_owned() },
     ]
 }
 
@@ -116,15 +128,24 @@ mod tests {
 
     #[test]
     fn the_tabs_keep_their_keys_and_say_their_counts() {
-        let t = tabs(false, 7, 1);
-        assert_eq!([t[0].key, t[1].key], ["half-pages", "half-memory"]);
+        let t = tabs(false, false, 7, 1);
+        assert_eq!([t[0].key, t[1].key, t[2].key], ["half-pages", "half-memory", "half-search"]);
         assert!(t[0].on && !t[1].on);
         assert_eq!(t[0].said, "Files, 7 pages");
         assert_eq!(t[1].said, "Knowledge, 1 memory");
-        let t = tabs(true, 1, 0);
-        assert!(!t[0].on && t[1].on);
+        let t = tabs(true, false, 1, 0);
+        assert!(!t[0].on && t[1].on && !t[2].on);
         assert_eq!(t[0].said, "Files, 1 page");
         assert_eq!(t[1].said, "Knowledge, 0 memories");
+    }
+
+    #[test]
+    fn searching_is_the_only_tab_marked_whichever_half_is_under_it() {
+        for memory in [false, true] {
+            let t = tabs(memory, true, 0, 0);
+            assert_eq!(t.iter().filter(|t| t.on).map(|t| t.what).collect::<Vec<_>>(), [Half::Search]);
+        }
+        assert_eq!(tabs(false, true, 0, 0)[2].keys, Some("Ctrl+Shift+F"));
     }
 
     #[test]
@@ -181,7 +202,7 @@ mod tests {
 
     #[test]
     fn every_icon_has_a_name_of_its_own() {
-        let mut names: Vec<_> = tools(false, false).iter().map(|t| t.icon.name).chain(tabs(false, 0, 0).iter().map(|t| t.icon.name)).collect();
+        let mut names: Vec<_> = tools(false, false).iter().map(|t| t.icon.name).chain(tabs(false, false, 0, 0).iter().map(|t| t.icon.name)).collect();
         let n = names.len();
         names.sort_unstable();
         names.dedup();

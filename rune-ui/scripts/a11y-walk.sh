@@ -25,6 +25,7 @@ walk comments welcome "$(tap comments-toggle-pane)"
 walk history welcome "$(tap history-toggle)"
 walk edit-rich welcome "$(tap edit)"
 walk edit-source welcome "$(tap edit)" "$(tap mode)"
+walk search-pane welcome "$(tap half-search)" '{"type": "type", "text": "rune"}'
 walk find welcome "$(key f)"
 walk palette welcome "$(key p)"
 walk jump welcome "$(key o)"

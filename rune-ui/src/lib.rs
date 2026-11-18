@@ -22,6 +22,7 @@ mod pdf;
 mod ribbon;
 mod scad;
 mod scadrun;
+mod search;
 mod sheet;
 mod shift;
 mod styles;
@@ -616,6 +617,17 @@ struct App {
     /// The quick switcher: its query while open, and the row the arrows are on.
     jump: Option<TextEdit>,
     jump_at: usize,
+    /// The left pane's Search tab is showing, over whichever half of the tree is.
+    searching: bool,
+    /// What is typed into it.
+    squery: TextEdit,
+    /// What it found, the most that are shown, and how many it found in all.
+    shits: Vec<search::Hit>,
+    sfound: usize,
+    /// Pages whose text is not held, so not searched.
+    sskipped: usize,
+    /// The result the arrows are on.
+    search_at: Option<usize>,
     /// The command palette, when open: what is typed and the row chosen.
     palette: Option<TextEdit>,
     /// New from a template: the ship's templates, the dialog when open
@@ -863,6 +875,12 @@ fn init() -> App {
         names: Vec::new(),
         jump: None,
         jump_at: 0,
+        searching: false,
+        squery: TextEdit::new(""),
+        shits: Vec::new(),
+        sfound: 0,
+        sskipped: 0,
+        search_at: None,
         palette: None,
         templates: Vec::new(),
         templates_req: Latest::default(),
@@ -1034,6 +1052,9 @@ fn take_knows(s: &mut App, knows: Vec<Know>) {
     s.cache = knows.iter().map(|k| (name(k), Page { name: name(k), body: k.body.clone(), kind: "md".into(), rev: 0 })).collect();
     let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 0, body: None, ..Node::default() }).collect();
     s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
+    if s.searching {
+        run_search(s);
+    }
     if !was {
         flip_quiet(s);
     } else if !s.editing {
@@ -1537,6 +1558,9 @@ fn refresh_tree(s: &mut App) {
         // the folders that were given a name to show
         nodes.extend(s.dnames.iter().filter(|(p, _)| !s.names.contains(p)).map(|(p, d)| Node { path: p.clone(), dname: d.clone(), ..Node::default() }));
         s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
+    if s.searching {
+        run_search(s);
+    }
         s.files.expand_all();
         if let Some(p) = &s.open {
             s.files.select(&p.name);
@@ -4638,6 +4662,9 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 let first = s.files.is_empty();
                 s.names = nodes.iter().filter(|n| n.page).map(|n| n.path.clone()).collect();
                 s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
+    if s.searching {
+        run_search(s);
+    }
                 if first {
                     s.files.expand_all();
                 }
@@ -7199,6 +7226,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("capture", "Capture a page to the inbox"),
     ("today", "Today's journal page"),
     ("open", "Open a page"),
+    ("search", "Search your pages and notes"),
     ("tab", "New tab"),
     ("tab-copy", "Open this page in a new tab"),
     ("tab-close", "Close this tab"),
@@ -7298,6 +7326,7 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
             s.jump = Some(q);
             s.jump_at = 0;
         }
+        "search" => open_search(s),
         "edit" => {
             start_edit(s);
             tx.focus_when_shown(FIELD, false);
@@ -8443,6 +8472,127 @@ fn ask_delete(s: &mut App) {
     }
 }
 
+/// Searches what is held for what is typed in the Search tab: every
+/// page's text and every memory's, whichever half is showing.
+fn run_search(s: &mut App) {
+    s.search_at = None;
+    s.shits.clear();
+    (s.sfound, s.sskipped) = (0, 0);
+    let Some(q) = search::query(&s.squery.text) else { return };
+    let (pages, names, knows) = if s.memory { (&s.other.2, &s.other.1, &s.cache) } else { (&s.cache, &s.names, &s.other.2) };
+    let mut out = Vec::new();
+    for name in names {
+        match pages.get(name) {
+            Some(p) => out.extend(search::hit(name, &search::text_of(&p.kind, &p.body), &q, search::scope(s.shares.get(name).map(String::as_str)), false)),
+            // its text was not carried: said, so no result is not read as no match
+            None => s.sskipped += 1,
+        }
+    }
+    for (name, p) in knows {
+        out.extend(search::hit(name, &p.body, &q, "knowledge", true));
+    }
+    search::sort(&mut out);
+    s.sfound = out.len();
+    out.truncate(search::MOST);
+    s.shits = out;
+}
+
+/// Shows the Search tab with its field ready to type in.
+fn open_search(s: &mut App) {
+    s.sidebar.set_open(true);
+    s.searching = true;
+    s.squery.focused = true;
+    // what is held may have changed since it was last shown
+    run_search(s);
+}
+
+/// Opens a result: a page among the pages, a memory among the memories.
+/// The results stay where they are for the next one.
+fn open_hit(s: &mut App, i: usize, tab: bool) {
+    let Some(h) = s.shits.get(i).cloned() else { return };
+    if s.editing {
+        s.note = "Save or cancel the edit first".to_owned();
+        return;
+    }
+    s.search_at = Some(i);
+    if h.know != s.memory {
+        flip(s);
+    }
+    if tab && !h.know {
+        open_in_tab(s, &h.key);
+    } else {
+        open_page(s, &h.key);
+    }
+}
+
+/// The Search tab: the field, how many were found, and the results.
+fn search_view(s: &App, k: &Kit) -> El {
+    let field = TextInput::new(&s.squery)
+        .placeholder("Search your pages and notes")
+        .leading_icon(k.glyph.search)
+        .clear_button()
+        .on_edit(|s: &mut App| &mut s.squery)
+        .on_change(|s: &mut App, _| run_search(s))
+        .on_key(|s: &mut App, ev: &KeyEvent, _: &mut Tx| {
+            let n = s.shits.len();
+            match ev.key {
+                Key::Down if n > 0 => s.search_at = Some(s.search_at.map_or(0, |i| (i + 1) % n)),
+                Key::Up if n > 0 => s.search_at = Some(s.search_at.map_or(n - 1, |i| (i + n - 1) % n)),
+                Key::Enter => match s.search_at {
+                    Some(i) => open_hit(s, i, ev.mods.ctrl || ev.mods.cmd),
+                    None => run_search(s),
+                },
+                _ => return false,
+            }
+            true
+        })
+        .build(k)
+        .w_full()
+        .key("search-field");
+    let mut out = col().key("search").role("search").label("Search").w_full().grow(1.0).min_h(0.0).gap(8.0).child(field);
+    let said = if search::query(&s.squery.text).is_none() {
+        "Type at least two letters".to_owned()
+    } else if s.shits.is_empty() && s.sskipped == 0 {
+        "Nothing matches that".to_owned()
+    } else if s.sfound > s.shits.len() {
+        format!("{}, the first {} shown", search::summary(s.sfound, s.sskipped), s.shits.len())
+    } else {
+        search::summary(s.sfound, s.sskipped)
+    };
+    out = out.child(text(said).key("search-sum").font(k.ty.small).color(k.c.text_muted).wrap());
+    let mut rows = col().key("search-rows").w_full().gap(2.0);
+    for (i, h) in s.shits.iter().enumerate() {
+        let mut r = col()
+            .key(format!("{}:{}", if h.know { "qk" } else { "q" }, h.key))
+            .role("button")
+            .label(format!("{}, {}", h.key, h.scope))
+            .w_full()
+            .px(8.0)
+            .py(5.0)
+            .gap(2.0)
+            .radius(k.radius.sm)
+            .on_press(move |s: &mut App| open_hit(s, i, false))
+            .on_middle_press(move |s: &mut App, _| open_hit(s, i, true))
+            .child(
+                row()
+                    .w_full()
+                    .gap(6.0)
+                    .center_y()
+                    // who reads it: a private page and a public one must not look alike in a list
+                    .child(text(h.scope).font(k.ty.text_xsmall_medium).color(if h.scope == "clearweb" { k.c.warning.icon } else if h.scope == "urbit" { k.c.text_accent } else { k.c.text_muted }).px(4.0).radius(k.radius.sm).fill(k.c.layer_02))
+                    .child(text(h.key.clone()).font(k.ty.small_medium).color(k.c.text_base).truncate().grow(1.0).min_w(0.0)),
+            );
+        if !h.snip.is_empty() {
+            r = r.child(text(h.snip.clone()).font(k.ty.small).color(k.c.text_muted).wrap());
+        }
+        if s.search_at == Some(i) {
+            r = r.fill(k.selection());
+        }
+        rows = rows.child(r);
+    }
+    out.child(col().w_full().grow(1.0).min_h(0.0).child(rows).scroll(ScrollSpec { stick_bottom: false }))
+}
+
 /// What a press on one of the tools over the tree does.
 fn head_go(s: &mut App, act: head::Do, tx: &mut Tx) {
     use head::Do;
@@ -8584,16 +8734,20 @@ fn sidebar(s: &App, k: &Kit) -> El {
     let (pages, knows) = if s.memory { (s.other.1.len(), s.names.len()) } else { (s.names.len(), s.other.1.len()) };
     // the pane's head as the web client has it: icon tabs, then a toolbar of icons over the tree
     let mut halves = row().key("halves").role("tablist").label("Left pane").w_full().gap(4.0);
-    for tab in head::tabs(s.memory, pages, knows) {
-        let on = tab.on;
+    for tab in head::tabs(s.memory, s.searching, pages, knows) {
+        let (on, what, memory) = (tab.on, tab.what, s.memory);
         let mut b = IconButton::new(tab.icon).control_size(ControlSize::Large).variant(if on { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).label(tab.said).help(tab.name);
         if let Some(keys) = tab.keys {
             b = b.shortcut(keys);
         }
-        halves = halves.child(b.on_press(move |s: &mut App| {
-            // the half that is showing does nothing when pressed
-            if !on {
-                flip(s);
+        halves = halves.child(b.on_press(move |s: &mut App| match what {
+            head::Half::Search => open_search(s),
+            // the half that is showing does nothing when pressed, but for leaving the search
+            _ => {
+                s.searching = false;
+                if (what == head::Half::Knowledge) != memory {
+                    flip(s);
+                }
             }
         }).build(k).key(tab.key));
     }
@@ -8706,7 +8860,12 @@ fn sidebar(s: &App, k: &Kit) -> El {
         }
         list
     });
-    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).children(core).child(filter).child(new).children((!tags.is_empty()).then_some(chips)).child(heading).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(foot);
+    let side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves);
+    let mut side = if s.searching {
+        side.child(search_view(s, k)).child(foot)
+    } else {
+        side.children(core).child(filter).child(new).children((!tags.is_empty()).then_some(chips)).child(heading).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(foot)
+    };
     if let Some(when) = &s.offline {
         let said = if when.is_empty() { "Offline. The ship does not answer.".to_owned() } else { format!("Offline. The ship does not answer, so this is what was kept {when}.") };
         side = side.child(text(format!("{said} A save, a new page, a delete or a move made now waits on this device. Anything else needs the ship.")).key("offline").font(k.ty.small).color(k.c.text_base).wrap());
@@ -9141,8 +9300,10 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
 enum Chord {
     /// Ctrl+K and Ctrl+P: the commands.
     Palette,
-    /// Ctrl+O: the pages by name. Ctrl+Shift+F: the same list, which finds by text too.
+    /// Ctrl+O: the pages by name.
     Jump,
+    /// Ctrl+Shift+F: the left pane's Search tab, as on the web.
+    Search,
     /// Ctrl+,
     Settings,
     /// Ctrl+Tab and Ctrl+Shift+Tab: the next tab and the one before, around the ends.
@@ -9170,7 +9331,7 @@ fn chord(s: &App, ev: &KeyEvent) -> Option<Chord> {
     }
     if m.shift {
         return if ev.is_command('f') && !s.editing {
-            Some(Chord::Jump)
+            Some(Chord::Search)
         } else if ev.is_command('l') {
             Some(Chord::Files)
         } else {
@@ -9210,6 +9371,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
         match c {
             Chord::Palette => ask(s, false),
             Chord::Jump => ask(s, true),
+            Chord::Search => open_search(s),
             Chord::Settings => go_settings(s),
             Chord::Tab(next) => {
                 let n = s.tabs.len();
@@ -10015,7 +10177,7 @@ mod tests {
         let m = rune::Mods::default();
         let cmd = |c: char, shift: bool| KeyEvent { key: Key::Command(c), mods: rune::Mods { cmd: true, ctrl: true, shift, ..m } };
         assert_eq!([chord(&s, &cmd('k', false)), chord(&s, &cmd('p', false))], [Some(Chord::Palette); 2]);
-        assert_eq!([chord(&s, &cmd('o', false)), chord(&s, &cmd('f', true))], [Some(Chord::Jump); 2]);
+        assert_eq!([chord(&s, &cmd('o', false)), chord(&s, &cmd('f', true))], [Some(Chord::Jump), Some(Chord::Search)]);
         assert_eq!(chord(&s, &cmd('f', false)), None, "plain Ctrl+F is find in the page, handled as before");
         assert_eq!((chord(&s, &cmd(',', false)), chord(&s, &cmd('l', true)), chord(&s, &cmd('\\', false))), (Some(Chord::Settings), Some(Chord::Files), Some(Chord::Split)));
         // Delete asks about the page showing, and only with nothing else open to type into
