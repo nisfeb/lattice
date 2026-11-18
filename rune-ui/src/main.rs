@@ -113,11 +113,18 @@ struct Settings {
     /// The secret of the key just made, shown this once.
     token: Option<String>,
     sending: bool,
+    /// The map token as the ship has it, the token typed to set, the ship's OpenSCAD runtime, and the openscad this computer draws with (read once: `Some(None)` when there is none).
+    tiles: Option<api::TileStatus>,
+    map_token: TextEdit,
+    scad: Option<api::ScadStatus>,
+    local_scad: Option<Option<String>>,
+    /// When the runtime's state is read next, while an install runs.
+    scad_next: f64,
 }
 
 impl Settings {
     fn new() -> Self {
-        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false }
+        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0 }
     }
 
     fn ask(&self) -> api::KeyAsk {
@@ -493,6 +500,8 @@ struct App {
     settings: Option<Settings>,
     /// The agent keys as read, and the secret of one just made.
     keys_req: Latest<Result<(Vec<api::AgentKey>, Option<String>), String>>,
+    /// The map token's state and the OpenSCAD runtime's as read, the openscad found here when it was looked for, and what to say of what was just done.
+    set_req: Latest<Result<SetGot, String>>,
     /// The refusals, read beside the boards and after a clear.
     notes_req: Latest<Result<ForumGot, String>>,
     /// The open page as a spreadsheet, when it is one.
@@ -730,6 +739,7 @@ fn init() -> App {
         forum: None,
         settings: None,
         keys_req: Latest::default(),
+        set_req: Latest::default(),
         forum_req: Latest::default(),
         notes_req: Latest::default(),
         beside: None,
@@ -1447,6 +1457,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.back_req.set_waker(waker.clone());
     s.forum_req.set_waker(waker.clone());
     s.keys_req.set_waker(waker.clone());
+    s.set_req.set_waker(waker.clone());
     s.notes_req.set_waker(waker.clone());
     s.core_req.set_waker(waker.clone());
     s.trash_req.set_waker(waker.clone());
@@ -3953,6 +3964,14 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
         changed |= autosave_tick(s, clock);
     }
+    // while the ship fetches the runtime, its state is read every two seconds, as its own page does
+    if s.settings.as_ref().is_some_and(|st| st.scad.as_ref().is_some_and(|r| r.busy) && clock >= st.scad_next) && !s.set_req.is_pending() {
+        if let Some(st) = &mut s.settings {
+            st.scad_next = clock + 2.0;
+        }
+        tx.wake_after(std::time::Duration::from_secs(2));
+        settings_do(s, SetAct::Read);
+    }
     if std::mem::take(&mut s.resync) && s.conn.is_some() {
         s.next_sync = clock + 2.0;
         tx.wake_after(std::time::Duration::from_secs(2));
@@ -4396,6 +4415,25 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Ok(p) if s.open.as_ref().is_some_and(|o| o.name == p.name) && !s.editing => s.old = Some(p),
             Ok(_) => {}
             Err(e) => s.note = format!("revision: {e}"),
+        }
+    }
+    if let Some(r) = s.set_req.take() {
+        changed = true;
+        match (r, &mut s.settings) {
+            (Ok((tiles, scad, local, said)), Some(st)) => {
+                (st.tiles, st.scad) = (Some(tiles), Some(scad));
+                if local.is_some() {
+                    st.local_scad = local;
+                }
+                if !said.is_empty() {
+                    // a token saved is not kept on screen, and maps ask the ship again what it can give
+                    st.map_token = TextEdit::new("");
+                    (s.tile_status, s.tiles_off) = (None, None);
+                    s.note = said;
+                }
+            }
+            (Err(e), Some(_)) => s.note = format!("settings: {e}"),
+            _ => {}
         }
     }
     if let Some(r) = s.keys_req.take() {
@@ -5942,7 +5980,94 @@ fn go_settings(s: &mut App) {
         (s.forum, s.access, s.inbox, s.shared_open) = (None, false, false, false);
         s.settings = Some(Settings::new());
         keys_do(s, None, None);
+        settings_do(s, SetAct::Read);
     }
+}
+
+type SetGot = (api::TileStatus, api::ScadStatus, Option<Option<String>>, String);
+
+/// What is done from the settings, beside the keys.
+enum SetAct {
+    Read,
+    /// The Mapbox token is set to what is typed, or cleared.
+    Token(bool),
+    /// The ship's OpenSCAD runtime is installed or updated, or dropped.
+    Runtime(bool),
+}
+
+/// Reads the map token's state and the OpenSCAD runtime's, after doing what was asked.
+fn settings_do(s: &mut App, act: SetAct) {
+    let Some((c, st)) = s.conn.clone().zip(s.settings.as_mut()) else { return };
+    let token = match act {
+        SetAct::Token(true) if st.map_token.text.trim().is_empty() => {
+            s.note = "paste a Mapbox token to save".into();
+            return;
+        }
+        SetAct::Token(set) => Some(if set { st.map_token.text.trim().to_owned() } else { String::new() }),
+        _ => None,
+    };
+    let runtime = if let SetAct::Runtime(install) = act { Some(install) } else { None };
+    // this computer's own openscad is looked for once: it is a few programs run
+    let look = st.local_scad.is_none();
+    s.set_req.request((c, token, runtime), move |(c, token, runtime)| {
+        let mut said = String::new();
+        if let Some(t) = &token {
+            c.map_token(t)?;
+            said = if t.is_empty() { "the Mapbox token is removed".into() } else { "the Mapbox token is saved".into() };
+        }
+        if let Some(install) = runtime {
+            c.scad_runtime(install)?;
+            said = if install { "the ship is fetching the runtime".into() } else { "the runtime is uninstalled".into() };
+        }
+        let local = look.then(|| scadrun::locate().map(|p| p.display().to_string()));
+        Ok((c.tile_status()?, c.scad_status()?, local, said))
+    });
+}
+
+/// The map tiles and OpenSCAD parts of the settings.
+fn settings_more(st: &Settings, k: &Kit) -> El {
+    let c = &k.c;
+    let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
+    let head = |t: &str| text(t.to_owned()).font(k.ty.body_medium).color(c.text_base);
+    let small = |label: String, key: &str, act: fn() -> SetAct| Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| settings_do(s, act())).build(k).key(key.to_owned());
+    let tiles = col()
+        .key("set-tiles")
+        .w_full()
+        .gap(6.0)
+        .child(head("Map tiles"))
+        .child(muted("Map pages draw their features on Mapbox's base maps. Your ship fetches each tile with your own Mapbox token and passes it on without keeping it, so Mapbox sees your ship and not this computer. With no token here, the one set in orrery is used. With neither, maps draw on a plain grid."))
+        .child(text(st.tiles.as_ref().map_or("Checking\u{2026}", api::tiles_say).to_owned()).key("tiles-state").font(k.ty.small).color(c.text_base).wrap())
+        .child(TextInput::new(&st.map_token).label("Mapbox token").placeholder("pk\u{2026}").secure().on_edit(|s: &mut App| &mut s.settings.as_mut().expect("the settings are showing").map_token).build(k).w_full().key("tiles-token"))
+        .child(row().gap(4.0).child(small("Save".into(), "tiles-save", || SetAct::Token(true))).child(small("Remove".into(), "tiles-remove", || SetAct::Token(false))));
+    let mut scad = col().key("set-scad").w_full().gap(6.0).child(head("OpenSCAD pages")).child(muted("This app draws a scad page's part with the OpenSCAD on this computer."));
+    scad = scad.child(
+        text(match &st.local_scad {
+            None => "Looking for it\u{2026}".to_owned(),
+            Some(Some(path)) => format!("Found: {path}"),
+            Some(None) => "None was found. Install OpenSCAD, or name one with LATTICE_OPENSCAD. Until then a scad page shows its source.".to_owned(),
+        })
+        .key("scad-local")
+        .font(k.ty.small)
+        .color(c.text_base)
+        .wrap(),
+    );
+    scad = scad.child(muted("A browser draws with a runtime your ship keeps and never runs. It is optional: until it is installed, a scad page in a browser shows its source."));
+    match &st.scad {
+        None => scad = scad.child(muted("checking\u{2026}")),
+        Some(rt) => {
+            let (said, install, uninstall) = rt.says();
+            scad = scad.child(text(said).key("scad-state").font(k.ty.small).color(c.text_base).wrap());
+            let mut acts = row().gap(4.0);
+            if let Some(label) = install {
+                acts = acts.child(small(label, "scad-install", || SetAct::Runtime(true)));
+            }
+            if uninstall {
+                acts = acts.child(small("Uninstall".into(), "scad-uninstall", || SetAct::Runtime(false)));
+            }
+            scad = scad.child(acts);
+        }
+    }
+    col().w_full().gap(20.0).child(tiles).child(scad)
 }
 
 /// Reads the agent keys, after making one (`mint`) or revoking one (`revoke`, by its id) when asked.
@@ -6071,7 +6196,7 @@ fn settings_view(st: &Settings, k: &Kit) -> El {
         }).build(k).key("key-sensitive"))
         .child(muted("A memory with sensitive: yes in its front matter (health, money, family) is invisible to a key without this. A key with it can read them, but for 12 hours after reading one, everything it writes is marked sensitive too, so it cannot pass what it read to a key without clearance. Clearance is set here, when the key is made."))
         .child(row().child(Button::new(if st.sending { "Making\u{2026}" } else { "Make key" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(st.sending).on_press(key_make).build(k).key("key-make")));
-    col().key("settings-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(page.child(form))).scroll(ScrollSpec { stick_bottom: false })
+    col().key("settings-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(page.child(form).child(settings_more(st, k)))).scroll(ScrollSpec { stick_bottom: false })
 }
 
 fn next_theme(s: &mut App) {

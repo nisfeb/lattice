@@ -1,0 +1,29 @@
+{
+ "events": [
+  {
+   "t": 2.0,
+   "type": "tap",
+   "key": "settings-open"
+  },
+  {
+   "t": 5.0,
+   "type": "tap",
+   "key": "tiles-token"
+  },
+  {
+   "t": 5.4,
+   "type": "type",
+   "text": "pk.rune-test-token_0"
+  },
+  {
+   "t": 7.5,
+   "type": "tap",
+   "key": "tiles-save"
+  },
+  {
+   "t": 11.0,
+   "type": "tap",
+   "key": "scad-install"
+  }
+ ]
+}

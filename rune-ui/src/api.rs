@@ -492,6 +492,9 @@ pub fn clip_note(s: &str) -> &str {
 pub struct TileStatus {
     #[serde(default)]
     pub token: bool,
+    /// The token in use is the one set in orrery, none being set here.
+    #[serde(default)]
+    pub orrery: bool,
     #[serde(default)]
     pub max: u32,
     #[serde(default)]
@@ -613,6 +616,60 @@ fn kept_at(p: &std::path::Path) -> Option<(Dump, u64)> {
     let d: Dump = serde_json::from_slice(&std::fs::read(p).ok()?).ok()?;
     let age = std::fs::metadata(p).ok()?.modified().ok()?.elapsed().map_or(0, |d| d.as_secs());
     Some((d, age))
+}
+
+/// What the ship says of the map token, as its settings page words it.
+pub fn tiles_say(t: &TileStatus) -> &'static str {
+    match (t.token, t.orrery) {
+        (true, true) => "Using the Mapbox token set in orrery. A token saved here is used instead.",
+        (true, false) => "A token is set. It is never shown again.",
+        _ => "No token is set.",
+    }
+}
+
+/// The OpenSCAD runtime the ship keeps for browsers (`GET /scad-status`):
+/// the version it offers and its size, the one installed, and whether an
+/// install is running or failed.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct ScadStatus {
+    #[serde(default)]
+    pub pin: String,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub have: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub busy: bool,
+    /// Whether this build of lattice names an address to install from.
+    #[serde(default)]
+    pub source: bool,
+}
+
+impl ScadStatus {
+    /// The runtime's state in the ship's settings page's words, the label
+    /// of the button that installs or updates it when one is offered, and
+    /// whether it can be uninstalled.
+    pub fn says(&self) -> (String, Option<String>, bool) {
+        let have = self.have.as_deref().filter(|h| !h.is_empty());
+        let mb = format!("{} MB", (self.size as f64 / 1e5).round() / 10.0);
+        let err = self.error.as_deref().filter(|e| !e.is_empty());
+        let text = match (self.busy, have) {
+            (true, _) => "installing, this takes a little while...".to_owned(),
+            (false, Some(h)) => format!("OpenSCAD {h} is installed.{}{}", if h == self.pin { String::new() } else { format!(" This lattice offers {}.", self.pin) }, err.map_or_else(String::new, |e| format!(" The last update failed: {e}"))),
+            (false, None) if !self.source => "This build of lattice names no address to install from.".to_owned(),
+            (false, None) => err.map_or_else(|| "Not installed.".to_owned(), |e| format!("Not installed: {e}")),
+        };
+        let install = match have {
+            _ if self.busy => None,
+            Some(h) if h == self.pin => None,
+            Some(_) => Some(format!("Update to {} ({mb})", self.pin)),
+            None if !self.source => None,
+            None => Some(format!("Install ({mb})")),
+        };
+        (text, install, have.is_some() && !self.busy)
+    }
 }
 
 /// An agent key as the ship lists it, in the words the ship's own
@@ -1377,6 +1434,16 @@ impl Conn {
             QueuedOp::Del(name) => self.delete(name),
             QueuedOp::Move { from, to, dname, dnames } => self.rename_as(from, &RealName { name: to.clone(), dname: dname.clone(), dnames: dnames.clone() }),
         }
+    }
+
+    /// The OpenSCAD runtime the ship keeps for browsers.
+    pub fn scad_status(&self) -> Result<ScadStatus, String> {
+        serde_json::from_str(&self.call("GET", "scad-status", None)?).map_err(|e| e.to_string())
+    }
+
+    /// Starts the ship fetching the runtime (`install`), or drops it. The install runs on: its state is read with `scad_status`.
+    pub fn scad_runtime(&self, install: bool) -> Result<(), String> {
+        self.call("POST", if install { "scad-install" } else { "scad-uninstall" }, Some("")).map(drop)
     }
 
     /// The agent keys, newest first.
@@ -2737,6 +2804,50 @@ mod tests {
         assert!(again.starts_with("409") || again.starts_with("400"), "{again}");
         c.key_revoke(&k.id).unwrap();
         assert!(!c.keys().unwrap().iter().any(|x| x.id == k.id));
+    }
+
+    #[test]
+    fn the_runtime_and_the_token_are_said_as_the_ships_page_says_them() {
+        let st = |have: Option<&str>, busy, source, error: Option<&str>| ScadStatus { pin: "2026.05".into(), size: 4_260_000, have: have.map(str::to_owned), error: error.map(str::to_owned), busy, source };
+        assert_eq!(st(None, false, true, None).says(), ("Not installed.".into(), Some("Install (4.3 MB)".into()), false));
+        assert_eq!(st(None, false, true, Some("fetch failed")).says().0, "Not installed: fetch failed");
+        assert_eq!(st(None, false, false, None).says(), ("This build of lattice names no address to install from.".into(), None, false));
+        assert_eq!(st(Some("2026.05"), false, true, None).says(), ("OpenSCAD 2026.05 is installed.".into(), None, true));
+        assert_eq!(st(Some("2025.01"), false, true, Some("x")).says(), ("OpenSCAD 2025.01 is installed. This lattice offers 2026.05. The last update failed: x".into(), Some("Update to 2026.05 (4.3 MB)".into()), true));
+        assert_eq!(st(Some("2025.01"), true, true, None).says(), ("installing, this takes a little while...".into(), None, false));
+        // as the ship writes it, with nothing installed
+        let read: ScadStatus = serde_json::from_str(r#"{"pin":"2026.05","size":4260000,"have":null,"error":null,"busy":false,"source":true}"#).unwrap();
+        assert_eq!(read, st(None, false, true, None));
+        let t = |token, orrery| TileStatus { token, orrery, ..TileStatus::default() };
+        assert_eq!([tiles_say(&t(false, false)), tiles_say(&t(true, false)), tiles_say(&t(true, true))], ["No token is set.", "A token is set. It is never shown again.", "Using the Mapbox token set in orrery. A token saved here is used instead."]);
+    }
+
+    /// The ship's OpenSCAD runtime: its state read, installed from the address the ship names, and dropped. The install fetches about 4 MB.
+    #[test]
+    #[ignore]
+    fn live_scad_runtime() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let st = c.scad_status().unwrap();
+        eprintln!("before: {st:?}");
+        assert!(!st.pin.is_empty() && st.size > 1_000_000);
+        if !st.source {
+            eprintln!("this build names no address to install from: the install is not tried");
+            return;
+        }
+        c.scad_runtime(true).unwrap();
+        let mut now = c.scad_status().unwrap();
+        for _ in 0..150 {
+            if !now.busy {
+                break;
+            }
+            std::thread::sleep(Duration::from_secs(2));
+            now = c.scad_status().unwrap();
+        }
+        eprintln!("after the install: {now:?}");
+        assert!(!now.busy, "the install ends");
+        assert!(now.have.as_deref() == Some(now.pin.as_str()) || now.error.is_some(), "it is installed, or the ship says why not");
+        c.scad_runtime(false).unwrap();
+        assert_eq!(c.scad_status().unwrap().have, None);
     }
 
     #[test]
