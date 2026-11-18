@@ -861,7 +861,7 @@ fn confirm(s: &mut App) {
             match &op {
                 Op::Created(n) if memory => c.know_save(&format!("/{n}"), &format!("{}\n", n.rsplit('/').next().unwrap_or(n)))?,
                 Op::Deleted(n) if memory => c.know_delete(&format!("/{n}"))?,
-                Op::Renamed(..) if memory => return Err("a memory is not renamed here".into()),
+                Op::Renamed(a, b) if memory => c.know_move(&format!("/{a}"), &format!("/{b}"))?,
                 Op::Created(_) => c.create_as(&rn)?,
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
@@ -901,6 +901,10 @@ fn applied(s: &mut App, op: Op) {
                 if let Some(mut p) = s.cache.remove(&old) {
                     p.name = new.clone();
                     s.cache.insert(new.clone(), p);
+                }
+                // a memory's tags and date go with it
+                if let Some(meta) = s.know_meta.remove(&old).filter(|_| s.memory) {
+                    s.know_meta.insert(new.clone(), meta);
                 }
                 s.names.retain(|x| *x != old);
                 s.names.push(new);
@@ -6105,9 +6109,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             trailing = trailing.child(Button::new("History").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| show_pane(s, false, false)).build(&k).key("history-toggle"));
         }
         trailing = trailing.child(Button::new("Delete").variant(ButtonVariant::GhostMuted).on_press(ask_delete).build(&k).key("delete"));
-        if !s.memory {
-            trailing = trailing.child(Button::new("Rename").variant(ButtonVariant::GhostMuted).on_press(ask_rename).build(&k).key("rename"));
-        }
+        trailing = trailing.child(Button::new("Rename").variant(ButtonVariant::GhostMuted).on_press(ask_rename).build(&k).key("rename"));
         trailing = trailing
             .child(Button::new("Edit").variant(ButtonVariant::Ghost).on_press_tx(|s: &mut App, tx| {
                 start_edit(s);
@@ -6411,6 +6413,27 @@ mod tests {
         s.split = None;
         keep_split(&mut s);
         assert!(s.beside.is_none());
+    }
+
+    #[test]
+    fn a_memory_is_renamed_with_its_text_and_its_tags() {
+        let mut s = sample("welcome");
+        flip(&mut s);
+        open_page(&mut s, "feedback/short-answers");
+        let body = s.open.as_ref().unwrap().body.clone();
+        s.know_meta.insert("feedback/short-answers".into(), (vec!["style".into()], "~2026.11.17".into()));
+        ask_rename(&mut s);
+        let Some(Prompt::Rename(_, t)) = &mut s.prompt else { panic!("the rename prompt opens for a memory") };
+        t.text = "feedback/writing/short answers".into();
+        confirm(&mut s);
+        assert_eq!(s.names, ["project/lattice/rune", "feedback/writing/short-answers"]);
+        let p = s.open.as_ref().unwrap();
+        assert_eq!((p.name.as_str(), p.body.as_str()), ("feedback/writing/short-answers", body.as_str()));
+        assert_eq!(s.know_meta.get("feedback/writing/short-answers").map(|m| m.0.clone()), Some(vec!["style".to_owned()]));
+        assert!(!s.know_meta.contains_key("feedback/short-answers") && !s.cache.contains_key("feedback/short-answers"));
+        // the pages are not touched by it
+        flip(&mut s);
+        assert!(s.names.contains(&"welcome".to_owned()) && !s.names.iter().any(|n| n.starts_with("feedback")));
     }
 
     #[test]

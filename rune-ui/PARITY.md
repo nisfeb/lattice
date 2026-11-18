@@ -121,7 +121,7 @@ Not a line: forms and quizzes. An earlier list had them, by mistake. The existin
 ## Memory
 
 - [x] Browse, read, search, edit, new, delete
-- [ ] Rename or move a memory (`/know-move`)
+- [x] Rename or move a memory (`/know-move`). Rename is offered on a memory as on a page: the typed name becomes a key by the web client's own rule, the memory moves with its text, and its tags and date follow it here. The ship refuses a key that is taken and one that is not there, and its words are shown. As on the web, only the text goes: the new key's history starts again. Checked by an app test on the sample memories, by a live test on a fresh fake ship (`live_memories`: moved with its text, 409 for a key taken, 404 for one missing), and by a scripted run of the app against that ship (`scripts/memory-rename.json`), after which the ship itself listed the memory under its new key with its text. The memory checks were moved out of the long live test into one of their own, which needs no page and can run twice on a pier.
 - [ ] Tags: add and remove (`/know-tag`, `/know-untag`), filter by tag
 - [ ] Trash and restore (`/know-trash`, `/know-restore`)
 - [ ] History and restore a revision (`/know-history`, `/know-read-at`, `/know-restore-rev`)

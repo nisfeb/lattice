@@ -1,0 +1,9 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "half-memory"},
+  {"t": 2.8, "type": "tap", "key": "rune"},
+  {"t": 3.5, "type": "tap", "key": "rune/first"},
+  {"t": 5.0, "type": "tap", "key": "rename"},
+  {"t": 5.6, "type": "key", "name": "a", "cmd": true},
+  {"t": 6.0, "type": "type", "text": "rune/kept/second"},
+  {"t": 9.0, "type": "key", "name": "Enter"}
+]}

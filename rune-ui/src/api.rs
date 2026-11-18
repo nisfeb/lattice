@@ -895,6 +895,13 @@ impl Conn {
         self.call("POST", &format!("know-save?key={}", enc(key)), Some(if body.is_empty() { "\n" } else { body })).map(drop)
     }
 
+    /// Renames or moves a memory. Both keys start with a slash. The ship
+    /// refuses a key that is not there (404) and one already taken (409).
+    /// Only the text goes with it: the new key's history starts again.
+    pub fn know_move(&self, from: &str, to: &str) -> Result<(), String> {
+        self.call("POST", &format!("know-move?from={}&to={}", enc(from), enc(to)), Some("")).map(drop)
+    }
+
     pub fn know_delete(&self, key: &str) -> Result<(), String> {
         self.call("POST", &format!("know-delete?key={}", enc(key)), Some("")).map(drop)
     }
@@ -1437,6 +1444,32 @@ mod tests {
         assert_eq!(c.image_url("pics/a.png"), "http://ship.example/apps/lattice/pics/a.png");
     }
 
+    /// Memories against a ship, by themselves: this needs no page and can run again on the same pier.
+    #[test]
+    #[ignore]
+    fn live_memories() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        // a memory is written, listed with its text, and deleted. The ship
+        // may refuse a key whose deleted memory is still in the trash, so
+        // each run uses its own.
+        let key = format!("/rune/probe-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        c.know_save(&key, "a fact\n").unwrap();
+        let all = c.know_all().unwrap();
+        let got = all.iter().find(|k| k.key == key).expect("the memory is listed");
+        assert_eq!(got.body.trim(), "a fact");
+        // moved, it is read under the new key and gone from the old. A key taken or missing is refused
+        let moved = format!("{key}-moved");
+        c.know_move(&key, &moved).unwrap();
+        let all = c.know_all().unwrap();
+        assert!(all.iter().any(|k| k.key == moved && k.body.starts_with("a fact")) && !all.iter().any(|k| k.key == key), "the memory moved with its text");
+        c.know_save(&key, "another\n").unwrap();
+        assert!(c.know_move(&key, &moved).unwrap_err().contains("409"), "a key already taken is refused");
+        assert!(c.know_move(&format!("{key}-never"), &format!("{key}-x")).unwrap_err().contains("404"), "a key that is not there is refused");
+        c.know_delete(&moved).unwrap();
+        c.know_delete(&key).unwrap();
+        assert!(!c.know_all().unwrap().iter().any(|k| k.key == key), "and gone after a delete");
+    }
+
     /// Against a real ship: `LATTICE_URL=.. LATTICE_COOKIE=.. cargo test -- --ignored`.
     /// It needs a page named `rune-probe` to exist.
     #[test]
@@ -1690,16 +1723,6 @@ mod tests {
             eprintln!("readers after a grant to ~nec: {:?}", readers(&c.groups().unwrap(), "rune-probe"));
         }
         assert!(c.groups().unwrap().iter().any(|g| g.name == "public"), "the access list reads");
-        // a memory is written, listed with its text, and deleted. The ship
-        // may refuse a key whose deleted memory is still in the trash, so
-        // each run uses its own.
-        let key = format!("/rune/probe-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
-        c.know_save(&key, "a fact\n").unwrap();
-        let all = c.know_all().unwrap();
-        let got = all.iter().find(|k| k.key == key).expect("the memory is listed");
-        assert_eq!(got.body.trim(), "a fact");
-        c.know_delete(&key).unwrap();
-        assert!(!c.know_all().unwrap().iter().any(|k| k.key == key), "and gone after a delete");
         // create, rename, delete
         // a second dump carries only what was written since the first
         let first = c.dump("").unwrap();
@@ -1711,7 +1734,7 @@ mod tests {
         assert_eq!(bodies, ["rune-probe"], "only the page written since comes with its body");
         let has = |c: &Conn, n: &str| c.tree().unwrap().iter().any(|x| x.page && x.path == n);
         // names of their own each run: on an old kernel a deleted page's name cannot be used again
-        let stamp = key.rsplit('-').next().unwrap().to_owned();
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs().to_string();
         let (made, moved) = (format!("rune-made-{stamp}"), format!("rune-moved-{stamp}/here"));
         c.create(&made).unwrap();
         assert!(has(&c, &made), "a created page is in the tree");
