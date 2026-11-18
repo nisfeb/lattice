@@ -531,6 +531,8 @@ struct App {
     queue: api::Queue,
     /// The page a save on its way carries, and the revision it was written over: put by if the ship does not answer.
     save_sent: Option<(Page, u64)>,
+    /// The saves that waited, on their way to the ship: each as it was sent, and how it came out.
+    drain_req: Latest<Vec<(String, api::Queued, api::Sent)>>,
     next_sync: f64,
     page_req: Latest<Result<Page, String>>,
     save_req: Latest<Result<Page, String>>,
@@ -733,6 +735,7 @@ fn init() -> App {
         offline: None,
         queue: conn.as_ref().map(Conn::queue).unwrap_or_default(),
         save_sent: None,
+        drain_req: Latest::default(),
         next_sync: 0.0,
         page_req: Latest::default(),
         save_req: Latest::default(),
@@ -1353,6 +1356,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.tree_req.set_waker(waker.clone());
     s.page_req.set_waker(waker.clone());
     s.save_req.set_waker(waker.clone());
+    s.drain_req.set_waker(waker.clone());
     s.login_req.set_waker(waker.clone());
     s.hist_req.set_waker(waker.clone());
     s.know_req.set_waker(waker.clone());
@@ -3641,9 +3645,13 @@ fn write(s: &mut App) {
     let remote = s.remote.clone();
     // a page of this ship's can wait for it. A memory, or a page of another ship, cannot yet
     let own = !memory && remote.is_none() && s.conn.is_some();
-    if own && s.offline.is_some() {
-        // the ship is known not to answer: the save is not tried, as the web client does not try it
+    // the ship is known not to answer: the save is not tried, as the web client does not try it.
+    // And a page with a save still waiting, or on its way, goes behind it: sent straight, the older one could land after it
+    if own && (s.offline.is_some() || s.queue.contains_key(&p.name) || s.drain_req.is_pending()) {
         queue_save(s, p, base);
+        if s.offline.is_none() {
+            drain(s);
+        }
         return;
     }
     s.save_sent = own.then(|| (p.clone(), base));
@@ -3667,6 +3675,91 @@ fn write(s: &mut App) {
     }
 }
 
+/// Sends the saves that wait, now that the ship answers: the pages made
+/// here first, then the edits, one request each, stopping at the first
+/// the ship does not take or refuse outright.
+// ponytail: one request for each page. The ship's batch route is for when a queue of hundreds shows up
+fn drain(s: &mut App) {
+    if s.queue.is_empty() || s.drain_req.is_pending() {
+        return;
+    }
+    let Some(c) = s.conn.clone() else { return };
+    s.note = format!("sending {} saved on this device\u{2026}", s.queue.len());
+    s.drain_req.request((c, s.queue.clone()), |(c, q)| {
+        let mut all: Vec<(String, api::Queued)> = q.into_iter().collect();
+        all.sort_by_key(|(_, q)| !q.is_new);
+        let mut out = Vec::new();
+        for (name, q) in all {
+            let sent = c.send_queued(&name, &q);
+            let stop = matches!(sent, api::Sent::Stop(_));
+            out.push((name, q, sent));
+            if stop {
+                break;
+            }
+        }
+        out
+    });
+}
+
+/// What sending the waiting saves came to: each one the ship has, or
+/// that was kept aside, leaves the list, unless the page was saved again
+/// meanwhile, and that newer save then goes. A conflict or a refusal is
+/// said with the name its other text is kept under.
+fn drained(s: &mut App, out: Vec<(String, api::Queued, api::Sent)>) {
+    let (mut gone_to_ship, mut stopped, mut said) = (0, false, Vec::new());
+    for (name, q, sent) in out {
+        let same = s.queue.get(&name) == Some(&q);
+        match sent {
+            api::Sent::Stop(why) => {
+                stopped = true;
+                if api::gone(&why) {
+                    s.offline.get_or_insert_with(String::new);
+                } else {
+                    said.push(format!("{name} is still waiting: {why}"));
+                }
+            }
+            api::Sent::Done { rev, kept } => {
+                gone_to_ship += 1;
+                if same {
+                    s.queue.remove(&name);
+                } else if let Some(newer) = s.queue.get_mut(&name) {
+                    // saved again meanwhile: that one is written over what was just sent
+                    (newer.base, newer.is_new) = (rev, false);
+                }
+                if let Some(p) = s.cache.get_mut(&name) {
+                    p.rev = rev;
+                }
+                if let Some(p) = s.open.as_mut().filter(|p| p.name == name) {
+                    p.rev = rev;
+                }
+                if let Some(kept) = kept {
+                    said.push(format!("{name} had changed on the ship. Yours is the page now, and what it replaced is kept at {kept}"));
+                }
+            }
+            api::Sent::Aside(alt, why) => {
+                gone_to_ship += 1;
+                if same {
+                    s.queue.remove(&name);
+                }
+                said.push(format!("{name} was refused ({why}). Your text is kept at {alt}"));
+            }
+        }
+    }
+    if let Some(Err(e)) = s.conn.as_ref().map(|c| c.store_queue(&s.queue)) {
+        said.push(format!("the list of what waits could not be written: {e}"));
+    }
+    if gone_to_ship > 0 {
+        said.insert(0, format!("sent {gone_to_ship} saved on this device"));
+        // the whole tree is read again: revisions moved, and a kept copy may have been made
+        s.since.clear();
+        load_tree(s);
+    }
+    s.note = said.join(". ");
+    if !stopped {
+        drain(s);
+    }
+}
+
 /// Puts a save by for a ship that does not answer, in the file that
 /// outlives this run, and shows it as the page's text from then on.
 /// When the file cannot be written the save is nowhere, and that is
@@ -3682,7 +3775,6 @@ fn queue_save(s: &mut App, mut p: Page, base: u64) {
         return;
     }
     s.queue = q;
-    s.offline.get_or_insert_with(String::new);
     p.rev = base;
     landed(s, p);
     s.note = "saved on this device, to send when the ship answers".into();
@@ -4014,6 +4106,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             },
             Ok(d) => {
                 s.offline = None;
+                // the ship answers: what waited for it goes now
+                drain(s);
                 Ok(d)
             }
             e => e,
@@ -4167,6 +4261,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Err(e) => s.note = format!("revision: {e}"),
         }
     }
+    if let Some(out) = s.drain_req.take() {
+        changed = true;
+        drained(s, out);
+    }
     if let Some(r) = s.save_req.take() {
         changed = true;
         let sent = s.save_sent.take();
@@ -4183,6 +4281,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             // the ship did not answer: the save waits here for it
             Err(e) if api::gone(&e) && sent.is_some() => {
                 let (p, base) = sent.expect("just checked");
+                s.offline.get_or_insert_with(String::new);
                 queue_save(s, p, base);
             }
             Err(e) => {

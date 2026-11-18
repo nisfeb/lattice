@@ -567,6 +567,11 @@ struct History {
 struct Saved {
     #[serde(default)]
     rev: u64,
+    /// The page had changed since the revision the save named: it was applied all the same, and what it replaced is kept at `kept`.
+    #[serde(default)]
+    conflicted: bool,
+    #[serde(default)]
+    kept: String,
 }
 
 /// Where a signed-in session is kept between runs: the app's own file,
@@ -636,6 +641,34 @@ pub fn enqueue(q: &mut Queue, p: &Page, base: u64, is_new: bool, at: u64) {
     let prev = q.get(&p.name);
     let (base, is_new) = (prev.map_or(base, |o| o.base), is_new || prev.is_some_and(|o| o.is_new));
     q.insert(p.name.clone(), Queued { kind: p.kind.clone(), body: p.body.clone(), base, is_new, at });
+}
+
+/// How sending one waiting save came out.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Sent {
+    /// The ship has it, at this revision. When the ship's page had changed since the save was written, the text it replaced is kept under the name given.
+    Done { rev: u64, kept: Option<String> },
+    /// The ship refused it in a way sending again would not mend, and the text is kept as a page of its own under this name. Why it was refused.
+    Aside(String, String),
+    /// Not sent, or refused with nowhere to keep the text: it stays waiting. Why.
+    Stop(String),
+}
+
+/// Whether the ship refused a waiting save in a way sending it again
+/// cannot mend: a bad request, a missing target, a conflict, a text too
+/// large. Anything else (no answer, a 5xx, a session that lapsed, a rate
+/// limit) leaves it waiting. The web client's `REPLAY_DROP`.
+pub fn replay_drop(error: &str) -> bool {
+    error.split_once(':').and_then(|(code, _)| code.parse::<u16>().ok()).is_some_and(|c| [400, 404, 409, 410, 413, 422].contains(&c))
+}
+
+/// The name a refused save's text is kept under: `conflicts/offline-`,
+/// what it was (`create` or `edit`), the page's name made one segment
+/// as the ship makes it for its own kept copies (`/` to `-`, with `-`
+/// and `~` marked so no two names share one), and when.
+pub fn aside_name(tag: &str, name: &str, stamp: &str) -> String {
+    let flat = name.replace('~', "~~").replace('-', "~d").replace('/', "-");
+    format!("conflicts/offline-{tag}-{flat}-{stamp}")
 }
 
 fn queue_path(url: &str) -> Option<std::path::PathBuf> {
@@ -1091,6 +1124,49 @@ impl Conn {
     /// Keeps the tree with every page's text, to read when the ship does not answer. In a file only its owner reads, written whole or not at all.
     pub fn keep_tree(&self, nodes: Vec<Node>) -> Result<(), String> {
         keep_at(&kept_path(&self.url).ok_or("no home directory")?, nodes)
+    }
+
+    /// Sends one save that waited (`docs/offline-edits.md`). A page made here
+    /// goes as a new page, which the ship refuses when the name was taken
+    /// meanwhile: taken by this same text, it is done. An edit goes with the
+    /// revision it was written over and is applied either way, the ship
+    /// keeping what it replaced when that had changed. A text refused for
+    /// good is kept as a page of its own before it leaves the queue.
+    pub fn send_queued(&self, name: &str, q: &Queued) -> Sent {
+        let body = if q.body.is_empty() { "\n" } else { q.body.as_str() };
+        let save = |name: &str, how: &str| self.call("POST", &format!("page-save?name={}&type={}&by=rune{how}", enc(name), enc(&q.kind)), Some(body));
+        let tried = if q.is_new { save(name, "&new=1") } else { save(name, &format!("&base={}", q.base)) };
+        let why = match tried {
+            Ok(text) => {
+                return match serde_json::from_str::<Saved>(&text) {
+                    Ok(a) => Sent::Done { rev: a.rev, kept: (a.conflicted && !a.kept.is_empty()).then_some(a.kept) },
+                    Err(e) => Sent::Stop(format!("the ship's answer was not read: {e}")),
+                }
+            }
+            Err(e) if !replay_drop(&e) => return Sent::Stop(e),
+            Err(e) => e,
+        };
+        // the name taken by this very text is an earlier try of this save that landed after all
+        if q.is_new && why.starts_with("409") {
+            match self.page(name) {
+                Ok(there) if there.body == body => return Sent::Done { rev: there.rev, kept: None },
+                Err(e) if gone(&e) => return Sent::Stop(e),
+                _ => {}
+            }
+        }
+        let stamp = std::process::Command::new("date").arg("+%Y%m%d-%H%M%S").output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).map(|s| s.trim().to_owned()).filter(|s| s.len() == 15);
+        let stamp = stamp.unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()).to_string());
+        let base = aside_name(if q.is_new { "create" } else { "edit" }, name, &stamp);
+        // never over a kept copy: the first of the name, -2, -3 that is free
+        for i in 1..30 {
+            let alt = if i > 1 { format!("{base}-{i}") } else { base.clone() };
+            match save(&alt, "&new=1") {
+                Ok(_) => return Sent::Aside(alt, why),
+                Err(e) if e.starts_with("409") => {}
+                Err(e) => return Sent::Stop(format!("{why}, and its text could not be kept aside: {e}")),
+            }
+        }
+        Sent::Stop(why)
     }
 
     /// The saves that wait for this ship, from the file they are kept in.
@@ -2253,6 +2329,55 @@ mod tests {
         assert!(queue_at(&file).is_empty());
         let _ = std::fs::remove_dir_all(file.parent().unwrap());
         assert!(queue_path("http://ship.example:8080").unwrap().ends_with("lattice-rune/waiting-http---ship-example-8080.json"));
+    }
+
+    #[test]
+    fn a_waiting_save_leaves_only_when_sending_again_would_not_mend_it() {
+        for e in ["400: bad", "404: no such folder", "409: page exists", "410: gone", "413: too large", "422: x"] {
+            assert!(replay_drop(e), "{e}");
+        }
+        for e in ["http://ship/apps/lattice/page-save: Connection refused", "500: crash", "502: bad gateway", "401: sign in", "403: no", "408: slow", "429: wait"] {
+            assert!(!replay_drop(e), "{e}");
+        }
+        // as the ship flattens a name for its own kept copies: a/b and a-b do not share one
+        assert_eq!(aside_name("edit", "notes/a-b", "20261118-012233"), "conflicts/offline-edit-notes-a~db-20261118-012233");
+        assert_ne!(aside_name("create", "a/b", "s"), aside_name("create", "a-b", "s"));
+        assert_eq!(aside_name("create", "~x", "s"), "conflicts/offline-create-~~x-s");
+    }
+
+    /// Saves that waited, sent to a ship: an edit over the revision it knew, one over a page since changed, a page made here, and one whose name was taken meanwhile.
+    #[test]
+    #[ignore]
+    fn live_send_queued() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let name = format!("waited/a-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let q = |body: &str, base: u64, is_new: bool| Queued { kind: "md".into(), body: body.into(), base, is_new, at: 0 };
+        // made here: it goes as a new page
+        let Sent::Done { rev: r1, kept: None } = c.send_queued(&name, &q("first\n", 0, true)) else { panic!("a new page is taken") };
+        assert_eq!(c.page(&name).unwrap().body, "first\n");
+        // sent again, as after a try that landed unseen: the same text there is not a collision
+        assert_eq!(c.send_queued(&name, &q("first\n", 0, true)), Sent::Done { rev: r1, kept: None });
+        // a page starts at revision 0, and a save that names 0 names no revision: it is applied and nothing is checked
+        let Sent::Done { rev: r2, kept: None } = c.send_queued(&name, &q("second\n", r1, false)) else { panic!("an edit over a new page is plain") };
+        assert!((r1, r2) == (0, 1), "{r1} {r2}");
+        // an edit over the revision the ship has: applied, nothing kept
+        let Sent::Done { rev: r2b, kept: None } = c.send_queued(&name, &q("second, again\n", r2, false)) else { panic!("an edit over the ship's own revision is plain") };
+        // an edit written over a revision the ship has moved past: applied all the same, and what it replaced is kept
+        let Sent::Done { rev: r3, kept: Some(kept) } = c.send_queued(&name, &q("third, written away\n", r2, false)) else { panic!("a conflict is flagged") };
+        assert!(r3 > r2b && kept.starts_with("conflicts/"), "{kept}");
+        assert_eq!(c.page(&name).unwrap().body, "third, written away\n");
+        assert_eq!(c.page(&kept).unwrap().body, "second, again\n", "the text replaced is kept");
+        // a page made here under a name taken meanwhile by another text: kept aside, the ship's page untouched
+        let Sent::Aside(alt, why) = c.send_queued(&name, &q("made away under the same name\n", 0, true)) else { panic!("a taken name keeps the text aside") };
+        assert!(why.starts_with("409") && alt.starts_with("conflicts/offline-create-waited-a~d"), "{alt} {why}");
+        assert_eq!(c.page(&alt).unwrap().body, "made away under the same name\n");
+        assert_eq!(c.page(&name).unwrap().body, "third, written away\n");
+        // a ship that is not there: it stays waiting
+        let away = Conn { url: "http://127.0.0.1:9".into(), cookie: String::new() };
+        assert!(matches!(away.send_queued(&name, &q("x", 1, false)), Sent::Stop(_)));
+        for n in [name, kept, alt] {
+            c.delete(&n).unwrap();
+        }
     }
 
     #[test]
