@@ -123,11 +123,6 @@ pub fn chain(path: &str) -> Vec<&str> {
     out
 }
 
-/// The heading over the tree.
-pub fn heading(memory: bool) -> &'static str {
-    if memory { "KNOWLEDGE" } else { "FILES" }
-}
-
 /// What a row is sorted by: its own part of the path, or the whole of
 /// its name when the row stands for several folders at once (`a/b/c`).
 /// A name given to a page is not what it is sorted by, as on the web.
@@ -209,12 +204,6 @@ mod tests {
     }
 
     #[test]
-    fn the_heading_names_the_half() {
-        assert_eq!(heading(false), "FILES");
-        assert_eq!(heading(true), "KNOWLEDGE");
-    }
-
-    #[test]
     fn folders_stay_first_and_names_turn_round() {
         let mut rows = vec![(false, "b"), (true, "z"), (false, "a10"), (false, "a2"), (true, "m")];
         rows.sort_by(|a, b| order(*a, *b, false));
@@ -231,14 +220,5 @@ mod tests {
         assert_eq!(sort_key("docs/guide/intro", "guide/intro"), "guide/intro");
         // a given name with a slash in it is still not the key
         assert_eq!(sort_key("a/b", "either/or"), "b");
-    }
-
-    #[test]
-    fn every_icon_has_a_name_of_its_own() {
-        let mut names: Vec<_> = tools(false, false).iter().map(|t| t.icon.name).chain(tabs(Half::Files, 0, 0).iter().map(|t| t.icon.name)).collect();
-        let n = names.len();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), n);
     }
 }

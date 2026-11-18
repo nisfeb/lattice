@@ -45,6 +45,11 @@ pub const ICONS: [(&str, &str); 16] = [
     ("dot", ""), ("pin", "⊕"), ("star", "★"), ("flag", "⚑"), ("home", "⌂"), ("camera", "◉"), ("alert", "⚠"), ("person", "☺"),
     ("car", "▣"), ("boat", "⛵"), ("plane", "✈"), ("fire", "♨"), ("water", "≈"), ("tent", "△"), ("cross", "✚"), ("question", "?"),
 ];
+/// The name of the icon a glyph stands for, or nothing for a plain dot.
+pub fn pin_of(glyph: &str) -> &'static str {
+    ICONS.iter().find(|(_, g)| !g.is_empty() && *g == glyph).map_or("", |(n, _)| *n)
+}
+
 /// The icon a kind gets when the feature names none.
 const KIND_ICON: [(&str, &str); 5] = [("place", "pin"), ("situation", "flag"), ("person", "person"), ("home", "home"), ("report", "alert")];
 pub const KIND_COLORS: [&str; 8] = ["#c0392b", "#2e86c1", "#28a745", "#8e44ad", "#d68910", "#16a085", "#7f8c8d", "#e84393"];
@@ -1070,6 +1075,11 @@ mod tests {
         let long: Vec<String> = (0..1001).map(|i| format!("[{},1]", i as f64 / 100.0)).collect();
         let big = format!(r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","geometry":{{"type":"LineString","coordinates":[{}]}},"properties":{{}}}}]}}"#, long.join(","));
         assert!(parse(&big).unwrap()[0].corners.is_empty());
+    }
+
+    #[test]
+    fn a_glyph_names_its_icon() {
+        assert_eq!((pin_of("★"), pin_of("⊕"), pin_of(""), pin_of("x")), ("star", "pin", "", ""));
     }
 
     #[test]

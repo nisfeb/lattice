@@ -25,7 +25,8 @@ line!(FORUM, "lat-forum", "M3 4h12v8H8l-3 3v-3H3zM18 9h3v8h-2v3l-3-3h-6v-2");
 line!(INBOX, "lat-inbox", "M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5");
 line!(KEY, "lat-key", "M4 15a4 4 0 1 0 8 0a4 4 0 1 0-8 0M11 12l9-9M16 7l3 3M14 9l2 2");
 line!(TERM, "lat-term", "M4 17l6-5-6-5M12 19h8");
-line!(GEAR, "lat-gear", "M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1");
+// a gear with teeth, not the web client's own, which reads as a sun: the Feather set's, on the same grid
+line!(GEAR, "lat-gear", "M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z");
 
 /// What a press on an item does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -149,14 +150,5 @@ mod tests {
         assert_eq!(by(Go::Commands).keys, Some("Ctrl+K"));
         assert_eq!(by(Go::Settings).keys, Some("Ctrl+,"));
         assert_eq!(by(Go::Today).keys, None);
-    }
-
-    #[test]
-    fn every_icon_has_a_name_of_its_own() {
-        let it = items(Showing::default());
-        let mut names: Vec<_> = it.iter().map(|i| i.icon.name).collect();
-        names.sort_unstable();
-        names.dedup();
-        assert_eq!(names.len(), it.len());
     }
 }

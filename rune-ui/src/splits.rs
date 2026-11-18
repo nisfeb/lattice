@@ -1,12 +1,9 @@
 //! Splits, by the web client's rules (`ui-src/lattice/28-splits.js`):
-//! groups side by side or one above the other, a split inside a split,
-//! and the least room a group needs, under which a split is refused.
-//!
-//! The groups stand in a list. The split's own way (across, or down) is
-//! its outer way, and the list is cut into runs: each run is one place
-//! in the outer split, and a run of more than one group is split the
-//! other way inside that place. So `[1, 2]` across is a group, then a
-//! column of two.
+//! groups side by side or one above the other, each with its share of
+//! the room, and the least room a group needs, under which a split is
+//! refused. The web client also splits a group inside a split. That was
+//! built here and taken out again by the owner's word, as more
+//! bookkeeping than its use was worth: the groups stand in one row or one column.
 
 /// The least a group may be, in points: across, and down.
 pub const LEAST_W: f32 = 360.0;
@@ -40,10 +37,10 @@ pub fn halves(extent: f32, down: bool) -> Option<String> {
 pub enum Press {
     /// No split yet: make one that way.
     Make,
-    /// The split's own way: one more place in it, after the group in front's.
-    Outer,
-    /// The other way: the group in front is split by itself, inside its place.
-    Inner,
+    /// Split this way already: one more group, after the one in front.
+    Add,
+    /// Split the other way: the groups are turned round to stand this way.
+    Turn,
 }
 
 /// A press on the button for a split across (`down` false) or down, given
@@ -51,43 +48,9 @@ pub enum Press {
 pub fn press(split: bool, is_down: bool, down: bool) -> Press {
     match (split, is_down == down) {
         (false, _) => Press::Make,
-        (true, true) => Press::Outer,
-        (true, false) => Press::Inner,
+        (true, true) => Press::Add,
+        (true, false) => Press::Turn,
     }
-}
-
-/// The run the group standing at `d` is in.
-pub fn run_of(runs: &[usize], d: usize) -> Option<usize> {
-    let mut end = 0;
-    runs.iter().position(|n| {
-        end += n;
-        d < end
-    })
-}
-
-/// The runs once a group is added after the one standing at `front`:
-/// in a place of its own after that group's run, or, `inner`, in the
-/// same run. The second number is where the new group stands.
-pub fn added(runs: &[usize], front: usize, inner: bool) -> (Vec<usize>, usize) {
-    let mut out = runs.to_vec();
-    let Some(r) = run_of(runs, front) else { return (out, front) };
-    if inner {
-        out[r] += 1;
-        (out, front + 1)
-    } else {
-        out.insert(r + 1, 1);
-        (out, runs[..=r].iter().sum())
-    }
-}
-
-/// The runs once the group standing at `d` is gone. A run left empty is gone too.
-pub fn removed(runs: &[usize], d: usize) -> Vec<usize> {
-    let mut out = runs.to_vec();
-    if let Some(r) = run_of(runs, d) {
-        out[r] -= 1;
-        out.retain(|n| *n > 0);
-    }
-    out
 }
 
 /// Equal shares of the room for `n` standing side by side.
@@ -166,30 +129,9 @@ pub fn slot(tabs: &[[f32; 4]], p: [f32; 2]) -> Option<usize> {
     Some(laid.iter().filter(|r| r[0] + r[2] / 2.0 <= p[0]).count())
 }
 
-/// The group to bring to the front after the one standing at `front`,
-/// of `n`: the next, or the one before, going round at the ends.
-pub fn turn(front: usize, n: usize, forward: bool) -> usize {
-    if n < 2 {
-        front
-    } else if forward {
-        (front + 1) % n
-    } else {
-        (front + n - 1) % n
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_groups_are_gone_round_in_the_order_they_stand() {
-        assert_eq!((0..3).map(|d| turn(d, 3, true)).collect::<Vec<_>>(), [1, 2, 0]);
-        assert_eq!((0..3).map(|d| turn(d, 3, false)).collect::<Vec<_>>(), [2, 0, 1]);
-        assert_eq!(turn(0, 2, false), 1);
-        assert_eq!(turn(0, 0, true), 0, "no split, nowhere to go");
-        assert_eq!(turn(0, 1, true), 0);
-    }
 
     #[test]
     fn a_tab_let_go_among_tabs_goes_between_them() {
@@ -273,38 +215,12 @@ mod tests {
     }
 
     #[test]
-    fn a_press_makes_adds_a_place_or_splits_inside() {
+    fn a_press_makes_adds_a_group_or_turns_them_round() {
         assert_eq!(press(false, false, false), Press::Make);
         assert_eq!(press(false, true, true), Press::Make, "which way an old split ran does not matter once it is gone");
-        assert_eq!(press(true, false, false), Press::Outer);
-        assert_eq!(press(true, true, true), Press::Outer);
-        assert_eq!(press(true, false, true), Press::Inner);
-        assert_eq!(press(true, true, false), Press::Inner);
-    }
-
-    #[test]
-    fn which_run_a_group_is_in() {
-        let runs = [1, 2, 1];
-        assert_eq!((0..5).map(|d| run_of(&runs, d)).collect::<Vec<_>>(), [Some(0), Some(1), Some(1), Some(2), None]);
-    }
-
-    #[test]
-    fn a_group_added_goes_after_the_one_in_front() {
-        // a place of its own, after the whole run the front is in
-        assert_eq!(added(&[1, 1], 0, false), (vec![1, 1, 1], 1));
-        assert_eq!(added(&[2, 1], 0, false), (vec![2, 1, 1], 2), "after the run, not inside it");
-        assert_eq!(added(&[2, 1], 2, false), (vec![2, 1, 1], 3));
-        // inside the front's own run, right after it
-        assert_eq!(added(&[1, 1], 0, true), (vec![2, 1], 1));
-        assert_eq!(added(&[1, 2], 1, true), (vec![1, 3], 2));
-        assert_eq!(added(&[1, 1], 1, true), (vec![1, 2], 2));
-    }
-
-    #[test]
-    fn a_group_gone_shrinks_its_run_and_an_empty_run_goes() {
-        assert_eq!(removed(&[1, 2, 1], 1), [1, 1, 1]);
-        assert_eq!(removed(&[1, 2, 1], 0), [2, 1]);
-        assert_eq!(removed(&[1, 2, 1], 3), [1, 2]);
-        assert_eq!(removed(&[1, 1], 9), [1, 1], "nothing stands there");
+        assert_eq!(press(true, false, false), Press::Add);
+        assert_eq!(press(true, true, true), Press::Add);
+        assert_eq!(press(true, false, true), Press::Turn);
+        assert_eq!(press(true, true, false), Press::Turn);
     }
 }

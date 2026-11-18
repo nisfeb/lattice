@@ -36,6 +36,23 @@ pub struct Node {
     /// dump, then only those written since.
     #[serde(default)]
     pub body: Option<String>,
+    /// The page is a link to one another ship shared, moved into this tree.
+    /// It is read and saved through this ship like any page, and never
+    /// carried in a dump.
+    #[serde(default)]
+    pub link: Option<LinkTo>,
+}
+
+/// What a link in the tree points at: the page on its host, and whether it may be changed.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct LinkTo {
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub path: String,
+    /// `read` or `edit`, as the host granted it when the link was made.
+    #[serde(default)]
+    pub mode: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -1340,6 +1357,12 @@ pub struct Prefs {
     /// The bookmark folders folded away in the left pane.
     #[serde(default)]
     pub marks_folded: Vec<String>,
+    /// What the ship last said of themes, so the first frame is drawn in them.
+    #[serde(default)]
+    pub worn: crate::theme::Worn,
+    /// The pin chosen here for a feature of a map that is not written to, as orrery's: by the body it names.
+    #[serde(default)]
+    pub pins: std::collections::BTreeMap<String, String>,
 }
 
 impl Prefs {
@@ -2069,14 +2092,19 @@ impl Conn {
 
     /// `call` with its own time limit, for the few routes the ship is slow to answer.
     fn call_in(&self, secs: u64, method: &str, path: &str, body: Option<&str>) -> Result<String, String> {
+        self.call_url(secs, method, &format!("{}/apps/lattice/{path}", self.url), body)
+    }
+
+    /// One request of the ship, at any of its addresses, as the owner.
+    fn call_url(&self, secs: u64, method: &str, url: &str, body: Option<&str>) -> Result<String, String> {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = secs;
-            web::text(web::request(method, &format!("{}/apps/lattice/{path}", self.url), None, None, body))
+            web::text(web::request(method, url, None, None, body))
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let req = ureq::request(method, &format!("{}/apps/lattice/{path}", self.url))
+            let req = ureq::request(method, url)
                 .timeout(Duration::from_secs(secs))
                 .set("cookie", &self.cookie)
                 // the ship refuses a cross-site write, and reads the origin to tell
@@ -2091,6 +2119,34 @@ impl Conn {
                 Err(e) => Err(e.to_string()),
             }
         }
+    }
+
+    /// One scry through eyre, as the web client's theme script asks: nothing when the ship has nothing there.
+    fn scry(&self, path: &str) -> Result<Option<serde_json::Value>, String> {
+        match self.call_url(30, "GET", &format!("{}/~/scry/{path}.json", self.url), None) {
+            Ok(t) => serde_json::from_str(&t).map(Some).map_err(|e| e.to_string()),
+            Err(e) if e.starts_with("404") => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// What the ship says of themes now, over what it said before: lattice's
+    /// own from its %settings bucket, Talon's when it is followed, and the
+    /// profile's colour when an accent asks for it. Talon's bucket or the
+    /// profile not answering leaves what was had.
+    pub fn worn(&self, mut w: crate::theme::Worn) -> Result<crate::theme::Worn, String> {
+        w.lattice(self.scry("settings/bucket/lattice/ui-prefs")?.as_ref());
+        if w.reads_talon() {
+            if let Ok(b) = self.scry("settings/bucket/talon/ui-prefs") {
+                w.talon(b.as_ref());
+            }
+        }
+        if w.wants_profile() {
+            if let Ok(c) = self.scry("contacts/v1/self") {
+                w.contacts(c.as_ref());
+            }
+        }
+        Ok(w)
     }
 
     /// Every node, with the bodies written since `since` (all of them when
@@ -2575,6 +2631,18 @@ impl Conn {
         serde_json::from_str(&self.call("GET", "shared-with-me", None)?).map_err(|e| e.to_string())
     }
 
+    /// Moves a page shared with this ship into its own tree, as a link at
+    /// `to`. The entry leaves shared with me, and the host's grant is not
+    /// touched. The host is asked for the page's kind, so it is refused while the host is away.
+    pub fn link_make(&self, sh: &Shared, to: &str) -> Result<(), String> {
+        self.call_in(60, "POST", &format!("link-make?host={}&path={}&to={}", enc(&sh.host), enc(&sh.path), enc(to)), Some("")).map(drop)
+    }
+
+    /// Moves a link back to shared with me, and drops it from the tree.
+    pub fn link_unmake(&self, name: &str) -> Result<(), String> {
+        self.call("POST", &format!("link-unmake?name={}", enc(name)), Some("")).map(drop)
+    }
+
     /// Drops a notice from the list. It changes nothing on the host.
     pub fn shared_forget(&self, sh: &Shared) -> Result<(), String> {
         self.call("POST", &format!("shared-with-me-del?host={}&path={}", enc(&sh.host), enc(&sh.path)), Some("")).map(drop)
@@ -2890,7 +2958,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true, worn: crate::theme::Worn { own: true, ..Default::default() }, pins: [("place/home".to_owned(), "home".to_owned())].into() }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert!(back.sort_desc);
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
@@ -3875,6 +3943,52 @@ mod tests {
         let bad = RealName { name: "Bad Name".into(), dname: String::new(), dnames: String::new() };
         assert!(c.folder_new(&bad).is_err());
         println!("folder: {}", rn.name);
+    }
+
+    /// The themes in the ship's %settings, read as the window reads them:
+    /// Talon's while it is followed, lattice's own once the switch is off.
+    #[test]
+    #[ignore = "needs a ship: LATTICE_URL and LATTICE_COOKIE"]
+    fn live_themes_are_read_from_settings() {
+        use serde_json::json;
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        // a ship that was never themed answers, with nothing
+        let bare = c.worn(crate::theme::Worn::default()).expect("the ship answers with no bucket");
+        println!("before: {}", bare.said());
+        let ship = c.call_url(30, "GET", &format!("{}/~/host", c.url), None).unwrap().trim().trim_start_matches('~').to_owned();
+        let stamp = crate::api::since_epoch().unwrap().as_millis();
+        // as the web client's theme script writes an entry: a poke on a channel of its own
+        let put = |desk: &str, entry: &str, value: serde_json::Value| {
+            let url = format!("{}/~/channel/rune-theme-{stamp}-{desk}-{entry}", c.url);
+            let poke = json!([{ "id": 1, "action": "poke", "ship": ship, "app": "settings", "mark": "settings-event", "json": { "put-entry": { "desk": desk, "bucket-key": "ui-prefs", "entry-key": entry, "value": value.to_string() } } }]);
+            c.call_url(30, "PUT", &url, Some(&poke.to_string())).unwrap();
+        };
+        let theme = |id: &str, name: &str, surface: &str| json!({ "id": id, "name": name, "dark": true, "primary": "#8AB4F8", "secondary": "#C58AF9", "tertiary": "#78D9EC", "background": "#101418", "surface": surface, "text": "", "muted": "", "raised": "", "error": "", "selection": "", "link": "" });
+        let until = |what: &str, ok: &dyn Fn(&crate::theme::Worn) -> bool| {
+            for _ in 0..40 {
+                let w = c.worn(crate::theme::Worn::default()).unwrap();
+                if ok(&w) {
+                    return w;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            panic!("{what} was not read back");
+        };
+        let name = format!("Night {stamp}");
+        put("talon", "themes", json!({ "themes": [theme("a", &name, "#1B2026")], "activeId": "a" }));
+        put("talon", "accent", json!({ "enabled": true, "mode": "Custom", "customHex": "FFCC00" }));
+        let w = until("Talon's theme and accent", &|w| w.name() == Some(name.as_str()) && w.look().accent.is_some_and(|a| a.hex().starts_with("#ffcc00")));
+        assert!(w.follows());
+        assert_eq!(w.look().bg.map(|c| c.hex()), Some("#1b2026ff".to_owned()));
+        // lattice's own, worn once Talon is not followed
+        let mine = format!("Mine {stamp}");
+        put("lattice", "themes", json!({ "themes": [theme("m", &mine, "#202020")], "activeId": "m" }));
+        put("lattice", "use-talon-theme", json!({ "enabled": false }));
+        let w = until("lattice's own theme", &|w| !w.follows() && w.name() == Some(mine.as_str()));
+        assert_eq!(w.look().bg.map(|c| c.hex()), Some("#202020ff".to_owned()));
+        // and back to following Talon
+        put("lattice", "use-talon-theme", json!({ "enabled": true }));
+        until("Talon followed again", &|w| w.follows() && w.name() == Some(name.as_str()));
     }
 
     /// The reader's bookmarks, kept on a ship and read back as the left pane reads them.

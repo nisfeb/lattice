@@ -19,11 +19,10 @@ pub fn label(b: &Bookmark) -> &str {
     if b.title.is_empty() { &b.url } else { &b.title }
 }
 
-/// Whether the filter keeps a bookmark: what is typed is in its title,
-/// its address or its folder, in any case.
-pub fn keeps(b: &Bookmark, q: &str) -> bool {
-    let q = q.trim().to_lowercase();
-    q.is_empty() || [&b.title, &b.url, &b.folder].iter().any(|x| x.to_lowercase().contains(&q))
+/// Whether the filter keeps a bookmark: the query, trimmed and in small
+/// letters, is in its title, its address or its folder, in any case.
+fn keeps(b: &Bookmark, q: &str) -> bool {
+    q.is_empty() || [&b.title, &b.url, &b.folder].iter().any(|x| x.to_lowercase().contains(q))
 }
 
 /// The rows: folders first by name, then the bookmarks in no folder,
@@ -31,7 +30,8 @@ pub fn keeps(b: &Bookmark, q: &str) -> bool {
 /// shows every match, in a folded folder or not.
 pub fn rows(marks: &[Bookmark], q: &str, folded: &[String]) -> Vec<Row> {
     let filtering = !q.trim().is_empty();
-    let shown: Vec<usize> = (0..marks.len()).filter(|&i| keeps(&marks[i], q)).collect();
+    let low = q.trim().to_lowercase();
+    let shown: Vec<usize> = (0..marks.len()).filter(|&i| keeps(&marks[i], &low)).collect();
     let mut folders: Vec<&str> = shown.iter().map(|&i| marks[i].folder.as_str()).filter(|f| !f.is_empty()).collect();
     // by name whatever the case, and two that differ only in case told apart by their letters
     folders.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b)));
@@ -46,11 +46,6 @@ pub fn rows(marks: &[Bookmark], q: &str, folded: &[String]) -> Vec<Row> {
     }
     out.extend(shown.iter().filter(|&&i| marks[i].folder.is_empty()).map(|&at| Row::Mark { at, under: false }));
     out
-}
-
-/// What is said when there are no rows.
-pub fn none(q: &str) -> &'static str {
-    if q.trim().is_empty() { "No bookmarks yet" } else { "No bookmark matches that" }
 }
 
 /// Where a bookmark opens.
@@ -109,11 +104,6 @@ pub fn said(change: &Change) -> String {
     }
 }
 
-/// The folder typed into the move prompt, as it is sent.
-pub fn folder_of(typed: &str) -> String {
-    typed.trim().to_owned()
-}
-
 /// Whether an address is among the bookmarks.
 pub fn has(list: &[Bookmark], url: &str) -> bool {
     list.iter().any(|b| b.url == url)
@@ -156,12 +146,6 @@ mod tests {
         assert_eq!(said(&Change::Drop("u".into())), "Bookmark removed");
     }
 
-    #[test]
-    fn the_folder_typed_is_trimmed() {
-        assert_eq!(folder_of("  reading list "), "reading list");
-        assert_eq!(folder_of("   "), "");
-    }
-
     fn b(url: &str, title: &str, folder: &str) -> Bookmark {
         Bookmark { url: url.into(), title: title.into(), folder: folder.into() }
     }
@@ -201,12 +185,6 @@ mod tests {
         // by folder
         assert_eq!(rows(&list(), "boards", &[]), [Row::Folder { name: "Boards".into(), folded: false }, Row::Mark { at: 2, under: true }]);
         assert_eq!(rows(&list(), "nothing like it", &[]), []);
-    }
-
-    #[test]
-    fn what_is_said_with_no_rows() {
-        assert_eq!(none(""), "No bookmarks yet");
-        assert_eq!(none(" x "), "No bookmark matches that");
     }
 
     #[test]

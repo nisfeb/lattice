@@ -45,8 +45,14 @@ class H(BaseHTTPRequestHandler):
         if not signed:
             self.send_response(302); self.send_header('location', '/~/login?redirect=' + u.path); self.send_header('content-length', '0'); self.end_headers(); return
         if p == 'streams': return self.send(200, json.dumps({"base": "/stub", "streams": {}}))
-        if p == 'page-dump': return self.send(200, json.dumps({"nodes":[{"path":n,"page":True,"kind":v[1],"rev":v[2],"body":v[0]} for n, v in PAGES.items()],"since":"s1"}))
+        if p == 'page-dump':
+            nodes = [{"path":n,"page":True,"kind":v[1],"rev":v[2],"body":v[0]} for n, v in PAGES.items()]
+            # a link is in the tree with no text, as the ship sends one
+            nodes += [{"path":n,"page":True,"kind":"md","rev":l["rev"],"readonly":l["mode"]=="read","link":{"host":l["host"],"path":l["path"],"mode":l["mode"],"kind":"md"}} for n, l in LINKS.items()]
+            return self.send(200, json.dumps({"nodes":nodes,"since":"s1"}))
         if p == 'page-source':
+            l = LINKS.get(q.get('name', [''])[0])
+            if l: return self.send(200, json.dumps({"body":l["body"],"kind":"md","rev":l["rev"],"mtime":"~2026.11.17"}))
             v = PAGES.get(q.get('name', [''])[0])
             if not v: return self.send(404, '{"error":"no such page"}')
             return self.send(200, json.dumps({"body":v[0],"kind":v[1],"rev":v[2],"mtime":"~2026.11.17"}))
@@ -55,13 +61,25 @@ class H(BaseHTTPRequestHandler):
             _, style, z, x, y = p.split('/')
             return self.send(200, png(int(z), int(x), int(y)), 'image/png')
         if p == 'know-all': return self.send(200, json.dumps({"items":[{"key":k,"body":v,"tags":[],"updated":"~2026.11.17"} for k, v in KNOWS.items()]}))
-        if p == 'shared-with-me': return self.send(200, '[]')
+        if p == 'shared-with-me': return self.send(200, json.dumps([{"host":e["host"],"path":e["path"],"mode":e["mode"],"when":"~2026.11.18"} for e in SHARED]))
+        if p == 'browse-file':
+            e = next((e for e in SHARED if e["host"] == q.get('ship', [''])[0] and e["path"] == q.get('path', [''])[0]), None)
+            if not e or e["path"].endswith('/dir-index'): return self.send(404, 'not a file')
+            return self.send(200, json.dumps({"body":e["body"],"mark":"page","builder":"md","editable":True,"rev":e["rev"]}))
         if p == 'notify-count': return self.send(200, '{"held":0,"unread":0}')
         self.send(404, '{"error":"not in the stub"}')
 # a save is taken and answered as the ship answers one, so a change made in the window lands
 # LR_REV: the revision the page starts at, as when it was written elsewhere while this window was away
 KNOWS = {'/rune/fact': 'a fact as the ship has it\n'}
-PAGES = {'places': [GEO, KIND, int(os.environ.get('LR_REV', '1'))]}
+# LR_NAME: the page's name, as orrery/map for the map orrery keeps
+PAGES = {os.environ.get('LR_NAME', 'places'): [GEO, KIND, int(os.environ.get('LR_REV', '1'))]}
+# LR_SHARED=1: three notices from other ships, as shared with me holds them: a page to edit, a page to read, and a folder
+BASE = '/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/'
+SHARED = [] if os.environ.get('LR_SHARED') != '1' else [
+    {"host":"~sampel-palnet","path":BASE+"plans/trip/code","mode":"edit","body":"# The trip\n\nShared by ~sampel-palnet.\n","rev":4},
+    {"host":"~sampel-palnet","path":BASE+"recipes/dir-index","mode":"read","body":"","rev":1},
+    {"host":"~bus","path":BASE+"minutes/code","mode":"read","body":"# Minutes\n\nTo read only.\n","rev":2}]
+LINKS = {}
 def do_POST(self):
     u = urlparse(self.path); p = u.path.replace('/apps/lattice/', '', 1); q = parse_qs(u.query)
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
@@ -81,6 +99,26 @@ def do_POST(self):
         KNOWS[q['key'][0]] = body
         sys.stderr.write("memory %s %r\n" % (q['key'][0], body[:60]))
         return self.send(200, '{"ok":true}')
+    if p == 'link-make':
+        e = next((e for e in SHARED if e["host"] == q['host'][0] and e["path"] == q['path'][0]), None)
+        if not e: return self.send(404, 'not shared with you')
+        to = q['to'][0]
+        if to in PAGES or to in LINKS: return self.send(409, 'destination exists')
+        SHARED.remove(e); LINKS[to] = dict(e)
+        sys.stderr.write("linked %s to %s %s\n" % (to, e["host"], e["path"]))
+        return self.send(200, json.dumps({"path":to,"page":True,"kind":"md","rev":e["rev"]}))
+    if p == 'link-unmake':
+        l = LINKS.pop(q['name'][0], None)
+        if not l: return self.send(404, 'no such link')
+        SHARED.append(l)
+        sys.stderr.write("unlinked %s\n" % q['name'][0])
+        return self.send(200, '{"ok":true}')
+    if p == 'page-save' and q['name'][0] in LINKS:
+        l = LINKS[q['name'][0]]
+        if l["mode"] == 'read': return self.send(403, 'the link is read only')
+        l["body"] = body; l["rev"] += 1
+        sys.stderr.write("saved through link %s rev %d %r\n" % (q['name'][0], l["rev"], body[:60]))
+        return self.send(200, json.dumps({"rev": l["rev"], "conflicted": False, "kept": ""}))
     if p == 'page-save':
         # LR_SAVE_502: a save is answered as something in between answers when it cannot reach the ship
         if os.environ.get('LR_SAVE_502'): return self.send(502, 'bad gateway')

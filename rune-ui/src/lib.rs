@@ -21,6 +21,7 @@ mod md;
 mod odf;
 mod outline;
 mod pdf;
+mod pins;
 mod ribbon;
 mod rpane;
 mod scad;
@@ -30,9 +31,11 @@ mod sheet;
 mod shift;
 mod splits;
 mod status;
+mod swm;
 mod styles;
 mod tabhead;
 mod tex;
+mod theme;
 mod topbar;
 mod upload;
 mod vault;
@@ -330,6 +333,8 @@ enum Prompt {
     NewFolder(TextEdit),
     /// A folder for a bookmark: its address, and the folder typed.
     MarkMove(String, TextEdit),
+    /// Where in the tree a page shared with this ship goes, as a link.
+    LinkIn(Shared, TextEdit),
     /// A bookmark to remove: its address, and what it is shown as.
     MarkDrop(String, String),
 }
@@ -346,6 +351,13 @@ impl Tab {
     fn page(&self) -> Option<&str> {
         self.trail.get(self.at).map(String::as_str)
     }
+}
+
+/// A tab of the left pane that shows over the tree.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Over {
+    Search,
+    Marks,
 }
 
 /// A group of tabs that is not in front: its tabs, the one that shows,
@@ -376,6 +388,9 @@ enum Op {
     Restored(String),
     /// A memory's tag was put on or taken off: the memory, the tag, which.
     Tagged(String, String, bool),
+    /// A shared page was moved into the tree as a link: where, and whose it is. And a link moved back.
+    Linked(String, String),
+    Unlinked(String),
     Created(String),
     Renamed(String, String),
     Deleted(String),
@@ -476,19 +491,8 @@ struct App {
     /// Each folder's own share setting.
     dshares: HashMap<String, String>,
     sharing: bool,
-    /// The side pane shows comments, not history. The newest comments
-    /// across the ship, whether comments are on for each page asked
-    /// about, and the comment being typed.
-    pane_comments: bool,
-    /// The side pane shows links: the pages that link to the one named,
-    /// as the ship last said.
-    pane_links: bool,
-    /// Of the links, the pane shows those that come here, not those that go out.
-    pane_back: bool,
-    /// The pane shows the page's sharing, before any of the others.
-    pane_page: bool,
-    /// The pane shows the page's headings.
-    pane_outline: bool,
+    /// The right pane's tab that was asked for last.
+    pane: rpane::Tab,
     /// The heading last jumped to from the outline while reading, marked in the page.
     outline_at: Option<usize>,
     back: Option<(String, Vec<String>)>,
@@ -627,11 +631,7 @@ struct App {
     /// `front_at` is in front, and its tabs are `tabs`, so its place here is empty. No split is no groups.
     tgroups: Vec<TabGroup>,
     front_at: usize,
-    /// How the groups are cut into places of the split: each number is a place, and a place of more than one group is
-    /// split the other way inside (see `splits`).
-    runs: Vec<usize>,
-    /// Each place's share of the room along the split, and each group's share of its place across it. Each adds up to 1.
-    place_share: Vec<f32>,
+    /// Each group's share of the room along the split. They add up to 1.
     group_share: Vec<f32>,
     /// Where each group that is not in front stands in the window, as last laid out: for a tab dropped on one.
     group_rects: Vec<[f32; 4]>,
@@ -641,6 +641,8 @@ struct App {
     front_rect: [f32; 4],
     /// The tabs of each group that is not in front while one is pressed or dragged, by where the group stands.
     group_drag: [rune_kit::shell::TabDragState; splits::MOST],
+    /// How tall the room the page's editor stands in is, as last laid out.
+    edit_room: f32,
     /// The shares as they stood when a line between groups was pressed, while it is dragged.
     share_base: Option<Vec<f32>>,
     /// The groups are one above the other, not side by side.
@@ -682,8 +684,8 @@ struct App {
     /// The quick switcher: its query while open, and the row the arrows are on.
     jump: Option<TextEdit>,
     jump_at: usize,
-    /// The left pane's Search tab is showing, over whichever half of the tree is.
-    searching: bool,
+    /// The left pane's Search or Bookmarks tab, showing over whichever half of the tree is.
+    over: Option<Over>,
     /// What is typed into it.
     squery: TextEdit,
     /// What it found, the most that are shown, and how many it found in all.
@@ -697,11 +699,16 @@ struct App {
     page_menu: bool,
     /// The top bar's tabs while one is pressed or dragged.
     tab_drag: rune_kit::shell::TabDragState,
-    /// The left pane's Bookmarks tab is showing.
-    marks_open: bool,
     /// The bookmarks the reader keeps, once read.
     marks: Option<Vec<api::Bookmark>>,
     marks_req: Latest<Result<Vec<api::Bookmark>, String>>,
+    /// The pages of the tree that are links to pages other ships shared, by name.
+    links: HashMap<String, api::LinkTo>,
+    /// The ship's word on themes, and when it is asked next.
+    theme_req: Latest<Result<theme::Worn, String>>,
+    next_theme: f64,
+    /// The families the window's text was last set in, to set them again only when the theme's font changes.
+    font_set: String,
     /// The last read of them failed.
     marks_bad: bool,
     /// What is typed into their filter.
@@ -764,12 +771,50 @@ fn sample_nodes() -> Vec<Node> {
     SAMPLE.iter().map(|(p, _)| Node { path: (*p).into(), page: true, kind: "md".into(), rev: 1, body: None, ..Node::default() }).collect()
 }
 
-/// Puts the tree in the order asked for: folders first, then by name,
-/// from the end when `desc`. The tree is built in name order, so there
-/// is nothing to do for that one.
+/// Puts the tree in the order asked for: folders first, then by name, from the end when `desc`.
 fn sort_files(m: &mut Files, desc: bool) {
-    if desc {
-        m.sort_by(|a, b| head::order((a.dir, head::sort_key(&a.path, &a.name)), (b.dir, head::sort_key(&b.path, &b.name)), true));
+    m.sort_by(|a, b| head::order((a.dir, head::sort_key(&a.path, &a.name)), (b.dir, head::sort_key(&b.path, &b.name)), desc));
+}
+
+/// The rows of shared with me that are folded shut now, to leave them so when the tree is made again.
+fn shared_shut(s: &App) -> Vec<String> {
+    let mut ids = vec![swm::ROOT.to_owned()];
+    ids.extend(swm::hosts(&s.shared).into_iter().map(|(h, _)| swm::host_id(h)));
+    ids.retain(|id| s.files.contains(id) && !s.files.is_expanded(id));
+    ids
+}
+
+/// Puts shared with me at the foot of the pages' tree, as the web client
+/// draws it: the folder, a folder for each ship, and each entry by its
+/// name there. It stands only while something is shared, and never among the memories.
+fn graft_shared(s: &mut App, shut: &[String]) {
+    if s.memory || s.files.contains(swm::ROOT) {
+        return;
+    }
+    let (list, m) = (&s.shared, &mut s.files);
+    if list.is_empty() {
+        return;
+    }
+    let folder = |name: &str, path: &str| FileNode { name: name.to_owned(), path: path.to_owned(), dir: true, data: None };
+    m.insert(None, swm::ROOT, folder(swm::LABEL, swm::ROOT));
+    for (host, entries) in swm::hosts(list) {
+        let hid = swm::host_id(host);
+        m.insert(Some(swm::ROOT), hid.clone(), folder(host, &hid));
+        for sh in entries {
+            let id = swm::row_id(sh);
+            m.insert(Some(hid.as_str()), id.clone(), FileNode { name: swm::name(&sh.path), path: id, dir: false, data: None });
+        }
+        m.set_expanded(&hid, !shut.contains(&hid));
+    }
+    m.set_expanded(swm::ROOT, !shut.iter().any(|x| x == swm::ROOT));
+}
+
+/// A row of shared with me, pressed: a page is read from its host, and a folder at its address.
+fn open_shared(s: &mut App, id: &str) {
+    let Some(sh) = swm::at(&s.shared, id).cloned() else { return };
+    match swm::address(&sh.host, &sh.path) {
+        Some(url) => urb_go(s, Some(url)),
+        None => open_remote(s, sh),
     }
 }
 
@@ -796,11 +841,10 @@ fn files_of(nodes: Vec<Node>, keep: &Files, desc: bool) -> Files {
             parent = Some(path);
         }
     }
-    if added && !desc {
-        // a row put in by hand went last: back into the order the rest are in
-        m.sort_by(|a, b| head::order((a.dir, head::sort_key(&a.path, &a.name)), (b.dir, head::sort_key(&b.path, &b.name)), false));
+    // the tree is built in name order, but a row put in by hand went last
+    if added || desc {
+        sort_files(&mut m, desc);
     }
-    sort_files(&mut m, desc);
     // a row shows the name its page or folder was given. A row that stands
     // for several folders at once (a/b/c) keeps its path.
     for (path, name) in shown {
@@ -862,12 +906,8 @@ fn init() -> App {
         shares: HashMap::new(),
         dshares: HashMap::new(),
         sharing: false,
-        pane_comments: false,
         // the pane opens on the page's outgoing links, which cost no request
-        pane_links: true,
-        pane_back: false,
-        pane_page: false,
-        pane_outline: false,
+        pane: rpane::Tab::Out,
         outline_at: None,
         back: None,
         back_req: Latest::default(),
@@ -957,14 +997,13 @@ fn init() -> App {
         tab: 0,
         tgroups: Vec::new(),
         front_at: 0,
-        runs: Vec::new(),
-        place_share: Vec::new(),
         group_share: Vec::new(),
         group_rects: Vec::new(),
         tab_rects: Vec::new(),
         front_rect: [0.0; 4],
         group_drag: std::array::from_fn(|_| rune_kit::shell::TabDragState::new()),
         share_base: None,
+        edit_room: 0.0,
         split_down: false,
         groups_room: (0.0, 0.0),
         resync: false,
@@ -988,7 +1027,7 @@ fn init() -> App {
         jump: None,
         jump_at: 0,
         dirs: Vec::new(),
-        searching: false,
+        over: None,
         squery: TextEdit::new(""),
         shits: Vec::new(),
         sfound: 0,
@@ -996,9 +1035,12 @@ fn init() -> App {
         search_at: None,
         page_menu: false,
         tab_drag: rune_kit::shell::TabDragState::new(),
-        marks_open: false,
         marks: None,
         marks_req: Latest::default(),
+        links: HashMap::new(),
+        theme_req: Latest::default(),
+        next_theme: 0.0,
+        font_set: APP_FONT.to_owned(),
         marks_bad: false,
         marks_q: TextEdit::new(""),
         palette: None,
@@ -1038,6 +1080,7 @@ fn browse_sample(s: &mut App) {
         s.shared = vec![Shared { host: "~sampel-palnet".into(), path: "/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/plans/trip/code".into(), mode: "edit".into(), when: "~2026.11.16..18.5.0".into() }];
         // and one shared read-only, whose host can be asked for more
         s.shared.push(Shared { host: "~sampel-palnet".into(), path: "/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/plans/budget/code".into(), mode: "read".into(), when: "~2026.11.16..8.0.0".into() });
+        graft_shared(s, &[]);
         s.held = vec![Comment { page: "welcome".into(), id: "0v1.sample".into(), author: "~doznec-salfun-naptul-habrys--todlux-mosmep-linsub-binzod".into(), when: "~2026.11.17..9.30.0".into(), body: "Held until you say yes.".into() }];
         s.notices = vec![
             Notice { id: "0v1.note".into(), kind: "comment".into(), when: "~2026.11.17..9.31.0".into(), who: "~sampel-palnet".into(), host: "~zod".into(), place: "notes/today".into(), body: "A good day by the sound of it.".into(), ..Notice::default() },
@@ -1058,7 +1101,7 @@ fn browse_sample(s: &mut App) {
 /// Switches between pages and memories. Nothing is open after it, and the
 /// trail of visits starts again: a name means one thing in each half.
 fn flip(s: &mut App) {
-    if s.editing {
+    if !leave_edit(s) {
         return;
     }
     flip_quiet(s);
@@ -1172,7 +1215,7 @@ fn take_knows(s: &mut App, knows: Vec<Know>) {
     s.cache = knows.iter().map(|k| (name(k), Page { name: name(k), body: k.body.clone(), kind: "md".into(), rev: 0 })).collect();
     let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 0, body: None, ..Node::default() }).collect();
     s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
-    if s.searching {
+    if s.over == Some(Over::Search) {
         run_search(s);
     }
     if !was {
@@ -1275,8 +1318,12 @@ fn confirm(s: &mut App) {
         open_share(s);
         return;
     }
+    if let Prompt::LinkIn(sh, t) = &p {
+        link_in(s, sh.clone(), t.text.trim().to_owned());
+        return;
+    }
     if let Prompt::MarkMove(url, t) = &p {
-        mark_change(s, marks::Change::Move(url.clone(), marks::folder_of(&t.text)));
+        mark_change(s, marks::Change::Move(url.clone(), t.text.trim().to_owned()));
         return;
     }
     if let Prompt::MarkDrop(url, _) = &p {
@@ -1462,7 +1509,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) => {}
+                Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) | Op::Linked(..) | Op::Unlinked(..) => {}
             }
             Ok(op)
         }),
@@ -1541,6 +1588,24 @@ fn applied(s: &mut App, op: Op) {
         Op::Said(say) => {
             s.note = say;
             return;
+        }
+        Op::Linked(to, host) => {
+            // the page is the tree's now: it opens there once the tree is read, and the entry is gone from shared with me
+            s.note = format!("moved into {to}, linked from {host}");
+            s.remote = None;
+            s.open = None;
+            s.land = Some(to);
+            load_shared(s);
+        }
+        Op::Unlinked(name) => {
+            s.note = format!("moved {name} back to shared with me");
+            s.names.retain(|n| *n != name);
+            s.cache.remove(&name);
+            s.links.remove(&name);
+            if s.open.as_ref().is_some_and(|p| p.name == name) {
+                s.open = None;
+            }
+            load_shared(s);
         }
         Op::Marks(say, list) => {
             (s.note, s.marks, s.marks_bad) = (say, Some(list), false);
@@ -1711,11 +1776,13 @@ fn refresh_tree(s: &mut App) {
         if !s.memory {
             nodes.extend(s.dirs.iter().filter(|d| !s.dnames.contains_key(*d)).map(|d| Node { path: d.clone(), ..Node::default() }));
         }
+        let shut = shared_shut(s);
         s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
-        if s.searching {
+        if s.over == Some(Over::Search) {
             run_search(s);
         }
         s.files.expand_all();
+        graft_shared(s, &shut);
         if let Some(p) = &s.open {
             s.files.select(&p.name);
         }
@@ -1769,6 +1836,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.comets_req.set_waker(waker.clone());
     s.shared_req.set_waker(waker.clone());
     s.marks_req.set_waker(waker.clone());
+    s.theme_req.set_waker(waker.clone());
     s.remote_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
     s.op_req.set_waker(waker);
@@ -1864,16 +1932,14 @@ fn load_tree(s: &mut App) {
 /// Shows a page: from the cache at once when it is there, and from the ship
 /// when one is connected, so the cached text is corrected a moment later.
 fn open_page(s: &mut App, name: &str) {
-    if s.editing {
+    if !leave_edit(s) {
         return;
     }
     // the page to open again next run. Only a ship's: sample pages are not kept
     if !s.memory && s.prefs.recent.first().map(String::as_str) != Some(name) {
         s.prefs.last = name.to_owned();
         s.prefs.opened(name);
-        if s.conn.is_some() {
-            s.prefs.save();
-        }
+        save_prefs(s);
     }
     // a new visit drops what was ahead of it, as a browser does
     if s.trail.get(s.trail_at).map(String::as_str) != Some(name) {
@@ -1888,7 +1954,7 @@ fn open_page(s: &mut App, name: &str) {
 /// Steps back (`-1`) or forward (`1`) through the pages visited.
 fn step(s: &mut App, by: isize) {
     let Some(at) = s.trail_at.checked_add_signed(by).filter(|&i| i < s.trail.len()) else { return };
-    if s.editing {
+    if !leave_edit(s) {
         return;
     }
     s.trail_at = at;
@@ -2866,8 +2932,9 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         let (was, scale) = (*p, m.cam.scale);
         let on = m.picked == Some(i);
         let f = &m.feats[i];
-        // a point with a glyph is larger, to hold it. The sizes are the web client's
-        let r = if f.icon.is_empty() { 6.0 } else { 10.0 } + if on { 2.0 } else { 0.0 };
+        // its pin: the one chosen for it here, else its own, else its kind's. A point with one is larger, to hold it
+        let pin = pins::icon(pins::worn(map::pin_of(f.icon), pin_key(f).and_then(|id| s.prefs.pins.get(id)).map(String::as_str)));
+        let r = if pin.is_none() { 6.0 } else { 11.0 } + if on { 2.0 } else { 0.0 };
         view = view.child(
             el().key(format!("dot-{n}"))
                 .absolute(x - r, y - r)
@@ -2875,9 +2942,11 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                 .radius(r)
                 .center()
                 .fill(rune::color::hex(&f.color).unwrap_or(ink))
-                .children((!f.icon.is_empty()).then(|| text(f.icon).font(k.ty.small_medium).color(rune::Color::WHITE).inert()))
+                .children(pin.map(|i| rune::icon(i, 14.0).color(rune::Color::WHITE).inert()))
                 .border(2.0, c.bg_base)
                 .label(m.feats[i].name.clone())
+                // its name is said under the pointer, and drawn only for the one picked: every name at once is a crowd
+                .help(m.feats[i].name.clone())
                 .on_drag(move |s: &mut App, d, _| {
                     let may = map_changes(s);
                     let Some(m) = &mut s.map else { return };
@@ -2901,7 +2970,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                     }
                 }),
         );
-        if !m.feats[i].name.is_empty() {
+        if on && !m.feats[i].name.is_empty() {
             view = view.child(text(m.feats[i].name.clone()).key(format!("name-{n}")).absolute(x + r + 4.0, y - 9.0).font(k.ty.small_medium).color(c.text_base).inert());
         }
     }
@@ -2988,8 +3057,12 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             // each press here is a change to the page, saved at once, as on the web
             let set = move |key: &'static str, v: Option<&'static str>| move |s: &mut App| drop(write_map(s, |body| map::set_props(body, at, &[(key, v.map(serde_json::Value::from))])));
             let mut icons = row().key("map-icons").w_full().gap(2.0).flex_wrap();
-            for (name, glyph) in map::ICONS {
-                icons = icons.child(small(if glyph.is_empty() { "•" } else { glyph }).help(name).on_press(set("icon", Some(name))).build(k).key(format!("icon:{name}")));
+            for (name, _) in map::ICONS {
+                let b = match pins::icon(name) {
+                    Some(i) => IconButton::new(i).variant(IconButtonVariant::GhostMuted).help(name).on_press(set("icon", Some(name))).build(k),
+                    None => small("•").help(name).on_press(set("icon", Some(name))).build(k),
+                };
+                icons = icons.child(b.key(format!("icon:{name}")));
             }
             let mut inks = row().key("map-colours").w_full().gap(6.0).center_y();
             for ink in map::KIND_COLORS {
@@ -3009,6 +3082,21 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                             }
                         }).build(k).key("feature-delete")),
                 );
+        } else if let Some(id) = pin_key(f).filter(|_| f.geoms.iter().all(|g| matches!(g, map::Geom::Point(_)))).map(str::to_owned) {
+            // a map that is not written to, as orrery's: the pin is chosen for this computer, by the body the point names
+            let small = |label: &str| Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost);
+            let mut icons = row().key("map-pins").w_full().gap(2.0).flex_wrap();
+            for (name, _) in map::ICONS {
+                let id = id.clone();
+                let b = match pins::icon(name) {
+                    Some(i) => IconButton::new(i).variant(IconButtonVariant::GhostMuted).help(name).on_press(move |s: &mut App| set_pin(s, &id, Some(name))).build(k),
+                    None => small("\u{2022}").help(name).on_press(move |s: &mut App| set_pin(s, &id, Some(name))).build(k),
+                };
+                icons = icons.child(b.key(format!("pin:{name}")));
+            }
+            card = card
+                .child(text("Its pin, kept on this computer. Orrery keeps this map, so the choice is not written to it.").font(k.ty.small).color(c.text_faint).wrap())
+                .child(icons.child(small("Kind's pin").on_press(move |s: &mut App| set_pin(s, &id, None)).build(k).key("pin:none")));
         }
         view = view.child(card);
     }
@@ -3263,6 +3351,20 @@ fn orrery_or_source(f: &map::Feature) -> bool {
 /// pages, being read, and not the map orrery keeps.
 fn map_changes(s: &App) -> bool {
     usable(s, "map-base") && !kept_by_orrery(s) && !s.save_req.is_pending()
+}
+
+/// What a pin chosen here is kept by: the body a feature of orrery's map names.
+fn pin_key(f: &map::Feature) -> Option<&str> {
+    f.props.iter().find(|(k, _)| k == "orrery").map(|(_, v)| v.as_str()).filter(|v| !v.is_empty())
+}
+
+/// Chooses the pin a point wears on this computer, or, with none, gives it back its own.
+fn set_pin(s: &mut App, id: &str, name: Option<&'static str>) {
+    match name {
+        Some(n) => drop(s.prefs.pins.insert(id.to_owned(), n.to_owned())),
+        None => drop(s.prefs.pins.remove(id)),
+    }
+    save_prefs(s);
 }
 
 /// Asks for the name, kind and note of the feature at `at` in the page.
@@ -3607,10 +3709,10 @@ fn find_bar(q: &TextEdit, s: &App, k: &Kit) -> El {
         .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close find").on_press(|s: &mut App| s.find = None).build(k).key("find-close"))
 }
 
-/// Reads which pages link to the open one when the links pane is showing.
+/// Reads which pages link to the open one when the backlinks are showing.
 /// The ship's index answers. Sample pages are read here.
 fn load_links(s: &mut App) {
-    let Some(p) = s.open.as_ref().filter(|_| s.inspector.is_open() && s.pane_links && !s.memory && s.remote.is_none()) else { return };
+    let Some(p) = s.open.as_ref().filter(|_| s.inspector.is_open() && s.pane == rpane::Tab::Back && !s.memory && s.remote.is_none()) else { return };
     match s.conn.clone() {
         Some(c) => s.back_req.request((c, p.name.clone()), |(c, n)| c.backlinks(&n).map(|b| (n, b))),
         None => s.back = Some((p.name.clone(), linked_from(&s.cache, &p.name))),
@@ -3641,67 +3743,49 @@ fn links_view(s: &App, k: &Kit, back: bool) -> El {
             }
         }).build(k).key(key))
     };
-    let mut here = col().key("links-here").w_full().gap(2.0).child(text("Links here").font(k.ty.small_medium).color(c.text_muted));
-    match s.back.as_ref().filter(|(n, _)| *n == p.name) {
-        Some((_, list)) if list.is_empty() => here = here.child(text("Nothing links here yet.").font(k.ty.small).color(c.text_faint)),
-        Some((_, list)) => {
-            for n in list {
-                here = here.child(line(n, format!("back-{n}"), false));
-            }
-        }
-        None => here = here.child(text("Reading the links").font(k.ty.small).color(c.text_faint)),
-    }
-    let mut out = col().key("links-out").w_full().gap(2.0).child(text("Links out").font(k.ty.small_medium).color(c.text_muted));
-    let outs = if p.kind == "md" { md::links(&p.body) } else { Vec::new() };
-    for n in &outs {
-        out = out.child(line(n, format!("out-{n}"), ghost(s, n)));
-    }
-    if outs.is_empty() {
-        out = out.child(text("No links to other pages.").font(k.ty.small).color(c.text_faint));
-    }
     // one tab for the links that come here and one for those that go out, as on the web
-    col().key("links").w_full().h_full().min_h(0.0).padding(12.0).gap(14.0).child(if back { here } else { out }).scroll(ScrollSpec { stick_bottom: false })
+    let list = if back {
+        let mut here = col().key("links-here").w_full().gap(2.0).child(text("Links here").font(k.ty.small_medium).color(c.text_muted));
+        match s.back.as_ref().filter(|(n, _)| *n == p.name) {
+            Some((_, list)) if list.is_empty() => here = here.child(text("Nothing links here yet.").font(k.ty.small).color(c.text_faint)),
+            Some((_, list)) => {
+                for n in list {
+                    here = here.child(line(n, format!("back-{n}"), false));
+                }
+            }
+            None => here = here.child(text("Reading the links").font(k.ty.small).color(c.text_faint)),
+        }
+        here
+    } else {
+        let mut out = col().key("links-out").w_full().gap(2.0).child(text("Links out").font(k.ty.small_medium).color(c.text_muted));
+        let outs = if p.kind == "md" { md::links(&p.body) } else { Vec::new() };
+        for n in &outs {
+            out = out.child(line(n, format!("out-{n}"), ghost(s, n)));
+        }
+        if outs.is_empty() {
+            out = out.child(text("No links to other pages.").font(k.ty.small).color(c.text_faint));
+        }
+        out
+    };
+    col().key("links").w_full().h_full().min_h(0.0).padding(12.0).gap(14.0).child(list).scroll(ScrollSpec { stick_bottom: false })
 }
 
-/// Shows one of the side pane's three views, or closes the pane when
-/// that view is the one showing.
-fn show_pane(s: &mut App, comments: bool, links: bool) {
-    if s.inspector.is_open() && s.pane_comments == comments && s.pane_links == links {
-        s.inspector.toggle();
+/// Shows one of the right pane's tabs, or closes the pane when that
+/// tab is the one showing. The links command takes either list of links for its own.
+fn show_pane(s: &mut App, tab: rpane::Tab) {
+    use rpane::Tab;
+    if s.inspector.is_open() && (s.pane == tab || (tab == Tab::Out && s.pane == Tab::Back)) {
+        s.inspector.set_open(false);
         return;
     }
-    if !s.inspector.is_open() {
-        s.inspector.toggle();
-    }
-    (s.pane_comments, s.pane_links, s.pane_back, s.pane_page, s.pane_outline) = (comments, links, false, false, false);
-    s.old = None;
-    load_history(s);
-    load_comments(s);
-    load_links(s);
-}
-
-/// The right pane's tab in front, as its flags say.
-fn pane_now(s: &App) -> rpane::Tab {
-    if s.pane_page {
-        return rpane::Tab::Page;
-    }
-    if s.pane_outline {
-        return rpane::Tab::Outline;
-    }
-    match (s.pane_links, s.pane_back, s.pane_comments) {
-        (true, false, _) => rpane::Tab::Out,
-        (true, true, _) => rpane::Tab::Back,
-        (false, _, true) => rpane::Tab::Comments,
-        (false, _, false) => rpane::Tab::Hist,
-    }
+    pane_tab(s, tab);
 }
 
 /// Brings one of the right pane's tabs to the front, and reads what it shows.
 fn pane_tab(s: &mut App, tab: rpane::Tab) {
     use rpane::Tab;
     s.inspector.set_open(true);
-    (s.pane_comments, s.pane_links, s.pane_back, s.pane_page) = (tab == Tab::Comments, matches!(tab, Tab::Out | Tab::Back), tab == Tab::Back, tab == Tab::Page);
-    s.pane_outline = tab == Tab::Outline;
+    s.pane = tab;
     s.old = None;
     if tab == Tab::Page {
         // who it is shared with, and the groups there are to share it with
@@ -3713,8 +3797,8 @@ fn pane_tab(s: &mut App, tab: rpane::Tab) {
     load_links(s);
 }
 
-/// The text the outline is read from, and its kind: what is being
-/// typed while editing, and the page as it stands otherwise.
+/// The open page's headings: those of what is being typed while
+/// editing, and of the page as it stands otherwise.
 fn outline_of(s: &App) -> Vec<outline::Heading> {
     match &s.open {
         Some(p) if s.editing => outline::outline(&s.edit.text, &p.kind),
@@ -3791,11 +3875,12 @@ fn status_bar(s: &App, k: &Kit, busy: bool) -> El {
 /// The right pane: its tabs as icons, then what the one in front shows.
 fn right_pane(s: &App, k: &Kit) -> El {
     let own = s.open.is_some() && !s.memory && s.remote.is_none();
-    let now = rpane::front(pane_now(s), own);
+    // a memory, and another ship's page, have only their history, whatever was showing before
+    let now = if own { s.pane } else { rpane::Tab::Hist };
     let mut tabs = row().key("rtabs").role("tablist").label("Right pane").w_full().gap(4.0).px(8.0).pt(8.0);
-    for cell in rpane::tabs(pane_now(s), own) {
-        let what = cell.what;
-        tabs = tabs.child(IconButton::new(cell.icon).control_size(ControlSize::Large).variant(if cell.on { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help(cell.name).on_press(move |s: &mut App| pane_tab(s, what)).build(k).key(cell.key));
+    // the tabs in the web client's order, each by the key its button in the header had
+    for (what, key, name, icon) in rpane::TABS.iter().copied().filter(|t| own || t.0 == rpane::Tab::Hist) {
+        tabs = tabs.child(IconButton::new(icon).control_size(ControlSize::Large).variant(if what == now { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help(name).on_press(move |s: &mut App| pane_tab(s, what)).build(k).key(key));
     }
     let body = match now {
         rpane::Tab::Page => match share_body(s, k) {
@@ -3813,7 +3898,7 @@ fn right_pane(s: &App, k: &Kit) -> El {
 
 /// Reads the open page's revisions when the history pane is showing.
 fn load_history(s: &mut App) {
-    if s.pane_comments || s.pane_links || s.pane_page || s.pane_outline {
+    if s.pane != rpane::Tab::Hist {
         return;
     }
     let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else { return };
@@ -3892,7 +3977,7 @@ fn show_page(s: &mut App, name: &str) {
     load_links(s);
     // a heading marked in the page before is not this page's
     s.outline_at = None;
-    if s.pane_page && s.inspector.is_open() {
+    if s.pane == rpane::Tab::Page && s.inspector.is_open() {
         // the Page tab follows the page: whether this one is marked sensitive
         load_sens(s);
     }
@@ -4243,7 +4328,7 @@ fn format_bar(s: &App, k: &Kit) -> El {
 /// Starts a page with no question asked: named in the inbox by the
 /// date, open in the editor, and kept by its first save.
 fn capture(s: &mut App) {
-    if s.editing {
+    if !leave_edit(s) {
         return;
     }
     if s.memory {
@@ -4258,7 +4343,7 @@ fn capture(s: &mut App) {
 /// Starts a page that is not written yet under a name it already has,
 /// open in the editor. Its first save makes it.
 fn start_named(s: &mut App, name: String) {
-    if s.editing {
+    if !leave_edit(s) {
         return;
     }
     if s.memory {
@@ -4277,7 +4362,7 @@ fn start_named(s: &mut App, name: String) {
 /// Today's journal page: the one there is, under any of its names, or a
 /// new one started at the name the ship's journal pass uses.
 fn open_today(s: &mut App) {
-    if s.editing {
+    if !leave_edit(s) {
         return;
     }
     if s.memory {
@@ -4302,6 +4387,55 @@ fn cancel_edit(s: &mut App) {
         s.open = None;
         s.note.clear();
     }
+}
+
+/// Leaves the editor so that something else can be gone to, keeping what
+/// was typed: text that is as the page was read is let go, and text
+/// that changed is saved as a save made with the ship away is, kept on
+/// this device first and then sent, so nothing waits on the ship's
+/// answer and a save the ship refuses is not lost. `false` when the
+/// editor could not be left, with why said.
+fn leave_edit(s: &mut App) -> bool {
+    if !s.editing {
+        return true;
+    }
+    let Some(mut p) = s.open.clone() else {
+        s.editing = false;
+        return true;
+    };
+    let body = edited(s);
+    if p.body == body || (s.capture && body.trim().is_empty()) {
+        cancel_edit(s);
+        return true;
+    }
+    if s.conn.is_none() {
+        // sample pages are kept at once
+        s.autosaving = false;
+        write(s);
+        return !s.editing;
+    }
+    // another ship's page, and one that changed elsewhere, are saved on purpose only
+    if s.remote.is_some() || s.stale {
+        s.note = "Save or cancel this edit first: it is not saved by itself".into();
+        return false;
+    }
+    // ponytail: a save on its way would land over this one's place in the list, so it is waited for. Carry the newer text behind it if this is met in use
+    if s.save_req.is_pending() {
+        s.note = "A save is on its way. Try again in a moment".into();
+        return false;
+    }
+    let (base, memory) = (p.rev, s.memory);
+    p.body = body;
+    (s.autosaving, s.save_again) = (false, false);
+    queue_save(s, p, base, memory);
+    if s.editing {
+        // it could not be kept on this device: the editor stays, and says so
+        return false;
+    }
+    if s.offline.is_none() {
+        drain(s);
+    }
+    true
 }
 
 /// How long the text must rest before it is saved by itself, as in the
@@ -4562,6 +4696,12 @@ fn landed(s: &mut App, p: Page) {
             refresh_tree(s);
         }
     }
+    // the page was left while its save was on the way: it is kept, and what is in front stays as it is
+    if !s.open.as_ref().is_some_and(|o| o.name == p.name) {
+        (s.save_again, s.autosaving) = (false, false);
+        s.note = format!("saved {}", p.name);
+        return;
+    }
     s.capture = false;
     s.open = Some(p);
     s.stale = false;
@@ -4629,10 +4769,30 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         if s.next_sync > 0.0 {
             load_tree(s);
         }
+        // ponytail: the themes are asked for with the tree, a minute apart at least, so one
+        // changed in Talon shows within five minutes. Watch %settings if that is too slow.
+        if let Some(c) = s.conn.clone().filter(|_| clock >= s.next_theme) {
+            s.next_theme = clock + 60.0;
+            let had = s.prefs.worn.clone();
+            s.theme_req.request(c, move |c| c.worn(had));
+        }
         // while the stream is registered it says when anything changes, and asking is only a floor
         let every = if s.beacon_state.live { SYNC_LIVE } else { SYNC_EVERY };
         s.next_sync = clock + every;
         tx.wake_after(std::time::Duration::from_secs_f64(every));
+    }
+    // the theme's font, behind the app's own text: set when it changes, and at the first look from what was kept
+    let font = font_of(&s.prefs.worn);
+    if s.font_set != font {
+        tx.set_font_families(font.clone(), APP_FONT);
+        s.font_set = font;
+        changed = true;
+    }
+    // a ship that could not be asked leaves the look it had
+    if let Some(Ok(worn)) = s.theme_req.take().filter(|r| r.as_ref().is_ok_and(|w| *w != s.prefs.worn)) {
+        changed = true;
+        s.prefs.worn = worn;
+        save_prefs(s);
     }
     if let Some(r) = s.marks_req.take() {
         changed = true;
@@ -4645,7 +4805,11 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if let Some(r) = s.shared_req.take() {
         changed = true;
         match r {
-            Ok(list) => s.shared = list,
+            Ok(list) => {
+                s.shared = list;
+                let shut = shared_shut(s);
+                graft_shared(s, &shut);
+            }
             Err(e) => s.note = format!("shared with me: {e}"),
         }
     }
@@ -4943,6 +5107,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 s.shares = nodes.iter().filter(|n| n.page && !n.share.is_empty()).map(|n| (n.path.clone(), n.share.clone())).collect();
                 s.dnames = nodes.iter().filter(|n| !n.dname.is_empty()).map(|n| (n.path.clone(), n.dname.clone())).collect();
                 s.dshares = nodes.iter().filter(|n| !n.page && !n.dshare.is_empty()).map(|n| (n.path.clone(), n.dshare.clone())).collect();
+                s.links = nodes.iter().filter_map(|n| n.link.clone().map(|l| (n.path.clone(), l))).collect();
                 // bodies the dump carried replace the kept ones, and pages gone from it go
                 let live: std::collections::HashSet<&str> = nodes.iter().filter(|n| n.page).map(|n| n.path.as_str()).collect();
                 s.cache.retain(|name, _| live.contains(name.as_str()));
@@ -4971,8 +5136,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 let first = s.files.is_empty();
                 s.names = nodes.iter().filter(|n| n.page).map(|n| n.path.clone()).collect();
                 s.dirs = nodes.iter().filter(|n| !n.page).map(|n| n.path.clone()).collect();
+                let shut = shared_shut(s);
                 s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
-                if s.searching {
+                graft_shared(s, &shut);
+                if s.over == Some(Over::Search) {
                     run_search(s);
                 }
                 if first {
@@ -4989,7 +5156,6 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     // the page held beside last run is held again, if it is still there
                     if s.names.contains(&s.prefs.split) && s.tgroups.is_empty() {
                         (s.tgroups, s.front_at) = (vec![TabGroup::default(), TabGroup { tabs: vec![Tab { trail: vec![s.prefs.split.clone()], at: 0 }], at: 0, view: None }], 0);
-                        s.runs = vec![1, 1];
                         s.split_down = s.prefs.split_down;
                     }
                     let last = s.prefs.last.clone();
@@ -5540,7 +5706,7 @@ fn upload_dir(s: &App) -> String {
 
 /// Asks for a file or a folder and uploads the text files in it as pages.
 fn ask_upload(s: &mut App, folder: bool, tx: &mut Tx) {
-    if s.editing {
+    if !leave_edit(s) {
         return;
     }
     if s.memory {
@@ -5561,7 +5727,7 @@ fn ask_upload(s: &mut App, folder: bool, tx: &mut Tx) {
 
 /// Reads the picked file or folder and saves its pages, off the window's thread.
 fn upload(s: &mut App, paths: Vec<std::path::PathBuf>) {
-    if s.editing || paths.is_empty() {
+    if paths.is_empty() || !leave_edit(s) {
         return;
     }
     if s.memory {
@@ -5621,7 +5787,7 @@ fn land_on(s: &mut App, name: &str) {
 
 /// Opens the template dialog, with the name seeded by where a new page would go.
 fn ask_template(s: &mut App) {
-    if s.editing {
+    if !leave_edit(s) {
         return;
     }
     if s.memory {
@@ -5722,40 +5888,29 @@ fn split_page(s: &App) -> Option<&str> {
 }
 
 /// One more group, holding the page in front, placed after the group in
-/// front: in a place of its own in the split, or, `inner`, in the front
-/// group's own place, split the other way. The first one makes the split.
-fn add_group(s: &mut App, inner: bool) {
+/// front, which gives it half its share of the room. The first one makes the split.
+fn add_group(s: &mut App) {
     let Some(name) = s.open.as_ref().filter(|_| s.remote.is_none() && !s.capture && !s.memory).map(|p| p.name.clone()) else { return };
     let made = TabGroup { tabs: vec![Tab { trail: vec![name], at: 0 }], at: 0, view: None };
     if s.tgroups.is_empty() {
         // the group in front has a place among them, left empty: its tabs are the window's own
-        (s.tgroups, s.front_at, s.runs) = (vec![TabGroup::default(), made], 0, vec![1, 1]);
+        (s.tgroups, s.front_at) = (vec![TabGroup::default(), made], 0);
     } else {
-        let (runs, at) = splits::added(&s.runs, s.front_at, inner);
         fix_shares(s);
-        if let Some(r) = splits::run_of(&s.runs, s.front_at) {
-            let from: usize = s.runs[..r].iter().sum();
-            if inner {
-                // the group in front gives half its share of the place to the new one
-                let slice = splits::share_added(&s.group_share[from..from + s.runs[r]], s.front_at - from);
-                s.group_share.splice(from..from + s.runs[r], slice);
-            } else {
-                // the front's place gives half its share of the room to the new place, which one group has whole
-                s.place_share = splits::share_added(&s.place_share, r);
-                s.group_share.insert(at, 1.0);
-            }
-        }
-        s.tgroups.insert(at, made);
-        s.runs = runs;
+        s.group_share = splits::share_added(&s.group_share, s.front_at);
+        s.tgroups.insert(s.front_at + 1, made);
     }
     sync_groups(s);
 }
 
 /// Holds the page in front beside whatever comes next, or, with a split, closes it.
 fn toggle_split(s: &mut App) {
+    if !leave_edit(s) {
+        return;
+    }
     if s.tgroups.is_empty() {
         s.split_down = false;
-        add_group(s, false);
+        add_group(s);
     } else {
         s.tgroups.clear();
         sync_groups(s);
@@ -5763,42 +5918,48 @@ fn toggle_split(s: &mut App) {
 }
 
 /// A press on a split button: across, or down. With no split it makes
-/// one that way. With a split that way it adds a place to it. With a
-/// split the other way it splits the group in front by itself. Each is
-/// refused when a group would have less than its least room.
+/// one that way. With a split that way it adds a group to it. With a
+/// split the other way it turns the groups round to stand that way. Each
+/// is refused when a group would have less than its least room.
 fn split_press(s: &mut App, down: bool) {
-    let press = splits::press(!s.tgroups.is_empty(), s.split_down, down);
-    if let Some(why) = split_refused(s, down) {
-        s.note = why;
+    if !leave_edit(s) {
         return;
     }
-    let outer = if press == splits::Press::Make { down } else { s.split_down };
-    s.split_down = outer;
-    add_group(s, press == splits::Press::Inner);
+    let press = match split_plan(s, down) {
+        Ok(press) => press,
+        Err(why) => {
+            s.note = why;
+            return;
+        }
+    };
+    s.split_down = down;
+    if press != splits::Press::Turn {
+        add_group(s);
+    }
     if s.prefs.split_down != s.split_down {
         s.prefs.split_down = s.split_down;
-        if s.conn.is_some() {
-            s.prefs.save();
-        }
+        save_prefs(s);
     }
 }
 
-/// Why a press on a split button would be refused now, or nothing: four
-/// groups is the most, and what would be split, the room, the front
-/// group's place or the front group, must be room for two that way.
-fn split_refused(s: &App, down: bool) -> Option<String> {
+/// What a press on a split button would do now, or why it would be
+/// refused: four groups is the most, what would be split, the room or
+/// the group in front, must be room for two that way, and groups turned
+/// round must each keep their least.
+fn split_plan(s: &App, down: bool) -> Result<splits::Press, String> {
     let press = splits::press(!s.tgroups.is_empty(), s.split_down, down);
-    if press != splits::Press::Make && s.tgroups.len() >= splits::MOST {
-        return Some("Four groups is the most there can be".to_owned());
+    if press == splits::Press::Add && s.tgroups.len() >= splits::MOST {
+        return Err("Four groups is the most there can be".to_owned());
     }
     let room = if down { s.groups_room.1 } else { s.groups_room.0 };
     // the share of the room that way that what is split has now
     let share = match press {
         splits::Press::Make => 1.0,
-        splits::Press::Outer => splits::run_of(&s.runs, s.front_at).and_then(|r| s.place_share.get(r)).copied().unwrap_or(1.0),
-        splits::Press::Inner => s.group_share.get(s.front_at).copied().unwrap_or(1.0),
+        splits::Press::Add => s.group_share.get(s.front_at).copied().unwrap_or(1.0),
+        // turned round, the smallest group must keep its least: asked as room for two of twice its share
+        splits::Press::Turn => 2.0 * s.group_share.iter().copied().fold(1.0 / s.tgroups.len().max(1) as f32, f32::min),
     };
-    splits::halves(room * share, down)
+    splits::halves(room * share, down).map_or(Ok(press), Err)
 }
 
 /// Puts the groups in order after a change: a group that is not in
@@ -5813,17 +5974,9 @@ fn sync_groups(s: &mut App) {
             g.at = g.at.min(g.tabs.len().saturating_sub(1));
             if g.tabs.is_empty() {
                 s.tgroups.remove(d);
-                if let Some(r) = splits::run_of(&s.runs, d).filter(|_| s.place_share.len() == s.runs.len() && s.group_share.len() == s.tgroups.len() + 1) {
-                    let from: usize = s.runs[..r].iter().sum();
-                    if s.runs[r] == 1 {
-                        s.place_share = splits::share_removed(&s.place_share, r);
-                        s.group_share.remove(d);
-                    } else {
-                        let slice = splits::share_removed(&s.group_share[from..from + s.runs[r]], d - from);
-                        s.group_share.splice(from..from + s.runs[r], slice);
-                    }
+                if s.group_share.len() == s.tgroups.len() + 1 {
+                    s.group_share = splits::share_removed(&s.group_share, d);
                 }
-                s.runs = splits::removed(&s.runs, d);
                 if s.front_at > d {
                     s.front_at -= 1;
                 }
@@ -5837,62 +5990,40 @@ fn sync_groups(s: &mut App) {
     if s.tgroups.len() < 2 {
         s.tgroups.clear();
         s.front_at = 0;
-        s.runs.clear();
-    } else if s.runs.len() == 1 {
-        // one place left, split inside: that inner split is the split now, with the shares its groups had
-        s.split_down = !s.split_down;
-        s.runs = vec![1; s.tgroups.len()];
-        if s.group_share.len() == s.tgroups.len() {
-            s.place_share = std::mem::take(&mut s.group_share);
-        }
     }
     fix_shares(s);
     keep_split(s);
 }
 
-/// Makes the shares fit the groups: equal ones wherever they do not, as
+/// Makes the shares fit the groups: equal ones when they do not, as
 /// when a split is made or put back from the last run.
 fn fix_shares(s: &mut App) {
-    if s.place_share.len() != s.runs.len() {
-        s.place_share = splits::even(s.runs.len());
-    }
     if s.group_share.len() != s.tgroups.len() {
-        s.group_share = s.runs.iter().flat_map(|n| splits::even(*n)).collect();
+        s.group_share = splits::even(s.tgroups.len());
     }
 }
 
-/// A line between two places of the split (`inner` nothing), or between
-/// two groups of one place (the place, in `inner`), dragged: the room
-/// moves between its two neighbours, neither going under the least
-/// size. A double press makes the two alike.
-fn drag_line(s: &mut App, i: usize, inner: Option<usize>, d: &rune::Drag) {
+/// The line between the group standing at `i` and the next, dragged:
+/// the room moves between the two, neither going under the least size.
+/// A double press makes the two alike.
+fn drag_line(s: &mut App, i: usize, d: &rune::Drag) {
     fix_shares(s);
-    // the way this line moves, and the room there is that way
-    let down = s.split_down != inner.is_some();
+    let down = s.split_down;
     let (room, least) = if down { (s.groups_room.1, splits::LEAST_H) } else { (s.groups_room.0, splits::LEAST_W) };
     if room <= 0.0 {
         return;
     }
-    let span = match inner {
-        Some(r) if r < s.runs.len() => {
-            let from: usize = s.runs[..r].iter().sum();
-            from..from + s.runs[r]
-        }
-        Some(_) => return,
-        None => 0..s.place_share.len(),
-    };
-    let now = if inner.is_some() { s.group_share[span.clone()].to_vec() } else { s.place_share.clone() };
-    let next = match d.phase {
+    s.group_share = match d.phase {
         Phase::Down if d.clicks >= 2 => {
             s.share_base = None;
-            splits::evened(&now, i)
+            splits::evened(&s.group_share, i)
         }
         Phase::Down => {
-            s.share_base = Some(now);
+            s.share_base = Some(s.group_share.clone());
             return;
         }
         Phase::Move => match &s.share_base {
-            Some(base) if base.len() == now.len() => splits::dragged(base, i, if down { d.dy } else { d.dx } / room, least / room),
+            Some(base) if base.len() == s.group_share.len() => splits::dragged(base, i, if down { d.dy } else { d.dx } / room, least / room),
             _ => return,
         },
         Phase::Up => {
@@ -5900,18 +6031,13 @@ fn drag_line(s: &mut App, i: usize, inner: Option<usize>, d: &rune::Drag) {
             return;
         }
     };
-    if inner.is_some() {
-        s.group_share.splice(span, next);
-    } else {
-        s.place_share = next;
-    }
 }
 
 /// Brings the group standing at `d` to the front, whole, on its tab
 /// `i`. The group that was in front stays where it stands, with every
 /// tab that holds a page.
 fn focus_group(s: &mut App, d: usize, i: usize) {
-    if s.editing || s.memory || d == s.front_at || s.tgroups.get(d).is_none_or(|g| i >= g.tabs.len()) {
+    if s.memory || d == s.front_at || s.tgroups.get(d).is_none_or(|g| i >= g.tabs.len()) || !leave_edit(s) {
         return;
     }
     park_tab(s);
@@ -5936,7 +6062,9 @@ fn focus_group(s: &mut App, d: usize, i: usize) {
 
 /// Brings the next group to the front, or the one before, in the order they stand and round at the ends.
 fn turn_group(s: &mut App, forward: bool) {
-    let d = splits::turn(s.front_at, s.tgroups.len(), forward);
+    // the next, or the one before, going round at the ends
+    let n = s.tgroups.len().max(1);
+    let d = (s.front_at + if forward { 1 } else { n - 1 }) % n;
     if let Some(at) = s.tgroups.get(d).filter(|_| d != s.front_at).map(|g| g.at) {
         focus_group(s, d, at);
     }
@@ -5964,23 +6092,20 @@ fn close_group(s: &mut App, d: usize) {
     }
 }
 
+/// Writes the preferences down. With no ship there is nothing to keep them for.
+fn save_prefs(s: &App) {
+    if s.conn.is_some() {
+        s.prefs.save();
+    }
+}
+
 /// Notes the page held beside in the preferences, to hold again next run.
 fn keep_split(s: &mut App) {
     sync_beside(s);
     let held = split_page(s).unwrap_or_default().to_owned();
     if s.prefs.split != held {
         s.prefs.split = held;
-        if s.conn.is_some() {
-            s.prefs.save();
-        }
-    }
-}
-
-#[cfg(test)]
-/// Brings the page held beside to the front, and holds the one that was there.
-fn swap_split(s: &mut App) {
-    if let Some((d, at)) = s.tgroups.iter().enumerate().find(|(d, _)| *d != s.front_at).map(|(d, g)| (d, g.at)) {
-        focus_group(s, d, at);
+        save_prefs(s);
     }
 }
 
@@ -6112,7 +6237,7 @@ fn split_view(d: usize, s: &App, k: &Kit) -> El {
     let ids: Vec<String> = (0..group.tabs.len()).map(|i| format!("g{d}-{i}")).collect();
     let at_of = |id: &str| id.rsplit('-').next().and_then(|i| i.parse::<usize>().ok());
     let tabs = rune_kit::shell::TabStrip::new(format!("g{d}-tabs"), rune_kit::shell::TabOrientation::Horizontal)
-        .tabs(labels.iter().zip(&ids).enumerate().map(|(i, (label, id))| rune_kit::shell::TabItem::new(id.as_str(), label.as_str()).closable(true).decorate(move |tab, _| tab.on_layout(move |s: &mut App, r| note_tab(s, d, i, r)))))
+        .tabs(labels.iter().zip(&ids).enumerate().map(|(i, (label, id))| rune_kit::shell::TabItem::new(id.as_str(), label.as_str()).closable(true).decorate(move |tab, _| tab.on_layout_tx(move |s: &mut App, r, tx| note_tab(s, d, i, r, tx)))))
         .active(ids.get(group.at).map(String::as_str))
         .select_on_drag_start(false)
         .drag_state(&s.group_drag[d.min(splits::MOST - 1)], access)
@@ -6166,9 +6291,7 @@ fn keep_tabs(s: &mut App) {
     let pages: Vec<String> = (0..s.tabs.len()).map(|i| if i == s.tab { front.clone() } else { s.tabs[i].page().map(str::to_owned) }.unwrap_or_default()).collect();
     if s.prefs.tabs != pages || s.prefs.tab != s.tab {
         (s.prefs.tabs, s.prefs.tab) = (pages, s.tab);
-        if s.conn.is_some() {
-            s.prefs.save();
-        }
+        save_prefs(s);
     }
 }
 
@@ -6193,7 +6316,7 @@ fn restore_tabs(s: &mut App) -> bool {
 
 /// Opens a page in a new tab, in front.
 fn open_in_tab(s: &mut App, name: &str) {
-    if s.editing {
+    if !leave_edit(s) {
         return;
     }
     new_tab(s);
@@ -6209,7 +6332,7 @@ fn park_tab(s: &mut App) {
 
 /// Brings a tab forward. A page it held that is gone leaves it empty.
 fn switch_tab(s: &mut App, to: usize) {
-    if s.editing || to == s.tab || to >= s.tabs.len() {
+    if to == s.tab || to >= s.tabs.len() || !leave_edit(s) {
         return;
     }
     if s.memory {
@@ -6243,7 +6366,7 @@ fn load_tab(s: &mut App, to: usize) {
 
 /// A new, empty tab, in front.
 fn new_tab(s: &mut App) {
-    if s.editing {
+    if !leave_edit(s) {
         return;
     }
     s.tabs.push(Tab::default());
@@ -6253,7 +6376,7 @@ fn new_tab(s: &mut App) {
 
 /// Closes a tab. The last one stays.
 fn close_tab(s: &mut App, i: usize) {
-    if s.editing || s.tabs.len() < 2 || i >= s.tabs.len() {
+    if s.tabs.len() < 2 || i >= s.tabs.len() || !leave_edit(s) {
         return;
     }
     if i == s.tab {
@@ -6277,23 +6400,23 @@ fn tab_label(s: &App, i: usize) -> String {
 fn tab_strip(s: &App, k: &Kit) -> El {
     let labels: Vec<String> = (0..s.tabs.len()).map(|i| tab_label(s, i)).collect();
     let memory = s.memory.then(|| s.open.as_ref().map_or("", |p| p.name.as_str()));
-    let (can_new, can_split) = topbar::tools(s.editing, s.memory, usable(s, "split"));
+    let can_new = !s.memory;
+    let can_split = can_new && usable(s, "split");
     let button = |down: bool, icon: &'static rune::Icon, key: &str, keys: Option<&str>| {
         let split = !s.tgroups.is_empty();
         let on = split && s.split_down == down;
         // a split there is no room for is refused, and its button says why
-        let press = splits::press(split, s.split_down, down);
-        let why = split_refused(s, down);
-        let says = match (&why, press, down) {
-            (Some(why), ..) => why.clone(),
-            (_, splits::Press::Make, false) => "Split right: hold this page beside the next one you open".to_owned(),
-            (_, splits::Press::Make, true) => "Split down: hold this page below the next one you open".to_owned(),
-            (_, splits::Press::Outer, false) => "Split right again: one more group".to_owned(),
-            (_, splits::Press::Outer, true) => "Split down again: one more group".to_owned(),
-            (_, splits::Press::Inner, false) => "Split the group in front right, by itself".to_owned(),
-            (_, splits::Press::Inner, true) => "Split the group in front down, by itself".to_owned(),
+        let plan = split_plan(s, down);
+        let says = match (&plan, down) {
+            (Err(why), _) => why.clone(),
+            (Ok(splits::Press::Make), false) => "Split right: hold this page beside the next one you open".to_owned(),
+            (Ok(splits::Press::Make), true) => "Split down: hold this page below the next one you open".to_owned(),
+            (Ok(splits::Press::Add), false) => "Split right again: one more group".to_owned(),
+            (Ok(splits::Press::Add), true) => "Split down again: one more group".to_owned(),
+            (Ok(splits::Press::Turn), false) => "Stand the groups side by side".to_owned(),
+            (Ok(splits::Press::Turn), true) => "Stand the groups one above the other".to_owned(),
         };
-        let mut b = IconButton::new(icon).variant(if on { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help(says).disabled(!can_split || why.is_some()).on_press(move |s: &mut App| split_press(s, down));
+        let mut b = IconButton::new(icon).variant(if on { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help(says).disabled(!can_split || plan.is_err()).on_press(move |s: &mut App| split_press(s, down));
         if let Some(keys) = keys {
             b = b.shortcut(keys);
         }
@@ -6301,15 +6424,18 @@ fn tab_strip(s: &App, k: &Kit) -> El {
     };
     let tools = row().gap(2.0).center_y().child(IconButton::new(&head::PLUS).variant(IconButtonVariant::GhostMuted).help("New tab").disabled(!can_new).on_press(new_tab).build(k).key("tab-new")).child(button(false, &topbar::SPLIT, "split-toggle", Some("Ctrl+\\"))).child(button(true, &topbar::SPLIT_DOWN, "split-down", None));
     // rune-kit's strip: a tab is dragged along it to another place, and a strip too long for the bar scrolls
-    let cells = topbar::strip(&labels, s.tab, memory);
-    let ids: Vec<String> = cells.iter().map(|c| c.at.map_or("memory".to_owned(), |i| i.to_string())).collect();
-    let front = cells.iter().position(|c| c.front).and_then(|i| ids.get(i)).map(String::as_str);
+    // the pages have their tabs, the last one left with no cross. The memories have none: one cell names the memory in front
+    let (cells, ids, front_i, closes): (Vec<String>, Vec<String>, usize, bool) = match memory {
+        Some(name) => (vec![if name.is_empty() { "Knowledge".to_owned() } else { name.to_owned() }], vec!["memory".to_owned()], 0, false),
+        None => (labels.clone(), (0..labels.len()).map(|i| i.to_string()).collect(), s.tab, labels.len() > 1),
+    };
+    let front = ids.get(front_i).map(String::as_str);
     let at = |id: &str| id.parse::<usize>().ok();
     rune_kit::shell::TabStrip::new("tabs", rune_kit::shell::TabOrientation::Horizontal)
         .tabs(cells.iter().zip(&ids).enumerate().map(|(i, (c, id))| {
             let d = s.front_at;
             // where each tab stands is noted, for a tab of another group let go among them
-            rune_kit::shell::TabItem::new(id.as_str(), c.label.as_str()).closable(c.closes).decorate(move |tab, _| tab.on_layout(move |s: &mut App, r| note_tab(s, d, i, r)))
+            rune_kit::shell::TabItem::new(id.as_str(), c.as_str()).closable(closes).decorate(move |tab, _| tab.on_layout_tx(move |s: &mut App, r, tx| note_tab(s, d, i, r, tx)))
         }))
         .active(front)
         .drag_state(&s.tab_drag, |s: &mut App| &mut s.tab_drag)
@@ -6335,7 +6461,7 @@ fn tab_strip(s: &App, k: &Kit) -> El {
 /// then shows it. The group in front is never left with no tab, and an
 /// empty tab stays where it is.
 fn move_tab_to_group(s: &mut App, i: usize, d: usize, at: Option<usize>) {
-    if s.editing || s.memory || s.tabs.len() < 2 || i >= s.tabs.len() || d == s.front_at || d >= s.tgroups.len() {
+    if s.memory || s.tabs.len() < 2 || i >= s.tabs.len() || d == s.front_at || d >= s.tgroups.len() || !leave_edit(s) {
         return;
     }
     // the front tab's history is with the window: put it back in its tab before the tabs are moved
@@ -6359,14 +6485,14 @@ fn move_tab_to_group(s: &mut App, i: usize, d: usize, at: Option<usize>) {
 }
 
 /// A tab of the group standing at `from`, not the one in front, goes to
-/// the group standing at `to`: to the end of its tabs, where it is the
-/// one shown. Going to the group in front, it comes to the front. A
+/// the group standing at `to`: to `at` among its tabs, or to their end,
+/// where it is the one shown. Going to the group in front, it comes to the front. A
 /// group left with no tab is gone.
 fn move_group_tab(s: &mut App, from: usize, i: usize, to: usize, at: Option<usize>) {
     if from == s.front_at {
         return move_tab_to_group(s, i, to, at);
     }
-    if s.editing || s.memory || from == to || to >= s.tgroups.len() || s.tgroups.get(from).is_none_or(|g| i >= g.tabs.len()) {
+    if s.memory || from == to || to >= s.tgroups.len() || s.tgroups.get(from).is_none_or(|g| i >= g.tabs.len()) || !leave_edit(s) {
         return;
     }
     let g = &mut s.tgroups[from];
@@ -6417,7 +6543,9 @@ fn drop_slot(s: &App, d: usize, p: [f32; 2]) -> Option<usize> {
 }
 
 /// Notes where tab `i` of the group standing at `d` is, as it is laid out.
-fn note_tab(s: &mut App, d: usize, i: usize, r: [f32; 4]) {
+fn note_tab(s: &mut App, d: usize, i: usize, r: [f32; 4], tx: &mut Tx) {
+    // a drop reads it, the view does not
+    tx.live_only();
     if s.tab_rects.len() <= d {
         s.tab_rects.resize(d + 1, Vec::new());
     }
@@ -6457,21 +6585,38 @@ fn toggle_right(s: &mut App) {
 }
 
 fn go_shared(s: &mut App) {
-    if !s.editing {
-        s.forum = None;
-        s.shared_open = true;
-        s.access = false;
-    s.settings = None;
-        s.inbox = false;
-        s.forum = None;
-        load_shared(s);
+    // shared with me is a folder in the files tree, as on the web: the ribbon's icon goes to it there
+    if s.memory && !leave_edit(s) {
+        return;
     }
+    if s.memory {
+        flip(s);
+    }
+    s.sidebar.set_open(true);
+    s.over = None;
+    load_shared(s);
+    if s.files.contains(swm::ROOT) {
+        s.files.set_expanded(swm::ROOT, true);
+        s.files.select(swm::ROOT);
+    } else if s.conn.is_some() {
+        s.note = "Nothing is shared with you yet. A page another ship shares shows in the files, under shared with me".into();
+    }
+}
+
+/// The screen for an address typed by hand and for what was asked of other ships.
+fn go_address(s: &mut App) {
+    if !leave_edit(s) {
+        return;
+    }
+    (s.forum, s.access, s.settings, s.inbox) = (None, false, None, false);
+    s.shared_open = true;
+    load_shared(s);
 }
 
 /// Shows the forum: this ship's boards, read as it opens. Where it
 /// was left is where it opens again, until something else is shown.
 fn go_forum(s: &mut App) {
-    if s.editing {
+    if !leave_edit(s) {
         return;
     }
     (s.inbox, s.access, s.shared_open) = (false, false, false);
@@ -7158,6 +7303,9 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
 }
 
 fn go_inbox(s: &mut App) {
+    if !leave_edit(s) {
+        return;
+    }
     if !s.editing {
         s.forum = None;
         s.inbox = true;
@@ -7169,6 +7317,9 @@ fn go_inbox(s: &mut App) {
 }
 
 fn go_access(s: &mut App) {
+    if !leave_edit(s) {
+        return;
+    }
     if !s.editing {
         s.forum = None;
         s.settings = None;
@@ -7180,6 +7331,9 @@ fn go_access(s: &mut App) {
 }
 
 fn go_settings(s: &mut App) {
+    if !leave_edit(s) {
+        return;
+    }
     if !s.editing {
         (s.forum, s.access, s.inbox, s.shared_open) = (None, false, false, false);
         s.settings = Some(Settings::new());
@@ -7764,8 +7918,7 @@ fn stack_view(st: &Settings, k: &Kit) -> Option<El> {
 
 /// Shows or hides the form that connects, with the ship's address in it to sign in again, or empty for another ship.
 fn connect_form(s: &mut App, show: bool, another: bool) {
-    if show && s.editing {
-        s.note = "save or cancel what is being edited first".into();
+    if show && !leave_edit(s) {
         return;
     }
     let url = s.conn.as_ref().filter(|_| !another).map(|c| c.url.clone()).unwrap_or_default();
@@ -7833,9 +7986,7 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
     for (pref, name) in EDITOR_FONTS {
         fonts = fonts.child(Button::new(name).control_size(ControlSize::Small).variant(if font == pref { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
             s.prefs.font = pref.to_owned();
-            if s.conn.is_some() {
-                s.prefs.save();
-            }
+            save_prefs(s);
         }).build(k).key(format!("font-{}", if pref.is_empty() { "app" } else { pref })));
     }
     let sample = editor_kit(k, font).ty.ui;
@@ -7848,12 +7999,20 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
         .child(fonts)
         .child(Switch::new(vim_on).label("Vim mode in the source editor").on_toggle(|s: &mut App| {
             s.prefs.vim = !s.prefs.vim;
-            if s.conn.is_some() {
-                s.prefs.save();
-            }
+            save_prefs(s);
         }).build(k).key("vim-on"))
         .child(text("Modal editing: Esc for normal, i to insert, :w to save.").font(k.ty.small).color(c.text_muted).wrap())
         .child(el().w_full().padding(10.0).radius(k.radius.md).fill(c.layer_01).child(text("The quick brown fox jumps over the lazy dog \u{b7} 0123456789 \u{b7} il1 O0 \u{b7} |= ^- @ud").key("font-sample").font(sample).color(c.text_base).wrap()));
+    // the themes are made in Talon or on the web client's settings page, and worn here
+    let themed = s.prefs.worn.look().bg.is_some();
+    let theme = col()
+        .key("set-theme")
+        .w_full()
+        .gap(6.0)
+        .child(text("Theme").font(k.ty.body_medium).color(c.text_base))
+        .child(text(if s.conn.is_some() { s.prefs.worn.said() } else { "The sample pages wear the built-in theme.".to_owned() }).key("theme-worn").font(k.ty.small).color(c.text_muted).wrap())
+        .children(s.conn.is_some().then(|| text(s.prefs.worn.font_said()).key("theme-font").font(k.ty.small).color(c.text_muted).wrap()))
+        .child(text(if themed { "A theme brings its own light or dark." } else { "Light, dark, or whatever the system is set to: the button at the foot of the left pane. Kept on this computer." }).font(k.ty.small).color(c.text_muted).wrap());
     // the way back from "do not ask again"
     let mut publishing = col()
         .key("set-publishing")
@@ -7959,14 +8118,12 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
         }).build(k).key("key-sensitive"))
         .child(muted("A memory with sensitive: yes in its front matter (health, money, family) is invisible to a key without this. A key with it can read them, but for 12 hours after reading one, everything it writes is marked sensitive too, so it cannot pass what it read to a key without clearance. Clearance is set here, when the key is made."))
         .child(row().child(Button::new(if st.sending { "Making\u{2026}" } else { "Make key" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(st.sending).on_press(key_make).build(k).key("key-make")));
-    col().key("settings-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(page.child(form).child(settings_more(st, k)).child(publishing).child(editor))).scroll(ScrollSpec { stick_bottom: false })
+    col().key("settings-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(page.child(form).child(settings_more(st, k)).child(publishing).child(theme).child(editor))).scroll(ScrollSpec { stick_bottom: false })
 }
 
 fn next_theme(s: &mut App) {
     s.prefs.theme = s.prefs.next_theme().to_owned();
-    if s.conn.is_some() {
-        s.prefs.save();
-    }
+    save_prefs(s);
 }
 
 fn open_share(s: &mut App) {
@@ -8016,6 +8173,9 @@ const COMMANDS: &[(&str, &str)] = &[
     ("history", "History"),
     ("inbox", "Inbox"),
     ("shared", "Shared with me"),
+    ("urb-open", "Open an address on another ship"),
+    ("link-in", "Move into my pages"),
+    ("link-back", "Move back to shared with me"),
     ("access", "Access"),
     ("half", "Switch between pages and memory"),
     ("theme", "Next theme"),
@@ -8029,7 +8189,11 @@ fn usable(s: &App, id: &str) -> bool {
     let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox;
     let own = page && s.remote.is_none();
     match id {
-        "edit" => page && s.remote.as_ref().is_none_or(Shared::editable),
+        // a link made from a page shared to read is read only
+        "edit" => page && s.remote.as_ref().is_none_or(Shared::editable) && (s.memory || s.remote.is_some() || s.open.as_ref().and_then(|p| s.links.get(&p.name)).is_none_or(|l| l.mode != "read")),
+        // a page open from shared with me goes into the tree as a link, and a link goes back
+        "link-in" => page && !s.editing && s.remote.as_ref().is_some_and(|r| !swm::is_dir(&r.path) && s.shared.contains(r)),
+        "link-back" => own && !s.memory && !s.editing && s.open.as_ref().is_some_and(|p| s.links.contains_key(&p.name)),
         "delete" => own,
         "download" | "copy-name" => page,
         "duplicate" | "copy-link" | "pdf" => own && !s.memory && !s.editing,
@@ -8067,9 +8231,7 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
     }
     s.prefs.used.retain(|u| u != id);
     s.prefs.used.insert(0, id.to_owned());
-    if s.conn.is_some() {
-        s.prefs.save();
-    }
+    save_prefs(s);
     match id {
         "new" => ask_new(s),
         "template" => ask_template(s),
@@ -8128,11 +8290,14 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "map-import" => ask_map_import(s, tx),
         "map-gpx" => ask_gpx(s, tx),
         "find" => open_find(s),
-        "links" => show_pane(s, false, true),
-        "comments" => show_pane(s, true, false),
-        "history" => show_pane(s, false, false),
+        "links" => show_pane(s, rpane::Tab::Out),
+        "comments" => show_pane(s, rpane::Tab::Comments),
+        "history" => show_pane(s, rpane::Tab::Hist),
         "inbox" => go_inbox(s),
         "shared" => go_shared(s),
+        "urb-open" => go_address(s),
+        "link-in" => ask_link_in(s),
+        "link-back" => link_back(s),
         "access" => go_access(s),
         "half" => flip(s),
         "theme" => next_theme(s),
@@ -8250,7 +8415,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::NewFolder(t) => t,
+                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
                 Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
@@ -8287,6 +8452,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::ForumDelete(comment) => (if comment.is_some() { "Delete this comment?" } else { "Delete this thread?" }, text(if comment.is_some() { "It is gone for everyone who reads the board." } else { "The thread and its comments are gone for everyone who reads the board." }).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
         Prompt::MarkMove(_, t) => ("Move this bookmark to a folder", field(t, "A folder, or nothing for none"), "Move", ButtonVariant::Contrast),
+        Prompt::LinkIn(_, t) => ("Move into my pages as", field(t, "a name, as notes/plan"), "Move", ButtonVariant::Contrast),
         Prompt::MarkDrop(_, shown) => ("Remove this bookmark?", text(shown.clone()).key("mark-drop-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
         Prompt::Param(_, _, t) => ("Set this parameter", field(t, "A value"), "Set", ButtonVariant::Contrast),
         Prompt::Token(t) => ("The ship's Mapbox token", field(t, "pk... to set it, or nothing to clear it"), "Set", ButtonVariant::Contrast),
@@ -8342,7 +8508,7 @@ fn load_shared(s: &mut App) {
 
 /// Opens a page another ship shared, read from that ship.
 fn open_remote(s: &mut App, sh: Shared) {
-    if s.editing {
+    if !leave_edit(s) {
         return;
     }
     match s.conn.clone() {
@@ -8378,6 +8544,42 @@ fn show_remote(s: &mut App, sh: Shared, p: Page) {
     s.open = Some(p);
     sync_map(s);
     sync_sheet(s);
+}
+
+/// Asks where in the tree the shared page in front goes, seeded with its own name.
+fn ask_link_in(s: &mut App) {
+    let Some(sh) = s.remote.clone().filter(|_| usable(s, "link-in")) else { return };
+    let mut t = TextEdit::new(swm::leaf(&sh.path).as_str());
+    t.focused = true;
+    s.prompt = Some(Prompt::LinkIn(sh, t));
+}
+
+/// Moves a page shared with this ship into its tree as a link at `to`. It
+/// has one home at a time: the entry leaves shared with me, and the
+/// host's grant is not touched.
+fn link_in(s: &mut App, sh: Shared, to: String) {
+    if !api::valid_name(&to) {
+        s.note = format!("{to} is not a name a page can have: small letters, digits, . _ ~ and -, with / between folders");
+        return;
+    }
+    if s.names.contains(&to) {
+        s.note = format!("there is a page named {to} already");
+        return;
+    }
+    let Some(c) = s.conn.clone() else {
+        s.note = "sample pages have no ship to keep a link".into();
+        return;
+    };
+    s.note = format!("moving {} into {to}", swm::name(&sh.path));
+    s.op_req.request((c, sh, to), |(c, sh, to)| c.link_make(&sh, &to).map(|()| Op::Linked(to, sh.host)));
+}
+
+/// Moves the link in front back to shared with me.
+fn link_back(s: &mut App) {
+    let Some(name) = s.open.as_ref().filter(|_| usable(s, "link-back")).map(|p| p.name.clone()) else { return };
+    let Some(c) = s.conn.clone() else { return };
+    s.note = format!("moving {name} back to shared with me");
+    s.op_req.request((c, name), |(c, name)| c.link_unmake(&name).map(|()| Op::Unlinked(name)));
 }
 
 /// Reads what stands at an address: the one typed, or one given (a folder's entry).
@@ -8516,7 +8718,7 @@ fn load_comments(s: &mut App) {
         s.notices_req.request(c.clone(), |c| c.notices());
     }
     let Some(p) = &s.open else { return };
-    if s.inspector.is_open() && s.pane_comments && !s.pane_links && !s.memory && s.remote.is_none() {
+    if s.inspector.is_open() && s.pane == rpane::Tab::Comments && !s.memory && s.remote.is_none() {
         s.comments_req.request(c.clone(), |c| c.comments());
         s.comments_on_req.request((c.clone(), p.name.clone()), |(c, n)| c.comments_on(&n).map(|on| (n, on)));
         s.comets_req.request((c, p.name.clone()), |(c, n)| c.comets(&n).map(|m| (n, m)));
@@ -9283,8 +9485,7 @@ fn run_search(s: &mut App) {
 /// Shows the Search tab with its field ready to type in.
 fn open_search(s: &mut App) {
     s.sidebar.set_open(true);
-    s.searching = true;
-    s.marks_open = false;
+    s.over = Some(Over::Search);
     s.squery.focused = true;
     // what is held may have changed since it was last shown
     run_search(s);
@@ -9297,8 +9498,7 @@ const SAMPLE_MARKS: &[(&str, &str, &str)] = &[("urb://~sampel-palnet/notes", "Sa
 /// keeps and drops them elsewhere, and this is one small request.
 fn open_marks(s: &mut App) {
     s.sidebar.set_open(true);
-    s.marks_open = true;
-    s.searching = false;
+    s.over = Some(Over::Marks);
     match s.conn.clone() {
         Some(c) => s.marks_req.request(c, |c| c.bookmarks()),
         None => s.marks = Some(SAMPLE_MARKS.iter().map(|(url, title, folder)| api::Bookmark { url: (*url).into(), title: (*title).into(), folder: (*folder).into() }).collect()),
@@ -9346,7 +9546,7 @@ fn star(s: &mut App) {
 fn open_mark(s: &mut App, at: usize, tx: &mut Tx) {
     let Some(url) = s.marks.as_ref().and_then(|m| m.get(at)).map(|b| b.url.clone()) else { return };
     match marks::opens(&url) {
-        marks::Opens::Urb if s.editing => s.note = "Save or cancel the edit first".to_owned(),
+        marks::Opens::Urb if !leave_edit(s) => {}
         marks::Opens::Urb => urb_go(s, Some(url)),
         marks::Opens::Web => {
             if let Err(e) = tx.open_url(&url) {
@@ -9370,7 +9570,7 @@ fn marks_view(s: &App, k: &Kit) -> El {
     }
     let shown = marks::rows(list, &s.marks_q.text, &s.prefs.marks_folded);
     if shown.is_empty() {
-        return out.child(said(marks::none(&s.marks_q.text)));
+        return out.child(said(if s.marks_q.text.trim().is_empty() { "No bookmarks yet" } else { "No bookmark matches that" }));
     }
     let mut rows = col().key("marks-rows").w_full().gap(2.0);
     for r in shown {
@@ -9392,9 +9592,7 @@ fn marks_view(s: &App, k: &Kit) -> El {
                             Some(i) => drop(s.prefs.marks_folded.remove(i)),
                             None => s.prefs.marks_folded.push(f.clone()),
                         }
-                        if s.conn.is_some() {
-                            s.prefs.save();
-                        }
+                        save_prefs(s);
                     })
                     .child(rune::icon(if folded { k.glyph.caret_right } else { k.glyph.chevron_down }, 16.0).color(k.c.icon_muted).a11y_hidden())
                     .child(text(name).font(k.ty.small_medium).color(k.c.text_base).truncate().grow(1.0).min_w(0.0))
@@ -9444,8 +9642,7 @@ fn marks_view(s: &App, k: &Kit) -> El {
 /// The results stay where they are for the next one.
 fn open_hit(s: &mut App, i: usize, tab: bool) {
     let Some(h) = s.shits.get(i).cloned() else { return };
-    if s.editing {
-        s.note = "Save or cancel the edit first".to_owned();
+    if !leave_edit(s) {
         return;
     }
     s.search_at = Some(i);
@@ -9552,17 +9749,11 @@ fn head_go(s: &mut App, act: head::Do, tx: &mut Tx) {
         }
         Do::Sort => {
             s.prefs.sort_desc ^= true;
-            if s.conn.is_some() {
-                s.prefs.save();
-            }
+            save_prefs(s);
             // both halves, so the one not showing is in the same order when it is turned to
             let desc = s.prefs.sort_desc;
             for m in [&mut s.files, &mut s.other.0] {
-                if desc {
-                    sort_files(m, true);
-                } else {
-                    m.sort_by(|a, b| head::order((a.dir, head::sort_key(&a.path, &a.name)), (b.dir, head::sort_key(&b.path, &b.name)), false));
-                }
+                sort_files(m, desc);
             }
         }
         Do::Fold => s.files.collapse_all(),
@@ -9643,15 +9834,73 @@ fn ribbon_view(s: &App, k: &Kit, top: f32) -> El {
 }
 
 fn sidebar(s: &App, k: &Kit) -> El {
+    let (pages, knows) = if s.memory { (s.other.1.len(), s.names.len()) } else { (s.names.len(), s.other.1.len()) };
+    // the pane's head as the web client has it: icon tabs, then a toolbar of icons over the tree
+    let mut halves = row().key("halves").role("tablist").label("Left pane").w_full().gap(4.0);
+    let front = match s.over {
+        Some(Over::Search) => head::Half::Search,
+        Some(Over::Marks) => head::Half::Marks,
+        None if s.memory => head::Half::Knowledge,
+        None => head::Half::Files,
+    };
+    for tab in head::tabs(front, pages, knows) {
+        let (on, what, memory) = (tab.on, tab.what, s.memory);
+        let mut b = IconButton::new(tab.icon).control_size(ControlSize::Large).variant(if on { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).label(tab.said).help(tab.name);
+        if let Some(keys) = tab.keys {
+            b = b.shortcut(keys);
+        }
+        halves = halves.child(b.on_press(move |s: &mut App| match what {
+            head::Half::Search => open_search(s),
+            head::Half::Marks => open_marks(s),
+            // the half that is showing does nothing when pressed, but for leaving the search or the bookmarks
+            _ => {
+                s.over = None;
+                if (what == head::Half::Knowledge) != memory {
+                    flip(s);
+                }
+            }
+        }).build(k).key(tab.key));
+    }
+    let who = s.conn.as_ref().map_or("sample pages".to_owned(), |c| c.ship().to_owned());
+    let theme = Button::new(match s.prefs.theme.as_str() {
+        "dark" => "Dark",
+        "light" => "Light",
+        _ => "Auto",
+    })
+    .variant(ButtonVariant::GhostMuted)
+    .help("Theme: the system's, dark, or light")
+    .on_press(next_theme)
+    .build(k)
+    .key("theme");
+    let foot = row()
+        .w_full()
+        .center_y()
+        .justify_between()
+        .child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).grow(1.0).min_w(0.0).truncate())
+        .child(theme)
+        .child(Button::new(if s.conn.is_some() { "Sign out" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
+    // rune-kit keeps a band over the sidebar for its own toggle, level with the top bar. The toggle is the
+    // ribbon's here, so the pane's tabs go up into the band, beside the top bar, and nothing is left blank
+    let side = col().key("pages").w_full().grow(1.0).min_h(0.0).mt(-rune_kit::shell::TOOLBAR_HEIGHT).padding(8.0).gap(8.0).child(halves);
+    let raised = |side: El| col().w_full().h_full().min_h(0.0).child(side);
+    // the search and the bookmarks show over the tree, so the tree is not built for them
+    match s.over {
+        Some(Over::Search) => return raised(side.child(search_view(s, k)).child(foot)),
+        Some(Over::Marks) => return raised(side.child(marks_view(s, k)).child(foot)),
+        None => {}
+    }
     let q = s.query.text.trim().to_lowercase();
     let tree = Tree::new(|s: &App| &s.files, |s: &mut App| &mut s.files, |n: &FileNode<Node>| n.name.as_str())
         .name(if s.memory { "Memories" } else { "Pages" })
         .row(move |n, r| TreeItem::file(n, r).highlight(q.clone()))
         // one click opens a page, as the web client's tree does
         .on_select(|s: &mut App, id, _| {
-            if s.files.get(id).is_some_and(|n| !n.dir) {
+            if swm::is_ours(id) {
+                // a page or a folder another ship shared. The folder itself and a ship's only fold
+                open_shared(s, id);
+            } else if s.files.get(id).is_some_and(|n| !n.dir) {
                 open_page(s, id);
-            } else if !s.editing {
+            } else if leave_edit(s) {
                 // a folder shows what it holds, and can be renamed, moved or deleted there
                 s.access = false;
     s.settings = None;
@@ -9679,37 +9928,6 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .build(k)
         .w_full()
         .key("filter");
-    let (pages, knows) = if s.memory { (s.other.1.len(), s.names.len()) } else { (s.names.len(), s.other.1.len()) };
-    // the pane's head as the web client has it: icon tabs, then a toolbar of icons over the tree
-    let mut halves = row().key("halves").role("tablist").label("Left pane").w_full().gap(4.0);
-    let front = if s.searching {
-        head::Half::Search
-    } else if s.marks_open {
-        head::Half::Marks
-    } else if s.memory {
-        head::Half::Knowledge
-    } else {
-        head::Half::Files
-    };
-    for tab in head::tabs(front, pages, knows) {
-        let (on, what, memory) = (tab.on, tab.what, s.memory);
-        let mut b = IconButton::new(tab.icon).control_size(ControlSize::Large).variant(if on { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).label(tab.said).help(tab.name);
-        if let Some(keys) = tab.keys {
-            b = b.shortcut(keys);
-        }
-        halves = halves.child(b.on_press(move |s: &mut App| match what {
-            head::Half::Search => open_search(s),
-            head::Half::Marks => open_marks(s),
-            // the half that is showing does nothing when pressed, but for leaving the search or the bookmarks
-            _ => {
-                s.searching = false;
-                s.marks_open = false;
-                if (what == head::Half::Knowledge) != memory {
-                    flip(s);
-                }
-            }
-        }).build(k).key(tab.key));
-    }
     let mut new = row().key("tree-tools").role("toolbar").label(if s.memory { "Knowledge" } else { "Files" }).w_full().gap(2.0).center_y();
     let mut gap = false;
     for tool in head::tools(s.memory, s.prefs.sort_desc) {
@@ -9724,25 +9942,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
         }
         new = new.child(b.on_press_tx(move |s: &mut App, tx| head_go(s, act, tx)).build(k).key(tool.key));
     }
-    let heading = text(head::heading(s.memory)).key("tree-sec").font(k.ty.text_xsmall_medium).color(k.c.text_muted).pl(4.0);
-    let who = s.conn.as_ref().map_or("sample pages".to_owned(), |c| c.ship().to_owned());
-    let theme = Button::new(match s.prefs.theme.as_str() {
-        "dark" => "Dark",
-        "light" => "Light",
-        _ => "Auto",
-    })
-    .variant(ButtonVariant::GhostMuted)
-    .help("Theme: the system's, dark, or light")
-    .on_press(next_theme)
-    .build(k)
-    .key("theme");
-    let foot = row()
-        .w_full()
-        .center_y()
-        .justify_between()
-        .child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).grow(1.0).min_w(0.0).truncate())
-        .child(theme)
-        .child(Button::new(if s.conn.is_some() { "Sign out" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
+    let heading = text(if s.memory { "KNOWLEDGE" } else { "FILES" }).key("tree-sec").font(k.ty.text_xsmall_medium).color(k.c.text_muted).pl(4.0);
     // the memories' tags, to show only those that carry one: said even when folded away, as on the web
     let mut chips = row().key("know-tags").w_full().gap(2.0).flex_wrap();
     let tags = if s.memory { know_tags(s) } else { Vec::new() };
@@ -9792,9 +9992,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
                     .help("Hide this until another one shows up")
                     .on_press(|s: &mut App| {
                         s.prefs.core_seen = s.core_agents.clone();
-                        if s.conn.is_some() {
-                            s.prefs.save();
-                        }
+                        save_prefs(s);
                     })
                     .build(k)
                     .key("core-dismiss"),
@@ -9808,7 +10006,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
                     .gap(4.0)
                     .center_y()
                     .child(Button::new(key.clone()).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Read this rule").on_press(move |s: &mut App| {
-                        if s.names.contains(&open) && !s.editing {
+                        if s.names.contains(&open) {
                             s.files.select(&open);
                             open_page(s, &open);
                         }
@@ -9819,16 +10017,8 @@ fn sidebar(s: &App, k: &Kit) -> El {
         }
         list
     });
-    let side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves);
-    let side = if s.searching {
-        side.child(search_view(s, k)).child(foot)
-    } else if s.marks_open {
-        side.child(marks_view(s, k)).child(foot)
-    } else {
-        side.children(core).child(filter).child(new).children((!tags.is_empty()).then_some(chips)).child(heading).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(foot)
-    };
     // what is said, the offline state and what waits are the status bar's, along the bottom of the window
-    side
+    raised(side.children(core).child(filter).child(new).children((!tags.is_empty()).then_some(chips)).child(heading).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(foot))
 }
 
 /// The history pane: the open page's revisions, newest first.
@@ -9931,9 +10121,7 @@ fn body(s: &App, k: &Kit) -> El {
             |s| {
                 if let Some(name) = s.open.as_ref().map(|p| p.name.clone()) {
                     s.prefs.allow_outside(&name);
-                    if s.conn.is_some() {
-                        s.prefs.save();
-                    }
+                    save_prefs(s);
                     sync_pics(s);
                 }
             },
@@ -10000,6 +10188,18 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
+/// The page's editor at the height there is for it: a page longer than
+/// that scrolls inside the field, with the caret kept in view. rune-kit's
+/// text area grows with its text unless it is told a height in points,
+/// so the room it stands in is noted as it is laid out.
+fn fill_editor(s: &App, area: TextArea, k: &Kit) -> El {
+    // not laid out yet: a height to start from, put right in the next frame
+    let room = if s.edit_room > 0.0 { s.edit_room } else { 400.0 };
+    // more rows than fit, so the field is as tall as its room even when the page is short
+    let field = area.width(None).rows(10_000).max_height(room).build(k).key(FIELD).w_full();
+    col().key("edit-room").w_full().grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.edit_room = r[3]).child(field)
+}
+
 fn page_body(s: &App, k: &Kit) -> El {
     if let Some(st) = s.settings.as_ref().filter(|_| !s.editing) {
         return settings_view(s, st, k);
@@ -10034,12 +10234,8 @@ fn page_body(s: &App, k: &Kit) -> El {
                 spans
             })
             .on_edit(|s: &mut App| &mut s.edit)
-            .on_key(editor_key)
-            .build(k)
-            .key(FIELD)
-            .w_full()
-            .grow(1.0)
-            .min_h(0.0);
+            .on_key(editor_key);
+        let field = fill_editor(s, field, k);
         return col()
             .key("editor")
             .w_full()
@@ -10061,7 +10257,8 @@ fn page_body(s: &App, k: &Kit) -> El {
             }
         }
         // the font is the one chosen in settings: the text area takes its style from the kit it is built with
-        let source = TextArea::new(&s.edit).label("Page source").decorations(marks).on_edit(|s: &mut App| &mut s.edit).on_key(editor_key).build(&editor_kit(k, &s.prefs.font)).key(FIELD).w_full().h_full().min_h(0.0);
+        let source = TextArea::new(&s.edit).label("Page source").decorations(marks).on_edit(|s: &mut App| &mut s.edit).on_key(editor_key);
+        let source = fill_editor(s, source, &editor_kit(k, &s.prefs.font));
         let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
         if s.preview && p.kind == "md" {
             let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(s.edit.text.clone()).build(k));
@@ -10126,8 +10323,62 @@ fn page_body(s: &App, k: &Kit) -> El {
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
+/// The family the app's text is set in when no theme names one: Rune's own.
+const APP_FONT: &str = "Inter";
+
+/// The families the window's text is set in, as a list tried in order:
+/// the theme's font, then the app's own. A family Talon installed is used
+/// when this computer has it too. ponytail: its files on the ship are not
+/// fetched, since Rune takes font files only at launch. Ask Rune for a
+/// call that registers a font while the app runs if that is wanted.
+fn font_of(worn: &theme::Worn) -> String {
+    match worn.font() {
+        None => APP_FONT.to_owned(),
+        Some(theme::Font::Serif) => format!("Georgia, Times New Roman, Noto Serif, DejaVu Serif, Liberation Serif, {APP_FONT}"),
+        Some(theme::Font::Mono) => format!("ui-monospace, {APP_FONT}"),
+        Some(theme::Font::Named(f)) => format!("\"{f}\", {APP_FONT}"),
+    }
+}
+
+/// The kit the window is drawn with: the theme the ship says is worn,
+/// and the accent over it, as the web client wears them. With no theme
+/// it is the built-in look, light or dark as the mode picked says.
+fn kit_of(prefs: &api::Prefs, system_dark: bool) -> Kit {
+    let look = prefs.worn.look();
+    let mut k = match (look.bg, look.text) {
+        // a theme brings its own light or dark: the mode picked is for the built-in look
+        (Some(bg), Some(fg)) => Kit::from_palette(rune_kit::PaletteSeed { bg, fg, accent: look.accent.unwrap_or(fg) }),
+        _ => Kit::neutral(prefs.dark(system_dark)),
+    };
+    let c = &mut k.c;
+    if let Some(muted) = look.muted {
+        (c.text_muted, c.icon_muted) = (muted, muted);
+    }
+    if let (Some(soft), Some(strong)) = (look.border_soft, look.border) {
+        (c.border_muted, c.border_base, c.border_strong) = (soft, soft, strong);
+    }
+    if let Some(raised) = look.raised {
+        (c.layer_01, c.bg_button_neutral, c.surface_raised, c.surface_raised_base) = (raised, raised, raised, raised);
+    }
+    if let Some(error) = look.error {
+        (c.danger.fg, c.danger.icon) = (error, error);
+    }
+    if let (Some(a), Some(on)) = (look.accent, look.on_accent) {
+        // the accent is the primary colour: what stands out is drawn in it, with its own ink
+        (c.bg_accent, c.icon_accent, c.text_accent) = (a, a, a);
+        (c.bg_contrast, c.bg_icon_button_contrast) = (a, a);
+        (c.text_contrast, c.icon_contrast, c.submit_fg, c.submit_icon) = (on, on, on, on);
+    }
+    if let Some(link) = look.link {
+        // links, and the selection the kit tints from them. A theme's own
+        // selection colour is not worn: the kit has no place of its own for one.
+        c.text_accent = link;
+    }
+    k
+}
+
 fn view(s: &App, cx: &mut Cx<App>) -> El {
-    let k = Kit::neutral(s.prefs.dark(cx.system_dark()));
+    let k = kit_of(&s.prefs, cx.system_dark());
     if s.conn.is_none() && !s.sample {
         return login_view(s, &k);
     }
@@ -10139,7 +10390,8 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let mut layer = Vec::new();
     let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox;
     let remote = s.remote.as_ref().filter(|_| page);
-    let sw = tabhead::switch(page, s.editing, remote.is_none_or(Shared::editable));
+    // the Edit and Read switch: a page shows it, a screen that is no page (the forum, the inbox, a folder) does not
+    let (editing, can_edit) = (page && s.editing, remote.is_none_or(Shared::editable));
     let mut trailing = row().gap(6.0).center_y();
     if s.editing {
         if s.prefs.vim && !s.rich {
@@ -10156,9 +10408,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         trailing = trailing
             .child(Switch::new(!s.prefs.no_autosave).label("Autosave").on_toggle(|s: &mut App| {
                 s.prefs.no_autosave = !s.prefs.no_autosave;
-                if s.conn.is_some() {
-                    s.prefs.save();
-                }
+                save_prefs(s);
             }).build(&k).key("autosave"));
     } else if let Some(sh) = remote {
         // another ship's page: read, and edited when that ship lets this one
@@ -10177,7 +10427,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             }).build(&k).key("ask-edit"));
         }
     }
-    if sw.shown && (sw.can_edit || sw.editing) {
+    if page && (can_edit || editing) {
         // Edit and Read, as one switch: Read from an edit saves what was typed, as Ctrl+E does
         let side = |label: &str, on: bool| Button::new(label).control_size(ControlSize::Small).variant(if on { ButtonVariant::Contrast } else { ButtonVariant::Ghost });
         trailing = trailing.child(
@@ -10189,13 +10439,13 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
                 .padding(2.0)
                 .radius(k.radius.md)
                 .fill(k.c.layer_01)
-                .child(side("Edit", sw.editing).help("Edit / Read (Ctrl+E)").on_press_tx(|s: &mut App, tx| {
+                .child(side("Edit", editing).help("Edit / Read (Ctrl+E)").on_press_tx(|s: &mut App, tx| {
                     if !s.editing {
                         start_edit(s);
                         tx.focus_when_shown(FIELD, false);
                     }
                 }).build(&k).key("edit"))
-                .child(side("Read", !sw.editing).help("Edit / Read (Ctrl+E)").on_press(|s: &mut App| {
+                .child(side("Read", !editing).help("Edit / Read (Ctrl+E)").on_press(|s: &mut App| {
                     if s.editing {
                         save(s);
                     }
@@ -10207,14 +10457,15 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             .child(Button::new("Cancel").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Leave the edit and drop what was typed").on_press(cancel_edit).build(&k).key("cancel"))
             .child(IconButton::new(&tabhead::SAVE).variant(IconButtonVariant::Neutral).help("Save").shortcut("Ctrl+S").on_press(save).build(&k).key("save"));
     }
-    let items = if page && !s.editing { tabhead::menu(|id| usable(s, id)) } else { Vec::new() };
+    // the page menu's rows, in the web client's order, for the commands that can run now
+    let items: Vec<(&str, &str)> = tabhead::MENU.iter().copied().filter(|(id, _)| page && !s.editing && usable(s, id)).collect();
     if !items.is_empty() {
         let dots = IconButton::new(&tabhead::DOTS).variant(IconButtonVariant::GhostMuted).help("Page menu").expanded(s.page_menu).on_press(|s: &mut App| s.page_menu ^= true).build(&k).key("page-menu-open");
         let mut menu = Menu::new("page-menu").trigger(dots).open(s.page_menu).on_close(|s: &mut App| s.page_menu = false);
-        for it in items {
-            menu = menu.item(MenuItem::new(it.label).danger(it.danger).on_select_tx(move |s: &mut App, tx| {
+        for (id, label) in items {
+            menu = menu.item(MenuItem::new(label).danger(id == "delete").on_select_tx(move |s: &mut App, tx| {
                 s.page_menu = false;
-                run_command(s, it.id, tx);
+                run_command(s, id, tx);
             }));
         }
         trailing = trailing.child(menu.build(&k, &mut layer));
@@ -10235,53 +10486,45 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let leading = row()
         .gap(2.0)
         .center_y()
-        .child(nav("back", &tabhead::LEFT, "Back", -1, s.trail_at > 0 && !s.editing))
-        .child(nav("forward", &tabhead::RIGHT, "Forward", 1, s.trail_at + 1 < s.trail.len() && !s.editing))
+        .child(nav("back", &tabhead::LEFT, "Back", -1, s.trail_at > 0))
+        .child(nav("forward", &tabhead::RIGHT, "Forward", 1, s.trail_at + 1 < s.trail.len()))
         .child(name);
     let main = body(s, &k);
     let main = if s.tgroups.is_empty() || s.memory {
         main
     } else {
-        // every group stands where it stood: the one in front is drawn in its own place among the rest.
-        // The split runs one way, and a place in it that holds more than one group is split the other way inside
-        let lay = |down: bool| if down { col() } else { row() }.w_full().h_full().min_h(0.0).min_w(0.0);
+        // every group stands where it stood, in one row or one column: the one in front is drawn in its own place among the rest
+        let down = s.split_down;
         // the line between two neighbours: dragged, it moves room from one to the other
-        let rule = |down: bool, i: usize, inner: Option<usize>| {
-            let line = el().key(inner.map_or(format!("line-{i}"), |r| format!("line-{r}-{i}"))).label("Drag to give one group more room. Press twice to make the two alike").fill(k.c.border_weak).cursor(if down { rune::Cursor::ResizeRow } else { rune::Cursor::ResizeColumn }).on_drag(move |s: &mut App, d, _| drag_line(s, i, inner, d));
+        let rule = |i: usize| {
+            let line = el().key(format!("line-{i}")).label("Drag to give one group more room. Press twice to make the two alike").fill(k.c.border_weak).cursor(if down { rune::Cursor::ResizeRow } else { rune::Cursor::ResizeColumn }).on_drag(move |s: &mut App, d, _| drag_line(s, i, d));
             if down { line.w_full().h(4.0) } else { line.h_full().w(4.0) }
         };
-        // each takes its share of the room: shares that add up to 1, as weights
-        let fill = |one: El, down: bool, share: f32| {
-            let one = one.grow((share * 100.0).max(1.0)).min_w(0.0).min_h(0.0);
-            if down { one.w_full() } else { one.h_full() }
-        };
-        let share = |v: &[f32], i: usize, n: usize| v.get(i).copied().filter(|_| v.len() >= n).unwrap_or(1.0 / n.max(1) as f32);
+        let n = s.tgroups.len();
         let mut main = Some(main);
-        let mut all = lay(s.split_down);
-        let mut d = 0;
-        for (r, n) in s.runs.iter().copied().enumerate() {
-            if r > 0 {
-                all = all.child(rule(s.split_down, r - 1, None));
+        let mut all = if down { col() } else { row() }.w_full().h_full().min_h(0.0).min_w(0.0);
+        for d in 0..n {
+            if d > 0 {
+                all = all.child(rule(d - 1));
             }
-            let mut place = lay(!s.split_down);
-            for i in 0..n {
-                if i > 0 {
-                    place = place.child(rule(!s.split_down, i - 1, Some(r)));
-                }
-                let one = match main.take_if(|_| d == s.front_at) {
-                    Some(front) => col().key("group-front").on_layout(|s: &mut App, r| s.front_rect = r).child(front),
-                    // where it stands is noted, for a tab dropped on it
-                    None => col().on_layout(move |s: &mut App, r| {
-                        if s.group_rects.len() <= d {
-                            s.group_rects.resize(d + 1, [0.0; 4]);
-                        }
-                        s.group_rects[d] = r;
-                    }).child(split_view(d, s, &k)),
-                };
-                place = place.child(fill(one, !s.split_down, if s.group_share.len() == s.tgroups.len() { s.group_share[d] } else { 1.0 / n as f32 }));
-                d += 1;
-            }
-            all = all.child(fill(col().key(format!("place-{r}")).child(place), s.split_down, share(&s.place_share, r, s.runs.len())));
+            let one = match main.take_if(|_| d == s.front_at) {
+                Some(front) => col().key("group-front").on_layout_tx(|s: &mut App, r, tx| {
+                    s.front_rect = r;
+                    tx.live_only();
+                }).child(front),
+                // where it stands is noted, for a tab dropped on it
+                None => col().on_layout_tx(move |s: &mut App, r, tx| {
+                    if s.group_rects.len() <= d {
+                        s.group_rects.resize(d + 1, [0.0; 4]);
+                    }
+                    s.group_rects[d] = r;
+                    tx.live_only();
+                }).child(split_view(d, s, &k)),
+            };
+            // each takes its share of the room: shares that add up to 1, as weights
+            let share = s.group_share.get(d).copied().filter(|_| s.group_share.len() == n).unwrap_or(1.0 / n as f32);
+            let one = one.grow((share * 100.0).max(1.0)).min_w(0.0).min_h(0.0);
+            all = all.child(if down { one.w_full() } else { one.h_full() });
         }
         all
     };
@@ -10308,7 +10551,9 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         layer.push(col().key("drop-hint").absolute(0.0, 0.0).w_full().h_full().center().child(text("Drop to upload as pages").font(k.ty.body_medium).color(k.c.text_base).padding(16.0).radius(k.radius.md).fill(k.c.layer_01)));
     }
     // files dropped anywhere on the window are uploaded, as on the web
-    let shell = row().w_full().h_full().min_h(0.0).child(ribbon_view(s, &k, if inset > 0.0 { 32.0 } else { 0.0 })).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(el().w_full().grow(1.0).min_h(0.0).child(shell)).child(status_bar(s, &k, busy)));
+    // a theme's ground goes behind the ribbon and the status bar too. The built-in look leaves the window's own there
+    let ground = if s.prefs.worn.look().bg.is_some() { k.c.page } else { rune::Color::TRANSPARENT };
+    let shell = row().w_full().h_full().min_h(0.0).fill(ground).child(ribbon_view(s, &k, if inset > 0.0 { 32.0 } else { 0.0 })).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(el().w_full().grow(1.0).min_h(0.0).child(shell)).child(status_bar(s, &k, busy)));
     rune_kit::root(shell, layer).on_drop_files(|s: &mut App, files, _| upload(s, files.to_vec())).on_drop_hover(|s: &mut App, over, _| s.dropping = over)
 }
 
@@ -10468,6 +10713,8 @@ pub fn start() {
 
 pub fn run() {
     let chrome = Chrome { full_size_content: true, traffic_lights: Some((16.0, 25.0)), drag_regions: true };
+    // the id the desktop matches to `lattice-rune.desktop`, which names the icon: the window wears lattice's logo by it
+    rune::set_app_id("lattice-rune");
     rune::App::new(AppSpec {
         setup: Some(setup),
         poll: Some(poll),
@@ -10900,11 +11147,11 @@ mod tests {
         take_knows(&mut s, vec![Know { key: "/a/b".into(), body: "fact".into(), tags: vec!["t".into()], updated: String::new() }]);
         assert_eq!((s.names.len(), s.other.1.clone(), s.other.2["a/b"].body.as_str()), (pages, vec!["a/b".to_owned()], "fact"));
         assert!(s.cache.contains_key("welcome") && !s.cache.contains_key("a/b"), "and not among the pages");
-        // editing holds the switch
+        // an edit does not hold the switch: it is left for it
         open_page(&mut s, "welcome");
         start_edit(&mut s);
         flip(&mut s);
-        assert!(!s.memory);
+        assert!(s.memory && !s.editing);
     }
 
     #[test]
@@ -10979,9 +11226,9 @@ mod tests {
     fn the_links_pane_knows_what_links_here_and_which_links_are_ghosts() {
         let mut s = sample("notes/today");
         // the pane is open from the start, on the links that go out
-        assert!(s.inspector.is_open() && pane_now(&s) == rpane::Tab::Out);
+        assert!(s.inspector.is_open() && s.pane == rpane::Tab::Out);
         pane_tab(&mut s, rpane::Tab::Back);
-        assert_eq!(pane_now(&s), rpane::Tab::Back);
+        assert_eq!(s.pane, rpane::Tab::Back);
         assert_eq!(s.back, Some(("notes/today".to_owned(), vec!["welcome".to_owned()])));
         assert!(ghost(&s, "not/written") && !ghost(&s, "welcome"));
         // a memory by that name is not a ghost either
@@ -10995,7 +11242,7 @@ mod tests {
         go(&mut s, "welcome");
         assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("welcome"));
         // the links command, with the links showing, closes the pane
-        show_pane(&mut s, false, true);
+        show_pane(&mut s, rpane::Tab::Out);
         assert!(!s.inspector.is_open());
     }
 
@@ -11355,13 +11602,18 @@ mod tests {
         assert_eq!(open(&s).as_deref(), Some("welcome"));
         switch_tab(&mut s, 1);
         assert_eq!((open(&s).as_deref(), s.trail.len()), (Some("notes/today"), 1));
-        // no switching, opening or closing while editing
+        // switching while editing leaves the editor, with what was typed kept
         start_edit(&mut s);
+        if s.rich {
+            flip_mode(&mut s);
+        }
+        s.edit.text.push_str("\ntyped and left");
         switch_tab(&mut s, 0);
-        new_tab(&mut s);
-        close_tab(&mut s, 1);
+        assert_eq!((s.tab, s.editing, open(&s).as_deref()), (0, false, Some("welcome")));
+        assert!(s.cache["notes/today"].body.ends_with("\ntyped and left"));
+        switch_tab(&mut s, 1);
+        assert!(s.open.as_ref().is_some_and(|p| p.body.ends_with("\ntyped and left")));
         assert_eq!((s.tab, s.tabs.len()), (1, 2));
-        cancel_edit(&mut s);
         // a page that is gone leaves its tab empty
         s.names.retain(|n| n != "welcome");
         switch_tab(&mut s, 0);
@@ -11476,10 +11728,9 @@ mod tests {
         move_group_tab(&mut s, 1, 0, 0, None);
         assert!(s.tgroups.is_empty());
         assert_eq!(front(&s), ["welcome", "region", "budget", "places"]);
-        // not over an edit, and not to where it is
+        // not to where it is
         toggle_split(&mut s);
-        start_edit(&mut s);
-        move_group_tab(&mut s, 1, 0, 0, None);
+        move_group_tab(&mut s, 1, 0, 1, None);
         assert_eq!((s.tgroups.len(), s.tabs.len()), (2, 4));
     }
 
@@ -11503,10 +11754,10 @@ mod tests {
         assert_eq!((open(&s), s.front_at), ("places".to_owned(), 0), "round to the first");
         turn_group(&mut s, false);
         assert_eq!((open(&s), s.front_at), ("welcome".to_owned(), 2), "and back round the other way");
-        // not over an edit
+        // over an edit too: it is left
         start_edit(&mut s);
         turn_group(&mut s, false);
-        assert_eq!(s.front_at, 2);
+        assert_eq!((s.front_at, s.editing), (1, false));
     }
 
     #[test]
@@ -11530,26 +11781,25 @@ mod tests {
         // a group whose last tab is closed is gone, and the rest close up
         close_group_tab(&mut s, 1, 0);
         assert_eq!(stand(&s), ["places", "*welcome"]);
-        assert_eq!(s.runs, [1, 1]);
-        // the other button splits the group in front by itself: a row of a group and a column of two
+        // the other button turns the groups round, and adds none
         split_press(&mut s, true);
-        assert_eq!((stand(&s), s.runs.clone(), s.split_down), (vec!["places".to_owned(), "*welcome".to_owned(), "welcome".to_owned()], vec![1, 2], false));
-        // the split's own button adds a place after the whole column
+        assert_eq!((stand(&s), s.split_down), (vec!["places".to_owned(), "*welcome".to_owned()], true));
         split_press(&mut s, false);
-        assert_eq!((stand(&s).len(), s.runs.clone(), s.front_at), (4, vec![1, 2, 1], 1));
+        assert_eq!((stand(&s).len(), s.split_down), (2, false));
+        // each new group stands after the one in front, with half its share
+        split_press(&mut s, false);
+        split_press(&mut s, false);
+        assert_eq!((stand(&s).len(), s.front_at), (4, 1));
+        let want = [1.0 / 3.0, 1.0 / 6.0, 1.0 / 6.0, 1.0 / 3.0];
+        assert!(s.group_share.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-5), "{:?}", s.group_share);
         // a fifth group is refused
         split_press(&mut s, false);
         assert_eq!((s.tgroups.len(), s.note.as_str()), (4, "Four groups is the most there can be"));
-        // a group gone from the column leaves a row of three, and one more leaves two
+        // a group gone leaves its room to the rest
+        close_group(&mut s, 3);
         close_group(&mut s, 2);
-        assert_eq!((s.tgroups.len(), s.runs.clone()), (3, vec![1, 1, 1]));
-        close_group(&mut s, 0);
-        assert_eq!((s.tgroups.len(), s.runs.clone(), s.front_at), (2, vec![1, 1], 0));
-        // a place left alone with its inner split becomes the split
-        split_press(&mut s, true);
-        assert_eq!(s.runs, [2, 1]);
-        close_group(&mut s, 2);
-        assert_eq!((s.runs.clone(), s.split_down), (vec![1, 1], true), "the column that was inside is the whole split now");
+        assert_eq!((s.tgroups.len(), s.front_at), (2, 1));
+        assert!((s.group_share[0] - 2.0 / 3.0).abs() < 1e-5 && (s.group_share[1] - 1.0 / 3.0).abs() < 1e-5, "{:?}", s.group_share);
         s.split_down = false;
         toggle_split(&mut s);
         assert!(s.tgroups.is_empty() && s.front_at == 0 && split_page(&s).is_none());
@@ -11568,7 +11818,7 @@ mod tests {
         assert_eq!((pages(&s, 1), s.front_at), (vec!["budget".to_owned()], 0));
         open_page(&mut s, "places");
         // the group beside comes to the front whole, and the one that was in front stays where it stood, with both its tabs
-        swap_split(&mut s);
+        turn_group(&mut s, true);
         assert_eq!((open(&s), s.tabs.len(), s.tab), (Some("budget".to_owned()), 1, 0));
         assert_eq!((pages(&s, 0), s.tgroups[0].at), (vec!["welcome".to_owned(), "places".to_owned()], 1));
         assert_eq!(split_page(&s), Some("places"), "its front tab is the page it shows");
@@ -11585,12 +11835,11 @@ mod tests {
         // closing the last tab beside ends the split
         close_group_tab(&mut s, 1, 0);
         assert!(s.tgroups.is_empty() && s.front_at == 0 && split_page(&s).is_none());
-        // an edit in front keeps the groups where they are
+        // an edit in front is left for the group pressed
         toggle_split(&mut s);
         start_edit(&mut s);
-        let before = (open(&s), pages(&s, 1), s.front_at);
         focus_group(&mut s, 1, 0);
-        assert_eq!((open(&s), pages(&s, 1), s.front_at), before);
+        assert_eq!((s.front_at, s.editing), (1, false));
     }
 
     #[test]
@@ -11600,13 +11849,13 @@ mod tests {
         assert_eq!(split_page(&s), Some("welcome"));
         open_page(&mut s, "budget");
         assert_eq!(split_page(&s), Some("welcome"), "it stays while the front changes");
-        swap_split(&mut s);
+        turn_group(&mut s, true);
         assert_eq!((s.open.as_ref().map(|p| p.name.as_str()), split_page(&s)), (Some("welcome"), Some("budget")));
-        // not while editing: the page in front is not left behind
+        // while editing too: an edit nothing was typed into is let go, and the other group comes forward
         start_edit(&mut s);
-        swap_split(&mut s);
-        assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("welcome"));
-        cancel_edit(&mut s);
+        turn_group(&mut s, true);
+        assert_eq!((s.open.as_ref().map(|p| p.name.as_str()), s.editing), (Some("budget"), false));
+        turn_group(&mut s, true);
         assert_eq!(s.prefs.split, "budget", "what is held is kept for the next run");
         // the same press lets go of it
         toggle_split(&mut s);
@@ -11637,12 +11886,10 @@ mod tests {
         // nothing usable
         upload(&mut s, vec![root.join("Trip/photo.png")]);
         assert!(s.note.starts_with("nothing was uploaded. Left out 1"));
-        // nothing while a page is being edited: the editor is not left
+        // while a page is being edited too: the editor is left for it
         start_edit(&mut s);
-        let pages = s.names.len();
         upload(&mut s, vec![root.join("Trip")]);
-        assert!(s.editing && s.names.len() == pages);
-        cancel_edit(&mut s);
+        assert!(!s.editing);
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(common_folder(&["a/b/c".into(), "a/b/d/e".into(), "a/x".into()]), "a");
         assert_eq!(common_folder(&["a".into(), "b".into()]), "");
@@ -12053,6 +12300,27 @@ mod tests {
         assert_eq!(rows[0], ("notes/today".to_owned(), None));
         assert_eq!(rows.iter().filter(|r| r.0 == "notes/today").count(), 1);
         assert!(found(&s, "zq").is_empty(), "two letters search names only");
+    }
+
+    #[test]
+    fn the_window_wears_the_theme_the_ship_says_and_the_mode_only_without_one() {
+        use serde_json::json;
+        let hex = |c: rune::Color| c.hex()[..7].to_owned();
+        let mut p = api::Prefs { theme: "light".into(), ..api::Prefs::default() };
+        // no theme: the built-in look, as the mode picked says
+        assert_eq!(hex(kit_of(&p, true).c.bg_base), hex(Kit::neutral(false).c.bg_base));
+        let night = json!({ "id": "a", "name": "Night", "dark": true, "primary": "#8AB4F8", "secondary": "#C58AF9", "tertiary": "#78D9EC", "background": "#101418", "surface": "#1B2026", "link": "", "raised": "#2A3038", "error": "#FF6B6B" });
+        p.worn.talon = json!({ "themes": [night], "activeId": "a" });
+        let k = kit_of(&p, false);
+        // the theme's own dark ground, though the mode says light
+        assert_eq!([hex(k.c.bg_base), hex(k.c.bg_accent), hex(k.c.bg_contrast), hex(k.c.text_accent)], ["#1b2026", "#8ab4f8", "#8ab4f8", "#2962ff"]);
+        assert_eq!([hex(k.c.layer_01), hex(k.c.danger.fg)], ["#2a3038", "#ff6b6b"]);
+        assert_eq!(hex(k.c.text_contrast), "#1c1917", "ink on a light accent");
+        // an accent alone is laid over the built-in look
+        p.worn.talon = serde_json::Value::Null;
+        p.worn.talon_accent = json!({ "enabled": true, "mode": "Custom", "customHex": "#5050FF" });
+        let k = kit_of(&p, true);
+        assert_eq!([hex(k.c.bg_base), hex(k.c.bg_contrast), hex(k.c.text_contrast)], [hex(Kit::neutral(false).c.bg_base), "#5050ff".into(), "#ffffff".into()]);
     }
 
     /// The sample pages with `name` open, and no ship.
