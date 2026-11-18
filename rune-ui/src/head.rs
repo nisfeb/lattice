@@ -13,6 +13,8 @@ line!(DOC, "lat-doc", "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8
 line!(KNOW, "lat-know", "M12 3l8 9-8 9-8-9z");
 line!(SEARCH, "lat-search", "M4 11a7 7 0 1 0 14 0a7 7 0 1 0-14 0M16 16l5 5");
 line!(MARK, "lat-mark", "M6 3h12v18l-6-4-6 4z");
+line!(FOLDER, "lat-folder", "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z");
+line!(X, "lat-x", "M6 6l12 12M18 6L6 18");
 line!(QOPEN, "lat-qopen", "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4M14 3l5 5v3M14 3v5h5M13 16a3 3 0 1 0 6 0a3 3 0 1 0-6 0M18.2 18.2L21 21");
 line!(PLUS, "lat-plus", "M12 5v14M5 12h14");
 line!(TPL, "lat-tpl", "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM3 9h18M9 9v12");

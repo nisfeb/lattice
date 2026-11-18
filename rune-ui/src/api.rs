@@ -2241,6 +2241,16 @@ impl Conn {
         self.call("POST", &format!("bookmark?url={}&title={}&folder={}", enc(url), enc(title), enc(folder)), Some("")).map(drop)
     }
 
+    /// Moves a bookmark to a folder, or out of one with none named. Its place in the list stays.
+    pub fn bookmark_move(&self, url: &str, folder: &str) -> Result<(), String> {
+        self.call("POST", &format!("bookmark-move?url={}&folder={}", enc(url), enc(folder)), Some("")).map(drop)
+    }
+
+    /// Drops a bookmark.
+    pub fn unbookmark(&self, url: &str) -> Result<(), String> {
+        self.call("POST", &format!("unbookmark?url={}", enc(url)), Some("")).map(drop)
+    }
+
     /// Writes a memory, new or not. `key` starts with a slash.
     pub fn know_save(&self, key: &str, body: &str) -> Result<(), String> {
         // the ship refuses an empty body
@@ -3861,6 +3871,24 @@ mod tests {
         c.bookmark(&there, "Kept page", "rune marks").unwrap();
         assert!(matches!(c.urb_read(&there).unwrap(), Urb::Page { body, .. } if body == "# Kept by a bookmark\n"));
         println!("bookmarked: {there}");
+        // moved in place, then out of its folder, then dropped, each as the ship has it
+        let list = |c: &Conn| c.bookmarks().unwrap();
+        let before = list(&c);
+        c.bookmark_move(&two, "later reading").unwrap();
+        let moved = list(&c);
+        assert_eq!(moved, crate::marks::after(&before, &crate::marks::Change::Move(two.clone(), "later reading".into())), "a move changes the folder and keeps the order");
+        assert!(moved.iter().any(|b| b.url == two && b.folder == "later reading"));
+        c.bookmark_move(&two, "").unwrap();
+        assert_eq!(list(&c), before, "and back out of it");
+        c.unbookmark(&two).unwrap();
+        assert_eq!(list(&c), crate::marks::after(&before, &crate::marks::Change::Drop(two.clone())));
+        // one kept again goes to the front and does not double
+        c.bookmark(&one, "Rune & one, again", "").unwrap();
+        let again = list(&c);
+        assert_eq!(again, crate::marks::after(&crate::marks::after(&before, &crate::marks::Change::Drop(two.clone())), &crate::marks::Change::Keep(one.clone(), "Rune & one, again".into(), String::new())));
+        assert_eq!(again.iter().filter(|b| b.url == one).count(), 1);
+        let all = { let mut a = again; a.retain(|b| b.url != one); a.push(Bookmark { url: one.clone(), title: "Rune & one".into(), folder: "rune marks".into() }); a };
+        let at = |url: &str| all.iter().position(|b| b.url == url).unwrap();
         // and the rows the pane makes of them
         let rows = crate::marks::rows(&all, &format!("rune-mark-{stamp}"), &[]);
         assert_eq!(rows, [crate::marks::Row::Folder { name: "rune marks".into(), folded: false }, crate::marks::Row::Mark { at: at(&one), under: true }]);

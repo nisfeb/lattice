@@ -74,9 +74,93 @@ pub fn opens(url: &str) -> Opens {
     }
 }
 
+/// A change to the bookmarks, as the ship makes it (`apply-bookmark`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Change {
+    /// Kept: the address, the title, and the folder.
+    Keep(String, String, String),
+    /// Moved to a folder, or out of one with none named.
+    Move(String, String),
+    Drop(String),
+}
+
+/// The list after a change, as the ship would have it: a bookmark kept
+/// goes to the front and replaces one of the same address, a move
+/// leaves the order alone, and a drop takes it out.
+pub fn after(list: &[Bookmark], change: &Change) -> Vec<Bookmark> {
+    match change {
+        Change::Keep(url, title, folder) => {
+            let mut out = vec![Bookmark { url: url.clone(), title: title.clone(), folder: folder.clone() }];
+            out.extend(list.iter().filter(|b| b.url != *url).cloned());
+            out
+        }
+        Change::Move(url, folder) => list.iter().cloned().map(|b| if b.url == *url { Bookmark { folder: folder.clone(), ..b } } else { b }).collect(),
+        Change::Drop(url) => list.iter().filter(|b| b.url != *url).cloned().collect(),
+    }
+}
+
+/// What is said once a change is made.
+pub fn said(change: &Change) -> String {
+    match change {
+        Change::Keep(..) => "Bookmark kept".to_owned(),
+        Change::Move(_, f) if f.is_empty() => "Moved out of its folder".to_owned(),
+        Change::Move(_, f) => format!("Moved to {f}"),
+        Change::Drop(_) => "Bookmark removed".to_owned(),
+    }
+}
+
+/// The folder typed into the move prompt, as it is sent.
+pub fn folder_of(typed: &str) -> String {
+    typed.trim().to_owned()
+}
+
+/// Whether an address is among the bookmarks.
+pub fn has(list: &[Bookmark], url: &str) -> bool {
+    list.iter().any(|b| b.url == url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bookmark_kept_goes_to_the_front_and_replaces_its_like() {
+        let got = after(&list(), &Change::Keep("urb://~nec/x".into(), "Nec".into(), "".into()));
+        assert_eq!(got.len(), 5);
+        assert_eq!(got[0], b("urb://~nec/x", "Nec", ""));
+        assert_eq!(got[1], list()[0]);
+        let got = after(&list(), &Change::Keep("urb://~new/y".into(), "".into(), "f".into()));
+        assert_eq!((got.len(), &got[0]), (6, &b("urb://~new/y", "", "f")));
+    }
+
+    #[test]
+    fn a_move_changes_the_folder_and_nothing_else() {
+        let got = after(&list(), &Change::Move("https://example.com/a".into(), "".into()));
+        assert_eq!(got[1], b("https://example.com/a", "", ""));
+        assert_eq!([&got[0], &got[2], &got[3], &got[4]], [&list()[0], &list()[2], &list()[3], &list()[4]]);
+        assert_eq!(after(&list(), &Change::Move("not there".into(), "f".into())), list());
+    }
+
+    #[test]
+    fn a_drop_takes_one_out() {
+        let got = after(&list(), &Change::Drop("urb://~bus/forum/chat".into()));
+        assert_eq!(got.len(), 4);
+        assert!(!has(&got, "urb://~bus/forum/chat") && has(&got, "urb://~zod/notes"));
+    }
+
+    #[test]
+    fn what_is_said_of_each_change() {
+        assert_eq!(said(&Change::Keep("u".into(), "".into(), "".into())), "Bookmark kept");
+        assert_eq!(said(&Change::Move("u".into(), "reading".into())), "Moved to reading");
+        assert_eq!(said(&Change::Move("u".into(), "".into())), "Moved out of its folder");
+        assert_eq!(said(&Change::Drop("u".into())), "Bookmark removed");
+    }
+
+    #[test]
+    fn the_folder_typed_is_trimmed() {
+        assert_eq!(folder_of("  reading list "), "reading list");
+        assert_eq!(folder_of("   "), "");
+    }
 
     fn b(url: &str, title: &str, folder: &str) -> Bookmark {
         Bookmark { url: url.into(), title: title.into(), folder: folder.into() }

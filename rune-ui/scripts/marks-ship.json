@@ -1,1 +1,59 @@
-{"events": [{"t": 3.0, "type": "tap", "key": "half-marks"}, {"t": 7.0, "type": "tap", "key": "m:urb://~zod/marks1795008028/page"}]}
+{
+ "events": [
+  {
+   "t": 3.0,
+   "type": "tap",
+   "key": "half-marks"
+  },
+  {
+   "t": 5.0,
+   "type": "tap",
+   "key": "shared-open"
+  },
+  {
+   "t": 6.0,
+   "type": "tap",
+   "key": "urb-address"
+  },
+  {
+   "t": 6.4,
+   "type": "type",
+   "text": "~zod/marks1795008874/page"
+  },
+  {
+   "t": 8.0,
+   "type": "key",
+   "name": "Enter"
+  },
+  {
+   "t": 14.0,
+   "type": "tap",
+   "key": "star"
+  },
+  {
+   "t": 20.0,
+   "type": "tap",
+   "key": "mv:urb://~zod/marks1795008874/page"
+  },
+  {
+   "t": 21.0,
+   "type": "type",
+   "text": "kept pages"
+  },
+  {
+   "t": 22.0,
+   "type": "key",
+   "name": "Enter"
+  },
+  {
+   "t": 28.0,
+   "type": "tap",
+   "key": "rm:urb://~zod/rune-mark-1795008874"
+  },
+  {
+   "t": 29.0,
+   "type": "tap",
+   "key": "prompt-ok"
+  }
+ ]
+}

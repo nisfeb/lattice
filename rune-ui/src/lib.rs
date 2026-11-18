@@ -319,6 +319,10 @@ enum Prompt {
     Restore(Box<vault::Archive>),
     /// A value typed for an OpenSCAD parameter: its name, which part of a vector, and the text.
     Param(String, Option<usize>, TextEdit),
+    /// A folder for a bookmark: its address, and the folder typed.
+    MarkMove(String, TextEdit),
+    /// A bookmark to remove: its address, and what it is shown as.
+    MarkDrop(String, String),
 }
 
 /// A tab that is not in front: the pages it went through, and which of
@@ -339,6 +343,8 @@ impl Tab {
 enum Op {
     /// A core rule an agent key wrote was kept or untagged: what to say.
     Cored(String),
+    /// The bookmarks were changed: what to say, and the list as it now stands.
+    Marks(String, Vec<api::Bookmark>),
     /// A deleted memory was brought back from the trash.
     Restored(String),
     /// A memory's tag was put on or taken off: the memory, the tag, which.
@@ -1170,6 +1176,14 @@ fn confirm(s: &mut App) {
         open_share(s);
         return;
     }
+    if let Prompt::MarkMove(url, t) = &p {
+        mark_change(s, marks::Change::Move(url.clone(), marks::folder_of(&t.text)));
+        return;
+    }
+    if let Prompt::MarkDrop(url, _) = &p {
+        mark_change(s, marks::Change::Drop(url.clone()));
+        return;
+    }
     if let Prompt::KeyRevoke(id, _) = &p {
         keys_do(s, None, Some(id.clone()));
         return;
@@ -1341,7 +1355,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) => {}
+                Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) => {}
             }
             Ok(op)
         }),
@@ -1419,6 +1433,10 @@ fn applied(s: &mut App, op: Op) {
         }
         Op::Said(say) => {
             s.note = say;
+            return;
+        }
+        Op::Marks(say, list) => {
+            (s.note, s.marks, s.marks_bad) = (say, Some(list), false);
             return;
         }
         Op::MapIn(feats, say) => {
@@ -7509,8 +7527,8 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) => t,
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
             .build(k)
@@ -7544,6 +7562,8 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::ForumTags(t) => ("This thread's tags", field(t, "Up to five: lowercase letters, digits and dashes. None clears them"), "Set", ButtonVariant::Contrast),
         Prompt::ForumDelete(comment) => (if comment.is_some() { "Delete this comment?" } else { "Delete this thread?" }, text(if comment.is_some() { "It is gone for everyone who reads the board." } else { "The thread and its comments are gone for everyone who reads the board." }).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
+        Prompt::MarkMove(_, t) => ("Move this bookmark to a folder", field(t, "A folder, or nothing for none"), "Move", ButtonVariant::Contrast),
+        Prompt::MarkDrop(_, shown) => ("Remove this bookmark?", text(shown.clone()).key("mark-drop-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
         Prompt::Param(_, _, t) => ("Set this parameter", field(t, "A value"), "Set", ButtonVariant::Contrast),
         Prompt::Token(t) => ("The ship's Mapbox token", field(t, "pk... to set it, or nothing to clear it"), "Set", ButtonVariant::Contrast),
         Prompt::Feature(at, t) => {
@@ -7616,6 +7636,10 @@ fn open_remote(s: &mut App, sh: Shared) {
 
 /// A shared page arrived: it shows in place of a page of this ship.
 fn show_remote(s: &mut App, sh: Shared, p: Page) {
+    // the star says whether this page is kept, so the bookmarks are read if they were not yet
+    if let Some(c) = s.conn.clone().filter(|_| s.marks.is_none()) {
+        s.marks_req.request(c, |c| c.bookmarks());
+    }
     s.access = false;
     s.settings = None;
     s.shared_open = false;
@@ -8546,6 +8570,41 @@ fn open_marks(s: &mut App) {
     }
 }
 
+/// Makes a change to the bookmarks on the ship and reads them back, or,
+/// with no ship, makes it to the sample ones as the ship would.
+fn mark_change(s: &mut App, change: marks::Change) {
+    match s.conn.clone() {
+        Some(c) => s.op_req.request((c, change), |(c, change)| {
+            match &change {
+                marks::Change::Keep(url, title, folder) => c.bookmark(url, title, folder)?,
+                marks::Change::Move(url, folder) => c.bookmark_move(url, folder)?,
+                marks::Change::Drop(url) => c.unbookmark(url)?,
+            }
+            Ok(Op::Marks(marks::said(&change), c.bookmarks()?))
+        }),
+        None => {
+            let list = marks::after(s.marks.as_deref().unwrap_or_default(), &change);
+            applied(s, Op::Marks(marks::said(&change), list));
+        }
+    }
+}
+
+/// The address another ship's page is kept under as a bookmark.
+fn mark_url(sh: &Shared) -> String {
+    format!("urb://{}/{}", sh.host, sh.name())
+}
+
+/// The star on another ship's page: keeps it as a bookmark, or drops the one there is.
+fn star(s: &mut App) {
+    let Some(sh) = s.remote.clone() else { return };
+    let url = mark_url(&sh);
+    if s.marks.as_deref().is_some_and(|m| marks::has(m, &url)) {
+        mark_change(s, marks::Change::Drop(url));
+    } else {
+        mark_change(s, marks::Change::Keep(url, format!("{}/{}", sh.host, sh.name()), String::new()));
+    }
+}
+
 /// Opens a bookmark: an address on the network is read by the ship,
 /// as one typed into Shared with me is, and a web address goes to the
 /// system's browser.
@@ -8608,18 +8667,38 @@ fn marks_view(s: &App, k: &Kit) -> El {
             marks::Row::Mark { at, under } => {
                 let b = &list[at];
                 row()
-                    .key(format!("m:{}", b.url))
-                    .role("button")
-                    .label(marks::label(b).to_owned())
-                    .help(b.url.clone())
                     .w_full()
                     .h(26.0)
                     .pl(if under { 28.0 } else { 6.0 })
                     .pr(6.0)
                     .center_y()
                     .radius(k.radius.sm)
-                    .on_press_tx(move |s: &mut App, tx| open_mark(s, at, tx))
-                    .child(text(marks::label(b).to_owned()).font(k.ty.small).color(k.c.text_base).truncate().grow(1.0).min_w(0.0))
+                    .gap(2.0)
+                    .child(
+                        row()
+                            .key(format!("m:{}", b.url))
+                            .role("button")
+                            .label(marks::label(b).to_owned())
+                            .help(b.url.clone())
+                            .h_full()
+                            .center_y()
+                            .grow(1.0)
+                            .min_w(0.0)
+                            .on_press_tx(move |s: &mut App, tx| open_mark(s, at, tx))
+                            .child(text(marks::label(b).to_owned()).font(k.ty.small).color(k.c.text_base).truncate().grow(1.0).min_w(0.0)),
+                    )
+                    .child({
+                        let (url, folder) = (b.url.clone(), b.folder.clone());
+                        IconButton::new(&head::FOLDER).control_size(ControlSize::Small).variant(IconButtonVariant::GhostMuted).label(format!("Move {} to a folder", marks::label(b))).help("Move to folder").on_press(move |s: &mut App| {
+                            let mut t = TextEdit::new(folder.clone());
+                            t.focused = true;
+                            s.prompt = Some(Prompt::MarkMove(url.clone(), t));
+                        }).build(k).key(format!("mv:{}", b.url))
+                    })
+                    .child({
+                        let (url, shown) = (b.url.clone(), marks::label(b).to_owned());
+                        IconButton::new(&head::X).control_size(ControlSize::Small).variant(IconButtonVariant::GhostMuted).label(format!("Remove the bookmark {}", marks::label(b))).help("Remove bookmark").on_press(move |s: &mut App| s.prompt = Some(Prompt::MarkDrop(url.clone(), shown.clone()))).build(k).key(format!("rm:{}", b.url))
+                    })
             }
         });
     }
@@ -9348,6 +9427,9 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     } else if let Some(sh) = s.remote.as_ref().filter(|_| s.open.is_some() && !s.access && !s.shared_open && !s.inbox) {
         // another ship's page: read, and edited when that ship lets this one
         trailing = trailing.child(text(format!("from {}", sh.host)).font(k.ty.small).color(k.c.text_muted));
+        // the reader's star: kept on the ship, and listed in the pane's Bookmarks tab
+        let kept = s.marks.as_deref().is_some_and(|m| marks::has(m, &mark_url(sh)));
+        trailing = trailing.child(Button::new(if kept { "Bookmarked" } else { "Bookmark" }).variant(ButtonVariant::GhostMuted).help(if kept { "Drop the bookmark of this page" } else { "Keep this page as a bookmark" }).on_press(star).build(&k).key("star"));
         // a page read by its address was published, not shared with this ship: there is no edit to ask for
         if !sh.editable() && sh.mode != "published" {
             // read only: the host can be asked for more

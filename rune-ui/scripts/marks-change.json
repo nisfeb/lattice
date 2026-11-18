@@ -1,0 +1,9 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 1.5, "type": "tap", "key": "half-marks"},
+  {"t": 3.0, "type": "tap", "key": "mv:urb://~sampel-palnet/notes"},
+  {"t": 4.0, "type": "type", "text": " boards "},
+  {"t": 5.0, "type": "key", "name": "Enter"},
+  {"t": 7.0, "type": "tap", "key": "rm:https://urbit.org/overview"},
+  {"t": 9.0, "type": "tap", "key": "prompt-ok"}
+]}
