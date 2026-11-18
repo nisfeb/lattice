@@ -111,3 +111,4 @@ Debug builds render headless with the same renderer:
 ## Bundles
 
 - A deb: `sh scripts/bundle/build-in-debian.sh` builds the release inside Debian 12 (docker), then `LATTICE_RUNE_BIN=target/debian/lattice-rune sh scripts/bundle/deb.sh` writes `target/bundle/lattice-rune_<version>_amd64.deb`. Without `LATTICE_RUNE_BIN` the deb holds this machine's own build, which runs only on a system with a glibc as new.
+- An AppImage: `LATTICE_RUNE_BIN=target/debian/lattice-rune sh scripts/bundle/appimage.sh` writes `target/bundle/lattice-rune-<version>-x86_64.AppImage`. It fetches the AppImage runtime once (0.9 MB) unless `APPIMAGE_RUNTIME` names one.

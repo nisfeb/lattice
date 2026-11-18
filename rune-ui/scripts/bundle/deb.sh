@@ -39,6 +39,8 @@ Priority: optional
 Description: An experimental native client for lattice, drawn with Rune
  Not the shipped desktop app, and installable beside it.
 EOF
+# whoever installs it must be able to read it, whatever this shell's umask
+chmod -R u=rwX,go=rX "$stage/data"
 (cd "$stage/data" && find usr -type f -exec md5sum {} + > ../control/md5sums)
 tar_as_root="tar --owner=0 --group=0 --numeric-owner -czf"
 (cd "$stage/control" && $tar_as_root ../control.tar.gz ./control ./md5sums)
