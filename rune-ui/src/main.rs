@@ -44,8 +44,10 @@ struct MapView {
     // ponytail: read when this map's text moves. A layer page changed
     // meanwhile shows when this map is opened again
     under: Vec<(String, Option<Vec<map::Feature>>)>,
-    /// Whether a press on the ground puts a new point there.
-    adding: bool,
+    /// What a press on the ground draws, when a drawing tool is on.
+    tool: Option<map::Draw>,
+    /// The corners of the line or area being drawn, each a longitude and latitude.
+    verts: Vec<[f64; 2]>,
     /// The picked point being dragged: which feature, and how far in points.
     moving: Option<(usize, f32, f32)>,
     /// Whether the feature a save adds is to be picked when it lands.
@@ -1060,7 +1062,7 @@ fn sync_map(s: &mut App) {
     s.map = map::parse(&p.body).map(|feats| {
         let cam = old.as_ref().map_or(map::Camera { at: [0.5, 0.5], scale: 800.0 }, |m| m.cam);
         let pick_new = old.as_ref().is_some_and(|m| m.pick_new);
-        MapView { name: p.name.clone(), rev: p.rev, cam, grab: cam, adding: old.as_ref().is_some_and(|m| m.adding), moving: None, pick_new: false, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: if pick_new { feats.len().checked_sub(1) } else { old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()) }, feats, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
+        MapView { name: p.name.clone(), rev: p.rev, cam, grab: cam, tool: old.as_ref().and_then(|m| m.tool), verts: old.as_ref().map_or(Vec::new(), |m| m.verts.clone()), moving: None, pick_new: false, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: if pick_new { feats.len().checked_sub(1) } else { old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()) }, feats, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
     });
 }
 
@@ -1225,9 +1227,17 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                 match d.phase {
                     Phase::Down => m.grab = m.cam,
                     // with the point tool on, a press on the ground puts a point there
-                    Phase::Up if d.dx.hypot(d.dy) < 5.0 && m.adding => {
+                    Phase::Up if d.dx.hypot(d.dy) < 5.0 && m.tool == Some(map::Draw::Point) => {
                         m.cam = m.grab;
                         put = Some(map::lonlat(m.cam.unproject(d.x, d.y, m.size.0, m.size.1)));
+                    }
+                    // with the line or area tool on, each press is a corner. One on top of the last is dropped
+                    Phase::Up if d.dx.hypot(d.dy) < 5.0 && m.tool.is_some() => {
+                        m.cam = m.grab;
+                        let last = m.verts.last().map(|v| m.cam.project(map::mercator(v[0], v[1]), m.size.0, m.size.1));
+                        if last.is_none_or(|l| (l[0] - d.x).hypot(l[1] - d.y) >= 3.0) {
+                            m.verts.push(map::lonlat(m.cam.unproject(d.x, d.y, m.size.0, m.size.1)));
+                        }
                     }
                     // a press that hardly moved is a press on what is under it, or on nothing
                     Phase::Up if d.dx.hypot(d.dy) < 5.0 => {
@@ -1239,11 +1249,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             }
             if let Some([lon, lat]) = put {
                 if write_map(s, |body| map::add(body, serde_json::json!({"type": "Point", "coordinates": [lon, lat]}))) {
-                    // the new point is picked, when the page comes back with it
-                    let coming = s.save_req.is_pending();
-                    if let Some(m) = &mut s.map {
-                        if coming { m.pick_new = true } else { m.picked = m.feats.len().checked_sub(1) }
-                    }
+                    pick_added(s);
                 }
             }
             sync_tiles(s);
@@ -1267,7 +1273,19 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             }
         }
     }
+    // the shape being drawn, in the web client's orange
+    let pen = rune::color::hex("#e67e22").unwrap_or(c.text_accent);
+    let mut corners: Vec<[f32; 2]> = m.verts.iter().map(|v| to(map::mercator(v[0], v[1]))).collect();
+    if m.tool == Some(map::Draw::Area) && corners.len() > 2 {
+        corners.push(corners[0]);
+    }
+    if corners.len() > 1 {
+        shape = shape.stroke(corners.clone(), 2.0, pen);
+    }
     let mut view = view.child(canvas(shape).key("map-shapes").absolute(0.0, 0.0).size(w, h));
+    for (n, [x, y]) in corners.iter().take(m.verts.len()).enumerate() {
+        view = view.child(el().key(format!("vert-{n}")).absolute(x - 4.0, y - 4.0).size(8.0, 8.0).radius(4.0).fill(pen).a11y_hidden().inert());
+    }
     // until the first layout the size is a guess: draw the ground alone
     if !m.fitted {
         return view;
@@ -1433,16 +1451,28 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
     };
     let showing = m.feats.iter().filter(|f| !m.hidden.contains(&f.kind)).count();
     let count = text(if showing == m.feats.len() { format!("{showing} shapes{ground}") } else { format!("{showing} of {} shapes{ground}", m.feats.len()) }).font(k.ty.small).color(c.text_muted);
-    let point = map_changes(s).then(|| {
-        Button::new("Point").control_size(ControlSize::Small).variant(if m.adding { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("Put a point where the map is pressed next. Press again to stop").on_press(|s: &mut App| {
-            if let Some(m) = &mut s.map {
-                m.adding = !m.adding;
-            }
-        }).build(k).key("map-point")
-    });
+    let mut draw = Vec::new();
+    if map_changes(s) {
+        for (tool, label, key, help) in [
+            (map::Draw::Point, "Point", "map-point", "Put a point where the map is pressed next. Press again to stop"),
+            (map::Draw::Line, "Line", "map-line", "Draw a line: press for each corner, then Done"),
+            (map::Draw::Area, "Area", "map-area", "Draw an area: press for each corner, then Done"),
+        ] {
+            draw.push(Button::new(label).control_size(ControlSize::Small).variant(if m.tool == Some(tool) { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help(help).on_press(move |s: &mut App| {
+                if let Some(m) = &mut s.map {
+                    // another tool, or the same one again to stop: what was being drawn is dropped
+                    m.tool = Some(tool).filter(|t| m.tool != Some(*t));
+                    m.verts.clear();
+                }
+            }).build(k).key(key));
+        }
+        if !m.verts.is_empty() {
+            draw.push(Button::new("Done").control_size(ControlSize::Small).help("Finish the shape").on_press(finish_shape).build(k).key("map-done"));
+        }
+    }
     let base = Button::new(format!("Base: {}", m.style)).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("The next base map: streets, outdoors, satellite, dark. It is kept in the page").on_press(next_base).build(k).key("map-base");
     let token = (s.conn.is_some() && s.tile_status.as_ref().is_some_and(|t| !t.token)).then(|| Button::new("Set Mapbox token").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(ask_token).build(k).key("map-token"));
-    view.child(row().key("map-tools").absolute(12.0, h - 40.0).gap(6.0).center_y().child(zoom("zoom-in", "+", 2.0)).child(zoom("zoom-out", "−", 0.5)).child(zoom("zoom-fit", "Fit", 0.0)).children(point).child(base).children(token).child(count))
+    view.child(row().key("map-tools").absolute(12.0, h - 40.0).gap(6.0).center_y().child(zoom("zoom-in", "+", 2.0)).child(zoom("zoom-out", "−", 0.5)).child(zoom("zoom-fit", "Fit", 0.0)).children(draw).child(base).children(token).child(count))
 }
 
 /// Whether a wiki link's target is a page not written yet: no page and
@@ -1524,6 +1554,29 @@ fn next_base(s: &mut App) {
     let at = map::STYLES.iter().position(|x| *x == m.style).unwrap_or(0);
     let style = map::STYLES[(at + 1) % map::STYLES.len()];
     write_map(s, |body| map::with_base(body, style));
+}
+
+/// Makes the line or area being drawn a feature of the page and picks
+/// it. With too few corners for the tool, what was drawn is dropped.
+fn finish_shape(s: &mut App) {
+    let Some(m) = &mut s.map else { return };
+    let (Some(tool), verts) = (m.tool, std::mem::take(&mut m.verts)) else { return };
+    let Some(geometry) = map::drawn(tool, &verts) else {
+        s.note = "that is too few corners: a line takes two and an area three".into();
+        return;
+    };
+    m.tool = None;
+    if write_map(s, |body| map::add(body, geometry)) {
+        pick_added(s);
+    }
+}
+
+/// Picks the feature just added: now, or when the page comes back from the ship with it.
+fn pick_added(s: &mut App) {
+    let coming = s.save_req.is_pending();
+    if let Some(m) = &mut s.map {
+        if coming { m.pick_new = true } else { m.picked = m.feats.len().checked_sub(1) }
+    }
 }
 
 /// Whether the map in front may be changed here: one of the owner's own
@@ -5824,6 +5877,22 @@ mod tests {
         s.editing = true;
         assert!(!write_map(&mut s, |b| map::remove(b, 0)));
         assert_eq!(s.map.as_ref().unwrap().feats.len(), 3);
+    }
+
+    #[test]
+    fn a_drawn_line_becomes_a_feature_and_too_few_corners_do_not() {
+        let mut s = sample("places");
+        let shapes = s.map.as_ref().unwrap().feats.len();
+        let m = s.map.as_mut().unwrap();
+        (m.tool, m.verts) = (Some(map::Draw::Area), vec![[-73.9, 40.7], [-73.8, 40.7]]);
+        finish_shape(&mut s);
+        let m = s.map.as_mut().unwrap();
+        assert_eq!((m.feats.len(), m.verts.len(), m.tool), (shapes, 0, Some(map::Draw::Area)), "two corners are no area: nothing is made and the tool stays");
+        (m.tool, m.verts) = (Some(map::Draw::Line), vec![[-73.9, 40.7], [-73.8, 40.7]]);
+        finish_shape(&mut s);
+        let m = s.map.as_ref().unwrap();
+        assert_eq!((m.feats.len(), m.picked, m.tool), (shapes + 1, Some(shapes), None), "the line is there and picked, and the tool is put down");
+        assert!(matches!(m.feats[shapes].geoms[0], map::Geom::Line(_)));
     }
 
     #[test]

@@ -410,6 +410,29 @@ pub fn remove(body: &str, at: usize) -> Option<String> {
     })
 }
 
+/// What a press on the map draws.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Draw {
+    Point,
+    Line,
+    Area,
+}
+
+/// The geometry of a shape drawn with these corners, each a longitude
+/// and latitude: a line of two or more, an area of three or more with
+/// its ring closed. `None` for too few, and for the point tool, whose
+/// point is made where it is pressed.
+pub fn drawn(tool: Draw, verts: &[[f64; 2]]) -> Option<Value> {
+    match tool {
+        Draw::Line if verts.len() >= 2 => Some(serde_json::json!({"type": "LineString", "coordinates": verts})),
+        Draw::Area if verts.len() >= 3 => {
+            let ring: Vec<_> = verts.iter().chain(verts.first()).collect();
+            Some(serde_json::json!({"type": "Polygon", "coordinates": [ring]}))
+        }
+        _ => None,
+    }
+}
+
 /// A map page with a new feature of this geometry and no properties,
 /// after the others.
 pub fn add(body: &str, geometry: Value) -> Option<String> {
@@ -729,6 +752,23 @@ mod tests {
         assert!(out.contains("[-173.9857,89.9999999]"), "{out}");
         assert_eq!(shift(body, 5, 1.0, 1.0), None);
         assert_eq!(add("[]", Value::Null), None);
+    }
+
+    #[test]
+    fn a_line_and_an_area_are_made_of_the_corners_drawn() {
+        let v = [[1.0, 2.0], [3.0, 4.5], [5.0, 6.0]];
+        assert_eq!(drawn(Draw::Line, &v[..1]), None);
+        assert_eq!(drawn(Draw::Area, &v[..2]), None);
+        assert_eq!(drawn(Draw::Point, &v), None);
+        let blank = "{\"type\":\"FeatureCollection\",\"lattice\":{},\"features\":[\n]}\n";
+        // what the web client writes for the same corners
+        let line = add(blank, drawn(Draw::Line, &v[..2]).unwrap()).unwrap();
+        assert_eq!(line, "{\"type\":\"FeatureCollection\",\"lattice\":{},\"features\":[\n{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[1,2],[3,4.5]]},\"properties\":{}}\n]}\n");
+        let area = add(blank, drawn(Draw::Area, &v).unwrap()).unwrap();
+        assert!(area.contains(r#"{"type":"Polygon","coordinates":[[[1,2],[3,4.5],[5,6],[1,2]]]}"#), "{area}");
+        // both are shapes lattice draws
+        assert!(matches!(parse(&line).unwrap()[0].geoms[0], Geom::Line(_)));
+        assert!(matches!(parse(&area).unwrap()[0].geoms[0], Geom::Area(_)));
     }
 
     #[test]

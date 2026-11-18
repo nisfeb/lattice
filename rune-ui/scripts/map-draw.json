@@ -1,0 +1,12 @@
+{"events": [
+  {"t": 0.8, "type": "tap", "key": "places"},
+  {"t": 2.0, "type": "tap", "key": "map-area"},
+  {"t": 2.5, "type": "drag", "x": 450, "y": 450, "dx": 0, "dy": 0, "dur": 0.1},
+  {"t": 3.0, "type": "drag", "x": 600, "y": 650, "dx": 0, "dy": 0, "dur": 0.1},
+  {"t": 3.5, "type": "drag", "x": 601, "y": 651, "dx": 0, "dy": 0, "dur": 0.1},
+  {"t": 4.0, "type": "drag", "x": 420, "y": 680, "dx": 0, "dy": 0, "dur": 0.1},
+  {"t": 5.5, "type": "tap", "key": "map-done"},
+  {"t": 6.5, "type": "tap", "key": "map-line"},
+  {"t": 7.0, "type": "drag", "x": 1000, "y": 300, "dx": 0, "dy": 0, "dur": 0.1},
+  {"t": 7.5, "type": "tap", "key": "map-done"}
+]}
