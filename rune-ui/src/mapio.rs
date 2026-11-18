@@ -1,6 +1,8 @@
 //! Files in and out of a map page: a port of the web client's
-//! `ui-src/map/io.js`. Import reads GeoJSON and GPX into features, the
-//! GPX as `@tmcw/togeojson` reads it, and simplifies long tracks. Export
+//! `ui-src/map/io.js`. Import reads GeoJSON, GPX and KML into features,
+//! the GPX and KML as `@tmcw/togeojson` reads them, and simplifies long
+//! tracks. Of a KML file the placemarks are read. Its ground overlays
+//! and network links, which togeojson turns into boxes, are not. Export
 //! writes GPX. Nothing here touches a file: the caller reads and writes.
 
 use serde_json::{Value, json};
@@ -237,6 +239,111 @@ fn gpx(root: &Node) -> Vec<Value> {
     out
 }
 
+/// A KML position, `lon,lat` or `lon,lat,height`: what of it is a number, three at most.
+fn kml_pos(t: &str) -> Vec<Value> {
+    let t: String = t.chars().filter(|c| !c.is_whitespace()).collect();
+    t.split(',').filter_map(parse_float).take(3).map(Value::from).collect()
+}
+
+/// The positions of a KML `coordinates` element, apart by white space.
+fn kml_line(n: &Node) -> Vec<Value> {
+    let text = n.first("coordinates").map_or("", |c| c.text.as_str());
+    text.split_whitespace().map(kml_pos).filter(|p| p.len() >= 2).map(Value::Array).collect()
+}
+
+/// The geometries directly in a placemark or a multi-geometry, and the
+/// times of each track among them.
+fn kml_geoms(n: &Node, out: &mut Vec<Value>, times: &mut Vec<Vec<String>>) {
+    for k in &n.kids {
+        match k.name.as_str() {
+            "MultiGeometry" | "MultiTrack" | "gx:MultiTrack" => kml_geoms(k, out, times),
+            "Point" => {
+                let p = kml_pos(k.first("coordinates").map_or("", |c| c.text.as_str()));
+                if p.len() >= 2 {
+                    out.push(json!({"type": "Point", "coordinates": p}));
+                }
+            }
+            "LinearRing" | "LineString" => {
+                let l = kml_line(k);
+                if l.len() >= 2 {
+                    out.push(json!({"type": "LineString", "coordinates": l}));
+                }
+            }
+            "Polygon" => {
+                let mut rings = Vec::new();
+                for r in k.each("LinearRing") {
+                    let mut ring = kml_line(r);
+                    // a ring that does not end where it began is closed
+                    if ring.first() != ring.last() {
+                        ring.push(ring[0].clone());
+                    }
+                    if ring.len() >= 4 {
+                        rings.push(Value::Array(ring));
+                    }
+                }
+                if !rings.is_empty() {
+                    out.push(json!({"type": "Polygon", "coordinates": rings}));
+                }
+            }
+            "Track" | "gx:Track" => {
+                let mut coords = k.each("coord");
+                if coords.is_empty() {
+                    coords = k.each("gx:coord");
+                }
+                // what is not a number stays as it is, and the check refuses the file for it
+                let mut line: Vec<Value> = coords.iter().map(|c| c.text.split(' ').map(|v| parse_float(v).map_or(Value::Null, Value::from)).collect()).collect();
+                match line.len() {
+                    0 => continue,
+                    1 => out.push(json!({"type": "Point", "coordinates": line.remove(0)})),
+                    _ => out.push(json!({"type": "LineString", "coordinates": line})),
+                }
+                let when: Vec<String> = k.each("when").iter().map(|w| w.text.clone()).collect();
+                if !when.is_empty() {
+                    times.push(when);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The features of a KML file: its placemarks that have a shape. Of each
+/// lattice keeps the name, the description as the note, a lone track's
+/// first time, and what its extended data says of those and of its type.
+fn kml(root: &Node) -> Vec<Value> {
+    // a schema's fields that are not text come out of togeojson as numbers, which lattice does not keep as a name or a note
+    let typed: Vec<&str> = root.each("SimpleField").into_iter().filter(|f| matches!(f.attr("type"), "int" | "uint" | "short" | "ushort" | "float" | "double" | "bool")).map(|f| f.attr("name")).collect();
+    let mut out = Vec::new();
+    for pm in root.each("Placemark") {
+        let (mut geoms, mut times) = (Vec::new(), Vec::new());
+        kml_geoms(pm, &mut geoms, &mut times);
+        let geometry = match geoms.len() {
+            0 => continue,
+            1 => geoms.remove(0),
+            _ => json!({"type": "GeometryCollection", "geometries": geoms}),
+        };
+        // read in togeojson's order, a later one taking the place of an earlier
+        let mut raw: Vec<(String, Option<String>)> = ["name", "description"].iter().filter_map(|k| said(pm, k).map(|v| ((*k).to_owned(), Some(v.to_owned())))).collect();
+        if let Some(ext) = pm.first("ExtendedData") {
+            for d in ext.each("Data") {
+                raw.push((d.attr("name").to_owned(), Some(d.first("value").map_or(String::new(), |v| v.text.clone()))));
+            }
+            for d in ext.each("SimpleData") {
+                raw.push((d.attr("name").to_owned(), (!typed.contains(&d.attr("name"))).then(|| d.text.clone())));
+            }
+        }
+        let get = |k: &str| raw.iter().rev().find(|(n, _)| n == k).and_then(|(_, v)| v.as_deref());
+        let mut p = serde_json::Map::new();
+        let mut put = |k: &str, v: Option<&str>| drop(v.map(|v| p.insert(k.into(), v.into())));
+        put("name", get("name"));
+        put("note", get("desc").or(get("description")).filter(|d| !d.is_empty()));
+        put("time", get("time").or(if times.len() == 1 { times[0].first().map(String::as_str) } else { None }));
+        put("kind", get("type").filter(|t| t.encode_utf16().count() <= 40));
+        out.push(json!({"type": "Feature", "geometry": geometry, "properties": p}));
+    }
+    out
+}
+
 fn xy(p: &Value) -> [f64; 2] {
     [p[0].as_f64().unwrap_or(0.0), p[1].as_f64().unwrap_or(0.0)]
 }
@@ -343,7 +450,8 @@ pub fn import(kind: &str, text: &str) -> Result<Imported, String> {
             }
         }
         "gpx" => gpx(&xml(text).ok_or("the file is not valid XML")?),
-        _ => return Err("lattice reads .geojson, .json and .gpx files here".into()),
+        "kml" => kml(&xml(text).ok_or("the file is not valid XML")?),
+        _ => return Err("lattice reads .geojson, .json, .gpx and .kml files".into()),
     };
     let whole = |features: &[Value]| json!({"type": "FeatureCollection", "features": features});
     map::check(&whole(&features), usize::MAX).map_err(|why| why.replace("the page", "the file"))?;
@@ -465,8 +573,52 @@ mod tests {
         assert_eq!(import("geojson", r#"{"type":"Feature","geometry":{"type":"LineString","coordinates":[[1,2]]}}"#).unwrap_err(), "a line or ring has too few positions");
         assert_eq!(import("geojson", r#"{"type":"FeatureCollection","features":[{"type":"Feature","geometry":{"type":"Point","coordinates":[1,"x"]}}]}"#).unwrap_err(), "a coordinate is not a number");
         assert_eq!(import("geojson", &format!("{}1{}", "[".repeat(70), "]".repeat(70))).unwrap_err(), "the file is nested too deeply");
-        assert_eq!(import("kml", "<kml/>").unwrap_err(), "lattice reads .geojson, .json and .gpx files here");
+        assert_eq!(import("txt", "x").unwrap_err(), "lattice reads .geojson, .json, .gpx and .kml files");
+        assert_eq!(import("kml", "<kml><Placemark></kml>").unwrap_err(), "the file is not valid XML");
+        // a track position that is not a number refuses the file, as on the web
+        assert_eq!(import("kml", "<kml xmlns:gx=\"http://www.google.com/kml/ext/2.2\"><Placemark><gx:Track><gx:coord>1 x</gx:coord><gx:coord>1 2</gx:coord></gx:Track></Placemark></kml>").unwrap_err(), "a coordinate is not a number");
         assert_eq!((file_kind("a/Walk.GPX"), file_kind("x.json"), file_kind("x.geojson"), file_kind("x.kml"), file_kind("x.txt"), file_kind("gpx")), ("gpx", "geojson", "geojson", "kml", "", ""));
+    }
+
+    const KML: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
+<Document><name>Doc name</name>
+  <Schema name="s" id="s"><SimpleField type="int" name="count"/><SimpleField type="string" name="type"/></Schema>
+  <Style id="a"><LineStyle><color>ff0000ff</color></LineStyle></Style>
+  <Folder><name>Folder</name>
+    <Placemark id="p1"><name>Spot</name><description><![CDATA[<p>hello</p>]]></description><styleUrl>#a</styleUrl>
+      <Point><coordinates> -73.9857, 40.7484, 12 </coordinates></Point></Placemark>
+    <Placemark><name>Line</name><ExtendedData><SchemaData schemaUrl="#s"><SimpleData name="type">route</SimpleData><SimpleData name="count">3</SimpleData></SchemaData></ExtendedData>
+      <LineString><coordinates>1,2,0 3,4,0
+        5,6</coordinates></LineString></Placemark>
+    <Placemark><name>Area</name><Polygon><outerBoundaryIs><LinearRing><coordinates>0,0 0,1 1,1</coordinates></LinearRing></outerBoundaryIs>
+      <innerBoundaryIs><LinearRing><coordinates>0.2,0.2 0.2,0.4 0.4,0.4 0.2,0.2</coordinates></LinearRing></innerBoundaryIs></Polygon></Placemark>
+    <Placemark><name>Both</name><ExtendedData><Data name="name"><value>Renamed</value></Data><Data name="desc"><value>from data</value></Data></ExtendedData>
+      <MultiGeometry><Point><coordinates>7,8</coordinates></Point><LineString><coordinates>7,8 9,10</coordinates></LineString></MultiGeometry></Placemark>
+    <Placemark><name>Run</name><gx:Track><when>2026-11-17T09:00:00Z</when><when>2026-11-17T09:05:00Z</when><gx:coord>-73.1 40.1 5</gx:coord><gx:coord>-73.2 40.2 6</gx:coord></gx:Track></Placemark>
+    <Placemark><name>Nowhere</name></Placemark>
+    <Placemark><name>Short</name><LineString><coordinates>1,2</coordinates></LineString></Placemark>
+  </Folder>
+</Document></kml>"##;
+
+    #[test]
+    fn a_kml_file_is_read_as_the_web_client_reads_one() {
+        let got = import("kml", KML).unwrap().features;
+        let line = |i: usize| serde_json::to_string(&got[i]).unwrap();
+        assert_eq!(got.len(), 5, "a placemark with no shape, or a line of one position, is left out");
+        // the description's markup is kept as text, and the height stays with the position
+        assert_eq!(line(0), r#"{"type":"Feature","geometry":{"type":"Point","coordinates":[-73.9857,40.7484,12.0]},"properties":{"name":"Spot","note":"<p>hello</p>"}}"#);
+        // positions are apart by any white space. The schema's text field is the kind, its number is not kept
+        assert_eq!(line(1), r#"{"type":"Feature","geometry":{"type":"LineString","coordinates":[[1.0,2.0,0.0],[3.0,4.0,0.0],[5.0,6.0]]},"properties":{"name":"Line","kind":"route"}}"#);
+        // an open ring is closed, and a hole is a ring too
+        assert_eq!(line(2), r#"{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0.0,0.0],[0.0,1.0],[1.0,1.0],[0.0,0.0]],[[0.2,0.2],[0.2,0.4],[0.4,0.4],[0.2,0.2]]]},"properties":{"name":"Area"}}"#);
+        // two shapes are a collection, and extended data takes the place of the name and gives the note
+        assert_eq!(line(3), r#"{"type":"Feature","geometry":{"type":"GeometryCollection","geometries":[{"type":"Point","coordinates":[7.0,8.0]},{"type":"LineString","coordinates":[[7.0,8.0],[9.0,10.0]]}]},"properties":{"name":"Renamed","note":"from data"}}"#);
+        // a track is a line, timed by its first position
+        assert_eq!(line(4), r#"{"type":"Feature","geometry":{"type":"LineString","coordinates":[[-73.1,40.1,5.0],[-73.2,40.2,6.0]]},"properties":{"name":"Run","time":"2026-11-17T09:00:00Z"}}"#);
+        // it lands in a page as shapes lattice draws
+        let page = map::append("{\"type\":\"FeatureCollection\",\"features\":[]}", got).unwrap();
+        assert_eq!(map::parse(&page).unwrap().len(), 5);
     }
 
     #[test]

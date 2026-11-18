@@ -1570,7 +1570,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         }
     }
     if map_changes(s) {
-        draw.push(Button::new("Import").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Add the features of a GPX or GeoJSON file").on_press_tx(ask_map_import).build(k).key("map-import"));
+        draw.push(Button::new("Import").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Add the features of a GPX, KML or GeoJSON file").on_press_tx(ask_map_import).build(k).key("map-import"));
     }
     draw.push(Button::new("GPX").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Download this map as GPX").on_press_tx(ask_gpx).build(k).key("map-gpx"));
     let base = Button::new(format!("Base: {}", m.style)).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("The next base map: streets, outdoors, satellite, dark. It is kept in the page").on_press(next_base).build(k).key("map-base");
@@ -1682,7 +1682,7 @@ fn pick_added(s: &mut App) {
     }
 }
 
-/// Asks for a GPX or GeoJSON file and adds its features to the map in
+/// Asks for a GPX, KML or GeoJSON file and adds its features to the map in
 /// front. The file is read and checked off the window's thread.
 fn ask_map_import(s: &mut App, tx: &mut Tx) {
     if !map_changes(s) {
@@ -1690,7 +1690,7 @@ fn ask_map_import(s: &mut App, tx: &mut Tx) {
         return;
     }
     let options = rune::FileDialogOptions { title: "Import into this map".into(), ..Default::default() };
-    tx.open_file(options.filter("Maps", &["gpx", "geojson", "json"]), |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+    tx.open_file(options.filter("Maps", &["gpx", "kml", "geojson", "json"]), |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
         Ok(Some(path)) => map_import(s, path),
         Ok(None) => {}
         Err(e) => s.note = format!("no file dialog could open: {e}"),
@@ -1702,7 +1702,7 @@ fn map_import(s: &mut App, path: std::path::PathBuf) {
     s.op_req.request(path, |path| {
         let name = path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
         let read = match mapio::file_kind(&name) {
-            "" => Err("lattice reads .geojson, .json and .gpx files here".to_owned()),
+            "" => Err("lattice reads .geojson, .json, .gpx and .kml files".to_owned()),
             kind => std::fs::read_to_string(&path).map_err(|_| "the file cannot be read".to_owned()).and_then(|text| mapio::import(kind, &text)),
         };
         Ok(match read {
@@ -3624,7 +3624,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("tex", "Convert this LaTeX page to HTML"),
     ("map-base", "Map: next base map"),
     ("map-token", "Map: set the ship's Mapbox token"),
-    ("map-import", "Map: import a GPX or GeoJSON file"),
+    ("map-import", "Map: import a GPX, KML or GeoJSON file"),
     ("map-gpx", "Map: download as GPX"),
     ("find", "Find in this page"),
     ("links", "Links"),
