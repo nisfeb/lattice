@@ -5,7 +5,10 @@
 //! platform's own, kept over a hole in the page's place. On X11 it is a
 //! child of the window and stands in the page's place. On Wayland a web
 //! view can only live in a window GTK made, so there the page has a
-//! window of its own.
+//! window of its own, in a process of its own: GTK beside Rune in one
+//! process on Wayland lost its connection to the display and took the
+//! app down with it (seen on an NVIDIA card), and a helper that fails
+//! takes only the page's window.
 //!
 //! The page is given to the view as text. It has no session with the
 //! ship: its scripts run as a stranger's would, and cannot read or write
@@ -19,8 +22,8 @@ use wry::WebViewBuilderExtUnix;
 enum Held {
     /// In the page's place, a child of the app's window.
     Child(wry::WebView),
-    /// In a window of its own.
-    Own(gtk::Window, wry::WebView),
+    /// In a window of its own, in a helper process: this program again, run as `--web-view`.
+    Own(std::process::Child),
 }
 
 #[derive(Default)]
@@ -40,9 +43,72 @@ thread_local! {
     static STATE: RefCell<State> = RefCell::new(State::default());
 }
 
-/// Starts GTK, before the app's own window is made. Started after it, a web view came up and drew nothing.
+/// Whether the app's window will be a Wayland one, as winit chooses it.
+fn wayland() -> bool {
+    std::env::var_os("WAYLAND_DISPLAY").is_some_and(|v| !v.is_empty())
+}
+
+/// Starts GTK before the app's own window is made, on X11 only. Started after the window, a web
+/// view came up and drew nothing. On Wayland GTK is never started in this process.
 pub fn start() {
-    STATE.with(|s| s.borrow_mut().gtk = Some(gtk::init().is_ok()));
+    if !wayland() {
+        STATE.with(|s| s.borrow_mut().gtk = Some(gtk::init().is_ok()));
+    }
+}
+
+/// The helper: one window showing the HTML file named, until it is closed. Run as
+/// `lattice-rune --web-view FILE TITLE`, and never returns.
+pub fn helper(file: &str, title: &str) -> ! {
+    let ok = (|| {
+        let html = std::fs::read_to_string(file).ok()?;
+        gtk::init().ok()?;
+        let w = gtk::Window::new(gtk::WindowType::Toplevel);
+        w.set_title(title);
+        w.set_default_size(960, 720);
+        let b = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        w.add(&b);
+        let view = builder(&html).build_gtk(&b).ok()?;
+        w.connect_delete_event(|_, _| {
+            gtk::main_quit();
+            gtk::glib::Propagation::Proceed
+        });
+        w.show_all();
+        // the app gone, however it went, the page's window goes too
+        let app = std::os::unix::process::parent_id();
+        gtk::glib::timeout_add_seconds_local(1, move || {
+            if std::os::unix::process::parent_id() != app {
+                gtk::main_quit();
+            }
+            gtk::glib::ControlFlow::Continue
+        });
+        gtk::main();
+        drop(view);
+        Some(())
+    })();
+    std::process::exit(if ok.is_some() { 0 } else { 1 })
+}
+
+/// Starts the helper on a page: its text in a file only the owner reads, and what it says kept beside it.
+fn spawn(name: &str, html: &str) -> Option<std::process::Child> {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(std::path::PathBuf::from).filter(|d| d.is_dir()).unwrap_or_else(std::env::temp_dir).join("lattice-rune");
+    std::fs::create_dir_all(&dir).ok()?;
+    let file = dir.join(format!("web-view-{}.html", std::process::id()));
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&file).ok()?;
+        f.write_all(html.as_bytes()).ok()?;
+    }
+    let log = std::fs::File::create(dir.join("web-view.log")).ok();
+    let mut cmd = std::process::Command::new(std::env::current_exe().ok()?);
+    cmd.arg("--web-view").arg(&file).arg(format!("{name} \u{2013} lattice"));
+    // WebKitGTK on an NVIDIA card under Wayland loses its connection to the display over
+    // these two (the "Error 71" protocol error): both are turned off for the helper
+    cmd.env("WEBKIT_DISABLE_DMABUF_RENDERER", "1").env("__NV_DISABLE_EXPLICIT_SYNC", "1");
+    if let Some(log) = log {
+        cmd.stderr(log);
+    }
+    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).spawn().ok()
 }
 
 /// Notes the app's window when it is made, to hang a view on.
@@ -53,6 +119,16 @@ pub fn note_window(h: &rune::WindowHandle) {
 /// Whether a page can be shown this way at all: false once GTK has refused to start.
 pub fn usable() -> bool {
     STATE.with(|s| s.borrow().gtk != Some(false))
+}
+
+/// Lets go of the page's own window, as when the app is closing.
+pub fn stop() {
+    STATE.with(|s| {
+        if let Some((_, _, Held::Own(mut child))) = s.borrow_mut().shown.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    });
 }
 
 /// Whether the view stands in the page's place (X11), or has a window of its own (Wayland).
@@ -108,8 +184,9 @@ pub fn sync(want: Option<(&str, u64, &str)>, rect: [f32; 4], covered: bool) {
     STATE.with(|st| {
         let mut st = st.borrow_mut();
         let Some((name, rev, html)) = want else {
-            if let Some((_, _, Held::Own(w, _))) = st.shown.take() {
-                w.close();
+            if let Some((_, _, Held::Own(mut child))) = st.shown.take() {
+                let _ = child.kill();
+                let _ = child.wait();
             }
             st.closed = None;
             return;
@@ -119,7 +196,11 @@ pub fn sync(want: Option<(&str, u64, &str)>, rect: [f32; 4], covered: bool) {
         }
         st.closed = None;
         // the page's own window, closed by the reader: let go of, and not opened again by itself
-        if matches!(&st.shown, Some((_, _, Held::Own(w, _))) if !w.is_visible()) {
+        let gone = match &mut st.shown {
+            Some((_, _, Held::Own(child))) => !matches!(child.try_wait(), Ok(None)),
+            _ => false,
+        };
+        if gone {
             st.shown = None;
             st.closed = Some((name.to_owned(), rev));
             return;
@@ -127,20 +208,24 @@ pub fn sync(want: Option<(&str, u64, &str)>, rect: [f32; 4], covered: bool) {
         match &mut st.shown {
             Some((n, r, held)) if n == name => {
                 if *r != rev {
-                    let (Held::Child(v) | Held::Own(_, v)) = &*held;
-                    let _ = v.load_html(html);
+                    match held {
+                        Held::Child(v) => drop(v.load_html(html)),
+                        // the page changed: its window is started again on the new text
+                        Held::Own(child) => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            if let Some(c) = spawn(name, html) {
+                                *child = c;
+                            }
+                        }
+                    }
                     *r = rev;
                 }
             }
             _ => {
-                if let Some((_, _, Held::Own(w, _))) = st.shown.take() {
-                    w.close();
-                }
-                if st.gtk.is_none() {
-                    st.gtk = Some(gtk::init().is_ok());
-                }
-                if st.gtk != Some(true) {
-                    return;
+                if let Some((_, _, Held::Own(mut child))) = st.shown.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
                 }
                 let Some(window) = st.window.clone() else { return };
                 let own = !on_x11(&window);
@@ -149,21 +234,15 @@ pub fn sync(want: Option<(&str, u64, &str)>, rect: [f32; 4], covered: bool) {
                 if !own && (rect[2] <= 1.0 || rect[3] <= 1.0) {
                     return;
                 }
-                let child = if own { Ok(None) } else { window.with_raw_handle(|raw| Some(builder(html).with_bounds(bounds(rect)).build_as_child(&raw))) };
-                let held = match child {
-                    Ok(Some(Ok(v))) => Some(Held::Child(v)),
-                    Ok(None) => {
-                        let w = gtk::Window::new(gtk::WindowType::Toplevel);
-                        w.set_title(&format!("{name} \u{2013} lattice"));
-                        w.set_default_size(960, 720);
-                        let b = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                        w.add(&b);
-                        builder(html).build_gtk(&b).ok().map(|v| {
-                            w.show_all();
-                            Held::Own(w, v)
-                        })
+                let held = if own {
+                    spawn(name, html).map(Held::Own)
+                } else if st.gtk == Some(true) {
+                    match window.with_raw_handle(|raw| builder(html).with_bounds(bounds(rect)).build_as_child(&raw)) {
+                        Ok(Ok(v)) => Some(Held::Child(v)),
+                        _ => None,
                     }
-                    _ => None,
+                } else {
+                    None
                 };
                 match held {
                     Some(h) => {

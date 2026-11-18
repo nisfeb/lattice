@@ -11083,8 +11083,17 @@ pub fn run() {
     let fonts: &'static [&'static [u8]] = &[];
     // the id the desktop matches to `lattice-rune.desktop`, which names the icon: the window wears lattice's logo by it
     rune::set_app_id("lattice-rune");
+    // run as the helper that shows one HTML page in a window of its own: never the app itself
     #[cfg(target_os = "linux")]
-    webview::start();
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let [_, flag, file, title] = args.as_slice() {
+            if flag == "--web-view" {
+                webview::helper(file, title);
+            }
+        }
+        webview::start();
+    }
     let app = rune::App::new(AppSpec {
         setup: Some(setup),
         poll: Some(poll),
@@ -11137,6 +11146,8 @@ pub fn run() {
     #[cfg(target_os = "linux")]
     let app = app.on_window(webview::note_window);
     app.run();
+    #[cfg(target_os = "linux")]
+    webview::stop();
 }
 
 #[cfg(test)]
