@@ -615,6 +615,97 @@ fn kept_at(p: &std::path::Path) -> Option<(Dump, u64)> {
     Some((d, age))
 }
 
+/// An agent key as the ship lists it, in the words the ship's own
+/// settings page says it in: whose it is, and what it may touch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AgentKey {
+    pub id: String,
+    pub title: String,
+    pub detail: String,
+}
+
+/// The keys of the ship's answer (`GET /keys`), newest first as it gives them.
+pub fn agent_keys(json: &str) -> Result<Vec<AgentKey>, String> {
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let day = |da: &serde_json::Value| da.as_str().map(|d| format!("{} UTC", Rev { rev: 0, updated: d.to_owned() }.when()));
+    let list = |v: &serde_json::Value| v.as_array().map_or_else(String::new, |a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" "));
+    let rows = v.as_array().ok_or("the ship did not give a list of keys")?;
+    Ok(rows
+        .iter()
+        .map(|k| {
+            let sc = &k["scope"];
+            let pages = match (&sc["pages"]["all"], &sc["pages"]["some"]) {
+                (serde_json::Value::String(all), _) => all.clone(),
+                (_, some) if some.is_object() => format!("scoped (read {}; write {})", list(&some["read"]), list(&some["write"])),
+                _ => "none".into(),
+            };
+            let web = if sc["web"].get("all").is_some() {
+                "all ships (read)".into()
+            } else if let Some(some) = sc["web"]["some"].as_object() {
+                some.iter().map(|(ship, e)| format!("{ship} (read {}; write {})", list(&e["read"]), list(&e["write"]))).collect::<Vec<_>>().join(", ")
+            } else {
+                "none".into()
+            };
+            let mut detail = format!("memory {}, pages {pages}, other ships {web}, skills {}", sc["memory"].as_str().unwrap_or("none"), sc["skills"].as_str().unwrap_or("none"));
+            if sc["sensitive"].as_bool() == Some(true) {
+                detail.push_str(", reads sensitive memories");
+            }
+            detail.push_str(&format!(". Made {}", day(&k["made"]).unwrap_or_default()));
+            detail.push_str(&day(&k["used"]).map_or_else(|| ", never used".into(), |d| format!(", last used {d}")));
+            if let Some(until) = day(&k["tainted_until"]) {
+                detail.push_str(&format!(". Read sensitive content, so until {until} it writes only sensitive"));
+            }
+            AgentKey { id: k["id"].as_str().unwrap_or_default().to_owned(), title: format!("{} (writes as {})", k["name"].as_str().unwrap_or_default(), k["by"].as_str().unwrap_or_default()), detail }
+        })
+        .collect())
+}
+
+/// What is asked for when a key is made, as the ship's settings form holds it.
+#[derive(Clone, Debug, Default)]
+pub struct KeyAsk {
+    pub name: String,
+    /// The name its saves are signed with.
+    pub by: String,
+    /// `write`, `read` or `none`.
+    pub memory: String,
+    /// `read`, `write`, `none`, or `some` for the paths given.
+    pub pages: String,
+    pub pages_read: String,
+    pub pages_write: String,
+    /// `off`, `all`, or `some` for one ship and its paths.
+    pub web: String,
+    pub web_ship: String,
+    pub web_read: String,
+    pub web_write: String,
+    /// `none`, `read` or `write`.
+    pub skills: String,
+    pub sensitive: bool,
+}
+
+/// What is sent to make a key (`POST /key-mint`), or why it is not sent:
+/// the checks the ship's form makes before it posts. Paths are parted by
+/// commas and each starts with a slash, put there when it was left off.
+pub fn key_request(a: &KeyAsk) -> Result<serde_json::Value, String> {
+    let paths = |v: &str| v.split(',').map(str::trim).filter(|s| !s.is_empty()).map(|s| if s.starts_with('/') { s.to_owned() } else { format!("/{s}") }).collect::<Vec<_>>();
+    let (name, by, ship) = (a.name.trim(), a.by.trim(), a.web_ship.trim());
+    if name.is_empty() || name.chars().count() > 200 {
+        return Err("a key needs a name, 200 characters at most".into());
+    }
+    if by.is_empty() || by.len() > 64 || !by.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)) {
+        return Err("the name it writes as is letters, digits, dots, dashes and underscores, 64 at most".into());
+    }
+    if a.web == "some" && ship.is_empty() {
+        return Err("pick a ship for scoped access to other ships, or set Other ships to none".into());
+    }
+    let pages = if a.pages == "some" { serde_json::json!({ "some": { "read": paths(&a.pages_read), "write": paths(&a.pages_write) } }) } else { serde_json::json!({ "all": a.pages }) };
+    let web = match a.web.as_str() {
+        "all" => serde_json::json!({ "all": null }),
+        "some" => serde_json::json!({ "some": { ship: { "read": paths(&a.web_read), "write": paths(&a.web_write) } } }),
+        _ => serde_json::json!({ "off": null }),
+    };
+    Ok(serde_json::json!({ "name": name, "by": by, "scope": { "memory": a.memory, "pages": pages, "web": web, "sensitive": a.sensitive, "skills": a.skills } }))
+}
+
 /// A page's save that could not reach the ship, waiting to be sent: the
 /// text, and the revision it was written over, by which the ship can
 /// tell whether the page changed meanwhile.
@@ -1286,6 +1377,28 @@ impl Conn {
             QueuedOp::Del(name) => self.delete(name),
             QueuedOp::Move { from, to, dname, dnames } => self.rename_as(from, &RealName { name: to.clone(), dname: dname.clone(), dnames: dnames.clone() }),
         }
+    }
+
+    /// The agent keys, newest first.
+    pub fn keys(&self) -> Result<Vec<AgentKey>, String> {
+        agent_keys(&self.call("GET", "keys", None)?)
+    }
+
+    /// Makes a key from what `key_request` built, and answers its secret: the ship gives it this once and keeps only a hash.
+    pub fn key_mint(&self, ask: &serde_json::Value) -> Result<String, String> {
+        let req = ureq::post(&format!("{}/apps/lattice/key-mint", self.url)).timeout(Duration::from_secs(30)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/json");
+        let text = match req.send_string(&ask.to_string()) {
+            Ok(r) => r.into_string().map_err(|e| e.to_string())?,
+            Err(ureq::Error::Status(code, r)) => return Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+            Err(e) => return Err(e.to_string()),
+        };
+        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        v["token"].as_str().map(str::to_owned).ok_or_else(|| "the ship made no key".into())
+    }
+
+    /// Revokes a key by its id: it stops working at once.
+    pub fn key_revoke(&self, id: &str) -> Result<(), String> {
+        self.call("POST", &format!("key-revoke?id={}", enc(id)), Some("")).map(drop)
     }
 
     /// The saves that wait for this ship, from the file they are kept in.
@@ -2584,6 +2697,46 @@ mod tests {
         let gone_from = c.send_op(&QueuedOp::Move { from: a.clone(), to: format!("ops{t}/x"), dname: String::new(), dnames: String::new() }).unwrap_err();
         assert!(gone_from.starts_with("404") && replay_drop(&gone_from), "{gone_from}");
         c.delete(&to).unwrap();
+    }
+
+    #[test]
+    fn an_agent_key_is_asked_for_and_read_as_the_ships_page_does() {
+        let ask = KeyAsk { name: " laptop Claude ".into(), by: "claude-laptop".into(), memory: "write".into(), pages: "read".into(), web: "off".into(), skills: "none".into(), ..KeyAsk::default() };
+        assert_eq!(key_request(&ask).unwrap(), serde_json::json!({"name": "laptop Claude", "by": "claude-laptop", "scope": {"memory": "write", "pages": {"all": "read"}, "web": {"off": null}, "sensitive": false, "skills": "none"}}));
+        let scoped = KeyAsk { pages: "some".into(), pages_read: "/notes, projects ,".into(), pages_write: "notes/agent".into(), web: "some".into(), web_ship: " ~nec ".into(), web_read: "/x".into(), sensitive: true, ..ask.clone() };
+        let v = key_request(&scoped).unwrap();
+        assert_eq!(v["scope"]["pages"], serde_json::json!({"some": {"read": ["/notes", "/projects"], "write": ["/notes/agent"]}}));
+        assert_eq!(v["scope"]["web"], serde_json::json!({"some": {"~nec": {"read": ["/x"], "write": []}}}));
+        assert_eq!(v["scope"]["sensitive"], true);
+        assert_eq!(key_request(&KeyAsk { web: "all".into(), ..ask.clone() }).unwrap()["scope"]["web"], serde_json::json!({"all": null}));
+        for bad in [KeyAsk { name: " ".into(), ..ask.clone() }, KeyAsk { by: "has space".into(), ..ask.clone() }, KeyAsk { by: String::new(), ..ask.clone() }, KeyAsk { by: "x".repeat(65), ..ask.clone() }, KeyAsk { web: "some".into(), ..ask.clone() }] {
+            assert!(key_request(&bad).is_err(), "{bad:?}");
+        }
+        let listed = r#"[{"id":"k1","name":"laptop","by":"claude","scope":{"memory":"write","pages":{"some":{"read":["/notes"],"write":["/notes/agent"]}},"web":{"some":{"~nec":{"read":["/x"],"write":[]}}},"sensitive":true,"skills":"read"},"made":"~2026.11.17..17.25.11..b165","used":"~2026.11.18..6.5.0..0000","tainted_until":"~2026.11.18..18.5.0..0000"},{"id":"k2","name":"old","by":"hermes","scope":{"memory":"read","pages":{"all":"none"},"web":{"off":null},"sensitive":false},"made":"~2026.1.2..3.4.5..0000","used":null}]"#;
+        let keys = agent_keys(listed).unwrap();
+        assert_eq!(keys[0], AgentKey { id: "k1".into(), title: "laptop (writes as claude)".into(), detail: "memory write, pages scoped (read /notes; write /notes/agent), other ships ~nec (read /x; write ), skills read, reads sensitive memories. Made 2026-11-17 17:25 UTC, last used 2026-11-18 06:05 UTC. Read sensitive content, so until 2026-11-18 18:05 UTC it writes only sensitive".into() });
+        assert_eq!(keys[1].detail, "memory read, pages none, other ships none, skills none. Made 2026-01-02 03:04 UTC, never used");
+        assert!(agent_keys("{}").is_err());
+    }
+
+    /// Agent keys against a ship: made, listed, used, refused, revoked.
+    #[test]
+    #[ignore]
+    fn live_agent_keys() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let by = format!("rune-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let ask = KeyAsk { name: "Rune's test key".into(), by: by.clone(), memory: "read".into(), pages: "some".into(), pages_read: "notes".into(), web: "off".into(), skills: "none".into(), ..KeyAsk::default() };
+        let token = c.key_mint(&key_request(&ask).unwrap()).unwrap();
+        assert!(token.len() > 20, "a secret is given once");
+        let keys = c.keys().unwrap();
+        let k = keys.iter().find(|k| k.title == format!("Rune's test key (writes as {by})")).expect("the key is listed");
+        assert!(k.detail.starts_with("memory read, pages scoped (read /notes; write ), other ships none, skills none. Made 20") && k.detail.ends_with("never used"), "{}", k.detail);
+        // the same name to write as is refused, with the ship's reason
+        let again = c.key_mint(&key_request(&ask).unwrap()).unwrap_err();
+        eprintln!("a second key writing as the same name: {again}");
+        assert!(again.starts_with("409") || again.starts_with("400"), "{again}");
+        c.key_revoke(&k.id).unwrap();
+        assert!(!c.keys().unwrap().iter().any(|x| x.id == k.id));
     }
 
     #[test]

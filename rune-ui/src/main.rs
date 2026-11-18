@@ -98,6 +98,34 @@ enum Beside {
     Read(String),
 }
 
+/// The settings on screen: the agent keys once read, and the key being
+/// asked for. Its fields in order: the name, the name it writes as, the
+/// page paths it reads and writes, a ship, and that ship's paths it
+/// reads and writes.
+struct Settings {
+    keys: Option<Vec<api::AgentKey>>,
+    f: Box<[TextEdit; 7]>,
+    memory: &'static str,
+    pages: &'static str,
+    web: &'static str,
+    skills: &'static str,
+    sensitive: bool,
+    /// The secret of the key just made, shown this once.
+    token: Option<String>,
+    sending: bool,
+}
+
+impl Settings {
+    fn new() -> Self {
+        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false }
+    }
+
+    fn ask(&self) -> api::KeyAsk {
+        let t = |i: usize| self.f[i].text.clone();
+        api::KeyAsk { name: t(0), by: t(1), memory: self.memory.into(), pages: self.pages.into(), pages_read: t(2), pages_write: t(3), web: self.web.into(), web_ship: t(4), web_read: t(5), web_write: t(6), skills: self.skills.into(), sensitive: self.sensitive }
+    }
+}
+
 /// The forum on screen: the boards once read, the board and the thread
 /// showing when one is, and how the board's threads are ordered.
 #[derive(Default)]
@@ -239,6 +267,8 @@ enum Prompt {
     ForumDelete(Option<u64>),
     /// A board to delete, with every thread on it.
     BoardDelete(String),
+    /// An agent key to revoke: its id, and what it is called.
+    KeyRevoke(String, String),
     /// A value typed for an OpenSCAD parameter: its name, which part of a vector, and the text.
     Param(String, Option<usize>, TextEdit),
 }
@@ -459,6 +489,10 @@ struct App {
     /// The forum, when it is what shows.
     forum: Option<Forum>,
     forum_req: Latest<Result<ForumGot, String>>,
+    /// The settings showing, when they are.
+    settings: Option<Settings>,
+    /// The agent keys as read, and the secret of one just made.
+    keys_req: Latest<Result<(Vec<api::AgentKey>, Option<String>), String>>,
     /// The refusals, read beside the boards and after a clear.
     notes_req: Latest<Result<ForumGot, String>>,
     /// The open page as a spreadsheet, when it is one.
@@ -694,6 +728,8 @@ fn init() -> App {
         know_req: Latest::default(),
         read_as: None,
         forum: None,
+        settings: None,
+        keys_req: Latest::default(),
         forum_req: Latest::default(),
         notes_req: Latest::default(),
         beside: None,
@@ -977,6 +1013,10 @@ fn confirm(s: &mut App) {
                 s.prompt = Some(p);
             }
         }
+        return;
+    }
+    if let Prompt::KeyRevoke(id, _) = &p {
+        keys_do(s, None, Some(id.clone()));
         return;
     }
     if let Prompt::BoardDelete(name) = &p {
@@ -1406,6 +1446,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.templates_req.set_waker(waker.clone());
     s.back_req.set_waker(waker.clone());
     s.forum_req.set_waker(waker.clone());
+    s.keys_req.set_waker(waker.clone());
     s.notes_req.set_waker(waker.clone());
     s.core_req.set_waker(waker.clone());
     s.trash_req.set_waker(waker.clone());
@@ -3299,6 +3340,7 @@ fn show_page(s: &mut App, name: &str) {
     s.inbox = false;
     s.forum = None;
     s.access = false;
+    s.settings = None;
     s.folder = None;
     s.old = None;
     s.stale = false;
@@ -4356,6 +4398,25 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Err(e) => s.note = format!("revision: {e}"),
         }
     }
+    if let Some(r) = s.keys_req.take() {
+        changed = true;
+        match (r, &mut s.settings) {
+            (Ok((keys, token)), Some(st)) => {
+                if token.is_some() {
+                    // made: the form is cleared for the next one, and the secret shows
+                    *st = Settings { token, ..Settings::new() };
+                    s.note = "the key is made".into();
+                }
+                st.keys = Some(keys);
+                st.sending = false;
+            }
+            (Err(e), Some(st)) => {
+                st.sending = false;
+                s.note = format!("keys: {e}");
+            }
+            _ => {}
+        }
+    }
     if let Some(out) = s.drain_req.take() {
         changed = true;
         drained(s, out);
@@ -5158,6 +5219,7 @@ fn go_shared(s: &mut App) {
         s.forum = None;
         s.shared_open = true;
         s.access = false;
+    s.settings = None;
         s.inbox = false;
         s.forum = None;
         load_shared(s);
@@ -5858,6 +5920,7 @@ fn go_inbox(s: &mut App) {
         s.forum = None;
         s.inbox = true;
         s.access = false;
+    s.settings = None;
         s.shared_open = false;
         load_comments(s);
     }
@@ -5866,11 +5929,149 @@ fn go_inbox(s: &mut App) {
 fn go_access(s: &mut App) {
     if !s.editing {
         s.forum = None;
+        s.settings = None;
         s.access = true;
         s.inbox = false;
         s.forum = None;
         load_groups(s);
     }
+}
+
+fn go_settings(s: &mut App) {
+    if !s.editing {
+        (s.forum, s.access, s.inbox, s.shared_open) = (None, false, false, false);
+        s.settings = Some(Settings::new());
+        keys_do(s, None, None);
+    }
+}
+
+/// Reads the agent keys, after making one (`mint`) or revoking one (`revoke`, by its id) when asked.
+fn keys_do(s: &mut App, mint: Option<serde_json::Value>, revoke: Option<String>) {
+    let Some(c) = s.conn.clone() else { return };
+    if let Some(st) = &mut s.settings {
+        st.sending = mint.is_some();
+    }
+    s.keys_req.request((c, mint, revoke), |(c, mint, revoke)| {
+        let token = match &mint {
+            Some(ask) => Some(c.key_mint(ask)?),
+            None => None,
+        };
+        if let Some(id) = &revoke {
+            c.key_revoke(id)?;
+        }
+        Ok((c.keys()?, token))
+    });
+}
+
+/// Makes the key asked for, once what is typed is what the ship takes.
+fn key_make(s: &mut App) {
+    let Some(st) = s.settings.as_ref().filter(|st| !st.sending) else { return };
+    match api::key_request(&st.ask()) {
+        Ok(ask) => keys_do(s, Some(ask), None),
+        Err(why) => s.note = why,
+    }
+}
+
+fn settings_field(s: &mut App, i: usize) -> &mut TextEdit {
+    &mut s.settings.as_mut().expect("the settings are showing").f[i]
+}
+
+/// The settings: the agent keys, each with what it may touch and a Revoke, and the form that makes one.
+fn settings_view(st: &Settings, k: &Kit) -> El {
+    let c = &k.c;
+    let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
+    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
+        "A key lets an agent, such as the lattice plugin for Claude Code or Hermes, use your memory and pages without your login. Everything a key saves is signed with the name it writes as, and its scope says what it may touch. Publishing, sharing and settings stay yours whatever the scope.",
+    ));
+    if let Some(token) = &st.token {
+        let copy = token.clone();
+        page = page.child(
+            col()
+                .key("key-token")
+                .w_full()
+                .gap(6.0)
+                .padding(10.0)
+                .radius(k.radius.md)
+                .fill(c.layer_01)
+                .child(text("Copy this key now. It is not shown again.").font(k.ty.small_medium).color(c.text_base))
+                .child(text(token.clone()).key("key-secret").font(k.ty.mono).color(c.text_base).wrap())
+                .child(row().child(Button::new("Copy").control_size(ControlSize::Small).variant(ButtonVariant::Contrast).on_press_tx(move |s: &mut App, tx: &mut Tx| {
+                    tx.copy(copy.clone());
+                    s.note = "the key is copied".into();
+                }).build(k).key("key-copy"))),
+        );
+    }
+    match &st.keys {
+        None => page = page.child(muted("reading the keys\u{2026}")),
+        Some(keys) if keys.is_empty() => page = page.child(muted("No keys yet.")),
+        Some(keys) => {
+            for key in keys {
+                let (id, title) = (key.id.clone(), key.title.clone());
+                page = page.child(
+                    col()
+                        .key(format!("key-{}", key.id))
+                        .w_full()
+                        .gap(4.0)
+                        .padding(10.0)
+                        .radius(k.radius.md)
+                        .fill(c.layer_01)
+                        .child(text(key.title.clone()).font(k.ty.ui).color(c.text_base).wrap())
+                        .child(muted(&key.detail))
+                        .child(row().child(Button::new("Revoke").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("It stops working at once").on_press(move |s: &mut App| s.prompt = Some(Prompt::KeyRevoke(id.clone(), title.clone()))).build(k).key(format!("key-revoke-{}", key.id)))),
+                );
+            }
+        }
+    }
+    // one of a few: what the key may do with one thing
+    let pick = |group: &'static str, now: &'static str, opts: &[(&'static str, &'static str)]| {
+        let mut r = row().gap(4.0).flex_wrap();
+        for &(val, label) in opts {
+            r = r.child(Button::new(label.to_owned()).control_size(ControlSize::Small).variant(if now == val { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
+                if let Some(st) = &mut s.settings {
+                    match group {
+                        "memory" => st.memory = val,
+                        "pages" => st.pages = val,
+                        "web" => st.web = val,
+                        _ => st.skills = val,
+                    }
+                }
+            }).build(k).key(format!("k{group}-{val}")));
+        }
+        r
+    };
+    let line = |i: usize, label: &str, hint: &str, key: &str| col().w_full().gap(2.0).child(muted(label)).child(TextInput::new(&st.f[i]).label(label.to_owned()).placeholder(hint.to_owned()).on_edit(move |s: &mut App| settings_field(s, i)).build(k).w_full().key(key.to_owned()));
+    let mut form = col()
+        .key("key-form")
+        .w_full()
+        .gap(8.0)
+        .padding(10.0)
+        .radius(k.radius.md)
+        .fill(c.layer_01)
+        .child(text("Make a key").font(k.ty.small_medium).color(c.text_base))
+        .child(line(0, "Name", "laptop Claude", "key-name"))
+        .child(line(1, "Writes as", "claude-laptop", "key-by"))
+        .child(muted("Memory"))
+        .child(pick("memory", st.memory, &[("write", "Read and write"), ("read", "Read"), ("none", "None")]))
+        .child(muted("Pages"))
+        .child(pick("pages", st.pages, &[("read", "Read"), ("write", "Read, write private pages"), ("none", "None"), ("some", "Scoped to paths")]));
+    if st.pages == "some" {
+        form = form.child(line(2, "Pages read paths", "/notes, /projects", "key-pread")).child(line(3, "Pages write paths", "/notes/agent", "key-pwrite"));
+    }
+    form = form.child(muted("Other ships")).child(pick("web", st.web, &[("off", "None"), ("all", "Read all ships"), ("some", "Scoped to one ship")]));
+    if st.web == "some" {
+        form = form.child(line(4, "Ship", "~sampel-palnet", "key-wship")).child(line(5, "Its read paths", "/x", "key-wread")).child(line(6, "Its write paths", "/x/out", "key-wwrite"));
+    }
+    form = form
+        .child(muted("Skills"))
+        .child(pick("skills", st.skills, &[("none", "None"), ("read", "Read"), ("write", "Read and write")]))
+        .child(Switch::new(st.sensitive).label("Read sensitive memories").on_toggle(|s: &mut App| {
+            if let Some(st) = &mut s.settings {
+                st.sensitive = !st.sensitive;
+            }
+        }).build(k).key("key-sensitive"))
+        .child(muted("A memory with sensitive: yes in its front matter (health, money, family) is invisible to a key without this. A key with it can read them, but for 12 hours after reading one, everything it writes is marked sensitive too, so it cannot pass what it read to a key without clearance. Clearance is set here, when the key is made."))
+        .child(row().child(Button::new(if st.sending { "Making\u{2026}" } else { "Make key" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(st.sending).on_press(key_make).build(k).key("key-make")));
+    col().key("settings-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(page.child(form))).scroll(ScrollSpec { stick_bottom: false })
 }
 
 fn next_theme(s: &mut App) {
@@ -6154,7 +6355,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
                 Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
             .build(k)
@@ -6168,6 +6369,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::Ask(_, t) => ("Ask for edit access", field(t, "A short note, if you like"), "Ask", ButtonVariant::Contrast),
         Prompt::Duplicate(_, t) => ("Duplicate this page as", field(t, "folder/name"), "Duplicate", ButtonVariant::Contrast),
         // kept on the ship, which never shows it again. Typed in the clear here: it is pasted, not remembered
+        Prompt::KeyRevoke(_, title) => ("Revoke this key?", text(format!("{title} stops working at once, and cannot be brought back.")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Revoke", ButtonVariant::Danger),
         Prompt::BoardDelete(name) => ("Delete this board?", text(format!("{name} and every thread on it are gone for everyone who reads it.")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::ForumTags(t) => ("This thread's tags", field(t, "Up to five: lowercase letters, digits and dashes. None clears them"), "Set", ButtonVariant::Contrast),
         Prompt::ForumDelete(comment) => (if comment.is_some() { "Delete this comment?" } else { "Delete this thread?" }, text(if comment.is_some() { "It is gone for everyone who reads the board." } else { "The thread and its comments are gone for everyone who reads the board." }).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
@@ -6245,6 +6447,7 @@ fn open_remote(s: &mut App, sh: Shared) {
 /// A shared page arrived: it shows in place of a page of this ship.
 fn show_remote(s: &mut App, sh: Shared, p: Page) {
     s.access = false;
+    s.settings = None;
     s.shared_open = false;
     s.inbox = false;
     s.forum = None;
@@ -7051,6 +7254,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
             } else if !s.editing {
                 // a folder shows what it holds, and can be renamed, moved or deleted there
                 s.access = false;
+    s.settings = None;
                 s.shared_open = false;
                 s.inbox = false;
                 s.forum = None;
@@ -7198,7 +7402,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
         }
         list
     });
-    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).children(core).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(row().gap(4.0).flex_wrap().child(with_me).child(inbox).child(forum)).child(foot);
+    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).children(core).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(row().gap(4.0).flex_wrap().child(with_me).child(inbox).child(forum).child(Button::new("Settings").control_size(ControlSize::Small).variant(if s.settings.is_some() { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("Agent keys").on_press(go_settings).build(k).key("settings-open"))).child(foot);
     if let Some(when) = &s.offline {
         let said = if when.is_empty() { "Offline. The ship does not answer.".to_owned() } else { format!("Offline. The ship does not answer, so this is what was kept {when}.") };
         side = side.child(text(format!("{said} A save, a new page, a delete or a move made now waits on this device. Anything else needs the ship.")).key("offline").font(k.ty.small).color(k.c.text_base).wrap());
@@ -7385,6 +7589,9 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
 }
 
 fn page_body(s: &App, k: &Kit) -> El {
+    if let Some(st) = s.settings.as_ref().filter(|_| !s.editing) {
+        return settings_view(st, k);
+    }
     if s.access && !s.editing {
         return access_view(s, k);
     }
@@ -7506,7 +7713,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let path = s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref());
     // the name it was given when there is one, with its path beside it
     let named = path.and_then(|p| s.dnames.get(p).filter(|_| !s.memory && s.remote.is_none()).map(|d| format!("{d}  ({p})")));
-    let title = if s.forum.is_some() { "Forum" } else if s.inbox { "Inbox" } else if s.shared_open { "Shared with me" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
+    let title = if s.settings.is_some() { "Settings" } else if s.forum.is_some() { "Forum" } else if s.inbox { "Inbox" } else if s.shared_open { "Shared with me" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
     let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending();
     let mut trailing = row().gap(8.0).center_y();
     if busy {
