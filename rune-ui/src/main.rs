@@ -39,6 +39,11 @@ struct MapView {
     picked: Option<usize>,
     /// The base map its tiles are of.
     style: &'static str,
+    /// The maps drawn under this one, dimmed and never written: each by
+    /// name, with its features, or nothing when it could not be read.
+    // ponytail: read when this map's text moves. A layer page changed
+    // meanwhile shows when this map is opened again
+    under: Vec<(String, Option<Vec<map::Feature>>)>,
     /// The kinds not shown. Not kept: a map opens with every kind showing, as on the web.
     hidden: std::collections::HashSet<String>,
 }
@@ -332,6 +337,9 @@ const SAMPLE: &[(&str, &str)] = &[
 {"type":"Feature","geometry":{"type":"LineString","coordinates":[[-73.9857,40.7484],[-73.97,40.72],[-73.9442,40.6782]]},"properties":{"name":"A walk"}},
 {"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[-73.981,40.768],[-73.958,40.8],[-73.949,40.797],[-73.973,40.764],[-73.981,40.768]]]},"properties":{"name":"The park"}}
 ]}"#),
+    ("region", r#"{"type":"FeatureCollection","lattice":{"layers":["places","nowhere"]},"features":[
+]}
+"#),
 ];
 
 fn sample_nodes() -> Vec<Node> {
@@ -1032,9 +1040,11 @@ fn sync_map(s: &mut App) {
         return;
     }
     let old = s.map.take().filter(|m| m.name == p.name);
+    // a layer's own layers are not followed, so there is no cycle
+    let under: Vec<_> = map::layers(&p.body).into_iter().map(|n| (n.clone(), s.cache.get(&n).filter(|l| l.kind == "geojson").and_then(|l| map::parse(&l.body)))).collect();
     s.map = map::parse(&p.body).map(|feats| {
         let cam = old.as_ref().map_or(map::Camera { at: [0.5, 0.5], scale: 800.0 }, |m| m.cam);
-        MapView { name: p.name.clone(), rev: p.rev, feats, cam, grab: cam, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: None, hidden: old.map(|m| m.hidden).unwrap_or_default() }
+        MapView { name: p.name.clone(), rev: p.rev, feats, cam, grab: cam, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: None, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
     });
 }
 
@@ -1148,6 +1158,21 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         }
         lat += step;
     }
+    // the maps underneath come first, dimmed, and take no press
+    let mut faint: Vec<(map::P, rune::Color)> = Vec::new();
+    for f in m.under.iter().filter_map(|(_, f)| f.as_ref()).flatten() {
+        let ink = rune::color::hex(&f.color).unwrap_or(c.text_accent).alpha(0.5);
+        for g in &f.geoms {
+            match g {
+                map::Geom::Point(p) => faint.push((*p, ink)),
+                map::Geom::Line(l) => shape = shape.stroke(map::thin(l, MAP_LINE).into_iter().map(to).collect::<Vec<_>>(), 2.5, ink),
+                map::Geom::Area(l) => {
+                    let ring: Vec<[f32; 2]> = map::thin(l, MAP_LINE).into_iter().map(to).collect();
+                    shape = shape.fill(ring.clone(), ink.alpha(0.05)).stroke(ring, 1.5, ink);
+                }
+            }
+        }
+    }
     let mut dots: Vec<(usize, map::P)> = Vec::new();
     for (i, f) in m.feats.iter().enumerate().filter(|(_, f)| !m.hidden.contains(&f.kind)) {
         let ink = rune::color::hex(&f.color).unwrap_or(c.text_accent);
@@ -1172,7 +1197,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             if let Some(m) = &mut s.map {
                 m.size = (r[2].max(1.0), r[3].max(1.0));
                 if !m.fitted {
-                    m.cam = map::Camera::fit(&m.feats, m.size.0, m.size.1);
+                    m.cam = fit_map(m);
                     m.fitted = true;
                 }
             }
@@ -1210,6 +1235,12 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
     // until the first layout the size is a guess: draw the ground alone
     if !m.fitted {
         return view;
+    }
+    for (n, (p, ink)) in faint.iter().take(MAP_DOTS).enumerate() {
+        let [x, y] = to(*p);
+        if (-20.0..=w + 20.0).contains(&x) && (-20.0..=h + 20.0).contains(&y) {
+            view = view.child(el().key(format!("under-{n}")).absolute(x - 5.0, y - 5.0).size(10.0, 10.0).radius(5.0).fill(*ink).a11y_hidden().inert());
+        }
     }
     for (n, (i, p)) in dots.iter().take(MAP_DOTS).enumerate() {
         let [x, y] = to(*p);
@@ -1255,7 +1286,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
     }
     // the kinds, each with its colour and count: press one to hide or show its features
     let kinds = map::kinds(&m.feats);
-    if kinds.len() > 1 || kinds.iter().any(|(kind, _)| !kind.is_empty()) {
+    if kinds.len() > 1 || kinds.iter().any(|(kind, _)| !kind.is_empty()) || !m.under.is_empty() {
         let mut legend = col().key("map-legend").absolute(w - 192.0, 12.0).w(180.0).padding(6.0).gap(2.0).radius(k.radius.md).fill(c.layer_01).border(1.0, c.border_weak);
         for (kind, n) in kinds.into_iter().take(MAP_KINDS) {
             let off = m.hidden.contains(&kind);
@@ -1284,6 +1315,10 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                     .child(text(label).font(k.ty.small).color(if off { c.text_faint } else { c.text_base }).truncate().grow(1.0).min_w(0.0)),
             );
         }
+        for (name, feats) in &m.under {
+            let say = feats.as_ref().map_or(format!("Layer {name} could not be read."), |f| format!("Layer: {name} ({})", f.len()));
+            legend = legend.child(text(say).font(k.ty.small).color(c.text_muted).wrap());
+        }
         view = view.child(legend);
     }
     let zoom = |key: &str, label: &str, f: f64| {
@@ -1292,7 +1327,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             .on_press(move |s: &mut App| {
                 if let Some(m) = &mut s.map {
                     let (w, h) = m.size;
-                    if f == 0.0 { m.cam = map::Camera::fit(&m.feats, w, h) } else { m.cam.zoom_at(f, w / 2.0, h / 2.0, w, h) }
+                    if f == 0.0 { m.cam = fit_map(m) } else { m.cam.zoom_at(f, w / 2.0, h / 2.0, w, h) }
                 }
                 sync_tiles(s);
             })
@@ -1375,6 +1410,13 @@ fn sync_pics(s: &mut App) {
             waker();
         });
     }
+}
+
+/// The camera that shows the whole map. A map with nothing of its own
+/// is fitted to what lies under it, not to the world.
+fn fit_map(m: &MapView) -> map::Camera {
+    let (w, h) = m.size;
+    if m.feats.is_empty() { map::Camera::fit(m.under.iter().filter_map(|(_, f)| f.as_ref()).flatten(), w, h) } else { map::Camera::fit(&m.feats, w, h) }
 }
 
 /// Sets the base map of the map in front to the next one and saves the
@@ -5601,6 +5643,19 @@ mod tests {
         open_page(&mut s, "welcome");
         open_page(&mut s, "places");
         assert!(s.map.as_ref().unwrap().hidden.is_empty(), "opened afresh, every kind shows");
+    }
+
+    #[test]
+    fn a_map_draws_the_maps_it_names_under_it_and_fits_to_them() {
+        let s = sample("region");
+        let m = s.map.as_ref().unwrap();
+        assert!(m.feats.is_empty());
+        assert_eq!(m.under.iter().map(|(n, f)| (n.as_str(), f.as_ref().map(Vec::len))).collect::<Vec<_>>(), [("places", Some(4)), ("nowhere", None)]);
+        // with nothing of its own it looks at what is under it, where a bare map looks at the world
+        let cam = fit_map(m);
+        assert!(cam.scale > 10_000.0 && (cam.at[0] - map::mercator(-73.96, 40.74)[0]).abs() < 0.001, "{cam:?}");
+        // the layers are only shown: the page is as it was
+        assert_eq!(s.open.as_ref().unwrap().body, SAMPLE.iter().find(|(n, _)| *n == "region").unwrap().1);
     }
 
     #[test]

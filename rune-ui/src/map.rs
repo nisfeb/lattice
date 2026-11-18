@@ -147,8 +147,8 @@ const SCALE: (f64, f64) = (200.0, 256.0 * 1_048_576.0);
 impl Camera {
     /// The camera that shows every feature inside a `w` by `h` view with a
     /// margin, or the whole world when there is nothing to show.
-    pub fn fit(feats: &[Feature], w: f32, h: f32) -> Camera {
-        let pts = feats.iter().flat_map(|f| &f.geoms).flat_map(|g| match g {
+    pub fn fit<'a>(feats: impl IntoIterator<Item = &'a Feature>, w: f32, h: f32) -> Camera {
+        let pts = feats.into_iter().flat_map(|f| &f.geoms).flat_map(|g| match g {
             Geom::Point(p) => std::slice::from_ref(p),
             Geom::Line(l) | Geom::Area(l) => l.as_slice(),
         });
@@ -362,6 +362,14 @@ pub fn with_base(body: &str, style: &str) -> Option<String> {
     serialize(&doc)
 }
 
+/// The other map pages a map asks to have drawn under it
+/// (`lattice.layers`), checked as the web client checks them.
+pub fn layers(body: &str) -> Vec<String> {
+    let v: Option<Value> = serde_json::from_str(body).ok();
+    let named = v.as_ref().and_then(|v| v.get("lattice")?.get("layers")?.as_array());
+    named.map_or(Vec::new(), |a| a.iter().filter_map(Value::as_str).filter(|s| !s.is_empty() && s.encode_utf16().count() < 400).take(20).map(str::to_owned).collect())
+}
+
 /// The base map a page asks for (`lattice.base`), or streets.
 pub fn base_style(body: &str) -> &'static str {
     let named = serde_json::from_str::<Value>(body).ok().and_then(|v| v.get("lattice")?.get("base")?.as_str().map(str::to_owned));
@@ -532,6 +540,17 @@ mod tests {
             {"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{"kind":"place"}},
             {"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{"kind":"alpha"}}]}"#).unwrap();
         assert_eq!(kinds(&feats), [(String::new(), 1), ("alpha".into(), 1), ("place".into(), 2)]);
+    }
+
+    #[test]
+    fn a_map_names_the_maps_drawn_under_it() {
+        assert_eq!(layers(r#"{"type":"FeatureCollection","lattice":{"layers":["a/b", 7, "", "c"]},"features":[]}"#), ["a/b", "c"]);
+        assert!(layers(r#"{"type":"FeatureCollection","lattice":{"layers":"a"},"features":[]}"#).is_empty());
+        assert!(layers(r#"{"type":"FeatureCollection","features":[]}"#).is_empty());
+        assert!(layers("nope").is_empty());
+        let many: Vec<String> = (0..30).map(|i| format!("\"m{i}\"")).collect();
+        assert_eq!(layers(&format!(r#"{{"lattice":{{"layers":[{}]}}}}"#, many.join(","))).len(), 20);
+        assert!(layers(&format!(r#"{{"lattice":{{"layers":["{}"]}}}}"#, "x".repeat(400))).is_empty());
     }
 
     #[test]
