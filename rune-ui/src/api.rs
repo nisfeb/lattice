@@ -618,6 +618,14 @@ fn kept_at(p: &std::path::Path) -> Option<(Dump, u64)> {
     Some((d, age))
 }
 
+/// Whether sharing in `mode` over `was` is going public, which asks
+/// first: from private, or from a folder whose pages differ, to either
+/// public mode. Moving between the two public modes does not ask.
+pub fn goes_public(was: &str, mode: &str) -> bool {
+    let public = |m: &str| m == "shared" || m == "clearweb";
+    public(mode) && !public(was)
+}
+
 /// What the ship says of the map token, as its settings page words it.
 pub fn tiles_say(t: &TileStatus) -> &'static str {
     match (t.token, t.orrery) {
@@ -986,6 +994,9 @@ pub struct Prefs {
     /// Autosave is on unless this says otherwise.
     #[serde(default)]
     pub no_autosave: bool,
+    /// Making a page public does not ask first: "do not ask again" was ticked on a publish that went ahead.
+    #[serde(default)]
+    pub pub_ok: bool,
 }
 
 impl Prefs {
@@ -1469,6 +1480,11 @@ impl Conn {
     /// Asks the ship to install %obelisk from the ship that publishes it. It answers at once: `obelisk` says when it is there.
     pub fn obelisk_install(&self) -> Result<(), String> {
         self.call("POST", "obelisk-install", Some("")).map(drop)
+    }
+
+    /// Rebuilds the search index from the pages and memories as they are. The ship answers when it is done.
+    pub fn reindex(&self) -> Result<(), String> {
+        self.call_in(120, "POST", "search-reindex", Some("")).map(drop)
     }
 
     /// The agent keys, newest first.
@@ -2236,7 +2252,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()] }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
     }
@@ -2893,6 +2909,21 @@ mod tests {
             assert!(on.enabled);
         }
         c.obelisk_install().unwrap();
+    }
+
+    #[test]
+    fn going_public_is_what_asks_first() {
+        for (was, mode, asks) in [("private", "shared", true), ("", "clearweb", true), ("mixed", "shared", true), ("shared", "clearweb", false), ("clearweb", "shared", false), ("shared", "private", false), ("private", "private", false)] {
+            assert_eq!(goes_public(was, mode), asks, "{was} to {mode}");
+        }
+    }
+
+    /// The search index rebuilt on a ship, and a page then found by a word in it.
+    #[test]
+    #[ignore]
+    fn live_reindex() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        c.reindex().unwrap();
     }
 
     #[test]

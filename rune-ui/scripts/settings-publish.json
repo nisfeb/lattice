@@ -1,0 +1,10 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "pubtest"},
+  {"t": 3.5, "type": "tap", "key": "share"},
+  {"t": 4.5, "type": "tap", "key": "share-clearweb"},
+  {"t": 5.5, "type": "tap", "key": "publish-quiet"},
+  {"t": 6.5, "type": "tap", "key": "prompt-ok"},
+  {"t": 10.0, "type": "key", "name": "Escape"},
+  {"t": 11.0, "type": "tap", "key": "settings-open"},
+  {"t": 14.0, "type": "tap", "key": "reindex"}
+]}

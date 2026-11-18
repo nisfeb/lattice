@@ -126,11 +126,13 @@ struct Settings {
     ob_next: f64,
     /// The ship was asked to install %obelisk in this visit: what the state line says depends on it.
     ob_asked: bool,
+    /// What the last rebuild of the search index came to.
+    reindex: String,
 }
 
 impl Settings {
     fn new() -> Self {
-        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false }
+        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new() }
     }
 
     fn ask(&self) -> api::KeyAsk {
@@ -282,6 +284,8 @@ enum Prompt {
     BoardDelete(String),
     /// An agent key to revoke: its id, and what it is called.
     KeyRevoke(String, String),
+    /// A page or folder about to be made public in this mode, and whether not to ask again.
+    Publish(&'static str, bool),
     /// A value typed for an OpenSCAD parameter: its name, which part of a vector, and the text.
     Param(String, Option<usize>, TextEdit),
 }
@@ -1029,6 +1033,16 @@ fn confirm(s: &mut App) {
                 s.prompt = Some(p);
             }
         }
+        return;
+    }
+    if let Prompt::Publish(mode, quiet) = &p {
+        // only a publish that goes ahead puts the asking aside: ticking it and backing out must not make the next one silent
+        if *quiet {
+            s.prefs.pub_ok = true;
+            s.prefs.save();
+        }
+        share_now(s, mode);
+        open_share(s);
         return;
     }
     if let Prompt::KeyRevoke(id, _) = &p {
@@ -4424,6 +4438,13 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     st.ob_tries = 0;
                 }
                 st.ob_asked |= said.contains("%obelisk");
+                let said = match said.strip_prefix("reindex: ") {
+                    Some(how) => {
+                        st.reindex = how.to_owned();
+                        String::new()
+                    }
+                    None => said,
+                };
                 if local.is_some() {
                     st.local_scad = local;
                 }
@@ -6014,6 +6035,8 @@ enum SetAct {
     Runtime(bool),
     /// The Commons mirror is turned on or off.
     Mirror(bool),
+    /// The search index is rebuilt.
+    Reindex,
     /// %obelisk is installed.
     Obelisk,
 }
@@ -6032,6 +6055,10 @@ fn settings_do(s: &mut App, act: SetAct) {
     let runtime = if let SetAct::Runtime(install) = act { Some(install) } else { None };
     let mirror = if let SetAct::Mirror(on) = act { Some(on) } else { None };
     let obelisk = matches!(act, SetAct::Obelisk);
+    let reindex = matches!(act, SetAct::Reindex);
+    if reindex {
+        st.reindex = "reindexing...".into();
+    }
     if obelisk {
         // the ship is asked forty times, six seconds apart, as its own page asks
         st.ob_tries = 40;
@@ -6051,6 +6078,13 @@ fn settings_do(s: &mut App, act: SetAct) {
         if let Some(on) = mirror {
             c.mirror(on)?;
             said = if on { "the Commons mirror is on".into() } else { "the Commons mirror is off, and its copy deleted".into() };
+        }
+        if reindex {
+            // its own failure is said beside its button, and is no reason to lose the rest
+            said = match c.reindex() {
+                Ok(()) => "reindex: done - your pages and notes are searchable.".into(),
+                Err(e) => format!("reindex: failed: {e}"),
+            };
         }
         if obelisk {
             c.obelisk_install()?;
@@ -6129,7 +6163,15 @@ fn settings_more(st: &Settings, k: &Kit) -> El {
             }
         }
     }
-    col().w_full().gap(20.0).child(tiles).child(scad).child(ob)
+    let busy = st.reindex == "reindexing...";
+    let search = col()
+        .key("set-search")
+        .w_full()
+        .gap(6.0)
+        .child(head("Search index"))
+        .child(muted("Search covers your published pages, your private page sources and your memories. The ship's index is rebuilt on demand rather than continuously, so reindex after a batch of edits to make them findable."))
+        .child(row().gap(8.0).center_y().child(Button::new("Reindex my content").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(busy).on_press(|s: &mut App| settings_do(s, SetAct::Reindex)).build(k).key("reindex")).child(text(st.reindex.clone()).key("reindex-state").font(k.ty.small).color(c.text_muted)));
+    col().w_full().gap(20.0).child(tiles).child(scad).child(ob).child(search)
 }
 
 /// Reads the agent keys, after making one (`mint`) or revoking one (`revoke`, by its id) when asked.
@@ -6164,8 +6206,21 @@ fn settings_field(s: &mut App, i: usize) -> &mut TextEdit {
 }
 
 /// The settings: the agent keys, each with what it may touch and a Revoke, and the form that makes one.
-fn settings_view(st: &Settings, k: &Kit) -> El {
+fn settings_view(st: &Settings, pub_ok: bool, k: &Kit) -> El {
     let c = &k.c;
+    // the way back from "do not ask again"
+    let mut publishing = col()
+        .key("set-publishing")
+        .w_full()
+        .gap(6.0)
+        .child(text("Publishing").font(k.ty.body_medium).color(c.text_base))
+        .child(text(if pub_ok { "Making a page public does not ask first on this computer." } else { "Making a page public asks first." }).key("publish-state").font(k.ty.small).color(c.text_muted).wrap());
+    if pub_ok {
+        publishing = publishing.child(row().child(Button::new("Ask before making a page public").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+            s.prefs.pub_ok = false;
+            s.prefs.save();
+        }).build(k).key("publish-ask")));
+    }
     let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
     let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
         "A key lets an agent, such as the lattice plugin for Claude Code or Hermes, use your memory and pages without your login. Everything a key saves is signed with the name it writes as, and its scope says what it may touch. Publishing, sharing and settings stay yours whatever the scope.",
@@ -6258,7 +6313,7 @@ fn settings_view(st: &Settings, k: &Kit) -> El {
         }).build(k).key("key-sensitive"))
         .child(muted("A memory with sensitive: yes in its front matter (health, money, family) is invisible to a key without this. A key with it can read them, but for 12 hours after reading one, everything it writes is marked sensitive too, so it cannot pass what it read to a key without clearance. Clearance is set here, when the key is made."))
         .child(row().child(Button::new(if st.sending { "Making\u{2026}" } else { "Make key" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(st.sending).on_press(key_make).build(k).key("key-make")));
-    col().key("settings-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(page.child(form).child(settings_more(st, k)))).scroll(ScrollSpec { stick_bottom: false })
+    col().key("settings-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(page.child(form).child(settings_more(st, k)).child(publishing))).scroll(ScrollSpec { stick_bottom: false })
 }
 
 fn next_theme(s: &mut App) {
@@ -6542,7 +6597,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
                 Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::Publish(..) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
             .build(k)
@@ -6556,6 +6611,20 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::Ask(_, t) => ("Ask for edit access", field(t, "A short note, if you like"), "Ask", ButtonVariant::Contrast),
         Prompt::Duplicate(_, t) => ("Duplicate this page as", field(t, "folder/name"), "Duplicate", ButtonVariant::Contrast),
         // kept on the ship, which never shows it again. Typed in the clear here: it is pasted, not remembered
+        Prompt::Publish(_, quiet) => (
+            "Make this public?",
+            col()
+                .w_full()
+                .gap(10.0)
+                .child(text("Once published, deletion is not assured. Anyone who has read this page can keep a copy, and the network may go on serving it after you unpublish or delete it.").font(k.ty.ui).color(k.c.text_muted).wrap())
+                .child(Switch::new(*quiet).label("Do not ask again").on_toggle(|s: &mut App| {
+                    if let Some(Prompt::Publish(_, quiet)) = &mut s.prompt {
+                        *quiet = !*quiet;
+                    }
+                }).build(k).key("publish-quiet")),
+            "Publish",
+            ButtonVariant::Danger,
+        ),
         Prompt::KeyRevoke(_, title) => ("Revoke this key?", text(format!("{title} stops working at once, and cannot be brought back.")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Revoke", ButtonVariant::Danger),
         Prompt::BoardDelete(name) => ("Delete this board?", text(format!("{name} and every thread on it are gone for everyone who reads it.")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::ForumTags(t) => ("This thread's tags", field(t, "Up to five: lowercase letters, digits and dashes. None clears them"), "Set", ButtonVariant::Contrast),
@@ -7230,8 +7299,20 @@ fn grant(s: &mut App, edit: bool) {
     });
 }
 
-/// Asks the ship to share the open page in `mode`.
+/// Shares the open page in `mode`, asking first when that makes it public and the asking was not put aside.
 fn share_as(s: &mut App, mode: &'static str) {
+    let was = share_target(s).and_then(|(name, folder)| if folder { &s.dshares } else { &s.shares }.get(&name).cloned()).unwrap_or_default();
+    if s.conn.is_some() && !s.prefs.pub_ok && api::goes_public(&was, mode) {
+        // one dialog at a time: the share dialog steps aside for the question, and comes back with the answer
+        s.sharing = false;
+        s.prompt = Some(Prompt::Publish(mode, false));
+        return;
+    }
+    share_now(s, mode);
+}
+
+/// Asks the ship to share the open page in `mode`.
+fn share_now(s: &mut App, mode: &'static str) {
     let (Some(c), Some((name, folder))) = (s.conn.clone(), share_target(s)) else {
         s.note = "sample pages cannot be shared".into();
         return;
@@ -7777,7 +7858,7 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
 
 fn page_body(s: &App, k: &Kit) -> El {
     if let Some(st) = s.settings.as_ref().filter(|_| !s.editing) {
-        return settings_view(st, k);
+        return settings_view(st, s.prefs.pub_ok, k);
     }
     if s.access && !s.editing {
         return access_view(s, k);
