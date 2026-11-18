@@ -31,8 +31,8 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code); self.send_header('content-type', ct); self.send_header('content-length', str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
         u = urlparse(self.path); p = u.path.replace('/apps/lattice/', '', 1); q = parse_qs(u.query)
-        if p == 'page-dump': return self.send(200, json.dumps({"nodes":[{"path":"places","page":True,"kind":KIND,"rev":1,"body":GEO}],"since":"s1"}))
-        if p == 'page-source': return self.send(200, json.dumps({"body":GEO,"kind":KIND,"rev":1,"mtime":"~2026.11.17"}))
+        if p == 'page-dump': return self.send(200, json.dumps({"nodes":[{"path":"places","page":True,"kind":KIND,"rev":REV[0],"body":GEO}],"since":"s1"}))
+        if p == 'page-source': return self.send(200, json.dumps({"body":GEO,"kind":KIND,"rev":REV[0],"mtime":"~2026.11.17"}))
         if p == 'tile-status': return self.send(200, json.dumps({"token":True,"orrery":False,"max":17,"styles":["streets","outdoors","satellite","dark"]}))
         if p.startswith('tile/'):
             _, style, z, x, y = p.split('/')
@@ -41,4 +41,15 @@ class H(BaseHTTPRequestHandler):
         if p == 'shared-with-me': return self.send(200, '[]')
         if p == 'notify-count': return self.send(200, '{"held":0,"unread":0}')
         self.send(404, '{"error":"not in the stub"}')
+# a save is taken and answered as the ship answers one, so a change made in the window lands
+REV = [1]
+def do_POST(self):
+    global GEO
+    u = urlparse(self.path); p = u.path.replace('/apps/lattice/', '', 1)
+    body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
+    if p == 'page-save':
+        GEO = body; REV[0] += 1
+        return self.send(200, json.dumps({"rev": REV[0]}))
+    self.send(404, '{"error":"not in the stub"}')
+H.do_POST = do_POST
 HTTPServer(('127.0.0.1', 8379), H).serve_forever()

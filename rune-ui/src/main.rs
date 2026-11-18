@@ -5,6 +5,7 @@
 //! headless runs draw: `cargo run -- --snap out.png --scene reading`.
 
 mod api;
+mod calc;
 mod formula;
 mod map;
 mod mapio;
@@ -73,6 +74,9 @@ struct SheetView {
     entry: TextEdit,
     /// What the bar held when the cell was picked: its text, or its formula as typed.
     entry_was: String,
+    /// The formulas a change reached that could not be worked out here: sheet, row, column.
+    /// They keep the values they had, until a later change works them out.
+    stale: std::collections::BTreeSet<(usize, usize, usize)>,
 }
 
 /// A question the window is asking: a name for a new page, a new name for
@@ -1119,6 +1123,7 @@ fn sync_sheet(s: &mut App) {
         table: TableState::new(),
         cursor: old.as_ref().and_then(|v| v.cursor),
         entry_was: old.as_ref().map_or(String::new(), |v| v.entry_was.clone()),
+        stale: old.as_ref().map_or_else(Default::default, |v| v.stale.clone()),
         entry: old.map_or_else(|| TextEdit::new(""), |v| v.entry),
     });
 }
@@ -1159,11 +1164,16 @@ fn commit_cell(s: &mut App) {
         pick_cell(s, r + 1, c);
         return;
     }
-    match sheet::set_cell(&p.body, v.at, r, c, &v.entry.text) {
+    // the value or the formula goes in, and every formula that reads the cell is worked out again
+    match calc::enter(&p.body, v.at, r, c, &v.entry.text) {
         Err(why) => s.note = format!("not changed: {why}"),
-        Ok(body) => {
-            if body != p.body {
-                save_body(s, p, body);
+        Ok(got) => {
+            if let Some(v) = &mut s.sheet {
+                v.stale.retain(|k| !got.done.contains(k));
+                v.stale.extend(got.stale);
+            }
+            if got.body != p.body {
+                save_body(s, p, got.body);
             }
             pick_cell(s, r + 1, c);
         }
@@ -1202,7 +1212,7 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
     }
     // found once a frame, not once a cell
     let hits: std::collections::HashSet<(usize, usize)> = sheet_matches(s).into_iter().collect();
-    let (accent, ink, held, font) = (c.text_accent, c.text_base, c.layer_02, k.ty.ui);
+    let (accent, ink, held, font, warn) = (c.text_accent, c.text_base, c.layer_02, k.ty.ui, c.danger.icon);
     let grid = table
         .cell(move |s: &App, i, col| {
             let Some(v) = &s.sheet else { return Cell::text("") };
@@ -1213,7 +1223,8 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
             let at = col.bytes().fold(0usize, |n, b| n * 26 + (b - b'A') as usize + 1) - 1;
             let said = v.sheets[v.at].rows.get(i).and_then(|r| r.get(at)).map_or("", String::as_str);
             // a cell find matches is in the accent colour, and the current one's row is the selected one
-            let color = if hits.contains(&(i, at)) { accent } else { ink };
+            // a formula not worked out since what it reads changed is marked: it shows what it showed before
+            let color = if hits.contains(&(i, at)) { accent } else if v.stale.contains(&(v.at, i, at)) { warn } else { ink };
             if !may {
                 return Cell::text(said).color(color);
             }
@@ -1247,11 +1258,16 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
     }
     let more = if sh.width() > SHEET_COLS { format!(", the first {SHEET_COLS} of {} columns", sh.width()) } else { String::new() };
     tabs = tabs.child(text(format!("{} rows{more}", sh.rows.len())).font(k.ty.small).color(c.text_muted).pl(8.0));
+    if !v.stale.is_empty() {
+        // said for as long as it holds: these show what they showed before the change
+        let n = v.stale.len();
+        tabs = tabs.child(text(format!("{n} formula{} not worked out here: {} the value {} had", if n == 1 { "" } else { "s" }, if n == 1 { "it keeps" } else { "they keep" }, if n == 1 { "it" } else { "they" })).key("sheet-stale").font(k.ty.small).color(c.danger.icon).pl(8.0));
+    }
     let mut page = col().key("sheet").w_full().h_full().min_h(0.0).padding(12.0).gap(8.0);
     if may {
         let name = v.cursor.map_or("".to_owned(), |(r, col)| format!("{}{}", sheet::column_name(col), r + 1));
         let entry = TextInput::new(&v.entry)
-            .placeholder(if v.cursor.is_some() { "Type text, a number, true or false. Enter saves it" } else { "Press a cell to change it" })
+            .placeholder(if v.cursor.is_some() { "Type text, a number, true or false, or a formula starting with =. Enter saves it" } else { "Press a cell to change it" })
             .on_edit(|s: &mut App| &mut s.sheet.as_mut().expect("a sheet is showing").entry)
             .on_submit(|s: &mut App, _| commit_cell(s))
             .build(k)
@@ -6189,15 +6205,6 @@ mod tests {
     fn a_cell_typed_into_is_saved_and_the_cell_below_is_picked() {
         let mut s = sample("budget");
         let before = s.open.clone().unwrap();
-        // a sample sheet with a formula in it is not changed: nothing here works formulas out
-        if before.body.contains("table:formula=") {
-            pick_cell(&mut s, 1, 0);
-            s.sheet.as_mut().unwrap().entry.text = "x".into();
-            commit_cell(&mut s);
-            assert!(s.note.starts_with("not changed: this spreadsheet has formulas"), "{}", s.note);
-            assert_eq!(s.open.as_ref().unwrap().body, before.body);
-            return;
-        }
         pick_cell(&mut s, 1, 0);
         assert_eq!(s.sheet.as_ref().unwrap().entry.text, s.sheet.as_ref().unwrap().sheets[0].rows[1][0]);
         s.sheet.as_mut().unwrap().entry.text = "Oat milk".into();
@@ -6211,10 +6218,33 @@ mod tests {
         assert_eq!(s.open.as_ref().unwrap().rev, before.rev + 1);
         // what cannot be written says why and leaves the page alone
         pick_cell(&mut s, 1, 0);
-        s.sheet.as_mut().unwrap().entry.text = "=A1".into();
+        s.sheet.as_mut().unwrap().entry.text = "=A1+".into();
         commit_cell(&mut s);
-        assert_eq!(s.note, "not changed: formulas are not written here yet");
+        assert_eq!(s.note, "not changed: that formula cannot be read: the formula ends too soon");
         assert_eq!(s.sheet.as_ref().unwrap().sheets[0].rows[1][0], "Oat milk");
+        // a formula is worked out and shown, and picked again it shows as it was typed
+        pick_cell(&mut s, 5, 0);
+        s.sheet.as_mut().unwrap().entry.text = "=A2&\"!\"".into();
+        commit_cell(&mut s);
+        assert_eq!(s.sheet.as_ref().unwrap().sheets[0].rows[5][0], "Oat milk!");
+        pick_cell(&mut s, 5, 0);
+        assert_eq!(s.sheet.as_ref().unwrap().entry.text, "=A2&\"!\"");
+        // what it reads changes, and it follows
+        pick_cell(&mut s, 1, 0);
+        s.sheet.as_mut().unwrap().entry.text = "Soy".into();
+        commit_cell(&mut s);
+        assert_eq!(s.sheet.as_ref().unwrap().sheets[0].rows[5][0], "Soy!");
+        // a function is not worked out here yet: it is stored, counted, and shows nothing until it is
+        pick_cell(&mut s, 6, 0);
+        s.sheet.as_mut().unwrap().entry.text = "=SUM(B2:B3)".into();
+        commit_cell(&mut s);
+        assert_eq!(s.sheet.as_ref().unwrap().stale.iter().copied().collect::<Vec<_>>(), [(0, 6, 0)]);
+        // another change elsewhere does not forget it
+        pick_cell(&mut s, 8, 3);
+        s.sheet.as_mut().unwrap().entry.text = "x".into();
+        commit_cell(&mut s);
+        assert_eq!(s.sheet.as_ref().unwrap().stale.len(), 1);
+        assert!(s.open.as_ref().unwrap().body.contains("table:formula=\"of:=SUM([.B2:.B3])\""));
     }
 
     #[test]

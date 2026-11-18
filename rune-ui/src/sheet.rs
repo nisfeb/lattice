@@ -340,8 +340,114 @@ fn gap(src: &str, at: usize) -> String {
     if src[line..at].bytes().all(|b| b == b' ') { format!("\n{}", &src[line..at]) } else { String::new() }
 }
 
+/// What a cell holds, as a formula sees it and as the page stores it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Val {
+    Blank,
+    Num(f64),
+    Str(String),
+    Bool(bool),
+}
+
+/// What is put into a cell: its formula as stored, the type of its
+/// value, the value, the text it shows, and whether it is an error.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Put {
+    pub f: Option<String>,
+    /// `string`, `float`, `boolean`, `date`, `time`, `percentage`, `currency`, or nothing.
+    pub vt: String,
+    pub v: Val,
+    pub text: String,
+    pub err: bool,
+}
+
+impl From<Typed> for Put {
+    fn from(t: Typed) -> Put {
+        let (vt, v, text) = match t {
+            Typed::Empty => ("", Val::Blank, String::new()),
+            Typed::Text(t) => ("string", Val::Str(t.clone()), t),
+            Typed::Number(n) => ("float", Val::Num(n), general(n)),
+            Typed::Bool(b) => ("boolean", Val::Bool(b), if b { "TRUE" } else { "FALSE" }.to_owned()),
+        };
+        Put { f: None, vt: vt.into(), v, text, err: false }
+    }
+}
+
+fn esc_attr(s: &str) -> String {
+    esc_text(s).replace('"', "&quot;").replace('\'', "&apos;")
+}
+
+/// Days from 1970-01-01 to a day of the calendar, and back.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
+}
+
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let (d, m) = (doy - (153 * mp + 2) / 5 + 1, if mp < 10 { mp + 3 } else { mp - 9 });
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// An ISO date or date and time as a spreadsheet's day number, counted from its null date.
+pub fn date_serial(iso: &str, null_date: f64) -> Option<f64> {
+    let (day, clock) = iso.split_once('T').map_or((iso, None), |(d, c)| (d, Some(c)));
+    let neg = day.starts_with('-');
+    let p: Vec<&str> = day.trim_start_matches('-').split('-').collect();
+    let n = |s: &str| s.parse::<i64>().ok().filter(|_| s.bytes().all(|b| b.is_ascii_digit()));
+    if p.len() != 3 || p[0].len() < 4 || p[1].len() != 2 || p[2].len() != 2 {
+        return None;
+    }
+    let y = n(p[0])? * if neg { -1 } else { 1 };
+    // a day past its month's end runs on into the next, as JavaScript's Date.UTC has it
+    let days = days_from_civil(y, n(p[1])?, 1) + n(p[2])? - 1;
+    let frac = clock.and_then(|c| {
+        let t: Vec<&str> = c.splitn(3, ':').collect();
+        let secs: String = t.get(2)?.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        Some((n(t[0])? as f64 * 3600.0 + n(t[1])? as f64 * 60.0 + secs.parse::<f64>().ok()?) / 86_400.0)
+    });
+    Some(days as f64 - null_date + frac.unwrap_or(0.0))
+}
+
+/// A duration, `PT13H37M05S`, as a fraction of a day.
+pub fn time_serial(dur: &str) -> Option<f64> {
+    let (neg, rest) = dur.strip_prefix('-').map_or((false, dur), |r| (true, r));
+    let mut rest = rest.strip_prefix("PT")?;
+    let mut secs = 0.0;
+    for (unit, by) in [('H', 3600.0), ('M', 60.0), ('S', 1.0)] {
+        if let Some(i) = rest.find(unit) {
+            secs += rest[..i].parse::<f64>().ok()? * by;
+            rest = &rest[i + 1..];
+        }
+    }
+    rest.is_empty().then_some(if neg { -secs } else { secs } / 86_400.0)
+}
+
+/// A day number as the ISO date the page stores, with its time when it has one.
+fn serial_date(n: f64, null_date: f64) -> String {
+    // in whole seconds first, so a time half a second short of midnight is the next day's start
+    let total = (n * 86_400.0).round() as i64;
+    let (whole, secs) = (total.div_euclid(86_400), total.rem_euclid(86_400));
+    let (y, m, d) = civil_from_days(whole + null_date as i64);
+    let clock = if secs > 0 { format!("T{:02}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60) } else { String::new() };
+    format!("{y:04}-{m:02}-{d:02}{clock}")
+}
+
+fn serial_time(n: f64) -> String {
+    let secs = (n.abs() * 86_400.0).round() as i64;
+    format!("{}PT{:02}H{:02}M{:02}S", if n < 0.0 { "-" } else { "" }, secs / 3600, secs / 60 % 60, secs % 60)
+}
+
 /// A cell holding `v`, keeping the style, the span and the notes of the cell it takes the place of.
-fn cell_xml(src: &str, old: Option<&El>, pad: &str, v: &Typed, calcext: bool) -> Result<String, String> {
+fn cell_xml(src: &str, old: Option<&El>, pad: &str, v: &Put, calcext: bool, null_date: f64) -> Result<String, String> {
     let name = old.map_or("table:table-cell", |o| o.name.as_str());
     let tag = old.map_or("", |o| &src[o.start..o.open_end]);
     let had = attrs(tag);
@@ -352,17 +458,33 @@ fn cell_xml(src: &str, old: Option<&El>, pad: &str, v: &Typed, calcext: bool) ->
             a.push_str(&format!(" {k}=\"{v}\""));
         }
     }
-    let (vt, value, text) = match v {
-        Typed::Empty => ("", String::new(), String::new()),
-        Typed::Text(t) => ("string", String::new(), t.clone()),
-        Typed::Number(n) => ("float", format!(" office:value=\"{}\"", num_attr(*n)), general(*n)),
-        Typed::Bool(b) => ("boolean", format!(" office:boolean-value=\"{b}\""), if *b { "TRUE" } else { "FALSE" }.to_owned()),
-    };
-    if !vt.is_empty() {
-        a.push_str(&format!(" office:value-type=\"{vt}\"{value}"));
+    if let Some(f) = &v.f {
+        a.push_str(&format!(" table:formula=\"{}\"", esc_attr(f)));
+    }
+    if !v.vt.is_empty() {
+        a.push_str(&format!(" office:value-type=\"{}\"", v.vt));
+        let n = match &v.v {
+            Val::Num(n) => *n,
+            Val::Bool(b) => f64::from(*b),
+            _ => 0.0,
+        };
+        match (v.vt.as_str(), &v.v) {
+            // a formula's text is kept beside it, so a reader need not work the formula out
+            ("string", Val::Str(t)) if v.f.is_some() => a.push_str(&format!(" office:string-value=\"{}\"", esc_attr(if v.err { "" } else { t }))),
+            ("string", _) => {}
+            ("boolean", _) => a.push_str(&format!(" office:boolean-value=\"{}\"", n != 0.0)),
+            ("date", _) => a.push_str(&format!(" office:date-value=\"{}\"", serial_date(n, null_date))),
+            ("time", _) => a.push_str(&format!(" office:time-value=\"{}\"", serial_time(n))),
+            (vt, _) => {
+                if let Some(cur) = raw("office:currency").filter(|_| vt == "currency") {
+                    a.push_str(&format!(" office:currency=\"{cur}\""));
+                }
+                a.push_str(&format!(" office:value=\"{}\"", num_attr(n)));
+            }
+        }
         // LibreOffice's own attribute, only where the document declares its namespace
         if calcext {
-            a.push_str(&format!(" calcext:value-type=\"{vt}\""));
+            a.push_str(&format!(" calcext:value-type=\"{}\"", if v.err { "error" } else { &v.vt }));
         }
     }
     for (k, at) in had.iter().filter(|(k, _)| !VALUE_ATTRS.contains(k) && *k != "table:content-validation-name") {
@@ -373,7 +495,7 @@ fn cell_xml(src: &str, old: Option<&El>, pad: &str, v: &Typed, calcext: bool) ->
         Some(o) => kids(src, o)?.iter().filter(|k| k.name != "text:p").map(|k| &src[k.start..k.end]).collect(),
         None => String::new(),
     };
-    let ps = paragraphs(&text);
+    let ps = paragraphs(&v.text);
     if ps.is_empty() && keep.is_empty() {
         return Ok(format!("<{name}{a}/>"));
     }
@@ -389,6 +511,16 @@ const COLS: &str = "table:number-columns-repeated";
 /// header or a group, and whether the document declares LibreOffice's
 /// own namespace.
 fn sheet_rows(src: &str, sheet: usize) -> Result<(El, Vec<El>, bool), String> {
+    let (ss, calcext) = spreadsheet(src)?;
+    let table = kids(src, &ss)?.into_iter().filter(|e| e.name == "table:table").nth(sheet).ok_or("this is not a spreadsheet lattice can change")?;
+    let mut rows = Vec::new();
+    rows_of(src, &table, &mut rows)?;
+    Ok((table, rows, calcext))
+}
+
+/// The spreadsheet element of a flat ODS document, and whether the
+/// document declares LibreOffice's own namespace.
+fn spreadsheet(src: &str) -> Result<(El, bool), String> {
     let no = || "this is not a spreadsheet lattice can change".to_owned();
     let root = elements(src, 0, src.len())?.into_iter().find(|e| e.name == "office:document").ok_or_else(no)?;
     let calcext = src[root.start..root.open_end].contains("xmlns:calcext=");
@@ -396,20 +528,103 @@ fn sheet_rows(src: &str, sheet: usize) -> Result<(El, Vec<El>, bool), String> {
     for name in ["office:body", "office:spreadsheet"] {
         at = kids(src, &at)?.into_iter().find(|e| e.name == name).ok_or_else(no)?;
     }
-    let table = kids(src, &at)?.into_iter().filter(|e| e.name == "table:table").nth(sheet).ok_or_else(no)?;
-    fn rows_of(src: &str, el: &El, out: &mut Vec<El>) -> Result<(), String> {
-        for k in kids(src, el)? {
-            match k.name.as_str() {
-                "table:table-row" => out.push(k),
-                "table:table-header-rows" | "table:table-row-group" | "table:table-rows" => rows_of(src, &k, out)?,
-                _ => {}
-            }
+    Ok((at, calcext))
+}
+
+fn rows_of(src: &str, el: &El, out: &mut Vec<El>) -> Result<(), String> {
+    for k in kids(src, el)? {
+        match k.name.as_str() {
+            "table:table-row" => out.push(k),
+            "table:table-header-rows" | "table:table-row-group" | "table:table-rows" => rows_of(src, &k, out)?,
+            _ => {}
         }
-        Ok(())
     }
-    let mut rows = Vec::new();
-    rows_of(src, &table, &mut rows)?;
-    Ok((table, rows, calcext))
+    Ok(())
+}
+
+/// The day the document counts dates from, in days since 1970: 30 December 1899 unless it says otherwise.
+fn null_date(src: &str, ss: &El) -> f64 {
+    let said = kids(src, ss).ok().and_then(|k| k.into_iter().find(|e| e.name == "table:calculation-settings")).and_then(|calc| kids(src, &calc).ok()?.into_iter().find(|e| e.name == "table:null-date")).and_then(|nd| attr(&src[nd.start + 1..nd.open_end], "table:date-value"));
+    said.and_then(|iso| date_serial(&iso, 0.0)).map_or(-25_569.0, f64::trunc)
+}
+
+/// A cell, or a run of the same cell, as formulas read it.
+#[derive(Clone, Debug, Default)]
+pub struct MCell {
+    pub rep: usize,
+    pub vt: String,
+    pub v: Option<Val>,
+    pub f: Option<String>,
+    pub text: String,
+    pub err: bool,
+}
+
+pub struct MRow {
+    pub rep: usize,
+    pub cells: Vec<MCell>,
+}
+
+pub struct MSheet {
+    pub name: String,
+    pub rows: Vec<MRow>,
+}
+
+/// A spreadsheet's sheets with every cell's type, value and formula.
+pub struct Book {
+    pub sheets: Vec<MSheet>,
+    pub null_date: f64,
+}
+
+impl Book {
+    /// The cell at a place, or nothing past the stored rows and cells.
+    pub fn at(&self, s: usize, r: usize, c: usize) -> Option<&MCell> {
+        let mut seen = 0;
+        let row = self.sheets.get(s)?.rows.iter().find(|row| {
+            seen += row.rep;
+            r < seen
+        })?;
+        let mut seen = 0;
+        row.cells.iter().find(|cell| {
+            seen += cell.rep;
+            c < seen
+        })
+    }
+}
+
+/// The typed model of a flat ODS document.
+pub fn book(src: &str) -> Result<Book, String> {
+    let (ss, _) = spreadsheet(src)?;
+    let null_date = null_date(src, &ss);
+    let mut sheets = Vec::new();
+    for table in kids(src, &ss)?.into_iter().filter(|e| e.name == "table:table") {
+        let mut rows = Vec::new();
+        rows_of(src, &table, &mut rows)?;
+        let mut out = Vec::new();
+        for row in &rows {
+            let mut cells = Vec::new();
+            for cell in kids(src, row)?.iter().filter(|k| k.name == "table:table-cell" || k.name == "table:covered-table-cell") {
+                let tag = &src[cell.start + 1..cell.open_end];
+                let get = |k: &str| attr(tag, k);
+                let vt = get("office:value-type").unwrap_or_default();
+                let err = get("calcext:value-type").as_deref() == Some("error");
+                // ponytail: a cell's text is read by the grid's own reader, one cell at a time. A reader of its own if a large sheet is slow to change
+                let text = if cell.open_end == cell.end { String::new() } else { parse(&format!("<table:table><table:table-row><table:table-cell>{}</table:table-row></table:table>", &src[cell.open_end..cell.end])).first().and_then(|s| s.rows.first()?.first().cloned()).unwrap_or_default() };
+                let num = |k: &str| get(k).and_then(|v| v.trim().parse::<f64>().ok()).filter(|n| !n.is_nan());
+                let v = match vt.as_str() {
+                    "" => None,
+                    "string" => Some(Val::Str(get("office:string-value").filter(|_| !err).unwrap_or_else(|| text.clone()))),
+                    "boolean" => Some(Val::Bool(get("office:boolean-value").as_deref() == Some("true"))),
+                    "date" => Some(Val::Num(get("office:date-value").and_then(|d| date_serial(&d, null_date)).unwrap_or(0.0))),
+                    "time" => Some(Val::Num(get("office:time-value").and_then(|d| time_serial(&d)).unwrap_or(0.0))),
+                    _ => Some(Val::Num(num("office:value").unwrap_or(0.0))),
+                };
+                cells.push(MCell { rep: count(src, cell, COLS), vt, v, f: get("table:formula"), text, err });
+            }
+            out.push(MRow { rep: count(src, row, ROWS), cells });
+        }
+        sheets.push(MSheet { name: attr(&src[table.start + 1..table.open_end], "table:name").unwrap_or_default(), rows: out });
+    }
+    Ok(Book { sheets, null_date })
 }
 
 /// The formula a cell holds, as it is stored, or nothing.
@@ -434,94 +649,136 @@ pub fn formula_at(src: &str, sheet: usize, r: usize, c: usize) -> Option<String>
 /// cell is split so the one cell stands alone, and a cell past the end
 /// of its row or its sheet is made, with the blanks before it.
 ///
-/// A sheet with formulas is refused: nothing here works a formula out,
-/// so the cells that depend on the one changed would be left stale.
+/// Nothing is worked out here: `calc::enter` does that, and is what a
+/// person's typing goes through.
 pub fn set_cell(src: &str, sheet: usize, r: usize, c: usize, text: &str) -> Result<String, String> {
-    let value = typed(text)?;
-    if r >= MAX_ROWS || c >= MAX_COLS {
+    put_cell(src, sheet, r, c, &typed(text)?.into(), Care::Typed)
+}
+
+/// How careful a write is. A person's typing is refused where it would
+/// lose something. A formula's result goes wherever the formula is.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Care {
+    /// A value typed by a person.
+    Typed,
+    /// A formula typed by a person.
+    Formula,
+    /// A result worked out for a formula already there.
+    Result,
+}
+
+/// A flat ODS document with one cell holding `value`. See `set_cell`.
+pub fn put_cell(src: &str, sheet: usize, r: usize, c: usize, value: &Put, care: Care) -> Result<String, String> {
+    put_cells(src, sheet, &std::collections::BTreeMap::from([(r, vec![(c, value.clone())])]), care)
+}
+
+/// The row with one cell of it holding `value`, standing alone: a run of one.
+#[allow(clippy::too_many_arguments)]
+fn row_with(src: &str, row: Option<&El>, pad: &str, c: usize, value: &Put, care: Care, calcext: bool, null_date: f64) -> Result<String, String> {
+    let cells: Vec<El> = match row {
+        Some(row) => kids(src, row)?.into_iter().filter(|k| k.name == "table:table-cell" || k.name == "table:covered-table-cell").collect(),
+        None => Vec::new(),
+    };
+    let inner_pad = if pad.is_empty() { String::new() } else { format!("{pad} ") };
+    let mut seen = 0;
+    let mut found = None;
+    for cell in &cells {
+        let n = count(src, cell, COLS);
+        if c < seen + n {
+            found = Some((cell, c - seen, n - (c - seen) - 1));
+            break;
+        }
+        seen += n;
+    }
+    let (from, to, new) = match found {
+        Some((cell, before, after)) => {
+            if cell.name == "table:covered-table-cell" && care != Care::Result {
+                return Err("that cell is part of a merged cell".into());
+            }
+            let tag = &src[cell.start..cell.open_end];
+            let held = attrs(tag).into_iter().find(|(k, _)| *k == "office:value-type").map(|(_, at)| &tag[at]);
+            if care == Care::Typed && held.is_some_and(|t| !matches!(t, "string" | "float" | "boolean")) {
+                return Err("that cell holds a date, a time, a percentage or money, which are not written here yet".into());
+            }
+            let sep = gap(src, cell.start);
+            let mut parts = Vec::new();
+            if before > 0 {
+                parts.push(copy(src, cell, COLS, before));
+            }
+            parts.push(cell_xml(src, Some(cell), &sep, value, calcext, null_date)?);
+            if after > 0 {
+                parts.push(copy(src, cell, COLS, after));
+            }
+            (cell.start, cell.end, parts.join(&sep))
+        }
+        None => {
+            // past the row's last cell: the blanks between, then the cell
+            let sep = cells.last().map_or(inner_pad.clone(), |l| gap(src, l.start));
+            let mut new = String::new();
+            if c > seen {
+                new.push_str(&format!("{sep}<table:table-cell{}/>", if c - seen > 1 { format!(" {COLS}=\"{}\"", c - seen) } else { String::new() }));
+            }
+            new.push_str(&format!("{sep}{}", cell_xml(src, None, &sep, value, calcext, null_date)?));
+            let end = cells.last().map_or_else(|| row.map_or(0, |r| if r.open_end == inner_end(src, r) { r.open_end } else { r.open_end }), |l| l.end);
+            (end, end, new)
+        }
+    };
+    Ok(match row {
+        Some(row) => {
+            let empty = src[row.start..row.open_end].ends_with("/>");
+            let close = if empty { format!("{pad}</table:table-row>") } else { src[inner_end(src, row)..row.end].to_owned() };
+            let body_start = row.open_end;
+            let body_end = inner_end(src, row);
+            let (from, to) = (from.max(body_start), to.max(body_start));
+            format!("{}>{}{new}{}{close}", open_tag(src, row, ROWS, 1), &src[body_start..from], &src[to..body_end])
+        }
+        None => format!("<table:table-row>{new}{pad}</table:table-row>"),
+    })
+}
+
+/// A flat ODS document with cells of one sheet holding new values: for
+/// each row, the cells to set. The page is read once and written once,
+/// however many cells there are.
+pub fn put_cells(src: &str, sheet: usize, edits: &std::collections::BTreeMap<usize, Vec<(usize, Put)>>, care: Care) -> Result<String, String> {
+    if care != Care::Result && edits.iter().any(|(r, cells)| *r >= MAX_ROWS || cells.iter().any(|(c, _)| *c >= MAX_COLS)) {
         return Err("that is outside the part of the sheet shown here".into());
     }
-    if src.contains("table:formula=") {
-        return Err("this spreadsheet has formulas, which are not worked out here yet, so it is not changed here".into());
-    }
     let (table, rows, calcext) = sheet_rows(src, sheet)?;
-    // the row with the cell in it, standing alone
-    let one_row = |row: Option<&El>, pad: &str| -> Result<String, String> {
-        let cells: Vec<El> = match row {
-            Some(row) => kids(src, row)?.into_iter().filter(|k| k.name == "table:table-cell" || k.name == "table:covered-table-cell").collect(),
-            None => Vec::new(),
-        };
-        let inner_pad = if pad.is_empty() { String::new() } else { format!("{pad} ") };
-        let mut seen = 0;
-        let mut found = None;
-        for cell in &cells {
-            let n = count(src, cell, COLS);
-            if c < seen + n {
-                found = Some((cell, c - seen, n - (c - seen) - 1));
-                break;
-            }
-            seen += n;
+    let null_date = null_date(src, &spreadsheet(src)?.0);
+    // a row with every one of its cells set, one after another, each on the row the one before made
+    let row_of = |row: Option<&El>, pad: &str, cells: &[(usize, Put)]| -> Result<String, String> {
+        let mut text: Option<String> = None;
+        for (c, value) in cells {
+            text = Some(match &text {
+                None => row_with(src, row, pad, *c, value, care, calcext, null_date)?,
+                Some(t) => {
+                    let el = elements(t, 0, t.len())?.into_iter().next().ok_or("a row was lost")?;
+                    row_with(t, Some(&el), pad, *c, value, care, calcext, null_date)?
+                }
+            });
         }
-        let (from, to, new) = match found {
-            Some((cell, before, after)) => {
-                if cell.name == "table:covered-table-cell" {
-                    return Err("that cell is part of a merged cell".into());
-                }
-                let tag = &src[cell.start..cell.open_end];
-                let held = attrs(tag).into_iter().find(|(k, _)| *k == "office:value-type").map(|(_, at)| &tag[at]);
-                if held.is_some_and(|t| !matches!(t, "string" | "float" | "boolean")) {
-                    return Err("that cell holds a date, a time, a percentage or money, which are not written here yet".into());
-                }
-                let sep = gap(src, cell.start);
-                let mut parts = Vec::new();
-                if before > 0 {
-                    parts.push(copy(src, cell, COLS, before));
-                }
-                parts.push(cell_xml(src, Some(cell), &sep, &value, calcext)?);
-                if after > 0 {
-                    parts.push(copy(src, cell, COLS, after));
-                }
-                (cell.start, cell.end, parts.join(&sep))
-            }
-            None => {
-                // past the row's last cell: the blanks between, then the cell
-                let sep = cells.last().map_or(inner_pad.clone(), |l| gap(src, l.start));
-                let mut new = String::new();
-                if c > seen {
-                    new.push_str(&format!("{sep}<table:table-cell{}/>", if c - seen > 1 { format!(" {COLS}=\"{}\"", c - seen) } else { String::new() }));
-                }
-                new.push_str(&format!("{sep}{}", cell_xml(src, None, &sep, &value, calcext)?));
-                let end = cells.last().map_or_else(|| row.map_or(0, |r| if r.open_end == inner_end(src, r) { r.open_end } else { r.open_end }), |l| l.end);
-                (end, end, new)
-            }
-        };
-        Ok(match row {
-            Some(row) => {
-                let empty = src[row.start..row.open_end].ends_with("/>");
-                let close = if empty { format!("{pad}</table:table-row>") } else { src[inner_end(src, row)..row.end].to_owned() };
-                let body_start = row.open_end;
-                let body_end = inner_end(src, row);
-                let (from, to) = (from.max(body_start), to.max(body_start));
-                format!("{}>{}{new}{}{close}", open_tag(src, row, ROWS, 1), &src[body_start..from], &src[to..body_end])
-            }
-            None => format!("<table:table-row>{new}{pad}</table:table-row>"),
-        })
+        text.ok_or_else(|| "a row with nothing to set".to_owned())
     };
+    // what takes the place of what, in the page's order
+    let mut swaps: Vec<(usize, usize, String)> = Vec::new();
+    let mut todo = edits.iter().peekable();
     let mut seen = 0;
     for row in &rows {
         let n = count(src, row, ROWS);
-        if r < seen + n {
-            let (before, after) = (r - seen, n - (r - seen) - 1);
-            let sep = gap(src, row.start);
-            let mut parts = Vec::new();
-            if before > 0 {
-                parts.push(copy(src, row, ROWS, before));
+        let (mut at, sep, mut parts) = (seen, gap(src, row.start), Vec::new());
+        // a repeated row is split round each of its rows that is set
+        while let Some((r, cells)) = todo.next_if(|(r, _)| **r < seen + n) {
+            if *r > at {
+                parts.push(copy(src, row, ROWS, r - at));
             }
-            parts.push(one_row(Some(row), &sep)?);
-            if after > 0 {
-                parts.push(copy(src, row, ROWS, after));
+            parts.push(row_of(Some(row), &sep, cells)?);
+            at = r + 1;
+        }
+        if !parts.is_empty() {
+            if seen + n > at {
+                parts.push(copy(src, row, ROWS, seen + n - at));
             }
-            return Ok(format!("{}{}{}", &src[..row.start], parts.join(&sep), &src[row.end..]));
+            swaps.push((row.start, row.end, parts.join(&sep)));
         }
         seen += n;
     }
@@ -534,17 +791,32 @@ pub fn set_cell(src: &str, sheet: usize, r: usize, c: usize, text: &str) -> Resu
     });
     let style = style.unwrap_or_default();
     let mut new = String::new();
-    if r > seen {
-        let inner = if sep.is_empty() { String::new() } else { format!("{sep} ") };
-        new.push_str(&format!("{sep}<table:table-row{style}{}>{inner}<table:table-cell/>{sep}</table:table-row>", if r - seen > 1 { format!(" {ROWS}=\"{}\"", r - seen) } else { String::new() }));
+    for (r, cells) in todo {
+        if *r > seen {
+            let inner = if sep.is_empty() { String::new() } else { format!("{sep} ") };
+            new.push_str(&format!("{sep}<table:table-row{style}{}>{inner}<table:table-cell/>{sep}</table:table-row>", if r - seen > 1 { format!(" {ROWS}=\"{}\"", r - seen) } else { String::new() }));
+        }
+        new.push_str(&format!("{sep}{}", row_of(None, &sep, cells)?.replacen("<table:table-row", &format!("<table:table-row{style}"), 1)));
+        seen = r + 1;
     }
-    new.push_str(&format!("{sep}{}", one_row(None, &sep)?.replacen("<table:table-row", &format!("<table:table-row{style}"), 1)));
-    // a sheet written as an empty element is opened, so the row goes inside it
-    if src[table.start..table.open_end].ends_with("/>") {
-        return Ok(format!("{}>{new}</table:table>{}", &src[..table.open_end - 2], &src[table.open_end..]));
+    if !new.is_empty() {
+        // a sheet written as an empty element is opened, so the row goes inside it
+        if src[table.start..table.open_end].ends_with("/>") {
+            swaps.push((table.open_end - 2, table.open_end, format!(">{new}</table:table>")));
+        } else {
+            let end = last.map_or(inner_end(src, &table), |l| l.end);
+            swaps.push((end, end, new));
+        }
     }
-    let end = last.map_or(inner_end(src, &table), |l| l.end);
-    Ok(format!("{}{new}{}", &src[..end], &src[end..]))
+    let mut out = String::with_capacity(src.len() + swaps.iter().map(|s| s.2.len()).sum::<usize>());
+    let mut at = 0;
+    for (from, to, with) in &swaps {
+        out.push_str(&src[at..*from]);
+        out.push_str(with);
+        at = *to;
+    }
+    out.push_str(&src[at..]);
+    Ok(out)
 }
 
 /// The rows of a CSV, as the web client reads one (RFC 4180, forgiving):
@@ -834,7 +1106,6 @@ mod tests {
         assert_eq!(set_cell(BOOK, 0, 0, 2, "x").unwrap_err(), "that cell is part of a merged cell");
         assert!(set_cell(BOOK, 0, 0, 3, "x").unwrap_err().starts_with("that cell holds a date"));
         assert_eq!(set_cell(BOOK, 0, 0, 0, "=1+1").unwrap_err(), "formulas are not written here yet");
-        assert!(set_cell(&BOOK.replace("office:value=\"3\"", "table:formula=\"of:=1+2\" office:value=\"3\""), 0, 0, 0, "x").unwrap_err().starts_with("this spreadsheet has formulas"));
         assert_eq!(set_cell(BOOK, 5, 0, 0, "x").unwrap_err(), "this is not a spreadsheet lattice can change");
         assert_eq!(set_cell("<a/>", 0, 0, 0, "x").unwrap_err(), "this is not a spreadsheet lattice can change");
         assert_eq!(set_cell(BOOK, 0, 5000, 0, "x").unwrap_err(), "that is outside the part of the sheet shown here");
