@@ -107,3 +107,7 @@ Debug builds render headless with the same renderer:
 
     cargo test                                             # unit tests
     LATTICE_URL=.. LATTICE_COOKIE=.. cargo test -- --ignored   # against a ship, needs a page named rune-probe
+
+## Bundles
+
+- A deb: `sh scripts/bundle/build-in-debian.sh` builds the release inside Debian 12 (docker), then `LATTICE_RUNE_BIN=target/debian/lattice-rune sh scripts/bundle/deb.sh` writes `target/bundle/lattice-rune_<version>_amd64.deb`. Without `LATTICE_RUNE_BIN` the deb holds this machine's own build, which runs only on a system with a glibc as new.
