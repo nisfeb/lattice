@@ -341,6 +341,41 @@ fn line(e: &mut Engine, g: Rg, down: bool) -> Vec<V> {
     }
 }
 
+/// Days since 1970 to a year, a month counted from nothing, and a day, as JavaScript's
+/// `Date.UTC` takes them: a month or a day outside its range runs on into the next or the
+/// one before, and a year from 0 to 99 is in the 1900s.
+fn utc_days(y: f64, m0: f64, d: f64) -> f64 {
+    let y = if (0.0..=99.0).contains(&y) { y + 1900.0 } else { y };
+    let (y, m) = (y + (m0 / 12.0).floor(), m0.rem_euclid(12.0));
+    crate::sheet::days_from_civil(y as i64, m as i64 + 1, 1) as f64 + d - 1.0
+}
+
+/// A day number as its year, month (from one) and day, on the document's null date.
+fn date_of(e: &Engine, n: f64) -> (i64, i64, i64) {
+    crate::sheet::civil_from_days(((n + 1e-9).floor() + e.null_date()) as i64)
+}
+
+/// The seconds this machine's clock is ahead of UTC.
+// ponytail: asked of the `date` command once, since the standard library knows no time zones. UTC where there is no such command
+fn zone_secs() -> f64 {
+    static ZONE: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *ZONE.get_or_init(|| {
+        let out = std::process::Command::new("date").arg("+%z").output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).unwrap_or_default();
+        let t = out.trim();
+        let digits = t.trim_start_matches(['+', '-']);
+        match (digits.get(..2).and_then(|h| h.parse::<f64>().ok()), digits.get(2..4).and_then(|m| m.parse::<f64>().ok())) {
+            (Some(h), Some(m)) => (h * 3600.0 + m * 60.0) * if t.starts_with('-') { -1.0 } else { 1.0 },
+            _ => 0.0,
+        }
+    })
+}
+
+/// Now, by this machine's clock, as a day number with the time of day as its fraction.
+fn now(e: &Engine) -> f64 {
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs() as f64) + zone_secs();
+    secs / 86_400.0 - e.null_date()
+}
+
 /// The functions that take their arguments unevaluated. `None` for a name that is not one of them.
 pub fn lazy(e: &mut Engine, name: &str, n: &[Node], ctx: Ctx) -> Option<R> {
     Some((|| -> R {
@@ -929,6 +964,62 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
             Some(V::Range(g)) => n(if name == "ROWS" { g.rows() } else { g.cols() } as f64),
             _ => n(1.0),
         },
+
+        // dates and times
+        // with one of the three left off the end there is no date to make, as on the web
+        "DATE" | "TIME" if a.len() < 3 => a.iter().map(|x| to_num(&scalar(e, x))).find(is_err).unwrap_or_else(|| err("#NUM!")),
+        "DATE" | "TIME" => {
+            let v: Vec<V> = (0..3).map(|i| to_num(&scalar(e, &arg(i)))).collect();
+            match (&v[0], &v[1], &v[2]) {
+                (V::Num(x), V::Num(y), V::Num(z)) if name == "DATE" => n(utc_days(x.floor(), y.floor() - 1.0, z.floor()) - e.null_date()),
+                (V::Num(h), V::Num(m), V::Num(s)) => {
+                    let t = (h * 3600.0 + m * 60.0 + s) / 86_400.0;
+                    n(t - t.floor())
+                }
+                _ => v.into_iter().find(is_err).unwrap_or_else(|| err(VALUE)),
+            }
+        }
+        "YEAR" | "MONTH" | "DAY" => match to_num(&scalar(e, &arg(0))) {
+            V::Num(x) => {
+                let (y, m, d) = date_of(e, x);
+                n(match name {
+                    "YEAR" => y,
+                    "MONTH" => m,
+                    _ => d,
+                } as f64)
+            }
+            bad => bad,
+        },
+        "HOUR" => num1!(|x| V::Num((((x - x.floor()) * 86_400.0 + 0.5).floor() / 3600.0).floor() % 24.0)),
+        "MINUTE" => num1!(|x| V::Num((((x - x.floor()) * 86_400.0 + 0.5).floor() / 60.0).floor() % 60.0)),
+        "SECOND" => num1!(|x| V::Num(((x - x.floor()) * 86_400.0 + 0.5).floor() % 60.0)),
+        "WEEKDAY" => {
+            let (x, how) = (to_num(&scalar(e, &arg(0))), if a.get(1).is_none_or(|v| *v == V::Missing) { V::Num(1.0) } else { to_num(&scalar(e, &arg(1))) });
+            match (x, how) {
+                (V::Num(x), V::Num(how)) => {
+                    // 0 is Sunday. The first day of 1970 was a Thursday
+                    let d = (((x + 1e-9).floor() + e.null_date()) + 4.0).rem_euclid(7.0);
+                    n(if how == 2.0 { (d + 6.0) % 7.0 + 1.0 } else if how == 3.0 { (d + 6.0) % 7.0 } else { d + 1.0 })
+                }
+                (V::Num(_), bad) | (bad, _) => bad,
+            }
+        }
+        "DAYS" => num2!(arg(1), |end, start| V::Num(end - start)),
+        "EDATE" | "EOMONTH" => {
+            let (x, m) = (to_num(&scalar(e, &arg(0))), to_num(&scalar(e, &arg(1))));
+            match (x, m) {
+                (V::Num(x), V::Num(m)) => {
+                    let (y, mo, d) = date_of(e, x);
+                    let mo = (mo - 1) as f64 + m.trunc();
+                    // the last day of the month it lands in: the day before the next month's first
+                    let last = crate::sheet::civil_from_days(utc_days(y as f64, mo + 1.0, 0.0) as i64).2 as f64;
+                    n(if name == "EDATE" { utc_days(y as f64, mo, (d as f64).min(last)) } else { utc_days(y as f64, mo + 1.0, 0.0) } - e.null_date())
+                }
+                (V::Num(_), bad) | (bad, _) => bad,
+            }
+        }
+        "TODAY" => n(now(e).floor()),
+        "NOW" => n((now(e) * 86_400.0).floor() / 86_400.0),
         _ => return Err(Unsupported),
     })
 }

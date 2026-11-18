@@ -321,6 +321,11 @@ impl<'a> Engine<'a> {
         }
     }
 
+    /// The day the document counts its dates from, in days since 1970.
+    pub fn null_date(&self) -> f64 {
+        self.book.null_date
+    }
+
     /// How much of a sheet holds anything: a value, a formula or a text. Trailing empty runs do not count.
     pub fn used(&mut self, s: usize) -> (usize, usize) {
         if let Some(u) = self.extents.get(&s) {
@@ -791,6 +796,12 @@ mod tests {
     fn lookups_give_what_the_web_client_gives() {
         let sheet: &[&[&str]] = &[&["1", "apple", "10", "x", "3.5"], &["3", "banana", "20", "y", "7"], &["5", "cherry", "30", "apple", "1"], &["7", "date", "40", "3", "-1"], &["", "egg", "50", "", ""]];
         corpus(sheet, include_str!("funcs_lookup_corpus.tsv"), 107);
+    }
+
+    #[test]
+    fn dates_and_times_give_what_the_web_client_gives() {
+        let sheet: &[&[&str]] = &[&["46343", "46343.75", "0.5", "abc", "-3"], &["2026-11-17", "45000.999999", "60", "", ""]];
+        corpus(sheet, include_str!("funcs_date_corpus.tsv"), 133);
     }
 
     #[test]
