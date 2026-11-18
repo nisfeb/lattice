@@ -153,9 +153,38 @@ pub fn hit(rects: &[[f32; 4]], p: [f32; 2]) -> Option<usize> {
     rects.iter().position(|r| r[2] > 0.0 && r[3] > 0.0 && p[0] >= r[0] && p[0] < r[0] + r[2] && p[1] >= r[1] && p[1] < r[1] + r[3])
 }
 
+/// Where among a strip's tabs a tab let go at `p` goes: before the
+/// first tab whose middle is past the point. Each tab is `[x, y,
+/// width, height]`. A point above or below the strip is not among the
+/// tabs at all, and nothing is said for it.
+pub fn slot(tabs: &[[f32; 4]], p: [f32; 2]) -> Option<usize> {
+    let laid: Vec<&[f32; 4]> = tabs.iter().filter(|r| r[2] > 0.0 && r[3] > 0.0).collect();
+    let (top, bottom) = (laid.iter().map(|r| r[1]).fold(f32::INFINITY, f32::min), laid.iter().map(|r| r[1] + r[3]).fold(f32::NEG_INFINITY, f32::max));
+    if laid.is_empty() || p[1] < top || p[1] >= bottom {
+        return None;
+    }
+    Some(laid.iter().filter(|r| r[0] + r[2] / 2.0 <= p[0]).count())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tab_let_go_among_tabs_goes_between_them() {
+        let tabs = [[100.0, 10.0, 80.0, 28.0], [184.0, 10.0, 80.0, 28.0], [268.0, 10.0, 80.0, 28.0]];
+        assert_eq!(slot(&tabs, [105.0, 20.0]), Some(0), "over the first half of the first tab: before it");
+        assert_eq!(slot(&tabs, [150.0, 20.0]), Some(1), "past its middle: after it");
+        assert_eq!(slot(&tabs, [230.0, 20.0]), Some(2));
+        assert_eq!(slot(&tabs, [400.0, 20.0]), Some(3), "past them all, still on the strip: the end");
+        assert_eq!(slot(&tabs, [50.0, 20.0]), Some(0));
+        // off the strip, above or below, it is not among the tabs
+        assert_eq!(slot(&tabs, [150.0, 5.0]), None);
+        assert_eq!(slot(&tabs, [150.0, 60.0]), None);
+        assert_eq!(slot(&[], [1.0, 1.0]), None);
+        // a tab not laid out yet is not counted
+        assert_eq!(slot(&[[100.0, 10.0, 80.0, 28.0], [0.0; 4]], [300.0, 20.0]), Some(1));
+    }
 
     #[test]
     fn a_point_is_in_the_place_that_holds_it() {
