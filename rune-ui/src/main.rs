@@ -6942,7 +6942,9 @@ fn sidebar(s: &App, k: &Kit) -> El {
     if let Some(when) = &s.offline {
         side = side.child(text(format!("Offline. The ship does not answer, so this is what was kept {when}. A change made now is not saved.")).key("offline").font(k.ty.small).color(k.c.text_base).wrap());
     }
-    if !s.note.is_empty() {
+    // offline, a read that failed because the ship is away is not said again: its error starts with the ship's address
+    let again = s.offline.is_some() && s.conn.as_ref().is_some_and(|c| s.note.split_once(": ").is_some_and(|(_, e)| e.starts_with(c.url.as_str())));
+    if !s.note.is_empty() && !again {
         side = side.child(text(s.note.clone()).key("note").font(k.ty.small).color(k.c.text_muted).wrap());
     }
     side
