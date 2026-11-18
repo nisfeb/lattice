@@ -15,6 +15,7 @@ mod md;
 mod odf;
 mod pdf;
 mod scad;
+mod scadrun;
 mod sheet;
 mod shift;
 mod styles;
@@ -233,6 +234,13 @@ struct App {
     pane_links: bool,
     back: Option<(String, Vec<String>)>,
     back_req: Latest<Result<(String, Vec<String>), String>>,
+    /// An OpenSCAD page being drawn by this machine's openscad: its name, its revision, and what came of it.
+    scad_req: Latest<(String, u64, scadrun::Drawn)>,
+    /// The OpenSCAD page last asked to be drawn, and what the open one came to.
+    scad_for: Option<(String, u64)>,
+    scad: Option<(String, u64, scadrun::Drawn)>,
+    /// A page of another ship that the reader said may be drawn here.
+    scad_ok: Option<String>,
     /// A LaTeX page being read by pandoc: its name, its revision, and the Markdown or why there is none.
     tex_req: Latest<(String, u64, Result<String, String>)>,
     /// The LaTeX page pandoc was last asked to read, and why the open one shows as its source when it does.
@@ -466,6 +474,10 @@ fn init() -> App {
         back: None,
         back_req: Latest::default(),
         tex_req: Latest::default(),
+        scad_req: Latest::default(),
+        scad_for: None,
+        scad: None,
+        scad_ok: None,
         tex_for: None,
         tex_why: None,
         comments: Vec::new(),
@@ -1043,6 +1055,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.templates_req.set_waker(waker.clone());
     s.back_req.set_waker(waker.clone());
     s.tex_req.set_waker(waker.clone());
+    s.scad_req.set_waker(waker.clone());
     s.asks_req.set_waker(waker.clone());
     s.waiting_req.set_waker(waker.clone());
     s.comets_req.set_waker(waker.clone());
@@ -1180,9 +1193,45 @@ fn read_md<'a>(s: &'a App, p: &'a Page) -> Option<&'a str> {
     s.read_as.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev).map(|(_, _, t)| t.as_str())
 }
 
+/// Whether the open OpenSCAD page is drawn without being asked: one of
+/// this ship's own. A page of another ship runs a program on this
+/// machine over text someone else wrote, so it waits for a yes.
+fn scad_draws(s: &App, p: &Page) -> bool {
+    p.kind == "scad" && !s.memory && (s.remote.is_none() || s.scad_ok.as_deref() == Some(p.name.as_str()))
+}
+
+/// Keeps the drawn part in step with the open page: openscad runs on a
+/// thread of its own, once for each revision. The pages it includes
+/// are read from the ship there, or from the sample pages.
+fn sync_scad(s: &mut App) {
+    let Some(p) = s.open.as_ref().filter(|p| scad_draws(s, p)) else {
+        if !s.open.as_ref().is_some_and(|p| p.kind == "scad") {
+            (s.scad_for, s.scad) = (None, None);
+        }
+        return;
+    };
+    let now = (p.name.clone(), p.rev);
+    if s.scad_for.as_ref() == Some(&now) {
+        return;
+    }
+    s.scad_for = Some(now.clone());
+    // with no ship the pages in hand are all there are: the OpenSCAD ones go with the request
+    let conn = s.conn.clone();
+    let local: HashMap<String, String> = if conn.is_some() { HashMap::new() } else { s.cache.values().filter(|x| x.kind == "scad").map(|x| (x.name.clone(), x.body.clone())).collect() };
+    s.scad_req.request((now, p.body.clone(), conn, local), |((name, rev), text, conn, local)| {
+        let read = |page: &str| match &conn {
+            Some(c) => c.page(page).ok().filter(|p| p.kind == "scad").map(|p| p.body),
+            None => local.get(page).cloned(),
+        };
+        let drawn = scadrun::draw(&name, &text, read);
+        (name, rev, drawn)
+    });
+}
+
 /// Keeps `s.sheet` in step with the open page, as +sync_map does for a map.
 fn sync_sheet(s: &mut App) {
     sync_read(s);
+    sync_scad(s);
     let Some(p) = s.open.as_ref().filter(|p| p.kind == "fods") else {
         s.sheet = None;
         return;
@@ -1300,6 +1349,49 @@ fn shift_picked(s: &mut App, rows: bool, off: usize, n: i64) {
             }
         }
     }
+}
+
+/// What drawing the open OpenSCAD page came to: a line that says so,
+/// and the console under it when openscad said anything.
+fn scad_view(s: &App, p: &Page, k: &Kit) -> El {
+    let c = &k.c;
+    let mut out = col().key("scad-part").w_full().gap(6.0);
+    if !scad_draws(s, p) {
+        let name = p.name.clone();
+        return out.child(
+            row().gap(10.0).center_y().child(text("This page is another ship's. Drawing it runs OpenSCAD on this machine over its text.").font(k.ty.small).color(c.text_muted).wrap().grow(1.0).min_w(0.0)).child(
+                Button::new("Draw it")
+                    .control_size(ControlSize::Small)
+                    .on_press(move |s: &mut App| {
+                        s.scad_ok = Some(name.clone());
+                        sync_scad(s);
+                    })
+                    .build(k)
+                    .key("scad-draw"),
+            ),
+        );
+    }
+    let Some((_, _, d)) = s.scad.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev) else {
+        return out.child(text("rendering\u{2026}").key("scad-status").font(k.ty.small).color(c.text_muted));
+    };
+    out = out.child(text(d.status.clone()).key("scad-status").font(k.ty.small).color(if d.bad { c.danger.icon } else { c.text_muted }).wrap());
+    if !d.lines.is_empty() {
+        let mut con = col().key("scad-console").w_full().gap(1.0).padding(8.0).radius(k.radius.md).fill(c.layer_01).child(text(d.head.clone()).font(k.ty.small_medium).color(c.text_muted));
+        // a model that echoes without end is not drawn to its last line
+        for (level, line) in d.lines.iter().take(200) {
+            let ink = match level {
+                scadrun::Level::Error => c.danger.icon,
+                scadrun::Level::Warning => c.warning.icon,
+                scadrun::Level::Plain => c.text_base,
+            };
+            con = con.child(text(line.clone()).font(k.ty.mono).color(ink).wrap().selectable(true));
+        }
+        if d.lines.len() > 200 {
+            con = con.child(text(format!("and {} more lines", d.lines.len() - 200)).font(k.ty.small).color(c.text_faint));
+        }
+        out = out.child(con);
+    }
+    out
 }
 
 /// Gives an OpenSCAD parameter of the open page a new value, worked
@@ -3157,6 +3249,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
             Err(e) => s.tiles_off = Some(e),
         }
+    }
+    if let Some(drawn) = s.scad_req.take() {
+        changed = true;
+        s.scad = Some(drawn);
     }
     if let Some((name, rev, got)) = s.tex_req.take() {
         changed = true;
@@ -5588,6 +5684,9 @@ fn page_body(s: &App, k: &Kit) -> El {
         if !params.is_empty() && page_changes(s) {
             page = page.child(params_view(&params, k));
         }
+    }
+    if p.kind == "scad" && !s.memory {
+        page = page.child(scad_view(s, p, k));
     }
     if let Some((_, _, why)) = s.tex_why.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev) {
         page = page.child(text(why.clone()).key("tex-why").font(k.ty.small).color(c.text_muted).wrap());
