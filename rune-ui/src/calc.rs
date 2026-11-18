@@ -766,7 +766,7 @@ mod tests {
         // from ui-src/sheet/book.js run under node. STALE is a formula it does not work out either
         let src = doc(&[&["2", "abc", "", "TRUE", "3.5"], &["0", "-4", "10", "x", "7"], &["5", "5", "2.5", "apple", "1"], &["", "12", "Banana", "3", "-1"]]);
         let (mut n, mut wrong) = (0, Vec::new());
-        for line in include_str!("funcs_corpus.tsv").lines() {
+        for line in include_str!("funcs_corpus.tsv").lines().chain(include_str!("funcs_text_corpus.tsv").lines()) {
             let (f, want) = line.split_once('\t').unwrap();
             let (f, want): (String, String) = (serde_json::from_str(f).unwrap(), serde_json::from_str(want).unwrap());
             let got = enter(&src, 0, 7, 6, &format!("={f}")).unwrap();
@@ -777,7 +777,7 @@ mod tests {
             n += 1;
         }
         assert!(wrong.is_empty(), "{} of {n} differ:\n{}", wrong.len(), wrong.join("\n"));
-        assert_eq!(n, 266);
+        assert_eq!(n, 266 + 127);
     }
 
     #[test]

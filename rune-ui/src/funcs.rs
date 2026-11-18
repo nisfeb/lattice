@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use crate::calc::{Ctx, Engine, Rg, Unsupported, V, compare, to_num};
+use crate::calc::{Ctx, Engine, Rg, Unsupported, V, compare, to_num, to_str};
 use crate::formula::Node;
 
 type R = Result<V, Unsupported>;
@@ -265,6 +265,39 @@ fn random() -> f64 {
     // ponytail: the standard library's own seeded hasher, so no dependency for RAND
     let bits = std::collections::hash_map::RandomState::new().build_hasher().finish();
     (bits >> 11) as f64 / (1u64 << 53) as f64
+}
+
+/// Where a slice starts or ends, as JavaScript's `slice` reads an index: cut to a whole
+/// number, counted from the end when it is below nothing, and held inside the length.
+fn js_index(len: usize, i: f64) -> usize {
+    let i = if i.is_nan() { 0.0 } else { i.trunc() };
+    if i < 0.0 { (len as f64 + i).max(0.0) as usize } else { i.min(len as f64) as usize }
+}
+
+fn slice<T: Clone>(v: &[T], from: f64, to: f64) -> Vec<T> {
+    let (a, b) = (js_index(v.len(), from), js_index(v.len(), to));
+    if a < b { v[a..b].to_vec() } else { Vec::new() }
+}
+
+/// Where `needle` first is in `hay` at or after `from`, both in UTF-16 units as JavaScript counts a text.
+fn index_of(hay: &[u16], needle: &[u16], from: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return (from <= hay.len()).then_some(from);
+    }
+    (from..=hay.len().checked_sub(needle.len())?).find(|i| hay[*i..].starts_with(needle))
+}
+
+fn units(s: &str) -> Vec<u16> {
+    s.encode_utf16().collect()
+}
+
+fn text_of(u: &[u16]) -> String {
+    String::from_utf16_lossy(u)
+}
+
+/// The first of the values that is an error.
+fn first_err(vs: &[&V]) -> Option<V> {
+    vs.iter().find(|v| is_err(v)).map(|v| (*v).clone())
 }
 
 /// The functions that take their arguments unevaluated. `None` for a name that is not one of them.
@@ -622,6 +655,171 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], _ctx: Ctx) -> R {
             v @ (V::Str(_) | V::Err(_)) => v,
             _ => V::Str(String::new()),
         },
+
+        // text
+        "LEN" | "UPPER" | "LOWER" | "PROPER" | "TRIM" | "CODE" => match scalar(e, &arg(0)) {
+            V::Err(code) => V::Err(code),
+            v => {
+                let s = to_str(&v);
+                match name {
+                    "LEN" => n(s.chars().count() as f64),
+                    "UPPER" => V::Str(s.to_uppercase()),
+                    "LOWER" => V::Str(s.to_lowercase()),
+                    "PROPER" => {
+                        // a letter after the start, or after what is neither a letter nor a digit, is a capital
+                        let mut up = true;
+                        V::Str(s.to_lowercase().chars().flat_map(|c| {
+                            let out: Vec<char> = if up && c.is_alphabetic() { c.to_uppercase().collect() } else { vec![c] };
+                            up = !c.is_alphanumeric();
+                            out
+                        }).collect())
+                    }
+                    "TRIM" => {
+                        // runs of spaces are one space, and one at each end goes
+                        let mut t = String::new();
+                        for c in s.chars() {
+                            if !(c == ' ' && t.ends_with(' ')) {
+                                t.push(c);
+                            }
+                        }
+                        let t = t.strip_prefix(' ').unwrap_or(&t);
+                        V::Str(t.strip_suffix(' ').unwrap_or(t).to_owned())
+                    }
+                    _ => units(&s).first().map_or(err(VALUE), |u| n(f64::from(*u))),
+                }
+            }
+        },
+        "LEFT" | "RIGHT" => {
+            let s = scalar(e, &arg(0));
+            let k = if a.get(1).is_none_or(|x| *x == V::Missing) { V::Num(1.0) } else { to_num(&scalar(e, &arg(1))) };
+            match (first_err(&[&s, &k]), k) {
+                (Some(bad), _) => bad,
+                (None, V::Num(k)) if k < 0.0 => err(ARG),
+                (None, V::Num(k)) => {
+                    let ch: Vec<char> = to_str(&s).chars().collect();
+                    let k = k.floor();
+                    V::Str(if name == "LEFT" { slice(&ch, 0.0, k) } else if k == 0.0 { Vec::new() } else { slice(&ch, -k, f64::INFINITY) }.into_iter().collect())
+                }
+                _ => err(VALUE),
+            }
+        }
+        "MID" => {
+            let (s, st, k) = (scalar(e, &arg(0)), to_num(&scalar(e, &arg(1))), to_num(&scalar(e, &arg(2))));
+            match (first_err(&[&s, &st, &k]), st, k) {
+                (Some(bad), ..) => bad,
+                (None, V::Num(st), V::Num(k)) if st < 1.0 || k < 0.0 => err(ARG),
+                (None, V::Num(st), V::Num(k)) => {
+                    let ch: Vec<char> = to_str(&s).chars().collect();
+                    V::Str(slice(&ch, st.floor() - 1.0, st.floor() - 1.0 + k.floor()).into_iter().collect())
+                }
+                _ => err(VALUE),
+            }
+        }
+        "CONCATENATE" | "CONCAT" => {
+            let vs: Vec<V> = if name == "CONCAT" { values(e, a)? } else { a.iter().map(|x| scalar(e, x)).collect() };
+            vs.iter().find(|v| is_err(v)).cloned().unwrap_or_else(|| V::Str(vs.iter().map(to_str).collect()))
+        }
+        "TEXTJOIN" => {
+            let (d, skip) = (scalar(e, &arg(0)), to_bool(&scalar(e, &arg(1))));
+            let V::Bool(skip) = skip else { return Ok(if is_err(&d) { d } else { skip }) };
+            if is_err(&d) {
+                return Ok(d);
+            }
+            let mut parts = Vec::new();
+            for x in a.iter().skip(2) {
+                match x {
+                    V::Range(g) => {
+                        let (rows, cols) = e.used(g.s);
+                        for i in 0..g.rows().min(rows.saturating_sub(g.r1)) {
+                            for j in 0..g.cols().min(cols.saturating_sub(g.c1)) {
+                                parts.push(e.value((g.s, g.r1 + i, g.c1 + j)));
+                            }
+                        }
+                    }
+                    other => parts.push(other.clone()),
+                }
+            }
+            parts.iter().find(|v| is_err(v)).cloned().unwrap_or_else(|| V::Str(parts.iter().map(to_str).filter(|s| !skip || !s.is_empty()).collect::<Vec<_>>().join(&to_str(&d))))
+        }
+        "REPT" => {
+            let (s, k) = (scalar(e, &arg(0)), to_num(&scalar(e, &arg(1))));
+            match (first_err(&[&s, &k]), k) {
+                (Some(bad), _) => bad,
+                (None, V::Num(k)) => {
+                    let s = to_str(&s);
+                    if k < 0.0 || k * units(&s).len() as f64 > 65_535.0 { err(VALUE) } else { V::Str(s.repeat(k.floor() as usize)) }
+                }
+                _ => err(VALUE),
+            }
+        }
+        "EXACT" => {
+            let (x, y) = (scalar(e, &arg(0)), scalar(e, &arg(1)));
+            first_err(&[&x, &y]).unwrap_or_else(|| V::Bool(to_str(&x) == to_str(&y)))
+        }
+        "FIND" | "SEARCH" => {
+            let (needle, hay) = (scalar(e, &arg(0)), scalar(e, &arg(1)));
+            let st = if a.get(2).is_none_or(|x| *x == V::Missing) { V::Num(1.0) } else { to_num(&scalar(e, &arg(2))) };
+            match (first_err(&[&needle, &hay, &st]), st) {
+                (Some(bad), _) => bad,
+                (None, V::Num(st)) if st < 1.0 => err(VALUE),
+                (None, V::Num(st)) => {
+                    let fold = |v: &V| if name == "SEARCH" { to_str(v).to_lowercase() } else { to_str(v) };
+                    let (nd, hy) = (units(&fold(&needle)), units(&fold(&hay)));
+                    index_of(&hy, &nd, js_index(hy.len(), st - 1.0)).map_or(err(VALUE), |at| n(at as f64 + 1.0))
+                }
+                _ => err(VALUE),
+            }
+        }
+        "SUBSTITUTE" => {
+            let (s, from, to) = (scalar(e, &arg(0)), scalar(e, &arg(1)), scalar(e, &arg(2)));
+            if let Some(bad) = first_err(&[&s, &from, &to]) {
+                return Ok(bad);
+            }
+            let (s, f, t) = (to_str(&s), to_str(&from), to_str(&to));
+            if f.is_empty() {
+                return Ok(V::Str(s));
+            }
+            if a.get(3).is_none_or(|x| *x == V::Missing) {
+                return Ok(V::Str(s.replace(&f, &t)));
+            }
+            // the one named: the first, the second. As JavaScript counts, in UTF-16 units
+            let k = match to_num(&scalar(e, &arg(3))) {
+                V::Num(k) => k,
+                bad => return Ok(bad),
+            };
+            let (su, fu) = (units(&s), units(&f));
+            let mut at: f64 = -1.0;
+            let mut i = 0.0;
+            while i < k {
+                match index_of(&su, &fu, (at + 1.0) as usize) {
+                    Some(hit) => at = hit as f64,
+                    None => return Ok(V::Str(s)),
+                }
+                i += 1.0;
+            }
+            V::Str(text_of(&slice(&su, 0.0, at)) + &t + &text_of(&slice(&su, at + fu.len() as f64, f64::INFINITY)))
+        }
+        "REPLACE" => {
+            let (s, st, k, w) = (scalar(e, &arg(0)), to_num(&scalar(e, &arg(1))), to_num(&scalar(e, &arg(2))), scalar(e, &arg(3)));
+            match (first_err(&[&s, &st, &k, &w]), st, k) {
+                (Some(bad), ..) => bad,
+                (None, V::Num(st), V::Num(k)) => {
+                    let ch: Vec<char> = to_str(&s).chars().collect();
+                    V::Str(slice(&ch, 0.0, st - 1.0).into_iter().collect::<String>() + &to_str(&w) + &slice(&ch, st - 1.0 + k, f64::INFINITY).into_iter().collect::<String>())
+                }
+                _ => err(VALUE),
+            }
+        }
+        "VALUE" => {
+            let v = scalar(e, &arg(0));
+            let got = match &v {
+                V::Str(s) => to_num(&V::Str(s.replace(',', ""))),
+                other => to_num(other),
+            };
+            // text that is no number is Calc's own error for it
+            if got == err(VALUE) { err(ILLEGAL) } else { got }
+        }
+        "CHAR" => num1!(|x| if !(1.0..=255.0).contains(&x) { err(ARG) } else { V::Str(char::from_u32(x as u32).map_or(String::new(), String::from)) }),
         _ => return Err(Unsupported),
     })
 }
