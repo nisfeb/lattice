@@ -10746,9 +10746,10 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let name = text(title.to_owned()).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate();
     // the name is the way to move or rename the page, as on the web
     let name = if page && remote.is_none() && !s.editing {
-        row().key("rename").role("button").label(format!("{title}: move or rename")).help("Move or rename").min_w(0.0).px(6.0).h(24.0).center_y().radius(k.radius.sm).on_press(ask_rename).child(name)
+        row().key("rename").role("button").label(format!("{title}: move or rename")).help("Move or rename").min_w(0.0).shrink().px(6.0).h(24.0).center_y().radius(k.radius.sm).on_press(ask_rename).child(name.min_w(0.0).shrink())
     } else {
-        row().min_w(0.0).px(6.0).center_y().child(name)
+        // a long name gives way to what stands beside it, cut short with its whole self on hover
+        row().min_w(0.0).shrink().px(6.0).center_y().child(name.min_w(0.0).shrink().help_when_truncated(title.to_owned()))
     };
     let leading = row()
         .gap(2.0)
@@ -10796,7 +10797,17 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         all
     };
     // under the top bar, the page's own bar: where it has been, its name, and what can be done with it
-    let head = row().key("tab-head").w_full().h(36.0).px(8.0).gap(8.0).center_y().justify_between().child(leading.grow(1.0).min_w(0.0)).child(trailing);
+    // while editing the tools are many. In a narrow pane, as with the right pane open, they take a row of
+    // their own under the name, where they drew over it
+    let narrow = s.editing && s.groups_room.0 > 0.0 && s.groups_room.0 < 720.0;
+    let head = if narrow {
+        col().key("tab-head").w_full().px(8.0)
+            .child(row().w_full().h(32.0).center_y().child(leading.grow(1.0).min_w(0.0)))
+            // and wrap among themselves when even that row is too short for them
+            .child(trailing.w_full().min_w(0.0).min_h(32.0).py(2.0).flex_wrap().justify_end())
+    } else {
+        row().key("tab-head").w_full().h(36.0).px(8.0).gap(8.0).center_y().justify_between().child(leading.grow(1.0).min_w(0.0)).child(trailing)
+    };
     // the room the groups have is noted as it is laid out: a split is refused when it is too little for two
     let main = col().w_full().h_full().min_h(0.0).child(head).child(col().key("groups").w_full().grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.groups_room = (r[2], r[3])).child(main));
     let inset = cx.titlebar_inset();
