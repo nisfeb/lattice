@@ -114,6 +114,8 @@ struct Forum {
     editing: Option<Box<[TextEdit; 2]>>,
     /// The board showing being moderated.
     moding: Option<Moding>,
+    /// The address typed of a board on another ship.
+    address: TextEdit,
     /// The posts other ships refused, once read: why, and where and when. And whether they are what shows.
     notes: Option<Vec<(String, String)>>,
     notes_open: bool,
@@ -3892,10 +3894,14 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
             (Ok(ForumGot::Board(b)), Some(f)) => {
                 (f.board, f.thread) = (Some(b), None);
+                if s.note.starts_with("reading ") {
+                    s.note.clear();
+                }
                 // what was being sent landed: the thread written is let go
                 if std::mem::take(&mut f.sending) {
                     // a thread written, or the board's own title and description changed
-                    s.note = if f.editing.is_some() { "changed".into() } else { "posted".into() };
+                    let away = f.board.as_ref().is_some_and(|b| b.board.starts_with('~'));
+                    s.note = if f.editing.is_some() { "changed".into() } else if away { SENT_AWAY.into() } else { "posted".into() };
                     (f.draft, f.editing) = (None, None);
                 }
             }
@@ -3913,7 +3919,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 f.thread = Some(th);
                 if std::mem::take(&mut f.sending) {
                     (f.comment, f.reply) = (TextEdit::new(""), None);
-                    s.note = "sent".into();
+                    s.note = if f.thread.as_ref().is_some_and(|t| t.board.starts_with('~')) { SENT_AWAY.into() } else { "sent".into() };
                 }
             }
             // what was written stays, to be sent again or changed
@@ -4881,6 +4887,21 @@ fn go_forum(s: &mut App) {
     }
 }
 
+/// What is said of a thread or a comment sent to a board on another ship: that ship takes it or refuses it in its own time.
+const SENT_AWAY: &str = "sent to the board's ship. It shows here once that ship has taken it, and under Refusals if it does not";
+
+/// Opens the board whose address is typed, or the thread when the address names one.
+fn forum_go(s: &mut App) {
+    let Some((c, f)) = s.conn.as_ref().zip(s.forum.as_mut()) else { return };
+    match api::board_key(&f.address.text, c.ship()) {
+        Ok((board, post)) => {
+            s.note = format!("reading {board}\u{2026}");
+            forum_open(s, board, post);
+        }
+        Err(why) => s.note = why,
+    }
+}
+
 /// Reads a board of the forum, or with a number one of its threads, and shows it when it lands.
 fn forum_open(s: &mut App, board: String, post: Option<u64>) {
     let Some(c) = s.conn.clone() else { return };
@@ -4954,7 +4975,8 @@ fn forum_submit(s: &mut App) {
     s.forum_req.request((c, board), move |(c, board)| {
         c.forum_submit(&board, &title, &link, &body, &tags)?;
         let now = c.forum_board(&board)?;
-        if now.count <= had { Err("the ship did not take that thread: its board may not let you post, or the thread is too long".into()) } else { Ok(ForumGot::Board(now)) }
+        // another ship takes a thread in its own time: it is not yet there to count
+        if now.count <= had && !board.starts_with('~') { Err("the ship did not take that thread: its board may not let you post, or the thread is too long".into()) } else { Ok(ForumGot::Board(now)) }
     });
 }
 
@@ -4973,7 +4995,7 @@ fn forum_comment(s: &mut App) {
     s.forum_req.request((c, board), move |(c, board)| {
         c.forum_comment(&board, post, parent, &body)?;
         let now = c.forum_thread(&board, post)?;
-        if now.comments.len() <= had { Err("the ship did not take that comment: the board may not let you post, or it is too long".into()) } else { Ok(ForumGot::Thread(now)) }
+        if now.comments.len() <= had && !board.starts_with('~') { Err("the ship did not take that comment: the board may not let you post, or it is too long".into()) } else { Ok(ForumGot::Thread(now)) }
     });
 }
 
@@ -5305,6 +5327,8 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
         // the board itself: its title and description changed, shown to all or to its members, or deleted
         let (title, description, public, name) = (b.title.clone(), b.description.clone(), b.public, b.board.clone());
         match &f.editing {
+            // a board on another ship is its owner's to change
+            None if name.starts_with('~') => {}
             None => {
                 page = page.child(
                     row()
@@ -5452,6 +5476,15 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
                 .build(k)
                 .key("notes-open"),
         ),
+    );
+    page = page.child(
+        row()
+            .key("board-away")
+            .w_full()
+            .gap(6.0)
+            .center_y()
+            .child(TextInput::new(&f.address).label("A board on another ship").placeholder("urb://~sampel-palnet/forum/board").on_edit(|s: &mut App| &mut s.forum.as_mut().expect("the forum is showing").address).on_submit(|s: &mut App, _| forum_go(s)).build(k).grow(1.0).key("board-address"))
+            .child(Button::new("Open").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Read a board on another ship by its address").on_press(forum_go).build(k).key("board-go")),
     );
     match &f.making {
         None => {

@@ -936,6 +936,31 @@ pub fn prune_rule(score: &str, days: &str) -> Result<(u64, u64), String> {
     }
 }
 
+/// A board as typed by its address, and the thread when the address
+/// names one: `urb://~ship/forum/board`, with or without `urb://` and
+/// `forum/`, and a thread's number after. A board on another ship is
+/// kept as `~ship/board`, and one on `own` as its bare name, which is
+/// how every forum call here tells whose board it is.
+pub fn board_key(typed: &str, own: &str) -> Result<(String, Option<u64>), String> {
+    let why = || "a board's address is urb://~ship/forum/board".to_owned();
+    let t = typed.trim().trim_start_matches("urb://").trim_end_matches('/');
+    let mut parts: Vec<&str> = t.split('/').collect();
+    if parts.len() >= 2 && parts[1] == "forum" {
+        parts.remove(1);
+    }
+    let (ship, name, post) = match parts[..] {
+        [ship, name] => (ship, name, None),
+        [ship, name, post] => (ship, name, Some(post.parse::<u64>().map_err(|_| why())?)),
+        _ => return Err(why()),
+    };
+    let ship = ship_name(ship).filter(|_| ship.starts_with('~')).ok_or_else(why)?;
+    let term = name.starts_with(|c: char| c.is_ascii_lowercase()) && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !term {
+        return Err(why());
+    }
+    Ok((if ship == own { name.to_owned() } else { format!("{ship}/{name}") }, post))
+}
+
 /// The tags typed for a thread, as the ship takes them: five at most,
 /// each lowercase letters, digits and dashes, starting with a letter,
 /// twenty-four characters at most. Commas or spaces part them, and a
@@ -1113,8 +1138,11 @@ impl Conn {
     /// answers the same when its rules refuse what was sent: the board is read again to see.
     fn forum_form(&self, path: &str, fields: &[(&str, &str)]) -> Result<(), String> {
         let body = fields.iter().map(|(k, v)| format!("{k}={}", enc(v))).collect::<Vec<_>>().join("&");
-        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
-        let res = agent.post(&format!("{}/apps/lattice/forum/{path}", self.url)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&body);
+        // the ship waits on another ship before it answers for a board there: about 30 s when that ship is not reachable
+        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(90)).build();
+        // a board on another ship (`~ship/board`) has the same forms under its own route, which the ship sends on to that ship
+        let root = if path.starts_with('~') { "forum-remote" } else { "forum" };
+        let res = agent.post(&format!("{}/apps/lattice/{root}/{path}", self.url)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&body);
         match res {
             Ok(_) => Ok(()),
             Err(ureq::Error::Status(code, _)) if (300..400).contains(&code) => Ok(()),
@@ -1263,20 +1291,34 @@ impl Conn {
     /// One of this ship's boards, with its threads and the text beside them.
     pub fn forum_board(&self, board: &str) -> Result<Board, String> {
         let mut b = self.board_bare(board)?;
-        // the moderation page is the only place the ship gives that text. A board read without it is still read
-        b.sidebar = self.forum_mod(board).map(|m| m.sidebar).unwrap_or_default();
+        // the moderation page is the only place the ship gives that text, and only of its own boards. A board read without it is still read
+        if !board.contains('/') {
+            b.sidebar = self.forum_mod(board).map(|m| m.sidebar).unwrap_or_default();
+        }
         Ok(b)
     }
 
+    /// The address of a board: this ship's by its name, another ship's as `~ship/board`.
+    fn board_url(&self, board: &str) -> String {
+        match board.split_once('/') {
+            Some((ship, name)) => format!("urb://{ship}/forum/{name}"),
+            None => format!("urb://{}/forum/{board}", self.ship()),
+        }
+    }
+
     fn board_bare(&self, board: &str) -> Result<Board, String> {
-        let url = format!("urb://{}/forum/{board}", self.ship());
-        serde_json::from_str(&self.call("GET", &format!("urb-read?url={}", enc(&url)), None)?).map_err(|e| e.to_string())
+        let mut b: Board = serde_json::from_str(&self.call_in(60, "GET", &format!("urb-read?url={}", enc(&self.board_url(board))), None)?).map_err(|e| e.to_string())?;
+        // what is done to it next goes by the same name it was read by
+        b.board = board.to_owned();
+        Ok(b)
     }
 
     /// A thread of one of this ship's boards, with its text and comments.
     pub fn forum_thread(&self, board: &str, post: u64) -> Result<Thread, String> {
-        let url = format!("urb://{}/forum/{board}/{post}", self.ship());
-        serde_json::from_str(&self.call("GET", &format!("urb-read?url={}", enc(&url)), None)?).map_err(|e| e.to_string())
+        let url = format!("{}/{post}", self.board_url(board));
+        let mut th: Thread = serde_json::from_str(&self.call_in(60, "GET", &format!("urb-read?url={}", enc(&url)), None)?).map_err(|e| e.to_string())?;
+        th.board = board.to_owned();
+        Ok(th)
     }
 
     /// The core memories an agent key wrote, which every session loads as rules until the owner keeps or untags each. Keys with their slashes, in order.
@@ -2037,6 +2079,19 @@ mod tests {
     }
 
     #[test]
+    fn a_boards_address_reads_as_whose_board_it_is() {
+        let key = |t: &str| board_key(t, "~zod");
+        assert_eq!(key("urb://~nec/forum/chat"), Ok(("~nec/chat".into(), None)));
+        assert_eq!(key(" ~sampel-palnet/forum/b2/14/ "), Ok(("~sampel-palnet/b2".into(), Some(14))));
+        assert_eq!(key("~nec/chat/3"), Ok(("~nec/chat".into(), Some(3))));
+        // this ship's own board is read the plain way
+        assert_eq!(key("urb://~zod/forum/chat"), Ok(("chat".into(), None)));
+        for bad in ["", "chat", "~nec", "nec/chat", "~nec/Chat", "~nec/forum", "~nec/chat/x", "~nec/a/1/2", "urb://~nec/pages/chat/1/2"] {
+            assert!(key(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn pruning_is_checked_before_it_is_sent() {
         assert_eq!(prune_rule(" 0 ", "1"), Ok((0, 1)));
         assert!(prune_rule("-1", "3").is_err() && prune_rule("2", "0").is_err() && prune_rule("2", "").is_err() && prune_rule("x", "3").is_err());
@@ -2077,6 +2132,25 @@ mod tests {
         assert_eq!(c.forum_invite(&name, "~nec", true), Ok(false));
         c.forum_invite(&name, "~nec", false).unwrap();
         assert!(c.forum_invite(&name, c.ship(), true).unwrap_err().starts_with("400"), "the owner is not invited to their own board");
+        c.forum_board_delete(&name).unwrap();
+    }
+
+    /// A board by its address against one ship: its own is read the plain way, and one on a ship that is not there is said so, not hung on.
+    #[test]
+    #[ignore]
+    fn live_forum_away() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let name = format!("away-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        c.forum_new(&name, "Here", "", "poster").unwrap();
+        let (key, post) = board_key(&format!("urb://{}/forum/{name}", c.ship()), c.ship()).unwrap();
+        assert_eq!((key.as_str(), post), (name.as_str(), None));
+        assert_eq!(c.forum_board(&key).unwrap().title, "Here");
+        let (key, _) = board_key("urb://~nec/forum/chat", c.ship()).unwrap();
+        let why = c.forum_board(&key).unwrap_err();
+        assert!(why.starts_with("504") && why.contains("does not answer"), "{why}");
+        assert!(c.forum_thread(&key, 1).unwrap_err().starts_with("504"));
+        // a thread sent there is handed to this ship, which answers as it does for any form
+        c.forum_submit(&key, "Hello", "", "text", &[]).unwrap();
         c.forum_board_delete(&name).unwrap();
     }
 
