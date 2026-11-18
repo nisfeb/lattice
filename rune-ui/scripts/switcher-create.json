@@ -1,4 +1,4 @@
 {"events": [
-  {"t": 1.5, "type": "key", "name": "k", "cmd": true},
+  {"t": 1.5, "type": "key", "name": "o", "cmd": true},
   {"t": 2.0, "type": "type", "text": "plans/tod"}
 ]}

@@ -7883,7 +7883,8 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .on_edit(|s: &mut App| &mut s.query)
         .on_change(|s: &mut App, _| refilter(s))
         .build(k)
-        .w_full();
+        .w_full()
+        .key("filter");
     let half = |key: &str, label: String, on: bool| {
         Button::new(label)
             .control_size(ControlSize::Small)
@@ -8434,9 +8435,95 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     rune_kit::root(shell, layer).on_drop_files(|s: &mut App, files, _| upload(s, files.to_vec())).on_drop_hover(|s: &mut App, over, _| s.dropping = over)
 }
 
+/// A chord the web client binds (`ui-src/lattice`: 21-tabs, 23-tabhead,
+/// 24-tools, 26-palette, 28-splits, 30-tree, 79-search), as what it does here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Chord {
+    /// Ctrl+K and Ctrl+P: the commands.
+    Palette,
+    /// Ctrl+O: the pages by name. Ctrl+Shift+F: the same list, which finds by text too.
+    Jump,
+    /// Ctrl+,
+    Settings,
+    /// Ctrl+Tab and Ctrl+Shift+Tab: the next tab and the one before, around the ends.
+    Tab(bool),
+    /// Ctrl+E while editing: back to reading, with what was typed saved. Vim keeps the chord while its editor is on.
+    Read,
+    /// Ctrl+Shift+L: the pages' list, with its filter to type in.
+    Files,
+    /// Ctrl+\: the page held beside, or let go.
+    Split,
+    /// Delete, with nothing typed into: the page showing, asked first.
+    Delete,
+}
+
+fn chord(s: &App, ev: &KeyEvent) -> Option<Chord> {
+    let m = ev.mods;
+    if ev.key == Key::Tab && m.ctrl && !m.alt {
+        return (!s.editing && s.tabs.len() > 1).then_some(Chord::Tab(!m.shift));
+    }
+    if ev.key == Key::Delete && m == rune::Mods::default() {
+        return (page_changes(s) && s.open.is_some() && s.prompt.is_none() && s.palette.is_none() && s.jump.is_none()).then_some(Chord::Delete);
+    }
+    if m.alt {
+        return None;
+    }
+    if m.shift {
+        return if ev.is_command('f') && !s.editing {
+            Some(Chord::Jump)
+        } else if ev.is_command('l') {
+            Some(Chord::Files)
+        } else {
+            None
+        };
+    }
+    if (ev.is_command('k') || ev.is_command('p')) && !s.editing {
+        // with vim on, Ctrl+P in its editor is vim's own
+        Some(Chord::Palette)
+    } else if ev.is_command('o') && !s.editing {
+        Some(Chord::Jump)
+    } else if ev.is_command(',') && !s.editing {
+        Some(Chord::Settings)
+    } else if ev.is_command('e') && s.editing && !(s.prefs.vim && !s.rich) {
+        Some(Chord::Read)
+    } else if ev.is_command('\\') && !s.editing {
+        Some(Chord::Split)
+    } else {
+        None
+    }
+}
+
 fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if s.conn.is_none() && !s.sample {
         return false;
+    }
+    if let Some(c) = chord(s, ev) {
+        let ask = |s: &mut App, jump: bool| {
+            let mut q = TextEdit::new("");
+            q.focused = true;
+            if jump {
+                (s.jump, s.jump_at) = (Some(q), 0);
+            } else {
+                (s.palette, s.palette_at) = (Some(q), 0);
+            }
+        };
+        match c {
+            Chord::Palette => ask(s, false),
+            Chord::Jump => ask(s, true),
+            Chord::Settings => go_settings(s),
+            Chord::Tab(next) => {
+                let n = s.tabs.len();
+                switch_tab(s, if next { (s.tab + 1) % n } else { (s.tab + n - 1) % n });
+            }
+            Chord::Read => save(s),
+            Chord::Files => {
+                s.sidebar.set_open(true);
+                tx.focus_when_shown("filter", false);
+            }
+            Chord::Split => toggle_split(s),
+            Chord::Delete => ask_delete(s),
+        }
+        return true;
     }
     if ev.mods.alt && matches!(ev.key, Key::Left | Key::Right) {
         step(s, if ev.key == Key::Left { -1 } else { 1 });
@@ -8460,20 +8547,6 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
     }
     if ev.is_command('w') && !s.editing && s.tabs.len() > 1 {
         close_tab(s, s.tab);
-        return true;
-    }
-    if ev.is_command('p') && !s.editing {
-        let mut q = TextEdit::new("");
-        q.focused = true;
-        s.palette = Some(q);
-        s.palette_at = 0;
-        return true;
-    }
-    if (ev.is_command('k') || ev.is_command('o')) && !s.editing {
-        let mut q = TextEdit::new("");
-        q.focused = true;
-        s.jump = Some(q);
-        s.jump_at = 0;
         return true;
     }
     if ev.is_command('s') && s.editing {
@@ -9227,6 +9300,37 @@ mod tests {
     /// Whether the editor's key handler took a typed character.
     fn editor_key_plain(s: &mut App, ch: &str) -> bool {
         s.prefs.vim && !s.rich && vim_take(s, &KeyEvent { key: Key::Text(ch.into()), mods: rune::Mods::default() })
+    }
+
+    #[test]
+    fn the_web_clients_chords_are_read_as_what_they_do_here() {
+        let mut s = sample("welcome");
+        let m = rune::Mods::default();
+        let cmd = |c: char, shift: bool| KeyEvent { key: Key::Command(c), mods: rune::Mods { cmd: true, ctrl: true, shift, ..m } };
+        assert_eq!([chord(&s, &cmd('k', false)), chord(&s, &cmd('p', false))], [Some(Chord::Palette); 2]);
+        assert_eq!([chord(&s, &cmd('o', false)), chord(&s, &cmd('f', true))], [Some(Chord::Jump); 2]);
+        assert_eq!(chord(&s, &cmd('f', false)), None, "plain Ctrl+F is find in the page, handled as before");
+        assert_eq!((chord(&s, &cmd(',', false)), chord(&s, &cmd('l', true)), chord(&s, &cmd('\\', false))), (Some(Chord::Settings), Some(Chord::Files), Some(Chord::Split)));
+        // Delete asks about the page showing, and only with nothing else open to type into
+        let del = KeyEvent { key: Key::Delete, mods: m };
+        assert_eq!(chord(&s, &del), Some(Chord::Delete));
+        s.prompt = Some(Prompt::Delete("welcome".into()));
+        assert_eq!(chord(&s, &del), None);
+        s.prompt = None;
+        // one tab: nothing to go round. Two: forward, and back with Shift
+        let tab = |shift| KeyEvent { key: Key::Tab, mods: rune::Mods { ctrl: true, shift, ..m } };
+        assert_eq!(chord(&s, &tab(false)), None);
+        new_tab(&mut s);
+        assert_eq!((chord(&s, &tab(false)), chord(&s, &tab(true))), (Some(Chord::Tab(true)), Some(Chord::Tab(false))));
+        assert_eq!(chord(&s, &KeyEvent { key: Key::Tab, mods: m }), None, "a plain Tab is the focus's");
+        // editing: the commands and the tabs wait, and Ctrl+E goes back to reading
+        open_page(&mut s, "welcome");
+        start_edit(&mut s);
+        assert_eq!([chord(&s, &cmd('k', false)), chord(&s, &cmd('o', false)), chord(&s, &cmd(',', false)), chord(&s, &tab(false)), chord(&s, &del)], [None; 5]);
+        assert_eq!(chord(&s, &cmd('e', false)), Some(Chord::Read));
+        // with vim on, in its editor, the chord is vim's
+        (s.prefs.vim, s.rich) = (true, false);
+        assert_eq!(chord(&s, &cmd('e', false)), None);
     }
 
     #[test]
