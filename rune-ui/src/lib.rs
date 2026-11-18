@@ -635,6 +635,10 @@ struct App {
     group_share: Vec<f32>,
     /// Where each group that is not in front stands in the window, as last laid out: for a tab dropped on one.
     group_rects: Vec<[f32; 4]>,
+    /// Where the group in front stands, for a tab of another group dropped on it.
+    front_rect: [f32; 4],
+    /// The tabs of each group that is not in front while one is pressed or dragged, by where the group stands.
+    group_drag: [rune_kit::shell::TabDragState; splits::MOST],
     /// The shares as they stood when a line between groups was pressed, while it is dragged.
     share_base: Option<Vec<f32>>,
     /// The groups are one above the other, not side by side.
@@ -955,6 +959,8 @@ fn init() -> App {
         place_share: Vec::new(),
         group_share: Vec::new(),
         group_rects: Vec::new(),
+        front_rect: [0.0; 4],
+        group_drag: std::array::from_fn(|_| rune_kit::shell::TabDragState::new()),
         share_base: None,
         split_down: false,
         groups_room: (0.0, 0.0),
@@ -5759,15 +5765,11 @@ fn toggle_split(s: &mut App) {
 /// refused when a group would have less than its least room.
 fn split_press(s: &mut App, down: bool) {
     let press = splits::press(!s.tgroups.is_empty(), s.split_down, down);
-    let (outer, runs) = match press {
-        splits::Press::Make => (down, vec![1, 1]),
-        splits::Press::Outer => (s.split_down, splits::added(&s.runs, s.front_at, false).0),
-        splits::Press::Inner => (s.split_down, splits::added(&s.runs, s.front_at, true).0),
-    };
-    if let Some(why) = splits::refused(s.groups_room, outer, &runs) {
+    if let Some(why) = split_refused(s, down) {
         s.note = why;
         return;
     }
+    let outer = if press == splits::Press::Make { down } else { s.split_down };
     s.split_down = outer;
     add_group(s, press == splits::Press::Inner);
     if s.prefs.split_down != s.split_down {
@@ -5776,6 +5778,24 @@ fn split_press(s: &mut App, down: bool) {
             s.prefs.save();
         }
     }
+}
+
+/// Why a press on a split button would be refused now, or nothing: four
+/// groups is the most, and what would be split, the room, the front
+/// group's place or the front group, must be room for two that way.
+fn split_refused(s: &App, down: bool) -> Option<String> {
+    let press = splits::press(!s.tgroups.is_empty(), s.split_down, down);
+    if press != splits::Press::Make && s.tgroups.len() >= splits::MOST {
+        return Some("Four groups is the most there can be".to_owned());
+    }
+    let room = if down { s.groups_room.1 } else { s.groups_room.0 };
+    // the share of the room that way that what is split has now
+    let share = match press {
+        splits::Press::Make => 1.0,
+        splits::Press::Outer => splits::run_of(&s.runs, s.front_at).and_then(|r| s.place_share.get(r)).copied().unwrap_or(1.0),
+        splits::Press::Inner => s.group_share.get(s.front_at).copied().unwrap_or(1.0),
+    };
+    splits::halves(room * share, down)
 }
 
 /// Puts the groups in order after a change: a group that is not in
@@ -5945,6 +5965,7 @@ fn keep_split(s: &mut App) {
     }
 }
 
+#[cfg(test)]
 /// Brings the page held beside to the front, and holds the one that was there.
 fn swap_split(s: &mut App) {
     if let Some((d, at)) = s.tgroups.iter().enumerate().find(|(d, _)| *d != s.front_at).map(|(d, g)| (d, g.at)) {
@@ -6064,23 +6085,40 @@ fn split_view(d: usize, s: &App, k: &Kit) -> El {
     let c = &k.c;
     let Some(group) = s.tgroups.get(d) else { return el() };
     let name = group.page().unwrap_or("");
-    // the group's own tabs: a press on one brings the group to the front on it
-    let mut tabs = row().key(format!("g{d}-tabs")).role("tablist").label("Tabs of a group that is not in front").gap(2.0).center_y().grow(1.0).min_w(0.0);
-    for (i, tab) in group.tabs.iter().enumerate() {
-        let page = tab.page().unwrap_or("");
-        let label = s.dnames.get(page).cloned().unwrap_or_else(|| page.rsplit('/').next().unwrap_or(page).to_owned());
-        let front = i == group.at;
-        tabs = tabs.child(
-            row()
-                .key(format!("g{d}-tab-{i}"))
-                .center_y()
-                .radius(k.radius.sm)
-                .fill(if front { c.layer_01 } else { rune::Color::TRANSPARENT })
-                .min_w(0.0)
-                .child(Button::new(label).control_size(ControlSize::Small).variant(if front { ButtonVariant::Ghost } else { ButtonVariant::GhostMuted }).help(format!("{page}: bring this group to the front")).disabled(s.editing).on_press(move |s: &mut App| focus_group(s, d, i)).build(k).key(format!("g{d}-tab-{i}-go")))
-                .child(IconButton::new(&head::X).control_size(ControlSize::Small).variant(IconButtonVariant::GhostMuted).help("Close this tab").on_press(move |s: &mut App| close_group_tab(s, d, i)).build(k).key(format!("g{d}-close-{i}"))),
-        );
+    // the group's own tabs, as rune-kit's strip: a press on one brings the group to the front on it, and a tab
+    // is dragged along it, or off it to another group. Its drag state is reached by a plain function, so there
+    // is one for each place a group can stand
+    fn drag<const D: usize>(s: &mut App) -> &mut rune_kit::shell::TabDragState {
+        &mut s.group_drag[D]
     }
+    let access: fn(&mut App) -> &mut rune_kit::shell::TabDragState = match d {
+        0 => drag::<0>,
+        1 => drag::<1>,
+        2 => drag::<2>,
+        _ => drag::<3>,
+    };
+    let labels: Vec<String> = group.tabs.iter().map(|tab| tab.page().map_or(String::new(), |page| s.dnames.get(page).cloned().unwrap_or_else(|| page.rsplit('/').next().unwrap_or(page).to_owned()))).collect();
+    let ids: Vec<String> = (0..group.tabs.len()).map(|i| format!("g{d}-{i}")).collect();
+    let at_of = |id: &str| id.rsplit('-').next().and_then(|i| i.parse::<usize>().ok());
+    let tabs = rune_kit::shell::TabStrip::new(format!("g{d}-tabs"), rune_kit::shell::TabOrientation::Horizontal)
+        .tabs(labels.iter().zip(&ids).map(|(label, id)| rune_kit::shell::TabItem::new(id.as_str(), label.as_str()).closable(true)))
+        .active(ids.get(group.at).map(String::as_str))
+        .select_on_drag_start(false)
+        .drag_state(&s.group_drag[d.min(splits::MOST - 1)], access)
+        .on_select(move |s: &mut App, id, _| {
+            if let Some(i) = at_of(id) {
+                focus_group(s, d, i);
+            }
+        })
+        .on_close(move |s: &mut App, id, _| {
+            if let Some(i) = at_of(id) {
+                close_group_tab(s, d, i);
+            }
+        })
+        .on_reorder(move |s: &mut App, r: rune_kit::shell::TabReorder, _| reorder_group_tab(s, d, r.from, r.to))
+        .tear_out(Some(rune_kit::shell::TearOutSpec { lone: true, ..Default::default() }))
+        .on_tear_out(move |s: &mut App, t: rune_kit::shell::TabTearOut, _| drop_group_tab(s, d, t.index, t.window_point))
+        .build(k);
     let at = group.at;
     let head = row()
         .w_full()
@@ -6226,7 +6264,6 @@ fn tab_label(s: &App, i: usize) -> String {
 
 /// The top bar's strip: the tabs, always shown, then new tab and split.
 fn tab_strip(s: &App, k: &Kit) -> El {
-    let c = &k.c;
     let labels: Vec<String> = (0..s.tabs.len()).map(|i| tab_label(s, i)).collect();
     let memory = s.memory.then(|| s.open.as_ref().map_or("", |p| p.name.as_str()));
     let (can_new, can_split) = topbar::tools(s.editing, s.memory, usable(s, "split"));
@@ -6235,12 +6272,7 @@ fn tab_strip(s: &App, k: &Kit) -> El {
         let on = split && s.split_down == down;
         // a split there is no room for is refused, and its button says why
         let press = splits::press(split, s.split_down, down);
-        let (outer, runs) = match press {
-            splits::Press::Make => (down, vec![1, 1]),
-            splits::Press::Outer => (s.split_down, splits::added(&s.runs, s.front_at, false).0),
-            splits::Press::Inner => (s.split_down, splits::added(&s.runs, s.front_at, true).0),
-        };
-        let why = splits::refused(s.groups_room, outer, &runs);
+        let why = split_refused(s, down);
         let says = match (&why, press, down) {
             (Some(why), ..) => why.clone(),
             (_, splits::Press::Make, false) => "Split right: hold this page beside the next one you open".to_owned(),
@@ -6307,6 +6339,56 @@ fn move_tab_to_group(s: &mut App, i: usize, d: usize) {
     (g.at, g.view) = (g.tabs.len() - 1, None);
     sync_groups(s);
     keep_tabs(s);
+}
+
+/// A tab of the group standing at `from`, not the one in front, goes to
+/// the group standing at `to`: to the end of its tabs, where it is the
+/// one shown. Going to the group in front, it comes to the front. A
+/// group left with no tab is gone.
+fn move_group_tab(s: &mut App, from: usize, i: usize, to: usize) {
+    if from == s.front_at {
+        return move_tab_to_group(s, i, to);
+    }
+    if s.editing || s.memory || from == to || to >= s.tgroups.len() || s.tgroups.get(from).is_none_or(|g| i >= g.tabs.len()) {
+        return;
+    }
+    let g = &mut s.tgroups[from];
+    let tab = g.tabs.remove(i);
+    if g.at > i {
+        g.at -= 1;
+    }
+    g.view = None;
+    if to == s.front_at {
+        park_tab(s);
+        s.tabs.push(tab);
+        let last = s.tabs.len() - 1;
+        load_tab(s, last);
+    } else {
+        let g = &mut s.tgroups[to];
+        g.tabs.push(tab);
+        (g.at, g.view) = (g.tabs.len() - 1, None);
+    }
+    sync_groups(s);
+    keep_tabs(s);
+}
+
+/// A tab of a group that is not in front, dragged along its strip to another place. The one showing is followed.
+fn reorder_group_tab(s: &mut App, d: usize, from: usize, to: usize) {
+    if d == s.front_at {
+        return move_tab(s, from, to);
+    }
+    let Some(g) = s.tgroups.get_mut(d).filter(|g| from < g.tabs.len()) else { return };
+    topbar::move_in(&mut g.tabs, from, to);
+    g.at = topbar::front_after(g.at, from, to.min(g.tabs.len() - 1));
+}
+
+/// A tab of a group that is not in front, dragged off its strip and let go: over another group, or the one in front, it goes there.
+fn drop_group_tab(s: &mut App, d: usize, i: usize, at: Option<[f32; 2]>) {
+    let over = at.and_then(|p| splits::hit(&s.group_rects, p).or_else(|| splits::hit(&[s.front_rect], p).map(|_| s.front_at)));
+    match over {
+        Some(to) => move_group_tab(s, d, i, to),
+        None => s.note = "Drop a tab on another group to move it there".to_owned(),
+    }
 }
 
 /// A tab dragged off the strip and let go: over a group that is not in front, it goes to that group.
@@ -10151,7 +10233,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
                     place = place.child(rule(!s.split_down, i - 1, Some(r)));
                 }
                 let one = match main.take_if(|_| d == s.front_at) {
-                    Some(front) => col().key("group-front").child(front),
+                    Some(front) => col().key("group-front").on_layout(|s: &mut App, r| s.front_rect = r).child(front),
                     // where it stands is noted, for a tab dropped on it
                     None => col().on_layout(move |s: &mut App, r| {
                         if s.group_rects.len() <= d {
@@ -11306,6 +11388,41 @@ mod tests {
         let empty = s.tab;
         move_tab_to_group(&mut s, empty, 1);
         assert_eq!((s.tabs.len(), pages(&s, 1).len()), (3, 3));
+    }
+
+    #[test]
+    fn a_tab_of_a_group_that_is_not_in_front_is_moved_too() {
+        let pages = |s: &App, d: usize| s.tgroups[d].tabs.iter().map(|t| t.page().unwrap_or("").to_owned()).collect::<Vec<_>>();
+        let front = |s: &App| (0..s.tabs.len()).map(|i| tab_label(s, i)).collect::<Vec<_>>();
+        let mut s = sample("welcome");
+        new_tab(&mut s);
+        open_page(&mut s, "budget");
+        // three groups: the front with two tabs, then one holding places, then one holding region
+        open_page(&mut s, "region");
+        split_press(&mut s, false);
+        open_page(&mut s, "places");
+        split_press(&mut s, false);
+        open_page(&mut s, "budget");
+        assert_eq!((front(&s), pages(&s, 1), pages(&s, 2)), (vec!["welcome".to_owned(), "budget".to_owned()], vec!["places".to_owned()], vec!["region".to_owned()]));
+        // from one group to another: it goes to the end and is the one shown. A group left with none is gone
+        move_group_tab(&mut s, 1, 0, 2);
+        assert_eq!((s.tgroups.len(), pages(&s, 1), s.tgroups[1].at), (2, vec!["region".to_owned(), "places".to_owned()], 1));
+        // along its own strip: the one showing is followed
+        reorder_group_tab(&mut s, 1, 1, 0);
+        assert_eq!((pages(&s, 1), s.tgroups[1].at), (vec!["places".to_owned(), "region".to_owned()], 0));
+        // to the group in front: it joins the front's tabs at the end and comes forward
+        move_group_tab(&mut s, 1, 1, 0);
+        assert_eq!((front(&s), s.tab, s.open.as_ref().map(|p| p.name.clone())), (vec!["welcome".to_owned(), "budget".to_owned(), "region".to_owned()], 2, Some("region".to_owned())));
+        assert_eq!(pages(&s, 1), ["places"]);
+        // the last tab of the last other group going to the front ends the split
+        move_group_tab(&mut s, 1, 0, 0);
+        assert!(s.tgroups.is_empty());
+        assert_eq!(front(&s), ["welcome", "budget", "region", "places"]);
+        // not over an edit, and not to where it is
+        toggle_split(&mut s);
+        start_edit(&mut s);
+        move_group_tab(&mut s, 1, 0, 0);
+        assert_eq!((s.tgroups.len(), s.tabs.len()), (2, 4));
     }
 
     #[test]

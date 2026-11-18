@@ -38,12 +38,12 @@
   {
    "t": 11.0,
    "type": "tap",
-   "key": "g0-tab-0-go"
+   "key": "t-g0-0"
   },
   {
    "t": 14.0,
    "type": "tap",
-   "key": "g1-close-0"
+   "key": "g1-close"
   }
  ]
 }

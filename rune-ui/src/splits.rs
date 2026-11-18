@@ -17,24 +17,19 @@ pub const LEAST_H: f32 = 200.0;
 /// places, since rune-kit's table reaches its state by a plain function.
 pub const MOST: usize = 4;
 
-/// Why the room cannot hold these runs with the outer split running
-/// `down` or across, or nothing when it can. Room not yet measured
+/// Why what is split cannot be halved that way, or nothing when it can:
+/// `extent` is how much room it has that way, and each half must keep a
+/// group's least. This is the web client's rule: it is the group being
+/// split that is measured, not the whole room. Room not yet measured
 /// refuses nothing.
-pub fn refused(room: (f32, f32), down: bool, runs: &[usize]) -> Option<String> {
-    if runs.iter().sum::<usize>() > MOST {
-        return Some("Four groups is the most there can be".to_owned());
-    }
-    if room.0 <= 0.0 || room.1 <= 0.0 {
+pub fn halves(extent: f32, down: bool) -> Option<String> {
+    if extent <= 0.0 {
         return None;
     }
-    // how many stand side by side at the most, and how many one above the other
-    let (places, deepest) = (runs.len(), runs.iter().copied().max().unwrap_or(1));
-    let (across, stacked) = if down { (deepest, places) } else { (places, deepest) };
-    // only a way that is split is held to its least: one group alone takes what there is
-    if across > 1 && room.0 < across as f32 * LEAST_W {
+    if !down && extent < 2.0 * LEAST_W {
         return Some(format!("Not enough room: each group needs at least {LEAST_W} points across"));
     }
-    if stacked > 1 && room.1 < stacked as f32 * LEAST_H {
+    if down && extent < 2.0 * LEAST_H {
         return Some(format!("Not enough room: each group needs at least {LEAST_H} points of height"));
     }
     None
@@ -219,37 +214,12 @@ mod tests {
     }
 
     #[test]
-    fn each_group_needs_its_least_room() {
-        assert_eq!(refused((720.0, 300.0), false, &[1, 1]), None);
-        assert_eq!(refused((719.0, 900.0), false, &[1, 1]).as_deref(), Some("Not enough room: each group needs at least 360 points across"));
-        assert_eq!(refused((300.0, 400.0), true, &[1, 1]), None);
-        assert_eq!(refused((900.0, 399.0), true, &[1, 1]).as_deref(), Some("Not enough room: each group needs at least 200 points of height"));
-        // a third place needs room for three
-        assert_eq!(refused((1080.0, 300.0), false, &[1, 1, 1]), None);
-        assert!(refused((1079.0, 300.0), false, &[1, 1, 1]).is_some());
-    }
-
-    #[test]
-    fn a_split_inside_needs_room_the_other_way() {
-        // a row of a group and a column of two: 360 across for each place, 200 down for each of the two
-        assert_eq!(refused((720.0, 400.0), false, &[1, 2]), None);
-        assert_eq!(refused((720.0, 399.0), false, &[1, 2]).as_deref(), Some("Not enough room: each group needs at least 200 points of height"));
-        assert_eq!(refused((719.0, 400.0), false, &[1, 2]).as_deref(), Some("Not enough room: each group needs at least 360 points across"));
-        // a column of a row of three and a group
-        assert_eq!(refused((1080.0, 400.0), true, &[3, 1]), None);
-        assert!(refused((1079.0, 400.0), true, &[3, 1]).is_some());
-    }
-
-    #[test]
-    fn room_not_measured_yet_refuses_nothing() {
-        assert_eq!(refused((0.0, 0.0), false, &[1, 1]), None);
-        assert_eq!(refused((0.0, 0.0), true, &[2, 2]), None);
-    }
-
-    #[test]
-    fn there_are_never_more_than_four_groups() {
-        assert_eq!(refused((5000.0, 5000.0), false, &[2, 2]), None);
-        assert_eq!(refused((5000.0, 5000.0), false, &[2, 3]).as_deref(), Some("Four groups is the most there can be"));
+    fn what_is_split_must_be_room_for_two() {
+        assert_eq!(halves(720.0, false), None);
+        assert_eq!(halves(719.0, false).as_deref(), Some("Not enough room: each group needs at least 360 points across"));
+        assert_eq!(halves(400.0, true), None);
+        assert_eq!(halves(399.0, true).as_deref(), Some("Not enough room: each group needs at least 200 points of height"));
+        assert_eq!(halves(0.0, false), None, "not measured yet");
     }
 
     #[test]
