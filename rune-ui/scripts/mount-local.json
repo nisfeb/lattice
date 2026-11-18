@@ -1,0 +1,7 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "settings-open"},
+  {"t": 4.0, "type": "tap", "key": "local-look"},
+  {"t": 6.0, "type": "tap", "key": "mount-at"},
+  {"t": 6.4, "type": "type", "text": "/tmp/lr-app-mnt"},
+  {"t": 8.0, "type": "tap", "key": "local-mount-0"}
+]}

@@ -10,6 +10,7 @@ mod code;
 mod formula;
 mod html;
 mod local;
+mod mounts;
 mod funcs;
 mod map;
 mod mapio;
@@ -132,6 +133,8 @@ struct Settings {
     reindex: String,
     /// The form that connects is showing: to sign in again, or to another ship.
     connect: bool,
+    /// The folder typed to mount a ship at. Empty is the ship's name under the home directory.
+    mount_at: TextEdit,
     /// The piers found on this machine, once looked for.
     local: Option<Vec<local::LocalShip>>,
     /// What of lattice's software the ship has, once asked, and the ship to install %grubbery from.
@@ -141,7 +144,7 @@ struct Settings {
 
 impl Settings {
     fn new() -> Self {
-        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false, local: None, stack: None, dist: TextEdit::new("~nisfeb") }
+        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false, mount_at: TextEdit::new(""), local: None, stack: None, dist: TextEdit::new("~nisfeb") }
     }
 
     fn ask(&self) -> api::KeyAsk {
@@ -535,6 +538,9 @@ struct App {
     set_req: Latest<Result<SetGot, String>>,
     stack_req: Latest<Result<api::Stack, String>>,
     local_req: Latest<Vec<local::LocalShip>>,
+    /// The folders ships are mounted at, as kept between runs, and a mount or an unmount on its way: the list after it, and what to say.
+    mounts: Vec<mounts::MountSpec>,
+    mount_req: Latest<(Vec<mounts::MountSpec>, String)>,
     /// The refusals, read beside the boards and after a clear.
     notes_req: Latest<Result<ForumGot, String>>,
     /// The open page as a spreadsheet, when it is one.
@@ -783,6 +789,8 @@ fn init() -> App {
         set_req: Latest::default(),
         stack_req: Latest::default(),
         local_req: Latest::default(),
+        mounts: Vec::new(),
+        mount_req: Latest::default(),
         forum_req: Latest::default(),
         notes_req: Latest::default(),
         beside: None,
@@ -1520,6 +1528,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.set_req.set_waker(waker.clone());
     s.stack_req.set_waker(waker.clone());
     s.local_req.set_waker(waker.clone());
+    s.mount_req.set_waker(waker.clone());
     s.notes_req.set_waker(waker.clone());
     s.core_req.set_waker(waker.clone());
     s.trash_req.set_waker(waker.clone());
@@ -1537,6 +1546,21 @@ fn setup(s: &mut App, waker: Waker) {
     load_know(s);
     load_shared(s);
     listen(s);
+    // the mounts kept from the run before: still there, or made again. Not on sample pages, which keep nothing
+    let kept = mounts::load();
+    if !kept.is_empty() && !s.sample {
+        s.mount_req.request(kept, |kept| {
+            let (mut list, mut said) = (Vec::new(), Vec::new());
+            for (m, r) in mounts::resume(kept) {
+                if let Err(e) = r {
+                    said.push(format!("{} was not mounted again: {e}", m.mountpoint));
+                }
+                list.push(m);
+            }
+            let _ = mounts::save(&list);
+            (list, said.join(". "))
+        });
+    }
 }
 
 /// Starts listening to the ship's change stream, in place of asking it
@@ -4710,6 +4734,13 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(std::time::Duration::from_secs(6));
         settings_do(s, SetAct::Read);
     }
+    if let Some((list, said)) = s.mount_req.take() {
+        changed = true;
+        s.mounts = list;
+        if !said.is_empty() {
+            s.note = said;
+        }
+    }
     if let Some(found) = s.local_req.take() {
         changed = true;
         if let Some(st) = &mut s.settings {
@@ -6494,8 +6525,45 @@ fn local_look(s: &mut App) {
     s.local_req.request(home, |home| local::discover(&home));
 }
 
+/// Mounts the ship found at `i` at the folder typed, or under the home directory by its name.
+fn mount_ship(s: &mut App, i: usize) {
+    let Some(st) = &s.settings else { return };
+    let Some(ship) = st.local.as_ref().and_then(|l| l.get(i)).filter(|x| x.lick).cloned() else { return };
+    let home = std::env::var("HOME").unwrap_or_default();
+    let typed = st.mount_at.text.trim();
+    let named = mounts::default_mountpoint(&ship.ship);
+    let at = mounts::expand(if typed.is_empty() { &named } else { typed }, &home);
+    let spec = mounts::MountSpec { mountpoint: at.clone(), sock: ship.sock.clone(), ship: ship.ship.clone(), pid: 0 };
+    s.note = format!("mounting {} at {at}\u{2026}", ship.ship);
+    s.mount_req.request((s.mounts.clone(), spec), |(mut list, mut spec)| match mounts::start(&spec) {
+        Ok(pid) => {
+            spec.pid = pid;
+            let said = format!("{} is mounted at {}", spec.ship, spec.mountpoint);
+            list.retain(|m| m.mountpoint != spec.mountpoint);
+            list.push(spec);
+            let kept = mounts::save(&list).err().map_or_else(String::new, |e| format!(". It was not kept for the next launch: {e}"));
+            (list, format!("{said}{kept}"))
+        }
+        Err(e) => (list, format!("not mounted: {e}")),
+    });
+}
+
+/// Unmounts the folder at `i` and lets go of it.
+fn unmount(s: &mut App, i: usize) {
+    let Some(spec) = s.mounts.get(i).cloned() else { return };
+    s.note = format!("unmounting {}\u{2026}", spec.mountpoint);
+    s.mount_req.request((s.mounts.clone(), spec), |(mut list, spec)| match mounts::stop(&spec) {
+        Ok(()) => {
+            list.retain(|m| m.mountpoint != spec.mountpoint);
+            let _ = mounts::save(&list);
+            (list, format!("{} is unmounted", spec.mountpoint))
+        }
+        Err(e) => (list, format!("not unmounted: {e}")),
+    });
+}
+
 /// The ships on this machine: each with where its pier is, and why it cannot be reached when it cannot.
-fn local_view(st: &Settings, looking: bool, k: &Kit) -> El {
+fn local_view(st: &Settings, held: &[mounts::MountSpec], busy: bool, looking: bool, k: &Kit) -> El {
     let c = &k.c;
     let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
     let mut v = col()
@@ -6516,9 +6584,27 @@ fn local_view(st: &Settings, looking: bool, k: &Kit) -> El {
                         .center_y()
                         .child(text(ship.ship.clone()).font(k.ty.mono).color(c.text_base))
                         .child(text(ship.says()).key(format!("local-says-{i}")).font(k.ty.small).color(c.text_muted).grow(1.0).min_w(0.0).truncate())
-                        .children(ship.lick.then(|| text("over lick").font(k.ty.small_medium).color(c.success.icon))),
+                        .children(ship.lick.then(|| text("over lick").font(k.ty.small_medium).color(c.success.icon)))
+                        .children(ship.lick.then(|| Button::new("Mount").control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(busy).help("Its pages as a folder on this computer").on_press(move |s: &mut App| mount_ship(s, i)).build(k).key(format!("local-mount-{i}")))),
                 );
             }
+        }
+    }
+    if st.local.as_ref().is_some_and(|l| l.iter().any(|x| x.lick)) {
+        v = v.child(TextInput::new(&st.mount_at).label("Folder to mount at").placeholder("~/ship-name when left empty").on_edit(|s: &mut App| &mut s.settings.as_mut().expect("the settings are showing").mount_at).build(k).w_full().key("mount-at"));
+    }
+    if !held.is_empty() {
+        v = v.child(text("Mounts").font(k.ty.small_medium).color(c.text_base));
+        for (i, m) in held.iter().enumerate() {
+            v = v.child(
+                row()
+                    .key(format!("mount-{i}"))
+                    .gap(8.0)
+                    .center_y()
+                    .child(text(m.mountpoint.clone()).key(format!("mount-at-{i}")).font(k.ty.mono).color(c.text_base).grow(1.0).min_w(0.0).truncate())
+                    .child(text(format!("lick \u{b7} {}", if m.ship.is_empty() { "local" } else { m.ship.as_str() })).font(k.ty.small).color(c.text_muted))
+                    .child(Button::new("Unmount").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(busy).on_press(move |s: &mut App| unmount(s, i)).build(k).key(format!("unmount-{i}"))),
+            );
         }
     }
     v.child(row().child(Button::new(if looking { "Looking\u{2026}" } else if st.local.is_some() { "Look again" } else { "Look for ships" }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(looking).help("Looks a few levels under your home directory for piers. Nothing in them is read").on_press(local_look).build(k).key("local-look")))
@@ -6676,7 +6762,7 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
         }).build(k).key("publish-ask")));
     }
     let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
-    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).children(stack_view(st, k)).child(local_view(st, s.local_req.is_pending(), k)).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
+    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).children(stack_view(st, k)).child(local_view(st, &s.mounts, s.mount_req.is_pending(), s.local_req.is_pending(), k)).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
         "A key lets an agent, such as the lattice plugin for Claude Code or Hermes, use your memory and pages without your login. Everything a key saves is signed with the name it writes as, and its scope says what it may touch. Publishing, sharing and settings stay yours whatever the scope.",
     ));
     if let Some(token) = &st.token {
