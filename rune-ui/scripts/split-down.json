@@ -18,11 +18,6 @@
   {
    "t": 5.0,
    "type": "tap",
-   "key": "split-toggle"
-  },
-  {
-   "t": 7.0,
-   "type": "tap",
    "key": "g1-close"
   }
  ]

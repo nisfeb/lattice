@@ -627,6 +627,9 @@ struct App {
     /// `front_at` is in front, and its tabs are `tabs`, so its place here is empty. No split is no groups.
     tgroups: Vec<TabGroup>,
     front_at: usize,
+    /// How the groups are cut into places of the split: each number is a place, and a place of more than one group is
+    /// split the other way inside (see `splits`).
+    runs: Vec<usize>,
     /// The groups are one above the other, not side by side.
     split_down: bool,
     /// The room the groups have, as last laid out: nothing until then.
@@ -939,6 +942,7 @@ fn init() -> App {
         tab: 0,
         tgroups: Vec::new(),
         front_at: 0,
+        runs: Vec::new(),
         split_down: false,
         groups_room: (0.0, 0.0),
         resync: false,
@@ -4962,6 +4966,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     // the page held beside last run is held again, if it is still there
                     if s.names.contains(&s.prefs.split) && s.tgroups.is_empty() {
                         (s.tgroups, s.front_at) = (vec![TabGroup::default(), TabGroup { tabs: vec![Tab { trail: vec![s.prefs.split.clone()], at: 0 }], at: 0, view: None }], 0);
+                        s.runs = vec![1, 1];
                         s.split_down = s.prefs.split_down;
                     }
                     let last = s.prefs.last.clone();
@@ -5694,15 +5699,18 @@ fn split_page(s: &App) -> Option<&str> {
 }
 
 /// One more group, holding the page in front, placed after the group in
-/// front. The first one makes the split.
-fn add_group(s: &mut App) {
+/// front: in a place of its own in the split, or, `inner`, in the front
+/// group's own place, split the other way. The first one makes the split.
+fn add_group(s: &mut App, inner: bool) {
     let Some(name) = s.open.as_ref().filter(|_| s.remote.is_none() && !s.capture && !s.memory).map(|p| p.name.clone()) else { return };
     let made = TabGroup { tabs: vec![Tab { trail: vec![name], at: 0 }], at: 0, view: None };
     if s.tgroups.is_empty() {
         // the group in front has a place among them, left empty: its tabs are the window's own
-        (s.tgroups, s.front_at) = (vec![TabGroup::default(), made], 0);
+        (s.tgroups, s.front_at, s.runs) = (vec![TabGroup::default(), made], 0, vec![1, 1]);
     } else {
-        s.tgroups.insert(s.front_at + 1, made);
+        let (runs, at) = splits::added(&s.runs, s.front_at, inner);
+        s.tgroups.insert(at, made);
+        s.runs = runs;
     }
     sync_groups(s);
 }
@@ -5711,7 +5719,7 @@ fn add_group(s: &mut App) {
 fn toggle_split(s: &mut App) {
     if s.tgroups.is_empty() {
         s.split_down = false;
-        add_group(s);
+        add_group(s, false);
     } else {
         s.tgroups.clear();
         sync_groups(s);
@@ -5719,24 +5727,22 @@ fn toggle_split(s: &mut App) {
 }
 
 /// A press on a split button: across, or down. With no split it makes
-/// one that way. With a split that way it adds a group. With a split
-/// the other way it turns the groups round. Each is refused when a
-/// group would have less than its least room.
+/// one that way. With a split that way it adds a place to it. With a
+/// split the other way it splits the group in front by itself. Each is
+/// refused when a group would have less than its least room.
 fn split_press(s: &mut App, down: bool) {
     let press = splits::press(!s.tgroups.is_empty(), s.split_down, down);
-    let n = match press {
-        splits::Press::Make => 2,
-        splits::Press::Add => s.tgroups.len() + 1,
-        splits::Press::Turn => s.tgroups.len(),
+    let (outer, runs) = match press {
+        splits::Press::Make => (down, vec![1, 1]),
+        splits::Press::Outer => (s.split_down, splits::added(&s.runs, s.front_at, false).0),
+        splits::Press::Inner => (s.split_down, splits::added(&s.runs, s.front_at, true).0),
     };
-    if let Some(why) = splits::refused(s.groups_room, down, n) {
+    if let Some(why) = splits::refused(s.groups_room, outer, &runs) {
         s.note = why;
         return;
     }
-    s.split_down = down;
-    if press != splits::Press::Turn {
-        add_group(s);
-    }
+    s.split_down = outer;
+    add_group(s, press == splits::Press::Inner);
     if s.prefs.split_down != s.split_down {
         s.prefs.split_down = s.split_down;
         if s.conn.is_some() {
@@ -5757,6 +5763,7 @@ fn sync_groups(s: &mut App) {
             g.at = g.at.min(g.tabs.len().saturating_sub(1));
             if g.tabs.is_empty() {
                 s.tgroups.remove(d);
+                s.runs = splits::removed(&s.runs, d);
                 if s.front_at > d {
                     s.front_at -= 1;
                 }
@@ -5768,6 +5775,11 @@ fn sync_groups(s: &mut App) {
     if s.tgroups.len() < 2 {
         s.tgroups.clear();
         s.front_at = 0;
+        s.runs.clear();
+    } else if s.runs.len() == 1 {
+        // one place left, split inside: that inner split is the split now
+        s.split_down = !s.split_down;
+        s.runs = vec![1; s.tgroups.len()];
     }
     keep_split(s);
 }
@@ -6136,20 +6148,21 @@ fn tab_strip(s: &App, k: &Kit) -> El {
         let split = !s.tgroups.is_empty();
         let on = split && s.split_down == down;
         // a split there is no room for is refused, and its button says why
-        let n = match splits::press(split, s.split_down, down) {
-            splits::Press::Make => 2,
-            splits::Press::Add => s.tgroups.len() + 1,
-            splits::Press::Turn => s.tgroups.len(),
+        let press = splits::press(split, s.split_down, down);
+        let (outer, runs) = match press {
+            splits::Press::Make => (down, vec![1, 1]),
+            splits::Press::Outer => (s.split_down, splits::added(&s.runs, s.front_at, false).0),
+            splits::Press::Inner => (s.split_down, splits::added(&s.runs, s.front_at, true).0),
         };
-        let why = splits::refused(s.groups_room, down, n);
-        let says = match (&why, on, split, down) {
+        let why = splits::refused(s.groups_room, outer, &runs);
+        let says = match (&why, press, down) {
             (Some(why), ..) => why.clone(),
-            (_, true, _, false) => "Split right again: one more group".to_owned(),
-            (_, true, _, true) => "Split down again: one more group".to_owned(),
-            (_, _, true, false) => "Put the groups side by side".to_owned(),
-            (_, _, true, true) => "Put the groups one above the other".to_owned(),
-            (_, _, false, false) => "Split right: hold this page beside the next one you open".to_owned(),
-            (_, _, false, true) => "Split down: hold this page below the next one you open".to_owned(),
+            (_, splits::Press::Make, false) => "Split right: hold this page beside the next one you open".to_owned(),
+            (_, splits::Press::Make, true) => "Split down: hold this page below the next one you open".to_owned(),
+            (_, splits::Press::Outer, false) => "Split right again: one more group".to_owned(),
+            (_, splits::Press::Outer, true) => "Split down again: one more group".to_owned(),
+            (_, splits::Press::Inner, false) => "Split the group in front right, by itself".to_owned(),
+            (_, splits::Press::Inner, true) => "Split the group in front down, by itself".to_owned(),
         };
         let mut b = IconButton::new(icon).variant(if on { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help(says).disabled(!can_split || why.is_some()).on_press(move |s: &mut App| split_press(s, down));
         if let Some(keys) = keys {
@@ -9957,19 +9970,34 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let main = if s.tgroups.is_empty() || s.memory {
         main
     } else {
-        // every group stands where it stood: the one in front is drawn in its own place among the rest
-        let mut all = if s.split_down { col() } else { row() }.w_full().h_full().min_h(0.0);
-        let mut main = Some(main);
-        for d in 0..s.tgroups.len() {
-            if d > 0 {
-                all = all.child(if s.split_down { Divider::horizontal() } else { Divider::vertical() }.build(&k));
-            }
-            let one = match main.take_if(|_| d == s.front_at) {
-                Some(front) => col().key("group-front").child(front),
-                None => col().child(split_view(d, s, &k)),
-            };
+        // every group stands where it stood: the one in front is drawn in its own place among the rest.
+        // The split runs one way, and a place in it that holds more than one group is split the other way inside
+        let lay = |down: bool| if down { col() } else { row() }.w_full().h_full().min_h(0.0).min_w(0.0);
+        let rule = |down: bool| if down { Divider::horizontal() } else { Divider::vertical() }.build(&k);
+        let fill = |one: El, down: bool| {
             let one = one.grow(1.0).min_w(0.0).min_h(0.0);
-            all = all.child(if s.split_down { one.w_full() } else { one.h_full() });
+            if down { one.w_full() } else { one.h_full() }
+        };
+        let mut main = Some(main);
+        let mut all = lay(s.split_down);
+        let mut d = 0;
+        for (r, n) in s.runs.iter().copied().enumerate() {
+            if r > 0 {
+                all = all.child(rule(s.split_down));
+            }
+            let mut place = lay(!s.split_down);
+            for i in 0..n {
+                if i > 0 {
+                    place = place.child(rule(!s.split_down));
+                }
+                let one = match main.take_if(|_| d == s.front_at) {
+                    Some(front) => col().key("group-front").child(front),
+                    None => col().child(split_view(d, s, &k)),
+                };
+                place = place.child(fill(one, !s.split_down));
+                d += 1;
+            }
+            all = all.child(fill(col().key(format!("place-{r}")).child(place), s.split_down));
         }
         all
     };
@@ -11100,18 +11128,27 @@ mod tests {
         // a group whose last tab is closed is gone, and the rest close up
         close_group_tab(&mut s, 1, 0);
         assert_eq!(stand(&s), ["places", "*welcome"]);
+        assert_eq!(s.runs, [1, 1]);
+        // the other button splits the group in front by itself: a row of a group and a column of two
+        split_press(&mut s, true);
+        assert_eq!((stand(&s), s.runs.clone(), s.split_down), (vec!["places".to_owned(), "*welcome".to_owned(), "welcome".to_owned()], vec![1, 2], false));
+        // the split's own button adds a place after the whole column
+        split_press(&mut s, false);
+        assert_eq!((stand(&s).len(), s.runs.clone(), s.front_at), (4, vec![1, 2, 1], 1));
         // a fifth group is refused
         split_press(&mut s, false);
-        split_press(&mut s, false);
-        assert_eq!(s.tgroups.len(), 4);
-        split_press(&mut s, false);
         assert_eq!((s.tgroups.len(), s.note.as_str()), (4, "Four groups is the most there can be"));
-        // the other button turns them all the other way
-        split_press(&mut s, true);
-        assert!(s.split_down && s.tgroups.len() == 4);
-        // closing a whole group, then the split
+        // a group gone from the column leaves a row of three, and one more leaves two
+        close_group(&mut s, 2);
+        assert_eq!((s.tgroups.len(), s.runs.clone()), (3, vec![1, 1, 1]));
         close_group(&mut s, 0);
-        assert_eq!(s.tgroups.len(), 3);
+        assert_eq!((s.tgroups.len(), s.runs.clone(), s.front_at), (2, vec![1, 1], 0));
+        // a place left alone with its inner split becomes the split
+        split_press(&mut s, true);
+        assert_eq!(s.runs, [2, 1]);
+        close_group(&mut s, 2);
+        assert_eq!((s.runs.clone(), s.split_down), (vec![1, 1], true), "the column that was inside is the whole split now");
+        s.split_down = false;
         toggle_split(&mut s);
         assert!(s.tgroups.is_empty() && s.front_at == 0 && split_page(&s).is_none());
     }
