@@ -10370,8 +10370,9 @@ fn fill_editor(s: &App, area: TextArea, k: &Kit) -> El {
     // not laid out yet: a height to start from, put right in the next frame
     let room = if s.edit_room > 0.0 { s.edit_room } else { 400.0 };
     // more rows than fit, so the field is as tall as its room even when the page is short
-    let field = area.width(None).rows(10_000).max_height(room).build(k).key(FIELD).w_full();
-    col().key("edit-room").w_full().grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.edit_room = r[3]).child(field)
+    // a line with no place to break, as a long address, is broken where the room ends: it never runs out of sight
+    let field = area.width(None).wrap_anywhere().rows(10_000).max_height(room).build(k).key(FIELD).w_full().min_w(0.0);
+    col().key("edit-room").w_full().min_w(0.0).grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.edit_room = r[3]).child(field)
 }
 
 fn page_body(s: &App, k: &Kit) -> El {
@@ -10416,7 +10417,7 @@ fn page_body(s: &App, k: &Kit) -> El {
             .h_full()
             .min_h(0.0)
             .items_center()
-            .child(col().w_full().max_w(820.0).h_full().min_h(0.0).padding(16.0).gap(8.0).child(format_bar(s, k)).child(Divider::horizontal().build(k)).child(field).child(offers_bar(s, k)));
+            .child(col().w_full().min_w(0.0).max_w(820.0).h_full().min_h(0.0).padding(16.0).gap(8.0).child(format_bar(s, k)).child(Divider::horizontal().build(k)).child(field).child(offers_bar(s, k)));
     }
     if s.editing {
         // the source, coloured as Markdown: colour only, so nothing moves as it is typed
@@ -10433,10 +10434,10 @@ fn page_body(s: &App, k: &Kit) -> El {
         // the font is the one chosen in settings: the text area takes its style from the kit it is built with
         let source = TextArea::new(&s.edit).label("Page source").decorations(marks).on_edit(|s: &mut App| &mut s.edit).on_key(editor_key);
         let source = fill_editor(s, source, &editor_kit(k, &s.prefs.font));
-        let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
+        let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
         if s.preview && p.kind == "md" {
             let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(s.edit.text.clone()).build(k));
-            panes = panes.child(col().key("preview").grow(1.0).h_full().min_h(0.0).child(shown).scroll(ScrollSpec { stick_bottom: false }));
+            panes = panes.child(col().key("preview").grow(1.0).min_w(0.0).h_full().min_h(0.0).child(shown).scroll(ScrollSpec { stick_bottom: false }));
         }
         return panes;
     }
