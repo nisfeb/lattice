@@ -167,7 +167,9 @@ Not a line: forms and quizzes. An earlier list had them, by mistake. The existin
 
 ## Desktop app extras (`desktop/`)
 
-- [ ] Connection page: connected, signed out, unreachable, change ship
+- [x] Connection page: connected, signed out, unreachable, change ship. Settings opens with Ship: a dot and, in the desktop app's words, connected as the ship, cannot reach this ship, or signed out, with the ship's address under it. Change ship opens the address and the access code to sign in to another, and Reconnect, offered when the ship is unreachable or the session lapsed, opens them with this ship's address filled in. A code refused is said in the form and the connection stays as it was. Signed in, what the window held of the ship before is let go, the session is kept for the next launch, and the new ship's pages are read. An edit under way is to be saved or cancelled first. Checked: unit tests of the states, and scripted runs (`scripts/ship-change.json`) from the stand-in ship to a fake ship: the state before, a wrong code, the right code (the tree became the other ship's and the next launch opened on it), and the stand-in stopped (cannot reach, with Reconnect). Not checked: signed out was never seen, since a fake ship's session does not lapse in a run. It is read from a 401 or 403 to the tree's read.
+- [ ] Anonymous use with no ship: a reader identity made on this computer to browse and comment, exported and imported (`desktop/ui/settings.js`, `#reader`)
+- [ ] Ship software: what a ship needs for lattice (%mcp, %grubbery, lattice itself) listed, and installed from the app
 - [ ] Local ships over lick (no URL, no code)
 - [ ] FUSE mounts: add, remove, remount at launch
 - [ ] Backups: schedule, retention, restore

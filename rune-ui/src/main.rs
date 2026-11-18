@@ -129,11 +129,13 @@ struct Settings {
     ob_asked: bool,
     /// What the last rebuild of the search index came to.
     reindex: String,
+    /// The form that connects is showing: to sign in again, or to another ship.
+    connect: bool,
 }
 
 impl Settings {
     fn new() -> Self {
-        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new() }
+        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false }
     }
 
     fn ask(&self) -> api::KeyAsk {
@@ -354,6 +356,8 @@ struct App {
     url: TextEdit,
     code: TextEdit,
     login_err: String,
+    /// The ship answered a read as not signed in: the session lapsed.
+    lapsed: bool,
     login_req: Latest<Result<Conn, String>>,
     prompt: Option<Prompt>,
     op_req: Latest<Result<Op, String>>,
@@ -665,6 +669,7 @@ fn init() -> App {
         url,
         code: TextEdit::new(""),
         login_err: String::new(),
+        lapsed: false,
         login_req: Latest::default(),
         prompt: None,
         op_req: Latest::default(),
@@ -4472,8 +4477,12 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 }
                 None => Err(e),
             },
+            Err(e) if api::lapsed(&e) => {
+                s.lapsed = true;
+                Err(e)
+            }
             Ok(d) => {
-                s.offline = None;
+                (s.offline, s.lapsed) = (None, false);
                 // the ship answers: what waited for it goes now
                 drain(s);
                 Ok(d)
@@ -4595,6 +4604,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         match r {
             Ok(c) => {
+                // signed in again, or to another ship: what the window held of the one before is let go first
+                if s.conn.is_some() {
+                    sign_out(s);
+                }
                 if let Err(e) = c.remember() {
                     s.note = format!("signed in, but the session was not kept: {e}");
                 }
@@ -6446,9 +6459,73 @@ fn editor_kit(k: &Kit, pref: &str) -> Kit {
     ek
 }
 
-/// The settings: the agent keys, each with what it may touch and a Revoke, and the form that makes one.
-fn settings_view(st: &Settings, pub_ok: bool, font: &str, vim_on: bool, k: &Kit) -> El {
+/// Shows or hides the form that connects, with the ship's address in it to sign in again, or empty for another ship.
+fn connect_form(s: &mut App, show: bool, another: bool) {
+    if show && s.editing {
+        s.note = "save or cancel what is being edited first".into();
+        return;
+    }
+    let url = s.conn.as_ref().filter(|_| !another).map(|c| c.url.clone()).unwrap_or_default();
+    (s.url, s.code) = (TextEdit::new(url.as_str()), TextEdit::new(""));
+    s.url.focused = another;
+    s.code.focused = !another;
+    s.login_err.clear();
+    if let Some(st) = &mut s.settings {
+        st.connect = show;
+    }
+}
+
+/// The ship this window is on, how the connection stands, and the way to sign in again or to another ship.
+fn ship_view(s: &App, st: &Settings, k: &Kit) -> El {
     let c = &k.c;
+    let mut v = col().key("set-ship").w_full().gap(6.0).child(text("Ship").font(k.ty.body_medium).color(c.text_base));
+    let Some(conn) = &s.conn else {
+        return v.child(text("Sample pages: no ship is connected.").key("ship-state").font(k.ty.small).color(c.text_muted));
+    };
+    let state = api::link(s.offline.is_some(), s.lapsed);
+    let (dot, said) = match state {
+        api::Link::Connected => (c.success.icon, format!("connected as {}", if conn.ship().is_empty() { "your ship" } else { conn.ship() })),
+        api::Link::Unreachable => (c.danger.icon, "cannot reach this ship".to_owned()),
+        api::Link::SignedOut => (c.text_muted, "signed out: enter your +code to reconnect".to_owned()),
+    };
+    v = v
+        .child(row().gap(8.0).center_y().child(el().w(8.0).h(8.0).radius(4.0).fill(dot)).child(text(said).key("ship-state").font(k.ty.ui).color(c.text_base)))
+        .child(text(conn.url.clone()).key("ship-url").font(k.ty.mono).color(c.text_muted).truncate());
+    if !st.connect {
+        let mut acts = row().gap(4.0);
+        if state != api::Link::Connected {
+            acts = acts.child(Button::new("Reconnect").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Sign in to this ship again").on_press(|s: &mut App| connect_form(s, true, false)).build(k).key("ship-reconnect"));
+        }
+        return v.child(acts.child(Button::new("Change ship").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Sign in to another ship").on_press(|s: &mut App| connect_form(s, true, true)).build(k).key("ship-change")));
+    }
+    let busy = s.login_req.is_pending();
+    let mut form = col()
+        .key("ship-connect")
+        .w_full()
+        .gap(6.0)
+        .padding(10.0)
+        .radius(k.radius.md)
+        .fill(c.layer_01)
+        .child(TextInput::new(&s.url).label("Ship address").placeholder("https://your-ship.example.com").on_edit(|s: &mut App| &mut s.url).build(k).w_full().key("ship-address"))
+        .child(TextInput::new(&s.code).label("Access code").placeholder("+code").secure().on_edit(|s: &mut App| &mut s.code).on_submit(|s: &mut App, _| sign_in(s)).build(k).w_full().key("ship-code"))
+        .child(
+            row()
+                .gap(6.0)
+                .center_y()
+                .child(Button::new(if busy { "Connecting\u{2026}" } else { "Connect" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(busy).on_press(sign_in).build(k).key("ship-connect-go"))
+                .child(Button::new("Cancel").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| connect_form(s, false, false)).build(k).key("ship-connect-cancel")),
+        );
+    if !s.login_err.is_empty() {
+        form = form.child(text(s.login_err.clone()).key("ship-connect-error").font(k.ty.small).color(c.danger.icon).wrap());
+    }
+    v.child(form)
+}
+
+/// The settings: the agent keys, each with what it may touch and a Revoke, and the form that makes one.
+fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
+    let (pub_ok, font, vim_on) = (s.prefs.pub_ok, s.prefs.font.as_str(), s.prefs.vim);
+    let c = &k.c;
+    let ship = ship_view(s, st, k);
     let mut fonts = row().gap(4.0).flex_wrap();
     for (pref, name) in EDITOR_FONTS {
         fonts = fonts.child(Button::new(name).control_size(ControlSize::Small).variant(if font == pref { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
@@ -6488,7 +6565,7 @@ fn settings_view(st: &Settings, pub_ok: bool, font: &str, vim_on: bool, k: &Kit)
         }).build(k).key("publish-ask")));
     }
     let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
-    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
+    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
         "A key lets an agent, such as the lattice plugin for Claude Code or Hermes, use your memory and pages without your login. Everything a key saves is signed with the name it writes as, and its scope says what it may touch. Publishing, sharing and settings stay yours whatever the scope.",
     ));
     if let Some(token) = &st.token {
@@ -8197,7 +8274,7 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
 
 fn page_body(s: &App, k: &Kit) -> El {
     if let Some(st) = s.settings.as_ref().filter(|_| !s.editing) {
-        return settings_view(st, s.prefs.pub_ok, &s.prefs.font, s.prefs.vim, k);
+        return settings_view(s, st, k);
     }
     if s.access && !s.editing {
         return access_view(s, k);

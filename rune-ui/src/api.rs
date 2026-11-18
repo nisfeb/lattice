@@ -752,6 +752,33 @@ pub fn beacon_fail(fail: u32, registered: bool, lived_ms: u128, bumped: bool) ->
     }
 }
 
+/// How the connection to the ship stands, as the desktop app's settings say it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Link {
+    Connected,
+    /// The ship does not answer.
+    Unreachable,
+    /// The ship answers, and no longer takes this session.
+    SignedOut,
+}
+
+/// The state of the connection from what was last seen of it: reads
+/// that got no answer, or a read the ship refused as not signed in.
+pub fn link(offline: bool, lapsed: bool) -> Link {
+    if offline {
+        Link::Unreachable
+    } else if lapsed {
+        Link::SignedOut
+    } else {
+        Link::Connected
+    }
+}
+
+/// Whether an error is the ship saying this session is not signed in.
+pub fn lapsed(error: &str) -> bool {
+    error.starts_with("401") || error.starts_with("403")
+}
+
 /// What stands at a `urb://` address, as the ship reads it (`GET /urb-read`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Urb {
@@ -3258,6 +3285,12 @@ mod tests {
         assert!(registered && bumped, "{seen:?}");
         assert!(matches!(saver.unwrap().join().unwrap(), Sent::Done { .. }));
         c.delete(&name).unwrap();
+    }
+
+    #[test]
+    fn the_connection_is_said_as_it_stands() {
+        assert_eq!([link(false, false), link(true, false), link(false, true), link(true, true)], [Link::Connected, Link::Unreachable, Link::SignedOut, Link::Unreachable]);
+        assert!(lapsed("403: sign in") && lapsed("401: ") && !lapsed("404: no such page") && !lapsed("http://ship: Connection refused"));
     }
 
     #[test]
