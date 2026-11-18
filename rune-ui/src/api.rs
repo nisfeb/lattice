@@ -586,14 +586,18 @@ fn kept_path(url: &str) -> Option<std::path::PathBuf> {
 }
 
 fn keep_at(p: &std::path::Path, nodes: Vec<Node>) -> Result<(), String> {
+    write_private(p, &serde_json::to_vec(&Dump { nodes, since: String::new() }).map_err(|e| e.to_string())?)
+}
+
+/// Writes a file only its owner reads, whole or not at all: beside it first, then moved into place.
+fn write_private(p: &std::path::Path, body: &[u8]) -> Result<(), String> {
     std::fs::create_dir_all(p.parent().ok_or("no parent")?).map_err(|e| e.to_string())?;
-    let body = serde_json::to_vec(&Dump { nodes, since: String::new() }).map_err(|e| e.to_string())?;
     let tmp = p.with_extension("part");
     #[cfg(unix)]
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(&body)).map_err(|e| e.to_string())?;
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(body).and_then(|()| f.sync_all())).map_err(|e| e.to_string())?;
     }
     #[cfg(not(unix))]
     std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
@@ -604,6 +608,42 @@ fn kept_at(p: &std::path::Path) -> Option<(Dump, u64)> {
     let d: Dump = serde_json::from_slice(&std::fs::read(p).ok()?).ok()?;
     let age = std::fs::metadata(p).ok()?.modified().ok()?.elapsed().map_or(0, |d| d.as_secs());
     Some((d, age))
+}
+
+/// A page's save that could not reach the ship, waiting to be sent: the
+/// text, and the revision it was written over, by which the ship can
+/// tell whether the page changed meanwhile.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct Queued {
+    pub kind: String,
+    pub body: String,
+    pub base: u64,
+    /// The page was made here and the ship has not seen it: sent as a new page, which a page of that name made elsewhere meanwhile refuses.
+    #[serde(default)]
+    pub is_new: bool,
+    /// When it was put by, in seconds.
+    #[serde(default)]
+    pub at: u64,
+}
+
+/// The saves that wait, one for each page by its name (`docs/offline-edits.md`).
+pub type Queue = std::collections::BTreeMap<String, Queued>;
+
+/// Puts a save by. A page saved again while one waits takes its place,
+/// and keeps what the first one knew: the revision the ship last gave,
+/// and that the page is new. Once new, new until it is sent.
+pub fn enqueue(q: &mut Queue, p: &Page, base: u64, is_new: bool, at: u64) {
+    let prev = q.get(&p.name);
+    let (base, is_new) = (prev.map_or(base, |o| o.base), is_new || prev.is_some_and(|o| o.is_new));
+    q.insert(p.name.clone(), Queued { kind: p.kind.clone(), body: p.body.clone(), base, is_new, at });
+}
+
+fn queue_path(url: &str) -> Option<std::path::PathBuf> {
+    Some(kept_path(url)?.with_file_name(format!("waiting-{}", kept_path(url)?.file_name()?.to_str()?.trim_start_matches("kept-"))))
+}
+
+fn queue_at(p: &std::path::Path) -> Queue {
+    std::fs::read(p).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 /// Whether a call failed because the ship did not answer, as against the
@@ -1051,6 +1091,16 @@ impl Conn {
     /// Keeps the tree with every page's text, to read when the ship does not answer. In a file only its owner reads, written whole or not at all.
     pub fn keep_tree(&self, nodes: Vec<Node>) -> Result<(), String> {
         keep_at(&kept_path(&self.url).ok_or("no home directory")?, nodes)
+    }
+
+    /// The saves that wait for this ship, from the file they are kept in.
+    pub fn queue(&self) -> Queue {
+        queue_path(&self.url).map(|p| queue_at(&p)).unwrap_or_default()
+    }
+
+    /// Keeps the saves that wait. They are nowhere else, so a failure here is one to say.
+    pub fn store_queue(&self, q: &Queue) -> Result<(), String> {
+        write_private(&queue_path(&self.url).ok_or("no home directory")?, &serde_json::to_vec(q).map_err(|e| e.to_string())?)
     }
 
     /// The tree as it was last kept for this ship, and how many seconds ago. Its `since` is empty, so the next read of the ship is a whole one.
@@ -2180,6 +2230,29 @@ mod tests {
             assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_save_that_waits_is_one_for_each_page_and_keeps_what_the_first_knew() {
+        let page = |name: &str, body: &str| Page { name: name.into(), body: body.into(), kind: "md".into(), rev: 0 };
+        let mut q = Queue::new();
+        enqueue(&mut q, &page("a", "one"), 4, false, 10);
+        enqueue(&mut q, &page("made", "new"), 0, true, 11);
+        // saved again: the newer text, over the revision the ship last gave, not one this device made up
+        enqueue(&mut q, &page("a", "two"), 9, false, 12);
+        enqueue(&mut q, &page("made", "newer"), 0, false, 13);
+        assert_eq!(q.len(), 2);
+        assert_eq!(q["a"], Queued { kind: "md".into(), body: "two".into(), base: 4, is_new: false, at: 12 });
+        assert_eq!((q["made"].body.as_str(), q["made"].is_new), ("newer", true));
+        // kept in a file and read back the same. A file that is not there, or not a queue, is an empty one
+        let file = std::env::temp_dir().join(format!("lr-queue-{}", std::process::id())).join("waiting.json");
+        assert!(queue_at(&file).is_empty());
+        write_private(&file, &serde_json::to_vec(&q).unwrap()).unwrap();
+        assert_eq!(queue_at(&file), q);
+        std::fs::write(&file, "not json").unwrap();
+        assert!(queue_at(&file).is_empty());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+        assert!(queue_path("http://ship.example:8080").unwrap().ends_with("lattice-rune/waiting-http---ship-example-8080.json"));
     }
 
     #[test]

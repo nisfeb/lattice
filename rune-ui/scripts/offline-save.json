@@ -1,0 +1,7 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "places"},
+  {"t": 3.0, "type": "tap", "key": "edit"},
+  {"t": 4.0, "type": "key", "name": "a", "cmd": true},
+  {"t": 4.5, "type": "type", "text": "# Places\n\nWritten with the ship away.\n"},
+  {"t": 6.0, "type": "tap", "key": "save"}
+]}

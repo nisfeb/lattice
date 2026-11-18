@@ -48,6 +48,8 @@ def do_POST(self):
     u = urlparse(self.path); p = u.path.replace('/apps/lattice/', '', 1)
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
     if p == 'page-save':
+        # LR_SAVE_502: a save is answered as something in between answers when it cannot reach the ship
+        if os.environ.get('LR_SAVE_502'): return self.send(502, 'bad gateway')
         GEO = body; REV[0] += 1
         return self.send(200, json.dumps({"rev": REV[0]}))
     self.send(404, '{"error":"not in the stub"}')

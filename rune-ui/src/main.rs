@@ -527,6 +527,10 @@ struct App {
     since: String,
     /// The ship did not answer, and what shows is what was kept: how long ago it was kept.
     offline: Option<String>,
+    /// The saves that could not reach the ship and wait to be sent, one for each page, as the file beside the session holds them.
+    queue: api::Queue,
+    /// The page a save on its way carries, and the revision it was written over: put by if the ship does not answer.
+    save_sent: Option<(Page, u64)>,
     next_sync: f64,
     page_req: Latest<Result<Page, String>>,
     save_req: Latest<Result<Page, String>>,
@@ -727,6 +731,8 @@ fn init() -> App {
         tree_req: Latest::default(),
         since: String::new(),
         offline: None,
+        queue: conn.as_ref().map(Conn::queue).unwrap_or_default(),
+        save_sent: None,
         next_sync: 0.0,
         page_req: Latest::default(),
         save_req: Latest::default(),
@@ -1322,10 +1328,11 @@ fn applied(s: &mut App, op: Op) {
 fn refresh_tree(s: &mut App) {
     if s.conn.is_some() && s.memory {
         load_know(s);
-    } else if s.conn.is_some() {
+    } else if s.conn.is_some() && s.offline.is_none() {
         load_tree(s);
     } else {
-        let mut nodes: Vec<Node> = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 1, dname: s.dnames.get(p).cloned().unwrap_or_default(), ..Node::default() }).collect();
+        // no ship to ask, or none that answers: the tree is drawn again from what is here
+        let mut nodes: Vec<Node> = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: s.cache.get(p).map_or_else(|| "md".into(), |c| c.kind.clone()), rev: 1, dname: s.dnames.get(p).cloned().unwrap_or_default(), ..Node::default() }).collect();
         // the folders that were given a name to show
         nodes.extend(s.dnames.iter().filter(|(p, _)| !s.names.contains(p)).map(|(p, d)| Node { path: p.clone(), dname: d.clone(), ..Node::default() }));
         s.files = files_of(nodes, &s.files);
@@ -3632,6 +3639,14 @@ fn write(s: &mut App) {
     }
     let memory = s.memory;
     let remote = s.remote.clone();
+    // a page of this ship's can wait for it. A memory, or a page of another ship, cannot yet
+    let own = !memory && remote.is_none() && s.conn.is_some();
+    if own && s.offline.is_some() {
+        // the ship is known not to answer: the save is not tried, as the web client does not try it
+        queue_save(s, p, base);
+        return;
+    }
+    s.save_sent = own.then(|| (p.clone(), base));
     match s.conn.clone() {
         Some(c) => s.save_req.request((c, p), move |(c, mut p)| {
             if let Some(sh) = &remote {
@@ -3650,6 +3665,27 @@ fn write(s: &mut App) {
             landed(s, p)
         }
     }
+}
+
+/// Puts a save by for a ship that does not answer, in the file that
+/// outlives this run, and shows it as the page's text from then on.
+/// When the file cannot be written the save is nowhere, and that is
+/// said in place of "saved": the editor stays open with the text.
+fn queue_save(s: &mut App, mut p: Page, base: u64) {
+    let Some(c) = s.conn.clone() else { return };
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let mut q = s.queue.clone();
+    api::enqueue(&mut q, &p, base, !s.names.contains(&p.name), at);
+    if let Err(e) = c.store_queue(&q) {
+        (s.save_again, s.autosaving, s.auto_held) = (false, false, true);
+        s.note = format!("NOT SAVED. The ship does not answer and this change could not be kept on this device ({e}). Copy your text somewhere safe");
+        return;
+    }
+    s.queue = q;
+    s.offline.get_or_insert_with(String::new);
+    p.rev = base;
+    landed(s, p);
+    s.note = "saved on this device, to send when the ship answers".into();
 }
 
 fn landed(s: &mut App, p: Page) {
@@ -3983,7 +4019,16 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             e => e,
         };
         match r {
-            Ok(Dump { nodes, since }) => {
+            Ok(Dump { mut nodes, since }) => {
+                // a save that waits is the page's text, over whatever was read: it is newer than anything the ship has
+                // ponytail: while anything waits this rewrites the kept file on every read. Skip unchanged ones if it shows up as disk churn
+                for (name, q) in &s.queue {
+                    match nodes.iter_mut().find(|n| n.page && n.path == *name) {
+                        // with the revision it was written over, so a save made from it is still checked against that one
+                        Some(n) => (n.body, n.kind, n.rev) = (Some(q.body.clone()), q.kind.clone(), q.base),
+                        None => nodes.push(Node { path: name.clone(), page: true, kind: q.kind.clone(), rev: q.base, body: Some(q.body.clone()), ..Node::default() }),
+                    }
+                }
                 // what the ship gave is kept for a run when it does not answer: whenever it carried a text, or pages came or went
                 let news = nodes.iter().any(|n| n.body.is_some()) || nodes.iter().filter(|n| n.page).count() != s.names.len() || was_kept;
                 let keep = (s.offline.is_none() && news).then(|| nodes.clone());
@@ -4045,7 +4090,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     s.files.select(&p.name);
                 }
             }
-            Err(e) if s.offline.is_some() && api::gone(&e) => {}
+            // a ship that stops answering while its pages show: said once, and saves wait from here on
+            Err(e) if api::gone(&e) && (s.offline.is_some() || !s.names.is_empty()) => {
+                s.offline.get_or_insert_with(String::new);
+            }
             Err(e) => s.note = format!("tree: {e}"),
         }
         if away {
@@ -4059,6 +4107,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Ok(p) if s.memory => {
                 s.other.2.insert(p.name.clone(), p);
             }
+            // a page with a save that waits shows that save, not what the ship still has
+            Ok(p) if s.queue.contains_key(&p.name) => {}
             Ok(p) => {
                 s.cache.insert(p.name.clone(), p.clone());
                 // shown when it is the page on screen, or the one waited for
@@ -4085,6 +4135,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     s.note = format!("signed in, but the session was not kept: {e}");
                 }
                 s.code = TextEdit::new("");
+                s.queue = c.queue();
                 s.conn = Some(c);
                 load_tree(s);
                 load_know(s);
@@ -4118,8 +4169,22 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     if let Some(r) = s.save_req.take() {
         changed = true;
+        let sent = s.save_sent.take();
         match r {
-            Ok(p) => landed(s, p),
+            Ok(p) => {
+                // the ship has this page's text now: an older save of it that waited is done with
+                if s.queue.remove(&p.name).is_some() {
+                    if let Some(Err(e)) = s.conn.as_ref().map(|c| c.store_queue(&s.queue)) {
+                        s.note = format!("saved, but the list of what waits could not be written: {e}");
+                    }
+                }
+                landed(s, p);
+            }
+            // the ship did not answer: the save waits here for it
+            Err(e) if api::gone(&e) && sent.is_some() => {
+                let (p, base) = sent.expect("just checked");
+                queue_save(s, p, base);
+            }
             Err(e) => {
                 s.save_again = false;
                 if std::mem::take(&mut s.autosaving) {
@@ -6940,7 +7005,12 @@ fn sidebar(s: &App, k: &Kit) -> El {
     });
     let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).children(core).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(row().gap(4.0).flex_wrap().child(with_me).child(inbox).child(forum)).child(foot);
     if let Some(when) = &s.offline {
-        side = side.child(text(format!("Offline. The ship does not answer, so this is what was kept {when}. A change made now is not saved.")).key("offline").font(k.ty.small).color(k.c.text_base).wrap());
+        let said = if when.is_empty() { "Offline. The ship does not answer.".to_owned() } else { format!("Offline. The ship does not answer, so this is what was kept {when}.") };
+        side = side.child(text(format!("{said} A page saved now waits on this device. Anything else needs the ship.")).key("offline").font(k.ty.small).color(k.c.text_base).wrap());
+    }
+    if !s.queue.is_empty() {
+        let n = s.queue.len();
+        side = side.child(text(format!("{n} page{} saved on this device, waiting to be sent.", if n == 1 { "" } else { "s" })).key("waiting-saves").font(k.ty.small).color(k.c.text_base).wrap());
     }
     // offline, a read that failed because the ship is away is not said again: its error starts with the ship's address
     let again = s.offline.is_some() && s.conn.as_ref().is_some_and(|c| s.note.split_once(": ").is_some_and(|(_, e)| e.starts_with(c.url.as_str())));
