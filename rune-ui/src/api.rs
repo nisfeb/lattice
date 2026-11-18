@@ -672,6 +672,16 @@ impl ScadStatus {
     }
 }
 
+/// The Commons mirror (`GET /obelisk-status`): whether %obelisk, the
+/// database it copies into, is installed, and whether the mirror is on.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+pub struct Obelisk {
+    #[serde(default)]
+    pub installed: bool,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
 /// An agent key as the ship lists it, in the words the ship's own
 /// settings page says it in: whose it is, and what it may touch.
 #[derive(Clone, Debug, PartialEq)]
@@ -1444,6 +1454,21 @@ impl Conn {
     /// Starts the ship fetching the runtime (`install`), or drops it. The install runs on: its state is read with `scad_status`.
     pub fn scad_runtime(&self, install: bool) -> Result<(), String> {
         self.call("POST", if install { "scad-install" } else { "scad-uninstall" }, Some("")).map(drop)
+    }
+
+    /// Whether %obelisk is installed and the Commons mirror on.
+    pub fn obelisk(&self) -> Result<Obelisk, String> {
+        serde_json::from_str(&self.call("GET", "obelisk-status", None)?).map_err(|e| e.to_string())
+    }
+
+    /// Turns the Commons mirror on or off. Off deletes the copy it made.
+    pub fn mirror(&self, on: bool) -> Result<(), String> {
+        self.call("POST", &format!("mirror-config?enabled={on}"), Some("")).map(drop)
+    }
+
+    /// Asks the ship to install %obelisk from the ship that publishes it. It answers at once: `obelisk` says when it is there.
+    pub fn obelisk_install(&self) -> Result<(), String> {
+        self.call("POST", "obelisk-install", Some("")).map(drop)
     }
 
     /// The agent keys, newest first.
@@ -2848,6 +2873,26 @@ mod tests {
         assert!(now.have.as_deref() == Some(now.pin.as_str()) || now.error.is_some(), "it is installed, or the ship says why not");
         c.scad_runtime(false).unwrap();
         assert_eq!(c.scad_status().unwrap().have, None);
+    }
+
+    /// The Commons mirror against a ship: its state read, turned on and off. A fake ship cannot reach the ship that publishes %obelisk, so it is not installed here.
+    #[test]
+    #[ignore]
+    fn live_mirror() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let was = c.obelisk().unwrap();
+        eprintln!("before: {was:?}");
+        c.mirror(true).unwrap();
+        let on = c.obelisk().unwrap();
+        c.mirror(false).unwrap();
+        let off = c.obelisk().unwrap();
+        eprintln!("turned on: {on:?}, turned off: {off:?}");
+        assert!(!off.enabled);
+        // with %obelisk there the switch is what the ship then says. Without it, the ship's answer is printed, not assumed
+        if was.installed {
+            assert!(on.enabled);
+        }
+        c.obelisk_install().unwrap();
     }
 
     #[test]

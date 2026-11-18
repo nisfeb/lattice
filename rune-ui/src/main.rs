@@ -120,11 +120,17 @@ struct Settings {
     local_scad: Option<Option<String>>,
     /// When the runtime's state is read next, while an install runs.
     scad_next: f64,
+    /// The Commons mirror's state, and how many more times the ship is asked whether %obelisk has arrived.
+    obelisk: Option<api::Obelisk>,
+    ob_tries: u32,
+    ob_next: f64,
+    /// The ship was asked to install %obelisk in this visit: what the state line says depends on it.
+    ob_asked: bool,
 }
 
 impl Settings {
     fn new() -> Self {
-        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0 }
+        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false }
     }
 
     fn ask(&self) -> api::KeyAsk {
@@ -3964,14 +3970,6 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         }
         changed |= autosave_tick(s, clock);
     }
-    // while the ship fetches the runtime, its state is read every two seconds, as its own page does
-    if s.settings.as_ref().is_some_and(|st| st.scad.as_ref().is_some_and(|r| r.busy) && clock >= st.scad_next) && !s.set_req.is_pending() {
-        if let Some(st) = &mut s.settings {
-            st.scad_next = clock + 2.0;
-        }
-        tx.wake_after(std::time::Duration::from_secs(2));
-        settings_do(s, SetAct::Read);
-    }
     if std::mem::take(&mut s.resync) && s.conn.is_some() {
         s.next_sync = clock + 2.0;
         tx.wake_after(std::time::Duration::from_secs(2));
@@ -4420,8 +4418,12 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if let Some(r) = s.set_req.take() {
         changed = true;
         match (r, &mut s.settings) {
-            (Ok((tiles, scad, local, said)), Some(st)) => {
-                (st.tiles, st.scad) = (Some(tiles), Some(scad));
+            (Ok((tiles, scad, local, said, ob)), Some(st)) => {
+                (st.tiles, st.scad, st.obelisk) = (Some(tiles), Some(scad), Some(ob));
+                if ob.installed {
+                    st.ob_tries = 0;
+                }
+                st.ob_asked |= said.contains("%obelisk");
                 if local.is_some() {
                     st.local_scad = local;
                 }
@@ -4435,6 +4437,23 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             (Err(e), Some(_)) => s.note = format!("settings: {e}"),
             _ => {}
         }
+    }
+    // these come after the answer above is taken: asked before it, they would take its place and what it said would be lost
+    // while the ship fetches the runtime, its state is read every two seconds, as its own page does
+    if s.settings.as_ref().is_some_and(|st| st.scad.as_ref().is_some_and(|r| r.busy) && clock >= st.scad_next) && !s.set_req.is_pending() {
+        if let Some(st) = &mut s.settings {
+            st.scad_next = clock + 2.0;
+        }
+        tx.wake_after(std::time::Duration::from_secs(2));
+        settings_do(s, SetAct::Read);
+    }
+    // and while %obelisk is on its way, every six seconds, forty times
+    if s.settings.as_ref().is_some_and(|st| st.ob_tries > 0 && clock >= st.ob_next) && !s.set_req.is_pending() {
+        if let Some(st) = &mut s.settings {
+            (st.ob_tries, st.ob_next) = (st.ob_tries - 1, clock + 6.0);
+        }
+        tx.wake_after(std::time::Duration::from_secs(6));
+        settings_do(s, SetAct::Read);
     }
     if let Some(r) = s.keys_req.take() {
         changed = true;
@@ -5984,7 +6003,7 @@ fn go_settings(s: &mut App) {
     }
 }
 
-type SetGot = (api::TileStatus, api::ScadStatus, Option<Option<String>>, String);
+type SetGot = (api::TileStatus, api::ScadStatus, Option<Option<String>>, String, api::Obelisk);
 
 /// What is done from the settings, beside the keys.
 enum SetAct {
@@ -5993,6 +6012,10 @@ enum SetAct {
     Token(bool),
     /// The ship's OpenSCAD runtime is installed or updated, or dropped.
     Runtime(bool),
+    /// The Commons mirror is turned on or off.
+    Mirror(bool),
+    /// %obelisk is installed.
+    Obelisk,
 }
 
 /// Reads the map token's state and the OpenSCAD runtime's, after doing what was asked.
@@ -6007,6 +6030,12 @@ fn settings_do(s: &mut App, act: SetAct) {
         _ => None,
     };
     let runtime = if let SetAct::Runtime(install) = act { Some(install) } else { None };
+    let mirror = if let SetAct::Mirror(on) = act { Some(on) } else { None };
+    let obelisk = matches!(act, SetAct::Obelisk);
+    if obelisk {
+        // the ship is asked forty times, six seconds apart, as its own page asks
+        st.ob_tries = 40;
+    }
     // this computer's own openscad is looked for once: it is a few programs run
     let look = st.local_scad.is_none();
     s.set_req.request((c, token, runtime), move |(c, token, runtime)| {
@@ -6019,8 +6048,16 @@ fn settings_do(s: &mut App, act: SetAct) {
             c.scad_runtime(install)?;
             said = if install { "the ship is fetching the runtime".into() } else { "the runtime is uninstalled".into() };
         }
+        if let Some(on) = mirror {
+            c.mirror(on)?;
+            said = if on { "the Commons mirror is on".into() } else { "the Commons mirror is off, and its copy deleted".into() };
+        }
+        if obelisk {
+            c.obelisk_install()?;
+            said = "the ship is installing %obelisk".into();
+        }
         let local = look.then(|| scadrun::locate().map(|p| p.display().to_string()));
-        Ok((c.tile_status()?, c.scad_status()?, local, said))
+        Ok((c.tile_status()?, c.scad_status()?, local, said, c.obelisk()?))
     });
 }
 
@@ -6067,7 +6104,32 @@ fn settings_more(st: &Settings, k: &Kit) -> El {
             scad = scad.child(acts);
         }
     }
-    col().w_full().gap(20.0).child(tiles).child(scad)
+    let mut ob = col()
+        .key("set-mirror")
+        .w_full()
+        .gap(6.0)
+        .child(head("Commons mirror"))
+        .child(muted("Mirrors your pages, notes, tags, follows and browsing history into the %obelisk database, where you (and your agents) can query across apps with urQL. Turning it off deletes that copy. Optional: without %obelisk everything else works unchanged."));
+    match st.obelisk {
+        None => ob = ob.child(muted("checking\u{2026}")),
+        Some(o) if o.installed => {
+            ob = ob.child(text("%obelisk is installed.").key("mirror-state").font(k.ty.small).color(c.text_base)).child(Switch::new(o.enabled).label("Mirror enabled").on_toggle(move |s: &mut App| settings_do(s, SetAct::Mirror(!o.enabled))).build(k).key("mirror-on"));
+        }
+        Some(_) => {
+            let said = if st.ob_tries > 0 {
+                "installing from ~dister-nomryg-nilref (this can take a while)..."
+            } else if st.ob_asked {
+                "still not installed - check your ship is connected and retry."
+            } else {
+                "%obelisk is not installed."
+            };
+            ob = ob.child(text(said).key("mirror-state").font(k.ty.small).color(c.text_base).wrap());
+            if st.ob_tries == 0 {
+                ob = ob.child(row().child(small("Install %obelisk".into(), "obelisk-install", || SetAct::Obelisk)));
+            }
+        }
+    }
+    col().w_full().gap(20.0).child(tiles).child(scad).child(ob)
 }
 
 /// Reads the agent keys, after making one (`mint`) or revoking one (`revoke`, by its id) when asked.
