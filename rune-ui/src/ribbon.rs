@@ -21,6 +21,7 @@ pub(crate) use line;
 
 line!(CAL, "lat-cal", "M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM8 3v4M16 3v4M3 10h18");
 line!(BACK, "lat-back", "M17 7L7 17M16 17H7V8");
+line!(GLOBE, "lat-globe", "M3 12a9 9 0 1 0 18 0a9 9 0 1 0-18 0M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18");
 line!(FORUM, "lat-forum", "M3 4h12v8H8l-3 3v-3H3zM18 9h3v8h-2v3l-3-3h-6v-2");
 line!(INBOX, "lat-inbox", "M3 13l3-8h12l3 8v6H3zM3 13h5l1 3h6l1-3h5");
 line!(KEY, "lat-key", "M4 15a4 4 0 1 0 8 0a4 4 0 1 0-8 0M11 12l9-9M16 7l3 3M14 9l2 2");
@@ -32,7 +33,7 @@ line!(GEAR, "lat-gear", "M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0M19.4 15a1.65 1.65 0 0
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Go {
     Today,
-    Shared,
+    Browser,
     Forum,
     Inbox,
     Access,
@@ -88,8 +89,6 @@ pub struct Showing {
     pub inbox: bool,
     pub access: bool,
     pub settings: bool,
-    /// Pages other ships share with this one.
-    pub shared_n: u32,
     /// Held comments and unread notices together.
     pub waiting: u32,
 }
@@ -99,7 +98,7 @@ pub fn items(w: Showing) -> Vec<Item> {
     let it = |go, key, name, icon| Item { go, key, name, keys: None, icon, on: false, count: 0, foot: false };
     vec![
         it(Go::Today, "today", "Today's page", &CAL),
-        Item { on: w.shared, count: w.shared_n, ..it(Go::Shared, "shared-open", "Shared with me", &BACK) },
+        Item { on: w.shared, ..it(Go::Browser, "browser-open", "Browser", &GLOBE) },
         Item { on: w.forum, ..it(Go::Forum, "forum-open", "Forum", &FORUM) },
         Item { on: w.inbox, count: w.waiting, ..it(Go::Inbox, "inbox-open", "Inbox", &INBOX) },
         Item { on: w.access, ..it(Go::Access, "access-open", "Access & groups", &KEY) },
@@ -116,7 +115,7 @@ mod tests {
     fn the_items_in_the_web_clients_order_with_settings_at_the_foot() {
         let it = items(Showing::default());
         let keys: Vec<_> = it.iter().map(|i| i.key).collect();
-        assert_eq!(keys, ["today", "shared-open", "forum-open", "inbox-open", "access-open", "palette-open", "settings-open"]);
+        assert_eq!(keys, ["today", "browser-open", "forum-open", "inbox-open", "access-open", "palette-open", "settings-open"]);
         let foot: Vec<_> = it.iter().filter(|i| i.foot).map(|i| i.go).collect();
         assert_eq!(foot, [Go::Settings]);
         assert!(it.iter().all(|i| !i.on && i.count == 0 && !i.name.is_empty()));
@@ -133,10 +132,9 @@ mod tests {
 
     #[test]
     fn counts_are_painted_and_said() {
-        let it = items(Showing { shared_n: 3, waiting: 120, ..Default::default() });
+        let it = items(Showing { waiting: 120, ..Default::default() });
         let by = |g| it.iter().find(|i| i.go == g).unwrap();
-        assert_eq!(by(Go::Shared).badge().as_deref(), Some("3"));
-        assert_eq!(by(Go::Shared).said(), "Shared with me, 3");
+        assert_eq!((by(Go::Browser).badge(), by(Go::Browser).said()), (None, "Browser".to_owned()));
         assert_eq!(by(Go::Inbox).badge().as_deref(), Some("99+"));
         assert_eq!(by(Go::Inbox).said(), "Inbox, 120 waiting");
         assert_eq!(by(Go::Forum).badge(), None);

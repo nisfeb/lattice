@@ -67,6 +67,26 @@ class H(BaseHTTPRequestHandler):
             _, style, z, x, y = p.split('/')
             return self.send(200, png(int(z), int(x), int(y)), 'image/png')
         if p == 'know-all': return self.send(200, json.dumps({"items":[{"key":k,"body":v,"tags":[],"updated":"~2026.11.17"} for k, v in KNOWS.items()]}))
+        # the browser: what stands at an address, what the address field offers, and what was visited
+        if u.path == '/apps/lattice' and 'url' in q:
+            url = q['url'][0]
+            HISTORY[:] = [v for v in HISTORY if v["url"] != url]
+            HISTORY.insert(0, {"url": url, "title": url.rsplit('/', 1)[-1] or url, "last": "~2026.11.18", "hits": 1})
+            sys.stderr.write("visited %s\n" % url)
+            return self.send(200, '<title>reader</title>', 'text/html')
+        if p == 'urb-read':
+            url = q.get('url', [''])[0]
+            if url.rstrip('/') == 'urb://~sampel-palnet/notes':
+                return self.send(200, json.dumps({"kind":"folder","path":"/notes","entries":[{"name":"plan","url":"urb://~sampel-palnet/notes/plan","folder":False},{"name":"trips","url":"urb://~sampel-palnet/notes/trips/","folder":True}]}))
+            if url == 'urb://~sampel-palnet/notes/plan':
+                return self.send(200, json.dumps({"kind":"page","ship":"~sampel-palnet","path":"/notes/plan","mode":"md","body":"# The plan\n\nPublished by ~sampel-palnet. See [the trips](urb://~sampel-palnet/notes/trips/).\n","comments":[]}))
+            return self.send(404, 'nothing is published there')
+        if p == 'omni-suggest':
+            needle = q.get('q', [''])[0].lower()
+            rows = [dict(b, source='bookmark') for b in MARKS] + [dict(v, source='history') for v in HISTORY if v["url"] not in [b["url"] for b in MARKS]]
+            return self.send(200, json.dumps({"ok": True, "items": [{"url": r["url"], "title": r["title"], "source": r["source"], "hits": r.get("hits", 0)} for r in rows if needle in (r["url"] + r["title"]).lower()][:12]}))
+        if p == 'history': return self.send(200, json.dumps({"ok": True, "items": HISTORY}))
+        if p == 'bookmarks-json': return self.send(200, json.dumps([{"url": b["url"], "title": b["title"], "folder": b.get("folder", "")} for b in MARKS]))
         if p == 'shared-with-me': return self.send(200, json.dumps([{"host":e["host"],"path":e["path"],"mode":e["mode"],"when":"~2026.11.18"} for e in SHARED]))
         if p == 'folder-pages':
             if not any(e["host"] == q.get('host', [''])[0] and e["path"].endswith(q.get('path', [''])[0] + '/dir-index') for e in SHARED): return self.send(404, 'the folder does not read')
@@ -89,6 +109,8 @@ SHARED = [] if os.environ.get('LR_SHARED') != '1' else [
     {"host":"~sampel-palnet","path":BASE+"recipes/dir-index","mode":"read","body":"","rev":1},
     {"host":"~bus","path":BASE+"minutes/code","mode":"read","body":"# Minutes\n\nTo read only.\n","rev":2}]
 LINKS = {}
+MARKS = [{"url": "urb://~sampel-palnet/notes", "title": "Sampel's notes", "folder": ""}]
+HISTORY = []
 def do_POST(self):
     u = urlparse(self.path); p = u.path.replace('/apps/lattice/', '', 1); q = parse_qs(u.query)
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
@@ -121,6 +143,20 @@ def do_POST(self):
         if not l: return self.send(404, 'no such link')
         SHARED.append(l)
         sys.stderr.write("unlinked %s\n" % q['name'][0])
+        return self.send(200, '{"ok":true}')
+    if p == 'bookmark':
+        MARKS[:] = [b for b in MARKS if b["url"] != q['url'][0]]
+        MARKS.insert(0, {"url": q['url'][0], "title": q.get('title', q['url'])[0], "folder": q.get('folder', [''])[0]})
+        sys.stderr.write("bookmarked %s\n" % q['url'][0])
+        return self.send(200, '{"ok":true}')
+    if p == 'unbookmark':
+        MARKS[:] = [b for b in MARKS if b["url"] != q['url'][0]]
+        return self.send(200, '{"ok":true}')
+    if p == 'history-forget':
+        HISTORY[:] = [v for v in HISTORY if v["url"] != q['url'][0]]
+        return self.send(200, '{"ok":true}')
+    if p == 'history-clear':
+        HISTORY.clear()
         return self.send(200, '{"ok":true}')
     if p == 'shared-with-me-del':
         e = next((e for e in SHARED if e["host"] == q['host'][0] and e["path"] == q['path'][0]), None)

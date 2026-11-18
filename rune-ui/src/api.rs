@@ -43,6 +43,37 @@ pub struct Node {
     pub link: Option<LinkTo>,
 }
 
+/// An address the address field offers: one saved or one visited, with its title.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Suggest {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    /// `bookmark` or `history`.
+    #[serde(default)]
+    pub source: String,
+}
+
+/// An address the reader visited: when last, and how often.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Visit {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub last: String,
+    #[serde(default)]
+    pub hits: u64,
+}
+
+#[derive(Deserialize)]
+struct Items<T> {
+    #[serde(default = "Vec::new")]
+    items: Vec<T>,
+}
+
 /// A page of a folder another ship shared: its place on that ship, and its title.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub struct FoldPage {
@@ -2679,6 +2710,32 @@ impl Conn {
     /// touched. The host is asked for the page's kind, so it is refused while the host is away.
     pub fn link_make(&self, sh: &Shared, to: &str) -> Result<(), String> {
         self.call_in(60, "POST", &format!("link-make?host={}&path={}&to={}", enc(&sh.host), enc(&sh.path), enc(to)), Some("")).map(drop)
+    }
+
+    /// What the address field offers for what is typed: bookmarks first, then visits, twelve at most.
+    pub fn omni_suggest(&self, q: &str) -> Result<Vec<Suggest>, String> {
+        serde_json::from_str::<Items<Suggest>>(&self.call("GET", &format!("omni-suggest?q={}", enc(q)), None)?).map(|i| i.items).map_err(|e| e.to_string())
+    }
+
+    /// The addresses visited, newest first.
+    pub fn visits(&self) -> Result<Vec<Visit>, String> {
+        serde_json::from_str::<Items<Visit>>(&self.call("GET", "history", None)?).map(|i| i.items).map_err(|e| e.to_string())
+    }
+
+    /// Takes one address out of the visits, or all of them.
+    pub fn history_forget(&self, url: Option<&str>) -> Result<(), String> {
+        match url {
+            Some(u) => self.call("POST", &format!("history-forget?url={}", enc(u)), Some("")).map(drop),
+            None => self.call("POST", "history-clear", Some("")).map(drop),
+        }
+    }
+
+    /// Notes a visit to an address. The ship has no call that only notes
+    /// one: it notes a visit when its own reader shows the address, so the
+    /// reader's page is asked for and thrown away.
+    // ponytail: a second read of the address for each page browsed. A route that only records is the fix, in the ship's code
+    pub fn visit(&self, url: &str) -> Result<(), String> {
+        self.call_url(90, "GET", &format!("{}/apps/lattice?url={}", self.url, enc(url)), None).map(drop)
     }
 
     /// The pages of a folder another ship shared whole, read from that ship now.

@@ -18,7 +18,7 @@ walk settings welcome "$(tap settings-open)"
 walk settings-scoped welcome "$(tap settings-open)" "$(tap kpages-some)" "$(tap kweb-some)"
 walk access welcome "$(tap access-open)"
 walk inbox welcome "$(tap inbox-open)"
-walk shared welcome "$(tap shared-open)"
+walk browser welcome "$(tap browser-open)"
 walk share welcome "$(tap share)"
 walk links welcome "$(tap links-toggle)"
 walk backlinks welcome "$(tap backlinks-toggle)"
@@ -61,6 +61,6 @@ if [ -n "${A11Y_SHIP:-}" ]; then
   ship thread-new "$(tap forum-open)" "$(tap board-modt)" "$(tap forum-new)"
   ship thread "$(tap forum-open)" "$(tap board-modt)" "$(tap post-1)"
   ship settings "$(tap settings-open)"
-  ship address "$(tap shared-open)" "$(tap urb-address)" '{"type": "type", "text": "~zod/udir/"}' '{"type": "key", "name": "Enter"}'
+  ship address "$(tap browser-open)" "$(tap browser-address)" '{"type": "type", "text": "~zod/udir/"}' '{"type": "key", "name": "Enter"}'
 fi
 python3 "$(dirname "$0")/a11y.py" "$out"/walk-*.json

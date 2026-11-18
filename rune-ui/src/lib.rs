@@ -6,6 +6,7 @@
 
 mod api;
 mod backups;
+mod browse;
 mod calc;
 mod code;
 mod fonts;
@@ -562,6 +563,14 @@ struct App {
     urb: TextEdit,
     urb_req: Latest<Result<(String, api::Urb), String>>,
     urb_folder: Option<(String, Vec<(String, String, bool)>)>,
+    /// The browser's way back and forward, what its address field offers and the row the arrows are on,
+    /// and the addresses visited, as its start page lists them.
+    nav: browse::Nav,
+    sugg: Vec<api::Suggest>,
+    sugg_at: Option<usize>,
+    sugg_req: Latest<Result<Vec<api::Suggest>, String>>,
+    visits: Vec<api::Visit>,
+    visits_req: Latest<Result<Vec<api::Visit>, String>>,
     shared_open: bool,
     /// The comments of every page show in place of a page.
     inbox: bool,
@@ -1005,6 +1014,12 @@ fn init() -> App {
         urb: TextEdit::new(""),
         urb_req: Latest::default(),
         urb_folder: None,
+        nav: browse::Nav::default(),
+        sugg: Vec::new(),
+        sugg_at: None,
+        sugg_req: Latest::default(),
+        visits: Vec::new(),
+        visits_req: Latest::default(),
         shared_open: false,
         inbox: false,
         remote: None,
@@ -1923,6 +1938,8 @@ fn setup(s: &mut App, waker: Waker) {
     s.marks_req.set_waker(waker.clone());
     s.theme_req.set_waker(waker.clone());
     s.folds_req.set_waker(waker.clone());
+    s.sugg_req.set_waker(waker.clone());
+    s.visits_req.set_waker(waker.clone());
     s.theme_put.set_waker(waker.clone());
     s.remote_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
@@ -5488,6 +5505,16 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             st.stack = Some(stack);
         }
     }
+    if let Some(r) = s.sugg_req.take() {
+        changed = true;
+        // offered only while the field is being typed into
+        s.sugg = r.ok().filter(|_| s.urb.focused).unwrap_or_default();
+        s.sugg_at = None;
+    }
+    if let Some(Ok(list)) = s.visits_req.take() {
+        changed = true;
+        s.visits = list;
+    }
     if let Some(r) = s.urb_req.take() {
         changed = true;
         match r {
@@ -6527,6 +6554,13 @@ fn close_tab(s: &mut App, i: usize) {
 
 /// What a tab is called: its page's last name, or that it is empty.
 fn tab_label(s: &App, i: usize) -> String {
+    // the browser in front names its tab by the page it is on, as the web client's does
+    if i == s.tab && browsing(s) {
+        return match s.open.as_ref().filter(|_| s.remote.is_some() && !s.shared_open) {
+            Some(p) => p.name.rsplit('/').next().unwrap_or(&p.name).to_owned(),
+            None => "Browser".to_owned(),
+        };
+    }
     let name = if i == s.tab { s.open.as_ref().filter(|_| s.remote.is_none()).map(|p| p.name.as_str()) } else { s.tabs[i].page() };
     name.map_or("New tab".to_owned(), |n| s.dnames.get(n).cloned().unwrap_or_else(|| n.rsplit('/').next().unwrap_or(n).to_owned()))
 }
@@ -6738,14 +6772,150 @@ fn go_shared(s: &mut App) {
     }
 }
 
-/// The screen for an address typed by hand and for what was asked of other ships.
-fn go_address(s: &mut App) {
+/// The browser: its start page, or whatever it was last on, with the address field to type in.
+fn go_browser(s: &mut App) {
     if !leave_edit(s) {
         return;
     }
-    (s.forum, s.access, s.settings, s.inbox) = (None, false, None, false);
+    (s.forum, s.access, s.settings, s.inbox, s.folder) = (None, false, None, false, None);
     s.shared_open = true;
-    load_shared(s);
+    s.urb.focused = true;
+    browse_home(s);
+}
+
+/// Reads what the browser's start page lists: the bookmarks and the visits.
+fn browse_home(s: &mut App) {
+    if let Some(c) = s.conn.clone() {
+        s.visits_req.request(c.clone(), |c| c.visits());
+        if s.marks.is_none() {
+            s.marks_req.request(c, |c| c.bookmarks());
+        }
+    }
+}
+
+/// Goes where the address field says, or to an address given: a page or folder on the network,
+/// a web page in the system's browser, and anything else looked for among the reader's own pages.
+fn browse_to(s: &mut App, to: Option<String>, tx: &mut Tx) {
+    let typed = to.unwrap_or_else(|| s.urb.text.clone());
+    (s.sugg, s.sugg_at) = (Vec::new(), None);
+    s.urb.focused = false;
+    match browse::target(&typed) {
+        browse::Target::Home => {
+            s.nav.go("");
+            browse_show(s, "");
+        }
+        browse::Target::Urb(url) => {
+            s.nav.go(&url);
+            browse_show(s, &url);
+        }
+        browse::Target::Web(url) => {
+            if let Err(e) = tx.open_url(&url) {
+                s.note = format!("could not open {url}: {e}");
+            }
+        }
+        browse::Target::Search(q) => {
+            s.squery = TextEdit::new(q.as_str());
+            open_search(s);
+        }
+    }
+}
+
+/// Back, or forward, in the browser.
+fn browse_step(s: &mut App, back: bool) {
+    if !leave_edit(s) {
+        return;
+    }
+    if let Some(url) = s.nav.step(back).map(str::to_owned) {
+        browse_show(s, &url);
+    }
+}
+
+/// Shows an address in the browser without a step being taken: the start page for the empty one.
+fn browse_show(s: &mut App, url: &str) {
+    s.urb = TextEdit::new(url);
+    if url.is_empty() {
+        (s.remote, s.open, s.urb_folder) = (None, None, None);
+        s.shared_open = true;
+        browse_home(s);
+    } else {
+        urb_go(s, Some(url.to_owned()));
+    }
+}
+
+/// Whether the browser is what is in front: its start page or a folder, or a page read at an address.
+fn browsing(s: &App) -> bool {
+    s.shared_open || (s.remote.as_ref().is_some_and(|r| r.mode == "published") && s.open.is_some() && !s.access && !s.inbox && s.settings.is_none() && s.forum.is_none())
+}
+
+/// Asks what the address field offers for what is typed in it.
+fn suggest(s: &mut App) {
+    s.sugg_at = None;
+    match s.conn.clone() {
+        Some(c) => s.sugg_req.request((c, s.urb.text.trim().to_owned()), |(c, q)| c.omni_suggest(&q)),
+        None => s.sugg.clear(),
+    }
+}
+
+/// The browser's bar: Back, Forward, the address field with what it offers under it, and the star.
+fn browser_bar(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let cur = s.nav.cur().to_owned();
+    let nav = |key: &str, icon: &'static rune::Icon, name: &str, back: bool, on: bool| IconButton::new(icon).variant(IconButtonVariant::GhostMuted).help(name).disabled(!on).on_press(move |s: &mut App| browse_step(s, back)).build(k).key(key.to_owned());
+    let field = TextInput::new(&s.urb)
+        .label("Address")
+        .placeholder("urb:// address or search your pages")
+        .on_edit(|s: &mut App| &mut s.urb)
+        .on_change(|s: &mut App, _| suggest(s))
+        .on_submit(|s: &mut App, tx| {
+            let picked = s.sugg_at.and_then(|i| s.sugg.get(i)).map(|x| x.url.clone());
+            browse_to(s, picked, tx);
+        })
+        .on_key(|s: &mut App, ev, _| match ev.key {
+            Key::Down | Key::Up if !s.sugg.is_empty() => {
+                s.sugg_at = browse::moved(s.sugg_at, s.sugg.len(), ev.key == Key::Down);
+                true
+            }
+            Key::Escape if !s.sugg.is_empty() => {
+                (s.sugg, s.sugg_at) = (Vec::new(), None);
+                true
+            }
+            _ => false,
+        })
+        .build(k)
+        .grow(1.0)
+        .min_w(0.0)
+        .key("browser-address");
+    let mut bar = row().w_full().gap(4.0).center_y()
+        .child(nav("browser-back", &tabhead::LEFT, "Back", true, s.nav.can_back()))
+        .child(nav("browser-forward", &tabhead::RIGHT, "Forward", false, s.nav.can_forward()))
+        .child(field);
+    // the star keeps the page at this address, or drops it
+    if cur.starts_with("urb://") {
+        let kept = s.marks.as_deref().is_some_and(|m| marks::has(m, &cur));
+        let title = s.open.as_ref().filter(|_| s.remote.is_some()).map_or_else(|| cur.trim_start_matches("urb://").to_owned(), |p| p.name.clone());
+        bar = bar.child(IconButton::new(&head::MARK).variant(if kept { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help(if kept { "Bookmarked. Press to drop it" } else { "Bookmark this page" }).on_press(move |s: &mut App| {
+            let change = if s.marks.as_deref().is_some_and(|m| marks::has(m, &cur)) { marks::Change::Drop(cur.clone()) } else { marks::Change::Keep(cur.clone(), title.clone(), String::new()) };
+            mark_change(s, change);
+        }).build(k).key("browser-star"));
+    }
+    let mut out = col().key("browser-bar").w_full().px(8.0).pb(6.0).gap(2.0).child(bar);
+    if s.urb.focused && !s.sugg.is_empty() {
+        let mut list = col().key("browser-suggest").role("listbox").label("Suggestions").w_full().padding(4.0).radius(k.radius.md).fill(c.layer_01).border(1.0, c.border_weak);
+        for (i, it) in s.sugg.iter().enumerate() {
+            let to = it.url.clone();
+            let on = s.sugg_at == Some(i);
+            list = list.child(
+                row().key(format!("suggest-{i}")).role("option").label(format!("{}, {}", if it.title.is_empty() { &it.url } else { &it.title }, browse::source(&it.source))).w_full().h(26.0).px(8.0).gap(8.0).center_y().radius(k.radius.sm)
+                    .fill(if on { k.selection() } else { rune::Color::TRANSPARENT }).hover(c.hover)
+                    .on_press_tx(move |s: &mut App, tx| browse_to(s, Some(to.clone()), tx))
+                    .child(text(browse::source(&it.source)).font(k.ty.text_xsmall_medium).color(if it.source == "bookmark" { c.text_accent } else { c.text_faint }).w(48.0))
+                    .child(text(if it.title.is_empty() { it.url.clone() } else { it.title.clone() }).font(k.ty.small_medium).color(c.text_base).truncate().min_w(0.0).shrink())
+                    .child(text(it.url.clone()).font(k.ty.small).color(c.text_muted).truncate().grow(1.0).min_w(0.0)),
+            );
+        }
+        out = out.child(list);
+    }
+    out
 }
 
 /// Shows the forum: this ship's boards, read as it opens. Where it
@@ -8367,7 +8537,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("history", "History"),
     ("inbox", "Inbox"),
     ("shared", "Shared with me"),
-    ("urb-open", "Open an address on another ship"),
+    ("urb-open", "Browser"),
     ("link-in", "Move into my pages"),
     ("link-back", "Move back to shared with me"),
     ("access", "Access"),
@@ -8489,7 +8659,7 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         "history" => show_pane(s, rpane::Tab::Hist),
         "inbox" => go_inbox(s),
         "shared" => go_shared(s),
-        "urb-open" => go_address(s),
+        "urb-open" => go_browser(s),
         "link-in" => ask_link_in(s),
         "link-back" => link_back(s),
         "access" => go_access(s),
@@ -8815,6 +8985,15 @@ fn urb_go(s: &mut App, to: Option<String>) {
 /// What was read at an address is shown: a page as another ship's page, a folder as a list under the address.
 fn urb_got(s: &mut App, url: String, got: api::Urb) {
     s.note.clear();
+    // the bar follows what is showing, however it was come to (a bookmark, a row of shared with me)
+    s.nav.go(&url);
+    s.urb = TextEdit::new(url.as_str());
+    (s.sugg, s.sugg_at) = (Vec::new(), None);
+    if let Some(c) = s.conn.clone().filter(|_| matches!(got, api::Urb::Page { .. } | api::Urb::Folder { .. })) {
+        // noted among the visits, as the ship's own reader notes it
+        let seen = url.clone();
+        spawn(move || drop(c.visit(&seen)));
+    }
     match got {
         api::Urb::Page { ship, path, kind, body, comments } => {
             let name = format!("{ship}/{path}");
@@ -8826,83 +9005,85 @@ fn urb_got(s: &mut App, url: String, got: api::Urb) {
             s.note = note;
         }
         api::Urb::Folder { path, entries } => {
-            s.urb.text = url;
             s.urb_folder = Some((path, entries));
+            // a folder is the browser's own page
+            if leave_edit(s) {
+                (s.remote, s.open, s.forum, s.settings, s.access, s.inbox) = (None, None, None, None, false, false);
+                s.shared_open = true;
+            }
         }
         api::Urb::Forum => s.note = "that address is a forum's: open it from the Forum's boards".into(),
         api::Urb::Binary { kind, size } => s.note = format!("that address is a file, not a page: {kind}, {size} bytes"),
     }
 }
 
-/// The list of what other ships shared with this one.
+/// The browser's page when no page of another ship is showing: the folder read at the address, or its
+/// start, which lists what was saved and what was visited, as the ship's own reader does.
 fn shared_view(s: &App, k: &Kit) -> El {
     let c = &k.c;
-    // any ship's published pages, by address
-    let mut browse = col()
-        .key("urb")
-        .w_full()
-        .gap(6.0)
-        .child(text("Open an address").font(k.ty.body_medium).color(c.text_base))
-        .child(text("A page or a folder another ship published or shared with you, by its urb:// address.").font(k.ty.small).color(c.text_muted).wrap())
-        .child(
-            row()
-                .w_full()
-                .gap(6.0)
-                .center_y()
-                .child(TextInput::new(&s.urb).label("Address").placeholder("urb://~sampel-palnet/notes").on_edit(|s: &mut App| &mut s.urb).on_submit(|s: &mut App, _| urb_go(s, None)).build(k).grow(1.0).key("urb-address"))
-                .child(Button::new("Open").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| urb_go(s, None)).build(k).key("urb-go")),
-        );
+    let go = |label: String, to: String, key: String| Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press_tx(move |s: &mut App, tx| browse_to(s, Some(to.clone()), tx)).build(k).key(key);
+    let mut page = col().w_full().max_w(760.0).padding(28.0).gap(16.0);
     if let Some((path, entries)) = &s.urb_folder {
         let mut rows = col().key("urb-folder").w_full().gap(2.0).child(text(format!("{path} \u{b7} {} in it", entries.len())).font(k.ty.small).color(c.text_muted));
-        for (name, url, folder) in entries {
-            let to = url.clone();
-            rows = rows.child(row().child(Button::new(if *folder { format!("{name}/") } else { name.clone() }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| urb_go(s, Some(to.clone()))).build(k).key(format!("urb-{name}"))));
+        for (i, (name, url, folder)) in entries.iter().enumerate() {
+            rows = rows.child(row().child(go(if *folder { format!("{name}/") } else { name.clone() }, url.clone(), format!("urb-entry-{i}"))));
         }
-        browse = browse.child(rows);
-    }
-    let mut list = col().key("shared-list").w_full().gap(6.0);
-    for (i, sh) in s.shared.iter().enumerate() {
-        let (open, forget) = (sh.clone(), sh.clone());
-        let when = Rev { rev: 0, updated: sh.when.clone() }.when();
-        list = list.child(
-            row()
-                .key(format!("shared-{i}"))
-                .w_full()
-                .px(12.0)
-                .py(8.0)
-                .gap(10.0)
-                .center_y()
-                .radius(k.radius.md)
-                .border(1.0, c.border_weak)
-                .child(
-                    col()
-                        .gap(2.0)
-                        .grow(1.0)
-                        .min_w(0.0)
-                        .child(text(sh.name().to_owned()).font(k.ty.ui_medium).color(c.text_base).truncate())
-                        .child(text(format!("{} lets you {} it  {when}", sh.host, if sh.editable() { "edit" } else { "read" })).font(k.ty.small).color(c.text_muted).truncate()),
-                )
-                .child(Button::new("Open").control_size(ControlSize::Small).on_press(move |s: &mut App| {
-                    let id = swm::row_id(&open);
-                    open_shared(s, &id);
-                }).build(k).key(format!("shared-open-{i}")))
-                .child(Button::new("Forget").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| s.prompt = Some(Prompt::Forget(forget.clone()))).build(k).key(format!("shared-forget-{i}"))),
+        if entries.is_empty() {
+            rows = rows.child(text("Nothing is in it.").font(k.ty.small).color(c.text_faint));
+        }
+        page = page.child(rows);
+    } else {
+        let head = |t: &str| text(t.to_owned()).font(k.ty.body_medium).color(c.text_base);
+        let line = |title: &str, url: &str| col().gap(1.0).grow(1.0).min_w(0.0).child(text(if title.is_empty() { url.to_owned() } else { title.to_owned() }).font(k.ty.ui_medium).color(c.text_base).truncate()).child(text(url.to_owned()).font(k.ty.small).color(c.text_muted).truncate());
+        let mut saved = col().key("browser-saved").w_full().gap(4.0).child(head("Bookmarks"));
+        match s.marks.as_deref() {
+            Some([]) | None => saved = saved.child(text(if s.marks.is_some() { "Nothing is saved yet. The star in the bar above keeps the page showing." } else { "Reading the bookmarks" }).font(k.ty.small).color(c.text_faint).wrap()),
+            Some(list) => {
+                for (i, m) in list.iter().take(12).enumerate() {
+                    let to = m.url.clone();
+                    saved = saved.child(row().key(format!("saved-{i}")).role("button").label(marks::label(m)).w_full().px(8.0).py(4.0).radius(k.radius.sm).hover(c.hover).on_press_tx(move |s: &mut App, tx| browse_to(s, Some(to.clone()), tx)).child(line(&m.title, &m.url)));
+                }
+                if list.len() > 12 {
+                    saved = saved.child(text(format!("and {} more, in the left pane's Bookmarks", list.len() - 12)).font(k.ty.small).color(c.text_faint));
+                }
+            }
+        }
+        let mut seen = col().key("browser-visited").w_full().gap(4.0).child(
+            row().w_full().center_y().justify_between().child(head("Visited")).children((!s.visits.is_empty()).then(|| {
+                Button::new("Clear").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Forget every address visited").on_press(|s: &mut App| forget_visit(s, None)).build(k).key("visited-clear")
+            })),
         );
+        if s.visits.is_empty() {
+            seen = seen.child(text(if s.conn.is_some() { "No address has been visited yet." } else { "Sample pages have no other ships to visit." }).font(k.ty.small).color(c.text_faint));
+        }
+        for (i, v) in s.visits.iter().take(30).enumerate() {
+            let (to, gone) = (v.url.clone(), v.url.clone());
+            seen = seen.child(
+                row().key(format!("visited-{i}")).w_full().gap(6.0).center_y()
+                    .child(row().role("button").label(if v.title.is_empty() { v.url.clone() } else { v.title.clone() }).grow(1.0).min_w(0.0).px(8.0).py(4.0).radius(k.radius.sm).hover(c.hover).on_press_tx(move |s: &mut App, tx| browse_to(s, Some(to.clone()), tx)).child(line(&v.title, &v.url)))
+                    .child(IconButton::new(&head::X).control_size(ControlSize::Small).variant(IconButtonVariant::GhostMuted).label(format!("Forget the visit to {}", v.url)).help("Forget this visit").on_press(move |s: &mut App| forget_visit(s, Some(gone.clone()))).build(k).key(format!("visited-forget-{i}"))),
+            );
+        }
+        page = page
+            .child(text("Type an address above, as urb://~sampel-palnet/notes, to read what another ship publishes or shares with you. Anything else is looked for among your own pages.").font(k.ty.small).color(c.text_muted).wrap())
+            .child(saved)
+            .child(seen);
     }
-    if s.shared.is_empty() {
-        list = list.child(text("No ship has shared a page with you.").font(k.ty.small).color(c.text_muted));
+    col().key("shared").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(page)).scroll(ScrollSpec { stick_bottom: false })
+}
+
+/// Forgets one address visited, or all of them.
+fn forget_visit(s: &mut App, url: Option<String>) {
+    match &url {
+        Some(u) => s.visits.retain(|v| v.url != *u),
+        None => s.visits.clear(),
     }
-    let head = col()
-        .gap(4.0)
-        .child(text("Shared with me").font(k.ty.body_medium).color(c.text_base))
-        .child(text("Pages other ships said they shared. Opening one reads it from that ship, which shows whether it still lets you.").font(k.ty.small).color(c.text_muted).wrap());
-    col()
-        .key("shared")
-        .w_full()
-        .h_full()
-        .min_h(0.0)
-        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(list).child(browse)))
-        .scroll(ScrollSpec { stick_bottom: false })
+    if let Some(c) = s.conn.clone() {
+        s.visits_req.request((c, url), |(c, url)| {
+            c.history_forget(url.as_deref())?;
+            c.visits()
+        });
+    }
 }
 
 /// Reads the comments, and whether they are on for the open page, when
@@ -9967,7 +10148,7 @@ fn ribbon_go(s: &mut App, go: ribbon::Go, tx: &mut Tx) {
                 tx.focus_when_shown(FIELD, false);
             }
         }
-        Go::Shared => go_shared(s),
+        Go::Browser => go_browser(s),
         Go::Forum => go_forum(s),
         Go::Inbox => go_inbox(s),
         Go::Access => go_access(s),
@@ -9990,7 +10171,6 @@ fn ribbon_view(s: &App, k: &Kit, top: f32) -> El {
         inbox: s.inbox,
         access: s.access,
         settings: s.settings.is_some(),
-        shared_n: s.shared.len() as u32,
         waiting: s.waiting.held + s.waiting.unread,
     });
     let one = |it: &ribbon::Item| {
@@ -10723,7 +10903,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let path = s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref());
     // the name it was given when there is one, with its path beside it
     let named = path.and_then(|p| s.dnames.get(p).filter(|_| !s.memory && s.remote.is_none()).map(|d| format!("{d}  ({p})")));
-    let title = if s.settings.is_some() { "Settings" } else if s.forum.is_some() { "Forum" } else if s.inbox { "Inbox" } else if s.shared_open { "Shared with me" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
+    let title = if s.settings.is_some() { "Settings" } else if s.forum.is_some() { "Forum" } else if s.inbox { "Inbox" } else if s.shared_open { "Browser" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
     let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending();
     let mut layer = Vec::new();
     let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox;
@@ -10889,6 +11069,8 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         row().key("tab-head").w_full().h(36.0).px(8.0).gap(8.0).center_y().justify_between().child(leading.grow(1.0).min_w(0.0)).child(trailing)
     };
     // the room the groups have is noted as it is laid out: a split is refused when it is too little for two
+    // while browsing, the browser's bar is the header: its own Back and Forward, the address, and the star
+    let head = if browsing(s) && !s.editing { browser_bar(s, &k).pt(6.0) } else { head };
     let main = col().w_full().h_full().min_h(0.0).child(head).child(col().key("groups").w_full().grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.groups_room = (r[2], r[3])).child(main));
     let inset = cx.titlebar_inset();
     let right = IconButton::new(&topbar::PANE_RIGHT).variant(if s.inspector.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help("Right pane").on_press(toggle_right).build(&k).key("pane-right");

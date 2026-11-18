@@ -1,6 +1,6 @@
 {"events": [
-  {"t": 2.0, "type": "tap", "key": "shared-open"},
-  {"t": 3.0, "type": "tap", "key": "urb-address"},
+  {"t": 2.0, "type": "tap", "key": "browser-open"},
+  {"t": 3.0, "type": "tap", "key": "browser-address"},
   {"t": 3.4, "type": "type", "text": "~zod/udir/"},
   {"t": 5.0, "type": "key", "name": "Enter"},
   {"t": 9.0, "type": "tap", "key": "urb-sub"},

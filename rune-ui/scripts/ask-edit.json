@@ -1,5 +1,5 @@
 {"events": [
-  {"t": 1.5, "type": "tap", "key": "shared-open"},
+  {"t": 1.5, "type": "tap", "key": "browser-open"},
   {"t": 2.5, "type": "tap", "key": "shared-open-1"},
   {"t": 3.5, "type": "tap", "key": "ask-edit"},
   {"t": 4.5, "type": "type", "text": "two small fixes"},

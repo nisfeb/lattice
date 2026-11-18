@@ -8,12 +8,12 @@
   {
    "t": 5.0,
    "type": "tap",
-   "key": "shared-open"
+   "key": "browser-open"
   },
   {
    "t": 6.0,
    "type": "tap",
-   "key": "urb-address"
+   "key": "browser-address"
   },
   {
    "t": 6.4,

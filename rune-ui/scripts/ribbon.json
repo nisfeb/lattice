@@ -3,7 +3,7 @@
   {"t": 1.5, "type": "tap", "key": "welcome"},
   {"t": 3.0, "type": "tap", "key": "forum-open"},
   {"t": 5.0, "type": "tap", "key": "inbox-open"},
-  {"t": 7.0, "type": "tap", "key": "shared-open"},
+  {"t": 7.0, "type": "tap", "key": "browser-open"},
   {"t": 9.0, "type": "tap", "key": "access-open"},
   {"t": 11.0, "type": "tap", "key": "settings-open"},
   {"t": 13.0, "type": "tap", "key": "today"},
