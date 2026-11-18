@@ -451,9 +451,221 @@ pub fn set_param(src: &str, p: &Param, v: &Lit) -> Option<String> {
     None
 }
 
+// ── include and use ──────────────────────────────────────────────────────
+//
+// A port of the web client's `ui-src/scad/includes.js`. A page
+// `parts/box` is the file `/w/parts/box.scad`, and `include
+// <lib/screws.scad>` in it names the page `parts/lib/screws`. Paths stay
+// inside lattice: an absolute path, a URL and a `..` above the top are
+// refused, and depth, file count and size are capped.
+
+/// Where the pages stand as files when OpenSCAD reads them.
+pub const ROOT: &str = "/w/";
+/// How deep includes nest, how many files, and how many bytes in all.
+pub const CAPS: (usize, usize, usize) = (8, 64, 4 * 1024 * 1024);
+
+/// An `include` or `use` in a source: which, the path as written, and its line, counted from one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Include {
+    pub kind: &'static str,
+    pub path: String,
+    pub line: usize,
+}
+
+/// Where an `include <...>` or `use <...>` that starts at `i` ends, and where its path lies.
+fn include_at(src: &str, i: usize) -> Option<(&'static str, usize, usize)> {
+    let kind = ["include", "use"].into_iter().find(|k| src[i..].starts_with(k))?;
+    let rest = &src[i + kind.len()..];
+    let open = i + kind.len() + (rest.len() - rest.trim_start().len());
+    if !src[open..].starts_with('<') {
+        return None;
+    }
+    let len = src[open + 1..].find(['>', '\n']).filter(|e| src.as_bytes()[open + 1 + e] == b'>')?;
+    Some((kind, open + 1, open + 1 + len))
+}
+
+/// The source with its comments and strings blanked, lengths kept. An include's path is left whole, as OpenSCAD's lexer reads it, so a `//` inside one is part of the path.
+fn bare(src: &str) -> String {
+    let b = src.as_bytes();
+    let mut out = String::with_capacity(src.len());
+    let blank = |out: &mut String, s: &str| out.extend(s.chars().map(|c| if c == '\n' { "\n".to_owned() } else { " ".repeat(c.len_utf8()) }));
+    let mut i = 0;
+    while i < b.len() {
+        let word_before = i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+        if let Some((_, _, end)) = include_at(src, i).filter(|_| !word_before) {
+            out.push_str(&src[i..=end]);
+            i = end + 1;
+            continue;
+        }
+        let end = match (b[i], b.get(i + 1)) {
+            (b'/', Some(b'*')) => src[i + 2..].find("*/").map(|e| i + 2 + e + 2),
+            (b'/', Some(b'/')) => Some(src[i..].find('\n').map_or(b.len(), |e| i + e)),
+            (b'"', _) => {
+                // a string closes on its own line, or it is not one
+                let mut j = i + 1;
+                loop {
+                    match b.get(j) {
+                        Some(b'"') => break Some(j + 1),
+                        Some(b'\\') if b.get(j + 1).is_some_and(|c| *c != b'\n') => j += 1 + src[j + 1..].chars().next().map_or(1, char::len_utf8),
+                        Some(b'\n' | b'\\') | None => break None,
+                        Some(_) => j += 1,
+                    }
+                }
+            }
+            _ => None,
+        };
+        match end {
+            Some(e) => {
+                blank(&mut out, &src[i..e]);
+                i = e;
+            }
+            None => {
+                let n = src[i..].chars().next().map_or(1, char::len_utf8);
+                out.push_str(&src[i..i + n]);
+                i += n;
+            }
+        }
+    }
+    out
+}
+
+/// Every include and use in a source.
+pub fn scan_includes(src: &str) -> Vec<Include> {
+    let b = bare(src);
+    let bytes = b.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !b.is_char_boundary(i) {
+            i += 1;
+            continue;
+        }
+        // at the start, or after a semicolon, a space or a closing brace
+        let led = i == 0 || matches!(bytes[i - 1], b';' | b'}') || b[..i].chars().next_back().is_some_and(char::is_whitespace);
+        match include_at(&b, i).filter(|_| led) {
+            Some((kind, from, to)) => {
+                out.push(Include { kind, path: src[from..to].to_owned(), line: b[..i].matches('\n').count() + 1 });
+                i = to + 1;
+            }
+            None => i += 1,
+        }
+    }
+    out
+}
+
+/// A path written in a file in `dir` (a page folder, empty at the top), as the page it names and the file it becomes. An error says why it is refused.
+pub fn resolve_ref(dir: &str, path: &str) -> Result<(String, String), String> {
+    let r = path.trim();
+    if r.is_empty() {
+        return Err("an empty include".into());
+    }
+    let scheme = r.split_once(':').is_some_and(|(s, _)| s.starts_with(|c: char| c.is_ascii_alphabetic()) && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-')));
+    if scheme || r.starts_with('/') || r.contains('\\') {
+        return Err(format!("{r}: only lattice pages can be included, by a relative path"));
+    }
+    let mut out: Vec<&str> = Vec::new();
+    for p in dir.split('/').filter(|_| !dir.is_empty()).chain(r.split('/')) {
+        match p {
+            "" | "." => {}
+            ".." => {
+                if out.pop().is_none() {
+                    return Err(format!("{r}: reaches above the top of your pages"));
+                }
+            }
+            p => out.push(p),
+        }
+    }
+    if out.is_empty() {
+        return Err(format!("{r}: names no page"));
+    }
+    let file = out.join("/");
+    let page = if file.len() >= 5 && file.is_char_boundary(file.len() - 5) && file[file.len() - 5..].eq_ignore_ascii_case(".scad") { file[..file.len() - 5].to_owned() } else { file.clone() };
+    Ok((page, format!("{ROOT}{file}")))
+}
+
+/// A page and everything it includes: its own file's name, every file
+/// with its text, and notes on what was refused or capped. `read`
+/// answers a page's text, or nothing when there is no such page: that
+/// one is left out, and OpenSCAD says which include it could not open.
+pub fn collect(name: &str, text: &str, mut read: impl FnMut(&str) -> Option<String>) -> (String, Vec<(String, String)>, Vec<String>) {
+    let (max_depth, max_files, max_bytes) = CAPS;
+    let main = format!("{ROOT}{name}.scad");
+    let mut files: Vec<(String, String)> = vec![(main.clone(), text.to_owned())];
+    let mut notes = Vec::new();
+    let mut bytes = text.len();
+    let mut queue: std::collections::VecDeque<(String, String, usize)> = [(name.to_owned(), text.to_owned(), 0)].into();
+    let mut asked: std::collections::HashMap<String, Option<String>> = Default::default();
+    'all: while let Some((page, t, depth)) = queue.pop_front() {
+        let dir = page.rsplit_once('/').map_or("", |(d, _)| d);
+        for inc in scan_includes(&t) {
+            let (p, file) = match resolve_ref(dir, &inc.path) {
+                Ok(r) => r,
+                Err(why) => {
+                    notes.push(format!("line {} of {page}: {why}", inc.line));
+                    continue;
+                }
+            };
+            if files.iter().any(|(f, _)| *f == file) {
+                continue;
+            }
+            if depth + 1 > max_depth {
+                notes.push(format!("{p}: includes nest deeper than {max_depth}, not read"));
+                continue;
+            }
+            if files.len() >= max_files {
+                notes.push(format!("more than {max_files} included files, the rest not read"));
+                break 'all;
+            }
+            let Some(body) = asked.entry(p.clone()).or_insert_with(|| read(&p)).clone() else { continue };
+            if bytes + body.len() > max_bytes {
+                notes.push(format!("{p}: the included files pass {} MB, not read", max_bytes >> 20));
+                continue;
+            }
+            bytes += body.len();
+            files.push((file, body.clone()));
+            queue.push_back((p, body, depth + 1));
+        }
+    }
+    (main, files, notes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn includes_are_found_and_resolved_as_the_web_client_does() {
+        // sets of pages, and for each the main page's files and notes from the web client's collect under node
+        let cases: serde_json::Value = serde_json::from_str(include_str!("scad_includes.json")).unwrap();
+        let mut n = 0;
+        for case in cases.as_array().unwrap() {
+            let pages = case["pages"].as_object().unwrap();
+            let name = case["name"].as_str().unwrap();
+            // a very long page is kept in the corpus as one character and a count
+            let text = |v: &str| match v.strip_prefix("@repeat:").and_then(|r| r.split_once(':')) {
+                Some((ch, n)) => ch.repeat(n.parse().unwrap()),
+                None => v.to_owned(),
+            };
+            let (main, files, notes) = collect(name, pages[name].as_str().unwrap(), |p| pages.get(p).and_then(|v| v.as_str()).map(text));
+            assert_eq!(main, case["main"].as_str().unwrap());
+            let got: Vec<&str> = files.iter().map(|(f, _)| f.as_str()).collect();
+            let want: Vec<&str> = case["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+            assert_eq!(got, want, "{name}");
+            let want: Vec<&str> = case["notes"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+            assert_eq!(notes, want, "{name}");
+            let scanned: Vec<String> = scan_includes(pages[name].as_str().unwrap()).iter().map(|i| format!("{} {} {}", i.kind, i.line, i.path)).collect();
+            let want: Vec<&str> = case["scan"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+            assert_eq!(scanned, want, "{name}");
+            n += 1;
+        }
+        assert!(n >= 10, "{n}");
+        // a file's text is what the page holds, and the main page comes first
+        let (_, files, _) = collect("a", "use <b>", |p| (p == "b").then(|| "cube(1);".to_owned()));
+        assert_eq!(files, [("/w/a.scad".to_owned(), "use <b>".to_owned()), ("/w/b".to_owned(), "cube(1);".to_owned())]);
+        for bad in ["", "include <", "use <\n>", "include<é", "\"é\\", "/* é", "é include <é>", "include <a>\u{0}use <b>"] {
+            let _ = scan_includes(bad);
+        }
+    }
 
     fn lit_json(v: &Lit) -> String {
         match v {
