@@ -173,9 +173,33 @@ pub fn page(source_name: &str, html: &str) -> String {
     format!("<!-- generated from {source_name}.tex by pandoc. Edits here are lost on the next convert. -->\n{}", clean(html))
 }
 
+/// A LaTeX page as Markdown to read: pandoc's HTML, cleaned as a
+/// conversion is, then read as any HTML page is. An error says why:
+/// no pandoc on this machine, or what pandoc said of the source.
+pub fn read(src: &str) -> Result<String, String> {
+    let exe = locate().ok_or("Shown as its source: reading LaTeX as a document needs pandoc, which is not installed on this machine. It is at pandoc.org")?;
+    let html = convert(&exe, src).map_err(|e| format!("Shown as its source, since pandoc could not read it: {}", e.chars().take(300).collect::<String>()))?;
+    Ok(crate::html::to_markdown(&clean(&html)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_paper_reads_as_a_document_when_pandoc_is_here() {
+        // with no pandoc on the machine there is nothing to check, and the page shows as its source
+        if locate().is_none() {
+            assert!(read("x").unwrap_err().contains("pandoc.org"));
+            return;
+        }
+        let got = read("\\section{Intro}\nSome \\emph{soft} text with $x^2$ inline.\n\\begin{itemize}\\item one \\item two\\end{itemize}\n\\href{https://urbit.org}{link} \\href{javascript:alert(1)}{bad}\n\\begin{verbatim}\ncode here\n\\end{verbatim}\n").unwrap();
+        assert_eq!(got, "# Intro\n\nSome *soft* text with `x^2` inline.\n\n- one\n- two\n\n[link](https://urbit.org) bad\n\n```\ncode here\n```\n");
+        // a file of this machine is not read into the page
+        let stolen = read("\\input{/etc/hostname}\nafter").unwrap_or_default();
+        let host = std::fs::read_to_string("/etc/hostname").unwrap_or_default();
+        assert!(host.trim().is_empty() || !stolen.contains(host.trim()));
+    }
 
     #[test]
     fn what_embeds_or_runs_is_dropped_and_links_keep_only_safe_targets() {

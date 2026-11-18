@@ -248,6 +248,27 @@ fn raw(nodes: &[Node], out: &mut String) {
     }
 }
 
+/// Text as a span of code: a fence longer than any run of backticks inside, and a space where the text starts or ends with one.
+fn code_span(t: &str, out: &mut String) {
+    let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.is_empty() {
+        return;
+    }
+    let longest = t.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest + 1);
+    let pad = if t.starts_with('`') || t.ends_with('`') { " " } else { "" };
+    out.push_str(&format!("{fence}{pad}{t}{pad}{fence}"));
+}
+
+/// The TeX a piece of MathML says it was made from.
+fn annotation(nodes: &[Node]) -> Option<&[Node]> {
+    nodes.iter().find_map(|n| match n {
+        Node::El(name, attrs, kids) if name == "annotation" && attr(attrs, "encoding") == Some("application/x-tex") => Some(kids.as_slice()),
+        Node::El(_, _, kids) => annotation(kids),
+        Node::Text(_) => None,
+    })
+}
+
 /// Marks round what some nodes read as, with the spaces at its ends kept outside the marks.
 fn wrap(kids: &[Node], mark: &str, out: &mut String) {
     let mut inner = String::new();
@@ -274,13 +295,23 @@ fn inline(nodes: &[Node], out: &mut String) {
                 "code" | "kbd" | "samp" | "tt" => {
                     let mut t = String::new();
                     raw(kids, &mut t);
-                    let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
-                    if !t.is_empty() {
-                        // a fence longer than any run of backticks inside, and a space where the text starts or ends with one
-                        let longest = t.split(|c| c != '`').map(str::len).max().unwrap_or(0);
-                        let fence = "`".repeat(longest + 1);
-                        let pad = if t.starts_with('`') || t.ends_with('`') { " " } else { "" };
-                        out.push_str(&format!("{fence}{pad}{t}{pad}{fence}"));
+                    code_span(&t, out);
+                }
+                // mathematics is not set here: it reads as the TeX it was written in, when the page
+                // carries that beside the MathML as pandoc's does, on a line of its own when displayed
+                "math" => {
+                    let mut t = String::new();
+                    match annotation(kids) {
+                        Some(tex) => raw(tex, &mut t),
+                        None => raw(kids, &mut t),
+                    }
+                    let block = attr(attrs, "display") == Some("block");
+                    if block {
+                        out.push_str("\\\n");
+                    }
+                    code_span(&t, out);
+                    if block {
+                        out.push_str("\\\n");
                     }
                 }
                 "a" => {
@@ -578,6 +609,16 @@ mod tests {
         assert_eq!(md("<pre>a\n```\nb</pre>"), "````\na\n```\nb\n````");
         assert_eq!(md("<table><caption>Costs</caption><thead><tr><th>Item<th>Cost</tr></thead><tbody><tr><td>a|b</td><td><b>3</b></td></tr><tr><td>only</td></tr></tbody></table>"), "*Costs*\n\n| Item | Cost |\n| --- | --- |\n| a\\|b | **3** |\n| only |  |");
         assert_eq!(md("<p><img src=\"fig/a.png\" alt=\"A [fig]\"> <img src=\"https://x.org/t.png\"></p>"), "![A \\[fig\\]](fig/a.png) ![](https://x.org/t.png)");
+    }
+
+    #[test]
+    fn mathematics_reads_as_the_tex_it_was_written_in() {
+        let inline = "<math display=\"inline\"><semantics><mrow><msup><mi>x</mi><mn>2</mn></msup></mrow><annotation encoding=\"application/x-tex\">x^2 + y_1</annotation></semantics></math>";
+        assert_eq!(md(&format!("<p>with {inline} inline</p>")), "with `x^2 + y_1` inline");
+        let block = inline.replace("inline", "block");
+        assert_eq!(md(&format!("<p>before {block} after</p>")), "before\\\n`x^2 + y_1`\\\nafter");
+        // MathML with no TeX beside it reads as its symbols
+        assert_eq!(md("<math><mi>a</mi><mo>+</mo><mi>b</mi></math>"), "`a+b`");
     }
 
     #[test]

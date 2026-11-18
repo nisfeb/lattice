@@ -230,6 +230,11 @@ struct App {
     pane_links: bool,
     back: Option<(String, Vec<String>)>,
     back_req: Latest<Result<(String, Vec<String>), String>>,
+    /// A LaTeX page being read by pandoc: its name, its revision, and the Markdown or why there is none.
+    tex_req: Latest<(String, u64, Result<String, String>)>,
+    /// The LaTeX page pandoc was last asked to read, and why the open one shows as its source when it does.
+    tex_for: Option<(String, u64)>,
+    tex_why: Option<(String, u64, String)>,
     comments: Vec<Comment>,
     comments_req: Latest<Result<Vec<Comment>, String>>,
     comments_on: HashMap<String, bool>,
@@ -457,6 +462,9 @@ fn init() -> App {
         pane_links: false,
         back: None,
         back_req: Latest::default(),
+        tex_req: Latest::default(),
+        tex_for: None,
+        tex_why: None,
         comments: Vec::new(),
         comments_req: Latest::default(),
         comments_on: HashMap::new(),
@@ -1017,6 +1025,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.kept_req.set_waker(waker.clone());
     s.templates_req.set_waker(waker.clone());
     s.back_req.set_waker(waker.clone());
+    s.tex_req.set_waker(waker.clone());
     s.asks_req.set_waker(waker.clone());
     s.waiting_req.set_waker(waker.clone());
     s.comets_req.set_waker(waker.clone());
@@ -1120,10 +1129,26 @@ fn sync_map(s: &mut App) {
 /// Keeps `s.read_as` in step with the open page: an HTML or a gemtext
 /// page is read as a document, turned to Markdown once and not on every frame.
 fn sync_read(s: &mut App) {
-    let Some(p) = s.open.as_ref().filter(|p| p.kind == "html" || p.kind == "gmi") else {
+    // away from a LaTeX page and back, it is read again: what was read went with the page
+    if !s.open.as_ref().is_some_and(|p| p.kind == "tex") {
+        s.tex_for = None;
+    }
+    let Some(p) = s.open.as_ref().filter(|p| matches!(p.kind.as_str(), "html" | "gmi" | "tex")) else {
         s.read_as = None;
         return;
     };
+    if p.kind == "tex" {
+        // pandoc reads it on a thread of its own, once for each revision. Until it answers, and when
+        // it cannot, the page shows as its source
+        let now = (p.name.clone(), p.rev);
+        if s.tex_for.as_ref() != Some(&now) {
+            s.tex_for = Some(now.clone());
+            s.tex_why = None;
+            s.read_as = None;
+            s.tex_req.request((now, p.body.clone()), |((name, rev), src)| (name, rev, tex::read(&src)));
+        }
+        return;
+    }
     if !s.read_as.as_ref().is_some_and(|(n, rev, _)| *n == p.name && *rev == p.rev) {
         s.read_as = Some((p.name.clone(), p.rev, if p.kind == "gmi" { html::gemtext(&p.body) } else { html::to_markdown(&p.body) }));
     }
@@ -2997,6 +3022,13 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 s.tile_status = Some(t);
             }
             Err(e) => s.tiles_off = Some(e),
+        }
+    }
+    if let Some((name, rev, got)) = s.tex_req.take() {
+        changed = true;
+        match got {
+            Ok(md) => s.read_as = Some((name, rev, md)),
+            Err(why) => s.tex_why = Some((name, rev, why)),
         }
     }
     if let Some(r) = s.back_req.take() {
@@ -5414,6 +5446,9 @@ fn page_body(s: &App, k: &Kit) -> El {
             meta = meta.child(row().px(6.0).py(1.0).radius(k.radius.sm).fill(c.layer_01).child(text(t.clone()).font(k.ty.small).color(c.text_muted)));
         }
         page = page.child(meta);
+    }
+    if let Some((_, _, why)) = s.tex_why.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev) {
+        page = page.child(text(why.clone()).key("tex-why").font(k.ty.small).color(c.text_muted).wrap());
     }
     col()
         .key("reader")
