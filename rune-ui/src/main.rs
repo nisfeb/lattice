@@ -14,6 +14,7 @@ mod mapio;
 mod md;
 mod odf;
 mod pdf;
+mod scad;
 mod sheet;
 mod shift;
 mod styles;
@@ -105,6 +106,8 @@ enum Prompt {
     Duplicate(Page, TextEdit),
     /// A note to go with an ask for edit on another ship's page.
     Ask(Shared, TextEdit),
+    /// A value typed for an OpenSCAD parameter: its name, which part of a vector, and the text.
+    Param(String, Option<usize>, TextEdit),
 }
 
 /// A tab that is not in front: the pages it went through, and which of
@@ -700,6 +703,20 @@ fn confirm(s: &mut App) {
         }
         return;
     }
+    if let Prompt::Param(name, part, t) = &p {
+        let (name, part, typed) = (name.clone(), *part, t.text.clone());
+        set_param(s, &name, |old| match (old, part) {
+            (scad::Lit::Str(_), _) => Ok(scad::Lit::Str(typed.clone())),
+            (scad::Lit::Num(_), _) => typed.trim().parse().map(scad::Lit::Num).map_err(|_| "that is not a number".to_owned()),
+            (scad::Lit::Vector(v), Some(i)) if i < v.len() => {
+                let mut v = v.clone();
+                v[i] = typed.trim().parse().map_err(|_| "that is not a number".to_owned())?;
+                Ok(scad::Lit::Vector(v))
+            }
+            _ => Err("that parameter is not typed".to_owned()),
+        });
+        return;
+    }
     if let Prompt::Feature(at, t) = &p {
         let [name, kind, note, time, source, radius] = [t[0].text.trim(), t[1].text.trim(), t[2].text.as_str(), t[3].text.trim(), t[4].text.trim(), t[5].text.trim()];
         if !time.is_empty() && !map::time_ok(time) {
@@ -1283,6 +1300,123 @@ fn shift_picked(s: &mut App, rows: bool, off: usize, n: i64) {
             }
         }
     }
+}
+
+/// Gives an OpenSCAD parameter of the open page a new value, worked
+/// out from the one it has, and saves the page: its line is rewritten
+/// and nothing else. A number is kept inside its range.
+fn set_param(s: &mut App, name: &str, change: impl Fn(&scad::Lit) -> Result<scad::Lit, String>) {
+    let Some(p) = s.open.clone().filter(|p| p.kind == "scad") else { return };
+    if !page_changes(s) {
+        s.note = "this page is not changed here".into();
+        return;
+    }
+    let Some(param) = scad::parse_params(&p.body).into_iter().find(|x| x.name == name) else { return };
+    let clamp = |n: f64| n.clamp(param.min.unwrap_or(f64::MIN), param.max.unwrap_or(f64::MAX).max(param.min.unwrap_or(f64::MIN)));
+    let value = match change(&param.value) {
+        Ok(scad::Lit::Num(n)) => scad::Lit::Num(clamp(n)),
+        Ok(scad::Lit::Vector(v)) => scad::Lit::Vector(v.into_iter().map(clamp).collect()),
+        // a string is no longer than its comment lets it be
+        Ok(scad::Lit::Str(t)) => scad::Lit::Str(t.chars().take(param.max_length.map_or(usize::MAX, |m| m.max(0.0) as usize)).collect()),
+        Ok(v) => v,
+        Err(why) => {
+            s.note = format!("not changed: {why}");
+            return;
+        }
+    };
+    match scad::set_param(&p.body, &param, &value) {
+        None => s.note = "not changed: that line is not as it was read".into(),
+        Some(body) if body == p.body => {}
+        Some(body) => save_body(s, p, body),
+    }
+}
+
+/// The parameters an OpenSCAD page's source declares, each with a
+/// control for its kind, in their groups. A change is written into the
+/// parameter's own line and saved.
+fn params_view(params: &[scad::Param], k: &Kit) -> El {
+    let c = &k.c;
+    let small = |label: String, help: &str| Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(help.to_owned());
+    // a number: one step down, the value (press it to type one), one step up
+    let stepper = |p: &scad::Param, part: Option<usize>, n: f64, key: String| {
+        let step = p.step.filter(|s| *s > 0.0).unwrap_or(1.0);
+        let nudge = move |by: f64| {
+            move |old: &scad::Lit| match (old, part) {
+                (scad::Lit::Num(n), _) => Ok(scad::Lit::Num(n + by)),
+                (scad::Lit::Vector(v), Some(i)) if i < v.len() => {
+                    let mut v = v.clone();
+                    v[i] += by;
+                    Ok(scad::Lit::Vector(v))
+                }
+                _ => Err("that parameter is not a number".to_owned()),
+            }
+        };
+        let (down, up, typed) = (p.name.clone(), p.name.clone(), p.name.clone());
+        let shown = scad::fmt_value(&scad::Lit::Num(n), p.step);
+        let start = shown.clone();
+        row()
+            .gap(2.0)
+            .center_y()
+            .child(small("\u{2212}".into(), "One step down").on_press(move |s: &mut App| set_param(s, &down, nudge(-step))).build(k).key(format!("{key}-down")))
+            .child(small(shown, "Type a value").on_press(move |s: &mut App| {
+                let mut t = TextEdit::new(start.as_str());
+                t.focused = true;
+                s.prompt = Some(Prompt::Param(typed.clone(), part, t));
+            }).build(k).key(format!("{key}-value")))
+            .child(small("+".into(), "One step up").on_press(move |s: &mut App| set_param(s, &up, nudge(step))).build(k).key(format!("{key}-up")))
+    };
+    let mut out = col().key("scad-params").w_full().gap(6.0).padding(10.0).radius(k.radius.md).fill(c.layer_01);
+    let mut group = "";
+    for p in params {
+        if p.group != group {
+            group = &p.group;
+            out = out.child(text(group.to_owned()).font(k.ty.small_medium).color(c.text_muted));
+        }
+        let key = format!("param-{}", p.name);
+        let control = if !p.options.is_empty() {
+            // a list: a button a choice, the one in the source marked
+            let mut choices = row().gap(2.0).center_y().flex_wrap();
+            for (i, (v, label)) in p.options.iter().enumerate() {
+                let (name, v, on) = (p.name.clone(), v.clone(), *v == p.value);
+                choices = choices.child(Button::new(label.clone()).control_size(ControlSize::Small).variant(if on { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| set_param(s, &name, |_| Ok(v.clone()))).build(k).key(format!("{key}-{i}")));
+            }
+            choices
+        } else {
+            match &p.value {
+                scad::Lit::Bool(on) => {
+                    let (name, on) = (p.name.clone(), *on);
+                    row().child(Switch::new(on).on_toggle(move |s: &mut App| set_param(s, &name, |_| Ok(scad::Lit::Bool(!on)))).build(k).key(format!("{key}-switch")))
+                }
+                scad::Lit::Num(n) => stepper(p, None, *n, key.clone()),
+                scad::Lit::Vector(v) => {
+                    let mut parts = row().gap(8.0).center_y();
+                    for (i, n) in v.iter().enumerate() {
+                        parts = parts.child(stepper(p, Some(i), *n, format!("{key}-{i}")));
+                    }
+                    parts
+                }
+                scad::Lit::Str(t) => {
+                    let (name, start) = (p.name.clone(), t.clone());
+                    row().child(small(if t.is_empty() { "(empty)".into() } else { t.clone() }, "Type a value").on_press(move |s: &mut App| {
+                        let mut e = TextEdit::new(start.as_str());
+                        e.focused = true;
+                        s.prompt = Some(Prompt::Param(name.clone(), None, e));
+                    }).build(k).key(format!("{key}-value")))
+                }
+            }
+        };
+        let range = match (p.min, p.max) {
+            (Some(lo), Some(hi)) => format!("{} to {}", scad::js_num(lo), scad::js_num(hi)),
+            _ => String::new(),
+        };
+        let mut label = col().w(180.0).child(text(p.name.clone()).font(k.ty.ui).color(c.text_base).truncate());
+        let said = [p.description.as_str(), range.as_str()].iter().filter(|x| !x.is_empty()).copied().collect::<Vec<_>>().join(" \u{b7} ");
+        if !said.is_empty() {
+            label = label.child(text(said).font(k.ty.small).color(c.text_faint).wrap());
+        }
+        out = out.child(row().key(key).w_full().gap(10.0).center_y().child(label).child(control));
+    }
+    out
 }
 
 /// Adds a sheet after the last, named as the web client names one, and shows it.
@@ -4223,7 +4357,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) => t,
+                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) => t,
                 Prompt::Delete(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
@@ -4238,6 +4372,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::Ask(_, t) => ("Ask for edit access", field(t, "A short note, if you like"), "Ask", ButtonVariant::Contrast),
         Prompt::Duplicate(_, t) => ("Duplicate this page as", field(t, "folder/name"), "Duplicate", ButtonVariant::Contrast),
         // kept on the ship, which never shows it again. Typed in the clear here: it is pasted, not remembered
+        Prompt::Param(_, _, t) => ("Set this parameter", field(t, "A value"), "Set", ButtonVariant::Contrast),
         Prompt::Token(t) => ("The ship's Mapbox token", field(t, "pk... to set it, or nothing to clear it"), "Set", ButtonVariant::Contrast),
         Prompt::Feature(at, t) => {
             // only a point has a ring round it
@@ -5447,6 +5582,13 @@ fn page_body(s: &App, k: &Kit) -> El {
         }
         page = page.child(meta);
     }
+    // an OpenSCAD page's parameters stand over its source, to be changed where the page is read
+    if p.kind == "scad" && !s.memory && p.body.len() <= 512 * 1024 {
+        let params = scad::parse_params(&p.body);
+        if !params.is_empty() && page_changes(s) {
+            page = page.child(params_view(&params, k));
+        }
+    }
     if let Some((_, _, why)) = s.tex_why.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev) {
         page = page.child(text(why.clone()).key("tex-why").font(k.ty.small).color(c.text_muted).wrap());
     }
@@ -5762,6 +5904,39 @@ mod tests {
         s.open.as_mut().unwrap().kind = "css".into();
         sync_sheet(&mut s);
         assert_eq!(read_md(&s, &s.open.clone().unwrap()), None);
+    }
+
+    #[test]
+    fn an_openscad_parameter_is_changed_in_its_own_line_and_kept_in_range() {
+        let mut s = sample("welcome");
+        let body = "// wall\nwall = 2; // [1:5]\nlabel = \"abc\"; // 4\nsize = [10, 20]; // [0:50]\ncube(size);\n";
+        s.open = Some(Page { name: "welcome".into(), body: body.into(), kind: "scad".into(), rev: 1 });
+        let text = |s: &App| s.open.as_ref().unwrap().body.clone();
+        set_param(&mut s, "wall", |v| if let scad::Lit::Num(n) = v { Ok(scad::Lit::Num(n + 1.0)) } else { unreachable!() });
+        assert_eq!(text(&s), body.replace("wall = 2;", "wall = 3;"));
+        // past the end of its range it stops there
+        set_param(&mut s, "wall", |_| Ok(scad::Lit::Num(99.0)));
+        assert!(text(&s).contains("wall = 5; // [1:5]"));
+        // a typed value goes through the prompt: a string no longer than its comment lets it be
+        let mut t = TextEdit::new("");
+        t.text = "abcdefgh".into();
+        s.prompt = Some(Prompt::Param("label".into(), None, t));
+        confirm(&mut s);
+        assert!(text(&s).contains("label = \"abcd\"; // 4"), "{}", text(&s));
+        // one part of a vector, typed, and what is not a number changes nothing
+        let mut t = TextEdit::new("");
+        t.text = "7.5".into();
+        s.prompt = Some(Prompt::Param("size".into(), Some(1), t));
+        confirm(&mut s);
+        assert!(text(&s).contains("size = [10, 7.5]; // [0:50]"));
+        let before = text(&s);
+        let mut t = TextEdit::new("");
+        t.text = "wide".into();
+        s.prompt = Some(Prompt::Param("wall".into(), None, t));
+        confirm(&mut s);
+        assert_eq!((text(&s), s.note.as_str()), (before, "not changed: that is not a number"));
+        // nothing but the values moved
+        assert_eq!(text(&s), "// wall\nwall = 5; // [1:5]\nlabel = \"abcd\"; // 4\nsize = [10, 7.5]; // [0:50]\ncube(size);\n");
     }
 
     #[test]
