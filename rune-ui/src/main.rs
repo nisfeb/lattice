@@ -9,6 +9,7 @@ mod calc;
 mod code;
 mod formula;
 mod html;
+mod local;
 mod funcs;
 mod map;
 mod mapio;
@@ -131,6 +132,8 @@ struct Settings {
     reindex: String,
     /// The form that connects is showing: to sign in again, or to another ship.
     connect: bool,
+    /// The piers found on this machine, once looked for.
+    local: Option<Vec<local::LocalShip>>,
     /// What of lattice's software the ship has, once asked, and the ship to install %grubbery from.
     stack: Option<api::Stack>,
     dist: TextEdit,
@@ -138,7 +141,7 @@ struct Settings {
 
 impl Settings {
     fn new() -> Self {
-        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false, stack: None, dist: TextEdit::new("~nisfeb") }
+        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false, local: None, stack: None, dist: TextEdit::new("~nisfeb") }
     }
 
     fn ask(&self) -> api::KeyAsk {
@@ -531,6 +534,7 @@ struct App {
     /// The map token's state and the OpenSCAD runtime's as read, the openscad found here when it was looked for, and what to say of what was just done.
     set_req: Latest<Result<SetGot, String>>,
     stack_req: Latest<Result<api::Stack, String>>,
+    local_req: Latest<Vec<local::LocalShip>>,
     /// The refusals, read beside the boards and after a clear.
     notes_req: Latest<Result<ForumGot, String>>,
     /// The open page as a spreadsheet, when it is one.
@@ -778,6 +782,7 @@ fn init() -> App {
         keys_req: Latest::default(),
         set_req: Latest::default(),
         stack_req: Latest::default(),
+        local_req: Latest::default(),
         forum_req: Latest::default(),
         notes_req: Latest::default(),
         beside: None,
@@ -1514,6 +1519,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.urb_req.set_waker(waker.clone());
     s.set_req.set_waker(waker.clone());
     s.stack_req.set_waker(waker.clone());
+    s.local_req.set_waker(waker.clone());
     s.notes_req.set_waker(waker.clone());
     s.core_req.set_waker(waker.clone());
     s.trash_req.set_waker(waker.clone());
@@ -4704,6 +4710,12 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(std::time::Duration::from_secs(6));
         settings_do(s, SetAct::Read);
     }
+    if let Some(found) = s.local_req.take() {
+        changed = true;
+        if let Some(st) = &mut s.settings {
+            st.local = Some(found);
+        }
+    }
     if let Some(r) = s.stack_req.take() {
         changed = true;
         // a ship that could not be asked is not said to lack anything
@@ -6473,6 +6485,45 @@ fn editor_kit(k: &Kit, pref: &str) -> Kit {
     ek
 }
 
+/// Looks for piers on this machine. Asked for, not done on opening the settings: it walks a few levels of the home directory.
+fn local_look(s: &mut App) {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+        s.note = "this computer names no home directory to look under".into();
+        return;
+    };
+    s.local_req.request(home, |home| local::discover(&home));
+}
+
+/// The ships on this machine: each with where its pier is, and why it cannot be reached when it cannot.
+fn local_view(st: &Settings, looking: bool, k: &Kit) -> El {
+    let c = &k.c;
+    let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
+    let mut v = col()
+        .key("set-local")
+        .w_full()
+        .gap(6.0)
+        .child(text("On this machine").font(k.ty.body_medium).color(c.text_base))
+        .child(muted("Ships running here can be reached directly over lick, with no URL and no +code. The socket lives inside the pier, so being able to open it is the permission."));
+    match &st.local {
+        None => {}
+        Some(found) if found.is_empty() => v = v.child(text("no piers found under your home directory.").key("local-none").font(k.ty.small).color(c.text_muted)),
+        Some(found) => {
+            for (i, ship) in found.iter().enumerate() {
+                v = v.child(
+                    row()
+                        .key(format!("local-{i}"))
+                        .gap(8.0)
+                        .center_y()
+                        .child(text(ship.ship.clone()).font(k.ty.mono).color(c.text_base))
+                        .child(text(ship.says()).key(format!("local-says-{i}")).font(k.ty.small).color(c.text_muted).grow(1.0).min_w(0.0).truncate())
+                        .children(ship.lick.then(|| text("over lick").font(k.ty.small_medium).color(c.success.icon))),
+                );
+            }
+        }
+    }
+    v.child(row().child(Button::new(if looking { "Looking\u{2026}" } else if st.local.is_some() { "Look again" } else { "Look for ships" }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(looking).help("Looks a few levels under your home directory for piers. Nothing in them is read").on_press(local_look).build(k).key("local-look")))
+}
+
 /// Asks the ship what it has of lattice's software.
 fn stack_ask(s: &mut App) {
     if let Some(c) = s.conn.clone() {
@@ -6625,7 +6676,7 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
         }).build(k).key("publish-ask")));
     }
     let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
-    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).children(stack_view(st, k)).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
+    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).children(stack_view(st, k)).child(local_view(st, s.local_req.is_pending(), k)).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
         "A key lets an agent, such as the lattice plugin for Claude Code or Hermes, use your memory and pages without your login. Everything a key saves is signed with the name it writes as, and its scope says what it may touch. Publishing, sharing and settings stay yours whatever the scope.",
     ));
     if let Some(token) = &st.token {
