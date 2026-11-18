@@ -18,6 +18,7 @@ mod mapio;
 mod md;
 mod odf;
 mod pdf;
+mod ribbon;
 mod scad;
 mod scadrun;
 mod sheet;
@@ -37,7 +38,7 @@ use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
 use rune_kit::{Cell, Table, TableColumn, TableState};
 use rune_kit::Switch;
-use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, Divider, FileNode, FileTree, Kit, Markdown, Spinner, TextArea, TextInput, Tree, TreeItem, TreeModel};
+use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, IconButton, IconButtonVariant, Divider, FileNode, FileTree, Kit, Markdown, Spinner, TextArea, TextInput, Tree, TreeItem, TreeModel};
 
 type Files = TreeModel<FileNode<Node>>;
 
@@ -8431,6 +8432,71 @@ fn ask_delete(s: &mut App) {
     }
 }
 
+/// What a press on one of the ribbon's icons does.
+fn ribbon_go(s: &mut App, go: ribbon::Go, tx: &mut Tx) {
+    use ribbon::Go;
+    match go {
+        Go::Today => {
+            open_today(s);
+            if s.editing {
+                tx.focus_when_shown(FIELD, false);
+            }
+        }
+        Go::Shared => go_shared(s),
+        Go::Forum => go_forum(s),
+        Go::Inbox => go_inbox(s),
+        Go::Access => go_access(s),
+        Go::Commands => {
+            let mut q = TextEdit::new("");
+            q.focused = true;
+            (s.palette, s.palette_at) = (Some(q), 0);
+        }
+        Go::Settings => go_settings(s),
+    }
+}
+
+/// The ribbon: icons down the window's left edge, as the web client has
+/// them, with settings at its foot. `top` clears what the window draws
+/// over its leading corner (a Mac's traffic lights).
+fn ribbon_view(s: &App, k: &Kit, top: f32) -> El {
+    let items = ribbon::items(ribbon::Showing {
+        shared: s.shared_open,
+        forum: s.forum.is_some(),
+        inbox: s.inbox,
+        access: s.access,
+        settings: s.settings.is_some(),
+        shared_n: s.shared.len() as u32,
+        waiting: s.waiting.held + s.waiting.unread,
+    });
+    let one = |it: &ribbon::Item| {
+        let go = it.go;
+        let mut b = IconButton::new(it.icon).control_size(ControlSize::Large).variant(if it.on { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help(it.name);
+        if it.count > 0 {
+            // the number painted on it is said with its name
+            b = b.label(it.said());
+        }
+        if let Some(keys) = it.keys {
+            b = b.shortcut(keys);
+        }
+        let b = b.on_press_tx(move |s: &mut App, tx| ribbon_go(s, go, tx)).build(k).key(it.key);
+        let mut cell = el().size(28.0, 28.0).child(b);
+        if let Some(n) = it.badge() {
+            cell = cell.child(text(n).key(format!("{}-count", it.key)).font(k.ty.text_xsmall_medium).color(k.c.text_base).fill(k.c.layer_02).radius(6.0).px(3.0).absolute(15.0, -3.0).inert().a11y_hidden());
+        }
+        cell
+    };
+    let mut head = col().gap(4.0).items_center();
+    let mut foot = col().gap(4.0).items_center();
+    for it in &items {
+        if it.foot {
+            foot = foot.child(one(it));
+        } else {
+            head = head.child(one(it));
+        }
+    }
+    col().key("ribbon").role("navigation").label("Ribbon").w(40.0).h_full().min_h(0.0).pt(8.0 + top).pb(8.0).items_center().justify_between().child(head).child(foot)
+}
+
 fn sidebar(s: &App, k: &Kit) -> El {
     let q = s.query.text.trim().to_lowercase();
     let tree = Tree::new(|s: &App| &s.files, |s: &mut App| &mut s.files, |n: &FileNode<Node>| n.name.as_str())
@@ -8482,20 +8548,12 @@ fn sidebar(s: &App, k: &Kit) -> El {
             .key(key.to_owned())
     };
     let (pages, knows) = if s.memory { (s.other.1.len(), s.names.len()) } else { (s.names.len(), s.other.1.len()) };
-    let with_me = Button::new(format!("Shared with me {}", s.shared.len())).control_size(ControlSize::Small).variant(if s.shared_open { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(go_shared).build(k).key("shared-open");
-    let forum = Button::new("Forum").control_size(ControlSize::Small).variant(if s.forum.is_some() { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("This ship's boards and their threads").on_press(go_forum).build(k).key("forum-open");
-    let inbox = Button::new(match s.waiting.held + s.waiting.unread { 0 => "Inbox".to_owned(), n => format!("Inbox {n}") }).control_size(ControlSize::Small).variant(if s.inbox { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("Held comments, activity, and comments on every page").on_press(go_inbox).build(k).key("inbox-open");
     let halves = row().key("halves").w_full().gap(4.0).child(half("half-pages", format!("Pages {pages}"), !s.memory)).child(half("half-memory", format!("Memory {knows}"), s.memory));
     let new = Button::new(if s.memory { "New memory" } else { "New page" }).variant(ButtonVariant::Ghost).help("Asks for a name and a place").on_press(ask_new).build(k).key("new");
     let new = row().w_full().gap(4.0).child(Button::new("Capture").variant(ButtonVariant::Ghost).help("A new page in the inbox, with nothing asked").on_press_tx(|s: &mut App, tx| {
         capture(s);
         tx.focus_when_shown(FIELD, false);
-    }).build(k).key("capture")).child(Button::new("Today").variant(ButtonVariant::Ghost).help("Today's journal page").on_press_tx(|s: &mut App, tx| {
-        open_today(s);
-        if s.editing {
-            tx.focus_when_shown(FIELD, false);
-        }
-    }).build(k).key("today")).child(new);
+    }).build(k).key("capture")).child(new);
     let who = s.conn.as_ref().map_or("sample pages".to_owned(), |c| c.ship().to_owned());
     let theme = Button::new(match s.prefs.theme.as_str() {
         "dark" => "Dark",
@@ -8507,13 +8565,11 @@ fn sidebar(s: &App, k: &Kit) -> El {
     .on_press(next_theme)
     .build(k)
     .key("theme");
-    let access = Button::new("Access").variant(ButtonVariant::GhostMuted).help("Groups of ships and what they read").on_press(go_access).build(k).key("access-open");
     let foot = row()
         .w_full()
         .center_y()
         .justify_between()
         .child(text(who).key("ship").font(k.ty.small_medium).color(k.c.text_muted).grow(1.0).min_w(0.0).truncate())
-        .child(access)
         .child(theme)
         .child(Button::new(if s.conn.is_some() { "Sign out" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
     // the memories' tags, to show only those that carry one: said even when folded away, as on the web
@@ -8592,7 +8648,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
         }
         list
     });
-    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).children(core).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(row().gap(4.0).flex_wrap().child(with_me).child(inbox).child(forum).child(Button::new("Settings").control_size(ControlSize::Small).variant(if s.settings.is_some() { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("Agent keys").on_press(go_settings).build(k).key("settings-open"))).child(foot);
+    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).children(core).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(foot);
     if let Some(when) = &s.offline {
         let said = if when.is_empty() { "Offline. The ship does not answer.".to_owned() } else { format!("Offline. The ship does not answer, so this is what was kept {when}.") };
         side = side.child(text(format!("{said} A save, a new page, a delete or a move made now waits on this device. Anything else needs the ship.")).key("offline").font(k.ty.small).color(k.c.text_base).wrap());
@@ -9001,11 +9057,13 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         Some(name) => row().w_full().h_full().min_h(0.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(main)).child(Divider::vertical().build(&k)).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(split_view(name, s, &k))),
         None => main,
     };
+    let inset = cx.titlebar_inset();
     let shell = SplitView::new(main)
         .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k))
         .inspector(&s.inspector, |s: &mut App| &mut s.inspector, if s.pane_links { links_view(s, &k) } else if s.pane_comments { comments_view(s, &k) } else { history_view(s, &k) })
         .toolbar(Toolbar::new().leading(leading).trailing(trailing))
-        .titlebar_inset(cx.titlebar_inset())
+        // the ribbon stands where the window's own buttons would push the toolbar from
+        .titlebar_inset((inset - 40.0).max(0.0))
         .frame_inset(8.0)
         .toolbar_in_panel()
         .reduced_motion(cx.is_reduced_motion())
@@ -9015,6 +9073,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         layer.push(col().key("drop-hint").absolute(0.0, 0.0).w_full().h_full().center().child(text("Drop to upload as pages").font(k.ty.body_medium).color(k.c.text_base).padding(16.0).radius(k.radius.md).fill(k.c.layer_01)));
     }
     // files dropped anywhere on the window are uploaded, as on the web
+    let shell = row().w_full().h_full().min_h(0.0).child(ribbon_view(s, &k, if inset > 0.0 { 32.0 } else { 0.0 })).child(el().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(shell));
     rune_kit::root(shell, layer).on_drop_files(|s: &mut App, files, _| upload(s, files.to_vec())).on_drop_hover(|s: &mut App, over, _| s.dropping = over)
 }
 
