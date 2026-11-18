@@ -466,6 +466,8 @@ struct App {
     pane_links: bool,
     /// Of the links, the pane shows those that come here, not those that go out.
     pane_back: bool,
+    /// The pane shows the page's sharing, before any of the others.
+    pane_page: bool,
     back: Option<(String, Vec<String>)>,
     back_req: Latest<Result<(String, Vec<String>), String>>,
     /// An OpenSCAD page being drawn by this machine's openscad: its name, its revision, and what came of it.
@@ -792,7 +794,7 @@ fn init() -> App {
         rich: false,
         seps: md::Seps::default(),
         // open from the start, as the web client's is
-        inspector: PaneState::new(240.0).range(200.0, 360.0),
+        inspector: PaneState::new(280.0).range(200.0, 420.0),
         revs: None,
         old: None,
         hist_req: Latest::default(),
@@ -818,6 +820,7 @@ fn init() -> App {
         // the pane opens on the page's outgoing links, which cost no request
         pane_links: true,
         pane_back: false,
+        pane_page: false,
         back: None,
         back_req: Latest::default(),
         tex_req: Latest::default(),
@@ -3602,7 +3605,7 @@ fn show_pane(s: &mut App, comments: bool, links: bool) {
     if !s.inspector.is_open() {
         s.inspector.toggle();
     }
-    (s.pane_comments, s.pane_links, s.pane_back) = (comments, links, false);
+    (s.pane_comments, s.pane_links, s.pane_back, s.pane_page) = (comments, links, false, false);
     s.old = None;
     load_history(s);
     load_comments(s);
@@ -3611,6 +3614,9 @@ fn show_pane(s: &mut App, comments: bool, links: bool) {
 
 /// The right pane's tab in front, as its flags say.
 fn pane_now(s: &App) -> rpane::Tab {
+    if s.pane_page {
+        return rpane::Tab::Page;
+    }
     match (s.pane_links, s.pane_back, s.pane_comments) {
         (true, false, _) => rpane::Tab::Out,
         (true, true, _) => rpane::Tab::Back,
@@ -3623,8 +3629,13 @@ fn pane_now(s: &App) -> rpane::Tab {
 fn pane_tab(s: &mut App, tab: rpane::Tab) {
     use rpane::Tab;
     s.inspector.set_open(true);
-    (s.pane_comments, s.pane_links, s.pane_back) = (tab == Tab::Comments, matches!(tab, Tab::Out | Tab::Back), tab == Tab::Back);
+    (s.pane_comments, s.pane_links, s.pane_back, s.pane_page) = (tab == Tab::Comments, matches!(tab, Tab::Out | Tab::Back), tab == Tab::Back, tab == Tab::Page);
     s.old = None;
+    if tab == Tab::Page {
+        // who it is shared with, and the groups there are to share it with
+        load_groups(s);
+        load_sens(s);
+    }
     load_history(s);
     load_comments(s);
     load_links(s);
@@ -3640,6 +3651,10 @@ fn right_pane(s: &App, k: &Kit) -> El {
         tabs = tabs.child(IconButton::new(cell.icon).control_size(ControlSize::Large).variant(if cell.on { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help(cell.name).on_press(move |s: &mut App| pane_tab(s, what)).build(k).key(cell.key));
     }
     let body = match now {
+        rpane::Tab::Page => match share_body(s, k) {
+            Some((_, body)) => col().key("page-tab").w_full().h_full().min_h(0.0).child(col().w_full().padding(12.0).child(body)).scroll(ScrollSpec { stick_bottom: false }),
+            None => col().key("page-tab").w_full().padding(12.0).child(text("Open a page to share it.").font(k.ty.small).color(k.c.text_muted).wrap()),
+        },
         rpane::Tab::Out => links_view(s, k, false),
         rpane::Tab::Back => links_view(s, k, true),
         rpane::Tab::Comments => comments_view(s, k),
@@ -3650,7 +3665,7 @@ fn right_pane(s: &App, k: &Kit) -> El {
 
 /// Reads the open page's revisions when the history pane is showing.
 fn load_history(s: &mut App) {
-    if s.pane_comments || s.pane_links {
+    if s.pane_comments || s.pane_links || s.pane_page {
         return;
     }
     let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else { return };
@@ -3727,6 +3742,10 @@ fn show_page(s: &mut App, name: &str) {
     load_history(s);
     load_comments(s);
     load_links(s);
+    if s.pane_page && s.inspector.is_open() {
+        // the Page tab follows the page: whether this one is marked sensitive
+        load_sens(s);
+    }
     sync_pics(s);
 }
 
@@ -7376,6 +7395,12 @@ fn next_theme(s: &mut App) {
 }
 
 fn open_share(s: &mut App) {
+    // a page's sharing is the right pane's Page tab. A folder has no pane, so its sharing is a dialog
+    if s.open.is_some() && !s.memory && s.remote.is_none() {
+        s.sharing = false;
+        pane_tab(s, rpane::Tab::Page);
+        return;
+    }
     s.sharing = true;
     load_groups(s);
     load_sens(s);
@@ -8463,8 +8488,19 @@ fn share_now(s: &mut App, mode: &'static str) {
 }
 
 /// The share dialog: who may read the open page, and where from.
+/// The share dialog, for a folder: a page's sharing is in the right pane.
 fn share_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
-    let (true, Some((name, folder))) = (s.sharing, share_target(s)) else { return };
+    if !s.sharing {
+        return;
+    }
+    if let Some((name, body)) = share_body(s, k) {
+        Dialog::new("share", format!("Share {name}")).open(true).width(460.0).fit().on_close(|s: &mut App| s.sharing = false).child(body).build(k, layer);
+    }
+}
+
+/// Who reads the open page or the folder showing, and the ways to change it: its name, and the controls.
+fn share_body(s: &App, k: &Kit) -> Option<(String, El)> {
+    let (name, folder) = share_target(s)?;
     let p = &Page { name, ..Page::default() };
     let c = &k.c;
     let now = if folder { &s.dshares } else { &s.shares }.get(&p.name).map_or("private", String::as_str);
@@ -8599,7 +8635,7 @@ fn share_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
     if s.op_req.is_pending() {
         body = body.child(Spinner::new().build(k));
     }
-    Dialog::new("share", format!("Share {}", p.name)).open(true).width(460.0).fit().on_close(|s: &mut App| s.sharing = false).child(body).build(k, layer);
+    Some((p.name.clone(), body))
 }
 
 fn ask_new(s: &mut App) {
@@ -9579,12 +9615,6 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
                 t.focused = true;
                 s.prompt = Some(Prompt::Ask(to.clone(), t));
             }).build(&k).key("ask-edit"));
-        }
-    } else if page {
-        // sharing, until the right pane has its Page tab. Links, comments and history are the pane's own tabs
-        if !s.memory {
-            let shared = s.open.as_ref().and_then(|p| s.shares.get(&p.name)).is_some_and(|m| m != "private");
-            trailing = trailing.child(IconButton::new(&tabhead::GEAR).variant(IconButtonVariant::GhostMuted).help(if shared { "Sharing: shared" } else { "Sharing" }).on_press(open_share).build(&k).key("share"));
         }
     }
     if sw.shown && (sw.can_edit || sw.editing) {
