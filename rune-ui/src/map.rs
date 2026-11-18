@@ -510,6 +510,105 @@ pub fn drawn(tool: Draw, verts: &[[f64; 2]]) -> Option<Value> {
     }
 }
 
+/// The most positions a map page may hold, and the most features. The web client's.
+pub const MAX_POSITIONS: usize = 500_000;
+const MAX_FEATURES: usize = 20_000;
+
+/// How deep the brackets of a JSON text go, those in strings not counted.
+pub fn depth(t: &str) -> usize {
+    let (mut d, mut max, mut quoted, mut escaped) = (0usize, 0, false, false);
+    for b in t.bytes() {
+        match b {
+            _ if escaped => escaped = false,
+            b'\\' if quoted => escaped = true,
+            b'"' => quoted = !quoted,
+            b'[' | b'{' if !quoted => {
+                d += 1;
+                max = max.max(d);
+            }
+            b']' | b'}' if !quoted => d = d.saturating_sub(1),
+            _ => {}
+        }
+    }
+    max
+}
+
+/// Why a parsed text is not a map page's, in the web client's words, so
+/// nothing is written that the web client or the ship would refuse.
+pub fn check(j: &Value, max_pos: usize) -> Result<(), String> {
+    fn position(p: &Value, n: &mut usize, max: usize) -> Result<(), String> {
+        let a = p.as_array().filter(|a| (2..=4).contains(&a.len())).ok_or("a position is not [lon, lat]")?;
+        if !a.iter().all(|v| v.as_f64().is_some_and(f64::is_finite)) {
+            return Err("a coordinate is not a number".into());
+        }
+        *n += 1;
+        if *n > max { Err(format!("more than {max} positions")) } else { Ok(()) }
+    }
+    fn positions(a: &Value, n: &mut usize, max: usize, min: usize) -> Result<(), String> {
+        let a = a.as_array().ok_or("coordinates are not a list")?;
+        if a.len() > max {
+            return Err(format!("more than {max} positions"));
+        }
+        if a.len() < min {
+            return Err("a line or ring has too few positions".into());
+        }
+        a.iter().try_for_each(|p| position(p, n, max))
+    }
+    fn lists(a: &Value, n: &mut usize, max: usize, min: usize) -> Result<(), String> {
+        a.as_array().ok_or("coordinates are not a list")?.iter().try_for_each(|r| positions(r, n, max, min))
+    }
+    fn geometry(g: &Value, n: &mut usize, max: usize, inner: bool) -> Result<(), String> {
+        if g.is_null() {
+            return Ok(());
+        }
+        if !g.is_object() {
+            return Err("a geometry is not an object".into());
+        }
+        let c = &g["coordinates"];
+        match g["type"].as_str() {
+            Some("Point") => position(c, n, max),
+            Some("MultiPoint") => positions(c, n, max, 0),
+            Some("LineString") => positions(c, n, max, 2),
+            Some("MultiLineString") => lists(c, n, max, 2),
+            Some("Polygon") => lists(c, n, max, 4),
+            Some("MultiPolygon") => c.as_array().ok_or("coordinates are not a list")?.iter().try_for_each(|p| lists(p, n, max, 4)),
+            Some("GeometryCollection") if inner => Err("a geometry collection inside another".into()),
+            Some("GeometryCollection") => g["geometries"].as_array().ok_or("a geometry collection has no geometries")?.iter().try_for_each(|h| if h.is_null() { Err("a null geometry in a collection".to_owned()) } else { geometry(h, n, max, true) }),
+            _ => Err("an unknown geometry type".into()),
+        }
+    }
+    if !j.is_object() || j["type"] != "FeatureCollection" {
+        return Err("the page is not a GeoJSON FeatureCollection".into());
+    }
+    let feats = j["features"].as_array().ok_or("the collection has no features list")?;
+    if feats.len() > MAX_FEATURES {
+        return Err(format!("more than {MAX_FEATURES} features"));
+    }
+    let mut n = 0;
+    for f in feats {
+        if !f.is_object() || f["type"] != "Feature" {
+            return Err("a feature is not a Feature".into());
+        }
+        geometry(&f["geometry"], &mut n, max_pos, false)?;
+        if f.get("properties").is_some_and(|p| !p.is_null() && !p.is_object()) {
+            return Err("a feature's properties are not an object".into());
+        }
+    }
+    if j.get("lattice").is_some_and(|l| !l.is_object()) {
+        return Err("the lattice member is not an object".into());
+    }
+    Ok(())
+}
+
+/// A map page with these features after its own. `None` when that
+/// would be more features or positions than a map page may hold.
+pub fn append(body: &str, feats: Vec<Value>) -> Option<String> {
+    change(body, |d| {
+        d.get_mut("features")?.as_array_mut()?.extend(feats);
+        check(&Value::Object(d.clone()), MAX_POSITIONS).ok()
+    })
+}
+
 /// A map page with a new feature of this geometry and these
 /// properties, after the others.
 pub fn add(body: &str, geometry: Value, properties: Value) -> Option<String> {

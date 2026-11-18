@@ -6,6 +6,7 @@
 
 mod api;
 mod map;
+mod mapio;
 mod md;
 mod odf;
 mod pdf;
@@ -115,6 +116,8 @@ enum Op {
     /// A page was written beside the one in front: its name, its text when
     /// there is no ship to read it from, and what to say.
     Wrote(String, Option<Page>, String),
+    /// A file was read for the map in front: its features, and what to say of it.
+    MapIn(Vec<serde_json::Value>, String),
     /// The ship's Mapbox token was set or cleared: what to say.
     Tokened(String),
     /// Something was done that changes nothing here: what to say.
@@ -763,7 +766,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) => {}
+                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) => {}
             }
             Ok(op)
         }),
@@ -837,6 +840,21 @@ fn applied(s: &mut App, op: Op) {
         }
         Op::Said(say) => {
             s.note = say;
+            return;
+        }
+        Op::MapIn(feats, say) => {
+            // the page may have moved on while the file was read: it is added to what is there now
+            let n = feats.len();
+            if n > 0 && write_map(s, |body| map::append(body, feats)) {
+                // the view goes to what came in
+                if let Some(m) = s.map.as_mut().filter(|m| m.feats.len() >= n) {
+                    m.cam = map::Camera::fit(&m.feats[m.feats.len() - n..], m.size.0, m.size.1);
+                }
+                s.note = say;
+            } else if n == 0 {
+                s.note = say;
+            }
+            sync_tiles(s);
             return;
         }
         Op::Tokened(say) => {
@@ -1551,6 +1569,10 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             draw.push(Button::new("Done").control_size(ControlSize::Small).help("Finish the shape").on_press(finish_shape).build(k).key("map-done"));
         }
     }
+    if map_changes(s) {
+        draw.push(Button::new("Import").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Add the features of a GPX or GeoJSON file").on_press_tx(ask_map_import).build(k).key("map-import"));
+    }
+    draw.push(Button::new("GPX").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Download this map as GPX").on_press_tx(ask_gpx).build(k).key("map-gpx"));
     let base = Button::new(format!("Base: {}", m.style)).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("The next base map: streets, outdoors, satellite, dark. It is kept in the page").on_press(next_base).build(k).key("map-base");
     let token = (s.conn.is_some() && s.tile_status.as_ref().is_some_and(|t| !t.token)).then(|| Button::new("Set Mapbox token").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(ask_token).build(k).key("map-token"));
     view.child(row().key("map-tools").absolute(12.0, h - 40.0).gap(6.0).center_y().child(zoom("zoom-in", "+", 2.0)).child(zoom("zoom-out", "−", 0.5)).child(zoom("zoom-fit", "Fit", 0.0)).children(draw).child(base).children(token).child(count))
@@ -1658,6 +1680,56 @@ fn pick_added(s: &mut App) {
     if let Some(m) = &mut s.map {
         if coming { m.pick_new = true } else { m.picked = m.feats.len().checked_sub(1) }
     }
+}
+
+/// Asks for a GPX or GeoJSON file and adds its features to the map in
+/// front. The file is read and checked off the window's thread.
+fn ask_map_import(s: &mut App, tx: &mut Tx) {
+    if !map_changes(s) {
+        s.note = "this map is not changed here, so nothing was imported".into();
+        return;
+    }
+    let options = rune::FileDialogOptions { title: "Import into this map".into(), ..Default::default() };
+    tx.open_file(options.filter("Maps", &["gpx", "geojson", "json"]), |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => map_import(s, path),
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
+}
+
+fn map_import(s: &mut App, path: std::path::PathBuf) {
+    s.note = "reading the file".into();
+    s.op_req.request(path, |path| {
+        let name = path.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
+        let read = match mapio::file_kind(&name) {
+            "" => Err("lattice reads .geojson, .json and .gpx files here".to_owned()),
+            kind => std::fs::read_to_string(&path).map_err(|_| "the file cannot be read".to_owned()).and_then(|text| mapio::import(kind, &text)),
+        };
+        Ok(match read {
+            Ok(got) => {
+                let simplified = if got.before > 0 { format!(", tracks simplified from {} to {} points", got.before, got.after) } else { String::new() };
+                let say = format!("imported {name}: {} features{simplified}", got.features.len());
+                Op::MapIn(got.features, say)
+            }
+            Err(why) => Op::Said(format!("{name}: {why}")),
+        })
+    });
+}
+
+/// Saves the map in front as a GPX file named in the save dialog.
+fn ask_gpx(s: &mut App, tx: &mut Tx) {
+    let Some(p) = &s.open else { return };
+    let title = p.name.rsplit('/').next().unwrap_or("map").to_owned();
+    let Some(gpx) = mapio::export_gpx(&p.body, &title) else {
+        s.note = "this page is not a map".into();
+        return;
+    };
+    let options = rune::FileDialogOptions { title: "Download as GPX".into(), file_name: Some(format!("{title}.gpx")), ..Default::default() };
+    tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| match result {
+        Ok(Some(path)) => write_file(s, path, gpx.clone()),
+        Ok(None) => {}
+        Err(e) => s.note = format!("no file dialog could open: {e}"),
+    });
 }
 
 /// Whether the map in front may be changed here: one of the owner's own
@@ -3552,6 +3624,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("tex", "Convert this LaTeX page to HTML"),
     ("map-base", "Map: next base map"),
     ("map-token", "Map: set the ship's Mapbox token"),
+    ("map-import", "Map: import a GPX or GeoJSON file"),
+    ("map-gpx", "Map: download as GPX"),
     ("find", "Find in this page"),
     ("links", "Links"),
     ("comments", "Comments on this page"),
@@ -3580,6 +3654,8 @@ fn usable(s: &App, id: &str) -> bool {
         "find" => page && find_where(s) != FindIn::Nothing,
         "reload" | "map-token" => s.conn.is_some(),
         "map-base" => own && !s.editing && s.map.as_ref().is_some_and(|m| s.open.as_ref().is_some_and(|p| p.name == m.name)),
+        "map-import" => map_changes(s),
+        "map-gpx" => page && s.map.is_some(),
         "tab-close" => s.tabs.len() > 1,
         "tab-copy" => own && !s.memory,
         "split" => s.split.is_some() || (own && !s.memory),
@@ -3664,6 +3740,8 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
         }
         "map-base" => next_base(s),
         "map-token" => ask_token(s),
+        "map-import" => ask_map_import(s, tx),
+        "map-gpx" => ask_gpx(s, tx),
         "find" => open_find(s),
         "links" => show_pane(s, false, true),
         "comments" => show_pane(s, true, false),
