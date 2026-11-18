@@ -131,7 +131,10 @@ Not a line: forms and quizzes. An earlier list had them, by mistake. The existin
 ## Forum
 
 - [x] Boards and threads: read. The web client shows the forum as the ship's own pages in a frame. Here a Forum button beside the inbox opens it natively: this ship's boards with how many threads each has, a board's threads (pinned first, then newest, latest spoken in, or most points) with author, date, points, comments, the link's site and tags, and a thread with its text read as Markdown and its comments each under what it answers. A board and a thread are read as the JSON the ship gives an address (`/urb-read?url=urb://~ship/forum/<board>[/<thread>]`). The ship has no list of boards but its index page, so the boards' names are taken from that page's links. Nothing is fetched for a picture in a post. Checked by unit tests of the names, the nesting and the ship's shapes, by an app test, by a live test on a fresh fake ship seeded by `scripts/forum-seed.sh` (`live_forum_read`: two boards, a pinned and tagged thread with a point, a link thread, three comments with one a reply, and 404 for a board or a thread that is not there), and by a scripted run of the app against that ship with pictures (`scripts/forum-read.json`). Differences from the web: the ship's own order by its hot score is not offered, since that score is worked out on the ship and is not in what it gives, a board lists its newest hundred threads, which is all the ship gives, and a board's sidebar and its theme are not shown. With no ship there are no boards.
-- [ ] Post, reply, tags, refusal notes
+- [ ] Forum: start a thread, comment, and reply to a comment
+- [ ] Forum: vote, pin, delete a thread or a comment, set a thread's tags, and show a board by tags
+- [ ] Forum: refusal notes, read and cleared (`/forum-notes`)
+- [ ] Forum: make a board, and moderate one (roles, its title and description, public or private, sidebar, pruning, comets, invites, deleting it)
 - [ ] Boards on other ships over `urb://`
 
 ## Around the edges
