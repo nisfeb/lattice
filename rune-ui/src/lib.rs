@@ -43,7 +43,6 @@ mod topbar;
 mod upload;
 mod vault;
 mod view3d;
-#[cfg(target_os = "linux")]
 #[cfg(not(target_arch = "wasm32"))]
 mod htmlview;
 mod vim;

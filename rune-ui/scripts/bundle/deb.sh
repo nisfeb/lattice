@@ -32,7 +32,7 @@ Architecture: amd64
 Maintainer: nisfeb <business@nisfeb.com>
 Installed-Size: $(du -sk "$stage/data" | cut -f1)
 Depends: libc6 (>= $glibc), libgcc-s1
-Recommends: libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libvulkan1, mesa-vulkan-drivers | libgl1, libxcursor1, libxi6, libxrandr2, libx11-xcb1, fonts-dejavu-core
+Recommends: libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libvulkan1, mesa-vulkan-drivers | libgl1, libxcursor1, libxi6, libxrandr2, libx11-xcb1, libfontconfig1, fonts-dejavu-core
 Suggests: fuse3, openscad
 Section: editors
 Priority: optional

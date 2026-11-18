@@ -126,12 +126,22 @@ fn hand_session(url: &str, cookie: &str) -> Result<PathBuf, String> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         use std::io::Write;
+        #[cfg(unix)]
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
         let home = list_path().ok_or("no home directory")?.with_file_name("fs-home");
         let dir = home.join(".config").join("lattice-fs");
-        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(|e| e.to_string())?;
+        // the folder and the file are their owner's alone, where the system has such a thing to say
+        let (mut mk, mut open) = (std::fs::DirBuilder::new(), std::fs::OpenOptions::new());
+        mk.recursive(true);
+        open.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            mk.mode(0o700);
+            open.mode(0o600);
+        }
+        mk.create(&dir).map_err(|e| e.to_string())?;
         let file = dir.join(cookie_file_name(url)?);
-        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&file).and_then(|mut f| f.write_all(cookie.as_bytes())).map_err(|e| e.to_string())?;
+        open.open(&file).and_then(|mut f| f.write_all(cookie.as_bytes())).map_err(|e| e.to_string())?;
         Ok(home)
     }
 }

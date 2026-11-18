@@ -16,7 +16,7 @@ docker run --name "$name" -v "$(cd .. && pwd):/src:ro" "$image" sh -ec '
     apt-get update -qq && apt-get install -y -qq libxkbcommon-dev >/dev/null
     mkdir -p /build/rune-ui /build/ui-src/sheet
     cp /src/rune-ui/Cargo.toml /src/rune-ui/Cargo.lock /build/rune-ui/
-    cp -r /src/rune-ui/src /build/rune-ui/
+    cp -r /src/rune-ui/src /src/rune-ui/vendor /build/rune-ui/
     # the one file the crate reads from outside itself
     cp /src/ui-src/sheet/blank.fods /build/ui-src/sheet/
     cd /build/rune-ui
