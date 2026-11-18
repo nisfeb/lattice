@@ -473,6 +473,10 @@ struct App {
     /// of a page, and the shared page that is open (its notice).
     shared: Vec<Shared>,
     shared_req: Latest<Result<Vec<Shared>, String>>,
+    /// The address typed in Shared with me, what was read at one (the address, and what stands there), and the folder showing from it.
+    urb: TextEdit,
+    urb_req: Latest<Result<(String, api::Urb), String>>,
+    urb_folder: Option<(String, Vec<(String, String, bool)>)>,
     shared_open: bool,
     /// The comments of every page show in place of a page.
     inbox: bool,
@@ -731,6 +735,9 @@ fn init() -> App {
         group_ships: TextEdit::new(""),
         shared: Vec::new(),
         shared_req: Latest::default(),
+        urb: TextEdit::new(""),
+        urb_req: Latest::default(),
+        urb_folder: None,
         shared_open: false,
         inbox: false,
         remote: None,
@@ -1481,6 +1488,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.back_req.set_waker(waker.clone());
     s.forum_req.set_waker(waker.clone());
     s.keys_req.set_waker(waker.clone());
+    s.urb_req.set_waker(waker.clone());
     s.set_req.set_waker(waker.clone());
     s.notes_req.set_waker(waker.clone());
     s.core_req.set_waker(waker.clone());
@@ -4587,6 +4595,13 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(std::time::Duration::from_secs(6));
         settings_do(s, SetAct::Read);
     }
+    if let Some(r) = s.urb_req.take() {
+        changed = true;
+        match r {
+            Ok((url, got)) => urb_got(s, url, got),
+            Err(e) => s.note = format!("address: {e}"),
+        }
+    }
     if let Some(r) = s.keys_req.take() {
         changed = true;
         match (r, &mut s.settings) {
@@ -6879,9 +6894,81 @@ fn show_remote(s: &mut App, sh: Shared, p: Page) {
     sync_sheet(s);
 }
 
+/// Reads what stands at an address: the one typed, or one given (a folder's entry).
+fn urb_go(s: &mut App, to: Option<String>) {
+    let Some(c) = s.conn.clone() else {
+        s.note = "sample pages have no other ships to read".into();
+        return;
+    };
+    let Some(url) = to.or_else(|| api::urb_address(&s.urb.text)) else {
+        s.note = "an address is urb://~ship/path".into();
+        return;
+    };
+    // a board or a thread is the forum's to show
+    if api::urb_is_forum(&url) {
+        match api::board_key(&url, c.ship()) {
+            Ok((board, post)) => {
+                s.forum = Some(Forum::default());
+                s.shared_open = false;
+                s.note = format!("reading {board}\u{2026}");
+                forum_open(s, board, post);
+            }
+            Err(why) => s.note = why,
+        }
+        return;
+    }
+    s.note = format!("reading {url}\u{2026}");
+    s.urb_req.request((c, url), |(c, url)| c.urb_read(&url).map(|u| (url, u)));
+}
+
+/// What was read at an address is shown: a page as another ship's page, a folder as a list under the address.
+fn urb_got(s: &mut App, url: String, got: api::Urb) {
+    s.note.clear();
+    match got {
+        api::Urb::Page { ship, path, kind, body, comments } => {
+            let name = format!("{ship}/{path}");
+            if comments > 0 {
+                s.note = format!("{comments} comment{} on its public thread, not shown here", if comments == 1 { "" } else { "s" });
+            }
+            let note = std::mem::take(&mut s.note);
+            show_remote(s, Shared { host: ship, path, mode: "published".into(), when: String::new() }, Page { name, body, kind, rev: 0 });
+            s.note = note;
+        }
+        api::Urb::Folder { path, entries } => {
+            s.urb.text = url;
+            s.urb_folder = Some((path, entries));
+        }
+        api::Urb::Forum => s.note = "that address is a forum's: open it from the Forum's boards".into(),
+        api::Urb::Binary { kind, size } => s.note = format!("that address is a file, not a page: {kind}, {size} bytes"),
+    }
+}
+
 /// The list of what other ships shared with this one.
 fn shared_view(s: &App, k: &Kit) -> El {
     let c = &k.c;
+    // any ship's published pages, by address
+    let mut browse = col()
+        .key("urb")
+        .w_full()
+        .gap(6.0)
+        .child(text("Open an address").font(k.ty.body_medium).color(c.text_base))
+        .child(text("A page or a folder another ship published or shared with you, by its urb:// address.").font(k.ty.small).color(c.text_muted).wrap())
+        .child(
+            row()
+                .w_full()
+                .gap(6.0)
+                .center_y()
+                .child(TextInput::new(&s.urb).label("Address").placeholder("urb://~sampel-palnet/notes").on_edit(|s: &mut App| &mut s.urb).on_submit(|s: &mut App, _| urb_go(s, None)).build(k).grow(1.0).key("urb-address"))
+                .child(Button::new("Open").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| urb_go(s, None)).build(k).key("urb-go")),
+        );
+    if let Some((path, entries)) = &s.urb_folder {
+        let mut rows = col().key("urb-folder").w_full().gap(2.0).child(text(format!("{path} \u{b7} {} in it", entries.len())).font(k.ty.small).color(c.text_muted));
+        for (name, url, folder) in entries {
+            let to = url.clone();
+            rows = rows.child(row().child(Button::new(if *folder { format!("{name}/") } else { name.clone() }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| urb_go(s, Some(to.clone()))).build(k).key(format!("urb-{name}"))));
+        }
+        browse = browse.child(rows);
+    }
     let mut list = col().key("shared-list").w_full().gap(6.0);
     for (i, sh) in s.shared.iter().enumerate() {
         let (open, forget) = (sh.clone(), sh.clone());
@@ -6929,7 +7016,7 @@ fn shared_view(s: &App, k: &Kit) -> El {
         .w_full()
         .h_full()
         .min_h(0.0)
-        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(list)))
+        .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(list).child(browse)))
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
@@ -8181,7 +8268,8 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     } else if let Some(sh) = s.remote.as_ref().filter(|_| s.open.is_some() && !s.access && !s.shared_open && !s.inbox) {
         // another ship's page: read, and edited when that ship lets this one
         trailing = trailing.child(text(format!("from {}", sh.host)).font(k.ty.small).color(k.c.text_muted));
-        if !sh.editable() {
+        // a page read by its address was published, not shared with this ship: there is no edit to ask for
+        if !sh.editable() && sh.mode != "published" {
             // read only: the host can be asked for more
             let (to, asked) = (sh.clone(), s.asks.sent.iter().any(|a| a.ship == sh.host && a.path == sh.path));
             trailing = trailing.child(Button::new(if asked { "Ask again" } else { "Ask to edit" }).variant(ButtonVariant::Ghost).help(if asked { "You asked already. Asking again replaces that request" } else { "Ask its ship to let you edit it" }).on_press(move |s: &mut App| {

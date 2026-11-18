@@ -626,6 +626,53 @@ pub fn goes_public(was: &str, mode: &str) -> bool {
     public(mode) && !public(was)
 }
 
+/// What stands at a `urb://` address, as the ship reads it (`GET /urb-read`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Urb {
+    /// A page: its ship, its path there, its kind and its text, and how many comments its public thread has.
+    Page { ship: String, path: String, kind: String, body: String, comments: usize },
+    /// A folder: its path, and what is in it, each with its address and whether it is a folder too.
+    Folder { path: String, entries: Vec<(String, String, bool)> },
+    /// A forum board or one of its threads: read as the forum reads it.
+    Forum,
+    /// A file that is no page: what it is, and its size in bytes.
+    Binary { kind: String, size: u64 },
+}
+
+/// An address as typed, made whole: `urb://` is put before `~ship/path`
+/// when it was left off. `None` for what names no ship.
+pub fn urb_address(typed: &str) -> Option<String> {
+    let t = typed.trim();
+    let rest = t.strip_prefix("urb://").unwrap_or(t);
+    let ship = rest.split('/').next().unwrap_or_default();
+    (ship.starts_with('~') && ship_name(ship).is_some()).then(|| format!("urb://{rest}"))
+}
+
+/// Whether an address is a forum's: `urb://~ship/forum` and under it.
+pub fn urb_is_forum(url: &str) -> bool {
+    url.trim_start_matches("urb://").split('/').nth(1) == Some("forum")
+}
+
+/// Reads the ship's answer for an address.
+pub fn urb_parse(json: &str) -> Result<Urb, String> {
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let text = |k: &str| v[k].as_str().unwrap_or_default().to_owned();
+    match v["kind"].as_str() {
+        Some("page") => {
+            // this ship's own page comes with its name, another's with its path there
+            let path = if v["name"].is_string() { text("name") } else { text("path").trim_start_matches('/').to_owned() };
+            Ok(Urb::Page { ship: text("ship"), path, kind: text("mode"), body: text("body"), comments: v["comments"].as_array().map_or(0, Vec::len) })
+        }
+        Some("folder") => {
+            let entries = v["entries"].as_array().map_or_else(Vec::new, |a| a.iter().filter_map(|e| Some((e["name"].as_str()?.to_owned(), e["url"].as_str()?.to_owned(), e["folder"].as_bool().unwrap_or(false)))).collect());
+            Ok(Urb::Folder { path: text("path"), entries })
+        }
+        Some("board" | "thread") => Ok(Urb::Forum),
+        Some("binary") => Ok(Urb::Binary { kind: text("type"), size: v["size"].as_u64().unwrap_or(0) }),
+        _ => Err("the ship gave nothing this reads at that address".into()),
+    }
+}
+
 /// What the ship says of the map token, as its settings page words it.
 pub fn tiles_say(t: &TileStatus) -> &'static str {
     match (t.token, t.orrery) {
@@ -1491,6 +1538,11 @@ impl Conn {
     /// Rebuilds the search index from the pages and memories as they are. The ship answers when it is done.
     pub fn reindex(&self) -> Result<(), String> {
         self.call_in(120, "POST", "search-reindex", Some("")).map(drop)
+    }
+
+    /// What stands at a `urb://` address: a page, a folder, a board, a file. The ship waits on another ship for one of its.
+    pub fn urb_read(&self, url: &str) -> Result<Urb, String> {
+        urb_parse(&self.call_in(90, "GET", &format!("urb-read?url={}", enc(url)), None)?)
     }
 
     /// The agent keys, newest first.
@@ -2930,6 +2982,45 @@ mod tests {
     fn live_reindex() {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
         c.reindex().unwrap();
+    }
+
+    #[test]
+    fn an_address_is_made_whole_and_what_stands_there_is_read() {
+        assert_eq!(urb_address(" ~nec/notes/a "), Some("urb://~nec/notes/a".into()));
+        assert_eq!(urb_address("urb://~sampel-palnet"), Some("urb://~sampel-palnet".into()));
+        for bad in ["", "notes/a", "nec/a", "https://example.com", "urb://Notes"] {
+            assert_eq!(urb_address(bad), None, "{bad}");
+        }
+        assert!(urb_is_forum("urb://~nec/forum/chat/3") && urb_is_forum("urb://~nec/forum") && !urb_is_forum("urb://~nec/notes/forum"));
+        let page = r##"{"url":"urb://~nec/notes/a","ship":"~nec","own":false,"kind":"page","shared":false,"path":"/notes/a","mode":"md","body":"# A\n","size":4,"comments":[{"author":"~bud","when":"~2026.1.1","body":"hi"}]}"##;
+        assert_eq!(urb_parse(page), Ok(Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: 1 }));
+        let own = r##"{"url":"urb://~zod/a","ship":"~zod","own":true,"kind":"page","mode":"gmi","name":"a","body":"x","rev":2,"comments":[]}"##;
+        assert_eq!(urb_parse(own), Ok(Urb::Page { ship: "~zod".into(), path: "a".into(), kind: "gmi".into(), body: "x".into(), comments: 0 }));
+        let folder = r#"{"url":"urb://~nec/notes/","ship":"~nec","own":false,"kind":"folder","path":"/notes","entries":[{"name":"sub","url":"urb://~nec/notes/sub/","folder":true},{"name":"a","url":"urb://~nec/notes/a","folder":false}]}"#;
+        assert_eq!(urb_parse(folder), Ok(Urb::Folder { path: "/notes".into(), entries: vec![("sub".into(), "urb://~nec/notes/sub/".into(), true), ("a".into(), "urb://~nec/notes/a".into(), false)] }));
+        assert_eq!(urb_parse(r#"{"kind":"binary","mark":"mime","type":"image/png","size":1234}"#), Ok(Urb::Binary { kind: "image/png".into(), size: 1234 }));
+        assert_eq!(urb_parse(r#"{"kind":"thread"}"#), Ok(Urb::Forum));
+        assert!(urb_parse("{}").is_err() && urb_parse("not json").is_err());
+    }
+
+    /// An address read through a ship: its own published page, its own folder, and a ship that is not there.
+    #[test]
+    #[ignore]
+    fn live_urb_read() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let dir = format!("urbt{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let name = format!("{dir}/page");
+        let q = Queued { kind: "md".into(), body: "# Read by address\n".into(), base: 0, is_new: true, at: 0 };
+        assert!(matches!(c.send_queued(&name, &q), Sent::Done { .. }));
+        c.share(&name, "shared").unwrap();
+        let got = c.urb_read(&format!("urb://{}/{name}", c.ship())).unwrap();
+        assert_eq!(got, Urb::Page { ship: c.ship().to_owned(), path: name.clone(), kind: "md".into(), body: "# Read by address\n".into(), comments: 0 });
+        let folder = c.urb_read(&format!("urb://{}/{dir}/", c.ship()));
+        eprintln!("the folder's address: {folder:?}");
+        let away = c.urb_read("urb://~nec/notes/a").unwrap_err();
+        eprintln!("a ship that is not there: {away}");
+        assert!(away.starts_with("504") || away.starts_with("404"), "{away}");
+        c.delete(&name).unwrap();
     }
 
     #[test]
