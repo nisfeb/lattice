@@ -1,0 +1,5 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "half-memory"},
+  {"t": 2.8, "type": "tap", "key": "rune"},
+  {"t": 3.5, "type": "tap", "key": "rune/fact"}
+]}

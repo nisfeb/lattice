@@ -530,7 +530,7 @@ struct App {
     /// The saves that could not reach the ship and wait to be sent, one for each page, as the file beside the session holds them.
     queue: api::Queue,
     /// The page a save on its way carries, and the revision it was written over: put by if the ship does not answer.
-    save_sent: Option<(Page, u64)>,
+    save_sent: Option<(Page, u64, bool)>,
     /// The saves that waited, on their way to the ship: each as it was sent, and how it came out.
     drain_req: Latest<Vec<(String, api::Queued, api::Sent)>>,
     next_sync: f64,
@@ -880,6 +880,8 @@ fn core_rule(s: &mut App, name: String, keep: bool) {
 
 /// The memories just read, as the half that shows them.
 fn take_knows(s: &mut App, knows: Vec<Know>) {
+    // a memory with a save that waits shows that save
+    let knows = api::knows_with(knows, &s.queue);
     let was = s.memory;
     if !was {
         flip_quiet(s);
@@ -3644,17 +3646,18 @@ fn write(s: &mut App) {
     let memory = s.memory;
     let remote = s.remote.clone();
     // a page of this ship's can wait for it. A memory, or a page of another ship, cannot yet
-    let own = !memory && remote.is_none() && s.conn.is_some();
+    let own = remote.is_none() && s.conn.is_some();
+    let waits_as = if memory { api::know_queue_name(&p.name) } else { p.name.clone() };
     // the ship is known not to answer: the save is not tried, as the web client does not try it.
     // And a page with a save still waiting, or on its way, goes behind it: sent straight, the older one could land after it
-    if own && (s.offline.is_some() || s.queue.contains_key(&p.name) || s.drain_req.is_pending()) {
-        queue_save(s, p, base);
+    if own && (s.offline.is_some() || s.queue.contains_key(&waits_as) || s.drain_req.is_pending()) {
+        queue_save(s, p, base, memory);
         if s.offline.is_none() {
             drain(s);
         }
         return;
     }
-    s.save_sent = own.then(|| (p.clone(), base));
+    s.save_sent = own.then(|| (p.clone(), base, memory));
     match s.conn.clone() {
         Some(c) => s.save_req.request((c, p), move |(c, mut p)| {
             if let Some(sh) = &remote {
@@ -3750,6 +3753,8 @@ fn drained(s: &mut App, out: Vec<(String, api::Queued, api::Sent)>) {
     }
     if gone_to_ship > 0 {
         said.insert(0, format!("sent {gone_to_ship} saved on this device"));
+        // the memories too: one of them may have been among what went
+        load_know(s);
         // the whole tree is read again: revisions moved, and a kept copy may have been made
         s.since.clear();
         load_tree(s);
@@ -3764,11 +3769,16 @@ fn drained(s: &mut App, out: Vec<(String, api::Queued, api::Sent)>) {
 /// outlives this run, and shows it as the page's text from then on.
 /// When the file cannot be written the save is nowhere, and that is
 /// said in place of "saved": the editor stays open with the text.
-fn queue_save(s: &mut App, mut p: Page, base: u64) {
+fn queue_save(s: &mut App, mut p: Page, base: u64, memory: bool) {
     let Some(c) = s.conn.clone() else { return };
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     let mut q = s.queue.clone();
-    api::enqueue(&mut q, &p, base, !s.names.contains(&p.name), at);
+    if memory {
+        // under its own name in the list, with no revision: the last write of a memory wins
+        api::enqueue(&mut q, &Page { name: api::know_queue_name(&p.name), ..p.clone() }, 0, false, at);
+    } else {
+        api::enqueue(&mut q, &p, base, !s.names.contains(&p.name), at);
+    }
     if let Err(e) = c.store_queue(&q) {
         (s.save_again, s.autosaving, s.auto_held) = (false, false, true);
         s.note = format!("NOT SAVED. The ship does not answer and this change could not be kept on this device ({e}). Copy your text somewhere safe");
@@ -4080,6 +4090,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         match r {
             Ok(knows) => take_knows(s, knows),
+            // the ship does not answer and memories are not kept between runs: the ones written away are still listed
+            Err(e) if api::gone(&e) && s.queue.keys().any(|n| api::queued_know(n).is_some()) => take_knows(s, Vec::new()),
             Err(e) => s.note = format!("memory: {e}"),
         }
     }
@@ -4271,7 +4283,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         match r {
             Ok(p) => {
                 // the ship has this page's text now: an older save of it that waited is done with
-                if s.queue.remove(&p.name).is_some() {
+                let waited_as = if sent.as_ref().is_some_and(|x| x.2) { api::know_queue_name(&p.name) } else { p.name.clone() };
+                if s.queue.remove(&waited_as).is_some() {
                     if let Some(Err(e)) = s.conn.as_ref().map(|c| c.store_queue(&s.queue)) {
                         s.note = format!("saved, but the list of what waits could not be written: {e}");
                     }
@@ -4280,9 +4293,9 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             }
             // the ship did not answer: the save waits here for it
             Err(e) if api::gone(&e) && sent.is_some() => {
-                let (p, base) = sent.expect("just checked");
+                let (p, base, memory) = sent.expect("just checked");
                 s.offline.get_or_insert_with(String::new);
-                queue_save(s, p, base);
+                queue_save(s, p, base, memory);
             }
             Err(e) => {
                 s.save_again = false;
@@ -7105,11 +7118,11 @@ fn sidebar(s: &App, k: &Kit) -> El {
     let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).children(core).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(row().gap(4.0).flex_wrap().child(with_me).child(inbox).child(forum)).child(foot);
     if let Some(when) = &s.offline {
         let said = if when.is_empty() { "Offline. The ship does not answer.".to_owned() } else { format!("Offline. The ship does not answer, so this is what was kept {when}.") };
-        side = side.child(text(format!("{said} A page saved now waits on this device. Anything else needs the ship.")).key("offline").font(k.ty.small).color(k.c.text_base).wrap());
+        side = side.child(text(format!("{said} A page or a memory saved now waits on this device. Anything else needs the ship.")).key("offline").font(k.ty.small).color(k.c.text_base).wrap());
     }
     if !s.queue.is_empty() {
         let n = s.queue.len();
-        side = side.child(text(format!("{n} page{} saved on this device, waiting to be sent.", if n == 1 { "" } else { "s" })).key("waiting-saves").font(k.ty.small).color(k.c.text_base).wrap());
+        side = side.child(text(format!("{n} change{} saved on this device, waiting to be sent.", if n == 1 { "" } else { "s" })).key("waiting-saves").font(k.ty.small).color(k.c.text_base).wrap());
     }
     // offline, a read that failed because the ship is away is not said again: its error starts with the ship's address
     let again = s.offline.is_some() && s.conn.as_ref().is_some_and(|c| s.note.split_once(": ").is_some_and(|(_, e)| e.starts_with(c.url.as_str())));

@@ -671,6 +671,31 @@ pub fn aside_name(tag: &str, name: &str, stamp: &str) -> String {
     format!("conflicts/offline-{tag}-{flat}-{stamp}")
 }
 
+/// The name a memory waits under: its key after `know:`, so a memory
+/// and a page of the same name never share a place in the list.
+pub fn know_queue_name(name: &str) -> String {
+    format!("know:{}", name.trim_start_matches('/'))
+}
+
+/// The memory a waiting save is of, by its key without the slash. `None` for a page's.
+pub fn queued_know(name: &str) -> Option<&str> {
+    name.strip_prefix("know:")
+}
+
+/// The memories as read, with those that wait put over them: a waiting
+/// text is the memory's text, and a memory written away that the ship
+/// has not seen is listed.
+pub fn knows_with(mut knows: Vec<Know>, q: &Queue) -> Vec<Know> {
+    for (name, w) in q {
+        let Some(key) = queued_know(name).map(|k| format!("/{k}")) else { continue };
+        match knows.iter_mut().find(|k| k.key == key) {
+            Some(k) => k.body = w.body.clone(),
+            None => knows.push(Know { key, body: w.body.clone(), ..Know::default() }),
+        }
+    }
+    knows
+}
+
 fn queue_path(url: &str) -> Option<std::path::PathBuf> {
     Some(kept_path(url)?.with_file_name(format!("waiting-{}", kept_path(url)?.file_name()?.to_str()?.trim_start_matches("kept-"))))
 }
@@ -1134,8 +1159,15 @@ impl Conn {
     /// good is kept as a page of its own before it leaves the queue.
     pub fn send_queued(&self, name: &str, q: &Queued) -> Sent {
         let body = if q.body.is_empty() { "\n" } else { q.body.as_str() };
-        let save = |name: &str, how: &str| self.call("POST", &format!("page-save?name={}&type={}&by=rune{how}", enc(name), enc(&q.kind)), Some(body));
-        let tried = if q.is_new { save(name, "&new=1") } else { save(name, &format!("&base={}", q.base)) };
+        let know = queued_know(name);
+        let kind = if know.is_some() { "md" } else { q.kind.as_str() };
+        let save = |name: &str, how: &str| self.call("POST", &format!("page-save?name={}&type={}&by=rune{how}", enc(name), enc(kind)), Some(body));
+        // a memory is written as any save of one is: the last write wins, and there is nothing to flag
+        let tried = match know {
+            Some(key) => self.know_save(&format!("/{key}"), body).map(|()| "{}".to_owned()),
+            None if q.is_new => save(name, "&new=1"),
+            None => save(name, &format!("&base={}", q.base)),
+        };
         let why = match tried {
             Ok(text) => {
                 return match serde_json::from_str::<Saved>(&text) {
@@ -1156,7 +1188,7 @@ impl Conn {
         }
         let stamp = std::process::Command::new("date").arg("+%Y%m%d-%H%M%S").output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).map(|s| s.trim().to_owned()).filter(|s| s.len() == 15);
         let stamp = stamp.unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()).to_string());
-        let base = aside_name(if q.is_new { "create" } else { "edit" }, name, &stamp);
+        let base = aside_name(if know.is_some() { "memory" } else if q.is_new { "create" } else { "edit" }, know.unwrap_or(name), &stamp);
         // never over a kept copy: the first of the name, -2, -3 that is free
         for i in 1..30 {
             let alt = if i > 1 { format!("{base}-{i}") } else { base.clone() };
@@ -2372,12 +2404,34 @@ mod tests {
         assert!(why.starts_with("409") && alt.starts_with("conflicts/offline-create-waited-a~d"), "{alt} {why}");
         assert_eq!(c.page(&alt).unwrap().body, "made away under the same name\n");
         assert_eq!(c.page(&name).unwrap().body, "third, written away\n");
+        // a memory that waited: written, and written again over itself, the last one winning
+        let key = format!("rune/waited-{}", name.rsplit('-').next().unwrap());
+        assert_eq!(c.send_queued(&know_queue_name(&key), &q("a fact kept away\n", 0, false)), Sent::Done { rev: 0, kept: None });
+        assert_eq!(c.send_queued(&know_queue_name(&key), &q("the fact, changed\n", 0, false)), Sent::Done { rev: 0, kept: None });
+        assert_eq!(c.know_all().unwrap().iter().find(|k| k.key == format!("/{key}")).map(|k| k.body.trim().to_owned()), Some("the fact, changed".into()));
+        c.know_delete(&format!("/{key}")).unwrap();
         // a ship that is not there: it stays waiting
         let away = Conn { url: "http://127.0.0.1:9".into(), cookie: String::new() };
         assert!(matches!(away.send_queued(&name, &q("x", 1, false)), Sent::Stop(_)));
         for n in [name, kept, alt] {
             c.delete(&n).unwrap();
         }
+    }
+
+    #[test]
+    fn a_memory_that_waits_is_put_over_what_was_read() {
+        let mut q = Queue::new();
+        let page = |name: &str, body: &str| Page { name: name.into(), body: body.into(), kind: "md".into(), rev: 0 };
+        enqueue(&mut q, &Page { name: know_queue_name("/project/a"), ..page("", "changed away") }, 0, false, 1);
+        enqueue(&mut q, &Page { name: know_queue_name("made/away"), ..page("", "new") }, 0, false, 2);
+        // a page of the same name waits beside it, and is no memory
+        enqueue(&mut q, &page("project/a", "a page"), 3, false, 3);
+        assert_eq!(q.len(), 3);
+        assert_eq!((queued_know("know:project/a"), queued_know("project/a")), (Some("project/a"), None));
+        let read = vec![Know { key: "/project/a".into(), body: "as read".into(), tags: vec!["core".into()], updated: "~2026.1.1".into() }, Know { key: "/other".into(), body: "untouched".into(), ..Know::default() }];
+        let got = knows_with(read, &q);
+        assert_eq!(got.iter().map(|k| (k.key.as_str(), k.body.as_str())).collect::<Vec<_>>(), [("/project/a", "changed away"), ("/other", "untouched"), ("/made/away", "new")]);
+        assert_eq!(got[0].tags, ["core"], "what else the ship said of it stays");
     }
 
     #[test]

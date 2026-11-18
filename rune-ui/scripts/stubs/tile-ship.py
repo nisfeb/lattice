@@ -40,16 +40,22 @@ class H(BaseHTTPRequestHandler):
         if p.startswith('tile/'):
             _, style, z, x, y = p.split('/')
             return self.send(200, png(int(z), int(x), int(y)), 'image/png')
-        if p == 'know-all': return self.send(200, '{"items":[]}')
+        if p == 'know-all': return self.send(200, json.dumps({"items":[{"key":k,"body":v,"tags":[],"updated":"~2026.11.17"} for k, v in KNOWS.items()]}))
         if p == 'shared-with-me': return self.send(200, '[]')
         if p == 'notify-count': return self.send(200, '{"held":0,"unread":0}')
         self.send(404, '{"error":"not in the stub"}')
 # a save is taken and answered as the ship answers one, so a change made in the window lands
 # LR_REV: the revision the page starts at, as when it was written elsewhere while this window was away
+KNOWS = {'/rune/fact': 'a fact as the ship has it\n'}
 PAGES = {'places': [GEO, KIND, int(os.environ.get('LR_REV', '1'))]}
 def do_POST(self):
     u = urlparse(self.path); p = u.path.replace('/apps/lattice/', '', 1); q = parse_qs(u.query)
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
+    if p == 'know-save':
+        if os.environ.get('LR_SAVE_502'): return self.send(502, 'bad gateway')
+        KNOWS[q['key'][0]] = body
+        sys.stderr.write("memory %s %r\n" % (q['key'][0], body[:60]))
+        return self.send(200, '{"ok":true}')
     if p == 'page-save':
         # LR_SAVE_502: a save is answered as something in between answers when it cannot reach the ship
         if os.environ.get('LR_SAVE_502'): return self.send(502, 'bad gateway')
