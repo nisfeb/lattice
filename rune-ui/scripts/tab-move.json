@@ -1,0 +1,47 @@
+{
+ "events": [
+  {
+   "t": 0.5,
+   "type": "tap",
+   "key": "sample"
+  },
+  {
+   "t": 1.5,
+   "type": "tap",
+   "key": "welcome"
+  },
+  {
+   "t": 2.5,
+   "type": "tap",
+   "key": "tab-new"
+  },
+  {
+   "t": 3.5,
+   "type": "tap",
+   "key": "budget"
+  },
+  {
+   "t": 4.5,
+   "type": "tap",
+   "key": "tab-new"
+  },
+  {
+   "t": 5.5,
+   "type": "tap",
+   "key": "places"
+  },
+  {
+   "t": 7.5,
+   "type": "drag",
+   "key": "t-0",
+   "dx": 230,
+   "dy": 0,
+   "dur": 0.6
+  },
+  {
+   "t": 10.5,
+   "type": "tap",
+   "key": "t-0"
+  }
+ ]
+}

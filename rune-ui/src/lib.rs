@@ -687,6 +687,8 @@ struct App {
     search_at: Option<usize>,
     /// The page menu in the tab header is open.
     page_menu: bool,
+    /// The top bar's tabs while one is pressed or dragged.
+    tab_drag: rune_kit::shell::TabDragState,
     /// The left pane's Bookmarks tab is showing.
     marks_open: bool,
     /// The bookmarks the reader keeps, once read.
@@ -981,6 +983,7 @@ fn init() -> App {
         sskipped: 0,
         search_at: None,
         page_menu: false,
+        tab_drag: rune_kit::shell::TabDragState::new(),
         marks_open: false,
         marks: None,
         marks_req: Latest::default(),
@@ -6221,20 +6224,6 @@ fn tab_strip(s: &App, k: &Kit) -> El {
     let c = &k.c;
     let labels: Vec<String> = (0..s.tabs.len()).map(|i| tab_label(s, i)).collect();
     let memory = s.memory.then(|| s.open.as_ref().map_or("", |p| p.name.as_str()));
-    let mut strip = row().key("tabs").role("tablist").label("Tabs").gap(2.0).center_y().grow(1.0).min_w(0.0);
-    for cell in topbar::strip(&labels, s.tab, memory) {
-        let key = cell.at.map_or("tab-memory".to_owned(), |i| format!("tab-{i}"));
-        let mut one = row().key(key.clone()).center_y().radius(k.radius.sm).fill(if cell.front { c.layer_01 } else { rune::Color::TRANSPARENT }).min_w(0.0);
-        let mut b = Button::new(cell.label).control_size(ControlSize::Small).variant(if cell.front { ButtonVariant::Ghost } else { ButtonVariant::GhostMuted });
-        if let Some(i) = cell.at {
-            b = b.on_press(move |s: &mut App| switch_tab(s, i));
-        }
-        one = one.child(b.build(k).key(format!("{key}-go")));
-        if let (true, Some(i)) = (cell.closes, cell.at) {
-            one = one.child(IconButton::new(&head::X).control_size(ControlSize::Small).variant(IconButtonVariant::GhostMuted).help("Close this tab").on_press(move |s: &mut App| close_tab(s, i)).build(k).key(format!("tab-close-{i}")));
-        }
-        strip = strip.child(one);
-    }
     let (can_new, can_split) = topbar::tools(s.editing, s.memory, usable(s, "split"));
     let button = |down: bool, icon: &'static rune::Icon, key: &str, keys: Option<&str>| {
         let split = !s.tgroups.is_empty();
@@ -6262,7 +6251,39 @@ fn tab_strip(s: &App, k: &Kit) -> El {
         }
         b.build(k).key(key.to_owned())
     };
-    strip.child(IconButton::new(&head::PLUS).variant(IconButtonVariant::GhostMuted).help("New tab").disabled(!can_new).on_press(new_tab).build(k).key("tab-new")).child(button(false, &topbar::SPLIT, "split-toggle", Some("Ctrl+\\"))).child(button(true, &topbar::SPLIT_DOWN, "split-down", None))
+    let tools = row().gap(2.0).center_y().child(IconButton::new(&head::PLUS).variant(IconButtonVariant::GhostMuted).help("New tab").disabled(!can_new).on_press(new_tab).build(k).key("tab-new")).child(button(false, &topbar::SPLIT, "split-toggle", Some("Ctrl+\\"))).child(button(true, &topbar::SPLIT_DOWN, "split-down", None));
+    // rune-kit's strip: a tab is dragged along it to another place, and a strip too long for the bar scrolls
+    let cells = topbar::strip(&labels, s.tab, memory);
+    let ids: Vec<String> = cells.iter().map(|c| c.at.map_or("memory".to_owned(), |i| i.to_string())).collect();
+    let front = cells.iter().position(|c| c.front).and_then(|i| ids.get(i)).map(String::as_str);
+    let at = |id: &str| id.parse::<usize>().ok();
+    rune_kit::shell::TabStrip::new("tabs", rune_kit::shell::TabOrientation::Horizontal)
+        .tabs(cells.iter().zip(&ids).map(|(c, id)| rune_kit::shell::TabItem::new(id.as_str(), c.label.as_str()).closable(c.closes)))
+        .active(front)
+        .drag_state(&s.tab_drag, |s: &mut App| &mut s.tab_drag)
+        .on_select(move |s: &mut App, id, _| {
+            if let Some(i) = at(id) {
+                switch_tab(s, i);
+            }
+        })
+        .on_close(move |s: &mut App, id, _| {
+            if let Some(i) = at(id) {
+                close_tab(s, i);
+            }
+        })
+        .on_reorder(|s: &mut App, r: rune_kit::shell::TabReorder, _| move_tab(s, r.from, r.to))
+        .trailing_action(tools)
+        .build(k)
+}
+
+/// A tab dragged along the strip to another place: the tabs make way, and the one in front stays the one in front.
+fn move_tab(s: &mut App, from: usize, to: usize) {
+    if s.memory || from >= s.tabs.len() {
+        return;
+    }
+    topbar::move_in(&mut s.tabs, from, to);
+    s.tab = topbar::front_after(s.tab, from, to.min(s.tabs.len() - 1));
+    keep_tabs(s);
 }
 
 /// The right pane, shown or put away, with what it showed last.
