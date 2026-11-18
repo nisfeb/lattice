@@ -138,6 +138,8 @@ struct Settings {
     mount_at: TextEdit,
     /// The folder a vault export is written to.
     vault_dir: TextEdit,
+    /// The archive to restore from.
+    vault_file: TextEdit,
     /// The part of the tree to mount of the ship signed in to. Empty is every page.
     mount_root: TextEdit,
     /// The piers found on this machine, once looked for.
@@ -149,7 +151,7 @@ struct Settings {
 
 impl Settings {
     fn new() -> Self {
-        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false, mount_at: TextEdit::new(""), vault_dir: TextEdit::new(""), mount_root: TextEdit::new(""), local: None, stack: None, dist: TextEdit::new("~nisfeb") }
+        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false, mount_at: TextEdit::new(""), vault_dir: TextEdit::new(""), vault_file: TextEdit::new(""), mount_root: TextEdit::new(""), local: None, stack: None, dist: TextEdit::new("~nisfeb") }
     }
 
     fn ask(&self) -> api::KeyAsk {
@@ -303,6 +305,8 @@ enum Prompt {
     KeyRevoke(String, String),
     /// A page or folder about to be made public in this mode, and whether not to ask again.
     Publish(&'static str, bool),
+    /// An archive to put back, once the owner says so.
+    Restore(Box<vault::Archive>),
     /// A value typed for an OpenSCAD parameter: its name, which part of a vector, and the text.
     Param(String, Option<usize>, TextEdit),
 }
@@ -547,7 +551,8 @@ struct App {
     mounts: Vec<mounts::MountSpec>,
     mount_req: Latest<(Vec<mounts::MountSpec>, String)>,
     /// A vault export being written, and what was last said of one.
-    vault_req: Latest<String>,
+    /// With whether the tree is to be read again.
+    vault_req: Latest<(String, bool)>,
     vault_said: String,
     /// The refusals, read beside the boards and after a clear.
     notes_req: Latest<Result<ForumGot, String>>,
@@ -1104,6 +1109,12 @@ fn confirm(s: &mut App) {
     }
     if let Prompt::KeyRevoke(id, _) = &p {
         keys_do(s, None, Some(id.clone()));
+        return;
+    }
+    if let Prompt::Restore(a) = p {
+        let Some(c) = s.conn.clone() else { return };
+        s.vault_said = "restoring\u{2026}".into();
+        s.vault_req.request((c, a), |(c, a)| (c.vault_restore(&a).0, true));
         return;
     }
     if let Prompt::BoardDelete(name) = &p {
@@ -4747,9 +4758,12 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(std::time::Duration::from_secs(6));
         settings_do(s, SetAct::Read);
     }
-    if let Some(said) = s.vault_req.take() {
+    if let Some((said, changed)) = s.vault_req.take() {
         s.note = said.clone();
         s.vault_said = said;
+        if changed {
+            refresh_tree(s);
+        }
     }
     if let Some((list, said)) = s.mount_req.take() {
         changed = true;
@@ -6609,15 +6623,38 @@ fn vault_export(s: &mut App) {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let built = match c.vault(now) {
             Ok(b) => b,
-            Err(e) => return e,
+            Err(e) => return (e, false),
         };
         let at = std::path::Path::new(&dir).join(vault::file_name(now));
         // the whole store in one file: only its owner may read it
         match std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|()| api::write_private(&at, &built.bytes)) {
-            Ok(()) => built.says(&at.display().to_string()),
-            Err(e) => format!("export failed: could not write {}: {e}", at.display()),
+            Ok(()) => (built.says(&at.display().to_string()), false),
+            Err(e) => (format!("export failed: could not write {}: {e}", at.display()), false),
         }
     });
+}
+
+/// Reads the archive named and asks before putting it back. Nothing is
+/// written until the answer.
+fn vault_restore(s: &mut App) {
+    let Some(st) = s.settings.as_ref() else { return };
+    if s.conn.is_none() {
+        s.vault_said = "a restore writes many pages, so it needs the ship".into();
+        return;
+    }
+    let typed = st.vault_file.text.trim();
+    if typed.is_empty() {
+        s.vault_said = "name the archive to restore from".into();
+        return;
+    }
+    let at = mounts::expand(typed, &std::env::var("HOME").unwrap_or_default());
+    match std::fs::read(&at).map_err(|e| format!("could not read {at}: {e}")).and_then(|b| vault::read(&b)) {
+        Ok(a) => {
+            s.vault_said.clear();
+            s.prompt = Some(Prompt::Restore(Box::new(a)));
+        }
+        Err(e) => s.vault_said = e,
+    }
 }
 
 fn vault_view(st: &Settings, said: &str, busy: bool, k: &Kit) -> El {
@@ -6630,6 +6667,8 @@ fn vault_view(st: &Settings, said: &str, busy: bool, k: &Kit) -> El {
         .child(text("Every page and memory as one tar. The archive is plain files, readable without lattice.").font(k.ty.small).color(c.text_muted).wrap())
         .child(TextInput::new(&st.vault_dir).label("Folder to export to").placeholder("your home directory when left empty").on_edit(|s: &mut App| &mut s.settings.as_mut().expect("the settings are showing").vault_dir).build(k).w_full().key("vault-dir"))
         .child(row().gap(8.0).child(Button::new(if busy { "Exporting\u{2026}" } else { "Export vault" }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(busy).on_press(vault_export).build(k).key("vault-export")))
+        .child(TextInput::new(&st.vault_file).label("Archive to restore from").placeholder("a lattice-vault tar on this computer").on_edit(|s: &mut App| &mut s.settings.as_mut().expect("the settings are showing").vault_file).build(k).w_full().key("vault-file"))
+        .child(row().gap(8.0).child(Button::new("Restore vault\u{2026}").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(busy).on_press(vault_restore).build(k).key("vault-restore")))
         .child(text(said.to_owned()).key("vault-said").font(k.ty.small).color(c.text_base).wrap())
 }
 
@@ -7217,7 +7256,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
                 Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::Publish(..) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
             .build(k)
@@ -7245,6 +7284,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             "Publish",
             ButtonVariant::Danger,
         ),
+        Prompt::Restore(a) => ("Restore this vault?", text(vault::question(a)).key("restore-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Restore", ButtonVariant::Danger),
         Prompt::KeyRevoke(_, title) => ("Revoke this key?", text(format!("{title} stops working at once, and cannot be brought back.")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Revoke", ButtonVariant::Danger),
         Prompt::BoardDelete(name) => ("Delete this board?", text(format!("{name} and every thread on it are gone for everyone who reads it.")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::ForumTags(t) => ("This thread's tags", field(t, "Up to five: lowercase letters, digits and dashes. None clears them"), "Set", ButtonVariant::Contrast),

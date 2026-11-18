@@ -1942,6 +1942,90 @@ impl Conn {
         Ok(crate::vault::build(&dump, json("know-all").as_ref(), json("page-scopes").as_ref(), &source, now))
     }
 
+    /// Puts an archive back, as the web client does: the folders, the pages
+    /// fifty at a time (one by one when the ship refuses a batch, so only
+    /// the page at fault is lost), then the sensitive marks, share modes and
+    /// display names of what was saved, then the memories. Answers what to
+    /// say and whether all of it went well.
+    pub fn vault_restore(&self, a: &crate::vault::Archive) -> (String, bool) {
+        let post = |q: String, body: &str| self.call_in(120, "POST", &q, Some(body));
+        let (mut said, mut well) = (a.warnings.clone(), true);
+        let mut saved = std::collections::BTreeSet::new();
+        if a.page_files > 0 {
+            for d in crate::vault::folders(&a.pages) {
+                let _ = post(format!("folder-new?name={}", enc(&d)), "");
+            }
+            let mut failed = Vec::new();
+            for part in a.pages.chunks(50) {
+                // the ship refuses an empty body
+                let body = |p: &crate::vault::PageIn| if p.body.is_empty() { "\n".to_owned() } else { p.body.clone() };
+                let items: Vec<(String, &str, String)> = part.iter().map(|p| (p.name.clone(), p.kind, body(p))).collect();
+                if self.save_batch(&items).is_ok() {
+                    saved.extend(part.iter().map(|p| p.name.clone()));
+                    continue;
+                }
+                for p in part {
+                    match post(format!("page-save?name={}&type={}", enc(&p.name), p.kind), &body(p)) {
+                        Ok(_) => drop(saved.insert(p.name.clone())),
+                        Err(_) => failed.push(p.name.clone()),
+                    }
+                }
+            }
+            let mut bits = vec![format!("pages: {} restored", saved.len())];
+            if a.skip_ext > 0 {
+                bits.push(format!("{} skipped (unknown extension)", a.skip_ext));
+            }
+            if a.skip_name > 0 {
+                bits.push(format!("{} skipped (bad name)", a.skip_name));
+            }
+            if !failed.is_empty() {
+                well = false;
+                let more = if failed.len() > 5 { format!(" and {} more", failed.len() - 5) } else { String::new() };
+                bits.push(format!("{} failed: {}{more}", failed.len(), failed.iter().take(5).cloned().collect::<Vec<_>>().join(", ")));
+            }
+            let plan = crate::vault::plan(a, &saved);
+            if plan.dropped > 0 {
+                bits.push(format!("{} share mode or name entries ignored (no restored page)", plan.dropped));
+            }
+            said.push(bits.join(", "));
+            // the ship answers a batch before every page of it is there to
+            // be marked, so what it says is not there is asked for again
+            let post = |q: String, body: &str| {
+                let mut tries = 0;
+                loop {
+                    match post(q.clone(), body) {
+                        Err(e) if e.starts_with("404") && tries < 5 => {
+                            tries += 1;
+                            std::thread::sleep(Duration::from_secs(1));
+                        }
+                        r => return r,
+                    }
+                }
+            };
+            // the marks first: a page must not be shared a moment before it is marked
+            let mut tally = |what: &str, bad: usize| {
+                if bad > 0 {
+                    well = false;
+                    said.push(format!("{what}: {bad} failed"));
+                }
+            };
+            tally("sensitive marks", plan.sensitive.iter().filter(|p| post(format!("page-sensitive?name={}&on=1", enc(p)), "").is_err()).count());
+            tally("share modes", plan.share.iter().filter(|(n, m)| post(format!("page-share?name={}&mode={}", enc(n), enc(m)), "").is_err()).count());
+            // a move to the same path is how the ship sets a display name
+            tally("display names", plan.names.iter().filter(|(p, d)| post(format!("page-move?from={}&to={}&dname={}", enc(p), enc(p), enc(d)), "").is_err()).count());
+        }
+        if let Some(know) = &a.know {
+            match post("know-import".into(), know) {
+                Ok(_) => said.push("memories restored".into()),
+                Err(e) => {
+                    well = false;
+                    said.push(format!("the memories were not restored: {e}"));
+                }
+            }
+        }
+        (said.join(". "), well)
+    }
+
     pub fn tree(&self) -> Result<Vec<Node>, String> {
         Ok(self.dump("")?.nodes)
     }

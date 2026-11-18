@@ -212,6 +212,160 @@ pub fn build(dump: &Value, know: Option<&Value>, scopes: Option<&Value>, source:
     Built { bytes: tar(&files), pages, memories, missing, excluded }
 }
 
+/// The kind a file's extension puts a page back as, or none for one that
+/// is not a page's.
+pub fn ext_kind(ext: &str) -> Option<&'static str> {
+    Some(match ext.to_ascii_lowercase().as_str() {
+        "md" => "md",
+        "gmi" => "gmi",
+        "html" | "htm" => "html",
+        "txt" | "text" => "text",
+        "js" => "js",
+        "css" => "css",
+        "hoon" => "hoon",
+        "tex" | "latex" => "tex",
+        _ => return None,
+    })
+}
+
+/// A name the ship takes: parts of lowercase letters, digits and `._~-`,
+/// none of them `.` or `..`.
+pub fn valid_name(n: &str) -> bool {
+    n.split('/').all(|p| !p.is_empty() && p != "." && p != ".." && p.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._~-".contains(&b)))
+}
+
+/// A page an archive would put back.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PageIn {
+    pub name: String,
+    pub kind: &'static str,
+    pub body: String,
+}
+
+/// What an archive holds, read for a restore.
+#[derive(Clone, Debug, Default)]
+pub struct Archive {
+    pub pages: Vec<PageIn>,
+    /// Files under `pages/`, with those left out below.
+    pub page_files: usize,
+    /// Left out for an extension that is no page's, and for a name the ship would refuse.
+    pub skip_ext: usize,
+    pub skip_name: usize,
+    /// `know.json` as it is, for the ship to read.
+    pub know: Option<String>,
+    pub share: Value,
+    pub names: Value,
+    pub sensitive: Value,
+    /// A part that could not be read, said and gone without.
+    pub warnings: Vec<String>,
+}
+
+/// Reads an archive for a restore. One with no pages and no memories is refused.
+pub fn read(bytes: &[u8]) -> Result<Archive, String> {
+    let mut a = Archive::default();
+    for (name, text) in untar(bytes).map_err(|e| format!("not a readable archive: {e}"))? {
+        let mut json = |what: &str, lost: &str| serde_json::from_str::<Value>(&text).unwrap_or_else(|_| {
+            a.warnings.push(format!("{what} is unreadable, so {lost}"));
+            Value::Null
+        });
+        match name.as_str() {
+            "know.json" => a.know = Some(text),
+            "share.json" => a.share = json("share.json", "pages will come back private"),
+            "names.json" => a.names = json("names.json", "display names will not come back"),
+            "sensitive.json" => a.sensitive = json("sensitive.json", "sensitive marks will not come back"),
+            _ => {
+                let Some(rel) = name.strip_prefix("pages/") else { continue };
+                a.page_files += 1;
+                let (stem, kind) = match rel.rfind('.') {
+                    Some(dot) if dot > 0 => (&rel[..dot], ext_kind(&rel[dot + 1..])),
+                    _ => (rel, None),
+                };
+                match kind {
+                    None => a.skip_ext += 1,
+                    Some(_) if !valid_name(stem) => a.skip_name += 1,
+                    Some(kind) => a.pages.push(PageIn { name: stem.to_owned(), kind, body: text }),
+                }
+            }
+        }
+    }
+    if a.page_files == 0 && a.know.is_none() {
+        return Err("that archive has no pages/ and no know.json in it".into());
+    }
+    Ok(a)
+}
+
+type Saved = std::collections::BTreeSet<String>;
+
+/// Whether a path is a saved page, or a folder holding one.
+pub fn covers(saved: &Saved, path: &str) -> bool {
+    let pre = format!("{path}/");
+    saved.contains(path) || saved.iter().any(|n| n.starts_with(&pre))
+}
+
+/// What is put back after the pages, held to the pages that were saved: an
+/// archive cannot publish, name or mark what it did not bring back.
+#[derive(Debug, Default, PartialEq)]
+pub struct Plan {
+    /// A page and its mode, in the ship's word (`shared`, `clearweb`).
+    pub share: Vec<(String, String)>,
+    pub names: Vec<(String, String)>,
+    pub sensitive: Vec<String>,
+    pub dropped: usize,
+}
+
+pub fn plan(a: &Archive, saved: &Saved) -> Plan {
+    let mut p = Plan::default();
+    let pairs = |v: &Value| v.as_object().into_iter().flatten().filter_map(|(k, v)| Some((k.clone(), v.as_str().filter(|s| !s.is_empty())?.to_owned()))).collect::<Vec<_>>();
+    for (name, mode) in pairs(&a.share) {
+        if saved.contains(&name) {
+            // `urbit` is how the ship labels a page shared over Urbit. Its route's word is `shared`
+            p.share.push((name, if mode == "urbit" { "shared".into() } else { mode }));
+        } else {
+            p.dropped += 1;
+        }
+    }
+    for (path, dname) in pairs(&a.names) {
+        if covers(saved, &path) {
+            p.names.push((path, dname));
+        } else {
+            p.dropped += 1;
+        }
+    }
+    p.sensitive = a.sensitive.as_array().into_iter().flatten().filter_map(Value::as_str).filter(|p| !p.is_empty() && covers(saved, p)).map(str::to_owned).collect();
+    p
+}
+
+/// Every page a restore of this archive would make shared or public, at
+/// the most: named before anything is written.
+pub fn would_publish(a: &Archive) -> Vec<(String, String)> {
+    plan(a, &a.pages.iter().map(|p| p.name.clone()).collect()).share.into_iter().filter(|(_, m)| m != "private").collect()
+}
+
+/// The question a restore asks. Each page it would publish is named with
+/// its mode: a count cannot say which page is about to go public.
+pub fn question(a: &Archive) -> String {
+    let publish = would_publish(a);
+    let mut msg = format!("Restore {} page(s){}?", a.page_files, if a.know.is_some() { " and the memories" } else { "" });
+    msg += " Anything already there is overwritten, and the version replaced stays in that page's history.";
+    if !publish.is_empty() {
+        msg += &format!("\n\nThis will publish {} page(s):\n{}", publish.len(), publish.iter().map(|(n, m)| format!("  {n} ({m})")).collect::<Vec<_>>().join("\n"));
+        msg += "\n\nOnce published, deletion is not assured. Anyone who has read these pages can keep a copy, and the network may go on serving them after you unpublish or delete them.";
+    }
+    msg
+}
+
+/// The folders the pages sit in, outermost first.
+pub fn folders(pages: &[PageIn]) -> Vec<String> {
+    let mut dirs = Saved::new();
+    for p in pages {
+        let parts: Vec<&str> = p.name.split('/').collect();
+        for i in 1..parts.len() {
+            dirs.insert(parts[..i].join("/"));
+        }
+    }
+    dirs.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +437,48 @@ mod tests {
         assert_eq!(man["memories"], Value::Null);
         let clean = build(&dump, Some(&know), Some(&scopes), &|_| Some("b".into()), 100);
         assert_eq!(clean.says("/tmp/v.tar"), "exported 3 page(s) and 1 memories to /tmp/v.tar (1 generated folder index not included, they rebuild themselves)");
+    }
+
+    #[test]
+    fn an_archive_is_read_for_a_restore_and_held_to_what_it_saves() {
+        let f = |name: &str, body: &str| File { name: name.into(), body: body.into(), mtime: 1 };
+        let t = tar(&[
+            f("pages/notes/a.md", "# a"),
+            f("pages/notes/t.txt", "plain"),
+            f("pages/top.TEX", "x"),
+            f("pages/pic.png", "x"),
+            f("pages/Bad Name.md", "x"),
+            f("pages/noext", "x"),
+            f("know/project/x.md", "fact"),
+            f("know.json", "{\"items\":[]}"),
+            f("share.json", "{\"notes/a\":\"clearweb\",\"top\":\"urbit\",\"elsewhere\":\"clearweb\",\"notes/t\":7}"),
+            f("names.json", "{\"notes\":\"Notes\",\"other\":\"Other\"}"),
+            f("sensitive.json", "not json"),
+            f("README.txt", "hi"),
+        ]);
+        let a = read(&t).unwrap();
+        assert_eq!(a.pages.iter().map(|p| (p.name.as_str(), p.kind)).collect::<Vec<_>>(), [("notes/a", "md"), ("notes/t", "text"), ("top", "tex")]);
+        assert_eq!((a.page_files, a.skip_ext, a.skip_name), (6, 2, 1));
+        assert_eq!(a.warnings, ["sensitive.json is unreadable, so sensitive marks will not come back"]);
+        assert_eq!(folders(&a.pages), ["notes"]);
+        // the question names each page that would go public, with the ship's word for its mode
+        assert_eq!(would_publish(&a), [("notes/a".to_owned(), "clearweb".to_owned()), ("top".to_owned(), "shared".to_owned())]);
+        let q = question(&a);
+        assert!(q.starts_with("Restore 6 page(s) and the memories?"), "{q}");
+        assert!(q.contains("This will publish 2 page(s):\n  notes/a (clearweb)\n  top (shared)"), "{q}");
+        // only what was saved is shared, named or marked
+        let mut a = a;
+        a.sensitive = json!(["notes", "top", "elsewhere", 4]);
+        let saved: Saved = ["notes/a".to_owned()].into();
+        let p = plan(&a, &saved);
+        assert_eq!(p, Plan { share: vec![("notes/a".into(), "clearweb".into())], names: vec![("notes".into(), "Notes".into())], sensitive: vec!["notes".into()], dropped: 3 });
+        assert!(covers(&saved, "notes") && !covers(&saved, "note") && !covers(&saved, "notes/a/b"));
+
+        assert!(valid_name("a/b-c.d~1") && !valid_name("a//b") && !valid_name("a/../b") && !valid_name("A") && !valid_name(""));
+        assert_eq!(read(&tar(&[f("README.txt", "hi")])).unwrap_err(), "that archive has no pages/ and no know.json in it");
+        assert!(read(b"nonsense that is long enough to be read as a header, but is not one at all................................................................................................................................................................................................................................................................................................................................................................................................................................................................................................").unwrap_err().starts_with("not a readable archive"));
+        let private = read(&tar(&[f("pages/a.md", "x")])).unwrap();
+        assert!(!question(&private).contains("publish"));
     }
 
     /// Against a ship seeded with `notes/a` (named Alpha Page), `notes/plain`
