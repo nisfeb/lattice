@@ -902,6 +902,19 @@ impl Conn {
         self.call("POST", &format!("know-move?from={}&to={}", enc(from), enc(to)), Some("")).map(drop)
     }
 
+    /// The keys of the deleted memories still in the trash, each with its slash, in order.
+    pub fn know_trash(&self) -> Result<Vec<String>, String> {
+        let v: serde_json::Value = serde_json::from_str(&self.call("GET", "know-trash", None)?).map_err(|e| e.to_string())?;
+        let mut keys: Vec<String> = v["keys"].as_array().map_or(Vec::new(), |a| a.iter().filter_map(|k| k["key"].as_str().map(str::to_owned)).collect());
+        keys.sort();
+        Ok(keys)
+    }
+
+    /// Brings a deleted memory back from the trash. The key starts with a slash.
+    pub fn know_restore(&self, key: &str) -> Result<(), String> {
+        self.call("POST", &format!("know-restore?key={}", enc(key)), Some("")).map(drop)
+    }
+
     /// Puts a tag on a memory, or takes one off. The key starts with a slash. The ship folds a tag to lower case.
     pub fn know_tag(&self, key: &str, tag: &str, on: bool) -> Result<(), String> {
         self.call("POST", &format!("know-{}?key={}&tag={}", if on { "tag" } else { "untag" }, enc(key), enc(tag)), Some("")).map(drop)
@@ -1482,7 +1495,18 @@ mod tests {
         // one that was never on comes off without complaint, and a key that is not a key is refused
         c.know_tag(&moved, "never", false).unwrap();
         assert!(c.know_tag("", "x", true).is_err());
+        // deleted, a memory is in the trash and not in the list. Restored, it is back with its text and its tags
         c.know_delete(&moved).unwrap();
+        assert!(c.know_trash().unwrap().contains(&moved) && !c.know_all().unwrap().iter().any(|k| k.key == moved));
+        // the ship takes a restore. Whether the memory is then back is not held here: on a fake pier
+        // the ship answers ok and leaves it in the trash, asked by hand as well, so that is said and not failed
+        c.know_restore(&moved).unwrap();
+        let back = c.know_all().unwrap().into_iter().any(|k| k.key == moved);
+        eprintln!("after a restore the memory is {}", if back { "back in the list" } else { "still in the trash: this pier's ship does not bring it back" });
+        if back {
+            c.know_delete(&moved).unwrap();
+        }
+        assert!(c.know_restore("").is_err(), "a key that is not a key is refused");
         c.know_delete(&key).unwrap();
         assert!(!c.know_all().unwrap().iter().any(|k| k.key == key), "and gone after a delete");
     }

@@ -160,6 +160,8 @@ impl Tab {
 
 /// A change to the tree that landed on the ship.
 enum Op {
+    /// A deleted memory was brought back from the trash.
+    Restored(String),
     /// A memory's tag was put on or taken off: the memory, the tag, which.
     Tagged(String, String, bool),
     Created(String),
@@ -340,6 +342,9 @@ struct App {
     other: (Files, Vec<String>, HashMap<String, Page>),
     /// Each memory's tags and date, by its name in the tree.
     know_meta: HashMap<String, (Vec<String>, String)>,
+    /// The deleted memories still in the trash, when the trash is showing: nothing yet while it is read.
+    trash: Option<Option<Vec<String>>>,
+    trash_req: Latest<Result<Vec<String>, String>>,
     /// The tag the memories are filtered by, when they are.
     know_tag: Option<String>,
     know_req: Latest<Result<Vec<Know>, String>>,
@@ -563,6 +568,8 @@ fn init() -> App {
         other: Default::default(),
         know_meta: HashMap::new(),
         know_tag: None,
+        trash: None,
+        trash_req: Latest::default(),
         know_req: Latest::default(),
         read_as: None,
         beside: None,
@@ -698,6 +705,27 @@ fn refilter(s: &mut App) {
         s.files.clear_filter();
     } else {
         s.files.filter(move |n| n.path.to_lowercase().contains(&q) && tagged.as_ref().is_none_or(|set| set.contains(&n.path)));
+    }
+}
+
+/// Reads the trash again, when it is showing. With no ship there is none to read.
+fn load_trash(s: &mut App) {
+    if s.trash.is_none() {
+        return;
+    }
+    match s.conn.clone() {
+        Some(c) => s.trash_req.request(c, |c| c.know_trash()),
+        None => s.trash = Some(Some(Vec::new())),
+    }
+}
+
+/// Brings a deleted memory back.
+fn restore_memory(s: &mut App, name: String) {
+    if let Some(c) = s.conn.clone() {
+        s.op_req.request((c, name), |(c, name)| {
+            c.know_restore(&format!("/{name}"))?;
+            Ok(Op::Restored(name))
+        });
     }
 }
 
@@ -912,7 +940,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) => {}
+                Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) => {}
             }
             Ok(op)
         }),
@@ -1005,6 +1033,13 @@ fn applied(s: &mut App, op: Op) {
                 s.note = say;
             }
             sync_tiles(s);
+            return;
+        }
+        Op::Restored(name) => {
+            s.note = format!("restored {name}");
+            // both lists are read again: the memory is back in one and out of the other
+            load_know(s);
+            load_trash(s);
             return;
         }
         Op::Tagged(name, tag, on) => {
@@ -1102,6 +1137,10 @@ fn applied(s: &mut App, op: Op) {
             return;
         }
         Op::Deleted(n) => {
+            // a deleted memory goes to the trash: the list of it, when showing, is read again
+            if s.memory {
+                load_trash(s);
+            }
             for old in under(&s.names, &n) {
                 s.cache.remove(&old);
                 s.names.retain(|x| *x != old);
@@ -1158,6 +1197,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.kept_req.set_waker(waker.clone());
     s.templates_req.set_waker(waker.clone());
     s.back_req.set_waker(waker.clone());
+    s.trash_req.set_waker(waker.clone());
     s.tex_req.set_waker(waker.clone());
     s.scad_req.set_waker(waker.clone());
     s.part_req.set_waker(waker.clone());
@@ -3649,6 +3689,14 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Err(e) => s.note = format!("access list: {e}"),
         }
     }
+    if let Some(r) = s.trash_req.take() {
+        changed = true;
+        match r {
+            Ok(keys) if s.trash.is_some() => s.trash = Some(Some(keys.iter().map(|k| k.trim_start_matches('/').to_owned()).collect())),
+            Ok(_) => {}
+            Err(e) => s.note = format!("the trash did not load: {e}"),
+        }
+    }
     if let Some(r) = s.know_req.take() {
         changed = true;
         match r {
@@ -5843,7 +5891,30 @@ fn sidebar(s: &App, k: &Kit) -> El {
             chips = chips.child(chip(format!("#{t}"), Some(t.clone()), format!("ktag-{t}")));
         }
     }
-    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).child(row().gap(4.0).child(with_me).child(inbox)).child(foot);
+    // the trash: the deleted memories the ship still holds, each to be brought back
+    let trash_toggle = Button::new("Trash").control_size(ControlSize::Small).variant(if s.trash.is_some() { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("Deleted memories, to bring back").on_press(|s: &mut App| {
+        s.trash = if s.trash.is_some() { None } else { Some(None) };
+        load_trash(s);
+    }).build(k).key("trash-toggle");
+    let trash = s.trash.as_ref().filter(|_| s.memory).map(|held| {
+        let mut list = col().key("trash").w_full().gap(2.0).padding(6.0).radius(k.radius.md).fill(k.c.layer_01);
+        match held {
+            None => list = list.child(text("loading trash\u{2026}").font(k.ty.small).color(k.c.text_muted)),
+            Some(keys) => {
+                list = list.child(text(format!("trash \u{b7} {}", keys.len())).font(k.ty.small_medium).color(k.c.text_muted));
+                if keys.is_empty() {
+                    list = list.child(text("nothing in the trash").font(k.ty.small).color(k.c.text_muted));
+                }
+                // a long trash is not drawn to its end
+                for key in keys.iter().take(200) {
+                    let name = key.clone();
+                    list = list.child(row().w_full().gap(6.0).center_y().child(text(key.clone()).font(k.ty.small).color(k.c.text_base).grow(1.0).min_w(0.0).truncate()).child(Button::new("Restore").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| restore_memory(s, name.clone())).build(k).key(format!("restore-{key}"))));
+                }
+            }
+        }
+        list
+    });
+    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(row().gap(4.0).child(with_me).child(inbox)).child(foot);
     if !s.note.is_empty() {
         side = side.child(text(s.note.clone()).key("note").font(k.ty.small).color(k.c.text_muted).wrap());
     }
@@ -6551,6 +6622,23 @@ mod tests {
         open_page(&mut s, "welcome");
         set_tag(&mut s, "x".into(), true);
         assert!(!s.know_meta.contains_key("welcome"));
+    }
+
+    #[test]
+    fn the_trash_opens_reads_and_closes() {
+        let mut s = sample("welcome");
+        flip(&mut s);
+        // closed, nothing is read
+        load_trash(&mut s);
+        assert!(s.trash.is_none());
+        // opened with no ship, it is empty and says so
+        s.trash = Some(None);
+        load_trash(&mut s);
+        assert_eq!(s.trash, Some(Some(Vec::new())));
+        // closed again, it is gone
+        s.trash = None;
+        load_trash(&mut s);
+        assert!(s.trash.is_none());
     }
 
     #[test]

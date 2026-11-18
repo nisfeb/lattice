@@ -1,0 +1,5 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "half-memory"},
+  {"t": 3.0, "type": "tap", "key": "trash-toggle"},
+  {"t": 5.5, "type": "tap", "key": "restore-t/one"}
+]}
