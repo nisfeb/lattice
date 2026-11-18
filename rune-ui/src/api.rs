@@ -860,6 +860,28 @@ pub fn comment_order(comments: &[ForumComment]) -> Vec<(usize, &ForumComment)> {
     out
 }
 
+/// The tags typed for a thread, as the ship takes them: five at most,
+/// each lowercase letters, digits and dashes, starting with a letter,
+/// twenty-four characters at most. Commas or spaces part them, and a
+/// leading `#` is let go. What is not a tag is said, as the web
+/// client's form says it before posting.
+pub fn forum_tags(typed: &str) -> Result<Vec<String>, String> {
+    let mut out: Vec<String> = Vec::new();
+    for t in typed.split(|c: char| c == ',' || c.is_whitespace()).map(|t| t.trim_start_matches('#')).filter(|t| !t.is_empty()) {
+        let ok = t.len() <= 24 && t.starts_with(|c: char| c.is_ascii_lowercase()) && t.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !ok {
+            return Err(format!("{t} is not a tag: lowercase letters, digits and dashes, starting with a letter, 24 characters at most"));
+        }
+        if !out.iter().any(|x| x == t) {
+            out.push(t.to_owned());
+        }
+    }
+    if out.len() > 5 {
+        return Err("a thread carries five tags at most".into());
+    }
+    Ok(out)
+}
+
 impl Conn {
     /// The ship's name, from its session cookie (`urbauth-~zod=..`).
     pub fn ship(&self) -> &str {
@@ -1008,6 +1030,45 @@ impl Conn {
     /// Only the text goes with it: the new key's history starts again.
     pub fn know_move(&self, from: &str, to: &str) -> Result<(), String> {
         self.call("POST", &format!("know-move?from={}&to={}", enc(from), enc(to)), Some("")).map(drop)
+    }
+
+    /// Sends one of the forum's own forms, as the ship's forum pages do: `path` under `/forum/`, and the
+    /// fields. The ship answers by sending the browser on to a page, which is not followed, and it
+    /// answers the same when its rules refuse what was sent: the board is read again to see.
+    fn forum_form(&self, path: &str, fields: &[(&str, &str)]) -> Result<(), String> {
+        let body = fields.iter().map(|(k, v)| format!("{k}={}", enc(v))).collect::<Vec<_>>().join("&");
+        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
+        let res = agent.post(&format!("{}/apps/lattice/forum/{path}", self.url)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&body);
+        match res {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(code, _)) if (300..400).contains(&code) => Ok(()),
+            Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    /// Starts a thread on one of this ship's boards: a title, and a link, a text or both. Tags as `forum_tags` gives them.
+    pub fn forum_submit(&self, board: &str, title: &str, link: &str, body: &str, tags: &[String]) -> Result<(), String> {
+        let mut fields = vec![("title", title)];
+        if !link.is_empty() {
+            fields.push(("url", link));
+        }
+        if !body.is_empty() {
+            fields.push(("body", body));
+        }
+        let names = ["t1", "t2", "t3", "t4", "t5"];
+        fields.extend(names.iter().zip(tags).map(|(n, t)| (*n, t.as_str())));
+        self.forum_form(&format!("{board}/submit"), &fields)
+    }
+
+    /// Comments on a thread, or with `parent` answers a comment of it.
+    pub fn forum_comment(&self, board: &str, post: u64, parent: Option<u64>, body: &str) -> Result<(), String> {
+        let parent = parent.map(|p| p.to_string());
+        let mut fields = vec![("body", body)];
+        if let Some(p) = &parent {
+            fields.push(("parent", p));
+        }
+        self.forum_form(&format!("{board}/{post}/comment"), &fields)
     }
 
     /// The boards on this ship, each with its threads. The names come from the forum's index page, fifty at most.
@@ -1625,10 +1686,10 @@ mod tests {
         let names: Vec<&str> = boards.iter().map(|b| b.board.as_str()).collect();
         assert!(names.contains(&"general") && names.contains(&"quiet"), "{names:?}");
         let b = c.forum_board("general").unwrap();
-        assert_eq!((b.title.as_str(), b.description.as_str(), b.public, b.count), ("General talk", "Anything goes", true, 2));
-        // newest first, and a listed thread comes without its text
-        assert_eq!(b.posts.iter().map(|p| p.id).collect::<Vec<_>>(), [2, 1]);
-        let (link, first) = (&b.posts[0], &b.posts[1]);
+        assert_eq!((b.title.as_str(), b.description.as_str(), b.public), ("General talk", "Anything goes", true));
+        // newest first, and a listed thread comes without its text. The posting test may have added threads above these
+        assert!(b.count >= 2 && b.posts.windows(2).all(|w| w[0].id > w[1].id), "{:?}", b.posts.iter().map(|p| p.id).collect::<Vec<_>>());
+        let (link, first) = (b.posts.iter().find(|p| p.id == 2).unwrap(), b.posts.iter().find(|p| p.id == 1).unwrap());
         assert_eq!((link.title.as_str(), link.link.as_deref(), link.body.as_deref()), ("A link", Some("https://urbit.org"), None));
         assert_eq!((first.pinned, first.up, first.comments, first.tags.clone(), first.body.as_deref()), (true, 1, 3, vec!["intro".to_owned(), "meta".to_owned()], None));
         let t = c.forum_thread("general", 1).unwrap();
@@ -1637,6 +1698,18 @@ mod tests {
         assert_eq!(order, [(0, "A first comment."), (1, "A reply to it."), (0, "Another top comment.")]);
         assert!(c.forum_board("no-such-board").unwrap_err().contains("404"));
         assert!(c.forum_thread("general", 99).unwrap_err().contains("404"));
+    }
+
+    #[test]
+    fn tags_are_taken_as_the_ship_takes_them_or_said_not_to_be() {
+        assert_eq!(forum_tags(" bug, #idea  c2-d bug ").unwrap(), ["bug", "idea", "c2-d"]);
+        assert!(forum_tags("").unwrap().is_empty());
+        for bad in ["Bug", "c++", "2fast", "-x", "a_b", &"a".repeat(25)] {
+            assert!(forum_tags(bad).unwrap_err().contains("is not a tag"), "{bad}");
+        }
+        assert!(forum_tags(&"a".repeat(24)).is_ok());
+        assert_eq!(forum_tags("a b c d e f").unwrap_err(), "a thread carries five tags at most");
+        assert!(forum_tags("a b c d e a").is_ok(), "one typed twice is one");
     }
 
     #[test]
@@ -1656,6 +1729,37 @@ mod tests {
         // the ship's own shapes read, with what may be absent left out
         let b: Board = serde_json::from_str(r#"{"posts":[{"tags":[],"comments":0,"link":"https://urbit.org","author":"~zod","body":null,"title":"A link","id":2,"pinned":false,"up":0,"down":0}],"public":true,"title":"General talk","count":1,"board":"general","description":"d","kind":"board"}"#).unwrap();
         assert_eq!((b.posts[0].link.as_deref(), b.posts[0].body.as_deref(), b.count), (Some("https://urbit.org"), None, 1));
+    }
+
+    /// Posting to the forum against a ship: it needs the board `general` that `scripts/forum-seed.sh` makes, and can run again.
+    #[test]
+    #[ignore]
+    fn live_forum_post() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let before = c.forum_board("general").unwrap();
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let title = format!("Posted natively {stamp}");
+        c.forum_submit("general", &title, "", "Text with *marks*, an & and a = sign.\n\nSecond paragraph: é.", &forum_tags("native second").unwrap()).unwrap();
+        let after = c.forum_board("general").unwrap();
+        assert_eq!(after.count, before.count + 1);
+        let made = after.posts.iter().find(|p| p.title == title).expect("the thread is listed");
+        assert_eq!(made.tags, ["native", "second"]);
+        let read = |c: &Conn| c.forum_thread("general", made.id).unwrap();
+        assert_eq!(read(&c).post.body.as_deref(), Some("Text with *marks*, an & and a = sign.\n\nSecond paragraph: é."));
+        // a comment, and an answer to it, sit where they were put
+        c.forum_comment("general", made.id, None, "A comment, with a + and a % in it.").unwrap();
+        let first = read(&c).comments[0].clone();
+        assert_eq!((first.body.as_str(), first.parent), ("A comment, with a + and a % in it.", None));
+        c.forum_comment("general", made.id, Some(first.id), "An answer.").unwrap();
+        let t = read(&c);
+        assert_eq!(comment_order(&t.comments).into_iter().map(|(d, c)| (d, c.body.as_str())).collect::<Vec<_>>(), [(0, "A comment, with a + and a % in it."), (1, "An answer.")]);
+        // a link thread with no text
+        c.forum_submit("general", &format!("A link {stamp}"), "https://example.org/a?b=c&d=e", "", &[]).unwrap();
+        let linked = c.forum_board("general").unwrap();
+        assert_eq!(linked.posts.iter().find(|p| p.title == format!("A link {stamp}")).and_then(|p| p.link.clone()).as_deref(), Some("https://example.org/a?b=c&d=e"));
+        // a thread with no title is refused by the form, and a board that is not there says so
+        assert!(c.forum_submit("general", "", "", "no title", &[]).unwrap_err().starts_with("400"));
+        assert!(c.forum_submit("no-such-board", "x", "", "", &[]).unwrap_err().starts_with("404"));
     }
 
     /// Memories against a ship, by themselves: this needs no page and can run again on the same pier.

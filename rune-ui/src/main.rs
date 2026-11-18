@@ -106,6 +106,13 @@ struct Forum {
     board: Option<api::Board>,
     thread: Option<api::Thread>,
     sort: ForumSort,
+    /// A thread being written for the board showing: its title, link, text and tags.
+    draft: Option<Box<[TextEdit; 4]>>,
+    /// A comment being written on the thread showing, and the comment it answers when it answers one.
+    comment: TextEdit,
+    reply: Option<u64>,
+    /// What was written is on its way to the ship: it is kept until the ship has it.
+    sending: bool,
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -3789,9 +3796,26 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         // an answer that lands after the forum was left is dropped
         match (r, &mut s.forum) {
             (Ok(ForumGot::Boards(b)), Some(f)) => f.boards = Some(b),
-            (Ok(ForumGot::Board(b)), Some(f)) => (f.board, f.thread) = (Some(b), None),
-            (Ok(ForumGot::Thread(th)), Some(f)) => f.thread = Some(th),
-            (Err(e), Some(_)) => s.note = format!("forum: {e}"),
+            (Ok(ForumGot::Board(b)), Some(f)) => {
+                (f.board, f.thread) = (Some(b), None);
+                // what was being sent landed: the thread written is let go
+                if std::mem::take(&mut f.sending) {
+                    f.draft = None;
+                    s.note = "posted".into();
+                }
+            }
+            (Ok(ForumGot::Thread(th)), Some(f)) => {
+                f.thread = Some(th);
+                if std::mem::take(&mut f.sending) {
+                    (f.comment, f.reply) = (TextEdit::new(""), None);
+                    s.note = "sent".into();
+                }
+            }
+            // what was written stays, to be sent again or changed
+            (Err(e), Some(f)) => {
+                f.sending = false;
+                s.note = format!("forum: {e}");
+            }
             _ => {}
         }
     }
@@ -4757,6 +4781,58 @@ fn forum_open(s: &mut App, board: String, post: Option<u64>) {
     });
 }
 
+/// Sends the thread written for the board showing. The ship answers a
+/// form it refuses as it answers one it takes, so the board is read
+/// again, and a board no longer than it was says the thread was not taken.
+fn forum_submit(s: &mut App) {
+    let Some(f) = s.forum.as_mut().filter(|f| !f.sending) else { return };
+    let (Some(b), Some(d)) = (&f.board, &f.draft) else { return };
+    let [title, link, body, tags] = [d[0].text.trim().to_owned(), d[1].text.trim().to_owned(), d[2].text.trim_end().to_owned(), d[3].text.clone()];
+    if title.is_empty() {
+        s.note = "a thread needs a title".into();
+        return;
+    }
+    let tags = match api::forum_tags(&tags) {
+        Ok(t) => t,
+        Err(why) => {
+            s.note = why;
+            return;
+        }
+    };
+    let Some(c) = s.conn.clone() else { return };
+    f.sending = true;
+    let (board, had) = (b.board.clone(), b.count);
+    s.forum_req.request((c, board), move |(c, board)| {
+        c.forum_submit(&board, &title, &link, &body, &tags)?;
+        let now = c.forum_board(&board)?;
+        if now.count <= had { Err("the ship did not take that thread: its board may not let you post, or the thread is too long".into()) } else { Ok(ForumGot::Board(now)) }
+    });
+}
+
+/// Sends the comment written on the thread showing, under the comment it answers when it answers one.
+fn forum_comment(s: &mut App) {
+    let Some(f) = s.forum.as_mut().filter(|f| !f.sending) else { return };
+    let Some(th) = &f.thread else { return };
+    let body = f.comment.text.trim_end().to_owned();
+    if body.trim().is_empty() {
+        s.note = "there is nothing written to send".into();
+        return;
+    }
+    let Some(c) = s.conn.clone() else { return };
+    f.sending = true;
+    let (board, post, parent, had) = (th.board.clone(), th.post.id, f.reply, th.comments.len());
+    s.forum_req.request((c, board), move |(c, board)| {
+        c.forum_comment(&board, post, parent, &body)?;
+        let now = c.forum_thread(&board, post)?;
+        if now.comments.len() <= had { Err("the ship did not take that comment: the board may not let you post, or it is too long".into()) } else { Ok(ForumGot::Thread(now)) }
+    });
+}
+
+/// The field of the thread being written, by its place: title, link, text, tags.
+fn draft_field(s: &mut App, i: usize) -> &mut TextEdit {
+    &mut s.forum.as_mut().and_then(|f| f.draft.as_mut()).expect("a thread is being written")[i]
+}
+
 /// One step back in the forum: from a thread to its board, from a board to the boards.
 fn forum_back(s: &mut App) {
     if let Some(f) = &mut s.forum {
@@ -4799,11 +4875,32 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
                     .w_full()
                     .pl(indent)
                     .gap(2.0)
-                    .child(muted(format!("{} \u{b7} {}", cm.author, when(&cm.created))))
+                    .child({
+                        let id = cm.id;
+                        row().gap(6.0).center_y().child(muted(format!("{} \u{b7} {}", cm.author, when(&cm.created)))).child(Button::new("Reply").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Answer this comment").on_press(move |s: &mut App| {
+                            if let Some(f) = &mut s.forum {
+                                f.reply = Some(id);
+                                f.comment.focused = true;
+                            }
+                        }).build(k).key(format!("reply-{id}")))
+                    })
                     .child(Markdown::new(cm.body.clone()).selectable(true).on_link_tx(follow).build(k)),
             );
         }
-        return page;
+        // the comment box: what is written goes under the thread, or under the comment being answered
+        let to = f.reply.and_then(|id| th.comments.iter().find(|c| c.id == id));
+        let mut write = col().key("forum-write").w_full().gap(6.0).pt(8.0);
+        if let Some(cm) = to {
+            write = write.child(row().gap(6.0).center_y().child(muted(format!("Answering {}: {}", cm.author, cm.body.chars().take(60).collect::<String>()))).child(Button::new("Not an answer").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| {
+                if let Some(f) = &mut s.forum {
+                    f.reply = None;
+                }
+            }).build(k).key("reply-none")));
+        }
+        write = write
+            .child(TextArea::new(&f.comment).label("Comment").placeholder("Write a comment, in Markdown").rows(4).on_edit(|s: &mut App| &mut s.forum.as_mut().expect("the forum is showing").comment).build(k).w_full().key("forum-comment"))
+            .child(row().child(Button::new(if f.sending { "Sending\u{2026}" } else if to.is_some() { "Reply" } else { "Comment" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(f.sending).on_press(forum_comment).build(k).key("forum-send")));
+        return page.child(write);
     }
     if let Some(b) = &f.board {
         page = page.child(text(b.title.clone()).font(k.ty.body_medium).color(c.text_base).wrap());
@@ -4817,6 +4914,44 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
             }).build(k).key(key.to_owned())
         };
         page = page.child(row().key("forum-sort").gap(4.0).child(sort("New", "fsort-new", ForumSort::New)).child(sort("Active", "fsort-active", ForumSort::Active)).child(sort("Top", "fsort-top", ForumSort::Top)));
+        // a thread is written here, under the board's heading, and sent from here
+        match &f.draft {
+            None => {
+                page = page.child(row().child(Button::new("New thread").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+                    if let Some(f) = &mut s.forum {
+                        let mut d = Box::new([TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")]);
+                        d[0].focused = true;
+                        f.draft = Some(d);
+                    }
+                }).build(k).key("forum-new")));
+            }
+            Some(d) => {
+                let line = |i: usize, label: &str, hint: &str, key: &str| TextInput::new(&d[i]).label(label).placeholder(hint).on_edit(move |s: &mut App| draft_field(s, i)).build(k).w_full().key(key.to_owned());
+                page = page.child(
+                    col()
+                        .key("forum-draft")
+                        .w_full()
+                        .gap(8.0)
+                        .padding(10.0)
+                        .radius(k.radius.md)
+                        .fill(c.layer_01)
+                        .child(line(0, "Title", "What the thread is about", "draft-title"))
+                        .child(line(1, "Link", "A link, if it is about one", "draft-link"))
+                        .child(TextArea::new(&d[2]).label("Text (Markdown)").placeholder("The text, if it has one").rows(5).on_edit(|s: &mut App| draft_field(s, 2)).build(k).w_full().key("draft-body"))
+                        .child(line(3, "Tags", "Up to five: lowercase letters, digits and dashes", "draft-tags"))
+                        .child(
+                            row()
+                                .gap(6.0)
+                                .child(Button::new(if f.sending { "Posting\u{2026}" } else { "Post" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(f.sending).on_press(forum_submit).build(k).key("draft-post"))
+                                .child(Button::new("Cancel").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+                                    if let Some(f) = &mut s.forum {
+                                        f.draft = None;
+                                    }
+                                }).build(k).key("draft-cancel")),
+                        ),
+                );
+            }
+        }
         if b.posts.is_empty() {
             page = page.child(muted("No threads yet.".into()));
         }
@@ -6991,6 +7126,30 @@ mod tests {
         assert!(s.forum.is_none() && s.inbox);
         go_forum(&mut s);
         assert!(s.forum.is_some() && !s.inbox);
+    }
+
+    #[test]
+    fn a_thread_is_not_sent_without_a_title_or_with_what_is_not_a_tag() {
+        let mut s = sample("welcome");
+        go_forum(&mut s);
+        let f = s.forum.as_mut().unwrap();
+        f.board = Some(api::Board { board: "general".into(), ..api::Board::default() });
+        f.draft = Some(Box::new([TextEdit::new(""), TextEdit::new(""), TextEdit::new(""), TextEdit::new("")]));
+        draft_field(&mut s, 2).text = "some text".into();
+        forum_submit(&mut s);
+        assert_eq!(s.note, "a thread needs a title");
+        draft_field(&mut s, 0).text = "A title".into();
+        draft_field(&mut s, 3).text = "fine Not-Fine".into();
+        forum_submit(&mut s);
+        assert!(s.note.starts_with("Not-Fine is not a tag"), "{}", s.note);
+        // what was written is still there to be put right, and nothing is on its way
+        let f = s.forum.as_ref().unwrap();
+        assert!(!f.sending && f.draft.as_ref().is_some_and(|d| d[2].text == "some text"));
+        // a comment with nothing in it is not sent either
+        s.forum.as_mut().unwrap().thread = Some(api::Thread { board: "general".into(), ..api::Thread::default() });
+        s.forum.as_mut().unwrap().comment.text = "  \n".into();
+        forum_comment(&mut s);
+        assert_eq!(s.note, "there is nothing written to send");
     }
 
     #[test]
