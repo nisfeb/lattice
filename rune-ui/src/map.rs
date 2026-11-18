@@ -203,10 +203,122 @@ pub fn tile_rect(cam: &Camera, t: &Tile, w: f32, h: f32) -> [f32; 3] {
     [at[0], at[1], (cam.scale / n) as f32]
 }
 
+/// The base maps a page may name, in the order they are offered.
+pub const STYLES: [&str; 4] = ["streets", "outdoors", "satellite", "dark"];
+
+/// Over this many bytes a map is shown and never rewritten, as on the web.
+const BIG: usize = 4 * 1024 * 1024;
+
+/// A JSON value as JavaScript's `JSON.stringify` writes it: a number
+/// that is whole has no `.0`, which is where serde's own writer differs.
+fn js(v: &Value, out: &mut String) {
+    match v {
+        Value::Number(n) if n.is_f64() => out.push_str(&n.as_f64().map_or("null".to_owned(), |f| if f.is_finite() { format!("{f}") } else { "null".into() })),
+        Value::Array(a) => {
+            out.push('[');
+            for (i, x) in a.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                js(x, out);
+            }
+            out.push(']');
+        }
+        Value::Object(o) => {
+            out.push('{');
+            for (i, (k, x)) in o.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&Value::String(k.clone()).to_string());
+                out.push(':');
+                js(x, out);
+            }
+            out.push('}');
+        }
+        other => out.push_str(&other.to_string()),
+    }
+}
+
+/// A geometry with every coordinate rounded to seven places, about a centimetre.
+fn round_geom(g: &Value) -> Value {
+    fn deep(c: &Value) -> Value {
+        match c {
+            Value::Array(a) if a.first().is_some_and(Value::is_number) => Value::Array(a.iter().map(|n| n.as_f64().filter(|f| f.is_finite()).and_then(|f| serde_json::Number::from_f64((f * 1e7).round() / 1e7)).map_or(n.clone(), Value::Number)).collect()),
+            Value::Array(a) => Value::Array(a.iter().map(deep).collect()),
+            other => other.clone(),
+        }
+    }
+    let Value::Object(o) = g else { return g.clone() };
+    Value::Object(
+        o.iter()
+            .map(|(k, v)| {
+                let v = match (k.as_str(), v) {
+                    ("coordinates", c) => deep(c),
+                    ("geometries", Value::Array(a)) => Value::Array(a.iter().map(round_geom).collect()),
+                    (_, v) => v.clone(),
+                };
+                (k.clone(), v)
+            })
+            .collect(),
+    )
+}
+
+/// A map page in lattice's own layout, as the web client writes one:
+/// the view first, then whatever else the collection held, then one
+/// feature to a line with its type, geometry, properties and id first.
+/// `None` for what is not a map, or one too large to rewrite.
+pub fn serialize(doc: &Value) -> Option<String> {
+    let o = doc.as_object().filter(|o| o.get("type").and_then(Value::as_str) == Some("FeatureCollection"))?;
+    let feats = o.get("features")?.as_array()?;
+    let mut s = String::from("{\"type\":\"FeatureCollection\",\"lattice\":");
+    js(o.get("lattice").filter(|l| l.is_object()).unwrap_or(&Value::Object(Default::default())), &mut s);
+    for (k, v) in o.iter().filter(|(k, _)| !matches!(k.as_str(), "type" | "lattice" | "features")) {
+        s.push(',');
+        s.push_str(&Value::String(k.clone()).to_string());
+        s.push(':');
+        js(v, &mut s);
+    }
+    s.push_str(",\"features\":[\n");
+    for (i, f) in feats.iter().enumerate() {
+        let f = f.as_object()?;
+        let mut line = serde_json::Map::new();
+        line.insert("type".into(), "Feature".into());
+        line.insert("geometry".into(), round_geom(f.get("geometry").unwrap_or(&Value::Null)));
+        line.insert("properties".into(), f.get("properties").cloned().unwrap_or_else(|| Value::Object(Default::default())));
+        if let Some(id) = f.get("id") {
+            line.insert("id".into(), id.clone());
+        }
+        for (k, v) in f.iter().filter(|(k, _)| !matches!(k.as_str(), "type" | "geometry" | "properties" | "id")) {
+            line.insert(k.clone(), v.clone());
+        }
+        js(&Value::Object(line), &mut s);
+        s.push_str(if i + 1 < feats.len() { ",\n" } else { "\n" });
+    }
+    s.push_str("]}\n");
+    Some(s)
+}
+
+/// A map page with its base map set, in lattice's layout. `None` for a
+/// page that is not a map, a base that is not one of `STYLES`, or a map
+/// too large to rewrite.
+pub fn with_base(body: &str, style: &str) -> Option<String> {
+    if body.len() > BIG || !STYLES.contains(&style) {
+        return None;
+    }
+    let mut doc: Value = serde_json::from_str(body).ok()?;
+    let o = doc.as_object_mut()?;
+    if !o.get("lattice").is_some_and(Value::is_object) {
+        o.insert("lattice".into(), Value::Object(Default::default()));
+    }
+    o.get_mut("lattice")?.as_object_mut()?.insert("base".into(), style.into());
+    serialize(&doc)
+}
+
 /// The base map a page asks for (`lattice.base`), or streets.
 pub fn base_style(body: &str) -> &'static str {
     let named = serde_json::from_str::<Value>(body).ok().and_then(|v| v.get("lattice")?.get("base")?.as_str().map(str::to_owned));
-    ["streets", "outdoors", "satellite", "dark"].into_iter().find(|s| Some(*s) == named.as_deref()).unwrap_or("streets")
+    STYLES.into_iter().find(|s| Some(*s) == named.as_deref()).unwrap_or("streets")
 }
 
 pub fn thin(line: &[P], max: usize) -> Vec<P> {
@@ -329,6 +441,29 @@ mod tests {
         assert!(tiles(&off, 400.0, 400.0, 17).is_empty());
         let wide = Camera { at: [0.5, 0.5], scale: 512.0 * 64.0 };
         assert_eq!(tiles(&wide, 8000.0, 8000.0, 17).len(), MAX_TILES);
+    }
+
+    #[test]
+    fn a_map_is_written_in_lattices_layout_with_nothing_lost() {
+        let body = r#"{ "features": [ {"properties": {"name": "A", "n": 1.0}, "geometry": {"type": "Point", "coordinates": [-73.98570001234, 40.0]}, "type": "Feature", "zz": [1, 2.5], "id": 7},
+            {"type": "Feature", "geometry": null} ], "bbox": [0, 1.50, 2, 3], "type": "FeatureCollection", "lattice": {"title": "T", "zoom": 9} }"#;
+        let out = with_base(body, "satellite").unwrap();
+        // the web client's own writer gives exactly this for the same document
+        assert_eq!(
+            out,
+            "{\"type\":\"FeatureCollection\",\"lattice\":{\"title\":\"T\",\"zoom\":9,\"base\":\"satellite\"},\"bbox\":[0,1.5,2,3],\"features\":[\n{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[-73.9857,40]},\"properties\":{\"name\":\"A\",\"n\":1},\"id\":7,\"zz\":[1,2.5]},\n{\"type\":\"Feature\",\"geometry\":null,\"properties\":{}}\n]}\n"
+        );
+        assert_eq!(base_style(&out), "satellite");
+        // written again it is the same, and the shapes read from it are the ones read before
+        assert_eq!(with_base(&out, "satellite").unwrap(), out);
+        assert_eq!(parse(&out).map(|f| f.len()), parse(body).map(|f| f.len()));
+        // a map with no view member gets one, and an empty one stays a map
+        let bare = with_base(r#"{"type":"FeatureCollection","features":[]}"#, "dark").unwrap();
+        assert_eq!(bare, "{\"type\":\"FeatureCollection\",\"lattice\":{\"base\":\"dark\"},\"features\":[\n]}\n");
+        // what is not a map, or not a base, is left alone
+        assert_eq!(with_base("{\"type\":\"Feature\"}", "dark"), None);
+        assert_eq!(with_base("not json", "dark"), None);
+        assert_eq!(with_base(body, "sepia"), None);
     }
 
     #[test]

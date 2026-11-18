@@ -60,7 +60,7 @@ On macOS, Cmd takes the place of Ctrl.
 - Download: the palette's Download saves the page in front to a file you name in the system's save dialog. It is the page's source, not a rendering.
 - LaTeX: on a LaTeX page, the palette's Convert to HTML runs the pandoc installed on this machine and writes the result beside the page as `<name>-web`. Anything in the output that would run or load from another site is removed first. The html page shows as its source here until this client renders HTML.
 - PDF: the palette's Export PDF prints the page as the ship renders it to a file you name. It needs a ship and Chromium or Chrome installed, since this app cannot print by itself. Images from other sites are left out of the PDF. Sheets, Writer documents and maps print as their source.
-- Map tiles: a map page draws its base map under the shapes when the ship has a Mapbox token. Tiles come through the ship, which holds the token. With no token the map says so and shows its grid. There is no way yet to choose the base map or set the token from here.
+- Map tiles: a map page draws its base map under the shapes when the ship has a Mapbox token. Tiles come through the ship, which holds the token. With no token the map says so and shows its grid. The Base button goes round streets, outdoors, satellite and dark, and saves the choice in the page, in the layout the web client writes. The ship's token is set or cleared from the command palette, or from the button a map shows when there is none.
 - Capture: the Capture button above the tree starts a page in the inbox with no name asked, open in the editor. Save keeps it. Cancel, or saving it empty, leaves nothing behind.
 - Autosave: while editing, text that has changed and then rested for two to four seconds is saved and the editor stays open. The Autosave switch beside Save turns it off. If the ship refuses a save, autosave waits until you press Save. What is typed in the last seconds before the window closes is not saved.
 - Links: the toolbar's Links button opens a side pane with the pages that link to this one and the pages it links to. A link to a page not written yet is in italics in the text and marked in the pane. Pressing it offers to make the page. Opening a page from the pane does not move the tree's highlight.
@@ -69,14 +69,14 @@ On macOS, Cmd takes the place of Ctrl.
 - Shared with me: the sidebar lists the pages other ships shared. One opens in place of a page, read from that ship, and is edited and saved back when that ship allows it. A notice can be forgotten.
 - Memory: the sidebar switches between pages and memories. Memories have the same tree, reader, editors and Ctrl+K search, show their tags and date, and can be made, edited and deleted. They are read once at sign-in and again on Ctrl+R.
 - Ctrl+K also finds pages by their text (three letters or more), showing the line.
-- Map pages (GeoJSON) draw natively: points with their names, lines and areas over a graticule. Drag to pan, wheel to zoom about the pointer, press a point for its note and properties, and Fit returns to the whole map. There are no tiles, and a map is edited as source.
+- Map pages (GeoJSON) draw natively: points with their names, lines and areas over a graticule. Drag to pan, wheel to zoom about the pointer, press a point for its note and properties, and Fit returns to the whole map. A map is edited as source.
 - Spreadsheet pages (flat ODS) show as a grid: each sheet's cells as they read, with lettered columns that resize and a tab for each sheet. Read-only, with no formulas or styles, and edited as source.
 - Other pages that are not Markdown (HTML, OpenSCAD) show as their source, coloured.
 - Every ship call runs on a worker thread, never on the UI thread.
 
 ## What does not, yet
 
-OpenSCAD and HTML pages have no native view, a spreadsheet cannot be edited as a grid, and a map has no tiles under it, no layers and no drawing tools. In the rich editor a heading keeps its `#`, a table its pipes and a fence its backticks, since Rune's rich text has no heading or table, and paragraphs have no space between them. No forum, memory tags, rename, trash and history, search inside pages, or offline queue.
+OpenSCAD and HTML pages have no native view, a spreadsheet cannot be edited as a grid, and a map has no layers and no drawing tools. In the rich editor a heading keeps its `#`, a table its pipes and a fence its backticks, since Rune's rich text has no heading or table, and paragraphs have no space between them. No forum, memory tags, rename, trash and history, search inside pages, or offline queue.
 
 ## Check it without a window
 

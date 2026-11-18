@@ -1135,6 +1135,12 @@ impl Conn {
         serde_json::from_str(&self.call("GET", "tile-status", None)?).map_err(|e| e.to_string())
     }
 
+    /// Sets the ship's Mapbox token, or clears it with an empty one. The
+    /// ship never gives it back: it only says whether one is set.
+    pub fn map_token(&self, token: &str) -> Result<(), String> {
+        self.call("POST", "map-token", Some(token.trim())).map(drop).map_err(|e| if e.starts_with("400") { "that does not look like a Mapbox token".into() } else { e })
+    }
+
     /// The address of a map tile on the ship, which fetches it from
     /// Mapbox with the owner's token and keeps nothing.
     pub fn tile_url(&self, style: &str, z: u32, x: u32, y: u32) -> String {
@@ -1555,6 +1561,12 @@ mod tests {
         assert!(!ts.token && ts.max == 17 && ts.styles.contains(&"streets".to_owned()), "{ts:?}");
         assert_eq!(fetch_bytes(&c.tile_url("streets", 1, 0, 0), Some(c.cookie())).unwrap_err(), "503");
         assert_eq!(fetch_bytes(&c.tile_url("nonsense", 1, 0, 0), Some(c.cookie())).unwrap_err(), "404");
+        // a token is refused by its shape, set, told of only as set, and cleared
+        assert_eq!(c.map_token("not a token!").unwrap_err(), "that does not look like a Mapbox token");
+        c.map_token("pk.rune-test-token_0").unwrap();
+        assert!(c.tile_status().unwrap().token);
+        c.map_token("").unwrap();
+        assert!(!c.tile_status().unwrap().token);
         // the ship's own images come back as images, with the session
         let svg = fetch_bytes(&c.image_url("icon.svg"), Some(c.cookie())).unwrap();
         assert!(String::from_utf8_lossy(&svg).contains("<svg"), "the icon is an svg");

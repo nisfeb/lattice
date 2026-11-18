@@ -58,6 +58,8 @@ enum Prompt {
     Delete(String),
     /// The address for a link on the editor's selection.
     Link(TextEdit),
+    /// The ship's Mapbox token, to set or, left empty, to clear.
+    Token(TextEdit),
     /// A name for a copy of a page: the page as it stood, and the name.
     Duplicate(Page, TextEdit),
     /// A note to go with an ask for edit on another ship's page.
@@ -94,6 +96,8 @@ enum Op {
     /// A page was written beside the one in front: its name, its text when
     /// there is no ship to read it from, and what to say.
     Wrote(String, Option<Page>, String),
+    /// The ship's Mapbox token was set or cleared: what to say.
+    Tokened(String),
     /// Something was done that changes nothing here: what to say.
     Said(String),
     /// A template made a page or a folder of pages at this name.
@@ -639,6 +643,16 @@ fn confirm(s: &mut App) {
         }
         return;
     }
+    if let Prompt::Token(t) = &p {
+        let token = t.text.trim().to_owned();
+        if let Some(c) = s.conn.clone() {
+            s.op_req.request((c, token), |(c, token)| {
+                c.map_token(&token)?;
+                Ok(Op::Tokened(if token.is_empty() { "the Mapbox token is cleared".into() } else { "the Mapbox token is set".into() }))
+            });
+        }
+        return;
+    }
     if let Prompt::Duplicate(from, t) = &p {
         let Some(rn) = api::real_name(&t.text) else {
             s.note = "that name has nothing a path can keep".into();
@@ -713,7 +727,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) => {}
+                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) => {}
             }
             Ok(op)
         }),
@@ -787,6 +801,14 @@ fn applied(s: &mut App, op: Op) {
         }
         Op::Said(say) => {
             s.note = say;
+            return;
+        }
+        Op::Tokened(say) => {
+            s.note = say;
+            // the ship is asked again what it can give, and tiles that failed may be tried again
+            (s.tile_status, s.tiles_off) = (None, None);
+            s.pics_asked.retain(|k| !k.starts_with("tile:"));
+            sync_tiles(s);
             return;
         }
         Op::Wrote(name, page, say) => {
@@ -1242,7 +1264,9 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         _ => String::new(),
     };
     let count = text(format!("{} shapes{ground}", m.feats.len())).font(k.ty.small).color(c.text_muted);
-    view.child(row().key("map-tools").absolute(12.0, h - 40.0).gap(6.0).center_y().child(zoom("zoom-in", "+", 2.0)).child(zoom("zoom-out", "−", 0.5)).child(zoom("zoom-fit", "Fit", 0.0)).child(count))
+    let base = Button::new(format!("Base: {}", m.style)).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("The next base map: streets, outdoors, satellite, dark. It is kept in the page").on_press(next_base).build(k).key("map-base");
+    let token = (s.conn.is_some() && s.tile_status.as_ref().is_some_and(|t| !t.token)).then(|| Button::new("Set Mapbox token").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(ask_token).build(k).key("map-token"));
+    view.child(row().key("map-tools").absolute(12.0, h - 40.0).gap(6.0).center_y().child(zoom("zoom-in", "+", 2.0)).child(zoom("zoom-out", "−", 0.5)).child(zoom("zoom-fit", "Fit", 0.0)).child(base).children(token).child(count))
 }
 
 /// Whether a wiki link's target is a page not written yet: no page and
@@ -1308,6 +1332,42 @@ fn sync_pics(s: &mut App) {
             waker();
         });
     }
+}
+
+/// Sets the base map of the map in front to the next one and saves the
+/// page, in the layout the web client writes a map in.
+fn next_base(s: &mut App) {
+    let (Some(p), Some(m)) = (s.open.clone(), &s.map) else { return };
+    if s.editing || m.name != p.name || kept_by_orrery(s) {
+        s.note = "this map is not changed here".into();
+        return;
+    }
+    let at = map::STYLES.iter().position(|x| *x == m.style).unwrap_or(0);
+    let style = map::STYLES[(at + 1) % map::STYLES.len()];
+    let Some(body) = map::with_base(&p.body, style) else {
+        s.note = "this map is too large to change here".into();
+        return;
+    };
+    let base = p.rev;
+    let page = Page { body, ..p };
+    match s.conn.clone() {
+        Some(c) => s.save_req.request((c, page), move |(c, mut p)| {
+            p.rev = c.save(&p, base)?;
+            Ok(p)
+        }),
+        None => landed(s, Page { rev: base + 1, ..page }),
+    }
+}
+
+/// Asks for the ship's Mapbox token.
+fn ask_token(s: &mut App) {
+    if s.conn.is_none() {
+        s.note = "sample pages have no ship to keep a token".into();
+        return;
+    }
+    let mut t = TextEdit::new("");
+    t.focused = true;
+    s.prompt = Some(Prompt::Token(t));
 }
 
 /// The name a tile's picture is kept under, beside the pages' images.
@@ -3149,6 +3209,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("download", "Download this page as a file"),
     ("pdf", "Export this page as PDF"),
     ("tex", "Convert this LaTeX page to HTML"),
+    ("map-base", "Map: next base map"),
+    ("map-token", "Map: set the ship's Mapbox token"),
     ("find", "Find in this page"),
     ("links", "Links"),
     ("comments", "Comments on this page"),
@@ -3175,7 +3237,8 @@ fn usable(s: &App, id: &str) -> bool {
         "tex" => own && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "tex"),
         "rename" | "share" | "links" | "comments" | "history" => own && !s.memory,
         "find" => page && find_where(s) != FindIn::Nothing,
-        "reload" => s.conn.is_some(),
+        "reload" | "map-token" => s.conn.is_some(),
+        "map-base" => own && !s.editing && s.map.as_ref().is_some_and(|m| s.open.as_ref().is_some_and(|p| p.name == m.name)),
         "tab-close" => s.tabs.len() > 1,
         "tab-copy" => own && !s.memory,
         "split" => s.split.is_some() || (own && !s.memory),
@@ -3258,6 +3321,8 @@ fn run_command(s: &mut App, id: &str, tx: &mut Tx) {
                 s.note = format!("name copied: {name}");
             }
         }
+        "map-base" => next_base(s),
+        "map-token" => ask_token(s),
         "find" => open_find(s),
         "links" => show_pane(s, false, true),
         "comments" => show_pane(s, true, false),
@@ -3373,7 +3438,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) => t,
+                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) => t,
                 Prompt::Delete(_) => unreachable!("a delete has no field"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
@@ -3387,6 +3452,8 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::Link(t) => ("Link the selection to", field(t, "https://"), "Link", ButtonVariant::Contrast),
         Prompt::Ask(_, t) => ("Ask for edit access", field(t, "A short note, if you like"), "Ask", ButtonVariant::Contrast),
         Prompt::Duplicate(_, t) => ("Duplicate this page as", field(t, "folder/name"), "Duplicate", ButtonVariant::Contrast),
+        // kept on the ship, which never shows it again. Typed in the clear here: it is pasted, not remembered
+        Prompt::Token(t) => ("The ship's Mapbox token", field(t, "pk... to set it, or nothing to clear it"), "Set", ButtonVariant::Contrast),
         Prompt::Delete(n) => {
             let held = under(&s.names, n).len();
             let (ask, says) = if s.names.contains(n) { ("Delete this page?", n.clone()) } else { ("Delete this folder?", format!("{n} and the {held} pages in it")) };
@@ -5480,6 +5547,29 @@ mod tests {
         applied(&mut s, Op::Wrote("paper-web".into(), Some(again), "wrote paper-web".into()));
         assert_eq!(s.names.iter().filter(|n| *n == "paper-web").count(), 1);
         assert!(s.cache["paper-web"].body.ends_with("<h1>B</h1>"));
+    }
+
+    #[test]
+    fn a_maps_base_goes_round_and_is_kept_in_the_page() {
+        let mut s = sample("places");
+        let (rev, shapes) = (s.open.as_ref().unwrap().rev, s.map.as_ref().unwrap().feats.len());
+        assert_eq!(s.map.as_ref().unwrap().style, "streets");
+        next_base(&mut s);
+        let p = s.open.clone().unwrap();
+        assert_eq!((p.rev, map::base_style(&p.body)), (rev + 1, "outdoors"));
+        assert_eq!((s.map.as_ref().unwrap().style, s.map.as_ref().unwrap().feats.len()), ("outdoors", shapes), "the shapes are the ones it had");
+        for want in ["satellite", "dark", "streets"] {
+            next_base(&mut s);
+            assert_eq!(s.map.as_ref().unwrap().style, want);
+        }
+        // not a map, or being edited: nothing is changed
+        open_page(&mut s, "welcome");
+        let before = s.cache["welcome"].body.clone();
+        next_base(&mut s);
+        assert_eq!(s.cache["welcome"].body, before);
+        // sample pages have no ship to keep a token
+        ask_token(&mut s);
+        assert!(s.prompt.is_none());
     }
 
     #[test]
