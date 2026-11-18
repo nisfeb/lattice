@@ -6205,9 +6205,52 @@ fn settings_field(s: &mut App, i: usize) -> &mut TextEdit {
     &mut s.settings.as_mut().expect("the settings are showing").f[i]
 }
 
+/// The fonts the source editor may be set in, as the web client's
+/// settings offer them: what the preference says, and its name.
+const EDITOR_FONTS: [(&str, &str); 4] = [("", "App's own"), ("mono", "Monospace"), ("serif", "Serif"), ("coding", "Coding (Iosevka, JetBrains Mono)")];
+
+/// The family the source editor is drawn in for a preference. `None`
+/// leaves it as the app draws it. A named list is tried in order, with
+/// faces most systems have after the ones asked for.
+fn editor_family(pref: &str) -> Option<rune::Family> {
+    match pref {
+        "mono" => Some(rune::Family::SystemMono),
+        "serif" => Some(rune::Family::Named("Georgia, Times New Roman, Noto Serif, DejaVu Serif, Liberation Serif")),
+        "coding" => Some(rune::Family::Named("Iosevka, JetBrains Mono, Fira Code, Cascadia Mono, Menlo, Consolas, DejaVu Sans Mono, Liberation Mono")),
+        _ => None,
+    }
+}
+
+/// The kit the source editor is built with: the app's, in the font chosen.
+fn editor_kit(k: &Kit, pref: &str) -> Kit {
+    let mut ek = k.clone();
+    if let Some(family) = editor_family(pref) {
+        ek.ty.ui.family = family;
+    }
+    ek
+}
+
 /// The settings: the agent keys, each with what it may touch and a Revoke, and the form that makes one.
-fn settings_view(st: &Settings, pub_ok: bool, k: &Kit) -> El {
+fn settings_view(st: &Settings, pub_ok: bool, font: &str, k: &Kit) -> El {
     let c = &k.c;
+    let mut fonts = row().gap(4.0).flex_wrap();
+    for (pref, name) in EDITOR_FONTS {
+        fonts = fonts.child(Button::new(name).control_size(ControlSize::Small).variant(if font == pref { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
+            s.prefs.font = pref.to_owned();
+            if s.conn.is_some() {
+                s.prefs.save();
+            }
+        }).build(k).key(format!("font-{}", if pref.is_empty() { "app" } else { pref })));
+    }
+    let sample = editor_kit(k, font).ty.ui;
+    let editor = col()
+        .key("set-editor")
+        .w_full()
+        .gap(6.0)
+        .child(text("Editor").font(k.ty.body_medium).color(c.text_base))
+        .child(text("The font a page's source is written in. Kept on this computer.").font(k.ty.small).color(c.text_muted).wrap())
+        .child(fonts)
+        .child(el().w_full().padding(10.0).radius(k.radius.md).fill(c.layer_01).child(text("The quick brown fox jumps over the lazy dog \u{b7} 0123456789 \u{b7} il1 O0 \u{b7} |= ^- @ud").key("font-sample").font(sample).color(c.text_base).wrap()));
     // the way back from "do not ask again"
     let mut publishing = col()
         .key("set-publishing")
@@ -6313,7 +6356,7 @@ fn settings_view(st: &Settings, pub_ok: bool, k: &Kit) -> El {
         }).build(k).key("key-sensitive"))
         .child(muted("A memory with sensitive: yes in its front matter (health, money, family) is invisible to a key without this. A key with it can read them, but for 12 hours after reading one, everything it writes is marked sensitive too, so it cannot pass what it read to a key without clearance. Clearance is set here, when the key is made."))
         .child(row().child(Button::new(if st.sending { "Making\u{2026}" } else { "Make key" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(st.sending).on_press(key_make).build(k).key("key-make")));
-    col().key("settings-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(page.child(form).child(settings_more(st, k)).child(publishing))).scroll(ScrollSpec { stick_bottom: false })
+    col().key("settings-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(page.child(form).child(settings_more(st, k)).child(publishing).child(editor))).scroll(ScrollSpec { stick_bottom: false })
 }
 
 fn next_theme(s: &mut App) {
@@ -7858,7 +7901,7 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
 
 fn page_body(s: &App, k: &Kit) -> El {
     if let Some(st) = s.settings.as_ref().filter(|_| !s.editing) {
-        return settings_view(st, s.prefs.pub_ok, k);
+        return settings_view(st, s.prefs.pub_ok, &s.prefs.font, k);
     }
     if s.access && !s.editing {
         return access_view(s, k);
@@ -7908,7 +7951,8 @@ fn page_body(s: &App, k: &Kit) -> El {
         // the source, coloured as Markdown: colour only, so nothing moves as it is typed
         let mut marks = code_spans(&p.kind, &s.edit.text, k);
         marks.extend(find_spans(s, k));
-        let source = TextArea::new(&s.edit).label("Page source").decorations(marks).on_edit(|s: &mut App| &mut s.edit).on_key(editor_key).build(k).key(FIELD).w_full().h_full().min_h(0.0);
+        // the font is the one chosen in settings: the text area takes its style from the kit it is built with
+        let source = TextArea::new(&s.edit).label("Page source").decorations(marks).on_edit(|s: &mut App| &mut s.edit).on_key(editor_key).build(&editor_kit(k, &s.prefs.font)).key(FIELD).w_full().h_full().min_h(0.0);
         let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
         if s.preview && p.kind == "md" {
             let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(s.edit.text.clone()).build(k));
@@ -8828,6 +8872,20 @@ mod tests {
         // nothing is offered outside the editor
         s.editing = false;
         assert!(link_offers(&s).is_none());
+    }
+
+    #[test]
+    fn the_editors_font_is_the_one_chosen_and_the_apps_own_otherwise() {
+        let k = Kit::neutral(true);
+        assert!(editor_family("").is_none() && editor_family("something else").is_none());
+        assert!(matches!(editor_family("mono"), Some(rune::Family::SystemMono)));
+        // every choice offered has a family, but the app's own
+        for (pref, _) in EDITOR_FONTS.iter().skip(1) {
+            assert!(editor_family(pref).is_some(), "{pref}");
+        }
+        assert!(matches!(editor_kit(&k, "serif").ty.ui.family, rune::Family::Named(n) if n.starts_with("Georgia")));
+        // only the family changes: the size and the rest are the app's
+        assert_eq!(editor_kit(&k, "serif").ty.ui.size, k.ty.ui.size);
     }
 
     #[test]
