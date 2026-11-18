@@ -46,10 +46,20 @@ type Key = (usize, usize, usize);
 
 /// Where a formula is being worked out.
 #[derive(Clone, Copy)]
-struct Ctx {
-    s: usize,
-    r: usize,
-    c: usize,
+pub struct Ctx {
+    pub s: usize,
+    pub r: usize,
+    pub c: usize,
+}
+
+impl Rg {
+    pub fn rows(&self) -> usize {
+        self.r2 - self.r1 + 1
+    }
+
+    pub fn cols(&self) -> usize {
+        self.c2 - self.c1 + 1
+    }
 }
 
 struct Entry {
@@ -173,7 +183,7 @@ fn compare_op(a: &V, b: &V) -> i32 {
 }
 
 /// A power as Calc takes it: an odd root of a negative number is real.
-fn power(a: f64, b: f64) -> V {
+pub fn power(a: f64, b: f64) -> V {
     if a == 0.0 && b < 0.0 {
         return err("#DIV/0!");
     }
@@ -200,6 +210,10 @@ pub struct Engine<'a> {
     /// Those that could not be worked out here.
     pub stale: HashSet<Key>,
     changed: Vec<Key>,
+    /// How much of each sheet holds anything: rows, then columns.
+    extents: HashMap<usize, (usize, usize)>,
+    /// The cells walked for the formula being worked out: a hostile run of them is not walked to its end.
+    steps: usize,
     /// Those worked out.
     done: Vec<Key>,
     depth: usize,
@@ -207,7 +221,7 @@ pub struct Engine<'a> {
 
 impl<'a> Engine<'a> {
     pub fn new(book: &'a Book) -> Engine<'a> {
-        let mut e = Engine { book, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), done: Vec::new(), depth: 0 };
+        let mut e = Engine { book, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), extents: HashMap::new(), steps: 0, done: Vec::new(), depth: 0 };
         for (s, sh) in book.sheets.iter().enumerate() {
             let mut r = 0;
             for row in &sh.rows {
@@ -307,6 +321,80 @@ impl<'a> Engine<'a> {
         }
     }
 
+    /// How much of a sheet holds anything: a value, a formula or a text. Trailing empty runs do not count.
+    pub fn used(&mut self, s: usize) -> (usize, usize) {
+        if let Some(u) = self.extents.get(&s) {
+            return *u;
+        }
+        let (mut rows, mut cols, mut at) = (0, 0, 0);
+        for row in self.book.sheets.get(s).map_or(&[][..], |sh| &sh.rows) {
+            let (mut c, mut last) = (0, 0);
+            for cell in &row.cells {
+                if !cell.vt.is_empty() || cell.f.is_some() || !cell.text.is_empty() {
+                    last = c + cell.rep;
+                }
+                c += cell.rep;
+            }
+            if last > 0 {
+                // a repeated row with content is real data only when the run is short
+                rows = at + row.rep.min(4096);
+                cols = cols.max(last);
+            }
+            at += row.rep;
+        }
+        let u = (rows, cols.min(16_384));
+        self.extents.insert(s, u);
+        u
+    }
+
+    /// Calls `f` with the value of every cell of the rectangle that holds something, in row order.
+    pub fn each(&mut self, g: Rg, f: &mut dyn FnMut(V)) -> Result<(), Unsupported> {
+        let book = self.book;
+        let Some(sheet) = book.sheets.get(g.s) else { return Ok(()) };
+        let mut r = 0;
+        for row in &sheet.rows {
+            let (top, bot) = (r, r + row.rep - 1);
+            r += row.rep;
+            if bot < g.r1 {
+                continue;
+            }
+            if top > g.r2 {
+                break;
+            }
+            if !row.cells.iter().any(|c| !c.vt.is_empty() || c.f.is_some()) {
+                continue;
+            }
+            for rr in top.max(g.r1)..=bot.min(g.r2) {
+                let mut c = 0;
+                for cell in &row.cells {
+                    let (left, right) = (c, c + cell.rep - 1);
+                    c += cell.rep;
+                    if right < g.c1 {
+                        continue;
+                    }
+                    if left > g.c2 {
+                        break;
+                    }
+                    if cell.vt.is_empty() && cell.f.is_none() {
+                        continue;
+                    }
+                    for cc in left.max(g.c1)..=right.min(g.c2) {
+                        // a million rows of sixteen thousand cells are not walked: the formula keeps what it had
+                        self.steps += 1;
+                        if self.steps > 5_000_000 {
+                            return Err(Unsupported);
+                        }
+                        let v = self.value((g.s, rr, cc));
+                        if v != V::Blank {
+                            f(v);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// One value from what an expression gave: a one-cell range is its cell, and a column
     /// or a row is the cell on the formula's own row or column.
     fn one(&mut self, v: V, ctx: Ctx) -> V {
@@ -323,7 +411,7 @@ impl<'a> Engine<'a> {
         err("#VALUE!")
     }
 
-    fn ev(&mut self, n: &Node, ctx: Ctx) -> Result<V, Unsupported> {
+    pub fn ev(&mut self, n: &Node, ctx: Ctx) -> Result<V, Unsupported> {
         Ok(match n {
             Node::Num(v) => V::Num(*v),
             Node::Str(v) => V::Str(v.clone()),
@@ -353,10 +441,25 @@ impl<'a> Engine<'a> {
                 let r = self.one(r, ctx);
                 bin(op, l, r)
             }
-            // a logical value is stored as a call with nothing in it
-            Node::Call(name, args) if args.is_empty() && (name == "TRUE" || name == "FALSE") => V::Bool(name == "TRUE"),
-            // the other functions and the names are not worked out here yet
-            Node::Call(..) | Node::Name(_) => return Err(Unsupported),
+            Node::Call(name, nodes) => {
+                if let Some(got) = crate::funcs::lazy(self, name, nodes, ctx) {
+                    return got;
+                }
+                let mut args = Vec::with_capacity(nodes.len());
+                for a in nodes {
+                    args.push(self.ev(a, ctx)?);
+                }
+                // an argument left out at the end is no argument
+                while args.last() == Some(&V::Missing) {
+                    args.pop();
+                }
+                match crate::funcs::call(self, name, &args, ctx)? {
+                    V::Num(n) if !n.is_finite() => err("#NUM!"),
+                    v => v,
+                }
+            }
+            // named ranges and expressions are not read here yet
+            Node::Name(_) => return Err(Unsupported),
         })
     }
 
@@ -382,6 +485,10 @@ impl<'a> Engine<'a> {
         let at = self.formulas[i].at;
         if self.busy.contains(&at) {
             return err("Err:522");
+        }
+        // the budget of cells walked is one outermost formula's, with whatever it pulls in
+        if self.busy.is_empty() {
+            self.steps = 0;
         }
         self.busy.insert(at);
         self.depth += 1;
@@ -654,9 +761,29 @@ mod tests {
     }
 
     #[test]
+    fn functions_give_what_the_web_client_gives() {
+        // each line is a formula and what the web client's engine shows for it in G8 of this sheet,
+        // from ui-src/sheet/book.js run under node. STALE is a formula it does not work out either
+        let src = doc(&[&["2", "abc", "", "TRUE", "3.5"], &["0", "-4", "10", "x", "7"], &["5", "5", "2.5", "apple", "1"], &["", "12", "Banana", "3", "-1"]]);
+        let (mut n, mut wrong) = (0, Vec::new());
+        for line in include_str!("funcs_corpus.tsv").lines() {
+            let (f, want) = line.split_once('\t').unwrap();
+            let (f, want): (String, String) = (serde_json::from_str(f).unwrap(), serde_json::from_str(want).unwrap());
+            let got = enter(&src, 0, 7, 6, &format!("={f}")).unwrap();
+            let shown = if got.stale.contains(&(0, 7, 6)) { "STALE".to_owned() } else { grid(&got.body).get(7).and_then(|r| r.get(6).cloned()).unwrap_or_default() };
+            if shown != want {
+                wrong.push(format!("={f} gave {shown}, the web gives {want}"));
+            }
+            n += 1;
+        }
+        assert!(wrong.is_empty(), "{} of {n} differ:\n{}", wrong.len(), wrong.join("\n"));
+        assert_eq!(n, 266);
+    }
+
+    #[test]
     fn what_cannot_be_worked_out_keeps_what_it_had_and_is_counted() {
-        // a function is not known here yet: its cached 5 stays, and what reads it still follows the 5
-        let src = doc(&[&["2", "=SUM(A1:A1)+3|5", "=B1*2|10"]]);
+        // a function not known here: its cached 5 stays, and what reads it still follows the 5
+        let src = doc(&[&["2", "=NOPE(A1:A1)+3|5", "=B1*2|10"]]);
         let got = enter(&src, 0, 0, 0, "100").unwrap();
         assert_eq!((grid(&got.body)[0].clone(), got.stale, got.done), (vec!["100".to_owned(), "5".into(), "10".into()], vec![(0, 0, 1)], vec![(0, 0, 2)]));
         // a cycle is Calc's own error for one, in every cell of it

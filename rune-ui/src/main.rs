@@ -7,6 +7,7 @@
 mod api;
 mod calc;
 mod formula;
+mod funcs;
 mod map;
 mod mapio;
 mod md;
@@ -6234,17 +6235,24 @@ mod tests {
         s.sheet.as_mut().unwrap().entry.text = "Soy".into();
         commit_cell(&mut s);
         assert_eq!(s.sheet.as_ref().unwrap().sheets[0].rows[5][0], "Soy!");
-        // a function is not worked out here yet: it is stored, counted, and shows nothing until it is
+        // a function is worked out. The sample sheet is written by hand and its own text cells say no
+        // type, so they are nothing to a formula, as on the web: the two counted are the two typed here
+        pick_cell(&mut s, 7, 0);
+        s.sheet.as_mut().unwrap().entry.text = "=COUNTA(A1:A6)&\" items\"".into();
+        commit_cell(&mut s);
+        assert_eq!(s.sheet.as_ref().unwrap().sheets[0].rows[7][0], "2 items");
+        assert!(s.sheet.as_ref().unwrap().stale.is_empty());
+        // one that is not known here is stored, counted, and shows nothing until it is
         pick_cell(&mut s, 6, 0);
-        s.sheet.as_mut().unwrap().entry.text = "=SUM(B2:B3)".into();
+        s.sheet.as_mut().unwrap().entry.text = "=NOPE(B2:B3)".into();
         commit_cell(&mut s);
         assert_eq!(s.sheet.as_ref().unwrap().stale.iter().copied().collect::<Vec<_>>(), [(0, 6, 0)]);
+        assert!(s.open.as_ref().unwrap().body.contains("table:formula=\"of:=NOPE([.B2:.B3])\""));
         // another change elsewhere does not forget it
         pick_cell(&mut s, 8, 3);
         s.sheet.as_mut().unwrap().entry.text = "x".into();
         commit_cell(&mut s);
         assert_eq!(s.sheet.as_ref().unwrap().stale.len(), 1);
-        assert!(s.open.as_ref().unwrap().body.contains("table:formula=\"of:=SUM([.B2:.B3])\""));
     }
 
     #[test]
