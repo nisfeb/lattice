@@ -630,6 +630,11 @@ struct App {
     /// How the groups are cut into places of the split: each number is a place, and a place of more than one group is
     /// split the other way inside (see `splits`).
     runs: Vec<usize>,
+    /// Each place's share of the room along the split, and each group's share of its place across it. Each adds up to 1.
+    place_share: Vec<f32>,
+    group_share: Vec<f32>,
+    /// The shares as they stood when a line between groups was pressed, while it is dragged.
+    share_base: Option<Vec<f32>>,
     /// The groups are one above the other, not side by side.
     split_down: bool,
     /// The room the groups have, as last laid out: nothing until then.
@@ -943,6 +948,9 @@ fn init() -> App {
         tgroups: Vec::new(),
         front_at: 0,
         runs: Vec::new(),
+        place_share: Vec::new(),
+        group_share: Vec::new(),
+        share_base: None,
         split_down: false,
         groups_room: (0.0, 0.0),
         resync: false,
@@ -5709,6 +5717,19 @@ fn add_group(s: &mut App, inner: bool) {
         (s.tgroups, s.front_at, s.runs) = (vec![TabGroup::default(), made], 0, vec![1, 1]);
     } else {
         let (runs, at) = splits::added(&s.runs, s.front_at, inner);
+        fix_shares(s);
+        if let Some(r) = splits::run_of(&s.runs, s.front_at) {
+            let from: usize = s.runs[..r].iter().sum();
+            if inner {
+                // the group in front gives half its share of the place to the new one
+                let slice = splits::share_added(&s.group_share[from..from + s.runs[r]], s.front_at - from);
+                s.group_share.splice(from..from + s.runs[r], slice);
+            } else {
+                // the front's place gives half its share of the room to the new place, which one group has whole
+                s.place_share = splits::share_added(&s.place_share, r);
+                s.group_share.insert(at, 1.0);
+            }
+        }
         s.tgroups.insert(at, made);
         s.runs = runs;
     }
@@ -5763,6 +5784,16 @@ fn sync_groups(s: &mut App) {
             g.at = g.at.min(g.tabs.len().saturating_sub(1));
             if g.tabs.is_empty() {
                 s.tgroups.remove(d);
+                if let Some(r) = splits::run_of(&s.runs, d).filter(|_| s.place_share.len() == s.runs.len() && s.group_share.len() == s.tgroups.len() + 1) {
+                    let from: usize = s.runs[..r].iter().sum();
+                    if s.runs[r] == 1 {
+                        s.place_share = splits::share_removed(&s.place_share, r);
+                        s.group_share.remove(d);
+                    } else {
+                        let slice = splits::share_removed(&s.group_share[from..from + s.runs[r]], d - from);
+                        s.group_share.splice(from..from + s.runs[r], slice);
+                    }
+                }
                 s.runs = splits::removed(&s.runs, d);
                 if s.front_at > d {
                     s.front_at -= 1;
@@ -5777,11 +5808,72 @@ fn sync_groups(s: &mut App) {
         s.front_at = 0;
         s.runs.clear();
     } else if s.runs.len() == 1 {
-        // one place left, split inside: that inner split is the split now
+        // one place left, split inside: that inner split is the split now, with the shares its groups had
         s.split_down = !s.split_down;
         s.runs = vec![1; s.tgroups.len()];
+        if s.group_share.len() == s.tgroups.len() {
+            s.place_share = std::mem::take(&mut s.group_share);
+        }
     }
+    fix_shares(s);
     keep_split(s);
+}
+
+/// Makes the shares fit the groups: equal ones wherever they do not, as
+/// when a split is made or put back from the last run.
+fn fix_shares(s: &mut App) {
+    if s.place_share.len() != s.runs.len() {
+        s.place_share = splits::even(s.runs.len());
+    }
+    if s.group_share.len() != s.tgroups.len() {
+        s.group_share = s.runs.iter().flat_map(|n| splits::even(*n)).collect();
+    }
+}
+
+/// A line between two places of the split (`inner` nothing), or between
+/// two groups of one place (the place, in `inner`), dragged: the room
+/// moves between its two neighbours, neither going under the least
+/// size. A double press makes the two alike.
+fn drag_line(s: &mut App, i: usize, inner: Option<usize>, d: &rune::Drag) {
+    fix_shares(s);
+    // the way this line moves, and the room there is that way
+    let down = s.split_down != inner.is_some();
+    let (room, least) = if down { (s.groups_room.1, splits::LEAST_H) } else { (s.groups_room.0, splits::LEAST_W) };
+    if room <= 0.0 {
+        return;
+    }
+    let span = match inner {
+        Some(r) if r < s.runs.len() => {
+            let from: usize = s.runs[..r].iter().sum();
+            from..from + s.runs[r]
+        }
+        Some(_) => return,
+        None => 0..s.place_share.len(),
+    };
+    let now = if inner.is_some() { s.group_share[span.clone()].to_vec() } else { s.place_share.clone() };
+    let next = match d.phase {
+        Phase::Down if d.clicks >= 2 => {
+            s.share_base = None;
+            splits::evened(&now, i)
+        }
+        Phase::Down => {
+            s.share_base = Some(now);
+            return;
+        }
+        Phase::Move => match &s.share_base {
+            Some(base) if base.len() == now.len() => splits::dragged(base, i, if down { d.dy } else { d.dx } / room, least / room),
+            _ => return,
+        },
+        Phase::Up => {
+            s.share_base = None;
+            return;
+        }
+    };
+    if inner.is_some() {
+        s.group_share.splice(span, next);
+    } else {
+        s.place_share = next;
+    }
 }
 
 /// Brings the group standing at `d` to the front, whole, on its tab
@@ -9973,31 +10065,37 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         // every group stands where it stood: the one in front is drawn in its own place among the rest.
         // The split runs one way, and a place in it that holds more than one group is split the other way inside
         let lay = |down: bool| if down { col() } else { row() }.w_full().h_full().min_h(0.0).min_w(0.0);
-        let rule = |down: bool| if down { Divider::horizontal() } else { Divider::vertical() }.build(&k);
-        let fill = |one: El, down: bool| {
-            let one = one.grow(1.0).min_w(0.0).min_h(0.0);
+        // the line between two neighbours: dragged, it moves room from one to the other
+        let rule = |down: bool, i: usize, inner: Option<usize>| {
+            let line = el().key(inner.map_or(format!("line-{i}"), |r| format!("line-{r}-{i}"))).label("Drag to give one group more room. Press twice to make the two alike").fill(k.c.border_weak).cursor(if down { rune::Cursor::ResizeRow } else { rune::Cursor::ResizeColumn }).on_drag(move |s: &mut App, d, _| drag_line(s, i, inner, d));
+            if down { line.w_full().h(4.0) } else { line.h_full().w(4.0) }
+        };
+        // each takes its share of the room: shares that add up to 1, as weights
+        let fill = |one: El, down: bool, share: f32| {
+            let one = one.grow((share * 100.0).max(1.0)).min_w(0.0).min_h(0.0);
             if down { one.w_full() } else { one.h_full() }
         };
+        let share = |v: &[f32], i: usize, n: usize| v.get(i).copied().filter(|_| v.len() >= n).unwrap_or(1.0 / n.max(1) as f32);
         let mut main = Some(main);
         let mut all = lay(s.split_down);
         let mut d = 0;
         for (r, n) in s.runs.iter().copied().enumerate() {
             if r > 0 {
-                all = all.child(rule(s.split_down));
+                all = all.child(rule(s.split_down, r - 1, None));
             }
             let mut place = lay(!s.split_down);
             for i in 0..n {
                 if i > 0 {
-                    place = place.child(rule(!s.split_down));
+                    place = place.child(rule(!s.split_down, i - 1, Some(r)));
                 }
                 let one = match main.take_if(|_| d == s.front_at) {
                     Some(front) => col().key("group-front").child(front),
                     None => col().child(split_view(d, s, &k)),
                 };
-                place = place.child(fill(one, !s.split_down));
+                place = place.child(fill(one, !s.split_down, if s.group_share.len() == s.tgroups.len() { s.group_share[d] } else { 1.0 / n as f32 }));
                 d += 1;
             }
-            all = all.child(fill(col().key(format!("place-{r}")).child(place), s.split_down));
+            all = all.child(fill(col().key(format!("place-{r}")).child(place), s.split_down, share(&s.place_share, r, s.runs.len())));
         }
         all
     };

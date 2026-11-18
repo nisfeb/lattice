@@ -95,9 +95,111 @@ pub fn removed(runs: &[usize], d: usize) -> Vec<usize> {
     out
 }
 
+/// Equal shares of the room for `n` standing side by side.
+pub fn even(n: usize) -> Vec<f32> {
+    vec![1.0 / n.max(1) as f32; n]
+}
+
+/// The shares once one more stands after `i`: it takes half of what `i` had, as on the web.
+pub fn share_added(shares: &[f32], i: usize) -> Vec<f32> {
+    let mut out = shares.to_vec();
+    if let Some(had) = out.get(i).copied() {
+        out[i] = had / 2.0;
+        out.insert(i + 1, had / 2.0);
+    }
+    out
+}
+
+/// The shares once `i` is gone: the rest take up its room in proportion.
+pub fn share_removed(shares: &[f32], i: usize) -> Vec<f32> {
+    let mut out = shares.to_vec();
+    if i < out.len() {
+        out.remove(i);
+        let left: f32 = out.iter().sum();
+        if left > 0.0 {
+            out.iter_mut().for_each(|x| *x /= left);
+        } else {
+            out = even(out.len());
+        }
+    }
+    out
+}
+
+/// The shares once the line between `i` and the next is moved by `by`,
+/// a part of the whole room: what one gains the other loses, and
+/// neither goes under `least`. Two that are both at their least stay.
+pub fn dragged(shares: &[f32], i: usize, by: f32, least: f32) -> Vec<f32> {
+    let mut out = shares.to_vec();
+    if i + 1 >= out.len() {
+        return out;
+    }
+    let both = out[i] + out[i + 1];
+    if both < 2.0 * least {
+        return out;
+    }
+    let first = (out[i] + by).clamp(least, both - least);
+    (out[i], out[i + 1]) = (first, both - first);
+    out
+}
+
+/// The shares once `i` and the next are made alike: a double press on the line between them.
+pub fn evened(shares: &[f32], i: usize) -> Vec<f32> {
+    let mut out = shares.to_vec();
+    if i + 1 < out.len() {
+        let half = (out[i] + out[i + 1]) / 2.0;
+        (out[i], out[i + 1]) = (half, half);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn near(a: &[f32], b: &[f32]) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4)
+    }
+
+    #[test]
+    fn shares_start_even_and_always_make_the_whole() {
+        assert!(near(&even(2), &[0.5, 0.5]));
+        assert!(near(&even(4), &[0.25; 4]));
+        assert!(even(0).is_empty());
+    }
+
+    #[test]
+    fn one_more_takes_half_of_the_one_it_stands_after() {
+        assert!(near(&share_added(&[0.5, 0.5], 0), &[0.25, 0.25, 0.5]));
+        assert!(near(&share_added(&[0.7, 0.3], 1), &[0.7, 0.15, 0.15]));
+        assert!(near(&share_added(&[1.0], 0), &[0.5, 0.5]));
+    }
+
+    #[test]
+    fn one_gone_leaves_its_room_to_the_rest_in_proportion() {
+        assert!(near(&share_removed(&[0.5, 0.25, 0.25], 0), &[0.5, 0.5]));
+        assert!(near(&share_removed(&[0.6, 0.3, 0.1], 2), &[0.6 / 0.9, 0.3 / 0.9]));
+        assert!(near(&share_removed(&[0.5, 0.5], 7), &[0.5, 0.5]), "nothing stands there");
+    }
+
+    #[test]
+    fn a_line_dragged_moves_room_between_its_two_neighbours() {
+        assert!(near(&dragged(&[0.5, 0.5], 0, 0.1, 0.2), &[0.6, 0.4]));
+        assert!(near(&dragged(&[0.25, 0.25, 0.5], 1, -0.05, 0.1), &[0.25, 0.2, 0.55]), "the others are left alone");
+        // neither goes under its least
+        assert!(near(&dragged(&[0.5, 0.5], 0, 0.45, 0.2), &[0.8, 0.2]));
+        assert!(near(&dragged(&[0.5, 0.5], 0, -0.9, 0.2), &[0.2, 0.8]));
+        // two already at their least stay as they are
+        assert!(near(&dragged(&[0.2, 0.2, 0.6], 0, 0.1, 0.2), &[0.2, 0.2, 0.6]));
+        // a line that is not there moves nothing
+        assert!(near(&dragged(&[0.5, 0.5], 1, 0.1, 0.2), &[0.5, 0.5]));
+    }
+
+    #[test]
+    fn a_double_press_makes_two_neighbours_alike() {
+        assert!(near(&evened(&[0.7, 0.1, 0.2], 0), &[0.4, 0.4, 0.2]));
+        assert!(near(&evened(&[0.7, 0.1, 0.2], 1), &[0.7, 0.15, 0.15]));
+        assert!(near(&evened(&[0.7, 0.3], 1), &[0.7, 0.3]));
+    }
 
     #[test]
     fn each_group_needs_its_least_room() {
