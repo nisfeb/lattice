@@ -486,6 +486,18 @@ pub fn clip_note(s: &str) -> &str {
     &s[..end]
 }
 
+/// What the ship says of map tiles: whether a Mapbox token is set (the
+/// token itself is never told), and the deepest zoom it gives.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct TileStatus {
+    #[serde(default)]
+    pub token: bool,
+    #[serde(default)]
+    pub max: u32,
+    #[serde(default)]
+    pub styles: Vec<String>,
+}
+
 #[derive(Deserialize)]
 struct Templates {
     #[serde(default)]
@@ -1118,6 +1130,17 @@ impl Conn {
         self.call_in(120, "POST", "page-save-batch", Some(&serde_json::Value::Array(body).to_string())).map(drop)
     }
 
+    /// Whether the ship can give map tiles, and how deep.
+    pub fn tile_status(&self) -> Result<TileStatus, String> {
+        serde_json::from_str(&self.call("GET", "tile-status", None)?).map_err(|e| e.to_string())
+    }
+
+    /// The address of a map tile on the ship, which fetches it from
+    /// Mapbox with the owner's token and keeps nothing.
+    pub fn tile_url(&self, style: &str, z: u32, x: u32, y: u32) -> String {
+        format!("{}/apps/lattice/tile/{}/{z}/{x}/{y}", self.url, enc(style))
+    }
+
     /// The templates the ship has, by name.
     pub fn templates(&self) -> Result<Vec<String>, String> {
         let t: Templates = serde_json::from_str(&self.call("GET", "template-list", None)?).map_err(|e| e.to_string())?;
@@ -1527,6 +1550,11 @@ mod tests {
         // the ship renders a Markdown page to HTML, which is what a PDF export prints
         let html = c.rendered("rune-probe").unwrap();
         assert!(html.contains("<h1") && html.contains("probe"), "{html}");
+        // map tiles: a fake ship has no Mapbox token, says so, and gives no tile
+        let ts = c.tile_status().unwrap();
+        assert!(!ts.token && ts.max == 17 && ts.styles.contains(&"streets".to_owned()), "{ts:?}");
+        assert_eq!(fetch_bytes(&c.tile_url("streets", 1, 0, 0), Some(c.cookie())).unwrap_err(), "503");
+        assert_eq!(fetch_bytes(&c.tile_url("nonsense", 1, 0, 0), Some(c.cookie())).unwrap_err(), "404");
         // the ship's own images come back as images, with the session
         let svg = fetch_bytes(&c.image_url("icon.svg"), Some(c.cookie())).unwrap();
         assert!(String::from_utf8_lossy(&svg).contains("<svg"), "the icon is an svg");

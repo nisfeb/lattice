@@ -155,6 +155,60 @@ impl Camera {
 }
 
 /// A line thinned to at most `max` positions, its ends kept.
+/// One map tile: its zoom and its place in that zoom's grid. A tile at
+/// zoom `z` covers a `2^z`th of the world each way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Tile {
+    pub z: u32,
+    pub x: u32,
+    pub y: u32,
+}
+
+/// The most tiles asked for at once: a view never needs more, and the
+/// ship fetches a bounded number a minute.
+pub const MAX_TILES: usize = 24;
+
+/// The tiles that cover a `w` by `h` view, nearest the middle first. The
+/// zoom is the one whose tiles draw nearest 512 points across, which is
+/// the size they are made at, and no deeper than `max_z`.
+pub fn tiles(cam: &Camera, w: f32, h: f32, max_z: u32) -> Vec<Tile> {
+    let z = (cam.scale / 512.0).log2().round().clamp(0.0, f64::from(max_z)) as u32;
+    let n = f64::from(1u32 << z);
+    let (a, b) = (cam.unproject(0.0, 0.0, w, h), cam.unproject(w, h, w, h));
+    // the world does not wrap here: what is past its edge has no tile
+    let span = |lo: f64, hi: f64| ((lo * n).floor().max(0.0) as u32, ((hi * n).ceil() - 1.0).min(n - 1.0).max(-1.0));
+    let ((x0, x1), (y0, y1)) = (span(a[0], b[0]), span(a[1], b[1]));
+    let mut out = Vec::new();
+    if x1 < 0.0 || y1 < 0.0 {
+        return out;
+    }
+    for y in y0..=y1 as u32 {
+        for x in x0..=x1 as u32 {
+            out.push(Tile { z, x, y });
+        }
+    }
+    let mid = [cam.at[0] * n - 0.5, cam.at[1] * n - 0.5];
+    out.sort_by(|p, q| {
+        let d = |t: &Tile| (f64::from(t.x) - mid[0]).powi(2) + (f64::from(t.y) - mid[1]).powi(2);
+        d(p).total_cmp(&d(q))
+    });
+    out.truncate(MAX_TILES);
+    out
+}
+
+/// Where a tile draws in the view: its left, its top and its side.
+pub fn tile_rect(cam: &Camera, t: &Tile, w: f32, h: f32) -> [f32; 3] {
+    let n = f64::from(1u32 << t.z);
+    let at = cam.project([f64::from(t.x) / n, f64::from(t.y) / n], w, h);
+    [at[0], at[1], (cam.scale / n) as f32]
+}
+
+/// The base map a page asks for (`lattice.base`), or streets.
+pub fn base_style(body: &str) -> &'static str {
+    let named = serde_json::from_str::<Value>(body).ok().and_then(|v| v.get("lattice")?.get("base")?.as_str().map(str::to_owned));
+    ["streets", "outdoors", "satellite", "dark"].into_iter().find(|s| Some(*s) == named.as_deref()).unwrap_or("streets")
+}
+
 pub fn thin(line: &[P], max: usize) -> Vec<P> {
     if line.len() <= max.max(2) {
         return line.to_vec();
@@ -245,5 +299,43 @@ mod tests {
         let t = thin(&line, 500);
         assert!(t.len() <= 501 && t[0] == line[0] && t.last() == line.last());
         assert_eq!(thin(&line[..3], 500).len(), 3);
+    }
+
+    #[test]
+    fn the_tiles_that_cover_a_view_are_found_nearest_the_middle_first() {
+        // the whole world in a 512 point view: the one tile of zoom 0
+        let world = Camera { at: [0.5, 0.5], scale: 512.0 };
+        assert_eq!(tiles(&world, 512.0, 512.0, 17), [Tile { z: 0, x: 0, y: 0 }]);
+        assert_eq!(tile_rect(&world, &Tile { z: 0, x: 0, y: 0 }, 512.0, 512.0), [0.0, 0.0, 512.0]);
+        // twice as close, on the middle: the four tiles of zoom 1, each 512 across
+        let closer = Camera { at: [0.5, 0.5], scale: 1024.0 };
+        let four = tiles(&closer, 1024.0, 1024.0, 17);
+        assert_eq!(four.len(), 4);
+        assert!(four.iter().all(|t| t.z == 1 && t.x < 2 && t.y < 2));
+        assert_eq!(tile_rect(&closer, &Tile { z: 1, x: 1, y: 1 }, 1024.0, 1024.0), [512.0, 512.0, 512.0]);
+        // a small view deep in: few tiles, the one under the middle first, all inside the grid
+        let deep = Camera { at: mercator(-73.98, 40.75), scale: 512.0 * 4096.0 };
+        let near = tiles(&deep, 800.0, 500.0, 17);
+        assert!((2..=9).contains(&near.len()), "{}", near.len());
+        assert_eq!(near[0], Tile { z: 12, x: (deep.at[0] * 4096.0) as u32, y: (deep.at[1] * 4096.0) as u32 });
+        assert!(near.iter().all(|t| t.z == 12 && t.x < 4096 && t.y < 4096));
+        // no deeper than the ship gives, and tiles then draw larger
+        let past = Camera { at: [0.5, 0.5], scale: 512.0 * f64::from(1u32 << 20) };
+        let top = tiles(&past, 800.0, 500.0, 17);
+        assert!(top.iter().all(|t| t.z == 17));
+        assert_eq!(tile_rect(&past, &top[0], 800.0, 500.0)[2], 4096.0);
+        // a view of nothing but what is past the world's edge has no tiles, and a huge one is capped
+        let off = Camera { at: [3.0, 0.5], scale: 512.0 };
+        assert!(tiles(&off, 400.0, 400.0, 17).is_empty());
+        let wide = Camera { at: [0.5, 0.5], scale: 512.0 * 64.0 };
+        assert_eq!(tiles(&wide, 8000.0, 8000.0, 17).len(), MAX_TILES);
+    }
+
+    #[test]
+    fn a_map_names_its_base_or_gets_streets() {
+        assert_eq!(base_style(r#"{"type":"FeatureCollection","features":[],"lattice":{"base":"satellite"}}"#), "satellite");
+        assert_eq!(base_style(r#"{"type":"FeatureCollection","features":[],"lattice":{"base":"nonsense"}}"#), "streets");
+        assert_eq!(base_style(r#"{"type":"FeatureCollection","features":[]}"#), "streets");
+        assert_eq!(base_style("not json"), "streets");
     }
 }

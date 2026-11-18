@@ -75,7 +75,14 @@ Marks: `[x]` done and checked, `[ ]` not built, `[~]` built in part (the line sa
 ## Page kinds
 
 - [x] Markdown
-- [~] Map (GeoJSON): shapes, pan, zoom, point card. Missing: tiles, layers, drawing tools, GPX and KML import and export, orrery detail links, icons by kind
+- [x] Map (GeoJSON): shapes, pan, zoom, point card
+- [x] Map tiles: the base map the page names (`lattice.base`, else streets) drawn under the shapes from the ship's tile route (`/tile-status`, `/tile/<style>/z/x/y`), eight tiles at a time, nearest the middle first, with Mapbox's and OpenStreetMap's credit. A ship with no Mapbox token is asked for nothing and the map says so. Drawn against a stand-in for the ship that serves checkerboard tiles (`scripts/stubs/tile-ship.py`)
+- [!] Map tiles from Mapbox itself, through a ship: blocked on a Mapbox token on a test ship
+- [ ] Map: choose the base map (streets, outdoors, satellite, dark) and set the Mapbox token
+- [ ] Map: layers by kind, shown and hidden, and icons by kind
+- [ ] Map: drawing tools (add, move and delete points, lines and areas, edit names and notes)
+- [ ] Map: import and export GPX and KML
+- [ ] Map: orrery detail links on a feature
 - [~] Spreadsheet (flat ODS): read-only grid with sheet tabs. Missing: cell editing, formulas, styles, number formats
 - [ ] HTML pages rendered
 - [ ] Gemtext (`gmi`) rendered

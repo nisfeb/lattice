@@ -37,6 +37,8 @@ struct MapView {
     size: (f32, f32),
     fitted: bool,
     picked: Option<usize>,
+    /// The base map its tiles are of.
+    style: &'static str,
 }
 
 /// A spreadsheet page on screen: its sheets, the one showing, and the grid's state.
@@ -268,6 +270,12 @@ struct App {
     pics_for: Option<(String, u64)>,
     /// How many of the pictures had were decoded at the last look.
     pics_ready: usize,
+    /// Map tiles: what the ship says it can give, how many are on their
+    /// way, and why none are coming when none are.
+    tile_status: Option<api::TileStatus>,
+    tile_status_req: Latest<Result<api::TileStatus, String>>,
+    tiles_flying: usize,
+    tiles_off: Option<String>,
     waker: Option<Waker>,
     /// Files from another app are being held over the window.
     dropping: bool,
@@ -452,6 +460,10 @@ fn init() -> App {
         pics_in: Default::default(),
         pics_for: None,
         pics_ready: 0,
+        tile_status: None,
+        tile_status_req: Latest::default(),
+        tiles_flying: 0,
+        tiles_off: None,
         waker: None,
         dropping: false,
         cache: HashMap::new(),
@@ -593,6 +605,7 @@ fn sign_out(s: &mut App) {
     fresh.comments_on_req = std::mem::take(&mut s.comments_on_req);
     fresh.held_req = std::mem::take(&mut s.held_req);
     fresh.notices_req = std::mem::take(&mut s.notices_req);
+    fresh.tile_status_req = std::mem::take(&mut s.tile_status_req);
     fresh.kept_req = std::mem::take(&mut s.kept_req);
     fresh.templates_req = std::mem::take(&mut s.templates_req);
     fresh.back_req = std::mem::take(&mut s.back_req);
@@ -900,6 +913,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.comments_on_req.set_waker(waker.clone());
     s.held_req.set_waker(waker.clone());
     s.notices_req.set_waker(waker.clone());
+    s.tile_status_req.set_waker(waker.clone());
     s.kept_req.set_waker(waker.clone());
     s.templates_req.set_waker(waker.clone());
     s.back_req.set_waker(waker.clone());
@@ -996,7 +1010,7 @@ fn sync_map(s: &mut App) {
     let old = s.map.take().filter(|m| m.name == p.name);
     s.map = map::parse(&p.body).map(|feats| {
         let cam = old.as_ref().map_or(map::Camera { at: [0.5, 0.5], scale: 800.0 }, |m| m.cam);
-        MapView { name: p.name.clone(), rev: p.rev, feats, cam, grab: cam, size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.is_some_and(|m| m.fitted), picked: None }
+        MapView { name: p.name.clone(), rev: p.rev, feats, cam, grab: cam, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.is_some_and(|m| m.fitted), picked: None }
     });
 }
 
@@ -1083,7 +1097,7 @@ const MAP_LINE: usize = 2000;
 /// The most points drawn as pressable dots, and named.
 const MAP_DOTS: usize = 400;
 
-fn map_view(m: &MapView, k: &Kit) -> El {
+fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
     let c = &k.c;
     let (w, h) = m.size;
     let ink = c.text_accent;
@@ -1135,6 +1149,7 @@ fn map_view(m: &MapView, k: &Kit) -> El {
                     m.fitted = true;
                 }
             }
+            sync_tiles(s);
         })
         .on_drag(|s: &mut App, d, _| {
             if let Some(m) = &mut s.map {
@@ -1143,15 +1158,28 @@ fn map_view(m: &MapView, k: &Kit) -> El {
                     _ => m.cam = map::Camera::dragged(m.grab, d.dx, d.dy),
                 }
             }
+            sync_tiles(s);
         })
         .on_wheel(|s: &mut App, e: WheelEvent, _| {
             if let Some(m) = &mut s.map {
                 // wheel up zooms in: a real wheel on Linux reports up as a positive dy (checked by the owner on beast)
                 m.cam.zoom_at((e.dy as f64 / 200.0).exp(), e.x, e.y, m.size.0, m.size.1);
             }
+            sync_tiles(s);
             true
-        })
-        .child(canvas(shape).key("map-shapes").absolute(0.0, 0.0).size(w, h));
+        });
+    // the base map's tiles go under the shapes: each tile had so far, where the camera puts it
+    let mut tiled = 0;
+    if m.fitted && s.tiles_off.is_none() {
+        for t in map::tiles(&m.cam, w, h, s.tile_status.as_ref().map_or(17, |t| t.max)) {
+            if let Some(pic) = s.pics.get(&tile_key(m.style, &t)).filter(|i| i.is_ready() && i.error().is_none()) {
+                let [x, y, side] = map::tile_rect(&m.cam, &t, w, h);
+                view = view.child(el().key(format!("tile-{}-{}-{}", t.z, t.x, t.y)).absolute(x, y).size(side, side).pixels(pic.pixels()).a11y_hidden());
+                tiled += 1;
+            }
+        }
+    }
+    let mut view = view.child(canvas(shape).key("map-shapes").absolute(0.0, 0.0).size(w, h));
     // until the first layout the size is a guess: draw the ground alone
     if !m.fitted {
         return view;
@@ -1202,11 +1230,18 @@ fn map_view(m: &MapView, k: &Kit) -> El {
                     let (w, h) = m.size;
                     if f == 0.0 { m.cam = map::Camera::fit(&m.feats, w, h) } else { m.cam.zoom_at(f, w / 2.0, h / 2.0, w, h) }
                 }
+                sync_tiles(s);
             })
             .build(k)
             .key(key.to_owned())
     };
-    let count = text(format!("{} shapes", m.feats.len())).font(k.ty.small).color(c.text_muted);
+    // what the ground is: the base map with whom it is owed to, or why there is none
+    let ground = match (&s.tiles_off, tiled) {
+        (Some(why), _) if s.conn.is_some() => format!("   no base map: {why}"),
+        (None, n) if n > 0 => format!("   {}  © Mapbox © OpenStreetMap", m.style),
+        _ => String::new(),
+    };
+    let count = text(format!("{} shapes{ground}", m.feats.len())).font(k.ty.small).color(c.text_muted);
     view.child(row().key("map-tools").absolute(12.0, h - 40.0).gap(6.0).center_y().child(zoom("zoom-in", "+", 2.0)).child(zoom("zoom-out", "−", 0.5)).child(zoom("zoom-fit", "Fit", 0.0)).child(count))
 }
 
@@ -1275,6 +1310,57 @@ fn sync_pics(s: &mut App) {
     }
 }
 
+/// The name a tile's picture is kept under, beside the pages' images.
+fn tile_key(style: &str, t: &map::Tile) -> String {
+    format!("tile:{style}/{}/{}/{}", t.z, t.x, t.y)
+}
+
+/// Asks the ship for the tiles the map showing needs and does not have,
+/// eight at a time, and lets go of tiles that are no longer in view once
+/// there are many. The ship fetches each from Mapbox with the owner's
+/// token, so nothing is asked of a ship that has none.
+fn sync_tiles(s: &mut App) {
+    let (Some(c), Some(m)) = (s.conn.clone(), &s.map) else { return };
+    if !s.open.as_ref().is_some_and(|p| p.name == m.name) || s.editing {
+        return;
+    }
+    let Some(status) = &s.tile_status else {
+        // asked once: the answer brings the first tiles
+        if !s.tile_status_req.is_pending() && s.tiles_off.is_none() {
+            s.tile_status_req.request(c, |c| c.tile_status());
+        }
+        return;
+    };
+    if s.tiles_off.is_some() || !m.fitted {
+        return;
+    }
+    let Some(waker) = s.waker.clone() else { return };
+    let want = map::tiles(&m.cam, m.size.0, m.size.1, status.max);
+    let keys: std::collections::HashSet<String> = want.iter().map(|t| tile_key(m.style, t)).collect();
+    if s.pics.len() > 160 {
+        s.pics.retain(|k, _| !k.starts_with("tile:") || keys.contains(k));
+        s.pics_asked.retain(|k| !k.starts_with("tile:") || keys.contains(k));
+    }
+    for t in want {
+        if s.tiles_flying >= 8 {
+            break;
+        }
+        let key = tile_key(m.style, &t);
+        if !s.pics_asked.insert(key.clone()) {
+            continue;
+        }
+        s.tiles_flying += 1;
+        let (url, cookie, back, waker) = (c.tile_url(m.style, t.z, t.x, t.y), c.cookie().to_owned(), s.pics_in.clone(), waker.clone());
+        std::thread::spawn(move || {
+            let got = api::fetch_bytes(&url, Some(&cookie));
+            if let Ok(mut list) = back.lock() {
+                list.push((key, got));
+            }
+            waker();
+        });
+    }
+}
+
 /// Takes in what the fetching threads brought back. `true` when something came.
 fn take_pics(s: &mut App) -> bool {
     let got: Vec<_> = s.pics_in.lock().map(|mut l| std::mem::take(&mut *l)).unwrap_or_default();
@@ -1283,6 +1369,20 @@ fn take_pics(s: &mut App) -> bool {
     let ready = s.pics.values().filter(|i| i.is_ready()).count();
     any |= std::mem::replace(&mut s.pics_ready, ready) != ready;
     for (src, res) in got {
+        if src.starts_with("tile:") {
+            s.tiles_flying = s.tiles_flying.saturating_sub(1);
+            // a tile that failed is not asked for again, and the first failure says why once
+            if let Err(e) = &res {
+                if s.tiles_off.is_none() && (e == "503" || e == "502" || e == "403") {
+                    s.tiles_off = Some(match e.as_str() {
+                        "503" => "no Mapbox token is set on the ship".to_owned(),
+                        "403" => "the ship refused the tile".to_owned(),
+                        _ => "the tile server failed or refused the token".to_owned(),
+                    });
+                }
+                continue;
+            }
+        }
         match (res, &s.image_cache) {
             (Ok(bytes), Some(cache)) => {
                 s.pics.insert(src, cache.load(bytes));
@@ -2090,6 +2190,16 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         changed = true;
         s.kept = k;
     }
+    if let Some(r) = s.tile_status_req.take() {
+        changed = true;
+        match r {
+            Ok(t) => {
+                s.tiles_off = (!t.token).then(|| "no Mapbox token is set on the ship".to_owned());
+                s.tile_status = Some(t);
+            }
+            Err(e) => s.tiles_off = Some(e),
+        }
+    }
     if let Some(r) = s.back_req.take() {
         changed = true;
         if let Ok(b) = r {
@@ -2324,6 +2434,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         sync_map(s);
         sync_sheet(s);
         sync_pics(s);
+        sync_tiles(s);
     }
     changed
 }
@@ -4441,7 +4552,7 @@ fn page_body(s: &App, k: &Kit) -> El {
         return sheet_view(v, s, k);
     }
     if let Some(m) = s.map.as_ref().filter(|m| m.name == p.name && m.rev == p.rev) {
-        return map_view(m, k);
+        return map_view(m, s, k);
     }
     let shown = if p.kind == "md" {
         reader(&p.body, s, k, true)
