@@ -88,6 +88,16 @@ struct PartView {
 // ponytail: one size, which fits the page's column in a window 930 points wide or more. Sized to the column if narrow windows matter
 const PART_SIZE: (f32, f32) = (600.0, 360.0);
 
+/// The page held beside, as what its kind is drawn from: read once for
+/// each revision, and not on every frame.
+enum Beside {
+    /// A spreadsheet's sheets, the one showing, and its grid's state.
+    Sheet(Vec<sheet::Sheet>, usize, TableState),
+    Map(Vec<map::Feature>),
+    /// An HTML or gemtext page as the Markdown it is read as.
+    Read(String),
+}
+
 /// A spreadsheet page on screen: its sheets, the one showing, and the grid's state.
 struct SheetView {
     name: String,
@@ -329,6 +339,8 @@ struct App {
     know_req: Latest<Result<Vec<Know>, String>>,
     /// The open page as the Markdown it is read as, when it is of a kind read that way and is not Markdown: its name, its revision, the text.
     read_as: Option<(String, u64, String)>,
+    /// The page held beside, when its kind has a view of its own: its name, its revision, the view.
+    beside: Option<(String, u64, Beside)>,
     /// The open page as a spreadsheet, when it is one.
     sheet: Option<SheetView>,
     /// The open page as a map, when it is one.
@@ -546,6 +558,7 @@ fn init() -> App {
         know_meta: HashMap::new(),
         know_req: Latest::default(),
         read_as: None,
+        beside: None,
         sheet: None,
         map: None,
         trail: Vec::new(),
@@ -1325,10 +1338,39 @@ fn sync_scad(s: &mut App) {
     });
 }
 
+/// Keeps `s.beside` in step with the page held beside: a sheet as its
+/// grid, a map as its shapes, an HTML or gemtext page as it is read.
+fn sync_beside(s: &mut App) {
+    let Some(p) = s.split.as_ref().and_then(|n| s.cache.get(n)) else {
+        s.beside = None;
+        return;
+    };
+    if s.beside.as_ref().is_some_and(|(n, rev, _)| *n == p.name && *rev == p.rev) {
+        return;
+    }
+    // the sheet that was showing stays the one showing through a change
+    let old = s.beside.take().filter(|(n, ..)| *n == p.name);
+    let view = match p.kind.as_str() {
+        "fods" => Some(sheet::parse(&p.body)).filter(|sheets| !sheets.is_empty()).map(|sheets| {
+            let (at, table) = match old {
+                Some((_, _, Beside::Sheet(_, at, table))) => (at.min(sheets.len() - 1), table),
+                _ => (0, TableState::new()),
+            };
+            Beside::Sheet(sheets, at, table)
+        }),
+        "geojson" => map::parse(&p.body).map(Beside::Map),
+        "html" => Some(Beside::Read(html::to_markdown(&p.body))),
+        "gmi" => Some(Beside::Read(html::gemtext(&p.body))),
+        _ => None,
+    };
+    s.beside = view.map(|v| (p.name.clone(), p.rev, v));
+}
+
 /// Keeps `s.sheet` in step with the open page, as +sync_map does for a map.
 fn sync_sheet(s: &mut App) {
     sync_read(s);
     sync_scad(s);
+    sync_beside(s);
     let Some(p) = s.open.as_ref().filter(|p| p.kind == "fods") else {
         s.sheet = None;
         return;
@@ -4171,6 +4213,7 @@ fn toggle_split(s: &mut App) {
 
 /// Notes the page held beside in the preferences, to hold again next run.
 fn keep_split(s: &mut App) {
+    sync_beside(s);
     let held = s.split.clone().unwrap_or_default();
     if s.prefs.split != held {
         s.prefs.split = held;
@@ -4194,8 +4237,102 @@ fn swap_split(s: &mut App) {
     keep_split(s);
 }
 
-/// The page held beside: read-only, as the reader shows it. A kind with
-/// a view of its own (a map, a sheet) shows as its source here.
+/// The sheet held beside, to be read: its cells as they read, a tab for
+/// each sheet, and no cell bar. It is changed from the front.
+fn beside_sheet(sheets: &[sheet::Sheet], at: usize, s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    fn grid_of(s: &App) -> Option<&sheet::Sheet> {
+        match &s.beside {
+            Some((_, _, Beside::Sheet(sheets, at, _))) => sheets.get(*at),
+            _ => None,
+        }
+    }
+    let mut table = Table::new(
+        |s: &App| match &s.beside {
+            Some((_, _, Beside::Sheet(_, _, table))) => table,
+            _ => unreachable!("a sheet is held beside"),
+        },
+        |s: &mut App| match &mut s.beside {
+            Some((_, _, Beside::Sheet(_, _, table))) => table,
+            _ => unreachable!("a sheet is held beside"),
+        },
+        |s: &App| grid_of(s).map_or(0, |sh| sh.rows.len()),
+        |_: &App, i| std::borrow::Cow::Owned(i.to_string()),
+    )
+    .name("The sheet held beside")
+    .column(TableColumn::new("#", "").width(48.0).resizable(false));
+    for i in 0..sheets[at].width().clamp(1, SHEET_COLS) {
+        table = table.column(TableColumn::new(sheet::column_name(i), sheet::column_name(i)).width(110.0).min(48.0).max(600.0));
+    }
+    let grid = table
+        .cell(move |s: &App, i, col| {
+            if col == "#" {
+                return Cell::text((i + 1).to_string()).muted().mono();
+            }
+            let at = col.bytes().fold(0usize, |n, b| n * 26 + (b - b'A') as usize + 1) - 1;
+            Cell::text(grid_of(s).and_then(|sh| sh.rows.get(i)).and_then(|r| r.get(at)).cloned().unwrap_or_default())
+        })
+        .zebra(true)
+        .build(s, k)
+        .key("split-sheet")
+        .w_full()
+        .h(420.0);
+    let mut tabs = row().key("split-sheet-tabs").gap(4.0).center_y();
+    for (i, sh) in sheets.iter().enumerate() {
+        tabs = tabs.child(
+            Button::new(if sh.name.is_empty() { format!("Sheet {}", i + 1) } else { sh.name.clone() })
+                .control_size(ControlSize::Small)
+                .variant(if i == at { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
+                .on_press(move |s: &mut App| {
+                    if let Some((_, _, Beside::Sheet(_, at, table))) = &mut s.beside {
+                        (*at, *table) = (i, TableState::new());
+                    }
+                })
+                .build(k)
+                .key(format!("split-sheet-{i}")),
+        );
+    }
+    col().key("split-sheet-view").w_full().gap(8.0).child(grid).child(tabs.child(text(format!("{} rows", sheets[at].rows.len())).font(k.ty.small).color(c.text_muted).pl(8.0)))
+}
+
+/// The map held beside, to be read: every feature, fitted to the
+/// picture, in its own colour. It is moved and changed from the front.
+fn beside_map(feats: &[map::Feature], k: &Kit) -> El {
+    let c = &k.c;
+    let (w, h) = (520.0f32, 340.0f32);
+    let cam = map::Camera::fit(feats.iter(), w, h);
+    let to = |p: map::P| cam.project(p, w, h);
+    let mut shape = Shape::new();
+    let mut dots = Vec::new();
+    for f in feats {
+        let ink = rune::color::hex(&f.color).unwrap_or(c.text_accent);
+        for g in &f.geoms {
+            match g {
+                map::Geom::Point(p) => dots.push((to(*p), ink)),
+                map::Geom::Line(l) => shape = shape.stroke(map::thin(l, MAP_LINE).into_iter().map(to).collect::<Vec<_>>(), 2.5, ink),
+                map::Geom::Area(l) => {
+                    let ring: Vec<[f32; 2]> = map::thin(l, MAP_LINE).into_iter().map(to).collect();
+                    shape = shape.fill(ring.clone(), ink.alpha(0.12)).stroke(ring, 2.0, ink);
+                }
+            }
+        }
+    }
+    // points over the lines and areas, each a small round mark
+    for ([x, y], ink) in dots {
+        let ring: Vec<[f32; 2]> = (0..16).map(|i| (i as f32) * std::f32::consts::TAU / 16.0).map(|a| [x + 5.0 * a.cos(), y + 5.0 * a.sin()]).collect();
+        shape = shape.fill(ring.clone(), ink).stroke(ring, 1.0, c.bg_base);
+    }
+    let said = format!("{} feature{}", feats.len(), if feats.len() == 1 { "" } else { "s" });
+    col()
+        .key("split-map-view")
+        .gap(6.0)
+        .child(el().size(w, h).radius(k.radius.md).fill(c.layer_01).child(canvas(shape).key("split-map").absolute(0.0, 0.0).size(w, h)))
+        .child(text(said).font(k.ty.small).color(c.text_muted))
+}
+
+/// The page held beside: read-only. A sheet shows as its grid, a map as
+/// its shapes, an HTML or gemtext page as it is read, and any other
+/// kind as its source, coloured.
 fn split_view(name: &str, s: &App, k: &Kit) -> El {
     let c = &k.c;
     let title = s.dnames.get(name).cloned().unwrap_or_else(|| name.to_owned());
@@ -4209,10 +4346,18 @@ fn split_view(name: &str, s: &App, k: &Kit) -> El {
             s.split = None;
             keep_split(s);
         }).build(k).key("split-close"));
-    let shown = match s.cache.get(name) {
-        Some(p) if p.kind == "md" => reader(&p.body, s, k, false),
-        Some(p) => text(p.body.clone()).font(k.ty.mono).color(c.text_base).wrap().selectable(true),
-        None => text("This page is not here any more.").font(k.ty.small).color(c.text_muted),
+    let beside = s.cache.get(name).and_then(|p| s.beside.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev)).map(|(_, _, v)| v);
+    let shown = match (s.cache.get(name), beside) {
+        (Some(p), _) if p.kind == "md" => reader(&p.body, s, k, false),
+        (_, Some(Beside::Read(md))) => reader(md, s, k, false),
+        (_, Some(Beside::Sheet(sheets, at, _))) => beside_sheet(sheets, *at, s, k),
+        (_, Some(Beside::Map(feats))) => beside_map(feats, k),
+        // any other kind is its source, coloured
+        (Some(p), None) => {
+            let shown = source_shown(&p.body);
+            rune::rich(shown.to_owned(), code_spans(&p.kind, shown, k)).font(k.ty.mono).color(c.text_base).wrap().selectable(true)
+        }
+        (None, _) => text("This page is not here any more.").font(k.ty.small).color(c.text_muted),
     };
     col()
         .key("split")
@@ -6232,6 +6377,40 @@ mod tests {
         assert_eq!((text(&s), s.note.as_str()), (before, "not changed: that is not a number"));
         // nothing but the values moved
         assert_eq!(text(&s), "// wall\nwall = 5; // [1:5]\nlabel = \"abcd\"; // 4\nsize = [10, 7.5]; // [0:50]\ncube(size);\n");
+    }
+
+    #[test]
+    fn a_page_held_beside_is_read_as_its_kind_once_for_each_revision() {
+        let mut s = sample("welcome");
+        s.split = Some("budget".into());
+        sync_beside(&mut s);
+        assert!(matches!(&s.beside, Some((n, 1, Beside::Sheet(sheets, 0, _))) if n == "budget" && sheets.len() == 2 && sheets[0].rows.len() == 4));
+        // the sheet showing stays through a change to the page, and follows its text
+        if let Some((_, _, Beside::Sheet(_, at, _))) = &mut s.beside {
+            *at = 1;
+        }
+        let p = s.cache.get_mut("budget").unwrap();
+        p.body = p.body.replace("Prices checked in November", "Checked again");
+        p.rev = 2;
+        sync_beside(&mut s);
+        assert!(matches!(&s.beside, Some((_, 2, Beside::Sheet(sheets, 1, _))) if sheets[1].rows[0][0] == "Checked again"));
+        // a map is its features, an HTML page is what it reads as, and Markdown needs nothing kept
+        s.split = Some("places".into());
+        sync_beside(&mut s);
+        assert!(matches!(&s.beside, Some((_, _, Beside::Map(feats))) if feats.len() == 4));
+        s.cache.insert("page".into(), Page { name: "page".into(), body: "<h1>T</h1><script>x</script>".into(), kind: "html".into(), rev: 1 });
+        s.split = Some("page".into());
+        sync_beside(&mut s);
+        assert!(matches!(&s.beside, Some((_, _, Beside::Read(md))) if md == "# T\n"));
+        s.split = Some("welcome".into());
+        sync_beside(&mut s);
+        assert!(s.beside.is_none());
+        // closing the split lets it go
+        s.split = Some("budget".into());
+        sync_beside(&mut s);
+        s.split = None;
+        keep_split(&mut s);
+        assert!(s.beside.is_none());
     }
 
     #[test]
