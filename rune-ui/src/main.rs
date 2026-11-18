@@ -112,6 +112,8 @@ struct Forum {
     making: Option<(Box<[TextEdit; 3]>, &'static str)>,
     /// The board showing being changed: its title and description.
     editing: Option<Box<[TextEdit; 2]>>,
+    /// The board showing being moderated.
+    moding: Option<Moding>,
     /// The posts other ships refused, once read: why, and where and when. And whether they are what shows.
     notes: Option<Vec<(String, String)>>,
     notes_open: bool,
@@ -122,6 +124,36 @@ struct Forum {
     reply: Option<u64>,
     /// What was written is on its way to the ship: it is kept until the ship has it.
     sending: bool,
+}
+
+/// A board's moderation as the ship gave it, and what is typed over it:
+/// a ship to give a role, the sidebar, the least score and the days of
+/// its pruning, and a ship to invite.
+struct Moding {
+    got: api::BoardMod,
+    fields: Box<[TextEdit; 5]>,
+    role: &'static str,
+    prune: bool,
+}
+
+impl Moding {
+    fn new(got: api::BoardMod) -> Self {
+        let fields = Box::new([TextEdit::new(""), TextEdit::new(got.sidebar.as_str()), TextEdit::new(got.min_score.to_string().as_str()), TextEdit::new(got.after_days.to_string().as_str()), TextEdit::new("")]);
+        Moding { prune: got.prune, got, fields, role: "reader" }
+    }
+}
+
+/// What is done to the board being moderated.
+enum ModAct {
+    Open,
+    /// The ship typed is given the role chosen.
+    Role,
+    Unrole(String),
+    Sidebar,
+    Prune,
+    Comets,
+    /// The ship typed is invited, or its invitation taken back.
+    Invite(bool),
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -138,6 +170,8 @@ enum ForumGot {
     Board(api::Board),
     Thread(api::Thread),
     Notes(Vec<(String, String)>),
+    /// A board's moderation, and what to say of what was just done to it.
+    Mod(api::BoardMod, String),
     /// The boards after one was made or deleted: what was being made, and the board that was showing, are let go.
     Changed(Vec<api::Board>),
 }
@@ -3853,6 +3887,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             (Ok(ForumGot::Notes(n)), Some(f)) => f.notes = Some(n),
             (Ok(ForumGot::Changed(b)), Some(f)) => {
                 (f.boards, f.board, f.thread, f.making, f.editing, f.sending) = (Some(b), None, None, None, None, false);
+                f.moding = None;
                 f.tags.clear();
             }
             (Ok(ForumGot::Board(b)), Some(f)) => {
@@ -3862,6 +3897,16 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     // a thread written, or the board's own title and description changed
                     s.note = if f.editing.is_some() { "changed".into() } else { "posted".into() };
                     (f.draft, f.editing) = (None, None);
+                }
+            }
+            (Ok(ForumGot::Mod(m, said)), Some(f)) => {
+                // the text beside the threads is shown as it now is
+                if let Some(b) = &mut f.board {
+                    b.sidebar = m.sidebar.clone();
+                }
+                (f.moding, f.sending) = (Some(Moding::new(m)), false);
+                if !said.is_empty() {
+                    s.note = said;
                 }
             }
             (Ok(ForumGot::Thread(th)), Some(f)) => {
@@ -4976,6 +5021,10 @@ fn forum_change(s: &mut App, flip: bool) {
     }
     let Some(c) = s.conn.clone() else { return };
     f.sending = !flip;
+    if flip {
+        // what the moderation showed of comets and invitations is no longer so
+        f.moding = None;
+    }
     s.forum_req.request((c, b.board.clone()), move |(c, board)| {
         match (&texts, flip) {
             (_, true) => c.forum_flip_public(&board)?,
@@ -4984,6 +5033,136 @@ fn forum_change(s: &mut App, flip: bool) {
         }
         c.forum_board(&board).map(ForumGot::Board)
     });
+}
+
+/// Reads the moderation of the board showing, after doing to it what was asked.
+/// What is typed is checked first, as the ship's own page would refuse it.
+fn forum_mod(s: &mut App, act: ModAct) {
+    enum Send {
+        Open,
+        Role(String, Option<&'static str>),
+        Sidebar(String),
+        Prune(Option<(u64, u64)>),
+        Comets,
+        Invite(String, bool),
+    }
+    let Some(f) = s.forum.as_mut().filter(|f| !f.sending) else { return };
+    let Some(board) = f.board.as_ref().map(|b| b.board.clone()) else { return };
+    let m = f.moding.as_ref();
+    let field = |i: usize| m.map(|m| m.fields[i].text.trim().to_owned()).unwrap_or_default();
+    let ship = |i: usize| api::ship_name(&field(i)).ok_or_else(|| "that is not a ship's name".to_owned());
+    let send = match act {
+        ModAct::Open => Ok(Send::Open),
+        ModAct::Role => ship(0).map(|w| Send::Role(w, Some(m.map_or("reader", |m| m.role)))),
+        ModAct::Unrole(w) => Ok(Send::Role(w, None)),
+        ModAct::Sidebar => Ok(Send::Sidebar(m.map(|m| m.fields[1].text.clone()).unwrap_or_default())),
+        ModAct::Prune if m.is_some_and(|m| m.prune) => api::prune_rule(&field(2), &field(3)).map(|r| Send::Prune(Some(r))),
+        ModAct::Prune => Ok(Send::Prune(None)),
+        ModAct::Comets => Ok(Send::Comets),
+        ModAct::Invite(add) => ship(4).map(|w| Send::Invite(w, add)),
+    };
+    let send = match send {
+        Ok(x) => x,
+        Err(e) => {
+            s.note = e;
+            return;
+        }
+    };
+    let Some(c) = s.conn.clone() else { return };
+    f.sending = !matches!(send, Send::Open);
+    s.forum_req.request((c, board), move |(c, board)| {
+        let said = match &send {
+            Send::Open => String::new(),
+            Send::Role(w, Some(r)) => c.forum_role(&board, w, Some(r)).map(|()| format!("{w} has a role"))?,
+            Send::Role(w, None) => c.forum_role(&board, w, None).map(|()| format!("{w} is back to the board's default"))?,
+            Send::Sidebar(t) => c.forum_sidebar(&board, t).map(|()| "sidebar saved".to_owned())?,
+            Send::Prune(r) => c.forum_prune(&board, *r).map(|()| "pruning saved".to_owned())?,
+            Send::Comets => c.forum_comets(&board).map(|()| "changed".to_owned())?,
+            Send::Invite(w, true) => {
+                if c.forum_invite(&board, w, true)? {
+                    format!("{w} is invited and was told")
+                } else {
+                    format!("{w} is invited. It could not be reached to be told")
+                }
+            }
+            Send::Invite(w, false) => c.forum_invite(&board, w, false).map(|_| format!("{w} is no longer invited"))?,
+        };
+        c.forum_mod(&board).map(|m| ForumGot::Mod(m, said))
+    });
+}
+
+fn moding_field(s: &mut App, i: usize) -> &mut TextEdit {
+    &mut s.forum.as_mut().and_then(|f| f.moding.as_mut()).expect("a board is being moderated").fields[i]
+}
+
+/// The moderation of the board showing: who holds which role, the text beside its threads, its pruning, comets, and who is invited.
+fn moding_view(m: &Moding, sending: bool, k: &Kit) -> El {
+    let c = &k.c;
+    let muted = |t: String| text(t).font(k.ty.small).color(c.text_muted).wrap();
+    let head = |t: &str| text(t.to_owned()).font(k.ty.small_medium).color(c.text_base);
+    let small = |label: &str, key: &str, act: fn() -> ModAct| Button::new(label.to_owned()).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(sending).on_press(move |s: &mut App| forum_mod(s, act())).build(k).key(key.to_owned());
+    let mut roles = col().key("mod-roles").w_full().gap(4.0).child(head("Roles")).child(muted(format!("A ship with no role of its own is a {}.", m.got.default_role)));
+    for (who, role) in &m.got.roles {
+        let who2 = who.clone();
+        roles = roles.child(
+            row()
+                .gap(8.0)
+                .center_y()
+                .child(text(format!("{who} \u{b7} {role}")).font(k.ty.ui).color(c.text_base))
+                .child(Button::new("Remove").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Back to the board's default").disabled(sending).on_press(move |s: &mut App| forum_mod(s, ModAct::Unrole(who2.clone()))).build(k).key(format!("role-remove-{}", who.trim_start_matches('~')))),
+        );
+    }
+    let pick = |label: &str, val: &'static str| {
+        Button::new(label.to_owned()).control_size(ControlSize::Small).variant(if m.role == val { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
+            if let Some(m) = s.forum.as_mut().and_then(|f| f.moding.as_mut()) {
+                m.role = val;
+            }
+        }).build(k).key(format!("role-{val}"))
+    };
+    roles = roles
+        .child(TextInput::new(&m.fields[0]).label("Ship").placeholder("~sampel-palnet").on_edit(|s: &mut App| moding_field(s, 0)).build(k).w_full().key("role-who"))
+        .child(row().gap(4.0).child(pick("Reader", "reader")).child(pick("Poster", "poster")).child(pick("Moderator", "mod")).child(small("Set role", "role-set", || ModAct::Role)));
+    let side = col()
+        .key("mod-side")
+        .w_full()
+        .gap(4.0)
+        .child(head("Sidebar"))
+        .child(TextArea::new(&m.fields[1]).label("Shown beside the board's threads. Empty hides it").rows(4).on_edit(|s: &mut App| moding_field(s, 1)).build(k).w_full().key("mod-sidebar"))
+        .child(row().child(small("Save sidebar", "sidebar-save", || ModAct::Sidebar)));
+    let prune = col()
+        .key("mod-prune")
+        .w_full()
+        .gap(4.0)
+        .child(head("Pruning"))
+        .child(Switch::new(m.prune).label("Delete old threads with a low score. A pinned thread is kept").on_toggle(|s: &mut App| {
+            if let Some(m) = s.forum.as_mut().and_then(|f| f.moding.as_mut()) {
+                m.prune = !m.prune;
+            }
+        }).build(k).key("prune-on"))
+        .child(muted("Least score: a thread scoring under it is deleted".into()))
+        .child(TextInput::new(&m.fields[2]).label("Least score").on_edit(|s: &mut App| moding_field(s, 2)).build(k).w_full().key("prune-score"))
+        .child(muted("Once it is this many days old".into()))
+        .child(TextInput::new(&m.fields[3]).label("After days").on_edit(|s: &mut App| moding_field(s, 3)).build(k).w_full().key("prune-days"))
+        .child(row().child(small("Save pruning", "prune-save", || ModAct::Prune)));
+    let comets = col().key("mod-comets").w_full().gap(4.0).child(head("Comets"));
+    let comets = match m.got.comets {
+        Some(on) => comets.child(muted(if on { "Comets may post on this board, ten an hour across it. They never vote.".into() } else { "Comets may not post on this board.".into() })).child(row().child(small(if on { "Turn comet posts off" } else { "Turn comet posts on" }, "comets-flip", || ModAct::Comets))),
+        None => comets.child(muted("This board is private, so comets cannot post.".into())),
+    };
+    let invites = col().key("mod-invites").w_full().gap(4.0).child(head("Invitations"));
+    let invites = if m.got.public {
+        invites.child(muted("A public board is read by anyone, so it has nobody to invite.".into()))
+    } else {
+        invites
+            .child(muted("Only the ships invited read this board and post on it. The ship keeps no list of them to show here.".into()))
+            .child(TextInput::new(&m.fields[4]).label("Ship").placeholder("~sampel-palnet").on_edit(|s: &mut App| moding_field(s, 4)).build(k).w_full().key("invite-ship"))
+            .child(row().gap(4.0).child(small("Invite", "invite-add", || ModAct::Invite(true))).child(small("Take back", "invite-revoke", || ModAct::Invite(false))))
+    };
+    col().key("board-moding").w_full().gap(12.0).padding(10.0).radius(k.radius.md).fill(c.layer_01).child(roles).child(side).child(prune).child(comets).child(invites).child(row().child(Button::new("Done").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+        if let Some(f) = &mut s.forum {
+            f.moding = None;
+        }
+    }).build(k).key("mod-close")))
 }
 
 fn making_field(s: &mut App, i: usize) -> &mut TextEdit {
@@ -5010,7 +5189,7 @@ fn forum_back(s: &mut App) {
             return;
         }
         if f.thread.take().is_none() {
-            f.board = None;
+            (f.board, f.moding) = (None, None);
             f.tags.clear();
         }
     }
@@ -5112,6 +5291,9 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
         page = page.child(text(b.title.clone()).font(k.ty.body_medium).color(c.text_base).wrap());
         let said = [b.description.clone(), format!("{}, {}", b.board, if b.public { "public" } else { "private" }), format!("{} thread{}", b.count, if b.count == 1 { "" } else { "s" })];
         page = page.child(muted(said.into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" \u{b7} ")).wrap());
+        if !b.sidebar.is_empty() {
+            page = page.child(el().key("board-sidebar").w_full().padding(8.0).radius(k.radius.md).fill(c.layer_01).child(text(b.sidebar.clone()).font(k.ty.small).color(c.text_base).wrap()));
+        }
         let sort = |label: &str, key: &str, to: ForumSort| {
             Button::new(label.to_owned()).control_size(ControlSize::Small).variant(if f.sort == to { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
                 if let Some(f) = &mut s.forum {
@@ -5137,6 +5319,7 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
                             }
                         }).build(k).key("board-edit"))
                         .child(Button::new(if public { "Make private" } else { "Make public" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help(if public { "Only ships you invite read it and post" } else { "Anyone reads it" }).on_press(|s: &mut App| forum_change(s, true)).build(k).key("board-public"))
+                        .child(Button::new("Moderate").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Roles, sidebar, pruning, comets and invitations").on_press(|s: &mut App| forum_mod(s, ModAct::Open)).build(k).key("board-mod"))
                         .child(Button::new("Delete board").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(move |s: &mut App| s.prompt = Some(Prompt::BoardDelete(name.clone()))).build(k).key("board-delete")),
                 );
             }
@@ -5163,6 +5346,9 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
                         ),
                 );
             }
+        }
+        if let Some(m) = &f.moding {
+            page = page.child(moding_view(m, f.sending, k));
         }
         // the board's tags, most used first: pressed, only the threads that carry every one pressed are listed
         let board_tags = forum_board_tags(&b.posts);

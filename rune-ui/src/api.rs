@@ -811,6 +811,9 @@ pub struct Board {
     pub count: u64,
     #[serde(default)]
     pub posts: Vec<ForumPost>,
+    /// The text the board keeps beside its threads. Not in what the ship gives of a board: `forum_board` reads it from the moderation page.
+    #[serde(skip)]
+    pub sidebar: String,
 }
 
 /// One thread with its text and its comments, oldest first.
@@ -880,6 +883,57 @@ pub fn refusal_notes(page: &str) -> Vec<(String, String)> {
         Some(crate::html::decode(&text))
     };
     page.split("<div class=\"rw\">").skip(1).filter_map(|row| Some((span(row, "ti")?, span(row, "me")?))).collect()
+}
+
+/// What the ship's moderation page says of a board. The ship gives
+/// these nowhere else: the roles ships hold, the board's sidebar text,
+/// its pruning and whether comets may post are read from the forms of
+/// `render-mod` in `lattice-forum-render.hoon`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BoardMod {
+    /// What a ship with no role of its own may do, as the page words it: `reader`, `poster` or `moderator`.
+    pub default_role: String,
+    pub public: bool,
+    /// Whether comets may post. `None` on a private board, where they never may.
+    pub comets: Option<bool>,
+    pub sidebar: String,
+    /// Whether old threads with a low score are deleted, and the score and the days the form holds.
+    pub prune: bool,
+    pub min_score: u64,
+    pub after_days: u64,
+    /// Each ship with a role of its own, and the role as the page words it.
+    pub roles: Vec<(String, String)>,
+}
+
+/// Reads the moderation page. `None` for a page that is not one.
+pub fn board_mod(page: &str) -> Option<BoardMod> {
+    fn between<'a>(s: &'a str, a: &str, b: &str) -> Option<&'a str> {
+        let from = s.find(a)? + a.len();
+        Some(&s[from..from + s[from..].find(b)?])
+    }
+    let text = |s: &str| crate::html::decode(s);
+    let default_role = text(between(page, "Default role: ", "<")?);
+    let num = |name: &str| between(page, &format!("name=\"{name}\" value=\""), "\"").and_then(|n| n.parse().ok());
+    let roles = between(page, "<table class=\"mod\">", "</table>").map_or_else(Vec::new, |t| t.split("<tr><td>").skip(1).filter_map(|row| Some((text(&row[..row.find("</td>")?]), text(between(row, "</td><td>", "</td>")?)))).collect());
+    Some(BoardMod {
+        default_role,
+        public: page.contains("This board is currently public."),
+        comets: if page.contains("Comets may post on this board.") { Some(true) } else if page.contains("Comets may not post on this board.") { Some(false) } else { None },
+        sidebar: between(page, "<textarea name=\"sidebar\"", "</textarea>").and_then(|t| t.split_once('>')).map(|(_, t)| text(t)).unwrap_or_default(),
+        prune: between(page, "name=\"prune-enabled\"", ">").is_some_and(|t| t.contains("checked")),
+        min_score: num("min-score").unwrap_or(2),
+        after_days: num("after-days").unwrap_or(7),
+        roles,
+    })
+}
+
+/// The pruning typed, as the ship takes it: a least score, and a count of days that is one or more.
+pub fn prune_rule(score: &str, days: &str) -> Result<(u64, u64), String> {
+    let score = score.trim().parse::<u64>().map_err(|_| "the least score is a whole number, 0 or more".to_owned())?;
+    match days.trim().parse::<u64>() {
+        Ok(d) if d >= 1 => Ok((score, d)),
+        _ => Err("the days are a whole number, 1 or more".into()),
+    }
 }
 
 /// The tags typed for a thread, as the ship takes them: five at most,
@@ -1134,6 +1188,45 @@ impl Conn {
         self.forum_form(&format!("{board}/mod/delete"), &[("x", "1")])
     }
 
+    /// What the moderation page says of a board: roles, sidebar, pruning, comets.
+    pub fn forum_mod(&self, board: &str) -> Result<BoardMod, String> {
+        board_mod(&self.call("GET", &format!("forum/{board}/mod"), None)?).ok_or_else(|| "the ship did not give the board's moderation page".into())
+    }
+
+    /// Gives a ship a role on a board (`reader`, `poster` or `mod`), or with none sets it to the board's default, which the ship still lists by name.
+    pub fn forum_role(&self, board: &str, who: &str, role: Option<&str>) -> Result<(), String> {
+        match role {
+            Some(r) => self.forum_form(&format!("{board}/mod/role"), &[("who", who), ("role", r)]),
+            None => self.forum_form(&format!("{board}/mod/remove-role"), &[("who", who)]),
+        }
+    }
+
+    /// Sets the text beside a board's threads. Empty hides it.
+    pub fn forum_sidebar(&self, board: &str, text: &str) -> Result<(), String> {
+        self.forum_form(&format!("{board}/sidebar"), &[("sidebar", text)])
+    }
+
+    /// Sets a board's pruning: threads scoring under the least score are deleted once so many days old. `None` turns it off.
+    pub fn forum_prune(&self, board: &str, rule: Option<(u64, u64)>) -> Result<(), String> {
+        match rule {
+            Some((score, days)) => self.forum_form(&format!("{board}/mod/prune"), &[("prune-enabled", "on"), ("min-score", &score.to_string()), ("after-days", &days.to_string())]),
+            None => self.forum_form(&format!("{board}/mod/prune"), &[("x", "1")]),
+        }
+    }
+
+    /// Flips whether comets may post on a board. As with public, the form says neither which.
+    pub fn forum_comets(&self, board: &str) -> Result<(), String> {
+        self.forum_form(&format!("{board}/mod/comets"), &[("x", "1")])
+    }
+
+    /// Invites a ship to a private board, or takes the invitation back. Answers whether the ship was told of an invitation: it holds either way.
+    pub fn forum_invite(&self, board: &str, ship: &str, add: bool) -> Result<bool, String> {
+        let q = format!("forum-{}?board={}&ship={}", if add { "invite" } else { "revoke" }, enc(board), enc(ship));
+        // the ship waits a few seconds on the other ship before it answers
+        let g: Granted = serde_json::from_str(&self.call_in(120, "POST", &q, Some(""))?).map_err(|e| e.to_string())?;
+        Ok(g.notified)
+    }
+
     /// Gives a thread this ship's point. Once given it stays: the forms have no way to take it back.
     pub fn forum_vote(&self, board: &str, post: u64) -> Result<(), String> {
         self.forum_form(&format!("{board}/vote"), &[("target", &format!("post-{post}"))])
@@ -1164,11 +1257,18 @@ impl Conn {
     /// The boards on this ship, each with its threads. The names come from the forum's index page, fifty at most.
     pub fn forum_boards(&self) -> Result<Vec<Board>, String> {
         let names = board_names(&self.call("GET", "forum", None)?);
-        names.iter().take(50).map(|n| self.forum_board(n)).collect()
+        names.iter().take(50).map(|n| self.board_bare(n)).collect()
     }
 
-    /// One of this ship's boards, with its threads.
+    /// One of this ship's boards, with its threads and the text beside them.
     pub fn forum_board(&self, board: &str) -> Result<Board, String> {
+        let mut b = self.board_bare(board)?;
+        // the moderation page is the only place the ship gives that text. A board read without it is still read
+        b.sidebar = self.forum_mod(board).map(|m| m.sidebar).unwrap_or_default();
+        Ok(b)
+    }
+
+    fn board_bare(&self, board: &str) -> Result<Board, String> {
         let url = format!("urb://{}/forum/{board}", self.ship());
         serde_json::from_str(&self.call("GET", &format!("urb-read?url={}", enc(&url)), None)?).map_err(|e| e.to_string())
     }
@@ -1916,6 +2016,68 @@ mod tests {
         c.forum_board_delete(&name).unwrap();
         assert!(!c.forum_boards().unwrap().iter().any(|b| b.board == name));
         assert!(c.forum_board(&name).unwrap_err().starts_with("404"));
+    }
+
+    #[test]
+    fn a_moderation_page_reads_as_the_ship_writes_it() {
+        let m = board_mod(include_str!("forum_mod_public.html")).unwrap();
+        assert_eq!(m.default_role, "poster");
+        assert!(m.public && m.prune);
+        assert_eq!(m.comets, Some(false));
+        assert_eq!(m.sidebar, "Rules & <b>such</b>\nsee https://example.com \"q\"");
+        assert_eq!((m.min_score, m.after_days), (3, 9));
+        assert_eq!(m.roles, [("~bud".to_owned(), "reader".to_owned()), ("~nec".to_owned(), "moderator".to_owned())]);
+        let m = board_mod(include_str!("forum_mod_private.html")).unwrap();
+        assert!(!m.public);
+        assert_eq!(m.comets, None, "a private board takes no comets either way");
+        // a page with no roles, no sidebar and pruning off, as a new board's is
+        let bare = "<p class=\"me\">Default role: reader</p><textarea name=\"sidebar\" rows=\"6\" cols=\"60\"></textarea><input type=\"checkbox\" name=\"prune-enabled\" value=\"on\" /><input type=\"number\" name=\"min-score\" value=\"2\" min=\"0\" /><input type=\"number\" name=\"after-days\" value=\"7\" min=\"1\" /><p class=\"me\">No explicit roles set. Everyone gets the default role.</p>";
+        assert_eq!(board_mod(bare).unwrap(), BoardMod { default_role: "reader".into(), min_score: 2, after_days: 7, ..BoardMod::default() });
+        assert_eq!(board_mod("<html>some other page</html>"), None);
+    }
+
+    #[test]
+    fn pruning_is_checked_before_it_is_sent() {
+        assert_eq!(prune_rule(" 0 ", "1"), Ok((0, 1)));
+        assert!(prune_rule("-1", "3").is_err() && prune_rule("2", "0").is_err() && prune_rule("2", "").is_err() && prune_rule("x", "3").is_err());
+    }
+
+    /// A board's moderation against a ship: roles, sidebar, pruning, comets and invitations.
+    #[test]
+    #[ignore]
+    fn live_forum_mod() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let name = format!("mod-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        c.forum_new(&name, "Moderated", "", "reader").unwrap();
+        let m = c.forum_mod(&name).unwrap();
+        assert_eq!((m.default_role.as_str(), m.public, m.prune, m.sidebar.as_str(), m.roles.len()), ("reader", true, false, "", 0));
+        let comets = m.comets.expect("a public board says whether comets post");
+        c.forum_role(&name, "~nec", Some("mod")).unwrap();
+        c.forum_role(&name, "~bud", Some("poster")).unwrap();
+        c.forum_sidebar(&name, "Be kind & <brief>\nhttps://example.com").unwrap();
+        c.forum_prune(&name, Some((4, 12))).unwrap();
+        c.forum_comets(&name).unwrap();
+        let m = c.forum_mod(&name).unwrap();
+        assert_eq!(m.roles, [("~bud".to_owned(), "poster".to_owned()), ("~nec".to_owned(), "moderator".to_owned())]);
+        assert_eq!((m.sidebar.as_str(), m.prune, m.min_score, m.after_days, m.comets), ("Be kind & <brief>\nhttps://example.com", true, 4, 12, Some(!comets)));
+        c.forum_role(&name, "~nec", None).unwrap();
+        c.forum_sidebar(&name, "").unwrap();
+        c.forum_prune(&name, None).unwrap();
+        let m = c.forum_mod(&name).unwrap();
+        // a role taken away is the board's default given by name: the ship still lists the ship
+        assert_eq!(m.roles, [("~bud".to_owned(), "poster".to_owned()), ("~nec".to_owned(), "reader".to_owned())]);
+        assert_eq!((m.sidebar.as_str(), m.prune), ("", false));
+        // a bad ship or role is refused outright
+        assert!(c.forum_role(&name, "nec", Some("mod")).unwrap_err().starts_with("400"));
+        assert!(c.forum_role(&name, "~nec", Some("king")).unwrap_err().starts_with("400"));
+        // only a private board has members: an invitation holds though the other ship is not there to be told
+        assert!(c.forum_invite(&name, "~nec", true).unwrap_err().starts_with("400"));
+        c.forum_flip_public(&name).unwrap();
+        assert_eq!(c.forum_mod(&name).unwrap().comets, None);
+        assert_eq!(c.forum_invite(&name, "~nec", true), Ok(false));
+        c.forum_invite(&name, "~nec", false).unwrap();
+        assert!(c.forum_invite(&name, c.ship(), true).unwrap_err().starts_with("400"), "the owner is not invited to their own board");
+        c.forum_board_delete(&name).unwrap();
     }
 
     /// Memories against a ship, by themselves: this needs no page and can run again on the same pier.

@@ -1,0 +1,8 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "forum-open"},
+  {"t": 5.0, "type": "tap", "key": "board-modt"},
+  {"t": 8.0, "type": "tap", "key": "board-mod"},
+  {"t": 11.0, "type": "tap", "key": "comets-flip"},
+  {"t": 15.0, "type": "tap", "key": "prune-on"},
+  {"t": 16.0, "type": "tap", "key": "prune-save"}
+]}
