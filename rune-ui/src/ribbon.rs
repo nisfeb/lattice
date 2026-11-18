@@ -17,6 +17,8 @@ macro_rules! line {
     };
 }
 
+pub(crate) use line;
+
 line!(CAL, "lat-cal", "M5 5h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2zM8 3v4M16 3v4M3 10h18");
 line!(BACK, "lat-back", "M17 7L7 17M16 17H7V8");
 line!(FORUM, "lat-forum", "M3 4h12v8H8l-3 3v-3H3zM18 9h3v8h-2v3l-3-3h-6v-2");

@@ -1,0 +1,12 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 2.0, "type": "tap", "key": "tree-sort"},
+  {"t": 4.0, "type": "tap", "key": "tree-fold"},
+  {"t": 6.0, "type": "tap", "key": "half-memory"},
+  {"t": 8.0, "type": "tap", "key": "half-pages"},
+  {"t": 10.0, "type": "tap", "key": "jump-open"},
+  {"t": 11.0, "type": "key", "name": "Escape"},
+  {"t": 12.0, "type": "tap", "key": "new-template"},
+  {"t": 13.0, "type": "key", "name": "Escape"},
+  {"t": 14.0, "type": "tap", "key": "capture"}
+]}

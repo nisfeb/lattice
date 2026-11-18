@@ -13,6 +13,7 @@ mod html;
 mod local;
 mod mounts;
 mod funcs;
+mod head;
 mod map;
 mod mapio;
 mod md;
@@ -673,7 +674,16 @@ fn sample_nodes() -> Vec<Node> {
     SAMPLE.iter().map(|(p, _)| Node { path: (*p).into(), page: true, kind: "md".into(), rev: 1, body: None, ..Node::default() }).collect()
 }
 
-fn files_of(nodes: Vec<Node>, keep: &Files) -> Files {
+/// Puts the tree in the order asked for: folders first, then by name,
+/// from the end when `desc`. The tree is built in name order, so there
+/// is nothing to do for that one.
+fn sort_files(m: &mut Files, desc: bool) {
+    if desc {
+        m.sort_by(|a, b| head::order((a.dir, head::sort_key(&a.path, &a.name)), (b.dir, head::sort_key(&b.path, &b.name)), true));
+    }
+}
+
+fn files_of(nodes: Vec<Node>, keep: &Files, desc: bool) -> Files {
     let shown: Vec<(String, String)> = nodes.iter().filter(|n| !n.dname.is_empty()).map(|n| (n.path.clone(), n.dname.clone())).collect();
     let pages: Vec<Node> = nodes.into_iter().filter(|n| n.page).collect();
     // a refreshed tree keeps what was open and selected
@@ -683,6 +693,7 @@ fn files_of(nodes: Vec<Node>, keep: &Files) -> Files {
         .filter(|d| keep.is_expanded(d))
         .collect();
     let mut m = FileTree::new().build(pages.into_iter().map(|n| (n.path.clone(), n)));
+    sort_files(&mut m, desc);
     // a row shows the name its page or folder was given. A row that stands
     // for several folders at once (a/b/c) keeps its path.
     for (path, name) in shown {
@@ -882,7 +893,7 @@ fn browse_sample(s: &mut App) {
         let kind = |b: &str| if b.starts_with('{') { "geojson" } else if b.starts_with("<?xml") { "fods" } else { "md" };
         s.cache = SAMPLE.iter().map(|(p, b)| ((*p).to_owned(), Page { name: (*p).into(), body: (*b).into(), kind: kind(b).into(), rev: 1 })).collect();
         s.names = SAMPLE.iter().map(|(p, _)| (*p).to_owned()).collect();
-        s.files = files_of(sample_nodes(), &Files::default());
+        s.files = files_of(sample_nodes(), &Files::default(), s.prefs.sort_desc);
         s.files.expand_all();
         s.note = "sample pages, kept only while the window is open".into();
         // a page another ship shared, to open from the list
@@ -900,7 +911,7 @@ fn browse_sample(s: &mut App) {
         let knows = [("feedback/short-answers", "Keep answers short.\n\n**Why:** long ones are not read.\n"), ("project/lattice/rune", "An experimental native client, drawn with Rune.\n")];
         s.other.1 = knows.iter().map(|(k, _)| (*k).to_owned()).collect();
         s.other.2 = knows.iter().map(|(k, b)| ((*k).to_owned(), Page { name: (*k).into(), body: (*b).into(), kind: "md".into(), rev: 0 })).collect();
-        s.other.0 = files_of(s.other.1.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 0, body: None, ..Node::default() }).collect(), &Files::default());
+        s.other.0 = files_of(s.other.1.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 0, body: None, ..Node::default() }).collect(), &Files::default(), s.prefs.sort_desc);
         s.other.0.expand_all();
         s.know_meta.insert("feedback/short-answers".into(), (vec!["style".into()], "~2026.11.17..9.30.0".into()));
     }
@@ -1022,7 +1033,7 @@ fn take_knows(s: &mut App, knows: Vec<Know>) {
     s.know_meta = knows.iter().map(|k| (name(k), (k.tags.clone(), k.updated.clone()))).collect();
     s.cache = knows.iter().map(|k| (name(k), Page { name: name(k), body: k.body.clone(), kind: "md".into(), rev: 0 })).collect();
     let nodes = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: "md".into(), rev: 0, body: None, ..Node::default() }).collect();
-    s.files = files_of(nodes, &s.files);
+    s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
     if !was {
         flip_quiet(s);
     } else if !s.editing {
@@ -1525,7 +1536,7 @@ fn refresh_tree(s: &mut App) {
         let mut nodes: Vec<Node> = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: s.cache.get(p).map_or_else(|| "md".into(), |c| c.kind.clone()), rev: 1, dname: s.dnames.get(p).cloned().unwrap_or_default(), ..Node::default() }).collect();
         // the folders that were given a name to show
         nodes.extend(s.dnames.iter().filter(|(p, _)| !s.names.contains(p)).map(|(p, d)| Node { path: p.clone(), dname: d.clone(), ..Node::default() }));
-        s.files = files_of(nodes, &s.files);
+        s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
         s.files.expand_all();
         if let Some(p) = &s.open {
             s.files.select(&p.name);
@@ -4626,7 +4637,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 }
                 let first = s.files.is_empty();
                 s.names = nodes.iter().filter(|n| n.page).map(|n| n.path.clone()).collect();
-                s.files = files_of(nodes, &s.files);
+                s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
                 if first {
                     s.files.expand_all();
                 }
@@ -8432,6 +8443,42 @@ fn ask_delete(s: &mut App) {
     }
 }
 
+/// What a press on one of the tools over the tree does.
+fn head_go(s: &mut App, act: head::Do, tx: &mut Tx) {
+    use head::Do;
+    match act {
+        Do::Open => {
+            let mut q = TextEdit::new("");
+            q.focused = true;
+            (s.jump, s.jump_at) = (Some(q), 0);
+        }
+        Do::New => ask_new(s),
+        Do::Template => ask_template(s),
+        Do::Upload => ask_upload(s, false, tx),
+        Do::UploadFolder => ask_upload(s, true, tx),
+        Do::Capture => {
+            capture(s);
+            tx.focus_when_shown(FIELD, false);
+        }
+        Do::Sort => {
+            s.prefs.sort_desc ^= true;
+            if s.conn.is_some() {
+                s.prefs.save();
+            }
+            // both halves, so the one not showing is in the same order when it is turned to
+            let desc = s.prefs.sort_desc;
+            for m in [&mut s.files, &mut s.other.0] {
+                if desc {
+                    sort_files(m, true);
+                } else {
+                    m.sort_by(|a, b| head::order((a.dir, head::sort_key(&a.path, &a.name)), (b.dir, head::sort_key(&b.path, &b.name)), false));
+                }
+            }
+        }
+        Do::Fold => s.files.collapse_all(),
+    }
+}
+
 /// What a press on one of the ribbon's icons does.
 fn ribbon_go(s: &mut App, go: ribbon::Go, tx: &mut Tx) {
     use ribbon::Go;
@@ -8534,26 +8581,37 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .build(k)
         .w_full()
         .key("filter");
-    let half = |key: &str, label: String, on: bool| {
-        Button::new(label)
-            .control_size(ControlSize::Small)
-            .variant(if on { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
-            .on_press(move |s: &mut App| {
-                // the half that is showing does nothing when pressed
-                if !on {
-                    flip(s);
-                }
-            })
-            .build(k)
-            .key(key.to_owned())
-    };
     let (pages, knows) = if s.memory { (s.other.1.len(), s.names.len()) } else { (s.names.len(), s.other.1.len()) };
-    let halves = row().key("halves").w_full().gap(4.0).child(half("half-pages", format!("Pages {pages}"), !s.memory)).child(half("half-memory", format!("Memory {knows}"), s.memory));
-    let new = Button::new(if s.memory { "New memory" } else { "New page" }).variant(ButtonVariant::Ghost).help("Asks for a name and a place").on_press(ask_new).build(k).key("new");
-    let new = row().w_full().gap(4.0).child(Button::new("Capture").variant(ButtonVariant::Ghost).help("A new page in the inbox, with nothing asked").on_press_tx(|s: &mut App, tx| {
-        capture(s);
-        tx.focus_when_shown(FIELD, false);
-    }).build(k).key("capture")).child(new);
+    // the pane's head as the web client has it: icon tabs, then a toolbar of icons over the tree
+    let mut halves = row().key("halves").role("tablist").label("Left pane").w_full().gap(4.0);
+    for tab in head::tabs(s.memory, pages, knows) {
+        let on = tab.on;
+        let mut b = IconButton::new(tab.icon).control_size(ControlSize::Large).variant(if on { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).label(tab.said).help(tab.name);
+        if let Some(keys) = tab.keys {
+            b = b.shortcut(keys);
+        }
+        halves = halves.child(b.on_press(move |s: &mut App| {
+            // the half that is showing does nothing when pressed
+            if !on {
+                flip(s);
+            }
+        }).build(k).key(tab.key));
+    }
+    let mut new = row().key("tree-tools").role("toolbar").label(if s.memory { "Knowledge" } else { "Files" }).w_full().gap(2.0).center_y();
+    let mut gap = false;
+    for tool in head::tools(s.memory, s.prefs.sort_desc) {
+        if tool.end && !gap {
+            new = new.child(el().grow(1.0));
+            gap = true;
+        }
+        let act = tool.act;
+        let mut b = IconButton::new(tool.icon).variant(IconButtonVariant::GhostMuted).help(tool.name);
+        if let Some(keys) = tool.keys {
+            b = b.shortcut(keys);
+        }
+        new = new.child(b.on_press_tx(move |s: &mut App, tx| head_go(s, act, tx)).build(k).key(tool.key));
+    }
+    let heading = text(head::heading(s.memory)).key("tree-sec").font(k.ty.text_xsmall_medium).color(k.c.text_muted).pl(4.0);
     let who = s.conn.as_ref().map_or("sample pages".to_owned(), |c| c.ship().to_owned());
     let theme = Button::new(match s.prefs.theme.as_str() {
         "dark" => "Dark",
@@ -8648,7 +8706,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
         }
         list
     });
-    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).children(core).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(foot);
+    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).children(core).child(filter).child(new).children((!tags.is_empty()).then_some(chips)).child(heading).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(foot);
     if let Some(when) = &s.offline {
         let said = if when.is_empty() { "Offline. The ship does not answer.".to_owned() } else { format!("Offline. The ship does not answer, so this is what was kept {when}.") };
         side = side.child(text(format!("{said} A save, a new page, a delete or a move made now waits on this device. Anything else needs the ship.")).key("offline").font(k.ty.small).color(k.c.text_base).wrap());
