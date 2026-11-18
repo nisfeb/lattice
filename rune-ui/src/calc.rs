@@ -309,7 +309,7 @@ impl<'a> Engine<'a> {
     /// The cell as it stands: what was worked out for it, else what the book holds.
     fn stored(&self, at: Key) -> Option<MCell> {
         match self.over.get(&at) {
-            Some(p) => Some(MCell { rep: 1, vt: p.vt.clone(), v: (!p.vt.is_empty()).then(|| p.v.clone()), f: p.f.clone(), text: p.text.clone(), err: p.err, st: None }),
+            Some(p) => Some(MCell { rep: 1, vt: p.vt.clone(), v: (!p.vt.is_empty()).then(|| p.v.clone()), f: p.f.clone(), text: p.text.clone(), err: p.err, st: None, covered: false }),
             None => self.book.at(at.0, at.1, at.2).cloned(),
         }
     }
@@ -630,6 +630,61 @@ fn bin(op: &str, l: V, r: V) -> V {
     if v.is_finite() { V::Num(v) } else { err("#NUM!") }
 }
 
+/// A change to how a cell looks or how its number is written.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Fmt {
+    Bold(bool),
+    Italic(bool),
+    Underline(bool),
+    /// Left, centre or right, or nothing to let the value's kind say.
+    Align(Option<char>),
+    /// `general`, `number`, `percentage`, `currency`, `date` or `time`.
+    Number(&'static str),
+}
+
+/// A flat ODS document with one cell's look or number format changed: a port of the web
+/// client's `Book.format` for one cell. The cell takes a style that is its own with the
+/// change, made when the page has none that says the same. A number given a format takes
+/// the format's type and is shown as it writes it. No value changes, so nothing is worked out.
+pub fn format_cell(src: &str, s: usize, r: usize, c: usize, change: &Fmt) -> Result<String, String> {
+    let book = sheet::book(src)?;
+    let styles = Styles::read(src, book.null_date);
+    let cell = book.at(s, r, c).cloned().unwrap_or_default();
+    if cell.covered {
+        return Err("that cell is part of a merged cell".into());
+    }
+    let base = book.style_at(s, r, c);
+    let mut new = Vec::new();
+    let ch = match change {
+        Fmt::Bold(on) => crate::styles::Change { bold: Some(*on), ..Default::default() },
+        Fmt::Italic(on) => crate::styles::Change { italic: Some(*on), ..Default::default() },
+        Fmt::Underline(on) => crate::styles::Change { underline: Some(*on), ..Default::default() },
+        Fmt::Align(a) => crate::styles::Change { align: Some(*a), ..Default::default() },
+        Fmt::Number(kind) => {
+            let data = styles.format_for(kind).map(|(name, xml)| {
+                new.extend(xml);
+                name
+            });
+            crate::styles::Change { data: Some(data), ..Default::default() }
+        }
+    };
+    let (name, more) = styles.restyle(&base, &ch);
+    new.extend(more);
+    let page = crate::styles::add_auto(src, &new)?;
+    let mut put = Put { f: cell.f.clone(), vt: cell.vt.clone(), v: cell.v.clone().unwrap_or(Val::Blank), text: cell.text.clone(), err: cell.err, st: Some(name.clone()) };
+    // a number given a format is of the format's type, and shows as the format writes it
+    if let (Fmt::Number(kind), Val::Num(n)) = (change, &put.v) {
+        if !put.vt.is_empty() && put.vt != "string" && put.vt != "boolean" {
+            put.vt = if matches!(*kind, "percentage" | "currency" | "date" | "time") { (*kind).to_owned() } else { "float".to_owned() };
+            put.text = Styles::read(&page, book.null_date).text(&name, *n, &put.vt);
+        }
+    }
+    if name == base && put.vt == cell.vt && new.is_empty() {
+        return Ok(src.to_owned());
+    }
+    sheet::put_cell(&page, s, r, c, &put, Care::Result)
+}
+
 /// A page after something was typed into a cell, and how many formulas
 /// in it could not be worked out here.
 #[derive(Debug)]
@@ -758,6 +813,18 @@ mod tests {
         sheet::parse(body)[0].rows.clone()
     }
 
+    /// A change of style from its spelling in an edits file: `bold=1`, `align=c`, `align=-`, `number=percentage`.
+    fn fmt_of(op: &str) -> Fmt {
+        let (k, v) = op.split_once('=').unwrap();
+        match k {
+            "bold" => Fmt::Bold(v == "1"),
+            "italic" => Fmt::Italic(v == "1"),
+            "underline" => Fmt::Underline(v == "1"),
+            "align" => Fmt::Align(v.chars().next().filter(|c| *c != '-')),
+            _ => Fmt::Number(["general", "number", "percentage", "currency", "date", "time"].into_iter().find(|n| *n == v).unwrap()),
+        }
+    }
+
     /// Types the lines of the file `LR_EDITS` (`sheet,row,column,text`) into the spreadsheet in
     /// `LR_FODS` and writes it to `LR_OUT`, to compare with LibreOffice and the web client.
     #[test]
@@ -767,7 +834,13 @@ mod tests {
         let mut doc = std::fs::read_to_string(f).unwrap();
         for line in std::fs::read_to_string(e).unwrap().lines() {
             let p: Vec<&str> = line.splitn(4, ',').collect();
-            let got = enter(&doc, p[0].parse().unwrap(), p[1].parse().unwrap(), p[2].parse().unwrap(), p[3]).unwrap();
+            let at = (p[0].parse().unwrap(), p[1].parse().unwrap(), p[2].parse().unwrap());
+            // a line whose text starts with ! is a change of style: !bold=1, !align=c, !number=percentage
+            if let Some(op) = p[3].strip_prefix('!') {
+                doc = format_cell(&doc, at.0, at.1, at.2, &fmt_of(op)).unwrap();
+                continue;
+            }
+            let got = enter(&doc, at.0, at.1, at.2, p[3]).unwrap();
             println!("{line}: {} stale", got.stale.len());
             doc = got.body;
         }
@@ -897,6 +970,34 @@ mod tests {
         assert_eq!(again.matches("<number:percentage-style").count(), body.matches("<number:percentage-style").count());
         assert_eq!(again.matches("<style:style").count(), body.matches("<style:style").count());
         assert_eq!(crate::styles::hash("lattice"), format!("{:08x}", "lattice".bytes().fold(0x811c_9dc5u32, |h, c| (h ^ u32::from(c)).wrapping_mul(0x0100_0193))));
+    }
+
+    #[test]
+    fn a_cells_style_is_set_as_the_web_client_sets_it() {
+        // the LibreOffice-made sheet with bold, italic, underline, alignment and number formats put on
+        // and taken off, and values typed between. The expected page is the web client's Book given the
+        // same, from node: the same bytes
+        let mut body = include_str!("typed_fixture.fods").to_owned();
+        for line in include_str!("style_edits.txt").lines() {
+            let p: Vec<&str> = line.splitn(4, ',').collect();
+            let at = (p[0].parse().unwrap(), p[1].parse().unwrap(), p[2].parse().unwrap());
+            body = match p[3].strip_prefix('!') {
+                Some(op) => format_cell(&body, at.0, at.1, at.2, &fmt_of(op)).unwrap(),
+                None => enter(&body, at.0, at.1, at.2, p[3]).unwrap().body,
+            };
+        }
+        assert!(body == include_str!("style_expected.fods"), "the page differs from the web client's");
+        // set as it already is, the page is not touched
+        assert_eq!(format_cell(&body, 0, 0, 1, &Fmt::Bold(true)).unwrap(), body);
+        // a merged-over cell is refused
+        let merged = body.replacen("<table:table-cell/>", "<table:covered-table-cell/>", 1);
+        if merged != body {
+            let book = sheet::book(&merged).unwrap();
+            let at = (0..20).flat_map(|r| (0..10).map(move |c| (r, c))).find(|(r, c)| book.at(0, *r, *c).is_some_and(|x| x.covered));
+            if let Some((r, c)) = at {
+                assert_eq!(format_cell(&merged, 0, r, c, &Fmt::Bold(true)).unwrap_err(), "that cell is part of a merged cell");
+            }
+        }
     }
 
     #[test]

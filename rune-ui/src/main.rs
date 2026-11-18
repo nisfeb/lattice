@@ -1186,6 +1186,21 @@ fn commit_cell(s: &mut App) {
     }
 }
 
+/// Changes how the picked cell looks, or how its number is written, and saves the page.
+fn format_picked(s: &mut App, change: calc::Fmt) {
+    let (Some(p), Some(v)) = (s.open.clone(), &s.sheet) else { return };
+    let Some((r, c)) = v.cursor else { return };
+    if !page_changes(s) || v.name != p.name {
+        s.note = "this spreadsheet is not changed here".into();
+        return;
+    }
+    match calc::format_cell(&p.body, v.at, r, c, &change) {
+        Err(why) => s.note = format!("not changed: {why}"),
+        Ok(body) if body == p.body => {}
+        Ok(body) => save_body(s, p, body),
+    }
+}
+
 /// Saves the open page with a new text, made by a change where it is read.
 fn save_body(s: &mut App, p: Page, body: String) {
     let base = p.rev;
@@ -1325,6 +1340,35 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
             .grow(1.0)
             .key("cell-entry");
         page = page.child(row().key("cell-bar").w_full().gap(8.0).center_y().child(text(name).key("cell-name").font(k.ty.ui_medium).color(c.text_muted).w(48.0)).child(entry));
+        // how the picked cell looks and how its number is written: each press is a change, saved at once
+        if let (Some((r, col)), Some((book, styles))) = (v.cursor, &v.looks) {
+            let style = book.style_at(v.at, r, col);
+            let look = styles.look(&style);
+            let kind = styles.kind(&style);
+            let plain = !styles.formatted(&style);
+            let b = |key: &str, label: &str, on: bool, help: &str, change: calc::Fmt| {
+                Button::new(label).control_size(ControlSize::Small).variant(if on { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help(help).on_press(move |s: &mut App| format_picked(s, change.clone())).build(k).key(key.to_owned())
+            };
+            let align = |a: char| calc::Fmt::Align(Some(a).filter(|a| look.align != Some(*a)));
+            let number = |n: &'static str, on: bool| calc::Fmt::Number(if on { "general" } else { n });
+            page = page.child(
+                row().key("cell-tools").w_full().gap(4.0).center_y().pl(56.0)
+                    .child(b("fmt-bold", "B", look.bold, "Bold", calc::Fmt::Bold(!look.bold)))
+                    .child(b("fmt-italic", "I", look.italic, "Italic", calc::Fmt::Italic(!look.italic)))
+                    .child(b("fmt-underline", "U", look.underline, "Underline", calc::Fmt::Underline(!look.underline)))
+                    .child(Divider::vertical().build(k))
+                    .child(b("fmt-left", "Left", look.align == Some('l'), "Keep it to the left. Press again to let the value say", align('l')))
+                    .child(b("fmt-centre", "Centre", look.align == Some('c'), "Keep it in the middle. Press again to let the value say", align('c')))
+                    .child(b("fmt-right", "Right", look.align == Some('r'), "Keep it to the right. Press again to let the value say", align('r')))
+                    .child(Divider::vertical().build(k))
+                    .child(b("fmt-general", "General", plain, "No number format", calc::Fmt::Number("general")))
+                    .child(b("fmt-number", "0.00", !plain && kind.is_none(), "Two decimals, grouped in thousands", number("number", false)))
+                    .child(b("fmt-percent", "%", kind == Some("percentage"), "A percentage. Press again for no format", number("percentage", kind == Some("percentage"))))
+                    .child(b("fmt-money", "$", kind == Some("currency"), "Money. Press again for no format", number("currency", kind == Some("currency"))))
+                    .child(b("fmt-date", "Date", kind == Some("date"), "A date. Press again for no format", number("date", kind == Some("date"))))
+                    .child(b("fmt-time", "Time", kind == Some("time"), "A time of day. Press again for no format", number("time", kind == Some("time")))),
+            );
+        }
     }
     page.child(grid).child(tabs)
 }

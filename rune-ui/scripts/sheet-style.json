@@ -1,0 +1,14 @@
+{"events": [
+  {"t": 0.8, "type": "tap", "key": "budget"},
+  {"t": 2.0, "type": "tap", "key": "cell-0-0"},
+  {"t": 2.5, "type": "tap", "key": "fmt-bold"},
+  {"t": 3.5, "type": "tap", "key": "fmt-underline"},
+  {"t": 4.5, "type": "tap", "key": "cell-1-1"},
+  {"t": 5.0, "type": "tap", "key": "fmt-money"},
+  {"t": 6.0, "type": "tap", "key": "cell-2-1"},
+  {"t": 6.5, "type": "tap", "key": "fmt-number"},
+  {"t": 7.5, "type": "tap", "key": "cell-2-0"},
+  {"t": 8.0, "type": "tap", "key": "fmt-right"},
+  {"t": 9.0, "type": "tap", "key": "fmt-italic"},
+  {"t": 10.0, "type": "tap", "key": "cell-0-0"}
+]}

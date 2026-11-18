@@ -602,6 +602,8 @@ pub struct MCell {
     pub err: bool,
     /// The cell style it names, when it names one.
     pub st: Option<String>,
+    /// It lies under a merged cell.
+    pub covered: bool,
 }
 
 pub struct MRow {
@@ -682,7 +684,7 @@ pub fn book(src: &str) -> Result<Book, String> {
                     "time" => Some(Val::Num(get("office:time-value").and_then(|d| time_serial(&d)).unwrap_or(0.0))),
                     _ => Some(Val::Num(num("office:value").unwrap_or(0.0))),
                 };
-                cells.push(MCell { rep: count(src, cell, COLS), vt, v, f: get("table:formula"), text, err, st: get("table:style-name") });
+                cells.push(MCell { rep: count(src, cell, COLS), vt, v, f: get("table:formula"), text, err, st: get("table:style-name"), covered: cell.name == "table:covered-table-cell" });
             }
             out.push(MRow { rep: count(src, row, ROWS), cells });
         }

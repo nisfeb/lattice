@@ -150,6 +150,18 @@ impl Format {
     }
 }
 
+/// A change to how a cell looks. A field left as `None` is not changed.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Change {
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub underline: Option<bool>,
+    /// Left, centre or right, or `Some(None)` to take the alignment away.
+    pub align: Option<Option<char>>,
+    /// A number format by name, or `Some(None)` to take it away.
+    pub data: Option<Option<String>>,
+}
+
 /// What a cell looks like, from its style.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Look {
@@ -198,7 +210,8 @@ const CELL_PROPS: [&str; 3] = ["style:text-properties", "style:paragraph-propert
 
 /// The number formats lattice makes, one for each kind of value typed as such. The text is
 /// the web client's own, so the name hashed from it is the same.
-const DATA: [(&str, &str); 4] = [
+const DATA: [(&str, &str); 5] = [
+    ("number", r#"<number:number-style style:name="NAME"><number:number number:decimal-places="2" number:min-decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:number-style>"#),
     ("percentage", r#"<number:percentage-style style:name="NAME"><number:number number:decimal-places="2" number:min-decimal-places="2" number:min-integer-digits="1"/><number:text>%</number:text></number:percentage-style>"#),
     ("currency", r#"<number:currency-style style:name="NAME"><number:currency-symbol number:language="en" number:country="US">$</number:currency-symbol><number:number number:decimal-places="2" number:min-decimal-places="2" number:min-integer-digits="1" number:grouping="true"/></number:currency-style>"#),
     ("date", r#"<number:date-style style:name="NAME"><number:year number:style="long"/><number:text>-</number:text><number:month number:style="long"/><number:text>-</number:text><number:day number:style="long"/></number:date-style>"#),
@@ -369,30 +382,87 @@ impl Styles {
         self.widths.get(style).copied()
     }
 
-    /// The name of a cell style that is `base` with a number format for `kind` (`percentage`,
-    /// `currency`, `date` or `time`), and the styles to add to the page for it: none when the
-    /// page already has them. A new style is named by a hash of what it holds, as the web
-    /// client names it, so the same formatting has the same name in both.
+    /// The name of a number format of one of lattice's kinds (`number`, `percentage`,
+    /// `currency`, `date`, `time`), and its text to add to the page when the page has none.
+    /// A format is named by a hash of what it holds, as the web client names it.
+    pub fn format_for(&self, kind: &str) -> Option<(String, Option<String>)> {
+        let (_, xml) = DATA.iter().find(|(k, _)| *k == kind)?;
+        let name = format!("Ln{}", hash(xml));
+        let new = (!self.data.contains_key(&name)).then(|| xml.replace("NAME", &name));
+        Some((name, new))
+    }
+
+    /// The name of a cell style that is `base` with a number format for `kind`, and the
+    /// styles to add to the page for it: none when the page already has them.
     pub fn with_format(&self, base: &str, kind: &str) -> (String, Vec<String>) {
-        let Some((_, xml)) = DATA.iter().find(|(k, _)| *k == kind) else { return (base.to_owned(), Vec::new()) };
-        let data = format!("Ln{}", hash(xml));
-        let mut add = Vec::new();
-        if !self.data.contains_key(&data) {
-            add.push(xml.replace("NAME", &data));
+        let Some((data, new)) = self.format_for(kind) else { return (base.to_owned(), Vec::new()) };
+        let (name, more) = self.restyle(base, &Change { data: Some(Some(data)), ..Change::default() });
+        (name, new.into_iter().chain(more).collect())
+    }
+
+    /// The name of a cell style that is `base` with `change` applied, and its text to add to
+    /// the page when the page has no style that says the same. A port of the web client's
+    /// `restyle`: a named style becomes the parent of the new one, an automatic style is
+    /// copied with its own parent, and the new style is named by a hash of what it holds.
+    pub fn restyle(&self, base: &str, change: &Change) -> (String, Vec<String>) {
+        // already so: the style it has, whatever attributes spell it
+        let now = self.look(base);
+        let same = change.bold.is_none_or(|b| b == now.bold)
+            && change.italic.is_none_or(|b| b == now.italic)
+            && change.underline.is_none_or(|b| b == now.underline)
+            && change.align.is_none_or(|a| a == now.align)
+            && change.data.as_ref().is_none_or(|d| d.as_deref() == self.data_of(base));
+        if same {
+            return (base.to_owned(), Vec::new());
         }
-        // already so: the style it has
-        if self.data_of(base) == Some(data.as_str()) {
-            return (base.to_owned(), add);
-        }
-        // a named style is the parent of the new one. An automatic style is copied, with its own parent
-        let (parent, props, raws) = match (self.auto.get(base), self.cell.get(base)) {
-            (Some((props, raws)), Some((parent, _))) => (parent.clone().unwrap_or_else(|| "Default".to_owned()), props.clone(), raws.clone()),
-            (None, Some(_)) => (base.to_owned(), Vec::new(), Vec::new()),
-            _ => ("Default".to_owned(), Vec::new(), Vec::new()),
+        let own = self.auto.get(base);
+        let (parent, mut data, mut props, raws) = match (own, self.cell.get(base)) {
+            (Some((props, raws)), Some((parent, data))) => (parent.clone().unwrap_or_else(|| "Default".to_owned()), data.clone(), props.clone(), raws.clone()),
+            (None, Some(_)) => (base.to_owned(), None, Vec::new(), Vec::new()),
+            _ => ("Default".to_owned(), None, Vec::new(), Vec::new()),
         };
-        let key = key_of(&parent, &data, &props, &raws);
-        if let Some(have) = self.by_key.get(&key) {
-            return (have.clone(), add);
+        // a property set where it is, added after the others of its element, or taken away
+        let mut set = |name: &str, val: Option<&str>| {
+            let at = props.iter().position(|(a, _)| a == name);
+            match (at, val) {
+                (Some(i), Some(v)) => props[i].1 = v.to_owned(),
+                (Some(i), None) => drop(props.remove(i)),
+                (None, Some(v)) => props.push((name.to_owned(), v.to_owned())),
+                (None, None) => {}
+            }
+        };
+        const TP: &str = "style:text-properties@";
+        if let Some(on) = change.bold {
+            for a in ["fo:font-weight", "style:font-weight-asian", "style:font-weight-complex"] {
+                set(&format!("{TP}{a}"), on.then_some("bold"));
+            }
+        }
+        if let Some(on) = change.italic {
+            for a in ["fo:font-style", "style:font-style-asian", "style:font-style-complex"] {
+                set(&format!("{TP}{a}"), on.then_some("italic"));
+            }
+        }
+        if let Some(on) = change.underline {
+            for (a, v) in [("style:text-underline-style", "solid"), ("style:text-underline-width", "auto"), ("style:text-underline-color", "font-color")] {
+                set(&format!("{TP}{a}"), on.then_some(v));
+            }
+        }
+        if let Some(align) = change.align {
+            let v = align.map(|a| match a {
+                'r' => "end",
+                'l' => "start",
+                'c' => "center",
+                _ => "justify",
+            });
+            set("style:paragraph-properties@fo:text-align", v);
+            set("style:table-cell-properties@style:text-align-source", v.map(|_| "fix"));
+            set("style:table-cell-properties@style:repeat-content", v.map(|_| "false"));
+            if v.is_none() {
+                set("style:paragraph-properties@fo:margin-left", None);
+            }
+        }
+        if let Some(d) = &change.data {
+            data = d.clone();
         }
         let mut body = String::new();
         for b in CELL_PROPS {
@@ -402,10 +472,24 @@ impl Styles {
             }
         }
         body.push_str(&raws.concat());
+        // nothing left of it: the parent says it all
+        if body.is_empty() && data.is_none() {
+            return (parent, Vec::new());
+        }
+        let key = key_of(&parent, data.as_deref().unwrap_or(""), &props, &raws);
+        // nothing changed: the style it already has, not a twin of it
+        if let (Some((was, was_raws)), Some((was_parent, was_data))) = (own, self.cell.get(base)) {
+            if key == key_of(was_parent.as_deref().unwrap_or(""), was_data.as_deref().unwrap_or(""), was, was_raws) {
+                return (base.to_owned(), Vec::new());
+            }
+        }
+        if let Some(have) = self.by_key.get(&key) {
+            return (have.clone(), Vec::new());
+        }
         let name = format!("Lce{}", hash(&key));
         let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;");
-        add.push(format!("<style:style style:name=\"{name}\" style:family=\"table-cell\" style:parent-style-name=\"{}\" style:data-style-name=\"{}\"{}", esc(&parent), esc(&data), if body.is_empty() { "/>".to_owned() } else { format!(">{body}</style:style>") }));
-        (name, add)
+        let data = data.map_or(String::new(), |d| format!(" style:data-style-name=\"{}\"", esc(&d)));
+        (name.clone(), vec![format!("<style:style style:name=\"{name}\" style:family=\"table-cell\" style:parent-style-name=\"{}\"{data}{}", esc(&parent), if body.is_empty() { "/>".to_owned() } else { format!(">{body}</style:style>") })])
     }
 
     /// Whether a cell style has a number format, its own or one it takes from a parent.
