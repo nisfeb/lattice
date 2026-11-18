@@ -150,6 +150,50 @@ impl Format {
     }
 }
 
+/// What a cell looks like, from its style.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Look {
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strike: bool,
+    /// The text's colour and the cell's background, each as `#rrggbb`.
+    pub color: Option<String>,
+    pub bg: Option<String>,
+    /// Left, centre, right or justified, when the style fixes it.
+    pub align: Option<char>,
+}
+
+/// A length as the document writes one ("2.258cm") in points on screen.
+fn px(len: &str) -> Option<f32> {
+    let at = len.find(|c: char| c.is_ascii_alphabetic())?;
+    let unit = match &len[at..] {
+        "cm" => 37.795,
+        "mm" => 3.7795,
+        "in" => 96.0,
+        "pt" => 1.3333,
+        "pc" => 16.0,
+        "px" => 1.0,
+        _ => return None,
+    };
+    len[..at].parse::<f32>().ok().map(|n| n * unit)
+}
+
+/// A cell style's properties as written, each named by its element and attribute, and
+/// anything else it holds, kept as text.
+fn props_of(src: &str, k: &El) -> (Vec<(String, String)>, Vec<String>) {
+    let (mut props, mut raws) = (Vec::new(), Vec::new());
+    for p in kids(src, k) {
+        if CELL_PROPS.contains(&p.name.as_str()) && kids(src, &p).is_empty() {
+            let tag = &src[p.start..p.open_end];
+            props.extend(attrs(tag).into_iter().map(|(a, at)| (format!("{}@{a}", p.name), tag[at].to_owned())));
+        } else {
+            raws.push(src[p.start..p.end].to_owned());
+        }
+    }
+    (props, raws)
+}
+
 const CELL_PROPS: [&str; 3] = ["style:text-properties", "style:paragraph-properties", "style:table-cell-properties"];
 
 /// The number formats lattice makes, one for each kind of value typed as such. The text is
@@ -204,6 +248,10 @@ pub struct Styles {
     cell: HashMap<String, (Option<String>, Option<String>)>,
     /// Each automatic cell style as it is written: its properties, and what else it holds, kept as text.
     auto: HashMap<String, (Vec<(String, String)>, Vec<String>)>,
+    /// Every cell style's properties as written, and the default style's under the empty name.
+    props: HashMap<String, Vec<(String, String)>>,
+    /// How wide each column style makes its columns, in points.
+    widths: HashMap<String, f32>,
     /// Automatic cell styles by what they say: a new style that says the same is not made twice.
     by_key: HashMap<String, String>,
     /// The number format of cells with no style of their own, when the document sets one.
@@ -216,7 +264,7 @@ pub struct Styles {
 impl Styles {
     /// The styles of a flat ODS document. One with none of its own gives every number its plain text.
     pub fn read(src: &str, null_date: f64) -> Styles {
-        let mut s = Styles { cell: HashMap::new(), auto: HashMap::new(), by_key: HashMap::new(), default_data: None, data: HashMap::new(), null_date };
+        let mut s = Styles { cell: HashMap::new(), auto: HashMap::new(), props: HashMap::new(), widths: HashMap::new(), by_key: HashMap::new(), default_data: None, data: HashMap::new(), null_date };
         let Some(root) = elements(src, 0, src.len()).ok().and_then(|e| e.into_iter().find(|e| e.name == "office:document")) else { return s };
         for holder in kids(src, &root).iter().filter(|e| e.name == "office:styles" || e.name == "office:automatic-styles") {
             for k in kids(src, holder) {
@@ -225,24 +273,26 @@ impl Styles {
                     "style:style" if attr(src, &k, "style:family") == Some("table-cell") => {
                         if let Some(name) = own("style:name") {
                             let (parent, data) = (own("style:parent-style-name"), own("style:data-style-name"));
+                            let (props, raws) = props_of(src, &k);
+                            s.props.insert(name.clone(), props.clone());
                             if holder.name == "office:automatic-styles" {
-                                // its properties as written, and anything else in it as it stands
-                                let (mut props, mut raws) = (Vec::new(), Vec::new());
-                                for p in kids(src, &k) {
-                                    if CELL_PROPS.contains(&p.name.as_str()) && kids(src, &p).is_empty() {
-                                        let tag = &src[p.start..p.open_end];
-                                        props.extend(attrs(tag).into_iter().map(|(a, at)| (format!("{}@{a}", p.name), tag[at].to_owned())));
-                                    } else {
-                                        raws.push(src[p.start..p.end].to_owned());
-                                    }
-                                }
                                 s.by_key.insert(key_of(parent.as_deref().unwrap_or(""), data.as_deref().unwrap_or(""), &props, &raws), name.clone());
                                 s.auto.insert(name.clone(), (props, raws));
                             }
                             s.cell.insert(name, (parent, data));
                         }
                     }
-                    "style:default-style" if attr(src, &k, "style:family") == Some("table-cell") => s.default_data = own("style:data-style-name"),
+                    "style:default-style" if attr(src, &k, "style:family") == Some("table-cell") => {
+                        s.default_data = own("style:data-style-name");
+                        s.props.insert(String::new(), props_of(src, &k).0);
+                    }
+                    "style:style" if attr(src, &k, "style:family") == Some("table-column") => {
+                        let inner = kids(src, &k).into_iter().find(|p| p.name == "style:table-column-properties");
+                        let wide = inner.as_ref().and_then(|p| attr(src, p, "style:column-width")).or_else(|| attr(src, &k, "style:column-width")).and_then(px);
+                        if let (Some(name), Some(w)) = (own("style:name"), wide) {
+                            s.widths.insert(name, w);
+                        }
+                    }
                     n if n.starts_with("number:") => {
                         if let Some(name) = own("style:name") {
                             s.data.insert(name, (k.name.clone(), compile(src, &k)));
@@ -269,6 +319,54 @@ impl Styles {
             }
         }
         self.default_data.as_deref()
+    }
+
+    /// What a cell style looks like, its parents and the default style folded in.
+    pub fn look(&self, style: &str) -> Look {
+        let mut chain = Vec::new();
+        let mut name = style;
+        while let Some((parent, _)) = self.cell.get(name).filter(|_| chain.len() < 64) {
+            chain.push(name);
+            match parent {
+                Some(p) => name = p,
+                None => break,
+            }
+        }
+        chain.push("");
+        let mut out = Look::default();
+        // the default first, the style itself last, so the nearer one has the last word
+        for name in chain.into_iter().rev() {
+            for (a, v) in self.props.get(name).into_iter().flatten() {
+                let hex = v.len() == 7 && v.starts_with('#') && v[1..].bytes().all(|b| b.is_ascii_hexdigit());
+                match a.as_str() {
+                    "style:text-properties@fo:font-weight" => out.bold = v == "bold" || v.parse::<f64>().is_ok_and(|w| w >= 600.0),
+                    "style:text-properties@fo:font-style" => out.italic = v == "italic" || v == "oblique",
+                    "style:text-properties@style:text-underline-style" => out.underline = v != "none",
+                    "style:text-properties@style:text-line-through-style" => out.strike = v != "none",
+                    "style:text-properties@fo:color" if hex => out.color = Some(v.clone()),
+                    "style:paragraph-properties@fo:text-align" => {
+                        out.align = Some(match v.as_str() {
+                            "end" | "right" => 'r',
+                            "center" => 'c',
+                            "justify" => 'j',
+                            _ => 'l',
+                        });
+                    }
+                    "style:table-cell-properties@fo:background-color" => out.bg = hex.then(|| v.clone()),
+                    _ => {}
+                }
+            }
+            // the cell's own kind of value says where it sits: a number to the right, text to the left
+            if self.props.get(name).into_iter().flatten().any(|(a, v)| a == "style:table-cell-properties@style:text-align-source" && v == "value-type") {
+                out.align = None;
+            }
+        }
+        out
+    }
+
+    /// How wide a column style makes its columns, in points, when it says.
+    pub fn col_width(&self, style: &str) -> Option<f32> {
+        self.widths.get(style).copied()
     }
 
     /// The name of a cell style that is `base` with a number format for `kind` (`percentage`,
@@ -356,6 +454,26 @@ impl Styles {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_style_looks_as_the_web_client_reads_it() {
+        // each line is a style of the fixture and its look as ui-src/sheet/styles.js lookOf gives it, from node:
+        // bold, italic, underline, struck, colour, background, alignment
+        let src = include_str!("looks_fixture.fods");
+        let s = Styles::read(src, -25_569.0);
+        let got: Vec<String> = include_str!("looks_expected.txt").lines().map(|line| {
+            let name = line.split(' ').next().unwrap();
+            let l = s.look(name);
+            format!("{name} {} {} {} {} {} {} {}", l.bold, l.italic, l.underline, l.strike, l.color.as_deref().unwrap_or("-"), l.bg.as_deref().unwrap_or("-"), l.align.map_or("-".to_owned(), String::from))
+        }).collect();
+        assert_eq!(got.join("\n"), include_str!("looks_expected.txt").trim_end());
+        // a column is as wide as its style says: 5cm and 1.6cm at 96 to the inch
+        assert!((s.col_width("co1").unwrap() - 188.98).abs() < 0.01 && (s.col_width("co2").unwrap() - 60.47).abs() < 0.01);
+        assert_eq!(s.col_width("nope"), None);
+        // a row is found by where its run starts, through repeats
+        let book = crate::sheet::book(src).unwrap();
+        assert_eq!((book.style_at(0, 3, 0), book.style_at(0, 12, 2), book.style_at(0, 99, 0)), ("ce21".to_owned(), "nope".to_owned(), "Default".to_owned()));
+    }
 
     #[test]
     fn a_number_is_fixed_as_calc_fixes_it() {

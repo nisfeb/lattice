@@ -70,6 +70,8 @@ struct SheetView {
     sheets: Vec<sheet::Sheet>,
     at: usize,
     table: TableState,
+    /// The sheets again with each cell's type and style, and the page's styles: how the cells look.
+    looks: Option<(sheet::Book, styles::Styles)>,
     /// The cell picked to be changed: its row and column.
     cursor: Option<(usize, usize)>,
     /// What is being typed into the picked cell.
@@ -1117,17 +1119,19 @@ fn sync_sheet(s: &mut App) {
     }
     let sheets = sheet::parse(&p.body);
     let old = s.sheet.take().filter(|v| v.name == p.name);
-    s.sheet = (!sheets.is_empty()).then(|| SheetView {
-        name: p.name.clone(),
-        rev: p.rev,
-        at: old.as_ref().map_or(0, |v| v.at).min(sheets.len() - 1),
-        sheets,
-        table: TableState::new(),
-        cursor: old.as_ref().and_then(|v| v.cursor),
-        entry_was: old.as_ref().map_or(String::new(), |v| v.entry_was.clone()),
-        stale: old.as_ref().map_or_else(Default::default, |v| v.stale.clone()),
-        entry: old.map_or_else(|| TextEdit::new(""), |v| v.entry),
+    if sheets.is_empty() {
+        s.sheet = None;
+        return;
+    }
+    let (at, cursor) = (old.as_ref().map_or(0, |v| v.at).min(sheets.len() - 1), old.as_ref().and_then(|v| v.cursor));
+    let (entry_was, stale) = (old.as_ref().map_or(String::new(), |v| v.entry_was.clone()), old.as_ref().map_or_else(Default::default, |v| v.stale.clone()));
+    // where the grid was scrolled to and how wide its columns were dragged stay through a change
+    let (table, entry) = old.map_or_else(|| (TableState::new(), TextEdit::new("")), |v| (v.table, v.entry));
+    let looks = sheet::book(&p.body).ok().map(|b| {
+        let styles = styles::Styles::read(&p.body, b.null_date);
+        (b, styles)
     });
+    s.sheet = Some(SheetView { name: p.name.clone(), rev: p.rev, at, sheets, looks, cursor, entry_was, stale, table, entry });
 }
 
 /// The widest a sheet's grid is drawn. More columns are in the page, not on screen.
@@ -1209,12 +1213,22 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
     )
     .name("Sheet")
     .column(TableColumn::new("#", "").width(48.0).resizable(false));
+    // a column is as wide as its style says, when it says
+    let wide = |i: usize| {
+        let (book, styles) = v.looks.as_ref()?;
+        let mut seen = 0;
+        let run = book.sheets.get(v.at)?.col_styles.iter().find(|(rep, _)| {
+            seen += rep;
+            i < seen
+        })?;
+        styles.col_width(run.1.as_deref()?)
+    };
     for i in 0..cols {
-        table = table.column(TableColumn::new(sheet::column_name(i), sheet::column_name(i)).width(120.0).min(48.0).max(600.0));
+        table = table.column(TableColumn::new(sheet::column_name(i), sheet::column_name(i)).width(wide(i).unwrap_or(120.0).clamp(48.0, 600.0)).min(48.0).max(600.0));
     }
     // found once a frame, not once a cell
     let hits: std::collections::HashSet<(usize, usize)> = sheet_matches(s).into_iter().collect();
-    let (accent, ink, held, font, warn) = (c.text_accent, c.text_base, c.layer_02, k.ty.ui, c.danger.icon);
+    let (accent, ink, held, font, warn, ground) = (c.text_accent, c.text_base, c.layer_02, k.ty.ui, c.danger.icon, c.bg_base);
     let grid = table
         .cell(move |s: &App, i, col| {
             let Some(v) = &s.sheet else { return Cell::text("") };
@@ -1224,16 +1238,51 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
             // a column's letters back to its place
             let at = col.bytes().fold(0usize, |n, b| n * 26 + (b - b'A') as usize + 1) - 1;
             let said = v.sheets[v.at].rows.get(i).and_then(|r| r.get(at)).map_or("", String::as_str);
+            // how its style has it look, and where its kind of value sits: a number to the right, a truth or an error in the middle
+            let (look, kind) = match &v.looks {
+                Some((book, styles)) => {
+                    let cell = book.at(v.at, i, at);
+                    let kind = cell.map_or(' ', |c| if c.err || c.vt == "boolean" { 'c' } else if c.vt.is_empty() || c.vt == "string" { ' ' } else { 'r' });
+                    (styles.look(&book.style_at(v.at, i, at)), kind)
+                }
+                None => (styles::Look::default(), ' '),
+            };
             // a cell find matches is in the accent colour, and the current one's row is the selected one
             // a formula not worked out since what it reads changed is marked: it shows what it showed before
-            let color = if hits.contains(&(i, at)) { accent } else if v.stale.contains(&(v.at, i, at)) { warn } else { ink };
-            if !may {
-                return Cell::text(said).color(color);
+            // the page's colours are for a white sheet. One that would not show on what is under it gives way:
+            // text with no background of its own is the theme's when its colour is too near the theme's ground,
+            // and text on a background of the page's is dark or light, whichever shows on it
+            let light = |c: rune::Color| 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b;
+            let (paper, pen) = (look.bg.as_deref().and_then(rune::color::hex), look.color.as_deref().and_then(rune::color::hex));
+            let under = paper.unwrap_or(ground);
+            let own = match pen {
+                Some(p) if (light(p) - light(under)).abs() >= 0.12 => p,
+                _ if paper.is_some() => if light(under) > 0.3 { rune::Color::BLACK } else { rune::Color::WHITE },
+                _ => ink,
+            };
+            let color = if hits.contains(&(i, at)) { accent } else if v.stale.contains(&(v.at, i, at)) { warn } else { own };
+            let face = rune::TextStyle { weight: if look.bold { 700.0 } else { font.weight }, italic: look.italic, ..font };
+            let mut words = text(said.to_owned()).font(face).color(color).truncate().grow(1.0).min_w(0.0).inert().align(match look.align.unwrap_or(kind) {
+                'r' => rune::Align::End,
+                'c' => rune::Align::Center,
+                _ => rune::Align::Start,
+            });
+            if look.underline {
+                words = words.spans(vec![Span::new(0, said.len()).underline(color)]);
+            }
+            if look.strike {
+                words = words.strike(0, said.len(), None);
+            }
+            let on = v.cursor == Some((i, at));
+            let mut cell = row().key(format!("cell-{i}-{at}")).w_full().h_full().center_y().label(format!("{}{}", sheet::column_name(at), i + 1)).child(words);
+            if let Some(bg) = look.bg.as_deref().and_then(rune::color::hex) {
+                cell = cell.fill(bg);
             }
             // a press picks the cell, to type into it in the bar above
-            let on = v.cursor == Some((i, at));
-            let mut cell = row().key(format!("cell-{i}-{at}")).w_full().h_full().center_y().label(format!("{}{}", sheet::column_name(at), i + 1)).on_press(move |s: &mut App| pick_cell(s, i, at)).child(text(said.to_owned()).font(font).color(color).truncate().grow(1.0).min_w(0.0).inert());
-            if on {
+            if may {
+                cell = cell.on_press(move |s: &mut App| pick_cell(s, i, at));
+            }
+            if on && may {
                 cell = cell.fill(held).radius(3.0);
             }
             Cell::el(cell)

@@ -614,6 +614,10 @@ pub struct MSheet {
     pub rows: Vec<MRow>,
     /// The columns, in runs: how many, and the style their cells take when they name none.
     pub cols: Vec<(usize, Option<String>)>,
+    /// Each run of columns' own style, which says how wide they are.
+    pub col_styles: Vec<(usize, Option<String>)>,
+    /// The row each run of rows starts at, for finding a row without walking them all.
+    starts: Vec<usize>,
 }
 
 /// A spreadsheet's sheets with every cell's type, value and formula.
@@ -640,11 +644,9 @@ impl Book {
 
     /// The cell at a place, or nothing past the stored rows and cells.
     pub fn at(&self, s: usize, r: usize, c: usize) -> Option<&MCell> {
-        let mut seen = 0;
-        let row = self.sheets.get(s)?.rows.iter().find(|row| {
-            seen += row.rep;
-            r < seen
-        })?;
+        let sh = self.sheets.get(s)?;
+        // the last run that starts at or before the row
+        let row = sh.rows.get(sh.starts.partition_point(|at| *at <= r).checked_sub(1)?).filter(|row| r < sh.starts[sh.starts.partition_point(|at| *at <= r) - 1] + row.rep)?;
         let mut seen = 0;
         row.cells.iter().find(|cell| {
             seen += cell.rep;
@@ -697,7 +699,26 @@ pub fn book(src: &str) -> Result<Book, String> {
         }
         let mut cols = Vec::new();
         cols_of(src, &table, &mut cols)?;
-        sheets.push(MSheet { name: attr(&src[table.start + 1..table.open_end], "table:name").unwrap_or_default(), rows: out, cols });
+        // the same columns again, by the style of the column itself
+        fn col_styles_of(src: &str, el: &El, out: &mut Vec<(usize, Option<String>)>) -> Result<(), String> {
+            for k in kids(src, el)? {
+                match k.name.as_str() {
+                    "table:table-column" => out.push((count(src, &k, COLS), attr(&src[k.start + 1..k.open_end], "table:style-name"))),
+                    "table:table-header-columns" | "table:table-column-group" | "table:table-columns" => col_styles_of(src, &k, out)?,
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        let mut col_styles = Vec::new();
+        col_styles_of(src, &table, &mut col_styles)?;
+        let mut starts = Vec::with_capacity(out.len());
+        let mut at = 0;
+        for row in &out {
+            starts.push(at);
+            at += row.rep;
+        }
+        sheets.push(MSheet { name: attr(&src[table.start + 1..table.open_end], "table:name").unwrap_or_default(), rows: out, cols, col_styles, starts });
     }
     Ok(Book { sheets, null_date })
 }
