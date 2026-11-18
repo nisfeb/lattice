@@ -28,6 +28,7 @@ mod sheet;
 mod shift;
 mod styles;
 mod tex;
+mod topbar;
 mod upload;
 mod vault;
 mod view3d;
@@ -5767,23 +5768,47 @@ fn tab_label(s: &App, i: usize) -> String {
     name.map_or("New tab".to_owned(), |n| s.dnames.get(n).cloned().unwrap_or_else(|| n.rsplit('/').next().unwrap_or(n).to_owned()))
 }
 
-/// The tabs, shown once there is more than one.
+/// The top bar's strip: the tabs, always shown, then new tab and split.
 fn tab_strip(s: &App, k: &Kit) -> El {
     let c = &k.c;
-    let mut strip = row().key("tabs").w_full().gap(2.0).px(8.0).pt(4.0).center_y();
-    for i in 0..s.tabs.len() {
-        let front = i == s.tab;
-        strip = strip.child(
-            row()
-                .key(format!("tab-{i}"))
-                .center_y()
-                .radius(k.radius.sm)
-                .fill(if front { c.layer_01 } else { rune::Color::TRANSPARENT })
-                .child(Button::new(tab_label(s, i)).control_size(ControlSize::Small).variant(if front { ButtonVariant::Ghost } else { ButtonVariant::GhostMuted }).on_press(move |s: &mut App| switch_tab(s, i)).build(k).key(format!("tab-open-{i}")).max_w(180.0))
-                .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close this tab").on_press(move |s: &mut App| close_tab(s, i)).build(k).key(format!("tab-close-{i}"))),
-        );
+    let labels: Vec<String> = (0..s.tabs.len()).map(|i| tab_label(s, i)).collect();
+    let memory = s.memory.then(|| s.open.as_ref().map_or("", |p| p.name.as_str()));
+    let mut strip = row().key("tabs").role("tablist").label("Tabs").gap(2.0).center_y().grow(1.0).min_w(0.0);
+    for cell in topbar::strip(&labels, s.tab, memory) {
+        let key = cell.at.map_or("tab-memory".to_owned(), |i| format!("tab-{i}"));
+        let mut one = row().key(key.clone()).center_y().radius(k.radius.sm).fill(if cell.front { c.layer_01 } else { rune::Color::TRANSPARENT }).min_w(0.0);
+        let mut b = Button::new(cell.label).control_size(ControlSize::Small).variant(if cell.front { ButtonVariant::Ghost } else { ButtonVariant::GhostMuted });
+        if let Some(i) = cell.at {
+            b = b.on_press(move |s: &mut App| switch_tab(s, i));
+        }
+        one = one.child(b.build(k).key(format!("{key}-go")));
+        if let (true, Some(i)) = (cell.closes, cell.at) {
+            one = one.child(IconButton::new(&head::X).control_size(ControlSize::Small).variant(IconButtonVariant::GhostMuted).help("Close this tab").on_press(move |s: &mut App| close_tab(s, i)).build(k).key(format!("tab-close-{i}")));
+        }
+        strip = strip.child(one);
     }
-    strip
+    let (can_new, can_split) = topbar::tools(s.editing, s.memory, usable(s, "split"));
+    strip.child(IconButton::new(&head::PLUS).variant(IconButtonVariant::GhostMuted).help("New tab").disabled(!can_new).on_press(new_tab).build(k).key("tab-new")).child(
+        IconButton::new(&topbar::SPLIT)
+            .variant(if s.split.is_some() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted })
+            .help(if s.split.is_some() { "Close the split" } else { "Split: hold this page beside the next one you open" })
+            .shortcut("Ctrl+\\")
+            .disabled(!can_split)
+            .on_press(toggle_split)
+            .build(k)
+            .key("split-toggle"),
+    )
+}
+
+/// The right pane, shown or put away, with what it showed last.
+fn toggle_right(s: &mut App) {
+    s.inspector.toggle();
+    if s.inspector.is_open() {
+        s.old = None;
+        load_history(s);
+        load_comments(s);
+        load_links(s);
+    }
 }
 
 fn go_shared(s: &mut App) {
@@ -8935,7 +8960,15 @@ fn ribbon_view(s: &App, k: &Kit, top: f32) -> El {
         }
         cell
     };
-    let mut head = col().gap(4.0).items_center();
+    let mut head = col().gap(4.0).items_center().child(
+        IconButton::new(&topbar::PANE_LEFT)
+            .control_size(ControlSize::Large)
+            .variant(if s.sidebar.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted })
+            .help("Left pane")
+            .on_press(|s: &mut App| s.sidebar.toggle())
+            .build(k)
+            .key("pane-left"),
+    );
     let mut foot = col().gap(4.0).items_center();
     for it in &items {
         if it.foot {
@@ -9508,7 +9541,6 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         }
         if !s.memory {
             // one side pane, three things in it: pressing the one showing closes it
-            trailing = trailing.child(Button::new(if s.split.is_some() { "Unsplit" } else { "Split" }).variant(ButtonVariant::GhostMuted).help("Hold this page beside the next one you open").on_press(toggle_split).build(&k).key("split-toggle"));
             trailing = trailing.child(Button::new("Links").variant(ButtonVariant::GhostMuted).help("Pages that link here, and pages this links to").on_press(|s: &mut App| show_pane(s, false, true)).build(&k).key("links-toggle"));
             trailing = trailing.child(Button::new("Comments").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| show_pane(s, true, false)).build(&k).key("comments-toggle-pane"));
         }
@@ -9535,19 +9567,24 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         .center_y()
         .child(nav("back", "‹", -1, s.trail_at > 0 && !s.editing))
         .child(nav("forward", "›", 1, s.trail_at + 1 < s.trail.len() && !s.editing))
-        .child(Button::new("+").variant(ButtonVariant::GhostMuted).help("New tab").disabled(s.editing).on_press(new_tab).build(&k).key("tab-new"))
         // the title sits beside them, not centred: a centred one ran under the buttons in a narrow window
         .child(text(title.to_owned()).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate().pl(6.0));
-    let main = if s.tabs.len() > 1 && !s.memory { col().w_full().h_full().min_h(0.0).child(tab_strip(s, &k)).child(col().w_full().grow(1.0).min_h(0.0).child(body(s, &k))) } else { body(s, &k) };
+    let main = body(s, &k);
     let main = match s.split.as_ref().filter(|_| !s.memory) {
         Some(name) => row().w_full().h_full().min_h(0.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(main)).child(Divider::vertical().build(&k)).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(split_view(name, s, &k))),
         None => main,
     };
+    // under the top bar, the page's own bar: where it has been, its name, and what can be done with it
+    let head = row().key("tab-head").w_full().h(36.0).px(8.0).gap(8.0).center_y().justify_between().child(leading.grow(1.0).min_w(64.0)).child(trailing);
+    let main = col().w_full().h_full().min_h(0.0).child(head).child(col().w_full().grow(1.0).min_h(0.0).child(main));
     let inset = cx.titlebar_inset();
+    let right = IconButton::new(&topbar::PANE_RIGHT).variant(if s.inspector.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help("Right pane").on_press(toggle_right).build(&k).key("pane-right");
     let shell = SplitView::new(main)
         .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k))
         .inspector(&s.inspector, |s: &mut App| &mut s.inspector, if s.pane_links { links_view(s, &k) } else if s.pane_comments { comments_view(s, &k) } else { history_view(s, &k) })
-        .toolbar(Toolbar::new().leading(leading).trailing(trailing))
+        .toolbar(Toolbar::new().leading(tab_strip(s, &k)).trailing(right))
+        // the left pane's toggle is the ribbon's first icon, as on the web
+        .hide_sidebar_toggle()
         // the ribbon stands where the window's own buttons would push the toolbar from
         .titlebar_inset((inset - 40.0).max(0.0))
         .frame_inset(8.0)

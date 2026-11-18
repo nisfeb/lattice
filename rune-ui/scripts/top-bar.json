@@ -1,0 +1,13 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 1.5, "type": "tap", "key": "welcome"},
+  {"t": 3.0, "type": "tap", "key": "tab-new"},
+  {"t": 4.0, "type": "tap", "key": "budget"},
+  {"t": 6.0, "type": "tap", "key": "split-toggle"},
+  {"t": 7.0, "type": "tap", "key": "tab-0-go"},
+  {"t": 9.0, "type": "tap", "key": "pane-right"},
+  {"t": 11.0, "type": "tap", "key": "pane-left"},
+  {"t": 13.0, "type": "tap", "key": "pane-left"},
+  {"t": 14.0, "type": "tap", "key": "tab-close-1"},
+  {"t": 16.0, "type": "tap", "key": "half-memory"}
+]}
