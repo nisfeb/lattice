@@ -242,9 +242,43 @@ pub fn draw(name: &str, text: &str, read: impl FnMut(&str) -> Option<String>) ->
     }
 }
 
+/// A page's part as a file of another kind, `3mf` or `stl`, made by openscad. An error says why there is none.
+pub fn export(name: &str, text: &str, read: impl FnMut(&str) -> Option<String>, ext: &str) -> Result<Vec<u8>, String> {
+    let exe = locate().ok_or("making this file needs OpenSCAD, which is not installed on this machine. It is at openscad.org")?;
+    let (main, files, notes) = crate::scad::collect(name, text, read);
+    let ran = run(&exe, &files, &main, &[], ext, TIMEOUT);
+    let (lines, _) = console(&ran.log, &notes);
+    let why = lines.iter().find(|(l, _)| *l == Level::Error).map_or(String::new(), |(_, s)| format!(": {s}"));
+    ran.data.filter(|d| ran.ok && !d.is_empty()).ok_or_else(|| format!("could not make the {}{why}", ext.to_uppercase()))
+}
+
+/// A picture as a PNG file's bytes, from straight RGBA.
+pub fn png(w: u32, h: u32, px: &[u8]) -> Option<Vec<u8>> {
+    rune::DragImage::rgba(w, h, px).map(|d| d.png_data().to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_part_is_exported_as_3mf_when_openscad_is_here() {
+        if locate().is_none() {
+            assert!(export("a", "cube(1);", |_| None, "3mf").unwrap_err().contains("openscad.org"));
+            return;
+        }
+        // a 3MF is a zip, which starts PK, and holds the model
+        let file = export("a", "cube([3, 4, 5]);", |_| None, "3mf").unwrap();
+        assert_eq!(&file[..2], b"PK");
+        assert!(file.len() > 200);
+        let why = export("b", "cube(;", |_| None, "3mf").unwrap_err();
+        assert!(why.starts_with("could not make the 3MF: ERROR"), "{why}");
+        // a picture is a PNG of its own size
+        let shot = png(2, 1, &[255, 0, 0, 255, 0, 0, 0, 0]).unwrap();
+        assert_eq!(&shot[..8], b"\x89PNG\r\n\x1a\n");
+        assert_eq!((&shot[16..20], &shot[20..24]), (&2u32.to_be_bytes()[..], &1u32.to_be_bytes()[..]));
+        assert!(png(2, 2, &[0; 3]).is_none());
+    }
 
     /// A binary STL of `n` triangles from corner numbers.
     fn stl(tris: &[[f32; 9]]) -> Vec<u8> {

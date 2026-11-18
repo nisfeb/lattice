@@ -1219,6 +1219,65 @@ fn read_md<'a>(s: &'a App, p: &'a Page) -> Option<&'a str> {
     s.read_as.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev).map(|(_, _, t)| t.as_str())
 }
 
+/// Saves the part in front as a file named in the save dialog: the STL
+/// it was drawn from, a 3MF that openscad makes then, or a PNG of the
+/// view as it is turned, at twice its size on the page.
+fn export_part(s: &mut App, tx: &mut Tx, ext: &'static str) {
+    let Some(p) = s.open.clone().filter(|p| p.kind == "scad") else { return };
+    let leaf = p.name.rsplit('/').next().unwrap_or("part").to_owned();
+    let options = rune::FileDialogOptions { title: format!("Download as {}", ext.to_uppercase()), file_name: Some(format!("{leaf}.{ext}")), ..Default::default() };
+    tx.save_file(options, move |s: &mut App, result: rune::FileDialogResult, _: &mut Tx| {
+        let path = match result {
+            Ok(Some(path)) => path,
+            Ok(None) => return,
+            Err(e) => {
+                s.note = format!("no file dialog could open: {e}");
+                return;
+            }
+        };
+        let now = |x: &(String, u64, scadrun::Drawn)| x.0 == p.name && x.1 == p.rev;
+        match ext {
+            "stl" => match s.scad.as_ref().filter(|x| now(x)).and_then(|x| x.2.stl.clone()) {
+                Some(stl) => write_file(s, path, stl),
+                None => s.note = "there is no part to save yet".into(),
+            },
+            "png" => {
+                let Some(v) = s.part.as_ref().filter(|v| v.name == p.name) else {
+                    s.note = "there is no part to save yet".into();
+                    return;
+                };
+                let (w, h) = ((PART_SIZE.0 * 2.0) as u32, (PART_SIZE.1 * 2.0) as u32);
+                s.op_req.request((path, v.mesh.clone(), v.cam), move |(path, mesh, cam)| {
+                    let shot = scadrun::png(w, h, &view3d::render(&mesh, &cam, w as usize, h as usize)).ok_or("the picture could not be made")?;
+                    Ok(Op::Said(match std::fs::write(&path, shot) {
+                        Ok(()) => format!("saved to {}", path.display()),
+                        Err(e) => format!("not saved to {}: {e}", path.display()),
+                    }))
+                });
+            }
+            _ => {
+                // openscad runs again for this, with the pages it includes read as they were for the drawing
+                s.note = format!("making the {}", ext.to_uppercase());
+                let conn = s.conn.clone();
+                let local: HashMap<String, String> = if conn.is_some() { HashMap::new() } else { s.cache.values().filter(|x| x.kind == "scad").map(|x| (x.name.clone(), x.body.clone())).collect() };
+                s.op_req.request((path, p.clone(), conn, local), move |(path, p, conn, local)| {
+                    let read = |page: &str| match &conn {
+                        Some(c) => c.page(page).ok().filter(|p| p.kind == "scad").map(|p| p.body),
+                        None => local.get(page).cloned(),
+                    };
+                    Ok(Op::Said(match scadrun::export(&p.name, &p.body, read, ext) {
+                        Err(why) => why,
+                        Ok(file) => match std::fs::write(&path, file) {
+                            Ok(()) => format!("saved to {}", path.display()),
+                            Err(e) => format!("not saved to {}: {e}", path.display()),
+                        },
+                    }))
+                });
+            }
+        }
+    });
+}
+
 /// Asks for the part's picture from where the camera now is. It is
 /// drawn on a thread of its own, and only the newest asked for is kept.
 fn draw_part(s: &mut App) {
@@ -1459,7 +1518,11 @@ fn scad_view(s: &App, p: &Page, k: &Kit) -> El {
                     if let Some(v) = &mut s.part {
                         v.pan = !v.pan;
                     }
-                }).build(k).key("scad-pan")),
+                }).build(k).key("scad-pan"))
+                .child(Divider::vertical().build(k))
+                .child(Button::new("STL").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Download the part as STL").on_press_tx(|s: &mut App, tx: &mut Tx| export_part(s, tx, "stl")).build(k).key("scad-stl"))
+                .child(Button::new("3MF").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Download the part as 3MF").on_press_tx(|s: &mut App, tx: &mut Tx| export_part(s, tx, "3mf")).build(k).key("scad-3mf"))
+                .child(Button::new("PNG").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Download a PNG of this view").on_press_tx(|s: &mut App, tx: &mut Tx| export_part(s, tx, "png")).build(k).key("scad-png")),
         );
     }
     if !d.lines.is_empty() {
@@ -3874,8 +3937,8 @@ fn convert_tex(s: &mut App) {
 }
 
 /// Writes a file off the window's thread and says how it went.
-fn write_file(s: &mut App, path: std::path::PathBuf, body: String) {
-    s.op_req.request((path, body), |(path, body)| {
+fn write_file(s: &mut App, path: std::path::PathBuf, body: impl Into<Vec<u8>>) {
+    s.op_req.request((path, body.into()), |(path, body)| {
         Ok(Op::Said(match std::fs::write(&path, body) {
             Ok(()) => format!("saved to {}", path.display()),
             Err(e) => format!("not saved to {}: {e}", path.display()),
