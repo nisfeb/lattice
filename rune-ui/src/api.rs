@@ -902,6 +902,11 @@ impl Conn {
         self.call("POST", &format!("know-move?from={}&to={}", enc(from), enc(to)), Some("")).map(drop)
     }
 
+    /// Puts a tag on a memory, or takes one off. The key starts with a slash. The ship folds a tag to lower case.
+    pub fn know_tag(&self, key: &str, tag: &str, on: bool) -> Result<(), String> {
+        self.call("POST", &format!("know-{}?key={}&tag={}", if on { "tag" } else { "untag" }, enc(key), enc(tag)), Some("")).map(drop)
+    }
+
     pub fn know_delete(&self, key: &str) -> Result<(), String> {
         self.call("POST", &format!("know-delete?key={}", enc(key)), Some("")).map(drop)
     }
@@ -1465,6 +1470,18 @@ mod tests {
         c.know_save(&key, "another\n").unwrap();
         assert!(c.know_move(&key, &moved).unwrap_err().contains("409"), "a key already taken is refused");
         assert!(c.know_move(&format!("{key}-never"), &format!("{key}-x")).unwrap_err().contains("404"), "a key that is not there is refused");
+        // a tag goes on, is listed folded to lower case, and comes off
+        c.know_tag(&moved, "Rune-Tag", true).unwrap();
+        c.know_tag(&moved, "second", true).unwrap();
+        let tags = |c: &Conn| c.know_all().unwrap().into_iter().find(|k| k.key == moved).map(|k| k.tags).unwrap_or_default();
+        let mut got = tags(&c);
+        got.sort();
+        assert_eq!(got, ["rune-tag", "second"]);
+        c.know_tag(&moved, "rune-tag", false).unwrap();
+        assert_eq!(tags(&c), ["second"]);
+        // one that was never on comes off without complaint, and a key that is not a key is refused
+        c.know_tag(&moved, "never", false).unwrap();
+        assert!(c.know_tag("", "x", true).is_err());
         c.know_delete(&moved).unwrap();
         c.know_delete(&key).unwrap();
         assert!(!c.know_all().unwrap().iter().any(|k| k.key == key), "and gone after a delete");

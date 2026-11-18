@@ -138,6 +138,8 @@ enum Prompt {
     Duplicate(Page, TextEdit),
     /// A note to go with an ask for edit on another ship's page.
     Ask(Shared, TextEdit),
+    /// A tag to put on the memory in front.
+    Tag(TextEdit),
     /// A value typed for an OpenSCAD parameter: its name, which part of a vector, and the text.
     Param(String, Option<usize>, TextEdit),
 }
@@ -158,6 +160,8 @@ impl Tab {
 
 /// A change to the tree that landed on the ship.
 enum Op {
+    /// A memory's tag was put on or taken off: the memory, the tag, which.
+    Tagged(String, String, bool),
     Created(String),
     Renamed(String, String),
     Deleted(String),
@@ -336,6 +340,8 @@ struct App {
     other: (Files, Vec<String>, HashMap<String, Page>),
     /// Each memory's tags and date, by its name in the tree.
     know_meta: HashMap<String, (Vec<String>, String)>,
+    /// The tag the memories are filtered by, when they are.
+    know_tag: Option<String>,
     know_req: Latest<Result<Vec<Know>, String>>,
     /// The open page as the Markdown it is read as, when it is of a kind read that way and is not Markdown: its name, its revision, the text.
     read_as: Option<(String, u64, String)>,
@@ -556,6 +562,7 @@ fn init() -> App {
         memory: false,
         other: Default::default(),
         know_meta: HashMap::new(),
+        know_tag: None,
         know_req: Latest::default(),
         read_as: None,
         beside: None,
@@ -649,7 +656,7 @@ fn flip(s: &mut App) {
     s.trail_at = 0;
     s.folder = None;
     s.query = TextEdit::new("");
-    s.files.clear_filter();
+    refilter(s);
     s.inspector = s.inspector.clone().collapsed();
     sync_map(s);
     sync_sheet(s);
@@ -661,6 +668,37 @@ fn flip_quiet(s: &mut App) {
     std::mem::swap(&mut s.names, &mut s.other.1);
     std::mem::swap(&mut s.cache, &mut s.other.2);
     s.memory = !s.memory;
+}
+
+/// Puts a tag on the memory in front, or takes one off.
+fn set_tag(s: &mut App, tag: String, on: bool) {
+    let Some(name) = s.open.as_ref().filter(|_| s.memory).map(|p| p.name.clone()) else { return };
+    match s.conn.clone() {
+        Some(c) => s.op_req.request((c, name, tag), move |(c, name, tag)| {
+            c.know_tag(&format!("/{name}"), &tag, on)?;
+            Ok(Op::Tagged(name, tag, on))
+        }),
+        None => applied(s, Op::Tagged(name, tag, on)),
+    }
+}
+
+/// Every tag the memories carry, in order.
+fn know_tags(s: &App) -> Vec<String> {
+    let mut tags: Vec<String> = s.know_meta.values().flat_map(|m| m.0.iter().cloned()).collect();
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
+/// Shows the tree by what is typed in the filter and, for memories, by the tag picked.
+fn refilter(s: &mut App) {
+    let q = s.query.text.trim().to_lowercase();
+    let tagged: Option<std::collections::HashSet<String>> = s.know_tag.as_ref().filter(|_| s.memory).map(|t| s.know_meta.iter().filter(|(_, m)| m.0.contains(t)).map(|(n, _)| n.clone()).collect());
+    if q.is_empty() && tagged.is_none() {
+        s.files.clear_filter();
+    } else {
+        s.files.filter(move |n| n.path.to_lowercase().contains(&q) && tagged.as_ref().is_none_or(|set| set.contains(&n.path)));
+    }
 }
 
 fn load_know(s: &mut App) {
@@ -751,6 +789,14 @@ fn confirm(s: &mut App) {
                 s.note = format!("asked {} for edit access to {}", sh.host, sh.name());
                 s.asks.sent.push(Ask { ship: sh.host.clone(), path: sh.path.clone(), name: sh.name().to_owned(), note: api::clip_note(note.trim()).to_owned(), when: String::new() });
             }
+        }
+        return;
+    }
+    if let Prompt::Tag(t) = &p {
+        // the ship folds tags to lower case, so this does too and the list here matches
+        let tag = t.text.trim().trim_start_matches('#').to_lowercase();
+        if !tag.is_empty() {
+            set_tag(s, tag, true);
         }
         return;
     }
@@ -866,7 +912,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) => {}
+                Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) => {}
             }
             Ok(op)
         }),
@@ -959,6 +1005,21 @@ fn applied(s: &mut App, op: Op) {
                 s.note = say;
             }
             sync_tiles(s);
+            return;
+        }
+        Op::Tagged(name, tag, on) => {
+            // this client made the change: the list in hand is patched, as the web client patches its own
+            let meta = s.know_meta.entry(name).or_default();
+            meta.0.retain(|x| *x != tag);
+            if on {
+                meta.0.push(tag.clone());
+            }
+            s.note = if on { format!("tagged #{tag}") } else { format!("took off #{tag}") };
+            // a tag nothing has any more is not one to filter by
+            if s.know_tag.as_ref().is_some_and(|f| !s.know_meta.values().any(|m| m.0.contains(f))) {
+                s.know_tag = None;
+            }
+            refilter(s);
             return;
         }
         Op::Tokened(say) => {
@@ -4804,7 +4865,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) => t,
+                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) => t,
                 Prompt::Delete(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
@@ -4819,6 +4880,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::Ask(_, t) => ("Ask for edit access", field(t, "A short note, if you like"), "Ask", ButtonVariant::Contrast),
         Prompt::Duplicate(_, t) => ("Duplicate this page as", field(t, "folder/name"), "Duplicate", ButtonVariant::Contrast),
         // kept on the ship, which never shows it again. Typed in the clear here: it is pasted, not remembered
+        Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
         Prompt::Param(_, _, t) => ("Set this parameter", field(t, "A value"), "Set", ButtonVariant::Contrast),
         Prompt::Token(t) => ("The ship's Mapbox token", field(t, "pk... to set it, or nothing to clear it"), "Set", ButtonVariant::Contrast),
         Prompt::Feature(at, t) => {
@@ -5715,10 +5777,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .leading_icon(k.glyph.search)
         .clear_button()
         .on_edit(|s: &mut App| &mut s.query)
-        .on_change(|s: &mut App, _| {
-            let q = s.query.text.trim().to_lowercase();
-            if q.is_empty() { s.files.clear_filter() } else { s.files.filter(|n| n.path.to_lowercase().contains(&q)) }
-        })
+        .on_change(|s: &mut App, _| refilter(s))
         .build(k)
         .w_full();
     let half = |key: &str, label: String, on: bool| {
@@ -5768,7 +5827,23 @@ fn sidebar(s: &App, k: &Kit) -> El {
         .child(access)
         .child(theme)
         .child(Button::new(if s.conn.is_some() { "Sign out" } else { "Close" }).variant(ButtonVariant::GhostMuted).on_press(sign_out).build(k).key("sign-out"));
-    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).child(filter).child(new).child(tree).child(row().gap(4.0).child(with_me).child(inbox)).child(foot);
+    // the memories' tags, to show only those that carry one: said even when folded away, as on the web
+    let mut chips = row().key("know-tags").w_full().gap(2.0).flex_wrap();
+    let tags = if s.memory { know_tags(s) } else { Vec::new() };
+    if !tags.is_empty() {
+        let chip = |label: String, val: Option<String>, key: String| {
+            let on = s.know_tag == val;
+            Button::new(label).control_size(ControlSize::Small).variant(if on { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
+                s.know_tag = val.clone();
+                refilter(s);
+            }).build(k).key(key)
+        };
+        chips = chips.child(chip("all".into(), None, "ktag-all".into()));
+        for t in &tags {
+            chips = chips.child(chip(format!("#{t}"), Some(t.clone()), format!("ktag-{t}")));
+        }
+    }
+    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).child(row().gap(4.0).child(with_me).child(inbox)).child(foot);
     if !s.note.is_empty() {
         side = side.child(text(s.note.clone()).key("note").font(k.ty.small).color(k.c.text_muted).wrap());
     }
@@ -6018,10 +6093,19 @@ fn page_body(s: &App, k: &Kit) -> El {
     if let Some((tags, updated)) = s.know_meta.get(&p.name).filter(|_| s.memory) {
         let when = Rev { rev: 0, updated: updated.clone() }.when();
         let mut meta = row().key("know-meta").gap(6.0).center_y().child(text(when).font(k.ty.small).color(c.text_faint));
-        for t in tags {
-            meta = meta.child(row().px(6.0).py(1.0).radius(k.radius.sm).fill(c.layer_01).child(text(t.clone()).font(k.ty.small).color(c.text_muted)));
+        let mut sorted = tags.clone();
+        sorted.sort();
+        // a tag is pressed to take it off, and one is added from the button after them
+        for t in sorted {
+            let tag = t.clone();
+            meta = meta.child(Button::new(format!("#{t} \u{d7}")).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Take this tag off").on_press(move |s: &mut App| set_tag(s, tag.clone(), false)).build(k).key(format!("tag-{t}")));
         }
-        page = page.child(meta);
+        meta = meta.child(Button::new("+ tag").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Put a tag on this memory").on_press(|s: &mut App| {
+            let mut t = TextEdit::new("");
+            t.focused = true;
+            s.prompt = Some(Prompt::Tag(t));
+        }).build(k).key("tag-add"));
+        page = page.child(meta.flex_wrap());
     }
     // an OpenSCAD page's parameters stand over its source, to be changed where the page is read
     if p.kind == "scad" && !s.memory && p.body.len() <= 512 * 1024 {
@@ -6434,6 +6518,39 @@ mod tests {
         // the pages are not touched by it
         flip(&mut s);
         assert!(s.names.contains(&"welcome".to_owned()) && !s.names.iter().any(|n| n.starts_with("feedback")));
+    }
+
+    #[test]
+    fn a_memory_is_tagged_untagged_and_the_tree_filtered_by_a_tag() {
+        let mut s = sample("welcome");
+        flip(&mut s);
+        open_page(&mut s, "project/lattice/rune");
+        // typed with a hash and capitals, it is kept as the ship keeps it
+        let mut t = TextEdit::new("");
+        t.text = " #Native ".into();
+        s.prompt = Some(Prompt::Tag(t));
+        confirm(&mut s);
+        assert_eq!(s.know_meta["project/lattice/rune"].0, ["native"]);
+        assert_eq!(know_tags(&s), ["native", "style"]);
+        // put on twice, it is there once
+        set_tag(&mut s, "native".into(), true);
+        assert_eq!(s.know_meta["project/lattice/rune"].0, ["native"]);
+        // filtered by a tag, the filter and the tag both hold
+        s.know_tag = Some("style".into());
+        refilter(&mut s);
+        s.query.text = "rune".into();
+        refilter(&mut s);
+        s.query.text = String::new();
+        // the last memory with the tag loses it: there is nothing to filter by, and the filter goes
+        open_page(&mut s, "feedback/short-answers");
+        set_tag(&mut s, "style".into(), false);
+        assert!(s.know_meta["feedback/short-answers"].0.is_empty());
+        assert_eq!((s.know_tag.clone(), know_tags(&s)), (None, vec!["native".to_owned()]));
+        // a page has no tags
+        flip(&mut s);
+        open_page(&mut s, "welcome");
+        set_tag(&mut s, "x".into(), true);
+        assert!(!s.know_meta.contains_key("welcome"));
     }
 
     #[test]
