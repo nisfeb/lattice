@@ -1,0 +1,8 @@
+{"events": [
+  {"t": 0.8, "type": "tap", "key": "places"},
+  {"t": 2.0, "type": "tap", "key": "map-point"},
+  {"t": 2.5, "type": "drag", "x": 600, "y": 600, "dx": 0, "dy": 0, "dur": 0.1},
+  {"t": 3.5, "type": "tap", "key": "map-point"},
+  {"t": 4.5, "type": "drag", "x": 600, "y": 600, "dx": 150, "dy": -60, "dur": 0.5},
+  {"t": 6.0, "type": "drag", "x": 863, "y": 751, "dx": 100, "dy": 0, "dur": 0.5}
+]}

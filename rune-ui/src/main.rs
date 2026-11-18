@@ -44,6 +44,12 @@ struct MapView {
     // ponytail: read when this map's text moves. A layer page changed
     // meanwhile shows when this map is opened again
     under: Vec<(String, Option<Vec<map::Feature>>)>,
+    /// Whether a press on the ground puts a new point there.
+    adding: bool,
+    /// The picked point being dragged: which feature, and how far in points.
+    moving: Option<(usize, f32, f32)>,
+    /// Whether the feature a save adds is to be picked when it lands.
+    pick_new: bool,
     /// The kinds not shown. Not kept: a map opens with every kind showing, as on the web.
     hidden: std::collections::HashSet<String>,
 }
@@ -1053,7 +1059,8 @@ fn sync_map(s: &mut App) {
     let under: Vec<_> = map::layers(&p.body).into_iter().map(|n| (n.clone(), s.cache.get(&n).filter(|l| l.kind == "geojson").and_then(|l| map::parse(&l.body)))).collect();
     s.map = map::parse(&p.body).map(|feats| {
         let cam = old.as_ref().map_or(map::Camera { at: [0.5, 0.5], scale: 800.0 }, |m| m.cam);
-        MapView { name: p.name.clone(), rev: p.rev, cam, grab: cam, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()), feats, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
+        let pick_new = old.as_ref().is_some_and(|m| m.pick_new);
+        MapView { name: p.name.clone(), rev: p.rev, cam, grab: cam, adding: old.as_ref().is_some_and(|m| m.adding), moving: None, pick_new: false, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: if pick_new { feats.len().checked_sub(1) } else { old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()) }, feats, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
     });
 }
 
@@ -1213,15 +1220,30 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             sync_tiles(s);
         })
         .on_drag(|s: &mut App, d, _| {
+            let mut put = None;
             if let Some(m) = &mut s.map {
                 match d.phase {
                     Phase::Down => m.grab = m.cam,
+                    // with the point tool on, a press on the ground puts a point there
+                    Phase::Up if d.dx.hypot(d.dy) < 5.0 && m.adding => {
+                        m.cam = m.grab;
+                        put = Some(map::lonlat(m.cam.unproject(d.x, d.y, m.size.0, m.size.1)));
+                    }
                     // a press that hardly moved is a press on what is under it, or on nothing
                     Phase::Up if d.dx.hypot(d.dy) < 5.0 => {
                         m.cam = m.grab;
                         m.picked = map::hit(m.feats.iter().enumerate().filter(|(_, f)| !m.hidden.contains(&f.kind)), &m.cam, m.size.0, m.size.1, d.x, d.y);
                     }
                     _ => m.cam = map::Camera::dragged(m.grab, d.dx, d.dy),
+                }
+            }
+            if let Some([lon, lat]) = put {
+                if write_map(s, |body| map::add(body, serde_json::json!({"type": "Point", "coordinates": [lon, lat]}))) {
+                    // the new point is picked, when the page comes back with it
+                    let coming = s.save_req.is_pending();
+                    if let Some(m) = &mut s.map {
+                        if coming { m.pick_new = true } else { m.picked = m.feats.len().checked_sub(1) }
+                    }
                 }
             }
             sync_tiles(s);
@@ -1257,11 +1279,16 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         }
     }
     for (n, (i, p)) in dots.iter().take(MAP_DOTS).enumerate() {
-        let [x, y] = to(*p);
+        let [mut x, mut y] = to(*p);
         if !(-20.0..=w + 20.0).contains(&x) || !(-20.0..=h + 20.0).contains(&y) {
             continue;
         }
         let i = *i;
+        // a point being dragged is drawn where it is held
+        if let Some((_, dx, dy)) = m.moving.filter(|(at, ..)| *at == i) {
+            (x, y) = (x + dx, y + dy);
+        }
+        let (was, scale) = (*p, m.cam.scale);
         let on = m.picked == Some(i);
         let f = &m.feats[i];
         // a point with a glyph is larger, to hold it. The sizes are the web client's
@@ -1276,9 +1303,26 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                 .children((!f.icon.is_empty()).then(|| text(f.icon).font(k.ty.small_medium).color(rune::Color::WHITE).inert()))
                 .border(2.0, c.bg_base)
                 .label(m.feats[i].name.clone())
-                .on_press(move |s: &mut App| {
-                    if let Some(m) = &mut s.map {
-                        m.picked = if m.picked == Some(i) { None } else { Some(i) };
+                .on_drag(move |s: &mut App, d, _| {
+                    let may = map_changes(s);
+                    let Some(m) = &mut s.map else { return };
+                    match d.phase {
+                        Phase::Down => {}
+                        // a press picks it, or lets it go
+                        Phase::Up if m.moving.is_none() => {
+                            if d.dx.hypot(d.dy) < 5.0 {
+                                m.picked = if m.picked == Some(i) { None } else { Some(i) };
+                            }
+                        }
+                        // the picked point goes where it is dragged, and is saved there when let go
+                        Phase::Move if m.picked == Some(i) && may && (m.moving.is_some() || d.dx.hypot(d.dy) >= 5.0) => m.moving = Some((i, d.dx, d.dy)),
+                        Phase::Move => {}
+                        Phase::Up => {
+                            m.moving = None;
+                            let Some(at) = m.feats.get(i).map(|f| f.at) else { return };
+                            let (from, to) = (map::lonlat(was), map::lonlat([was[0] + d.dx as f64 / scale, was[1] + d.dy as f64 / scale]));
+                            write_map(s, |body| map::shift(body, at, to[0] - from[0], to[1] - from[1]));
+                        }
                     }
                 }),
         );
@@ -1389,9 +1433,16 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
     };
     let showing = m.feats.iter().filter(|f| !m.hidden.contains(&f.kind)).count();
     let count = text(if showing == m.feats.len() { format!("{showing} shapes{ground}") } else { format!("{showing} of {} shapes{ground}", m.feats.len()) }).font(k.ty.small).color(c.text_muted);
+    let point = map_changes(s).then(|| {
+        Button::new("Point").control_size(ControlSize::Small).variant(if m.adding { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("Put a point where the map is pressed next. Press again to stop").on_press(|s: &mut App| {
+            if let Some(m) = &mut s.map {
+                m.adding = !m.adding;
+            }
+        }).build(k).key("map-point")
+    });
     let base = Button::new(format!("Base: {}", m.style)).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("The next base map: streets, outdoors, satellite, dark. It is kept in the page").on_press(next_base).build(k).key("map-base");
     let token = (s.conn.is_some() && s.tile_status.as_ref().is_some_and(|t| !t.token)).then(|| Button::new("Set Mapbox token").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(ask_token).build(k).key("map-token"));
-    view.child(row().key("map-tools").absolute(12.0, h - 40.0).gap(6.0).center_y().child(zoom("zoom-in", "+", 2.0)).child(zoom("zoom-out", "−", 0.5)).child(zoom("zoom-fit", "Fit", 0.0)).child(base).children(token).child(count))
+    view.child(row().key("map-tools").absolute(12.0, h - 40.0).gap(6.0).center_y().child(zoom("zoom-in", "+", 2.0)).child(zoom("zoom-out", "−", 0.5)).child(zoom("zoom-fit", "Fit", 0.0)).children(point).child(base).children(token).child(count))
 }
 
 /// Whether a wiki link's target is a page not written yet: no page and

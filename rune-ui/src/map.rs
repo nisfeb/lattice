@@ -79,6 +79,13 @@ pub fn mercator(lon: f64, lat: f64) -> P {
     [lon / 360.0 + 0.5, 0.5 - (std::f64::consts::FRAC_PI_4 + lat / 2.0).tan().ln() / std::f64::consts::TAU]
 }
 
+/// The longitude and latitude of a position on the unit square: what
+/// `mercator` undoes. The longitude is held in -180 to 180.
+pub fn lonlat(p: P) -> [f64; 2] {
+    let lon = ((p[0] - 0.5) * 360.0 + 180.0).rem_euclid(360.0) - 180.0;
+    [lon, (std::f64::consts::PI * (1.0 - 2.0 * p[1])).sinh().atan().to_degrees().clamp(-85.0511, 85.0511)]
+}
+
 fn pos(v: &Value) -> Option<P> {
     let a = v.as_array()?;
     Some(mercator(a.first()?.as_f64()?, a.get(1)?.as_f64()?))
@@ -403,6 +410,42 @@ pub fn remove(body: &str, at: usize) -> Option<String> {
     })
 }
 
+/// A map page with a new feature of this geometry and no properties,
+/// after the others.
+pub fn add(body: &str, geometry: Value) -> Option<String> {
+    change(body, |d| {
+        d.get_mut("features")?.as_array_mut()?.push(serde_json::json!({"type": "Feature", "geometry": geometry, "properties": {}}));
+        Some(())
+    })
+}
+
+/// A map page with its feature `at` moved by so many degrees, every
+/// position of it. Anything a position has past its first two is kept.
+pub fn shift(body: &str, at: usize, dlon: f64, dlat: f64) -> Option<String> {
+    fn walk(c: &mut Value, dlon: f64, dlat: f64) {
+        let Value::Array(a) = c else { return };
+        if let [Value::Number(x), Value::Number(y), ..] = a.as_slice() {
+            let (lon, lat) = ((x.as_f64().unwrap_or(0.0) + dlon + 180.0).rem_euclid(360.0) - 180.0, (y.as_f64().unwrap_or(0.0) + dlat).clamp(-89.999_999_9, 89.999_999_9));
+            (a[0], a[1]) = (lon.into(), lat.into());
+        } else {
+            a.iter_mut().for_each(|x| walk(x, dlon, dlat));
+        }
+    }
+    fn geom(g: &mut Value, dlon: f64, dlat: f64) {
+        if let Some(Value::Array(a)) = g.get_mut("geometries") {
+            a.iter_mut().for_each(|h| geom(h, dlon, dlat));
+        }
+        if let Some(c) = g.get_mut("coordinates") {
+            walk(c, dlon, dlat);
+        }
+    }
+    change(body, |d| {
+        let g = d.get_mut("features")?.as_array_mut()?.get_mut(at)?.get_mut("geometry").filter(|g| g.is_object())?;
+        geom(g, dlon, dlat);
+        Some(())
+    })
+}
+
 /// How near a press must be to a shape to pick it, in points. The web client's.
 const TOL: f32 = 10.0;
 
@@ -663,6 +706,29 @@ mod tests {
         assert!(out.contains("ghost") && !out.contains("\"A\""));
         assert_eq!(remove(body, 3), None);
         assert_eq!(remove("{}", 0), None);
+    }
+
+    #[test]
+    fn a_point_is_added_where_it_was_put_and_a_feature_moved() {
+        // a place on the map and back again is the same place
+        for (lon, lat) in [(-73.9857, 40.7484), (151.2, -33.87), (0.0, 0.0), (-179.5, 84.0)] {
+            let [a, b] = lonlat(mercator(lon, lat));
+            assert!((a - lon).abs() < 1e-9 && (b - lat).abs() < 1e-9, "{lon} {lat} gave {a} {b}");
+        }
+        let body = "{\"type\":\"FeatureCollection\",\"lattice\":{},\"features\":[\n{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[1,2,30],[3,4]]},\"properties\":{\"name\":\"L\"}}\n]}\n";
+        let [lon, lat] = lonlat(mercator(-73.98570001, 40.5));
+        let out = add(body, serde_json::json!({"type": "Point", "coordinates": [lon, lat]})).unwrap();
+        // the web client writes a new point this way: after the others, with empty properties, rounded
+        assert_eq!(out, body.replace("}}\n]}", "}},\n{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[-73.9857,40.5]},\"properties\":{}}\n]}"));
+        // moved: every position, the height of one kept, the name kept
+        let out = shift(&out, 0, 0.5, -0.25).unwrap();
+        assert!(out.contains(r#"{"type":"LineString","coordinates":[[1.5,1.75,30],[3.5,3.75]]},"properties":{"name":"L"}}"#), "{out}");
+        assert!(out.contains("[-73.9857,40.5]"), "the other feature stays");
+        // over the date line it comes round, and it stops short of the pole
+        let out = shift(&out, 1, 260.0, 80.0).unwrap();
+        assert!(out.contains("[-173.9857,89.9999999]"), "{out}");
+        assert_eq!(shift(body, 5, 1.0, 1.0), None);
+        assert_eq!(add("[]", Value::Null), None);
     }
 
     #[test]

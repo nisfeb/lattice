@@ -1,0 +1,7 @@
+{"events": [
+  {"t": 3.0, "type": "tap", "key": "runmap"},
+  {"t": 5.0, "type": "tap", "key": "map-point"},
+  {"t": 5.5, "type": "drag", "x": 800, "y": 500, "dx": 0, "dy": 0, "dur": 0.1},
+  {"t": 7.5, "type": "tap", "key": "map-point"},
+  {"t": 8.0, "type": "drag", "x": 800, "y": 500, "dx": 100, "dy": 50, "dur": 0.5}
+]}
