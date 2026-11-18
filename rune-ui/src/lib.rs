@@ -21,6 +21,7 @@ mod md;
 mod odf;
 mod pdf;
 mod ribbon;
+mod rpane;
 mod scad;
 mod scadrun;
 mod search;
@@ -463,6 +464,8 @@ struct App {
     /// The side pane shows links: the pages that link to the one named,
     /// as the ship last said.
     pane_links: bool,
+    /// Of the links, the pane shows those that come here, not those that go out.
+    pane_back: bool,
     back: Option<(String, Vec<String>)>,
     back_req: Latest<Result<(String, Vec<String>), String>>,
     /// An OpenSCAD page being drawn by this machine's openscad: its name, its revision, and what came of it.
@@ -788,7 +791,8 @@ fn init() -> App {
         edit: TextEdit::new(""),
         rich: false,
         seps: md::Seps::default(),
-        inspector: PaneState::new(240.0).range(200.0, 360.0).collapsed(),
+        // open from the start, as the web client's is
+        inspector: PaneState::new(240.0).range(200.0, 360.0),
         revs: None,
         old: None,
         hist_req: Latest::default(),
@@ -811,7 +815,9 @@ fn init() -> App {
         dshares: HashMap::new(),
         sharing: false,
         pane_comments: false,
-        pane_links: false,
+        // the pane opens on the page's outgoing links, which cost no request
+        pane_links: true,
+        pane_back: false,
         back: None,
         back_req: Latest::default(),
         tex_req: Latest::default(),
@@ -3550,7 +3556,7 @@ fn go(s: &mut App, name: &str) {
 }
 
 /// The links pane: the pages that link here, and the pages this one links to.
-fn links_view(s: &App, k: &Kit) -> El {
+fn links_view(s: &App, k: &Kit, back: bool) -> El {
     let c = &k.c;
     let Some(p) = &s.open else {
         return col().key("links").w_full().padding(12.0).child(text("Open a page to see its links.").font(k.ty.small).color(c.text_muted).wrap());
@@ -3582,7 +3588,8 @@ fn links_view(s: &App, k: &Kit) -> El {
     if outs.is_empty() {
         out = out.child(text("No links to other pages.").font(k.ty.small).color(c.text_faint));
     }
-    col().key("links").w_full().h_full().min_h(0.0).padding(12.0).gap(14.0).child(text("Links").font(k.ty.ui_medium).color(c.text_base)).child(here).child(out).scroll(ScrollSpec { stick_bottom: false })
+    // one tab for the links that come here and one for those that go out, as on the web
+    col().key("links").w_full().h_full().min_h(0.0).padding(12.0).gap(14.0).child(if back { here } else { out }).scroll(ScrollSpec { stick_bottom: false })
 }
 
 /// Shows one of the side pane's three views, or closes the pane when
@@ -3595,11 +3602,50 @@ fn show_pane(s: &mut App, comments: bool, links: bool) {
     if !s.inspector.is_open() {
         s.inspector.toggle();
     }
-    (s.pane_comments, s.pane_links) = (comments, links);
+    (s.pane_comments, s.pane_links, s.pane_back) = (comments, links, false);
     s.old = None;
     load_history(s);
     load_comments(s);
     load_links(s);
+}
+
+/// The right pane's tab in front, as its flags say.
+fn pane_now(s: &App) -> rpane::Tab {
+    match (s.pane_links, s.pane_back, s.pane_comments) {
+        (true, false, _) => rpane::Tab::Out,
+        (true, true, _) => rpane::Tab::Back,
+        (false, _, true) => rpane::Tab::Comments,
+        (false, _, false) => rpane::Tab::Hist,
+    }
+}
+
+/// Brings one of the right pane's tabs to the front, and reads what it shows.
+fn pane_tab(s: &mut App, tab: rpane::Tab) {
+    use rpane::Tab;
+    s.inspector.set_open(true);
+    (s.pane_comments, s.pane_links, s.pane_back) = (tab == Tab::Comments, matches!(tab, Tab::Out | Tab::Back), tab == Tab::Back);
+    s.old = None;
+    load_history(s);
+    load_comments(s);
+    load_links(s);
+}
+
+/// The right pane: its tabs as icons, then what the one in front shows.
+fn right_pane(s: &App, k: &Kit) -> El {
+    let own = s.open.is_some() && !s.memory && s.remote.is_none();
+    let now = rpane::front(pane_now(s), own);
+    let mut tabs = row().key("rtabs").role("tablist").label("Right pane").w_full().gap(4.0).px(8.0).pt(8.0);
+    for cell in rpane::tabs(pane_now(s), own) {
+        let what = cell.what;
+        tabs = tabs.child(IconButton::new(cell.icon).control_size(ControlSize::Large).variant(if cell.on { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help(cell.name).on_press(move |s: &mut App| pane_tab(s, what)).build(k).key(cell.key));
+    }
+    let body = match now {
+        rpane::Tab::Out => links_view(s, k, false),
+        rpane::Tab::Back => links_view(s, k, true),
+        rpane::Tab::Comments => comments_view(s, k),
+        rpane::Tab::Hist => history_view(s, k),
+    };
+    col().key("rpane").w_full().h_full().min_h(0.0).child(tabs).child(col().w_full().grow(1.0).min_h(0.0).child(body))
 }
 
 /// Reads the open page's revisions when the history pane is showing.
@@ -9535,16 +9581,11 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             }).build(&k).key("ask-edit"));
         }
     } else if page {
-        // what the right pane holds, as icons until the pane has tabs of its own. A memory has only its history
-        let pane = |icon: &'static rune::Icon, name: &str, key: &str, f: fn(&mut App)| IconButton::new(icon).variant(IconButtonVariant::GhostMuted).help(name).on_press(f).build(&k).key(key.to_owned());
+        // sharing, until the right pane has its Page tab. Links, comments and history are the pane's own tabs
         if !s.memory {
             let shared = s.open.as_ref().and_then(|p| s.shares.get(&p.name)).is_some_and(|m| m != "private");
-            trailing = trailing
-                .child(pane(&tabhead::GEAR, if shared { "Sharing: shared" } else { "Sharing" }, "share", open_share))
-                .child(pane(&tabhead::OUT, "Links: pages that link here, and pages this links to", "links-toggle", |s| show_pane(s, false, true)))
-                .child(pane(&tabhead::COMMENT, "Comments", "comments-toggle-pane", |s| show_pane(s, true, false)));
+            trailing = trailing.child(IconButton::new(&tabhead::GEAR).variant(IconButtonVariant::GhostMuted).help(if shared { "Sharing: shared" } else { "Sharing" }).on_press(open_share).build(&k).key("share"));
         }
-        trailing = trailing.child(pane(&tabhead::HIST, "History", "history-toggle", |s| show_pane(s, false, false)));
     }
     if sw.shown && (sw.can_edit || sw.editing) {
         // Edit and Read, as one switch: Read from an edit saves what was typed, as Ctrl+E does
@@ -9619,7 +9660,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let right = IconButton::new(&topbar::PANE_RIGHT).variant(if s.inspector.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help("Right pane").on_press(toggle_right).build(&k).key("pane-right");
     let shell = SplitView::new(main)
         .sidebar(&s.sidebar, |s: &mut App| &mut s.sidebar, sidebar(s, &k))
-        .inspector(&s.inspector, |s: &mut App| &mut s.inspector, if s.pane_links { links_view(s, &k) } else if s.pane_comments { comments_view(s, &k) } else { history_view(s, &k) })
+        .inspector(&s.inspector, |s: &mut App| &mut s.inspector, right_pane(s, &k))
         .toolbar(Toolbar::new().leading(tab_strip(s, &k)).trailing(right))
         // the left pane's toggle is the ribbon's first icon, as on the web
         .hide_sidebar_toggle()
@@ -10290,7 +10331,10 @@ mod tests {
     #[test]
     fn the_links_pane_knows_what_links_here_and_which_links_are_ghosts() {
         let mut s = sample("notes/today");
-        show_pane(&mut s, false, true);
+        // the pane is open from the start, on the links that go out
+        assert!(s.inspector.is_open() && pane_now(&s) == rpane::Tab::Out);
+        pane_tab(&mut s, rpane::Tab::Back);
+        assert_eq!(pane_now(&s), rpane::Tab::Back);
         assert_eq!(s.back, Some(("notes/today".to_owned(), vec!["welcome".to_owned()])));
         assert!(ghost(&s, "not/written") && !ghost(&s, "welcome"));
         // a memory by that name is not a ghost either
@@ -10303,7 +10347,7 @@ mod tests {
         cancel_edit(&mut s);
         go(&mut s, "welcome");
         assert_eq!(s.open.as_ref().map(|p| p.name.as_str()), Some("welcome"));
-        // the same button closes the pane
+        // the links command, with the links showing, closes the pane
         show_pane(&mut s, false, true);
         assert!(!s.inspector.is_open());
     }
