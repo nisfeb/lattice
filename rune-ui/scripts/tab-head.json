@@ -1,0 +1,16 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 1.5, "type": "tap", "key": "welcome"},
+  {"t": 3.0, "type": "tap", "key": "edit"},
+  {"t": 4.0, "type": "type", "text": "typed "},
+  {"t": 5.0, "type": "tap", "key": "read"},
+  {"t": 7.0, "type": "tap", "key": "rename"},
+  {"t": 8.0, "type": "key", "name": "Escape"},
+  {"t": 9.0, "type": "tap", "key": "notes/today"},
+  {"t": 10.0, "type": "tap", "key": "back"},
+  {"t": 11.0, "type": "tap", "key": "page-menu-open"},
+  {"t": 13.0, "type": "tap", "key": "page-menu-item1"},
+  {"t": 14.5, "type": "tap", "key": "page-menu-open"},
+  {"t": 15.5, "type": "tap", "key": "page-menu-item5"},
+  {"t": 17.0, "type": "tap", "key": "prompt-ok"}
+]}

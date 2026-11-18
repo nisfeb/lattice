@@ -27,6 +27,7 @@ mod search;
 mod sheet;
 mod shift;
 mod styles;
+mod tabhead;
 mod tex;
 mod topbar;
 mod upload;
@@ -42,6 +43,7 @@ use rune_kit::shell::{self, PaneState, SplitView, Toolbar};
 use rune_kit::syntax::{self, SyntaxTheme};
 use rune_kit::{Cell, Table, TableColumn, TableState};
 use rune_kit::Switch;
+use rune_kit::{Menu, MenuItem};
 use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, IconButton, IconButtonVariant, Divider, FileNode, FileTree, Kit, Markdown, Spinner, TextArea, TextInput, Tree, TreeItem, TreeModel};
 
 type Files = TreeModel<FileNode<Node>>;
@@ -642,6 +644,8 @@ struct App {
     sskipped: usize,
     /// The result the arrows are on.
     search_at: Option<usize>,
+    /// The page menu in the tab header is open.
+    page_menu: bool,
     /// The left pane's Bookmarks tab is showing.
     marks_open: bool,
     /// The bookmarks the reader keeps, once read.
@@ -922,6 +926,7 @@ fn init() -> App {
         sfound: 0,
         sskipped: 0,
         search_at: None,
+        page_menu: false,
         marks_open: false,
         marks: None,
         marks_req: Latest::default(),
@@ -9486,7 +9491,11 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let named = path.and_then(|p| s.dnames.get(p).filter(|_| !s.memory && s.remote.is_none()).map(|d| format!("{d}  ({p})")));
     let title = if s.settings.is_some() { "Settings" } else if s.forum.is_some() { "Forum" } else if s.inbox { "Inbox" } else if s.shared_open { "Shared with me" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
     let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending();
-    let mut trailing = row().gap(8.0).center_y();
+    let mut layer = Vec::new();
+    let page = s.open.is_some() && !s.access && !s.shared_open && !s.inbox;
+    let remote = s.remote.as_ref().filter(|_| page);
+    let sw = tabhead::switch(page, s.editing, remote.is_none_or(Shared::editable));
+    let mut trailing = row().gap(6.0).center_y();
     if busy {
         trailing = trailing.child(Spinner::new().build(&k));
     }
@@ -9495,12 +9504,12 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             trailing = trailing.child(text(s.vim.indicator()).key("vim-mode").font(k.ty.small_medium).color(k.c.text_muted));
         }
         trailing = trailing
-            .child(Button::new(if s.rich { "Source" } else { "Rich text" }).variant(ButtonVariant::GhostMuted).on_press_tx(|s: &mut App, tx| {
+            .child(Button::new(if s.rich { "Source" } else { "Rich text" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press_tx(|s: &mut App, tx| {
                 flip_mode(s);
                 tx.focus_when_shown(FIELD, false);
             }).build(&k).key("mode"));
         if !s.rich {
-            trailing = trailing.child(Button::new(if s.preview { "Hide preview" } else { "Preview" }).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| s.preview ^= true).build(&k).key("preview-toggle"));
+            trailing = trailing.child(Button::new(if s.preview { "Hide preview" } else { "Preview" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| s.preview ^= true).build(&k).key("preview-toggle"));
         }
         trailing = trailing
             .child(Switch::new(!s.prefs.no_autosave).label("Autosave").on_toggle(|s: &mut App| {
@@ -9508,74 +9517,103 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
                 if s.conn.is_some() {
                     s.prefs.save();
                 }
-            }).build(&k).key("autosave"))
-            .child(Button::new("Cancel").variant(ButtonVariant::Ghost).on_press(cancel_edit).build(&k).key("cancel"))
-            .child(Button::new("Save").variant(ButtonVariant::Contrast).on_press(save).build(&k).key("save"));
-    } else if let Some(sh) = s.remote.as_ref().filter(|_| s.open.is_some() && !s.access && !s.shared_open && !s.inbox) {
+            }).build(&k).key("autosave"));
+    } else if let Some(sh) = remote {
         // another ship's page: read, and edited when that ship lets this one
         trailing = trailing.child(text(format!("from {}", sh.host)).font(k.ty.small).color(k.c.text_muted));
         // the reader's star: kept on the ship, and listed in the pane's Bookmarks tab
         let kept = s.marks.as_deref().is_some_and(|m| marks::has(m, &mark_url(sh)));
-        trailing = trailing.child(Button::new(if kept { "Bookmarked" } else { "Bookmark" }).variant(ButtonVariant::GhostMuted).help(if kept { "Drop the bookmark of this page" } else { "Keep this page as a bookmark" }).on_press(star).build(&k).key("star"));
+        trailing = trailing.child(Button::new(if kept { "Bookmarked" } else { "Bookmark" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help(if kept { "Drop the bookmark of this page" } else { "Keep this page as a bookmark" }).on_press(star).build(&k).key("star"));
         // a page read by its address was published, not shared with this ship: there is no edit to ask for
         if !sh.editable() && sh.mode != "published" {
             // read only: the host can be asked for more
             let (to, asked) = (sh.clone(), s.asks.sent.iter().any(|a| a.ship == sh.host && a.path == sh.path));
-            trailing = trailing.child(Button::new(if asked { "Ask again" } else { "Ask to edit" }).variant(ButtonVariant::Ghost).help(if asked { "You asked already. Asking again replaces that request" } else { "Ask its ship to let you edit it" }).on_press(move |s: &mut App| {
+            trailing = trailing.child(Button::new(if asked { "Ask again" } else { "Ask to edit" }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(if asked { "You asked already. Asking again replaces that request" } else { "Ask its ship to let you edit it" }).on_press(move |s: &mut App| {
                 let mut t = TextEdit::new("");
                 t.focused = true;
                 s.prompt = Some(Prompt::Ask(to.clone(), t));
             }).build(&k).key("ask-edit"));
         }
-        if sh.editable() {
-            trailing = trailing.child(Button::new("Edit").variant(ButtonVariant::Ghost).on_press_tx(|s: &mut App, tx| {
-                start_edit(s);
-                tx.focus_when_shown(FIELD, false);
-            }).build(&k).key("edit"));
-        }
-    } else if s.open.is_some() && !s.access && !s.shared_open && !s.inbox {
-        // a memory has no sharing, history pane or rename here
+    } else if page {
+        // what the right pane holds, as icons until the pane has tabs of its own. A memory has only its history
+        let pane = |icon: &'static rune::Icon, name: &str, key: &str, f: fn(&mut App)| IconButton::new(icon).variant(IconButtonVariant::GhostMuted).help(name).on_press(f).build(&k).key(key.to_owned());
         if !s.memory {
             let shared = s.open.as_ref().and_then(|p| s.shares.get(&p.name)).is_some_and(|m| m != "private");
-            trailing = trailing.child(Button::new(if shared { "Shared" } else { "Share" }).variant(ButtonVariant::GhostMuted).on_press(open_share).build(&k).key("share"));
+            trailing = trailing
+                .child(pane(&tabhead::GEAR, if shared { "Sharing: shared" } else { "Sharing" }, "share", open_share))
+                .child(pane(&tabhead::OUT, "Links: pages that link here, and pages this links to", "links-toggle", |s| show_pane(s, false, true)))
+                .child(pane(&tabhead::COMMENT, "Comments", "comments-toggle-pane", |s| show_pane(s, true, false)));
         }
-        if !s.memory {
-            // one side pane, three things in it: pressing the one showing closes it
-            trailing = trailing.child(Button::new("Links").variant(ButtonVariant::GhostMuted).help("Pages that link here, and pages this links to").on_press(|s: &mut App| show_pane(s, false, true)).build(&k).key("links-toggle"));
-            trailing = trailing.child(Button::new("Comments").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| show_pane(s, true, false)).build(&k).key("comments-toggle-pane"));
-        }
-        trailing = trailing.child(Button::new("History").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| show_pane(s, false, false)).build(&k).key("history-toggle"));
-        trailing = trailing.child(Button::new("Delete").variant(ButtonVariant::GhostMuted).on_press(ask_delete).build(&k).key("delete"));
-        trailing = trailing.child(Button::new("Rename").variant(ButtonVariant::GhostMuted).on_press(ask_rename).build(&k).key("rename"));
-        trailing = trailing
-            .child(Button::new("Edit").variant(ButtonVariant::Ghost).on_press_tx(|s: &mut App, tx| {
-                start_edit(s);
-                tx.focus_when_shown(FIELD, false);
-            }).build(&k).key("edit"));
+        trailing = trailing.child(pane(&tabhead::HIST, "History", "history-toggle", |s| show_pane(s, false, false)));
     }
-    let mut layer = Vec::new();
+    if sw.shown && (sw.can_edit || sw.editing) {
+        // Edit and Read, as one switch: Read from an edit saves what was typed, as Ctrl+E does
+        let side = |label: &str, on: bool| Button::new(label).control_size(ControlSize::Small).variant(if on { ButtonVariant::Contrast } else { ButtonVariant::Ghost });
+        trailing = trailing.child(
+            row()
+                .key("edit-read")
+                .role("group")
+                .label("Edit or Read")
+                .gap(2.0)
+                .padding(2.0)
+                .radius(k.radius.md)
+                .fill(k.c.layer_01)
+                .child(side("Edit", sw.editing).help("Edit / Read (Ctrl+E)").on_press_tx(|s: &mut App, tx| {
+                    if !s.editing {
+                        start_edit(s);
+                        tx.focus_when_shown(FIELD, false);
+                    }
+                }).build(&k).key("edit"))
+                .child(side("Read", !sw.editing).help("Edit / Read (Ctrl+E)").on_press(|s: &mut App| {
+                    if s.editing {
+                        save(s);
+                    }
+                }).build(&k).key("read")),
+        );
+    }
+    if s.editing {
+        trailing = trailing
+            .child(Button::new("Cancel").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Leave the edit and drop what was typed").on_press(cancel_edit).build(&k).key("cancel"))
+            .child(IconButton::new(&tabhead::SAVE).variant(IconButtonVariant::Neutral).help("Save").shortcut("Ctrl+S").on_press(save).build(&k).key("save"));
+    }
+    let items = if page && !s.editing { tabhead::menu(|id| usable(s, id)) } else { Vec::new() };
+    if !items.is_empty() {
+        let dots = IconButton::new(&tabhead::DOTS).variant(IconButtonVariant::GhostMuted).help("Page menu").expanded(s.page_menu).on_press(|s: &mut App| s.page_menu ^= true).build(&k).key("page-menu-open");
+        let mut menu = Menu::new("page-menu").trigger(dots).open(s.page_menu).on_close(|s: &mut App| s.page_menu = false);
+        for it in items {
+            menu = menu.item(MenuItem::new(it.label).danger(it.danger).on_select_tx(move |s: &mut App, tx| {
+                s.page_menu = false;
+                run_command(s, it.id, tx);
+            }));
+        }
+        trailing = trailing.child(menu.build(&k, &mut layer));
+    }
     switcher(s, &k, &mut layer);
     palette_view(s, &k, &mut layer);
     template_view(s, &k, &mut layer);
     prompt_view(s, &k, &mut layer);
     share_view(s, &k, &mut layer);
-    let nav = |key: &str, label: &str, by: isize, on: bool| {
-        Button::new(label).variant(ButtonVariant::GhostMuted).disabled(!on).on_press(move |s: &mut App| step(s, by)).build(&k).key(key.to_owned())
+    let nav = |key: &str, icon: &'static rune::Icon, name: &str, by: isize, on: bool| IconButton::new(icon).variant(IconButtonVariant::GhostMuted).help(name).disabled(!on).on_press(move |s: &mut App| step(s, by)).build(&k).key(key.to_owned());
+    let name = text(title.to_owned()).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate();
+    // the name is the way to move or rename the page, as on the web
+    let name = if page && remote.is_none() && !s.editing {
+        row().key("rename").role("button").label(format!("{title}: move or rename")).help("Move or rename").min_w(0.0).px(6.0).h(24.0).center_y().radius(k.radius.sm).on_press(ask_rename).child(name)
+    } else {
+        row().min_w(0.0).px(6.0).center_y().child(name)
     };
     let leading = row()
         .gap(2.0)
         .center_y()
-        .child(nav("back", "‹", -1, s.trail_at > 0 && !s.editing))
-        .child(nav("forward", "›", 1, s.trail_at + 1 < s.trail.len() && !s.editing))
-        // the title sits beside them, not centred: a centred one ran under the buttons in a narrow window
-        .child(text(title.to_owned()).key("title").font(k.ty.ui_medium).color(k.c.text_base).truncate().pl(6.0));
+        .child(nav("back", &tabhead::LEFT, "Back", -1, s.trail_at > 0 && !s.editing))
+        .child(nav("forward", &tabhead::RIGHT, "Forward", 1, s.trail_at + 1 < s.trail.len() && !s.editing))
+        .child(name);
     let main = body(s, &k);
     let main = match s.split.as_ref().filter(|_| !s.memory) {
         Some(name) => row().w_full().h_full().min_h(0.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(main)).child(Divider::vertical().build(&k)).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(split_view(name, s, &k))),
         None => main,
     };
     // under the top bar, the page's own bar: where it has been, its name, and what can be done with it
-    let head = row().key("tab-head").w_full().h(36.0).px(8.0).gap(8.0).center_y().justify_between().child(leading.grow(1.0).min_w(64.0)).child(trailing);
+    let head = row().key("tab-head").w_full().h(36.0).px(8.0).gap(8.0).center_y().justify_between().child(leading.grow(1.0).min_w(0.0)).child(trailing);
     let main = col().w_full().h_full().min_h(0.0).child(head).child(col().w_full().grow(1.0).min_h(0.0).child(main));
     let inset = cx.titlebar_inset();
     let right = IconButton::new(&topbar::PANE_RIGHT).variant(if s.inspector.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help("Right pane").on_press(toggle_right).build(&k).key("pane-right");
