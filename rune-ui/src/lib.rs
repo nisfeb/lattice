@@ -609,6 +609,11 @@ struct App {
     tab: usize,
     /// The page held beside the one in front, to read while working on another.
     split: Option<String>,
+    /// The group of tabs beside the one in front, parked: its tabs, and which of them shows. `split` is that tab's page.
+    side_tabs: Vec<Tab>,
+    side_tab: usize,
+    /// The group in front is the right one of the two: a group stays on its side when it comes to the front.
+    front_right: bool,
     /// The tree is to be read once more a moment from now: the ship
     /// answers a batch before it has written all of it.
     resync: bool,
@@ -916,6 +921,9 @@ fn init() -> App {
         tabs: vec![Tab::default()],
         tab: 0,
         split: None,
+        side_tabs: Vec::new(),
+        side_tab: 0,
+        front_right: false,
         resync: false,
         find: None,
         find_at: 0,
@@ -4933,6 +4941,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     // the page held beside last run is held again, if it is still there
                     if s.names.contains(&s.prefs.split) {
                         s.split = Some(s.prefs.split.clone());
+                        (s.side_tabs, s.side_tab) = (vec![Tab { trail: vec![s.prefs.split.clone()], at: 0 }], 0);
                     }
                     let last = s.prefs.last.clone();
                     if s.open.is_none() && !restore_tabs(s) && s.names.contains(&last) {
@@ -5660,11 +5669,61 @@ fn template_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
 /// Holds the page in front beside whatever comes next, or lets go of
 /// the one held.
 fn toggle_split(s: &mut App) {
-    s.split = match (&s.split, s.open.as_ref().filter(|_| s.remote.is_none() && !s.capture && !s.memory)) {
-        (None, Some(p)) => Some(p.name.clone()),
-        _ => None,
-    };
+    match (s.split.is_some(), s.open.as_ref().filter(|_| s.remote.is_none() && !s.capture && !s.memory)) {
+        // the page in front is held beside, as a group of one tab
+        (false, Some(p)) => (s.side_tabs, s.side_tab) = (vec![Tab { trail: vec![p.name.clone()], at: 0 }], 0),
+        _ => s.side_tabs.clear(),
+    }
+    sync_side(s);
+}
+
+/// Puts `split` in step with the group beside: its front tab's page, or
+/// nothing once the group has no tab left, which ends the split.
+fn sync_side(s: &mut App) {
+    if s.side_tabs.is_empty() {
+        (s.split, s.side_tab, s.front_right) = (None, 0, false);
+    } else {
+        s.side_tab = s.side_tab.min(s.side_tabs.len() - 1);
+        s.split = s.side_tabs[s.side_tab].page().map(str::to_owned);
+    }
     keep_split(s);
+}
+
+/// Brings the group beside to the front, whole, on its tab `i`. The
+/// group that was in front goes beside with every tab that holds a page,
+/// and each group stays on its side of the window.
+fn focus_side(s: &mut App, i: usize) {
+    if s.editing || s.memory || i >= s.side_tabs.len() {
+        return;
+    }
+    park_tab(s);
+    let (was, was_at) = (std::mem::replace(&mut s.tabs, std::mem::take(&mut s.side_tabs)), s.tab);
+    s.side_tab = 0;
+    for (j, tab) in was.into_iter().enumerate() {
+        // an empty tab has nothing to show beside
+        if tab.page().is_some() {
+            if j == was_at {
+                s.side_tab = s.side_tabs.len();
+            }
+            s.side_tabs.push(tab);
+        }
+    }
+    s.front_right = !s.front_right;
+    load_tab(s, i);
+    sync_side(s);
+    keep_tabs(s);
+}
+
+/// Closes one tab of the group beside. The last one closed ends the split.
+fn close_side(s: &mut App, i: usize) {
+    if i >= s.side_tabs.len() {
+        return;
+    }
+    s.side_tabs.remove(i);
+    if s.side_tab > i {
+        s.side_tab -= 1;
+    }
+    sync_side(s);
 }
 
 /// Notes the page held beside in the preferences, to hold again next run.
@@ -5681,16 +5740,7 @@ fn keep_split(s: &mut App) {
 
 /// Brings the page held beside to the front, and holds the one that was there.
 fn swap_split(s: &mut App) {
-    if s.editing {
-        return;
-    }
-    let Some(name) = s.split.take() else { return };
-    s.split = s.open.as_ref().filter(|p| s.remote.is_none() && p.name != name).map(|p| p.name.clone());
-    if s.names.contains(&name) {
-        s.files.select(&name);
-        open_page(s, &name);
-    }
-    keep_split(s);
+    focus_side(s, s.side_tab);
 }
 
 /// The sheet held beside, to be read: its cells as they read, a tab for
@@ -5791,16 +5841,33 @@ fn beside_map(feats: &[map::Feature], k: &Kit) -> El {
 /// kind as its source, coloured.
 fn split_view(name: &str, s: &App, k: &Kit) -> El {
     let c = &k.c;
-    let title = s.dnames.get(name).cloned().unwrap_or_else(|| name.to_owned());
+    // the group's own tabs: a press on one brings the group to the front on it
+    let mut tabs = row().key("side-tabs").role("tablist").label("Tabs of the group beside").gap(2.0).center_y().grow(1.0).min_w(0.0);
+    for (i, tab) in s.side_tabs.iter().enumerate() {
+        let page = tab.page().unwrap_or("");
+        let label = s.dnames.get(page).cloned().unwrap_or_else(|| page.rsplit('/').next().unwrap_or(page).to_owned());
+        let front = i == s.side_tab;
+        tabs = tabs.child(
+            row()
+                .key(format!("side-tab-{i}"))
+                .center_y()
+                .radius(k.radius.sm)
+                .fill(if front { c.layer_01 } else { rune::Color::TRANSPARENT })
+                .min_w(0.0)
+                .child(Button::new(label).control_size(ControlSize::Small).variant(if front { ButtonVariant::Ghost } else { ButtonVariant::GhostMuted }).help(format!("{page}: bring this group to the front")).disabled(s.editing).on_press(move |s: &mut App| focus_side(s, i)).build(k).key(format!("side-tab-{i}-go")))
+                .child(IconButton::new(&head::X).control_size(ControlSize::Small).variant(IconButtonVariant::GhostMuted).help("Close this tab").on_press(move |s: &mut App| close_side(s, i)).build(k).key(format!("side-close-{i}"))),
+        );
+    }
+    let _ = name;
     let head = row()
         .w_full()
         .gap(6.0)
         .center_y()
-        .child(text(title).font(k.ty.small_medium).color(c.text_muted).grow(1.0).min_w(0.0).truncate())
-        .child(Button::new("Swap").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Bring this page to the front").disabled(s.editing).on_press(swap_split).build(k).key("split-swap"))
+        .child(tabs)
+        .child(Button::new("Swap").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Bring this group to the front").disabled(s.editing).on_press(swap_split).build(k).key("split-swap"))
         .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close the split").on_press(|s: &mut App| {
-            s.split = None;
-            keep_split(s);
+            s.side_tabs.clear();
+            sync_side(s);
         }).build(k).key("split-close"));
     let beside = s.cache.get(name).and_then(|p| s.beside.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev)).map(|(_, _, v)| v);
     let shown = match (s.cache.get(name), beside) {
@@ -5880,6 +5947,12 @@ fn switch_tab(s: &mut App, to: usize) {
         flip(s);
     }
     park_tab(s);
+    load_tab(s, to);
+    keep_tabs(s);
+}
+
+/// Shows tab `to` of the group in front: its history, and the page it was on.
+fn load_tab(s: &mut App, to: usize) {
     s.tab = to;
     let Tab { trail, at } = std::mem::take(&mut s.tabs[to]);
     (s.trail, s.trail_at) = (trail, at);
@@ -5897,7 +5970,6 @@ fn switch_tab(s: &mut App, to: usize) {
             s.trail_at = 0;
         }
     }
-    keep_tabs(s);
 }
 
 /// A new, empty tab, in front.
@@ -9759,7 +9831,12 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         .child(name);
     let main = body(s, &k);
     let main = match s.split.as_ref().filter(|_| !s.memory) {
-        Some(name) => row().w_full().h_full().min_h(0.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(main)).child(Divider::vertical().build(&k)).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(split_view(name, s, &k))),
+        Some(name) => {
+            // a group stays on its side: the one in front is drawn where it stood before it came forward
+            let (front, beside) = (col().key("group-front").grow(1.0).min_w(0.0).h_full().min_h(0.0).child(main), col().key("group-beside").grow(1.0).min_w(0.0).h_full().min_h(0.0).child(split_view(name, s, &k)));
+            let (left, right) = if s.front_right { (beside, front) } else { (front, beside) };
+            row().w_full().h_full().min_h(0.0).child(left).child(Divider::vertical().build(&k)).child(right)
+        }
         None => main,
     };
     // under the top bar, the page's own bar: where it has been, its name, and what can be done with it
@@ -10864,6 +10941,43 @@ mod tests {
         one.prefs.tabs = vec!["budget".into(), "welcome".into()];
         one.prefs.tab = 9;
         assert!(restore_tabs(&mut one) && one.tab == 1);
+    }
+
+    #[test]
+    fn the_group_beside_keeps_its_own_tabs_and_comes_to_the_front_whole() {
+        let side = |s: &App| s.side_tabs.iter().map(|t| t.page().unwrap_or("").to_owned()).collect::<Vec<_>>();
+        let open = |s: &App| s.open.as_ref().map(|p| p.name.clone());
+        let mut s = sample("welcome");
+        new_tab(&mut s);
+        open_page(&mut s, "budget");
+        // the front has two tabs. Splitting holds the page in front beside, as a group of one tab
+        toggle_split(&mut s);
+        assert_eq!((side(&s), s.side_tab, s.front_right), (vec!["budget".to_owned()], 0, false));
+        open_page(&mut s, "places");
+        // the group beside comes to the front whole, and the one that was in front is beside, with both its tabs
+        swap_split(&mut s);
+        assert_eq!((open(&s), s.tabs.len(), s.tab), (Some("budget".to_owned()), 1, 0));
+        assert_eq!((side(&s), s.side_tab), (vec!["welcome".to_owned(), "places".to_owned()], 1));
+        assert_eq!(s.split.as_deref(), Some("places"), "its front tab is the page shown beside");
+        assert!(s.front_right, "each group stays on its side: the one in front is now the right one");
+        // a press on a tab of the group beside brings that group to the front on that tab
+        focus_side(&mut s, 0);
+        assert_eq!((open(&s), s.tabs.len(), s.tab), (Some("welcome".to_owned()), 2, 0));
+        assert_eq!((side(&s), s.front_right), (vec!["budget".to_owned()], false));
+        // the tab that went beside in the middle of its history comes back with it
+        switch_tab(&mut s, 1);
+        assert_eq!(open(&s), Some("places".to_owned()));
+        step(&mut s, -1);
+        assert_eq!(open(&s), Some("budget".to_owned()), "back still goes to where that tab had been");
+        // closing the last tab beside ends the split
+        close_side(&mut s, 0);
+        assert_eq!((s.split.clone(), s.side_tabs.len(), s.front_right), (None, 0, false));
+        // an edit in front keeps the groups where they are
+        toggle_split(&mut s);
+        start_edit(&mut s);
+        let before = (open(&s), side(&s));
+        focus_side(&mut s, 0);
+        assert_eq!((open(&s), side(&s)), before);
     }
 
     #[test]

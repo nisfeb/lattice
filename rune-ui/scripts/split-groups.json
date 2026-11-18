@@ -1,0 +1,11 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 1.5, "type": "tap", "key": "welcome"},
+  {"t": 2.5, "type": "tap", "key": "tab-new"},
+  {"t": 3.5, "type": "tap", "key": "budget"},
+  {"t": 5.0, "type": "tap", "key": "split-toggle"},
+  {"t": 6.0, "type": "tap", "key": "places"},
+  {"t": 8.0, "type": "tap", "key": "split-swap"},
+  {"t": 11.0, "type": "tap", "key": "side-tab-0-go"},
+  {"t": 14.0, "type": "tap", "key": "side-close-0"}
+]}
