@@ -72,6 +72,8 @@ struct SheetView {
     table: TableState,
     /// The sheets again with each cell's type and style, and the page's styles: how the cells look.
     looks: Option<(sheet::Book, styles::Styles)>,
+    /// The sheet to show once the save in hand lands: one just added.
+    want: Option<usize>,
     /// The cell picked to be changed: its row and column.
     cursor: Option<(usize, usize)>,
     /// What is being typed into the picked cell.
@@ -1123,15 +1125,17 @@ fn sync_sheet(s: &mut App) {
         s.sheet = None;
         return;
     }
-    let (at, cursor) = (old.as_ref().map_or(0, |v| v.at).min(sheets.len() - 1), old.as_ref().and_then(|v| v.cursor));
+    // a sheet just added is the one shown, with no cell of the old one picked
+    let want = old.as_ref().and_then(|v| v.want);
+    let (at, cursor) = (want.or(old.as_ref().map(|v| v.at)).unwrap_or(0).min(sheets.len() - 1), if want.is_some() { None } else { old.as_ref().and_then(|v| v.cursor) });
     let (entry_was, stale) = (old.as_ref().map_or(String::new(), |v| v.entry_was.clone()), old.as_ref().map_or_else(Default::default, |v| v.stale.clone()));
     // where the grid was scrolled to and how wide its columns were dragged stay through a change
-    let (table, entry) = old.map_or_else(|| (TableState::new(), TextEdit::new("")), |v| (v.table, v.entry));
+    let (table, entry) = old.map_or_else(|| (TableState::new(), TextEdit::new("")), |v| if want.is_some() { (TableState::new(), TextEdit::new("")) } else { (v.table, v.entry) });
     let looks = sheet::book(&p.body).ok().map(|b| {
         let styles = styles::Styles::read(&p.body, b.null_date);
         (b, styles)
     });
-    s.sheet = Some(SheetView { name: p.name.clone(), rev: p.rev, at, sheets, looks, cursor, entry_was, stale, table, entry });
+    s.sheet = Some(SheetView { name: p.name.clone(), rev: p.rev, at, sheets, looks, want: None, cursor, entry_was, stale, table, entry });
 }
 
 /// The widest a sheet's grid is drawn. More columns are in the page, not on screen.
@@ -1198,6 +1202,21 @@ fn format_picked(s: &mut App, change: calc::Fmt) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(body) if body == p.body => {}
         Ok(body) => save_body(s, p, body),
+    }
+}
+
+/// Adds a sheet after the last, named as the web client names one, and shows it.
+fn add_sheet(s: &mut App) {
+    let (Some(p), Some(v)) = (s.open.clone(), &mut s.sheet) else { return };
+    if v.name != p.name {
+        return;
+    }
+    match sheet::add_sheet(&p.body, "") {
+        Err(why) => s.note = format!("not changed: {why}"),
+        Ok((body, at)) => {
+            v.want = Some(at);
+            save_body(s, p, body);
+        }
     }
 }
 
@@ -1321,6 +1340,9 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
                 .build(k)
                 .key(format!("sheet-{i}")),
         );
+    }
+    if may {
+        tabs = tabs.child(Button::new("+").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(add_sheet).build(k).key("sheet-add"));
     }
     let more = if sh.width() > SHEET_COLS { format!(", the first {SHEET_COLS} of {} columns", sh.width()) } else { String::new() };
     tabs = tabs.child(text(format!("{} rows{more}", sh.rows.len())).font(k.ty.small).color(c.text_muted).pl(8.0));

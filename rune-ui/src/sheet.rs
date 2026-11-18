@@ -912,6 +912,55 @@ pub fn put_cells(src: &str, sheet: usize, edits: &std::collections::BTreeMap<usi
     Ok(out)
 }
 
+/// Why a sheet cannot have this name, by the web client's rules, or nothing when it can.
+pub fn bad_sheet_name(name: &str, have: &[String]) -> Option<&'static str> {
+    if name.is_empty() {
+        return Some("a sheet needs a name");
+    }
+    if name.encode_utf16().count() > 100 || name.contains(['[', ']', '*', '?', ':', '/', '\\']) || name.starts_with('\'') || name.ends_with('\'') {
+        return Some("a sheet name cannot hold [ ] * ? : / \\ or start or end with an apostrophe");
+    }
+    let low = name.to_lowercase();
+    have.iter().any(|h| h.to_lowercase() == low).then_some("there is already a sheet with that name")
+}
+
+/// The page with one more sheet after its last, and which sheet that
+/// is. An empty name gets the first `SheetN` not taken. The new sheet
+/// is written as the web client writes it: one blank row, and the
+/// first sheet's table style.
+pub fn add_sheet(src: &str, name: &str) -> Result<(String, usize), String> {
+    let (ss, _) = spreadsheet(src)?;
+    if src[ss.start..ss.open_end].ends_with("/>") {
+        return Err("this is not a spreadsheet lattice can change".into());
+    }
+    let tables: Vec<El> = kids(src, &ss)?.into_iter().filter(|e| e.name == "table:table").collect();
+    let tag = |e: &El| &src[e.start + 1..e.open_end];
+    let have: Vec<String> = tables.iter().map(|e| attr(tag(e), "table:name").unwrap_or_default()).collect();
+    let mut name = name.trim().to_owned();
+    if name.is_empty() {
+        let mut i = have.len() + 1;
+        loop {
+            name = format!("Sheet{i}");
+            i += 1;
+            if !have.iter().any(|h| h.to_lowercase() == name.to_lowercase()) {
+                break;
+            }
+        }
+    }
+    if let Some(why) = bad_sheet_name(&name, &have) {
+        return Err(why.into());
+    }
+    // beside the last sheet, indented as it is: three spaces when the page has none
+    let (at, ind) = match tables.last() {
+        Some(last) => (last.end, gap(src, last.start).len().saturating_sub(1)),
+        None => (ss.open_end, 3),
+    };
+    let sp = " ".repeat(ind);
+    let style = tables.first().and_then(|e| attr(tag(e), "table:style-name")).map_or(String::new(), |s| format!(" table:style-name=\"{}\"", esc_attr(&s)));
+    let xml = format!("\n{sp}<table:table table:name=\"{}\"{style}>\n{sp} <table:table-row>\n{sp}  <table:table-cell/>\n{sp} </table:table-row>\n{sp}</table:table>", esc_attr(&name));
+    Ok((format!("{}{xml}{}", &src[..at], &src[at..]), tables.len()))
+}
+
 /// The rows of a CSV, as the web client reads one (RFC 4180, forgiving):
 /// quoted fields, doubled quotes, CR LF or LF. A semicolon or a tab is
 /// the separator when the first line has more of them than commas.
@@ -1055,6 +1104,27 @@ fn end_row(sheets: &mut [Sheet], row: &mut Option<(Vec<String>, usize)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sheet_is_added_as_the_web_client_adds_one() {
+        let mut body = include_str!("typed_fixture.fods").to_owned();
+        for (name, at) in [("", 1), ("A & \"B\" <c>", 2), ("Bob's", 3), ("  ", 4)] {
+            let (next, got) = add_sheet(&body, name).unwrap();
+            assert_eq!(got, at);
+            body = next;
+        }
+        assert!(body == include_str!("sheets_expected.fods"), "the page differs from the web client's");
+        let names: Vec<String> = parse(&body).into_iter().map(|s| s.name).collect();
+        assert_eq!(names[1..], ["Sheet2", "A & \"B\" <c>", "Bob's", "Sheet5"]);
+        // the names the web client refuses
+        assert_eq!(add_sheet(&body, "sheet2").unwrap_err(), "there is already a sheet with that name");
+        for bad in ["a:b", "a/b", "[x]", "'x", "x'", "what?", "a*b", "a\\b"] {
+            assert!(add_sheet(&body, bad).unwrap_err().starts_with("a sheet name cannot hold"), "{bad}");
+        }
+        assert!(add_sheet(&body, &"x".repeat(101)).is_err());
+        assert!(add_sheet(&body, &"x".repeat(100)).is_ok());
+        assert!(add_sheet("not a sheet", "").is_err());
+    }
 
     const BOOK: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <office:document xmlns:office="urn:o" xmlns:table="urn:t" xmlns:text="urn:x" xmlns:calcext="urn:c" office:mimetype="application/vnd.oasis.opendocument.spreadsheet">
