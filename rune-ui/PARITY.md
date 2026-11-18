@@ -195,7 +195,14 @@ Rune's web target draws one canvas through WebGPU (`~/.cache/rune-src/rune/WEB.m
 
 ## Layout
 
-- [ ] Make the layout like the existing lattice's (the web client's arrangement of tree, tabs, toolbar and panels). The owner asked for this once the features are in, so it comes last.
+The web client's arrangement, read from `ui-src/lattice/13-frame.js` and from a screenshot of it on a fake ship: a ribbon of icons down the left edge, a pane either side of the editor with icon tabs, a top bar holding the tab strip between the two pane toggles, a tab header over the page, and a status bar along the bottom. Its icons are in `ui-src/lattice/10-shell.js`. The line was split by those parts, 2026-11-18:
+
+- [ ] The ribbon: icons down the left edge for today's page, shared with me, the forum, the inbox, access and the commands, with settings at its foot, each named for a screen reader and on hover. They leave the foot of the pages' pane
+- [ ] The left pane's head: icon tabs for files and knowledge in place of the two word buttons, an icon toolbar over the tree (capture, new page, upload, sort or fold where this client has them), and the `FILES` heading
+- [ ] The top bar: the left pane's toggle, the tab strip with new tab and split, and the right pane's toggle, always there
+- [ ] The tab header: back and forward, the page's name, and an Edit and Read switch in place of the row of word buttons
+- [ ] The right pane: icon tabs for the page (sharing), outgoing links, backlinks, comments and history, in place of the word buttons that open each
+- [ ] The status bar along the bottom: what was last said, the offline state and what waits to be sent, in place of the notes at the foot of the pages' pane
 - [ ] Split view as the web client arranges it: groups side by side, each with its own tabs and its own editor (`ui-src/lattice/28-splits.js`). It is part of that arrangement, and this client keeps one editor's state for the whole window, so it goes with the layout
 
 ## Checked by a person
