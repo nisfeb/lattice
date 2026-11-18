@@ -1,0 +1,5 @@
+[{"wait": 9000},
+ {"click": [80, 556]}, {"wait": 3000}, {"shot": "/tmp/lr-ship2.png"},
+ {"click": [1056, 32]}, {"wait": 1500},
+ {"click": [600, 300]}, {"wait": 500}, {"type": " typed in the browser"}, {"wait": 500}, {"shot": "/tmp/lr-ship3.png"},
+ {"down": "Control"}, {"key": "s"}, {"up": "Control"}, {"wait": 4000}, {"shot": "/tmp/lr-ship4.png"}]
