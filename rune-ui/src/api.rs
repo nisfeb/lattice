@@ -755,6 +755,111 @@ pub fn base_url(typed: &str) -> String {
     format!("{}://{t}", if local { "http" } else { "https" })
 }
 
+/// A thread on a forum board, as the ship lists it. Its text comes only with the thread itself.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct ForumPost {
+    pub id: u64,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub created: String,
+    #[serde(default)]
+    pub link: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub up: u64,
+    #[serde(default)]
+    pub down: u64,
+    #[serde(default)]
+    pub comments: u64,
+    #[serde(default)]
+    pub pinned: bool,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// When it was last posted to or commented on.
+    #[serde(default)]
+    pub active: String,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct ForumComment {
+    pub id: u64,
+    #[serde(default)]
+    pub parent: Option<u64>,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub created: String,
+    #[serde(default)]
+    pub body: String,
+}
+
+/// A board: what it is called, and its threads, newest first, a hundred at most.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Board {
+    pub board: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub public: bool,
+    #[serde(default)]
+    pub count: u64,
+    #[serde(default)]
+    pub posts: Vec<ForumPost>,
+}
+
+/// One thread with its text and its comments, oldest first.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Thread {
+    pub board: String,
+    #[serde(default)]
+    pub title: String,
+    pub post: ForumPost,
+    #[serde(default)]
+    pub comments: Vec<ForumComment>,
+}
+
+/// The names of the boards the forum's own index page links to, in its
+/// order. The ship has no list of boards but that page: each is a link
+/// to `/apps/lattice/forum/<name>`, and a name is a term.
+pub fn board_names(index_html: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in index_html.split("href=\"/apps/lattice/forum/").skip(1) {
+        let name = &part[..part.find('"').unwrap_or(0)];
+        let term = name.starts_with(|c: char| c.is_ascii_lowercase()) && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if term && !out.iter().any(|n| n == name) {
+            out.push(name.to_owned());
+        }
+    }
+    out
+}
+
+/// A thread's comments in the order they are read, each with how deep
+/// it sits: a reply under what it answers, oldest first at every level.
+/// One whose parent is not there, or that would nest without end, is
+/// read at the top.
+pub fn comment_order(comments: &[ForumComment]) -> Vec<(usize, &ForumComment)> {
+    let has = |id: u64| comments.iter().any(|c| c.id == id);
+    let mut out = Vec::with_capacity(comments.len());
+    let mut stack: Vec<(usize, &ForumComment)> = comments.iter().filter(|c| c.parent.is_none_or(|p| !has(p) || p == c.id)).rev().map(|c| (0, c)).collect();
+    while let Some((depth, c)) = stack.pop() {
+        out.push((depth, c));
+        if out.len() > comments.len() {
+            break;
+        }
+        stack.extend(comments.iter().filter(|k| k.parent == Some(c.id) && k.id != c.id).rev().map(|k| (depth + 1, k)));
+    }
+    // what a loop of parents left out is still read
+    let seen: std::collections::HashSet<u64> = out.iter().map(|(_, c)| c.id).collect();
+    out.extend(comments.iter().filter(|c| !seen.contains(&c.id)).map(|c| (0, c)));
+    out
+}
+
 impl Conn {
     /// The ship's name, from its session cookie (`urbauth-~zod=..`).
     pub fn ship(&self) -> &str {
@@ -903,6 +1008,24 @@ impl Conn {
     /// Only the text goes with it: the new key's history starts again.
     pub fn know_move(&self, from: &str, to: &str) -> Result<(), String> {
         self.call("POST", &format!("know-move?from={}&to={}", enc(from), enc(to)), Some("")).map(drop)
+    }
+
+    /// The boards on this ship, each with its threads. The names come from the forum's index page, fifty at most.
+    pub fn forum_boards(&self) -> Result<Vec<Board>, String> {
+        let names = board_names(&self.call("GET", "forum", None)?);
+        names.iter().take(50).map(|n| self.forum_board(n)).collect()
+    }
+
+    /// One of this ship's boards, with its threads.
+    pub fn forum_board(&self, board: &str) -> Result<Board, String> {
+        let url = format!("urb://{}/forum/{board}", self.ship());
+        serde_json::from_str(&self.call("GET", &format!("urb-read?url={}", enc(&url)), None)?).map_err(|e| e.to_string())
+    }
+
+    /// A thread of one of this ship's boards, with its text and comments.
+    pub fn forum_thread(&self, board: &str, post: u64) -> Result<Thread, String> {
+        let url = format!("urb://{}/forum/{board}/{post}", self.ship());
+        serde_json::from_str(&self.call("GET", &format!("urb-read?url={}", enc(&url)), None)?).map_err(|e| e.to_string())
     }
 
     /// The core memories an agent key wrote, which every session loads as rules until the owner keeps or untags each. Keys with their slashes, in order.
@@ -1490,6 +1613,49 @@ mod tests {
         assert_eq!(c.image_url("/apps/lattice/icon.svg"), "http://ship.example/apps/lattice/icon.svg");
         assert_eq!(c.image_url("icon.svg"), "http://ship.example/apps/lattice/icon.svg");
         assert_eq!(c.image_url("pics/a.png"), "http://ship.example/apps/lattice/pics/a.png");
+    }
+
+    /// The forum against a ship, read: it needs a board named `general` with a pinned thread 1 that has
+    /// tags, a link thread 2, and three comments on thread 1, one a reply. `scripts/forum-seed.sh` makes them.
+    #[test]
+    #[ignore]
+    fn live_forum_read() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let boards = c.forum_boards().unwrap();
+        let names: Vec<&str> = boards.iter().map(|b| b.board.as_str()).collect();
+        assert!(names.contains(&"general") && names.contains(&"quiet"), "{names:?}");
+        let b = c.forum_board("general").unwrap();
+        assert_eq!((b.title.as_str(), b.description.as_str(), b.public, b.count), ("General talk", "Anything goes", true, 2));
+        // newest first, and a listed thread comes without its text
+        assert_eq!(b.posts.iter().map(|p| p.id).collect::<Vec<_>>(), [2, 1]);
+        let (link, first) = (&b.posts[0], &b.posts[1]);
+        assert_eq!((link.title.as_str(), link.link.as_deref(), link.body.as_deref()), ("A link", Some("https://urbit.org"), None));
+        assert_eq!((first.pinned, first.up, first.comments, first.tags.clone(), first.body.as_deref()), (true, 1, 3, vec!["intro".to_owned(), "meta".to_owned()], None));
+        let t = c.forum_thread("general", 1).unwrap();
+        assert!(t.post.body.as_deref().is_some_and(|b| b.starts_with("The **body**")), "{:?}", t.post);
+        let order: Vec<(usize, &str)> = comment_order(&t.comments).into_iter().map(|(d, c)| (d, c.body.as_str())).collect();
+        assert_eq!(order, [(0, "A first comment."), (1, "A reply to it."), (0, "Another top comment.")]);
+        assert!(c.forum_board("no-such-board").unwrap_err().contains("404"));
+        assert!(c.forum_thread("general", 99).unwrap_err().contains("404"));
+    }
+
+    #[test]
+    fn boards_are_named_by_the_index_page_and_comments_nest_under_what_they_answer() {
+        let page = r#"<a href="/apps/lattice/forum">forum</a><a href="/apps/lattice/forum/_new">create a board</a><span class="ti"><a href="/apps/lattice/forum/general">General talk</a></span><a href="/apps/lattice/forum/quiet-room2">Q</a><a href="/apps/lattice/forum/general">again</a><a href="/apps/lattice/forum/general/3">a thread</a><a href="/apps/lattice/forum/Bad">B</a><a href="/apps/lattice/forum/"#;
+        assert_eq!(board_names(page), ["general", "quiet-room2"]);
+        assert!(board_names("").is_empty());
+        let c = |id: u64, parent: Option<u64>| ForumComment { id, parent, ..ForumComment::default() };
+        let all = [c(0, None), c(1, Some(0)), c(2, None), c(3, Some(1)), c(4, Some(0)), c(5, Some(99)), c(6, Some(6))];
+        let got: Vec<(usize, u64)> = comment_order(&all).into_iter().map(|(d, c)| (d, c.id)).collect();
+        assert_eq!(got, [(0, 0), (1, 1), (2, 3), (1, 4), (0, 2), (0, 5), (0, 6)]);
+        // two that answer each other are both read, once each
+        let ring = [c(1, Some(2)), c(2, Some(1))];
+        let mut ids: Vec<u64> = comment_order(&ring).into_iter().map(|(_, c)| c.id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [1, 2]);
+        // the ship's own shapes read, with what may be absent left out
+        let b: Board = serde_json::from_str(r#"{"posts":[{"tags":[],"comments":0,"link":"https://urbit.org","author":"~zod","body":null,"title":"A link","id":2,"pinned":false,"up":0,"down":0}],"public":true,"title":"General talk","count":1,"board":"general","description":"d","kind":"board"}"#).unwrap();
+        assert_eq!((b.posts[0].link.as_deref(), b.posts[0].body.as_deref(), b.count), (Some("https://urbit.org"), None, 1));
     }
 
     /// Memories against a ship, by themselves: this needs no page and can run again on the same pier.

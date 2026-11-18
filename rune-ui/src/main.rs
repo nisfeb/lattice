@@ -98,6 +98,44 @@ enum Beside {
     Read(String),
 }
 
+/// The forum on screen: the boards once read, the board and the thread
+/// showing when one is, and how the board's threads are ordered.
+#[derive(Default)]
+struct Forum {
+    boards: Option<Vec<api::Board>>,
+    board: Option<api::Board>,
+    thread: Option<api::Thread>,
+    sort: ForumSort,
+}
+
+#[derive(Clone, Copy, Default, PartialEq)]
+enum ForumSort {
+    #[default]
+    New,
+    Active,
+    Top,
+}
+
+/// What a read of the forum gave.
+enum ForumGot {
+    Boards(Vec<api::Board>),
+    Board(api::Board),
+    Thread(api::Thread),
+}
+
+/// A board's threads as they are listed: the pinned ones first, then by the order asked for.
+fn forum_sorted(posts: &[api::ForumPost], sort: ForumSort) -> Vec<&api::ForumPost> {
+    let mut v: Vec<&api::ForumPost> = posts.iter().collect();
+    match sort {
+        // the ship's dates sort as text: the same shape, most significant first
+        ForumSort::New => v.sort_by(|a, b| b.created.cmp(&a.created)),
+        ForumSort::Active => v.sort_by(|a, b| b.active.cmp(&a.active)),
+        ForumSort::Top => v.sort_by_key(|p| std::cmp::Reverse(p.up as i64 - p.down as i64)),
+    }
+    v.sort_by_key(|p| !p.pinned);
+    v
+}
+
 /// A spreadsheet page on screen: its sheets, the one showing, and the grid's state.
 struct SheetView {
     name: String,
@@ -357,6 +395,9 @@ struct App {
     read_as: Option<(String, u64, String)>,
     /// The page held beside, when its kind has a view of its own: its name, its revision, the view.
     beside: Option<(String, u64, Beside)>,
+    /// The forum, when it is what shows.
+    forum: Option<Forum>,
+    forum_req: Latest<Result<ForumGot, String>>,
     /// The open page as a spreadsheet, when it is one.
     sheet: Option<SheetView>,
     /// The open page as a map, when it is one.
@@ -579,6 +620,8 @@ fn init() -> App {
         trash_req: Latest::default(),
         know_req: Latest::default(),
         read_as: None,
+        forum: None,
+        forum_req: Latest::default(),
         beside: None,
         sheet: None,
         map: None,
@@ -1227,6 +1270,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.kept_req.set_waker(waker.clone());
     s.templates_req.set_waker(waker.clone());
     s.back_req.set_waker(waker.clone());
+    s.forum_req.set_waker(waker.clone());
     s.core_req.set_waker(waker.clone());
     s.trash_req.set_waker(waker.clone());
     s.tex_req.set_waker(waker.clone());
@@ -3117,6 +3161,7 @@ fn show_page(s: &mut App, name: &str) {
     s.remote = None;
     s.shared_open = false;
     s.inbox = false;
+    s.forum = None;
     s.access = false;
     s.folder = None;
     s.old = None;
@@ -3403,6 +3448,7 @@ fn start_named(s: &mut App, name: String) {
     // nothing is asked of the ship: the page is not there until it is saved
     (s.remote, s.folder, s.old, s.want) = (None, None, None, None);
     (s.shared_open, s.inbox, s.access, s.stale) = (false, false, false, false);
+    s.forum = None;
     s.note = format!("{name} is not written yet. It is kept when you save");
     s.open = Some(Page { name, body: String::new(), kind: "md".into(), rev: 0 });
     s.capture = true;
@@ -3736,6 +3782,17 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         match r {
             Ok(g) => s.groups = g,
             Err(e) => s.note = format!("access list: {e}"),
+        }
+    }
+    if let Some(r) = s.forum_req.take() {
+        changed = true;
+        // an answer that lands after the forum was left is dropped
+        match (r, &mut s.forum) {
+            (Ok(ForumGot::Boards(b)), Some(f)) => f.boards = Some(b),
+            (Ok(ForumGot::Board(b)), Some(f)) => (f.board, f.thread) = (Some(b), None),
+            (Ok(ForumGot::Thread(th)), Some(f)) => f.thread = Some(th),
+            (Err(e), Some(_)) => s.note = format!("forum: {e}"),
+            _ => {}
         }
     }
     if let Some(r) = s.core_req.take() {
@@ -4270,6 +4327,7 @@ fn land_on(s: &mut App, name: &str) {
         open_page(s, &index);
     } else if !under(&s.names, name).is_empty() {
         (s.open, s.remote, s.access, s.shared_open, s.inbox) = (None, None, false, false, false);
+        s.forum = None;
         s.folder = Some(name.to_owned());
     }
 }
@@ -4598,6 +4656,7 @@ fn switch_tab(s: &mut App, to: usize) {
     (s.trail, s.trail_at) = (trail, at);
     (s.open, s.folder, s.remote, s.old, s.want) = (None, None, None, None, None);
     (s.access, s.shared_open, s.inbox) = (false, false, false);
+    s.forum = None;
     match s.trail.get(s.trail_at).cloned() {
         Some(name) if s.names.contains(&name) => {
             s.files.expand_to(&name);
@@ -4665,15 +4724,156 @@ fn tab_strip(s: &App, k: &Kit) -> El {
 
 fn go_shared(s: &mut App) {
     if !s.editing {
+        s.forum = None;
         s.shared_open = true;
         s.access = false;
         s.inbox = false;
+        s.forum = None;
         load_shared(s);
     }
 }
 
+/// Shows the forum: this ship's boards, read as it opens. Where it
+/// was left is where it opens again, until something else is shown.
+fn go_forum(s: &mut App) {
+    if s.editing {
+        return;
+    }
+    (s.inbox, s.access, s.shared_open) = (false, false, false);
+    s.forum = Some(Forum::default());
+    match s.conn.clone() {
+        Some(c) => s.forum_req.request(c, |c| c.forum_boards().map(ForumGot::Boards)),
+        // ponytail: the sample pages have no forum. A sample board if the screens are to be shown without a ship
+        None => s.forum.as_mut().expect("just made").boards = Some(Vec::new()),
+    }
+}
+
+/// Reads a board of the forum, or with a number one of its threads, and shows it when it lands.
+fn forum_open(s: &mut App, board: String, post: Option<u64>) {
+    let Some(c) = s.conn.clone() else { return };
+    s.forum_req.request((c, board, post), |(c, board, post)| match post {
+        Some(id) => c.forum_thread(&board, id).map(ForumGot::Thread),
+        None => c.forum_board(&board).map(ForumGot::Board),
+    });
+}
+
+/// One step back in the forum: from a thread to its board, from a board to the boards.
+fn forum_back(s: &mut App) {
+    if let Some(f) = &mut s.forum {
+        if f.thread.take().is_none() {
+            f.board = None;
+        }
+    }
+}
+
+/// The forum: the boards, a board's threads, or a thread with its comments under what they answer.
+fn forum_view(f: &Forum, k: &Kit) -> El {
+    let c = &k.c;
+    let when = |da: &str| Rev { rev: 0, updated: da.to_owned() }.when();
+    let muted = |t: String| text(t).font(k.ty.small).color(c.text_muted);
+    let mut page = col().key("forum").w_full().max_w(760.0).padding(28.0).gap(10.0);
+    if f.board.is_some() {
+        page = page.child(row().child(Button::new(if f.thread.is_some() { "\u{2039} Back to the board" } else { "\u{2039} Boards" }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(forum_back).build(k).key("forum-back")));
+    }
+    if let Some(th) = &f.thread {
+        let p = &th.post;
+        page = page.child(text(p.title.clone()).font(k.ty.body_medium).color(c.text_base).wrap());
+        page = page.child(muted(format!("{} \u{b7} {} \u{b7} {} point{} \u{b7} on {}", p.author, when(&p.created), p.up as i64 - p.down as i64, if p.up as i64 - p.down as i64 == 1 { "" } else { "s" }, th.title)));
+        if !p.tags.is_empty() {
+            page = page.child(row().gap(4.0).flex_wrap().children(p.tags.iter().map(|t| row().px(6.0).py(1.0).radius(k.radius.sm).fill(c.layer_01).child(text(format!("#{t}")).font(k.ty.small).color(c.text_muted)))));
+        }
+        // the link and the text are the poster's Markdown: read as a page is, with no picture fetched
+        if let Some(link) = p.link.as_deref().filter(|l| !l.is_empty()) {
+            page = page.child(Markdown::new(format!("<{link}>")).selectable(true).on_link_tx(follow).build(k).key("forum-link"));
+        }
+        if let Some(body) = p.body.as_deref().filter(|b| !b.trim().is_empty()) {
+            page = page.child(Markdown::new(body.to_owned()).selectable(true).on_link_tx(follow).build(k).key("forum-body"));
+        }
+        page = page.child(Divider::horizontal().build(k)).child(muted(format!("{} comment{}", th.comments.len(), if th.comments.len() == 1 { "" } else { "s" })));
+        for (depth, cm) in api::comment_order(&th.comments) {
+            // a long chain of replies stops stepping in, so the last of them still has room to be read
+            let indent = 18.0 * depth.min(8) as f32;
+            page = page.child(
+                col()
+                    .key(format!("comment-{}", cm.id))
+                    .w_full()
+                    .pl(indent)
+                    .gap(2.0)
+                    .child(muted(format!("{} \u{b7} {}", cm.author, when(&cm.created))))
+                    .child(Markdown::new(cm.body.clone()).selectable(true).on_link_tx(follow).build(k)),
+            );
+        }
+        return page;
+    }
+    if let Some(b) = &f.board {
+        page = page.child(text(b.title.clone()).font(k.ty.body_medium).color(c.text_base).wrap());
+        let said = [b.description.clone(), format!("{}, {}", b.board, if b.public { "public" } else { "private" }), format!("{} thread{}", b.count, if b.count == 1 { "" } else { "s" })];
+        page = page.child(muted(said.into_iter().filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" \u{b7} ")).wrap());
+        let sort = |label: &str, key: &str, to: ForumSort| {
+            Button::new(label.to_owned()).control_size(ControlSize::Small).variant(if f.sort == to { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
+                if let Some(f) = &mut s.forum {
+                    f.sort = to;
+                }
+            }).build(k).key(key.to_owned())
+        };
+        page = page.child(row().key("forum-sort").gap(4.0).child(sort("New", "fsort-new", ForumSort::New)).child(sort("Active", "fsort-active", ForumSort::Active)).child(sort("Top", "fsort-top", ForumSort::Top)));
+        if b.posts.is_empty() {
+            page = page.child(muted("No threads yet.".into()));
+        }
+        for p in forum_sorted(&b.posts, f.sort) {
+            let (board, id) = (b.board.clone(), p.id);
+            let points = p.up as i64 - p.down as i64;
+            let mut line = col()
+                .key(format!("post-{id}"))
+                .w_full()
+                .padding(8.0)
+                .gap(2.0)
+                .radius(k.radius.md)
+                .hover(c.layer_01)
+                .cursor(rune::Cursor::Pointer)
+                .on_press(move |s: &mut App| forum_open(s, board.clone(), Some(id)))
+                .label(format!("Open the thread {}", p.title))
+                .child(text(if p.pinned { format!("\u{2022} {}", p.title) } else { p.title.clone() }).font(k.ty.ui_medium).color(c.text_base).wrap());
+            let host = p.link.as_deref().and_then(|l| l.split("://").nth(1)).and_then(|r| r.split('/').next()).map(|h| format!(" \u{b7} {h}")).unwrap_or_default();
+            line = line.child(muted(format!("{} \u{b7} {} \u{b7} {points} point{} \u{b7} {} comment{}{host}{}", p.author, when(&p.created), if points == 1 { "" } else { "s" }, p.comments, if p.comments == 1 { "" } else { "s" }, if p.pinned { " \u{b7} pinned" } else { "" })));
+            if !p.tags.is_empty() {
+                line = line.child(muted(p.tags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" ")));
+            }
+            page = page.child(line);
+        }
+        return page;
+    }
+    page = page.child(text("Boards").font(k.ty.body_medium).color(c.text_base));
+    match &f.boards {
+        None => page = page.child(muted("reading the boards\u{2026}".into())),
+        Some(b) if b.is_empty() => page = page.child(muted("There are no boards on this ship.".into())),
+        Some(boards) => {
+            for b in boards {
+                let name = b.board.clone();
+                page = page.child(
+                    col()
+                        .key(format!("board-{}", b.board))
+                        .w_full()
+                        .padding(8.0)
+                        .gap(2.0)
+                        .radius(k.radius.md)
+                        .hover(c.layer_01)
+                        .cursor(rune::Cursor::Pointer)
+                        .on_press(move |s: &mut App| forum_open(s, name.clone(), None))
+                        .label(format!("Open the board {}", b.title))
+                        .child(text(b.title.clone()).font(k.ty.ui_medium).color(c.text_base))
+                        .child(muted(format!("{}, {} \u{b7} {} thread{}", b.board, if b.public { "public" } else { "private" }, b.count, if b.count == 1 { "" } else { "s" })))
+                        .children((!b.description.is_empty()).then(|| muted(b.description.clone()).wrap())),
+                );
+            }
+        }
+    }
+    page
+}
+
 fn go_inbox(s: &mut App) {
     if !s.editing {
+        s.forum = None;
         s.inbox = true;
         s.access = false;
         s.shared_open = false;
@@ -4683,8 +4883,10 @@ fn go_inbox(s: &mut App) {
 
 fn go_access(s: &mut App) {
     if !s.editing {
+        s.forum = None;
         s.access = true;
         s.inbox = false;
+        s.forum = None;
         load_groups(s);
     }
 }
@@ -5060,6 +5262,7 @@ fn show_remote(s: &mut App, sh: Shared, p: Page) {
     s.access = false;
     s.shared_open = false;
     s.inbox = false;
+    s.forum = None;
     s.folder = None;
     s.old = None;
     s.stale = false;
@@ -5236,6 +5439,7 @@ fn open_notice(s: &mut App, n: &Notice) {
         Opens::Access => {
             s.access = true;
             s.inbox = false;
+            s.forum = None;
             load_groups(s);
         }
         Opens::Nothing => return,
@@ -5864,6 +6068,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
                 s.access = false;
                 s.shared_open = false;
                 s.inbox = false;
+                s.forum = None;
                 s.remote = None;
                 s.want = None;
                 s.folder = Some(id.to_owned());
@@ -5899,6 +6104,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
     };
     let (pages, knows) = if s.memory { (s.other.1.len(), s.names.len()) } else { (s.names.len(), s.other.1.len()) };
     let with_me = Button::new(format!("Shared with me {}", s.shared.len())).control_size(ControlSize::Small).variant(if s.shared_open { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(go_shared).build(k).key("shared-open");
+    let forum = Button::new("Forum").control_size(ControlSize::Small).variant(if s.forum.is_some() { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("This ship's boards and their threads").on_press(go_forum).build(k).key("forum-open");
     let inbox = Button::new(match s.waiting.held + s.waiting.unread { 0 => "Inbox".to_owned(), n => format!("Inbox {n}") }).control_size(ControlSize::Small).variant(if s.inbox { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("Held comments, activity, and comments on every page").on_press(go_inbox).build(k).key("inbox-open");
     let halves = row().key("halves").w_full().gap(4.0).child(half("half-pages", format!("Pages {pages}"), !s.memory)).child(half("half-memory", format!("Memory {knows}"), s.memory));
     let new = Button::new(if s.memory { "New memory" } else { "New page" }).variant(ButtonVariant::Ghost).help("Asks for a name and a place").on_press(ask_new).build(k).key("new");
@@ -6007,7 +6213,7 @@ fn sidebar(s: &App, k: &Kit) -> El {
         }
         list
     });
-    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).children(core).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(row().gap(4.0).child(with_me).child(inbox)).child(foot);
+    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).children(core).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(row().gap(4.0).flex_wrap().child(with_me).child(inbox).child(forum)).child(foot);
     if !s.note.is_empty() {
         side = side.child(text(s.note.clone()).key("note").font(k.ty.small).color(k.c.text_muted).wrap());
     }
@@ -6187,6 +6393,9 @@ fn page_body(s: &App, k: &Kit) -> El {
     if s.access && !s.editing {
         return access_view(s, k);
     }
+    if let Some(f) = s.forum.as_ref().filter(|_| !s.editing) {
+        return col().key("forum-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(forum_view(f, k))).scroll(ScrollSpec { stick_bottom: false });
+    }
     if s.shared_open && !s.editing {
         return shared_view(s, k);
     }
@@ -6302,7 +6511,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let path = s.open.as_ref().map(|p| p.name.as_str()).or(s.folder.as_deref());
     // the name it was given when there is one, with its path beside it
     let named = path.and_then(|p| s.dnames.get(p).filter(|_| !s.memory && s.remote.is_none()).map(|d| format!("{d}  ({p})")));
-    let title = if s.inbox { "Inbox" } else if s.shared_open { "Shared with me" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
+    let title = if s.forum.is_some() { "Forum" } else if s.inbox { "Inbox" } else if s.shared_open { "Shared with me" } else if s.access { "Access" } else { named.as_deref().or(path).unwrap_or("lattice") };
     let busy = s.tree_req.is_pending() || s.page_req.is_pending() || s.save_req.is_pending();
     let mut trailing = row().gap(8.0).center_y();
     if busy {
@@ -6752,6 +6961,36 @@ mod tests {
         // with no ship there is nothing to keep or untag
         core_rule(&mut s, "rules/new".into(), true);
         assert_eq!(s.core_agents.len(), 2);
+    }
+
+    #[test]
+    fn the_forum_orders_threads_steps_back_and_gives_way_to_a_page() {
+        let post = |id: u64, created: &str, active: &str, up: u64, pinned: bool| api::ForumPost { id, created: created.into(), active: active.into(), up, pinned, ..api::ForumPost::default() };
+        let posts = [post(1, "~2026.11.1", "~2026.11.9", 5, false), post(2, "~2026.11.2", "~2026.11.2", 1, false), post(3, "~2026.10.1", "~2026.10.1", 0, true), post(4, "~2026.11.3", "~2026.11.3", 9, false)];
+        let ids = |sort| forum_sorted(&posts, sort).into_iter().map(|p| p.id).collect::<Vec<_>>();
+        // the pinned thread is first whatever the order, then newest, latest spoken in, or most points
+        assert_eq!(ids(ForumSort::New), [3, 4, 2, 1]);
+        assert_eq!(ids(ForumSort::Active), [3, 1, 4, 2]);
+        assert_eq!(ids(ForumSort::Top), [3, 4, 1, 2]);
+        let mut s = sample("welcome");
+        go_forum(&mut s);
+        assert!(s.forum.as_ref().is_some_and(|f| f.boards.as_ref().is_some_and(Vec::is_empty)), "with no ship there are no boards, and it says so");
+        // back from a thread is its board, back from a board is the boards
+        let f = s.forum.as_mut().unwrap();
+        f.board = Some(api::Board { board: "general".into(), ..api::Board::default() });
+        f.thread = Some(api::Thread::default());
+        forum_back(&mut s);
+        assert!(s.forum.as_ref().is_some_and(|f| f.thread.is_none() && f.board.is_some()));
+        forum_back(&mut s);
+        assert!(s.forum.as_ref().is_some_and(|f| f.board.is_none()));
+        // a page opened, or the inbox, takes the forum's place
+        open_page(&mut s, "notes/today");
+        assert!(s.forum.is_none());
+        go_forum(&mut s);
+        go_inbox(&mut s);
+        assert!(s.forum.is_none() && s.inbox);
+        go_forum(&mut s);
+        assert!(s.forum.is_some() && !s.inbox);
     }
 
     #[test]
