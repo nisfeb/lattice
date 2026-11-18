@@ -73,8 +73,8 @@ enum Prompt {
     Delete(String),
     /// The address for a link on the editor's selection.
     Link(TextEdit),
-    /// A map feature's name, kind and note: its place in the page, and the three fields.
-    Feature(usize, Box<[TextEdit; 3]>),
+    /// A map feature's name, kind, note, time, source and ring radius: its place in the page, and the fields in that order.
+    Feature(usize, Box<[TextEdit; 6]>),
     /// The ship's Mapbox token, to set or, left empty, to clear.
     Token(TextEdit),
     /// A name for a copy of a page: the page as it stood, and the name.
@@ -664,10 +664,17 @@ fn confirm(s: &mut App) {
         return;
     }
     if let Prompt::Feature(at, t) = &p {
-        let [name, kind, note] = [t[0].text.trim(), t[1].text.trim(), t[2].text.as_str()];
-        let some = |v| Some(v).filter(|v: &&str| !v.is_empty());
+        let [name, kind, note, time, source, radius] = [t[0].text.trim(), t[1].text.trim(), t[2].text.as_str(), t[3].text.trim(), t[4].text.trim(), t[5].text.trim()];
+        if !time.is_empty() && !map::time_ok(time) {
+            s.note = "that time is not a date lattice can read. Write it as 2026-11-17T09:30:00Z".into();
+            s.prompt = Some(p);
+            return;
+        }
+        let some = |v: &str| Some(v).filter(|v| !v.is_empty()).map(serde_json::Value::from);
+        // a ring is so many metres, or there is none
+        let radius = radius.parse::<f64>().ok().filter(|r| *r > 0.0).map(|r| serde_json::Value::from(r.min(2e7)));
         let at = *at;
-        write_map(s, |body| map::set_props(body, at, &[("name", some(name)), ("kind", some(kind)), ("note", some(note))]));
+        write_map(s, |body| map::set_props(body, at, &[("name", some(name)), ("kind", some(kind)), ("note", some(note)), ("time", some(time)), ("source", some(source)), ("radius", radius)]));
         return;
     }
     if let Prompt::Token(t) = &p {
@@ -1196,7 +1203,14 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         let ink = rune::color::hex(&f.color).unwrap_or(c.text_accent);
         for g in &f.geoms {
             match g {
-                map::Geom::Point(p) => dots.push((i, *p)),
+                map::Geom::Point(p) => {
+                    dots.push((i, *p));
+                    // the ring round it, so many metres across the ground
+                    if f.radius > 0.0 {
+                        let ring: Vec<[f32; 2]> = map::circle(map::lonlat(*p), f.radius).into_iter().map(to).collect();
+                        shape = shape.fill(ring.clone(), ink.alpha(0.12)).stroke(ring, 1.5, ink);
+                    }
+                }
                 map::Geom::Line(l) => shape = shape.stroke(map::thin(l, MAP_LINE).into_iter().map(to).collect::<Vec<_>>(), 2.5, ink),
                 map::Geom::Area(l) => {
                     let ring: Vec<[f32; 2]> = map::thin(l, MAP_LINE).into_iter().map(to).collect();
@@ -1222,7 +1236,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             sync_tiles(s);
         })
         .on_drag(|s: &mut App, d, _| {
-            let mut put = None;
+            let (mut put, mut props) = (None, serde_json::json!({}));
             if let Some(m) = &mut s.map {
                 match d.phase {
                     Phase::Down => m.grab = m.cam,
@@ -1230,6 +1244,16 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                     Phase::Up if d.dx.hypot(d.dy) < 5.0 && m.tool == Some(map::Draw::Point) => {
                         m.cam = m.grab;
                         put = Some(map::lonlat(m.cam.unproject(d.x, d.y, m.size.0, m.size.1)));
+                    }
+                    // a ring's second press is on its edge: the point goes at the centre, with the distance as its radius
+                    Phase::Up if d.dx.hypot(d.dy) < 5.0 && m.tool == Some(map::Draw::Ring) && !m.verts.is_empty() => {
+                        m.cam = m.grab;
+                        let centre = m.verts.remove(0);
+                        let radius = map::distance(centre, map::lonlat(m.cam.unproject(d.x, d.y, m.size.0, m.size.1))).round();
+                        m.tool = None;
+                        if radius > 0.0 {
+                            (put, props) = (Some(centre), serde_json::json!({"radius": radius}));
+                        }
                     }
                     // with the line or area tool on, each press is a corner. One on top of the last is dropped
                     Phase::Up if d.dx.hypot(d.dy) < 5.0 && m.tool.is_some() => {
@@ -1248,7 +1272,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                 }
             }
             if let Some([lon, lat]) = put {
-                if write_map(s, |body| map::add(body, serde_json::json!({"type": "Point", "coordinates": [lon, lat]}))) {
+                if write_map(s, |body| map::add(body, serde_json::json!({"type": "Point", "coordinates": [lon, lat]}), props)) {
                     pick_added(s);
                 }
             }
@@ -1367,7 +1391,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             let at = f.at;
             let small = |label: &str| Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost);
             // each press here is a change to the page, saved at once, as on the web
-            let set = move |key: &'static str, v: Option<&'static str>| move |s: &mut App| drop(write_map(s, |body| map::set_props(body, at, &[(key, v)])));
+            let set = move |key: &'static str, v: Option<&'static str>| move |s: &mut App| drop(write_map(s, |body| map::set_props(body, at, &[(key, v.map(serde_json::Value::from))])));
             let mut icons = row().key("map-icons").w_full().gap(2.0).flex_wrap();
             for (name, glyph) in map::ICONS {
                 icons = icons.child(small(if glyph.is_empty() { "•" } else { glyph }).help(name).on_press(set("icon", Some(name))).build(k).key(format!("icon:{name}")));
@@ -1457,6 +1481,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             (map::Draw::Point, "Point", "map-point", "Put a point where the map is pressed next. Press again to stop"),
             (map::Draw::Line, "Line", "map-line", "Draw a line: press for each corner, then Done"),
             (map::Draw::Area, "Area", "map-area", "Draw an area: press for each corner, then Done"),
+            (map::Draw::Ring, "Ring", "map-ring", "Draw a ring: press its centre, then its edge"),
         ] {
             draw.push(Button::new(label).control_size(ControlSize::Small).variant(if m.tool == Some(tool) { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help(help).on_press(move |s: &mut App| {
                 if let Some(m) = &mut s.map {
@@ -1466,7 +1491,7 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                 }
             }).build(k).key(key));
         }
-        if !m.verts.is_empty() {
+        if !m.verts.is_empty() && m.tool != Some(map::Draw::Ring) {
             draw.push(Button::new("Done").control_size(ControlSize::Small).help("Finish the shape").on_press(finish_shape).build(k).key("map-done"));
         }
     }
@@ -1566,7 +1591,7 @@ fn finish_shape(s: &mut App) {
         return;
     };
     m.tool = None;
-    if write_map(s, |body| map::add(body, geometry)) {
+    if write_map(s, |body| map::add(body, geometry, serde_json::json!({}))) {
         pick_added(s);
     }
 }
@@ -1588,7 +1613,8 @@ fn map_changes(s: &App) -> bool {
 /// Asks for the name, kind and note of the feature at `at` in the page.
 fn ask_feature(s: &mut App, at: usize) {
     let Some(f) = s.map.as_ref().and_then(|m| m.feats.iter().find(|f| f.at == at)) else { return };
-    let mut t = [TextEdit::new(f.name.as_str()), TextEdit::new(f.kind.as_str()), TextEdit::new(f.note.as_str())];
+    let was = |key: &str| TextEdit::new(f.props.iter().find(|(k, _)| k == key).map_or("", |(_, v)| v.as_str()));
+    let mut t = [TextEdit::new(f.name.as_str()), TextEdit::new(f.kind.as_str()), TextEdit::new(f.note.as_str()), was("time"), was("source"), was("radius")];
     t[0].focused = true;
     s.prompt = Some(Prompt::Feature(at, Box::new(t)));
 }
@@ -3721,13 +3747,19 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::Duplicate(_, t) => ("Duplicate this page as", field(t, "folder/name"), "Duplicate", ButtonVariant::Contrast),
         // kept on the ship, which never shows it again. Typed in the clear here: it is pasted, not remembered
         Prompt::Token(t) => ("The ship's Mapbox token", field(t, "pk... to set it, or nothing to clear it"), "Set", ButtonVariant::Contrast),
-        Prompt::Feature(_, t) => {
+        Prompt::Feature(at, t) => {
+            // only a point has a ring round it
+            let point = s.map.as_ref().and_then(|m| m.feats.iter().find(|f| f.at == *at)).is_some_and(|f| f.geoms.iter().all(|g| matches!(g, map::Geom::Point(_))));
+            let line = |i: usize, label: &str, hint: &str, key: &str| TextInput::new(&t[i]).label(label).placeholder(hint).on_edit(move |s: &mut App| feature_field(s, i)).on_submit(|s: &mut App, _| confirm(s)).build(k).w_full().key(key.to_owned());
             let body = col()
                 .w_full()
                 .gap(10.0)
                 .child(TextInput::new(&t[0]).label("Name").placeholder("Name").on_edit(|s: &mut App| feature_field(s, 0)).on_submit(|s: &mut App, _| confirm(s)).build(k).w_full().key("prompt-field"))
                 .child(TextInput::new(&t[1]).label("Kind").placeholder("place, report, person...").on_edit(|s: &mut App| feature_field(s, 1)).on_submit(|s: &mut App, _| confirm(s)).build(k).w_full().key("feature-kind"))
-                .child(TextArea::new(&t[2]).label("Note (markdown)").placeholder("A note, in markdown").rows(4).on_edit(|s: &mut App| feature_field(s, 2)).build(k).w_full().key("feature-note"));
+                .child(TextArea::new(&t[2]).label("Note (markdown)").placeholder("A note, in markdown").rows(4).on_edit(|s: &mut App| feature_field(s, 2)).build(k).w_full().key("feature-note"))
+                .child(line(3, "Time", "Time, as 2026-11-17T09:30:00Z", "feature-time"))
+                .child(line(4, "Source", "Source: a URL or a page", "feature-source"))
+                .children(point.then(|| line(5, "Ring radius, metres", "Ring radius, in metres", "feature-radius")));
             ("This feature", body, "Save", ButtonVariant::Contrast)
         }
         Prompt::Delete(n) => {

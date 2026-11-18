@@ -24,6 +24,8 @@ pub struct Feature {
     pub geoms: Vec<Geom>,
     /// Where it is among the page's features, counting those with nothing to draw.
     pub at: usize,
+    /// The radius in metres of the ring round a point, or 0 for none.
+    pub radius: f64,
     /// What kind of thing it is, or nothing. A map is filtered by it.
     pub kind: String,
     /// Its colour as `#rgb` or `#rrggbb`: its own, else its kind's, else blue.
@@ -136,7 +138,7 @@ pub fn parse(body: &str) -> Option<Vec<Feature>> {
                 let p = &f["properties"];
                 let props = p.as_object().map_or(Vec::new(), |o| o.iter().map(|(k, v)| (k.clone(), text(v))).filter(|(_, v)| !v.is_empty()).collect());
                 let (kind, color, icon) = look(p);
-                (!g.is_empty()).then(|| Feature { name: text(&p["name"]), note: text(&p["note"]), props, geoms: g, at, kind, color, icon })
+                (!g.is_empty()).then(|| Feature { name: text(&p["name"]), note: text(&p["note"]), props, geoms: g, at, radius: p["radius"].as_f64().filter(|r| r.is_finite() && *r > 0.0 && *r <= 2e7).unwrap_or(0.0), kind, color, icon })
             })
             .collect(),
     )
@@ -385,7 +387,7 @@ fn change(body: &str, f: impl FnOnce(&mut serde_json::Map<String, Value>) -> Opt
 
 /// A map page with properties of its feature `at` set, or with `None`
 /// taken away. The others keep their order, and a new one goes last.
-pub fn set_props(body: &str, at: usize, props: &[(&str, Option<&str>)]) -> Option<String> {
+pub fn set_props(body: &str, at: usize, props: &[(&str, Option<Value>)]) -> Option<String> {
     change(body, |d| {
         let f = d.get_mut("features")?.as_array_mut()?.get_mut(at)?.as_object_mut()?;
         if !f.get("properties").is_some_and(Value::is_object) {
@@ -394,7 +396,7 @@ pub fn set_props(body: &str, at: usize, props: &[(&str, Option<&str>)]) -> Optio
         let p = f.get_mut("properties")?.as_object_mut()?;
         for (k, v) in props {
             match v {
-                Some(v) => drop(p.insert((*k).into(), (*v).into())),
+                Some(v) => drop(p.insert((*k).into(), v.clone())),
                 None => drop(p.shift_remove(*k)),
             }
         }
@@ -416,6 +418,49 @@ pub enum Draw {
     Point,
     Line,
     Area,
+    /// A point with a ring round it: its centre, then somewhere on its edge.
+    Ring,
+}
+
+/// How far apart two places are over the ground, in metres. Each is a
+/// longitude and latitude. The Earth is taken as a sphere, as Leaflet does.
+pub fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {
+    let (la, lb) = (a[1].to_radians(), b[1].to_radians());
+    let h = ((lb - la) / 2.0).sin().powi(2) + la.cos() * lb.cos() * ((b[0] - a[0]).to_radians() / 2.0).sin().powi(2);
+    2.0 * 6_371_000.0 * h.sqrt().min(1.0).asin()
+}
+
+/// The ring `radius` metres round a place, as positions on the map, the
+/// last the first again.
+pub fn circle(centre: [f64; 2], radius: f64) -> Vec<P> {
+    let per_degree = 6_371_000.0 * std::f64::consts::PI / 180.0;
+    (0..=48)
+        .map(|i| {
+            let a = i as f64 / 48.0 * std::f64::consts::TAU;
+            mercator(centre[0] + radius * a.sin() / (per_degree * centre[1].to_radians().cos().max(1e-6)), centre[1] + radius * a.cos() / per_degree)
+        })
+        .collect()
+}
+
+/// Whether a feature's time is a date lattice can read: a day, with a
+/// time of day and a zone if it likes, as `2026-11-17T09:30:00Z`.
+// ponytail: the web takes anything its Date.parse reads. This takes the form it writes
+pub fn time_ok(t: &str) -> bool {
+    let num = |s: &str, n: usize, lo: u32, hi: u32| s.len() == n && s.bytes().all(|b| b.is_ascii_digit()) && s.parse::<u32>().is_ok_and(|v| (lo..=hi).contains(&v));
+    let (day, rest) = t.split_at(t.find('T').unwrap_or(t.len()));
+    let d: Vec<&str> = day.split('-').collect();
+    if d.len() != 3 || !num(d[0], 4, 0, 9999) || !num(d[1], 2, 1, 12) || !num(d[2], 2, 1, 31) {
+        return false;
+    }
+    let Some(clock) = rest.strip_prefix('T') else { return rest.is_empty() };
+    let (clock, zone) = match clock.find(['Z', '+', '-']) {
+        Some(i) => clock.split_at(i),
+        None => (clock, ""),
+    };
+    let zone_ok = zone.is_empty() || zone == "Z" || zone[1..].split_once(':').is_some_and(|(h, m)| num(h, 2, 0, 23) && num(m, 2, 0, 59));
+    let c: Vec<&str> = clock.split(':').collect();
+    let secs = |s: &str| s.split_once('.').map_or(num(s, 2, 0, 59), |(a, f)| num(a, 2, 0, 59) && !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()));
+    zone_ok && matches!(c.len(), 2 | 3) && num(c[0], 2, 0, 23) && num(c[1], 2, 0, 59) && c.get(2).is_none_or(|s| secs(s))
 }
 
 /// The geometry of a shape drawn with these corners, each a longitude
@@ -433,11 +478,11 @@ pub fn drawn(tool: Draw, verts: &[[f64; 2]]) -> Option<Value> {
     }
 }
 
-/// A map page with a new feature of this geometry and no properties,
-/// after the others.
-pub fn add(body: &str, geometry: Value) -> Option<String> {
+/// A map page with a new feature of this geometry and these
+/// properties, after the others.
+pub fn add(body: &str, geometry: Value, properties: Value) -> Option<String> {
     change(body, |d| {
-        d.get_mut("features")?.as_array_mut()?.push(serde_json::json!({"type": "Feature", "geometry": geometry, "properties": {}}));
+        d.get_mut("features")?.as_array_mut()?.push(serde_json::json!({"type": "Feature", "geometry": geometry, "properties": properties}));
         Some(())
     })
 }
@@ -714,15 +759,15 @@ mod tests {
         let feats = parse(body).unwrap();
         assert_eq!(feats.iter().map(|f| f.at).collect::<Vec<_>>(), [1, 2]);
         // a property set keeps its place, a new one goes last, one taken away leaves the rest in order
-        let out = set_props(body, 1, &[("name", Some("B")), ("kind", None), ("note", Some("two\nlines"))]).unwrap();
+        let out = set_props(body, 1, &[("name", Some("B".into())), ("kind", None), ("note", Some("two\nlines".into()))]).unwrap();
         assert!(out.contains(r#"{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{"name":"B","zz":[1],"note":"two\nlines"},"id":"x"}"#), "{out}");
         // a feature with no properties gets them, and the others are as they were
-        let out = set_props(body, 2, &[("icon", Some("star"))]).unwrap();
+        let out = set_props(body, 2, &[("icon", Some("star".into()))]).unwrap();
         assert!(out.ends_with("{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[3,4]},\"properties\":{\"icon\":\"star\"}}\n]}\n"), "{out}");
         assert!(out.contains(r#""properties":{"name":"A","kind":"place","zz":[1]},"id":"x"}"#));
         // setting nothing writes the page in lattice's layout and loses nothing: what the web client gives
         assert_eq!(set_props(body, 1, &[]).unwrap(), body.replace(r#"[3,4]}}"#, r#"[3,4]},"properties":{}}"#));
-        assert_eq!(set_props(body, 9, &[("name", Some("x"))]), None);
+        assert_eq!(set_props(body, 9, &[("name", Some("x".into()))]), None);
         // removed by its place in the page
         let out = remove(body, 1).unwrap();
         assert_eq!(parse(&out).unwrap().iter().map(|f| f.at).collect::<Vec<_>>(), [1]);
@@ -740,7 +785,7 @@ mod tests {
         }
         let body = "{\"type\":\"FeatureCollection\",\"lattice\":{},\"features\":[\n{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[1,2,30],[3,4]]},\"properties\":{\"name\":\"L\"}}\n]}\n";
         let [lon, lat] = lonlat(mercator(-73.98570001, 40.5));
-        let out = add(body, serde_json::json!({"type": "Point", "coordinates": [lon, lat]})).unwrap();
+        let out = add(body, serde_json::json!({"type": "Point", "coordinates": [lon, lat]}), serde_json::json!({})).unwrap();
         // the web client writes a new point this way: after the others, with empty properties, rounded
         assert_eq!(out, body.replace("}}\n]}", "}},\n{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[-73.9857,40.5]},\"properties\":{}}\n]}"));
         // moved: every position, the height of one kept, the name kept
@@ -751,7 +796,7 @@ mod tests {
         let out = shift(&out, 1, 260.0, 80.0).unwrap();
         assert!(out.contains("[-173.9857,89.9999999]"), "{out}");
         assert_eq!(shift(body, 5, 1.0, 1.0), None);
-        assert_eq!(add("[]", Value::Null), None);
+        assert_eq!(add("[]", Value::Null, Value::Null), None);
     }
 
     #[test]
@@ -762,13 +807,46 @@ mod tests {
         assert_eq!(drawn(Draw::Point, &v), None);
         let blank = "{\"type\":\"FeatureCollection\",\"lattice\":{},\"features\":[\n]}\n";
         // what the web client writes for the same corners
-        let line = add(blank, drawn(Draw::Line, &v[..2]).unwrap()).unwrap();
+        let line = add(blank, drawn(Draw::Line, &v[..2]).unwrap(), serde_json::json!({})).unwrap();
         assert_eq!(line, "{\"type\":\"FeatureCollection\",\"lattice\":{},\"features\":[\n{\"type\":\"Feature\",\"geometry\":{\"type\":\"LineString\",\"coordinates\":[[1,2],[3,4.5]]},\"properties\":{}}\n]}\n");
-        let area = add(blank, drawn(Draw::Area, &v).unwrap()).unwrap();
+        let area = add(blank, drawn(Draw::Area, &v).unwrap(), serde_json::json!({})).unwrap();
         assert!(area.contains(r#"{"type":"Polygon","coordinates":[[[1,2],[3,4.5],[5,6],[1,2]]]}"#), "{area}");
         // both are shapes lattice draws
         assert!(matches!(parse(&line).unwrap()[0].geoms[0], Geom::Line(_)));
         assert!(matches!(parse(&area).unwrap()[0].geoms[0], Geom::Area(_)));
+    }
+
+    #[test]
+    fn a_ring_is_so_many_metres_round_its_point() {
+        // Leaflet's map.distance gives these for the same places
+        assert!((distance([0.0, 0.0], [1.0, 0.0]) - 111_194.93).abs() < 0.5);
+        assert!((distance([-73.9857, 40.7484], [-73.9442, 40.6782]) - 8_552.0).abs() < 60.0);
+        assert_eq!(distance([10.0, 20.0], [10.0, 20.0]), 0.0);
+        // every place on the ring is the radius away, near enough, and it closes
+        let c = [-73.9857, 40.7484];
+        let r = circle(c, 2_000.0);
+        assert_eq!((r.len(), r[0]), (49, r[48]));
+        for p in &r {
+            assert!((distance(c, lonlat(*p)) - 2_000.0).abs() < 5.0, "{}", distance(c, lonlat(*p)));
+        }
+        // a radius is read when it is a number lattice shows, and written as one
+        let body = add("{\"type\":\"FeatureCollection\",\"features\":[]}", serde_json::json!({"type": "Point", "coordinates": c}), serde_json::json!({"radius": 250})).unwrap();
+        assert!(body.contains(r#""properties":{"radius":250}}"#), "{body}");
+        assert_eq!(parse(&body).unwrap()[0].radius, 250.0);
+        for bad in ["-1", "0", "\"250\"", "3e7"] {
+            assert_eq!(parse(&body.replace("250", bad)).unwrap()[0].radius, 0.0, "{bad}");
+        }
+        assert_eq!(drawn(Draw::Ring, &[c, c, c]), None, "a ring is a point, made where its edge is pressed");
+    }
+
+    #[test]
+    fn a_time_is_a_date_or_is_refused() {
+        for ok in ["2026-11-17", "2026-11-17T09:30", "2026-11-17T09:30:00Z", "2026-11-17T09:30:00.250Z", "2026-11-17T09:30:00+02:00", "2026-11-17T09:30-05:00"] {
+            assert!(time_ok(ok), "{ok}");
+        }
+        for bad in ["", "yesterday", "2026-13-01", "2026-11-32", "17-11-2026", "2026-11-17T25:00", "2026-11-17T09", "2026-11-17T09:30:00X", "2026-11-17T09:30:00+2", "2026-11-17 09:30"] {
+            assert!(!time_ok(bad), "{bad}");
+        }
     }
 
     #[test]
