@@ -41,6 +41,12 @@ class H(BaseHTTPRequestHandler):
             ct = {'.js': 'text/javascript', '.wasm': 'application/wasm', '.html': 'text/html', '.ttf': 'font/ttf'}.get(os.path.splitext(f)[1], 'application/octet-stream')
             return self.send(200, open(f, 'rb').read(), ct)
         if u.path == '/~/login': return self.send(200, '<title>login</title><p id=login>the ship asks for its code, to go back to ' + q.get('redirect', [''])[0], 'text/html')
+        # %settings, as eyre answers a scry of a bucket: each entry is text that holds JSON, and a bucket never written is a 404
+        if u.path.startswith('/~/scry/settings/bucket/'):
+            desk = u.path.split('/')[5]
+            if desk not in SETTINGS: return self.send(404, 'not found', 'text/plain')
+            return self.send(200, json.dumps({"bucket": SETTINGS[desk]}))
+        if u.path.startswith('/~/channel/'): return self.send(200, 'id: 0\ndata: {"ok":"ok","id":1,"response":"poke"}\n\n', 'text/event-stream')
         if u.path == '/~/name': return self.send(200, '~zod' if signed else '~bosdev-dozzod-marnus-fopfed', 'text/plain')
         if not signed:
             self.send_response(302); self.send_header('location', '/~/login?redirect=' + u.path); self.send_header('content-length', '0'); self.end_headers(); return
@@ -144,5 +150,16 @@ def do_POST(self):
         sys.stderr.write("saved %s rev %d %r\n" % (name, PAGES[name][2], body[:60]))
         return self.send(200, json.dumps({"rev": PAGES[name][2], "conflicted": bool(stale), "kept": kept}))
     self.send(404, '{"error":"not in the stub"}')
+# a poke of %settings on a channel, as the theme controls send one
+SETTINGS = {}
+def do_PUT(self):
+    body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
+    for act in json.loads(body or '[]'):
+        e = act.get('json', {}).get('put-entry')
+        if act.get('action') == 'poke' and act.get('app') == 'settings' and e:
+            SETTINGS.setdefault(e['desk'], {})[e['entry-key']] = e['value']
+            sys.stderr.write("settings %s %s %s\n" % (e['desk'], e['entry-key'], e['value'][:300]))
+    self.send(204, '')
+H.do_PUT = do_PUT
 H.do_POST = do_POST
 HTTPServer(('127.0.0.1', 8379), H).serve_forever()

@@ -716,6 +716,8 @@ struct App {
     next_theme: f64,
     /// A change to the theme on its way to the ship.
     theme_put: Latest<Result<(), String>>,
+    /// A theme being made or changed in the settings: its id, light or dark, and its name, five colours and six more as typed.
+    theme_draft: Option<(String, bool, Box<[TextEdit; 12]>)>,
     /// The accent's colour as typed in the settings.
     accent_hex: TextEdit,
     /// The families the window's text was last set in, to set them again only when the theme's font changes.
@@ -1090,6 +1092,7 @@ fn init() -> App {
         font_set: APP_FONT.to_owned(),
         theme_put: Latest::default(),
         accent_hex: TextEdit::new(""),
+        theme_draft: None,
         marks_bad: false,
         marks_q: TextEdit::new(""),
         palette: None,
@@ -8126,9 +8129,26 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
                     None => s.note = "A colour is six hex figures, as #4A7C59".into(),
                 }).build(k).w(170.0).key("accent-hex"));
             }
+            // a new theme starts light or dark as the window is now
+            let dark_now = k.c.text_base.luminance() > k.c.bg_base.luminance();
+            let mut tools = row().key("theme-tools").gap(4.0).child(Button::new("New theme").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| {
+                let id = format!("r{:x}", api::since_epoch().map_or(0, |d| d.as_nanos()));
+                draft_open(s, theme::Draft::new(id, dark_now));
+            }).build(k).key("theme-new"));
+            if let Some(cur) = worn.own_draft() {
+                let id = cur.id.clone();
+                tools = tools
+                    .child(Button::new("Edit").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| draft_open(s, cur.clone())).build(k).key("theme-edit"))
+                    .child(Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| {
+                        s.theme_draft = None;
+                        theme_change(s, |w| w.delete_theme(&id));
+                    }).build(k).key("theme-delete"));
+            }
             theme = theme
-                .child(text("Your own themes are made on the web client's settings page, or in Talon. Pick one here, or the built-in look.").font(k.ty.small).color(c.text_muted).wrap())
+                .child(text("Your own themes: pick five colours and the rest is worked out. Saved to your ship, so they follow you to every device.").font(k.ty.small).color(c.text_muted).wrap())
                 .child(themes)
+                .child(tools)
+                .children(draft_now(s).map(|d| draft_view(s, &d, k)))
                 .child(text("An accent: one colour over whichever theme is in use, as in Talon.").font(k.ty.small).color(c.text_muted).wrap())
                 .child(accents);
         }
@@ -10468,6 +10488,86 @@ fn page_body(s: &App, k: &Kit) -> El {
         .min_h(0.0)
         .child(col().key(format!("page:{}", p.name)).w_full().items_center().child(page.child(shown)))
         .scroll(ScrollSpec { stick_bottom: false })
+}
+
+/// Opens the theme editor on a theme: a new one, or one kept.
+fn draft_open(s: &mut App, d: theme::Draft) {
+    let mut fields = Vec::with_capacity(12);
+    fields.push(TextEdit::new(d.name.as_str()));
+    fields.extend(d.five.iter().chain(&d.more).map(|c| TextEdit::new(c.as_str())));
+    fields[0].focused = true;
+    s.theme_draft = fields.try_into().ok().map(|f: [TextEdit; 12]| (d.id, d.dark, Box::new(f)));
+}
+
+/// The theme the editor holds, as typed.
+fn draft_now(s: &App) -> Option<theme::Draft> {
+    let (id, dark, f) = s.theme_draft.as_ref()?;
+    let text = |i: usize| f[i].text.clone();
+    Some(theme::Draft { id: id.clone(), name: text(0), dark: *dark, five: std::array::from_fn(|i| text(1 + i)), more: std::array::from_fn(|i| text(6 + i)) })
+}
+
+fn theme_field(s: &mut App, i: usize) -> &mut TextEdit {
+    &mut s.theme_draft.as_mut().expect("the theme editor is open").2[i]
+}
+
+/// Keeps the theme in the editor and wears it.
+fn draft_save(s: &mut App) {
+    let Some(d) = draft_now(s).filter(theme::Draft::valid) else {
+        s.note = "A theme needs a name and its five colours, each as six hex figures".into();
+        return;
+    };
+    s.theme_draft = None;
+    theme_change(s, |w| w.save_theme(&d));
+}
+
+/// The theme editor, as the web client's: a name, light or dark, five
+/// colours, six more that are derived unless named, and how it would look.
+fn draft_view(s: &App, d: &theme::Draft, k: &Kit) -> El {
+    let c = &k.c;
+    let pick = |label: &str, on: bool| Button::new(label).control_size(ControlSize::Small).variant(if on { ButtonVariant::Contrast } else { ButtonVariant::Ghost });
+    let fields = &s.theme_draft.as_ref().expect("the theme editor is open").2;
+    // a colour as typed, with what it is beside it
+    let colour = |i: usize, label: &str, hint: &str| {
+        let shown = theme::hex_of(&fields[i].text).and_then(|h| rune::color::hex(&h.to_lowercase()));
+        row().gap(6.0).center_y()
+            .child(el().size(18.0, 18.0).radius(4.0).fill(shown.unwrap_or(rune::Color::TRANSPARENT)).border(1.0, c.border_base).a11y_hidden())
+            .child(TextInput::new(&fields[i]).label(label).placeholder(hint).on_edit(move |s: &mut App| theme_field(s, i)).build(k).w(120.0).key(format!("draft-{i}")))
+            .child(text(label.to_owned()).font(k.ty.small).color(c.text_muted))
+    };
+    let mut five = row().key("draft-five").gap(12.0).flex_wrap();
+    for (i, label) in ["Primary", "Secondary", "Tertiary", "Background", "Surface"].into_iter().enumerate() {
+        five = five.child(colour(1 + i, label, "#RRGGBB"));
+    }
+    let mut more = row().key("draft-more").gap(12.0).flex_wrap();
+    for (i, label) in ["Text", "Muted text", "Raised", "Error", "Selection", "Links"].into_iter().enumerate() {
+        more = more.child(colour(6 + i, label, "Auto"));
+    }
+    // how it would look: the background, with a card of its surface on it, as Talon's editor shows
+    let l = d.look();
+    let bg = theme::hex_of(&d.five[3]).and_then(|h| rune::color::hex(&h.to_lowercase())).unwrap_or(c.bg_base);
+    let ink = l.text.unwrap_or(c.text_base);
+    let word = |t: &str, ink: rune::Color| text(t.to_owned()).font(k.ty.small_medium).color(ink);
+    let demo = row().key("draft-demo").w_full().padding(12.0).gap(10.0).center_y().flex_wrap().radius(k.radius.md).fill(bg).border(1.0, c.border_base)
+        .child(word("A menu on a surface.", ink).px(10.0).py(4.0).radius(6.0).fill(l.bg.unwrap_or(c.layer_01)).border(1.0, l.border_soft.unwrap_or(c.border_base)))
+        .child(word("Primary", l.on_accent.unwrap_or(c.text_contrast)).px(10.0).py(4.0).radius(6.0).fill(l.accent.unwrap_or(c.bg_accent)))
+        .child(word("Secondary", theme::hex_of(&d.five[1]).and_then(|h| rune::color::hex(&h.to_lowercase())).unwrap_or(ink)))
+        .child(word("Tertiary", theme::hex_of(&d.five[2]).and_then(|h| rune::color::hex(&h.to_lowercase())).unwrap_or(ink)))
+        .child(word("A link", l.link.unwrap_or(c.text_accent)))
+        .child(word("An error", l.error.unwrap_or(c.danger.fg)))
+        .child(word("Raised", ink).px(10.0).py(4.0).radius(6.0).fill(l.raised.unwrap_or(c.layer_02)))
+        .child(word("Muted", l.muted.unwrap_or(c.text_muted)));
+    col().key("theme-draft").w_full().gap(8.0).padding(12.0).radius(k.radius.md).border(1.0, c.border_base)
+        .child(TextInput::new(&fields[0]).label("Theme name").placeholder("Theme name").on_edit(|s: &mut App| theme_field(s, 0)).on_submit(|s: &mut App, _| draft_save(s)).build(k).w(260.0).key("draft-name"))
+        .child(row().gap(4.0)
+            .child(pick("Light", !d.dark).on_press(|s: &mut App| if let Some(t) = &mut s.theme_draft { t.1 = false }).build(k).key("draft-light"))
+            .child(pick("Dark", d.dark).on_press(|s: &mut App| if let Some(t) = &mut s.theme_draft { t.1 = true }).build(k).key("draft-dark")))
+        .child(five)
+        .child(text("More colours. Left empty, each is worked out from the five.").font(k.ty.small).color(c.text_muted).wrap())
+        .child(more)
+        .child(demo)
+        .child(row().gap(6.0)
+            .child(Button::new("Save and use").control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(!d.valid()).on_press(draft_save).build(k).key("draft-save"))
+            .child(Button::new("Cancel").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| s.theme_draft = None).build(k).key("draft-cancel")))
 }
 
 /// Makes a change to what lattice wears: here at once, kept for the next

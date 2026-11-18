@@ -141,6 +141,57 @@ fn unwrap(v: Option<&Value>) -> Value {
     }
 }
 
+/// The six colours a theme may name in place of having them derived, in Talon's names.
+pub const MORE: [&str; 6] = ["text", "muted", "raised", "error", "selection", "link"];
+
+/// A theme being made or changed: what is typed, before it is a theme.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Draft {
+    pub id: String,
+    pub name: String,
+    pub dark: bool,
+    /// Primary, secondary, tertiary, background and surface, as typed.
+    pub five: [String; 5],
+    /// The six more, as typed. Empty is derived.
+    pub more: [String; 6],
+}
+
+impl Draft {
+    /// A new theme, started from lattice's own colours on a light or a dark ground.
+    pub fn new(id: String, dark: bool) -> Draft {
+        let (bg, surface) = if dark { ("#1A1A1A", "#242424") } else { ("#FAFAFA", "#FFFFFF") };
+        Draft { id, name: String::new(), dark, five: ["#4A7C59", "#7A5AF8", "#0A9A6A", bg, surface].map(str::to_owned), more: Default::default() }
+    }
+
+    /// A kept theme, to change.
+    pub fn of(t: &Value) -> Draft {
+        let s = |k: &str| t.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
+        Draft { id: s("id"), name: s("name"), dark: t.get("dark").and_then(Value::as_bool).unwrap_or(false), five: FIVE.map(s), more: MORE.map(s) }
+    }
+
+    /// Whether it can be kept: named, with its five colours.
+    pub fn valid(&self) -> bool {
+        !self.name.trim().is_empty() && !self.id.is_empty() && self.five.iter().all(|c| hex_of(c).is_some())
+    }
+
+    /// The theme as it is kept, in Talon's shape: every colour in capitals, and each of the six written, empty for derived.
+    pub fn value(&self) -> Value {
+        let mut t = serde_json::json!({ "id": self.id, "name": self.name.trim(), "dark": self.dark });
+        for (k, c) in FIVE.iter().zip(&self.five) {
+            t[*k] = Value::String(hex_of(c).unwrap_or_default());
+        }
+        for (k, c) in MORE.iter().zip(&self.more) {
+            t[*k] = Value::String(hex_of(c).unwrap_or_default());
+        }
+        t
+    }
+
+    /// How it would look, to show while it is made. Nothing until its primary and surface are colours.
+    pub fn look(&self) -> Look {
+        theme_look(&self.value())
+    }
+}
+
 /// How an accent is set, as the settings offer it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Accent {
@@ -208,6 +259,28 @@ impl Worn {
             self.mine = serde_json::json!({ "themes": [] });
         }
         self.mine["activeId"] = id.map_or(Value::Null, |i| Value::String(i.to_owned()));
+        Put { entry: "themes", value: self.mine.clone() }
+    }
+
+    /// The theme in use among lattice's own, to change.
+    pub fn own_draft(&self) -> Option<Draft> {
+        active(&self.mine).map(Draft::of)
+    }
+
+    /// Keeps a theme made or changed, in place of the one with its id, and wears it. The others are left as they are.
+    pub fn save_theme(&mut self, d: &Draft) -> Put {
+        let mut all: Vec<Value> = self.mine.get("themes").and_then(Value::as_array).cloned().unwrap_or_default();
+        all.retain(|t| t.get("id").and_then(Value::as_str) != Some(d.id.as_str()));
+        all.push(d.value());
+        self.mine = serde_json::json!({ "themes": all, "activeId": d.id });
+        Put { entry: "themes", value: self.mine.clone() }
+    }
+
+    /// Drops one of lattice's own themes. The built-in look is worn after it.
+    pub fn delete_theme(&mut self, id: &str) -> Put {
+        let mut all: Vec<Value> = self.mine.get("themes").and_then(Value::as_array).cloned().unwrap_or_default();
+        all.retain(|t| t.get("id").and_then(Value::as_str) != Some(id));
+        self.mine = serde_json::json!({ "themes": all, "activeId": null });
         Put { entry: "themes", value: self.mine.clone() }
     }
 
@@ -487,6 +560,38 @@ mod tests {
         assert_eq!(w.set_accent(Accent::Profile).value, json!({ "enabled": true, "mode": "Profile", "customHex": "#FFCC00" }));
         assert!(w.own_accent() == Accent::Profile && w.wants_profile());
         assert_eq!([hex_of("ffcc00"), hex_of(" #AbCdEf "), hex_of("red"), hex_of("#fff")], [Some("#FFCC00".to_owned()), Some("#ABCDEF".to_owned()), None, None]);
+    }
+
+    #[test]
+    fn a_theme_is_made_changed_and_dropped() {
+        let mut d = Draft::new("n1".into(), true);
+        assert!(!d.valid(), "not until it is named");
+        assert_eq!((d.five[3].as_str(), d.five[4].as_str()), ("#1A1A1A", "#242424"));
+        assert_eq!(Draft::new("n2".into(), false).five[4], "#FFFFFF");
+        d.name = " Dusk ".into();
+        d.five[0] = "ffcc00".into();
+        d.more[5] = "#0055aa".into();
+        d.more[0] = "nope".into();
+        assert!(d.valid());
+        let v = d.value();
+        assert_eq!((&v["name"], &v["primary"], &v["link"], &v["text"], &v["muted"]), (&json!("Dusk"), &json!("#FFCC00"), &json!("#0055AA"), &json!(""), &json!("")), "each of the six is written, empty for derived");
+        assert_eq!((hex(d.look().accent), hex(d.look().bg), hex(d.look().link)), ("#ffcc00".to_owned(), "#242424".to_owned(), "#0055aa".to_owned()));
+        d.five[4] = "#12".into();
+        assert!(!d.valid() && d.look() == Look::default());
+        d.five[4] = "#242424".into();
+        // kept among the others, and worn
+        let mut w = Worn { own: true, mine: json!({ "themes": [night()], "activeId": "a" }), ..Worn::default() };
+        let put = w.save_theme(&d);
+        assert_eq!((put.entry, w.own_active(), w.themes().len()), ("themes", Some("n1"), 2));
+        // changed in place: the same id is one theme still
+        let mut again = w.own_draft().unwrap();
+        assert_eq!(again, Draft { name: "Dusk".into(), five: ["#FFCC00", "#7A5AF8", "#0A9A6A", "#1A1A1A", "#242424"].map(str::to_owned), more: ["", "", "", "", "", "#0055AA"].map(str::to_owned), ..d.clone() });
+        again.name = "Dusk two".into();
+        w.save_theme(&again);
+        assert_eq!(w.themes(), [("a".to_owned(), "Night".to_owned()), ("n1".to_owned(), "Dusk two".to_owned())]);
+        // dropped: the built-in look, and the other theme left
+        let put = w.delete_theme("n1");
+        assert_eq!((put.value["activeId"].clone(), w.themes(), w.own_active()), (Value::Null, vec![("a".to_owned(), "Night".to_owned())], None));
     }
 
     #[test]
