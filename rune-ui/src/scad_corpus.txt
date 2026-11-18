@@ -1,0 +1,537 @@
+// lattice's new scad page: a box with a lid, three customizer variables
+/* [Size] */
+// inside width, in mm
+width = 40; // [10:200]
+// inside depth, in mm
+depth = 30; // [10:200]
+// wall thickness, in mm
+wall = 2; // [0.8:0.2:6]
+
+/* [Hidden] */
+$fn = 48;
+
+difference() {
+  cube([width + 2 * wall, depth + 2 * wall, 20]);
+  translate([wall, wall, wall]) cube([width, depth, 20]);
+}
+
+-----
+width|3|8|10|"40"|40|"Size"|"inside width, in mm"|10|200|1||-
+depth|5|8|10|"30"|30|"Size"|"inside depth, in mm"|10|200|1||-
+wall|7|7|8|"2"|2|"Size"|"wall thickness, in mm"|0.8|6|0.2||-
+=====
+/*[ Candle Stand ]*/
+//Length of candle stand
+length=50; // [70:large,50:medium,30:small]
+
+// Center stand
+cylinder(length,width-2);
+
+//Radius of ring of stand
+radius=25;
+
+/* [ Number of candle holders ]*/
+// Number of candle holders
+count=7; //[3:14]
+
+//Do you want center Candle
+centerCandle=true;
+
+/* [ Candle Holder ]*/
+//Length of candle holder
+candleSize=7;
+
+//Width of candle holder
+width=4;
+
+//Size of hole for candle holder
+holeSize=3;
+
+CenterCandleWidth=4;
+
+/*[Properties of support]*/
+
+heightOfSupport=3;
+widthOfSupport=3;
+
+/*[Properties of Ring]*/
+
+heightOfRing=4;
+
+widthOfRing=23;
+
+
+//Create center candle
+translate([0,0,length-candleSize/2])
+if(centerCandle){
+    difference(){
+        $fn=360;
+        cylinder(candleSize,r=CenterCandleWidth);
+        cylinder(candleSize+1,r=CenterCandleWidth-2);
+    }
+}else{
+        sphere(CenterCandleWidth);
+}
+
+//make ring 
+translate([0,0,length-candleSize/2]){
+    make(radius, count,candleSize,length);
+    //make bottom cover for candle holders
+    make_ring_of(radius, count){
+        cylinder(1,r=width);
+    }
+}
+
+
+//Base of candle stand
+for (a = [0 : count - 1]) {
+    rotate(a*360/count) {
+    translate([0, -width/2, 0]) 
+        cube([radius, widthOfSupport, heightOfSupport]);
+    }
+}
+
+//make ring with candle holders
+module make(radius, count,candleSize,length){
+    
+    $fa = 0.5;
+    $fs = 0.5;
+    difference(){
+        union(){
+             //making holders
+            make_ring_of(radius, count){ 
+                cylinder(candleSize,r=width);
+            }
+            
+            //Attaching holders to stand
+            for (a = [0 : count - 1]) {
+                rotate(a*360/count) {
+                translate([0, -width/2, 0]) 
+                    cube([radius, widthOfSupport, heightOfSupport]);
+                }
+            }
+            
+            // make ring
+            linear_extrude(heightOfRing, convexity=2)
+            difference(){    
+                circle(radius);
+                circle(widthOfRing);
+            }
+        }
+        //Making holes in candle holder
+        make_ring_of(radius, count){
+            cylinder(candleSize+1,r=holeSize);
+        }
+    }
+}
+
+
+module make_ring_of(radius, count){
+    for (a = [0 : count - 1]) {
+        angle = a * 360 / count;
+        translate(radius * [cos(angle), -sin(angle), 0])
+                children();
+    }
+}
+
+// Written by Amarjeet Singh Kapoor <amarjeet.kapoor1@gmail.com>
+//
+// To the extent possible under law, the author(s) have dedicated all
+// copyright and related and neighboring rights to this software to the
+// public domain worldwide. This software is distributed without any
+// warranty.
+//
+// You should have received a copy of the CC0 Public Domain
+// Dedication along with this software.
+// If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
+
+-----
+length|2|7|9|"50"|50|"Candle Stand"|"Length of candle stand"|-|-|-|70="large";50="medium";30="small"|-
+radius|8|7|9|"25"|25|"Candle Stand"|"Radius of ring of stand"|-|-|1||-
+count|12|6|7|"7"|7|"Number of candle holders"|"Number of candle holders"|3|14|1||-
+centerCandle|15|13|17|"true"|true|"Number of candle holders"|"Do you want center Candle"|-|-|-||-
+candleSize|19|11|12|"7"|7|"Candle Holder"|"Length of candle holder"|-|-|1||-
+width|22|6|7|"4"|4|"Candle Holder"|"Width of candle holder"|-|-|1||-
+holeSize|25|9|10|"3"|3|"Candle Holder"|"Size of hole for candle holder"|-|-|1||-
+CenterCandleWidth|27|18|19|"4"|4|"Candle Holder"|""|-|-|1||-
+heightOfSupport|31|16|17|"3"|3|"Properties of support"|""|-|-|1||-
+widthOfSupport|32|15|16|"3"|3|"Properties of support"|""|-|-|1||-
+heightOfRing|36|13|14|"4"|4|"Properties of Ring"|""|-|-|1||-
+widthOfRing|38|12|14|"23"|23|"Properties of Ring"|""|-|-|1||-
+=====
+// lattice's own fixture: every widget form OpenSCAD's customizer reads
+plain = 4;
+
+step = 5; // 0.5
+
+spaced = 7;    //   2
+
+slider = 20; // [10:100]
+
+stepped = 15; // [0:5:50]
+
+maxonly = 3; // [12]
+
+broken = 2; // [1:12
+
+notlist = 6; // [1 12]
+
+twice = 1; // [1:12] // [12:34]
+
+empty = 9; //
+
+labelled = 20; // [10:Small, 20:Medium, 30:Large]
+
+numlist = 2; // [0, 1, 2, 3]
+
+missing = 10; // [0, 1, 2]
+
+word = "hello"; // just a note
+
+maxlen = "abc"; // 8
+
+choice = "bar"; // [foo, bar, baz]
+
+pick = "M"; // [S:Small, M:Medium, L:Large]
+
+flag = true;
+
+vec2 = [12, 34]; // [1:100]
+
+vec4 = [1, 2, 3, 4];
+
+vec6 = [1, 2, 3, 4, 5, 6];
+
+neg = -12.5;
+
+sci = 1e3;
+
+computed = 2 * plain;
+
+notb = !true;
+
+names = ["a", "b"];
+
+a1 = 1; b1 = "two"; // [1:34]
+
+/* [Shape] */
+// how round the corners are
+round = 2; // [0:0.5:10]
+
+// a description
+//
+described = 3;
+
+// a description with a blank line after it
+
+notdescribed = 4;
+
+/* [Hidden] */
+secret = 99;
+
+/* [Global] */
+everywhere = 1; // [0:1]
+
+/* [Last] */
+last = "x";
+
+module part() {
+  inside = 5;
+  cube(inside);
+}
+
+after = 7;
+
+-----
+plain|1|8|9|"4"|4|"Parameters"|"lattice's own fixture: every widget form OpenSCAD's customizer reads"|-|-|1||-
+step|3|7|8|"5"|5|"Parameters"|""|-|-|0.5||-
+spaced|5|9|10|"7"|7|"Parameters"|""|-|-|2||-
+slider|7|9|11|"20"|20|"Parameters"|""|10|100|1||-
+stepped|9|10|12|"15"|15|"Parameters"|""|0|50|5||-
+maxonly|11|10|11|"3"|3|"Parameters"|""|0|12|1||-
+broken|13|9|10|"2"|2|"Parameters"|""|-|-|1||-
+notlist|15|10|11|"6"|6|"Parameters"|""|-|-|1||-
+twice|17|8|9|"1"|1|"Parameters"|""|-|-|1||-
+empty|19|8|9|"9"|9|"Parameters"|""|-|-|1||-
+labelled|21|11|13|"20"|20|"Parameters"|""|-|-|-|10="Small";20="Medium";30="Large"|-
+numlist|23|10|11|"2"|2|"Parameters"|""|-|-|-|0="0";1="1";2="2";3="3"|-
+missing|25|10|12|"10"|10|"Parameters"|""|-|-|-|10="10";0="0";1="1";2="2"|-
+word|27|7|14|"\"hello\""|"hello"|"Parameters"|""|-|-|-||-
+maxlen|29|9|14|"\"abc\""|"abc"|"Parameters"|""|-|-|-||8
+choice|31|9|14|"\"bar\""|"bar"|"Parameters"|""|-|-|-|"foo"="foo";"bar"="bar";"baz"="baz"|-
+pick|33|7|10|"\"M\""|"M"|"Parameters"|""|-|-|-|"S"="Small";"M"="Medium";"L"="Large"|-
+flag|35|7|11|"true"|true|"Parameters"|""|-|-|-||-
+vec2|37|7|15|"[12, 34]"|[12,34]|"Parameters"|""|1|100|1||-
+vec4|39|7|19|"[1, 2, 3, 4]"|[1,2,3,4]|"Parameters"|""|-|-|-||-
+neg|43|6|11|"-12.5"|-12.5|"Parameters"|""|-|-|1||-
+sci|45|6|9|"1e3"|1000|"Parameters"|""|-|-|1||-
+a1|53|5|6|"1"|1|"Parameters"|""|-|-|1||-
+b1|53|13|18|"\"two\""|"two"|"Parameters"|""|-|-|-||-
+round|57|8|9|"2"|2|"Shape"|"how round the corners are"|0|10|0.5||-
+described|61|12|13|"3"|3|"Shape"|""|-|-|1||-
+notdescribed|65|15|16|"4"|4|"Shape"|""|-|-|1||-
+everywhere|71|13|14|"1"|1|"Global"|""|0|1|1||-
+last|74|7|10|"\"x\""|"x"|"Last"|""|-|-|-||-
+=====
+// First example of parameteric model
+//   
+//    syntax: 
+//        //Description
+//        variable=value; //Parameter
+//        
+//        This type of comment tells the name of group to which parameters below
+//        this comment will belong 
+//    
+//       /*[ group name ]*/ 
+//
+
+
+//Below comment tells the group to which a variable will belong
+/*[ properties of Sign]*/
+
+//The resolution of the curves. Higher values give smoother curves but may increase the model render time.
+resolution = 10; //[10, 20, 30, 50, 100]
+
+//The horizontal radius of the outer ellipse of the sign.
+radius = 80;//[60 : 200]
+
+//Total height of the sign
+height = 2;//[1 : 10]
+
+/*[ Content To be written ] */
+
+//Message to be write 
+Message = "Welcome to..."; //["Welcome to...", "Happy Birthday!", "Happy Anniversary", "Congratulations", "Thank You"]
+
+//Name of Person, company etc.
+To = "Parametric Designs";
+
+$fn = resolution;
+
+scale([1, 0.5]) difference() {
+    cylinder(r = radius, h = 2 * height, center = true);
+    translate([0, 0, height])
+        cylinder(r = radius - 10, h = height + 1, center = true);
+}
+linear_extrude(height = height) {
+    translate([0, --4]) text(Message, halign = "center");
+    translate([0, -16]) text(To, halign = "center");
+}
+
+// Written by Amarjeet Singh Kapoor <amarjeet.kapoor1@gmail.com>
+//
+// To the extent possible under law, the author(s) have dedicated all
+// copyright and related and neighboring rights to this software to the
+// public domain worldwide. This software is distributed without any
+// warranty.
+//
+// You should have received a copy of the CC0 Public Domain
+// Dedication along with this software.
+// If not, see <http://creativecommons.org/publicdomain/zero/1.0/>.
+
+-----
+resolution|17|13|15|"10"|10|"properties of Sign"|"The resolution of the curves. Higher values give smoother curves but may increase the model render time."|-|-|-|10="10";20="20";30="30";50="50";100="100"|-
+radius|20|9|11|"80"|80|"properties of Sign"|"The horizontal radius of the outer ellipse of the sign."|60|200|1||-
+height|23|9|10|"2"|2|"properties of Sign"|"Total height of the sign"|1|10|1||-
+Message|28|10|25|"\"Welcome to...\""|"Welcome to..."|"Content To be written"|"Message to be write"|-|-|-|"Welcome to..."="Welcome to...";"Happy Birthday!"="Happy Birthday!";"Happy Anniversary"="Happy Anniversary";"Congratulations"="Congratulations";"Thank You"="Thank You"|-
+To|31|5|25|"\"Parametric Designs\""|"Parametric Designs"|"Content To be written"|"Name of Person, company etc."|-|-|-||-
+=====
+// unbounded recursion: OpenSCAD's own stack guard ends it
+function f(n) = f(n + 1) + 1;
+echo(f(0));
+module m(n) { m(n + 1); }
+m(0);
+
+-----
+
+=====
+// a tail call that runs for about 15 s: the time limit stops it
+function f(n, a = 0) = n == 0 ? a : f(n - 1, a + 1);
+echo(f(50000000));
+cube(1);
+
+-----
+
+=====
+// more triangles than the viewer draws: refused before WebGL
+sphere(10, $fn = 1500);
+
+-----
+
+=====
+// includes that try to leave lattice: each is refused, none is read
+include </etc/passwd>
+include <../../../../etc/shadow>
+use <https://example.com/evil.scad>
+use <file:///etc/hosts>
+include <C:\Windows\win.ini>
+include <\\host\share\x.scad>
+cube(2);
+
+-----
+
+=====
+// a page that includes itself, twice over
+include <05-include-self.scad>
+use <./05-include-self>
+cube(3);
+
+-----
+
+=====
+// markup in a model, which must stay text everywhere
+label = "</code></pre><script>alert(document.cookie)</script>";
+/* <img src=x onerror=alert(1)> */
+echo("<b>bold</b>", label);
+text("\u202e reversed", size = 5);
+cube(1);
+
+-----
+label|1|8|62|"\"</code></pre><script>alert(document.cookie)</script>\""|"</code></pre><script>alert(document.cookie)</script>"|"Parameters"|"markup in a model, which must stay text everywhere"|-|-|-||-
+=====
+// a model that makes nothing
+x = 1;
+
+-----
+x|1|4|5|"1"|1|"Parameters"|"a model that makes nothing"|-|-|1||-
+=====
+// a NUL and control bytes in a comment: 
+label = "tab	here";
+cube(1);
+
+-----
+label|1|8|18|"\"tab\there\""|"tab\there"|"Parameters"|"a NUL and control bytes in a comment: \u0001\u0002"|-|-|-||-
+=====
+// lattice's new scad page: a box with a lid, three customizer variables
+/* [Size] */
+// inside width, in mm
+width = 40; // [10:200]
+// inside depth, in mm
+depth = 30; // [10:200]
+// wall thickness, in mm
+wall = 2; // [0.8:0.2:6]
+
+/* [Hidden] */
+$fn = 48;
+
+difference() {
+  cube([width + 2 * wall, depth + 2 * wall, 20]);
+  translate([wall, wall, wall]) cube([width, depth, 20]);
+}
+
+-----
+width|3|8|10|"40"|40|"Size"|"inside width, in mm"|10|200|1||-
+depth|5|8|10|"30"|30|"Size"|"inside depth, in mm"|10|200|1||-
+wall|7|7|8|"2"|2|"Size"|"wall thickness, in mm"|0.8|6|0.2||-
+=====
+// plain
+a = 1;
+b=2.5 ;   // [0:0.5:10]
+c = -3; // [10]
+d = 7; // [1:9]
+e = 4; // 0.25
+f = "txt"; // 12
+g = "red"; // [red, green, "dark blue"]
+h = 10; // [10:Small, 20:Large, 30]
+i = 5; // [1, 2, 3]
+j = 5; // [a, b]
+k = [1,2,3]; // [0:10]
+l = [1,2,3,4,5];
+m = true; n = false;
+o = 1; p = 2; // [0:5]
+q = a + 1;
+r = "esc \"q\" \\ \n \x41 \u00e9 \z";
+/* [Second group] */
+// described
+//  twice
+s = 1e3;
+t = .5;
+
+u = 3;
+/* [Hidden] */
+v = 9;
+/*[ Shown again ]*/
+w = "é ü"; // [é ü, other]
+x = 1; /* block
+y = 2;
+*/ z = 3;
+a = 99; // [0:100]
+if (a > 1) { inner = 5; }
+after = 6;
+module m() { deep = 1; }
+late = 7;
+
+-----
+b|2|2|5|"2.5"|2.5|"Parameters"|""|0|10|0.5||-
+c|3|4|6|"-3"|-3|"Parameters"|""|0|10|1||-
+d|4|4|5|"7"|7|"Parameters"|""|1|9|1||-
+e|5|4|5|"4"|4|"Parameters"|""|-|-|0.25||-
+f|6|4|9|"\"txt\""|"txt"|"Parameters"|""|-|-|-||12
+g|7|4|9|"\"red\""|"red"|"Parameters"|""|-|-|-|"red"="red";"green"="green";"dark blue"="dark blue"|-
+h|8|4|6|"10"|10|"Parameters"|""|-|-|-|10="Small";20="Large";30="30"|-
+i|9|4|5|"5"|5|"Parameters"|""|-|-|-|5="5";1="1";2="2";3="3"|-
+j|10|4|5|"5"|5|"Parameters"|""|-|-|1||-
+k|11|4|11|"[1,2,3]"|[1,2,3]|"Parameters"|""|0|10|1||-
+m|13|4|8|"true"|true|"Parameters"|""|-|-|-||-
+n|13|14|19|"false"|false|"Parameters"|""|-|-|-||-
+o|14|4|5|"1"|1|"Parameters"|""|-|-|1||-
+p|14|11|12|"2"|2|"Parameters"|""|-|-|1||-
+r|16|4|36|"\"esc \\\"q\\\" \\\\ \\n \\x41 \\u00e9 \\z\""|"esc \"q\" \\ \n A é \\z"|"Parameters"|""|-|-|-||-
+s|20|4|7|"1e3"|1000|"Second group"|"twice"|-|-|1||-
+t|21|4|6|".5"|0.5|"Second group"|""|-|-|1||-
+u|23|4|5|"3"|3|"Second group"|""|-|-|1||-
+w|27|4|9|"\"é ü\""|"é ü"|"Shown again"|""|-|-|-|"é ü"="é ü";"other"="other"|-
+x|28|4|5|"1"|1|"Shown again"|""|-|-|1||-
+a|31|4|6|"99"|99|"Shown again"|""|0|100|1||-
+after|33|8|9|"6"|6|"Shown again"|""|-|-|1||-
+=====
+a = "unclosed;
+b = [1, "x"];
+c = [];
+d = [ 1 , 2 ];
+e = 1 // none
+f = 2;;g=3;
+h = "a;b"; // [a;b, c]
+$fn = 64; // [8:128]
+_p = 1; // [ 1 : 2 : 9 ]
+q = 1; // [1:2:3:4]
+r = 5; // []
+s = "x"; // [,]
+t = 1; // [0:1e2]
+u = 2; // [1:one, 2:"two words", 3:]
+v = 1.5; // [0.5:tiny,1.5:mid]
+w = 3; // text
+x = "y"; // [10:100]
+
+-----
+d|3|4|13|"[ 1 , 2 ]"|[1,2]|"Parameters"|""|-|-|-||-
+f|5|4|5|"2"|2|"Parameters"|""|-|-|1||-
+h|6|4|9|"\"a;b\""|"a;b"|"Parameters"|""|-|-|-|"a;b"="a;b";"c"="c"|-
+$fn|7|6|8|"64"|64|"Parameters"|""|8|128|1||-
+_p|8|5|6|"1"|1|"Parameters"|""|1|9|2||-
+q|9|4|5|"1"|1|"Parameters"|""|-|-|-|1="2:3:4"|-
+r|10|4|5|"5"|5|"Parameters"|""|-|-|1||-
+s|11|4|7|"\"x\""|"x"|"Parameters"|""|-|-|-||-
+t|12|4|5|"1"|1|"Parameters"|""|0|100|1||-
+u|13|4|5|"2"|2|"Parameters"|""|-|-|-|1="one";2="two words";3=""|-
+v|14|4|7|"1.5"|1.5|"Parameters"|""|-|-|-|0.5="tiny";1.5="mid"|-
+w|15|4|5|"3"|3|"Parameters"|""|-|-|1||-
+x|16|4|7|"\"y\""|"y"|"Parameters"|""|-|-|-|"y"="y";10="100"|-
+=====
+function f(x) = x;
+a = 1;
+
+-----
+
+=====
+  module  m(){}
+
+-----
+
+=====
+a = 1; // [1:5]
+b = 2;
+
+-----
+a|0|4|5|"1"|1|"Parameters"|""|1|5|1||-
+b|1|4|5|"2"|2|"Parameters"|""|-|-|1||-

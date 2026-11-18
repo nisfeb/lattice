@@ -1,0 +1,4 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "places"},
+  {"t": 5.0, "type": "tap", "key": "param-wall-up"}
+]}

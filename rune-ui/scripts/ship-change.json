@@ -1,0 +1,8 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "settings-open"},
+  {"t": 3.5, "type": "tap", "key": "ship-change"},
+  {"t": 4.0, "type": "type", "text": "http://localhost:8222"},
+  {"t": 6.0, "type": "tap", "key": "ship-code"},
+  {"t": 6.5, "type": "type", "text": "lidlut-tabwed-pillex-ridrup"},
+  {"t": 9.0, "type": "tap", "key": "ship-connect-go"}
+]}

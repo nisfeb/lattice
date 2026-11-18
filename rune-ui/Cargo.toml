@@ -1,0 +1,53 @@
+[package]
+name = "lattice-rune"
+version = "0.0.1"
+edition = "2024"
+publish = false
+description = "An experimental native client for lattice, drawn with Rune. Not the shipped desktop app."
+
+[lib]
+# a library the native program runs, and a cdylib for the browser (`scripts/web/build.sh`)
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Rune is pre-release: pin one rev of `dev` for it and for every patch below.
+rune = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
+rune-kit = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721", features = ["markdown", "mermaid"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+flate2 = "1"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# the file dialog is the desktop's
+rune = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721", features = ["native-file-dialog"] }
+# the same client the desktop app's bridge uses. It does not build for the browser, which has its own
+ureq = { version = "2", default-features = false, features = ["tls"] }
+# an HTML page as a browser shows it, drawn in the app (`src/htmlview.rs`): Blitz lays it out and paints it
+# on the processor. Pre-release, so each is pinned to the versions that go together
+blitz-dom = "=0.3.0-beta.4"
+blitz-html = "=0.3.0-beta.4"
+blitz-paint = "=0.3.0-beta.4"
+blitz-traits = "=0.3.0-beta.4"
+anyrender = "=0.14.0"
+anyrender_vello_cpu = "=0.18.0"
+data-url = "0.3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# Rune's own, already in the lock: the browser's entry point, clock, requests and storage
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["XmlHttpRequest", "Window", "Storage", "Location"] }
+
+# Cargo does not inherit a dependency's patches: these are Rune's own, at the same rev.
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
+
+# Rune's layout crate with one arm added, so it builds beside Blitz: see `vendor/rune-taffy/Cargo.toml`
+[patch."https://github.com/anomalyco/rune"]
+rune-taffy = { path = "vendor/rune-taffy" }
+
+[workspace]

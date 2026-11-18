@@ -1,0 +1,5 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "half-memory"},
+  {"t": 5.0, "type": "tap", "key": "core-keep-rules/brief"},
+  {"t": 8.0, "type": "tap", "key": "core-untag-rules/kind"}
+]}

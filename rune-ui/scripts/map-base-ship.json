@@ -1,0 +1,9 @@
+{"events": [
+  {"t": 3.0, "type": "tap", "key": "runmap"},
+  {"t": 5.0, "type": "tap", "key": "map-base"},
+  {"t": 8.0, "type": "key", "name": "p", "cmd": true},
+  {"t": 8.5, "type": "type", "text": "mapbox token"},
+  {"t": 9.0, "type": "key", "name": "Enter"},
+  {"t": 9.5, "type": "type", "text": "pk.rune-ui-run_1"},
+  {"t": 10.0, "type": "tap", "key": "prompt-ok"}
+]}

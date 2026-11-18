@@ -1,0 +1,8 @@
+{"events": [
+  {"t": 2.5, "type": "tap", "key": "rune-probe"},
+  {"t": 3.5, "type": "tap", "key": "comments-toggle-pane"},
+  {"t": 6.0, "type": "tap", "key": "comments-toggle"},
+  {"t": 9.0, "type": "tap", "key": "comment-field"},
+  {"t": 9.5, "type": "type", "text": "first from the pane"},
+  {"t": 10.5, "type": "tap", "key": "comment-post"}
+]}

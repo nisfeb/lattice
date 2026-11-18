@@ -1,0 +1,9 @@
+{"events": [
+  {"t": 3.0, "type": "tap", "key": "rune-probe"},
+  {"t": 4.0, "type": "tap", "key": "new"},
+  {"t": 5.0, "type": "tap", "key": "prompt-template"},
+  {"t": 8.0, "type": "tap", "key": "tmpl-site"},
+  {"t": 9.0, "type": "tap", "key": "tmpl-name"},
+  {"t": 9.5, "type": "type", "text": "-from-rune"},
+  {"t": 10.5, "type": "tap", "key": "tmpl-ok"}
+]}

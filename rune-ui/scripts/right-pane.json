@@ -1,0 +1,11 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 1.5, "type": "tap", "key": "notes/today"},
+  {"t": 3.0, "type": "tap", "key": "backlinks-toggle"},
+  {"t": 5.0, "type": "tap", "key": "comments-toggle-pane"},
+  {"t": 7.0, "type": "tap", "key": "history-toggle"},
+  {"t": 9.0, "type": "tap", "key": "links-toggle"},
+  {"t": 11.0, "type": "tap", "key": "pane-right"},
+  {"t": 13.0, "type": "tap", "key": "pane-right"},
+  {"t": 15.0, "type": "tap", "key": "half-memory"}
+]}

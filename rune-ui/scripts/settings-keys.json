@@ -1,0 +1,14 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "settings-open"},
+  {"t": 4.0, "type": "tap", "key": "key-make"},
+  {"t": 5.0, "type": "tap", "key": "key-name"},
+  {"t": 5.4, "type": "type", "text": "laptop Claude"},
+  {"t": 7.0, "type": "tap", "key": "key-by"},
+  {"t": 7.4, "type": "type", "text": "claude-laptop"},
+  {"t": 9.0, "type": "tap", "key": "kmemory-read"},
+  {"t": 9.6, "type": "tap", "key": "kpages-some"},
+  {"t": 10.4, "type": "tap", "key": "key-pread"},
+  {"t": 10.8, "type": "type", "text": "notes, projects"},
+  {"t": 12.5, "type": "tap", "key": "kskills-read"},
+  {"t": 13.2, "type": "tap", "key": "key-make"}
+]}

@@ -1,0 +1,6 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "rune-probe"},
+  {"t": 3.0, "type": "tap", "key": "edit"},
+  {"t": 4.0, "type": "type", "text": " MINE"},
+  {"t": 66.0, "type": "tap", "key": "stale-act"}
+]}

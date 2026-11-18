@@ -1,0 +1,5 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "new"},
+  {"t": 2.5, "type": "tap", "key": "prompt-template"},
+  {"t": 3.5, "type": "tap", "key": "tmpl-site"}
+]}

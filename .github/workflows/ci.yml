@@ -217,6 +217,67 @@ jobs:
           fi
           echo "the app started without libfuse and was still running after 8s"
 
+  # The experimental Rune client (rune-ui/), on every target a release
+  # offers it for. Linux runs its tests and checks the browser build still
+  # compiles. macOS and Windows build and pack it, which is all that can be
+  # asked of them here: the tests draw text with the system's fonts and read
+  # unix file modes. No clippy and no cargo deny yet: the crate has warnings
+  # of its own and its dependencies' licences have not been gone through.
+  rune:
+    name: rune client — ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 22.04 for the same reason the desktop is built there: the glibc
+          # a build asks for is the oldest it runs on
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15
+            target: x86_64-apple-darwin
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: rust toolchain
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      # the linker is handed -lxkbcommon, and the AppImage is a squashfs
+      - name: linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev pkg-config squashfs-tools binutils fonts-dejavu-core
+      - name: cargo test
+        if: runner.os == 'Linux'
+        working-directory: rune-ui
+        run: cargo test --locked
+      - name: the browser build compiles
+        if: runner.os == 'Linux'
+        working-directory: rune-ui
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check --locked --lib --target wasm32-unknown-unknown
+      - name: build and pack (release)
+        run: sh rune-ui/scripts/bundle/dist.sh ${{ matrix.target }} "$RUNNER_TEMP/rune-dist"
+      # the program answers before it opens a window, so this runs with no display
+      - name: the packed program starts
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: |
+          bin=rune-ui/target/${{ matrix.target }}/release/lattice-rune
+          [ "$RUNNER_OS" = Windows ] && bin=$bin.exe
+          "$bin" --version
+
   nix:
     name: nix — flake build
     runs-on: ubuntu-24.04

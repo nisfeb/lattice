@@ -1,0 +1,4 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "split-toggle"},
+  {"t": 2.5, "type": "tap", "key": "notes/today"}
+]}

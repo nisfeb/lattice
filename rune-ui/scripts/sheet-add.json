@@ -1,0 +1,10 @@
+{"events": [
+  {"t": 0.8, "type": "tap", "key": "budget"},
+  {"t": 2.0, "type": "tap", "key": "cell-1-1"},
+  {"t": 3.0, "type": "tap", "key": "sheet-add"},
+  {"t": 4.0, "type": "tap", "key": "cell-0-0"},
+  {"t": 4.5, "type": "type", "text": "42"},
+  {"t": 6.5, "type": "key", "name": "Enter"},
+  {"t": 7.5, "type": "tap", "key": "sheet-add"},
+  {"t": 8.5, "type": "tap", "key": "sheet-2"}
+]}

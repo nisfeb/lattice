@@ -1,0 +1,5 @@
+{"events": [
+  {"t": 2.5, "type": "tap", "key": "album"},
+  {"t": 3.5, "type": "tap", "key": "folder-share"},
+  {"t": 5.0, "type": "tap", "key": "share-clearweb"}
+]}

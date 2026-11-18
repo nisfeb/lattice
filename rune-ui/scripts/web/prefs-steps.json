@@ -1,0 +1,4 @@
+[{"wait": 4000}, {"storage": "lattice-rune.prefs"},
+ {"click": [155, 680]}, {"wait": 800}, {"click": [155, 680]}, {"wait": 800}, {"storage": "lattice-rune.prefs"},
+ {"click": [74, 172]}, {"wait": 2500},
+ {"reload": true}, {"wait": 5000}, {"shot": "/tmp/lr-prefs.png"}, {"storage": "lattice-rune.prefs"}]

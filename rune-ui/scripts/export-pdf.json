@@ -1,0 +1,7 @@
+{"events": [
+  {"t": 3.0, "type": "tap", "key": "trip-report"},
+  {"t": 4.5, "type": "key", "name": "p", "cmd": true},
+  {"t": 5.0, "type": "type", "text": "export this page as pdf"},
+  {"t": 5.5, "type": "key", "name": "Enter"},
+  {"t": 6.5, "type": "file-dialog", "path": "/tmp/lr-pdf/trip-report.pdf"}
+]}

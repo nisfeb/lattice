@@ -1,0 +1,11 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "url"},
+  {"t": 0.7, "type": "type", "text": "localhost:8222"},
+  {"t": 1.5, "type": "tap", "key": "code"},
+  {"t": 1.7, "type": "type", "text": "lidlut-tabwed-pillex-ridrup"},
+  {"t": 3.0, "type": "key", "name": "Enter"},
+  {"t": 6.0, "type": "tap", "key": "rune-probe"},
+  {"t": 8.0, "type": "key", "name": "n", "cmd": true},
+  {"t": 8.5, "type": "type", "text": "made/from-the-window"},
+  {"t": 10.0, "type": "key", "name": "Enter"}
+]}

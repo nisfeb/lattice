@@ -1,0 +1,7 @@
+{"events": [
+  {"t": 0.8, "type": "tap", "key": "budget"},
+  {"t": 2.0, "type": "tap", "key": "split-toggle"},
+  {"t": 3.0, "type": "tap", "key": "places"},
+  {"t": 5.0, "type": "tap", "key": "split-sheet-1"},
+  {"t": 6.5, "type": "tap", "key": "g1-front"}
+]}

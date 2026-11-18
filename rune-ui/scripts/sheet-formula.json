@@ -1,0 +1,8 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "places"},
+  {"t": 4.0, "type": "tap", "key": "cell-3-2"},
+  {"t": 5.0, "type": "key", "name": "Enter"},
+  {"t": 6.0, "type": "tap", "key": "cell-1-2"},
+  {"t": 6.5, "type": "type", "text": "9"},
+  {"t": 7.5, "type": "key", "name": "Enter"}
+]}

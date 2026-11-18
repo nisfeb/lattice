@@ -1,0 +1,12 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "places"},
+  {"t": 3.0, "type": "tap", "key": "param-slider-up"},
+  {"t": 4.0, "type": "tap", "key": "param-step-down"},
+  {"t": 5.0, "type": "tap", "key": "param-labelled-2"},
+  {"t": 6.0, "type": "tap", "key": "param-flag-switch"},
+  {"t": 7.0, "type": "tap", "key": "param-maxonly-up"},
+  {"t": 8.0, "type": "tap", "key": "param-word-value"},
+  {"t": 8.6, "type": "key", "name": "a", "cmd": true},
+  {"t": 9.0, "type": "type", "text": "say \"hi\""},
+  {"t": 11.5, "type": "key", "name": "Enter"}
+]}

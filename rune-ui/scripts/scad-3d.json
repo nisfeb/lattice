@@ -1,0 +1,5 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "places"},
+  {"t": 5.0, "type": "drag", "key": "scad-3d", "dx": 160, "dy": -60},
+  {"t": 7.0, "type": "tap", "key": "scad-pan"}
+]}

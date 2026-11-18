@@ -1,0 +1,9 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "places"},
+  {"t": 5.0, "type": "tap", "key": "scad-stl"},
+  {"t": 5.5, "type": "file-dialog", "path": "/tmp/lr-exp/box.stl"},
+  {"t": 7.0, "type": "tap", "key": "scad-png"},
+  {"t": 7.5, "type": "file-dialog", "path": "/tmp/lr-exp/box.png"},
+  {"t": 9.5, "type": "tap", "key": "scad-3mf"},
+  {"t": 10.0, "type": "file-dialog", "path": "/tmp/lr-exp/box.3mf"}
+]}

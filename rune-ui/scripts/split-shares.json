@@ -1,0 +1,53 @@
+{
+ "events": [
+  {
+   "t": 0.5,
+   "type": "tap",
+   "key": "sample"
+  },
+  {
+   "t": 1.5,
+   "type": "tap",
+   "key": "welcome"
+  },
+  {
+   "t": 3.0,
+   "type": "tap",
+   "key": "split-toggle"
+  },
+  {
+   "t": 5.0,
+   "type": "drag",
+   "key": "line-0",
+   "dx": 60,
+   "dy": 0,
+   "dur": 0.5
+  },
+  {
+   "t": 8.0,
+   "type": "drag",
+   "key": "line-0",
+   "dx": 400,
+   "dy": 0,
+   "dur": 0.5
+  },
+  {
+   "t": 11.0,
+   "type": "double-click",
+   "key": "line-0"
+  },
+  {
+   "t": 14.0,
+   "type": "tap",
+   "key": "split-down"
+  },
+  {
+   "t": 16.0,
+   "type": "drag",
+   "key": "line-0",
+   "dx": 0,
+   "dy": -60,
+   "dur": 0.5
+  }
+ ]
+}

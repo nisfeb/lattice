@@ -1,0 +1,59 @@
+{
+ "events": [
+  {
+   "t": 0.5,
+   "type": "tap",
+   "key": "sample"
+  },
+  {
+   "t": 1.5,
+   "type": "tap",
+   "key": "welcome"
+  },
+  {
+   "t": 3.0,
+   "type": "key",
+   "name": "\\",
+   "cmd": true,
+   "shift": false
+  },
+  {
+   "t": 4.0,
+   "type": "tap",
+   "key": "budget"
+  },
+  {
+   "t": 6.0,
+   "type": "key",
+   "name": "\\",
+   "cmd": true,
+   "shift": true
+  },
+  {
+   "t": 7.0,
+   "type": "tap",
+   "key": "places"
+  },
+  {
+   "t": 9.0,
+   "type": "key",
+   "name": "]",
+   "cmd": true,
+   "shift": true
+  },
+  {
+   "t": 11.0,
+   "type": "key",
+   "name": "]",
+   "cmd": true,
+   "shift": true
+  },
+  {
+   "t": 13.0,
+   "type": "key",
+   "name": "[",
+   "cmd": true,
+   "shift": true
+  }
+ ]
+}

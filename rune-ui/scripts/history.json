@@ -1,0 +1,6 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "rune-probe"},
+  {"t": 3.0, "type": "tap", "key": "history-toggle"},
+  {"t": 5.0, "type": "tap", "key": "rev-2"},
+  {"t": 7.0, "type": "tap", "key": "restore"}
+]}

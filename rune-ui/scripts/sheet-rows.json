@@ -1,0 +1,8 @@
+{"events": [
+  {"t": 0.8, "type": "tap", "key": "budget"},
+  {"t": 2.0, "type": "tap", "key": "cell-1-0"},
+  {"t": 3.0, "type": "tap", "key": "row-above"},
+  {"t": 4.0, "type": "tap", "key": "row-below"},
+  {"t": 5.0, "type": "tap", "key": "cell-4-1"},
+  {"t": 6.0, "type": "tap", "key": "row-del"}
+]}

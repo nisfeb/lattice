@@ -1,0 +1,9 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "half-memory"},
+  {"t": 2.8, "type": "tap", "key": "rune"},
+  {"t": 3.5, "type": "tap", "key": "rune/fact"},
+  {"t": 5.0, "type": "tap", "key": "edit"},
+  {"t": 6.0, "type": "key", "name": "a", "cmd": true},
+  {"t": 6.5, "type": "type", "text": "the fact, changed with the ship away\n"},
+  {"t": 8.0, "type": "tap", "key": "save"}
+]}

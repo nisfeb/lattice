@@ -1,0 +1,6 @@
+{"events": [
+  {"t": 2.5, "type": "tap", "key": "access-open"},
+  {"t": 5.0, "type": "tap", "key": "group-ships-team"},
+  {"t": 6.0, "type": "type", "text": " wes"},
+  {"t": 7.0, "type": "key", "name": "Enter"}
+]}

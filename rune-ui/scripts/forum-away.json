@@ -1,0 +1,10 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "forum-open"},
+  {"t": 5.0, "type": "tap", "key": "board-address"},
+  {"t": 5.5, "type": "type", "text": "~nec/chat"},
+  {"t": 7.0, "type": "tap", "key": "board-go"},
+  {"t": 40.0, "type": "tap", "key": "board-address"},
+  {"t": 40.5, "type": "key", "name": "a", "cmd": true},
+  {"t": 41.0, "type": "type", "text": "urb://~zod/forum/chat"},
+  {"t": 43.0, "type": "key", "name": "Enter"}
+]}

@@ -1,0 +1,7 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 1.0, "type": "tap", "key": "welcome"},
+  {"t": 2.0, "type": "tap", "key": "lattice:notes/today"},
+  {"t": 3.0, "type": "tap", "key": "back"},
+  {"t": 4.0, "type": "tap", "key": "lattice:plans/next"}
+]}

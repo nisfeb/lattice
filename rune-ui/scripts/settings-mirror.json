@@ -1,0 +1,4 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "settings-open"},
+  {"t": 6.0, "type": "tap", "key": "obelisk-install"}
+]}

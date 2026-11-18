@@ -1,0 +1,6 @@
+{"events": [
+  {"t": 1.5, "drop_files": {"paths": ["/tmp/lr-tex/paper.tex"], "at": [700, 400]}},
+  {"t": 3.0, "type": "key", "name": "p", "cmd": true},
+  {"t": 3.5, "type": "type", "text": "convert this latex"},
+  {"t": 4.0, "type": "key", "name": "Enter"}
+]}

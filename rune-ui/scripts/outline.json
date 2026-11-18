@@ -1,0 +1,70 @@
+{
+ "events": [
+  {
+   "t": 0.5,
+   "type": "tap",
+   "key": "sample"
+  },
+  {
+   "t": 1.5,
+   "type": "tap",
+   "key": "new"
+  },
+  {
+   "t": 2.0,
+   "type": "type",
+   "text": "longdoc"
+  },
+  {
+   "t": 3.0,
+   "type": "key",
+   "name": "Enter"
+  },
+  {
+   "t": 4.5,
+   "type": "tap",
+   "key": "edit"
+  },
+  {
+   "t": 5.0,
+   "type": "tap",
+   "key": "mode"
+  },
+  {
+   "t": 5.5,
+   "type": "key",
+   "name": "End",
+   "cmd": true
+  },
+  {
+   "t": 6.0,
+   "type": "type",
+   "text": "\n\np1\n\np2\n\np3\n\np4\n\np5\n\np6\n\np7\n\np8\n\np9\n\np10\n\np11\n\np12\n\np13\n\np14\n\np15\n\np16\n\np17\n\np18\n\np19\n\np20\n\np21\n\np22\n\np23\n\np24\n\np25\n\np26\n\np27\n\np28\n\np29\n\np30\n\n## Deep heading\n\nThe end.\n"
+  },
+  {
+   "t": 16.0,
+   "type": "tap",
+   "key": "outline-toggle"
+  },
+  {
+   "t": 18.0,
+   "type": "tap",
+   "key": "ol-1"
+  },
+  {
+   "t": 20.0,
+   "type": "tap",
+   "key": "read"
+  },
+  {
+   "t": 22.0,
+   "type": "tap",
+   "key": "ol-1"
+  },
+  {
+   "t": 25.0,
+   "type": "tap",
+   "key": "ol-0"
+  }
+ ]
+}

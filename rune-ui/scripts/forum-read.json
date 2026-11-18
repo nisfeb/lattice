@@ -1,0 +1,7 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "forum-open"},
+  {"t": 4.5, "type": "tap", "key": "board-general"},
+  {"t": 7.0, "type": "tap", "key": "post-1"},
+  {"t": 10.0, "type": "tap", "key": "forum-back"},
+  {"t": 11.0, "type": "tap", "key": "fsort-top"}
+]}

@@ -1,0 +1,8 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 1.5, "type": "tap", "key": "settings-open"},
+  {"t": 2.5, "type": "tap", "key": "font-serif"},
+  {"t": 4.0, "type": "tap", "key": "welcome"},
+  {"t": 5.0, "type": "tap", "key": "edit"},
+  {"t": 6.0, "type": "tap", "key": "mode"}
+]}

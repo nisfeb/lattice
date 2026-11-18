@@ -1,0 +1,70 @@
+{
+ "events": [
+  {
+   "t": 0.5,
+   "type": "tap",
+   "key": "sample"
+  },
+  {
+   "t": 1.5,
+   "type": "tap",
+   "key": "welcome"
+  },
+  {
+   "t": 3.0,
+   "type": "tap",
+   "key": "tab-new"
+  },
+  {
+   "t": 4.0,
+   "type": "tap",
+   "key": "budget"
+  },
+  {
+   "t": 6.0,
+   "type": "tap",
+   "key": "split-toggle"
+  },
+  {
+   "t": 7.0,
+   "type": "tap",
+   "key": "t-0"
+  },
+  {
+   "t": 9.0,
+   "type": "tap",
+   "key": "pane-right"
+  },
+  {
+   "t": 11.0,
+   "type": "tap",
+   "key": "pane-left"
+  },
+  {
+   "t": 13.0,
+   "type": "tap",
+   "key": "pane-left"
+  },
+  {
+   "t": 14.0,
+   "type": "key",
+   "name": "p",
+   "cmd": true
+  },
+  {
+   "t": 14.4,
+   "type": "type",
+   "text": "Close this tab"
+  },
+  {
+   "t": 15.2,
+   "type": "key",
+   "name": "Enter"
+  },
+  {
+   "t": 16.0,
+   "type": "tap",
+   "key": "half-memory"
+  }
+ ]
+}

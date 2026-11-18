@@ -1,0 +1,7 @@
+{"events": [
+  {"t": 2.5, "type": "tap", "key": "access-open"},
+  {"t": 4.5, "type": "tap", "key": "ban-who"},
+  {"t": 5.0, "type": "type", "text": "dev"},
+  {"t": 6.0, "type": "key", "name": "Enter"},
+  {"t": 12.0, "type": "tap", "key": "unban-~dev"}
+]}

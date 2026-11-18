@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=lattice (Rune)
+Comment=An experimental native client for lattice
+Exec=lattice-rune
+Icon=lattice-rune
+Terminal=false
+Categories=Office;TextEditor;
+StartupWMClass=lattice-rune

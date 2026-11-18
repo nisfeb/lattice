@@ -1,0 +1,8 @@
+{"events": [
+  {"t": 3.0, "type": "tap", "key": "new"},
+  {"t": 4.0, "type": "type", "text": "pagetab"},
+  {"t": 5.0, "type": "key", "name": "Enter"},
+  {"t": 12.0, "type": "tap", "key": "share"},
+  {"t": 16.0, "type": "tap", "key": "share-clearweb"},
+  {"t": 18.0, "type": "tap", "key": "prompt-ok"}
+]}

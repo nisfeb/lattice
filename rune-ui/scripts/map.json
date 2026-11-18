@@ -1,0 +1,7 @@
+{"events": [
+  {"t": 0.8, "type": "tap", "key": "places"},
+  {"t": 2.0, "type": "drag", "x": 700, "y": 500, "dx": 100, "dy": -40, "dur": 0.4},
+  {"t": 3.0, "type": "wheel", "x": 700, "y": 400, "dx": 0, "dy": -100},
+  {"t": 4.0, "type": "tap", "key": "dot-0"},
+  {"t": 5.0, "type": "tap", "key": "zoom-fit"}
+]}

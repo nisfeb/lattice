@@ -1,0 +1,6 @@
+{"events": [
+  {"t": 1.5, "type": "key", "name": "p", "cmd": true},
+  {"t": 2.0, "type": "type", "text": "links"},
+  {"t": 2.5, "type": "key", "name": "Enter"},
+  {"t": 3.5, "type": "key", "name": "p", "cmd": true}
+]}

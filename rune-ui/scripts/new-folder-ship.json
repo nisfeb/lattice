@@ -1,0 +1,8 @@
+{"events": [
+  {"t": 3.0, "type": "tap", "key": "new-folder"},
+  {"t": 4.0, "type": "type", "text": "Ship Plans/Year Two"},
+  {"t": 5.0, "type": "key", "name": "Enter"},
+  {"t": 14.0, "type": "tap", "key": "new"},
+  {"t": 15.0, "type": "type", "text": "first"},
+  {"t": 16.0, "type": "key", "name": "Enter"}
+]}

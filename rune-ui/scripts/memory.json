@@ -1,0 +1,9 @@
+{"events": [
+  {"t": 2.5, "type": "tap", "key": "half-memory"},
+  {"t": 3.5, "type": "key", "name": "n", "cmd": true},
+  {"t": 4.0, "type": "type", "text": "rune/made-here"},
+  {"t": 5.0, "type": "key", "name": "Enter"},
+  {"t": 8.0, "type": "tap", "key": "edit"},
+  {"t": 9.0, "type": "type", "text": " and a fact typed natively"},
+  {"t": 10.5, "type": "key", "name": "s", "cmd": true}
+]}

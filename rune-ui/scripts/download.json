@@ -1,0 +1,7 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "notes/today"},
+  {"t": 2.0, "type": "key", "name": "p", "cmd": true},
+  {"t": 2.5, "type": "type", "text": "download"},
+  {"t": 3.0, "type": "key", "name": "Enter"},
+  {"t": 4.0, "type": "file-dialog", "path": "/tmp/lr-dl/today.md"}
+]}

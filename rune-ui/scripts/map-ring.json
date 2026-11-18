@@ -1,0 +1,16 @@
+{"events": [
+  {"t": 0.8, "type": "tap", "key": "places"},
+  {"t": 2.0, "type": "tap", "key": "map-ring"},
+  {"t": 2.5, "type": "drag", "x": 500, "y": 560, "dx": 0, "dy": 0, "dur": 0.1},
+  {"t": 3.0, "type": "drag", "x": 580, "y": 560, "dx": 0, "dy": 0, "dur": 0.1},
+  {"t": 4.0, "type": "tap", "key": "feature-edit"},
+  {"t": 4.5, "type": "tap", "key": "feature-time"},
+  {"t": 4.8, "type": "type", "text": "2026-11-17T09:30:00Z"},
+  {"t": 8.0, "type": "tap", "key": "feature-source"},
+  {"t": 8.3, "type": "type", "text": "notes/today"},
+  {"t": 11.0, "type": "tap", "key": "prompt-ok"},
+  {"t": 12.0, "type": "tap", "key": "feature-edit"},
+  {"t": 12.5, "type": "tap", "key": "feature-time"},
+  {"t": 12.8, "type": "type", "text": "ish"},
+  {"t": 14.5, "type": "tap", "key": "prompt-ok"}
+]}

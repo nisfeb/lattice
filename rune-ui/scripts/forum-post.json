@@ -1,0 +1,22 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "forum-open"},
+  {"t": 4.5, "type": "tap", "key": "board-quiet"},
+  {"t": 6.5, "type": "tap", "key": "forum-new"},
+  {"t": 7.2, "type": "type", "text": "Written in the app"},
+  {"t": 10.5, "type": "tap", "key": "draft-body"},
+  {"t": 11.0, "type": "type", "text": "A *first* post."},
+  {"t": 14.0, "type": "tap", "key": "draft-tags"},
+  {"t": 14.5, "type": "type", "text": "native Bad"},
+  {"t": 17.0, "type": "tap", "key": "draft-post"},
+  {"t": 18.0, "type": "tap", "key": "draft-tags"},
+  {"t": 18.4, "type": "key", "name": "a", "cmd": true},
+  {"t": 18.8, "type": "type", "text": "native, app"},
+  {"t": 21.5, "type": "tap", "key": "draft-post"},
+  {"t": 24.5, "type": "tap", "key": "post-1"},
+  {"t": 26.5, "type": "tap", "key": "forum-comment"},
+  {"t": 27.0, "type": "type", "text": "A comment."},
+  {"t": 29.5, "type": "tap", "key": "forum-send"},
+  {"t": 32.0, "type": "tap", "key": "reply-0"},
+  {"t": 32.8, "type": "type", "text": "And an answer."},
+  {"t": 35.5, "type": "tap", "key": "forum-send"}
+]}

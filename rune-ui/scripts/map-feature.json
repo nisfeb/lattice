@@ -1,0 +1,12 @@
+{"events": [
+  {"t": 0.8, "type": "tap", "key": "places"},
+  {"t": 2.0, "type": "drag", "x": 757, "y": 524, "dx": 0, "dy": 0, "dur": 0.1},
+  {"t": 3.0, "type": "tap", "key": "colour:#28a745"},
+  {"t": 4.0, "type": "tap", "key": "feature-edit"},
+  {"t": 4.5, "type": "type", "text": " home"},
+  {"t": 5.0, "type": "tap", "key": "prompt-ok"},
+  {"t": 6.0, "type": "tap", "key": "dot-0"},
+  {"t": 6.5, "type": "tap", "key": "icon:star"},
+  {"t": 7.5, "type": "tap", "key": "dot-1"},
+  {"t": 8.0, "type": "tap", "key": "feature-delete"}
+]}

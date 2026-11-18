@@ -1,0 +1,21 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "forum-open"},
+  {"t": 5.0, "type": "tap", "key": "board-modt"},
+  {"t": 8.0, "type": "tap", "key": "board-mod"},
+  {"t": 11.0, "type": "tap", "key": "role-who"},
+  {"t": 11.5, "type": "type", "text": "~wes"},
+  {"t": 13.0, "type": "tap", "key": "role-mod"},
+  {"t": 14.0, "type": "tap", "key": "role-set"},
+  {"t": 18.0, "type": "tap", "key": "role-remove-bud"},
+  {"t": 22.0, "type": "tap", "key": "mod-sidebar"},
+  {"t": 22.5, "type": "key", "name": "a", "cmd": true},
+  {"t": 23.0, "type": "type", "text": "Be kind. Read the rules first."},
+  {"t": 25.0, "type": "tap", "key": "sidebar-save"},
+  {"t": 29.0, "type": "tap", "key": "prune-score"},
+  {"t": 29.5, "type": "key", "name": "a", "cmd": true},
+  {"t": 30.0, "type": "type", "text": "5"},
+  {"t": 31.0, "type": "tap", "key": "prune-save"},
+  {"t": 35.0, "type": "tap", "key": "invite-ship"},
+  {"t": 35.5, "type": "type", "text": "~wes"},
+  {"t": 37.0, "type": "tap", "key": "invite-add"}
+]}

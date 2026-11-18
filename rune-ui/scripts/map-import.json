@@ -1,0 +1,7 @@
+{"events": [
+  {"t": 0.8, "type": "tap", "key": "places"},
+  {"t": 2.0, "type": "tap", "key": "map-import"},
+  {"t": 2.5, "type": "file-dialog", "path": "/tmp/lr-io/walk.gpx"},
+  {"t": 4.5, "type": "tap", "key": "map-gpx"},
+  {"t": 5.0, "type": "file-dialog", "path": "/tmp/lr-io/out.gpx"}
+]}

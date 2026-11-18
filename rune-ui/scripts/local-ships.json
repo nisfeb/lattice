@@ -1,0 +1,5 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 1.5, "type": "tap", "key": "settings-open"},
+  {"t": 2.5, "type": "tap", "key": "local-look"}
+]}

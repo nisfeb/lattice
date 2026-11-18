@@ -1,0 +1,24 @@
+{
+ "events": [
+  {
+   "t": 0.5,
+   "type": "tap",
+   "key": "sample"
+  },
+  {
+   "t": 1.5,
+   "type": "tap",
+   "key": "welcome"
+  },
+  {
+   "t": 3.0,
+   "type": "tap",
+   "key": "split-down"
+  },
+  {
+   "t": 5.0,
+   "type": "tap",
+   "key": "g1-close"
+  }
+ ]
+}
