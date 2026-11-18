@@ -1334,6 +1334,9 @@ pub struct Prefs {
     /// The tree is sorted by name from the end: the web client's `name-desc`.
     #[serde(default)]
     pub sort_desc: bool,
+    /// The page held beside is held below, not to the right.
+    #[serde(default)]
+    pub split_down: bool,
     /// The bookmark folders folded away in the left pane.
     #[serde(default)]
     pub marks_folded: Vec<String>,
@@ -2887,7 +2890,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()] }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()], split_down: true }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert!(back.sort_desc);
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");

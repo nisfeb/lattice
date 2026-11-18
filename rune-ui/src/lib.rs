@@ -28,6 +28,7 @@ mod scadrun;
 mod search;
 mod sheet;
 mod shift;
+mod splits;
 mod status;
 mod styles;
 mod tabhead;
@@ -613,7 +614,12 @@ struct App {
     side_tabs: Vec<Tab>,
     side_tab: usize,
     /// The group in front is the right one of the two: a group stays on its side when it comes to the front.
+    /// When the split runs down, it is the lower one.
     front_right: bool,
+    /// The two groups are one above the other, not side by side.
+    split_down: bool,
+    /// The room the groups have, as last laid out: nothing until then.
+    groups_room: (f32, f32),
     /// The tree is to be read once more a moment from now: the ship
     /// answers a batch before it has written all of it.
     resync: bool,
@@ -924,6 +930,8 @@ fn init() -> App {
         side_tabs: Vec::new(),
         side_tab: 0,
         front_right: false,
+        split_down: false,
+        groups_room: (0.0, 0.0),
         resync: false,
         find: None,
         find_at: 0,
@@ -4942,6 +4950,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     if s.names.contains(&s.prefs.split) {
                         s.split = Some(s.prefs.split.clone());
                         (s.side_tabs, s.side_tab) = (vec![Tab { trail: vec![s.prefs.split.clone()], at: 0 }], 0);
+                        s.split_down = s.prefs.split_down;
                     }
                     let last = s.prefs.last.clone();
                     if s.open.is_none() && !restore_tabs(s) && s.names.contains(&last) {
@@ -5677,6 +5686,33 @@ fn toggle_split(s: &mut App) {
     sync_side(s);
 }
 
+/// A press on a split button: across, or down. With no split it makes
+/// one that way, when there is room for two groups. With a split the
+/// other way it turns the two groups round. With one that way it closes it.
+fn split_press(s: &mut App, down: bool) {
+    let press = splits::press(s.split.is_some(), s.split_down, down);
+    if press != splits::Press::Close {
+        if let Some(why) = splits::refused(s.groups_room, down) {
+            s.note = why;
+            return;
+        }
+    }
+    match press {
+        splits::Press::Make => {
+            s.split_down = down;
+            toggle_split(s);
+        }
+        splits::Press::Turn => s.split_down = down,
+        splits::Press::Close => toggle_split(s),
+    }
+    if s.prefs.split_down != s.split_down {
+        s.prefs.split_down = s.split_down;
+        if s.conn.is_some() {
+            s.prefs.save();
+        }
+    }
+}
+
 /// Puts `split` in step with the group beside: its front tab's page, or
 /// nothing once the group has no tab left, which ends the split.
 fn sync_side(s: &mut App) {
@@ -6024,16 +6060,25 @@ fn tab_strip(s: &App, k: &Kit) -> El {
         strip = strip.child(one);
     }
     let (can_new, can_split) = topbar::tools(s.editing, s.memory, usable(s, "split"));
-    strip.child(IconButton::new(&head::PLUS).variant(IconButtonVariant::GhostMuted).help("New tab").disabled(!can_new).on_press(new_tab).build(k).key("tab-new")).child(
-        IconButton::new(&topbar::SPLIT)
-            .variant(if s.split.is_some() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted })
-            .help(if s.split.is_some() { "Close the split" } else { "Split: hold this page beside the next one you open" })
-            .shortcut("Ctrl+\\")
-            .disabled(!can_split)
-            .on_press(toggle_split)
-            .build(k)
-            .key("split-toggle"),
-    )
+    let button = |down: bool, icon: &'static rune::Icon, key: &str, keys: Option<&str>| {
+        let on = s.split.is_some() && s.split_down == down;
+        // a split there is no room for is refused, and its button says why
+        let why = (!on).then(|| splits::refused(s.groups_room, down)).flatten();
+        let says = match (&why, on, s.split.is_some(), down) {
+            (Some(why), ..) => why.clone(),
+            (_, true, ..) => "Close the split".to_owned(),
+            (_, _, true, false) => "Put the two groups side by side".to_owned(),
+            (_, _, true, true) => "Put the two groups one above the other".to_owned(),
+            (_, _, false, false) => "Split right: hold this page beside the next one you open".to_owned(),
+            (_, _, false, true) => "Split down: hold this page below the next one you open".to_owned(),
+        };
+        let mut b = IconButton::new(icon).variant(if on { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help(says).disabled(!can_split || why.is_some()).on_press(move |s: &mut App| split_press(s, down));
+        if let Some(keys) = keys {
+            b = b.shortcut(keys);
+        }
+        b.build(k).key(key.to_owned())
+    };
+    strip.child(IconButton::new(&head::PLUS).variant(IconButtonVariant::GhostMuted).help("New tab").disabled(!can_new).on_press(new_tab).build(k).key("tab-new")).child(button(false, &topbar::SPLIT, "split-toggle", Some("Ctrl+\\"))).child(button(true, &topbar::SPLIT_DOWN, "split-down", None))
 }
 
 /// The right pane, shown or put away, with what it showed last.
@@ -9833,15 +9878,20 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let main = match s.split.as_ref().filter(|_| !s.memory) {
         Some(name) => {
             // a group stays on its side: the one in front is drawn where it stood before it came forward
-            let (front, beside) = (col().key("group-front").grow(1.0).min_w(0.0).h_full().min_h(0.0).child(main), col().key("group-beside").grow(1.0).min_w(0.0).h_full().min_h(0.0).child(split_view(name, s, &k)));
-            let (left, right) = if s.front_right { (beside, front) } else { (front, beside) };
-            row().w_full().h_full().min_h(0.0).child(left).child(Divider::vertical().build(&k)).child(right)
+            let (front, beside) = (col().key("group-front").grow(1.0).min_w(0.0).min_h(0.0).child(main), col().key("group-beside").grow(1.0).min_w(0.0).min_h(0.0).child(split_view(name, s, &k)));
+            let (first, second) = if s.front_right { (beside, front) } else { (front, beside) };
+            if s.split_down {
+                col().w_full().h_full().min_h(0.0).child(first.w_full()).child(Divider::horizontal().build(&k)).child(second.w_full())
+            } else {
+                row().w_full().h_full().min_h(0.0).child(first.h_full()).child(Divider::vertical().build(&k)).child(second.h_full())
+            }
         }
         None => main,
     };
     // under the top bar, the page's own bar: where it has been, its name, and what can be done with it
     let head = row().key("tab-head").w_full().h(36.0).px(8.0).gap(8.0).center_y().justify_between().child(leading.grow(1.0).min_w(0.0)).child(trailing);
-    let main = col().w_full().h_full().min_h(0.0).child(head).child(col().w_full().grow(1.0).min_h(0.0).child(main));
+    // the room the groups have is noted as it is laid out: a split is refused when it is too little for two
+    let main = col().w_full().h_full().min_h(0.0).child(head).child(col().key("groups").w_full().grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.groups_room = (r[2], r[3])).child(main));
     let inset = cx.titlebar_inset();
     let right = IconButton::new(&topbar::PANE_RIGHT).variant(if s.inspector.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help("Right pane").on_press(toggle_right).build(&k).key("pane-right");
     let shell = SplitView::new(main)
@@ -9953,7 +10003,7 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
                 s.sidebar.set_open(true);
                 tx.focus_when_shown("filter", false);
             }
-            Chord::Split => toggle_split(s),
+            Chord::Split => split_press(s, false),
             Chord::Delete => ask_delete(s),
         }
         return true;
