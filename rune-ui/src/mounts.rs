@@ -117,14 +117,23 @@ pub fn cookie_file_name(url: &str) -> Result<String, String> {
 
 /// Puts the session where the mounter will read it: a home of its own under this app's files, so the mounter's own files in the owner's home are never touched. Answers that home.
 fn hand_session(url: &str, cookie: &str) -> Result<PathBuf, String> {
-    use std::io::Write;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let home = list_path().ok_or("no home directory")?.with_file_name("fs-home");
-    let dir = home.join(".config").join("lattice-fs");
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(|e| e.to_string())?;
-    let file = dir.join(cookie_file_name(url)?);
-    std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&file).and_then(|mut f| f.write_all(cookie.as_bytes())).map_err(|e| e.to_string())?;
-    Ok(home)
+    // nothing is mounted from a browser
+    #[cfg(target_arch = "wasm32")]
+    return {
+        let _ = (url, cookie);
+        Err("not in the browser build".into())
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        let home = list_path().ok_or("no home directory")?.with_file_name("fs-home");
+        let dir = home.join(".config").join("lattice-fs");
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(|e| e.to_string())?;
+        let file = dir.join(cookie_file_name(url)?);
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&file).and_then(|mut f| f.write_all(cookie.as_bytes())).map_err(|e| e.to_string())?;
+        Ok(home)
+    }
 }
 
 /// Mounts a ship at a folder and answers the mounter's process, once the folder is a mount. A ship reached over HTTP is mounted with the session given.

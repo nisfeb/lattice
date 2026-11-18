@@ -112,3 +112,7 @@ Debug builds render headless with the same renderer:
 
 - A deb: `sh scripts/bundle/build-in-debian.sh` builds the release inside Debian 12 (docker), then `LATTICE_RUNE_BIN=target/debian/lattice-rune sh scripts/bundle/deb.sh` writes `target/bundle/lattice-rune_<version>_amd64.deb`. Without `LATTICE_RUNE_BIN` the deb holds this machine's own build, which runs only on a system with a glibc as new.
 - An AppImage: `LATTICE_RUNE_BIN=target/debian/lattice-rune sh scripts/bundle/appimage.sh` writes `target/bundle/lattice-rune-<version>-x86_64.AppImage`. It fetches the AppImage runtime once (0.9 MB) unless `APPIMAGE_RUNTIME` names one.
+
+## Web build
+
+`sh scripts/web/build.sh` builds the browser version into `target/web` (docker: the first run builds the toolchain image). Serve the folder and open it in a browser with WebGPU: `python3 -m http.server -d target/web`. `sh scripts/web/build.sh check` only checks that the crate compiles for wasm32.

@@ -43,7 +43,7 @@ pub fn print(browser: &Path, html: &str, out: &Path) -> Result<(), String> {
     if html.len() > MAX_HTML {
         return Err("the page is too large to print".into());
     }
-    let dir = std::env::temp_dir().join(format!("lattice-rune-pdf-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos())));
+    let dir = std::env::temp_dir().join(format!("lattice-rune-pdf-{}-{}", std::process::id(), crate::api::since_epoch().map_or(0, |d| d.subsec_nanos())));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     #[cfg(unix)]
     {

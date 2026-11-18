@@ -1444,11 +1444,14 @@ name = "lattice-rune"
 version = "0.0.1"
 dependencies = [
  "flate2",
+ "js-sys",
  "rune",
  "rune-kit",
  "serde",
  "serde_json",
  "ureq",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

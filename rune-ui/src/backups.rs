@@ -29,7 +29,7 @@ pub struct Schedule {
 }
 
 pub fn now() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    crate::api::since_epoch().map_or(0, |d| d.as_secs())
 }
 
 /// A schedule never run is due at once. One whose last run is in the
@@ -89,6 +89,7 @@ pub fn is_ours(s: &Schedule, fname: &str) -> bool {
     fname.strip_prefix(&format!("lattice-{}-", slug(&s.label))).and_then(|r| r.strip_suffix(".tar")).and_then(|r| r.split_once('-')).is_some_and(|(d, t)| digits(d, 8) && digits(t, 6))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 unsafe extern "C" {
     // ponytail: the C library std already links, declared here to save a dependency
     safe fn geteuid() -> u32;
@@ -98,20 +99,29 @@ unsafe extern "C" {
 /// a folder others can write to can be planted in. So each must be a plain
 /// file of this user's, with one link, stamped no later than tomorrow.
 pub fn existing(s: &Schedule, dir: &Path) -> Vec<PathBuf> {
-    use std::os::unix::fs::MetadataExt;
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
-    let latest = archive_name(s, now() + 86400, true);
-    let mut v: Vec<PathBuf> = rd
-        .flatten()
-        .filter(|e| {
-            let Some(n) = e.file_name().to_str().map(str::to_owned) else { return false };
-            let Ok(m) = std::fs::symlink_metadata(e.path()) else { return false };
-            is_ours(s, &n) && n <= latest && m.file_type().is_file() && m.uid() == geteuid() && m.nlink() == 1
-        })
-        .map(|e| e.path())
-        .collect();
-    v.sort();
-    v
+    // a browser has no folder to keep archives in
+    #[cfg(target_arch = "wasm32")]
+    return {
+        let _ = (s, dir);
+        Vec::new()
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+        let latest = archive_name(s, now() + 86400, true);
+        let mut v: Vec<PathBuf> = rd
+            .flatten()
+            .filter(|e| {
+                let Some(n) = e.file_name().to_str().map(str::to_owned) else { return false };
+                let Ok(m) = std::fs::symlink_metadata(e.path()) else { return false };
+                is_ours(s, &n) && n <= latest && m.file_type().is_file() && m.uid() == geteuid() && m.nlink() == 1
+            })
+            .map(|e| e.path())
+            .collect();
+        v.sort();
+        v
+    }
 }
 
 /// Deletes this schedule's oldest archives until `keep` are left. Keeping 0

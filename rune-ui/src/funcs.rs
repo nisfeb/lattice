@@ -372,7 +372,7 @@ fn zone_secs() -> f64 {
 
 /// Now, by this machine's clock, as a day number with the time of day as its fraction.
 fn now(e: &Engine) -> f64 {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs() as f64) + zone_secs();
+    let secs = crate::api::since_epoch().map_or(0.0, |d| d.as_secs() as f64) + zone_secs();
     secs / 86_400.0 - e.null_date()
 }
 

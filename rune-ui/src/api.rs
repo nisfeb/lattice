@@ -424,23 +424,32 @@ const IMAGE_MAX: u64 = 8 * 1024 * 1024;
 /// The bytes at a URL, for an image: `http` and `https` only, 8 MB at
 /// most, twenty seconds at most. The cookie goes only where it is given.
 pub fn fetch_bytes(url: &str, cookie: Option<&str>) -> Result<Vec<u8>, String> {
-    if !(url.starts_with("http://") || url.starts_with("https://")) {
-        return Err("not a web address".into());
+    #[cfg(target_arch = "wasm32")]
+    {
+        // ponytail: no bytes over a waited-for request. The browser fetches images itself
+        let _ = (url, cookie);
+        Err("not fetched in the browser build".into())
     }
-    let mut req = ureq::get(url).timeout(Duration::from_secs(20));
-    if let Some(c) = cookie {
-        req = req.set("cookie", c);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err("not a web address".into());
+        }
+        let mut req = ureq::get(url).timeout(Duration::from_secs(20));
+        if let Some(c) = cookie {
+            req = req.set("cookie", c);
+        }
+        let res = req.call().map_err(|e| match e {
+            ureq::Error::Status(code, _) => format!("{code}"),
+            e => e.to_string(),
+        })?;
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::Read::take(res.into_reader(), IMAGE_MAX + 1), &mut out).map_err(|e| e.to_string())?;
+        if out.len() as u64 > IMAGE_MAX {
+            return Err("larger than 8 MB".into());
+        }
+        Ok(out)
     }
-    let res = req.call().map_err(|e| match e {
-        ureq::Error::Status(code, _) => format!("{code}"),
-        e => e.to_string(),
-    })?;
-    let mut out = Vec::new();
-    std::io::Read::read_to_end(&mut std::io::Read::take(res.into_reader(), IMAGE_MAX + 1), &mut out).map_err(|e| e.to_string())?;
-    if out.len() as u64 > IMAGE_MAX {
-        return Err("larger than 8 MB".into());
-    }
-    Ok(out)
 }
 
 /// A captured page's name: `inbox/YYYY-MM-DD-NNNN`, the date and four
@@ -470,7 +479,7 @@ pub fn journal_forms(date: &str) -> Vec<String> {
 pub fn today() -> String {
     let local = std::process::Command::new("date").arg("+%Y-%m-%d").output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).map(|s| s.trim().to_owned());
     local.filter(|d| d.len() == 10).unwrap_or_else(|| {
-        let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        let ms = crate::api::since_epoch().map_or(0, |d| d.as_millis() as i64);
         let da = da_of_ms(ms);
         let ymd: Vec<&str> = da.trim_start_matches('~').split("..").next().unwrap_or("").split('.').collect();
         format!("{}-{:0>2}-{:0>2}", ymd[0], ymd.get(1).unwrap_or(&"1"), ymd.get(2).unwrap_or(&"1"))
@@ -595,6 +604,44 @@ fn kept_path(url: &str) -> Option<std::path::PathBuf> {
 
 fn keep_at(p: &std::path::Path, nodes: Vec<Node>) -> Result<(), String> {
     write_private(p, &serde_json::to_vec(&Dump { nodes, since: String::new() }).map_err(|e| e.to_string())?)
+}
+
+/// The time since 1970. The browser has no system clock to ask but its own.
+pub fn since_epoch() -> Result<Duration, std::time::SystemTimeError> {
+    #[cfg(target_arch = "wasm32")]
+    return Ok(Duration::from_millis(js_sys::Date::now() as u64));
+    #[cfg(not(target_arch = "wasm32"))]
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+}
+
+/// The browser's requests to the ship that served the page. The browser sends its own session with each.
+#[cfg(target_arch = "wasm32")]
+pub mod web {
+    pub const FORM: &str = "application/x-www-form-urlencoded";
+
+    /// One request, waited for: the answer's status and text.
+    // ponytail: a waited-for request stops the page until the ship answers. Each is short. An async fetch with its answer taken in `poll` is the step up when the pauses show
+    pub fn request(method: &str, url: &str, content_type: Option<&str>, accept: Option<&str>, body: Option<&str>) -> Result<(u16, String), String> {
+        let js = |e: wasm_bindgen::JsValue| e.as_string().unwrap_or_else(|| "the ship could not be reached".into());
+        let x = web_sys::XmlHttpRequest::new().map_err(js)?;
+        x.open_with_async(method, url, false).map_err(js)?;
+        for (name, value) in [("content-type", content_type), ("accept", accept)] {
+            if let Some(v) = value {
+                x.set_request_header(name, v).map_err(js)?;
+            }
+        }
+        x.send_with_opt_str(body).map_err(|_| "the ship could not be reached".to_owned())?;
+        Ok((x.status().map_err(js)?, x.response_text().map_err(js)?.unwrap_or_default()))
+    }
+
+    /// The text of an answer the ship did not refuse, or its refusal as the native client words one.
+    pub fn text(r: Result<(u16, String), String>) -> Result<String, String> {
+        match r? {
+            (0, _) => Err("the ship could not be reached".into()),
+            (code, text) if code >= 400 => Err(format!("{code}: {text}")),
+            (_, text) => Ok(text),
+        }
+    }
 }
 
 /// Writes a file only its owner reads, whole or not at all: beside it first, then moved into place.
@@ -1666,7 +1713,7 @@ impl Conn {
             }
         }
         let stamp = std::process::Command::new("date").arg("+%Y%m%d-%H%M%S").output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).map(|s| s.trim().to_owned()).filter(|s| s.len() == 15);
-        let stamp = stamp.unwrap_or_else(|| std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()).to_string());
+        let stamp = stamp.unwrap_or_else(|| crate::api::since_epoch().map_or(0, |d| d.as_secs()).to_string());
         let base = aside_name(if know.is_some() { "memory" } else if q.is_new { "create" } else { "edit" }, know.unwrap_or(name), &stamp);
         // never over a kept copy: the first of the name, -2, -3 that is free
         for i in 1..30 {
@@ -1730,12 +1777,20 @@ impl Conn {
     /// One request to the ship's %mcp, answering its result. It answers as a stream of one event even for one reply, and refuses a request that does not say it accepts one.
     fn mcp_rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
         let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }).to_string();
-        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(120)).build();
-        let text = match agent.post(&format!("{}/mcp", self.url)).set("cookie", &self.cookie).set("content-type", "application/json").set("accept", "application/json, text/event-stream").send_string(&body) {
-            Ok(r) if r.status() == 200 => r.into_string().map_err(|e| e.to_string())?,
-            Ok(r) => return Err(format!("{}: this ship has no %mcp", r.status())),
-            Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: %mcp did not take that")),
-            Err(e) => return Err(e.to_string()),
+        #[cfg(not(target_arch = "wasm32"))]
+        let text = {
+            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(120)).build();
+            match agent.post(&format!("{}/mcp", self.url)).set("cookie", &self.cookie).set("content-type", "application/json").set("accept", "application/json, text/event-stream").send_string(&body) {
+                Ok(r) if r.status() == 200 => r.into_string().map_err(|e| e.to_string())?,
+                Ok(r) => return Err(format!("{}: this ship has no %mcp", r.status())),
+                Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: %mcp did not take that")),
+                Err(e) => return Err(e.to_string()),
+            }
+        };
+        #[cfg(target_arch = "wasm32")]
+        let text = match web::request("POST", &format!("{}/mcp", self.url), Some("application/json"), Some("application/json, text/event-stream"), Some(&body))? {
+            (200, t) => t,
+            (code, _) => return Err(format!("{code}: this ship has no %mcp")),
         };
         let frame = text.lines().find_map(|l| l.strip_prefix("data: ")).unwrap_or(text.trim());
         let v: serde_json::Value = serde_json::from_str(frame).map_err(|e| format!("bad reply from %mcp: {e}"))?;
@@ -1747,12 +1802,16 @@ impl Conn {
 
     /// What of lattice's software the ship has. An error when the ship could not be asked at all, which is not the same as having nothing.
     pub fn stack(&self) -> Result<Stack, String> {
+        #[cfg(not(target_arch = "wasm32"))]
         let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(20)).build();
+        #[cfg(not(target_arch = "wasm32"))]
         let status = |path: &str| match agent.get(&format!("{}{path}", self.url)).set("cookie", &self.cookie).call() {
             Ok(r) => Ok(r.status()),
             Err(ureq::Error::Status(code, _)) => Ok(code),
             Err(e) => Err(e.to_string()),
         };
+        #[cfg(target_arch = "wasm32")]
+        let status = |path: &str| web::request("GET", &format!("{}{path}", self.url), None, None, None).map(|(code, _)| code);
         let grubbery = bound(status("/grubbery/api/tree")?);
         let lattice = status("/apps/lattice").is_ok_and(bound);
         // a real handshake, not only an answer: a refusal would otherwise read as %mcp being there
@@ -1778,35 +1837,44 @@ impl Conn {
 
     /// Listens to the ship's change stream until it ends, giving each event to `on`. Answers whether the stream was registered, and whether a change came after that. `on` answering false stops the listening.
     pub fn beacon_stream(&self, base: &str, mut on: impl FnMut(Beacon) -> bool) -> Result<(bool, bool), String> {
-        use std::io::Read;
-        // no limit on the whole request: the stream is held open. A read that hears nothing for two minutes is a dead one, since the ship ends each stream itself after about eighty seconds
-        let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(120)).build();
-        let resp = match agent.get(&format!("{}/grubbery/api/keep{base}/beacon/rev", self.url)).set("cookie", &self.cookie).set("accept", "text/event-stream").call() {
-            Ok(r) => r,
-            Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: no stream")),
-            Err(e) => return Err(e.to_string()),
-        };
-        let (mut rd, mut buf, mut chunk) = (resp.into_reader(), String::new(), [0u8; 4096]);
-        let (mut registered, mut bumped) = (false, false);
-        loop {
-            let n = match rd.read(&mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => n,
+        #[cfg(target_arch = "wasm32")]
+        {
+            // ponytail: a stream cannot be waited for on the page's one thread. The tree is read again on a timer, as it is without a stream
+            let _ = (base, &mut on);
+            Err("no stream in the browser build".into())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use std::io::Read;
+            // no limit on the whole request: the stream is held open. A read that hears nothing for two minutes is a dead one, since the ship ends each stream itself after about eighty seconds
+            let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(120)).build();
+            let resp = match agent.get(&format!("{}/grubbery/api/keep{base}/beacon/rev", self.url)).set("cookie", &self.cookie).set("accept", "text/event-stream").call() {
+                Ok(r) => r,
+                Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: no stream")),
+                Err(e) => return Err(e.to_string()),
             };
-            buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
-            for (name, data) in sse_events(&mut buf) {
-                let Some(ev) = beacon_of(&name, &data) else { continue };
-                match &ev {
-                    Beacon::Rev { old: true, .. } => registered = true,
-                    Beacon::Rev { old: false, .. } => bumped = true,
-                    _ => {}
-                }
-                if !on(ev) {
-                    return Ok((registered, bumped));
+            let (mut rd, mut buf, mut chunk) = (resp.into_reader(), String::new(), [0u8; 4096]);
+            let (mut registered, mut bumped) = (false, false);
+            loop {
+                let n = match rd.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => n,
+                };
+                buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                for (name, data) in sse_events(&mut buf) {
+                    let Some(ev) = beacon_of(&name, &data) else { continue };
+                    match &ev {
+                        Beacon::Rev { old: true, .. } => registered = true,
+                        Beacon::Rev { old: false, .. } => bumped = true,
+                        _ => {}
+                    }
+                    if !on(ev) {
+                        return Ok((registered, bumped));
+                    }
                 }
             }
+            Ok((registered, bumped))
         }
-        Ok((registered, bumped))
     }
 
     /// What stands at a `urb://` address: a page, a folder, a board, a file. The ship waits on another ship for one of its.
@@ -1821,14 +1889,23 @@ impl Conn {
 
     /// Makes a key from what `key_request` built, and answers its secret: the ship gives it this once and keeps only a hash.
     pub fn key_mint(&self, ask: &serde_json::Value) -> Result<String, String> {
-        let req = ureq::post(&format!("{}/apps/lattice/key-mint", self.url)).timeout(Duration::from_secs(30)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/json");
-        let text = match req.send_string(&ask.to_string()) {
-            Ok(r) => r.into_string().map_err(|e| e.to_string())?,
-            Err(ureq::Error::Status(code, r)) => return Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
-            Err(e) => return Err(e.to_string()),
-        };
-        let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        v["token"].as_str().map(str::to_owned).ok_or_else(|| "the ship made no key".into())
+        #[cfg(target_arch = "wasm32")]
+        {
+            let text = web::text(web::request("POST", &format!("{}/apps/lattice/key-mint", self.url), Some("application/json"), None, Some(&ask.to_string())))?;
+            let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            v["token"].as_str().map(str::to_owned).ok_or_else(|| "the ship made no key".into())
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let req = ureq::post(&format!("{}/apps/lattice/key-mint", self.url)).timeout(Duration::from_secs(30)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/json");
+            let text = match req.send_string(&ask.to_string()) {
+                Ok(r) => r.into_string().map_err(|e| e.to_string())?,
+                Err(ureq::Error::Status(code, r)) => return Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+                Err(e) => return Err(e.to_string()),
+            };
+            let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            v["token"].as_str().map(str::to_owned).ok_or_else(|| "the ship made no key".into())
+        }
     }
 
     /// Revokes a key by its id: it stops working at once.
@@ -1876,23 +1953,32 @@ impl Conn {
 
     /// Signs in with the ship's access code and returns the session.
     pub fn login(typed_url: &str, code: &str) -> Result<Conn, String> {
-        let url = base_url(typed_url);
-        // the cookie comes on the redirect itself, so it is not followed
-        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(20)).build();
-        let res = agent
-            .post(&format!("{url}/~/login"))
-            .set("content-type", "application/x-www-form-urlencoded")
-            .send_string(&format!("password={}", enc(code.trim())));
-        let res = match res {
-            Ok(r) => r,
-            Err(ureq::Error::Status(_, _)) => return Err("that access code was refused".into()),
-            Err(e) => return Err(format!("could not reach {url}: {e}")),
-        };
-        let cookie = res.header("set-cookie").and_then(|c| c.split(';').next()).unwrap_or("").trim().to_owned();
-        if !cookie.starts_with("urbauth-~") {
-            return Err("the ship gave no session".into());
+        #[cfg(target_arch = "wasm32")]
+        {
+            // the page is served by the ship, which signed the browser in before it served it
+            let _ = (typed_url, code);
+            Err("sign in on the ship's own page".into())
         }
-        Ok(Conn { url, cookie })
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let url = base_url(typed_url);
+            // the cookie comes on the redirect itself, so it is not followed
+            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(20)).build();
+            let res = agent
+                .post(&format!("{url}/~/login"))
+                .set("content-type", "application/x-www-form-urlencoded")
+                .send_string(&format!("password={}", enc(code.trim())));
+            let res = match res {
+                Ok(r) => r,
+                Err(ureq::Error::Status(_, _)) => return Err("that access code was refused".into()),
+                Err(e) => return Err(format!("could not reach {url}: {e}")),
+            };
+            let cookie = res.header("set-cookie").and_then(|c| c.split(';').next()).unwrap_or("").trim().to_owned();
+            if !cookie.starts_with("urbauth-~") {
+                return Err("the ship gave no session".into());
+            }
+            Ok(Conn { url, cookie })
+        }
     }
 
     /// From `LATTICE_URL` and `LATTICE_COOKIE` (a file holding the cookie
@@ -1909,19 +1995,27 @@ impl Conn {
 
     /// `call` with its own time limit, for the few routes the ship is slow to answer.
     fn call_in(&self, secs: u64, method: &str, path: &str, body: Option<&str>) -> Result<String, String> {
-        let req = ureq::request(method, &format!("{}/apps/lattice/{path}", self.url))
-            .timeout(Duration::from_secs(secs))
-            .set("cookie", &self.cookie)
-            // the ship refuses a cross-site write, and reads the origin to tell
-            .set("origin", &self.url);
-        let res = match body {
-            Some(b) => req.send_string(b),
-            None => req.call(),
-        };
-        match res {
-            Ok(r) => r.into_string().map_err(|e| e.to_string()),
-            Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
-            Err(e) => Err(e.to_string()),
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = secs;
+            web::text(web::request(method, &format!("{}/apps/lattice/{path}", self.url), None, None, body))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let req = ureq::request(method, &format!("{}/apps/lattice/{path}", self.url))
+                .timeout(Duration::from_secs(secs))
+                .set("cookie", &self.cookie)
+                // the ship refuses a cross-site write, and reads the origin to tell
+                .set("origin", &self.url);
+            let res = match body {
+                Some(b) => req.send_string(b),
+                None => req.call(),
+            };
+            match res {
+                Ok(r) => r.into_string().map_err(|e| e.to_string()),
+                Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+                Err(e) => Err(e.to_string()),
+            }
         }
     }
 
@@ -2083,17 +2177,27 @@ impl Conn {
     /// fields. The ship answers by sending the browser on to a page, which is not followed, and it
     /// answers the same when its rules refuse what was sent: the board is read again to see.
     fn forum_form(&self, path: &str, fields: &[(&str, &str)]) -> Result<(), String> {
-        let body = fields.iter().map(|(k, v)| format!("{k}={}", enc(v))).collect::<Vec<_>>().join("&");
-        // the ship waits on another ship before it answers for a board there: about 30 s when that ship is not reachable
-        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(90)).build();
-        // a board on another ship (`~ship/board`) has the same forms under its own route, which the ship sends on to that ship
-        let root = if path.starts_with('~') { "forum-remote" } else { "forum" };
-        let res = agent.post(&format!("{}/apps/lattice/{root}/{path}", self.url)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&body);
-        match res {
-            Ok(_) => Ok(()),
-            Err(ureq::Error::Status(code, _)) if (300..400).contains(&code) => Ok(()),
-            Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
-            Err(e) => Err(e.to_string()),
+        #[cfg(target_arch = "wasm32")]
+        {
+            let body = fields.iter().map(|(k, v)| format!("{k}={}", enc(v))).collect::<Vec<_>>().join("&");
+            let root = if path.starts_with('~') { "forum-remote" } else { "forum" };
+            // the browser follows the ship's redirect itself, and the page it lands on is not used
+            web::text(web::request("POST", &format!("{}/apps/lattice/{root}/{path}", self.url), Some(web::FORM), None, Some(&body))).map(drop)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let body = fields.iter().map(|(k, v)| format!("{k}={}", enc(v))).collect::<Vec<_>>().join("&");
+            // the ship waits on another ship before it answers for a board there: about 30 s when that ship is not reachable
+            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(90)).build();
+            // a board on another ship (`~ship/board`) has the same forms under its own route, which the ship sends on to that ship
+            let root = if path.starts_with('~') { "forum-remote" } else { "forum" };
+            let res = agent.post(&format!("{}/apps/lattice/{root}/{path}", self.url)).set("cookie", &self.cookie).set("origin", &self.url).set("content-type", "application/x-www-form-urlencoded").send_string(&body);
+            match res {
+                Ok(_) => Ok(()),
+                Err(ureq::Error::Status(code, _)) if (300..400).contains(&code) => Ok(()),
+                Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+                Err(e) => Err(e.to_string()),
+            }
         }
     }
 
@@ -2133,12 +2237,19 @@ impl Conn {
 
     /// Clears every refusal note.
     pub fn forum_notes_clear(&self) -> Result<(), String> {
-        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
-        match agent.post(&format!("{}/apps/lattice/forum-notes/clear", self.url)).set("cookie", &self.cookie).set("origin", &self.url).send_string("") {
-            Ok(_) => Ok(()),
-            Err(ureq::Error::Status(code, _)) if (300..400).contains(&code) => Ok(()),
-            Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
-            Err(e) => Err(e.to_string()),
+        #[cfg(target_arch = "wasm32")]
+        {
+            web::text(web::request("POST", &format!("{}/apps/lattice/forum-notes/clear", self.url), None, None, Some(""))).map(drop)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
+            match agent.post(&format!("{}/apps/lattice/forum-notes/clear", self.url)).set("cookie", &self.cookie).set("origin", &self.url).send_string("") {
+                Ok(_) => Ok(()),
+                Err(ureq::Error::Status(code, _)) if (300..400).contains(&code) => Ok(()),
+                Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+                Err(e) => Err(e.to_string()),
+            }
         }
     }
 
@@ -2459,17 +2570,24 @@ impl Conn {
     /// with a redirect to the reader, which is not followed: that it
     /// answered so is the success.
     pub fn comment(&self, page: &str, body: &str) -> Result<(), String> {
-        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
-        let res = agent
-            .post(&format!("{}/apps/lattice/comment?page={}", self.url, enc(page)))
-            .set("cookie", &self.cookie)
-            .set("origin", &self.url)
-            .set("content-type", "application/x-www-form-urlencoded")
-            .send_string(&format!("body={}", enc(body)));
-        match res {
-            Ok(_) => Ok(()),
-            Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
-            Err(e) => Err(e.to_string()),
+        #[cfg(target_arch = "wasm32")]
+        {
+            web::text(web::request("POST", &format!("{}/apps/lattice/comment?page={}", self.url, enc(page)), Some(web::FORM), None, Some(&format!("body={}", enc(body))))).map(drop)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
+            let res = agent
+                .post(&format!("{}/apps/lattice/comment?page={}", self.url, enc(page)))
+                .set("cookie", &self.cookie)
+                .set("origin", &self.url)
+                .set("content-type", "application/x-www-form-urlencoded")
+                .send_string(&format!("body={}", enc(body)));
+            match res {
+                Ok(_) => Ok(()),
+                Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+                Err(e) => Err(e.to_string()),
+            }
         }
     }
 
@@ -2929,7 +3047,7 @@ mod tests {
     fn live_forum_post() {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
         let before = c.forum_board("general").unwrap();
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let stamp = crate::api::since_epoch().unwrap().as_secs();
         let title = format!("Posted natively {stamp}");
         c.forum_submit("general", &title, "", "Text with *marks*, an & and a = sign.\n\nSecond paragraph: é.", &forum_tags("native second").unwrap()).unwrap();
         let after = c.forum_board("general").unwrap();
@@ -2982,7 +3100,7 @@ mod tests {
     #[ignore]
     fn live_forum_boards() {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
-        let name = format!("made-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let name = format!("made-{}", crate::api::since_epoch().unwrap().as_secs());
         c.forum_new(&name, "Made & named", "A board, with a \"description\".", "reader").unwrap();
         assert!(c.forum_boards().unwrap().iter().any(|b| b.board == name), "the board is on the index");
         let b = c.forum_board(&name).unwrap();
@@ -3111,7 +3229,7 @@ mod tests {
     #[ignore]
     fn live_send_queued() {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
-        let name = format!("waited/a-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let name = format!("waited/a-{}", crate::api::since_epoch().unwrap().as_secs());
         let q = |body: &str, base: u64, is_new: bool| Queued { kind: "md".into(), body: body.into(), base, is_new, at: 0 };
         // made here: it goes as a new page
         let Sent::Done { rev: r1, kept: None } = c.send_queued(&name, &q("first\n", 0, true)) else { panic!("a new page is taken") };
@@ -3200,7 +3318,7 @@ mod tests {
     #[ignore]
     fn live_send_ops() {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let t = crate::api::since_epoch().unwrap().as_secs();
         let (a, b, to) = (format!("ops{t}/a"), format!("ops{t}/b"), format!("ops{t}/moved"));
         let q = |body: &str, base: u64, is_new: bool| Queued { kind: "md".into(), body: body.into(), base, is_new, at: 0 };
         for n in [&a, &b] {
@@ -3253,7 +3371,7 @@ mod tests {
     #[ignore]
     fn live_agent_keys() {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
-        let by = format!("rune-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let by = format!("rune-{}", crate::api::since_epoch().unwrap().as_secs());
         let ask = KeyAsk { name: "Rune's test key".into(), by: by.clone(), memory: "read".into(), pages: "some".into(), pages_read: "notes".into(), web: "off".into(), skills: "none".into(), ..KeyAsk::default() };
         let token = c.key_mint(&key_request(&ask).unwrap()).unwrap();
         assert!(token.len() > 20, "a secret is given once");
@@ -3371,7 +3489,7 @@ mod tests {
     #[ignore]
     fn live_urb_read() {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
-        let dir = format!("urbt{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let dir = format!("urbt{}", crate::api::since_epoch().unwrap().as_secs());
         let name = format!("{dir}/page");
         let q = Queued { kind: "md".into(), body: "# Read by address\n".into(), base: 0, is_new: true, at: 0 };
         assert!(matches!(c.send_queued(&name, &q), Sent::Done { .. }));
@@ -3433,7 +3551,7 @@ mod tests {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
         let base = c.lat_base().unwrap();
         eprintln!("the base: {base}");
-        let name = format!("beacon/p{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let name = format!("beacon/p{}", crate::api::since_epoch().unwrap().as_secs());
         let (c2, name2) = (c.clone(), name.clone());
         let mut seen = Vec::new();
         let mut saver = None;
@@ -3499,7 +3617,7 @@ mod tests {
     #[ignore]
     fn live_forum_mod() {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
-        let name = format!("mod-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let name = format!("mod-{}", crate::api::since_epoch().unwrap().as_secs());
         c.forum_new(&name, "Moderated", "", "reader").unwrap();
         let m = c.forum_mod(&name).unwrap();
         assert_eq!((m.default_role.as_str(), m.public, m.prune, m.sidebar.as_str(), m.roles.len()), ("reader", true, false, "", 0));
@@ -3537,7 +3655,7 @@ mod tests {
     #[ignore]
     fn live_forum_away() {
         let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
-        let name = format!("away-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let name = format!("away-{}", crate::api::since_epoch().unwrap().as_secs());
         c.forum_new(&name, "Here", "", "poster").unwrap();
         let (key, post) = board_key(&format!("urb://{}/forum/{name}", c.ship()), c.ship()).unwrap();
         assert_eq!((key.as_str(), post), (name.as_str(), None));
@@ -3559,7 +3677,7 @@ mod tests {
         // a memory is written, listed with its text, and deleted. The ship
         // may refuse a key whose deleted memory is still in the trash, so
         // each run uses its own.
-        let key = format!("/rune/probe-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let key = format!("/rune/probe-{}", crate::api::since_epoch().unwrap().as_secs());
         c.know_save(&key, "a fact\n").unwrap();
         let all = c.know_all().unwrap();
         let got = all.iter().find(|k| k.key == key).expect("the memory is listed");
@@ -3685,7 +3803,7 @@ mod tests {
         // group is there and the rest is the calls answering.
         let base = c.base().unwrap();
         assert!(base.starts_with("/apps/") && base.ends_with("lattice_app"), "the lattice's place on the ship: {base}");
-        let gname = format!("rune{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let gname = format!("rune{}", crate::api::since_epoch().unwrap().as_secs());
         let g = Group { name: gname.clone(), ships: vec!["~nec".into(), "~bud".into()], ..Group::default() }.with_level(&base, "rune-probe", Level::Read);
         c.group_save(&g).unwrap();
         match c.groups().unwrap().into_iter().find(|x| x.name == gname) {
@@ -3723,7 +3841,7 @@ mod tests {
         assert!(c.comment("rune-probe", "").unwrap_err().starts_with("400"), "an empty comment is refused");
         c.comment_delete("rune-probe", &got.id).unwrap();
         assert!(mine(&c).is_none(), "a removed comment is gone");
-        let run = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let run = crate::api::since_epoch().unwrap().as_secs();
         // a batch makes every page in it, with the folders they need, and an empty one is refused
         c.save_batch(&[(format!("rune-batch-{run}/a"), "md", "# a\n".into()), (format!("rune-batch-{run}/deep/b"), "text", "b\n".into())]).unwrap();
         // the ship answers before it has written them all, so the last one is waited for
@@ -3832,7 +3950,7 @@ mod tests {
         assert!(!c.sensitive("rune-probe").unwrap());
         assert!(c.sensitive("no/such/page-here").is_ok_and(|on| !on) && c.set_sensitive("no/such/page-here", true).unwrap_err().starts_with("404"));
         // a name typed with capitals and spaces is kept to show, for the page and its folder
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let stamp = crate::api::since_epoch().unwrap().as_secs();
         let typed = format!("Rune Names {stamp}/My Page");
         let rn = real_name(&typed).unwrap();
         c.create_as(&rn).unwrap();
@@ -3854,7 +3972,7 @@ mod tests {
         }
         assert_eq!(shown(&c, &plain), Some(String::new()));
         // a folder's share setting is taken by the pages in it, and cleared again
-        let fdir = format!("rune-shared-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let fdir = format!("rune-shared-{}", crate::api::since_epoch().unwrap().as_secs());
         c.create(&format!("{fdir}/inside")).unwrap();
         let node = |c: &Conn, path: &str| c.dump("").unwrap().nodes.into_iter().find(|n| n.path == path).unwrap();
         c.share_dir(&fdir, "clearweb").unwrap();
@@ -3899,7 +4017,7 @@ mod tests {
         assert_eq!(bodies, ["rune-probe"], "only the page written since comes with its body");
         let has = |c: &Conn, n: &str| c.tree().unwrap().iter().any(|x| x.page && x.path == n);
         // names of their own each run: on an old kernel a deleted page's name cannot be used again
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs().to_string();
+        let stamp = crate::api::since_epoch().unwrap().as_secs().to_string();
         let (made, moved) = (format!("rune-made-{stamp}"), format!("rune-moved-{stamp}/here"));
         c.create(&made).unwrap();
         assert!(has(&c, &made), "a created page is in the tree");
