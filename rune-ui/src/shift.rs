@@ -219,7 +219,7 @@ enum Kind {
 /// comes from, and how many it stands for. Nothing when `at` is past them
 /// all. With `max`, what is pushed past the last falls off.
 fn runs(reps: &[i64], at: i64, n: i64, max: Option<i64>) -> Option<Vec<(Kind, usize, i64)>> {
-    if at >= reps.iter().sum() {
+    if at >= reps.iter().sum::<i64>() {
         return None;
     }
     let (cnt, end) = (n.abs(), at + n.abs());

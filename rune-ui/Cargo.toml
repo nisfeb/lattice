@@ -23,6 +23,12 @@ rune = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4
 # the same client the desktop app's bridge uses. It does not build for the browser, which has its own
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
+# an HTML page as a browser shows it: the system's web view (WebKitGTK 4.1), over a hole in the page's place.
+# Linux only so far: the same library has macOS and Windows behind it, untried here
+[target.'cfg(target_os = "linux")'.dependencies]
+wry = "0.53"
+gtk = "0.18"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Rune's own, already in the lock: the browser's entry point, clock, requests and storage
 wasm-bindgen = "0.2"

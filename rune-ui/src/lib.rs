@@ -42,6 +42,8 @@ mod topbar;
 mod upload;
 mod vault;
 mod view3d;
+#[cfg(target_os = "linux")]
+mod webview;
 mod vim;
 
 use std::collections::HashMap;
@@ -718,6 +720,8 @@ struct App {
     next_theme: f64,
     /// A change to the theme on its way to the ship.
     theme_put: Latest<Result<(), String>>,
+    /// Where an HTML page shown as a web page stands in the window, as last laid out.
+    web_rect: [f32; 4],
     /// The link of the rich editor that is open to its Markdown, while the caret is in it.
     link_open: Option<linkedit::Open>,
     /// A theme being made or changed in the settings: its id, light or dark, and its name, five colours and six more as typed.
@@ -1098,6 +1102,7 @@ fn init() -> App {
         accent_hex: TextEdit::new(""),
         theme_draft: None,
         link_open: None,
+        web_rect: [0.0; 4],
         marks_bad: false,
         marks_q: TextEdit::new(""),
         palette: None,
@@ -4812,6 +4817,19 @@ const SYNC_LIVE: f64 = 300.0;
 
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
+    // an HTML page shown as a web page: the system's web view is kept in step with what is in front
+    #[cfg(target_os = "linux")]
+    {
+        // it stands over everything drawn here, so it gives way to a dialog, the palette, the switcher and a menu
+        let covered = s.prompt.is_some() || s.palette.is_some() || s.jump.is_some() || s.page_menu || s.sharing;
+        let was = webview::closed();
+        webview::sync(web_page(s).map(|p| (p.name.as_str(), p.rev, p.body.as_str())), s.web_rect, covered);
+        changed |= was != webview::closed();
+        webview::pump();
+        if webview::active() {
+            tx.wake_after(std::time::Duration::from_millis(33));
+        }
+    }
     // a link in the rich editor reads as its Markdown while the caret is in it, to be changed by typing,
     // and is a link again once the caret has left. The page's Markdown is the same either way
     if s.editing && s.rich {
@@ -10384,6 +10402,33 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
+/// The HTML page to show as a web page, when one is in front to be read and that is how it is wanted.
+#[cfg(target_os = "linux")]
+fn web_page(s: &App) -> Option<&Page> {
+    let screen = s.settings.is_some() || s.access || s.forum.is_some() || s.shared_open || s.inbox || s.folder.is_some();
+    s.open.as_ref().filter(|p| p.kind == "html" && !s.prefs.html_plain && !s.editing && !s.memory && s.old.is_none() && !screen && webview::usable())
+}
+
+/// The place of an HTML page shown as a web page. On X11 the web view stands
+/// in it, and this is the hole it stands over. On Wayland the page has a
+/// window of its own, and this says so.
+#[cfg(target_os = "linux")]
+fn web_hole(k: &Kit) -> El {
+    if webview::inline() == Some(true) {
+        return el().key("web-hole").w_full().h_full().min_h(0.0).on_layout(|s: &mut App, r| s.web_rect = r);
+    }
+    let c = &k.c;
+    let said = if webview::closed() { "This page was showing in a window of its own, which was closed." } else { "This page is showing in a window of its own, with its own styles and scripts." };
+    col().key("web-hole").w_full().h_full().center().gap(10.0)
+        .child(text(said).font(k.ty.ui).color(c.text_muted).wrap())
+        .child(row().gap(6.0)
+            .children(webview::closed().then(|| Button::new("Show it again").control_size(ControlSize::Small).on_press(|_: &mut App| webview::reopen()).build(k).key("web-reopen")))
+            .child(Button::new("Read it here as a document").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+                s.prefs.html_plain = true;
+                save_prefs(s);
+            }).build(k).key("web-plain")))
+}
+
 /// The page's editor at the height there is for it: a page longer than
 /// that scrolls inside the field, with the caret kept in view. rune-kit's
 /// text area grows with its text unless it is told a height in points,
@@ -10468,6 +10513,10 @@ fn page_body(s: &App, k: &Kit) -> El {
     }
     if let Some(m) = s.map.as_ref().filter(|m| m.name == p.name && m.rev == p.rev) {
         return map_view(m, s, k);
+    }
+    #[cfg(target_os = "linux")]
+    if web_page(s).is_some_and(|w| w.name == p.name && w.rev == p.rev) {
+        return web_hole(k);
     }
     let shown = if let Some(body) = read_md(s, p) {
         reader(body, s, k, true)
@@ -10682,6 +10731,15 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     // the Edit and Read switch: a page shows it, a screen that is no page (the forum, the inbox, a folder) does not
     let (editing, can_edit) = (page && s.editing, remote.is_none_or(Shared::editable));
     let mut trailing = row().gap(6.0).center_y();
+    // an HTML page is shown as a web page, or read as a document: one press goes between them
+    #[cfg(target_os = "linux")]
+    if page && !s.editing && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "html") && webview::usable() {
+        let plain = s.prefs.html_plain;
+        trailing = trailing.child(Button::new(if plain { "Web page" } else { "Document" }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(if plain { "Show this page as a browser would, with its own styles and scripts" } else { "Read this page as a document, without its styles and scripts" }).on_press(|s: &mut App| {
+            s.prefs.html_plain ^= true;
+            save_prefs(s);
+        }).build(&k).key("html-mode"));
+    }
     if s.editing {
         if s.prefs.vim && !s.rich {
             trailing = trailing.child(text(s.vim.indicator()).key("vim-mode").font(k.ty.small_medium).color(k.c.text_muted));
@@ -11025,7 +11083,9 @@ pub fn run() {
     let fonts: &'static [&'static [u8]] = &[];
     // the id the desktop matches to `lattice-rune.desktop`, which names the icon: the window wears lattice's logo by it
     rune::set_app_id("lattice-rune");
-    rune::App::new(AppSpec {
+    #[cfg(target_os = "linux")]
+    webview::start();
+    let app = rune::App::new(AppSpec {
         setup: Some(setup),
         poll: Some(poll),
         on_key: Some(on_key),
@@ -11072,8 +11132,11 @@ pub fn run() {
         fonts,
         ..AppSpec::new("lattice", (1120.0, 720.0), init, view)
     })
-    .chrome(chrome)
-    .run();
+    .chrome(chrome);
+    // the window an HTML page's web view hangs on
+    #[cfg(target_os = "linux")]
+    let app = app.on_window(webview::note_window);
+    app.run();
 }
 
 #[cfg(test)]

@@ -109,7 +109,7 @@ On macOS, Cmd takes the place of Ctrl.
 
 ## What does not, yet
 
-An HTML page's own styles, scripts and forms are not run (Rune has no web view), and a map is not read from a dropped file yet. In the rich editor a heading keeps its `#`, a table its pipes and a fence its backticks, since Rune's rich text has no heading or table, and paragraphs have no space between them. No forum, memory tags, rename, trash and history, search inside pages, or offline queue.
+An HTML page is shown as a browser shows it on Linux, in the system's web view (WebKitGTK 4.1, which the build now needs): in the page's place on X11, and in a window of its own on Wayland. Document in the tab header reads it as a document, as before. A map is not read from a dropped file yet. In the rich editor a heading keeps its `#`, a table its pipes and a fence its backticks, since Rune's rich text has no heading or table, and paragraphs have no space between them. No forum, memory tags, rename, trash and history, search inside pages, or offline queue.
 
 ## Check it without a window
 
