@@ -626,6 +626,13 @@ pub fn since_epoch() -> Result<Duration, std::time::SystemTimeError> {
 #[cfg(target_arch = "wasm32")]
 pub mod web {
     pub const FORM: &str = "application/x-www-form-urlencoded";
+    /// The name the preferences are kept under in the browser's storage.
+    pub const PREFS: &str = "lattice-rune.prefs";
+
+    /// The browser's storage for this address, when it lets the page have one.
+    pub fn storage() -> Option<web_sys::Storage> {
+        web_sys::window()?.local_storage().ok().flatten()
+    }
 
     /// One request, waited for: the answer's status and text.
     // ponytail: a waited-for request stops the page until the ship answers. Each is short. An async fetch with its answer taken in `poll` is the step up when the pauses show
@@ -1320,11 +1327,21 @@ impl Prefs {
 
     /// The kept preferences, or the defaults when there are none or they do not read.
     pub fn load() -> Prefs {
-        Prefs::path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        #[cfg(target_arch = "wasm32")]
+        let kept = web::storage().and_then(|st| st.get_item(web::PREFS).ok().flatten());
+        #[cfg(not(target_arch = "wasm32"))]
+        let kept = Prefs::path().and_then(|p| std::fs::read_to_string(p).ok());
+        kept.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     }
 
     /// Keeps them. A failure is not worth a message: they are a convenience.
     pub fn save(&self) {
+        // in a browser they are kept in its storage for this ship's address, under one name
+        #[cfg(target_arch = "wasm32")]
+        if let (Some(st), Ok(t)) = (web::storage(), serde_json::to_string(self)) {
+            let _ = st.set_item(web::PREFS, &t);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         if let (Some(p), Ok(t)) = (Prefs::path(), serde_json::to_string(self)) {
             let _ = p.parent().map(std::fs::create_dir_all);
             let _ = std::fs::write(p, t);

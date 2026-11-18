@@ -115,4 +115,4 @@ Debug builds render headless with the same renderer:
 
 ## Web build
 
-`sh scripts/web/build.sh` builds the browser version into `target/web` (docker: the first run builds the toolchain image). Serve the folder and open it in a browser with WebGPU: `python3 -m http.server -d target/web`. `sh scripts/web/build.sh check` only checks that the crate compiles for wasm32.
+`sh scripts/web/build.sh` builds the browser version into `target/web` (docker: the first run builds the toolchain image). Serve the folder and open it in a browser with WebGPU: `python3 -m http.server -d target/web`. `sh scripts/web/build.sh check` only checks that the crate compiles for wasm32. To work the page from a script: `PUPPETEER_MODULE=<a puppeteer-core folder> node scripts/web/drive.mjs URL steps.json` clicks, types and takes screenshots in headless Chromium. The stand-in ship serves a built folder under `/rune/` with `LR_WEB=target/web`.
