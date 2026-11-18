@@ -1,0 +1,11 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "forum-open"},
+  {"t": 4.5, "type": "tap", "key": "board-general"},
+  {"t": 6.5, "type": "tap", "key": "post-1"},
+  {"t": 8.5, "type": "tap", "key": "comment-delete-1"},
+  {"t": 9.5, "type": "tap", "key": "prompt-ok"},
+  {"t": 12.0, "type": "tap", "key": "forum-back"},
+  {"t": 13.5, "type": "tap", "key": "post-2"},
+  {"t": 15.5, "type": "tap", "key": "forum-vote"},
+  {"t": 17.5, "type": "tap", "key": "forum-delete"}
+]}

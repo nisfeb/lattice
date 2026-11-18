@@ -1071,6 +1071,33 @@ impl Conn {
         self.forum_form(&format!("{board}/{post}/comment"), &fields)
     }
 
+    /// Gives a thread this ship's point. Once given it stays: the forms have no way to take it back.
+    pub fn forum_vote(&self, board: &str, post: u64) -> Result<(), String> {
+        self.forum_form(&format!("{board}/vote"), &[("target", &format!("post-{post}"))])
+    }
+
+    /// Pins a thread to the top of its board, or lets it go.
+    pub fn forum_pin(&self, board: &str, post: u64, on: bool) -> Result<(), String> {
+        self.forum_form(&format!("{board}/{post}/pin"), &[("pinned", if on { "true" } else { "false" })])
+    }
+
+    /// Deletes a thread, or with `comment` one comment of it. Its author or a mod of the board may.
+    pub fn forum_delete(&self, board: &str, post: u64, comment: Option<u64>) -> Result<(), String> {
+        match comment {
+            Some(id) => self.forum_form(&format!("{board}/{post}/delete-comment"), &[("comment-id", &id.to_string())]),
+            None => self.forum_form(&format!("{board}/{post}/delete"), &[("x", "1")]),
+        }
+    }
+
+    /// Sets a thread's tags to these, five at most. None clears them.
+    pub fn forum_set_tags(&self, board: &str, post: u64, tags: &[String]) -> Result<(), String> {
+        let names = ["t1", "t2", "t3", "t4", "t5"];
+        let mut fields: Vec<(&str, &str)> = names.iter().zip(tags).map(|(n, t)| (*n, t.as_str())).collect();
+        // a form with no field at all is not one the ship reads
+        fields.push(("x", "1"));
+        self.forum_form(&format!("{board}/{post}/tags"), &fields)
+    }
+
     /// The boards on this ship, each with its threads. The names come from the forum's index page, fifty at most.
     pub fn forum_boards(&self) -> Result<Vec<Board>, String> {
         let names = board_names(&self.call("GET", "forum", None)?);
@@ -1757,6 +1784,25 @@ mod tests {
         c.forum_submit("general", &format!("A link {stamp}"), "https://example.org/a?b=c&d=e", "", &[]).unwrap();
         let linked = c.forum_board("general").unwrap();
         assert_eq!(linked.posts.iter().find(|p| p.title == format!("A link {stamp}")).and_then(|p| p.link.clone()).as_deref(), Some("https://example.org/a?b=c&d=e"));
+        // a point is given once, a pin goes on and comes off, tags are set and cleared
+        c.forum_vote("general", made.id).unwrap();
+        c.forum_vote("general", made.id).unwrap();
+        c.forum_pin("general", made.id, true).unwrap();
+        c.forum_set_tags("general", made.id, &forum_tags("changed").unwrap()).unwrap();
+        let p = read(&c).post;
+        assert_eq!((p.up, p.pinned, p.tags.clone()), (1, true, vec!["changed".to_owned()]));
+        c.forum_pin("general", made.id, false).unwrap();
+        c.forum_set_tags("general", made.id, &[]).unwrap();
+        let p = read(&c).post;
+        assert!(!p.pinned && p.tags.is_empty(), "{p:?}");
+        // the answer is deleted and the comment stays, then the link thread goes whole
+        let answer = read(&c).comments.iter().find(|k| k.parent.is_some()).unwrap().id;
+        c.forum_delete("general", made.id, Some(answer)).unwrap();
+        assert_eq!(read(&c).comments.iter().map(|k| k.body.as_str()).collect::<Vec<_>>(), ["A comment, with a + and a % in it."]);
+        let gone = linked.posts.iter().find(|p| p.title == format!("A link {stamp}")).unwrap().id;
+        c.forum_delete("general", gone, None).unwrap();
+        assert!(!c.forum_board("general").unwrap().posts.iter().any(|p| p.id == gone));
+        assert!(c.forum_thread("general", gone).unwrap_err().starts_with("404"));
         // a thread with no title is refused by the form, and a board that is not there says so
         assert!(c.forum_submit("general", "", "", "no title", &[]).unwrap_err().starts_with("400"));
         assert!(c.forum_submit("no-such-board", "x", "", "", &[]).unwrap_err().starts_with("404"));

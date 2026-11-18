@@ -1,0 +1,50 @@
+{
+ "events": [
+  {
+   "t": 2.0,
+   "type": "tap",
+   "key": "forum-open"
+  },
+  {
+   "t": 4.5,
+   "type": "tap",
+   "key": "board-general"
+  },
+  {
+   "t": 6.5,
+   "type": "tap",
+   "key": "ftag-intro"
+  },
+  {
+   "t": 8.5,
+   "type": "tap",
+   "key": "post-1"
+  },
+  {
+   "t": 10.5,
+   "type": "tap",
+   "key": "forum-pin"
+  },
+  {
+   "t": 12.5,
+   "type": "tap",
+   "key": "forum-tags"
+  },
+  {
+   "t": 13.0,
+   "type": "key",
+   "name": "a",
+   "cmd": true
+  },
+  {
+   "t": 13.4,
+   "type": "type",
+   "text": "retagged"
+  },
+  {
+   "t": 16.0,
+   "type": "key",
+   "name": "Enter"
+  }
+ ]
+}

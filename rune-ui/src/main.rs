@@ -106,6 +106,8 @@ struct Forum {
     board: Option<api::Board>,
     thread: Option<api::Thread>,
     sort: ForumSort,
+    /// The tags the board's threads are shown by: those that carry every one.
+    tags: Vec<String>,
     /// A thread being written for the board showing: its title, link, text and tags.
     draft: Option<Box<[TextEdit; 4]>>,
     /// A comment being written on the thread showing, and the comment it answers when it answers one.
@@ -185,6 +187,10 @@ enum Prompt {
     Ask(Shared, TextEdit),
     /// A tag to put on the memory in front.
     Tag(TextEdit),
+    /// The tags of the forum thread showing, to set.
+    ForumTags(TextEdit),
+    /// A forum thread to delete, or one comment of the thread showing.
+    ForumDelete(Option<u64>),
     /// A value typed for an OpenSCAD parameter: its name, which part of a vector, and the text.
     Param(String, Option<usize>, TextEdit),
 }
@@ -892,6 +898,21 @@ fn confirm(s: &mut App) {
                 s.asks.sent.push(Ask { ship: sh.host.clone(), path: sh.path.clone(), name: sh.name().to_owned(), note: api::clip_note(note.trim()).to_owned(), when: String::new() });
             }
         }
+        return;
+    }
+    if let Prompt::ForumTags(t) = &p {
+        match api::forum_tags(&t.text) {
+            Ok(tags) => forum_act(s, ForumAct::Tags(tags)),
+            Err(why) => {
+                // what was typed stays, to be put right
+                s.note = why;
+                s.prompt = Some(p);
+            }
+        }
+        return;
+    }
+    if let Prompt::ForumDelete(comment) = &p {
+        forum_act(s, ForumAct::Delete(*comment));
         return;
     }
     if let Prompt::Tag(t) = &p {
@@ -4781,6 +4802,46 @@ fn forum_open(s: &mut App, board: String, post: Option<u64>) {
     });
 }
 
+/// What is done to the forum thread showing.
+enum ForumAct {
+    Vote,
+    Pin(bool),
+    Tags(Vec<String>),
+    /// The thread, or with a number one comment of it.
+    Delete(Option<u64>),
+}
+
+/// Does something to the thread showing, as the ship's own form for it
+/// does, then reads the thread again, or its board when the thread is gone.
+fn forum_act(s: &mut App, act: ForumAct) {
+    let Some(th) = s.forum.as_ref().and_then(|f| f.thread.as_ref()) else { return };
+    let Some(c) = s.conn.clone() else { return };
+    let (board, post) = (th.board.clone(), th.post.id);
+    s.forum_req.request((c, board, act), move |(c, board, act)| {
+        match &act {
+            ForumAct::Vote => c.forum_vote(&board, post)?,
+            ForumAct::Pin(on) => c.forum_pin(&board, post, *on)?,
+            ForumAct::Tags(tags) => c.forum_set_tags(&board, post, tags)?,
+            ForumAct::Delete(comment) => c.forum_delete(&board, post, *comment)?,
+        }
+        match act {
+            ForumAct::Delete(None) => c.forum_board(&board).map(ForumGot::Board),
+            _ => c.forum_thread(&board, post).map(ForumGot::Thread),
+        }
+    });
+}
+
+/// The tags a board's threads carry, most used first, then by name.
+fn forum_board_tags(posts: &[api::ForumPost]) -> Vec<(String, usize)> {
+    let mut count: HashMap<&str, usize> = HashMap::new();
+    for t in posts.iter().flat_map(|p| &p.tags) {
+        *count.entry(t.as_str()).or_default() += 1;
+    }
+    let mut v: Vec<(String, usize)> = count.into_iter().map(|(t, n)| (t.to_owned(), n)).collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    v
+}
+
 /// Sends the thread written for the board showing. The ship answers a
 /// form it refuses as it answers one it takes, so the board is read
 /// again, and a board no longer than it was says the thread was not taken.
@@ -4838,6 +4899,7 @@ fn forum_back(s: &mut App) {
     if let Some(f) = &mut s.forum {
         if f.thread.take().is_none() {
             f.board = None;
+            f.tags.clear();
         }
     }
 }
@@ -4858,6 +4920,23 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
         if !p.tags.is_empty() {
             page = page.child(row().gap(4.0).flex_wrap().children(p.tags.iter().map(|t| row().px(6.0).py(1.0).radius(k.radius.sm).fill(c.layer_01).child(text(format!("#{t}")).font(k.ty.small).color(c.text_muted)))));
         }
+        // what may be done to the thread. The ship holds the rule on who may: what it refuses leaves the thread as it was
+        let act = |label: String, key: &str, help: &str| Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(help.to_owned());
+        let (pinned, tags) = (p.pinned, p.tags.join(" "));
+        page = page.child(
+            row()
+                .key("forum-acts")
+                .gap(4.0)
+                .flex_wrap()
+                .child(act("\u{25b2} Point".into(), "forum-vote", "Give this thread your point").on_press(|s: &mut App| forum_act(s, ForumAct::Vote)).build(k).key("forum-vote"))
+                .child(act(if pinned { "Unpin".into() } else { "Pin".into() }, "forum-pin", "Keep this thread at the top of its board").on_press(move |s: &mut App| forum_act(s, ForumAct::Pin(!pinned))).build(k).key("forum-pin"))
+                .child(act("Tags".into(), "forum-tags", "Set this thread's tags").on_press(move |s: &mut App| {
+                    let mut t = TextEdit::new(tags.as_str());
+                    t.focused = true;
+                    s.prompt = Some(Prompt::ForumTags(t));
+                }).build(k).key("forum-tags"))
+                .child(act("Delete".into(), "forum-delete", "Delete this thread").on_press(|s: &mut App| s.prompt = Some(Prompt::ForumDelete(None))).build(k).key("forum-delete")),
+        );
         // the link and the text are the poster's Markdown: read as a page is, with no picture fetched
         if let Some(link) = p.link.as_deref().filter(|l| !l.is_empty()) {
             page = page.child(Markdown::new(format!("<{link}>")).selectable(true).on_link_tx(follow).build(k).key("forum-link"));
@@ -4882,7 +4961,7 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
                                 f.reply = Some(id);
                                 f.comment.focused = true;
                             }
-                        }).build(k).key(format!("reply-{id}")))
+                        }).build(k).key(format!("reply-{id}"))).child(Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Delete this comment").on_press(move |s: &mut App| s.prompt = Some(Prompt::ForumDelete(Some(id)))).build(k).key(format!("comment-delete-{id}")))
                     })
                     .child(Markdown::new(cm.body.clone()).selectable(true).on_link_tx(follow).build(k)),
             );
@@ -4914,6 +4993,25 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
             }).build(k).key(key.to_owned())
         };
         page = page.child(row().key("forum-sort").gap(4.0).child(sort("New", "fsort-new", ForumSort::New)).child(sort("Active", "fsort-active", ForumSort::Active)).child(sort("Top", "fsort-top", ForumSort::Top)));
+        // the board's tags, most used first: pressed, only the threads that carry every one pressed are listed
+        let board_tags = forum_board_tags(&b.posts);
+        if !board_tags.is_empty() {
+            let mut chips = row().key("forum-tag-filter").gap(2.0).flex_wrap();
+            for (tag, n) in board_tags.iter().take(30) {
+                let (on, tag2) = (f.tags.contains(tag), tag.clone());
+                chips = chips.child(Button::new(format!("#{tag} {n}")).control_size(ControlSize::Small).variant(if on { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted }).on_press(move |s: &mut App| {
+                    if let Some(f) = &mut s.forum {
+                        match f.tags.iter().position(|t| *t == tag2) {
+                            Some(i) => drop(f.tags.remove(i)),
+                            // five at most, as the ship's own address keeps
+                            None if f.tags.len() < 5 => f.tags.push(tag2.clone()),
+                            None => {}
+                        }
+                    }
+                }).build(k).key(format!("ftag-{tag}")));
+            }
+            page = page.child(chips);
+        }
         // a thread is written here, under the board's heading, and sent from here
         match &f.draft {
             None => {
@@ -4955,7 +5053,11 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
         if b.posts.is_empty() {
             page = page.child(muted("No threads yet.".into()));
         }
-        for p in forum_sorted(&b.posts, f.sort) {
+        let shown: Vec<&api::ForumPost> = forum_sorted(&b.posts, f.sort).into_iter().filter(|p| f.tags.iter().all(|t| p.tags.contains(t))).collect();
+        if shown.is_empty() && !b.posts.is_empty() {
+            page = page.child(muted("No thread carries every tag picked.".into()));
+        }
+        for p in shown {
             let (board, id) = (b.board.clone(), p.id);
             let points = p.up as i64 - p.down as i64;
             let mut line = col()
@@ -5306,8 +5408,8 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) => t,
-                Prompt::Delete(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) => t,
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
             .build(k)
@@ -5321,6 +5423,8 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::Ask(_, t) => ("Ask for edit access", field(t, "A short note, if you like"), "Ask", ButtonVariant::Contrast),
         Prompt::Duplicate(_, t) => ("Duplicate this page as", field(t, "folder/name"), "Duplicate", ButtonVariant::Contrast),
         // kept on the ship, which never shows it again. Typed in the clear here: it is pasted, not remembered
+        Prompt::ForumTags(t) => ("This thread's tags", field(t, "Up to five: lowercase letters, digits and dashes. None clears them"), "Set", ButtonVariant::Contrast),
+        Prompt::ForumDelete(comment) => (if comment.is_some() { "Delete this comment?" } else { "Delete this thread?" }, text(if comment.is_some() { "It is gone for everyone who reads the board." } else { "The thread and its comments are gone for everyone who reads the board." }).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
         Prompt::Param(_, _, t) => ("Set this parameter", field(t, "A value"), "Set", ButtonVariant::Contrast),
         Prompt::Token(t) => ("The ship's Mapbox token", field(t, "pk... to set it, or nothing to clear it"), "Set", ButtonVariant::Contrast),
@@ -7150,6 +7254,30 @@ mod tests {
         s.forum.as_mut().unwrap().comment.text = "  \n".into();
         forum_comment(&mut s);
         assert_eq!(s.note, "there is nothing written to send");
+    }
+
+    #[test]
+    fn a_boards_tags_are_counted_and_a_threads_tags_are_checked_before_they_are_sent() {
+        let post = |id: u64, tags: &[&str]| api::ForumPost { id, tags: tags.iter().map(|t| (*t).to_owned()).collect(), ..api::ForumPost::default() };
+        let posts = [post(1, &["bug", "ui"]), post(2, &["bug"]), post(3, &[]), post(4, &["idea", "bug"]), post(5, &["ui"])];
+        // most used first, then by name
+        assert_eq!(forum_board_tags(&posts), [("bug".to_owned(), 3), ("ui".to_owned(), 2), ("idea".to_owned(), 1)]);
+        assert!(forum_board_tags(&[]).is_empty());
+        let mut s = sample("welcome");
+        go_forum(&mut s);
+        s.forum.as_mut().unwrap().thread = Some(api::Thread { board: "general".into(), ..api::Thread::default() });
+        // tags that are not tags are said, and the prompt stays open on what was typed
+        let mut t = TextEdit::new("");
+        t.text = "ok Not-Ok".into();
+        s.prompt = Some(Prompt::ForumTags(t));
+        confirm(&mut s);
+        assert!(s.note.starts_with("Not-Ok is not a tag"));
+        assert!(matches!(&s.prompt, Some(Prompt::ForumTags(t)) if t.text == "ok Not-Ok"));
+        // leaving a board lets its tag filter go
+        let f = s.forum.as_mut().unwrap();
+        (f.thread, f.board, f.tags) = (None, Some(api::Board::default()), vec!["bug".into()]);
+        forum_back(&mut s);
+        assert!(s.forum.as_ref().unwrap().tags.is_empty());
     }
 
     #[test]
