@@ -135,6 +135,8 @@ struct Settings {
     connect: bool,
     /// The folder typed to mount a ship at. Empty is the ship's name under the home directory.
     mount_at: TextEdit,
+    /// The part of the tree to mount of the ship signed in to. Empty is every page.
+    mount_root: TextEdit,
     /// The piers found on this machine, once looked for.
     local: Option<Vec<local::LocalShip>>,
     /// What of lattice's software the ship has, once asked, and the ship to install %grubbery from.
@@ -144,7 +146,7 @@ struct Settings {
 
 impl Settings {
     fn new() -> Self {
-        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false, mount_at: TextEdit::new(""), local: None, stack: None, dist: TextEdit::new("~nisfeb") }
+        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false, mount_at: TextEdit::new(""), mount_root: TextEdit::new(""), local: None, stack: None, dist: TextEdit::new("~nisfeb") }
     }
 
     fn ask(&self) -> api::KeyAsk {
@@ -1549,9 +1551,11 @@ fn setup(s: &mut App, waker: Waker) {
     // the mounts kept from the run before: still there, or made again. Not on sample pages, which keep nothing
     let kept = mounts::load();
     if !kept.is_empty() && !s.sample {
-        s.mount_req.request(kept, |kept| {
+        s.mount_req.request((kept, s.conn.clone()), |(kept, conn)| {
             let (mut list, mut said) = (Vec::new(), Vec::new());
-            for (m, r) in mounts::resume(kept) {
+            // a ship over HTTP is mounted again only while this window is signed in to it
+            let session = |url: &str| conn.as_ref().filter(|c| c.url == url).map(|c| c.cookie.clone());
+            for (m, r) in mounts::resume(kept, session) {
                 if let Err(e) = r {
                     said.push(format!("{} was not mounted again: {e}", m.mountpoint));
                 }
@@ -6533,9 +6537,24 @@ fn mount_ship(s: &mut App, i: usize) {
     let typed = st.mount_at.text.trim();
     let named = mounts::default_mountpoint(&ship.ship);
     let at = mounts::expand(if typed.is_empty() { &named } else { typed }, &home);
-    let spec = mounts::MountSpec { mountpoint: at.clone(), sock: ship.sock.clone(), ship: ship.ship.clone(), pid: 0 };
-    s.note = format!("mounting {} at {at}\u{2026}", ship.ship);
-    s.mount_req.request((s.mounts.clone(), spec), |(mut list, mut spec)| match mounts::start(&spec) {
+    let spec = mounts::MountSpec { mountpoint: at, sock: ship.sock.clone(), ship: ship.ship.clone(), ..mounts::MountSpec::default() };
+    mount_start(s, spec, None);
+}
+
+/// Mounts the ship this window is signed in to, over HTTP with its session: every page, or the part of the tree typed.
+fn mount_conn(s: &mut App) {
+    let Some((c, st)) = s.conn.clone().zip(s.settings.as_ref()) else { return };
+    let home = std::env::var("HOME").unwrap_or_default();
+    let (typed, ship) = (st.mount_at.text.trim(), if c.ship().is_empty() { "ship" } else { c.ship() });
+    let named = mounts::default_mountpoint(ship);
+    let at = mounts::expand(if typed.is_empty() { &named } else { typed }, &home);
+    let spec = mounts::MountSpec { mountpoint: at, url: c.url.clone(), root: st.mount_root.text.trim().to_owned(), ship: c.ship().to_owned(), ..mounts::MountSpec::default() };
+    mount_start(s, spec, Some(c.cookie.clone()));
+}
+
+fn mount_start(s: &mut App, spec: mounts::MountSpec, session: Option<String>) {
+    s.note = format!("mounting {} at {}\u{2026}", if spec.ship.is_empty() { "the ship" } else { spec.ship.as_str() }, spec.mountpoint);
+    s.mount_req.request((s.mounts.clone(), spec, session), |(mut list, mut spec, session)| match mounts::start(&spec, session.as_deref()) {
         Ok(pid) => {
             spec.pid = pid;
             let said = format!("{} is mounted at {}", spec.ship, spec.mountpoint);
@@ -6563,7 +6582,7 @@ fn unmount(s: &mut App, i: usize) {
 }
 
 /// The ships on this machine: each with where its pier is, and why it cannot be reached when it cannot.
-fn local_view(st: &Settings, held: &[mounts::MountSpec], busy: bool, looking: bool, k: &Kit) -> El {
+fn local_view(st: &Settings, held: &[mounts::MountSpec], signed_in: bool, busy: bool, looking: bool, k: &Kit) -> El {
     let c = &k.c;
     let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
     let mut v = col()
@@ -6590,7 +6609,17 @@ fn local_view(st: &Settings, held: &[mounts::MountSpec], busy: bool, looking: bo
             }
         }
     }
-    if st.local.as_ref().is_some_and(|l| l.iter().any(|x| x.lick)) {
+    if signed_in {
+        // the ship this window is signed in to, wherever it runs: over HTTP, with this session
+        v = v.child(muted("The ship you are signed in to can be mounted too, over HTTP with this session: every page, or one part of the tree.")).child(
+            row()
+                .gap(6.0)
+                .center_y()
+                .child(TextInput::new(&st.mount_root).label("Part of the tree").placeholder("a folder like notes, or empty for every page").on_edit(|s: &mut App| &mut s.settings.as_mut().expect("the settings are showing").mount_root).build(k).grow(1.0).key("mount-root"))
+                .child(Button::new("Mount this ship").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(busy).on_press(mount_conn).build(k).key("mount-ship")),
+        );
+    }
+    if signed_in || st.local.as_ref().is_some_and(|l| l.iter().any(|x| x.lick)) {
         v = v.child(TextInput::new(&st.mount_at).label("Folder to mount at").placeholder("~/ship-name when left empty").on_edit(|s: &mut App| &mut s.settings.as_mut().expect("the settings are showing").mount_at).build(k).w_full().key("mount-at"));
     }
     if !held.is_empty() {
@@ -6602,7 +6631,7 @@ fn local_view(st: &Settings, held: &[mounts::MountSpec], busy: bool, looking: bo
                     .gap(8.0)
                     .center_y()
                     .child(text(m.mountpoint.clone()).key(format!("mount-at-{i}")).font(k.ty.mono).color(c.text_base).grow(1.0).min_w(0.0).truncate())
-                    .child(text(format!("lick \u{b7} {}", if m.ship.is_empty() { "local" } else { m.ship.as_str() })).font(k.ty.small).color(c.text_muted))
+                    .child(text(format!("{} \u{b7} {}{}", if m.sock.is_empty() { "http" } else { "lick" }, if m.ship.is_empty() { "local" } else { m.ship.as_str() }, if m.root.is_empty() { String::new() } else { format!(" \u{b7} {}", m.root) })).key(format!("mount-how-{i}")).font(k.ty.small).color(c.text_muted))
                     .child(Button::new("Unmount").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(busy).on_press(move |s: &mut App| unmount(s, i)).build(k).key(format!("unmount-{i}"))),
             );
         }
@@ -6762,7 +6791,7 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
         }).build(k).key("publish-ask")));
     }
     let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
-    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).children(stack_view(st, k)).child(local_view(st, &s.mounts, s.mount_req.is_pending(), s.local_req.is_pending(), k)).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
+    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).children(stack_view(st, k)).child(local_view(st, &s.mounts, s.conn.is_some(), s.mount_req.is_pending(), s.local_req.is_pending(), k)).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
         "A key lets an agent, such as the lattice plugin for Claude Code or Hermes, use your memory and pages without your login. Everything a key saves is signed with the name it writes as, and its scope says what it may touch. Publishing, sharing and settings stay yours whatever the scope.",
     ));
     if let Some(token) = &st.token {

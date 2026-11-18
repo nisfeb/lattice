@@ -1,0 +1,8 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "settings-open"},
+  {"t": 4.0, "type": "tap", "key": "mount-root"},
+  {"t": 4.4, "type": "type", "text": "mnt"},
+  {"t": 6.0, "type": "tap", "key": "mount-at"},
+  {"t": 6.4, "type": "type", "text": "/tmp/lr-http-app"},
+  {"t": 8.0, "type": "tap", "key": "mount-ship"}
+]}
