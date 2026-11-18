@@ -5934,6 +5934,14 @@ fn focus_group(s: &mut App, d: usize, i: usize) {
     keep_tabs(s);
 }
 
+/// Brings the next group to the front, or the one before, in the order they stand and round at the ends.
+fn turn_group(s: &mut App, forward: bool) {
+    let d = splits::turn(s.front_at, s.tgroups.len(), forward);
+    if let Some(at) = s.tgroups.get(d).filter(|_| d != s.front_at).map(|g| g.at) {
+        focus_group(s, d, at);
+    }
+}
+
 /// Closes one tab of a group that is not in front. Its last tab closed, the group is gone.
 fn close_group_tab(s: &mut App, d: usize, i: usize) {
     let Some(g) = s.tgroups.get_mut(d).filter(|g| i < g.tabs.len()) else { return };
@@ -10322,8 +10330,12 @@ enum Chord {
     Read,
     /// Ctrl+Shift+L: the pages' list, with its filter to type in.
     Files,
-    /// Ctrl+\: the page held beside, or let go.
+    /// Ctrl+\: split right.
     Split,
+    /// Ctrl+Shift+\: split down.
+    SplitDown,
+    /// Ctrl+Shift+] and Ctrl+Shift+[: the next group to the front, and the one before, round at the ends.
+    Group(bool),
     /// Delete, with nothing typed into: the page showing, asked first.
     Delete,
 }
@@ -10344,6 +10356,13 @@ fn chord(s: &App, ev: &KeyEvent) -> Option<Chord> {
             Some(Chord::Search)
         } else if ev.is_command('l') {
             Some(Chord::Files)
+        } else if (ev.is_command('\\') || ev.is_command('|')) && !s.editing {
+            // a shifted key comes as either of its two characters, by the keyboard and the platform
+            Some(Chord::SplitDown)
+        } else if (ev.is_command(']') || ev.is_command('}')) && !s.editing {
+            Some(Chord::Group(true))
+        } else if (ev.is_command('[') || ev.is_command('{')) && !s.editing {
+            Some(Chord::Group(false))
         } else {
             None
         };
@@ -10393,6 +10412,8 @@ fn on_key(s: &mut App, ev: &KeyEvent, tx: &mut Tx) -> bool {
                 tx.focus_when_shown("filter", false);
             }
             Chord::Split => split_press(s, false),
+            Chord::SplitDown => split_press(s, true),
+            Chord::Group(forward) => turn_group(s, forward),
             Chord::Delete => ask_delete(s),
         }
         return true;
@@ -11193,6 +11214,11 @@ mod tests {
         assert_eq!([chord(&s, &cmd('k', false)), chord(&s, &cmd('p', false))], [Some(Chord::Palette); 2]);
         assert_eq!([chord(&s, &cmd('o', false)), chord(&s, &cmd('f', true))], [Some(Chord::Jump), Some(Chord::Search)]);
         assert_eq!(chord(&s, &cmd('f', false)), None, "plain Ctrl+F is find in the page, handled as before");
+        // the split's keys: down, and round the groups either way. A shifted key may come as either of its two characters
+        assert_eq!([chord(&s, &cmd('\\', true)), chord(&s, &cmd('|', true))], [Some(Chord::SplitDown); 2]);
+        assert_eq!([chord(&s, &cmd(']', true)), chord(&s, &cmd('}', true))], [Some(Chord::Group(true)); 2]);
+        assert_eq!([chord(&s, &cmd('[', true)), chord(&s, &cmd('{', true))], [Some(Chord::Group(false)); 2]);
+        assert_eq!(chord(&s, &cmd('[', false)), None, "unshifted, it is vim's own Escape and nothing here");
         assert_eq!((chord(&s, &cmd(',', false)), chord(&s, &cmd('l', true)), chord(&s, &cmd('\\', false))), (Some(Chord::Settings), Some(Chord::Files), Some(Chord::Split)));
         // Delete asks about the page showing, and only with nothing else open to type into
         let del = KeyEvent { key: Key::Delete, mods: m };
@@ -11455,6 +11481,32 @@ mod tests {
         start_edit(&mut s);
         move_group_tab(&mut s, 1, 0, 0, None);
         assert_eq!((s.tgroups.len(), s.tabs.len()), (2, 4));
+    }
+
+    #[test]
+    fn the_keys_go_round_the_groups_and_split_down() {
+        let open = |s: &App| s.open.as_ref().map(|p| p.name.clone()).unwrap_or_default();
+        let mut s = sample("welcome");
+        // with no split there is nowhere to go
+        turn_group(&mut s, true);
+        assert_eq!((open(&s), s.tgroups.len()), ("welcome".to_owned(), 0));
+        split_press(&mut s, false);
+        open_page(&mut s, "budget");
+        split_press(&mut s, false);
+        open_page(&mut s, "places");
+        // three groups stand as places (in front), budget, welcome
+        turn_group(&mut s, true);
+        assert_eq!((open(&s), s.front_at), ("budget".to_owned(), 1));
+        turn_group(&mut s, true);
+        assert_eq!((open(&s), s.front_at), ("welcome".to_owned(), 2));
+        turn_group(&mut s, true);
+        assert_eq!((open(&s), s.front_at), ("places".to_owned(), 0), "round to the first");
+        turn_group(&mut s, false);
+        assert_eq!((open(&s), s.front_at), ("welcome".to_owned(), 2), "and back round the other way");
+        // not over an edit
+        start_edit(&mut s);
+        turn_group(&mut s, false);
+        assert_eq!(s.front_at, 2);
     }
 
     #[test]

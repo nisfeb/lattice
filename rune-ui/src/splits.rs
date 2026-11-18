@@ -166,9 +166,30 @@ pub fn slot(tabs: &[[f32; 4]], p: [f32; 2]) -> Option<usize> {
     Some(laid.iter().filter(|r| r[0] + r[2] / 2.0 <= p[0]).count())
 }
 
+/// The group to bring to the front after the one standing at `front`,
+/// of `n`: the next, or the one before, going round at the ends.
+pub fn turn(front: usize, n: usize, forward: bool) -> usize {
+    if n < 2 {
+        front
+    } else if forward {
+        (front + 1) % n
+    } else {
+        (front + n - 1) % n
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_groups_are_gone_round_in_the_order_they_stand() {
+        assert_eq!((0..3).map(|d| turn(d, 3, true)).collect::<Vec<_>>(), [1, 2, 0]);
+        assert_eq!((0..3).map(|d| turn(d, 3, false)).collect::<Vec<_>>(), [2, 0, 1]);
+        assert_eq!(turn(0, 2, false), 1);
+        assert_eq!(turn(0, 0, true), 0, "no split, nowhere to go");
+        assert_eq!(turn(0, 1, true), 0);
+    }
 
     #[test]
     fn a_tab_let_go_among_tabs_goes_between_them() {
