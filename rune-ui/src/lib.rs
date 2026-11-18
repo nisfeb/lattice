@@ -19,6 +19,7 @@ mod marks;
 mod mapio;
 mod md;
 mod odf;
+mod outline;
 mod pdf;
 mod ribbon;
 mod rpane;
@@ -468,6 +469,10 @@ struct App {
     pane_back: bool,
     /// The pane shows the page's sharing, before any of the others.
     pane_page: bool,
+    /// The pane shows the page's headings.
+    pane_outline: bool,
+    /// The heading last jumped to from the outline while reading, marked in the page.
+    outline_at: Option<usize>,
     back: Option<(String, Vec<String>)>,
     back_req: Latest<Result<(String, Vec<String>), String>>,
     /// An OpenSCAD page being drawn by this machine's openscad: its name, its revision, and what came of it.
@@ -821,6 +826,8 @@ fn init() -> App {
         pane_links: true,
         pane_back: false,
         pane_page: false,
+        pane_outline: false,
+        outline_at: None,
         back: None,
         back_req: Latest::default(),
         tex_req: Latest::default(),
@@ -3328,10 +3335,14 @@ fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
     let pics = s.pics.clone();
     let src = md::wikilinks(body, &|n| ghost(s, n));
     // what find matches is marked, the current one apart from the rest
-    let marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = match s.find.as_ref().filter(|_| found) {
+    let mut marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = match s.find.as_ref().filter(|_| found) {
         Some(q) => find_in(&src, &q.text).into_iter().enumerate().map(|(i, m)| (m, if i == s.find_at { rune_kit::Highlight::current() } else { rune_kit::Highlight::new() })).collect(),
         None => Vec::new(),
     };
+    // the heading the outline last went to, marked so it can be brought into view and seen
+    if let Some(h) = s.outline_at.and_then(|i| outline::outline(&src, "md").into_iter().nth(i)).filter(|h| !h.words.is_empty()) {
+        marks.push((vec![h.words], rune_kit::Highlight::new().key("md-outline")));
+    }
     Markdown::new(src).selectable(true).on_link_tx(follow).images(move |src| pics.get(src).cloned()).highlights(marks).build(k)
 }
 
@@ -3605,7 +3616,7 @@ fn show_pane(s: &mut App, comments: bool, links: bool) {
     if !s.inspector.is_open() {
         s.inspector.toggle();
     }
-    (s.pane_comments, s.pane_links, s.pane_back, s.pane_page) = (comments, links, false, false);
+    (s.pane_comments, s.pane_links, s.pane_back, s.pane_page, s.pane_outline) = (comments, links, false, false, false);
     s.old = None;
     load_history(s);
     load_comments(s);
@@ -3616,6 +3627,9 @@ fn show_pane(s: &mut App, comments: bool, links: bool) {
 fn pane_now(s: &App) -> rpane::Tab {
     if s.pane_page {
         return rpane::Tab::Page;
+    }
+    if s.pane_outline {
+        return rpane::Tab::Outline;
     }
     match (s.pane_links, s.pane_back, s.pane_comments) {
         (true, false, _) => rpane::Tab::Out,
@@ -3630,6 +3644,7 @@ fn pane_tab(s: &mut App, tab: rpane::Tab) {
     use rpane::Tab;
     s.inspector.set_open(true);
     (s.pane_comments, s.pane_links, s.pane_back, s.pane_page) = (tab == Tab::Comments, matches!(tab, Tab::Out | Tab::Back), tab == Tab::Back, tab == Tab::Page);
+    s.pane_outline = tab == Tab::Outline;
     s.old = None;
     if tab == Tab::Page {
         // who it is shared with, and the groups there are to share it with
@@ -3639,6 +3654,65 @@ fn pane_tab(s: &mut App, tab: rpane::Tab) {
     load_history(s);
     load_comments(s);
     load_links(s);
+}
+
+/// The text the outline is read from, and its kind: what is being
+/// typed while editing, and the page as it stands otherwise.
+fn outline_of(s: &App) -> Vec<outline::Heading> {
+    match &s.open {
+        Some(p) if s.editing => outline::outline(&s.edit.text, &p.kind),
+        Some(p) => outline::outline(&p.body, &p.kind),
+        None => Vec::new(),
+    }
+}
+
+/// Goes to a heading: the caret to its line while editing, and the
+/// reader to it, marked, while reading.
+fn go_heading(s: &mut App, i: usize, tx: &mut Tx) {
+    let Some(h) = outline_of(s).into_iter().nth(i) else { return };
+    if s.editing {
+        // the caret on the heading's line is what the field keeps in view
+        s.edit.set_selection(h.at, h.at);
+        s.edit.focused = true;
+        tx.focus_when_shown(FIELD, false);
+    } else {
+        s.outline_at = Some(i);
+        tx.scroll_into_view("md-outline");
+    }
+}
+
+/// The Outline tab: the page's headings, set in by their level.
+fn outline_view(s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let said = |t: &str| col().key("outline").w_full().padding(12.0).child(text(t.to_owned()).key("outline-none").font(k.ty.small).color(c.text_muted).wrap());
+    let Some(p) = &s.open else { return said("Open a page to see its headings.") };
+    if !matches!(p.kind.as_str(), "md" | "gmi") {
+        return said("Nothing here for this kind of page.");
+    }
+    let heads = outline_of(s);
+    if heads.is_empty() {
+        return said("No headings");
+    }
+    let mut rows = col().key("outline-rows").w_full().gap(1.0);
+    for (i, h) in heads.iter().enumerate() {
+        let on = !s.editing && s.outline_at == Some(i);
+        rows = rows.child(
+            row()
+                .key(format!("ol-{i}"))
+                .role("button")
+                .label(format!("{}, heading level {}", outline::shown(h), h.level))
+                .w_full()
+                .h(26.0)
+                .pl(6.0 + 12.0 * (h.level as f32 - 1.0))
+                .pr(6.0)
+                .center_y()
+                .radius(k.radius.sm)
+                .fill(if on { k.selection() } else { rune::Color::TRANSPARENT })
+                .on_press_tx(move |s: &mut App, tx| go_heading(s, i, tx))
+                .child(text(outline::shown(h).to_owned()).font(if h.level == 1 { k.ty.small_medium } else { k.ty.small }).color(if h.text.is_empty() { c.text_faint } else { c.text_base }).truncate().grow(1.0).min_w(0.0)),
+        );
+    }
+    col().key("outline").w_full().h_full().min_h(0.0).padding(8.0).child(rows).scroll(ScrollSpec { stick_bottom: false })
 }
 
 /// The right pane: its tabs as icons, then what the one in front shows.
@@ -3655,6 +3729,7 @@ fn right_pane(s: &App, k: &Kit) -> El {
             Some((_, body)) => col().key("page-tab").w_full().h_full().min_h(0.0).child(col().w_full().padding(12.0).child(body)).scroll(ScrollSpec { stick_bottom: false }),
             None => col().key("page-tab").w_full().padding(12.0).child(text("Open a page to share it.").font(k.ty.small).color(k.c.text_muted).wrap()),
         },
+        rpane::Tab::Outline => outline_view(s, k),
         rpane::Tab::Out => links_view(s, k, false),
         rpane::Tab::Back => links_view(s, k, true),
         rpane::Tab::Comments => comments_view(s, k),
@@ -3665,7 +3740,7 @@ fn right_pane(s: &App, k: &Kit) -> El {
 
 /// Reads the open page's revisions when the history pane is showing.
 fn load_history(s: &mut App) {
-    if s.pane_comments || s.pane_links || s.pane_page {
+    if s.pane_comments || s.pane_links || s.pane_page || s.pane_outline {
         return;
     }
     let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else { return };
@@ -3742,6 +3817,8 @@ fn show_page(s: &mut App, name: &str) {
     load_history(s);
     load_comments(s);
     load_links(s);
+    // a heading marked in the page before is not this page's
+    s.outline_at = None;
     if s.pane_page && s.inspector.is_open() {
         // the Page tab follows the page: whether this one is marked sensitive
         load_sens(s);
