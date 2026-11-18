@@ -152,9 +152,26 @@ pub fn evened(shares: &[f32], i: usize) -> Vec<f32> {
     out
 }
 
+/// Which of these places a point is in: each is `[x, y, width, height]`.
+/// A place with no size, as one not laid out yet or the group in front's, holds nothing.
+pub fn hit(rects: &[[f32; 4]], p: [f32; 2]) -> Option<usize> {
+    rects.iter().position(|r| r[2] > 0.0 && r[3] > 0.0 && p[0] >= r[0] && p[0] < r[0] + r[2] && p[1] >= r[1] && p[1] < r[1] + r[3])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_point_is_in_the_place_that_holds_it() {
+        let rects = [[0.0, 0.0, 0.0, 0.0], [100.0, 50.0, 200.0, 300.0], [300.0, 50.0, 200.0, 300.0]];
+        assert_eq!(hit(&rects, [150.0, 60.0]), Some(1));
+        assert_eq!(hit(&rects, [301.0, 349.0]), Some(2));
+        assert_eq!(hit(&rects, [99.0, 60.0]), None);
+        assert_eq!(hit(&rects, [150.0, 351.0]), None);
+        assert_eq!(hit(&rects, [0.0, 0.0]), None, "a place with no size holds nothing");
+        assert_eq!(hit(&[], [1.0, 1.0]), None);
+    }
 
     fn near(a: &[f32], b: &[f32]) -> bool {
         a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4)
