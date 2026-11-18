@@ -144,7 +144,11 @@ Not a line: forms and quizzes. An earlier list had them, by mistake. The existin
 ## Around the edges
 
 - [x] Theme switch, reopen the last page
-- [ ] Offline: read from what is kept, queue writes, replay
+- [ ] Offline: the tree and every page's text are kept on disk as they are read, and shown when the ship does not answer at launch, with a standing word that this is what was kept
+- [ ] Offline: a page's save that cannot reach the ship waits on disk, one per page with the revision it was made from, is what the page shows when opened again, and is counted in a standing word (`ui-src/lattice/08-offline.js`, `docs/offline-edits.md`)
+- [ ] Offline: what waits is sent when the ship answers again or at the next launch, each with its base revision, and one the ship had changed meanwhile is flagged with both revisions to choose from
+- [ ] Offline: memories wait and are sent the same way, last write winning
+- [ ] Offline: deletes, moves and renames wait in order, and uploads and sharing say they need the ship
 - [ ] Settings: Mapbox token, OpenSCAD runtime, agent keys, mirror config
 - [ ] `urb://` browsing of other ships' published pages
 - [ ] Notifications of changes (the beacon stream, in place of the 30 s poll)
