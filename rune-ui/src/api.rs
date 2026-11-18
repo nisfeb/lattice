@@ -696,6 +696,76 @@ pub fn knows_with(mut knows: Vec<Know>, q: &Queue) -> Vec<Know> {
     knows
 }
 
+/// A delete or a move made with the ship away, waiting to be sent in
+/// the order it was made: "rename A to B" then "delete B" is not its
+/// reverse. Pages and folders only.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub enum QueuedOp {
+    Del(String),
+    /// From a path to a path, with the names to show for it (`RealName`).
+    Move { from: String, to: String, dname: String, dnames: String },
+}
+
+/// A path at `at` or under it, as it is called once `at` is `to`. `None` for a path elsewhere.
+fn moved(path: &str, at: &str, to: &str) -> Option<String> {
+    let rest = path.strip_prefix(at).filter(|r| r.is_empty() || r.starts_with('/'))?;
+    Some(format!("{to}{rest}"))
+}
+
+/// Puts a delete or a move by, and settles now what it means for the
+/// saves that wait, so that when the ship answers every one of these can
+/// go before every save and still be right. A delete drops the saves
+/// under its path. A move carries them to their new names, and they then
+/// name no revision: the page they go over is the moved one, whatever
+/// the ship numbers it. Memories are not under any page's path.
+pub fn enqueue_op(ops: &mut Vec<QueuedOp>, saves: &mut Queue, op: QueuedOp) {
+    match &op {
+        // a page made away and deleted away was never the ship's: its save goes, and there is nothing to send
+        QueuedOp::Del(name) if saves.get(name).is_some_and(|q| q.is_new) => {
+            saves.remove(name);
+            return;
+        }
+        QueuedOp::Del(name) => saves.retain(|k, _| queued_know(k).is_some() || moved(k, name, "").is_none()),
+        QueuedOp::Move { from, to, .. } => {
+            let carried: Vec<(String, String)> = saves.keys().filter(|k| queued_know(k).is_none()).filter_map(|k| Some((k.clone(), moved(k, from, to)?))).collect();
+            for (old, new) in carried {
+                if let Some(mut q) = saves.remove(&old) {
+                    q.base = 0;
+                    saves.insert(new, q);
+                }
+            }
+        }
+    }
+    ops.push(op);
+}
+
+/// The tree as read, as it is once the deletes and moves that wait are
+/// done to it: what shows while they wait.
+pub fn ops_over(mut nodes: Vec<Node>, ops: &[QueuedOp]) -> Vec<Node> {
+    for op in ops {
+        match op {
+            QueuedOp::Del(name) => nodes.retain(|n| moved(&n.path, name, "").is_none()),
+            QueuedOp::Move { from, to, dname, .. } => {
+                for n in &mut nodes {
+                    if let Some(new) = moved(&n.path, from, to) {
+                        // the moved thing itself is shown under the name typed for it, or its plain path
+                        if n.path == *from {
+                            n.dname = dname.clone();
+                        }
+                        n.path = new;
+                    }
+                }
+            }
+        }
+    }
+    nodes
+}
+
+fn ops_path(url: &str) -> Option<std::path::PathBuf> {
+    let q = queue_path(url)?;
+    Some(q.with_file_name(format!("ops-{}", q.file_name()?.to_str()?.trim_start_matches("waiting-"))))
+}
+
 fn queue_path(url: &str) -> Option<std::path::PathBuf> {
     Some(kept_path(url)?.with_file_name(format!("waiting-{}", kept_path(url)?.file_name()?.to_str()?.trim_start_matches("kept-"))))
 }
@@ -1199,6 +1269,23 @@ impl Conn {
             }
         }
         Sent::Stop(why)
+    }
+
+    /// The deletes and moves that wait for this ship, in the order they were made.
+    pub fn ops(&self) -> Vec<QueuedOp> {
+        ops_path(&self.url).and_then(|p| std::fs::read(p).ok()).and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    }
+
+    pub fn store_ops(&self, ops: &[QueuedOp]) -> Result<(), String> {
+        write_private(&ops_path(&self.url).ok_or("no home directory")?, &serde_json::to_vec(ops).map_err(|e| e.to_string())?)
+    }
+
+    /// Sends one delete or move that waited, as it would have gone at the time.
+    pub fn send_op(&self, op: &QueuedOp) -> Result<(), String> {
+        match op {
+            QueuedOp::Del(name) => self.delete(name),
+            QueuedOp::Move { from, to, dname, dnames } => self.rename_as(from, &RealName { name: to.clone(), dname: dname.clone(), dnames: dnames.clone() }),
+        }
     }
 
     /// The saves that wait for this ship, from the file they are kept in.
@@ -2432,6 +2519,71 @@ mod tests {
         let got = knows_with(read, &q);
         assert_eq!(got.iter().map(|k| (k.key.as_str(), k.body.as_str())).collect::<Vec<_>>(), [("/project/a", "changed away"), ("/other", "untouched"), ("/made/away", "new")]);
         assert_eq!(got[0].tags, ["core"], "what else the ship said of it stays");
+    }
+
+    #[test]
+    fn a_delete_or_a_move_that_waits_settles_the_saves_that_wait() {
+        let page = |name: &str, body: &str| Page { name: name.into(), body: body.into(), kind: "md".into(), rev: 0 };
+        let mv = |from: &str, to: &str| QueuedOp::Move { from: from.into(), to: to.into(), dname: String::new(), dnames: String::new() };
+        let (mut ops, mut q) = (Vec::new(), Queue::new());
+        enqueue(&mut q, &page("notes/a", "A"), 4, false, 1);
+        enqueue(&mut q, &page("notes/sub/b", "B"), 0, true, 2);
+        enqueue(&mut q, &page("notes-other", "O"), 2, false, 3);
+        enqueue(&mut q, &Page { name: know_queue_name("notes/a"), ..page("", "a memory") }, 0, false, 4);
+        // a folder moved: the saves under it go with it, and name no revision. One beside it, and a memory of the same name, stay
+        enqueue_op(&mut ops, &mut q, mv("notes", "kept"));
+        assert_eq!(q.keys().map(String::as_str).collect::<Vec<_>>(), ["kept/a", "kept/sub/b", "know:notes/a", "notes-other"]);
+        assert_eq!((q["kept/a"].base, q["kept/sub/b"].is_new, q["notes-other"].base), (0, true, 2));
+        // a page deleted under its new name: its save is dropped, the others wait
+        enqueue_op(&mut ops, &mut q, QueuedOp::Del("kept/a".into()));
+        assert_eq!(q.keys().map(String::as_str).collect::<Vec<_>>(), ["kept/sub/b", "know:notes/a", "notes-other"]);
+        assert_eq!(ops, [mv("notes", "kept"), QueuedOp::Del("kept/a".into())], "in the order made");
+        // a page made away and deleted away leaves nothing to send
+        let (mut ops2, mut q2) = (Vec::new(), Queue::new());
+        enqueue(&mut q2, &page("scratch", "s"), 0, true, 1);
+        enqueue_op(&mut ops2, &mut q2, QueuedOp::Del("scratch".into()));
+        assert!(ops2.is_empty() && q2.is_empty());
+        // the tree as read shows as it is once they are done
+        let node = |path: &str, page: bool| Node { path: path.into(), page, ..Node::default() };
+        let shown = ops_over(vec![node("notes", false), node("notes/a", true), node("notes/sub/b", true), node("notes-other", true), node("x", true)], &ops);
+        assert_eq!(shown.iter().map(|n| n.path.as_str()).collect::<Vec<_>>(), ["kept", "kept/sub/b", "notes-other", "x"]);
+        // a move with a name to show
+        let shown = ops_over(vec![node("x", true)], &[QueuedOp::Move { from: "x".into(), to: "my-page".into(), dname: "My Page".into(), dnames: String::new() }]);
+        assert_eq!((shown[0].path.as_str(), shown[0].dname.as_str()), ("my-page", "My Page"));
+        assert!(ops_path("http://ship.example:8080").unwrap().ends_with("lattice-rune/ops-http---ship-example-8080.json"));
+    }
+
+    /// Deletes and moves that waited, sent to a ship in order, and a save carried by a move.
+    #[test]
+    #[ignore]
+    fn live_send_ops() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+        let (a, b, to) = (format!("ops{t}/a"), format!("ops{t}/b"), format!("ops{t}/moved"));
+        let q = |body: &str, base: u64, is_new: bool| Queued { kind: "md".into(), body: body.into(), base, is_new, at: 0 };
+        for n in [&a, &b] {
+            assert!(matches!(c.send_queued(n, &q("as made\n", 0, true)), Sent::Done { .. }));
+        }
+        // made away: a moved to a new name with an edit waiting on it, then b deleted
+        let (mut ops, mut saves) = (Vec::new(), Queue::new());
+        enqueue(&mut saves, &Page { name: a.clone(), body: "edited before the move\n".into(), kind: "md".into(), rev: 0 }, 0, false, 1);
+        enqueue_op(&mut ops, &mut saves, QueuedOp::Move { from: a.clone(), to: to.clone(), dname: String::new(), dnames: String::new() });
+        enqueue_op(&mut ops, &mut saves, QueuedOp::Del(b.clone()));
+        for op in &ops {
+            c.send_op(op).unwrap();
+        }
+        for (name, w) in &saves {
+            assert!(matches!(c.send_queued(name, w), Sent::Done { kept: None, .. }), "{name}");
+        }
+        assert_eq!(c.page(&to).unwrap().body, "edited before the move\n");
+        // the tree is what says a page is gone: the ship still answers a read of a moved or deleted page by name
+        let names: Vec<String> = c.dump("").unwrap().nodes.into_iter().filter(|n| n.page).map(|n| n.path).collect();
+        assert!(names.contains(&to) && !names.contains(&a) && !names.contains(&b), "{names:?}");
+        // a delete of nothing is answered as done, and a move of nothing is refused for good, which is what lets it be dropped
+        c.send_op(&QueuedOp::Del(b.clone())).unwrap();
+        let gone_from = c.send_op(&QueuedOp::Move { from: a.clone(), to: format!("ops{t}/x"), dname: String::new(), dnames: String::new() }).unwrap_err();
+        assert!(gone_from.starts_with("404") && replay_drop(&gone_from), "{gone_from}");
+        c.delete(&to).unwrap();
     }
 
     #[test]

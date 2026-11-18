@@ -1,0 +1,16 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "places"},
+  {"t": 3.0, "type": "tap", "key": "edit"},
+  {"t": 4.0, "type": "key", "name": "a", "cmd": true},
+  {"t": 4.5, "type": "type", "text": "# Places\n\nEdited, then moved, with the ship away.\n"},
+  {"t": 6.0, "type": "tap", "key": "save"},
+  {"t": 8.0, "type": "tap", "key": "rename"},
+  {"t": 8.6, "type": "key", "name": "a", "cmd": true},
+  {"t": 9.0, "type": "type", "text": "trips/places"},
+  {"t": 10.0, "type": "key", "name": "Enter"},
+  {"t": 12.0, "type": "tap", "key": "new"},
+  {"t": 12.6, "type": "type", "text": "scratch"},
+  {"t": 13.5, "type": "key", "name": "Enter"},
+  {"t": 15.5, "type": "tap", "key": "delete"},
+  {"t": 16.5, "type": "tap", "key": "prompt-ok"}
+]}

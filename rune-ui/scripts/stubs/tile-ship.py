@@ -51,6 +51,17 @@ PAGES = {'places': [GEO, KIND, int(os.environ.get('LR_REV', '1'))]}
 def do_POST(self):
     u = urlparse(self.path); p = u.path.replace('/apps/lattice/', '', 1); q = parse_qs(u.query)
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
+    if p == 'page-del' or p == 'page-move':
+        if os.environ.get('LR_SAVE_502'): return self.send(502, 'bad gateway')
+        at = q['name' if p == 'page-del' else 'from'][0]
+        hit = [n for n in PAGES if n == at or n.startswith(at + '/')]
+        # as the ship: a delete of nothing is answered as done, a move of nothing is refused
+        if not hit: return self.send(200, '{"ok":true}') if p == 'page-del' else self.send(404, '{"error":"no such page or folder"}')
+        for n in hit:
+            v = PAGES.pop(n)
+            if p == 'page-move': PAGES[q['to'][0] + n[len(at):]] = v
+        sys.stderr.write("%s %s %s\n" % (p, at, q.get('to', [''])[0]))
+        return self.send(200, '{"ok":true}')
     if p == 'know-save':
         if os.environ.get('LR_SAVE_502'): return self.send(502, 'bad gateway')
         KNOWS[q['key'][0]] = body
