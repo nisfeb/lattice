@@ -22,12 +22,15 @@ flate2 = "1"
 rune = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721", features = ["native-file-dialog"] }
 # the same client the desktop app's bridge uses. It does not build for the browser, which has its own
 ureq = { version = "2", default-features = false, features = ["tls"] }
-
-# an HTML page as a browser shows it: the system's web view (WebKitGTK 4.1), over a hole in the page's place.
-# Linux only so far: the same library has macOS and Windows behind it, untried here
-[target.'cfg(target_os = "linux")'.dependencies]
-wry = "0.53"
-gtk = "0.18"
+# an HTML page as a browser shows it, drawn in the app (`src/htmlview.rs`): Blitz lays it out and paints it
+# on the processor. Pre-release, so each is pinned to the versions that go together
+blitz-dom = "=0.3.0-beta.4"
+blitz-html = "=0.3.0-beta.4"
+blitz-paint = "=0.3.0-beta.4"
+blitz-traits = "=0.3.0-beta.4"
+anyrender = "=0.14.0"
+anyrender_vello_cpu = "=0.18.0"
+data-url = "0.3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Rune's own, already in the lock: the browser's entry point, clock, requests and storage
@@ -42,5 +45,9 @@ winit = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e
 parley_engine = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
 accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
 accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "842c28c2ca5dd1506c1e4a67052db61800aed721" }
+
+# Rune's layout crate with one arm added, so it builds beside Blitz: see `vendor/rune-taffy/Cargo.toml`
+[patch."https://github.com/anomalyco/rune"]
+rune-taffy = { path = "vendor/rune-taffy" }
 
 [workspace]

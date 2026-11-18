@@ -19,9 +19,9 @@ docker run --name "$name" -e MODE="$mode" \
     -v "$(cd .. && pwd):/src:ro" -v "$rune/scripts:/rune-scripts:ro" -v lattice-rune-web-cache:/cache \
     lattice-rune-web sh -ec '
     mkdir -p /cache/build/rune-ui /cache/build/ui-src/sheet
-    rm -rf /cache/build/rune-ui/src
+    rm -rf /cache/build/rune-ui/src /cache/build/rune-ui/vendor
     cp -p /src/rune-ui/Cargo.toml /src/rune-ui/Cargo.lock /cache/build/rune-ui/
-    cp -rp /src/rune-ui/src /cache/build/rune-ui/
+    cp -rp /src/rune-ui/src /src/rune-ui/vendor /cache/build/rune-ui/
     cp -p /src/ui-src/sheet/blank.fods /cache/build/ui-src/sheet/
     cd /cache/build/rune-ui
     export CARGO_HOME=/cache/cargo CARGO_TARGET_DIR=/cache/target

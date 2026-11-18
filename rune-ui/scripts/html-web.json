@@ -1,0 +1,5 @@
+{"events": [
+  {"t": 1.5, "type": "tap", "key": "places"},
+  {"t": 6.0, "type": "wheel", "x": 600, "y": 500, "dx": 0, "dy": -1500},
+  {"t": 9.0, "type": "tap", "key": "html-mode"}
+]}

@@ -44,7 +44,8 @@ mod upload;
 mod vault;
 mod view3d;
 #[cfg(target_os = "linux")]
-mod webview;
+#[cfg(not(target_arch = "wasm32"))]
+mod htmlview;
 mod vim;
 
 use std::collections::HashMap;
@@ -730,7 +731,9 @@ struct App {
     /// A change to the theme on its way to the ship.
     theme_put: Latest<Result<(), String>>,
     /// Where an HTML page shown as a web page stands in the window, as last laid out.
-    web_rect: [f32; 4],
+    /// An HTML page drawn as a browser shows it: the thread that lays it out, and what it has sent.
+    #[cfg(not(target_arch = "wasm32"))]
+    web: WebShow,
     /// The link of the rich editor that is open to its Markdown, while the caret is in it.
     link_open: Option<linkedit::Open>,
     /// A theme being made or changed in the settings: its id, light or dark, and its name, five colours and six more as typed.
@@ -1117,7 +1120,8 @@ fn init() -> App {
         accent_hex: TextEdit::new(""),
         theme_draft: None,
         link_open: None,
-        web_rect: [0.0; 4],
+        #[cfg(not(target_arch = "wasm32"))]
+        web: WebShow::default(),
         marks_bad: false,
         marks_q: TextEdit::new(""),
         palette: None,
@@ -1895,6 +1899,10 @@ fn refresh_tree(s: &mut App) {
 
 fn setup(s: &mut App, waker: Waker) {
     s.image_cache = Some(std::rc::Rc::new(rune::ImageCache::new(waker.clone())));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        s.web.html = Some(htmlview::Html::start(waker.clone()));
+    }
     s.waker = Some(waker.clone());
     s.tree_req.set_waker(waker.clone());
     s.page_req.set_waker(waker.clone());
@@ -3311,6 +3319,10 @@ fn outside_ok(s: &App) -> bool {
 
 /// The open page's images from other sites that are held back.
 fn held_back(s: &App) -> usize {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(p) = web_page(s) {
+        return if s.web.laid.as_ref().is_some_and(|l| l.0.key.name == p.name) { s.web.held } else { 0 };
+    }
     match s.open.as_ref().filter(|_| !s.memory && !s.editing).and_then(|p| read_md(s, p)) {
         Some(body) if !outside_ok(s) => md::images(body).iter().filter(|u| md::remote(u)).count(),
         _ => 0,
@@ -3670,6 +3682,11 @@ enum FindIn {
 
 fn find_where(s: &App) -> FindIn {
     let Some(p) = &s.open else { return FindIn::Nothing };
+    // a page drawn as a web page is pictures: there are no words in it to mark
+    #[cfg(not(target_arch = "wasm32"))]
+    if web_page(s).is_some() {
+        return FindIn::Nothing;
+    }
     if s.editing {
         FindIn::Editor
     } else if read_md(s, p).is_some() {
@@ -4834,18 +4851,9 @@ const SYNC_LIVE: f64 = 300.0;
 
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
-    // an HTML page shown as a web page: the system's web view is kept in step with what is in front
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_arch = "wasm32"))]
     {
-        // it stands over everything drawn here, so it gives way to a dialog, the palette, the switcher and a menu
-        let covered = s.prompt.is_some() || s.palette.is_some() || s.jump.is_some() || s.page_menu || s.sharing;
-        let was = webview::closed();
-        webview::sync(web_page(s).map(|p| (p.name.as_str(), p.rev, p.body.as_str())), s.web_rect, covered);
-        changed |= was != webview::closed();
-        webview::pump();
-        if webview::active() {
-            tx.wake_after(std::time::Duration::from_millis(33));
-        }
+        changed |= sync_web(s, tx);
     }
     // a link in the rich editor reads as its Markdown while the caret is in it, to be changed by typing,
     // and is a link again once the caret has left. The page's Markdown is the same either way
@@ -10508,9 +10516,14 @@ fn body(s: &App, k: &Kit) -> El {
         Some(find_bar(q, s, k))
     } else if held_back(s) > 0 && !s.access && !s.shared_open && !s.inbox && s.folder.is_none() {
         let n = held_back(s);
+        // an HTML page drawn as a web page names sheets and fonts as well as pictures
+        #[cfg(not(target_arch = "wasm32"))]
+        let web = web_page(s).is_some();
+        #[cfg(target_arch = "wasm32")]
+        let web = false;
         Some(banner(
             "outside",
-            format!("{} from another site {} not loaded. Loading {} tells that site your address.", if n == 1 { "An image".to_owned() } else { format!("{n} images") }, if n == 1 { "is" } else { "are" }, if n == 1 { "it" } else { "them" }),
+            format!("{} from another site {} not loaded. Loading {} tells that site your address.", match (n, web) { (1, false) => "An image".to_owned(), (1, true) => "A file".to_owned(), (_, false) => format!("{n} images"), (_, true) => format!("{n} files") }, if n == 1 { "is" } else { "are" }, if n == 1 { "it" } else { "them" }),
             "Load outside content for this page",
             |s| {
                 if let Some(name) = s.open.as_ref().map(|p| p.name.clone()) {
@@ -10582,31 +10595,144 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
         .scroll(ScrollSpec { stick_bottom: false })
 }
 
-/// The HTML page to show as a web page, when one is in front to be read and that is how it is wanted.
-#[cfg(target_os = "linux")]
-fn web_page(s: &App) -> Option<&Page> {
-    let screen = s.settings.is_some() || s.access || s.forum.is_some() || s.shared_open || s.inbox || s.folder.is_some();
-    s.open.as_ref().filter(|p| p.kind == "html" && !s.prefs.html_plain && !s.editing && !s.memory && s.old.is_none() && !screen && webview::usable())
+/// An HTML page drawn as a browser shows it.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct WebShow {
+    html: Option<htmlview::Html>,
+    /// The width there is for the page, in points.
+    room: f32,
+    /// Pixels to a point and whether the look is dark, as the view last saw them.
+    env: std::cell::Cell<(f32, bool)>,
+    /// What was last asked for.
+    asked: Option<htmlview::Ask>,
+    /// What is laid out: how, which turn of it, and its height in points.
+    laid: Option<(htmlview::Ask, u64, f32)>,
+    /// The bands of it had so far.
+    bands: std::collections::BTreeMap<usize, rune::Image>,
+    /// The bands of the turn before, shown until this turn's come: a page is not blank while it is laid out again.
+    was: std::collections::BTreeMap<usize, rune::Image>,
+    /// The pointer is over a link.
+    hot: bool,
+    /// How many things on the web the page named and was not let to fetch.
+    held: usize,
 }
 
-/// The place of an HTML page shown as a web page. On X11 the web view stands
-/// in it, and this is the hole it stands over. On Wayland the page has a
-/// window of its own, and this says so.
-#[cfg(target_os = "linux")]
-fn web_hole(k: &Kit) -> El {
-    if webview::inline() == Some(true) {
-        return el().key("web-hole").w_full().h_full().min_h(0.0).on_layout(|s: &mut App, r| s.web_rect = r);
+/// The HTML page to show as a web page, when one is in front to be read and that is how it is wanted.
+#[cfg(not(target_arch = "wasm32"))]
+fn web_page(s: &App) -> Option<&Page> {
+    let screen = s.settings.is_some() || s.access || s.forum.is_some() || s.shared_open || s.inbox || s.folder.is_some();
+    s.open.as_ref().filter(|p| p.kind == "html" && !s.prefs.html_plain && !s.editing && !s.memory && s.old.is_none() && !screen)
+}
+
+/// Keeps the drawn HTML page in step with what is in front: asks for it
+/// at the room's width, and takes what its thread has sent.
+#[cfg(not(target_arch = "wasm32"))]
+fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
+    let mut changed = false;
+    let (scale, dark) = s.web.env.get();
+    let ask = web_page(s).filter(|_| s.web.room > 0.0).map(|p| htmlview::Ask { key: htmlview::Key { name: p.name.clone(), rev: p.rev }, width: htmlview::width_for(s.web.room), scale: scale.clamp(1.0, 3.0), dark, outside: s.prefs.outside.contains(&p.name) });
+    if let (Some(ask), Some(html)) = (&ask, &s.web.html) {
+        if s.web.asked.as_ref() != Some(ask) {
+            // a page let to load outside content is read afresh: what it held back is fetched as it is parsed
+            let new = s.web.asked.as_ref().is_none_or(|a| a.key != ask.key || a.outside != ask.outside);
+            let body = new.then(|| s.open.as_ref().map(|p| p.body.clone())).flatten();
+            if new {
+                s.web.laid = None;
+                s.web.bands.clear();
+                s.web.was.clear();
+                (s.web.hot, s.web.held) = (false, 0);
+            }
+            html.show(ask.clone(), body);
+            s.web.asked = Some(ask.clone());
+        }
     }
+    let outs = s.web.html.as_ref().map(htmlview::Html::take).unwrap_or_default();
+    let mut link = None;
+    for o in outs {
+        changed = true;
+        match o {
+            htmlview::Out::Laid { ask, turn, height, held } => {
+                s.web.held = held;
+                let old = std::mem::take(&mut s.web.bands);
+                if !old.is_empty() {
+                    s.web.was = old;
+                }
+                s.web.laid = Some((ask, turn, height));
+            }
+            htmlview::Out::Band { turn, index, w, h, px } => {
+                if let (true, Some(cache)) = (s.web.laid.as_ref().is_some_and(|l| l.1 == turn), &s.image_cache) {
+                    s.web.bands.insert(index, cache.rgba(w, h, px));
+                }
+            }
+            htmlview::Out::Forget { turn, index } => {
+                if s.web.laid.as_ref().is_some_and(|l| l.1 == turn) {
+                    s.web.bands.remove(&index);
+                }
+            }
+            htmlview::Out::Hot(on) => s.web.hot = on,
+            htmlview::Out::Link(href) => link = Some(href),
+        }
+    }
+    // a band of the turn before stays until the one that takes its place can be shown
+    if !s.web.was.is_empty() {
+        let bands = &s.web.bands;
+        s.web.was.retain(|i, _| !bands.get(i).is_some_and(|b| b.is_ready()));
+    }
+    // what was sent is for the page asked for: one left behind says nothing
+    if s.web.laid.as_ref().is_some_and(|l| s.web.asked.as_ref().is_none_or(|a| a.key != l.0.key)) {
+        s.web.laid = None;
+        s.web.bands.clear();
+        s.web.was.clear();
+    }
+    if let Some(href) = link.filter(|_| ask.is_some()) {
+        follow(s, &href, tx);
+    }
+    changed
+}
+
+/// An HTML page as a browser shows it: Blitz's pictures of it, band under
+/// band, in a scroll view. The room's width is noted as it is laid out,
+/// and what is in view is told to the page's thread as it scrolls.
+#[cfg(not(target_arch = "wasm32"))]
+fn web_view(p: &Page, s: &App, k: &Kit) -> El {
     let c = &k.c;
-    let said = if webview::closed() { "This page was showing in a window of its own, which was closed." } else { "This page is showing in a window of its own, with its own styles and scripts." };
-    col().key("web-hole").w_full().h_full().center().gap(10.0)
-        .child(text(said).font(k.ty.ui).color(c.text_muted).wrap())
-        .child(row().gap(6.0)
-            .children(webview::closed().then(|| Button::new("Show it again").control_size(ControlSize::Small).on_press(|_: &mut App| webview::reopen()).build(k).key("web-reopen")))
-            .child(Button::new("Read it here as a document").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
-                s.prefs.html_plain = true;
-                save_prefs(s);
-            }).build(k).key("web-plain")))
+    let room = el().key("web-room").w_full().h_full().min_h(0.0).on_layout(|s: &mut App, r| s.web.room = r[2]);
+    let Some((ask, _, height)) = s.web.laid.as_ref().filter(|l| l.0.key.name == p.name && l.0.key.rev == p.rev) else {
+        return room.center().child(text("Laying the page out").font(k.ty.ui).color(c.text_muted));
+    };
+    let (w, height) = (ask.width, *height);
+    let ready = |i: &&rune::Image| i.is_ready() && i.error().is_none();
+    let mut page = el().key("web-page").size(w, height).cursor(if s.web.hot { rune::Cursor::Pointer } else { rune::Cursor::Default }).label(format!("{}, drawn as a web page", p.name));
+    for index in 0..htmlview::bands(height) {
+        let top = index as f32 * htmlview::BAND;
+        let tall = (height - top).min(htmlview::BAND);
+        if let Some(pic) = s.web.bands.get(&index).filter(ready).or(s.web.was.get(&index).filter(ready)) {
+            page = page.child(el().key(format!("web-band-{index}")).absolute(0.0, top).size(w, tall).pixels(pic.pixels()).a11y_hidden());
+        }
+    }
+    let page = page
+        .on_pointer_move_local(|s: &mut App, at, tx| {
+            if let Some(h) = &s.web.html {
+                h.point(at.x, at.y, false);
+            }
+            tx.live_only();
+        })
+        .on_drag(|s: &mut App, d, tx| {
+            // a press let go where it began, not a drag
+            if d.phase == Phase::Up && d.dx.abs() < 4.0 && d.dy.abs() < 4.0 {
+                if let Some(h) = &s.web.html {
+                    h.point(d.x, d.y, true);
+                }
+            }
+            tx.live_only();
+        });
+    let mut scroll = col().key(format!("web-scroll-{}", p.name)).w_full().h_full().min_h(0.0).child(page).scroll(ScrollSpec { stick_bottom: false });
+    if let Some(h) = &s.web.html {
+        let see = h.seer();
+        scroll = scroll.on_scroll_offset(move |at| see(at.offset[1], at.viewport[1]));
+    }
+    room.child(scroll)
 }
 
 /// The page's editor at the height there is for it: a page longer than
@@ -10694,9 +10820,9 @@ fn page_body(s: &App, k: &Kit) -> El {
     if let Some(m) = s.map.as_ref().filter(|m| m.name == p.name && m.rev == p.rev) {
         return map_view(m, s, k);
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_arch = "wasm32"))]
     if web_page(s).is_some_and(|w| w.name == p.name && w.rev == p.rev) {
-        return web_hole(k);
+        return web_view(p, s, k);
     }
     let shown = if let Some(body) = read_md(s, p) {
         reader(body, s, k, true)
@@ -10897,6 +11023,8 @@ fn kit_of(prefs: &api::Prefs, system_dark: bool) -> Kit {
 
 fn view(s: &App, cx: &mut Cx<App>) -> El {
     let k = kit_of(&s.prefs, cx.system_dark());
+    #[cfg(not(target_arch = "wasm32"))]
+    s.web.env.set((cx.env().scale, k.dark));
     if s.conn.is_none() && !s.sample {
         return login_view(s, &k);
     }
@@ -10912,10 +11040,10 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let (editing, can_edit) = (page && s.editing, remote.is_none_or(Shared::editable));
     let mut trailing = row().gap(6.0).center_y();
     // an HTML page is shown as a web page, or read as a document: one press goes between them
-    #[cfg(target_os = "linux")]
-    if page && !s.editing && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "html") && webview::usable() {
+    #[cfg(not(target_arch = "wasm32"))]
+    if page && !s.editing && !s.memory && s.open.as_ref().is_some_and(|p| p.kind == "html") {
         let plain = s.prefs.html_plain;
-        trailing = trailing.child(Button::new(if plain { "Web page" } else { "Document" }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(if plain { "Show this page as a browser would, with its own styles and scripts" } else { "Read this page as a document, without its styles and scripts" }).on_press(|s: &mut App| {
+        trailing = trailing.child(Button::new(if plain { "Web page" } else { "Document" }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(if plain { "Show this page as a browser would, with its own styles" } else { "Read this page as a document, without its styles" }).on_press(|s: &mut App| {
             s.prefs.html_plain ^= true;
             save_prefs(s);
         }).build(&k).key("html-mode"));
@@ -11265,17 +11393,6 @@ pub fn run() {
     let fonts: &'static [&'static [u8]] = &[];
     // the id the desktop matches to `lattice-rune.desktop`, which names the icon: the window wears lattice's logo by it
     rune::set_app_id("lattice-rune");
-    // run as the helper that shows one HTML page in a window of its own: never the app itself
-    #[cfg(target_os = "linux")]
-    {
-        let args: Vec<String> = std::env::args().collect();
-        if let [_, flag, file, title] = args.as_slice() {
-            if flag == "--web-view" {
-                webview::helper(file, title);
-            }
-        }
-        webview::start();
-    }
     let app = rune::App::new(AppSpec {
         setup: Some(setup),
         poll: Some(poll),
@@ -11324,12 +11441,7 @@ pub fn run() {
         ..AppSpec::new("lattice", (1120.0, 720.0), init, view)
     })
     .chrome(chrome);
-    // the window an HTML page's web view hangs on
-    #[cfg(target_os = "linux")]
-    let app = app.on_window(webview::note_window);
     app.run();
-    #[cfg(target_os = "linux")]
-    webview::stop();
 }
 
 #[cfg(test)]
@@ -11397,6 +11509,11 @@ mod tests {
         s.open = Some(Page { name: "welcome".into(), body: body.into(), kind: "html".into(), rev: 9 });
         sync_sheet(&mut s);
         let p = s.open.clone().unwrap();
+        // drawn as a web page unless asked otherwise: find has no words to mark there, and what is held back is what the page's thread counts
+        assert!(web_page(&s).is_some());
+        assert_eq!((find_where(&s), held_back(&s)), (FindIn::Nothing, 0));
+        s.prefs.html_plain = true;
+        assert!(web_page(&s).is_none());
         assert_eq!(read_md(&s, &p), Some("# Notes\n\nFind **this** word. ![a](https://x.org/a.png)\n"));
         // find looks through what is read, and a picture from another site waits for a yes as on a Markdown page
         assert_eq!(find_where(&s), FindIn::Reader);

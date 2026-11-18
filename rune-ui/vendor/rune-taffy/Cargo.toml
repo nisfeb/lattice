@@ -1,0 +1,18 @@
+# Rune's own `rune-taffy`, as it is at the rev pinned in `rune-ui/Cargo.toml`, with one change:
+# `encode_wrap` in `src/style/mod.rs` has an arm for the wrap values taffy only has when its
+# `flexbox_balance` feature is on. Blitz turns that feature on, Cargo gives every crate the same taffy,
+# and without the arm this crate does not compile. Rune never sets those values.
+# Take this copy away once Rune's own has the arm, and copy it again when the pinned rev moves.
+[package]
+name = "rune-taffy"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+
+[features]
+default = []
+# Use upstream `taffy::TaffyTree` instead of `LayoutStore` for A/B benchmarks and parity checks.
+baseline-taffy = []
+
+[dependencies]
+taffy = { version = "0.15", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid", "block_layout", "content_size"] }
