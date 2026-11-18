@@ -157,12 +157,14 @@ pub fn parse(src: &str) -> Vec<Sheet> {
 }
 
 /// What was typed into a cell, as the web client reads it.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Typed {
     Empty,
     Text(String),
     Number(f64),
     Bool(bool),
+    /// A percentage, money, a date or a time, typed as one: the type its cell takes, and the number it is.
+    Special(&'static str, f64),
 }
 
 /// Whether text is a plain number as the web client takes one: digits,
@@ -185,11 +187,16 @@ fn numeric(t: &str) -> bool {
     (whole.is_empty() || digits(whole) || grouped(whole)) && frac.is_none_or(digits) && exp.is_none_or(|e| digits(e.strip_prefix(['+', '-']).unwrap_or(e))) && t.bytes().any(|b| b.is_ascii_digit())
 }
 
-/// What typed text becomes in a cell. A leading `'` keeps the rest as
-/// text. A formula, a date, a time, a percentage and money are refused:
-/// writing them needs the formula engine and the number formats, which
-/// are not here yet.
+/// What typed text becomes in a cell, with dates counted from the usual null date. See `typed_on`.
 pub fn typed(text: &str) -> Result<Typed, String> {
+    typed_on(text, -25_569.0)
+}
+
+/// What typed text becomes in a cell, as the web client reads it: a
+/// number, a percentage (50%), money ($1,200), true or false, a date
+/// (2026-11-17), a time of day (9:30), or text. A leading `'` keeps the
+/// rest as text. A formula is not for here: `calc::enter` takes those.
+pub fn typed_on(text: &str, null_date: f64) -> Result<Typed, String> {
     let t = text.trim();
     if t.is_empty() {
         return Ok(Typed::Empty);
@@ -203,19 +210,49 @@ pub fn typed(text: &str) -> Result<Typed, String> {
     if numeric(t) {
         return t.replace(',', "").parse().map(Typed::Number).map_err(|_| "that number cannot be read".to_owned());
     }
-    let parts = |sep: char, n: std::ops::RangeInclusive<usize>| {
-        let p: Vec<&str> = t.split(sep).collect();
-        n.contains(&p.len()) && p.iter().all(|x| !x.is_empty() && x.len() <= 4 && x.bytes().all(|b| b.is_ascii_digit()))
+    let digits = |s: &str, lo: usize, hi: usize| (lo..=hi).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit());
+    // a plain number, with no grouping and no exponent, as a percentage's is
+    let plain = |s: &str| {
+        let s = s.strip_prefix(['+', '-']).unwrap_or(s);
+        let (w, f) = s.split_once('.').map_or((s, None), |(w, f)| (w, Some(f)));
+        if w.is_empty() { f.is_some_and(|f| digits(f, 1, 400)) } else { digits(w, 1, 400) && f.is_none_or(|f| f.is_empty() || digits(f, 1, 400)) }
     };
-    let special = t.strip_suffix('%').is_some_and(|n| numeric(n.trim_end())) || t.strip_prefix("-$").or(t.strip_prefix('$')).is_some_and(|n| numeric(n.trim_start())) || (parts('-', 3..=3) && t.len() >= 8) || parts(':', 2..=3);
-    if special {
-        return Err("dates, times, percentages and money are not written here yet. Start it with ' to keep it as text".into());
+    if let Some(n) = t.strip_suffix('%').map(str::trim_end).filter(|n| plain(n)) {
+        return Ok(Typed::Special("percentage", n.parse::<f64>().map_err(|_| "that number cannot be read")? / 100.0));
     }
-    Ok(match t.to_ascii_lowercase().as_str() {
-        "true" => Typed::Bool(true),
-        "false" => Typed::Bool(false),
-        _ => Typed::Text(text.to_owned()),
-    })
+    if let Some((neg, n)) = t.strip_prefix("-$").map(|n| (true, n)).or_else(|| t.strip_prefix('$').map(|n| (false, n))) {
+        let n = n.trim_start();
+        let (w, f) = n.split_once('.').map_or((n, None), |(w, f)| (w, Some(f)));
+        let mut groups = w.split(',');
+        let grouped = groups.next().is_some_and(|g| digits(g, 1, 3)) && groups.clone().count() > 0 && groups.all(|g| digits(g, 3, 3));
+        if (digits(w, 1, 400) || grouped) && f.is_none_or(|f| digits(f, 1, 400)) {
+            let v: f64 = n.replace(',', "").parse().map_err(|_| "that number cannot be read")?;
+            return Ok(Typed::Special("currency", if neg { -v } else { v }));
+        }
+    }
+    match t.to_ascii_lowercase().as_str() {
+        "true" => return Ok(Typed::Bool(true)),
+        "false" => return Ok(Typed::Bool(false)),
+        _ => {}
+    }
+    let d: Vec<&str> = t.split('-').collect();
+    if d.len() == 3 && digits(d[0], 4, 4) && digits(d[1], 1, 2) && digits(d[2], 1, 2) {
+        let (m, day): (i64, i64) = (d[1].parse().unwrap_or(0), d[2].parse().unwrap_or(0));
+        if (1..=12).contains(&m) && (1..=31).contains(&day) {
+            if let Some(v) = date_serial(&format!("{}-{m:02}-{day:02}", d[0]), null_date) {
+                return Ok(Typed::Special("date", v));
+            }
+        }
+    }
+    let c: Vec<&str> = t.split(':').collect();
+    if (2..=3).contains(&c.len()) && digits(c[0], 1, 2) && digits(c[1], 2, 2) && c.get(2).is_none_or(|s| digits(s, 2, 2)) {
+        let n = |s: &str| s.parse::<f64>().unwrap_or(0.0);
+        let (m, s) = (n(c[1]), c.get(2).map_or(0.0, |s| n(s)));
+        if m < 60.0 && s < 60.0 {
+            return Ok(Typed::Special("time", (n(c[0]) * 3600.0 + m * 60.0 + s) / 86_400.0));
+        }
+    }
+    Ok(Typed::Text(text.to_owned()))
 }
 
 /// A number as a cell shows it with no format of its own: fifteen
@@ -359,6 +396,8 @@ pub struct Put {
     pub v: Val,
     pub text: String,
     pub err: bool,
+    /// The cell style it takes, when the write gives it a new one.
+    pub st: Option<String>,
 }
 
 impl From<Typed> for Put {
@@ -368,8 +407,9 @@ impl From<Typed> for Put {
             Typed::Text(t) => ("string", Val::Str(t.clone()), t),
             Typed::Number(n) => ("float", Val::Num(n), general(n)),
             Typed::Bool(b) => ("boolean", Val::Bool(b), if b { "TRUE" } else { "FALSE" }.to_owned()),
+            Typed::Special(vt, n) => (vt, Val::Num(n), general(n)),
         };
-        Put { f: None, vt: vt.into(), v, text, err: false }
+        Put { f: None, vt: vt.into(), v, text, err: false, st: None }
     }
 }
 
@@ -453,10 +493,12 @@ fn cell_xml(src: &str, old: Option<&El>, pad: &str, v: &Put, calcext: bool, null
     let had = attrs(tag);
     let raw = |k: &str| had.iter().find(|(n, _)| *n == k).map(|(_, at)| &tag[at.clone()]);
     let mut a = String::new();
-    for k in ["table:style-name", "table:content-validation-name"] {
-        if let Some(v) = raw(k) {
-            a.push_str(&format!(" {k}=\"{v}\""));
-        }
+    // the style the write gives it, else the one it had
+    if let Some(st) = v.st.as_deref().or(raw("table:style-name")) {
+        a.push_str(&format!(" table:style-name=\"{st}\""));
+    }
+    if let Some(val) = raw("table:content-validation-name") {
+        a.push_str(&format!(" table:content-validation-name=\"{val}\""));
     }
     if let Some(f) = &v.f {
         a.push_str(&format!(" table:formula=\"{}\"", esc_attr(f)));
@@ -1032,8 +1074,13 @@ mod tests {
         assert_eq!(typed("'12"), Ok(Typed::Text("12".into())));
         assert_eq!(typed("TRUE"), Ok(Typed::Bool(true)));
         assert_eq!(typed("false"), Ok(Typed::Bool(false)));
-        for t in ["50%", "$1,200", "-$3", "2026-11-17", "9:30", "09:30:15"] {
-            assert!(typed(t).unwrap_err().starts_with("dates, times"), "{t}");
+        // a percentage, money, a date and a time are the numbers the web client makes of them
+        for (t, vt, n) in [("50%", "percentage", 0.5), ("$1,200", "currency", 1200.0), ("-$3", "currency", -3.0), ("2026-11-17", "date", 46343.0), ("9:30", "time", 0.3958333333333333), ("09:30:15", "time", 0.39600694444444445), (".5 %", "percentage", 0.005), ("$ 2.50", "currency", 2.5), ("2026-1-5", "date", 46027.0), ("99:00", "time", 4.125)] {
+            assert_eq!(typed(t), Ok(Typed::Special(vt, n)), "{t}");
+        }
+        // and what only looks like one is text
+        for t in ["1,000%", "1e2%", "$1,23", "$", "2026-13-01", "2026-11-32", "26-11-17", "9:60", "9:5", "100:00", "1:2:3:4", "$-3"] {
+            assert_eq!(typed(t), Ok(Typed::Text(t.into())), "{t}");
         }
         assert_eq!(typed("=A1+1").unwrap_err(), "formulas are not written here yet");
         assert_eq!(typed("="), Ok(Typed::Text("=".into())));

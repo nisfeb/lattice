@@ -530,9 +530,9 @@ impl<'a> Engine<'a> {
         let v = if blank { V::Num(0.0) } else { v };
         let plain_number = !was.vt.is_empty() && was.vt != "boolean" && was.vt != "string";
         let mut val = match &v {
-            V::Err(code) => Put { f: Some(f.clone()), vt: "string".into(), v: Val::Str(code.clone()), text: code.clone(), err: true },
-            V::Str(t) => Put { f: Some(f.clone()), vt: "string".into(), v: Val::Str(t.clone()), text: t.clone(), err: false },
-            V::Bool(b) if !plain_number => Put { f: Some(f.clone()), vt: "boolean".into(), v: Val::Bool(*b), text: if *b { "TRUE" } else { "FALSE" }.into(), err: false },
+            V::Err(code) => Put { f: Some(f.clone()), vt: "string".into(), v: Val::Str(code.clone()), text: code.clone(), err: true, st: None },
+            V::Str(t) => Put { f: Some(f.clone()), vt: "string".into(), v: Val::Str(t.clone()), text: t.clone(), err: false, st: None },
+            V::Bool(b) if !plain_number => Put { f: Some(f.clone()), vt: "boolean".into(), v: Val::Bool(*b), text: if *b { "TRUE" } else { "FALSE" }.into(), err: false, st: None },
             other => {
                 // a logical result in a cell Calc keeps as a plain number stays one
                 let n = match other {
@@ -541,7 +541,7 @@ impl<'a> Engine<'a> {
                     _ => 0.0,
                 };
                 let keep = matches!(was.vt.as_str(), "percentage" | "currency" | "date" | "time");
-                Put { f: Some(f.clone()), vt: if keep { was.vt.clone() } else { "float".into() }, v: Val::Num(n), text: String::new(), err: false }
+                Put { f: Some(f.clone()), vt: if keep { was.vt.clone() } else { "float".into() }, v: Val::Num(n), text: String::new(), err: false, st: None }
             }
         };
         let same = was.vt == val.vt && was.err == val.err && was.f.as_deref() == Some(f.as_str()) && if val.err { was.text == val.text } else { was.v.as_ref() == Some(&val.v) };
@@ -647,26 +647,75 @@ pub struct Entered {
 // ponytail: this runs where it is called. A worker if a large sheet stalls the window
 pub fn enter(src: &str, s: usize, r: usize, c: usize, typed: &str) -> Result<Entered, String> {
     let formula = typed.len() > 1 && typed.starts_with('=');
-    let styles = Styles::read(src, sheet::book(src)?.null_date);
+    let mut styles = Styles::read(src, sheet::book(src)?.null_date);
     let mut body = if formula {
         let f = formula::to_of(typed).map_err(|e| format!("that formula cannot be read: {e}"))?;
         // until it is worked out the cell holds no value: if it cannot be here, LibreOffice will when it opens the page
-        sheet::put_cell(src, s, r, c, &Put { f: Some(f), vt: String::new(), v: Val::Blank, text: String::new(), err: false }, Care::Formula)?
+        sheet::put_cell(src, s, r, c, &Put { f: Some(f), vt: String::new(), v: Val::Blank, text: String::new(), err: false, st: None }, Care::Formula)?
     } else {
         // a number typed into a formatted cell takes the format's type, and shows as the format writes it
         let before = sheet::book(src)?;
         let style = before.style_at(s, r, c);
-        let mut put: Put = sheet::typed(typed)?.into();
-        if let (Val::Num(n), Typed::Number(_)) = (put.v.clone(), sheet::typed(typed)?) {
-            let kind = styles.kind(&style);
-            let n = if kind == Some("percentage") { n / 100.0 } else { n };
-            put = Put { vt: kind.unwrap_or("float").to_owned(), v: Val::Num(n), text: styles.text(&style, n, kind.unwrap_or("float")), ..put };
+        let what = sheet::typed_on(typed, before.null_date)?;
+        let mut put: Put = what.clone().into();
+        let has = styles.kind(&style);
+        let mut page = src.to_owned();
+        match what {
+            Typed::Number(n) => {
+                let n = if has == Some("percentage") { n / 100.0 } else { n };
+                put = Put { vt: has.unwrap_or("float").to_owned(), v: Val::Num(n), text: styles.text(&style, n, has.unwrap_or("float")), ..put };
+            }
+            // a date, a time, a percentage or money typed as one: its cell takes a format for it, made when the page has none
+            Typed::Special(vt, n) => {
+                let mut st = style;
+                if has != Some(vt) {
+                    let (name, new) = styles.with_format(&st, vt);
+                    page = crate::styles::add_auto(&page, &new)?;
+                    styles = Styles::read(&page, before.null_date);
+                    put.st = Some(name.clone());
+                    st = name;
+                }
+                put.text = styles.text(&st, n, vt);
+            }
+            _ => {}
         }
-        sheet::put_cell(src, s, r, c, &put, Care::Typed)?
+        sheet::put_cell(&page, s, r, c, &put, Care::Typed)?
     };
     let book = sheet::book(&body)?;
     let mut eng = Engine::new(&book, &styles);
-    let results = eng.recalc(&[(s, r, c)], formula.then_some((s, r, c)));
+    let mut results = eng.recalc(&[(s, r, c)], formula.then_some((s, r, c)));
+    let stale: Vec<Key> = {
+        let mut v: Vec<Key> = eng.stale.iter().copied().collect();
+        v.sort_unstable();
+        v
+    };
+    let done = std::mem::take(&mut eng.done);
+    // a formula that makes a date or a time, in a cell with no number format of its own, gets one:
+    // =DATE(2026,11,10) shows as a date and not as the day number, as it does in Calc
+    if formula {
+        let made = formula::to_of(typed).ok().and_then(|f| formula::parse(formula::body_of(&f)?, Mode::Of).ok()).and_then(|mut top| {
+            while let Node::Paren(x) = top {
+                top = *x;
+            }
+            match top {
+                Node::Call(name, _) => match name.as_str() {
+                    "DATE" | "TODAY" | "EDATE" | "EOMONTH" | "NOW" => Some("date"),
+                    "TIME" => Some("time"),
+                    _ => None,
+                },
+                _ => None,
+            }
+        });
+        let style = book.style_at(s, r, c);
+        if let (Some(vt), Some((_, put))) = (made.filter(|_| !styles.formatted(&style)), results.iter_mut().find(|(k, p)| *k == (s, r, c) && p.vt == "float")) {
+            let (name, new) = styles.with_format(&style, vt);
+            body = crate::styles::add_auto(&body, &new)?;
+            let styles = Styles::read(&body, book.null_date);
+            if let Val::Num(n) = put.v {
+                *put = Put { vt: vt.to_owned(), text: styles.text(&name, n, vt), st: Some(name), ..put.clone() };
+            }
+        }
+    }
     // each sheet's results are written in one pass over the page
     let mut by_sheet: std::collections::BTreeMap<usize, std::collections::BTreeMap<usize, Vec<(usize, Put)>>> = Default::default();
     for ((s2, r2, c2), put) in results {
@@ -675,9 +724,7 @@ pub fn enter(src: &str, s: usize, r: usize, c: usize, typed: &str) -> Result<Ent
     for (s2, rows) in &by_sheet {
         body = sheet::put_cells(&body, *s2, rows, Care::Result)?;
     }
-    let mut stale: Vec<Key> = eng.stale.iter().copied().collect();
-    stale.sort_unstable();
-    Ok(Entered { body, stale, done: eng.done })
+    Ok(Entered { body, stale, done })
 }
 
 #[cfg(test)]
@@ -832,6 +879,24 @@ mod tests {
         assert!(body.contains("office:value-type=\"percentage\" office:value=\"0.75\""));
         assert!(body.contains("office:value-type=\"currency\" office:currency=\"USD\" office:value=\"-1234.5\""));
         assert!(body.contains("office:value-type=\"date\" office:date-value=\"2025-12-09\""));
+    }
+
+    #[test]
+    fn typed_dates_and_money_write_the_page_the_web_client_writes() {
+        // a sheet LibreOffice made, with a percentage, money, a date, a time and date formulas typed
+        // into it. The expected page is the web client's Book given the same typing, from node:
+        // the same bytes, the new styles and their hashed names included
+        let mut body = include_str!("typed_fixture.fods").to_owned();
+        for line in include_str!("typed_edits.txt").lines() {
+            let p: Vec<&str> = line.splitn(4, ',').collect();
+            body = enter(&body, p[0].parse().unwrap(), p[1].parse().unwrap(), p[2].parse().unwrap(), p[3]).unwrap().body;
+        }
+        assert!(body == include_str!("typed_expected.fods"), "the page differs from the web client's");
+        // typed again into a cell that has the format, no style is made twice
+        let again = enter(&body, 0, 1, 1, "10%").unwrap().body;
+        assert_eq!(again.matches("<number:percentage-style").count(), body.matches("<number:percentage-style").count());
+        assert_eq!(again.matches("<style:style").count(), body.matches("<style:style").count());
+        assert_eq!(crate::styles::hash("lattice"), format!("{:08x}", "lattice".bytes().fold(0x811c_9dc5u32, |h, c| (h ^ u32::from(c)).wrapping_mul(0x0100_0193))));
     }
 
     #[test]
