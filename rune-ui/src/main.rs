@@ -108,6 +108,9 @@ struct Forum {
     sort: ForumSort,
     /// The tags the board's threads are shown by: those that carry every one.
     tags: Vec<String>,
+    /// The posts other ships refused, once read: why, and where and when. And whether they are what shows.
+    notes: Option<Vec<(String, String)>>,
+    notes_open: bool,
     /// A thread being written for the board showing: its title, link, text and tags.
     draft: Option<Box<[TextEdit; 4]>>,
     /// A comment being written on the thread showing, and the comment it answers when it answers one.
@@ -130,6 +133,7 @@ enum ForumGot {
     Boards(Vec<api::Board>),
     Board(api::Board),
     Thread(api::Thread),
+    Notes(Vec<(String, String)>),
 }
 
 /// A board's threads as they are listed: the pinned ones first, then by the order asked for.
@@ -411,6 +415,8 @@ struct App {
     /// The forum, when it is what shows.
     forum: Option<Forum>,
     forum_req: Latest<Result<ForumGot, String>>,
+    /// The refusals, read beside the boards and after a clear.
+    notes_req: Latest<Result<ForumGot, String>>,
     /// The open page as a spreadsheet, when it is one.
     sheet: Option<SheetView>,
     /// The open page as a map, when it is one.
@@ -635,6 +641,7 @@ fn init() -> App {
         read_as: None,
         forum: None,
         forum_req: Latest::default(),
+        notes_req: Latest::default(),
         beside: None,
         sheet: None,
         map: None,
@@ -1299,6 +1306,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.templates_req.set_waker(waker.clone());
     s.back_req.set_waker(waker.clone());
     s.forum_req.set_waker(waker.clone());
+    s.notes_req.set_waker(waker.clone());
     s.core_req.set_waker(waker.clone());
     s.trash_req.set_waker(waker.clone());
     s.tex_req.set_waker(waker.clone());
@@ -3812,11 +3820,20 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Err(e) => s.note = format!("access list: {e}"),
         }
     }
+    if let Some(r) = s.notes_req.take() {
+        changed = true;
+        match (r, &mut s.forum) {
+            (Ok(ForumGot::Notes(n)), Some(f)) => f.notes = Some(n),
+            (Err(e), Some(_)) => s.note = format!("refusals: {e}"),
+            _ => {}
+        }
+    }
     if let Some(r) = s.forum_req.take() {
         changed = true;
         // an answer that lands after the forum was left is dropped
         match (r, &mut s.forum) {
             (Ok(ForumGot::Boards(b)), Some(f)) => f.boards = Some(b),
+            (Ok(ForumGot::Notes(n)), Some(f)) => f.notes = Some(n),
             (Ok(ForumGot::Board(b)), Some(f)) => {
                 (f.board, f.thread) = (Some(b), None);
                 // what was being sent landed: the thread written is let go
@@ -4787,7 +4804,11 @@ fn go_forum(s: &mut App) {
     (s.inbox, s.access, s.shared_open) = (false, false, false);
     s.forum = Some(Forum::default());
     match s.conn.clone() {
-        Some(c) => s.forum_req.request(c, |c| c.forum_boards().map(ForumGot::Boards)),
+        Some(c) => {
+            s.forum_req.request(c.clone(), |c| c.forum_boards().map(ForumGot::Boards));
+            // and what other ships refused, for the count on the way in
+            s.notes_req.request(c, |c| c.forum_notes().map(ForumGot::Notes));
+        }
         // ponytail: the sample pages have no forum. A sample board if the screens are to be shown without a ship
         None => s.forum.as_mut().expect("just made").boards = Some(Vec::new()),
     }
@@ -4894,9 +4915,21 @@ fn draft_field(s: &mut App, i: usize) -> &mut TextEdit {
     &mut s.forum.as_mut().and_then(|f| f.draft.as_mut()).expect("a thread is being written")[i]
 }
 
+/// Clears every refusal note on the ship, and reads them again.
+fn forum_notes_clear(s: &mut App) {
+    let Some(c) = s.conn.clone() else { return };
+    s.notes_req.request(c, |c| {
+        c.forum_notes_clear()?;
+        c.forum_notes().map(ForumGot::Notes)
+    });
+}
+
 /// One step back in the forum: from a thread to its board, from a board to the boards.
 fn forum_back(s: &mut App) {
     if let Some(f) = &mut s.forum {
+        if std::mem::take(&mut f.notes_open) {
+            return;
+        }
         if f.thread.take().is_none() {
             f.board = None;
             f.tags.clear();
@@ -4910,6 +4943,21 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
     let when = |da: &str| Rev { rev: 0, updated: da.to_owned() }.when();
     let muted = |t: String| text(t).font(k.ty.small).color(c.text_muted);
     let mut page = col().key("forum").w_full().max_w(760.0).padding(28.0).gap(10.0);
+    // the posts other ships refused: this ship's own page of them, read
+    if f.notes_open {
+        let notes = f.notes.as_deref().unwrap_or_default();
+        page = page.child(row().child(Button::new("\u{2039} Boards").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(forum_back).build(k).key("forum-back")));
+        page = page.child(text("Refused posts").font(k.ty.body_medium).color(c.text_base));
+        page = page.child(muted("What another ship's board did not take from this one, and why.".into()).wrap());
+        if notes.is_empty() {
+            return page.child(muted(if f.notes.is_some() { "No refusals.".into() } else { "reading\u{2026}".into() }));
+        }
+        page = page.child(row().child(Button::new("Clear").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Forget every refusal").on_press(forum_notes_clear).build(k).key("notes-clear")));
+        for (i, (why, at)) in notes.iter().take(200).enumerate() {
+            page = page.child(col().key(format!("note-{i}")).w_full().padding(8.0).gap(2.0).child(text(why.clone()).font(k.ty.ui).color(c.text_base).wrap().selectable(true)).child(muted(at.clone())));
+        }
+        return page;
+    }
     if f.board.is_some() {
         page = page.child(row().child(Button::new(if f.thread.is_some() { "\u{2039} Back to the board" } else { "\u{2039} Boards" }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(forum_back).build(k).key("forum-back")));
     }
@@ -5080,7 +5128,22 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
         }
         return page;
     }
-    page = page.child(text("Boards").font(k.ty.body_medium).color(c.text_base));
+    let refused = f.notes.as_ref().map_or(0, Vec::len);
+    page = page.child(
+        row().w_full().gap(8.0).center_y().child(text("Boards").font(k.ty.body_medium).color(c.text_base).grow(1.0)).child(
+            Button::new(if refused == 0 { "Refusals".to_owned() } else { format!("Refusals {refused}") })
+                .control_size(ControlSize::Small)
+                .variant(if refused == 0 { ButtonVariant::GhostMuted } else { ButtonVariant::Ghost })
+                .help("Posts another ship's board did not take, and why")
+                .on_press(|s: &mut App| {
+                    if let Some(f) = &mut s.forum {
+                        f.notes_open = true;
+                    }
+                })
+                .build(k)
+                .key("notes-open"),
+        ),
+    );
     match &f.boards {
         None => page = page.child(muted("reading the boards\u{2026}".into())),
         Some(b) if b.is_empty() => page = page.child(muted("There are no boards on this ship.".into())),
@@ -7278,6 +7341,23 @@ mod tests {
         (f.thread, f.board, f.tags) = (None, Some(api::Board::default()), vec!["bug".into()]);
         forum_back(&mut s);
         assert!(s.forum.as_ref().unwrap().tags.is_empty());
+    }
+
+    #[test]
+    fn the_refusals_open_from_the_boards_and_back_leaves_them() {
+        let mut s = sample("welcome");
+        go_forum(&mut s);
+        let f = s.forum.as_mut().unwrap();
+        f.notes = Some(vec![("your role on this board cannot post".into(), "~nec/general, 2 minutes ago".into())]);
+        f.notes_open = true;
+        // back from the refusals is the boards, with nothing else let go
+        f.board = None;
+        forum_back(&mut s);
+        let f = s.forum.as_ref().unwrap();
+        assert!(!f.notes_open && f.notes.as_ref().is_some_and(|n| n.len() == 1));
+        // with no ship there is nothing to clear, and nothing is lost by asking
+        forum_notes_clear(&mut s);
+        assert!(s.forum.as_ref().unwrap().notes.is_some());
     }
 
     #[test]

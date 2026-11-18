@@ -860,6 +860,28 @@ pub fn comment_order(comments: &[ForumComment]) -> Vec<(usize, &ForumComment)> {
     out
 }
 
+/// The refusals on the ship's page of them: for each, why a post was
+/// refused, and the board and how long ago, as the page words them.
+/// The ship gives these only as that page, each a row holding a `ti`
+/// span and a `me` span (`render-notes` in `lattice-forum-render.hoon`).
+pub fn refusal_notes(page: &str) -> Vec<(String, String)> {
+    // the text of the first span of a class in a row, with its marks let go and its characters read
+    let span = |row: &str, class: &str| {
+        let open = format!("<span class=\"{class}\">");
+        let from = row.find(&open)? + open.len();
+        let inner = &row[from..from + row[from..].find("</span>")?];
+        let mut text = String::new();
+        let mut rest = inner;
+        while let Some(lt) = rest.find('<') {
+            text.push_str(&rest[..lt]);
+            rest = rest[lt..].find('>').map_or("", |gt| &rest[lt + gt + 1..]);
+        }
+        text.push_str(rest);
+        Some(crate::html::decode(&text))
+    };
+    page.split("<div class=\"rw\">").skip(1).filter_map(|row| Some((span(row, "ti")?, span(row, "me")?))).collect()
+}
+
 /// The tags typed for a thread, as the ship takes them: five at most,
 /// each lowercase letters, digits and dashes, starting with a letter,
 /// twenty-four characters at most. Commas or spaces part them, and a
@@ -1069,6 +1091,27 @@ impl Conn {
             fields.push(("parent", p));
         }
         self.forum_form(&format!("{board}/{post}/comment"), &fields)
+    }
+
+    /// The posts other ships refused, newest as the ship lists them: why, and where and when.
+    pub fn forum_notes(&self) -> Result<Vec<(String, String)>, String> {
+        let page = self.call("GET", "forum-notes", None)?;
+        // a page that is not the refusals page is not read as an empty list
+        if !page.contains("Refused posts") {
+            return Err("the ship did not give its page of refusals".into());
+        }
+        Ok(refusal_notes(&page))
+    }
+
+    /// Clears every refusal note.
+    pub fn forum_notes_clear(&self) -> Result<(), String> {
+        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(30)).build();
+        match agent.post(&format!("{}/apps/lattice/forum-notes/clear", self.url)).set("cookie", &self.cookie).set("origin", &self.url).send_string("") {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(code, _)) if (300..400).contains(&code) => Ok(()),
+            Err(ureq::Error::Status(code, r)) => Err(format!("{code}: {}", r.into_string().unwrap_or_default())),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     /// Gives a thread this ship's point. Once given it stays: the forms have no way to take it back.
@@ -1728,6 +1771,20 @@ mod tests {
     }
 
     #[test]
+    fn refusals_are_read_from_the_ships_page_of_them() {
+        // rows as +render-notes writes them, in the page's shell
+        let page = r#"<html><body><form class="bar"></form><div class="ct"><h3>Refused posts</h3><form method="post" action="/apps/lattice/forum-notes/clear"><button type="submit">Clear</button></form><div class="rw"><div><span class="ti">your role on this board cannot post</span><span class="me">~nec/general, 2 minutes ago</span></div></div><div class="rw"><div><span class="ti">a post needs a title (300 bytes at most), a url of 2,048 &amp; a body of 40,000 &lt;b&gt;</span><span class="me">~sampel-palnet/a-b, 3 days ago</span></div></div></div></body></html>"#;
+        assert_eq!(
+            refusal_notes(page),
+            [("your role on this board cannot post".to_owned(), "~nec/general, 2 minutes ago".to_owned()), ("a post needs a title (300 bytes at most), a url of 2,048 & a body of 40,000 <b>".to_owned(), "~sampel-palnet/a-b, 3 days ago".to_owned())]
+        );
+        // none, as the page says it, and a row cut short is left out
+        assert!(refusal_notes(r#"<h3>Refused posts</h3><span></span><p class="me">No refusals.</p>"#).is_empty());
+        assert!(refusal_notes(r#"<div class="rw"><div><span class="ti">cut"#).is_empty());
+        assert!(refusal_notes("").is_empty());
+    }
+
+    #[test]
     fn tags_are_taken_as_the_ship_takes_them_or_said_not_to_be() {
         assert_eq!(forum_tags(" bug, #idea  c2-d bug ").unwrap(), ["bug", "idea", "c2-d"]);
         assert!(forum_tags("").unwrap().is_empty());
@@ -1803,6 +1860,10 @@ mod tests {
         c.forum_delete("general", gone, None).unwrap();
         assert!(!c.forum_board("general").unwrap().posts.iter().any(|p| p.id == gone));
         assert!(c.forum_thread("general", gone).unwrap_err().starts_with("404"));
+        // this ship was refused nothing, the page of refusals says so, and clearing none is taken
+        assert!(c.forum_notes().unwrap().is_empty());
+        c.forum_notes_clear().unwrap();
+        assert!(c.forum_notes().unwrap().is_empty());
         // a thread with no title is refused by the form, and a board that is not there says so
         assert!(c.forum_submit("general", "", "", "no title", &[]).unwrap_err().starts_with("400"));
         assert!(c.forum_submit("no-such-board", "x", "", "", &[]).unwrap_err().starts_with("404"));

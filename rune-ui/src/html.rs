@@ -68,7 +68,7 @@ fn entity(name: &str) -> Option<String> {
 }
 
 /// Text with its character references read.
-fn decode(s: &str) -> String {
+pub(crate) fn decode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(i) = rest.find('&') {
