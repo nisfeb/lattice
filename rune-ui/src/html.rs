@@ -482,9 +482,79 @@ pub fn to_markdown(html: &str) -> String {
     out
 }
 
+/// A gemtext page as Markdown to read, by the web client's rules
+/// (`gmiToHtml`, which mirrors the ship's `render-gmi`): fenced text as
+/// it is, `#` to `###` headings, `=>` links, `>` quotes, blank lines
+/// dropped and every other line a paragraph. A link goes only to
+/// `urb://` or the web. One to anywhere else reads as its words.
+pub fn gemtext(src: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut pre: Option<Vec<&str>> = None;
+    let line = |t: &str| {
+        let mut e = String::new();
+        escape(t, &mut e);
+        tidy(&e).join(" ")
+    };
+    let fence = |lines: &[&str]| {
+        let longest = lines.iter().map(|l| l.trim_start().bytes().take_while(|b| *b == b'`').count()).max().unwrap_or(0);
+        let f = "`".repeat(longest.max(2) + 1);
+        format!("{f}\n{}{}{f}", lines.join("\n"), if lines.is_empty() { "" } else { "\n" })
+    };
+    for ln in src.split('\n') {
+        let ln = ln.strip_suffix('\r').unwrap_or(ln);
+        if ln.trim_end() == "```" {
+            match pre.take() {
+                Some(lines) => out.push(fence(&lines)),
+                None => pre = Some(Vec::new()),
+            }
+            continue;
+        }
+        if let Some(lines) = &mut pre {
+            lines.push(ln);
+            continue;
+        }
+        let level = ln.bytes().take_while(|b| *b == b'#').count();
+        if (1..=3).contains(&level) && ln[level..].starts_with(' ') {
+            out.push(format!("{} {}", "#".repeat(level), line(&ln[level + 1..])));
+        } else if let Some(rest) = ln.strip_prefix("=> ") {
+            let rest = rest.trim_start();
+            let (raw, desc) = rest.split_once(' ').map_or((rest, rest), |(r, d)| (r, d.trim_start()));
+            let (desc, low) = (line(desc), raw.to_ascii_lowercase());
+            let goes = low.starts_with("urb://") || low.starts_with("http://") || low.starts_with("https://");
+            match target(raw).filter(|_| goes && !desc.is_empty()) {
+                Some(href) => out.push(format!("[{desc}]({href})")),
+                None => out.push(desc),
+            }
+        } else if let Some(said) = ln.strip_prefix("> ") {
+            out.push(format!("> {}", line(said)));
+        } else if !ln.trim().is_empty() {
+            out.push(line(ln));
+        }
+    }
+    if let Some(lines) = pre {
+        out.push(fence(&lines));
+    }
+    out.retain(|b| !b.is_empty());
+    let mut text = out.join("\n\n");
+    text.push('\n');
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gemtext_reads_by_the_web_clients_rules() {
+        let page = "# Capsule\n## Two\n### Three\n#### not four\n#nor this\n\n\nA line with *stars* and <b>.\n=> https://urbit.org Urbit\n=>   urb://~zod/page   A page\n=> https://bare.example\n=> gemini://x.org Elsewhere\n=> javascript:alert(1) Run\n=>nospace\n> quoted _text_\n* an item\n1. numbered\n```\ncode *as is*\n  <kept>\n``` \nafter";
+        let want = "# Capsule\n\n## Two\n\n### Three\n\n\\#\\#\\#\\# not four\n\n\\#nor this\n\nA line with \\*stars\\* and \\<b\\>.\n\n[Urbit](https://urbit.org)\n\n[A page](urb://~zod/page)\n\n[https://bare.example](https://bare.example)\n\nElsewhere\n\nRun\n\n\\=\\>nospace\n\n> quoted \\_text\\_\n\n\\* an item\n\n1\\. numbered\n\n```\ncode *as is*\n  <kept>\n```\n\nafter\n";
+        assert_eq!(gemtext(page), want);
+        // a fence never closed takes the rest, and one holding a fence gets a longer one
+        assert_eq!(gemtext("```\nopen"), "```\nopen\n```\n");
+        assert_eq!(gemtext("```\n````\n```"), "`````\n````\n`````\n");
+        assert_eq!(gemtext(""), "\n");
+        assert_eq!(gemtext("a\r\n\r\nb\r\n"), "a\n\nb\n");
+    }
 
     fn md(html: &str) -> String {
         to_markdown(html).trim_end().to_owned()

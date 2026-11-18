@@ -1117,15 +1117,15 @@ fn sync_map(s: &mut App) {
     });
 }
 
-/// Keeps `s.read_as` in step with the open page: an HTML page is read
-/// as a document, turned to Markdown once and not on every frame.
+/// Keeps `s.read_as` in step with the open page: an HTML or a gemtext
+/// page is read as a document, turned to Markdown once and not on every frame.
 fn sync_read(s: &mut App) {
-    let Some(p) = s.open.as_ref().filter(|p| p.kind == "html") else {
+    let Some(p) = s.open.as_ref().filter(|p| p.kind == "html" || p.kind == "gmi") else {
         s.read_as = None;
         return;
     };
     if !s.read_as.as_ref().is_some_and(|(n, rev, _)| *n == p.name && *rev == p.rev) {
-        s.read_as = Some((p.name.clone(), p.rev, html::to_markdown(&p.body)));
+        s.read_as = Some((p.name.clone(), p.rev, if p.kind == "gmi" { html::gemtext(&p.body) } else { html::to_markdown(&p.body) }));
     }
 }
 
