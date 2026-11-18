@@ -1,0 +1,10 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "settings-open"},
+  {"t": 4.0, "type": "tap", "key": "bk-add"},
+  {"t": 6.0, "type": "tap", "key": "bk-label"},
+  {"t": 6.4, "type": "type", "text": "Daily"},
+  {"t": 8.0, "type": "tap", "key": "bk-every-168"},
+  {"t": 9.0, "type": "tap", "key": "bk-dir"},
+  {"t": 9.4, "type": "type", "text": "/tmp/lr-bk"},
+  {"t": 11.0, "type": "tap", "key": "bk-add"}
+]}

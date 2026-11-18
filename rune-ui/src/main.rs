@@ -5,6 +5,7 @@
 //! headless runs draw: `cargo run -- --snap out.png --scene reading`.
 
 mod api;
+mod backups;
 mod calc;
 mod code;
 mod formula;
@@ -140,6 +141,11 @@ struct Settings {
     vault_dir: TextEdit,
     /// The archive to restore from.
     vault_file: TextEdit,
+    /// A backup schedule being typed: its name, folder, how many to keep, and its period in hours.
+    bk_label: TextEdit,
+    bk_dir: TextEdit,
+    bk_keep: TextEdit,
+    bk_every: u64,
     /// The part of the tree to mount of the ship signed in to. Empty is every page.
     mount_root: TextEdit,
     /// The piers found on this machine, once looked for.
@@ -151,7 +157,7 @@ struct Settings {
 
 impl Settings {
     fn new() -> Self {
-        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false, mount_at: TextEdit::new(""), vault_dir: TextEdit::new(""), vault_file: TextEdit::new(""), mount_root: TextEdit::new(""), local: None, stack: None, dist: TextEdit::new("~nisfeb") }
+        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false, mount_at: TextEdit::new(""), vault_dir: TextEdit::new(""), vault_file: TextEdit::new(""), bk_label: TextEdit::new(""), bk_dir: TextEdit::new(""), bk_keep: TextEdit::new("7"), bk_every: 24, mount_root: TextEdit::new(""), local: None, stack: None, dist: TextEdit::new("~nisfeb") }
     }
 
     fn ask(&self) -> api::KeyAsk {
@@ -549,6 +555,11 @@ struct App {
     local_req: Latest<Vec<local::LocalShip>>,
     /// The folders ships are mounted at, as kept between runs, and a mount or an unmount on its way: the list after it, and what to say.
     mounts: Vec<mounts::MountSpec>,
+    /// The backup schedules, the one being written, what was last said of them, and when they are next looked at (app clock).
+    backups: Vec<backups::Schedule>,
+    bk_req: Latest<BkDone>,
+    bk_said: String,
+    bk_next: f64,
     mount_req: Latest<(Vec<mounts::MountSpec>, String)>,
     /// A vault export being written, and what was last said of one.
     /// With whether the tree is to be read again.
@@ -803,6 +814,10 @@ fn init() -> App {
         stack_req: Latest::default(),
         local_req: Latest::default(),
         mounts: Vec::new(),
+        backups: Vec::new(),
+        bk_req: Latest::default(),
+        bk_said: String::new(),
+        bk_next: 0.0,
         mount_req: Latest::default(),
         vault_req: Latest::default(),
         vault_said: String::new(),
@@ -1551,6 +1566,8 @@ fn setup(s: &mut App, waker: Waker) {
     s.local_req.set_waker(waker.clone());
     s.mount_req.set_waker(waker.clone());
     s.vault_req.set_waker(waker.clone());
+    s.bk_req.set_waker(waker.clone());
+    s.backups = backups::load();
     s.notes_req.set_waker(waker.clone());
     s.core_req.set_waker(waker.clone());
     s.trash_req.set_waker(waker.clone());
@@ -4758,6 +4775,27 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(std::time::Duration::from_secs(6));
         settings_do(s, SetAct::Read);
     }
+    if let Some(done) = s.bk_req.take() {
+        // only a whole archive counts as a run: an incomplete one leaves the schedule due
+        if let Some(b) = s.backups.iter_mut().find(|b| b.id == done.id).filter(|_| done.complete) {
+            b.last_run = done.at;
+            if let Err(e) = backups::save(&s.backups) {
+                s.note = format!("the backup's time was not kept: {e}");
+            }
+        }
+        s.bk_said = done.said;
+    }
+    // the schedules are looked at once a minute, and at launch: one that came due while the app was closed runs then
+    if clock >= s.bk_next {
+        s.bk_next = clock + 60.0;
+        if !s.backups.is_empty() {
+            tx.wake_after(std::time::Duration::from_secs(60));
+        }
+        let now = backups::now();
+        if let Some(id) = s.backups.iter().find(|b| backups::is_due(b, now)).map(|b| b.id.clone()).filter(|_| s.conn.is_some() && !s.bk_req.is_pending()) {
+            backup_run(s, &id);
+        }
+    }
     if let Some((said, changed)) = s.vault_req.take() {
         s.note = said.clone();
         s.vault_said = said;
@@ -6634,6 +6672,145 @@ fn vault_export(s: &mut App) {
     });
 }
 
+/// A backup written, or not: whose, when, whether it was whole, and what to say.
+struct BkDone {
+    id: String,
+    at: u64,
+    complete: bool,
+    said: String,
+}
+
+/// Writes one schedule's archive now, whatever its period says.
+fn backup_run(s: &mut App, id: &str) {
+    let Some(b) = s.backups.iter().find(|b| b.id == id).cloned() else { return };
+    let Some(c) = s.conn.clone() else {
+        s.bk_said = "a backup reads the whole store, so it needs the ship".into();
+        return;
+    };
+    if s.bk_req.is_pending() {
+        s.bk_said = "a backup is being written. Try again when it is done".into();
+        return;
+    }
+    s.bk_said = format!("{}: reading the store\u{2026}", b.label);
+    s.bk_req.request((c, b), |(c, b)| {
+        let at = backups::now();
+        let done = |complete, said| BkDone { id: b.id.clone(), at, complete, said };
+        let built = match c.vault(at) {
+            Ok(v) => v,
+            Err(e) => return done(false, format!("{}: {e}", b.label)),
+        };
+        let complete = built.missing.is_empty();
+        match backups::write_archive(&b, &built.bytes, at, complete) {
+            Ok(path) if complete => done(true, format!("{}: backed up {} page(s) to {}", b.label, built.pages, path.display())),
+            Ok(path) => done(false, format!("{}: {}. The backup is INCOMPLETE", b.label, built.says(&path.display().to_string()))),
+            Err(e) => done(false, format!("{}: the backup failed: {e}", b.label)),
+        }
+    });
+}
+
+enum BkAct {
+    Add,
+    Now(String),
+    Verify(String),
+    /// Paused, or going again.
+    Pause(String),
+    /// The schedule goes. The archives it wrote stay.
+    Remove(String),
+}
+
+fn backup_do(s: &mut App, act: BkAct) {
+    s.bk_said.clear();
+    match act {
+        BkAct::Now(id) => return backup_run(s, &id),
+        BkAct::Verify(id) => {
+            let Some(b) = s.backups.iter().find(|b| b.id == id) else { return };
+            // read here, not on a thread: one file from this computer's disk
+            s.bk_said = format!("{}: {}", b.label, backups::verify_newest(b).map_or_else(|e| e, |r| r.says()));
+            return;
+        }
+        BkAct::Pause(id) => {
+            if let Some(b) = s.backups.iter_mut().find(|b| b.id == id) {
+                b.enabled = !b.enabled;
+            }
+        }
+        BkAct::Remove(id) => s.backups.retain(|b| b.id != id),
+        BkAct::Add => {
+            let Some(st) = s.settings.as_mut() else { return };
+            let dir = mounts::expand(&st.bk_dir.text, &std::env::var("HOME").unwrap_or_default());
+            let id = format!("bk{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()));
+            match backups::new_schedule(&s.backups, &st.bk_label.text, &dir, st.bk_every, &st.bk_keep.text, id) {
+                Ok(b) => {
+                    s.backups.push(b);
+                    st.bk_label = TextEdit::new("");
+                    // it is due at once: the next look is now
+                    s.bk_next = 0.0;
+                }
+                Err(e) => {
+                    s.bk_said = e;
+                    return;
+                }
+            }
+        }
+    }
+    if let Err(e) = backups::save(&s.backups) {
+        s.bk_said = format!("the schedules were not kept: {e}");
+    }
+}
+
+fn backups_view(st: &Settings, list: &[backups::Schedule], said: &str, busy: bool, k: &Kit) -> El {
+    let c = &k.c;
+    let muted = |t: String| text(t).font(k.ty.small).color(c.text_muted).wrap();
+    let small = |label: &str, key: String, act: BkAct| {
+        let act = std::cell::Cell::new(Some(act));
+        Button::new(label.to_owned()).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| {
+            if let Some(a) = act.take() {
+                backup_do(s, a);
+            }
+        }).build(k).key(key)
+    };
+    let now = backups::now();
+    let mut v = col().key("set-backups").w_full().gap(6.0).child(text("Automatic backups").font(k.ty.body_medium).color(c.text_base)).child(muted("Whole-store archives written to this computer on a schedule, the same tar as the export above. They run while this app is open. One that came due while it was closed runs shortly after it is next opened.".into()));
+    if list.is_empty() {
+        v = v.child(muted("No scheduled backups yet.".into()).key("bk-none"));
+    }
+    for (i, b) in list.iter().enumerate() {
+        let late = backups::overdue(b, now);
+        let keep = if b.keep == 0 { "keeping every one".to_owned() } else { format!("keeping {}", b.keep) };
+        v = v.child(
+            col()
+                .key(format!("bk-{i}"))
+                .w_full()
+                .gap(2.0)
+                .child(text(format!("{}: {}, {keep}{}", b.label, backups::period(b.every_hours), if b.enabled { "" } else { " (paused)" })).key(format!("bk-head-{i}")).font(k.ty.small).color(c.text_base).wrap())
+                .child(text(format!("{} \u{b7} {}{}", b.dir, backups::ago(b.last_run, now), if late { ". The last run did not complete" } else { "" })).key(format!("bk-sub-{i}")).font(k.ty.small).color(if late { c.danger.icon } else { c.text_muted }).wrap())
+                .child(
+                    row()
+                        .gap(4.0)
+                        .flex_wrap()
+                        .child(small(if busy { "Backing up\u{2026}" } else { "Back up now" }, format!("bk-now-{i}"), BkAct::Now(b.id.clone())))
+                        .child(small("Verify latest", format!("bk-verify-{i}"), BkAct::Verify(b.id.clone())))
+                        .child(small(if b.enabled { "Pause" } else { "Resume" }, format!("bk-pause-{i}"), BkAct::Pause(b.id.clone())))
+                        .child(small("Remove", format!("bk-remove-{i}"), BkAct::Remove(b.id.clone()))),
+                ),
+        );
+    }
+    let field = |t: &TextEdit, label: &str, hint: &str, key: &str, which: fn(&mut Settings) -> &mut TextEdit| TextInput::new(t).label(label.to_owned()).placeholder(hint.to_owned()).on_edit(move |s: &mut App| which(s.settings.as_mut().expect("the settings are showing"))).build(k).w_full().key(key.to_owned());
+    let mut every = row().gap(4.0).flex_wrap();
+    for (hours, label) in [(24, "Every day"), (168, "Every week"), (720, "Every 30 days"), (1, "Every hour")] {
+        every = every.child(Button::new(label).control_size(ControlSize::Small).variant(if st.bk_every == hours { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
+            if let Some(st) = &mut s.settings {
+                st.bk_every = hours;
+            }
+        }).build(k).key(format!("bk-every-{hours}")));
+    }
+    v.child(field(&st.bk_label, "Name", "daily", "bk-label", |st| &mut st.bk_label))
+        .child(every)
+        .child(field(&st.bk_keep, "How many to keep", "0 keeps every one", "bk-keep", |st| &mut st.bk_keep))
+        .child(field(&st.bk_dir, "Folder on this computer", "~/backups", "bk-dir", |st| &mut st.bk_dir))
+        .child(row().child(small("Add schedule", "bk-add".into(), BkAct::Add)))
+        .child(text(said.to_owned()).key("bk-said").font(k.ty.small).color(c.text_base).wrap())
+}
+
 /// Reads the archive named and asks before putting it back. Nothing is
 /// written until the answer.
 fn vault_restore(s: &mut App) {
@@ -6881,7 +7058,7 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
         }).build(k).key("publish-ask")));
     }
     let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
-    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).children(stack_view(st, k)).child(local_view(st, &s.mounts, s.conn.is_some(), s.mount_req.is_pending(), s.local_req.is_pending(), k)).child(vault_view(st, &s.vault_said, s.vault_req.is_pending(), k)).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
+    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).children(stack_view(st, k)).child(local_view(st, &s.mounts, s.conn.is_some(), s.mount_req.is_pending(), s.local_req.is_pending(), k)).child(vault_view(st, &s.vault_said, s.vault_req.is_pending(), k)).child(backups_view(st, &s.backups, &s.bk_said, s.bk_req.is_pending(), k)).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
         "A key lets an agent, such as the lattice plugin for Claude Code or Hermes, use your memory and pages without your login. Everything a key saves is signed with the name it writes as, and its scope says what it may touch. Publishing, sharing and settings stay yours whatever the scope.",
     ));
     if let Some(token) = &st.token {

@@ -66,12 +66,19 @@ pub fn tar(files: &[File]) -> Vec<u8> {
 /// The files of a tar, each with its text. A header whose checksum is off
 /// and an entry cut short are refused.
 pub fn untar(u: &[u8]) -> Result<Vec<(String, String)>, String> {
+    untar_end(u).map(|(files, _)| files)
+}
+
+/// `untar`, with whether the archive's end marker was there: one without
+/// was cut short on a file's edge.
+pub fn untar_end(u: &[u8]) -> Result<(Vec<(String, String)>, bool), String> {
     let text = |b: &[u8]| String::from_utf8_lossy(&b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())]).into_owned();
     let octal = |b: &[u8]| u64::from_str_radix(&text(b).chars().filter(|c| ('0'..='7').contains(c)).collect::<String>(), 8).ok();
-    let (mut out, mut off, mut long) = (Vec::new(), 0, None::<String>);
+    let (mut out, mut off, mut long, mut end) = (Vec::new(), 0, None::<String>, false);
     while off + 512 <= u.len() {
         let h = &u[off..off + 512];
         if h.iter().all(|&b| b == 0) {
+            end = true;
             break;
         }
         let sum: u64 = h.iter().enumerate().map(|(i, &b)| if (148..156).contains(&i) { 32 } else { u64::from(b) }).sum();
@@ -92,7 +99,7 @@ pub fn untar(u: &[u8]) -> Result<Vec<(String, String)>, String> {
             _ => long = None,
         }
     }
-    Ok(out)
+    Ok((out, end))
 }
 
 /// The extension a page of this kind is written with.
