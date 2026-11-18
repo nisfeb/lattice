@@ -11,7 +11,7 @@ pub struct Conn {
     pub cookie: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Node {
     pub path: String,
     #[serde(default)]
@@ -51,7 +51,7 @@ pub struct Page {
 }
 
 /// The whole tree with page bodies, in one request (`page-dump`).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Dump {
     pub nodes: Vec<Node>,
     /// Handed back on the next dump, which then carries only what changed.
@@ -578,6 +578,55 @@ fn session_path() -> Option<std::path::PathBuf> {
     Some(base.join("lattice-rune").join("session.json"))
 }
 
+/// Where a ship's tree and pages are kept between runs, to read when it
+/// does not answer: beside the session, one file for each ship's address.
+fn kept_path(url: &str) -> Option<std::path::PathBuf> {
+    let name: String = url.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+    Some(session_path()?.with_file_name(format!("kept-{name}.json")))
+}
+
+fn keep_at(p: &std::path::Path, nodes: Vec<Node>) -> Result<(), String> {
+    std::fs::create_dir_all(p.parent().ok_or("no parent")?).map_err(|e| e.to_string())?;
+    let body = serde_json::to_vec(&Dump { nodes, since: String::new() }).map_err(|e| e.to_string())?;
+    let tmp = p.with_extension("part");
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).and_then(|mut f| f.write_all(&body)).map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(unix))]
+    std::fs::write(&tmp, body).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, p).map_err(|e| e.to_string())
+}
+
+fn kept_at(p: &std::path::Path) -> Option<(Dump, u64)> {
+    let d: Dump = serde_json::from_slice(&std::fs::read(p).ok()?).ok()?;
+    let age = std::fs::metadata(p).ok()?.modified().ok()?.elapsed().map_or(0, |d| d.as_secs());
+    Some((d, age))
+}
+
+/// Whether a call failed because the ship did not answer, as against the
+/// ship answering no: no status at all, or the 502 or 504 of something
+/// in between that could not reach it. Only then is what was kept read.
+pub fn gone(error: &str) -> bool {
+    match error.split_once(':').and_then(|(code, _)| code.parse::<u16>().ok()) {
+        Some(code) => code == 502 || code == 504,
+        None => true,
+    }
+}
+
+/// How long ago, in words: the age of what was kept.
+pub fn ago(secs: u64) -> String {
+    let (n, unit) = match secs {
+        0..60 => return "just now".into(),
+        60..3600 => (secs / 60, "minute"),
+        3600..86_400 => (secs / 3600, "hour"),
+        _ => (secs / 86_400, "day"),
+    };
+    format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+}
+
 /// What the window remembers between runs, beside the session.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Prefs {
@@ -997,6 +1046,16 @@ impl Conn {
         }
         let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(session_path()?).ok()?).ok()?;
         Some(Conn { url: v["url"].as_str()?.to_owned(), cookie: v["cookie"].as_str()?.to_owned() })
+    }
+
+    /// Keeps the tree with every page's text, to read when the ship does not answer. In a file only its owner reads, written whole or not at all.
+    pub fn keep_tree(&self, nodes: Vec<Node>) -> Result<(), String> {
+        keep_at(&kept_path(&self.url).ok_or("no home directory")?, nodes)
+    }
+
+    /// The tree as it was last kept for this ship, and how many seconds ago. Its `since` is empty, so the next read of the ship is a whole one.
+    pub fn kept_tree(&self) -> Option<(Dump, u64)> {
+        kept_at(&kept_path(&self.url)?)
     }
 
     /// Keeps this session for the next run, in a file only its owner reads.
@@ -2089,6 +2148,38 @@ mod tests {
         for bad in ["", "chat", "~nec", "nec/chat", "~nec/Chat", "~nec/forum", "~nec/chat/x", "~nec/a/1/2", "urb://~nec/pages/chat/1/2"] {
             assert!(key(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_ship_that_did_not_answer_is_told_from_one_that_said_no() {
+        for e in ["http://localhost:1/apps/lattice/page-dump: Connection Failed: Connect error: Connection refused (os error 111)", "timed out reading response", "502: bad gateway", "504: "] {
+            assert!(gone(e), "{e}");
+        }
+        for e in ["403: sign in", "404: {\"error\":\"no such page\"}", "500: crashed", "409: taken"] {
+            assert!(!gone(e), "{e}");
+        }
+        assert_eq!([ago(5), ago(60), ago(150), ago(3600), ago(90_000), ago(200_000)], ["just now", "1 minute ago", "2 minutes ago", "1 hour ago", "1 day ago", "2 days ago"]);
+    }
+
+    #[test]
+    fn a_tree_kept_is_read_back_with_every_text_for_its_own_ship() {
+        let dir = std::env::temp_dir().join(format!("lr-kept-{}", std::process::id()));
+        let file = dir.join("deep").join("kept.json");
+        assert!(kept_at(&file).is_none(), "nothing is kept before anything is read");
+        let nodes = vec![Node { path: "notes".into(), dname: "Notes".into(), ..Node::default() }, Node { path: "notes/a".into(), page: true, kind: "md".into(), rev: 7, body: Some("# A\n\ntext \u{e9}\n".into()), ..Node::default() }];
+        keep_at(&file, nodes).unwrap();
+        let (d, age) = kept_at(&file).unwrap();
+        assert!(age < 60 && d.since.is_empty());
+        assert_eq!((d.nodes.len(), d.nodes[0].dname.as_str(), d.nodes[1].rev, d.nodes[1].body.as_deref()), (2, "Notes", 7, Some("# A\n\ntext \u{e9}\n")));
+        // each ship's address has its own file
+        assert_ne!(kept_path("http://ship.example:8080"), kept_path("http://other.example"));
+        assert!(kept_path("http://ship.example:8080").unwrap().ends_with("lattice-rune/kept-http---ship-example-8080.json"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

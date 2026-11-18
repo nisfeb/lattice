@@ -525,6 +525,8 @@ struct App {
     tree_req: Latest<Result<Dump, String>>,
     /// The last dump's token, and when the next one is due (app clock).
     since: String,
+    /// The ship did not answer, and what shows is what was kept: how long ago it was kept.
+    offline: Option<String>,
     next_sync: f64,
     page_req: Latest<Result<Page, String>>,
     save_req: Latest<Result<Page, String>>,
@@ -724,6 +726,7 @@ fn init() -> App {
         palette_at: 0,
         tree_req: Latest::default(),
         since: String::new(),
+        offline: None,
         next_sync: 0.0,
         page_req: Latest::default(),
         save_req: Latest::default(),
@@ -3959,8 +3962,31 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         if away {
             flip_quiet(s);
         }
+        // a ship that does not answer before anything was read: what was kept of it is read in its place
+        let was_kept = s.offline.is_some();
+        let r = match r {
+            Err(e) if s.names.is_empty() && api::gone(&e) => match s.conn.as_ref().and_then(api::Conn::kept_tree) {
+                Some((d, age)) => {
+                    s.offline = Some(api::ago(age));
+                    // a page asked for before this was known failed the same way: once is enough to say it
+                    if s.note.starts_with("page: ") {
+                        s.note.clear();
+                    }
+                    Ok(d)
+                }
+                None => Err(e),
+            },
+            Ok(d) => {
+                s.offline = None;
+                Ok(d)
+            }
+            e => e,
+        };
         match r {
             Ok(Dump { nodes, since }) => {
+                // what the ship gave is kept for a run when it does not answer: whenever it carried a text, or pages came or went
+                let news = nodes.iter().any(|n| n.body.is_some()) || nodes.iter().filter(|n| n.page).count() != s.names.len() || was_kept;
+                let keep = (s.offline.is_none() && news).then(|| nodes.clone());
                 s.since = since;
                 s.shares = nodes.iter().filter(|n| n.page && !n.share.is_empty()).map(|n| (n.path.clone(), n.share.clone())).collect();
                 s.dnames = nodes.iter().filter(|n| !n.dname.is_empty()).map(|n| (n.path.clone(), n.dname.clone())).collect();
@@ -3982,6 +4008,13 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     if let Some(fresh) = s.open.as_ref().and_then(|p| s.cache.get(&p.name)).filter(|c| s.open.as_ref().is_some_and(|p| c.rev > p.rev)) {
                         s.open = Some(fresh.clone());
                     }
+                }
+                if let Some((c, mut all)) = s.conn.clone().zip(keep) {
+                    // every page goes with its text as it now is, not only those this read carried
+                    for n in all.iter_mut().filter(|n| n.page) {
+                        n.body = s.cache.get(&n.path).map(|p| p.body.clone());
+                    }
+                    std::thread::spawn(move || drop(c.keep_tree(all)));
                 }
                 let first = s.files.is_empty();
                 s.names = nodes.iter().filter(|n| n.page).map(|n| n.path.clone()).collect();
@@ -4012,6 +4045,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     s.files.select(&p.name);
                 }
             }
+            Err(e) if s.offline.is_some() && api::gone(&e) => {}
             Err(e) => s.note = format!("tree: {e}"),
         }
         if away {
@@ -4038,6 +4072,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     s.open = Some(p);
                 }
             }
+            // offline, the page shows as it was kept: that the ship still does not answer is already said
+            Err(e) if s.offline.is_some() && api::gone(&e) => {}
             Err(e) => s.note = format!("page: {e}"),
         }
     }
@@ -6903,6 +6939,9 @@ fn sidebar(s: &App, k: &Kit) -> El {
         list
     });
     let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).children(core).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(row().gap(4.0).flex_wrap().child(with_me).child(inbox).child(forum)).child(foot);
+    if let Some(when) = &s.offline {
+        side = side.child(text(format!("Offline. The ship does not answer, so this is what was kept {when}. A change made now is not saved.")).key("offline").font(k.ty.small).color(k.c.text_base).wrap());
+    }
     if !s.note.is_empty() {
         side = side.child(text(s.note.clone()).key("note").font(k.ty.small).color(k.c.text_muted).wrap());
     }
