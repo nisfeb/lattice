@@ -239,7 +239,7 @@ pub fn general(n: f64) -> String {
 
 /// A number as the value attribute holds it: the shortest text that
 /// reads back as the same number.
-fn num_attr(n: f64) -> String {
+pub(crate) fn num_attr(n: f64) -> String {
     if !n.is_finite() {
         "0".into()
     } else if n != 0.0 && (n.abs() >= 1e21 || n.abs() < 1e-6) {
@@ -382,6 +382,53 @@ fn cell_xml(src: &str, old: Option<&El>, pad: &str, v: &Typed, calcext: bool) ->
     Ok(format!("<{name}{a}>{kept}{}{pad}</{name}>", ps.iter().map(|p| format!("{inner}{p}")).collect::<String>()))
 }
 
+const ROWS: &str = "table:number-rows-repeated";
+const COLS: &str = "table:number-columns-repeated";
+
+/// A sheet of a flat ODS document: its table, its rows, also those in a
+/// header or a group, and whether the document declares LibreOffice's
+/// own namespace.
+fn sheet_rows(src: &str, sheet: usize) -> Result<(El, Vec<El>, bool), String> {
+    let no = || "this is not a spreadsheet lattice can change".to_owned();
+    let root = elements(src, 0, src.len())?.into_iter().find(|e| e.name == "office:document").ok_or_else(no)?;
+    let calcext = src[root.start..root.open_end].contains("xmlns:calcext=");
+    let mut at = root;
+    for name in ["office:body", "office:spreadsheet"] {
+        at = kids(src, &at)?.into_iter().find(|e| e.name == name).ok_or_else(no)?;
+    }
+    let table = kids(src, &at)?.into_iter().filter(|e| e.name == "table:table").nth(sheet).ok_or_else(no)?;
+    fn rows_of(src: &str, el: &El, out: &mut Vec<El>) -> Result<(), String> {
+        for k in kids(src, el)? {
+            match k.name.as_str() {
+                "table:table-row" => out.push(k),
+                "table:table-header-rows" | "table:table-row-group" | "table:table-rows" => rows_of(src, &k, out)?,
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    let mut rows = Vec::new();
+    rows_of(src, &table, &mut rows)?;
+    Ok((table, rows, calcext))
+}
+
+/// The formula a cell holds, as it is stored, or nothing.
+pub fn formula_at(src: &str, sheet: usize, r: usize, c: usize) -> Option<String> {
+    let (_, rows, _) = sheet_rows(src, sheet).ok()?;
+    let mut seen = 0;
+    let row = rows.iter().find(|row| {
+        seen += count(src, row, ROWS);
+        r < seen
+    })?;
+    let mut seen = 0;
+    let cells = kids(src, row).ok()?;
+    let cell = cells.iter().filter(|k| k.name == "table:table-cell" || k.name == "table:covered-table-cell").find(|cell| {
+        seen += count(src, cell, COLS);
+        c < seen
+    })?;
+    attr(&src[cell.start + 1..cell.open_end], "table:formula")
+}
+
 /// A flat ODS document with one cell holding what was typed, and every
 /// byte that is not of that cell's row as it was. A repeated row or
 /// cell is split so the one cell stands alone, and a cell past the end
@@ -397,29 +444,7 @@ pub fn set_cell(src: &str, sheet: usize, r: usize, c: usize, text: &str) -> Resu
     if src.contains("table:formula=") {
         return Err("this spreadsheet has formulas, which are not worked out here yet, so it is not changed here".into());
     }
-    let no = || "this is not a spreadsheet lattice can change".to_owned();
-    let root = elements(src, 0, src.len())?.into_iter().find(|e| e.name == "office:document").ok_or_else(no)?;
-    let calcext = src[root.start..root.open_end].contains("xmlns:calcext=");
-    let mut at = root;
-    for name in ["office:body", "office:spreadsheet"] {
-        at = kids(src, &at)?.into_iter().find(|e| e.name == name).ok_or_else(no)?;
-    }
-    let table = kids(src, &at)?.into_iter().filter(|e| e.name == "table:table").nth(sheet).ok_or_else(no)?;
-    // the rows, also those in a header or a group
-    fn rows_of(src: &str, el: &El, out: &mut Vec<El>) -> Result<(), String> {
-        for k in kids(src, el)? {
-            match k.name.as_str() {
-                "table:table-row" => out.push(k),
-                "table:table-header-rows" | "table:table-row-group" | "table:table-rows" => rows_of(src, &k, out)?,
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-    let mut rows = Vec::new();
-    rows_of(src, &table, &mut rows)?;
-    const ROWS: &str = "table:number-rows-repeated";
-    const COLS: &str = "table:number-columns-repeated";
+    let (table, rows, calcext) = sheet_rows(src, sheet)?;
     // the row with the cell in it, standing alone
     let one_row = |row: Option<&El>, pad: &str| -> Result<String, String> {
         let cells: Vec<El> = match row {
@@ -813,6 +838,11 @@ mod tests {
         assert_eq!(set_cell(BOOK, 5, 0, 0, "x").unwrap_err(), "this is not a spreadsheet lattice can change");
         assert_eq!(set_cell("<a/>", 0, 0, 0, "x").unwrap_err(), "this is not a spreadsheet lattice can change");
         assert_eq!(set_cell(BOOK, 0, 5000, 0, "x").unwrap_err(), "that is outside the part of the sheet shown here");
+        // a cell's formula is found where the cell is, through repeats, with its escapes read
+        let f = BOOK.replace("<table:table-cell table:style-name=\"ce2\" table:number-columns-repeated=\"4\"/>", "<table:table-cell table:number-columns-repeated=\"2\"/><table:table-cell table:formula=\"of:=IF([.A1]&gt;1;&quot;y&quot;;0)\" office:value-type=\"float\" office:value=\"0\"/>");
+        assert_eq!(formula_at(&f, 0, 3, 2).as_deref(), Some("of:=IF([.A1]>1;\"y\";0)"));
+        assert_eq!(formula_at(&f, 0, 1, 2).as_deref(), Some("of:=IF([.A1]>1;\"y\";0)"), "each row of the run has it");
+        assert_eq!((formula_at(&f, 0, 3, 1), formula_at(&f, 0, 0, 0), formula_at(&f, 0, 9, 9), formula_at(&f, 7, 0, 0)), (None, None, None, None));
         // spaces and tabs are written as LibreOffice writes them
         assert_eq!(paragraphs(" a  b\tc\nd   "), ["<text:p><text:s/>a <text:s/>b<text:tab/>c</text:p>", "<text:p>d <text:s text:c=\"2\"/></text:p>"]);
     }

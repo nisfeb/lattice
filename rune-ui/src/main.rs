@@ -5,6 +5,7 @@
 //! headless runs draw: `cargo run -- --snap out.png --scene reading`.
 
 mod api;
+mod formula;
 mod map;
 mod mapio;
 mod md;
@@ -70,6 +71,8 @@ struct SheetView {
     cursor: Option<(usize, usize)>,
     /// What is being typed into the picked cell.
     entry: TextEdit,
+    /// What the bar held when the cell was picked: its text, or its formula as typed.
+    entry_was: String,
 }
 
 /// A question the window is asking: a name for a new page, a new name for
@@ -1115,6 +1118,7 @@ fn sync_sheet(s: &mut App) {
         sheets,
         table: TableState::new(),
         cursor: old.as_ref().and_then(|v| v.cursor),
+        entry_was: old.as_ref().map_or(String::new(), |v| v.entry_was.clone()),
         entry: old.map_or_else(|| TextEdit::new(""), |v| v.entry),
     });
 }
@@ -1134,7 +1138,10 @@ fn page_changes(s: &App) -> bool {
 fn pick_cell(s: &mut App, r: usize, c: usize) {
     let Some(v) = &mut s.sheet else { return };
     v.cursor = Some((r, c));
-    v.entry = TextEdit::new(v.sheets[v.at].rows.get(r).and_then(|row| row.get(c)).map_or("", String::as_str));
+    // a cell with a formula shows the formula, as it is typed, and not what it came to
+    let formula = s.open.as_ref().and_then(|p| sheet::formula_at(&p.body, v.at, r, c)).map(|f| formula::to_user(&f));
+    v.entry_was = formula.unwrap_or_else(|| v.sheets[v.at].rows.get(r).and_then(|row| row.get(c)).cloned().unwrap_or_default());
+    v.entry = TextEdit::new(v.entry_was.as_str());
     v.entry.focused = true;
 }
 
@@ -1145,6 +1152,11 @@ fn commit_cell(s: &mut App) {
     let Some((r, c)) = v.cursor else { return };
     if !page_changes(s) || v.name != p.name {
         s.note = "this spreadsheet is not changed here".into();
+        return;
+    }
+    // left as it was: nothing is written, and a formula is not typed over itself
+    if v.entry.text == v.entry_was {
+        pick_cell(s, r + 1, c);
         return;
     }
     match sheet::set_cell(&p.body, v.at, r, c, &v.entry.text) {

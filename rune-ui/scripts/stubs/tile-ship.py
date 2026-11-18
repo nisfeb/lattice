@@ -8,6 +8,8 @@ GEO = json.dumps({"type":"FeatureCollection","features":[
 # LR_GEO names a file to serve as the map page instead
 import os
 if os.environ.get('LR_GEO'): GEO = open(os.environ['LR_GEO']).read()
+# LR_KIND is the kind of that page, a map unless said
+KIND = os.environ.get('LR_KIND', 'geojson')
 def png(z, x, y):
     w = 512; rows = []
     base = (70, 110, 150) if (x + y) % 2 == 0 else (150, 110, 70)
@@ -29,8 +31,8 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code); self.send_header('content-type', ct); self.send_header('content-length', str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
         u = urlparse(self.path); p = u.path.replace('/apps/lattice/', '', 1); q = parse_qs(u.query)
-        if p == 'page-dump': return self.send(200, json.dumps({"nodes":[{"path":"places","page":True,"kind":"geojson","rev":1,"body":GEO}],"since":"s1"}))
-        if p == 'page-source': return self.send(200, json.dumps({"body":GEO,"kind":"geojson","rev":1,"mtime":"~2026.11.17"}))
+        if p == 'page-dump': return self.send(200, json.dumps({"nodes":[{"path":"places","page":True,"kind":KIND,"rev":1,"body":GEO}],"since":"s1"}))
+        if p == 'page-source': return self.send(200, json.dumps({"body":GEO,"kind":KIND,"rev":1,"mtime":"~2026.11.17"}))
         if p == 'tile-status': return self.send(200, json.dumps({"token":True,"orrery":False,"max":17,"styles":["streets","outdoors","satellite","dark"]}))
         if p.startswith('tile/'):
             _, style, z, x, y = p.split('/')
