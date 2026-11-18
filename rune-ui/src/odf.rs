@@ -93,12 +93,12 @@ fn bytes(b: &[u8], e: &Entry) -> Result<Vec<u8>, String> {
 
 /// An element: its name and where it sits in its source.
 #[derive(Clone, Debug)]
-struct El {
-    name: String,
-    start: usize,
+pub(crate) struct El {
+    pub(crate) name: String,
+    pub(crate) start: usize,
     /// The end of its opening tag.
-    open_end: usize,
-    end: usize,
+    pub(crate) open_end: usize,
+    pub(crate) end: usize,
 }
 
 /// The end of the tag that starts at `at`, past any `>` inside a quoted value.
@@ -116,7 +116,7 @@ pub(crate) fn tag_end(src: &str, at: usize) -> Option<usize> {
 }
 
 /// The elements directly inside `src[from..to]`.
-fn elements(src: &str, from: usize, to: usize) -> Result<Vec<El>, String> {
+pub(crate) fn elements(src: &str, from: usize, to: usize) -> Result<Vec<El>, String> {
     let bad = || "it is not well-formed XML".to_owned();
     let (mut out, mut open): (Vec<El>, Option<El>) = (Vec::new(), None);
     let (mut depth, mut i) = (0usize, from);

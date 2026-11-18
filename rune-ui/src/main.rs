@@ -66,6 +66,10 @@ struct SheetView {
     sheets: Vec<sheet::Sheet>,
     at: usize,
     table: TableState,
+    /// The cell picked to be changed: its row and column.
+    cursor: Option<(usize, usize)>,
+    /// What is being typed into the picked cell.
+    entry: TextEdit,
 }
 
 /// A question the window is asking: a name for a new page, a new name for
@@ -1110,20 +1114,73 @@ fn sync_sheet(s: &mut App) {
         at: old.as_ref().map_or(0, |v| v.at).min(sheets.len() - 1),
         sheets,
         table: TableState::new(),
+        cursor: old.as_ref().and_then(|v| v.cursor),
+        entry: old.map_or_else(|| TextEdit::new(""), |v| v.entry),
     });
 }
 
 /// The widest a sheet's grid is drawn. More columns are in the page, not on screen.
 const SHEET_COLS: usize = 52;
+/// The empty rows shown under a sheet's last, to type into.
+const SHEET_SPARE: usize = 20;
+
+/// Whether the page in front may be changed where it is read: one of
+/// the owner's own, not open in the editor, with no save on its way.
+fn page_changes(s: &App) -> bool {
+    usable(s, "delete") && !s.editing && !s.save_req.is_pending()
+}
+
+/// Picks a cell of the sheet showing, with its text ready to be typed over.
+fn pick_cell(s: &mut App, r: usize, c: usize) {
+    let Some(v) = &mut s.sheet else { return };
+    v.cursor = Some((r, c));
+    v.entry = TextEdit::new(v.sheets[v.at].rows.get(r).and_then(|row| row.get(c)).map_or("", String::as_str));
+    v.entry.focused = true;
+}
+
+/// Puts what was typed into the picked cell and saves the page, then
+/// picks the cell below, as a spreadsheet does.
+fn commit_cell(s: &mut App) {
+    let (Some(p), Some(v)) = (s.open.clone(), &s.sheet) else { return };
+    let Some((r, c)) = v.cursor else { return };
+    if !page_changes(s) || v.name != p.name {
+        s.note = "this spreadsheet is not changed here".into();
+        return;
+    }
+    match sheet::set_cell(&p.body, v.at, r, c, &v.entry.text) {
+        Err(why) => s.note = format!("not changed: {why}"),
+        Ok(body) => {
+            if body != p.body {
+                save_body(s, p, body);
+            }
+            pick_cell(s, r + 1, c);
+        }
+    }
+}
+
+/// Saves the open page with a new text, made by a change where it is read.
+fn save_body(s: &mut App, p: Page, body: String) {
+    let base = p.rev;
+    let page = Page { body, ..p };
+    match s.conn.clone() {
+        Some(c) => s.save_req.request((c, page), move |(c, mut p)| {
+            p.rev = c.save(&p, base)?;
+            Ok(p)
+        }),
+        None => landed(s, Page { rev: base + 1, ..page }),
+    }
+}
 
 fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
     let c = &k.c;
     let sh = &v.sheets[v.at];
-    let cols = sh.width().clamp(1, SHEET_COLS);
+    let may = page_changes(s);
+    // a sheet that can be changed has room to grow: empty rows under it and columns beside it
+    let cols = if may { (sh.width() + 2).clamp(8, SHEET_COLS) } else { sh.width().clamp(1, SHEET_COLS) };
     let mut table = Table::new(
         |s: &App| &s.sheet.as_ref().expect("a sheet is showing").table,
         |s: &mut App| &mut s.sheet.as_mut().expect("a sheet is showing").table,
-        |s: &App| s.sheet.as_ref().map_or(0, |v| v.sheets[v.at].rows.len()),
+        |s: &App| s.sheet.as_ref().map_or(0, |v| v.sheets[v.at].rows.len() + if page_changes(s) { SHEET_SPARE } else { 0 }),
         |_: &App, i| std::borrow::Cow::Owned(i.to_string()),
     )
     .name("Sheet")
@@ -1133,7 +1190,7 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
     }
     // found once a frame, not once a cell
     let hits: std::collections::HashSet<(usize, usize)> = sheet_matches(s).into_iter().collect();
-    let accent = c.text_accent;
+    let (accent, ink, held, font) = (c.text_accent, c.text_base, c.layer_02, k.ty.ui);
     let grid = table
         .cell(move |s: &App, i, col| {
             let Some(v) = &s.sheet else { return Cell::text("") };
@@ -1142,9 +1199,19 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
             }
             // a column's letters back to its place
             let at = col.bytes().fold(0usize, |n, b| n * 26 + (b - b'A') as usize + 1) - 1;
-            let cell = Cell::text(v.sheets[v.at].rows.get(i).and_then(|r| r.get(at)).map_or("", String::as_str));
+            let said = v.sheets[v.at].rows.get(i).and_then(|r| r.get(at)).map_or("", String::as_str);
             // a cell find matches is in the accent colour, and the current one's row is the selected one
-            if hits.contains(&(i, at)) { cell.color(accent) } else { cell }
+            let color = if hits.contains(&(i, at)) { accent } else { ink };
+            if !may {
+                return Cell::text(said).color(color);
+            }
+            // a press picks the cell, to type into it in the bar above
+            let on = v.cursor == Some((i, at));
+            let mut cell = row().key(format!("cell-{i}-{at}")).w_full().h_full().center_y().label(format!("{}{}", sheet::column_name(at), i + 1)).on_press(move |s: &mut App| pick_cell(s, i, at)).child(text(said.to_owned()).font(font).color(color).truncate().grow(1.0).min_w(0.0).inert());
+            if on {
+                cell = cell.fill(held).radius(3.0);
+            }
+            Cell::el(cell)
         })
         .zebra(true)
         .build(s, k)
@@ -1168,7 +1235,19 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
     }
     let more = if sh.width() > SHEET_COLS { format!(", the first {SHEET_COLS} of {} columns", sh.width()) } else { String::new() };
     tabs = tabs.child(text(format!("{} rows{more}", sh.rows.len())).font(k.ty.small).color(c.text_muted).pl(8.0));
-    col().key("sheet").w_full().h_full().min_h(0.0).padding(12.0).gap(8.0).child(grid).child(tabs)
+    let mut page = col().key("sheet").w_full().h_full().min_h(0.0).padding(12.0).gap(8.0);
+    if may {
+        let name = v.cursor.map_or("".to_owned(), |(r, col)| format!("{}{}", sheet::column_name(col), r + 1));
+        let entry = TextInput::new(&v.entry)
+            .placeholder(if v.cursor.is_some() { "Type text, a number, true or false. Enter saves it" } else { "Press a cell to change it" })
+            .on_edit(|s: &mut App| &mut s.sheet.as_mut().expect("a sheet is showing").entry)
+            .on_submit(|s: &mut App, _| commit_cell(s))
+            .build(k)
+            .grow(1.0)
+            .key("cell-entry");
+        page = page.child(row().key("cell-bar").w_full().gap(8.0).center_y().child(text(name).key("cell-name").font(k.ty.ui_medium).color(c.text_muted).w(48.0)).child(entry));
+    }
+    page.child(grid).child(tabs)
 }
 
 /// The most positions one line or area is drawn with.
@@ -1801,15 +1880,7 @@ fn write_map(s: &mut App, change: impl FnOnce(&str) -> Option<String>) -> bool {
         s.note = "that change was not made: the map is too large, or is not one lattice writes".into();
         return false;
     };
-    let base = p.rev;
-    let page = Page { body, ..p };
-    match s.conn.clone() {
-        Some(c) => s.save_req.request((c, page), move |(c, mut p)| {
-            p.rev = c.save(&p, base)?;
-            Ok(p)
-        }),
-        None => landed(s, Page { rev: base + 1, ..page }),
-    }
+    save_body(s, p, body);
     true
 }
 
@@ -6100,6 +6171,38 @@ mod tests {
         let m = s.map.as_ref().unwrap();
         assert_eq!((m.feats.len(), m.picked, m.tool), (shapes + 1, Some(shapes), None), "the line is there and picked, and the tool is put down");
         assert!(matches!(m.feats[shapes].geoms[0], map::Geom::Line(_)));
+    }
+
+    #[test]
+    fn a_cell_typed_into_is_saved_and_the_cell_below_is_picked() {
+        let mut s = sample("budget");
+        let before = s.open.clone().unwrap();
+        // a sample sheet with a formula in it is not changed: nothing here works formulas out
+        if before.body.contains("table:formula=") {
+            pick_cell(&mut s, 1, 0);
+            s.sheet.as_mut().unwrap().entry.text = "x".into();
+            commit_cell(&mut s);
+            assert!(s.note.starts_with("not changed: this spreadsheet has formulas"), "{}", s.note);
+            assert_eq!(s.open.as_ref().unwrap().body, before.body);
+            return;
+        }
+        pick_cell(&mut s, 1, 0);
+        assert_eq!(s.sheet.as_ref().unwrap().entry.text, s.sheet.as_ref().unwrap().sheets[0].rows[1][0]);
+        s.sheet.as_mut().unwrap().entry.text = "Oat milk".into();
+        commit_cell(&mut s);
+        let v = s.sheet.as_ref().unwrap();
+        assert_eq!((v.sheets[0].rows[1][0].as_str(), v.cursor), ("Oat milk", Some((2, 0))));
+        assert_eq!(s.open.as_ref().unwrap().rev, before.rev + 1);
+        // typed as it already is: nothing is saved
+        pick_cell(&mut s, 1, 0);
+        commit_cell(&mut s);
+        assert_eq!(s.open.as_ref().unwrap().rev, before.rev + 1);
+        // what cannot be written says why and leaves the page alone
+        pick_cell(&mut s, 1, 0);
+        s.sheet.as_mut().unwrap().entry.text = "=A1".into();
+        commit_cell(&mut s);
+        assert_eq!(s.note, "not changed: formulas are not written here yet");
+        assert_eq!(s.sheet.as_ref().unwrap().sheets[0].rows[1][0], "Oat milk");
     }
 
     #[test]

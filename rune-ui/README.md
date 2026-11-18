@@ -70,13 +70,13 @@ On macOS, Cmd takes the place of Ctrl.
 - Memory: the sidebar switches between pages and memories. Memories have the same tree, reader, editors and Ctrl+K search, show their tags and date, and can be made, edited and deleted. They are read once at sign-in and again on Ctrl+R.
 - Ctrl+K also finds pages by their text (three letters or more), showing the line.
 - Map pages (GeoJSON) draw natively: points with their names, lines and areas over a graticule. Drag to pan, wheel to zoom about the pointer, press a point for its note and properties, and Fit returns to the whole map. Each feature has its own colour or its kind's, a point shows its icon, and the legend hides or shows a kind. The maps a map names in `lattice.layers` are drawn under it, dimmed. Press any shape to pick it: its card sets the icon and colour, edits the name, kind and note, and deletes it, and each change is saved at once. The Point button puts a point where the map is pressed next, and the picked point can be dragged to a new place. Line and Area draw a shape a corner at a time, finished with Done. Ring takes a centre and an edge. A feature's time, source and ring radius are set where its name is. The picked line or area has a handle on each corner to drag, and is dragged whole by pressing on it. Import adds the features of a GPX, KML or GeoJSON file, and GPX downloads the map as one. A feature orrery made has an Open in orrery button, and a source that is an address or a page opens. The rest of a map is edited as source.
-- Spreadsheet pages (flat ODS) show as a grid: each sheet's cells as they read, with lettered columns that resize and a tab for each sheet. Read-only, with no formulas or styles, and edited as source.
+- Spreadsheet pages (flat ODS) show as a grid: each sheet's cells as they read, with lettered columns that resize and a tab for each sheet. Press a cell to pick it, type text, a number, true or false in the bar above, and Enter saves it. Only that cell's row of the page is rewritten. A sheet with formulas is not changed here yet, nor are dates, times, percentages and money, and there are no styles or number formats.
 - Other pages that are not Markdown (HTML, OpenSCAD) show as their source, coloured.
 - Every ship call runs on a worker thread, never on the UI thread.
 
 ## What does not, yet
 
-OpenSCAD and HTML pages have no native view, a spreadsheet cannot be edited as a grid, and a map is not read from a dropped file yet. In the rich editor a heading keeps its `#`, a table its pipes and a fence its backticks, since Rune's rich text has no heading or table, and paragraphs have no space between them. No forum, memory tags, rename, trash and history, search inside pages, or offline queue.
+OpenSCAD and HTML pages have no native view, a spreadsheet with formulas cannot be changed, and a map is not read from a dropped file yet. In the rich editor a heading keeps its `#`, a table its pipes and a fence its backticks, since Rune's rich text has no heading or table, and paragraphs have no space between them. No forum, memory tags, rename, trash and history, search inside pages, or offline queue.
 
 ## Check it without a window
 
