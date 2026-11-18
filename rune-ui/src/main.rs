@@ -39,6 +39,8 @@ struct MapView {
     picked: Option<usize>,
     /// The base map its tiles are of.
     style: &'static str,
+    /// The kinds not shown. Not kept: a map opens with every kind showing, as on the web.
+    hidden: std::collections::HashSet<String>,
 }
 
 /// A spreadsheet page on screen: its sheets, the one showing, and the grid's state.
@@ -1032,7 +1034,7 @@ fn sync_map(s: &mut App) {
     let old = s.map.take().filter(|m| m.name == p.name);
     s.map = map::parse(&p.body).map(|feats| {
         let cam = old.as_ref().map_or(map::Camera { at: [0.5, 0.5], scale: 800.0 }, |m| m.cam);
-        MapView { name: p.name.clone(), rev: p.rev, feats, cam, grab: cam, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.is_some_and(|m| m.fitted), picked: None }
+        MapView { name: p.name.clone(), rev: p.rev, feats, cam, grab: cam, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: None, hidden: old.map(|m| m.hidden).unwrap_or_default() }
     });
 }
 
@@ -1118,6 +1120,8 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
 const MAP_LINE: usize = 2000;
 /// The most points drawn as pressable dots, and named.
 const MAP_DOTS: usize = 400;
+/// The most kinds the legend lists.
+const MAP_KINDS: usize = 12;
 
 fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
     let c = &k.c;
@@ -1145,7 +1149,8 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         lat += step;
     }
     let mut dots: Vec<(usize, map::P)> = Vec::new();
-    for (i, f) in m.feats.iter().enumerate() {
+    for (i, f) in m.feats.iter().enumerate().filter(|(_, f)| !m.hidden.contains(&f.kind)) {
+        let ink = rune::color::hex(&f.color).unwrap_or(c.text_accent);
         for g in &f.geoms {
             match g {
                 map::Geom::Point(p) => dots.push((i, *p)),
@@ -1213,13 +1218,17 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         }
         let i = *i;
         let on = m.picked == Some(i);
-        let r = if on { 8.0 } else { 6.0 };
+        let f = &m.feats[i];
+        // a point with a glyph is larger, to hold it. The sizes are the web client's
+        let r = if f.icon.is_empty() { 6.0 } else { 10.0 } + if on { 2.0 } else { 0.0 };
         view = view.child(
             el().key(format!("dot-{n}"))
                 .absolute(x - r, y - r)
                 .size(r * 2.0, r * 2.0)
                 .radius(r)
-                .fill(ink)
+                .center()
+                .fill(rune::color::hex(&f.color).unwrap_or(ink))
+                .children((!f.icon.is_empty()).then(|| text(f.icon).font(k.ty.small_medium).color(rune::Color::WHITE).inert()))
                 .border(2.0, c.bg_base)
                 .label(m.feats[i].name.clone())
                 .on_press(move |s: &mut App| {
@@ -1244,6 +1253,39 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         }
         view = view.child(card);
     }
+    // the kinds, each with its colour and count: press one to hide or show its features
+    let kinds = map::kinds(&m.feats);
+    if kinds.len() > 1 || kinds.iter().any(|(kind, _)| !kind.is_empty()) {
+        let mut legend = col().key("map-legend").absolute(w - 192.0, 12.0).w(180.0).padding(6.0).gap(2.0).radius(k.radius.md).fill(c.layer_01).border(1.0, c.border_weak);
+        for (kind, n) in kinds.into_iter().take(MAP_KINDS) {
+            let off = m.hidden.contains(&kind);
+            let swatch = if kind.is_empty() { "#2e86c1" } else { map::kind_color(&kind) };
+            let label = format!("{} ({n})", if kind.is_empty() { "no kind" } else { &kind });
+            legend = legend.child(
+                row().key(format!("kind:{kind}"))
+                    .h(24.0)
+                    .px(6.0)
+                    .gap(8.0)
+                    .center_y()
+                    .radius(k.radius.sm)
+                    .label(format!("{label}, {}", if off { "hidden" } else { "shown" }))
+                    .on_press(move |s: &mut App| {
+                        if let Some(m) = &mut s.map {
+                            if !m.hidden.remove(&kind) {
+                                m.hidden.insert(kind.clone());
+                            }
+                            // a hidden feature is not left picked
+                            if m.picked.and_then(|i| m.feats.get(i)).is_some_and(|f| m.hidden.contains(&f.kind)) {
+                                m.picked = None;
+                            }
+                        }
+                    })
+                    .child(el().size(10.0, 10.0).radius(5.0).fill(rune::color::hex(swatch).unwrap_or(ink).alpha(if off { 0.3 } else { 1.0 })))
+                    .child(text(label).font(k.ty.small).color(if off { c.text_faint } else { c.text_base }).truncate().grow(1.0).min_w(0.0)),
+            );
+        }
+        view = view.child(legend);
+    }
     let zoom = |key: &str, label: &str, f: f64| {
         Button::new(label)
             .control_size(ControlSize::Small)
@@ -1263,7 +1305,8 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         (None, n) if n > 0 => format!("   {}  © Mapbox © OpenStreetMap", m.style),
         _ => String::new(),
     };
-    let count = text(format!("{} shapes{ground}", m.feats.len())).font(k.ty.small).color(c.text_muted);
+    let showing = m.feats.iter().filter(|f| !m.hidden.contains(&f.kind)).count();
+    let count = text(if showing == m.feats.len() { format!("{showing} shapes{ground}") } else { format!("{showing} of {} shapes{ground}", m.feats.len()) }).font(k.ty.small).color(c.text_muted);
     let base = Button::new(format!("Base: {}", m.style)).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("The next base map: streets, outdoors, satellite, dark. It is kept in the page").on_press(next_base).build(k).key("map-base");
     let token = (s.conn.is_some() && s.tile_status.as_ref().is_some_and(|t| !t.token)).then(|| Button::new("Set Mapbox token").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(ask_token).build(k).key("map-token"));
     view.child(row().key("map-tools").absolute(12.0, h - 40.0).gap(6.0).center_y().child(zoom("zoom-in", "+", 2.0)).child(zoom("zoom-out", "−", 0.5)).child(zoom("zoom-fit", "Fit", 0.0)).child(base).children(token).child(count))
@@ -5547,6 +5590,17 @@ mod tests {
         applied(&mut s, Op::Wrote("paper-web".into(), Some(again), "wrote paper-web".into()));
         assert_eq!(s.names.iter().filter(|n| *n == "paper-web").count(), 1);
         assert!(s.cache["paper-web"].body.ends_with("<h1>B</h1>"));
+    }
+
+    #[test]
+    fn a_maps_hidden_kinds_outlast_a_save_of_the_same_page() {
+        let mut s = sample("places");
+        s.map.as_mut().unwrap().hidden.insert("place".into());
+        next_base(&mut s);
+        assert!(s.map.as_ref().unwrap().hidden.contains("place"), "the page was written again and the kind is still hidden");
+        open_page(&mut s, "welcome");
+        open_page(&mut s, "places");
+        assert!(s.map.as_ref().unwrap().hidden.is_empty(), "opened afresh, every kind shows");
     }
 
     #[test]

@@ -22,6 +22,52 @@ pub struct Feature {
     /// The properties, in the page's order, as text.
     pub props: Vec<(String, String)>,
     pub geoms: Vec<Geom>,
+    /// What kind of thing it is, or nothing. A map is filtered by it.
+    pub kind: String,
+    /// Its colour as `#rgb` or `#rrggbb`: its own, else its kind's, else blue.
+    pub color: String,
+    /// The glyph a point shows, or nothing for a plain dot.
+    pub icon: &'static str,
+}
+
+/// The icons a feature may name, each with its glyph, as on the web.
+/// The pin alone differs: the web's U+2316 is in no font Rune falls back to
+/// on Linux and drew as an empty box, so it is the circled plus here.
+const ICONS: [(&str, &str); 16] = [
+    ("dot", ""), ("pin", "⊕"), ("star", "★"), ("flag", "⚑"), ("home", "⌂"), ("camera", "◉"), ("alert", "⚠"), ("person", "☺"),
+    ("car", "▣"), ("boat", "⛵"), ("plane", "✈"), ("fire", "♨"), ("water", "≈"), ("tent", "△"), ("cross", "✚"), ("question", "?"),
+];
+/// The icon a kind gets when the feature names none.
+const KIND_ICON: [(&str, &str); 5] = [("place", "pin"), ("situation", "flag"), ("person", "person"), ("home", "home"), ("report", "alert")];
+const KIND_COLORS: [&str; 8] = ["#c0392b", "#2e86c1", "#28a745", "#8e44ad", "#d68910", "#16a085", "#7f8c8d", "#e84393"];
+
+/// The colour a kind is drawn in: the web client's own choice, so a map
+/// looks the same in both.
+pub fn kind_color(kind: &str) -> &'static str {
+    let h = kind.encode_utf16().fold(0i32, |h, c| h.wrapping_mul(31).wrapping_add(c as i32));
+    KIND_COLORS[h.unsigned_abs() as usize % KIND_COLORS.len()]
+}
+
+/// A feature's kind, colour and glyph from its properties, each checked.
+fn look(p: &Value) -> (String, String, &'static str) {
+    let s = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("");
+    let kind: String = s("kind").chars().take(40).collect::<String>().trim().to_owned();
+    let own = s("color");
+    let hex = own.strip_prefix('#').is_some_and(|h| matches!(h.len(), 3 | 6) && h.bytes().all(|b| b.is_ascii_hexdigit()));
+    let color = if hex { own.to_owned() } else if kind.is_empty() { "#2e86c1".to_owned() } else { kind_color(&kind).to_owned() };
+    let named = Some(s("icon")).filter(|i| ICONS.iter().any(|(n, _)| n == i)).or_else(|| KIND_ICON.iter().find(|(k, _)| *k == kind).map(|(_, i)| *i));
+    let icon = named.and_then(|i| ICONS.iter().find(|(n, _)| *n == i)).map_or("", |(_, g)| *g);
+    (kind, color, icon)
+}
+
+/// The kinds a map's features have, in order, each with how many. A
+/// feature with none counts under the empty kind.
+pub fn kinds(feats: &[Feature]) -> Vec<(String, usize)> {
+    let mut m = std::collections::BTreeMap::new();
+    for f in feats {
+        *m.entry(f.kind.clone()).or_insert(0) += 1;
+    }
+    m.into_iter().collect()
 }
 
 /// Longitude and latitude to the unit square. The latitude is held inside
@@ -79,7 +125,8 @@ pub fn parse(body: &str) -> Option<Vec<Feature>> {
                 geoms(&f["geometry"], &mut g);
                 let p = &f["properties"];
                 let props = p.as_object().map_or(Vec::new(), |o| o.iter().map(|(k, v)| (k.clone(), text(v))).filter(|(_, v)| !v.is_empty()).collect());
-                (!g.is_empty()).then(|| Feature { name: text(&p["name"]), note: text(&p["note"]), props, geoms: g })
+                let (kind, color, icon) = look(p);
+                (!g.is_empty()).then(|| Feature { name: text(&p["name"]), note: text(&p["note"]), props, geoms: g, kind, color, icon })
             })
             .collect(),
     )
@@ -464,6 +511,27 @@ mod tests {
         assert_eq!(with_base("{\"type\":\"Feature\"}", "dark"), None);
         assert_eq!(with_base("not json", "dark"), None);
         assert_eq!(with_base(body, "sepia"), None);
+    }
+
+    #[test]
+    fn a_feature_gets_its_kind_colour_and_glyph_as_on_the_web() {
+        // every value here is what ui-src/map/core.js gives for the same input
+        for (k, c) in [("place", "#e84393"), ("situation", "#28a745"), ("person", "#8e44ad"), ("report", "#d68910"), ("café", "#2e86c1"), ("a much longer kind name here", "#d68910"), ("😀x", "#16a085")] {
+            assert_eq!(kind_color(k), c, "{k}");
+        }
+        let of = |p: &str| look(&serde_json::from_str(p).unwrap());
+        assert_eq!(of(r#"{"kind":" place "}"#), ("place".into(), "#e84393".into(), "⊕"));
+        assert_eq!(of(r##"{"kind":"x","icon":"star","color":"#ABC"}"##), ("x".into(), "#ABC".into(), "★"));
+        assert_eq!(of(r#"{"icon":"nope","color":"red"}"#), (String::new(), "#2e86c1".into(), ""));
+        assert_eq!(of(r#"{"kind":7}"#), (String::new(), "#2e86c1".into(), ""));
+        assert_eq!(of(r#"{"kind":"home","icon":"dot"}"#), ("home".into(), "#e84393".into(), ""), "a dot named outright stays a dot");
+        assert_eq!(of("null"), (String::new(), "#2e86c1".into(), ""));
+        let feats = parse(r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{"kind":"place"}},
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{}},
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{"kind":"place"}},
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{"kind":"alpha"}}]}"#).unwrap();
+        assert_eq!(kinds(&feats), [(String::new(), 1), ("alpha".into(), 1), ("place".into(), 2)]);
     }
 
     #[test]

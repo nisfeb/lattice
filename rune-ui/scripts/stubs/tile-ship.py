@@ -5,6 +5,9 @@ GEO = json.dumps({"type":"FeatureCollection","features":[
  {"type":"Feature","geometry":{"type":"Point","coordinates":[-73.9857,40.7484]},"properties":{"name":"Midtown"}},
  {"type":"Feature","geometry":{"type":"Point","coordinates":[-73.9442,40.6782]},"properties":{"name":"Brooklyn"}},
  {"type":"Feature","geometry":{"type":"LineString","coordinates":[[-73.9857,40.7484],[-73.97,40.72],[-73.9442,40.6782]]},"properties":{"name":"A walk"}}]})
+# LR_GEO names a file to serve as the map page instead
+import os
+if os.environ.get('LR_GEO'): GEO = open(os.environ['LR_GEO']).read()
 def png(z, x, y):
     w = 512; rows = []
     base = (70, 110, 150) if (x + y) % 2 == 0 else (150, 110, 70)
