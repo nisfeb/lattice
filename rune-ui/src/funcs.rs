@@ -300,6 +300,47 @@ fn first_err(vs: &[&V]) -> Option<V> {
     vs.iter().find(|v| is_err(v)).map(|v| (*v).clone())
 }
 
+/// What sort of value it is, as a lookup tells them apart: a number, a text, a truth, or neither.
+fn kind(v: &V) -> u8 {
+    match v {
+        V::Num(_) => 1,
+        V::Str(_) => 2,
+        V::Bool(_) => 3,
+        _ => 0,
+    }
+}
+
+/// Where `needle` is in a column or a row of values: the entry that equals it, or, in a
+/// sorted one, the last entry not greater than it.
+fn lookup(e: &mut Engine, needle: &V, vec: &[V], exact: bool) -> Result<usize, V> {
+    let needle = scalar(e, needle);
+    if is_err(&needle) {
+        return Err(needle);
+    }
+    if exact {
+        let hit = vec.iter().position(|v| (kind(v) != 0 && kind(v) == kind(&needle) && compare(v, &needle) == 0) || matches!((v, &needle), (V::Bool(b), V::Num(x)) if f64::from(*b) == *x));
+        return hit.ok_or_else(|| err(NA));
+    }
+    let mut hit = None;
+    for (i, v) in vec.iter().enumerate() {
+        if kind(v) == 0 || kind(v) != kind(&needle) {
+            continue;
+        }
+        if compare(v, &needle) <= 0 { hit = Some(i) } else { break }
+    }
+    hit.ok_or_else(|| err(NA))
+}
+
+/// The cells of one column of a range, or of one row, as far as the sheet holds anything.
+fn line(e: &mut Engine, g: Rg, down: bool) -> Vec<V> {
+    let (rows, cols) = e.used(g.s);
+    if down {
+        (0..g.rows().min(rows.saturating_sub(g.r1))).map(|i| e.value((g.s, g.r1 + i, g.c1))).collect()
+    } else {
+        (0..g.cols().min(cols.saturating_sub(g.c1))).map(|j| e.value((g.s, g.r1, g.c1 + j))).collect()
+    }
+}
+
 /// The functions that take their arguments unevaluated. `None` for a name that is not one of them.
 pub fn lazy(e: &mut Engine, name: &str, n: &[Node], ctx: Ctx) -> Option<R> {
     Some((|| -> R {
@@ -411,7 +452,7 @@ pub fn lazy(e: &mut Engine, name: &str, n: &[Node], ctx: Ctx) -> Option<R> {
 }
 
 /// A function of evaluated arguments. An argument left out is `V::Missing`.
-pub fn call(e: &mut Engine, name: &str, a: &[V], _ctx: Ctx) -> R {
+pub fn call(e: &mut Engine, name: &str, a: &[V], ctx: Ctx) -> R {
     let arg = |i: usize| a.get(i).cloned().unwrap_or(V::Missing);
     // an argument left out, or an empty cell handed on, takes the default
     let or = |i: usize, d: f64| match a.get(i) {
@@ -820,6 +861,85 @@ pub fn call(e: &mut Engine, name: &str, a: &[V], _ctx: Ctx) -> R {
             if got == err(VALUE) { err(ILLEGAL) } else { got }
         }
         "CHAR" => num1!(|x| if !(1.0..=255.0).contains(&x) { err(ARG) } else { V::Str(char::from_u32(x as u32).map_or(String::new(), String::from)) }),
+
+        // lookup
+        "VLOOKUP" | "HLOOKUP" => {
+            let Some(V::Range(g)) = a.get(1).copied_range() else { return Ok(err(VALUE)) };
+            let down = name == "VLOOKUP";
+            let V::Num(at) = to_num(&scalar(e, &arg(2))) else { return Ok(to_num(&scalar(e, &arg(2)))) };
+            if at < 1.0 || at > if down { g.cols() } else { g.rows() } as f64 {
+                return Ok(err(ILLEGAL));
+            }
+            let exact = a.get(3).is_some_and(|x| *x != V::Missing) && to_num(&scalar(e, &arg(3))) == V::Num(0.0);
+            let vec = line(e, g, down);
+            match lookup(e, &arg(0), &vec, exact) {
+                Err(bad) => bad,
+                Ok(i) if down => e.value((g.s, g.r1 + i, g.c1 + at.floor() as usize - 1)),
+                Ok(j) => e.value((g.s, g.r1 + at.floor() as usize - 1, g.c1 + j)),
+            }
+        }
+        "MATCH" => {
+            let Some(V::Range(g)) = a.get(1).copied_range().filter(|g| matches!(g, V::Range(g) if g.rows() == 1 || g.cols() == 1)) else { return Ok(err(NA)) };
+            let how = if a.get(2).is_none_or(|x| *x == V::Missing) { V::Num(1.0) } else { to_num(&scalar(e, &arg(2))) };
+            let V::Num(how) = how else { return Ok(how) };
+            let vec = line(e, g, g.cols() == 1);
+            if how < 0.0 {
+                // sorted downwards: the last entry not less than what is looked for
+                let needle = scalar(e, &arg(0));
+                let hit = vec.iter().take_while(|v| kind(v) != 0 && kind(v) == kind(&needle) && compare(v, &needle) >= 0).count();
+                return Ok(if hit == 0 { err(NA) } else { n(hit as f64) });
+            }
+            match lookup(e, &arg(0), &vec, how == 0.0) {
+                Ok(i) => n(i as f64 + 1.0),
+                Err(bad) => bad,
+            }
+        }
+        "INDEX" => {
+            let Some(V::Range(g)) = a.first().copied_range() else { return Ok(err(VALUE)) };
+            let given = |i: usize| a.get(i).is_some_and(|x| *x != V::Missing);
+            let r = if given(1) { to_num(&scalar(e, &arg(1))) } else { V::Num(0.0) };
+            let c = if given(2) { to_num(&scalar(e, &arg(2))) } else { V::Num(0.0) };
+            let (V::Num(mut r), V::Num(mut c)) = (r.clone(), c.clone()) else { return Ok(if is_err(&r) { r } else { c }) };
+            // one number into a single row is a column of it
+            if g.rows() == 1 && !given(2) && r > 0.0 {
+                (c, r) = (r, 1.0);
+            }
+            if r == 0.0 && g.rows() == 1 {
+                r = 1.0;
+            }
+            if c == 0.0 && g.cols() == 1 {
+                c = 1.0;
+            }
+            if r < 1.0 || c < 1.0 || r > g.rows() as f64 || c > g.cols() as f64 {
+                return Ok(err(if r == 0.0 || c == 0.0 { VALUE } else { "#REF!" }));
+            }
+            e.value((g.s, g.r1 + r.floor() as usize - 1, g.c1 + c.floor() as usize - 1))
+        }
+        "CHOOSE" => match to_num(&scalar(e, &arg(0))) {
+            V::Num(k) if k < 1.0 || k >= a.len() as f64 => err(ILLEGAL),
+            V::Num(k) => scalar(e, &arg(k.floor() as usize)),
+            bad => bad,
+        },
+        "ROW" | "COLUMN" => match a.first() {
+            Some(V::Range(g)) => n(if name == "ROW" { g.r1 } else { g.c1 } as f64 + 1.0),
+            Some(_) => err(VALUE),
+            None => n(if name == "ROW" { ctx.r } else { ctx.c } as f64 + 1.0),
+        },
+        "ROWS" | "COLUMNS" => match a.first() {
+            Some(V::Range(g)) => n(if name == "ROWS" { g.rows() } else { g.cols() } as f64),
+            _ => n(1.0),
+        },
         _ => return Err(Unsupported),
     })
+}
+
+/// An argument as a range, when it is one.
+trait AsRange {
+    fn copied_range(self) -> Option<V>;
+}
+
+impl AsRange for Option<&V> {
+    fn copied_range(self) -> Option<V> {
+        self.filter(|v| matches!(v, V::Range(_))).cloned()
+    }
 }

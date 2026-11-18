@@ -760,13 +760,13 @@ mod tests {
         assert_eq!(n, 59);
     }
 
-    #[test]
-    fn functions_give_what_the_web_client_gives() {
-        // each line is a formula and what the web client's engine shows for it in G8 of this sheet,
-        // from ui-src/sheet/book.js run under node. STALE is a formula it does not work out either
-        let src = doc(&[&["2", "abc", "", "TRUE", "3.5"], &["0", "-4", "10", "x", "7"], &["5", "5", "2.5", "apple", "1"], &["", "12", "Banana", "3", "-1"]]);
+    /// Checks formulas against the web client's answers. Each line of a corpus is a formula and what
+    /// the web client's engine shows for it in G8 of the sheet, from ui-src/sheet/book.js run under
+    /// node. STALE is a formula it does not work out either.
+    fn corpus(sheet: &[&[&str]], lines: &str, count: usize) {
+        let src = doc(sheet);
         let (mut n, mut wrong) = (0, Vec::new());
-        for line in include_str!("funcs_corpus.tsv").lines().chain(include_str!("funcs_text_corpus.tsv").lines()) {
+        for line in lines.lines() {
             let (f, want) = line.split_once('\t').unwrap();
             let (f, want): (String, String) = (serde_json::from_str(f).unwrap(), serde_json::from_str(want).unwrap());
             let got = enter(&src, 0, 7, 6, &format!("={f}")).unwrap();
@@ -777,7 +777,20 @@ mod tests {
             n += 1;
         }
         assert!(wrong.is_empty(), "{} of {n} differ:\n{}", wrong.len(), wrong.join("\n"));
-        assert_eq!(n, 266 + 127);
+        assert_eq!(n, count);
+    }
+
+    #[test]
+    fn functions_give_what_the_web_client_gives() {
+        let sheet: &[&[&str]] = &[&["2", "abc", "", "TRUE", "3.5"], &["0", "-4", "10", "x", "7"], &["5", "5", "2.5", "apple", "1"], &["", "12", "Banana", "3", "-1"]];
+        corpus(sheet, include_str!("funcs_corpus.tsv"), 266);
+        corpus(sheet, include_str!("funcs_text_corpus.tsv"), 127);
+    }
+
+    #[test]
+    fn lookups_give_what_the_web_client_gives() {
+        let sheet: &[&[&str]] = &[&["1", "apple", "10", "x", "3.5"], &["3", "banana", "20", "y", "7"], &["5", "cherry", "30", "apple", "1"], &["7", "date", "40", "3", "-1"], &["", "egg", "50", "", ""]];
+        corpus(sheet, include_str!("funcs_lookup_corpus.tsv"), 107);
     }
 
     #[test]
