@@ -31,6 +31,20 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code); self.send_header('content-type', ct); self.send_header('content-length', str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
         u = urlparse(self.path); p = u.path.replace('/apps/lattice/', '', 1); q = parse_qs(u.query)
+        # LR_WEB names a built web folder (target/web), served under /rune/ as a ship serves its own files.
+        # LR_SIGNED=0 answers as to a browser that is not signed in.
+        signed = os.environ.get('LR_SIGNED', '1') == '1'
+        if u.path.startswith('/rune/') and os.environ.get('LR_WEB'):
+            rel = u.path[len('/rune/'):] or 'index.html'
+            f = os.path.realpath(os.path.join(os.environ['LR_WEB'], rel))
+            if not f.startswith(os.path.realpath(os.environ['LR_WEB']) + os.sep) or not os.path.isfile(f): return self.send(404, 'not found', 'text/plain')
+            ct = {'.js': 'text/javascript', '.wasm': 'application/wasm', '.html': 'text/html', '.ttf': 'font/ttf'}.get(os.path.splitext(f)[1], 'application/octet-stream')
+            return self.send(200, open(f, 'rb').read(), ct)
+        if u.path == '/~/login': return self.send(200, '<title>login</title><p id=login>the ship asks for its code, to go back to ' + q.get('redirect', [''])[0], 'text/html')
+        if u.path == '/~/name': return self.send(200, '~zod' if signed else '~bosdev-dozzod-marnus-fopfed', 'text/plain')
+        if not signed:
+            self.send_response(302); self.send_header('location', '/~/login?redirect=' + u.path); self.send_header('content-length', '0'); self.end_headers(); return
+        if p == 'streams': return self.send(200, json.dumps({"base": "/stub", "streams": {}}))
         if p == 'page-dump': return self.send(200, json.dumps({"nodes":[{"path":n,"page":True,"kind":v[1],"rev":v[2],"body":v[0]} for n, v in PAGES.items()],"since":"s1"}))
         if p == 'page-source':
             v = PAGES.get(q.get('name', [''])[0])

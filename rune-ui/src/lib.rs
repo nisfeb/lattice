@@ -1609,8 +1609,20 @@ fn setup(s: &mut App, waker: Waker) {
 /// every eighty seconds and is taken up again at once. One that does not
 /// hold is tried again more slowly, up to thirty seconds apart. Each
 /// event is left for the window to take, and the window is woken.
+/// A job off the window's thread. A browser page has the one thread, so there it runs at once.
+fn spawn(f: impl FnOnce() + Send + 'static) {
+    #[cfg(target_arch = "wasm32")]
+    f();
+    #[cfg(not(target_arch = "wasm32"))]
+    drop(std::thread::spawn(f));
+}
+
 fn listen(s: &mut App) {
     use std::sync::atomic::Ordering;
+    // a browser page has one thread and no stream to wait on: the tree is read again on its timer
+    if cfg!(target_arch = "wasm32") {
+        return;
+    }
     // a listener for a session before this one stops at its next event
     s.beacon_stop.store(true, Ordering::Relaxed);
     let (Some(c), Some(waker)) = (s.conn.clone(), s.waker.clone()) else { return };
@@ -2947,7 +2959,7 @@ fn sync_pics(s: &mut App) {
             continue;
         }
         let (back, waker) = (s.pics_in.clone(), waker.clone());
-        std::thread::spawn(move || {
+        spawn(move || {
             let got = api::fetch_bytes(&url, cookie.as_deref());
             if let Ok(mut list) = back.lock() {
                 list.push((src, got));
@@ -3136,7 +3148,7 @@ fn sync_tiles(s: &mut App) {
         }
         s.tiles_flying += 1;
         let (url, cookie, back, waker) = (c.tile_url(m.style, t.z, t.x, t.y), c.cookie().to_owned(), s.pics_in.clone(), waker.clone());
-        std::thread::spawn(move || {
+        spawn(move || {
             let got = api::fetch_bytes(&url, Some(&cookie));
             if let Ok(mut list) = back.lock() {
                 list.push((key, got));
@@ -4609,7 +4621,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                     for n in all.iter_mut().filter(|n| n.page) {
                         n.body = s.cache.get(&n.path).map(|p| p.body.clone());
                     }
-                    std::thread::spawn(move || drop(c.keep_tree(all)));
+                    spawn(move || drop(c.keep_tree(all)));
                 }
                 let first = s.files.is_empty();
                 s.names = nodes.iter().filter(|n| n.page).map(|n| n.path.clone()).collect();
@@ -7712,7 +7724,7 @@ fn post_comment(s: &mut App) {
     s.op_req.request((c, p.name.clone(), body), |(c, page, body)| {
         c.comment(&page, &body)?;
         // the ship writes it in a step of its own behind the answer
-        std::thread::sleep(std::time::Duration::from_millis(1500));
+        api::pause(std::time::Duration::from_millis(1500));
         Ok(Op::Commented(format!("comment posted on {page}")))
     });
 }

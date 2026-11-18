@@ -606,6 +606,14 @@ fn keep_at(p: &std::path::Path, nodes: Vec<Node>) -> Result<(), String> {
     write_private(p, &serde_json::to_vec(&Dump { nodes, since: String::new() }).map_err(|e| e.to_string())?)
 }
 
+/// Waits. A browser page cannot: there the wait is skipped.
+pub fn pause(d: Duration) {
+    #[cfg(target_arch = "wasm32")]
+    let _ = d;
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::sleep(d);
+}
+
 /// The time since 1970. The browser has no system clock to ask but its own.
 pub fn since_epoch() -> Result<Duration, std::time::SystemTimeError> {
     #[cfg(target_arch = "wasm32")]
@@ -632,6 +640,25 @@ pub mod web {
         }
         x.send_with_opt_str(body).map_err(|_| "the ship could not be reached".to_owned())?;
         Ok((x.status().map_err(js)?, x.response_text().map_err(js)?.unwrap_or_default()))
+    }
+
+    /// The session of a page the ship served: the ship is the page's own
+    /// address and the browser sends its login with every request, so there
+    /// is no code to ask for and nothing to keep. A browser that is not
+    /// signed in is sent to the ship's own login page, to come back here.
+    pub fn session() -> Option<super::Conn> {
+        let loc = web_sys::window()?.location();
+        let url = loc.origin().ok()?;
+        // an owner's route: the ship answers it only to its owner's browser
+        let (code, text) = request("GET", &format!("{url}/apps/lattice/streams"), None, None, None).ok()?;
+        if code != 200 || !text.trim_start().starts_with('{') {
+            let back = loc.pathname().unwrap_or_default();
+            let _ = loc.set_href(&format!("{url}/~/login?redirect={}", super::enc(&back)));
+            return None;
+        }
+        // the cookie is the browser's and is never seen here. Only its name's part is made up, for `ship` to read
+        let name = request("GET", &format!("{url}/~/name"), None, None, None).ok().map(|(_, t)| t.trim().to_owned()).filter(|t| super::ship_name(t).is_some()).unwrap_or_else(|| "ship".into());
+        Some(super::Conn { url, cookie: format!("urbauth-{name}=the-browsers") })
     }
 
     /// The text of an answer the ship did not refuse, or its refusal as the native client words one.
@@ -1665,6 +1692,14 @@ impl Conn {
     /// The session to open with: the environment's, else the one saved by
     /// the last login.
     pub fn load() -> Option<Conn> {
+        #[cfg(target_arch = "wasm32")]
+        return web::session();
+        #[cfg(not(target_arch = "wasm32"))]
+        Conn::load_kept()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_kept() -> Option<Conn> {
         if let Some(c) = Conn::from_env() {
             return Some(c);
         }
@@ -2090,7 +2125,7 @@ impl Conn {
                     match post(q.clone(), body) {
                         Err(e) if e.starts_with("404") && tries < 5 => {
                             tries += 1;
-                            std::thread::sleep(Duration::from_secs(1));
+                            pause(Duration::from_secs(1));
                         }
                         r => return r,
                     }
