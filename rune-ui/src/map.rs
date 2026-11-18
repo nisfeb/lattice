@@ -22,6 +22,8 @@ pub struct Feature {
     /// The properties, in the page's order, as text.
     pub props: Vec<(String, String)>,
     pub geoms: Vec<Geom>,
+    /// Where it is among the page's features, counting those with nothing to draw.
+    pub at: usize,
     /// What kind of thing it is, or nothing. A map is filtered by it.
     pub kind: String,
     /// Its colour as `#rgb` or `#rrggbb`: its own, else its kind's, else blue.
@@ -33,13 +35,13 @@ pub struct Feature {
 /// The icons a feature may name, each with its glyph, as on the web.
 /// The pin alone differs: the web's U+2316 is in no font Rune falls back to
 /// on Linux and drew as an empty box, so it is the circled plus here.
-const ICONS: [(&str, &str); 16] = [
+pub const ICONS: [(&str, &str); 16] = [
     ("dot", ""), ("pin", "⊕"), ("star", "★"), ("flag", "⚑"), ("home", "⌂"), ("camera", "◉"), ("alert", "⚠"), ("person", "☺"),
     ("car", "▣"), ("boat", "⛵"), ("plane", "✈"), ("fire", "♨"), ("water", "≈"), ("tent", "△"), ("cross", "✚"), ("question", "?"),
 ];
 /// The icon a kind gets when the feature names none.
 const KIND_ICON: [(&str, &str); 5] = [("place", "pin"), ("situation", "flag"), ("person", "person"), ("home", "home"), ("report", "alert")];
-const KIND_COLORS: [&str; 8] = ["#c0392b", "#2e86c1", "#28a745", "#8e44ad", "#d68910", "#16a085", "#7f8c8d", "#e84393"];
+pub const KIND_COLORS: [&str; 8] = ["#c0392b", "#2e86c1", "#28a745", "#8e44ad", "#d68910", "#16a085", "#7f8c8d", "#e84393"];
 
 /// The colour a kind is drawn in: the web client's own choice, so a map
 /// looks the same in both.
@@ -120,13 +122,14 @@ pub fn parse(body: &str) -> Option<Vec<Feature>> {
     Some(
         feats
             .iter()
-            .filter_map(|f| {
+            .enumerate()
+            .filter_map(|(at, f)| {
                 let mut g = Vec::new();
                 geoms(&f["geometry"], &mut g);
                 let p = &f["properties"];
                 let props = p.as_object().map_or(Vec::new(), |o| o.iter().map(|(k, v)| (k.clone(), text(v))).filter(|(_, v)| !v.is_empty()).collect());
                 let (kind, color, icon) = look(p);
-                (!g.is_empty()).then(|| Feature { name: text(&p["name"]), note: text(&p["note"]), props, geoms: g, kind, color, icon })
+                (!g.is_empty()).then(|| Feature { name: text(&p["name"]), note: text(&p["note"]), props, geoms: g, at, kind, color, icon })
             })
             .collect(),
     )
@@ -350,16 +353,96 @@ pub fn serialize(doc: &Value) -> Option<String> {
 /// page that is not a map, a base that is not one of `STYLES`, or a map
 /// too large to rewrite.
 pub fn with_base(body: &str, style: &str) -> Option<String> {
-    if body.len() > BIG || !STYLES.contains(&style) {
+    if !STYLES.contains(&style) {
+        return None;
+    }
+    change(body, |o| {
+        if !o.get("lattice").is_some_and(Value::is_object) {
+            o.insert("lattice".into(), Value::Object(Default::default()));
+        }
+        o.get_mut("lattice")?.as_object_mut()?.insert("base".into(), style.into());
+        Some(())
+    })
+}
+
+/// A map page after `f` changed it, in lattice's layout. `None` when the
+/// page is not a map, `f` refuses, or the map is or would be too large.
+fn change(body: &str, f: impl FnOnce(&mut serde_json::Map<String, Value>) -> Option<()>) -> Option<String> {
+    if body.len() > BIG {
         return None;
     }
     let mut doc: Value = serde_json::from_str(body).ok()?;
-    let o = doc.as_object_mut()?;
-    if !o.get("lattice").is_some_and(Value::is_object) {
-        o.insert("lattice".into(), Value::Object(Default::default()));
+    f(doc.as_object_mut()?)?;
+    serialize(&doc).filter(|s| s.len() <= BIG)
+}
+
+/// A map page with properties of its feature `at` set, or with `None`
+/// taken away. The others keep their order, and a new one goes last.
+pub fn set_props(body: &str, at: usize, props: &[(&str, Option<&str>)]) -> Option<String> {
+    change(body, |d| {
+        let f = d.get_mut("features")?.as_array_mut()?.get_mut(at)?.as_object_mut()?;
+        if !f.get("properties").is_some_and(Value::is_object) {
+            f.insert("properties".into(), Value::Object(Default::default()));
+        }
+        let p = f.get_mut("properties")?.as_object_mut()?;
+        for (k, v) in props {
+            match v {
+                Some(v) => drop(p.insert((*k).into(), (*v).into())),
+                None => drop(p.shift_remove(*k)),
+            }
+        }
+        Some(())
+    })
+}
+
+/// A map page without its feature `at`.
+pub fn remove(body: &str, at: usize) -> Option<String> {
+    change(body, |d| {
+        let a = d.get_mut("features")?.as_array_mut()?;
+        (at < a.len()).then(|| drop(a.remove(at)))
+    })
+}
+
+/// How near a press must be to a shape to pick it, in points. The web client's.
+const TOL: f32 = 10.0;
+
+/// The feature under a press at `x`, `y` in the view: the nearest within
+/// reach, the later drawn of two as near. Inside an area counts as on it.
+pub fn hit<'a>(feats: impl IntoIterator<Item = (usize, &'a Feature)>, cam: &Camera, w: f32, h: f32, x: f32, y: f32) -> Option<usize> {
+    let seg = |a: [f32; 2], b: [f32; 2]| {
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx * dx + dy * dy;
+        let u = if len > 0.0 { (((x - a[0]) * dx + (y - a[1]) * dy) / len).clamp(0.0, 1.0) } else { 0.0 };
+        (a[0] + u * dx - x).hypot(a[1] + u * dy - y)
+    };
+    let path = |l: &[P]| {
+        let pts: Vec<[f32; 2]> = l.iter().map(|p| cam.project(*p, w, h)).collect();
+        let near = pts.windows(2).map(|s| seg(s[0], s[1])).fold(f32::MAX, f32::min);
+        (pts, near)
+    };
+    let mut best = None;
+    for (i, f) in feats {
+        for g in &f.geoms {
+            let d = match g {
+                Geom::Point(p) => seg(cam.project(*p, w, h), cam.project(*p, w, h)),
+                Geom::Line(l) => path(l).1,
+                Geom::Area(l) => {
+                    let (r, near) = path(l);
+                    let mut inside = false;
+                    for (a, b) in r.iter().zip(r.iter().cycle().skip(r.len().saturating_sub(1))) {
+                        if (a[1] > y) != (b[1] > y) && x < (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]) + a[0] {
+                            inside = !inside;
+                        }
+                    }
+                    if inside { 0.0 } else { near }
+                }
+            };
+            if d <= TOL && best.is_none_or(|(_, was)| d <= was) {
+                best = Some((i, d));
+            }
+        }
     }
-    o.get_mut("lattice")?.as_object_mut()?.insert("base".into(), style.into());
-    serialize(&doc)
+    best.map(|(i, _)| i)
 }
 
 /// The other map pages a map asks to have drawn under it
@@ -551,6 +634,61 @@ mod tests {
         let many: Vec<String> = (0..30).map(|i| format!("\"m{i}\"")).collect();
         assert_eq!(layers(&format!(r#"{{"lattice":{{"layers":[{}]}}}}"#, many.join(","))).len(), 20);
         assert!(layers(&format!(r#"{{"lattice":{{"layers":["{}"]}}}}"#, "x".repeat(400))).is_empty());
+    }
+
+    #[test]
+    fn a_features_properties_are_set_and_a_feature_removed() {
+        let body = r#"{"type":"FeatureCollection","lattice":{"title":"T"},"features":[
+{"type":"Feature","geometry":null,"properties":{"name":"ghost"}},
+{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{"name":"A","kind":"place","zz":[1]},"id":"x"},
+{"type":"Feature","geometry":{"type":"Point","coordinates":[3,4]}}
+]}
+"#;
+        // the feature drawn first is the page's second: a shapeless one comes before it
+        let feats = parse(body).unwrap();
+        assert_eq!(feats.iter().map(|f| f.at).collect::<Vec<_>>(), [1, 2]);
+        // a property set keeps its place, a new one goes last, one taken away leaves the rest in order
+        let out = set_props(body, 1, &[("name", Some("B")), ("kind", None), ("note", Some("two\nlines"))]).unwrap();
+        assert!(out.contains(r#"{"type":"Feature","geometry":{"type":"Point","coordinates":[1,2]},"properties":{"name":"B","zz":[1],"note":"two\nlines"},"id":"x"}"#), "{out}");
+        // a feature with no properties gets them, and the others are as they were
+        let out = set_props(body, 2, &[("icon", Some("star"))]).unwrap();
+        assert!(out.ends_with("{\"type\":\"Feature\",\"geometry\":{\"type\":\"Point\",\"coordinates\":[3,4]},\"properties\":{\"icon\":\"star\"}}\n]}\n"), "{out}");
+        assert!(out.contains(r#""properties":{"name":"A","kind":"place","zz":[1]},"id":"x"}"#));
+        // setting nothing writes the page in lattice's layout and loses nothing: what the web client gives
+        assert_eq!(set_props(body, 1, &[]).unwrap(), body.replace(r#"[3,4]}}"#, r#"[3,4]},"properties":{}}"#));
+        assert_eq!(set_props(body, 9, &[("name", Some("x"))]), None);
+        // removed by its place in the page
+        let out = remove(body, 1).unwrap();
+        assert_eq!(parse(&out).unwrap().iter().map(|f| f.at).collect::<Vec<_>>(), [1]);
+        assert!(out.contains("ghost") && !out.contains("\"A\""));
+        assert_eq!(remove(body, 3), None);
+        assert_eq!(remove("{}", 0), None);
+    }
+
+    #[test]
+    fn a_press_picks_the_shape_under_it() {
+        let feats = parse(r#"{"type":"FeatureCollection","features":[
+            {"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[0,1],[1,1],[1,0],[0,0]]]},"properties":{}},
+            {"type":"Feature","geometry":{"type":"LineString","coordinates":[[0,2],[1,2]]},"properties":{}},
+            {"type":"Feature","geometry":{"type":"Point","coordinates":[0.5,0.5]},"properties":{}}]}"#).unwrap();
+        let (w, h) = (800.0, 600.0);
+        let cam = Camera::fit(&feats, w, h);
+        let at = |lon: f64, lat: f64| cam.project(mercator(lon, lat), w, h);
+        let pick = |[x, y]: [f32; 2]| hit(feats.iter().enumerate(), &cam, w, h, x, y);
+        // inside the area, away from the point in it
+        assert_eq!(pick(at(0.1, 0.1)), Some(0));
+        // the point, drawn over the area, wins where both are under the press
+        assert_eq!(pick(at(0.5, 0.5)), Some(2));
+        // near the line but not on it, and then out of reach
+        let [x, y] = at(0.5, 2.0);
+        assert_eq!(pick([x, y + 8.0]), Some(1));
+        assert_eq!(pick([x, y + 40.0]), None);
+        // just outside the area's edge still picks it, well outside does not
+        let [x, y] = at(1.0, 0.5);
+        assert_eq!(pick([x + 6.0, y]), Some(0));
+        assert_eq!(pick([x + 60.0, y]), None);
+        // a hidden feature is not offered, so it is not picked
+        assert_eq!(hit(feats.iter().enumerate().filter(|(i, _)| *i != 2), &cam, w, h, at(0.5, 0.5)[0], at(0.5, 0.5)[1]), Some(0));
     }
 
     #[test]

@@ -1,0 +1,12 @@
+{"events": [
+  {"t": 3.0, "type": "tap", "key": "runmap"},
+  {"t": 5.0, "type": "tap", "key": "dot-0"},
+  {"t": 5.5, "type": "tap", "key": "icon:flag"},
+  {"t": 7.5, "type": "tap", "key": "feature-edit"},
+  {"t": 8.0, "type": "type", "text": " One"},
+  {"t": 8.5, "type": "tap", "key": "feature-kind"},
+  {"t": 8.8, "type": "type", "text": "report"},
+  {"t": 9.2, "type": "tap", "key": "prompt-ok"},
+  {"t": 11.5, "type": "tap", "key": "dot-1"},
+  {"t": 12.0, "type": "tap", "key": "feature-delete"}
+]}

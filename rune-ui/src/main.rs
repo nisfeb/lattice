@@ -65,6 +65,8 @@ enum Prompt {
     Delete(String),
     /// The address for a link on the editor's selection.
     Link(TextEdit),
+    /// A map feature's name, kind and note: its place in the page, and the three fields.
+    Feature(usize, Box<[TextEdit; 3]>),
     /// The ship's Mapbox token, to set or, left empty, to clear.
     Token(TextEdit),
     /// A name for a copy of a page: the page as it stood, and the name.
@@ -653,6 +655,13 @@ fn confirm(s: &mut App) {
         }
         return;
     }
+    if let Prompt::Feature(at, t) = &p {
+        let [name, kind, note] = [t[0].text.trim(), t[1].text.trim(), t[2].text.as_str()];
+        let some = |v| Some(v).filter(|v: &&str| !v.is_empty());
+        let at = *at;
+        write_map(s, |body| map::set_props(body, at, &[("name", some(name)), ("kind", some(kind)), ("note", some(note))]));
+        return;
+    }
     if let Prompt::Token(t) = &p {
         let token = t.text.trim().to_owned();
         if let Some(c) = s.conn.clone() {
@@ -1044,7 +1053,7 @@ fn sync_map(s: &mut App) {
     let under: Vec<_> = map::layers(&p.body).into_iter().map(|n| (n.clone(), s.cache.get(&n).filter(|l| l.kind == "geojson").and_then(|l| map::parse(&l.body)))).collect();
     s.map = map::parse(&p.body).map(|feats| {
         let cam = old.as_ref().map_or(map::Camera { at: [0.5, 0.5], scale: 800.0 }, |m| m.cam);
-        MapView { name: p.name.clone(), rev: p.rev, feats, cam, grab: cam, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: None, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
+        MapView { name: p.name.clone(), rev: p.rev, cam, grab: cam, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()), feats, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
     });
 }
 
@@ -1207,6 +1216,11 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
             if let Some(m) = &mut s.map {
                 match d.phase {
                     Phase::Down => m.grab = m.cam,
+                    // a press that hardly moved is a press on what is under it, or on nothing
+                    Phase::Up if d.dx.hypot(d.dy) < 5.0 => {
+                        m.cam = m.grab;
+                        m.picked = map::hit(m.feats.iter().enumerate().filter(|(_, f)| !m.hidden.contains(&f.kind)), &m.cam, m.size.0, m.size.1, d.x, d.y);
+                    }
                     _ => m.cam = map::Camera::dragged(m.grab, d.dx, d.dy),
                 }
             }
@@ -1274,13 +1288,46 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
     }
     // the picked point's details
     if let Some(f) = m.picked.and_then(|i| m.feats.get(i)) {
-        let mut card = col().key("map-detail").absolute(12.0, 12.0).w(260.0).padding(12.0).gap(6.0).radius(k.radius.md).fill(c.layer_01).border(1.0, c.border_weak);
-        card = card.child(text(if f.name.is_empty() { "A point".to_owned() } else { f.name.clone() }).font(k.ty.ui_medium).color(c.text_base));
+        let mut card = col().key("map-detail").absolute(12.0, 12.0).w(290.0).padding(12.0).gap(6.0).radius(k.radius.md).fill(c.layer_01).border(1.0, c.border_weak);
+        let what = match f.geoms.first() {
+            Some(map::Geom::Line(_)) => "A line",
+            Some(map::Geom::Area(_)) => "An area",
+            _ => "A point",
+        };
+        card = card.child(text(if f.name.is_empty() { what.to_owned() } else { f.name.clone() }).font(k.ty.ui_medium).color(c.text_base));
         if !f.note.is_empty() {
             card = card.child(text(f.note.clone()).font(k.ty.small).color(c.text_muted).wrap());
         }
         for (key, v) in f.props.iter().filter(|(key, _)| key != "name" && key != "note").take(8) {
             card = card.child(row().gap(6.0).child(text(key.clone()).font(k.ty.small).color(c.text_faint)).child(text(v.clone()).font(k.ty.small).color(c.text_base).truncate().grow(1.0).min_w(0.0)));
+        }
+        if map_changes(s) {
+            let at = f.at;
+            let small = |label: &str| Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost);
+            // each press here is a change to the page, saved at once, as on the web
+            let set = move |key: &'static str, v: Option<&'static str>| move |s: &mut App| drop(write_map(s, |body| map::set_props(body, at, &[(key, v)])));
+            let mut icons = row().key("map-icons").w_full().gap(2.0).flex_wrap();
+            for (name, glyph) in map::ICONS {
+                icons = icons.child(small(if glyph.is_empty() { "•" } else { glyph }).help(name).on_press(set("icon", Some(name))).build(k).key(format!("icon:{name}")));
+            }
+            let mut inks = row().key("map-colours").w_full().gap(6.0).center_y();
+            for ink in map::KIND_COLORS {
+                inks = inks.child(el().key(format!("colour:{ink}")).size(16.0, 16.0).radius(8.0).fill(rune::color::hex(ink).unwrap_or(c.text_accent)).label(format!("Colour {ink}")).on_press(set("color", Some(ink))));
+            }
+            card = card
+                .child(icons.child(small("No icon").on_press(set("icon", None)).build(k).key("icon:none")))
+                .child(inks.child(small("Kind's colour").on_press(set("color", None)).build(k).key("colour:none")))
+                .child(
+                    row().gap(6.0)
+                        .child(Button::new("Edit").control_size(ControlSize::Small).help("Its name, kind and note").on_press(move |s: &mut App| ask_feature(s, at)).build(k).key("feature-edit"))
+                        .child(Button::new("Delete").control_size(ControlSize::Small).variant(ButtonVariant::Danger).on_press(move |s: &mut App| {
+                            if write_map(s, |body| map::remove(body, at)) {
+                                if let Some(m) = &mut s.map {
+                                    m.picked = None;
+                                }
+                            }
+                        }).build(k).key("feature-delete")),
+                );
         }
         view = view.child(card);
     }
@@ -1422,16 +1469,38 @@ fn fit_map(m: &MapView) -> map::Camera {
 /// Sets the base map of the map in front to the next one and saves the
 /// page, in the layout the web client writes a map in.
 fn next_base(s: &mut App) {
-    let (Some(p), Some(m)) = (s.open.clone(), &s.map) else { return };
-    if s.editing || m.name != p.name || kept_by_orrery(s) {
-        s.note = "this map is not changed here".into();
-        return;
-    }
+    let Some(m) = &s.map else { return };
     let at = map::STYLES.iter().position(|x| *x == m.style).unwrap_or(0);
     let style = map::STYLES[(at + 1) % map::STYLES.len()];
-    let Some(body) = map::with_base(&p.body, style) else {
-        s.note = "this map is too large to change here".into();
-        return;
+    write_map(s, |body| map::with_base(body, style));
+}
+
+/// Whether the map in front may be changed here: one of the owner's own
+/// pages, being read, and not the map orrery keeps.
+fn map_changes(s: &App) -> bool {
+    usable(s, "map-base") && !kept_by_orrery(s) && !s.save_req.is_pending()
+}
+
+/// Asks for the name, kind and note of the feature at `at` in the page.
+fn ask_feature(s: &mut App, at: usize) {
+    let Some(f) = s.map.as_ref().and_then(|m| m.feats.iter().find(|f| f.at == at)) else { return };
+    let mut t = [TextEdit::new(f.name.as_str()), TextEdit::new(f.kind.as_str()), TextEdit::new(f.note.as_str())];
+    t[0].focused = true;
+    s.prompt = Some(Prompt::Feature(at, Box::new(t)));
+}
+
+/// Changes the map in front and saves the page, in the layout the web
+/// client writes a map in. Every change to a map goes through here.
+/// `false` when nothing was changed.
+fn write_map(s: &mut App, change: impl FnOnce(&str) -> Option<String>) -> bool {
+    let Some(p) = s.open.clone() else { return false };
+    if !map_changes(s) {
+        s.note = "this map is not changed here".into();
+        return false;
+    }
+    let Some(body) = change(&p.body) else {
+        s.note = "that change was not made: the map is too large, or is not one lattice writes".into();
+        return false;
     };
     let base = p.rev;
     let page = Page { body, ..p };
@@ -1442,6 +1511,7 @@ fn next_base(s: &mut App) {
         }),
         None => landed(s, Page { rev: base + 1, ..page }),
     }
+    true
 }
 
 /// Asks for the ship's Mapbox token.
@@ -3517,6 +3587,14 @@ fn login_view(s: &App, k: &Kit) -> El {
     col().w_full().h_full().center().fill(c.bg_base).child(card)
 }
 
+/// One of the open feature prompt's fields: its name, kind or note.
+fn feature_field(s: &mut App, i: usize) -> &mut TextEdit {
+    match s.prompt.as_mut().expect("a prompt is open") {
+        Prompt::Feature(_, t) => &mut t[i],
+        _ => unreachable!("the feature prompt is open"),
+    }
+}
+
 fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
     let Some(p) = &s.prompt else { return };
     let field = |t: &TextEdit, hint: &str| {
@@ -3524,7 +3602,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
                 Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) => t,
-                Prompt::Delete(_) => unreachable!("a delete has no field"),
+                Prompt::Delete(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
             .build(k)
@@ -3539,6 +3617,15 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::Duplicate(_, t) => ("Duplicate this page as", field(t, "folder/name"), "Duplicate", ButtonVariant::Contrast),
         // kept on the ship, which never shows it again. Typed in the clear here: it is pasted, not remembered
         Prompt::Token(t) => ("The ship's Mapbox token", field(t, "pk... to set it, or nothing to clear it"), "Set", ButtonVariant::Contrast),
+        Prompt::Feature(_, t) => {
+            let body = col()
+                .w_full()
+                .gap(10.0)
+                .child(TextInput::new(&t[0]).label("Name").placeholder("Name").on_edit(|s: &mut App| feature_field(s, 0)).on_submit(|s: &mut App, _| confirm(s)).build(k).w_full().key("prompt-field"))
+                .child(TextInput::new(&t[1]).label("Kind").placeholder("place, report, person...").on_edit(|s: &mut App| feature_field(s, 1)).on_submit(|s: &mut App, _| confirm(s)).build(k).w_full().key("feature-kind"))
+                .child(TextArea::new(&t[2]).label("Note (markdown)").placeholder("A note, in markdown").rows(4).on_edit(|s: &mut App| feature_field(s, 2)).build(k).w_full().key("feature-note"));
+            ("This feature", body, "Save", ButtonVariant::Contrast)
+        }
         Prompt::Delete(n) => {
             let held = under(&s.names, n).len();
             let (ask, says) = if s.names.contains(n) { ("Delete this page?", n.clone()) } else { ("Delete this folder?", format!("{n} and the {held} pages in it")) };
@@ -5656,6 +5743,36 @@ mod tests {
         assert!(cam.scale > 10_000.0 && (cam.at[0] - map::mercator(-73.96, 40.74)[0]).abs() < 0.001, "{cam:?}");
         // the layers are only shown: the page is as it was
         assert_eq!(s.open.as_ref().unwrap().body, SAMPLE.iter().find(|(n, _)| *n == "region").unwrap().1);
+    }
+
+    #[test]
+    fn a_map_feature_is_edited_and_deleted_and_the_rest_is_kept() {
+        let mut s = sample("places");
+        let shapes = s.map.as_ref().unwrap().feats.len();
+        s.map.as_mut().unwrap().picked = Some(2);
+        // the line's name, kind and note, through the prompt
+        ask_feature(&mut s, 2);
+        let Some(Prompt::Feature(2, t)) = &mut s.prompt else { panic!("the feature prompt opens") };
+        assert_eq!(t[0].text, "A walk");
+        (t[0].text, t[1].text, t[2].text) = (" The walk ".into(), "route".into(), "by the river\nthen back".into());
+        confirm(&mut s);
+        let m = s.map.as_ref().unwrap();
+        assert_eq!((m.feats[2].name.as_str(), m.feats[2].kind.as_str(), m.feats[2].note.as_str()), ("The walk", "route", "by the river\nthen back"));
+        assert_eq!((m.picked, m.feats.len()), (Some(2), shapes), "it stays picked and nothing else moved");
+        assert_eq!(m.feats[0].name, "Midtown");
+        // emptied fields take the properties away
+        ask_feature(&mut s, 2);
+        let Some(Prompt::Feature(_, t)) = &mut s.prompt else { panic!() };
+        (t[1].text, t[2].text) = (" ".into(), String::new());
+        confirm(&mut s);
+        assert!(!s.open.as_ref().unwrap().body.contains("route") && !s.open.as_ref().unwrap().body.contains("river"));
+        // deleted: the others are there, in order
+        assert!(write_map(&mut s, |b| map::remove(b, 2)));
+        assert_eq!(s.map.as_ref().unwrap().feats.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["Midtown", "Brooklyn", "The park"]);
+        // while the page is being edited as source the map is not changed under it
+        s.editing = true;
+        assert!(!write_map(&mut s, |b| map::remove(b, 0)));
+        assert_eq!(s.map.as_ref().unwrap().feats.len(), 3);
     }
 
     #[test]
