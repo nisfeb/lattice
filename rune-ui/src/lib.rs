@@ -15,6 +15,7 @@ mod local;
 mod mounts;
 mod funcs;
 mod head;
+mod linkedit;
 mod map;
 mod marks;
 mod mapio;
@@ -717,6 +718,8 @@ struct App {
     next_theme: f64,
     /// A change to the theme on its way to the ship.
     theme_put: Latest<Result<(), String>>,
+    /// The link of the rich editor that is open to its Markdown, while the caret is in it.
+    link_open: Option<linkedit::Open>,
     /// A theme being made or changed in the settings: its id, light or dark, and its name, five colours and six more as typed.
     theme_draft: Option<(String, bool, Box<[TextEdit; 12]>)>,
     /// The accent's colour as typed in the settings.
@@ -1094,6 +1097,7 @@ fn init() -> App {
         theme_put: Latest::default(),
         accent_hex: TextEdit::new(""),
         theme_draft: None,
+        link_open: None,
         marks_bad: false,
         marks_q: TextEdit::new(""),
         palette: None,
@@ -4808,6 +4812,24 @@ const SYNC_LIVE: f64 = 300.0;
 
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
+    // a link in the rich editor reads as its Markdown while the caret is in it, to be changed by typing,
+    // and is a link again once the caret has left. The page's Markdown is the same either way
+    if s.editing && s.rich {
+        match s.link_open {
+            Some(o) if linkedit::left(&s.edit, o) => {
+                linkedit::close(&mut s.edit, o);
+                s.link_open = None;
+                changed = true;
+            }
+            Some(_) => {}
+            None => {
+                s.link_open = linkedit::open(&mut s.edit);
+                changed |= s.link_open.is_some();
+            }
+        }
+    } else {
+        s.link_open = None;
+    }
     if s.editing {
         if clock >= s.next_auto {
             tx.wake_after(std::time::Duration::from_secs_f64(AUTOSAVE_AFTER));
