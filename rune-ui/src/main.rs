@@ -21,6 +21,7 @@ mod shift;
 mod styles;
 mod tex;
 mod upload;
+mod view3d;
 
 use std::collections::HashMap;
 
@@ -66,6 +67,25 @@ struct MapView {
     /// The kinds not shown. Not kept: a map opens with every kind showing, as on the web.
     hidden: std::collections::HashSet<String>,
 }
+
+/// An OpenSCAD part on screen: the page it is of, its triangles, where
+/// it is seen from, and the picture of that.
+struct PartView {
+    name: String,
+    mesh: std::sync::Arc<scadrun::Mesh>,
+    cam: view3d::Cam,
+    /// The camera when the drag in hand began.
+    grab: view3d::Cam,
+    /// A drag slides the view, where it would turn it.
+    pan: bool,
+    /// The newest picture, and the one before it, shown until the newest is ready.
+    pic: Option<rune::Image>,
+    was: Option<rune::Image>,
+}
+
+/// How big the part's picture is on the page, in points. It is drawn at twice that.
+// ponytail: one size, which fits the page's column in a window 930 points wide or more. Sized to the column if narrow windows matter
+const PART_SIZE: (f32, f32) = (600.0, 360.0);
 
 /// A spreadsheet page on screen: its sheets, the one showing, and the grid's state.
 struct SheetView {
@@ -239,6 +259,9 @@ struct App {
     /// The OpenSCAD page last asked to be drawn, and what the open one came to.
     scad_for: Option<(String, u64)>,
     scad: Option<(String, u64, scadrun::Drawn)>,
+    /// The part in 3D, and its picture being drawn: the page, the picture's size, its pixels.
+    part: Option<PartView>,
+    part_req: Latest<(String, u32, u32, Vec<u8>)>,
     /// A page of another ship that the reader said may be drawn here.
     scad_ok: Option<String>,
     /// A LaTeX page being read by pandoc: its name, its revision, and the Markdown or why there is none.
@@ -478,6 +501,8 @@ fn init() -> App {
         scad_for: None,
         scad: None,
         scad_ok: None,
+        part: None,
+        part_req: Latest::default(),
         tex_for: None,
         tex_why: None,
         comments: Vec::new(),
@@ -1056,6 +1081,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.back_req.set_waker(waker.clone());
     s.tex_req.set_waker(waker.clone());
     s.scad_req.set_waker(waker.clone());
+    s.part_req.set_waker(waker.clone());
     s.asks_req.set_waker(waker.clone());
     s.waiting_req.set_waker(waker.clone());
     s.comets_req.set_waker(waker.clone());
@@ -1193,6 +1219,17 @@ fn read_md<'a>(s: &'a App, p: &'a Page) -> Option<&'a str> {
     s.read_as.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev).map(|(_, _, t)| t.as_str())
 }
 
+/// Asks for the part's picture from where the camera now is. It is
+/// drawn on a thread of its own, and only the newest asked for is kept.
+fn draw_part(s: &mut App) {
+    let Some(v) = &s.part else { return };
+    let (w, h) = ((PART_SIZE.0 * 2.0) as u32, (PART_SIZE.1 * 2.0) as u32);
+    s.part_req.request((v.name.clone(), v.mesh.clone(), v.cam), move |(name, mesh, cam)| {
+        let px = view3d::render(&mesh, &cam, w as usize, h as usize);
+        (name, w, h, px)
+    });
+}
+
 /// Whether the open OpenSCAD page is drawn without being asked: one of
 /// this ship's own. A page of another ship runs a program on this
 /// machine over text someone else wrote, so it waits for a yes.
@@ -1206,7 +1243,7 @@ fn scad_draws(s: &App, p: &Page) -> bool {
 fn sync_scad(s: &mut App) {
     let Some(p) = s.open.as_ref().filter(|p| scad_draws(s, p)) else {
         if !s.open.as_ref().is_some_and(|p| p.kind == "scad") {
-            (s.scad_for, s.scad) = (None, None);
+            (s.scad_for, s.scad, s.part) = (None, None, None);
         }
         return;
     };
@@ -1375,6 +1412,56 @@ fn scad_view(s: &App, p: &Page, k: &Kit) -> El {
         return out.child(text("rendering\u{2026}").key("scad-status").font(k.ty.small).color(c.text_muted));
     };
     out = out.child(text(d.status.clone()).key("scad-status").font(k.ty.small).color(if d.bad { c.danger.icon } else { c.text_muted }).wrap());
+    // the part in 3D: drag to turn it, or to slide it with Pan on, and the wheel steps nearer and further
+    if let Some(v) = s.part.as_ref().filter(|v| v.name == p.name) {
+        let ready = |i: &&rune::Image| i.is_ready() && i.error().is_none();
+        let mut view = el()
+            .key("scad-3d")
+            .size(PART_SIZE.0, PART_SIZE.1)
+            .radius(k.radius.md)
+            .fill(c.layer_01)
+            .label("The part in 3D. Drag to turn it")
+            .on_drag(|s: &mut App, d, _| {
+                let Some(v) = &mut s.part else { return };
+                if d.phase == Phase::Down {
+                    v.grab = v.cam;
+                    return;
+                }
+                v.cam = v.grab;
+                if v.pan { v.cam.pan(d.dx, d.dy) } else { v.cam.orbit(d.dx, d.dy) }
+                draw_part(s);
+            })
+            .on_wheel(|s: &mut App, e: WheelEvent, _| {
+                if let Some(v) = &mut s.part {
+                    // wheel up steps nearer: a real wheel on Linux reports up as a positive dy
+                    v.cam.zoom(-e.dy);
+                }
+                draw_part(s);
+                true
+            });
+        if let Some(pic) = v.pic.as_ref().filter(ready).or(v.was.as_ref().filter(ready)) {
+            view = view.child(el().key("scad-3d-pic").absolute(0.0, 0.0).size(PART_SIZE.0, PART_SIZE.1).pixels(pic.pixels()).a11y_hidden());
+        }
+        let pan = v.pan;
+        out = out.child(view).child(
+            row()
+                .key("scad-3d-tools")
+                .gap(4.0)
+                .center_y()
+                .child(Button::new("Fit").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("See the whole part").on_press(|s: &mut App| {
+                    if let Some(v) = &mut s.part {
+                        let mesh = v.mesh.clone();
+                        v.cam.fit(&mesh);
+                    }
+                    draw_part(s);
+                }).build(k).key("scad-fit"))
+                .child(Button::new("Pan").control_size(ControlSize::Small).variant(if pan { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help("A drag slides the view, where it would turn it").on_press(|s: &mut App| {
+                    if let Some(v) = &mut s.part {
+                        v.pan = !v.pan;
+                    }
+                }).build(k).key("scad-pan")),
+        );
+    }
     if !d.lines.is_empty() {
         let mut con = col().key("scad-console").w_full().gap(1.0).padding(8.0).radius(k.radius.md).fill(c.layer_01).child(text(d.head.clone()).font(k.ty.small_medium).color(c.text_muted));
         // a model that echoes without end is not drawn to its last line
@@ -3250,9 +3337,32 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Err(e) => s.tiles_off = Some(e),
         }
     }
-    if let Some(drawn) = s.scad_req.take() {
+    if let Some(mut drawn) = s.scad_req.take() {
         changed = true;
+        // the part goes to the 3D view, seen from where the last one was when it is the same page's
+        if let Some(mesh) = drawn.2.mesh.take() {
+            let old = s.part.take().filter(|v| v.name == drawn.0);
+            let cam = old.as_ref().map_or_else(|| {
+                let mut c = view3d::Cam::default();
+                c.fit(&mesh);
+                c
+            }, |v| v.cam);
+            s.part = Some(PartView { name: drawn.0.clone(), mesh: std::sync::Arc::new(mesh), cam, grab: cam, pan: old.as_ref().is_some_and(|v| v.pan), pic: None, was: old.and_then(|v| v.pic.or(v.was)) });
+            draw_part(s);
+        } else {
+            s.part = None;
+        }
         s.scad = Some(drawn);
+    }
+    if let Some((name, w, h, px)) = s.part_req.take() {
+        changed = true;
+        if let (Some(v), Some(cache)) = (s.part.as_mut().filter(|v| v.name == name), &s.image_cache) {
+            // the one showing stays until the new one can be shown
+            if let Some(ready) = v.pic.take().filter(|i| i.is_ready() && i.error().is_none()) {
+                v.was = Some(ready);
+            }
+            v.pic = Some(cache.rgba(w, h, px));
+        }
     }
     if let Some((name, rev, got)) = s.tex_req.take() {
         changed = true;
