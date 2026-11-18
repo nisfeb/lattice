@@ -2831,6 +2831,11 @@ impl Conn {
         self.call("POST", &format!("page-save?name={}&type=md&new=1&by=rune{}", enc(&rn.name), rn.query()), Some(&format!("# {title}\n"))).map(drop)
     }
 
+    /// Makes an empty folder, shown under the names typed. Nested is fine, and one that is there already is no error.
+    pub fn folder_new(&self, rn: &RealName) -> Result<(), String> {
+        self.call("POST", &format!("folder-new?name={}{}", enc(&rn.name), rn.query()), Some("")).map(drop)
+    }
+
     pub fn rename(&self, from: &str, to: &str) -> Result<(), String> {
         self.rename_as(from, &RealName { name: to.to_owned(), dname: String::new(), dnames: String::new() })
     }
@@ -3843,6 +3848,30 @@ mod tests {
         assert!(c.know_restore("").is_err(), "a key that is not a key is refused");
         c.know_delete(&key).unwrap();
         assert!(!c.know_all().unwrap().iter().any(|k| k.key == key), "and gone after a delete");
+    }
+
+    /// An empty folder made on a ship is in the tree it then gives, with the names typed.
+    #[test]
+    #[ignore = "needs a ship: LATTICE_URL and LATTICE_COOKIE"]
+    fn live_folder_new_is_listed_empty() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let stamp = crate::api::since_epoch().unwrap().as_secs();
+        let rn = real_name(&format!("Rune Dir {stamp}/Sub Folder")).unwrap();
+        assert_eq!(rn.name, format!("rune-dir-{stamp}/sub-folder"));
+        c.folder_new(&rn).unwrap();
+        let tree = c.tree().unwrap();
+        let node = |path: &str| tree.iter().find(|n| n.path == path).unwrap_or_else(|| panic!("{path} is not in the tree"));
+        let (outer, inner) = (node(&format!("rune-dir-{stamp}")), node(&rn.name));
+        assert!(!outer.page && !inner.page, "both are folders");
+        assert_eq!((outer.dname.as_str(), inner.dname.as_str()), (format!("Rune Dir {stamp}").as_str(), "Sub Folder"), "shown as typed");
+        assert!(!tree.iter().any(|n| n.page && n.path.starts_with(&format!("rune-dir-{stamp}/"))), "and nothing is in them");
+        // made again, it is no error and nothing doubles
+        c.folder_new(&rn).unwrap();
+        assert_eq!(c.tree().unwrap().iter().filter(|n| n.path == rn.name).count(), 1);
+        // a name the ship does not take is refused
+        let bad = RealName { name: "Bad Name".into(), dname: String::new(), dnames: String::new() };
+        assert!(c.folder_new(&bad).is_err());
+        println!("folder: {}", rn.name);
     }
 
     /// The reader's bookmarks, kept on a ship and read back as the left pane reads them.

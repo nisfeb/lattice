@@ -17,6 +17,7 @@ line!(FOLDER, "lat-folder", "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 
 line!(X, "lat-x", "M6 6l12 12M18 6L6 18");
 line!(QOPEN, "lat-qopen", "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4M14 3l5 5v3M14 3v5h5M13 16a3 3 0 1 0 6 0a3 3 0 1 0-6 0M18.2 18.2L21 21");
 line!(PLUS, "lat-plus", "M12 5v14M5 12h14");
+line!(FPLUS, "lat-fplus", "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM12 10v6M9 13h6");
 line!(TPL, "lat-tpl", "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM3 9h18M9 9v12");
 line!(UPLOAD, "lat-upload", "M12 16V4M7 9l5-5 5 5M4 20h16");
 line!(UPDIR, "lat-updir", "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM12 16v-6M9 13l3-3 3 3");
@@ -65,6 +66,7 @@ pub fn tabs(showing: Half, pages: usize, knows: usize) -> [Tab; 4] {
 pub enum Do {
     Open,
     New,
+    NewFolder,
     Template,
     Upload,
     UploadFolder,
@@ -95,6 +97,7 @@ pub fn tools(memory: bool, desc: bool) -> Vec<Tool> {
     } else {
         out.push(Tool { keys: Some("Ctrl+O"), ..t(Do::Open, "jump-open", "Open a page", &QOPEN) });
         out.push(t(Do::New, "new", "New page", &PLUS));
+        out.push(t(Do::NewFolder, "new-folder", "New folder", &FPLUS));
         out.push(t(Do::Template, "new-template", "New from template", &TPL));
         out.push(t(Do::Upload, "upload-files", "Upload files", &UPLOAD));
         out.push(t(Do::UploadFolder, "upload-folder", "Upload a folder", &UPDIR));
@@ -102,6 +105,21 @@ pub fn tools(memory: bool, desc: bool) -> Vec<Tool> {
     }
     out.push(Tool { end: true, ..t(Do::Sort, "tree-sort", if desc { "Sort: name, descending" } else { "Sort: name" }, &SORT) });
     out.push(Tool { end: true, ..t(Do::Fold, "tree-fold", "Collapse all", &FOLD) });
+    out
+}
+
+/// A folder's path and every folder it is in, outermost first: what the
+/// tree needs rows for when a folder holds no page yet.
+pub fn chain(path: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    for part in path.split('/') {
+        let end = from + part.len();
+        if !part.is_empty() {
+            out.push(&path[..end]);
+        }
+        from = end + 1;
+    }
     out
 }
 
@@ -158,7 +176,8 @@ mod tests {
     fn the_tools_in_the_web_clients_order() {
         let t = tools(false, false);
         let keys: Vec<_> = t.iter().map(|t| t.key).collect();
-        assert_eq!(keys, ["jump-open", "new", "new-template", "upload-files", "upload-folder", "capture", "tree-sort", "tree-fold"]);
+        assert_eq!(keys, ["jump-open", "new", "new-folder", "new-template", "upload-files", "upload-folder", "capture", "tree-sort", "tree-fold"]);
+        assert_eq!(t[2].name, "New folder");
         let end: Vec<_> = t.iter().filter(|t| t.end).map(|t| t.act).collect();
         assert_eq!(end, [Do::Sort, Do::Fold]);
         assert_eq!(t[0].keys, Some("Ctrl+O"));
@@ -172,6 +191,14 @@ mod tests {
         assert_eq!(acts, [Do::New, Do::Sort, Do::Fold]);
         assert_eq!(t[0].name, "New memory");
         assert_eq!(t[0].key, "new");
+    }
+
+    #[test]
+    fn a_folder_and_the_folders_it_is_in() {
+        assert_eq!(chain("a/b/c"), ["a", "a/b", "a/b/c"]);
+        assert_eq!(chain("top"), ["top"]);
+        assert_eq!(chain(""), Vec::<&str>::new());
+        assert_eq!(chain("a//b/"), ["a", "a//b"], "an empty part makes no row");
     }
 
     #[test]

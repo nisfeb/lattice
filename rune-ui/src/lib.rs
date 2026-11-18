@@ -319,6 +319,8 @@ enum Prompt {
     Restore(Box<vault::Archive>),
     /// A value typed for an OpenSCAD parameter: its name, which part of a vector, and the text.
     Param(String, Option<usize>, TextEdit),
+    /// A folder to make, empty.
+    NewFolder(TextEdit),
     /// A folder for a bookmark: its address, and the folder typed.
     MarkMove(String, TextEdit),
     /// A bookmark to remove: its address, and what it is shown as.
@@ -343,6 +345,8 @@ impl Tab {
 enum Op {
     /// A core rule an agent key wrote was kept or untagged: what to say.
     Cored(String),
+    /// An empty folder was made.
+    FolderMade(String),
     /// The bookmarks were changed: what to say, and the list as it now stands.
     Marks(String, Vec<api::Bookmark>),
     /// A deleted memory was brought back from the trash.
@@ -621,6 +625,8 @@ struct App {
     note: String,
     /// Every page's name, for the switcher.
     names: Vec<String>,
+    /// The folders among the pages, those with no page in them too: the tree shows them all.
+    dirs: Vec<String>,
     /// The quick switcher: its query while open, and the row the arrows are on.
     jump: Option<TextEdit>,
     jump_at: usize,
@@ -713,6 +719,8 @@ fn sort_files(m: &mut Files, desc: bool) {
 
 fn files_of(nodes: Vec<Node>, keep: &Files, desc: bool) -> Files {
     let shown: Vec<(String, String)> = nodes.iter().filter(|n| !n.dname.is_empty()).map(|n| (n.path.clone(), n.dname.clone())).collect();
+    // a folder with no page in it is a row too
+    let dirs: Vec<String> = nodes.iter().filter(|n| !n.page).map(|n| n.path.clone()).collect();
     let pages: Vec<Node> = nodes.into_iter().filter(|n| n.page).collect();
     // a refreshed tree keeps what was open and selected
     let open: Vec<String> = pages
@@ -721,6 +729,21 @@ fn files_of(nodes: Vec<Node>, keep: &Files, desc: bool) -> Files {
         .filter(|d| keep.is_expanded(d))
         .collect();
     let mut m = FileTree::new().build(pages.into_iter().map(|n| (n.path.clone(), n)));
+    let mut added = false;
+    for dir in &dirs {
+        let mut parent: Option<&str> = None;
+        for path in head::chain(dir) {
+            if !m.contains(path) {
+                let name = path.rsplit('/').next().unwrap_or(path).to_owned();
+                added |= m.insert(parent, path, FileNode { name, path: path.to_owned(), dir: true, data: None });
+            }
+            parent = Some(path);
+        }
+    }
+    if added && !desc {
+        // a row put in by hand went last: back into the order the rest are in
+        m.sort_by(|a, b| head::order((a.dir, head::sort_key(&a.path, &a.name)), (b.dir, head::sort_key(&b.path, &b.name)), false));
+    }
     sort_files(&mut m, desc);
     // a row shows the name its page or folder was given. A row that stands
     // for several folders at once (a/b/c) keeps its path.
@@ -891,6 +914,7 @@ fn init() -> App {
         names: Vec::new(),
         jump: None,
         jump_at: 0,
+        dirs: Vec::new(),
         searching: false,
         squery: TextEdit::new(""),
         shits: Vec::new(),
@@ -1292,7 +1316,7 @@ fn confirm(s: &mut App) {
     }
     // a typed name becomes a path and the names to show (api::real_name)
     let typed = match &p {
-        Prompt::New(t) | Prompt::Rename(_, t) => Some(t.text.clone()),
+        Prompt::New(t) | Prompt::Rename(_, t) | Prompt::NewFolder(t) => Some(t.text.clone()),
         _ => None,
     };
     let rn = match typed.as_deref().map(api::real_name) {
@@ -1305,6 +1329,13 @@ fn confirm(s: &mut App) {
     };
     let op = match p {
         Prompt::New(_) => Op::Created(rn.name.clone()),
+        Prompt::NewFolder(_) if s.memory => return,
+        Prompt::NewFolder(_) if s.offline.is_some() => {
+            s.note = "a new folder needs the ship, which does not answer".into();
+            return;
+        }
+        Prompt::NewFolder(_) if rn.name.is_empty() => return,
+        Prompt::NewFolder(_) => Op::FolderMade(rn.name.clone()),
         Prompt::Rename(from, _) if rn.name != from || !rn.dnames.is_empty() => Op::Renamed(from, rn.name.clone()),
         Prompt::Delete(name) => Op::Deleted(name),
         _ => return,
@@ -1352,6 +1383,7 @@ fn confirm(s: &mut App) {
                 Op::Deleted(n) if memory => c.know_delete(&format!("/{n}"))?,
                 Op::Renamed(a, b) if memory => c.know_move(&format!("/{a}"), &format!("/{b}"))?,
                 Op::Created(_) => c.create_as(&rn)?,
+                Op::FolderMade(_) => c.folder_new(&rn)?,
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
@@ -1438,6 +1470,17 @@ fn applied(s: &mut App, op: Op) {
         Op::Marks(say, list) => {
             (s.note, s.marks, s.marks_bad) = (say, Some(list), false);
             return;
+        }
+        Op::FolderMade(n) => {
+            if !s.dirs.contains(&n) {
+                s.dirs.push(n.clone());
+            }
+            // the folder is what shows, as when its row is pressed: a page can be made in it from there
+            if !s.editing {
+                (s.open, s.old, s.want, s.remote) = (None, None, None, None);
+                s.folder = Some(n);
+            }
+            s.note = "folder created".into();
         }
         Op::MapIn(feats, say) => {
             // the page may have moved on while the file was read: it is added to what is there now
@@ -1590,10 +1633,13 @@ fn refresh_tree(s: &mut App) {
         let mut nodes: Vec<Node> = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: s.cache.get(p).map_or_else(|| "md".into(), |c| c.kind.clone()), rev: 1, dname: s.dnames.get(p).cloned().unwrap_or_default(), ..Node::default() }).collect();
         // the folders that were given a name to show
         nodes.extend(s.dnames.iter().filter(|(p, _)| !s.names.contains(p)).map(|(p, d)| Node { path: p.clone(), dname: d.clone(), ..Node::default() }));
+        if !s.memory {
+            nodes.extend(s.dirs.iter().filter(|d| !s.dnames.contains_key(*d)).map(|d| Node { path: d.clone(), ..Node::default() }));
+        }
         s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
-    if s.searching {
-        run_search(s);
-    }
+        if s.searching {
+            run_search(s);
+        }
         s.files.expand_all();
         if let Some(p) = &s.open {
             s.files.select(&p.name);
@@ -4703,10 +4749,11 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 }
                 let first = s.files.is_empty();
                 s.names = nodes.iter().filter(|n| n.page).map(|n| n.path.clone()).collect();
+                s.dirs = nodes.iter().filter(|n| !n.page).map(|n| n.path.clone()).collect();
                 s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
-    if s.searching {
-        run_search(s);
-    }
+                if s.searching {
+                    run_search(s);
+                }
                 if first {
                     s.files.expand_all();
                 }
@@ -7527,7 +7574,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         TextInput::new(t)
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
-                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) => t,
+                Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::NewFolder(t) => t,
                 Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
@@ -7537,6 +7584,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
     };
     let (title, body, verb, variant) = match p {
         Prompt::New(t) => ("New page", field(t, "folder/name"), "Create", ButtonVariant::Contrast),
+        Prompt::NewFolder(t) => ("New folder", field(t, "A folder's name, as notes or notes/sub"), "Create", ButtonVariant::Contrast),
         Prompt::Rename(_, t) => ("Rename or move", field(t, "folder/name"), "Rename", ButtonVariant::Contrast),
         Prompt::Link(t) => ("Link the selection to", field(t, "https://"), "Link", ButtonVariant::Contrast),
         Prompt::Ask(_, t) => ("Ask for edit access", field(t, "A short note, if you like"), "Ask", ButtonVariant::Contrast),
@@ -8802,6 +8850,12 @@ fn head_go(s: &mut App, act: head::Do, tx: &mut Tx) {
             (s.jump, s.jump_at) = (Some(q), 0);
         }
         Do::New => ask_new(s),
+        Do::NewFolder => {
+            // it starts in the folder showing, as the web client's does
+            let mut t = TextEdit::new(s.folder.as_ref().filter(|_| s.open.is_none()).map_or(String::new(), |f| format!("{f}/")));
+            t.focused = true;
+            s.prompt = Some(Prompt::NewFolder(t));
+        }
         Do::Template => ask_template(s),
         Do::Upload => ask_upload(s, false, tx),
         Do::UploadFolder => ask_upload(s, true, tx),

@@ -1,0 +1,9 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 1.5, "type": "tap", "key": "new-folder"},
+  {"t": 2.5, "type": "type", "text": "Plans/Next Year"},
+  {"t": 3.5, "type": "key", "name": "Enter"},
+  {"t": 6.0, "type": "tap", "key": "new"},
+  {"t": 7.0, "type": "type", "text": "first"},
+  {"t": 8.0, "type": "key", "name": "Enter"}
+]}
