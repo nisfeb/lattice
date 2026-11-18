@@ -6,6 +6,7 @@
 
 mod api;
 mod calc;
+mod code;
 mod formula;
 mod html;
 mod funcs;
@@ -2605,6 +2606,34 @@ fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
         None => Vec::new(),
     };
     Markdown::new(src).selectable(true).on_link_tx(follow).images(move |src| pics.get(src).cloned()).highlights(marks).build(k)
+}
+
+/// The colours of a page's source, by its kind: Rune's own lexers for
+/// the kinds they know, and the web client's own grammars, ported in
+/// `code.rs`, for Hoon, OpenSCAD, LaTeX and gemtext. Colour only, so
+/// nothing moves as it is typed. Plain text has none.
+fn code_spans(kind: &str, text: &str, k: &Kit) -> Vec<Span> {
+    let theme = SyntaxTheme::from_kit(k);
+    if !code::knows(kind) {
+        let lang = match kind {
+            "md" => Some("markdown"),
+            "geojson" => Some("json"),
+            "html" | "fods" | "fodt" | "svg" => Some("html"),
+            "text" => None,
+            other => Some(other),
+        };
+        return theme.spans(&syntax::highlight(lang, text), 0);
+    }
+    // the last page coloured is kept, so a frame that changes nothing reads nothing again
+    thread_local! {
+        static LAST: std::cell::RefCell<(String, String, Vec<syntax::Highlight>)> = const { std::cell::RefCell::new((String::new(), String::new(), Vec::new())) };
+    }
+    LAST.with_borrow_mut(|last| {
+        if last.0 != kind || last.1 != text {
+            *last = (kind.to_owned(), text.to_owned(), code::highlight(kind, text).into_iter().map(|(r, s)| (r, syntax::Paint::Kind(s))).collect());
+        }
+        theme.spans(&last.2, 0)
+    })
 }
 
 /// Where `query` is found in a page's text as it is read: any case,
@@ -5809,7 +5838,7 @@ fn page_body(s: &App, k: &Kit) -> El {
     }
     if s.editing {
         // the source, coloured as Markdown: colour only, so nothing moves as it is typed
-        let mut marks = SyntaxTheme::from_kit(k).spans(&syntax::highlight(Some("markdown"), &s.edit.text), 0);
+        let mut marks = code_spans(&p.kind, &s.edit.text, k);
         marks.extend(find_spans(s, k));
         let source = TextArea::new(&s.edit).label("Page source").decorations(marks).on_edit(|s: &mut App| &mut s.edit).on_key(editor_key).build(k).key(FIELD).w_full().h_full().min_h(0.0);
         let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
@@ -5829,14 +5858,8 @@ fn page_body(s: &App, k: &Kit) -> El {
         reader(body, s, k, true)
     } else {
         // other kinds draw as their source, coloured, until each has a native view
-        let lang = match p.kind.as_str() {
-            "geojson" => Some("json"),
-            "html" | "fods" | "svg" => Some("html"),
-            "hoon" | "scad" | "tex" | "gmi" | "text" => None,
-            other => Some(other),
-        };
         let shown = source_shown(&p.body);
-        let mut spans = SyntaxTheme::from_kit(k).spans(&syntax::highlight(lang, shown), 0);
+        let mut spans = code_spans(&p.kind, shown, k);
         if s.find.is_some() && !s.memory {
             spans.extend(source_matches(s).into_iter().enumerate().map(|(i, r)| Span::new(r.start, r.end).bg(k.c.text_accent.alpha(if i == s.find_at { 0.55 } else { 0.22 }), 1.0)));
         }
