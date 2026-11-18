@@ -7851,7 +7851,7 @@ fn ask_delete(s: &mut App) {
 fn sidebar(s: &App, k: &Kit) -> El {
     let q = s.query.text.trim().to_lowercase();
     let tree = Tree::new(|s: &App| &s.files, |s: &mut App| &mut s.files, |n: &FileNode<Node>| n.name.as_str())
-        .name("Pages")
+        .name(if s.memory { "Memories" } else { "Pages" })
         .row(move |n, r| TreeItem::file(n, r).highlight(q.clone()))
         // one click opens a page, as the web client's tree does
         .on_select(|s: &mut App, id, _| {
