@@ -62,6 +62,9 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, png(int(z), int(x), int(y)), 'image/png')
         if p == 'know-all': return self.send(200, json.dumps({"items":[{"key":k,"body":v,"tags":[],"updated":"~2026.11.17"} for k, v in KNOWS.items()]}))
         if p == 'shared-with-me': return self.send(200, json.dumps([{"host":e["host"],"path":e["path"],"mode":e["mode"],"when":"~2026.11.18"} for e in SHARED]))
+        if p == 'folder-pages':
+            if not any(e["host"] == q.get('host', [''])[0] and e["path"].endswith(q.get('path', [''])[0] + '/dir-index') for e in SHARED): return self.send(404, 'the folder does not read')
+            return self.send(200, json.dumps([{"key": q['path'][0] + "/bread", "title": "Bread", "when": 1}, {"key": q['path'][0] + "/soup", "title": "", "when": 2}]))
         if p == 'browse-file':
             e = next((e for e in SHARED if e["host"] == q.get('ship', [''])[0] and e["path"] == q.get('path', [''])[0]), None)
             if not e or e["path"].endswith('/dir-index'): return self.send(404, 'not a file')
@@ -112,6 +115,11 @@ def do_POST(self):
         if not l: return self.send(404, 'no such link')
         SHARED.append(l)
         sys.stderr.write("unlinked %s\n" % q['name'][0])
+        return self.send(200, '{"ok":true}')
+    if p == 'shared-with-me-del':
+        e = next((e for e in SHARED if e["host"] == q['host'][0] and e["path"] == q['path'][0]), None)
+        if e: SHARED.remove(e)
+        sys.stderr.write("forgot %s %s\n" % (q['host'][0], q['path'][0]))
         return self.send(200, '{"ok":true}')
     if p == 'page-save' and q['name'][0] in LINKS:
         l = LINKS[q['name'][0]]

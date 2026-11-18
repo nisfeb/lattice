@@ -337,6 +337,8 @@ enum Prompt {
     LinkIn(Shared, TextEdit),
     /// A bookmark to remove: its address, and what it is shown as.
     MarkDrop(String, String),
+    /// Taking a notice off shared with me, asked first.
+    Forget(Shared),
 }
 
 /// A tab that is not in front: the pages it went through, and which of
@@ -388,6 +390,8 @@ enum Op {
     Restored(String),
     /// A memory's tag was put on or taken off: the memory, the tag, which.
     Tagged(String, String, bool),
+    /// A notice was taken off shared with me: what to say.
+    Forgot(String),
     /// A shared page was moved into the tree as a link: where, and whose it is. And a link moved back.
     Linked(String, String),
     Unlinked(String),
@@ -702,6 +706,9 @@ struct App {
     /// The bookmarks the reader keeps, once read.
     marks: Option<Vec<api::Bookmark>>,
     marks_req: Latest<Result<Vec<api::Bookmark>, String>>,
+    /// The pages of each folder shared whole, by the folder's row in the tree, once read.
+    folds: HashMap<String, Vec<api::FoldPage>>,
+    folds_req: Latest<Vec<(String, Vec<api::FoldPage>)>>,
     /// The pages of the tree that are links to pages other ships shared, by name.
     links: HashMap<String, api::LinkTo>,
     /// The ship's word on themes, and when it is asked next.
@@ -776,45 +783,79 @@ fn sort_files(m: &mut Files, desc: bool) {
     m.sort_by(|a, b| head::order((a.dir, head::sort_key(&a.path, &a.name)), (b.dir, head::sort_key(&b.path, &b.name)), desc));
 }
 
-/// The rows of shared with me that are folded shut now, to leave them so when the tree is made again.
-fn shared_shut(s: &App) -> Vec<String> {
+/// The folders of shared with me as they stand now, each open or shut, to leave them so when the tree is made again.
+fn shared_shut(s: &App) -> Vec<(String, bool)> {
     let mut ids = vec![swm::ROOT.to_owned()];
-    ids.extend(swm::hosts(&s.shared).into_iter().map(|(h, _)| swm::host_id(h)));
-    ids.retain(|id| s.files.contains(id) && !s.files.is_expanded(id));
-    ids
+    for (h, entries) in swm::hosts(&s.shared) {
+        ids.push(swm::host_id(h));
+        ids.extend(entries.into_iter().filter(|sh| swm::is_dir(&sh.path)).map(swm::row_id));
+    }
+    ids.into_iter().filter(|id| s.files.contains(id)).map(|id| (s.files.is_expanded(&id), id)).map(|(open, id)| (id, open)).collect()
 }
 
 /// Puts shared with me at the foot of the pages' tree, as the web client
 /// draws it: the folder, a folder for each ship, and each entry by its
-/// name there. It stands only while something is shared, and never among the memories.
-fn graft_shared(s: &mut App, shut: &[String]) {
-    if s.memory || s.files.contains(swm::ROOT) {
+/// name there. A folder shared whole unfolds to its pages, shut until
+/// opened. It stands only while something is shared, and never among the memories.
+fn graft_shared(s: &mut App, was: &[(String, bool)]) {
+    if s.memory || s.files.contains(swm::ROOT) || s.shared.is_empty() {
         return;
     }
-    let (list, m) = (&s.shared, &mut s.files);
-    if list.is_empty() {
-        return;
-    }
-    let folder = |name: &str, path: &str| FileNode { name: name.to_owned(), path: path.to_owned(), dir: true, data: None };
-    m.insert(None, swm::ROOT, folder(swm::LABEL, swm::ROOT));
+    let (list, folds, m) = (&s.shared, &s.folds, &mut s.files);
+    let open = |id: &str, unless: bool| was.iter().find(|(x, _)| x == id).map_or(unless, |(_, o)| *o);
+    let node = |name: &str, path: &str, dir: bool| FileNode { name: name.to_owned(), path: path.to_owned(), dir, data: None };
+    m.insert(None, swm::ROOT, node(swm::LABEL, swm::ROOT, true));
     for (host, entries) in swm::hosts(list) {
         let hid = swm::host_id(host);
-        m.insert(Some(swm::ROOT), hid.clone(), folder(host, &hid));
+        m.insert(Some(swm::ROOT), hid.clone(), node(host, &hid, true));
         for sh in entries {
             let id = swm::row_id(sh);
-            m.insert(Some(hid.as_str()), id.clone(), FileNode { name: swm::name(&sh.path), path: id, dir: false, data: None });
+            let dir = swm::is_dir(&sh.path);
+            m.insert(Some(hid.as_str()), id.clone(), node(&swm::name(&sh.path), &id, dir));
+            if dir {
+                for p in folds.get(&id).map_or(&[][..], Vec::as_slice) {
+                    let pid = swm::page_id(sh, &p.key);
+                    m.insert(Some(id.as_str()), pid.clone(), node(&swm::page_label(&p.key, &p.title), &pid, false));
+                }
+                m.set_expanded(&id, open(&id, false));
+            }
         }
-        m.set_expanded(&hid, !shut.contains(&hid));
+        m.set_expanded(&hid, open(&hid, true));
     }
-    m.set_expanded(swm::ROOT, !shut.iter().any(|x| x == swm::ROOT));
+    m.set_expanded(swm::ROOT, open(swm::ROOT, true));
 }
 
-/// A row of shared with me, pressed: a page is read from its host, and a folder at its address.
+/// Reads the pages of each folder shared whole, one request after
+/// another off the window's thread. A folder that does not read has no pages under it.
+// ponytail: every folder is read when the list lands, a dozen at most. Read one when it is first opened if lists grow long
+fn load_folds(s: &mut App) {
+    let dirs: Vec<(String, String, String)> = s.shared.iter().filter_map(|sh| swm::folder(&sh.path).map(|f| (swm::row_id(sh), sh.host.clone(), f.to_owned()))).take(12).collect();
+    let Some(c) = s.conn.clone().filter(|_| !dirs.is_empty()) else { return };
+    s.folds_req.request((c, dirs), |(c, dirs)| dirs.into_iter().filter_map(|(id, host, folder)| c.folder_pages(&host, &folder).ok().map(|pages| (id, pages))).collect());
+}
+
+/// A row of shared with me, pressed: a page is read from its host, and a
+/// folder, or a page of one, at its address. The folder itself and a ship's only fold.
 fn open_shared(s: &mut App, id: &str) {
-    let Some(sh) = swm::at(&s.shared, id).cloned() else { return };
-    match swm::address(&sh.host, &sh.path) {
+    let Some((sh, page)) = swm::at(&s.shared, id).map(|(sh, page)| (sh.clone(), page.map(str::to_owned))) else { return };
+    match swm::row_address(&sh, page.as_deref()) {
         Some(url) => urb_go(s, Some(url)),
         None => open_remote(s, sh),
+    }
+}
+
+/// Takes an entry off shared with me. Nothing is deleted: the page is its
+/// host's, and the grant stands. It comes back if it is shared again.
+fn forget_shared(s: &mut App, sh: Shared) {
+    match s.conn.clone() {
+        Some(c) => s.op_req.request((c, sh), |(c, sh)| {
+            c.shared_forget(&sh)?;
+            Ok(Op::Forgot(format!("removed {} from shared with me. Nothing was deleted: it is {}'s", swm::name(&sh.path), sh.host)))
+        }),
+        None => {
+            s.shared.retain(|x| *x != sh);
+            redraw_tree(s, false);
+        }
     }
 }
 
@@ -1038,6 +1079,8 @@ fn init() -> App {
         marks: None,
         marks_req: Latest::default(),
         links: HashMap::new(),
+        folds: HashMap::new(),
+        folds_req: Latest::default(),
         theme_req: Latest::default(),
         next_theme: 0.0,
         font_set: APP_FONT.to_owned(),
@@ -1080,7 +1123,7 @@ fn browse_sample(s: &mut App) {
         s.shared = vec![Shared { host: "~sampel-palnet".into(), path: "/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/plans/trip/code".into(), mode: "edit".into(), when: "~2026.11.16..18.5.0".into() }];
         // and one shared read-only, whose host can be asked for more
         s.shared.push(Shared { host: "~sampel-palnet".into(), path: "/apps/shell/desks/lattice.desk/desk/data/lattice.lattice_app/page/plans/budget/code".into(), mode: "read".into(), when: "~2026.11.16..8.0.0".into() });
-        graft_shared(s, &[]);
+        redraw_tree(s, true);
         s.held = vec![Comment { page: "welcome".into(), id: "0v1.sample".into(), author: "~doznec-salfun-naptul-habrys--todlux-mosmep-linsub-binzod".into(), when: "~2026.11.17..9.30.0".into(), body: "Held until you say yes.".into() }];
         s.notices = vec![
             Notice { id: "0v1.note".into(), kind: "comment".into(), when: "~2026.11.17..9.31.0".into(), who: "~sampel-palnet".into(), host: "~zod".into(), place: "notes/today".into(), body: "A good day by the sound of it.".into(), ..Notice::default() },
@@ -1326,6 +1369,10 @@ fn confirm(s: &mut App) {
         mark_change(s, marks::Change::Move(url.clone(), t.text.trim().to_owned()));
         return;
     }
+    if let Prompt::Forget(sh) = &p {
+        forget_shared(s, sh.clone());
+        return;
+    }
     if let Prompt::MarkDrop(url, _) = &p {
         mark_change(s, marks::Change::Drop(url.clone()));
         return;
@@ -1509,7 +1556,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) | Op::Linked(..) | Op::Unlinked(..) => {}
+                Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) | Op::Linked(..) | Op::Unlinked(..) | Op::Forgot(..) => {}
             }
             Ok(op)
         }),
@@ -1587,6 +1634,11 @@ fn applied(s: &mut App, op: Op) {
         }
         Op::Said(say) => {
             s.note = say;
+            return;
+        }
+        Op::Forgot(say) => {
+            s.note = say;
+            load_shared(s);
             return;
         }
         Op::Linked(to, host) => {
@@ -1761,6 +1813,33 @@ fn applied(s: &mut App, op: Op) {
     refresh_tree(s);
 }
 
+/// Draws the tree again from what is held here, with no ship asked: the
+/// pages and folders known, and shared with me at its foot. `all` opens
+/// every folder, as a tree first drawn with no ship is. Otherwise each stays as it was.
+fn redraw_tree(s: &mut App, all: bool) {
+    let mut nodes: Vec<Node> = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: s.cache.get(p).map_or_else(|| "md".into(), |c| c.kind.clone()), rev: 1, dname: s.dnames.get(p).cloned().unwrap_or_default(), ..Node::default() }).collect();
+    // the folders that were given a name to show
+    nodes.extend(s.dnames.iter().filter(|(p, _)| !s.names.contains(p)).map(|(p, d)| Node { path: p.clone(), dname: d.clone(), ..Node::default() }));
+    if !s.memory {
+        nodes.extend(s.dirs.iter().filter(|d| !s.dnames.contains_key(*d)).map(|d| Node { path: d.clone(), ..Node::default() }));
+    }
+    let shut = shared_shut(s);
+    s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
+    if s.over == Some(Over::Search) {
+        run_search(s);
+    }
+    if all {
+        s.files.expand_all();
+    }
+    graft_shared(s, &shut);
+    if let Some(p) = &s.open {
+        s.files.select(&p.name);
+    }
+    if !s.query.text.trim().is_empty() {
+        refilter(s);
+    }
+}
+
 /// Shows the tree as it now stands: read again from the ship, or built
 /// from the names on sample pages.
 fn refresh_tree(s: &mut App) {
@@ -1770,22 +1849,7 @@ fn refresh_tree(s: &mut App) {
         load_tree(s);
     } else {
         // no ship to ask, or none that answers: the tree is drawn again from what is here
-        let mut nodes: Vec<Node> = s.names.iter().map(|p| Node { path: p.clone(), page: true, kind: s.cache.get(p).map_or_else(|| "md".into(), |c| c.kind.clone()), rev: 1, dname: s.dnames.get(p).cloned().unwrap_or_default(), ..Node::default() }).collect();
-        // the folders that were given a name to show
-        nodes.extend(s.dnames.iter().filter(|(p, _)| !s.names.contains(p)).map(|(p, d)| Node { path: p.clone(), dname: d.clone(), ..Node::default() }));
-        if !s.memory {
-            nodes.extend(s.dirs.iter().filter(|d| !s.dnames.contains_key(*d)).map(|d| Node { path: d.clone(), ..Node::default() }));
-        }
-        let shut = shared_shut(s);
-        s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
-        if s.over == Some(Over::Search) {
-            run_search(s);
-        }
-        s.files.expand_all();
-        graft_shared(s, &shut);
-        if let Some(p) = &s.open {
-            s.files.select(&p.name);
-        }
+        redraw_tree(s, true);
         // sample pages have no tree to wait for: what was just made is shown now
         if let Some(name) = s.land.take() {
             land_on(s, &name);
@@ -1837,6 +1901,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.shared_req.set_waker(waker.clone());
     s.marks_req.set_waker(waker.clone());
     s.theme_req.set_waker(waker.clone());
+    s.folds_req.set_waker(waker.clone());
     s.remote_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
     s.op_req.set_waker(waker);
@@ -4807,11 +4872,16 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         match r {
             Ok(list) => {
                 s.shared = list;
-                let shut = shared_shut(s);
-                graft_shared(s, &shut);
+                redraw_tree(s, false);
+                load_folds(s);
             }
             Err(e) => s.note = format!("shared with me: {e}"),
         }
+    }
+    if let Some(read) = s.folds_req.take() {
+        changed = true;
+        s.folds = read.into_iter().collect();
+        redraw_tree(s, false);
     }
     if let Some(r) = s.remote_req.take() {
         changed = true;
@@ -8416,7 +8486,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
                 Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
             .build(k)
@@ -8453,6 +8523,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
         Prompt::MarkMove(_, t) => ("Move this bookmark to a folder", field(t, "A folder, or nothing for none"), "Move", ButtonVariant::Contrast),
         Prompt::LinkIn(_, t) => ("Move into my pages as", field(t, "a name, as notes/plan"), "Move", ButtonVariant::Contrast),
+        Prompt::Forget(sh) => ("Remove from shared with me?", text(format!("{} from {}. Nothing is deleted: it is {}'s, and their grant to you stays. It comes back here if they share it again.", swm::name(&sh.path), sh.host, sh.host)).key("swm-forget-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
         Prompt::MarkDrop(_, shown) => ("Remove this bookmark?", text(shown.clone()).key("mark-drop-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
         Prompt::Param(_, _, t) => ("Set this parameter", field(t, "A value"), "Set", ButtonVariant::Contrast),
         Prompt::Token(t) => ("The ship's Mapbox token", field(t, "pk... to set it, or nothing to clear it"), "Set", ButtonVariant::Contrast),
@@ -8549,6 +8620,14 @@ fn show_remote(s: &mut App, sh: Shared, p: Page) {
 /// Asks where in the tree the shared page in front goes, seeded with its own name.
 fn ask_link_in(s: &mut App) {
     let Some(sh) = s.remote.clone().filter(|_| usable(s, "link-in")) else { return };
+    ask_link_for(s, sh);
+}
+
+/// Asks where in the tree a page shared with this ship goes.
+fn ask_link_for(s: &mut App, sh: Shared) {
+    if !leave_edit(s) {
+        return;
+    }
     let mut t = TextEdit::new(swm::leaf(&sh.path).as_str());
     t.focused = true;
     s.prompt = Some(Prompt::LinkIn(sh, t));
@@ -8679,17 +8758,11 @@ fn shared_view(s: &App, k: &Kit) -> El {
                         .child(text(sh.name().to_owned()).font(k.ty.ui_medium).color(c.text_base).truncate())
                         .child(text(format!("{} lets you {} it  {when}", sh.host, if sh.editable() { "edit" } else { "read" })).font(k.ty.small).color(c.text_muted).truncate()),
                 )
-                .child(Button::new("Open").control_size(ControlSize::Small).on_press(move |s: &mut App| open_remote(s, open.clone())).build(k).key(format!("shared-open-{i}")))
-                .child(Button::new("Forget").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| {
-                    let sh = forget.clone();
-                    match s.conn.clone() {
-                        Some(c) => s.op_req.request((c, sh), |(c, sh)| {
-                            c.shared_forget(&sh)?;
-                            Ok(Op::Grouped(format!("forgot {} from {}", sh.name(), sh.host)))
-                        }),
-                        None => s.shared.retain(|x| *x != sh),
-                    }
-                }).build(k).key(format!("shared-forget-{i}"))),
+                .child(Button::new("Open").control_size(ControlSize::Small).on_press(move |s: &mut App| {
+                    let id = swm::row_id(&open);
+                    open_shared(s, &id);
+                }).build(k).key(format!("shared-open-{i}")))
+                .child(Button::new("Forget").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(move |s: &mut App| s.prompt = Some(Prompt::Forget(forget.clone()))).build(k).key(format!("shared-forget-{i}"))),
         );
     }
     if s.shared.is_empty() {
@@ -9892,7 +9965,24 @@ fn sidebar(s: &App, k: &Kit) -> El {
     let q = s.query.text.trim().to_lowercase();
     let tree = Tree::new(|s: &App| &s.files, |s: &mut App| &mut s.files, |n: &FileNode<Node>| n.name.as_str())
         .name(if s.memory { "Memories" } else { "Pages" })
-        .row(move |n, r| TreeItem::file(n, r).highlight(q.clone()))
+        .row({
+            let (shared, links) = (s.shared.clone(), s.links.keys().cloned().collect::<std::collections::HashSet<String>>());
+            let (muted, hover) = (k.c.text_muted, k.c.hover);
+            move |n, r| {
+                let item = TreeItem::file(n, r).highlight(q.clone());
+                if links.contains(&n.path) {
+                    // a page that is another ship's, moved here as a link
+                    return item.icon(&tabhead::OUT);
+                }
+                let Some((sh, None)) = swm::at(&shared, &n.path) else { return item };
+                // what the host lets this ship do with it, then into my pages (a page only), and off the list
+                let small = |glyph: &'static str, name: &str, key: String| text(glyph).key(key).role("button").label(name.to_owned()).help(name.to_owned()).color(muted).px(4.0).radius(4.0).hover(hover);
+                let (a, b) = (sh.clone(), sh.clone());
+                let item = item.badge(sh.mode.clone());
+                let item = if swm::is_dir(&sh.path) { item } else { item.trailing(small("\u{2197}", "Move into my pages", format!("swm-move:{}", n.path)).on_press(move |s: &mut App| ask_link_for(s, a.clone()))) };
+                item.trailing(small("\u{d7}", "Remove from this list. Their grant is untouched", format!("swm-forget:{}", n.path)).on_press(move |s: &mut App| s.prompt = Some(Prompt::Forget(b.clone()))))
+            }
+        })
         // one click opens a page, as the web client's tree does
         .on_select(|s: &mut App, id, _| {
             if swm::is_ours(id) {

@@ -43,6 +43,15 @@ pub struct Node {
     pub link: Option<LinkTo>,
 }
 
+/// A page of a folder another ship shared: its place on that ship, and its title.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct FoldPage {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub title: String,
+}
+
 /// What a link in the tree points at: the page on its host, and whether it may be changed.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct LinkTo {
@@ -2636,6 +2645,11 @@ impl Conn {
     /// touched. The host is asked for the page's kind, so it is refused while the host is away.
     pub fn link_make(&self, sh: &Shared, to: &str) -> Result<(), String> {
         self.call_in(60, "POST", &format!("link-make?host={}&path={}&to={}", enc(&sh.host), enc(&sh.path), enc(to)), Some("")).map(drop)
+    }
+
+    /// The pages of a folder another ship shared whole, read from that ship now.
+    pub fn folder_pages(&self, host: &str, folder: &str) -> Result<Vec<FoldPage>, String> {
+        serde_json::from_str(&self.call_in(60, "GET", &format!("folder-pages?host={}&path={}", enc(host), enc(folder)), None)?).map_err(|e| e.to_string())
     }
 
     /// Moves a link back to shared with me, and drops it from the tree.

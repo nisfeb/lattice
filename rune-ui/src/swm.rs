@@ -61,10 +61,39 @@ pub fn is_ours(id: &str) -> bool {
     id == ROOT || id.strip_prefix(ROOT).is_some_and(|r| r.starts_with('/'))
 }
 
-/// The entry a row of the tree stands for.
-pub fn at<'a>(list: &'a [Shared], id: &str) -> Option<&'a Shared> {
+/// A page of a shared folder, under the folder's row. A path has no space in it, so the mark between them is in neither.
+pub fn page_id(sh: &Shared, key: &str) -> String {
+    format!("{} >{key}", row_id(sh))
+}
+
+/// The entry a row of the tree stands for, and, for a page of a shared
+/// folder, that page's place on its host.
+pub fn at<'a, 'b>(list: &'a [Shared], id: &'b str) -> Option<(&'a Shared, Option<&'b str>)> {
     let rest = id.strip_prefix(ROOT)?.strip_prefix('/')?;
-    list.iter().find(|sh| rest.strip_prefix(sh.host.as_str()).and_then(|r| r.strip_prefix('/')) == Some(sh.path.as_str()))
+    let (entry, page) = match rest.split_once(" >") {
+        Some((e, k)) => (e, Some(k)),
+        None => (rest, None),
+    };
+    list.iter().find(|sh| entry.strip_prefix(sh.host.as_str()).and_then(|r| r.strip_prefix('/')) == Some(sh.path.as_str())).map(|sh| (sh, page))
+}
+
+/// A shared folder's place on its host, as the ship is asked for its pages: `/trip`.
+pub fn folder(path: &str) -> Option<&str> {
+    dir_rel(path)
+}
+
+/// The address a row is read at, when it is not a page read as a shared
+/// page is: a folder at its own, and a page of a folder at its place on the host.
+pub fn row_address(sh: &Shared, page: Option<&str>) -> Option<String> {
+    match page {
+        Some(key) => Some(format!("urb://{}/{}", sh.host, key.trim_start_matches('/'))),
+        None => address(&sh.host, &sh.path),
+    }
+}
+
+/// What a page of a shared folder is called in the tree: its title, or the last part of its place.
+pub fn page_label(key: &str, title: &str) -> String {
+    if title.trim().is_empty() { key.trim_end_matches('/').rsplit('/').next().unwrap_or(key).to_owned() } else { title.trim().to_owned() }
 }
 
 /// The ships that shared something, in order, each with its entries by name.
@@ -108,6 +137,20 @@ mod tests {
     }
 
     #[test]
+    fn a_page_of_a_shared_folder_stands_under_it_and_reads_at_its_place() {
+        let dir = sh("~bus", "/x/page/trip/dir-index");
+        let list = [dir.clone(), sh("~bus", "/x/page/z/code")];
+        let id = page_id(&dir, "/trip/day-one");
+        assert!(is_ours(&id));
+        assert_eq!(at(&list, &id), Some((&list[0], Some("/trip/day-one"))));
+        assert_eq!(row_address(&dir, Some("/trip/day-one")).as_deref(), Some("urb://~bus/trip/day-one"));
+        assert_eq!(row_address(&dir, None).as_deref(), Some("urb://~bus/trip/"));
+        assert_eq!(row_address(&list[1], None), None, "a page is read as a shared page is");
+        assert_eq!(folder(&dir.path), Some("/trip"));
+        assert_eq!((page_label("/trip/day-one", ""), page_label("/trip/day-one", " Day One ")), ("day-one".to_owned(), "Day One".to_owned()));
+    }
+
+    #[test]
     fn ships_in_order_each_with_its_entries_by_name() {
         let list = [sh("~wex", "/x/page/b/code"), sh("~bus", "/x/page/z/code"), sh("~wex", "/x/page/a/dir-index"), sh("~bus", "/x/page/c/d/code")];
         let got: Vec<(&str, Vec<String>)> = hosts(&list).into_iter().map(|(h, e)| (h, e.into_iter().map(|s| name(&s.path)).collect())).collect();
@@ -118,8 +161,8 @@ mod tests {
     fn a_row_of_the_tree_finds_its_entry_and_no_page_stands_there() {
         let list = [sh("~bus", "/x/page/z/code"), sh("~bus-two", "/x/page/z/code")];
         assert_eq!(row_id(&list[0]), " shared/~bus//x/page/z/code");
-        assert_eq!(at(&list, &row_id(&list[0])), Some(&list[0]));
-        assert_eq!(at(&list, &row_id(&list[1])), Some(&list[1]), "one ship's name at the start of another's");
+        assert_eq!(at(&list, &row_id(&list[0])), Some((&list[0], None)));
+        assert_eq!(at(&list, &row_id(&list[1])), Some((&list[1], None)), "one ship's name at the start of another's");
         assert_eq!(at(&list, &host_id("~bus")), None);
         assert_eq!(at(&list, "notes/plan"), None);
         assert!(is_ours(ROOT) && is_ours(&host_id("~bus")) && is_ours(&row_id(&list[0])));
