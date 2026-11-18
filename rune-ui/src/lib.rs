@@ -8,6 +8,7 @@ mod api;
 mod backups;
 mod calc;
 mod code;
+mod fonts;
 mod formula;
 mod html;
 mod local;
@@ -1857,8 +1858,10 @@ fn refresh_tree(s: &mut App) {
     } else if s.conn.is_some() && s.offline.is_none() {
         load_tree(s);
     } else {
-        // no ship to ask, or none that answers: the tree is drawn again from what is here
-        redraw_tree(s, true);
+        // no ship to ask, or none that answers: the tree is drawn again from what is here.
+        // Every folder is opened only when there was no tree yet: after that they are the reader's
+        let none_yet = s.files.is_empty();
+        redraw_tree(s, none_yet);
         // sample pages have no tree to wait for: what was just made is shown now
         if let Some(name) = s.land.take() {
             land_on(s, &name);
@@ -2034,7 +2037,7 @@ fn step(s: &mut App, by: isize) {
     }
     s.trail_at = at;
     let name = s.trail[at].clone();
-    s.files.expand_to(&name);
+    // marked in the tree, with its folders left as the reader has them
     s.files.select(&name);
     show_page(s, &name);
 }
@@ -5225,6 +5228,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 s.names = nodes.iter().filter(|n| n.page).map(|n| n.path.clone()).collect();
                 s.dirs = nodes.iter().filter(|n| !n.page).map(|n| n.path.clone()).collect();
                 let shut = shared_shut(s);
+                // whether the page in front had a row before this read: one just made or moved has none yet
+                let had = s.open.as_ref().is_some_and(|p| s.files.contains(&p.name));
                 s.files = files_of(nodes, &s.files, s.prefs.sort_desc);
                 graft_shared(s, &shut);
                 if s.over == Some(Over::Search) {
@@ -5251,9 +5256,12 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                         open_page(s, &last);
                     }
                 }
-                // a page just made or moved is shown where it now is
+                // a page just made or moved is shown where it now is. One that was there already is
+                // only marked: a folder the reader folded stays folded through every read of the tree
                 if let Some(p) = s.open.as_ref().filter(|_| !away) {
-                    s.files.expand_to(&p.name);
+                    if !had {
+                        s.files.expand_to(&p.name);
+                    }
                     s.files.select(&p.name);
                 }
             }
@@ -6441,7 +6449,6 @@ fn load_tab(s: &mut App, to: usize) {
     s.forum = None;
     match s.trail.get(s.trail_at).cloned() {
         Some(name) if s.names.contains(&name) => {
-            s.files.expand_to(&name);
             s.files.select(&name);
             show_page(s, &name);
         }
@@ -10972,6 +10979,16 @@ pub fn start() {
 
 pub fn run() {
     let chrome = Chrome { full_size_content: true, traffic_lights: Some((16.0, 25.0)), drag_regions: true };
+    // the theme's font as the last run knew it, read from this computer's own files and put right
+    // where its tables are wrong, before Rune looks for the family itself. A font first worn in this
+    // run is found by Rune, and is read this way from the next launch
+    #[cfg(not(target_arch = "wasm32"))]
+    let fonts: &'static [&'static [u8]] = match api::Prefs::load().worn.font() {
+        Some(theme::Font::Named(f)) => Box::leak(fonts::of_family(&f).into_iter().map(|b| &*Box::leak(b.into_boxed_slice())).collect::<Vec<&'static [u8]>>().into_boxed_slice()),
+        _ => &[],
+    };
+    #[cfg(target_arch = "wasm32")]
+    let fonts: &'static [&'static [u8]] = &[];
     // the id the desktop matches to `lattice-rune.desktop`, which names the icon: the window wears lattice's logo by it
     rune::set_app_id("lattice-rune");
     rune::App::new(AppSpec {
@@ -11018,6 +11035,7 @@ pub fn run() {
                 flip_mode(s);
             }
         })],
+        fonts,
         ..AppSpec::new("lattice", (1120.0, 720.0), init, view)
     })
     .chrome(chrome)
