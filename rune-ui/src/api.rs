@@ -1114,6 +1114,26 @@ impl Conn {
         }
     }
 
+    /// Makes a board: a name (a term), a title, a description, and what those with no role of their own may do: `poster`, `reader` or `mod`.
+    pub fn forum_new(&self, name: &str, title: &str, description: &str, role: &str) -> Result<(), String> {
+        self.forum_form("_new", &[("name", name), ("title", title), ("description", description), ("role", role)])
+    }
+
+    /// Sets a board's title and description.
+    pub fn forum_edit(&self, board: &str, title: &str, description: &str) -> Result<(), String> {
+        self.forum_form(&format!("{board}/mod/edit-info"), &[("title", title), ("description", description)])
+    }
+
+    /// Flips a board between public and private. The form has no other way: it says neither which.
+    pub fn forum_flip_public(&self, board: &str) -> Result<(), String> {
+        self.forum_form(&format!("{board}/mod/public"), &[("x", "1")])
+    }
+
+    /// Deletes a board with every thread on it.
+    pub fn forum_board_delete(&self, board: &str) -> Result<(), String> {
+        self.forum_form(&format!("{board}/mod/delete"), &[("x", "1")])
+    }
+
     /// Gives a thread this ship's point. Once given it stays: the forms have no way to take it back.
     pub fn forum_vote(&self, board: &str, post: u64) -> Result<(), String> {
         self.forum_form(&format!("{board}/vote"), &[("target", &format!("post-{post}"))])
@@ -1867,6 +1887,35 @@ mod tests {
         // a thread with no title is refused by the form, and a board that is not there says so
         assert!(c.forum_submit("general", "", "", "no title", &[]).unwrap_err().starts_with("400"));
         assert!(c.forum_submit("no-such-board", "x", "", "", &[]).unwrap_err().starts_with("404"));
+    }
+
+    /// Boards against a ship: made, changed, flipped and deleted. It needs nothing first and can run again.
+    #[test]
+    #[ignore]
+    fn live_forum_boards() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let name = format!("made-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        c.forum_new(&name, "Made & named", "A board, with a \"description\".", "reader").unwrap();
+        assert!(c.forum_boards().unwrap().iter().any(|b| b.board == name), "the board is on the index");
+        let b = c.forum_board(&name).unwrap();
+        assert_eq!((b.title.as_str(), b.description.as_str(), b.public, b.count), ("Made & named", "A board, with a \"description\".", true, 0));
+        c.forum_edit(&name, "Renamed", "").unwrap();
+        c.forum_flip_public(&name).unwrap();
+        let b = c.forum_board(&name).unwrap();
+        assert_eq!((b.title.as_str(), b.description.as_str(), b.public), ("Renamed", "", false));
+        c.forum_flip_public(&name).unwrap();
+        assert!(c.forum_board(&name).unwrap().public);
+        // a board made again under a name taken does not take the first one's place
+        c.forum_submit(&name, "Kept", "", "text", &[]).unwrap();
+        c.forum_new(&name, "Second", "", "poster").unwrap();
+        let b = c.forum_board(&name).unwrap();
+        eprintln!("made again under the same name, the board is titled {:?} with {} thread(s)", b.title, b.count);
+        assert!(c.forum_new("Bad Name", "x", "", "poster").unwrap_err().starts_with("400"));
+        assert!(c.forum_new(&format!("{name}-x"), "", "", "poster").unwrap_err().starts_with("400"));
+        assert!(c.forum_new(&format!("{name}-y"), "t", "", "king").unwrap_err().starts_with("400"));
+        c.forum_board_delete(&name).unwrap();
+        assert!(!c.forum_boards().unwrap().iter().any(|b| b.board == name));
+        assert!(c.forum_board(&name).unwrap_err().starts_with("404"));
     }
 
     /// Memories against a ship, by themselves: this needs no page and can run again on the same pier.

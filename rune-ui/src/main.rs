@@ -108,6 +108,10 @@ struct Forum {
     sort: ForumSort,
     /// The tags the board's threads are shown by: those that carry every one.
     tags: Vec<String>,
+    /// A board being made: its name, title and description, and what those with no role of their own may do.
+    making: Option<(Box<[TextEdit; 3]>, &'static str)>,
+    /// The board showing being changed: its title and description.
+    editing: Option<Box<[TextEdit; 2]>>,
     /// The posts other ships refused, once read: why, and where and when. And whether they are what shows.
     notes: Option<Vec<(String, String)>>,
     notes_open: bool,
@@ -134,6 +138,8 @@ enum ForumGot {
     Board(api::Board),
     Thread(api::Thread),
     Notes(Vec<(String, String)>),
+    /// The boards after one was made or deleted: what was being made, and the board that was showing, are let go.
+    Changed(Vec<api::Board>),
 }
 
 /// A board's threads as they are listed: the pinned ones first, then by the order asked for.
@@ -195,6 +201,8 @@ enum Prompt {
     ForumTags(TextEdit),
     /// A forum thread to delete, or one comment of the thread showing.
     ForumDelete(Option<u64>),
+    /// A board to delete, with every thread on it.
+    BoardDelete(String),
     /// A value typed for an OpenSCAD parameter: its name, which part of a vector, and the text.
     Param(String, Option<usize>, TextEdit),
 }
@@ -915,6 +923,15 @@ fn confirm(s: &mut App) {
                 s.note = why;
                 s.prompt = Some(p);
             }
+        }
+        return;
+    }
+    if let Prompt::BoardDelete(name) = &p {
+        if let Some(c) = s.conn.clone() {
+            s.forum_req.request((c, name.clone()), |(c, name)| {
+                c.forum_board_delete(&name)?;
+                c.forum_boards().map(ForumGot::Changed)
+            });
         }
         return;
     }
@@ -3834,12 +3851,17 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         match (r, &mut s.forum) {
             (Ok(ForumGot::Boards(b)), Some(f)) => f.boards = Some(b),
             (Ok(ForumGot::Notes(n)), Some(f)) => f.notes = Some(n),
+            (Ok(ForumGot::Changed(b)), Some(f)) => {
+                (f.boards, f.board, f.thread, f.making, f.editing, f.sending) = (Some(b), None, None, None, None, false);
+                f.tags.clear();
+            }
             (Ok(ForumGot::Board(b)), Some(f)) => {
                 (f.board, f.thread) = (Some(b), None);
                 // what was being sent landed: the thread written is let go
                 if std::mem::take(&mut f.sending) {
-                    f.draft = None;
-                    s.note = "posted".into();
+                    // a thread written, or the board's own title and description changed
+                    s.note = if f.editing.is_some() { "changed".into() } else { "posted".into() };
+                    (f.draft, f.editing) = (None, None);
                 }
             }
             (Ok(ForumGot::Thread(th)), Some(f)) => {
@@ -4915,6 +4937,63 @@ fn draft_field(s: &mut App, i: usize) -> &mut TextEdit {
     &mut s.forum.as_mut().and_then(|f| f.draft.as_mut()).expect("a thread is being written")[i]
 }
 
+/// Makes the board being written, when its name is one a board may have and no board has yet.
+fn forum_make(s: &mut App) {
+    let Some(f) = s.forum.as_mut().filter(|f| !f.sending) else { return };
+    let Some((d, role)) = &f.making else { return };
+    let [name, title, description] = [d[0].text.trim().to_owned(), d[1].text.trim().to_owned(), d[2].text.trim().to_owned()];
+    let term = name.starts_with(|c: char| c.is_ascii_lowercase()) && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    let why = if !term {
+        "a board's name is lowercase letters, digits and hyphens, starting with a letter"
+    } else if title.is_empty() {
+        "a board needs a title"
+    } else if f.boards.as_ref().is_some_and(|b| b.iter().any(|b| b.board == name)) {
+        "there is already a board by that name"
+    } else {
+        ""
+    };
+    if !why.is_empty() {
+        s.note = why.into();
+        return;
+    }
+    let (role, Some(c)) = (*role, s.conn.clone()) else { return };
+    f.sending = true;
+    s.forum_req.request((c, name), move |(c, name)| {
+        c.forum_new(&name, &title, &description, role)?;
+        let boards = c.forum_boards()?;
+        if boards.iter().any(|b| b.board == name) { Ok(ForumGot::Changed(boards)) } else { Err("the ship did not make that board".into()) }
+    });
+}
+
+/// Sends the board's title and description as changed, or flips it between public and private, then reads it again.
+fn forum_change(s: &mut App, flip: bool) {
+    let Some(f) = s.forum.as_mut().filter(|f| !f.sending) else { return };
+    let Some(b) = &f.board else { return };
+    let texts = f.editing.as_ref().map(|e| (e[0].text.trim().to_owned(), e[1].text.trim().to_owned()));
+    if !flip && texts.as_ref().is_none_or(|(title, _)| title.is_empty()) {
+        s.note = "a board needs a title".into();
+        return;
+    }
+    let Some(c) = s.conn.clone() else { return };
+    f.sending = !flip;
+    s.forum_req.request((c, b.board.clone()), move |(c, board)| {
+        match (&texts, flip) {
+            (_, true) => c.forum_flip_public(&board)?,
+            (Some((title, description)), false) => c.forum_edit(&board, title, description)?,
+            (None, false) => {}
+        }
+        c.forum_board(&board).map(ForumGot::Board)
+    });
+}
+
+fn making_field(s: &mut App, i: usize) -> &mut TextEdit {
+    &mut s.forum.as_mut().and_then(|f| f.making.as_mut()).expect("a board is being made").0[i]
+}
+
+fn editing_field(s: &mut App, i: usize) -> &mut TextEdit {
+    &mut s.forum.as_mut().and_then(|f| f.editing.as_mut()).expect("a board is being changed")[i]
+}
+
 /// Clears every refusal note on the ship, and reads them again.
 fn forum_notes_clear(s: &mut App) {
     let Some(c) = s.conn.clone() else { return };
@@ -5041,6 +5120,50 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
             }).build(k).key(key.to_owned())
         };
         page = page.child(row().key("forum-sort").gap(4.0).child(sort("New", "fsort-new", ForumSort::New)).child(sort("Active", "fsort-active", ForumSort::Active)).child(sort("Top", "fsort-top", ForumSort::Top)));
+        // the board itself: its title and description changed, shown to all or to its members, or deleted
+        let (title, description, public, name) = (b.title.clone(), b.description.clone(), b.public, b.board.clone());
+        match &f.editing {
+            None => {
+                page = page.child(
+                    row()
+                        .key("board-acts")
+                        .gap(4.0)
+                        .flex_wrap()
+                        .child(Button::new("Edit board").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help("Change its title and description").on_press(move |s: &mut App| {
+                            if let Some(f) = &mut s.forum {
+                                let mut e = Box::new([TextEdit::new(title.as_str()), TextEdit::new(description.as_str())]);
+                                e[0].focused = true;
+                                f.editing = Some(e);
+                            }
+                        }).build(k).key("board-edit"))
+                        .child(Button::new(if public { "Make private" } else { "Make public" }).control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).help(if public { "Only ships you invite read it and post" } else { "Anyone reads it" }).on_press(|s: &mut App| forum_change(s, true)).build(k).key("board-public"))
+                        .child(Button::new("Delete board").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(move |s: &mut App| s.prompt = Some(Prompt::BoardDelete(name.clone()))).build(k).key("board-delete")),
+                );
+            }
+            Some(e) => {
+                page = page.child(
+                    col()
+                        .key("board-editing")
+                        .w_full()
+                        .gap(8.0)
+                        .padding(10.0)
+                        .radius(k.radius.md)
+                        .fill(c.layer_01)
+                        .child(TextInput::new(&e[0]).label("Title").on_edit(|s: &mut App| editing_field(s, 0)).build(k).w_full().key("board-title"))
+                        .child(TextArea::new(&e[1]).label("Description").rows(3).on_edit(|s: &mut App| editing_field(s, 1)).build(k).w_full().key("board-description"))
+                        .child(
+                            row()
+                                .gap(6.0)
+                                .child(Button::new(if f.sending { "Saving\u{2026}" } else { "Save" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(f.sending).on_press(|s: &mut App| forum_change(s, false)).build(k).key("board-save"))
+                                .child(Button::new("Cancel").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+                                    if let Some(f) = &mut s.forum {
+                                        f.editing = None;
+                                    }
+                                }).build(k).key("board-cancel")),
+                        ),
+                );
+            }
+        }
         // the board's tags, most used first: pressed, only the threads that carry every one pressed are listed
         let board_tags = forum_board_tags(&b.posts);
         if !board_tags.is_empty() {
@@ -5144,6 +5267,50 @@ fn forum_view(f: &Forum, k: &Kit) -> El {
                 .key("notes-open"),
         ),
     );
+    match &f.making {
+        None => {
+            page = page.child(row().child(Button::new("New board").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+                if let Some(f) = &mut s.forum {
+                    let mut d = Box::new([TextEdit::new(""), TextEdit::new(""), TextEdit::new("")]);
+                    d[0].focused = true;
+                    f.making = Some((d, "poster"));
+                }
+            }).build(k).key("board-new")));
+        }
+        Some((d, role)) => {
+            let line = |i: usize, label: &str, hint: &str, key: &str| TextInput::new(&d[i]).label(label).placeholder(hint).on_edit(move |s: &mut App| making_field(s, i)).build(k).w_full().key(key.to_owned());
+            let pick = |label: &str, val: &'static str| {
+                Button::new(label.to_owned()).control_size(ControlSize::Small).variant(if *role == val { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
+                    if let Some((_, r)) = s.forum.as_mut().and_then(|f| f.making.as_mut()) {
+                        *r = val;
+                    }
+                }).build(k).key(format!("new-role-{val}"))
+            };
+            page = page.child(
+                col()
+                    .key("board-making")
+                    .w_full()
+                    .gap(8.0)
+                    .padding(10.0)
+                    .radius(k.radius.md)
+                    .fill(c.layer_01)
+                    .child(line(0, "Name", "lowercase letters, digits, hyphens", "new-name"))
+                    .child(line(1, "Title", "What the board is called", "new-title"))
+                    .child(TextArea::new(&d[2]).label("Description").rows(3).on_edit(|s: &mut App| making_field(s, 2)).build(k).w_full().key("new-description"))
+                    .child(row().gap(4.0).center_y().child(muted("Those with no role of their own may".into())).child(pick("post", "poster")).child(pick("read", "reader")).child(pick("moderate", "mod")))
+                    .child(
+                        row()
+                            .gap(6.0)
+                            .child(Button::new(if f.sending { "Making\u{2026}" } else { "Create" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(f.sending).on_press(forum_make).build(k).key("new-create"))
+                            .child(Button::new("Cancel").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+                                if let Some(f) = &mut s.forum {
+                                    f.making = None;
+                                }
+                            }).build(k).key("new-cancel")),
+                    ),
+            );
+        }
+    }
     match &f.boards {
         None => page = page.child(muted("reading the boards\u{2026}".into())),
         Some(b) if b.is_empty() => page = page.child(muted("There are no boards on this ship.".into())),
@@ -5472,7 +5639,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
                 Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
             .build(k)
@@ -5486,6 +5653,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::Ask(_, t) => ("Ask for edit access", field(t, "A short note, if you like"), "Ask", ButtonVariant::Contrast),
         Prompt::Duplicate(_, t) => ("Duplicate this page as", field(t, "folder/name"), "Duplicate", ButtonVariant::Contrast),
         // kept on the ship, which never shows it again. Typed in the clear here: it is pasted, not remembered
+        Prompt::BoardDelete(name) => ("Delete this board?", text(format!("{name} and every thread on it are gone for everyone who reads it.")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::ForumTags(t) => ("This thread's tags", field(t, "Up to five: lowercase letters, digits and dashes. None clears them"), "Set", ButtonVariant::Contrast),
         Prompt::ForumDelete(comment) => (if comment.is_some() { "Delete this comment?" } else { "Delete this thread?" }, text(if comment.is_some() { "It is gone for everyone who reads the board." } else { "The thread and its comments are gone for everyone who reads the board." }).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
@@ -7358,6 +7526,31 @@ mod tests {
         // with no ship there is nothing to clear, and nothing is lost by asking
         forum_notes_clear(&mut s);
         assert!(s.forum.as_ref().unwrap().notes.is_some());
+    }
+
+    #[test]
+    fn a_board_is_not_made_with_a_bad_name_no_title_or_a_name_taken() {
+        let mut s = sample("welcome");
+        go_forum(&mut s);
+        let f = s.forum.as_mut().unwrap();
+        f.boards = Some(vec![api::Board { board: "general".into(), ..api::Board::default() }]);
+        f.making = Some((Box::new([TextEdit::new(""), TextEdit::new(""), TextEdit::new("")]), "poster"));
+        for (name, title, why) in [("Bad Name", "T", "a board's name is lowercase letters, digits and hyphens, starting with a letter"), ("2x", "T", "a board's name is lowercase letters, digits and hyphens, starting with a letter"), ("fine", " ", "a board needs a title"), ("general", "T", "there is already a board by that name")] {
+            making_field(&mut s, 0).text = name.into();
+            making_field(&mut s, 1).text = title.into();
+            forum_make(&mut s);
+            assert_eq!(s.note, why, "{name}");
+        }
+        // what was written is still there, and nothing is on its way
+        let f = s.forum.as_ref().unwrap();
+        assert!(!f.sending && f.making.is_some());
+        // a board's title is not saved empty
+        let f = s.forum.as_mut().unwrap();
+        f.board = Some(api::Board { board: "general".into(), title: "General".into(), ..api::Board::default() });
+        f.editing = Some(Box::new([TextEdit::new(""), TextEdit::new("")]));
+        s.note.clear();
+        forum_change(&mut s, false);
+        assert_eq!(s.note, "a board needs a title");
     }
 
     #[test]

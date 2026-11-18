@@ -1,0 +1,6 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "forum-open"},
+  {"t": 4.5, "type": "tap", "key": "board-workshop"},
+  {"t": 6.5, "type": "tap", "key": "board-delete"},
+  {"t": 7.5, "type": "tap", "key": "prompt-ok"}
+]}

@@ -1,0 +1,15 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "forum-open"},
+  {"t": 4.0, "type": "tap", "key": "board-new"},
+  {"t": 4.6, "type": "type", "text": "workshop"},
+  {"t": 7.0, "type": "tap", "key": "new-title"},
+  {"t": 7.5, "type": "type", "text": "The workshop"},
+  {"t": 10.5, "type": "tap", "key": "new-role-reader"},
+  {"t": 11.5, "type": "tap", "key": "new-create"},
+  {"t": 15.0, "type": "tap", "key": "board-workshop"},
+  {"t": 17.0, "type": "tap", "key": "board-edit"},
+  {"t": 17.6, "type": "key", "name": "a", "cmd": true},
+  {"t": 18.0, "type": "type", "text": "Workshop, renamed"},
+  {"t": 21.5, "type": "tap", "key": "board-save"},
+  {"t": 24.5, "type": "tap", "key": "board-public"}
+]}
