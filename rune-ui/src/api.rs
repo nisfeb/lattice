@@ -626,6 +626,132 @@ pub fn goes_public(was: &str, mode: &str) -> bool {
     public(mode) && !public(was)
 }
 
+/// One event of the ship's change stream (`ui-src/lattice/90-sync.js`).
+/// The ship stamps a file under `/beacon` on every change and the
+/// stream carries each stamp: first as it stood when the stream was
+/// registered (`old`), then as it moves.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Beacon {
+    /// Pages changed. `old` is the stamp as it stood at registration: from then on the stream is the ship's word.
+    Rev { old: bool, stamp: String },
+    /// Memories changed.
+    Know { old: bool, stamp: String },
+    /// What is shared with this ship changed.
+    Shares { old: bool, stamp: String },
+    /// The inbox moved: a held comment, or something to read.
+    Notify { old: bool, stamp: String },
+    /// A comment landed.
+    Comments,
+    /// The stream ended, as it does every minute or so, or broke.
+    Down,
+}
+
+/// The whole events in what has come of a stream so far, each its name
+/// and its data. What follows the last blank line stays, to be added to.
+pub fn sse_events(buf: &mut String) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    while let Some(end) = buf.find("\n\n") {
+        let (mut name, mut data) = (String::new(), String::new());
+        for ln in buf[..end].split('\n') {
+            if let Some(n) = ln.strip_prefix("event: ") {
+                name = n.trim().to_owned();
+            } else if let Some(d) = ln.strip_prefix("data: ") {
+                data = d.trim().to_owned();
+            }
+        }
+        buf.drain(..end + 2);
+        if !name.is_empty() {
+            out.push((name, data));
+        }
+    }
+    out
+}
+
+/// The event a stream's name and data are: `old /rev`, `upd /know` and
+/// the like. `None` for one this client does nothing with.
+pub fn beacon_of(name: &str, data: &str) -> Option<Beacon> {
+    let old = name.starts_with("old");
+    let stamp = data.to_owned();
+    match name.rsplit(' ').next()? {
+        "/rev" => Some(Beacon::Rev { old, stamp }),
+        "/know" => Some(Beacon::Know { old, stamp }),
+        "/shares" => Some(Beacon::Shares { old, stamp }),
+        "/notify" => Some(Beacon::Notify { old, stamp }),
+        "/comments" if !old => Some(Beacon::Comments),
+        _ => None,
+    }
+}
+
+/// The last stamp seen of each thing the stream tells of, and whether a
+/// stream is registered. It turns events into what to read again.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BeaconState {
+    pub live: bool,
+    rev: String,
+    know: String,
+    shares: String,
+    notify: String,
+}
+
+/// What an event asks to be read again.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Wants {
+    pub tree: bool,
+    pub know: bool,
+    pub shared: bool,
+    pub inbox: bool,
+}
+
+impl BeaconState {
+    /// Takes one event. A stamp as it stood at registration is news only
+    /// when it differs from the last one seen: something changed while
+    /// nobody was listening. A stamp that moves on a live stream is news.
+    pub fn take(&mut self, ev: Beacon) -> Wants {
+        let mut w = Wants::default();
+        // a stamp at registration is a missed change when one was seen before and it is not this one
+        let moved = |last: &mut String, old: bool, stamp: String| {
+            let news = if old { !last.is_empty() && !stamp.is_empty() && *last != stamp } else { true };
+            if !stamp.is_empty() {
+                *last = stamp;
+            }
+            news
+        };
+        match ev {
+            Beacon::Rev { old, stamp } => {
+                self.live |= old;
+                w.tree = moved(&mut self.rev, old, stamp);
+            }
+            Beacon::Know { old, stamp } => w.know = moved(&mut self.know, old, stamp),
+            // these two say the same stamp again when nothing moved
+            Beacon::Shares { old, stamp } => w.shared = stamp != self.shares && moved(&mut self.shares, old, stamp),
+            Beacon::Notify { old, stamp } => w.inbox = stamp != self.notify && moved(&mut self.notify, old, stamp),
+            Beacon::Comments => w.inbox = true,
+            Beacon::Down => self.live = false,
+        }
+        w
+    }
+}
+
+/// How long to wait before listening again, in milliseconds, after `fail`
+/// tries in a row that did not hold: three seconds, doubling to thirty,
+/// and from half to one and a half of that by `jitter` (0 to 1), so that
+/// windows dropped together do not all come back on the same tick.
+pub fn beacon_wait(fail: u32, jitter: f64) -> u64 {
+    let base = (3000u64 << fail.saturating_sub(1).min(4)).min(30_000);
+    ((base as f64 * (0.5 + jitter.clamp(0.0, 1.0))).round() as u64).min(30_000)
+}
+
+/// The count of failed tries after one more: none when the stream was
+/// registered and then lived a minute or carried a change, which is the
+/// stream ending on schedule. Five at most.
+pub fn beacon_fail(fail: u32, registered: bool, lived_ms: u128, bumped: bool) -> u32 {
+    if registered && (lived_ms >= 60_000 || bumped) {
+        0
+    } else {
+        (fail + 1).min(5)
+    }
+}
+
 /// What stands at a `urb://` address, as the ship reads it (`GET /urb-read`).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Urb {
@@ -1538,6 +1664,45 @@ impl Conn {
     /// Rebuilds the search index from the pages and memories as they are. The ship answers when it is done.
     pub fn reindex(&self) -> Result<(), String> {
         self.call_in(120, "POST", "search-reindex", Some("")).map(drop)
+    }
+
+    /// Where this ship's lattice lives in its tree, which the change stream's address is under.
+    pub fn lat_base(&self) -> Result<String, String> {
+        let v: serde_json::Value = serde_json::from_str(&self.call("GET", "streams", None)?).map_err(|e| e.to_string())?;
+        v["base"].as_str().filter(|b| !b.is_empty()).map(str::to_owned).ok_or_else(|| "the ship named no base".into())
+    }
+
+    /// Listens to the ship's change stream until it ends, giving each event to `on`. Answers whether the stream was registered, and whether a change came after that. `on` answering false stops the listening.
+    pub fn beacon_stream(&self, base: &str, mut on: impl FnMut(Beacon) -> bool) -> Result<(bool, bool), String> {
+        use std::io::Read;
+        // no limit on the whole request: the stream is held open. A read that hears nothing for two minutes is a dead one, since the ship ends each stream itself after about eighty seconds
+        let agent = ureq::AgentBuilder::new().timeout_connect(Duration::from_secs(15)).timeout_read(Duration::from_secs(120)).build();
+        let resp = match agent.get(&format!("{}/grubbery/api/keep{base}/beacon/rev", self.url)).set("cookie", &self.cookie).set("accept", "text/event-stream").call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: no stream")),
+            Err(e) => return Err(e.to_string()),
+        };
+        let (mut rd, mut buf, mut chunk) = (resp.into_reader(), String::new(), [0u8; 4096]);
+        let (mut registered, mut bumped) = (false, false);
+        loop {
+            let n = match rd.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n,
+            };
+            buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+            for (name, data) in sse_events(&mut buf) {
+                let Some(ev) = beacon_of(&name, &data) else { continue };
+                match &ev {
+                    Beacon::Rev { old: true, .. } => registered = true,
+                    Beacon::Rev { old: false, .. } => bumped = true,
+                    _ => {}
+                }
+                if !on(ev) {
+                    return Ok((registered, bumped));
+                }
+            }
+        }
+        Ok((registered, bumped))
     }
 
     /// What stands at a `urb://` address: a page, a folder, a board, a file. The ship waits on another ship for one of its.
@@ -3020,6 +3185,78 @@ mod tests {
         let away = c.urb_read("urb://~nec/notes/a").unwrap_err();
         eprintln!("a ship that is not there: {away}");
         assert!(away.starts_with("504") || away.starts_with("404"), "{away}");
+        c.delete(&name).unwrap();
+    }
+
+    #[test]
+    fn the_change_stream_is_read_and_says_what_to_read_again() {
+        // events come in pieces: only whole ones are taken, and the rest waits
+        let mut buf = String::from("event: old /rev\ndata: 41\n\nevent: old /know\ndata: 7\n\nevent: upd /re");
+        assert_eq!(sse_events(&mut buf), [("old /rev".to_owned(), "41".to_owned()), ("old /know".to_owned(), "7".to_owned())]);
+        assert_eq!(buf, "event: upd /re");
+        buf.push_str("v\ndata: 42\n\n: a comment line\n\n");
+        assert_eq!(sse_events(&mut buf), [("upd /rev".to_owned(), "42".to_owned())]);
+        assert_eq!(beacon_of("upd /rev", "42"), Some(Beacon::Rev { old: false, stamp: "42".into() }));
+        assert_eq!(beacon_of("old /comments", "x"), None, "a comment stamp as it stood is not news");
+        assert_eq!((beacon_of("upd /comments", "x"), beacon_of("upd /folds", "x")), (Some(Beacon::Comments), None));
+        let rev = |old, n: &str| Beacon::Rev { old, stamp: n.into() };
+        let mut st = BeaconState::default();
+        // the first registration is no news: nothing was seen before it
+        assert_eq!(st.take(rev(true, "41")), Wants::default());
+        assert!(st.live);
+        // a change on the live stream is
+        assert!(st.take(rev(false, "42")).tree);
+        // the stream ends and comes back at the same stamp: nothing was missed
+        st.take(Beacon::Down);
+        assert!(!st.live);
+        assert_eq!(st.take(rev(true, "42")), Wants::default());
+        // it comes back at another: something changed while nobody listened
+        st.take(Beacon::Down);
+        assert!(st.take(rev(true, "45")).tree && st.live);
+        // memories have their own stamp
+        assert_eq!(st.take(Beacon::Know { old: true, stamp: "7".into() }), Wants::default());
+        assert!(st.take(Beacon::Know { old: false, stamp: "8".into() }).know);
+        // shares and the inbox say the same stamp again when nothing moved
+        assert_eq!(st.take(Beacon::Shares { old: true, stamp: "a".into() }), Wants::default());
+        assert_eq!(st.take(Beacon::Shares { old: false, stamp: "a".into() }), Wants::default());
+        assert!(st.take(Beacon::Shares { old: false, stamp: "b".into() }).shared);
+        assert!(st.take(Beacon::Shares { old: true, stamp: "c".into() }).shared, "moved while the stream was down");
+        assert_eq!(st.take(Beacon::Notify { old: true, stamp: "n1".into() }), Wants::default());
+        assert!(st.take(Beacon::Notify { old: false, stamp: "n2".into() }).inbox && st.take(Beacon::Comments).inbox);
+        // listening again: at once in effect after a stream that lived, slower after each that did not, thirty seconds at most
+        assert_eq!((beacon_fail(3, true, 80_000, false), beacon_fail(3, true, 2_000, true), beacon_fail(0, true, 2_000, false), beacon_fail(5, false, 0, false)), (0, 0, 1, 5));
+        assert_eq!([beacon_wait(0, 0.5), beacon_wait(1, 0.5), beacon_wait(2, 0.5), beacon_wait(3, 0.0), beacon_wait(5, 1.0), beacon_wait(9, 0.5)], [3000, 3000, 6000, 6000, 30_000, 30_000]);
+    }
+
+    /// The change stream of a ship: registered, and a page saved while it is listened to comes down it.
+    #[test]
+    #[ignore]
+    fn live_beacon() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let base = c.lat_base().unwrap();
+        eprintln!("the base: {base}");
+        let name = format!("beacon/p{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs());
+        let (c2, name2) = (c.clone(), name.clone());
+        let mut seen = Vec::new();
+        let mut saver = None;
+        let (registered, bumped) = c
+            .beacon_stream(&base, |ev| {
+                eprintln!("{ev:?}");
+                // once it is registered, a page is saved from elsewhere
+                if matches!(ev, Beacon::Rev { old: true, .. }) && saver.is_none() {
+                    let (c3, n3) = (c2.clone(), name2.clone());
+                    saver = Some(std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(1));
+                        c3.send_queued(&n3, &Queued { kind: "md".into(), body: "seen\n".into(), base: 0, is_new: true, at: 0 })
+                    }));
+                }
+                let done = matches!(ev, Beacon::Rev { old: false, .. });
+                seen.push(ev);
+                !done
+            })
+            .unwrap();
+        assert!(registered && bumped, "{seen:?}");
+        assert!(matches!(saver.unwrap().join().unwrap(), Sent::Done { .. }));
         c.delete(&name).unwrap();
     }
 

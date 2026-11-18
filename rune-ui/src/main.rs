@@ -513,6 +513,10 @@ struct App {
     forum_req: Latest<Result<ForumGot, String>>,
     /// The settings showing, when they are.
     settings: Option<Settings>,
+    /// The ship's change stream: what its listener heard since the last look, what the stamps stood at, and the flag that stops a listener whose session ended.
+    beacon: std::sync::Arc<std::sync::Mutex<Vec<api::Beacon>>>,
+    beacon_state: api::BeaconState,
+    beacon_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Vim's state between keys, for the source editor when vim mode is on.
     vim: vim::Vim,
     /// The agent keys as read, and the secret of one just made.
@@ -758,6 +762,9 @@ fn init() -> App {
         read_as: None,
         forum: None,
         settings: None,
+        beacon: Default::default(),
+        beacon_state: api::BeaconState::default(),
+        beacon_stop: Default::default(),
         vim: vim::Vim::default(),
         keys_req: Latest::default(),
         set_req: Latest::default(),
@@ -1012,7 +1019,13 @@ fn sign_out(s: &mut App) {
     fresh.remote_req = std::mem::take(&mut s.remote_req);
     fresh.old_req = std::mem::take(&mut s.old_req);
     fresh.sidebar = s.sidebar.clone();
+    // the listener of the session that ended stops, and every request this window keeps is woken as before
+    s.beacon_stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let waker = s.waker.clone();
     *s = fresh;
+    if let Some(w) = waker {
+        setup(s, w);
+    }
 }
 
 /// Asks the ship for the change the open prompt names.
@@ -1506,6 +1519,53 @@ fn setup(s: &mut App, waker: Waker) {
     load_tree(s);
     load_know(s);
     load_shared(s);
+    listen(s);
+}
+
+/// Starts listening to the ship's change stream, in place of asking it
+/// every half minute (`ui-src/lattice/90-sync.js`). The stream ends about
+/// every eighty seconds and is taken up again at once. One that does not
+/// hold is tried again more slowly, up to thirty seconds apart. Each
+/// event is left for the window to take, and the window is woken.
+fn listen(s: &mut App) {
+    use std::sync::atomic::Ordering;
+    // a listener for a session before this one stops at its next event
+    s.beacon_stop.store(true, Ordering::Relaxed);
+    let (Some(c), Some(waker)) = (s.conn.clone(), s.waker.clone()) else { return };
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    s.beacon_stop = stop.clone();
+    s.beacon_state = api::BeaconState::default();
+    let heard = s.beacon.clone();
+    std::thread::spawn(move || {
+        let (mut fail, mut base) = (0u32, None::<String>);
+        while !stop.load(Ordering::Relaxed) {
+            let began = std::time::Instant::now();
+            if base.is_none() {
+                base = c.lat_base().ok();
+            }
+            let got = match &base {
+                Some(b) => c.beacon_stream(b, |ev| {
+                    heard.lock().unwrap().push(ev);
+                    waker();
+                    !stop.load(Ordering::Relaxed)
+                }),
+                None => Err("no base".into()),
+            };
+            // a stream refused may be an install that moved: where it lives is asked again
+            if got.is_err() {
+                base = None;
+            }
+            heard.lock().unwrap().push(api::Beacon::Down);
+            waker();
+            let (registered, bumped) = got.unwrap_or((false, false));
+            fail = api::beacon_fail(fail, registered, began.elapsed().as_millis(), bumped);
+            let jitter = f64::from(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos())) / 1e9;
+            let until = std::time::Instant::now() + std::time::Duration::from_millis(api::beacon_wait(fail, jitter));
+            while std::time::Instant::now() < until && !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        }
+    });
 }
 
 fn load_tree(s: &mut App) {
@@ -4094,6 +4154,8 @@ fn landed(s: &mut App, p: Page) {
 /// How often the tree is read again, to see what other windows wrote. Each
 /// read after the first carries only the bodies written since (`since`).
 const SYNC_EVERY: f64 = 30.0;
+/// How often it is read while the change stream is registered: the stream tells of changes, so this only catches one it merged or missed.
+const SYNC_LIVE: f64 = 300.0;
 
 fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = false;
@@ -4107,12 +4169,39 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         s.next_sync = clock + 2.0;
         tx.wake_after(std::time::Duration::from_secs(2));
     }
+    // what the change stream said since the last look
+    let heard = std::mem::take(&mut *s.beacon.lock().unwrap());
+    for ev in heard {
+        let down = ev == api::Beacon::Down;
+        let w = s.beacon_state.take(ev);
+        if w.tree {
+            // a moment later, so changes that come together are read once
+            s.next_sync = clock + 0.3;
+            tx.wake_after(std::time::Duration::from_millis(300));
+        }
+        if w.know {
+            load_know(s);
+        }
+        if w.shared {
+            load_shared(s);
+        }
+        if let Some(c) = s.conn.clone().filter(|_| w.inbox) {
+            s.waiting_req.request(c, |c| c.waiting());
+        }
+        if down && s.next_sync > clock + SYNC_EVERY {
+            // nothing is listening: the ship is asked again as it was before there was a stream
+            s.next_sync = clock + SYNC_EVERY;
+            tx.wake_after(std::time::Duration::from_secs_f64(SYNC_EVERY));
+        }
+    }
     if s.conn.is_some() && clock >= s.next_sync {
         if s.next_sync > 0.0 {
             load_tree(s);
         }
-        s.next_sync = clock + SYNC_EVERY;
-        tx.wake_after(std::time::Duration::from_secs_f64(SYNC_EVERY));
+        // while the stream is registered it says when anything changes, and asking is only a floor
+        let every = if s.beacon_state.live { SYNC_LIVE } else { SYNC_EVERY };
+        s.next_sync = clock + every;
+        tx.wake_after(std::time::Duration::from_secs_f64(every));
     }
     if let Some(r) = s.shared_req.take() {
         changed = true;
@@ -4516,6 +4605,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 load_tree(s);
                 load_know(s);
                 load_shared(s);
+                listen(s);
             }
             Err(e) => s.login_err = e,
         }
