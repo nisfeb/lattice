@@ -714,6 +714,10 @@ struct App {
     /// The ship's word on themes, and when it is asked next.
     theme_req: Latest<Result<theme::Worn, String>>,
     next_theme: f64,
+    /// A change to the theme on its way to the ship.
+    theme_put: Latest<Result<(), String>>,
+    /// The accent's colour as typed in the settings.
+    accent_hex: TextEdit,
     /// The families the window's text was last set in, to set them again only when the theme's font changes.
     font_set: String,
     /// The last read of them failed.
@@ -1084,6 +1088,8 @@ fn init() -> App {
         theme_req: Latest::default(),
         next_theme: 0.0,
         font_set: APP_FONT.to_owned(),
+        theme_put: Latest::default(),
+        accent_hex: TextEdit::new(""),
         marks_bad: false,
         marks_q: TextEdit::new(""),
         palette: None,
@@ -1902,6 +1908,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.marks_req.set_waker(waker.clone());
     s.theme_req.set_waker(waker.clone());
     s.folds_req.set_waker(waker.clone());
+    s.theme_put.set_waker(waker.clone());
     s.remote_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
     s.op_req.set_waker(waker);
@@ -4845,6 +4852,14 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         let every = if s.beacon_state.live { SYNC_LIVE } else { SYNC_EVERY };
         s.next_sync = clock + every;
         tx.wake_after(std::time::Duration::from_secs_f64(every));
+    }
+    if let Some(r) = s.theme_put.take() {
+        changed = true;
+        match r {
+            // read again, so what the ship holds is what is worn
+            Ok(()) => s.next_theme = 0.0,
+            Err(e) => s.note = format!("Could not reach your ship ({e}): the theme is changed on this computer only"),
+        }
     }
     // the theme's font, behind the app's own text: set when it changes, and at the first look from what was kept
     let font = font_of(&s.prefs.worn);
@@ -8073,16 +8088,58 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
         }).build(k).key("vim-on"))
         .child(text("Modal editing: Esc for normal, i to insert, :w to save.").font(k.ty.small).color(c.text_muted).wrap())
         .child(el().w_full().padding(10.0).radius(k.radius.md).fill(c.layer_01).child(text("The quick brown fox jumps over the lazy dog \u{b7} 0123456789 \u{b7} il1 O0 \u{b7} |= ^- @ud").key("font-sample").font(sample).color(c.text_base).wrap()));
-    // the themes are made in Talon or on the web client's settings page, and worn here
-    let themed = s.prefs.worn.look().bg.is_some();
-    let theme = col()
-        .key("set-theme")
-        .w_full()
-        .gap(6.0)
-        .child(text("Theme").font(k.ty.body_medium).color(c.text_base))
-        .child(text(if s.conn.is_some() { s.prefs.worn.said() } else { "The sample pages wear the built-in theme.".to_owned() }).key("theme-worn").font(k.ty.small).color(c.text_muted).wrap())
-        .children(s.conn.is_some().then(|| text(s.prefs.worn.font_said()).key("theme-font").font(k.ty.small).color(c.text_muted).wrap()))
-        .child(text(if themed { "A theme brings its own light or dark." } else { "Light, dark, or whatever the system is set to: the button at the foot of the left pane. Kept on this computer." }).font(k.ty.small).color(c.text_muted).wrap());
+    // what is worn is chosen here as on the web client's settings page. Themes themselves are made there or in Talon
+    let worn = &s.prefs.worn;
+    let themed = worn.look().bg.is_some();
+    let pick = |label: String, on: bool| Button::new(label).control_size(ControlSize::Small).variant(if on { ButtonVariant::Contrast } else { ButtonVariant::Ghost });
+    let mut theme = col().key("set-theme").w_full().gap(6.0).child(text("Theme").font(k.ty.body_medium).color(c.text_base));
+    if s.conn.is_some() {
+        let own = worn.own;
+        theme = theme
+            .child(Switch::new(own).label("Use a lattice-specific theme").on_toggle(move |s: &mut App| theme_change(s, |w| w.set_own(!own))).build(k).key("theme-own"))
+            .child(text(worn.said()).key("theme-worn").font(k.ty.small).color(c.text_muted).wrap());
+        if own {
+            let active = worn.own_active().map(str::to_owned);
+            let mut themes = row().key("theme-picks").gap(4.0).flex_wrap().child(pick("Built-in".into(), active.is_none()).on_press(|s: &mut App| theme_change(s, |w| w.set_active(None))).build(k).key("theme-pick:"));
+            for (id, name) in worn.themes() {
+                let on = active.as_deref() == Some(id.as_str());
+                let key = format!("theme-pick:{id}");
+                themes = themes.child(pick(name, on).on_press(move |s: &mut App| theme_change(s, |w| w.set_active(Some(&id)))).build(k).key(key));
+            }
+            let accent = worn.own_accent();
+            let custom = matches!(accent, theme::Accent::Custom(_));
+            let mut accents = row().key("theme-accent").gap(4.0).center_y().flex_wrap()
+                .child(pick("Off".into(), accent == theme::Accent::Off).on_press(|s: &mut App| theme_change(s, |w| w.set_accent(theme::Accent::Off))).build(k).key("accent-off"))
+                .child(pick("Profile colour".into(), accent == theme::Accent::Profile).on_press(|s: &mut App| theme_change(s, |w| w.set_accent(theme::Accent::Profile))).build(k).key("accent-profile"))
+                .child(pick("Custom".into(), custom).on_press(|s: &mut App| {
+                    // the colour it had, or lattice's own green to start from
+                    let hex = match s.prefs.worn.own_accent() {
+                        theme::Accent::Custom(h) if !h.is_empty() => h,
+                        _ => s.prefs.worn.accent.get("customHex").and_then(|v| v.as_str()).and_then(theme::hex_of).unwrap_or_else(|| "#4A7C59".to_owned()),
+                    };
+                    s.accent_hex = TextEdit::new(hex.as_str());
+                    theme_change(s, |w| w.set_accent(theme::Accent::Custom(hex)));
+                }).build(k).key("accent-custom"));
+            if custom {
+                accents = accents.child(TextInput::new(&s.accent_hex).label("The accent's colour").placeholder("#RRGGBB, then Return").on_edit(|s: &mut App| &mut s.accent_hex).on_submit(|s: &mut App, _| match theme::hex_of(&s.accent_hex.text) {
+                    Some(hex) => theme_change(s, |w| w.set_accent(theme::Accent::Custom(hex))),
+                    None => s.note = "A colour is six hex figures, as #4A7C59".into(),
+                }).build(k).w(170.0).key("accent-hex"));
+            }
+            theme = theme
+                .child(text("Your own themes are made on the web client's settings page, or in Talon. Pick one here, or the built-in look.").font(k.ty.small).color(c.text_muted).wrap())
+                .child(themes)
+                .child(text("An accent: one colour over whichever theme is in use, as in Talon.").font(k.ty.small).color(c.text_muted).wrap())
+                .child(accents);
+        }
+        let own_font = worn.own_font;
+        theme = theme
+            .child(Switch::new(!own_font).label("Use Talon's font").on_toggle(move |s: &mut App| theme_change(s, |w| w.set_own_font(!own_font))).build(k).key("theme-font-on"))
+            .child(text(worn.font_said()).key("theme-font").font(k.ty.small).color(c.text_muted).wrap());
+    } else {
+        theme = theme.child(text("The sample pages wear the built-in theme.").key("theme-worn").font(k.ty.small).color(c.text_muted).wrap());
+    }
+    let theme = theme.child(text(if themed { "A theme brings its own light or dark." } else { "Light, dark, or whatever the system is set to: the button at the foot of the left pane. Kept on this computer." }).font(k.ty.small).color(c.text_muted).wrap());
     // the way back from "do not ask again"
     let mut publishing = col()
         .key("set-publishing")
@@ -10411,6 +10468,18 @@ fn page_body(s: &App, k: &Kit) -> El {
         .min_h(0.0)
         .child(col().key(format!("page:{}", p.name)).w_full().items_center().child(page.child(shown)))
         .scroll(ScrollSpec { stick_bottom: false })
+}
+
+/// Makes a change to what lattice wears: here at once, kept for the next
+/// run, and written to the ship, where the web client and every other
+/// window read it.
+// ponytail: a read of the ship already on its way can put the old look back for a moment. Count the changes, as the web client does, if that is seen
+fn theme_change(s: &mut App, change: impl FnOnce(&mut theme::Worn) -> theme::Put) {
+    let put = change(&mut s.prefs.worn);
+    save_prefs(s);
+    if let Some(c) = s.conn.clone() {
+        s.theme_put.request((c, put), |(c, put)| c.settings_put(&put));
+    }
 }
 
 /// The family the app's text is set in when no theme names one: Rune's own.

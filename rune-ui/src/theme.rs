@@ -141,7 +141,87 @@ fn unwrap(v: Option<&Value>) -> Value {
     }
 }
 
+/// How an accent is set, as the settings offer it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Accent {
+    Off,
+    Profile,
+    /// Any colour, as six hex figures.
+    Custom(String),
+}
+
+/// A change to what lattice wears, as it is written to the ship: the
+/// entry of lattice's %settings bucket, and its value. Each is in the
+/// shape the web client and Talon write, so they read one another's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Put {
+    pub entry: &'static str,
+    pub value: Value,
+}
+
+/// Six hex figures as they are written, in capitals with their `#`, or nothing for what is no colour.
+pub fn hex_of(typed: &str) -> Option<String> {
+    let v = Value::String(typed.to_owned());
+    hex6(&v)?;
+    Some(format!("#{}", typed.trim().trim_start_matches('#').to_uppercase()))
+}
+
 impl Worn {
+    /// Lattice's own themes that are whole, as id and name, in the order kept.
+    pub fn themes(&self) -> Vec<(String, String)> {
+        let one = |t: &Value| Some((t.get("id")?.as_str()?.to_owned(), t.get("name")?.as_str()?.trim().to_owned()));
+        self.mine.get("themes").and_then(Value::as_array).map(|a| a.iter().filter(|t| FIVE.iter().all(|k| t.get(*k).and_then(hex6).is_some())).filter_map(one).filter(|(_, n)| !n.is_empty()).collect()).unwrap_or_default()
+    }
+
+    /// The id of lattice's own theme in use, or nothing for the built-in look.
+    pub fn own_active(&self) -> Option<&str> {
+        active(&self.mine)?.get("id")?.as_str()
+    }
+
+    /// How lattice's own accent is set.
+    pub fn own_accent(&self) -> Accent {
+        let mode = self.accent.get("mode").and_then(Value::as_str);
+        if self.accent.get("enabled") != Some(&Value::Bool(true)) || mode == Some("Brand") {
+            Accent::Off
+        } else if mode == Some("Custom") {
+            Accent::Custom(self.accent.get("customHex").and_then(Value::as_str).and_then(hex_of).unwrap_or_default())
+        } else {
+            Accent::Profile
+        }
+    }
+
+    /// Follows Talon's theme, or wears lattice's own. Stored as Talon's switch, the other way round.
+    pub fn set_own(&mut self, own: bool) -> Put {
+        self.own = own;
+        Put { entry: "use-talon-theme", value: serde_json::json!({ "enabled": !own }) }
+    }
+
+    /// Wears Talon's font, or does not.
+    pub fn set_own_font(&mut self, own: bool) -> Put {
+        self.own_font = own;
+        Put { entry: "use-talon-font", value: serde_json::json!({ "enabled": !own }) }
+    }
+
+    /// Wears one of lattice's own themes, or, with none, the built-in look. The themes themselves are left as they are.
+    pub fn set_active(&mut self, id: Option<&str>) -> Put {
+        if !self.mine.is_object() {
+            self.mine = serde_json::json!({ "themes": [] });
+        }
+        self.mine["activeId"] = id.map_or(Value::Null, |i| Value::String(i.to_owned()));
+        Put { entry: "themes", value: self.mine.clone() }
+    }
+
+    /// Sets lattice's own accent. Turning it off keeps the mode and the colour it had, as Talon does.
+    pub fn set_accent(&mut self, how: Accent) -> Put {
+        let hex = self.accent.get("customHex").cloned().unwrap_or(Value::Null);
+        self.accent = match how {
+            Accent::Off => serde_json::json!({ "enabled": false, "mode": self.accent.get("mode").and_then(Value::as_str).unwrap_or("Profile"), "customHex": hex }),
+            Accent::Profile => serde_json::json!({ "enabled": true, "mode": "Profile", "customHex": hex }),
+            Accent::Custom(h) => serde_json::json!({ "enabled": true, "mode": "Custom", "customHex": h }),
+        };
+        Put { entry: "accent", value: self.accent.clone() }
+    }
+
     /// Takes what lattice's own bucket says (`settings/bucket/lattice/ui-prefs`), or nothing when the ship has none.
     pub fn lattice(&mut self, answer: Option<&Value>) {
         let b = answer.and_then(|a| a.get("bucket"));
@@ -365,6 +445,48 @@ mod tests {
         assert_eq!((w.font(), w.font_said()), (None, "Talon\u{2019}s font is ignored here.".to_owned()));
         w.lattice(Some(&json!({ "bucket": { "use-talon-font": { "enabled": false }, "use-talon-theme": { "enabled": false } } })));
         assert!(!w.reads_talon());
+    }
+
+    #[test]
+    fn the_switches_are_written_as_talons_the_other_way_round() {
+        let mut w = Worn::default();
+        assert_eq!(w.set_own(true), Put { entry: "use-talon-theme", value: json!({ "enabled": false }) });
+        assert!(w.own && !w.follows());
+        assert_eq!(w.set_own(false).value, json!({ "enabled": true }));
+        assert_eq!(w.set_own_font(true), Put { entry: "use-talon-font", value: json!({ "enabled": false }) });
+        assert!(w.own_font);
+        // what is written reads back as it was set
+        let mut back = Worn::default();
+        back.lattice(Some(&json!({ "bucket": { "use-talon-theme": w.clone().set_own(true).value.to_string(), "use-talon-font": w.set_own_font(true).value.to_string() } })));
+        assert!(back.own && back.own_font);
+    }
+
+    #[test]
+    fn one_of_lattices_own_themes_is_picked_and_the_rest_left_alone() {
+        let mut w = Worn { own: true, mine: json!({ "themes": [night(), day(), { "id": "broken", "name": "Half" }], "activeId": "a" }), ..Worn::default() };
+        assert_eq!(w.themes(), [("a".to_owned(), "Night".to_owned()), ("b".to_owned(), "Day".to_owned())], "a theme that is not whole is not offered");
+        assert_eq!(w.own_active(), Some("a"));
+        let put = w.set_active(Some("b"));
+        assert_eq!((put.entry, &put.value["activeId"], put.value["themes"].as_array().map(Vec::len)), ("themes", &json!("b"), Some(3)));
+        assert_eq!((w.own_active(), w.name()), (Some("b"), Some("Day")));
+        assert_eq!(w.set_active(None).value["activeId"], Value::Null);
+        assert_eq!((w.own_active(), w.look().bg), (None, None), "the built-in look");
+        // with nothing kept yet there is still something to write
+        assert_eq!(Worn::default().set_active(None).value, json!({ "themes": [], "activeId": null }));
+    }
+
+    #[test]
+    fn the_accent_is_off_the_profiles_or_a_colour() {
+        let mut w = Worn { own: true, ..Worn::default() };
+        assert_eq!(w.own_accent(), Accent::Off);
+        assert_eq!(w.set_accent(Accent::Custom("#FFCC00".into())).value, json!({ "enabled": true, "mode": "Custom", "customHex": "#FFCC00" }));
+        assert_eq!((w.own_accent(), hex(w.look().accent)), (Accent::Custom("#FFCC00".into()), "#ffcc00".to_owned()));
+        // off keeps the mode and the colour, to come back to
+        assert_eq!(w.set_accent(Accent::Off).value, json!({ "enabled": false, "mode": "Custom", "customHex": "#FFCC00" }));
+        assert_eq!((w.own_accent(), w.look().accent), (Accent::Off, None));
+        assert_eq!(w.set_accent(Accent::Profile).value, json!({ "enabled": true, "mode": "Profile", "customHex": "#FFCC00" }));
+        assert!(w.own_accent() == Accent::Profile && w.wants_profile());
+        assert_eq!([hex_of("ffcc00"), hex_of(" #AbCdEf "), hex_of("red"), hex_of("#fff")], [Some("#FFCC00".to_owned()), Some("#ABCDEF".to_owned()), None, None]);
     }
 
     #[test]

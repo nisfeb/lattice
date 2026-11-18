@@ -2139,6 +2139,37 @@ impl Conn {
         }
     }
 
+    /// Writes one entry of lattice's %settings bucket, as the web client's
+    /// theme script and Talon write one: a poke on a channel of its own,
+    /// the value as text that holds JSON. The channel is let go once the
+    /// poke's answer is on it.
+    pub fn settings_put(&self, put: &crate::theme::Put) -> Result<(), String> {
+        let stamp = since_epoch().map_or(0, |d| d.as_nanos());
+        let url = format!("{}/~/channel/lattice-rune-theme-{stamp:x}", self.url);
+        let poke = serde_json::json!([{ "id": 1, "action": "poke", "ship": self.ship().trim_start_matches('~'), "app": "settings", "mark": "settings-event",
+            "json": { "put-entry": { "desk": "lattice", "bucket-key": "ui-prefs", "entry-key": put.entry, "value": put.value.to_string() } } }]);
+        self.call_url(30, "PUT", &url, Some(&poke.to_string()))?;
+        // let go at once, the answer would find no channel and the ship would print an error for it, on every change
+        self.channel_answer(&url);
+        let _ = self.call_url(10, "PUT", &url, Some(r#"[{"id":2,"action":"delete"}]"#));
+        Ok(())
+    }
+
+    /// Waits for the first thing a channel says, five seconds at most.
+    // ponytail: a browser's fetch cannot read part of an answer through this client's one call, so there the channel is let go without the wait
+    fn channel_answer(&self, url: &str) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use std::io::Read;
+            let req = ureq::get(url).timeout(Duration::from_secs(5)).set("cookie", &self.cookie).set("accept", "text/event-stream");
+            if let Ok(r) = req.call() {
+                let _ = r.into_reader().read(&mut [0u8; 64]);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = url;
+    }
+
     /// What the ship says of themes now, over what it said before: lattice's
     /// own from its %settings bucket, Talon's when it is followed, and the
     /// profile's colour when an accent asks for it. Talon's bucket or the
@@ -3989,6 +4020,9 @@ mod tests {
             panic!("{what} was not read back");
         };
         let name = format!("Night {stamp}");
+        // from where a run before this one left the ship: Talon followed
+        put("lattice", "use-talon-theme", json!({ "enabled": true }));
+        put("lattice", "use-talon-font", json!({ "enabled": true }));
         put("talon", "themes", json!({ "themes": [theme("a", &name, "#1B2026")], "activeId": "a" }));
         put("talon", "accent", json!({ "enabled": true, "mode": "Custom", "customHex": "FFCC00" }));
         let w = until("Talon's theme and accent", &|w| w.name() == Some(name.as_str()) && w.look().accent.is_some_and(|a| a.hex().starts_with("#ffcc00")));
@@ -4003,6 +4037,18 @@ mod tests {
         // and back to following Talon
         put("lattice", "use-talon-theme", json!({ "enabled": true }));
         until("Talon followed again", &|w| w.follows() && w.name() == Some(name.as_str()));
+        // the window's own writer: each change it makes reads back as it was set
+        let mut w = c.worn(crate::theme::Worn::default()).unwrap();
+        c.settings_put(&w.set_own(true)).unwrap();
+        c.settings_put(&w.set_active(None)).unwrap();
+        c.settings_put(&w.set_accent(crate::theme::Accent::Custom("#336699".into()))).unwrap();
+        c.settings_put(&w.set_own_font(true)).unwrap();
+        let back = until("the window's own changes", &|x| x.own && x.own_font && x.own_active().is_none() && x.own_accent() == crate::theme::Accent::Custom("#336699".into()));
+        assert_eq!(back.look().accent.map(|c| c.hex()), Some("#336699ff".to_owned()));
+        assert_eq!(back.themes(), [("m".to_owned(), mine.clone())], "the themes kept are left as they were");
+        c.settings_put(&w.set_active(Some("m"))).unwrap();
+        c.settings_put(&w.set_own_font(false)).unwrap();
+        until("its own theme picked again", &|x| x.own_active() == Some("m") && !x.own_font);
     }
 
     /// The reader's bookmarks, kept on a ship and read back as the left pane reads them.
