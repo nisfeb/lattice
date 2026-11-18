@@ -15,6 +15,7 @@ mod mounts;
 mod funcs;
 mod head;
 mod map;
+mod marks;
 mod mapio;
 mod md;
 mod odf;
@@ -628,6 +629,15 @@ struct App {
     sskipped: usize,
     /// The result the arrows are on.
     search_at: Option<usize>,
+    /// The left pane's Bookmarks tab is showing.
+    marks_open: bool,
+    /// The bookmarks the reader keeps, once read.
+    marks: Option<Vec<api::Bookmark>>,
+    marks_req: Latest<Result<Vec<api::Bookmark>, String>>,
+    /// The last read of them failed.
+    marks_bad: bool,
+    /// What is typed into their filter.
+    marks_q: TextEdit,
     /// The command palette, when open: what is typed and the row chosen.
     palette: Option<TextEdit>,
     /// New from a template: the ship's templates, the dialog when open
@@ -881,6 +891,11 @@ fn init() -> App {
         sfound: 0,
         sskipped: 0,
         search_at: None,
+        marks_open: false,
+        marks: None,
+        marks_req: Latest::default(),
+        marks_bad: false,
+        marks_q: TextEdit::new(""),
         palette: None,
         templates: Vec::new(),
         templates_req: Latest::default(),
@@ -1614,6 +1629,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.waiting_req.set_waker(waker.clone());
     s.comets_req.set_waker(waker.clone());
     s.shared_req.set_waker(waker.clone());
+    s.marks_req.set_waker(waker.clone());
     s.remote_req.set_waker(waker.clone());
     s.old_req.set_waker(waker.clone());
     s.op_req.set_waker(waker);
@@ -4332,6 +4348,14 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         let every = if s.beacon_state.live { SYNC_LIVE } else { SYNC_EVERY };
         s.next_sync = clock + every;
         tx.wake_after(std::time::Duration::from_secs_f64(every));
+    }
+    if let Some(r) = s.marks_req.take() {
+        changed = true;
+        match r {
+            Ok(list) => (s.marks, s.marks_bad) = (Some(list), false),
+            // what was read before stays on screen
+            Err(_) => s.marks_bad = true,
+        }
     }
     if let Some(r) = s.shared_req.take() {
         changed = true;
@@ -8501,9 +8525,105 @@ fn run_search(s: &mut App) {
 fn open_search(s: &mut App) {
     s.sidebar.set_open(true);
     s.searching = true;
+    s.marks_open = false;
     s.squery.focused = true;
     // what is held may have changed since it was last shown
     run_search(s);
+}
+
+/// Sample bookmarks, for looking at the tab with no ship.
+const SAMPLE_MARKS: &[(&str, &str, &str)] = &[("urb://~sampel-palnet/notes", "Sampel's notes", ""), ("https://urbit.org/overview", "Urbit overview", "reading"), ("urb://~sampel-palnet/forum/chat", "", "boards"), ("https://example.com/a-long-read", "A long read", "reading")];
+
+/// Shows the Bookmarks tab and reads the bookmarks again: the reader
+/// keeps and drops them elsewhere, and this is one small request.
+fn open_marks(s: &mut App) {
+    s.sidebar.set_open(true);
+    s.marks_open = true;
+    s.searching = false;
+    match s.conn.clone() {
+        Some(c) => s.marks_req.request(c, |c| c.bookmarks()),
+        None => s.marks = Some(SAMPLE_MARKS.iter().map(|(url, title, folder)| api::Bookmark { url: (*url).into(), title: (*title).into(), folder: (*folder).into() }).collect()),
+    }
+}
+
+/// Opens a bookmark: an address on the network is read by the ship,
+/// as one typed into Shared with me is, and a web address goes to the
+/// system's browser.
+fn open_mark(s: &mut App, at: usize, tx: &mut Tx) {
+    let Some(url) = s.marks.as_ref().and_then(|m| m.get(at)).map(|b| b.url.clone()) else { return };
+    match marks::opens(&url) {
+        marks::Opens::Urb if s.editing => s.note = "Save or cancel the edit first".to_owned(),
+        marks::Opens::Urb => urb_go(s, Some(url)),
+        marks::Opens::Web => {
+            if let Err(e) = tx.open_url(&url) {
+                s.note = format!("could not open {url}: {e:?}");
+            }
+        }
+        marks::Opens::Nowhere => s.note = format!("{url} is not an address this can open"),
+    }
+}
+
+/// The Bookmarks tab: a filter, then the bookmarks under their folders.
+fn marks_view(s: &App, k: &Kit) -> El {
+    let field = TextInput::new(&s.marks_q).placeholder("Filter bookmarks").leading_icon(k.glyph.search).clear_button().on_edit(|s: &mut App| &mut s.marks_q).build(k).w_full().key("marks-filter");
+    let mut out = col().key("marks").w_full().grow(1.0).min_h(0.0).gap(8.0).child(field);
+    let said = |t: &str| text(t.to_owned()).key("marks-note").font(k.ty.small).color(k.c.text_muted).wrap();
+    let Some(list) = &s.marks else {
+        return out.child(said(if s.marks_bad { "Bookmarks did not load" } else { "Loading bookmarks\u{2026}" }));
+    };
+    if s.marks_bad {
+        out = out.child(said("Bookmarks did not load again. These are the ones read before."));
+    }
+    let shown = marks::rows(list, &s.marks_q.text, &s.prefs.marks_folded);
+    if shown.is_empty() {
+        return out.child(said(marks::none(&s.marks_q.text)));
+    }
+    let mut rows = col().key("marks-rows").w_full().gap(2.0);
+    for r in shown {
+        rows = rows.child(match r {
+            marks::Row::Folder { name, folded } => {
+                let f = name.clone();
+                row()
+                    .key(format!("mf:{name}"))
+                    .role("button")
+                    .label(format!("{name}, folder, {}", if folded { "folded" } else { "open" }))
+                    .w_full()
+                    .h(26.0)
+                    .px(6.0)
+                    .gap(6.0)
+                    .center_y()
+                    .radius(k.radius.sm)
+                    .on_press(move |s: &mut App| {
+                        match s.prefs.marks_folded.iter().position(|x| *x == f) {
+                            Some(i) => drop(s.prefs.marks_folded.remove(i)),
+                            None => s.prefs.marks_folded.push(f.clone()),
+                        }
+                        if s.conn.is_some() {
+                            s.prefs.save();
+                        }
+                    })
+                    .child(rune::icon(if folded { k.glyph.caret_right } else { k.glyph.chevron_down }, 16.0).color(k.c.icon_muted).a11y_hidden())
+                    .child(text(name).font(k.ty.small_medium).color(k.c.text_base).truncate().grow(1.0).min_w(0.0))
+            }
+            marks::Row::Mark { at, under } => {
+                let b = &list[at];
+                row()
+                    .key(format!("m:{}", b.url))
+                    .role("button")
+                    .label(marks::label(b).to_owned())
+                    .help(b.url.clone())
+                    .w_full()
+                    .h(26.0)
+                    .pl(if under { 28.0 } else { 6.0 })
+                    .pr(6.0)
+                    .center_y()
+                    .radius(k.radius.sm)
+                    .on_press_tx(move |s: &mut App, tx| open_mark(s, at, tx))
+                    .child(text(marks::label(b).to_owned()).font(k.ty.small).color(k.c.text_base).truncate().grow(1.0).min_w(0.0))
+            }
+        });
+    }
+    out.child(col().w_full().grow(1.0).min_h(0.0).child(rows).scroll(ScrollSpec { stick_bottom: false }))
 }
 
 /// Opens a result: a page among the pages, a memory among the memories.
@@ -8734,7 +8854,16 @@ fn sidebar(s: &App, k: &Kit) -> El {
     let (pages, knows) = if s.memory { (s.other.1.len(), s.names.len()) } else { (s.names.len(), s.other.1.len()) };
     // the pane's head as the web client has it: icon tabs, then a toolbar of icons over the tree
     let mut halves = row().key("halves").role("tablist").label("Left pane").w_full().gap(4.0);
-    for tab in head::tabs(s.memory, s.searching, pages, knows) {
+    let front = if s.searching {
+        head::Half::Search
+    } else if s.marks_open {
+        head::Half::Marks
+    } else if s.memory {
+        head::Half::Knowledge
+    } else {
+        head::Half::Files
+    };
+    for tab in head::tabs(front, pages, knows) {
         let (on, what, memory) = (tab.on, tab.what, s.memory);
         let mut b = IconButton::new(tab.icon).control_size(ControlSize::Large).variant(if on { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).label(tab.said).help(tab.name);
         if let Some(keys) = tab.keys {
@@ -8742,9 +8871,11 @@ fn sidebar(s: &App, k: &Kit) -> El {
         }
         halves = halves.child(b.on_press(move |s: &mut App| match what {
             head::Half::Search => open_search(s),
-            // the half that is showing does nothing when pressed, but for leaving the search
+            head::Half::Marks => open_marks(s),
+            // the half that is showing does nothing when pressed, but for leaving the search or the bookmarks
             _ => {
                 s.searching = false;
+                s.marks_open = false;
                 if (what == head::Half::Knowledge) != memory {
                     flip(s);
                 }
@@ -8863,6 +8994,8 @@ fn sidebar(s: &App, k: &Kit) -> El {
     let side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves);
     let mut side = if s.searching {
         side.child(search_view(s, k)).child(foot)
+    } else if s.marks_open {
+        side.child(marks_view(s, k)).child(foot)
     } else {
         side.children(core).child(filter).child(new).children((!tags.is_empty()).then_some(chips)).child(heading).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(foot)
     };

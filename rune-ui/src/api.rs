@@ -50,6 +50,19 @@ pub struct Page {
     pub rev: u64,
 }
 
+/// A bookmark the reader keeps on the ship: an address on the network
+/// or the web, the title it was kept under, and the folder it is in,
+/// empty for none (`bookmarks-json`).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+pub struct Bookmark {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub folder: String,
+}
+
 /// The whole tree with page bodies, in one request (`page-dump`).
 #[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Dump {
@@ -1321,6 +1334,9 @@ pub struct Prefs {
     /// The tree is sorted by name from the end: the web client's `name-desc`.
     #[serde(default)]
     pub sort_desc: bool,
+    /// The bookmark folders folded away in the left pane.
+    #[serde(default)]
+    pub marks_folded: Vec<String>,
 }
 
 impl Prefs {
@@ -2215,6 +2231,16 @@ impl Conn {
         Ok(k.items)
     }
 
+    /// The bookmarks the reader keeps, newest first.
+    pub fn bookmarks(&self) -> Result<Vec<Bookmark>, String> {
+        serde_json::from_str(&self.call("GET", "bookmarks-json", None)?).map_err(|e| e.to_string())
+    }
+
+    /// Keeps a bookmark, in a folder or, with none named, in no folder.
+    pub fn bookmark(&self, url: &str, title: &str, folder: &str) -> Result<(), String> {
+        self.call("POST", &format!("bookmark?url={}&title={}&folder={}", enc(url), enc(title), enc(folder)), Some("")).map(drop)
+    }
+
     /// Writes a memory, new or not. `key` starts with a slash.
     pub fn know_save(&self, key: &str, body: &str) -> Result<(), String> {
         // the ship refuses an empty body
@@ -2846,7 +2872,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()], pub_ok: true, font: "serif".into(), vim: true, sort_desc: true, marks_folded: vec!["web".into()] }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert!(back.sort_desc);
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
@@ -3807,6 +3833,37 @@ mod tests {
         assert!(c.know_restore("").is_err(), "a key that is not a key is refused");
         c.know_delete(&key).unwrap();
         assert!(!c.know_all().unwrap().iter().any(|k| k.key == key), "and gone after a delete");
+    }
+
+    /// The reader's bookmarks, kept on a ship and read back as the left pane reads them.
+    #[test]
+    #[ignore = "needs a ship: LATTICE_URL and LATTICE_COOKIE"]
+    fn live_bookmarks_are_kept_and_read_newest_first() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let stamp = crate::api::since_epoch().unwrap().as_secs();
+        let (one, two) = (format!("urb://~zod/rune-mark-{stamp}"), format!("https://example.com/rune mark?n={stamp}&x=1"));
+        c.bookmark(&one, "Rune & one", "rune marks").unwrap();
+        c.bookmark(&two, "", "").unwrap();
+        let all = c.bookmarks().unwrap();
+        let at = |url: &str| all.iter().position(|b| b.url == url).unwrap_or_else(|| panic!("{url} is not among {all:?}"));
+        assert_eq!(all[at(&one)], Bookmark { url: one.clone(), title: "Rune & one".into(), folder: "rune marks".into() }, "title and folder come back as sent");
+        // a title sent empty is kept empty, so the pane shows the address for it
+        assert_eq!((all[at(&two)].title.as_str(), all[at(&two)].folder.as_str()), ("", ""));
+        assert_eq!(crate::marks::label(&all[at(&two)]), two);
+        assert!(at(&two) < at(&one), "the one kept last is read first");
+        // a bookmark of a page that is shared opens by the read the pane uses for it.
+        // The page is left there, named for the run, for `scripts/marks-ship.json` to press
+        let name = format!("marks{stamp}/page");
+        let q = Queued { kind: "md".into(), body: "# Kept by a bookmark\n".into(), base: 0, is_new: true, at: 0 };
+        assert!(matches!(c.send_queued(&name, &q), Sent::Done { .. }));
+        c.share(&name, "shared").unwrap();
+        let there = format!("urb://{}/{name}", c.ship());
+        c.bookmark(&there, "Kept page", "rune marks").unwrap();
+        assert!(matches!(c.urb_read(&there).unwrap(), Urb::Page { body, .. } if body == "# Kept by a bookmark\n"));
+        println!("bookmarked: {there}");
+        // and the rows the pane makes of them
+        let rows = crate::marks::rows(&all, &format!("rune-mark-{stamp}"), &[]);
+        assert_eq!(rows, [crate::marks::Row::Folder { name: "rune marks".into(), folded: false }, crate::marks::Row::Mark { at: at(&one), under: true }]);
     }
 
     /// Against a real ship: `LATTICE_URL=.. LATTICE_COOKIE=.. cargo test -- --ignored`.

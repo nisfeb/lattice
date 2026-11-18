@@ -12,6 +12,7 @@ use rune::Icon;
 line!(DOC, "lat-doc", "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5");
 line!(KNOW, "lat-know", "M12 3l8 9-8 9-8-9z");
 line!(SEARCH, "lat-search", "M4 11a7 7 0 1 0 14 0a7 7 0 1 0-14 0M16 16l5 5");
+line!(MARK, "lat-mark", "M6 3h12v18l-6-4-6 4z");
 line!(QOPEN, "lat-qopen", "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h4M14 3l5 5v3M14 3v5h5M13 16a3 3 0 1 0 6 0a3 3 0 1 0-6 0M18.2 18.2L21 21");
 line!(PLUS, "lat-plus", "M12 5v14M5 12h14");
 line!(TPL, "lat-tpl", "M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM3 9h18M9 9v12");
@@ -27,6 +28,7 @@ pub enum Half {
     Files,
     Knowledge,
     Search,
+    Marks,
 }
 
 /// One of the pane's tabs.
@@ -43,14 +45,16 @@ pub struct Tab {
     pub said: String,
 }
 
-/// The tabs: files, knowledge, then search. `memory` is which half of
-/// the tree is showing, and `searching` that the search is over it.
-pub fn tabs(memory: bool, searching: bool, pages: usize, knows: usize) -> [Tab; 3] {
+/// The tabs, in the web client's order: files, knowledge, search and
+/// bookmarks. `showing` is the one in front.
+pub fn tabs(showing: Half, pages: usize, knows: usize) -> [Tab; 4] {
     let n = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    let tab = |what, key, name, keys, icon, said| Tab { what, key, name, keys, icon, on: showing == what, said };
     [
-        Tab { what: Half::Files, key: "half-pages", name: "Files", keys: Some("Ctrl+Shift+L"), icon: &DOC, on: !memory && !searching, said: format!("Files, {}", n(pages, "page", "pages")) },
-        Tab { what: Half::Knowledge, key: "half-memory", name: "Knowledge", keys: None, icon: &KNOW, on: memory && !searching, said: format!("Knowledge, {}", n(knows, "memory", "memories")) },
-        Tab { what: Half::Search, key: "half-search", name: "Search", keys: Some("Ctrl+Shift+F"), icon: &SEARCH, on: searching, said: "Search".to_owned() },
+        tab(Half::Files, "half-pages", "Files", Some("Ctrl+Shift+L"), &DOC, format!("Files, {}", n(pages, "page", "pages"))),
+        tab(Half::Knowledge, "half-memory", "Knowledge", None, &KNOW, format!("Knowledge, {}", n(knows, "memory", "memories"))),
+        tab(Half::Search, "half-search", "Search", Some("Ctrl+Shift+F"), &SEARCH, "Search".to_owned()),
+        tab(Half::Marks, "half-marks", "Bookmarks", None, &MARK, "Bookmarks".to_owned()),
     ]
 }
 
@@ -128,24 +132,24 @@ mod tests {
 
     #[test]
     fn the_tabs_keep_their_keys_and_say_their_counts() {
-        let t = tabs(false, false, 7, 1);
-        assert_eq!([t[0].key, t[1].key, t[2].key], ["half-pages", "half-memory", "half-search"]);
+        let t = tabs(Half::Files, 7, 1);
+        assert_eq!([t[0].key, t[1].key, t[2].key, t[3].key], ["half-pages", "half-memory", "half-search", "half-marks"]);
         assert!(t[0].on && !t[1].on);
         assert_eq!(t[0].said, "Files, 7 pages");
         assert_eq!(t[1].said, "Knowledge, 1 memory");
-        let t = tabs(true, false, 1, 0);
-        assert!(!t[0].on && t[1].on && !t[2].on);
+        let t = tabs(Half::Knowledge, 1, 0);
+        assert!(!t[0].on && t[1].on && !t[2].on && !t[3].on);
         assert_eq!(t[0].said, "Files, 1 page");
         assert_eq!(t[1].said, "Knowledge, 0 memories");
     }
 
     #[test]
-    fn searching_is_the_only_tab_marked_whichever_half_is_under_it() {
-        for memory in [false, true] {
-            let t = tabs(memory, true, 0, 0);
-            assert_eq!(t.iter().filter(|t| t.on).map(|t| t.what).collect::<Vec<_>>(), [Half::Search]);
+    fn only_the_tab_in_front_is_marked() {
+        for what in [Half::Files, Half::Knowledge, Half::Search, Half::Marks] {
+            assert_eq!(tabs(what, 0, 0).iter().filter(|t| t.on).map(|t| t.what).collect::<Vec<_>>(), [what]);
         }
-        assert_eq!(tabs(false, true, 0, 0)[2].keys, Some("Ctrl+Shift+F"));
+        assert_eq!(tabs(Half::Search, 0, 0)[2].keys, Some("Ctrl+Shift+F"));
+        assert_eq!(tabs(Half::Files, 0, 0)[3].name, "Bookmarks");
     }
 
     #[test]
@@ -202,7 +206,7 @@ mod tests {
 
     #[test]
     fn every_icon_has_a_name_of_its_own() {
-        let mut names: Vec<_> = tools(false, false).iter().map(|t| t.icon.name).chain(tabs(false, false, 0, 0).iter().map(|t| t.icon.name)).collect();
+        let mut names: Vec<_> = tools(false, false).iter().map(|t| t.icon.name).chain(tabs(Half::Files, 0, 0).iter().map(|t| t.icon.name)).collect();
         let n = names.len();
         names.sort_unstable();
         names.dedup();

@@ -1,0 +1,9 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 1.5, "type": "tap", "key": "half-marks"},
+  {"t": 3.0, "type": "tap", "key": "mf:reading"},
+  {"t": 5.0, "type": "tap", "key": "marks-filter"},
+  {"t": 5.5, "type": "type", "text": "LONG"},
+  {"t": 7.0, "type": "tap", "key": "m:https://example.com/a-long-read"},
+  {"t": 9.0, "type": "tap", "key": "half-pages"}
+]}
