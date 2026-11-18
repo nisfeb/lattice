@@ -23,6 +23,7 @@ mod styles;
 mod tex;
 mod upload;
 mod view3d;
+mod vim;
 
 use std::collections::HashMap;
 
