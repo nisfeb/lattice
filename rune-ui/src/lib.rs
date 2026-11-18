@@ -28,6 +28,7 @@ mod scadrun;
 mod search;
 mod sheet;
 mod shift;
+mod status;
 mod styles;
 mod tabhead;
 mod tex;
@@ -3713,6 +3714,22 @@ fn outline_view(s: &App, k: &Kit) -> El {
         );
     }
     col().key("outline").w_full().h_full().min_h(0.0).padding(8.0).child(rows).scroll(ScrollSpec { stick_bottom: false })
+}
+
+/// The status bar along the bottom of the window: what was last said,
+/// and, for as long as each holds, that the ship is away and how much
+/// waits to be sent.
+fn status_bar(s: &App, k: &Kit, busy: bool) -> El {
+    let c = &k.c;
+    let bar = status::bar(&s.note, s.offline.as_deref(), s.queue.len() + s.ops.len(), s.conn.as_ref().map(|c| c.url.as_str()));
+    let badge = |b: status::Badge, key: &str| text(b.short).key(key.to_owned()).role("status").label(b.long.clone()).help(b.long).font(k.ty.text_xsmall_medium).color(c.text_base).px(6.0).radius(k.radius.sm).fill(c.layer_02);
+    let mut out = row().key("statusbar").role("status").label("Status").w_full().h(24.0).px(10.0).gap(8.0).center_y();
+    if busy {
+        out = out.child(Spinner::new().build(k));
+    }
+    // said even when there is nothing: the bar keeps its height, and the page does not jump as notes come and go
+    out = out.child(text(bar.said.unwrap_or_default()).key("note").font(k.ty.small).color(c.text_muted).truncate().grow(1.0).min_w(0.0));
+    out.children(bar.offline.map(|b| badge(b, "offline"))).children(bar.waiting.map(|b| badge(b, "waiting-saves")))
 }
 
 /// The right pane: its tabs as icons, then what the one in front shows.
@@ -9322,26 +9339,14 @@ fn sidebar(s: &App, k: &Kit) -> El {
         list
     });
     let side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves);
-    let mut side = if s.searching {
+    let side = if s.searching {
         side.child(search_view(s, k)).child(foot)
     } else if s.marks_open {
         side.child(marks_view(s, k)).child(foot)
     } else {
         side.children(core).child(filter).child(new).children((!tags.is_empty()).then_some(chips)).child(heading).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(foot)
     };
-    if let Some(when) = &s.offline {
-        let said = if when.is_empty() { "Offline. The ship does not answer.".to_owned() } else { format!("Offline. The ship does not answer, so this is what was kept {when}.") };
-        side = side.child(text(format!("{said} A save, a new page, a delete or a move made now waits on this device. Anything else needs the ship.")).key("offline").font(k.ty.small).color(k.c.text_base).wrap());
-    }
-    if !s.queue.is_empty() || !s.ops.is_empty() {
-        let n = s.queue.len() + s.ops.len();
-        side = side.child(text(format!("{n} change{} saved on this device, waiting to be sent.", if n == 1 { "" } else { "s" })).key("waiting-saves").font(k.ty.small).color(k.c.text_base).wrap());
-    }
-    // offline, a read that failed because the ship is away is not said again: its error starts with the ship's address
-    let again = s.offline.is_some() && s.conn.as_ref().is_some_and(|c| s.note.split_once(": ").is_some_and(|(_, e)| e.starts_with(c.url.as_str())));
-    if !s.note.is_empty() && !again {
-        side = side.child(text(s.note.clone()).key("note").font(k.ty.small).color(k.c.text_muted).wrap());
-    }
+    // what is said, the offline state and what waits are the status bar's, along the bottom of the window
     side
 }
 
@@ -9655,9 +9660,6 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     let remote = s.remote.as_ref().filter(|_| page);
     let sw = tabhead::switch(page, s.editing, remote.is_none_or(Shared::editable));
     let mut trailing = row().gap(6.0).center_y();
-    if busy {
-        trailing = trailing.child(Spinner::new().build(&k));
-    }
     if s.editing {
         if s.prefs.vim && !s.rich {
             trailing = trailing.child(text(s.vim.indicator()).key("vim-mode").font(k.ty.small_medium).color(k.c.text_muted));
@@ -9782,7 +9784,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         layer.push(col().key("drop-hint").absolute(0.0, 0.0).w_full().h_full().center().child(text("Drop to upload as pages").font(k.ty.body_medium).color(k.c.text_base).padding(16.0).radius(k.radius.md).fill(k.c.layer_01)));
     }
     // files dropped anywhere on the window are uploaded, as on the web
-    let shell = row().w_full().h_full().min_h(0.0).child(ribbon_view(s, &k, if inset > 0.0 { 32.0 } else { 0.0 })).child(el().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(shell));
+    let shell = row().w_full().h_full().min_h(0.0).child(ribbon_view(s, &k, if inset > 0.0 { 32.0 } else { 0.0 })).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(el().w_full().grow(1.0).min_h(0.0).child(shell)).child(status_bar(s, &k, busy)));
     rune_kit::root(shell, layer).on_drop_files(|s: &mut App, files, _| upload(s, files.to_vec())).on_drop_hover(|s: &mut App, over, _| s.dropping = over)
 }
 
