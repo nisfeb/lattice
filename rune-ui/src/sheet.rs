@@ -65,7 +65,7 @@ fn unescape(s: &str, out: &mut String) {
 }
 
 /// An attribute's value in a tag's text, unescaped.
-fn attr(tag: &str, name: &str) -> Option<String> {
+pub(crate) fn attr(tag: &str, name: &str) -> Option<String> {
     let mut from = 0;
     while let Some(i) = tag[from..].find(name) {
         let at = from + i;
@@ -335,11 +335,11 @@ const VALUE_ATTRS: [&str; 11] = [
 ];
 
 /// Where an element's own content ends: at its closing tag, or at once for an empty one.
-fn inner_end(src: &str, el: &El) -> usize {
+pub(crate) fn inner_end(src: &str, el: &El) -> usize {
     if src[el.start..el.open_end].ends_with("/>") { el.open_end } else { src[..el.end].rfind("</").unwrap_or(el.end) }
 }
 
-fn kids(src: &str, el: &El) -> Result<Vec<El>, String> {
+pub(crate) fn kids(src: &str, el: &El) -> Result<Vec<El>, String> {
     elements(src, el.open_end, inner_end(src, el))
 }
 
@@ -360,19 +360,19 @@ fn open_tag(src: &str, el: &El, count: &str, n: usize) -> String {
 }
 
 /// An element again, standing for `n` of itself.
-fn copy(src: &str, el: &El, count: &str, n: usize) -> String {
+pub(crate) fn copy(src: &str, el: &El, count: &str, n: usize) -> String {
     let rest = &src[el.open_end..el.end];
     format!("{}{}{rest}", open_tag(src, el, count, n), if src[el.start..el.open_end].ends_with("/>") { "/>" } else { ">" })
 }
 
-fn count(src: &str, el: &El, name: &str) -> usize {
+pub(crate) fn count(src: &str, el: &El, name: &str) -> usize {
     let tag = &src[el.start..el.open_end];
     attrs(tag).into_iter().find(|(k, _)| *k == name).and_then(|(_, at)| tag[at].parse().ok()).unwrap_or(1).max(1)
 }
 
 /// The spaces an element is indented by when it starts its line, and
 /// what goes between it and a sibling put beside it.
-fn gap(src: &str, at: usize) -> String {
+pub(crate) fn gap(src: &str, at: usize) -> String {
     let line = src[..at].rfind('\n').map_or(0, |i| i + 1);
     if src[line..at].bytes().all(|b| b == b' ') { format!("\n{}", &src[line..at]) } else { String::new() }
 }
@@ -413,7 +413,7 @@ impl From<Typed> for Put {
     }
 }
 
-fn esc_attr(s: &str) -> String {
+pub(crate) fn esc_attr(s: &str) -> String {
     esc_text(s).replace('"', "&quot;").replace('\'', "&apos;")
 }
 
@@ -547,13 +547,13 @@ fn cell_xml(src: &str, old: Option<&El>, pad: &str, v: &Put, calcext: bool, null
     Ok(format!("<{name}{a}>{kept}{}{pad}</{name}>", ps.iter().map(|p| format!("{inner}{p}")).collect::<String>()))
 }
 
-const ROWS: &str = "table:number-rows-repeated";
-const COLS: &str = "table:number-columns-repeated";
+pub(crate) const ROWS: &str = "table:number-rows-repeated";
+pub(crate) const COLS: &str = "table:number-columns-repeated";
 
 /// A sheet of a flat ODS document: its table, its rows, also those in a
 /// header or a group, and whether the document declares LibreOffice's
 /// own namespace.
-fn sheet_rows(src: &str, sheet: usize) -> Result<(El, Vec<El>, bool), String> {
+pub(crate) fn sheet_rows(src: &str, sheet: usize) -> Result<(El, Vec<El>, bool), String> {
     let (ss, calcext) = spreadsheet(src)?;
     let table = kids(src, &ss)?.into_iter().filter(|e| e.name == "table:table").nth(sheet).ok_or("this is not a spreadsheet lattice can change")?;
     let mut rows = Vec::new();
@@ -563,7 +563,7 @@ fn sheet_rows(src: &str, sheet: usize) -> Result<(El, Vec<El>, bool), String> {
 
 /// The spreadsheet element of a flat ODS document, and whether the
 /// document declares LibreOffice's own namespace.
-fn spreadsheet(src: &str) -> Result<(El, bool), String> {
+pub(crate) fn spreadsheet(src: &str) -> Result<(El, bool), String> {
     let no = || "this is not a spreadsheet lattice can change".to_owned();
     let root = elements(src, 0, src.len())?.into_iter().find(|e| e.name == "office:document").ok_or_else(no)?;
     let calcext = src[root.start..root.open_end].contains("xmlns:calcext=");

@@ -309,6 +309,11 @@ fn user_full(s: &[char], i: usize) -> Option<(Ref, usize)> {
 
 /// The tokens of a formula's body, with no leading `=` or `of:=`.
 fn tokenize(text: &str, mode: Mode) -> Result<Vec<Tok>, String> {
+    tokenize_spans(text, mode, &mut Vec::new())
+}
+
+/// The tokens, and where each stored reference lies in the body, in characters.
+fn tokenize_spans(text: &str, mode: Mode, spans: &mut Vec<(usize, usize)>) -> Result<Vec<Tok>, String> {
     let s: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -359,6 +364,7 @@ fn tokenize(text: &str, mode: Mode) -> Result<Vec<Tok>, String> {
                 let inner: String = s[i + 1..close].iter().collect();
                 if inner.contains("#REF!") { Ref::Bad } else { Ref::Unknown(s[i..=close].iter().collect()) }
             });
+            spans.push((i, close + 1));
             i = close + 1;
             out.push(Tok::Ref(r));
             continue;
@@ -639,6 +645,151 @@ pub fn body_of(stored: &str) -> Option<&str> {
     (!prefix.is_empty() && prefix.bytes().all(|b| b.is_ascii_lowercase())).then_some(body)
 }
 
+/// A change to the grid: on the sheet named, `n` rows or columns put in
+/// before index `at`, or `-n` of them taken out from `at`.
+pub struct Op<'a> {
+    pub sheet: &'a str,
+    pub rows: bool,
+    pub at: i64,
+    pub n: i64,
+}
+
+fn same_sheet(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
+/// A reference after the change, for a formula on the sheet `home`.
+/// Nothing when it did not move. `Ref::Bad` when what it read is gone.
+pub fn move_ref(r: &Ref, home: &str, op: &Op) -> Option<Ref> {
+    let Ref::Cells { a, b, full } = r else { return None };
+    // a whole column has no rows to move, and a whole row no columns
+    if full.is_some_and(|f| f != if op.rows { 'r' } else { 'c' }) {
+        return None;
+    }
+    let sa = a.sheet.as_deref().unwrap_or(home);
+    let get = |e: &End| i64::from(if op.rows { e.r } else { e.c });
+    let set = |e: &End, v: i64| if op.rows { End { r: v as u32, ..e.clone() } } else { End { c: v as u32, ..e.clone() } };
+    let max = i64::from(if op.rows { MAX_ROW } else { MAX_COL });
+    let Some(b) = b else {
+        if !same_sheet(sa, op.sheet) {
+            return None;
+        }
+        let i = get(a);
+        let v = if op.n > 0 {
+            if i >= op.at { i + op.n } else { i }
+        } else if i < op.at {
+            i
+        } else if i >= op.at - op.n {
+            i + op.n
+        } else {
+            return Some(Ref::Bad);
+        };
+        if v >= max {
+            return Some(Ref::Bad);
+        }
+        return (v != i).then(|| Ref::Cells { a: set(a, v), b: None, full: None });
+    };
+    let sb = b.sheet.as_deref().unwrap_or(sa);
+    if !same_sheet(sa, op.sheet) || !same_sheet(sb, op.sheet) {
+        return None;
+    }
+    let (mut lo, mut hi) = (get(a), get(b));
+    let flip = lo > hi;
+    if flip {
+        (lo, hi) = (hi, lo);
+    }
+    let (nlo, nhi);
+    if op.n > 0 {
+        nlo = if lo >= op.at { lo + op.n } else { lo };
+        nhi = (if hi >= op.at { hi + op.n } else { hi }).min(max - 1);
+        if nlo >= max {
+            return Some(Ref::Bad);
+        }
+    } else {
+        let (cnt, end) = (-op.n, op.at - op.n);
+        if lo >= op.at && hi < end {
+            return Some(Ref::Bad);
+        }
+        nlo = if lo < op.at { lo } else if lo >= end { lo - cnt } else { op.at };
+        nhi = if hi < op.at { hi } else if hi >= end { hi - cnt } else { op.at - 1 };
+    }
+    if nlo == lo && nhi == hi {
+        return None;
+    }
+    Some(Ref::Cells { a: set(a, if flip { nhi } else { nlo }), b: Some(set(b, if flip { nlo } else { nhi })), full: *full })
+}
+
+/// A stored formula after the change. Only its references are spelled
+/// again. Nothing when lattice cannot read it: the caller must not guess.
+pub fn move_formula(stored: &str, home: &str, op: &Op) -> Option<String> {
+    let body = body_of(stored)?;
+    let head = &stored[..stored.len() - body.len()];
+    let mut spans = Vec::new();
+    let toks = tokenize_spans(body, Mode::Of, &mut spans).ok()?;
+    let refs: Vec<&Ref> = toks.iter().filter_map(|t| if let Tok::Ref(r) = t { Some(r) } else { None }).collect();
+    // a reference lattice cannot read cannot be moved, so nothing is
+    if refs.iter().any(|r| matches!(r, Ref::Unknown(_))) {
+        return None;
+    }
+    let chars: Vec<char> = body.chars().collect();
+    let (mut out, mut pos) = (String::new(), 0);
+    for (r, (s, e)) in refs.iter().zip(&spans) {
+        if let Some(moved) = move_ref(r, home, op) {
+            out.extend(&chars[pos..*s]);
+            out.push_str(&print_ref(&moved, Mode::Of));
+            pos = *e;
+        }
+    }
+    if pos == 0 {
+        return Some(stored.to_owned());
+    }
+    out.extend(&chars[pos..]);
+    Some(format!("{head}{out}"))
+}
+
+/// A list of plain addresses with spaces between, as a named range or a
+/// print range holds: `Sheet.A1:Sheet.C5 $Sheet.$B$2`. Nothing when any
+/// part of it is not an address.
+pub fn parse_addrs(s: &str) -> Option<Vec<Ref>> {
+    let s: Vec<char> = s.chars().collect();
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < s.len() {
+        if s[i] == ' ' {
+            i += 1;
+            continue;
+        }
+        let (a, mut end) = read_end(&s, i, Mode::Of)?;
+        let mut b = None;
+        if at(&s, end) == ':' {
+            let (e, e2) = read_end(&s, end + 1, Mode::Of)?;
+            (b, end) = (Some(e), e2);
+        }
+        if end < s.len() && s[end] != ' ' {
+            return None;
+        }
+        out.push(Ref::Cells { a, b, full: None });
+        i = end;
+    }
+    Some(out)
+}
+
+/// An address list after the change, or nothing when it cannot be read.
+/// An address whose cells are all gone is dropped. `home` is the sheet
+/// an address that names none is on.
+pub fn move_addrs(s: &str, op: &Op, home: &str) -> Option<String> {
+    let refs = parse_addrs(s)?;
+    let (mut out, mut changed) = (Vec::new(), false);
+    for r in &refs {
+        let own = if let Ref::Cells { a, .. } = r { a.sheet.clone() } else { None };
+        let moved = move_ref(r, own.as_deref().unwrap_or(home), op);
+        changed |= moved.is_some();
+        if let Ref::Cells { a, b, .. } = moved.as_ref().unwrap_or(r) {
+            out.push(format!("{}{}", print_end(a, Mode::Of), b.as_ref().map_or(String::new(), |b| format!(":{}", print_end(b, Mode::Of)))));
+        }
+    }
+    Some(if changed { out.join(" ") } else { s.to_owned() })
+}
+
 /// A stored formula as the bar shows it. One lattice cannot read is shown as stored.
 pub fn to_user(stored: &str) -> String {
     match body_of(stored) {
@@ -657,6 +808,20 @@ pub fn to_of(typed: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every line is the web client's own answer, from `formula.js` run under node.
+    #[test]
+    fn references_move_as_the_web_client_moves_them() {
+        let mut n = 0;
+        for line in include_str!("move_corpus.tsv").lines() {
+            let p: Vec<&str> = line.split('\t').collect();
+            let op = Op { sheet: p[3], rows: p[4] == "r", at: p[5].parse().unwrap(), n: p[6].parse().unwrap() };
+            let got = if p[0] == "f" { move_formula(p[1], p[2], &op) } else { move_addrs(p[1], &op, p[2]) };
+            assert_eq!(got.as_deref().unwrap_or("\u{1}"), p[7], "{line}");
+            n += 1;
+        }
+        assert!(n > 2000);
+    }
 
     /// Every line of the corpus is a formula and what `ui-src/sheet/formula.js`
     /// makes of it: `U` lines through `toUser`, `O` lines through `toOf`.

@@ -14,6 +14,7 @@ mod md;
 mod odf;
 mod pdf;
 mod sheet;
+mod shift;
 mod styles;
 mod tex;
 mod upload;
@@ -74,6 +75,8 @@ struct SheetView {
     looks: Option<(sheet::Book, styles::Styles)>,
     /// The sheet to show once the save in hand lands: one just added.
     want: Option<usize>,
+    /// The picked cell is to be read again when the save in hand lands: its rows moved.
+    repick: bool,
     /// The cell picked to be changed: its row and column.
     cursor: Option<(usize, usize)>,
     /// What is being typed into the picked cell.
@@ -1127,6 +1130,7 @@ fn sync_sheet(s: &mut App) {
     }
     // a sheet just added is the one shown, with no cell of the old one picked
     let want = old.as_ref().and_then(|v| v.want);
+    let repick = old.as_ref().is_some_and(|v| v.repick);
     let (at, cursor) = (want.or(old.as_ref().map(|v| v.at)).unwrap_or(0).min(sheets.len() - 1), if want.is_some() { None } else { old.as_ref().and_then(|v| v.cursor) });
     let (entry_was, stale) = (old.as_ref().map_or(String::new(), |v| v.entry_was.clone()), old.as_ref().map_or_else(Default::default, |v| v.stale.clone()));
     // where the grid was scrolled to and how wide its columns were dragged stay through a change
@@ -1135,7 +1139,10 @@ fn sync_sheet(s: &mut App) {
         let styles = styles::Styles::read(&p.body, b.null_date);
         (b, styles)
     });
-    s.sheet = Some(SheetView { name: p.name.clone(), rev: p.rev, at, sheets, looks, want: None, cursor, entry_was, stale, table, entry });
+    s.sheet = Some(SheetView { name: p.name.clone(), rev: p.rev, at, sheets, looks, want: None, repick: false, cursor, entry_was, stale, table, entry });
+    if let (true, Some((r, c))) = (repick, cursor) {
+        pick_cell(s, r, c);
+    }
 }
 
 /// The widest a sheet's grid is drawn. More columns are in the page, not on screen.
@@ -1202,6 +1209,27 @@ fn format_picked(s: &mut App, change: calc::Fmt) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(body) if body == p.body => {}
         Ok(body) => save_body(s, p, body),
+    }
+}
+
+/// Puts `n` rows in at the picked cell's row and `off` below it, or
+/// takes `-n` out from there, and saves the page.
+fn shift_picked(s: &mut App, off: usize, n: i64) {
+    let (Some(p), Some(v)) = (s.open.clone(), &mut s.sheet) else { return };
+    let Some((r, _)) = v.cursor else { return };
+    if v.name != p.name {
+        return;
+    }
+    match calc::shift(&p.body, v.at, true, r + off, n) {
+        Err(why) => s.note = format!("not changed: {why}"),
+        Ok(got) => {
+            // the formulas moved with the rows, so what could not be worked out is counted afresh
+            v.stale = got.stale.into_iter().collect();
+            v.repick = true;
+            if got.body != p.body {
+                save_body(s, p, got.body);
+            }
+        }
     }
 }
 
@@ -1371,6 +1399,9 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
             let b = |key: &str, label: &str, on: bool, help: &str, change: calc::Fmt| {
                 Button::new(label).control_size(ControlSize::Small).variant(if on { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help(help).on_press(move |s: &mut App| format_picked(s, change.clone())).build(k).key(key.to_owned())
             };
+            let rows = |key: &str, label: &str, help: &str, off: usize, n: i64| {
+                Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(help).on_press(move |s: &mut App| shift_picked(s, off, n)).build(k).key(key.to_owned())
+            };
             let align = |a: char| calc::Fmt::Align(Some(a).filter(|a| look.align != Some(*a)));
             let number = |n: &'static str, on: bool| calc::Fmt::Number(if on { "general" } else { n });
             page = page.child(
@@ -1388,7 +1419,11 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
                     .child(b("fmt-percent", "%", kind == Some("percentage"), "A percentage. Press again for no format", number("percentage", kind == Some("percentage"))))
                     .child(b("fmt-money", "$", kind == Some("currency"), "Money. Press again for no format", number("currency", kind == Some("currency"))))
                     .child(b("fmt-date", "Date", kind == Some("date"), "A date. Press again for no format", number("date", kind == Some("date"))))
-                    .child(b("fmt-time", "Time", kind == Some("time"), "A time of day. Press again for no format", number("time", kind == Some("time")))),
+                    .child(b("fmt-time", "Time", kind == Some("time"), "A time of day. Press again for no format", number("time", kind == Some("time"))))
+                    .child(Divider::vertical().build(k))
+                    .child(rows("row-above", "Row above", "Put a row in above this one", 0, 1))
+                    .child(rows("row-below", "+ row", "Put a row in below this one", 1, 1))
+                    .child(rows("row-del", "\u{2212} row", "Take this row out", 0, -1)),
             );
         }
     }

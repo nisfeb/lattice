@@ -562,8 +562,13 @@ impl<'a> Engine<'a> {
     /// After the cells in `edited` changed, works out again every formula that reads them,
     /// however indirectly, and the formula at `also` itself. Gives the cells whose stored value changed.
     pub fn recalc(&mut self, edited: &[Key], also: Option<Key>) -> Vec<(Key, Put)> {
+        self.recalc_with(edited, &also.into_iter().collect())
+    }
+
+    /// The same, with any number of formulas worked out again whatever they read.
+    fn recalc_with(&mut self, edited: &[Key], also: &HashSet<Key>) -> Vec<(Key, Put)> {
         self.changed.clear();
-        let mut hit: Vec<usize> = self.formulas.iter().enumerate().filter(|(_, e)| Some(e.at) == also).map(|(i, _)| i).collect();
+        let mut hit: Vec<usize> = self.formulas.iter().enumerate().filter(|(_, e)| also.contains(&e.at)).map(|(i, _)| i).collect();
         let mut seen: HashSet<Key> = hit.iter().map(|i| self.formulas[*i].at).collect();
         let mut front: Vec<Key> = edited.to_vec();
         let mut guard = 0;
@@ -771,7 +776,11 @@ pub fn enter(src: &str, s: usize, r: usize, c: usize, typed: &str) -> Result<Ent
             }
         }
     }
-    // each sheet's results are written in one pass over the page
+    Ok(Entered { body: write(body, results)?, stale, done })
+}
+
+/// The page with each sheet's results written, in one pass over the page for each sheet.
+fn write(mut body: String, results: Vec<(Key, Put)>) -> Result<String, String> {
     let mut by_sheet: std::collections::BTreeMap<usize, std::collections::BTreeMap<usize, Vec<(usize, Put)>>> = Default::default();
     for ((s2, r2, c2), put) in results {
         by_sheet.entry(s2).or_default().entry(r2).or_default().push((c2, put));
@@ -779,7 +788,25 @@ pub fn enter(src: &str, s: usize, r: usize, c: usize, typed: &str) -> Result<Ent
     for (s2, rows) in &by_sheet {
         body = sheet::put_cells(&body, *s2, rows, Care::Result)?;
     }
-    Ok(Entered { body, stale, done })
+    Ok(body)
+}
+
+/// Puts rows into a sheet before row `at` (`n` above nothing), or takes
+/// `-n` rows out from `at`. Every reference follows, and the formulas
+/// the change reached are worked out again: all of them when rows went,
+/// since a range may have lost values, and only those now pointing at
+/// nothing when rows came.
+pub fn shift(src: &str, s: usize, rows: bool, at: usize, n: i64) -> Result<Entered, String> {
+    let body = crate::shift::shift(src, s, rows, at as i64, n)?;
+    let book = sheet::book(&body)?;
+    let styles = Styles::read(&body, book.null_date);
+    let mut eng = Engine::new(&book, &styles);
+    let again: Vec<Key> = eng.formulas.iter().filter(|e| n < 0 || e.f.contains("#REF!")).map(|e| e.at).collect();
+    let results = if again.is_empty() { Vec::new() } else { eng.recalc_with(&again, &again.iter().copied().collect()) };
+    let mut stale: Vec<Key> = eng.stale.iter().copied().collect();
+    stale.sort_unstable();
+    let done = std::mem::take(&mut eng.done);
+    Ok(Entered { body: write(body, results)?, stale, done })
 }
 
 #[cfg(test)]
@@ -836,6 +863,10 @@ mod tests {
             let p: Vec<&str> = line.splitn(4, ',').collect();
             let at = (p[0].parse().unwrap(), p[1].parse().unwrap(), p[2].parse().unwrap());
             // a line whose text starts with ! is a change of style: !bold=1, !align=c, !number=percentage
+            if let Some(n) = p[3].strip_prefix("!rows=") {
+                doc = shift(&doc, at.0, true, at.1, n.parse().unwrap()).map_or_else(|why| { println!("{line}: {why}"); doc.clone() }, |g| g.body);
+                continue;
+            }
             if let Some(op) = p[3].strip_prefix('!') {
                 doc = format_cell(&doc, at.0, at.1, at.2, &fmt_of(op)).unwrap();
                 continue;
@@ -970,6 +1001,46 @@ mod tests {
         assert_eq!(again.matches("<number:percentage-style").count(), body.matches("<number:percentage-style").count());
         assert_eq!(again.matches("<style:style").count(), body.matches("<style:style").count());
         assert_eq!(crate::styles::hash("lattice"), format!("{:08x}", "lattice".bytes().fold(0x811c_9dc5u32, |h, c| (h ^ u32::from(c)).wrapping_mul(0x0100_0193))));
+    }
+
+    #[test]
+    fn rows_are_put_in_and_taken_out_as_the_web_client_does_it() {
+        // a two-sheet page LibreOffice made, with formulas across the sheets, a named range, a print
+        // range, a merged cell and a run of blank rows. Rows go in and come out of both sheets, with
+        // typing between. The expected page is the web client's Book given the same, from node
+        let fixture = include_str!("rows_fixture.fods");
+        let mut body = fixture.to_owned();
+        for line in include_str!("rows_edits.txt").lines() {
+            let p: Vec<&str> = line.splitn(4, ',').collect();
+            let at = (p[0].parse().unwrap(), p[1].parse().unwrap(), p[2].parse().unwrap());
+            body = match p[3].strip_prefix("!rows=") {
+                Some(n) => shift(&body, at.0, true, at.1, n.parse().unwrap()).unwrap().body,
+                None => enter(&body, at.0, at.1, at.2, p[3]).unwrap().body,
+            };
+        }
+        assert!(body == include_str!("rows_expected.fods"), "the page differs from the web client's");
+        // a row put in above the costs: the formulas, the named range and the print range all follow
+        let down = shift(fixture, 0, true, 1, 1).unwrap().body;
+        assert!(down.contains("table:formula=\"of:=SUM([.B3:.B5])\"") && down.contains("table:cell-range-address=\"$One.$B$3:.$B$5\"") && down.contains("table:print-ranges=\"One.A1:One.C8\""));
+        assert!(down.contains("table:formula=\"of:=[.B$3]+[.$B4]\"") && down.contains("of:=SUM([.3:.5])") && down.contains("of:=COUNTA([.A:.A])"));
+        // the other sheet's reference into this one follows too, and its own cells stay
+        assert!(down.contains("of:=SUM([.B2:.B3])+[One.B7]") && down.contains("of:=[$One.$C$3]"));
+        // the rows a formula read taken out: it says so, and so does what reads it
+        let gone = shift(fixture, 0, true, 1, -3).unwrap().body;
+        let book = sheet::book(&gone).unwrap();
+        assert_eq!(book.at(0, 2, 1).map(|c| (c.f.clone().unwrap(), c.text.clone())), Some(("of:=SUM(#REF!)".to_owned(), "#REF!".to_owned())));
+        assert!(!gone.contains("table:cell-range-address=\"$One.$B$2"), "a named range whose cells all went keeps no address");
+        // refused whole, with the page as it was: a merged cell cut, the edge of the sheet, a chart
+        assert_eq!(shift(fixture, 0, true, 13, 1).unwrap_err(), "that would cut through a merged cell");
+        assert_eq!(shift(fixture, 0, true, 12, -1).unwrap_err(), "that would cut through a merged cell");
+        assert_eq!(shift(fixture, 0, true, 1_048_575, 2).unwrap_err(), "that is past the edge of the sheet");
+        assert_eq!(shift(fixture, 5, true, 0, 1).unwrap_err(), "nothing to do");
+        let chart = fixture.replacen("<table:table-row ", "<table:shapes><draw:frame><draw:object/></draw:frame></table:shapes><table:table-row ", 1);
+        assert_eq!(shift(&chart, 0, true, 0, 1).unwrap_err(), "this spreadsheet has a chart or an embedded object, which lattice cannot keep in step");
+        let filter = fixture.replacen("<table:named-expressions>", "<table:database-ranges><table:database-range table:target-range-address=\"One.A1:One.C4\"><table:filter table:condition-source-range-address=\"One.A1:One.A2\"/></table:database-range></table:database-ranges><table:named-expressions>", 1);
+        assert_eq!(shift(&filter, 0, true, 0, 1).unwrap_err(), "this spreadsheet has a filter lattice cannot keep in step");
+        // below everything stored, nothing in the page moves
+        assert_eq!(shift(fixture, 1, true, 500, 3).unwrap().body, fixture);
     }
 
     #[test]
