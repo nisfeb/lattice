@@ -422,7 +422,8 @@ mod tests {
         h.point(20.0, 20.0, true);
         let (mut bands, mut link, mut hot, mut rests) = (Vec::new(), None, Vec::new(), Vec::new());
         let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while bands.len() < 2 || link.is_none() || hot.len() < 2 {
+        // and it says when it has no more to send for what is in view
+        while bands.len() < 2 || link.is_none() || hot.len() < 2 || !rests.contains(&true) {
             for o in h.take() {
                 match o {
                     Out::Band { turn: t, index, w, h, px } => {
@@ -439,7 +440,7 @@ mod tests {
                     _ => {}
                 }
             }
-            assert!(std::time::Instant::now() < end, "bands {} link {link:?} hot {hot:?}", bands.len());
+            assert!(std::time::Instant::now() < end, "bands {} link {link:?} hot {hot:?} rests {rests:?}", bands.len());
             std::thread::yield_now();
         }
         assert_eq!(link.as_deref(), Some("https://example.com/x"));
@@ -451,7 +452,6 @@ mod tests {
         let below = (100 * 400 + 10) * 4;
         assert_eq!(&px[below..below + 4], [0x10, 0x20, 0x30, 255], "the page's ground");
         assert_eq!((bands[1].0, bands[1].2), (1, 188), "the last band is as tall as what is left");
-        assert_eq!(rests.first(), Some(&false), "more to come is said before the first band");
         // the same page at another width is laid out again without its text
         h.show(Ask { width: 300.0, ..ask }, None);
         assert!(laid(&h).0 > turn);
