@@ -605,6 +605,9 @@ pub struct Prefs {
     /// The pages whose images from other sites may load, newest first.
     #[serde(default)]
     pub outside: Vec<String>,
+    /// The core rules written by agent keys that the notice was dismissed for: it shows again when there is one not here.
+    #[serde(default)]
+    pub core_seen: Vec<String>,
     /// Autosave is on unless this says otherwise.
     #[serde(default)]
     pub no_autosave: bool,
@@ -900,6 +903,16 @@ impl Conn {
     /// Only the text goes with it: the new key's history starts again.
     pub fn know_move(&self, from: &str, to: &str) -> Result<(), String> {
         self.call("POST", &format!("know-move?from={}&to={}", enc(from), enc(to)), Some("")).map(drop)
+    }
+
+    /// The core memories an agent key wrote, which every session loads as rules until the owner keeps or untags each. Keys with their slashes, in order.
+    pub fn know_core_agents(&self) -> Result<Vec<String>, String> {
+        serde_json::from_str(&self.call("GET", "know-core-agents", None)?).map_err(|e| e.to_string())
+    }
+
+    /// The owner vouches for a core memory an agent key wrote: it is the owner's from now on.
+    pub fn know_core_keep(&self, key: &str) -> Result<(), String> {
+        self.call("POST", &format!("know-core-keep?key={}", enc(key)), Some("")).map(drop)
     }
 
     /// A memory's revisions, oldest first. The key starts with a slash.
@@ -1298,7 +1311,7 @@ mod tests {
         let dark = Prefs { theme: "dark".into(), ..p.clone() };
         assert!(dark.dark(false));
         assert_eq!((p.next_theme(), dark.next_theme(), Prefs { theme: "light".into(), ..p.clone() }.next_theme()), ("dark", "light", "system"));
-        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()] }).unwrap()).unwrap();
+        let back: Prefs = serde_json::from_str(&serde_json::to_string(&Prefs { theme: "light".into(), last: "a/b".into(), no_autosave: true, recent: vec!["a/b".into()], used: vec!["edit".into()], tabs: vec!["a/b".into(), String::new()], tab: 1, split: "c".into(), outside: vec!["a/b".into()], core_seen: vec!["a".into()] }).unwrap()).unwrap();
         assert_eq!((back.theme.as_str(), back.last.as_str()), ("light", "a/b"));
         assert_eq!(serde_json::from_str::<Prefs>(r#"{"other":1}"#).unwrap(), Prefs::default(), "unknown fields and missing ones are fine");
     }
@@ -1500,6 +1513,26 @@ mod tests {
         c.know_save(&key, "another\n").unwrap();
         assert!(c.know_move(&key, &moved).unwrap_err().contains("409"), "a key already taken is refused");
         assert!(c.know_move(&format!("{key}-never"), &format!("{key}-x")).unwrap_err().contains("404"), "a key that is not there is refused");
+        // a core memory whose text says an agent wrote it waits in the notice's list until it is kept or untagged
+        let (rule, other) = (format!("{key}-rule"), format!("{key}-rule2"));
+        for k in [&rule, &other] {
+            c.know_save(k, "---\nsource: agent\n---\nAlways answer briefly.\n").unwrap();
+            c.know_tag(k, "core", true).unwrap();
+        }
+        let waiting = c.know_core_agents().unwrap();
+        assert!(waiting.contains(&rule) && waiting.contains(&other), "{waiting:?}");
+        c.know_core_keep(&rule).unwrap();
+        c.know_tag(&other, "core", false).unwrap();
+        let waiting = c.know_core_agents().unwrap();
+        assert!(!waiting.contains(&rule) && !waiting.contains(&other), "{waiting:?}");
+        // kept, it is still core and says the owner vouched for it. Untagged, it is no rule any more
+        let all = c.know_all().unwrap();
+        let kept = all.iter().find(|k| k.key == rule).unwrap();
+        assert!(kept.tags.contains(&"core".to_owned()) && kept.body.contains("source: user") && kept.body.contains("Always answer briefly."), "{kept:?}");
+        assert!(!all.iter().find(|k| k.key == other).unwrap().tags.contains(&"core".to_owned()));
+        assert!(c.know_core_keep(&format!("{key}-never")).unwrap_err().contains("404"));
+        c.know_delete(&rule).unwrap();
+        c.know_delete(&other).unwrap();
         // each save is a revision: the old text is read at its number, and restored it is the newest again
         c.know_save(&moved, "a fact, rewritten\n").unwrap();
         let revs = c.know_history(&moved).unwrap();

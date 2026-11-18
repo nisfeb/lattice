@@ -160,6 +160,8 @@ impl Tab {
 
 /// A change to the tree that landed on the ship.
 enum Op {
+    /// A core rule an agent key wrote was kept or untagged: what to say.
+    Cored(String),
     /// A deleted memory was brought back from the trash.
     Restored(String),
     /// A memory's tag was put on or taken off: the memory, the tag, which.
@@ -345,6 +347,9 @@ struct App {
     /// The deleted memories still in the trash, when the trash is showing: nothing yet while it is read.
     trash: Option<Option<Vec<String>>>,
     trash_req: Latest<Result<Vec<String>, String>>,
+    /// The core memories agent keys wrote, waiting for the owner to keep or untag each.
+    core_agents: Vec<String>,
+    core_req: Latest<Result<Vec<String>, String>>,
     /// The tag the memories are filtered by, when they are.
     know_tag: Option<String>,
     know_req: Latest<Result<Vec<Know>, String>>,
@@ -568,6 +573,8 @@ fn init() -> App {
         other: Default::default(),
         know_meta: HashMap::new(),
         know_tag: None,
+        core_agents: Vec::new(),
+        core_req: Latest::default(),
         trash: None,
         trash_req: Latest::default(),
         know_req: Latest::default(),
@@ -731,8 +738,25 @@ fn restore_memory(s: &mut App, name: String) {
 
 fn load_know(s: &mut App) {
     if let Some(c) = s.conn.clone() {
-        s.know_req.request(c, |c| c.know_all());
+        s.know_req.request(c.clone(), |c| c.know_all());
+        // and the core rules agent keys wrote, for the notice over the memories
+        s.core_req.request(c, |c| c.know_core_agents());
     }
+}
+
+/// Whether the notice of core rules agent keys wrote is showing: there is one the owner has not dismissed it for.
+fn core_notice(s: &App) -> bool {
+    s.core_agents.iter().any(|k| !s.prefs.core_seen.contains(k))
+}
+
+/// Keeps a core rule an agent key wrote, as the owner's from now on, or takes its core tag off.
+fn core_rule(s: &mut App, name: String, keep: bool) {
+    let Some(c) = s.conn.clone() else { return };
+    s.op_req.request((c, name), move |(c, name)| {
+        let key = format!("/{name}");
+        if keep { c.know_core_keep(&key)? } else { c.know_tag(&key, "core", false)? }
+        Ok(Op::Cored(if keep { format!("kept {name} as your own rule") } else { format!("{name} is not a core rule any more") }))
+    });
 }
 
 /// The memories just read, as the half that shows them.
@@ -940,7 +964,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) => {}
+                Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) => {}
             }
             Ok(op)
         }),
@@ -1033,6 +1057,11 @@ fn applied(s: &mut App, op: Op) {
                 s.note = say;
             }
             sync_tiles(s);
+            return;
+        }
+        Op::Cored(say) => {
+            s.note = say;
+            load_know(s);
             return;
         }
         Op::Restored(name) => {
@@ -1198,6 +1227,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.kept_req.set_waker(waker.clone());
     s.templates_req.set_waker(waker.clone());
     s.back_req.set_waker(waker.clone());
+    s.core_req.set_waker(waker.clone());
     s.trash_req.set_waker(waker.clone());
     s.tex_req.set_waker(waker.clone());
     s.scad_req.set_waker(waker.clone());
@@ -3708,6 +3738,13 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             Err(e) => s.note = format!("access list: {e}"),
         }
     }
+    if let Some(r) = s.core_req.take() {
+        changed = true;
+        // a list that does not load leaves the notice as it was: it is asked again with the memories
+        if let Ok(keys) = r {
+            s.core_agents = keys.iter().map(|k| k.trim_start_matches('/').to_owned()).collect();
+        }
+    }
     if let Some(r) = s.trash_req.take() {
         changed = true;
         match r {
@@ -5933,7 +5970,44 @@ fn sidebar(s: &App, k: &Kit) -> El {
         }
         list
     });
-    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(row().gap(4.0).child(with_me).child(inbox)).child(foot);
+    // core rules agent keys wrote: every session loads core as rules, so each waits here to be kept or untagged
+    let core = (s.memory && core_notice(s)).then(|| {
+        let mut list = col().key("core-notice").w_full().gap(4.0).padding(8.0).radius(k.radius.md).fill(k.c.layer_01).child(
+            row().w_full().gap(6.0).child(text("These core rules were added by agent keys. Every session loads core as rules: keep each one, or untag it.").font(k.ty.small).color(k.c.text_muted).wrap().grow(1.0).min_w(0.0)).child(
+                Button::new("Dismiss")
+                    .control_size(ControlSize::Small)
+                    .variant(ButtonVariant::GhostMuted)
+                    .help("Hide this until another one shows up")
+                    .on_press(|s: &mut App| {
+                        s.prefs.core_seen = s.core_agents.clone();
+                        if s.conn.is_some() {
+                            s.prefs.save();
+                        }
+                    })
+                    .build(k)
+                    .key("core-dismiss"),
+            ),
+        );
+        for key in s.core_agents.iter().take(50) {
+            let (open, keep, untag) = (key.clone(), key.clone(), key.clone());
+            list = list.child(
+                row()
+                    .w_full()
+                    .gap(4.0)
+                    .center_y()
+                    .child(Button::new(key.clone()).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Read this rule").on_press(move |s: &mut App| {
+                        if s.names.contains(&open) && !s.editing {
+                            s.files.select(&open);
+                            open_page(s, &open);
+                        }
+                    }).build(k).key(format!("core-open-{key}")).grow(1.0).min_w(0.0))
+                    .child(Button::new("Keep").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Vouch for it: it is your own rule from now on").on_press(move |s: &mut App| core_rule(s, keep.clone(), true)).build(k).key(format!("core-keep-{key}")))
+                    .child(Button::new("Untag").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Take the core tag off: it is a memory, and no rule").on_press(move |s: &mut App| core_rule(s, untag.clone(), false)).build(k).key(format!("core-untag-{key}"))),
+            );
+        }
+        list
+    });
+    let mut side = col().key("pages").w_full().h_full().min_h(0.0).padding(8.0).gap(8.0).child(halves).children(core).child(filter).children((!tags.is_empty()).then_some(chips)).child(new).child(tree).children(trash).children(s.memory.then_some(row().child(trash_toggle))).child(row().gap(4.0).child(with_me).child(inbox)).child(foot);
     if !s.note.is_empty() {
         side = side.child(text(s.note.clone()).key("note").font(k.ty.small).color(k.c.text_muted).wrap());
     }
@@ -6659,6 +6733,25 @@ mod tests {
         s.trash = None;
         load_trash(&mut s);
         assert!(s.trash.is_none());
+    }
+
+    #[test]
+    fn the_core_notice_shows_until_dismissed_and_again_for_a_new_rule() {
+        let mut s = sample("welcome");
+        assert!(!core_notice(&s));
+        s.core_agents = vec!["rules/brief".into(), "rules/kind".into()];
+        assert!(core_notice(&s));
+        // dismissed for what is listed, it stays away while nothing new is
+        s.prefs.core_seen = s.core_agents.clone();
+        assert!(!core_notice(&s));
+        s.core_agents.remove(0);
+        assert!(!core_notice(&s));
+        // another rule from a key brings it back, with every one listed
+        s.core_agents.push("rules/new".into());
+        assert!(core_notice(&s));
+        // with no ship there is nothing to keep or untag
+        core_rule(&mut s, "rules/new".into(), true);
+        assert_eq!(s.core_agents.len(), 2);
     }
 
     #[test]
