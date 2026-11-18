@@ -1,0 +1,12 @@
+{"events": [
+  {"t": 0.5, "type": "tap", "key": "sample"},
+  {"t": 1.2, "type": "tap", "key": "settings-open"},
+  {"t": 2.0, "type": "tap", "key": "vim-on"},
+  {"t": 3.0, "type": "tap", "key": "welcome"},
+  {"t": 4.0, "type": "tap", "key": "edit"},
+  {"t": 5.0, "type": "tap", "key": "mode"},
+  {"t": 6.0, "type": "type", "text": "jjdd"},
+  {"t": 7.0, "type": "type", "text": "wcwVIM"},
+  {"t": 8.0, "type": "key", "name": "Escape"},
+  {"t": 8.5, "type": "type", "text": "0ve"}
+]}

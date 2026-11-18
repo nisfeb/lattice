@@ -509,6 +509,8 @@ struct App {
     forum_req: Latest<Result<ForumGot, String>>,
     /// The settings showing, when they are.
     settings: Option<Settings>,
+    /// Vim's state between keys, for the source editor when vim mode is on.
+    vim: vim::Vim,
     /// The agent keys as read, and the secret of one just made.
     keys_req: Latest<Result<(Vec<api::AgentKey>, Option<String>), String>>,
     /// The map token's state and the OpenSCAD runtime's as read, the openscad found here when it was looked for, and what to say of what was just done.
@@ -749,6 +751,7 @@ fn init() -> App {
         read_as: None,
         forum: None,
         settings: None,
+        vim: vim::Vim::default(),
         keys_req: Latest::default(),
         set_req: Latest::default(),
         forum_req: Latest::default(),
@@ -3446,7 +3449,111 @@ fn accept_link(s: &mut App, start: usize, name: &str) {
     s.ac_at = 0;
 }
 
+/// The place in a text as a count of characters, from a count of bytes, and back.
+fn char_at(text: &str, byte: usize) -> usize {
+    text.char_indices().take_while(|(i, _)| *i < byte).count()
+}
+
+fn byte_at(text: &str, chars: usize) -> usize {
+    text.char_indices().nth(chars).map_or(text.len(), |(i, _)| i)
+}
+
+/// The editor's text and selection as vim reads them.
+fn vim_buf(e: &TextEdit) -> vim::Buf {
+    let (a, b) = (e.anchor.min(e.focus), e.anchor.max(e.focus));
+    vim::Buf { text: e.text.chars().collect(), a: char_at(&e.text, a), b: char_at(&e.text, b) }
+}
+
+/// Puts what vim made of the text into the editor: the part that changed
+/// goes in as one typed edit, so the editor's own undo takes it back,
+/// and the selection is set where vim left it.
+fn vim_put(e: &mut TextEdit, b: &vim::Buf) {
+    let new: String = b.text.iter().collect();
+    if new != e.text {
+        let pre = e.text.bytes().zip(new.bytes()).take_while(|(x, y)| x == y).count();
+        // back to a character's start in both
+        let pre = (0..=pre).rev().find(|&i| e.text.is_char_boundary(i) && new.is_char_boundary(i)).unwrap_or(0);
+        let max = (e.text.len() - pre).min(new.len() - pre);
+        let suf = e.text.bytes().rev().zip(new.bytes().rev()).take(max).take_while(|(x, y)| x == y).count();
+        let suf = (0..=suf).rev().find(|&i| e.text.is_char_boundary(e.text.len() - i) && new.is_char_boundary(new.len() - i)).unwrap_or(0);
+        (e.anchor, e.focus) = (pre, e.text.len() - suf);
+        e.insert(&new[pre..new.len() - suf]);
+    }
+    (e.anchor, e.focus) = (byte_at(&e.text, b.a), byte_at(&e.text, b.b));
+}
+
+/// Starts vim on a text just put in the editor: in normal mode, at the top, as a page opens on the web.
+fn vim_start(s: &mut App) {
+    s.vim = vim::Vim::default();
+    if s.prefs.vim {
+        s.edit.set_caret(0);
+        vim_settle(s);
+    }
+}
+
+/// Keeps the cursor on a character, as normal mode has it.
+fn vim_settle(s: &mut App) {
+    let mut b = vim_buf(&s.edit);
+    s.vim.settle(&mut b);
+    vim_put(&mut s.edit, &b);
+}
+
+/// A key as vim names it, and whether Ctrl or Cmd is held.
+fn vim_key(ev: &KeyEvent) -> (String, bool) {
+    let held = ev.mods.cmd || ev.mods.ctrl;
+    let name = match &ev.key {
+        Key::Text(t) => t.clone(),
+        Key::Command(c) => return (if ev.mods.shift { c.to_ascii_uppercase().to_string() } else { c.to_string() }, true),
+        Key::Enter => "Enter".into(),
+        Key::Backspace => "Backspace".into(),
+        Key::Escape => "Escape".into(),
+        Key::Tab => "Tab".into(),
+        Key::Left => "ArrowLeft".into(),
+        Key::Right => "ArrowRight".into(),
+        Key::Up => "ArrowUp".into(),
+        Key::Down => "ArrowDown".into(),
+        Key::Delete => "Delete".into(),
+        Key::Home => "Home".into(),
+        Key::End => "End".into(),
+        // a key vim has no name for: in normal mode it is swallowed like any other it does not bind
+        _ => "Unidentified".into(),
+    };
+    (name, held)
+}
+
+/// Gives a key to vim. `true` when vim took it. What vim asks for beside the text (a save, an undo) is done here.
+fn vim_take(s: &mut App, ev: &KeyEvent) -> bool {
+    let (name, held) = vim_key(ev);
+    let mut b = vim_buf(&s.edit);
+    let out = s.vim.key(&mut b, &name, held);
+    if !out.taken {
+        return false;
+    }
+    vim_put(&mut s.edit, &b);
+    if out.undo || out.redo {
+        if out.undo {
+            s.edit.undo();
+        } else {
+            s.edit.redo();
+        }
+        vim_settle(s);
+    }
+    if let Some(said) = out.said {
+        s.note = said;
+    }
+    if out.save {
+        // as autosave saves: the text goes to the ship and the editor stays
+        s.autosaving = true;
+        write(s);
+    }
+    true
+}
+
 fn editor_key(s: &mut App, ev: &KeyEvent, _: &mut Tx) -> bool {
+    // vim reads the key first, as its listener on the web runs before any other
+    if s.prefs.vim && !s.rich && vim_take(s, ev) {
+        return true;
+    }
     let plain = ev.mods == rune::Mods::default();
     if let Some((start, offers)) = link_offers(s).filter(|_| plain) {
         let at = s.ac_at.min(offers.len() - 1);
@@ -3504,6 +3611,8 @@ fn start_edit(s: &mut App) {
             if p.kind == "md" {
                 s.note = KEPT_AS_SOURCE.into();
             }
+            // vim starts each edit in normal mode, on a character
+            vim_start(s);
         }
     }
     s.editing = true;
@@ -3517,6 +3626,7 @@ fn flip_mode(s: &mut App) {
         s.edit.focused = true;
         s.rich = false;
         s.note.clear();
+        vim_start(s);
     } else {
         match md::exact(&body) {
             Some(d) => {
@@ -6232,7 +6342,7 @@ fn editor_kit(k: &Kit, pref: &str) -> Kit {
 }
 
 /// The settings: the agent keys, each with what it may touch and a Revoke, and the form that makes one.
-fn settings_view(st: &Settings, pub_ok: bool, font: &str, k: &Kit) -> El {
+fn settings_view(st: &Settings, pub_ok: bool, font: &str, vim_on: bool, k: &Kit) -> El {
     let c = &k.c;
     let mut fonts = row().gap(4.0).flex_wrap();
     for (pref, name) in EDITOR_FONTS {
@@ -6251,6 +6361,13 @@ fn settings_view(st: &Settings, pub_ok: bool, font: &str, k: &Kit) -> El {
         .child(text("Editor").font(k.ty.body_medium).color(c.text_base))
         .child(text("The font a page's source is written in. Kept on this computer.").font(k.ty.small).color(c.text_muted).wrap())
         .child(fonts)
+        .child(Switch::new(vim_on).label("Vim mode in the source editor").on_toggle(|s: &mut App| {
+            s.prefs.vim = !s.prefs.vim;
+            if s.conn.is_some() {
+                s.prefs.save();
+            }
+        }).build(k).key("vim-on"))
+        .child(text("Modal editing: Esc for normal, i to insert, :w to save.").font(k.ty.small).color(c.text_muted).wrap())
         .child(el().w_full().padding(10.0).radius(k.radius.md).fill(c.layer_01).child(text("The quick brown fox jumps over the lazy dog \u{b7} 0123456789 \u{b7} il1 O0 \u{b7} |= ^- @ud").key("font-sample").font(sample).color(c.text_base).wrap()));
     // the way back from "do not ask again"
     let mut publishing = col()
@@ -7902,7 +8019,7 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
 
 fn page_body(s: &App, k: &Kit) -> El {
     if let Some(st) = s.settings.as_ref().filter(|_| !s.editing) {
-        return settings_view(st, s.prefs.pub_ok, &s.prefs.font, k);
+        return settings_view(st, s.prefs.pub_ok, &s.prefs.font, s.prefs.vim, k);
     }
     if s.access && !s.editing {
         return access_view(s, k);
@@ -7952,6 +8069,14 @@ fn page_body(s: &App, k: &Kit) -> El {
         // the source, coloured as Markdown: colour only, so nothing moves as it is typed
         let mut marks = code_spans(&p.kind, &s.edit.text, k);
         marks.extend(find_spans(s, k));
+        // vim's block: the character under the cursor, or underlined while r waits for its character
+        if let Some((at, under)) = s.prefs.vim.then(|| s.vim.block(&vim_buf(&s.edit))).flatten() {
+            let from = byte_at(&s.edit.text, at);
+            if let Some(ch) = s.edit.text[from..].chars().next().filter(|c| *c != '\n') {
+                let span = Span::new(from, from + ch.len_utf8());
+                marks.push(if under { span.underline(c.text_base) } else { span.bg(c.text_base, 0.0).color(c.bg_base) });
+            }
+        }
         // the font is the one chosen in settings: the text area takes its style from the kit it is built with
         let source = TextArea::new(&s.edit).label("Page source").decorations(marks).on_edit(|s: &mut App| &mut s.edit).on_key(editor_key).build(&editor_kit(k, &s.prefs.font)).key(FIELD).w_full().h_full().min_h(0.0);
         let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
@@ -8033,6 +8158,9 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         trailing = trailing.child(Spinner::new().build(&k));
     }
     if s.editing {
+        if s.prefs.vim && !s.rich {
+            trailing = trailing.child(text(s.vim.indicator()).key("vim-mode").font(k.ty.small_medium).color(k.c.text_muted));
+        }
         trailing = trailing
             .child(Button::new(if s.rich { "Source" } else { "Rich text" }).variant(ButtonVariant::GhostMuted).on_press_tx(|s: &mut App, tx| {
                 flip_mode(s);
@@ -8873,6 +9001,54 @@ mod tests {
         // nothing is offered outside the editor
         s.editing = false;
         assert!(link_offers(&s).is_none());
+    }
+
+    #[test]
+    fn vim_keys_edit_the_source_and_the_editors_undo_takes_them_back() {
+        let mut s = sample("welcome");
+        s.prefs.vim = true;
+        start_edit(&mut s);
+        s.edit = TextEdit::new("one two\nthr\u{e9}e four\nfive\n");
+        s.rich = false;
+        vim_start(&mut s);
+        let keys = |s: &mut App, typed: &str| {
+            for ch in typed.chars() {
+                let ev = KeyEvent { key: if ch == '\u{1b}' { Key::Escape } else { Key::Text(ch.to_string()) }, mods: rune::Mods::default() };
+                // a key vim does not take is typed, as the editor types it
+                if !vim_take(s, &ev) {
+                    s.edit.insert(&ch.to_string());
+                }
+            }
+        };
+        // a line deleted, a word changed past a character of two bytes, and the cursor left on a character
+        keys(&mut s, "jdd");
+        assert_eq!(s.edit.text, "one two\nfive\n");
+        keys(&mut s, "ggwcwdeux\u{1b}");
+        assert_eq!((s.edit.text.as_str(), s.vim.indicator().as_str()), ("one deux\nfive\n", "-- NORMAL --"));
+        assert_eq!((s.edit.anchor, s.edit.focus), (7, 7), "on the last character typed");
+        // u is the editor's own undo and Ctrl-R its redo: an edit made in normal mode is one step
+        keys(&mut s, "0x");
+        assert_eq!(s.edit.text, "ne deux\nfive\n");
+        keys(&mut s, "u");
+        assert_eq!(s.edit.text, "one deux\nfive\n");
+        assert!(vim_take(&mut s, &KeyEvent { key: Key::Command('r'), mods: rune::Mods { ctrl: true, ..rune::Mods::default() } }));
+        assert_eq!(s.edit.text, "ne deux\nfive\n");
+        keys(&mut s, "u");
+        // visual selects through the character under the cursor
+        keys(&mut s, "0ve");
+        assert_eq!((s.vim.indicator().as_str(), s.edit.anchor.min(s.edit.focus), s.edit.anchor.max(s.edit.focus)), ("-- VISUAL --", 0, 3));
+        // :w saves and the editor stays open
+        keys(&mut s, "\u{1b}:w");
+        assert!(vim_take(&mut s, &KeyEvent { key: Key::Enter, mods: rune::Mods::default() }));
+        assert!(s.editing && s.cache["welcome"].body == "one deux\nfive\n", "{:?}", s.cache["welcome"].body);
+        // with vim off the keys are the editor's
+        s.prefs.vim = false;
+        assert!(!editor_key_plain(&mut s, "j"));
+    }
+
+    /// Whether the editor's key handler took a typed character.
+    fn editor_key_plain(s: &mut App, ch: &str) -> bool {
+        s.prefs.vim && !s.rich && vim_take(s, &KeyEvent { key: Key::Text(ch.into()), mods: rune::Mods::default() })
     }
 
     #[test]
