@@ -50,6 +50,8 @@ struct MapView {
     verts: Vec<[f64; 2]>,
     /// The picked point being dragged: which feature, and how far in points.
     moving: Option<(usize, f32, f32)>,
+    /// The corner of the picked shape being dragged: which, and how far in points.
+    grip: Option<(usize, f32, f32)>,
     /// Whether the feature a save adds is to be picked when it lands.
     pick_new: bool,
     /// The kinds not shown. Not kept: a map opens with every kind showing, as on the web.
@@ -1069,7 +1071,7 @@ fn sync_map(s: &mut App) {
     s.map = map::parse(&p.body).map(|feats| {
         let cam = old.as_ref().map_or(map::Camera { at: [0.5, 0.5], scale: 800.0 }, |m| m.cam);
         let pick_new = old.as_ref().is_some_and(|m| m.pick_new);
-        MapView { name: p.name.clone(), rev: p.rev, cam, grab: cam, tool: old.as_ref().and_then(|m| m.tool), verts: old.as_ref().map_or(Vec::new(), |m| m.verts.clone()), moving: None, pick_new: false, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: if pick_new { feats.len().checked_sub(1) } else { old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()) }, feats, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
+        MapView { name: p.name.clone(), rev: p.rev, cam, grab: cam, tool: old.as_ref().and_then(|m| m.tool), verts: old.as_ref().map_or(Vec::new(), |m| m.verts.clone()), moving: None, grip: None, pick_new: false, style: map::base_style(&p.body), size: old.as_ref().map_or((800.0, 500.0), |m| m.size), fitted: old.as_ref().is_some_and(|m| m.fitted), picked: if pick_new { feats.len().checked_sub(1) } else { old.as_ref().and_then(|m| m.picked).filter(|i| *i < feats.len()) }, feats, hidden: old.map(|m| m.hidden).unwrap_or_default(), under }
     });
 }
 
@@ -1201,13 +1203,19 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
     let mut dots: Vec<(usize, map::P)> = Vec::new();
     for (i, f) in m.feats.iter().enumerate().filter(|(_, f)| !m.hidden.contains(&f.kind)) {
         let ink = rune::color::hex(&f.color).unwrap_or(c.text_accent);
+        // a line or area being dragged is drawn where it is held
+        let (hx, hy) = m.moving.filter(|(at, ..)| *at == i).map_or((0.0, 0.0), |(_, dx, dy)| (dx, dy));
+        let to = |p: map::P| {
+            let [x, y] = to(p);
+            [x + hx, y + hy]
+        };
         for g in &f.geoms {
             match g {
                 map::Geom::Point(p) => {
                     dots.push((i, *p));
                     // the ring round it, so many metres across the ground
                     if f.radius > 0.0 {
-                        let ring: Vec<[f32; 2]> = map::circle(map::lonlat(*p), f.radius).into_iter().map(to).collect();
+                        let ring: Vec<[f32; 2]> = map::circle(map::lonlat(*p), f.radius).into_iter().map(|p| m.cam.project(p, w, h)).collect();
                         shape = shape.fill(ring.clone(), ink.alpha(0.12)).stroke(ring, 1.5, ink);
                     }
                 }
@@ -1237,9 +1245,27 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         })
         .on_drag(|s: &mut App, d, _| {
             let (mut put, mut props) = (None, serde_json::json!({}));
+            let (may, mut moved) = (map_changes(s), None);
             if let Some(m) = &mut s.map {
+                // a press that hardly moved is a press, whatever it was on
+                if d.phase == Phase::Up && d.dx.hypot(d.dy) < 5.0 {
+                    m.moving = None;
+                }
                 match d.phase {
-                    Phase::Down => m.grab = m.cam,
+                    Phase::Down => {
+                        m.grab = m.cam;
+                        // a press on the picked line or area takes hold of it, to move it whole
+                        let on = map::hit(m.feats.iter().enumerate().filter(|(_, f)| !m.hidden.contains(&f.kind)), &m.cam, m.size.0, m.size.1, d.x, d.y);
+                        let shape = m.picked.filter(|i| on == Some(*i) && m.feats[*i].geoms.iter().any(|g| !matches!(g, map::Geom::Point(_))));
+                        m.moving = shape.filter(|_| may && m.tool.is_none()).map(|i| (i, 0.0, 0.0));
+                    }
+                    Phase::Move if m.moving.is_some() => m.moving = m.moving.map(|(i, ..)| (i, d.dx, d.dy)),
+                    // let go: it is saved where it was dragged to, by as far as the press moved over the ground
+                    Phase::Up if m.moving.is_some() => {
+                        let (i, ..) = m.moving.take().expect("a shape is held");
+                        let at = |x: f32, y: f32| map::lonlat(m.cam.unproject(x, y, m.size.0, m.size.1));
+                        moved = Some((m.feats[i].at, at(d.x - d.dx, d.y - d.dy), at(d.x, d.y)));
+                    }
                     // with the point tool on, a press on the ground puts a point there
                     Phase::Up if d.dx.hypot(d.dy) < 5.0 && m.tool == Some(map::Draw::Point) => {
                         m.cam = m.grab;
@@ -1270,6 +1296,9 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
                     }
                     _ => m.cam = map::Camera::dragged(m.grab, d.dx, d.dy),
                 }
+            }
+            if let Some((at, from, to)) = moved {
+                write_map(s, |body| map::shift(body, at, to[0] - from[0], to[1] - from[1]));
             }
             if let Some([lon, lat]) = put {
                 if write_map(s, |body| map::add(body, serde_json::json!({"type": "Point", "coordinates": [lon, lat]}), props)) {
@@ -1370,6 +1399,33 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         );
         if !m.feats[i].name.is_empty() {
             view = view.child(text(m.feats[i].name.clone()).key(format!("name-{n}")).absolute(x + r + 4.0, y - 9.0).font(k.ty.small_medium).color(c.text_base).inert());
+        }
+    }
+    // the picked shape's corners, each to be dragged somewhere else
+    if let Some((i, f)) = m.picked.and_then(|i| Some((i, m.feats.get(i)?))).filter(|_| m.tool.is_none() && m.moving.is_none() && map_changes(s)) {
+        let scale = m.cam.scale;
+        for (n, (path, p)) in f.corners.iter().enumerate() {
+            let [mut x, mut y] = to(*p);
+            if !(-20.0..=w + 20.0).contains(&x) || !(-20.0..=h + 20.0).contains(&y) {
+                continue;
+            }
+            if let Some((_, dx, dy)) = m.grip.filter(|(at, ..)| *at == n) {
+                (x, y) = (x + dx, y + dy);
+            }
+            let (path, was, at) = (path.clone(), *p, f.at);
+            view = view.child(el().key(format!("grip-{n}")).absolute(x - 6.0, y - 6.0).size(12.0, 12.0).radius(6.0).fill(rune::Color::WHITE).border(1.5, c.bg_base).label(format!("Corner {} of the picked shape", n + 1)).on_drag(move |s: &mut App, d, _| {
+                let Some(m) = &mut s.map else { return };
+                match d.phase {
+                    Phase::Down => {}
+                    Phase::Move => m.grip = Some((n, d.dx, d.dy)),
+                    Phase::Up => {
+                        if m.grip.take().is_some() && d.dx.hypot(d.dy) >= 5.0 && m.picked == Some(i) {
+                            let [lon, lat] = map::lonlat([was[0] + d.dx as f64 / scale, was[1] + d.dy as f64 / scale]);
+                            write_map(s, |body| map::set_corner(body, at, &path, lon, lat));
+                        }
+                    }
+                }
+            }));
         }
     }
     // the picked point's details

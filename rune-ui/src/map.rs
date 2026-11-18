@@ -24,6 +24,10 @@ pub struct Feature {
     pub geoms: Vec<Geom>,
     /// Where it is among the page's features, counting those with nothing to draw.
     pub at: usize,
+    /// The corners of its lines and areas that can be moved: where each
+    /// is in the geometry's coordinates, and where it is on the map.
+    /// Empty for a shape with more than a thousand, as on the web.
+    pub corners: Vec<(Vec<usize>, P)>,
     /// The radius in metres of the ring round a point, or 0 for none.
     pub radius: f64,
     /// What kind of thing it is, or nothing. A map is filtered by it.
@@ -97,6 +101,34 @@ fn ring(v: &Value) -> Vec<P> {
     v.as_array().map_or(Vec::new(), |a| a.iter().filter_map(pos).collect())
 }
 
+/// The corners of a line or an area, each with its path into the
+/// coordinates. An area's closing position is its first again, so it is
+/// not a corner of its own.
+fn corners(g: &Value) -> Vec<(Vec<usize>, P)> {
+    fn walk(c: &Value, depth: usize, closed: bool, path: &mut Vec<usize>, out: &mut Vec<(Vec<usize>, P)>) {
+        let Some(a) = c.as_array() else { return };
+        let n = if depth == 0 && closed { a.len().saturating_sub(1) } else { a.len() };
+        for (i, x) in a.iter().take(n).enumerate() {
+            path.push(i);
+            match depth {
+                0 => out.extend(pos(x).map(|p| (path.clone(), p))),
+                _ => walk(x, depth - 1, closed, path, out),
+            }
+            path.pop();
+        }
+    }
+    let (depth, closed) = match g["type"].as_str() {
+        Some("LineString") => (0, false),
+        Some("MultiLineString") => (1, false),
+        Some("Polygon") => (1, true),
+        Some("MultiPolygon") => (2, true),
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    walk(&g["coordinates"], depth, closed, &mut Vec::new(), &mut out);
+    if out.len() > 1000 { Vec::new() } else { out }
+}
+
 fn geoms(g: &Value, out: &mut Vec<Geom>) {
     let c = &g["coordinates"];
     let each = |f: &mut dyn FnMut(&Value)| c.as_array().into_iter().flatten().for_each(f);
@@ -138,7 +170,7 @@ pub fn parse(body: &str) -> Option<Vec<Feature>> {
                 let p = &f["properties"];
                 let props = p.as_object().map_or(Vec::new(), |o| o.iter().map(|(k, v)| (k.clone(), text(v))).filter(|(_, v)| !v.is_empty()).collect());
                 let (kind, color, icon) = look(p);
-                (!g.is_empty()).then(|| Feature { name: text(&p["name"]), note: text(&p["note"]), props, geoms: g, at, radius: p["radius"].as_f64().filter(|r| r.is_finite() && *r > 0.0 && *r <= 2e7).unwrap_or(0.0), kind, color, icon })
+                (!g.is_empty()).then(|| Feature { name: text(&p["name"]), note: text(&p["note"]), props, geoms: g, at, corners: corners(&f["geometry"]), radius: p["radius"].as_f64().filter(|r| r.is_finite() && *r > 0.0 && *r <= 2e7).unwrap_or(0.0), kind, color, icon })
             })
             .collect(),
     )
@@ -514,6 +546,28 @@ pub fn shift(body: &str, at: usize, dlon: f64, dlat: f64) -> Option<String> {
     })
 }
 
+/// A map page with one corner of its feature `at` put somewhere else.
+/// `path` is the corner's place in the coordinates. The first corner
+/// of an area's ring takes the closing position with it.
+pub fn set_corner(body: &str, at: usize, path: &[usize], lon: f64, lat: f64) -> Option<String> {
+    change(body, |d| {
+        let g = d.get_mut("features")?.as_array_mut()?.get_mut(at)?.get_mut("geometry")?;
+        let closed = matches!(g.get("type")?.as_str()?, "Polygon" | "MultiPolygon");
+        let (last, up) = path.split_last()?;
+        let mut ring = g.get_mut("coordinates")?;
+        for i in up {
+            ring = ring.get_mut(*i)?;
+        }
+        let ring = ring.as_array_mut()?;
+        let to = serde_json::json!([lon, lat.clamp(-89.999_999_9, 89.999_999_9)]);
+        *ring.get_mut(*last)? = to.clone();
+        if closed && *last == 0 {
+            *ring.last_mut()? = to;
+        }
+        Some(())
+    })
+}
+
 /// How near a press must be to a shape to pick it, in points. The web client's.
 const TOL: f32 = 10.0;
 
@@ -847,6 +901,43 @@ mod tests {
         for bad in ["", "yesterday", "2026-13-01", "2026-11-32", "17-11-2026", "2026-11-17T25:00", "2026-11-17T09", "2026-11-17T09:30:00X", "2026-11-17T09:30:00+2", "2026-11-17 09:30"] {
             assert!(!time_ok(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn a_shapes_corners_are_found_and_one_is_moved() {
+        let body = r#"{"type":"FeatureCollection","lattice":{},"features":[
+{"type":"Feature","geometry":{"type":"LineString","coordinates":[[1,2],[3,4],[5,6]]},"properties":{"name":"L"}},
+{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[0,1],[1,1],[0,0]],[[0.2,0.2],[0.2,0.4],[0.4,0.4],[0.2,0.2]]]},"properties":{}},
+{"type":"Feature","geometry":{"type":"MultiPolygon","coordinates":[[[[10,10],[10,11],[11,11],[10,10]]]]},"properties":{}},
+{"type":"Feature","geometry":{"type":"Point","coordinates":[7,7]},"properties":{}}
+]}
+"#;
+        let f = parse(body).unwrap();
+        let paths = |i: usize| f[i].corners.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>();
+        assert_eq!(paths(0), [vec![0], vec![1], vec![2]]);
+        // an area's closing position is not a corner, and a hole has corners too
+        assert_eq!(paths(1), [vec![0, 0], vec![0, 1], vec![0, 2], vec![1, 0], vec![1, 1], vec![1, 2]]);
+        assert_eq!(paths(2), [vec![0, 0, 0], vec![0, 0, 1], vec![0, 0, 2]]);
+        assert!(paths(3).is_empty());
+        assert_eq!(f[0].corners[1].1, mercator(3.0, 4.0));
+        // a line's corner moves alone
+        let out = set_corner(body, 0, &[1], 3.5, 4.25).unwrap();
+        assert!(out.contains(r#""coordinates":[[1,2],[3.5,4.25],[5,6]]},"properties":{"name":"L"}"#), "{out}");
+        // an area's first corner takes the closing position with it, another does not
+        let out = set_corner(body, 1, &[0, 0], -0.5, -0.5).unwrap();
+        assert!(out.contains("[[[-0.5,-0.5],[0,1],[1,1],[-0.5,-0.5]],[[0.2,0.2]"), "{out}");
+        let out = set_corner(body, 1, &[1, 2], 0.5, 0.5).unwrap();
+        assert!(out.contains("[[0.2,0.2],[0.2,0.4],[0.5,0.5],[0.2,0.2]]]"), "{out}");
+        let out = set_corner(body, 2, &[0, 0, 0], 9.0, 9.0).unwrap();
+        assert!(out.contains("[[[[9,9],[10,11],[11,11],[9,9]]]]"), "{out}");
+        // a path that is not there changes nothing
+        assert_eq!(set_corner(body, 0, &[7], 0.0, 0.0), None);
+        assert_eq!(set_corner(body, 0, &[], 0.0, 0.0), None);
+        assert_eq!(set_corner(body, 3, &[0, 0], 0.0, 0.0), None);
+        // too many corners to handle: none are offered
+        let long: Vec<String> = (0..1001).map(|i| format!("[{},1]", i as f64 / 100.0)).collect();
+        let big = format!(r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","geometry":{{"type":"LineString","coordinates":[{}]}},"properties":{{}}}}]}}"#, long.join(","));
+        assert!(parse(&big).unwrap()[0].corners.is_empty());
     }
 
     #[test]
