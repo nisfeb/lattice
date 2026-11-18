@@ -348,6 +348,22 @@ impl Tab {
     }
 }
 
+/// A group of tabs that is not in front: its tabs, the one that shows,
+/// and that tab's page as its kind is read (a sheet's grid, a map's
+/// shapes), made once for each revision.
+#[derive(Default)]
+struct TabGroup {
+    tabs: Vec<Tab>,
+    at: usize,
+    view: Option<(String, u64, Beside)>,
+}
+
+impl TabGroup {
+    fn page(&self) -> Option<&str> {
+        self.tabs.get(self.at).and_then(Tab::page)
+    }
+}
+
 /// A change to the tree that landed on the ship.
 enum Op {
     /// A core rule an agent key wrote was kept or untagged: what to say.
@@ -563,8 +579,7 @@ struct App {
     know_req: Latest<Result<Vec<Know>, String>>,
     /// The open page as the Markdown it is read as, when it is of a kind read that way and is not Markdown: its name, its revision, the text.
     read_as: Option<(String, u64, String)>,
-    /// The page held beside, when its kind has a view of its own: its name, its revision, the view.
-    beside: Option<(String, u64, Beside)>,
+
     /// The forum, when it is what shows.
     forum: Option<Forum>,
     forum_req: Latest<Result<ForumGot, String>>,
@@ -608,15 +623,11 @@ struct App {
     /// is there, and its slot here is filled when another comes forward.
     tabs: Vec<Tab>,
     tab: usize,
-    /// The page held beside the one in front, to read while working on another.
-    split: Option<String>,
-    /// The group of tabs beside the one in front, parked: its tabs, and which of them shows. `split` is that tab's page.
-    side_tabs: Vec<Tab>,
-    side_tab: usize,
-    /// The group in front is the right one of the two: a group stays on its side when it comes to the front.
-    /// When the split runs down, it is the lower one.
-    front_right: bool,
-    /// The two groups are one above the other, not side by side.
+    /// The groups of tabs, in the order they stand, when there is a split: two to four of them. The one at
+    /// `front_at` is in front, and its tabs are `tabs`, so its place here is empty. No split is no groups.
+    tgroups: Vec<TabGroup>,
+    front_at: usize,
+    /// The groups are one above the other, not side by side.
     split_down: bool,
     /// The room the groups have, as last laid out: nothing until then.
     groups_room: (f32, f32),
@@ -919,17 +930,15 @@ fn init() -> App {
         vault_said: String::new(),
         forum_req: Latest::default(),
         notes_req: Latest::default(),
-        beside: None,
+
         sheet: None,
         map: None,
         trail: Vec::new(),
         trail_at: 0,
         tabs: vec![Tab::default()],
         tab: 0,
-        split: None,
-        side_tabs: Vec::new(),
-        side_tab: 0,
-        front_right: false,
+        tgroups: Vec::new(),
+        front_at: 0,
         split_down: false,
         groups_room: (0.0, 0.0),
         resync: false,
@@ -2047,32 +2056,36 @@ fn sync_scad(s: &mut App) {
     });
 }
 
-/// Keeps `s.beside` in step with the page held beside: a sheet as its
-/// grid, a map as its shapes, an HTML or gemtext page as it is read.
+/// Keeps each group that is not in front in step with the page it
+/// shows: a sheet as its grid, a map as its shapes, an HTML or gemtext
+/// page as it is read.
 fn sync_beside(s: &mut App) {
-    let Some(p) = s.split.as_ref().and_then(|n| s.cache.get(n)) else {
-        s.beside = None;
-        return;
-    };
-    if s.beside.as_ref().is_some_and(|(n, rev, _)| *n == p.name && *rev == p.rev) {
-        return;
+    for d in 0..s.tgroups.len() {
+        let page = s.tgroups[d].page().filter(|_| d != s.front_at).and_then(|n| s.cache.get(n));
+        let Some(p) = page else {
+            s.tgroups[d].view = None;
+            continue;
+        };
+        if s.tgroups[d].view.as_ref().is_some_and(|(n, rev, _)| *n == p.name && *rev == p.rev) {
+            continue;
+        }
+        // the sheet that was showing stays the one showing through a change
+        let old = s.tgroups[d].view.take().filter(|(n, ..)| *n == p.name);
+        let view = match p.kind.as_str() {
+            "fods" => Some(sheet::parse(&p.body)).filter(|sheets| !sheets.is_empty()).map(|sheets| {
+                let (at, table) = match old {
+                    Some((_, _, Beside::Sheet(_, at, table))) => (at.min(sheets.len() - 1), table),
+                    _ => (0, TableState::new()),
+                };
+                Beside::Sheet(sheets, at, table)
+            }),
+            "geojson" => map::parse(&p.body).map(Beside::Map),
+            "html" => Some(Beside::Read(html::to_markdown(&p.body))),
+            "gmi" => Some(Beside::Read(html::gemtext(&p.body))),
+            _ => None,
+        };
+        s.tgroups[d].view = view.map(|v| (p.name.clone(), p.rev, v));
     }
-    // the sheet that was showing stays the one showing through a change
-    let old = s.beside.take().filter(|(n, ..)| *n == p.name);
-    let view = match p.kind.as_str() {
-        "fods" => Some(sheet::parse(&p.body)).filter(|sheets| !sheets.is_empty()).map(|sheets| {
-            let (at, table) = match old {
-                Some((_, _, Beside::Sheet(_, at, table))) => (at.min(sheets.len() - 1), table),
-                _ => (0, TableState::new()),
-            };
-            Beside::Sheet(sheets, at, table)
-        }),
-        "geojson" => map::parse(&p.body).map(Beside::Map),
-        "html" => Some(Beside::Read(html::to_markdown(&p.body))),
-        "gmi" => Some(Beside::Read(html::gemtext(&p.body))),
-        _ => None,
-    };
-    s.beside = view.map(|v| (p.name.clone(), p.rev, v));
 }
 
 /// Keeps `s.sheet` in step with the open page, as +sync_map does for a map.
@@ -4947,9 +4960,8 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
                 if !s.restored && !away {
                     s.restored = true;
                     // the page held beside last run is held again, if it is still there
-                    if s.names.contains(&s.prefs.split) {
-                        s.split = Some(s.prefs.split.clone());
-                        (s.side_tabs, s.side_tab) = (vec![Tab { trail: vec![s.prefs.split.clone()], at: 0 }], 0);
+                    if s.names.contains(&s.prefs.split) && s.tgroups.is_empty() {
+                        (s.tgroups, s.front_at) = (vec![TabGroup::default(), TabGroup { tabs: vec![Tab { trail: vec![s.prefs.split.clone()], at: 0 }], at: 0, view: None }], 0);
                         s.split_down = s.prefs.split_down;
                     }
                     let last = s.prefs.last.clone();
@@ -5675,35 +5687,55 @@ fn template_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         .build(k, layer);
 }
 
-/// Holds the page in front beside whatever comes next, or lets go of
-/// the one held.
-fn toggle_split(s: &mut App) {
-    match (s.split.is_some(), s.open.as_ref().filter(|_| s.remote.is_none() && !s.capture && !s.memory)) {
-        // the page in front is held beside, as a group of one tab
-        (false, Some(p)) => (s.side_tabs, s.side_tab) = (vec![Tab { trail: vec![p.name.clone()], at: 0 }], 0),
-        _ => s.side_tabs.clear(),
+/// The page the first group that is not in front shows: what a split
+/// of two holds beside.
+fn split_page(s: &App) -> Option<&str> {
+    s.tgroups.iter().enumerate().find(|(d, _)| *d != s.front_at).and_then(|(_, g)| g.page())
+}
+
+/// One more group, holding the page in front, placed after the group in
+/// front. The first one makes the split.
+fn add_group(s: &mut App) {
+    let Some(name) = s.open.as_ref().filter(|_| s.remote.is_none() && !s.capture && !s.memory).map(|p| p.name.clone()) else { return };
+    let made = TabGroup { tabs: vec![Tab { trail: vec![name], at: 0 }], at: 0, view: None };
+    if s.tgroups.is_empty() {
+        // the group in front has a place among them, left empty: its tabs are the window's own
+        (s.tgroups, s.front_at) = (vec![TabGroup::default(), made], 0);
+    } else {
+        s.tgroups.insert(s.front_at + 1, made);
     }
-    sync_side(s);
+    sync_groups(s);
+}
+
+/// Holds the page in front beside whatever comes next, or, with a split, closes it.
+fn toggle_split(s: &mut App) {
+    if s.tgroups.is_empty() {
+        s.split_down = false;
+        add_group(s);
+    } else {
+        s.tgroups.clear();
+        sync_groups(s);
+    }
 }
 
 /// A press on a split button: across, or down. With no split it makes
-/// one that way, when there is room for two groups. With a split the
-/// other way it turns the two groups round. With one that way it closes it.
+/// one that way. With a split that way it adds a group. With a split
+/// the other way it turns the groups round. Each is refused when a
+/// group would have less than its least room.
 fn split_press(s: &mut App, down: bool) {
-    let press = splits::press(s.split.is_some(), s.split_down, down);
-    if press != splits::Press::Close {
-        if let Some(why) = splits::refused(s.groups_room, down) {
-            s.note = why;
-            return;
-        }
+    let press = splits::press(!s.tgroups.is_empty(), s.split_down, down);
+    let n = match press {
+        splits::Press::Make => 2,
+        splits::Press::Add => s.tgroups.len() + 1,
+        splits::Press::Turn => s.tgroups.len(),
+    };
+    if let Some(why) = splits::refused(s.groups_room, down, n) {
+        s.note = why;
+        return;
     }
-    match press {
-        splits::Press::Make => {
-            s.split_down = down;
-            toggle_split(s);
-        }
-        splits::Press::Turn => s.split_down = down,
-        splits::Press::Close => toggle_split(s),
+    s.split_down = down;
+    if press != splits::Press::Turn {
+        add_group(s);
     }
     if s.prefs.split_down != s.split_down {
         s.prefs.split_down = s.split_down;
@@ -5713,59 +5745,86 @@ fn split_press(s: &mut App, down: bool) {
     }
 }
 
-/// Puts `split` in step with the group beside: its front tab's page, or
-/// nothing once the group has no tab left, which ends the split.
-fn sync_side(s: &mut App) {
-    if s.side_tabs.is_empty() {
-        (s.split, s.side_tab, s.front_right) = (None, 0, false);
-    } else {
-        s.side_tab = s.side_tab.min(s.side_tabs.len() - 1);
-        s.split = s.side_tabs[s.side_tab].page().map(str::to_owned);
+/// Puts the groups in order after a change: a group that is not in
+/// front and has no tab with a page is gone, and a split of one group
+/// is no split.
+fn sync_groups(s: &mut App) {
+    let mut d = 0;
+    while d < s.tgroups.len() {
+        if d != s.front_at {
+            let g = &mut s.tgroups[d];
+            g.tabs.retain(|t| t.page().is_some());
+            g.at = g.at.min(g.tabs.len().saturating_sub(1));
+            if g.tabs.is_empty() {
+                s.tgroups.remove(d);
+                if s.front_at > d {
+                    s.front_at -= 1;
+                }
+                continue;
+            }
+        }
+        d += 1;
+    }
+    if s.tgroups.len() < 2 {
+        s.tgroups.clear();
+        s.front_at = 0;
     }
     keep_split(s);
 }
 
-/// Brings the group beside to the front, whole, on its tab `i`. The
-/// group that was in front goes beside with every tab that holds a page,
-/// and each group stays on its side of the window.
-fn focus_side(s: &mut App, i: usize) {
-    if s.editing || s.memory || i >= s.side_tabs.len() {
+/// Brings the group standing at `d` to the front, whole, on its tab
+/// `i`. The group that was in front stays where it stands, with every
+/// tab that holds a page.
+fn focus_group(s: &mut App, d: usize, i: usize) {
+    if s.editing || s.memory || d == s.front_at || s.tgroups.get(d).is_none_or(|g| i >= g.tabs.len()) {
         return;
     }
     park_tab(s);
-    let (was, was_at) = (std::mem::replace(&mut s.tabs, std::mem::take(&mut s.side_tabs)), s.tab);
-    s.side_tab = 0;
+    let coming = std::mem::take(&mut s.tgroups[d]);
+    let (was, was_at) = (std::mem::replace(&mut s.tabs, coming.tabs), s.tab);
+    let mut going = TabGroup::default();
     for (j, tab) in was.into_iter().enumerate() {
         // an empty tab has nothing to show beside
         if tab.page().is_some() {
             if j == was_at {
-                s.side_tab = s.side_tabs.len();
+                going.at = going.tabs.len();
             }
-            s.side_tabs.push(tab);
+            going.tabs.push(tab);
         }
     }
-    s.front_right = !s.front_right;
+    s.tgroups[s.front_at] = going;
+    s.front_at = d;
     load_tab(s, i);
-    sync_side(s);
+    sync_groups(s);
     keep_tabs(s);
 }
 
-/// Closes one tab of the group beside. The last one closed ends the split.
-fn close_side(s: &mut App, i: usize) {
-    if i >= s.side_tabs.len() {
+/// Closes one tab of a group that is not in front. Its last tab closed, the group is gone.
+fn close_group_tab(s: &mut App, d: usize, i: usize) {
+    let Some(g) = s.tgroups.get_mut(d).filter(|g| i < g.tabs.len()) else { return };
+    if d == s.front_at {
         return;
     }
-    s.side_tabs.remove(i);
-    if s.side_tab > i {
-        s.side_tab -= 1;
+    g.tabs.remove(i);
+    if g.at > i {
+        g.at -= 1;
     }
-    sync_side(s);
+    g.view = None;
+    sync_groups(s);
+}
+
+/// Closes a whole group that is not in front.
+fn close_group(s: &mut App, d: usize) {
+    if d != s.front_at && d < s.tgroups.len() {
+        s.tgroups[d].tabs.clear();
+        sync_groups(s);
+    }
 }
 
 /// Notes the page held beside in the preferences, to hold again next run.
 fn keep_split(s: &mut App) {
     sync_beside(s);
-    let held = s.split.clone().unwrap_or_default();
+    let held = split_page(s).unwrap_or_default().to_owned();
     if s.prefs.split != held {
         s.prefs.split = held;
         if s.conn.is_some() {
@@ -5776,31 +5835,45 @@ fn keep_split(s: &mut App) {
 
 /// Brings the page held beside to the front, and holds the one that was there.
 fn swap_split(s: &mut App) {
-    focus_side(s, s.side_tab);
+    if let Some((d, at)) = s.tgroups.iter().enumerate().find(|(d, _)| *d != s.front_at).map(|(d, g)| (d, g.at)) {
+        focus_group(s, d, at);
+    }
 }
 
 /// The sheet held beside, to be read: its cells as they read, a tab for
 /// each sheet, and no cell bar. It is changed from the front.
-fn beside_sheet(sheets: &[sheet::Sheet], at: usize, s: &App, k: &Kit) -> El {
+fn beside_sheet(d: usize, sheets: &[sheet::Sheet], at: usize, s: &App, k: &Kit) -> El {
     let c = &k.c;
-    fn grid_of(s: &App) -> Option<&sheet::Sheet> {
-        match &s.beside {
+    fn grid_of(s: &App, d: usize) -> Option<&sheet::Sheet> {
+        match s.tgroups.get(d).and_then(|g| g.view.as_ref()) {
             Some((_, _, Beside::Sheet(sheets, at, _))) => sheets.get(*at),
             _ => None,
         }
     }
-    let mut table = Table::new(
-        |s: &App| match &s.beside {
+    // rune-kit's table reaches its state by a plain function, which cannot be told which group it is for.
+    // So there is one for each place a group can stand, picked here
+    fn state<const D: usize>(s: &App) -> &TableState {
+        match s.tgroups.get(D).and_then(|g| g.view.as_ref()) {
             Some((_, _, Beside::Sheet(_, _, table))) => table,
-            _ => unreachable!("a sheet is held beside"),
-        },
-        |s: &mut App| match &mut s.beside {
+            _ => unreachable!("a sheet is held in this group"),
+        }
+    }
+    fn state_mut<const D: usize>(s: &mut App) -> &mut TableState {
+        match s.tgroups.get_mut(D).and_then(|g| g.view.as_mut()) {
             Some((_, _, Beside::Sheet(_, _, table))) => table,
-            _ => unreachable!("a sheet is held beside"),
-        },
-        |s: &App| grid_of(s).map_or(0, |sh| sh.rows.len()),
-        |_: &App, i| std::borrow::Cow::Owned(i.to_string()),
-    )
+            _ => unreachable!("a sheet is held in this group"),
+        }
+    }
+    fn rows<const D: usize>(s: &App) -> usize {
+        grid_of(s, D).map_or(0, |sh| sh.rows.len())
+    }
+    let (get, get_mut, len): (fn(&App) -> &TableState, fn(&mut App) -> &mut TableState, fn(&App) -> usize) = match d {
+        0 => (state::<0>, state_mut::<0>, rows::<0>),
+        1 => (state::<1>, state_mut::<1>, rows::<1>),
+        2 => (state::<2>, state_mut::<2>, rows::<2>),
+        _ => (state::<3>, state_mut::<3>, rows::<3>),
+    };
+    let mut table = Table::new(get, get_mut, len, |_: &App, i| std::borrow::Cow::Owned(i.to_string()))
     .name("The sheet held beside")
     .column(TableColumn::new("#", "").width(48.0).resizable(false));
     for i in 0..sheets[at].width().clamp(1, SHEET_COLS) {
@@ -5812,7 +5885,7 @@ fn beside_sheet(sheets: &[sheet::Sheet], at: usize, s: &App, k: &Kit) -> El {
                 return Cell::text((i + 1).to_string()).muted().mono();
             }
             let at = col.bytes().fold(0usize, |n, b| n * 26 + (b - b'A') as usize + 1) - 1;
-            Cell::text(grid_of(s).and_then(|sh| sh.rows.get(i)).and_then(|r| r.get(at)).cloned().unwrap_or_default())
+            Cell::text(grid_of(s, d).and_then(|sh| sh.rows.get(i)).and_then(|r| r.get(at)).cloned().unwrap_or_default())
         })
         .zebra(true)
         .build(s, k)
@@ -5826,7 +5899,7 @@ fn beside_sheet(sheets: &[sheet::Sheet], at: usize, s: &App, k: &Kit) -> El {
                 .control_size(ControlSize::Small)
                 .variant(if i == at { ButtonVariant::Contrast } else { ButtonVariant::Ghost })
                 .on_press(move |s: &mut App| {
-                    if let Some((_, _, Beside::Sheet(_, at, table))) = &mut s.beside {
+                    if let Some((_, _, Beside::Sheet(_, at, table))) = s.tgroups.get_mut(d).and_then(|g| g.view.as_mut()) {
                         (*at, *table) = (i, TableState::new());
                     }
                 })
@@ -5875,41 +5948,40 @@ fn beside_map(feats: &[map::Feature], k: &Kit) -> El {
 /// The page held beside: read-only. A sheet shows as its grid, a map as
 /// its shapes, an HTML or gemtext page as it is read, and any other
 /// kind as its source, coloured.
-fn split_view(name: &str, s: &App, k: &Kit) -> El {
+fn split_view(d: usize, s: &App, k: &Kit) -> El {
     let c = &k.c;
+    let Some(group) = s.tgroups.get(d) else { return el() };
+    let name = group.page().unwrap_or("");
     // the group's own tabs: a press on one brings the group to the front on it
-    let mut tabs = row().key("side-tabs").role("tablist").label("Tabs of the group beside").gap(2.0).center_y().grow(1.0).min_w(0.0);
-    for (i, tab) in s.side_tabs.iter().enumerate() {
+    let mut tabs = row().key(format!("g{d}-tabs")).role("tablist").label("Tabs of a group that is not in front").gap(2.0).center_y().grow(1.0).min_w(0.0);
+    for (i, tab) in group.tabs.iter().enumerate() {
         let page = tab.page().unwrap_or("");
         let label = s.dnames.get(page).cloned().unwrap_or_else(|| page.rsplit('/').next().unwrap_or(page).to_owned());
-        let front = i == s.side_tab;
+        let front = i == group.at;
         tabs = tabs.child(
             row()
-                .key(format!("side-tab-{i}"))
+                .key(format!("g{d}-tab-{i}"))
                 .center_y()
                 .radius(k.radius.sm)
                 .fill(if front { c.layer_01 } else { rune::Color::TRANSPARENT })
                 .min_w(0.0)
-                .child(Button::new(label).control_size(ControlSize::Small).variant(if front { ButtonVariant::Ghost } else { ButtonVariant::GhostMuted }).help(format!("{page}: bring this group to the front")).disabled(s.editing).on_press(move |s: &mut App| focus_side(s, i)).build(k).key(format!("side-tab-{i}-go")))
-                .child(IconButton::new(&head::X).control_size(ControlSize::Small).variant(IconButtonVariant::GhostMuted).help("Close this tab").on_press(move |s: &mut App| close_side(s, i)).build(k).key(format!("side-close-{i}"))),
+                .child(Button::new(label).control_size(ControlSize::Small).variant(if front { ButtonVariant::Ghost } else { ButtonVariant::GhostMuted }).help(format!("{page}: bring this group to the front")).disabled(s.editing).on_press(move |s: &mut App| focus_group(s, d, i)).build(k).key(format!("g{d}-tab-{i}-go")))
+                .child(IconButton::new(&head::X).control_size(ControlSize::Small).variant(IconButtonVariant::GhostMuted).help("Close this tab").on_press(move |s: &mut App| close_group_tab(s, d, i)).build(k).key(format!("g{d}-close-{i}"))),
         );
     }
-    let _ = name;
+    let at = group.at;
     let head = row()
         .w_full()
         .gap(6.0)
         .center_y()
         .child(tabs)
-        .child(Button::new("Swap").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Bring this group to the front").disabled(s.editing).on_press(swap_split).build(k).key("split-swap"))
-        .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close the split").on_press(|s: &mut App| {
-            s.side_tabs.clear();
-            sync_side(s);
-        }).build(k).key("split-close"));
-    let beside = s.cache.get(name).and_then(|p| s.beside.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev)).map(|(_, _, v)| v);
+        .child(Button::new("Swap").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("Bring this group to the front").disabled(s.editing).on_press(move |s: &mut App| focus_group(s, d, at)).build(k).key(format!("g{d}-front")))
+        .child(Button::new("×").control_size(ControlSize::Small).variant(ButtonVariant::GhostFaint).help("Close this group").on_press(move |s: &mut App| close_group(s, d)).build(k).key(format!("g{d}-close")));
+    let beside = s.cache.get(name).and_then(|p| group.view.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev)).map(|(_, _, v)| v);
     let shown = match (s.cache.get(name), beside) {
         (Some(p), _) if p.kind == "md" => reader(&p.body, s, k, false),
         (_, Some(Beside::Read(md))) => reader(md, s, k, false),
-        (_, Some(Beside::Sheet(sheets, at, _))) => beside_sheet(sheets, *at, s, k),
+        (_, Some(Beside::Sheet(sheets, at, _))) => beside_sheet(d, sheets, *at, s, k),
         (_, Some(Beside::Map(feats))) => beside_map(feats, k),
         // any other kind is its source, coloured
         (Some(p), None) => {
@@ -5919,7 +5991,7 @@ fn split_view(name: &str, s: &App, k: &Kit) -> El {
         (None, _) => text("This page is not here any more.").font(k.ty.small).color(c.text_muted),
     };
     col()
-        .key("split")
+        .key(format!("group-{d}"))
         .w_full()
         .h_full()
         .min_h(0.0)
@@ -6061,14 +6133,21 @@ fn tab_strip(s: &App, k: &Kit) -> El {
     }
     let (can_new, can_split) = topbar::tools(s.editing, s.memory, usable(s, "split"));
     let button = |down: bool, icon: &'static rune::Icon, key: &str, keys: Option<&str>| {
-        let on = s.split.is_some() && s.split_down == down;
+        let split = !s.tgroups.is_empty();
+        let on = split && s.split_down == down;
         // a split there is no room for is refused, and its button says why
-        let why = (!on).then(|| splits::refused(s.groups_room, down)).flatten();
-        let says = match (&why, on, s.split.is_some(), down) {
+        let n = match splits::press(split, s.split_down, down) {
+            splits::Press::Make => 2,
+            splits::Press::Add => s.tgroups.len() + 1,
+            splits::Press::Turn => s.tgroups.len(),
+        };
+        let why = splits::refused(s.groups_room, down, n);
+        let says = match (&why, on, split, down) {
             (Some(why), ..) => why.clone(),
-            (_, true, ..) => "Close the split".to_owned(),
-            (_, _, true, false) => "Put the two groups side by side".to_owned(),
-            (_, _, true, true) => "Put the two groups one above the other".to_owned(),
+            (_, true, _, false) => "Split right again: one more group".to_owned(),
+            (_, true, _, true) => "Split down again: one more group".to_owned(),
+            (_, _, true, false) => "Put the groups side by side".to_owned(),
+            (_, _, true, true) => "Put the groups one above the other".to_owned(),
             (_, _, false, false) => "Split right: hold this page beside the next one you open".to_owned(),
             (_, _, false, true) => "Split down: hold this page below the next one you open".to_owned(),
         };
@@ -7678,7 +7757,7 @@ fn usable(s: &App, id: &str) -> bool {
         "map-gpx" => page && s.map.is_some(),
         "tab-close" => s.tabs.len() > 1,
         "tab-copy" => own && !s.memory,
-        "split" => s.split.is_some() || (own && !s.memory),
+        "split" => !s.tgroups.is_empty() || (own && !s.memory),
         _ => true,
     }
 }
@@ -9875,18 +9954,24 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
         .child(nav("forward", &tabhead::RIGHT, "Forward", 1, s.trail_at + 1 < s.trail.len() && !s.editing))
         .child(name);
     let main = body(s, &k);
-    let main = match s.split.as_ref().filter(|_| !s.memory) {
-        Some(name) => {
-            // a group stays on its side: the one in front is drawn where it stood before it came forward
-            let (front, beside) = (col().key("group-front").grow(1.0).min_w(0.0).min_h(0.0).child(main), col().key("group-beside").grow(1.0).min_w(0.0).min_h(0.0).child(split_view(name, s, &k)));
-            let (first, second) = if s.front_right { (beside, front) } else { (front, beside) };
-            if s.split_down {
-                col().w_full().h_full().min_h(0.0).child(first.w_full()).child(Divider::horizontal().build(&k)).child(second.w_full())
-            } else {
-                row().w_full().h_full().min_h(0.0).child(first.h_full()).child(Divider::vertical().build(&k)).child(second.h_full())
+    let main = if s.tgroups.is_empty() || s.memory {
+        main
+    } else {
+        // every group stands where it stood: the one in front is drawn in its own place among the rest
+        let mut all = if s.split_down { col() } else { row() }.w_full().h_full().min_h(0.0);
+        let mut main = Some(main);
+        for d in 0..s.tgroups.len() {
+            if d > 0 {
+                all = all.child(if s.split_down { Divider::horizontal() } else { Divider::vertical() }.build(&k));
             }
+            let one = match main.take_if(|_| d == s.front_at) {
+                Some(front) => col().key("group-front").child(front),
+                None => col().child(split_view(d, s, &k)),
+            };
+            let one = one.grow(1.0).min_w(0.0).min_h(0.0);
+            all = all.child(if s.split_down { one.w_full() } else { one.h_full() });
         }
-        None => main,
+        all
     };
     // under the top bar, the page's own bar: where it has been, its name, and what can be done with it
     let head = row().key("tab-head").w_full().h(36.0).px(8.0).gap(8.0).center_y().justify_between().child(leading.grow(1.0).min_w(0.0)).child(trailing);
@@ -10226,35 +10311,36 @@ mod tests {
     #[test]
     fn a_page_held_beside_is_read_as_its_kind_once_for_each_revision() {
         let mut s = sample("welcome");
-        s.split = Some("budget".into());
-        sync_beside(&mut s);
-        assert!(matches!(&s.beside, Some((n, 1, Beside::Sheet(sheets, 0, _))) if n == "budget" && sheets.len() == 2 && sheets[0].rows.len() == 4));
+        // a split of two, with the named page in the group that is not in front
+        fn hold(s: &mut App, name: &str) {
+            (s.tgroups, s.front_at) = (vec![TabGroup::default(), TabGroup { tabs: vec![Tab { trail: vec![name.to_owned()], at: 0 }], at: 0, view: None }], 0);
+            sync_beside(s);
+        }
+        hold(&mut s, "budget");
+        assert!(matches!(&s.tgroups[1].view, Some((n, 1, Beside::Sheet(sheets, 0, _))) if n == "budget" && sheets.len() == 2 && sheets[0].rows.len() == 4));
         // the sheet showing stays through a change to the page, and follows its text
-        if let Some((_, _, Beside::Sheet(_, at, _))) = &mut s.beside {
+        if let Some((_, _, Beside::Sheet(_, at, _))) = &mut s.tgroups[1].view {
             *at = 1;
         }
         let p = s.cache.get_mut("budget").unwrap();
         p.body = p.body.replace("Prices checked in November", "Checked again");
         p.rev = 2;
         sync_beside(&mut s);
-        assert!(matches!(&s.beside, Some((_, 2, Beside::Sheet(sheets, 1, _))) if sheets[1].rows[0][0] == "Checked again"));
+        assert!(matches!(&s.tgroups[1].view, Some((_, 2, Beside::Sheet(sheets, 1, _))) if sheets[1].rows[0][0] == "Checked again"));
         // a map is its features, an HTML page is what it reads as, and Markdown needs nothing kept
-        s.split = Some("places".into());
-        sync_beside(&mut s);
-        assert!(matches!(&s.beside, Some((_, _, Beside::Map(feats))) if feats.len() == 4));
+        hold(&mut s, "places");
+        assert!(matches!(&s.tgroups[1].view, Some((_, _, Beside::Map(feats))) if feats.len() == 4));
         s.cache.insert("page".into(), Page { name: "page".into(), body: "<h1>T</h1><script>x</script>".into(), kind: "html".into(), rev: 1 });
-        s.split = Some("page".into());
-        sync_beside(&mut s);
-        assert!(matches!(&s.beside, Some((_, _, Beside::Read(md))) if md == "# T\n"));
-        s.split = Some("welcome".into());
-        sync_beside(&mut s);
-        assert!(s.beside.is_none());
-        // closing the split lets it go
-        s.split = Some("budget".into());
-        sync_beside(&mut s);
-        s.split = None;
-        keep_split(&mut s);
-        assert!(s.beside.is_none());
+        hold(&mut s, "page");
+        assert!(matches!(&s.tgroups[1].view, Some((_, _, Beside::Read(md))) if md == "# T\n"));
+        hold(&mut s, "welcome");
+        assert!(s.tgroups[1].view.is_none());
+        // the group in front keeps none: its page is the window's own
+        assert!(s.tgroups[0].view.is_none());
+        // closing the split lets it all go
+        hold(&mut s, "budget");
+        toggle_split(&mut s);
+        assert!(s.tgroups.is_empty());
     }
 
     #[test]
@@ -10994,51 +11080,89 @@ mod tests {
     }
 
     #[test]
+    fn a_split_made_again_adds_a_group_and_each_keeps_its_place() {
+        // what each group shows, in the order they stand, with the one in front marked
+        let stand = |s: &App| (0..s.tgroups.len()).map(|d| if d == s.front_at { format!("*{}", s.open.as_ref().map_or("", |p| p.name.as_str())) } else { s.tgroups[d].page().unwrap_or("").to_owned() }).collect::<Vec<_>>();
+        let mut s = sample("welcome");
+        split_press(&mut s, false);
+        assert_eq!(stand(&s), ["*welcome", "welcome"]);
+        open_page(&mut s, "budget");
+        // the same button again adds a third group, beside the one in front
+        split_press(&mut s, false);
+        assert_eq!(stand(&s), ["*budget", "budget", "welcome"]);
+        open_page(&mut s, "places");
+        // the last group comes to the front where it stands, and the others stay where they are
+        focus_group(&mut s, 2, 0);
+        assert_eq!(stand(&s), ["places", "budget", "*welcome"]);
+        // the middle one's sheet is read for it, and the first one's map, each kept with its own group
+        assert!(matches!(&s.tgroups[1].view, Some((n, _, Beside::Sheet(..))) if n == "budget"));
+        assert!(matches!(&s.tgroups[0].view, Some((n, _, Beside::Map(_))) if n == "places"));
+        // a group whose last tab is closed is gone, and the rest close up
+        close_group_tab(&mut s, 1, 0);
+        assert_eq!(stand(&s), ["places", "*welcome"]);
+        // a fifth group is refused
+        split_press(&mut s, false);
+        split_press(&mut s, false);
+        assert_eq!(s.tgroups.len(), 4);
+        split_press(&mut s, false);
+        assert_eq!((s.tgroups.len(), s.note.as_str()), (4, "Four groups is the most there can be"));
+        // the other button turns them all the other way
+        split_press(&mut s, true);
+        assert!(s.split_down && s.tgroups.len() == 4);
+        // closing a whole group, then the split
+        close_group(&mut s, 0);
+        assert_eq!(s.tgroups.len(), 3);
+        toggle_split(&mut s);
+        assert!(s.tgroups.is_empty() && s.front_at == 0 && split_page(&s).is_none());
+    }
+
+    #[test]
     fn the_group_beside_keeps_its_own_tabs_and_comes_to_the_front_whole() {
-        let side = |s: &App| s.side_tabs.iter().map(|t| t.page().unwrap_or("").to_owned()).collect::<Vec<_>>();
+        // the pages of the tabs of the group standing at `d`
+        let pages = |s: &App, d: usize| s.tgroups[d].tabs.iter().map(|t| t.page().unwrap_or("").to_owned()).collect::<Vec<_>>();
         let open = |s: &App| s.open.as_ref().map(|p| p.name.clone());
         let mut s = sample("welcome");
         new_tab(&mut s);
         open_page(&mut s, "budget");
         // the front has two tabs. Splitting holds the page in front beside, as a group of one tab
         toggle_split(&mut s);
-        assert_eq!((side(&s), s.side_tab, s.front_right), (vec!["budget".to_owned()], 0, false));
+        assert_eq!((pages(&s, 1), s.front_at), (vec!["budget".to_owned()], 0));
         open_page(&mut s, "places");
-        // the group beside comes to the front whole, and the one that was in front is beside, with both its tabs
+        // the group beside comes to the front whole, and the one that was in front stays where it stood, with both its tabs
         swap_split(&mut s);
         assert_eq!((open(&s), s.tabs.len(), s.tab), (Some("budget".to_owned()), 1, 0));
-        assert_eq!((side(&s), s.side_tab), (vec!["welcome".to_owned(), "places".to_owned()], 1));
-        assert_eq!(s.split.as_deref(), Some("places"), "its front tab is the page shown beside");
-        assert!(s.front_right, "each group stays on its side: the one in front is now the right one");
-        // a press on a tab of the group beside brings that group to the front on that tab
-        focus_side(&mut s, 0);
+        assert_eq!((pages(&s, 0), s.tgroups[0].at), (vec!["welcome".to_owned(), "places".to_owned()], 1));
+        assert_eq!(split_page(&s), Some("places"), "its front tab is the page it shows");
+        assert_eq!(s.front_at, 1, "each group stays in its place: the one in front is now the second");
+        // a press on a tab of the other group brings that group to the front on that tab
+        focus_group(&mut s, 0, 0);
         assert_eq!((open(&s), s.tabs.len(), s.tab), (Some("welcome".to_owned()), 2, 0));
-        assert_eq!((side(&s), s.front_right), (vec!["budget".to_owned()], false));
+        assert_eq!((pages(&s, 1), s.front_at), (vec!["budget".to_owned()], 0));
         // the tab that went beside in the middle of its history comes back with it
         switch_tab(&mut s, 1);
         assert_eq!(open(&s), Some("places".to_owned()));
         step(&mut s, -1);
         assert_eq!(open(&s), Some("budget".to_owned()), "back still goes to where that tab had been");
         // closing the last tab beside ends the split
-        close_side(&mut s, 0);
-        assert_eq!((s.split.clone(), s.side_tabs.len(), s.front_right), (None, 0, false));
+        close_group_tab(&mut s, 1, 0);
+        assert!(s.tgroups.is_empty() && s.front_at == 0 && split_page(&s).is_none());
         // an edit in front keeps the groups where they are
         toggle_split(&mut s);
         start_edit(&mut s);
-        let before = (open(&s), side(&s));
-        focus_side(&mut s, 0);
-        assert_eq!((open(&s), side(&s)), before);
+        let before = (open(&s), pages(&s, 1), s.front_at);
+        focus_group(&mut s, 1, 0);
+        assert_eq!((open(&s), pages(&s, 1), s.front_at), before);
     }
 
     #[test]
     fn a_page_is_held_beside_another_and_swapped_to_the_front() {
         let mut s = sample("welcome");
         toggle_split(&mut s);
-        assert_eq!(s.split.as_deref(), Some("welcome"));
+        assert_eq!(split_page(&s), Some("welcome"));
         open_page(&mut s, "budget");
-        assert_eq!(s.split.as_deref(), Some("welcome"), "it stays while the front changes");
+        assert_eq!(split_page(&s), Some("welcome"), "it stays while the front changes");
         swap_split(&mut s);
-        assert_eq!((s.open.as_ref().map(|p| p.name.as_str()), s.split.as_deref()), (Some("welcome"), Some("budget")));
+        assert_eq!((s.open.as_ref().map(|p| p.name.as_str()), split_page(&s)), (Some("welcome"), Some("budget")));
         // not while editing: the page in front is not left behind
         start_edit(&mut s);
         swap_split(&mut s);
@@ -11047,11 +11171,11 @@ mod tests {
         assert_eq!(s.prefs.split, "budget", "what is held is kept for the next run");
         // the same press lets go of it
         toggle_split(&mut s);
-        assert_eq!((s.split.clone(), s.prefs.split.as_str()), (None, ""));
+        assert_eq!((split_page(&s), s.prefs.split.as_str()), (None, ""));
         // nothing to hold with no page in front
         s.open = None;
         toggle_split(&mut s);
-        assert_eq!(s.split, None);
+        assert_eq!(split_page(&s), None);
     }
 
     #[test]
