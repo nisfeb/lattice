@@ -1,0 +1,6 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "settings-open"},
+  {"t": 4.0, "type": "tap", "key": "vault-dir"},
+  {"t": 4.4, "type": "type", "text": "/tmp/lr-vault-out"},
+  {"t": 6.0, "type": "tap", "key": "vault-export"}
+]}

@@ -24,6 +24,7 @@ mod shift;
 mod styles;
 mod tex;
 mod upload;
+mod vault;
 mod view3d;
 mod vim;
 
@@ -135,6 +136,8 @@ struct Settings {
     connect: bool,
     /// The folder typed to mount a ship at. Empty is the ship's name under the home directory.
     mount_at: TextEdit,
+    /// The folder a vault export is written to.
+    vault_dir: TextEdit,
     /// The part of the tree to mount of the ship signed in to. Empty is every page.
     mount_root: TextEdit,
     /// The piers found on this machine, once looked for.
@@ -146,7 +149,7 @@ struct Settings {
 
 impl Settings {
     fn new() -> Self {
-        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false, mount_at: TextEdit::new(""), mount_root: TextEdit::new(""), local: None, stack: None, dist: TextEdit::new("~nisfeb") }
+        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false, mount_at: TextEdit::new(""), vault_dir: TextEdit::new(""), mount_root: TextEdit::new(""), local: None, stack: None, dist: TextEdit::new("~nisfeb") }
     }
 
     fn ask(&self) -> api::KeyAsk {
@@ -543,6 +546,9 @@ struct App {
     /// The folders ships are mounted at, as kept between runs, and a mount or an unmount on its way: the list after it, and what to say.
     mounts: Vec<mounts::MountSpec>,
     mount_req: Latest<(Vec<mounts::MountSpec>, String)>,
+    /// A vault export being written, and what was last said of one.
+    vault_req: Latest<String>,
+    vault_said: String,
     /// The refusals, read beside the boards and after a clear.
     notes_req: Latest<Result<ForumGot, String>>,
     /// The open page as a spreadsheet, when it is one.
@@ -793,6 +799,8 @@ fn init() -> App {
         local_req: Latest::default(),
         mounts: Vec::new(),
         mount_req: Latest::default(),
+        vault_req: Latest::default(),
+        vault_said: String::new(),
         forum_req: Latest::default(),
         notes_req: Latest::default(),
         beside: None,
@@ -1531,6 +1539,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.stack_req.set_waker(waker.clone());
     s.local_req.set_waker(waker.clone());
     s.mount_req.set_waker(waker.clone());
+    s.vault_req.set_waker(waker.clone());
     s.notes_req.set_waker(waker.clone());
     s.core_req.set_waker(waker.clone());
     s.trash_req.set_waker(waker.clone());
@@ -4738,6 +4747,10 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(std::time::Duration::from_secs(6));
         settings_do(s, SetAct::Read);
     }
+    if let Some(said) = s.vault_req.take() {
+        s.note = said.clone();
+        s.vault_said = said;
+    }
     if let Some((list, said)) = s.mount_req.take() {
         changed = true;
         s.mounts = list;
@@ -6582,6 +6595,44 @@ fn unmount(s: &mut App, i: usize) {
 }
 
 /// The ships on this machine: each with where its pier is, and why it cannot be reached when it cannot.
+/// Writes the whole store as one tar into the folder typed, or the home
+/// directory when none is.
+fn vault_export(s: &mut App) {
+    let Some((c, st)) = s.conn.clone().zip(s.settings.as_ref()) else {
+        s.note = "an export reads the whole store, so it needs the ship".into();
+        return;
+    };
+    let typed = st.vault_dir.text.trim();
+    let dir = mounts::expand(if typed.is_empty() { "~" } else { typed }, &std::env::var("HOME").unwrap_or_default());
+    s.vault_said = "reading the store\u{2026}".into();
+    s.vault_req.request((c, dir), |(c, dir)| {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let built = match c.vault(now) {
+            Ok(b) => b,
+            Err(e) => return e,
+        };
+        let at = std::path::Path::new(&dir).join(vault::file_name(now));
+        // the whole store in one file: only its owner may read it
+        match std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|()| api::write_private(&at, &built.bytes)) {
+            Ok(()) => built.says(&at.display().to_string()),
+            Err(e) => format!("export failed: could not write {}: {e}", at.display()),
+        }
+    });
+}
+
+fn vault_view(st: &Settings, said: &str, busy: bool, k: &Kit) -> El {
+    let c = &k.c;
+    col()
+        .key("set-vault")
+        .w_full()
+        .gap(6.0)
+        .child(text("Backup").font(k.ty.body_medium).color(c.text_base))
+        .child(text("Every page and memory as one tar. The archive is plain files, readable without lattice.").font(k.ty.small).color(c.text_muted).wrap())
+        .child(TextInput::new(&st.vault_dir).label("Folder to export to").placeholder("your home directory when left empty").on_edit(|s: &mut App| &mut s.settings.as_mut().expect("the settings are showing").vault_dir).build(k).w_full().key("vault-dir"))
+        .child(row().gap(8.0).child(Button::new(if busy { "Exporting\u{2026}" } else { "Export vault" }).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(busy).on_press(vault_export).build(k).key("vault-export")))
+        .child(text(said.to_owned()).key("vault-said").font(k.ty.small).color(c.text_base).wrap())
+}
+
 fn local_view(st: &Settings, held: &[mounts::MountSpec], signed_in: bool, busy: bool, looking: bool, k: &Kit) -> El {
     let c = &k.c;
     let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
@@ -6791,7 +6842,7 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
         }).build(k).key("publish-ask")));
     }
     let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
-    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).children(stack_view(st, k)).child(local_view(st, &s.mounts, s.conn.is_some(), s.mount_req.is_pending(), s.local_req.is_pending(), k)).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
+    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).children(stack_view(st, k)).child(local_view(st, &s.mounts, s.conn.is_some(), s.mount_req.is_pending(), s.local_req.is_pending(), k)).child(vault_view(st, &s.vault_said, s.vault_req.is_pending(), k)).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
         "A key lets an agent, such as the lattice plugin for Claude Code or Hermes, use your memory and pages without your login. Everything a key saves is signed with the name it writes as, and its scope says what it may touch. Publishing, sharing and settings stay yours whatever the scope.",
     ));
     if let Some(token) = &st.token {

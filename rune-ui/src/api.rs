@@ -598,7 +598,7 @@ fn keep_at(p: &std::path::Path, nodes: Vec<Node>) -> Result<(), String> {
 }
 
 /// Writes a file only its owner reads, whole or not at all: beside it first, then moved into place.
-fn write_private(p: &std::path::Path, body: &[u8]) -> Result<(), String> {
+pub fn write_private(p: &std::path::Path, body: &[u8]) -> Result<(), String> {
     std::fs::create_dir_all(p.parent().ok_or("no parent")?).map_err(|e| e.to_string())?;
     let tmp = p.with_extension("part");
     #[cfg(unix)]
@@ -1930,6 +1930,16 @@ impl Conn {
     pub fn dump(&self, since: &str) -> Result<Dump, String> {
         let q = if since.is_empty() { "page-dump".to_owned() } else { format!("page-dump?since={}", enc(since)) };
         serde_json::from_str(&self.call("GET", &q, None)?).map_err(|e| e.to_string())
+    }
+
+    /// The whole store as one vault archive, and what it holds and lacks.
+    /// Read as the web client reads it: the dump, then the memories and the
+    /// share modes, with a page the dump gave no body for read on its own.
+    pub fn vault(&self, now: u64) -> Result<crate::vault::Built, String> {
+        let json = |path: &str| self.call_in(120, "GET", path, None).ok().and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok());
+        let dump = json("page-dump").ok_or("export failed: could not read the page tree")?;
+        let source = |name: &str| self.page(name).ok().map(|p| p.body);
+        Ok(crate::vault::build(&dump, json("know-all").as_ref(), json("page-scopes").as_ref(), &source, now))
     }
 
     pub fn tree(&self) -> Result<Vec<Node>, String> {
