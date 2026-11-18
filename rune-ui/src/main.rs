@@ -7,6 +7,7 @@
 mod api;
 mod calc;
 mod formula;
+mod html;
 mod funcs;
 mod map;
 mod mapio;
@@ -286,6 +287,8 @@ struct App {
     /// Each memory's tags and date, by its name in the tree.
     know_meta: HashMap<String, (Vec<String>, String)>,
     know_req: Latest<Result<Vec<Know>, String>>,
+    /// The open page as the Markdown it is read as, when it is of a kind read that way and is not Markdown: its name, its revision, the text.
+    read_as: Option<(String, u64, String)>,
     /// The open page as a spreadsheet, when it is one.
     sheet: Option<SheetView>,
     /// The open page as a map, when it is one.
@@ -493,6 +496,7 @@ fn init() -> App {
         other: Default::default(),
         know_meta: HashMap::new(),
         know_req: Latest::default(),
+        read_as: None,
         sheet: None,
         map: None,
         trail: Vec::new(),
@@ -1113,8 +1117,30 @@ fn sync_map(s: &mut App) {
     });
 }
 
+/// Keeps `s.read_as` in step with the open page: an HTML page is read
+/// as a document, turned to Markdown once and not on every frame.
+fn sync_read(s: &mut App) {
+    let Some(p) = s.open.as_ref().filter(|p| p.kind == "html") else {
+        s.read_as = None;
+        return;
+    };
+    if !s.read_as.as_ref().is_some_and(|(n, rev, _)| *n == p.name && *rev == p.rev) {
+        s.read_as = Some((p.name.clone(), p.rev, html::to_markdown(&p.body)));
+    }
+}
+
+/// The page as the reader draws it: its own text when it is Markdown,
+/// or what it was turned to. Nothing for a kind with a view of its own.
+fn read_md<'a>(s: &'a App, p: &'a Page) -> Option<&'a str> {
+    if p.kind == "md" {
+        return Some(&p.body);
+    }
+    s.read_as.as_ref().filter(|(n, rev, _)| *n == p.name && *rev == p.rev).map(|(_, _, t)| t.as_str())
+}
+
 /// Keeps `s.sheet` in step with the open page, as +sync_map does for a map.
 fn sync_sheet(s: &mut App) {
+    sync_read(s);
     let Some(p) = s.open.as_ref().filter(|p| p.kind == "fods") else {
         s.sheet = None;
         return;
@@ -1900,8 +1926,8 @@ fn outside_ok(s: &App) -> bool {
 
 /// The open page's images from other sites that are held back.
 fn held_back(s: &App) -> usize {
-    match s.open.as_ref().filter(|p| p.kind == "md" && !s.memory && !s.editing) {
-        Some(p) if !outside_ok(s) => md::images(&p.body).iter().filter(|u| md::remote(u)).count(),
+    match s.open.as_ref().filter(|_| !s.memory && !s.editing).and_then(|p| read_md(s, p)) {
+        Some(body) if !outside_ok(s) => md::images(body).iter().filter(|u| md::remote(u)).count(),
         _ => 0,
     }
 }
@@ -1911,7 +1937,7 @@ fn held_back(s: &App) -> usize {
 /// let to load outside content, since that site then learns the reader's
 /// address. One on the ship is fetched with the session, and nowhere else is.
 fn sync_pics(s: &mut App) {
-    let Some(p) = s.open.as_ref().filter(|p| p.kind == "md" && !s.memory) else { return };
+    let Some(p) = s.open.as_ref().filter(|p| !s.memory && read_md(s, p).is_some()) else { return };
     let now = (p.name.clone(), p.rev);
     let ok = outside_ok(s);
     if s.pics_for.as_ref() == Some(&now) && !ok {
@@ -1919,7 +1945,7 @@ fn sync_pics(s: &mut App) {
     }
     s.pics_for = Some(now);
     let Some(waker) = s.waker.clone() else { return };
-    for src in md::images(&p.body).into_iter().take(20) {
+    for src in md::images(read_md(s, p).unwrap_or_default()).into_iter().take(20) {
         let (url, cookie) = if md::remote(&src) {
             if !ok {
                 continue;
@@ -2215,7 +2241,7 @@ fn find_where(s: &App) -> FindIn {
     let Some(p) = &s.open else { return FindIn::Nothing };
     if s.editing {
         FindIn::Editor
-    } else if p.kind == "md" {
+    } else if read_md(s, p).is_some() {
         FindIn::Reader
     } else if s.sheet.as_ref().is_some_and(|v| v.name == p.name && v.rev == p.rev) {
         FindIn::Sheet
@@ -2260,7 +2286,7 @@ fn source_matches(s: &App) -> Vec<std::ops::Range<usize>> {
 fn find_count(s: &App) -> usize {
     match (find_where(s), &s.find, &s.open) {
         (FindIn::Editor, ..) => edit_matches(s).len(),
-        (FindIn::Reader, Some(q), Some(p)) => find_in(&md::wikilinks(&p.body, &|n| ghost(s, n)), &q.text).len(),
+        (FindIn::Reader, Some(q), Some(p)) => find_in(&md::wikilinks(read_md(s, p).unwrap_or_default(), &|n| ghost(s, n)), &q.text).len(),
         (FindIn::Sheet, ..) => sheet_matches(s).len(),
         (FindIn::Source, ..) => source_matches(s).len(),
         _ => 0,
@@ -5363,8 +5389,8 @@ fn page_body(s: &App, k: &Kit) -> El {
     if let Some(m) = s.map.as_ref().filter(|m| m.name == p.name && m.rev == p.rev) {
         return map_view(m, s, k);
     }
-    let shown = if p.kind == "md" {
-        reader(&p.body, s, k, true)
+    let shown = if let Some(body) = read_md(s, p) {
+        reader(body, s, k, true)
     } else {
         // other kinds draw as their source, coloured, until each has a native view
         let lang = match p.kind.as_str() {
@@ -5677,6 +5703,30 @@ mod tests {
         assert_eq!((v.at, v.sheets[0].rows[1][0].as_str()), (1, "Servers"));
         open_page(&mut s, "welcome");
         assert!(s.sheet.is_none());
+    }
+
+    #[test]
+    fn an_html_page_is_read_as_a_document_and_its_text_is_left_alone() {
+        let mut s = sample("welcome");
+        let body = "<h1>Notes</h1><script>x()</script><p>Find <b>this</b> word. <img src=\"https://x.org/a.png\" alt=\"a\"></p>";
+        s.open = Some(Page { name: "welcome".into(), body: body.into(), kind: "html".into(), rev: 9 });
+        sync_sheet(&mut s);
+        let p = s.open.clone().unwrap();
+        assert_eq!(read_md(&s, &p), Some("# Notes\n\nFind **this** word. ![a](https://x.org/a.png)\n"));
+        // find looks through what is read, and a picture from another site waits for a yes as on a Markdown page
+        assert_eq!(find_where(&s), FindIn::Reader);
+        assert_eq!(held_back(&s), 1);
+        // the page's own text is what is edited and kept: reading it changes nothing
+        assert_eq!(s.open.as_ref().unwrap().body, body);
+        // a new revision is read again, and a page of another kind is not read this way
+        let p2 = s.open.as_mut().unwrap();
+        p2.body = "<p>Second</p>".into();
+        p2.rev = 10;
+        sync_sheet(&mut s);
+        assert_eq!(read_md(&s, &s.open.clone().unwrap()), Some("Second\n"));
+        s.open.as_mut().unwrap().kind = "css".into();
+        sync_sheet(&mut s);
+        assert_eq!(read_md(&s, &s.open.clone().unwrap()), None);
     }
 
     #[test]
