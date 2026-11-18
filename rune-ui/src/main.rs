@@ -1213,14 +1213,15 @@ fn format_picked(s: &mut App, change: calc::Fmt) {
 }
 
 /// Puts `n` rows in at the picked cell's row and `off` below it, or
-/// takes `-n` out from there, and saves the page.
-fn shift_picked(s: &mut App, off: usize, n: i64) {
+/// takes `-n` out from there, and saves the page. Columns the same,
+/// counted from the picked cell's column.
+fn shift_picked(s: &mut App, rows: bool, off: usize, n: i64) {
     let (Some(p), Some(v)) = (s.open.clone(), &mut s.sheet) else { return };
-    let Some((r, _)) = v.cursor else { return };
+    let Some((r, c)) = v.cursor else { return };
     if v.name != p.name {
         return;
     }
-    match calc::shift(&p.body, v.at, true, r + off, n) {
+    match calc::shift(&p.body, v.at, rows, if rows { r } else { c } + off, n) {
         Err(why) => s.note = format!("not changed: {why}"),
         Ok(got) => {
             // the formulas moved with the rows, so what could not be worked out is counted afresh
@@ -1399,8 +1400,8 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
             let b = |key: &str, label: &str, on: bool, help: &str, change: calc::Fmt| {
                 Button::new(label).control_size(ControlSize::Small).variant(if on { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).help(help).on_press(move |s: &mut App| format_picked(s, change.clone())).build(k).key(key.to_owned())
             };
-            let rows = |key: &str, label: &str, help: &str, off: usize, n: i64| {
-                Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(help).on_press(move |s: &mut App| shift_picked(s, off, n)).build(k).key(key.to_owned())
+            let shift = |key: &str, label: &str, help: &str, rows: bool, off: usize, n: i64| {
+                Button::new(label).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(help).on_press(move |s: &mut App| shift_picked(s, rows, off, n)).build(k).key(key.to_owned())
             };
             let align = |a: char| calc::Fmt::Align(Some(a).filter(|a| look.align != Some(*a)));
             let number = |n: &'static str, on: bool| calc::Fmt::Number(if on { "general" } else { n });
@@ -1419,11 +1420,18 @@ fn sheet_view(v: &SheetView, s: &App, k: &Kit) -> El {
                     .child(b("fmt-percent", "%", kind == Some("percentage"), "A percentage. Press again for no format", number("percentage", kind == Some("percentage"))))
                     .child(b("fmt-money", "$", kind == Some("currency"), "Money. Press again for no format", number("currency", kind == Some("currency"))))
                     .child(b("fmt-date", "Date", kind == Some("date"), "A date. Press again for no format", number("date", kind == Some("date"))))
-                    .child(b("fmt-time", "Time", kind == Some("time"), "A time of day. Press again for no format", number("time", kind == Some("time"))))
+                    .child(b("fmt-time", "Time", kind == Some("time"), "A time of day. Press again for no format", number("time", kind == Some("time")))),
+            );
+            // rows and columns put in beside the picked cell, or its own taken out: a line of their own, so none runs off a narrow window
+            page = page.child(
+                row().key("cell-shift").w_full().gap(4.0).center_y().pl(56.0)
+                    .child(shift("row-above", "Row above", "Put a row in above this one", true, 0, 1))
+                    .child(shift("row-below", "+ row", "Put a row in below this one", true, 1, 1))
+                    .child(shift("row-del", "\u{2212} row", "Take this row out", true, 0, -1))
                     .child(Divider::vertical().build(k))
-                    .child(rows("row-above", "Row above", "Put a row in above this one", 0, 1))
-                    .child(rows("row-below", "+ row", "Put a row in below this one", 1, 1))
-                    .child(rows("row-del", "\u{2212} row", "Take this row out", 0, -1)),
+                    .child(shift("col-left", "Col left", "Put a column in left of this one", false, 0, 1))
+                    .child(shift("col-right", "+ col", "Put a column in right of this one", false, 1, 1))
+                    .child(shift("col-del", "\u{2212} col", "Take this column out", false, 0, -1)),
             );
         }
     }

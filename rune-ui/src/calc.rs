@@ -863,6 +863,10 @@ mod tests {
             let p: Vec<&str> = line.splitn(4, ',').collect();
             let at = (p[0].parse().unwrap(), p[1].parse().unwrap(), p[2].parse().unwrap());
             // a line whose text starts with ! is a change of style: !bold=1, !align=c, !number=percentage
+            if let Some(n) = p[3].strip_prefix("!cols=") {
+                doc = shift(&doc, at.0, false, at.2, n.parse().unwrap()).map_or_else(|why| { println!("{line}: {why}"); doc.clone() }, |g| g.body);
+                continue;
+            }
             if let Some(n) = p[3].strip_prefix("!rows=") {
                 doc = shift(&doc, at.0, true, at.1, n.parse().unwrap()).map_or_else(|why| { println!("{line}: {why}"); doc.clone() }, |g| g.body);
                 continue;
@@ -1041,6 +1045,39 @@ mod tests {
         assert_eq!(shift(&filter, 0, true, 0, 1).unwrap_err(), "this spreadsheet has a filter lattice cannot keep in step");
         // below everything stored, nothing in the page moves
         assert_eq!(shift(fixture, 1, true, 500, 3).unwrap().body, fixture);
+    }
+
+    #[test]
+    fn columns_are_put_in_and_taken_out_as_the_web_client_does_it() {
+        // the same two-sheet page, with columns going in and coming out of both sheets, a row put in
+        // and typing between. The expected page is the web client's Book given the same, from node
+        let fixture = include_str!("rows_fixture.fods");
+        let mut body = fixture.to_owned();
+        for line in include_str!("cols_edits.txt").lines() {
+            let p: Vec<&str> = line.splitn(4, ',').collect();
+            let at: (usize, usize, usize) = (p[0].parse().unwrap(), p[1].parse().unwrap(), p[2].parse().unwrap());
+            body = match (p[3].strip_prefix("!cols="), p[3].strip_prefix("!rows=")) {
+                (Some(n), _) => shift(&body, at.0, false, at.2, n.parse().unwrap()).unwrap().body,
+                (_, Some(n)) => shift(&body, at.0, true, at.1, n.parse().unwrap()).unwrap().body,
+                _ => enter(&body, at.0, at.1, at.2, p[3]).unwrap().body,
+            };
+        }
+        assert!(body == include_str!("cols_expected.fods"), "the page differs from the web client's");
+        // a column put in before the costs: formulas, the named range and the print range follow, and the
+        // column elements gain one made like its neighbour
+        let right = shift(fixture, 0, false, 0, 1).unwrap().body;
+        assert!(right.contains("table:formula=\"of:=SUM([.C2:.C4])\"") && right.contains("table:cell-range-address=\"$One.$C$2:.$C$4\"") && right.contains("table:print-ranges=\"One.B1:One.D7\""));
+        assert!(right.contains("of:=COUNTA([.B:.B])") && right.contains("of:=SUM([.2:.4])"), "whole columns move, whole rows do not");
+        let cols = |page: &str| sheet::book(page).unwrap().sheets[0].cols.iter().map(|c| c.0).sum::<usize>();
+        assert_eq!(cols(&right), cols(fixture) + 1);
+        // the column a formula read taken out
+        let gone = shift(fixture, 0, false, 2, -1).unwrap().body;
+        assert_eq!(sheet::book(&gone).unwrap().at(0, 6, 1).map(|c| c.text.clone()).as_deref(), Some("#REF!"));
+        // a merged cell is not cut, and the last column is the edge
+        assert_eq!(shift(fixture, 0, false, 1, 1).unwrap_err(), "that would cut through a merged cell");
+        assert_eq!(shift(fixture, 0, false, 16_383, 2).unwrap_err(), "that is past the edge of the sheet");
+        // right of everything stored, nothing in the page moves
+        assert_eq!(shift(fixture, 1, false, 500, 3).unwrap().body, fixture);
     }
 
     #[test]
