@@ -3977,6 +3977,31 @@ fn outline_view(s: &App, k: &Kit) -> El {
     col().key("outline").w_full().h_full().min_h(0.0).padding(8.0).child(rows).scroll(ScrollSpec { stick_bottom: false })
 }
 
+/// The line under the page's header that says something is on its way, as
+/// the web client has it: two points tall, in the accent colour, sweeping.
+/// It keeps its room when there is nothing to wait for, so the page does
+/// not jump, and it waits a moment before it shows, so a quick answer
+/// does not flash it.
+fn wait_line(on: bool, k: &Kit) -> El {
+    let track = row().key("wait-line").w_full().h(2.0).clip_soft(0.0).a11y_hidden();
+    if !on {
+        return track;
+    }
+    let sweep = rune::LoopSpec { delay: 0.18, ..rune::LoopSpec::slide(1.4, [-1.0, 0.0], [4.0, 0.0]) };
+    track.child(el().key("wait-sweep").h_full().w_frac(0.25).radius(999.0).fill(k.c.text_accent).looping(sweep))
+}
+
+/// Whether the HTML page in front is still being laid out or painted.
+fn web_waiting(s: &App) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(p) = web_page(s) {
+        let laid = s.web.laid.as_ref().is_some_and(|l| l.0.key.name == p.name && l.0.key.rev == p.rev && s.web.asked.as_ref() == Some(&l.0));
+        return !laid || s.web.painting;
+    }
+    let _ = s;
+    false
+}
+
 /// The status bar along the bottom of the window: what was last said,
 /// and, for as long as each holds, that the ship is away and how much
 /// waits to be sent.
@@ -10616,6 +10641,8 @@ struct WebShow {
     hot: bool,
     /// How many things on the web the page named and was not let to fetch.
     held: usize,
+    /// Bands for what is in view are still to come.
+    painting: bool,
 }
 
 /// The HTML page to show as a web page, when one is in front to be read and that is how it is wanted.
@@ -10671,6 +10698,7 @@ fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
                 }
             }
             htmlview::Out::Hot(on) => s.web.hot = on,
+            htmlview::Out::Rest(rest) => s.web.painting = !rest,
             htmlview::Out::Link(href) => link = Some(href),
         }
     }
@@ -10696,10 +10724,10 @@ fn sync_web(s: &mut App, tx: &mut Tx) -> bool {
 /// and what is in view is told to the page's thread as it scrolls.
 #[cfg(not(target_arch = "wasm32"))]
 fn web_view(p: &Page, s: &App, k: &Kit) -> El {
-    let c = &k.c;
     let room = el().key("web-room").w_full().h_full().min_h(0.0).on_layout(|s: &mut App, r| s.web.room = r[2]);
     let Some((ask, _, height)) = s.web.laid.as_ref().filter(|l| l.0.key.name == p.name && l.0.key.rev == p.rev) else {
-        return room.center().child(text("Laying the page out").font(k.ty.ui).color(c.text_muted));
+        // the line under the header says it is on its way
+        return room;
     };
     let (w, height) = (ask.width, *height);
     let ready = |i: &&rune::Image| i.is_ready() && i.error().is_none();
@@ -11199,7 +11227,7 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
     // the room the groups have is noted as it is laid out: a split is refused when it is too little for two
     // while browsing, the browser's bar is the header: its own Back and Forward, the address, and the star
     let head = if browsing(s) && !s.editing { browser_bar(s, &k).pt(6.0) } else { head };
-    let main = col().w_full().h_full().min_h(0.0).child(head).child(col().key("groups").w_full().grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.groups_room = (r[2], r[3])).child(main));
+    let main = col().w_full().h_full().min_h(0.0).child(head).child(wait_line(busy || web_waiting(s), &k)).child(col().key("groups").w_full().grow(1.0).min_h(0.0).on_layout(|s: &mut App, r| s.groups_room = (r[2], r[3])).child(main));
     let inset = cx.titlebar_inset();
     let right = IconButton::new(&topbar::PANE_RIGHT).variant(if s.inspector.is_open() { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help("Right pane").on_press(toggle_right).build(&k).key("pane-right");
     let shell = SplitView::new(main)

@@ -71,6 +71,8 @@ pub enum Out {
     Band { turn: u64, index: usize, w: u32, h: u32, px: Vec<u8> },
     /// A band far from view is let go.
     Forget { turn: u64, index: usize },
+    /// Every band wanted for what is in view has been sent, or, with `false`, there are more to come.
+    Rest(bool),
     /// Whether the pointer is over a link.
     Hot(bool),
     /// A link was pressed.
@@ -262,7 +264,7 @@ fn run(rx: Receiver<Cmd>, own: Sender<Cmd>, out: Arc<Mutex<Vec<Out>>>, wake: Arc
     };
     let mut page: Option<Page> = None;
     let mut renderer = None;
-    let (mut turn, mut seen, mut hot) = (0u64, (0.0f32, 900.0f32), false);
+    let (mut turn, mut seen, mut hot, mut rest) = (0u64, (0.0f32, 900.0f32), false, true);
     loop {
         // everything waiting is taken at once, so only the newest of each kind is acted on
         let Ok(first) = rx.recv() else { return };
@@ -334,7 +336,12 @@ fn run(rx: Receiver<Cmd>, own: Sender<Cmd>, out: Arc<Mutex<Vec<Out>>>, wake: Arc
             tell(Out::Forget { turn, index: gone });
         }
         // one band, then back to see what was asked meanwhile: a newer view or page goes first
-        if let Some(index) = want.into_iter().find(|i| !p.have.contains(i)) {
+        let next = want.into_iter().find(|i| !p.have.contains(i));
+        if rest != next.is_none() {
+            rest = next.is_none();
+            tell(Out::Rest(rest));
+        }
+        if let Some(index) = next {
             let (w, h, px) = paint(p, &mut renderer, index);
             p.have.insert(index);
             tell(Out::Band { turn, index, w, h, px });
@@ -413,7 +420,7 @@ mod tests {
         let (turn, height) = laid(&h);
         assert_eq!(height, 700.0);
         h.point(20.0, 20.0, true);
-        let (mut bands, mut link, mut hot) = (Vec::new(), None, Vec::new());
+        let (mut bands, mut link, mut hot, mut rests) = (Vec::new(), None, Vec::new(), Vec::new());
         let end = std::time::Instant::now() + std::time::Duration::from_secs(20);
         while bands.len() < 2 || link.is_none() || hot.len() < 2 {
             for o in h.take() {
@@ -428,6 +435,7 @@ mod tests {
                         h.point(20.0, 300.0, false);
                     }
                     Out::Hot(on) => hot.push(on),
+                    Out::Rest(r) => rests.push(r),
                     _ => {}
                 }
             }
@@ -443,6 +451,7 @@ mod tests {
         let below = (100 * 400 + 10) * 4;
         assert_eq!(&px[below..below + 4], [0x10, 0x20, 0x30, 255], "the page's ground");
         assert_eq!((bands[1].0, bands[1].2), (1, 188), "the last band is as tall as what is left");
+        assert_eq!(rests.first(), Some(&false), "more to come is said before the first band");
         // the same page at another width is laid out again without its text
         h.show(Ask { width: 300.0, ..ask }, None);
         assert!(laid(&h).0 > turn);
