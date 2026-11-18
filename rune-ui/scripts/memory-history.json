@@ -1,0 +1,8 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "half-memory"},
+  {"t": 2.8, "type": "tap", "key": "rune"},
+  {"t": 3.5, "type": "tap", "key": "rune/fact"},
+  {"t": 4.5, "type": "tap", "key": "history-toggle"},
+  {"t": 6.5, "type": "tap", "key": "rev-0"},
+  {"t": 9.0, "type": "tap", "key": "restore"}
+]}

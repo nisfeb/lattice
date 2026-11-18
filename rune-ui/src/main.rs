@@ -1040,6 +1040,7 @@ fn applied(s: &mut App, op: Op) {
             // both lists are read again: the memory is back in one and out of the other
             load_know(s);
             load_trash(s);
+            load_history(s);
             return;
         }
         Op::Tagged(name, tag, on) => {
@@ -3033,29 +3034,47 @@ fn show_pane(s: &mut App, comments: bool, links: bool) {
 
 /// Reads the open page's revisions when the history pane is showing.
 fn load_history(s: &mut App) {
-    if s.memory || s.pane_comments || s.pane_links {
+    if s.pane_comments || s.pane_links {
         return;
     }
     let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else { return };
     if s.inspector.is_open() {
-        s.hist_req.request((c, p.name.clone()), |(c, n)| c.history(&n).map(|r| (n, r)));
+        let memory = s.memory;
+        s.hist_req.request((c, p.name.clone()), move |(c, n)| if memory { c.know_history(&format!("/{n}")) } else { c.history(&n) }.map(|r| (n, r)));
     }
 }
 
 /// Shows the open page as it was at `rev`, read-only.
 fn view_rev(s: &mut App, rev: u64) {
     let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else { return };
-    if p.rev == rev {
+    // a memory in hand has no number of its own: its newest revision is the one showing
+    let newest = if s.memory { s.revs.as_ref().filter(|(n, _)| *n == p.name).and_then(|(_, r)| r.iter().map(|r| r.rev).max()) } else { Some(p.rev) };
+    if newest == Some(rev) {
         s.old = None;
         return;
     }
-    s.old_req.request((c, p.name.clone()), move |(c, n)| c.page_at(&n, rev));
+    let memory = s.memory;
+    s.old_req.request((c, p.name.clone()), move |(c, n)| {
+        if !memory {
+            return c.page_at(&n, rev);
+        }
+        let body = c.know_at(&format!("/{n}"), rev)?;
+        Ok(Page { name: n, body, kind: "md".into(), rev })
+    });
 }
 
 /// Saves the old revision on screen as the page's newest. Nothing is
 /// lost: what it replaces stays in the history.
 fn restore(s: &mut App) {
     let (Some(c), Some(old), Some(cur)) = (s.conn.clone(), s.old.take(), &s.open) else { return };
+    if s.memory {
+        // the ship makes the old revision the newest itself, with its tags, and the lists are read again
+        s.op_req.request((c, old.name, old.rev), |(c, name, rev)| {
+            c.know_restore_rev(&format!("/{name}"), rev)?;
+            Ok(Op::Restored(name))
+        });
+        return;
+    }
     let base = cur.rev;
     let p = Page { name: old.name, body: old.body, kind: cur.kind.clone(), rev: base };
     s.save_req.request((c, p), move |(c, mut p)| {
@@ -5928,7 +5947,8 @@ fn history_view(s: &App, k: &Kit) -> El {
     let name = s.open.as_ref().map(|p| p.name.as_str());
     match s.revs.as_ref().filter(|(n, _)| Some(n.as_str()) == name) {
         Some((_, revs)) => {
-            let shown = s.old.as_ref().map_or(s.open.as_ref().map_or(0, |p| p.rev), |o| o.rev);
+            let newest = if s.memory { revs.iter().map(|r| r.rev).max().unwrap_or(0) } else { s.open.as_ref().map_or(0, |p| p.rev) };
+            let shown = s.old.as_ref().map_or(newest, |o| o.rev);
             for r in revs {
                 let rev = r.rev;
                 let mut line = row()
@@ -5988,7 +6008,7 @@ fn body(s: &App, k: &Kit) -> El {
                 .gap(8.0)
                 .center_y()
                 .fill(k.c.layer_01)
-                .child(text(format!("Reading revision {}, not the page as it is now", o.rev)).font(k.ty.small).color(k.c.text_base).grow(1.0))
+                .child(text(format!("Reading revision {}, not the {} as it is now", o.rev, if s.memory { "memory" } else { "page" })).font(k.ty.small).color(k.c.text_base).grow(1.0))
                 .child(Button::new("Restore this").control_size(ControlSize::Small).variant(ButtonVariant::Contrast).on_press(restore).build(k).key("restore"))
                 .child(Button::new("Back to now").control_size(ControlSize::Small).on_press(|s: &mut App| s.old = None).build(k).key("leave-old")),
         )
@@ -6261,8 +6281,8 @@ fn view(s: &App, cx: &mut Cx<App>) -> El {
             trailing = trailing.child(Button::new(if s.split.is_some() { "Unsplit" } else { "Split" }).variant(ButtonVariant::GhostMuted).help("Hold this page beside the next one you open").on_press(toggle_split).build(&k).key("split-toggle"));
             trailing = trailing.child(Button::new("Links").variant(ButtonVariant::GhostMuted).help("Pages that link here, and pages this links to").on_press(|s: &mut App| show_pane(s, false, true)).build(&k).key("links-toggle"));
             trailing = trailing.child(Button::new("Comments").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| show_pane(s, true, false)).build(&k).key("comments-toggle-pane"));
-            trailing = trailing.child(Button::new("History").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| show_pane(s, false, false)).build(&k).key("history-toggle"));
         }
+        trailing = trailing.child(Button::new("History").variant(ButtonVariant::GhostMuted).on_press(|s: &mut App| show_pane(s, false, false)).build(&k).key("history-toggle"));
         trailing = trailing.child(Button::new("Delete").variant(ButtonVariant::GhostMuted).on_press(ask_delete).build(&k).key("delete"));
         trailing = trailing.child(Button::new("Rename").variant(ButtonVariant::GhostMuted).on_press(ask_rename).build(&k).key("rename"));
         trailing = trailing

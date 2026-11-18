@@ -902,6 +902,23 @@ impl Conn {
         self.call("POST", &format!("know-move?from={}&to={}", enc(from), enc(to)), Some("")).map(drop)
     }
 
+    /// A memory's revisions, oldest first. The key starts with a slash.
+    pub fn know_history(&self, key: &str) -> Result<Vec<Rev>, String> {
+        let h: History = serde_json::from_str(&self.call("GET", &format!("know-history?key={}", enc(key)), None)?).map_err(|e| e.to_string())?;
+        Ok(h.revisions)
+    }
+
+    /// A memory's text as it was at `rev`.
+    pub fn know_at(&self, key: &str, rev: u64) -> Result<String, String> {
+        let k: Know = serde_json::from_str(&self.call("GET", &format!("know-read-at?key={}&rev={rev}", enc(key)), None)?).map_err(|e| e.to_string())?;
+        Ok(k.body)
+    }
+
+    /// Makes an old revision of a memory its newest. What it replaces stays in the history.
+    pub fn know_restore_rev(&self, key: &str, rev: u64) -> Result<(), String> {
+        self.call("POST", &format!("know-restore-rev?key={}&rev={rev}", enc(key)), Some("")).map(drop)
+    }
+
     /// The keys of the deleted memories still in the trash, each with its slash, in order.
     pub fn know_trash(&self) -> Result<Vec<String>, String> {
         let v: serde_json::Value = serde_json::from_str(&self.call("GET", "know-trash", None)?).map_err(|e| e.to_string())?;
@@ -1483,6 +1500,21 @@ mod tests {
         c.know_save(&key, "another\n").unwrap();
         assert!(c.know_move(&key, &moved).unwrap_err().contains("409"), "a key already taken is refused");
         assert!(c.know_move(&format!("{key}-never"), &format!("{key}-x")).unwrap_err().contains("404"), "a key that is not there is refused");
+        // each save is a revision: the old text is read at its number, and restored it is the newest again
+        c.know_save(&moved, "a fact, rewritten\n").unwrap();
+        let revs = c.know_history(&moved).unwrap();
+        assert!(revs.len() >= 2 && revs.windows(2).all(|w| w[0].rev < w[1].rev), "{revs:?}");
+        let (first, last) = (revs[0].rev, revs[revs.len() - 1].rev);
+        assert!(c.know_at(&moved, first).unwrap().starts_with("a fact\n") || c.know_at(&moved, first).unwrap().trim() == "a fact");
+        assert_eq!(c.know_at(&moved, last).unwrap().trim(), "a fact, rewritten");
+        assert!(c.know_at(&moved, last + 50).unwrap_err().contains("404"));
+        c.know_restore_rev(&moved, first).unwrap();
+        let now = c.know_all().unwrap().into_iter().find(|k| k.key == moved).unwrap();
+        assert_eq!(now.body.trim(), "a fact");
+        let after = c.know_history(&moved).unwrap();
+        // the restore is a revision of its own. The ship may let an older one go as it writes it, so only that is held
+        assert!(after.last().is_some_and(|r| r.rev > last), "{after:?}");
+        assert!(c.know_restore_rev(&moved, last + 50).unwrap_err().contains("404"));
         // a tag goes on, is listed folded to lower case, and comes off
         c.know_tag(&moved, "Rune-Tag", true).unwrap();
         c.know_tag(&moved, "second", true).unwrap();
