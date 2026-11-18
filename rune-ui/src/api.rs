@@ -752,6 +752,40 @@ pub fn beacon_fail(fail: u32, registered: bool, lived_ms: u128, bumped: bool) ->
     }
 }
 
+/// What of lattice's software a ship has (`desktop/src/stack.rs`): %mcp,
+/// the bootstrap that installs the rest, with the name its server gives.
+/// %grubbery, the framework lattice runs inside. And lattice itself.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Stack {
+    pub mcp: Option<String>,
+    pub grubbery: bool,
+    pub lattice: bool,
+}
+
+/// Whether a route's answer shows something bound there. The ship
+/// redirects (307) a path nothing has bound, and a 404 is the same.
+/// Anything else, a refusal included, is something listening.
+pub fn bound(status: u16) -> bool {
+    status != 307 && status != 404
+}
+
+impl Stack {
+    /// The list as the desktop app shows it: for each, whether it is there, its name, and a word on it.
+    pub fn lines(&self) -> [(bool, &'static str, String); 3] {
+        let word = |on: bool, note: &str| if on { note.to_owned() } else { "not installed".to_owned() };
+        [
+            (self.mcp.is_some(), "%mcp", word(self.mcp.is_some(), self.mcp.as_deref().unwrap_or("the bootstrap, which installs everything else"))),
+            (self.grubbery, "%grubbery", word(self.grubbery, "the framework lattice runs inside")),
+            (self.lattice, "lattice", word(self.lattice, "the app itself")),
+        ]
+    }
+
+    /// Whether the list is worth showing: lattice is not there to use. A ship that runs lattice lacks nothing that matters here, whether or not it still has the %mcp that installed it.
+    pub fn missing(&self) -> bool {
+        !self.grubbery || !self.lattice
+    }
+}
+
 /// How the connection to the ship stands, as the desktop app's settings say it.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Link {
@@ -1691,6 +1725,49 @@ impl Conn {
     /// Rebuilds the search index from the pages and memories as they are. The ship answers when it is done.
     pub fn reindex(&self) -> Result<(), String> {
         self.call_in(120, "POST", "search-reindex", Some("")).map(drop)
+    }
+
+    /// One request to the ship's %mcp, answering its result. It answers as a stream of one event even for one reply, and refuses a request that does not say it accepts one.
+    fn mcp_rpc(&self, method: &str, params: serde_json::Value) -> Result<serde_json::Value, String> {
+        let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }).to_string();
+        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(120)).build();
+        let text = match agent.post(&format!("{}/mcp", self.url)).set("cookie", &self.cookie).set("content-type", "application/json").set("accept", "application/json, text/event-stream").send_string(&body) {
+            Ok(r) if r.status() == 200 => r.into_string().map_err(|e| e.to_string())?,
+            Ok(r) => return Err(format!("{}: this ship has no %mcp", r.status())),
+            Err(ureq::Error::Status(code, _)) => return Err(format!("{code}: %mcp did not take that")),
+            Err(e) => return Err(e.to_string()),
+        };
+        let frame = text.lines().find_map(|l| l.strip_prefix("data: ")).unwrap_or(text.trim());
+        let v: serde_json::Value = serde_json::from_str(frame).map_err(|e| format!("bad reply from %mcp: {e}"))?;
+        match v.get("error") {
+            Some(e) => Err(format!("%mcp: {e}")),
+            None => Ok(v.get("result").cloned().unwrap_or(serde_json::Value::Null)),
+        }
+    }
+
+    /// What of lattice's software the ship has. An error when the ship could not be asked at all, which is not the same as having nothing.
+    pub fn stack(&self) -> Result<Stack, String> {
+        let agent = ureq::AgentBuilder::new().redirects(0).timeout(Duration::from_secs(20)).build();
+        let status = |path: &str| match agent.get(&format!("{}{path}", self.url)).set("cookie", &self.cookie).call() {
+            Ok(r) => Ok(r.status()),
+            Err(ureq::Error::Status(code, _)) => Ok(code),
+            Err(e) => Err(e.to_string()),
+        };
+        let grubbery = bound(status("/grubbery/api/tree")?);
+        let lattice = status("/apps/lattice").is_ok_and(bound);
+        // a real handshake, not only an answer: a refusal would otherwise read as %mcp being there
+        let hello = serde_json::json!({ "protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": { "name": "lattice-rune", "version": env!("CARGO_PKG_VERSION") } });
+        let mcp = self.mcp_rpc("initialize", hello).ok().and_then(|r| r["serverInfo"]["name"].as_str().map(str::to_owned));
+        Ok(Stack { mcp, grubbery, lattice })
+    }
+
+    /// Asks the ship, through its %mcp, to install %grubbery from the ship that publishes it. The ship answers when it has taken the ask: the desk arrives over minutes.
+    pub fn install_grubbery(&self, from: &str) -> Result<(), String> {
+        let r = self.mcp_rpc("tools/call", serde_json::json!({ "name": "mcp/install-app", "arguments": { "ship": from, "desk": "grubbery" } }))?;
+        if r["isError"].as_bool() == Some(true) {
+            return Err(format!("%mcp could not install it: {}", r["content"]));
+        }
+        Ok(())
     }
 
     /// Where this ship's lattice lives in its tree, which the change stream's address is under.
@@ -3291,6 +3368,30 @@ mod tests {
     fn the_connection_is_said_as_it_stands() {
         assert_eq!([link(false, false), link(true, false), link(false, true), link(true, true)], [Link::Connected, Link::Unreachable, Link::SignedOut, Link::Unreachable]);
         assert!(lapsed("403: sign in") && lapsed("401: ") && !lapsed("404: no such page") && !lapsed("http://ship: Connection refused"));
+    }
+
+    #[test]
+    fn the_ships_software_is_listed_as_the_desktop_lists_it() {
+        assert!(bound(200) && bound(403) && bound(406) && !bound(307) && !bound(404));
+        let all = Stack { mcp: Some("~zod urbit mcp server".into()), grubbery: true, lattice: true };
+        assert!(!all.missing());
+        assert_eq!(all.lines()[0], (true, "%mcp", "~zod urbit mcp server".to_owned()));
+        let none = Stack::default();
+        assert!(none.missing());
+        assert_eq!(none.lines().map(|(on, name, word)| (on, name, word)), [(false, "%mcp", "not installed".to_owned()), (false, "%grubbery", "not installed".to_owned()), (false, "lattice", "not installed".to_owned())]);
+        assert!(Stack { mcp: Some("x".into()), grubbery: true, lattice: false }.missing());
+        assert!(!Stack { mcp: None, grubbery: true, lattice: true }.missing(), "lattice runs: the bootstrap is not asked after");
+    }
+
+    /// What a ship has of lattice's software, asked of a fake ship that has lattice.
+    #[test]
+    #[ignore]
+    fn live_stack() {
+        let c = Conn::from_env().expect("LATTICE_URL and LATTICE_COOKIE");
+        let st = c.stack().unwrap();
+        eprintln!("{st:?}");
+        assert!(st.grubbery && st.lattice, "the ship this is run against has both");
+        assert!(Conn { url: "http://127.0.0.1:9".into(), cookie: String::new() }.stack().is_err(), "a ship that cannot be asked is an error, not an empty list");
     }
 
     #[test]

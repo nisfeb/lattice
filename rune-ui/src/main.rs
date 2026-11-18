@@ -131,11 +131,14 @@ struct Settings {
     reindex: String,
     /// The form that connects is showing: to sign in again, or to another ship.
     connect: bool,
+    /// What of lattice's software the ship has, once asked, and the ship to install %grubbery from.
+    stack: Option<api::Stack>,
+    dist: TextEdit,
 }
 
 impl Settings {
     fn new() -> Self {
-        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false }
+        Settings { keys: None, f: Box::new(std::array::from_fn(|_| TextEdit::new(""))), memory: "write", pages: "read", web: "off", skills: "none", sensitive: false, token: None, sending: false, tiles: None, map_token: TextEdit::new(""), scad: None, local_scad: None, scad_next: 0.0, obelisk: None, ob_tries: 0, ob_next: 0.0, ob_asked: false, reindex: String::new(), connect: false, stack: None, dist: TextEdit::new("~nisfeb") }
     }
 
     fn ask(&self) -> api::KeyAsk {
@@ -527,6 +530,7 @@ struct App {
     keys_req: Latest<Result<(Vec<api::AgentKey>, Option<String>), String>>,
     /// The map token's state and the OpenSCAD runtime's as read, the openscad found here when it was looked for, and what to say of what was just done.
     set_req: Latest<Result<SetGot, String>>,
+    stack_req: Latest<Result<api::Stack, String>>,
     /// The refusals, read beside the boards and after a clear.
     notes_req: Latest<Result<ForumGot, String>>,
     /// The open page as a spreadsheet, when it is one.
@@ -773,6 +777,7 @@ fn init() -> App {
         vim: vim::Vim::default(),
         keys_req: Latest::default(),
         set_req: Latest::default(),
+        stack_req: Latest::default(),
         forum_req: Latest::default(),
         notes_req: Latest::default(),
         beside: None,
@@ -1508,6 +1513,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.keys_req.set_waker(waker.clone());
     s.urb_req.set_waker(waker.clone());
     s.set_req.set_waker(waker.clone());
+    s.stack_req.set_waker(waker.clone());
     s.notes_req.set_waker(waker.clone());
     s.core_req.set_waker(waker.clone());
     s.trash_req.set_waker(waker.clone());
@@ -4698,6 +4704,13 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         tx.wake_after(std::time::Duration::from_secs(6));
         settings_do(s, SetAct::Read);
     }
+    if let Some(r) = s.stack_req.take() {
+        changed = true;
+        // a ship that could not be asked is not said to lack anything
+        if let (Ok(stack), Some(st)) = (r, &mut s.settings) {
+            st.stack = Some(stack);
+        }
+    }
     if let Some(r) = s.urb_req.take() {
         changed = true;
         match r {
@@ -6250,6 +6263,7 @@ fn go_settings(s: &mut App) {
         s.settings = Some(Settings::new());
         keys_do(s, None, None);
         settings_do(s, SetAct::Read);
+        stack_ask(s);
     }
 }
 
@@ -6459,6 +6473,52 @@ fn editor_kit(k: &Kit, pref: &str) -> Kit {
     ek
 }
 
+/// Asks the ship what it has of lattice's software.
+fn stack_ask(s: &mut App) {
+    if let Some(c) = s.conn.clone() {
+        s.stack_req.request(c, |c| c.stack());
+    }
+}
+
+/// Asks the ship to install %grubbery from the ship typed, through its %mcp.
+fn grubbery_install(s: &mut App) {
+    let Some((c, st)) = s.conn.clone().zip(s.settings.as_ref()) else { return };
+    // the ship typed is the one asked: it is never swapped for another
+    let Some(from) = api::ship_name(&st.dist.text).filter(|_| st.dist.text.trim().starts_with('~')) else {
+        s.note = "that is not a ship's name: try ~nisfeb".into();
+        return;
+    };
+    s.note = format!("asking {from} for %grubbery\u{2026}");
+    s.op_req.request((c, from), |(c, from)| {
+        c.install_grubbery(&from)?;
+        Ok(Op::Said("the ship took the install. %grubbery comes over the network in a few minutes: check again then".into()))
+    });
+}
+
+/// What the ship lacks of lattice's software, shown only when it lacks something, with what to do about it.
+fn stack_view(st: &Settings, k: &Kit) -> Option<El> {
+    let c = &k.c;
+    let stack = st.stack.as_ref().filter(|x| x.missing())?;
+    let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
+    let mut v = col().key("set-stack").w_full().gap(6.0).child(text("Ship software").font(k.ty.body_medium).color(c.text_base));
+    for (on, name, word) in stack.lines() {
+        v = v.child(row().gap(8.0).center_y().child(text(if on { "\u{2713}" } else { "\u{25cb}" }).font(k.ty.ui).color(if on { c.success.icon } else { c.text_muted })).child(text(name).font(k.ty.mono).color(c.text_base)).child(text(word).key(format!("stack-{}", name.trim_start_matches('%'))).font(k.ty.small).color(c.text_muted)));
+    }
+    if stack.mcp.is_none() {
+        v = v
+            .child(text("%mcp is not installed on this ship.").font(k.ty.small).color(c.danger.icon))
+            .child(muted("lattice installs the rest through %mcp, so it has to go on first, and it cannot install itself. From your ship's dojo:"))
+            .child(text("|install ~nisfeb %mcp").key("stack-mcp-command").font(k.ty.mono).color(c.text_base).selectable(true))
+            .child(muted("Then press check again."));
+    } else if !stack.grubbery {
+        // %grubbery needs %mcp to install it, so this is never offered first
+        v = v
+            .child(muted("%grubbery is missing. lattice runs as a nexus inside it, so it is installed first, over Ames from a publishing ship. This takes a few minutes: the whole desk transfers over Ames."))
+            .child(row().gap(6.0).center_y().child(TextInput::new(&st.dist).label("Ship to install from").on_edit(|s: &mut App| &mut s.settings.as_mut().expect("the settings are showing").dist).build(k).grow(1.0).key("stack-dist")).child(Button::new("Install %grubbery").control_size(ControlSize::Small).variant(ButtonVariant::Contrast).on_press(grubbery_install).build(k).key("stack-install")));
+    }
+    Some(v.child(row().child(Button::new("Check again").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(stack_ask).build(k).key("stack-check"))))
+}
+
 /// Shows or hides the form that connects, with the ship's address in it to sign in again, or empty for another ship.
 fn connect_form(s: &mut App, show: bool, another: bool) {
     if show && s.editing {
@@ -6565,7 +6625,7 @@ fn settings_view(s: &App, st: &Settings, k: &Kit) -> El {
         }).build(k).key("publish-ask")));
     }
     let muted = |t: &str| text(t.to_owned()).font(k.ty.small).color(c.text_muted).wrap();
-    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
+    let mut page = col().key("settings").w_full().max_w(760.0).padding(28.0).gap(12.0).child(ship).children(stack_view(st, k)).child(text("Agent keys").font(k.ty.body_medium).color(c.text_base)).child(muted(
         "A key lets an agent, such as the lattice plugin for Claude Code or Hermes, use your memory and pages without your login. Everything a key saves is signed with the name it writes as, and its scope says what it may touch. Publishing, sharing and settings stay yours whatever the scope.",
     ));
     if let Some(token) = &st.token {
