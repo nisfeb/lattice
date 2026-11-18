@@ -14,6 +14,7 @@ mod md;
 mod odf;
 mod pdf;
 mod sheet;
+mod styles;
 mod tex;
 mod upload;
 

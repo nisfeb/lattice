@@ -476,8 +476,9 @@ fn cell_xml(src: &str, old: Option<&El>, pad: &str, v: &Put, calcext: bool, null
             ("date", _) => a.push_str(&format!(" office:date-value=\"{}\"", serial_date(n, null_date))),
             ("time", _) => a.push_str(&format!(" office:time-value=\"{}\"", serial_time(n))),
             (vt, _) => {
-                if let Some(cur) = raw("office:currency").filter(|_| vt == "currency") {
-                    a.push_str(&format!(" office:currency=\"{cur}\""));
+                // money is in the currency the cell had, or dollars
+                if vt == "currency" {
+                    a.push_str(&format!(" office:currency=\"{}\"", raw("office:currency").unwrap_or("USD")));
                 }
                 a.push_str(&format!(" office:value=\"{}\"", num_attr(n)));
             }
@@ -557,6 +558,8 @@ pub struct MCell {
     pub f: Option<String>,
     pub text: String,
     pub err: bool,
+    /// The cell style it names, when it names one.
+    pub st: Option<String>,
 }
 
 pub struct MRow {
@@ -567,6 +570,8 @@ pub struct MRow {
 pub struct MSheet {
     pub name: String,
     pub rows: Vec<MRow>,
+    /// The columns, in runs: how many, and the style their cells take when they name none.
+    pub cols: Vec<(usize, Option<String>)>,
 }
 
 /// A spreadsheet's sheets with every cell's type, value and formula.
@@ -576,6 +581,21 @@ pub struct Book {
 }
 
 impl Book {
+    /// The style in force at a cell: its own, else its column's, else the default.
+    pub fn style_at(&self, s: usize, r: usize, c: usize) -> String {
+        if let Some(st) = self.at(s, r, c).and_then(|cell| cell.st.clone()) {
+            return st;
+        }
+        let mut seen = 0;
+        let col = self.sheets.get(s).and_then(|sh| {
+            sh.cols.iter().find(|(rep, _)| {
+                seen += rep;
+                c < seen
+            })
+        });
+        col.and_then(|(_, st)| st.clone()).unwrap_or_else(|| "Default".to_owned())
+    }
+
     /// The cell at a place, or nothing past the stored rows and cells.
     pub fn at(&self, s: usize, r: usize, c: usize) -> Option<&MCell> {
         let mut seen = 0;
@@ -618,11 +638,24 @@ pub fn book(src: &str) -> Result<Book, String> {
                     "time" => Some(Val::Num(get("office:time-value").and_then(|d| time_serial(&d)).unwrap_or(0.0))),
                     _ => Some(Val::Num(num("office:value").unwrap_or(0.0))),
                 };
-                cells.push(MCell { rep: count(src, cell, COLS), vt, v, f: get("table:formula"), text, err });
+                cells.push(MCell { rep: count(src, cell, COLS), vt, v, f: get("table:formula"), text, err, st: get("table:style-name") });
             }
             out.push(MRow { rep: count(src, row, ROWS), cells });
         }
-        sheets.push(MSheet { name: attr(&src[table.start + 1..table.open_end], "table:name").unwrap_or_default(), rows: out });
+        // the columns, also those in a header or a group
+        fn cols_of(src: &str, el: &El, out: &mut Vec<(usize, Option<String>)>) -> Result<(), String> {
+            for k in kids(src, el)? {
+                match k.name.as_str() {
+                    "table:table-column" => out.push((count(src, &k, COLS), attr(&src[k.start + 1..k.open_end], "table:default-cell-style-name"))),
+                    "table:table-header-columns" | "table:table-column-group" | "table:table-columns" => cols_of(src, &k, out)?,
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        let mut cols = Vec::new();
+        cols_of(src, &table, &mut cols)?;
+        sheets.push(MSheet { name: attr(&src[table.start + 1..table.open_end], "table:name").unwrap_or_default(), rows: out, cols });
     }
     Ok(Book { sheets, null_date })
 }
@@ -694,11 +727,6 @@ fn row_with(src: &str, row: Option<&El>, pad: &str, c: usize, value: &Put, care:
         Some((cell, before, after)) => {
             if cell.name == "table:covered-table-cell" && care != Care::Result {
                 return Err("that cell is part of a merged cell".into());
-            }
-            let tag = &src[cell.start..cell.open_end];
-            let held = attrs(tag).into_iter().find(|(k, _)| *k == "office:value-type").map(|(_, at)| &tag[at]);
-            if care == Care::Typed && held.is_some_and(|t| !matches!(t, "string" | "float" | "boolean")) {
-                return Err("that cell holds a date, a time, a percentage or money, which are not written here yet".into());
             }
             let sep = gap(src, cell.start);
             let mut parts = Vec::new();
@@ -1104,7 +1132,6 @@ mod tests {
     #[test]
     fn what_cannot_be_written_here_is_refused_and_says_why() {
         assert_eq!(set_cell(BOOK, 0, 0, 2, "x").unwrap_err(), "that cell is part of a merged cell");
-        assert!(set_cell(BOOK, 0, 0, 3, "x").unwrap_err().starts_with("that cell holds a date"));
         assert_eq!(set_cell(BOOK, 0, 0, 0, "=1+1").unwrap_err(), "formulas are not written here yet");
         assert_eq!(set_cell(BOOK, 5, 0, 0, "x").unwrap_err(), "this is not a spreadsheet lattice can change");
         assert_eq!(set_cell("<a/>", 0, 0, 0, "x").unwrap_err(), "this is not a spreadsheet lattice can change");

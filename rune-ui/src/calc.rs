@@ -13,7 +13,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::formula::{self, Mode, Node, Ref};
-use crate::sheet::{self, Book, Care, MCell, Put, Val};
+use crate::sheet::{self, Book, Care, MCell, Put, Typed, Val};
+use crate::styles::Styles;
 
 /// A value in the middle of a formula.
 #[derive(Clone, Debug, PartialEq)]
@@ -200,6 +201,7 @@ pub fn power(a: f64, b: f64) -> V {
 
 pub struct Engine<'a> {
     book: &'a Book,
+    styles: &'a Styles,
     /// What formulas were worked out to, over what the book holds.
     over: HashMap<Key, Put>,
     formulas: Vec<Entry>,
@@ -220,8 +222,8 @@ pub struct Engine<'a> {
 }
 
 impl<'a> Engine<'a> {
-    pub fn new(book: &'a Book) -> Engine<'a> {
-        let mut e = Engine { book, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), extents: HashMap::new(), steps: 0, done: Vec::new(), depth: 0 };
+    pub fn new(book: &'a Book, styles: &'a Styles) -> Engine<'a> {
+        let mut e = Engine { book, styles, over: HashMap::new(), formulas: Vec::new(), pending: HashMap::new(), busy: HashSet::new(), stale: HashSet::new(), changed: Vec::new(), extents: HashMap::new(), steps: 0, done: Vec::new(), depth: 0 };
         for (s, sh) in book.sheets.iter().enumerate() {
             let mut r = 0;
             for row in &sh.rows {
@@ -307,7 +309,7 @@ impl<'a> Engine<'a> {
     /// The cell as it stands: what was worked out for it, else what the book holds.
     fn stored(&self, at: Key) -> Option<MCell> {
         match self.over.get(&at) {
-            Some(p) => Some(MCell { rep: 1, vt: p.vt.clone(), v: (!p.vt.is_empty()).then(|| p.v.clone()), f: p.f.clone(), text: p.text.clone(), err: p.err }),
+            Some(p) => Some(MCell { rep: 1, vt: p.vt.clone(), v: (!p.vt.is_empty()).then(|| p.v.clone()), f: p.f.clone(), text: p.text.clone(), err: p.err, st: None }),
             None => self.book.at(at.0, at.1, at.2).cloned(),
         }
     }
@@ -547,8 +549,8 @@ impl<'a> Engine<'a> {
             return;
         }
         if let (true, Val::Num(n), false) = (val.text.is_empty(), &val.v, blank) {
-            // ponytail: shown with no format of its own until the number formats are here
-            val.text = sheet::general(*n);
+            // shown as the cell's own number format writes it
+            val.text = self.styles.text(&self.book.style_at(at.0, at.1, at.2), *n, &val.vt);
         }
         if blank && same && was.text.is_empty() {
             return;
@@ -645,15 +647,25 @@ pub struct Entered {
 // ponytail: this runs where it is called. A worker if a large sheet stalls the window
 pub fn enter(src: &str, s: usize, r: usize, c: usize, typed: &str) -> Result<Entered, String> {
     let formula = typed.len() > 1 && typed.starts_with('=');
+    let styles = Styles::read(src, sheet::book(src)?.null_date);
     let mut body = if formula {
         let f = formula::to_of(typed).map_err(|e| format!("that formula cannot be read: {e}"))?;
         // until it is worked out the cell holds no value: if it cannot be here, LibreOffice will when it opens the page
         sheet::put_cell(src, s, r, c, &Put { f: Some(f), vt: String::new(), v: Val::Blank, text: String::new(), err: false }, Care::Formula)?
     } else {
-        sheet::set_cell(src, s, r, c, typed)?
+        // a number typed into a formatted cell takes the format's type, and shows as the format writes it
+        let before = sheet::book(src)?;
+        let style = before.style_at(s, r, c);
+        let mut put: Put = sheet::typed(typed)?.into();
+        if let (Val::Num(n), Typed::Number(_)) = (put.v.clone(), sheet::typed(typed)?) {
+            let kind = styles.kind(&style);
+            let n = if kind == Some("percentage") { n / 100.0 } else { n };
+            put = Put { vt: kind.unwrap_or("float").to_owned(), v: Val::Num(n), text: styles.text(&style, n, kind.unwrap_or("float")), ..put };
+        }
+        sheet::put_cell(src, s, r, c, &put, Care::Typed)?
     };
     let book = sheet::book(&body)?;
-    let mut eng = Engine::new(&book);
+    let mut eng = Engine::new(&book, &styles);
     let results = eng.recalc(&[(s, r, c)], formula.then_some((s, r, c)));
     // each sheet's results are written in one pass over the page
     let mut by_sheet: std::collections::BTreeMap<usize, std::collections::BTreeMap<usize, Vec<(usize, Put)>>> = Default::default();
@@ -802,6 +814,24 @@ mod tests {
     fn dates_and_times_give_what_the_web_client_gives() {
         let sheet: &[&[&str]] = &[&["46343", "46343.75", "0.5", "abc", "-3"], &["2026-11-17", "45000.999999", "60", "", ""]];
         corpus(sheet, include_str!("funcs_date_corpus.tsv"), 133);
+    }
+
+    #[test]
+    fn numbers_are_shown_by_their_cells_format_as_on_the_web() {
+        // a sheet with eleven number formats, typed into. The expected grid is what the web client's
+        // Book gives for the same sheet and the same typing, from node: each cell's text and type
+        let mut body = include_str!("formats_fixture.fods").to_owned();
+        for line in include_str!("formats_edits.txt").lines() {
+            let p: Vec<&str> = line.splitn(4, ',').collect();
+            body = enter(&body, p[0].parse().unwrap(), p[1].parse().unwrap(), p[2].parse().unwrap(), p[3]).unwrap().body;
+        }
+        let book = sheet::book(&body).unwrap();
+        let got: Vec<String> = (0..13).map(|r| (0..3).map(|c| book.at(0, r, c).map_or(String::new(), |x| if c == 0 { x.text.clone() } else { format!("{}[{}]", x.text, x.vt) })).collect::<Vec<_>>().join(" | ")).collect();
+        assert_eq!(got.join("\n"), include_str!("formats_expected.txt").trim_end());
+        // a percentage typed as 75 is stored as three quarters, and money keeps its currency
+        assert!(body.contains("office:value-type=\"percentage\" office:value=\"0.75\""));
+        assert!(body.contains("office:value-type=\"currency\" office:currency=\"USD\" office:value=\"-1234.5\""));
+        assert!(body.contains("office:value-type=\"date\" office:date-value=\"2025-12-09\""));
     }
 
     #[test]
