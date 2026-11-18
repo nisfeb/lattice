@@ -49,6 +49,39 @@ pub const ICONS: [(&str, &str); 16] = [
 const KIND_ICON: [(&str, &str); 5] = [("place", "pin"), ("situation", "flag"), ("person", "person"), ("home", "home"), ("report", "alert")];
 pub const KIND_COLORS: [&str; 8] = ["#c0392b", "#2e86c1", "#28a745", "#8e44ad", "#d68910", "#16a085", "#7f8c8d", "#e84393"];
 
+/// Where on the ship a feature of orrery's map leads: its body's page.
+/// The property names the body as `kind/name`. `None` for anything else.
+pub fn orrery_link(v: &str) -> Option<String> {
+    let (kind, name) = v.split_once('/')?;
+    let kind_ok = kind.starts_with(|c: char| c.is_ascii_lowercase()) && kind.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    let name_ok = !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"~._-".contains(&b));
+    (v.len() <= 200 && kind_ok && name_ok).then(|| format!("/apps/orrery#body/{v}"))
+}
+
+/// What a feature's source leads to.
+#[derive(Debug, PartialEq)]
+pub enum Source {
+    /// An address on the web.
+    Url(String),
+    /// A page of this lattice.
+    Page(String),
+}
+
+/// A source as something to follow: an http or https address, a page's
+/// name, bare or as a wiki link, or nothing. Another scheme is never a link.
+pub fn source_link(s: &str) -> Option<Source> {
+    let v = s.trim();
+    let scheme = v.split_once(':').map(|(a, _)| a).filter(|a| a.starts_with(|c: char| c.is_ascii_alphabetic()) && a.bytes().all(|b| b.is_ascii_alphanumeric() || b"+.-".contains(&b)));
+    if let Some(scheme) = scheme {
+        let web = matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") && v[scheme.len()..].starts_with("://") && v.len() > scheme.len() + 3 && !v.contains(char::is_whitespace);
+        return web.then(|| Source::Url(v.to_owned()));
+    }
+    let page = v.strip_prefix("[[").unwrap_or(v);
+    let page = page.strip_suffix("]]").unwrap_or(page).trim_start_matches('/');
+    let ok = !page.is_empty() && page.split('/').all(|p| !p.is_empty() && p != "." && p != ".." && p.bytes().all(|b| b.is_ascii_alphanumeric() || b"~._-".contains(&b)));
+    ok.then(|| Source::Page(page.to_owned()))
+}
+
 /// The colour a kind is drawn in: the web client's own choice, so a map
 /// looks the same in both.
 pub fn kind_color(kind: &str) -> &'static str {
@@ -1037,6 +1070,25 @@ mod tests {
         let long: Vec<String> = (0..1001).map(|i| format!("[{},1]", i as f64 / 100.0)).collect();
         let big = format!(r#"{{"type":"FeatureCollection","features":[{{"type":"Feature","geometry":{{"type":"LineString","coordinates":[{}]}},"properties":{{}}}}]}}"#, long.join(","));
         assert!(parse(&big).unwrap()[0].corners.is_empty());
+    }
+
+    #[test]
+    fn a_feature_leads_to_its_orrery_body_and_its_source() {
+        // each answer here is what ui-src/map/core.js gives for the same text
+        assert_eq!(orrery_link("person/~sampel-palnet").as_deref(), Some("/apps/orrery#body/person/~sampel-palnet"));
+        assert_eq!(orrery_link("place/the_park.2").as_deref(), Some("/apps/orrery#body/place/the_park.2"));
+        for bad in ["", "person", "person/", "/x", "Person/x", "1a/x", "a/b/c", "a/b c", "a/b#c", "javascript:alert(1)/x"] {
+            assert_eq!(orrery_link(bad), None, "{bad}");
+        }
+        assert_eq!(orrery_link(&format!("a/{}", "b".repeat(199))), None);
+        assert_eq!(source_link(" https://example.com/a?b=1 "), Some(Source::Url("https://example.com/a?b=1".into())));
+        assert_eq!(source_link("HTTP://example.com"), Some(Source::Url("HTTP://example.com".into())));
+        assert_eq!(source_link("notes/today"), Some(Source::Page("notes/today".into())));
+        assert_eq!(source_link("[[notes/today]]"), Some(Source::Page("notes/today".into())));
+        assert_eq!(source_link("/notes/today"), Some(Source::Page("notes/today".into())));
+        for bad in ["", "  ", "javascript:alert(1)", "file:///etc/passwd", "mailto:a@b.c", "https://", "https://a b", "a page with spaces", "notes/../secret", "notes//x", "a/./b"] {
+            assert_eq!(source_link(bad), None, "{bad}");
+        }
     }
 
     #[test]

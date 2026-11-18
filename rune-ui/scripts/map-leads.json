@@ -1,0 +1,7 @@
+{"events": [
+  {"t": 2.0, "type": "tap", "key": "places"},
+  {"t": 4.0, "type": "tap", "key": "dot-0"},
+  {"t": 5.0, "type": "tap", "key": "feature-orrery"},
+  {"t": 6.5, "type": "tap", "key": "feature-source-open"},
+  {"t": 8.0, "type": "tap", "key": "dot-1"}
+]}

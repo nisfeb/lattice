@@ -1458,8 +1458,43 @@ fn map_view(m: &MapView, s: &App, k: &Kit) -> El {
         if !f.note.is_empty() {
             card = card.child(text(f.note.clone()).font(k.ty.small).color(c.text_muted).wrap());
         }
-        for (key, v) in f.props.iter().filter(|(key, _)| key != "name" && key != "note").take(8) {
+        let prop = |key: &str| f.props.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        // orrery's body id shows as its link, not as a loose property
+        let orrery = prop("orrery").and_then(map::orrery_link);
+        for (key, v) in f.props.iter().filter(|(key, _)| key != "name" && key != "note" && !(key == "orrery" && orrery.is_some())).take(8) {
             card = card.child(row().gap(6.0).child(text(key.clone()).font(k.ty.small).color(c.text_faint)).child(text(v.clone()).font(k.ty.small).color(c.text_base).truncate().grow(1.0).min_w(0.0)));
+        }
+        let mut leads = row().key("map-leads").gap(6.0);
+        if let Some(path) = orrery {
+            leads = leads.child(Button::new("Open in orrery").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help("This feature's body, in orrery on the ship").on_press_tx(move |s: &mut App, tx| {
+                // orrery is another app on the ship: it opens in the browser
+                let Some(c) = &s.conn else {
+                    s.note = "sample pages have no ship to open orrery on".into();
+                    return;
+                };
+                let url = format!("{}{path}", c.url.trim_end_matches('/'));
+                s.note = match tx.open_url(&url) {
+                    Ok(()) => format!("opening {url}"),
+                    Err(e) => format!("could not open {url}: {e:?}"),
+                };
+            }).build(k).key("feature-orrery"));
+        }
+        match prop("source").and_then(map::source_link) {
+            Some(map::Source::Url(url)) => {
+                leads = leads.child(Button::new("Open source").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(url.clone()).on_press_tx(move |s: &mut App, tx| {
+                    s.note = match tx.open_url(&url) {
+                        Ok(()) => format!("opening {url}"),
+                        Err(e) => format!("could not open {url}: {e:?}"),
+                    };
+                }).build(k).key("feature-source-open"));
+            }
+            Some(map::Source::Page(page)) => {
+                leads = leads.child(Button::new("Open source").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).help(format!("The page {page}")).on_press(move |s: &mut App| go(s, &page)).build(k).key("feature-source-open"));
+            }
+            None => {}
+        }
+        if orrery_or_source(f) {
+            card = card.child(leads);
         }
         if map_changes(s) {
             let at = f.at;
@@ -1730,6 +1765,12 @@ fn ask_gpx(s: &mut App, tx: &mut Tx) {
         Ok(None) => {}
         Err(e) => s.note = format!("no file dialog could open: {e}"),
     });
+}
+
+/// Whether a feature's card has somewhere to lead: its orrery body or its source.
+fn orrery_or_source(f: &map::Feature) -> bool {
+    let prop = |key: &str| f.props.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+    prop("orrery").and_then(map::orrery_link).is_some() || prop("source").and_then(map::source_link).is_some()
 }
 
 /// Whether the map in front may be changed here: one of the owner's own
