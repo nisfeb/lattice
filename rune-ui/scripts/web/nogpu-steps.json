@@ -1,0 +1,1 @@
+[{"wait": 3000}, {"text": "#status"}, {"shot": "/tmp/lr-nogpu.png"}, {"follow": "#classic"}, {"wait": 2000}, {"where": true}, {"text": "title"}]
