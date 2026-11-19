@@ -2280,7 +2280,8 @@ fn follow(s: &mut App, url: &str, tx: &mut Tx) {
     match md::page_of(url) {
         Some(name) if s.names.contains(&name) => {
             s.files.reveal(&name, tx);
-            open_page(s, &name);
+            // with Ctrl (Cmd on a Mac) the link opens in a new tab
+            if tx.mods().cmd { tab_for(s, &name) } else { open_page(s, &name) }
         }
         // a link to a page not written yet starts it, named, ready to type in
         Some(name) if api::valid_name(&name) => {
@@ -6886,6 +6887,16 @@ fn restore_tabs(s: &mut App) -> bool {
         show_page(s, &name);
     }
     true
+}
+
+/// A page asked for in a tab of its own, by Ctrl or a middle click: marked in the tree and opened
+/// there. Memories have no tabs, so one opens where it is.
+fn tab_for(s: &mut App, name: &str) {
+    if s.memory {
+        return open_page(s, name);
+    }
+    s.files.select(name);
+    open_in_tab(s, name);
 }
 
 /// Opens a page in a new tab, in front.
@@ -11600,11 +11611,13 @@ fn sidebar(s: &App, k: &Kit) -> El {
                 let item = if swm::is_ours(&n.path) {
                     item
                 } else {
-                    let at = n.path.clone();
-                    item.trailing(el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).on_secondary_press(move |s: &mut App, p, _| {
+                    let (at, mid, page) = (n.path.clone(), n.path.clone(), !n.dir);
+                    let sheet = el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).on_secondary_press(move |s: &mut App, p, _| {
                         s.files.select(&at);
                         s.tree_menu = Some((at.clone(), p));
-                    }))
+                    });
+                    // a middle click on a page opens it in a new tab, as a browser opens a link
+                    item.trailing(if page { sheet.on_middle_press(move |s: &mut App, _| tab_for(s, &mid)) } else { sheet })
                 };
                 if links.contains(&n.path) {
                     // a page that is another ship's, moved here as a link
@@ -11620,7 +11633,11 @@ fn sidebar(s: &App, k: &Kit) -> El {
             }
         })
         // one click opens a page, as the web client's tree does
-        .on_select(|s: &mut App, id, _| {
+        .on_select(|s: &mut App, id, tx| {
+            // with Ctrl (Cmd on a Mac) a page opens in a new tab
+            if tx.mods().cmd && !swm::is_ours(id) && s.files.get(id).is_some_and(|n| !n.dir) {
+                return tab_for(s, id);
+            }
             if swm::is_ours(id) {
                 // a page or a folder another ship shared. The folder itself and a ship's only fold
                 open_shared(s, id);

@@ -1,0 +1,6 @@
+{"events": [
+  {"t": 1.0, "hold": "cmd+ctrl"},
+  {"t": 1.2, "type": "tap", "key": "lattice:notes/today"},
+  {"t": 1.6, "hold": ""},
+  {"t": 2.5, "type": "mark", "name": "link"}
+]}
