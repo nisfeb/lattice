@@ -119,6 +119,82 @@ fn theme_look(t: &Value) -> Look {
     }
 }
 
+/// A colour as a stylesheet writes it, when it is plain hex: `#rgb` or `#rrggbb`.
+fn css_hex(v: &str) -> Option<Color> {
+    let h = v.trim().strip_prefix('#')?;
+    let six = match h.len() {
+        3 => h.chars().flat_map(|c| [c, c]).collect::<String>(),
+        6 => h.to_owned(),
+        _ => return None,
+    };
+    six.bytes().all(|b| b.is_ascii_hexdigit()).then(|| rune::color::hex(&format!("#{six}"))).flatten()
+}
+
+/// The look a published folder's `theme` stylesheet gives, from the variables the forum's own
+/// layout is drawn with (`code/lib/lattice-forum-render.hoon`): `--bg`, `--text`, `--muted`,
+/// `--accent`, `--on-accent`, `--link`, `--border`, `--border-soft` and `--raised`. Only a plain
+/// hex colour is taken. A variable set inside `@media (prefers-color-scheme: dark)` counts when
+/// the window is dark, and one inside any other `@` block never does. With no `--bg` and
+/// `--text` both, there is no look: half a theme would be drawn on the wrong ground.
+pub fn css_look(css: &str, dark: bool) -> Look {
+    let mut vars: std::collections::HashMap<String, Color> = std::collections::HashMap::new();
+    // which blocks the text is inside: true for one whose variables count
+    let mut inside: Vec<bool> = Vec::new();
+    let mut rest = css;
+    let mut head = String::new();
+    while let Some(at) = rest.find(['{', '}', ';']) {
+        let (before, mark) = (&rest[..at], rest.as_bytes()[at]);
+        rest = &rest[at + 1..];
+        match mark {
+            b'{' => {
+                head.push_str(before);
+                let h = head.trim().to_lowercase();
+                let counts = if h.starts_with('@') { h.starts_with("@media") && h.contains("prefers-color-scheme") && h.contains("dark") && dark } else { true };
+                inside.push(counts);
+                head.clear();
+            }
+            b'}' | b';' => {
+                head.push_str(before);
+                if !inside.is_empty() && inside.iter().all(|c| *c) {
+                    if let Some((name, value)) = head.trim().strip_prefix("--").and_then(|d| d.split_once(':')) {
+                        if let Some(c) = css_hex(value.trim().trim_end_matches("!important")) {
+                            vars.insert(name.trim().to_lowercase(), c);
+                        }
+                    }
+                }
+                head.clear();
+                if mark == b'}' {
+                    inside.pop();
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+    let named = |k: &str| vars.get(k).copied();
+    let (Some(bg), Some(text)) = (named("bg"), named("text")) else { return Look::default() };
+    let accent = named("accent");
+    Look {
+        dark: Some(bg.luminance() < 0.4),
+        bg: Some(bg),
+        text: Some(text),
+        muted: Some(named("muted").unwrap_or_else(|| lerp(text, bg, 0.35))),
+        border: Some(named("border").unwrap_or_else(|| lerp(bg, text, 0.4))),
+        border_soft: Some(named("border-soft").unwrap_or_else(|| lerp(bg, text, 0.15))),
+        link: named("link"),
+        raised: named("raised"),
+        error: None,
+        selection: None,
+        accent,
+        on_accent: named("on-accent").or_else(|| accent.map(on)),
+    }
+}
+
+/// Where a board's theme may be: the `theme` page at the board's folder, then at each folder
+/// above it, nearest first, as `+find-theme` in `app.hoon` looks.
+pub fn board_theme_names(board: &str) -> [String; 3] {
+    [format!("forum/{board}/theme"), "forum/theme".to_owned(), "theme".to_owned()]
+}
+
 /// An accent's colour, when it is on and has one. Unset reads as off, and
 /// a mode that is not known reads as the profile's colour, as Talon reads them.
 fn accent_of(a: &Value, profile: Option<&str>) -> Option<Color> {
@@ -403,6 +479,32 @@ mod tests {
         let got = hex(got);
         let ch = |s: &str, i: usize| i64::from_str_radix(&s[i..i + 2], 16).unwrap();
         got.len() == 7 && [1, 3, 5].iter().all(|&i| (ch(&got, i) - ch(want, i)).abs() <= 1)
+    }
+
+    #[test]
+    fn a_theme_sheet_gives_the_forum_its_colours() {
+        let css = ":root { --bg: #fdf6e3; --text:#073642; --muted: #657b83; --accent: #b58900; --link: #268bd2; --raised: #eee8d5; --pop: red; --border: rgb(1,2,3) }\n\
+            body { color: var(--text) }\n\
+            @media (prefers-color-scheme: dark) { :root { --bg: #002b36; --text: #eee; } }\n\
+            @media print { :root { --bg: #ffffff; } }";
+        let day = css_look(css, false);
+        assert_eq!((hex(day.bg).as_str(), hex(day.text).as_str(), hex(day.muted).as_str()), ("#fdf6e3", "#073642", "#657b83"));
+        assert_eq!((hex(day.accent).as_str(), hex(day.link).as_str(), hex(day.raised).as_str()), ("#b58900", "#268bd2", "#eee8d5"));
+        assert_eq!(day.dark, Some(false));
+        assert!(day.border.is_some() && hex(day.border) != "#010203", "a colour that is not plain hex is worked out, not taken");
+        assert!(day.on_accent.is_some(), "the ink on the accent is worked out when the sheet has none");
+        let night = css_look(css, true);
+        assert_eq!((hex(night.bg).as_str(), hex(night.text).as_str(), night.dark), ("#002b36", "#eeeeee", Some(true)));
+        assert_eq!(hex(night.accent), "#b58900", "what the dark block leaves alone stays");
+        // half a theme, or none, is no look
+        assert_eq!(css_look(":root { --bg: #000 }", false), Look::default());
+        assert_eq!(css_look("body { margin: 0 }", false), Look::default());
+        assert_eq!(css_look("@media (prefers-color-scheme: dark) { :root { --bg:#000; --text:#fff } }", false), Look::default());
+    }
+
+    #[test]
+    fn a_board_looks_for_its_theme_nearest_first() {
+        assert_eq!(board_theme_names("tech"), ["forum/tech/theme", "forum/theme", "theme"]);
     }
 
     fn night() -> Value {

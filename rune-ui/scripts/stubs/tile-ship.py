@@ -53,12 +53,16 @@ class H(BaseHTTPRequestHandler):
         if p == 'streams': return self.send(200, json.dumps({"base": "/stub", "streams": {}}))
         if p == 'page-dump':
             nodes = [{"path":n,"page":True,"kind":v[1],"rev":v[2],"body":v[0]} for n, v in PAGES.items()]
+            # LR_BOARD_THEME: a stylesheet published to the web at forum/theme, which every board of this ship's wears
+            if os.environ.get('LR_BOARD_THEME'): nodes.append({"path":"forum/theme","page":True,"kind":"css","rev":1,"share":"clearweb"})
             # a link is in the tree with no text, as the ship sends one
             nodes += [{"path":n,"page":True,"kind":"md","rev":l["rev"],"readonly":l["mode"]=="read","link":{"host":l["host"],"path":l["path"],"mode":l["mode"],"kind":"md"}} for n, l in LINKS.items()]
             return self.send(200, json.dumps({"nodes":nodes,"since":"s1"}))
         if p == 'page-source':
             l = LINKS.get(q.get('name', [''])[0])
             if l: return self.send(200, json.dumps({"body":l["body"],"kind":"md","rev":l["rev"],"mtime":"~2026.11.17"}))
+            if q.get('name', [''])[0] == 'forum/theme' and os.environ.get('LR_BOARD_THEME'):
+                return self.send(200, json.dumps({"body":open(os.environ['LR_BOARD_THEME']).read(),"kind":"css","rev":1,"mtime":"~2026.11.17"}))
             v = PAGES.get(q.get('name', [''])[0])
             if not v: return self.send(404, '{"error":"no such page"}')
             return self.send(200, json.dumps({"body":v[0],"kind":v[1],"rev":v[2],"mtime":"~2026.11.17","comments":COMMENTS_ON.get(q.get('name', [''])[0], os.environ.get('LR_COMMENTS', '1') == '1')}))

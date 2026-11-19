@@ -697,6 +697,9 @@ struct App {
     /// The forum, when it is what shows.
     forum: Option<Forum>,
     forum_req: Latest<Result<ForumGot, String>>,
+    /// The board whose theme was looked for, and its stylesheet: empty when it has none.
+    board_theme: Option<(String, String)>,
+    board_theme_req: Latest<Result<(String, String), String>>,
     /// The settings showing, when they are.
     settings: Option<Settings>,
     /// The ship's change stream: what its listener heard since the last look, what the stamps stood at, and the flag that stops a listener whose session ended.
@@ -1183,6 +1186,8 @@ fn init() -> App {
         vault_req: Latest::default(),
         vault_said: String::new(),
         forum_req: Latest::default(),
+        board_theme: None,
+        board_theme_req: Latest::default(),
         notes_req: Latest::default(),
 
         sheet: None,
@@ -2107,6 +2112,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.templates_req.set_waker(waker.clone());
     s.back_req.set_waker(waker.clone());
     s.forum_req.set_waker(waker.clone());
+    s.board_theme_req.set_waker(waker.clone());
     s.keys_req.set_waker(waker.clone());
     s.urb_req.set_waker(waker.clone());
     s.set_req.set_waker(waker.clone());
@@ -5463,6 +5469,16 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
             _ => {}
         }
     }
+    if let Some(r) = s.board_theme_req.take() {
+        changed = true;
+        // a sheet that could not be read leaves the board in the window's own look
+        if let Ok((board, css)) = r {
+            if s.board_theme.as_ref().is_some_and(|t| t.0 == board) {
+                s.board_theme = Some((board, css));
+            }
+        }
+    }
+    board_theme_sync(s);
     if let Some(r) = s.forum_req.take() {
         changed = true;
         if let Some(f) = &mut s.forum {
@@ -12447,7 +12463,13 @@ fn page_body(s: &App, k: &Kit) -> El {
         return access_view(s, k);
     }
     if let Some(f) = s.forum.as_ref().filter(|_| !s.editing) {
-        return col().key("forum-pane").w_full().h_full().min_h(0.0).child(col().w_full().items_center().child(forum_view(f, s.conn.as_ref().map_or("", |c| c.ship()), &Pics { had: &s.pics, failed: &s.pics_failed }, k))).scroll(ScrollSpec { stick_bottom: false });
+        // a board of this ship's wears its own theme, on its own ground, as its pages do on the web
+        let own = board_kit(s, k);
+        let (k, ground) = match &own {
+            Some(bk) => (bk, bk.c.bg_base),
+            None => (k, rune::Color::TRANSPARENT),
+        };
+        return col().key("forum-pane").w_full().h_full().min_h(0.0).fill(ground).child(col().w_full().items_center().child(forum_view(f, s.conn.as_ref().map_or("", |c| c.ship()), &Pics { had: &s.pics, failed: &s.pics_failed }, k))).scroll(ScrollSpec { stick_bottom: false });
     }
     if s.shared_open && !s.editing {
         return shared_view(s, k);
@@ -12675,15 +12697,68 @@ fn font_of(worn: &theme::Worn) -> String {
     }
 }
 
+/// The board of this ship's that the forum is showing, a thread's board with it.
+fn board_showing(s: &App) -> Option<&str> {
+    let f = s.forum.as_ref()?;
+    let name = f.thread.as_ref().map(|t| t.board.as_str()).or(f.board.as_ref().map(|b| b.board.as_str()))?;
+    (!name.starts_with('~')).then_some(name)
+}
+
+/// Whether a page is published to the web, by its own setting or by the nearest folder's that has one.
+fn on_clearweb(s: &App, name: &str) -> bool {
+    if let Some(mode) = s.shares.get(name) {
+        return mode == "clearweb";
+    }
+    let mut dir = name;
+    while let Some((up, _)) = dir.rsplit_once('/') {
+        if let Some(mode) = s.dshares.get(up) {
+            return mode == "clearweb";
+        }
+        dir = up;
+    }
+    false
+}
+
+/// The page that dresses a board: the nearest `theme` at or above its folder that is a stylesheet
+/// published to the web, as the ship picks it for the board's own pages.
+fn board_theme_page(s: &App, board: &str) -> Option<String> {
+    theme::board_theme_names(board).into_iter().find(|n| s.files.get(n).and_then(|f| f.data.as_ref()).is_some_and(|d| d.kind == "css") && on_clearweb(s, n))
+}
+
+/// Reads the theme of the board showing, once for each board. Another ship's board has none
+/// that can be read here: its tree is not this ship's to look in.
+fn board_theme_sync(s: &mut App) {
+    let Some(board) = board_showing(s).map(str::to_owned) else { return };
+    if s.board_theme.as_ref().is_some_and(|t| t.0 == board) {
+        return;
+    }
+    s.board_theme = Some((board.clone(), String::new()));
+    if let (Some(c), Some(page)) = (s.conn.clone(), board_theme_page(s, &board)) {
+        s.board_theme_req.request((c, board, page), |(c, board, page)| c.page(&page).map(|p| (board, p.body)));
+    }
+}
+
+/// The kit a board is drawn with: its own theme's, or the window's when it has none.
+fn board_kit(s: &App, k: &Kit) -> Option<Kit> {
+    let board = board_showing(s)?;
+    let (_, css) = s.board_theme.as_ref().filter(|t| t.0 == board && !t.1.is_empty())?;
+    let look = theme::css_look(css, k.dark);
+    look.bg.is_some().then(|| kit_from(look, k.dark))
+}
+
 /// The kit the window is drawn with: the theme the ship says is worn,
 /// and the accent over it, as the web client wears them. With no theme
 /// it is the built-in look, light or dark as the mode picked says.
 fn kit_of(prefs: &api::Prefs, system_dark: bool) -> Kit {
-    let look = prefs.worn.look();
+    kit_from(prefs.worn.look(), prefs.dark(system_dark))
+}
+
+/// A kit for a look. One that brings no ground of its own is the built-in look, dark or light as told.
+fn kit_from(look: theme::Look, dark: bool) -> Kit {
     let mut k = match (look.bg, look.text) {
         // a theme brings its own light or dark: the mode picked is for the built-in look
         (Some(bg), Some(fg)) => Kit::from_palette(rune_kit::PaletteSeed { bg, fg, accent: look.accent.unwrap_or(fg) }),
-        _ => Kit::neutral(prefs.dark(system_dark)),
+        _ => Kit::neutral(dark),
     };
     let c = &mut k.c;
     if let Some(muted) = look.muted {
