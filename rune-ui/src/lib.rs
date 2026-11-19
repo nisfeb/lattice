@@ -328,6 +328,8 @@ enum Prompt {
     ForumTags(TextEdit),
     /// A forum thread to delete, or one comment of the thread showing.
     ForumDelete(Option<u64>),
+    /// Removing a comment from one of this ship's pages: the page and the comment.
+    CommentRemove(String, String),
     /// A board to delete, with every thread on it.
     BoardDelete(String),
     /// An agent key to revoke: its id, and what it is called.
@@ -430,6 +432,10 @@ enum Op {
     Asked(String),
     /// Something about comments changed on the ship: what to say.
     Commented(String),
+    /// The owner's own comment landed on a page of theirs: the field is emptied only now.
+    Posted(String),
+    /// A comment went to another ship's page: the address, the text, and whether the host took it in the ship's five seconds.
+    SentRemote(String, String, bool),
     /// A ship was let in to a page (edit or read, and whether it was told),
     /// or put out again.
     Granted(String, String, bool, bool),
@@ -534,10 +540,21 @@ struct App {
     tex_for: Option<(String, u64)>,
     tex_why: Option<(String, u64, String)>,
     comments: Vec<Comment>,
-    comments_req: Latest<Result<Vec<Comment>, String>>,
+    comments_req: Latest<Result<(Vec<Comment>, u64), String>>,
     comments_on: HashMap<String, bool>,
     comments_on_req: Latest<Result<(String, bool), String>>,
     comment: TextEdit,
+    /// How many comments the ship has in all: it sends the newest 200.
+    comments_total: u64,
+    /// A comment is on its way to the ship: Post waits, and the text stays until it is known to have landed.
+    comment_sending: bool,
+    /// A switch flipped here before the ship said yes, with what it was: put back if the ship refuses.
+    comment_undo: Option<CommentUndo>,
+    /// The comets' comments held on each page, as its Comments pane last read them.
+    page_held: HashMap<String, Vec<Comment>>,
+    /// The public thread of the page of another ship last read by address, oldest first.
+    thread: Option<Thread>,
+    thread_req: Latest<Result<(String, Vec<Comment>), String>>,
     /// Comet comments waiting for a yes, and what each page asked about
     /// does with comets' comments (`open`, `held`, `off`).
     /// The activity notices, and how much waits (for the button's count).
@@ -551,7 +568,7 @@ struct App {
     held: Vec<Comment>,
     held_req: Latest<Result<Vec<Comment>, String>>,
     comets: HashMap<String, String>,
-    comets_req: Latest<Result<(String, String), String>>,
+    comets_req: Latest<Result<(String, (String, Vec<Comment>)), String>>,
     /// The sensitive mark of each page and folder asked about so far.
     sens: HashMap<String, bool>,
     sens_req: Latest<Result<(String, bool), String>>,
@@ -1010,6 +1027,12 @@ fn init() -> App {
         comments_on: HashMap::new(),
         comments_on_req: Latest::default(),
         comment: TextEdit::new(""),
+        comments_total: 0,
+        comment_sending: false,
+        comment_undo: None,
+        page_held: HashMap::new(),
+        thread: None,
+        thread_req: Latest::default(),
         asks: Asks::default(),
         asks_req: Latest::default(),
         notices: Vec::new(),
@@ -1365,6 +1388,7 @@ fn sign_out(s: &mut App) {
     fresh.asks_req = std::mem::take(&mut s.asks_req);
     fresh.waiting_req = std::mem::take(&mut s.waiting_req);
     fresh.comets_req = std::mem::take(&mut s.comets_req);
+    fresh.thread_req = std::mem::take(&mut s.thread_req);
     fresh.shared_req = std::mem::take(&mut s.shared_req);
     fresh.remote_req = std::mem::take(&mut s.remote_req);
     fresh.old_req = std::mem::take(&mut s.old_req);
@@ -1461,6 +1485,15 @@ fn confirm(s: &mut App) {
     }
     if let Prompt::ForumDelete(comment) = &p {
         forum_act(s, ForumAct::Delete(*comment));
+        return;
+    }
+    if let Prompt::CommentRemove(page, id) = &p {
+        if let Some(c) = s.conn.clone() {
+            s.op_req.request((c, page.clone(), id.clone()), |(c, page, id)| {
+                c.comment_delete(&page, &id)?;
+                Ok(Op::Commented(format!("removed a comment from {page}")))
+            });
+        }
         return;
     }
     if let Prompt::Tag(t) = &p {
@@ -1619,7 +1652,7 @@ fn confirm(s: &mut App) {
                 Op::Renamed(a, _) => c.rename_as(a, &rn)?,
                 Op::Deleted(n) => c.delete(n)?,
                 Op::Shared(n, mode) => c.share(n, mode)?,
-                Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) | Op::Linked(..) | Op::Unlinked(..) | Op::Forgot(..) => {}
+                Op::Cored(..) | Op::Restored(..) | Op::Tagged(..) | Op::Granted(..) | Op::Ungranted(..) | Op::Grouped(..) | Op::SharedDir(..) | Op::Sensed(..) | Op::Commented(..) | Op::Posted(..) | Op::SentRemote(..) | Op::Asked(..) | Op::Templated(..) | Op::Uploaded(..) | Op::Said(..) | Op::Wrote(..) | Op::Tokened(..) | Op::MapIn(..) | Op::Marks(..) | Op::Linked(..) | Op::Unlinked(..) | Op::Forgot(..) => {}
             }
             Ok(op)
         }),
@@ -1818,7 +1851,34 @@ fn applied(s: &mut App, op: Op) {
         }
         Op::Commented(say) => {
             s.note = say;
+            // the ship said yes: the switch stands as it was flipped
+            s.comment_undo = None;
             load_comments(s);
+            return;
+        }
+        Op::Posted(say) => {
+            s.note = say;
+            // landed: only now is what was typed let go
+            (s.comment, s.comment_sending) = (TextEdit::new(""), false);
+            load_comments(s);
+            return;
+        }
+        Op::SentRemote(url, body, told) => {
+            s.comment_sending = false;
+            let Some(t) = s.thread.as_mut().filter(|t| t.url == url) else {
+                s.note = "comment sent".into();
+                return;
+            };
+            s.comment = TextEdit::new("");
+            s.note = if told { format!("sent to {}", t.ship) } else { format!("{} has not said it took the comment yet", t.ship) };
+            t.sent = Some((body, told));
+            // the thread is read again, a moment after: the host writes the comment in a step of its own
+            if let Some(c) = s.conn.clone() {
+                s.thread_req.request((c, url), |(c, url)| {
+                    api::pause(std::time::Duration::from_millis(2500));
+                    thread_of(&c, &url).map(|l| (url, l))
+                });
+            }
             return;
         }
         Op::Sensed(n, on, shared) => {
@@ -1969,6 +2029,7 @@ fn setup(s: &mut App, waker: Waker) {
     s.asks_req.set_waker(waker.clone());
     s.waiting_req.set_waker(waker.clone());
     s.comets_req.set_waker(waker.clone());
+    s.thread_req.set_waker(waker.clone());
     s.shared_req.set_waker(waker.clone());
     s.marks_req.set_waker(waker.clone());
     s.theme_req.set_waker(waker.clone());
@@ -4048,11 +4109,13 @@ fn status_bar(s: &App, k: &Kit, busy: bool) -> El {
 /// The right pane: its tabs as icons, then what the one in front shows.
 fn right_pane(s: &App, k: &Kit) -> El {
     let own = s.open.is_some() && !s.memory && s.remote.is_none();
+    // a page of another ship read by address has its public thread as well
+    let thread = thread_here(s).is_some();
     // a memory, and another ship's page, have only their history, whatever was showing before
-    let now = if own { s.pane } else { rpane::Tab::Hist };
+    let now = if own || (thread && s.pane == rpane::Tab::Comments) { s.pane } else { rpane::Tab::Hist };
     let mut tabs = row().key("rtabs").role("tablist").label("Right pane").w_full().gap(4.0).px(8.0).pt(8.0);
     // the tabs in the web client's order, each by the key its button in the header had
-    for (what, key, name, icon) in rpane::TABS.iter().copied().filter(|t| own || t.0 == rpane::Tab::Hist) {
+    for (what, key, name, icon) in rpane::TABS.iter().copied().filter(|t| own || t.0 == rpane::Tab::Hist || (thread && t.0 == rpane::Tab::Comments)) {
         tabs = tabs.child(IconButton::new(icon).control_size(ControlSize::Large).variant(if what == now { IconButtonVariant::Neutral } else { IconButtonVariant::GhostMuted }).help(name).on_press(move |s: &mut App| pane_tab(s, what)).build(k).key(key));
     }
     let body = match now {
@@ -5059,7 +5122,7 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     if let Some(r) = s.comments_req.take() {
         changed = true;
         match r {
-            Ok(list) => s.comments = list,
+            Ok((list, total)) => (s.comments, s.comments_total) = (list, total),
             Err(e) => s.note = format!("comments: {e}"),
         }
     }
@@ -5168,8 +5231,9 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
     }
     if let Some(r) = s.comets_req.take() {
         changed = true;
-        if let Ok((n, m)) = r {
-            s.comets.insert(n, m);
+        if let Ok((n, (mode, pending))) = r {
+            s.comets.insert(n.clone(), mode);
+            s.page_held.insert(n, pending);
         }
     }
     if let Some(r) = s.comments_on_req.take() {
@@ -5474,11 +5538,32 @@ fn poll(s: &mut App, clock: f64, tx: &mut Tx) -> bool {
         match r {
             Ok(op) => applied(s, op),
             // uploads, sharing, grants and the rest are not put by: a grant that seems to work and is refused an hour later is a surprise nobody wants
-            Err(e) if api::gone(&e) => {
-                s.offline.get_or_insert_with(String::new);
-                s.note = "not done: that needs the ship, and it does not answer".into();
+            Err(e) => {
+                // a comment that did not go keeps its text, and a switch the ship did not take goes back
+                s.comment_sending = false;
+                match s.comment_undo.take() {
+                    Some(CommentUndo::On(n, was)) => drop(s.comments_on.insert(n, was)),
+                    Some(CommentUndo::Comets(n, was)) => drop(s.comets.insert(n, was)),
+                    None => {}
+                }
+                if api::gone(&e) {
+                    s.offline.get_or_insert_with(String::new);
+                    s.note = "not done: that needs the ship, and it does not answer".into();
+                } else {
+                    s.note = format!("not done: {e}");
+                }
             }
-            Err(e) => s.note = format!("not done: {e}"),
+        }
+    }
+    if let Some(Ok((url, list))) = s.thread_req.take() {
+        changed = true;
+        if let Some(t) = s.thread.as_mut().filter(|t| t.url == url) {
+            // what was sent from here is in the thread now: it is no longer waiting to show
+            let ours = s.conn.as_ref().map(|c| c.ship().to_owned()).unwrap_or_default();
+            if t.sent.as_ref().is_some_and(|(body, _)| list.iter().any(|m| m.author == ours && m.body.trim() == body.trim())) {
+                t.sent = None;
+            }
+            t.list = list;
         }
     }
     if let Some(r) = s.hist_req.take() {
@@ -8886,7 +8971,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
             .placeholder(hint)
             .on_edit(|s: &mut App| match s.prompt.as_mut().expect("a prompt is open") {
                 Prompt::New(t) | Prompt::Rename(_, t) | Prompt::Link(t) | Prompt::Ask(_, t) | Prompt::Duplicate(_, t) | Prompt::Token(t) | Prompt::Param(_, _, t) | Prompt::Tag(t) | Prompt::ForumTags(t) | Prompt::MarkMove(_, t) | Prompt::LinkIn(_, t) | Prompt::NewFolder(t) => t,
-                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
+                Prompt::Delete(_) | Prompt::ForumDelete(_) | Prompt::CommentRemove(..) | Prompt::BoardDelete(_) | Prompt::KeyRevoke(..) | Prompt::MarkDrop(..) | Prompt::Forget(_) | Prompt::Publish(..) | Prompt::Restore(_) | Prompt::Feature(..) => unreachable!("it has no field of this kind"),
             })
             .on_submit(|s: &mut App, _| confirm(s))
             .build(k)
@@ -8920,6 +9005,7 @@ fn prompt_view(s: &App, k: &Kit, layer: &mut Vec<El>) {
         Prompt::BoardDelete(name) => ("Delete this board?", text(format!("{name} and every thread on it are gone for everyone who reads it.")).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
         Prompt::ForumTags(t) => ("This thread's tags", field(t, "Up to five: lowercase letters, digits and dashes. None clears them"), "Set", ButtonVariant::Contrast),
         Prompt::ForumDelete(comment) => (if comment.is_some() { "Delete this comment?" } else { "Delete this thread?" }, text(if comment.is_some() { "It is gone for everyone who reads the board." } else { "The thread and its comments are gone for everyone who reads the board." }).font(k.ty.ui).color(k.c.text_muted).wrap(), "Delete", ButtonVariant::Danger),
+        Prompt::CommentRemove(page, _) => ("Remove this comment?", text(format!("It is gone from {page} for everyone who reads it, and cannot be brought back.")).key("comment-remove-ask").font(k.ty.ui).color(k.c.text_muted).wrap(), "Remove", ButtonVariant::Danger),
         Prompt::Tag(t) => ("Tag this memory", field(t, "a tag"), "Tag", ButtonVariant::Contrast),
         Prompt::MarkMove(_, t) => ("Move this bookmark to a folder", field(t, "A folder, or nothing for none"), "Move", ButtonVariant::Contrast),
         Prompt::LinkIn(_, t) => ("Move into my pages as", field(t, "a name, as notes/plan"), "Move", ButtonVariant::Contrast),
@@ -9092,7 +9178,7 @@ fn urb_go_anon(s: &mut App, to: Option<String>) {
     s.urb_req.request((e, url), |(e, url)| {
         let (ship, path) = engine::place(&url).ok_or_else(|| "an address is urb://~ship/path".to_owned())?;
         let p = e.read(&url, engine::BUDGET).map_err(|e| e.words())?;
-        Ok((url, api::Urb::Page { ship, path, kind: engine::kind_of(&p.mark).to_owned(), body: p.body, comments: 0 }))
+        Ok((url, api::Urb::Page { ship, path, kind: engine::kind_of(&p.mark).to_owned(), body: p.body, comments: Vec::new() }))
     });
 }
 
@@ -9142,9 +9228,12 @@ fn urb_got(s: &mut App, url: String, got: api::Urb) {
     match got {
         api::Urb::Page { ship, path, kind, body, comments } => {
             let name = format!("{ship}/{path}");
-            if comments > 0 {
-                s.note = format!("{comments} comment{} on its public thread, not shown here", if comments == 1 { "" } else { "s" });
+            if !comments.is_empty() {
+                s.note = format!("{} comment{} on this page, in the Comments pane", comments.len(), if comments.len() == 1 { "" } else { "s" });
             }
+            // the thread is kept for the pane, and what was sent to it from here stays said until the thread shows it
+            let sent = s.thread.take().filter(|t| t.url == url).and_then(|t| t.sent);
+            s.thread = Some(Thread { url: url.clone(), ship: ship.clone(), page: path.clone(), list: comments, all: false, sent });
             let note = std::mem::take(&mut s.note);
             show_remote(s, Shared { host: ship, path, mode: "published".into(), when: String::new() }, Page { name, body, kind, rev: 0 });
             s.note = note;
@@ -9248,6 +9337,30 @@ fn load_comments(s: &mut App) {
     }
 }
 
+/// Another ship's page's public thread, read at its address.
+fn thread_of(c: &Conn, url: &str) -> Result<Vec<Comment>, String> {
+    match c.urb_read(url)? {
+        api::Urb::Page { comments, .. } => Ok(comments),
+        _ => Err("that address is no longer a page".into()),
+    }
+}
+
+/// Sends the comment typed in the pane to the page of another ship in front, as this ship.
+fn post_remote_comment(s: &mut App) {
+    let (Some(c), Some(t)) = (s.conn.clone(), thread_here(s).cloned()) else { return };
+    let body = s.comment.text.trim().to_owned();
+    if body.is_empty() || s.comment_sending {
+        return;
+    }
+    // the text stays in the field until the ship has answered
+    s.comment_sending = true;
+    s.note = format!("sending to {}\u{2026}", t.ship);
+    s.op_req.request((c, t, body), |(c, t, body)| {
+        let told = c.comment_remote(&t.ship, &t.page, &body)?;
+        Ok(Op::SentRemote(t.url, body, told))
+    });
+}
+
 /// Posts the comment typed in the pane on the open page.
 fn post_comment(s: &mut App) {
     let (Some(c), Some(p)) = (s.conn.clone(), &s.open) else {
@@ -9255,31 +9368,35 @@ fn post_comment(s: &mut App) {
         return;
     };
     let body = s.comment.text.trim().to_owned();
-    if body.is_empty() {
+    if body.is_empty() || s.comment_sending {
         return;
     }
-    s.comment = TextEdit::new("");
+    // the text stays in the field until the ship has it: a post that fails loses nothing
+    s.comment_sending = true;
     s.op_req.request((c, p.name.clone(), body), |(c, page, body)| {
         c.comment(&page, &body)?;
         // the ship writes it in a step of its own behind the answer
         api::pause(std::time::Duration::from_millis(1500));
-        Ok(Op::Commented(format!("comment posted on {page}")))
+        Ok(Op::Posted(format!("comment posted on {page}")))
     });
 }
 
 /// One comment: who, when, what, and Remove. In the inbox it also names
 /// its page, which opens when pressed.
-fn comment_card(m: &Comment, k: &Kit, link: bool, held: bool) -> El {
+fn comment_card(m: &Comment, k: &Kit, link: bool, held: bool, busy: bool) -> El {
     let c = &k.c;
     let (page, id, to) = (m.page.clone(), m.id.clone(), m.page.clone());
     let when = Rev { rev: 0, updated: m.when.clone() }.when();
-    let mut top = row().w_full().gap(6.0).center_y().child(text(m.author.clone()).font(k.ty.small_medium).color(c.text_base)).child(text(when).font(k.ty.small).color(c.text_faint).grow(1.0));
+    // a comet's name is long: it is cut to the room there is, and said whole on hover. What can be done
+    // with the comment is on a row of its own, where a long name used to push it out of the pane
+    let top = row().w_full().gap(6.0).center_y().child(text(m.author.clone()).help(m.author.clone()).font(k.ty.small_medium).color(c.text_base).truncate().grow(1.0).min_w(0.0)).child(text(when).font(k.ty.small).color(c.text_faint));
+    let mut acts = row().w_full().gap(6.0).justify_end();
     if held {
         // a held comment is answered, not removed
         for approve in [true, false] {
             let (page, id) = (page.clone(), id.clone());
             let word = if approve { "approve" } else { "reject" };
-            top = top.child(Button::new(if approve { "Approve" } else { "Reject" }).control_size(ControlSize::Small).variant(if approve { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted }).on_press(move |s: &mut App| {
+            acts = acts.child(Button::new(if approve { "Approve" } else { "Reject" }).control_size(ControlSize::Small).variant(if approve { ButtonVariant::Contrast } else { ButtonVariant::GhostMuted }).disabled(busy).on_press(move |s: &mut App| {
                 match s.conn.clone() {
                     Some(c) => s.op_req.request((c, page.clone(), id.clone()), move |(c, page, id)| {
                         c.held_answer(&page, &id, approve)?;
@@ -9290,14 +9407,13 @@ fn comment_card(m: &Comment, k: &Kit, link: bool, held: bool) -> El {
             }).build(k).key(format!("held-{word}-{}", m.id)));
         }
     }
-    let mut card = col().key(format!("{}-{}", if held { "held" } else { "comment" }, m.id)).w_full().padding(8.0).gap(4.0).radius(k.radius.sm).fill(c.layer_01).child(if held { top } else {
-        top
-            .child(Button::new("Remove").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).on_press(move |s: &mut App| {
-                let Some(c) = s.conn.clone() else { return };
-                s.op_req.request((c, page.clone(), id.clone()), |(c, page, id)| {
-                    c.comment_delete(&page, &id)?;
-                    Ok(Op::Commented(format!("removed a comment from {page}")))
-                });
+    let mut card = col().key(format!("{}-{}", if held { "held" } else { "comment" }, m.id)).w_full().padding(8.0).gap(4.0).radius(k.radius.sm).fill(c.layer_01).child(top).child(if held { acts } else {
+        acts
+            // asked first, as the web client asks: a comment removed cannot be brought back
+            .child(Button::new("Remove").control_size(ControlSize::Small).variant(ButtonVariant::GhostMuted).disabled(busy).on_press(move |s: &mut App| {
+                if s.conn.is_some() {
+                    s.prompt = Some(Prompt::CommentRemove(page.clone(), id.clone()));
+                }
             }).build(k).key(format!("comment-del-{}", m.id)))
     });
     if link {
@@ -9394,9 +9510,11 @@ fn activity_view(s: &App, k: &Kit) -> El {
 /// Every page's comments, newest first, as the ship gives them.
 fn inbox_view(s: &App, k: &Kit) -> El {
     let c = &k.c;
+    // one answer at a time: a second press while the first is out would be a second request
+    let busy = s.op_req.is_pending();
     let mut list = col().key("inbox-list").w_full().gap(8.0);
     for m in &s.comments {
-        list = list.child(comment_card(m, k, true, false));
+        list = list.child(comment_card(m, k, true, false, busy));
     }
     if s.comments.is_empty() {
         list = list.child(text(if s.comments_req.is_pending() { "Reading the comments" } else { "No comments. They are off until switched on for a page, in its Comments pane." }).font(k.ty.small).color(c.text_muted).wrap());
@@ -9406,14 +9524,17 @@ fn inbox_view(s: &App, k: &Kit) -> El {
     if !s.held.is_empty() {
         waiting = waiting.child(text(format!("Held for your yes: {}", s.held.len())).font(k.ty.ui_medium).color(c.text_base));
         for m in &s.held {
-            waiting = waiting.child(comment_card(m, k, true, true));
+            waiting = waiting.child(comment_card(m, k, true, true, busy));
         }
     }
     let head = col()
         .gap(4.0)
         .child(text("Inbox").font(k.ty.body_medium).color(c.text_base))
-        .child(text("What waits for your yes, what happened, and every comment on your pages, newest first. The ship gives the newest 200 comments.").font(k.ty.small).color(c.text_muted).wrap());
-    let list = col().w_full().gap(8.0).child(text("Comments").font(k.ty.ui_medium).color(c.text_base)).child(list);
+        .child(text("What waits for your yes, what happened, and the comments on your pages, newest first.").font(k.ty.small).color(c.text_muted).wrap());
+    // how many of how many, as the web client says it: the ship sends the newest 200
+    let shown = s.comments.len() as u64;
+    let count = if s.comments_total > shown { format!("Comments: the newest {shown} of {}", s.comments_total) } else { "Comments".to_owned() };
+    let list = col().w_full().gap(8.0).child(text(count).key("inbox-count").font(k.ty.ui_medium).color(c.text_base)).child(list);
     col()
         .key("inbox")
         .w_full()
@@ -9430,6 +9551,10 @@ fn comments_view(s: &App, k: &Kit) -> El {
     let Some(p) = &s.open else {
         return col().key("comments").w_full().padding(12.0).child(text("Open a page to see its comments.").font(k.ty.small).color(c.text_muted).wrap());
     };
+    if let Some(t) = thread_here(s) {
+        return thread_view(t, s, k);
+    }
+    let busy = s.op_req.is_pending();
     let on = s.comments_on.get(&p.name).copied();
     let name = p.name.clone();
     let toggle = row()
@@ -9437,10 +9562,12 @@ fn comments_view(s: &App, k: &Kit) -> El {
         .w_full()
         .gap(8.0)
         .center_y()
-        .child(Switch::new(on.unwrap_or(false)).label("Comments on").on_toggle(move |s: &mut App| {
+        // not to be pressed until the ship has said which way it stands: flipped blind it could go the wrong way
+        .child(Switch::new(on.unwrap_or(false)).label("Comments on").disabled(on.is_none() || busy).on_toggle(move |s: &mut App| {
             let Some(c) = s.conn.clone() else { return };
-            let now = s.comments_on.get(&name).copied().unwrap_or(false);
+            let Some(now) = s.comments_on.get(&name).copied() else { return };
             s.comments_on.insert(name.clone(), !now);
+            s.comment_undo = Some(CommentUndo::On(name.clone(), now));
             s.op_req.request((c, name.clone()), move |(c, n)| {
                 c.set_comments(&n, !now)?;
                 Ok(Op::Commented(format!("comments are {} for {n}", if now { "off" } else { "on" })))
@@ -9453,9 +9580,10 @@ fn comments_view(s: &App, k: &Kit) -> El {
         comets = comets.child(text("Comets").font(k.ty.small).color(c.text_muted));
         for (mode, label) in [("open", "Open"), ("held", "Held"), ("off", "Off")] {
             let name = p.name.clone();
-            comets = comets.child(Button::new(label).control_size(ControlSize::Small).variant(if now == mode { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).on_press(move |s: &mut App| {
+            comets = comets.child(Button::new(label).control_size(ControlSize::Small).variant(if now == mode { ButtonVariant::Contrast } else { ButtonVariant::Ghost }).disabled(busy).on_press(move |s: &mut App| {
                 let Some(c) = s.conn.clone() else { return };
-                s.comets.insert(name.clone(), mode.to_owned());
+                let was = s.comets.insert(name.clone(), mode.to_owned()).unwrap_or_else(|| "open".to_owned());
+                s.comment_undo = Some(CommentUndo::Comets(name.clone(), was));
                 s.op_req.request((c, name.clone()), move |(c, n)| {
                     c.set_comets(&n, mode)?;
                     Ok(Op::Commented(format!("comets' comments are {mode} for {n}")))
@@ -9466,19 +9594,30 @@ fn comments_view(s: &App, k: &Kit) -> El {
     let mine: Vec<&Comment> = s.comments.iter().filter(|m| m.page == p.name).collect();
     let mut list = col().key("comment-list").w_full().gap(8.0);
     for m in &mine {
-        list = list.child(comment_card(m, k, false, false));
+        list = list.child(comment_card(m, k, false, false, busy));
     }
     if mine.is_empty() {
         list = list.child(text(if s.comments_req.is_pending() { "Reading the comments" } else { "No comments on this page." }).font(k.ty.small).color(c.text_muted));
     }
-    let off = on == Some(false);
+    // this page's comets' comments that wait for a yes, as the web client has them beside the page
+    let held = s.page_held.get(&p.name).filter(|h| !h.is_empty());
+    if let Some(held) = held {
+        let mut waiting = col().key("page-held").w_full().gap(8.0).child(text(format!("Held for your yes: {}", held.len())).font(k.ty.small_medium).color(c.text_base));
+        for m in held {
+            waiting = waiting.child(comment_card(m, k, false, true, busy));
+        }
+        list = col().w_full().gap(8.0).child(waiting).child(list);
+    }
     let mut write = col().key("comment-write").w_full().gap(6.0);
-    if off {
-        write = write.child(text("Comments are off for this page.").font(k.ty.small).color(c.text_muted).wrap());
-    } else {
-        write = write
-            .child(TextArea::new(&s.comment).label("Your comment").placeholder("Say something").rows(3).on_edit(|s: &mut App| &mut s.comment).build(k).w_full().key("comment-field"))
-            .child(row().child(Button::new("Post").control_size(ControlSize::Small).variant(ButtonVariant::Contrast).on_press(post_comment).build(k).key("comment-post")));
+    match on {
+        // the ship has not said yet: a comment posted on a page with comments off would be dropped and called posted
+        None => write = write.child(text(if s.comments_on_req.is_pending() { "Reading whether comments are on" } else { "Whether comments are on is not known." }).font(k.ty.small).color(c.text_muted).wrap()),
+        Some(false) => write = write.child(text("Comments are off for this page.").font(k.ty.small).color(c.text_muted).wrap()),
+        Some(true) => {
+            write = write
+                .child(TextArea::new(&s.comment).label("Your comment").placeholder("Say something").rows(3).on_edit(|s: &mut App| &mut s.comment).build(k).w_full().key("comment-field"))
+                .child(row().child(Button::new(if s.comment_sending { "Posting\u{2026}" } else { "Post" }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(s.comment_sending).on_press(post_comment).build(k).key("comment-post")));
+        }
     }
     col()
         .key("comments")
@@ -9490,6 +9629,62 @@ fn comments_view(s: &App, k: &Kit) -> El {
         .child(text("Comments").font(k.ty.ui_medium).color(c.text_base))
         .child(toggle)
         .child(comets)
+        .child(col().w_full().grow(1.0).min_h(0.0).child(list).scroll(ScrollSpec { stick_bottom: false }))
+        .child(write)
+}
+
+/// The Comments pane for a page of another ship read by address: its
+/// public thread, oldest first as its own reader shows it, and a field to
+/// send a comment as this ship. The host decides whether a comment lands.
+fn thread_view(t: &Thread, s: &App, k: &Kit) -> El {
+    let c = &k.c;
+    let hidden = if t.all { 0 } else { t.list.len().saturating_sub(THREAD_SHOWN) };
+    let mut list = col().key("thread-list").w_full().gap(8.0);
+    if hidden > 0 {
+        list = list.child(row().child(Button::new(format!("Show {hidden} older")).control_size(ControlSize::Small).variant(ButtonVariant::Ghost).on_press(|s: &mut App| {
+            if let Some(t) = &mut s.thread {
+                t.all = true;
+            }
+        }).build(k).key("thread-older")));
+    }
+    for (i, m) in t.list.iter().enumerate().skip(hidden) {
+        let when = Rev { rev: 0, updated: m.when.clone() }.when();
+        list = list.child(
+            col().key(format!("thread-{i}")).w_full().padding(8.0).gap(4.0).radius(k.radius.sm).fill(c.layer_01)
+                .child(row().w_full().gap(6.0).center_y().child(text(m.author.clone()).font(k.ty.small_medium).color(c.text_base)).child(text(when).font(k.ty.small).color(c.text_faint)))
+                .child(text(m.body.clone()).font(k.ty.ui).color(c.text_base).wrap().selectable(true)),
+        );
+    }
+    if t.list.is_empty() && t.sent.is_none() {
+        list = list.child(text("No comments on this page yet.").font(k.ty.small).color(c.text_muted));
+    }
+    // what was sent from here and is not in the thread yet, said as the ship's reader says it
+    if let Some((body, told)) = &t.sent {
+        let said = if *told { format!("Sent. It shows here once {} has it, or after its owner's yes if comments from you are held.", t.ship) } else { format!("{} did not say it took this within five seconds. It may still arrive.", t.ship) };
+        list = list.child(
+            col().key("thread-sent").w_full().padding(8.0).gap(4.0).radius(k.radius.sm).border(1.0, c.border_weak)
+                .child(text(said).font(k.ty.small).color(c.text_muted).wrap())
+                .child(text(body.clone()).font(k.ty.ui).color(c.text_muted).wrap()),
+        );
+    }
+    let url = t.url.clone();
+    let again = Button::new("Refresh").help("Read the thread again").control_size(ControlSize::Small).variant(ButtonVariant::Ghost).disabled(s.thread_req.is_pending()).on_press(move |s: &mut App| {
+        if let Some(c) = s.conn.clone() {
+            s.thread_req.request((c, url.clone()), |(c, url)| thread_of(&c, &url).map(|l| (url, l)));
+        }
+    }).build(k).key("thread-again");
+    let write = col().key("comment-write").w_full().gap(6.0)
+        .child(TextArea::new(&s.comment).label(format!("Your comment to {}", t.ship)).placeholder("Say something").rows(3).on_edit(|s: &mut App| &mut s.comment).build(k).w_full().key("comment-field"))
+        .child(text(format!("Sent as your ship. {} decides whether it shows: comments may be off there, or held.", t.ship)).font(k.ty.small).color(c.text_faint).wrap())
+        .child(row().child(Button::new(if s.comment_sending { "Sending\u{2026}".to_owned() } else { format!("Send to {}", t.ship) }).control_size(ControlSize::Small).variant(ButtonVariant::Contrast).disabled(s.comment_sending).on_press(post_remote_comment).build(k).key("comment-send")));
+    col()
+        .key("comments")
+        .w_full()
+        .h_full()
+        .min_h(0.0)
+        .padding(12.0)
+        .gap(10.0)
+        .child(row().w_full().gap(8.0).center_y().child(text(format!("Comments on {}'s page", t.ship)).font(k.ty.ui_medium).color(c.text_base).truncate().grow(1.0).min_w(0.0)).child(again))
         .child(col().w_full().grow(1.0).min_h(0.0).child(list).scroll(ScrollSpec { stick_bottom: false }))
         .child(write)
 }
@@ -10730,6 +10925,36 @@ fn folder_view(dir: &str, s: &App, k: &Kit) -> El {
         .min_h(0.0)
         .child(col().w_full().items_center().child(col().w_full().max_w(760.0).padding(28.0).gap(16.0).child(head).child(acts).child(list)))
         .scroll(ScrollSpec { stick_bottom: false })
+}
+
+/// A switch in the Comments pane as it was before it was flipped.
+#[derive(Clone, Debug, PartialEq)]
+enum CommentUndo {
+    On(String, bool),
+    Comets(String, String),
+}
+
+/// Another ship's page's public thread, and what this ship last sent to it.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Thread {
+    /// The address it was read at, its host, and the page's name there.
+    url: String,
+    ship: String,
+    page: String,
+    list: Vec<Comment>,
+    /// The older ones are shown too: fifty are until asked.
+    all: bool,
+    /// A comment sent from here that the thread does not show yet, and whether the host took it.
+    sent: Option<(String, bool)>,
+}
+
+/// How many of a thread's comments show until the rest are asked for, as in the ship's own reader.
+const THREAD_SHOWN: usize = 50;
+
+/// The thread that belongs to the page of another ship in front, when it was read by address.
+fn thread_here(s: &App) -> Option<&Thread> {
+    let sh = s.remote.as_ref()?;
+    s.thread.as_ref().filter(|t| t.ship == sh.host && t.page == sh.path)
 }
 
 /// How far along an update is.
@@ -13349,6 +13574,40 @@ mod tests {
         to_read(&mut s);
         assert!(!s.editing);
         assert_eq!(s.open.as_ref().unwrap().body, "changed text\n");
+    }
+
+    #[test]
+    fn a_comment_that_fails_keeps_its_text_and_a_refused_switch_goes_back() {
+        let mut s = sample("welcome");
+        // a post on its way: the text is there until the ship has it
+        s.comment = TextEdit::new("my words");
+        s.comment_sending = true;
+        applied(&mut s, Op::Posted("comment posted on welcome".into()));
+        assert_eq!((s.comment.text.as_str(), s.comment_sending), ("", false), "landed: only now is the field emptied");
+        // a switch flipped before the ship said yes is remembered as it was
+        s.comments_on.insert("welcome".into(), false);
+        s.comment_undo = Some(CommentUndo::On("welcome".into(), true));
+        applied(&mut s, Op::Commented("comments are off for welcome".into()));
+        assert_eq!((s.comments_on.get("welcome"), &s.comment_undo), (Some(&false), &None), "the ship said yes: it stands");
+    }
+
+    #[test]
+    fn another_ships_thread_belongs_to_the_page_it_was_read_with() {
+        let mut s = sample("welcome");
+        let m = |who: &str, body: &str| Comment { page: String::new(), id: String::new(), author: who.into(), when: "~2026.1.1".into(), body: body.into() };
+        urb_got(&mut s, "urb://~nec/notes/a".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: vec![m("~bus", "one"), m("~wex", "two")] });
+        let t = thread_here(&s).expect("the page in front has its thread");
+        assert_eq!((t.url.as_str(), t.ship.as_str(), t.page.as_str(), t.list.len(), t.all, &t.sent), ("urb://~nec/notes/a", "~nec", "notes/a", 2, false, &None));
+        assert!(s.note.contains("2 comments"));
+        // what was sent from here stays said across a read of the same address, and goes with another page
+        s.thread.as_mut().unwrap().sent = Some(("mine".into(), true));
+        urb_got(&mut s, "urb://~nec/notes/a".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/a".into(), kind: "md".into(), body: "# A\n".into(), comments: Vec::new() });
+        assert_eq!(thread_here(&s).unwrap().sent, Some(("mine".into(), true)));
+        urb_got(&mut s, "urb://~nec/notes/b".into(), api::Urb::Page { ship: "~nec".into(), path: "notes/b".into(), kind: "md".into(), body: "# B\n".into(), comments: Vec::new() });
+        assert_eq!(thread_here(&s).unwrap().sent, None);
+        // one of this ship's own pages has no such thread
+        open_page(&mut s, "welcome");
+        assert!(thread_here(&s).is_none());
     }
 
     fn sample(name: &str) -> App {

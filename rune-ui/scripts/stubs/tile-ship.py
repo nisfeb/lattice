@@ -61,7 +61,11 @@ class H(BaseHTTPRequestHandler):
             if l: return self.send(200, json.dumps({"body":l["body"],"kind":"md","rev":l["rev"],"mtime":"~2026.11.17"}))
             v = PAGES.get(q.get('name', [''])[0])
             if not v: return self.send(404, '{"error":"no such page"}')
-            return self.send(200, json.dumps({"body":v[0],"kind":v[1],"rev":v[2],"mtime":"~2026.11.17"}))
+            return self.send(200, json.dumps({"body":v[0],"kind":v[1],"rev":v[2],"mtime":"~2026.11.17","comments":COMMENTS_ON.get(q.get('name', [''])[0], os.environ.get('LR_COMMENTS', '1') == '1')}))
+        # comments: this ship's own pages' (the newest of a total), what waits for a yes on one page, and nothing held elsewhere
+        if p == 'comments-inbox': return self.send(200, json.dumps({"items": COMMENTS, "total": len(COMMENTS) + int(os.environ.get('LR_MORE', '0'))}))
+        if p == 'held-comments': return self.send(200, json.dumps({"items": []}))
+        if p == 'page-comets': return self.send(200, json.dumps({"mode": "held", "pending": PENDING}))
         if p == 'tile-status': return self.send(200, json.dumps({"token":True,"orrery":False,"max":17,"styles":["streets","outdoors","satellite","dark"]}))
         if p.startswith('tile/'):
             _, style, z, x, y = p.split('/')
@@ -79,7 +83,7 @@ class H(BaseHTTPRequestHandler):
             if url.rstrip('/') == 'urb://~sampel-palnet/notes':
                 return self.send(200, json.dumps({"kind":"folder","path":"/notes","entries":[{"name":"plan","url":"urb://~sampel-palnet/notes/plan","folder":False},{"name":"trips","url":"urb://~sampel-palnet/notes/trips/","folder":True}]}))
             if url == 'urb://~sampel-palnet/notes/plan':
-                return self.send(200, json.dumps({"kind":"page","ship":"~sampel-palnet","path":"/notes/plan","mode":"md","body":"# The plan\n\nPublished by ~sampel-palnet. See [the trips](urb://~sampel-palnet/notes/trips/).\n","comments":[]}))
+                return self.send(200, json.dumps({"comments":THREAD,"kind":"page","ship":"~sampel-palnet","path":"/notes/plan","mode":"md","body":"# The plan\n\nPublished by ~sampel-palnet. See [the trips](urb://~sampel-palnet/notes/trips/).\n"}))
             return self.send(404, 'nothing is published there')
         if p == 'omni-suggest':
             needle = q.get('q', [''])[0].lower()
@@ -111,9 +115,39 @@ SHARED = [] if os.environ.get('LR_SHARED') != '1' else [
 LINKS = {}
 MARKS = [{"url": "urb://~sampel-palnet/notes", "title": "Sampel's notes", "folder": ""}]
 HISTORY = []
+COMMENTS = [{"page": os.environ.get('LR_NAME', 'places'), "id": "0v1.a", "author": "~sampel-palnet", "when": "~2026.11.17..9.30.0", "body": "A first comment."}]
+COMMENTS_ON = {}
+PENDING = [{"id": "0v9.held", "author": "~doznec-salfun-naptul-habrys--todlux-mosmep-linsub-binzod", "when": 1795000000000, "body": "A comet's comment, held."}]
+THREAD = [{"author": "~bus", "when": "~2026.11.%d..8.0.0" % (1 + i % 20), "body": "Thread comment %d" % i} for i in range(int(os.environ.get('LR_THREAD', '2')))]
+def redirect(self, to):
+    self.send_response(303); self.send_header('location', to); self.send_header('content-length', '0'); self.end_headers()
 def do_POST(self):
     u = urlparse(self.path); p = u.path.replace('/apps/lattice/', '', 1); q = parse_qs(u.query)
     body = self.rfile.read(int(self.headers.get('Content-Length') or 0)).decode()
+    # comments, as the ship answers each. LR_COMMENT_FAIL refuses a post and a switch, to see that nothing typed is lost
+    if p in ('comment', 'page-comments', 'comment-remote') and os.environ.get('LR_COMMENT_FAIL'): return self.send(500, 'the ship could not do that')
+    if p == 'comment':
+        COMMENTS.insert(0, {"page": q['page'][0], "id": "0v2.%d" % len(COMMENTS), "author": "~zod", "when": "~2026.11.18..10.0.0", "body": parse_qs(body).get('body', [''])[0]})
+        sys.stderr.write("comment on %s\n" % q['page'][0])
+        return redirect(self, '/apps/lattice?name=' + q['page'][0])
+    if p == 'page-comments':
+        COMMENTS_ON[q['name'][0]] = q['on'][0] == '1'
+        return self.send(200, '{"ok":true}')
+    if p == 'comment-del':
+        COMMENTS[:] = [c for c in COMMENTS if c["id"] != q['id'][0]]
+        sys.stderr.write("comment removed %s\n" % q['id'][0])
+        return self.send(200, '{"ok":true}')
+    if p == 'comet-pending':
+        PENDING[:] = [c for c in PENDING if c["id"] != q['id'][0]]
+        sys.stderr.write("held %s %s\n" % (q['do'][0], q['id'][0]))
+        return self.send(200, '{"ok":true}')
+    if p == 'comment-remote':
+        said = parse_qs(body).get('body', [''])[0]
+        # LR_REMOTE_QUIET: the host does not answer the poke in time, so nothing says it was taken and nothing lands
+        quiet = os.environ.get('LR_REMOTE_QUIET')
+        if not quiet: THREAD.append({"author": "~zod", "when": "~2026.11.18..11.0.0", "body": said})
+        sys.stderr.write("remote comment to %s on %s: %r\n" % (q['ship'][0], q['page'][0], said))
+        return redirect(self, '/apps/lattice?url=urb://%s/%s' % (q['ship'][0], q['page'][0]) + ('' if quiet else '&sent=x'))
     if p == 'page-del' or p == 'page-move':
         if os.environ.get('LR_SAVE_502'): return self.send(502, 'bad gateway')
         at = q['name' if p == 'page-del' else 'from'][0]
