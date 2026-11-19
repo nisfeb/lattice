@@ -3837,7 +3837,7 @@ fn take_pics(s: &mut App) -> bool {
 /// the pictures had so far.
 fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
     let pics = s.pics.clone();
-    let src = md::wikilinks(body, &|n| ghost(s, n));
+    let src = md::wikilinks(&md::html_shown(body), &|n| ghost(s, n));
     // what find matches is marked, the current one apart from the rest
     let mut marks: Vec<(Vec<std::ops::Range<usize>>, rune_kit::Highlight)> = match s.find.as_ref().filter(|_| found) {
         Some(q) => find_in(&src, &q.text).into_iter().enumerate().map(|(i, m)| (m, if i == s.find_at { rune_kit::Highlight::current() } else { rune_kit::Highlight::new() })).collect(),
@@ -3847,7 +3847,17 @@ fn reader(body: &str, s: &App, k: &Kit, found: bool) -> El {
     if let Some(h) = s.outline_at.and_then(|i| outline::outline(&src, "md").into_iter().nth(i)).filter(|h| !h.words.is_empty()) {
         marks.push((vec![h.words], rune_kit::Highlight::new().key("md-outline")));
     }
-    Markdown::new(src).selectable(true).on_link_tx(follow).images(move |src| pics.get(src).cloned()).highlights(marks).build(k)
+    Markdown::new(src).selectable(true).on_link_tx(follow).images(move |src| pics.get(src).cloned()).highlights(marks).style(page_style(k)).build(k)
+}
+
+/// How a page's Markdown is set to be read. rune-kit's own style is a chat message's, with
+/// headings of 17, 15 and 13 points beside text of 14, so a third-level heading is the text's
+/// size and a page looks hardly marked up at all. A page is a document: its headings step down
+/// from well above the text, as they do in the editor and on the web.
+fn page_style(k: &Kit) -> rune_kit::MarkdownStyle {
+    let body = rune::TextStyle { line_height: 22.4, ..k.ty.body };
+    let heading = |size: f32, line: f32| rune::TextStyle { size, weight: 650.0, line_height: line, ..body };
+    rune_kit::MarkdownStyle::from_kit(k).heading_font(1, heading(26.0, 34.0)).heading_font(2, heading(21.0, 28.0)).heading_font(3, heading(17.0, 24.0)).heading_font(4, heading(15.0, 22.0))
 }
 
 /// The colours of a page's source, by its kind: Rune's own lexers for
@@ -12601,7 +12611,7 @@ fn page_body(s: &App, k: &Kit) -> El {
         let source = fill_editor(s, source, &editor_kit(k, &s.prefs.font));
         let mut panes = row().key("editor").w_full().h_full().min_h(0.0).padding(16.0).gap(16.0).child(col().grow(1.0).min_w(0.0).h_full().min_h(0.0).child(source).child(offers_bar(s, k)));
         if s.preview && p.kind == "md" {
-            let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(s.edit.text.clone()).build(k));
+            let shown = col().key("preview-page").w_full().padding(12.0).child(Markdown::new(md::html_shown(&s.edit.text)).style(page_style(k)).build(k));
             panes = panes.child(col().key("preview").grow(1.0).min_w(0.0).h_full().min_h(0.0).child(shown).scroll(ScrollSpec { stick_bottom: false }));
         }
         return panes;
@@ -13313,6 +13323,119 @@ mod tests {
         let post = |id: u64| api::ForumPost { id, ..Default::default() };
         let joined = forum_joined(&[post(9), post(8)], vec![post(8), post(7), post(6)]);
         assert_eq!(joined.iter().map(|p| p.id).collect::<Vec<_>>(), [9, 8, 7, 6]);
+    }
+
+    /// What the reader draws for a Markdown text: every piece of text in order, and how many of each
+    /// kind of block (heading, listitem, blockquote, image).
+    fn drawn(src: &str) -> (String, std::collections::BTreeMap<&'static str, usize>) {
+        struct Doc(String);
+        fn view(d: &Doc, _: &mut Cx<Doc>) -> El {
+            let k = Kit::neutral(true);
+            col().w_full().child(Markdown::new(md::wikilinks(&md::html_shown(&d.0), &|_| false)).selectable(true).style(page_style(&k)).build(&k))
+        }
+        let mut rt = rune::Runtime::new(Doc(src.to_owned()), view, (800.0, 20000.0), rune::Env::new(true, 1.0));
+        rt.frame(0.0);
+        rt.frame(0.1);
+        let mut text = String::new();
+        let mut kinds = std::collections::BTreeMap::new();
+        for e in rt.elements() {
+            if let Some(t) = &e.text {
+                text.push_str(t);
+                text.push(' ');
+            }
+            if matches!(e.role, "heading" | "listitem" | "blockquote" | "image") {
+                *kinds.entry(e.role).or_insert(0) += 1;
+            }
+        }
+        (text, kinds)
+    }
+
+    /// The text of the HTML the CommonMark spec gives for an example, as a reader of the page would
+    /// see it: tags gone, entities read.
+    fn html_text(html: &str) -> String {
+        let mut out = String::new();
+        let mut rest = html;
+        while let Some(a) = rest.find('<') {
+            out.push_str(&rest[..a]);
+            match rest[a..].find('>') {
+                Some(z) => {
+                    // an image is its alt words
+                    let tag = &rest[a..a + z];
+                    if let Some(alt) = tag.strip_prefix("<img").and_then(|t| t.split("alt=\"").nth(1)).and_then(|t| t.split('"').next()) {
+                        out.push_str(alt);
+                    }
+                    rest = &rest[a + z + 1..];
+                }
+                None => {
+                    rest = "";
+                }
+            }
+        }
+        out.push_str(rest);
+        out.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&amp;", "&")
+    }
+
+    /// Letters and figures only, so spacing, bullets, list numbers and the pads round code do not count.
+    fn letters(s: &str) -> String {
+        s.chars().filter(|c| c.is_alphanumeric()).collect()
+    }
+
+    /// Runs every example of the CommonMark spec through the reader and says, by section, which
+    /// lose text the spec's HTML shows, which show text it does not, and which have another
+    /// number of headings, list items, quotes or images. `LATTICE_CM_SPEC` names the spec's
+    /// `spec.json` (spec.commonmark.org). The parser is pulldown-cmark, which passes the spec:
+    /// this holds what is drawn to what it parsed.
+    #[test]
+    #[ignore = "LATTICE_CM_SPEC names spec.json"]
+    fn the_reader_against_the_commonmark_spec() {
+        let Ok(path) = std::env::var("LATTICE_CM_SPEC") else { return };
+        let spec: Vec<serde_json::Value> = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let mut by: std::collections::BTreeMap<String, (usize, Vec<String>)> = std::collections::BTreeMap::new();
+        for e in &spec {
+            let (md, html, n, section) = (e["markdown"].as_str().unwrap(), e["html"].as_str().unwrap(), e["example"].as_u64().unwrap(), e["section"].as_str().unwrap());
+            let (text, kinds) = drawn(md);
+            let (want, got) = (letters(&html_text(html)), letters(&text));
+            let count = |tag: &str| html.matches(tag).count();
+            let mut wrong = Vec::new();
+            // a numbered list draws its numbers, which the HTML leaves to the browser: figures more than
+            // the HTML has are not a fault there
+            let numbers_only = html.contains("<ol") && {
+                let mut w = want.chars().peekable();
+                got.chars().all(|c| if w.peek() == Some(&c) { w.next(); true } else { c.is_ascii_digit() }) && w.peek().is_none()
+            };
+            if want != got && !numbers_only {
+                wrong.push(if got.len() < want.len() { "text lost" } else if got.len() > want.len() { "text added" } else { "text differs" });
+                if std::env::var("LATTICE_CM_SHOW").is_ok() {
+                    eprintln!("-- {n} {section}\n   md   {md:?}\n   want {want:?}\n   got  {got:?}");
+                }
+            }
+            let heads = (1..=6).map(|l| count(&format!("<h{l}>")) + count(&format!("<h{l} "))).sum::<usize>();
+            for (role, n) in [("heading", heads), ("listitem", count("<li>")), ("blockquote", count("<blockquote>")), ("image", count("<img "))] {
+                if kinds.get(role).copied().unwrap_or(0) != n && std::env::var("LATTICE_CM_SHOW").is_ok() {
+                    eprintln!("-- {n} {section}: {role} {} drawn, {n2} in the HTML\n   md   {md:?}", kinds.get(role).copied().unwrap_or(0), n2 = n);
+                }
+                if kinds.get(role).copied().unwrap_or(0) != n {
+                    wrong.push(match role {
+                        "heading" => "headings",
+                        "listitem" => "list items",
+                        "blockquote" => "quotes",
+                        _ => "images",
+                    });
+                }
+            }
+            let entry = by.entry(section.to_owned()).or_default();
+            entry.0 += 1;
+            if !wrong.is_empty() {
+                entry.1.push(format!("{n} ({})", wrong.join(", ")));
+            }
+        }
+        let (mut all, mut bad) = (0, 0);
+        for (section, (n, wrong)) in &by {
+            all += n;
+            bad += wrong.len();
+            eprintln!("{section}: {} of {n} as the spec has them{}", n - wrong.len(), if wrong.is_empty() { String::new() } else { format!(". Not: {}", wrong.join("; ")) });
+        }
+        eprintln!("ALL: {} of {all}", all - bad);
     }
 
     #[test]

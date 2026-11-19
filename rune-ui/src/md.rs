@@ -39,6 +39,99 @@ pub fn exact(src: &str) -> Option<Doc> {
 /// The scheme a wiki link is given so the reader can tell it from a web one.
 pub const WIKI: &str = "lattice:";
 
+/// A page's Markdown with its raw HTML made into what the reader can draw. The reader draws
+/// Markdown natively and has nothing to draw HTML with, so what CommonMark passes through to a
+/// browser would be left out: a `<div>` and all the text in it, a table written in HTML, a
+/// `<br>`. Here a block of HTML is read as the document it is and written as Markdown
+/// (`html::to_markdown`), a `<br>` is a line break, and the few inline tags that have a Markdown
+/// of their own become it. Any other inline tag is still left out, with the words inside it kept.
+/// HTML inside a list item or a quote is left as it was: its lines carry the marks of what holds it.
+pub fn html_shown(src: &str) -> String {
+    if !src.contains('<') {
+        return src.to_owned();
+    }
+    // the last page read is kept: a view is built every frame, and the page is parsed once
+    thread_local! {
+        static LAST: std::cell::RefCell<(String, String)> = const { std::cell::RefCell::new((String::new(), String::new())) };
+    }
+    LAST.with_borrow_mut(|last| {
+        if last.0 != src {
+            *last = (src.to_owned(), html_made(src));
+        }
+        last.1.clone()
+    })
+}
+
+fn html_made(src: &str) -> String {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    // the options rune-kit parses with, so the places agree
+    let opts = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS;
+    let mut swaps: Vec<(std::ops::Range<usize>, String)> = Vec::new();
+    let (mut held, mut cell) = (0usize, 0usize);
+    // the paired tags met in the block being read: (where, the tag's name, whether it closes, what it becomes)
+    let mut pairs: Vec<(std::ops::Range<usize>, String, bool, &'static str)> = Vec::new();
+    for (ev, range) in Parser::new_ext(src, opts).into_offset_iter() {
+        match ev {
+            Event::Start(Tag::BlockQuote(_) | Tag::Item) => held += 1,
+            Event::End(TagEnd::BlockQuote(_)) => held = held.saturating_sub(1),
+            Event::Start(Tag::TableCell) => cell += 1,
+            // a tag left open, or closed and never opened, is not made into a mark with no partner
+            Event::End(TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::TableCell | TagEnd::Item) => {
+                for (range, name, _, with) in &pairs {
+                    let (opens, closes) = (pairs.iter().filter(|p| p.1 == *name && !p.2).count(), pairs.iter().filter(|p| p.1 == *name && p.2).count());
+                    if opens == closes {
+                        swaps.push((range.clone(), (*with).to_owned()));
+                    }
+                }
+                pairs.clear();
+                match ev {
+                    Event::End(TagEnd::Item) => held = held.saturating_sub(1),
+                    Event::End(TagEnd::TableCell) => cell = cell.saturating_sub(1),
+                    _ => {}
+                }
+            }
+            // at the start of its line, with at most the spaces Markdown allows before a block
+            Event::Start(Tag::HtmlBlock) if held == 0 && src[..range.start].rsplit('\n').next().is_some_and(|lead| lead.chars().all(|c| c == ' ')) => {
+                let mut as_md = crate::html::to_markdown(&src[range.clone()]);
+                as_md.truncate(as_md.trim_end().len());
+                // a block of its own, whatever stood round it
+                swaps.push((range, if as_md.is_empty() { String::new() } else { format!("\n{as_md}\n\n") }));
+            }
+            Event::InlineHtml(tag) => {
+                let name: String = tag.trim_start_matches('<').trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+                let closes = tag.starts_with("</");
+                match name.as_str() {
+                    // a cell of a table is one line: a break there is a space
+                    "br" => swaps.push((range, if cell > 0 { " " } else { "\\\n" }.to_owned())),
+                    "b" | "strong" => pairs.push((range, "b".into(), closes, "**")),
+                    "i" | "em" => pairs.push((range, "i".into(), closes, "*")),
+                    "s" | "del" | "strike" => pairs.push((range, "s".into(), closes, "~~")),
+                    "kbd" | "code" | "samp" | "tt" => pairs.push((range, "code".into(), closes, "`")),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    if swaps.is_empty() {
+        return src.to_owned();
+    }
+    swaps.sort_by_key(|s| s.0.start);
+    let mut out = String::with_capacity(src.len());
+    let mut at = 0;
+    for (range, with) in swaps {
+        // an HTML block's own lines come as events inside it: what is already replaced is passed over
+        if range.start < at {
+            continue;
+        }
+        out.push_str(&src[at..range.start]);
+        out.push_str(&with);
+        at = range.end;
+    }
+    out.push_str(&src[at..]);
+    out
+}
+
 /// The page for display: each wiki link, `[[name]]` or `[[name|label]]`,
 /// becomes a Markdown link to `lattice:name`. Fenced code and inline code
 /// are left as they are. Only the reader uses this, never the editor.
@@ -624,6 +717,34 @@ pub fn emit_with(text: &str, marks: &[MarkRange], blocks: &[Block], soft: &[u32]
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_html_in_a_page_is_made_into_what_the_reader_draws() {
+        // nothing to do is nothing done, byte for byte
+        for same in ["plain *text*\n", "a < b and `<br>` in code\n", "```\n<div>x</div>\n```\n"] {
+            assert_eq!(html_shown(same), same);
+        }
+        assert_eq!(html_shown("one<br>two<br/>three\n"), "one\\\ntwo\\\nthree\n");
+        assert_eq!(html_shown("press <kbd>Ctrl</kbd> and <b>hold</b>, <em>then</em> <del>not</del>\n"), "press `Ctrl` and **hold**, *then* ~~not~~\n");
+        // a tag with no partner is left alone, so no mark is opened that nothing closes
+        assert_eq!(html_shown("a <b>bold and no end\n"), "a <b>bold and no end\n");
+        assert_eq!(html_shown("[a](<b>c)\n"), "[a](<b>c)\n");
+        // an HTML block set in by a space or two is still one
+        assert!(html_shown(" <div>\n  *hello*\n </div>\n").contains("hello"));
+        // a tag with no Markdown of its own is left for the reader to leave out
+        assert_eq!(html_shown("H<sub>2</sub>O\n"), "H<sub>2</sub>O\n");
+        // a block of HTML is read as a document: its words are kept, where the reader would have dropped them
+        let div = html_shown("before\n\n<div>\n<em>Emphasized</em> text.\n</div>\n\nafter\n");
+        assert!(div.contains("Emphasized") && div.contains("text.") && !div.contains("<div>"), "{div}");
+        assert!(div.starts_with("before\n") && div.trim_end().ends_with("after"));
+        let table = html_shown("<table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>\n");
+        assert!(table.contains('|') && table.contains('A') && table.contains('2'), "{table}");
+        // a comment is nothing, and HTML held by a list is left as it was
+        assert_eq!(html_shown("<!-- note -->\n\ntext\n").trim(), "text");
+        assert_eq!(html_shown("- item\n\n  <div>x</div>\n"), "- item\n\n  <div>x</div>\n");
+        // a break in a table's cell is a space, since a cell is one line
+        assert_eq!(html_shown("| a |\n|---|\n| x<br>y |\n"), "| a |\n|---|\n| x y |\n");
+    }
 
     fn m(start: usize, end: usize, mark: Mark) -> MarkRange {
         MarkRange { start, end, mark }
